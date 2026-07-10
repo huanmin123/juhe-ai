@@ -30,6 +30,7 @@ export interface ProviderDefinition {
   protocolVersion: string
   baseUrl: string
   defaultTestModel: string
+  systemDefaultTestModel?: string
   defaultSupportedModels: string[]
   accountTypes: AccountType[]
   capabilities: string[]

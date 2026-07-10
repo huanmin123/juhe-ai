@@ -11,35 +11,63 @@ export type SelectOption = {
   disabled?: boolean
 }
 
-export function buildTestModelOptions(providerModels: ProviderModelPricing[], account?: AccountSummary | AccountSummary[], providerDefaultModel = ''): SelectOption[] {
+export function buildTestModelOptions(
+  providerModels: ProviderModelPricing[],
+  account?: AccountSummary | AccountSummary[],
+  providerDefaultModel = '',
+  systemDefaultModel = ''
+): SelectOption[] {
   const restrictedModels = restrictedTestModelsForAccountSelection(account)
+  const preferredModels = preferredTestModelsForAccountSelection(account, providerDefaultModel, systemDefaultModel)
   if (restrictedModels) {
-    return selectOptions(prioritizeDefaultModel(restrictedModels, providerDefaultModel))
+    return selectOptions(prioritizeTestModels(restrictedModels, preferredModels))
   }
   const useProviderModels = isGatewaySupportedTestSelection(account)
   const providerModelValues = useProviderModels
     ? providerModels.map((item) => item.model)
     : []
-  const defaultModel = providerDefaultModel.trim()
   const models = [
-    ...(defaultModel ? [defaultModel] : []),
+    ...preferredModels,
     ...providerModelValues
   ]
   return selectOptions(models)
 }
 
-export function defaultTestModelForAccountSelection(account: AccountSummary | AccountSummary[] | undefined, providerDefaultModel = ''): string {
+export function defaultTestModelForAccountSelection(
+  account: AccountSummary | AccountSummary[] | undefined,
+  providerDefaultModel = '',
+  systemDefaultModel = ''
+): string {
   const restrictedModels = restrictedTestModelsForAccountSelection(account)
+  const preferredModels = preferredTestModelsForAccountSelection(account, providerDefaultModel, systemDefaultModel)
   if (restrictedModels) {
-    return prioritizeDefaultModel(restrictedModels, providerDefaultModel)[0] ?? ''
+    return prioritizeTestModels(restrictedModels, preferredModels)[0] ?? ''
   }
-  return providerDefaultModel.trim() || ''
+  return preferredModels[0] ?? ''
 }
 
 export function providerDefaultTestModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
   const providerCode = providerCodeForAccountSelection(account)
   if (!providerCode) return ''
   return providers.find((provider) => provider.code === providerCode)?.defaultTestModel?.trim() ?? ''
+}
+
+export function providerSystemDefaultTestModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
+  const providerCode = providerCodeForAccountSelection(account)
+  if (!providerCode) return ''
+  const provider = providers.find((item) => item.code === providerCode)
+  if (!provider) return ''
+  const profileIds = [...new Set(normalizeAccounts(account).map((item) => item.providerProtocolProfileId).filter(Boolean))]
+  if (profileIds.length === 1) {
+    const profile = provider.protocolProfiles.find((item) => item.id === profileIds[0])
+    if (profile?.defaultTestModel?.trim()) return profile.defaultTestModel.trim()
+  }
+  return provider.systemDefaultTestModel?.trim()
+    || provider.protocolProfiles
+      .find((item) => item.id === provider.defaultProtocolProfileId)
+      ?.defaultTestModel
+      ?.trim()
+    || ''
 }
 
 export function providerCodeForAccountSelection(account: AccountSummary | AccountSummary[] | undefined): string {
@@ -72,10 +100,30 @@ function restrictedTestModelsForAccountSelection(account: AccountSummary | Accou
   return firstModels.filter((model) => otherModelLists.every((models) => models.includes(model)))
 }
 
-function prioritizeDefaultModel(models: string[], providerDefaultModel: string): string[] {
-  const defaultModel = providerDefaultModel.trim()
-  if (!defaultModel || !models.includes(defaultModel)) return models
-  return [defaultModel, ...models.filter((model) => model !== defaultModel)]
+function preferredTestModelsForAccountSelection(
+  account: AccountSummary | AccountSummary[] | undefined,
+  providerDefaultModel: string,
+  systemDefaultModel: string
+): string[] {
+  return uniqueTextList([
+    accountDefaultTestModelForSelection(account),
+    providerDefaultModel,
+    systemDefaultModel
+  ])
+}
+
+function accountDefaultTestModelForSelection(account: AccountSummary | AccountSummary[] | undefined): string {
+  const accounts = normalizeAccounts(account)
+  if (!accounts.length) return ''
+  const models = accounts.map((item) => item.defaultTestModel?.trim() ?? '')
+  if (models.some((model) => !model)) return ''
+  const uniqueModels = [...new Set(models)]
+  return uniqueModels.length === 1 ? uniqueModels[0] : ''
+}
+
+function prioritizeTestModels(models: string[], preferredModels: string[]): string[] {
+  const availablePreferredModels = preferredModels.filter((model) => models.includes(model))
+  return [...availablePreferredModels, ...models.filter((model) => !availablePreferredModels.includes(model))]
 }
 
 function selectOptions(models: string[]): SelectOption[] {

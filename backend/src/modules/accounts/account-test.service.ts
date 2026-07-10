@@ -7,11 +7,13 @@ import type { AccountClientCompatibility, AccountSummary, AccountSupportedEndpoi
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
-  findProviderDefaultTestModelAsync,
+  defaultProviderProtocolProfileAsync,
   findAccountForTestAsync,
   findOpenAIAccountForGroupAsync,
+  findProviderProtocolProfileAsync,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
+import { listProviderDefaultTestModelPreferencesAsync } from '../../storage/provider-default-test-model.repository.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
@@ -77,6 +79,10 @@ export async function testOpenAIAccountWithDiagnosticRetries(
   input: AccountTestInput = {}
 ): Promise<AccountTestResult> {
   const startedAt = Date.now()
+  const model = await resolveAccountTestModelAsync(account, {
+    explicitModel: input.model,
+    systemAccountId: input.systemAccountId
+  })
   let lastResult: AccountTestResult | undefined
   for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
     const timeoutMs = accountDiagnosticRetryTimeoutMs[attemptIndex] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
@@ -84,6 +90,7 @@ export async function testOpenAIAccountWithDiagnosticRetries(
     const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
     const result = await testOpenAIAccount(account, {
       ...input,
+      model,
       signal: attemptSignal,
       gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(input.gatewaySettingsOverride, timeoutMs)
     })
@@ -106,7 +113,7 @@ export async function testOpenAIAccountWithDiagnosticRetries(
       }, '账户诊断请求未通过，将继续使用真实网关链路重试')
     }
   }
-  return accountTestResultWithTotalDuration(lastResult ?? await testOpenAIAccount(account, input), startedAt)
+  return accountTestResultWithTotalDuration(lastResult ?? await testOpenAIAccount(account, { ...input, model }), startedAt)
 }
 
 function notifyDiagnosticAttemptProgress(
@@ -163,7 +170,10 @@ export async function testOpenAIAccount(
       candidateAccount: input.candidateAccount,
       findOpenAIAccountForGroup: input.findOpenAIAccountForGroup
     })
-    const model = explicitModel || await defaultAccountTestModelAsync(account, input.systemAccountId)
+    const model = await resolveAccountTestModelAsync(account, {
+      explicitModel,
+      systemAccountId: input.systemAccountId
+    })
     testRequest = anthropicProtocol
       ? createAnthropicTestRequest({
         explicitModel,
@@ -333,11 +343,42 @@ async function loadAccountForTest(
   return await reader(accountId, access)
 }
 
-export async function preferredSystemAccountTestModelAsync(account: Pick<AccountSummary, 'providerCode' | 'supportedModels' | 'lastSuccessfulTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>): Promise<string> {
-  return stringValue(account.lastSuccessfulTestModel)
-    || await findProviderDefaultTestModelAsync(account.providerCode, accountDefaultPreferenceSystemAccountId(account))
-    || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
-    || ''
+export async function resolveAccountTestModelAsync(
+  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'supportedModels' | 'defaultTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>,
+  input: {
+    explicitModel?: string
+    systemAccountId?: string
+    providerCode?: string
+    providerProtocolProfileId?: string
+    supportedModels?: string[]
+  } = {}
+): Promise<string> {
+  const explicitModel = stringValue(input.explicitModel)
+  if (explicitModel) return explicitModel
+
+  const providerCode = stringValue(input.providerCode) || account.providerCode
+  const providerProtocolProfileId = stringValue(input.providerProtocolProfileId) || account.providerProtocolProfileId
+  const supportedModels = normalizedAccountTestModels(input.supportedModels ?? account.supportedModels)
+  const accountDefaultModel = supportedAccountTestModel(account.defaultTestModel, supportedModels)
+  if (accountDefaultModel) return accountDefaultModel
+
+  const preferenceSystemAccountId = accountTestPreferenceSystemAccountId(account, input.systemAccountId)
+  const preferences = await listProviderDefaultTestModelPreferencesAsync(
+    preferenceSystemAccountId,
+    [providerCode]
+  )
+  const userDefaultModel = supportedAccountTestModel(
+    preferences.get(providerCode),
+    supportedModels
+  )
+  if (userDefaultModel) return userDefaultModel
+
+  const accountProfile = providerProtocolProfileId
+    ? await findProviderProtocolProfileAsync(providerProtocolProfileId)
+    : undefined
+  const profile = accountProfile ?? await defaultProviderProtocolProfileAsync(providerCode)
+  const systemDefaultModel = supportedAccountTestModel(profile?.defaultTestModel, supportedModels)
+  return systemDefaultModel || supportedModels[0] || ''
 }
 
 function sanitizeAccountTestResult(result: AccountTestResult): AccountTestResult {
@@ -601,12 +642,6 @@ async function resolveAccountTestCandidate(account: AccountSummary, input: { gro
   }
 }
 
-async function defaultAccountTestModelAsync(account: AccountSummary, requestSystemAccountId?: string): Promise<string> {
-  return await findProviderDefaultTestModelAsync(account.providerCode, stringValue(requestSystemAccountId) || accountDefaultPreferenceSystemAccountId(account))
-    || account.supportedModels?.map((model) => stringValue(model)).find(Boolean)
-    || ''
-}
-
 async function loadOpenAIAccountForGroup(
   input: Pick<AccountTestInput, 'findOpenAIAccountForGroup'>,
   groupId: string,
@@ -620,11 +655,27 @@ async function loadOpenAIAccountForGroup(
   return await reader(groupId, accountId, systemAccountId, options)
 }
 
-function accountDefaultPreferenceSystemAccountId(account: Pick<AccountSummary, 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>): string | undefined {
-  return stringValue(account.ownerSystemAccountId)
-    || stringValue(account.systemAccountId)
+function accountTestPreferenceSystemAccountId(
+  account: Pick<AccountSummary, 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>,
+  requestSystemAccountId?: string
+): string | undefined {
+  return stringValue(requestSystemAccountId)
     || stringValue(account.bindingSystemAccountId)
+    || stringValue(account.ownerSystemAccountId)
+    || stringValue(account.systemAccountId)
     || undefined
+}
+
+function normalizedAccountTestModels(models: string[] | undefined): string[] {
+  return [...new Set((models ?? []).map((model) => stringValue(model)).filter(Boolean))]
+}
+
+function supportedAccountTestModel(model: string | undefined, supportedModels: string[]): string {
+  const normalizedModel = stringValue(model)
+  if (!normalizedModel) return ''
+  return !supportedModels.length || supportedModels.includes(normalizedModel)
+    ? normalizedModel
+    : ''
 }
 
 function didRefreshToken(original: AccountSummary, resolved: OpenAIAccountSecret): boolean | undefined {

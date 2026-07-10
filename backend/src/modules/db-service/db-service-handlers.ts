@@ -83,8 +83,6 @@ import {
   recordAccountHealthCheckSuccessAsync,
   recordCooldownAccountRetestFailure,
   recordCooldownAccountRetestFailureAsync,
-  recordAccountSuccessfulTestModel,
-  recordAccountSuccessfulTestModelAsync,
   recordAuthorizedAccountBindingStreamFailure,
   recordAuthorizedAccountBindingStreamFailureAsync,
   resolveGroupUsageAccessMetadata,
@@ -607,16 +605,6 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           id: operation.taskId
         })
       }
-    case 'record_account_successful_test_model': {
-      if (runtimeConfig.databaseDriver === 'postgres') {
-        const updated = await recordAccountSuccessfulTestModelAsync(operation.accountId, operation.model, operation.access ?? internalDbServiceAccountAccess)
-        if (updated) {
-          clearGatewayRuntimeCacheLocal()
-        }
-        return { updated: Boolean(updated), accountStatus: updated?.status }
-      }
-      return handleDbServiceOperationSync(operation)
-    }
     case 'record_account_api_key_failure': {
       if (runtimeConfig.databaseDriver === 'postgres') {
         const result = await recordAccountApiKeyRuntimeFailureAsync({
@@ -1481,13 +1469,6 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return { canceled: isAccountTestTaskCancelRequested(operation.taskId) }
     case 'read_account_test_task_cancel_message':
       return { message: accountTestTaskCancelMessage(operation.taskId) }
-    case 'record_account_successful_test_model': {
-      const updated = recordAccountSuccessfulTestModel(operation.accountId, operation.model, operation.access ?? internalDbServiceAccountAccess)
-      if (updated) {
-        clearGatewayRuntimeCacheLocal()
-      }
-      return { updated: Boolean(updated), accountStatus: updated?.status }
-    }
     case 'clear_account_stream_failure_state': {
       const authorizedTarget = authorizedBindingRuntimeTarget(operation.account)
       const accountId = operation.account?.id ?? operation.accountId

@@ -762,8 +762,9 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       { model: userADeletableModel.model }
     )
     assert.equal(userADefaultPreference.defaultTestModel, userADeletableModel.model, '用户应能把自己可见的个人模型设置为默认测试模型')
-    const userAProviderOptions = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    const userAProviderOptions = await getEnvelope<Array<{ code: string; defaultTestModel: string; systemDefaultTestModel?: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
     assert.equal(userAProviderOptions.find((item) => item.code === 'openai')?.defaultTestModel, userADeletableModel.model, '用户默认测试模型应覆盖自己的供应商选项')
+    assert.notEqual(userAProviderOptions.find((item) => item.code === 'openai')?.systemDefaultTestModel, userADeletableModel.model, '用户默认测试模型不能覆盖系统协议档案默认事实')
     const userBProviderOptions = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userBCookie)
     assert.notEqual(userBProviderOptions.find((item) => item.code === 'openai')?.defaultTestModel, userADeletableModel.model, '用户默认测试模型不能泄露给其他用户')
     await assertHttpStatus(

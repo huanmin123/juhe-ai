@@ -205,6 +205,8 @@ try {
 	        type: 'api_key',
         status: 'active',
         groupName: importGroupName,
+        supportedModels: ['gpt-5.5'],
+        defaultTestModel: 'gpt-5.5',
         availabilitySchedule: schedule,
         credentials: {
           api_key: 'sk-import-schedule-explicit',
@@ -260,6 +262,7 @@ try {
   assert(scheduled, '显式计划的导入账户应创建成功')
   assert.equal(scheduled.availabilitySchedule?.enabled, true, '账户导入应保存账户级 availabilitySchedule')
   assert.equal(scheduled.availabilitySchedule?.windows?.[0]?.start, '22:00', '账户导入应保存可用时段时段')
+  assert.equal(scheduled.defaultTestModel, 'gpt-5.5', '账户导入应保存账户级默认测试模型')
 
   const withoutSchedule = repositories.listAccounts(access, { keyword: '导入无计划账户', providerCode: 'gpt' })
     .find((item) => item.name === '导入无计划账户')
@@ -387,6 +390,20 @@ try {
           api_key: 'sk-import-account-empty-supported-models',
           base_url: 'https://api.openai.com/v1'
         }
+      },
+      {
+        name: '导入账户非法默认测试模型',
+        providerCode: 'gpt',
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+        type: 'api_key',
+        status: 'pending_test',
+        groupName: importGroupName,
+        supportedModels: ['gpt-5.5'],
+        defaultTestModel: 'gpt-4o-mini',
+        credentials: {
+          api_key: 'sk-import-account-invalid-default-test-model',
+          base_url: 'https://api.openai.com/v1'
+        }
       }
     ]
   }, {}, access)
@@ -399,6 +416,7 @@ try {
   assert.match(strictAccountPreview.accounts[1]?.messages.join('\n') ?? '', /账户 supportedModels必须是非空字符串数组/, '账户 supportedModels 不应过滤非法成员后继续导入')
   assert.match(strictAccountPreview.accounts[1]?.messages.join('\n') ?? '', /账户 accountExpiresAt必须是有效时间字符串/, '账户不存在的日历日期不应被 Date 自动修正')
   assert.match(strictAccountPreview.accounts[2]?.messages.join('\n') ?? '', /账户 supportedModels必须是非空字符串数组/, '账户 supportedModels 显式空数组不应按省略处理')
+  assert.match(strictAccountPreview.accounts[3]?.messages.join('\n') ?? '', /账户 defaultTestModel 必须属于 supportedModels/, '账户默认测试模型不在支持列表时应阻止导入')
 
   const strictProxyPreview = accountImport.previewAccountImport({
     type: accountImport.accountImportProtocolType,

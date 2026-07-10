@@ -24,7 +24,7 @@ const seenResponsesPayloads: Record<string, unknown>[] = []
 const providerDefaultTestModel = 'gpt-5.6-sol'
 
 const [
-  { preferredSystemAccountTestModelAsync, testOpenAIAccount },
+  { resolveAccountTestModelAsync, testOpenAIAccount },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
   databaseModule,
@@ -112,15 +112,29 @@ try {
     name: '测试 Responses 当前契约账户',
     type: 'api_key',
     groupId: group.id,
+    supportedModels: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
     credentials: { api_key: 'sk-account-test-responses-contract', base_url: mockBaseUrl }
   }, access)
   assert.equal(account.clientCompatibility, 'codex_responses', 'GPT API Key 账户创建时默认应使用 Codex Responses 兼容')
 
-  assert.equal(await preferredSystemAccountTestModelAsync(account), providerDefaultTestModel, '无手动成功测试模型时，系统复测应使用供应商默认测试模型')
-  repositories.recordAccountSuccessfulTestModel(account.id, 'gpt-5.4', access)
-  const accountWithSuccessfulModel = repositories.findAccountSummary(account.id, access)
-  assert.equal(accountWithSuccessfulModel?.lastSuccessfulTestModel, 'gpt-5.4', '手动测试成功模型应写入账户')
-  assert.equal(await preferredSystemAccountTestModelAsync(accountWithSuccessfulModel!), 'gpt-5.4', '系统复测应优先使用手动测试通过模型')
+  assert.equal(await resolveAccountTestModelAsync(account), providerDefaultTestModel, '账户和用户都未配置时应使用账户协议档案系统默认模型')
+  repositories.updateAccountDefaultTestModel(account.id, 'gpt-5.4', access)
+  const accountWithDefaultModel = repositories.findAccountSummary(account.id, access)
+  assert.equal(accountWithDefaultModel?.defaultTestModel, 'gpt-5.4', '账户默认测试模型应按账户 ID 写入')
+  assert.equal(await resolveAccountTestModelAsync(accountWithDefaultModel!), 'gpt-5.4', '账户默认测试模型应优先于用户和系统默认')
+
+  const isolatedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '测试账户默认模型隔离',
+    type: 'api_key',
+    groupId: group.id,
+    supportedModels: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
+    credentials: { api_key: 'sk-account-test-default-model-isolated', base_url: mockBaseUrl }
+  }, access)
+  repositories.updateAccountDefaultTestModel(isolatedAccount.id, 'gpt-5.5', access)
+  assert.equal(repositories.findAccountSummary(account.id, access)?.defaultTestModel, 'gpt-5.4', '账户 B 切换默认模型不能覆盖账户 A')
+  assert.equal(repositories.findAccountSummary(isolatedAccount.id, access)?.defaultTestModel, 'gpt-5.5', '账户 B 应保存自己的默认测试模型')
 
   const tested = await testOpenAIAccount(account, { model: 'gpt-5.5', testEndpointMode: 'responses_sse' })
   await flushGatewayAccountSideEffects()
@@ -135,12 +149,20 @@ try {
   )
   assert.equal(seenResponsesPayloads[0]?.model, 'gpt-5.5', '测试请求应保留显式模型')
 
+  const accountDefaultModelTested = await testOpenAIAccount(accountWithDefaultModel!, { testEndpointMode: 'responses_sse' })
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  assert.equal(accountDefaultModelTested.success, true, `账户默认模型测试应成功：${accountDefaultModelTested.message}`)
+  assert.equal(accountDefaultModelTested.model, 'gpt-5.4', '未显式指定模型时应优先使用当前账户自己的默认测试模型')
+  assert.equal(seenResponsesPayloads.at(-1)?.model, 'gpt-5.4', '账户默认测试模型应写入上游请求')
+
   const defaultModelAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '测试 Responses 默认模型账户',
     type: 'api_key',
     groupId: group.id,
+    supportedModels: ['gpt-5.6-sol', 'gpt-5.5'],
     credentials: { api_key: 'sk-account-test-default-model', base_url: mockBaseUrl }
   }, access)
   const defaultModelTested = await testOpenAIAccount(defaultModelAccount, { testEndpointMode: 'responses_sse' })
@@ -150,17 +172,58 @@ try {
   assert.equal(defaultModelTested.model, providerDefaultTestModel, '未显式指定测试模型时，应使用供应商默认测试模型而不是最近真实请求模型')
   assert.equal(seenResponsesPayloads.at(-1)?.model, providerDefaultTestModel, '未显式指定测试模型时，上游请求应使用供应商默认测试模型')
 
+  const bindingUser = repositories.createSystemAccount({
+    username: 'account_test_binding_user',
+    displayName: '账户测试授权绑定用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
   await upsertProviderDefaultTestModelPreferenceAsync({
     systemAccountId: admin.id,
     providerCode: 'gpt',
     model: 'gpt-5.4-mini'
   })
+  await upsertProviderDefaultTestModelPreferenceAsync({
+    systemAccountId: bindingUser.id,
+    providerCode: 'gpt',
+    model: 'gpt-5.5'
+  })
+  assert.equal(
+    await resolveAccountTestModelAsync({
+      ...isolatedAccount,
+      systemAccountId: bindingUser.id,
+      ownerSystemAccountId: admin.id,
+      bindingSystemAccountId: bindingUser.id,
+      defaultTestModel: undefined
+    }),
+    'gpt-5.5',
+    '授权账户没有账户偏好时应使用 binding 用户个人默认，不能读取来源 owner 的个人默认'
+  )
+
+  await upsertProviderDefaultTestModelPreferenceAsync({
+    systemAccountId: admin.id,
+    providerCode: 'gpt',
+    model: 'gpt-5.4-mini'
+  })
+  assert.equal(
+    await resolveAccountTestModelAsync(accountWithDefaultModel!, {
+      systemAccountId: admin.id,
+      providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      supportedModels: ['gpt-5.4-mini', 'gpt-5.5']
+    }),
+    'gpt-5.4-mini',
+    '编辑草稿移除账户默认模型后，应按草稿支持模型回退当前用户默认，不能继续使用数据库中的旧账户默认'
+  )
   const userDefaultModelAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '测试 Responses 用户默认测试模型账户',
     type: 'api_key',
     groupId: group.id,
+    supportedModels: ['gpt-5.6-sol', 'gpt-5.4-mini'],
     credentials: { api_key: 'sk-account-test-user-default-model', base_url: mockBaseUrl }
   }, access)
   const userDefaultModelTested = await testOpenAIAccount(userDefaultModelAccount, {
@@ -172,6 +235,24 @@ try {
   assert.equal(userDefaultModelTested.success, true, `用户默认测试模型账户测试应成功：${userDefaultModelTested.message}`)
   assert.equal(userDefaultModelTested.model, 'gpt-5.4-mini', '未显式指定测试模型时，应优先使用当前用户默认测试模型偏好')
   assert.equal(seenResponsesPayloads.at(-1)?.model, 'gpt-5.4-mini', '用户默认测试模型偏好应写入上游测试请求')
+
+  const systemFallbackAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '测试用户默认不受账户支持时回退系统默认',
+    type: 'api_key',
+    groupId: group.id,
+    supportedModels: ['gpt-5.6-sol'],
+    credentials: { api_key: 'sk-account-test-system-default-fallback', base_url: mockBaseUrl }
+  }, access)
+  const systemFallbackTested = await testOpenAIAccount(systemFallbackAccount, {
+    systemAccountId: admin.id,
+    testEndpointMode: 'responses_sse'
+  })
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  assert.equal(systemFallbackTested.success, true, `系统默认回退账户测试应成功：${systemFallbackTested.message}`)
+  assert.equal(systemFallbackTested.model, providerDefaultTestModel, '用户默认不受账户支持时应回退账户协议档案系统默认')
 
   console.log('账户测试 Responses 当前契约回归通过：显式 testEndpointMode 生效，API Key 测试不发送 max_output_tokens')
 } finally {

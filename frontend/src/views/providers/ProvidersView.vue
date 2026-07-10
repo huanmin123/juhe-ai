@@ -609,12 +609,7 @@ function applyProviderDefaultTestModel(providerCode: string, defaultTestModel: s
 function providerWithDefaultTestModel(provider: ProviderDefinition, defaultTestModel: string): ProviderDefinition {
   return {
     ...provider,
-    defaultTestModel,
-    protocolProfiles: provider.protocolProfiles.map((profile) => (
-      profile.id === provider.defaultProtocolProfileId
-        ? { ...profile, defaultTestModel }
-        : profile
-    ))
+    defaultTestModel
   }
 }
 

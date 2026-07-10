@@ -271,7 +271,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_retest_observation_started_at TEXT,
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
-      last_successful_test_model TEXT,
+      default_test_model TEXT,
       health_check_enabled INTEGER NOT NULL DEFAULT 1,
       last_health_check_at TEXT,
       next_health_check_at TEXT,

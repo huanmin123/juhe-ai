@@ -316,7 +316,7 @@ const {
   handleAccountTableChangeAndLoad,
   handleAccountSortChange,
   handleSystemAccountFilterChange: handleAccountListSystemAccountFilterChange,
-  applyProviderDefaultTestModel,
+  applyAccountDefaultTestModel,
   removeLoadedAccount,
   resetFilters: resetAccountListFilters
 } = useAccountListData({
@@ -371,7 +371,7 @@ function handleAccountListLoaded(selectableAccountIds: Set<string>) {
   }
 }
 
-async function loadData(options?: { append?: boolean; quiet?: boolean; forceOptions?: boolean }) {
+async function loadData(options?: { append?: boolean; quiet?: boolean; forceOptions?: boolean; shouldApply?: () => boolean }) {
   await loadAccountListData(options)
 }
 
@@ -582,7 +582,7 @@ const {
   updateAccountTestModel
 } = useAccountTestModal({
   accountScopeParams,
-  applyProviderDefaultTestModel,
+  applyAccountDefaultTestModel,
   clearSelection,
   isManagementView,
   loadData,

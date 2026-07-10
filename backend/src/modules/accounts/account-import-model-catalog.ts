@@ -19,6 +19,7 @@ export interface AccountImportModelCatalogAccount {
   providerProtocolProfileId?: string
   credentials?: Record<string, unknown>
   supportedModels?: string[]
+  defaultTestModel?: string
   modelMappings?: AccountModelMapping[]
   messages: string[]
 }
@@ -38,6 +39,7 @@ export function validateAccountModelCatalogFields(
       context.targetSystemAccountId
     )
     assertAccountSupportedModelsRequired(account.supportedModels ?? [])
+    assertImportedAccountDefaultTestModel(account.defaultTestModel, account.supportedModels ?? [])
     account.modelMappings = normalizeAccountModelMappingsForProvider(
       account.modelMappings,
       account.providerCode,
@@ -70,6 +72,7 @@ export async function validateAccountModelCatalogFieldsAsync(
       context.targetSystemAccountId
     )
     assertAccountSupportedModelsRequired(account.supportedModels ?? [])
+    assertImportedAccountDefaultTestModel(account.defaultTestModel, account.supportedModels ?? [])
     account.modelMappings = await normalizeAccountModelMappingsForProviderAsync(
       account.modelMappings,
       account.providerCode,
@@ -85,4 +88,9 @@ export async function validateAccountModelCatalogFieldsAsync(
   } catch (error) {
     account.messages.push(errorMessage(error))
   }
+}
+
+function assertImportedAccountDefaultTestModel(defaultTestModel: string | undefined, supportedModels: readonly string[]): void {
+  if (!defaultTestModel || supportedModels.includes(defaultTestModel)) return
+  throw new Error('账户 defaultTestModel 必须属于 supportedModels')
 }

@@ -85,6 +85,7 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
     fallbackEnabled: input.accountDetail?.fallbackEnabled ?? false,
     clientCompatibility: input.accountDetail?.clientCompatibility ?? (input.draftPayload.type === 'oauth' ? 'codex_responses' : 'openai_standard'),
     supportedModels: input.draftPayload.supportedModels,
+    defaultTestModel: input.accountDetail?.defaultTestModel,
     modelMappings: input.draftPayload.modelMappings,
     proxyProfileId: input.draftPayload.proxyProfileId ?? undefined,
     schedulable: true,

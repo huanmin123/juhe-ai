@@ -7,6 +7,7 @@ export const accountCreateInputKeys = new Set([
   'type',
   'credentials',
   'supportedModels',
+  'defaultTestModel',
   'modelMappings',
   'tags',
   'status',

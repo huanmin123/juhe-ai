@@ -4,7 +4,7 @@ import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccountQualityFailurePrecheckCandidate } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
-import { preferredSystemAccountTestModelAsync, testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
+import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 
 interface AccountQualityFailurePrecheckQueueItem extends AccountQualityFailurePrecheckCandidate {
@@ -71,9 +71,9 @@ async function runAccountQualityFailurePrecheckQueueItem(
 
   const groupId = account.boundGroupId
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
-    model: await preferredSystemAccountTestModelAsync(account),
     diagnostics: 'full',
     groupId,
+    systemAccountId: item.systemAccountId,
     trafficSource: 'runtime_recovery_probe',
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,

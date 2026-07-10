@@ -157,7 +157,7 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 账号测试健康探针复用现有账户测试链路：
 
 - 测试入口使用 `testOpenAIAccount`。
-- 测试模型使用 `preferredSystemAccountTestModelAsync`：优先 `lastSuccessfulTestModel`，其次供应商默认测试模型，再其次账号声明的可用模型。
+- 测试模型统一交给 `resolveAccountTestModelAsync`：优先账户独立 `defaultTestModel`，其次当前执行用户的供应商个人默认，再次账户绑定协议档案的系统默认，最后使用账号声明的支持模型首项。
 - 测试请求使用账户测试自己的最小 payload 和协议匹配 endpoint。
 - 测试链路仍走账号自己的供应商、协议档案、Base URL、代理和凭据。
 - 探针使用 `traffic_source = runtime_recovery_probe`，且 `disableAccountStateMutation = true`，运行态状态机根据结果决定是否清理或升级。

@@ -13,6 +13,7 @@ const accountTestDispatchRoutesSource = readFileSync(resolve(backendSrc, 'module
 const accountTestSessionRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-session.routes.ts'), 'utf8')
 const accountTestStatusRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-status.routes.ts'), 'utf8')
 const accountTestTaskQueueSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-task-queue.service.ts'), 'utf8')
+const accountTestServiceSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test.service.ts'), 'utf8')
 const accountTestTaskRepositorySource = readFileSync(resolve(backendSrc, 'storage/account-test-tasks.repository.ts'), 'utf8')
 const accountDraftTestServiceSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-draft-test.service.ts'), 'utf8')
 const dbServiceHandlersSource = readFileSync(resolve(backendSrc, 'modules/db-service/db-service-handlers.ts'), 'utf8')
@@ -50,6 +51,14 @@ const prepareAccountDraftTestSnapshotAsyncSource = accountDraftTestServiceSource
   accountDraftTestServiceSource.indexOf('export async function prepareAccountDraftTestSnapshotAsync'),
   accountDraftTestServiceSource.indexOf('function prepareAccountDraftTestSnapshotResolved')
 )
+const assertActivationTestTaskMatchesCreateAsyncSource = accountDraftTestServiceSource.slice(
+  accountDraftTestServiceSource.indexOf('async function assertActivationTestTaskMatchesCreateAsync'),
+  accountDraftTestServiceSource.indexOf('async function accountCreateActivationFingerprintSnapshotAsync')
+)
+const accountCreateActivationFingerprintSnapshotAsyncSource = accountDraftTestServiceSource.slice(
+  accountDraftTestServiceSource.indexOf('async function accountCreateActivationFingerprintSnapshotAsync'),
+  accountDraftTestServiceSource.indexOf('function sameAccountTestRequester')
+)
 
 assert.equal(
   accountTestDispatchRoutesSource.includes('testOpenAIAccount('),
@@ -59,6 +68,13 @@ assert.equal(
 assert(
   accountTestDispatchRoutesSource.includes('createAccountTestTaskAsync({'),
   'POST /accounts/:id/test 应创建账号测试任务'
+)
+assert(
+  accountTestDispatchRoutesSource.includes("router.put('/:id/default-test-model'")
+    && accountTestDispatchRoutesSource.includes('accountDefaultTestModelSchema.safeParse(req.body)')
+    && accountTestDispatchRoutesSource.includes('updateAccountDefaultTestModelAsync(account.id, model, requestAccess)')
+    && accountTestDispatchRoutesSource.includes('(account.supportedModels ?? []).includes(model)'),
+  '账户测试弹窗默认模型应通过账户级接口按账户支持模型校验后持久化'
 )
 assert(
   accountTestDispatchRoutesSource.includes('dispatchAccountTestTasks([task.id])'),
@@ -191,6 +207,11 @@ assert(
   accountTestTaskQueueSource.includes('testOpenAIAccountWithDiagnosticRetries(account, {'),
   '真实账号测试应在后台任务队列中执行，并使用诊断重试等待策略'
 )
+assert.doesNotMatch(
+  accountTestTaskQueueSource,
+  /updateAccountDefaultTestModel|update_account_default_test_model/,
+  '账号测试任务成功不能自动改写账户默认模型，避免批量测试覆盖每个账户的独立偏好'
+)
 assert(
   runOpenAIAccountTestWithSideEffectsSource.includes('findAccountForTest: loadAccountForTestViaDbService')
     && runOpenAIAccountTestWithSideEffectsSource.includes('findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService'),
@@ -198,8 +219,14 @@ assert(
 )
 assert(
   accountTestTaskQueueSource.includes('testOpenAIDraftAccountWithDiagnosticRetries')
-    && accountTestTaskQueueSource.includes('openAIDraftAccountSecret(draft, attemptSignal)'),
-  '草稿账号测试应把 OAuth 刷新和候选账号生成纳入单次诊断 attempt 超时'
+    && accountTestTaskQueueSource.includes('openAIDraftAccountSecret(draft, attemptSignal)')
+    && accountTestTaskQueueSource.includes('providerCode: draft.providerCode')
+    && accountTestTaskQueueSource.includes('providerProtocolProfileId: draft.providerProtocolProfileId')
+    && accountTestTaskQueueSource.includes('supportedModels: draft.supportedModels')
+    && accountTestTaskQueueSource.includes('providerCode: input.draftAccount?.providerCode')
+    && accountTestTaskQueueSource.includes('providerProtocolProfileId: input.draftAccount?.providerProtocolProfileId')
+    && accountTestTaskQueueSource.includes('supportedModels: input.draftAccount?.supportedModels'),
+  '草稿账号测试应把 OAuth 刷新和候选账号生成纳入单次诊断 attempt 超时，并按草稿协议和支持模型解析默认测试模型'
 )
 assert(
   accountTestTaskQueueSource.includes('accountTestTaskProgressReporter(task.id)')
@@ -256,10 +283,10 @@ assert(
     && runManualAccountTestFailurePrecheckQueueItemSource.includes('findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService'),
   '账号测试失败事前确认应同时通过 DB service 读取账号详情和分组候选账号，避免 PostgreSQL 模式回退 SQLite'
 )
-assert.match(
+assert.doesNotMatch(
   runManualAccountTestFailurePrecheckQueueItemSource,
-  /model:\s*await preferredSystemAccountTestModelAsync\(account\)/,
-  '账号测试失败事前确认只能使用账户健康测试模型，不能复用本次手动失败模型'
+  /\bmodel\s*:/,
+  '账号测试失败事前确认应交给统一解析器选择模型，不能自行维护另一套优先级'
 )
 assert.doesNotMatch(
   runManualAccountTestFailurePrecheckQueueItemSource,
@@ -347,14 +374,39 @@ assert(
   '异步草稿测试快照必须走异步解析，模型映射不能回退到 SQLite 同步模型目录读取'
 )
 assert(
+  assertActivationTestTaskMatchesCreateAsyncSource.includes('await accountCreateActivationFingerprintSnapshotAsync({')
+    && !assertActivationTestTaskMatchesCreateAsyncSource.includes('accountCreateActivationFingerprintSnapshot({'),
+  '异步创建账户激活校验必须使用异步 fingerprint 构建，不能在 PostgreSQL 模式回退同步 SQLite 路径'
+)
+assert(
+  accountCreateActivationFingerprintSnapshotAsyncSource.includes('await normalizeDraftAccountModelMappingsAsync(')
+    && accountCreateActivationFingerprintSnapshotAsyncSource.includes('await findProviderDefaultSupportedModelsAsync(')
+    && !accountCreateActivationFingerprintSnapshotAsyncSource.includes('normalizeDraftAccountModelMappings(')
+    && !accountCreateActivationFingerprintSnapshotAsyncSource.includes('findProviderDefaultSupportedModels('),
+  '异步创建账户 fingerprint 的模型目录和模型映射读取必须全程使用异步 repository'
+)
+assert(
   dbServiceHandlersSource.includes('findAccountForTestAsync(operation.accountId, operation.access)')
     && dbServiceHandlersSource.includes('handleAccountTestTaskMaintenanceAsync(operation)')
     && dbServiceHandlersSource.includes('markAccountTestTaskRunningAsync(operation.taskId)')
     && dbServiceHandlersSource.includes('completeAccountTestTaskAsync(operation.taskId, operation.result)')
     && dbServiceHandlersSource.includes('failAccountTestTaskAsync(operation.taskId, operation.message, operation.result)')
-    && dbServiceHandlersSource.includes('recordAccountSuccessfulTestModelAsync(operation.accountId, operation.model')
     && dbServiceHandlersSource.includes('markAccountTestTemporaryUnavailableAsync(account, operation.reason'),
   'DB service 的账号测试链路在 PostgreSQL 模式下必须使用异步账户读取、任务维护和收尾写入'
+)
+assert(
+  accountTestServiceSource.includes('export async function resolveAccountTestModelAsync')
+    && accountTestServiceSource.includes('account.defaultTestModel')
+    && accountTestServiceSource.includes('listProviderDefaultTestModelPreferencesAsync')
+    && accountTestServiceSource.includes('findProviderProtocolProfileAsync')
+    && accountTestServiceSource.includes('supportedModels[0]'),
+  '账号测试模型优先级必须统一收口为账户偏好、当前用户偏好、账户协议档案系统默认和支持模型兜底'
+)
+assert(
+  accountTestServiceSource.includes('const model = await resolveAccountTestModelAsync(account, {')
+    && accountTestServiceSource.includes('model,')
+    && accountTestServiceSource.includes('return accountTestResultWithTotalDuration(lastResult ?? await testOpenAIAccount(account, { ...input, model })'),
+  '诊断重试应在循环外解析一次模型，所有 attempt 使用同一模型'
 )
 assert(
   accountTestTaskRepositorySource.includes('draft_account_encrypted')
@@ -390,13 +442,13 @@ assert(
 )
 assert(
   frontendAccountTestModalSource.includes('activeSingleTestTask')
-    && frontendAccountTestModalSource.includes('waitForSubmittedAccountTestResult(task, account, controller.signal,')
+    && frontendAccountTestModalSource.includes('waitForSubmittedAccountTestResult(run, task, account, payload,')
     && frontendAccountTestModalSource.includes('activeSingleTestTask.value = latestTask'),
   '前端单账号测试应轮询活动任务并把任务状态传给测试终端'
 )
 assert(
-  frontendAccountTestModalSource.includes('runBatchAccountTestItem(account, index, controller, session.id)')
-    && frontendAccountTestModalSource.includes('const result = await waitForSubmittedAccountTestResult(task, account, controller.signal,')
+  frontendAccountTestModalSource.includes('runBatchAccountTestItem(run, account, index, formSnapshot, session.id)')
+    && frontendAccountTestModalSource.includes('const result = await waitForSubmittedAccountTestResult(run, task, account, payload,')
     && frontendAccountTestTaskPollingSource.includes('accountTestTaskMaxWaitMs')
     && frontendAccountTestTaskPollingSource.includes('await cancelTask(task.id, account)')
     && frontendAccountTestModalSource.includes('cancelCreatedAccountTestTask(task.id, account)'),
@@ -411,8 +463,18 @@ assert(
 assert(
   frontendAccountTestModalSource.includes('createAccountTestSession')
     && frontendAccountTestModalSource.includes('startAccountTestSessionHeartbeat')
-    && frontendAccountTestModalSource.includes('cancelActiveAccountTestSession'),
+    && frontendAccountTestModalSource.includes('cancelAccountTestRunSession'),
   '前端测试弹窗应创建测试 session、保持心跳，并在停止或关闭时批量取消 session'
+)
+assert(
+  frontendAccountTestModalSource.includes('interface AccountTestRunContext')
+    && frontendAccountTestModalSource.includes('activeTestRun === run')
+    && frontendAccountTestModalSource.includes('detachActiveAccountTestRun()')
+    && frontendAccountTestModalSource.includes('activeTestRun = undefined')
+    && frontendAccountTestModalSource.includes('run.tasks.set(task.id, account)')
+    && !frontendAccountTestModalSource.includes('const activeAccountTestTasks = new Map')
+    && !frontendAccountTestModalSource.includes('let accountTestAbortController'),
+  '前端测试运行状态必须按弹窗运行隔离，关闭 A 后应立即允许 B 启动且旧 A 结果不能污染 B'
 )
 assert(
   frontendAccountTestModalSource.includes('beforeunload')
