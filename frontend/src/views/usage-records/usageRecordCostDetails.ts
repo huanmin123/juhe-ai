@@ -15,9 +15,34 @@ export function usageRecordCostDetailTitle(record: UsageRecordSummary): string {
 }
 
 export function usageRecordHasCostDetails(record: UsageRecordSummary): boolean {
-  return usageRecordCostTokenRows(record).length > 0
+  return usageRecordCostMetadataRows(record).length > 0
+    || usageRecordCostTokenRows(record).length > 0
     || usageRecordCostAmountRows(record).length > 0
     || usageRecordCostPriceRows(record).length > 0
+}
+
+export function usageRecordCostMetadataRows(record: UsageRecordSummary): UsageRecordCostDetailRow[] {
+  const rows: UsageRecordCostDetailRow[] = []
+  if (record.model) {
+    rows.push({ key: 'requestModel', label: '请求模型', value: record.model })
+  }
+  if (record.upstreamModel && record.upstreamModel !== record.model) {
+    rows.push({ key: 'upstreamModel', label: '实际上游模型', value: record.upstreamModel })
+  }
+  if (record.pricingModel) {
+    rows.push({ key: 'pricingModel', label: '计价模型', value: record.pricingModel })
+  }
+  if (record.modelMappingApplied && record.modelMappingSource) {
+    rows.push({ key: 'modelMappingSource', label: '映射来源', value: modelMappingSourceText(record.modelMappingSource) })
+  }
+  if (record.modelMappingApplied && record.sourceEndpointFamily && record.upstreamEndpointFamily) {
+    rows.push({
+      key: 'endpointFamily',
+      label: '协议映射',
+      value: `${record.sourceEndpointFamily} -> ${record.upstreamEndpointFamily}`
+    })
+  }
+  return rows
 }
 
 export function usageRecordCostTokenRows(record: UsageRecordSummary): UsageRecordCostDetailRow[] {
@@ -150,6 +175,11 @@ function thinkingTokenLabel(family: UsageRecordCostProviderFamily): string {
   return family === 'openai' || family === 'deepseek' || family === 'glm'
     ? '推理 Tokens'
     : '思考 Tokens'
+}
+
+function modelMappingSourceText(value: string): string {
+  if (value === 'account') return '账户配置'
+  return value
 }
 
 function standardCacheWriteTokens(record: UsageRecordSummary): number {

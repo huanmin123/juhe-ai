@@ -79,6 +79,8 @@ export function usageRecordSummaryFromRow(
     pricingModel: optionalString(row.pricing_model),
     modelMappingApplied: row.model_mapping_applied === 1,
     modelMappingSource: optionalString(row.model_mapping_source),
+    sourceEndpointFamily: optionalString(row.source_endpoint_family),
+    upstreamEndpointFamily: optionalString(row.upstream_endpoint_family),
     stream,
     statusCode,
     success,

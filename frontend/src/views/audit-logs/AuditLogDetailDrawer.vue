@@ -60,6 +60,7 @@
                 </template>
                 <template v-else-if="column.key === 'account'">
                   <span class="attempt-account-cell">{{ displayName(record.accountName, record.accountId) }}</span>
+                  <span v-if="record.modelMappingText" class="attempt-mapping-cell">{{ record.modelMappingText }}</span>
                 </template>
                 <template v-else-if="column.key === 'status'">
                   <a-tag :color="record.success === undefined ? 'default' : record.success ? 'green' : 'red'">{{ record.statusText }}</a-tag>
@@ -100,6 +101,8 @@
                     <strong>{{ record.title }}</strong>
                     <span>AI账户</span>
                     <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
+                    <span v-if="record.modelMappingText">模型映射</span>
+                    <strong v-if="record.modelMappingText">{{ record.modelMappingText }}</strong>
                     <span>状态码</span>
                     <strong>{{ record.statusText }}</strong>
                     <span>时间</span>
@@ -296,6 +299,7 @@ interface RequestChainRow {
   captureStatus?: string
   url?: string
   errorMessage?: string
+  modelMappingText?: string
   payload?: AuditLogPayloadSummary
 }
 
@@ -434,6 +438,7 @@ function createUpstreamRequestRow(
     partType: 'upstream_request',
     accountId: attempt.accountId,
     accountName: attempt.accountName,
+    modelMappingText: attemptModelMappingText(attempt),
     statusText: '已发起',
     time: payload?.createdAt ?? attempt.startedAt,
     sizeBytes: payload?.sizeBytes,
@@ -456,6 +461,7 @@ function createUpstreamResponseRow(
     partType: 'upstream_response',
     accountId: attempt.accountId,
     accountName: attempt.accountName,
+    modelMappingText: attemptModelMappingText(attempt),
     success: attempt.success,
     statusText: upstreamAttemptStatusText(attempt),
     time: payload?.createdAt ?? attempt.endedAt ?? attempt.startedAt,
@@ -508,6 +514,7 @@ function createPayloadOnlyRow(
     partType: payload.partType,
     accountId: attempt?.accountId ?? detail.accountId,
     accountName: attempt?.accountName ?? detail.accountName,
+    modelMappingText: attempt ? attemptModelMappingText(attempt) : undefined,
     success: payload.partType === 'upstream_response' ? attempt?.success : undefined,
     statusText: payloadOnlyStatusText(payload, attempt),
     time: payload.createdAt,
@@ -523,6 +530,17 @@ function createPayloadOnlyRow(
 function upstreamAttemptStatusText(attempt: AuditLogAttemptSummary): string {
   if (attempt.upstreamStatusCode !== undefined) return String(attempt.upstreamStatusCode)
   return attempt.success ? '成功' : '失败'
+}
+
+function attemptModelMappingText(attempt: AuditLogAttemptSummary): string | undefined {
+  if (attempt.modelMappingApplied && attempt.model && attempt.upstreamModel) {
+    const source = attempt.sourceEndpointFamily ?? 'source'
+    const upstream = attempt.upstreamEndpointFamily ?? 'upstream'
+    return `${source} / ${attempt.model} -> ${upstream} / ${attempt.upstreamModel}`
+  }
+  if (attempt.upstreamModel && attempt.model && attempt.upstreamModel !== attempt.model) {
+    return `${attempt.model} -> ${attempt.upstreamModel}`
+  }
 }
 
 function gatewayStatusText(detail: AuditLogDetail): string {
@@ -645,6 +663,7 @@ function payloadActions(record: AuditPayloadRow): RowActionItem[] {
 
 <style scoped>
 .attempt-account-cell,
+.attempt-mapping-cell,
 .error-cell,
 .url-cell,
 .detail-time-cell {
@@ -684,6 +703,7 @@ function payloadActions(record: AuditPayloadRow): RowActionItem[] {
 }
 
 .attempt-account-cell,
+.attempt-mapping-cell,
 .detail-time-cell,
 .error-cell,
 .url-cell {
@@ -692,6 +712,11 @@ function payloadActions(record: AuditPayloadRow): RowActionItem[] {
   overflow-wrap: anywhere;
   white-space: normal;
   word-break: break-word;
+}
+
+.attempt-mapping-cell {
+  margin-top: 4px;
+  color: #d97706;
 }
 
 .detail-descriptions {

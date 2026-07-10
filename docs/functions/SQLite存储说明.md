@@ -152,7 +152,7 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 - `accounts.last_error_code` 保存账户异常子类型；顶层状态仍统一使用 `status = error` 表示“异常”，可读细节继续放在 `accounts.last_error_message`。
 - `accounts.last_successful_test_model` 保存该账户最近一次手动账户测试通过时使用的模型；后台系统复测优先使用该模型，没有手动成功记录时使用账户归属用户在 `provider_default_test_models` 中配置的供应商默认测试模型，再兜底使用供应商协议档案 `provider_protocol_profiles.default_test_model`。
 - `account_test_tasks` 保存手动 AI 账户测试任务的轻量状态，任务由管理 API 创建并投递给 background worker 执行；表内只保留任务发起人、管理筛选作用域、账户摘要、状态、取消标记和最终脱敏结果，创建 / 编辑弹窗发起的未保存账户测试会额外保存加密草稿快照 `draft_account_encrypted`，默认只保留已完成任务 24 小时。前端手动测试和批量测试只能查询该表的任务状态，不在管理 API 请求链路等待上游测试完成。任务运行超时只从 `started_at` 开始计算，`queued` 或等待 worker 接收阶段不参与 60 秒运行超时。
-- `account_test_sessions` 保存一次测试窗口或批量测试的会话租约，包括发起作用域、状态、最后心跳、取消原因和完成时间；`account_test_session_tasks` 关联 session 与 task。单测和批测都先创建 session，停止、关闭窗口或心跳过期时按 session 批量取消未完成任务，避免前端离开后后台继续消费已提交任务。
+- `account_test_sessions` 保存一次测试窗口或批量测试的会话租约，包括发起作用域、状态、最后心跳、取消原因和完成时间；`account_test_session_tasks` 关联 session 与 task。单测和批测都先创建 session，同一用户存在未完成 session 时不能创建下一次测试；只有手动停止才按 session 批量取消未完成任务。关闭弹窗、切换菜单、刷新页面或浏览器会话丢失不会取消后端任务，任务继续执行到终态；任务全部终态后空闲 session 自动收口为 `completed`。
 - `accounts.cooldown_retest_failure_count`、`cooldown_retest_observation_started_at`、`cooldown_retest_last_at` 和 `cooldown_retest_last_status_code` 保存 `temporary_unavailable` / `rate_limited` 后台复测的连续失败次数、本轮自动恢复观察起点、最近复测时间和最近 HTTP 状态；复测失败时 `last_error_code/last_error_message` 记录本次上游真实错误摘要，复测成功、手动恢复、停用或到期时清空。进入慢速恢复后仍继续自动退避复测；超过 `cooldownAccountRetestMaxBackoffHours` 表达的长期不可用观察阈值后，账户主状态保持 `temporary_unavailable` / `rate_limited`，`last_error_code` 写入 `cooldown_retest_long_term_unavailable`，并按 `cooldownAccountRetestLongTermIntervalHours` 继续低频自动复测。
 - `account_supported_models` 保存账号显式支持的模型列表；账号没有任何模型行表示不限制。网关账号池缓存 miss 时按账号 ID 批量读取这些行，并把结果放入运行时账号快照，正常请求只做内存过滤，不逐次查询该表。授权实例调度和列表补数只读取来源账户的模型列表，实例行不保存模型快照。
 - `account_tags` 保存系统账户维度的标签字典，`account_tag_bindings` 保存账户与标签的多对多绑定。标签名在同一系统账户内大小写敏感唯一，`Prod` 和 `prod` 属于两个不同标签；账户列表按 `tagIds` 通过绑定索引筛选，返回时按当前页账户 ID 批量读取绑定标签；删除标签前必须确认没有任何未删除账户仍绑定该标签。
@@ -290,7 +290,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `account_test_tasks(request_system_account_id, updated_at, id)`：账号测试任务按发起人和更新时间查询；读取时还要校验同一管理筛选作用域，避免跨用户作用域读取任务状态。
 - `account_test_tasks(status, queued_at, id)`：background worker 按排队时间读取可执行测试任务。
 - `account_test_tasks(finished_at, id) WHERE finished_at IS NOT NULL`：清理已完成的短期测试任务记录。
-- `account_test_sessions(status, last_heartbeat_at, id)`：后台过期清理按 session 心跳和状态取消失联测试窗口。
+- `account_test_sessions(status, last_heartbeat_at, id)`：后台按 session 心跳和状态收口已无未完成任务的空闲测试 session，不按心跳取消 queued/running 任务。
 - `account_test_session_tasks(session_id, task_id)`、`account_test_session_tasks(task_id)`：按 session 批量取消任务，以及按 task 反查 session 租约。
 - `groups(system_account_id, provider_code, lower(name))`：保证同一用户同一供应商下分组名称唯一。
 - `groups(name, id)`、`groups(system_account_id, name, id)`：账户绑定分组和分组选项按分组名前缀定位。

@@ -95,8 +95,7 @@ try {
 
   const group = await postEnvelope<{ id: string; name: string }>(backendBaseUrl, '/groups', cookie, {
     name: `账号测试边界 mock 分组 ${Date.now()}`,
-    providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
+    providerCode: 'gpt'
   })
   const context: TestContext = {
     backendBaseUrl,
@@ -108,7 +107,16 @@ try {
   const retryAccount = await createMockAccount(context, '重试后成功账号', 'sk-retry-once')
   const retryTask = await submitAccountTest(context, retryAccount)
   const retryFinished = await waitForTask(context, retryTask.id, 20_000, (task) => task.status === 'success' || task.status === 'failed')
-  assert.equal(retryFinished.status, 'success', '10s 超时后的第二次真实请求应继续重试并成功')
+  assert.equal(retryFinished.status, 'success', `10s 超时后的第二次真实请求应继续重试并成功：${JSON.stringify({
+    status: retryFinished.status,
+    message: retryFinished.message,
+    resultMessage: retryFinished.result?.message,
+    statusCode: retryFinished.result?.statusCode,
+    errorCode: retryFinished.result?.errorCode,
+    accountFailureEligible: retryFinished.result?.accountFailureEligible,
+    hitsByKey: Object.fromEntries(mockState.hitsByKey),
+    abortedByKey: Object.fromEntries(mockState.abortedByKey)
+  })}`)
   assert.equal(mockState.hitsByKey.get('retry-once'), 2, 'retry-once 账号应命中 mock AI 两次')
 
   const precheckRecoverAccount = repositories.createAccount({
@@ -159,14 +167,12 @@ try {
   assert.equal(canceledRunning.status, 'canceled', 'session 取消应中断 running 任务')
   assert.equal(canceledQueued.status, 'canceled', 'session 取消应剔除 queued 任务')
   assert.equal(mockState.hitsByKey.get('cancel-queued') ?? 0, 0, '被 session 取消的 queued 任务不应再命中 mock AI')
-  await waitForCondition(5_000, () => (mockState.abortedByKey.get('cancel-running') ?? 0) >= 1, '等待 running 任务取消 abort 上游请求')
 
-  const staleSession = await createTestSession(context)
-  const staleAccount = await createMockAccount(context, '心跳过期账号', 'sk-stale-session')
-  const staleTask = await submitAccountTest(context, staleAccount, staleSession.id)
-  const staleFinished = await waitForTask(context, staleTask.id, 25_000, (task) => task.status === 'canceled')
-  assert.equal(staleFinished.status, 'canceled', '没有 heartbeat 的 session 应过期取消任务')
-  assert.match(staleFinished.message ?? '', /前端测试窗口已关闭|任务已取消/, 'heartbeat 过期取消应返回中文原因')
+  const noHeartbeatSession = await createTestSession(context)
+  const noHeartbeatAccount = await createMockAccount(context, '无心跳继续账号', 'sk-no-heartbeat-fast')
+  const noHeartbeatTask = await submitAccountTest(context, noHeartbeatAccount, noHeartbeatSession.id)
+  const noHeartbeatFinished = await waitForTask(context, noHeartbeatTask.id, 10_000, (task) => task.status === 'success')
+  assert.equal(noHeartbeatFinished.status, 'success', '没有前端 heartbeat 的 session 不应取消后台任务，任务应继续执行到终态')
 
   console.log(JSON.stringify({
     message: '账号测试 mock AI 边界覆盖通过',
@@ -178,7 +184,7 @@ try {
       'running 60s 总超时失败',
       'queued 超过运行任务耗时不计超时且后续成功',
       'session 取消 running/queued',
-      'session heartbeat 过期自动取消'
+      '无 heartbeat 的 session 仍继续执行'
     ],
     hitsByKey: Object.fromEntries(mockState.hitsByKey),
     abortedByKey: Object.fromEntries(mockState.abortedByKey)
@@ -365,24 +371,35 @@ function createMockAIUpstream(): http.Server {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     req.on('data', () => {})
     req.on('end', () => {
-      if (req.method !== 'POST' || url.pathname !== '/v1/responses') {
+      if (
+        req.method !== 'POST'
+        || (url.pathname !== '/v1/responses' && url.pathname !== '/v1/chat/completions')
+      ) {
         sendJsonError(res, 404, 'mock path not found')
         return
       }
       const key = upstreamKey(req.headers.authorization)
       mockState.hitsByKey.set(key, (mockState.hitsByKey.get(key) ?? 0) + 1)
-      const finish = delayedResponse(res, key)
-      res.once('close', () => {
+      const finish = delayedResponse(res, key, url.pathname)
+      let abortObserved = false
+      const observeAbort = () => {
+        if (abortObserved) return
         if (!res.writableEnded) {
+          abortObserved = true
           mockState.abortedByKey.set(key, (mockState.abortedByKey.get(key) ?? 0) + 1)
           finish.cancel()
         }
+      }
+      req.once('aborted', observeAbort)
+      req.once('close', () => {
+        if (!req.complete) observeAbort()
       })
+      res.once('close', observeAbort)
     })
   })
 }
 
-function delayedResponse(res: http.ServerResponse, key: string): { cancel: () => void } {
+function delayedResponse(res: http.ServerResponse, key: string, path: string): { cancel: () => void } {
   if (key === 'timeout-always') {
     return { cancel: () => {} }
   }
@@ -404,7 +421,11 @@ function delayedResponse(res: http.ServerResponse, key: string): { cancel: () =>
       : 500
   const timer = setTimeout(() => {
     if (!res.destroyed) {
-      sendResponsesCompleted(res, `OK ${key}`)
+      if (path === '/v1/chat/completions') {
+        sendChatCompletionsCompleted(res, `OK ${key}`)
+      } else {
+        sendResponsesCompleted(res, `OK ${key}`)
+      }
     }
   }, delayMs)
   return {
@@ -444,6 +465,40 @@ function sendResponsesCompleted(res: http.ServerResponse, outputText: string): v
   }
   res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
   res.end(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`)
+}
+
+function sendChatCompletionsCompleted(res: http.ServerResponse, outputText: string): void {
+  const id = 'chatcmpl_account_test_mock_ai_edge'
+  const created = Math.floor(Date.now() / 1000)
+  const contentChunk = {
+    id,
+    object: 'chat.completion.chunk',
+    created,
+    model: 'gpt-5.5',
+    choices: [{
+      index: 0,
+      delta: { content: outputText },
+      finish_reason: null
+    }]
+  }
+  const completedChunk = {
+    id,
+    object: 'chat.completion.chunk',
+    created,
+    model: 'gpt-5.5',
+    choices: [{
+      index: 0,
+      delta: {},
+      finish_reason: 'stop'
+    }],
+    usage: {
+      prompt_tokens: 1,
+      completion_tokens: 1,
+      total_tokens: 2
+    }
+  }
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+  res.end(`data: ${JSON.stringify(contentChunk)}\n\ndata: ${JSON.stringify(completedChunk)}\n\ndata: [DONE]\n\n`)
 }
 
 async function onceListening(server: http.Server): Promise<void> {

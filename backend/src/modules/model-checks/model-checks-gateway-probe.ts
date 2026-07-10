@@ -41,7 +41,13 @@ export type GatewayProbeInput = {
   itemKey: string
   body?: Record<string, unknown>
   responseProtocol?: ModelCheckProbeProtocol
+  requestModel?: string
   expectedModel?: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
 }
 
 type GatewayProbeProgressEvent = {
@@ -58,6 +64,13 @@ type GatewayProbeProgressEvent = {
   statusCode: number
   success: boolean
   durationMs: number
+  requestModel?: string
+  expectedModel?: string
+  upstreamModel?: string
+  modelMappingApplied?: boolean
+  modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
   responseModel?: string
   outputPreview?: string
 }
@@ -154,6 +167,7 @@ async function runGatewayProbeAttempt(
       statusCode,
       success: false,
       durationMs: Date.now() - startedAt,
+      ...probeModelFields(probe),
       bodyText: responseBodyText || message,
       bodyTruncated: hasGatewayResponse ? response.bodyTruncated() : false,
       headers: hasGatewayResponse ? response.headersObject() : {},
@@ -169,7 +183,14 @@ async function runGatewayProbeAttempt(
       traceId: result.traceId,
       statusCode: result.statusCode,
       success: result.success,
-      durationMs: result.durationMs
+      durationMs: result.durationMs,
+      requestModel: result.requestModel,
+      expectedModel: result.expectedModel,
+      upstreamModel: result.upstreamModel,
+      modelMappingApplied: result.modelMappingApplied,
+      modelMappingSource: result.modelMappingSource,
+      sourceEndpointFamily: result.sourceEndpointFamily,
+      upstreamEndpointFamily: result.upstreamEndpointFamily
     })
     return result
   }
@@ -181,6 +202,7 @@ async function runGatewayProbeAttempt(
       statusCode: 0,
       success: false,
       durationMs: Date.now() - startedAt,
+      ...probeModelFields(probe),
       bodyText: message,
       bodyTruncated: false,
       headers: {},
@@ -193,7 +215,14 @@ async function runGatewayProbeAttempt(
       traceId: result.traceId,
       statusCode: result.statusCode,
       success: result.success,
-      durationMs: result.durationMs
+      durationMs: result.durationMs,
+      requestModel: result.requestModel,
+      expectedModel: result.expectedModel,
+      upstreamModel: result.upstreamModel,
+      modelMappingApplied: result.modelMappingApplied,
+      modelMappingSource: result.modelMappingSource,
+      sourceEndpointFamily: result.sourceEndpointFamily,
+      upstreamEndpointFamily: result.upstreamEndpointFamily
     })
     return result
   }
@@ -208,6 +237,7 @@ async function runGatewayProbeAttempt(
     statusCode: response.statusCode,
     success: response.statusCode >= 200 && response.statusCode < 300 && !parsed.streamFailureMessage,
     durationMs: Date.now() - startedAt,
+    ...probeModelFields(probe),
     firstTokenMs: response.firstTokenMs(),
     bodyText,
     bodyTruncated: response.bodyTruncated(),
@@ -229,10 +259,29 @@ async function runGatewayProbeAttempt(
     statusCode: result.statusCode,
     success: result.success,
     durationMs: result.durationMs,
+    requestModel: result.requestModel,
+    expectedModel: result.expectedModel,
+    upstreamModel: result.upstreamModel,
+    modelMappingApplied: result.modelMappingApplied,
+    modelMappingSource: result.modelMappingSource,
+    sourceEndpointFamily: result.sourceEndpointFamily,
+    upstreamEndpointFamily: result.upstreamEndpointFamily,
     responseModel: result.model,
     outputPreview: bounded(result.outputText)
   })
   return result
+}
+
+function probeModelFields(probe: GatewayProbeInput): Pick<GatewayProbeResult, 'requestModel' | 'expectedModel' | 'upstreamModel' | 'modelMappingApplied' | 'modelMappingSource' | 'sourceEndpointFamily' | 'upstreamEndpointFamily'> {
+  return {
+    requestModel: probe.requestModel,
+    expectedModel: probe.expectedModel,
+    upstreamModel: probe.upstreamModel,
+    modelMappingApplied: probe.modelMappingApplied,
+    modelMappingSource: probe.modelMappingSource,
+    sourceEndpointFamily: probe.sourceEndpointFamily,
+    upstreamEndpointFamily: probe.upstreamEndpointFamily
+  }
 }
 
 function isRetryableProbeFailure(result: GatewayProbeResult): boolean {

@@ -150,6 +150,35 @@ try {
   assert.equal(defaultModelTested.model, providerDefaultTestModel, '未显式指定测试模型时，应使用供应商默认测试模型而不是最近真实请求模型')
   assert.equal(seenResponsesPayloads.at(-1)?.model, providerDefaultTestModel, '未显式指定测试模型时，上游请求应使用供应商默认测试模型')
 
+  const mappedSourceModel = 'gpt-5.5'
+  const mappedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '测试 Responses 模型映射账户',
+    type: 'api_key',
+    groupId: group.id,
+    supportedModels: [providerDefaultTestModel],
+    modelMappings: [{
+      sourceModel: mappedSourceModel,
+      sourceEndpointFamily: 'responses',
+      upstreamModel: providerDefaultTestModel,
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }],
+    credentials: { api_key: 'sk-account-test-mapped-model', base_url: mockBaseUrl }
+  }, access)
+  assert.equal(await preferredSystemAccountTestModelAsync(mappedAccount), mappedSourceModel, '系统复测应优先使用可命中的映射左侧请求模型')
+  const mappedModelTested = await testOpenAIAccount(mappedAccount, { testEndpointMode: 'responses_sse' })
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  assert.equal(mappedModelTested.success, true, `模型映射账户测试应成功：${mappedModelTested.message}`)
+  assert.equal(mappedModelTested.model, mappedSourceModel, '账户测试结果 model 应保留用户请求模型')
+  assert.equal(mappedModelTested.upstreamModel, providerDefaultTestModel, '账户测试结果应返回实际上游模型')
+  assert.equal(mappedModelTested.modelMappingApplied, true, '账户测试结果应明确标记模型映射已命中')
+  assert.equal(mappedModelTested.sourceEndpointFamily, 'responses', '账户测试结果应返回映射来源协议族')
+  assert.equal(mappedModelTested.upstreamEndpointFamily, 'responses', '账户测试结果应返回映射上游协议族')
+  assert.equal(seenResponsesPayloads.at(-1)?.model, providerDefaultTestModel, '模型映射账户的真实上游请求应改写为映射右侧模型')
+
   await upsertProviderDefaultTestModelPreferenceAsync({
     systemAccountId: admin.id,
     providerCode: 'gpt',
@@ -173,7 +202,7 @@ try {
   assert.equal(userDefaultModelTested.model, 'gpt-5.4-mini', '未显式指定测试模型时，应优先使用当前用户默认测试模型偏好')
   assert.equal(seenResponsesPayloads.at(-1)?.model, 'gpt-5.4-mini', '用户默认测试模型偏好应写入上游测试请求')
 
-  console.log('账户测试 Responses 当前契约回归通过：显式 testEndpointMode 生效，API Key 测试不发送 max_output_tokens')
+  console.log('账户测试 Responses 当前契约回归通过：显式 testEndpointMode、生效模型映射和 API Key payload 均符合预期')
 } finally {
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)

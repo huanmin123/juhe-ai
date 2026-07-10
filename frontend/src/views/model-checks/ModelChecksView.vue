@@ -610,7 +610,8 @@ function handleModelCheckProgress(event: ModelCheckProgressEvent) {
   if (event.type === 'probe_completed') {
     const output = event.outputPreview ? `，输出 "${event.outputPreview}"` : ''
     const responseModel = event.responseModel ? `，返回模型 ${event.responseModel}` : ''
-    appendTerminalLine(event.success ? 'success' : 'warning', `${progressItemTitle(event.itemKey)} 响应完成：HTTP ${event.statusCode}，${formatDuration(event.durationMs)}，Trace ${event.traceId}${responseModel}${output}`)
+    const mappingDetails = modelCheckMappingProgressText(event)
+    appendTerminalLine(event.success ? 'success' : 'warning', `${progressItemTitle(event.itemKey)} 响应完成：HTTP ${event.statusCode}，${formatDuration(event.durationMs)}，Trace ${event.traceId}${mappingDetails}${responseModel}${output}`)
     return
   }
   if (event.type === 'item_completed') {
@@ -620,6 +621,27 @@ function handleModelCheckProgress(event: ModelCheckProgressEvent) {
   if (event.type === 'run_completed') {
     appendTerminalLine(event.status === 'completed' ? 'success' : 'error', `检测结束：${statusText(event.status)}，${levelText(event.level)}，${event.score}/${event.maxScore}，${event.message}`)
   }
+}
+
+function modelCheckMappingProgressText(event: Extract<ModelCheckProgressEvent, { type: 'probe_completed' }>): string {
+  const requestModel = event.requestModel || '未记录'
+  const upstreamModel = event.upstreamModel || event.expectedModel
+  if (event.modelMappingApplied) {
+    const sourceFamily = modelCheckEndpointFamilyText(event.sourceEndpointFamily) || '当前请求'
+    const upstreamFamily = modelCheckEndpointFamilyText(event.upstreamEndpointFamily) || '上游'
+    const mappingSource = event.modelMappingSource ? `，来源 ${event.modelMappingSource}` : ''
+    return `，模型映射 ${sourceFamily} / ${requestModel} -> ${upstreamFamily} / ${upstreamModel || requestModel}${mappingSource}`
+  }
+  return upstreamModel ? `，实际上游模型 ${upstreamModel}` : ''
+}
+
+function modelCheckEndpointFamilyText(value?: string): string {
+  if (value === 'responses') return 'Responses'
+  if (value === 'chat_completions') return 'Chat Completions'
+  if (value === 'messages') return 'Messages'
+  if (value === 'generate_content') return 'Gemini GenerateContent'
+  if (value === 'stream_generate_content') return 'Gemini StreamGenerateContent'
+  return value?.trim() || ''
 }
 
 function knownTargetName(id: string) {

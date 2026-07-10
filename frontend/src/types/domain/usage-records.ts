@@ -53,6 +53,8 @@ export interface UsageRecordSummary {
   pricingModel?: string
   modelMappingApplied?: boolean
   modelMappingSource?: string
+  sourceEndpointFamily?: string
+  upstreamEndpointFamily?: string
   stream: boolean
   statusCode?: number
   success: boolean

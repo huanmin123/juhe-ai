@@ -110,7 +110,7 @@
         <a-space>
           <a-button :disabled="!showResultJson" @click="$emit('copy-result', resultJson)">复制完整结果</a-button>
           <a-button danger v-if="running" @click="$emit('stop')">停止测试</a-button>
-          <a-button @click="close">{{ running ? '停止并关闭' : '关闭' }}</a-button>
+          <a-button @click="close">关闭</a-button>
           <a-button v-if="!running" type="primary" @click="$emit('run')">{{ runButtonText }}</a-button>
         </a-space>
       </div>

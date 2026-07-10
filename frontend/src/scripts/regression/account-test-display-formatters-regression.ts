@@ -122,6 +122,28 @@ const mappedLines = accountTestSingleOutputLines({
 assertLineIncludes(mappedLines, '请求模型：gpt-5.5', '命中模型映射时应先展示用户请求模型')
 assertLineIncludes(mappedLines, '模型映射：Responses / gpt-5.5 -> Responses / gpt-5.6-terra', '命中模型映射时应展示协议和模型改写关系')
 assertLineIncludes(mappedLines, '实际上游模型：gpt-5.6-terra', '命中模型映射时应展示实际上游模型')
+const sameModelMappingLines = accountTestSingleOutputLines({
+  account: apiKeyAccount,
+  testEndpointMode: 'responses_sse',
+  selectedEndpointModeText: 'Responses API (Streaming)',
+  model: 'gpt-5.5',
+  providerLabel: () => 'OpenAI',
+  result: resultFixture(apiKeyAccount, {
+    success: true,
+    statusCode: 200,
+    message: '测试成功',
+    model: 'gpt-5.5',
+    upstreamModel: 'gpt-5.5',
+    modelMappingApplied: true,
+    sourceEndpointFamily: 'responses',
+    upstreamEndpointFamily: 'chat_completions',
+    durationMs: 280,
+    testEndpointMode: 'responses_sse'
+  }),
+  running: false
+})
+assertLineIncludes(sameModelMappingLines, '模型映射：Responses / gpt-5.5 -> Chat Completions / gpt-5.5', '仅协议族发生映射时也必须展示映射关系')
+assertLineIncludes(sameModelMappingLines, '实际上游模型：gpt-5.5', '映射前后模型名相同时也必须展示实际上游模型')
 const draftTestPayload = draftApiKeyPayload(['sk-a-draft-good', 'sk-b-draft-fail'])
 const draftRuntimeDetails = draftApiKeyTestRuntimeDetailsForPayload({ account: draftTestPayload, result: successResult }, draftTestPayload)
 assertEqual(draftRuntimeDetails?.length, 2, '草稿 Key 池测试结果应映射到每个输入 Key')
@@ -245,6 +267,24 @@ assertLineIncludes(batchLines, '失败账户: 上游 500', '批量输出应展�
 assertEqual(accountTestBatchItemStatusColor(batchItems[1]!), 'red', '失败行状态颜色应为 red')
 assertEqual(accountTestBatchItemStatusText(batchItems[1]!), '失败', '失败行状态文案应为失败')
 assertEqual(accountTestBatchItemModelText(batchItems[0]!, 'gpt-5.1'), 'gpt-5.1', '批量行应优先展示结果模型')
+assertEqual(
+  accountTestBatchItemModelText({ account: apiKeyAccount, status: 'failed', result: mappedResult }, 'gpt-5.5'),
+  'gpt-5.5 -> gpt-5.6-terra',
+  '批量行命中模型映射时应同时展示请求模型和实际上游模型'
+)
+assertEqual(
+  accountTestBatchItemModelText({
+    account: apiKeyAccount,
+    status: 'success',
+    result: resultFixture(apiKeyAccount, {
+      model: 'gpt-5.5',
+      upstreamModel: 'gpt-5.5',
+      modelMappingApplied: true
+    })
+  }, 'gpt-5.5'),
+  'gpt-5.5 -> gpt-5.5',
+  '批量行映射前后模型名相同时也应明确展示命中映射'
+)
 assertEqual(accountTestBatchItemMessage(batchItems[2]!), '已停止测试', '批量行应优先展示显式消息')
 
 const batchSnapshot = accountTestBatchResultSnapshot({

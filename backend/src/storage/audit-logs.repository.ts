@@ -99,19 +99,21 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   const insertLog = database.prepare(`
     INSERT INTO audit_logs (
       id, trace_id, traffic_source, system_account_id, api_key_id, group_id, account_id, provider_code, method, path, query_string,
-      model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
+      model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
       compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
       duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const insertAttempt = database.prepare(`
     INSERT INTO audit_log_attempts (
       id, audit_log_id, attempt_index, account_id, account_owner_system_account_id, group_id, proxy_url, provider_code,
+      attempt_model, attempt_upstream_model, attempt_pricing_model, attempt_model_mapping_applied, attempt_model_mapping_source,
+      attempt_source_endpoint_family, attempt_upstream_endpoint_family,
       upstream_method, upstream_url, upstream_status_code, success, error_phase, error_code, error_message,
       started_at, ended_at, duration_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const insertPayloadRef = database.prepare(`
@@ -169,6 +171,8 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
         input.pricingModel ?? null,
         input.modelMappingApplied ? 1 : 0,
         input.modelMappingSource ?? null,
+        input.sourceEndpointFamily ?? null,
+        input.upstreamEndpointFamily ?? null,
         input.stream ? 1 : 0,
         input.clientIp ?? null,
         input.userAgent ?? null,
@@ -208,6 +212,13 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
           attempt.groupId ?? null,
           attempt.proxyUrl ?? null,
           attempt.providerCode ?? null,
+          attempt.model ?? null,
+          attempt.upstreamModel ?? null,
+          attempt.pricingModel ?? null,
+          attempt.modelMappingApplied ? 1 : 0,
+          attempt.modelMappingSource ?? null,
+          attempt.sourceEndpointFamily ?? null,
+          attempt.upstreamEndpointFamily ?? null,
           attempt.upstreamMethod,
           attempt.upstreamUrl,
           attempt.upstreamStatusCode ?? null,
@@ -319,19 +330,21 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
   const insertLog = database.prepare(`
     INSERT INTO audit_logs (
       id, trace_id, traffic_source, system_account_id, api_key_id, group_id, account_id, provider_code, method, path, query_string,
-      model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
+      model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
       compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
       duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const insertAttempt = database.prepare(`
     INSERT INTO audit_log_attempts (
       id, audit_log_id, attempt_index, account_id, account_owner_system_account_id, group_id, proxy_url, provider_code,
+      attempt_model, attempt_upstream_model, attempt_pricing_model, attempt_model_mapping_applied, attempt_model_mapping_source,
+      attempt_source_endpoint_family, attempt_upstream_endpoint_family,
       upstream_method, upstream_url, upstream_status_code, success, error_phase, error_code, error_message,
       started_at, ended_at, duration_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const insertPayloadRef = database.prepare(`
@@ -369,6 +382,8 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
         input.pricingModel ?? null,
         input.modelMappingApplied ? 1 : 0,
         input.modelMappingSource ?? null,
+        input.sourceEndpointFamily ?? null,
+        input.upstreamEndpointFamily ?? null,
         input.stream ? 1 : 0,
         input.clientIp ?? null,
         input.userAgent ?? null,
@@ -408,6 +423,13 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
           attempt.groupId ?? null,
           attempt.proxyUrl ?? null,
           attempt.providerCode ?? null,
+          attempt.model ?? null,
+          attempt.upstreamModel ?? null,
+          attempt.pricingModel ?? null,
+          attempt.modelMappingApplied ? 1 : 0,
+          attempt.modelMappingSource ?? null,
+          attempt.sourceEndpointFamily ?? null,
+          attempt.upstreamEndpointFamily ?? null,
           attempt.upstreamMethod,
           attempt.upstreamUrl,
           attempt.upstreamStatusCode ?? null,
@@ -673,11 +695,11 @@ async function insertPostgresAuditLog(client: DatabaseClient, prepared: Prepared
   const result = await client.execute(`
     INSERT INTO juhe_dataset.audit_logs (
       id, trace_id, traffic_source, system_account_id, api_key_id, group_id, account_id, provider_code, method, path, query_string,
-      model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
+      model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
       compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
       duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `, [
     id,
@@ -696,6 +718,8 @@ async function insertPostgresAuditLog(client: DatabaseClient, prepared: Prepared
     input.pricingModel ?? null,
     input.modelMappingApplied ? 1 : 0,
     input.modelMappingSource ?? null,
+    input.sourceEndpointFamily ?? null,
+    input.upstreamEndpointFamily ?? null,
     input.stream ? 1 : 0,
     input.clientIp ?? null,
     input.userAgent ?? null,
@@ -732,9 +756,11 @@ async function insertPostgresAuditLogAttempts(client: DatabaseClient, prepared: 
     await client.execute(`
       INSERT INTO juhe_dataset.audit_log_attempts (
         id, audit_log_id, attempt_index, account_id, account_owner_system_account_id, group_id, proxy_url, provider_code,
+        attempt_model, attempt_upstream_model, attempt_pricing_model, attempt_model_mapping_applied, attempt_model_mapping_source,
+        attempt_source_endpoint_family, attempt_upstream_endpoint_family,
         upstream_method, upstream_url, upstream_status_code, success, error_phase, error_code, error_message,
         started_at, ended_at, duration_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO NOTHING
     `, [
       attempt.id,
@@ -745,6 +771,13 @@ async function insertPostgresAuditLogAttempts(client: DatabaseClient, prepared: 
       attempt.groupId ?? null,
       attempt.proxyUrl ?? null,
       attempt.providerCode ?? null,
+      attempt.model ?? null,
+      attempt.upstreamModel ?? null,
+      attempt.pricingModel ?? null,
+      attempt.modelMappingApplied ? 1 : 0,
+      attempt.modelMappingSource ?? null,
+      attempt.sourceEndpointFamily ?? null,
+      attempt.upstreamEndpointFamily ?? null,
       attempt.upstreamMethod,
       attempt.upstreamUrl,
       attempt.upstreamStatusCode ?? null,

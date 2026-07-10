@@ -429,6 +429,11 @@ export interface AccountTestSession {
   updatedAt: string
 }
 
+export interface AccountTestSessionDetail {
+  session: AccountTestSession
+  tasks: AccountTestTask[]
+}
+
 export interface AccountTestTask {
   id: string
   sessionId?: string

@@ -2,8 +2,10 @@ import type { Router } from 'express'
 
 import { badRequest, ok } from '../../shared/http.js'
 import {
+  AccountTestSessionConflictError,
   cancelAccountTestSessionAsync,
   cancelAccountTestTaskAsync,
+  completeAccountTestSessionAsync,
   createAccountTestSessionAsync,
   heartbeatAccountTestSessionAsync
 } from '../../storage/account-test-tasks.repository.js'
@@ -26,6 +28,10 @@ export function registerAccountTestSessionRoutes(router: Router): void {
     try {
       res.status(201).json(ok(await createAccountTestSessionAsync(requestAccess)))
     } catch (error) {
+      if (error instanceof AccountTestSessionConflictError) {
+        res.status(409).json({ message: error.message, active: error.active })
+        return
+      }
       res.status(400).json(badRequest(error instanceof Error ? error.message : '创建账户测试会话失败'))
     }
   })
@@ -38,6 +44,21 @@ export function registerAccountTestSessionRoutes(router: Router): void {
     }
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     const session = await heartbeatAccountTestSessionAsync(req.params.sessionId, requestAccess)
+    if (!session) {
+      res.status(404).json({ message: '账户测试会话不存在' })
+      return
+    }
+    res.json(ok(session))
+  })
+
+  router.post('/test-sessions/:sessionId/complete', async (req, res) => {
+    const scopeQuery = parseRequestScopeQuery(req.query)
+    if (!scopeQuery.success) {
+      res.status(400).json(badRequest(scopeQuery.message))
+      return
+    }
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const session = await completeAccountTestSessionAsync(req.params.sessionId, requestAccess)
     if (!session) {
       res.status(404).json({ message: '账户测试会话不存在' })
       return
