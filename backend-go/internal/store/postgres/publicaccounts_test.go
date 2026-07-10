@@ -67,6 +67,27 @@ func TestUpdatePublicAccountQueryWritesAndReturnsHealthCheckModel(t *testing.T) 
 	}
 }
 
+func TestUpdatePublicAccountQueryIncrementsConfigRevisionInMainUpdate(t *testing.T) {
+	source, err := os.ReadFile("queries/w1b_public_accounts.sql")
+	if err != nil {
+		t.Fatalf("read public account query: %v", err)
+	}
+	sql := string(source)
+	start := strings.Index(sql, "-- name: UpdatePublicAccountAllFields :one")
+	end := strings.Index(sql, "-- name: UpdatePublicAccountGroupBindingDispatch :exec")
+	if start < 0 || end <= start {
+		t.Fatal("public account SQL missing update query")
+	}
+	query := sql[start:end]
+	whereIndex := strings.Index(query, "\nWHERE ")
+	if whereIndex < 0 {
+		t.Fatalf("public account update query missing WHERE clause:\n%s", query)
+	}
+	if !strings.Contains(query[:whereIndex], "config_revision = config_revision + 1") {
+		t.Fatalf("public account main update must increment config_revision:\n%s", query)
+	}
+}
+
 func TestUpdatePublicAccountQueryResetsFailureStateAndPendingDiagnostics(t *testing.T) {
 	source, err := os.ReadFile("queries/w1b_public_accounts.sql")
 	if err != nil {

@@ -95,6 +95,27 @@ func (q *Queries) GetManagementAccountTagUpdateAccount(ctx context.Context, arg 
 	return i, err
 }
 
+const incrementManagementAccountConfigRevision = `-- name: IncrementManagementAccountConfigRevision :execrows
+UPDATE juhe_business.accounts
+SET config_revision = config_revision + 1
+WHERE id = $1::text
+  AND system_account_id = $2::text
+  AND deleted_at IS NULL
+`
+
+type IncrementManagementAccountConfigRevisionParams struct {
+	AccountID       string
+	SystemAccountID string
+}
+
+func (q *Queries) IncrementManagementAccountConfigRevision(ctx context.Context, arg IncrementManagementAccountConfigRevisionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, incrementManagementAccountConfigRevision, arg.AccountID, arg.SystemAccountID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertManagementAccountTagBindingForAccount = `-- name: InsertManagementAccountTagBindingForAccount :exec
 INSERT INTO juhe_business.account_tag_bindings (
   account_id, tag_id, system_account_id, created_at

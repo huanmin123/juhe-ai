@@ -256,6 +256,17 @@ func updateManagementAccountTagsInTx(ctx context.Context, s *Store, input port.M
 		}
 	}
 
+	updatedRows, err := q.IncrementManagementAccountConfigRevision(ctx, postgresqueries.IncrementManagementAccountConfigRevisionParams{
+		AccountID:       accountID,
+		SystemAccountID: systemAccountID,
+	})
+	if err != nil {
+		return port.ManagementAccountTagUpdateResult{}, false, fmt.Errorf("increment management account config revision: %w", err)
+	}
+	if updatedRows != 1 {
+		return port.ManagementAccountTagUpdateResult{}, false, fmt.Errorf("increment management account config revision: account disappeared")
+	}
+
 	row, err := q.GetManagementAccountTagUpdateAccount(ctx, postgresqueries.GetManagementAccountTagUpdateAccountParams{
 		AccountID:       accountID,
 		SystemAccountID: systemAccountID,

@@ -195,7 +195,7 @@ func TestManagementAccountTagUpdateSQLScopesAndReplacesBindings(t *testing.T) {
 			t.Fatalf("account tag upsert query missing %q", want)
 		}
 	}
-	insertBindingSQL := querySection(t, sql, "-- name: InsertManagementAccountTagBindingForAccount :exec", "-- name: GetManagementAccountTagUpdateAccount :one")
+	insertBindingSQL := querySection(t, sql, "-- name: InsertManagementAccountTagBindingForAccount :exec", "-- name: IncrementManagementAccountConfigRevision :execrows")
 	for _, want := range []string{
 		"INSERT INTO juhe_business.account_tag_bindings",
 		"sqlc.arg(account_id)::text",
@@ -206,6 +206,21 @@ func TestManagementAccountTagUpdateSQLScopesAndReplacesBindings(t *testing.T) {
 		if !strings.Contains(insertBindingSQL, want) {
 			t.Fatalf("account tag binding insert query missing %q", want)
 		}
+	}
+	incrementRevisionSQL := querySection(t, sql, "-- name: IncrementManagementAccountConfigRevision :execrows", "-- name: GetManagementAccountTagUpdateAccount :one")
+	for _, want := range []string{
+		"UPDATE juhe_business.accounts",
+		"config_revision = config_revision + 1",
+		"WHERE id = sqlc.arg(account_id)::text",
+		"AND system_account_id = sqlc.arg(system_account_id)::text",
+		"AND deleted_at IS NULL",
+	} {
+		if !strings.Contains(incrementRevisionSQL, want) {
+			t.Fatalf("account config revision increment query missing %q", want)
+		}
+	}
+	if strings.Contains(incrementRevisionSQL, "account_tag_bindings") {
+		t.Fatal("account config revision increment must remain a separate account update query")
 	}
 	accountSQL := querySection(t, sql, "-- name: GetManagementAccountTagUpdateAccount :one", "-- name: ListManagementAccountTagsForAccount :many")
 	for _, want := range []string{
@@ -236,6 +251,42 @@ func TestManagementAccountTagUpdateSQLScopesAndReplacesBindings(t *testing.T) {
 		if strings.Contains(accountSQL, forbidden) {
 			t.Fatalf("account tag update account query should stay narrow, found %q", forbidden)
 		}
+	}
+}
+
+func TestManagementAccountTagUpdateFlowIncrementsConfigRevision(t *testing.T) {
+	source, err := os.ReadFile("managementaccounts.go")
+	if err != nil {
+		t.Fatalf("read management account store source: %v", err)
+	}
+	code := string(source)
+	start := strings.Index(code, "func updateManagementAccountTagsInTx(")
+	end := strings.Index(code, "\nfunc managementAccountOptionLimit(")
+	if start < 0 || end <= start {
+		t.Fatal("management account store missing tag update transaction flow")
+	}
+	flow := code[start:end]
+	for _, want := range []string{
+		"q := s.queries().WithTx(tx)",
+		"q.IncrementManagementAccountConfigRevision(ctx, postgresqueries.IncrementManagementAccountConfigRevisionParams{",
+		"AccountID:       accountID",
+		"SystemAccountID: systemAccountID",
+		"if updatedRows != 1",
+	} {
+		if !strings.Contains(flow, want) {
+			t.Fatalf("management account tag update flow missing %q", want)
+		}
+	}
+	deleteIndex := strings.Index(flow, "q.DeleteManagementAccountTagBindingsForAccount(")
+	insertIndex := strings.Index(flow, "q.InsertManagementAccountTagBindingForAccount(")
+	incrementIndex := strings.Index(flow, "q.IncrementManagementAccountConfigRevision(")
+	readIndex := strings.Index(flow, "q.GetManagementAccountTagUpdateAccount(")
+	commitIndex := strings.Index(flow, "tx.Commit(ctx)")
+	if deleteIndex < 0 || insertIndex < 0 || incrementIndex < 0 || readIndex < 0 || commitIndex < 0 {
+		t.Fatal("management account tag update flow is missing replacement, revision, readback, or commit steps")
+	}
+	if !(deleteIndex < insertIndex && insertIndex < incrementIndex && incrementIndex < readIndex && readIndex < commitIndex) {
+		t.Fatal("management account tag update flow must increment config_revision after replacing tags and before readback/commit")
 	}
 }
 

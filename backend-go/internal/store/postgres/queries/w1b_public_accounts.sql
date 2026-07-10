@@ -357,6 +357,7 @@ INSERT INTO juhe_business.group_accounts (
 -- name: UpdatePublicAccountAllFields :one
 UPDATE juhe_business.accounts
 SET name = sqlc.arg(name),
+    config_revision = config_revision + 1,
     status = sqlc.arg(status),
     credentials_encrypted = sqlc.arg(credentials_encrypted),
     credential_fingerprint = sqlc.arg(credential_fingerprint),

@@ -49,6 +49,7 @@ type JuheBusinessAccount struct {
 	LastHealthCheckStatusCode                 pgtype.Int4
 	LastHealthCheckErrorCode                  pgtype.Text
 	LastHealthCheckErrorMessage               pgtype.Text
+	ConfigRevision                            int32
 }
 
 type JuheBusinessAccountModelMapping struct {

@@ -1101,6 +1101,7 @@ func (q *Queries) SoftDeletePublicAccount(ctx context.Context, arg SoftDeletePub
 const updatePublicAccountAllFields = `-- name: UpdatePublicAccountAllFields :one
 UPDATE juhe_business.accounts
 SET name = $1,
+    config_revision = config_revision + 1,
     status = $2,
     credentials_encrypted = $3,
     credential_fingerprint = $4,

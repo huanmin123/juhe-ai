@@ -102,6 +102,13 @@ INSERT INTO juhe_business.account_tag_bindings (
 )
 ON CONFLICT (account_id, tag_id) DO NOTHING;
 
+-- name: IncrementManagementAccountConfigRevision :execrows
+UPDATE juhe_business.accounts
+SET config_revision = config_revision + 1
+WHERE id = sqlc.arg(account_id)::text
+  AND system_account_id = sqlc.arg(system_account_id)::text
+  AND deleted_at IS NULL;
+
 -- name: GetManagementAccountTagUpdateAccount :one
 SELECT
   accounts.id,
