@@ -137,7 +137,11 @@ docs/plans/
 
 | 编号 | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
-| PLAN-0081 | 通用客户端重试协调 | 已完成 | 2026-07-10 | 后端 / 网关 / 客户端画像 / 账号调度 / 审计 / 测试 / 部署 / 文档 | `docs/plans/计划-0081-通用客户端重试协调.md` |
+| PLAN-0085 | AI 账户批量编辑 | 进行中 | 2026-07-11 | 前端 / 后端 / 存储 / AI 账户 / 权限 / 操作日志 / 缓存 / 后台健康检查 / 文档 / 验证 | `docs/plans/计划-0085-AI账户批量编辑.md` |
+| PLAN-0084 | AI 账户检查模型与人工测试解耦 | 进行中 | 2026-07-11 | 前端 / 后端 / 存储 / AI 账户 / 模型目录 / 后台 worker / 网关运行态 / API Key 恢复 / 导入导出 / 文档 / 验证 | `docs/plans/计划-0084-AI账户检查模型与人工测试解耦.md` |
+| PLAN-0083 | GPT 服务等级与思考级别覆盖 | 待开始 | 2026-07-10 | 前端 / 后端 / 存储 / 网关 / GPT 供应商 / 模型目录 / Codex 兼容 / 审计 / 文档 / 验证 | `docs/plans/计划-0083-GPT服务等级与思考级别覆盖.md` |
+| PLAN-0082 | 通用客户端重试协调 | 已完成 | 2026-07-10 | 后端 / 网关 / 客户端画像 / 账号调度 / 审计 / 测试 / 部署 / 文档 | `docs/plans/计划-0082-通用客户端重试协调.md` |
+| PLAN-0081 | Node 转 Go 渐进减法迁移 | 进行中 | 2026-07-06 | 后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证 | `docs/plans/计划-0081-Node转Go渐进减法迁移.md` |
 | PLAN-0080 | 用户维度热数据分区与归档治理 | 已完成 / PG live smoke 与归档恢复已复验 | 2026-07-05 | 前端 / 后端 / 存储 / SQLite / PostgreSQL / 统计 / 日志 / 审计 / 表监控 / 文档 / 验证 | `docs/plans/计划-0080-用户维度热数据分区与归档治理.md` |
 | PLAN-0079 | 可靠统计与读写资源隔离 | 进行中 | 2026-07-05 | 后端 / PostgreSQL / Redis / DB service / stats-worker / ingest-worker / record maintenance / 部署 / 压测 / 文档 | `docs/plans/计划-0079-可靠统计与读写资源隔离.md` |
 | PLAN-0078 | 普通路由速度优先调度 | 进行中 | 2026-07-04 | 前端 / 后端 / 存储 / 网关 / 策略路由 / AI 账户运行态 / 审计 / 文档 / 验证 | `docs/plans/计划-0078-普通路由速度优先调度.md` |
@@ -147,12 +151,12 @@ docs/plans/
 | PLAN-0074 | AI 账户探针调度器与高性能模式 | 已完成 | 2026-07-02 | 后端 / 网关 / AI 账户 / 探针调度器 / Redis runtime state / 高性能模式 / 使用记录 / 审计 / 文档 / 验证 | `docs/plans/计划-0074-AI账户探针调度器与高性能模式.md` |
 | PLAN-0073 | AI 账户后台探针恢复状态机 | 已完成 | 2026-07-01 | 后端 / 网关 / 后台探针 / AI 账户 / 使用记录 / Mock AI / 文档 / 验证 | `docs/plans/计划-0073-AI账户后台探针恢复状态机.md` |
 | PLAN-0072 | 多供应商模型检测扩展 | 已完成 | 2026-06-30 | 前端 / 后端 / 存储 / 网关 / 供应商驱动 / 模型目录 / 模型检测 / 文档 / 验证 | `docs/plans/计划-0072-多供应商模型检测扩展.md` |
-| PLAN-0071 | 存储适配接口收敛 | 进行中 | 2026-06-29 | 后端 / 存储 / DB service / 网关 / 缓存 / Redis / PostgreSQL / SQLite / 队列 / 文档 / 验证 | `docs/plans/计划-0071-存储适配接口收敛.md` |
+| PLAN-0071 | 存储适配接口收敛 | Node 过渡期进行中 / 长期方向被 PLAN-0081 收口 | 2026-06-29 | 后端 / 存储 / DB service / 网关 / 缓存 / Redis / PostgreSQL / SQLite / 队列 / 文档 / 验证 | `docs/plans/计划-0071-存储适配接口收敛.md` |
 | PLAN-0070 | Responses 目标映射收敛 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 模型映射 / 协议桥接 / Mock AI / 文档 / 验证 | `docs/plans/计划-0070-Responses目标映射收敛.md` |
 | PLAN-0069 | 协议桥接框架与 Gemini Native 目标桥接 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / 协议桥接框架 / Gemini native / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0069-协议桥接框架与GeminiNative目标桥接.md` |
 | PLAN-0068 | Gemini Native 转 Anthropic Messages 桥接 | 已完成 | 2026-06-26 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / Gemini native / Anthropic Messages / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0068-GeminiNative转AnthropicMessages桥接.md` |
 | PLAN-0067 | Gemini Native 转 Chat 桥接 | 待真实验证 | 2026-06-25 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / Gemini native / OpenAI Chat bridge / GLM / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0067-GeminiNative转Chat桥接.md` |
-| PLAN-0066 | PostgreSQL 与 Redis 高性能模式 | 进行中 | 2026-06-25 | 后端 / 存储 / DB service / 后台 worker / 网关 / 缓存 / Redis / PostgreSQL / Docker 部署 / 迁移 / 文档 / 验证 | `docs/plans/计划-0066-PostgreSQL与Redis高性能模式.md` |
+| PLAN-0066 | PostgreSQL 与 Redis 高性能模式 | Node 过渡期进行中 / 长期方向被 PLAN-0081 收口 | 2026-06-25 | 后端 / 存储 / DB service / 后台 worker / 网关 / 缓存 / Redis / PostgreSQL / Docker 部署 / 迁移 / 文档 / 验证 | `docs/plans/计划-0066-PostgreSQL与Redis高性能模式.md` |
 | PLAN-0065 | Gemini 原生协议接入 | 已完成 | 2026-06-25 | 前端 / 后端 / 存储 / 网关 / 供应商驱动 / Gemini native / gemini-cli / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0065-Gemini原生协议接入.md` |
 | PLAN-0064 | Anthropic Messages 转 Chat 协议桥接 | 已完成 | 2026-06-25 | 后端 / 前端 / 网关 / 供应商驱动 / 模型映射 / 协议桥接 / Mock 回归 / 文档 / 验证 | `docs/plans/计划-0064-AnthropicMessages转Chat协议桥接.md` |
 | PLAN-0063 | OpenAI 托管工具运行时适配 | 进行中 | 2026-06-24 | 后端 / 网关 / Anthropic bridge / OpenAI hosted tools / code execution / computer use / 文档 / 验证；MCP 固定 guidance，不做服务端 runtime | `docs/plans/计划-0063-OpenAI托管工具运行时适配.md` |
@@ -173,7 +177,7 @@ docs/plans/
 | PLAN-0049 | Anthropic 响应语义与前端能力补齐 | 已完成 | 2026-06-18 | 后端 / 前端 / 网关 / Anthropic / 响应检查策略 / 模型价格 / 使用记录 / 文档 / 验证 | `docs/plans/计划-0049-Anthropic响应语义与前端能力补齐.md` |
 | PLAN-0048 | SQLite 单写者写队列治理 | 已完成 | 2026-06-18 | 后端 / SQLite / DB service / 后台任务 / 存储 / 统计 / 日志 / 维护清理 / 文档 / 验证 | `docs/plans/计划-0048-SQLite单写者写队列治理.md` |
 | PLAN-0047 | 账号健康检测 | 已完成 | 2026-06-17 | 前端 / 后端 / 存储 / 后台任务 / 账号 / 网关 / 文档 / 验证 | `docs/plans/计划-0047-账号健康检测.md` |
-| PLAN-0046 | 测试与探测任务并发取消治理 | 草稿 | 2026-06-13 | 前端 / 后端 / 存储 / 后台任务 / 网关 / 模型检测 / 代理 / OAuth / 文档 / 验证 | `docs/plans/计划-0046-测试与探测任务并发取消治理.md` |
+| PLAN-0046 | 测试与探测任务并发取消治理 | 已关闭 / 被 PLAN-0084、PLAN-0085 取代 | 2026-06-13 | 历史账号测试 session / 批量测试 / 探测任务治理 | `docs/plans/计划-0046-测试与探测任务并发取消治理.md` |
 | PLAN-0045 | 后台 Worker 轻量拆分与任务租约 | 进行中 | 2026-06-13 | 后端 / 后台任务 / 统计 / 系统监控 / SQLite / 部署 / 文档 / 验证 | `docs/plans/计划-0045-后台Worker轻量拆分与任务租约.md` |
 | PLAN-0044 | 模型路由与跨供应商 API Key | 草稿 | 2026-06-11 | 前端 / 后端 / 存储 / 网关 / 模型目录 / API Key / 文档 / 验证 | `docs/plans/计划-0044-模型路由与跨供应商APIKey.md` |
 | PLAN-0043 | 网关兼容策略与请求恢复 | 已完成 | 2026-06-10 | 后端 / 网关 / 账号调度 / 使用记录 / 原始审计日志 / 文档 / 验证 | `docs/plans/计划-0043-网关兼容策略与请求恢复.md` |
@@ -217,7 +221,7 @@ docs/plans/
 | PLAN-0003 | 系统团队与统一授权新版 | 已完成 | 2026-05-04 | 系统团队 / 授权 / 前端 / 后端 / 存储 / 网关 / 文档 | `docs/plans/计划-0003-系统团队与统一授权新版.md` |
 | PLAN-0001 | 透传定位修正 | 已完成 | 2026-05-04 | 网关 / 账号 / 文档 | `docs/plans/计划-0001-透传定位修正.md` |
 
-历史旧方案不再列入当前计划入口：`PLAN-0002` 的账户 / 分组分散授权方案已被 `PLAN-0003` 系统团队与统一授权新版取代，旧文件已删除，当前实现和后续维护只参考统一授权模型。`PLAN-0039` 和 `PLAN-0042` 为历史跳号 / 撤销号，不再补写、不复用编号。
+历史旧方案不再作为当前事实入口：`PLAN-0002` 的账户 / 分组分散授权方案已被 `PLAN-0003` 系统团队与统一授权新版取代，旧文件已删除，当前实现和后续维护只参考统一授权模型。`PLAN-0046` 的多账户批量测试、用户级全局测试 session 和人工测试承担状态恢复等正文可以作为历史记录保留，但当前账户检查模型、人工测试和批量编辑事实分别以 `PLAN-0084`、`PLAN-0085` 及对应 functions 设计为准。`PLAN-0039` 和 `PLAN-0042` 为历史跳号 / 撤销号，不再补写、不复用编号。
 
 ## 12. 写作注意事项
 

@@ -92,6 +92,11 @@
         show-search
       />
     </a-form-item>
+    <AccountHealthCheckModelField
+      :form="form"
+      :model-options="modelOptions"
+      :models-loading="modelsLoading"
+    />
   </section>
 </template>
 
@@ -104,6 +109,7 @@ import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus, AccountTagSummary } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import { normalizedAccountApiKeys } from './accountCredentials'
+import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountMetaFields from './AccountMetaFields.vue'
 
 const props = defineProps<{

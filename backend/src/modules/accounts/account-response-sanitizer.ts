@@ -3,6 +3,8 @@ import type { AccountSummary } from '../../domain/types.js'
 const publicCredentialKeys = new Set([
   'base_url',
   'supported_endpoint_modes',
+  'service_tier_override',
+  'reasoning_effort_override',
   'expires_at',
   'client_id',
   'email',
@@ -17,7 +19,17 @@ const editBasicCredentialKeys = new Set([
   'api_key_strategy',
   'api_key_weights',
   'base_url',
-  'supported_endpoint_modes'
+  'supported_endpoint_modes',
+  'service_tier_override',
+  'reasoning_effort_override'
+])
+
+const batchEditCredentialKeys = new Set([
+  'supported_endpoint_modes',
+  'service_tier_override',
+  'reasoning_effort_override',
+  'error_handling_rules',
+  'response_inspection_rules'
 ])
 
 export function sanitizeAccountCredentialsForResponse(credentials: Record<string, unknown> | undefined): Record<string, unknown> {
@@ -51,6 +63,23 @@ export function sanitizeAccountEditBasicDetailResponse<T extends AccountSummary>
     ...item,
     credentials: sanitizeAccountCredentialsByKeys(account.credentials, editBasicCredentialKeys),
     supportedModels: [...(account.supportedModels ?? [])]
+  } as T
+}
+
+export function sanitizeAccountBatchEditDetailResponse<T extends AccountSummary>(account: T): T {
+  const {
+    apiKeyRuntime: _apiKeyRuntime,
+    apiKeyRuntimeDetails: _apiKeyRuntimeDetails,
+    oauthUsage: _oauthUsage,
+    authorizationSources: _authorizationSources,
+    ...item
+  } = account
+  return {
+    ...item,
+    credentials: sanitizeAccountCredentialsByKeys(account.credentials, batchEditCredentialKeys),
+    supportedModels: [...(account.supportedModels ?? [])],
+    modelMappings: [...(account.modelMappings ?? [])],
+    tags: [...(account.tags ?? [])]
   } as T
 }
 

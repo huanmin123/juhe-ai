@@ -26,8 +26,8 @@
         <template v-else-if="column.key === 'baseUrl'">
           <span class="mono-cell">{{ record.baseUrl }}</span>
         </template>
-        <template v-else-if="column.key === 'defaultTestModel'">
-          <span class="mono-cell">{{ record.defaultTestModel }}</span>
+        <template v-else-if="column.key === 'defaultHealthCheckModel'">
+          <span class="mono-cell">{{ record.defaultHealthCheckModel }}</span>
         </template>
         <template v-else-if="column.key === 'defaultSupportedModels'">
           <a-space wrap>
@@ -66,8 +66,8 @@
               <strong class="mono-cell">{{ record.baseUrl }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>默认测试模型</span>
-              <strong class="mono-cell">{{ record.defaultTestModel }}</strong>
+              <span>默认检查模型</span>
+              <strong class="mono-cell">{{ record.defaultHealthCheckModel }}</strong>
             </div>
             <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>默认支持模型</span>
@@ -88,7 +88,7 @@
       :category-tabs="modelCategoryTabs"
       :columns="modelColumns"
       :current-category-count="currentCategoryModels.length"
-      :default-test-model="activeProviderDefaultTestModel"
+      :default-health-check-model="activeProviderDefaultHealthCheckModel"
       :is-management-view="isManagementView"
       :load-error="modelLoadError"
       :loading="modelLoading"
@@ -142,6 +142,34 @@
               placeholder="不确定时可留空"
             />
           </a-form-item>
+          <template v-if="showCustomModelGptCapabilities">
+            <a-form-item label="服务等级" class="custom-model-grid-wide">
+              <a-select
+                v-model:value="customModelForm.supportedServiceTiers"
+                mode="multiple"
+                :options="customModelServiceTierOptions"
+                placeholder="未选择时表示不支持账户级服务等级覆盖"
+              />
+            </a-form-item>
+            <a-form-item label="思考级别" class="custom-model-grid-wide">
+              <a-select
+                v-model:value="customModelForm.supportedReasoningEfforts"
+                mode="multiple"
+                :options="customModelReasoningEffortOptions"
+                placeholder="仅配置上游 wire 支持的思考级别"
+                @change="handleCustomModelReasoningEffortsChange"
+              />
+            </a-form-item>
+            <a-form-item label="默认思考级别" class="custom-model-grid-wide">
+              <a-select
+                v-model:value="customModelForm.defaultReasoningEffort"
+                allow-clear
+                :disabled="!customModelDefaultReasoningOptions.length"
+                :options="customModelDefaultReasoningOptions"
+                placeholder="从已支持的思考级别中选择"
+              />
+            </a-form-item>
+          </template>
           <a-form-item label="价格模板" class="custom-model-grid-wide">
             <a-select
               v-model:value="customModelForm.pricingTemplateModel"
@@ -223,9 +251,13 @@ import ProviderModelCatalogModal from './ProviderModelCatalogModal.vue'
 import {
   applyPricingTemplateToCustomModelForm,
   buildCustomModelPayload as buildCustomModelUpsertPayload,
+  clearCustomModelGptCapabilities,
   clearCustomModelPricesOutsideCategory,
   createCustomModelFormFromPricing,
+  customModelReasoningEffortOptions,
+  customModelServiceTierOptions,
   emptyCustomModelForm,
+  normalizeCustomModelDefaultReasoningEffort,
   type CustomModelForm
 } from './customProviderModelForm'
 import {
@@ -234,6 +266,7 @@ import {
   defaultProtocolsForProviderModelCategory,
   findFirstModelCategory,
   formatCapabilitiesSummary,
+  formatModelReasoningEffort,
   formatProviderCapability,
   getModelCategory,
   modelModeOptions,
@@ -306,9 +339,16 @@ const currentCategoryModels = computed(() => {
 const modelColumns = computed(() => buildProviderModelColumns(selectedModelCategory.value, currentCategoryModels.value))
 
 const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.value.name} 模型目录` : '模型目录')
-const activeProviderDefaultTestModel = computed(() => activeProvider.value?.defaultTestModel ?? '')
+const activeProviderDefaultHealthCheckModel = computed(() => activeProvider.value?.defaultHealthCheckModel ?? '')
 const customModelModalTitle = computed(() => customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
+const showCustomModelGptCapabilities = computed(() => (
+  activeProvider.value?.code === 'gpt' && customModelPricingCategory.value === 'text'
+))
+const customModelDefaultReasoningOptions = computed(() => customModelForm.supportedReasoningEfforts.map((value) => ({
+  value,
+  label: formatModelReasoningEffort(value)
+})))
 const selectedModelOwnerLabel = computed(() => {
   if (!isManagementView.value) return ''
   const systemAccountId = modelSystemAccountFilter.value.trim()
@@ -477,7 +517,9 @@ function resetCustomModelForm() {
   editingCustomModelProviderCode.value = undefined
   Object.assign(customModelForm, {
     ...emptyCustomModelForm,
-    supportedApiProtocols: [...emptyCustomModelForm.supportedApiProtocols]
+    supportedApiProtocols: [...emptyCustomModelForm.supportedApiProtocols],
+    supportedServiceTiers: [...emptyCustomModelForm.supportedServiceTiers],
+    supportedReasoningEfforts: [...emptyCustomModelForm.supportedReasoningEfforts]
   })
 }
 
@@ -491,7 +533,9 @@ function currentUserSystemAccountId(): string {
 }
 
 function buildCurrentCustomModelPayload(): ProviderModelUpsertPayload | undefined {
-  const payload = buildCustomModelUpsertPayload(customModelForm, customModelPricingCategory.value)
+  const payload = buildCustomModelUpsertPayload(customModelForm, customModelPricingCategory.value, {
+    includeGptCapabilities: activeProvider.value?.code === 'gpt'
+  })
   if (!payload) {
     message.warning('请填写模型 ID')
     return undefined
@@ -508,20 +552,27 @@ function handleCustomModelModeChange() {
   customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProvider.value ?? undefined, category)
   customModelForm.pricingTemplateModel = undefined
   clearCustomModelPricesOutsideCategory(customModelForm, category)
+  if (!showCustomModelGptCapabilities.value) {
+    clearCustomModelGptCapabilities(customModelForm)
+  }
 }
 
-async function setDefaultTestModel(record: ProviderModelPricing) {
+function handleCustomModelReasoningEffortsChange() {
+  normalizeCustomModelDefaultReasoningEffort(customModelForm)
+}
+
+async function setDefaultHealthCheckModel(record: ProviderModelPricing) {
   const provider = activeProvider.value
   if (!provider) return
   ensureModelSystemAccountFilter()
   modelLoading.value = true
   try {
-    const result = await api.providers.setDefaultTestModel(provider.code, record.model, modelProviderQueryParams())
-    applyProviderDefaultTestModel(provider.code, result.defaultTestModel)
-    message.success(`默认测试模型已设置为 ${result.defaultTestModel}`)
+    const result = await api.providers.setDefaultHealthCheckModel(provider.code, record.model, modelProviderQueryParams())
+    applyProviderDefaultHealthCheckModel(provider.code, result.defaultHealthCheckModel)
+    message.success(`默认检查模型已设置为 ${result.defaultHealthCheckModel}`)
   } catch (error) {
     console.error(error)
-    message.error(extractModelErrorMessage(error, '默认测试模型设置失败'))
+    message.error(extractModelErrorMessage(error, '默认检查模型设置失败'))
   } finally {
     modelLoading.value = false
   }
@@ -552,14 +603,15 @@ function modelOperationQueryParams(payload: ProviderModelUpsertPayload): Pick<Pr
 
 function modelRowActions(record: ProviderModelPricing): RowActionItem[] {
   const actions: RowActionItem[] = []
-  const isDefault = isActiveProviderDefaultTestModel(record.model)
+  const isDefault = isActiveProviderDefaultHealthCheckModel(record.model)
   if (getModelCategory(record) === 'text') {
+    const unavailableForSystemDefault = isManagementView.value && record.scope === 'personal'
     actions.push({
-      key: 'set-default-test-model',
-      label: isDefault ? '默认测试' : '设为默认测试',
+      key: 'set-default-health-check-model',
+      label: isDefault ? '默认检查' : '设为默认检查',
       icon: 'test',
       tone: isDefault ? 'success' : 'info',
-      disabled: isDefault || (record.status ?? 'active') !== 'active'
+      disabled: isDefault || unavailableForSystemDefault || (record.status ?? 'active') !== 'active'
     })
   }
   if (!canMutateModel(record)) return actions
@@ -571,8 +623,8 @@ function modelRowActions(record: ProviderModelPricing): RowActionItem[] {
 }
 
 function handleModelAction(key: string, record: ProviderModelPricing) {
-  if (key === 'set-default-test-model') {
-    void setDefaultTestModel(record)
+  if (key === 'set-default-health-check-model') {
+    void setDefaultHealthCheckModel(record)
     return
   }
   if (key === 'edit') {
@@ -590,26 +642,29 @@ function canMutateModel(record: ProviderModelPricing): boolean {
   return record.systemAccountId === authState.currentUser.value?.id
 }
 
-function isActiveProviderDefaultTestModel(model: string): boolean {
-  const current = activeProviderDefaultTestModel.value.trim()
+function isActiveProviderDefaultHealthCheckModel(model: string): boolean {
+  const current = activeProviderDefaultHealthCheckModel.value.trim()
   return Boolean(current && model.trim() === current)
 }
 
-function applyProviderDefaultTestModel(providerCode: string, defaultTestModel: string) {
+function applyProviderDefaultHealthCheckModel(providerCode: string, defaultHealthCheckModel: string) {
   providers.value = providers.value.map((provider) => (
     provider.code === providerCode
-      ? providerWithDefaultTestModel(provider, defaultTestModel)
+      ? providerWithDefaultHealthCheckModel(provider, defaultHealthCheckModel)
       : provider
   ))
   if (activeProvider.value?.code === providerCode) {
-    activeProvider.value = providerWithDefaultTestModel(activeProvider.value, defaultTestModel)
+    activeProvider.value = providerWithDefaultHealthCheckModel(activeProvider.value, defaultHealthCheckModel)
   }
 }
 
-function providerWithDefaultTestModel(provider: ProviderDefinition, defaultTestModel: string): ProviderDefinition {
+function providerWithDefaultHealthCheckModel(provider: ProviderDefinition, defaultHealthCheckModel: string): ProviderDefinition {
   return {
     ...provider,
-    defaultTestModel
+    defaultHealthCheckModel,
+    systemDefaultHealthCheckModel: isManagementView.value
+      ? defaultHealthCheckModel
+      : provider.systemDefaultHealthCheckModel
   }
 }
 

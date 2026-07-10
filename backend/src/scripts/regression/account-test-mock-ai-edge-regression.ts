@@ -119,26 +119,6 @@ try {
   })}`)
   assert.equal(mockState.hitsByKey.get('retry-once'), 2, 'retry-once 账号应命中 mock AI 两次')
 
-  const precheckRecoverAccount = repositories.createAccount({
-    providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    name: `失败确认恢复账号 ${Date.now()} ${Math.random().toString(16).slice(2, 6)}`,
-    type: 'api_key',
-    status: 'active',
-    credentials: {
-      api_key: 'sk-precheck-recover',
-      base_url: context.mockBaseUrl
-    },
-    groupId: context.groupId
-  }, { systemAccountId: admin.id, role: 'admin' })
-  databaseModule.closeStorageDatabases()
-  const precheckRecoverTask = await submitAccountTest(context, precheckRecoverAccount)
-  const precheckRecoverFinished = await waitForTask(context, precheckRecoverTask.id, 20_000, (task) => task.status === 'failed')
-  assert.equal(precheckRecoverFinished.status, 'failed', '前三次真实请求均失败时账号测试任务应失败')
-  await waitForCondition(10_000, () => (mockState.hitsByKey.get('precheck-recover') ?? 0) >= 4, '等待失败事前确认请求')
-  const precheckRecoveredAccount = await getAccount(context, precheckRecoverAccount.id)
-  assert.equal(precheckRecoveredAccount.status, 'active', '账号测试失败后事前确认恢复时不应把账号改为临时不可调用')
-
   const timeoutAccount = await createMockAccount(context, '真实超时账号', 'sk-timeout-always')
   const queuedAccount = await createMockAccount(context, '排队不计时账号', 'sk-queued-fast')
   const timeoutTask = await submitAccountTest(context, timeoutAccount)
@@ -167,6 +147,11 @@ try {
   assert.equal(canceledRunning.status, 'canceled', 'session 取消应中断 running 任务')
   assert.equal(canceledQueued.status, 'canceled', 'session 取消应剔除 queued 任务')
   assert.equal(mockState.hitsByKey.get('cancel-queued') ?? 0, 0, '被 session 取消的 queued 任务不应再命中 mock AI')
+  const afterCancelAccount = await createMockAccount(context, '取消后立即测试账号', 'sk-after-cancel-fast')
+  const afterCancelTask = await submitAccountTest(context, afterCancelAccount)
+  const afterCancelFinished = await waitForTask(context, afterCancelTask.id, 10_000, (task) => task.status === 'success')
+  assert.equal(afterCancelFinished.status, 'success', '取消 A 账户测试后应立即释放队列并允许 B 账户测试')
+  assert.equal(mockState.hitsByKey.get('after-cancel-fast'), 1, '取消后提交的 B 账户应真实命中 mock AI')
 
   const noHeartbeatSession = await createTestSession(context)
   const noHeartbeatAccount = await createMockAccount(context, '无心跳继续账号', 'sk-no-heartbeat-fast')
@@ -180,10 +165,9 @@ try {
     mockBaseUrl,
     scenarios: [
       '10s attempt 超时后重试成功',
-      '测试失败后事前确认恢复不改账号状态',
       'running 60s 总超时失败',
       'queued 超过运行任务耗时不计超时且后续成功',
-      'session 取消 running/queued',
+      'session 取消 running/queued 后立即释放队列给其他账户',
       '无 heartbeat 的 session 仍继续执行'
     ],
     hitsByKey: Object.fromEntries(mockState.hitsByKey),
@@ -215,10 +199,6 @@ async function createMockAccount(context: TestContext, name: string, apiKey: str
 
 async function createTestSession(context: TestContext): Promise<AccountTestSession> {
   return postEnvelope<AccountTestSession>(context.backendBaseUrl, '/accounts/test-sessions', context.cookie, {})
-}
-
-async function getAccount(context: TestContext, accountId: string): Promise<AccountSummary> {
-  return getEnvelope<AccountSummary>(context.backendBaseUrl, `/accounts/${encodeURIComponent(accountId)}`, context.cookie)
 }
 
 async function cancelTestSession(context: TestContext, sessionId: string): Promise<AccountTestSession> {
@@ -255,17 +235,6 @@ async function waitForTask(
     latest = await getTask(context, taskId)
   }
   throw new Error(`等待任务 ${taskId} 超时，最后状态：${latest.status} ${latest.message ?? ''}`)
-}
-
-async function waitForCondition(timeoutMs: number, done: () => boolean, message: string): Promise<void> {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt <= timeoutMs) {
-    if (done()) {
-      return
-    }
-    await sleep(pollIntervalMs)
-  }
-  throw new Error(`${message} 超时`)
 }
 
 function startBackendServer(port: number): ChildProcess {
@@ -404,19 +373,9 @@ function delayedResponse(res: http.ServerResponse, key: string, path: string): {
     return { cancel: () => {} }
   }
   const hits = mockState.hitsByKey.get(key) ?? 0
-  if (key === 'precheck-recover' && hits <= 3) {
-    const timer = setTimeout(() => {
-      if (!res.destroyed) {
-        sendJsonError(res, 500, 'mock precheck staged failure')
-      }
-    }, 100)
-    return {
-      cancel: () => clearTimeout(timer)
-    }
-  }
   const delayMs = key === 'retry-once' && hits === 1
     ? 12_000
-    : key === 'cancel-running' || key === 'stale-session'
+    : key === 'cancel-running'
       ? 30_000
       : 500
   const timer = setTimeout(() => {

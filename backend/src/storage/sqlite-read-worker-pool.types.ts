@@ -139,7 +139,7 @@ import type {
   OpenAICompatibleVectorStoreSearchResult
 } from './openai-compatible-vector-stores.repository.js'
 
-export type ProviderDefaultTestModelPreferenceEntries = Array<[string, string]>
+export type ProviderDefaultHealthCheckModelPreferenceEntries = Array<[string, string]>
 
 export type SqliteReadWorkerOperation =
   | {
@@ -602,7 +602,7 @@ export type SqliteReadWorkerOperation =
     protocolVersion?: string
   }
   | {
-    type: 'find_provider_default_test_model_read_only'
+    type: 'find_provider_default_health_check_model_read_only'
     providerCode: string
     systemAccountId?: string
   }
@@ -619,7 +619,7 @@ export type SqliteReadWorkerOperation =
     providerCode: string
   }
   | {
-    type: 'list_provider_default_test_model_preferences_read_only'
+    type: 'list_provider_default_health_check_model_preferences_read_only'
     systemAccountId?: string
     providerCodes?: string[]
   }
@@ -787,11 +787,11 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_protocol_provider_codes_read_only' } ? ProviderCode[] :
   T extends { type: 'list_openai_protocol_profile_ids_read_only' } ? string[] :
   T extends { type: 'is_protocol_provider_code_read_only' } ? boolean :
-  T extends { type: 'find_provider_default_test_model_read_only' } ? string | undefined :
+  T extends { type: 'find_provider_default_health_check_model_read_only' } ? string | undefined :
   T extends { type: 'find_provider_default_supported_models_read_only' } ? string[] :
   T extends { type: 'find_provider_protocol_profile_read_only' } ? ProviderProtocolProfileDefinition | undefined :
   T extends { type: 'default_provider_protocol_profile_read_only' } ? ProviderProtocolProfileDefinition | undefined :
-  T extends { type: 'list_provider_default_test_model_preferences_read_only' } ? ProviderDefaultTestModelPreferenceEntries :
+  T extends { type: 'list_provider_default_health_check_model_preferences_read_only' } ? ProviderDefaultHealthCheckModelPreferenceEntries :
   T extends { type: 'list_global_settings_read_only' } ? Record<string, unknown> :
   T extends { type: 'get_settings_read_only' } ? Record<string, unknown> :
   T extends { type: 'read_gateway_settings_read_only' } ? GatewaySettings :

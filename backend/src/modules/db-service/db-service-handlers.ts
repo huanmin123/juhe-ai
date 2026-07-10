@@ -525,7 +525,12 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       if (runtimeConfig.databaseDriver === 'postgres') {
         const account = await findAccountForTestAsync(operation.accountId, operation.access ?? internalDbServiceAccountAccess)
         const updated = account
-          ? await markAccountTestTemporaryUnavailableAsync(account, operation.reason, operation.access ?? internalDbServiceAccountAccess)
+          ? await markAccountTestTemporaryUnavailableAsync(
+              account,
+              operation.reason,
+              operation.access ?? internalDbServiceAccountAccess,
+              operation.healthCheckGuard
+            )
           : undefined
         if (updated) {
           clearGatewayRuntimeCacheLocal()
@@ -1297,7 +1302,12 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'mark_account_test_temporary_unavailable': {
       const account = findAccountForTest(operation.accountId, operation.access ?? internalDbServiceAccountAccess)
       const updated = account
-        ? markAccountTestTemporaryUnavailable(account, operation.reason, operation.access ?? internalDbServiceAccountAccess)
+        ? markAccountTestTemporaryUnavailable(
+            account,
+            operation.reason,
+            operation.access ?? internalDbServiceAccountAccess,
+            operation.healthCheckGuard
+          )
         : undefined
       if (updated) {
         clearGatewayRuntimeCacheLocal()

@@ -236,6 +236,8 @@ interface SystemTeamSummary {
   id: string
   name: string
   status: string
+  memberCount?: number
+  activeMemberCount?: number
   members?: SystemTeamMemberSummary[]
 }
 
@@ -327,8 +329,8 @@ async function main(): Promise<void> {
     await assertForbidden(`${baseUrl}/__aisys__/api/system-teams`, seed.userACookie, '普通用户不能访问系统团队管理接口')
     await assertForbidden(`${baseUrl}/__aisys__/api/authorizations`, seed.userACookie, '普通用户不能访问统一授权管理接口')
     await assertForbidden(`${baseUrl}/__aisys__/api/providers`, seed.userACookie, '普通用户不能访问供应商管理接口')
-    const userProviderOptions = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', seed.userACookie)
-    assert(userProviderOptions.some((item) => item.code === 'gpt' && typeof item.defaultTestModel === 'string'), '普通用户应能读取供应商安全选项')
+    const userProviderOptions = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string }>>(baseUrl, '/__aisys__/api/providers/options', seed.userACookie)
+    assert(userProviderOptions.some((item) => item.code === 'gpt' && typeof item.defaultHealthCheckModel === 'string'), '普通用户应能读取供应商安全选项')
     const userProviderModels = await getEnvelope<Array<{ model: string }>>(baseUrl, '/__aisys__/api/providers/gpt/models', seed.userACookie)
     assert(userProviderModels.some((item) => item.model === 'gpt-5.5'), '普通用户应能查询 GPT 模型列表用于账户模型限制下拉')
     const userProviderModelOptions = await getEnvelope<Array<{ providerCode: string; model: string }>>(baseUrl, '/__aisys__/api/providers/models/options', seed.userACookie)
@@ -348,8 +350,10 @@ async function main(): Promise<void> {
     const userAMyAccountsWithQuery = await getAccountItems(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}`, seed.userACookie)
     assertSameIds(userAMyAccounts, userAMyAccountsWithQuery, '用户 A 传 systemAccountId 后 my-accounts 结果发生变化')
     const userAOwnAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAccountId}`, seed.userACookie)
-    assert(userAOwnAccountDetail.credentials?.base_url === 'https://api.openai.com/v1', '用户 A 应能打开自有账户详情并读取非敏感 Base URL')
-    assert(userAOwnAccountDetail.credentials?.api_key === 'sk-scope-user-a', '用户 A 自有账户详情应返回明文 API Key 供编辑弹窗查看')
+    assert(!userAOwnAccountDetail.credentials, '用户 A 的普通账户详情不应返回凭据')
+    const userAOwnAccountEditDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAccountId}/edit-basic`, seed.userACookie)
+    assert(userAOwnAccountEditDetail.credentials?.base_url === 'https://api.openai.com/v1', '用户 A 应能从编辑详情读取非敏感 Base URL')
+    assert(userAOwnAccountEditDetail.credentials?.api_key === 'sk-scope-user-a', '用户 A 自有账户编辑详情应返回明文 API Key')
     const userAExport = await postEnvelope<AccountExportResult>(
       baseUrl,
       `/__aisys__/api/my-accounts/export?systemAccountId=${seed.userBId}`,
@@ -397,7 +401,7 @@ async function main(): Promise<void> {
       404,
       '用户 A 不应通过授权账户详情接口查看用户 B 原账户'
     )
-    const userAAuthorizedAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAuthorizedUserBAccountId}`, seed.userACookie)
+    const userAAuthorizedAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAuthorizedUserBAccountId}/advanced`, seed.userACookie)
     assert(userAAuthorizedAccountDetail.accessType === 'authorized', '用户 A 应能打开自己的授权实例详情')
     assert(userAAuthorizedAccountDetail.credentials?.base_url === 'https://api.openai.com/v1', '授权实例详情应返回来源账户公开 Base URL')
     assert(userAAuthorizedAccountDetail.concurrencyLimit === 3, '授权实例详情应只读展示来源账户并发上限')
@@ -443,8 +447,7 @@ async function main(): Promise<void> {
 
     const createdGroup = await postEnvelope<GroupSummary>(baseUrl, `/__aisys__/api/groups?systemAccountId=${seed.userBId}`, seed.adminCookie, {
       name: '用户 B 管理代建分组',
-      providerCode: 'gpt',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID
+      providerCode: 'gpt'
     })
     assert(createdGroup.systemAccountId === seed.userBId, '管理员按用户 B 创建分组没有归属到用户 B')
     const userBGroupPage1 = await getEnvelope<GroupListResult>(baseUrl, `/__aisys__/api/groups?systemAccountId=${seed.userBId}&page=1&pageSize=1`, seed.adminCookie)
@@ -570,8 +573,10 @@ async function main(): Promise<void> {
     const userATeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/my-teams', seed.userACookie)
     const userATeams = userATeamsPage.items
     assert(userATeams.length === 1 && userATeams[0]?.id === seed.teamSharedId, '用户 A 我的团队没有只返回自己加入的团队')
-    assert((userATeams[0]?.members ?? []).some((member) => member.systemAccountId === seed.userAId), '用户 A 我的团队缺少自己')
-    assert((userATeams[0]?.members ?? []).some((member) => member.systemAccountId === seed.userBId), '用户 A 我的团队缺少同团队成员')
+    assert(userATeams[0]?.activeMemberCount === 2, '用户 A 我的团队成员计数异常')
+    const userASharedTeamDetail = await getEnvelope<SystemTeamSummary>(baseUrl, `/__aisys__/api/my-teams/${seed.teamSharedId}`, seed.userACookie)
+    assert((userASharedTeamDetail.members ?? []).some((member) => member.systemAccountId === seed.userAId), '用户 A 我的团队详情缺少自己')
+    assert((userASharedTeamDetail.members ?? []).some((member) => member.systemAccountId === seed.userBId), '用户 A 我的团队详情缺少同团队成员')
     assert(!userATeams.some((team) => team.id === seed.teamUserBOnlyId), '用户 A 我的团队返回了未加入团队')
     const userBTeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/my-teams', seed.userBCookie)
     const userBTeams = userBTeamsPage.items
@@ -579,7 +584,7 @@ async function main(): Promise<void> {
     const adminTeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/system-teams', seed.adminCookie)
     const adminTeams = adminTeamsPage.items
     assert(adminTeams.some((team) => team.id === seed.teamSharedId) && adminTeams.some((team) => team.id === seed.teamUserBOnlyId), '管理员系统团队管理没有返回全量团队')
-    const userBOnlyTeam = adminTeams.find((team) => team.id === seed.teamUserBOnlyId)
+    const userBOnlyTeam = await getEnvelope<SystemTeamSummary>(baseUrl, `/__aisys__/api/system-teams/${seed.teamUserBOnlyId}`, seed.adminCookie)
     const userBOnlyMemberId = userBOnlyTeam?.members?.find((member) => member.systemAccountId === seed.userBId)?.id
     assert(userBOnlyMemberId, '回归需要用户 B 专属团队成员 ID')
     await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/system-teams/${seed.teamUserBOnlyId}?systemAccountId=${seed.userAId}`, seed.adminCookie, 'PATCH', { name: '不应跨作用域更新团队' }, '管理员按用户 A 作用域写入时不应能更新用户 A 不可见团队')
@@ -716,11 +721,18 @@ function seedData(): SeedState {
     name: '用户 A 账户',
     type: 'api_key',
     groupId: userATargetGroup.id,
-    credentials: { api_key: 'sk-scope-user-a', base_url: 'https://api.openai.com/v1' }
+    credentials: { api_key: 'sk-scope-user-a', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }, userAAccess)
   assert(
-    repositories.clearAccountFailureStateResult(userAAccount.id, userAAccess, { allowPendingTestRestore: true }).account?.status === 'active',
-    '作用域回归种子应模拟用户 A 账户测试成功'
+    repositories.recordAccountHealthCheckSuccess(userAAccount.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }),
+    '作用域回归种子应模拟用户 A 账户后台检查成功'
   )
   const userBErrorHandlingRules = [{
     enabled: true,
@@ -756,13 +768,19 @@ function seedData(): SeedState {
     },
     concurrencyLimit: 3,
     supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     proxyProfileId: userBProxy.id,
     accountExpiresAt: '2027-12-31T00:00:00.000Z',
     availabilitySchedule: userBAvailabilitySchedule
   }, userBAccess)
   assert(
-    repositories.clearAccountFailureStateResult(userBAccount.id, userBAccess, { allowPendingTestRestore: true }).account?.status === 'active',
-    '作用域回归种子应模拟用户 B 账户测试成功后再创建授权'
+    repositories.recordAccountHealthCheckSuccess(userBAccount.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }),
+    '作用域回归种子应模拟用户 B 账户后台检查成功后再创建授权'
   )
   repositories.createAccount({
     providerCode: 'gpt',
@@ -770,7 +788,9 @@ function seedData(): SeedState {
     name: 'Scope Extra OAuth',
     type: 'oauth',
     groupId: userBGroup.id,
-    credentials: { refresh_token: 'refresh-scope-user-b-extra', base_url: 'https://api.openai.com/v1' }
+    credentials: { refresh_token: 'refresh-scope-user-b-extra', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }, userBAccess)
   const teamShared = repositories.createSystemTeam({
     name: '作用域共享团队',
@@ -835,8 +855,8 @@ function seedData(): SeedState {
     name: '用户 B Key',
     groupBindings: [{ groupId: userBGroup.id, priority: 1, status: 'active' }],
   }, userBAccess)
-  const usageToday = localDateKey(addDays(new Date(), -1))
-  const usageYesterday = localDateKey(addDays(new Date(), -2))
+  const usageToday = localDateKey(new Date())
+  const usageYesterday = localDateKey(addDays(new Date(), -1))
   repositories.createUsageRecordsBatch([
     usageRecord('scope_usage_a_1', userA.id, userAAccount.id, 'GET /v1/models', 'scope-model-a', 200, true, usageAt(usageToday, 1)),
     usageRecord('scope_usage_a_2', userA.id, userAAccount.id, 'POST /v1/responses', 'scope-model-a', 500, false, usageAt(usageToday, 2)),

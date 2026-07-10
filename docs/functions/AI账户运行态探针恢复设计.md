@@ -17,22 +17,23 @@
 - 真实请求失败：记录失败样本、短暂避让当前账号、切换后续账号救当前请求。
 - 状态事件触发探针：账号进入 `local_suppressed`、`latency_degraded`、`runtime_degraded`、`precheck_pending` 或持久冷却到期时，由状态机调度通用探针。触发源是状态转换，不是“用户请求到来”。
 - 后台兜底探针：扫描 due 的探针任务，补偿漏调度、进程重启和无新请求场景。本地运行态由 Web / Redis runtime state 探针恢复，已落库冷却态由 ops-worker 冷却复测恢复。
-- 真实请求成功：可以作为强恢复信号，清理运行态观察和调度降级，但不能恢复已经持久化的限流或临时不可用；持久态恢复仍由后台复测或手动测试成功完成。
+- 真实请求成功：可以作为强恢复信号，清理运行态观察和调度降级，但不能恢复已经持久化的限流或临时不可用；持久态恢复仍由对应后台复测或显式人工恢复完成。
 - 请求数量不能直接驱动状态升级。状态升级必须同时满足最小观察时间、失败窗口、无成功证据和后台探针结果。
-- 运行态恢复探针只允许使用账号测试健康探针，也就是现有账户测试链路的最小请求；模型优先使用历史测试成功模型，其次使用供应商默认测试模型，最后才使用账号声明的可用模型。禁止把失败请求的 model、endpoint、stream 或用户 payload 复用为恢复探针输入。
+- 运行态恢复探针只允许使用系统账户检查探针，也就是共享最小请求执行器；模型固定为账户保存的 `healthCheckModel`。禁止从历史测试、个人默认、管理员默认、协议档案默认、支持模型首项或失败请求回退模型，也禁止复用失败请求的 endpoint、stream 或用户 payload。
+- 人工测试是独立诊断流量，成功或失败都不清理、确认、升级或恢复本设计中的任何运行态和持久态。
 
 ## 状态分层
 
 | 状态 | 存储位置 | 调度影响 | 触发入口 | 自动恢复 |
 | --- | --- | --- | --- | --- |
-| `normal` | 无运行态 / `accounts.status = active` | 正常调度 | 账号创建、测试成功、探针恢复、运行态清理 | 无需恢复 |
+| `normal` | 无运行态 / `accounts.status = active` | 正常调度 | 后台激活检查成功、探针恢复、运行态清理 | 无需恢复 |
 | `failure_observed` | Web 进程运行态样本 | 不影响排序 | 真实请求命中上游后失败 | 成功信号清理；观察窗口过期清理；后台探针成功清理 |
 | `latency_degraded` | Web / Redis 短 TTL 运行态 | 速度优先普通路由下未降级硬可承接候选优先，首字慢账号兜底；有效期内可临时覆盖账户偏好 | 普通路由速度优先下首字慢样本达到阈值 | 后台探针连续达标清理；真实请求首字连续达标清理；TTL 过期清理 |
 | `local_suppressed` | Web 进程短 TTL 运行态 | 暂不选中该账号 | 真实请求失败后立即止血 | TTL 到期由后台探针验证；探针成功清理；窗口过期且无新失败清理 |
 | `runtime_degraded` | Web 进程运行态快照 | 普通候选优先，降级账号兜底 | 后台探针确认近期不稳 | 后台探针连续成功清理；真实完整成功可清理；观察窗口无新失败清理；手动恢复清理 |
 | `precheck_pending` | Web 进程运行态快照 / 后台探针队列 | 暂不作为普通候选 | 达到确认条件后由后台探针接管 | 探针成功清理；探针失败且并发归零后写持久态；探针异常按退避重试 |
-| `temporary_unavailable` | `accounts.status` / `cooldown_until` | 不参与调度 | 后台探针确认不可用 | 后台冷却复测成功恢复；手动测试成功恢复；手动恢复清理 |
-| `rate_limited` | `accounts.status` / `cooldown_until` | 不参与调度 | 账户错误策略或探针确认限流 | 后台慢速复测成功恢复；手动测试成功恢复；手动恢复清理 |
+| `temporary_unavailable` | `accounts.status` / `cooldown_until` | 不参与调度 | 后台探针确认不可用 | 后台冷却复测成功恢复；手动恢复清理 |
+| `rate_limited` | `accounts.status` / `cooldown_until` | 不参与调度 | 账户错误策略或探针确认限流 | 后台慢速复测成功恢复；手动恢复清理 |
 | `error` | `accounts.status = error` | 不参与调度 | 明确硬异常，例如凭据无效、OAuth 刷新连续失败 | 可自动恢复的异常由对应后台任务恢复；不可自动恢复的异常需要用户修配置或手动恢复 |
 
 `failure_observed` 是内部观察态，不作为前端状态标签展示；`latency_degraded` 只表示当前普通路由速度优先偏好下近期首字慢，不表示账号不可用，也不能升级为持久账号状态。它是路由策略目标对账户偏好的短 TTL 覆盖层，不改写超级优先、账号优先级、备用层、会话亲和或质量排序；恢复清理后，后续请求必须重新回到账户配置排序。账户页只展示会影响调度或需要排障的 `latency_degraded`、`runtime_degraded`、`local_suppressed`、`precheck_pending`、`precheck_failed` 和持久状态。
@@ -150,17 +151,18 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 - Redis 探针状态只保存非敏感元数据：`runtimeKey`、`accountId`、账号展示名、供应商、系统账户 / 分组 ID、设置快照、失败计数、观察时间、下一次探针时间、原因和 generation。
 - Redis 探针状态不保存账号凭据、API Key、OAuth token、代理密码、完整请求 / 响应正文、失败请求 model、endpoint、stream 或用户 payload。执行探针前必须通过 DB service 按 `accountId + groupId + systemAccountId` 重载账号凭据，并允许读取当前不可用账号用于恢复验证。
 
-## 账号测试健康探针
+## 系统账户检查探针
 
-运行态恢复和事前确认只使用一类探针：账号测试健康探针。
+运行态恢复和事前确认只使用一类底层执行器：系统账户检查探针。
 
-账号测试健康探针复用现有账户测试链路：
+系统账户检查探针与人工测试复用最小请求构造和网关链路，但不复用人工测试会话或状态策略：
 
-- 测试入口使用 `testOpenAIAccount`。
-- 测试模型统一交给 `resolveAccountTestModelAsync`：优先账户独立 `defaultTestModel`，其次当前执行用户的供应商个人默认，再次账户绑定协议档案的系统默认，最后使用账号声明的支持模型首项。
-- 测试请求使用账户测试自己的最小 payload 和协议匹配 endpoint。
-- 测试链路仍走账号自己的供应商、协议档案、Base URL、代理和凭据。
-- 探针使用 `traffic_source = runtime_recovery_probe`，且 `disableAccountStateMutation = true`，运行态状态机根据结果决定是否清理或升级。
+- 底层入口使用纯结果执行器 `executeAccountProbe()`。
+- 探针模型严格读取账户 `healthCheckModel`，必须属于账户 `supportedModels` 并能按协议档案发起最小文本请求。
+- 探针请求使用协议档案、endpoint modes 和模型协议能力解析出的最小 payload 与 endpoint。
+- 探针链路仍走账号自己的供应商、协议档案、Base URL、代理和凭据。
+- 探针使用 `traffic_source = runtime_recovery_probe`；执行器不自行修改状态，由运行态恢复策略根据 `purpose` 和 generation 决定是否清理或升级。
+- 检查模型缺失、不可见、不属于支持模型或请求形态不匹配时，记录“检查模型配置异常”并停止本轮，不猜测其他模型，也不把该配置错误升级为账户不可用。
 
 明确禁止：
 
@@ -184,7 +186,7 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 
 1. 扫描 due 的失败样本、运行态降级、短暂避让、探针确认态和持久冷却态。
 2. 多个 Web 节点可以短暂重复执行同一个运行态键的探针；探针结果回写必须校验 generation，旧探针结果直接丢弃，不能靠 Redis 分布式锁保证唯一执行。
-3. 使用现有账户测试健康探针发起最小请求；模型优先历史测试成功模型，其次供应商默认测试模型，不从失败请求提取 model 或 endpoint。
+3. 使用系统账户检查探针发起最小请求；模型固定为账户 `healthCheckModel`，不从历史测试、目录默认或失败请求提取 model / endpoint。
 4. 运行态恢复探针必须标记 `traffic_source = runtime_recovery_probe`；持久冷却复测继续使用 `traffic_source = cooldown_retest`，两者都不能伪装成真实用户网关流量。
 5. 探针使用记录和审计只保留诊断摘要，不参与业务统计或账号质量统计。
 6. Web 本地探针成功清理运行态；ops-worker 冷却复测成功时恢复持久状态为 `active`。
@@ -279,9 +281,9 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 | `local_suppressed` | TTL 到期后后台探针成功；窗口过期 | 手动恢复正常 |
 | `runtime_degraded` | 后台探针成功；真实完整成功；观察窗口过期 | 手动恢复正常 |
 | `precheck_pending` | 后台探针成功 | 手动恢复正常 |
-| `temporary_unavailable` | 后台冷却复测成功 | 手动测试成功；手动恢复正常 |
-| `rate_limited` | 后台慢速复测成功 | 手动测试成功；手动恢复正常 |
-| `error` | 对应后台任务成功，例如 OAuth 刷新恢复 | 修复配置后测试成功；恢复异常 |
+| `temporary_unavailable` | 后台冷却复测成功 | 手动恢复正常 |
+| `rate_limited` | 后台慢速复测成功 | 手动恢复正常 |
+| `error` | 对应后台任务成功，例如 OAuth 刷新恢复 | 修复配置后由后台复检；恢复异常 |
 
 ## 日志和排障
 

@@ -8,6 +8,7 @@ import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import type { AccountSummary } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
 import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
@@ -31,10 +32,11 @@ const [
   { accountsRouter },
   { requireAdmin, requireAuth },
   { requestContextMiddleware },
-  { flushAllUsageRecordQueue },
+  { flushAllUsageRecordQueueAsync },
   { flushAllOperationLogQueue },
   databaseModule,
-  repositories
+  repositories,
+  usageRecordWriterPool
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
@@ -42,7 +44,8 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/operation-logs/operation-log-queue.service.js'),
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/usage-record-writer-pool.js')
 ])
 
 const app = express()
@@ -159,19 +162,22 @@ try {
     }
   })
 
-  console.log('手动账号测试恢复回归通过：自有账户测试成功会恢复临时不可调用、限流、异常和不可调度状态')
+  console.log('手动账号测试状态隔离回归通过：自有账户测试成功不会改写临时不可调用、限流、异常和不可调度状态')
 } finally {
   await closeServer(appServer)
   await closeServer(mockOpenAIServer)
   try {
-    flushAllUsageRecordQueue()
+    await flushAllUsageRecordQueueAsync()
+    await usageRecordWriterPool.closeUsageRecordWriterPool()
     flushAllOperationLogQueue()
     databaseModule.closeStorageDatabases()
   } catch {
   }
   restoreWorkerParentIpc()
-  rmSync(tempRoot, { recursive: true, force: true })
+  await removeTempRoot()
 }
+
+process.exit(0)
 
 async function assertManualTestRestoresAccount(input: {
   appBaseUrl: string
@@ -209,31 +215,30 @@ async function assertManualTestRestoresAccount(input: {
     baseUrl: input.appBaseUrl,
     path: `/__aisys__/api/accounts/${account.id}/test`,
     cookie: sessionCookie(),
-    body: { model: 'gpt-5.5' }
+    body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
   })
   assert.equal(result.success, true, `${input.accountName} 手动测试应通过：${result.message}`)
   assert.equal(result.statusCode, 200, `${input.accountName} 应返回上游 200`)
-  assert.equal(result.accountStatusChanged, true, `${input.accountName} 测试结果应标记状态已恢复`)
-  assert.equal(result.accountStatus, 'active', `${input.accountName} 测试结果状态应为正常`)
+  assert.equal(result.accountStatusChanged, false, `${input.accountName} 测试结果不应标记账户状态变化`)
+  assert.equal(result.accountStatus, unavailable.status, `${input.accountName} 测试结果应保留测试前账户状态`)
   assert(result.traceId, `${input.accountName} 测试结果应返回本地 traceId`)
-  flushAllUsageRecordQueue()
-  const usageRecordsByTrace = repositories.listUsageRecords(adminAccess, {
-    traceId: result.traceId,
-    trafficSource: 'manual_account_test',
-    page: 1,
-    pageSize: 10
-  })
-  assert(
-    usageRecordsByTrace.items.some((item) => item.traceId === result.traceId && item.accountId === account.id && item.trafficSource === 'manual_account_test'),
-    `${input.accountName} 应能通过测试返回的 traceId 查到手动测试使用记录`
-  )
 
-  const restored = repositories.findAccountSummary(account.id, adminAccess)
-  assert.equal(restored?.status, 'active', `${input.accountName} 测试成功后应恢复正常`)
-  assert.equal(restored?.schedulable, true, `${input.accountName} 测试成功后应恢复调度`)
-  assert.equal(restored?.cooldownUntil, undefined, `${input.accountName} 测试成功后应清理冷却时间`)
-  assert.equal(restored?.lastErrorCode, undefined, `${input.accountName} 测试成功后应清理错误码`)
-  assert.equal(restored?.lastErrorMessage, undefined, `${input.accountName} 测试成功后应清理错误信息`)
+  const preserved = repositories.findAccountSummary(account.id, adminAccess)
+  assert.deepEqual(
+    accountAvailabilityState(preserved),
+    accountAvailabilityState(unavailable),
+    `${input.accountName} 测试成功后不能改写账户可用状态`
+  )
+}
+
+function accountAvailabilityState(account: AccountSummary | undefined) {
+  return {
+    status: account?.status,
+    schedulable: account?.schedulable,
+    cooldownUntil: account?.cooldownUntil,
+    lastErrorCode: account?.lastErrorCode,
+    lastErrorMessage: account?.lastErrorMessage
+  }
 }
 
 function createMockOpenAIServer(): http.Server {
@@ -299,4 +304,19 @@ async function closeServer(listeningServer?: ReturnType<typeof app.listen>): Pro
     })
     listeningServer.closeIdleConnections?.()
   })
+}
+
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message)) {
+        throw error
+      }
+      if (attempt === 7) return
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 100 + attempt * 100))
+    }
+  }
 }

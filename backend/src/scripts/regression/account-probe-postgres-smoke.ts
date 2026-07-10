@@ -34,7 +34,8 @@ try {
       api_key: `sk-${marker}`,
       base_url: 'https://example.invalid/v1'
     },
-    supportedModels: ['gpt-5-mini']
+    supportedModels: ['gpt-5-mini'],
+    healthCheckModel: 'gpt-5-mini'
   }, access)
   createdAccountIds.push(account.id)
 
@@ -159,7 +160,6 @@ async function setHealthCheckDue(accountId: string, dueAt: string): Promise<void
     UPDATE juhe_business.accounts
     SET status = 'active',
         schedulable = 1,
-        health_check_enabled = 1,
         next_health_check_at = $1,
         last_health_success_at = NULL,
         cooldown_until = NULL,
@@ -218,7 +218,6 @@ async function assertProbeExplainUsesIndexes(dueAt: string): Promise<void> {
         AND accounts.deleted_at IS NULL
         AND accounts.status = 'active'
         AND accounts.schedulable = 1
-        AND accounts.health_check_enabled = 1
         AND (accounts.next_health_check_at IS NULL OR accounts.next_health_check_at <= $1)
       ORDER BY accounts.next_health_check_at IS NOT NULL ASC,
         accounts.next_health_check_at ASC,

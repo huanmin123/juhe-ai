@@ -6,6 +6,10 @@ const {
 const {
   normalizeOpenAICodexBuiltinTools
 } = await import(resolveOpenAICodexBuiltinToolsModuleUrl()) as typeof import('./builtin-tools.js')
+const {
+  applyGptAccountRequestOverrides,
+  GptAccountRequestOverrideError
+} = await import(resolveGptRequestOverridesModuleUrl()) as typeof import('../../../providers/drivers/gpt/request-overrides.js')
 
 export interface OpenAIOAuthCodexAccount {
   id?: string
@@ -53,6 +57,7 @@ export function normalizeOpenAIOAuthCodexParsedBody(
   normalizeOpenAIOAuthCodexInstructions(body)
   normalizeOpenAIOAuthCodexInput(body)
   normalizeOpenAIOAuthCodexTools(body)
+  applyOpenAIOAuthCodexAccountRequestOverrides(body, input)
   normalizeOpenAIOAuthCodexServiceTier(body)
 
   if (input.compact) {
@@ -65,6 +70,36 @@ export function normalizeOpenAIOAuthCodexParsedBody(
   body.stream = true
 
   return { body: JSON.stringify(body), stream: true, session }
+}
+
+function applyOpenAIOAuthCodexAccountRequestOverrides(
+  body: Record<string, unknown>,
+  input: OpenAIOAuthCodexNormalizeInput
+): void {
+  const serviceTierOverride = input.account.credentials?.service_tier_override
+  if (serviceTierOverride === 'flex') {
+    throw new OpenAIOAuthCodexAdapterError('当前 OAuth 上游适配器不支持服务等级 flex')
+  }
+  let overridden: Record<string, unknown>
+  try {
+    overridden = applyGptAccountRequestOverrides(body, {
+      credentials: input.account.credentials,
+      endpointFamily: 'responses',
+      compact: input.compact
+    })
+  } catch (error) {
+    if (error instanceof GptAccountRequestOverrideError) {
+      throw new OpenAIOAuthCodexAdapterError(error.message)
+    }
+    throw error
+  }
+  if (overridden === body) {
+    return
+  }
+  for (const key of Object.keys(body)) {
+    delete body[key]
+  }
+  Object.assign(body, overridden)
 }
 
 export function normalizeOpenAIOAuthCodexRawBody(
@@ -167,6 +202,12 @@ function resolveOpenAICodexOAuthErrorsModuleUrl(): string {
   return import.meta.url.endsWith('.ts')
     ? new URL('./oauth-errors.ts', import.meta.url).href
     : new URL('./oauth-errors.js', import.meta.url).href
+}
+
+function resolveGptRequestOverridesModuleUrl(): string {
+  return import.meta.url.endsWith('.ts')
+    ? new URL('../../../providers/drivers/gpt/request-overrides.ts', import.meta.url).href
+    : new URL('../../../providers/drivers/gpt/request-overrides.js', import.meta.url).href
 }
 
 function normalizeOpenAIOAuthCodexServiceTier(body: Record<string, unknown>): void {

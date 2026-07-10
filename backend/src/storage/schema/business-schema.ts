@@ -91,7 +91,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       protocol_code TEXT NOT NULL,
       protocol_version TEXT NOT NULL,
       base_url TEXT NOT NULL,
-      default_test_model TEXT NOT NULL,
+      default_health_check_model TEXT NOT NULL,
       account_types_json TEXT NOT NULL,
       capabilities_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -104,7 +104,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       profile_id TEXT NOT NULL,
       family_code TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
-      default_test_model TEXT,
+      default_health_check_model TEXT,
       capabilities_json TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -121,6 +121,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       status TEXT NOT NULL DEFAULT 'active',
       mode TEXT,
       supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
+      supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
+      supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+      default_reasoning_effort TEXT,
       pricing_model TEXT,
       release_date TEXT,
       shutdown_date TEXT,
@@ -153,7 +156,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       )
     );
 
-    CREATE TABLE IF NOT EXISTS provider_default_test_models (
+    CREATE TABLE IF NOT EXISTS provider_default_health_check_models (
       system_account_id TEXT NOT NULL,
       provider_code TEXT NOT NULL,
       model TEXT NOT NULL,
@@ -161,6 +164,14 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, provider_code),
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (provider_code) REFERENCES providers(code)
+    );
+
+    CREATE TABLE IF NOT EXISTS provider_system_default_health_check_models (
+      provider_code TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_code) REFERENCES providers(code)
     );
 
@@ -239,6 +250,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
+      config_revision INTEGER NOT NULL DEFAULT 1,
       system_account_id TEXT NOT NULL,
       provider_code TEXT NOT NULL,
       provider_protocol_profile_id TEXT NOT NULL,
@@ -271,8 +283,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_retest_observation_started_at TEXT,
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
-      default_test_model TEXT,
-      health_check_enabled INTEGER NOT NULL DEFAULT 1,
+      health_check_model TEXT NOT NULL,
       last_health_check_at TEXT,
       next_health_check_at TEXT,
       last_health_success_at TEXT,
@@ -816,11 +827,11 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON accounts(provider_protocol_profile_id, type, oauth_refresh_token_present, (oauth_access_token_expires_at IS NOT NULL), oauth_access_token_expires_at ASC, updated_at ASC, id ASC)
       WHERE authorization_instance_authorization_id IS NULL AND deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_health_check_due
-      ON accounts(health_check_enabled, status, next_health_check_at, updated_at, id)
+      ON accounts(status, next_health_check_at, updated_at, id)
       WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_health_check_pg_due
-      ON accounts(provider_protocol_profile_id, status, health_check_enabled, next_health_check_at ASC, updated_at ASC, id ASC)
-      WHERE deleted_at IS NULL AND health_check_enabled = 1;
+      ON accounts(provider_protocol_profile_id, status, next_health_check_at ASC, updated_at ASC, id ASC)
+      WHERE deleted_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_due
       ON accounts(status, cooldown_until ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NULL AND cooldown_until IS NOT NULL;
@@ -847,8 +858,10 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       WHERE scope = 'global';
     CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
       ON custom_provider_models(provider_code, status, scope, system_account_id, model);
-    CREATE INDEX IF NOT EXISTS idx_provider_default_test_models_model
-      ON provider_default_test_models(provider_code, model, system_account_id);
+    CREATE INDEX IF NOT EXISTS idx_provider_default_health_check_models_model
+      ON provider_default_health_check_models(provider_code, model, system_account_id);
+    CREATE INDEX IF NOT EXISTS idx_provider_system_default_health_check_models_model
+      ON provider_system_default_health_check_models(model, provider_code);
     CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_model_mappings_source ON account_model_mappings(provider_code, source_model, source_endpoint_family, account_id);
     CREATE INDEX IF NOT EXISTS idx_account_model_mappings_upstream ON account_model_mappings(provider_code, upstream_model, upstream_endpoint_family, account_id);

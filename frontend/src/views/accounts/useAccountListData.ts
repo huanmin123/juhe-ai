@@ -16,7 +16,6 @@ import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import type { AccountDefaultTestModelApplyPhase } from './accountDefaultTestModelSaveQueue'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -46,12 +45,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const accountOptionsLoaded = ref(false)
   const accountOptionsScopeKey = ref('')
   const accountOptionsInFlight = new Map<string, Promise<void>>()
-  const accountDefaultTestModelOverrides = new Map<string, {
-    confirmAfterRequestSequence?: number
-    model?: string
-  }>()
-  const accountListRequestSequences = new WeakMap<object, number>()
-  let accountListRequestSequence = 0
   const accountSorts = ref<AccountListSortParam[]>(initialPageState.sorts)
   const filters = reactive<AccountFilters>({ ...initialPageState.filters })
   const {
@@ -100,24 +93,14 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     fetchPage: async (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
       await loadAccountOptions(systemAccountId, Boolean(_loadOptions?.forceOptions))
-      const requestSequence = ++accountListRequestSequence
       const accountList = await fetchAccountList(systemAccountId, pageState)
-      const result = {
+      return {
         items: accountList.items,
         page: accountList.page,
         pageSize: accountList.pageSize,
         total: accountList.total,
         hasMore: accountList.hasMore
       }
-      accountListRequestSequences.set(result, requestSequence)
-      return result
-    },
-    transformItems: (nextAccounts, _loadOptions, result) => {
-      confirmAccountDefaultTestModelOverrides(
-        nextAccounts,
-        accountListRequestSequences.get(result) ?? accountListRequestSequence
-      )
-      return nextAccounts.map(applyAccountDefaultTestModelOverride)
     },
     requestSignature: (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
@@ -200,54 +183,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
 
   function removeLoadedAccount(accountId: string): boolean {
     return removeAccountItems((account) => account.id === accountId) > 0
-  }
-
-  function applyAccountDefaultTestModel(
-    accountId: string,
-    defaultTestModel?: string,
-    phase: AccountDefaultTestModelApplyPhase = 'optimistic'
-  ): void {
-    const id = accountId.trim()
-    if (!id) return
-    const model = defaultTestModel?.trim() || undefined
-    accountDefaultTestModelOverrides.set(id, {
-      model,
-      confirmAfterRequestSequence: phase === 'optimistic' ? undefined : accountListRequestSequence
-    })
-    accounts.value = accounts.value.map((account) => (
-      account.id === id
-        ? { ...account, defaultTestModel: model }
-        : account
-    ))
-  }
-
-  function applyAccountDefaultTestModelOverride(account: AccountSummary): AccountSummary {
-    const override = accountDefaultTestModelOverrides.get(account.id)
-    if (!override) return account
-    return {
-      ...account,
-      defaultTestModel: override.model
-    }
-  }
-
-  function confirmAccountDefaultTestModelOverrides(
-    nextAccounts: AccountSummary[],
-    requestSequence: number
-  ): void {
-    for (const account of nextAccounts) {
-      const override = accountDefaultTestModelOverrides.get(account.id)
-      if (
-        !override
-        || override.confirmAfterRequestSequence === undefined
-        || requestSequence <= override.confirmAfterRequestSequence
-      ) {
-        continue
-      }
-      const storedModel = account.defaultTestModel?.trim() || undefined
-      if (storedModel === override.model) {
-        accountDefaultTestModelOverrides.delete(account.id)
-      }
-    }
   }
 
   function snapshotPageState(): AccountsPageState {
@@ -343,7 +278,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     handleAccountSortChange,
     handleSystemAccountFilterChange,
     focusCreatedAccount,
-    applyAccountDefaultTestModel,
     removeLoadedAccount,
     resetAccountPagination,
     resetFilters

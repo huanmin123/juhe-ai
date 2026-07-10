@@ -137,6 +137,12 @@ try {
     credentials: { api_key: 'sk-authorized-local-restore', base_url: mockBaseUrl },
     groupId: ownerSourceGroup.id
   }, ownerAccess)
+  repositories.recordAccountHealthCheckSuccess(ownerAccount.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: ownerAccount.id,
@@ -147,7 +153,14 @@ try {
   }, ownerAccess)
   const granteeAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
   assert(repositories.setAccountGroup(granteeAccount.id, granteeGroup.id, granteeAccess), '授权实例账户绑定到被授权用户分组失败')
-  const cooled = repositories.markAccountTestTemporaryUnavailable(granteeAccount, '模拟授权账户测试失败', granteeAccess)
+  repositories.recordAccountHealthCheckSuccess(granteeAccount.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
+  const activeGranteeAccount = authorizedInstanceForSource(ownerAccount.id, granteeAccess)
+  const cooled = repositories.markAccountTestTemporaryUnavailable(activeGranteeAccount, '模拟授权账户测试失败', granteeAccess)
   assert.equal(cooled?.status, 'temporary_unavailable', '授权账户测试失败应写入被授权实例临时不可调用')
   assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '实例临时不可调用不应改变所有者原账户')
 
@@ -195,14 +208,14 @@ try {
   }))
   assert.equal(result.success, true, `授权实例临时不可调用时手动测试应允许探活：${result.message}`)
   assert.equal(result.statusCode, 200, '授权实例探活成功应返回上游状态码')
-  assert.equal(result.accountStatusChanged, true, '授权实例状态恢复应在测试结果中标记状态变化')
-  assert.equal(result.accountStatus, 'active', '授权实例状态恢复后结果状态应为正常')
+  assert.equal(result.accountStatusChanged, false, '授权实例探活成功不应在测试结果中标记状态变化')
+  assert.equal(result.accountStatus, 'temporary_unavailable', '授权实例探活成功后结果应保留原状态')
 
   const granteeView = repositories.findAccountSummary(granteeAccount.id, granteeAccess) as AccountView | undefined
-  assert.equal(granteeView?.status, 'active', '测试成功后被授权用户视角应恢复正常')
-  assert.equal(granteeView?.cooldownUntil, undefined, '测试成功后应清理授权实例冷却时间')
-  assert.equal(granteeView?.lastErrorMessage, undefined, '测试成功后应清理授权实例错误信息')
-  assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '测试恢复授权实例状态不应修改所有者原账户')
+  assert.equal(granteeView?.status, 'temporary_unavailable', '测试成功后被授权用户视角应保留原状态')
+  assert.equal(granteeView?.cooldownUntil, expiredLocalCooldownUntil, '测试成功后不应清理授权实例冷却时间')
+  assert(granteeView?.lastErrorMessage, '测试成功后不应清理授权实例错误信息')
+  assert.equal(repositories.findAccountSummary(ownerAccount.id, ownerAccess)?.status, 'active', '授权实例测试不应修改所有者原账户')
 
   const failingOwnerAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -213,6 +226,7 @@ try {
     credentials: { api_key: 'sk-authorized-local-failure', base_url: mockBaseUrl },
     groupId: ownerSourceGroup.id
   }, ownerAccess)
+  activateAccountAfterBackgroundCheck(failingOwnerAccount.id)
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: failingOwnerAccount.id,
@@ -223,6 +237,7 @@ try {
   }, ownerAccess)
   const failingGranteeAccount = authorizedInstanceForSource(failingOwnerAccount.id, granteeAccess)
   assert(repositories.setAccountGroup(failingGranteeAccount.id, granteeGroup.id, granteeAccess), '失败授权实例账户绑定到被授权用户分组失败')
+  activateAccountAfterBackgroundCheck(failingGranteeAccount.id)
 
   const failureResult = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
     baseUrl: appBaseUrl,
@@ -242,21 +257,17 @@ try {
     'account-test-url-password'
   ], '账户测试失败响应不应暴露上游错误体中的敏感串')
 
-  const failedGranteeView = await waitForGranteeAccountView(
-    granteeAccess,
-    failingGranteeAccount.id,
-    (account) => account.status === 'temporary_unavailable',
-    '测试失败事前确认后被授权用户视角应为临时不可调用'
-  )
-  assert(failedGranteeView.cooldownUntil, '测试失败事前确认后应写入授权实例冷却时间')
-  assert(failedGranteeView.lastErrorMessage?.includes('事前确认仍未通过'), `测试失败事前确认后应写入授权实例错误信息，实际 ${failedGranteeView.lastErrorMessage}`)
+  const failedGranteeView = repositories.findAccountSummary(failingGranteeAccount.id, granteeAccess) as AccountView | undefined
+  assert.equal(failedGranteeView?.status, 'active', '授权账户人工测试失败后应保持正常状态')
+  assert.equal(failedGranteeView?.cooldownUntil, undefined, '授权账户人工测试失败后不应写入冷却时间')
+  assert.equal(failedGranteeView?.lastErrorMessage, undefined, '授权账户人工测试失败后不应写入最近错误')
   assertNoLeak(failedGranteeView?.lastErrorMessage ?? '', [
     'account-test-bearer-token',
     'sk-account-test-secret-token',
     'account-test-client-secret',
     'account-test-url-user',
     'account-test-url-password'
-  ], '账户测试失败写入最近错误前应清理上游敏感串')
+  ], '账户测试失败后账户状态字段不应出现上游敏感串')
 
   failureMessageVariant = 'second'
   const secondFailureResult = await withWorkerRole(() => submitAccountTestAndWait<AccountTestResult>({
@@ -266,13 +277,10 @@ try {
     body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
   }))
   assert.equal(secondFailureResult.success, false, '再次测试失败时结果仍不应成功')
-  assert.equal(secondFailureResult.accountStatusChanged, false, '再次测试失败也应先进入事前确认，不应由主测试直接写状态')
-  const secondFailedView = await waitForGranteeAccountView(
-    granteeAccess,
-    failingGranteeAccount.id,
-    (account) => account.status === 'temporary_unavailable' && Boolean(account.lastErrorMessage?.includes('第二次')),
-    '再次测试失败事前确认后应覆盖最近错误'
-  )
+  assert.equal(secondFailureResult.accountStatusChanged, false, '再次测试失败也不应写账户状态')
+  const secondFailedView = repositories.findAccountSummary(failingGranteeAccount.id, granteeAccess) as AccountView | undefined
+  assert.equal(secondFailedView?.status, 'active', '再次测试失败后授权实例仍应保持正常状态')
+  assert.equal(secondFailedView?.lastErrorMessage, undefined, '再次测试失败后也不应覆盖最近错误')
   assertNoLeak(JSON.stringify(secondFailureResult), [
     'second-account-test-bearer-token',
     'sk-second-account-test-secret-token',
@@ -298,6 +306,7 @@ try {
     credentials: { api_key: 'sk-authorized-local-error-success', base_url: mockBaseUrl },
     groupId: ownerSourceGroup.id
   }, ownerAccess)
+  activateAccountAfterBackgroundCheck(errorOwnerAccount.id)
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: errorOwnerAccount.id,
@@ -308,6 +317,7 @@ try {
   }, ownerAccess)
   const errorGranteeAccount = authorizedInstanceForSource(errorOwnerAccount.id, granteeAccess)
   assert(repositories.setAccountGroup(errorGranteeAccount.id, granteeGroup.id, granteeAccess), '异常授权实例账户绑定到被授权用户分组失败')
+  activateAccountAfterBackgroundCheck(errorGranteeAccount.id)
   assert(errorGranteeAccount.accountAuthorizationId, '异常授权实例应带有稳定授权 ID')
   const disabledByFailure = repositories.markAuthorizedAccountBindingDisabledByFailure({
     accountId: errorGranteeAccount.id,
@@ -330,11 +340,12 @@ try {
   }))
   assert.equal(errorRecoveryResult.success, true, `授权实例异常时手动测试应允许进入探活：${errorRecoveryResult.message}`)
   assert.equal(errorRecoveryResult.statusCode, 200, '授权实例异常探活成功应返回上游状态码')
-  assert.equal(errorRecoveryResult.accountStatusChanged, true, '授权实例异常探活成功应返回状态变化')
-  assert.equal(errorRecoveryResult.accountStatus, 'active', '授权实例异常探活成功后应恢复为正常')
-  assert.equal(repositories.findAccountSummary(errorOwnerAccount.id, ownerAccess)?.status, 'active', '测试恢复授权实例异常不应修改所有者原账户')
+  assert.equal(errorRecoveryResult.accountStatusChanged, false, '授权实例异常探活成功不应返回状态变化')
+  assert.equal(errorRecoveryResult.accountStatus, 'error', '授权实例异常探活成功后应保留异常状态')
+  assert.equal(repositories.findAccountSummary(errorGranteeAccount.id, granteeAccess)?.status, 'error', '授权实例异常探活成功后不应自动恢复')
+  assert.equal(repositories.findAccountSummary(errorOwnerAccount.id, ownerAccess)?.status, 'active', '授权实例测试不应修改所有者原账户')
 
-  console.log('授权账户测试实例状态恢复和失败隔离回归通过')
+  console.log('授权账户人工测试状态隔离回归通过')
 } finally {
   await closeServer(appServer)
   await closeServer(mockOpenAIServer)
@@ -426,22 +437,14 @@ function sessionCookie(systemAccountId: string): string {
   return `juhe_ai_session=${repositories.createSession(systemAccountId, 1).token}`
 }
 
-async function waitForGranteeAccountView(
-  access: { systemAccountId: string; role: 'user' },
-  accountId: string,
-  predicate: (account: AccountView) => boolean,
-  message: string
-): Promise<AccountView> {
-  const startedAt = Date.now()
-  let latest: AccountView | undefined
-  while (Date.now() - startedAt < 5000) {
-    latest = repositories.findAccountSummary(accountId, access) as AccountView | undefined
-    if (latest && predicate(latest)) {
-      return latest
-    }
-    await sleep(100)
-  }
-  throw new Error(`${message}，最后状态 ${latest?.status ?? 'missing'}，错误 ${latest?.lastErrorMessage ?? ''}`)
+function activateAccountAfterBackgroundCheck(accountId: string): void {
+  const changed = repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
+  assert.equal(changed, true, `后台健康检查激活账户失败：${accountId}`)
 }
 
 async function withWorkerRole<T>(action: () => Promise<T>): Promise<T> {
@@ -481,9 +484,6 @@ async function closeServer(listeningServer?: ReturnType<typeof app.listen>): Pro
   })
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
-}
 
 function assertNoLeak(text: string, markers: string[], message: string): void {
   for (const marker of markers) {

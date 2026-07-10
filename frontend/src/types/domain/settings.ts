@@ -20,6 +20,7 @@ export interface SystemSettings {
   statsAggregationIntervalSeconds: number
   statsAggregationBatchSize: number
   statsAggregationMaxBatchesPerRun: number
+  usageHotWindowRefreshIntervalSeconds: number
   groupAccountStatsRefreshIntervalSeconds: number
   systemMetricsSampleIntervalSeconds: number
   tableMonitorMaxTablesPerRun: number

@@ -81,6 +81,8 @@
 - process event loop 采样角色固定为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`。
 - 系统监控接口使用 `ingestWorkerSnapshotAvailable`、`statsWorkerSnapshotAvailable`、`opsWorkerSnapshotAvailable` 表达三类 worker 可观测性；不可观测时对应 runtime 返回 `null`，不能用空数组或 0 伪装正常。
 
+以上 process event loop 和 `db-service` 口径只描述当前 Node 过渡实现。Go W6 / W7 接管系统指标和 worker 后，必须按 [Go 迁移指标与观测规划](../../migration/Go迁移指标与观测规划.md) 替换为 Go runtime、Asynq queue、worker heartbeat、worker lag 和 stats freshness 指标，不再暴露 `eventLoopLagMs`、`process_event_loop_*` 或 `db-service` 作为长期契约。
+
 ## 并发策略
 
 - `ops-worker` 内外部请求可以并发，但必须使用固定并发上限、超时、取消边界和批间让出。

@@ -24,13 +24,11 @@ logger.level = 'silent'
 const [
   databaseModule,
   repositories,
-  accountTestTasks,
-  accountDraftTest
+  accountTestTasks
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/account-test-tasks.repository.js'),
-  import('../../modules/accounts/account-draft-test.service.js')
+  import('../../storage/account-test-tasks.repository.js')
 ])
 
 try {
@@ -47,9 +45,6 @@ try {
     name: 'OAuth Refresh 激活回归分组',
     providerCode: 'gpt'
   }, access)
-  const groupSummary = repositories.findGroupSummary(group.id, access)
-  assert(groupSummary, 'OAuth Refresh 激活回归需要可访问分组')
-
   const draft = oauthDraftActivationSnapshot({
     groupId: group.id,
     groupName: group.name,
@@ -71,46 +66,25 @@ try {
     type: task.type,
     success: true,
     statusCode: 200,
-    message: 'OAuth 草稿测试成功'
+    message: 'OAuth 草稿测试成功',
+    model: 'gpt-5.5'
   }
   assert(accountTestTasks.completeAccountTestTask(task.id, result), 'OAuth 草稿测试任务应能完成')
 
-  const createStatus = accountDraftTest.accountCreateStatusFromActivationTest({
-    account: oauthCreateActivationRequest({
-      groupId: group.id,
-      name: draft.name,
-      refreshToken: 'refresh-token-oauth-success',
-      activationTestTaskId: task.id
-    }),
-    providerBaseUrl: 'https://api.openai.com/v1',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    protocolVersion: OPENAI_PROTOCOL_VERSION,
-    group: groupSummary,
-    requestAccess: access
-  })
-  assert.equal(createStatus, 'active', 'OAuth Refresh Token 成功草稿测试应允许创建为正常状态')
+  const created = repositories.createAccount(oauthCreateRequest({
+    groupId: group.id,
+    name: draft.name,
+    refreshToken: 'refresh-token-oauth-success'
+  }), access)
+  assert.equal(created.status, 'pending_test', 'OAuth 草稿人工测试成功不能直接激活新账户')
+  assert.equal(created.schedulable, false, 'OAuth 新账户必须等待后台检查成功后参与调度')
+  assert.equal(created.healthCheckModel, 'gpt-5.5', 'OAuth 新账户应保存表单检查模型')
 
-  assert.throws(
-    () => accountDraftTest.accountCreateStatusFromActivationTest({
-      account: oauthCreateActivationRequest({
-        groupId: group.id,
-        name: draft.name,
-        refreshToken: 'refresh-token-oauth-changed',
-        activationTestTaskId: task.id
-      }),
-      providerBaseUrl: 'https://api.openai.com/v1',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      protocolCode: OPENAI_PROTOCOL_CODE,
-      protocolVersion: OPENAI_PROTOCOL_VERSION,
-      group: groupSummary,
-      requestAccess: access
-    }),
-    /内容已变化/,
-    'OAuth Refresh Token 草稿测试后修改 Token 不应允许直接激活'
-  )
+  const storedTask = accountTestTasks.getAccountTestTaskRecord(task.id)
+  assert.equal(storedTask?.status, 'success', '创建 OAuth 账户不应消费或改写人工测试任务')
+  assert.equal(storedTask?.result?.model, 'gpt-5.5', 'OAuth 人工测试只保留本次诊断模型')
 
-  console.log('OpenAI OAuth Refresh Token 草稿激活回归通过：成功测试可创建 active，配置变化必须重新测试')
+  console.log('OpenAI OAuth 草稿诊断隔离回归通过：人工测试不参与账户激活')
 } finally {
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
@@ -154,15 +128,15 @@ function oauthDraftActivationSnapshot(input: {
     fallbackEnabled: false,
     clientCompatibility,
     supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     modelMappings: []
   }
 }
 
-function oauthCreateActivationRequest(input: {
+function oauthCreateRequest(input: {
   groupId: string
   name: string
   refreshToken: string
-  activationTestTaskId: string
 }) {
   return {
     providerCode: 'gpt',
@@ -172,10 +146,10 @@ function oauthCreateActivationRequest(input: {
     credentials: oauthActivationCredentials(input.refreshToken),
     groupId: input.groupId,
     status: 'active' as const,
-    activationTestTaskId: input.activationTestTaskId,
     concurrencyLimit: 20,
     priority: 0,
     supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     modelMappings: []
   }
 }
@@ -209,6 +183,7 @@ function draftAccountSummary(draft: AccountTestDraftSnapshot): AccountSummary {
     fallbackEnabled: draft.fallbackEnabled,
     clientCompatibility: draft.clientCompatibility,
     supportedModels: draft.supportedModels,
+    healthCheckModel: draft.healthCheckModel,
     modelMappings: draft.modelMappings,
     schedulable: true,
     todayUsage: usage,

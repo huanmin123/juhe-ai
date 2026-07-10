@@ -11,10 +11,15 @@ import {
 } from '../../storage/provider.repository.js'
 import { isHybridProviderCode } from '../../domain/provider-protocol.js'
 import {
-  clearProviderDefaultTestModelPreferenceIfModelAsync,
-  listProviderDefaultTestModelPreferencesAsync,
-  upsertProviderDefaultTestModelPreferenceAsync
-} from '../../storage/provider-default-test-model.repository.js'
+  clearProviderDefaultHealthCheckModelPreferenceIfModelAsync,
+  listProviderDefaultHealthCheckModelPreferencesAsync,
+  upsertProviderDefaultHealthCheckModelPreferenceAsync
+} from '../../storage/provider-default-health-check-model.repository.js'
+import {
+  clearProviderSystemDefaultHealthCheckModelIfModelAsync,
+  listProviderSystemDefaultHealthCheckModelsAsync,
+  upsertProviderSystemDefaultHealthCheckModelAsync
+} from '../../storage/provider-system-default-health-check-model.repository.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext, type RequestAccessScope } from '../auth/request-context.js'
 import {
@@ -37,8 +42,7 @@ interface ProviderModelOption {
 
 providersRouter.get('/', requireAdmin, async (req, res, next) => {
   try {
-    const access = getRequestAccessScope(req.query.systemAccountId)
-    res.json(ok(await listProvidersForRequestAsync(providerModelRequestSystemAccountId(access))))
+    res.json(ok(await listProvidersForRequestAsync()))
   } catch (error) {
     next(error)
   }
@@ -113,11 +117,11 @@ providersRouter.get('/:code/models', async (req, res, next) => {
   }
 })
 
-const defaultTestModelSchema = z.object({
+const defaultHealthCheckModelSchema = z.object({
   model: z.string().trim().min(1)
 }).strict()
 
-providersRouter.put('/:code/default-test-model', async (req, res, next) => {
+providersRouter.put('/:code/default-health-check-model', async (req, res, next) => {
   try {
     const context = getRequestAuthContext()
     if (!context) {
@@ -129,19 +133,22 @@ providersRouter.put('/:code/default-test-model', async (req, res, next) => {
       sendNotFound(res, '供应商不存在')
       return
     }
-    const parsed = defaultTestModelSchema.safeParse(req.body)
+    const parsed = defaultHealthCheckModelSchema.safeParse(req.body)
     if (!parsed.success) {
-      res.status(400).json(badRequest('默认测试模型参数无效'))
+      res.status(400).json(badRequest('默认检查模型参数无效'))
       return
     }
+    const saveAsSystemDefault = isAdminRole(context.role)
     const access = getRequestAccessScope(req.query.systemAccountId)
-    const targetSystemAccountId = providerModelRequestSystemAccountId(access)
-    if (!targetSystemAccountId) {
-      res.status(400).json(badRequest('请选择要设置默认测试模型的系统账户'))
+    const targetSystemAccountId = saveAsSystemDefault
+      ? undefined
+      : providerModelRequestSystemAccountId(access)
+    if (!saveAsSystemDefault && !targetSystemAccountId) {
+      res.status(400).json(badRequest('请选择要设置默认检查模型的系统账户'))
       return
     }
     const model = parsed.data.model
-    const validation = await validateDefaultTestModelSelection({
+    const validation = await validateDefaultHealthCheckModelSelection({
       providerCode: provider.code,
       systemAccountId: targetSystemAccountId,
       model
@@ -150,14 +157,19 @@ providersRouter.put('/:code/default-test-model', async (req, res, next) => {
       res.status(400).json(badRequest(validation.message))
       return
     }
-    const saved = await upsertProviderDefaultTestModelPreferenceAsync({
-      providerCode: provider.code,
-      systemAccountId: targetSystemAccountId,
-      model: validation.model
-    })
+    const saved = saveAsSystemDefault
+      ? await upsertProviderSystemDefaultHealthCheckModelAsync({
+          providerCode: provider.code,
+          model: validation.model
+        })
+      : await upsertProviderDefaultHealthCheckModelPreferenceAsync({
+          providerCode: provider.code,
+          systemAccountId: targetSystemAccountId!,
+          model: validation.model
+        })
     res.json(ok({
       providerCode: saved.providerCode,
-      defaultTestModel: saved.model
+      defaultHealthCheckModel: saved.model
     }))
   } catch (error) {
     next(error)
@@ -169,6 +181,8 @@ const nullableDateSchema = z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).nullab
 const nullableIntegerSchema = z.number().int().min(0).nullable().optional()
 const nullableNumberSchema = z.number().min(0).nullable().optional()
 const nullableModelModeSchema = z.enum(['text', 'image', 'audio']).nullable().optional()
+const customModelServiceTierSchema = z.enum(['priority', 'flex'])
+const customModelReasoningEffortSchema = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 
 const customModelSchema = z.object({
   scope: z.enum(['personal', 'global']).optional(),
@@ -189,6 +203,9 @@ const customModelSchema = z.object({
     'audio',
     'realtime'
   ])).optional(),
+  supportedServiceTiers: z.array(customModelServiceTierSchema).max(2).optional(),
+  supportedReasoningEfforts: z.array(customModelReasoningEffortSchema).max(7).optional(),
+  defaultReasoningEffort: customModelReasoningEffortSchema.nullable().optional(),
   pricingModel: nullableTrimmedStringSchema,
   releaseDate: nullableDateSchema,
   shutdownDate: nullableDateSchema,
@@ -314,11 +331,17 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         actorSystemAccountId: context.systemAccountId
       })
       if (saved.status !== 'active') {
-        await clearProviderDefaultTestModelPreferenceIfModelAsync({
+        await clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
           providerCode: saved.providerCode,
           systemAccountId: saved.scope === 'global' ? undefined : saved.systemAccountId,
           model: saved.model
         })
+        if (saved.scope === 'global') {
+          await clearProviderSystemDefaultHealthCheckModelIfModelAsync({
+            providerCode: saved.providerCode,
+            model: saved.model
+          })
+        }
       }
       res.json(ok(saved))
     } catch (error) {
@@ -359,11 +382,17 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
     }
     const deleted = await removeCustomProviderModelAsync(existing.id)
     if (deleted) {
-      await clearProviderDefaultTestModelPreferenceIfModelAsync({
+      await clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
         providerCode: existing.providerCode,
         systemAccountId: existing.scope === 'global' ? undefined : existing.systemAccountId,
         model: existing.model
       })
+      if (existing.scope === 'global') {
+        await clearProviderSystemDefaultHealthCheckModelIfModelAsync({
+          providerCode: existing.providerCode,
+          model: existing.model
+        })
+      }
     }
     res.json(ok({ deleted }))
   } catch (error) {
@@ -377,19 +406,29 @@ function providerModelRequestSystemAccountId(access?: RequestAccessScope): strin
 
 async function listProvidersForRequestAsync(systemAccountId?: string): Promise<ProviderDefinition[]> {
   const providers = await listProvidersAsync()
-  const preferences = await listProviderDefaultTestModelPreferencesAsync(
-    systemAccountId,
-    providers.map((provider) => provider.code)
-  )
-  return providers.map((provider) => providerWithDefaultTestModelPreference(provider, preferences.get(provider.code)))
+  const providerCodes = providers.map((provider) => provider.code)
+  const [preferences, systemDefaults] = await Promise.all([
+    listProviderDefaultHealthCheckModelPreferencesAsync(systemAccountId, providerCodes),
+    listProviderSystemDefaultHealthCheckModelsAsync(providerCodes)
+  ])
+  return providers.map((provider) => providerWithDefaultHealthCheckModelPreference(
+    provider,
+    preferences.get(provider.code),
+    systemDefaults.get(provider.code)
+  ))
 }
 
-function providerWithDefaultTestModelPreference(provider: ProviderDefinition, preferredModel?: string): ProviderDefinition {
-  const model = preferredModel?.trim()
+function providerWithDefaultHealthCheckModelPreference(
+  provider: ProviderDefinition,
+  preferredModel?: string,
+  configuredSystemDefaultModel?: string
+): ProviderDefinition {
+  const personalModel = preferredModel?.trim()
+  const systemModel = configuredSystemDefaultModel?.trim()
   return {
     ...provider,
-    defaultTestModel: model || provider.defaultTestModel,
-    systemDefaultTestModel: provider.defaultTestModel
+    defaultHealthCheckModel: personalModel || systemModel || provider.defaultHealthCheckModel,
+    systemDefaultHealthCheckModel: systemModel
   }
 }
 
@@ -454,9 +493,9 @@ async function listProviderModelsForRequestAsync(input: {
   })
 }
 
-async function validateDefaultTestModelSelection(input: {
+async function validateDefaultHealthCheckModelSelection(input: {
   providerCode: string
-  systemAccountId: string
+  systemAccountId?: string
   model: string
 }): Promise<{ success: true; model: string } | { success: false; message: string }> {
   const model = input.model.trim()
@@ -471,10 +510,10 @@ async function validateDefaultTestModelSelection(input: {
     return { success: false, message: `模型不在当前用户可见目录中：${model}` }
   }
   if ((item.status ?? 'active') !== 'active') {
-    return { success: false, message: '只能把启用模型设置为默认测试模型' }
+    return { success: false, message: '只能把启用模型设置为默认检查模型' }
   }
   if (!isProviderModelUsableForAccountTest(item)) {
-    return { success: false, message: '默认测试模型只能选择文本生成模型' }
+    return { success: false, message: '默认检查模型只能选择文本生成模型' }
   }
   return { success: true, model: item.model }
 }
@@ -541,6 +580,10 @@ async function validateCustomModelPricing(input: {
   const model = input.input.model?.trim()
   const pricingModel = typeof input.input.pricingModel === 'string' ? input.input.pricingModel.trim() : undefined
   const hasDirectPrice = customInputHasDirectPrice(input.input)
+  const capabilityValidationMessage = validateCustomModelCapabilities(input.providerCode, input.input)
+  if (capabilityValidationMessage) {
+    return { success: false, message: capabilityValidationMessage }
+  }
   if (hasDirectPrice && pricingModel) {
     return { success: false, message: '自定义模型不能同时配置直接价格和 pricingModel' }
   }
@@ -574,7 +617,23 @@ type CustomModelPricingInput = CustomModelPriceFields & {
   model?: string
   pricingModel?: string | null
   supportedApiProtocols?: ProviderModelCatalogItem['supportedApiProtocols']
+  supportedServiceTiers?: ProviderModelCatalogItem['supportedServiceTiers']
+  supportedReasoningEfforts?: ProviderModelCatalogItem['supportedReasoningEfforts']
+  defaultReasoningEffort?: ProviderModelCatalogItem['defaultReasoningEffort'] | null
   status?: CustomModelStatus
+}
+
+function validateCustomModelCapabilities(providerCode: string, input: CustomModelPricingInput): string | undefined {
+  const serviceTiers = input.supportedServiceTiers ?? []
+  const reasoningEfforts = input.supportedReasoningEfforts ?? []
+  const defaultReasoningEffort = input.defaultReasoningEffort ?? undefined
+  if (providerCode !== 'gpt' && (serviceTiers.length || reasoningEfforts.length || defaultReasoningEffort)) {
+    return '只有 GPT 自定义模型支持服务等级和思考能力配置'
+  }
+  if (defaultReasoningEffort && !reasoningEfforts.includes(defaultReasoningEffort)) {
+    return '默认思考级别必须属于支持的思考级别'
+  }
+  return undefined
 }
 
 function customInputHasDirectPrice(input: CustomModelPriceFields): boolean {

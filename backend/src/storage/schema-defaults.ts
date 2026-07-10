@@ -341,7 +341,7 @@ export const GPT_OPENAI_V1_PROFILE_SEED = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.openai.com/v1',
-  defaultTestModel: 'gpt-5.6-sol',
+  defaultHealthCheckModel: 'gpt-5.6-sol',
   accountTypes: ['oauth', 'api_key'],
   capabilities: ['responses', 'chat'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
@@ -356,7 +356,7 @@ export const OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.openai.com/v1',
-  defaultTestModel: 'gpt-5.6-sol',
+  defaultHealthCheckModel: 'gpt-5.6-sol',
   accountTypes: ['api_key'],
   capabilities: ['responses', 'chat', 'passthrough'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
@@ -371,7 +371,7 @@ export const ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED = {
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   baseUrl: 'https://api.anthropic.com/v1',
-  defaultTestModel: 'claude-opus-4-8',
+  defaultHealthCheckModel: 'claude-opus-4-8',
   accountTypes: ['api_key'],
   capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
   endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY, ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY]
@@ -386,7 +386,7 @@ export const GEMINI_NATIVE_V1BETA_PROFILE_SEED = {
   protocolCode: GEMINI_PROTOCOL_CODE,
   protocolVersion: GEMINI_PROTOCOL_VERSION,
   baseUrl: 'https://generativelanguage.googleapis.com',
-  defaultTestModel: 'gemini-3.5-flash',
+  defaultHealthCheckModel: 'gemini-3.5-flash',
   accountTypes: ['api_key'],
   capabilities: ['generate_content', 'stream_generate_content', 'count_tokens', 'embed_content', 'models', 'passthrough'],
   endpointFamilies: [
@@ -407,7 +407,7 @@ export const GEMINI_OPENAI_CHAT_V1BETA_PROFILE_SEED = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-  defaultTestModel: 'gemini-3.5-flash',
+  defaultHealthCheckModel: 'gemini-3.5-flash',
   accountTypes: ['api_key'],
   capabilities: ['chat', 'passthrough'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
@@ -422,7 +422,7 @@ export const DEEPSEEK_OPENAI_V1_PROFILE_SEED = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.deepseek.com',
-  defaultTestModel: 'deepseek-v4-flash',
+  defaultHealthCheckModel: 'deepseek-v4-flash',
   accountTypes: ['api_key'],
   capabilities: ['chat', 'passthrough'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
@@ -437,7 +437,7 @@ export const DEEPSEEK_ANTHROPIC_V1_PROFILE_SEED = {
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   baseUrl: 'https://api.deepseek.com/anthropic',
-  defaultTestModel: 'deepseek-v4-flash',
+  defaultHealthCheckModel: 'deepseek-v4-flash',
   accountTypes: ['api_key'],
   capabilities: ['messages', 'models', 'passthrough'],
   endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY]
@@ -452,7 +452,7 @@ export const GLM_GENERAL_OPENAI_V1_PROFILE_SEED = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
-  defaultTestModel: 'glm-5.2',
+  defaultHealthCheckModel: 'glm-5.2',
   accountTypes: ['api_key'],
   capabilities: ['chat', 'passthrough'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
@@ -467,7 +467,7 @@ export const GLM_CODING_OPENAI_V1_PROFILE_SEED = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
-  defaultTestModel: 'glm-5.2',
+  defaultHealthCheckModel: 'glm-5.2',
   accountTypes: ['api_key'],
   capabilities: ['chat', 'passthrough'],
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY]
@@ -482,7 +482,7 @@ export const GLM_CODING_ANTHROPIC_V1_PROFILE_SEED = {
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   baseUrl: 'https://open.bigmodel.cn/api/anthropic',
-  defaultTestModel: 'glm-5.2',
+  defaultHealthCheckModel: 'glm-5.2',
   accountTypes: ['api_key'],
   capabilities: ['messages', 'models', 'passthrough'],
   endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY]
@@ -497,7 +497,7 @@ export const HYBRID_OPENAI_CHAT_V1_PROFILE_SEED = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: '',
-  defaultTestModel: '',
+  defaultHealthCheckModel: '',
   accountTypes: ['api_key'],
   capabilities: ['chat', 'responses', 'messages', 'generate_content', 'stream_generate_content', 'bridge'],
   endpointFamilies: [
@@ -518,7 +518,7 @@ export const HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_SEED = {
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   baseUrl: '',
-  defaultTestModel: '',
+  defaultHealthCheckModel: '',
   accountTypes: ['api_key'],
   capabilities: ['messages', 'bridge'],
   endpointFamilies: [

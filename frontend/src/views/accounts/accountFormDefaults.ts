@@ -34,6 +34,7 @@ export function defaultAccountForm(
   const accountTypes = profile?.accountTypes ?? provider?.accountTypes ?? []
   const resolvedType = type || (accountTypes.includes('api_key') ? 'api_key' : accountTypes[0] ?? '')
   const clientCompatibility = defaultAccountClientCompatibility(resolvedProviderCode, providerList, profile?.id)
+  const supportedModels = defaultSupportedModelsForProvider(provider)
   return {
     providerCode: resolvedProviderCode,
     providerProtocolProfileId: profile?.id || providerProtocolProfileId || defaultProviderProtocolProfileId(provider),
@@ -55,7 +56,10 @@ export function defaultAccountForm(
     priority: 0,
     clientCompatibility,
     supportedEndpointModes: defaultAccountEndpointModes(resolvedProviderCode, resolvedType, undefined, { provider, protocolProfile: profile }),
-    supportedModels: defaultSupportedModelsForProvider(provider),
+    supportedModels,
+    healthCheckModel: defaultHealthCheckModelForProvider(provider, profile, supportedModels),
+    serviceTierOverride: '',
+    reasoningEffortOverride: '',
     modelMappings: [],
     tags: [],
     proxyProfileId: undefined,
@@ -67,13 +71,25 @@ export function defaultAccountForm(
 function defaultSupportedModelsForProvider(provider: ProviderDefinition | undefined): string[] {
   const output: string[] = []
   const seen = new Set<string>()
-  for (const item of [provider?.defaultTestModel, ...(provider?.defaultSupportedModels ?? [])]) {
+  for (const item of [provider?.defaultHealthCheckModel, ...(provider?.defaultSupportedModels ?? [])]) {
     const model = item?.trim() ?? ''
     if (!model || seen.has(model)) continue
     seen.add(model)
     output.push(model)
   }
   return output
+}
+
+function defaultHealthCheckModelForProvider(
+  provider: ProviderDefinition | undefined,
+  profile: ProviderDefinition['protocolProfiles'][number] | undefined,
+  supportedModels: string[]
+): string {
+  for (const value of [provider?.defaultHealthCheckModel, profile?.defaultHealthCheckModel, ...supportedModels]) {
+    const model = value?.trim() ?? ''
+    if (model && supportedModels.includes(model)) return model
+  }
+  return ''
 }
 
 export function compactAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {

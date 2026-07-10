@@ -1,4 +1,4 @@
-import type { AccountSummary, AccountUsageSummary, ProviderModelPricing } from '@/types/domain'
+import type { AccountSummary, AccountUsageSummary } from '@/types/domain'
 import {
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
@@ -71,21 +71,21 @@ assertTrue(canTestAccount(geminiAccount), 'Gemini API Key 正常账户应可测�
 assertTrue(canTestAccount(geminiOpenAIChatAccount), 'Gemini OpenAI Chat API Key 正常账户应可测试')
 assertFalse(canTestAccount(unsupportedAccount), '未支持协议账户应不可测试')
 
-assertTrue(isGatewaySupportedTestSelection(anthropicAccount), 'Anthropic 单账户选择应允许加载供应商模型目录')
-assertTrue(isGatewaySupportedTestSelection(geminiAccount), 'Gemini 单账户选择应允许加载供应商模型目录')
+assertTrue(isGatewaySupportedTestSelection(anthropicAccount), 'Anthropic 单账户选择应允许加载作用域默认模型信息')
+assertTrue(isGatewaySupportedTestSelection(geminiAccount), 'Gemini 单账户选择应允许加载作用域默认模型信息')
 assertFalse(hasSingleProviderProfileForAccountSelection([openAIAccount, anthropicAccount]), 'OpenAI 与 Anthropic 混合选择不应被视为同一供应商协议')
-assertFalse(isGatewaySupportedTestSelection([openAIAccount, anthropicAccount]), 'OpenAI 与 Anthropic 混合选择不应加载单一供应商模型目录')
-assertFalse(isGatewaySupportedTestSelection([anthropicAccount, unsupportedAccount]), '混入未支持协议时不应加载供应商模型目录')
-assertFalse(isGatewaySupportedTestSelection([anthropicAccount, geminiAccount]), 'Anthropic 与 Gemini 混合选择不应加载单一供应商模型目录')
+assertFalse(isGatewaySupportedTestSelection([openAIAccount, anthropicAccount]), 'OpenAI 与 Anthropic 混合选择不应加载单一供应商默认模型')
+assertFalse(isGatewaySupportedTestSelection([anthropicAccount, unsupportedAccount]), '混入未支持协议时不应加载供应商默认模型')
+assertFalse(isGatewaySupportedTestSelection([anthropicAccount, geminiAccount]), 'Anthropic 与 Gemini 混合选择不应加载单一供应商默认模型')
 assertFalse(isGatewaySupportedTestSelection([geminiAccount, geminiOpenAIChatAccount]), 'Gemini 原生与 Gemini OpenAI Chat 混合选择不应被视为同一协议档案')
 
 assertDeepEqual(
-  optionValues(buildTestModelOptions([
-    providerModel('anthropic', 'claude-haiku-4-5'),
-    providerModel('anthropic', 'claude-opus-4-8')
-  ], anthropicAccount, 'claude-haiku-4-5')),
+  optionValues(buildTestModelOptions({
+    ...anthropicAccount,
+    supportedModels: ['claude-haiku-4-5', 'claude-opus-4-8']
+  }, 'claude-haiku-4-5')),
   ['claude-haiku-4-5', 'claude-opus-4-8'],
-  'Anthropic 测试模型选项应合并默认模型和供应商模型目录'
+  'Anthropic 测试模型选项只能使用账户支持模型并按默认模型排序'
 )
 
 console.log('账户测试协议回归通过：OpenAI、Anthropic 与 Gemini 协议均可测试，未支持协议仍被前端拦截')
@@ -118,18 +118,6 @@ function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary
       canBindToApiKey: true
     },
     ...overrides
-  }
-}
-
-function providerModel(providerCode: string, model: string): ProviderModelPricing {
-  return {
-    providerCode,
-    model,
-    source: 'built-in',
-    scope: 'built_in',
-    status: 'active',
-    supportsPromptCaching: false,
-    supportsServiceTier: false
   }
 }
 

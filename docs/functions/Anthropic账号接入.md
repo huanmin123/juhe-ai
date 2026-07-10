@@ -115,7 +115,7 @@ type AnthropicAccountType = 'api_key'
 
 选择 `Anthropic Claude` 后只展示一个接入类型：
 
-| 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认测试模型 |
+| 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认检查模型 |
 | --- | --- | --- | --- | --- |
 | Anthropic API Key | `api_key` | `profile_anthropic_anthropic_v1` | `api_key`、`base_url`、`supported_endpoint_modes` | `claude-opus-4-8` |
 
@@ -460,12 +460,12 @@ Anthropic 账户测试必须复用真实网关链路。
 测试要求：
 
 - 测试路径使用 `/v1/messages`。
-- 默认测试模型统一按账户独立配置、当前用户在供应商模型目录中设置的个人默认、账户绑定协议档案 `default_test_model`、账户支持模型首项依次选择，并把本地 Anthropic 目录作为可选模型列表。目录落库以官方 Models API 返回值为准。
+- 新建账户的检查模型按“个人默认 > 管理员系统默认 > 协议档案默认”初始化，保存后严格读取账户自己的 `healthCheckModel`。新增和编辑表单测试固定使用当前表单检查模型；列表单项测试按需读取当前作用域可见的启用文本模型目录。
 - 测试请求必须带 `anthropic-version: 2023-06-01`，并通过 `x-juhe-client-profile: claude_code` 触发上游 Claude Code `User-Agent`、`anthropic-beta`、`x-claude-code-session-id` 和 `?beta=true` 补齐。
-- 已保存账户只在单账户测试弹窗切换模型时写入该账户独立的 `default_test_model`；测试任务成功本身不自动改写该配置，避免批量测试覆盖多个账户偏好。
-- 测试失败不直接把正常账户写成 `temporary_unavailable`，仍遵循当前事前确认和冷却复测规则。
-- `pending_test` 账户测试失败继续保持待测试，测试成功才进入正常调度。
+- 人工单账户测试无论成功或失败都不保存模型选择，也不改写账户、授权实例、账户内 Key、状态、调度、冷却和最近错误；真实网关失败和后台检查继续维护生产运行态。
+- `pending_test` 账户在人工测试成功或失败后都继续保持待测试，不因测试结果自动进入正常调度。
 - 停用账户测试只保留诊断，不自动恢复停用状态。
+- 账户页面不提供多账户批量测试。
 - 测试返回的完整上游请求 URL、响应头、响应体、`request-id` 和原始错误只对所有者或管理员开放；授权用户只看脱敏摘要。
 
 ## 导入导出协议

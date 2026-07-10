@@ -1,0 +1,8 @@
+/.tmp/
+/juhe-ai
+/juhe-ai.exe
+/juhe-ai-worker
+/juhe-ai-worker.exe
+/juhe-ai-maintenance
+/juhe-ai-maintenance.exe
+/cmd/*/*.exe

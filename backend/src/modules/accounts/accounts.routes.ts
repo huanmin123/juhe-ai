@@ -1,9 +1,8 @@
 import { Router } from 'express'
 
-import { type AccountStatus, type AccountSummary } from '../../domain/types.js'
+import { type AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { errorLogFields, logger } from '../../shared/logger.js'
-import { ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, findOpenAIAccountForGroupAsync, listProvidersAsync, setAccountGroupAsync, updateAccountAsync } from '../../storage/repositories.js'
+import { ProxyProfileUnavailableError, clearAccountFailureStateAsync, createAccountAsync, findAccountForTestAsync, findGroupSummaryAsync, listProvidersAsync, setAccountGroupAsync, updateAccountAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
@@ -12,18 +11,9 @@ import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-s
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import {
   createAccountTestTaskAsync,
-  failAccountTestTaskAsync,
-  getAccountTestTaskRecordAsync,
+  failAccountTestTaskAsync
 } from '../../storage/account-test-tasks.repository.js'
-import {
-  recordAccountApiKeyRuntimeFailureAsync,
-  recordAccountApiKeyRuntimeSuccessAsync
-} from '../../storage/account-api-key-runtime-state.repository.js'
-import {
-  assertAccountUpdateActivationTestMatchesAsync,
-  accountCreateStatusFromActivationTestAsync,
-  prepareAccountDraftTestSnapshotAsync
-} from './account-draft-test.service.js'
+import { prepareAccountDraftTestSnapshotAsync } from './account-draft-test.service.js'
 import { accountErrorPolicyValidationMessage, validateAccountCredentialsErrorHandlingRules } from './account-error-policy-validation.js'
 import {
   accountCreateSchema,
@@ -47,11 +37,8 @@ import { registerAccountGroupBindingRoutes } from './account-group-binding.route
 import { registerAccountDeleteRoutes } from './account-delete.routes.js'
 import { registerAccountDetailRoutes } from './account-detail.routes.js'
 import { registerAccountTestDispatchRoutes } from './account-test-dispatch.routes.js'
-import {
-  accountApiKeyPoolEntriesForCandidate,
-  accountApiKeyPoolEntryForResult,
-  fixedAccountApiKeyPoolCandidate
-} from './account-api-key-pool-runtime.js'
+import { registerAccountBatchEditRoutes } from './account-batch-edit.routes.js'
+import { assertAccountGptRequestOverridesSupportedAsync } from './account-gpt-request-overrides.validation.js'
 
 export const accountsRouter = Router()
 
@@ -88,7 +75,7 @@ accountsRouter.post('/test-draft', async (req, res) => {
       access: requestAccess,
       diagnostics: 'full',
       sessionId: testSessionId,
-      model: testOptions.model,
+      model: preparedDraft.account.healthCheckModel,
       testEndpointMode: testOptions.testEndpointMode,
       draftAccount: preparedDraft.draftAccount
     })
@@ -107,6 +94,7 @@ registerAccountTestStatusRoutes(accountsRouter)
 registerAccountImportRoutes(accountsRouter)
 registerAccountTrafficMigrationRoutes(accountsRouter)
 registerAccountGroupBindingRoutes(accountsRouter)
+registerAccountBatchEditRoutes(accountsRouter)
 
 registerAccountDetailRoutes(accountsRouter)
 
@@ -120,8 +108,7 @@ accountsRouter.post('/', mutationGuard({
     type: normalizedText(bodyField(req, 'type')),
     name: normalizedText(bodyField(req, 'name')),
     credential: accountCredentialFingerprint(bodyField(req, 'credentials')),
-    status: normalizedText(bodyField(req, 'status')),
-    activationTestTaskId: normalizedText(bodyField(req, 'activationTestTaskId'))
+    status: normalizedText(bodyField(req, 'status'))
   })
 }), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
@@ -170,30 +157,20 @@ accountsRouter.post('/', mutationGuard({
     res.status(400).json(badRequest(`供应商协议档案不支持账户类型：${parsed.data.type}`))
     return
   }
-  let createStatus: AccountStatus
   try {
-    createStatus = await accountCreateStatusFromActivationTestAsync({
-      account: { ...parsed.data, providerProtocolProfileId: providerProfile.id },
-      providerBaseUrl: providerProfile.baseUrl,
-      providerProtocolProfileId: providerProfile.id,
-      protocolCode: providerProfile.protocolCode,
-      protocolVersion: providerProfile.protocolVersion,
-      group,
-      requestAccess
+    await assertAccountGptRequestOverridesSupportedAsync({
+      providerCode,
+      accountType: parsed.data.type,
+      credentials: parsed.data.credentials,
+      supportedModels: parsed.data.supportedModels ?? provider.defaultSupportedModels,
+      systemAccountId: effectiveRequestSystemAccountId(requestAccess)
     })
-  } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '账户创建测试状态无效'))
-    return
-  }
-
-  try {
     const account = await runLoggedOperationAsync(async () => {
-      const { activationTestTaskId: _activationTestTaskId, ...accountCreateInput } = parsed.data
       const account = await createAccountAsync({
-        ...accountCreateInput,
+        ...parsed.data,
         providerCode,
         providerProtocolProfileId: providerProfile.id,
-        status: createStatus
+        status: parsed.data.status === 'disabled' ? 'disabled' : 'pending_test'
       }, requestAccess)
       const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
       return {
@@ -216,7 +193,10 @@ accountsRouter.post('/', mutationGuard({
             safeChange('status', '状态', undefined, account.status),
             safeChange('clientCompatibility', '客户端兼容', undefined, account.clientCompatibility),
             safeChange('credentials', '凭据', undefined, parsed.data.credentials),
+            safeChange('serviceTierOverride', '服务等级覆盖', undefined, parsed.data.credentials?.service_tier_override),
+            safeChange('reasoningEffortOverride', '思考级别覆盖', undefined, parsed.data.credentials?.reasoning_effort_override),
             safeChange('supportedModels', '支持模型', undefined, account.supportedModels),
+            safeChange('healthCheckModel', '检查模型', undefined, account.healthCheckModel),
             safeChange('modelMappings', '模型映射', undefined, account.modelMappings),
             safeChange('tags', '标签', undefined, account.tags),
             safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
@@ -229,7 +209,6 @@ accountsRouter.post('/', mutationGuard({
         }
       }
     }, req)
-    await applyActivationApiKeyPoolRuntimeSafely(account, parsed.data.activationTestTaskId, requestAccess)
     res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
     if (error instanceof ProxyProfileUnavailableError) {
@@ -240,71 +219,6 @@ accountsRouter.post('/', mutationGuard({
     res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
   }
 })
-
-async function applyActivationApiKeyPoolRuntimeSafely(
-  account: AccountSummary,
-  activationTestTaskId: string | undefined,
-  requestAccess: RequestAccessScope | undefined
-): Promise<void> {
-  try {
-    await applyActivationApiKeyPoolRuntime(account, activationTestTaskId, requestAccess)
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'account_activation_api_key_pool_runtime_apply_failed',
-      accountId: account.id,
-      accountName: account.name,
-      activationTestTaskId
-    }), '账户创建后同步 API Key 池测试运行态失败')
-  }
-}
-
-async function applyActivationApiKeyPoolRuntime(
-  account: AccountSummary,
-  activationTestTaskId: string | undefined,
-  requestAccess: RequestAccessScope | undefined
-): Promise<void> {
-  const taskId = typeof activationTestTaskId === 'string' ? activationTestTaskId.trim() : ''
-  if (!taskId || !account.boundGroupId) {
-    return
-  }
-  const task = await getAccountTestTaskRecordAsync(taskId)
-  const pool = task?.result?.apiKeyPool
-  if (task?.status !== 'success' || task.result?.success !== true || !pool?.results.length) {
-    return
-  }
-  const systemAccountId = account.ownerSystemAccountId
-    ?? account.systemAccountId
-    ?? requestAccess?.systemAccountFilterId
-    ?? requestAccess?.systemAccountId
-  if (!systemAccountId) {
-    return
-  }
-  const candidate = await findOpenAIAccountForGroupAsync(account.boundGroupId, account.id, systemAccountId, {
-    ignoreAvailability: true
-  })
-  if (!candidate) {
-    return
-  }
-  const entries = accountApiKeyPoolEntriesForCandidate(candidate)
-  await Promise.all(pool.results.map(async (item) => {
-    const entry = accountApiKeyPoolEntryForResult(entries, item)
-    if (!entry) {
-      return
-    }
-    const fixedCandidate = fixedAccountApiKeyPoolCandidate(candidate, entry)
-    if (item.success) {
-      await recordAccountApiKeyRuntimeSuccessAsync(fixedCandidate)
-      return
-    }
-    await recordAccountApiKeyRuntimeFailureAsync({
-      account: fixedCandidate,
-      status: 'temporary_unavailable',
-      statusCode: item.statusCode,
-      errorCode: item.errorCode,
-      errorMessage: item.message
-    })
-  }))
-}
 
 async function clearAccountGatewayRuntimeAfterRestore(account: AccountSummary, access?: RequestAccessScope): Promise<void> {
   const systemAccountId = account.accessType === 'authorized'
@@ -353,7 +267,6 @@ accountsRouter.patch('/:id', async (req, res) => {
   }
   const body = parsed.data as Record<string, unknown>
   const {
-    activationTestTaskId: requestedActivationTestTaskId,
     groupId: requestedGroupId,
     clearFailureState: requestedClearFailureState,
     ...accountUpdateInput
@@ -364,7 +277,7 @@ accountsRouter.patch('/:id', async (req, res) => {
     return
   }
   if (requestedClearFailureState === true && existingAccount.status === 'pending_test') {
-    res.status(400).json(badRequest('待测试账户需手动测试通过后才能参与调度'))
+    res.status(400).json(badRequest('待检查账户需等待后台健康检查通过后才能参与调度'))
     return
   }
   if (isAuthorizedAccountUpdateTarget(existingAccount) && Object.prototype.hasOwnProperty.call(body, 'concurrencyLimit')) {
@@ -398,29 +311,19 @@ accountsRouter.patch('/:id', async (req, res) => {
   if (Object.prototype.hasOwnProperty.call(body, 'credentials') && requestedCredentials) {
     accountUpdateInput.credentials = mergeAccountCredentialsForUpdate(existingAccount, requestedCredentials)
   }
-  if (isApiKeyCredentialChanged(existingAccount, accountUpdateInput.credentials)) {
-    if (!requestedActivationTestTaskId) {
-      res.status(400).json(badRequest('更换 API Key 后请先测试通过，再保存账户'))
-      return
-    }
-    try {
-      await assertAccountUpdateActivationTestMatchesAsync({
-        currentAccount: existingAccount,
-        update: {
-          ...accountUpdateInput,
-          ...(hasGroupId ? { groupId: groupIdToBind } : {})
-        },
-        activationTestTaskId: requestedActivationTestTaskId,
-        requestAccess
-      })
-    } catch (error) {
-      res.status(400).json(badRequest(error instanceof Error ? error.message : '账户测试结果无效，请重新测试后再保存'))
-      return
-    }
-  }
   const hasAccountUpdateInput = Object.keys(accountUpdateInput).length > 0
   const canUseExistingWithoutAccountUpdate = existingAccount.accessType !== 'authorized' && !existingAccount.accountAuthorizationId
   try {
+    const nextCredentials = credentialsRecordValue(accountUpdateInput.credentials) ?? existingAccount.credentials
+    await assertAccountGptRequestOverridesSupportedAsync({
+      providerCode: existingAccount.providerCode,
+      accountType: existingAccount.type,
+      credentials: nextCredentials,
+      supportedModels: Array.isArray(accountUpdateInput.supportedModels)
+        ? accountUpdateInput.supportedModels as string[]
+        : existingAccount.supportedModels ?? [],
+      systemAccountId: existingAccount.ownerSystemAccountId ?? effectiveRequestSystemAccountId(requestAccess)
+    })
     const account = await runLoggedOperationAsync(async () => {
       let account: AccountSummary | undefined
       if (requestedClearFailureState === true) {
@@ -470,6 +373,7 @@ accountsRouter.patch('/:id', async (req, res) => {
               fallbackEnabled: '降级备用',
               clientCompatibility: '客户端兼容',
               supportedModels: '支持模型',
+              healthCheckModel: '检查模型',
               modelMappings: '模型映射',
               tags: '标签',
               proxyProfileId: '代理',
@@ -481,6 +385,18 @@ accountsRouter.patch('/:id', async (req, res) => {
               lastErrorCode: '异常类型',
               lastErrorMessage: '错误信息'
             }),
+            safeChange(
+              'serviceTierOverride',
+              '服务等级覆盖',
+              existingAccount.credentials.service_tier_override,
+              account.credentials.service_tier_override
+            ),
+            safeChange(
+              'reasoningEffortOverride',
+              '思考级别覆盖',
+              existingAccount.credentials.reasoning_effort_override,
+              account.credentials.reasoning_effort_override
+            ),
             ...(requestedClearFailureState === true ? [safeChange('clearFailureState', '恢复异常状态', false, true)] : [])
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')

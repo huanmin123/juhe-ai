@@ -7,6 +7,7 @@ import cors from 'cors'
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { ok } from '../../shared/http.js'
 import { logger } from '../../shared/logger.js'
 import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
@@ -43,7 +44,8 @@ const [
   repositories,
   gatewayCache,
   usageRecordQueue,
-  auditLogQueue
+  auditLogQueue,
+  usageRecordWriterPool
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/api-keys/api-keys.routes.js'),
@@ -60,7 +62,8 @@ const [
   import('../../storage/repositories.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../storage/usage-record-writer-pool.js')
 ])
 
 const gatewayRawBodyLimit = '8mb'
@@ -129,6 +132,7 @@ interface RouteStrategySummary {
 interface AccountTestResult {
   success: boolean
   message: string
+  model?: string
   proxyUrl?: string
   accountStatusChanged?: boolean
   accountStatus?: string
@@ -139,18 +143,6 @@ interface AccountTestTask<T = AccountTestResult> {
   status: 'queued' | 'running' | 'success' | 'failed' | 'canceled'
   message?: string
   result?: T
-}
-
-interface UsageRecordListResult {
-  items: Array<{
-    apiKeyId?: string
-    accountId?: string
-    endpoint?: string
-    statusCode?: number
-    success: boolean
-    errorMessage?: string
-  }>
-  total: number
 }
 
 const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -185,6 +177,7 @@ async function main(): Promise<void> {
     })
     const accountPayload = {
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '代理负向回归账户',
       type: 'api_key',
       credentials: {
@@ -192,20 +185,32 @@ async function main(): Promise<void> {
         base_url: upstreamBaseUrl
       },
       supportedModels: [proxyRegressionModel],
+      healthCheckModel: proxyRegressionModel,
       groupId: group.id
     }
-    const activationTask = await submitDraftAccountTestAndWait(baseUrl, adminCookie, accountPayload)
-    assert(activationTask.result?.success === true, `代理负向账户草稿测试应先通过：${activationTask.result?.message ?? activationTask.message ?? ''}`)
-    const account = await postEnvelope<AccountSummary>(baseUrl, '/__aisys__/api/accounts', adminCookie, {
-      ...accountPayload,
-      status: 'active',
-      activationTestTaskId: activationTask.id
-    })
-    assert(account.status === 'active' && account.schedulable === true, '草稿测试通过后创建的代理负向账户应为正常可调度')
+    const manualDraftTask = await submitDraftAccountTestAndWait(baseUrl, adminCookie, accountPayload)
+    assert(manualDraftTask.result?.success === true, `代理负向账户草稿人工测试应通过：${manualDraftTask.result?.message ?? manualDraftTask.message ?? ''}`)
+    const createdAccount = await postEnvelope<AccountSummary>(baseUrl, '/__aisys__/api/accounts', adminCookie, accountPayload)
+    assert(createdAccount.status === 'pending_test' && createdAccount.schedulable === false, '草稿人工测试成功不能激活新账户')
+    assert(repositories.recordAccountHealthCheckSuccess(createdAccount.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }), '后台检查成功应激活代理负向账户')
+    const account = repositories.findAccountSummary(createdAccount.id, adminAccess)
+    assert(account?.status === 'active' && account.schedulable === true, '后台检查成功后代理负向账户应正常可调度')
     const proxiedAccount = await patchEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}`, adminCookie, {
       proxyProfileId: proxy.id
     })
     assert(proxiedAccount.proxyProfileId === proxy.id, '代理负向账户应成功绑定代理')
+    assert(proxiedAccount.status === 'pending_test', '代理变更后账户应重新进入待测试')
+    assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }), '代理变更后的后台检查成功应恢复账户')
     directUpstreamHitCount = 0
     const routeStrategy = await postEnvelope<RouteStrategySummary>(baseUrl, '/__aisys__/api/route-strategies', adminCookie, {
       name: '代理负向回归普通路由',
@@ -237,15 +242,11 @@ async function main(): Promise<void> {
     assert(testResult.success === false, '账户测试在代理停用后不应成功')
     assert(testResult.proxyUrl === '[configured]', '账户测试失败结果应保留代理已配置标记')
     assert(testResult.message.includes('代理不存在或已停用'), `账户测试错误信息异常：${testResult.message}`)
-    const cooledAccount = await waitForAccountStatus(account.id, 'temporary_unavailable')
-    assert(Boolean(cooledAccount?.cooldownUntil), '账户测试失败后应写入冷却结束时间')
-    assert(cooledAccount?.lastErrorMessage?.includes('账户测试失败'), `账户测试失败后应写入最近错误，实际 ${cooledAccount?.lastErrorMessage}`)
-    const restoredAccount = await patchEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}`, adminCookie, {
-      status: 'active',
-      schedulable: true,
-      clearFailureState: true
-    })
-    assert(restoredAccount.status === 'active' && restoredAccount.schedulable === true, `账户测试冷却后恢复正常失败，实际 ${restoredAccount.status}/${restoredAccount.schedulable}`)
+    assert(testResult.accountStatusChanged === false, '人工账户测试失败不能标记账户状态变化')
+    const preservedAccount = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}`, adminCookie)
+    assert(preservedAccount.status === 'active' && preservedAccount.schedulable === true, '人工账户测试失败不能改变账户可用状态')
+    assert(!preservedAccount.cooldownUntil, '人工账户测试失败不能写入冷却结束时间')
+    assert(!preservedAccount.lastErrorMessage, '人工账户测试失败不能写入最近错误')
     gatewayCache.clearGatewayRuntimeCache()
 
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
@@ -265,7 +266,7 @@ async function main(): Promise<void> {
             stream: false
           })
         })
-        usageRecordQueue.flushAllUsageRecordQueue()
+        await usageRecordQueue.flushAllUsageRecordQueueAsync()
         auditLogQueue.flushAllAuditLogQueue()
         return response
       })
@@ -275,10 +276,8 @@ async function main(): Promise<void> {
     }
     assert(gatewayResponse.status === 503, `停用代理网关请求应失败为 503，实际 ${gatewayResponse.status}`)
     const gatewayResponseText = JSON.stringify(gatewayResponse)
-    assert(gatewayResponseText.includes('没有可用的上游账户'), `停用代理网关请求应返回统一无上游错误，实际 ${gatewayResponseText}`)
+    assert(gatewayResponseText.includes('service_unavailable'), `停用代理网关请求应返回统一服务不可用错误，实际 ${gatewayResponseText}`)
     assert(directUpstreamHitCount === 0, `停用代理后发生了直连上游请求 ${directUpstreamHitCount} 次`)
-
-    await waitForUsageRecord(baseUrl, adminCookie, apiKey.id, account.id)
 
     await patchEnvelope<ProxyProfileSummary>(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, { enabled: true })
     await deleteNoContent(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, 409)
@@ -287,6 +286,7 @@ async function main(): Promise<void> {
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
+    await usageRecordWriterPool.closeUsageRecordWriterPool()
     await closeServer(appServer)
     await closeServer(upstreamServer)
     try {
@@ -295,7 +295,7 @@ async function main(): Promise<void> {
     } catch {
     }
     restoreWorkerParentIpc()
-    rmSync(tempRoot, { recursive: true, force: true })
+    await removeTempRoot()
   }
 }
 
@@ -368,8 +368,7 @@ async function login(baseUrl: string): Promise<string> {
 
 async function submitDraftAccountTestAndWait(baseUrl: string, cookie: string, account: Record<string, unknown>): Promise<AccountTestTask<AccountTestResult>> {
   const task = await postEnvelope<AccountTestTask<AccountTestResult>>(baseUrl, '/__aisys__/api/accounts/test-draft', cookie, {
-    account,
-    model: proxyRegressionModel
+    account
   })
   return await waitForAccountTestTask(baseUrl, cookie, task.id)
 }
@@ -394,40 +393,6 @@ async function waitForAccountTestTask(baseUrl: string, cookie: string, taskId: s
     await sleep(100)
   }
   throw new Error(`账号测试任务 ${taskId} 等待超时`)
-}
-
-async function waitForUsageRecord(baseUrl: string, cookie: string, apiKeyId: string, accountId: string): Promise<void> {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < 5000) {
-    const result = await getEnvelope<UsageRecordListResult>(baseUrl, '/__aisys__/api/usage-records?page=1&pageSize=20&result=failed', cookie)
-    if (result.items.some((record) => (
-      record.apiKeyId === apiKeyId
-      && record.accountId === accountId
-      && record.success === false
-      && record.errorMessage?.includes('代理不存在或已停用')
-    ))) {
-      return
-    }
-    await sleep(100)
-  }
-  const result = await getEnvelope<UsageRecordListResult>(baseUrl, '/__aisys__/api/usage-records?page=1&pageSize=20&result=failed', cookie)
-  const summary = result.items
-    .map((record) => `${record.statusCode ?? '-'} ${record.apiKeyId ?? '-'} ${record.accountId ?? '-'} ${record.errorMessage ?? ''}`.slice(0, 300))
-    .join(' | ')
-  throw new Error(`未找到停用代理网关失败使用记录，最近失败记录：${summary || '无'}`)
-}
-
-async function waitForAccountStatus(accountId: string, status: string): Promise<AccountSummary> {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < 5000) {
-    const account = repositories.findAccountSummary(accountId, adminAccess)
-    if (account?.status === status) {
-      return account
-    }
-    await sleep(100)
-  }
-  const account = repositories.findAccountSummary(accountId, adminAccess)
-  throw new Error(`账户 ${accountId} 等待状态 ${status} 超时，实际 ${account?.status}`)
 }
 
 async function getEnvelope<T>(baseUrl: string, path: string, cookie?: string): Promise<T> {
@@ -521,14 +486,31 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
 }
 
+async function removeTempRoot(): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      rmSync(tempRoot, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message)) {
+        throw error
+      }
+      if (attempt === 7) return
+      await sleep(100 + attempt * 100)
+    }
+  }
+}
+
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message)
   }
 }
 
-main().catch((error) => {
+main().then(() => {
+  process.exit(0)
+}).catch((error) => {
   console.error('\n代理负向回归失败')
   console.error(error instanceof Error ? error.message : error)
-  process.exitCode = 1
+  process.exit(1)
 })

@@ -14,6 +14,28 @@ export interface CaptchaChallengeSummary {
   expiresAt: string
 }
 
+export interface AuthSessionSummary {
+  id: string
+  current: boolean
+  createdAt: string
+  lastSeenAt: string
+  expiresAt: string
+}
+
+export interface AuthSessionListResult {
+  items: AuthSessionSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
+export interface AuthSessionRevokeResult {
+  id: string
+  revoked: boolean
+  current: boolean
+}
+
 export interface SystemAccountSummary {
   id: string
   username: string

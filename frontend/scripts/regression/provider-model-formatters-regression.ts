@@ -70,11 +70,11 @@ assert.deepEqual(
 assert.match(formatterSource, /from '\.\/providerModelCategoryRules'/, 'providerModelFormatters 应从分类规则文件读取模型类别能力')
 assert.doesNotMatch(formatterSource, /gpt-image|dall-e|whisper|startsWith\('gpt-'|startsWith\('claude-'/, 'providerModelFormatters 不应继续内联模型名前缀分类规则')
 assert.match(categoryRulesSource, /modelNameCategoryRules/, '模型名前缀分类规则应集中在 providerModelCategoryRules')
-assert.match(catalogModalSource, /isDefaultTestModel\(record\).*默认测试/s, '个人模型目录应在当前默认模型名称旁保留默认测试标签')
-assert.doesNotMatch(catalogModalSource, /我的默认测试模型|column\.key === 'defaultTest'/, '个人模型目录不应重复增加顶部说明或独立默认测试列')
+assert.match(catalogModalSource, /isDefaultHealthCheckModel\(record\).*默认检查/s, '个人模型目录应在当前默认模型名称旁保留默认检查标签')
+assert.doesNotMatch(catalogModalSource, /我的默认检查模型|column\.key === 'defaultTest'/, '个人模型目录不应重复增加顶部说明或独立默认检查列')
 assert.match(providersViewSource, /: await api\.providers\.options\(\)/, '普通用户每次打开模型目录时应重新读取个人 provider 默认值')
-assert.match(providerTableConfigSource, /const selfProviderColumns = \[[\s\S]*默认测试模型[\s\S]*defaultTestModel/, '普通用户模型目录列表应展示个人默认测试模型列')
-assert.match(providersViewSource, /<div class="mobile-list-meta-item mobile-list-meta-wide">\s*<span>默认测试模型<\/span>/, '普通用户移动端模型目录列表应展示个人默认测试模型')
+assert.match(providerTableConfigSource, /const selfProviderColumns = \[[\s\S]*默认检查模型[\s\S]*defaultHealthCheckModel/, '普通用户模型目录列表应展示个人默认检查模型列')
+assert.match(providersViewSource, /<div class="mobile-list-meta-item mobile-list-meta-wide">\s*<span>默认检查模型<\/span>/, '普通用户移动端模型目录列表应展示个人默认检查模型')
 
 console.log('供应商模型 formatter 回归通过：模型类别规则已拆分，现有分类和默认协议行为保持不变')
 
@@ -107,7 +107,7 @@ function providerFixture(input: {
     protocolCode: input.protocolCode,
     protocolVersion: input.protocolVersion,
     baseUrl: 'https://example.com/v1',
-    defaultTestModel: '',
+    defaultHealthCheckModel: '',
     accountTypes: ['api_key'],
     capabilities: [],
     protocolProfiles: [
@@ -119,7 +119,7 @@ function providerFixture(input: {
         protocolCode: input.protocolCode,
         protocolVersion: input.protocolVersion,
         baseUrl: 'https://example.com/v1',
-        defaultTestModel: '',
+        defaultHealthCheckModel: '',
         accountTypes: ['api_key'],
         capabilities: [],
         endpointFamilies: input.endpointFamilies.map((code) => ({ code, name: code }))

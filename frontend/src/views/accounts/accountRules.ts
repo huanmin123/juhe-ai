@@ -137,8 +137,18 @@ export function canBatchManageAccount(account: AccountSummary): boolean {
   return canEditAccount(account) && account.status !== 'error'
 }
 
+export function canBatchEditAccount(account: AccountSummary): boolean {
+  return !isAuthorizedAccount(account)
+    && hasAccountEditPermission(account)
+    && account.permissions?.canViewCredentials !== false
+}
+
 export function canSelectAccountForBatch(account: AccountSummary): boolean {
-  return canBatchManageAccount(account) || canBatchRestoreAccount(account) || canBatchDeleteAccount(account) || canTestAccount(account)
+  return canBatchEditAccount(account)
+    || canBatchManageAccount(account)
+    || canBatchRestoreAccount(account)
+    || canBatchDeleteAccount(account)
+    || canTestAccount(account)
 }
 
 export function canBatchRestoreAccount(account: AccountSummary): boolean {

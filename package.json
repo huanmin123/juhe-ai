@@ -86,6 +86,7 @@
     "test:team-proxy-list-pagination": "pnpm --filter juhe-ai-backend test:team-proxy-list-pagination",
     "test:system-account-list-query-guard": "pnpm --filter juhe-ai-backend test:system-account-list-query-guard",
     "test:system-account-options-lightweight": "pnpm --filter juhe-ai-backend test:system-account-options-lightweight",
+    "test:w3-auth-system-account-smoke": "pnpm --filter juhe-ai-frontend test:w3-auth-system-account-smoke",
     "test:account-test-limited-diagnostics": "pnpm --filter juhe-ai-backend test:account-test-limited-diagnostics",
     "test:openai-endpoint-modes": "pnpm --filter juhe-ai-backend test:openai-endpoint-modes",
     "test:account-model-mapping": "pnpm --filter juhe-ai-backend test:account-model-mapping",

@@ -40,7 +40,7 @@ type StatsDatabase = ReturnType<typeof getStatsDatabase>
 
 export function createBusinessTableCoverageMockdata(created: CreatedMockdata): void {
   createSystemSessionCoverage(created)
-  createProviderDefaultTestModelCoverage(created)
+  createProviderDefaultHealthCheckModelCoverage(created)
   createAccountTestCoverage(created)
   createGroupAuthorizationSettingsCoverage(created)
   createOpenAICompatibleStorageCoverage(created)
@@ -110,7 +110,7 @@ function createSystemSessionCoverage(created: CreatedMockdata): void {
   )
 }
 
-function createProviderDefaultTestModelCoverage(created: CreatedMockdata): void {
+function createProviderDefaultHealthCheckModelCoverage(created: CreatedMockdata): void {
   const now = nowIso()
   const database = getBusinessDatabase()
   const rows = [
@@ -118,7 +118,7 @@ function createProviderDefaultTestModelCoverage(created: CreatedMockdata): void 
     [created.users.tester.id, 'gpt', 'gpt-5.4-mini']
   ] as const
   const statement = database.prepare(`
-    INSERT INTO provider_default_test_models (system_account_id, provider_code, model, created_at, updated_at)
+    INSERT INTO provider_default_health_check_models (system_account_id, provider_code, model, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, provider_code) DO UPDATE SET
       model = excluded.model,

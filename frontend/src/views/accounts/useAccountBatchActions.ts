@@ -7,14 +7,13 @@ import { invalidateAccountDetailForAccount } from './accountDetailCache'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { accountBatchConcurrency, runWithConcurrency } from './accountBatchExecution'
-import { canBatchManageAccount, canBatchRestoreAccount, canTestAccount } from './accountRules'
+import { canBatchManageAccount, canBatchRestoreAccount } from './accountRules'
 
 interface UseAccountBatchActionsOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   clearSelection: () => void
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
-  openBatchTestModal: (accounts: AccountSummary[]) => void | Promise<void>
   selectedAccounts: ComputedRef<AccountSummary[]>
 }
 
@@ -68,18 +67,6 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
     }
   }
 
-  async function batchTestSelected() {
-    const selected = options.selectedAccounts.value.filter(canTestAccount)
-    if (!selected.length) {
-      message.warning('请先选择账户')
-      return
-    }
-    if (selected.length !== options.selectedAccounts.value.length) {
-      message.warning('已跳过不支持测试协议或当前不能测试的账户')
-    }
-    await options.openBatchTestModal(selected)
-  }
-
   async function batchSetStatus(status: 'active' | 'disabled') {
     const selected = options.selectedAccounts.value.filter(canBatchManageAccount)
     const eligible = status === 'active'
@@ -120,7 +107,6 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
   return {
     batchRestoreSelected,
     batchSetStatus,
-    batchTestSelected,
     batchUpdateAccounts
   }
 }

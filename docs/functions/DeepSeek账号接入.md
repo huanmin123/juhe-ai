@@ -57,7 +57,7 @@ DeepSeek Anthropic-compatible 必须保留 `providerCode=deepseek`、独立 Base
 
 选择 `DeepSeek` 后展示 OpenAI-compatible API Key 和 Claude Code API Key 两个接入类型：
 
-| 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认测试模型 | 下游客户端画像 |
+| 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认检查模型 | 下游客户端画像 |
 | --- | --- | --- | --- | --- | --- |
 | DeepSeek OpenAI-compatible API Key | `api_key` | `profile_deepseek_openai_v1` | `api_key`、`base_url` | `deepseek-v4-flash` | 由 API Key / 请求识别 |
 | DeepSeek Claude Code API Key | `api_key` | `profile_deepseek_anthropic_v1` | `api_key`、`base_url` | `deepseek-v4-flash` | Anthropic API / Claude Code |
@@ -314,7 +314,7 @@ DeepSeek 模型目录必须单独维护在 `deepseek` 供应商下，不要混�
 | `deepseek-v4-flash` / `deepseek-ai-v4-flash` | 1,000,000 | 384,000 | USD 0.0028 | USD 0.14 | USD 0.28 |
 | `deepseek-v4-pro` / `deepseek-ai-v4-pro` | 1,000,000 | 384,000 | USD 0.003625 | USD 0.435 | USD 0.87 |
 
-旧别名 `deepseek-chat` 和 `deepseek-reasoner` 已被官方标记为将于 `2026-07-24 15:59 UTC` 退役。当前在目录中可以作为历史兼容别名保留，但不应作为新建账户或新默认测试模型的首选。
+旧别名 `deepseek-chat` 和 `deepseek-reasoner` 已被官方标记为将于 `2026-07-24 15:59 UTC` 退役。当前在目录中可以作为历史兼容别名保留，但不应作为新建账户或新默认检查模型的首选。
 
 模型目录字段要求：
 
@@ -332,7 +332,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 
 - DeepSeek 必须作为独立供应商接入 provider driver registry，不能复用 GPT driver 或通用 `openai` 聚合供应商的账号创建类型
 - `providerCode=openai` 仍只表达通用 OpenAI-compatible 聚合目录；`providerCode=deepseek` 表达 DeepSeek 自身账号、模型、价格、测试和展示，DeepSeek 不进入 `openai` 聚合模型目录
-- DeepSeek driver 负责按 `profile_deepseek_openai_v1` 选择默认 base URL、默认测试模型、默认 endpoint modes、Codex bridge、特殊字段说明、导入导出 round-trip、模型检测入口隔离和供应商局部响应语义
+- DeepSeek driver 负责按 `profile_deepseek_openai_v1` 选择默认 base URL、协议档案默认检查模型、默认 endpoint modes、Codex bridge、特殊字段说明、导入导出 round-trip、模型检测入口隔离和供应商局部响应语义
 - DeepSeek Anthropic-compatible 复用 `anthropic/v1` 协议适配器的 URL、请求体和响应语义，但不能复用官方 Anthropic 供应商账号池；DeepSeek 的 Base URL、模型映射、headers、账户测试和价格归属都归属 `deepseek`
 - PLAN-0050 的供应商驱动化重构尚未完全关闭时，DeepSeek 实现必须沿用新 driver 边界，不把新逻辑硬写回 GPT / OpenAI-compatible 旧分支
 
@@ -353,7 +353,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 - API Key 只绑定策略路由；每次请求先由策略路由选择分组，再由账户模型别名、模型目录和协议档案定位真实 DeepSeek 上游能力。
 - 会话亲和、IP 级账号回避、本地账号屏蔽、上游桶避让和高并发队列继续使用现有运行态，不为 DeepSeek 另起一套调度状态
 - 如果后续 DeepSeek API Key 账户支持同一账户内多个上游 Key，应复用账户内 Key 故障隔离能力：只摘除当前失败 Key，不因单个 Key 的认证失败、余额不足或限流直接打坏整个账户；第一阶段如果只开放单 Key 表单，则不展示 Key 池配置
-- 账户测试、批量测试、模型检测、后台恢复探活和真实网关请求都必须走账号绑定代理；不能只让真实请求走代理、测试请求直连
+- 人工单账户测试、模型检测、后台检查和真实网关请求都必须走账号绑定代理；不能只让真实请求走代理、测试请求直连。账户页面不提供多账户批量测试
 
 ### 错误处理、切号与恢复
 
@@ -418,7 +418,7 @@ DeepSeek 账户测试必须复用真实网关链路：
 
 - OpenAI-compatible 测试路径使用 `/v1/chat/completions`
 - Anthropic-compatible 测试路径使用 `/v1/messages`
-- 默认测试模型建议优先使用 `deepseek-v4-flash`
+- 默认检查模型建议优先使用 `deepseek-v4-flash`
 - 测试请求不发送不相关的 OpenAI / GPT 专属字段
 - 测试默认不启用 beta prefix、FIM、Responses、count_tokens、多模态、MCP 或 code execution 能力
 - 测试失败不直接把正常账户写成 `temporary_unavailable`，仍遵循当前事前确认和冷却复测规则

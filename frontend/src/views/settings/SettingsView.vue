@@ -157,7 +157,7 @@
             <div>
               <h3 class="section-title">
                 <span>账号测试</span>
-                <a-tooltip title="控制后台账号测试任务的系统级并发防护；单个用户批量测试仍按每批最多 10 个账号提交。">
+                <a-tooltip title="控制独立单账户人工测试任务的系统级并发防护；账户健康检查由后台任务统一执行。">
                   <QuestionCircleOutlined class="help-icon" />
                 </a-tooltip>
               </h3>
@@ -166,7 +166,7 @@
 
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="后台并发上限" tooltip="默认 100；用于防止异常批量或恶意请求把账号测试任务全部同时打到上游。">
+              <a-form-item label="后台并发上限" tooltip="默认 100；用于限制全系统同时执行的单账户人工测试任务数量。">
                 <a-input-number v-model:value="systemForm.accountTestTaskConcurrency" :min="1" :max="1000" style="width: 100%" />
               </a-form-item>
             </div>

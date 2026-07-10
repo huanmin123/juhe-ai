@@ -1,4 +1,4 @@
-import type { AccountSummary, GroupOptionSummary, ProviderDefinition, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountSummary, GroupOptionSummary, ProviderDefinition, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { proxySelectOptionLabel } from '@/shared/proxyLabelCache'
@@ -12,47 +12,32 @@ export type SelectOption = {
 }
 
 export function buildTestModelOptions(
-  providerModels: ProviderModelPricing[],
   account?: AccountSummary | AccountSummary[],
   providerDefaultModel = '',
   systemDefaultModel = ''
 ): SelectOption[] {
-  const restrictedModels = restrictedTestModelsForAccountSelection(account)
+  const supportedModels = supportedTestModelsForAccountSelection(account)
   const preferredModels = preferredTestModelsForAccountSelection(account, providerDefaultModel, systemDefaultModel)
-  if (restrictedModels) {
-    return selectOptions(prioritizeTestModels(restrictedModels, preferredModels))
-  }
-  const useProviderModels = isGatewaySupportedTestSelection(account)
-  const providerModelValues = useProviderModels
-    ? providerModels.map((item) => item.model)
-    : []
-  const models = [
-    ...preferredModels,
-    ...providerModelValues
-  ]
-  return selectOptions(models)
+  return selectOptions(prioritizeTestModels(supportedModels, preferredModels))
 }
 
-export function defaultTestModelForAccountSelection(
+export function defaultHealthCheckModelForAccountSelection(
   account: AccountSummary | AccountSummary[] | undefined,
   providerDefaultModel = '',
   systemDefaultModel = ''
 ): string {
-  const restrictedModels = restrictedTestModelsForAccountSelection(account)
+  const supportedModels = supportedTestModelsForAccountSelection(account)
   const preferredModels = preferredTestModelsForAccountSelection(account, providerDefaultModel, systemDefaultModel)
-  if (restrictedModels) {
-    return prioritizeTestModels(restrictedModels, preferredModels)[0] ?? ''
-  }
-  return preferredModels[0] ?? ''
+  return prioritizeTestModels(supportedModels, preferredModels)[0] ?? ''
 }
 
-export function providerDefaultTestModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
+export function providerDefaultHealthCheckModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
   const providerCode = providerCodeForAccountSelection(account)
   if (!providerCode) return ''
-  return providers.find((provider) => provider.code === providerCode)?.defaultTestModel?.trim() ?? ''
+  return providers.find((provider) => provider.code === providerCode)?.defaultHealthCheckModel?.trim() ?? ''
 }
 
-export function providerSystemDefaultTestModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
+export function providerSystemDefaultHealthCheckModelForAccountSelection(providers: ProviderDefinition[], account: AccountSummary | AccountSummary[] | undefined): string {
   const providerCode = providerCodeForAccountSelection(account)
   if (!providerCode) return ''
   const provider = providers.find((item) => item.code === providerCode)
@@ -60,12 +45,12 @@ export function providerSystemDefaultTestModelForAccountSelection(providers: Pro
   const profileIds = [...new Set(normalizeAccounts(account).map((item) => item.providerProtocolProfileId).filter(Boolean))]
   if (profileIds.length === 1) {
     const profile = provider.protocolProfiles.find((item) => item.id === profileIds[0])
-    if (profile?.defaultTestModel?.trim()) return profile.defaultTestModel.trim()
+    if (profile?.defaultHealthCheckModel?.trim()) return profile.defaultHealthCheckModel.trim()
   }
-  return provider.systemDefaultTestModel?.trim()
+  return provider.systemDefaultHealthCheckModel?.trim()
     || provider.protocolProfiles
       .find((item) => item.id === provider.defaultProtocolProfileId)
-      ?.defaultTestModel
+      ?.defaultHealthCheckModel
       ?.trim()
     || ''
 }
@@ -91,12 +76,12 @@ function normalizeAccountSupportedModels(account: AccountSummary | AccountSummar
   return uniqueTextList(normalizeAccounts(account).flatMap((item) => item.supportedModels ?? []))
 }
 
-function restrictedTestModelsForAccountSelection(account: AccountSummary | AccountSummary[] | undefined): string[] | undefined {
-  const restrictedModelLists = normalizeAccounts(account)
-    .map((item) => normalizeAccountSupportedModels(item))
-    .filter((models) => models.length > 0)
-  if (!restrictedModelLists.length) return undefined
-  const [firstModels, ...otherModelLists] = restrictedModelLists
+function supportedTestModelsForAccountSelection(account: AccountSummary | AccountSummary[] | undefined): string[] {
+  const accounts = normalizeAccounts(account)
+  if (!accounts.length) return []
+  const supportedModelLists = accounts.map((item) => normalizeAccountSupportedModels(item))
+  if (supportedModelLists.some((models) => models.length === 0)) return []
+  const [firstModels, ...otherModelLists] = supportedModelLists
   return firstModels.filter((model) => otherModelLists.every((models) => models.includes(model)))
 }
 
@@ -106,16 +91,16 @@ function preferredTestModelsForAccountSelection(
   systemDefaultModel: string
 ): string[] {
   return uniqueTextList([
-    accountDefaultTestModelForSelection(account),
+    accountHealthCheckModelForSelection(account),
     providerDefaultModel,
     systemDefaultModel
   ])
 }
 
-function accountDefaultTestModelForSelection(account: AccountSummary | AccountSummary[] | undefined): string {
+function accountHealthCheckModelForSelection(account: AccountSummary | AccountSummary[] | undefined): string {
   const accounts = normalizeAccounts(account)
   if (!accounts.length) return ''
-  const models = accounts.map((item) => item.defaultTestModel?.trim() ?? '')
+  const models = accounts.map((item) => item.healthCheckModel?.trim() ?? '')
   if (models.some((model) => !model)) return ''
   const uniqueModels = [...new Set(models)]
   return uniqueModels.length === 1 ? uniqueModels[0] : ''

@@ -50,6 +50,7 @@ export interface AccountTestDraftSnapshot {
   fallbackEnabled: boolean
   clientCompatibility: AccountClientCompatibility
   supportedModels?: string[]
+  healthCheckModel: string
   modelMappings?: AccountSummary['modelMappings']
   proxyProfileId?: string
   accountExpiresAt?: string
@@ -101,13 +102,6 @@ interface AccountTestSessionRow {
   updated_at: string
 }
 
-export class AccountTestSessionConflictError extends Error {
-  constructor(public readonly active: AccountTestSessionDetail) {
-    super('当前已有账户测试任务未完成，请先停止当前测试或等待完成')
-    this.name = 'AccountTestSessionConflictError'
-  }
-}
-
 export interface CreateAccountTestTaskInput {
   account: AccountSummary
   access: AccessScope
@@ -125,11 +119,6 @@ const accountTestCleanupBatchSize = 200
 export function createAccountTestSession(access: AccessScope): AccountTestSession {
   if (!access) {
     throw new Error('缺少系统账户上下文')
-  }
-  completeIdleAccountTestSessionsForAccess(access)
-  const active = getActiveAccountTestSessionDetail(access)
-  if (active) {
-    throw new AccountTestSessionConflictError(active)
   }
   const now = nowIso()
   const id = newId('acctsess')
@@ -153,23 +142,6 @@ export function createAccountTestSession(access: AccessScope): AccountTestSessio
     throw new Error('账户测试会话创建失败')
   }
   return session
-}
-
-export function getActiveAccountTestSessionDetail(access: AccessScope): AccountTestSessionDetail | undefined {
-  if (!access) {
-    throw new Error('缺少系统账户上下文')
-  }
-  completeIdleAccountTestSessionsForAccess(access)
-  const row = getBusinessDatabase().prepare(`
-    SELECT s.*
-    FROM account_test_sessions s
-    WHERE s.status = 'running'
-      AND s.request_system_account_id = ?
-    ORDER BY s.updated_at DESC, s.created_at DESC, s.id DESC
-    LIMIT 1
-  `).get(access.systemAccountId) as unknown as AccountTestSessionRow | undefined
-  if (!row) return undefined
-  return accountTestSessionDetailFromRow(row, access, { ownerOnly: true })
 }
 
 export function getAccountTestSession(id: string, access?: AccessScope): AccountTestSession | undefined {
@@ -250,10 +222,6 @@ export function completeIdleAccountTestSessions(limit = 200, access?: AccessScop
     completed += completeAccountTestSessionIfSettled(row.id) ? 1 : 0
   }
   return completed
-}
-
-function completeIdleAccountTestSessionsForAccess(access: AccessScope): number {
-  return completeIdleAccountTestSessions(accountTestCleanupBatchSize, access)
 }
 
 export function createAccountTestTask(input: CreateAccountTestTaskInput): AccountTestTask {
@@ -607,11 +575,6 @@ export async function createAccountTestSessionAsync(access: AccessScope): Promis
     throw new Error('缺少系统账户上下文')
   }
   const client = await accountTestTaskDatabaseClient()
-  await completeIdleAccountTestSessionsForAccessAsync(client, access)
-  const active = await getActiveAccountTestSessionDetailAsync(access)
-  if (active) {
-    throw new AccountTestSessionConflictError(active)
-  }
   const now = nowIso()
   const id = newId('acctsess')
   await client.execute(`
@@ -634,27 +597,6 @@ export async function createAccountTestSessionAsync(access: AccessScope): Promis
     throw new Error('账户测试会话创建失败')
   }
   return session
-}
-
-export async function getActiveAccountTestSessionDetailAsync(access: AccessScope): Promise<AccountTestSessionDetail | undefined> {
-  if (runtimeConfig.databaseDriver !== 'postgres') {
-    return getActiveAccountTestSessionDetail(access)
-  }
-  if (!access) {
-    throw new Error('缺少系统账户上下文')
-  }
-  const client = await accountTestTaskDatabaseClient()
-  await completeIdleAccountTestSessionsForAccessAsync(client, access)
-  const row = await client.one<AccountTestSessionRow>(`
-    SELECT s.*
-    FROM ${accountTestTable(client, 'account_test_sessions')} s
-    WHERE s.status = 'running'
-      AND s.request_system_account_id = ?
-    ORDER BY s.updated_at DESC, s.created_at DESC, s.id DESC
-    LIMIT 1
-  `, [access.systemAccountId])
-  if (!row) return undefined
-  return accountTestSessionDetailFromRowAsync(client, row, access, { ownerOnly: true })
 }
 
 export async function getAccountTestSessionAsync(id: string, access?: AccessScope): Promise<AccountTestSession | undefined> {
@@ -1272,10 +1214,6 @@ async function completeIdleAccountTestSessionsWithClientAsync(client: DatabaseCl
   return completed
 }
 
-function completeIdleAccountTestSessionsForAccessAsync(client: DatabaseClient, access: AccessScope): Promise<number> {
-  return completeIdleAccountTestSessionsWithClientAsync(client, accountTestCleanupBatchSize, access)
-}
-
 async function assertUsableAccountTestSessionAsync(client: DatabaseClient, id: string, access: AccessScope): Promise<void> {
   const row = await getAccountTestSessionRowAsync(client, id)
   if (!row || !canReadAccountTestSession(row, access)) {
@@ -1285,6 +1223,15 @@ async function assertUsableAccountTestSessionAsync(client: DatabaseClient, id: s
   if (cancelReason) {
     await cancelAccountTestSessionByRowAsync(client, row, cancelReason, row.status === 'running' ? 'expired' : accountTestSessionStatus(row.status))
     throw new Error(cancelReason)
+  }
+  const existingTask = await client.one<{ task_id?: string }>(`
+    SELECT task_id
+    FROM ${accountTestTable(client, 'account_test_session_tasks')}
+    WHERE session_id = ?
+    LIMIT 1
+  `, [row.id])
+  if (existingTask?.task_id) {
+    throw new Error('账户测试会话只能包含一个账户任务')
   }
 }
 
@@ -1503,6 +1450,15 @@ function assertUsableAccountTestSession(id: string, access: AccessScope): void {
     cancelAccountTestSessionByRow(row, cancelReason, row.status === 'running' ? 'expired' : accountTestSessionStatus(row.status))
     throw new Error(cancelReason)
   }
+  const existingTask = getBusinessDatabase().prepare(`
+    SELECT task_id
+    FROM account_test_session_tasks
+    WHERE session_id = ?
+    LIMIT 1
+  `).get(row.id) as unknown as { task_id?: string } | undefined
+  if (existingTask?.task_id) {
+    throw new Error('账户测试会话只能包含一个账户任务')
+  }
 }
 
 function cancelAccountTestSessionByRow(row: AccountTestSessionRow, message: string, status: AccountTestSessionStatus): string[] {
@@ -1674,7 +1630,8 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
   const type = normalizedOptionalText(record.type)
   const credentials = record.credentials
   const clientCompatibility = accountClientCompatibility(normalizedOptionalText(record.clientCompatibility) ?? null)
-  if (!id || !ownerSystemAccountId || !groupId || !providerCode || !name || !type || !clientCompatibility) {
+  const healthCheckModel = normalizedOptionalText(record.healthCheckModel)
+  if (!id || !ownerSystemAccountId || !groupId || !providerCode || !name || !type || !clientCompatibility || !healthCheckModel) {
     return undefined
   }
   if (typeof credentials !== 'object' || credentials === null || Array.isArray(credentials)) {
@@ -1699,6 +1656,7 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
     fallbackEnabled: booleanValue(record.fallbackEnabled),
     clientCompatibility,
     supportedModels: stringListValue(record.supportedModels),
+    healthCheckModel,
     modelMappings: accountModelMappingsValue(record.modelMappings),
     proxyProfileId: normalizedOptionalText(record.proxyProfileId),
     accountExpiresAt: normalizedOptionalText(record.accountExpiresAt),

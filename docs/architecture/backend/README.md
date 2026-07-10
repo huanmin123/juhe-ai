@@ -37,7 +37,7 @@
 
 ## 3. 技术边界
 
-- 运行时：官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`；standalone 模式需要内置 `node:sqlite` 可用，performance 模式不应在运行路径加载 SQLite。
+- 运行时：当前实现使用官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`；standalone 模式需要内置 `node:sqlite` 可用，performance 模式不应在运行路径加载 SQLite。后续后端目标运行时是 Go，目标存储只保留 PostgreSQL + Redis，不再保留 SQLite 或两套模式；迁移规则见 [Go 渐进减法迁移目录](../../migration/README.md)、[Go 技术选型与依赖基线](../../migration/Go技术选型与依赖基线.md)、[Go 迁移指标与观测规划](../../migration/Go迁移指标与观测规划.md) 和 [存储目标与 SQLite 移除](../../migration/存储目标与SQLite移除.md)。迁移完成前，本文仍描述当前 Node 后端事实。
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
 - 存储：默认 standalone 模式使用 Node 内置 `node:sqlite`，按业务库 `backend/data/juhe-ai.sqlite3`、数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、使用记录目录库 `backend/data/juhe-ai-usage-catalog.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行；显式 performance 模式使用 PostgreSQL 保存事实域和统计域，使用 Redis 保存可丢弃缓存、短 TTL 运行态和 Redis Streams 队列。业务层必须通过 Store Port 访问存储，不能直接感知 SQLite / PostgreSQL / Redis。
@@ -66,18 +66,19 @@
 
 ### 4.1 模块目录约定
 
-- 新模块默认放在 `backend/src/modules/<module-name>/`。
+- 当前 Node 过渡期内必须维护的旧模块仍放在 `backend/src/modules/<module-name>/`；新增长期后端能力默认先按 [Go 渐进减法迁移目录](../../migration/README.md) 判断是否进入 Go + PostgreSQL + Redis 目标实现，不再默认新增 Node 模块和 SQLite schema。
 - 管理 API 路由命名为 `<module-name>.routes.ts`。
 - 有外部请求、调度、副作用或复杂规则时拆出 `<module-name>.service.ts`。
-- 同一业务对象的存储访问优先定义业务语义 Store Port，再由 SQLite + memory adapter 和 PostgreSQL + Redis adapter 实现；repository helper 只能作为 adapter 内部实现细节，不再作为新业务的长期边界。
+- 当前 Node 过渡期内必须补齐的同一业务对象，存储访问优先定义业务语义 Store Port；长期 Go 目标只实现 PostgreSQL + Redis，SQLite + memory adapter 只能作为未迁移 Node 模块的临时维护例外，并必须同步迁移删除条件。
 - 模块不要绕过 `auth.middleware.ts` 和 `request-context.ts` 自行信任前端传入的系统账户归属。
 
 ### 4.2 存储适配边界
 
-- 后端存储长期边界是 Store Port / Adapter，而不是 routes、service 或 DB service handler 内散落数据库 driver 分支。
+- 后端存储边界是 Store Port / Adapter，而不是 routes、service 或 DB service handler 内散落数据库 driver 分支。
+- Go 迁移后的长期存储边界已经调整为 PostgreSQL + Redis 单模式；以下 SQLite / memory / standalone adapter 规则只描述当前 Node 过渡事实，不能作为新增 Go 模块的目标。
 - routes 和 service 只能调用业务语义接口，例如系统账户、AI 账户、API Key、网关运行态、使用记录、审计日志、统计窗口、维护清理、共享缓存、运行态状态和队列 Port。
 - SQLite、PostgreSQL、Redis、Redis Streams、SQL 方言、连接池、事务对象、Redis key 和 Stream consumer group 只允许出现在 adapter 或基础设施层。
-- 新增 DB / cache / queue 能力时，先更新 [存储适配接口设计](../../functions/存储适配接口设计.md)，再实现 standalone adapter 和 performance adapter；不能只补一个 `if postgres` 分支。
+- 新增长期 DB / cache / queue / job / system metrics / observability 能力时，先更新 [Go 技术选型与依赖基线](../../migration/Go技术选型与依赖基线.md)、[Go 迁移指标与观测规划](../../migration/Go迁移指标与观测规划.md)、[存储目标与 SQLite 移除](../../migration/存储目标与SQLite移除.md) 和必要功能文档，默认落到 Go + PostgreSQL + Redis。只有明确属于当前 Node 过渡期、且模块尚未迁移时，才允许补临时 Node adapter；这类例外必须写清删除条件，不能继续扩展 standalone / performance 双模式或 Node event-loop / DB service 指标作为长期目标。
 - adapter 内部可以复用已有 repository helper，但不允许新业务绕过 Port 直接新增底层 repository 调用。
 
 ### 4.3 当前模块落点
@@ -191,7 +192,7 @@ flowchart LR
 | 账号快照 | `account_usage_snapshots` | OpenAI OAuth / Codex 等账号额度快照和刷新状态 |
 | 业务统计 | `usage_stats_minute`、`usage_stats_hourly`、`usage_stats_daily`、`usage_stats_weekly`、`usage_stats_monthly`、`usage_stats_totals`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、`usage_rank_snapshots`、`usage_scope_range_windows`、`usage_quota_hourly_windows`、`usage_overview_summary_windows`、`usage_overview_trend_windows`、`usage_model_rank_windows`、`usage_error_rank_windows`、`ai_performance_summary_windows`、`group_account_stats` | 列表统计、趋势图、模型分布、错误聚合、耗时指标、TopN、额度窗口、范围快照和分组账户状态缓存 |
 | 后台任务 | `stats_job_state` | 聚合游标、任务状态、统计滞后和错误信息 |
-| 运维监控 | `system_metrics_samples`、`system_metrics_hourly`、`system_metrics_trend_windows` | CPU、内存、进程、事件循环、网络、数据库体积、统计滞后和监控窗口趋势 |
+| 运维监控 | `system_metrics_samples`、`system_metrics_hourly`、`system_metrics_trend_windows` | 当前 Node 过渡事实包含 CPU、内存、进程、事件循环、网络、数据库体积、统计滞后和监控窗口趋势；Go 接管后改为 Go runtime、PG、Redis、Asynq、worker lag、stats freshness 和网关 SLI，具体见 [Go 迁移指标与观测规划](../../migration/Go迁移指标与观测规划.md) |
 
 ### 6.3 核心关系
 

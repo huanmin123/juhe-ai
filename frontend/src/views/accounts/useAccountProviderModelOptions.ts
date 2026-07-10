@@ -56,7 +56,10 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
       const modelOptions = dedupeModelOptions(models.map((item) => ({
         label: item.model,
         value: item.model,
-        supportedApiProtocols: item.supportedApiProtocols
+        supportedApiProtocols: item.supportedApiProtocols,
+        supportedServiceTiers: item.supportedServiceTiers,
+        supportedReasoningEfforts: item.supportedReasoningEfforts,
+        defaultReasoningEffort: item.defaultReasoningEffort
       })))
       providerModelOptionsCache.set(cacheKey, modelOptions)
       if (options.currentProviderCode() === code) {
@@ -93,10 +96,17 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
       output.push({
         label: model,
         value: model,
-        supportedApiProtocols: mergeModelProtocols(undefined, option.supportedApiProtocols)
+        supportedApiProtocols: mergeModelProtocols(undefined, option.supportedApiProtocols),
+        supportedServiceTiers: cloneOptionalList(option.supportedServiceTiers),
+        supportedReasoningEfforts: cloneOptionalList(option.supportedReasoningEfforts),
+        defaultReasoningEffort: option.defaultReasoningEffort
       })
     }
     return output
+  }
+
+  function cloneOptionalList<TValue>(value: TValue[] | undefined): TValue[] | undefined {
+    return value ? [...value] : undefined
   }
 
   function mergeModelProtocols(

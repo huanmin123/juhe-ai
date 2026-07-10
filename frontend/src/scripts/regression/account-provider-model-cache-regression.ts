@@ -14,7 +14,12 @@ const originalModels = api.providers.models
 const originalModelOptions = api.providers.modelOptions
 const calls: Array<{ code: string; params?: ProviderModelsParams }> = []
 const modelOptionCalls: unknown[] = []
-let latestModels = [providerModel('gpt-cache-old', ['chat_completions'])]
+let latestModels: ProviderModelPricing[] = [{
+  ...providerModel('gpt-cache-old', ['chat_completions']),
+  supportedServiceTiers: ['priority'],
+  supportedReasoningEfforts: ['medium', 'high'],
+  defaultReasoningEffort: 'high'
+}]
 const latestGlobalModels: ProviderModelOption[] = [
   { providerCode: 'gpt', model: 'gpt-global-model', supportedApiProtocols: ['chat_completions'] },
   { providerCode: 'gpt', model: 'gpt-global-model', supportedApiProtocols: ['responses'] },
@@ -47,6 +52,17 @@ try {
     protocolsByValue(modelOptions.providerModelOptions.value),
     { 'gpt-cache-old': ['chat_completions'] },
     '普通供应商模型选项必须保留协议能力，供账号模型别名右侧按协议过滤'
+  )
+  assertDeepEqual(
+    requestCapabilitiesByValue(modelOptions.providerModelOptions.value),
+    {
+      'gpt-cache-old': {
+        supportedServiceTiers: ['priority'],
+        supportedReasoningEfforts: ['medium', 'high'],
+        defaultReasoningEffort: 'high'
+      }
+    },
+    'GPT 账户模型选项必须保留模型目录精确请求能力'
   )
   assertEqual(calls.length, 1, '首次加载应请求一次模型目录')
 
@@ -121,6 +137,19 @@ function optionValues(options: Array<{ value: string }>): string[] {
 
 function protocolsByValue(options: Array<{ value: string; supportedApiProtocols?: string[] }>): Record<string, string[] | undefined> {
   return Object.fromEntries(options.map((option) => [option.value, option.supportedApiProtocols]))
+}
+
+function requestCapabilitiesByValue(options: Array<{
+  value: string
+  supportedServiceTiers?: string[]
+  supportedReasoningEfforts?: string[]
+  defaultReasoningEffort?: string
+}>): Record<string, unknown> {
+  return Object.fromEntries(options.map((option) => [option.value, {
+    supportedServiceTiers: option.supportedServiceTiers,
+    supportedReasoningEfforts: option.supportedReasoningEfforts,
+    defaultReasoningEffort: option.defaultReasoningEffort
+  }]))
 }
 
 function assertEqual<T>(actual: T, expected: T, message: string): void {

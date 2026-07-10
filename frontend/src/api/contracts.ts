@@ -72,6 +72,11 @@ export interface RequestControlOptions {
   signal?: AbortSignal
 }
 
+export interface AuthSessionListParams {
+  page?: number
+  pageSize?: number
+}
+
 export interface UsageOverviewParams extends ListParams {
   startDate?: string
   endDate?: string
@@ -155,6 +160,7 @@ export interface AccountDraftTestAccountPayload {
   concurrencyLimit: number
   priority: number
   supportedModels: string[]
+  healthCheckModel: string
   modelMappings: Array<{ sourceModel: string; sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'; upstreamModel: string; upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content'; enabled: boolean }>
   proxyProfileId?: string | null
   groupId: string

@@ -323,10 +323,6 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
 
 function accountHealthCheckTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
-  if (account.healthCheckEnabled === false) {
-    lines.push('后台健康检测已关闭')
-    return lines
-  }
   if (account.lastHealthCheckAt) {
     lines.push(`最近后台检测：${formatDateTime(account.lastHealthCheckAt)}`)
   }

@@ -341,6 +341,8 @@ try {
 function assertGatewayQuotaSnapshotSourcesBounded(): void {
   const repositorySource = readFileSync(new URL('../../storage/gateway-quota-snapshot.repository.ts', import.meta.url), 'utf8')
   const cacheSource = readFileSync(new URL('../../modules/gateway/quota/quota-snapshot-cache.service.ts', import.meta.url), 'utf8')
+  const apiKeyQuotaSource = readFileSync(new URL('../../modules/gateway/quota/api-key-quota.service.ts', import.meta.url), 'utf8')
+  const authorizationQuotaSource = readFileSync(new URL('../../modules/gateway/quota/authorization-quota.service.ts', import.meta.url), 'utf8')
   const apiKeyRowsBody = sourceFunctionBlock(repositorySource, 'function loadApiKeyQuotaSnapshotRows')
   const authorizationRowsBody = sourceFunctionBlock(repositorySource, 'function loadAuthorizationQuotaSnapshotRows')
   const teamRowsBody = sourceFunctionBlock(repositorySource, 'function loadTeamAuthorizationQuotaSnapshotRows')
@@ -357,6 +359,12 @@ function assertGatewayQuotaSnapshotSourcesBounded(): void {
   assert(teamRowsBody.includes('rows.slice(0, maxGatewayQuotaSnapshotAuthorizationEntries)'), '团队授权额度快照发送前必须限制 IPC payload 大小')
   assert(!teamRowsBody.includes('OFFSET ?'), '团队授权额度快照构建禁止通过 OFFSET 循环读取全表')
   assert(!cacheSource.includes('.slice(0,'), 'server 接收完整额度快照时不应二次截断导致误 429')
+  assert(cacheSource.includes("createRuntimeStateStore('gateway_quota_snapshot')"), 'Redis 模式必须通过 runtime state 读取 Go worker 发布的网关额度快照')
+  assert(sourceFunctionBlock(cacheSource, 'async function readGatewayQuotaCostsSnapshotAsync').includes('sharedSnapshotCostEntries.get'), 'Redis 模式 API Key 额度快照必须读取 runtime state shared snapshot')
+  assert(sourceFunctionBlock(cacheSource, 'async function readGatewayAuthorizationQuotaSnapshotAsync').includes('sharedSnapshotAuthorizationEntries.get'), 'Redis 模式授权额度快照必须读取 runtime state shared snapshot')
+  assert(sourceFunctionBlock(apiKeyQuotaSource, 'export async function checkGatewayApiKeyQuotaAsync').includes('readGatewayQuotaCostsSnapshotAsync'), 'Redis 模式 API Key 额度检查必须先消费共享快照再 fallback')
+  assert(sourceFunctionBlock(authorizationQuotaSource, 'export async function checkGatewayAuthorizationQuotaAsync').includes('authorizationQuotaDecisionFromSnapshotAsync'), 'Redis 模式单授权额度检查必须先消费共享快照再 fallback')
+  assert(sourceFunctionBlock(authorizationQuotaSource, 'export async function checkGatewayAuthorizationQuotaBatchAsync').includes('authorizationQuotaDecisionFromSnapshotAsync'), 'Redis 模式批量授权额度检查必须先消费共享快照再 fallback')
 }
 
 function assertAuthorizationQuotaInvalidationSourcesConnected(): void {
@@ -364,12 +372,16 @@ function assertAuthorizationQuotaInvalidationSourcesConnected(): void {
   const dbServiceTypesSource = readFileSync(new URL('../../modules/db-service/db-service-types.ts', import.meta.url), 'utf8')
   const authorizationQuotaSource = readFileSync(new URL('../../modules/gateway/quota/authorization-quota.service.ts', import.meta.url), 'utf8')
   const cacheSource = readFileSync(new URL('../../modules/gateway/quota/quota-snapshot-cache.service.ts', import.meta.url), 'utf8')
+  const runtimeInvalidationSource = readFileSync(new URL('../../shared/gateway-cache-invalidation.ts', import.meta.url), 'utf8')
+  const runtimeApplyBlock = sourceFunctionBlock(runtimeInvalidationSource, 'function applyRuntimeStateCacheInvalidation')
   assert(dbServiceTypesSource.includes("type: 'authorization_quota_cache_invalidate'"), 'DB service 子进程消息类型必须包含授权配额缓存失效')
   assert(dbServiceIpcSource.includes('registerAuthorizationQuotaCacheInvalidator(notifyServerAuthorizationQuotaCacheInvalidated)'), 'DB service 必须把授权配额失效器注册到跨进程通知链路')
   assert(dbServiceIpcSource.includes("sendDbServiceChildMessage({ type: 'authorization_quota_cache_invalidate' })"), 'DB service 角色必须把授权配额失效转发给 server')
   assert(dbServiceIpcSource.includes('authorizationQuota.clearAuthorizationQuotaCache()'), 'server 收到授权配额失效后必须清空运行时授权配额缓存')
   assert(dbServiceIpcSource.includes('invalidateGatewayAuthorizationQuotaSnapshot()'), 'server 收到授权配额失效后必须同步让授权配额快照失效')
   assert(cacheSource.includes('authorizationSnapshotInvalidated'), '授权配额快照缓存必须有独立失效标记，避免误伤 API Key 成本快照')
+  assert(runtimeApplyBlock.includes('handler({ publishedAt: state.publishedAt })'), 'Redis runtime state 授权失效必须把事件 publishedAt 传给快照失效器')
+  assert(cacheSource.includes("Date.parse(metadata.publishedAt ?? '')"), '授权快照失效时间必须优先使用跨运行时事件 publishedAt，不能使用本机观察时间')
   assert(authorizationQuotaSource.includes('gatewayAuthorizationQuotaSnapshotVersion()'), '授权配额快照缓存版本必须参与 server 运行时缓存 key，避免复用旧决策')
 }
 

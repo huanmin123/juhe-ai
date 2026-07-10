@@ -9,6 +9,7 @@ import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import { compactAccountCredentials } from './accountFormDefaults'
+import { writeAccountGptRequestOverrides } from './accountGptRequestOverrides'
 
 const oauthCredentialMetadataKeys = [
   'expires_at',
@@ -30,6 +31,7 @@ export function buildAccountCredentials(input: {
   const credentials: Record<string, unknown> = input.form.type === 'api_key'
     ? buildApiKeyCredentials(input.form)
     : buildOAuthCredentials(input.form, input.currentCredentials ?? {})
+  writeAccountGptRequestOverrides(credentials, input.form)
   writeAccountErrorPolicyToCredentials(credentials, input.errorPolicyRules)
   writeAccountResponseInspectionRulesToCredentials(credentials, input.responseInspectionRules)
   return credentials

@@ -117,7 +117,7 @@ try {
     groupId: group.id,
     mockBaseUrl
   }))
-  assert.equal(savedAccount.status, 'pending_test', '未携带激活测试任务创建的 Key 池账户应先进入待测试')
+  assert.equal(savedAccount.status, 'pending_test', '新建 Key 池账户应先进入待测试')
   const savedTask = await submitAccountTest(context, savedAccount.id)
   const savedFinished = await waitForTask(context, savedTask.id)
   assert.equal(savedFinished.status, 'success', '已保存 Key 池账户只要至少一个 Key 可用就应测试成功')
@@ -126,9 +126,9 @@ try {
   assert.equal(savedFinished.result?.apiKeyPool?.failedCount, 2, '已保存账户测试应统计 2 个不可用 Key')
   assertKeyPoolPreview(savedFinished.result, 1, 'sk-p', 'good', '已保存账户可用 Key 应返回安全预览')
   const savedDetail = await waitForAccountRuntimeDetails(context, savedAccount.id, 3)
-  assertKeyRuntime(savedDetail, 'good', 'active', '已保存账户可用 Key 应写入 active 运行态')
-  assertKeyRuntime(savedDetail, 'ad-a', 'temporary_unavailable', '已保存账户坏 Key A 应进入后台恢复')
-  assertKeyRuntime(savedDetail, 'ad-b', 'temporary_unavailable', '已保存账户坏 Key B 应进入后台恢复')
+  assertKeyRuntime(savedDetail, 'good', 'active', '已保存账户可用 Key 的运行态应保持不变')
+  assertKeyRuntime(savedDetail, 'ad-a', 'active', '已保存账户坏 Key A 的运行态不能被人工测试改写')
+  assertKeyRuntime(savedDetail, 'ad-b', 'active', '已保存账户坏 Key B 的运行态不能被人工测试改写')
 
   const responsesAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, accountPayload({
     name: '已保存 Key 池 Responses 批测账户',
@@ -157,15 +157,13 @@ try {
   assert.equal(draftFinished.result?.apiKeyPool?.failedCount, 2, '创建草稿测试应统计 2 个不可用 Key')
   assertKeyPoolPreview(draftFinished.result, 1, 'sk-p', 'good', '创建草稿可用 Key 应返回安全预览')
 
-  const createdAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, {
-    ...draftAccount,
-    activationTestTaskId: draftTask.id
-  })
-  assert.equal(createdAccount.status, 'active', 'Key 池草稿测试成功后保存账户应直接启用')
+  const createdAccount = await postEnvelope<AccountSummary>(backendBaseUrl, '/accounts', cookie, draftAccount)
+  assert.equal(createdAccount.status, 'pending_test', 'Key 池草稿人工测试成功后保存账户仍应等待后台检查')
+  assert.equal(createdAccount.healthCheckModel, 'gpt-5.5', '保存账户应使用表单检查模型，不得从人工测试结果回写')
   const createdDetail = await waitForAccountRuntimeDetails(context, createdAccount.id, 3)
-  assertKeyRuntime(createdDetail, 'good', 'active', '创建账户可用 Key 应在保存后写入 active 运行态')
-  assertKeyRuntime(createdDetail, 'ad-a', 'temporary_unavailable', '创建账户坏 Key A 应在保存后进入后台恢复')
-  assertKeyRuntime(createdDetail, 'ad-b', 'temporary_unavailable', '创建账户坏 Key B 应在保存后进入后台恢复')
+  assertKeyRuntime(createdDetail, 'good', 'active', '创建账户可用 Key 应初始化为 active')
+  assertKeyRuntime(createdDetail, 'ad-a', 'active', '草稿人工测试不能把新账户坏 Key A 初始化为不可用')
+  assertKeyRuntime(createdDetail, 'ad-b', 'active', '草稿人工测试不能把新账户坏 Key B 初始化为不可用')
 
   assert.equal(mockState.hitsByKey.get('pool-saved-bad-a'), 1, '已保存账户坏 Key A 应被测试一次')
   assert.equal(mockState.hitsByKey.get('pool-saved-good'), 1, '已保存账户好 Key 应被测试一次')
@@ -214,7 +212,8 @@ function accountPayload(input: {
     groupId: input.groupId,
     concurrencyLimit: 20,
     priority: 0,
-    supportedModels: ['gpt-5.5']
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }
 }
 
@@ -228,7 +227,6 @@ async function submitAccountTest(context: TestContext, accountId: string, testEn
 async function submitDraftAccountTest(context: TestContext, account: ReturnType<typeof accountPayload>, testEndpointMode?: AccountTestEndpointMode): Promise<AccountTestTask> {
   return await postEnvelope<AccountTestTask>(context.backendBaseUrl, '/accounts/test-draft', context.cookie, {
     account,
-    model: 'gpt-5.5',
     ...(testEndpointMode ? { testEndpointMode } : {})
   })
 }

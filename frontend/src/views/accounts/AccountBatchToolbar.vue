@@ -6,7 +6,14 @@
     </div>
     <div class="batch-toolbar-actions">
       <a-button @click="$emit('clear')">清空选择</a-button>
-      <a-button type="primary" @click="$emit('test')">批量测试</a-button>
+      <a-tooltip :title="editDisabled ? editDisabledReason : '批量覆盖所选账户的公共配置'">
+        <span>
+          <a-button type="primary" :disabled="editDisabled" @click="$emit('edit')">
+            <template #icon><EditOutlined /></template>
+            批量编辑
+          </a-button>
+        </span>
+      </a-tooltip>
       <a-button @click="$emit('restore')">批量恢复</a-button>
       <a-button @click="$emit('enable')">批量启用</a-button>
       <a-button danger @click="$emit('disable')">批量停用</a-button>
@@ -16,8 +23,12 @@
 </template>
 
 <script setup lang="ts">
+import { EditOutlined } from '@ant-design/icons-vue'
+
 defineProps<{
   deletableCount: number
+  editDisabled: boolean
+  editDisabledReason: string
   selectedCount: number
 }>()
 
@@ -25,9 +36,9 @@ defineEmits<{
   (event: 'clear'): void
   (event: 'delete'): void
   (event: 'disable'): void
+  (event: 'edit'): void
   (event: 'enable'): void
   (event: 'restore'): void
-  (event: 'test'): void
 }>()
 </script>
 
@@ -41,8 +52,8 @@ defineEmits<{
   padding: 14px 16px;
   margin-bottom: 16px;
   border: 1px solid #dbeafe;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%);
+  border-radius: 8px;
+  background: #f8fbff;
 }
 
 .batch-toolbar-info {

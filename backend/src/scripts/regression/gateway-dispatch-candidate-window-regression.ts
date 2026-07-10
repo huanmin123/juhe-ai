@@ -117,6 +117,18 @@ try {
   }, access)
 
   const database = databaseModule.getBusinessDatabase()
+  const initialAccountIds = database
+    .prepare(`
+      SELECT accounts.id
+      FROM accounts
+      INNER JOIN group_accounts ON group_accounts.account_id = accounts.id
+      WHERE group_accounts.group_id = ?
+        AND group_accounts.system_account_id = ?
+    `)
+    .all(group.id, access.systemAccountId) as Array<{ id: string }>
+  for (const account of initialAccountIds) {
+    activateAccountAfterBackgroundCheck(repositories, account.id)
+  }
   database
     .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
     .run('2999-01-01T00:00:00.000Z', cooledAccount.id)
@@ -199,6 +211,7 @@ try {
         groupId: refillGroup.id,
         priority: index
       }, access)
+      activateAccountAfterBackgroundCheck(repositories, account.id)
       brokenAccountIds.push(account.id)
     }
     const refillAccountIds: string[] = []
@@ -216,6 +229,7 @@ try {
         groupId: refillGroup.id,
         priority: dispatchCandidateLimit + index
       }, access)
+      activateAccountAfterBackgroundCheck(repositories, account.id)
       refillAccountIds.push(account.id)
     }
     database
@@ -335,7 +349,7 @@ function candidateWindowRow(
     stream_failure_count: 0,
     stream_failure_window_started_at: null,
     account_expires_at: null,
-    default_test_model: null,
+    health_check_model: 'gpt-5.5',
     quality_score: options.qualityScore ?? null,
     quality_state: null,
     quality_ewma_first_token_ms: null
@@ -359,7 +373,7 @@ function assertModelAwareCandidateWindowCanPullLateDeterministicAccount(
     enabled: true
   }, access)
   for (let index = 0; index < dispatchCandidateScanLimit + 8; index += 1) {
-    repositories.createAccount({
+    const account = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `模型窗口不匹配账号 ${String(index).padStart(3, '0')}`,
@@ -371,8 +385,10 @@ function assertModelAwareCandidateWindowCanPullLateDeterministicAccount(
       status: 'active',
       groupId: group.id,
       priority: index,
-      supportedModels: ['gpt-5.4']
+      supportedModels: ['gpt-5.4'],
+      healthCheckModel: 'gpt-5.4'
     }, access)
+    activateAccountAfterBackgroundCheck(repositories, account.id)
   }
   const deterministicAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -386,14 +402,29 @@ function assertModelAwareCandidateWindowCanPullLateDeterministicAccount(
     status: 'active',
     groupId: group.id,
     priority: dispatchCandidateScanLimit + 99,
-    supportedModels: ['gpt-5.5']
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }, access)
+  activateAccountAfterBackgroundCheck(repositories, deterministicAccount.id)
 
   const result = repositories.listOpenAIAccountsForGroupResult(group.id, access.systemAccountId, {
     requestedModel: 'gpt-5.5'
   })
 
   assert.equal(result.accounts[0]?.id, deterministicAccount.id, '请求带模型时，显式支持该模型的账号即使排在普通候选窗口之后也应被拉入候选首位')
+}
+
+function activateAccountAfterBackgroundCheck(
+  repositories: typeof import('../../storage/repositories.js'),
+  accountId: string
+): void {
+  const changed = repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
+  assert.equal(changed, true, `后台健康检查激活账户失败：${accountId}`)
 }
 
 function explainDispatchCandidateWindowQueries(groupId: string, systemAccountId: string): string[] {

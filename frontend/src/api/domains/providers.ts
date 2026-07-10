@@ -1,6 +1,6 @@
 import type {
   ProviderDefinition,
-  ProviderDefaultTestModelResult,
+  ProviderDefaultHealthCheckModelResult,
   ProviderModelOption,
   ProviderModelPricing,
   ProviderModelsParams,
@@ -22,8 +22,8 @@ export const providersApi = {
   options: (params?: ListParams) => providerOptionsCache.load(`providers/options:${params?.systemAccountId ?? ''}`, () => unwrap<ProviderDefinition[]>(http.get('/providers/options', { params }))),
   modelOptions: (params?: ProviderModelOptionsParams) => providerModelOptionsCache.load(`providers/models/options:${params?.systemAccountId ?? ''}:${params?.protocol ?? 'all'}`, () => unwrap<ProviderModelOption[]>(http.get('/providers/models/options', { params }))),
   models: (code: string, params?: ProviderModelsParams) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`, { params })),
-  setDefaultTestModel: async (code: string, model: string, params?: ListParams) => {
-    const result = await unwrap<ProviderDefaultTestModelResult>(http.put(`/providers/${code}/default-test-model`, { model }, { params }))
+  setDefaultHealthCheckModel: async (code: string, model: string, params?: ListParams) => {
+    const result = await unwrap<ProviderDefaultHealthCheckModelResult>(http.put(`/providers/${code}/default-health-check-model`, { model }, { params }))
     providerOptionsCache.clear()
     return result
   },

@@ -29,8 +29,8 @@ import {
   findProviderProtocolProfileAsync,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
-import { listProviderDefaultTestModelPreferencesAsync } from '../../storage/provider-default-test-model.repository.js'
 import type { AccessScope } from '../../storage/access-scope.js'
+import { accountTestFailureEligibleForAccount } from './account-test-failure-eligibility.js'
 import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
@@ -97,7 +97,8 @@ export async function testOpenAIAccountWithDiagnosticRetries(
   const startedAt = Date.now()
   const model = await resolveAccountTestModelAsync(account, {
     explicitModel: input.model,
-    systemAccountId: input.systemAccountId
+    systemAccountId: input.systemAccountId,
+    testEndpointMode: input.testEndpointMode
   })
   let lastResult: AccountTestResult | undefined
   for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
@@ -218,7 +219,16 @@ export async function testOpenAIAccount(
     const requestBodyText = JSON.stringify(requestBody)
     requestUrl = testRequest.path
     const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal, clientCompatibility, testRequest.headers)
-    modelMapping = resolveOpenAIRequestModelMapping(request, resolved.account)
+    const diagnosticCandidate = explicitModel
+      ? {
+          ...resolved.account,
+          supportedModels: normalizedAccountTestModels([
+            ...(resolved.account.supportedModels ?? []),
+            explicitModel
+          ])
+        }
+      : resolved.account
+    modelMapping = resolveOpenAIRequestModelMapping(request, diagnosticCandidate)
     const response = new MemoryGatewayResponse(startedAt)
     let diagnosticLastAttempt: UpstreamAttempt | undefined
     const context: RequestContext = {
@@ -238,7 +248,7 @@ export async function testOpenAIAccount(
         systemAccountId: resolved.systemAccountId,
         groupId: resolved.groupId
       },
-      candidateAccounts: [resolved.account],
+      candidateAccounts: [diagnosticCandidate],
       disableSessionAffinity: true,
       exposeUpstreamDiagnostics: !limitedDiagnostics,
       trafficSource: input.trafficSource ?? 'manual_account_test',
@@ -318,7 +328,13 @@ export async function testOpenAIAccount(
       firstTokenMs: response.firstTokenMs(),
       accountStatusChanged: finalAccountStatus !== account.status,
       accountStatus: finalAccountStatus,
-      accountFailureEligible: !success
+      accountFailureEligible: success
+        ? false
+        : accountTestFailureEligibleForAccount({
+            statusCode: diagnosticStatusCode,
+            errorCode: upstreamErrorCode,
+            message: proxyFailureMessage || upstreamMessage || streamFailureMessage
+          })
     }), limitedDiagnostics)
   } catch (error) {
     const normalizedError = input.signal?.aborted ? accountTestAbortError(input.signal) : error
@@ -361,7 +377,7 @@ async function loadAccountForTest(
 }
 
 export async function resolveAccountTestModelAsync(
-  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'supportedModels' | 'defaultTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId' | 'modelMappings' | 'protocolCode' | 'protocolVersion' | 'type'>,
+  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'supportedModels' | 'healthCheckModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId' | 'modelMappings' | 'protocolCode' | 'protocolVersion' | 'type'>,
   input: {
     explicitModel?: string
     systemAccountId?: string
@@ -369,44 +385,25 @@ export async function resolveAccountTestModelAsync(
     providerProtocolProfileId?: string
     supportedModels?: string[]
     sourceFamilies?: AccountModelMappingSourceEndpointFamily[]
+    testEndpointMode?: AccountSupportedEndpointMode
   } = {}
 ): Promise<string> {
   const explicitModel = stringValue(input.explicitModel)
   if (explicitModel) return explicitModel
 
-  const providerCode = stringValue(input.providerCode) || account.providerCode
-  const providerProtocolProfileId = stringValue(input.providerProtocolProfileId) || account.providerProtocolProfileId
   const supportedModels = normalizedAccountTestModels(input.supportedModels ?? account.supportedModels)
-  const accountDefaultModel = supportedAccountTestModel(account.defaultTestModel, supportedModels)
-  if (accountDefaultModel) return accountDefaultModel
-
-  const preferenceSystemAccountId = accountTestPreferenceSystemAccountId(account, input.systemAccountId)
-  const preferences = await listProviderDefaultTestModelPreferencesAsync(
-    preferenceSystemAccountId,
-    [providerCode]
-  )
-  const userDefaultModel = supportedAccountTestModel(
-    preferences.get(providerCode),
-    supportedModels
-  )
-  if (userDefaultModel) return userDefaultModel
-
-  const mappedSourceModel = preferredMappedSourceModelForAccount(
-    account,
-    input.sourceFamilies ?? accountTestDefaultSourceFamilies(account)
-  )
-  if (mappedSourceModel) return mappedSourceModel
-
-  const accountProfile = providerProtocolProfileId
-    ? await findProviderProtocolProfileAsync(providerProtocolProfileId)
-    : undefined
-  const profile = accountProfile ?? await defaultProviderProtocolProfileAsync(providerCode)
-  const systemDefaultModel = supportedAccountTestModel(profile?.defaultTestModel, supportedModels)
-  return systemDefaultModel || supportedModels[0] || ''
+  const healthCheckModel = stringValue(account.healthCheckModel)
+  if (!healthCheckModel) {
+    throw new AccountTestConfigurationError('账户检查模型未配置')
+  }
+  if (!supportedModels.includes(healthCheckModel)) {
+    throw new AccountTestConfigurationError(`账户检查模型不在支持模型列表中：${healthCheckModel}`)
+  }
+  return healthCheckModel
 }
 
 export async function preferredSystemAccountTestModelAsync(
-  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'supportedModels' | 'defaultTestModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId' | 'modelMappings' | 'protocolCode' | 'protocolVersion' | 'type'>
+  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'supportedModels' | 'healthCheckModel' | 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId' | 'modelMappings' | 'protocolCode' | 'protocolVersion' | 'type'>
 ): Promise<string> {
   return await resolveAccountTestModelAsync(account, {
     sourceFamilies: accountTestDefaultSourceFamilies(account)

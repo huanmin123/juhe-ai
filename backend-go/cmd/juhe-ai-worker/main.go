@@ -1,0 +1,179 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"juhe-ai/backend-go/internal/app"
+	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/logging"
+	"juhe-ai/backend-go/internal/version"
+)
+
+func main() {
+	root := &cobra.Command{
+		Use:     "juhe-ai-worker",
+		Version: version.Version,
+		Short:   "juhe-ai Go worker process",
+	}
+
+	root.AddCommand(&cobra.Command{
+		Use:   "version",
+		Short: "Print version",
+		Run: func(cmd *cobra.Command, args []string) {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), version.Version)
+		},
+	})
+	root.AddCommand(&cobra.Command{
+		Use:   "ingest",
+		Short: "Run ingest worker",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
+			if err != nil {
+				return err
+			}
+
+			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			return app.RunIngestWorker(ctx, cfg, logger)
+		},
+	})
+	expirySweepOptions := app.AuthorizationExpirySweepWorkerOptions{
+		Interval:     time.Minute,
+		InitialDelay: 54 * time.Second,
+	}
+	expirySweepCommand := &cobra.Command{
+		Use:   "authorization-expiry-sweep",
+		Short: "Run authorization expiry sweep worker",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
+			if err != nil {
+				return err
+			}
+
+			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			return app.RunAuthorizationExpirySweepWorker(ctx, cfg, logger, expirySweepOptions)
+		},
+	}
+	expirySweepCommand.Flags().IntVar(&expirySweepOptions.Limit, "limit", 0, "maximum grants to expire per sweep; 0 uses the service default")
+	expirySweepCommand.Flags().DurationVar(&expirySweepOptions.Interval, "interval", expirySweepOptions.Interval, "sweep interval")
+	expirySweepCommand.Flags().DurationVar(&expirySweepOptions.InitialDelay, "initial-delay", expirySweepOptions.InitialDelay, "initial delay before the first sweep")
+	expirySweepCommand.Flags().BoolVar(&expirySweepOptions.RunOnce, "run-once", false, "run one sweep and exit")
+	root.AddCommand(expirySweepCommand)
+
+	operationLogRetentionCleanupOptions := app.OperationLogRetentionCleanupWorkerOptions{
+		Interval:     10 * time.Minute,
+		InitialDelay: 13 * time.Minute,
+	}
+	operationLogRetentionCleanupCommand := &cobra.Command{
+		Use:   "operation-log-retention-cleanup",
+		Short: "Run operation log retention cleanup worker",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
+			if err != nil {
+				return err
+			}
+
+			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			return app.RunOperationLogRetentionCleanupWorker(ctx, cfg, logger, operationLogRetentionCleanupOptions)
+		},
+	}
+	operationLogRetentionCleanupCommand.Flags().IntVar(&operationLogRetentionCleanupOptions.RetentionDays, "retention-days", 0, "override operation log retention days; 0 reads system settings")
+	operationLogRetentionCleanupCommand.Flags().IntVar(&operationLogRetentionCleanupOptions.BatchSize, "batch-size", 0, "operation logs to delete per batch; 0 uses the service default")
+	operationLogRetentionCleanupCommand.Flags().IntVar(&operationLogRetentionCleanupOptions.MaxBatches, "max-batches", 0, "maximum cleanup batches per run; 0 uses the service default")
+	operationLogRetentionCleanupCommand.Flags().DurationVar(&operationLogRetentionCleanupOptions.Interval, "interval", operationLogRetentionCleanupOptions.Interval, "cleanup interval")
+	operationLogRetentionCleanupCommand.Flags().DurationVar(&operationLogRetentionCleanupOptions.InitialDelay, "initial-delay", operationLogRetentionCleanupOptions.InitialDelay, "initial delay before the first cleanup")
+	operationLogRetentionCleanupCommand.Flags().BoolVar(&operationLogRetentionCleanupOptions.RunOnce, "run-once", false, "run one cleanup and exit")
+	root.AddCommand(operationLogRetentionCleanupCommand)
+
+	usageRangeWindowOptions := app.AuthorizationUsageRangeWindowRefreshWorkerOptions{
+		Interval:     6 * time.Hour,
+		InitialDelay: 43 * time.Minute,
+	}
+	usageRangeWindowCommand := &cobra.Command{
+		Use:   "authorization-usage-range-windows-refresh",
+		Short: "Run authorization usage range window refresh worker",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
+			if err != nil {
+				return err
+			}
+
+			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			return app.RunAuthorizationUsageRangeWindowRefreshWorker(ctx, cfg, logger, usageRangeWindowOptions)
+		},
+	}
+	usageRangeWindowCommand.Flags().DurationVar(&usageRangeWindowOptions.Interval, "interval", usageRangeWindowOptions.Interval, "refresh interval")
+	usageRangeWindowCommand.Flags().DurationVar(&usageRangeWindowOptions.InitialDelay, "initial-delay", usageRangeWindowOptions.InitialDelay, "initial delay before the first refresh")
+	usageRangeWindowCommand.Flags().BoolVar(&usageRangeWindowOptions.RunOnce, "run-once", false, "run one refresh and exit")
+	usageRangeWindowCommand.Flags().StringVar(&usageRangeWindowOptions.Timezone, "timezone", "", "override usageStatsTimezone for local smoke; empty reads system settings")
+	root.AddCommand(usageRangeWindowCommand)
+
+	gatewayQuotaSnapshotOptions := app.GatewayQuotaSnapshotBuildWorkerOptions{
+		Interval:     time.Minute,
+		InitialDelay: 37 * time.Second,
+	}
+	gatewayQuotaSnapshotCommand := &cobra.Command{
+		Use:   "gateway-quota-snapshot-build",
+		Short: "Build gateway quota snapshot from PostgreSQL aggregates",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
+			if err != nil {
+				return err
+			}
+
+			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			return app.RunGatewayQuotaSnapshotBuildWorker(ctx, cfg, logger, gatewayQuotaSnapshotOptions)
+		},
+	}
+	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.Interval, "interval", gatewayQuotaSnapshotOptions.Interval, "build interval")
+	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.InitialDelay, "initial-delay", gatewayQuotaSnapshotOptions.InitialDelay, "initial delay before the first build")
+	gatewayQuotaSnapshotCommand.Flags().BoolVar(&gatewayQuotaSnapshotOptions.RunOnce, "run-once", false, "run one build and exit")
+	gatewayQuotaSnapshotCommand.Flags().StringVar(&gatewayQuotaSnapshotOptions.Timezone, "timezone", "", "override usageStatsTimezone for local smoke; empty reads system settings")
+	gatewayQuotaSnapshotCommand.Flags().BoolVar(&gatewayQuotaSnapshotOptions.PublishRuntimeState, "publish-runtime-state", false, "publish the built snapshot to Redis runtime state for gateway consumption")
+	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.SnapshotTTL, "snapshot-ttl", 0, "Redis runtime state snapshot TTL; 0 uses the service default")
+	root.AddCommand(gatewayQuotaSnapshotCommand)
+
+	if err := root.Execute(); err != nil {
+		os.Exit(1)
+	}
+}

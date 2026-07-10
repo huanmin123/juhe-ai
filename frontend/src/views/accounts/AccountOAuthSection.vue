@@ -50,11 +50,17 @@
         show-search
       />
     </a-form-item>
+    <AccountHealthCheckModelField
+      :form="form"
+      :model-options="modelOptions"
+      :models-loading="modelsLoading"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
 import type { OpenAIAuthURLResult } from '@/types/domain'
+import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
 import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
 import type { AccountFormModel } from './accountFormTypes'
 

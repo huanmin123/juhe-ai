@@ -42,12 +42,7 @@ import { canCreateOAuthAccount } from './accountProviderCapabilities'
 import { authUrl } from './accountOAuthPayload'
 import { loadAccountDetailCached, type AccountDetailLevel } from './accountDetailCache'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
-import { accountFormApiKeyRuntimeChanged, normalizedAccountApiKeys } from './accountCredentials'
-import type { AccountSavePayload } from './accountSavePayload'
-import {
-  accountCreatePayloadWithActivationTest as applyActivationTestToCreatePayload,
-  accountUpdateActivationTestTaskId as updateActivationTestTaskIdForPayload
-} from './accountEditFormPayload'
+import { normalizedAccountApiKeys } from './accountCredentials'
 import { buildAccountDraftTestPayload } from './accountDraftTestPayload'
 import {
   draftApiKeyTestRuntimeDetailsForPayload,
@@ -58,7 +53,6 @@ import {
   buildAccountCloneFormLoad,
   buildAccountEditFormLoad
 } from './accountEditFormLoaders'
-import type { SuccessfulDraftActivationTest } from './useAccountTestModal'
 import { useAccountProviderModelOptions } from './useAccountProviderModelOptions'
 import { useAccountEditTagOptions } from './useAccountEditTagOptions'
 import { useAccountEditSaveFlow } from './useAccountEditSaveFlow'
@@ -83,8 +77,6 @@ interface UseAccountEditFormOptions {
   draftApiKeyTestSnapshot?: { value: DraftApiKeyTestSnapshot | undefined }
   systemAccountSelection?: ReadonlyValue<PrincipalSelection | undefined>
   systemAccounts: ReadonlyValue<SystemAccountPrincipalSummary[]>
-  successfulDraftActivationTest?: { value: SuccessfulDraftActivationTest | undefined }
-  successfulSavedDraftUpdateTest?: { value: SuccessfulDraftActivationTest | undefined }
 }
 
 export function useAccountEditForm(options: UseAccountEditFormOptions) {
@@ -195,13 +187,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     saveAccount,
     saving
   } = useAccountEditSaveFlow({
-    accountCreatePayloadWithActivationTest,
-    accountUpdateActivationTestTaskId,
     accountAdvancedDetailLoaded,
     accountErrorPolicyRules,
     accountResponseInspectionRules,
     accounts: options.accounts,
-    clearSuccessfulDraftActivationTest,
     createScopeParams,
     editingAccountDetail,
     editingAccountScopeParams,
@@ -209,7 +198,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingId,
     extractApiErrorMessage: options.extractApiErrorMessage,
     form,
-    isApiKeyRuntimeChanged,
     isManagementView: options.isManagementView,
     loadData: options.loadData,
     mappingAnthropicSourceModelOptions,
@@ -262,8 +250,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningSourceId.value = undefined
     editingScheduleFingerprint.value = undefined
     cloningScheduleFingerprint.value = undefined
-    clearSuccessfulDraftActivationTest()
-    clearSuccessfulSavedDraftUpdateTest()
+    clearDraftApiKeyTestSnapshot()
     Object.assign(form, defaultForm(providerCode, type))
     resetProviderModelOptions()
     resetAnthropicProviderModelOptions()
@@ -345,6 +332,26 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
   )
 
+  watch(
+    [
+      () => [...form.supportedModels],
+      () => form.providerCode,
+      () => form.providerProtocolProfileId
+    ],
+    () => {
+      const supportedModels = [...new Set(form.supportedModels.map((model) => model.trim()).filter(Boolean))]
+      const current = form.healthCheckModel.trim()
+      if (current && supportedModels.includes(current)) return
+      const preferred = [
+        selectedProvider.value?.defaultHealthCheckModel,
+        selectedProtocolProfile.value?.defaultHealthCheckModel,
+        ...supportedModels
+      ].map((model) => model?.trim() ?? '').find((model) => model && supportedModels.includes(model))
+      form.healthCheckModel = preferred ?? ''
+    },
+    { immediate: true }
+  )
+
   function handleModalCancel() {
     nextFormOpenRequestToken()
     accountEditDetailLoading.value = false
@@ -353,7 +360,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     modalOpen.value = false
     authResult.value = undefined
     clearDraftApiKeyTestSnapshot()
-    clearSuccessfulSavedDraftUpdateTest()
   }
 
   function selectProvider(providerCode: string) {
@@ -390,6 +396,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       proxyProfileId: form.proxyProfileId,
       notes: form.notes,
       supportedModels: form.supportedModels.length ? form.supportedModels : defaults.supportedModels,
+      serviceTierOverride: form.serviceTierOverride,
+      reasoningEffortOverride: form.reasoningEffortOverride,
       modelMappings: form.modelMappings,
       tags: form.tags,
       concurrencyLimit: form.concurrencyLimit,
@@ -419,8 +427,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     creatingAccountScopeParams.value = undefined
     accountEditDetailLoading.value = false
     authResult.value = undefined
-    clearSuccessfulDraftActivationTest()
-    clearSuccessfulSavedDraftUpdateTest()
+    clearDraftApiKeyTestSnapshot()
 
     if (isAuthorizedAccount(account)) {
       accountEditDetailLoading.value = true
@@ -523,6 +530,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
           notes: form.notes,
           baseUrl: form.baseUrl,
           supportedModels: [...form.supportedModels],
+          healthCheckModel: form.healthCheckModel,
           ...(preserveTypedApiKeys
             ? {
                 apiKey: form.apiKey,
@@ -793,32 +801,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function accountTagOperationScopeParams(): AccountScopeParams {
     return editingId.value ? editingAccountScopeParams() : createScopeParams.value
-  }
-
-  function accountCreatePayloadWithActivationTest(payload: AccountSavePayload): AccountSavePayload & { status?: 'active'; activationTestTaskId?: string } {
-    return applyActivationTestToCreatePayload(payload, options.successfulDraftActivationTest?.value, form.name.trim())
-  }
-
-  function accountUpdateActivationTestTaskId(payload: AccountSavePayload): string | undefined {
-    return updateActivationTestTaskIdForPayload(payload, options.successfulSavedDraftUpdateTest?.value, form.name.trim())
-  }
-
-  function isApiKeyRuntimeChanged(): boolean {
-    return accountFormApiKeyRuntimeChanged(form, editingAccountDetail.value)
-  }
-
-  function clearSuccessfulDraftActivationTest(): void {
-    if (options.successfulDraftActivationTest) {
-      options.successfulDraftActivationTest.value = undefined
-    }
-    clearSuccessfulSavedDraftUpdateTest()
-    clearDraftApiKeyTestSnapshot()
-  }
-
-  function clearSuccessfulSavedDraftUpdateTest(): void {
-    if (options.successfulSavedDraftUpdateTest) {
-      options.successfulSavedDraftUpdateTest.value = undefined
-    }
   }
 
   function clearDraftApiKeyTestSnapshot(): void {

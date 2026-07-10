@@ -29,13 +29,11 @@ const draftChatUpstreamModel = 'gpt-draft-activation-chat-upstream'
 const [
   databaseModule,
   repositories,
-  accountTestTasks,
-  accountDraftTest
+  accountTestTasks
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/account-test-tasks.repository.js'),
-  import('../../modules/accounts/account-draft-test.service.js')
+  import('../../storage/account-test-tasks.repository.js')
 ])
 
 try {
@@ -75,44 +73,20 @@ try {
     '草稿测试任务记录读回后应保留 Chat Completions 同协议模型别名'
   )
 
-  const createStatus = accountDraftTest.accountCreateStatusFromActivationTest({
-    account: {
-      ...accountInput,
-      status: 'active',
-      activationTestTaskId: task.id
-    },
-    providerBaseUrl: 'https://api.openai.com/v1',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    protocolVersion: OPENAI_PROTOCOL_VERSION,
-    group,
-    requestAccess: access
-  })
-  assert.equal(createStatus, 'active', 'API Key 成功草稿测试应允许创建为正常状态')
+  const { clientCompatibility: _clientCompatibility, ...accountCreateInput } = accountInput
+  const created = repositories.createAccount({
+    ...accountCreateInput,
+    status: 'active'
+  }, access)
+  assert.equal(created.status, 'pending_test', 'API Key 草稿人工测试成功不能直接激活新账户')
+  assert.equal(created.schedulable, false, '新账户必须等待后台检查成功后才能参与调度')
+  assert.equal(created.healthCheckModel, draftChatUpstreamModel, '新账户应持久化表单检查模型')
 
-  assert.throws(
-    () => accountDraftTest.accountCreateStatusFromActivationTest({
-      account: {
-        ...apiKeyActivationRequest({
-          groupId: group.id,
-          name: accountInput.name,
-          apiKeys: ['sk-api-key-draft-changed']
-        }),
-        status: 'active',
-        activationTestTaskId: task.id
-      },
-      providerBaseUrl: 'https://api.openai.com/v1',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      protocolCode: OPENAI_PROTOCOL_CODE,
-      protocolVersion: OPENAI_PROTOCOL_VERSION,
-      group,
-      requestAccess: access
-    }),
-    /内容已变化/,
-    'API Key 草稿测试后修改 Key 不应允许直接激活'
-  )
+  const storedTaskAfterCreate = accountTestTasks.getAccountTestTaskRecord(task.id)
+  assert.equal(storedTaskAfterCreate?.status, 'success', '创建账户不应修改人工测试任务结果')
+  assert.equal(storedTaskAfterCreate?.result?.model, draftChatUpstreamModel, '人工测试结果只保留本次诊断模型')
 
-  console.log('API Key 草稿激活回归通过：成功测试可创建 active，配置变化必须重新测试')
+  console.log('API Key 草稿诊断隔离回归通过：人工测试保留诊断结果，新账户始终等待后台检查激活')
 } finally {
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
@@ -134,6 +108,7 @@ function apiKeyActivationRequest(input: {
     priority: 0,
     clientCompatibility: 'codex_responses' as const,
     supportedModels: [draftChatUpstreamModel],
+    healthCheckModel: draftChatUpstreamModel,
     modelMappings: [draftChatAliasMapping(), draftChatCaseAliasMapping()],
     notes: 'API Key 草稿测试成功后保存应直接启用'
   }
@@ -239,6 +214,7 @@ function apiKeyDraftActivationSnapshot(input: ReturnType<typeof apiKeyActivation
     fallbackEnabled: false,
     clientCompatibility,
     supportedModels: input.supportedModels,
+    healthCheckModel: input.healthCheckModel,
     modelMappings: repositories.normalizeAccountModelMappingsForProvider(input.modelMappings, input.providerCode, input.ownerSystemAccountId, {
       providerCode: input.providerCode,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -270,7 +246,8 @@ function createCompletedDraftActivationTask(input: {
     type: task.type,
     success: true,
     statusCode: 200,
-    message: 'API Key 草稿测试成功'
+    message: 'API Key 草稿测试成功',
+    model: draftChatUpstreamModel
   }
   assert(accountTestTasks.completeAccountTestTask(task.id, result), 'API Key 草稿测试任务应能完成')
   return task
@@ -297,6 +274,7 @@ function draftAccountSummary(draft: AccountTestDraftSnapshot): AccountSummary {
     fallbackEnabled: draft.fallbackEnabled,
     clientCompatibility: draft.clientCompatibility,
     supportedModels: draft.supportedModels,
+    healthCheckModel: draft.healthCheckModel,
     modelMappings: draft.modelMappings,
     schedulable: true,
     todayUsage: usage,

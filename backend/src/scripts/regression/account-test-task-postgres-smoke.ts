@@ -1,8 +1,17 @@
 import { strict as assert } from 'node:assert'
 
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { closeRedisClients } from '../../shared/redis-client.js'
+import {
+  createAccountAsync,
+  createGroupAsync,
+  deleteAccountAsync,
+  deleteGroupAsync,
+  updateAccountHealthCheckModelAsync
+} from '../../storage/repositories.js'
 import {
   accountTestTaskCancelMessageAsync,
   cancelAccountTestSessionAsync,
@@ -39,6 +48,8 @@ const account = {
 
 const taskIds: string[] = []
 const sessionIds: string[] = []
+const createdAccountIds: string[] = []
+const createdGroupIds: string[] = []
 
 try {
   const session = await createAccountTestSessionAsync(access)
@@ -97,13 +108,61 @@ try {
   assert.equal(await isAccountTestTaskCancelRequestedAsync(cancelTask.id), true, 'PG session cancel should mark task canceled')
   assert.equal(await accountTestTaskCancelMessageAsync(cancelTask.id), 'PG smoke cancel', 'PG cancel message should be readable')
 
+  const accountAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
+  const group = await createGroupAsync({
+    name: `账号测试模型 PG smoke 分组 ${marker}`,
+    providerCode: 'gpt',
+    enabled: true
+  }, accountAccess)
+  createdGroupIds.push(group.id)
+  const storedAccount = await createAccountAsync({
+    name: `账号测试模型 PG smoke 账户 ${marker}`,
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    type: 'api_key',
+    status: 'active',
+    groupId: group.id,
+    credentials: {
+      api_key: `sk-account-test-model-pg-${marker}`,
+      base_url: 'https://example.invalid/v1'
+    },
+    supportedModels: ['gpt-5.6-sol']
+  }, accountAccess)
+  createdAccountIds.push(storedAccount.id)
+  const firstEnsuredModel = await updateAccountHealthCheckModelAsync(
+    storedAccount.id,
+    'gpt-5.6-terra',
+    accountAccess,
+    true
+  )
+  assert(firstEnsuredModel?.supportedModels?.includes('gpt-5.6-sol'), 'PG 原子追加不能删除账户原支持模型')
+  assert(firstEnsuredModel?.supportedModels?.includes('gpt-5.6-terra'), 'PG 应追加第一个成功模型')
+  const secondEnsuredModel = await updateAccountHealthCheckModelAsync(
+    storedAccount.id,
+    'gpt-5.6-luna',
+    accountAccess,
+    true
+  )
+  assert(secondEnsuredModel?.supportedModels?.includes('gpt-5.6-terra'), 'PG 连续追加第二个模型不能删除第一个成功模型')
+  assert(secondEnsuredModel?.supportedModels?.includes('gpt-5.6-luna'), 'PG 应追加第二个成功模型')
+  assert.equal(secondEnsuredModel?.healthCheckModel, 'gpt-5.6-luna', 'PG 连续更新后应保存最后检查模型')
+
   console.log(JSON.stringify({
     message: '账号测试任务 PG smoke 通过',
     taskCount: taskIds.length,
-    sessionCount: sessionIds.length
+    sessionCount: sessionIds.length,
+    ensuredModelCount: 2
   }))
 } finally {
+  const accountAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
+  for (const accountId of createdAccountIds.reverse()) {
+    await deleteAccountAsync(accountId, accountAccess).catch(() => false)
+  }
+  for (const groupId of createdGroupIds.reverse()) {
+    await deleteGroupAsync(groupId, accountAccess).catch(() => undefined)
+  }
   await cleanupSmokeRows(taskIds, sessionIds)
+  await closeRedisClients()
   await closePostgresPool()
 }
 

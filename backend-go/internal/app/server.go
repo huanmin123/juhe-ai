@@ -1,0 +1,747 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/httpapi"
+	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/gatewaycache"
+	"juhe-ai/backend-go/internal/modules/managementaccounts"
+	"juhe-ai/backend-go/internal/modules/managementauth"
+	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
+	"juhe-ai/backend-go/internal/modules/managementauthorizations"
+	"juhe-ai/backend-go/internal/modules/managementgroups"
+	"juhe-ai/backend-go/internal/modules/managementoperationlogs"
+	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
+	"juhe-ai/backend-go/internal/modules/managementproviders"
+	"juhe-ai/backend-go/internal/modules/managementproxies"
+	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
+	"juhe-ai/backend-go/internal/modules/managementsettings"
+	"juhe-ai/backend-go/internal/modules/managementstats"
+	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
+	"juhe-ai/backend-go/internal/modules/managementsystemteams"
+	"juhe-ai/backend-go/internal/modules/publicaccounts"
+	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
+	publicapiauth "juhe-ai/backend-go/internal/modules/publicapi/auth"
+	publicapiratelimit "juhe-ai/backend-go/internal/modules/publicapi/ratelimit"
+	"juhe-ai/backend-go/internal/modules/publicapikeys"
+	"juhe-ai/backend-go/internal/modules/publicgroups"
+	"juhe-ai/backend-go/internal/modules/publicroutestrategies"
+	"juhe-ai/backend-go/internal/modules/publicsettings"
+	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	postgresstore "juhe-ai/backend-go/internal/store/postgres"
+)
+
+func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if cfg.PostgresURL == "" {
+		return fmt.Errorf("JUHE_AI_POSTGRES_URL 不能为空")
+	}
+	if cfg.RedisStateURL == "" {
+		return fmt.Errorf("JUHE_AI_REDIS_STATE_URL 不能为空")
+	}
+
+	store, err := postgresstore.Open(ctx, cfg.PostgresURL)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := store.Ping(pingCtx); err != nil {
+		cancel()
+		return err
+	}
+	cancel()
+
+	stateRedis, err := redisplatform.NewClient(cfg.RedisStateURL, cfg.RedisNamespace+":state")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stateRedis.Close() }()
+	redisPingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := stateRedis.Ping(redisPingCtx); err != nil {
+		cancel()
+		return err
+	}
+	cancel()
+
+	var systemAPIClientIPAllowlistVersionReader httpapi.SystemAPIClientIPAllowlistVersionReader
+	var systemAPIClientIPAllowlistCacheRedis *redisplatform.Client
+	if cfg.RedisCacheURL != "" {
+		systemAPIClientIPAllowlistCacheRedis, err = redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
+		if err != nil {
+			return fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
+		}
+		defer func() { _ = systemAPIClientIPAllowlistCacheRedis.Close() }()
+		systemAPIClientIPAllowlistVersionReader, err = httpapi.NewRedisSystemAPIClientIPAllowlistVersionReader(
+			systemAPIClientIPAllowlistCacheRedis,
+			cfg.RedisNamespace,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	systemAccountInvalidator, closeSystemAccountInvalidator, err := newGatewaySystemAccountInvalidator(ctx, cfg, stateRedis)
+	if err != nil {
+		return err
+	}
+	defer closeSystemAccountInvalidator()
+
+	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
+		cfg,
+		logger,
+		store,
+		stateRedis,
+		PublicAPIHandlerOptions{APIKeyInvalidator: systemAccountInvalidator},
+	)
+	if err != nil {
+		return err
+	}
+	if publicAPILogQueue != nil {
+		defer func() { _ = publicAPILogQueue.Close() }()
+	}
+	managementOperationLogQueue, err := newManagementOperationLogQueue(cfg)
+	if err != nil {
+		return err
+	}
+	if managementOperationLogQueue != nil {
+		defer func() { _ = managementOperationLogQueue.Close() }()
+	}
+
+	publicSettingsService := publicsettings.NewService(store)
+	var accountConcurrencyReader managementgroups.AccountConcurrencyReader
+	if cfg.ManagementAPIEnabled {
+		accountConcurrencyReader, err = redisplatform.NewAccountConcurrencyReader(stateRedis, cfg.RedisNamespace)
+		if err != nil {
+			return fmt.Errorf("初始化账号实时并发读取器失败: %w", err)
+		}
+	}
+	managementHandlers := newManagementAPIHandler(
+		cfg,
+		store,
+		stateRedis,
+		managementOperationLogQueue,
+		logger,
+		systemAccountInvalidator,
+		accountConcurrencyReader,
+	)
+	router := httpapi.NewRouter(httpapi.RouterOptions{
+		Config:                                            cfg,
+		Logger:                                            logger,
+		PublicSettingsService:                             &publicSettingsService,
+		SystemAPIRateLimitReader:                          store,
+		SystemAPIClientIPAllowlistReader:                  store,
+		SystemAPIClientIPAllowlistVersionReader:           systemAPIClientIPAllowlistVersionReader,
+		SystemAPIIPRateLimiter:                            httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, cfg.RedisNamespace),
+		SystemAPIAuthenticatedRateLimiter:                 httpapi.NewRedisSystemAPIAuthenticatedRateLimiter(stateRedis, cfg.RedisNamespace),
+		PublicAPIHandler:                                  publicAPIHandler,
+		ManagementAPIAuthMiddleware:                       managementHandlers.AuthMiddleware,
+		ManagementAPIAuthTouchMiddleware:                  managementHandlers.AuthTouchMiddleware,
+		ManagementCaptchaHandler:                          managementHandlers.CaptchaHandler,
+		ManagementLoginHandler:                            managementHandlers.LoginHandler,
+		ManagementCurrentUserHandler:                      managementHandlers.CurrentUserHandler,
+		ManagementProfileUpdateHandler:                    managementHandlers.ProfileUpdateHandler,
+		ManagementPasswordChangeHandler:                   managementHandlers.PasswordChangeHandler,
+		ManagementLogoutHandler:                           managementHandlers.LogoutHandler,
+		ManagementSessionListHandler:                      managementHandlers.SessionListHandler,
+		ManagementSessionRevokeHandler:                    managementHandlers.SessionRevokeHandler,
+		ManagementProxiesHandler:                          managementHandlers.ProxiesHandler,
+		ManagementProxyOptionsHandler:                     managementHandlers.ProxyOptionsHandler,
+		ManagementProxyCreateHandler:                      managementHandlers.ProxyCreateHandler,
+		ManagementProxyUpdateHandler:                      managementHandlers.ProxyUpdateHandler,
+		ManagementProxyDeleteHandler:                      managementHandlers.ProxyDeleteHandler,
+		ManagementProxyTestHandler:                        managementHandlers.ProxyTestHandler,
+		ManagementSystemAccountsHandler:                   managementHandlers.SystemAccountsHandler,
+		ManagementSystemAccountOptionsHandler:             managementHandlers.SystemAccountOptionsHandler,
+		ManagementSystemAccountPatchHandler:               managementHandlers.SystemAccountPatchHandler,
+		ManagementSystemAccountCreateHandler:              managementHandlers.SystemAccountCreateHandler,
+		ManagementSystemTeamsHandler:                      managementHandlers.SystemTeamsHandler,
+		ManagementMySystemTeamsHandler:                    managementHandlers.MySystemTeamsHandler,
+		ManagementSystemTeamCreateHandler:                 managementHandlers.SystemTeamCreateHandler,
+		ManagementSystemTeamPatchHandler:                  managementHandlers.SystemTeamPatchHandler,
+		ManagementSystemTeamMembersAddHandler:             managementHandlers.SystemTeamMembersAddHandler,
+		ManagementSystemTeamMemberDeleteHandler:           managementHandlers.SystemTeamMemberDeleteHandler,
+		ManagementAuthorizationGranteeAccountsHandler:     managementHandlers.AuthorizationGranteeAccountsHandler,
+		ManagementMyAuthorizationGranteeAccountsHandler:   managementHandlers.MyAuthorizationGranteeAccountsHandler,
+		ManagementAuthorizationGranteeTeamsHandler:        managementHandlers.AuthorizationGranteeTeamsHandler,
+		ManagementMyAuthorizationGranteeTeamsHandler:      managementHandlers.MyAuthorizationGranteeTeamsHandler,
+		ManagementAuthorizationGranteeGroupsHandler:       managementHandlers.AuthorizationGranteeGroupsHandler,
+		ManagementMyAuthorizationGranteeGroupsHandler:     managementHandlers.MyAuthorizationGranteeGroupsHandler,
+		ManagementAuthorizationListHandler:                managementHandlers.AuthorizationListHandler,
+		ManagementMyAuthorizationListHandler:              managementHandlers.MyAuthorizationListHandler,
+		ManagementAuthorizationTeamUsageOverviewHandler:   managementHandlers.AuthorizationTeamUsageOverviewHandler,
+		ManagementMyAuthorizationTeamUsageOverviewHandler: managementHandlers.MyAuthorizationTeamUsageOverviewHandler,
+		ManagementAuthorizationUserUsageOverviewHandler:   managementHandlers.AuthorizationUserUsageOverviewHandler,
+		ManagementMyAuthorizationUserUsageOverviewHandler: managementHandlers.MyAuthorizationUserUsageOverviewHandler,
+		ManagementAuthorizationUsageHandler:               managementHandlers.AuthorizationUsageHandler,
+		ManagementMyAuthorizationUsageHandler:             managementHandlers.MyAuthorizationUsageHandler,
+		ManagementAuthorizationDetailHandler:              managementHandlers.AuthorizationDetailHandler,
+		ManagementMyAuthorizationDetailHandler:            managementHandlers.MyAuthorizationDetailHandler,
+		ManagementAuthorizationCreateHandler:              managementHandlers.AuthorizationCreateHandler,
+		ManagementMyAuthorizationCreateHandler:            managementHandlers.MyAuthorizationCreateHandler,
+		ManagementAuthorizationUpdateHandler:              managementHandlers.AuthorizationUpdateHandler,
+		ManagementMyAuthorizationUpdateHandler:            managementHandlers.MyAuthorizationUpdateHandler,
+		ManagementAuthorizationExpireUpdateHandler:        managementHandlers.AuthorizationExpireUpdateHandler,
+		ManagementMyAuthorizationExpireUpdateHandler:      managementHandlers.MyAuthorizationExpireUpdateHandler,
+		ManagementAuthorizationReturnHandler:              managementHandlers.AuthorizationReturnHandler,
+		ManagementMyAuthorizationReturnHandler:            managementHandlers.MyAuthorizationReturnHandler,
+		ManagementAccountAuthorizationReturnHandler:       managementHandlers.AccountAuthorizationReturnHandler,
+		ManagementMyAccountAuthorizationReturnHandler:     managementHandlers.MyAccountAuthorizationReturnHandler,
+		ManagementGroupAuthorizationReturnHandler:         managementHandlers.GroupAuthorizationReturnHandler,
+		ManagementMyGroupAuthorizationReturnHandler:       managementHandlers.MyGroupAuthorizationReturnHandler,
+		ManagementAuthorizationRevokeHandler:              managementHandlers.AuthorizationRevokeHandler,
+		ManagementMyAuthorizationRevokeHandler:            managementHandlers.MyAuthorizationRevokeHandler,
+		ManagementProvidersHandler:                        managementHandlers.ProvidersHandler,
+		ManagementProviderOptionsHandler:                  managementHandlers.ProviderOptionsHandler,
+		ManagementProviderModelOptionsHandler:             managementHandlers.ProviderModelOptionsHandler,
+		ManagementProviderModelsHandler:                   managementHandlers.ProviderModelsHandler,
+		ManagementProviderDefaultHealthCheckModelHandler:  managementHandlers.ProviderDefaultHealthCheckModelHandler,
+		ManagementProviderCustomModelCreateHandler:        managementHandlers.ProviderCustomModelCreateHandler,
+		ManagementProviderCustomModelUpdateHandler:        managementHandlers.ProviderCustomModelUpdateHandler,
+		ManagementProviderCustomModelDeleteHandler:        managementHandlers.ProviderCustomModelDeleteHandler,
+		ManagementRouteStrategyOptionsHandler:             managementHandlers.RouteStrategyOptionsHandler,
+		ManagementMyRouteStrategyOptionsHandler:           managementHandlers.MyRouteStrategyOptionsHandler,
+		ManagementGroupListHandler:                        managementHandlers.GroupListHandler,
+		ManagementMyGroupListHandler:                      managementHandlers.MyGroupListHandler,
+		ManagementGroupDetailHandler:                      managementHandlers.GroupDetailHandler,
+		ManagementMyGroupDetailHandler:                    managementHandlers.MyGroupDetailHandler,
+		ManagementGroupCreateHandler:                      managementHandlers.GroupCreateHandler,
+		ManagementMyGroupCreateHandler:                    managementHandlers.MyGroupCreateHandler,
+		ManagementGroupUpdateHandler:                      managementHandlers.GroupUpdateHandler,
+		ManagementMyGroupUpdateHandler:                    managementHandlers.MyGroupUpdateHandler,
+		ManagementGroupOptionsHandler:                     managementHandlers.GroupOptionsHandler,
+		ManagementMyGroupOptionsHandler:                   managementHandlers.MyGroupOptionsHandler,
+		ManagementGroupAccountOptionsHandler:              managementHandlers.GroupAccountOptionsHandler,
+		ManagementMyGroupAccountOptionsHandler:            managementHandlers.MyGroupAccountOptionsHandler,
+		ManagementAccountOptionsHandler:                   managementHandlers.AccountOptionsHandler,
+		ManagementMyAccountOptionsHandler:                 managementHandlers.MyAccountOptionsHandler,
+		ManagementAccountTagsHandler:                      managementHandlers.AccountTagsHandler,
+		ManagementMyAccountTagsHandler:                    managementHandlers.MyAccountTagsHandler,
+		ManagementAccountTagDeleteHandler:                 managementHandlers.AccountTagDeleteHandler,
+		ManagementMyAccountTagDeleteHandler:               managementHandlers.MyAccountTagDeleteHandler,
+		ManagementAccountTagUpdateHandler:                 managementHandlers.AccountTagUpdateHandler,
+		ManagementMyAccountTagUpdateHandler:               managementHandlers.MyAccountTagUpdateHandler,
+		ManagementSystemSettingsHandler:                   managementHandlers.SystemSettingsHandler,
+		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
+		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
+		ManagementGlobalSettingsUpdateHandler:             managementHandlers.GlobalSettingsUpdateHandler,
+		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
+		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
+		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
+		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
+	})
+
+	server := &http.Server{
+		Addr:              cfg.Address(),
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("Go 后端 HTTP 服务启动", slog.String("address", cfg.Address()))
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		return <-errCh
+	case err := <-errCh:
+		return err
+	}
+}
+
+type managementAPIHandlers struct {
+	AuthMiddleware                          func(http.Handler) http.Handler
+	AuthTouchMiddleware                     func(http.Handler) http.Handler
+	CaptchaHandler                          http.Handler
+	LoginHandler                            http.Handler
+	CurrentUserHandler                      http.Handler
+	ProfileUpdateHandler                    http.Handler
+	PasswordChangeHandler                   http.Handler
+	LogoutHandler                           http.Handler
+	SessionListHandler                      http.Handler
+	SessionRevokeHandler                    http.Handler
+	ProxiesHandler                          http.Handler
+	ProxyOptionsHandler                     http.Handler
+	ProxyCreateHandler                      http.Handler
+	ProxyUpdateHandler                      http.Handler
+	ProxyDeleteHandler                      http.Handler
+	ProxyTestHandler                        http.Handler
+	SystemAccountsHandler                   http.Handler
+	SystemAccountOptionsHandler             http.Handler
+	SystemAccountPatchHandler               http.Handler
+	SystemAccountCreateHandler              http.Handler
+	SystemTeamsHandler                      http.Handler
+	MySystemTeamsHandler                    http.Handler
+	SystemTeamCreateHandler                 http.Handler
+	SystemTeamPatchHandler                  http.Handler
+	SystemTeamMembersAddHandler             http.Handler
+	SystemTeamMemberDeleteHandler           http.Handler
+	AuthorizationGranteeAccountsHandler     http.Handler
+	MyAuthorizationGranteeAccountsHandler   http.Handler
+	AuthorizationGranteeTeamsHandler        http.Handler
+	MyAuthorizationGranteeTeamsHandler      http.Handler
+	AuthorizationGranteeGroupsHandler       http.Handler
+	MyAuthorizationGranteeGroupsHandler     http.Handler
+	AuthorizationListHandler                http.Handler
+	MyAuthorizationListHandler              http.Handler
+	AuthorizationTeamUsageOverviewHandler   http.Handler
+	MyAuthorizationTeamUsageOverviewHandler http.Handler
+	AuthorizationUserUsageOverviewHandler   http.Handler
+	MyAuthorizationUserUsageOverviewHandler http.Handler
+	AuthorizationUsageHandler               http.Handler
+	MyAuthorizationUsageHandler             http.Handler
+	AuthorizationDetailHandler              http.Handler
+	MyAuthorizationDetailHandler            http.Handler
+	AuthorizationCreateHandler              http.Handler
+	MyAuthorizationCreateHandler            http.Handler
+	AuthorizationUpdateHandler              http.Handler
+	MyAuthorizationUpdateHandler            http.Handler
+	AuthorizationExpireUpdateHandler        http.Handler
+	MyAuthorizationExpireUpdateHandler      http.Handler
+	AuthorizationReturnHandler              http.Handler
+	MyAuthorizationReturnHandler            http.Handler
+	AccountAuthorizationReturnHandler       http.Handler
+	MyAccountAuthorizationReturnHandler     http.Handler
+	GroupAuthorizationReturnHandler         http.Handler
+	MyGroupAuthorizationReturnHandler       http.Handler
+	AuthorizationRevokeHandler              http.Handler
+	MyAuthorizationRevokeHandler            http.Handler
+	ProvidersHandler                        http.Handler
+	ProviderOptionsHandler                  http.Handler
+	ProviderModelOptionsHandler             http.Handler
+	ProviderModelsHandler                   http.Handler
+	ProviderDefaultHealthCheckModelHandler  http.Handler
+	ProviderCustomModelCreateHandler        http.Handler
+	ProviderCustomModelUpdateHandler        http.Handler
+	ProviderCustomModelDeleteHandler        http.Handler
+	RouteStrategyOptionsHandler             http.Handler
+	MyRouteStrategyOptionsHandler           http.Handler
+	GroupListHandler                        http.Handler
+	MyGroupListHandler                      http.Handler
+	GroupDetailHandler                      http.Handler
+	MyGroupDetailHandler                    http.Handler
+	GroupCreateHandler                      http.Handler
+	MyGroupCreateHandler                    http.Handler
+	GroupUpdateHandler                      http.Handler
+	MyGroupUpdateHandler                    http.Handler
+	GroupOptionsHandler                     http.Handler
+	MyGroupOptionsHandler                   http.Handler
+	GroupAccountOptionsHandler              http.Handler
+	MyGroupAccountOptionsHandler            http.Handler
+	AccountOptionsHandler                   http.Handler
+	MyAccountOptionsHandler                 http.Handler
+	AccountTagsHandler                      http.Handler
+	MyAccountTagsHandler                    http.Handler
+	AccountTagDeleteHandler                 http.Handler
+	MyAccountTagDeleteHandler               http.Handler
+	AccountTagUpdateHandler                 http.Handler
+	MyAccountTagUpdateHandler               http.Handler
+	SystemSettingsHandler                   http.Handler
+	SystemSettingsUpdateHandler             http.Handler
+	GlobalSettingsHandler                   http.Handler
+	GlobalSettingsUpdateHandler             http.Handler
+	OperationLogsHandler                    http.Handler
+	MyOperationLogsHandler                  http.Handler
+	StatsUsageWindowHandler                 http.Handler
+	MyStatsUsageWindowHandler               http.Handler
+}
+
+type managementAPIInvalidator interface {
+	managementsystemaccounts.SystemAccountInvalidator
+	managementsystemteams.AuthorizationInvalidator
+	managementauthorizations.AuthorizationInvalidator
+	managementprovidermodels.CustomProviderModelInvalidator
+	managementproxies.ProxyInvalidator
+	managementsettings.GlobalSettingsCacheInvalidator
+	managementsettings.SystemSettingsInvalidator
+}
+
+type gatewayCacheInvalidator interface {
+	managementAPIInvalidator
+	publicapikeys.APIKeyGatewayCacheInvalidator
+}
+
+func newManagementAPIHandler(
+	cfg config.Config,
+	store *postgresstore.Store,
+	stateRedis *redisplatform.Client,
+	operationLogQueue operationLogEnqueueClient,
+	logger *slog.Logger,
+	systemAccountInvalidator managementAPIInvalidator,
+	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
+) managementAPIHandlers {
+	if !cfg.ManagementAPIEnabled && !cfg.ManagementAuthSessionsEnabled {
+		return managementAPIHandlers{}
+	}
+	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store})
+	sessionService := managementauth.NewSessionService(store)
+	if !cfg.ManagementAPIEnabled {
+		return managementAPIHandlers{
+			AuthMiddleware:       httpapi.NewManagementAPIAuthMiddleware(authenticator),
+			AuthTouchMiddleware:  httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
+			SessionListHandler:   httpapi.NewManagementSessionListHandler(sessionService),
+			SessionRevokeHandler: httpapi.NewManagementSessionRevokeHandler(sessionService, cfg),
+		}
+	}
+	captchaService := managementauth.NewCaptchaService(stateRedis)
+	loginGuardService := managementauth.NewLoginGuardService(stateRedis)
+	loginService := managementauth.NewLoginService(store, captchaService, loginGuardService)
+	profileService := managementauth.NewProfileService(store)
+	passwordService := managementauth.NewPasswordService(store)
+	proxyService := managementproxies.NewServiceWithOptions(managementproxies.ServiceOptions{
+		Store:       store,
+		Secret:      cfg.Secret,
+		Invalidator: systemAccountInvalidator,
+	})
+	providerService := managementproviders.NewService(store)
+	providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
+		Store:       store,
+		Invalidator: systemAccountInvalidator,
+	})
+	routeStrategyService := managementroutestrategies.NewService(store)
+	groupService := managementgroups.NewServiceWithOptions(managementgroups.ServiceOptions{
+		Store:                   store,
+		ListStore:               store,
+		DetailStore:             store,
+		UsageStatsTimezoneStore: store,
+		AccountConcurrency:      accountConcurrencyReader,
+		Invalidator:             systemAccountInvalidator,
+		Logger:                  logger,
+	})
+	accountService := managementaccounts.NewService(store)
+	systemAccountService := managementsystemaccounts.NewServiceWithOptions(managementsystemaccounts.ServiceOptions{
+		Store:                    store,
+		Secret:                   cfg.Secret,
+		SystemAccountInvalidator: systemAccountInvalidator,
+	})
+	systemTeamService := managementsystemteams.NewServiceWithOptions(managementsystemteams.ServiceOptions{
+		Store:                    store,
+		AuthorizationInvalidator: systemAccountInvalidator,
+	})
+	authorizationService := managementauthorizations.NewServiceWithOptions(managementauthorizations.ServiceOptions{
+		Store:                    store,
+		Secret:                   cfg.Secret,
+		AuthorizationInvalidator: systemAccountInvalidator,
+	})
+	authorizationOptionService := managementauthorizationoptions.NewService(store)
+	operationLogService := managementoperationlogs.NewService(store)
+	statsService := managementstats.NewService(store)
+	globalSettingsService := publicsettings.NewService(store)
+	globalSettingsUpdateService := managementsettings.NewServiceWithOptions(managementsettings.ServiceOptions{
+		Store:                          store,
+		GlobalSettingsCacheInvalidator: systemAccountInvalidator,
+	})
+	systemSettingsService := managementsettings.NewSystemServiceWithOptions(managementsettings.SystemServiceOptions{
+		Store:       store,
+		Invalidator: systemAccountInvalidator,
+		Logger:      logger,
+	})
+	operationLogOptions := httpapi.ManagementOperationLogOptions{
+		Config:         cfg,
+		Logger:         logger,
+		Client:         operationLogQueue,
+		SettingsReader: store,
+	}
+	return managementAPIHandlers{
+		AuthMiddleware:                          httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		AuthTouchMiddleware:                     httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
+		CaptchaHandler:                          httpapi.NewManagementCaptchaHandler(captchaService, cfg),
+		LoginHandler:                            httpapi.NewManagementLoginHandler(loginService, cfg),
+		CurrentUserHandler:                      httpapi.NewManagementCurrentUserHandler(authenticator),
+		ProfileUpdateHandler:                    httpapi.NewManagementProfileUpdateHandlerWithOperationLog(profileService, operationLogOptions),
+		PasswordChangeHandler:                   httpapi.NewManagementPasswordChangeHandler(authenticator, passwordService),
+		LogoutHandler:                           httpapi.NewManagementLogoutHandler(authenticator, cfg),
+		SessionListHandler:                      httpapi.NewManagementSessionListHandler(sessionService),
+		SessionRevokeHandler:                    httpapi.NewManagementSessionRevokeHandler(sessionService, cfg),
+		ProxiesHandler:                          httpapi.NewManagementProxiesHandler(proxyService),
+		ProxyOptionsHandler:                     httpapi.NewManagementProxyOptionsHandler(proxyService),
+		ProxyCreateHandler:                      httpapi.NewManagementProxyCreateHandlerWithOperationLog(proxyService, operationLogOptions),
+		ProxyUpdateHandler:                      httpapi.NewManagementProxyUpdateHandlerWithOperationLog(proxyService, operationLogOptions),
+		ProxyDeleteHandler:                      httpapi.NewManagementProxyDeleteHandlerWithOperationLog(proxyService, operationLogOptions),
+		ProxyTestHandler:                        httpapi.NewManagementProxyTestHandlerWithOperationLog(proxyService, operationLogOptions),
+		SystemAccountsHandler:                   httpapi.NewManagementSystemAccountsHandler(systemAccountService),
+		SystemAccountOptionsHandler:             httpapi.NewManagementSystemAccountOptionsHandler(systemAccountService),
+		SystemAccountPatchHandler:               httpapi.NewManagementSystemAccountPatchHandlerWithOperationLog(systemAccountService, operationLogOptions),
+		SystemAccountCreateHandler:              httpapi.NewManagementSystemAccountCreateHandlerWithOperationLog(systemAccountService, operationLogOptions),
+		SystemTeamsHandler:                      httpapi.NewManagementSystemTeamsHandler(systemTeamService),
+		MySystemTeamsHandler:                    httpapi.NewManagementMySystemTeamsHandler(systemTeamService),
+		SystemTeamCreateHandler:                 httpapi.NewManagementSystemTeamCreateHandlerWithOperationLog(systemTeamService, operationLogOptions),
+		SystemTeamPatchHandler:                  httpapi.NewManagementSystemTeamPatchHandlerWithOperationLog(systemTeamService, operationLogOptions),
+		SystemTeamMembersAddHandler:             httpapi.NewManagementSystemTeamMembersAddHandlerWithOperationLog(systemTeamService, operationLogOptions),
+		SystemTeamMemberDeleteHandler:           httpapi.NewManagementSystemTeamMemberDeleteHandlerWithOperationLog(systemTeamService, operationLogOptions),
+		AuthorizationGranteeAccountsHandler:     httpapi.NewManagementAuthorizationGranteeAccountsHandler(authorizationOptionService),
+		MyAuthorizationGranteeAccountsHandler:   httpapi.NewManagementMyAuthorizationGranteeAccountsHandler(authorizationOptionService),
+		AuthorizationGranteeTeamsHandler:        httpapi.NewManagementAuthorizationGranteeTeamsHandler(authorizationOptionService),
+		MyAuthorizationGranteeTeamsHandler:      httpapi.NewManagementMyAuthorizationGranteeTeamsHandler(authorizationOptionService),
+		AuthorizationGranteeGroupsHandler:       httpapi.NewManagementAuthorizationGranteeGroupsHandler(authorizationOptionService),
+		MyAuthorizationGranteeGroupsHandler:     httpapi.NewManagementMyAuthorizationGranteeGroupsHandler(authorizationOptionService),
+		AuthorizationListHandler:                httpapi.NewManagementAuthorizationListHandler(authorizationService),
+		MyAuthorizationListHandler:              httpapi.NewManagementMyAuthorizationListHandler(authorizationService),
+		AuthorizationTeamUsageOverviewHandler:   httpapi.NewManagementAuthorizationTeamUsageOverviewHandler(authorizationService),
+		MyAuthorizationTeamUsageOverviewHandler: httpapi.NewManagementMyAuthorizationTeamUsageOverviewHandler(authorizationService),
+		AuthorizationUserUsageOverviewHandler:   httpapi.NewManagementAuthorizationUserUsageOverviewHandler(authorizationService),
+		MyAuthorizationUserUsageOverviewHandler: httpapi.NewManagementMyAuthorizationUserUsageOverviewHandler(authorizationService),
+		AuthorizationUsageHandler:               httpapi.NewManagementAuthorizationUsageHandler(authorizationService),
+		MyAuthorizationUsageHandler:             httpapi.NewManagementMyAuthorizationUsageHandler(authorizationService),
+		AuthorizationDetailHandler:              httpapi.NewManagementAuthorizationDetailHandler(authorizationService),
+		MyAuthorizationDetailHandler:            httpapi.NewManagementMyAuthorizationDetailHandler(authorizationService),
+		AuthorizationCreateHandler:              httpapi.NewManagementAuthorizationCreateHandlerWithOperationLog(authorizationService, operationLogOptions),
+		MyAuthorizationCreateHandler:            httpapi.NewManagementMyAuthorizationCreateHandlerWithOperationLog(authorizationService, operationLogOptions),
+		AuthorizationUpdateHandler:              httpapi.NewManagementAuthorizationUpdateHandlerWithOperationLog(authorizationService, operationLogOptions),
+		MyAuthorizationUpdateHandler:            httpapi.NewManagementMyAuthorizationUpdateHandlerWithOperationLog(authorizationService, operationLogOptions),
+		AuthorizationExpireUpdateHandler:        httpapi.NewManagementAuthorizationExpireUpdateHandlerWithOperationLog(authorizationService, operationLogOptions),
+		MyAuthorizationExpireUpdateHandler:      httpapi.NewManagementMyAuthorizationExpireUpdateHandlerWithOperationLog(authorizationService, operationLogOptions),
+		AuthorizationReturnHandler:              httpapi.NewManagementAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
+		MyAuthorizationReturnHandler:            httpapi.NewManagementMyAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
+		AccountAuthorizationReturnHandler:       httpapi.NewManagementAccountAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
+		MyAccountAuthorizationReturnHandler:     httpapi.NewManagementMyAccountAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
+		GroupAuthorizationReturnHandler:         httpapi.NewManagementGroupAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
+		MyGroupAuthorizationReturnHandler:       httpapi.NewManagementMyGroupAuthorizationReturnHandlerWithOperationLog(authorizationService, operationLogOptions),
+		AuthorizationRevokeHandler:              httpapi.NewManagementAuthorizationRevokeHandlerWithOperationLog(authorizationService, operationLogOptions),
+		MyAuthorizationRevokeHandler:            httpapi.NewManagementMyAuthorizationRevokeHandlerWithOperationLog(authorizationService, operationLogOptions),
+		ProvidersHandler:                        httpapi.NewManagementProvidersHandler(providerService),
+		ProviderOptionsHandler:                  httpapi.NewManagementProviderOptionsHandler(providerService),
+		ProviderModelOptionsHandler:             httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
+		ProviderModelsHandler:                   httpapi.NewManagementProviderModelsHandler(providerModelService),
+		ProviderDefaultHealthCheckModelHandler:  httpapi.NewManagementProviderDefaultHealthCheckModelHandler(providerModelService),
+		ProviderCustomModelCreateHandler:        httpapi.NewManagementProviderCustomModelCreateHandler(providerModelService),
+		ProviderCustomModelUpdateHandler:        httpapi.NewManagementProviderCustomModelUpdateHandler(providerModelService),
+		ProviderCustomModelDeleteHandler:        httpapi.NewManagementProviderCustomModelDeleteHandler(providerModelService),
+		RouteStrategyOptionsHandler:             httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
+		MyRouteStrategyOptionsHandler:           httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
+		GroupListHandler:                        httpapi.NewManagementGroupListHandler(groupService),
+		MyGroupListHandler:                      httpapi.NewManagementMyGroupListHandler(groupService),
+		GroupDetailHandler:                      httpapi.NewManagementGroupDetailHandler(groupService),
+		MyGroupDetailHandler:                    httpapi.NewManagementMyGroupDetailHandler(groupService),
+		GroupCreateHandler:                      httpapi.NewManagementGroupCreateHandlerWithOperationLog(groupService, operationLogOptions),
+		MyGroupCreateHandler:                    httpapi.NewManagementMyGroupCreateHandlerWithOperationLog(groupService, operationLogOptions),
+		GroupUpdateHandler:                      httpapi.NewManagementGroupUpdateHandlerWithOperationLog(groupService, operationLogOptions),
+		MyGroupUpdateHandler:                    httpapi.NewManagementMyGroupUpdateHandlerWithOperationLog(groupService, operationLogOptions),
+		GroupOptionsHandler:                     httpapi.NewManagementGroupOptionsHandler(groupService),
+		MyGroupOptionsHandler:                   httpapi.NewManagementMyGroupOptionsHandler(groupService),
+		GroupAccountOptionsHandler:              httpapi.NewManagementGroupAccountOptionsHandler(groupService),
+		MyGroupAccountOptionsHandler:            httpapi.NewManagementMyGroupAccountOptionsHandler(groupService),
+		AccountOptionsHandler:                   httpapi.NewManagementAccountOptionsHandler(accountService),
+		MyAccountOptionsHandler:                 httpapi.NewManagementMyAccountOptionsHandler(accountService),
+		AccountTagsHandler:                      httpapi.NewManagementAccountTagsHandler(accountService),
+		MyAccountTagsHandler:                    httpapi.NewManagementMyAccountTagsHandler(accountService),
+		AccountTagDeleteHandler:                 httpapi.NewManagementAccountTagDeleteHandler(accountService),
+		MyAccountTagDeleteHandler:               httpapi.NewManagementMyAccountTagDeleteHandler(accountService),
+		AccountTagUpdateHandler:                 httpapi.NewManagementAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
+		MyAccountTagUpdateHandler:               httpapi.NewManagementMyAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
+		SystemSettingsHandler:                   httpapi.NewManagementSystemSettingsHandler(systemSettingsService),
+		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
+		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),
+		GlobalSettingsUpdateHandler:             httpapi.NewManagementGlobalSettingsUpdateHandlerWithOperationLog(globalSettingsUpdateService, operationLogOptions),
+		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
+		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
+		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
+		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
+	}
+}
+
+type operationLogEnqueueClient interface {
+	Enqueue(ctx context.Context, taskType string, payload []byte, opts queue.EnqueueOptions) (queue.TaskInfo, error)
+}
+
+func newGatewaySystemAccountInvalidator(
+	ctx context.Context,
+	cfg config.Config,
+	stateRedis *redisplatform.Client,
+) (gatewayCacheInvalidator, func(), error) {
+	closeFn := func() {}
+	if !cfg.ManagementAPIEnabled && !cfg.PublicAPIEnabled {
+		return nil, closeFn, nil
+	}
+	if stateRedis == nil {
+		return nil, closeFn, fmt.Errorf("gateway system account invalidator requires state redis")
+	}
+	var cacheRedis *redisplatform.Client
+	if cfg.RedisCacheURL == "" {
+		return nil, closeFn, fmt.Errorf("gateway invalidator requires JUHE_AI_REDIS_CACHE_URL when management or public API is enabled")
+	} else {
+		var err error
+		cacheRedis, err = redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
+		if err != nil {
+			return nil, closeFn, fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
+		}
+		closeFn = func() { _ = cacheRedis.Close() }
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := cacheRedis.Ping(pingCtx); err != nil {
+			closeFn()
+			return nil, func() {}, fmt.Errorf("网关缓存 Redis 不可用: %w", err)
+		}
+	}
+	invalidator, err := gatewaycache.NewSystemAccountInvalidator(gatewaycache.SystemAccountInvalidatorOptions{
+		Cache:     cacheRedis,
+		State:     stateRedis,
+		Namespace: cfg.RedisNamespace,
+	})
+	if err != nil {
+		closeFn()
+		return nil, func() {}, err
+	}
+	return invalidator, closeFn, nil
+}
+
+func newManagementOperationLogQueue(cfg config.Config) (*queue.Client, error) {
+	if !cfg.ManagementAPIEnabled {
+		return nil, nil
+	}
+	redisOpts, err := queue.ParseRedisURL(cfg.RedisQueueURL)
+	if err != nil {
+		return nil, fmt.Errorf("JUHE_AI_REDIS_QUEUE_URL 无效: %w", err)
+	}
+	logQueue := queue.NewClient(redisOpts)
+	if err := logQueue.Ping(); err != nil {
+		_ = logQueue.Close()
+		return nil, fmt.Errorf("操作日志队列不可用: %w", err)
+	}
+	return logQueue, nil
+}
+
+func newPublicAPIHandler(
+	cfg config.Config,
+	logger *slog.Logger,
+	store *postgresstore.Store,
+	stateRedis *redisplatform.Client,
+) (http.Handler, *queue.Client, error) {
+	return newPublicAPIHandlerWithOptions(cfg, logger, store, stateRedis, PublicAPIHandlerOptions{})
+}
+
+type PublicAPIHandlerOptions struct {
+	Now               func() time.Time
+	NewLogID          func() string
+	APIKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator
+}
+
+func NewPublicAPIHandler(
+	cfg config.Config,
+	logger *slog.Logger,
+	store *postgresstore.Store,
+	stateRedis *redisplatform.Client,
+) (http.Handler, *queue.Client, error) {
+	return newPublicAPIHandlerWithOptions(cfg, logger, store, stateRedis, PublicAPIHandlerOptions{})
+}
+
+func NewPublicAPIHandlerWithOptions(
+	cfg config.Config,
+	logger *slog.Logger,
+	store *postgresstore.Store,
+	stateRedis *redisplatform.Client,
+	opts PublicAPIHandlerOptions,
+) (http.Handler, *queue.Client, error) {
+	return newPublicAPIHandlerWithOptions(cfg, logger, store, stateRedis, opts)
+}
+
+func newPublicAPIHandlerWithOptions(
+	cfg config.Config,
+	logger *slog.Logger,
+	store *postgresstore.Store,
+	stateRedis *redisplatform.Client,
+	opts PublicAPIHandlerOptions,
+) (http.Handler, *queue.Client, error) {
+	if !cfg.PublicAPIEnabled {
+		return nil, nil, nil
+	}
+
+	redisOpts, err := queue.ParseRedisURL(cfg.RedisQueueURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("JUHE_AI_REDIS_QUEUE_URL 无效: %w", err)
+	}
+	logQueue := queue.NewClient(redisOpts)
+	if err := logQueue.Ping(); err != nil {
+		_ = logQueue.Close()
+		return nil, nil, fmt.Errorf("公开接口日志队列不可用: %w", err)
+	}
+
+	limiter, err := publicapiratelimit.NewLimiter(publicapiratelimit.Options{Client: stateRedis})
+	if err != nil {
+		_ = logQueue.Close()
+		return nil, nil, err
+	}
+
+	handlers, err := newPublicAPIHandlers(store, cfg.Secret, opts.APIKeyInvalidator)
+	if err != nil {
+		_ = logQueue.Close()
+		return nil, nil, err
+	}
+
+	handler := httpapi.NewPublicAPIShell(httpapi.PublicAPIShellOptions{
+		Config:                  cfg,
+		Logger:                  logger,
+		Authenticator:           publicapiauth.NewAuthenticator(publicapiauth.AuthenticatorOptions{Store: store}),
+		RateLimiter:             limiter,
+		LogClient:               logQueue,
+		EndpointHandlers:        handlers,
+		Now:                     opts.Now,
+		NewLogID:                opts.NewLogID,
+		SkipRequestIDMiddleware: true,
+	})
+
+	return handler, logQueue, nil
+}
+
+func newPublicAPIHandlers(
+	store *postgresstore.Store,
+	credentialSecret string,
+	apiKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator,
+) (map[string]http.Handler, error) {
+	groupService := publicgroups.NewService(publicgroups.Options{Store: store, Transactor: store})
+	routeStrategyService := publicroutestrategies.NewService(publicroutestrategies.Options{Store: store, Transactor: store})
+	apiKeyService := publicapikeys.NewService(publicapikeys.Options{
+		Store:       store,
+		Transactor:  store,
+		Invalidator: apiKeyInvalidator,
+	})
+	providerModelService := managementprovidermodels.NewService(store)
+	accountService := publicaccounts.NewService(publicaccounts.Options{
+		Store:          store,
+		Transactor:     store,
+		ProviderModels: providerModelService,
+		Secret:         credentialSecret,
+	})
+
+	handlers := map[string]http.Handler{}
+	for _, part := range []map[string]http.Handler{
+		httpapi.NewPublicGroupHandlers(groupService),
+		httpapi.NewPublicRouteStrategyHandlers(routeStrategyService),
+		httpapi.NewPublicAPIKeyHandlers(apiKeyService),
+		httpapi.NewPublicAccountHandlers(accountService),
+	} {
+		for id, handler := range part {
+			if _, exists := handlers[id]; exists {
+				return nil, fmt.Errorf("公开接口 handler 重复: %s", id)
+			}
+			handlers[id] = handler
+		}
+	}
+
+	for _, endpoint := range publicapicatalog.Endpoints() {
+		if handlers[endpoint.ID] == nil {
+			return nil, fmt.Errorf("公开接口 handler 未实现: %s", endpoint.ID)
+		}
+	}
+	return handlers, nil
+}

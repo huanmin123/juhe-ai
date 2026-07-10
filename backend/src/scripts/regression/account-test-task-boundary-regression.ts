@@ -1,606 +1,142 @@
-import { strict as assert } from 'node:assert'
+import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 
-const currentDir = dirname(fileURLToPath(import.meta.url))
-const backendSrc = resolve(currentDir, '../..')
-const projectRoot = resolve(backendSrc, '../..')
+const backendRoot = resolve('src')
+const frontendRoot = resolve('..', 'frontend', 'src')
 
-const accountsRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/accounts.routes.ts'), 'utf8')
-const accountDetailRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-detail.routes.ts'), 'utf8')
-const accountTestDispatchRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-dispatch.routes.ts'), 'utf8')
-const accountTestSessionRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-session.routes.ts'), 'utf8')
-const accountTestStatusRoutesSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-status.routes.ts'), 'utf8')
-const accountTestTaskQueueSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test-task-queue.service.ts'), 'utf8')
-const accountTestServiceSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-test.service.ts'), 'utf8')
-const accountTestTaskRepositorySource = readFileSync(resolve(backendSrc, 'storage/account-test-tasks.repository.ts'), 'utf8')
-const accountDraftTestServiceSource = readFileSync(resolve(backendSrc, 'modules/accounts/account-draft-test.service.ts'), 'utf8')
-const dbServiceHandlersSource = readFileSync(resolve(backendSrc, 'modules/db-service/db-service-handlers.ts'), 'utf8')
-const workerSource = readFileSync(resolve(backendSrc, 'worker.ts'), 'utf8')
-const backgroundIpcSource = readFileSync(resolve(backendSrc, 'modules/background/background-ipc.ts'), 'utf8')
-const frontendAccountTestModalSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/useAccountTestModal.ts'), 'utf8')
-const frontendAccountTestTaskPollingSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestTaskPolling.ts'), 'utf8')
-const frontendAccountTestSessionClientSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestSessionClient.ts'), 'utf8')
-const frontendAccountTestRunSessionSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestRunSession.ts'), 'utf8')
-const frontendAccountBatchExecutionSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountBatchExecution.ts'), 'utf8')
-const frontendAccountTestModalComponentSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/AccountTestModal.vue'), 'utf8')
-const frontendAccountTestDisplayFormattersSource = readFileSync(resolve(projectRoot, 'frontend/src/views/accounts/accountTestDisplayFormatters.ts'), 'utf8')
-const accountTestRuntimeCallSources = [
-  'modules/accounts/account-test-task-queue.service.ts',
-  'modules/background/cooldown-account-retest.service.ts',
-  'modules/background/account-health-check.service.ts',
-  'modules/background/account-quality-failure-precheck.service.ts',
-  'modules/background/account-api-key-cooldown-retest.service.ts',
-  'modules/background/normal-route-speed-first-recovery-probe.service.ts',
-  'modules/gateway/runtime/account-side-effects.service.ts',
-  'modules/gateway/client-profiles/codex-switch-probe.ts'
-].map((relativePath) => ({
-  relativePath,
-  source: readFileSync(resolve(backendSrc, relativePath), 'utf8')
-}))
-const accountTestQueueItemSource = interfaceBody(accountTestTaskQueueSource, 'AccountTestQueueItem')
-const runOpenAIAccountTestWithSideEffectsSource = accountTestTaskQueueSource.slice(
-  accountTestTaskQueueSource.indexOf('async function runOpenAIAccountTestWithSideEffects'),
-  accountTestTaskQueueSource.indexOf('function enqueueManualAccountTestFailurePrecheck')
-)
-const runManualAccountTestFailurePrecheckQueueItemSource = accountTestTaskQueueSource.slice(
-  accountTestTaskQueueSource.indexOf('async function runManualAccountTestFailurePrecheckQueueItem'),
-  accountTestTaskQueueSource.indexOf('async function openAIDraftAccountSecret')
-)
-const prepareAccountDraftTestSnapshotAsyncSource = accountDraftTestServiceSource.slice(
-  accountDraftTestServiceSource.indexOf('export async function prepareAccountDraftTestSnapshotAsync'),
-  accountDraftTestServiceSource.indexOf('function prepareAccountDraftTestSnapshotResolved')
-)
-const assertActivationTestTaskMatchesCreateAsyncSource = accountDraftTestServiceSource.slice(
-  accountDraftTestServiceSource.indexOf('async function assertActivationTestTaskMatchesCreateAsync'),
-  accountDraftTestServiceSource.indexOf('async function accountCreateActivationFingerprintSnapshotAsync')
-)
-const accountCreateActivationFingerprintSnapshotAsyncSource = accountDraftTestServiceSource.slice(
-  accountDraftTestServiceSource.indexOf('async function accountCreateActivationFingerprintSnapshotAsync'),
-  accountDraftTestServiceSource.indexOf('function sameAccountTestRequester')
-)
+const dispatchRoutes = source(backendRoot, 'modules', 'accounts', 'account-test-dispatch.routes.ts')
+const sessionRoutes = source(backendRoot, 'modules', 'accounts', 'account-test-session.routes.ts')
+const statusRoutes = source(backendRoot, 'modules', 'accounts', 'account-test-status.routes.ts')
+const taskRepository = source(backendRoot, 'storage', 'account-test-tasks.repository.ts')
+const testService = source(backendRoot, 'modules', 'accounts', 'account-test.service.ts')
+const gatewayRoutes = source(backendRoot, 'modules', 'gateway', 'routes.ts')
+const failureDispatch = source(backendRoot, 'modules', 'gateway', 'response', 'failure-dispatch.ts')
+const usageRepository = source(backendRoot, 'storage', 'usage-records.repository.ts')
+const accountApi = source(frontendRoot, 'api', 'domains', 'accounts.ts')
+const accountsView = source(frontendRoot, 'views', 'accounts', 'AccountsView.vue')
+const accountTestModal = source(frontendRoot, 'views', 'accounts', 'useAccountTestModal.ts')
+const accountTestModels = source(frontendRoot, 'views', 'accounts', 'useAccountTestModels.ts')
+const accountTestRunSession = source(frontendRoot, 'views', 'accounts', 'accountTestRunSession.ts')
+const accountEditSaveFlow = source(frontendRoot, 'views', 'accounts', 'useAccountEditSaveFlow.ts')
+const batchToolbar = source(frontendRoot, 'views', 'accounts', 'AccountBatchToolbar.vue')
 
-assert.equal(
-  accountTestDispatchRoutesSource.includes('testOpenAIAccount('),
-  false,
-  '账户路由不应直接等待 OpenAI 测试，应只创建后台任务'
+assert.match(
+  dispatchRoutes,
+  /router\.get\('\/:id\/test-options'/,
+  '列表测试模型目录必须在打开具体账户测试时按需加载'
 )
-assert(
-  accountTestDispatchRoutesSource.includes('createAccountTestTaskAsync({'),
-  'POST /accounts/:id/test 应创建账号测试任务'
-)
-assert(
-  accountTestDispatchRoutesSource.includes("router.put('/:id/default-test-model'")
-    && accountTestDispatchRoutesSource.includes('accountDefaultTestModelSchema.safeParse(req.body)')
-    && accountTestDispatchRoutesSource.includes('updateAccountDefaultTestModelAsync(account.id, model, requestAccess)')
-    && accountTestDispatchRoutesSource.includes('(account.supportedModels ?? []).includes(model)'),
-  '账户测试弹窗默认模型应通过账户级接口按账户支持模型校验后持久化'
-)
-assert(
-  accountTestDispatchRoutesSource.includes('dispatchAccountTestTasks([task.id])'),
-  'POST /accounts/:id/test 应把测试任务投递到后台 worker'
-)
-assert(
-  accountTestDispatchRoutesSource.includes('res.status(202).json(ok(task))'),
-  'POST /accounts/:id/test 应返回 202 和任务对象，而不是同步测试结果'
-)
-assert(
-  accountsRoutesSource.includes('registerAccountTestDispatchRoutes(accountsRouter)'),
-  '账户主路由应注册账号测试调度子路由'
-)
-assert(
-  accountTestDispatchRoutesSource.includes("router.post('/:id/test'")
-    && accountTestDispatchRoutesSource.includes('parseRequestScopeQuery(req.query)')
-    && accountTestDispatchRoutesSource.includes("res.status(403).json({ message: '缺少系统账户上下文' })")
-    && accountTestDispatchRoutesSource.includes('accountTestSchema.safeParse(req.body)')
-    && accountTestDispatchRoutesSource.includes('findAccountForTestAsync(req.params.id, requestAccess)')
-    && accountTestDispatchRoutesSource.includes('isGatewaySupportedProtocolProfile(account)')
-    && accountTestDispatchRoutesSource.includes('accountTestUnavailableMessage(account)')
-    && accountTestDispatchRoutesSource.includes("isAdminRole(requestAccess?.role) || account.accessType !== 'authorized' ? 'full' : 'limited'")
-    && accountTestDispatchRoutesSource.includes('savedAccountDraftTestSnapshotAsync(account, accountSnapshot, requestAccess)')
-    && accountTestDispatchRoutesSource.includes("failAccountTestTaskAsync(task.id, '后台 worker 暂不可用，账号测试任务未能投递')")
-    && accountTestDispatchRoutesSource.includes("res.status(503).json({ message: '后台 worker 暂不可用，账号测试任务未能投递' })"),
-  '账号测试调度子路由应保留 scope、权限、协议校验、诊断范围、草稿快照、任务失败和 503 边界'
-)
-assert(
-  accountsRoutesSource.includes("accountsRouter.post('/test-draft'"),
-  '应提供创建 / 编辑账户弹窗使用的草稿测试任务接口'
-)
-assert(
-  accountsRoutesSource.includes('draftAccount')
-    && accountsRoutesSource.includes('createAccountTestTaskAsync({'),
-  '草稿测试接口应创建携带草稿快照的后台任务'
-)
-
-const taskReadRouteIndex = accountTestStatusRoutesSource.indexOf("router.get('/test-tasks/:taskId'")
-const draftTestRouteIndex = accountsRoutesSource.indexOf("accountsRouter.post('/test-draft'")
-const accountReadRouteIndex = accountsRoutesSource.indexOf('registerAccountDetailRoutes(accountsRouter)')
-const accountCreateRouteIndex = accountsRoutesSource.indexOf("accountsRouter.post('/',")
-const accountImportRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountImportRoutes(accountsRouter)')
-const accountTrafficMigrationRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountTrafficMigrationRoutes(accountsRouter)')
-const accountGroupBindingRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountGroupBindingRoutes(accountsRouter)')
-const accountTestSessionRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountTestSessionRoutes(accountsRouter)')
-const accountTestStatusRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountTestStatusRoutes(accountsRouter)')
-const accountTestDispatchRouteRegistrationIndex = accountsRoutesSource.indexOf('registerAccountTestDispatchRoutes(accountsRouter)')
-assert(taskReadRouteIndex >= 0, '应提供账号测试任务查询接口')
-assert(draftTestRouteIndex >= 0, '应提供账号草稿测试任务创建接口')
-assert(accountReadRouteIndex >= 0, '账户主路由应注册账号详情子路由')
-assert(accountCreateRouteIndex >= 0, '应保留账号创建接口')
-assert.equal(
-  accountsRoutesSource.includes("accountsRouter.get('/:id'"),
-  false,
-  '账号详情 GET /:id 不应继续内联在账户主路由文件中'
-)
-assert(
-  accountDetailRoutesSource.includes("router.get('/:id'")
-    && accountDetailRoutesSource.includes('findAccountSummary')
-    && accountDetailRoutesSource.includes('findAccountForTest')
-    && accountDetailRoutesSource.includes('applyServerAccountRuntimeToAccount'),
-  '账号详情子路由应保留可见性、凭据权限和运行态 hydrate 逻辑'
-)
-assert(
-  accountTestSessionRouteRegistrationIndex >= 0,
-  '账户路由应注册账号测试 session 写入子路由'
-)
-assert(
-  accountTestStatusRouteRegistrationIndex >= 0,
-  '账户路由应注册账号测试状态读取子路由'
-)
-assert(
-  accountTestDispatchRouteRegistrationIndex >= 0,
-  '账户路由应注册账号测试调度子路由'
-)
-assert(
-  accountImportRouteRegistrationIndex >= 0,
-  '账户路由应注册账号导入子路由'
-)
-assert(
-  accountTrafficMigrationRouteRegistrationIndex >= 0,
-  '账户路由应注册账号流量迁移子路由'
-)
-assert(
-  accountGroupBindingRouteRegistrationIndex >= 0,
-  '账户路由应注册账号分组绑定子路由'
-)
-assert(
-  accountTestSessionRouteRegistrationIndex < accountReadRouteIndex,
-  '账号测试 session 写入子路由必须注册在 GET /:id 之前，避免被参数路由吞掉'
-)
-assert(
-  accountTestStatusRouteRegistrationIndex < accountReadRouteIndex,
-  '账号测试状态读取子路由必须注册在 GET /:id 之前，避免被参数路由吞掉'
-)
-assert(
-  draftTestRouteIndex < accountReadRouteIndex,
-  'POST /test-draft 必须定义在 GET /:id 之前，避免被参数路由吞掉'
-)
-assert(
-  accountImportRouteRegistrationIndex < accountReadRouteIndex,
-  '账号导入子路由必须注册在 GET /:id 之前，避免被参数路由吞掉'
-)
-assert(
-  accountTrafficMigrationRouteRegistrationIndex < accountReadRouteIndex,
-  '账号流量迁移子路由必须注册在 GET /:id 之前，避免被参数路由吞掉'
-)
-assert(
-  accountGroupBindingRouteRegistrationIndex < accountReadRouteIndex,
-  '账号分组绑定子路由必须注册在 GET /:id 之前，避免被参数路由吞掉'
-)
-assert(
-  accountReadRouteIndex < accountCreateRouteIndex,
-  'GET /:id 详情子路由注册必须位于 POST / 创建路由之前'
-)
-assert(
-  accountCreateRouteIndex < accountTestDispatchRouteRegistrationIndex,
-  'POST /:id/test 账号测试调度子路由注册必须位于 POST / 创建路由之后'
-)
-assert(
-  accountTestStatusRoutesSource.includes("router.get('/test-tasks',"),
-  '应提供账号测试任务批量查询接口，避免批量测试逐个任务轮询'
-)
-assert(
-  accountTestSessionRoutesSource.includes("router.post('/test-tasks/:taskId/cancel'"),
-  '应提供账号测试任务取消接口'
-)
-
-assert(
-  accountTestTaskQueueSource.includes('testOpenAIAccountWithDiagnosticRetries(account, {'),
-  '真实账号测试应在后台任务队列中执行，并使用诊断重试等待策略'
+assert.match(
+  dispatchRoutes,
+  /accountManualTestOptionsAsync\(account\)/,
+  '列表测试选项必须由后端按账户供应商和用户作用域解析'
 )
 assert.doesNotMatch(
-  accountTestTaskQueueSource,
-  /updateAccountDefaultTestModel|update_account_default_test_model/,
-  '账号测试任务成功不能自动改写账户默认模型，避免批量测试覆盖每个账户的独立偏好'
+  dispatchRoutes,
+  /default-test-model|defaultTestModel/,
+  '人工测试路由不得保存账户默认测试模型'
 )
-assert(
-  runOpenAIAccountTestWithSideEffectsSource.includes('findAccountForTest: loadAccountForTestViaDbService')
-    && runOpenAIAccountTestWithSideEffectsSource.includes('findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService'),
-  '真实账号测试应同时通过 DB service 读取账号详情和分组候选账号，避免 PostgreSQL 模式回退 SQLite'
+assert.match(
+  dispatchRoutes,
+  /accountTestSchema[\s\S]*accountSnapshot[\s\S]*savedAccountDraftTestSnapshotAsync/,
+  '新增和编辑表单测试必须通过统一测试契约按需构建草稿账户快照'
 )
-assert(
-  accountTestTaskQueueSource.includes('testOpenAIDraftAccountWithDiagnosticRetries')
-    && accountTestTaskQueueSource.includes('openAIDraftAccountSecret(draft, attemptSignal)')
-    && accountTestTaskQueueSource.includes('providerCode: draft.providerCode')
-    && accountTestTaskQueueSource.includes('providerProtocolProfileId: draft.providerProtocolProfileId')
-    && accountTestTaskQueueSource.includes('supportedModels: draft.supportedModels')
-    && accountTestTaskQueueSource.includes('providerCode: input.draftAccount?.providerCode')
-    && accountTestTaskQueueSource.includes('providerProtocolProfileId: input.draftAccount?.providerProtocolProfileId')
-    && accountTestTaskQueueSource.includes('supportedModels: input.draftAccount?.supportedModels'),
-  '草稿账号测试应把 OAuth 刷新和候选账号生成纳入单次诊断 attempt 超时，并按草稿协议和支持模型解析默认测试模型'
+assert.match(
+  testService,
+  /healthCheckModel/,
+  '未显式选择人工测试模型时必须使用账户检查模型'
 )
-assert(
-  accountTestTaskQueueSource.includes('accountTestTaskProgressReporter(task.id)')
-    && accountTestTaskQueueSource.includes('updateAccountTestTaskMessageViaDbService(taskId, accountDiagnosticAttemptMessage(progress))'),
-  '后台账号测试任务应在每次 10/20/30s 真实请求 attempt 开始时更新进度消息'
+assert.match(
+  testService,
+  /disableAccountStateMutation/,
+  '人工测试必须显式关闭账户运行态副作用'
 )
-assert(
-  accountTestTaskQueueSource.includes('const defaultManualAccountTestConcurrency = 100')
-    && accountTestTaskQueueSource.includes('manualAccountTestQueue.setConcurrency(accountTestTaskConcurrency())')
-    && accountTestTaskQueueSource.includes('getSettings().accountTestTaskConcurrency'),
-  '手动账号测试后台 worker 应使用系统设置控制并发，默认 100'
-)
-assert(
-  accountTestTaskQueueSource.includes('recordOperationLogAsync'),
-  '账号测试状态变更操作日志必须走 async 设置读取入口'
-)
-assert(
-  !accountTestTaskQueueSource.includes('recordOperationLog({'),
-  '账号测试队列不得重新调用同步操作日志入口'
-)
-assert(
-  accountTestTaskQueueSource.includes("type: 'account_test_task_maintenance'")
-    && accountTestTaskQueueSource.includes('refillLimit: manualAccountTestRefillBatchSize()')
-    && accountTestTaskQueueSource.includes("runAccountTestTaskMaintenance('start')")
-    && accountTestTaskQueueSource.includes("runAccountTestTaskMaintenance('sweep')")
-    && accountTestTaskQueueSource.includes('manualAccountTestRefillMaxBatchSize = 1000'),
-  '手动账号测试队列应持续从 DB 补拉 queued 任务，避免 worker 重启后只执行首批任务'
-)
-assert(
-  accountTestQueueItemSource.includes('taskId: string'),
-  '手动账号测试本地执行队列只能保存任务 ID，任务详情必须从数据库加载'
+
+assert.doesNotMatch(
+  sessionRoutes,
+  /AccountTestSessionConflictError/,
+  'A/B 账户测试会话不得使用用户级全局冲突锁'
 )
 assert.doesNotMatch(
-  accountTestQueueItemSource,
-  /\b(accountId|credentials|draftAccount|apiKey|proxyUrl|access)\b/,
-  '手动账号测试本地执行队列不得保存账号、凭据、草稿、代理或权限上下文'
-)
-assert.equal(
-  runOpenAIAccountTestWithSideEffectsSource.includes('markAccountTestTemporaryUnavailable'),
-  false,
-  '账号测试失败不应在主测试函数内直接写临时不可调用，应先进入事前确认'
-)
-assert(
-  accountTestTaskQueueSource.includes('manualAccountTestFailurePrecheckQueue')
-    && accountTestTaskQueueSource.includes('enqueueManualAccountTestFailurePrecheck(account, access, result')
-    && accountTestTaskQueueSource.includes("trafficSource: 'cooldown_retest'")
-    && accountTestTaskQueueSource.includes('getAccountPrecheckMutationStateAsync')
-    && accountTestTaskQueueSource.includes('await manualAccountTestFailurePrecheckSkipReason')
-    && accountTestTaskQueueSource.includes('await getAccountPrecheckMutationStateAsync'),
-  '账号测试失败应进入事前确认队列，确认失败后才允许写临时不可调用，并需要通过 async 入口跳过已被更新的旧确认'
-)
-assert(
-  runManualAccountTestFailurePrecheckQueueItemSource.includes('findAccountForTest: loadAccountForTestViaDbService')
-    && runManualAccountTestFailurePrecheckQueueItemSource.includes('findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService'),
-  '账号测试失败事前确认应同时通过 DB service 读取账号详情和分组候选账号，避免 PostgreSQL 模式回退 SQLite'
+  statusRoutes,
+  /test-sessions\/active/,
+  '后端不得暴露用户级全局活动测试会话接口'
 )
 assert.doesNotMatch(
-  runManualAccountTestFailurePrecheckQueueItemSource,
-  /\bmodel\s*:/,
-  '账号测试失败事前确认应交给统一解析器选择模型，不能自行维护另一套优先级'
+  taskRepository,
+  /getActiveAccountTestSessionDetail/,
+  '任务存储不得继续维护用户级全局活动会话查询'
+)
+assert.match(
+  taskRepository,
+  /账户测试会话只能包含一个账户任务/,
+  '每个会话必须只承载一个账户任务，防止重新引入批量测试'
+)
+
+assert.match(
+  gatewayRoutes,
+  /disableAccountStateMutation/,
+  '网关测试请求必须支持关闭账户状态写入'
+)
+assert.match(
+  failureDispatch,
+  /accountStateMutationEnabled !== false/,
+  '人工测试失败不得写入账户、授权实例或 API Key 生产状态'
+)
+assert.match(
+  usageRepository,
+  /manual_account_test/,
+  '人工测试使用记录必须与生产健康成功信号隔离'
+)
+
+assert.match(
+  accountApi,
+  /testOptions:/,
+  '前端账户 API 必须提供按账户加载测试选项的方法'
 )
 assert.doesNotMatch(
-  runManualAccountTestFailurePrecheckQueueItemSource,
-  /testEndpointMode:\s*item\.testEndpointMode/,
-  '账号测试失败事前确认不能复用本次手动失败的接口形态'
+  accountApi,
+  /default-test-model|setDefaultTestModel/,
+  '前端账户 API 不得保留人工测试模型持久化接口'
 )
-assert(
-  accountTestSessionRoutesSource.includes("router.post('/test-sessions'")
-    && accountTestSessionRoutesSource.includes("router.post('/test-sessions/:sessionId/heartbeat'")
-    && accountTestSessionRoutesSource.includes("router.post('/test-sessions/:sessionId/complete'")
-    && accountTestSessionRoutesSource.includes("router.post('/test-sessions/:sessionId/cancel'"),
-  '账号测试应提供 session 创建、心跳、正常完成和手动批量取消接口'
+assert.match(
+  accountTestModels,
+  /loadSavedAccountTestOptions/,
+  '列表测试弹窗必须在打开时加载当前账户测试选项'
 )
-assert(
-  accountTestSessionRoutesSource.includes('AccountTestSessionConflictError')
-    && accountTestSessionRoutesSource.includes('res.status(409).json'),
-  '同一用户存在未完成测试 session 时，后端应拒绝创建下一个测试并返回活动 session'
-)
-assert(
-  !accountsRoutesSource.includes("accountsRouter.post('/test-sessions'")
-    && !accountsRoutesSource.includes("accountsRouter.post('/test-sessions/:sessionId/heartbeat'")
-    && !accountsRoutesSource.includes("accountsRouter.post('/test-sessions/:sessionId/cancel'")
-    && !accountsRoutesSource.includes("accountsRouter.post('/test-tasks/:taskId/cancel'"),
-  '账号测试 session 写入路由不应继续放在账户主路由文件中'
-)
-assert(
-  accountTestStatusRoutesSource.includes("router.get('/test-sessions/active'")
-    && accountTestStatusRoutesSource.includes("router.get('/test-sessions/:sessionId'")
-    && accountTestStatusRoutesSource.includes("router.get('/test-sessions/:sessionId/tasks'"),
-  '账号测试状态子路由应提供活动 session、session 详情和 session 任务查询接口'
-)
-assert(
-  accountTestTaskRepositorySource.includes('account_test_sessions')
-    && accountTestTaskRepositorySource.includes('completeIdleAccountTestSessions')
-    && accountTestTaskRepositorySource.includes('getActiveAccountTestSessionDetail')
-    && !accountTestTaskRepositorySource.includes('cancelExpiredAccountTestSessions')
-    && !accountTestTaskRepositorySource.includes('accountTestSessionStaleMs')
-    && !accountTestTaskRepositorySource.includes('前端测试窗口已关闭，任务已取消'),
-  '账号测试 session 不应因前端心跳中断取消后台任务，只能在任务全部结束后空闲收口'
-)
-assert(
-  accountTestTaskRepositorySource.includes('AND cancel_requested = 1')
-    && accountTestTaskRepositorySource.includes('AND cancel_requested = 0'),
-  'worker 重启时应保留已请求取消的 running 任务，不应把它们重新排队'
-)
-assert(
-  accountTestTaskRepositorySource.includes('failExpiredQueuedAccountTestTasks')
-    && accountTestTaskRepositorySource.includes('accountTestQueuedWaitExpiredMessage')
-    && accountTestTaskQueueSource.includes('maxQueuedMs: manualAccountTestQueuedMaxWaitMs')
-    && accountTestTaskQueueSource.includes('result.expiredQueuedTaskIds')
-    && dbServiceHandlersSource.includes('failExpiredQueuedAccountTestTasks(operation.maxQueuedMs')
-    && dbServiceHandlersSource.includes('failExpiredQueuedAccountTestTasksAsync(operation.maxQueuedMs')
-    && accountTestTaskQueueSource.includes('manualAccountTestQueuedMaxWaitMs = 10 * 60_000'),
-  '未被 worker 消费的 queued 任务不应计算 60s 运行超时，但后台应按独立队列等待上限自动收口'
-)
-assert(
-  accountTestTaskRepositorySource.includes('createPostgresDatabaseClient(await getPostgresPool())')
-    && accountTestTaskRepositorySource.includes('function accountTestTable(client: DatabaseClient, tableName: string)')
-    && accountTestTaskRepositorySource.includes('createAccountTestTaskAsync')
-    && accountTestTaskRepositorySource.includes('listRunnableAccountTestTaskIdsAsync')
-    && accountTestTaskRepositorySource.includes('markAccountTestTaskRunningAsync')
-    && accountTestTaskRepositorySource.includes('completeAccountTestTaskAsync')
-    && accountTestTaskRepositorySource.includes('failAccountTestTaskAsync')
-    && accountTestTaskRepositorySource.includes('isAccountTestTaskCancelRequestedAsync')
-    && accountTestTaskRepositorySource.includes('accountTestTaskCancelMessageAsync'),
-  '账号测试任务 repository 在 PostgreSQL 模式下必须提供异步读写、维护和取消状态接口'
-)
-assert(
-  accountTestDispatchRoutesSource.includes('findAccountForTestAsync')
-    && accountTestDispatchRoutesSource.includes('createAccountTestTaskAsync')
-    && accountTestDispatchRoutesSource.includes('failAccountTestTaskAsync')
-    && accountTestStatusRoutesSource.includes('listAccountTestTasksAsync')
-    && accountTestStatusRoutesSource.includes('getAccountTestSessionAsync')
-    && accountTestStatusRoutesSource.includes('getAccountTestTaskAsync')
-    && accountTestSessionRoutesSource.includes('createAccountTestSessionAsync')
-    && accountTestSessionRoutesSource.includes('heartbeatAccountTestSessionAsync')
-    && accountTestSessionRoutesSource.includes('cancelAccountTestSessionAsync')
-    && accountTestSessionRoutesSource.includes('cancelAccountTestTaskAsync')
-    && accountsRoutesSource.includes('prepareAccountDraftTestSnapshotAsync')
-    && accountsRoutesSource.includes('accountCreateStatusFromActivationTestAsync')
-    && accountDraftTestServiceSource.includes('getAccountTestTaskRecordAsync'),
-  '账号测试 HTTP 请求路径必须使用异步 repository，避免高性能模式回退到 SQLite 同步连接'
+assert.match(
+  accountTestModels,
+  /useFixedTestModel/,
+  '新增和编辑表单测试必须固定使用检查模型'
 )
 assert.doesNotMatch(
-  [
-    accountsRoutesSource,
-    accountTestDispatchRoutesSource,
-    accountTestSessionRoutesSource,
-    accountTestStatusRoutesSource
-  ].join('\n'),
-  /\b(?:savedAccountDraftTestSnapshot|prepareAccountDraftTestSnapshot|accountCreateStatusFromActivationTest|getAccountTestTaskRecord)\(/,
-  '账号测试 HTTP 路由不得调用同步草稿准备、激活校验或任务读取入口，避免 PostgreSQL 模式回退 SQLite'
+  accountTestModal,
+  /SuccessfulDraftActivationTest|successfulDraftActivationTest|successfulSavedDraftUpdateTest/,
+  '人工测试结果不得生成供账户保存消费的激活状态'
 )
-assert(
-  prepareAccountDraftTestSnapshotAsyncSource.includes('prepareAccountDraftTestSnapshotResolvedAsync'),
-  '异步草稿测试快照必须走异步解析，模型映射不能回退到 SQLite 同步模型目录读取'
+assert.doesNotMatch(
+  accountEditSaveFlow,
+  /activationTestTaskId|defaultTestModel|测试通过后再保存/,
+  '新增和编辑保存不得依赖人工测试结果'
 )
-assert(
-  assertActivationTestTaskMatchesCreateAsyncSource.includes('await accountCreateActivationFingerprintSnapshotAsync({')
-    && !assertActivationTestTaskMatchesCreateAsyncSource.includes('accountCreateActivationFingerprintSnapshot({'),
-  '异步创建账户激活校验必须使用异步 fingerprint 构建，不能在 PostgreSQL 模式回退同步 SQLite 路径'
+assert.match(
+  accountTestRunSession,
+  /accountId/,
+  '测试恢复快照必须按账户隔离'
 )
-assert(
-  accountCreateActivationFingerprintSnapshotAsyncSource.includes('await normalizeDraftAccountModelMappingsAsync(')
-    && accountCreateActivationFingerprintSnapshotAsyncSource.includes('await findProviderDefaultSupportedModelsAsync(')
-    && !accountCreateActivationFingerprintSnapshotAsyncSource.includes('normalizeDraftAccountModelMappings(')
-    && !accountCreateActivationFingerprintSnapshotAsyncSource.includes('findProviderDefaultSupportedModels('),
-  '异步创建账户 fingerprint 的模型目录和模型映射读取必须全程使用异步 repository'
+assert.doesNotMatch(
+  batchToolbar,
+  /批量测试/,
+  '账户批量工具栏不得保留批量测试入口'
 )
-assert(
-  dbServiceHandlersSource.includes('findAccountForTestAsync(operation.accountId, operation.access)')
-    && dbServiceHandlersSource.includes('handleAccountTestTaskMaintenanceAsync(operation)')
-    && dbServiceHandlersSource.includes('markAccountTestTaskRunningAsync(operation.taskId)')
-    && dbServiceHandlersSource.includes('completeAccountTestTaskAsync(operation.taskId, operation.result)')
-    && dbServiceHandlersSource.includes('failAccountTestTaskAsync(operation.taskId, operation.message, operation.result)')
-    && dbServiceHandlersSource.includes('markAccountTestTemporaryUnavailableAsync(account, operation.reason'),
-  'DB service 的账号测试链路在 PostgreSQL 模式下必须使用异步账户读取、任务维护和收尾写入'
-)
-assert(
-  accountTestServiceSource.includes('export async function resolveAccountTestModelAsync')
-    && accountTestServiceSource.includes('account.defaultTestModel')
-    && accountTestServiceSource.includes('listProviderDefaultTestModelPreferencesAsync')
-    && accountTestServiceSource.includes('findProviderProtocolProfileAsync')
-    && accountTestServiceSource.includes('supportedModels[0]'),
-  '账号测试模型优先级必须统一收口为账户偏好、当前用户偏好、账户协议档案系统默认和支持模型兜底'
-)
-assert(
-  accountTestServiceSource.includes('const model = await resolveAccountTestModelAsync(account, {')
-    && accountTestServiceSource.includes('model,')
-    && accountTestServiceSource.includes('return accountTestResultWithTotalDuration(lastResult ?? await testOpenAIAccount(account, { ...input, model })'),
-  '诊断重试应在循环外解析一次模型，所有 attempt 使用同一模型'
-)
-assert(
-  accountTestTaskRepositorySource.includes('draft_account_encrypted')
-    && accountTestTaskRepositorySource.includes('encryptJson(value)')
-    && accountTestTaskRepositorySource.includes('decryptJson<unknown>(value)'),
-  '草稿测试任务必须把未保存账户快照加密写入任务表'
-)
-assert(
-  accountTestTaskQueueSource.includes('if (task.draftAccount)')
-    && accountTestTaskQueueSource.includes('candidateAccount'),
-  '草稿账户测试应在后台队列中使用候选账号执行，不应要求账户已保存'
-)
-assert(
-  workerSource.includes('startAccountTestTaskQueue()'),
-  'worker 启动时应启动手动账号测试队列'
-)
-assert(
-  backgroundIpcSource.includes("type: 'background_worker_account_test_tasks'"),
-  '主进程和 DB service 应能通过 IPC 投递账号测试任务'
-)
-assert(
-  backgroundIpcSource.includes("type: 'background_worker_account_test_cancel'"),
-  '主进程和 DB service 应能通过 IPC 取消账号测试任务'
-)
-assert.equal(
-  frontendAccountTestModalSource.includes('submitAccountTest(account, payload, controller.signal)'),
-  false,
-  '前端创建测试任务的请求不应绑定停止用 AbortSignal，否则停止时可能拿不到 taskId 而无法取消后台任务'
-)
-assert(
-  frontendAccountTestModalSource.includes('cancelCreatedAccountTestTask(task.id, account)'),
-  '前端应在停止信号已触发但刚拿到 taskId 时立即取消后台测试任务'
-)
-assert(
-  frontendAccountTestModalSource.includes('activeSingleTestTask')
-    && frontendAccountTestModalSource.includes('waitForSubmittedAccountTestResult(run, task, account, payload,')
-    && frontendAccountTestModalSource.includes('activeSingleTestTask.value = latestTask'),
-  '前端单账号测试应轮询活动任务并把任务状态传给测试终端'
-)
-assert(
-  frontendAccountTestModalSource.includes('runBatchAccountTestItem(run, account, index, formSnapshot, session.id)')
-    && frontendAccountTestModalSource.includes('const result = await waitForSubmittedAccountTestResult(run, task, account, payload,')
-    && frontendAccountTestTaskPollingSource.includes('accountTestTaskMaxWaitMs')
-    && frontendAccountTestTaskPollingSource.includes('await cancelTask(task.id, account)')
-    && frontendAccountTestModalSource.includes('cancelCreatedAccountTestTask(task.id, account)'),
-  '前端批量测试应让每个任务独立完成提交、轮询和运行超时取消'
-)
-assert(
-  frontendAccountBatchExecutionSource.includes('const accountBatchTestChunkSize = 10')
-    && frontendAccountTestModalSource.includes('accountBatchTestChunkSize')
-    && frontendAccountTestModalSource.includes('runInFixedBatches(accounts, accountBatchTestChunkSize'),
-  '前端批量测试应固定每批最多提交 10 个任务，本批全部结束后再提交下一批'
-)
-assert(
-  frontendAccountTestModalSource.includes('createAccountTestSession')
-    && frontendAccountTestModalSource.includes('startAccountTestSessionHeartbeat')
-    && frontendAccountTestModalSource.includes('cancelAccountTestRunSession')
-    && frontendAccountTestModalSource.includes('completeAccountTestRunSession'),
-  '前端测试弹窗应创建测试 session、保持心跳，显式停止或切换时取消旧 session，正常完成时结束 session'
-)
-assert(
-  frontendAccountTestModalSource.includes('interface AccountTestRunContext')
-    && frontendAccountTestModalSource.includes('activeTestRun === run')
-    && frontendAccountTestModalSource.includes('detachActiveAccountTestRun()')
-    && frontendAccountTestModalSource.includes('activeTestRun = undefined')
-    && frontendAccountTestModalSource.includes('run.tasks.set(task.id, account)')
-    && !frontendAccountTestModalSource.includes('const activeAccountTestTasks = new Map')
-    && !frontendAccountTestModalSource.includes('let accountTestAbortController'),
-  '前端测试运行状态必须按弹窗运行隔离，关闭 A 后应立即允许 B 启动且旧 A 结果不能污染 B'
-)
-assert(
-  !frontendAccountTestModalSource.includes('beforeunload')
-    && !frontendAccountTestModalSource.includes('onDeactivated(stopAccountTest)')
-    && frontendAccountTestModalSource.includes('restoreAccountTestRunSession')
-    && frontendAccountTestModalSource.includes('persistAccountTestRunSession')
-    && frontendAccountTestModalSource.includes('completeAccountTestRunSession')
-    && !frontendAccountTestModalSource.includes('onBeforeUnmount(() => {\n    stopAccountTest()')
-    && !frontendAccountTestModalComponentSource.includes('停止并关闭')
-    && frontendAccountTestModalComponentSource.includes('停止测试')
-    && frontendAccountTestRunSessionSource.includes('window.sessionStorage')
-    && frontendAccountTestRunSessionSource.includes('12 * 60 * 60 * 1000'),
-  '前端刷新、切换菜单或关闭浏览器时不应取消后台 session，并应通过 sessionStorage 恢复 12 小时内的运行状态'
-)
-assert(
-  frontendAccountTestSessionClientSource.includes('api.accounts.testDraft')
-    && frontendAccountTestSessionClientSource.includes('api.myAccounts.testDraft')
-    && frontendAccountTestSessionClientSource.includes('accountOperationScopeParams(input.account, input.accountScopeParams)'),
-  '前端测试 session client 应集中管理管理端/个人端和草稿/已保存草稿的账号测试 API 分流'
-)
-assert(
-  frontendAccountTestTaskPollingSource.includes("if (input.task.status !== 'running')")
-    && frontendAccountTestTaskPollingSource.includes('parseTaskTime(input.task.startedAt)')
-    && frontendAccountTestTaskPollingSource.includes('账号测试运行超过'),
-  '前端 60s 超时只应从后台任务进入 running 且写入 startedAt 后开始计算'
-)
-assert.equal(
-  frontendAccountTestModalSource.includes('pollBatchAccountTestTasks('),
-  false,
-  '前端批量测试不应保留旧的提交全部任务后统一轮询流程'
-)
-assert(
-  frontendAccountTestModalComponentSource.includes('activeTask?: AccountTestTask')
-    && frontendAccountTestDisplayFormattersSource.includes('当前窗口估计')
-    && frontendAccountTestDisplayFormattersSource.includes('10s + 20s + 30s'),
-  '前端测试终端应展示后台任务状态、等待策略和当前等待窗口'
-)
-assert(
-  frontendAccountTestDisplayFormattersSource.includes('等待接收')
-    && frontendAccountTestDisplayFormattersSource.includes("item.status === 'queued'"),
-  '批量测试弹窗应区分等待接收和测试中，避免把 worker 未接任务误展示为真实测试中'
-)
-assert(
-  frontendAccountTestDisplayFormattersSource.includes('每批最多 10 个账户'),
-  '批量测试弹窗应明确展示固定小批次提交策略'
+assert.doesNotMatch(
+  accountsView,
+  /batchTestSelected|openBatchTestModal/,
+  '账户页不得保留批量测试入口或批量测试状态'
 )
 
-for (const { relativePath, source } of accountTestRuntimeCallSources) {
-  for (const call of accountTestRuntimeCalls(source)) {
-    const hasCandidate = call.block.includes('candidateAccount')
-    const requiresDefensiveReaders = relativePath !== 'modules/accounts/account-test-task-queue.service.ts'
-    assert(
-      (!requiresDefensiveReaders && hasCandidate) || call.block.includes('findAccountForTest:'),
-      `${relativePath}:${call.line} ${call.name} 必须注入 findAccountForTest，避免 PostgreSQL 模式回退 SQLite`
-    )
-    assert(
-      (!requiresDefensiveReaders && hasCandidate) || call.block.includes('findOpenAIAccountForGroup:'),
-      `${relativePath}:${call.line} ${call.name} 必须注入 findOpenAIAccountForGroup，避免 PostgreSQL 模式回退 SQLite`
-    )
-  }
-}
+console.log('account-test-task-boundary-regression passed')
 
-console.log('账号测试任务边界回归通过：手动测试由后台 worker 队列执行，前端通过任务接口查询结果')
-
-function interfaceBody(source: string, interfaceName: string): string {
-  const start = source.indexOf(`interface ${interfaceName}`)
-  assert(start >= 0, `缺少接口 ${interfaceName}`)
-  const openBrace = source.indexOf('{', start)
-  assert(openBrace >= 0, `接口 ${interfaceName} 缺少函数体`)
-  const closeBrace = source.indexOf('}', openBrace)
-  assert(closeBrace >= 0, `接口 ${interfaceName} 未闭合`)
-  return source.slice(openBrace, closeBrace + 1)
-}
-
-function accountTestRuntimeCalls(source: string): Array<{ name: string; line: number; block: string }> {
-  const calls: Array<{ name: string; line: number; block: string }> = []
-  for (const name of ['testOpenAIAccountWithDiagnosticRetries', 'testOpenAIAccount']) {
-    let index = 0
-    while ((index = source.indexOf(`${name}(`, index)) >= 0) {
-      if (source.slice(Math.max(0, index - 20), index).includes('function ')) {
-        index += name.length
-        continue
-      }
-      const openParen = source.indexOf('(', index)
-      assert(openParen >= 0, `${name} 调用缺少左括号`)
-      const end = matchingCallEnd(source, openParen)
-      const block = source.slice(index, end)
-      calls.push({
-        name,
-        line: source.slice(0, index).split(/\r?\n/).length,
-        block
-      })
-      index = end
-    }
-  }
-  return calls
-}
-
-function matchingCallEnd(source: string, openParen: number): number {
-  let depth = 0
-  for (let index = openParen; index < source.length; index += 1) {
-    const char = source[index]
-    if (char === '(') {
-      depth += 1
-      continue
-    }
-    if (char !== ')') {
-      continue
-    }
-    depth -= 1
-    if (depth === 0) {
-      return index + 1
-    }
-  }
-  throw new Error('账号测试调用未闭合')
+function source(root: string, ...segments: string[]): string {
+  return readFileSync(resolve(root, ...segments), 'utf8')
 }

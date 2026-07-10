@@ -8,6 +8,7 @@ import { createPostgresDatabaseClient } from './database-client.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { invalidateAccountLookupCache } from './repository-lookups.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export type { AccountTagSummary } from '../domain/types.js'
@@ -192,8 +193,18 @@ export function updateAccountTags(accountId: string, tagNamesInput: unknown, acc
   const tagNames = normalizeAccountTagNamesInput(tagNamesInput) ?? []
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    const tags = replaceAccountTags(account.id, account.system_account_id, tagNames, nowIso(), database)
+    const updatedAt = nowIso()
+    const tags = replaceAccountTags(account.id, account.system_account_id, tagNames, updatedAt, database)
+    database.prepare(`
+      UPDATE accounts
+      SET config_revision = config_revision + 1,
+          updated_at = ?
+      WHERE id = ?
+        AND system_account_id = ?
+        AND deleted_at IS NULL
+    `).run(updatedAt, account.id, account.system_account_id)
     commitDatabaseTransaction(database, transactionStarted)
+    invalidateAccountLookupCache(account.id)
     return tags
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -215,7 +226,21 @@ export async function updateAccountTagsAsync(accountId: string, tagNamesInput: u
   if (!account?.id || !account.system_account_id) return undefined
   if (account.system_account_id !== accountTagOwnerSystemAccountId(access)) return undefined
   const tagNames = normalizeAccountTagNamesInput(tagNamesInput) ?? []
-  return await client.transaction(async (tx) => replaceAccountTagsAsync(tx, account.id as string, account.system_account_id as string, tagNames, nowIso()))
+  const tags = await client.transaction(async (tx) => {
+    const updatedAt = nowIso()
+    const tags = await replaceAccountTagsAsync(tx, account.id as string, account.system_account_id as string, tagNames, updatedAt)
+    await tx.execute(`
+      UPDATE ${accountTagsTable(tx, 'accounts')}
+      SET config_revision = config_revision + 1,
+          updated_at = ?
+      WHERE id = ?
+        AND system_account_id = ?
+        AND deleted_at IS NULL
+    `, [updatedAt, account.id, account.system_account_id])
+    return tags
+  })
+  invalidateAccountLookupCache(account.id)
+  return tags
 }
 
 export function replaceAccountTags(accountId: string, systemAccountId: string, tagNamesInput: unknown, now = nowIso(), database = getBusinessDatabase()): AccountTagSummary[] {

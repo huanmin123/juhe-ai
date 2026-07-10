@@ -18,9 +18,13 @@ import { runtimeConfig } from '../config/runtime.js'
 import { parseJsonArray } from './value-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import {
-  findProviderDefaultTestModelPreference,
-  findProviderDefaultTestModelPreferenceAsync
-} from './provider-default-test-model.repository.js'
+  findProviderDefaultHealthCheckModelPreference,
+  findProviderDefaultHealthCheckModelPreferenceAsync
+} from './provider-default-health-check-model.repository.js'
+import {
+  findProviderSystemDefaultHealthCheckModel,
+  findProviderSystemDefaultHealthCheckModelAsync
+} from './provider-system-default-health-check-model.repository.js'
 
 interface ProviderRow {
   id: string
@@ -41,7 +45,7 @@ interface ProviderProtocolProfileRow {
   protocol_code: string
   protocol_version: string
   base_url: string
-  default_test_model: string
+  default_health_check_model: string
   account_types_json: string
   capabilities_json: string
 }
@@ -296,14 +300,16 @@ export async function isProtocolProviderCodeAsync(providerCode: string, protocol
   return Boolean(row)
 }
 
-export function findProviderDefaultTestModel(providerCode: string, systemAccountId?: string): string | undefined {
+export function findProviderDefaultHealthCheckModel(providerCode: string, systemAccountId?: string): string | undefined {
   const code = providerCode.trim()
   if (!code) return undefined
-  const preference = findProviderDefaultTestModelPreference(code, systemAccountId)
+  const preference = findProviderDefaultHealthCheckModelPreference(code, systemAccountId)
   if (preference) return preference
+  const systemDefault = findProviderSystemDefaultHealthCheckModel(code)
+  if (systemDefault) return systemDefault
   const row = getBusinessDatabase()
     .prepare(`
-      SELECT provider_protocol_profiles.default_test_model
+      SELECT provider_protocol_profiles.default_health_check_model
       FROM provider_protocol_profiles
       INNER JOIN providers ON providers.code = provider_protocol_profiles.provider_code
       WHERE provider_protocol_profiles.provider_code = ?
@@ -312,28 +318,30 @@ export function findProviderDefaultTestModel(providerCode: string, systemAccount
       ORDER BY provider_protocol_profiles.updated_at DESC, provider_protocol_profiles.id ASC
       LIMIT 1
     `)
-    .get(code) as unknown as { default_test_model?: string | null } | undefined
-  const model = row?.default_test_model?.trim()
+    .get(code) as unknown as { default_health_check_model?: string | null } | undefined
+  const model = row?.default_health_check_model?.trim()
   return model || undefined
 }
 
-export async function findProviderDefaultTestModelAsync(providerCode: string, systemAccountId?: string): Promise<string | undefined> {
+export async function findProviderDefaultHealthCheckModelAsync(providerCode: string, systemAccountId?: string): Promise<string | undefined> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
-      type: 'find_provider_default_test_model_read_only',
+      type: 'find_provider_default_health_check_model_read_only',
       providerCode,
       systemAccountId
     })
   }
   const code = providerCode.trim()
   if (!code) return undefined
-  const preference = await findProviderDefaultTestModelPreferenceAsync(code, systemAccountId)
+  const preference = await findProviderDefaultHealthCheckModelPreferenceAsync(code, systemAccountId)
   if (preference) return preference
+  const systemDefault = await findProviderSystemDefaultHealthCheckModelAsync(code)
+  if (systemDefault) return systemDefault
   const client = await getProviderDatabaseClient()
   const profilesTable = providerTable(client, 'provider_protocol_profiles')
   const providersTable = providerTable(client, 'providers')
-  const row = await client.one<{ default_test_model?: string | null }>(`
-    SELECT ppp.default_test_model
+  const row = await client.one<{ default_health_check_model?: string | null }>(`
+    SELECT ppp.default_health_check_model
     FROM ${profilesTable} ppp
     INNER JOIN ${providersTable} p
       ON p.code = ppp.provider_code
@@ -343,7 +351,7 @@ export async function findProviderDefaultTestModelAsync(providerCode: string, sy
     ORDER BY ppp.updated_at DESC, ppp.id ASC
     LIMIT 1
   `, [code])
-  const model = row?.default_test_model?.trim()
+  const model = row?.default_health_check_model?.trim()
   return model || undefined
 }
 
@@ -468,7 +476,7 @@ function listProviderProtocolProfiles(providerCodes?: string[]): ProviderProtoco
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT id, provider_code, name, description, enabled, protocol_code, protocol_version,
-        base_url, default_test_model, account_types_json, capabilities_json
+        base_url, default_health_check_model, account_types_json, capabilities_json
       FROM provider_protocol_profiles
       ${providerFilter}
       ORDER BY provider_code ASC, updated_at DESC, id ASC
@@ -485,7 +493,7 @@ function listProviderProtocolProfiles(providerCodes?: string[]): ProviderProtoco
     protocolCode: row.protocol_code,
     protocolVersion: row.protocol_version,
     baseUrl: row.base_url,
-    defaultTestModel: row.default_test_model,
+    defaultHealthCheckModel: row.default_health_check_model,
     accountTypes: parseJsonArray(row.account_types_json) as AccountType[],
     capabilities: parseJsonArray(row.capabilities_json),
     endpointFamilies: familiesByProfileId.get(row.id) ?? []
@@ -501,7 +509,7 @@ async function listProviderProtocolProfilesAsync(providerCodes?: string[], clien
   const profilesTable = providerTable(client, 'provider_protocol_profiles')
   const rows = await client.query<ProviderProtocolProfileRow>(`
     SELECT ppp.id, ppp.provider_code, ppp.name, ppp.description, ppp.enabled, ppp.protocol_code, ppp.protocol_version,
-      ppp.base_url, ppp.default_test_model, ppp.account_types_json, ppp.capabilities_json
+      ppp.base_url, ppp.default_health_check_model, ppp.account_types_json, ppp.capabilities_json
     FROM ${profilesTable} ppp
     ${providerFilter}
     ORDER BY ppp.provider_code ASC, ppp.updated_at DESC, ppp.id ASC
@@ -517,7 +525,7 @@ async function listProviderProtocolProfilesAsync(providerCodes?: string[], clien
     protocolCode: row.protocol_code,
     protocolVersion: row.protocol_version,
     baseUrl: row.base_url,
-    defaultTestModel: row.default_test_model,
+    defaultHealthCheckModel: row.default_health_check_model,
     accountTypes: parseJsonArray(row.account_types_json) as AccountType[],
     capabilities: parseJsonArray(row.capabilities_json),
     endpointFamilies: familiesByProfileId.get(row.id) ?? []
@@ -649,7 +657,7 @@ function providerDefaultProfileFields(profiles: ProviderProtocolProfileDefinitio
       protocolCode: '',
       protocolVersion: '',
       baseUrl: '',
-      defaultTestModel: '',
+      defaultHealthCheckModel: '',
       accountTypes: [],
       capabilities: []
     }
@@ -659,7 +667,7 @@ function providerDefaultProfileFields(profiles: ProviderProtocolProfileDefinitio
     protocolCode: defaultProfile.protocolCode,
     protocolVersion: defaultProfile.protocolVersion,
     baseUrl: defaultProfile.baseUrl,
-    defaultTestModel: defaultProfile.defaultTestModel,
+    defaultHealthCheckModel: defaultProfile.defaultHealthCheckModel,
     accountTypes: defaultProfile.accountTypes,
     capabilities: defaultProfile.capabilities
   }

@@ -6,6 +6,7 @@ import { assertGeminiEndpointModesCompatible } from '../../domain/gemini-endpoin
 import { isAnthropicProtocolProfile, isGeminiProtocolProfile, isHybridProviderCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
 import { normalizeAccountCredentialsForWrite } from '../../storage/repositories.js'
+import { currentSystemAccountId } from '../../storage/access-scope.js'
 import {
   appendUnknownFieldMessages,
   errorMessage,
@@ -39,6 +40,10 @@ import {
 } from './account-import-provider-resolver.js'
 import { validateAccountModelCatalogFields, validateAccountModelCatalogFieldsAsync } from './account-import-model-catalog.js'
 import type { AccountImportItem } from './account-import.service.js'
+import {
+  assertAccountGptRequestOverridesSupported,
+  assertAccountGptRequestOverridesSupportedAsync
+} from './account-gpt-request-overrides.validation.js'
 
 export interface NormalizedImportAccount {
   index: number
@@ -61,7 +66,7 @@ export interface NormalizedImportAccount {
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean
   supportedModels?: string[]
-  defaultTestModel?: string
+  healthCheckModel?: string
   modelMappings?: AccountModelMapping[]
   tags?: string[]
   accountExpiresAt?: string
@@ -91,6 +96,7 @@ export function planImportAccount(
   const { source, item, shouldResolve } = prepareImportAccountPlan(value, index, context)
   if (!shouldResolve) return { source, item }
   validateAccountModelCatalogFields(source, context)
+  validateImportAccountGptRequestOverrides(source, context)
   const groupId = resolveAccountGroup(source, context, groupIdsByKey, groupNamesToCreate, item)
   const proxyProfileId = resolveAccountProxy(source, proxyByRef, item)
   if (item.messages.length > 0) {
@@ -115,6 +121,7 @@ export async function planImportAccountAsync(
   const { source, item, shouldResolve } = prepareImportAccountPlan(value, index, context)
   if (!shouldResolve) return { source, item }
   await validateAccountModelCatalogFieldsAsync(source, context)
+  await validateImportAccountGptRequestOverridesAsync(source, context)
   const groupId = await resolveAccountGroupAsync(source, context, groupIdsByKey, groupNamesToCreate, item)
   const proxyProfileId = await resolveAccountProxyAsync(source, proxyByRef, item)
   if (item.messages.length > 0) {
@@ -125,6 +132,40 @@ export async function planImportAccountAsync(
     item,
     groupId,
     proxyProfileId
+  }
+}
+
+function validateImportAccountGptRequestOverrides(
+  source: NormalizedImportAccount,
+  context: AccountImportAccountPlanContext
+): void {
+  try {
+    assertAccountGptRequestOverridesSupported({
+      providerCode: source.providerCode,
+      accountType: source.type,
+      credentials: source.credentials,
+      supportedModels: source.supportedModels ?? context.providerByCode.get(source.providerCode)?.defaultSupportedModels ?? [],
+      systemAccountId: currentSystemAccountId(context.access)
+    })
+  } catch (error) {
+    source.messages.push(errorMessage(error))
+  }
+}
+
+async function validateImportAccountGptRequestOverridesAsync(
+  source: NormalizedImportAccount,
+  context: AccountImportAccountPlanContext
+): Promise<void> {
+  try {
+    await assertAccountGptRequestOverridesSupportedAsync({
+      providerCode: source.providerCode,
+      accountType: source.type,
+      credentials: source.credentials,
+      supportedModels: source.supportedModels ?? context.providerByCode.get(source.providerCode)?.defaultSupportedModels ?? [],
+      systemAccountId: currentSystemAccountId(context.access)
+    })
+  } catch (error) {
+    source.messages.push(errorMessage(error))
   }
 }
 
@@ -187,7 +228,7 @@ function prepareImportAccountPlan(
   source.superPriorityEnabled = optionalBooleanField(value, 'superPriorityEnabled', '账户 superPriorityEnabled', item.messages)
   source.fallbackEnabled = optionalBooleanField(value, 'fallbackEnabled', '账户 fallbackEnabled', item.messages)
   source.supportedModels = optionalStringArrayField(value, 'supportedModels', '账户 supportedModels', item.messages)
-  source.defaultTestModel = optionalTextField(value, 'defaultTestModel', '账户 defaultTestModel', item.messages)
+  source.healthCheckModel = optionalTextField(value, 'healthCheckModel', '账户 healthCheckModel', item.messages)
   source.modelMappings = optionalModelMappingsField(value, 'modelMappings', '账户 modelMappings', item.messages)
   source.tags = optionalAccountTagsField(value, 'tags', '账户 tags', item.messages)
   source.accountExpiresAt = optionalDateTimeField(value, 'accountExpiresAt', '账户 accountExpiresAt', item.messages)

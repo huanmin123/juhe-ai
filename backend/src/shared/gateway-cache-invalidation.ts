@@ -5,7 +5,10 @@ import { scheduleProcessFatalError } from './process-fatal.js'
 import { createRuntimeStateStore } from './runtime-state-store.js'
 
 type GatewayRuntimeCacheInvalidationHandler = (reason: string) => void
-type CacheInvalidationHandler = () => void
+type CacheInvalidationMetadata = {
+  publishedAt?: string
+}
+type CacheInvalidationHandler = (metadata?: CacheInvalidationMetadata) => void
 type ApiKeyQuotaInvalidationHandler = (apiKeyId?: string) => void
 type GatewayCacheInvalidationTopic = 'gateway_runtime_cache' | 'authorization_quota_cache' | 'api_key_quota_cache'
 
@@ -62,8 +65,9 @@ export function notifyGatewayRuntimeCacheInvalidation(reason: string): void {
 
 export function notifyAuthorizationQuotaCacheInvalidation(reason: string): void {
   runGatewayCacheInvalidatorsAfterCommit(() => {
-    runCacheInvalidators('authorization_quota_cache', reason, authorizationQuotaCacheInvalidators, (handler) => handler())
-    publishGatewayCacheInvalidationToRuntimeState('authorization_quota_cache', reason)
+    const publishedAt = new Date().toISOString()
+    runCacheInvalidators('authorization_quota_cache', reason, authorizationQuotaCacheInvalidators, (handler) => handler({ publishedAt }))
+    publishGatewayCacheInvalidationToRuntimeState('authorization_quota_cache', reason, { publishedAt })
   })
 }
 
@@ -128,14 +132,14 @@ function runCacheInvalidators<THandler>(
 function publishGatewayCacheInvalidationToRuntimeState(
   topic: GatewayCacheInvalidationTopic,
   reason: string,
-  fields: { apiKeyId?: string } = {}
+  fields: { apiKeyId?: string; publishedAt?: string } = {}
 ): void {
   if (runtimeConfig.runtimeStateDriver !== 'redis') return
   const state: GatewayCacheInvalidationState = {
     version: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     reason,
     apiKeyId: fields.apiKeyId,
-    publishedAt: new Date().toISOString()
+    publishedAt: fields.publishedAt ?? new Date().toISOString()
   }
   lastSeenGatewayCacheInvalidationVersions.set(topic, state.version)
   void gatewayCacheInvalidationState
@@ -169,7 +173,7 @@ function applyRuntimeStateCacheInvalidation(topic: GatewayCacheInvalidationTopic
     return
   }
   if (topic === 'authorization_quota_cache') {
-    runCacheInvalidators(topic, state.reason, authorizationQuotaCacheInvalidators, (handler) => handler())
+    runCacheInvalidators(topic, state.reason, authorizationQuotaCacheInvalidators, (handler) => handler({ publishedAt: state.publishedAt }))
     return
   }
   runCacheInvalidators(topic, state.reason, apiKeyQuotaCacheInvalidators, (handler) => handler(state.apiKeyId), {

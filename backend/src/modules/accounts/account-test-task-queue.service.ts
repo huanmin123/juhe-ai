@@ -5,20 +5,18 @@ import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import {
   accountTestUnavailableMessage,
-  getAccountPrecheckMutationStateAsync,
   resolveProxyUrlForProfileAsync,
   runtimeOpenAIAccountCredentials,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
-import { accountApiKeyEntries, selectAccountRuntimeApiKeyEntryAsync, type AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
+import { accountApiKeyEntries, type AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
 import { getSettings } from '../../storage/settings.repository.js'
 import { DEFAULT_SYSTEM_SETTINGS } from '../../storage/schema-defaults.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   type AccountTestDraftSnapshot,
 } from '../../storage/account-test-tasks.repository.js'
-import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
-import { operationMode, recordOperationLogAsync, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { requestBackgroundWorkerDbService, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protocol.js'
 import { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
@@ -40,14 +38,6 @@ interface AccountTestQueueItem {
   taskId: string
 }
 
-interface ManualAccountTestFailurePrecheckQueueItem {
-  accountId: string
-  accountName: string
-  access: AccessScope
-  originalResult: Pick<AccountTestResult, 'traceId' | 'statusCode' | 'errorCode' | 'message' | 'model' | 'testEndpointMode'>
-  precheckStartedAt: string
-}
-
 const unsupportedGatewayProtocolTestMessage = '当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户'
 const defaultManualAccountTestConcurrency = 100
 const defaultSystemSettingsByKey = new Map<string, unknown>(DEFAULT_SYSTEM_SETTINGS.map(([key, value]) => [key, value]))
@@ -57,7 +47,6 @@ const manualAccountTestQueuedMaxWaitMs = 10 * 60_000
 const manualAccountTestQueuedSweepBatchSize = 500
 const accountApiKeyPoolTestConcurrency = 5
 const manualAccountTestRetryPolicy = sequenceRetryPolicy('manual_account_test', [], 0)
-const manualAccountTestFailurePrecheckRetryPolicy = sequenceRetryPolicy('manual_account_test_failure_precheck', [], 0)
 const runningAccountTestControllers = new Map<string, AbortController>()
 let accountTestSessionStaleSweepTimer: NodeJS.Timeout | undefined
 let sqliteSettingsTableMissingWarningLogged = false
@@ -73,22 +62,6 @@ const manualAccountTestQueue = createRetryQueue<AccountTestQueueItem>({
   onExhausted: (event) => {
     void failAccountTestTaskViaDbService(event.item.taskId, event.error instanceof Error ? event.error.message : '账号测试任务执行失败')
     refillManualAccountTestQueue()
-  }
-})
-
-const manualAccountTestFailurePrecheckQueue = createRetryQueue<ManualAccountTestFailurePrecheckQueueItem>({
-  name: 'manual-account-test-failure-precheck',
-  policy: manualAccountTestFailurePrecheckRetryPolicy,
-  concurrency: 1,
-  run: runManualAccountTestFailurePrecheckQueueItem,
-  onExhausted: (event) => {
-    logger.warn(errorLogFields(event.error, {
-      event: 'manual_account_test_failure_precheck_exhausted',
-      accountId: event.item.accountId,
-      accountName: event.item.accountName,
-      traceId: event.item.originalResult.traceId,
-      attemptCount: event.attemptIndex + 1
-    }), '账号测试失败事前确认任务已用尽，本轮跳过状态写入')
   }
 })
 
@@ -277,7 +250,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
           await failAccountTestTaskViaDbService(task.id, unavailableMessage, failedAccountTestResult(account, unavailableMessage, task.model))
           return true
         }
-        const result = await runOpenAIAccountTestWithSideEffects(account, access, {
+        const result = await runOpenAIAccountTestWithoutStateMutation(account, access, {
           model: task.model,
           testEndpointMode: task.testEndpointMode,
           diagnostics: task.diagnostics,
@@ -329,7 +302,7 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       return true
     }
 
-    const result = await runOpenAIAccountTestWithSideEffects(account, access, {
+    const result = await runOpenAIAccountTestWithoutStateMutation(account, access, {
       model: task.model,
       testEndpointMode: task.testEndpointMode,
       diagnostics: task.diagnostics,
@@ -518,7 +491,8 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
     systemAccountId: draft.ownerSystemAccountId,
     providerCode: draft.providerCode,
     providerProtocolProfileId: draft.providerProtocolProfileId,
-    supportedModels: draft.supportedModels
+    supportedModels: draft.supportedModels,
+    testEndpointMode: input.testEndpointMode
   })
   let candidateAccount: OpenAIAccountSecret | undefined
   let lastResult: AccountTestResult | undefined
@@ -538,6 +512,7 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
         diagnostics: input.diagnostics,
         signal: attemptSignal,
         candidateAccount,
+        disableAccountStateMutation: true,
         gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(undefined, timeoutMs)
       })
     } catch (error) {
@@ -570,7 +545,7 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
   }), startedAt)
 }
 
-async function runOpenAIAccountTestWithSideEffects(
+async function runOpenAIAccountTestWithoutStateMutation(
   account: AccountSummary,
   access: AccessScope,
   input: {
@@ -583,10 +558,9 @@ async function runOpenAIAccountTestWithSideEffects(
     onStatusMessage?: (message: string) => void
   }
 ): Promise<AccountTestResult> {
-  let accountTestStatusChanges: ReturnType<typeof safeChange>[] | undefined
-  let result = await runAccountApiKeyPoolTestIfNeeded(account, access, input)
+  const result = await runAccountApiKeyPoolTestIfNeeded(account, access, input)
   if (!result) {
-    result = input.draftAccount
+    return input.draftAccount
       ? await runOpenAIDraftAccountTest(account, input.draftAccount, {
         model: input.model,
         testEndpointMode: input.testEndpointMode,
@@ -600,63 +574,12 @@ async function runOpenAIAccountTestWithSideEffects(
         signal: input.signal,
         diagnostics: input.diagnostics,
         systemAccountId: access.systemAccountFilterId ?? access.systemAccountId,
+        disableAccountStateMutation: true,
         onDiagnosticAttemptProgress: input.onDiagnosticAttemptProgress,
         findAccountForTest: loadAccountForTestViaDbService,
         findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService
       })
   }
-
-  if (input.signal.aborted) {
-    return result
-  }
-
-  if (result.success && shouldClearAccountAfterSuccessfulTest(account)) {
-    const restored = await clearAccountAfterSuccessfulTest(account, access)
-    if (restored.changed && restored.accountStatus) {
-      const restoredStatus = restored.accountStatus as AccountSummary['status']
-      accountTestStatusChanges = accountTestStatusLogChanges(account, {
-        ...account,
-        status: restoredStatus
-      })
-      result = {
-        ...result,
-        accountStatusChanged: restored.changed,
-        accountStatus: restoredStatus
-      }
-    }
-  }
-
-  if (result.success) {
-    clearAccountGatewayRuntimeAfterRestore(account, access)
-  }
-
-  if (shouldRunAccountTestFailurePrecheck(account, result)) {
-    enqueueManualAccountTestFailurePrecheck(account, access, result, {
-      model: input.model ?? result.model,
-      testEndpointMode: input.testEndpointMode ?? result.testEndpointMode
-    })
-  }
-
-  if (result.accountStatusChanged) {
-    const ownerSystemAccountId = authorizedLocalOperationOwner(account, access)
-      ?? resolveOperationOwner(account as unknown as Record<string, unknown>, access)
-    await recordOperationLogAsync({
-      actorSystemAccountId: access.systemAccountId,
-      actorRole: access.role,
-      operationScopeSystemAccountId: ownerSystemAccountId,
-      mode: operationMode(access),
-      module: 'accounts',
-      action: 'test_status_changed',
-      operationKey: 'accounts.test_status_changed',
-      resourceType: 'account',
-      resourceId: account.id,
-      resourceName: account.name,
-      summary: `账户测试更新状态：${account.name}`,
-      changes: accountTestStatusChanges ?? [safeChange('status', '状态', account.status, result.accountStatus)],
-      viewers: viewer(ownerSystemAccountId, 'resource_owner')
-    })
-  }
-
   return result
 }
 
@@ -702,7 +625,8 @@ async function runAccountApiKeyPoolTestIfNeeded(
     systemAccountId,
     providerCode: input.draftAccount?.providerCode,
     providerProtocolProfileId: input.draftAccount?.providerProtocolProfileId,
-    supportedModels: input.draftAccount?.supportedModels
+    supportedModels: input.draftAccount?.supportedModels,
+    testEndpointMode: input.testEndpointMode
   })
 
   input.onStatusMessage?.(accountApiKeyPoolProgressMessage(0, entries.length, 0, 0))
@@ -715,22 +639,8 @@ async function runAccountApiKeyPoolTestIfNeeded(
     systemAccountId,
     onProgress: input.onStatusMessage
   })
-  let persistedRuntime = false
-  if (!input.draftAccount && !input.signal.aborted) {
-    try {
-      await persistSavedAccountApiKeyPoolRuntime(baseCandidate, itemResults)
-      persistedRuntime = true
-    } catch (error) {
-      logger.warn(errorLogFields(error, {
-        event: 'account_api_key_pool_test_runtime_persist_failed',
-        accountId: account.id,
-        accountName: account.name
-      }), 'API Key 池测试结果写入运行态失败，本次仅返回测试结论')
-    }
-  }
   const result = accountApiKeyPoolSummaryResult(account, model, itemResults, {
-    total: entries.length,
-    persistedRuntime
+    total: entries.length
   })
   return accountTestResultWithTotalDuration(result, startedAt)
 }
@@ -863,7 +773,6 @@ function accountApiKeyPoolSummaryResult(
   itemResults: AccountApiKeyPoolEntryTestResult[],
   input: {
     total: number
-    persistedRuntime: boolean
   }
 ): AccountTestResult {
   const successCount = itemResults.filter((item) => item.success).length
@@ -885,36 +794,10 @@ function accountApiKeyPoolSummaryResult(
     ...representative,
     success,
     errorCode: success ? undefined : representative.errorCode,
-    message: accountApiKeyPoolTestMessage(pool, input.persistedRuntime),
+    message: accountApiKeyPoolTestMessage(pool),
     accountFailureEligible: false,
     apiKeyPool: pool
   }
-}
-
-async function persistSavedAccountApiKeyPoolRuntime(
-  baseCandidate: OpenAIAccountSecret,
-  itemResults: AccountApiKeyPoolEntryTestResult[]
-): Promise<void> {
-  await Promise.all(itemResults.map(async (item) => {
-    const candidate = fixedAccountApiKeyPoolCandidate(baseCandidate, item.entry)
-    if (item.success) {
-      await requestBackgroundWorkerDbService({
-        type: 'record_account_api_key_success',
-        account: candidate
-      })
-      return
-    }
-    await requestBackgroundWorkerDbService({
-      type: 'record_account_api_key_failure',
-      account: candidate,
-      input: {
-        status: 'temporary_unavailable',
-        statusCode: item.statusCode,
-        errorCode: item.errorCode,
-        errorMessage: item.message
-      }
-    })
-  }))
 }
 
 async function loadOpenAIAccountForGroupViaDbService(
@@ -943,14 +826,11 @@ function accountApiKeyPoolTestMessage(
     tested: number
     successCount: number
     failedCount: number
-  },
-  persistedRuntime: boolean
+  }
 ): string {
   if (pool.successCount >= 1) {
     if (pool.failedCount > 0) {
-      return persistedRuntime
-        ? `API Key 池测试通过：${pool.successCount}/${pool.total} 个 Key 可用，${pool.failedCount} 个 Key 已进入后台恢复`
-        : `API Key 池测试通过：${pool.successCount}/${pool.total} 个 Key 可用，${pool.failedCount} 个 Key 未通过`
+      return `API Key 池测试通过：${pool.successCount}/${pool.total} 个 Key 可用，${pool.failedCount} 个 Key 未通过`
     }
     return `API Key 池测试通过：${pool.successCount}/${pool.total} 个 Key 可用`
   }
@@ -968,171 +848,6 @@ function keyPrefixForDisplay(key: string): string | undefined {
 function keySuffixForDisplay(key: string): string | undefined {
   const text = key.trim()
   return text ? text.slice(-4) : undefined
-}
-
-function enqueueManualAccountTestFailurePrecheck(
-  account: AccountSummary,
-  access: AccessScope,
-  result: AccountTestResult,
-  input: {
-    model?: string
-    testEndpointMode?: AccountSupportedEndpointMode
-  }
-): void {
-  const precheckStartedAt = new Date().toISOString()
-  const enqueued = manualAccountTestFailurePrecheckQueue.enqueue(manualAccountTestFailurePrecheckKey(account, access), {
-    accountId: account.id,
-    accountName: account.name,
-    access: { ...access },
-    originalResult: {
-      traceId: result.traceId,
-      statusCode: result.statusCode,
-      errorCode: result.errorCode,
-      message: result.message,
-      model: result.model ?? normalizedString(input.model),
-      testEndpointMode: result.testEndpointMode ?? input.testEndpointMode
-    },
-    precheckStartedAt
-  })
-  logger.info({
-    event: enqueued ? 'manual_account_test_failure_precheck_enqueued' : 'manual_account_test_failure_precheck_deduped',
-    accountId: account.id,
-    accountName: account.name,
-    traceId: result.traceId,
-    statusCode: result.statusCode,
-    errorCode: result.errorCode,
-    failedModel: result.model ?? input.model,
-    failedTestEndpointMode: result.testEndpointMode ?? input.testEndpointMode,
-    precheckStartedAt
-  }, enqueued ? '账号测试失败，已进入事前确认队列' : '账号测试失败事前确认已在队列中，本次不重复入队')
-}
-
-async function runManualAccountTestFailurePrecheckQueueItem(
-  item: ManualAccountTestFailurePrecheckQueueItem,
-  context: { attemptIndex: number; retryNumber: number }
-) {
-  const account = await loadAccountForTestViaDbService(item.accountId, item.access)
-  if (!account) {
-    logger.info({
-      event: 'manual_account_test_failure_precheck_skipped',
-      accountId: item.accountId,
-      accountName: item.accountName,
-      skipReason: 'account_missing',
-      traceId: item.originalResult.traceId
-    }, '账号测试失败事前确认已失效，跳过状态写入')
-    return true
-  }
-  const skipReason = await manualAccountTestFailurePrecheckSkipReason(item, account)
-  if (skipReason) {
-    logger.info({
-      event: 'manual_account_test_failure_precheck_skipped',
-      accountId: item.accountId,
-      accountName: item.accountName,
-      accountStatus: account.status,
-      skipReason,
-      traceId: item.originalResult.traceId
-    }, '账号测试失败事前确认已失效，跳过状态写入')
-    return true
-  }
-
-  const result = await testOpenAIAccountWithDiagnosticRetries(account, {
-    diagnostics: 'full',
-    groupId: account.boundGroupId,
-    systemAccountId: accountTestPrecheckSystemAccountId(account),
-    trafficSource: 'cooldown_retest',
-    disableAccountStateMutation: true,
-    findAccountForTest: loadAccountForTestViaDbService,
-    findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
-    gatewaySettingsOverride: {
-      temporaryUnschedulableRetryAttempts: 0,
-      temporaryUnschedulableRetryIntervalSeconds: 0
-    }
-  })
-
-  if (result.success) {
-    logger.info({
-      event: 'manual_account_test_failure_precheck_recovered',
-      accountId: account.id,
-      accountName: account.name,
-      statusCode: result.statusCode,
-      durationMs: result.durationMs,
-      originalTraceId: item.originalResult.traceId,
-      precheckTraceId: result.traceId,
-      attemptIndex: context.attemptIndex,
-      retryNumber: context.retryNumber
-    }, '账号测试失败后事前确认通过，保留当前账户状态')
-    return true
-  }
-
-  if (result.accountFailureEligible === false) {
-    logger.warn({
-      event: 'manual_account_test_failure_precheck_ineligible_failure_discarded',
-      accountId: account.id,
-      accountName: account.name,
-      statusCode: result.statusCode,
-      errorCode: result.errorCode,
-      durationMs: result.durationMs,
-      message: result.message,
-      originalTraceId: item.originalResult.traceId,
-      precheckTraceId: result.traceId
-    }, '账号测试失败后事前确认未通过，但失败不属于账号失败，已跳过状态写入')
-    return true
-  }
-
-  const latestAccount = await loadAccountForTestViaDbService(item.accountId, item.access)
-  if (!latestAccount) {
-    logger.info({
-      event: 'manual_account_test_failure_precheck_mark_skipped',
-      accountId: item.accountId,
-      accountName: item.accountName,
-      skipReason: 'account_missing',
-      originalTraceId: item.originalResult.traceId,
-      precheckTraceId: result.traceId
-    }, '账号测试失败事前确认完成前账户已变化，跳过状态写入')
-    return true
-  }
-  const latestSkipReason = await manualAccountTestFailurePrecheckSkipReason(item, latestAccount)
-  if (latestSkipReason) {
-    logger.info({
-      event: 'manual_account_test_failure_precheck_mark_skipped',
-      accountId: item.accountId,
-      accountName: item.accountName,
-      accountStatus: latestAccount.status,
-      skipReason: latestSkipReason,
-      originalTraceId: item.originalResult.traceId,
-      precheckTraceId: result.traceId
-    }, '账号测试失败事前确认完成前账户已变化，跳过状态写入')
-    return true
-  }
-
-  const reason = accountTestFailurePrecheckCooldownReason(item, result)
-  const updatedAccount = await requestBackgroundWorkerDbService({
-    type: 'mark_account_test_temporary_unavailable',
-    accountId: latestAccount.id,
-    reason,
-    access: item.access
-  })
-  if (updatedAccount?.updated) {
-    const nextAccount = {
-      ...latestAccount,
-      status: (updatedAccount.accountStatus ?? latestAccount.status) as AccountSummary['status']
-    }
-    const changes = accountTestStatusLogChanges(latestAccount, nextAccount)
-    await recordAccountTestPrecheckStatusChangedOperation(latestAccount, nextAccount, item.access, changes)
-  }
-  logger.warn({
-    event: 'manual_account_test_failure_precheck_marked',
-    accountId: latestAccount.id,
-    accountName: latestAccount.name,
-    statusCode: result.statusCode,
-    errorCode: result.errorCode,
-    durationMs: result.durationMs,
-    originalTraceId: item.originalResult.traceId,
-    precheckTraceId: result.traceId,
-    accountStatus: updatedAccount?.accountStatus,
-    updated: updatedAccount?.updated ?? false
-  }, '账号测试失败且事前确认未通过，已尝试标记为临时不可调用')
-  return true
 }
 
 async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal: AbortSignal): Promise<OpenAIAccountSecret> {
@@ -1155,7 +870,7 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
     }
   }
   const selectedApiKeyEntry = draft.type === 'api_key'
-    ? await selectAccountRuntimeApiKeyEntryAsync({ accountId: draft.id, credentials })
+    ? accountApiKeyEntries(credentials)[0]
     : undefined
   const apiKey = draft.type === 'oauth'
     ? stringCredential(credentials.access_token)
@@ -1189,6 +904,7 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
     fallbackEnabled: draft.fallbackEnabled,
     clientCompatibility: draft.clientCompatibility,
     supportedModels: draft.supportedModels ?? [],
+    healthCheckModel: draft.healthCheckModel,
     modelMappings: draft.modelMappings ?? [],
     baseUrl,
     apiKey,
@@ -1230,6 +946,7 @@ function accountSummaryFromDraftSnapshot(draft: AccountTestDraftSnapshot): Accou
     fallbackEnabled: draft.fallbackEnabled,
     clientCompatibility: draft.clientCompatibility,
     supportedModels: draft.supportedModels ?? [],
+    healthCheckModel: draft.healthCheckModel,
     modelMappings: draft.modelMappings ?? [],
     proxyProfileId: draft.proxyProfileId,
     schedulable: true,
@@ -1288,222 +1005,10 @@ function emptyAccountUsageSummary(): AccountSummary['usage'] {
   }
 }
 
-function clearAccountGatewayRuntimeAfterRestore(account: AccountSummary, access?: AccessScope): void {
-  const systemAccountId = account.accessType === 'authorized'
-    ? account.bindingSystemAccountId ?? effectiveRequestSystemAccountId(access)
-    : undefined
-  sendAccountRuntimeClearToServer({
-    accountId: account.id,
-    authorizedBinding: account.accessType === 'authorized' && systemAccountId && account.boundGroupId && account.accountAuthorizationId
-      ? {
-          systemAccountId,
-          groupId: account.boundGroupId,
-          accountAuthorizationId: account.accountAuthorizationId
-        }
-      : undefined
-  })
-}
-
-function shouldClearAccountAfterSuccessfulTest(account: AccountSummary): boolean {
-  if (account.status === 'disabled') return false
-  return Boolean(
-    account.status !== 'active'
-    || !account.schedulable
-    || account.cooldownUntil
-    || account.lastErrorMessage
-    || account.lastErrorCode
-    || account.cooldownRetestFailureCount
-    || account.cooldownRetestObservationStartedAt
-    || account.cooldownRetestLastAt
-    || account.cooldownRetestLastStatusCode
-    || account.streamFailureCount
-    || account.streamFailureWindowStartedAt
-  )
-}
-
-async function clearAccountAfterSuccessfulTest(account: AccountSummary, access: AccessScope): Promise<{ changed: boolean; accountStatus?: string }> {
-  const systemAccountId = account.accessType === 'authorized'
-    ? account.bindingSystemAccountId ?? effectiveRequestSystemAccountId(access)
-    : undefined
-  const result = await requestBackgroundWorkerDbService({
-    type: 'clear_account_failure_state',
-    accountId: account.id,
-    allowPendingTestRestore: true,
-    authorizedBinding: account.accessType === 'authorized' && systemAccountId && account.boundGroupId && account.accountAuthorizationId
-      ? {
-          systemAccountId,
-          groupId: account.boundGroupId,
-          accountAuthorizationId: account.accountAuthorizationId
-        }
-      : undefined
-  })
-  return result ?? { changed: false }
-}
-
-function accountTestStatusLogChanges(before: AccountSummary, after: AccountSummary): ReturnType<typeof safeChange>[] {
-  const changes: ReturnType<typeof safeChange>[] = []
-  if (before.status !== after.status) {
-    changes.push(safeChange('status', '状态', before.status, after.status))
-  }
-  if (before.schedulable !== after.schedulable) {
-    changes.push(safeChange('schedulable', '是否参与调度', before.schedulable, after.schedulable))
-  }
-  if ((before.cooldownUntil ?? null) !== (after.cooldownUntil ?? null)) {
-    changes.push(safeChange('cooldownUntil', before.accessType === 'authorized' || after.accessType === 'authorized' ? '实例冷却结束时间' : '冷却结束时间', before.cooldownUntil, after.cooldownUntil))
-  }
-  if ((before.lastErrorCode ?? null) !== (after.lastErrorCode ?? null)) {
-    changes.push(safeChange('lastErrorCode', before.accessType === 'authorized' || after.accessType === 'authorized' ? '实例错误码' : '错误码', before.lastErrorCode, after.lastErrorCode))
-  }
-  if ((before.lastErrorMessage ?? null) !== (after.lastErrorMessage ?? null)) {
-    changes.push(safeChange('lastErrorMessage', before.accessType === 'authorized' || after.accessType === 'authorized' ? '实例错误信息' : '错误信息', before.lastErrorMessage, after.lastErrorMessage))
-  }
-  if ((before.cooldownRetestFailureCount ?? 0) !== (after.cooldownRetestFailureCount ?? 0)) {
-    changes.push(safeChange('cooldownRetestFailureCount', '后台复测失败次数', before.cooldownRetestFailureCount ?? 0, after.cooldownRetestFailureCount ?? 0))
-  }
-  if ((before.cooldownRetestObservationStartedAt ?? null) !== (after.cooldownRetestObservationStartedAt ?? null)) {
-    changes.push(safeChange('cooldownRetestObservationStartedAt', '自动恢复观察开始时间', before.cooldownRetestObservationStartedAt, after.cooldownRetestObservationStartedAt))
-  }
-  if ((before.cooldownRetestLastAt ?? null) !== (after.cooldownRetestLastAt ?? null)) {
-    changes.push(safeChange('cooldownRetestLastAt', '最近后台复测时间', before.cooldownRetestLastAt, after.cooldownRetestLastAt))
-  }
-  if ((before.cooldownRetestLastStatusCode ?? null) !== (after.cooldownRetestLastStatusCode ?? null)) {
-    changes.push(safeChange('cooldownRetestLastStatusCode', '最近后台复测状态码', before.cooldownRetestLastStatusCode, after.cooldownRetestLastStatusCode))
-  }
-  if ((before.streamFailureCount ?? 0) !== (after.streamFailureCount ?? 0)) {
-    changes.push(safeChange('streamFailureCount', '流失败诊断次数', before.streamFailureCount ?? 0, after.streamFailureCount ?? 0))
-  }
-  if ((before.streamFailureWindowStartedAt ?? null) !== (after.streamFailureWindowStartedAt ?? null)) {
-    changes.push(safeChange('streamFailureWindowStartedAt', '流失败诊断窗口开始时间', before.streamFailureWindowStartedAt, after.streamFailureWindowStartedAt))
-  }
-  return changes
-}
-
-function shouldRunAccountTestFailurePrecheck(account: AccountSummary, result: { success: boolean; accountFailureEligible?: boolean; accountStatusChanged?: boolean; accountStatus?: string }): boolean {
-  if (result.success) return false
-  if (result.accountStatusChanged) return false
-  if (result.accountFailureEligible === false) return false
-  if (account.status !== 'active' && account.status !== 'rate_limited' && account.status !== 'temporary_unavailable') return false
-  if (account.status === 'active' && !account.schedulable) return false
-  const observedStatus = result.accountStatus ?? account.status
-  if (observedStatus !== 'active' && observedStatus !== 'rate_limited' && observedStatus !== 'temporary_unavailable') return false
-  return true
-}
-
-async function manualAccountTestFailurePrecheckSkipReason(
-  item: ManualAccountTestFailurePrecheckQueueItem,
-  account: AccountSummary | undefined
-): Promise<string | undefined> {
-  if (!account) return 'account_missing'
-  if (!shouldRunAccountTestFailurePrecheck(account, {
-    success: false,
-    accountFailureEligible: true,
-    accountStatus: account.status
-  })) {
-    return 'account_not_eligible'
-  }
-  const state = await getAccountPrecheckMutationStateAsync({
-    accountId: account.id,
-    authorizedBinding: manualAccountTestFailurePrecheckAuthorizedBinding(account, item.access)
-  })
-  if (!state) {
-    return 'account_missing'
-  }
-  if (state.status === 'disabled' || state.status === 'error') {
-    return 'hard_unavailable'
-  }
-  const startedAtMs = Date.parse(item.precheckStartedAt)
-  const updatedAtMs = state.updatedAt ? Date.parse(state.updatedAt) : NaN
-  if (Number.isFinite(startedAtMs) && Number.isFinite(updatedAtMs) && updatedAtMs > startedAtMs && state.updatedAt !== state.lastUsedAt) {
-    return 'account_updated'
-  }
-  return undefined
-}
-
-function manualAccountTestFailurePrecheckAuthorizedBinding(account: AccountSummary, access?: AccessScope) {
-  if (account.accessType !== 'authorized') {
-    return undefined
-  }
-  const systemAccountId = account.bindingSystemAccountId ?? effectiveRequestSystemAccountId(access)
-  if (!systemAccountId || !account.boundGroupId || !account.accountAuthorizationId) {
-    return undefined
-  }
-  return {
-    accountId: account.id,
-    systemAccountId,
-    groupId: account.boundGroupId,
-    accountAuthorizationId: account.accountAuthorizationId
-  }
-}
-
-function manualAccountTestFailurePrecheckKey(account: AccountSummary, access: AccessScope): string {
-  const binding = manualAccountTestFailurePrecheckAuthorizedBinding(account, access)
-  if (binding) {
-    return `${binding.systemAccountId}:${binding.groupId}:${binding.accountAuthorizationId}:${binding.accountId}`
-  }
-  return account.id
-}
-
 function accountTestPrecheckSystemAccountId(account: AccountSummary): string | undefined {
   return account.accessType === 'authorized'
     ? account.bindingSystemAccountId
     : account.ownerSystemAccountId ?? account.systemAccountId
-}
-
-function accountTestFailurePrecheckCooldownReason(
-  item: ManualAccountTestFailurePrecheckQueueItem,
-  result: { traceId?: string; statusCode?: number; errorCode?: string; message?: string }
-): string {
-  const parts = ['账户测试失败，事前确认仍未通过，已标记为临时不可调用']
-  const originalTraceId = normalizedString(item.originalResult.traceId)
-  if (originalTraceId) {
-    parts.push(`原始 traceId ${originalTraceId}`)
-  }
-  const originalModel = normalizedString(item.originalResult.model)
-  if (originalModel) {
-    parts.push(`原始测试模型 ${originalModel}`)
-  }
-  if (item.originalResult.testEndpointMode) {
-    parts.push(`原始测试接口 ${item.originalResult.testEndpointMode}`)
-  }
-  const traceId = normalizedString(result.traceId)
-  if (traceId) {
-    parts.push(`确认 traceId ${traceId}`)
-  }
-  if (typeof result.statusCode === 'number') {
-    parts.push(`确认 HTTP ${Math.trunc(result.statusCode)}`)
-  }
-  if (result.errorCode) {
-    parts.push(result.errorCode)
-  }
-  if (result.message) {
-    parts.push(result.message)
-  }
-  return parts.join('；').slice(0, 1000)
-}
-
-function recordAccountTestPrecheckStatusChangedOperation(
-  before: AccountSummary,
-  after: AccountSummary,
-  access: AccessScope,
-  changes: ReturnType<typeof safeChange>[]
-): Promise<void> {
-  const ownerSystemAccountId = authorizedLocalOperationOwner(before, access)
-    ?? resolveOperationOwner(before as unknown as Record<string, unknown>, access)
-  return recordOperationLogAsync({
-    actorSystemAccountId: access.systemAccountId,
-    actorRole: access.role,
-    operationScopeSystemAccountId: ownerSystemAccountId,
-    mode: operationMode(access),
-    module: 'accounts',
-    action: 'test_status_changed',
-    operationKey: 'accounts.test_status_changed',
-    resourceType: 'account',
-    resourceId: before.id,
-    resourceName: before.name,
-    summary: `账户测试确认失败更新状态：${before.name}`,
-    changes: changes.length > 0 ? changes : [safeChange('status', '状态', before.status, after.status)],
-    viewers: viewer(ownerSystemAccountId, 'resource_owner')
-  })
 }
 
 function accountTestResultWithTotalDuration(result: AccountTestResult, startedAt: number): AccountTestResult {
@@ -1528,14 +1033,6 @@ function draftAccountTestFailureEligible(error: unknown, signal: AbortSignal): b
 }
 
 class DraftAccountConfigurationError extends Error {
-}
-
-function authorizedLocalOperationOwner(account: AccountSummary, access?: AccessScope): string | undefined {
-  return account.accessType === 'authorized' ? effectiveRequestSystemAccountId(access) : undefined
-}
-
-function effectiveRequestSystemAccountId(access?: AccessScope): string | undefined {
-  return access?.systemAccountFilterId?.trim() || access?.systemAccountId
 }
 
 function failedAccountTestResult(

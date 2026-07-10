@@ -83,6 +83,32 @@ const replacementUpstreamModel = 'gpt-mapping-regression-upstream-global'
 const unavailableSourceModel = 'gpt-mapping-regression-draft-source'
 const unpricedUpstreamModel = 'gpt-mapping-regression-unpriced-upstream'
 
+function createRegressionAccount(
+  input: Record<string, unknown>,
+  access = ownerAccess
+) {
+  const supportedModels = Array.isArray(input.supportedModels)
+    ? input.supportedModels
+    : undefined
+  const normalized = supportedModels && supportedModels.length > 0
+    ? {
+        ...input,
+        healthCheckModel: input.healthCheckModel ?? supportedModels[0]
+      }
+    : input
+  const created = repositories.createAccount(
+    normalized as Parameters<typeof repositories.createAccount>[0],
+    access
+  )
+  repositories.recordAccountHealthCheckSuccess(created.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
+  return repositories.findAccountSummary(created.id, access) ?? created
+}
+
 function responsesMapping(sourceModel: string, upstreamModel: string, enabled = true): AccountModelMapping {
   return {
     sourceModel,
@@ -338,7 +364,7 @@ try {
     name: '账号模型映射回归分组',
     providerCode: GPT_VENDOR_CODE,
   }, ownerAccess)
-  const account = repositories.createAccount({
+  const account = createRegressionAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '账号模型映射回归账户',
@@ -382,7 +408,7 @@ try {
   assert.deepEqual(mappedBody.extra, { keep: true }, '模型映射不应丢弃未知字段')
   assert.equal(requestModel(originalRequest), sourceModel, 'requestModel 仍应保持下游请求模型')
 
-  const caseAccount = repositories.createAccount({
+  const caseAccount = createRegressionAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '账号模型映射大小写回归账户',
@@ -399,10 +425,17 @@ try {
     ],
     groupId: group.id
   }, ownerAccess)
-  assert.deepEqual(caseAccount.modelMappings, [
+  assert.equal(caseAccount.modelMappings?.length, 2, '仅大小写不同的下游模型应允许分别配置映射')
+  assert.deepEqual(
+    caseAccount.modelMappings?.find((mapping) => mapping.sourceModel === caseSourceModel),
     responsesMapping(caseSourceModel, upstreamModel),
-    responsesMapping(caseSourceModelUpper, replacementUpstreamModel)
-  ], '仅大小写不同的下游模型应允许分别配置映射')
+    '小写下游模型映射应独立保留'
+  )
+  assert.deepEqual(
+    caseAccount.modelMappings?.find((mapping) => mapping.sourceModel === caseSourceModelUpper),
+    responsesMapping(caseSourceModelUpper, replacementUpstreamModel),
+    '大写下游模型映射应独立保留'
+  )
   assert.equal(customProviderModelBindings({
     providerCode: GPT_VENDOR_CODE,
     model: caseSourceModel,
@@ -517,7 +550,7 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
   }, ownerAccess)
   assert.throws(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Chat-only 账号不能配置 Responses 上游',
@@ -536,7 +569,7 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   }, /上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游/, 'Chat-only 账号不能把映射右侧配置成 Responses')
 
   assert.throws(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Chat-only 账号不能配置 Chat 转 Responses',
@@ -555,7 +588,7 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   }, /账号模型别名只支持同协议映射/, 'Chat-only 账号不能配置 Chat Completions 转 Responses')
 
   assert.throws(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '原生 Responses 账号也不能配置 Chat 转 Responses',
@@ -574,7 +607,7 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   }, /账号模型别名只支持同协议映射/, '即使账号真实支持 Responses，也不能配置 Chat Completions 转 Responses')
 
   assert.doesNotThrow(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
       providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       name: 'OpenAI-compatible Chat-only 账号可以配置 Responses 转 Chat',
@@ -593,7 +626,7 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   }, '通用 OpenAI-compatible Chat-only 账号应允许显式配置 Responses -> Chat Completions bridge')
 
   assert.doesNotThrow(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
       providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       name: 'OpenAI-compatible Chat-only 账号可以配置 Codex Responses 转 Chat',
@@ -612,7 +645,7 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
   }, 'OpenAI-compatible 账号应允许在账号模型别名里配置 Responses -> Chat Completions')
 
   assert.doesNotThrow(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
       providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
       name: 'Chat-only 模型可作为 Responses 到 Chat 来源别名',
@@ -754,7 +787,7 @@ async function assertCompactSyntheticChatUsesResponsesModelMapping(): Promise<vo
 
 function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
   assert.throws(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '账号模型别名不能配置 Messages 到 Chat',
@@ -776,7 +809,7 @@ function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
     providerCode: ANTHROPIC_PROVIDER_CODE,
   }, ownerAccess)
   assert.throws(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: ANTHROPIC_PROVIDER_CODE,
       providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
       name: '账号模型别名不能配置 Gemini 到 Messages',
@@ -799,7 +832,7 @@ function assertCrossProtocolAccountMappingsRejected(groupId: string): void {
     providerCode: GEMINI_PROVIDER_CODE,
   }, ownerAccess)
   assert.throws(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: GEMINI_PROVIDER_CODE,
       providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
       name: '账号模型别名不能配置 Responses 到 Gemini',
@@ -824,7 +857,7 @@ function assertHybridProtocolModelPools(): void {
     providerCode: HYBRID_PROVIDER_CODE,
   }, ownerAccess)
   assert.throws(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: HYBRID_PROVIDER_CODE,
       providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
       name: '混合供应商 Responses 不能选择 Chat-only 来源模型',
@@ -843,7 +876,7 @@ function assertHybridProtocolModelPools(): void {
   }, /账号模型别名来源模型不在对应协议模型池中/, '混合供应商 Responses 来源模型必须来自支持 Responses 的模型池')
 
   assert.doesNotThrow(() => {
-    const account = repositories.createAccount({
+    const account = createRegressionAccount({
       providerCode: HYBRID_PROVIDER_CODE,
       providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
       name: '混合供应商 Responses 到 Chat 合法模型池',
@@ -951,7 +984,7 @@ function assertProtocolMatrixHelper(): void {
 
 function assertUnsupportedAnthropicMessagesMappingsRejected(groupId: string): void {
   assert.throws(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Messages 不能桥接到 Responses',
@@ -970,7 +1003,7 @@ function assertUnsupportedAnthropicMessagesMappingsRejected(groupId: string): vo
   }, /Anthropic Messages 下游协议当前只支持.*Chat Completions/, 'Messages 下游协议不能桥接到 Responses 上游')
 
   assert.throws(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Messages 不能配置为 Messages 上游',
@@ -988,7 +1021,7 @@ function assertUnsupportedAnthropicMessagesMappingsRejected(groupId: string): vo
   }, /Anthropic Messages 下游协议当前只支持.*Chat Completions/, 'Messages 下游协议不能桥接到 Messages 上游')
 
   assert.throws(() => {
-    repositories.createAccount({
+    createRegressionAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: 'Messages source 必须来自 Anthropic 模型池',
@@ -1176,7 +1209,7 @@ async function assertInvalidMappingBodyDoesNotSwitchAccount(groupId: string): Pr
   const address = server.address()
   assert(address && typeof address !== 'string', '模型映射非法请求体 mock 上游地址应可用')
   try {
-    const fallback = repositories.createAccount({
+    const fallback = createRegressionAccount({
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '账号模型映射非法请求不应切到的后备账户',

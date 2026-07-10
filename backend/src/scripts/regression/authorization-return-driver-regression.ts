@@ -110,9 +110,9 @@ async function assertAuthorizationReturnAsync(): Promise<void> {
   const resourceSeed = await seedReturnableAccountAuthorization(client)
   createdSeedRows.push(resourceSeed)
   const resourceAccess: AccessScope = { systemAccountId: resourceSeed.granteeSystemAccountId, role: 'user' }
-  const resourceReturned = await repositories.returnResourceAuthorizationForGranteeAsync(resourceSeed.authorizationId, resourceAccess)
+  const resourceReturned = await repositories.returnResourceAuthorizationForGranteeAsync(resourceSeed.grantId, resourceAccess)
   await assertReturnedAuthorization(client, resourceSeed, resourceReturned, '授权列表个人归还')
-  const secondResourceReturn = await repositories.returnResourceAuthorizationForGranteeAsync(resourceSeed.authorizationId, resourceAccess)
+  const secondResourceReturn = await repositories.returnResourceAuthorizationForGranteeAsync(resourceSeed.grantId, resourceAccess)
   assert.equal(secondResourceReturn, undefined, '授权列表已归还后不应重复归还')
 
   const groupSeed = await seedReturnableGroupAuthorization(client)

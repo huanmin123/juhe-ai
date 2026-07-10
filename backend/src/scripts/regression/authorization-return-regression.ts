@@ -219,6 +219,7 @@ try {
 
   const adminManagedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: seed.gptProtocolProfileId,
     name: '管理员代归还授权账户',
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorization-return', base_url: 'https://api.openai.com/v1' },
@@ -285,8 +286,11 @@ function seedData() {
     name: '授权归还被授权人目标分组',
     providerCode: 'gpt'
   }, { systemAccountId: grantee.id, role: 'user' as const })
+  const gptProtocolProfileId = repositories.defaultProviderProtocolProfile('gpt')?.id
+  assert(gptProtocolProfileId, 'GPT 默认协议档案不存在')
   const ownerAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: gptProtocolProfileId,
     groupId: ownerGroup.id,
     name: '授权归还账户',
     type: 'api_key',
@@ -294,6 +298,7 @@ function seedData() {
   }, ownerAccess)
   const teamAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: gptProtocolProfileId,
     groupId: ownerGroup.id,
     name: '授权归还团队来源账户',
     type: 'api_key',
@@ -301,6 +306,7 @@ function seedData() {
   }, ownerAccess)
   const mixedAccount = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: gptProtocolProfileId,
     groupId: ownerGroup.id,
     name: '授权归还团队覆盖个人来源账户',
     type: 'api_key',
@@ -350,6 +356,7 @@ function seedData() {
     granteeCookie: sessionCookie(grantee.id),
     granteeId: grantee.id,
     granteeTargetGroupId: granteeTargetGroup.id,
+    gptProtocolProfileId,
     mixedAccountId: mixedAccount.id,
     mixedDirectGrantId: mixedDirectGrant.id,
     ownerAccountId: ownerAccount.id,
