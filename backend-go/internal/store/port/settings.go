@@ -62,6 +62,15 @@ type SystemAPIRateLimitReader interface {
 	SystemAPIRateLimitSettings(ctx context.Context) (SystemAPIRateLimitSettings, error)
 }
 
+type SystemAPIClientIPAllowlistPolicy struct {
+	ID        string
+	ExpiresAt *time.Time
+}
+
 type SystemAPIClientIPAllowlistReader interface {
-	SystemAPIClientIPAllowlisted(ctx context.Context, ipHash string, now time.Time) (bool, error)
+	FindSystemAPIClientIPAllowlistPolicy(
+		ctx context.Context,
+		ipHash string,
+		now time.Time,
+	) (SystemAPIClientIPAllowlistPolicy, bool, error)
 }

@@ -704,3 +704,15 @@ type JuheStatsClientIpPolicy struct {
 	DisabledBySystemAccountID pgtype.Text
 	DisabledReason            pgtype.Text
 }
+
+type JuheStatsClientIpRegistry struct {
+	IpHash         string
+	BucketNo       int32
+	AggregateIpKey string
+	ClientIp       string
+	IpVersion      int32
+	FirstSeenAt    string
+	LastSeenAt     string
+	CreatedAt      string
+	UpdatedAt      string
+}

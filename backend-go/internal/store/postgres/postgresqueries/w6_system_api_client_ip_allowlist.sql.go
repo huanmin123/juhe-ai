@@ -7,31 +7,39 @@ package postgresqueries
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const systemAPIClientIPAllowlisted = `-- name: SystemAPIClientIPAllowlisted :one
-SELECT EXISTS (
-  SELECT 1
-  FROM juhe_stats.client_ip_policies AS policies
-  WHERE policies.ip_hash = $1::text
-    AND policies.policy_type = 'allowlist'
-    AND policies.status = 'active'
-    AND (
-      policies.expires_at IS NULL
-      OR policies.expires_at > $2::text
-    )
-  LIMIT 1
-) AS allowlisted
+const findSystemAPIClientIPAllowlistPolicy = `-- name: FindSystemAPIClientIPAllowlistPolicy :one
+SELECT policies.id, policies.expires_at
+FROM juhe_stats.client_ip_policies AS policies
+INNER JOIN juhe_stats.client_ip_registry AS registry
+  ON registry.ip_hash = policies.ip_hash
+WHERE policies.ip_hash = $1::text
+  AND policies.policy_type = 'allowlist'
+  AND policies.status = 'active'
+  AND (
+    policies.expires_at IS NULL
+    OR policies.expires_at > $2::text
+  )
+ORDER BY policies.created_at DESC, policies.id DESC
+LIMIT 1
 `
 
-type SystemAPIClientIPAllowlistedParams struct {
+type FindSystemAPIClientIPAllowlistPolicyParams struct {
 	IpHash string
 	NowAt  string
 }
 
-func (q *Queries) SystemAPIClientIPAllowlisted(ctx context.Context, arg SystemAPIClientIPAllowlistedParams) (bool, error) {
-	row := q.db.QueryRow(ctx, systemAPIClientIPAllowlisted, arg.IpHash, arg.NowAt)
-	var allowlisted bool
-	err := row.Scan(&allowlisted)
-	return allowlisted, err
+type FindSystemAPIClientIPAllowlistPolicyRow struct {
+	ID        string
+	ExpiresAt pgtype.Text
+}
+
+func (q *Queries) FindSystemAPIClientIPAllowlistPolicy(ctx context.Context, arg FindSystemAPIClientIPAllowlistPolicyParams) (FindSystemAPIClientIPAllowlistPolicyRow, error) {
+	row := q.db.QueryRow(ctx, findSystemAPIClientIPAllowlistPolicy, arg.IpHash, arg.NowAt)
+	var i FindSystemAPIClientIPAllowlistPolicyRow
+	err := row.Scan(&i.ID, &i.ExpiresAt)
+	return i, err
 }

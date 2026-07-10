@@ -24,7 +24,10 @@ type Reader interface {
 }
 
 type systemAPIClientIPAllowlistQuerier interface {
-	SystemAPIClientIPAllowlisted(ctx context.Context, arg postgresqueries.SystemAPIClientIPAllowlistedParams) (bool, error)
+	FindSystemAPIClientIPAllowlistPolicy(
+		ctx context.Context,
+		arg postgresqueries.FindSystemAPIClientIPAllowlistPolicyParams,
+	) (postgresqueries.FindSystemAPIClientIPAllowlistPolicyRow, error)
 }
 
 type TxFunc func(ctx context.Context, q Reader) error
@@ -124,24 +127,43 @@ func (s *Store) SystemAPIRateLimitSettings(ctx context.Context) (port.SystemAPIR
 	}, nil
 }
 
-func (s *Store) SystemAPIClientIPAllowlisted(ctx context.Context, ipHash string, now time.Time) (bool, error) {
-	return systemAPIClientIPAllowlisted(ctx, s.queries(), ipHash, now)
+func (s *Store) FindSystemAPIClientIPAllowlistPolicy(
+	ctx context.Context,
+	ipHash string,
+	now time.Time,
+) (port.SystemAPIClientIPAllowlistPolicy, bool, error) {
+	return findSystemAPIClientIPAllowlistPolicy(ctx, s.queries(), ipHash, now)
 }
 
-func systemAPIClientIPAllowlisted(
+func findSystemAPIClientIPAllowlistPolicy(
 	ctx context.Context,
 	q systemAPIClientIPAllowlistQuerier,
 	ipHash string,
 	now time.Time,
-) (bool, error) {
-	allowlisted, err := q.SystemAPIClientIPAllowlisted(ctx, postgresqueries.SystemAPIClientIPAllowlistedParams{
+) (port.SystemAPIClientIPAllowlistPolicy, bool, error) {
+	row, err := q.FindSystemAPIClientIPAllowlistPolicy(ctx, postgresqueries.FindSystemAPIClientIPAllowlistPolicyParams{
 		IpHash: ipHash,
 		NowAt:  now.UTC().Format(time.RFC3339Nano),
 	})
-	if err != nil {
-		return false, fmt.Errorf("check system api client IP allowlist: %w", err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.SystemAPIClientIPAllowlistPolicy{}, false, nil
 	}
-	return allowlisted, nil
+	if err != nil {
+		return port.SystemAPIClientIPAllowlistPolicy{}, false, fmt.Errorf("find system api client IP allowlist policy: %w", err)
+	}
+	var expiresAt *time.Time
+	if row.ExpiresAt.Valid {
+		value, err := time.Parse(time.RFC3339Nano, row.ExpiresAt.String)
+		if err != nil {
+			return port.SystemAPIClientIPAllowlistPolicy{}, false, fmt.Errorf("parse system api client IP allowlist expiry: %w", err)
+		}
+		value = value.UTC()
+		expiresAt = &value
+	}
+	return port.SystemAPIClientIPAllowlistPolicy{
+		ID:        row.ID,
+		ExpiresAt: expiresAt,
+	}, true, nil
 }
 
 func (s *Store) queries() *postgresqueries.Queries {
