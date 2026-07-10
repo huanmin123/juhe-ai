@@ -133,6 +133,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.AccountTagUpdateHandler != nil ||
 		handlers.MyAccountTagUpdateHandler != nil ||
 		handlers.GlobalSettingsHandler != nil ||
+		handlers.GlobalSettingsUpdateHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.MyOperationLogsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
@@ -185,6 +186,7 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.AccountOptionsHandler != nil ||
 		handlers.AccountTagsHandler != nil ||
 		handlers.GlobalSettingsHandler != nil ||
+		handlers.GlobalSettingsUpdateHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
 		handlers.MyStatsUsageWindowHandler != nil {
@@ -259,6 +261,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.AccountTagUpdateHandler == nil ||
 		handlers.MyAccountTagUpdateHandler == nil ||
 		handlers.GlobalSettingsHandler == nil ||
+		handlers.GlobalSettingsUpdateHandler == nil ||
 		handlers.OperationLogsHandler == nil ||
 		handlers.MyOperationLogsHandler == nil ||
 		handlers.StatsUsageWindowHandler == nil ||

@@ -22,6 +22,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementproviders"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
 	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
+	"juhe-ai/backend-go/internal/modules/managementsettings"
 	"juhe-ai/backend-go/internal/modules/managementstats"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
 	"juhe-ai/backend-go/internal/modules/managementsystemteams"
@@ -187,6 +188,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementAccountTagUpdateHandler:                 managementHandlers.AccountTagUpdateHandler,
 		ManagementMyAccountTagUpdateHandler:               managementHandlers.MyAccountTagUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
+		ManagementGlobalSettingsUpdateHandler:             managementHandlers.GlobalSettingsUpdateHandler,
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
@@ -302,6 +304,7 @@ type managementAPIHandlers struct {
 	AccountTagUpdateHandler                 http.Handler
 	MyAccountTagUpdateHandler               http.Handler
 	GlobalSettingsHandler                   http.Handler
+	GlobalSettingsUpdateHandler             http.Handler
 	OperationLogsHandler                    http.Handler
 	MyOperationLogsHandler                  http.Handler
 	StatsUsageWindowHandler                 http.Handler
@@ -314,6 +317,7 @@ type managementAPIInvalidator interface {
 	managementauthorizations.AuthorizationInvalidator
 	managementprovidermodels.CustomProviderModelInvalidator
 	managementproxies.ProxyInvalidator
+	managementsettings.GlobalSettingsCacheInvalidator
 }
 
 type gatewayCacheInvalidator interface {
@@ -378,6 +382,10 @@ func newManagementAPIHandler(
 	operationLogService := managementoperationlogs.NewService(store)
 	statsService := managementstats.NewService(store)
 	globalSettingsService := publicsettings.NewService(store)
+	globalSettingsUpdateService := managementsettings.NewServiceWithOptions(managementsettings.ServiceOptions{
+		Store:                          store,
+		GlobalSettingsCacheInvalidator: systemAccountInvalidator,
+	})
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
 		Config: cfg,
 		Logger: logger,
@@ -463,6 +471,7 @@ func newManagementAPIHandler(
 		AccountTagUpdateHandler:                 httpapi.NewManagementAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
 		MyAccountTagUpdateHandler:               httpapi.NewManagementMyAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),
+		GlobalSettingsUpdateHandler:             httpapi.NewManagementGlobalSettingsUpdateHandlerWithOperationLog(globalSettingsUpdateService, operationLogOptions),
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
@@ -493,7 +502,7 @@ func newGatewaySystemAccountInvalidator(
 			return nil, closeFn, fmt.Errorf("gateway API Key invalidator requires JUHE_AI_REDIS_CACHE_URL when public API is enabled")
 		}
 		if logger != nil {
-			logger.Warn("Go 管理 API 未配置 Redis cache，系统账户状态变更不会触发 API Key 校验缓存版本刷新")
+			logger.Warn("Go 管理 API 未配置 Redis cache，相关管理写操作不会触发共享缓存版本刷新")
 		}
 	} else {
 		var err error

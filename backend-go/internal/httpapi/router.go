@@ -101,6 +101,7 @@ type RouterOptions struct {
 	ManagementAccountTagUpdateHandler                 http.Handler
 	ManagementMyAccountTagUpdateHandler               http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
+	ManagementGlobalSettingsUpdateHandler             http.Handler
 	ManagementOperationLogsHandler                    http.Handler
 	ManagementMyOperationLogsHandler                  http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
@@ -255,6 +256,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementAccountTagUpdateHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
 				opts.ManagementGlobalSettingsHandler == nil &&
+				opts.ManagementGlobalSettingsUpdateHandler == nil &&
 				opts.ManagementOperationLogsHandler == nil &&
 				opts.ManagementMyOperationLogsHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
@@ -502,6 +504,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementGlobalSettingsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/settings/global", opts.ManagementGlobalSettingsHandler.ServeHTTP)
 			}
+			if opts.ManagementGlobalSettingsUpdateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Patch("/settings/global", opts.ManagementGlobalSettingsUpdateHandler.ServeHTTP)
+			}
 			if opts.ManagementOperationLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/operation-logs", opts.ManagementOperationLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/operation-logs/{id}", opts.ManagementOperationLogsHandler.ServeHTTP)
@@ -626,6 +631,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAccountTagUpdateHandler != nil ||
 		opts.ManagementMyAccountTagUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsHandler != nil ||
+		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementOperationLogsHandler != nil ||
 		opts.ManagementMyOperationLogsHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
@@ -666,5 +672,6 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAccountTagDeleteHandler != nil ||
 		opts.ManagementMyAccountTagDeleteHandler != nil ||
 		opts.ManagementAccountTagUpdateHandler != nil ||
-		opts.ManagementMyAccountTagUpdateHandler != nil
+		opts.ManagementMyAccountTagUpdateHandler != nil ||
+		opts.ManagementGlobalSettingsUpdateHandler != nil
 }
