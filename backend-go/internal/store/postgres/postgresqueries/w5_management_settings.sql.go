@@ -11,6 +11,93 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const listManagementSystemSettings = `-- name: ListManagementSystemSettings :many
+SELECT key, value_json
+FROM juhe_business.system_settings
+WHERE system_account_id = 'sys_admin'
+  AND key IN (
+    'gatewayTextRawBodyLimitMegabytes',
+    'systemApiRateLimitIpReadPerMinute',
+    'systemApiRateLimitIpReadBurstPer10Seconds',
+    'systemApiRateLimitIpWritePerMinute',
+    'systemApiRateLimitIpWriteBurstPer10Seconds',
+    'systemApiRateLimitUserReadPerMinute',
+    'systemApiRateLimitUserWritePerMinute',
+    'defaultTemporaryUnschedulableMinutes',
+    'temporaryUnschedulableRetryIntervalSeconds',
+    'temporaryUnschedulableRetryAttempts',
+    'streamRequestTimeoutSeconds',
+    'streamIdleTimeoutSeconds',
+    'streamClientTotalWaitTimeoutSeconds',
+    'streamMaxLifetimeSeconds',
+    'streamFailureThresholdCount',
+    'streamFailureThresholdWindowMinutes',
+    'operationLogRetentionDays',
+    'operationLogMaxChangesPerRecord',
+    'statsAggregationIntervalSeconds',
+    'statsAggregationBatchSize',
+    'statsAggregationMaxBatchesPerRun',
+    'usageHotWindowRefreshIntervalSeconds',
+    'groupAccountStatsRefreshIntervalSeconds',
+    'systemMetricsSampleIntervalSeconds',
+    'tableMonitorMaxTablesPerRun',
+    'accountQualityRefreshIntervalSeconds',
+    'accountQualityWindowMinutes',
+    'accountTestTaskConcurrency',
+    'accountHealthCheckIntervalHours',
+    'accountHealthCheckJitterMinutes',
+    'accountHealthCheckBatchSize',
+    'accountHealthCheckFailureThreshold',
+    'cooldownAccountRetestIntervalSeconds',
+    'cooldownAccountRetestBatchSize',
+    'cooldownAccountRetestMaxBackoffHours',
+    'cooldownAccountRetestLongTermIntervalHours',
+    'oauthAccessTokenRefreshIntervalSeconds',
+    'oauthAccessTokenRefreshLeadSeconds',
+    'oauthAccessTokenRefreshBatchSize',
+    'oauthAccessTokenRefreshRetryBackoffSeconds',
+    'modelCheckRetentionDays',
+    'runtimeLogIndexRetentionDays',
+    'publicApiLogRetentionDays',
+    'usageRecordRetentionDays',
+    'usageStatsTimezone',
+    'usageStatsMinuteRetentionHours',
+    'usageStatsHourlyRetentionDays',
+    'usageStatsDailyRetentionDays',
+    'usageStatsWeeklyRetentionWeeks',
+    'usageStatsMonthlyRetentionMonths',
+    'usageRankSnapshotRetentionDays',
+    'systemMetricsRetentionDays',
+    'systemMetricsHourlyRetentionDays'
+  )
+ORDER BY key ASC
+`
+
+type ListManagementSystemSettingsRow struct {
+	Key       string
+	ValueJson string
+}
+
+func (q *Queries) ListManagementSystemSettings(ctx context.Context) ([]ListManagementSystemSettingsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementSystemSettings)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementSystemSettingsRow
+	for rows.Next() {
+		var i ListManagementSystemSettingsRow
+		if err := rows.Scan(&i.Key, &i.ValueJson); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockManagementGlobalSettings = `-- name: LockManagementGlobalSettings :many
 SELECT key, value_json
 FROM juhe_business.global_settings
@@ -33,6 +120,94 @@ func (q *Queries) LockManagementGlobalSettings(ctx context.Context) ([]LockManag
 	var items []LockManagementGlobalSettingsRow
 	for rows.Next() {
 		var i LockManagementGlobalSettingsRow
+		if err := rows.Scan(&i.Key, &i.ValueJson); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockManagementSystemSettings = `-- name: LockManagementSystemSettings :many
+SELECT key, value_json
+FROM juhe_business.system_settings
+WHERE system_account_id = 'sys_admin'
+  AND key IN (
+    'gatewayTextRawBodyLimitMegabytes',
+    'systemApiRateLimitIpReadPerMinute',
+    'systemApiRateLimitIpReadBurstPer10Seconds',
+    'systemApiRateLimitIpWritePerMinute',
+    'systemApiRateLimitIpWriteBurstPer10Seconds',
+    'systemApiRateLimitUserReadPerMinute',
+    'systemApiRateLimitUserWritePerMinute',
+    'defaultTemporaryUnschedulableMinutes',
+    'temporaryUnschedulableRetryIntervalSeconds',
+    'temporaryUnschedulableRetryAttempts',
+    'streamRequestTimeoutSeconds',
+    'streamIdleTimeoutSeconds',
+    'streamClientTotalWaitTimeoutSeconds',
+    'streamMaxLifetimeSeconds',
+    'streamFailureThresholdCount',
+    'streamFailureThresholdWindowMinutes',
+    'operationLogRetentionDays',
+    'operationLogMaxChangesPerRecord',
+    'statsAggregationIntervalSeconds',
+    'statsAggregationBatchSize',
+    'statsAggregationMaxBatchesPerRun',
+    'usageHotWindowRefreshIntervalSeconds',
+    'groupAccountStatsRefreshIntervalSeconds',
+    'systemMetricsSampleIntervalSeconds',
+    'tableMonitorMaxTablesPerRun',
+    'accountQualityRefreshIntervalSeconds',
+    'accountQualityWindowMinutes',
+    'accountTestTaskConcurrency',
+    'accountHealthCheckIntervalHours',
+    'accountHealthCheckJitterMinutes',
+    'accountHealthCheckBatchSize',
+    'accountHealthCheckFailureThreshold',
+    'cooldownAccountRetestIntervalSeconds',
+    'cooldownAccountRetestBatchSize',
+    'cooldownAccountRetestMaxBackoffHours',
+    'cooldownAccountRetestLongTermIntervalHours',
+    'oauthAccessTokenRefreshIntervalSeconds',
+    'oauthAccessTokenRefreshLeadSeconds',
+    'oauthAccessTokenRefreshBatchSize',
+    'oauthAccessTokenRefreshRetryBackoffSeconds',
+    'modelCheckRetentionDays',
+    'runtimeLogIndexRetentionDays',
+    'publicApiLogRetentionDays',
+    'usageRecordRetentionDays',
+    'usageStatsTimezone',
+    'usageStatsMinuteRetentionHours',
+    'usageStatsHourlyRetentionDays',
+    'usageStatsDailyRetentionDays',
+    'usageStatsWeeklyRetentionWeeks',
+    'usageStatsMonthlyRetentionMonths',
+    'usageRankSnapshotRetentionDays',
+    'systemMetricsRetentionDays',
+    'systemMetricsHourlyRetentionDays'
+  )
+ORDER BY key ASC
+FOR UPDATE
+`
+
+type LockManagementSystemSettingsRow struct {
+	Key       string
+	ValueJson string
+}
+
+func (q *Queries) LockManagementSystemSettings(ctx context.Context) ([]LockManagementSystemSettingsRow, error) {
+	rows, err := q.db.Query(ctx, lockManagementSystemSettings)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LockManagementSystemSettingsRow
+	for rows.Next() {
+		var i LockManagementSystemSettingsRow
 		if err := rows.Scan(&i.Key, &i.ValueJson); err != nil {
 			return nil, err
 		}
@@ -67,6 +242,34 @@ type UpdateManagementGlobalSettingRow struct {
 func (q *Queries) UpdateManagementGlobalSetting(ctx context.Context, arg UpdateManagementGlobalSettingParams) (UpdateManagementGlobalSettingRow, error) {
 	row := q.db.QueryRow(ctx, updateManagementGlobalSetting, arg.ValueJson, arg.UpdatedAt, arg.Key)
 	var i UpdateManagementGlobalSettingRow
+	err := row.Scan(&i.Key, &i.ValueJson)
+	return i, err
+}
+
+const updateManagementSystemSetting = `-- name: UpdateManagementSystemSetting :one
+UPDATE juhe_business.system_settings
+SET
+  value_json = $1::text,
+  updated_at = $2::timestamptz
+WHERE system_account_id = 'sys_admin'
+  AND key = $3::text
+RETURNING key, value_json
+`
+
+type UpdateManagementSystemSettingParams struct {
+	ValueJson string
+	UpdatedAt pgtype.Timestamptz
+	Key       string
+}
+
+type UpdateManagementSystemSettingRow struct {
+	Key       string
+	ValueJson string
+}
+
+func (q *Queries) UpdateManagementSystemSetting(ctx context.Context, arg UpdateManagementSystemSettingParams) (UpdateManagementSystemSettingRow, error) {
+	row := q.db.QueryRow(ctx, updateManagementSystemSetting, arg.ValueJson, arg.UpdatedAt, arg.Key)
+	var i UpdateManagementSystemSettingRow
 	err := row.Scan(&i.Key, &i.ValueJson)
 	return i, err
 }
