@@ -1299,6 +1299,17 @@ type ManagementGroupAuthorizationSourceRow struct {
 	SourceTeamName  string
 }
 
+type ManagementGroupDetailInput struct {
+	GroupID         string
+	SystemAccountID string
+}
+
+type ManagementGroupDetailReader interface {
+	FindManagementGroupDetail(ctx context.Context, input ManagementGroupDetailInput) (ManagementGroupListRow, bool, error)
+	ListManagementGroupDetailAccountIDs(ctx context.Context, input ManagementGroupDetailInput) ([]string, error)
+	ListManagementGroupDetailAuthorizationSources(ctx context.Context, input ManagementGroupDetailInput) ([]ManagementResourceAuthorizationSourceSummary, error)
+}
+
 type ManagementGroupCreateInput struct {
 	ID                   string
 	SystemAccountID      string
