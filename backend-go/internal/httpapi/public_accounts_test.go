@@ -132,6 +132,45 @@ func TestParsePublicAccountAddBodyPreservesSupportedModelsPresence(t *testing.T)
 	}
 }
 
+func TestParsePublicAccountUpdateBodyPreservesSupportedModelsPresence(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantSet    bool
+		wantModels []string
+	}{
+		{
+			name:       "omitted",
+			body:       `{"accountId":"acct_1","name":"公开账号更新"}`,
+			wantSet:    false,
+			wantModels: nil,
+		},
+		{
+			name:       "explicit empty array",
+			body:       `{"accountId":"acct_1","supportedModels":[]}`,
+			wantSet:    true,
+			wantModels: nil,
+		},
+		{
+			name:       "non-empty array",
+			body:       `{"accountId":"acct_1","supportedModels":[" gpt-5.5 ","gpt-5.5-mini"]}`,
+			wantSet:    true,
+			wantModels: []string{"gpt-5.5", "gpt-5.5-mini"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newPublicAccountParserRequest(t, tt.body)
+			input, err := parsePublicAccountUpdateBody(req)
+			if err != nil {
+				t.Fatalf("parse update body: %v", err)
+			}
+			assertPublicAccountStringListValue(t, input.SupportedModels, tt.wantSet, tt.wantModels)
+		})
+	}
+}
+
 func TestPublicAccountHandlersAddPreservesSupportedModelsPresence(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -255,6 +294,69 @@ func TestPublicAccountHandlersAddReturnsSupportedModelsRequiredMessage(t *testin
 	const want = "{\"message\":\"账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型\"}\n"
 	if got := rec.Body.String(); got != want {
 		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+func TestPublicAccountHandlersReturnUnsupportedSupportedModelsMessage(t *testing.T) {
+	const (
+		wantMessage    = "账户支持模型不在供应商模型目录中：gpt-missing"
+		wantBody       = "{\"message\":\"" + wantMessage + "\"}\n"
+		internalPrefix = "public account invalid supported models"
+	)
+	serviceErr := fmt.Errorf("%w: %s", publicaccounts.ErrInvalidSupportedModels, wantMessage)
+	tests := []struct {
+		name      string
+		path      string
+		body      string
+		configure func(*publicAccountServiceStub)
+	}{
+		{
+			name: "add",
+			path: "/__aipublic__/account/add",
+			body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","supportedModels":["gpt-missing"]}`,
+			configure: func(stub *publicAccountServiceStub) {
+				stub.addErr = serviceErr
+			},
+		},
+		{
+			name: "update",
+			path: "/__aipublic__/account/update",
+			body: `{"accountId":"acct_1","supportedModels":["gpt-missing"]}`,
+			configure: func(stub *publicAccountServiceStub) {
+				stub.updateErr = serviceErr
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &publicAccountServiceStub{}
+			tt.configure(service)
+			router := newTestPublicAPIShell(
+				newPublicGroupAPIAuthStub(),
+				&publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}},
+				&publicAPIShellLogQueueStub{},
+				newPublicAccountHandlers(service),
+				time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
+			)
+
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Authorization", "Bearer juis_plain")
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+			}
+			if got := rec.Body.String(); got != wantBody {
+				t.Fatalf("body = %q, want %q", got, wantBody)
+			}
+			if strings.Contains(rec.Body.String(), internalPrefix) {
+				t.Fatalf("body leaked internal error prefix: %q", rec.Body.String())
+			}
+		})
 	}
 }
 

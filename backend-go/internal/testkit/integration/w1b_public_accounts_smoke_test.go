@@ -16,6 +16,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
@@ -23,6 +24,13 @@ import (
 const (
 	w1bInvalidSupportedModelsMessage = "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型"
 	w1bDuplicateAccountNameMessage   = "账号已存在：公开账号"
+	w1bValidBuiltInModel             = "gpt-5.4-mini"
+	w1bGlobalCustomModel             = "w1b-global-model"
+	w1bAdminPersonalCustomModel      = "w1b-admin-personal-model"
+	w1bOtherPersonalCustomModel      = "w1b-other-personal-model"
+	w1bDisabledCustomModel           = "w1b-disabled-model"
+	w1bUnpricedCustomModel           = "w1b-unpriced-model"
+	w1bUnknownModel                  = "w1b-unknown-model"
 )
 
 var w1bGPTDefaultSupportedModels = []string{
@@ -69,11 +77,12 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 
 	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
 	service := publicaccounts.NewService(publicaccounts.Options{
-		Store:      store,
-		Transactor: store,
-		Now:        func() time.Time { return now },
-		NewID:      sequenceID("w1b_account"),
-		Secret:     "w1b-public-account-integration-secret",
+		Store:          store,
+		Transactor:     store,
+		ProviderModels: managementprovidermodels.NewService(store),
+		Now:            func() time.Time { return now },
+		NewID:          sequenceID("w1b_account"),
+		Secret:         "w1b-public-account-integration-secret",
 	})
 
 	initialSecret := "sk-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -105,6 +114,74 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	accountID := created.Account.ID
 	assertW1bPublicAccountStored(t, ctx, db, accountID, initialSecret, publicaccounts.StatusPendingTest, false)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
+
+	other, err := service.Add(ctx, publicaccounts.AddInput{
+		TargetUsername:            "other",
+		TargetDisplayName:         "其他用户",
+		TargetGroupName:           "其他分组",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "其他账号",
+		Type:                      publicaccounts.AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-other",
+	})
+	if err != nil {
+		t.Fatalf("add other public account: %v", err)
+	}
+	insertW1bPublicAccountProviderModelFixture(
+		t,
+		ctx,
+		db,
+		now,
+		created.Target.SystemAccountID,
+		other.Target.SystemAccountID,
+	)
+
+	catalogCases := []struct {
+		name        string
+		accountName string
+		model       string
+		wantSuccess bool
+	}{
+		{name: "built-in", accountName: "内置目录账号", model: w1bValidBuiltInModel, wantSuccess: true},
+		{name: "global", accountName: "全局目录账号", model: w1bGlobalCustomModel, wantSuccess: true},
+		{name: "owner-personal", accountName: "管理员个人目录账号", model: w1bAdminPersonalCustomModel, wantSuccess: true},
+		{name: "other-owner-personal", accountName: "其他所有者个人目录账号", model: w1bOtherPersonalCustomModel},
+		{name: "disabled", accountName: "停用目录账号", model: w1bDisabledCustomModel},
+		{name: "unpriced", accountName: "不可计价目录账号", model: w1bUnpricedCustomModel},
+		{name: "unknown", accountName: "未知目录账号", model: w1bUnknownModel},
+	}
+	for _, testCase := range catalogCases {
+		t.Run("catalog_"+testCase.name, func(t *testing.T) {
+			result, err := service.Add(ctx, publicaccounts.AddInput{
+				TargetUsername:            "admin",
+				TargetGroupName:           "账号分组",
+				ProviderCode:              "gpt",
+				ProviderProtocolProfileID: "profile_gpt_openai_v1",
+				Name:                      testCase.accountName,
+				Type:                      publicaccounts.AccountTypeAPIKey,
+				BaseURL:                   "https://api.openai.com/v1",
+				APIKey:                    "sk-" + testCase.name,
+				SupportedModels:           publicaccounts.NewStringListValue([]string{testCase.model}, true),
+			})
+			if testCase.wantSuccess {
+				if err != nil {
+					t.Fatalf("add catalog account: %v", err)
+				}
+				if result.Account == nil {
+					t.Fatalf("catalog account result = %+v", result)
+				}
+				assertW1bPublicAccountModelList(t, result.Account.SupportedModels, []string{testCase.model})
+				assertW1bPublicAccountNameCount(t, ctx, db, testCase.accountName, 1)
+				return
+			}
+			if !errors.Is(err, publicaccounts.ErrInvalidSupportedModels) {
+				t.Fatalf("add catalog account err = %v, want ErrInvalidSupportedModels", err)
+			}
+			assertW1bPublicAccountNameCount(t, ctx, db, testCase.accountName, 0)
+		})
+	}
 
 	emptyModelsAccountName := "空模型账号"
 	if _, err := service.Add(ctx, publicaccounts.AddInput{
@@ -153,10 +230,12 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 		Name:                      "公开账号",
 		Type:                      publicaccounts.AccountTypeAPIKey,
 		BaseURL:                   "https://api.openai.com/v1",
-		APIKey:                    "sk-duplicate",
+		APIKey:                    "sk-duplicate-unknown",
+		SupportedModels:           publicaccounts.NewStringListValue([]string{w1bUnknownModel}, true),
 	}); !errors.Is(err, publicaccounts.ErrDuplicateAccountName) {
-		t.Fatalf("duplicate add err = %v, want ErrDuplicateAccountName", err)
+		t.Fatalf("duplicate add with unknown supportedModels err = %v, want ErrDuplicateAccountName", err)
 	}
+	assertW1bPublicAccountNameCount(t, ctx, db, "公开账号", 1)
 
 	listed, err := service.List(ctx, publicaccounts.ListInput{
 		TargetUsername:            "admin",
@@ -183,6 +262,20 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 		t.Fatalf("pending -> active err = %v, want ErrInvalidStatusTransition", err)
 	}
 
+	invalidUpdatedName := "不应保存的账号名称"
+	invalidUpdatedSecret := "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if _, err := service.Update(ctx, publicaccounts.UpdateInput{
+		AccountID:       accountID,
+		Name:            &invalidUpdatedName,
+		APIKey:          &invalidUpdatedSecret,
+		SupportedModels: publicaccounts.NewStringListValue([]string{w1bUnknownModel}, true),
+	}); !errors.Is(err, publicaccounts.ErrInvalidSupportedModels) {
+		t.Fatalf("update with unknown supportedModels err = %v, want ErrInvalidSupportedModels", err)
+	}
+	assertW1bPublicAccountName(t, ctx, db, accountID, "公开账号")
+	assertW1bPublicAccountStored(t, ctx, db, accountID, initialSecret, publicaccounts.StatusPendingTest, false)
+	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
+
 	updatedSecret := "sk-fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	updatedBaseURL := "https://api.openai.com/v2"
 	updatedName := "公开账号更新"
@@ -200,7 +293,7 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 		Status:                    &disabled,
 		BaseURL:                   &updatedBaseURL,
 		APIKey:                    &updatedSecret,
-		SupportedModels:           publicaccounts.NewStringListValue([]string{"gpt-5.5-codex"}, true),
+		SupportedModels:           publicaccounts.NewStringListValue([]string{w1bValidBuiltInModel}, true),
 		ConcurrencyLimit:          &concurrencyLimit,
 		Priority:                  &priority,
 		Notes:                     publicaccounts.NewOptionalString(&notes, true),
@@ -212,22 +305,29 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 		t.Fatalf("updated account = %+v", updated.Account)
 	}
 	assertW1bPublicAccountStored(t, ctx, db, accountID, updatedSecret, publicaccounts.StatusDisabled, false)
-	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{"gpt-5.5-codex"})
+	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bValidBuiltInModel})
 
-	other, err := service.Add(ctx, publicaccounts.AddInput{
-		TargetUsername:            "other",
-		TargetDisplayName:         "其他用户",
-		TargetGroupName:           "其他分组",
-		ProviderCode:              "gpt",
-		ProviderProtocolProfileID: "profile_gpt_openai_v1",
-		Name:                      "其他账号",
+	hybridModel := "w1b-hybrid-arbitrary-model"
+	hybrid, err := service.Add(ctx, publicaccounts.AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "混合账号分组",
+		ProviderCode:              "hybrid",
+		ProviderProtocolProfileID: "profile_hybrid_openai_chat_v1",
+		Name:                      "混合供应商账号",
 		Type:                      publicaccounts.AccountTypeAPIKey,
-		BaseURL:                   "https://api.openai.com/v1",
-		APIKey:                    "sk-other",
+		BaseURL:                   "https://hybrid.example.com/v1",
+		APIKey:                    "sk-hybrid",
+		SupportedModels:           publicaccounts.NewStringListValue([]string{hybridModel}, true),
 	})
 	if err != nil {
-		t.Fatalf("add other public account: %v", err)
+		t.Fatalf("add hybrid public account with arbitrary model: %v", err)
 	}
+	if hybrid.Account == nil {
+		t.Fatalf("hybrid account result = %+v", hybrid)
+	}
+	assertW1bPublicAccountModelList(t, hybrid.Account.SupportedModels, []string{hybridModel})
+	assertW1bPublicAccountModels(t, ctx, db, hybrid.Account.ID, []string{hybridModel})
+
 	wrongTarget := other.Target.Username
 	notFound, err := service.Delete(ctx, publicaccounts.DeleteInput{AccountID: accountID, TargetUsername: &wrongTarget})
 	if err != nil {
@@ -250,6 +350,50 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 		t.Fatalf("deleted account = %+v", deleted)
 	}
 	assertW1bPublicAccountSoftDeleted(t, ctx, db, accountID)
+}
+
+func insertW1bPublicAccountProviderModelFixture(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	now time.Time,
+	adminSystemAccountID string,
+	otherSystemAccountID string,
+) {
+	t.Helper()
+
+	price := 1.0
+	fixtures := []struct {
+		id              string
+		model           string
+		scope           string
+		systemAccountID *string
+		status          string
+		price           *float64
+		createdBy       string
+	}{
+		{id: "custom_model_w1b_global", model: w1bGlobalCustomModel, scope: "global", status: "active", price: &price, createdBy: adminSystemAccountID},
+		{id: "custom_model_w1b_admin_personal", model: w1bAdminPersonalCustomModel, scope: "personal", systemAccountID: &adminSystemAccountID, status: "active", price: &price, createdBy: adminSystemAccountID},
+		{id: "custom_model_w1b_other_personal", model: w1bOtherPersonalCustomModel, scope: "personal", systemAccountID: &otherSystemAccountID, status: "active", price: &price, createdBy: otherSystemAccountID},
+		{id: "custom_model_w1b_disabled", model: w1bDisabledCustomModel, scope: "personal", systemAccountID: &adminSystemAccountID, status: "disabled", price: &price, createdBy: adminSystemAccountID},
+		{id: "custom_model_w1b_unpriced", model: w1bUnpricedCustomModel, scope: "personal", systemAccountID: &adminSystemAccountID, status: "active", createdBy: adminSystemAccountID},
+	}
+	for _, fixture := range fixtures {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO juhe_business.custom_provider_models (
+				id, provider_code, model, scope, system_account_id, status, mode,
+				supported_api_protocols_json, input_usd_per_1m, currency,
+				created_by, updated_by, created_at, updated_at
+			) VALUES (
+				$1, 'gpt', $2, $3, $4, $5, 'chat',
+				'["chat_completions","responses"]', $6, 'USD',
+				$7, $7, $8, $8
+			)
+		`, fixture.id, fixture.model, fixture.scope, fixture.systemAccountID, fixture.status, fixture.price, fixture.createdBy, now)
+		if err != nil {
+			t.Fatalf("insert public account provider model fixture %s: %v", fixture.id, err)
+		}
+	}
 }
 
 func assertW1bPublicAccountStored(t *testing.T, ctx context.Context, db *sql.DB, id string, secret string, wantStatus string, wantSchedulable bool) {
@@ -280,6 +424,22 @@ func assertW1bPublicAccountStored(t *testing.T, ctx context.Context, db *sql.DB,
 	}
 	if status != wantStatus || schedulable != wantSchedulable {
 		t.Fatalf("status/schedulable = %s/%v, want %s/%v", status, schedulable, wantStatus, wantSchedulable)
+	}
+}
+
+func assertW1bPublicAccountName(t *testing.T, ctx context.Context, db *sql.DB, accountID string, want string) {
+	t.Helper()
+
+	var got string
+	if err := db.QueryRowContext(ctx, `
+		SELECT name
+		FROM juhe_business.accounts
+		WHERE id = $1 AND deleted_at IS NULL
+	`, accountID).Scan(&got); err != nil {
+		t.Fatalf("read public account name: %v", err)
+	}
+	if got != want {
+		t.Fatalf("public account name = %q, want %q", got, want)
 	}
 }
 

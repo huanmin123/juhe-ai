@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -37,6 +38,8 @@ const (
 	defaultTargetPassword                 = "go-public-auto-created-target-password-hash"
 	defaultCredentialSecret               = "juhe-ai-go-development-secret"
 	invalidSupportedModelsRequiredMessage = "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型"
+	providerModelsRequiredMessage         = "public account provider models reader is required"
+	hybridProviderCode                    = "hybrid"
 )
 
 var (
@@ -62,25 +65,31 @@ var (
 )
 
 type Service struct {
-	store      port.PublicAccountStore
-	transactor port.PublicAccountTransactor
-	now        func() time.Time
-	newID      func(prefix string) string
-	codec      CredentialCodec
+	store          port.PublicAccountStore
+	transactor     port.PublicAccountTransactor
+	providerModels ProviderModelReader
+	now            func() time.Time
+	newID          func(prefix string) string
+	codec          CredentialCodec
 }
 
 type Options struct {
-	Store      port.PublicAccountStore
-	Transactor port.PublicAccountTransactor
-	Now        func() time.Time
-	NewID      func(prefix string) string
-	Codec      CredentialCodec
-	Secret     string
+	Store          port.PublicAccountStore
+	Transactor     port.PublicAccountTransactor
+	ProviderModels ProviderModelReader
+	Now            func() time.Time
+	NewID          func(prefix string) string
+	Codec          CredentialCodec
+	Secret         string
 }
 
 type CredentialCodec interface {
 	EncryptJSON(value map[string]any) (string, error)
 	DecryptJSON(value string) (map[string]any, error)
+}
+
+type ProviderModelReader interface {
+	Models(ctx context.Context, input managementprovidermodels.ModelListInput) ([]managementprovidermodels.ModelCatalogItem, error)
 }
 
 type Target struct {
@@ -224,11 +233,12 @@ func NewService(opts Options) *Service {
 		codec = newAESGCMCredentialCodec(secret)
 	}
 	return &Service{
-		store:      opts.Store,
-		transactor: opts.Transactor,
-		now:        now,
-		newID:      newID,
-		codec:      codec,
+		store:          opts.Store,
+		transactor:     opts.Transactor,
+		providerModels: opts.ProviderModels,
+		now:            now,
+		newID:          newID,
+		codec:          codec,
 	}
 }
 
@@ -388,6 +398,9 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 		if err != nil {
 			return err
 		}
+		if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, input.ProviderCode, models); err != nil {
+			return err
+		}
 		scheduleJSON, err := normalizeAvailabilityScheduleJSON(input.AvailabilitySchedule)
 		if err != nil {
 			return err
@@ -474,14 +487,6 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			}
 			next.AvailabilityScheduleJSON = scheduleJSON
 		}
-		if input.SupportedModels.Set() {
-			next.SupportedModels = input.SupportedModels.Value()
-		}
-		models, err := normalizeSupportedModels(next.SupportedModels)
-		if err != nil {
-			return err
-		}
-		next.SupportedModels = models
 		if input.APIKey != nil || input.BaseURL != nil {
 			apiKey, baseURL, err := s.currentCredentials(current.CredentialsEncrypted)
 			if err != nil {
@@ -501,6 +506,19 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			next.CredentialFingerprint = credential.Fingerprint
 			next.CredentialMask = credential.Mask
 		}
+		if input.SupportedModels.Set() {
+			next.SupportedModels = input.SupportedModels.Value()
+		}
+		models, err := normalizeSupportedModels(next.SupportedModels)
+		if err != nil {
+			return err
+		}
+		if input.SupportedModels.Set() && !unorderedStringListsEqual(models, current.SupportedModels) {
+			if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, current.ProviderCode, models); err != nil {
+				return err
+			}
+		}
+		next.SupportedModels = models
 		updated, ok, err := store.UpdatePublicAccount(ctx, port.PublicAccountUpdateInput{
 			ID:                       current.ID,
 			SystemAccountID:          current.SystemAccountID,
@@ -864,6 +882,64 @@ func normalizeSupportedModels(values []string) ([]string, error) {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidSupportedModels, invalidSupportedModelsRequiredMessage)
 	}
 	return out, nil
+}
+
+func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, systemAccountID string, providerCode string, models []string) error {
+	providerCode = strings.TrimSpace(providerCode)
+	if strings.EqualFold(providerCode, hybridProviderCode) {
+		return nil
+	}
+	if s.providerModels == nil {
+		return errors.New(providerModelsRequiredMessage)
+	}
+	catalog, err := s.providerModels.Models(ctx, managementprovidermodels.ModelListInput{
+		ProviderCode:    providerCode,
+		SystemAccountID: strings.TrimSpace(systemAccountID),
+		IncludeInactive: false,
+		IncludeUnpriced: false,
+	})
+	if err != nil {
+		return err
+	}
+	available := make(map[string]struct{}, len(catalog))
+	for _, item := range catalog {
+		model := strings.TrimSpace(item.Model)
+		if model != "" {
+			available[model] = struct{}{}
+		}
+	}
+	invalid := make([]string, 0)
+	for _, model := range models {
+		if _, ok := available[model]; !ok {
+			invalid = append(invalid, model)
+		}
+	}
+	if len(invalid) > 0 {
+		return fmt.Errorf(
+			"%w: 账户支持模型不在供应商模型目录中：%s",
+			ErrInvalidSupportedModels,
+			strings.Join(invalid[:min(5, len(invalid))], "、"),
+		)
+	}
+	return nil
+}
+
+func unorderedStringListsEqual(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	counts := make(map[string]int, len(left))
+	for _, value := range left {
+		counts[value]++
+	}
+	for _, value := range right {
+		count, ok := counts[value]
+		if !ok || count == 0 {
+			return false
+		}
+		counts[value] = count - 1
+	}
+	return true
 }
 
 func normalizeAvailabilityScheduleJSON(value JSONValue) (*string, error) {

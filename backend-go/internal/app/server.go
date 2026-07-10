@@ -608,7 +608,13 @@ func newPublicAPIHandlers(store *postgresstore.Store, credentialSecret string) (
 	groupService := publicgroups.NewService(publicgroups.Options{Store: store, Transactor: store})
 	routeStrategyService := publicroutestrategies.NewService(publicroutestrategies.Options{Store: store, Transactor: store})
 	apiKeyService := publicapikeys.NewService(publicapikeys.Options{Store: store, Transactor: store})
-	accountService := publicaccounts.NewService(publicaccounts.Options{Store: store, Transactor: store, Secret: credentialSecret})
+	providerModelService := managementprovidermodels.NewService(store)
+	accountService := publicaccounts.NewService(publicaccounts.Options{
+		Store:          store,
+		Transactor:     store,
+		ProviderModels: providerModelService,
+		Secret:         credentialSecret,
+	})
 
 	handlers := map[string]http.Handler{}
 	for _, part := range []map[string]http.Handler{

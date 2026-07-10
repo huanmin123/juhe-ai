@@ -20,6 +20,7 @@ import (
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	"juhe-ai/backend-go/internal/modules/publicapi"
 	publicapiauth "juhe-ai/backend-go/internal/modules/publicapi/auth"
@@ -99,9 +100,10 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 	accountCredentialSecret := "w1b-public-account-shell-credential-secret"
 	var accountIDSeq atomic.Int32
 	accountService := publicaccounts.NewService(publicaccounts.Options{
-		Store:      store,
-		Transactor: store,
-		Now:        w1bPublicAccountsShellNow,
+		Store:          store,
+		Transactor:     store,
+		ProviderModels: managementprovidermodels.NewService(store),
+		Now:            w1bPublicAccountsShellNow,
 		NewID: func(prefix string) string {
 			return prefix + "_w1b_account_shell_" + strconv.Itoa(int(accountIDSeq.Add(1)))
 		},
@@ -184,7 +186,7 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 
 	updatedSecret := "sk-fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	userInfoURL := "https://user:pass@example.com/private?token=notes-secret-value"
-	updateBody := `{"accountId":"` + accountID + `","targetUsername":"admin","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号更新","status":"disabled","baseUrl":"https://api.openai.com/v2","apiKey":"` + updatedSecret + `","supportedModels":["gpt-5.5-codex"],"concurrencyLimit":7,"priority":3,"notes":"` + userInfoURL + `"}`
+	updateBody := `{"accountId":"` + accountID + `","targetUsername":"admin","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号更新","status":"disabled","baseUrl":"https://api.openai.com/v2","apiKey":"` + updatedSecret + `","supportedModels":["` + w1bValidBuiltInModel + `"],"concurrencyLimit":7,"priority":3,"notes":"` + userInfoURL + `"}`
 	updateRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/update", token, "trace_account_update", updateBody)
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("update status = %d, body = %s", updateRec.Code, updateRec.Body.String())
@@ -200,7 +202,7 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 		t.Fatalf("update response = %+v", updateResponse.Data)
 	}
 	assertW1bPublicAccountStored(t, ctx, db, accountID, updatedSecret, publicaccounts.StatusDisabled, false)
-	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{"gpt-5.5-codex"})
+	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bValidBuiltInModel})
 
 	deleteRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/del", token, "trace_account_delete", `{"accountId":"`+accountID+`","targetUsername":"admin","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
 	if deleteRec.Code != http.StatusOK {

@@ -4,22 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *testing.T) {
 	store := newPublicAccountStoreFake()
-	service := NewService(Options{
-		Store:  store,
-		Now:    fixedPublicAccountNow,
-		NewID:  sequentialPublicAccountID(),
-		Secret: "public-account-test-secret",
-	})
+	service := newPublicAccountServiceForTest(store, nil)
 
 	response, err := service.Add(context.Background(), AddInput{
 		TargetUsername:            "admin",
@@ -31,7 +28,7 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 		Type:                      AccountTypeAPIKey,
 		BaseURL:                   "https://api.openai.com/v1",
 		APIKey:                    "sk-public-account-secret-0123456789abcdef",
-		SupportedModels:           NewStringListValue([]string{" gpt-5.5 ", "gpt-5.5", "gpt-5.5-mini"}, true),
+		SupportedModels:           NewStringListValue([]string{" gpt-5.5 ", "gpt-5.5", "gpt-5.4-mini"}, true),
 		Status:                    StatusActive,
 	})
 	if err != nil {
@@ -43,7 +40,7 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 	if response.Account == nil || response.Account.Status != StatusPendingTest || response.Account.Schedulable {
 		t.Fatalf("response account = %+v, want pending_test and unschedulable", response.Account)
 	}
-	if got := response.Account.SupportedModels; len(got) != 2 || got[0] != "gpt-5.5" || got[1] != "gpt-5.5-mini" {
+	if got := response.Account.SupportedModels; len(got) != 2 || got[0] != "gpt-5.5" || got[1] != "gpt-5.4-mini" {
 		t.Fatalf("supported models = %#v", got)
 	}
 	created := store.accounts[response.Account.ID]
@@ -70,12 +67,7 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 
 func TestServiceAddUsesProviderDefaultSupportedModelsWhenOmitted(t *testing.T) {
 	store := newPublicAccountStoreFake()
-	service := NewService(Options{
-		Store:  store,
-		Now:    fixedPublicAccountNow,
-		NewID:  sequentialPublicAccountID(),
-		Secret: "public-account-test-secret",
-	})
+	service := newPublicAccountServiceForTest(store, nil)
 
 	response, err := service.Add(context.Background(), AddInput{
 		TargetUsername:            "admin",
@@ -100,12 +92,7 @@ func TestServiceAddUsesProviderDefaultSupportedModelsWhenOmitted(t *testing.T) {
 
 func TestServiceAddExplicitEmptySupportedModelsReturnsErrorWithoutCreatingAccount(t *testing.T) {
 	store := newPublicAccountStoreFake()
-	service := NewService(Options{
-		Store:  store,
-		Now:    fixedPublicAccountNow,
-		NewID:  sequentialPublicAccountID(),
-		Secret: "public-account-test-secret",
-	})
+	service := newPublicAccountServiceForTest(store, nil)
 
 	_, err := service.Add(context.Background(), AddInput{
 		TargetUsername:            "admin",
@@ -130,12 +117,7 @@ func TestServiceAddEmptyProviderDefaultSupportedModelsReturnsError(t *testing.T)
 	profile := store.profiles[profileKey]
 	profile.DefaultSupportedModels = nil
 	store.profiles[profileKey] = profile
-	service := NewService(Options{
-		Store:  store,
-		Now:    fixedPublicAccountNow,
-		NewID:  sequentialPublicAccountID(),
-		Secret: "public-account-test-secret",
-	})
+	service := newPublicAccountServiceForTest(store, nil)
 
 	_, err := service.Add(context.Background(), AddInput{
 		TargetUsername:            "admin",
@@ -155,12 +137,8 @@ func TestServiceAddEmptyProviderDefaultSupportedModelsReturnsError(t *testing.T)
 
 func TestServiceAddDuplicateNamePrecedesEmptySupportedModelsValidation(t *testing.T) {
 	store := newPublicAccountStoreFake()
-	service := NewService(Options{
-		Store:  store,
-		Now:    fixedPublicAccountNow,
-		NewID:  sequentialPublicAccountID(),
-		Secret: "public-account-test-secret",
-	})
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
 	input := AddInput{
 		TargetUsername:            "admin",
 		TargetGroupName:           "福利",
@@ -175,16 +153,192 @@ func TestServiceAddDuplicateNamePrecedesEmptySupportedModelsValidation(t *testin
 		t.Fatalf("seed public account: %v", err)
 	}
 
+	reader.resetCalls()
 	input.SupportedModels = NewStringListValue([]string{}, true)
 	_, err := service.Add(context.Background(), input)
 	if !errors.Is(err, ErrDuplicateAccountName) {
 		t.Fatalf("duplicate add error = %v, want ErrDuplicateAccountName", err)
 	}
+	if reader.calls != 0 {
+		t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
+	}
+}
+
+func TestServiceAddPassesTargetOwnerAndProviderToModelCatalog(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := providerModelReaderWithItems(
+		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: "gpt-5.4-mini", Scope: "built_in"},
+	)
+	service := newPublicAccountServiceForTest(store, reader)
+
+	response, err := service.Add(context.Background(), validPublicAccountAddInput("目录目标账号", "gpt-5.4-mini"))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	if reader.calls != 1 || len(reader.inputs) != 1 {
+		t.Fatalf("provider model reader calls/inputs = %d/%d, want 1/1", reader.calls, len(reader.inputs))
+	}
+	input := reader.inputs[0]
+	if input.SystemAccountID != response.Target.SystemAccountID ||
+		input.ProviderCode != "gpt" ||
+		input.IncludeInactive ||
+		input.IncludeUnpriced {
+		t.Fatalf("provider model input = %+v, target = %+v", input, response.Target)
+	}
+}
+
+func TestServiceAddAcceptsBuiltInGlobalAndPersonalModels(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := providerModelReaderWithItems(
+		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: "built-in-model", Scope: "built_in"},
+		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: "global-model", Scope: "global"},
+		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: "personal-model", Scope: "personal", SystemAccountID: "sys_test_1"},
+	)
+	service := newPublicAccountServiceForTest(store, reader)
+	wantModels := []string{"built-in-model", "global-model", "personal-model"}
+
+	response, err := service.Add(context.Background(), validPublicAccountAddInput("多范围目录账号", wantModels...))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	if response.Account == nil || !slices.Equal(response.Account.SupportedModels, wantModels) {
+		t.Fatalf("response account = %+v, want supported models %#v", response.Account, wantModels)
+	}
+	if store.createCalls != 1 {
+		t.Fatalf("store create calls = %d, want 1", store.createCalls)
+	}
+}
+
+func TestServiceAddRejectsModelsMissingFromVisibleUsableCatalogWithoutWriting(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+	}{
+		{name: "unknown", model: "unknown-model"},
+		{name: "other owner personal", model: "other-owner-model"},
+		{name: "disabled", model: "disabled-model"},
+		{name: "unpriced", model: "unpriced-model"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newPublicAccountStoreFake()
+			reader := providerModelReaderWithItems(
+				managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: "visible-model", Scope: "built_in"},
+			)
+			service := newPublicAccountServiceForTest(store, reader)
+
+			_, err := service.Add(context.Background(), validPublicAccountAddInput("不可用目录账号", tt.model))
+			assertInvalidSupportedModelsCatalog(t, err, tt.model)
+			if store.createCalls != 0 || len(store.accounts) != 0 {
+				t.Fatalf("store create calls/accounts = %d/%d, want 0/0", store.createCalls, len(store.accounts))
+			}
+		})
+	}
+}
+
+func TestServiceAddMixedSupportedModelsReportsFirstFiveInvalidModels(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := providerModelReaderWithItems(
+		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: "valid-model", Scope: "built_in"},
+	)
+	service := newPublicAccountServiceForTest(store, reader)
+	input := validPublicAccountAddInput(
+		"混合目录账号",
+		"valid-model",
+		"invalid-1",
+		"invalid-2",
+		"invalid-3",
+		"invalid-4",
+		"invalid-5",
+		"invalid-6",
+	)
+
+	_, err := service.Add(context.Background(), input)
+	assertInvalidSupportedModelsCatalog(t, err, "invalid-1", "invalid-2", "invalid-3", "invalid-4", "invalid-5")
+	if store.createCalls != 0 || len(store.accounts) != 0 {
+		t.Fatalf("store create calls/accounts = %d/%d, want 0/0", store.createCalls, len(store.accounts))
+	}
+}
+
+func TestServiceAddHybridBypassesCatalogButStillRequiresModels(t *testing.T) {
+	t.Run("non-empty bypasses catalog", func(t *testing.T) {
+		store := newPublicAccountStoreFake()
+		readerErr := errors.New("catalog should not be read")
+		reader := &providerModelReaderStub{err: readerErr}
+		service := newPublicAccountServiceForTest(store, reader)
+		input := validPublicAccountAddInput("混合供应商账号", "hybrid-direct-model")
+		input.ProviderCode = hybridProviderCode
+		input.ProviderProtocolProfileID = "profile_hybrid_openai_v1"
+
+		response, err := service.Add(context.Background(), input)
+		if err != nil {
+			t.Fatalf("add hybrid public account: %v", err)
+		}
+		if response.Account == nil || !slices.Equal(response.Account.SupportedModels, []string{"hybrid-direct-model"}) {
+			t.Fatalf("response account = %+v", response.Account)
+		}
+		if reader.calls != 0 {
+			t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
+		}
+	})
+
+	t.Run("empty still fails", func(t *testing.T) {
+		store := newPublicAccountStoreFake()
+		reader := &providerModelReaderStub{err: errors.New("catalog should not be read")}
+		service := newPublicAccountServiceForTest(store, reader)
+		input := validPublicAccountAddInput("空混合供应商账号")
+		input.ProviderCode = hybridProviderCode
+		input.ProviderProtocolProfileID = "profile_hybrid_openai_v1"
+		input.SupportedModels = NewStringListValue([]string{}, true)
+
+		_, err := service.Add(context.Background(), input)
+		assertInvalidSupportedModelsRequired(t, err)
+		if reader.calls != 0 {
+			t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
+		}
+		if store.createCalls != 0 {
+			t.Fatalf("store create calls = %d, want 0", store.createCalls)
+		}
+	})
+}
+
+func TestServiceAddRequiresProviderModelReaderForNonHybridProvider(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := NewService(Options{
+		Store:  store,
+		Now:    fixedPublicAccountNow,
+		NewID:  sequentialPublicAccountID(),
+		Secret: "public-account-test-secret",
+	})
+
+	_, err := service.Add(context.Background(), validPublicAccountAddInput("缺少目录读取器账号", "gpt-5.4-mini"))
+	if err == nil || err.Error() != providerModelsRequiredMessage {
+		t.Fatalf("add error = %v, want %q", err, providerModelsRequiredMessage)
+	}
+	if store.createCalls != 0 || len(store.accounts) != 0 {
+		t.Fatalf("store create calls/accounts = %d/%d, want 0/0", store.createCalls, len(store.accounts))
+	}
+}
+
+func TestServiceAddPropagatesProviderModelReaderErrorWithoutWriting(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	readerErr := errors.New("provider model reader failed")
+	reader := &providerModelReaderStub{err: readerErr}
+	service := newPublicAccountServiceForTest(store, reader)
+
+	_, err := service.Add(context.Background(), validPublicAccountAddInput("目录读取失败账号", "gpt-5.4-mini"))
+	if !errors.Is(err, readerErr) {
+		t.Fatalf("add error = %v, want reader error", err)
+	}
+	if store.createCalls != 0 || len(store.accounts) != 0 {
+		t.Fatalf("store create calls/accounts = %d/%d, want 0/0", store.createCalls, len(store.accounts))
+	}
 }
 
 func TestServiceUpdateRejectsPendingTestToActive(t *testing.T) {
 	store := newPublicAccountStoreFake()
-	service := NewService(Options{Store: store, Now: fixedPublicAccountNow, NewID: sequentialPublicAccountID(), Secret: "public-account-test-secret"})
+	service := newPublicAccountServiceForTest(store, nil)
 	created, err := service.Add(context.Background(), AddInput{
 		TargetUsername:            "admin",
 		TargetGroupName:           "福利",
@@ -211,7 +365,7 @@ func TestServiceUpdateRejectsPendingTestToActive(t *testing.T) {
 
 func TestServiceUpdateOmittedSupportedModelsRejectsExistingEmptyModelsWithoutUpdatingStore(t *testing.T) {
 	store := newPublicAccountStoreFake()
-	service := NewService(Options{Store: store, Now: fixedPublicAccountNow, NewID: sequentialPublicAccountID(), Secret: "public-account-test-secret"})
+	service := newPublicAccountServiceForTest(store, nil)
 	created, err := service.Add(context.Background(), AddInput{
 		TargetUsername:            "admin",
 		TargetGroupName:           "福利",
@@ -247,7 +401,8 @@ func TestServiceUpdateOmittedSupportedModelsRejectsExistingEmptyModelsWithoutUpd
 
 func TestServiceUpdateOmittedSupportedModelsPreservesExistingNonEmptyModels(t *testing.T) {
 	store := newPublicAccountStoreFake()
-	service := NewService(Options{Store: store, Now: fixedPublicAccountNow, NewID: sequentialPublicAccountID(), Secret: "public-account-test-secret"})
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
 	wantModels := []string{"gpt-5.5", "gpt-5.4-mini"}
 	created, err := service.Add(context.Background(), AddInput{
 		TargetUsername:            "admin",
@@ -264,6 +419,7 @@ func TestServiceUpdateOmittedSupportedModelsPreservesExistingNonEmptyModels(t *t
 		t.Fatalf("add public account: %v", err)
 	}
 
+	reader.resetCalls()
 	name := "正常改名"
 	response, err := service.Update(context.Background(), UpdateInput{
 		AccountID: created.Account.ID,
@@ -281,6 +437,117 @@ func TestServiceUpdateOmittedSupportedModelsPreservesExistingNonEmptyModels(t *t
 	if got := store.accounts[created.Account.ID].SupportedModels; !slices.Equal(got, wantModels) {
 		t.Fatalf("stored supported models = %#v, want %#v", got, wantModels)
 	}
+	if reader.calls != 0 {
+		t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
+	}
+}
+
+func TestServiceUpdateUnorderedEquivalentSupportedModelsSkipsCatalog(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"无序相同模型账号",
+		"gpt-5.5",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+
+	reader.resetCalls()
+	store.updateCalls = 0
+	response, err := service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		SupportedModels: NewStringListValue([]string{
+			" gpt-5.4-mini ",
+			"gpt-5.5",
+			"gpt-5.5",
+		}, true),
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
+	}
+	if store.updateCalls != 1 {
+		t.Fatalf("store update calls = %d, want 1", store.updateCalls)
+	}
+	wantModels := []string{"gpt-5.4-mini", "gpt-5.5"}
+	if response.Account == nil || !slices.Equal(response.Account.SupportedModels, wantModels) {
+		t.Fatalf("response account = %+v, want supported models %#v", response.Account, wantModels)
+	}
+}
+
+func TestServiceUpdateCatalogFailureLeavesStateUnchanged(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"更新目录失败账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	before := store.accounts[created.Account.ID]
+	reader.resetCalls()
+	store.updateCalls = 0
+	updatedName := "不应保存的新名称"
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID:       created.Account.ID,
+		Name:            &updatedName,
+		SupportedModels: NewStringListValue([]string{"unknown-update-model"}, true),
+	})
+	assertInvalidSupportedModelsCatalog(t, err, "unknown-update-model")
+	if reader.calls != 1 {
+		t.Fatalf("provider model reader calls = %d, want 1", reader.calls)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+	}
+	after := store.accounts[created.Account.ID]
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("stored account changed after failed update:\nbefore = %+v\nafter  = %+v", before, after)
+	}
+}
+
+func TestServiceUpdateInvalidCredentialsPrecedeCatalogValidation(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"凭据优先账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	before := store.accounts[created.Account.ID]
+	reader.resetCalls()
+	store.updateCalls = 0
+	emptyAPIKey := ""
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID:       created.Account.ID,
+		APIKey:          &emptyAPIKey,
+		SupportedModels: NewStringListValue([]string{"unknown-update-model"}, true),
+	})
+	if !errors.Is(err, ErrInvalidAPIKey) {
+		t.Fatalf("update error = %v, want ErrInvalidAPIKey", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+	}
+	after := store.accounts[created.Account.ID]
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("stored account changed after failed update:\nbefore = %+v\nafter  = %+v", before, after)
+	}
 }
 
 func assertInvalidSupportedModelsRequired(t *testing.T, err error) {
@@ -294,8 +561,21 @@ func assertInvalidSupportedModelsRequired(t *testing.T, err error) {
 	}
 }
 
+func assertInvalidSupportedModelsCatalog(t *testing.T, err error, invalidModels ...string) {
+	t.Helper()
+	if !errors.Is(err, ErrInvalidSupportedModels) {
+		t.Fatalf("supported models error = %v, want ErrInvalidSupportedModels", err)
+	}
+	want := ErrInvalidSupportedModels.Error() +
+		": 账户支持模型不在供应商模型目录中：" +
+		strings.Join(invalidModels, "、")
+	if err.Error() != want {
+		t.Fatalf("supported models error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestServiceDeleteMissingIsNotFoundAction(t *testing.T) {
-	service := NewService(Options{Store: newPublicAccountStoreFake(), Now: fixedPublicAccountNow, NewID: sequentialPublicAccountID()})
+	service := newPublicAccountServiceForTest(newPublicAccountStoreFake(), nil)
 	username := "admin"
 	response, err := service.Delete(context.Background(), DeleteInput{
 		AccountID:      "acc_missing",
@@ -306,6 +586,33 @@ func TestServiceDeleteMissingIsNotFoundAction(t *testing.T) {
 	}
 	if response.Action != "not_found" || response.Account != nil || response.Target.Username != "admin" {
 		t.Fatalf("delete missing response = %+v", response)
+	}
+}
+
+func newPublicAccountServiceForTest(store *publicAccountStoreFake, providerModels ProviderModelReader) *Service {
+	if providerModels == nil {
+		providerModels = defaultProviderModelReaderStub()
+	}
+	return NewService(Options{
+		Store:          store,
+		ProviderModels: providerModels,
+		Now:            fixedPublicAccountNow,
+		NewID:          sequentialPublicAccountID(),
+		Secret:         "public-account-test-secret",
+	})
+}
+
+func validPublicAccountAddInput(name string, models ...string) AddInput {
+	return AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "福利",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      name,
+		Type:                      AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-public-account-secret-0123456789abcdef",
+		SupportedModels:           NewStringListValue(models, true),
 	}
 }
 
@@ -331,12 +638,53 @@ var defaultGPTSupportedModels = []string{
 	"gpt-image-2",
 }
 
+type providerModelReaderStub struct {
+	items  []managementprovidermodels.ModelCatalogItem
+	err    error
+	calls  int
+	inputs []managementprovidermodels.ModelListInput
+}
+
+func defaultProviderModelReaderStub() *providerModelReaderStub {
+	items := make([]managementprovidermodels.ModelCatalogItem, 0, len(defaultGPTSupportedModels))
+	for _, model := range defaultGPTSupportedModels {
+		items = append(items, managementprovidermodels.ModelCatalogItem{
+			ProviderCode: "gpt",
+			Model:        model,
+			Scope:        "built_in",
+			Status:       "active",
+		})
+	}
+	return providerModelReaderWithItems(items...)
+}
+
+func providerModelReaderWithItems(items ...managementprovidermodels.ModelCatalogItem) *providerModelReaderStub {
+	return &providerModelReaderStub{
+		items: append([]managementprovidermodels.ModelCatalogItem(nil), items...),
+	}
+}
+
+func (s *providerModelReaderStub) Models(_ context.Context, input managementprovidermodels.ModelListInput) ([]managementprovidermodels.ModelCatalogItem, error) {
+	s.calls++
+	s.inputs = append(s.inputs, input)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]managementprovidermodels.ModelCatalogItem(nil), s.items...), nil
+}
+
+func (s *providerModelReaderStub) resetCalls() {
+	s.calls = 0
+	s.inputs = nil
+}
+
 type publicAccountStoreFake struct {
 	targetsByUsername map[string]port.PublicGroupTarget
 	targetsByID       map[string]port.PublicGroupTarget
 	profiles          map[string]port.PublicAccountProviderProfile
 	groups            map[string]port.PublicAccountGroupRef
 	accounts          map[string]port.PublicAccountSummary
+	createCalls       int
 	updateCalls       int
 }
 
@@ -355,6 +703,17 @@ func newPublicAccountStoreFake() *publicAccountStoreFake {
 				ProtocolVersion:        "v1",
 				AccountTypesJSON:       `["oauth","api_key"]`,
 				DefaultSupportedModels: append([]string(nil), defaultGPTSupportedModels...),
+			},
+			"hybrid|profile_hybrid_openai_v1": {
+				ID:                     "profile_hybrid_openai_v1",
+				ProviderCode:           hybridProviderCode,
+				Name:                   "Hybrid / OpenAI v1",
+				Enabled:                true,
+				ProviderEnabled:        true,
+				ProtocolCode:           "openai",
+				ProtocolVersion:        "v1",
+				AccountTypesJSON:       `["api_key"]`,
+				DefaultSupportedModels: []string{"hybrid-direct-model"},
 			},
 		},
 		groups:   map[string]port.PublicAccountGroupRef{},
@@ -447,6 +806,7 @@ func (s *publicAccountStoreFake) FindExistingPublicAccountByNameInGroup(_ contex
 }
 
 func (s *publicAccountStoreFake) CreatePublicAccount(_ context.Context, input port.PublicAccountCreateInput) (port.PublicAccountSummary, error) {
+	s.createCalls++
 	for _, account := range s.accounts {
 		if account.SystemAccountID == input.SystemAccountID && strings.EqualFold(account.Name, input.Name) {
 			return port.PublicAccountSummary{}, port.ErrPublicAccountDuplicateName
