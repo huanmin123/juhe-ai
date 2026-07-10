@@ -285,9 +285,8 @@ func TestServiceListMapsTargetAuthorizedRowsAndSourceSummary(t *testing.T) {
 	if result.Items[0].AuthorizationSourceSummary != nil || result.Items[0].AccountCount != 2 {
 		t.Fatalf("owner item = %+v", result.Items[0])
 	}
-	if result.Items[0].AccountStats.CurrentConcurrencyAvailable == nil ||
-		!*result.Items[0].AccountStats.CurrentConcurrencyAvailable {
-		t.Fatalf("empty owner concurrency availability = %+v", result.Items[0].AccountStats)
+	if result.Items[0].AccountStats.CurrentConcurrencyAvailable != nil {
+		t.Fatalf("empty owner concurrency availability = %+v, want omitted", result.Items[0].AccountStats)
 	}
 	if authorized.AccountStats.CurrentConcurrencyAvailable != nil {
 		t.Fatalf("authorized concurrency availability = %+v, want omitted", authorized.AccountStats)
@@ -452,8 +451,7 @@ func TestServiceListKeepsPreaggregatesWhenAccountConcurrencyFails(t *testing.T) 
 	}
 	emptyOwner := result.Items[1]
 	if emptyOwner.AccountStats.CurrentConcurrency != 8 ||
-		emptyOwner.AccountStats.CurrentConcurrencyAvailable == nil ||
-		!*emptyOwner.AccountStats.CurrentConcurrencyAvailable {
+		emptyOwner.AccountStats.CurrentConcurrencyAvailable != nil {
 		t.Fatalf("empty owner stats = %+v", emptyOwner.AccountStats)
 	}
 	authorized := result.Items[2]

@@ -134,6 +134,7 @@ type managementGroupListEnrichment struct {
 	accountStatsByGroup       map[string]port.ManagementGroupAccountStatsRow
 	accountIDsByOwnedGroup    map[string][]string
 	currentConcurrencyByID    map[string]int
+	accountConcurrencyNeeded  bool
 	accountConcurrencyReady   bool
 	totalUsageByKey           map[string]port.ManagementAccountUsageSummary
 	todayUsageByKey           map[string]port.ManagementAccountUsageSummary
@@ -211,6 +212,7 @@ func (s *Service) loadManagementGroupListEnrichment(
 		}
 		accountIDs = uniqueStrings(accountIDs, len(accountIDs))
 		if len(accountIDs) > 0 {
+			enrichment.accountConcurrencyNeeded = true
 			if s.accountConcurrency == nil {
 				enrichment.accountConcurrencyReady = false
 			} else {
@@ -419,13 +421,20 @@ func managementGroupListItem(
 	)
 	if accessType != "authorized" {
 		accountIDs := enrichment.accountIDsByOwnedGroup[row.ID]
-		available := len(accountIDs) == 0 || enrichment.accountConcurrencyReady
-		accountStats.CurrentConcurrencyAvailable = &available
-		if len(accountIDs) > 0 && enrichment.accountConcurrencyReady {
-			accountStats.CurrentConcurrency = sumManagementGroupAccountConcurrency(
-				accountIDs,
-				enrichment.currentConcurrencyByID,
-			)
+		if enrichment.accountConcurrencyNeeded {
+			if len(accountIDs) > 0 {
+				available := enrichment.accountConcurrencyReady
+				accountStats.CurrentConcurrencyAvailable = &available
+				if enrichment.accountConcurrencyReady {
+					accountStats.CurrentConcurrency = sumManagementGroupAccountConcurrency(
+						accountIDs,
+						enrichment.currentConcurrencyByID,
+					)
+				}
+			} else if enrichment.accountConcurrencyReady {
+				available := true
+				accountStats.CurrentConcurrencyAvailable = &available
+			}
 		}
 	}
 	item := ListItem{
