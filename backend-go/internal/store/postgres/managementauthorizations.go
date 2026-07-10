@@ -2747,13 +2747,14 @@ SET provider_code = $1,
     cooldown_until = NULL,
     last_error_code = NULL,
     last_error_message = NULL,
-    authorization_instance_source_account_id = $7,
-    authorization_instance_owner_system_account_id = $8,
+    health_check_model = $7,
+    authorization_instance_source_account_id = $8,
+    authorization_instance_owner_system_account_id = $9,
     deleted_at = NULL,
     deleted_by = NULL,
-    updated_at = $9
-WHERE id = $10
-`, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, authorization.ResourceID, authorization.ResourceOwnerSystemAccountID, now.UTC(), deleted.ID); err != nil {
+    updated_at = $10
+WHERE id = $11
+`, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, source.HealthCheckModel, authorization.ResourceID, authorization.ResourceOwnerSystemAccountID, now.UTC(), deleted.ID); err != nil {
 			if isPGUniqueViolation(err) {
 				return activeManagementAuthorizationAccountInstanceTx(ctx, tx, authorization.ID)
 			}
@@ -2774,16 +2775,18 @@ INSERT INTO juhe_business.accounts (
   id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
   name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
   concurrency_limit, priority, super_priority_enabled, fallback_enabled, schedulable,
+  health_check_model,
   authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
   created_at, updated_at
 ) VALUES (
   $1, $2, $3, $4, $5, $6,
   $7, $8, 'active', $9, NULL, '',
   $10, 0, false, false, true,
-  $11, $12, $13,
-  $14, $14
+  $11,
+  $12, $13, $14,
+  $15, $15
 )
-`, id, authorization.GranteeSystemAccountID, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, credentialEncrypted, source.ConcurrencyLimit, authorization.ResourceID, authorization.ID, authorization.ResourceOwnerSystemAccountID, now.UTC()); err != nil {
+`, id, authorization.GranteeSystemAccountID, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, credentialEncrypted, source.ConcurrencyLimit, source.HealthCheckModel, authorization.ResourceID, authorization.ID, authorization.ResourceOwnerSystemAccountID, now.UTC()); err != nil {
 		if isPGUniqueViolation(err) {
 			return activeManagementAuthorizationAccountInstanceTx(ctx, tx, authorization.ID)
 		}
@@ -2805,18 +2808,19 @@ type managementAuthorizationAccountRow struct {
 	Name                      string
 	Type                      string
 	ConcurrencyLimit          int32
+	HealthCheckModel          string
 }
 
 func managementAuthorizationSourceAccountTx(ctx context.Context, tx pgx.Tx, accountID string) (managementAuthorizationAccountRow, bool, error) {
 	var row managementAuthorizationAccountRow
 	err := tx.QueryRow(ctx, `
 SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code,
-  protocol_version, name, type, concurrency_limit
+  protocol_version, name, type, concurrency_limit, health_check_model
 FROM juhe_business.accounts
 WHERE id = $1
   AND deleted_at IS NULL
 LIMIT 1
-`, accountID).Scan(&row.ID, &row.SystemAccountID, &row.ProviderCode, &row.ProviderProtocolProfileID, &row.ProtocolCode, &row.ProtocolVersion, &row.Name, &row.Type, &row.ConcurrencyLimit)
+`, accountID).Scan(&row.ID, &row.SystemAccountID, &row.ProviderCode, &row.ProviderProtocolProfileID, &row.ProtocolCode, &row.ProtocolVersion, &row.Name, &row.Type, &row.ConcurrencyLimit, &row.HealthCheckModel)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return managementAuthorizationAccountRow{}, false, nil
 	}

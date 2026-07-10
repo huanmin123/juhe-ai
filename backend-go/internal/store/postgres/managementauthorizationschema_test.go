@@ -355,6 +355,24 @@ func TestManagementResourceAuthorizationRevokeQueryKeepsTeamGrantScope(t *testin
 	}
 }
 
+func TestManagementResourceAuthorizationAccountInstancePreservesHealthCheckModel(t *testing.T) {
+	source, err := os.ReadFile("managementauthorizations.go")
+	if err != nil {
+		t.Fatalf("read management authorizations store: %v", err)
+	}
+	code := string(source)
+	for _, want := range []string{
+		"protocol_version, name, type, concurrency_limit, health_check_model",
+		"health_check_model = $7",
+		"concurrency_limit, priority, super_priority_enabled, fallback_enabled, schedulable,\n  health_check_model,",
+		"source.ConcurrencyLimit, source.HealthCheckModel, authorization.ResourceID",
+	} {
+		if !strings.Contains(code, want) {
+			t.Fatalf("authorization account instance implementation missing %q", want)
+		}
+	}
+}
+
 func TestManagementResourceAuthorizationReturnByResourceKeepsDirectUserGrantScope(t *testing.T) {
 	source, err := os.ReadFile("managementauthorizations.go")
 	if err != nil {
