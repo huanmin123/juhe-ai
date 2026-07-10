@@ -16,6 +16,7 @@ const selfProviderColumns = [
   { title: '模型目录', dataIndex: 'name', key: 'name', width: 180 },
   { title: '状态', key: 'status', width: 90 },
   { title: '接口能力', key: 'capabilities', width: 260 },
+  { title: '默认测试模型', dataIndex: 'defaultTestModel', key: 'defaultTestModel', width: 160 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 260 },
   { title: '操作', key: 'actions', fixed: 'right' }
 ]
@@ -25,7 +26,7 @@ export function providerColumnsForScope(isManagementView: boolean) {
 }
 
 export function providerScrollXForScope(isManagementView: boolean): number {
-  return isManagementView ? 1580 : 850
+  return isManagementView ? 1580 : 1010
 }
 
 export function providerEmptyDescriptionForScope(isManagementView: boolean): string {

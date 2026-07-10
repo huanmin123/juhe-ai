@@ -44,9 +44,7 @@ interface ManualAccountTestFailurePrecheckQueueItem {
   accountId: string
   accountName: string
   access: AccessScope
-  model?: string
-  testEndpointMode?: AccountSupportedEndpointMode
-  originalResult: Pick<AccountTestResult, 'traceId' | 'statusCode' | 'errorCode' | 'message' | 'model'>
+  originalResult: Pick<AccountTestResult, 'traceId' | 'statusCode' | 'errorCode' | 'message' | 'model' | 'testEndpointMode'>
   precheckStartedAt: string
 }
 
@@ -982,14 +980,13 @@ function enqueueManualAccountTestFailurePrecheck(
     accountId: account.id,
     accountName: account.name,
     access: { ...access },
-    model: normalizedString(input.model ?? result.model),
-    testEndpointMode: input.testEndpointMode,
     originalResult: {
       traceId: result.traceId,
       statusCode: result.statusCode,
       errorCode: result.errorCode,
       message: result.message,
-      model: result.model
+      model: result.model ?? normalizedString(input.model),
+      testEndpointMode: result.testEndpointMode ?? input.testEndpointMode
     },
     precheckStartedAt
   })
@@ -1000,8 +997,8 @@ function enqueueManualAccountTestFailurePrecheck(
     traceId: result.traceId,
     statusCode: result.statusCode,
     errorCode: result.errorCode,
-    model: input.model ?? result.model,
-    testEndpointMode: input.testEndpointMode,
+    failedModel: result.model ?? input.model,
+    failedTestEndpointMode: result.testEndpointMode ?? input.testEndpointMode,
     precheckStartedAt
   }, enqueued ? '账号测试失败，已进入事前确认队列' : '账号测试失败事前确认已在队列中，本次不重复入队')
 }
@@ -1035,8 +1032,7 @@ async function runManualAccountTestFailurePrecheckQueueItem(
   }
 
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
-    model: item.model || await preferredSystemAccountTestModelAsync(account),
-    testEndpointMode: item.testEndpointMode,
+    model: await preferredSystemAccountTestModelAsync(account),
     diagnostics: 'full',
     groupId: account.boundGroupId,
     systemAccountId: accountTestPrecheckSystemAccountId(account),
@@ -1458,6 +1454,13 @@ function accountTestFailurePrecheckCooldownReason(
   const originalTraceId = normalizedString(item.originalResult.traceId)
   if (originalTraceId) {
     parts.push(`原始 traceId ${originalTraceId}`)
+  }
+  const originalModel = normalizedString(item.originalResult.model)
+  if (originalModel) {
+    parts.push(`原始测试模型 ${originalModel}`)
+  }
+  if (item.originalResult.testEndpointMode) {
+    parts.push(`原始测试接口 ${item.originalResult.testEndpointMode}`)
   }
   const traceId = normalizedString(result.traceId)
   if (traceId) {

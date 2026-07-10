@@ -250,6 +250,16 @@ function assertApiKeyRuntimeChangeDetection(): void {
 function assertModelMappingProtocolValidation(): void {
   const baseForm = apiKeyFormFixture()
   assert.equal(validateForm(baseForm), undefined, 'OpenAI 协议账号应允许 Chat Completions 同协议模型别名')
+  assert.match(validateForm({
+    ...baseForm,
+    modelMappings: [{
+      sourceModel: 'gpt-5.6-alias',
+      sourceEndpointFamily: 'chat_completions',
+      upstreamModel: 'gpt-5.6-not-supported',
+      upstreamEndpointFamily: 'chat_completions',
+      enabled: true
+    }]
+  }) ?? '', /模型映射的上游模型必须从支持模型中选择/, '模型别名右侧上游模型不在账户支持模型时必须拒绝保存')
   assert.equal(validateForm({
     ...baseForm,
     supportedEndpointModes: ['responses_json', 'responses_sse'],
