@@ -12,7 +12,7 @@ func TestW5ManagementGroupListStatsMigrationMatchesNodeSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read W5 management group list stats migration: %v", err)
 	}
-	sql := string(source)
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
 	if count := strings.Count(sql, "CREATE TABLE IF NOT EXISTS juhe_stats."); count != 4 {
 		t.Fatalf("stats table count = %d, want 4", count)
 	}

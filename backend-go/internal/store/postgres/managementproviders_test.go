@@ -130,7 +130,7 @@ func TestManagementProviderSQLKeepsListAndOptionsFiltersSeparate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read provider option query: %v", err)
 	}
-	sql := string(source)
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
 	listStart := strings.Index(sql, "-- name: ListManagementProviders :many")
 	optionStart := strings.Index(sql, "-- name: ListManagementProviderOptionProviders :many")
 	if listStart < 0 || optionStart < 0 || optionStart <= listStart {
@@ -311,7 +311,7 @@ func TestManagementCustomProviderModelBindingSummaryScopesMappingsByProvider(t *
 	if err != nil {
 		t.Fatalf("read provider model query: %v", err)
 	}
-	sql := string(source)
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
 	start := strings.Index(sql, "-- name: GetManagementCustomProviderModelBindingSummary :one")
 	end := strings.Index(sql, "-- name: ClearManagementProviderDefaultHealthCheckModelIfModel :execrows")
 	if start < 0 || end <= start {

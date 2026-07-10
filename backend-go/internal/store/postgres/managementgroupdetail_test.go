@@ -21,7 +21,7 @@ func TestW5ManagementGroupDetailSQLUsesExactVisibilityAndCurrentTables(t *testin
 	if err != nil {
 		t.Fatalf("read W5 management group detail query: %v", err)
 	}
-	sql := string(source)
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
 	detailSQL := querySection(t, sql, "-- name: FindManagementGroupDetail :one", "-- name: ListManagementGroupDetailAccountIDs :many")
 	assertSQLContainsAll(t, detailSQL, []string{
 		"groups.id = sqlc.arg(group_id)::text",
