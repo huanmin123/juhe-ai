@@ -79,6 +79,23 @@ func TestOperationLogSQLGuards(t *testing.T) {
 	}
 }
 
+func TestW5OperationLogSettingsMigrationSeedsMaxChanges(t *testing.T) {
+	data, err := os.ReadFile("../../../db/migrations/000023_w5_operation_log_settings.sql")
+	if err != nil {
+		t.Fatalf("read W5 operation log settings migration: %v", err)
+	}
+	sql := string(data)
+	for _, want := range []string{
+		"INSERT INTO juhe_business.system_settings",
+		"('sys_admin', 'operationLogMaxChangesPerRecord', '100', now())",
+		"ON CONFLICT (system_account_id, key) DO NOTHING",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("W5 operation log settings migration missing %q", want)
+		}
+	}
+}
+
 func TestParseOperationLogMaxChangesPerRecord(t *testing.T) {
 	for _, raw := range []string{"1", "100", "500"} {
 		value, err := parseOperationLogMaxChangesPerRecord(raw)
