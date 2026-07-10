@@ -1126,43 +1126,33 @@ SET name = $1,
       ELSE last_error_message
     END,
     next_health_check_at = CASE
-      WHEN
-        ($12::boolean OR $13::boolean)
-        AND $2::text = 'pending_test'
+      WHEN $2::text = 'pending_test'
       THEN NULL
       ELSE next_health_check_at
     END,
     health_check_failure_count = CASE
-      WHEN
-        ($12::boolean OR $13::boolean)
-        AND $2::text = 'pending_test'
+      WHEN $2::text = 'pending_test'
       THEN 0
       ELSE health_check_failure_count
     END,
     last_health_check_status_code = CASE
-      WHEN
-        ($12::boolean OR $13::boolean)
-        AND $2::text = 'pending_test'
+      WHEN $2::text = 'pending_test'
       THEN NULL
       ELSE last_health_check_status_code
     END,
     last_health_check_error_code = CASE
-      WHEN
-        ($12::boolean OR $13::boolean)
-        AND $2::text = 'pending_test'
+      WHEN $2::text = 'pending_test'
       THEN NULL
       ELSE last_health_check_error_code
     END,
     last_health_check_error_message = CASE
-      WHEN
-        ($12::boolean OR $13::boolean)
-        AND $2::text = 'pending_test'
+      WHEN $2::text = 'pending_test'
       THEN NULL
       ELSE last_health_check_error_message
     END,
-    updated_at = $14
-WHERE id = $15
-  AND system_account_id = $16
+    updated_at = $13
+WHERE id = $14
+  AND system_account_id = $15
   AND deleted_at IS NULL
 RETURNING
   id,
@@ -1200,8 +1190,7 @@ type UpdatePublicAccountAllFieldsParams struct {
 	Schedulable              bool
 	AvailabilityScheduleJson pgtype.Text
 	Notes                    pgtype.Text
-	ConfigurationChanged     bool
-	HealthCheckModelChanged  bool
+	ResetFailureState        bool
 	UpdatedAt                pgtype.Timestamptz
 	ID                       string
 	SystemAccountID          string
@@ -1244,8 +1233,7 @@ func (q *Queries) UpdatePublicAccountAllFields(ctx context.Context, arg UpdatePu
 		arg.Schedulable,
 		arg.AvailabilityScheduleJson,
 		arg.Notes,
-		arg.ConfigurationChanged,
-		arg.HealthCheckModelChanged,
+		arg.ResetFailureState,
 		arg.UpdatedAt,
 		arg.ID,
 		arg.SystemAccountID,

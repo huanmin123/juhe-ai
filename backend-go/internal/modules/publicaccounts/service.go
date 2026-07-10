@@ -168,7 +168,6 @@ type AddInput struct {
 	BaseURL                   string
 	APIKey                    string
 	SupportedModels           StringListValue
-	HealthCheckModel          *string
 	Status                    string
 	ConcurrencyLimit          *int
 	Priority                  *int
@@ -187,7 +186,6 @@ type UpdateInput struct {
 	BaseURL                   *string
 	APIKey                    *string
 	SupportedModels           StringListValue
-	HealthCheckModel          *string
 	Status                    *string
 	ConcurrencyLimit          *int
 	Priority                  *int
@@ -416,11 +414,7 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 		if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, input.ProviderCode, models); err != nil {
 			return err
 		}
-		healthCheckModelSource := profile.DefaultHealthCheckModel
-		if input.HealthCheckModel != nil {
-			healthCheckModelSource = *input.HealthCheckModel
-		}
-		healthCheckModel, err := normalizeAccountHealthCheckModel(healthCheckModelSource, models)
+		healthCheckModel, err := normalizeAccountHealthCheckModel(profile.DefaultHealthCheckModel, models)
 		if err != nil {
 			return err
 		}
@@ -511,9 +505,8 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			}
 			next.AvailabilityScheduleJSON = scheduleJSON
 		}
-		credentialsChanged := false
 		if input.APIKey != nil || input.BaseURL != nil {
-			credentials, currentAPIKey, currentBaseURL, err := s.currentCredentials(current.CredentialsEncrypted)
+			credentials, _, _, err := s.currentCredentials(current.CredentialsEncrypted)
 			if err != nil {
 				return err
 			}
@@ -527,7 +520,6 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			if err != nil {
 				return err
 			}
-			credentialsChanged = credentials["api_key"] != currentAPIKey || credentials["base_url"] != currentBaseURL
 			next.CredentialsEncrypted = credential.Encrypted
 			next.CredentialFingerprint = credential.Fingerprint
 			next.CredentialMask = credential.Mask
@@ -545,22 +537,18 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 				return err
 			}
 		}
-		healthCheckModelSource := current.HealthCheckModel
-		if input.HealthCheckModel != nil {
-			healthCheckModelSource = *input.HealthCheckModel
-		}
-		healthCheckModel, err := normalizeAccountHealthCheckModel(healthCheckModelSource, models)
+		healthCheckModel, err := normalizeAccountHealthCheckModel(current.HealthCheckModel, models)
 		if err != nil {
 			return err
 		}
 		next.SupportedModels = models
-		healthCheckModelChanged := healthCheckModel != current.HealthCheckModel
 		next.HealthCheckModel = healthCheckModel
-		configurationChanged := credentialsChanged || supportedModelsChanged || healthCheckModelChanged
-		if configurationChanged && next.Status != port.PublicAccountStatusDisabled {
+		configurationSubmitted := input.APIKey != nil || input.BaseURL != nil || input.SupportedModels.Set()
+		if configurationSubmitted && next.Status != port.PublicAccountStatusDisabled {
 			next.Status = port.PublicAccountStatusPendingTest
 			next.Schedulable = false
 		}
+		resetFailureState := input.Status != nil || configurationSubmitted
 		updated, ok, err := store.UpdatePublicAccount(ctx, port.PublicAccountUpdateInput{
 			ID:                       current.ID,
 			SystemAccountID:          current.SystemAccountID,
@@ -573,8 +561,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			SupportedModels:          next.SupportedModels,
 			SupportedModelsChanged:   supportedModelsChanged,
 			HealthCheckModel:         next.HealthCheckModel,
-			HealthCheckModelChanged:  healthCheckModelChanged,
-			ConfigurationChanged:     configurationChanged,
+			ResetFailureState:        resetFailureState,
 			Schedulable:              next.Schedulable,
 			AvailabilityScheduleJSON: next.AvailabilityScheduleJSON,
 			ConcurrencyLimit:         next.ConcurrencyLimit,

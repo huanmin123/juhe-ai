@@ -140,6 +140,7 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountModelList(t, created.Account.SupportedModels, w1bGPTDefaultSupportedModels)
 	accountID := created.Account.ID
 	assertW1bPublicAccountStored(t, ctx, db, accountID, initialSecret, publicaccounts.StatusPendingTest, false)
+	assertW1bPublicAccountLastErrorMessage(t, ctx, db, accountID, "账户已保存，等待后台激活检查")
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
 	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bProfileDefaultHealthCheckModel)
 	assertW1bPublicAccountResponseHidesHealthCheckModel(t, created)
@@ -385,6 +386,15 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 		credentialExtensions,
 	)
 	assertW1bPublicAccountRuntimeReset(t, ctx, db, accountID)
+	seedW1bPublicAccountPendingHealthDiagnostics(t, ctx, db, accountID, now)
+	pendingNotes := "待检查状态下仅更新备注"
+	if _, err := service.Update(ctx, publicaccounts.UpdateInput{
+		AccountID: accountID,
+		Notes:     publicaccounts.NewOptionalString(&pendingNotes, true),
+	}); err != nil {
+		t.Fatalf("update pending public account notes: %v", err)
+	}
+	assertW1bPublicAccountRuntimeReset(t, ctx, db, accountID)
 
 	invalidUpdatedName := "不应保存的账号名称"
 	invalidUpdatedSecret := "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -450,11 +460,7 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
 	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeEquivalentUpdate)
 	assertW1bPublicAccountResponseHidesHealthCheckModel(t, preservedForEquivalentModels)
-	assertW1bPublicAccountRuntimeState(
-		t,
-		readW1bPublicAccountRuntimeState(t, ctx, db, accountID),
-		runtimeBeforeOmittedUpdate,
-	)
+	assertW1bPublicAccountRuntimeReset(t, ctx, db, accountID)
 
 	setW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bValidBuiltInModel)
 	seedW1bPublicAccountRuntimeState(t, ctx, db, accountID, now)
@@ -775,6 +781,30 @@ func seedW1bPublicAccountRuntimeState(t *testing.T, ctx context.Context, db *sql
 	}
 }
 
+func seedW1bPublicAccountPendingHealthDiagnostics(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	accountID string,
+	now time.Time,
+) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE juhe_business.accounts
+		SET status = 'pending_test',
+		    schedulable = false,
+		    next_health_check_at = $2,
+		    health_check_failure_count = 3,
+		    last_health_check_status_code = 503,
+		    last_health_check_error_code = 'fixture_health_error',
+		    last_health_check_error_message = 'fixture health error'
+		WHERE id = $1 AND deleted_at IS NULL
+	`, accountID, now.Add(10*time.Minute)); err != nil {
+		t.Fatalf("seed pending public account health diagnostics: %v", err)
+	}
+}
+
 func readW1bPublicAccountRuntimeState(
 	t *testing.T,
 	ctx context.Context,
@@ -896,6 +926,28 @@ func assertW1bPublicAccountName(t *testing.T, ctx context.Context, db *sql.DB, a
 	}
 	if got != want {
 		t.Fatalf("public account name = %q, want %q", got, want)
+	}
+}
+
+func assertW1bPublicAccountLastErrorMessage(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	accountID string,
+	want string,
+) {
+	t.Helper()
+
+	var got sql.NullString
+	if err := db.QueryRowContext(ctx, `
+		SELECT last_error_message
+		FROM juhe_business.accounts
+		WHERE id = $1 AND deleted_at IS NULL
+	`, accountID).Scan(&got); err != nil {
+		t.Fatalf("read public account last error message: %v", err)
+	}
+	if !got.Valid || got.String != want {
+		t.Fatalf("last_error_message = %q valid=%v, want %q", got.String, got.Valid, want)
 	}
 }
 

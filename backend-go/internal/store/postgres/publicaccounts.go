@@ -412,7 +412,7 @@ func publicAccountFindExistingByNameInGroup(ctx context.Context, q *postgresquer
 func publicAccountCreate(ctx context.Context, q *postgresqueries.Queries, input port.PublicAccountCreateInput) (port.PublicAccountSummary, error) {
 	lastErrorMessage := (*string)(nil)
 	if input.Status == port.PublicAccountStatusPendingTest {
-		message := "账户创建后需测试通过才能参与调度"
+		message := "账户已保存，等待后台激活检查"
 		lastErrorMessage = &message
 	}
 	if _, err := q.InsertPublicAccount(ctx, postgresqueries.InsertPublicAccountParams{
@@ -480,8 +480,7 @@ func publicAccountUpdate(ctx context.Context, q *postgresqueries.Queries, input 
 		Schedulable:              input.Schedulable,
 		AvailabilityScheduleJson: pgTextPtr(input.AvailabilityScheduleJSON),
 		Notes:                    pgTextPtr(input.Notes),
-		ConfigurationChanged:     input.ConfigurationChanged,
-		HealthCheckModelChanged:  input.HealthCheckModelChanged,
+		ResetFailureState:        input.ResetFailureState,
 		UpdatedAt:                pgTimestamptz(input.Now),
 		ID:                       input.ID,
 		SystemAccountID:          input.SystemAccountID,

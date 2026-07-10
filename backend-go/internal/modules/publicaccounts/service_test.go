@@ -118,54 +118,6 @@ func TestServiceAddUsesTargetProviderHealthCheckPreferenceBeforeProfileDefault(t
 	}
 }
 
-func TestServiceAddUsesExplicitHealthCheckModelWhenItBelongsToSupportedModels(t *testing.T) {
-	store := newPublicAccountStoreFake()
-	service := newPublicAccountServiceForTest(store, nil)
-	model := " gpt-5.5 "
-
-	response, err := service.Add(context.Background(), AddInput{
-		TargetUsername:            "admin",
-		TargetGroupName:           "福利",
-		ProviderCode:              "gpt",
-		ProviderProtocolProfileID: "profile_gpt_openai_v1",
-		Name:                      "显式检查模型账号",
-		Type:                      AccountTypeAPIKey,
-		BaseURL:                   "https://api.openai.com/v1",
-		APIKey:                    "sk-public-account-secret-0123456789abcdef",
-		SupportedModels:           NewStringListValue([]string{"gpt-5.5"}, true),
-		HealthCheckModel:          &model,
-	})
-	if err != nil {
-		t.Fatalf("add public account: %v", err)
-	}
-	if got := store.accounts[response.Account.ID].HealthCheckModel; got != "gpt-5.5" {
-		t.Fatalf("stored health check model = %q, want gpt-5.5", got)
-	}
-}
-
-func TestServiceAddRejectsExplicitHealthCheckModelOutsideSupportedModels(t *testing.T) {
-	store := newPublicAccountStoreFake()
-	service := newPublicAccountServiceForTest(store, nil)
-	model := "gpt-5.4-mini"
-
-	_, err := service.Add(context.Background(), AddInput{
-		TargetUsername:            "admin",
-		TargetGroupName:           "福利",
-		ProviderCode:              "gpt",
-		ProviderProtocolProfileID: "profile_gpt_openai_v1",
-		Name:                      "无效显式检查模型账号",
-		Type:                      AccountTypeAPIKey,
-		BaseURL:                   "https://api.openai.com/v1",
-		APIKey:                    "sk-public-account-secret-0123456789abcdef",
-		SupportedModels:           NewStringListValue([]string{"gpt-5.5"}, true),
-		HealthCheckModel:          &model,
-	})
-	assertInvalidHealthCheckModel(t, err, invalidHealthCheckModelUnsupportedMessage)
-	if store.createCalls != 0 {
-		t.Fatalf("store create calls = %d, want 0", store.createCalls)
-	}
-}
-
 func TestServiceAddUsesProviderDefaultSupportedModelsWhenOmitted(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	service := newPublicAccountServiceForTest(store, nil)
@@ -617,8 +569,8 @@ func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 			if response.Account == nil || response.Account.Status != StatusPendingTest || response.Account.Schedulable {
 				t.Fatalf("response account = %+v, want pending_test and unschedulable", response.Account)
 			}
-			if !store.lastUpdateInput.ConfigurationChanged {
-				t.Fatal("credential change must mark configuration as changed")
+			if !store.lastUpdateInput.ResetFailureState {
+				t.Fatal("credential submission must reset failure state")
 			}
 		})
 	}
@@ -634,6 +586,14 @@ func TestServiceUpdateConfigurationChangeForcesPendingTest(t *testing.T) {
 			update: func(accountID string) UpdateInput {
 				apiKey := "sk-pending-test-updated-abcdef0123456789"
 				return UpdateInput{AccountID: accountID, APIKey: &apiKey}
+			},
+		},
+		{
+			name: "equivalent credentials",
+			update: func(accountID string) UpdateInput {
+				apiKey := "sk-public-account-secret-0123456789abcdef"
+				baseURL := "https://api.openai.com/v1"
+				return UpdateInput{AccountID: accountID, APIKey: &apiKey, BaseURL: &baseURL}
 			},
 		},
 		{
@@ -671,8 +631,8 @@ func TestServiceUpdateConfigurationChangeForcesPendingTest(t *testing.T) {
 			if response.Account == nil || response.Account.Status != StatusPendingTest || response.Account.Schedulable {
 				t.Fatalf("response account = %+v, want pending_test and unschedulable", response.Account)
 			}
-			if !store.lastUpdateInput.ConfigurationChanged {
-				t.Fatal("configuration change flag = false, want true")
+			if !store.lastUpdateInput.ResetFailureState {
+				t.Fatal("failure state reset flag = false, want true")
 			}
 			stored := store.accounts[account.ID]
 			if stored.Status != port.PublicAccountStatusPendingTest || stored.Schedulable {
@@ -710,8 +670,8 @@ func TestServiceUpdateConfigurationChangeKeepsExplicitDisabled(t *testing.T) {
 	if response.Account == nil || response.Account.Status != StatusDisabled || response.Account.Schedulable {
 		t.Fatalf("response account = %+v, want disabled and unschedulable", response.Account)
 	}
-	if !store.lastUpdateInput.ConfigurationChanged {
-		t.Fatal("configuration change flag = false, want true")
+	if !store.lastUpdateInput.ResetFailureState {
+		t.Fatal("failure state reset flag = false, want true")
 	}
 }
 
@@ -748,8 +708,8 @@ func TestServiceUpdateNonConfigurationFieldsDoNotForcePendingTest(t *testing.T) 
 	if response.Account == nil || response.Account.Status != StatusActive || !response.Account.Schedulable {
 		t.Fatalf("response account = %+v, want active and schedulable", response.Account)
 	}
-	if store.lastUpdateInput.ConfigurationChanged {
-		t.Fatal("non-configuration fields must not mark configuration as changed")
+	if store.lastUpdateInput.ResetFailureState {
+		t.Fatal("non-configuration fields must not reset failure state")
 	}
 }
 
@@ -847,6 +807,10 @@ func TestServiceUpdateUnorderedEquivalentSupportedModelsSkipsCatalog(t *testing.
 	if err != nil {
 		t.Fatalf("add public account: %v", err)
 	}
+	account := store.accounts[created.Account.ID]
+	account.Status = port.PublicAccountStatusActive
+	account.Schedulable = true
+	store.accounts[account.ID] = account
 
 	reader.resetCalls()
 	store.updateCalls = 0
@@ -870,11 +834,14 @@ func TestServiceUpdateUnorderedEquivalentSupportedModelsSkipsCatalog(t *testing.
 	if store.lastUpdateInput.SupportedModelsChanged {
 		t.Fatal("unordered equivalent supportedModels must not mark the model set as changed")
 	}
-	if store.lastUpdateInput.ConfigurationChanged {
-		t.Fatal("unordered equivalent supportedModels must not mark configuration as changed")
+	if !store.lastUpdateInput.ResetFailureState {
+		t.Fatal("submitted supportedModels must reset failure state even when the set is equivalent")
 	}
 	wantModels := []string{"gpt-5.5", "gpt-5.4-mini"}
-	if response.Account == nil || !slices.Equal(response.Account.SupportedModels, wantModels) {
+	if response.Account == nil ||
+		response.Account.Status != StatusPendingTest ||
+		response.Account.Schedulable ||
+		!slices.Equal(response.Account.SupportedModels, wantModels) {
 		t.Fatalf("response account = %+v, want supported models %#v", response.Account, wantModels)
 	}
 }
@@ -910,101 +877,12 @@ func TestServiceUpdateChangedSupportedModelsMarksStoreUpdate(t *testing.T) {
 	if !store.lastUpdateInput.SupportedModelsChanged {
 		t.Fatal("changed supportedModels must mark the model set as changed")
 	}
-	if !store.lastUpdateInput.ConfigurationChanged {
-		t.Fatal("changed supportedModels must mark configuration as changed")
+	if !store.lastUpdateInput.ResetFailureState {
+		t.Fatal("changed supportedModels must reset failure state")
 	}
 	wantModels := []string{"gpt-5.4-mini"}
 	if response.Account == nil || !slices.Equal(response.Account.SupportedModels, wantModels) {
 		t.Fatalf("response account = %+v, want supported models %#v", response.Account, wantModels)
-	}
-}
-
-func TestServiceUpdateHealthCheckModelForcesPendingTest(t *testing.T) {
-	store := newPublicAccountStoreFake()
-	service := newPublicAccountServiceForTest(store, nil)
-	created, err := service.Add(context.Background(), validPublicAccountAddInput(
-		"仅更新检查模型账号",
-		defaultGPTHealthCheckModel,
-		"gpt-5.5",
-	))
-	if err != nil {
-		t.Fatalf("add public account: %v", err)
-	}
-	account := store.accounts[created.Account.ID]
-	account.Status = port.PublicAccountStatusActive
-	account.Schedulable = true
-	store.accounts[account.ID] = account
-	model := " gpt-5.5 "
-
-	_, err = service.Update(context.Background(), UpdateInput{
-		AccountID:        account.ID,
-		HealthCheckModel: &model,
-	})
-	if err != nil {
-		t.Fatalf("update public account: %v", err)
-	}
-	updated := store.accounts[account.ID]
-	if updated.HealthCheckModel != "gpt-5.5" {
-		t.Fatalf("health check model = %q, want gpt-5.5", updated.HealthCheckModel)
-	}
-	if updated.Status != port.PublicAccountStatusPendingTest || updated.Schedulable {
-		t.Fatalf("status/schedulable = %s/%v, want pending_test/false", updated.Status, updated.Schedulable)
-	}
-	if !store.lastUpdateInput.HealthCheckModelChanged || !store.lastUpdateInput.ConfigurationChanged {
-		t.Fatalf("update flags = health %v config %v", store.lastUpdateInput.HealthCheckModelChanged, store.lastUpdateInput.ConfigurationChanged)
-	}
-}
-
-func TestServiceUpdateSupportedModelsAndHealthCheckModelAtomically(t *testing.T) {
-	store := newPublicAccountStoreFake()
-	service := newPublicAccountServiceForTest(store, nil)
-	created, err := service.Add(context.Background(), validPublicAccountAddInput(
-		"原子更新检查模型账号",
-		defaultGPTHealthCheckModel,
-	))
-	if err != nil {
-		t.Fatalf("add public account: %v", err)
-	}
-	model := "gpt-5.5"
-
-	_, err = service.Update(context.Background(), UpdateInput{
-		AccountID:        created.Account.ID,
-		SupportedModels:  NewStringListValue([]string{"gpt-5.5"}, true),
-		HealthCheckModel: &model,
-	})
-	if err != nil {
-		t.Fatalf("update public account: %v", err)
-	}
-	updated := store.accounts[created.Account.ID]
-	if !slices.Equal(updated.SupportedModels, []string{"gpt-5.5"}) || updated.HealthCheckModel != "gpt-5.5" {
-		t.Fatalf("updated account = %+v", updated)
-	}
-	if !store.lastUpdateInput.SupportedModelsChanged ||
-		!store.lastUpdateInput.HealthCheckModelChanged ||
-		!store.lastUpdateInput.ConfigurationChanged {
-		t.Fatalf("update flags = %+v", store.lastUpdateInput)
-	}
-}
-
-func TestServiceUpdateRejectsExplicitHealthCheckModelOutsideFinalSupportedModels(t *testing.T) {
-	store := newPublicAccountStoreFake()
-	service := newPublicAccountServiceForTest(store, nil)
-	created, err := service.Add(context.Background(), validPublicAccountAddInput(
-		"拒绝无效检查模型账号",
-		defaultGPTHealthCheckModel,
-	))
-	if err != nil {
-		t.Fatalf("add public account: %v", err)
-	}
-	model := "gpt-5.5"
-
-	_, err = service.Update(context.Background(), UpdateInput{
-		AccountID:        created.Account.ID,
-		HealthCheckModel: &model,
-	})
-	assertInvalidHealthCheckModel(t, err, invalidHealthCheckModelUnsupportedMessage)
-	if store.updateCalls != 0 {
-		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
 	}
 }
 

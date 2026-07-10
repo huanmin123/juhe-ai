@@ -368,51 +368,41 @@ SET name = sqlc.arg(name),
     availability_schedule_json = sqlc.arg(availability_schedule_json),
     notes = sqlc.arg(notes),
     cooldown_until = CASE
-      WHEN sqlc.arg(configuration_changed)::boolean THEN NULL
+      WHEN sqlc.arg(reset_failure_state)::boolean THEN NULL
       ELSE cooldown_until
     END,
     last_error_code = CASE
-      WHEN sqlc.arg(configuration_changed)::boolean THEN NULL
+      WHEN sqlc.arg(reset_failure_state)::boolean THEN NULL
       ELSE last_error_code
     END,
     last_error_message = CASE
-      WHEN sqlc.arg(configuration_changed)::boolean AND sqlc.arg(status)::text = 'pending_test'
+      WHEN sqlc.arg(reset_failure_state)::boolean AND sqlc.arg(status)::text = 'pending_test'
         THEN '账户配置已保存，等待后台检查'
-      WHEN sqlc.arg(configuration_changed)::boolean THEN NULL
+      WHEN sqlc.arg(reset_failure_state)::boolean THEN NULL
       ELSE last_error_message
     END,
     next_health_check_at = CASE
-      WHEN
-        (sqlc.arg(configuration_changed)::boolean OR sqlc.arg(health_check_model_changed)::boolean)
-        AND sqlc.arg(status)::text = 'pending_test'
+      WHEN sqlc.arg(status)::text = 'pending_test'
       THEN NULL
       ELSE next_health_check_at
     END,
     health_check_failure_count = CASE
-      WHEN
-        (sqlc.arg(configuration_changed)::boolean OR sqlc.arg(health_check_model_changed)::boolean)
-        AND sqlc.arg(status)::text = 'pending_test'
+      WHEN sqlc.arg(status)::text = 'pending_test'
       THEN 0
       ELSE health_check_failure_count
     END,
     last_health_check_status_code = CASE
-      WHEN
-        (sqlc.arg(configuration_changed)::boolean OR sqlc.arg(health_check_model_changed)::boolean)
-        AND sqlc.arg(status)::text = 'pending_test'
+      WHEN sqlc.arg(status)::text = 'pending_test'
       THEN NULL
       ELSE last_health_check_status_code
     END,
     last_health_check_error_code = CASE
-      WHEN
-        (sqlc.arg(configuration_changed)::boolean OR sqlc.arg(health_check_model_changed)::boolean)
-        AND sqlc.arg(status)::text = 'pending_test'
+      WHEN sqlc.arg(status)::text = 'pending_test'
       THEN NULL
       ELSE last_health_check_error_code
     END,
     last_health_check_error_message = CASE
-      WHEN
-        (sqlc.arg(configuration_changed)::boolean OR sqlc.arg(health_check_model_changed)::boolean)
-        AND sqlc.arg(status)::text = 'pending_test'
+      WHEN sqlc.arg(status)::text = 'pending_test'
       THEN NULL
       ELSE last_health_check_error_message
     END,

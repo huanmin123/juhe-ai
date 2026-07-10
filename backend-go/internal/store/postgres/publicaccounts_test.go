@@ -67,7 +67,7 @@ func TestUpdatePublicAccountQueryWritesAndReturnsHealthCheckModel(t *testing.T) 
 	}
 }
 
-func TestUpdatePublicAccountQueryResetsDiagnosticsForConfigurationChanges(t *testing.T) {
+func TestUpdatePublicAccountQueryResetsFailureStateAndPendingDiagnostics(t *testing.T) {
 	source, err := os.ReadFile("queries/w1b_public_accounts.sql")
 	if err != nil {
 		t.Fatalf("read public account query: %v", err)
@@ -80,8 +80,7 @@ func TestUpdatePublicAccountQueryResetsDiagnosticsForConfigurationChanges(t *tes
 	}
 	query := sql[start:end]
 	for _, want := range []string{
-		"sqlc.arg(configuration_changed)::boolean",
-		"sqlc.arg(health_check_model_changed)::boolean",
+		"sqlc.arg(reset_failure_state)::boolean",
 		"sqlc.arg(status)::text = 'pending_test'",
 		"cooldown_until = CASE",
 		"last_error_code = CASE",
@@ -95,6 +94,14 @@ func TestUpdatePublicAccountQueryResetsDiagnosticsForConfigurationChanges(t *tes
 	} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("public account update query missing %q in:\n%s", want, query)
+		}
+	}
+	for _, removed := range []string{
+		"configuration_changed",
+		"health_check_model_changed",
+	} {
+		if strings.Contains(query, removed) {
+			t.Fatalf("public account update query still contains removed flag %q in:\n%s", removed, query)
 		}
 	}
 }
