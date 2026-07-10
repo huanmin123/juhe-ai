@@ -73,6 +73,11 @@ func TestW2ManagementProviderOptionsPostgresSmoke(t *testing.T) {
 	if gpt.DefaultProtocolProfileID != "profile_gpt_openai_v1" || len(gpt.ProtocolProfiles) == 0 {
 		t.Fatalf("gpt provider = %+v", *gpt)
 	}
+	if gpt.DefaultHealthCheckModel != "gpt-5.6-sol" ||
+		gpt.SystemDefaultHealthCheckModel != "gpt-5.6-sol" ||
+		gpt.ProtocolProfiles[0].DefaultHealthCheckModel != "gpt-5.6-sol" {
+		t.Fatalf("gpt provider health check model contract = %+v", *gpt)
+	}
 	if !stringSliceContains(gpt.AccountTypes, "oauth") || !stringSliceContains(gpt.AccountTypes, "api_key") {
 		t.Fatalf("gpt account types = %+v", gpt.AccountTypes)
 	}
@@ -110,6 +115,12 @@ func TestW2ManagementProviderOptionsPostgresSmoke(t *testing.T) {
 	}
 	if findProviderOption(body.Data, "gpt") == nil {
 		t.Fatalf("provider options response missing gpt: %+v", body.Data)
+	}
+	if provider := findProviderOption(body.Data, "gpt"); provider == nil ||
+		provider.DefaultHealthCheckModel != "gpt-5.6-sol" ||
+		provider.SystemDefaultHealthCheckModel != "gpt-5.6-sol" ||
+		provider.ProtocolProfiles[0].DefaultHealthCheckModel != "gpt-5.6-sol" {
+		t.Fatalf("provider options response health check model contract = %+v", provider)
 	}
 }
 

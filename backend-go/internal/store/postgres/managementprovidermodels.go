@@ -28,12 +28,12 @@ func (s *Store) ListManagementProviderModelCatalog(ctx context.Context, input po
 	return listManagementProviderModelCatalog(ctx, s.queries(), input)
 }
 
-func (s *Store) SetManagementProviderDefaultTestModel(ctx context.Context, input port.ManagementProviderDefaultTestModelInput) (port.ManagementProviderDefaultTestModelPreference, error) {
-	return setManagementProviderDefaultTestModel(ctx, s.queries(), input)
+func (s *Store) SetManagementProviderDefaultHealthCheckModel(ctx context.Context, input port.ManagementProviderDefaultHealthCheckModelInput) (port.ManagementProviderDefaultHealthCheckModelPreference, error) {
+	return setManagementProviderDefaultHealthCheckModel(ctx, s.queries(), input)
 }
 
-func (s *Store) ClearManagementProviderDefaultTestModelIfModel(ctx context.Context, input port.ManagementProviderDefaultTestModelClearInput) (bool, error) {
-	return clearManagementProviderDefaultTestModelIfModel(ctx, s.queries(), input)
+func (s *Store) ClearManagementProviderDefaultHealthCheckModelIfModel(ctx context.Context, input port.ManagementProviderDefaultHealthCheckModelClearInput) (bool, error) {
+	return clearManagementProviderDefaultHealthCheckModelIfModel(ctx, s.queries(), input)
 }
 
 func (s *Store) FindManagementCustomProviderModel(ctx context.Context, id string) (port.ManagementProviderModelCatalogItem, bool, error) {
@@ -124,37 +124,37 @@ func listManagementProviderModelCatalog(
 	return items, nil
 }
 
-func setManagementProviderDefaultTestModel(
+func setManagementProviderDefaultHealthCheckModel(
 	ctx context.Context,
 	q *postgresqueries.Queries,
-	input port.ManagementProviderDefaultTestModelInput,
-) (port.ManagementProviderDefaultTestModelPreference, error) {
-	row, err := q.UpsertManagementProviderDefaultTestModelPreference(ctx, postgresqueries.UpsertManagementProviderDefaultTestModelPreferenceParams{
+	input port.ManagementProviderDefaultHealthCheckModelInput,
+) (port.ManagementProviderDefaultHealthCheckModelPreference, error) {
+	row, err := q.UpsertManagementProviderDefaultHealthCheckModelPreference(ctx, postgresqueries.UpsertManagementProviderDefaultHealthCheckModelPreferenceParams{
 		SystemAccountID: input.SystemAccountID,
 		ProviderCode:    input.ProviderCode,
 		Model:           input.Model,
 	})
 	if err != nil {
-		return port.ManagementProviderDefaultTestModelPreference{}, fmt.Errorf("set management provider default test model: %w", err)
+		return port.ManagementProviderDefaultHealthCheckModelPreference{}, fmt.Errorf("set management provider default health check model: %w", err)
 	}
-	return port.ManagementProviderDefaultTestModelPreference{
+	return port.ManagementProviderDefaultHealthCheckModelPreference{
 		ProviderCode: row.ProviderCode,
 		Model:        row.Model,
 	}, nil
 }
 
-func clearManagementProviderDefaultTestModelIfModel(
+func clearManagementProviderDefaultHealthCheckModelIfModel(
 	ctx context.Context,
 	q *postgresqueries.Queries,
-	input port.ManagementProviderDefaultTestModelClearInput,
+	input port.ManagementProviderDefaultHealthCheckModelClearInput,
 ) (bool, error) {
-	rows, err := q.ClearManagementProviderDefaultTestModelIfModel(ctx, postgresqueries.ClearManagementProviderDefaultTestModelIfModelParams{
+	rows, err := q.ClearManagementProviderDefaultHealthCheckModelIfModel(ctx, postgresqueries.ClearManagementProviderDefaultHealthCheckModelIfModelParams{
 		ProviderCode:    input.ProviderCode,
 		Model:           input.Model,
 		SystemAccountID: input.SystemAccountID,
 	})
 	if err != nil {
-		return false, fmt.Errorf("clear management provider default test model if model: %w", err)
+		return false, fmt.Errorf("clear management provider default health check model if model: %w", err)
 	}
 	return rows > 0, nil
 }
@@ -527,5 +527,5 @@ func pgFloat8Ptr(value *float64) pgtype.Float8 {
 }
 
 var _ port.ManagementProviderModelCatalogReader = (*Store)(nil)
-var _ port.ManagementProviderDefaultTestModelWriter = (*Store)(nil)
+var _ port.ManagementProviderDefaultHealthCheckModelWriter = (*Store)(nil)
 var _ port.ManagementCustomProviderModelWriter = (*Store)(nil)

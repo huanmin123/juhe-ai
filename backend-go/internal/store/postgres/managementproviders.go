@@ -86,12 +86,12 @@ func managementProviderOptionsFromRows(ctx context.Context, q *postgresqueries.Q
 
 	preferences := map[string]string{}
 	if systemAccountID != "" {
-		preferenceRows, err := q.ListManagementProviderDefaultTestModelPreferences(ctx, postgresqueries.ListManagementProviderDefaultTestModelPreferencesParams{
+		preferenceRows, err := q.ListManagementProviderDefaultHealthCheckModelPreferences(ctx, postgresqueries.ListManagementProviderDefaultHealthCheckModelPreferencesParams{
 			SystemAccountID: systemAccountID,
 			ProviderCodes:   providerCodes,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("list management provider default test model preferences: %w", err)
+			return nil, fmt.Errorf("list management provider default health check model preferences: %w", err)
 		}
 		for _, row := range preferenceRows {
 			preferences[row.ProviderCode] = row.Model
@@ -160,18 +160,18 @@ func managementProviderProfilesByProvider(
 			return nil, err
 		}
 		profile := port.ManagementProviderProtocolProfile{
-			ID:               row.ID,
-			ProviderCode:     row.ProviderCode,
-			Name:             row.Name,
-			Description:      providerTextValue(row.Description),
-			Enabled:          row.Enabled,
-			ProtocolCode:     row.ProtocolCode,
-			ProtocolVersion:  row.ProtocolVersion,
-			BaseURL:          row.BaseUrl,
-			DefaultTestModel: row.DefaultTestModel,
-			AccountTypes:     accountTypes,
-			Capabilities:     capabilities,
-			EndpointFamilies: append([]port.ManagementProviderEndpointFamily(nil), familiesByProfile[row.ID]...),
+			ID:                      row.ID,
+			ProviderCode:            row.ProviderCode,
+			Name:                    row.Name,
+			Description:             providerTextValue(row.Description),
+			Enabled:                 row.Enabled,
+			ProtocolCode:            row.ProtocolCode,
+			ProtocolVersion:         row.ProtocolVersion,
+			BaseURL:                 row.BaseUrl,
+			DefaultHealthCheckModel: row.DefaultHealthCheckModel,
+			AccountTypes:            accountTypes,
+			Capabilities:            capabilities,
+			EndpointFamilies:        append([]port.ManagementProviderEndpointFamily(nil), familiesByProfile[row.ID]...),
 		}
 		result[row.ProviderCode] = append(result[row.ProviderCode], profile)
 	}
@@ -191,31 +191,31 @@ func managementProviderOptionFromRow(
 	defaultProfile := preferredManagementProviderDefaultProfile(profiles)
 	preferredModel = strings.TrimSpace(preferredModel)
 	option := port.ManagementProviderOption{
-		ID:                       row.ID,
-		Code:                     row.Code,
-		Name:                     row.Name,
-		ParentCode:               providerTextValue(row.ParentCode),
-		Description:              providerTextValue(row.Description),
-		Enabled:                  row.Enabled,
-		DefaultSupportedModels:   defaultSupportedModels,
-		ProtocolProfiles:         profiles,
-		DefaultProtocolProfileID: "",
-		ProtocolCode:             "",
-		ProtocolVersion:          "",
-		BaseURL:                  "",
-		DefaultTestModel:         preferredModel,
-		SystemDefaultTestModel:   "",
-		AccountTypes:             []string{},
-		Capabilities:             []string{},
+		ID:                            row.ID,
+		Code:                          row.Code,
+		Name:                          row.Name,
+		ParentCode:                    providerTextValue(row.ParentCode),
+		Description:                   providerTextValue(row.Description),
+		Enabled:                       row.Enabled,
+		DefaultSupportedModels:        defaultSupportedModels,
+		ProtocolProfiles:              profiles,
+		DefaultProtocolProfileID:      "",
+		ProtocolCode:                  "",
+		ProtocolVersion:               "",
+		BaseURL:                       "",
+		DefaultHealthCheckModel:       preferredModel,
+		SystemDefaultHealthCheckModel: "",
+		AccountTypes:                  []string{},
+		Capabilities:                  []string{},
 	}
 	if defaultProfile != nil {
 		option.DefaultProtocolProfileID = defaultProfile.ID
 		option.ProtocolCode = defaultProfile.ProtocolCode
 		option.ProtocolVersion = defaultProfile.ProtocolVersion
 		option.BaseURL = defaultProfile.BaseURL
-		option.SystemDefaultTestModel = defaultProfile.DefaultTestModel
-		if option.DefaultTestModel == "" {
-			option.DefaultTestModel = option.SystemDefaultTestModel
+		option.SystemDefaultHealthCheckModel = defaultProfile.DefaultHealthCheckModel
+		if option.DefaultHealthCheckModel == "" {
+			option.DefaultHealthCheckModel = option.SystemDefaultHealthCheckModel
 		}
 		option.AccountTypes = append([]string(nil), defaultProfile.AccountTypes...)
 		option.Capabilities = append([]string(nil), defaultProfile.Capabilities...)

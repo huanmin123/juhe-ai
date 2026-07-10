@@ -72,14 +72,14 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 			Port:                 3000,
 			ManagementAPIEnabled: true,
 		},
-		Logger:                                     slog.Default(),
-		ManagementAPIAuthMiddleware:                httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		ManagementAPIAuthTouchMiddleware:           httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
-		ManagementProviderModelsHandler:            httpapi.NewManagementProviderModelsHandler(service),
-		ManagementProviderDefaultTestModelHandler:  httpapi.NewManagementProviderDefaultTestModelHandler(service),
-		ManagementProviderCustomModelCreateHandler: httpapi.NewManagementProviderCustomModelCreateHandler(service),
-		ManagementProviderCustomModelUpdateHandler: httpapi.NewManagementProviderCustomModelUpdateHandler(service),
-		ManagementProviderCustomModelDeleteHandler: httpapi.NewManagementProviderCustomModelDeleteHandler(service),
+		Logger:                                           slog.Default(),
+		ManagementAPIAuthMiddleware:                      httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware:                 httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
+		ManagementProviderModelsHandler:                  httpapi.NewManagementProviderModelsHandler(service),
+		ManagementProviderDefaultHealthCheckModelHandler: httpapi.NewManagementProviderDefaultHealthCheckModelHandler(service),
+		ManagementProviderCustomModelCreateHandler:       httpapi.NewManagementProviderCustomModelCreateHandler(service),
+		ManagementProviderCustomModelUpdateHandler:       httpapi.NewManagementProviderCustomModelUpdateHandler(service),
+		ManagementProviderCustomModelDeleteHandler:       httpapi.NewManagementProviderCustomModelDeleteHandler(service),
 	})
 
 	createRec := serveW3ProviderModelCRUDRequest(router, http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options", sessionToken, `{
@@ -118,9 +118,9 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 		t.Fatalf("list response missing created custom model with notes: %+v", listBody.Data)
 	}
 
-	defaultRec := serveW3ProviderModelCRUDRequest(router, http.MethodPut, "/__aisys__/api/providers/gpt/default-test-model?systemAccountId=sys_w2_proxy_options", sessionToken, `{"model":"w3-crud-model"}`)
+	defaultRec := serveW3ProviderModelCRUDRequest(router, http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?systemAccountId=sys_w2_proxy_options", sessionToken, `{"model":"w3-crud-model"}`)
 	if defaultRec.Code != http.StatusOK {
-		t.Fatalf("set default model status = %d, body = %s", defaultRec.Code, defaultRec.Body.String())
+		t.Fatalf("set default health check model status = %d, body = %s", defaultRec.Code, defaultRec.Body.String())
 	}
 
 	patchRec := serveW3ProviderModelCRUDRequest(router, http.MethodPatch, "/__aisys__/api/providers/gpt/models/"+createBody.Data.ID, sessionToken, `{"status":"disabled","notes":null}`)
@@ -233,12 +233,12 @@ func assertW3ProviderModelCRUDDefaultPreferenceCleared(t *testing.T, ctx context
 	var count int
 	if err := db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM juhe_business.provider_default_test_models
+		FROM juhe_business.provider_default_health_check_models
 		WHERE system_account_id = 'sys_w2_proxy_options'
 		  AND provider_code = 'gpt'
 		  AND model = $1
 	`, model).Scan(&count); err != nil {
-		t.Fatalf("count provider default test model preference for %s: %v", model, err)
+		t.Fatalf("count provider default health check model preference for %s: %v", model, err)
 	}
 	if count != 0 {
 		t.Fatalf("default preference for %s count = %d, want 0", model, count)

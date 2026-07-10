@@ -342,8 +342,8 @@ SELECT
   (SELECT COUNT(DISTINCT account_id) FROM mapping_upstream_accounts)::integer AS mapping_upstream_account_count,
   (SELECT COUNT(DISTINCT account_id) FROM all_bound_accounts)::integer AS total_account_count;
 
--- name: ClearManagementProviderDefaultTestModelIfModel :execrows
-DELETE FROM juhe_business.provider_default_test_models
+-- name: ClearManagementProviderDefaultHealthCheckModelIfModel :execrows
+DELETE FROM juhe_business.provider_default_health_check_models
 WHERE provider_code = sqlc.arg(provider_code)
   AND model = sqlc.arg(model)
   AND (

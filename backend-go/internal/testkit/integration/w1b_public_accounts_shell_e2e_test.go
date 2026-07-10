@@ -142,6 +142,7 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 	accountID := addResponse.Data.Account.ID
 	assertW1bPublicAccountStored(t, ctx, db, accountID, initialSecret, publicaccounts.StatusPendingTest, false)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bProfileDefaultHealthCheckModel)
 
 	emptyModelsAccountName := "空模型账号"
 	emptyModelsBody := `{"targetUsername":"admin","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"` + emptyModelsAccountName + `","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"` + initialSecret + `","supportedModels":[]}`
@@ -186,7 +187,7 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 
 	updatedSecret := "sk-fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	userInfoURL := "https://user:pass@example.com/private?token=notes-secret-value"
-	updateBody := `{"accountId":"` + accountID + `","targetUsername":"admin","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号更新","status":"disabled","baseUrl":"https://api.openai.com/v2","apiKey":"` + updatedSecret + `","supportedModels":["` + w1bValidBuiltInModel + `"],"concurrencyLimit":7,"priority":3,"notes":"` + userInfoURL + `"}`
+	updateBody := `{"accountId":"` + accountID + `","targetUsername":"admin","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号更新","status":"disabled","baseUrl":"https://api.openai.com/v2","apiKey":"` + updatedSecret + `","supportedModels":["` + w1bProfileDefaultHealthCheckModel + `"],"concurrencyLimit":7,"priority":3,"notes":"` + userInfoURL + `"}`
 	updateRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/update", token, "trace_account_update", updateBody)
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("update status = %d, body = %s", updateRec.Code, updateRec.Body.String())
@@ -202,7 +203,8 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 		t.Fatalf("update response = %+v", updateResponse.Data)
 	}
 	assertW1bPublicAccountStored(t, ctx, db, accountID, updatedSecret, publicaccounts.StatusDisabled, false)
-	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bValidBuiltInModel})
+	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bProfileDefaultHealthCheckModel})
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bProfileDefaultHealthCheckModel)
 
 	deleteRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/del", token, "trace_account_delete", `{"accountId":"`+accountID+`","targetUsername":"admin","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
 	if deleteRec.Code != http.StatusOK {
@@ -449,7 +451,7 @@ func assertW1bPublicAccountResponseNoSecret(t *testing.T, response string, secre
 	t.Helper()
 
 	normalized := strings.ToLower(response)
-	for _, forbidden := range []string{"\"apikey\"", "\"baseurl\"", "\"credentials\""} {
+	for _, forbidden := range []string{"\"apikey\"", "\"baseurl\"", "\"credentials\"", "\"healthcheckmodel\"", "\"health_check_model\""} {
 		if strings.Contains(normalized, forbidden) {
 			t.Fatalf("public account response leaked forbidden field %s in %s", forbidden, response)
 		}

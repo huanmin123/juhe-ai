@@ -105,23 +105,23 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 		t.Fatalf("gpt-5.6-sol model option missing: %+v", options)
 	}
 
-	saved, err := service.SetDefaultTestModel(ctx, managementprovidermodels.DefaultTestModelInput{
+	saved, err := service.SetDefaultHealthCheckModel(ctx, managementprovidermodels.DefaultHealthCheckModelInput{
 		ProviderCode:    "gpt",
 		SystemAccountID: "sys_w2_proxy_options",
 		Model:           "w2-personal-model",
 	})
 	if err != nil {
-		t.Fatalf("set default test model: %v", err)
+		t.Fatalf("set default health check model: %v", err)
 	}
-	if saved.ProviderCode != "gpt" || saved.DefaultTestModel != "w2-personal-model" {
-		t.Fatalf("saved default test model = %+v", saved)
+	if saved.ProviderCode != "gpt" || saved.DefaultHealthCheckModel != "w2-personal-model" {
+		t.Fatalf("saved default health check model = %+v", saved)
 	}
 	providerOptions, err := providerService.Options(ctx, managementproviders.OptionListInput{SystemAccountID: "sys_w2_proxy_options"})
 	if err != nil {
 		t.Fatalf("list provider options after default model set: %v", err)
 	}
-	if provider := findProviderOption(providerOptions, "gpt"); provider == nil || provider.DefaultTestModel != "w2-personal-model" {
-		t.Fatalf("provider default model preference missing: %+v", provider)
+	if provider := findProviderOption(providerOptions, "gpt"); provider == nil || provider.DefaultHealthCheckModel != "w2-personal-model" {
+		t.Fatalf("provider default health check model preference missing: %+v", provider)
 	}
 
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
@@ -134,12 +134,12 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 			Port:                 3000,
 			ManagementAPIEnabled: true,
 		},
-		Logger:                                    slog.Default(),
-		ManagementAPIAuthMiddleware:               httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		ManagementAPIAuthTouchMiddleware:          httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
-		ManagementProviderModelOptionsHandler:     httpapi.NewManagementProviderModelOptionsHandler(service),
-		ManagementProviderModelsHandler:           httpapi.NewManagementProviderModelsHandler(service),
-		ManagementProviderDefaultTestModelHandler: httpapi.NewManagementProviderDefaultTestModelHandler(service),
+		Logger:                                           slog.Default(),
+		ManagementAPIAuthMiddleware:                      httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware:                 httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
+		ManagementProviderModelOptionsHandler:            httpapi.NewManagementProviderModelOptionsHandler(service),
+		ManagementProviderModelsHandler:                  httpapi.NewManagementProviderModelsHandler(service),
+		ManagementProviderDefaultHealthCheckModelHandler: httpapi.NewManagementProviderDefaultHealthCheckModelHandler(service),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options&includeInactive=true&includeUnpriced=true", nil)
@@ -176,28 +176,28 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 		t.Fatalf("HTTP provider model options response missing personal model: %+v", optionsBody.Data)
 	}
 
-	putReq := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-test-model?systemAccountId=sys_w2_proxy_options", strings.NewReader(`{"model":"gpt-5.6-sol"}`))
+	putReq := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?systemAccountId=sys_w2_proxy_options", strings.NewReader(`{"model":"gpt-5.6-sol"}`))
 	putReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
 	putRec := httptest.NewRecorder()
 	router.ServeHTTP(putRec, putReq)
 	if putRec.Code != http.StatusOK {
-		t.Fatalf("default test model status = %d, body = %s", putRec.Code, putRec.Body.String())
+		t.Fatalf("default health check model status = %d, body = %s", putRec.Code, putRec.Body.String())
 	}
 	var putBody struct {
-		Data managementprovidermodels.DefaultTestModelResult `json:"data"`
+		Data managementprovidermodels.DefaultHealthCheckModelResult `json:"data"`
 	}
 	if err := json.NewDecoder(putRec.Body).Decode(&putBody); err != nil {
-		t.Fatalf("decode default test model response: %v", err)
+		t.Fatalf("decode default health check model response: %v", err)
 	}
-	if putBody.Data.DefaultTestModel != "gpt-5.6-sol" {
-		t.Fatalf("default test model response = %+v", putBody.Data)
+	if putBody.Data.DefaultHealthCheckModel != "gpt-5.6-sol" {
+		t.Fatalf("default health check model response = %+v", putBody.Data)
 	}
 	providerOptions, err = providerService.Options(ctx, managementproviders.OptionListInput{SystemAccountID: "sys_w2_proxy_options"})
 	if err != nil {
 		t.Fatalf("list provider options after HTTP default model set: %v", err)
 	}
-	if provider := findProviderOption(providerOptions, "gpt"); provider == nil || provider.DefaultTestModel != "gpt-5.6-sol" {
-		t.Fatalf("provider default model preference was not updated by HTTP PUT: %+v", provider)
+	if provider := findProviderOption(providerOptions, "gpt"); provider == nil || provider.DefaultHealthCheckModel != "gpt-5.6-sol" {
+		t.Fatalf("provider default health check model preference was not updated by HTTP PUT: %+v", provider)
 	}
 
 	unauthorized := httptest.NewRecorder()

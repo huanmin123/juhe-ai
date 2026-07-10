@@ -84,7 +84,7 @@ type RouterOptions struct {
 	ManagementProviderOptionsHandler                  http.Handler
 	ManagementProviderModelOptionsHandler             http.Handler
 	ManagementProviderModelsHandler                   http.Handler
-	ManagementProviderDefaultTestModelHandler         http.Handler
+	ManagementProviderDefaultHealthCheckModelHandler  http.Handler
 	ManagementProviderCustomModelCreateHandler        http.Handler
 	ManagementProviderCustomModelUpdateHandler        http.Handler
 	ManagementProviderCustomModelDeleteHandler        http.Handler
@@ -254,7 +254,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementProviderOptionsHandler == nil &&
 				opts.ManagementProviderModelOptionsHandler == nil &&
 				opts.ManagementProviderModelsHandler == nil &&
-				opts.ManagementProviderDefaultTestModelHandler == nil &&
+				opts.ManagementProviderDefaultHealthCheckModelHandler == nil &&
 				opts.ManagementProviderCustomModelCreateHandler == nil &&
 				opts.ManagementProviderCustomModelUpdateHandler == nil &&
 				opts.ManagementProviderCustomModelDeleteHandler == nil &&
@@ -470,8 +470,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementProviderModelsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/providers/{code}/models", opts.ManagementProviderModelsHandler.ServeHTTP)
 			}
-			if opts.ManagementProviderDefaultTestModelHandler != nil {
-				system.With(managementAPIWriteRateLimitMiddleware).Put("/providers/{code}/default-test-model", opts.ManagementProviderDefaultTestModelHandler.ServeHTTP)
+			if opts.ManagementProviderDefaultHealthCheckModelHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Put("/providers/{code}/default-health-check-model", opts.ManagementProviderDefaultHealthCheckModelHandler.ServeHTTP)
 			}
 			if opts.ManagementProviderCustomModelCreateHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Post("/providers/{code}/models", opts.ManagementProviderCustomModelCreateHandler.ServeHTTP)
@@ -664,7 +664,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementProviderOptionsHandler != nil ||
 		opts.ManagementProviderModelOptionsHandler != nil ||
 		opts.ManagementProviderModelsHandler != nil ||
-		opts.ManagementProviderDefaultTestModelHandler != nil ||
+		opts.ManagementProviderDefaultHealthCheckModelHandler != nil ||
 		opts.ManagementProviderCustomModelCreateHandler != nil ||
 		opts.ManagementProviderCustomModelUpdateHandler != nil ||
 		opts.ManagementProviderCustomModelDeleteHandler != nil ||
@@ -723,7 +723,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyGroupAuthorizationReturnHandler != nil ||
 		opts.ManagementAuthorizationRevokeHandler != nil ||
 		opts.ManagementMyAuthorizationRevokeHandler != nil ||
-		opts.ManagementProviderDefaultTestModelHandler != nil ||
+		opts.ManagementProviderDefaultHealthCheckModelHandler != nil ||
 		opts.ManagementProviderCustomModelCreateHandler != nil ||
 		opts.ManagementProviderCustomModelUpdateHandler != nil ||
 		opts.ManagementProviderCustomModelDeleteHandler != nil ||

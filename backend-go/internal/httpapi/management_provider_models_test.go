@@ -127,60 +127,67 @@ func TestManagementProviderModelsHandlerRedactsStoreErrors(t *testing.T) {
 	}
 }
 
-func TestManagementProviderDefaultTestModelHandlerParsesAdminTargetScope(t *testing.T) {
+func TestManagementProviderDefaultHealthCheckModelHandlerParsesAdminTargetScope(t *testing.T) {
 	service := &managementProviderModelServiceStub{
-		defaultTestModelResult: managementprovidermodels.DefaultTestModelResult{ProviderCode: "gpt", DefaultTestModel: "gpt-5.5"},
+		defaultHealthCheckModelResult: managementprovidermodels.DefaultHealthCheckModelResult{ProviderCode: "gpt", DefaultHealthCheckModel: "gpt-5.5"},
 	}
 	handler := chi.NewRouter()
 	handler.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
-	})).Put("/__aisys__/api/providers/{code}/default-test-model", newManagementProviderDefaultTestModelHandler(service).ServeHTTP)
+	})).Put("/__aisys__/api/providers/{code}/default-health-check-model", newManagementProviderDefaultHealthCheckModelHandler(service).ServeHTTP)
 
-	req := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-test-model?systemAccountId=sys_user", strings.NewReader(`{"model":" gpt-5.5 "}`))
+	req := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?systemAccountId=sys_user", strings.NewReader(`{"model":" gpt-5.5 "}`))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if service.defaultTestModelInput.ProviderCode != "gpt" ||
-		service.defaultTestModelInput.SystemAccountID != "sys_user" ||
-		service.defaultTestModelInput.Model != " gpt-5.5 " {
-		t.Fatalf("input = %+v", service.defaultTestModelInput)
+	if service.defaultHealthCheckModelInput.ProviderCode != "gpt" ||
+		service.defaultHealthCheckModelInput.SystemAccountID != "sys_user" ||
+		service.defaultHealthCheckModelInput.Model != " gpt-5.5 " {
+		t.Fatalf("input = %+v", service.defaultHealthCheckModelInput)
+	}
+	responseJSON := rec.Body.String()
+	if !strings.Contains(responseJSON, `"defaultHealthCheckModel":"gpt-5.5"`) {
+		t.Fatalf("response missing default health check model: %s", responseJSON)
+	}
+	if strings.Contains(responseJSON, "defaultTestModel") {
+		t.Fatalf("response exposes legacy default test model field: %s", responseJSON)
 	}
 	var body struct {
-		Data managementprovidermodels.DefaultTestModelResult `json:"data"`
+		Data managementprovidermodels.DefaultHealthCheckModelResult `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Data.DefaultTestModel != "gpt-5.5" {
+	if body.Data.DefaultHealthCheckModel != "gpt-5.5" {
 		t.Fatalf("body = %+v", body)
 	}
 }
 
-func TestManagementProviderDefaultTestModelHandlerUsesSelfScopeForOrdinaryUser(t *testing.T) {
+func TestManagementProviderDefaultHealthCheckModelHandlerUsesSelfScopeForOrdinaryUser(t *testing.T) {
 	service := &managementProviderModelServiceStub{
-		defaultTestModelResult: managementprovidermodels.DefaultTestModelResult{ProviderCode: "gpt", DefaultTestModel: "gpt-5.5"},
+		defaultHealthCheckModelResult: managementprovidermodels.DefaultHealthCheckModelResult{ProviderCode: "gpt", DefaultHealthCheckModel: "gpt-5.5"},
 	}
 	handler := chi.NewRouter()
 	handler.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
-	})).Put("/__aisys__/api/providers/{code}/default-test-model", newManagementProviderDefaultTestModelHandler(service).ServeHTTP)
+	})).Put("/__aisys__/api/providers/{code}/default-health-check-model", newManagementProviderDefaultHealthCheckModelHandler(service).ServeHTTP)
 
-	req := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-test-model?systemAccountId=sys_admin", strings.NewReader(`{"model":"gpt-5.5"}`))
+	req := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?systemAccountId=sys_admin", strings.NewReader(`{"model":"gpt-5.5"}`))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if service.defaultTestModelInput.SystemAccountID != "sys_user" {
-		t.Fatalf("input = %+v", service.defaultTestModelInput)
+	if service.defaultHealthCheckModelInput.SystemAccountID != "sys_user" {
+		t.Fatalf("input = %+v", service.defaultHealthCheckModelInput)
 	}
 }
 
-func TestManagementProviderDefaultTestModelHandlerErrors(t *testing.T) {
+func TestManagementProviderDefaultHealthCheckModelHandlerErrors(t *testing.T) {
 	tests := []struct {
 		name       string
 		body       string
@@ -188,9 +195,10 @@ func TestManagementProviderDefaultTestModelHandlerErrors(t *testing.T) {
 		wantStatus int
 		wantMsg    string
 	}{
-		{name: "invalid body", body: `{"model":""}`, wantStatus: http.StatusBadRequest, wantMsg: "默认测试模型参数无效"},
+		{name: "invalid body", body: `{"model":""}`, wantStatus: http.StatusBadRequest, wantMsg: "默认检查模型参数无效"},
+		{name: "trailing json", body: `{"model":"gpt-5.5"}{"model":"gpt-5.6-sol"}`, wantStatus: http.StatusBadRequest, wantMsg: "默认检查模型参数无效"},
 		{name: "provider not found", body: `{"model":"gpt-5.5"}`, err: managementprovidermodels.ErrProviderNotFound, wantStatus: http.StatusNotFound, wantMsg: "供应商不存在"},
-		{name: "validation", body: `{"model":"missing"}`, err: &managementprovidermodels.DefaultTestModelValidationError{Message: "模型不在当前用户可见目录中：missing"}, wantStatus: http.StatusBadRequest, wantMsg: "模型不在当前用户可见目录中：missing"},
+		{name: "validation", body: `{"model":"missing"}`, err: &managementprovidermodels.DefaultHealthCheckModelValidationError{Message: "模型不在当前用户可见目录中：missing"}, wantStatus: http.StatusBadRequest, wantMsg: "模型不在当前用户可见目录中：missing"},
 		{name: "store error", body: `{"model":"gpt-5.5"}`, err: errors.New("postgres password leaked"), wantStatus: http.StatusInternalServerError, wantMsg: "服务器内部错误"},
 	}
 
@@ -200,9 +208,9 @@ func TestManagementProviderDefaultTestModelHandlerErrors(t *testing.T) {
 			handler := chi.NewRouter()
 			handler.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 				context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
-			})).Put("/__aisys__/api/providers/{code}/default-test-model", newManagementProviderDefaultTestModelHandler(service).ServeHTTP)
+			})).Put("/__aisys__/api/providers/{code}/default-health-check-model", newManagementProviderDefaultHealthCheckModelHandler(service).ServeHTTP)
 
-			req := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-test-model", strings.NewReader(tt.body))
+			req := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
@@ -393,11 +401,11 @@ func TestManagementProviderCustomModelHandlersMapErrors(t *testing.T) {
 
 func TestRouterRegistersW2ManagementProviderModelHandlers(t *testing.T) {
 	service := &managementProviderModelServiceStub{
-		modelOptions:           []managementprovidermodels.ModelOption{{ProviderCode: "gpt", Model: "gpt-5.5"}},
-		models:                 []managementprovidermodels.ModelCatalogItem{{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active"}},
-		defaultTestModelResult: managementprovidermodels.DefaultTestModelResult{ProviderCode: "gpt", DefaultTestModel: "gpt-5.5"},
-		customModelResult:      managementprovidermodels.ModelCatalogItem{ID: "custom_model_1", ProviderCode: "gpt", Model: "custom-chat", Scope: "personal", Status: "active"},
-		deleteResult:           managementprovidermodels.CustomModelDeleteResult{Deleted: true},
+		modelOptions:                  []managementprovidermodels.ModelOption{{ProviderCode: "gpt", Model: "gpt-5.5"}},
+		models:                        []managementprovidermodels.ModelCatalogItem{{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active"}},
+		defaultHealthCheckModelResult: managementprovidermodels.DefaultHealthCheckModelResult{ProviderCode: "gpt", DefaultHealthCheckModel: "gpt-5.5"},
+		customModelResult:             managementprovidermodels.ModelCatalogItem{ID: "custom_model_1", ProviderCode: "gpt", Model: "custom-chat", Scope: "personal", Status: "active"},
+		deleteResult:                  managementprovidermodels.CustomModelDeleteResult{Deleted: true},
 	}
 	readAuthenticator := &managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_read"},
@@ -410,12 +418,12 @@ func TestRouterRegistersW2ManagementProviderModelHandlers(t *testing.T) {
 		Logger:                                slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementProviderModelOptionsHandler: newManagementProviderModelOptionsHandler(service),
 		ManagementProviderModelsHandler:       newManagementProviderModelsHandler(service),
-		ManagementProviderDefaultTestModelHandler:  newManagementProviderDefaultTestModelHandler(service),
-		ManagementProviderCustomModelCreateHandler: newManagementProviderCustomModelCreateHandler(service),
-		ManagementProviderCustomModelUpdateHandler: newManagementProviderCustomModelUpdateHandler(service),
-		ManagementProviderCustomModelDeleteHandler: newManagementProviderCustomModelDeleteHandler(service),
-		ManagementAPIAuthMiddleware:                NewManagementAPIAuthMiddleware(readAuthenticator),
-		ManagementAPIAuthTouchMiddleware:           NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+		ManagementProviderDefaultHealthCheckModelHandler: newManagementProviderDefaultHealthCheckModelHandler(service),
+		ManagementProviderCustomModelCreateHandler:       newManagementProviderCustomModelCreateHandler(service),
+		ManagementProviderCustomModelUpdateHandler:       newManagementProviderCustomModelUpdateHandler(service),
+		ManagementProviderCustomModelDeleteHandler:       newManagementProviderCustomModelDeleteHandler(service),
+		ManagementAPIAuthMiddleware:                      NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware:                 NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/models/options", nil)
@@ -437,15 +445,23 @@ func TestRouterRegistersW2ManagementProviderModelHandlers(t *testing.T) {
 		t.Fatalf("models status = %d, want 200", rec.Code)
 	}
 
-	req = httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-test-model", strings.NewReader(`{"model":"gpt-5.5"}`))
+	req = httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", strings.NewReader(`{"model":"gpt-5.5"}`))
 	req.Header.Set("Cookie", "juhe_ai_session=session-token")
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("default test model status = %d, want 200", rec.Code)
+		t.Fatalf("default health check model status = %d, want 200", rec.Code)
 	}
 	if readAuthenticator.cookieHeader == "" || touchAuthenticator.touchCookieHeader == "" {
 		t.Fatalf("auth headers read=%q touch=%q", readAuthenticator.cookieHeader, touchAuthenticator.touchCookieHeader)
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-test-model", strings.NewReader(`{"model":"gpt-5.5"}`))
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("legacy default test model route status = %d, want 404", rec.Code)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/__aisys__/api/providers/gpt/models", strings.NewReader(`{"model":"custom-chat","inputUsdPer1M":1}`))
@@ -479,7 +495,7 @@ func TestRouterDoesNotRegisterW2ManagementProviderModelHandlersWhenDisabled(t *t
 		Logger:                                slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementProviderModelOptionsHandler: newManagementProviderModelOptionsHandler(&managementProviderModelServiceStub{}),
 		ManagementProviderModelsHandler:       newManagementProviderModelsHandler(&managementProviderModelServiceStub{}),
-		ManagementProviderDefaultTestModelHandler: newManagementProviderDefaultTestModelHandler(&managementProviderModelServiceStub{}),
+		ManagementProviderDefaultHealthCheckModelHandler: newManagementProviderDefaultHealthCheckModelHandler(&managementProviderModelServiceStub{}),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 		}),
@@ -493,7 +509,7 @@ func TestRouterDoesNotRegisterW2ManagementProviderModelHandlersWhenDisabled(t *t
 		t.Fatalf("status = %d, want 404 while JUHE_AI_MANAGEMENT_API_ENABLED=false", rec.Code)
 	}
 
-	req = httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-test-model", strings.NewReader(`{"model":"gpt-5.5"}`))
+	req = httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", strings.NewReader(`{"model":"gpt-5.5"}`))
 	req.Header.Set("Cookie", "juhe_ai_session=session-token")
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -503,18 +519,18 @@ func TestRouterDoesNotRegisterW2ManagementProviderModelHandlersWhenDisabled(t *t
 }
 
 type managementProviderModelServiceStub struct {
-	modelOptionsInput      managementprovidermodels.ModelOptionListInput
-	modelsInput            managementprovidermodels.ModelListInput
-	defaultTestModelInput  managementprovidermodels.DefaultTestModelInput
-	createInput            managementprovidermodels.CustomModelCreateInput
-	updateInput            managementprovidermodels.CustomModelUpdateInput
-	deleteInput            managementprovidermodels.CustomModelDeleteInput
-	modelOptions           []managementprovidermodels.ModelOption
-	models                 []managementprovidermodels.ModelCatalogItem
-	defaultTestModelResult managementprovidermodels.DefaultTestModelResult
-	customModelResult      managementprovidermodels.ModelCatalogItem
-	deleteResult           managementprovidermodels.CustomModelDeleteResult
-	err                    error
+	modelOptionsInput             managementprovidermodels.ModelOptionListInput
+	modelsInput                   managementprovidermodels.ModelListInput
+	defaultHealthCheckModelInput  managementprovidermodels.DefaultHealthCheckModelInput
+	createInput                   managementprovidermodels.CustomModelCreateInput
+	updateInput                   managementprovidermodels.CustomModelUpdateInput
+	deleteInput                   managementprovidermodels.CustomModelDeleteInput
+	modelOptions                  []managementprovidermodels.ModelOption
+	models                        []managementprovidermodels.ModelCatalogItem
+	defaultHealthCheckModelResult managementprovidermodels.DefaultHealthCheckModelResult
+	customModelResult             managementprovidermodels.ModelCatalogItem
+	deleteResult                  managementprovidermodels.CustomModelDeleteResult
+	err                           error
 }
 
 func (s *managementProviderModelServiceStub) ModelOptions(_ *http.Request, input managementprovidermodels.ModelOptionListInput) ([]managementprovidermodels.ModelOption, error) {
@@ -527,9 +543,9 @@ func (s *managementProviderModelServiceStub) Models(_ *http.Request, input manag
 	return s.models, s.err
 }
 
-func (s *managementProviderModelServiceStub) SetDefaultTestModel(_ *http.Request, input managementprovidermodels.DefaultTestModelInput) (managementprovidermodels.DefaultTestModelResult, error) {
-	s.defaultTestModelInput = input
-	return s.defaultTestModelResult, s.err
+func (s *managementProviderModelServiceStub) SetDefaultHealthCheckModel(_ *http.Request, input managementprovidermodels.DefaultHealthCheckModelInput) (managementprovidermodels.DefaultHealthCheckModelResult, error) {
+	s.defaultHealthCheckModelInput = input
+	return s.defaultHealthCheckModelResult, s.err
 }
 
 func (s *managementProviderModelServiceStub) CreateCustomModel(_ *http.Request, input managementprovidermodels.CustomModelCreateInput) (managementprovidermodels.ModelCatalogItem, error) {

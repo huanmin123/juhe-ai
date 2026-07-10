@@ -76,6 +76,9 @@ func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
 	if _, ok := account["baseUrl"]; ok {
 		t.Fatalf("response leaked baseUrl: %#v", account)
 	}
+	if _, ok := account["healthCheckModel"]; ok {
+		t.Fatalf("response exposed internal healthCheckModel: %#v", account)
+	}
 
 	log := singlePublicAPILog(t, logQueue)
 	if log.StatusCode == nil || *log.StatusCode != http.StatusCreated || !log.Success {
@@ -367,6 +370,7 @@ func TestPublicAccountHandlersRejectStrictAndNonCoercedFields(t *testing.T) {
 		body string
 	}{
 		{name: "add unknown credentials field", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","credentials":{"apiKey":"sk-test"}}`},
+		{name: "add internal health check model field", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","healthCheckModel":"gpt-5.5"}`},
 		{name: "add unsupported type", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"oauth","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test"}`},
 		{name: "add string concurrency", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","concurrencyLimit":"20"}`},
 		{name: "update empty mutable", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1"}`},
@@ -488,6 +492,13 @@ func TestPublicAccountHandlersMapServiceErrors(t *testing.T) {
 			},
 			wantStatus: http.StatusBadRequest, wantMsg: "pending_test -> active",
 		},
+		{
+			name: "health check model removed", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","supportedModels":["gpt-5.5"]}`,
+			configure: func(stub *publicAccountServiceStub) {
+				stub.updateErr = fmt.Errorf("%w: 账户检查模型必须属于账户支持模型", publicaccounts.ErrInvalidHealthCheckModel)
+			},
+			wantStatus: http.StatusBadRequest, wantMsg: "账户检查模型必须属于账户支持模型",
+		},
 	}
 
 	for _, tt := range tests {
@@ -546,8 +557,10 @@ func TestPublicAccountHandlersTestTokenSkipsService(t *testing.T) {
 	if service.addCalls != 0 {
 		t.Fatalf("add calls = %d, want 0", service.addCalls)
 	}
-	if strings.Contains(rec.Body.String(), "sk-test") || strings.Contains(rec.Body.String(), "baseUrl") {
-		t.Fatalf("mock response leaked credentials: %s", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "sk-test") ||
+		strings.Contains(rec.Body.String(), "baseUrl") ||
+		strings.Contains(rec.Body.String(), "healthCheckModel") {
+		t.Fatalf("mock response leaked credentials or internal health model: %s", rec.Body.String())
 	}
 }
 

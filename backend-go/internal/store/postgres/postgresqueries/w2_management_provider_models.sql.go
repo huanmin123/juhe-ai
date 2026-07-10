@@ -11,8 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const clearManagementProviderDefaultTestModelIfModel = `-- name: ClearManagementProviderDefaultTestModelIfModel :execrows
-DELETE FROM juhe_business.provider_default_test_models
+const clearManagementProviderDefaultHealthCheckModelIfModel = `-- name: ClearManagementProviderDefaultHealthCheckModelIfModel :execrows
+DELETE FROM juhe_business.provider_default_health_check_models
 WHERE provider_code = $1
   AND model = $2
   AND (
@@ -21,14 +21,14 @@ WHERE provider_code = $1
   )
 `
 
-type ClearManagementProviderDefaultTestModelIfModelParams struct {
+type ClearManagementProviderDefaultHealthCheckModelIfModelParams struct {
 	ProviderCode    string
 	Model           string
 	SystemAccountID string
 }
 
-func (q *Queries) ClearManagementProviderDefaultTestModelIfModel(ctx context.Context, arg ClearManagementProviderDefaultTestModelIfModelParams) (int64, error) {
-	result, err := q.db.Exec(ctx, clearManagementProviderDefaultTestModelIfModel, arg.ProviderCode, arg.Model, arg.SystemAccountID)
+func (q *Queries) ClearManagementProviderDefaultHealthCheckModelIfModel(ctx context.Context, arg ClearManagementProviderDefaultHealthCheckModelIfModelParams) (int64, error) {
+	result, err := q.db.Exec(ctx, clearManagementProviderDefaultHealthCheckModelIfModel, arg.ProviderCode, arg.Model, arg.SystemAccountID)
 	if err != nil {
 		return 0, err
 	}

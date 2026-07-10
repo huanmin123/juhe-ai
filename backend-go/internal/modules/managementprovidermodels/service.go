@@ -31,7 +31,7 @@ var ErrCustomProviderModelNotFound = errors.New("custom provider model not found
 
 type Store interface {
 	port.ManagementProviderModelCatalogReader
-	port.ManagementProviderDefaultTestModelWriter
+	port.ManagementProviderDefaultHealthCheckModelWriter
 	port.ManagementCustomProviderModelWriter
 }
 
@@ -63,7 +63,7 @@ type ModelListInput struct {
 	IncludeUnpriced bool
 }
 
-type DefaultTestModelInput struct {
+type DefaultHealthCheckModelInput struct {
 	ProviderCode    string
 	SystemAccountID string
 	Model           string
@@ -148,26 +148,26 @@ type ModelOption struct {
 	SupportedAPIProtocols []string `json:"supportedApiProtocols,omitempty"`
 }
 
-type DefaultTestModelResult struct {
-	ProviderCode     string `json:"providerCode"`
-	DefaultTestModel string `json:"defaultTestModel"`
+type DefaultHealthCheckModelResult struct {
+	ProviderCode            string `json:"providerCode"`
+	DefaultHealthCheckModel string `json:"defaultHealthCheckModel"`
 }
 
-type DefaultTestModelValidationError struct {
+type DefaultHealthCheckModelValidationError struct {
 	Message string
 }
 
-func (e *DefaultTestModelValidationError) Error() string {
+func (e *DefaultHealthCheckModelValidationError) Error() string {
 	return e.Message
 }
 
-func DefaultTestModelValidationMessage(err error) (string, bool) {
-	var validationErr *DefaultTestModelValidationError
+func DefaultHealthCheckModelValidationMessage(err error) (string, bool) {
+	var validationErr *DefaultHealthCheckModelValidationError
 	if !errors.As(err, &validationErr) {
 		return "", false
 	}
 	if strings.TrimSpace(validationErr.Message) == "" {
-		return "默认测试模型参数无效", true
+		return "默认检查模型参数无效", true
 	}
 	return validationErr.Message, true
 }
@@ -340,18 +340,18 @@ func (s *Service) Models(ctx context.Context, input ModelListInput) ([]ModelCata
 	return output, nil
 }
 
-func (s *Service) SetDefaultTestModel(ctx context.Context, input DefaultTestModelInput) (DefaultTestModelResult, error) {
+func (s *Service) SetDefaultHealthCheckModel(ctx context.Context, input DefaultHealthCheckModelInput) (DefaultHealthCheckModelResult, error) {
 	if s.store == nil {
-		return DefaultTestModelResult{}, fmt.Errorf("management provider model store is required")
+		return DefaultHealthCheckModelResult{}, fmt.Errorf("management provider model store is required")
 	}
 	providerCode := strings.TrimSpace(input.ProviderCode)
 	systemAccountID := strings.TrimSpace(input.SystemAccountID)
 	model := strings.TrimSpace(input.Model)
 	if systemAccountID == "" {
-		return DefaultTestModelResult{}, &DefaultTestModelValidationError{Message: "请选择要设置默认测试模型的系统账户"}
+		return DefaultHealthCheckModelResult{}, &DefaultHealthCheckModelValidationError{Message: "请选择要设置默认检查模型的系统账户"}
 	}
 	if model == "" {
-		return DefaultTestModelResult{}, &DefaultTestModelValidationError{Message: "默认测试模型参数无效"}
+		return DefaultHealthCheckModelResult{}, &DefaultHealthCheckModelValidationError{Message: "默认检查模型参数无效"}
 	}
 	models, err := s.Models(ctx, ModelListInput{
 		ProviderCode:    providerCode,
@@ -360,29 +360,29 @@ func (s *Service) SetDefaultTestModel(ctx context.Context, input DefaultTestMode
 		IncludeUnpriced: true,
 	})
 	if err != nil {
-		return DefaultTestModelResult{}, err
+		return DefaultHealthCheckModelResult{}, err
 	}
-	selected := findDefaultTestModelCandidate(models, model)
+	selected := findDefaultHealthCheckModelCandidate(models, model)
 	if selected == nil {
-		return DefaultTestModelResult{}, &DefaultTestModelValidationError{Message: "模型不在当前用户可见目录中：" + model}
+		return DefaultHealthCheckModelResult{}, &DefaultHealthCheckModelValidationError{Message: "模型不在当前用户可见目录中：" + model}
 	}
 	if !isActiveCatalogItem(*selected) {
-		return DefaultTestModelResult{}, &DefaultTestModelValidationError{Message: "只能把启用模型设置为默认测试模型"}
+		return DefaultHealthCheckModelResult{}, &DefaultHealthCheckModelValidationError{Message: "只能把启用模型设置为默认检查模型"}
 	}
 	if !isCatalogItemUsableForAccountTest(*selected) {
-		return DefaultTestModelResult{}, &DefaultTestModelValidationError{Message: "默认测试模型只能选择文本生成模型"}
+		return DefaultHealthCheckModelResult{}, &DefaultHealthCheckModelValidationError{Message: "默认检查模型只能选择文本生成模型"}
 	}
-	saved, err := s.store.SetManagementProviderDefaultTestModel(ctx, port.ManagementProviderDefaultTestModelInput{
+	saved, err := s.store.SetManagementProviderDefaultHealthCheckModel(ctx, port.ManagementProviderDefaultHealthCheckModelInput{
 		ProviderCode:    providerCode,
 		SystemAccountID: systemAccountID,
 		Model:           selected.Model,
 	})
 	if err != nil {
-		return DefaultTestModelResult{}, err
+		return DefaultHealthCheckModelResult{}, err
 	}
-	return DefaultTestModelResult{
-		ProviderCode:     saved.ProviderCode,
-		DefaultTestModel: saved.Model,
+	return DefaultHealthCheckModelResult{
+		ProviderCode:            saved.ProviderCode,
+		DefaultHealthCheckModel: saved.Model,
 	}, nil
 }
 
@@ -479,7 +479,7 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason)
 	if saved.Status != "active" {
-		if _, err := s.store.ClearManagementProviderDefaultTestModelIfModel(ctx, port.ManagementProviderDefaultTestModelClearInput{
+		if _, err := s.store.ClearManagementProviderDefaultHealthCheckModelIfModel(ctx, port.ManagementProviderDefaultHealthCheckModelClearInput{
 			ProviderCode:    saved.ProviderCode,
 			SystemAccountID: saved.SystemAccountID,
 			Model:           saved.Model,
@@ -522,7 +522,7 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 	}
 	if deleted {
 		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason)
-		if _, err := s.store.ClearManagementProviderDefaultTestModelIfModel(ctx, port.ManagementProviderDefaultTestModelClearInput{
+		if _, err := s.store.ClearManagementProviderDefaultHealthCheckModelIfModel(ctx, port.ManagementProviderDefaultHealthCheckModelClearInput{
 			ProviderCode:    existing.ProviderCode,
 			SystemAccountID: existing.SystemAccountID,
 			Model:           existing.Model,
@@ -1021,7 +1021,7 @@ func mergeCatalogItems(items []port.ManagementProviderModelCatalogItem, keyFunc 
 	return output
 }
 
-func findDefaultTestModelCandidate(items []ModelCatalogItem, model string) *ModelCatalogItem {
+func findDefaultHealthCheckModelCandidate(items []ModelCatalogItem, model string) *ModelCatalogItem {
 	normalized := strings.TrimSpace(model)
 	for index := range items {
 		if strings.TrimSpace(items[index].Model) == normalized {

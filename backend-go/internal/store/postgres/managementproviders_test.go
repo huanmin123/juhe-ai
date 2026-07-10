@@ -11,31 +11,31 @@ import (
 	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
 )
 
-func TestManagementProviderOptionFromRowKeepsSystemAndProtocolDefaults(t *testing.T) {
+func TestManagementProviderOptionFromRowKeepsSystemAndProtocolHealthCheckDefaults(t *testing.T) {
 	profilesByProvider, err := managementProviderProfilesByProvider([]postgresqueries.ListManagementProviderOptionProfilesRow{
 		{
-			ID:               "profile_gemini_openai_chat_v1beta",
-			ProviderCode:     "gemini",
-			Name:             "Gemini / OpenAI Chat",
-			Enabled:          true,
-			ProtocolCode:     "openai",
-			ProtocolVersion:  "v1",
-			BaseUrl:          "https://generativelanguage.googleapis.com/v1beta/openai",
-			DefaultTestModel: "gemini-3.5-flash",
-			AccountTypesJson: `["api_key"]`,
-			CapabilitiesJson: `["chat"]`,
+			ID:                      "profile_gemini_openai_chat_v1beta",
+			ProviderCode:            "gemini",
+			Name:                    "Gemini / OpenAI Chat",
+			Enabled:                 true,
+			ProtocolCode:            "openai",
+			ProtocolVersion:         "v1",
+			BaseUrl:                 "https://generativelanguage.googleapis.com/v1beta/openai",
+			DefaultHealthCheckModel: "gemini-3.5-flash",
+			AccountTypesJson:        `["api_key"]`,
+			CapabilitiesJson:        `["chat"]`,
 		},
 		{
-			ID:               "profile_gemini_native_v1beta",
-			ProviderCode:     "gemini",
-			Name:             "Gemini / Gemini v1beta",
-			Enabled:          true,
-			ProtocolCode:     "gemini",
-			ProtocolVersion:  "v1beta",
-			BaseUrl:          "https://generativelanguage.googleapis.com",
-			DefaultTestModel: "gemini-3.5-flash",
-			AccountTypesJson: `["api_key"]`,
-			CapabilitiesJson: `["generate_content","models"]`,
+			ID:                      "profile_gemini_native_v1beta",
+			ProviderCode:            "gemini",
+			Name:                    "Gemini / Gemini v1beta",
+			Enabled:                 true,
+			ProtocolCode:            "gemini",
+			ProtocolVersion:         "v1beta",
+			BaseUrl:                 "https://generativelanguage.googleapis.com",
+			DefaultHealthCheckModel: "gemini-3.5-flash",
+			AccountTypesJson:        `["api_key"]`,
+			CapabilitiesJson:        `["generate_content","models"]`,
 		},
 	}, map[string][]port.ManagementProviderEndpointFamily{})
 	if err != nil {
@@ -56,26 +56,26 @@ func TestManagementProviderOptionFromRowKeepsSystemAndProtocolDefaults(t *testin
 	if option.DefaultProtocolProfileID != "profile_gemini_native_v1beta" {
 		t.Fatalf("default profile = %q, want gemini native", option.DefaultProtocolProfileID)
 	}
-	if option.ProtocolCode != "gemini" || option.DefaultTestModel != "gemini-custom" {
+	if option.ProtocolCode != "gemini" || option.DefaultHealthCheckModel != "gemini-custom" {
 		t.Fatalf("option = %+v", option)
 	}
-	if option.SystemDefaultTestModel != "gemini-3.5-flash" {
-		t.Fatalf("system default test model = %q, want protocol profile default", option.SystemDefaultTestModel)
+	if option.SystemDefaultHealthCheckModel != "gemini-3.5-flash" {
+		t.Fatalf("system default health check model = %q, want protocol profile default", option.SystemDefaultHealthCheckModel)
 	}
-	if option.ProtocolProfiles[1].DefaultTestModel != "gemini-3.5-flash" {
+	if option.ProtocolProfiles[1].DefaultHealthCheckModel != "gemini-3.5-flash" {
 		t.Fatalf("protocol profile default was overwritten: %+v", option.ProtocolProfiles)
 	}
 }
 
-func TestManagementProviderOptionFromRowFallsBackToSystemDefault(t *testing.T) {
+func TestManagementProviderOptionFromRowFallsBackToSystemHealthCheckDefault(t *testing.T) {
 	profiles := []port.ManagementProviderProtocolProfile{
 		{
-			ID:               "profile_gpt_openai_v1",
-			ProviderCode:     "gpt",
-			Enabled:          true,
-			ProtocolCode:     "openai",
-			ProtocolVersion:  "v1",
-			DefaultTestModel: "gpt-5-system",
+			ID:                      "profile_gpt_openai_v1",
+			ProviderCode:            "gpt",
+			Enabled:                 true,
+			ProtocolCode:            "openai",
+			ProtocolVersion:         "v1",
+			DefaultHealthCheckModel: "gpt-5-system",
 		},
 	}
 
@@ -90,10 +90,10 @@ func TestManagementProviderOptionFromRowFallsBackToSystemDefault(t *testing.T) {
 		t.Fatalf("managementProviderOptionFromRow() error = %v", err)
 	}
 
-	if option.DefaultTestModel != "gpt-5-system" || option.SystemDefaultTestModel != "gpt-5-system" {
+	if option.DefaultHealthCheckModel != "gpt-5-system" || option.SystemDefaultHealthCheckModel != "gpt-5-system" {
 		t.Fatalf("option = %+v", option)
 	}
-	if option.ProtocolProfiles[0].DefaultTestModel != "gpt-5-system" {
+	if option.ProtocolProfiles[0].DefaultHealthCheckModel != "gpt-5-system" {
 		t.Fatalf("protocol profiles = %+v", option.ProtocolProfiles)
 	}
 }
@@ -125,6 +125,65 @@ func TestManagementProviderSQLKeepsListAndOptionsFiltersSeparate(t *testing.T) {
 	}
 	if !strings.Contains(optionSQL, "WHERE enabled = true") {
 		t.Fatalf("provider options SQL must keep enabled filter")
+	}
+	for _, want := range []string{
+		"default_health_check_model",
+		"provider_default_health_check_models",
+		"ListManagementProviderDefaultHealthCheckModelPreferences",
+		"UpsertManagementProviderDefaultHealthCheckModelPreference",
+	} {
+		if !strings.Contains(optionSQL, want) {
+			t.Fatalf("provider options SQL missing health check model contract %q", want)
+		}
+	}
+	for _, legacy := range []string{
+		"default_test_model",
+		"provider_default_test_models",
+		"DefaultTestModel",
+	} {
+		if strings.Contains(optionSQL, legacy) {
+			t.Fatalf("provider options SQL retains legacy contract %q", legacy)
+		}
+	}
+}
+
+func TestManagementProviderMigrationsUseHealthCheckModelColumns(t *testing.T) {
+	publicAccountsMigration, err := os.ReadFile("../../../db/migrations/000005_w1b_public_accounts.sql")
+	if err != nil {
+		t.Fatalf("read public accounts migration: %v", err)
+	}
+	publicAccountsSQL := string(publicAccountsMigration)
+	if !strings.Contains(publicAccountsSQL, "CREATE TABLE IF NOT EXISTS juhe_business.provider_protocol_profiles") ||
+		!strings.Contains(publicAccountsSQL, "default_health_check_model text NOT NULL DEFAULT ''") {
+		t.Fatalf("provider protocol profile health check model column missing")
+	}
+	if !strings.Contains(publicAccountsSQL, "CREATE TABLE IF NOT EXISTS juhe_business.accounts") ||
+		!strings.Contains(publicAccountsSQL, "health_check_model text NOT NULL") {
+		t.Fatalf("accounts.health_check_model column missing")
+	}
+
+	providerOptionsMigration, err := os.ReadFile("../../../db/migrations/000008_w2_management_provider_options.sql")
+	if err != nil {
+		t.Fatalf("read provider options migration: %v", err)
+	}
+	providerOptionsSQL := string(providerOptionsMigration)
+	for _, want := range []string{
+		"default_health_check_model text",
+		"provider_default_health_check_models",
+		"idx_provider_default_health_check_models_model",
+	} {
+		if !strings.Contains(providerOptionsSQL, want) {
+			t.Fatalf("provider options migration missing %q", want)
+		}
+	}
+	for _, legacy := range []string{
+		"default_test_model",
+		"provider_default_test_models",
+		"idx_provider_default_test_models_model",
+	} {
+		if strings.Contains(providerOptionsSQL, legacy) {
+			t.Fatalf("provider options migration retains legacy contract %q", legacy)
+		}
 	}
 }
 
@@ -181,7 +240,7 @@ func TestManagementCustomProviderModelBindingSummaryScopesMappingsByProvider(t *
 	}
 	sql := string(source)
 	start := strings.Index(sql, "-- name: GetManagementCustomProviderModelBindingSummary :one")
-	end := strings.Index(sql, "-- name: ClearManagementProviderDefaultTestModelIfModel :execrows")
+	end := strings.Index(sql, "-- name: ClearManagementProviderDefaultHealthCheckModelIfModel :execrows")
 	if start < 0 || end <= start {
 		t.Fatalf("provider model SQL missing binding summary query")
 	}

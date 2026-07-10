@@ -948,37 +948,37 @@ type ManagementProviderEndpointFamily struct {
 }
 
 type ManagementProviderProtocolProfile struct {
-	ID               string
-	ProviderCode     string
-	Name             string
-	Description      string
-	Enabled          bool
-	ProtocolCode     string
-	ProtocolVersion  string
-	BaseURL          string
-	DefaultTestModel string
-	AccountTypes     []string
-	Capabilities     []string
-	EndpointFamilies []ManagementProviderEndpointFamily
+	ID                      string
+	ProviderCode            string
+	Name                    string
+	Description             string
+	Enabled                 bool
+	ProtocolCode            string
+	ProtocolVersion         string
+	BaseURL                 string
+	DefaultHealthCheckModel string
+	AccountTypes            []string
+	Capabilities            []string
+	EndpointFamilies        []ManagementProviderEndpointFamily
 }
 
 type ManagementProviderOption struct {
-	ID                       string
-	Code                     string
-	Name                     string
-	ParentCode               string
-	Description              string
-	Enabled                  bool
-	DefaultProtocolProfileID string
-	ProtocolCode             string
-	ProtocolVersion          string
-	BaseURL                  string
-	DefaultTestModel         string
-	SystemDefaultTestModel   string
-	DefaultSupportedModels   []string
-	AccountTypes             []string
-	Capabilities             []string
-	ProtocolProfiles         []ManagementProviderProtocolProfile
+	ID                            string
+	Code                          string
+	Name                          string
+	ParentCode                    string
+	Description                   string
+	Enabled                       bool
+	DefaultProtocolProfileID      string
+	ProtocolCode                  string
+	ProtocolVersion               string
+	BaseURL                       string
+	DefaultHealthCheckModel       string
+	SystemDefaultHealthCheckModel string
+	DefaultSupportedModels        []string
+	AccountTypes                  []string
+	Capabilities                  []string
+	ProtocolProfiles              []ManagementProviderProtocolProfile
 }
 
 type ManagementProviderListInput struct {
@@ -1051,18 +1051,18 @@ type ManagementProviderModelCatalogListInput struct {
 	IncludeInactive      bool
 }
 
-type ManagementProviderDefaultTestModelPreference struct {
+type ManagementProviderDefaultHealthCheckModelPreference struct {
 	ProviderCode string
 	Model        string
 }
 
-type ManagementProviderDefaultTestModelInput struct {
+type ManagementProviderDefaultHealthCheckModelInput struct {
 	ProviderCode    string
 	SystemAccountID string
 	Model           string
 }
 
-type ManagementProviderDefaultTestModelClearInput struct {
+type ManagementProviderDefaultHealthCheckModelClearInput struct {
 	ProviderCode    string
 	SystemAccountID string
 	Model           string
@@ -1125,9 +1125,9 @@ type ManagementProviderModelCatalogReader interface {
 	ListManagementProviderModelCatalog(ctx context.Context, input ManagementProviderModelCatalogListInput) ([]ManagementProviderModelCatalogItem, error)
 }
 
-type ManagementProviderDefaultTestModelWriter interface {
-	SetManagementProviderDefaultTestModel(ctx context.Context, input ManagementProviderDefaultTestModelInput) (ManagementProviderDefaultTestModelPreference, error)
-	ClearManagementProviderDefaultTestModelIfModel(ctx context.Context, input ManagementProviderDefaultTestModelClearInput) (bool, error)
+type ManagementProviderDefaultHealthCheckModelWriter interface {
+	SetManagementProviderDefaultHealthCheckModel(ctx context.Context, input ManagementProviderDefaultHealthCheckModelInput) (ManagementProviderDefaultHealthCheckModelPreference, error)
+	ClearManagementProviderDefaultHealthCheckModelIfModel(ctx context.Context, input ManagementProviderDefaultHealthCheckModelClearInput) (bool, error)
 }
 
 type ManagementCustomProviderModelWriter interface {

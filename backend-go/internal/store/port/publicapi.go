@@ -427,15 +427,16 @@ const (
 )
 
 type PublicAccountProviderProfile struct {
-	ID                     string
-	ProviderCode           string
-	Name                   string
-	Enabled                bool
-	ProviderEnabled        bool
-	ProtocolCode           string
-	ProtocolVersion        string
-	AccountTypesJSON       string
-	DefaultSupportedModels []string
+	ID                      string
+	ProviderCode            string
+	Name                    string
+	Enabled                 bool
+	ProviderEnabled         bool
+	ProtocolCode            string
+	ProtocolVersion         string
+	AccountTypesJSON        string
+	DefaultSupportedModels  []string
+	DefaultHealthCheckModel string
 }
 
 type PublicAccountGroupRef struct {
@@ -463,6 +464,7 @@ type PublicAccountSummary struct {
 	CredentialMask            string
 	ClientCompatibility       string
 	SupportedModels           []string
+	HealthCheckModel          string
 	BoundGroupID              *string
 	BoundGroupName            *string
 	Schedulable               bool
@@ -519,6 +521,7 @@ type PublicAccountCreateInput struct {
 	CredentialMask            string
 	ClientCompatibility       string
 	SupportedModels           []string
+	HealthCheckModel          string
 	Schedulable               bool
 	AvailabilityScheduleJSON  *string
 	ConcurrencyLimit          int
@@ -552,7 +555,7 @@ type PublicAccountStore interface {
 	FindPublicAccountTargetByUsername(ctx context.Context, username string) (PublicGroupTarget, bool, error)
 	FindPublicAccountTargetByID(ctx context.Context, id string) (PublicGroupTarget, bool, error)
 	CreatePublicAccountTarget(ctx context.Context, input PublicGroupTargetCreateInput) (PublicGroupTarget, error)
-	FindPublicAccountProviderProfile(ctx context.Context, providerCode string, profileID string) (PublicAccountProviderProfile, bool, error)
+	FindPublicAccountProviderProfile(ctx context.Context, systemAccountID string, providerCode string, profileID string) (PublicAccountProviderProfile, bool, error)
 	FindExistingPublicAccountGroupByName(ctx context.Context, systemAccountID string, providerCode string, name string) (PublicAccountGroupRef, bool, error)
 	CreatePublicAccountGroup(ctx context.Context, input PublicGroupCreateInput) (PublicAccountGroupRef, error)
 	FindPublicAccountGroupByID(ctx context.Context, groupID string) (PublicAccountGroupRef, bool, error)

@@ -18,14 +18,14 @@ CREATE TABLE IF NOT EXISTS juhe_business.provider_protocol_profile_families (
   profile_id text NOT NULL REFERENCES juhe_business.provider_protocol_profiles(id) ON DELETE CASCADE,
   family_code text NOT NULL,
   enabled boolean NOT NULL DEFAULT true,
-  default_test_model text,
+  default_health_check_model text,
   capabilities_json text NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(capabilities_json::jsonb) = 'array'),
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
   PRIMARY KEY (profile_id, family_code)
 );
 
-CREATE TABLE IF NOT EXISTS juhe_business.provider_default_test_models (
+CREATE TABLE IF NOT EXISTS juhe_business.provider_default_health_check_models (
   system_account_id text NOT NULL REFERENCES juhe_business.system_accounts(id) ON DELETE CASCADE,
   provider_code text NOT NULL REFERENCES juhe_business.providers(code),
   model text NOT NULL CHECK (btrim(model) <> ''),
@@ -34,8 +34,8 @@ CREATE TABLE IF NOT EXISTS juhe_business.provider_default_test_models (
   PRIMARY KEY (system_account_id, provider_code)
 );
 
-CREATE INDEX IF NOT EXISTS idx_provider_default_test_models_model
-  ON juhe_business.provider_default_test_models(provider_code, model, system_account_id);
+CREATE INDEX IF NOT EXISTS idx_provider_default_health_check_models_model
+  ON juhe_business.provider_default_health_check_models(provider_code, model, system_account_id);
 
 INSERT INTO juhe_business.providers (
   id, code, name, parent_code, description, enabled, default_supported_models_json, created_at, updated_at
@@ -72,7 +72,7 @@ ON CONFLICT (code) DO UPDATE SET
 
 INSERT INTO juhe_business.provider_protocol_profiles (
   id, provider_code, name, description, enabled, protocol_code, protocol_version,
-  base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
+  base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at
 ) VALUES
   ('profile_openai_openai_v1', 'openai', 'OpenAI 兼容 / OpenAI v1',
     '通用 OpenAI-compatible 供应商的 OpenAI v1 协议档案，仅承载 API Key 透传、模型目录和通用协议策略',
@@ -130,7 +130,7 @@ ON CONFLICT (id) DO UPDATE SET
   protocol_code = EXCLUDED.protocol_code,
   protocol_version = EXCLUDED.protocol_version,
   base_url = EXCLUDED.base_url,
-  default_test_model = EXCLUDED.default_test_model,
+  default_health_check_model = EXCLUDED.default_health_check_model,
   account_types_json = EXCLUDED.account_types_json,
   capabilities_json = EXCLUDED.capabilities_json,
   updated_at = EXCLUDED.updated_at;

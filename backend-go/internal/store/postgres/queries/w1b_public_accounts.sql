@@ -27,12 +27,16 @@ SELECT
   profiles.enabled AS profile_enabled,
   providers.enabled AS provider_enabled,
   providers.default_supported_models_json,
+  COALESCE(health_check_defaults.model, profiles.default_health_check_model) AS default_health_check_model,
   profiles.protocol_code,
   profiles.protocol_version,
   profiles.account_types_json
 FROM juhe_business.provider_protocol_profiles AS profiles
 JOIN juhe_business.providers AS providers
   ON providers.code = profiles.provider_code
+LEFT JOIN juhe_business.provider_default_health_check_models AS health_check_defaults
+  ON health_check_defaults.system_account_id = sqlc.arg(system_account_id)
+  AND health_check_defaults.provider_code = profiles.provider_code
 WHERE profiles.provider_code = sqlc.arg(provider_code)
   AND profiles.id = sqlc.arg(profile_id)
 LIMIT 1;
@@ -94,6 +98,7 @@ SELECT
   accounts.credential_fingerprint,
   accounts.credential_mask,
   accounts.client_compatibility,
+  accounts.health_check_model,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -148,6 +153,7 @@ SELECT
   accounts.credential_fingerprint,
   accounts.credential_mask,
   accounts.client_compatibility,
+  accounts.health_check_model,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -183,6 +189,7 @@ SELECT
   accounts.credential_fingerprint,
   accounts.credential_mask,
   accounts.client_compatibility,
+  accounts.health_check_model,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -219,6 +226,7 @@ SELECT
   accounts.credential_fingerprint,
   accounts.credential_mask,
   accounts.client_compatibility,
+  accounts.health_check_model,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -260,6 +268,7 @@ INSERT INTO juhe_business.accounts (
   concurrency_limit,
   priority,
   client_compatibility,
+  health_check_model,
   schedulable,
   availability_schedule_json,
   notes,
@@ -282,6 +291,7 @@ INSERT INTO juhe_business.accounts (
   sqlc.arg(concurrency_limit),
   sqlc.arg(priority),
   sqlc.arg(client_compatibility),
+  sqlc.arg(health_check_model),
   sqlc.arg(schedulable),
   sqlc.arg(availability_schedule_json),
   sqlc.arg(notes),
@@ -303,6 +313,7 @@ RETURNING
   credential_fingerprint,
   credential_mask,
   client_compatibility,
+  health_check_model,
   schedulable,
   availability_schedule_json,
   concurrency_limit,
@@ -346,12 +357,6 @@ SET name = sqlc.arg(name),
     schedulable = sqlc.arg(schedulable),
     availability_schedule_json = sqlc.arg(availability_schedule_json),
     notes = sqlc.arg(notes),
-    default_test_model = CASE
-      WHEN default_test_model IS NOT NULL
-        AND default_test_model <> ALL(COALESCE(sqlc.arg(supported_models)::text[], ARRAY[]::text[]))
-      THEN NULL
-      ELSE default_test_model
-    END,
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
   AND system_account_id = sqlc.arg(system_account_id)
@@ -370,6 +375,7 @@ RETURNING
   credential_fingerprint,
   credential_mask,
   client_compatibility,
+  health_check_model,
   schedulable,
   availability_schedule_json,
   concurrency_limit,

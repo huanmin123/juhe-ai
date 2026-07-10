@@ -189,7 +189,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProviderOptionsHandler:                  managementHandlers.ProviderOptionsHandler,
 		ManagementProviderModelOptionsHandler:             managementHandlers.ProviderModelOptionsHandler,
 		ManagementProviderModelsHandler:                   managementHandlers.ProviderModelsHandler,
-		ManagementProviderDefaultTestModelHandler:         managementHandlers.ProviderDefaultTestModelHandler,
+		ManagementProviderDefaultHealthCheckModelHandler:  managementHandlers.ProviderDefaultHealthCheckModelHandler,
 		ManagementProviderCustomModelCreateHandler:        managementHandlers.ProviderCustomModelCreateHandler,
 		ManagementProviderCustomModelUpdateHandler:        managementHandlers.ProviderCustomModelUpdateHandler,
 		ManagementProviderCustomModelDeleteHandler:        managementHandlers.ProviderCustomModelDeleteHandler,
@@ -311,7 +311,7 @@ type managementAPIHandlers struct {
 	ProviderOptionsHandler                  http.Handler
 	ProviderModelOptionsHandler             http.Handler
 	ProviderModelsHandler                   http.Handler
-	ProviderDefaultTestModelHandler         http.Handler
+	ProviderDefaultHealthCheckModelHandler  http.Handler
 	ProviderCustomModelCreateHandler        http.Handler
 	ProviderCustomModelUpdateHandler        http.Handler
 	ProviderCustomModelDeleteHandler        http.Handler
@@ -497,7 +497,7 @@ func newManagementAPIHandler(
 		ProviderOptionsHandler:                  httpapi.NewManagementProviderOptionsHandler(providerService),
 		ProviderModelOptionsHandler:             httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
 		ProviderModelsHandler:                   httpapi.NewManagementProviderModelsHandler(providerModelService),
-		ProviderDefaultTestModelHandler:         httpapi.NewManagementProviderDefaultTestModelHandler(providerModelService),
+		ProviderDefaultHealthCheckModelHandler:  httpapi.NewManagementProviderDefaultHealthCheckModelHandler(providerModelService),
 		ProviderCustomModelCreateHandler:        httpapi.NewManagementProviderCustomModelCreateHandler(providerModelService),
 		ProviderCustomModelUpdateHandler:        httpapi.NewManagementProviderCustomModelUpdateHandler(providerModelService),
 		ProviderCustomModelDeleteHandler:        httpapi.NewManagementProviderCustomModelDeleteHandler(providerModelService),

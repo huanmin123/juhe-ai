@@ -30,16 +30,18 @@ const (
 	StatusPendingTest = "pending_test"
 	StatusDisabled    = "disabled"
 
-	DefaultConcurrencyLimit               = 20
-	DefaultPriority                       = 0
-	DefaultClientCompat                   = "openai_standard"
-	defaultGroupType                      = "personal"
-	defaultTargetDescription              = "由公开接口自动创建"
-	defaultTargetPassword                 = "go-public-auto-created-target-password-hash"
-	defaultCredentialSecret               = "juhe-ai-go-development-secret"
-	invalidSupportedModelsRequiredMessage = "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型"
-	providerModelsRequiredMessage         = "public account provider models reader is required"
-	hybridProviderCode                    = "hybrid"
+	DefaultConcurrencyLimit                   = 20
+	DefaultPriority                           = 0
+	DefaultClientCompat                       = "openai_standard"
+	defaultGroupType                          = "personal"
+	defaultTargetDescription                  = "由公开接口自动创建"
+	defaultTargetPassword                     = "go-public-auto-created-target-password-hash"
+	defaultCredentialSecret                   = "juhe-ai-go-development-secret"
+	invalidSupportedModelsRequiredMessage     = "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型"
+	invalidHealthCheckModelRequiredMessage    = "账户检查模型不能为空"
+	invalidHealthCheckModelUnsupportedMessage = "账户检查模型必须属于账户支持模型"
+	providerModelsRequiredMessage             = "public account provider models reader is required"
+	hybridProviderCode                        = "hybrid"
 )
 
 var (
@@ -58,6 +60,7 @@ var (
 	ErrInvalidBaseURL          = errors.New("public account invalid base url")
 	ErrInvalidAPIKey           = errors.New("public account invalid api key")
 	ErrInvalidSupportedModels  = errors.New("public account invalid supported models")
+	ErrInvalidHealthCheckModel = errors.New("public account invalid health check model")
 	ErrInvalidAvailability     = errors.New("public account invalid availability schedule")
 	ErrInvalidDispatchField    = errors.New("public account invalid dispatch field")
 	ErrInvalidStatusTransition = errors.New("public account invalid status transition")
@@ -287,7 +290,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (AccountListRespons
 	profileID := strings.TrimSpace(input.ProviderProtocolProfileID)
 	providerCode := strings.TrimSpace(input.ProviderCode)
 	if profileID != "" {
-		profile, err := s.requireProviderProfile(ctx, s.store, providerCode, profileID)
+		profile, err := s.requireProviderProfile(ctx, s.store, target.ID, providerCode, profileID)
 		if err != nil {
 			return AccountListResponse{}, err
 		}
@@ -357,13 +360,23 @@ func (s *Service) Add(ctx context.Context, input AddInput) (AccountResponse, err
 func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse, error) {
 	var response AccountResponse
 	err := s.inTx(ctx, func(ctx context.Context, store port.PublicAccountStore) error {
-		profile, err := s.requireProviderProfile(ctx, store, input.ProviderCode, input.ProviderProtocolProfileID)
+		target, targetFound, err := store.FindPublicAccountTargetByUsername(ctx, strings.TrimSpace(input.TargetUsername))
 		if err != nil {
 			return err
 		}
-		target, err := s.ensureTarget(ctx, store, input.TargetUsername, input.TargetDisplayName)
+		systemAccountID := ""
+		if targetFound {
+			systemAccountID = target.ID
+		}
+		profile, err := s.requireProviderProfile(ctx, store, systemAccountID, input.ProviderCode, input.ProviderProtocolProfileID)
 		if err != nil {
 			return err
+		}
+		if !targetFound {
+			target, err = s.ensureTarget(ctx, store, input.TargetUsername, input.TargetDisplayName)
+			if err != nil {
+				return err
+			}
 		}
 		if err := assertTargetActive(target); err != nil {
 			return err
@@ -401,6 +414,10 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 		if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, input.ProviderCode, models); err != nil {
 			return err
 		}
+		healthCheckModel, err := normalizeAccountHealthCheckModel(profile.DefaultHealthCheckModel, models)
+		if err != nil {
+			return err
+		}
 		scheduleJSON, err := normalizeAvailabilityScheduleJSON(input.AvailabilitySchedule)
 		if err != nil {
 			return err
@@ -423,6 +440,7 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 			CredentialMask:            credential.Mask,
 			ClientCompatibility:       DefaultClientCompat,
 			SupportedModels:           models,
+			HealthCheckModel:          healthCheckModel,
 			Schedulable:               false,
 			AvailabilityScheduleJSON:  scheduleJSON,
 			ConcurrencyLimit:          intPtrValue(input.ConcurrencyLimit, DefaultConcurrencyLimit),
@@ -518,6 +536,9 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, current.ProviderCode, models); err != nil {
 				return err
 			}
+		}
+		if _, err := normalizeAccountHealthCheckModel(current.HealthCheckModel, models); err != nil {
+			return err
 		}
 		next.SupportedModels = models
 		updated, ok, err := store.UpdatePublicAccount(ctx, port.PublicAccountUpdateInput{
@@ -662,13 +683,13 @@ func (s *Service) ensureGroup(ctx context.Context, store port.PublicAccountStore
 	return created, nil
 }
 
-func (s *Service) requireProviderProfile(ctx context.Context, store port.PublicAccountStore, providerCode string, profileID string) (port.PublicAccountProviderProfile, error) {
+func (s *Service) requireProviderProfile(ctx context.Context, store port.PublicAccountStore, systemAccountID string, providerCode string, profileID string) (port.PublicAccountProviderProfile, error) {
 	providerCode = strings.TrimSpace(providerCode)
 	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
 		return port.PublicAccountProviderProfile{}, fmt.Errorf("%w: providerProtocolProfileId 不能为空", ErrProviderProfileNotFound)
 	}
-	profile, ok, err := store.FindPublicAccountProviderProfile(ctx, providerCode, profileID)
+	profile, ok, err := store.FindPublicAccountProviderProfile(ctx, strings.TrimSpace(systemAccountID), providerCode, profileID)
 	if err != nil {
 		return port.PublicAccountProviderProfile{}, err
 	}
@@ -738,7 +759,7 @@ func (s *Service) assertAccountFilters(
 		if providerCode != nil && strings.TrimSpace(*providerCode) != "" {
 			provider = strings.TrimSpace(*providerCode)
 		}
-		profile, err := s.requireProviderProfile(ctx, store, provider, *profileID)
+		profile, err := s.requireProviderProfile(ctx, store, account.SystemAccountID, provider, *profileID)
 		if err != nil {
 			return err
 		}
@@ -884,6 +905,19 @@ func normalizeSupportedModels(values []string) ([]string, error) {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidSupportedModels, invalidSupportedModelsRequiredMessage)
 	}
 	return out, nil
+}
+
+func normalizeAccountHealthCheckModel(value string, supportedModels []string) (string, error) {
+	model := strings.TrimSpace(value)
+	if model == "" {
+		return "", fmt.Errorf("%w: %s", ErrInvalidHealthCheckModel, invalidHealthCheckModelRequiredMessage)
+	}
+	for _, supportedModel := range supportedModels {
+		if supportedModel == model {
+			return model, nil
+		}
+	}
+	return "", fmt.Errorf("%w: %s", ErrInvalidHealthCheckModel, invalidHealthCheckModelUnsupportedMessage)
 }
 
 func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, systemAccountID string, providerCode string, models []string) error {

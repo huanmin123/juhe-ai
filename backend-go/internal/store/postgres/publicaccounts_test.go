@@ -11,7 +11,7 @@ import (
 	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
 )
 
-func TestFindPublicAccountProviderProfileQuerySelectsDefaultSupportedModels(t *testing.T) {
+func TestFindPublicAccountProviderProfileQuerySelectsEffectiveHealthCheckModel(t *testing.T) {
 	source, err := os.ReadFile("queries/w1b_public_accounts.sql")
 	if err != nil {
 		t.Fatalf("read public account query: %v", err)
@@ -27,6 +27,10 @@ func TestFindPublicAccountProviderProfileQuerySelectsDefaultSupportedModels(t *t
 		"providers.default_supported_models_json",
 		"JOIN juhe_business.providers AS providers",
 		"ON providers.code = profiles.provider_code",
+		"LEFT JOIN juhe_business.provider_default_health_check_models AS health_check_defaults",
+		"health_check_defaults.system_account_id = sqlc.arg(system_account_id)",
+		"health_check_defaults.provider_code = profiles.provider_code",
+		"COALESCE(health_check_defaults.model, profiles.default_health_check_model) AS default_health_check_model",
 	} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("provider profile query missing %q in:\n%s", want, query)
@@ -34,7 +38,7 @@ func TestFindPublicAccountProviderProfileQuerySelectsDefaultSupportedModels(t *t
 	}
 }
 
-func TestUpdatePublicAccountQueryAlwaysClearsUnsupportedDefaultTestModel(t *testing.T) {
+func TestUpdatePublicAccountQueryPreservesHealthCheckModel(t *testing.T) {
 	source, err := os.ReadFile("queries/w1b_public_accounts.sql")
 	if err != nil {
 		t.Fatalf("read public account query: %v", err)
@@ -46,19 +50,57 @@ func TestUpdatePublicAccountQueryAlwaysClearsUnsupportedDefaultTestModel(t *test
 		t.Fatal("public account SQL missing update query")
 	}
 	query := sql[start:end]
-	for _, want := range []string{
-		"default_test_model = CASE",
-		"default_test_model IS NOT NULL",
-		"default_test_model <> ALL(COALESCE(sqlc.arg(supported_models)::text[], ARRAY[]::text[]))",
-		"THEN NULL",
-		"ELSE default_test_model",
+	whereIndex := strings.Index(query, "\nWHERE ")
+	if whereIndex < 0 {
+		t.Fatalf("public account update query missing WHERE clause:\n%s", query)
+	}
+	if strings.Contains(query[:whereIndex], "health_check_model") {
+		t.Fatalf("public account update query must not directly modify health_check_model:\n%s", query)
+	}
+	if !strings.Contains(query[whereIndex:], "health_check_model") {
+		t.Fatalf("public account update query must return health_check_model:\n%s", query)
+	}
+}
+
+func TestPublicAccountQueriesReadAndInsertHealthCheckModel(t *testing.T) {
+	source, err := os.ReadFile("queries/w1b_public_accounts.sql")
+	if err != nil {
+		t.Fatalf("read public account query: %v", err)
+	}
+	sql := string(source)
+	for _, queryName := range []string{
+		"ListPublicAccounts",
+		"FindPublicAccountByID",
+		"FindPublicAccountByIDForUpdate",
+		"FindExistingPublicAccountByNameInGroup",
 	} {
-		if !strings.Contains(query, want) {
-			t.Fatalf("public account update query missing %q in:\n%s", want, query)
+		start := strings.Index(sql, "-- name: "+queryName+" ")
+		if start < 0 {
+			t.Fatalf("public account SQL missing %s", queryName)
+		}
+		next := strings.Index(sql[start+1:], "\n-- name: ")
+		end := len(sql)
+		if next >= 0 {
+			end = start + 1 + next
+		}
+		if query := sql[start:end]; !strings.Contains(query, "accounts.health_check_model") {
+			t.Fatalf("%s query missing accounts.health_check_model:\n%s", queryName, query)
 		}
 	}
-	if strings.Contains(query, "supported_models_changed") {
-		t.Fatalf("public account update query must not gate default model cleanup on supported_models_changed:\n%s", query)
+
+	start := strings.Index(sql, "-- name: InsertPublicAccount :one")
+	end := strings.Index(sql, "-- name: InsertPublicAccountGroupBinding :exec")
+	if start < 0 || end <= start {
+		t.Fatal("public account SQL missing insert query")
+	}
+	insertQuery := sql[start:end]
+	for _, want := range []string{
+		"health_check_model,",
+		"sqlc.arg(health_check_model)",
+	} {
+		if !strings.Contains(insertQuery, want) {
+			t.Fatalf("public account insert query missing %q in:\n%s", want, insertQuery)
+		}
 	}
 }
 
@@ -70,6 +112,7 @@ func TestPublicAccountProviderProfileFromRowDecodesDefaultSupportedModels(t *tes
 		ProfileEnabled:             true,
 		ProviderEnabled:            true,
 		DefaultSupportedModelsJson: `[" gpt-5.6-sol ","gpt-5.6-terra","gpt-5.6-sol","gpt-5.6-luna",""]`,
+		DefaultHealthCheckModel:    " gpt-5.6-sol ",
 		ProtocolCode:               "openai",
 		ProtocolVersion:            "v1",
 		AccountTypesJson:           `["oauth","api_key"]`,
@@ -83,6 +126,9 @@ func TestPublicAccountProviderProfileFromRowDecodesDefaultSupportedModels(t *tes
 	}
 	if profile.ID != "profile_gpt_openai_v1" || profile.ProviderCode != "gpt" || profile.AccountTypesJSON != `["oauth","api_key"]` {
 		t.Fatalf("profile = %+v", profile)
+	}
+	if profile.DefaultHealthCheckModel != "gpt-5.6-sol" {
+		t.Fatalf("default health check model = %q, want gpt-5.6-sol", profile.DefaultHealthCheckModel)
 	}
 }
 

@@ -23,15 +23,16 @@ import (
 )
 
 const (
-	w1bInvalidSupportedModelsMessage = "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型"
-	w1bDuplicateAccountNameMessage   = "账号已存在：公开账号"
-	w1bValidBuiltInModel             = "gpt-5.4-mini"
-	w1bGlobalCustomModel             = "w1b-global-model"
-	w1bAdminPersonalCustomModel      = "w1b-admin-personal-model"
-	w1bOtherPersonalCustomModel      = "w1b-other-personal-model"
-	w1bDisabledCustomModel           = "w1b-disabled-model"
-	w1bUnpricedCustomModel           = "w1b-unpriced-model"
-	w1bUnknownModel                  = "w1b-unknown-model"
+	w1bInvalidSupportedModelsMessage  = "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型"
+	w1bDuplicateAccountNameMessage    = "账号已存在：公开账号"
+	w1bProfileDefaultHealthCheckModel = "gpt-5.6-sol"
+	w1bValidBuiltInModel              = "gpt-5.4-mini"
+	w1bGlobalCustomModel              = "w1b-global-model"
+	w1bAdminPersonalCustomModel       = "w1b-admin-personal-model"
+	w1bOtherPersonalCustomModel       = "w1b-other-personal-model"
+	w1bDisabledCustomModel            = "w1b-disabled-model"
+	w1bUnpricedCustomModel            = "w1b-unpriced-model"
+	w1bUnknownModel                   = "w1b-unknown-model"
 )
 
 var w1bGPTDefaultSupportedModels = []string{
@@ -120,6 +121,8 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	accountID := created.Account.ID
 	assertW1bPublicAccountStored(t, ctx, db, accountID, initialSecret, publicaccounts.StatusPendingTest, false)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bProfileDefaultHealthCheckModel)
+	assertW1bPublicAccountResponseHidesHealthCheckModel(t, created)
 
 	other, err := service.Add(ctx, publicaccounts.AddInput{
 		TargetUsername:            "other",
@@ -160,6 +163,7 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	}
 	for _, testCase := range catalogCases {
 		t.Run("catalog_"+testCase.name, func(t *testing.T) {
+			setW1bProviderHealthCheckModelPreference(t, ctx, db, created.Target.SystemAccountID, "gpt", testCase.model, now)
 			result, err := service.Add(ctx, publicaccounts.AddInput{
 				TargetUsername:            "admin",
 				TargetGroupName:           "账号分组",
@@ -180,6 +184,8 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 				}
 				assertW1bPublicAccountModelList(t, result.Account.SupportedModels, []string{testCase.model})
 				assertW1bPublicAccountNameCount(t, ctx, db, testCase.accountName, 1)
+				assertW1bPublicAccountHealthCheckModel(t, ctx, db, result.Account.ID, testCase.model)
+				assertW1bPublicAccountResponseHidesHealthCheckModel(t, result)
 				return
 			}
 			if !errors.Is(err, publicaccounts.ErrInvalidSupportedModels) {
@@ -284,52 +290,49 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 
 	// Make any unintended delete-and-reinsert use a different created_at value.
 	now = now.Add(time.Minute)
-	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bUnknownModel)
 	modelBindingsBeforeOmittedUpdate := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
-	clearedWithoutModelUpdate, err := service.Update(ctx, publicaccounts.UpdateInput{
+	preservedWithoutModelUpdate, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID: accountID,
 		Notes:     publicaccounts.NewOptionalString(ptrIntegrationString("仅更新备注"), true),
 	})
 	if err != nil {
 		t.Fatalf("update public account without supportedModels: %v", err)
 	}
-	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, "")
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bProfileDefaultHealthCheckModel)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
 	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeOmittedUpdate)
-	assertW1bPublicAccountResponseHidesDefaultTestModel(t, clearedWithoutModelUpdate)
+	assertW1bPublicAccountResponseHidesHealthCheckModel(t, preservedWithoutModelUpdate)
 
-	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bValidBuiltInModel)
-	modelBindingsBeforeValidDefaultUpdate := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
-	preservedWithoutModelUpdate, err := service.Update(ctx, publicaccounts.UpdateInput{
+	setW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bUnknownModel)
+	modelBindingsBeforeInvalidHealthUpdate := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
+	if _, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID: accountID,
-		Notes:     publicaccounts.NewOptionalString(ptrIntegrationString("仅更新备注并保留有效默认模型"), true),
-	})
-	if err != nil {
-		t.Fatalf("update public account with valid default test model: %v", err)
+		Notes:     publicaccounts.NewOptionalString(ptrIntegrationString("不应保存的备注"), true),
+	}); !errors.Is(err, publicaccounts.ErrInvalidHealthCheckModel) {
+		t.Fatalf("update public account with invalid health check model err = %v, want ErrInvalidHealthCheckModel", err)
 	}
-	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bValidBuiltInModel)
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bUnknownModel)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
-	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeValidDefaultUpdate)
-	assertW1bPublicAccountResponseHidesDefaultTestModel(t, preservedWithoutModelUpdate)
+	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeInvalidHealthUpdate)
 
-	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bUnknownModel)
+	setW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bProfileDefaultHealthCheckModel)
 	equivalentModels := slices.Clone(w1bGPTDefaultSupportedModels)
 	slices.Reverse(equivalentModels)
 	equivalentModels = append(equivalentModels, " "+w1bValidBuiltInModel+" ")
 	modelBindingsBeforeEquivalentUpdate := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
-	clearedForEquivalentModels, err := service.Update(ctx, publicaccounts.UpdateInput{
+	preservedForEquivalentModels, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID:       accountID,
 		SupportedModels: publicaccounts.NewStringListValue(equivalentModels, true),
 	})
 	if err != nil {
 		t.Fatalf("update public account with equivalent supportedModels: %v", err)
 	}
-	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, "")
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bProfileDefaultHealthCheckModel)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
 	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeEquivalentUpdate)
-	assertW1bPublicAccountResponseHidesDefaultTestModel(t, clearedForEquivalentModels)
+	assertW1bPublicAccountResponseHidesHealthCheckModel(t, preservedForEquivalentModels)
 
-	setW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bValidBuiltInModel)
+	setW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bValidBuiltInModel)
 	preservedForContainingModels, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID:       accountID,
 		SupportedModels: publicaccounts.NewStringListValue([]string{w1bValidBuiltInModel, "gpt-5.5"}, true),
@@ -337,20 +340,20 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update public account with containing supportedModels: %v", err)
 	}
-	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, w1bValidBuiltInModel)
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bValidBuiltInModel)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bValidBuiltInModel, "gpt-5.5"})
-	assertW1bPublicAccountResponseHidesDefaultTestModel(t, preservedForContainingModels)
+	assertW1bPublicAccountResponseHidesHealthCheckModel(t, preservedForContainingModels)
 
-	clearedForExcludingModels, err := service.Update(ctx, publicaccounts.UpdateInput{
+	modelBindingsBeforeRejectedRemoval := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
+	if _, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID:       accountID,
 		SupportedModels: publicaccounts.NewStringListValue([]string{"gpt-5.5"}, true),
-	})
-	if err != nil {
-		t.Fatalf("update public account with excluding supportedModels: %v", err)
+	}); !errors.Is(err, publicaccounts.ErrInvalidHealthCheckModel) {
+		t.Fatalf("update public account excluding health check model err = %v, want ErrInvalidHealthCheckModel", err)
 	}
-	assertW1bPublicAccountDefaultTestModel(t, ctx, db, accountID, "")
-	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{"gpt-5.5"})
-	assertW1bPublicAccountResponseHidesDefaultTestModel(t, clearedForExcludingModels)
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bValidBuiltInModel)
+	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bValidBuiltInModel, "gpt-5.5"})
+	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeRejectedRemoval)
 
 	updatedSecret := "sk-fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	updatedBaseURL := "https://api.openai.com/v2"
@@ -384,6 +387,7 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bValidBuiltInModel})
 
 	hybridModel := "w1b-hybrid-arbitrary-model"
+	setW1bProviderHealthCheckModelPreference(t, ctx, db, created.Target.SystemAccountID, "hybrid", hybridModel, now)
 	hybrid, err := service.Add(ctx, publicaccounts.AddInput{
 		TargetUsername:            "admin",
 		TargetGroupName:           "混合账号分组",
@@ -403,6 +407,7 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	}
 	assertW1bPublicAccountModelList(t, hybrid.Account.SupportedModels, []string{hybridModel})
 	assertW1bPublicAccountModels(t, ctx, db, hybrid.Account.ID, []string{hybridModel})
+	assertW1bPublicAccountHealthCheckModel(t, ctx, db, hybrid.Account.ID, hybridModel)
 
 	wrongTarget := other.Target.Username
 	notFound, err := service.Delete(ctx, publicaccounts.DeleteInput{AccountID: accountID, TargetUsername: &wrongTarget})
@@ -519,49 +524,66 @@ func assertW1bPublicAccountName(t *testing.T, ctx context.Context, db *sql.DB, a
 	}
 }
 
-func setW1bPublicAccountDefaultTestModel(t *testing.T, ctx context.Context, db *sql.DB, accountID string, model string) {
+func setW1bProviderHealthCheckModelPreference(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	systemAccountID string,
+	providerCode string,
+	model string,
+	now time.Time,
+) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO juhe_business.provider_default_health_check_models (
+			system_account_id, provider_code, model, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $4)
+		ON CONFLICT (system_account_id, provider_code) DO UPDATE
+		SET model = EXCLUDED.model,
+		    updated_at = EXCLUDED.updated_at
+	`, systemAccountID, providerCode, model, now); err != nil {
+		t.Fatalf("set provider health check model preference: %v", err)
+	}
+}
+
+func setW1bPublicAccountHealthCheckModel(t *testing.T, ctx context.Context, db *sql.DB, accountID string, model string) {
 	t.Helper()
 
 	if _, err := db.ExecContext(ctx, `
 		UPDATE juhe_business.accounts
-		SET default_test_model = $2
+		SET health_check_model = $2
 		WHERE id = $1 AND deleted_at IS NULL
 	`, accountID, model); err != nil {
-		t.Fatalf("set public account default test model: %v", err)
+		t.Fatalf("set public account health check model: %v", err)
 	}
 }
 
-func assertW1bPublicAccountDefaultTestModel(t *testing.T, ctx context.Context, db *sql.DB, accountID string, want string) {
+func assertW1bPublicAccountHealthCheckModel(t *testing.T, ctx context.Context, db *sql.DB, accountID string, want string) {
 	t.Helper()
 
-	var got sql.NullString
+	var got string
 	if err := db.QueryRowContext(ctx, `
-		SELECT default_test_model
+		SELECT health_check_model
 		FROM juhe_business.accounts
 		WHERE id = $1 AND deleted_at IS NULL
 	`, accountID).Scan(&got); err != nil {
-		t.Fatalf("read public account default test model: %v", err)
+		t.Fatalf("read public account health check model: %v", err)
 	}
-	if want == "" {
-		if got.Valid {
-			t.Fatalf("default_test_model = %q, want NULL", got.String)
-		}
-		return
-	}
-	if !got.Valid || got.String != want {
-		t.Fatalf("default_test_model = %q valid=%v, want %q", got.String, got.Valid, want)
+	if got != want {
+		t.Fatalf("health_check_model = %q, want %q", got, want)
 	}
 }
 
-func assertW1bPublicAccountResponseHidesDefaultTestModel(t *testing.T, response publicaccounts.AccountResponse) {
+func assertW1bPublicAccountResponseHidesHealthCheckModel(t *testing.T, response publicaccounts.AccountResponse) {
 	t.Helper()
 
 	payload, err := json.Marshal(response)
 	if err != nil {
 		t.Fatalf("marshal public account response: %v", err)
 	}
-	if strings.Contains(string(payload), "defaultTestModel") || strings.Contains(string(payload), "default_test_model") {
-		t.Fatalf("public account response exposed default test model: %s", payload)
+	if strings.Contains(string(payload), "healthCheckModel") || strings.Contains(string(payload), "health_check_model") {
+		t.Fatalf("public account response exposed health check model: %s", payload)
 	}
 }
 

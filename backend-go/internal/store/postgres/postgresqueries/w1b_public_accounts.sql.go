@@ -52,6 +52,7 @@ SELECT
   accounts.credential_fingerprint,
   accounts.credential_mask,
   accounts.client_compatibility,
+  accounts.health_check_model,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -99,6 +100,7 @@ type FindExistingPublicAccountByNameInGroupRow struct {
 	CredentialFingerprint     pgtype.Text
 	CredentialMask            string
 	ClientCompatibility       string
+	HealthCheckModel          string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -133,6 +135,7 @@ func (q *Queries) FindExistingPublicAccountByNameInGroup(ctx context.Context, ar
 		&i.CredentialFingerprint,
 		&i.CredentialMask,
 		&i.ClientCompatibility,
+		&i.HealthCheckModel,
 		&i.Schedulable,
 		&i.AvailabilityScheduleJson,
 		&i.ConcurrencyLimit,
@@ -205,6 +208,7 @@ SELECT
   accounts.credential_fingerprint,
   accounts.credential_mask,
   accounts.client_compatibility,
+  accounts.health_check_model,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -240,6 +244,7 @@ type FindPublicAccountByIDRow struct {
 	CredentialFingerprint     pgtype.Text
 	CredentialMask            string
 	ClientCompatibility       string
+	HealthCheckModel          string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -268,6 +273,7 @@ func (q *Queries) FindPublicAccountByID(ctx context.Context, id string) (FindPub
 		&i.CredentialFingerprint,
 		&i.CredentialMask,
 		&i.ClientCompatibility,
+		&i.HealthCheckModel,
 		&i.Schedulable,
 		&i.AvailabilityScheduleJson,
 		&i.ConcurrencyLimit,
@@ -296,6 +302,7 @@ SELECT
   accounts.credential_fingerprint,
   accounts.credential_mask,
   accounts.client_compatibility,
+  accounts.health_check_model,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -332,6 +339,7 @@ type FindPublicAccountByIDForUpdateRow struct {
 	CredentialFingerprint     pgtype.Text
 	CredentialMask            string
 	ClientCompatibility       string
+	HealthCheckModel          string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -360,6 +368,7 @@ func (q *Queries) FindPublicAccountByIDForUpdate(ctx context.Context, id string)
 		&i.CredentialFingerprint,
 		&i.CredentialMask,
 		&i.ClientCompatibility,
+		&i.HealthCheckModel,
 		&i.Schedulable,
 		&i.AvailabilityScheduleJson,
 		&i.ConcurrencyLimit,
@@ -417,20 +426,25 @@ SELECT
   profiles.enabled AS profile_enabled,
   providers.enabled AS provider_enabled,
   providers.default_supported_models_json,
+  COALESCE(health_check_defaults.model, profiles.default_health_check_model) AS default_health_check_model,
   profiles.protocol_code,
   profiles.protocol_version,
   profiles.account_types_json
 FROM juhe_business.provider_protocol_profiles AS profiles
 JOIN juhe_business.providers AS providers
   ON providers.code = profiles.provider_code
-WHERE profiles.provider_code = $1
-  AND profiles.id = $2
+LEFT JOIN juhe_business.provider_default_health_check_models AS health_check_defaults
+  ON health_check_defaults.system_account_id = $1
+  AND health_check_defaults.provider_code = profiles.provider_code
+WHERE profiles.provider_code = $2
+  AND profiles.id = $3
 LIMIT 1
 `
 
 type FindPublicAccountProviderProfileParams struct {
-	ProviderCode string
-	ProfileID    string
+	SystemAccountID string
+	ProviderCode    string
+	ProfileID       string
 }
 
 type FindPublicAccountProviderProfileRow struct {
@@ -440,13 +454,14 @@ type FindPublicAccountProviderProfileRow struct {
 	ProfileEnabled             bool
 	ProviderEnabled            bool
 	DefaultSupportedModelsJson string
+	DefaultHealthCheckModel    string
 	ProtocolCode               string
 	ProtocolVersion            string
 	AccountTypesJson           string
 }
 
 func (q *Queries) FindPublicAccountProviderProfile(ctx context.Context, arg FindPublicAccountProviderProfileParams) (FindPublicAccountProviderProfileRow, error) {
-	row := q.db.QueryRow(ctx, findPublicAccountProviderProfile, arg.ProviderCode, arg.ProfileID)
+	row := q.db.QueryRow(ctx, findPublicAccountProviderProfile, arg.SystemAccountID, arg.ProviderCode, arg.ProfileID)
 	var i FindPublicAccountProviderProfileRow
 	err := row.Scan(
 		&i.ID,
@@ -455,6 +470,7 @@ func (q *Queries) FindPublicAccountProviderProfile(ctx context.Context, arg Find
 		&i.ProfileEnabled,
 		&i.ProviderEnabled,
 		&i.DefaultSupportedModelsJson,
+		&i.DefaultHealthCheckModel,
 		&i.ProtocolCode,
 		&i.ProtocolVersion,
 		&i.AccountTypesJson,
@@ -531,6 +547,7 @@ INSERT INTO juhe_business.accounts (
   concurrency_limit,
   priority,
   client_compatibility,
+  health_check_model,
   schedulable,
   availability_schedule_json,
   notes,
@@ -558,7 +575,8 @@ INSERT INTO juhe_business.accounts (
   $18,
   $19,
   $20,
-  $21
+  $21,
+  $22
 )
 RETURNING
   id,
@@ -574,6 +592,7 @@ RETURNING
   credential_fingerprint,
   credential_mask,
   client_compatibility,
+  health_check_model,
   schedulable,
   availability_schedule_json,
   concurrency_limit,
@@ -599,6 +618,7 @@ type InsertPublicAccountParams struct {
 	ConcurrencyLimit          int32
 	Priority                  int32
 	ClientCompatibility       string
+	HealthCheckModel          string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	Notes                     pgtype.Text
@@ -621,6 +641,7 @@ type InsertPublicAccountRow struct {
 	CredentialFingerprint     pgtype.Text
 	CredentialMask            string
 	ClientCompatibility       string
+	HealthCheckModel          string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -647,6 +668,7 @@ func (q *Queries) InsertPublicAccount(ctx context.Context, arg InsertPublicAccou
 		arg.ConcurrencyLimit,
 		arg.Priority,
 		arg.ClientCompatibility,
+		arg.HealthCheckModel,
 		arg.Schedulable,
 		arg.AvailabilityScheduleJson,
 		arg.Notes,
@@ -669,6 +691,7 @@ func (q *Queries) InsertPublicAccount(ctx context.Context, arg InsertPublicAccou
 		&i.CredentialFingerprint,
 		&i.CredentialMask,
 		&i.ClientCompatibility,
+		&i.HealthCheckModel,
 		&i.Schedulable,
 		&i.AvailabilityScheduleJson,
 		&i.ConcurrencyLimit,
@@ -892,6 +915,7 @@ SELECT
   accounts.credential_fingerprint,
   accounts.credential_mask,
   accounts.client_compatibility,
+  accounts.health_check_model,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -961,6 +985,7 @@ type ListPublicAccountsRow struct {
 	CredentialFingerprint     pgtype.Text
 	CredentialMask            string
 	ClientCompatibility       string
+	HealthCheckModel          string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -1008,6 +1033,7 @@ func (q *Queries) ListPublicAccounts(ctx context.Context, arg ListPublicAccounts
 			&i.CredentialFingerprint,
 			&i.CredentialMask,
 			&i.ClientCompatibility,
+			&i.HealthCheckModel,
 			&i.Schedulable,
 			&i.AvailabilityScheduleJson,
 			&i.ConcurrencyLimit,
@@ -1075,15 +1101,9 @@ SET name = $1,
     schedulable = $8,
     availability_schedule_json = $9,
     notes = $10,
-    default_test_model = CASE
-      WHEN default_test_model IS NOT NULL
-        AND default_test_model <> ALL(COALESCE($11::text[], ARRAY[]::text[]))
-      THEN NULL
-      ELSE default_test_model
-    END,
-    updated_at = $12
-WHERE id = $13
-  AND system_account_id = $14
+    updated_at = $11
+WHERE id = $12
+  AND system_account_id = $13
   AND deleted_at IS NULL
 RETURNING
   id,
@@ -1099,6 +1119,7 @@ RETURNING
   credential_fingerprint,
   credential_mask,
   client_compatibility,
+  health_check_model,
   schedulable,
   availability_schedule_json,
   concurrency_limit,
@@ -1119,7 +1140,6 @@ type UpdatePublicAccountAllFieldsParams struct {
 	Schedulable              bool
 	AvailabilityScheduleJson pgtype.Text
 	Notes                    pgtype.Text
-	SupportedModels          []string
 	UpdatedAt                pgtype.Timestamptz
 	ID                       string
 	SystemAccountID          string
@@ -1139,6 +1159,7 @@ type UpdatePublicAccountAllFieldsRow struct {
 	CredentialFingerprint     pgtype.Text
 	CredentialMask            string
 	ClientCompatibility       string
+	HealthCheckModel          string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -1160,7 +1181,6 @@ func (q *Queries) UpdatePublicAccountAllFields(ctx context.Context, arg UpdatePu
 		arg.Schedulable,
 		arg.AvailabilityScheduleJson,
 		arg.Notes,
-		arg.SupportedModels,
 		arg.UpdatedAt,
 		arg.ID,
 		arg.SystemAccountID,
@@ -1180,6 +1200,7 @@ func (q *Queries) UpdatePublicAccountAllFields(ctx context.Context, arg UpdatePu
 		&i.CredentialFingerprint,
 		&i.CredentialMask,
 		&i.ClientCompatibility,
+		&i.HealthCheckModel,
 		&i.Schedulable,
 		&i.AvailabilityScheduleJson,
 		&i.ConcurrencyLimit,

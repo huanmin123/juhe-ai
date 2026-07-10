@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"juhe-ai/backend-go/internal/config"
@@ -17,14 +18,14 @@ func TestManagementProviderOptionsHandler(t *testing.T) {
 	service := &managementProviderOptionServiceStub{
 		options: []managementproviders.Option{
 			{
-				ID:                     "provider_gpt",
-				Code:                   "gpt",
-				Name:                   "GPT",
-				Enabled:                true,
-				DefaultTestModel:       "gpt-5-user",
-				SystemDefaultTestModel: "gpt-5-system",
+				ID:                            "provider_gpt",
+				Code:                          "gpt",
+				Name:                          "GPT",
+				Enabled:                       true,
+				DefaultHealthCheckModel:       "gpt-5-user",
+				SystemDefaultHealthCheckModel: "gpt-5-system",
 				ProtocolProfiles: []managementproviders.ProtocolProfile{
-					{ID: "profile_gpt_openai_v1", DefaultTestModel: "gpt-5-system"},
+					{ID: "profile_gpt_openai_v1", DefaultHealthCheckModel: "gpt-5-system"},
 				},
 			},
 		},
@@ -43,6 +44,15 @@ func TestManagementProviderOptionsHandler(t *testing.T) {
 	if service.input.SystemAccountID != "sys_user" {
 		t.Fatalf("service input = %+v", service.input)
 	}
+	responseJSON := rec.Body.String()
+	for _, want := range []string{`"defaultHealthCheckModel":"gpt-5-user"`, `"systemDefaultHealthCheckModel":"gpt-5-system"`} {
+		if !strings.Contains(responseJSON, want) {
+			t.Fatalf("response missing %s: %s", want, responseJSON)
+		}
+	}
+	if strings.Contains(responseJSON, "defaultTestModel") || strings.Contains(responseJSON, "systemDefaultTestModel") {
+		t.Fatalf("response exposes legacy provider model fields: %s", responseJSON)
+	}
 	var body struct {
 		Data []managementproviders.Option `json:"data"`
 	}
@@ -52,9 +62,9 @@ func TestManagementProviderOptionsHandler(t *testing.T) {
 	if len(body.Data) != 1 || body.Data[0].Code != "gpt" {
 		t.Fatalf("body = %+v", body)
 	}
-	if body.Data[0].DefaultTestModel != "gpt-5-user" ||
-		body.Data[0].SystemDefaultTestModel != "gpt-5-system" ||
-		body.Data[0].ProtocolProfiles[0].DefaultTestModel != "gpt-5-system" {
+	if body.Data[0].DefaultHealthCheckModel != "gpt-5-user" ||
+		body.Data[0].SystemDefaultHealthCheckModel != "gpt-5-system" ||
+		body.Data[0].ProtocolProfiles[0].DefaultHealthCheckModel != "gpt-5-system" {
 		t.Fatalf("provider option contract = %+v", body.Data[0])
 	}
 }
@@ -64,14 +74,14 @@ func TestManagementProvidersHandlerRequiresAdminAndIncludesDisabledProviders(t *
 		providers: []managementproviders.Option{
 			{ID: "provider_disabled", Code: "disabled", Name: "Disabled", Enabled: false},
 			{
-				ID:                     "provider_gpt",
-				Code:                   "gpt",
-				Name:                   "GPT",
-				Enabled:                true,
-				DefaultTestModel:       "gpt-5-user",
-				SystemDefaultTestModel: "gpt-5-system",
+				ID:                            "provider_gpt",
+				Code:                          "gpt",
+				Name:                          "GPT",
+				Enabled:                       true,
+				DefaultHealthCheckModel:       "gpt-5-user",
+				SystemDefaultHealthCheckModel: "gpt-5-system",
 				ProtocolProfiles: []managementproviders.ProtocolProfile{
-					{ID: "profile_gpt_openai_v1", DefaultTestModel: "gpt-5-system"},
+					{ID: "profile_gpt_openai_v1", DefaultHealthCheckModel: "gpt-5-system"},
 				},
 			},
 		},
@@ -90,6 +100,14 @@ func TestManagementProvidersHandlerRequiresAdminAndIncludesDisabledProviders(t *
 	if service.listInput.SystemAccountID != "sys_user" {
 		t.Fatalf("service list input = %+v", service.listInput)
 	}
+	responseJSON := rec.Body.String()
+	if !strings.Contains(responseJSON, `"defaultHealthCheckModel":"gpt-5-user"`) ||
+		!strings.Contains(responseJSON, `"systemDefaultHealthCheckModel":"gpt-5-system"`) {
+		t.Fatalf("response missing provider health check model contract: %s", responseJSON)
+	}
+	if strings.Contains(responseJSON, "defaultTestModel") || strings.Contains(responseJSON, "systemDefaultTestModel") {
+		t.Fatalf("response exposes legacy provider model fields: %s", responseJSON)
+	}
 	var body struct {
 		Data []managementproviders.Option `json:"data"`
 	}
@@ -99,9 +117,9 @@ func TestManagementProvidersHandlerRequiresAdminAndIncludesDisabledProviders(t *
 	if len(body.Data) != 2 || body.Data[0].Code != "disabled" || body.Data[0].Enabled {
 		t.Fatalf("body = %+v, want disabled provider preserved", body)
 	}
-	if body.Data[1].DefaultTestModel != "gpt-5-user" ||
-		body.Data[1].SystemDefaultTestModel != "gpt-5-system" ||
-		body.Data[1].ProtocolProfiles[0].DefaultTestModel != "gpt-5-system" {
+	if body.Data[1].DefaultHealthCheckModel != "gpt-5-user" ||
+		body.Data[1].SystemDefaultHealthCheckModel != "gpt-5-system" ||
+		body.Data[1].ProtocolProfiles[0].DefaultHealthCheckModel != "gpt-5-system" {
 		t.Fatalf("provider contract = %+v", body.Data[1])
 	}
 }

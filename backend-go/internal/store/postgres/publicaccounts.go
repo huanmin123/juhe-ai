@@ -55,8 +55,8 @@ func (s *Store) CreatePublicAccountTarget(ctx context.Context, input port.Public
 	return publicAccountCreateTarget(ctx, s.queries(), input)
 }
 
-func (s *Store) FindPublicAccountProviderProfile(ctx context.Context, providerCode string, profileID string) (port.PublicAccountProviderProfile, bool, error) {
-	return publicAccountFindProviderProfile(ctx, s.queries(), providerCode, profileID)
+func (s *Store) FindPublicAccountProviderProfile(ctx context.Context, systemAccountID string, providerCode string, profileID string) (port.PublicAccountProviderProfile, bool, error) {
+	return publicAccountFindProviderProfile(ctx, s.queries(), systemAccountID, providerCode, profileID)
 }
 
 func (s *Store) FindExistingPublicAccountGroupByName(ctx context.Context, systemAccountID string, providerCode string, name string) (port.PublicAccountGroupRef, bool, error) {
@@ -111,8 +111,8 @@ func (s publicAccountTxStore) CreatePublicAccountTarget(ctx context.Context, inp
 	return publicAccountCreateTarget(ctx, s.queries, input)
 }
 
-func (s publicAccountTxStore) FindPublicAccountProviderProfile(ctx context.Context, providerCode string, profileID string) (port.PublicAccountProviderProfile, bool, error) {
-	return publicAccountFindProviderProfile(ctx, s.queries, providerCode, profileID)
+func (s publicAccountTxStore) FindPublicAccountProviderProfile(ctx context.Context, systemAccountID string, providerCode string, profileID string) (port.PublicAccountProviderProfile, bool, error) {
+	return publicAccountFindProviderProfile(ctx, s.queries, systemAccountID, providerCode, profileID)
 }
 
 func (s publicAccountTxStore) FindExistingPublicAccountGroupByName(ctx context.Context, systemAccountID string, providerCode string, name string) (port.PublicAccountGroupRef, bool, error) {
@@ -207,10 +207,11 @@ func publicAccountCreateTarget(ctx context.Context, q *postgresqueries.Queries, 
 	}, nil
 }
 
-func publicAccountFindProviderProfile(ctx context.Context, q *postgresqueries.Queries, providerCode string, profileID string) (port.PublicAccountProviderProfile, bool, error) {
+func publicAccountFindProviderProfile(ctx context.Context, q *postgresqueries.Queries, systemAccountID string, providerCode string, profileID string) (port.PublicAccountProviderProfile, bool, error) {
 	row, err := q.FindPublicAccountProviderProfile(ctx, postgresqueries.FindPublicAccountProviderProfileParams{
-		ProviderCode: strings.TrimSpace(providerCode),
-		ProfileID:    strings.TrimSpace(profileID),
+		SystemAccountID: strings.TrimSpace(systemAccountID),
+		ProviderCode:    strings.TrimSpace(providerCode),
+		ProfileID:       strings.TrimSpace(profileID),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return port.PublicAccountProviderProfile{}, false, nil
@@ -231,15 +232,16 @@ func publicAccountProviderProfileFromRow(row postgresqueries.FindPublicAccountPr
 		return port.PublicAccountProviderProfile{}, err
 	}
 	return port.PublicAccountProviderProfile{
-		ID:                     row.ID,
-		ProviderCode:           row.ProviderCode,
-		Name:                   row.Name,
-		Enabled:                row.ProfileEnabled,
-		ProviderEnabled:        row.ProviderEnabled,
-		ProtocolCode:           row.ProtocolCode,
-		ProtocolVersion:        row.ProtocolVersion,
-		AccountTypesJSON:       row.AccountTypesJson,
-		DefaultSupportedModels: defaultSupportedModels,
+		ID:                      row.ID,
+		ProviderCode:            row.ProviderCode,
+		Name:                    row.Name,
+		Enabled:                 row.ProfileEnabled,
+		ProviderEnabled:         row.ProviderEnabled,
+		ProtocolCode:            row.ProtocolCode,
+		ProtocolVersion:         row.ProtocolVersion,
+		AccountTypesJSON:        row.AccountTypesJson,
+		DefaultSupportedModels:  defaultSupportedModels,
+		DefaultHealthCheckModel: strings.TrimSpace(row.DefaultHealthCheckModel),
 	}, nil
 }
 
@@ -429,6 +431,7 @@ func publicAccountCreate(ctx context.Context, q *postgresqueries.Queries, input 
 		ConcurrencyLimit:          int32(input.ConcurrencyLimit),
 		Priority:                  int32(input.Priority),
 		ClientCompatibility:       input.ClientCompatibility,
+		HealthCheckModel:          input.HealthCheckModel,
 		Schedulable:               input.Schedulable,
 		AvailabilityScheduleJson:  pgTextPtr(input.AvailabilityScheduleJSON),
 		Notes:                     pgTextPtr(input.Notes),
@@ -476,7 +479,6 @@ func publicAccountUpdate(ctx context.Context, q *postgresqueries.Queries, input 
 		Schedulable:              input.Schedulable,
 		AvailabilityScheduleJson: pgTextPtr(input.AvailabilityScheduleJSON),
 		Notes:                    pgTextPtr(input.Notes),
-		SupportedModels:          input.SupportedModels,
 		UpdatedAt:                pgTimestamptz(input.Now),
 		ID:                       input.ID,
 		SystemAccountID:          input.SystemAccountID,
@@ -587,6 +589,7 @@ func publicAccountSummaryFromListRow(row postgresqueries.ListPublicAccountsRow) 
 		CredentialFingerprint:     textPtr(row.CredentialFingerprint),
 		CredentialMask:            row.CredentialMask,
 		ClientCompatibility:       row.ClientCompatibility,
+		HealthCheckModel:          strings.TrimSpace(row.HealthCheckModel),
 		Schedulable:               row.Schedulable,
 		AvailabilityScheduleJSON:  textPtr(row.AvailabilityScheduleJson),
 		ConcurrencyLimit:          int(row.ConcurrencyLimit),
@@ -614,6 +617,7 @@ func publicAccountSummaryFromIDRow(row postgresqueries.FindPublicAccountByIDRow)
 		CredentialFingerprint:     textPtr(row.CredentialFingerprint),
 		CredentialMask:            row.CredentialMask,
 		ClientCompatibility:       row.ClientCompatibility,
+		HealthCheckModel:          strings.TrimSpace(row.HealthCheckModel),
 		Schedulable:               row.Schedulable,
 		AvailabilityScheduleJSON:  textPtr(row.AvailabilityScheduleJson),
 		ConcurrencyLimit:          int(row.ConcurrencyLimit),
@@ -641,6 +645,7 @@ func publicAccountSummaryFromForUpdateRow(row postgresqueries.FindPublicAccountB
 		CredentialFingerprint:     textPtr(row.CredentialFingerprint),
 		CredentialMask:            row.CredentialMask,
 		ClientCompatibility:       row.ClientCompatibility,
+		HealthCheckModel:          strings.TrimSpace(row.HealthCheckModel),
 		Schedulable:               row.Schedulable,
 		AvailabilityScheduleJSON:  textPtr(row.AvailabilityScheduleJson),
 		ConcurrencyLimit:          int(row.ConcurrencyLimit),
@@ -668,6 +673,7 @@ func publicAccountSummaryFromExistingRow(row postgresqueries.FindExistingPublicA
 		CredentialFingerprint:     textPtr(row.CredentialFingerprint),
 		CredentialMask:            row.CredentialMask,
 		ClientCompatibility:       row.ClientCompatibility,
+		HealthCheckModel:          strings.TrimSpace(row.HealthCheckModel),
 		Schedulable:               row.Schedulable,
 		AvailabilityScheduleJSON:  textPtr(row.AvailabilityScheduleJson),
 		ConcurrencyLimit:          int(row.ConcurrencyLimit),

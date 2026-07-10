@@ -47,6 +47,9 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 	if created.Status != port.PublicAccountStatusPendingTest || created.Schedulable {
 		t.Fatalf("stored account status/schedulable = %s/%v", created.Status, created.Schedulable)
 	}
+	if created.HealthCheckModel != defaultGPTHealthCheckModel {
+		t.Fatalf("stored health check model = %q, want %q", created.HealthCheckModel, defaultGPTHealthCheckModel)
+	}
 	if created.CredentialsEncrypted == "" ||
 		strings.Contains(created.CredentialsEncrypted, "sk-public-account-secret") ||
 		strings.Contains(created.CredentialsEncrypted, "api.openai.com") {
@@ -58,21 +61,60 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 		t.Fatalf("marshal response: %v", err)
 	}
 	lower := strings.ToLower(string(data))
-	for _, forbidden := range []string{"sk-public-account-secret", "api.openai.com", "credentials", "baseurl", "apikey"} {
+	for _, forbidden := range []string{"sk-public-account-secret", "api.openai.com", "credentials", "baseurl", "apikey", "healthcheckmodel"} {
 		if strings.Contains(lower, strings.ToLower(forbidden)) {
 			t.Fatalf("response leaked %q in %s", forbidden, string(data))
 		}
 	}
 }
 
-func TestPublicAccountSummaryDoesNotExposeDefaultTestModel(t *testing.T) {
+func TestPublicAccountSummaryDoesNotExposeHealthCheckModel(t *testing.T) {
 	summaryType := reflect.TypeOf(AccountSummary{})
 	for index := 0; index < summaryType.NumField(); index++ {
 		field := summaryType.Field(index)
 		jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
-		if field.Name == "DefaultTestModel" || jsonName == "defaultTestModel" {
-			t.Fatalf("public account summary exposes default test model through field %s", field.Name)
+		if field.Name == "HealthCheckModel" || jsonName == "healthCheckModel" {
+			t.Fatalf("public account summary exposes health check model through field %s", field.Name)
 		}
+	}
+}
+
+func TestServiceAddUsesTargetProviderHealthCheckPreferenceBeforeProfileDefault(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	target := port.PublicGroupTarget{
+		ID:          "sys_existing_admin",
+		Username:    "admin",
+		DisplayName: "管理员",
+		Status:      "active",
+	}
+	store.targetsByUsername["admin"] = target
+	store.targetsByID[target.ID] = target
+	store.healthCheckPreferences[target.ID+"|gpt"] = "gpt-5.5"
+	service := newPublicAccountServiceForTest(store, nil)
+
+	response, err := service.Add(context.Background(), AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "福利",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "偏好检查模型账号",
+		Type:                      AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-public-account-secret-0123456789abcdef",
+		SupportedModels:           NewStringListValue([]string{"gpt-5.5"}, true),
+	})
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	if response.Target.Created {
+		t.Fatalf("existing target was reported as created: %+v", response.Target)
+	}
+	created := store.accounts[response.Account.ID]
+	if created.HealthCheckModel != "gpt-5.5" {
+		t.Fatalf("stored health check model = %q, want preference gpt-5.5", created.HealthCheckModel)
+	}
+	if len(store.profileLookupSystemAccountIDs) != 1 || store.profileLookupSystemAccountIDs[0] != target.ID {
+		t.Fatalf("profile lookup system account IDs = %#v, want [%q]", store.profileLookupSystemAccountIDs, target.ID)
 	}
 }
 
@@ -146,6 +188,51 @@ func TestServiceAddEmptyProviderDefaultSupportedModelsReturnsError(t *testing.T)
 	}
 }
 
+func TestServiceAddRejectsEmptyEffectiveHealthCheckModel(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	profileKey := "gpt|profile_gpt_openai_v1"
+	profile := store.profiles[profileKey]
+	profile.DefaultHealthCheckModel = ""
+	store.profiles[profileKey] = profile
+	service := newPublicAccountServiceForTest(store, nil)
+
+	_, err := service.Add(context.Background(), AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "福利",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "空检查模型账号",
+		Type:                      AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-public-account-secret-0123456789abcdef",
+	})
+	assertInvalidHealthCheckModel(t, err, invalidHealthCheckModelRequiredMessage)
+	if store.createCalls != 0 || len(store.accounts) != 0 {
+		t.Fatalf("store create calls/accounts = %d/%d, want 0/0", store.createCalls, len(store.accounts))
+	}
+}
+
+func TestServiceAddRejectsEffectiveHealthCheckModelOutsideSupportedModels(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+
+	_, err := service.Add(context.Background(), AddInput{
+		TargetUsername:            "admin",
+		TargetGroupName:           "福利",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Name:                      "排除检查模型账号",
+		Type:                      AccountTypeAPIKey,
+		BaseURL:                   "https://api.openai.com/v1",
+		APIKey:                    "sk-public-account-secret-0123456789abcdef",
+		SupportedModels:           NewStringListValue([]string{"gpt-5.5"}, true),
+	})
+	assertInvalidHealthCheckModel(t, err, invalidHealthCheckModelUnsupportedMessage)
+	if store.createCalls != 0 || len(store.accounts) != 0 {
+		t.Fatalf("store create calls/accounts = %d/%d, want 0/0", store.createCalls, len(store.accounts))
+	}
+}
+
 func TestServiceAddDuplicateNamePrecedesEmptySupportedModelsValidation(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	reader := defaultProviderModelReaderStub()
@@ -200,6 +287,10 @@ func TestServiceAddPassesTargetOwnerAndProviderToModelCatalog(t *testing.T) {
 
 func TestServiceAddAcceptsBuiltInGlobalAndPersonalModels(t *testing.T) {
 	store := newPublicAccountStoreFake()
+	profileKey := "gpt|profile_gpt_openai_v1"
+	profile := store.profiles[profileKey]
+	profile.DefaultHealthCheckModel = "built-in-model"
+	store.profiles[profileKey] = profile
 	reader := providerModelReaderWithItems(
 		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: "built-in-model", Scope: "built_in"},
 		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: "global-model", Scope: "global"},
@@ -534,6 +625,66 @@ func TestServiceUpdateChangedSupportedModelsMarksStoreUpdate(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateRejectsRemovingCurrentHealthCheckModelWithoutWriting(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"不能移除检查模型账号",
+		defaultGPTHealthCheckModel,
+		"gpt-5.5",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	before := store.accounts[created.Account.ID]
+	reader.resetCalls()
+	store.updateCalls = 0
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID:       created.Account.ID,
+		SupportedModels: NewStringListValue([]string{"gpt-5.5"}, true),
+	})
+	assertInvalidHealthCheckModel(t, err, invalidHealthCheckModelUnsupportedMessage)
+	if reader.calls != 1 {
+		t.Fatalf("provider model reader calls = %d, want 1", reader.calls)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+	}
+	if after := store.accounts[created.Account.ID]; !reflect.DeepEqual(after, before) {
+		t.Fatalf("stored account changed after rejected health model removal:\nbefore = %+v\nafter  = %+v", before, after)
+	}
+}
+
+func TestServiceUpdateRejectsExistingInvalidHealthCheckModelOnUnrelatedWrite(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"现有检查模型异常账号",
+		defaultGPTHealthCheckModel,
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	account := store.accounts[created.Account.ID]
+	account.HealthCheckModel = "gpt-missing"
+	store.accounts[account.ID] = account
+	name := "不应保存的新名称"
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID: account.ID,
+		Name:      &name,
+	})
+	assertInvalidHealthCheckModel(t, err, invalidHealthCheckModelUnsupportedMessage)
+	if store.updateCalls != 0 {
+		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+	}
+	if stored := store.accounts[account.ID]; stored.Name != account.Name || stored.HealthCheckModel != "gpt-missing" {
+		t.Fatalf("stored account = %+v, want unchanged invalid health model account", stored)
+	}
+}
+
 func TestServiceUpdateCatalogFailureLeavesStateUnchanged(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	reader := defaultProviderModelReaderStub()
@@ -628,6 +779,17 @@ func assertInvalidSupportedModelsCatalog(t *testing.T, err error, invalidModels 
 	}
 }
 
+func assertInvalidHealthCheckModel(t *testing.T, err error, message string) {
+	t.Helper()
+	if !errors.Is(err, ErrInvalidHealthCheckModel) {
+		t.Fatalf("health check model error = %v, want ErrInvalidHealthCheckModel", err)
+	}
+	want := ErrInvalidHealthCheckModel.Error() + ": " + message
+	if err.Error() != want {
+		t.Fatalf("health check model error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestServiceDeleteMissingIsNotFoundAction(t *testing.T) {
 	service := newPublicAccountServiceForTest(newPublicAccountStoreFake(), nil)
 	username := "admin"
@@ -692,6 +854,8 @@ var defaultGPTSupportedModels = []string{
 	"gpt-image-2",
 }
 
+const defaultGPTHealthCheckModel = "gpt-5.4-mini"
+
 type providerModelReaderStub struct {
 	items  []managementprovidermodels.ModelCatalogItem
 	err    error
@@ -733,14 +897,16 @@ func (s *providerModelReaderStub) resetCalls() {
 }
 
 type publicAccountStoreFake struct {
-	targetsByUsername map[string]port.PublicGroupTarget
-	targetsByID       map[string]port.PublicGroupTarget
-	profiles          map[string]port.PublicAccountProviderProfile
-	groups            map[string]port.PublicAccountGroupRef
-	accounts          map[string]port.PublicAccountSummary
-	createCalls       int
-	updateCalls       int
-	lastUpdateInput   port.PublicAccountUpdateInput
+	targetsByUsername             map[string]port.PublicGroupTarget
+	targetsByID                   map[string]port.PublicGroupTarget
+	profiles                      map[string]port.PublicAccountProviderProfile
+	healthCheckPreferences        map[string]string
+	profileLookupSystemAccountIDs []string
+	groups                        map[string]port.PublicAccountGroupRef
+	accounts                      map[string]port.PublicAccountSummary
+	createCalls                   int
+	updateCalls                   int
+	lastUpdateInput               port.PublicAccountUpdateInput
 }
 
 func newPublicAccountStoreFake() *publicAccountStoreFake {
@@ -749,30 +915,33 @@ func newPublicAccountStoreFake() *publicAccountStoreFake {
 		targetsByID:       map[string]port.PublicGroupTarget{},
 		profiles: map[string]port.PublicAccountProviderProfile{
 			"gpt|profile_gpt_openai_v1": {
-				ID:                     "profile_gpt_openai_v1",
-				ProviderCode:           "gpt",
-				Name:                   "GPT / OpenAI v1",
-				Enabled:                true,
-				ProviderEnabled:        true,
-				ProtocolCode:           "openai",
-				ProtocolVersion:        "v1",
-				AccountTypesJSON:       `["oauth","api_key"]`,
-				DefaultSupportedModels: append([]string(nil), defaultGPTSupportedModels...),
+				ID:                      "profile_gpt_openai_v1",
+				ProviderCode:            "gpt",
+				Name:                    "GPT / OpenAI v1",
+				Enabled:                 true,
+				ProviderEnabled:         true,
+				ProtocolCode:            "openai",
+				ProtocolVersion:         "v1",
+				AccountTypesJSON:        `["oauth","api_key"]`,
+				DefaultSupportedModels:  append([]string(nil), defaultGPTSupportedModels...),
+				DefaultHealthCheckModel: defaultGPTHealthCheckModel,
 			},
 			"hybrid|profile_hybrid_openai_v1": {
-				ID:                     "profile_hybrid_openai_v1",
-				ProviderCode:           hybridProviderCode,
-				Name:                   "Hybrid / OpenAI v1",
-				Enabled:                true,
-				ProviderEnabled:        true,
-				ProtocolCode:           "openai",
-				ProtocolVersion:        "v1",
-				AccountTypesJSON:       `["api_key"]`,
-				DefaultSupportedModels: []string{"hybrid-direct-model"},
+				ID:                      "profile_hybrid_openai_v1",
+				ProviderCode:            hybridProviderCode,
+				Name:                    "Hybrid / OpenAI v1",
+				Enabled:                 true,
+				ProviderEnabled:         true,
+				ProtocolCode:            "openai",
+				ProtocolVersion:         "v1",
+				AccountTypesJSON:        `["api_key"]`,
+				DefaultSupportedModels:  []string{"hybrid-direct-model"},
+				DefaultHealthCheckModel: "hybrid-direct-model",
 			},
 		},
-		groups:   map[string]port.PublicAccountGroupRef{},
-		accounts: map[string]port.PublicAccountSummary{},
+		healthCheckPreferences: map[string]string{},
+		groups:                 map[string]port.PublicAccountGroupRef{},
+		accounts:               map[string]port.PublicAccountSummary{},
 	}
 }
 
@@ -799,8 +968,12 @@ func (s *publicAccountStoreFake) CreatePublicAccountTarget(_ context.Context, in
 	return target, nil
 }
 
-func (s *publicAccountStoreFake) FindPublicAccountProviderProfile(_ context.Context, providerCode string, profileID string) (port.PublicAccountProviderProfile, bool, error) {
+func (s *publicAccountStoreFake) FindPublicAccountProviderProfile(_ context.Context, systemAccountID string, providerCode string, profileID string) (port.PublicAccountProviderProfile, bool, error) {
+	s.profileLookupSystemAccountIDs = append(s.profileLookupSystemAccountIDs, strings.TrimSpace(systemAccountID))
 	profile, ok := s.profiles[strings.TrimSpace(providerCode)+"|"+strings.TrimSpace(profileID)]
+	if preference := s.healthCheckPreferences[strings.TrimSpace(systemAccountID)+"|"+strings.TrimSpace(providerCode)]; preference != "" {
+		profile.DefaultHealthCheckModel = preference
+	}
 	return profile, ok, nil
 }
 
@@ -883,6 +1056,7 @@ func (s *publicAccountStoreFake) CreatePublicAccount(_ context.Context, input po
 		CredentialMask:            input.CredentialMask,
 		ClientCompatibility:       input.ClientCompatibility,
 		SupportedModels:           input.SupportedModels,
+		HealthCheckModel:          input.HealthCheckModel,
 		BoundGroupID:              &group.ID,
 		BoundGroupName:            &group.Name,
 		Schedulable:               input.Schedulable,

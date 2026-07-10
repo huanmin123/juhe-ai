@@ -11,34 +11,34 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const listManagementProviderDefaultTestModelPreferences = `-- name: ListManagementProviderDefaultTestModelPreferences :many
+const listManagementProviderDefaultHealthCheckModelPreferences = `-- name: ListManagementProviderDefaultHealthCheckModelPreferences :many
 SELECT provider_code, model
-FROM juhe_business.provider_default_test_models
+FROM juhe_business.provider_default_health_check_models
 WHERE system_account_id = $1
   AND $1::text <> ''
   AND provider_code = ANY($2::text[])
 ORDER BY provider_code ASC
 `
 
-type ListManagementProviderDefaultTestModelPreferencesParams struct {
+type ListManagementProviderDefaultHealthCheckModelPreferencesParams struct {
 	SystemAccountID string
 	ProviderCodes   []string
 }
 
-type ListManagementProviderDefaultTestModelPreferencesRow struct {
+type ListManagementProviderDefaultHealthCheckModelPreferencesRow struct {
 	ProviderCode string
 	Model        string
 }
 
-func (q *Queries) ListManagementProviderDefaultTestModelPreferences(ctx context.Context, arg ListManagementProviderDefaultTestModelPreferencesParams) ([]ListManagementProviderDefaultTestModelPreferencesRow, error) {
-	rows, err := q.db.Query(ctx, listManagementProviderDefaultTestModelPreferences, arg.SystemAccountID, arg.ProviderCodes)
+func (q *Queries) ListManagementProviderDefaultHealthCheckModelPreferences(ctx context.Context, arg ListManagementProviderDefaultHealthCheckModelPreferencesParams) ([]ListManagementProviderDefaultHealthCheckModelPreferencesRow, error) {
+	rows, err := q.db.Query(ctx, listManagementProviderDefaultHealthCheckModelPreferences, arg.SystemAccountID, arg.ProviderCodes)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListManagementProviderDefaultTestModelPreferencesRow
+	var items []ListManagementProviderDefaultHealthCheckModelPreferencesRow
 	for rows.Next() {
-		var i ListManagementProviderDefaultTestModelPreferencesRow
+		var i ListManagementProviderDefaultHealthCheckModelPreferencesRow
 		if err := rows.Scan(&i.ProviderCode, &i.Model); err != nil {
 			return nil, err
 		}
@@ -111,7 +111,7 @@ SELECT
   protocol_code,
   protocol_version,
   base_url,
-  default_test_model,
+  default_health_check_model,
   account_types_json,
   capabilities_json
 FROM juhe_business.provider_protocol_profiles
@@ -121,17 +121,17 @@ LIMIT 200
 `
 
 type ListManagementProviderOptionProfilesRow struct {
-	ID               string
-	ProviderCode     string
-	Name             string
-	Description      pgtype.Text
-	Enabled          bool
-	ProtocolCode     string
-	ProtocolVersion  string
-	BaseUrl          string
-	DefaultTestModel string
-	AccountTypesJson string
-	CapabilitiesJson string
+	ID                      string
+	ProviderCode            string
+	Name                    string
+	Description             pgtype.Text
+	Enabled                 bool
+	ProtocolCode            string
+	ProtocolVersion         string
+	BaseUrl                 string
+	DefaultHealthCheckModel string
+	AccountTypesJson        string
+	CapabilitiesJson        string
 }
 
 func (q *Queries) ListManagementProviderOptionProfiles(ctx context.Context, providerCodes []string) ([]ListManagementProviderOptionProfilesRow, error) {
@@ -152,7 +152,7 @@ func (q *Queries) ListManagementProviderOptionProfiles(ctx context.Context, prov
 			&i.ProtocolCode,
 			&i.ProtocolVersion,
 			&i.BaseUrl,
-			&i.DefaultTestModel,
+			&i.DefaultHealthCheckModel,
 			&i.AccountTypesJson,
 			&i.CapabilitiesJson,
 		); err != nil {
@@ -257,8 +257,8 @@ func (q *Queries) ListManagementProviders(ctx context.Context) ([]ListManagement
 	return items, nil
 }
 
-const upsertManagementProviderDefaultTestModelPreference = `-- name: UpsertManagementProviderDefaultTestModelPreference :one
-INSERT INTO juhe_business.provider_default_test_models (
+const upsertManagementProviderDefaultHealthCheckModelPreference = `-- name: UpsertManagementProviderDefaultHealthCheckModelPreference :one
+INSERT INTO juhe_business.provider_default_health_check_models (
   system_account_id, provider_code, model, created_at, updated_at
 ) VALUES (
   $1, $2, $3, now(), now()
@@ -269,20 +269,20 @@ ON CONFLICT (system_account_id, provider_code) DO UPDATE SET
 RETURNING provider_code, model
 `
 
-type UpsertManagementProviderDefaultTestModelPreferenceParams struct {
+type UpsertManagementProviderDefaultHealthCheckModelPreferenceParams struct {
 	SystemAccountID string
 	ProviderCode    string
 	Model           string
 }
 
-type UpsertManagementProviderDefaultTestModelPreferenceRow struct {
+type UpsertManagementProviderDefaultHealthCheckModelPreferenceRow struct {
 	ProviderCode string
 	Model        string
 }
 
-func (q *Queries) UpsertManagementProviderDefaultTestModelPreference(ctx context.Context, arg UpsertManagementProviderDefaultTestModelPreferenceParams) (UpsertManagementProviderDefaultTestModelPreferenceRow, error) {
-	row := q.db.QueryRow(ctx, upsertManagementProviderDefaultTestModelPreference, arg.SystemAccountID, arg.ProviderCode, arg.Model)
-	var i UpsertManagementProviderDefaultTestModelPreferenceRow
+func (q *Queries) UpsertManagementProviderDefaultHealthCheckModelPreference(ctx context.Context, arg UpsertManagementProviderDefaultHealthCheckModelPreferenceParams) (UpsertManagementProviderDefaultHealthCheckModelPreferenceRow, error) {
+	row := q.db.QueryRow(ctx, upsertManagementProviderDefaultHealthCheckModelPreference, arg.SystemAccountID, arg.ProviderCode, arg.Model)
+	var i UpsertManagementProviderDefaultHealthCheckModelPreferenceRow
 	err := row.Scan(&i.ProviderCode, &i.Model)
 	return i, err
 }

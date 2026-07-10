@@ -21,7 +21,7 @@ SELECT
   protocol_code,
   protocol_version,
   base_url,
-  default_test_model,
+  default_health_check_model,
   account_types_json,
   capabilities_json
 FROM juhe_business.provider_protocol_profiles
@@ -47,16 +47,16 @@ WHERE ppf.profile_id = ANY(sqlc.arg(profile_ids)::text[])
   AND f.enabled = true
 ORDER BY ppf.profile_id ASC, f.family_code ASC;
 
--- name: ListManagementProviderDefaultTestModelPreferences :many
+-- name: ListManagementProviderDefaultHealthCheckModelPreferences :many
 SELECT provider_code, model
-FROM juhe_business.provider_default_test_models
+FROM juhe_business.provider_default_health_check_models
 WHERE system_account_id = sqlc.arg(system_account_id)
   AND sqlc.arg(system_account_id)::text <> ''
   AND provider_code = ANY(sqlc.arg(provider_codes)::text[])
 ORDER BY provider_code ASC;
 
--- name: UpsertManagementProviderDefaultTestModelPreference :one
-INSERT INTO juhe_business.provider_default_test_models (
+-- name: UpsertManagementProviderDefaultHealthCheckModelPreference :one
+INSERT INTO juhe_business.provider_default_health_check_models (
   system_account_id, provider_code, model, created_at, updated_at
 ) VALUES (
   sqlc.arg(system_account_id), sqlc.arg(provider_code), sqlc.arg(model), now(), now()

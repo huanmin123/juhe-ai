@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.provider_protocol_profiles (
   protocol_code text NOT NULL,
   protocol_version text NOT NULL,
   base_url text NOT NULL,
-  default_test_model text NOT NULL DEFAULT '',
+  default_health_check_model text NOT NULL DEFAULT '',
   account_types_json text NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(account_types_json::jsonb) = 'array'),
   capabilities_json text NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(capabilities_json::jsonb) = 'array'),
   created_at timestamptz NOT NULL,
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   cooldown_until timestamptz,
   last_error_code text,
   last_error_message text,
-  default_test_model text,
+  health_check_model text NOT NULL,
   deleted_at timestamptz,
   deleted_by text,
   created_at timestamptz NOT NULL,
@@ -143,7 +143,7 @@ ON CONFLICT (code, version) DO UPDATE SET
 
 INSERT INTO juhe_business.provider_protocol_profiles (
   id, provider_code, name, description, enabled, protocol_code, protocol_version,
-  base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
+  base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at
 ) VALUES
   ('profile_openai_openai_v1', 'openai', 'OpenAI Compatible / OpenAI v1',
     '通用 OpenAI-compatible 供应商的 OpenAI v1 协议档案',
@@ -201,7 +201,7 @@ ON CONFLICT (id) DO UPDATE SET
   protocol_code = EXCLUDED.protocol_code,
   protocol_version = EXCLUDED.protocol_version,
   base_url = EXCLUDED.base_url,
-  default_test_model = EXCLUDED.default_test_model,
+  default_health_check_model = EXCLUDED.default_health_check_model,
   account_types_json = EXCLUDED.account_types_json,
   capabilities_json = EXCLUDED.capabilities_json,
   updated_at = EXCLUDED.updated_at;

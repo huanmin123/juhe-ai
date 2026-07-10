@@ -603,6 +603,7 @@ func writePublicAccountServiceError(w http.ResponseWriter, err error, fallback s
 		errors.Is(err, publicaccounts.ErrInvalidBaseURL),
 		errors.Is(err, publicaccounts.ErrInvalidAPIKey),
 		errors.Is(err, publicaccounts.ErrInvalidSupportedModels),
+		errors.Is(err, publicaccounts.ErrInvalidHealthCheckModel),
 		errors.Is(err, publicaccounts.ErrInvalidAvailability),
 		errors.Is(err, publicaccounts.ErrInvalidDispatchField),
 		errors.Is(err, publicaccounts.ErrInvalidStatusTransition),

@@ -35,7 +35,7 @@ type JuheBusinessAccount struct {
 	CooldownUntil                             pgtype.Timestamptz
 	LastErrorCode                             pgtype.Text
 	LastErrorMessage                          pgtype.Text
-	DefaultTestModel                          pgtype.Text
+	HealthCheckModel                          string
 	DeletedAt                                 pgtype.Timestamptz
 	DeletedBy                                 pgtype.Text
 	CreatedAt                                 pgtype.Timestamptz
@@ -263,7 +263,7 @@ type JuheBusinessProvider struct {
 	UpdatedAt                  pgtype.Timestamptz
 }
 
-type JuheBusinessProviderDefaultTestModel struct {
+type JuheBusinessProviderDefaultHealthCheckModel struct {
 	SystemAccountID string
 	ProviderCode    string
 	Model           string
@@ -305,29 +305,29 @@ type JuheBusinessProviderModelCatalog struct {
 }
 
 type JuheBusinessProviderProtocolProfile struct {
-	ID               string
-	ProviderCode     string
-	Name             string
-	Description      pgtype.Text
-	Enabled          bool
-	ProtocolCode     string
-	ProtocolVersion  string
-	BaseUrl          string
-	DefaultTestModel string
-	AccountTypesJson string
-	CapabilitiesJson string
-	CreatedAt        pgtype.Timestamptz
-	UpdatedAt        pgtype.Timestamptz
+	ID                      string
+	ProviderCode            string
+	Name                    string
+	Description             pgtype.Text
+	Enabled                 bool
+	ProtocolCode            string
+	ProtocolVersion         string
+	BaseUrl                 string
+	DefaultHealthCheckModel string
+	AccountTypesJson        string
+	CapabilitiesJson        string
+	CreatedAt               pgtype.Timestamptz
+	UpdatedAt               pgtype.Timestamptz
 }
 
 type JuheBusinessProviderProtocolProfileFamily struct {
-	ProfileID        string
-	FamilyCode       string
-	Enabled          bool
-	DefaultTestModel pgtype.Text
-	CapabilitiesJson string
-	CreatedAt        pgtype.Timestamptz
-	UpdatedAt        pgtype.Timestamptz
+	ProfileID               string
+	FamilyCode              string
+	Enabled                 bool
+	DefaultHealthCheckModel pgtype.Text
+	CapabilitiesJson        string
+	CreatedAt               pgtype.Timestamptz
+	UpdatedAt               pgtype.Timestamptz
 }
 
 type JuheBusinessProxyProfile struct {

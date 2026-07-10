@@ -187,7 +187,7 @@ func TestServiceModelsReturnsProviderNotFound(t *testing.T) {
 	}
 }
 
-func TestServiceSetDefaultTestModelValidatesCatalogAndPersists(t *testing.T) {
+func TestServiceSetDefaultHealthCheckModelValidatesCatalogAndPersists(t *testing.T) {
 	store := &providerModelStoreStub{
 		providers: map[string]port.ManagementProviderModelProvider{
 			"gpt": {Code: "gpt", Enabled: true},
@@ -198,16 +198,16 @@ func TestServiceSetDefaultTestModelValidatesCatalogAndPersists(t *testing.T) {
 	}
 	service := NewService(store)
 
-	result, err := service.SetDefaultTestModel(context.Background(), DefaultTestModelInput{
+	result, err := service.SetDefaultHealthCheckModel(context.Background(), DefaultHealthCheckModelInput{
 		ProviderCode:    " gpt ",
 		SystemAccountID: " sys_user ",
 		Model:           " gpt-5.5 ",
 	})
 	if err != nil {
-		t.Fatalf("SetDefaultTestModel() error = %v", err)
+		t.Fatalf("SetDefaultHealthCheckModel() error = %v", err)
 	}
 
-	if result.ProviderCode != "gpt" || result.DefaultTestModel != "gpt-5.5" {
+	if result.ProviderCode != "gpt" || result.DefaultHealthCheckModel != "gpt-5.5" {
 		t.Fatalf("result = %+v", result)
 	}
 	if store.catalogInput.SystemAccountID != "sys_user" || !store.catalogInput.IncludeInactive {
@@ -220,46 +220,46 @@ func TestServiceSetDefaultTestModelValidatesCatalogAndPersists(t *testing.T) {
 	}
 }
 
-func TestServiceSetDefaultTestModelRejectsInvalidSelections(t *testing.T) {
+func TestServiceSetDefaultHealthCheckModelRejectsInvalidSelections(t *testing.T) {
 	tests := []struct {
 		name    string
-		input   DefaultTestModelInput
+		input   DefaultHealthCheckModelInput
 		catalog []port.ManagementProviderModelCatalogItem
 		wantMsg string
 	}{
 		{
 			name:    "missing system account",
-			input:   DefaultTestModelInput{ProviderCode: "gpt", Model: "gpt-5.5"},
-			wantMsg: "请选择要设置默认测试模型的系统账户",
+			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", Model: "gpt-5.5"},
+			wantMsg: "请选择要设置默认检查模型的系统账户",
 		},
 		{
 			name:    "missing model",
-			input:   DefaultTestModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user"},
-			wantMsg: "默认测试模型参数无效",
+			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user"},
+			wantMsg: "默认检查模型参数无效",
 		},
 		{
 			name:    "not visible",
-			input:   DefaultTestModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "missing"},
+			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "missing"},
 			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active"}},
 			wantMsg: "模型不在当前用户可见目录中：missing",
 		},
 		{
 			name:    "inactive",
-			input:   DefaultTestModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "draft-model"},
+			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "draft-model"},
 			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "draft-model", Scope: "global", Status: "draft"}},
-			wantMsg: "只能把启用模型设置为默认测试模型",
+			wantMsg: "只能把启用模型设置为默认检查模型",
 		},
 		{
 			name:    "image model",
-			input:   DefaultTestModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "image-model"},
+			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "image-model"},
 			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "image-model", Scope: "built_in", Status: "active", Mode: "image", SupportedAPIProtocols: []string{"images"}}},
-			wantMsg: "默认测试模型只能选择文本生成模型",
+			wantMsg: "默认检查模型只能选择文本生成模型",
 		},
 		{
 			name:    "unsupported protocol",
-			input:   DefaultTestModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "embed-model"},
+			input:   DefaultHealthCheckModelInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "embed-model"},
 			catalog: []port.ManagementProviderModelCatalogItem{{ProviderCode: "gpt", Model: "embed-model", Scope: "built_in", Status: "active", SupportedAPIProtocols: []string{"embed_content"}}},
-			wantMsg: "默认测试模型只能选择文本生成模型",
+			wantMsg: "默认检查模型只能选择文本生成模型",
 		},
 	}
 
@@ -271,11 +271,11 @@ func TestServiceSetDefaultTestModelRejectsInvalidSelections(t *testing.T) {
 				},
 				catalog: tt.catalog,
 			}
-			_, err := NewService(store).SetDefaultTestModel(context.Background(), tt.input)
+			_, err := NewService(store).SetDefaultHealthCheckModel(context.Background(), tt.input)
 			if err == nil {
-				t.Fatal("SetDefaultTestModel() error = nil, want validation error")
+				t.Fatal("SetDefaultHealthCheckModel() error = nil, want validation error")
 			}
-			got, ok := DefaultTestModelValidationMessage(err)
+			got, ok := DefaultHealthCheckModelValidationMessage(err)
 			if !ok || got != tt.wantMsg {
 				t.Fatalf("validation message = %q, %v; want %q", got, ok, tt.wantMsg)
 			}
@@ -286,14 +286,14 @@ func TestServiceSetDefaultTestModelRejectsInvalidSelections(t *testing.T) {
 	}
 }
 
-func TestServiceSetDefaultTestModelReturnsProviderNotFound(t *testing.T) {
-	_, err := NewService(&providerModelStoreStub{}).SetDefaultTestModel(context.Background(), DefaultTestModelInput{
+func TestServiceSetDefaultHealthCheckModelReturnsProviderNotFound(t *testing.T) {
+	_, err := NewService(&providerModelStoreStub{}).SetDefaultHealthCheckModel(context.Background(), DefaultHealthCheckModelInput{
 		ProviderCode:    "missing",
 		SystemAccountID: "sys_user",
 		Model:           "gpt-5.5",
 	})
 	if err != ErrProviderNotFound {
-		t.Fatalf("SetDefaultTestModel() error = %v, want ErrProviderNotFound", err)
+		t.Fatalf("SetDefaultHealthCheckModel() error = %v, want ErrProviderNotFound", err)
 	}
 }
 
@@ -737,8 +737,8 @@ type providerModelStoreStub struct {
 	protocolCodes    map[string][]string
 	catalog          []port.ManagementProviderModelCatalogItem
 	catalogInput     port.ManagementProviderModelCatalogListInput
-	setDefaultInput  port.ManagementProviderDefaultTestModelInput
-	setDefaultResult port.ManagementProviderDefaultTestModelPreference
+	setDefaultInput  port.ManagementProviderDefaultHealthCheckModelInput
+	setDefaultResult port.ManagementProviderDefaultHealthCheckModelPreference
 	setDefaultErr    error
 	customByID       map[string]port.ManagementProviderModelCatalogItem
 	customByScope    map[string]port.ManagementProviderModelCatalogItem
@@ -748,7 +748,7 @@ type providerModelStoreStub struct {
 	deleteResult     bool
 	bindingInput     port.ManagementCustomProviderModelBindingInput
 	bindingSummary   port.ManagementCustomProviderModelBindingSummary
-	clearInput       port.ManagementProviderDefaultTestModelClearInput
+	clearInput       port.ManagementProviderDefaultHealthCheckModelClearInput
 	clearErr         error
 }
 
@@ -783,21 +783,21 @@ func (s *providerModelStoreStub) ListManagementProviderModelCatalog(_ context.Co
 	return items, nil
 }
 
-func (s *providerModelStoreStub) SetManagementProviderDefaultTestModel(_ context.Context, input port.ManagementProviderDefaultTestModelInput) (port.ManagementProviderDefaultTestModelPreference, error) {
+func (s *providerModelStoreStub) SetManagementProviderDefaultHealthCheckModel(_ context.Context, input port.ManagementProviderDefaultHealthCheckModelInput) (port.ManagementProviderDefaultHealthCheckModelPreference, error) {
 	s.setDefaultInput = input
 	if s.setDefaultErr != nil {
-		return port.ManagementProviderDefaultTestModelPreference{}, s.setDefaultErr
+		return port.ManagementProviderDefaultHealthCheckModelPreference{}, s.setDefaultErr
 	}
 	if s.setDefaultResult.ProviderCode != "" || s.setDefaultResult.Model != "" {
 		return s.setDefaultResult, nil
 	}
-	return port.ManagementProviderDefaultTestModelPreference{
+	return port.ManagementProviderDefaultHealthCheckModelPreference{
 		ProviderCode: input.ProviderCode,
 		Model:        input.Model,
 	}, nil
 }
 
-func (s *providerModelStoreStub) ClearManagementProviderDefaultTestModelIfModel(_ context.Context, input port.ManagementProviderDefaultTestModelClearInput) (bool, error) {
+func (s *providerModelStoreStub) ClearManagementProviderDefaultHealthCheckModelIfModel(_ context.Context, input port.ManagementProviderDefaultHealthCheckModelClearInput) (bool, error) {
 	s.clearInput = input
 	if s.clearErr != nil {
 		return false, s.clearErr
