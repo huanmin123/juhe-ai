@@ -154,12 +154,12 @@ func TestRouterDoesNotRegisterManagementCaptchaWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestRouterSkipsIPReadRateLimitForManagementCaptcha(t *testing.T) {
+func TestRouterAppliesIPReadRateLimitForManagementCaptcha(t *testing.T) {
 	issuer := &managementCaptchaIssuerStub{
 		challenge: managementauth.CaptchaChallenge{CaptchaID: "captcha-id"},
 	}
 	limiter := &publicSettingsRateLimiterStub{
-		decision: SystemAPIIPReadRateLimitDecision{
+		decision: SystemAPIRateLimitDecision{
 			Allowed:           false,
 			RetryAfterSeconds: 7,
 		},
@@ -168,10 +168,10 @@ func TestRouterSkipsIPReadRateLimitForManagementCaptcha(t *testing.T) {
 		Config:                      config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
 		ManagementCaptchaHandler:    NewManagementCaptchaHandler(issuer, config.Config{}),
-		SystemAPIIPRateLimitReader: publicSettingsRateLimitReaderStub{
-			settings: port.SystemAPIIPReadRateLimitSettings{PerMinute: 1, BurstPer10Seconds: 1},
+		SystemAPIRateLimitReader: systemAPIRateLimitReaderStub{
+			settings: port.SystemAPIRateLimitSettings{IPReadPerMinute: 1, IPReadBurstPer10Seconds: 1},
 		},
-		SystemAPIIPReadRateLimiter: limiter,
+		SystemAPIIPRateLimiter: limiter,
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/captcha", nil)
@@ -180,11 +180,14 @@ func TestRouterSkipsIPReadRateLimitForManagementCaptcha(t *testing.T) {
 
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s, want 429", rec.Code, rec.Body.String())
 	}
-	if limiter.calls != 0 {
-		t.Fatalf("system API read limiter calls = %d, want 0 for captcha write-like GET", limiter.calls)
+	if got := rec.Header().Get("Retry-After"); got != "7" {
+		t.Fatalf("Retry-After = %q, want 7", got)
+	}
+	if limiter.calls != 1 {
+		t.Fatalf("system API limiter calls = %d, want 1 for captcha GET", limiter.calls)
 	}
 }
 

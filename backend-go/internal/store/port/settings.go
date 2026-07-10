@@ -11,11 +11,15 @@ type PublicSettingsReader interface {
 	PublicGlobalSettings(ctx context.Context) (PublicGlobalSettings, error)
 }
 
-type SystemAPIIPReadRateLimitSettings struct {
-	PerMinute         int
-	BurstPer10Seconds int
+type SystemAPIRateLimitSettings struct {
+	IPReadPerMinute          int
+	IPReadBurstPer10Seconds  int
+	IPWritePerMinute         int
+	IPWriteBurstPer10Seconds int
+	UserReadPerMinute        int
+	UserWritePerMinute       int
 }
 
-type SystemAPIIPRateLimitReader interface {
-	SystemAPIIPReadRateLimitSettings(ctx context.Context) (SystemAPIIPReadRateLimitSettings, error)
+type SystemAPIRateLimitReader interface {
+	SystemAPIRateLimitSettings(ctx context.Context) (SystemAPIRateLimitSettings, error)
 }

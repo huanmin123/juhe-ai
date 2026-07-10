@@ -22,7 +22,11 @@ CREATE TABLE IF NOT EXISTS juhe_business.system_settings (
 INSERT INTO juhe_business.system_settings (system_account_id, key, value_json, updated_at)
 VALUES
   ('sys_admin', 'systemApiRateLimitIpReadPerMinute', '600', now()),
-  ('sys_admin', 'systemApiRateLimitIpReadBurstPer10Seconds', '120', now())
+  ('sys_admin', 'systemApiRateLimitIpReadBurstPer10Seconds', '120', now()),
+  ('sys_admin', 'systemApiRateLimitIpWritePerMinute', '180', now()),
+  ('sys_admin', 'systemApiRateLimitIpWriteBurstPer10Seconds', '40', now()),
+  ('sys_admin', 'systemApiRateLimitUserReadPerMinute', '300', now()),
+  ('sys_admin', 'systemApiRateLimitUserWritePerMinute', '120', now())
 ON CONFLICT (system_account_id, key) DO NOTHING;
 
 -- +goose Down

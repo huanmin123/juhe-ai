@@ -12,6 +12,7 @@ import (
 
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/modules/managementauth"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestManagementAPIAuthMiddlewareInjectsContext(t *testing.T) {
@@ -381,6 +382,56 @@ func TestRouterRegistersManagementLogoutWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestRouterAppliesIPWriteRateLimitBeforeManagementLogin(t *testing.T) {
+	limiter := &publicSettingsRateLimiterStub{
+		decision: SystemAPIRateLimitDecision{
+			Allowed:           false,
+			RetryAfterSeconds: 5,
+		},
+	}
+	loginCalls := 0
+	router := NewRouter(RouterOptions{
+		Config:                      config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
+		ManagementLoginHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			loginCalls++
+			writeData(w, http.StatusOK, map[string]string{"ok": "login"})
+		}),
+		SystemAPIRateLimitReader: systemAPIRateLimitReaderStub{
+			settings: port.SystemAPIRateLimitSettings{
+				IPWritePerMinute:         1,
+				IPWriteBurstPer10Seconds: 1,
+			},
+		},
+		SystemAPIIPRateLimiter: limiter,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/login", strings.NewReader(`{}`))
+	req.RemoteAddr = "203.0.113.10:12345"
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s, want 429", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "5" {
+		t.Fatalf("Retry-After = %q, want 5", got)
+	}
+	if loginCalls != 0 {
+		t.Fatalf("login handler calls = %d, want 0 while IP write limited", loginCalls)
+	}
+	if limiter.calls != 1 {
+		t.Fatalf("system API IP limiter calls = %d, want 1", limiter.calls)
+	}
+	if limiter.settings.PerMinute != 1 || limiter.settings.BurstPer10Seconds != 1 {
+		t.Fatalf("write limit settings = %+v, want write minute and burst values", limiter.settings)
+	}
+	if limiter.key != systemAPIIPRateLimitKey("203.0.113.10", systemAPIMethodWrite) {
+		t.Fatalf("limiter key = %q, want hashed IP write key", limiter.key)
+	}
+}
+
 func TestRouterRegistersManagementSessionListWithReadAuth(t *testing.T) {
 	authenticator := &managementAPIAuthenticatorStub{
 		context: managementauth.Context{
@@ -538,6 +589,8 @@ func TestRouterRegistersOnlyManagementSessionsWhenSessionSwitchEnabled(t *testin
 	}
 	router := NewRouter(RouterOptions{
 		Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAuthSessionsEnabled: true},
+		SystemAPIRateLimitReader:         systemAPIRateLimitReaderStub{},
+		SystemAPIIPRateLimiter:           NewInMemorySystemAPIIPRateLimiter(),
 		ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(readAuthenticator),
 		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
 		ManagementSessionListHandler:     newManagementSessionListHandler(service),
@@ -678,6 +731,201 @@ func TestRouterUsesTouchMiddlewareOnlyForManagementWriteRoutes(t *testing.T) {
 	}
 }
 
+func TestRouterAppliesAuthenticatedUserReadRateLimitAfterManagementAuth(t *testing.T) {
+	authenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_user",
+			Username:        "user",
+			Role:            "user",
+			SessionID:       "sess_user",
+		},
+	}
+	limiter := &systemAPIAuthenticatedRateLimiterStub{
+		decision: SystemAPIRateLimitDecision{
+			Allowed:           false,
+			RetryAfterSeconds: 11,
+		},
+	}
+	handlerCalls := 0
+	router := NewRouter(RouterOptions{
+		Config:                            config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		SystemAPIRateLimitReader:          systemAPIRateLimitReaderStub{settings: port.SystemAPIRateLimitSettings{UserReadPerMinute: 300, UserWritePerMinute: 120}},
+		SystemAPIIPRateLimiter:            NewInMemorySystemAPIIPRateLimiter(),
+		SystemAPIAuthenticatedRateLimiter: limiter,
+		ManagementAPIAuthMiddleware:       NewManagementAPIAuthMiddleware(authenticator),
+		ManagementProxyOptionsHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handlerCalls++
+			writeData(w, http.StatusOK, map[string]string{"ok": "read"})
+		}),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s, want 429", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "11" {
+		t.Fatalf("Retry-After = %q, want 11", got)
+	}
+	if authenticator.cookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("read auth cookie header = %q", authenticator.cookieHeader)
+	}
+	if handlerCalls != 0 {
+		t.Fatalf("handler calls = %d, want 0 while rate limited", handlerCalls)
+	}
+	if limiter.calls != 1 || limiter.limit != 300 {
+		t.Fatalf("limiter calls=%d limit=%d, want one call with read limit 300", limiter.calls, limiter.limit)
+	}
+	if limiter.key != systemAPIAuthenticatedRateLimitKey("sys_user", systemAPIMethodRead) {
+		t.Fatalf("limiter key = %q, want hashed user read key", limiter.key)
+	}
+}
+
+func TestRouterAppliesAuthenticatedUserWriteRateLimitAfterTouchAuth(t *testing.T) {
+	readAuthenticator := &managementAPIAuthenticatorStub{}
+	touchAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_user",
+			Username:        "user",
+			Role:            "user",
+			SessionID:       "sess_touch",
+		},
+	}
+	limiter := &systemAPIAuthenticatedRateLimiterStub{
+		decision: SystemAPIRateLimitDecision{
+			Allowed:           false,
+			RetryAfterSeconds: 13,
+		},
+	}
+	handlerCalls := 0
+	router := NewRouter(RouterOptions{
+		Config:                            config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		SystemAPIRateLimitReader:          systemAPIRateLimitReaderStub{settings: port.SystemAPIRateLimitSettings{UserReadPerMinute: 300, UserWritePerMinute: 120}},
+		SystemAPIIPRateLimiter:            NewInMemorySystemAPIIPRateLimiter(),
+		SystemAPIAuthenticatedRateLimiter: limiter,
+		ManagementAPIAuthMiddleware:       NewManagementAPIAuthMiddleware(readAuthenticator),
+		ManagementAPIAuthTouchMiddleware:  NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+		ManagementProxyTestHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handlerCalls++
+			writeData(w, http.StatusOK, map[string]string{"ok": "write"})
+		}),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/proxies/proxy_1/test", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s, want 429", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "13" {
+		t.Fatalf("Retry-After = %q, want 13", got)
+	}
+	if touchAuthenticator.touchCookieHeader != "juhe_ai_session=session-token" {
+		t.Fatalf("touch auth cookie header = %q", touchAuthenticator.touchCookieHeader)
+	}
+	if readAuthenticator.cookieHeader != "" {
+		t.Fatalf("read auth cookie header = %q, want empty for write route", readAuthenticator.cookieHeader)
+	}
+	if handlerCalls != 0 {
+		t.Fatalf("handler calls = %d, want 0 while rate limited", handlerCalls)
+	}
+	if limiter.calls != 1 || limiter.limit != 120 {
+		t.Fatalf("limiter calls=%d limit=%d, want one call with write limit 120", limiter.calls, limiter.limit)
+	}
+	if limiter.key != systemAPIAuthenticatedRateLimitKey("sys_user", systemAPIMethodWrite) {
+		t.Fatalf("limiter key = %q, want hashed user write key", limiter.key)
+	}
+}
+
+func TestRouterSkipsAuthenticatedUserRateLimitForAuthProfileUpdate(t *testing.T) {
+	touchAuthenticator := &managementAPIAuthenticatorStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_user",
+			Username:        "user",
+			Role:            "user",
+			SessionID:       "sess_touch",
+		},
+	}
+	limiter := &systemAPIAuthenticatedRateLimiterStub{
+		decision: SystemAPIRateLimitDecision{
+			Allowed:           false,
+			RetryAfterSeconds: 13,
+		},
+	}
+	handlerCalls := 0
+	router := NewRouter(RouterOptions{
+		Config:                            config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		SystemAPIRateLimitReader:          systemAPIRateLimitReaderStub{settings: port.SystemAPIRateLimitSettings{UserReadPerMinute: 1, UserWritePerMinute: 1}},
+		SystemAPIIPRateLimiter:            NewInMemorySystemAPIIPRateLimiter(),
+		SystemAPIAuthenticatedRateLimiter: limiter,
+		ManagementAPIAuthMiddleware:       NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
+		ManagementAPIAuthTouchMiddleware:  NewManagementAPIAuthTouchMiddleware(touchAuthenticator),
+		ManagementProfileUpdateHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handlerCalls++
+			writeData(w, http.StatusOK, map[string]string{"ok": "profile"})
+		}),
+	})
+
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/auth/me", strings.NewReader(`{}`))
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	if handlerCalls != 1 {
+		t.Fatalf("handler calls = %d, want 1 for auth profile route", handlerCalls)
+	}
+	if limiter.calls != 0 {
+		t.Fatalf("authenticated limiter calls = %d, want 0 for /auth route", limiter.calls)
+	}
+}
+
+func TestRouterRequiresAuthenticatedRateLimiterForLimitedBusinessRoutes(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("NewRouter() did not panic for business management route without authenticated user limiter")
+		}
+	}()
+
+	_ = NewRouter(RouterOptions{
+		Config:                        config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		SystemAPIRateLimitReader:      systemAPIRateLimitReaderStub{settings: port.SystemAPIRateLimitSettings{UserReadPerMinute: 300}},
+		SystemAPIIPRateLimiter:        NewInMemorySystemAPIIPRateLimiter(),
+		ManagementAPIAuthMiddleware:   NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{}),
+		ManagementProxyOptionsHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+	})
+}
+
+func TestInMemorySystemAPIAuthenticatedRateLimiterAppliesMinuteWindow(t *testing.T) {
+	limiter := NewInMemorySystemAPIAuthenticatedRateLimiter()
+
+	decision, err := limiter.AllowSystemAPIAuthenticated(context.Background(), "account-key", 1)
+	if err != nil {
+		t.Fatalf("first AllowSystemAPIAuthenticated() error = %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("first decision = %+v, want allowed", decision)
+	}
+
+	decision, err = limiter.AllowSystemAPIAuthenticated(context.Background(), "account-key", 1)
+	if err != nil {
+		t.Fatalf("second AllowSystemAPIAuthenticated() error = %v", err)
+	}
+	if decision.Allowed || decision.RetryAfterSeconds <= 0 {
+		t.Fatalf("second decision = %+v, want denied with retry-after", decision)
+	}
+}
+
 func TestRouterRequiresTouchMiddlewareForManagementWriteRoutes(t *testing.T) {
 	defer func() {
 		if recovered := recover(); recovered == nil {
@@ -777,4 +1025,19 @@ func (s *managementSessionServiceStub) Revoke(_ context.Context, input managemen
 	s.revokeCalls++
 	s.revokeInput = input
 	return s.revokeResult, s.revokeErr
+}
+
+type systemAPIAuthenticatedRateLimiterStub struct {
+	decision SystemAPIRateLimitDecision
+	err      error
+	key      string
+	limit    int
+	calls    int
+}
+
+func (s *systemAPIAuthenticatedRateLimiterStub) AllowSystemAPIAuthenticated(_ context.Context, key string, limit int) (SystemAPIRateLimitDecision, error) {
+	s.calls++
+	s.key = key
+	s.limit = limit
+	return s.decision, s.err
 }

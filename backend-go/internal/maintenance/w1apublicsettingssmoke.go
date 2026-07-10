@@ -16,7 +16,6 @@ import (
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/modules/publicsettings"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
-	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -79,7 +78,7 @@ func RunW1aPublicSettingsSmoke(ctx context.Context, cfg config.Config, out io.Wr
 	}
 	checks["publicSettingsStore"] = okW1aSmokeCheck()
 
-	rateLimit, err := store.SystemAPIIPReadRateLimitSettings(ctx)
+	rateLimit, err := store.SystemAPIRateLimitSettings(ctx)
 	if err != nil {
 		checks["rateLimitSettingsStore"] = failedW1aSmokeCheck("系统 API 读限流设置读取失败，请确认 system_settings 包含 W1a 限流键")
 		return writeW1aPublicSettingsSmokeResult(out, W1aPublicSettingsSmokeResult{
@@ -88,8 +87,8 @@ func RunW1aPublicSettingsSmoke(ctx context.Context, cfg config.Config, out io.Wr
 		})
 	}
 	rateLimitResponse := W1aPublicSettingsSmokeRateLimitSettings{
-		PerMinute:         rateLimit.PerMinute,
-		BurstPer10Seconds: rateLimit.BurstPer10Seconds,
+		PerMinute:         rateLimit.IPReadPerMinute,
+		BurstPer10Seconds: rateLimit.IPReadBurstPer10Seconds,
 	}
 	checks["rateLimitSettingsStore"] = okW1aSmokeCheck()
 
@@ -130,11 +129,11 @@ func smokeW1aPublicSettingsRoute(
 ) error {
 	service := publicsettings.NewService(store)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
-		Config:                     cfg,
-		Logger:                     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		PublicSettingsService:      &service,
-		SystemAPIIPRateLimitReader: store,
-		SystemAPIIPReadRateLimiter: httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis),
+		Config:                   cfg,
+		Logger:                   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		PublicSettingsService:    &service,
+		SystemAPIRateLimitReader: store,
+		SystemAPIIPRateLimiter:   httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis),
 	})
 
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/__aisys__/api/settings/public", nil)
@@ -197,15 +196,15 @@ func smokeW1aRedisRateLimit(ctx context.Context, cfg config.Config, stateRedis *
 	}
 	defer func() { _ = peer.Close() }()
 
-	limiterA := httpapi.NewRedisSystemAPIIPReadRateLimiter(stateRedis)
-	limiterB := httpapi.NewRedisSystemAPIIPReadRateLimiter(peer)
-	settings := port.SystemAPIIPReadRateLimitSettings{
+	limiterA := httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis)
+	limiterB := httpapi.NewRedisSystemAPIIPRateLimiter(peer)
+	settings := httpapi.SystemAPIIPRateLimitSettings{
 		PerMinute:         1,
 		BurstPer10Seconds: 1,
 	}
 	key := "w1a-public-settings-smoke:" + uuid.NewString()
 
-	first, err := limiterA.AllowSystemAPIIPRead(ctx, key, settings)
+	first, err := limiterA.AllowSystemAPIIP(ctx, key, settings)
 	if err != nil {
 		return err
 	}
@@ -213,7 +212,7 @@ func smokeW1aRedisRateLimit(ctx context.Context, cfg config.Config, stateRedis *
 		return fmt.Errorf("first redis rate-limit decision denied")
 	}
 
-	second, err := limiterB.AllowSystemAPIIPRead(ctx, key, settings)
+	second, err := limiterB.AllowSystemAPIIP(ctx, key, settings)
 	if err != nil {
 		return err
 	}

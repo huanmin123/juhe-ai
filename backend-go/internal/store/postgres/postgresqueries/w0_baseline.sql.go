@@ -68,28 +68,35 @@ func (q *Queries) ListPublicGlobalSettings(ctx context.Context) ([]ListPublicGlo
 	return items, nil
 }
 
-const listSystemAPIIPReadRateLimitSettings = `-- name: ListSystemAPIIPReadRateLimitSettings :many
+const listSystemAPIRateLimitSettings = `-- name: ListSystemAPIRateLimitSettings :many
 SELECT key, value_json
 FROM juhe_business.system_settings
 WHERE system_account_id = 'sys_admin'
-  AND key IN ('systemApiRateLimitIpReadPerMinute', 'systemApiRateLimitIpReadBurstPer10Seconds')
+  AND key IN (
+    'systemApiRateLimitIpReadPerMinute',
+    'systemApiRateLimitIpReadBurstPer10Seconds',
+    'systemApiRateLimitIpWritePerMinute',
+    'systemApiRateLimitIpWriteBurstPer10Seconds',
+    'systemApiRateLimitUserReadPerMinute',
+    'systemApiRateLimitUserWritePerMinute'
+  )
 ORDER BY key ASC
 `
 
-type ListSystemAPIIPReadRateLimitSettingsRow struct {
+type ListSystemAPIRateLimitSettingsRow struct {
 	Key       string
 	ValueJson string
 }
 
-func (q *Queries) ListSystemAPIIPReadRateLimitSettings(ctx context.Context) ([]ListSystemAPIIPReadRateLimitSettingsRow, error) {
-	rows, err := q.db.Query(ctx, listSystemAPIIPReadRateLimitSettings)
+func (q *Queries) ListSystemAPIRateLimitSettings(ctx context.Context) ([]ListSystemAPIRateLimitSettingsRow, error) {
+	rows, err := q.db.Query(ctx, listSystemAPIRateLimitSettings)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListSystemAPIIPReadRateLimitSettingsRow
+	var items []ListSystemAPIRateLimitSettingsRow
 	for rows.Next() {
-		var i ListSystemAPIIPReadRateLimitSettingsRow
+		var i ListSystemAPIRateLimitSettingsRow
 		if err := rows.Scan(&i.Key, &i.ValueJson); err != nil {
 			return nil, err
 		}

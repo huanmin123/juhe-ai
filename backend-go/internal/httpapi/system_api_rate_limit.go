@@ -22,39 +22,71 @@ const (
 	rateLimitBurstWindow      = 10 * time.Second
 )
 
-type systemAPIRateLimitMiddleware struct {
-	reader        port.SystemAPIIPRateLimitReader
-	limiter       SystemAPIIPReadRateLimiter
+type systemAPIIPRateLimitMiddleware struct {
+	reader        port.SystemAPIRateLimitReader
+	limiter       SystemAPIIPRateLimiter
 	clientIPs     clientIPResolver
 	logger        *slog.Logger
 	settingsCache systemAPIRateLimitSettingsCache
 }
 
+type systemAPIAuthenticatedRateLimitMiddleware struct {
+	reader        port.SystemAPIRateLimitReader
+	limiter       SystemAPIAuthenticatedRateLimiter
+	methodClass   systemAPIMethodClass
+	logger        *slog.Logger
+	settingsCache systemAPIRateLimitSettingsCache
+}
+
+type systemAPIMethodClass string
+
+const (
+	systemAPIMethodRead  systemAPIMethodClass = "read"
+	systemAPIMethodWrite systemAPIMethodClass = "write"
+)
+
 type systemAPIRateLimitSettingsCache struct {
 	mu        sync.Mutex
-	settings  port.SystemAPIIPReadRateLimitSettings
+	settings  port.SystemAPIRateLimitSettings
 	expiresAt time.Time
 }
 
-type SystemAPIIPReadRateLimiter interface {
-	AllowSystemAPIIPRead(ctx context.Context, key string, settings port.SystemAPIIPReadRateLimitSettings) (SystemAPIIPReadRateLimitDecision, error)
+type SystemAPIIPRateLimitSettings struct {
+	PerMinute         int
+	BurstPer10Seconds int
 }
 
-type SystemAPIIPReadRateLimitDecision struct {
+type SystemAPIIPRateLimiter interface {
+	AllowSystemAPIIP(ctx context.Context, key string, settings SystemAPIIPRateLimitSettings) (SystemAPIRateLimitDecision, error)
+}
+
+type SystemAPIAuthenticatedRateLimiter interface {
+	AllowSystemAPIAuthenticated(ctx context.Context, key string, limit int) (SystemAPIRateLimitDecision, error)
+}
+
+type SystemAPIRateLimitDecision struct {
 	Allowed           bool
 	RetryAfterSeconds int
 }
 
-type inMemorySystemAPIIPReadRateLimiter struct {
+type inMemorySystemAPIIPRateLimiter struct {
 	minuteLimiter fixedWindowRateLimiter
 	burstLimiter  fixedWindowRateLimiter
+}
+
+type inMemorySystemAPIAuthenticatedRateLimiter struct {
+	minuteLimiter fixedWindowRateLimiter
 }
 
 type redisFixedWindowClient interface {
 	AllowFixedWindow(context.Context, []redisplatform.FixedWindowLimit) (redisplatform.FixedWindowDecision, error)
 }
 
-type redisSystemAPIIPReadRateLimiter struct {
+type redisSystemAPIIPRateLimiter struct {
+	client redisFixedWindowClient
+}
+
+type redisSystemAPIAuthenticatedRateLimiter struct {
 	client redisFixedWindowClient
 }
 
@@ -69,16 +101,16 @@ type rateLimitEntry struct {
 	resetAt time.Time
 }
 
-func newSystemAPIIPReadRateLimitMiddleware(
-	reader port.SystemAPIIPRateLimitReader,
-	limiter SystemAPIIPReadRateLimiter,
+func newSystemAPIIPRateLimitMiddleware(
+	reader port.SystemAPIRateLimitReader,
+	limiter SystemAPIIPRateLimiter,
 	clientIPs clientIPResolver,
 	logger *slog.Logger,
 ) func(http.Handler) http.Handler {
 	if limiter == nil {
-		panic("SystemAPIIPReadRateLimiter is required when SystemAPIIPRateLimitReader is configured")
+		panic("SystemAPIIPRateLimiter is required when SystemAPIRateLimitReader is configured")
 	}
-	middleware := &systemAPIRateLimitMiddleware{
+	middleware := &systemAPIIPRateLimitMiddleware{
 		reader:    reader,
 		limiter:   limiter,
 		clientIPs: clientIPs,
@@ -87,8 +119,26 @@ func newSystemAPIIPReadRateLimitMiddleware(
 	return middleware.handle
 }
 
-func NewInMemorySystemAPIIPReadRateLimiter() SystemAPIIPReadRateLimiter {
-	return &inMemorySystemAPIIPReadRateLimiter{
+func newSystemAPIAuthenticatedRateLimitMiddleware(
+	reader port.SystemAPIRateLimitReader,
+	limiter SystemAPIAuthenticatedRateLimiter,
+	methodClass systemAPIMethodClass,
+	logger *slog.Logger,
+) func(http.Handler) http.Handler {
+	if limiter == nil {
+		panic("SystemAPIAuthenticatedRateLimiter is required when authenticated management rate limiting is configured")
+	}
+	middleware := &systemAPIAuthenticatedRateLimitMiddleware{
+		reader:      reader,
+		limiter:     limiter,
+		methodClass: methodClass,
+		logger:      logger,
+	}
+	return middleware.handle
+}
+
+func NewInMemorySystemAPIIPRateLimiter() SystemAPIIPRateLimiter {
+	return &inMemorySystemAPIIPRateLimiter{
 		minuteLimiter: fixedWindowRateLimiter{
 			window:  rateLimitMinuteWindow,
 			entries: map[string]rateLimitEntry{},
@@ -100,21 +150,37 @@ func NewInMemorySystemAPIIPReadRateLimiter() SystemAPIIPReadRateLimiter {
 	}
 }
 
-func NewRedisSystemAPIIPReadRateLimiter(client redisFixedWindowClient) SystemAPIIPReadRateLimiter {
+func NewInMemorySystemAPIAuthenticatedRateLimiter() SystemAPIAuthenticatedRateLimiter {
+	return &inMemorySystemAPIAuthenticatedRateLimiter{
+		minuteLimiter: fixedWindowRateLimiter{
+			window:  rateLimitMinuteWindow,
+			entries: map[string]rateLimitEntry{},
+		},
+	}
+}
+
+func NewRedisSystemAPIIPRateLimiter(client redisFixedWindowClient) SystemAPIIPRateLimiter {
 	if client == nil {
 		return nil
 	}
-	return &redisSystemAPIIPReadRateLimiter{client: client}
+	return &redisSystemAPIIPRateLimiter{client: client}
 }
 
-func (m *systemAPIRateLimitMiddleware) handle(next http.Handler) http.Handler {
+func NewRedisSystemAPIAuthenticatedRateLimiter(client redisFixedWindowClient) SystemAPIAuthenticatedRateLimiter {
+	if client == nil {
+		return nil
+	}
+	return &redisSystemAPIAuthenticatedRateLimiter{client: client}
+}
+
+func (m *systemAPIIPRateLimitMiddleware) handle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !shouldApplySystemAPIIPReadRateLimit(r) {
+		if !shouldApplySystemAPIIPRateLimit(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		settings, err := m.currentSettings(r.Context(), time.Now())
+		settings, err := m.settingsCache.current(r.Context(), m.reader, time.Now())
 		if err != nil {
 			if m.logger != nil {
 				m.logger.Error("系统 API 限流设置读取失败",
@@ -127,16 +193,18 @@ func (m *systemAPIRateLimitMiddleware) handle(next http.Handler) http.Handler {
 			return
 		}
 
+		methodClass := systemAPIMethodClassFor(r.Method)
 		clientIP := m.clientIPs.FromRequest(r)
-		decision, err := m.limiter.AllowSystemAPIIPRead(
+		decision, err := m.limiter.AllowSystemAPIIP(
 			r.Context(),
-			systemAPIIPReadRateLimitKey(clientIP),
-			settings,
+			systemAPIIPRateLimitKey(clientIP, methodClass),
+			systemAPIIPRateLimitSettingsFor(settings, methodClass),
 		)
 		if err != nil {
 			if m.logger != nil {
-				m.logger.Error("系统 API IP 读限流失败",
+				m.logger.Error("系统 API IP 限流失败",
 					slog.String("path", r.URL.Path),
+					slog.String("method_class", string(methodClass)),
 					slog.String("request_id", requestIDFromContext(r.Context())),
 					slog.Any("error", err),
 				)
@@ -145,8 +213,7 @@ func (m *systemAPIRateLimitMiddleware) handle(next http.Handler) http.Handler {
 			return
 		}
 		if !decision.Allowed {
-			w.Header().Set("Retry-After", intString(decision.RetryAfterSeconds))
-			writeMessageError(w, http.StatusTooManyRequests, "请求过于频繁，请稍后重试")
+			writeSystemAPIRateLimitResponse(w, decision)
 			return
 		}
 
@@ -154,32 +221,84 @@ func (m *systemAPIRateLimitMiddleware) handle(next http.Handler) http.Handler {
 	})
 }
 
-func (m *systemAPIRateLimitMiddleware) currentSettings(ctx context.Context, now time.Time) (port.SystemAPIIPReadRateLimitSettings, error) {
-	m.settingsCache.mu.Lock()
-	if now.Before(m.settingsCache.expiresAt) {
-		settings := m.settingsCache.settings
-		m.settingsCache.mu.Unlock()
+func (m *systemAPIAuthenticatedRateLimitMiddleware) handle(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		settings, err := m.settingsCache.current(r.Context(), m.reader, time.Now())
+		if err != nil {
+			if m.logger != nil {
+				m.logger.Error("系统 API 认证用户限流设置读取失败",
+					slog.String("path", r.URL.Path),
+					slog.String("method_class", string(m.methodClass)),
+					slog.String("request_id", requestIDFromContext(r.Context())),
+					slog.Any("error", err),
+				)
+			}
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+
+		decision, err := m.limiter.AllowSystemAPIAuthenticated(
+			r.Context(),
+			systemAPIAuthenticatedRateLimitKey(authContext.SystemAccountID, m.methodClass),
+			systemAPIAuthenticatedRateLimitFor(settings, m.methodClass),
+		)
+		if err != nil {
+			if m.logger != nil {
+				m.logger.Error("系统 API 认证用户限流失败",
+					slog.String("path", r.URL.Path),
+					slog.String("method_class", string(m.methodClass)),
+					slog.String("request_id", requestIDFromContext(r.Context())),
+					slog.Any("error", err),
+				)
+			}
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !decision.Allowed {
+			writeSystemAPIRateLimitResponse(w, decision)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (c *systemAPIRateLimitSettingsCache) current(
+	ctx context.Context,
+	reader port.SystemAPIRateLimitReader,
+	now time.Time,
+) (port.SystemAPIRateLimitSettings, error) {
+	c.mu.Lock()
+	if now.Before(c.expiresAt) {
+		settings := c.settings
+		c.mu.Unlock()
 		return settings, nil
 	}
-	m.settingsCache.mu.Unlock()
+	c.mu.Unlock()
 
-	settings, err := m.reader.SystemAPIIPReadRateLimitSettings(ctx)
+	settings, err := reader.SystemAPIRateLimitSettings(ctx)
 	if err != nil {
-		return port.SystemAPIIPReadRateLimitSettings{}, err
+		return port.SystemAPIRateLimitSettings{}, err
 	}
 
-	m.settingsCache.mu.Lock()
-	m.settingsCache.settings = settings
-	m.settingsCache.expiresAt = now.Add(systemAPISettingsCacheTTL)
-	m.settingsCache.mu.Unlock()
+	c.mu.Lock()
+	c.settings = settings
+	c.expiresAt = now.Add(systemAPISettingsCacheTTL)
+	c.mu.Unlock()
 	return settings, nil
 }
 
-func (l *inMemorySystemAPIIPReadRateLimiter) AllowSystemAPIIPRead(
+func (l *inMemorySystemAPIIPRateLimiter) AllowSystemAPIIP(
 	_ context.Context,
 	key string,
-	settings port.SystemAPIIPReadRateLimitSettings,
-) (SystemAPIIPReadRateLimitDecision, error) {
+	settings SystemAPIIPRateLimitSettings,
+) (SystemAPIRateLimitDecision, error) {
 	now := time.Now()
 	minuteKey := key + ":minute"
 	burstKey := key + ":burst"
@@ -197,28 +316,53 @@ func (l *inMemorySystemAPIIPReadRateLimiter) AllowSystemAPIIPRead(
 	}
 	l.minuteLimiter.incrementLocked(minuteKey, settings.PerMinute, now)
 	l.burstLimiter.incrementLocked(burstKey, settings.BurstPer10Seconds, now)
-	return SystemAPIIPReadRateLimitDecision{Allowed: true}, nil
+	return SystemAPIRateLimitDecision{Allowed: true}, nil
 }
 
-func (l *redisSystemAPIIPReadRateLimiter) AllowSystemAPIIPRead(
+func (l *inMemorySystemAPIAuthenticatedRateLimiter) AllowSystemAPIAuthenticated(
+	_ context.Context,
+	key string,
+	limit int,
+) (SystemAPIRateLimitDecision, error) {
+	return l.minuteLimiter.Allow(key+":minute", limit, time.Now()), nil
+}
+
+func (l *redisSystemAPIIPRateLimiter) AllowSystemAPIIP(
 	ctx context.Context,
 	key string,
-	settings port.SystemAPIIPReadRateLimitSettings,
-) (SystemAPIIPReadRateLimitDecision, error) {
+	settings SystemAPIIPRateLimitSettings,
+) (SystemAPIRateLimitDecision, error) {
 	decision, err := l.client.AllowFixedWindow(ctx, []redisplatform.FixedWindowLimit{
-		{Key: "system-api:ip-read:" + key + ":minute", Limit: settings.PerMinute, Window: rateLimitMinuteWindow},
-		{Key: "system-api:ip-read:" + key + ":burst", Limit: settings.BurstPer10Seconds, Window: rateLimitBurstWindow},
+		{Key: "system-api:ip:" + key + ":minute", Limit: settings.PerMinute, Window: rateLimitMinuteWindow},
+		{Key: "system-api:ip:" + key + ":burst", Limit: settings.BurstPer10Seconds, Window: rateLimitBurstWindow},
 	})
 	if err != nil {
-		return SystemAPIIPReadRateLimitDecision{}, err
+		return SystemAPIRateLimitDecision{}, err
 	}
-	return SystemAPIIPReadRateLimitDecision{
+	return SystemAPIRateLimitDecision{
 		Allowed:           decision.Allowed,
 		RetryAfterSeconds: decision.RetryAfterSeconds,
 	}, nil
 }
 
-func (l *fixedWindowRateLimiter) Allow(key string, limit int, now time.Time) SystemAPIIPReadRateLimitDecision {
+func (l *redisSystemAPIAuthenticatedRateLimiter) AllowSystemAPIAuthenticated(
+	ctx context.Context,
+	key string,
+	limit int,
+) (SystemAPIRateLimitDecision, error) {
+	decision, err := l.client.AllowFixedWindow(ctx, []redisplatform.FixedWindowLimit{
+		{Key: "system-api:user:" + key + ":minute", Limit: limit, Window: rateLimitMinuteWindow},
+	})
+	if err != nil {
+		return SystemAPIRateLimitDecision{}, err
+	}
+	return SystemAPIRateLimitDecision{
+		Allowed:           decision.Allowed,
+		RetryAfterSeconds: decision.RetryAfterSeconds,
+	}, nil
+}
+
+func (l *fixedWindowRateLimiter) Allow(key string, limit int, now time.Time) SystemAPIRateLimitDecision {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -227,21 +371,21 @@ func (l *fixedWindowRateLimiter) Allow(key string, limit int, now time.Time) Sys
 		return decision
 	}
 	l.incrementLocked(key, limit, now)
-	return SystemAPIIPReadRateLimitDecision{Allowed: true}
+	return SystemAPIRateLimitDecision{Allowed: true}
 }
 
-func (l *fixedWindowRateLimiter) decisionLocked(key string, limit int, now time.Time) SystemAPIIPReadRateLimitDecision {
+func (l *fixedWindowRateLimiter) decisionLocked(key string, limit int, now time.Time) SystemAPIRateLimitDecision {
 	if limit <= 0 {
-		return SystemAPIIPReadRateLimitDecision{Allowed: true}
+		return SystemAPIRateLimitDecision{Allowed: true}
 	}
 	entry := l.currentEntryLocked(key, now)
 	if entry.count >= limit {
-		return SystemAPIIPReadRateLimitDecision{
+		return SystemAPIRateLimitDecision{
 			Allowed:           false,
 			RetryAfterSeconds: max(1, int(math.Ceil(entry.resetAt.Sub(now).Seconds()))),
 		}
 	}
-	return SystemAPIIPReadRateLimitDecision{Allowed: true}
+	return SystemAPIRateLimitDecision{Allowed: true}
 }
 
 func (l *fixedWindowRateLimiter) incrementLocked(key string, limit int, now time.Time) {
@@ -286,23 +430,57 @@ func isReadMethod(method string) bool {
 	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 }
 
-func shouldApplySystemAPIIPReadRateLimit(r *http.Request) bool {
-	if !isReadMethod(r.Method) {
-		return false
-	}
+func shouldApplySystemAPIIPRateLimit(r *http.Request) bool {
 	path := strings.TrimRight(r.URL.Path, "/")
 	if path == "" {
 		path = "/"
 	}
-	if path == "/__aisys__/api/health" {
-		return false
-	}
-	return path != "/__aisys__/api/auth/captcha"
+	return path != "/__aisys__/api/health"
 }
 
-func systemAPIIPReadRateLimitKey(clientIP string) string {
-	sum := sha256.Sum256([]byte(clientIP + "\x00read"))
+func systemAPIMethodClassFor(method string) systemAPIMethodClass {
+	if isReadMethod(method) {
+		return systemAPIMethodRead
+	}
+	return systemAPIMethodWrite
+}
+
+func systemAPIIPRateLimitSettingsFor(settings port.SystemAPIRateLimitSettings, methodClass systemAPIMethodClass) SystemAPIIPRateLimitSettings {
+	if methodClass == systemAPIMethodRead {
+		return SystemAPIIPRateLimitSettings{
+			PerMinute:         settings.IPReadPerMinute,
+			BurstPer10Seconds: settings.IPReadBurstPer10Seconds,
+		}
+	}
+	return SystemAPIIPRateLimitSettings{
+		PerMinute:         settings.IPWritePerMinute,
+		BurstPer10Seconds: settings.IPWriteBurstPer10Seconds,
+	}
+}
+
+func systemAPIAuthenticatedRateLimitFor(settings port.SystemAPIRateLimitSettings, methodClass systemAPIMethodClass) int {
+	if methodClass == systemAPIMethodRead {
+		return settings.UserReadPerMinute
+	}
+	return settings.UserWritePerMinute
+}
+
+func systemAPIIPRateLimitKey(clientIP string, methodClass systemAPIMethodClass) string {
+	return systemAPIRateLimitKey(clientIP, methodClass)
+}
+
+func systemAPIAuthenticatedRateLimitKey(systemAccountID string, methodClass systemAPIMethodClass) string {
+	return systemAPIRateLimitKey(systemAccountID, methodClass)
+}
+
+func systemAPIRateLimitKey(identity string, methodClass systemAPIMethodClass) string {
+	sum := sha256.Sum256([]byte(identity + "\x00" + string(methodClass)))
 	return hex.EncodeToString(sum[:])
+}
+
+func writeSystemAPIRateLimitResponse(w http.ResponseWriter, decision SystemAPIRateLimitDecision) {
+	w.Header().Set("Retry-After", intString(max(1, decision.RetryAfterSeconds)))
+	writeMessageError(w, http.StatusTooManyRequests, "请求过于频繁，请稍后重试")
 }
 
 func intString(value int) string {

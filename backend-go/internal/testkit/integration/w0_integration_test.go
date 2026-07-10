@@ -95,11 +95,16 @@ func TestW0PostgresMigrationSmoke(t *testing.T) {
 	if publicSettings.AppName != "聚合 AI" || publicSettings.AppIcon != "/__aisys__/brand-icon.svg" {
 		t.Fatalf("public settings = %+v", publicSettings)
 	}
-	rateLimitSettings, err := store.SystemAPIIPReadRateLimitSettings(ctx)
+	rateLimitSettings, err := store.SystemAPIRateLimitSettings(ctx)
 	if err != nil {
-		t.Fatalf("system api ip read rate limit settings: %v", err)
+		t.Fatalf("system api rate limit settings: %v", err)
 	}
-	if rateLimitSettings.PerMinute != 600 || rateLimitSettings.BurstPer10Seconds != 120 {
+	if rateLimitSettings.IPReadPerMinute != 600 ||
+		rateLimitSettings.IPReadBurstPer10Seconds != 120 ||
+		rateLimitSettings.IPWritePerMinute != 180 ||
+		rateLimitSettings.IPWriteBurstPer10Seconds != 40 ||
+		rateLimitSettings.UserReadPerMinute != 300 ||
+		rateLimitSettings.UserWritePerMinute != 120 {
 		t.Fatalf("rate limit settings = %+v", rateLimitSettings)
 	}
 

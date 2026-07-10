@@ -81,33 +81,42 @@ func (s *Store) PublicGlobalSettings(ctx context.Context) (port.PublicGlobalSett
 	}, nil
 }
 
-func (s *Store) SystemAPIIPReadRateLimitSettings(ctx context.Context) (port.SystemAPIIPReadRateLimitSettings, error) {
-	rows, err := s.queries().ListSystemAPIIPReadRateLimitSettings(ctx)
+func (s *Store) SystemAPIRateLimitSettings(ctx context.Context) (port.SystemAPIRateLimitSettings, error) {
+	rows, err := s.queries().ListSystemAPIRateLimitSettings(ctx)
 	if err != nil {
-		return port.SystemAPIIPReadRateLimitSettings{}, fmt.Errorf("list system api ip read rate limit settings: %w", err)
+		return port.SystemAPIRateLimitSettings{}, fmt.Errorf("list system api rate limit settings: %w", err)
 	}
 
 	values := map[string]int{}
 	for _, row := range rows {
 		value, err := parseIntegerSettingValue(row.ValueJson, row.Key, 0, 1_000_000)
 		if err != nil {
-			return port.SystemAPIIPReadRateLimitSettings{}, err
+			return port.SystemAPIRateLimitSettings{}, err
 		}
 		values[row.Key] = value
 	}
 
-	perMinute, ok := values["systemApiRateLimitIpReadPerMinute"]
-	if !ok {
-		return port.SystemAPIIPReadRateLimitSettings{}, fmt.Errorf("系统设置缺少字段：systemApiRateLimitIpReadPerMinute")
+	requiredKeys := []string{
+		"systemApiRateLimitIpReadPerMinute",
+		"systemApiRateLimitIpReadBurstPer10Seconds",
+		"systemApiRateLimitIpWritePerMinute",
+		"systemApiRateLimitIpWriteBurstPer10Seconds",
+		"systemApiRateLimitUserReadPerMinute",
+		"systemApiRateLimitUserWritePerMinute",
 	}
-	burst, ok := values["systemApiRateLimitIpReadBurstPer10Seconds"]
-	if !ok {
-		return port.SystemAPIIPReadRateLimitSettings{}, fmt.Errorf("系统设置缺少字段：systemApiRateLimitIpReadBurstPer10Seconds")
+	for _, key := range requiredKeys {
+		if _, ok := values[key]; !ok {
+			return port.SystemAPIRateLimitSettings{}, fmt.Errorf("系统设置缺少字段：%s", key)
+		}
 	}
 
-	return port.SystemAPIIPReadRateLimitSettings{
-		PerMinute:         perMinute,
-		BurstPer10Seconds: burst,
+	return port.SystemAPIRateLimitSettings{
+		IPReadPerMinute:          values["systemApiRateLimitIpReadPerMinute"],
+		IPReadBurstPer10Seconds:  values["systemApiRateLimitIpReadBurstPer10Seconds"],
+		IPWritePerMinute:         values["systemApiRateLimitIpWritePerMinute"],
+		IPWriteBurstPer10Seconds: values["systemApiRateLimitIpWriteBurstPer10Seconds"],
+		UserReadPerMinute:        values["systemApiRateLimitUserReadPerMinute"],
+		UserWritePerMinute:       values["systemApiRateLimitUserWritePerMinute"],
 	}, nil
 }
 
