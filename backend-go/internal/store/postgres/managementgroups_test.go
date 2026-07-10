@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -232,6 +233,298 @@ func TestManagementGroupCreateDatabaseErrorMapping(t *testing.T) {
 		ConstraintName: "other_foreign_key",
 	}) {
 		t.Fatal("unrelated foreign key violation should not be recognized")
+	}
+}
+
+func TestManagementGroupUpdateSQLLocksAndSeparatesOwnerAuthorization(t *testing.T) {
+	source, err := os.ReadFile("queries/w5_management_group_update.sql")
+	if err != nil {
+		t.Fatalf("read management group update query: %v", err)
+	}
+	sql := string(source)
+	for _, want := range []string{
+		"-- name: FindManagementGroupUpdateProvider :one",
+		"FOR SHARE",
+		"-- name: LockManagementGroupUpdateTarget :one",
+		"'owner'::text",
+		"'authorized'::text",
+		"resource_authorizations.resource_owner_system_account_id = groups.system_account_id",
+		"FOR UPDATE OF groups",
+		"-- name: LockManagementGroupUpdateAuthorization :one",
+		"FOR UPDATE OF resource_authorizations",
+		"-- name: LockManagementGroupUpdateAuthorizationSettings :one",
+		"FROM juhe_business.group_authorization_settings",
+		"FOR UPDATE;",
+		"-- name: CountManagementGroupUpdateAccounts :one",
+		"FROM juhe_business.group_accounts AS group_accounts",
+		"AND group_accounts.enabled = true",
+		"AND accounts.deleted_at IS NULL",
+		"account_authorizations.id = group_accounts.account_authorization_id",
+		"account_authorizations.id = accounts.authorization_instance_authorization_id",
+		"OR account_authorizations.id IS NOT NULL",
+		"-- name: LockManagementGroupUpdateRouteStrategies :many",
+		"sqlc.arg(all_scopes)::boolean",
+		"OR target_bindings.system_account_id = sqlc.arg(effective_system_account_id)::text",
+		"LIMIT 101",
+		"FOR UPDATE OF route_strategies",
+		"-- name: CountManagementGroupUpdateRouteStrategyLoss :one",
+		"route_strategies.id = ANY(sqlc.arg(route_strategy_ids)::text[])",
+		"other_authorization.status = 'active'",
+		"coalesce(other_settings.enabled, true) = true",
+		"-- name: UpdateManagementGroupOwner :one",
+		"-- name: UpsertManagementGroupAuthorizationSettings :one",
+		"ON CONFLICT (authorization_id) DO UPDATE",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("management group update SQL missing %q", want)
+		}
+	}
+	if got := strings.Count(sql, "sqlc.arg(all_scopes)::boolean"); got != 2 {
+		t.Fatalf("management group update SQL all-scopes guards = %d, want 2", got)
+	}
+	if got := strings.Count(sql, "other_bindings.system_account_id = target_bindings.system_account_id"); got != 1 {
+		t.Fatalf("management group update SQL binding-scope alternatives = %d, want 1", got)
+	}
+}
+
+func TestManagementGroupUpdateProviderValidationPrecedesTargetLookup(t *testing.T) {
+	source, err := os.ReadFile("managementgroups.go")
+	if err != nil {
+		t.Fatalf("read management groups store: %v", err)
+	}
+	goSource := string(source)
+	providerIndex := strings.Index(goSource, "q.FindManagementGroupUpdateProvider")
+	targetIndex := strings.Index(goSource, "q.LockManagementGroupUpdateTarget")
+	if providerIndex < 0 || targetIndex < 0 {
+		t.Fatalf("management group update store is missing provider or target query")
+	}
+	if providerIndex >= targetIndex {
+		t.Fatalf("provider validation index = %d, target lookup index = %d", providerIndex, targetIndex)
+	}
+}
+
+func TestManagementGroupUpdateKeepsPathGroupIDExact(t *testing.T) {
+	source, err := os.ReadFile("managementgroups.go")
+	if err != nil {
+		t.Fatalf("read management groups store: %v", err)
+	}
+	goSource := string(source)
+	if !strings.Contains(goSource, "GroupID:                  input.GroupID") {
+		t.Fatal("management group update must pass the path group ID unchanged")
+	}
+	if strings.Contains(goSource, "strings.TrimSpace(input.GroupID)") {
+		t.Fatal("management group update must not trim the path group ID")
+	}
+}
+
+func TestManagementGroupUpdateStoreMapsRequiredGuards(t *testing.T) {
+	source, err := os.ReadFile("managementgroups.go")
+	if err != nil {
+		t.Fatalf("read management groups store: %v", err)
+	}
+	goSource := string(source)
+	for _, want := range []string{
+		"port.ErrManagementGroupNotFound",
+		"port.ErrManagementGroupDefaultReadonly",
+		"q.CountManagementGroupUpdateAccounts",
+		"port.ErrManagementGroupProviderHasAccounts",
+		"managementGroupDuplicateNameError(err)",
+		"port.ErrManagementGroupNameExists",
+		"port.ErrManagementGroupAuthorizedFields",
+		"q.LockManagementGroupUpdateAuthorization",
+		"q.LockManagementGroupUpdateAuthorizationSettings",
+		"guardManagementGroupUpdateRouteStrategies",
+		"port.ErrManagementGroupRouteStrategyWouldLose",
+	} {
+		if !strings.Contains(goSource, want) {
+			t.Fatalf("management group update store missing %q", want)
+		}
+	}
+}
+
+func TestManagementGroupUpdateEffectiveScope(t *testing.T) {
+	tests := []struct {
+		name  string
+		input port.ManagementGroupUpdateInput
+		want  string
+	}{
+		{
+			name: "resolved target scope",
+			input: port.ManagementGroupUpdateInput{
+				ActorSystemAccountID:     " sys_user ",
+				EffectiveSystemAccountID: "sys_other",
+			},
+			want: "sys_other",
+		},
+		{
+			name: "self scope falls back to actor",
+			input: port.ManagementGroupUpdateInput{
+				ActorSystemAccountID: " sys_user ",
+			},
+			want: "sys_user",
+		},
+		{
+			name: "admin global scope",
+			input: port.ManagementGroupUpdateInput{
+				ActorSystemAccountID: "sys_admin",
+				CanAccessAll:         true,
+			},
+		},
+		{
+			name: "admin target scope",
+			input: port.ManagementGroupUpdateInput{
+				ActorSystemAccountID:     "sys_admin",
+				CanAccessAll:             true,
+				EffectiveSystemAccountID: " sys_target ",
+			},
+			want: "sys_target",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := managementGroupUpdateEffectiveSystemAccountID(tt.input); got != tt.want {
+				t.Fatalf("effective scope = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManagementGroupAuthorizedFieldsError(t *testing.T) {
+	if err := managementGroupAuthorizedFieldsError(port.ManagementGroupUpdateInput{
+		HasEnabled:          true,
+		HasGroupType:        true,
+		HasSchedulingPolicy: true,
+	}); err != nil {
+		t.Fatalf("allowed authorized fields error = %v", err)
+	}
+	err := managementGroupAuthorizedFieldsError(port.ManagementGroupUpdateInput{
+		HasName:         true,
+		HasProviderCode: true,
+		HasDescription:  true,
+	})
+	if !errors.Is(err, port.ErrManagementGroupAuthorizedFields) {
+		t.Fatalf("authorized fields error = %v", err)
+	}
+	const want = "management group authorized fields: 授权分组使用配置包含未知字段：name、providerCode、description"
+	if err.Error() != want {
+		t.Fatalf("authorized fields error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestManagementGroupUpdateNameExistsErrorIncludesNextName(t *testing.T) {
+	err := managementGroupUpdateNameExistsError("重名分组")
+	if !errors.Is(err, port.ErrManagementGroupNameExists) {
+		t.Fatalf("name exists error = %v", err)
+	}
+	if err.Error() != "management group name exists: 重名分组" {
+		t.Fatalf("name exists error = %q", err.Error())
+	}
+}
+
+func TestManagementGroupUpdateRouteStrategyLimitError(t *testing.T) {
+	if err := managementGroupUpdateRouteStrategyLimitError(100, "停用分组"); err != nil {
+		t.Fatalf("100 route strategies error = %v", err)
+	}
+	err := managementGroupUpdateRouteStrategyLimitError(101, "停用分组")
+	if !errors.Is(err, port.ErrManagementGroupRouteStrategyWouldLose) {
+		t.Fatalf("route strategy limit error = %v", err)
+	}
+	const want = "management group route strategy would lose: 该分组关联的策略路由超过 100 个，请先分批解除绑定后再停用分组"
+	if err.Error() != want {
+		t.Fatalf("route strategy limit error = %q, want %q", err.Error(), want)
+	}
+}
+
+func TestManagementGroupUpdateRouteStrategyScopes(t *testing.T) {
+	owner := managementGroupUpdateOwnerRouteStrategyScope()
+	if !owner.allScopes || owner.effectiveSystemAccountID != "" {
+		t.Fatalf("owner route strategy scope = %#v, want all scopes", owner)
+	}
+
+	authorized := managementGroupUpdateAuthorizedRouteStrategyScope("sys_grantee")
+	if authorized.allScopes || authorized.effectiveSystemAccountID != "sys_grantee" {
+		t.Fatalf("authorized route strategy scope = %#v, want grantee scope", authorized)
+	}
+}
+
+func TestManagementGroupUpdateSchedulingPolicyMerge(t *testing.T) {
+	current := `{"mode":"balanced_fast","defaultSoftConcurrency":7}`
+	explicit := `{"mode":"balanced_fast","defaultSoftConcurrency":9}`
+	defaultPolicy := fullHighConcurrencyPolicyJSON()
+	tests := []struct {
+		name        string
+		currentType string
+		currentJSON *string
+		nextType    string
+		input       port.ManagementGroupUpdateInput
+		want        *string
+	}{
+		{
+			name:        "high concurrency preserves full current policy",
+			currentType: "high_concurrency",
+			currentJSON: &current,
+			nextType:    "high_concurrency",
+			input:       port.ManagementGroupUpdateInput{DefaultSchedulingPolicyJSON: defaultPolicy},
+			want:        &current,
+		},
+		{
+			name:        "personal to high concurrency uses service default",
+			currentType: "personal",
+			nextType:    "high_concurrency",
+			input:       port.ManagementGroupUpdateInput{DefaultSchedulingPolicyJSON: defaultPolicy},
+			want:        &defaultPolicy,
+		},
+		{
+			name:        "explicit policy wins",
+			currentType: "high_concurrency",
+			currentJSON: &current,
+			nextType:    "high_concurrency",
+			input: port.ManagementGroupUpdateInput{
+				HasSchedulingPolicy:  true,
+				SchedulingPolicyJSON: &explicit,
+			},
+			want: &explicit,
+		},
+		{
+			name:        "personal clears policy",
+			currentType: "high_concurrency",
+			currentJSON: &current,
+			nextType:    "personal",
+			input:       port.ManagementGroupUpdateInput{DefaultSchedulingPolicyJSON: defaultPolicy},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := managementGroupUpdateSchedulingPolicy(
+				tt.currentType,
+				tt.currentJSON,
+				tt.nextType,
+				tt.input,
+			)
+			switch {
+			case got == nil && tt.want == nil:
+			case got == nil || tt.want == nil:
+				t.Fatalf("policy = %#v, want %#v", got, tt.want)
+			case *got != *tt.want:
+				t.Fatalf("policy = %q, want %q", *got, *tt.want)
+			}
+		})
+	}
+}
+
+func TestManagementGroupUpdateSentinelsSupportErrorsIs(t *testing.T) {
+	sentinels := []error{
+		port.ErrManagementGroupNotFound,
+		port.ErrManagementGroupDefaultReadonly,
+		port.ErrManagementGroupProviderHasAccounts,
+		port.ErrManagementGroupAuthorizedFields,
+		port.ErrManagementGroupRouteStrategyWouldLose,
+	}
+	for _, sentinel := range sentinels {
+		wrapped := fmt.Errorf("wrapped: %w", sentinel)
+		if !errors.Is(wrapped, sentinel) {
+			t.Fatalf("errors.Is(%v) = false", sentinel)
+		}
 	}
 }
 
