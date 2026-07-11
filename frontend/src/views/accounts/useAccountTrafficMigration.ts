@@ -58,7 +58,7 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
       return
     }
     if (account.status === 'pending_test') {
-      message.warning('待测试账户需测试通过后才能参与调度')
+      message.warning('待检查账户需等待后台健康检查通过后才能参与调度')
       return
     }
     if (!canUseAccountActions(account) && !isAuthorizedAccount(account)) {

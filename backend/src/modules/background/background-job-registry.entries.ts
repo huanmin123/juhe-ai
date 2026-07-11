@@ -453,6 +453,19 @@ export const backgroundWorkerRegistry = [
     writes: ['business:account_test_tasks']
   }),
   entry({
+    jobName: 'background_worker_account_health_check_trigger',
+    category: 'control-ipc',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:accounts']
+  }),
+  entry({
     jobName: 'background_worker_runtime_log_line',
     category: 'ipc-queue',
     kind: 'log',

@@ -348,7 +348,7 @@ export const ACCOUNT_PAGE_SIZE = 20
 
 export const statusOptions: Array<{ label: string; value: AccountStatus }> = [
   { label: '正常', value: 'active' },
-  { label: '待测试', value: 'pending_test' },
+  { label: '待检查', value: 'pending_test' },
   { label: '停用', value: 'disabled' },
   { label: '异常', value: 'error' },
   { label: '限流中', value: 'rate_limited' },
