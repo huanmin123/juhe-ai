@@ -1,4 +1,5 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
+import type { CooldownAccountRetestCursor } from '../../storage/account-cooldown-retest.repository.js'
 import { listAccountApiKeyRuntimeStatesDueForProbeAsync } from '../../storage/account-api-key-runtime-state.repository.js'
 import { listNormalRouteLatencyProbeCandidatesAsync } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
@@ -35,6 +36,7 @@ const normalRouteSpeedFirstRecoveryProbeBatchSize = 10
 const maxOpsExternalIoConcurrency = 10
 const maxOpsFullDiagnosticConcurrency = 3
 const backgroundProbeDbServiceTimeoutMs = 10_000
+let cooldownAccountRetestCursor: CooldownAccountRetestCursor | undefined
 
 type SettingsNumberReader = (key: string, min: number, max: number) => number
 
@@ -99,10 +101,16 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
   const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   const longTermIntervalHours = deps.settingsNumber('cooldownAccountRetestLongTermIntervalHours', 1, 24 * 30)
-  const candidates = await requestBackgroundWorkerDbService({
+  const page = await requestBackgroundWorkerDbService({
     type: 'list_accounts_due_for_cooldown_retest',
-    limit: batchSize
-  }, backgroundProbeDbServiceTimeoutMs) ?? []
+    limit: batchSize,
+    cursor: cooldownAccountRetestCursor
+  }, backgroundProbeDbServiceTimeoutMs)
+  const candidates = page?.accounts ?? []
+  cooldownAccountRetestCursor = page?.nextCursor
+  if (!page?.nextCursor) {
+    cooldownAccountRetestCursor = undefined
+  }
   const startedAtMs = Date.now()
   let enqueuedCount = 0
   let skippedQueuedCount = 0

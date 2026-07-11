@@ -58,6 +58,8 @@ import {
   listOpenAIAccountsForGroupResultAsync,
   listAccountsDueForCooldownRetest,
   listAccountsDueForCooldownRetestAsync,
+  listAccountsDueForCooldownRetestPage,
+  listAccountsDueForCooldownRetestPageAsync,
   listAccountsDueForHealthCheck,
   listAccountsDueForHealthCheckAsync,
   listRecoverableUnavailableOpenAIAccountsForGroup,
@@ -843,7 +845,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return handleDbServiceOperationSync(operation)
     case 'list_accounts_due_for_cooldown_retest':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        return await listAccountsDueForCooldownRetestAsync(operation.limit)
+        return await listAccountsDueForCooldownRetestPageAsync(operation.limit, operation.cursor)
       }
       return handleDbServiceOperationSync(operation)
     case 'find_account_for_cooldown_retest':
@@ -1349,7 +1351,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return result
     }
     case 'list_accounts_due_for_cooldown_retest': {
-      return listAccountsDueForCooldownRetest(operation.limit)
+      return listAccountsDueForCooldownRetestPage(operation.limit, operation.cursor)
     }
     case 'find_account_for_cooldown_retest': {
       return findAccountForCooldownRetest(operation.accountId)

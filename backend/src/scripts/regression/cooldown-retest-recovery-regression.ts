@@ -67,6 +67,7 @@ try {
     status: 'active',
     groupId: group.id
   }, access)
+  activateTestAccount(account.id)
   assert(repositories.setAccountGroup(account.id, group.id, access), '冷却复测观察窗口账号应能绑定分组')
   const cooled = repositories.markAccountTemporaryUnavailable(account.id, '模拟临时不可调用')
   assert.equal(cooled?.status, 'temporary_unavailable', '临时不可调用应进入恢复通道')
@@ -119,6 +120,7 @@ try {
     status: 'active',
     groupId: group.id
   }, access)
+  activateTestAccount(freshAccount.id)
   assert(repositories.setAccountGroup(freshAccount.id, group.id, access), '冷却复测未超观察窗口账号应能绑定分组')
   repositories.markAccountTemporaryUnavailable(freshAccount.id, '模拟临时不可调用')
   databaseModule.getBusinessDatabase()
@@ -163,6 +165,7 @@ try {
     status: 'active',
     groupId: group.id
   }, access)
+  activateTestAccount(disabledCleanupAccount.id)
   repositories.markAccountTemporaryUnavailable(disabledCleanupAccount.id, '过期冷却错误')
   const disabledCleanup = repositories.updateAccount(disabledCleanupAccount.id, { status: 'disabled' }, access)
   assert.equal(disabledCleanup?.status, 'disabled', '冷却账号应允许手动停用')
@@ -182,6 +185,7 @@ try {
     status: 'active',
     groupId: group.id
   }, access)
+  activateTestAccount(rateLimitedAccount.id)
   assert(repositories.setAccountGroup(rateLimitedAccount.id, group.id, access), '限流复测账号应能绑定分组')
   const limited = repositories.markAccountCooldown(rateLimitedAccount.id, new Date(Date.now() - 1000).toISOString(), '模拟限流', 'rate_limited')
   assert.equal(limited?.status, 'rate_limited', '限流状态应进入同一自动恢复通道')
@@ -200,6 +204,34 @@ try {
   assert.equal(limitedStillRecovering.action, 'retry_immediately', '限流首次复测失败应走快速恢复通道')
   assert.equal(repositories.findAccountSummary(rateLimitedAccount.id, access)?.status, 'rate_limited', '限流复测失败后应保持限流状态等待下次自动恢复')
 
+  const ineligibleFailureAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '后台探针配置失败也推进退避回归',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-cooldown-retest-ineligible-failure',
+      base_url: mockBaseUrl
+    },
+    status: 'active',
+    groupId: group.id
+  }, access)
+  activateTestAccount(ineligibleFailureAccount.id)
+  repositories.markAccountTemporaryUnavailable(ineligibleFailureAccount.id, '模拟后台探针配置失败前冷却态')
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET health_check_model = ?, cooldown_until = ? WHERE id = ?')
+    .run('not-in-supported-models', new Date(Date.now() - 1000).toISOString(), ineligibleFailureAccount.id)
+  const dueIneligibleFailure = repositories.findAccountSummary(ineligibleFailureAccount.id, access)
+  assert(dueIneligibleFailure, '后台探针配置失败账号应可读取')
+  assert(cooldownRetestService.enqueueCooldownAccountRetest(dueIneligibleFailure, {
+    maxPauseMinutes: 10,
+    maxRecoveryHours: 1,
+    longTermIntervalHours: 24
+  }), '后台探针配置失败账号应能入队')
+  const recordedIneligibleFailure = await waitForAccountRetestFailure(ineligibleFailureAccount.id)
+  assert.equal(recordedIneligibleFailure.cooldownRetestFailureCount, 1, '后台探针只要未完整成功就必须累计失败次数')
+  assert(Date.parse(recordedIneligibleFailure.cooldownUntil ?? '') > Date.now(), '后台探针失败必须推进下一次复测时间')
+
   const probeAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -212,6 +244,7 @@ try {
     status: 'active',
     groupId: group.id
   }, access)
+  activateTestAccount(probeAccount.id)
   repositories.markAccountTemporaryUnavailable(probeAccount.id, '模拟后台探针恢复前失败态')
   databaseModule.getBusinessDatabase()
     .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
@@ -268,6 +301,7 @@ try {
     status: 'active',
     groupId: ownerGroup.id
   }, ownerAccess)
+  activateTestAccount(sourceAccount.id)
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: sourceAccount.id,
@@ -359,6 +393,7 @@ try {
     status: 'active',
     groupId: quotaOwnerGroup.id
   }, quotaOwnerAccess)
+  activateTestAccount(quotaSourceAccount.id)
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: quotaSourceAccount.id,
@@ -399,6 +434,7 @@ try {
     status: 'active',
     groupId: group.id
   }, access)
+  activateTestAccount(scanWindowOwnerAccount.id)
   repositories.markAccountTemporaryUnavailable(scanWindowOwnerAccount.id, '模拟扫描窗口普通账户临时不可调用')
   databaseModule.getBusinessDatabase()
     .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
@@ -406,6 +442,20 @@ try {
   const scanWindowCandidates = repositories.listAccountsDueForCooldownRetest(1)
   assert(!scanWindowCandidates.some((item) => item.id === quotaLimitedInstance.id), '授权额度耗尽的授权实例不应进入后台复测候选')
   assert(scanWindowCandidates.some((item) => item.id === scanWindowOwnerAccount.id), '无效授权实例不应占满扫描窗口导致后续普通候选被挡住')
+
+  const fairnessFirstAccount = createActiveCoolingAccount('冷却复测公平游标账户一', 'sk-cooldown-retest-fairness-1', group.id)
+  const fairnessSecondAccount = createActiveCoolingAccount('冷却复测公平游标账户二', 'sk-cooldown-retest-fairness-2', group.id)
+  const fairnessBaseMs = Date.now() - 60_000
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
+    .run(new Date(fairnessBaseMs).toISOString(), fairnessFirstAccount.id)
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
+    .run(new Date(fairnessBaseMs + 1).toISOString(), fairnessSecondAccount.id)
+  const firstFairnessPage = repositories.listAccountsDueForCooldownRetestPage(1)
+  assert(firstFairnessPage.nextCursor, '冷却复测分页必须返回复合游标')
+  const secondFairnessPage = repositories.listAccountsDueForCooldownRetestPage(100, firstFairnessPage.nextCursor)
+  assert(secondFairnessPage.accounts.some((item) => item.id === fairnessSecondAccount.id), '游标后的到期账户必须能进入后续扫描窗口')
 
   console.log('cooldown retest recovery regression passed')
 } finally {
@@ -470,6 +520,35 @@ function createMockOpenAIServer(): http.Server {
   })
 }
 
+function activateTestAccount(accountId: string): void {
+  assert(repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), `测试账号 ${accountId} 应能通过后台健康检查激活`)
+}
+
+function createActiveCoolingAccount(name: string, apiKey: string, groupId: string) {
+  const account = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name,
+    type: 'api_key',
+    credentials: {
+      api_key: apiKey,
+      base_url: 'https://api.openai.com/v1'
+    },
+    status: 'active',
+    groupId
+  }, access)
+  activateTestAccount(account.id)
+  assert(repositories.setAccountGroup(account.id, groupId, access), `测试账号 ${account.id} 应能绑定分组`)
+  const cooled = repositories.markAccountTemporaryUnavailable(account.id, '模拟冷却复测公平扫描')
+  assert.equal(cooled?.status, 'temporary_unavailable', `测试账号 ${account.id} 应进入冷却态`)
+  return account
+}
+
 async function waitForAccountStatus(
   accountId: string,
   status: string,
@@ -484,6 +563,18 @@ async function waitForAccountStatus(
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
   }
   throw new Error(`等待账号 ${accountId} 恢复为 ${status} 超时`)
+}
+
+async function waitForAccountRetestFailure(accountId: string): Promise<NonNullable<ReturnType<typeof repositories.findAccountSummary>>> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 5000) {
+    const account = repositories.findAccountSummary(accountId, access)
+    if (account && (account.cooldownRetestFailureCount ?? 0) > 0) {
+      return account
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
+  }
+  throw new Error(`等待账号 ${accountId} 记录后台复测失败超时`)
 }
 
 async function onceListening(server: http.Server): Promise<void> {

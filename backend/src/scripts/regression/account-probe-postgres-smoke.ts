@@ -196,7 +196,7 @@ try {
     type: 'list_accounts_due_for_cooldown_retest',
     limit: 20
   })
-  const cooldownCandidate = cooldownCandidates.find((item) => item.id === account.id)
+  const cooldownCandidate = cooldownCandidates.accounts.find((item) => item.id === account.id)
   assert.ok(cooldownCandidate, 'PG cooldown retest 候选应返回到期冷却账号')
   assert.equal(cooldownCandidate.status, 'temporary_unavailable', 'PG cooldown retest 候选应保留冷却状态')
   assert.equal(cooldownCandidate.boundGroupId, group.id, 'PG cooldown retest 候选应带分组绑定')
@@ -236,7 +236,7 @@ try {
     message: '账号健康检测 / 冷却复测 DB service PG smoke 通过',
     accountId: account.id,
     healthCandidates: healthCandidates.length,
-    cooldownCandidates: cooldownCandidates.length,
+    cooldownCandidates: cooldownCandidates.accounts.length,
     explainIndexed: true
   }))
 } finally {

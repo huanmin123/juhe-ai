@@ -695,6 +695,7 @@ export type DbServiceOperation =
   | {
     type: 'list_accounts_due_for_cooldown_retest'
     limit: number
+    cursor?: import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestCursor
   }
   | {
     type: 'find_account_for_cooldown_retest'
@@ -908,7 +909,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'commit_account_balance_refresh' } ? { changed: boolean } :
   T extends { type: 'enable_detected_account_balance_query' } ? { changed: boolean } :
   T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt: string; errorCode: string; errorMessage: string } :
-  T extends { type: 'list_accounts_due_for_cooldown_retest' } ? AccountSummary[] :
+  T extends { type: 'list_accounts_due_for_cooldown_retest' } ? import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestPage :
   T extends { type: 'find_account_for_cooldown_retest' } ? AccountSummary | undefined :
   T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; errorCode: string; errorMessage: string } :
   T extends { type: 'mark_account_exception' } ? { updated: boolean; accountStatus?: string } :
