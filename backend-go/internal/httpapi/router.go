@@ -98,6 +98,8 @@ type RouterOptions struct {
 	ManagementMyGroupCreateHandler                    http.Handler
 	ManagementGroupUpdateHandler                      http.Handler
 	ManagementMyGroupUpdateHandler                    http.Handler
+	ManagementGroupDeleteHandler                      http.Handler
+	ManagementMyGroupDeleteHandler                    http.Handler
 	ManagementGroupOptionsHandler                     http.Handler
 	ManagementMyGroupOptionsHandler                   http.Handler
 	ManagementGroupAccountOptionsHandler              http.Handler
@@ -272,6 +274,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyGroupCreateHandler == nil &&
 				opts.ManagementGroupUpdateHandler == nil &&
 				opts.ManagementMyGroupUpdateHandler == nil &&
+				opts.ManagementGroupDeleteHandler == nil &&
+				opts.ManagementMyGroupDeleteHandler == nil &&
 				opts.ManagementGroupOptionsHandler == nil &&
 				opts.ManagementMyGroupOptionsHandler == nil &&
 				opts.ManagementGroupAccountOptionsHandler == nil &&
@@ -530,6 +534,16 @@ func NewRouter(opts RouterOptions) http.Handler {
 					managementAPIWriteRateLimitMiddleware,
 				).Patch("/my-groups/{id}", opts.ManagementMyGroupUpdateHandler.ServeHTTP)
 			}
+			if opts.ManagementGroupDeleteHandler != nil {
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+				).Delete("/groups/{id}", opts.ManagementGroupDeleteHandler.ServeHTTP)
+			}
+			if opts.ManagementMyGroupDeleteHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).
+					Delete("/my-groups/{id}", opts.ManagementMyGroupDeleteHandler.ServeHTTP)
+			}
 			if opts.ManagementGroupOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/groups/options", opts.ManagementGroupOptionsHandler.ServeHTTP)
 			}
@@ -705,6 +719,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyGroupCreateHandler != nil ||
 		opts.ManagementGroupUpdateHandler != nil ||
 		opts.ManagementMyGroupUpdateHandler != nil ||
+		opts.ManagementGroupDeleteHandler != nil ||
+		opts.ManagementMyGroupDeleteHandler != nil ||
 		opts.ManagementGroupOptionsHandler != nil ||
 		opts.ManagementMyGroupOptionsHandler != nil ||
 		opts.ManagementGroupAccountOptionsHandler != nil ||
@@ -762,6 +778,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyGroupCreateHandler != nil ||
 		opts.ManagementGroupUpdateHandler != nil ||
 		opts.ManagementMyGroupUpdateHandler != nil ||
+		opts.ManagementGroupDeleteHandler != nil ||
+		opts.ManagementMyGroupDeleteHandler != nil ||
 		opts.ManagementAccountTagDeleteHandler != nil ||
 		opts.ManagementMyAccountTagDeleteHandler != nil ||
 		opts.ManagementAccountTagUpdateHandler != nil ||
