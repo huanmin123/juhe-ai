@@ -28,6 +28,10 @@ import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
 import { createHttpCompressionMiddleware } from './shared/http-compression.js'
+import { dispatchAccountHealthCheck } from './modules/accounts/account-health-check-dispatch.service.js'
+import {
+  mountAccountHealthCheckDispatchBridge
+} from './modules/internal-api/account-health-check-dispatch.routes.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -124,8 +128,13 @@ if (runtimeConfig.httpSecurity.trustProxy !== false) {
 }
 
 app.use(requestContextMiddleware)
-app.use(cors({ credentials: true, origin: createCorsOriginDelegate() }))
-app.use(createHttpCompressionMiddleware())
+const corsMiddleware = cors({ credentials: true, origin: createCorsOriginDelegate() })
+mountAccountHealthCheckDispatchBridge(app, {
+  corsMiddleware,
+  compressionMiddleware: createHttpCompressionMiddleware(),
+  secret: runtimeConfig.secret,
+  dispatch: dispatchAccountHealthCheck
+})
 
 app.get(`${systemPrefix}/health`, (_req, res) => {
   res.json({ status: 'ok', service: 'juhe-ai' })
