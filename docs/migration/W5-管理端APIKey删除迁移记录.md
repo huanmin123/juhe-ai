@@ -8,7 +8,7 @@
 - 状态：Go opt-in 代码已完成，待真实依赖、前端联调、生产单 owner 切流与回滚证据
 - 迁移波次：W5
 - 当前 Node owner：`backend/src/modules/api-keys/api-keys.routes.ts`、`backend/src/storage/api-key.repository.ts`
-- 目标 Go owner：`backend-go/internal/modules/managementapikeys/`、`backend-go/internal/httpapi/management_api_key_delete.go`、`backend-go/internal/store/postgres/managementapikeydelete.go`、`backend-go/internal/store/postgres/queries/w5_management_api_key_delete.sql`、`backend-go/internal/store/postgres/queries/w1b_public_api_keys.sql`、`backend-go/internal/httpapi/router.go`、`backend-go/internal/app/server.go`
+- 目标 Go owner：`backend-go/internal/modules/managementapikeys/`、`backend-go/internal/httpapi/management_api_key_delete.go`、`backend-go/internal/store/postgres/managementapikeydelete.go`、`backend-go/internal/store/postgres/queries/w5_management_api_key_delete.sql`、`backend-go/internal/store/postgres/queries/w1b_public_api_keys.sql`、`backend-go/db/migrations/000037_w5_api_key_record_cleanup_targets.sql`、`backend-go/internal/httpapi/router.go`、`backend-go/internal/app/server.go`
 - 关联 integration：`backend-go/internal/testkit/integration/w5_management_api_key_delete_smoke_test.go`、`backend-go/internal/testkit/integration/w5_management_api_key_list_smoke_test.go`
 - 关联计划：`../plans/计划-0081-Node转Go渐进减法迁移.md`
 - 相邻记录：[W5 管理端 API Key 密钥生命周期迁移记录](W5-管理端APIKey密钥生命周期迁移记录.md)
@@ -24,15 +24,16 @@
 
 | 阶段 | 提交 | 内容 |
 | --- | --- | --- |
+| 前置 | `adbf148ca` | 新增 API Key 关联记录 cleanup-target schema |
 | C1 | `7bdbc08c7` | 新增管理端 API Key 原子删除 service / store |
 | C1 | `c51c08e7a` | 管理端与公开 API Key 删除复用 cleanup-target upsert |
 | C2a | `010f8f104` | 接入管理 / 个人 DELETE HTTP、router、app、失效与操作日志 |
-| C2b | `caf9edbe2` | 补管理端 API Key 删除 PostgreSQL / Redis smoke 覆盖 |
+| C2b | `caf9edbe2` | 补管理端 API Key 删除 PostgreSQL / Redis / Asynq smoke 覆盖 |
 
 ## 权限、middleware 与 HTTP 契约
 
-- 管理路由使用管理 API 写链路：鉴权并按写请求 touch session，进入 IP write limiter `180/minute` 与 `40/10 seconds` burst、已认证用户 write limiter `120/minute`，随后校验 `admin` / `super_admin`；普通用户返回 `403 { "message": "需要管理员权限" }`。
-- 个人路由使用同一写鉴权、session touch、IP write limiter 和已认证用户 write limiter，但不叠加管理员角色校验。
+- 管理路由使用管理 API 写链路：先进入鉴权前 IP write limiter，再执行写鉴权并 touch session、已认证用户 write limiter，随后校验 `admin` / `super_admin`；普通用户返回 `403 { "message": "需要管理员权限" }`。限流阈值按当前系统设置读取，fresh schema 默认值为 IP write `180/minute`、`40/10 seconds` burst 和已认证用户 write `120/minute`。
+- 个人路由使用同一 IP write limiter、写鉴权、session touch 和已认证用户 write limiter，但不叠加管理员角色校验。
 - DELETE 路由不注册 JSON body parser，也不注册 mutation guard；请求体即使 malformed 也不会参与业务解析或改变删除语义。
 - 管理路由省略 `systemAccountId` 或传 `systemAccountId=all` 时按全局精确 ID 查找；传一个非空 `systemAccountId` 时收窄到该 owner。空值返回 `400 { "message": "系统账号 ID 不能为空" }`，重复参数返回 `400 { "message": "Expected string, received array" }`。
 - 个人路由始终强制当前 session 系统账户；伪造或重复 `systemAccountId` 均被忽略，不能扩大作用域。
@@ -85,7 +86,7 @@ deterministic unit / full Go validation 已通过，integration package compile 
 
 ## Node 语义漂移审计
 
-审计基线覆盖到 `origin/master` 的 `b994a0105`。对已迁移 API Key 删除路径未发现额外 Node 语义漂移；唯一相关变化是已经对齐的 cleanup-target 行为。该结论不改变 Node 当前 owner，也不是 Node 删除证据。
+审计基线覆盖到 `origin/master` 的 `0e6ecaa69`。`861c5751e` 引入的账户余额自动识别和 GPT catalog 更新、`ce3477135` 引入的余额扫描上游 agent 收口、`d51b3c3ea` 引入的 Redis client 收口均未改变已迁移 API Key 删除的 HTTP、事务、失效或审计语义；相关 cleanup-target 行为已经对齐。合并远程新增的 provider catalog migration 后，cleanup-target migration 从冲突的 `000036` 顺延为 `000037`。该结论不改变 Node 当前 owner，也不是 Node 删除证据。
 
 ## 剩余门禁
 

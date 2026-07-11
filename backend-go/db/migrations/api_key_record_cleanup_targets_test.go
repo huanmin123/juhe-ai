@@ -7,7 +7,7 @@ import (
 )
 
 func TestAPIKeyRecordCleanupTargetsMigrationMatchesNodeWorkerContract(t *testing.T) {
-	source, err := os.ReadFile("000036_w5_api_key_record_cleanup_targets.sql")
+	source, err := os.ReadFile("000037_w5_api_key_record_cleanup_targets.sql")
 	if err != nil {
 		t.Fatalf("read API Key cleanup target migration: %v", err)
 	}
