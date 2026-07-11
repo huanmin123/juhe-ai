@@ -86,7 +86,7 @@
 | `go test -race ./internal/modules/managementapikeys ./internal/httpapi ./internal/store/postgres ./internal/app -count=1` | 通过 |
 | `go test ./... -count=1`、`go vet ./...`、`go mod tidy -diff` | 通过；tidy 无 diff |
 | `go test -tags=integration ./internal/testkit/integration -run '^$' -count=1` | 通过 |
-| `TestW5ManagementAPIKeyListPostgresSmoke` | 本机 Docker 不可用，按 testcontainers 健康门禁 `SKIP`，不计真实依赖通过 |
+| `TestW5ManagementAPIKeyUpdatePostgresRedisSmoke` | 本机 Docker 不可用，按 testcontainers 健康门禁 `SKIP`，不计真实依赖通过 |
 | Node `test:api-key-management-driver`、`test:api-key-route-validation`、`test:api-key-availability-schedule`、`test:api-key-single-read`、`test:scope`、`test:system-api-rate-limit` | 通过 |
 | `pnpm --filter juhe-ai-frontend typecheck` | 通过；不代表真实 Go 后端联调 |
 
@@ -105,19 +105,19 @@ integration smoke 已编码覆盖真实 migrations、PostgreSQL、Redis cache/st
 - `acc61a4e1` 仅澄清测试断言：summary / update 响应不得包含完整 key；create 成功响应仍是完整 key 唯一一次可见的管理生命周期入口，不改变本切片一次性返回契约。
 - `df1dc86ec` 的 gateway quota runtime state 发布、`8bb00ea0a` 的 authorization quota 失效时间语义，以及 `2ec3d776d` 的账户健康检查 / 人工诊断链路，分别属于尚未迁移的网关额度、授权额度和账户健康范围；本切片继续 defer，不提前复制到 API Key create HTTP / service。
 - 因此本次只修正 create 预校验去重边界和测试诊断脱敏，不扩展 gateway quota、authorization quota、account health、OAuth、usage/audit 或 worker 迁移范围。
-- 本机 `TestW5ManagementAPIKeyListPostgresSmoke` 仍因 Docker provider 不可用输出 `SKIP`；该结果只表示真实依赖测试未执行，不是 PostgreSQL / Redis / Asynq / HTTP 通过证据。
+- 本机 `TestW5ManagementAPIKeyUpdatePostgresRedisSmoke` 仍因 Docker provider 不可用输出 `SKIP`；该结果只表示真实依赖测试未执行，不是 PostgreSQL / Redis / Asynq / HTTP 通过证据。
 
 ## 剩余门禁
 
 满足以下条件前不得声明生产接管或删除 Node API Key 密钥接口：
 
-- 在 Docker/testcontainers 健康环境真实通过 `TestW5ManagementAPIKeyListPostgresSmoke`，确认 PostgreSQL、Redis、Asynq 和 operation log 均实际执行而非 `SKIP`。
+- 在 Docker/testcontainers 健康环境真实通过 `TestW5ManagementAPIKeyUpdatePostgresRedisSmoke`，确认 PostgreSQL、Redis、Asynq 和 operation log 均实际执行而非 `SKIP`。
 - 前端 API Key 页面连接真实 Go HTTP 服务完成列表、复制完整密钥、管理员 / 个人刷新、刷新后旧密钥失效、新密钥调用成功和页面不持久化完整密钥 smoke。
 - 对 validation cache 失效失败后的“数据库已提交”场景补生产告警、排障和人工恢复演练。
-- 完成 API Key update/delete 等剩余 W5 CRUD，并统一评估单 owner 切流。
+- 完成 API Key delete 等剩余 W5 CRUD，并统一评估单 owner 切流。
 - 生产反向代理按路径形成单 owner，并完成停止 Go 后回退 Node 的演练。
 - 对应 Node route/service/store/test 已删除并提供 `rg` 静态证据。
 
 ## 当前结论
 
-Go 已具备 W5 API Key 创建、完整密钥查看和刷新的一组独立 opt-in 实现，并完成非容器回归、integration 编译和真实依赖测试代码。真实 PostgreSQL / Redis / Asynq 执行、前端真实后端联调、API Key update/delete、生产切流和 Node 删除均未完成，本切片不能作为生产接管证据。
+Go 已具备 W5 API Key 创建、更新、完整密钥查看和刷新的一组独立 opt-in 实现，并完成非容器回归、integration 编译和真实依赖测试代码。真实 PostgreSQL / Redis / Asynq 执行、前端真实后端联调、API Key delete、生产切流和 Node 删除均未完成，本切片不能作为生产接管证据。
