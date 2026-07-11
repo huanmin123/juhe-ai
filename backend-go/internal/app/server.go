@@ -213,6 +213,10 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyRouteStrategyOptionsHandler:           managementHandlers.MyRouteStrategyOptionsHandler,
 		ManagementAPIKeyListHandler:                       managementHandlers.APIKeyListHandler,
 		ManagementMyAPIKeyListHandler:                     managementHandlers.MyAPIKeyListHandler,
+		ManagementAPIKeySecretHandler:                     managementHandlers.APIKeySecretHandler,
+		ManagementMyAPIKeySecretHandler:                   managementHandlers.MyAPIKeySecretHandler,
+		ManagementAPIKeyRefreshHandler:                    managementHandlers.APIKeyRefreshHandler,
+		ManagementMyAPIKeyRefreshHandler:                  managementHandlers.MyAPIKeyRefreshHandler,
 		ManagementGroupListHandler:                        managementHandlers.GroupListHandler,
 		ManagementMyGroupListHandler:                      managementHandlers.MyGroupListHandler,
 		ManagementGroupDetailHandler:                      managementHandlers.GroupDetailHandler,
@@ -343,6 +347,10 @@ type managementAPIHandlers struct {
 	MyRouteStrategyOptionsHandler           http.Handler
 	APIKeyListHandler                       http.Handler
 	MyAPIKeyListHandler                     http.Handler
+	APIKeySecretHandler                     http.Handler
+	MyAPIKeySecretHandler                   http.Handler
+	APIKeyRefreshHandler                    http.Handler
+	MyAPIKeyRefreshHandler                  http.Handler
 	GroupListHandler                        http.Handler
 	MyGroupListHandler                      http.Handler
 	GroupDetailHandler                      http.Handler
@@ -381,6 +389,7 @@ type managementAPIInvalidator interface {
 	managementauthorizations.AuthorizationInvalidator
 	managementprovidermodels.CustomProviderModelInvalidator
 	managementproxies.ProxyInvalidator
+	managementapikeys.APIKeyGatewayCacheInvalidator
 	managementsettings.GlobalSettingsCacheInvalidator
 	managementsettings.SystemSettingsInvalidator
 }
@@ -428,7 +437,13 @@ func newManagementAPIHandler(
 		Invalidator: systemAccountInvalidator,
 	})
 	routeStrategyService := managementroutestrategies.NewService(store)
-	apiKeyService := managementapikeys.NewService(store)
+	apiKeyService := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
+		ListReader:       store,
+		SecretStore:      store,
+		SecretTransactor: store,
+		Invalidator:      systemAccountInvalidator,
+		Secret:           cfg.Secret,
+	})
 	groupService := managementgroups.NewServiceWithOptions(managementgroups.ServiceOptions{
 		Store:                   store,
 		ListStore:               store,
@@ -541,6 +556,10 @@ func newManagementAPIHandler(
 		MyRouteStrategyOptionsHandler:           httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
 		APIKeyListHandler:                       httpapi.NewManagementAPIKeyListHandler(apiKeyService),
 		MyAPIKeyListHandler:                     httpapi.NewManagementMyAPIKeyListHandler(apiKeyService),
+		APIKeySecretHandler:                     httpapi.NewManagementAPIKeySecretHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		MyAPIKeySecretHandler:                   httpapi.NewManagementMyAPIKeySecretHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		APIKeyRefreshHandler:                    httpapi.NewManagementAPIKeyRefreshHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		MyAPIKeyRefreshHandler:                  httpapi.NewManagementMyAPIKeyRefreshHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		GroupListHandler:                        httpapi.NewManagementGroupListHandler(groupService),
 		MyGroupListHandler:                      httpapi.NewManagementMyGroupListHandler(groupService),
 		GroupDetailHandler:                      httpapi.NewManagementGroupDetailHandler(groupService),

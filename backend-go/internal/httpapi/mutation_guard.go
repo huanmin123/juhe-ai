@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 const (
@@ -222,6 +224,29 @@ func managementGroupCreateMutationGuardConfig(scope managementGroupOptionScope) 
 				"owner":        ownerSystemAccountID,
 				"providerCode": mutationStringField(fields, "providerCode"),
 				"name":         mutationStringField(fields, "name"),
+			}, nil
+		},
+	}
+}
+
+func managementAPIKeyRefreshMutationGuardConfig(scope managementAPIKeyScope) mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "api_keys.refresh_key",
+		fingerprint: func(_ http.ResponseWriter, r *http.Request) (any, error) {
+			ownerSystemAccountID := ""
+			if authContext, ok := ManagementAuthContextFromRequest(r); ok {
+				ownerSystemAccountID = strings.TrimSpace(authContext.SystemAccountID)
+			}
+			if scope == managementAPIKeyScopeAdmin {
+				selectedSystemAccountID := firstManagementQueryText(r.URL.Query(), "systemAccountId")
+				if selectedSystemAccountID == "all" {
+					selectedSystemAccountID = ""
+				}
+				ownerSystemAccountID = selectedSystemAccountID
+			}
+			return map[string]any{
+				"owner": ownerSystemAccountID,
+				"id":    strings.TrimSpace(chi.URLParam(r, "id")),
 			}, nil
 		},
 	}

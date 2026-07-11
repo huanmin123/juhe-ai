@@ -123,6 +123,10 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.MyRouteStrategyOptionsHandler != nil ||
 		handlers.APIKeyListHandler != nil ||
 		handlers.MyAPIKeyListHandler != nil ||
+		handlers.APIKeySecretHandler != nil ||
+		handlers.MyAPIKeySecretHandler != nil ||
+		handlers.APIKeyRefreshHandler != nil ||
+		handlers.MyAPIKeyRefreshHandler != nil ||
 		handlers.GroupListHandler != nil ||
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
@@ -197,6 +201,10 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.RouteStrategyOptionsHandler != nil ||
 		handlers.APIKeyListHandler != nil ||
 		handlers.MyAPIKeyListHandler != nil ||
+		handlers.APIKeySecretHandler != nil ||
+		handlers.MyAPIKeySecretHandler != nil ||
+		handlers.APIKeyRefreshHandler != nil ||
+		handlers.MyAPIKeyRefreshHandler != nil ||
 		handlers.GroupListHandler != nil ||
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
@@ -276,6 +284,10 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.MyRouteStrategyOptionsHandler == nil ||
 		handlers.APIKeyListHandler == nil ||
 		handlers.MyAPIKeyListHandler == nil ||
+		handlers.APIKeySecretHandler == nil ||
+		handlers.MyAPIKeySecretHandler == nil ||
+		handlers.APIKeyRefreshHandler == nil ||
+		handlers.MyAPIKeyRefreshHandler == nil ||
 		handlers.GroupListHandler == nil ||
 		handlers.MyGroupListHandler == nil ||
 		handlers.GroupCreateHandler == nil ||

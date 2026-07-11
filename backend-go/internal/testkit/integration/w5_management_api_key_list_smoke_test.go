@@ -107,7 +107,14 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 		Store: store,
 		Now:   func() time.Time { return now },
 	})
-	service := managementapikeys.NewService(store)
+	apiKeySecretInvalidator := &w5ManagementAPIKeySecretInvalidator{}
+	service := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
+		ListReader:       store,
+		SecretStore:      store,
+		SecretTransactor: store,
+		Invalidator:      apiKeySecretInvalidator,
+		Secret:           w5ManagementAPIKeySecretRuntimeSecret,
+	})
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config: config.Config{
 			Host:                 "127.0.0.1",
@@ -115,11 +122,28 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 			ManagementAPIEnabled: true,
 			TrustProxy:           "false",
 		},
-		Logger:                      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		ManagementAPIAuthMiddleware: httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		ManagementAPIKeyListHandler: httpapi.NewManagementAPIKeyListHandler(service),
+		Logger:                           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ManagementAPIAuthMiddleware:      httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware: httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
+		ManagementAPIKeyListHandler:      httpapi.NewManagementAPIKeyListHandler(service),
 		ManagementMyAPIKeyListHandler: httpapi.NewManagementMyAPIKeyListHandler(
 			service,
+		),
+		ManagementAPIKeySecretHandler: httpapi.NewManagementAPIKeySecretHandlerWithOperationLog(
+			service,
+			httpapi.ManagementOperationLogOptions{},
+		),
+		ManagementMyAPIKeySecretHandler: httpapi.NewManagementMyAPIKeySecretHandlerWithOperationLog(
+			service,
+			httpapi.ManagementOperationLogOptions{},
+		),
+		ManagementAPIKeyRefreshHandler: httpapi.NewManagementAPIKeyRefreshHandlerWithOperationLog(
+			service,
+			httpapi.ManagementOperationLogOptions{},
+		),
+		ManagementMyAPIKeyRefreshHandler: httpapi.NewManagementMyAPIKeyRefreshHandlerWithOperationLog(
+			service,
+			httpapi.ManagementOperationLogOptions{},
 		),
 	})
 
@@ -474,6 +498,13 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 		db,
 		w5ManagementAPIKeyListOwnerSID,
 		sessionLastSeenAt,
+	)
+	exerciseW5ManagementAPIKeySecretSmoke(
+		t,
+		ctx,
+		db,
+		router,
+		apiKeySecretInvalidator,
 	)
 }
 

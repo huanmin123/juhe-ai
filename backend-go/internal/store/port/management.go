@@ -690,6 +690,43 @@ type ManagementAPIKeyListReader interface {
 	ListManagementAPIKeyUsageTotals(ctx context.Context, scopes []ManagementAPIKeyUsageScope) ([]ManagementAPIKeyUsageRow, error)
 }
 
+type ManagementAPIKeySecretScope struct {
+	APIKeyID        string
+	SystemAccountID string
+}
+
+type ManagementAPIKeySecretRow struct {
+	ID                 string
+	SystemAccountID    string
+	Name               string
+	KeyPrefix          string
+	KeySuffix          string
+	KeySecretEncrypted *string
+}
+
+type ManagementAPIKeySecretUpdateInput struct {
+	APIKeyID           string
+	SystemAccountID    string
+	KeyHash            string
+	KeyPrefix          string
+	KeySuffix          string
+	KeySecretEncrypted string
+	UpdatedAt          time.Time
+}
+
+type ManagementAPIKeySecretStore interface {
+	FindManagementAPIKeySecret(ctx context.Context, input ManagementAPIKeySecretScope) (ManagementAPIKeySecretRow, bool, error)
+	LockManagementAPIKeySecretRefreshTarget(ctx context.Context, input ManagementAPIKeySecretScope) (ManagementAPIKeyListRow, bool, error)
+	UpdateManagementAPIKeySecret(ctx context.Context, input ManagementAPIKeySecretUpdateInput) (bool, error)
+}
+
+type ManagementAPIKeySecretTransactor interface {
+	ManagementAPIKeySecretInTx(
+		ctx context.Context,
+		fn func(context.Context, ManagementAPIKeySecretStore) error,
+	) error
+}
+
 type ManagementAccountUsageStatsRange struct {
 	StartDate string `json:"startDate"`
 	EndDate   string `json:"endDate"`

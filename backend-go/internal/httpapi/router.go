@@ -92,6 +92,10 @@ type RouterOptions struct {
 	ManagementMyRouteStrategyOptionsHandler           http.Handler
 	ManagementAPIKeyListHandler                       http.Handler
 	ManagementMyAPIKeyListHandler                     http.Handler
+	ManagementAPIKeySecretHandler                     http.Handler
+	ManagementMyAPIKeySecretHandler                   http.Handler
+	ManagementAPIKeyRefreshHandler                    http.Handler
+	ManagementMyAPIKeyRefreshHandler                  http.Handler
 	ManagementGroupListHandler                        http.Handler
 	ManagementMyGroupListHandler                      http.Handler
 	ManagementGroupDetailHandler                      http.Handler
@@ -270,6 +274,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyRouteStrategyOptionsHandler == nil &&
 				opts.ManagementAPIKeyListHandler == nil &&
 				opts.ManagementMyAPIKeyListHandler == nil &&
+				opts.ManagementAPIKeySecretHandler == nil &&
+				opts.ManagementMyAPIKeySecretHandler == nil &&
+				opts.ManagementAPIKeyRefreshHandler == nil &&
+				opts.ManagementMyAPIKeyRefreshHandler == nil &&
 				opts.ManagementGroupListHandler == nil &&
 				opts.ManagementMyGroupListHandler == nil &&
 				opts.ManagementGroupDetailHandler == nil &&
@@ -510,6 +518,24 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAPIKeyListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-api-keys", opts.ManagementMyAPIKeyListHandler.ServeHTTP)
 			}
+			if opts.ManagementAPIKeySecretHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/api-keys/{id}/secret", opts.ManagementAPIKeySecretHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAPIKeySecretHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-api-keys/{id}/secret", opts.ManagementMyAPIKeySecretHandler.ServeHTTP)
+			}
+			if opts.ManagementAPIKeyRefreshHandler != nil {
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					mutationGuards.Middleware(managementAPIKeyRefreshMutationGuardConfig(managementAPIKeyScopeAdmin)),
+				).Post("/api-keys/{id}/refresh-key", opts.ManagementAPIKeyRefreshHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAPIKeyRefreshHandler != nil {
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					mutationGuards.Middleware(managementAPIKeyRefreshMutationGuardConfig(managementAPIKeyScopeSelf)),
+				).Post("/my-api-keys/{id}/refresh-key", opts.ManagementMyAPIKeyRefreshHandler.ServeHTTP)
+			}
 			if opts.ManagementGroupListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/groups", opts.ManagementGroupListHandler.ServeHTTP)
 			}
@@ -723,6 +749,10 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyRouteStrategyOptionsHandler != nil ||
 		opts.ManagementAPIKeyListHandler != nil ||
 		opts.ManagementMyAPIKeyListHandler != nil ||
+		opts.ManagementAPIKeySecretHandler != nil ||
+		opts.ManagementMyAPIKeySecretHandler != nil ||
+		opts.ManagementAPIKeyRefreshHandler != nil ||
+		opts.ManagementMyAPIKeyRefreshHandler != nil ||
 		opts.ManagementGroupListHandler != nil ||
 		opts.ManagementMyGroupListHandler != nil ||
 		opts.ManagementGroupDetailHandler != nil ||
@@ -762,6 +792,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementProxyUpdateHandler != nil ||
 		opts.ManagementProxyDeleteHandler != nil ||
 		opts.ManagementProxyTestHandler != nil ||
+		opts.ManagementAPIKeyRefreshHandler != nil ||
+		opts.ManagementMyAPIKeyRefreshHandler != nil ||
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||
 		opts.ManagementSystemTeamCreateHandler != nil ||

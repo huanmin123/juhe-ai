@@ -26,7 +26,13 @@ const (
 var ErrAPIKeyListInvalid = errors.New("management API Key list invalid")
 
 type Service struct {
-	store port.ManagementAPIKeyListReader
+	store            port.ManagementAPIKeyListReader
+	secretStore      port.ManagementAPIKeySecretStore
+	secretTransactor port.ManagementAPIKeySecretTransactor
+	invalidator      APIKeyGatewayCacheInvalidator
+	codec            secretJSONCodec
+	now              func() time.Time
+	newSecret        func() (string, error)
 }
 
 type ListInput struct {
@@ -71,7 +77,14 @@ type ListResult struct {
 }
 
 func NewService(store port.ManagementAPIKeyListReader) *Service {
-	return &Service{store: store}
+	opts := ServiceOptions{ListReader: store}
+	if secretStore, ok := store.(port.ManagementAPIKeySecretStore); ok {
+		opts.SecretStore = secretStore
+	}
+	if transactor, ok := store.(port.ManagementAPIKeySecretTransactor); ok {
+		opts.SecretTransactor = transactor
+	}
+	return NewServiceWithOptions(opts)
 }
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
