@@ -7,6 +7,7 @@ import { closeRedisClients } from '../../shared/redis-client.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import { createAccountAsync, createGroupAsync } from '../../storage/repositories.js'
+import { refreshDirtyGroupAccountStatsCacheAsync } from '../../storage/usage-stats.repository.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '账号探测 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -39,8 +40,14 @@ try {
   }, access)
   createdAccountIds.push(account.id)
 
-  const dueAt = new Date(Date.now() - 60_000).toISOString()
-  await setHealthCheckDue(account.id, dueAt)
+  assert.equal(account.status, 'pending_test', 'PG 新建账户应先进入待检查状态')
+  assert.equal(account.schedulable, false, 'PG 新建账户健康成功前不得参与调度')
+  assert.equal(await refreshDirtyGroupAccountStatsCacheAsync(), 1, 'PG fixture 创建后应先刷新 pending 统计')
+  assert.deepEqual(
+    await readGroupAccountStats(group.id),
+    { available: 0, error: 1 },
+    'PG pending 账户首次聚合应为 available=0/error=1'
+  )
 
   const healthCandidates = await handleDbServiceOperation({
     type: 'list_accounts_due_for_health_check',
@@ -76,10 +83,20 @@ try {
   })
   assert.equal(healthSuccess.changed, true, 'PG health check success 应写回成功状态')
   const afterSuccess = await readAccountRuntimeFields(account.id)
+  assert.equal(afterSuccess.status, 'active', 'PG health success 应激活 pending 账户')
+  assert.equal(afterSuccess.schedulable, 1, 'PG health success 应恢复 pending 账户调度')
   assert.equal(afterSuccess.health_check_failure_count, 0, 'PG health success 应清零失败次数')
   assert.equal(afterSuccess.last_health_check_status_code, 200, 'PG health success 应写入状态码')
   assert(afterSuccess.next_health_check_at && afterSuccess.next_health_check_at > checkedAt, 'PG health success 应顺延下次检测')
+  assert.equal(await readGroupStatsDirtyReason(group.id), 'account_health_check_success', 'PG DB service 健康激活后应重新标记分组统计 dirty')
+  assert.equal(await refreshDirtyGroupAccountStatsCacheAsync(), 1, 'PG worker 应消费健康激活 dirty')
+  assert.deepEqual(
+    await readGroupAccountStats(group.id),
+    { available: 1, error: 0 },
+    'PG 健康激活后的聚合应为 available=1/error=0'
+  )
 
+  const dueAt = new Date(Date.now() - 60_000).toISOString()
   await setHealthCheckDue(account.id, dueAt)
   const healthFailure = await handleDbServiceOperation({
     type: 'record_account_health_check_failure',
@@ -191,7 +208,7 @@ async function setCooldownDue(accountId: string, dueAt: string): Promise<void> {
 async function readAccountRuntimeFields(accountId: string): Promise<Record<string, string | number | null>> {
   const pool = await getPostgresPool()
   const result = await pool.query(`
-    SELECT status, cooldown_until, last_error_code, last_error_message,
+    SELECT status, schedulable, cooldown_until, last_error_code, last_error_message,
       cooldown_retest_failure_count, last_health_check_status_code,
       next_health_check_at, health_check_failure_count, last_health_check_error_code
     FROM juhe_business.accounts
@@ -201,6 +218,33 @@ async function readAccountRuntimeFields(accountId: string): Promise<Record<strin
   const row = result.rows[0] as Record<string, string | number | null> | undefined
   assert(row, 'PG smoke 应能读回账号运行态字段')
   return row
+}
+
+async function readGroupAccountStats(groupId: string): Promise<{ available: number; error: number }> {
+  const pool = await getPostgresPool()
+  const result = await pool.query(`
+    SELECT available, error
+    FROM juhe_stats.group_account_stats
+    WHERE group_id = $1
+    LIMIT 1
+  `, [groupId])
+  const row = result.rows[0] as { available?: number | string; error?: number | string } | undefined
+  assert(row, 'PG smoke 应能读回分组账户统计')
+  return {
+    available: Number(row.available ?? 0),
+    error: Number(row.error ?? 0)
+  }
+}
+
+async function readGroupStatsDirtyReason(groupId: string): Promise<string | undefined> {
+  const pool = await getPostgresPool()
+  const result = await pool.query(`
+    SELECT reason
+    FROM juhe_business.group_account_stats_dirty
+    WHERE group_id = $1
+    LIMIT 1
+  `, [groupId])
+  return typeof result.rows[0]?.reason === 'string' ? result.rows[0].reason : undefined
 }
 
 async function assertProbeExplainUsesIndexes(dueAt: string): Promise<void> {
@@ -268,6 +312,7 @@ async function cleanupSmokeRows(): Promise<void> {
   }
   const groupIds = [...new Set(createdGroupIds)]
   if (groupIds.length > 0) {
+    await pool.query('DELETE FROM juhe_stats.group_account_stats WHERE group_id = ANY($1::text[])', [groupIds]).catch(() => undefined)
     await pool.query('DELETE FROM juhe_business.route_strategy_groups WHERE group_id = ANY($1::text[])', [groupIds])
     await pool.query('DELETE FROM juhe_business.group_account_stats_dirty WHERE group_id = ANY($1::text[])', [groupIds]).catch(() => undefined)
     await pool.query('DELETE FROM juhe_business.groups WHERE id = ANY($1::text[])', [groupIds])

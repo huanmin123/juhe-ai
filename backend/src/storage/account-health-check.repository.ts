@@ -31,6 +31,7 @@ import { loadSupportedModelsByAccountIdsAsync } from './account-supported-models
 import { getPostgresPool } from './postgres-client.js'
 import { listOpenAIProtocolProfileIds, listOpenAIProtocolProfileIdsAsync } from './provider.repository.js'
 import { sqlPlaceholders } from './query-utils.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { isResourceAuthorizationExpired } from './resource-authorization-helpers.js'
 import { authorizedAccountPermissions, ownerPermissions } from './resource-permissions.js'
 import { invalidateAccountLookupCache, loadSystemAccountNameMapByIds, loadSystemAccountNameMapByIdsAsync } from './repository-lookups.js'
@@ -113,44 +114,63 @@ export function recordAccountHealthCheckSuccess(accountId: string, input: Accoun
   const checkedAt = normalizedIso(input.checkedAt) ?? nowIso()
   const nextHealthCheckAt = nextHealthCheckAtForAccount(accountId, checkedAt, input)
   const statusCode = normalizedStatusCode(input.statusCode)
+  const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
   const database = getBusinessDatabase()
-  const activationStatus = healthCheckActivationStatus(
-    database.prepare('SELECT availability_schedule_json FROM accounts WHERE id = ?').get(accountId),
-    checkedAt
-  )
-  const result = database
-    .prepare(`
-      UPDATE accounts
-      SET status = CASE WHEN status = 'pending_test' THEN ? ELSE status END,
-          schedulable = CASE WHEN status = 'pending_test' THEN 1 ELSE schedulable END,
-          cooldown_until = CASE WHEN status = 'pending_test' THEN NULL ELSE cooldown_until END,
-          last_error_code = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_code END,
-          last_error_message = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_message END,
-          last_health_check_at = ?,
-          last_health_success_at = ?,
-          next_health_check_at = ?,
-          health_check_failure_count = 0,
-          last_health_check_status_code = ?,
-          last_health_check_error_code = NULL,
-          last_health_check_error_message = NULL,
-          updated_at = ?
+  const transactionStarted = beginDatabaseTransaction(database)
+  let changed = false
+  try {
+    const row = database.prepare(`
+      SELECT status, schedulable, availability_schedule_json, config_revision
+      FROM accounts
       WHERE id = ?
         AND deleted_at IS NULL
         AND status IN ('active', 'pending_test')
-        AND (? IS NULL OR config_revision = ?)
-    `)
-    .run(
-      activationStatus,
-      checkedAt,
-      checkedAt,
-      nextHealthCheckAt,
-      statusCode,
-      checkedAt,
-      accountId,
-      normalizedConfigRevision(input.expectedConfigRevision) ?? null,
-      normalizedConfigRevision(input.expectedConfigRevision) ?? null
-    )
-  const changed = Number(result.changes ?? 0) > 0
+      LIMIT 1
+    `).get(accountId) as unknown as AccountHealthCheckSuccessStateRow | undefined
+    if (row && (expectedConfigRevision === undefined || Number(row.config_revision) === expectedConfigRevision)) {
+      const activationStatus = healthCheckActivationStatus(row, checkedAt)
+      const result = database
+        .prepare(`
+          UPDATE accounts
+          SET status = CASE WHEN status = 'pending_test' THEN ? ELSE status END,
+              schedulable = CASE WHEN status = 'pending_test' THEN 1 ELSE schedulable END,
+              cooldown_until = CASE WHEN status = 'pending_test' THEN NULL ELSE cooldown_until END,
+              last_error_code = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_code END,
+              last_error_message = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_message END,
+              last_health_check_at = ?,
+              last_health_success_at = ?,
+              next_health_check_at = ?,
+              health_check_failure_count = 0,
+              last_health_check_status_code = ?,
+              last_health_check_error_code = NULL,
+              last_health_check_error_message = NULL,
+              updated_at = ?
+          WHERE id = ?
+            AND deleted_at IS NULL
+            AND status IN ('active', 'pending_test')
+            AND (? IS NULL OR config_revision = ?)
+        `)
+        .run(
+          activationStatus,
+          checkedAt,
+          checkedAt,
+          nextHealthCheckAt,
+          statusCode,
+          checkedAt,
+          accountId,
+          expectedConfigRevision ?? null,
+          expectedConfigRevision ?? null
+        )
+      changed = Number(result.changes ?? 0) > 0
+      if (changed && healthCheckSuccessChangesGroupStats(row, activationStatus)) {
+        refreshGroupAccountStatsAfterWrite({ accountIds: [accountId], reason: 'account_health_check_success' })
+      }
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
   if (changed) {
     invalidateAccountLookupCache(accountId)
   }
@@ -169,49 +189,77 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
   const checkedAt = normalizedIso(input.checkedAt) ?? nowIso()
   const nextHealthCheckAt = nextHealthCheckAtForAccount(accountId, checkedAt, input)
   const statusCode = normalizedStatusCode(input.statusCode)
-  const activationRows = await client.query<{ availability_schedule_json?: string | null }>(`
-    SELECT availability_schedule_json
-    FROM ${healthCheckTable(client, 'accounts')}
-    WHERE id = ?
-      AND deleted_at IS NULL
-    LIMIT 1
-  `, [accountId])
-  const activationStatus = healthCheckActivationStatus(activationRows[0], checkedAt)
-  const result = await client.execute(`
-    UPDATE ${healthCheckTable(client, 'accounts')}
-    SET status = CASE WHEN status = 'pending_test' THEN ? ELSE status END,
-        schedulable = CASE WHEN status = 'pending_test' THEN 1 ELSE schedulable END,
-        cooldown_until = CASE WHEN status = 'pending_test' THEN NULL ELSE cooldown_until END,
-        last_error_code = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_code END,
-        last_error_message = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_message END,
-        last_health_check_at = ?,
-        last_health_success_at = ?,
-        next_health_check_at = ?,
-        health_check_failure_count = 0,
-        last_health_check_status_code = ?,
-        last_health_check_error_code = NULL,
-        last_health_check_error_message = NULL,
-        updated_at = ?
-    WHERE id = ?
-      AND deleted_at IS NULL
-      AND status IN ('active', 'pending_test')
-      AND (? IS NULL OR config_revision = ?)
-  `, [
-    activationStatus,
-    checkedAt,
-    checkedAt,
-    nextHealthCheckAt,
-    statusCode,
-    checkedAt,
-    accountId,
-    normalizedConfigRevision(input.expectedConfigRevision) ?? null,
-    normalizedConfigRevision(input.expectedConfigRevision) ?? null
-  ])
-  const changed = Number(result.changes ?? 0) > 0
+  const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
+  const changed = await client.transaction(async (tx) => {
+    const row = await tx.one<AccountHealthCheckSuccessStateRow>(`
+      SELECT status, schedulable, availability_schedule_json, config_revision
+      FROM ${healthCheckTable(tx, 'accounts')}
+      WHERE id = ?
+        AND deleted_at IS NULL
+        AND status IN ('active', 'pending_test')
+      LIMIT 1
+      FOR UPDATE
+    `, [accountId])
+    if (!row || (expectedConfigRevision !== undefined && Number(row.config_revision) !== expectedConfigRevision)) {
+      return false
+    }
+    const activationStatus = healthCheckActivationStatus(row, checkedAt)
+    const result = await tx.execute(`
+      UPDATE ${healthCheckTable(tx, 'accounts')}
+      SET status = CASE WHEN status = 'pending_test' THEN ? ELSE status END,
+          schedulable = CASE WHEN status = 'pending_test' THEN 1 ELSE schedulable END,
+          cooldown_until = CASE WHEN status = 'pending_test' THEN NULL ELSE cooldown_until END,
+          last_error_code = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_code END,
+          last_error_message = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_message END,
+          last_health_check_at = ?,
+          last_health_success_at = ?,
+          next_health_check_at = ?,
+          health_check_failure_count = 0,
+          last_health_check_status_code = ?,
+          last_health_check_error_code = NULL,
+          last_health_check_error_message = NULL,
+          updated_at = ?
+      WHERE id = ?
+        AND deleted_at IS NULL
+        AND status IN ('active', 'pending_test')
+        AND (? IS NULL OR config_revision = ?)
+    `, [
+      activationStatus,
+      checkedAt,
+      checkedAt,
+      nextHealthCheckAt,
+      statusCode,
+      checkedAt,
+      accountId,
+      expectedConfigRevision ?? null,
+      expectedConfigRevision ?? null
+    ])
+    const updated = Number(result.changes ?? 0) > 0
+    if (updated && healthCheckSuccessChangesGroupStats(row, activationStatus)) {
+      await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [accountId], reason: 'account_health_check_success' }, tx)
+    }
+    return updated
+  })
   if (changed) {
     invalidateAccountLookupCache(accountId)
   }
   return changed
+}
+
+interface AccountHealthCheckSuccessStateRow {
+  status: string
+  schedulable: number
+  availability_schedule_json?: string | null
+  config_revision?: number
+}
+
+function healthCheckSuccessChangesGroupStats(
+  row: AccountHealthCheckSuccessStateRow,
+  activationStatus: 'active' | 'disabled'
+): boolean {
+  const nextStatus = row.status === 'pending_test' ? activationStatus : row.status
+  const nextSchedulable = row.status === 'pending_test' ? 1 : Number(row.schedulable)
+  return nextStatus !== row.status || nextSchedulable !== Number(row.schedulable)
 }
 
 function healthCheckActivationStatus(
