@@ -11,7 +11,11 @@ import (
 	"time"
 )
 
-const scheduleModeWindows = "allow_windows"
+const (
+	scheduleModeWindows           = "allow_windows"
+	scheduleNextCheckHorizonDays  = 14
+	scheduleNextCheckFallbackDays = 7
+)
 
 type scheduleWindow struct {
 	daysOfWeek []int
@@ -129,6 +133,61 @@ func Normalize(
 		out["exceptions"] = exceptions
 	}
 	return out, allowed, nil
+}
+
+// NextCheckAt returns the earliest UTC boundary strictly after now for a normalized schedule.
+func NextCheckAt(schedule map[string]any, now time.Time) *time.Time {
+	if len(schedule) == 0 {
+		return nil
+	}
+	enabled, _ := schedule["enabled"].(bool)
+	timezone, _ := schedule["timezone"].(string)
+	if !enabled || timezone == "" {
+		return nil
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return nil
+	}
+
+	windows := scheduleWindowsFromNormalized(schedule["windows"])
+	dateRange := scheduleDateRangeFromNormalized(schedule["dateRange"])
+	exceptions := scheduleExceptionsFromNormalized(schedule["exceptions"])
+	current := now.In(location)
+	startDate := time.Date(current.Year(), current.Month(), current.Day()-1, 0, 0, 0, 0, time.UTC)
+	nowUTC := now.UTC()
+	var next *time.Time
+
+	for offset := 0; offset <= scheduleNextCheckHorizonDays+2; offset++ {
+		date := startDate.AddDate(0, 0, offset)
+		dateKey := date.Format("2006-01-02")
+		if !dateRange.contains(dateKey) {
+			continue
+		}
+
+		if exception, exists := firstScheduleException(exceptions, dateKey); exists {
+			if exception.action == "allow" {
+				for _, window := range exception.windows {
+					next = earlierFutureBoundary(next, windowBoundaries(date, window.startMin, window.endMin), location, nowUTC)
+				}
+			}
+			continue
+		}
+
+		dayOfWeek := scheduleDay(date)
+		for _, window := range windows {
+			if !containsInt(window.daysOfWeek, dayOfWeek) {
+				continue
+			}
+			next = earlierFutureBoundary(next, windowBoundaries(date, window.startMin, window.endMin), location, nowUTC)
+		}
+	}
+
+	if next != nil {
+		return next
+	}
+	fallback := now.Add(scheduleNextCheckFallbackDays * 24 * time.Hour).UTC()
+	return &fallback
 }
 
 func normalizeScheduleWindows(raw any) ([]scheduleWindow, error) {
@@ -486,6 +545,190 @@ func containsInt(values []int, want int) bool {
 		}
 	}
 	return false
+}
+
+type normalizedScheduleDateRange struct {
+	startDate string
+	endDate   string
+}
+
+func (dateRange normalizedScheduleDateRange) contains(dateKey string) bool {
+	return (dateRange.startDate == "" || dateKey >= dateRange.startDate) &&
+		(dateRange.endDate == "" || dateKey <= dateRange.endDate)
+}
+
+type normalizedScheduleException struct {
+	date    string
+	action  string
+	windows []exceptionWindow
+}
+
+type scheduleBoundary struct {
+	date   time.Time
+	minute int
+}
+
+func scheduleWindowsFromNormalized(raw any) []scheduleWindow {
+	records := normalizedScheduleRecords(raw)
+	out := make([]scheduleWindow, 0, len(records))
+	for _, record := range records {
+		start, startMin, startErr := normalizeHHMM(record["start"])
+		end, endMin, endErr := normalizeHHMM(record["end"])
+		if startErr != nil || endErr != nil {
+			continue
+		}
+		out = append(out, scheduleWindow{
+			daysOfWeek: normalizedScheduleDays(record["daysOfWeek"]),
+			start:      start,
+			end:        end,
+			startMin:   startMin,
+			endMin:     endMin,
+		})
+	}
+	return out
+}
+
+func scheduleDateRangeFromNormalized(raw any) normalizedScheduleDateRange {
+	record, _ := raw.(map[string]any)
+	startDate, _ := record["startDate"].(string)
+	endDate, _ := record["endDate"].(string)
+	return normalizedScheduleDateRange{
+		startDate: startDate,
+		endDate:   endDate,
+	}
+}
+
+func scheduleExceptionsFromNormalized(raw any) []normalizedScheduleException {
+	records := normalizedScheduleRecords(raw)
+	out := make([]normalizedScheduleException, 0, len(records))
+	for _, record := range records {
+		date, _ := record["date"].(string)
+		action, _ := record["action"].(string)
+		exception := normalizedScheduleException{date: date, action: action}
+		if action == "allow" {
+			for _, windowRecord := range normalizedScheduleRecords(record["windows"]) {
+				start, startMin, startErr := normalizeHHMM(windowRecord["start"])
+				end, endMin, endErr := normalizeHHMM(windowRecord["end"])
+				if startErr != nil || endErr != nil {
+					continue
+				}
+				exception.windows = append(exception.windows, exceptionWindow{
+					start:    start,
+					end:      end,
+					startMin: startMin,
+					endMin:   endMin,
+				})
+			}
+		}
+		out = append(out, exception)
+	}
+	return out
+}
+
+func firstScheduleException(exceptions []normalizedScheduleException, dateKey string) (normalizedScheduleException, bool) {
+	for _, exception := range exceptions {
+		if exception.date == dateKey {
+			return exception, true
+		}
+	}
+	return normalizedScheduleException{}, false
+}
+
+func normalizedScheduleRecords(raw any) []map[string]any {
+	switch records := raw.(type) {
+	case []map[string]any:
+		return records
+	case []any:
+		out := make([]map[string]any, 0, len(records))
+		for _, item := range records {
+			if record, ok := item.(map[string]any); ok {
+				out = append(out, record)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func normalizedScheduleDays(raw any) []int {
+	switch days := raw.(type) {
+	case []int:
+		return days
+	case []any:
+		out := make([]int, 0, len(days))
+		for _, item := range days {
+			if day, err := normalizedInteger(item, 1, 7); err == nil {
+				out = append(out, day)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func windowBoundaries(startDate time.Time, startMin int, endMin int) []scheduleBoundary {
+	endDate := startDate
+	if startMin >= endMin {
+		endDate = endDate.AddDate(0, 0, 1)
+	}
+	return []scheduleBoundary{
+		{date: startDate, minute: startMin},
+		{date: endDate, minute: endMin},
+	}
+}
+
+func earlierFutureBoundary(
+	current *time.Time,
+	boundaries []scheduleBoundary,
+	location *time.Location,
+	now time.Time,
+) *time.Time {
+	next := current
+	for _, boundary := range boundaries {
+		candidate, ok := localScheduleMinuteToUTC(boundary.date, boundary.minute, location)
+		if !ok || !candidate.After(now) || (next != nil && !candidate.Before(*next)) {
+			continue
+		}
+		candidate = candidate.UTC()
+		next = &candidate
+	}
+	return next
+}
+
+func localScheduleMinuteToUTC(date time.Time, minute int, location *time.Location) (time.Time, bool) {
+	hour := minute / 60
+	minuteOfHour := minute % 60
+	target := time.Date(date.Year(), date.Month(), date.Day(), hour, minuteOfHour, 0, 0, time.UTC)
+	guess := target
+	for attempt := 0; attempt < 4; attempt++ {
+		current := guess.In(location)
+		currentLocal := time.Date(
+			current.Year(),
+			current.Month(),
+			current.Day(),
+			current.Hour(),
+			current.Minute(),
+			0,
+			0,
+			time.UTC,
+		)
+		delta := target.Sub(currentLocal)
+		if delta == 0 {
+			return guess.UTC(), true
+		}
+		guess = guess.Add(delta)
+	}
+	verified := guess.In(location)
+	if verified.Year() != date.Year() ||
+		verified.Month() != date.Month() ||
+		verified.Day() != date.Day() ||
+		verified.Hour() != hour ||
+		verified.Minute() != minuteOfHour {
+		return time.Time{}, false
+	}
+	return guess.UTC(), true
 }
 
 func invalidf(format string, args ...any) error {
