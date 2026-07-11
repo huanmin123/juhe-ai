@@ -95,6 +95,77 @@ try {
     { available: 1, error: 0 },
     'PG 健康激活后的聚合应为 available=1/error=0'
   )
+  const configRevision = Number(afterSuccess.config_revision)
+  assert.ok(Number.isInteger(configRevision) && configRevision >= 1, 'PG health success 回归应读到有效配置版本')
+
+  const beforeStaleSuccess = await readAccountRuntimeFields(account.id)
+  const staleSuccess = await handleDbServiceOperation({
+    type: 'record_account_health_check_success',
+    accountId: account.id,
+    input: {
+      intervalHours: 1,
+      jitterMinutes: 0,
+      failureThreshold: 2,
+      checkedAt: new Date(Date.now() + 1_000).toISOString(),
+      statusCode: 200,
+      expectedConfigRevision: configRevision + 1
+    }
+  })
+  assert.equal(staleSuccess.changed, false, 'PG 配置版本失配的健康成功不得更新账户')
+  assert.deepEqual(
+    await readAccountRuntimeFields(account.id),
+    beforeStaleSuccess,
+    'PG 配置版本失配的健康成功不得改变任何健康运行态字段'
+  )
+  assert.equal(await readGroupStatsDirtyReason(group.id), undefined, 'PG 配置版本失配不得标记分组统计 dirty')
+
+  const repeatedCheckedAt = new Date(Date.now() + 2_000).toISOString()
+  const repeatedSuccess = await handleDbServiceOperation({
+    type: 'record_account_health_check_success',
+    accountId: account.id,
+    input: {
+      intervalHours: 1,
+      jitterMinutes: 0,
+      failureThreshold: 2,
+      checkedAt: repeatedCheckedAt,
+      statusCode: 204,
+      expectedConfigRevision: configRevision
+    }
+  })
+  assert.equal(repeatedSuccess.changed, true, 'PG active 账户重复健康成功仍应刷新健康事实')
+  const afterRepeatedSuccess = await readAccountRuntimeFields(account.id)
+  assert.equal(afterRepeatedSuccess.status, 'active', 'PG 重复健康成功不得改变 active 状态')
+  assert.equal(afterRepeatedSuccess.schedulable, 1, 'PG 重复健康成功不得关闭调度')
+  assert.equal(afterRepeatedSuccess.last_health_check_at, repeatedCheckedAt, 'PG 重复健康成功应刷新检测时间')
+  assert.equal(afterRepeatedSuccess.last_health_check_status_code, 204, 'PG 重复健康成功应刷新状态码')
+  assert.equal(await readGroupStatsDirtyReason(group.id), undefined, 'PG 重复健康成功未改变状态或调度时不得重复 dirty')
+
+  const rollbackBaselineAt = new Date(Date.now() - 30_000).toISOString()
+  await setPendingHealthActivationFixture(account.id, group.id, rollbackBaselineAt)
+  const beforeDirtyFailure = await readAccountRuntimeFields(account.id)
+  await assertHealthActivationRollsBackWhenDirtyWriteBlocked(account.id, configRevision)
+  assert.deepEqual(
+    await readAccountRuntimeFields(account.id),
+    beforeDirtyFailure,
+    'PG dirty 写失败时账户健康成功更新必须整体回滚'
+  )
+  assert.equal(await readGroupStatsDirtyReason(group.id), undefined, 'PG dirty 写失败回滚后不得留下分组脏标记')
+
+  const recoveredSuccess = await handleDbServiceOperation({
+    type: 'record_account_health_check_success',
+    accountId: account.id,
+    input: {
+      intervalHours: 1,
+      jitterMinutes: 0,
+      failureThreshold: 2,
+      checkedAt: new Date().toISOString(),
+      statusCode: 200,
+      expectedConfigRevision: configRevision
+    }
+  })
+  assert.equal(recoveredSuccess.changed, true, 'PG dirty 锁释放后健康激活应恢复成功')
+  assert.equal(await readGroupStatsDirtyReason(group.id), 'account_health_check_success', 'PG dirty 锁释放后健康激活应重新标脏')
+  assert.equal(await refreshDirtyGroupAccountStatsCacheAsync(), 1, 'PG dirty 回滚场景恢复后应消费激活脏标记')
 
   const dueAt = new Date(Date.now() - 60_000).toISOString()
   await setHealthCheckDue(account.id, dueAt)
@@ -205,12 +276,63 @@ async function setCooldownDue(accountId: string, dueAt: string): Promise<void> {
   `, [dueAt, accountId])
 }
 
+async function setPendingHealthActivationFixture(accountId: string, groupId: string, baselineAt: string): Promise<void> {
+  const pool = await getPostgresPool()
+  await pool.query(`
+    UPDATE juhe_business.accounts
+    SET status = 'pending_test',
+        schedulable = 0,
+        last_health_check_at = $1,
+        last_health_success_at = NULL,
+        next_health_check_at = $1,
+        health_check_failure_count = 2,
+        last_health_check_status_code = 503,
+        last_health_check_error_code = 'dirty_rollback_baseline',
+        last_health_check_error_message = 'dirty rollback baseline',
+        updated_at = $1
+    WHERE id = $2
+  `, [baselineAt, accountId])
+  await pool.query('DELETE FROM juhe_business.group_account_stats_dirty WHERE group_id = $1', [groupId])
+}
+
+async function assertHealthActivationRollsBackWhenDirtyWriteBlocked(accountId: string, expectedConfigRevision: number): Promise<void> {
+  const pool = await getPostgresPool()
+  const lockClient = await pool.connect()
+  const previousLockTimeoutMs = runtimeConfig.postgres.lockTimeoutMs
+  runtimeConfig.postgres.lockTimeoutMs = 200
+  try {
+    await lockClient.query('BEGIN')
+    await lockClient.query('LOCK TABLE juhe_business.group_account_stats_dirty IN ACCESS EXCLUSIVE MODE')
+    await assert.rejects(
+      handleDbServiceOperation({
+        type: 'record_account_health_check_success',
+        accountId,
+        input: {
+          intervalHours: 1,
+          jitterMinutes: 0,
+          failureThreshold: 2,
+          checkedAt: new Date().toISOString(),
+          statusCode: 200,
+          expectedConfigRevision
+        }
+      }),
+      (error: unknown) => error instanceof Error && /lock timeout|canceling statement due to lock timeout/i.test(error.message),
+      'PG dirty 表写锁应使健康激活事务失败'
+    )
+  } finally {
+    runtimeConfig.postgres.lockTimeoutMs = previousLockTimeoutMs
+    await lockClient.query('ROLLBACK').catch(() => undefined)
+    lockClient.release()
+  }
+}
+
 async function readAccountRuntimeFields(accountId: string): Promise<Record<string, string | number | null>> {
   const pool = await getPostgresPool()
   const result = await pool.query(`
-    SELECT status, schedulable, cooldown_until, last_error_code, last_error_message,
+    SELECT status, schedulable, config_revision, cooldown_until, last_error_code, last_error_message,
       cooldown_retest_failure_count, last_health_check_status_code,
-      next_health_check_at, health_check_failure_count, last_health_check_error_code
+      last_health_check_at, last_health_success_at, next_health_check_at,
+      health_check_failure_count, last_health_check_error_code, last_health_check_error_message
     FROM juhe_business.accounts
     WHERE id = $1
     LIMIT 1
