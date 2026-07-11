@@ -153,7 +153,9 @@
     "test:data-retention-high-volume-settings": "pnpm --filter juhe-ai-backend test:data-retention-high-volume-settings",
     "test:data-retention-cleanup-catalog-window": "pnpm --filter juhe-ai-backend test:data-retention-cleanup-catalog-window",
     "test:non-business-data-hard-cleanup": "pnpm --filter juhe-ai-backend test:non-business-data-hard-cleanup",
-    "test:upstream-base-url-ssrf-policy": "pnpm --filter juhe-ai-backend test:upstream-base-url-ssrf-policy"
+    "test:upstream-base-url-ssrf-policy": "pnpm --filter juhe-ai-backend test:upstream-base-url-ssrf-policy",
+    "test:plan0081-real-go-management-smoke": "pnpm --filter juhe-ai-frontend test:plan0081-real-go-management-smoke",
+    "smoke:plan0081-real-go-management": "pnpm --filter juhe-ai-frontend smoke:plan0081-real-go-management"
   },
   "engines": {
     "node": ">=22.13.0 <23 || >=24.11.0 <25",
