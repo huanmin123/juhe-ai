@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const providerModelCatalogSnapshotMigration = "../../../db/migrations/000031_w2_sync_provider_model_catalog.sql"
+const providerModelCatalogSnapshotMigration = "../../../db/migrations/000035_w2_sync_provider_model_catalog_gpt_tiers.sql"
 
 func TestProviderModelCatalogSnapshotMigrationCountsAndRepresentativeModels(t *testing.T) {
 	source, err := os.ReadFile(providerModelCatalogSnapshotMigration)
@@ -61,6 +61,31 @@ func TestProviderModelCatalogSnapshotMigrationCountsAndRepresentativeModels(t *t
 	for providerCode, model := range representativeModels {
 		if !models[providerCode][model] {
 			t.Fatalf("%s representative model %q missing from provider model catalog snapshot", providerCode, model)
+		}
+	}
+
+	gptTierPattern := regexp.MustCompile(`(?m)^    'provider_model_[^']+', 'gpt', '([^']+)'[^\n]*\n    '\[[^']*\]', '(\[[^']*\])',`)
+	gptTierMatches := gptTierPattern.FindAllStringSubmatch(sql, -1)
+	gptServiceTiers := make(map[string]string, len(gptTierMatches))
+	for _, match := range gptTierMatches {
+		gptServiceTiers[match[1]] = match[2]
+	}
+	flexModels := []string{
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5",
+		"gpt-5-mini",
+		"gpt-5-nano",
+		"o3",
+		"o4-mini",
+	}
+	for _, model := range flexModels {
+		const wantTiers = `["priority","flex"]`
+		if actualTiers := gptServiceTiers[model]; actualTiers != wantTiers {
+			t.Fatalf("gpt model %q supported_service_tiers_json = %q, want %q", model, actualTiers, wantTiers)
 		}
 	}
 }
