@@ -1516,10 +1516,35 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
   }))
 }
 
+function accountBalanceWriteValues(input: Record<string, unknown>, now: string): {
+  enabled: boolean
+  config?: AccountSummary['balanceQueryConfig']
+  nextRefreshAt?: string
+} {
+  const enabled = input.balanceQueryEnabled === true
+  const config = input.balanceQueryConfig && typeof input.balanceQueryConfig === 'object' && !Array.isArray(input.balanceQueryConfig)
+    ? input.balanceQueryConfig as AccountSummary['balanceQueryConfig']
+    : undefined
+  if (enabled && !config) throw new Error('开启上游余额查询时必须选择查询类型')
+  return { enabled, config, nextRefreshAt: enabled ? now : undefined }
+}
+
+function accountBalanceUpdateValues(input: Record<string, unknown>, now: string): {
+  present: boolean
+  enabled?: boolean
+  config?: AccountSummary['balanceQueryConfig']
+  nextRefreshAt?: string
+} {
+  const present = hasOwnInput(input, 'balanceQueryEnabled') || hasOwnInput(input, 'balanceQueryConfig')
+  if (!present) return { present: false }
+  return { present: true, ...accountBalanceWriteValues(input, now) }
+}
+
 export function createAccount(input: Record<string, unknown>, access?: AccessScope): AccountSummary {
   assertKnownInputKeys(input, accountCreateInputKeys, '账户创建参数')
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
+  const balance = accountBalanceWriteValues(input, now)
   const id = newId('acc')
   const providerCode = requiredTextInput(input.providerCode, '供应商')
   const providerProfile = requireEnabledProviderProtocolProfile(providerCode, input.providerProtocolProfileId)
@@ -1634,6 +1659,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     cooldownRetestObservationStartedAt: initialObservationStartedAt,
     cooldownRetestLastAt: undefined,
     cooldownRetestLastStatusCode: undefined,
+    balanceQueryEnabled: balance.enabled,
+    balanceQueryConfig: balance.config,
+    balanceQueryNextRefreshAt: balance.nextRefreshAt,
     lastUsedAt: undefined,
     todayUsage: emptyAccountUsageSummary(),
     usage: emptyAccountUsageSummary(),
@@ -1653,8 +1681,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
-          health_check_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          health_check_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
+          balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -1689,6 +1718,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.cooldownRetestObservationStartedAt ?? null,
         0,
         null,
+        balance.enabled ? 1 : 0,
+        JSON.stringify(balance.config ?? {}),
+        balance.nextRefreshAt ?? null,
         now,
         now
       )
@@ -1742,6 +1774,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   assertKnownInputKeys(input, accountCreateInputKeys, '账户创建参数')
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
+  const balance = accountBalanceWriteValues(input, now)
   const id = newId('acc')
   const providerCode = requiredTextInput(input.providerCode, '供应商')
   const providerProfile = await requireEnabledProviderProtocolProfileAsync(providerCode, input.providerProtocolProfileId)
@@ -1860,6 +1893,9 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     cooldownRetestObservationStartedAt: initialObservationStartedAt,
     cooldownRetestLastAt: undefined,
     cooldownRetestLastStatusCode: undefined,
+    balanceQueryEnabled: balance.enabled,
+    balanceQueryConfig: balance.config,
+    balanceQueryNextRefreshAt: balance.nextRefreshAt,
     lastUsedAt: undefined,
     todayUsage: emptyAccountUsageSummary(),
     usage: emptyAccountUsageSummary(),
@@ -1876,8 +1912,9 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
-          health_check_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          health_check_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
+          balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         account.id,
         systemAccountId,
@@ -1911,6 +1948,9 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
         account.cooldownRetestObservationStartedAt ?? null,
         0,
         null,
+        balance.enabled ? 1 : 0,
+        JSON.stringify(balance.config ?? {}),
+        balance.nextRefreshAt ?? null,
         now,
         now
       ])
@@ -2058,6 +2098,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用恢复异常')
   }
   const updateNowMs = Date.now()
+  const balanceUpdate = accountBalanceUpdateValues(input, new Date(updateNowMs).toISOString())
   const scheduledStatus = expiredByPackage
     ? 'disabled'
     : hasAvailabilityScheduleInput
@@ -2173,7 +2214,12 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     cooldownRetestLastAt: clearCooldownRetestState ? undefined : current.cooldownRetestLastAt,
     cooldownRetestLastStatusCode: clearCooldownRetestState ? undefined : current.cooldownRetestLastStatusCode,
     lastUsedAt: current.lastUsedAt,
-    usage: current.usage
+    usage: current.usage,
+    ...(balanceUpdate.present ? {
+      balanceQueryEnabled: balanceUpdate.enabled,
+      balanceQueryConfig: balanceUpdate.config,
+      balanceQueryNextRefreshAt: balanceUpdate.nextRefreshAt
+    } : {})
   })
 
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
@@ -2193,6 +2239,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?,
+            balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
+            balance_query_config_json = CASE WHEN ? = 1 THEN ? ELSE balance_query_config_json END,
+            balance_query_next_refresh_at = CASE WHEN ? = 1 THEN ? ELSE balance_query_next_refresh_at END,
             config_revision = config_revision + 1, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
@@ -2223,6 +2272,12 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
         next.healthCheckModel,
+        balanceUpdate.present ? 1 : 0,
+        balanceUpdate.enabled ? 1 : 0,
+        balanceUpdate.present ? 1 : 0,
+        JSON.stringify(balanceUpdate.config ?? {}),
+        balanceUpdate.present ? 1 : 0,
+        balanceUpdate.nextRefreshAt ?? null,
         updatedAt,
         id,
         systemAccountId
@@ -2412,6 +2467,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用恢复异常')
   }
   const updateNowMs = Date.now()
+  const balanceUpdate = accountBalanceUpdateValues(input, new Date(updateNowMs).toISOString())
   const scheduledStatus = expiredByPackage
     ? 'disabled'
     : hasAvailabilityScheduleInput
@@ -2527,7 +2583,12 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     cooldownRetestLastAt: clearCooldownRetestState ? undefined : current.cooldownRetestLastAt,
     cooldownRetestLastStatusCode: clearCooldownRetestState ? undefined : current.cooldownRetestLastStatusCode,
     lastUsedAt: current.lastUsedAt,
-    usage: current.usage
+    usage: current.usage,
+    ...(balanceUpdate.present ? {
+      balanceQueryEnabled: balanceUpdate.enabled,
+      balanceQueryConfig: balanceUpdate.config,
+      balanceQueryNextRefreshAt: balanceUpdate.nextRefreshAt
+    } : {})
   })
 
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
@@ -2546,6 +2607,9 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?,
+            balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
+            balance_query_config_json = CASE WHEN ? = 1 THEN ? ELSE balance_query_config_json END,
+            balance_query_next_refresh_at = CASE WHEN ? = 1 THEN ? ELSE balance_query_next_refresh_at END,
             config_revision = config_revision + 1, updated_at = ?
         WHERE id = ?
           AND system_account_id = ?
@@ -2577,6 +2641,12 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
         next.healthCheckModel,
+        balanceUpdate.present ? 1 : 0,
+        balanceUpdate.enabled ? 1 : 0,
+        balanceUpdate.present ? 1 : 0,
+        JSON.stringify(balanceUpdate.config ?? {}),
+        balanceUpdate.present ? 1 : 0,
+        balanceUpdate.nextRefreshAt ?? null,
         updatedAt,
         id,
         systemAccountId

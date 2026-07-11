@@ -26,8 +26,8 @@ import { dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 import { accountCredentialFingerprint, credentialsRecordValue, mergeAccountCredentialsForUpdate } from './account-credential-update.js'
 import { normalizeAccountBalanceConfig, validateAccountBalanceCapability } from './account-balance-config.js'
 import {
+  deleteAccountBalanceSnapshotAsync,
   loadAccountBalanceConfigurationsByAccountIdsAsync,
-  saveAccountBalanceConfigurationAsync
 } from '../../storage/account-balance.repository.js'
 import { registerAccountExportRoutes } from './account-export.routes.js'
 import { registerAccountTestSessionRoutes } from './account-test-session.routes.js'
@@ -189,24 +189,14 @@ accountsRouter.post('/', mutationGuard({
       systemAccountId: effectiveRequestSystemAccountId(requestAccess)
     })
     const account = await runLoggedOperationAsync(async () => {
-      const { balanceQueryEnabled: _balanceEnabled, balanceQueryConfig: _balanceConfig, ...accountCreateInput } = parsed.data
-      let account = await createAccountAsync({
-        ...accountCreateInput,
+      const account = await createAccountAsync({
+        ...parsed.data,
+        balanceQueryEnabled,
+        balanceQueryConfig,
         providerCode,
         providerProtocolProfileId: providerProfile.id,
         status: parsed.data.status === 'disabled' ? 'disabled' : 'pending_test'
       }, requestAccess)
-      const savedBalance = await saveAccountBalanceConfigurationAsync({
-        accountId: account.id,
-        enabled: balanceQueryEnabled,
-        config: balanceQueryConfig
-      })
-      account = {
-        ...account,
-        balanceQueryEnabled: savedBalance.enabled,
-        balanceQueryConfig: savedBalance.config,
-        balanceQueryNextRefreshAt: savedBalance.nextRefreshAt
-      }
       const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
       return {
         result: account,
@@ -366,6 +356,12 @@ accountsRouter.patch('/:id', async (req, res) => {
       accessType: existingAccount.accessType
     }, nextBalanceEnabled)
     if (nextBalanceEnabled && !nextBalanceConfig) throw new Error('开启上游余额查询时必须选择查询类型')
+    if (requestedBalanceQueryEnabled !== undefined || requestedBalanceQueryConfig !== undefined) {
+      Object.assign(accountUpdateInput, {
+        balanceQueryEnabled: nextBalanceEnabled,
+        balanceQueryConfig: nextBalanceConfig
+      })
+    }
     await assertAccountGptRequestOverridesSupportedAsync({
       providerCode: existingAccount.providerCode,
       accountType: existingAccount.type,
@@ -400,17 +396,7 @@ accountsRouter.patch('/:id', async (req, res) => {
         account = nextAccount
       }
       if (requestedBalanceQueryEnabled !== undefined || requestedBalanceQueryConfig !== undefined) {
-        const savedBalance = await saveAccountBalanceConfigurationAsync({
-          accountId: account.id,
-          enabled: nextBalanceEnabled,
-          config: nextBalanceConfig
-        })
-        account = {
-          ...account,
-          balanceQueryEnabled: savedBalance.enabled,
-          balanceQueryConfig: savedBalance.config,
-          balanceQueryNextRefreshAt: savedBalance.nextRefreshAt
-        }
+        await deleteAccountBalanceSnapshotAsync(account.id).catch(() => undefined)
       } else if (currentBalance) {
         account = {
           ...account,

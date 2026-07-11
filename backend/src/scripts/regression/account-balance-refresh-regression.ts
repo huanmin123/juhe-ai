@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -26,6 +26,13 @@ const [databaseModule, repositories, balanceRepository, balanceQueryService] = a
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
+const balanceServiceSource = readFileSync(resolve('src/modules/accounts/account-balance-query.service.ts'), 'utf8')
+const accountRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
+const repositoriesSource = readFileSync(resolve('src/storage/repositories.ts'), 'utf8')
+assert.match(balanceServiceSource, /const balanceRefreshLeaseMs = 30_000/)
+assert.ok(!accountRoutesSource.includes('saveAccountBalanceConfigurationAsync'), '账户路由不应在账户保存后进行第二次余额配置写入')
+assert.match(repositoriesSource, /balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at/)
+
 try {
   const group = repositories.createGroup({ name: '余额回归分组', providerCode: 'gpt', enabled: true }, access)
   const create = (name: string, type = 'api_key', credentials: Record<string, unknown> = { api_key: `sk-${name}`, base_url: 'https://relay.example/v1' }) =>
@@ -39,7 +46,25 @@ try {
   const oauth = create('oauth', 'oauth', { access_token: 'oauth-token', refresh_token: 'refresh-token', base_url: 'https://relay.example/v1' })
   const multi = create('multi', 'api_key', { api_keys: ['sk-a', 'sk-b'], api_key: 'sk-a', base_url: 'https://relay.example/v1' })
   const future = create('future')
+  const configured = repositories.createAccount({
+    providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: 'configured', type: 'api_key', credentials: { api_key: 'sk-configured', base_url: 'https://relay.example/v1' },
+    groupId: group.id, balanceQueryEnabled: true,
+    balanceQueryConfig: { adapter: 'sub2api', intervalMinutes: 10 }
+  }, access)
+  assert.equal(configured.balanceQueryEnabled, true)
+  assert.deepEqual(configured.balanceQueryConfig, { adapter: 'sub2api', intervalMinutes: 10 })
   const database = databaseModule.getBusinessDatabase()
+  const configuredRow = database.prepare(`SELECT balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(configured.id) as Record<string, unknown>
+  assert.equal(configuredRow.balance_query_enabled, 1)
+  assert.deepEqual(JSON.parse(String(configuredRow.balance_query_config_json)), { adapter: 'sub2api', intervalMinutes: 10 })
+  assert.equal(typeof configuredRow.balance_query_next_refresh_at, 'string')
+  const configuredDisabled = repositories.updateAccount(configured.id, {
+    balanceQueryEnabled: false,
+    balanceQueryConfig: { adapter: 'sub2api', intervalMinutes: 10 }
+  }, access)
+  assert.equal(configuredDisabled?.balanceQueryEnabled, false)
+  assert.equal(database.prepare(`SELECT balance_query_enabled FROM accounts WHERE id = ?`).get(configured.id)?.balance_query_enabled, 0)
   const dueAt = '2026-07-11T00:00:00.000Z'
   const futureAt = '2026-07-12T00:00:00.000Z'
   const configure = database.prepare(`UPDATE accounts SET status = ?, schedulable = 1, balance_query_enabled = 1, balance_query_config_json = ?, balance_query_next_refresh_at = ? WHERE id = ?`)

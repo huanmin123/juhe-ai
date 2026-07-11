@@ -17,6 +17,7 @@ import { parseCustomBalance, parseLiteLlmBalance, parseNewApiBalance, parseSub2A
 
 const responseMaxBytes = 256 * 1024
 const requestTimeoutMs = 8_000
+const balanceRefreshLeaseMs = 30_000
 
 export async function refreshAccountBalanceCandidate(
   candidate: AccountBalanceRefreshCandidate,
@@ -31,7 +32,7 @@ export async function refreshAccountBalanceCandidate(
     jobName: 'account-balance-refresh',
     shardKey: candidate.systemAccountId,
     ownerId,
-    leaseUntil: new Date(Date.now() + 15_000).toISOString(),
+    leaseUntil: new Date(Date.now() + balanceRefreshLeaseMs).toISOString(),
     now: startedAt
   })
   if (!acquired) {

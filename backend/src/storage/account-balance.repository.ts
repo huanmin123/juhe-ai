@@ -239,6 +239,15 @@ export async function saveAccountBalanceConfigurationAsync(input: {
   return { enabled: input.enabled, config, nextRefreshAt }
 }
 
+export async function deleteAccountBalanceSnapshotAsync(accountId: string): Promise<void> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    await client.execute(`DELETE FROM juhe_stats.account_usage_snapshots WHERE account_id = ? AND kind = 'relay_balance'`, [accountId])
+    return
+  }
+  getStatsDatabase().prepare(`DELETE FROM account_usage_snapshots WHERE account_id = ? AND kind = 'relay_balance'`).run(accountId)
+}
+
 export async function loadAccountBalanceConfigurationsByAccountIdsAsync(accountIds: string[]): Promise<Map<string, {
   enabled: boolean
   config?: AccountBalanceQueryConfig
