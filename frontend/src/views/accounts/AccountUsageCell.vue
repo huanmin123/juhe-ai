@@ -3,7 +3,10 @@
     <UsageSummaryTags :usage="account.todayUsage" />
     <div v-if="account.balanceQueryEnabled" class="balance-row">
       <a-tooltip :title="balanceDisplay.tooltip">
-        <span class="balance-text" :class="`balance-${balanceDisplay.tone}`">剩余：{{ balanceDisplay.text }}</span>
+        <span class="balance-text">
+          <span class="balance-label">剩余：</span>
+          <span class="balance-value" :class="`balance-${balanceDisplay.tone}`">{{ balanceDisplay.text }}</span>
+        </span>
       </a-tooltip>
       <a-tooltip title="刷新上游余额">
         <ReloadOutlined
@@ -75,6 +78,10 @@ const canRefresh = computed(() => props.account.balanceQueryEnabled === true && 
   white-space: nowrap;
 }
 
+.balance-label {
+  color: #64748b;
+}
+
 .balance-failed { color: #dc2626; }
 .balance-fresh { color: #15803d; }
 .balance-pending,
@@ -82,9 +89,12 @@ const canRefresh = computed(() => props.account.balanceQueryEnabled === true && 
 .balance-unsupported { color: #64748b; }
 
 .balance-refresh-icon {
-  color: #1677ff;
+  color: #94a3b8;
   cursor: pointer;
+  font-size: 11px;
 }
+
+.balance-refresh-icon:hover { color: #64748b; }
 
 .balance-refresh-icon.disabled {
   color: #b8b8b8;

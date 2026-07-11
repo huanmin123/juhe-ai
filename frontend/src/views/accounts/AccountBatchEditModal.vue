@@ -9,11 +9,11 @@
   >
     <div class="batch-edit-modal">
       <div class="batch-edit-summary">
-        <div>
-          <strong>将统一覆盖 {{ accounts.length }} 个账户</strong>
-          <p>{{ accountNameSummary }}</p>
+        <div class="batch-edit-summary-main">
+          <strong>已选择 {{ accounts.length }} 个账户</strong>
+          <span>{{ accountNameSummary }}</span>
         </div>
-        <a-tag color="blue">仅修改已勾选字段</a-tag>
+        <span class="batch-edit-summary-hint">仅修改勾选项</span>
       </div>
 
       <a-alert
@@ -701,17 +701,34 @@ function dedupeModelOptions(options: AccountModelSelectOption[]): AccountModelSe
 
 .batch-edit-summary {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 12px;
+  gap: 20px;
+  padding: 2px 0 12px;
   border-bottom: 1px solid #eef2f7;
 }
 
-.batch-edit-summary p {
-  margin: 4px 0 0;
+.batch-edit-summary-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.batch-edit-summary-main span,
+.batch-edit-summary-hint {
   color: #64748b;
   font-size: 12px;
+}
+
+.batch-edit-summary-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-edit-summary-hint {
+  flex-shrink: 0;
 }
 
 .batch-edit-loading {
