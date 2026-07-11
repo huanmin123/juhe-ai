@@ -197,11 +197,13 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 		Now:   func() time.Time { return now },
 	})
 	service := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
-		ListReader:       store,
-		SecretStore:      store,
-		SecretTransactor: store,
-		Invalidator:      apiKeySecretInvalidator,
-		Secret:           w5ManagementAPIKeySecretRuntimeSecret,
+		ListReader:               store,
+		Creator:                  store,
+		UsageStatsTimezoneReader: store,
+		SecretStore:              store,
+		SecretTransactor:         store,
+		Invalidator:              apiKeySecretInvalidator,
+		Secret:                   w5ManagementAPIKeySecretRuntimeSecret,
 	})
 	cfg := config.Config{
 		Host:                 "127.0.0.1",
@@ -214,6 +216,8 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 		w5ManagementAPIKeySecretSelfRevealLogID,
 		w5ManagementAPIKeySecretAdminRefreshLogID,
 		w5ManagementAPIKeySecretRepairedRevealLogID,
+		w5ManagementAPIKeyCreateAdminLogID,
+		w5ManagementAPIKeyCreateSelfLogID,
 	}
 	nextLogID := 0
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
@@ -254,6 +258,14 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 			operationLogOptions,
 		),
 		ManagementMyAPIKeyRefreshHandler: httpapi.NewManagementMyAPIKeyRefreshHandlerWithOperationLog(
+			service,
+			operationLogOptions,
+		),
+		ManagementAPIKeyCreateHandler: httpapi.NewManagementAPIKeyCreateHandlerWithOperationLog(
+			service,
+			operationLogOptions,
+		),
+		ManagementMyAPIKeyCreateHandler: httpapi.NewManagementMyAPIKeyCreateHandlerWithOperationLog(
 			service,
 			operationLogOptions,
 		),
@@ -626,6 +638,23 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 			return workerRunErr
 		},
 		sessionLastSeenAt,
+		now,
+	)
+	exerciseW5ManagementAPIKeyCreateSmoke(
+		t,
+		ctx,
+		db,
+		store,
+		router,
+		cacheRedis,
+		stateRedis,
+		inspector,
+		workerDone,
+		func() error {
+			workerErrMu.Lock()
+			defer workerErrMu.Unlock()
+			return workerRunErr
+		},
 		now,
 	)
 	queueInfo, err := inspector.QueueInfo(operationlogjob.QueueName)
