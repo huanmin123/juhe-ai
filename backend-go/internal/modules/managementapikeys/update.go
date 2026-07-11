@@ -154,56 +154,62 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 		}
 	}
 
-	result, err := updateResultFromRows(stored, normalized.includeOwner)
-	if err != nil {
-		result.Committed = true
-		result.OwnerSystemAccountID = stored.After.SystemAccountID
-		return result, err
-	}
+	result, parseErr := updateResultFromRows(stored, normalized.includeOwner)
 	result.Committed = true
+	result.OwnerSystemAccountID = stored.After.SystemAccountID
 
-	usageCtx, cancelUsage := context.WithTimeout(
+	invalidationCtx, cancelInvalidation := context.WithTimeout(
 		context.WithoutCancel(ctx),
-		apiKeyUpdateUsageTimeout,
+		apiKeyUpdateInvalidationTimeout,
 	)
-	usageRows, usageErr := s.store.ListManagementAPIKeyUsageTotals(
-		usageCtx,
-		[]port.ManagementAPIKeyUsageScope{{
-			SystemAccountID: stored.After.SystemAccountID,
-			APIKeyID:        stored.After.ID,
-		}},
-	)
-	cancelUsage()
-	if usageErr == nil {
-		for _, row := range usageRows {
-			if row.SystemAccountID == stored.After.SystemAccountID &&
-				row.APIKeyID == stored.After.ID {
-				result.Before.Usage = row.Usage
-				result.After.Usage = row.Usage
-				break
+	validationErr := s.invalidator.InvalidateAPIKeyValidationCache(invalidationCtx)
+	if validationErr == nil {
+		_ = s.invalidator.InvalidateGatewayRuntime(invalidationCtx, apiKeyUpdatedReason)
+		_ = s.invalidator.InvalidateAPIKeyQuotaChanged(
+			invalidationCtx,
+			stored.After.ID,
+			apiKeyUpdatedReason,
+		)
+	}
+	cancelInvalidation()
+
+	var usageErr error
+	if parseErr == nil {
+		usageCtx, cancelUsage := context.WithTimeout(
+			context.WithoutCancel(ctx),
+			apiKeyUpdateUsageTimeout,
+		)
+		var usageRows []port.ManagementAPIKeyUsageRow
+		usageRows, usageErr = s.store.ListManagementAPIKeyUsageTotals(
+			usageCtx,
+			[]port.ManagementAPIKeyUsageScope{{
+				SystemAccountID: stored.After.SystemAccountID,
+				APIKeyID:        stored.After.ID,
+			}},
+		)
+		cancelUsage()
+		if usageErr == nil {
+			for _, row := range usageRows {
+				if row.SystemAccountID == stored.After.SystemAccountID &&
+					row.APIKeyID == stored.After.ID {
+					result.Before.Usage = row.Usage
+					result.After.Usage = row.Usage
+					break
+				}
 			}
 		}
 	}
 
-	validationCtx, cancel := context.WithTimeout(
-		context.WithoutCancel(ctx),
-		apiKeyUpdateInvalidationTimeout,
-	)
-	defer cancel()
-	if err := s.invalidator.InvalidateAPIKeyValidationCache(validationCtx); err != nil {
+	switch {
+	case validationErr != nil:
 		return result, ErrAPIKeyUpdateValidationCacheInvalidation
-	}
-	_ = s.invalidator.InvalidateGatewayRuntime(ctx, apiKeyUpdatedReason)
-	_ = s.invalidator.InvalidateAPIKeyQuotaChanged(
-		ctx,
-		stored.After.ID,
-		apiKeyUpdatedReason,
-	)
-
-	if usageErr != nil {
+	case parseErr != nil:
+		return result, parseErr
+	case usageErr != nil:
 		return result, fmt.Errorf("load management API Key usage after update: %w", usageErr)
+	default:
+		return result, nil
 	}
-	return result, nil
 }
 
 func (s *Service) normalizeUpdateInput(

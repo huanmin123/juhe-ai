@@ -444,7 +444,7 @@ func TestServiceUpdateValidationFailureReturnsCommittedResultWithBoundedLiveCont
 		result.After.Usage.RequestCount != 9 {
 		t.Fatalf("result = %+v", result)
 	}
-	if got, want := events, []string{"update", "usage", "validation"}; !reflect.DeepEqual(got, want) {
+	if got, want := events, []string{"update", "validation", "usage"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
 	if !errors.Is(ctx.Err(), context.Canceled) {
@@ -460,6 +460,239 @@ func TestServiceUpdateValidationFailureReturnsCommittedResultWithBoundedLiveCont
 		store.usageContextDeadline.After(startedAt.Add(5*time.Second+250*time.Millisecond)) {
 		t.Fatalf("invalidator=%+v store=%+v", invalidator, store)
 	}
+}
+
+func TestServiceUpdateUsesDetachedBoundedPostCommitContexts(t *testing.T) {
+	events := []string{}
+	ctx, cancel := context.WithCancel(context.Background())
+	store := newManagementAPIKeyUpdateStoreStub(&events)
+	store.afterUpdate = cancel
+	store.respectUsageContext = true
+	invalidator := &managementAPIKeyUpdateContextInvalidatorStub{events: &events}
+	service := NewServiceWithOptions(ServiceOptions{
+		ListReader:  store,
+		Updater:     store,
+		Invalidator: invalidator,
+	})
+
+	startedAt := time.Now()
+	result, err := service.Update(ctx, UpdateInput{
+		ActorSystemAccountID: "sys_admin",
+		APIKeyID:             "key_1",
+		HasName:              true,
+		Name:                 "新名称",
+	})
+	if err != nil ||
+		!result.Committed ||
+		result.After.Usage.RequestCount != 9 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("original context error = %v, want context canceled", ctx.Err())
+	}
+	if got, want := events, []string{"update", "validation", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	for name, snapshot := range map[string]managementAPIKeyUpdateContextSnapshot{
+		"validation": invalidator.validationContext,
+		"runtime":    invalidator.runtimeContext,
+		"quota":      invalidator.quotaContext,
+		"usage": {
+			err:         store.usageContextErr,
+			hasDeadline: store.usageContextHasDeadline,
+			deadline:    store.usageContextDeadline,
+		},
+	} {
+		if snapshot.err != nil ||
+			!snapshot.hasDeadline ||
+			!snapshot.deadline.After(startedAt) ||
+			snapshot.deadline.After(startedAt.Add(5*time.Second+250*time.Millisecond)) {
+			t.Fatalf("%s context = %+v", name, snapshot)
+		}
+	}
+}
+
+func TestServiceUpdateInvalidatesBeforeBlockedUsageRead(t *testing.T) {
+	events := []string{}
+	usageStarted := make(chan struct{}, 1)
+	usageRelease := make(chan struct{})
+	usageReleased := false
+	releaseUsage := func() {
+		if !usageReleased {
+			close(usageRelease)
+			usageReleased = true
+		}
+	}
+	defer releaseUsage()
+	store := newManagementAPIKeyUpdateStoreStub(&events)
+	store.usageStarted = usageStarted
+	store.usageRelease = usageRelease
+	invalidator := &managementAPIKeyInvalidatorStub{events: &events}
+	service := NewServiceWithOptions(ServiceOptions{
+		ListReader:  store,
+		Updater:     store,
+		Invalidator: invalidator,
+	})
+	type updateOutcome struct {
+		result UpdateResult
+		err    error
+	}
+	outcome := make(chan updateOutcome, 1)
+	go func() {
+		result, err := service.Update(context.Background(), UpdateInput{
+			ActorSystemAccountID: "sys_admin",
+			APIKeyID:             "key_1",
+			HasName:              true,
+			Name:                 "新名称",
+		})
+		outcome <- updateOutcome{result: result, err: err}
+	}()
+
+	select {
+	case <-usageStarted:
+	case <-time.After(time.Second):
+		t.Fatal("usage read did not start")
+	}
+	if got, want := events, []string{"update", "validation", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events before releasing usage = %v, want %v", got, want)
+	}
+	releaseUsage()
+	select {
+	case got := <-outcome:
+		if got.err != nil ||
+			!got.result.Committed ||
+			got.result.After.Usage.RequestCount != 9 {
+			t.Fatalf("result=%+v err=%v", got.result, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Update() did not finish after releasing usage")
+	}
+}
+
+func TestServiceUpdateParseFailureStillRunsPostCommitInvalidations(t *testing.T) {
+	tests := []struct {
+		name       string
+		setInvalid func(*managementAPIKeyUpdateStoreStub)
+		wantText   string
+	}{
+		{
+			name: "malformed quota",
+			setInvalid: func(store *managementAPIKeyUpdateStoreStub) {
+				value := "{"
+				store.result.After.QuotaLimitsJSON = &value
+			},
+			wantText: "quota limits",
+		},
+		{
+			name: "malformed schedule",
+			setInvalid: func(store *managementAPIKeyUpdateStoreStub) {
+				value := "{"
+				store.result.After.AvailabilityScheduleJSON = &value
+			},
+			wantText: "availability schedule",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events := []string{}
+			store := newManagementAPIKeyUpdateStoreStub(&events)
+			test.setInvalid(store)
+			invalidator := &managementAPIKeyInvalidatorStub{events: &events}
+			service := NewServiceWithOptions(ServiceOptions{
+				ListReader:  store,
+				Updater:     store,
+				Invalidator: invalidator,
+			})
+
+			result, err := service.Update(context.Background(), UpdateInput{
+				ActorSystemAccountID: "sys_admin",
+				APIKeyID:             "key_1",
+				HasName:              true,
+				Name:                 "新名称",
+			})
+			if err == nil ||
+				!strings.Contains(err.Error(), test.wantText) ||
+				errors.Is(err, ErrAPIKeyUpdateValidationCacheInvalidation) ||
+				!result.Committed ||
+				result.OwnerSystemAccountID != "sys_owner" ||
+				result.Before.ID != "key_1" {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if got, want := events, []string{"update", "validation", "runtime", "quota"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("events = %v, want %v", got, want)
+			}
+			if store.usageCalls != 0 || invalidator.calls != 3 {
+				t.Fatalf("usageCalls=%d invalidator=%+v", store.usageCalls, invalidator)
+			}
+		})
+	}
+}
+
+func TestServiceUpdateValidationFailureTakesPriorityOverParseAndUsageErrors(t *testing.T) {
+	t.Run("parse error", func(t *testing.T) {
+		events := []string{}
+		store := newManagementAPIKeyUpdateStoreStub(&events)
+		value := "{"
+		store.result.After.QuotaLimitsJSON = &value
+		validationErr := errors.New("validation unavailable")
+		invalidator := &managementAPIKeyInvalidatorStub{
+			events:        &events,
+			validationErr: validationErr,
+		}
+		service := NewServiceWithOptions(ServiceOptions{
+			ListReader:  store,
+			Updater:     store,
+			Invalidator: invalidator,
+		})
+
+		result, err := service.Update(context.Background(), UpdateInput{
+			ActorSystemAccountID: "sys_admin",
+			APIKeyID:             "key_1",
+			HasName:              true,
+			Name:                 "新名称",
+		})
+		if !errors.Is(err, ErrAPIKeyUpdateValidationCacheInvalidation) ||
+			errors.Is(err, validationErr) ||
+			!result.Committed {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+		if got, want := events, []string{"update", "validation"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("events = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("usage error", func(t *testing.T) {
+		events := []string{}
+		store := newManagementAPIKeyUpdateStoreStub(&events)
+		usageErr := errors.New("usage unavailable")
+		store.usageErr = usageErr
+		validationErr := errors.New("validation unavailable")
+		invalidator := &managementAPIKeyInvalidatorStub{
+			events:        &events,
+			validationErr: validationErr,
+		}
+		service := NewServiceWithOptions(ServiceOptions{
+			ListReader:  store,
+			Updater:     store,
+			Invalidator: invalidator,
+		})
+
+		result, err := service.Update(context.Background(), UpdateInput{
+			ActorSystemAccountID: "sys_admin",
+			APIKeyID:             "key_1",
+			HasName:              true,
+			Name:                 "新名称",
+		})
+		if !errors.Is(err, ErrAPIKeyUpdateValidationCacheInvalidation) ||
+			errors.Is(err, validationErr) ||
+			errors.Is(err, usageErr) ||
+			!result.Committed {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+		if got, want := events, []string{"update", "validation", "usage"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("events = %v, want %v", got, want)
+		}
+	})
 }
 
 func TestServiceUpdateRuntimeQuotaAreBestEffortAndUsageFailureIsCommitted(t *testing.T) {
@@ -516,7 +749,7 @@ func TestServiceUpdateRuntimeQuotaAreBestEffortAndUsageFailureIsCommitted(t *tes
 			result.After.Status != "disabled" {
 			t.Fatalf("result=%+v err=%v", result, err)
 		}
-		if got, want := events, []string{"update", "usage", "validation", "runtime", "quota"}; !reflect.DeepEqual(got, want) {
+		if got, want := events, []string{"update", "validation", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("events = %v, want %v", got, want)
 		}
 		if invalidator.calls != 3 {
@@ -591,6 +824,8 @@ type managementAPIKeyUpdateStoreStub struct {
 	usageContextErr         error
 	usageContextDeadline    time.Time
 	usageContextHasDeadline bool
+	usageStarted            chan<- struct{}
+	usageRelease            <-chan struct{}
 }
 
 func newManagementAPIKeyUpdateStoreStub(events *[]string) *managementAPIKeyUpdateStoreStub {
@@ -684,6 +919,16 @@ func (s *managementAPIKeyUpdateStoreStub) ListManagementAPIKeyUsageTotals(
 		default:
 		}
 	}
+	if s.usageStarted != nil {
+		s.usageStarted <- struct{}{}
+	}
+	if s.usageRelease != nil {
+		select {
+		case <-s.usageRelease:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if len(scopes) != 1 ||
 		scopes[0] != (port.ManagementAPIKeyUsageScope{
 			SystemAccountID: "sys_owner",
@@ -715,3 +960,58 @@ func (s *managementAPIKeyUpdateStoreStub) record(event string) {
 var _ port.ManagementAPIKeyUpdater = (*managementAPIKeyUpdateStoreStub)(nil)
 var _ port.ManagementAPIKeyListReader = (*managementAPIKeyUpdateStoreStub)(nil)
 var _ port.ManagementUsageStatsTimezoneReader = (*managementAPIKeyUpdateStoreStub)(nil)
+
+type managementAPIKeyUpdateContextSnapshot struct {
+	err         error
+	hasDeadline bool
+	deadline    time.Time
+}
+
+type managementAPIKeyUpdateContextInvalidatorStub struct {
+	events            *[]string
+	validationContext managementAPIKeyUpdateContextSnapshot
+	runtimeContext    managementAPIKeyUpdateContextSnapshot
+	quotaContext      managementAPIKeyUpdateContextSnapshot
+}
+
+func (s *managementAPIKeyUpdateContextInvalidatorStub) InvalidateAPIKeyValidationCache(
+	ctx context.Context,
+) error {
+	s.validationContext = managementAPIKeyUpdateSnapshot(ctx)
+	s.record("validation")
+	return nil
+}
+
+func (s *managementAPIKeyUpdateContextInvalidatorStub) InvalidateGatewayRuntime(
+	ctx context.Context,
+	_ string,
+) error {
+	s.runtimeContext = managementAPIKeyUpdateSnapshot(ctx)
+	s.record("runtime")
+	return nil
+}
+
+func (s *managementAPIKeyUpdateContextInvalidatorStub) InvalidateAPIKeyQuotaChanged(
+	ctx context.Context,
+	_ string,
+	_ string,
+) error {
+	s.quotaContext = managementAPIKeyUpdateSnapshot(ctx)
+	s.record("quota")
+	return nil
+}
+
+func (s *managementAPIKeyUpdateContextInvalidatorStub) record(event string) {
+	if s.events != nil {
+		*s.events = append(*s.events, event)
+	}
+}
+
+func managementAPIKeyUpdateSnapshot(ctx context.Context) managementAPIKeyUpdateContextSnapshot {
+	deadline, hasDeadline := ctx.Deadline()
+	return managementAPIKeyUpdateContextSnapshot{
+		err:         ctx.Err(),
+		hasDeadline: hasDeadline,
+		deadline:    deadline,
+	}
+}
