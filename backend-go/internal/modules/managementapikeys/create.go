@@ -29,6 +29,10 @@ var serverDateTimePattern = regexp.MustCompile(
 	`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$`,
 )
 
+var quotaNumberPattern = regexp.MustCompile(
+	`^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$`,
+)
+
 type CreateInput struct {
 	ActorSystemAccountID string
 	ActorRole            string
@@ -387,16 +391,74 @@ func normalizedCreateQuotaNumber(raw any) (json.Number, float64, error) {
 	if err != nil {
 		return "", 0, err
 	}
+	if !validCreateQuotaNumberText(text) {
+		return "", 0, errors.New("invalid quota number")
+	}
 	value, err := strconv.ParseFloat(text, 64)
 	if err != nil ||
 		math.IsNaN(value) ||
-		math.IsInf(value, 0) ||
-		value <= 0 ||
-		value > maxQuotaAmount ||
-		quotaDecimalPlaces(text) > 6 {
+		math.IsInf(value, 0) {
 		return "", 0, errors.New("invalid quota number")
 	}
 	return json.Number(text), value, nil
+}
+
+func validCreateQuotaNumberText(text string) bool {
+	if !quotaNumberPattern.MatchString(text) || strings.HasPrefix(text, "-") {
+		return false
+	}
+
+	mantissa := text
+	var exponent int64
+	if exponentIndex := strings.IndexAny(text, "eE"); exponentIndex >= 0 {
+		mantissa = text[:exponentIndex]
+		parsed, err := strconv.ParseInt(text[exponentIndex+1:], 10, 64)
+		if err != nil {
+			return false
+		}
+		exponent = parsed
+	}
+
+	integerPart := mantissa
+	fractionPart := ""
+	if decimalIndex := strings.IndexByte(mantissa, '.'); decimalIndex >= 0 {
+		integerPart = mantissa[:decimalIndex]
+		fractionPart = mantissa[decimalIndex+1:]
+	}
+	digits := strings.TrimLeft(integerPart+fractionPart, "0")
+	if digits == "" {
+		return false
+	}
+
+	digitCount := int64(len(digits))
+	if exponent > digitCount+int64(len(strconv.FormatInt(maxQuotaAmount, 10))) ||
+		exponent < -digitCount-6 {
+		return false
+	}
+	scale := int64(len(fractionPart)) - exponent
+	for scale > 0 && strings.HasSuffix(digits, "0") {
+		digits = strings.TrimSuffix(digits, "0")
+		scale--
+	}
+	if scale > 6 {
+		return false
+	}
+
+	maxText := strconv.FormatInt(maxQuotaAmount, 10)
+	if scale <= 0 {
+		totalDigits := int64(len(digits)) - scale
+		if totalDigits != int64(len(maxText)) {
+			return totalDigits < int64(len(maxText))
+		}
+		candidate := digits + strings.Repeat("0", int(-scale))
+		return candidate <= maxText
+	}
+
+	maxScaled := maxText + strings.Repeat("0", int(scale))
+	if len(digits) != len(maxScaled) {
+		return len(digits) < len(maxScaled)
+	}
+	return digits <= maxScaled
 }
 
 func normalizedCreateQuotaHours(raw any) (int, error) {

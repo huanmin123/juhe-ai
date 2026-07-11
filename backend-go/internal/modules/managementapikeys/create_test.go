@@ -280,7 +280,7 @@ func TestServiceCreateNormalizesQuotaLimitsWithJSONNumberPrecision(t *testing.T)
 			"enabled": true,
 			"limit":   json.Number("9007199254740991"),
 		},
-		"weekly":  map[string]any{"enabled": true, "limit": json.Number("2")},
+		"weekly":  map[string]any{"enabled": true, "limit": json.Number("9.007199254740991e15")},
 		"monthly": map[string]any{"enabled": true, "limit": json.Number("3.5")},
 		"total":   map[string]any{"enabled": true, "limit": json.Number("4e2")},
 	}
@@ -300,6 +300,7 @@ func TestServiceCreateNormalizesQuotaLimitsWithJSONNumberPrecision(t *testing.T)
 	}
 	if stored["hourly"]["limit"] != json.Number("1.000001") ||
 		stored["daily"]["limit"] != json.Number("9007199254740991") ||
+		stored["weekly"]["limit"] != json.Number("9.007199254740991e15") ||
 		stored["total"]["limit"] != json.Number("4e2") ||
 		store.createInput.HourlyQuotaHours == nil ||
 		*store.createInput.HourlyQuotaHours != 720 {
@@ -342,8 +343,12 @@ func TestServiceCreateRejectsInvalidQuotaLimits(t *testing.T) {
 		{name: "zero", value: map[string]any{"daily": map[string]any{"enabled": true, "limit": 0}}},
 		{name: "negative", value: map[string]any{"daily": map[string]any{"enabled": true, "limit": -1}}},
 		{name: "above max safe integer", value: map[string]any{"daily": map[string]any{"enabled": true, "limit": json.Number("9007199254740992")}}},
+		{name: "fraction above max safe integer", value: map[string]any{"daily": map[string]any{"enabled": true, "limit": json.Number("9007199254740991.1")}}},
+		{name: "scientific fraction above max safe integer", value: map[string]any{"daily": map[string]any{"enabled": true, "limit": json.Number("9.0071992547409911e15")}}},
+		{name: "scientific integer above max safe integer", value: map[string]any{"daily": map[string]any{"enabled": true, "limit": json.Number("9.007199254740992e15")}}},
 		{name: "seven decimals", value: map[string]any{"daily": map[string]any{"enabled": true, "limit": json.Number("1.0000001")}}},
 		{name: "nan", value: map[string]any{"daily": map[string]any{"enabled": true, "limit": json.Number("NaN")}}},
+		{name: "infinity", value: map[string]any{"daily": map[string]any{"enabled": true, "limit": json.Number("Infinity")}}},
 		{name: "hourly hours missing", value: map[string]any{"hourly": map[string]any{"enabled": true, "limit": 1}}},
 		{name: "hourly hours fractional", value: map[string]any{"hourly": map[string]any{"enabled": true, "limit": 1, "hours": json.Number("1.5")}}},
 		{name: "hourly hours zero", value: map[string]any{"hourly": map[string]any{"enabled": true, "limit": 1, "hours": 0}}},
