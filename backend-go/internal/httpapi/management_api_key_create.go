@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 )
 
 const managementAPIKeyCreateMaxBodyBytes = 256 << 10
+
+const managementAPIKeyCreateValidationContextKey contextKey = "management_api_key_create_validation"
 
 type managementAPIKeyCreateService interface {
 	Create(r *http.Request, input managementapikeys.CreateInput) (managementapikeys.CreateResult, error)
@@ -83,27 +86,35 @@ func newManagementAPIKeyCreateHandler(
 			return
 		}
 
-		ownerSystemAccountID, selfOnly, queryError := managementAPIKeyCreateScope(authContext, r, scope)
-		if queryError != "" {
-			writeMessageError(w, http.StatusBadRequest, queryError)
-			return
-		}
-		payload, ok := decodeManagementAPIKeyCreatePayload(w, r)
-		if !ok {
-			return
+		validated, validatedOK := managementAPIKeyCreateValidationFromRequest(r)
+		if !validatedOK {
+			ownerSystemAccountID, selfOnly, queryError := managementAPIKeyCreateScope(authContext, r, scope)
+			if queryError != "" {
+				writeMessageError(w, http.StatusBadRequest, queryError)
+				return
+			}
+			payload, ok := decodeManagementAPIKeyCreatePayload(w, r)
+			if !ok {
+				return
+			}
+			validated = managementAPIKeyCreateValidation{
+				OwnerSystemAccountID: ownerSystemAccountID,
+				SelfOnly:             selfOnly,
+				Payload:              payload,
+			}
 		}
 		result, err := service.Create(r, managementapikeys.CreateInput{
 			ActorSystemAccountID: authContext.SystemAccountID,
 			ActorRole:            authContext.Role,
-			SystemAccountID:      ownerSystemAccountID,
-			SelfOnly:             selfOnly,
-			Name:                 payload.Name,
-			Description:          payload.Description,
-			RouteStrategyID:      payload.RouteStrategyID,
-			Status:               payload.Status,
-			ExpiresAt:            payload.ExpiresAt,
-			QuotaLimits:          payload.QuotaLimits,
-			AvailabilitySchedule: payload.AvailabilitySchedule,
+			SystemAccountID:      validated.OwnerSystemAccountID,
+			SelfOnly:             validated.SelfOnly,
+			Name:                 validated.Payload.Name,
+			Description:          validated.Payload.Description,
+			RouteStrategyID:      validated.Payload.RouteStrategyID,
+			Status:               validated.Payload.Status,
+			ExpiresAt:            validated.Payload.ExpiresAt,
+			QuotaLimits:          validated.Payload.QuotaLimits,
+			AvailabilitySchedule: validated.Payload.AvailabilitySchedule,
 		})
 		if !writeManagementAPIKeyCreateError(w, err) {
 			return
@@ -155,6 +166,52 @@ type managementAPIKeyCreatePayload struct {
 	ExpiresAt            any
 	QuotaLimits          any
 	AvailabilitySchedule any
+}
+
+type managementAPIKeyCreateValidation struct {
+	OwnerSystemAccountID string
+	SelfOnly             bool
+	Payload              managementAPIKeyCreatePayload
+}
+
+func managementAPIKeyCreateValidationMiddleware(
+	scope managementAPIKeyScope,
+) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authContext, ok := ManagementAuthContextFromRequest(r)
+			if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
+			}
+			ownerSystemAccountID, selfOnly, queryError := managementAPIKeyCreateScope(authContext, r, scope)
+			if queryError != "" {
+				writeMessageError(w, http.StatusBadRequest, queryError)
+				return
+			}
+			payload, ok := decodeManagementAPIKeyCreatePayload(w, r)
+			if !ok {
+				return
+			}
+			validated := managementAPIKeyCreateValidation{
+				OwnerSystemAccountID: ownerSystemAccountID,
+				SelfOnly:             selfOnly,
+				Payload:              payload,
+			}
+			ctx := context.WithValue(r.Context(), managementAPIKeyCreateValidationContextKey, validated)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func managementAPIKeyCreateValidationFromRequest(
+	r *http.Request,
+) (managementAPIKeyCreateValidation, bool) {
+	if r == nil {
+		return managementAPIKeyCreateValidation{}, false
+	}
+	validated, ok := r.Context().Value(managementAPIKeyCreateValidationContextKey).(managementAPIKeyCreateValidation)
+	return validated, ok
 }
 
 func decodeManagementAPIKeyCreatePayload(

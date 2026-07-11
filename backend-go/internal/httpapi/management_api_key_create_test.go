@@ -493,6 +493,114 @@ func TestRouterManagementAPIKeyCreateTransportRunsBeforeAuth(t *testing.T) {
 	}
 }
 
+func TestRouterManagementAPIKeyCreateRejectsInvalidInputBeforeMutationClaim(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		body        string
+		wantMessage string
+	}{
+		{
+			name:        "repeated target",
+			path:        "/__aisys__/api/api-keys?systemAccountId=a&systemAccountId=b",
+			body:        validManagementAPIKeyCreateBody(),
+			wantMessage: "Expected string, received array",
+		},
+		{
+			name:        "empty target",
+			path:        "/__aisys__/api/api-keys?systemAccountId=",
+			body:        validManagementAPIKeyCreateBody(),
+			wantMessage: "系统账号 ID 不能为空",
+		},
+		{
+			name:        "array body",
+			path:        "/__aisys__/api/api-keys",
+			body:        `[]`,
+			wantMessage: "API Key 参数无效",
+		},
+		{
+			name:        "empty object",
+			path:        "/__aisys__/api/api-keys",
+			body:        `{}`,
+			wantMessage: "API Key 参数无效",
+		},
+		{
+			name:        "missing name",
+			path:        "/__aisys__/api/api-keys",
+			body:        `{"routeStrategyId":"route_1"}`,
+			wantMessage: "API Key 参数无效",
+		},
+		{
+			name:        "missing route",
+			path:        "/__aisys__/api/api-keys",
+			body:        `{"name":"Key"}`,
+			wantMessage: "API Key 必须绑定策略路由",
+		},
+		{
+			name:        "unknown field",
+			path:        "/__aisys__/api/api-keys",
+			body:        `{"name":"Key","routeStrategyId":"route_1","unknown":true}`,
+			wantMessage: "API Key 参数无效",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			authenticator := &managementAPIKeyRefreshAuthStub{
+				context: managementauth.Context{
+					SystemAccountID: "sys_admin",
+					Role:            "admin",
+					SessionID:       "sess_admin",
+				},
+			}
+			service := &managementAPIKeyCreateServiceStub{}
+			router := NewRouter(RouterOptions{
+				Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+				Logger:                           slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+				ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(authenticator),
+				ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(authenticator),
+				ManagementAPIKeyCreateHandler: newManagementAPIKeyCreateHandler(
+					service,
+					managementAPIKeyScopeAdmin,
+					managementOperationLogOptions{},
+				),
+			})
+
+			for attempt := 1; attempt <= 2; attempt++ {
+				req := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+				req.Header.Set("Cookie", "juhe_ai_session=session-token")
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+
+				router.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf(
+						"attempt %d status = %d, want 400; body = %s",
+						attempt,
+						rec.Code,
+						rec.Body.String(),
+					)
+				}
+				var body map[string]string
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+					t.Fatalf("attempt %d decode response: %v", attempt, err)
+				}
+				if body["message"] != test.wantMessage {
+					t.Fatalf(
+						"attempt %d message = %q, want %q",
+						attempt,
+						body["message"],
+						test.wantMessage,
+					)
+				}
+			}
+			if service.calls != 0 {
+				t.Fatalf("service calls = %d, want 0", service.calls)
+			}
+		})
+	}
+}
+
 func TestRouterManagementAPIKeyCreateChecksAdminBeforeMutationGuard(t *testing.T) {
 	authenticator := &managementAPIKeyRefreshAuthStub{
 		context: managementauth.Context{
@@ -578,11 +686,20 @@ func TestManagementAPIKeyCreateMutationGuardUsesSelfActorOwner(t *testing.T) {
 		strings.NewReader(`{"name":" Key ","routeStrategyId":"route_1"}`),
 	)
 	req = requestWithManagementAPIKeyAuthContext(req, managementauth.Context{SystemAccountID: "sys_actor"})
-	fingerprint, err := config.fingerprint(httptest.NewRecorder(), req)
-	if err != nil {
-		t.Fatalf("fingerprint error: %v", err)
+	rec := httptest.NewRecorder()
+	var got map[string]any
+	managementAPIKeyCreateValidationMiddleware(managementAPIKeyScopeSelf)(
+		http.HandlerFunc(func(w http.ResponseWriter, validatedRequest *http.Request) {
+			fingerprint, err := config.fingerprint(w, validatedRequest)
+			if err != nil {
+				t.Fatalf("fingerprint error: %v", err)
+			}
+			got = fingerprint.(map[string]any)
+		}),
+	).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	got := fingerprint.(map[string]any)
 	if got["owner"] != "sys_actor" || got["name"] != "Key" || config.operationKey != "api_keys.create" {
 		t.Fatalf("config=%+v fingerprint=%+v", config, got)
 	}

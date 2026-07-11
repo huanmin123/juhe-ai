@@ -255,24 +255,14 @@ func managementAPIKeyRefreshMutationGuardConfig(scope managementAPIKeyScope) mut
 func managementAPIKeyCreateMutationGuardConfig(scope managementAPIKeyScope) mutationGuardConfig {
 	return mutationGuardConfig{
 		operationKey: "api_keys.create",
-		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
-			fields, err := managementGroupCreateMutationJSONFields(w, r)
-			if err != nil {
-				return nil, err
-			}
-			ownerSystemAccountID := ""
-			if authContext, ok := ManagementAuthContextFromRequest(r); ok {
-				ownerSystemAccountID = strings.TrimSpace(authContext.SystemAccountID)
-			}
-			if scope == managementAPIKeyScopeAdmin {
-				selectedSystemAccountID := firstManagementQueryText(r.URL.Query(), "systemAccountId")
-				if selectedSystemAccountID != "" && selectedSystemAccountID != "all" {
-					ownerSystemAccountID = selectedSystemAccountID
-				}
+		fingerprint: func(_ http.ResponseWriter, r *http.Request) (any, error) {
+			validated, ok := managementAPIKeyCreateValidationFromRequest(r)
+			if !ok {
+				return nil, fmt.Errorf("API Key create request was not validated for scope %d", scope)
 			}
 			return map[string]any{
-				"owner": ownerSystemAccountID,
-				"name":  mutationStringField(fields, "name"),
+				"owner": validated.OwnerSystemAccountID,
+				"name":  strings.TrimSpace(validated.Payload.Name),
 			}, nil
 		},
 	}

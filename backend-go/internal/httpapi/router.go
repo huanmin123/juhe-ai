@@ -548,6 +548,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 					managementAPIKeyCreateJSONBodyMiddleware,
 					managementAPIWriteRateLimitMiddleware,
 					managementAPIKeyAdminRoleMiddleware,
+					managementAPIKeyCreateValidationMiddleware(managementAPIKeyScopeAdmin),
 					mutationGuards.Middleware(managementAPIKeyCreateMutationGuardConfig(managementAPIKeyScopeAdmin)),
 				).Post("/api-keys", opts.ManagementAPIKeyCreateHandler.ServeHTTP)
 			}
@@ -555,6 +556,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(
 					managementAPIKeyCreateJSONBodyMiddleware,
 					managementAPIWriteRateLimitMiddleware,
+					managementAPIKeyCreateValidationMiddleware(managementAPIKeyScopeSelf),
 					mutationGuards.Middleware(managementAPIKeyCreateMutationGuardConfig(managementAPIKeyScopeSelf)),
 				).Post("/my-api-keys", opts.ManagementMyAPIKeyCreateHandler.ServeHTTP)
 			}
