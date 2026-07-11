@@ -4,6 +4,7 @@ import { closeStorageDatabases, getBusinessDatabase } from '../../storage/databa
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { listAccountBalanceDetectionCandidatePageAsync } from '../../storage/account-balance.repository.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
+import { closeGatewayUpstreamAgents } from '../../modules/gateway/upstream/request.js'
 
 const pageSize = 50
 const concurrency = 2
@@ -37,6 +38,7 @@ try {
   }
   process.stdout.write(`${JSON.stringify({ event: 'account_balance_backfill_completed', scanned, enabled, unsupported, stale })}\n`)
 } finally {
+  closeGatewayUpstreamAgents()
   closeStorageDatabases()
   await closePostgresPool()
 }

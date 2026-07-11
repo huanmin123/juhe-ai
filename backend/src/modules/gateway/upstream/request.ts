@@ -189,7 +189,7 @@ export async function requestUpstream(upstreamUrl: string, options: UpstreamRequ
   })
 }
 
-export function closeGatewayUpstreamAgentsForTest(): void {
+export function closeGatewayUpstreamAgents(): void {
   directHttpAgent?.destroy()
   directHttpsAgent?.destroy()
   directHttpAgent = undefined
@@ -198,6 +198,10 @@ export function closeGatewayUpstreamAgentsForTest(): void {
     agent.destroy()
   }
   proxyAgents.clear()
+}
+
+export function closeGatewayUpstreamAgentsForTest(): void {
+  closeGatewayUpstreamAgents()
 }
 
 function gatewayUpstreamAgent(url: URL, proxyUrl?: string): http.Agent {
