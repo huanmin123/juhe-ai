@@ -28,7 +28,7 @@ PostgreSQL 健康检查成功和失败写回 SQL 使用 `(? IS NULL OR ...)` 表
 - 队列耗尽日志保留底层异常，避免数据库写回故障被“本轮跳过”掩盖。
 - PostgreSQL smoke 同时覆盖配置版本和观察时间守卫。
 
-上线清理积压时又发现，少量从未完成后台检查的 `pending_test` 账户保留了未来的 `next_health_check_at`。候选查询现对 `pending_test + last_health_check_at IS NULL` 忽略该遗留时间，确保首次后台检查立即进入周期队列；已有失败记录的账户仍遵守短退避时间。
+上线清理积压时又发现，少量从未完成后台检查的 `pending_test` 账户保留了未来的 `next_health_check_at` 和近期成功信号。候选查询现对 `pending_test + last_health_check_at IS NULL` 同时忽略遗留复检时间和普通成功信号，确保首次后台检查立即进入周期队列；人工诊断或真实流量成功不能替代后台激活检查，已有失败记录的账户仍遵守短退避时间。
 
 ## 验证记录
 

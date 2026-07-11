@@ -538,9 +538,10 @@ function dueHealthCheckRows(rows: AccountListRow[], options: AccountHealthCheckS
   const dueRows: AccountListRow[] = []
   const recentSuccessSignals = new Map<string, string>()
   for (const row of rows) {
+    const requiresFirstPendingCheck = row.status === 'pending_test' && !normalizedIso(row.last_health_check_at)
     const recentSuccessAt = normalizedIso(row.last_health_success_at)
     const recentSuccessMs = recentSuccessAt ? Date.parse(recentSuccessAt) : NaN
-    if (recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
+    if (!requiresFirstPendingCheck && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
       recentSuccessSignals.set(row.id, recentSuccessAt)
       continue
     }
@@ -556,9 +557,10 @@ async function dueHealthCheckRowsAsync(client: DatabaseClient, rows: AccountList
   const dueRows: AccountListRow[] = []
   const recentSuccessSignals = new Map<string, string>()
   for (const row of rows) {
+    const requiresFirstPendingCheck = row.status === 'pending_test' && !normalizedIso(row.last_health_check_at)
     const recentSuccessAt = normalizedIso(row.last_health_success_at)
     const recentSuccessMs = recentSuccessAt ? Date.parse(recentSuccessAt) : NaN
-    if (recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
+    if (!requiresFirstPendingCheck && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
       recentSuccessSignals.set(row.id, recentSuccessAt)
       continue
     }

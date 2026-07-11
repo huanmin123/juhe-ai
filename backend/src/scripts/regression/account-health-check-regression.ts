@@ -158,9 +158,14 @@ try {
   database.prepare(`
     UPDATE accounts
     SET next_health_check_at = ?,
-        last_health_check_at = NULL
+        last_health_check_at = NULL,
+        last_health_success_at = ?
     WHERE id = ?
-  `).run(new Date(Date.now() + 12 * 60 * 60_000).toISOString(), pendingFirstCheckAccount.id)
+  `).run(
+    new Date(Date.now() + 12 * 60 * 60_000).toISOString(),
+    new Date().toISOString(),
+    pendingFirstCheckAccount.id
+  )
 
   const due = repositories.listAccountsDueForHealthCheck({ limit: 10, ...healthSettings })
   assert.deepEqual(
