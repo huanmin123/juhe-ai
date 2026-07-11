@@ -28,6 +28,7 @@ var ErrAPIKeyListInvalid = errors.New("management API Key list invalid")
 type Service struct {
 	store                    port.ManagementAPIKeyListReader
 	creator                  port.ManagementAPIKeyCreator
+	updater                  port.ManagementAPIKeyUpdater
 	usageStatsTimezoneReader port.ManagementUsageStatsTimezoneReader
 	secretStore              port.ManagementAPIKeySecretStore
 	secretTransactor         port.ManagementAPIKeySecretTransactor
@@ -83,6 +84,9 @@ func NewService(store port.ManagementAPIKeyListReader) *Service {
 	opts := ServiceOptions{ListReader: store}
 	if creator, ok := store.(port.ManagementAPIKeyCreator); ok {
 		opts.Creator = creator
+	}
+	if updater, ok := store.(port.ManagementAPIKeyUpdater); ok {
+		opts.Updater = updater
 	}
 	if timezoneReader, ok := store.(port.ManagementUsageStatsTimezoneReader); ok {
 		opts.UsageStatsTimezoneReader = timezoneReader
