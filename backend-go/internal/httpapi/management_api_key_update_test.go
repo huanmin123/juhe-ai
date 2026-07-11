@@ -199,6 +199,8 @@ func TestManagementAPIKeyUpdateHandlerMapsErrorsAndLogsOnlyCommittedResults(t *t
 		wantStatus int
 		wantText   string
 		wantLogs   int
+		wantID     string
+		wantName   string
 	}{
 		{name: "not found", err: managementapikeys.ErrAPIKeyNotFound, wantStatus: http.StatusNotFound, wantText: "API Key 不存在"},
 		{name: "duplicate", err: managementapikeys.NewAPIKeyNameExistsError("重复"), wantStatus: http.StatusConflict, wantText: "API Key 名称已存在：重复"},
@@ -218,6 +220,23 @@ func TestManagementAPIKeyUpdateHandlerMapsErrorsAndLogsOnlyCommittedResults(t *t
 			wantStatus: http.StatusInternalServerError,
 			wantText:   "服务器内部错误",
 			wantLogs:   1,
+			wantID:     "key_1",
+			wantName:   "更新后",
+		},
+		{
+			name: "committed parse failure",
+			result: managementapikeys.UpdateResult{
+				Before:               managementAPIKeyUpdateListItem("key_1", "sys_owner", "更新前"),
+				After:                managementAPIKeyUpdateListItem("key_1", "sys_owner", "更新后"),
+				OwnerSystemAccountID: "sys_owner",
+				Committed:            true,
+			},
+			err:        errors.New("parse management API Key result"),
+			wantStatus: http.StatusInternalServerError,
+			wantText:   "服务器内部错误",
+			wantLogs:   1,
+			wantID:     "key_1",
+			wantName:   "更新后",
 		},
 		{name: "internal", err: errors.New("database down"), wantStatus: http.StatusInternalServerError, wantText: "服务器内部错误"},
 	}
@@ -255,6 +274,16 @@ func TestManagementAPIKeyUpdateHandlerMapsErrorsAndLogsOnlyCommittedResults(t *t
 				}
 				if logInput.StatusCode == nil || *logInput.StatusCode != test.wantStatus {
 					t.Fatalf("operation log status = %v, want %d", logInput.StatusCode, test.wantStatus)
+				}
+				if logInput.ResourceID != test.wantID ||
+					logInput.ResourceName != test.wantName {
+					t.Fatalf(
+						"operation log resource = %q/%q, want %q/%q",
+						logInput.ResourceID,
+						logInput.ResourceName,
+						test.wantID,
+						test.wantName,
+					)
 				}
 			}
 		})

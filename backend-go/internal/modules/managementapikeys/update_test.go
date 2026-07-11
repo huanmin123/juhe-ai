@@ -571,20 +571,22 @@ func TestServiceUpdateInvalidatesBeforeBlockedUsageRead(t *testing.T) {
 
 func TestServiceUpdateParseFailureStillRunsPostCommitInvalidations(t *testing.T) {
 	tests := []struct {
-		name       string
-		setInvalid func(*managementAPIKeyUpdateStoreStub)
-		wantText   string
+		name            string
+		setInvalid      func(*managementAPIKeyUpdateStoreStub)
+		wantText        string
+		malformedBefore bool
 	}{
 		{
-			name: "malformed quota",
+			name: "before malformed quota",
 			setInvalid: func(store *managementAPIKeyUpdateStoreStub) {
 				value := "{"
-				store.result.After.QuotaLimitsJSON = &value
+				store.result.Before.QuotaLimitsJSON = &value
 			},
-			wantText: "quota limits",
+			wantText:        "quota limits",
+			malformedBefore: true,
 		},
 		{
-			name: "malformed schedule",
+			name: "after malformed schedule",
 			setInvalid: func(store *managementAPIKeyUpdateStoreStub) {
 				value := "{"
 				store.result.After.AvailabilityScheduleJSON = &value
@@ -606,6 +608,7 @@ func TestServiceUpdateParseFailureStillRunsPostCommitInvalidations(t *testing.T)
 
 			result, err := service.Update(context.Background(), UpdateInput{
 				ActorSystemAccountID: "sys_admin",
+				ActorRole:            "admin",
 				APIKeyID:             "key_1",
 				HasName:              true,
 				Name:                 "新名称",
@@ -615,8 +618,26 @@ func TestServiceUpdateParseFailureStillRunsPostCommitInvalidations(t *testing.T)
 				errors.Is(err, ErrAPIKeyUpdateValidationCacheInvalidation) ||
 				!result.Committed ||
 				result.OwnerSystemAccountID != "sys_owner" ||
-				result.Before.ID != "key_1" {
+				result.Before.ID != "key_1" ||
+				result.Before.Name != "旧名称" ||
+				result.Before.SystemAccountID != "sys_owner" ||
+				result.Before.SystemAccountName != "所有者" ||
+				result.After.ID != "key_1" ||
+				result.After.Name != "新名称" ||
+				result.After.SystemAccountID != "sys_owner" ||
+				result.After.SystemAccountName != "所有者" {
 				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			malformed := result.After
+			if test.malformedBefore {
+				malformed = result.Before
+			}
+			if !reflect.DeepEqual(
+				malformed.QuotaLimits,
+				port.ManagementRequestQuotaLimits{},
+			) ||
+				malformed.AvailabilitySchedule != nil {
+				t.Fatalf("malformed DTO fabricated parsed fields: %+v", malformed)
 			}
 			if got, want := events, []string{"update", "validation", "runtime", "quota"}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("events = %v, want %v", got, want)

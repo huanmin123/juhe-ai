@@ -326,25 +326,43 @@ func updateResultFromRows(
 	stored port.ManagementAPIKeyUpdateResult,
 	includeOwner bool,
 ) (UpdateResult, error) {
+	result := UpdateResult{
+		Before:               updateResultIdentity(stored.Before, includeOwner),
+		After:                updateResultIdentity(stored.After, includeOwner),
+		OwnerSystemAccountID: stored.After.SystemAccountID,
+	}
 	before, err := listItem(
 		stored.Before,
 		port.ManagementAccountUsageSummary{},
 		includeOwner,
 	)
 	if err != nil {
-		return UpdateResult{}, err
+		return result, err
 	}
+	result.Before = before
 	after, err := listItem(
 		stored.After,
 		port.ManagementAccountUsageSummary{},
 		includeOwner,
 	)
 	if err != nil {
-		return UpdateResult{Before: before}, err
+		return result, err
 	}
-	return UpdateResult{
-		Before:               before,
-		After:                after,
-		OwnerSystemAccountID: stored.After.SystemAccountID,
-	}, nil
+	result.After = after
+	return result, nil
+}
+
+func updateResultIdentity(
+	row port.ManagementAPIKeyListRow,
+	includeOwner bool,
+) ListItem {
+	item := ListItem{
+		ID:   row.ID,
+		Name: row.Name,
+	}
+	if includeOwner {
+		item.SystemAccountID = row.SystemAccountID
+		item.SystemAccountName = row.SystemAccountName
+	}
+	return item
 }
