@@ -88,38 +88,14 @@
             </a-space>
           </template>
           <template v-else-if="column.key === 'reasoningEfforts'">
-            <div class="capability-tags">
-              <div v-if="record.supportedReasoningEfforts?.length" class="capability-row">
-                <span class="capability-prefix">API</span>
-                <div class="capability-tag-list">
-                  <a-tag
-                    v-for="effort in record.supportedReasoningEfforts"
-                    :key="`api-${effort}`"
-                    :color="effort === record.defaultReasoningEffort ? 'gold' : 'default'"
-                  >
-                    {{ formatModelReasoningEffort(effort) }}{{ effort === record.defaultReasoningEffort ? '（默认）' : '' }}
-                  </a-tag>
-                </div>
-              </div>
-              <div v-if="record.codexSupportedReasoningLevels?.length" class="capability-row">
-                <span class="capability-prefix">Codex</span>
-                <div class="capability-tag-list">
-                  <a-tag
-                    v-for="effort in record.codexSupportedReasoningLevels"
-                    :key="`codex-${effort}`"
-                    :color="effort === record.codexDefaultReasoningLevel ? 'purple' : 'default'"
-                  >
-                    {{ formatModelReasoningEffort(effort) }}{{ effort === record.codexDefaultReasoningLevel ? '（默认）' : '' }}
-                  </a-tag>
-                </div>
-              </div>
-              <div v-if="record.codexMultiAgentVersion" class="capability-row capability-feature-row">
-                <span class="capability-prefix">特性</span>
-                <a-tooltip title="Codex 多代理编排协议版本，不是思考级别">
-                  <a-tag color="geekblue">多代理编排 {{ record.codexMultiAgentVersion }}</a-tag>
-                </a-tooltip>
-              </div>
-              <span v-if="!record.supportedReasoningEfforts?.length && !record.codexSupportedReasoningLevels?.length" class="muted-text">-</span>
+            <div class="capability-tag-list">
+              <a-tag
+                v-for="effort in record.supportedReasoningEfforts"
+                :key="effort"
+              >
+                {{ formatModelReasoningEffort(effort) }}
+              </a-tag>
+              <span v-if="!record.supportedReasoningEfforts?.length" class="muted-text">-</span>
             </div>
           </template>
           <template v-else-if="column.key === 'prices'">
@@ -352,21 +328,6 @@ function handleSystemAccountUpdate(value: string | string[] | undefined): void {
   line-height: 1.5;
 }
 
-.capability-tags {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  padding: 2px 0;
-}
-
-.capability-row {
-  display: grid;
-  align-items: start;
-  grid-template-columns: 40px minmax(0, 1fr);
-  gap: 6px;
-}
-
 .capability-tag-list {
   display: flex;
   min-width: 0;
@@ -374,16 +335,9 @@ function handleSystemAccountUpdate(value: string | string[] | undefined): void {
   gap: 4px 2px;
 }
 
-.capability-tag-list :deep(.ant-tag),
-.capability-feature-row :deep(.ant-tag) {
+.capability-tag-list :deep(.ant-tag) {
   margin-inline-end: 0;
   white-space: nowrap;
-}
-
-.capability-prefix {
-  line-height: 22px;
-  color: rgba(0, 0, 0, 0.45);
-  font-size: 12px;
 }
 
 .model-mobile-card {

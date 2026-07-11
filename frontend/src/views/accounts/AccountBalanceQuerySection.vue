@@ -41,10 +41,10 @@
       <div class="balance-query-test">
         <div class="balance-query-test-copy">
           <strong>查询验证</strong>
-          <span>{{ canQuery ? '使用当前已保存的余额配置请求上游。' : '新账户保存后可验证余额查询。' }}</span>
+          <span>{{ canQuery ? '保存当前余额配置并请求上游。' : '新账户保存后可验证余额查询。' }}</span>
         </div>
         <a-button :disabled="readonly || !canQuery" :loading="queryLoading" @click="emit('query')">
-          立即查询
+          保存并查询
         </a-button>
       </div>
 
@@ -87,9 +87,7 @@ const queryResultDescription = computed(() => {
   return attemptedAt ? `查询时间：${formatDateTime(attemptedAt)}` : undefined
 })
 const adapterOptions = [
-  { label: 'Sub2API', value: 'sub2api' },
-  { label: 'New API', value: 'newapi' },
-  { label: 'LiteLLM', value: 'litellm' },
+  { label: '内置适配', value: 'builtin' },
   { label: '自定义接口', value: 'custom' }
 ]
 </script>

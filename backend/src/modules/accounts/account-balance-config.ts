@@ -7,6 +7,7 @@ import type {
 
 const decimalPattern = /^(?:0|[1-9]\d*)(?:\.\d+)?$/
 const jsonPointerPattern = /^(?:\/(?:[^~/]|~[01])*)*$/
+const accountBalanceBuiltinAdapterSchema = z.enum(['sub2api', 'newapi', 'litellm', 'user_balance'])
 
 const accountBalanceCustomConfigSchema = z.object({
   path: z.string().trim().min(1),
@@ -38,8 +39,9 @@ const accountBalanceCustomConfigSchema = z.object({
 })
 
 export const accountBalanceQueryConfigSchema = z.object({
-  adapter: z.enum(['sub2api', 'newapi', 'litellm', 'custom']),
+  adapter: z.enum(['builtin', 'custom']),
   intervalMinutes: z.number().int().min(1).max(10).optional(),
+  preferredBuiltinAdapter: accountBalanceBuiltinAdapterSchema.optional(),
   custom: accountBalanceCustomConfigSchema.optional()
 }).strict().superRefine((value, context) => {
   if (value.adapter === 'custom' && !value.custom) {
@@ -47,6 +49,9 @@ export const accountBalanceQueryConfigSchema = z.object({
   }
   if (value.adapter !== 'custom' && value.custom) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['custom'], message: '内置查询类型不能提供自定义配置' })
+  }
+  if (value.adapter === 'custom' && value.preferredBuiltinAdapter) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['preferredBuiltinAdapter'], message: '自定义查询不能提供内置适配偏好' })
   }
 })
 
@@ -62,6 +67,7 @@ export function normalizeAccountBalanceConfig(input: unknown): AccountBalanceQue
   return {
     adapter: parsed.data.adapter,
     intervalMinutes: parsed.data.intervalMinutes ?? 5,
+    ...(parsed.data.preferredBuiltinAdapter ? { preferredBuiltinAdapter: parsed.data.preferredBuiltinAdapter } : {}),
     ...(parsed.data.custom ? { custom: parsed.data.custom as AccountBalanceCustomConfig } : {})
   }
 }

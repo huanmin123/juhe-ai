@@ -47,6 +47,8 @@ export const dbServiceOperationAccessModeByType = {
   list_accounts_due_for_health_check: 'maintenance',
   find_account_for_health_check: 'maintenance',
   record_account_health_check_success: 'write',
+  commit_account_balance_refresh: 'write',
+  enable_detected_account_balance_query: 'write',
   record_account_health_check_failure: 'write',
   list_accounts_due_for_cooldown_retest: 'maintenance',
   find_account_for_cooldown_retest: 'maintenance',

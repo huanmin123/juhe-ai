@@ -16,6 +16,33 @@ const sol = requireModel('gpt-5.6-sol')
 const terra = requireModel('gpt-5.6-terra')
 const luna = requireModel('gpt-5.6-luna')
 
+const expectedApiReasoning = new Map<string, string[]>([
+  ['gpt-5.5', ['none', 'low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.5-2026-04-23', ['none', 'low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.5-pro', ['medium', 'high', 'xhigh']],
+  ['gpt-5.5-pro-2026-04-23', ['medium', 'high', 'xhigh']],
+  ['gpt-5.4', ['none', 'low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.4-2026-03-05', ['none', 'low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.4-mini', ['none', 'low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.4-mini-2026-03-17', ['none', 'low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.4-nano', ['none', 'low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.4-nano-2026-03-17', ['none', 'low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.4-pro', ['medium', 'high', 'xhigh']],
+  ['gpt-5.4-pro-2026-03-05', ['medium', 'high', 'xhigh']],
+  ['gpt-5.2', ['none', 'low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.2-2025-12-11', ['none', 'low', 'medium', 'high', 'xhigh']],
+  ['gpt-5.2-pro', ['medium', 'high', 'xhigh']],
+  ['gpt-5.2-pro-2025-12-11', ['medium', 'high', 'xhigh']],
+  ['gpt-5.1', ['none', 'low', 'medium', 'high']],
+  ['gpt-5.1-2025-11-13', ['none', 'low', 'medium', 'high']],
+  ['gpt-5', ['minimal', 'low', 'medium', 'high']],
+  ['gpt-5-2025-08-07', ['minimal', 'low', 'medium', 'high']]
+])
+
+for (const [model, efforts] of expectedApiReasoning) {
+  assert.deepEqual(requireModel(model).supportedReasoningEfforts, efforts, `${model} API reasoning effort 必须与官方模型契约一致`)
+}
+
 for (const model of [sol, terra, luna]) {
   assert.deepEqual(model.supportedServiceTiers, ['priority', 'flex'])
   assert.deepEqual(model.supportedReasoningEfforts, wireReasoning)

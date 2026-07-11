@@ -37,10 +37,11 @@ assert(textColumnKeys.includes('serviceTiers'), '模型目录必须独立展示�
 assert(textColumnKeys.includes('reasoningEfforts'), '模型目录必须独立展示思考级别列')
 assert.equal(textColumnKeys.includes('capabilities'), false, '模型目录不能继续合并请求能力列')
 const modelCatalogModalSource = readFileSync(new URL('../../views/providers/ProviderModelCatalogModal.vue', import.meta.url), 'utf8')
-assert.match(modelCatalogModalSource, /class="capability-row"/, 'API 与 Codex 思考能力必须使用独立行布局')
 assert.match(modelCatalogModalSource, /class="capability-tag-list"/, '思考级别标签必须使用独立可换行容器')
-assert.match(modelCatalogModalSource, /Codex 多代理编排协议版本，不是思考级别/, '多代理版本必须明确区别于思考级别')
-assert.match(modelCatalogModalSource, /多代理编排 \{\{ record\.codexMultiAgentVersion \}\}/, '多代理能力必须以编排特性展示')
+assert.doesNotMatch(modelCatalogModalSource, /class="capability-prefix"/, '模型目录思考列不能混排 API 或 Codex 前缀')
+assert.doesNotMatch(modelCatalogModalSource, /codexSupportedReasoningLevels/, '模型目录思考列只能消费 API reasoning effort')
+assert.doesNotMatch(modelCatalogModalSource, /codexMultiAgentVersion/, '模型目录思考列不能展示 Codex 多代理能力')
+assert.doesNotMatch(modelCatalogModalSource, /（默认）/, '模型目录思考列不显示默认值后缀')
 
 const modelOptions: AccountModelSelectOption[] = [
   {
@@ -190,7 +191,7 @@ const loadedCustomForm = createCustomModelFormFromPricing(catalogRecord, [])
 assert.deepEqual(loadedCustomForm.supportedServiceTiers, ['priority'], '自定义模型编辑必须恢复 wire 服务等级能力')
 assert.deepEqual(loadedCustomForm.supportedReasoningEfforts, ['high', 'max'], '自定义模型编辑必须恢复 wire 思考能力')
 assert.equal(loadedCustomForm.defaultReasoningEffort, 'high', '自定义模型编辑必须恢复 wire 默认思考级别')
-assert.match(formatModelRequestCapabilities(catalogRecord), /Codex High \/ Ultra/, '模型目录可以展示 Codex Ultra 能力')
+assert.doesNotMatch(formatModelRequestCapabilities(catalogRecord), /Codex|Ultra|多代理/, '通用模型目录格式化只展示 API 请求能力')
 assert.doesNotMatch(
   formatModelReasoningCapabilities(catalogRecord),
   /服务等级|Priority|Flex/,

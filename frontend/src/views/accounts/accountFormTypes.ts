@@ -44,7 +44,8 @@ export interface AccountFormModel {
   availabilitySchedule: AccountAvailabilityScheduleForm
   notes: string
   balanceQueryEnabled: boolean
-  balanceQueryAdapter: 'sub2api' | 'newapi' | 'litellm' | 'custom'
+  balanceQueryAdapter: 'builtin' | 'custom'
+  balanceQueryPreferredBuiltinAdapter?: 'sub2api' | 'newapi' | 'litellm' | 'user_balance'
   balanceQueryIntervalMinutes: number
   balanceQueryCustomPath: string
   balanceQueryRemainingPointer: string

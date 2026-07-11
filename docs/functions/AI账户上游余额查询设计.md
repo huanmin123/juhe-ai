@@ -1,19 +1,19 @@
 # AI 账户上游余额查询设计
 
-> 状态：设计完成，待实现。
+> 状态：核心实现完成；2026-07-12 补充查询修复、`/user/balance` 与新账户非阻塞自动探测设计。
 >
 > 需求来源：Codex 会话 `019f50a8-4d4a-73c1-8506-0dca19b9a684`。
 
 ## 1. 目标
 
-为 API Key 类型 AI 账户查询上游中转当前可用余额，并在“我的 AI 账户”列表的“用量（日）”单元格中展示。余额查询是账户所有者主动开启的辅助能力，不参与本地用量统计、额度判断、账户状态、健康检查或网关调度。
+为 API Key 类型 AI 账户查询上游中转当前可用余额，并在“我的 AI 账户”列表的“用量（日）”单元格中展示。余额查询是辅助能力，不参与本地用量统计、额度判断、账户状态、健康检查或网关调度。用户可以主动开启；新建账户未主动开启时，系统在首次健康检查成功后异步探测一次，确认支持才自动开启。
 
 首期保持轻量：
 
-- 支持 Sub2API、New API、LiteLLM 和受限自定义接口。
+- 支持 Sub2API、New API、LiteLLM、通用 `/user/balance` 和受限自定义接口。
 - 默认每 5 分钟刷新，可配置 1 至 10 分钟。
 - 只保存当前查询结果，不保存余额历史，不做余额告警。
-- 不做自动识别、管理员模板、脚本解析或任意 HTTP 请求配置。
+- 新账户只做一次内置适配器自动探测；不做管理员模板、脚本解析或任意 HTTP 请求配置。
 - 仅支持单 API Key 账户；OAuth 和账户内多 Key 池不开放。
 
 ## 2. 页面口径
@@ -48,7 +48,7 @@
 
 AI 账户新增/编辑弹窗增加“余额查询”开关，交互与时间计划一致：关闭时隐藏详细配置，开启时显示：
 
-- 中转类型：Sub2API、New API、LiteLLM、自定义。
+- 查询类型只展示“内置适配”和“自定义接口”。内置适配由系统维护具体中转规则和最近成功偏好，不要求用户识别中转项目。
 - 刷新间隔：整数分钟，默认 5，范围 1 至 10。
 - 自定义类型额外显示查询路径、认证方式、余额字段路径、可选总额/已用字段路径和换算除数。
 
@@ -67,15 +67,20 @@ AI 账户新增/编辑弹窗增加“余额查询”开关，交互与时间计�
 | `balance_query_next_refresh_at` | TEXT / timestamptz NULL | `NULL` | 自动刷新到期时间；业务库中的唯一调度事实 |
 
 ```ts
-type AccountBalanceAdapter =
+type AccountBalanceBuiltinAdapter =
   | 'sub2api'
   | 'newapi'
   | 'litellm'
+  | 'user_balance'
+
+type AccountBalanceAdapter =
+  | 'builtin'
   | 'custom'
 
 interface AccountBalanceQueryConfig {
   adapter: AccountBalanceAdapter
   intervalMinutes: number
+  preferredBuiltinAdapter?: AccountBalanceBuiltinAdapter
   custom?: {
     path: string
     auth: 'bearer' | 'x-api-key' | 'x-goog-api-key' | 'none'
@@ -92,6 +97,8 @@ interface AccountBalanceQueryConfig {
 - 关闭功能时 `balance_query_enabled=false`，配置可保留，重新开启时恢复表单。
 - 开启或修改适配器时把 `balance_query_next_refresh_at` 设为当前时间；关闭时清空。
 - `intervalMinutes` 必须为 1 至 10 的整数。
+- `adapter=builtin` 时可保存系统最近一次严格查询成功的 `preferredBuiltinAdapter`；该字段不在前端显示，也不能由普通表单任意填写。
+- `adapter=custom` 时不允许保存 `preferredBuiltinAdapter`。
 - 自定义配置必须提供 `remainingPointer`，或同时提供 `totalPointer` 与 `usedPointer`。
 - `divisor` 必须为有限正数，默认 `1`。
 - 不在配置中保存第二套密钥、任意 Header、请求体或脚本。
@@ -145,7 +152,8 @@ interface AccountBalanceAdapterDriver {
 通用请求约束：
 
 - 使用物理账户现有 Base URL、当前单一 API Key 和已绑定代理。
-- 仅发送 `GET`，最长 8 秒，禁止重定向，响应体上限 256 KiB。
+- 账户绑定 `proxyProfileId` 时，手动查询、首次自动探测、上线全量扫描和周期刷新都必须先通过代理仓储解析并使用该代理；禁止自动探测绕过账户代理直连。
+- 仅发送 `GET`，一次内置适配识别共享最长 8 秒总 deadline，禁止重定向，响应体上限 256 KiB；不能把每个候选适配器各自放大为 8 秒。
 - 自定义路径必须是以 `/` 开头的相对路径；解析后必须与账户 Base URL 同源。
 - 只解析 JSON；状态码、鉴权失败、超时、超限和字段错误映射为中文错误摘要。
 - 外部查询失败不修改账户状态、最近错误、冷却、Key 运行态或调度事实。
@@ -157,9 +165,12 @@ interface AccountBalanceAdapterDriver {
 | `sub2api` | `GET /v1/usage` | Key 独立额度优先，其次订阅最紧窗口，最后钱包；上游 USD 直接使用 |
 | `newapi` | `GET /api/usage/token/`，必要时 `GET /api/status` | 无限额度单独返回；`total_available / quota_per_unit` 转 USD |
 | `litellm` | `GET /key/info` | 有 `max_budget` 时返回 `max_budget - spend`，否则 `unsupported` |
+| `user_balance` | `GET /user/balance` | 读取顶层 `balance`，按 USD 钱包余额归一化；与 CC Switch 通用模板一致 |
 | `custom` | 用户配置的同源相对路径 | JSON Pointer 取余额，或总额减已用，再除以 divisor |
 
 所有余额只能来自上述明确查询接口的响应，不允许根据站点类型、本地 usage、账户额度配置或兼容特征推算。解析器必须以真实响应 fixture 做回归，不根据字段名猜测币种；New API 的旧 billing 字段可能实际承载 CNY、Token 或内部 quota，因此不作为余额来源。其他中转统一使用受限自定义接口。
+
+内置适配查询顺序固定为：先尝试 `preferredBuiltinAdapter`，再按 `sub2api -> newapi -> litellm -> user_balance` 补齐尚未尝试的规则。任一规则得到 `fresh` 或 `unlimited` 即成功并条件更新偏好；原偏好失败而其他规则成功时，用新规则替换偏好。只有全部规则都失败或只返回 `unsupported` 才返回查询失败，并清除旧偏好。账户 Base URL、API Key 或代理变更后不需要用户重新选择中转类型，下一次查询会自动完成上述回退和偏好修正。
 
 ## 5. 后台刷新
 
@@ -184,7 +195,8 @@ POST /__aisys__/api/accounts/:id/balance/refresh
 ```
 
 - 仅物理账户所有者或管理员可调用。
-- 账户必须启用余额查询且当前可用。
+- 编辑弹窗调用时请求体携带当前 `balanceQueryConfig`。后端先校验并保存余额子配置、开启余额查询，再查询上游；按钮文案固定为“保存并查询”。
+- 列表刷新不携带配置，账户必须已经启用余额查询且当前可用。
 - 请求同步等待外部查询，服务器超时 8 秒；前端图标在请求期间旋转。
 - 同一账户已有查询时返回当前 `refreshing` 状态，不重复发起上游请求。
 - 成功、无限、未提供和失败都返回最新快照 DTO；只有本地权限或参数错误使用 4xx。
@@ -192,7 +204,26 @@ POST /__aisys__/api/accounts/:id/balance/refresh
 
 账户列表接口按当前页账户 ID 批量加载 `relay_balance` 快照，不逐行查询。普通用户只能看到自有物理账户余额；管理员管理视图可以看到所有物理账户。授权实例和被授权用户响应中不返回余额配置或快照。
 
-## 7. 安全边界
+## 7. 新账户非阻塞自动探测
+
+新建物理单 Key API Key 账户且用户没有开启余额查询时，在首次激活健康检查成功并完成账户状态写回后，把余额探测任务投入 ops-worker 内存队列。投递是常数时间操作，创建 HTTP 请求不等待健康检查或余额请求。
+
+探测规则：
+
+1. 队列低并发执行；同一账户按 ID 去重，不重试，不改变健康检查结果。
+2. 领取时重新读取账户，只接受 `active`、可调度、未删除、非授权实例、单 API Key、`balance_query_enabled=false` 且配置版本仍等于首次检查版本的账户。
+3. 以 `adapter=builtin` 调用统一内置适配解析器：优先已有偏好，再尝试其余全部规则；复用账户 Base URL、代理、8 秒超时、256 KiB 限制和严格 JSON 解析。HTML 200、字段缺失、鉴权失败和网络错误都不算支持。
+4. 只有得到 `fresh` 或 `unlimited` 快照才算命中。命中后以账户 ID、关闭状态和预期配置版本为条件写入 `{ adapter: 'builtin', preferredBuiltinAdapter, intervalMinutes }` 并开启功能，同时保存本次快照和下次刷新时间。
+5. 全部不命中时不写配置、不写失败快照，账户继续保持关闭，表示当前无法确认支持。
+6. 用户在探测期间编辑账户、主动开启或关闭余额查询时，条件更新失败，后台结果不得覆盖用户选择。
+
+SQLite 严格 writer 边界下，ops-worker 不直接写业务库或统计库：业务配置和调度时间通过 DB service 条件提交，租约与余额快照通过 stats-writer 写入；手动刷新所在的 DB service 也通过 server IPC 把统计写操作转交 stats-writer。查询结束时先按 `configRevision + balanceQueryConfig` 提交业务状态，stats-writer 写快照前再次核对当前配置。配置在请求期间发生变化时丢弃旧结果，不恢复旧快照和旧调度时间。
+
+自动探测只随新账户首次激活执行一次；周期健康检查、旧账户和普通编辑不触发全量探测，避免持续增加上游请求。导入创建账户沿用同一首次激活流程。
+
+本功能首次上线后在 release 根目录执行一次维护命令 `pnpm --filter juhe-ai-backend maintenance:backfill-account-balance`，覆盖所有系统账户作用域下尚未开启余额查询的合格物理账户。发布包保留该命令和编译脚本。PostgreSQL 可在主服务运行时后台执行；SQLite 必须先停止主服务并设置 `JUHE_AI_SQLITE_OFFLINE_MAINTENANCE_CONFIRMED=1`，由专用离线维护启动器独占 business/stats 写入，禁止与在线 DB service/worker 并行。命令按账户 ID 游标每页 50 条读取、并发 2 探测，逐页输出 `scanned/enabled/unsupported/stale` 进度；不把全部账户载入内存，也不阻塞 PostgreSQL 主服务。上线后的常态只保留新账户首次激活探测，不把全量扫描注册为周期任务。
+
+## 8. 安全边界
 
 - API Key 只在服务端内存中用于当前上游请求，不返回前端、不写日志、不写错误摘要。
 - 自定义 URL 必须复用现有上游 URL 安全校验和账户代理，不允许访问另一 Origin。
@@ -201,30 +232,32 @@ POST /__aisys__/api/accounts/:id/balance/refresh
 - 错误摘要区分超时、HTTP 状态、鉴权失败、JSON 非法和字段不可解析，不包含完整响应正文。
 - 余额查询不能改变账户可调度性，也不能作为自动停用、切号或告警依据。
 
-## 8. 状态与删除
+## 9. 状态与删除
 
-- 创建账户时默认关闭余额查询。
+- 创建账户时默认关闭；首次健康检查成功后可按第 7 节自动开启。
 - 编辑配置后如果开启，清空旧适配器快照并立即到期；如果关闭，保留配置但删除 `relay_balance` 快照，列表立即隐藏。
 - 删除物理账户时沿用现有账户清理流程删除对应快照。
 - 授权实例不复制来源账户配置或快照。
 - 不保留旧 schema、旧字段或旧 DTO 兼容分支；上线按当前 schema 单独同步数据库。
 
-## 9. 验收
+## 10. 验收
 
-- 四类适配器都有成功、无限/未提供、鉴权失败、超时和字段异常回归。
+- 五类适配器都有成功、无限/未提供、鉴权失败、超时和字段异常回归。
 - 开启、关闭、修改间隔和修改适配器时，SQLite/PostgreSQL 读写一致。
 - 自动刷新只处理到期且可用的物理单 Key API Key 账户，单轮有界且稳定排序。
 - 手动刷新不会重复并发请求，失败后页面只显示“查询失败”且金额字段为空。
 - 授权实例和被授权用户看不到余额；管理员和物理账户所有者权限正确。
 - 列表按页批量补齐快照，不出现 N+1 查询。
 - 前端桌面和移动端不重叠，刷新图标无按钮外观，加载旋转和悬浮错误正常。
+- 新账户创建响应不等待余额探测；首次激活后只在严格命中时自动开启，探测失败或配置版本变化时保持关闭。
+- 编辑弹窗“保存并查询”使用当前表单配置，不再因数据库尚未开启而返回“账户未开启余额查询”。
 
-## 10. 非目标
+## 11. 非目标
 
 - 余额历史、趋势、告警和自动停用。
 - 多 API Key 池逐 Key 余额。
 - OAuth 订阅额度。
 - 管理员连接器模板市场。
-- 自动探测中转类型。
+- 对旧账户、周期健康检查或所有中转持续自动探测。
 - 任意 Header、第二套密钥、POST 请求或脚本解析。
 - 余额参与本地用量、额度、路由、质量评分或账户健康状态。

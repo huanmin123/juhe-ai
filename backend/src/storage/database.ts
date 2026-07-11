@@ -325,6 +325,9 @@ export function sqliteWriterOwnerForMainDatabase(kind: SqliteMainDatabaseKind): 
 }
 
 export function currentProcessOwnsSqliteMainDatabase(kind: SqliteMainDatabaseKind): boolean {
+  if (sqliteOfflineMaintenanceOwnsAllMainDatabases()) {
+    return true
+  }
   if (kind === 'business' || kind === 'codex-context-state') {
     return runtimeConfig.processRole === 'db-service'
   }
@@ -334,6 +337,13 @@ export function currentProcessOwnsSqliteMainDatabase(kind: SqliteMainDatabaseKin
   }
   return runtimeConfig.processRole === 'worker'
     && (runtimeConfig.workerRole === 'stats-worker' || runtimeConfig.workerRole === 'temporary-maintenance-worker')
+}
+
+function sqliteOfflineMaintenanceOwnsAllMainDatabases(): boolean {
+  const enabled = process.env.JUHE_AI_SQLITE_OFFLINE_MAINTENANCE?.trim().toLowerCase()
+  return Boolean(enabled && ['1', 'true', 'yes', 'on'].includes(enabled))
+    && runtimeConfig.processRole === 'worker'
+    && runtimeConfig.workerRole === 'temporary-maintenance-worker'
 }
 
 export function sqliteWriterBoundaryStrictModeEnabled(): boolean {
