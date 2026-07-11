@@ -343,6 +343,7 @@ func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyMutationDependencies(t *t
 		"Creator:                  store",
 		"Updater:                  store",
 		"UsageStatsTimezoneReader: store",
+		"Logger:                   logger",
 		"APIKeyCreateHandler:",
 		"MyAPIKeyCreateHandler:",
 		"APIKeyUpdateHandler:",

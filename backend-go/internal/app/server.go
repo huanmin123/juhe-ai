@@ -453,6 +453,7 @@ func newManagementAPIHandler(
 		SecretStore:              store,
 		SecretTransactor:         store,
 		Invalidator:              systemAccountInvalidator,
+		Logger:                   logger,
 		Secret:                   cfg.Secret,
 	})
 	groupService := managementgroups.NewServiceWithOptions(managementgroups.ServiceOptions{
