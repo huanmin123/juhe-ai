@@ -218,11 +218,15 @@ func decodeManagementAPIKeyCreatePayload(
 	w http.ResponseWriter,
 	r *http.Request,
 ) (managementAPIKeyCreatePayload, bool) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, managementAPIKeyCreateMaxBodyBytes))
+	limited := http.MaxBytesReader(w, r.Body, managementAPIKeyCreateMaxBodyBytes)
+	body, err := io.ReadAll(limited)
+	_ = limited.Close()
 	if err != nil {
 		writeManagementGroupCreateBodyError(w, err)
 		return managementAPIKeyCreatePayload{}, false
 	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	var decoded any

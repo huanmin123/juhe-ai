@@ -35,6 +35,7 @@ const (
 type mutationGuardConfig struct {
 	operationKey string
 	fingerprint  func(http.ResponseWriter, *http.Request) (any, error)
+	failedTTL    *time.Duration
 }
 
 type mutationGuardStore struct {
@@ -83,7 +84,7 @@ func (s *mutationGuardStore) Middleware(config mutationGuardConfig) func(http.Ha
 			completed := false
 			defer func() {
 				if !completed {
-					s.complete(key, mutationStatusFailed)
+					s.complete(key, mutationStatusFailed, config.failedTTL)
 				}
 			}()
 			next.ServeHTTP(recorder, r)
@@ -92,9 +93,9 @@ func (s *mutationGuardStore) Middleware(config mutationGuardConfig) func(http.Ha
 				statusCode = http.StatusOK
 			}
 			if statusCode >= 200 && statusCode < 400 {
-				s.complete(key, mutationStatusSucceeded)
+				s.complete(key, mutationStatusSucceeded, config.failedTTL)
 			} else {
-				s.complete(key, mutationStatusFailed)
+				s.complete(key, mutationStatusFailed, config.failedTTL)
 			}
 			completed = true
 		})
@@ -116,16 +117,26 @@ func (s *mutationGuardStore) claim(key string) (mutationEntry, bool) {
 	return entry, true
 }
 
-func (s *mutationGuardStore) complete(key string, status mutationStatus) {
+func (s *mutationGuardStore) complete(
+	key string,
+	status mutationStatus,
+	failedTTLOverride *time.Duration,
+) {
 	now := time.Now()
 	ttl := defaultMutationFailedTTL
 	if status == mutationStatusSucceeded {
 		ttl = defaultMutationSucceededTTL
+	} else if failedTTLOverride != nil {
+		ttl = *failedTTLOverride
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.entries[key]
 	if !ok || entry.status != mutationStatusProcessing {
+		return
+	}
+	if ttl <= 0 {
+		delete(s.entries, key)
 		return
 	}
 	entry.status = status
@@ -253,8 +264,10 @@ func managementAPIKeyRefreshMutationGuardConfig(scope managementAPIKeyScope) mut
 }
 
 func managementAPIKeyCreateMutationGuardConfig(scope managementAPIKeyScope) mutationGuardConfig {
+	releaseFailedClaim := time.Duration(0)
 	return mutationGuardConfig{
 		operationKey: "api_keys.create",
+		failedTTL:    &releaseFailedClaim,
 		fingerprint: func(_ http.ResponseWriter, r *http.Request) (any, error) {
 			validated, ok := managementAPIKeyCreateValidationFromRequest(r)
 			if !ok {

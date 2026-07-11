@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -682,6 +683,126 @@ func TestRouterManagementAPIKeyCreateDeduplicatesEffectiveOwnerAndTrimmedName(t 
 	}
 }
 
+func TestRouterManagementAPIKeyCreateReleasesFailedMutationForCorrectedRequest(t *testing.T) {
+	tests := []struct {
+		name             string
+		firstBody        string
+		firstError       error
+		wantFirstMessage string
+		secondBody       string
+	}{
+		{
+			name: "domain validation error",
+			firstBody: `{"name":"生产 Key","description":"` +
+				strings.Repeat("x", 201) +
+				`","routeStrategyId":"route_1"}`,
+			firstError:       managementapikeys.ErrAPIKeyCreateInvalid,
+			wantFirstMessage: "API Key 参数无效",
+			secondBody:       validManagementAPIKeyCreateBody(),
+		},
+		{
+			name:             "route error",
+			firstBody:        `{"name":"生产 Key","routeStrategyId":"route_disabled"}`,
+			firstError:       managementapikeys.ErrAPIKeyRouteStrategyOff,
+			wantFirstMessage: managementapikeys.ErrAPIKeyRouteStrategyOff.Error(),
+			secondBody:       validManagementAPIKeyCreateBody(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			authenticator := &managementAPIKeyRefreshAuthStub{
+				context: managementauth.Context{
+					SystemAccountID: "sys_admin",
+					Role:            "admin",
+					SessionID:       "sess_admin",
+				},
+			}
+			service := &managementAPIKeyCreateServiceStub{
+				errs: []error{test.firstError, nil},
+				result: managementapikeys.CreateResult{
+					ListItem: managementapikeys.ListItem{
+						ID:              "key_created",
+						Name:            "生产 Key",
+						KeyPrefix:       "sk-creat",
+						KeySuffix:       "23456789",
+						Status:          "active",
+						RouteStrategyID: "route_1",
+					},
+					Key:                  "sk-created-secret-0123456789",
+					OwnerSystemAccountID: "sys_admin",
+				},
+			}
+			router := NewRouter(RouterOptions{
+				Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+				Logger:                           slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+				ManagementAPIAuthMiddleware:      NewManagementAPIAuthMiddleware(authenticator),
+				ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(authenticator),
+				ManagementAPIKeyCreateHandler: newManagementAPIKeyCreateHandler(
+					service,
+					managementAPIKeyScopeAdmin,
+					managementOperationLogOptions{},
+				),
+			})
+
+			firstRec := serveManagementAPIKeyCreateTestRequest(
+				router,
+				"/__aisys__/api/api-keys",
+				test.firstBody,
+			)
+			if firstRec.Code != http.StatusBadRequest {
+				t.Fatalf("first status = %d, body = %s", firstRec.Code, firstRec.Body.String())
+			}
+			var firstResponse map[string]string
+			if err := json.Unmarshal(firstRec.Body.Bytes(), &firstResponse); err != nil {
+				t.Fatalf("decode first response: %v", err)
+			}
+			if firstResponse["message"] != test.wantFirstMessage {
+				t.Fatalf("first message = %q, want %q", firstResponse["message"], test.wantFirstMessage)
+			}
+
+			secondRec := serveManagementAPIKeyCreateTestRequest(
+				router,
+				"/__aisys__/api/api-keys",
+				test.secondBody,
+			)
+			if secondRec.Code != http.StatusCreated {
+				t.Fatalf("second status = %d, want 201; bodyBytes = %d", secondRec.Code, secondRec.Body.Len())
+			}
+			if service.calls != 2 {
+				t.Fatalf("service calls = %d, want 2", service.calls)
+			}
+		})
+	}
+}
+
+func TestManagementAPIKeyCreateValidationMiddlewareRestoresBody(t *testing.T) {
+	body := `{"name":" Key ","routeStrategyId":"route_1","quotaLimits":{"daily":{"limit":1.000001}}}`
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/api-keys", strings.NewReader(body))
+	req = requestWithManagementAPIKeyAuthContext(req, managementauth.Context{
+		SystemAccountID: "sys_admin",
+		Role:            "admin",
+	})
+	rec := httptest.NewRecorder()
+	var downstreamBody string
+
+	managementAPIKeyCreateValidationMiddleware(managementAPIKeyScopeAdmin)(
+		http.HandlerFunc(func(_ http.ResponseWriter, validatedRequest *http.Request) {
+			raw, err := io.ReadAll(validatedRequest.Body)
+			if err != nil {
+				t.Fatalf("read downstream body: %v", err)
+			}
+			downstreamBody = string(raw)
+		}),
+	).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if downstreamBody != body {
+		t.Fatalf("downstream body = %q, want original body", downstreamBody)
+	}
+}
+
 func TestManagementAPIKeyCreateMutationGuardUsesSelfActorOwner(t *testing.T) {
 	config := managementAPIKeyCreateMutationGuardConfig(managementAPIKeyScopeSelf)
 	req := httptest.NewRequest(
@@ -814,6 +935,19 @@ func validManagementAPIKeyCreateBody() string {
 	return `{"name":"生产 Key","routeStrategyId":"route_1"}`
 }
 
+func serveManagementAPIKeyCreateTestRequest(
+	router http.Handler,
+	path string,
+	body string,
+) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
 func managementAPIKeyCreateStringPtr(value string) *string {
 	return &value
 }
@@ -826,6 +960,7 @@ type managementAPIKeyCreateServiceStub struct {
 	input  managementapikeys.CreateInput
 	result managementapikeys.CreateResult
 	err    error
+	errs   []error
 	calls  int
 }
 
@@ -835,6 +970,9 @@ func (s *managementAPIKeyCreateServiceStub) Create(
 ) (managementapikeys.CreateResult, error) {
 	s.calls++
 	s.input = input
+	if len(s.errs) >= s.calls {
+		return s.result, s.errs[s.calls-1]
+	}
 	return s.result, s.err
 }
 
