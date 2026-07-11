@@ -71,7 +71,7 @@ docs/bug/
 
 | 编号 | 标题 | 状态 | 严重程度 | 模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
-| BUG-0054 | PostgreSQL 健康检查结果无法写回 | 已修复（生产已验证） | P1 | 后端 / worker / AI 账户 / PostgreSQL / 健康检查 | [问题-0054-PostgreSQL健康检查结果无法写回.md](问题-0054-PostgreSQL健康检查结果无法写回.md) |
+| BUG-0054 | PostgreSQL 健康检查结果无法写回 | 已修复（首次检查补充待上线验证） | P1 | 后端 / worker / AI 账户 / PostgreSQL / 健康检查 | [问题-0054-PostgreSQL健康检查结果无法写回.md](问题-0054-PostgreSQL健康检查结果无法写回.md) |
 | BUG-0053 | Go 分组列表并发快照误报可用 | 已修复（待真实环境验证） | P2 | 后端 / Go / 管理接口 / 分组 / Redis / 运行态 | [问题-0053-Go分组列表并发快照误报可用.md](问题-0053-Go分组列表并发快照误报可用.md) |
 | BUG-0052 | Go Redis namespace 默认值偏离 Node | 已修复（待真实环境验证） | P1 | 后端 / Go / Redis / 配置 / 管理接口 / 运行态 | [问题-0052-GoRedisNamespace默认值偏离Node.md](问题-0052-GoRedisNamespace默认值偏离Node.md) |
 | BUG-0051 | Go 账户标签更新未刷新修改时间 | 已修复（待真实环境验证） | P2 | 后端 / Go / 管理接口 / AI 账户 / 标签 / PostgreSQL | [问题-0051-Go账户标签更新未刷新修改时间.md](问题-0051-Go账户标签更新未刷新修改时间.md) |

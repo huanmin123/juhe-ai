@@ -604,7 +604,11 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
             AND (ra.expires_at IS NULL OR ra.expires_at > ?)
           )
         )
-        AND (accounts.next_health_check_at IS NULL OR accounts.next_health_check_at <= ?)
+        AND (
+          (accounts.status = 'pending_test' AND accounts.last_health_check_at IS NULL)
+          OR accounts.next_health_check_at IS NULL
+          OR accounts.next_health_check_at <= ?
+        )
         ${accountIdFilter}
         AND EXISTS (
           SELECT 1
@@ -690,7 +694,11 @@ async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit
           AND (ra.expires_at IS NULL OR ra.expires_at > ?)
         )
       )
-      AND (accounts.next_health_check_at IS NULL OR accounts.next_health_check_at <= ?)
+      AND (
+        (accounts.status = 'pending_test' AND accounts.last_health_check_at IS NULL)
+        OR accounts.next_health_check_at IS NULL
+        OR accounts.next_health_check_at <= ?
+      )
       ${accountIdFilter}
       AND group_bindings.group_id IS NOT NULL
     ORDER BY CASE WHEN accounts.status = 'pending_test' THEN 0 ELSE 1 END ASC,
