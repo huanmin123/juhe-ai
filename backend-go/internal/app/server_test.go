@@ -130,6 +130,8 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.MyAPIKeyRefreshHandler != nil ||
 		handlers.APIKeyCreateHandler != nil ||
 		handlers.MyAPIKeyCreateHandler != nil ||
+		handlers.APIKeyUpdateHandler != nil ||
+		handlers.MyAPIKeyUpdateHandler != nil ||
 		handlers.GroupListHandler != nil ||
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
@@ -210,6 +212,8 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.MyAPIKeyRefreshHandler != nil ||
 		handlers.APIKeyCreateHandler != nil ||
 		handlers.MyAPIKeyCreateHandler != nil ||
+		handlers.APIKeyUpdateHandler != nil ||
+		handlers.MyAPIKeyUpdateHandler != nil ||
 		handlers.GroupListHandler != nil ||
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
@@ -295,6 +299,8 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.MyAPIKeyRefreshHandler == nil ||
 		handlers.APIKeyCreateHandler == nil ||
 		handlers.MyAPIKeyCreateHandler == nil ||
+		handlers.APIKeyUpdateHandler == nil ||
+		handlers.MyAPIKeyUpdateHandler == nil ||
 		handlers.GroupListHandler == nil ||
 		handlers.MyGroupListHandler == nil ||
 		handlers.GroupCreateHandler == nil ||
@@ -327,7 +333,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 	}
 }
 
-func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyCreateDependencies(t *testing.T) {
+func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyMutationDependencies(t *testing.T) {
 	source, err := os.ReadFile("server.go")
 	if err != nil {
 		t.Fatalf("read server.go: %v", err)
@@ -335,12 +341,15 @@ func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyCreateDependencies(t *tes
 	text := string(source)
 	for _, required := range []string{
 		"Creator:                  store",
+		"Updater:                  store",
 		"UsageStatsTimezoneReader: store",
 		"APIKeyCreateHandler:",
 		"MyAPIKeyCreateHandler:",
+		"APIKeyUpdateHandler:",
+		"MyAPIKeyUpdateHandler:",
 	} {
 		if !strings.Contains(text, required) {
-			t.Fatalf("server.go missing explicit API Key create wiring %q", required)
+			t.Fatalf("server.go missing explicit API Key mutation wiring %q", required)
 		}
 	}
 }
