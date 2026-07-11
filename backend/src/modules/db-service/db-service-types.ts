@@ -16,6 +16,7 @@ import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/pol
 import type { AuthorizationQuotaDecision } from '../gateway/quota/authorization-quota.service.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
+import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
 import type { ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 import type { AccountApiKeyRuntimeStatus } from '../../storage/account-api-key-rotation.js'
 import type {
@@ -1063,6 +1064,7 @@ export type DbServiceChildMessage =
   | {
     type: 'background_worker_account_health_check_trigger'
     accountId: string
+    reason: AccountHealthCheckTriggerReason
   }
   | {
     type: 'background_worker_dataset_write_request'

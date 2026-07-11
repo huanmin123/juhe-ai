@@ -6,6 +6,7 @@ import {
   accountUpdateNeedsImmediateHealthCheck,
   dispatchPendingAccountHealthCheck
 } from '../../modules/accounts/account-health-check-dispatch.service.js'
+import { accountHealthCheckTriggerPriority } from '../../modules/accounts/account-health-check-trigger.js'
 
 const originalProcessRole = runtimeConfig.processRole
 const originalSend = process.send
@@ -26,12 +27,18 @@ try {
   assert.equal(dispatchPendingAccountHealthCheck({ id: ' acc_pending ', status: 'pending_test' }), true)
   assert.deepEqual(messages, [{
     type: 'background_worker_account_health_check_trigger',
-    accountId: 'acc_pending'
+    accountId: 'acc_pending',
+    reason: 'activation'
   }], '待检查账户应只向后台 worker 投递规范化账户 ID')
 
   assert.equal(accountUpdateNeedsImmediateHealthCheck({ notes: '仅改备注' }), false)
   assert.equal(accountUpdateNeedsImmediateHealthCheck({ credentials: { api_key: 'sk-updated' } }), true)
   assert.equal(accountUpdateNeedsImmediateHealthCheck({ healthCheckModel: 'gpt-5.5' }), true)
+  assert.deepEqual([
+    accountHealthCheckTriggerPriority('activation'),
+    accountHealthCheckTriggerPriority('configuration'),
+    accountHealthCheckTriggerPriority('scheduled')
+  ], [0, 10, 20], '首次激活、配置复检和周期复检必须保持稳定优先级')
 
   for (const [name, sourcePath] of [
     ['普通账户新增', '../../modules/accounts/accounts.routes.ts'],
@@ -42,6 +49,12 @@ try {
     const source = readFileSync(new URL(sourcePath, import.meta.url), 'utf8')
     assert(source.includes('dispatchPendingAccountHealthCheck('), `${name}必须在保存完成后立即投递后台健康检查`)
   }
+
+  const accountRoutesSource = readFileSync(new URL('../../modules/accounts/accounts.routes.ts', import.meta.url), 'utf8')
+  assert(
+    accountRoutesSource.includes("dispatchAccountHealthCheck(account.id, 'configuration')"),
+    '账户连接配置变更必须按配置复检优先级即时投递'
+  )
 
   console.log('账户健康检查即时投递回归通过：所有新增入口统一投递，非健康配置编辑不误触发')
 } finally {

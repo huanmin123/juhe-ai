@@ -150,7 +150,7 @@ export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<vo
   let enqueuedCount = 0
   let skippedQueuedCount = 0
   for (const account of candidates) {
-    if (enqueueAccountHealthCheck(account, { intervalHours, jitterMinutes, failureThreshold, maxPauseMinutes })) {
+    if (enqueueAccountHealthCheck(account, { intervalHours, jitterMinutes, failureThreshold, maxPauseMinutes }, 'scheduled')) {
       enqueuedCount += 1
     } else {
       skippedQueuedCount += 1

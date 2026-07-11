@@ -12,6 +12,7 @@ import type { RecordMaintenanceJob } from '../record-maintenance/record-maintena
 import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { dbServiceOperationAccessMode } from '../db-service/db-service-operation-access-mode.js'
 import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
+import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
 import { auditWorkerMessageMaxBytes, trimAuditLogsForWorkerIpc } from './background-ipc-audit-trim.js'
 import { estimateWorkerMessageBytes, regularWorkerMessageMaxBytes, usageRecordWorkerMessageMaxBytes } from './background-ipc-message-size.js'
 import {
@@ -309,13 +310,17 @@ export function sendAccountTestCancelToWorker(taskId: string): boolean {
   })
 }
 
-export function sendAccountHealthCheckTriggerToWorker(accountId: string): boolean {
+export function sendAccountHealthCheckTriggerToWorker(
+  accountId: string,
+  reason: AccountHealthCheckTriggerReason
+): boolean {
   if (runtimeConfig.processRole === 'worker') return false
   const normalizedId = normalizedString(accountId)
   if (!normalizedId) return false
   return sendBackgroundWorkerMessage({
     type: 'background_worker_account_health_check_trigger',
-    accountId: normalizedId
+    accountId: normalizedId,
+    reason
   })
 }
 
