@@ -11,6 +11,10 @@ import type {
   BackgroundDatasetWriteOperation,
   BackgroundDatasetWriteOperationResult
 } from '../background/background-dataset-writer.js'
+import type {
+  BackgroundStatsWriteOperation,
+  BackgroundStatsWriteOperationResult
+} from '../background/background-stats-writer.js'
 import type { ApiKeyQuotaDecision } from '../gateway/quota/api-key-quota.service.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/quota/authorization-quota.service.js'
@@ -655,6 +659,25 @@ export type DbServiceOperation =
     }
   }
   | {
+    type: 'commit_account_balance_refresh'
+    input: {
+      accountId: string
+      expectedConfigRevision: number
+      expectedConfig: import('../accounts/account-balance.types.js').AccountBalanceQueryConfig
+      nextConfig: import('../accounts/account-balance.types.js').AccountBalanceQueryConfig
+      nextRefreshAt: string
+    }
+  }
+  | {
+    type: 'enable_detected_account_balance_query'
+    input: {
+      accountId: string
+      expectedConfigRevision: number
+      config: import('../accounts/account-balance.types.js').AccountBalanceQueryConfig
+      nextRefreshAt: string
+    }
+  }
+  | {
     type: 'record_account_health_check_failure'
     accountId: string
     input: {
@@ -882,6 +905,8 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'list_accounts_due_for_health_check' } ? AccountSummary[] :
   T extends { type: 'find_account_for_health_check' } ? AccountSummary | undefined :
   T extends { type: 'record_account_health_check_success' } ? { changed: boolean } :
+  T extends { type: 'commit_account_balance_refresh' } ? { changed: boolean } :
+  T extends { type: 'enable_detected_account_balance_query' } ? { changed: boolean } :
   T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt: string; errorCode: string; errorMessage: string } :
   T extends { type: 'list_accounts_due_for_cooldown_retest' } ? AccountSummary[] :
   T extends { type: 'find_account_for_cooldown_retest' } ? AccountSummary | undefined :
@@ -980,6 +1005,18 @@ export type DbServiceParentMessage =
     ok: false
     errorMessage: string
   }
+  | {
+    type: 'background_worker_stats_write_response'
+    requestId: string
+    ok: true
+    result: BackgroundStatsWriteOperationResult
+  }
+  | {
+    type: 'background_worker_stats_write_response'
+    requestId: string
+    ok: false
+    errorMessage: string
+  }
 
 export type DbServiceChildMessage =
   | {
@@ -1070,4 +1107,9 @@ export type DbServiceChildMessage =
     type: 'background_worker_dataset_write_request'
     requestId: string
     operation: BackgroundDatasetWriteOperation
+  }
+  | {
+    type: 'background_worker_stats_write_request'
+    requestId: string
+    operation: BackgroundStatsWriteOperation
   }

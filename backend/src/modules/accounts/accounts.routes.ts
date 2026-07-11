@@ -26,9 +26,9 @@ import { dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 import { accountCredentialFingerprint, credentialsRecordValue, mergeAccountCredentialsForUpdate } from './account-credential-update.js'
 import { normalizeAccountBalanceConfig, validateAccountBalanceCapability } from './account-balance-config.js'
 import {
-  deleteAccountBalanceSnapshotAsync,
   loadAccountBalanceConfigurationsByAccountIdsAsync,
 } from '../../storage/account-balance.repository.js'
+import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { registerAccountExportRoutes } from './account-export.routes.js'
 import { registerAccountTestSessionRoutes } from './account-test-session.routes.js'
 import { registerAccountTestStatusRoutes } from './account-test-status.routes.js'
@@ -396,7 +396,7 @@ accountsRouter.patch('/:id', async (req, res) => {
         account = nextAccount
       }
       if (requestedBalanceQueryEnabled !== undefined || requestedBalanceQueryConfig !== undefined) {
-        await deleteAccountBalanceSnapshotAsync(account.id).catch(() => undefined)
+        await requestStatsWriter({ type: 'delete_account_balance_snapshot', accountId: account.id }).catch(() => undefined)
       } else if (currentBalance) {
         account = {
           ...account,

@@ -91,6 +91,17 @@ try {
   usageRecordShards.getUsageRecordShardDatabase(shardLocation)
   databaseModule.closeStorageDatabases()
 
+  process.env.JUHE_AI_SQLITE_OFFLINE_MAINTENANCE = '1'
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), true)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), true)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), true)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('usage-catalog'), true)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), true)
+  databaseModule.getBusinessDatabase()
+  databaseModule.getStatsDatabase()
+  databaseModule.closeStorageDatabases()
+  delete process.env.JUHE_AI_SQLITE_OFFLINE_MAINTENANCE
+
   runtimeConfig.processRole = 'worker'
   runtimeConfig.workerRole = 'ops-worker'
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), false)

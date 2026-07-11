@@ -4,7 +4,8 @@ import {
   parseCustomBalance,
   parseLiteLlmBalance,
   parseNewApiBalance,
-  parseSub2ApiBalance
+  parseSub2ApiBalance,
+  parseUserBalance
 } from '../../modules/accounts/account-balance-adapters.js'
 
 assert.deepEqual(parseSub2ApiBalance({ mode: 'quota_limited', remaining: 7.31, unit: 'USD' }), {
@@ -32,6 +33,12 @@ assert.deepEqual(parseLiteLlmBalance({ info: { max_budget: '10', spend: '2.69' }
 assert.deepEqual(parseLiteLlmBalance({ info: { spend: 2.69 } }), {
   status: 'unsupported', basis: 'budget'
 })
+
+assert.deepEqual(parseUserBalance({ balance: '7.31', is_active: true }), {
+  status: 'fresh', remainingUsd: '7.310000', rawRemaining: '7.31', rawUnit: 'usd', basis: 'wallet'
+})
+assert.throws(() => parseUserBalance({ is_active: true }), /balance/)
+assert.throws(() => parseUserBalance({ balance: '-1' }), /负数/)
 
 assert.deepEqual(parseCustomBalance(
   { data: { balance: '731' } },

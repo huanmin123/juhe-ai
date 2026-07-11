@@ -10,6 +10,7 @@ import {
   accountHealthCheckTriggerPriority,
   type AccountHealthCheckTriggerReason
 } from '../accounts/account-health-check-trigger.js'
+import { enqueueAccountBalanceAutoDetection } from './account-balance-auto-detect.service.js'
 
 interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
   accountId: string
@@ -148,6 +149,9 @@ async function runAccountHealthCheckQueueItem(
       attemptIndex: context.attemptIndex,
       retryNumber: context.retryNumber
     }, '账号健康检测通过，已顺延下次检测')
+    if (changed && account.status === 'pending_test') {
+      enqueueAccountBalanceAutoDetection(account.id, item.configRevision)
+    }
     return true
   }
 

@@ -1,4 +1,5 @@
-export type AccountBalanceAdapter = 'sub2api' | 'newapi' | 'litellm' | 'custom'
+export type AccountBalanceBuiltinAdapter = 'sub2api' | 'newapi' | 'litellm' | 'user_balance'
+export type AccountBalanceAdapter = 'builtin' | 'custom'
 
 export type AccountBalanceStatus =
   | 'pending'
@@ -19,6 +20,7 @@ export interface AccountBalanceCustomConfig {
 export interface AccountBalanceQueryConfig {
   adapter: AccountBalanceAdapter
   intervalMinutes: number
+  preferredBuiltinAdapter?: AccountBalanceBuiltinAdapter
   custom?: AccountBalanceCustomConfig
 }
 

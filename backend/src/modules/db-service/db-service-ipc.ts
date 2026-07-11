@@ -73,6 +73,7 @@ const invalidateTimeoutMs = 500
 const unavailableCircuitOpenMs = 3000
 const maxPendingRequests = 2000
 const maxPendingDatasetWriteRequests = 1000
+const maxPendingStatsWriteRequests = 1000
 
 let dbServiceProcess: ChildProcess | undefined
 let dbServiceReady = false
@@ -85,6 +86,7 @@ let pendingServerAccountRuntimeClearRequests = new Map<string, PendingServerAcco
 let pendingOpenAIAccountTrafficMigrationRuntimeRequests = new Map<string, PendingOpenAIAccountTrafficMigrationRuntimeRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let pendingDatasetWriteRequests = new Map<string, PendingDatasetWriteRequest>()
+let pendingStatsWriteRequests = new Map<string, PendingDatasetWriteRequest>()
 let timedOutRequestCount = 0
 let rejectedRequestCount = 0
 let failedRequestCount = 0
@@ -488,6 +490,35 @@ export async function requestDbServiceDatasetWrite<T extends import('../backgrou
   })
 }
 
+export async function requestDbServiceStatsWrite<T extends import('../background/background-stats-writer.js').BackgroundStatsWriteOperation>(
+  operation: T,
+  timeoutMs = 10_000
+): Promise<import('../background/background-stats-writer.js').BackgroundStatsWriteOperationResult<T> | undefined> {
+  if (runtimeConfig.processRole === 'server') {
+    const backgroundIpc = await import('../background/background-ipc.js')
+    return await backgroundIpc.requestBackgroundWorkerStatsWrite(operation, timeoutMs)
+  }
+  if (runtimeConfig.processRole !== 'db-service' || typeof process.send !== 'function') return undefined
+  if (pendingStatsWriteRequests.size >= maxPendingStatsWriteRequests) {
+    throw new Error('后台 stats-writer pending 请求过多，请稍后重试')
+  }
+  const requestId = randomUUID()
+  return await new Promise<import('../background/background-stats-writer.js').BackgroundStatsWriteOperationResult<T> | undefined>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      const pending = pendingStatsWriteRequests.get(requestId)
+      if (!pending) return
+      pendingStatsWriteRequests.delete(requestId)
+      pending.reject(new Error('后台 stats-writer 请求超时'))
+    }, timeoutMs)
+    pendingStatsWriteRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout, createdAt: Date.now() })
+    sendDbServiceChildMessage({
+      type: 'background_worker_stats_write_request',
+      requestId,
+      operation
+    }, () => finishStatsWriteRequest(requestId, undefined))
+  })
+}
+
 export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
   if (typeof message !== 'object' || message === null || Array.isArray(message)) {
     return false
@@ -524,6 +555,14 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
     finishDatasetWriteRequest(
       record.requestId,
       record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'dataset-writer 请求失败' }
+    )
+    return true
+  }
+
+  if (record.type === 'background_worker_stats_write_response' && typeof record.requestId === 'string') {
+    finishStatsWriteRequest(
+      record.requestId,
+      record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'stats-writer 请求失败' }
     )
     return true
   }
@@ -600,6 +639,11 @@ function handleDbServiceMessage(message: unknown): void {
     case 'background_worker_dataset_write_request':
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
         void respondToDatasetWriteRequest(record.requestId, record.operation as import('../background/background-dataset-writer.js').BackgroundDatasetWriteOperation)
+      }
+      break
+    case 'background_worker_stats_write_request':
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && record.operation) {
+        void respondToStatsWriteRequest(record.requestId, record.operation as import('../background/background-stats-writer.js').BackgroundStatsWriteOperation)
       }
       break
     case 'gateway_runtime_cache_invalidate':
@@ -723,6 +767,11 @@ function failPendingRequests(error: Error): void {
     clearTimeout(pending.timeout)
     pending.resolve(undefined)
     pendingDatasetWriteRequests.delete(requestId)
+  }
+  for (const [requestId, pending] of pendingStatsWriteRequests) {
+    clearTimeout(pending.timeout)
+    pending.resolve(undefined)
+    pendingStatsWriteRequests.delete(requestId)
   }
 }
 
@@ -924,6 +973,23 @@ function finishDatasetWriteRequest(
     return
   }
   pending.reject(new Error(response.errorMessage))
+}
+
+function finishStatsWriteRequest(
+  requestId: string,
+  response: { ok: true; result: unknown } | { ok: false; errorMessage: string } | undefined
+): void {
+  const pending = pendingStatsWriteRequests.get(requestId)
+  if (!pending) return
+  clearTimeout(pending.timeout)
+  pendingStatsWriteRequests.delete(requestId)
+  if (!response) {
+    pending.resolve(undefined)
+  } else if (response.ok) {
+    pending.resolve(response.result)
+  } else {
+    pending.reject(new Error(response.errorMessage))
+  }
 }
 
 function oldestDbServiceDatasetWriteRequestMs(): number {
@@ -1194,6 +1260,32 @@ async function respondToDatasetWriteRequest(
   } catch (error) {
     sendToDbServiceProcess(child, {
       type: 'background_worker_dataset_write_response',
+      requestId,
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    })
+  }
+}
+
+async function respondToStatsWriteRequest(
+  requestId: string,
+  operation: import('../background/background-stats-writer.js').BackgroundStatsWriteOperation
+): Promise<void> {
+  const child = dbServiceProcess
+  if (!child) return
+  try {
+    const backgroundIpc = await import('../background/background-ipc.js')
+    const result = await backgroundIpc.requestBackgroundWorkerStatsWrite(operation)
+    if (result === undefined) throw new Error(`stats-writer 不可用，无法执行统计写操作：${operation.type}`)
+    sendToDbServiceProcess(child, {
+      type: 'background_worker_stats_write_response',
+      requestId,
+      ok: true,
+      result
+    })
+  } catch (error) {
+    sendToDbServiceProcess(child, {
+      type: 'background_worker_stats_write_response',
       requestId,
       ok: false,
       errorMessage: error instanceof Error ? error.message : String(error)

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const providerModelCatalogSnapshotMigration = "../../../db/migrations/000035_w2_sync_provider_model_catalog_gpt_tiers.sql"
+const providerModelCatalogSnapshotMigration = "../../../db/migrations/000036_w2_sync_provider_model_catalog_gpt_reasoning.sql"
 
 func TestProviderModelCatalogSnapshotMigrationCountsAndRepresentativeModels(t *testing.T) {
 	source, err := os.ReadFile(providerModelCatalogSnapshotMigration)
