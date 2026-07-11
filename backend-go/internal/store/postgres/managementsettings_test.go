@@ -56,8 +56,10 @@ func TestW5SystemSettingsMigrationSeedsNodeDefaults(t *testing.T) {
 	}
 	sql := string(source)
 	defaults := nodeSystemSettingDefaultJSON()
-	if len(defaults) != len(systemsettings.Definitions()) {
-		t.Fatalf("default count = %d, want %d", len(defaults), len(systemsettings.Definitions()))
+	delete(defaults, "gptPriorityPriceMultiplier")
+	delete(defaults, "gptFlexPriceMultiplier")
+	if len(defaults) != 53 {
+		t.Fatalf("initial migration default count = %d, want 53", len(defaults))
 	}
 	if count := strings.Count(sql, "'sys_admin'"); count != len(defaults) {
 		t.Fatalf("migration sys_admin row count = %d, want %d", count, len(defaults))
@@ -84,6 +86,33 @@ func TestW5SystemSettingsMigrationSeedsNodeDefaults(t *testing.T) {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("W5 system settings migration missing %q", want)
 		}
+	}
+	for _, key := range []string{"gptPriorityPriceMultiplier", "gptFlexPriceMultiplier"} {
+		if strings.Contains(sql, "'"+key+"'") {
+			t.Fatalf("executed migration 000024 must not be modified with %s", key)
+		}
+	}
+}
+
+func TestW5GPTServiceTierSettingsMigrationSeedsDefaults(t *testing.T) {
+	source, err := os.ReadFile("../../../db/migrations/000034_w5_gpt_service_tier_settings.sql")
+	if err != nil {
+		t.Fatalf("read GPT service tier settings migration: %v", err)
+	}
+	sql := string(source)
+	for _, want := range []string{
+		"('sys_admin', 'gptPriorityPriceMultiplier', '2', now())",
+		"('sys_admin', 'gptFlexPriceMultiplier', '0.5', now())",
+		"ON CONFLICT (system_account_id, key) DO NOTHING",
+		"-- +goose Down",
+		"-- no-op:",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("GPT service tier settings migration missing %q", want)
+		}
+	}
+	if count := strings.Count(sql, "'sys_admin'"); count != 2 {
+		t.Fatalf("GPT service tier settings migration row count = %d, want 2", count)
 	}
 }
 
@@ -157,6 +186,14 @@ func TestManagementSystemSettingsSnapshotReadsAllSettings(t *testing.T) {
 	value, ok := settings.Value("usageHotWindowRefreshIntervalSeconds")
 	if !ok || string(value) != "600" {
 		t.Fatalf("usageHotWindowRefreshIntervalSeconds = %q, %v; want 600", value, ok)
+	}
+	priority, ok := settings.Value("gptPriorityPriceMultiplier")
+	if !ok || string(priority) != "2" {
+		t.Fatalf("gptPriorityPriceMultiplier = %q, %v; want 2", priority, ok)
+	}
+	flex, ok := settings.Value("gptFlexPriceMultiplier")
+	if !ok || string(flex) != "0.5" {
+		t.Fatalf("gptFlexPriceMultiplier = %q, %v; want 0.5", flex, ok)
 	}
 	timezone, ok := settings.Value(systemsettings.UsageStatsTimezoneKey)
 	if !ok || string(timezone) != `"UTC"` {
@@ -234,6 +271,7 @@ func TestUpdateManagementSystemSettingsUsesStablePatchOrder(t *testing.T) {
 		"usageHotWindowRefreshIntervalSeconds": json.RawMessage(`900`),
 		"gatewayTextRawBodyLimitMegabytes":     json.RawMessage(`32`),
 		"accountHealthCheckBatchSize":          json.RawMessage(`40`),
+		"gptFlexPriceMultiplier":               json.RawMessage(`0.75`),
 	})
 	q := &managementSystemSettingsQueriesStub{
 		lockedRows: validManagementSystemSettingsRows(),
@@ -249,6 +287,7 @@ func TestUpdateManagementSystemSettingsUsesStablePatchOrder(t *testing.T) {
 	wantKeys := []string{
 		"accountHealthCheckBatchSize",
 		"gatewayTextRawBodyLimitMegabytes",
+		"gptFlexPriceMultiplier",
 		"usageHotWindowRefreshIntervalSeconds",
 	}
 	if len(q.updateCalls) != len(wantKeys) {
@@ -267,6 +306,10 @@ func TestUpdateManagementSystemSettingsUsesStablePatchOrder(t *testing.T) {
 	updatedValue, _ := result.Settings.Value("usageHotWindowRefreshIntervalSeconds")
 	if string(beforeValue) != "600" || string(updatedValue) != "900" {
 		t.Fatalf("usage hot window before/after = %s/%s, want 600/900", beforeValue, updatedValue)
+	}
+	decimalValue, _ := result.Settings.Value("gptFlexPriceMultiplier")
+	if string(decimalValue) != "0.75" {
+		t.Fatalf("gpt flex multiplier = %s, want 0.75", decimalValue)
 	}
 	if result.Settings.Len() != len(systemsettings.Definitions()) {
 		t.Fatalf("updated settings length = %d, want %d", result.Settings.Len(), len(systemsettings.Definitions()))
@@ -521,6 +564,8 @@ func mustSystemSettingsPatch(t *testing.T, values map[string]json.RawMessage) sy
 func nodeSystemSettingDefaultJSON() map[string]string {
 	return map[string]string{
 		"gatewayTextRawBodyLimitMegabytes":           "16",
+		"gptPriorityPriceMultiplier":                 "2",
+		"gptFlexPriceMultiplier":                     "0.5",
 		"systemApiRateLimitIpReadPerMinute":          "600",
 		"systemApiRateLimitIpReadBurstPer10Seconds":  "120",
 		"systemApiRateLimitIpWritePerMinute":         "180",

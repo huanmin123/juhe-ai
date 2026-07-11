@@ -294,6 +294,16 @@ func TestManagementSystemSettingsUpdateHandlerReturnsDomainValidationErrorsAsBad
 			wantMsg: "accountTestTaskConcurrency 必须在 1 到 1000 之间",
 		},
 		{
+			name:    "decimal numeric string",
+			body:    `{"gptPriorityPriceMultiplier":"2"}`,
+			wantMsg: "gptPriorityPriceMultiplier 必须是数字",
+		},
+		{
+			name:    "decimal out of range",
+			body:    `{"gptFlexPriceMultiplier":0.009}`,
+			wantMsg: "gptFlexPriceMultiplier 必须在 0.01 到 100 之间",
+		},
+		{
 			name:    "empty patch sentinel",
 			body:    `{"accountTestTaskConcurrency":2}`,
 			err:     fmt.Errorf("wrapped: %w", systemsettings.ErrPatchEmpty),
@@ -376,6 +386,7 @@ func TestManagementSystemSettingsUpdateHandlerEnqueuesStableOperationLogChanges(
 	after := managementSystemSettingsSnapshot(t, map[string]string{
 		"accountTestTaskConcurrency":       "8",
 		"gatewayTextRawBodyLimitMegabytes": "32",
+		"gptFlexPriceMultiplier":           "0.75",
 		"usageStatsDailyRetentionDays":     "30",
 	})
 	queueStub := &managementSystemSettingsOperationLogQueueStub{}
@@ -397,7 +408,7 @@ func TestManagementSystemSettingsUpdateHandlerEnqueuesStableOperationLogChanges(
 	req := managementSystemSettingsRequest(
 		http.MethodPatch,
 		"admin",
-		`{"usageStatsDailyRetentionDays":30,"gatewayTextRawBodyLimitMegabytes":32,"accountTestTaskConcurrency":8}`,
+		`{"usageStatsDailyRetentionDays":30,"gptFlexPriceMultiplier":0.75,"gatewayTextRawBodyLimitMegabytes":32,"accountTestTaskConcurrency":8}`,
 	)
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("User-Agent", "system-settings-test")
@@ -446,24 +457,26 @@ func TestManagementSystemSettingsUpdateHandlerEnqueuesStableOperationLogChanges(
 	if logInput.StatusCode == nil || *logInput.StatusCode != http.StatusOK {
 		t.Fatalf("status code = %+v, want 200", logInput.StatusCode)
 	}
-	if len(logInput.Changes) != 3 {
-		t.Fatalf("changes = %+v, want 3", logInput.Changes)
+	if len(logInput.Changes) != 4 {
+		t.Fatalf("changes = %+v, want 4", logInput.Changes)
 	}
 	wantFields := []string{
 		"accountTestTaskConcurrency",
 		"gatewayTextRawBodyLimitMegabytes",
+		"gptFlexPriceMultiplier",
 		"usageStatsDailyRetentionDays",
 	}
-	wantAfter := []int{8, 32, 30}
+	wantBefore := []float64{1, 1, 0.5, 1}
+	wantAfter := []float64{8, 32, 0.75, 30}
 	for index, change := range logInput.Changes {
 		if change.Field != wantFields[index] || change.Label != wantFields[index] {
 			t.Fatalf("change[%d] = %+v, want field/label %q", index, change, wantFields[index])
 		}
-		if got := managementSystemSettingsOperationLogInt(t, change.Before); got != 1 {
-			t.Fatalf("change[%d].Before = %d, want 1", index, got)
+		if got := managementSystemSettingsOperationLogNumber(t, change.Before); got != wantBefore[index] {
+			t.Fatalf("change[%d].Before = %v, want %v", index, got, wantBefore[index])
 		}
-		if got := managementSystemSettingsOperationLogInt(t, change.After); got != wantAfter[index] {
-			t.Fatalf("change[%d].After = %d, want %d", index, got, wantAfter[index])
+		if got := managementSystemSettingsOperationLogNumber(t, change.After); got != wantAfter[index] {
+			t.Fatalf("change[%d].After = %v, want %v", index, got, wantAfter[index])
 		}
 	}
 }
@@ -810,6 +823,17 @@ func managementSystemSettingsSnapshot(
 			values[definition.Key] = json.RawMessage(`"UTC"`)
 			continue
 		}
+		if definition.Kind == systemsettings.ValueKindDecimal {
+			switch definition.Key {
+			case "gptPriorityPriceMultiplier":
+				values[definition.Key] = json.RawMessage(`2`)
+			case "gptFlexPriceMultiplier":
+				values[definition.Key] = json.RawMessage(`0.5`)
+			default:
+				t.Fatalf("unexpected decimal system setting %q", definition.Key)
+			}
+			continue
+		}
 		values[definition.Key] = json.RawMessage(strconv.Itoa(definition.Minimum))
 	}
 	for key, value := range overrides {
@@ -819,8 +843,8 @@ func managementSystemSettingsSnapshot(
 	if err != nil {
 		t.Fatalf("NewSnapshot() error = %v", err)
 	}
-	if settings.Len() != 53 {
-		t.Fatalf("settings length = %d, want 53", settings.Len())
+	if settings.Len() != 55 {
+		t.Fatalf("settings length = %d, want 55", settings.Len())
 	}
 	return settings
 }
@@ -846,8 +870,8 @@ func assertManagementSystemSettingsResponse(
 	if err := json.Unmarshal(rawData, &data); err != nil {
 		t.Fatalf("decode data: %v", err)
 	}
-	if len(data) != 53 {
-		t.Fatalf("data field count = %d, want 53", len(data))
+	if len(data) != 55 {
+		t.Fatalf("data field count = %d, want 55", len(data))
 	}
 	for key, wantValue := range want.Values() {
 		gotValue, exists := data[key]
@@ -879,13 +903,13 @@ func assertManagementSystemSettingsMessage(
 	}
 }
 
-func managementSystemSettingsOperationLogInt(t *testing.T, value any) int {
+func managementSystemSettingsOperationLogNumber(t *testing.T, value any) float64 {
 	t.Helper()
 	number, ok := value.(float64)
 	if !ok {
 		t.Fatalf("operation log value = %#v (%T), want JSON number", value, value)
 	}
-	return int(number)
+	return number
 }
 
 type managementSystemSettingsServiceStub struct {
