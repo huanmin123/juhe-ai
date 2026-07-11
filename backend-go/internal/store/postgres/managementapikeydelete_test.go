@@ -66,7 +66,7 @@ func TestManagementAPIKeyDeleteReusesCleanupUpsertWithoutResettingRetryOrCreated
 		t.Fatalf("read public API Key SQL: %v", err)
 	}
 	sql := string(source)
-	start := strings.Index(sql, "-- name: UpsertPublicAPIKeyRecordCleanupTarget :exec")
+	start := strings.Index(sql, "-- name: UpsertAPIKeyRecordCleanupTarget :exec")
 	if start < 0 {
 		t.Fatal("cleanup target upsert query is missing")
 	}
@@ -116,7 +116,7 @@ func TestDeleteManagementAPIKeyLocksDeletesAndUpsertsCleanupTarget(t *testing.T)
 		q.deleteInput.OwnerSystemAccountID != "sys_owner" {
 		t.Fatalf("delete input = %+v", q.deleteInput)
 	}
-	if q.upsertInput != (postgresqueries.UpsertPublicAPIKeyRecordCleanupTargetParams{
+	if q.upsertInput != (postgresqueries.UpsertAPIKeyRecordCleanupTargetParams{
 		ApiKeyID:        "key_1",
 		SystemAccountID: "sys_owner",
 		CreatedAt:       pgtype.Timestamptz{Time: deletedAt, Valid: true},
@@ -270,7 +270,7 @@ type managementAPIKeyDeleteQueriesStub struct {
 	deleteInput postgresqueries.HardDeleteManagementAPIKeyParams
 	deleteID    string
 	deleteErr   error
-	upsertInput postgresqueries.UpsertPublicAPIKeyRecordCleanupTargetParams
+	upsertInput postgresqueries.UpsertAPIKeyRecordCleanupTargetParams
 	upsertErr   error
 	calls       []string
 }
@@ -304,9 +304,9 @@ func (s *managementAPIKeyDeleteQueriesStub) HardDeleteManagementAPIKey(
 	return s.deleteID, s.deleteErr
 }
 
-func (s *managementAPIKeyDeleteQueriesStub) UpsertPublicAPIKeyRecordCleanupTarget(
+func (s *managementAPIKeyDeleteQueriesStub) UpsertAPIKeyRecordCleanupTarget(
 	_ context.Context,
-	input postgresqueries.UpsertPublicAPIKeyRecordCleanupTargetParams,
+	input postgresqueries.UpsertAPIKeyRecordCleanupTargetParams,
 ) error {
 	s.calls = append(s.calls, "upsert")
 	s.upsertInput = input

@@ -262,7 +262,7 @@ DELETE FROM juhe_business.api_keys
 WHERE id = sqlc.arg(id)
   AND system_account_id = sqlc.arg(system_account_id);
 
--- name: UpsertPublicAPIKeyRecordCleanupTarget :exec
+-- name: UpsertAPIKeyRecordCleanupTarget :exec
 INSERT INTO juhe_dataset.api_key_record_cleanup_targets (
   api_key_id,
   system_account_id,

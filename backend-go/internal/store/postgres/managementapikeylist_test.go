@@ -103,7 +103,7 @@ func TestPublicAPIKeyCleanupTargetUpsertPreservesRetryState(t *testing.T) {
 	}
 	sql := string(source)
 	for _, required := range []string{
-		"-- name: UpsertPublicAPIKeyRecordCleanupTarget :exec",
+		"-- name: UpsertAPIKeyRecordCleanupTarget :exec",
 		"INSERT INTO juhe_dataset.api_key_record_cleanup_targets",
 		"api_key_id",
 		"system_account_id",
@@ -124,7 +124,7 @@ func TestPublicAPIKeyCleanupTargetUpsertPreservesRetryState(t *testing.T) {
 	) {
 		t.Fatal("public API Key cleanup upsert must write the Node worker columns")
 	}
-	upsert := sql[strings.Index(sql, "-- name: UpsertPublicAPIKeyRecordCleanupTarget"):]
+	upsert := sql[strings.Index(sql, "-- name: UpsertAPIKeyRecordCleanupTarget"):]
 	for _, forbidden := range []string{
 		"created_at = EXCLUDED.created_at",
 		"attempt_count =",

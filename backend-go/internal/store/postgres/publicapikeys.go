@@ -322,9 +322,9 @@ func publicAPIKeyDelete(ctx context.Context, q *postgresqueries.Queries, apiKeyI
 }
 
 type publicAPIKeyCleanupTargetQueries interface {
-	UpsertPublicAPIKeyRecordCleanupTarget(
+	UpsertAPIKeyRecordCleanupTarget(
 		ctx context.Context,
-		arg postgresqueries.UpsertPublicAPIKeyRecordCleanupTargetParams,
+		arg postgresqueries.UpsertAPIKeyRecordCleanupTargetParams,
 	) error
 }
 
@@ -333,9 +333,9 @@ func publicAPIKeyUpsertCleanupTarget(
 	q publicAPIKeyCleanupTargetQueries,
 	input port.PublicAPIKeyRecordCleanupTargetInput,
 ) error {
-	if err := q.UpsertPublicAPIKeyRecordCleanupTarget(
+	if err := q.UpsertAPIKeyRecordCleanupTarget(
 		ctx,
-		postgresqueries.UpsertPublicAPIKeyRecordCleanupTargetParams{
+		postgresqueries.UpsertAPIKeyRecordCleanupTargetParams{
 			ApiKeyID:        input.APIKeyID,
 			SystemAccountID: input.SystemAccountID,
 			CreatedAt:       pgTimestamptz(input.Now),

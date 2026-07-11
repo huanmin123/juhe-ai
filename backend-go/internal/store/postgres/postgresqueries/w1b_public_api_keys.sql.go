@@ -726,7 +726,7 @@ func (q *Queries) UpdatePublicAPIKeyAllFields(ctx context.Context, arg UpdatePub
 	return i, err
 }
 
-const upsertPublicAPIKeyRecordCleanupTarget = `-- name: UpsertPublicAPIKeyRecordCleanupTarget :exec
+const upsertAPIKeyRecordCleanupTarget = `-- name: UpsertAPIKeyRecordCleanupTarget :exec
 INSERT INTO juhe_dataset.api_key_record_cleanup_targets (
   api_key_id,
   system_account_id,
@@ -743,15 +743,15 @@ ON CONFLICT (api_key_id) DO UPDATE SET
   updated_at = EXCLUDED.updated_at
 `
 
-type UpsertPublicAPIKeyRecordCleanupTargetParams struct {
+type UpsertAPIKeyRecordCleanupTargetParams struct {
 	ApiKeyID        string
 	SystemAccountID string
 	CreatedAt       pgtype.Timestamptz
 	UpdatedAt       pgtype.Timestamptz
 }
 
-func (q *Queries) UpsertPublicAPIKeyRecordCleanupTarget(ctx context.Context, arg UpsertPublicAPIKeyRecordCleanupTargetParams) error {
-	_, err := q.db.Exec(ctx, upsertPublicAPIKeyRecordCleanupTarget,
+func (q *Queries) UpsertAPIKeyRecordCleanupTarget(ctx context.Context, arg UpsertAPIKeyRecordCleanupTargetParams) error {
+	_, err := q.db.Exec(ctx, upsertAPIKeyRecordCleanupTarget,
 		arg.ApiKeyID,
 		arg.SystemAccountID,
 		arg.CreatedAt,

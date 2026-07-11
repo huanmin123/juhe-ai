@@ -22,9 +22,9 @@ type managementAPIKeyDeleteQueries interface {
 		ctx context.Context,
 		input postgresqueries.HardDeleteManagementAPIKeyParams,
 	) (string, error)
-	UpsertPublicAPIKeyRecordCleanupTarget(
+	UpsertAPIKeyRecordCleanupTarget(
 		ctx context.Context,
-		input postgresqueries.UpsertPublicAPIKeyRecordCleanupTargetParams,
+		input postgresqueries.UpsertAPIKeyRecordCleanupTargetParams,
 	) error
 }
 
@@ -123,9 +123,9 @@ func deleteManagementAPIKey(
 		)
 	}
 
-	if err := q.UpsertPublicAPIKeyRecordCleanupTarget(
+	if err := q.UpsertAPIKeyRecordCleanupTarget(
 		ctx,
-		postgresqueries.UpsertPublicAPIKeyRecordCleanupTargetParams{
+		postgresqueries.UpsertAPIKeyRecordCleanupTargetParams{
 			ApiKeyID:        current.ID,
 			SystemAccountID: current.SystemAccountID,
 			CreatedAt:       pgTimestamptz(input.DeletedAt),
