@@ -196,7 +196,7 @@ export function authorizedAccountUnavailableText(account: AccountSummary): strin
   if (isAuthorizationBindingUnavailable(account)) return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
   if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
   if (account.status === 'disabled') return '账户已停用，当前不可用'
-  if (account.status === 'pending_test') return '账户尚未测试通过，测试成功前不会参与调度'
+  if (account.status === 'pending_test') return '账户正在等待后台健康检查，检查通过前不会参与调度；人工测试不改变账户状态'
   if (account.status === 'error') return '授权账户状态异常，当前不可用'
   if (isTemporaryAccountStatus(account) || isFutureTime(account.cooldownUntil)) return '授权账户实例暂时不可调用，恢复前不会参与调度'
   if (!account.schedulable) return '授权账户实例暂时不可调用，恢复前不会参与调度'

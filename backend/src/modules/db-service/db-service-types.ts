@@ -1061,6 +1061,10 @@ export type DbServiceChildMessage =
     taskId: string
   }
   | {
+    type: 'background_worker_account_health_check_trigger'
+    accountId: string
+  }
+  | {
     type: 'background_worker_dataset_write_request'
     requestId: string
     operation: BackgroundDatasetWriteOperation

@@ -79,7 +79,7 @@ try {
   assert.equal(pending.status, 'pending_test', '新建账户默认应为待测试')
   assert.equal(pending.schedulable, false, '待测试账户默认不得参与调度')
   assert.equal(pending.healthCheckModel, 'gpt-5.5', '新建账户必须保存属于支持模型的检查模型')
-  assert.match(pending.lastErrorMessage ?? '', /等待后台激活检查/, '待测试账户应记录等待后台激活检查的提示')
+  assert.match(pending.lastErrorMessage ?? '', /等待后台健康检查/, '待检查账户应记录等待后台健康检查的提示')
   assert.equal(
     repositories.listOpenAIAccountsForGroup(group.id, owner.id).some((account) => account.id === pending.id),
     false,
@@ -110,6 +110,19 @@ try {
   assert.equal(afterManualSuccess?.status, 'pending_test', '人工测试成功不能激活账户')
   assert.equal(afterManualSuccess?.schedulable, false, '人工测试成功不能恢复账户调度')
   assert.equal(afterManualSuccess?.healthCheckModel, 'gpt-5.5', '人工测试成功不能改写检查模型')
+
+  assert.equal(repositories.recordAccountHealthCheckFailure(pending.id, {
+    ...healthSettings,
+    statusCode: 401,
+    errorCode: 'invalid_api_key',
+    errorMessage: 'Invalid API key'
+  }).changed, true, '后台健康检查失败应记录待检查账户的失败详情')
+  const failedPending = repositories.findAccountSummary(pending.id, access)
+  assert.equal(failedPending?.status, 'pending_test', '后台健康检查失败后仍应由系统自动重试')
+  assert.equal(failedPending?.schedulable, false, '后台健康检查失败后不得参与调度')
+  assert.equal(failedPending?.effectiveAvailability?.label, '账户检查失败', '待检查失败应显示明确状态')
+  assert.equal(failedPending?.effectiveAvailability?.color, 'red', '待检查失败应使用红色状态')
+  assert.match(failedPending?.effectiveAvailability?.reason ?? '', /自动重试/, '待检查失败应说明系统会自动重试')
 
   assert.equal(repositories.recordAccountHealthCheckSuccess(pending.id, {
     ...healthSettings,

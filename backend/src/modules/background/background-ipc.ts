@@ -309,6 +309,16 @@ export function sendAccountTestCancelToWorker(taskId: string): boolean {
   })
 }
 
+export function sendAccountHealthCheckTriggerToWorker(accountId: string): boolean {
+  if (runtimeConfig.processRole === 'worker') return false
+  const normalizedId = normalizedString(accountId)
+  if (!normalizedId) return false
+  return sendBackgroundWorkerMessage({
+    type: 'background_worker_account_health_check_trigger',
+    accountId: normalizedId
+  })
+}
+
 export function sendRuntimeLogLineToWorker(line: string, options: RuntimeLogLineIndexOptions = {}): boolean {
   return sendBackgroundWorkerMessageToWorker({
     type: 'background_worker_runtime_log_line',

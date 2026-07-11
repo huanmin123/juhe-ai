@@ -143,6 +143,7 @@ export type BackgroundWorkerMessage =
   | { type: 'background_worker_record_maintenance'; items: RecordMaintenanceJob[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: string[] }
   | { type: 'background_worker_account_test_cancel'; taskId: string }
+  | { type: 'background_worker_account_health_check_trigger'; accountId: string }
   | ({ type: 'background_worker_runtime_log_line'; line: string } & RuntimeLogLineIndexOptions)
   | { type: 'background_worker_status_request'; requestId: string }
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }

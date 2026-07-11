@@ -663,6 +663,11 @@ function handleDbServiceMessage(message: unknown): void {
         void forwardAccountTestCancelToWorker(record.taskId)
       }
       break
+    case 'background_worker_account_health_check_trigger':
+      if (runtimeConfig.processRole === 'server' && typeof record.accountId === 'string') {
+        void forwardAccountHealthCheckTriggerToWorker(record.accountId)
+      }
+      break
     default:
       break
   }
@@ -1449,6 +1454,17 @@ async function forwardAccountTestCancelToWorker(taskId: string): Promise<void> {
       event: 'db_service_account_test_cancel_forward_failed',
       taskId: normalizedId
     }, 'DB service 转发账号测试取消到后台 worker 失败')
+  }
+}
+
+async function forwardAccountHealthCheckTriggerToWorker(accountId: string): Promise<void> {
+  const backgroundIpc = await import('../background/background-ipc.js')
+  const normalizedId = normalizedString(accountId)
+  if (normalizedId && !backgroundIpc.sendAccountHealthCheckTriggerToWorker(normalizedId)) {
+    logger.warn({
+      event: 'db_service_account_health_check_trigger_forward_failed',
+      accountId: normalizedId
+    }, 'DB service 转发账户健康检查触发消息失败，等待周期任务兜底')
   }
 }
 

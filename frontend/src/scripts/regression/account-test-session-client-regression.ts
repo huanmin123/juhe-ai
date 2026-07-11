@@ -133,8 +133,8 @@ await submitAccountTestTask({
 })
 assertLastCall(
   'accounts.testDraft',
-  [{ account: draftAccount, ...testPayload, testSessionId: 'session_create_draft' }, scopeParams],
-  '管理端新建草稿测试应走 testDraft，并使用当前页面 scope'
+  [{ account: draftAccount, testEndpointMode: testPayload.testEndpointMode, prompt: testPayload.prompt, testSessionId: 'session_create_draft' }, scopeParams],
+  '管理端新建草稿测试应走 testDraft、使用当前页面 scope，且不发送顶层 model'
 )
 
 await submitAccountTestTask({
@@ -148,8 +148,8 @@ await submitAccountTestTask({
 })
 assertLastCall(
   'accounts.test',
-  [boundAccount.id, { account: draftAccount, ...testPayload, testSessionId: 'session_saved_draft' }, { systemAccountId: 'sys_bound' }],
-  '管理端已保存草稿测试应走账号测试，并使用账号归属 scope'
+  [boundAccount.id, { account: draftAccount, testEndpointMode: testPayload.testEndpointMode, prompt: testPayload.prompt, testSessionId: 'session_saved_draft' }, { systemAccountId: 'sys_bound' }],
+  '管理端已保存草稿测试应走账号测试、使用账号归属 scope，且以 account.healthCheckModel 为准'
 )
 
 await submitAccountTestTask({
@@ -163,8 +163,8 @@ await submitAccountTestTask({
 })
 assertLastCall(
   'myAccounts.testDraft',
-  [{ account: draftAccount, ...testPayload, testSessionId: 'session_personal_draft' }],
-  '个人端新建草稿测试应走 myAccounts.testDraft，且不携带管理端 scope'
+  [{ account: draftAccount, testEndpointMode: testPayload.testEndpointMode, prompt: testPayload.prompt, testSessionId: 'session_personal_draft' }],
+  '个人端新建草稿测试应走 myAccounts.testDraft，不携带管理端 scope 或顶层 model'
 )
 
 const controller = new AbortController()

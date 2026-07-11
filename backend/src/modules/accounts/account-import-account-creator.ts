@@ -7,6 +7,7 @@ import {
   type AccountImportCreatePayloadAccount
 } from './account-import-account-payload.js'
 import type { AccountImportItem, AccountImportSummary } from './account-import.service.js'
+import { dispatchPendingAccountHealthCheck } from './account-health-check-dispatch.service.js'
 
 export interface AccountImportAccountCreatePlan {
   options: {
@@ -41,8 +42,9 @@ export function createPlannedImportAccounts(plan: AccountImportAccountCreatePlan
         proxyProfileId
       })
       const created = createAccount(accountInput, access)
+      dispatchPendingAccountHealthCheck(created)
       account.item.accountId = created.id
-      account.item.messages = [created.status === 'pending_test' ? '已创建账户，需测试通过后参与调度' : '已创建账户']
+      account.item.messages = [created.status === 'pending_test' ? '已创建账户，等待后台健康检查通过后参与调度' : '已创建账户']
     } catch (error) {
       if (isDuplicateAccountError(error) && plan.options.skipDuplicates) {
         account.item.action = 'skip'
@@ -70,8 +72,9 @@ export async function createPlannedImportAccountsAsync(plan: AccountImportAccoun
         proxyProfileId
       })
       const created = await createAccountAsync(accountInput, access)
+      dispatchPendingAccountHealthCheck(created)
       account.item.accountId = created.id
-      account.item.messages = [created.status === 'pending_test' ? '已创建账户，需测试通过后参与调度' : '已创建账户']
+      account.item.messages = [created.status === 'pending_test' ? '已创建账户，等待后台健康检查通过后参与调度' : '已创建账户']
     } catch (error) {
       if (isDuplicateAccountError(error) && plan.options.skipDuplicates) {
         account.item.action = 'skip'

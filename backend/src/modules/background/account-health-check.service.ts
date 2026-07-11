@@ -46,6 +46,19 @@ export function enqueueAccountHealthCheck(
   })
 }
 
+export async function enqueueAccountHealthCheckById(
+  accountId: string,
+  settings: AccountHealthCheckSettings & { maxPauseMinutes: number }
+): Promise<boolean> {
+  const normalizedId = accountId.trim()
+  if (!normalizedId) return false
+  const account = await requestBackgroundWorkerDbService({
+    type: 'find_account_for_health_check',
+    accountId: normalizedId
+  }, 10_000)
+  return account ? enqueueAccountHealthCheck(account, settings) : false
+}
+
 export function getAccountHealthCheckQueueSnapshot() {
   return accountHealthCheckQueue.snapshot()
 }
