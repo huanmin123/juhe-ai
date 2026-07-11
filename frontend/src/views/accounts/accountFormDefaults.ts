@@ -64,7 +64,15 @@ export function defaultAccountForm(
     tags: [],
     proxyProfileId: undefined,
     availabilitySchedule: createAccountAvailabilityScheduleForm(),
-    notes: ''
+    notes: '',
+    balanceQueryEnabled: false,
+    balanceQueryAdapter: 'sub2api',
+    balanceQueryIntervalMinutes: 5,
+    balanceQueryCustomPath: '',
+    balanceQueryRemainingPointer: '',
+    balanceQueryTotalPointer: '',
+    balanceQueryUsedPointer: '',
+    balanceQueryDivisor: ''
   }
 }
 

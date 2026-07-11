@@ -30,162 +30,85 @@
           <a-descriptions-item label="错误" :span="2">{{ detail.errorMessage ?? '-' }}</a-descriptions-item>
         </a-descriptions>
 
-        <a-tabs>
-          <a-tab-pane key="attempts" tab="请求链路">
-            <a-alert
-              v-if="requestChainHasOnlyMetadata"
-              class="request-chain-alert"
-              type="warning"
-              show-icon
-              message="当前记录没有保存客户端请求、上游请求、上游响应或返回客户端的原始请求/响应。"
-            />
-            <ResponsiveDataList
-              table-class="audit-detail-table"
-              size="small"
-              :columns="requestChainColumns"
-              :data-source="requestChainRows"
-              row-key="id"
-              :pagination="false"
-              :table-scroll-enabled="false"
-              :adaptive-column-width="false"
-              :mobile-breakpoint="1024"
-              :lock-body-scroll="false"
-            >
-              <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'step'">
-                  <div class="chain-step-cell">
-                    <a-tag>{{ record.phaseText }}</a-tag>
-                    <span>{{ record.title }}</span>
-                  </div>
-                </template>
-                <template v-else-if="column.key === 'account'">
-                  <span class="attempt-account-cell">{{ displayName(record.accountName, record.accountId) }}</span>
-                  <span v-if="record.modelMappingText" class="attempt-mapping-cell">{{ record.modelMappingText }}</span>
-                </template>
-                <template v-else-if="column.key === 'status'">
+        <section class="request-chain-section">
+          <div class="request-chain-heading">
+            <strong>请求链路</strong>
+            <span>共 {{ requestChainRows.length }} 个步骤</span>
+          </div>
+          <a-alert
+            v-if="requestChainHasOnlyMetadata"
+            class="request-chain-alert"
+            type="warning"
+            show-icon
+            message="当前记录没有保存客户端请求、上游请求、上游响应或返回客户端的原文。"
+          />
+          <ResponsiveDataList
+            table-class="audit-detail-table"
+            size="small"
+            :columns="requestChainColumns"
+            :data-source="requestChainRows"
+            row-key="id"
+            :pagination="false"
+            :table-scroll-enabled="false"
+            :adaptive-column-width="false"
+            :mobile-breakpoint="1024"
+            :lock-body-scroll="false"
+          >
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'step'">
+                <div class="chain-step-cell">
+                  <a-tag>{{ record.phaseText }}</a-tag>
+                  <span>{{ record.title }}</span>
+                </div>
+              </template>
+              <template v-else-if="column.key === 'account'">
+                <span class="attempt-account-cell">{{ displayName(record.accountName, record.accountId) }}</span>
+              </template>
+              <template v-else-if="column.key === 'status'">
+                <a-tag :color="record.success === undefined ? 'default' : record.success ? 'green' : 'red'">{{ record.statusText }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'timeMetrics'">
+                <span class="detail-time-cell">{{ record.time ? formatDateTime(record.time) : '-' }}</span>
+                <span class="chain-secondary-text">耗时 {{ formatDuration(record.durationMs) }}</span>
+              </template>
+              <template v-else-if="column.key === 'data'">
+                <span>{{ record.sizeBytes === undefined ? '-' : formatBytes(record.sizeBytes) }}</span>
+                <a-tooltip v-if="record.payload" :title="payloadCaptureStatusDescription(record.payload)">
+                  <span class="chain-secondary-text">{{ captureStatusText(record.captureStatus) }}</span>
+                </a-tooltip>
+                <span v-else class="chain-secondary-text">未捕获</span>
+              </template>
+              <template v-else-if="column.key === 'target'">
+                <span :class="record.errorMessage ? 'error-cell' : 'url-cell'">{{ record.url || '-' }}</span>
+              </template>
+              <template v-else-if="column.key === 'actions'">
+                <RowActions :actions="requestChainActions(record)" @action-click="handleRequestChainAction(record)" />
+              </template>
+            </template>
+            <template #card="{ record }">
+              <article class="payload-mobile-card">
+                <div class="payload-mobile-card-head">
+                  <a-tag>{{ record.phaseText }}</a-tag>
                   <a-tag :color="record.success === undefined ? 'default' : record.success ? 'green' : 'red'">{{ record.statusText }}</a-tag>
-                </template>
-                <template v-else-if="column.key === 'time'">
-                  <span class="detail-time-cell muted-cell">{{ record.time ? formatDateTime(record.time) : '-' }}</span>
-                </template>
-                <template v-else-if="column.key === 'duration'">
-                  {{ formatDuration(record.durationMs) }}
-                </template>
-                <template v-else-if="column.key === 'size'">
-                  {{ record.sizeBytes === undefined ? '-' : formatBytes(record.sizeBytes) }}
-                </template>
-                <template v-else-if="column.key === 'captureStatus'">
-                  <a-tooltip v-if="record.payload" :title="payloadCaptureStatusDescription(record.payload)">
-                    <a-tag>{{ captureStatusText(record.captureStatus) }}</a-tag>
-                  </a-tooltip>
-                  <span v-else class="muted-cell">-</span>
-                </template>
-                <template v-else-if="column.key === 'url'">
-                  <span class="url-cell">{{ record.url || '-' }}</span>
-                </template>
-                <template v-else-if="column.key === 'error'">
-                  <span class="error-cell">{{ record.errorMessage || '-' }}</span>
-                </template>
-                <template v-else-if="column.key === 'actions'">
-                  <RowActions :actions="requestChainActions(record)" @action-click="handleRequestChainAction(record)" />
-                </template>
-              </template>
-              <template #card="{ record }">
-                <article class="payload-mobile-card">
-                  <div class="payload-mobile-card-head">
-                    <a-tag>{{ record.phaseText }}</a-tag>
-                    <span>{{ record.sizeBytes === undefined ? '-' : formatBytes(record.sizeBytes) }}</span>
-                  </div>
-                  <div class="payload-mobile-card-grid">
-                    <span>步骤</span>
-                    <strong>{{ record.title }}</strong>
-                    <span>AI账户</span>
-                    <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
-                    <span v-if="record.modelMappingText">模型映射</span>
-                    <strong v-if="record.modelMappingText">{{ record.modelMappingText }}</strong>
-                    <span>状态码</span>
-                    <strong>{{ record.statusText }}</strong>
-                    <span>时间</span>
-                    <strong>{{ record.time ? formatDateTime(record.time) : '-' }}</strong>
-                    <span>上游 URL</span>
-                    <strong>{{ record.url || '-' }}</strong>
-                  </div>
-                  <RowActions :actions="requestChainActions(record)" variant="button" @action-click="handleRequestChainAction(record)" />
-                </article>
-              </template>
-            </ResponsiveDataList>
-          </a-tab-pane>
-          <a-tab-pane key="payloads" tab="原始请求">
-            <ResponsiveDataList
-              table-class="audit-payload-table"
-              size="small"
-              :columns="payloadColumns"
-              :data-source="orderedPayloads"
-              row-key="id"
-              :pagination="false"
-              :table-scroll-enabled="false"
-              :adaptive-column-width="false"
-              :mobile-breakpoint="1024"
-              :lock-body-scroll="false"
-            >
-              <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'partType'">
-                  <a-tag>{{ payloadPartText(record.partType) }}</a-tag>
-                </template>
-                <template v-else-if="column.key === 'size'">
-                  {{ formatBytes(record.sizeBytes) }}
-                </template>
-                <template v-else-if="column.key === 'captureStatus'">
-                  <a-tooltip :title="payloadCaptureStatusDescription(record)">
-                    <a-tag>{{ captureStatusText(record.captureStatus) }}</a-tag>
-                  </a-tooltip>
-                </template>
-                <template v-else-if="column.key === 'createdAt'">
-                  <span class="detail-time-cell muted-cell">{{ formatDateTime(record.createdAt) }}</span>
-                </template>
-                <template v-else-if="column.key === 'headersSha256'">
-                  <a-tooltip :title="record.headersSha256 || payloadHeadersHashMissingText(record)">
-                    <span class="hash-cell">{{ formatHashPreview(record.headersSha256) }}</span>
-                  </a-tooltip>
-                </template>
-                <template v-else-if="column.key === 'bodySha256'">
-                  <a-tooltip :title="record.bodySha256 || payloadBodyHashMissingText(record)">
-                    <span class="hash-cell">{{ formatHashPreview(record.bodySha256) }}</span>
-                  </a-tooltip>
-                </template>
-                <template v-else-if="column.key === 'actions'">
-                  <RowActions :actions="payloadActions(record)" @action-click="emit('load-payload', record.id)" />
-                </template>
-              </template>
-              <template #card="{ record }">
-                <article class="payload-mobile-card">
-                  <div class="payload-mobile-card-head">
-                    <a-tag>{{ payloadPartText(record.partType) }}</a-tag>
-                    <span>{{ formatBytes(record.sizeBytes) }}</span>
-                  </div>
-                  <div class="payload-mobile-card-grid">
-                    <span>序号</span>
-                    <strong>{{ record.sequenceIndex }}</strong>
-                    <span>类型</span>
-                    <strong>{{ record.contentType || '-' }}</strong>
-                    <span>状态</span>
-                    <strong>{{ captureStatusText(record.captureStatus) }}</strong>
-                    <span>Headers</span>
-                    <strong>{{ record.hasHeaders ? '已保存' : '未保存' }}</strong>
-                    <span>Body</span>
-                    <strong>{{ record.hasBody ? '已保存' : '未保存' }}</strong>
-                    <span>时间</span>
-                    <strong>{{ formatDateTime(record.createdAt) }}</strong>
-                    <span>Headers SHA256</span>
-                    <strong class="hash-cell">{{ formatHashPreview(record.headersSha256) }}</strong>
-                    <span>Body SHA256</span>
-                    <strong class="hash-cell">{{ formatHashPreview(record.bodySha256) }}</strong>
-                  </div>
-                  <RowActions :actions="payloadActions(record)" variant="button" @action-click="emit('load-payload', record.id)" />
-                </article>
-              </template>
-            </ResponsiveDataList>
-            <div v-if="selectedPayload" class="payload-viewer">
+                </div>
+                <strong class="payload-mobile-title">{{ record.title }}</strong>
+                <div class="payload-mobile-card-grid">
+                  <span>AI账户</span>
+                  <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
+                  <span>时间</span>
+                  <strong>{{ record.time ? formatDateTime(record.time) : '-' }}</strong>
+                  <span>耗时</span>
+                  <strong>{{ formatDuration(record.durationMs) }}</strong>
+                  <span>数据</span>
+                  <strong>{{ record.sizeBytes === undefined ? '-' : formatBytes(record.sizeBytes) }} · {{ record.payload ? captureStatusText(record.captureStatus) : '未捕获' }}</strong>
+                  <span>目标 / 错误</span>
+                  <strong :class="record.errorMessage ? 'error-cell' : 'url-cell'">{{ record.url || '-' }}</strong>
+                </div>
+                <RowActions :actions="requestChainActions(record)" variant="button" @action-click="handleRequestChainAction(record)" />
+              </article>
+            </template>
+          </ResponsiveDataList>
+          <div v-if="selectedPayload" class="payload-viewer">
               <div class="payload-viewer-toolbar">
                 <div class="payload-viewer-main">
                   <strong>{{ payloadPartText(selectedPayload.partType) }}</strong>
@@ -223,9 +146,8 @@
                 :text="selectedPayloadCurrentText"
               />
               <a-empty v-else class="payload-empty" :description="selectedPayloadEmptyText" />
-            </div>
-          </a-tab-pane>
-        </a-tabs>
+          </div>
+        </section>
       </template>
     </a-spin>
   </a-drawer>
@@ -253,21 +175,16 @@ import {
   formatBytes,
   formatDateTime,
   formatDuration,
-  formatHashPreview,
   outcomeText,
   payloadPartText,
   prettyJson,
   trafficSourceText
 } from './auditLogFormatters'
-import { auditPayloadColumns } from './auditLogTableColumns'
 import {
-  payloadBodyHashMissingText,
   payloadBodyUnavailableText,
   payloadCaptureStatusDescription,
-  payloadHeadersHashMissingText,
   payloadStorageStatusColor,
-  payloadStorageStatusText,
-  type AuditPayloadRow
+  payloadStorageStatusText
 } from './auditPayloadDetails'
 
 const props = defineProps<{
@@ -299,7 +216,6 @@ interface RequestChainRow {
   captureStatus?: string
   url?: string
   errorMessage?: string
-  modelMappingText?: string
   payload?: AuditLogPayloadSummary
 }
 
@@ -308,25 +224,17 @@ const requestChainColumns = [
   { title: '步骤', key: 'step', width: 170 },
   { title: 'AI账户', key: 'account', width: 130 },
   { title: '状态', key: 'status', width: 82 },
-  { title: '时间', key: 'time', width: 132 },
-  { title: '耗时', key: 'duration', width: 70 },
-  { title: '大小', key: 'size', width: 78 },
-  { title: '捕获', key: 'captureStatus', width: 82 },
-  { title: '目标 / 错误', key: 'url', width: 240 },
-  { title: '原始请求', key: 'actions', width: 74 }
+  { title: '时间 / 耗时', key: 'timeMetrics', width: 148 },
+  { title: '数据', key: 'data', width: 92 },
+  { title: '目标 / 错误', key: 'target', width: 240 },
+  { title: '详情', key: 'actions', width: 64 }
 ]
 
-const payloadColumns = auditPayloadColumns
 const payloadContentTab = ref<'headers' | 'body'>('body')
 const payloadCodeViewer = ref<{
   copyDisplayText: () => Promise<void>
   openSearch: () => Promise<void>
 }>()
-
-const orderedPayloads = computed(() => {
-  const payloads = props.detail?.payloads ?? []
-  return [...payloads].sort(compareAuditPayloadForDisplay)
-})
 
 const requestChainHasOnlyMetadata = computed(() => {
   const payloads = props.detail?.payloads ?? []
@@ -393,13 +301,6 @@ const requestChainRows = computed<RequestChainRow[]>(() => {
   return rows
 })
 
-function compareAuditPayloadForDisplay(left: AuditLogPayloadSummary, right: AuditLogPayloadSummary): number {
-  const leftMetadata = left.partType === 'gateway_metadata' ? 1 : 0
-  const rightMetadata = right.partType === 'gateway_metadata' ? 1 : 0
-  if (leftMetadata !== rightMetadata) return leftMetadata - rightMetadata
-  return left.sequenceIndex - right.sequenceIndex
-}
-
 function attemptPartKey(attemptId: string, partType: AuditPayloadPartType): string {
   return `${attemptId}:${partType}`
 }
@@ -438,7 +339,6 @@ function createUpstreamRequestRow(
     partType: 'upstream_request',
     accountId: attempt.accountId,
     accountName: attempt.accountName,
-    modelMappingText: attemptModelMappingText(attempt),
     statusText: '已发起',
     time: payload?.createdAt ?? attempt.startedAt,
     sizeBytes: payload?.sizeBytes,
@@ -461,7 +361,6 @@ function createUpstreamResponseRow(
     partType: 'upstream_response',
     accountId: attempt.accountId,
     accountName: attempt.accountName,
-    modelMappingText: attemptModelMappingText(attempt),
     success: attempt.success,
     statusText: upstreamAttemptStatusText(attempt),
     time: payload?.createdAt ?? attempt.endedAt ?? attempt.startedAt,
@@ -514,7 +413,6 @@ function createPayloadOnlyRow(
     partType: payload.partType,
     accountId: attempt?.accountId ?? detail.accountId,
     accountName: attempt?.accountName ?? detail.accountName,
-    modelMappingText: attempt ? attemptModelMappingText(attempt) : undefined,
     success: payload.partType === 'upstream_response' ? attempt?.success : undefined,
     statusText: payloadOnlyStatusText(payload, attempt),
     time: payload.createdAt,
@@ -530,17 +428,6 @@ function createPayloadOnlyRow(
 function upstreamAttemptStatusText(attempt: AuditLogAttemptSummary): string {
   if (attempt.upstreamStatusCode !== undefined) return String(attempt.upstreamStatusCode)
   return attempt.success ? '成功' : '失败'
-}
-
-function attemptModelMappingText(attempt: AuditLogAttemptSummary): string | undefined {
-  if (attempt.modelMappingApplied && attempt.model && attempt.upstreamModel) {
-    const source = attempt.sourceEndpointFamily ?? 'source'
-    const upstream = attempt.upstreamEndpointFamily ?? 'upstream'
-    return `${source} / ${attempt.model} -> ${upstream} / ${attempt.upstreamModel}`
-  }
-  if (attempt.upstreamModel && attempt.model && attempt.upstreamModel !== attempt.model) {
-    return `${attempt.model} -> ${attempt.upstreamModel}`
-  }
 }
 
 function gatewayStatusText(detail: AuditLogDetail): string {
@@ -566,7 +453,7 @@ function readablePayload(record?: AuditLogPayloadSummary): boolean {
   return Boolean(record && (record.hasHeaders || record.hasBody))
 }
 
-function payloadActionLabel(record: AuditPayloadRow): string {
+function payloadActionLabel(record: AuditLogPayloadSummary): string {
   if (!record.hasBody && record.hasHeaders) return '查看 Headers'
   if (record.partType === 'upstream_response' || record.partType === 'gateway_response') return '查看原始响应'
   if (record.partType === 'gateway_error') return '查看原始错误'
@@ -647,23 +534,9 @@ function handleRequestChainAction(record: RequestChainRow): void {
   emit('load-payload', record.payload.id)
 }
 
-function payloadActions(record: AuditPayloadRow): RowActionItem[] {
-  const hasReadablePayload = record.hasHeaders || record.hasBody
-  return [
-    {
-      key: 'payload',
-      label: hasReadablePayload ? payloadActionLabel(record) : '无原文',
-      icon: 'detail',
-      tone: 'info',
-      disabled: !hasReadablePayload || props.payloadLoadingId === record.id
-    }
-  ]
-}
 </script>
 
 <style scoped>
-.attempt-account-cell,
-.attempt-mapping-cell,
 .error-cell,
 .url-cell,
 .detail-time-cell {
@@ -679,6 +552,30 @@ function payloadActions(record: AuditPayloadRow): RowActionItem[] {
 
 .request-chain-alert {
   margin-bottom: 12px;
+}
+
+.request-chain-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.request-chain-heading strong {
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.request-chain-heading span,
+.chain-secondary-text {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.chain-secondary-text {
+  display: block;
+  margin-top: 3px;
 }
 
 .chain-step-cell {
@@ -703,7 +600,6 @@ function payloadActions(record: AuditPayloadRow): RowActionItem[] {
 }
 
 .attempt-account-cell,
-.attempt-mapping-cell,
 .detail-time-cell,
 .error-cell,
 .url-cell {
@@ -712,11 +608,6 @@ function payloadActions(record: AuditPayloadRow): RowActionItem[] {
   overflow-wrap: anywhere;
   white-space: normal;
   word-break: break-word;
-}
-
-.attempt-mapping-cell {
-  margin-top: 4px;
-  color: #d97706;
 }
 
 .detail-descriptions {
@@ -791,16 +682,6 @@ function payloadActions(record: AuditPayloadRow): RowActionItem[] {
   gap: 6px;
 }
 
-.hash-cell {
-  display: inline-block;
-  max-width: 100%;
-  overflow: hidden;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .payload-empty {
   padding: 28px 12px;
   border: 1px dashed #cbd5e1;
@@ -822,6 +703,12 @@ function payloadActions(record: AuditPayloadRow): RowActionItem[] {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.payload-mobile-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #0f172a;
 }
 
 .payload-mobile-card-grid {

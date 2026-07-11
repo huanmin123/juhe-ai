@@ -529,6 +529,10 @@ export interface AccountSummary {
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
+  balanceQueryEnabled?: boolean
+  balanceQueryConfig?: import('../modules/accounts/account-balance.types.js').AccountBalanceQueryConfig
+  balanceQueryNextRefreshAt?: string
+  balanceSnapshot?: import('../modules/accounts/account-balance.types.js').AccountBalanceSnapshot
   lastUsedAt?: string
   todayUsage: AccountUsageSummary
   usage: AccountUsageSummary

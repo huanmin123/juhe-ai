@@ -2,6 +2,10 @@ import type { Router } from 'express'
 
 import { ok } from '../../shared/http.js'
 import { listAccountOptionsAsync, listAccountsPageAsync } from '../../storage/repositories.js'
+import {
+  loadAccountBalanceConfigurationsByAccountIdsAsync,
+  loadAccountBalanceSnapshotsByAccountIdsAsync
+} from '../../storage/account-balance.repository.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { applyServerAccountConcurrencyToAccountList } from '../gateway/runtime/runtime-snapshot.service.js'
 import {
@@ -20,6 +24,7 @@ export function registerAccountListRoutes(router: Router): void {
       let listDurationMs = 0
       let concurrencyDurationMs = 0
       let statusFilterDurationMs = 0
+      let balanceDurationMs = 0
 
       const statusFilterStartedAt = performance.now()
       let filteredResult: Awaited<ReturnType<typeof applyAccountListRuntimeStatusFilter>> | undefined = accountListNeedsRuntimeStatusFilter(listOptions)
@@ -39,10 +44,15 @@ export function registerAccountListRoutes(router: Router): void {
         statusFilterDurationMs += performance.now() - fallbackStatusFilterStartedAt
       }
 
+      const balanceStartedAt = performance.now()
+      filteredResult = await hydrateAccountBalances(filteredResult)
+      balanceDurationMs = performance.now() - balanceStartedAt
+
       res.setHeader('Server-Timing', [
         serverTimingMetric('account-list', listDurationMs),
         serverTimingMetric('account-concurrency', concurrencyDurationMs),
-        serverTimingMetric('account-status-filter', statusFilterDurationMs)
+        serverTimingMetric('account-status-filter', statusFilterDurationMs),
+        serverTimingMetric('account-balance', balanceDurationMs)
       ].join(', '))
       res.json(ok(sanitizeAccountListResponse(filteredResult)))
     } catch (error) {
@@ -58,6 +68,31 @@ export function registerAccountListRoutes(router: Router): void {
       next(error)
     }
   })
+}
+
+async function hydrateAccountBalances<T extends { items: import('../../domain/types.js').AccountSummary[] }>(result: T): Promise<T> {
+  const physicalIds = result.items
+    .filter((account) => account.accessType !== 'authorized' && !account.accountAuthorizationId && !account.authorizationInstanceSourceAccountId)
+    .map((account) => account.id)
+  if (physicalIds.length === 0) return result
+  const [configurations, snapshots] = await Promise.all([
+    loadAccountBalanceConfigurationsByAccountIdsAsync(physicalIds),
+    loadAccountBalanceSnapshotsByAccountIdsAsync(physicalIds)
+  ])
+  return {
+    ...result,
+    items: result.items.map((account) => {
+      const configuration = configurations.get(account.id)
+      if (!configuration) return account
+      return {
+        ...account,
+        balanceQueryEnabled: configuration.enabled,
+        balanceQueryConfig: configuration.config,
+        balanceQueryNextRefreshAt: configuration.nextRefreshAt,
+        balanceSnapshot: configuration.enabled ? snapshots.get(account.id) : undefined
+      }
+    })
+  }
 }
 
 function serverTimingMetric(name: string, durationMs: number): string {

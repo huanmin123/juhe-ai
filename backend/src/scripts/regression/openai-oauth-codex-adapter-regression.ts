@@ -48,6 +48,7 @@ async function main(): Promise<void> {
   await testOAuthCompactRequestOverrides()
   await testOAuthFlexRequestOverrideRejection()
   await testHeaderAllowlistAndDefaults()
+  await testInvalidAttestationRejection()
   await testSessionIsolation()
   await testInvalidBodyRejection()
   await testLargeBodyWorkerNormalization()
@@ -245,6 +246,7 @@ async function testHeaderAllowlistAndDefaults(): Promise<void> {
     'x-client-request-id': 'client-request',
     'x-codex-turn-state': 'turn-state',
     'x-codex-turn-metadata': 'turn-metadata',
+    'x-oai-attestation': 'device-proof',
     cookie: 'secret=value',
     'x-real-ip': '127.0.0.1'
   })
@@ -262,8 +264,25 @@ async function testHeaderAllowlistAndDefaults(): Promise<void> {
   assert.equal(parts.headers.get('x-client-request-id'), 'client-request')
   assert.equal(parts.headers.get('x-codex-turn-state'), 'turn-state')
   assert.equal(parts.headers.get('x-codex-turn-metadata'), 'turn-metadata')
+  assert.equal(parts.headers.get('x-oai-attestation'), 'device-proof')
   assert.equal(parts.headers.get('cookie'), null)
   assert.equal(parts.headers.get('x-real-ip'), null)
+}
+
+async function testInvalidAttestationRejection(): Promise<void> {
+  for (const value of ['device-proof\r\ninjected: true', 'x'.repeat(32 * 1024 + 1)]) {
+    const req = createRequest('/v1/responses', {
+      model: 'gpt-5.3-codex',
+      input: []
+    }, {
+      'x-oai-attestation': value
+    })
+    await assert.rejects(
+      buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity),
+      (error: unknown) => error instanceof OpenAIOAuthCodexAdapterError
+        && error.code === 'invalid_openai_oauth_codex_attestation'
+    )
+  }
 }
 
 async function testSessionIsolation(): Promise<void> {

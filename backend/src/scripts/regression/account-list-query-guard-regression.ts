@@ -52,6 +52,9 @@ try {
   const maxLengthTailAccount = createGuardAccount(maxLengthTailName, 'sk-account-list-query-guard-max-tail', '最大长度末尾片段', matchedGroup.id)
   const disabledStatusAccount = createGuardAccount('多状态筛选停用账户', 'sk-account-list-query-guard-disabled-status', '停用状态筛选', matchedGroup.id, 'disabled')
   const errorStatusAccount = createGuardAccount('多状态筛选异常账户', 'sk-account-list-query-guard-error-status', '异常状态筛选', matchedGroup.id, 'error')
+  databaseModule.getBusinessDatabase()
+    .prepare(`UPDATE accounts SET status = 'error', schedulable = 0 WHERE id = ?`)
+    .run(errorStatusAccount.id)
   assert.equal([...maxLengthTailName].length, 128, '回归账户名称应覆盖账户名称最大长度边界')
   assert.throws(
     () => createGuardAccount(`${'超'.repeat(129)}`, 'sk-account-list-query-guard-name-too-long', '超长名称', matchedGroup.id),

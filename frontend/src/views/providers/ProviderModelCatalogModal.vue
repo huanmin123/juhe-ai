@@ -89,26 +89,36 @@
           </template>
           <template v-else-if="column.key === 'reasoningEfforts'">
             <div class="capability-tags">
-              <a-space v-if="record.supportedReasoningEfforts?.length" wrap size="small">
-                <a-tag
-                  v-for="effort in record.supportedReasoningEfforts"
-                  :key="`api-${effort}`"
-                  :color="effort === record.defaultReasoningEffort ? 'gold' : 'default'"
-                >
-                  {{ formatModelReasoningEffort(effort) }}{{ effort === record.defaultReasoningEffort ? '（默认）' : '' }}
-                </a-tag>
-              </a-space>
-              <a-space v-if="record.codexSupportedReasoningLevels?.length" wrap size="small">
+              <div v-if="record.supportedReasoningEfforts?.length" class="capability-row">
+                <span class="capability-prefix">API</span>
+                <div class="capability-tag-list">
+                  <a-tag
+                    v-for="effort in record.supportedReasoningEfforts"
+                    :key="`api-${effort}`"
+                    :color="effort === record.defaultReasoningEffort ? 'gold' : 'default'"
+                  >
+                    {{ formatModelReasoningEffort(effort) }}{{ effort === record.defaultReasoningEffort ? '（默认）' : '' }}
+                  </a-tag>
+                </div>
+              </div>
+              <div v-if="record.codexSupportedReasoningLevels?.length" class="capability-row">
                 <span class="capability-prefix">Codex</span>
-                <a-tag
-                  v-for="effort in record.codexSupportedReasoningLevels"
-                  :key="`codex-${effort}`"
-                  :color="effort === record.codexDefaultReasoningLevel ? 'purple' : 'default'"
-                >
-                  {{ formatModelReasoningEffort(effort) }}{{ effort === record.codexDefaultReasoningLevel ? '（默认）' : '' }}
-                </a-tag>
-                <a-tag v-if="record.codexMultiAgentVersion" color="geekblue">多代理 {{ record.codexMultiAgentVersion }}</a-tag>
-              </a-space>
+                <div class="capability-tag-list">
+                  <a-tag
+                    v-for="effort in record.codexSupportedReasoningLevels"
+                    :key="`codex-${effort}`"
+                    :color="effort === record.codexDefaultReasoningLevel ? 'purple' : 'default'"
+                  >
+                    {{ formatModelReasoningEffort(effort) }}{{ effort === record.codexDefaultReasoningLevel ? '（默认）' : '' }}
+                  </a-tag>
+                </div>
+              </div>
+              <div v-if="record.codexMultiAgentVersion" class="capability-row capability-feature-row">
+                <span class="capability-prefix">特性</span>
+                <a-tooltip title="Codex 多代理编排协议版本，不是思考级别">
+                  <a-tag color="geekblue">多代理编排 {{ record.codexMultiAgentVersion }}</a-tag>
+                </a-tooltip>
+              </div>
               <span v-if="!record.supportedReasoningEfforts?.length && !record.codexSupportedReasoningLevels?.length" class="muted-text">-</span>
             </div>
           </template>
@@ -345,10 +355,33 @@ function handleSystemAccountUpdate(value: string | string[] | undefined): void {
 .capability-tags {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.capability-row {
+  display: grid;
+  align-items: start;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.capability-tag-list {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px 2px;
+}
+
+.capability-tag-list :deep(.ant-tag),
+.capability-feature-row :deep(.ant-tag) {
+  margin-inline-end: 0;
+  white-space: nowrap;
 }
 
 .capability-prefix {
+  line-height: 22px;
   color: rgba(0, 0, 0, 0.45);
   font-size: 12px;
 }

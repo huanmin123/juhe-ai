@@ -193,6 +193,7 @@ function buildOpenAIOAuthCodexHeaders(
   copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-beta-features')
   copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-turn-state')
   copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-turn-metadata')
+  copyOpenAIOAuthCodexAttestationHeader(headers, inputHeaders)
 
   const incomingOriginator = headerValue(inputHeaders, 'originator')
   const originator = isCodexOriginator(incomingOriginator) ? incomingOriginator : 'codex_cli_rs'
@@ -224,6 +225,21 @@ function buildOpenAIOAuthCodexHeaders(
   }
 
   return headers
+}
+
+function copyOpenAIOAuthCodexAttestationHeader(
+  output: Headers,
+  inputHeaders: Record<string, string | string[] | undefined>
+): void {
+  const value = headerValue(inputHeaders, 'x-oai-attestation')
+  if (!value) return
+  if (value.length > 32 * 1024 || /[\r\n\0]/.test(value)) {
+    throw new OpenAIOAuthCodexAdapterError(
+      'Codex 设备证明 header 无效',
+      'invalid_openai_oauth_codex_attestation'
+    )
+  }
+  output.set('x-oai-attestation', value)
 }
 
 function copyAllowedOpenAIOAuthCodexHeader(

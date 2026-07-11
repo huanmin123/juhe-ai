@@ -335,7 +335,7 @@ export function estimateCatalogCacheWriteCostUsd(input: CostInput & { systemAcco
   if (!pricing || (input.cacheWriteTokens === undefined && input.cacheWrite1hTokens === undefined)) return undefined
   const prices = effectiveCatalogTokenPrices(pricing, input)
   const cacheWritePrice = prices.cacheWritePrice
-  const cacheWrite1hPrice = perToken(pricing.cacheWrite1hUsdPer1M) ?? cacheWritePrice
+  const cacheWrite1hPrice = prices.cacheWrite1hPrice ?? cacheWritePrice
   if (cacheWritePrice === undefined && cacheWrite1hPrice === undefined) return undefined
   const cacheWriteTokens = Math.max(input.cacheWriteTokens ?? 0, 0)
   const cacheWrite1hTokens = normalizedCacheWrite1hTokens(input, cacheWriteTokens)
@@ -351,7 +351,7 @@ export async function estimateCatalogCacheWriteCostUsdAsync(input: CostInput & {
   if (!pricing || (input.cacheWriteTokens === undefined && input.cacheWrite1hTokens === undefined)) return undefined
   const prices = effectiveCatalogTokenPrices(pricing, input)
   const cacheWritePrice = prices.cacheWritePrice
-  const cacheWrite1hPrice = perToken(pricing.cacheWrite1hUsdPer1M) ?? cacheWritePrice
+  const cacheWrite1hPrice = prices.cacheWrite1hPrice ?? cacheWritePrice
   if (cacheWritePrice === undefined && cacheWrite1hPrice === undefined) return undefined
   const cacheWriteTokens = Math.max(input.cacheWriteTokens ?? 0, 0)
   const cacheWrite1hTokens = normalizedCacheWrite1hTokens(input, cacheWriteTokens)
@@ -391,7 +391,7 @@ function buildCatalogCostBreakdownFromPricing(
   const outputPrice = tokenPrices.outputPrice
   const cachedInputPrice = tokenPrices.cachedInputPrice ?? inputPrice
   const cacheWritePrice = tokenPrices.cacheWritePrice
-  const cacheWrite1hPrice = perToken(pricing.cacheWrite1hUsdPer1M) ?? cacheWritePrice
+  const cacheWrite1hPrice = tokenPrices.cacheWrite1hPrice ?? cacheWritePrice
   const inputImagePrice = perToken(pricing.imageInputUsdPer1M)
   const outputImagePrice = perToken(pricing.imageOutputUsdPer1M)
   const inputAudioPrice = perToken(pricing.audioInputUsdPer1M)
@@ -432,7 +432,7 @@ function buildCatalogCostBreakdownFromPricing(
     cacheWriteCostUsd,
     cacheWriteUsdPer1M: perMillion(cacheWritePrice),
     cacheWrite1hCostUsd,
-    cacheWrite1hUsdPer1M: pricing.cacheWrite1hUsdPer1M ?? pricing.cacheWriteUsdPer1M,
+    cacheWrite1hUsdPer1M: perMillion(cacheWrite1hPrice),
     thinkingTokens: input.thinkingTokens,
     inputImageCostUsd,
     outputImageCostUsd,
@@ -791,6 +791,7 @@ function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: C
   outputPrice?: number
   cachedInputPrice?: number
   cacheWritePrice?: number
+  cacheWrite1hPrice?: number
 } {
   const tier = input.serviceTier
   const tierSupported = (tier === 'priority' || tier === 'flex') && pricing.supportedServiceTiers.includes(tier)
@@ -812,7 +813,8 @@ function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: C
     inputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.inputUsdPer1M, pricing.priorityInputUsdPer1M, pricing.flexInputUsdPer1M), inputMultiplier)),
     outputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.outputUsdPer1M, pricing.priorityOutputUsdPer1M, pricing.flexOutputUsdPer1M), outputMultiplier)),
     cachedInputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cachedInputUsdPer1M, pricing.priorityCachedInputUsdPer1M, pricing.flexCachedInputUsdPer1M), inputMultiplier)),
-    cacheWritePrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWriteUsdPer1M, pricing.priorityCacheWriteUsdPer1M, pricing.flexCacheWriteUsdPer1M), inputMultiplier))
+    cacheWritePrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWriteUsdPer1M, pricing.priorityCacheWriteUsdPer1M, pricing.flexCacheWriteUsdPer1M), inputMultiplier)),
+    cacheWrite1hPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWrite1hUsdPer1M, pricing.priorityCacheWrite1hUsdPer1M, pricing.flexCacheWrite1hUsdPer1M), inputMultiplier))
   }
 }
 

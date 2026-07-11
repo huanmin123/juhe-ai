@@ -26,6 +26,7 @@ import {
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { stopGatewayJsonParseWorker } from '../../modules/gateway/request/json-parser.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
+import { sanitizeRequestHeaders } from '../../modules/gateway/usage/snapshots.js'
 
 type TestRequest = GatewayRawBodyRequest
 type MockResponse = EventEmitter & {
@@ -539,6 +540,7 @@ function testApiKeyHeaderFiltering(): void {
     'x-stainless-package-version': '4.0.0',
     'x-openai-client-user-agent': 'sdk-noise',
     'x-vercel-id': 'iad1::abc',
+    'x-oai-attestation': 'device-proof',
     'idempotency-key': 'idem-123',
     'x-custom-header': 'kept'
   }, apiKeyAccount)
@@ -575,10 +577,16 @@ function testApiKeyHeaderFiltering(): void {
     'x-stainless-lang',
     'x-stainless-package-version',
     'x-openai-client-user-agent',
-    'x-vercel-id'
+    'x-vercel-id',
+    'x-oai-attestation'
   ]) {
     assert.equal(headers.get(name), null, `${name} should be stripped`)
   }
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(sanitizeRequestHeaders({ 'x-oai-attestation': 'device-proof' }), 'x-oai-attestation'),
+    false,
+    'usage 请求快照必须从捕获范围排除 attestation 正文'
+  )
 }
 
 function testOpenAIAccountHeadersAreNotClientOrCredentialControlled(): void {

@@ -201,15 +201,33 @@ interface CodexModelCapabilities {
 
 | 模型 | API reasoning effort | 服务等级 | Codex reasoning level | Ultra |
 | --- | --- | --- | --- | --- |
-| `gpt-5.6` / `gpt-5.6-sol` | `none, low, medium, high, xhigh, max` | `priority` | `low, medium, high, xhigh, max, ultra` | 是 |
-| `gpt-5.6-terra` | `none, low, medium, high, xhigh, max` | `priority` | `low, medium, high, xhigh, max, ultra` | 是 |
-| `gpt-5.6-luna` | `none, low, medium, high, xhigh, max` | `priority` | `low, medium, high, xhigh, max` | 否 |
+| `gpt-5.6` / `gpt-5.6-sol` | `none, low, medium, high, xhigh, max` | `priority, flex` | `low, medium, high, xhigh, max, ultra` | 是 |
+| `gpt-5.6-terra` | `none, low, medium, high, xhigh, max` | `priority, flex` | `low, medium, high, xhigh, max, ultra` | 是 |
+| `gpt-5.6-luna` | `none, low, medium, high, xhigh, max` | `priority, flex` | `low, medium, high, xhigh, max` | 否 |
 
 注意：
 
 - API 默认 reasoning 与 Codex 产品默认 reasoning 可以不同。当前 Codex 源码中 Sol 默认 `low`，Terra 和 Luna 默认 `medium`。
 - 账户覆盖字段为空时，不应用本表默认值，继续保留客户端值或上游默认值。
 - 模型能力是带日期的外部事实，后续更新必须走 [厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)。
+
+### 5.1 请求与计费事实
+
+使用记录直接保存四个服务档位事实，不保留旧的单一 `service_tier` 计费口径：
+
+- `requested_service_tier`：客户端原始请求档位，缺失时为 `default`。
+- `effective_service_tier`：账户覆盖、模型能力和协议适配后实际发往上游的档位。
+- `reported_service_tier`：上游响应明确报告的档位，可以为空。
+- `billed_service_tier`：上游有报告时使用报告值，否则使用实际上游档位。
+
+成本计算只消费 `billed_service_tier`。Priority 与 Flex 平级，均使用模型精确档位价格；模型未提供精确价格时才使用系统可配置的通用倍率。普通缓存写入与 1 小时缓存写入分别选择各自的档位价格，不能用普通缓存写入档位价格替代 1 小时价格。
+
+### 5.2 Codex attestation 边界
+
+- `x-oai-attestation` 只允许 GPT OAuth Codex 适配链路透传客户端当前请求原值。
+- 服务端不生成、不缓存、不跨请求复用该值；包含换行、空字符或超过 32 KiB 时拒绝请求。
+- GPT API Key 和其他通用上游链路必须过滤该头。
+- 审计请求头、usage 快照和诊断捕获直接忽略该头，不写明文，也不写脱敏占位符。
 
 ## 6. 前端交互
 

@@ -90,7 +90,15 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     modelMappings: cloneAccountModelMappings(account.modelMappings),
     tags: accountTagNames(account.tags),
     availabilitySchedule,
-    notes: account.notes ?? ''
+    notes: account.notes ?? '',
+    balanceQueryEnabled: account.balanceQueryEnabled === true,
+    balanceQueryAdapter: account.balanceQueryConfig?.adapter ?? 'sub2api',
+    balanceQueryIntervalMinutes: account.balanceQueryConfig?.intervalMinutes ?? 5,
+    balanceQueryCustomPath: account.balanceQueryConfig?.custom?.path ?? '',
+    balanceQueryRemainingPointer: account.balanceQueryConfig?.custom?.remainingPointer ?? '',
+    balanceQueryTotalPointer: account.balanceQueryConfig?.custom?.totalPointer ?? '',
+    balanceQueryUsedPointer: account.balanceQueryConfig?.custom?.usedPointer ?? '',
+    balanceQueryDivisor: account.balanceQueryConfig?.custom?.divisor ?? ''
   }
 
   return {

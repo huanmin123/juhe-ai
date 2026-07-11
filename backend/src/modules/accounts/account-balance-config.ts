@@ -1,0 +1,95 @@
+import { z } from 'zod'
+
+import type {
+  AccountBalanceCustomConfig,
+  AccountBalanceQueryConfig
+} from './account-balance.types.js'
+
+const decimalPattern = /^(?:0|[1-9]\d*)(?:\.\d+)?$/
+const jsonPointerPattern = /^(?:\/(?:[^~/]|~[01])*)*$/
+
+const accountBalanceCustomConfigSchema = z.object({
+  path: z.string().trim().min(1),
+  remainingPointer: z.string().trim().optional(),
+  totalPointer: z.string().trim().optional(),
+  usedPointer: z.string().trim().optional(),
+  divisor: z.string().trim().optional()
+}).strict().superRefine((value, context) => {
+  if (!value.path.startsWith('/') || value.path.startsWith('//')) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['path'], message: '自定义查询地址必须是同源相对路径' })
+  }
+  for (const field of ['remainingPointer', 'totalPointer', 'usedPointer'] as const) {
+    const pointer = value[field]
+    if (pointer !== undefined && !jsonPointerPattern.test(pointer)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} 必须是合法 JSON Pointer` })
+    }
+  }
+  const hasRemaining = Boolean(value.remainingPointer)
+  const hasTotalAndUsed = Boolean(value.totalPointer) && Boolean(value.usedPointer)
+  if (hasRemaining === hasTotalAndUsed) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: '自定义查询必须配置余额 JSON Pointer，或同时配置总额和已用 JSON Pointer'
+    })
+  }
+  if (value.divisor !== undefined && (!decimalPattern.test(value.divisor) || /^0(?:\.0+)?$/.test(value.divisor))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['divisor'], message: '自定义金额除数必须是正数' })
+  }
+})
+
+export const accountBalanceQueryConfigSchema = z.object({
+  adapter: z.enum(['sub2api', 'newapi', 'litellm', 'custom']),
+  intervalMinutes: z.number().int().min(1).max(10).optional(),
+  custom: accountBalanceCustomConfigSchema.optional()
+}).strict().superRefine((value, context) => {
+  if (value.adapter === 'custom' && !value.custom) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['custom'], message: '自定义查询必须提供查询配置' })
+  }
+  if (value.adapter !== 'custom' && value.custom) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['custom'], message: '内置查询类型不能提供自定义配置' })
+  }
+})
+
+export function normalizeAccountBalanceConfig(input: unknown): AccountBalanceQueryConfig {
+  const parsed = accountBalanceQueryConfigSchema.safeParse(input)
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]
+    const field = issue?.path.at(-1)
+    if (field === 'intervalMinutes') throw new Error(`余额刷新周期无效：${issue.message}`)
+    if (field === 'adapter') throw new Error(`余额查询类型无效：${issue.message}`)
+    throw new Error(issue?.message ?? '余额查询配置无效')
+  }
+  return {
+    adapter: parsed.data.adapter,
+    intervalMinutes: parsed.data.intervalMinutes ?? 5,
+    ...(parsed.data.custom ? { custom: parsed.data.custom as AccountBalanceCustomConfig } : {})
+  }
+}
+
+interface AccountBalanceCapabilityInput {
+  type: string
+  credentials?: Record<string, unknown>
+  authorizationInstanceAuthorizationId?: string | null
+  accountAuthorizationId?: string | null
+  accessType?: string
+}
+
+export function validateAccountBalanceCapability(account: AccountBalanceCapabilityInput, enabled: boolean): void {
+  if (!enabled) return
+  if (account.authorizationInstanceAuthorizationId || account.accountAuthorizationId || account.accessType === 'authorized') {
+    throw new Error('授权实例不能配置上游余额查询')
+  }
+  if (account.type !== 'api_key') {
+    throw new Error('上游余额查询仅支持 API Key 账户')
+  }
+  const apiKeys = Array.isArray(account.credentials?.api_keys)
+    ? account.credentials.api_keys.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    : []
+  if (apiKeys.length > 1) {
+    throw new Error('上游余额查询仅支持单 API Key 账户')
+  }
+  const singleApiKey = typeof account.credentials?.api_key === 'string' && account.credentials.api_key.trim().length > 0
+  if (!singleApiKey && apiKeys.length !== 1) {
+    throw new Error('上游余额查询需要一个有效的 API Key')
+  }
+}

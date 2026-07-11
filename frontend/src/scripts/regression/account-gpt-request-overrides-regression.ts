@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 import { buildProviderModelColumns } from '../../views/providers/providerModelTableState'
 
 import {
@@ -35,6 +36,11 @@ const textColumnKeys = buildProviderModelColumns('text', []).map((column) => col
 assert(textColumnKeys.includes('serviceTiers'), '模型目录必须独立展示服务等级列')
 assert(textColumnKeys.includes('reasoningEfforts'), '模型目录必须独立展示思考级别列')
 assert.equal(textColumnKeys.includes('capabilities'), false, '模型目录不能继续合并请求能力列')
+const modelCatalogModalSource = readFileSync(new URL('../../views/providers/ProviderModelCatalogModal.vue', import.meta.url), 'utf8')
+assert.match(modelCatalogModalSource, /class="capability-row"/, 'API 与 Codex 思考能力必须使用独立行布局')
+assert.match(modelCatalogModalSource, /class="capability-tag-list"/, '思考级别标签必须使用独立可换行容器')
+assert.match(modelCatalogModalSource, /Codex 多代理编排协议版本，不是思考级别/, '多代理版本必须明确区别于思考级别')
+assert.match(modelCatalogModalSource, /多代理编排 \{\{ record\.codexMultiAgentVersion \}\}/, '多代理能力必须以编排特性展示')
 
 const modelOptions: AccountModelSelectOption[] = [
   {

@@ -198,7 +198,7 @@ export function formatModelReasoningCapabilities(item: ProviderModelPricing): st
     parts.push(`Codex ${item.codexSupportedReasoningLevels.map(formatModelReasoningEffort).join(' / ')}`)
   }
   if (item.codexMultiAgentVersion) {
-    parts.push(`多代理 ${item.codexMultiAgentVersion}`)
+    parts.push(`多代理编排 ${item.codexMultiAgentVersion}`)
   }
   return parts.join('；') || '-'
 }

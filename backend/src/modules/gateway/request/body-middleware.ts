@@ -108,6 +108,7 @@ export async function captureGatewayRawBody(
           jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes,
           model: metadata.model,
           stream: metadata.stream,
+          serviceTier: metadata.serviceTier,
           imageGeneration: metadata.imageGeneration,
           imageGenerationForced: metadata.imageGenerationForced,
           invalidJson: metadata.invalidJson
@@ -123,6 +124,7 @@ export async function captureGatewayRawBody(
           jsonParseStatus: metadata.invalidJson ? 'invalid_json' : 'deferred_large_json',
           model: metadata.model,
           stream: metadata.stream,
+          serviceTier: metadata.serviceTier,
           imageGeneration: metadata.imageGeneration,
           imageGenerationForced: metadata.imageGenerationForced
         })

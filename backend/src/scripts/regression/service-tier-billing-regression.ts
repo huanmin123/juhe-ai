@@ -4,6 +4,10 @@ import { parseGeminiUsageFromJsonBuffer } from '../../modules/gateway/protocols/
 import { parseOpenAIUsageFromJsonBuffer } from '../../modules/gateway/protocols/openai-v1/usage.js'
 import { estimateCatalogCostUsd } from '../../modules/model-pricing/model-catalog.service.js'
 import { estimateProviderCostUsd, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
+import { resolveUsageServiceTiers } from '../../modules/gateway/usage/service-tier.js'
+import { extractGatewayJsonBodyMetadata } from '../../modules/gateway/request/json-metadata-scanner.js'
+import { readFileSync } from 'node:fs'
+import { usageRecordSummaryFromRow } from '../../storage/usage-record-mappers.js'
 
 const gptPricing = listProviderModelPricing('gpt')
 for (const model of [
@@ -68,6 +72,11 @@ assert.equal(openAIUsage.serviceTier, 'priority')
 assert.equal(openAIUsage.outputTokens, 100, 'OpenAI output_tokens 已包含 reasoning，不能重复相加')
 assert.equal(openAIUsage.thinkingTokens, 40)
 
+assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
+  model: 'gpt-5.6-sol',
+  service_tier: 'flex'
+}))).serviceTier, 'flex', '实际发往上游的结构化 JSON 必须识别 Flex 档位')
+
 const geminiUsage = parseGeminiUsageFromJsonBuffer(Buffer.from(JSON.stringify({
   usageMetadata: {
     promptTokenCount: 80,
@@ -77,6 +86,42 @@ const geminiUsage = parseGeminiUsageFromJsonBuffer(Buffer.from(JSON.stringify({
 })))
 assert.equal(geminiUsage.outputTokens, 100, 'Gemini candidates 不含 thoughts，必须归一为完整可计费输出')
 assert.equal(geminiUsage.thinkingTokens, 40)
+
+assert.deepEqual(resolveUsageServiceTiers({
+  requestedServiceTier: 'flex',
+  effectiveServiceTier: 'flex'
+}), {
+  requestedServiceTier: 'flex',
+  effectiveServiceTier: 'flex',
+  reportedServiceTier: undefined,
+  billedServiceTier: 'flex'
+}, '兼容中转不回传 service_tier 时必须按实际上游请求档位计费')
+assert.equal(resolveUsageServiceTiers({
+  requestedServiceTier: 'flex',
+  effectiveServiceTier: 'flex',
+  reportedServiceTier: 'priority'
+}).billedServiceTier, 'priority', '上游明确报告实际档位时必须优先采用上游事实')
+
+const usageSchemaSource = readFileSync(new URL('../../storage/usage-record-shards.ts', import.meta.url), 'utf8')
+for (const column of ['requested_service_tier', 'effective_service_tier', 'reported_service_tier', 'billed_service_tier']) {
+  assert(usageSchemaSource.includes(column), `usage records schema 必须持久化 ${column}`)
+}
+const mappedServiceTiers = usageRecordSummaryFromRow({
+  id: 'usage_service_tier_mapping',
+  trace_id: 'trace_service_tier_mapping',
+  traffic_source: 'gateway',
+  stream: 0,
+  success: 1,
+  requested_service_tier: 'flex',
+  effective_service_tier: 'priority',
+  reported_service_tier: 'priority',
+  billed_service_tier: 'priority',
+  created_at: '2026-07-11T00:00:00.000Z'
+}, false, new Map())
+assert.equal(mappedServiceTiers.requestedServiceTier, 'flex')
+assert.equal(mappedServiceTiers.effectiveServiceTier, 'priority')
+assert.equal(mappedServiceTiers.reportedServiceTier, 'priority')
+assert.equal(mappedServiceTiers.billedServiceTier, 'priority')
 
 console.log('服务档位计费回归通过：GPT-5.6 三档、长上下文和思考 Token 口径正确')
 

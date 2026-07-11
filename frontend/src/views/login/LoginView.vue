@@ -22,7 +22,7 @@
         </a-form-item>
         <a-form-item label="验证码">
           <div class="captcha-row">
-            <a-input v-model:value="form.captchaCode" size="large" autocomplete="off" maxlength="6" placeholder="请输入验证码" />
+            <a-input v-model:value="form.captchaCode" size="large" autocomplete="off" :maxlength="6" placeholder="请输入验证码" />
             <button class="captcha-image-button" type="button" :disabled="captchaLoading" title="点击刷新验证码" @click="refreshCaptcha">
               <img v-if="captcha?.image" :src="captcha.image" alt="验证码" />
               <span v-else>{{ captchaLoading ? '加载中' : '刷新' }}</span>

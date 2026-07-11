@@ -1,6 +1,18 @@
 <template>
   <div class="usage-cell">
     <UsageSummaryTags :usage="account.todayUsage" />
+    <div v-if="account.balanceQueryEnabled" class="balance-row">
+      <a-tooltip :title="balanceDisplay.tooltip">
+        <span class="balance-text" :class="`balance-${balanceDisplay.tone}`">剩余：{{ balanceDisplay.text }}</span>
+      </a-tooltip>
+      <a-tooltip title="刷新上游余额">
+        <ReloadOutlined
+          class="balance-refresh-icon"
+          :class="{ spinning: refreshing || balanceDisplay.refreshing, disabled: !canRefresh }"
+          @click="canRefresh && !refreshing && $emit('refresh-balance', account.id)"
+        />
+      </a-tooltip>
+    </div>
     <div v-if="bars.length" class="oauth-usage-bars">
       <div v-for="bar in bars" :key="bar.key" class="oauth-usage-row">
         <span class="oauth-usage-label">{{ bar.label }}</span>
@@ -13,17 +25,24 @@
 </template>
 
 <script setup lang="ts">
+import { ReloadOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import type { AccountSummary } from '@/types/domain'
 import { oauthUsageBars } from './accountUsageFormatters'
+import { formatAccountBalance } from './accountBalanceQuery'
 
 const props = defineProps<{
   account: AccountSummary
+  refreshing?: boolean
 }>()
 
+defineEmits<{ (event: 'refresh-balance', accountId: string): void }>()
+
 const bars = computed(() => oauthUsageBars(props.account))
+const balanceDisplay = computed(() => formatAccountBalance(props.account.balanceSnapshot))
+const canRefresh = computed(() => props.account.balanceQueryEnabled === true && props.account.status === 'active' && props.account.accessType !== 'authorized')
 </script>
 
 <style scoped>
@@ -42,6 +61,43 @@ const bars = computed(() => oauthUsageBars(props.account))
   gap: 3px;
   width: min(220px, 100%);
   min-width: 150px;
+}
+
+.balance-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+
+.balance-text {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.balance-failed { color: #dc2626; }
+.balance-fresh { color: #15803d; }
+.balance-pending,
+.balance-refreshing,
+.balance-unsupported { color: #64748b; }
+
+.balance-refresh-icon {
+  color: #1677ff;
+  cursor: pointer;
+}
+
+.balance-refresh-icon.disabled {
+  color: #b8b8b8;
+  cursor: not-allowed;
+}
+
+.balance-refresh-icon.spinning {
+  animation: balance-spin 0.8s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes balance-spin {
+  to { transform: rotate(360deg); }
 }
 
 .oauth-usage-row {

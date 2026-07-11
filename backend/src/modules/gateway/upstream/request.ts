@@ -707,6 +707,7 @@ const skippedUpstreamRequestHeaders = new Set([
   'x-goog-api-key',
   'api-key',
   'chatgpt-account-id',
+  'x-oai-attestation',
   'openai-organization',
   'openai-project',
   gatewayClientProfileHeader,

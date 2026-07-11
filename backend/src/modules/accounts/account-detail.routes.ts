@@ -3,6 +3,7 @@ import type { Router } from 'express'
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { findAccountForTestAsync, findAccountSummaryAsync } from '../../storage/repositories.js'
+import { loadAccountBalanceConfigurationsByAccountIdsAsync } from '../../storage/account-balance.repository.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
@@ -84,7 +85,7 @@ async function loadEditableAccountBasicDetail(accountId: string, query: Record<s
   if (account.permissions?.canViewCredentials === false || account.permissions?.canEdit === false) {
     throw new Error('无权查看账户凭据')
   }
-  return sanitizeAccountEditBasicDetailResponse(account)
+  return sanitizeAccountEditBasicDetailResponse(await hydrateEditableBalanceConfiguration(account))
 }
 
 async function loadBasicAccountDetail(accountId: string, query: Record<string, unknown>): Promise<AccountSummary | undefined> {
@@ -116,7 +117,19 @@ async function loadEditableAccountDetail(accountId: string, query: Record<string
   }
   const account = await findAccountForTestAsync(accountId, requestAccess, visibleAccount)
   if (!account) return undefined
-  return applyServerAccountRuntimeToAccount(account)
+  return applyServerAccountRuntimeToAccount(await hydrateEditableBalanceConfiguration(account))
+}
+
+async function hydrateEditableBalanceConfiguration(account: AccountSummary): Promise<AccountSummary> {
+  if (account.accessType === 'authorized' || account.accountAuthorizationId || account.authorizationInstanceSourceAccountId) return account
+  const configuration = (await loadAccountBalanceConfigurationsByAccountIdsAsync([account.id])).get(account.id)
+  if (!configuration) return account
+  return {
+    ...account,
+    balanceQueryEnabled: configuration.enabled,
+    balanceQueryConfig: configuration.config,
+    balanceQueryNextRefreshAt: configuration.nextRefreshAt
+  }
 }
 
 class AccountDetailBadRequestError extends Error {}

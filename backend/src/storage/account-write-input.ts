@@ -20,6 +20,8 @@ export const accountCreateInputKeys = new Set([
   'groupId',
   'accountExpiresAt',
   'availabilitySchedule',
+  'balanceQueryEnabled',
+  'balanceQueryConfig',
   'notes'
 ])
 
@@ -39,6 +41,8 @@ export const accountUpdateInputKeys = new Set([
   'schedulable',
   'accountExpiresAt',
   'availabilitySchedule',
+  'balanceQueryEnabled',
+  'balanceQueryConfig',
   'notes'
 ])
 

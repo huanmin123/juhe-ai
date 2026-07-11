@@ -33,7 +33,7 @@
   <a-tooltip v-else-if="columnKey === 'concurrency'" :title="concurrencyTooltip">
     <a-tag :color="concurrencyAvailable ? 'blue' : 'default'">{{ concurrencyText }}</a-tag>
   </a-tooltip>
-  <AccountUsageCell v-else-if="columnKey === 'usage'" :account="account" />
+  <AccountUsageCell v-else-if="columnKey === 'usage'" :account="account" :refreshing="balanceRefreshing" @refresh-balance="$emit('refresh-balance', $event)" />
   <AccountTagsCell v-else-if="columnKey === 'tags'" :account="account" />
   <span v-else-if="columnKey === 'priority'">{{ account.priority }}</span>
   <template v-else-if="columnKey === 'lastUsedAt'">
@@ -95,6 +95,7 @@ defineEmits<{
   (event: 'edit', account: AccountSummary): void
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void
   (event: 'return-authorization', account: AccountSummary): void
+  (event: 'refresh-balance', accountId: string): void
   (event: 'test', account: AccountSummary): void
 }>()
 
@@ -108,6 +109,7 @@ const props = defineProps<{
   menuItems: (account: AccountSummary) => AccountMenuItem[]
   providerName: (providerCode?: string) => string
   proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
+  balanceRefreshing?: boolean
 }>()
 
 const currentGroupName = computed(() => props.groupName(props.account.id))

@@ -18,6 +18,7 @@ import { readAuditLogSettings } from '../../audit-logs/audit-log-settings.js'
 import { requestModel, requestStream } from '../request/metadata.js'
 import {
   headersToSafeObject,
+  isUncapturedHeaderName,
   sanitizeHeaderRecord,
   sanitizeHeaderValue
 } from '../upstream/headers.js'
@@ -619,6 +620,7 @@ function requestHeadersToObject(req: Request): Record<string, string | string[]>
   const output: Record<string, string | string[]> = {}
   for (const [name, value] of Object.entries(req.headers)) {
     if (value === undefined) continue
+    if (isUncapturedHeaderName(name)) continue
     output[name] = sanitizeHeaderValue(name, Array.isArray(value) ? value : String(value))
   }
   return output

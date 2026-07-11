@@ -1,3 +1,4 @@
+import { runtimeConfig } from '../config/runtime.js'
 import { getStatsDatabase, newId, nowIso } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
@@ -307,7 +308,7 @@ function renewBackgroundJobLease(leaseKey: string, ownerId: string, leaseUntil: 
   `).run(leaseUntil, now, now, leaseKey, ownerId).changes > 0
 }
 
-function releaseBackgroundJobLease(leaseKey: string, ownerId?: string): void {
+export function releaseBackgroundJobLease(leaseKey: string, ownerId?: string): void {
   if (!ownerId) return
   getStatsDatabase().prepare(`
     DELETE FROM background_job_leases
@@ -316,7 +317,7 @@ function releaseBackgroundJobLease(leaseKey: string, ownerId?: string): void {
   `).run(leaseKey, ownerId)
 }
 
-async function acquireBackgroundJobLeaseAsync(input: {
+export async function acquireBackgroundJobLeaseAsync(input: {
   leaseKey: string
   jobName: string
   shardKey?: string
@@ -325,6 +326,7 @@ async function acquireBackgroundJobLeaseAsync(input: {
   leaseUntil: string
   now?: string
 }): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return acquireBackgroundJobLease(input)
   const now = input.now ?? nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   return await client.transaction(async (tx) => {
@@ -376,8 +378,12 @@ async function renewBackgroundJobLeaseAsync(leaseKey: string, ownerId: string, l
   return result.changes > 0
 }
 
-async function releaseBackgroundJobLeaseAsync(leaseKey: string, ownerId?: string, client?: DatabaseClient): Promise<void> {
+export async function releaseBackgroundJobLeaseAsync(leaseKey: string, ownerId?: string, client?: DatabaseClient): Promise<void> {
   if (!ownerId) return
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    releaseBackgroundJobLease(leaseKey, ownerId)
+    return
+  }
   const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
   await databaseClient.execute(`
     DELETE FROM ${backgroundTaskRunTable(databaseClient, 'background_job_leases')}

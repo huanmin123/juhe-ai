@@ -116,6 +116,7 @@
       :row-selection="rowSelection"
       :table-scroll-x="tableScrollX"
       :table-scroll-y="tableScrollY"
+      :balance-refreshing-ids="balanceRefreshingIds"
       @change="handleAccountTableChange"
       @clone="openClone"
       @delete="removeAccount"
@@ -124,6 +125,7 @@
       @mobile-load-more="loadMoreMobileAccounts"
       @mobile-refresh="refreshMobileAccounts"
       @return-authorization="returnAuthorizationAccount"
+      @refresh-balance="refreshAccountBalance"
       @sort-change="handleAccountSortChange"
       @test="openTestModal"
       @toggle-selection="toggleAccountSelection"
@@ -242,6 +244,7 @@ import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { AccountDraftTestAccountPayload } from '@/api/client'
+import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
@@ -303,6 +306,7 @@ const AccountTrafficMigrationModal = defineAsyncComponent(() => import('./Accoun
 
 const importModalOpen = ref(false)
 const batchEditOpen = ref(false)
+const balanceRefreshingIds = ref(new Set<string>())
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const {
   loading,
@@ -388,6 +392,29 @@ function handleAccountListLoaded(selectableAccountIds: Set<string>) {
 
 async function loadData(options?: { append?: boolean; quiet?: boolean; forceOptions?: boolean; shouldApply?: () => boolean }) {
   await loadAccountListData(options)
+}
+
+async function refreshAccountBalance(accountId: string) {
+  if (balanceRefreshingIds.value.has(accountId)) return
+  balanceRefreshingIds.value = new Set(balanceRefreshingIds.value).add(accountId)
+  try {
+    const snapshot = isManagementView.value
+      ? await api.accounts.refreshBalance(accountId, accountScopeParams.value)
+      : await api.myAccounts.refreshBalance(accountId)
+    const account = accounts.value.find((item) => item.id === accountId)
+    if (account) account.balanceSnapshot = snapshot
+    if (snapshot?.status === 'failed') {
+      message.error(snapshot.errorMessage || '余额查询失败')
+    } else {
+      message.success('余额已更新')
+    }
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '刷新上游余额失败'))
+  } finally {
+    const next = new Set(balanceRefreshingIds.value)
+    next.delete(accountId)
+    balanceRefreshingIds.value = next
+  }
 }
 
 const rawColumns = computed(() => buildAccountTableColumns(

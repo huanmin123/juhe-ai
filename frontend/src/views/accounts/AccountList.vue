@@ -35,12 +35,14 @@
         :menu-items="menuItems"
         :provider-name="providerName"
         :proxy="proxy"
+        :balance-refreshing="balanceRefreshingIds.has(record.id)"
         @bind-group="$emit('bind-group', $event)"
         @clone="$emit('clone', $event)"
         @delete="$emit('delete', $event.id)"
         @edit="$emit('edit', $event)"
         @menu-click="$emit('menu-click', $event, record)"
         @return-authorization="$emit('return-authorization', $event.id)"
+        @refresh-balance="$emit('refresh-balance', $event)"
         @test="$emit('test', $event)"
       />
     </template>
@@ -57,12 +59,14 @@
         :provider-name="providerName(record.providerCode)"
         :proxy="proxy(record.proxyProfileId)"
         :selected="isSelected(record.id)"
+        :balance-refreshing="balanceRefreshingIds.has(record.id)"
         @delete="$emit('delete', record.id)"
         @clone="$emit('clone', record)"
         @edit="$emit('edit', record)"
         @bind-group="$emit('bind-group', record)"
         @menu-click="$emit('menu-click', $event, record)"
         @return-authorization="$emit('return-authorization', record.id)"
+        @refresh-balance="$emit('refresh-balance', record.id)"
         @test="$emit('test', record)"
         @toggle-selection="$emit('toggle-selection', record)"
       />
@@ -101,6 +105,7 @@ defineProps<{
   rowSelection: Record<string, unknown>
   tableScrollX: number
   tableScrollY: string
+  balanceRefreshingIds: Set<string>
 }>()
 
 defineEmits<{
@@ -113,6 +118,7 @@ defineEmits<{
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
   (event: 'return-authorization', accountId: string): void
+  (event: 'refresh-balance', accountId: string): void
   (event: 'sort-change', sorts: ResponsiveDataListSort[]): void
   (event: 'test', account: AccountSummary): void
   (event: 'toggle-selection', account: AccountSummary): void

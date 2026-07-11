@@ -1279,6 +1279,8 @@ export function buildGatewayUsageContext(input: {
     groupId: identity.groupId,
     ...groupUsageFields,
     endpoint,
-    requestSnapshot
+    requestSnapshot,
+    requestedServiceTier: requestSnapshot.requestedServiceTier ?? 'default',
+    effectiveServiceTier: requestSnapshot.requestedServiceTier ?? 'default'
   }
 }

@@ -1,6 +1,7 @@
 export interface GatewayJsonBodyMetadata {
   model?: string
   stream?: boolean
+  serviceTier?: 'default' | 'priority' | 'flex'
   imageGeneration?: boolean
   imageGenerationForced?: boolean
   invalidJson?: boolean
@@ -66,6 +67,16 @@ export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBody
       const value = readJsonStringToken(rawBody, index)
       if (value) {
         metadata.model = value.value
+        index = value.nextIndex
+      } else {
+        const skipped = skipJsonValue(rawBody, index)
+        metadata.invalidJson = metadata.invalidJson || !skipped.ok
+        index = skipped.nextIndex
+      }
+    } else if (key.value === 'service_tier') {
+      const value = readJsonStringToken(rawBody, index)
+      if (value) {
+        metadata.serviceTier = value.value === 'priority' || value.value === 'flex' ? value.value : 'default'
         index = value.nextIndex
       } else {
         const skipped = skipJsonValue(rawBody, index)

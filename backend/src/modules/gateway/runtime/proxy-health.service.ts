@@ -339,7 +339,7 @@ function orderedAccountsForBucketScope(order: {
   halfOpenBucketKeys: Set<string>
 }): UpstreamAccount[] {
   if (order.halfOpenBucketKeys.size > 0) {
-    return order.freshAccounts
+    return [...order.freshAccounts, ...order.avoidedAccounts]
   }
   return [...order.freshAccounts, ...order.avoidedAccounts]
 }
@@ -795,7 +795,7 @@ function proxyUrlKeyHash(value: string): string {
 }
 
 export function gatewayUpstreamBucketKeys(
-  account: Pick<UpstreamAccount, 'providerCode' | 'baseUrl' | 'type' | 'proxyProfileId' | 'proxyUrl'>,
+  account: Pick<UpstreamAccount, 'id' | 'systemAccountId' | 'accountOwnerSystemAccountId' | 'providerCode' | 'baseUrl' | 'type' | 'proxyProfileId' | 'proxyUrl'>,
   scope: 'all' | 'proxy' | 'upstream' = 'all'
 ): string[] {
   const keys: string[] = []
@@ -810,7 +810,8 @@ export function gatewayUpstreamBucketKeys(
     }
     keys.push(gatewayProviderKey(account))
   }
-  return [...new Set(keys)]
+  const ownerScope = account.accountOwnerSystemAccountId || account.systemAccountId || account.id
+  return [...new Set(keys.map((key) => `${key}:owner:${ownerScope}`))]
 }
 
 function gatewayBaseUrlKey(account: Pick<UpstreamAccount, 'baseUrl' | 'type'>): string | undefined {
