@@ -120,7 +120,6 @@ import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import type {
-  AuditLogListResult,
   AuditLogSummary,
   AuditOutcome,
   AuditTrafficSource
@@ -135,7 +134,7 @@ import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/pr
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
-import { selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AuditLogList from './AuditLogList.vue'
 import {
   displayAuditGroupName,
@@ -215,7 +214,7 @@ const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   pagination: { current: 1, pageSize },
   pathFilter: '',
   statusCodeFilter: '',
-  systemAccountFilter: '',
+  systemAccountFilter: allSystemAccountsValue,
   systemAccountSelection: undefined,
   traceIdFilter: '',
   trafficSourceFilter: 'all',
@@ -412,25 +411,12 @@ function resetFilters(): void {
   void loadData()
 }
 
-async function fetchRecords(pageState: { current: number; pageSize: number }) {
-  if (!selectedSystemAccountId(systemAccountFilter.value, true)) {
-    return emptyAuditLogListResult(pageState)
-  }
-  return await api.auditLogs.list(auditLogRequestParams(pageState))
+function fetchRecords(pageState: { current: number; pageSize: number }) {
+  return api.auditLogs.list(auditLogRequestParams(pageState))
 }
 
 function auditLogRequestParams(pageState: { current: number; pageSize: number }) {
   return auditLogListParams(currentFilterValues.value, pageState)
-}
-
-function emptyAuditLogListResult(pageState: { current: number; pageSize: number }): AuditLogListResult {
-  return {
-    items: [],
-    total: 0,
-    hasMore: false,
-    page: pageState.current,
-    pageSize: pageState.pageSize
-  }
 }
 
 function rememberAuditRecordGroupLabels(items: AuditLogSummary[]): void {

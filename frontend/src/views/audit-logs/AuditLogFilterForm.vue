@@ -13,8 +13,9 @@
         :accounts="systemAccounts"
         :active-only="false"
         :filter-option="false"
+        include-all
         :loading="systemAccountOptionsLoading"
-        placeholder="选择用户"
+        placeholder="全部系统账户"
         @change="handleAdvancedApply"
         @dropdown-visible-change="$emit('system-account-dropdown-visible-change', $event)"
         @search="$emit('system-account-search', $event)"
