@@ -34,10 +34,24 @@ const healthSettings = {
 try {
   const repositorySource = readFileSync(resolve('src/storage/account-health-check.repository.ts'), 'utf8')
   const serviceSource = readFileSync(resolve('src/modules/background/account-health-check.service.ts'), 'utf8')
+  const postgresSuccessSource = sourceBetween(
+    repositorySource,
+    'export async function recordAccountHealthCheckSuccessAsync',
+    'function healthCheckActivationStatus'
+  )
+  const postgresFailureSource = sourceBetween(
+    repositorySource,
+    'export async function recordAccountHealthCheckFailureAsync',
+    'export function recordAccountHealthSuccessSignals'
+  )
   assert.match(repositorySource, /SELECT config_revision, health_check_failure_count, last_health_success_at[\s\S]+FOR UPDATE/, 'PostgreSQL 健康失败计数必须锁定账户行后递增')
   assert.match(repositorySource, /expectedConfigRevision[\s\S]+config_revision = \?/, '健康检查结果写入必须绑定账户配置版本')
+  assert.doesNotMatch(postgresSuccessSource, /\(\? IS NULL OR/, 'PostgreSQL 健康成功写回不能使用无法推断参数类型的 NULL 守卫')
+  assert.doesNotMatch(postgresFailureSource, /\(\? IS NULL OR/, 'PostgreSQL 健康失败写回不能使用无法推断参数类型的 NULL 守卫')
+  assert.match(repositorySource, /CASE WHEN accounts\.status = 'pending_test' THEN 0 ELSE 1 END/, '周期兜底应优先处理待检查账户')
   assert.match(serviceSource, /queuedConfigRevision[\s\S]+currentConfigRevision/, '健康检查队列执行前必须丢弃旧配置版本任务')
   assert.match(serviceSource, /healthCheckGuard/, '达到阈值后的保护状态写入必须携带健康失败快照')
+  assert.match(serviceSource, /errorLogFields\(event\.error/, '健康检查队列耗尽日志必须保留真实异常')
 
   const database = databaseModule.getBusinessDatabase()
   const accountColumns = database.prepare('PRAGMA table_info(accounts)').all() as unknown as Array<{ name: string }>
@@ -363,6 +377,14 @@ try {
 } finally {
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function sourceBetween(source: string, start: string, end: string): string {
+  const startIndex = source.indexOf(start)
+  const endIndex = source.indexOf(end, startIndex + start.length)
+  assert.notEqual(startIndex, -1, `缺少源码起点：${start}`)
+  assert.notEqual(endIndex, -1, `缺少源码终点：${end}`)
+  return source.slice(startIndex, endIndex)
 }
 
 function createActiveAccount(

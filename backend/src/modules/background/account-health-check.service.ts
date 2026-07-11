@@ -1,5 +1,5 @@
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
-import { logger } from '../../shared/logger.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccountHealthCheckSettings } from '../../storage/repositories.js'
@@ -22,12 +22,12 @@ const accountHealthCheckQueue = createRetryQueue<AccountHealthCheckQueueItem>({
   concurrency: 1,
   run: runAccountHealthCheckQueueItem,
   onExhausted: (event) => {
-    logger.warn({
+    logger.warn(errorLogFields(event.error, {
       event: 'background_account_health_check_exhausted',
       accountId: event.item.accountId,
       accountName: event.item.accountName,
       attemptCount: event.attemptIndex + 1
-    }, '账号健康检测任务已用尽，本轮跳过')
+    }), '账号健康检测任务已用尽，本轮跳过')
   }
 })
 
