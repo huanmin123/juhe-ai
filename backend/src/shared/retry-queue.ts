@@ -32,6 +32,10 @@ export interface RetryQueueOptions<T> {
   name: string
   policy: RetryPolicy
   concurrency?: number
+  reservedPriorityConcurrency?: {
+    priorityAtMost: number
+    slots: number
+  }
   run: (item: T, context: RetryQueueRunContext) => Promise<RetryQueueRunResult> | RetryQueueRunResult
   onSuccess?: (event: RetryQueueEvent<T>) => void
   onFailure?: (event: RetryQueueEvent<T> & { error?: unknown }) => void
@@ -41,11 +45,16 @@ export interface RetryQueueOptions<T> {
 
 export interface RetryQueue<T> {
   readonly name: string
-  enqueue(key: string, item: T): boolean
+  enqueue(key: string, item: T, options?: RetryQueueEnqueueOptions): boolean
   delete(key: string): void
   clear(): void
   setConcurrency(concurrency: number): void
   snapshot(): RetryQueueSnapshot
+}
+
+export interface RetryQueueEnqueueOptions {
+  priority?: number
+  replaceExisting?: boolean
 }
 
 export interface RetryQueueSnapshot {
@@ -61,6 +70,11 @@ interface RetryQueueItem<T> {
   attemptIndex: number
   nextRunAtMs: number
   running: boolean
+  priority: number
+  followUp?: {
+    item: T
+    priority: number
+  }
 }
 
 export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T> {
@@ -105,7 +119,7 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
 
   const drain = async (): Promise<void> => {
     while (runningCount() < concurrency) {
-      const item = nextDueItem()
+      const item = nextDueItem(concurrency, options.reservedPriorityConcurrency)
       if (!item) {
         break
       }
@@ -149,6 +163,22 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
       retryNumber
     }
 
+    const followUp = queueItem.followUp
+    if (followUp) {
+      if (success) {
+        options.onSuccess?.(event)
+      } else {
+        options.onFailure?.({ ...event, error })
+      }
+      queueItem.item = followUp.item
+      queueItem.priority = followUp.priority
+      queueItem.attemptIndex = 0
+      queueItem.nextRunAtMs = Date.now()
+      queueItem.followUp = undefined
+      scheduleNext()
+      return
+    }
+
     if (success) {
       items.delete(queueItem.key)
       options.onSuccess?.(event)
@@ -184,11 +214,17 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
     return count
   }
 
-  const nextDueItem = (): RetryQueueItem<T> | undefined => {
+  const nextDueItem = (
+    currentConcurrency: number,
+    reservation: RetryQueueOptions<T>['reservedPriorityConcurrency']
+  ): RetryQueueItem<T> | undefined => {
     const now = Date.now()
     let next: RetryQueueItem<T> | undefined
+    const normalRunningLimit = reservedNormalRunningLimit(currentConcurrency, reservation)
+    const normalRunningCount = reservation ? runningCountAbovePriority(reservation.priorityAtMost) : 0
     for (const item of items.values()) {
       if (item.running || item.nextRunAtMs > now) continue
+      if (reservation && item.priority > reservation.priorityAtMost && normalRunningCount >= normalRunningLimit) continue
       if (!next || compareRetryQueueItems(item, next) < 0) {
         next = item
       }
@@ -198,8 +234,12 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
 
   const nextPendingRunAtMs = (): number | undefined => {
     let nextRunAtMs: number | undefined
+    const reservation = options.reservedPriorityConcurrency
+    const normalRunningLimit = reservedNormalRunningLimit(concurrency, reservation)
+    const normalRunningCount = reservation ? runningCountAbovePriority(reservation.priorityAtMost) : 0
     for (const item of items.values()) {
       if (item.running) continue
+      if (reservation && item.priority > reservation.priorityAtMost && normalRunningCount >= normalRunningLimit) continue
       nextRunAtMs = nextRunAtMs === undefined ? item.nextRunAtMs : Math.min(nextRunAtMs, item.nextRunAtMs)
     }
     return nextRunAtMs
@@ -213,18 +253,40 @@ export function createRetryQueue<T>(options: RetryQueueOptions<T>): RetryQueue<T
     return count
   }
 
+  const runningCountAbovePriority = (priority: number): number => {
+    let count = 0
+    for (const item of items.values()) {
+      if (item.running && item.priority > priority) count += 1
+    }
+    return count
+  }
+
   return {
     name: options.name,
-    enqueue: (key, item) => {
-      if (items.has(key)) {
-        return false
+    enqueue: (key, item, enqueueOptions = {}) => {
+      const priority = normalizedPriority(enqueueOptions.priority)
+      const existing = items.get(key)
+      if (existing) {
+        if (!enqueueOptions.replaceExisting) return false
+        const replacementPriority = Math.min(existing.followUp?.priority ?? existing.priority, priority)
+        if (existing.running) {
+          existing.followUp = { item, priority: replacementPriority }
+        } else {
+          existing.item = item
+          existing.priority = replacementPriority
+          existing.attemptIndex = 0
+          existing.nextRunAtMs = Date.now()
+        }
+        scheduleDrain(0)
+        return true
       }
       items.set(key, {
         key,
         item,
         attemptIndex: 0,
         nextRunAtMs: Date.now(),
-        running: false
+        running: false,
+        priority
       })
       scheduleDrain(0)
       return true
@@ -266,5 +328,18 @@ function normalizedConcurrency(value: unknown): number {
 }
 
 function compareRetryQueueItems<T>(left: RetryQueueItem<T>, right: RetryQueueItem<T>): number {
-  return left.nextRunAtMs - right.nextRunAtMs || left.key.localeCompare(right.key)
+  return left.priority - right.priority || left.nextRunAtMs - right.nextRunAtMs || left.key.localeCompare(right.key)
+}
+
+function normalizedPriority(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : 0
+}
+
+function reservedNormalRunningLimit(
+  concurrency: number,
+  reservation: RetryQueueOptions<unknown>['reservedPriorityConcurrency']
+): number {
+  if (!reservation) return concurrency
+  const slots = Math.max(0, Math.min(Math.trunc(reservation.slots), Math.max(0, concurrency - 1)))
+  return concurrency - slots
 }

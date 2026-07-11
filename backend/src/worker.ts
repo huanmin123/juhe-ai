@@ -74,6 +74,7 @@ import { datasetDatabasePath, getDatasetDatabase, getUsageCatalogDatabase, stats
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { buildProcessEventLoopSample, startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
+import { isAccountHealthCheckTriggerReason } from './modules/accounts/account-health-check-trigger.js'
 
 type WorkerIncomingMessage =
   | { type: 'background_worker_usage_records'; items: unknown[] }
@@ -83,7 +84,7 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_record_maintenance'; items: unknown[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: unknown[] }
   | { type: 'background_worker_account_test_cancel'; taskId: unknown }
-  | { type: 'background_worker_account_health_check_trigger'; accountId: unknown }
+  | { type: 'background_worker_account_health_check_trigger'; accountId: unknown; reason: unknown }
   | { type: 'background_worker_runtime_log_line'; line: unknown; sourceKey?: unknown; logFile?: unknown; logOffset?: unknown; lineNumber?: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
   | { type: 'background_worker_dataset_write_request'; requestId: unknown; operation: unknown }
@@ -170,8 +171,8 @@ process.on('message', (message: unknown) => {
       }
       break
     case 'background_worker_account_health_check_trigger':
-      if (typeof message.accountId === 'string') {
-        void triggerAccountHealthCheckNow(message.accountId).catch((error) => {
+      if (typeof message.accountId === 'string' && isAccountHealthCheckTriggerReason(message.reason)) {
+        void triggerAccountHealthCheckNow(message.accountId, message.reason).catch((error) => {
           logger.warn(errorLogFields(error, {
             event: 'background_account_health_check_trigger_failed',
             accountId: message.accountId

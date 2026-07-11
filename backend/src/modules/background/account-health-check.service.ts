@@ -6,6 +6,10 @@ import type { AccountHealthCheckSettings } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
+import {
+  accountHealthCheckTriggerPriority,
+  type AccountHealthCheckTriggerReason
+} from '../accounts/account-health-check-trigger.js'
 
 interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
   accountId: string
@@ -19,7 +23,11 @@ const accountHealthCheckRetryPolicy = sequenceRetryPolicy('account_health_check'
 const accountHealthCheckQueue = createRetryQueue<AccountHealthCheckQueueItem>({
   name: 'account-health-check',
   policy: accountHealthCheckRetryPolicy,
-  concurrency: 1,
+  concurrency: 10,
+  reservedPriorityConcurrency: {
+    priorityAtMost: accountHealthCheckTriggerPriority('configuration'),
+    slots: 3
+  },
   run: runAccountHealthCheckQueueItem,
   onExhausted: (event) => {
     logger.warn(errorLogFields(event.error, {
@@ -33,8 +41,10 @@ const accountHealthCheckQueue = createRetryQueue<AccountHealthCheckQueueItem>({
 
 export function enqueueAccountHealthCheck(
   account: AccountSummary,
-  settings: AccountHealthCheckSettings & { maxPauseMinutes: number }
+  settings: AccountHealthCheckSettings & { maxPauseMinutes: number },
+  reason: AccountHealthCheckTriggerReason
 ): boolean {
+  const effectiveReason = account.status === 'pending_test' ? 'activation' : reason
   return accountHealthCheckQueue.enqueue(account.id, {
     accountId: account.id,
     accountName: account.name,
@@ -43,12 +53,16 @@ export function enqueueAccountHealthCheck(
     jitterMinutes: settings.jitterMinutes,
     failureThreshold: settings.failureThreshold,
     maxPauseMinutes: settings.maxPauseMinutes
+  }, {
+    priority: accountHealthCheckTriggerPriority(effectiveReason),
+    replaceExisting: effectiveReason !== 'scheduled'
   })
 }
 
 export async function enqueueAccountHealthCheckById(
   accountId: string,
-  settings: AccountHealthCheckSettings & { maxPauseMinutes: number }
+  settings: AccountHealthCheckSettings & { maxPauseMinutes: number },
+  reason: AccountHealthCheckTriggerReason
 ): Promise<boolean> {
   const normalizedId = accountId.trim()
   if (!normalizedId) return false
@@ -56,7 +70,7 @@ export async function enqueueAccountHealthCheckById(
     type: 'find_account_for_health_check',
     accountId: normalizedId
   }, 10_000)
-  return account ? enqueueAccountHealthCheck(account, settings) : false
+  return account ? enqueueAccountHealthCheck(account, settings, reason) : false
 }
 
 export function getAccountHealthCheckQueueSnapshot() {

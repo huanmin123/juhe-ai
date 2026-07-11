@@ -413,7 +413,7 @@ accountsRouter.patch('/:id', async (req, res) => {
       await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
     }
     if (accountUpdateNeedsImmediateHealthCheck(accountUpdateInput)) {
-      dispatchAccountHealthCheck(account.id)
+      dispatchAccountHealthCheck(account.id, 'configuration')
     }
     res.json(ok(sanitizeAccountResponse(await applyServerAccountRuntimeToAccount(account))))
   } catch (error) {
