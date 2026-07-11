@@ -50,9 +50,12 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	defer closeSQLDB(t, db)
 	runGooseMigrations(t, db)
 	assertW2ProviderModelCatalogSnapshot(t, ctx, db)
-	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-sol", []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
-	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-terra", []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
-	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-luna", []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
+	priorityFlexTiers := []string{"priority", "flex"}
+	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-sol", priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
+	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-terra", priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
+	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-luna", priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
+	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "o3", priorityFlexTiers, []string{}, "", []string{}, "", "")
+	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "o4-mini", priorityFlexTiers, []string{}, "", []string{}, "", "")
 
 	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
 	insertW2ProxyOptionsFixture(t, ctx, db, now)
@@ -83,9 +86,11 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-sol"), "2026-06-26", 372000, 0.5, 6.25)
 	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-terra"), "2026-06-26", 372000, 0.25, 3.125)
 	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-luna"), "2026-06-26", 372000, 0.1, 1.25)
-	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-sol"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
-	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-terra"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
-	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-luna"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-sol"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-terra"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-luna"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "o3"), priorityFlexTiers, []string{}, "", []string{}, "", "")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "o4-mini"), priorityFlexTiers, []string{}, "", []string{}, "", "")
 	if personal := findW2ProviderModel(models, "w2-personal-model"); personal == nil || personal.Scope != "personal" || personal.SystemAccountID != "sys_w2_proxy_options" {
 		t.Fatalf("personal model missing or wrong scope: %+v", personal)
 	}
@@ -109,9 +114,11 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list provider model options: %v", err)
 	}
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "gpt-5.6-sol"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "gpt-5.6-terra"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "gpt-5.6-luna"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "gpt-5.6-sol"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "gpt-5.6-terra"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "gpt-5.6-luna"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "o3"), priorityFlexTiers, []string{}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "o4-mini"), priorityFlexTiers, []string{}, "")
 	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(options, "gpt", "w2-personal-model"), []string{"priority", "flex"}, []string{"low", "high"}, "high")
 
 	saved, err := service.SetDefaultHealthCheckModel(ctx, managementprovidermodels.DefaultHealthCheckModelInput{
@@ -170,9 +177,11 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if findW2ProviderModel(modelsBody.Data, "w2-personal-model") == nil {
 		t.Fatalf("HTTP provider models response missing personal model: %+v", modelsBody.Data)
 	}
-	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-sol"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
-	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-terra"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
-	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-luna"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-sol"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-terra"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-luna"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "o3"), priorityFlexTiers, []string{}, "", []string{}, "", "")
+	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "o4-mini"), priorityFlexTiers, []string{}, "", []string{}, "", "")
 
 	optionsReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/models/options?protocol=openai&systemAccountId=sys_w2_proxy_options", nil)
 	optionsReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
@@ -188,13 +197,17 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if err := json.Unmarshal(optionsResponseBody, &optionsBody); err != nil {
 		t.Fatalf("decode model options response: %v", err)
 	}
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-sol"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-terra"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
-	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-luna"), []string{"priority"}, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-sol"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-terra"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "gpt-5.6-luna"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "o3"), priorityFlexTiers, []string{}, "")
+	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "o4-mini"), priorityFlexTiers, []string{}, "")
 	assertW2ProviderModelOptionRequestCapabilities(t, findW2ProviderModelOption(optionsBody.Data, "gpt", "w2-personal-model"), []string{"priority", "flex"}, []string{"low", "high"}, "high")
 	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-sol", "supportedServiceTiers", "supportedReasoningEfforts")
 	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-terra", "supportedServiceTiers", "supportedReasoningEfforts")
 	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-luna", "supportedServiceTiers", "supportedReasoningEfforts")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "o3", "supportedServiceTiers", "supportedReasoningEfforts")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "o4-mini", "supportedServiceTiers", "supportedReasoningEfforts")
 	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "w2-personal-model", "supportedServiceTiers", "supportedReasoningEfforts", "defaultReasoningEffort")
 
 	putReq := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?systemAccountId=sys_w2_proxy_options", strings.NewReader(`{"model":"gpt-5.6-sol"}`))

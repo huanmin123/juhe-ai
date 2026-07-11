@@ -36,9 +36,15 @@ func TestProviderModelCatalogSnapshotMigrationCountsAndRepresentativeModels(t *t
 	}
 	actualCounts := make(map[string]int, len(wantCounts))
 	models := make(map[string]map[string]bool, len(wantCounts))
+	seenProviderModels := make(map[string]bool, len(matches))
 	for _, match := range matches {
 		providerCode := match[1]
 		model := match[2]
+		providerModelKey := providerCode + "\x00" + model
+		if seenProviderModels[providerModelKey] {
+			t.Fatalf("provider model catalog snapshot contains duplicate provider/model row %s/%s", providerCode, model)
+		}
+		seenProviderModels[providerModelKey] = true
 		actualCounts[providerCode]++
 		if models[providerCode] == nil {
 			models[providerCode] = make(map[string]bool)
