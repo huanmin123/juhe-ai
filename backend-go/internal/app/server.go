@@ -35,7 +35,9 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicgroups"
 	"juhe-ai/backend-go/internal/modules/publicroutestrategies"
 	"juhe-ai/backend-go/internal/modules/publicsettings"
+	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -687,9 +689,10 @@ func newPublicAPIHandler(
 }
 
 type PublicAPIHandlerOptions struct {
-	Now               func() time.Time
-	NewLogID          func() string
-	APIKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator
+	Now                          func() time.Time
+	NewLogID                     func() string
+	APIKeyInvalidator            publicapikeys.APIKeyGatewayCacheInvalidator
+	AccountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher
 }
 
 func NewPublicAPIHandler(
@@ -738,7 +741,22 @@ func newPublicAPIHandlerWithOptions(
 		return nil, nil, err
 	}
 
-	handlers, err := newPublicAPIHandlers(store, cfg.Secret, opts.APIKeyInvalidator)
+	accountHealthCheckDispatcher, err := newPublicAccountHealthCheckDispatcher(
+		cfg,
+		opts.AccountHealthCheckDispatcher,
+	)
+	if err != nil {
+		_ = logQueue.Close()
+		return nil, nil, err
+	}
+
+	handlers, err := newPublicAPIHandlers(
+		store,
+		cfg.Secret,
+		opts.APIKeyInvalidator,
+		accountHealthCheckDispatcher,
+		logger,
+	)
 	if err != nil {
 		_ = logQueue.Close()
 		return nil, nil, err
@@ -763,6 +781,8 @@ func newPublicAPIHandlers(
 	store *postgresstore.Store,
 	credentialSecret string,
 	apiKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator,
+	accountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher,
+	logger *slog.Logger,
 ) (map[string]http.Handler, error) {
 	groupService := publicgroups.NewService(publicgroups.Options{Store: store, Transactor: store})
 	routeStrategyService := publicroutestrategies.NewService(publicroutestrategies.Options{Store: store, Transactor: store})
@@ -772,12 +792,14 @@ func newPublicAPIHandlers(
 		Invalidator: apiKeyInvalidator,
 	})
 	providerModelService := managementprovidermodels.NewService(store)
-	accountService := publicaccounts.NewService(publicaccounts.Options{
-		Store:          store,
-		Transactor:     store,
-		ProviderModels: providerModelService,
-		Secret:         credentialSecret,
-	})
+	accountService := newPublicAccountService(
+		store,
+		store,
+		providerModelService,
+		credentialSecret,
+		accountHealthCheckDispatcher,
+		logger,
+	)
 
 	handlers := map[string]http.Handler{}
 	for _, part := range []map[string]http.Handler{
@@ -800,4 +822,40 @@ func newPublicAPIHandlers(
 		}
 	}
 	return handlers, nil
+}
+
+func newPublicAccountHealthCheckDispatcher(
+	cfg config.Config,
+	injected publicaccounts.AccountHealthCheckDispatcher,
+) (publicaccounts.AccountHealthCheckDispatcher, error) {
+	if injected != nil {
+		return injected, nil
+	}
+	dispatcher, err := accounthealthcheckdispatch.NewClientWithTimeout(
+		cfg.NodeInternalBaseURL,
+		cfg.Secret,
+		cfg.NodeInternalRequestTimeout,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("初始化公开账户健康检查投递器失败: %w", err)
+	}
+	return dispatcher, nil
+}
+
+func newPublicAccountService(
+	store port.PublicAccountStore,
+	transactor port.PublicAccountTransactor,
+	providerModels publicaccounts.ProviderModelReader,
+	credentialSecret string,
+	accountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher,
+	logger *slog.Logger,
+) *publicaccounts.Service {
+	return publicaccounts.NewService(publicaccounts.Options{
+		Store:                 store,
+		Transactor:            transactor,
+		ProviderModels:        providerModels,
+		HealthCheckDispatcher: accountHealthCheckDispatcher,
+		Logger:                logger,
+		Secret:                credentialSecret,
+	})
 }

@@ -215,6 +215,46 @@ func TestNewClientBuildsDedicatedSafeHTTPClient(t *testing.T) {
 	}
 }
 
+func TestNewClientWithTimeoutAppliesCustomTimeouts(t *testing.T) {
+	const customTimeout = 750 * time.Millisecond
+
+	client, err := NewClientWithTimeout("http://127.0.0.1:3000", goldenSecret, customTimeout)
+	if err != nil {
+		t.Fatalf("NewClientWithTimeout() error = %v", err)
+	}
+	if client.httpClient.Timeout != customTimeout {
+		t.Errorf("http client timeout = %s, want %s", client.httpClient.Timeout, customTimeout)
+	}
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", client.httpClient.Transport)
+	}
+	for name, got := range map[string]time.Duration{
+		"idle connection": transport.IdleConnTimeout,
+		"TLS handshake":   transport.TLSHandshakeTimeout,
+		"response header": transport.ResponseHeaderTimeout,
+		"expect continue": transport.ExpectContinueTimeout,
+	} {
+		if got != customTimeout {
+			t.Errorf("%s timeout = %s, want %s", name, got, customTimeout)
+		}
+	}
+}
+
+func TestNewClientWithTimeoutRequiresPositiveTimeout(t *testing.T) {
+	for _, timeout := range []time.Duration{0, -time.Nanosecond} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			if _, err := NewClientWithTimeout(
+				"http://127.0.0.1:3000",
+				goldenSecret,
+				timeout,
+			); err == nil {
+				t.Fatal("NewClientWithTimeout() error = nil, want timeout error")
+			}
+		})
+	}
+}
+
 func TestNewClientIgnoresReplacedDefaultTransport(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)

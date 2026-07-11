@@ -23,10 +23,6 @@ const (
 	signatureDomain                       = "juhe-ai:account-health-check-dispatch:v1\n"
 	requestTimeout                        = 2 * time.Second
 	transportKeepAlive                    = 30 * time.Second
-	transportIdleConnTimeout              = 30 * time.Second
-	transportTLSHandshakeTimeout          = 2 * time.Second
-	transportResponseHeaderTimeout        = 2 * time.Second
-	transportExpectContinueTimeout        = time.Second
 	transportMaxIdleConns                 = 16
 	transportMaxIdleConnsPerHost          = 8
 	transportMaxConnsPerHost              = 16
@@ -46,6 +42,13 @@ type dispatchPayload struct {
 }
 
 func NewClient(rawBaseURL string, secret string) (*Client, error) {
+	return NewClientWithTimeout(rawBaseURL, secret, requestTimeout)
+}
+
+func NewClientWithTimeout(rawBaseURL string, secret string, timeout time.Duration) (*Client, error) {
+	if timeout <= 0 {
+		return nil, errors.New("账户健康检查 dispatch timeout 必须大于 0")
+	}
 	baseURL, err := parseBaseURL(rawBaseURL)
 	if err != nil {
 		return nil, err
@@ -55,7 +58,7 @@ func NewClient(rawBaseURL string, secret string) (*Client, error) {
 	}
 
 	dialer := &net.Dialer{
-		Timeout:   requestTimeout,
+		Timeout:   timeout,
 		KeepAlive: transportKeepAlive,
 	}
 	transport := &http.Transport{
@@ -65,10 +68,10 @@ func NewClient(rawBaseURL string, secret string) (*Client, error) {
 		MaxIdleConns:           transportMaxIdleConns,
 		MaxIdleConnsPerHost:    transportMaxIdleConnsPerHost,
 		MaxConnsPerHost:        transportMaxConnsPerHost,
-		IdleConnTimeout:        transportIdleConnTimeout,
-		TLSHandshakeTimeout:    transportTLSHandshakeTimeout,
-		ResponseHeaderTimeout:  transportResponseHeaderTimeout,
-		ExpectContinueTimeout:  transportExpectContinueTimeout,
+		IdleConnTimeout:        timeout,
+		TLSHandshakeTimeout:    timeout,
+		ResponseHeaderTimeout:  timeout,
+		ExpectContinueTimeout:  timeout,
 		MaxResponseHeaderBytes: transportMaxResponseHeaderBytes,
 		DisableCompression:     true,
 	}
@@ -79,7 +82,7 @@ func NewClient(rawBaseURL string, secret string) (*Client, error) {
 		secret:   []byte(secret),
 		httpClient: &http.Client{
 			Transport: transport,
-			Timeout:   requestTimeout,
+			Timeout:   timeout,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

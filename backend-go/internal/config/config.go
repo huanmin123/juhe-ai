@@ -31,6 +31,8 @@ type Config struct {
 	RedisQueueURL                 string        `env:"JUHE_AI_REDIS_QUEUE_URL"`
 	RedisNamespace                string        `env:"JUHE_AI_REDIS_NAMESPACE"`
 	Secret                        string        `env:"JUHE_AI_SECRET"`
+	NodeInternalBaseURL           string        `env:"JUHE_AI_NODE_INTERNAL_BASE_URL"`
+	NodeInternalRequestTimeout    time.Duration `env:"JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT" envDefault:"2s"`
 	PublicAPIEnabled              bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled          bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
 	ManagementAuthSessionsEnabled bool          `env:"JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED" envDefault:"false"`
@@ -111,6 +113,10 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.ShutdownTimeout <= 0 {
 		return fmt.Errorf("JUHE_AI_SHUTDOWN_TIMEOUT 必须大于 0")
+	}
+	if cfg.NodeInternalRequestTimeout < 100*time.Millisecond ||
+		cfg.NodeInternalRequestTimeout > 10*time.Second {
+		return fmt.Errorf("JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT 必须在 100ms 到 10s 之间")
 	}
 	if strings.TrimSpace(cfg.RedisNamespace) == "" {
 		return fmt.Errorf("JUHE_AI_REDIS_NAMESPACE 不能为空")
@@ -214,6 +220,9 @@ func validatePublicAPIConfig(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.RedisQueueURL) == "" {
 		return fmt.Errorf("启用 JUHE_AI_PUBLIC_API_ENABLED 时 JUHE_AI_REDIS_QUEUE_URL 不能为空")
+	}
+	if strings.TrimSpace(cfg.NodeInternalBaseURL) == "" {
+		return fmt.Errorf("启用 JUHE_AI_PUBLIC_API_ENABLED 时 JUHE_AI_NODE_INTERNAL_BASE_URL 不能为空")
 	}
 	secret := strings.TrimSpace(cfg.Secret)
 	if secret == "" {
