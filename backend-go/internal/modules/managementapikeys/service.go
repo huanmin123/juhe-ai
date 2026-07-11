@@ -29,6 +29,7 @@ type Service struct {
 	store                    port.ManagementAPIKeyListReader
 	creator                  port.ManagementAPIKeyCreator
 	updater                  port.ManagementAPIKeyUpdater
+	deleter                  port.ManagementAPIKeyDeleter
 	usageStatsTimezoneReader port.ManagementUsageStatsTimezoneReader
 	secretStore              port.ManagementAPIKeySecretStore
 	secretTransactor         port.ManagementAPIKeySecretTransactor
@@ -87,6 +88,9 @@ func NewService(store port.ManagementAPIKeyListReader) *Service {
 	}
 	if updater, ok := store.(port.ManagementAPIKeyUpdater); ok {
 		opts.Updater = updater
+	}
+	if deleter, ok := store.(port.ManagementAPIKeyDeleter); ok {
+		opts.Deleter = deleter
 	}
 	if timezoneReader, ok := store.(port.ManagementUsageStatsTimezoneReader); ok {
 		opts.UsageStatsTimezoneReader = timezoneReader

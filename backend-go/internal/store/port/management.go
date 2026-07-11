@@ -681,6 +681,7 @@ var (
 	ErrManagementAPIKeyHashExists            = errors.New("management API Key hash exists")
 	ErrManagementAPIKeyNotFound              = errors.New("management API Key not found")
 	ErrManagementAPIKeyDefaultRouteChange    = errors.New("management default API Key route change")
+	ErrManagementAPIKeyDefaultDelete         = errors.New("management default API Key delete")
 )
 
 type ManagementAPIKeyCreateInput struct {
@@ -740,6 +741,25 @@ type ManagementAPIKeyUpdater interface {
 		ctx context.Context,
 		input ManagementAPIKeyUpdateInput,
 	) (ManagementAPIKeyUpdateResult, error)
+}
+
+type ManagementAPIKeyDeleteInput struct {
+	APIKeyID             string
+	OwnerSystemAccountID string
+	DeletedAt            time.Time
+}
+
+type ManagementAPIKeyDeleteResult struct {
+	APIKeyID             string
+	Name                 string
+	OwnerSystemAccountID string
+}
+
+type ManagementAPIKeyDeleter interface {
+	DeleteManagementAPIKey(
+		ctx context.Context,
+		input ManagementAPIKeyDeleteInput,
+	) (ManagementAPIKeyDeleteResult, error)
 }
 
 type ManagementAPIKeyUsageScope struct {

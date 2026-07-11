@@ -49,6 +49,7 @@ type ServiceOptions struct {
 	ListReader                    port.ManagementAPIKeyListReader
 	Creator                       port.ManagementAPIKeyCreator
 	Updater                       port.ManagementAPIKeyUpdater
+	Deleter                       port.ManagementAPIKeyDeleter
 	UsageStatsTimezoneReader      port.ManagementUsageStatsTimezoneReader
 	SecretStore                   port.ManagementAPIKeySecretStore
 	SecretTransactor              port.ManagementAPIKeySecretTransactor
@@ -122,6 +123,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		store:                    opts.ListReader,
 		creator:                  opts.Creator,
 		updater:                  opts.Updater,
+		deleter:                  opts.Deleter,
 		usageStatsTimezoneReader: opts.UsageStatsTimezoneReader,
 		secretStore:              opts.SecretStore,
 		secretTransactor:         opts.SecretTransactor,
