@@ -641,6 +641,49 @@ type ManagementAccountUsageSummary struct {
 	LastUsedAt         *time.Time `json:"lastUsedAt,omitempty"`
 }
 
+type ManagementAPIKeyListInput struct {
+	SystemAccountID string
+	Keyword         string
+	Status          string
+	RouteStrategyID string
+	Limit           int
+	Offset          int
+}
+
+type ManagementAPIKeyListRow struct {
+	ID                       string
+	SystemAccountID          string
+	SystemAccountName        string
+	Name                     string
+	Description              *string
+	KeyPrefix                string
+	KeySuffix                string
+	Status                   string
+	IsDefault                bool
+	RouteStrategyID          string
+	RouteStrategyName        string
+	RouteStrategyMode        string
+	RouteStrategyStatus      string
+	ExpiresAt                *time.Time
+	QuotaLimitsJSON          *string
+	AvailabilityScheduleJSON *string
+}
+
+type ManagementAPIKeyListPage struct {
+	Rows    []ManagementAPIKeyListRow
+	HasMore bool
+}
+
+type ManagementAPIKeyUsageRow struct {
+	APIKeyID string
+	Usage    ManagementAccountUsageSummary
+}
+
+type ManagementAPIKeyListReader interface {
+	ListManagementAPIKeys(ctx context.Context, input ManagementAPIKeyListInput) (ManagementAPIKeyListPage, error)
+	ListManagementAPIKeyUsageTotals(ctx context.Context, apiKeyIDs []string) ([]ManagementAPIKeyUsageRow, error)
+}
+
 type ManagementAccountUsageStatsRange struct {
 	StartDate string `json:"startDate"`
 	EndDate   string `json:"endDate"`

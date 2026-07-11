@@ -90,6 +90,8 @@ type RouterOptions struct {
 	ManagementProviderCustomModelDeleteHandler        http.Handler
 	ManagementRouteStrategyOptionsHandler             http.Handler
 	ManagementMyRouteStrategyOptionsHandler           http.Handler
+	ManagementAPIKeyListHandler                       http.Handler
+	ManagementMyAPIKeyListHandler                     http.Handler
 	ManagementGroupListHandler                        http.Handler
 	ManagementMyGroupListHandler                      http.Handler
 	ManagementGroupDetailHandler                      http.Handler
@@ -266,6 +268,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementProviderCustomModelDeleteHandler == nil &&
 				opts.ManagementRouteStrategyOptionsHandler == nil &&
 				opts.ManagementMyRouteStrategyOptionsHandler == nil &&
+				opts.ManagementAPIKeyListHandler == nil &&
+				opts.ManagementMyAPIKeyListHandler == nil &&
 				opts.ManagementGroupListHandler == nil &&
 				opts.ManagementMyGroupListHandler == nil &&
 				opts.ManagementGroupDetailHandler == nil &&
@@ -500,6 +504,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyRouteStrategyOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-route-strategies/options", opts.ManagementMyRouteStrategyOptionsHandler.ServeHTTP)
 			}
+			if opts.ManagementAPIKeyListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/api-keys", opts.ManagementAPIKeyListHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAPIKeyListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-api-keys", opts.ManagementMyAPIKeyListHandler.ServeHTTP)
+			}
 			if opts.ManagementGroupListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/groups", opts.ManagementGroupListHandler.ServeHTTP)
 			}
@@ -711,6 +721,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementProviderCustomModelDeleteHandler != nil ||
 		opts.ManagementRouteStrategyOptionsHandler != nil ||
 		opts.ManagementMyRouteStrategyOptionsHandler != nil ||
+		opts.ManagementAPIKeyListHandler != nil ||
+		opts.ManagementMyAPIKeyListHandler != nil ||
 		opts.ManagementGroupListHandler != nil ||
 		opts.ManagementMyGroupListHandler != nil ||
 		opts.ManagementGroupDetailHandler != nil ||

@@ -13,6 +13,7 @@ import (
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
+	"juhe-ai/backend-go/internal/modules/managementapikeys"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
 	"juhe-ai/backend-go/internal/modules/managementauthorizations"
@@ -210,6 +211,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProviderCustomModelDeleteHandler:        managementHandlers.ProviderCustomModelDeleteHandler,
 		ManagementRouteStrategyOptionsHandler:             managementHandlers.RouteStrategyOptionsHandler,
 		ManagementMyRouteStrategyOptionsHandler:           managementHandlers.MyRouteStrategyOptionsHandler,
+		ManagementAPIKeyListHandler:                       managementHandlers.APIKeyListHandler,
+		ManagementMyAPIKeyListHandler:                     managementHandlers.MyAPIKeyListHandler,
 		ManagementGroupListHandler:                        managementHandlers.GroupListHandler,
 		ManagementMyGroupListHandler:                      managementHandlers.MyGroupListHandler,
 		ManagementGroupDetailHandler:                      managementHandlers.GroupDetailHandler,
@@ -338,6 +341,8 @@ type managementAPIHandlers struct {
 	ProviderCustomModelDeleteHandler        http.Handler
 	RouteStrategyOptionsHandler             http.Handler
 	MyRouteStrategyOptionsHandler           http.Handler
+	APIKeyListHandler                       http.Handler
+	MyAPIKeyListHandler                     http.Handler
 	GroupListHandler                        http.Handler
 	MyGroupListHandler                      http.Handler
 	GroupDetailHandler                      http.Handler
@@ -423,6 +428,7 @@ func newManagementAPIHandler(
 		Invalidator: systemAccountInvalidator,
 	})
 	routeStrategyService := managementroutestrategies.NewService(store)
+	apiKeyService := managementapikeys.NewService(store)
 	groupService := managementgroups.NewServiceWithOptions(managementgroups.ServiceOptions{
 		Store:                   store,
 		ListStore:               store,
@@ -533,6 +539,8 @@ func newManagementAPIHandler(
 		ProviderCustomModelDeleteHandler:        httpapi.NewManagementProviderCustomModelDeleteHandler(providerModelService),
 		RouteStrategyOptionsHandler:             httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
 		MyRouteStrategyOptionsHandler:           httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
+		APIKeyListHandler:                       httpapi.NewManagementAPIKeyListHandler(apiKeyService),
+		MyAPIKeyListHandler:                     httpapi.NewManagementMyAPIKeyListHandler(apiKeyService),
 		GroupListHandler:                        httpapi.NewManagementGroupListHandler(groupService),
 		MyGroupListHandler:                      httpapi.NewManagementMyGroupListHandler(groupService),
 		GroupDetailHandler:                      httpapi.NewManagementGroupDetailHandler(groupService),
