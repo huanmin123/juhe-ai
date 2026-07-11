@@ -30,10 +30,13 @@ import {
 import { recordGatewayProxyFailureAsync } from '../runtime/proxy-health.service.js'
 import { requestEndpoint } from '../request/metadata.js'
 import { localAccountApiKeyRuntimeStatesForDispatch } from '../runtime/account-api-key-failure-guard.service.js'
+import { extractGatewayJsonBodyMetadata } from '../request/json-metadata-scanner.js'
+import type { UsageServiceTier } from '../usage/service-tier.js'
 
 export interface PreparedUpstreamRequestParts {
   headers: Headers
   body?: Buffer | string
+  effectiveServiceTier: UsageServiceTier
 }
 
 type GatewayAccountFailurePrecheckRecorder = (
@@ -226,11 +229,18 @@ export async function buildPreparedUpstreamRequestParts(
   context?: ProviderGatewayRequestContext
 ): Promise<PreparedUpstreamRequestParts> {
   try {
-    return await buildGatewayUpstreamRequestParts(req, account, {
+    const parts = await buildGatewayUpstreamRequestParts(req, account, {
       systemAccountId: usageContext.systemAccountId,
       apiKeyId: usageContext.apiKeyId,
       groupId: usageContext.groupId
     }, signal, context)
+    const bodyBuffer = typeof parts.body === 'string' ? Buffer.from(parts.body, 'utf8') : parts.body
+    return {
+      ...parts,
+      effectiveServiceTier: bodyBuffer
+        ? extractGatewayJsonBodyMetadata(bodyBuffer).serviceTier ?? 'default'
+        : 'default'
+    }
   } catch (error) {
     if (error instanceof OpenAIOAuthCodexAdapterError) {
       const responseBodyText = JSON.stringify({

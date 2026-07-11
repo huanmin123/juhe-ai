@@ -9,6 +9,7 @@ export function headersToObject(headers: Headers): Record<string, string> {
 export function headersToSafeObject(headers: Headers): Record<string, string> {
   const output: Record<string, string> = {}
   headers.forEach((value, name) => {
+    if (isUncapturedHeaderName(name)) return
     output[name] = sanitizeHeaderValue(name, value) as string
   })
   return output
@@ -17,6 +18,7 @@ export function headersToSafeObject(headers: Headers): Record<string, string> {
 export function sanitizeHeaderRecord(headers: Record<string, string | string[]>): Record<string, string | string[]> {
   const output: Record<string, string | string[]> = {}
   for (const [name, value] of Object.entries(headers)) {
+    if (isUncapturedHeaderName(name)) continue
     output[name] = sanitizeHeaderValue(name, value)
   }
   return output
@@ -25,9 +27,14 @@ export function sanitizeHeaderRecord(headers: Record<string, string | string[]>)
 export function sanitizeStringHeaderRecord(headers: Record<string, string>): Record<string, string> {
   const output: Record<string, string> = {}
   for (const [name, value] of Object.entries(headers)) {
+    if (isUncapturedHeaderName(name)) continue
     output[name] = sanitizeHeaderValue(name, value) as string
   }
   return output
+}
+
+export function isUncapturedHeaderName(name: string): boolean {
+  return name.trim().toLowerCase() === 'x-oai-attestation'
 }
 
 export function sanitizeHeaderValue(name: string, value: string | string[]): string | string[] {

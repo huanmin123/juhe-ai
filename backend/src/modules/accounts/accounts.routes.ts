@@ -24,6 +24,11 @@ import { accountResponseInspectionPolicyValidationMessage, validateAccountCreden
 import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 import { dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 import { accountCredentialFingerprint, credentialsRecordValue, mergeAccountCredentialsForUpdate } from './account-credential-update.js'
+import { normalizeAccountBalanceConfig, validateAccountBalanceCapability } from './account-balance-config.js'
+import {
+  deleteAccountBalanceSnapshotAsync,
+  loadAccountBalanceConfigurationsByAccountIdsAsync,
+} from '../../storage/account-balance.repository.js'
 import { registerAccountExportRoutes } from './account-export.routes.js'
 import { registerAccountTestSessionRoutes } from './account-test-session.routes.js'
 import { registerAccountTestStatusRoutes } from './account-test-status.routes.js'
@@ -38,6 +43,7 @@ import { registerAccountDeleteRoutes } from './account-delete.routes.js'
 import { registerAccountDetailRoutes } from './account-detail.routes.js'
 import { registerAccountTestDispatchRoutes } from './account-test-dispatch.routes.js'
 import { registerAccountBatchEditRoutes } from './account-batch-edit.routes.js'
+import { registerAccountBalanceRoutes } from './account-balance.routes.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from './account-gpt-request-overrides.validation.js'
 import {
   accountUpdateNeedsImmediateHealthCheck,
@@ -100,6 +106,7 @@ registerAccountImportRoutes(accountsRouter)
 registerAccountTrafficMigrationRoutes(accountsRouter)
 registerAccountGroupBindingRoutes(accountsRouter)
 registerAccountBatchEditRoutes(accountsRouter)
+registerAccountBalanceRoutes(accountsRouter)
 
 registerAccountDetailRoutes(accountsRouter)
 
@@ -135,6 +142,17 @@ accountsRouter.post('/', mutationGuard({
   const responseInspectionValidationMessage = accountResponseInspectionPolicyValidationMessage(validateAccountCredentialsResponseInspectionRules(parsed.data.credentials))
   if (responseInspectionValidationMessage) {
     res.status(400).json(badRequest(responseInspectionValidationMessage))
+    return
+  }
+  const balanceQueryEnabled = parsed.data.balanceQueryEnabled ?? false
+  const balanceQueryConfig = parsed.data.balanceQueryConfig
+    ? normalizeAccountBalanceConfig(parsed.data.balanceQueryConfig)
+    : undefined
+  try {
+    validateAccountBalanceCapability({ type: parsed.data.type, credentials: parsed.data.credentials }, balanceQueryEnabled)
+    if (balanceQueryEnabled && !balanceQueryConfig) throw new Error('开启上游余额查询时必须选择查询类型')
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '余额查询配置无效'))
     return
   }
 
@@ -173,6 +191,8 @@ accountsRouter.post('/', mutationGuard({
     const account = await runLoggedOperationAsync(async () => {
       const account = await createAccountAsync({
         ...parsed.data,
+        balanceQueryEnabled,
+        balanceQueryConfig,
         providerCode,
         providerProtocolProfileId: providerProfile.id,
         status: parsed.data.status === 'disabled' ? 'disabled' : 'pending_test'
@@ -275,6 +295,8 @@ accountsRouter.patch('/:id', async (req, res) => {
   const {
     groupId: requestedGroupId,
     clearFailureState: requestedClearFailureState,
+    balanceQueryEnabled: requestedBalanceQueryEnabled,
+    balanceQueryConfig: requestedBalanceQueryConfig,
     ...accountUpdateInput
   } = parsed.data
   const existingAccount = await findAccountForTestAsync(req.params.id, requestAccess)
@@ -321,6 +343,25 @@ accountsRouter.patch('/:id', async (req, res) => {
   const canUseExistingWithoutAccountUpdate = existingAccount.accessType !== 'authorized' && !existingAccount.accountAuthorizationId
   try {
     const nextCredentials = credentialsRecordValue(accountUpdateInput.credentials) ?? existingAccount.credentials
+    const currentBalance = (await loadAccountBalanceConfigurationsByAccountIdsAsync([existingAccount.id])).get(existingAccount.id)
+    const nextBalanceEnabled = requestedBalanceQueryEnabled ?? currentBalance?.enabled ?? false
+    const nextBalanceConfig = requestedBalanceQueryConfig
+      ? normalizeAccountBalanceConfig(requestedBalanceQueryConfig)
+      : currentBalance?.config
+    validateAccountBalanceCapability({
+      type: existingAccount.type,
+      credentials: nextCredentials,
+      accountAuthorizationId: existingAccount.accountAuthorizationId,
+      authorizationInstanceAuthorizationId: existingAccount.authorizationInstanceSourceAccountId,
+      accessType: existingAccount.accessType
+    }, nextBalanceEnabled)
+    if (nextBalanceEnabled && !nextBalanceConfig) throw new Error('开启上游余额查询时必须选择查询类型')
+    if (requestedBalanceQueryEnabled !== undefined || requestedBalanceQueryConfig !== undefined) {
+      Object.assign(accountUpdateInput, {
+        balanceQueryEnabled: nextBalanceEnabled,
+        balanceQueryConfig: nextBalanceConfig
+      })
+    }
     await assertAccountGptRequestOverridesSupportedAsync({
       providerCode: existingAccount.providerCode,
       accountType: existingAccount.type,
@@ -353,6 +394,16 @@ accountsRouter.patch('/:id', async (req, res) => {
           throw new Error('账户分组无效')
         }
         account = nextAccount
+      }
+      if (requestedBalanceQueryEnabled !== undefined || requestedBalanceQueryConfig !== undefined) {
+        await deleteAccountBalanceSnapshotAsync(account.id).catch(() => undefined)
+      } else if (currentBalance) {
+        account = {
+          ...account,
+          balanceQueryEnabled: currentBalance.enabled,
+          balanceQueryConfig: currentBalance.config,
+          balanceQueryNextRefreshAt: currentBalance.nextRefreshAt
+        }
       }
       const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
       return {

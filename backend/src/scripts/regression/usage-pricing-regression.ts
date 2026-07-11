@@ -19,6 +19,7 @@ import {
   inspectAnthropicStreamText
 } from '../../modules/gateway/protocols/anthropic-v1/stream-inspection.js'
 import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
+import { anthropicModelPricingData } from '../../modules/model-pricing/anthropic-model-pricing.data.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { retryDelayMs, retryAttemptCount, sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import { externalIntegrationScopeOptions } from '../../storage/external-integration-source-constants.js'
@@ -838,6 +839,32 @@ assert.equal(buildProviderCostBreakdown({
   cacheWrite1hTokens: 10,
   thinkingTokens: 12
 })?.cacheWrite1hUsdPer1M, 2)
+const tieredCacheWriteModel = anthropicModelPricingData.find((item) => item.model === 'claude-haiku-4-5') as unknown as Record<string, unknown>
+const originalTieredCacheWriteFields = {
+  supported_service_tiers: tieredCacheWriteModel.supported_service_tiers,
+  cache_creation_input_token_cost_above_1hr_priority: tieredCacheWriteModel.cache_creation_input_token_cost_above_1hr_priority,
+  cache_creation_input_token_cost_above_1hr_flex: tieredCacheWriteModel.cache_creation_input_token_cost_above_1hr_flex
+}
+Object.assign(tieredCacheWriteModel, {
+  supported_service_tiers: ['priority', 'flex'],
+  cache_creation_input_token_cost_above_1hr_priority: 4 / 1_000_000,
+  cache_creation_input_token_cost_above_1hr_flex: 1 / 1_000_000
+})
+assert.equal(buildProviderCostBreakdown({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'claude-haiku-4-5',
+  cacheWriteTokens: 10,
+  cacheWrite1hTokens: 10,
+  serviceTier: 'priority'
+})?.cacheWrite1hUsdPer1M, 4)
+assert.equal(buildProviderCostBreakdown({
+  providerCode: ANTHROPIC_PROVIDER_CODE,
+  model: 'claude-haiku-4-5',
+  cacheWriteTokens: 10,
+  cacheWrite1hTokens: 10,
+  serviceTier: 'flex'
+})?.cacheWrite1hUsdPer1M, 1)
+Object.assign(tieredCacheWriteModel, originalTieredCacheWriteFields)
 assert.equal(buildProviderCostBreakdown({
   providerCode: ANTHROPIC_PROVIDER_CODE,
   model: 'claude-haiku-4-5',
@@ -1222,7 +1249,7 @@ const accountTestSource = readSource('modules/accounts/account-test.service.ts')
 const memoryGatewayHttpSource = readSource('modules/gateway/testing/memory-gateway-http.ts')
 assert.match(accountTestSource, /from '\.\.\/gateway\/testing\/memory-gateway-http\.js'/)
 assert.match(accountTestSource, /handleOpenAIGatewayRequest/)
-assert.match(accountTestSource, /candidateAccounts:\s*\[resolved\.account\]/)
+assert.match(accountTestSource, /candidateAccounts:\s*\[diagnosticCandidate\]/)
 assert.match(accountTestSource, /disableSessionAffinity:\s*true/)
 assert.match(accountTestSource, /trafficSource:\s*input\.trafficSource\s*\?\?\s*'manual_account_test'/)
 assert.match(accountTestSource, /testOpenAIAccountWithDiagnosticRetries/)
@@ -1305,7 +1332,7 @@ assert.doesNotMatch(cooldownAccountRetestSource, /waitForRetryDelay/)
 const accountHealthCheckSource = readSource('modules/background/account-health-check.service.ts')
 assert.match(accountHealthCheckSource, /diagnostics:\s*'limited'/)
 assert.doesNotMatch(accountHealthCheckSource, /\bmodel\s*:/)
-assert.match(accountHealthCheckSource, /trafficSource:\s*'cooldown_retest'/)
+assert.match(accountHealthCheckSource, /trafficSource:\s*'account_health_check'/)
 assert.doesNotMatch(accountHealthCheckSource, /requestShape/, '账号健康检查只能使用账户测试健康探针，不能复用失败请求形态')
 
 const gatewayAccountSideEffectsSource = readSource('modules/gateway/runtime/account-side-effects.service.ts')

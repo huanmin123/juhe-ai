@@ -18,6 +18,7 @@ clearGatewayProxyHealthForTest()
 testProxyBucket()
 testProxyUrlBucketMetadataRedaction()
 testBaseUrlBucket()
+testBaseUrlBucketOwnerIsolation()
 testBaseUrlBucketHalfOpen()
 testPriorityBoundary()
 testModelPriorityBoundary()
@@ -112,6 +113,30 @@ function testBaseUrlBucket(): void {
   clearGatewayProxyHealthForTest()
 }
 
+function testBaseUrlBucketOwnerIsolation(): void {
+  clearGatewayProxyHealthForTest()
+  const firstOwnerAccount = account('account-owner-a-1', 'proxy-owner-a', 'https://owner-isolated.example/v1', undefined, { ownerSystemAccountId: 'owner-a' })
+  const secondOwnerAccount = account('account-owner-b-1', 'proxy-owner-b', 'https://owner-isolated.example/v1', undefined, { ownerSystemAccountId: 'owner-b' })
+  const firstOwnerPeer = account('account-owner-a-2', 'proxy-owner-a-2', 'https://owner-isolated.example/v1', undefined, { ownerSystemAccountId: 'owner-a' })
+
+  recordGatewayUpstreamBucketFailure(firstOwnerAccount, 'upstream_response_failed')
+  const crossOwnerDecision = recordGatewayUpstreamBucketFailure(secondOwnerAccount, 'upstream_response_failed')
+  assert.equal(crossOwnerDecision.suspected, false, '不同物理账户所有者不能共同打开同一 Base URL 桶')
+
+  const sameOwnerDecision = recordGatewayUpstreamBucketFailure(firstOwnerPeer, 'upstream_response_failed')
+  assert.equal(sameOwnerDecision.suspected, true, '同一物理账户所有者的多个账户仍应共同触发短期桶')
+
+  const order = orderOpenAIAccountsByGatewayProxyHealth([firstOwnerAccount, secondOwnerAccount, firstOwnerPeer])
+  assert.deepEqual(
+    order.avoidedAccountIds.sort(),
+    [firstOwnerAccount.id, firstOwnerPeer.id].sort(),
+    '桶避让只能影响相同物理账户所有者的候选'
+  )
+  assert(order.accounts.some((item) => item.id === secondOwnerAccount.id), '其他所有者的账户必须保留且不受桶状态影响')
+
+  clearGatewayProxyHealthForTest()
+}
+
 function testBaseUrlBucketHalfOpen(): void {
   clearGatewayProxyHealthForTest()
   const startedAtMs = 10_000
@@ -133,7 +158,7 @@ function testBaseUrlBucketHalfOpen(): void {
   assert.deepEqual(order.halfOpenAccountIds, [first.id], '半开阶段应只放行一个探测账号')
   assert(order.halfOpenBucketKeys.some((key) => key.startsWith('baseUrl:https://half-open-upstream.example/v1')), '半开元数据应包含共享 baseUrl 桶')
   assert.deepEqual(order.avoidedAccountIds, [second.id], '同桶其他账号应继续避让直到探针成功')
-  assert.deepEqual(order.accounts.map((item) => item.id), [first.id, third.id], '半开探测账号应优先获得一次恢复探测机会，其他同桶账号不进入本轮尝试')
+  assert.deepEqual(order.accounts.map((item) => item.id), [first.id, third.id, second.id], '半开探测账号应优先，但其他同桶账号仍必须保留为兜底候选')
 
   const decision = recordGatewayUpstreamBucketFailure(first, 'half_open_probe_failed')
   assert.equal(decision.suspected, true, '半开探测失败应直接重新打开上游桶，不重新等待多账号阈值')
@@ -199,11 +224,11 @@ function account(
   proxyProfileId: string | undefined,
   baseUrl = 'https://example.invalid/v1',
   proxyUrl?: string,
-  options: { priority?: number } = {}
+  options: { priority?: number; ownerSystemAccountId?: string } = {}
 ): OpenAIAccountSecret {
   return {
     id,
-    systemAccountId: 'sys_admin',
+    systemAccountId: options.ownerSystemAccountId ?? 'sys_admin',
     name: id,
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -223,8 +248,8 @@ function account(
     schedulable: true,
     proxyProfileId,
     proxyUrl,
-    accountOwnerSystemAccountId: 'sys_admin',
-    groupOwnerSystemAccountId: 'sys_admin',
+    accountOwnerSystemAccountId: options.ownerSystemAccountId ?? 'sys_admin',
+    groupOwnerSystemAccountId: options.ownerSystemAccountId ?? 'sys_admin',
     accountAccessType: 'owner',
     groupAccessType: 'owner',
     streamFailureCount: 0

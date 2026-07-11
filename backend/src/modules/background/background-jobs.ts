@@ -41,6 +41,7 @@ import { currentCpuPercent, currentMemoryMetrics, currentNetworkMetrics } from '
 import { WorkerScheduler } from './worker-scheduler.js'
 import { getUsageRecordRedisStreamOldestCreatedAt } from '../gateway/usage/record-queue.service.js'
 import { DATA_RETENTION_CLEANUP_INTERVAL_MINUTES } from './data-retention-cleanup.constants.js'
+import { runAccountBalanceRefresh } from './account-balance-refresh.job.js'
 
 let started = false
 let usageStatsAggregationRunning = false
@@ -155,6 +156,7 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('resource-authorization-expiry-sweep'), intervalMs: minuteMs, initialDelayMs: 54 * secondMs, task: runResourceAuthorizationExpirySweep })
       scheduler.schedule({ name: backgroundScheduledJobName('expired-deleted-account-cleanup'), intervalMs: dailyIntervalMs, initialDelayMs: 14 * minuteMs, task: runExpiredDeletedAccountCleanup })
       scheduler.schedule({ name: backgroundScheduledJobName('account-health-check'), intervalMs: minuteMs, initialDelayMs: 90 * secondMs, task: () => runAccountHealthCheck({ settingsNumber }) })
+      scheduler.schedule({ name: backgroundScheduledJobName('account-balance-refresh'), intervalMs: minuteMs, initialDelayMs: 20 * secondMs, task: runAccountBalanceRefresh })
       scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 2 * secondMs, task: () => runCooldownAccountRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: 3 * secondMs, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('normal-route-speed-first-recovery-probe'), intervalMs: 10 * secondMs, initialDelayMs: 6 * secondMs, task: runNormalRouteSpeedFirstRecoveryProbe })

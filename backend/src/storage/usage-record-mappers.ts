@@ -77,6 +77,10 @@ export function usageRecordSummaryFromRow(
     model,
     upstreamModel: optionalString(row.upstream_model),
     pricingModel: optionalString(row.pricing_model),
+    requestedServiceTier: usageServiceTier(row.requested_service_tier),
+    effectiveServiceTier: usageServiceTier(row.effective_service_tier),
+    reportedServiceTier: usageServiceTier(row.reported_service_tier),
+    billedServiceTier: usageServiceTier(row.billed_service_tier),
     modelMappingApplied: row.model_mapping_applied === 1,
     modelMappingSource: optionalString(row.model_mapping_source),
     sourceEndpointFamily: optionalString(row.source_endpoint_family),
@@ -107,6 +111,10 @@ export function usageRecordSummaryFromRow(
     responseSnapshot: includeSnapshots ? parseOptionalJsonObject(row.response_snapshot_json) : undefined,
     createdAt: String(row.created_at)
   }
+}
+
+function usageServiceTier(value: unknown): UsageRecordSummary['billedServiceTier'] {
+  return value === 'default' || value === 'priority' || value === 'flex' ? value : undefined
 }
 
 function usageRecordTrafficSource(value: unknown): UsageRecordSummary['trafficSource'] {

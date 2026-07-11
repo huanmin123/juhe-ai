@@ -42,7 +42,25 @@ export function usageRecordCostMetadataRows(record: UsageRecordSummary): UsageRe
       value: `${record.sourceEndpointFamily} -> ${record.upstreamEndpointFamily}`
     })
   }
+  pushServiceTierRow(rows, 'requestedServiceTier', '客户端服务档位', record.requestedServiceTier)
+  pushServiceTierRow(rows, 'effectiveServiceTier', '实际上游服务档位', record.effectiveServiceTier)
+  pushServiceTierRow(rows, 'reportedServiceTier', '上游报告服务档位', record.reportedServiceTier)
+  pushServiceTierRow(rows, 'billedServiceTier', '计费服务档位', record.billedServiceTier)
   return rows
+}
+
+function pushServiceTierRow(
+  rows: UsageRecordCostDetailRow[],
+  key: string,
+  label: string,
+  tier: UsageRecordSummary['billedServiceTier']
+): void {
+  if (!tier) return
+  rows.push({
+    key,
+    label,
+    value: tier === 'priority' ? 'Priority' : tier === 'flex' ? 'Flex' : 'Default'
+  })
 }
 
 export function usageRecordCostTokenRows(record: UsageRecordSummary): UsageRecordCostDetailRow[] {

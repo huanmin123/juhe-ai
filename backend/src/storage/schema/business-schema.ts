@@ -293,6 +293,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       last_health_check_error_message TEXT,
       stream_failure_count INTEGER NOT NULL DEFAULT 0,
       stream_failure_window_started_at TEXT,
+      balance_query_enabled INTEGER NOT NULL DEFAULT 0,
+      balance_query_config_json TEXT NOT NULL DEFAULT '{}',
+      balance_query_next_refresh_at TEXT,
       authorization_instance_source_account_id TEXT,
       authorization_instance_authorization_id TEXT,
       authorization_instance_owner_system_account_id TEXT,
@@ -841,6 +844,11 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_balance_query_due
+      ON accounts(balance_query_next_refresh_at ASC, id ASC)
+      WHERE balance_query_enabled = 1
+        AND deleted_at IS NULL
+        AND authorization_instance_authorization_id IS NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_account_api_key_runtime_unique
       ON account_api_key_runtime_states(account_id, key_fingerprint);
     CREATE INDEX IF NOT EXISTS idx_account_api_key_runtime_status

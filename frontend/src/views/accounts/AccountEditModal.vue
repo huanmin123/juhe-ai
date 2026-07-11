@@ -157,6 +157,11 @@
                 :readonly="authorizedEditing"
               />
 
+              <AccountBalanceQuerySection
+                :form="form"
+                :readonly="authorizedEditing"
+              />
+
               <AccountAvailabilityScheduleSection
                 :form="form"
                 :readonly="authorizedEditing"
@@ -199,6 +204,7 @@ import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountExtraInfoSection from './AccountExtraInfoSection.vue'
+import AccountBalanceQuerySection from './AccountBalanceQuerySection.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountGptRequestOverridesSection from './AccountGptRequestOverridesSection.vue'
 import AccountMetaFields from './AccountMetaFields.vue'

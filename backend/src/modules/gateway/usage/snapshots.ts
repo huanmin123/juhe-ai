@@ -4,6 +4,8 @@ import type { Request } from 'express'
 import {
   buildGatewayRequestBodySummary
 } from '../request/body.js'
+import { getGatewayRequestBodyState } from '../request/body.js'
+import { normalizeUsageServiceTier, type UsageServiceTier } from './service-tier.js'
 import {
   headersToSafeObject,
   sanitizeHeaderRecord,
@@ -17,6 +19,7 @@ export interface UsageRequestSnapshot {
   originalUrl: string
   clientIp?: string
   traceId: string
+  requestedServiceTier?: UsageServiceTier
   headers: Record<string, string | string[]>
   body?: unknown
   bodyOmission?: unknown
@@ -48,6 +51,10 @@ export function buildUsageRequestSnapshot(req: Request, traceId: string, clientI
     originalUrl: req.originalUrl,
     clientIp,
     traceId,
+    requestedServiceTier: normalizeUsageServiceTier(
+      getGatewayRequestBodyState(req)?.serviceTier
+        ?? (typeof req.body === 'object' && req.body !== null ? (req.body as Record<string, unknown>).service_tier : undefined)
+    ),
     headers: sanitizeRequestHeaders(req.headers)
   }
   const bodySummary = buildGatewayRequestBodySummary(req)

@@ -69,6 +69,7 @@ export interface OpenAIUpstreamDispatchResult {
   upstreamUrl: string
   auditAttemptId: string
   attemptStartedAt: number
+  effectiveServiceTier: 'default' | 'priority' | 'flex'
   releaseConcurrency: () => void
   markFirstOutput: () => void
   confirmSameAccountApiKeyFailures: () => Promise<void>
@@ -268,6 +269,7 @@ export async function fetchFirstAvailableUpstream(
           let account = originalAccount
           let headers: Headers
           let body: Buffer | string | undefined
+          let effectiveServiceTier = usageContext.effectiveServiceTier ?? usageContext.requestedServiceTier ?? 'default'
           let upstreamUrls: string[]
           const preparationStartedAt = Date.now()
           try {
@@ -301,6 +303,8 @@ export async function fetchFirstAvailableUpstream(
             })
             headers = requestParts.headers
             body = requestParts.body
+            effectiveServiceTier = requestParts.effectiveServiceTier
+            usageContext.effectiveServiceTier = effectiveServiceTier
           } catch (error) {
             if (error instanceof GatewayAgentGuidanceResponse && error.accountScoped) {
               lastAttempt = accountScopedGuidanceAttempt(account, error)
@@ -420,6 +424,7 @@ export async function fetchFirstAvailableUpstream(
                     upstreamUrl,
                     auditAttemptId,
                     attemptStartedAt,
+                    effectiveServiceTier,
                     releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release, halfOpenLease),
                     markFirstOutput: concurrencySlot.markFirstOutput,
                     confirmSameAccountApiKeyFailures: () => recordConfirmedSameAccountApiKeyFailures(pendingApiKeyFailures, account, usageContext)

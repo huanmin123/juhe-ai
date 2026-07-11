@@ -200,14 +200,22 @@ const mappedCostRecord = usageRecordFixture({
   modelMappingApplied: true,
   modelMappingSource: 'account',
   sourceEndpointFamily: 'responses',
-  upstreamEndpointFamily: 'responses'
+  upstreamEndpointFamily: 'responses',
+  requestedServiceTier: 'flex',
+  effectiveServiceTier: 'priority',
+  reportedServiceTier: 'priority',
+  billedServiceTier: 'priority'
 })
 assertArrayEqual(rowTexts(usageRecordCostMetadataRows(mappedCostRecord)), [
   '请求模型 gpt-5.5',
   '实际上游模型 gpt-5.6-terra',
   '计价模型 gpt-5.6-terra',
   '映射来源 账户配置',
-  '协议映射 responses -> responses'
+  '协议映射 responses -> responses',
+  '客户端服务档位 Flex',
+  '实际上游服务档位 Priority',
+  '上游报告服务档位 Priority',
+  '计费服务档位 Priority'
 ], '成本明细应展示请求模型、实际上游模型、计价模型、映射来源和协议族')
 assertTrue(usageRecordHasCostDetails(mappedCostRecord), '只有模型映射元数据时也应允许查看成本明细')
 

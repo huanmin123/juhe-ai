@@ -240,6 +240,20 @@ export const backgroundScheduledJobs = [
     writes: ['stats:account_quality_*']
   }),
   scheduled({
+    jobName: 'account-balance-refresh',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: false,
+    singleOwner: false,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:accounts', 'stats:account_usage_snapshots'],
+    notes: '按账户租约刷新物理单 API Key 上游余额，单轮有界且不影响账户健康状态'
+  }),
+  scheduled({
     jobName: 'openai-oauth-access-token-refresh',
     category: 'scheduled',
     kind: 'probe',

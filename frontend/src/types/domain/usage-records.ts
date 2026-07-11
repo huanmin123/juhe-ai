@@ -51,6 +51,10 @@ export interface UsageRecordSummary {
   model?: string
   upstreamModel?: string
   pricingModel?: string
+  requestedServiceTier?: 'default' | 'priority' | 'flex'
+  effectiveServiceTier?: 'default' | 'priority' | 'flex'
+  reportedServiceTier?: 'default' | 'priority' | 'flex'
+  billedServiceTier?: 'default' | 'priority' | 'flex'
   modelMappingApplied?: boolean
   modelMappingSource?: string
   sourceEndpointFamily?: string

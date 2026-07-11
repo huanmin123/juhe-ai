@@ -43,6 +43,14 @@ export interface AccountFormModel {
   proxyProfileId?: string
   availabilitySchedule: AccountAvailabilityScheduleForm
   notes: string
+  balanceQueryEnabled: boolean
+  balanceQueryAdapter: 'sub2api' | 'newapi' | 'litellm' | 'custom'
+  balanceQueryIntervalMinutes: number
+  balanceQueryCustomPath: string
+  balanceQueryRemainingPointer: string
+  balanceQueryTotalPointer: string
+  balanceQueryUsedPointer: string
+  balanceQueryDivisor: string
 }
 
 export type AccountOAuthAuthorizeForm = Pick<AccountFormModel, 'oauthMode' | 'callbackUrl' | 'refreshToken'>

@@ -35,6 +35,7 @@ import {
   isAccountGptReasoningEffortOverrideAvailable,
   isAccountGptServiceTierOverrideAvailable
 } from './accountGptRequestOverrides'
+import { buildAccountBalancePayload, validateAccountBalanceForm } from './accountBalanceQuery'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
 
@@ -55,6 +56,8 @@ export type AccountSavePayload = {
   availabilitySchedule?: AccountAvailabilitySchedulePayload | null
   groupId?: string
   notes: string
+  balanceQueryEnabled?: boolean
+  balanceQueryConfig?: Record<string, unknown>
 }
 
 export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type'>
@@ -128,6 +131,8 @@ export function validateAccountSaveForm(input: {
   if (tagValidation) return tagValidation
   const scheduleValidation = validateAccountAvailabilityScheduleForm(form.availabilitySchedule)
   if (scheduleValidation) return scheduleValidation
+  const balanceValidation = validateAccountBalanceForm(form)
+  if (balanceValidation) return balanceValidation
   const endpointModeValidation = validateAccountEndpointModes({
     modes: form.supportedEndpointModes,
     type: form.type,
@@ -181,6 +186,7 @@ export function buildAccountSavePayload(input: {
   errorPolicyRules: AccountErrorPolicyRuleForm[]
   responseInspectionRules: AccountResponseInspectionRuleForm[]
 }): AccountSavePayload {
+  const balancePayload = buildAccountBalancePayload(input.form)
   return {
     providerCode: input.form.providerCode,
     providerProtocolProfileId: input.form.providerProtocolProfileId,
@@ -197,7 +203,8 @@ export function buildAccountSavePayload(input: {
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
     availabilitySchedule: buildAccountAvailabilitySchedulePayload(input.form.availabilitySchedule),
     groupId: input.form.groupId,
-    notes: input.form.notes
+    notes: input.form.notes,
+    ...balancePayload
   }
 }
 
@@ -215,7 +222,9 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountU
     accountExpiresAt: payload.accountExpiresAt,
     availabilitySchedule: payload.availabilitySchedule,
     groupId: payload.groupId,
-    notes: payload.notes
+    notes: payload.notes,
+    balanceQueryEnabled: payload.balanceQueryEnabled,
+    balanceQueryConfig: payload.balanceQueryConfig
   }
 }
 

@@ -44,6 +44,7 @@ export interface GatewayRequestBodyState {
   jsonParseWarningBytes: number
   model?: string
   stream?: boolean
+  serviceTier?: 'default' | 'priority' | 'flex'
   imageGeneration?: boolean
   imageGenerationForced?: boolean
 }
@@ -89,6 +90,7 @@ export function createGatewayRequestBodyState(input: {
   parsedBody?: unknown
   model?: string
   stream?: boolean
+  serviceTier?: 'default' | 'priority' | 'flex'
   imageGeneration?: boolean
   imageGenerationForced?: boolean
 }): GatewayRequestBodyState {
@@ -105,6 +107,11 @@ export function createGatewayRequestBodyState(input: {
     jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes,
     model: input.model ?? (typeof parsedBody?.model === 'string' ? parsedBody.model : undefined),
     stream: input.stream ?? (typeof parsedBody?.stream === 'boolean' ? parsedBody.stream : undefined),
+    serviceTier: input.serviceTier ?? (
+      parsedBody?.service_tier === 'priority' || parsedBody?.service_tier === 'flex'
+        ? parsedBody.service_tier
+        : 'default'
+    ),
     imageGeneration: input.imageGeneration ?? (
       imageInspection ? imageInspection.imageToolCount > 0 || imageInspection.forcedImageGeneration : false
     ),

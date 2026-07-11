@@ -82,7 +82,7 @@ interface UsageRecordShardEntryScope {
   accountId?: string | null
 }
 
-const usageRecordShardSchemaVersion = 5
+const usageRecordShardSchemaVersion = 6
 const usageRecordShardWindowMaxDays = 31
 const shardDatabases = new Map<string, DatabaseSync>()
 const registeredUsageRecordShardKeys = new Set<string>()
@@ -90,14 +90,14 @@ const require = createRequire(import.meta.url)
 let DatabaseSyncConstructor: typeof import('node:sqlite').DatabaseSync | undefined
 const usageRecordInsertSql = `
   INSERT INTO usage_records (
-    id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, provider_protocol_profile_id, usage_semantic, model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream,
+    id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, provider_protocol_profile_id, usage_semantic, model, upstream_model, pricing_model, requested_service_tier, effective_service_tier, reported_service_tier, billed_service_tier, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream,
     status_code, success, failure_attribution, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens, input_audio_tokens, output_audio_tokens, output_image_count, cost_usd, error_code, error_message,
     request_snapshot_json, response_snapshot_json,
     account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type,
     account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
     group_authorization_id, group_authorization_source_type, group_authorization_source_team_id,
     created_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(id) DO NOTHING
 `
 
@@ -204,6 +204,10 @@ export function applyUsageRecordShardBaseSchema(database: UsageRecordShardSchema
       model TEXT,
       upstream_model TEXT,
       pricing_model TEXT,
+      requested_service_tier TEXT NOT NULL DEFAULT 'default',
+      effective_service_tier TEXT NOT NULL DEFAULT 'default',
+      reported_service_tier TEXT,
+      billed_service_tier TEXT NOT NULL DEFAULT 'default',
       model_mapping_applied INTEGER NOT NULL DEFAULT 0,
       model_mapping_source TEXT,
       source_endpoint_family TEXT,

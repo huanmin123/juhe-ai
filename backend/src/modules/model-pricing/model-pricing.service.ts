@@ -37,6 +37,8 @@ export interface ProviderModelPricing {
   flexCachedInputUsdPer1M?: number
   flexCacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
+  priorityCacheWrite1hUsdPer1M?: number
+  flexCacheWrite1hUsdPer1M?: number
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
@@ -145,7 +147,7 @@ export function estimateProviderCostUsd(input: CostInput): number | undefined {
   const outputPrice = tokenPrices.outputPrice
   const cachedInputPrice = tokenPrices.cachedInputPrice ?? inputPrice
   const cacheWritePrice = tokenPrices.cacheWritePrice
-  const cacheWrite1hPrice = normalizePrice(pricing.cache_creation_input_token_cost_above_1hr) ?? cacheWritePrice
+  const cacheWrite1hPrice = tokenPrices.cacheWrite1hPrice ?? cacheWritePrice
   const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token)
   const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token)
   const inputAudioPrice = normalizePrice(pricing.input_cost_per_audio_token)
@@ -188,8 +190,9 @@ export function estimateProviderCacheWriteCostUsd(input: CostInput): number | un
   const pricing = findProviderModelPricing(input.providerCode, input.model)
   if (!pricing) return undefined
 
-  const cacheWritePrice = effectiveRawTokenPrices(pricing, input).cacheWritePrice
-  const cacheWrite1hPrice = normalizePrice(pricing.cache_creation_input_token_cost_above_1hr) ?? cacheWritePrice
+  const tokenPrices = effectiveRawTokenPrices(pricing, input)
+  const cacheWritePrice = tokenPrices.cacheWritePrice
+  const cacheWrite1hPrice = tokenPrices.cacheWrite1hPrice ?? cacheWritePrice
   if (cacheWritePrice === undefined && cacheWrite1hPrice === undefined) return undefined
 
   const cacheWriteTokens = Math.max(input.cacheWriteTokens ?? 0, 0)
@@ -228,7 +231,7 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
   const outputPrice = tokenPrices.outputPrice
   const cachedInputPrice = tokenPrices.cachedInputPrice ?? inputPrice
   const cacheWritePrice = tokenPrices.cacheWritePrice
-  const cacheWrite1hPrice = normalizePrice(pricing.cache_creation_input_token_cost_above_1hr) ?? cacheWritePrice
+  const cacheWrite1hPrice = tokenPrices.cacheWrite1hPrice ?? cacheWritePrice
   const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token)
   const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token)
   const inputAudioPrice = normalizePrice(pricing.input_cost_per_audio_token)
@@ -363,6 +366,7 @@ function effectiveRawTokenPrices(pricing: RawModelPricing, input: CostInput): {
   outputPrice?: number
   cachedInputPrice?: number
   cacheWritePrice?: number
+  cacheWrite1hPrice?: number
 } {
   const tier = input.serviceTier
   const tierSupported = tier === 'priority' || tier === 'flex'
@@ -386,7 +390,8 @@ function effectiveRawTokenPrices(pricing: RawModelPricing, input: CostInput): {
     inputPrice: multiplyPrice(tierPrice(pricing.input_cost_per_token, pricing.input_cost_per_token_priority, pricing.input_cost_per_token_flex), inputMultiplier),
     outputPrice: multiplyPrice(tierPrice(pricing.output_cost_per_token, pricing.output_cost_per_token_priority, pricing.output_cost_per_token_flex), outputMultiplier),
     cachedInputPrice: multiplyPrice(tierPrice(pricing.cache_read_input_token_cost, pricing.cache_read_input_token_cost_priority, pricing.cache_read_input_token_cost_flex), inputMultiplier),
-    cacheWritePrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost, pricing.cache_creation_input_token_cost_priority, pricing.cache_creation_input_token_cost_flex), inputMultiplier)
+    cacheWritePrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost, pricing.cache_creation_input_token_cost_priority, pricing.cache_creation_input_token_cost_flex), inputMultiplier),
+    cacheWrite1hPrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost_above_1hr, pricing.cache_creation_input_token_cost_above_1hr_priority, pricing.cache_creation_input_token_cost_above_1hr_flex), inputMultiplier)
   }
 }
 
@@ -432,6 +437,8 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     flexCachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_flex),
     flexCacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_flex),
     cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr),
+    priorityCacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_priority),
+    flexCacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_flex),
     imageInputUsdPer1M: perMillion(item.input_cost_per_image_token),
     imageOutputUsdPer1M: perMillion(item.output_cost_per_image_token),
     audioInputUsdPer1M: perMillion(item.input_cost_per_audio_token),

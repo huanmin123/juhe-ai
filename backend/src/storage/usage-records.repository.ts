@@ -66,6 +66,10 @@ export interface UsageRecordSummary {
   model?: string
   upstreamModel?: string
   pricingModel?: string
+  requestedServiceTier?: 'default' | 'priority' | 'flex'
+  effectiveServiceTier?: 'default' | 'priority' | 'flex'
+  reportedServiceTier?: 'default' | 'priority' | 'flex'
+  billedServiceTier?: 'default' | 'priority' | 'flex'
   modelMappingApplied?: boolean
   modelMappingSource?: string
   sourceEndpointFamily?: string
@@ -154,7 +158,10 @@ export interface UsageRecordInput {
   model?: string
   upstreamModel?: string
   pricingModel?: string
-  serviceTier?: 'default' | 'priority' | 'flex'
+  requestedServiceTier?: 'default' | 'priority' | 'flex'
+  effectiveServiceTier?: 'default' | 'priority' | 'flex'
+  reportedServiceTier?: 'default' | 'priority' | 'flex'
+  billedServiceTier?: 'default' | 'priority' | 'flex'
   priorityPriceMultiplier?: number
   flexPriceMultiplier?: number
   modelMappingApplied?: boolean
@@ -503,7 +510,7 @@ async function enrichSingleUsageRecordPricingAsync(
         providerCode,
         systemAccountId: catalogSystemAccountId,
         model: costModel,
-        serviceTier: enriched.serviceTier,
+        serviceTier: enriched.billedServiceTier,
         priorityPriceMultiplier: enriched.priorityPriceMultiplier,
         flexPriceMultiplier: enriched.flexPriceMultiplier,
         cacheReadTokens: enriched.cacheReadTokens
@@ -518,7 +525,7 @@ async function enrichSingleUsageRecordPricingAsync(
         providerCode,
         systemAccountId: catalogSystemAccountId,
         model: costModel,
-        serviceTier: enriched.serviceTier,
+        serviceTier: enriched.billedServiceTier,
         priorityPriceMultiplier: enriched.priorityPriceMultiplier,
         flexPriceMultiplier: enriched.flexPriceMultiplier,
         cacheWriteTokens: enriched.cacheWriteTokens,
@@ -531,7 +538,7 @@ async function enrichSingleUsageRecordPricingAsync(
         providerCode,
         systemAccountId: catalogSystemAccountId,
         model: costModel,
-        serviceTier: enriched.serviceTier,
+        serviceTier: enriched.billedServiceTier,
         priorityPriceMultiplier: enriched.priorityPriceMultiplier,
         flexPriceMultiplier: enriched.flexPriceMultiplier,
         inputTokens: enriched.inputTokens,
@@ -656,6 +663,10 @@ function buildUsageRecordBatchWritePlan(
         input.model ?? null,
         input.upstreamModel ?? null,
         input.pricingModel ?? null,
+        input.requestedServiceTier ?? 'default',
+        input.effectiveServiceTier ?? input.requestedServiceTier ?? 'default',
+        input.reportedServiceTier ?? null,
+        input.billedServiceTier ?? input.reportedServiceTier ?? input.effectiveServiceTier ?? input.requestedServiceTier ?? 'default',
         input.modelMappingApplied ? 1 : 0,
         input.modelMappingSource ?? null,
         input.sourceEndpointFamily ?? null,
@@ -778,6 +789,10 @@ const postgresUsageRecordColumns = [
   'model',
   'upstream_model',
   'pricing_model',
+  'requested_service_tier',
+  'effective_service_tier',
+  'reported_service_tier',
+  'billed_service_tier',
   'model_mapping_applied',
   'model_mapping_source',
   'source_endpoint_family',

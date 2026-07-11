@@ -210,6 +210,29 @@ export interface AccountTagSummary {
   updatedAt?: string
 }
 
+export type AccountBalanceAdapter = 'sub2api' | 'newapi' | 'litellm' | 'custom'
+export type AccountBalanceStatus = 'pending' | 'refreshing' | 'fresh' | 'unlimited' | 'unsupported' | 'failed'
+
+export interface AccountBalanceQueryConfig {
+  adapter: AccountBalanceAdapter
+  intervalMinutes: number
+  custom?: {
+    path: string
+    remainingPointer?: string
+    totalPointer?: string
+    usedPointer?: string
+    divisor?: string
+  }
+}
+
+export interface AccountBalanceSnapshot {
+  status: AccountBalanceStatus
+  remainingUsd?: string
+  errorMessage?: string
+  lastAttemptAt?: string
+  lastSuccessAt?: string
+}
+
 export interface AccountTagsUpdateResult {
   id: string
   tags: Array<Pick<AccountTagSummary, 'id' | 'name'>>
@@ -276,6 +299,10 @@ export interface AccountSummary {
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
+  balanceQueryEnabled?: boolean
+  balanceQueryConfig?: AccountBalanceQueryConfig
+  balanceQueryNextRefreshAt?: string
+  balanceSnapshot?: AccountBalanceSnapshot
   lastUsedAt?: string
   todayUsage: AccountUsageSummary
   usage: AccountUsageSummary

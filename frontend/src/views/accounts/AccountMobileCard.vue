@@ -60,7 +60,7 @@
       </div>
       <div class="account-mobile-meta-item">
         <span>用量(日)</span>
-        <AccountUsageCell :account="account" />
+        <AccountUsageCell :account="account" :refreshing="balanceRefreshing" @refresh-balance="$emit('refresh-balance')" />
       </div>
       <div v-if="accountDisplayExpiresAt(account)" class="account-mobile-meta-item account-mobile-meta-wide">
         <span>到期时间</span>
@@ -111,6 +111,7 @@ const props = defineProps<{
   providerName: string
   proxy?: ProxyProfileOptionSummary
   selected: boolean
+  balanceRefreshing?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -120,6 +121,7 @@ const emit = defineEmits<{
   (event: 'bind-group'): void
   (event: 'menu-click', menuEvent: { key: string | number }): void
   (event: 'return-authorization'): void
+  (event: 'refresh-balance'): void
   (event: 'test'): void
   (event: 'toggle-selection'): void
 }>()
