@@ -1,4 +1,12 @@
-import type { AccountType, ProviderCode, ProviderDefinition, ProviderProtocolProfileDefinition, ProtocolEndpointFamilyDefinition } from '../domain/types.js'
+import {
+  isAdminRole,
+  type AccountType,
+  type ProviderCode,
+  type ProviderDefinition,
+  type ProviderProtocolProfileDefinition,
+  type ProtocolEndpointFamilyDefinition,
+  type SystemAccountRole
+} from '../domain/types.js'
 import {
   ANTHROPIC_PROTOCOL_CODE,
   ANTHROPIC_PROTOCOL_VERSION,
@@ -55,6 +63,10 @@ interface ProviderProfileFamilyRow {
   family_code: string
   name: string
   description: string | null
+}
+
+interface SystemAccountRoleRow {
+  role: SystemAccountRole
 }
 
 const maxProviderDefinitions = 50
@@ -303,8 +315,10 @@ export async function isProtocolProviderCodeAsync(providerCode: string, protocol
 export function findProviderDefaultHealthCheckModel(providerCode: string, systemAccountId?: string): string | undefined {
   const code = providerCode.trim()
   if (!code) return undefined
-  const preference = findProviderDefaultHealthCheckModelPreference(code, systemAccountId)
-  if (preference) return preference
+  if (shouldReadProviderDefaultHealthCheckModelPreference(systemAccountId)) {
+    const preference = findProviderDefaultHealthCheckModelPreference(code, systemAccountId)
+    if (preference) return preference
+  }
   const systemDefault = findProviderSystemDefaultHealthCheckModel(code)
   if (systemDefault) return systemDefault
   const row = getBusinessDatabase()
@@ -333,8 +347,10 @@ export async function findProviderDefaultHealthCheckModelAsync(providerCode: str
   }
   const code = providerCode.trim()
   if (!code) return undefined
-  const preference = await findProviderDefaultHealthCheckModelPreferenceAsync(code, systemAccountId)
-  if (preference) return preference
+  if (await shouldReadProviderDefaultHealthCheckModelPreferenceAsync(systemAccountId)) {
+    const preference = await findProviderDefaultHealthCheckModelPreferenceAsync(code, systemAccountId)
+    if (preference) return preference
+  }
   const systemDefault = await findProviderSystemDefaultHealthCheckModelAsync(code)
   if (systemDefault) return systemDefault
   const client = await getProviderDatabaseClient()
@@ -353,6 +369,33 @@ export async function findProviderDefaultHealthCheckModelAsync(providerCode: str
   `, [code])
   const model = row?.default_health_check_model?.trim()
   return model || undefined
+}
+
+function shouldReadProviderDefaultHealthCheckModelPreference(systemAccountId?: string): boolean {
+  const id = systemAccountId?.trim()
+  if (!id) return true
+  const row = getBusinessDatabase()
+    .prepare(`
+      SELECT role
+      FROM system_accounts
+      WHERE id = ?
+      LIMIT 1
+    `)
+    .get(id) as unknown as SystemAccountRoleRow | undefined
+  return !isAdminRole(row?.role)
+}
+
+async function shouldReadProviderDefaultHealthCheckModelPreferenceAsync(systemAccountId?: string): Promise<boolean> {
+  const id = systemAccountId?.trim()
+  if (!id) return true
+  const client = await getProviderDatabaseClient()
+  const row = await client.one<SystemAccountRoleRow>(`
+    SELECT role
+    FROM ${providerTable(client, 'system_accounts')}
+    WHERE id = ?
+    LIMIT 1
+  `, [id])
+  return !isAdminRole(row?.role)
 }
 
 export function findProviderDefaultSupportedModels(providerCode: string): string[] {
