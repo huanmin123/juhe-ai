@@ -19,7 +19,8 @@ export const baseModelColumns = [
   { title: '发布时间', key: 'releaseDate', width: 120 },
   { title: '用途', key: 'category', width: 120 },
   { title: '接口协议', key: 'protocols', width: 230 },
-  { title: '请求能力', key: 'capabilities', width: 320 },
+  { title: '服务等级', key: 'serviceTiers', width: 150 },
+  { title: '思考级别', key: 'reasoningEfforts', width: 300 },
   { title: '计费', key: 'prices', width: 230 },
   { title: '缓存写入', key: 'cacheWrite', width: 180 },
   { title: '图片 token 价格', key: 'imageTokenPrice', width: 180 },
@@ -33,7 +34,8 @@ export function buildProviderModelColumns(category: ModelCategoryKey, rows: Prov
   const visibleKeys = new Set(['model', 'scope', 'status', 'releaseDate', 'category', 'protocols', 'actions'])
 
   if (category === 'text') {
-    visibleKeys.add('capabilities')
+    visibleKeys.add('serviceTiers')
+    visibleKeys.add('reasoningEfforts')
     visibleKeys.add('prices')
     visibleKeys.add('cacheWrite')
   }

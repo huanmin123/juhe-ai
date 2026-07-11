@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { buildProviderModelColumns } from '../../views/providers/providerModelTableState'
 
 import {
   accountGptRequestOverrideCapabilities,
@@ -18,7 +19,10 @@ import {
   createCustomModelFormFromPricing,
   emptyCustomModelForm
 } from '../../views/providers/customProviderModelForm'
-import { formatModelRequestCapabilities } from '../../views/providers/providerModelFormatters'
+import {
+  formatModelReasoningCapabilities,
+  formatModelRequestCapabilities
+} from '../../views/providers/providerModelFormatters'
 import { FALLBACK_PROVIDERS } from '../../views/accounts/accountOptions'
 import type {
   ProviderModelPricing,
@@ -26,6 +30,11 @@ import type {
 } from '../../types/domain'
 import type { AccountFormModel } from '../../views/accounts/accountFormTypes'
 import type { AccountModelSelectOption } from '../../views/accounts/accountEditFormPayload'
+
+const textColumnKeys = buildProviderModelColumns('text', []).map((column) => column.key)
+assert(textColumnKeys.includes('serviceTiers'), '模型目录必须独立展示服务等级列')
+assert(textColumnKeys.includes('reasoningEfforts'), '模型目录必须独立展示思考级别列')
+assert.equal(textColumnKeys.includes('capabilities'), false, '模型目录不能继续合并请求能力列')
 
 const modelOptions: AccountModelSelectOption[] = [
   {
@@ -176,6 +185,11 @@ assert.deepEqual(loadedCustomForm.supportedServiceTiers, ['priority'], '自定�
 assert.deepEqual(loadedCustomForm.supportedReasoningEfforts, ['high', 'max'], '自定义模型编辑必须恢复 wire 思考能力')
 assert.equal(loadedCustomForm.defaultReasoningEffort, 'high', '自定义模型编辑必须恢复 wire 默认思考级别')
 assert.match(formatModelRequestCapabilities(catalogRecord), /Codex High \/ Ultra/, '模型目录可以展示 Codex Ultra 能力')
+assert.doesNotMatch(
+  formatModelReasoningCapabilities(catalogRecord),
+  /服务等级|Priority|Flex/,
+  '移动端思考级别不能重复展示服务等级'
+)
 assert.doesNotMatch(
   availableAccountGptReasoningEffortOptions(apiKeyCapabilities).map((option) => option.value).join(','),
   /ultra/,

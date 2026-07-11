@@ -186,11 +186,8 @@ export function formatModelReasoningEffort(value: ProviderModelReasoningEffort |
   return 'Ultra'
 }
 
-export function formatModelRequestCapabilities(item: ProviderModelPricing): string {
+export function formatModelReasoningCapabilities(item: ProviderModelPricing): string {
   const parts: string[] = []
-  if (item.supportedServiceTiers?.length) {
-    parts.push(`服务等级 ${item.supportedServiceTiers.map(formatModelServiceTier).join(' / ')}`)
-  }
   if (item.supportedReasoningEfforts?.length) {
     const defaultEffort = item.defaultReasoningEffort
       ? `，默认 ${formatModelReasoningEffort(item.defaultReasoningEffort)}`
@@ -203,6 +200,16 @@ export function formatModelRequestCapabilities(item: ProviderModelPricing): stri
   if (item.codexMultiAgentVersion) {
     parts.push(`多代理 ${item.codexMultiAgentVersion}`)
   }
+  return parts.join('；') || '-'
+}
+
+export function formatModelRequestCapabilities(item: ProviderModelPricing): string {
+  const parts: string[] = []
+  if (item.supportedServiceTiers?.length) {
+    parts.push(`服务等级 ${item.supportedServiceTiers.map(formatModelServiceTier).join(' / ')}`)
+  }
+  const reasoningCapabilities = formatModelReasoningCapabilities(item)
+  if (reasoningCapabilities !== '-') parts.push(reasoningCapabilities)
   return parts.join('；') || '-'
 }
 

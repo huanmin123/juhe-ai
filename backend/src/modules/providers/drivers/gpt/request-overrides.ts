@@ -134,7 +134,6 @@ const gptReasoningEffortOverrides = new Set<GptReasoningEffortOverride>([
   'max'
 ])
 
-const gptServiceTierOrder: readonly GptServiceTierOverride[] = ['flex', 'default', 'priority']
 const gptReasoningEffortOrder: readonly GptReasoningEffortOverride[] = [
   'none',
   'minimal',
@@ -150,7 +149,8 @@ function downgradedServiceTier(
   supported: readonly GptServiceTier[]
 ): GptServiceTierOverride | undefined {
   if (!configured) return undefined
-  return highestSupportedAtOrBelow(configured, ['default', ...supported], gptServiceTierOrder)
+  if (configured === 'default') return supported.length ? 'default' : undefined
+  return supported.includes(configured) ? configured : undefined
 }
 
 function downgradedReasoningEffort(

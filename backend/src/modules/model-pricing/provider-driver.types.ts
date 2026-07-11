@@ -31,10 +31,18 @@ export interface RawModelPricing {
   catalog_order?: number
   release_date?: string
   input_cost_per_token?: number
+  input_cost_per_token_priority?: number
+  input_cost_per_token_flex?: number
   output_cost_per_token?: number
+  output_cost_per_token_priority?: number
+  output_cost_per_token_flex?: number
   cache_creation_input_token_cost?: number
+  cache_creation_input_token_cost_priority?: number
+  cache_creation_input_token_cost_flex?: number
   cache_creation_input_token_cost_above_1hr?: number
   cache_read_input_token_cost?: number
+  cache_read_input_token_cost_priority?: number
+  cache_read_input_token_cost_flex?: number
   input_cost_per_image_token?: number
   output_cost_per_image?: number
   output_cost_per_image_token?: number
@@ -43,6 +51,9 @@ export interface RawModelPricing {
   max_input_tokens?: number
   max_output_tokens?: number
   max_tokens?: number
+  long_context_input_token_threshold?: number
+  long_context_input_cost_multiplier?: number
+  long_context_output_cost_multiplier?: number
   shutdown_date?: string
   supported_api_protocols?: readonly ProviderModelApiProtocol[]
   supports_prompt_caching?: boolean

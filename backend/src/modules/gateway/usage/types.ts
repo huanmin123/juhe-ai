@@ -1,4 +1,5 @@
 export interface ParsedUsage {
+  serviceTier?: 'default' | 'priority' | 'flex'
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
@@ -18,6 +19,7 @@ export function emptyUsage(): ParsedUsage {
 
 export function mergeUsage(current: ParsedUsage, next: ParsedUsage): ParsedUsage {
   return {
+    serviceTier: next.serviceTier ?? current.serviceTier,
     inputTokens: next.inputTokens ?? current.inputTokens,
     outputTokens: next.outputTokens ?? current.outputTokens,
     cacheReadTokens: next.cacheReadTokens ?? current.cacheReadTokens,
@@ -33,7 +35,8 @@ export function mergeUsage(current: ParsedUsage, next: ParsedUsage): ParsedUsage
 }
 
 export function hasAnyUsageValue(value: ParsedUsage): boolean {
-  return value.inputTokens !== undefined
+  return value.serviceTier !== undefined
+    || value.inputTokens !== undefined
     || value.outputTokens !== undefined
     || value.cacheReadTokens !== undefined
     || value.cacheWriteTokens !== undefined

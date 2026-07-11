@@ -204,14 +204,14 @@ try {
   assert.equal(publicModels.has('openai-regression-personal'), false, 'GPT 模型目录不应反向包含 OpenAI 兼容自定义模型')
 
   const gpt56WireReasoning = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
-  const gpt56ServiceTiers = ['priority']
+  const gpt56ServiceTiers = ['priority', 'flex']
   const gpt56CodexReasoning = ['low', 'medium', 'high', 'xhigh', 'max']
   const gpt56Sol = publicCatalog.find((item) => item.model === 'gpt-5.6-sol')
   const gpt56Terra = publicCatalog.find((item) => item.model === 'gpt-5.6-terra')
   const gpt56Luna = publicCatalog.find((item) => item.model === 'gpt-5.6-luna')
   assert(gpt56Sol && gpt56Terra && gpt56Luna, 'GPT-5.6 Sol / Terra / Luna 必须进入模型目录')
   for (const item of [gpt56Sol, gpt56Terra, gpt56Luna]) {
-    assert.deepEqual(item.supportedServiceTiers, gpt56ServiceTiers, `${item.model} 必须精确声明 Priority`)
+    assert.deepEqual(item.supportedServiceTiers, gpt56ServiceTiers, `${item.model} 必须精确声明 Priority 与 Flex`)
     assert.deepEqual(item.supportedReasoningEfforts, gpt56WireReasoning, `${item.model} 必须精确声明 wire reasoning effort`)
     assert.equal(item.supportsServiceTier, true, `${item.model} supportsServiceTier 必须从精确数组派生`)
     assert.equal(item.supportedReasoningEfforts.includes('ultra' as never), false, `${item.model} wire effort 不能包含 Ultra`)
@@ -547,7 +547,7 @@ try {
   assert.deepEqual(codexSol.additional_speed_tiers, ['fast'])
   assert.deepEqual(codexTerra.additional_speed_tiers, ['fast'])
   assert.deepEqual(codexLuna.additional_speed_tiers, ['fast'])
-  assert.deepEqual(codexSol.service_tiers.map((item) => item.id), ['priority'])
+  assert.deepEqual(codexSol.service_tiers.map((item) => item.id), ['priority', 'flex'])
   assert.equal(codexSol.multi_agent_version, 'v2')
   assert.equal(codexTerra.multi_agent_version, 'v2')
   assert.equal(codexLuna.multi_agent_version, null)

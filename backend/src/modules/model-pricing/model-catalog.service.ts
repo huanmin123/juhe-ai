@@ -315,7 +315,8 @@ export async function estimateCatalogCostUsdAsync(input: CostInput & { systemAcc
 export function estimateCatalogCacheReadCostUsd(input: CostInput & { systemAccountId?: string }): number | undefined {
   const pricing = resolveCatalogPricing(input)
   if (!pricing || input.cacheReadTokens === undefined) return undefined
-  const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? perToken(pricing.inputUsdPer1M)
+  const prices = effectiveCatalogTokenPrices(pricing, input)
+  const cachedInputPrice = prices.cachedInputPrice ?? prices.inputPrice
   if (cachedInputPrice === undefined) return undefined
   return roundCost(Math.max(input.cacheReadTokens, 0) * cachedInputPrice)
 }
@@ -323,7 +324,8 @@ export function estimateCatalogCacheReadCostUsd(input: CostInput & { systemAccou
 export async function estimateCatalogCacheReadCostUsdAsync(input: CostInput & { systemAccountId?: string }): Promise<number | undefined> {
   const pricing = await resolveCatalogPricingAsync(input)
   if (!pricing || input.cacheReadTokens === undefined) return undefined
-  const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? perToken(pricing.inputUsdPer1M)
+  const prices = effectiveCatalogTokenPrices(pricing, input)
+  const cachedInputPrice = prices.cachedInputPrice ?? prices.inputPrice
   if (cachedInputPrice === undefined) return undefined
   return roundCost(Math.max(input.cacheReadTokens, 0) * cachedInputPrice)
 }
@@ -331,7 +333,8 @@ export async function estimateCatalogCacheReadCostUsdAsync(input: CostInput & { 
 export function estimateCatalogCacheWriteCostUsd(input: CostInput & { systemAccountId?: string }): number | undefined {
   const pricing = resolveCatalogPricing(input)
   if (!pricing || (input.cacheWriteTokens === undefined && input.cacheWrite1hTokens === undefined)) return undefined
-  const cacheWritePrice = perToken(pricing.cacheWriteUsdPer1M)
+  const prices = effectiveCatalogTokenPrices(pricing, input)
+  const cacheWritePrice = prices.cacheWritePrice
   const cacheWrite1hPrice = perToken(pricing.cacheWrite1hUsdPer1M) ?? cacheWritePrice
   if (cacheWritePrice === undefined && cacheWrite1hPrice === undefined) return undefined
   const cacheWriteTokens = Math.max(input.cacheWriteTokens ?? 0, 0)
@@ -346,7 +349,8 @@ export function estimateCatalogCacheWriteCostUsd(input: CostInput & { systemAcco
 export async function estimateCatalogCacheWriteCostUsdAsync(input: CostInput & { systemAccountId?: string }): Promise<number | undefined> {
   const pricing = await resolveCatalogPricingAsync(input)
   if (!pricing || (input.cacheWriteTokens === undefined && input.cacheWrite1hTokens === undefined)) return undefined
-  const cacheWritePrice = perToken(pricing.cacheWriteUsdPer1M)
+  const prices = effectiveCatalogTokenPrices(pricing, input)
+  const cacheWritePrice = prices.cacheWritePrice
   const cacheWrite1hPrice = perToken(pricing.cacheWrite1hUsdPer1M) ?? cacheWritePrice
   if (cacheWritePrice === undefined && cacheWrite1hPrice === undefined) return undefined
   const cacheWriteTokens = Math.max(input.cacheWriteTokens ?? 0, 0)
@@ -382,10 +386,11 @@ function buildCatalogCostBreakdownFromPricing(
   pricing: ProviderModelCatalogItem,
   input: CostInput & { systemAccountId?: string; costUsd?: number }
 ): ProviderCostBreakdown | undefined {
-  const inputPrice = perToken(pricing.inputUsdPer1M)
-  const outputPrice = perToken(pricing.outputUsdPer1M)
-  const cachedInputPrice = perToken(pricing.cachedInputUsdPer1M) ?? inputPrice
-  const cacheWritePrice = perToken(pricing.cacheWriteUsdPer1M)
+  const tokenPrices = effectiveCatalogTokenPrices(pricing, input)
+  const inputPrice = tokenPrices.inputPrice
+  const outputPrice = tokenPrices.outputPrice
+  const cachedInputPrice = tokenPrices.cachedInputPrice ?? inputPrice
+  const cacheWritePrice = tokenPrices.cacheWritePrice
   const cacheWrite1hPrice = perToken(pricing.cacheWrite1hUsdPer1M) ?? cacheWritePrice
   const inputImagePrice = perToken(pricing.imageInputUsdPer1M)
   const outputImagePrice = perToken(pricing.imageOutputUsdPer1M)
@@ -420,12 +425,12 @@ function buildCatalogCostBreakdownFromPricing(
   return {
     inputCostUsd,
     outputCostUsd,
-    inputUsdPer1M: pricing.inputUsdPer1M,
-    outputUsdPer1M: pricing.outputUsdPer1M,
+    inputUsdPer1M: perMillion(inputPrice),
+    outputUsdPer1M: perMillion(outputPrice),
     cacheReadCostUsd,
-    cacheReadUsdPer1M: pricing.cachedInputUsdPer1M ?? pricing.inputUsdPer1M,
+    cacheReadUsdPer1M: perMillion(cachedInputPrice),
     cacheWriteCostUsd,
-    cacheWriteUsdPer1M: pricing.cacheWriteUsdPer1M,
+    cacheWriteUsdPer1M: perMillion(cacheWritePrice),
     cacheWrite1hCostUsd,
     cacheWrite1hUsdPer1M: pricing.cacheWrite1hUsdPer1M ?? pricing.cacheWriteUsdPer1M,
     thinkingTokens: input.thinkingTokens,
@@ -781,12 +786,54 @@ function normalizedCacheWrite1hTokens(input: CostInput, cacheWriteTokens: number
   return cacheWriteTokens > 0 ? Math.min(cacheWrite1hTokens, cacheWriteTokens) : cacheWrite1hTokens
 }
 
+function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: CostInput): {
+  inputPrice?: number
+  outputPrice?: number
+  cachedInputPrice?: number
+  cacheWritePrice?: number
+} {
+  const tier = input.serviceTier
+  const tierSupported = (tier === 'priority' || tier === 'flex') && pricing.supportedServiceTiers.includes(tier)
+  const fallbackMultiplier = tier === 'priority'
+    ? normalizeCatalogMultiplier(input.priorityPriceMultiplier, 2)
+    : tier === 'flex'
+      ? normalizeCatalogMultiplier(input.flexPriceMultiplier, 0.5)
+      : 1
+  const selectPrice = (standard: number | undefined, priority: number | undefined, flex: number | undefined): number | undefined => {
+    if (!tierSupported) return standard
+    const specific = tier === 'priority' ? priority : flex
+    return specific ?? multiplyCatalogPrice(standard, fallbackMultiplier)
+  }
+  const longContext = pricing.longContextInputTokenThreshold !== undefined
+    && Math.max(input.inputTokens ?? 0, 0) > pricing.longContextInputTokenThreshold
+  const inputMultiplier = longContext ? normalizeCatalogMultiplier(pricing.longContextInputCostMultiplier) : 1
+  const outputMultiplier = longContext ? normalizeCatalogMultiplier(pricing.longContextOutputCostMultiplier) : 1
+  return {
+    inputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.inputUsdPer1M, pricing.priorityInputUsdPer1M, pricing.flexInputUsdPer1M), inputMultiplier)),
+    outputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.outputUsdPer1M, pricing.priorityOutputUsdPer1M, pricing.flexOutputUsdPer1M), outputMultiplier)),
+    cachedInputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cachedInputUsdPer1M, pricing.priorityCachedInputUsdPer1M, pricing.flexCachedInputUsdPer1M), inputMultiplier)),
+    cacheWritePrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWriteUsdPer1M, pricing.priorityCacheWriteUsdPer1M, pricing.flexCacheWriteUsdPer1M), inputMultiplier))
+  }
+}
+
+function multiplyCatalogPrice(value: number | undefined, multiplier: number): number | undefined {
+  return value === undefined ? undefined : value * multiplier
+}
+
+function normalizeCatalogMultiplier(value: number | undefined, fallback = 1): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
+}
+
 function usesIncludedCacheReadUsage(providerCode: string): boolean {
   return modelPricingProviderDriverForProvider(providerCode)?.usesIncludedCacheReadUsage ?? true
 }
 
 function perToken(value: number | undefined): number | undefined {
   return value === undefined ? undefined : value / 1_000_000
+}
+
+function perMillion(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : Number((value * 1_000_000).toFixed(8))
 }
 
 function roundCost(value: number): number {
