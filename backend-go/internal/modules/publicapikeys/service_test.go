@@ -349,6 +349,26 @@ func TestServiceDeleteRollsBackBusinessDeleteWhenCleanupTargetWriteFails(t *test
 	}
 }
 
+func TestServiceDeleteRequiresTransactorBeforeAnyStoreAccess(t *testing.T) {
+	store := newPublicAPIKeyServiceStore()
+	service := NewService(Options{Store: store})
+
+	_, err := service.Delete(context.Background(), DeleteInput{APIKeyID: "key_normal"})
+
+	const wantError = "public api key delete transactor is required"
+	if err == nil || err.Error() != wantError {
+		t.Fatalf("delete error = %v, want %q", err, wantError)
+	}
+	if store.findByIDCalls != 0 || store.deleteCalls != 0 || len(store.deleteEvents) != 0 {
+		t.Fatalf(
+			"store calls before dependency failure: find=%d delete=%d events=%v",
+			store.findByIDCalls,
+			store.deleteCalls,
+			store.deleteEvents,
+		)
+	}
+}
+
 func TestServiceUpdateAndDeletePropagateValidationInvalidationError(t *testing.T) {
 	wantErr := errors.New("validation invalidation failed")
 
@@ -650,6 +670,8 @@ type publicAPIKeyServiceStore struct {
 
 	transactionEvents *[]string
 	deleteEvents      []string
+	findByIDCalls     int
+	deleteCalls       int
 }
 
 func newPublicAPIKeyServiceStore() *publicAPIKeyServiceStore {
@@ -714,6 +736,7 @@ func (s *publicAPIKeyServiceStore) ListPublicAPIKeys(_ context.Context, input po
 }
 
 func (s *publicAPIKeyServiceStore) FindPublicAPIKeyByID(_ context.Context, apiKeyID string) (port.PublicAPIKeySummary, bool, error) {
+	s.findByIDCalls++
 	key, ok := s.keys[apiKeyID]
 	return key, ok, nil
 }
@@ -761,6 +784,7 @@ func (s *publicAPIKeyServiceStore) UpdatePublicAPIKey(_ context.Context, input p
 }
 
 func (s *publicAPIKeyServiceStore) DeletePublicAPIKey(_ context.Context, apiKeyID string, _ string) (bool, error) {
+	s.deleteCalls++
 	s.deleteEvents = append(s.deleteEvents, "delete")
 	if _, ok := s.keys[apiKeyID]; !ok {
 		return false, nil

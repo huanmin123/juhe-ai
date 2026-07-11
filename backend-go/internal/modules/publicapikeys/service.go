@@ -43,6 +43,8 @@ var (
 	ErrInvalidAvailabilitySchedule      = errors.New("public api key invalid availability schedule")
 )
 
+var errPublicAPIKeyDeleteTransactorRequired = errors.New("public api key delete transactor is required")
+
 type APIKeyGatewayCacheInvalidator interface {
 	InvalidateAPIKeyValidationCache(ctx context.Context) error
 	InvalidateAPIKeyLookupCache(ctx context.Context, apiKeyID string, reason string) error
@@ -419,6 +421,9 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (APIKeyResponse
 }
 
 func (s *Service) Delete(ctx context.Context, input DeleteInput) (APIKeyResponse, error) {
+	if s.transactor == nil {
+		return APIKeyResponse{}, errPublicAPIKeyDeleteTransactorRequired
+	}
 	var response APIKeyResponse
 	var apiKeyID string
 	err := s.inTx(ctx, func(ctx context.Context, store port.PublicAPIKeyStore) error {
