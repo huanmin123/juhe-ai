@@ -16,6 +16,7 @@ import (
 
 const (
 	apiKeySecretRefreshedReason         = "api_key_secret_refreshed"
+	apiKeyRefreshUsageTimeout           = 5 * time.Second
 	apiKeyValidationInvalidationTimeout = 5 * time.Second
 )
 
@@ -216,7 +217,6 @@ func (s *Service) Refresh(ctx context.Context, input SecretInput) (RefreshResult
 		context.WithoutCancel(ctx),
 		apiKeyValidationInvalidationTimeout,
 	)
-	defer cancelInvalidation()
 
 	item, parseErr := listItem(row, port.ManagementAccountUsageSummary{}, includeOwner)
 	result := RefreshResult{
@@ -228,6 +228,7 @@ func (s *Service) Refresh(ctx context.Context, input SecretInput) (RefreshResult
 		Committed:            true,
 	}
 	if err := s.invalidator.InvalidateAPIKeyValidationCache(invalidationCtx); err != nil {
+		cancelInvalidation()
 		return result, ErrAPIKeyRefreshValidationCacheInvalidation
 	}
 	_ = s.invalidator.InvalidateAPIKeyLookupCache(
@@ -241,14 +242,20 @@ func (s *Service) Refresh(ctx context.Context, input SecretInput) (RefreshResult
 		row.ID,
 		apiKeySecretRefreshedReason,
 	)
+	cancelInvalidation()
 	if parseErr != nil {
 		return result, parseErr
 	}
 
-	usageRows, err := s.store.ListManagementAPIKeyUsageTotals(invalidationCtx, []port.ManagementAPIKeyUsageScope{{
+	usageCtx, cancelUsage := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		apiKeyRefreshUsageTimeout,
+	)
+	usageRows, err := s.store.ListManagementAPIKeyUsageTotals(usageCtx, []port.ManagementAPIKeyUsageScope{{
 		SystemAccountID: row.SystemAccountID,
 		APIKeyID:        row.ID,
 	}})
+	cancelUsage()
 	if err != nil {
 		return RefreshResult{}, err
 	}
