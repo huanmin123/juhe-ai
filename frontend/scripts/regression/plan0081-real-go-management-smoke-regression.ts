@@ -42,6 +42,8 @@ const cookie = 'juhe_ai_session=regression-secret; another_cookie=opaque-value'
 const systemAccountId = 'sys_plan0081_target'
 const selectedGroupId = 'grp_plan0081_owner_secondary'
 const temporaryGroupId = 'grp_plan0081_temporary'
+const missingGroupId = 'grp_plan0081_missing_sensitive'
+const missingProviderCode = 'missing-provider-sensitive'
 const requestRecords: RequestRecord[] = []
 const groups = new Map<string, MockGroup>()
 let scenario: MockScenario = 'normal'
@@ -62,6 +64,7 @@ await listen(server)
 try {
   const baseUrl = serverBaseUrl(server)
 
+  await assertLogBoundaryRedaction(baseUrl)
   await assertReadOnlySmoke(baseUrl)
   await assertSuccessfulMutationSmoke(baseUrl)
   await assertPatchFailureStillCleansUp(baseUrl)
@@ -73,6 +76,51 @@ try {
 }
 
 console.log('PLAN-0081 real Go management smoke regression passed')
+
+async function assertLogBoundaryRedaction(baseUrl: string): Promise<void> {
+  const messages: string[] = []
+
+  resetMock('normal')
+  await runRealGoManagementSmokeFromEnvironment(
+    smokeEnvironment(baseUrl, {
+      [realGoManagementSmokeEnv.allowGroupMutations]: '0'
+    }),
+    (message) => messages.push(message)
+  )
+
+  resetMock('normal')
+  const groupFailureMessage = await captureFailureMessage(
+    runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl, {
+      [realGoManagementSmokeEnv.groupId]: missingGroupId
+    }), () => undefined)
+  )
+  assert.match(groupFailureMessage, /Configured group was not returned by groups list/)
+  messages.push(groupFailureMessage)
+
+  resetMock('normal')
+  const providerFailureMessage = await captureFailureMessage(
+    runRealGoManagementSmokeFromEnvironment(mutationEnvironment(baseUrl, {
+      [realGoManagementSmokeEnv.providerCode]: missingProviderCode
+    }), () => undefined)
+  )
+  assert.match(providerFailureMessage, /Mutation provider was not returned by providers\/options/)
+  messages.push(providerFailureMessage)
+
+  const credentialedBaseUrl = 'https://smoke-user:smoke-password@example.test/private'
+  const baseUrlFailureMessage = await captureFailureMessage(
+    runRealGoManagementSmokeFromEnvironment(smokeEnvironment(credentialedBaseUrl), () => undefined)
+  )
+  assert.match(baseUrlFailureMessage, /must not contain credentials/)
+  messages.push(baseUrlFailureMessage)
+
+  assertNoEnvironmentIdentifierLeak(messages, baseUrl, [
+    missingGroupId,
+    missingProviderCode,
+    'smoke-user',
+    'smoke-password',
+    credentialedBaseUrl
+  ])
+}
 
 async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   resetMock('normal')
@@ -86,7 +134,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 selectedGroupId=grp_plan0081_owner_secondary providers=2 modelOptions=2'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2'
   )
   assert.deepEqual(requestPaths(), [
     groupsListPath(),
@@ -170,7 +218,7 @@ async function assertPatchFailureStillCleansUp(baseUrl: string): Promise<void> {
 
   assert(failure instanceof Error)
   assert.match(failure.message, /temporary group PATCH failed with HTTP 503/)
-  assert.equal(failure.message.includes(cookie), false)
+  assertNoEnvironmentIdentifierLeak([failure.message], baseUrl)
   assert.deepEqual(output, [])
   assert.equal(groups.has(temporaryGroupId), false, 'finally cleanup must remove the PATCH-mutated group')
   assert.deepEqual(requestPaths().slice(-3), [
@@ -193,6 +241,7 @@ async function assertCleanup404IsIdempotent(baseUrl: string): Promise<void> {
   assert(failure instanceof Error)
   assert.match(failure.message, /temporary group PATCH failed with HTTP 503/)
   assert.doesNotMatch(failure.message, /cleanup failed/)
+  assertNoEnvironmentIdentifierLeak([failure.message], baseUrl)
   assert.equal(groups.has(temporaryGroupId), false)
   assert.deepEqual(requestPaths().slice(-3), [
     groupPatchPath(temporaryGroupId),
@@ -215,7 +264,13 @@ async function assertPrimaryAndCleanupErrorsArePreserved(baseUrl: string): Promi
   assert(failure instanceof AggregateError)
   assert.match(failure.message, /temporary group PATCH failed with HTTP 503/)
   assert.match(failure.message, /cleanup failed: temporary group cleanup check failed with HTTP 502/)
-  assert.equal(failure.message.includes(cookie), false)
+  assertNoEnvironmentIdentifierLeak(
+    [
+      failure.message,
+      ...failure.errors.map((error) => error instanceof Error ? error.message : String(error))
+    ],
+    baseUrl
+  )
   assert.deepEqual(
     failure.errors.map((error) => error instanceof Error ? error.message : String(error)),
     [
@@ -260,11 +315,11 @@ async function assertInvalidConfiguration(baseUrl: string): Promise<void> {
 
   resetMock('normal')
   const unsupportedProviderEnv = mutationEnvironment(baseUrl, {
-    [realGoManagementSmokeEnv.providerCode]: 'missing-provider'
+    [realGoManagementSmokeEnv.providerCode]: missingProviderCode
   })
   await assert.rejects(
     runRealGoManagementSmokeFromEnvironment(unsupportedProviderEnv, () => undefined),
-    /Mutation provider missing-provider was not returned by providers\/options/
+    /Mutation provider was not returned by providers\/options/
   )
   assert.equal(requestRecords.some((record) => record.method === 'POST'), false)
   assertRequestHeaders()
@@ -627,6 +682,40 @@ function assertRequestHeaders(): void {
 
 function assertNoCookieLeak(messages: string[]): void {
   assert.equal(messages.some((line) => line.includes(cookie)), false, 'output must not expose the Cookie header')
+}
+
+function assertNoEnvironmentIdentifierLeak(
+  messages: string[],
+  baseUrl: string,
+  additionalIdentifiers: readonly string[] = []
+): void {
+  const identifiers = [
+    cookie,
+    baseUrl,
+    systemAccountId,
+    selectedGroupId,
+    temporaryGroupId,
+    'gpt',
+    'openai',
+    ...additionalIdentifiers
+  ]
+  for (const identifier of identifiers) {
+    assert.equal(
+      messages.some((message) => message.includes(identifier)),
+      false,
+      `output must not expose environment identifier: ${identifier}`
+    )
+  }
+}
+
+async function captureFailureMessage(operation: Promise<unknown>): Promise<string> {
+  try {
+    await operation
+  } catch (error) {
+    assert(error instanceof Error)
+    return error.message
+  }
+  assert.fail('expected operation to fail')
 }
 
 function listen(target: Server): Promise<void> {

@@ -180,7 +180,6 @@ export function formatRealGoManagementSmokeSummary(summary: RealGoManagementSmok
   return [
     'PLAN-0081 real Go management smoke passed',
     `groups=${summary.groupCount}`,
-    `selectedGroupId=${summary.selectedGroupId}`,
     `providers=${summary.providerCount}`,
     `modelOptions=${summary.modelOptionCount}`
   ].join(' ')
@@ -378,8 +377,8 @@ function selectMutationProvider(
 ): ProviderRecord {
   const requestedCode = configuredProviderCode ?? selectedGroup.providerCode
   const provider = providers.find((item) => item.code === requestedCode)
-  expect(provider, `Mutation provider ${requestedCode} was not returned by providers/options`)
-  expect(provider.enabled, `Mutation provider ${requestedCode} must be enabled`)
+  expect(provider, 'Mutation provider was not returned by providers/options')
+  expect(provider.enabled, 'Mutation provider must be enabled')
   return provider
 }
 
@@ -604,7 +603,7 @@ function selectOwnerNonDefaultGroup(items: unknown[], requestedGroupId?: string)
   const groups = items.map((item, index) => assertGroup(item, `groups list item ${index}`))
   if (requestedGroupId) {
     const requested = groups.find((group) => group.id === requestedGroupId)
-    expect(requested, `Configured group ${requestedGroupId} was not returned by groups list`)
+    expect(requested, 'Configured group was not returned by groups list')
     expect(requested.accessType === 'owner' && !requested.isDefault, 'Configured group must be owner and non-default')
     return requested
   }
