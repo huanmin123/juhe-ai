@@ -28,6 +28,17 @@ export interface ApiKeyQuotaDecision {
   message?: string
 }
 
+export async function readGatewayApiKeyQuotaCostsSnapshotAsync(apiKey: GatewayApiKeyRow) {
+  const limits = parseRequestQuotaLimitsJson(apiKey.quota_limits_json)
+  if (!hasEnabledRequestQuotaLimit(limits)) return undefined
+  return await readGatewayQuotaCostsSnapshotAsync({
+    systemAccountId: apiKey.system_account_id,
+    scopeType: 'api_key',
+    scopeId: apiKey.id,
+    hourlyWindowHours: limits.hourly?.hours
+  })
+}
+
 type ApiKeyQuotaCacheEntry = ApiKeyQuotaDecision & {
   checkedAtMs: number
 }

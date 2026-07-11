@@ -76,6 +76,10 @@ assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
   model: 'gpt-5.6-sol',
   service_tier: 'flex'
 }))).serviceTier, 'flex', '实际发往上游的结构化 JSON 必须识别 Flex 档位')
+assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
+  model: 'gpt-5.4',
+  max_output_tokens: 8192
+}))).maxOutputTokens, 8192, '大 JSON metadata scanner 应提取 max_output_tokens 供在途额度估算')
 
 const geminiUsage = parseGeminiUsageFromJsonBuffer(Buffer.from(JSON.stringify({
   usageMetadata: {

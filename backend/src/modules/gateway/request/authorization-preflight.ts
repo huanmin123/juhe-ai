@@ -2,6 +2,7 @@ import type { Request, Response } from 'express'
 
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuotaAsync } from '../quota/api-key-quota.service.js'
+import { reserveGatewayApiKeyInflightCost } from '../quota/api-key-inflight-quota.service.js'
 import {
   AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE,
   checkGatewayAuthorizationQuotaAsync
@@ -10,6 +11,8 @@ import type { AuditCaptureContext } from '../audit/capture.service.js'
 import { sendGatewayFailureResponse, sendQuotaExceededResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
+
+const inflightQuotaReservedRequests = new WeakSet<Request>()
 
 export async function rejectUnavailableGatewayApiKey(input: {
   req: Request
@@ -78,9 +81,41 @@ export async function rejectGatewayApiKeyQuotaIfExceeded(input: {
   apiKeyRecord?: GatewayApiKeyRow
 }): Promise<boolean> {
   const quotaDecision = input.apiKeyRecord ? await checkGatewayApiKeyQuotaAsync(input.apiKeyRecord) : { allowed: true }
-  if (quotaDecision.allowed) return false
+  if (!quotaDecision.allowed) {
+    await sendApiKeyQuotaExceeded(input, quotaDecision.message)
+    return true
+  }
+  if (!input.apiKeyRecord || inflightQuotaReservedRequests.has(input.req)) return false
+  const inflightDecision = await reserveGatewayApiKeyInflightCost({
+    req: input.req,
+    apiKey: input.apiKeyRecord,
+    providerCode: input.usageContext.providerCode ?? ''
+  })
+  if (!inflightDecision.allowed) {
+    await sendApiKeyQuotaExceeded(input, API_KEY_QUOTA_EXCEEDED_MESSAGE, 'api_key_inflight_quota_exceeded')
+    return true
+  }
+  if (inflightDecision.reservation) {
+    inflightQuotaReservedRequests.add(input.req)
+    input.res.once('finish', inflightDecision.reservation.complete)
+    input.res.once('close', inflightDecision.reservation.complete)
+  }
+  return false
+}
+
+async function sendApiKeyQuotaExceeded(
+  input: {
+    req: Request
+    res: Response
+    auditCapture: AuditCaptureContext
+    usageContext: GatewayFailureUsageContext
+    startedAt: number
+  },
+  message?: string,
+  errorCode = 'rate_limit_exceeded'
+): Promise<void> {
   const statusCode = 429
-  const responsePayload = gatewayErrorPayload(quotaDecision.message ?? API_KEY_QUOTA_EXCEEDED_MESSAGE, 'rate_limit_exceeded')
+  const responsePayload = gatewayErrorPayload(message ?? API_KEY_QUOTA_EXCEEDED_MESSAGE, 'rate_limit_exceeded')
   await sendGatewayFailureResponse({
     req: input.req,
     res: input.res,
@@ -92,11 +127,10 @@ export async function rejectGatewayApiKeyQuotaIfExceeded(input: {
     audit: {
       outcome: 'gateway_failed',
       errorPhase: 'quota',
-      errorCode: 'rate_limit_exceeded',
+      errorCode,
       errorMessage: responsePayload.error.message
     }
   })
-  return true
 }
 
 export async function rejectGatewayAuthorizationQuotaIfExceeded(input: {
