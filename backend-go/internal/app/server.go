@@ -218,6 +218,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyGroupCreateHandler:                    managementHandlers.MyGroupCreateHandler,
 		ManagementGroupUpdateHandler:                      managementHandlers.GroupUpdateHandler,
 		ManagementMyGroupUpdateHandler:                    managementHandlers.MyGroupUpdateHandler,
+		ManagementGroupDeleteHandler:                      managementHandlers.GroupDeleteHandler,
+		ManagementMyGroupDeleteHandler:                    managementHandlers.MyGroupDeleteHandler,
 		ManagementGroupOptionsHandler:                     managementHandlers.GroupOptionsHandler,
 		ManagementMyGroupOptionsHandler:                   managementHandlers.MyGroupOptionsHandler,
 		ManagementGroupAccountOptionsHandler:              managementHandlers.GroupAccountOptionsHandler,
@@ -344,6 +346,8 @@ type managementAPIHandlers struct {
 	MyGroupCreateHandler                    http.Handler
 	GroupUpdateHandler                      http.Handler
 	MyGroupUpdateHandler                    http.Handler
+	GroupDeleteHandler                      http.Handler
+	MyGroupDeleteHandler                    http.Handler
 	GroupOptionsHandler                     http.Handler
 	MyGroupOptionsHandler                   http.Handler
 	GroupAccountOptionsHandler              http.Handler
@@ -537,6 +541,8 @@ func newManagementAPIHandler(
 		MyGroupCreateHandler:                    httpapi.NewManagementMyGroupCreateHandlerWithOperationLog(groupService, operationLogOptions),
 		GroupUpdateHandler:                      httpapi.NewManagementGroupUpdateHandlerWithOperationLog(groupService, operationLogOptions),
 		MyGroupUpdateHandler:                    httpapi.NewManagementMyGroupUpdateHandlerWithOperationLog(groupService, operationLogOptions),
+		GroupDeleteHandler:                      httpapi.NewManagementGroupDeleteHandlerWithOperationLog(groupService, operationLogOptions),
+		MyGroupDeleteHandler:                    httpapi.NewManagementMyGroupDeleteHandlerWithOperationLog(groupService, operationLogOptions),
 		GroupOptionsHandler:                     httpapi.NewManagementGroupOptionsHandler(groupService),
 		MyGroupOptionsHandler:                   httpapi.NewManagementMyGroupOptionsHandler(groupService),
 		GroupAccountOptionsHandler:              httpapi.NewManagementGroupAccountOptionsHandler(groupService),

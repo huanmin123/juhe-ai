@@ -263,19 +263,45 @@ try {
   assert(openAICompatibleCatalog.some((item) => item.model === 'openai-regression-personal'), '通用 OpenAI-compatible 自身模型不要求排在其他 OpenAI 协议供应商模型之前')
 
   const dedupedProviderModelOptions = dedupeProviderModelOptions([
-    { providerCode: 'gpt', model: 'shared-model', supportedApiProtocols: ['chat_completions'] },
+    {
+      providerCode: 'gpt',
+      model: 'shared-model',
+      supportedApiProtocols: ['chat_completions'],
+      supportedServiceTiers: ['priority', 'priority'],
+      supportedReasoningEfforts: ['low'],
+      defaultReasoningEffort: 'medium'
+    },
     { providerCode: 'gpt', model: 'Shared-Model', supportedApiProtocols: ['responses'] },
     { providerCode: 'deepseek', model: 'shared-model', supportedApiProtocols: ['chat_completions'] },
-    { providerCode: 'gpt', model: 'shared-model', supportedApiProtocols: ['responses'] },
-    { providerCode: ' GPT ', model: ' shared-model ' },
+    {
+      providerCode: 'gpt',
+      model: 'shared-model',
+      supportedApiProtocols: ['responses'],
+      supportedServiceTiers: ['flex', 'priority'],
+      supportedReasoningEfforts: ['high'],
+      defaultReasoningEffort: 'max'
+    },
+    {
+      providerCode: ' GPT ',
+      model: ' shared-model ',
+      supportedReasoningEfforts: ['max', 'high'],
+      defaultReasoningEffort: 'low'
+    },
     { providerCode: '', model: 'shared-model' },
     { providerCode: 'glm', model: ' ' }
   ])
   assert.deepEqual(dedupedProviderModelOptions, [
-    { providerCode: 'gpt', model: 'shared-model', supportedApiProtocols: ['chat_completions', 'responses'] },
+    {
+      providerCode: 'gpt',
+      model: 'shared-model',
+      supportedApiProtocols: ['chat_completions', 'responses'],
+      supportedServiceTiers: ['priority', 'flex'],
+      supportedReasoningEfforts: ['low', 'high', 'max'],
+      defaultReasoningEffort: 'max'
+    },
     { providerCode: 'gpt', model: 'Shared-Model', supportedApiProtocols: ['responses'] },
     { providerCode: 'deepseek', model: 'shared-model', supportedApiProtocols: ['chat_completions'] }
-  ], '供应商模型选项必须按 providerCode + 大小写敏感 model 去重，并保留合并后的协议能力')
+  ], '供应商模型选项必须稳定地按 providerCode + 大小写敏感 model 去重，并合并能力和选择合并后有效的默认思考级别')
 
   const deepSeekCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'deepseek',
@@ -1121,7 +1147,14 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(userAVisible.some((item) => item.model === 'gpt-http-admin-personal'), false, '用户不应看到管理员个人模型')
     assert.equal(userAVisible.some((item) => item.model === 'gpt-http-user-a-draft'), false, '默认管理模型目录不应返回草稿模型')
 
-    const userAGlobalModelOptions = await getEnvelope<Array<{ providerCode: string; model: string; supportedApiProtocols?: string[] }>>(
+    const userAGlobalModelOptions = await getEnvelope<Array<{
+      providerCode: string
+      model: string
+      supportedApiProtocols?: string[]
+      supportedServiceTiers?: string[]
+      supportedReasoningEfforts?: string[]
+      defaultReasoningEffort?: string
+    }>>(
       baseUrl,
       '/__aisys__/api/providers/models/options',
       userACookie
@@ -1130,6 +1163,9 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert(userAGlobalModelOptions.some((item) => item.providerCode === 'openai' && item.model === 'gpt-http-admin-global'), '模型选项应包含管理员全局模型')
     const userAGptGlobalOption = userAGlobalModelOptions.find((item) => item.providerCode === 'gpt' && item.model === 'gpt-http-user-a-gpt')
     assert(userAGptGlobalOption?.supportedApiProtocols?.includes('responses'), '全局模型选项必须返回模型协议能力，供账号模型别名按协议过滤')
+    assert.deepEqual(userAGptGlobalOption?.supportedServiceTiers, ['priority'], '全局模型选项必须返回服务等级能力')
+    assert.deepEqual(userAGptGlobalOption?.supportedReasoningEfforts, ['low', 'high'], '全局模型选项必须返回思考能力')
+    assert.equal(userAGptGlobalOption?.defaultReasoningEffort, 'high', '全局模型选项必须返回有效默认思考级别')
     assert.equal(userAGlobalModelOptions.some((item) => item.providerCode === 'hybrid'), false, '全局模型选项不应把 hybrid 当作真实供应商目录')
     assert.equal(userAGlobalModelOptions.some((item) => item.model === 'hybrid-regression-should-not-list'), false, '全局模型选项不应返回 hybrid 自身模型')
 

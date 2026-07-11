@@ -1381,6 +1381,25 @@ type ManagementGroupUpdateResult struct {
 	GroupAuthorizationID     string
 }
 
+type ManagementGroupDeleteInput struct {
+	GroupID                  string
+	CanAccessAll             bool
+	EffectiveSystemAccountID string
+	DeletedAt                time.Time
+	Now                      time.Time
+}
+
+type ManagementGroupDeletedRouteStrategy struct {
+	ID   string
+	Name string
+}
+
+type ManagementGroupDeleteResult struct {
+	Before                  ManagementGroupMutationSummary
+	OwnerSystemAccountID    string
+	AffectedRouteStrategies []ManagementGroupDeletedRouteStrategy
+}
+
 var (
 	ErrManagementGroupSystemAccountNotFound  = errors.New("management group system account not found")
 	ErrManagementGroupProviderNotFound       = errors.New("management group provider not found")
@@ -1433,6 +1452,10 @@ type ManagementGroupCreator interface {
 
 type ManagementGroupUpdater interface {
 	UpdateManagementGroup(ctx context.Context, input ManagementGroupUpdateInput) (ManagementGroupUpdateResult, error)
+}
+
+type ManagementGroupDeleter interface {
+	DeleteManagementGroup(ctx context.Context, input ManagementGroupDeleteInput) (ManagementGroupDeleteResult, error)
 }
 
 type ManagementAccountOption struct {

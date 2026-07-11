@@ -20,34 +20,37 @@ const (
 
 	GroupCreatedReason                      = "group_created"
 	GroupUpdatedReason                      = "group_updated"
+	GroupDeletedReason                      = "group_deleted"
 	GroupAuthorizationSettingsUpdatedReason = "group_authorization_settings_updated"
 	groupRuntimeInvalidationTimeout         = 5 * time.Second
 )
 
 type Service struct {
-	store                   port.ManagementGroupOptionReader
-	listStore               port.ManagementGroupListReader
-	detailStore             port.ManagementGroupDetailReader
-	usageStatsTimezoneStore port.ManagementUsageStatsTimezoneReader
-	accountConcurrency      AccountConcurrencyReader
-	invalidator             RuntimeInvalidator
-	groupLookupInvalidator  GroupLookupInvalidator
-	logger                  *slog.Logger
-	now                     func() time.Time
-	newID                   func(prefix string) string
+	store                      port.ManagementGroupOptionReader
+	listStore                  port.ManagementGroupListReader
+	detailStore                port.ManagementGroupDetailReader
+	usageStatsTimezoneStore    port.ManagementUsageStatsTimezoneReader
+	accountConcurrency         AccountConcurrencyReader
+	invalidator                RuntimeInvalidator
+	groupLookupInvalidator     GroupLookupInvalidator
+	groupAccountIDsInvalidator GroupAccountIDsInvalidator
+	logger                     *slog.Logger
+	now                        func() time.Time
+	newID                      func(prefix string) string
 }
 
 type ServiceOptions struct {
-	Store                   port.ManagementGroupOptionReader
-	ListStore               port.ManagementGroupListReader
-	DetailStore             port.ManagementGroupDetailReader
-	UsageStatsTimezoneStore port.ManagementUsageStatsTimezoneReader
-	AccountConcurrency      AccountConcurrencyReader
-	Invalidator             RuntimeInvalidator
-	GroupLookupInvalidator  GroupLookupInvalidator
-	Logger                  *slog.Logger
-	Now                     func() time.Time
-	NewID                   func(prefix string) string
+	Store                      port.ManagementGroupOptionReader
+	ListStore                  port.ManagementGroupListReader
+	DetailStore                port.ManagementGroupDetailReader
+	UsageStatsTimezoneStore    port.ManagementUsageStatsTimezoneReader
+	AccountConcurrency         AccountConcurrencyReader
+	Invalidator                RuntimeInvalidator
+	GroupLookupInvalidator     GroupLookupInvalidator
+	GroupAccountIDsInvalidator GroupAccountIDsInvalidator
+	Logger                     *slog.Logger
+	Now                        func() time.Time
+	NewID                      func(prefix string) string
 }
 
 type RuntimeInvalidator interface {
@@ -56,6 +59,10 @@ type RuntimeInvalidator interface {
 
 type GroupLookupInvalidator interface {
 	InvalidateGroupLookupCache(ctx context.Context) error
+}
+
+type GroupAccountIDsInvalidator interface {
+	InvalidateGroupAccountIDsCache(ctx context.Context) error
 }
 
 type OptionListInput struct {
@@ -304,17 +311,24 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			groupLookupInvalidator = candidate
 		}
 	}
+	groupAccountIDsInvalidator := opts.GroupAccountIDsInvalidator
+	if groupAccountIDsInvalidator == nil {
+		if candidate, ok := opts.Invalidator.(GroupAccountIDsInvalidator); ok {
+			groupAccountIDsInvalidator = candidate
+		}
+	}
 	return &Service{
-		store:                   opts.Store,
-		listStore:               listStore,
-		detailStore:             detailStore,
-		usageStatsTimezoneStore: usageStatsTimezoneStore,
-		accountConcurrency:      opts.AccountConcurrency,
-		invalidator:             opts.Invalidator,
-		groupLookupInvalidator:  groupLookupInvalidator,
-		logger:                  opts.Logger,
-		now:                     now,
-		newID:                   newID,
+		store:                      opts.Store,
+		listStore:                  listStore,
+		detailStore:                detailStore,
+		usageStatsTimezoneStore:    usageStatsTimezoneStore,
+		accountConcurrency:         opts.AccountConcurrency,
+		invalidator:                opts.Invalidator,
+		groupLookupInvalidator:     groupLookupInvalidator,
+		groupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		logger:                     opts.Logger,
+		now:                        now,
+		newID:                      newID,
 	}
 }
 
@@ -531,6 +545,21 @@ func (s *Service) invalidateGroupLookup(ctx context.Context) {
 		s.logger.Warn(
 			"分组写入后共享 lookup 缓存失效失败",
 			slog.String("event", "management_group_lookup_cache_invalidation_failed"),
+			slog.Any("error", err),
+		)
+	}
+}
+
+func (s *Service) invalidateGroupAccountIDs(ctx context.Context) {
+	if s.groupAccountIDsInvalidator == nil {
+		return
+	}
+	invalidationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), groupRuntimeInvalidationTimeout)
+	defer cancel()
+	if err := s.groupAccountIDsInvalidator.InvalidateGroupAccountIDsCache(invalidationCtx); err != nil && s.logger != nil {
+		s.logger.Warn(
+			"分组写入后共享账号 ID 缓存失效失败",
+			slog.String("event", "management_group_account_ids_cache_invalidation_failed"),
 			slog.Any("error", err),
 		)
 	}
