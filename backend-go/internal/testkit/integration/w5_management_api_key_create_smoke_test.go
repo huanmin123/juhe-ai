@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +27,29 @@ const (
 	w5ManagementAPIKeyCreateAdminLogID = "oplog_w5_management_api_key_create_admin"
 	w5ManagementAPIKeyCreateSelfLogID  = "oplog_w5_management_api_key_create_self"
 )
+
+func TestW5ManagementAPIKeyCreateSmokeFailureDiagnosticsDoNotFormatSecrets(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve API Key create smoke source")
+	}
+	source, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read API Key create smoke source: %v", err)
+	}
+	for _, forbidden := range []string{
+		`"admin create response = ` + `%+v", admin`,
+		`"self create response = ` + `%+v", self`,
+		`"create response = ` + `%+v", response`,
+		`"created API Key owner=%q hash=%q status=%q response=` + `%+v"`,
+		`"decrypt created API Key payload=` + `%#v err=%v"`,
+		`"failure %s status = %d, want %d; body = ` + `%s"`,
+	} {
+		if strings.Contains(string(source), forbidden) {
+			t.Fatalf("secret-bearing failure diagnostic remains: %q", forbidden)
+		}
+	}
+}
 
 type w5ManagementAPIKeyCreateResponse struct {
 	Data struct {
@@ -90,7 +115,14 @@ func exerciseW5ManagementAPIKeyCreateSmoke(
 		admin.Data.Name != "W5 Admin Created" ||
 		admin.Data.Status != "active" ||
 		admin.Data.RouteStrategyID != w5ManagementAPIKeyListOtherRouteID {
-		t.Fatalf("admin create response = %+v", admin)
+		t.Fatalf(
+			"admin create mismatch id=%q owner=%q name=%q status=%q route=%q",
+			admin.Data.ID,
+			admin.Data.SystemAccountID,
+			admin.Data.Name,
+			admin.Data.Status,
+			admin.Data.RouteStrategyID,
+		)
 	}
 	if admin.Data.AvailabilitySchedule["timezone"] != "UTC" {
 		t.Fatalf("admin schedule = %+v", admin.Data.AvailabilitySchedule)
@@ -110,7 +142,14 @@ func exerciseW5ManagementAPIKeyCreateSmoke(
 		self.Data.Name != "W5 Self Created" ||
 		self.Data.Status != "disabled" ||
 		self.Data.RouteStrategyID != w5ManagementAPIKeyListOwnerPrimaryRouteID {
-		t.Fatalf("self create response = %+v", self)
+		t.Fatalf(
+			"self create mismatch id=%q ownerPresent=%v name=%q status=%q route=%q",
+			self.Data.ID,
+			self.Data.SystemAccountID != "",
+			self.Data.Name,
+			self.Data.Status,
+			self.Data.RouteStrategyID,
+		)
 	}
 	assertW5ManagementAPIKeyCreateStored(t, ctx, db, self, w5ManagementAPIKeyListOwnerID, false)
 
@@ -192,7 +231,7 @@ func requestW5ManagementAPIKeyCreate(
 		requestID,
 	)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("create %s status = %d, body = %s", path, rec.Code, rec.Body.String())
+		t.Fatalf("create %s status = %d, bodyBytes = %d", path, rec.Code, rec.Body.Len())
 	}
 	assertW5ManagementAPIKeySecretNoStore(t, rec)
 	var response w5ManagementAPIKeyCreateResponse
@@ -204,7 +243,14 @@ func requestW5ManagementAPIKeyCreate(
 		response.Data.Key == "" ||
 		response.Data.KeyPrefix != apikeysecret.Prefix(response.Data.Key) ||
 		response.Data.KeySuffix != apikeysecret.Suffix(response.Data.Key) {
-		t.Fatalf("create response = %+v", response)
+		t.Fatalf(
+			"create response mismatch id=%q messageOK=%v keyPresent=%v prefixMatches=%v suffixMatches=%v",
+			response.Data.ID,
+			response.Message == "API Key 已创建，请立即复制完整密钥",
+			response.Data.Key != "",
+			response.Data.KeyPrefix == apikeysecret.Prefix(response.Data.Key),
+			response.Data.KeySuffix == apikeysecret.Suffix(response.Data.Key),
+		)
 	}
 	return response
 }
@@ -228,7 +274,13 @@ func assertW5ManagementAPIKeyCreateFailure(
 		"req_w5_management_api_key_create_failure_"+strings.ReplaceAll(wantMessage, " ", "_"),
 	)
 	if rec.Code != wantStatus {
-		t.Fatalf("failure %s status = %d, want %d; body = %s", path, rec.Code, wantStatus, rec.Body.String())
+		t.Fatalf(
+			"failure %s status = %d, want %d; bodyBytes = %d",
+			path,
+			rec.Code,
+			wantStatus,
+			rec.Body.Len(),
+		)
 	}
 	var response map[string]string
 	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
@@ -280,11 +332,22 @@ func assertW5ManagementAPIKeyCreateStored(
 	if owner != wantOwner ||
 		keyHash != apikeysecret.Hash(response.Data.Key) ||
 		status != response.Data.Status {
-		t.Fatalf("created API Key owner=%q hash=%q status=%q response=%+v", owner, keyHash, status, response)
+		t.Fatalf(
+			"created API Key mismatch id=%q ownerMatches=%v hashMatches=%v statusMatches=%v",
+			response.Data.ID,
+			owner == wantOwner,
+			keyHash == apikeysecret.Hash(response.Data.Key),
+			status == response.Data.Status,
+		)
 	}
 	payload, err := secretcrypto.NewJSONCodec(w5ManagementAPIKeySecretRuntimeSecret).DecryptJSON(encrypted)
 	if err != nil || payload["key"] != response.Data.Key {
-		t.Fatalf("decrypt created API Key payload=%#v err=%v", payload, err)
+		t.Fatalf(
+			"decrypt created API Key id=%q decryptOK=%v keyMatches=%v",
+			response.Data.ID,
+			err == nil,
+			err == nil && payload["key"] == response.Data.Key,
+		)
 	}
 	if wantSchedule {
 		if !quotaJSON.Valid || !strings.Contains(quotaJSON.String, `"hours":6`) ||
@@ -373,7 +436,7 @@ func assertW5ManagementAPIKeyCreateOperationLog(
 		summary != "创建 API Key："+response.Data.Name {
 		t.Fatalf("API Key create operation log mode=%q scope=%q key=%q summary=%q", mode, operationScope, operationKey, summary)
 	}
-	for _, forbidden := range []string{
+	for index, forbidden := range []string{
 		response.Data.Key,
 		apikeysecret.Hash(response.Data.Key),
 		"admin create secret-free description",
@@ -382,11 +445,11 @@ func assertW5ManagementAPIKeyCreateOperationLog(
 		"ciphertext",
 	} {
 		if strings.Contains(changesJSON, forbidden) {
-			t.Fatalf("API Key create operation log leaked %q: %s", forbidden, changesJSON)
+			t.Fatalf("API Key create operation log %s contains forbidden field index %d", logID, index)
 		}
 	}
 	if !strings.Contains(changesJSON, response.Data.KeyPrefix+"..."+response.Data.KeySuffix) {
-		t.Fatalf("API Key create operation log missing marker: %s", changesJSON)
+		t.Fatalf("API Key create operation log %s missing key marker", logID)
 	}
 }
 

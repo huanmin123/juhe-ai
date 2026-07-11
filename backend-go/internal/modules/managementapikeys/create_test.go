@@ -102,18 +102,36 @@ func TestServiceCreateScopesOwnerAndReturnsOneTimeSecret(t *testing.T) {
 				got.IsDefault ||
 				got.CreatedAt != now ||
 				got.UpdatedAt != now {
-				t.Fatalf("create input = %+v", got)
+				t.Fatalf(
+					"create input mismatch id=%q owner=%q name=%q route=%q status=%q",
+					got.ID,
+					got.SystemAccountID,
+					got.Name,
+					got.RouteStrategyID,
+					got.Status,
+				)
 			}
 			if got.KeyHash != apikeysecret.Hash("sk-created-secret-0123456789") ||
 				got.KeyPrefix != "sk-creat" ||
 				got.KeySuffix != "23456789" ||
 				got.KeySecretEncrypted == "" {
-				t.Fatalf("credential input = %+v", got)
+				t.Fatalf(
+					"credential input mismatch id=%q hashMatches=%v prefixMatches=%v suffixMatches=%v encryptedPresent=%v",
+					got.ID,
+					got.KeyHash == apikeysecret.Hash("sk-created-secret-0123456789"),
+					got.KeyPrefix == "sk-creat",
+					got.KeySuffix == "23456789",
+					got.KeySecretEncrypted != "",
+				)
 			}
 			payload, err := secretcrypto.NewJSONCodec("management-api-key-create-test").
 				DecryptJSON(got.KeySecretEncrypted)
 			if err != nil || payload["key"] != "sk-created-secret-0123456789" {
-				t.Fatalf("ciphertext payload = %#v, err = %v", payload, err)
+				t.Fatalf(
+					"ciphertext verification decryptOK=%v keyMatches=%v",
+					err == nil,
+					err == nil && payload["key"] == "sk-created-secret-0123456789",
+				)
 			}
 			if result.Key != "sk-created-secret-0123456789" ||
 				result.OwnerSystemAccountID != test.wantOwner ||
@@ -123,7 +141,15 @@ func TestServiceCreateScopesOwnerAndReturnsOneTimeSecret(t *testing.T) {
 				result.KeySuffix != "23456789" ||
 				result.IsDefault ||
 				result.Usage != (port.ManagementAccountUsageSummary{}) {
-				t.Fatalf("result = %+v", result)
+				t.Fatalf(
+					"result mismatch id=%q owner=%q name=%q keyMatches=%v prefixMatches=%v suffixMatches=%v",
+					result.ID,
+					result.OwnerSystemAccountID,
+					result.Name,
+					result.Key == "sk-created-secret-0123456789",
+					result.KeyPrefix == "sk-creat",
+					result.KeySuffix == "23456789",
+				)
 			}
 			if test.wantIncludeOwner {
 				if result.SystemAccountID != test.wantOwner ||
@@ -304,7 +330,12 @@ func TestServiceCreateNormalizesQuotaLimitsWithJSONNumberPrecision(t *testing.T)
 		stored["total"]["limit"] != json.Number("4e2") ||
 		store.createInput.HourlyQuotaHours == nil ||
 		*store.createInput.HourlyQuotaHours != 720 {
-		t.Fatalf("stored quota = %#v input=%+v", stored, store.createInput)
+		t.Fatalf(
+			"stored quota mismatch value=%#v hourlyHoursPresent=%v hourlyHoursMatches=%v",
+			stored,
+			store.createInput.HourlyQuotaHours != nil,
+			store.createInput.HourlyQuotaHours != nil && *store.createInput.HourlyQuotaHours == 720,
+		)
 	}
 	if result.QuotaLimits.Hourly == nil ||
 		result.QuotaLimits.Hourly.Hours != 720 ||
@@ -324,7 +355,11 @@ func TestServiceCreateNormalizesQuotaLimitsWithJSONNumberPrecision(t *testing.T)
 		}
 		if store.createInput.QuotaLimitsJSON != nil ||
 			store.createInput.HourlyQuotaHours != nil {
-			t.Fatalf("empty quota stored = %+v", store.createInput)
+			t.Fatalf(
+				"empty quota storage jsonPresent=%v hourlyHoursPresent=%v",
+				store.createInput.QuotaLimitsJSON != nil,
+				store.createInput.HourlyQuotaHours != nil,
+			)
 		}
 	}
 }
@@ -443,11 +478,23 @@ func TestServiceCreateScheduleUsesSettingsTimezoneOverridesStatusAndStoresNextCh
 				store.createInput.AvailabilityScheduleJSON == nil ||
 				store.createInput.AvailabilityScheduleNextCheckAt == nil ||
 				!store.createInput.AvailabilityScheduleNextCheckAt.Equal(test.wantNext) {
-				t.Fatalf("create input = %+v", store.createInput)
+				t.Fatalf(
+					"schedule input mismatch status=%q schedulePresent=%v nextCheckPresent=%v nextCheckMatches=%v",
+					store.createInput.Status,
+					store.createInput.AvailabilityScheduleJSON != nil,
+					store.createInput.AvailabilityScheduleNextCheckAt != nil,
+					store.createInput.AvailabilityScheduleNextCheckAt != nil &&
+						store.createInput.AvailabilityScheduleNextCheckAt.Equal(test.wantNext),
+				)
 			}
 			if result.Status != test.wantStatus ||
 				result.AvailabilitySchedule["timezone"] != test.wantTimezone {
-				t.Fatalf("result = %+v", result)
+				t.Fatalf(
+					"schedule result mismatch id=%q status=%q timezone=%v",
+					result.ID,
+					result.Status,
+					result.AvailabilitySchedule["timezone"],
+				)
 			}
 			var stored map[string]any
 			if err := json.Unmarshal([]byte(*store.createInput.AvailabilityScheduleJSON), &stored); err != nil {
@@ -557,14 +604,33 @@ func TestServiceCreateRetriesOnlyDuplicateHashUpToThreeAttempts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create() error = %v", err)
 		}
+		firstID := ""
+		secondID := ""
+		hashesDiffer := false
+		if len(store.createInputs) > 0 {
+			firstID = store.createInputs[0].ID
+		}
+		if len(store.createInputs) > 1 {
+			secondID = store.createInputs[1].ID
+			hashesDiffer = store.createInputs[0].KeyHash != store.createInputs[1].KeyHash
+		}
 		if store.createCalls != 2 ||
 			len(store.createInputs) != 2 ||
-			store.createInputs[0].ID != "key_first" ||
-			store.createInputs[1].ID != "key_second" ||
-			store.createInputs[0].KeyHash == store.createInputs[1].KeyHash ||
+			firstID != "key_first" ||
+			secondID != "key_second" ||
+			!hashesDiffer ||
 			result.Key != "sk-second-secret-0123456789" ||
 			result.ID != "key_second" {
-			t.Fatalf("inputs=%+v result=%+v", store.createInputs, result)
+			t.Fatalf(
+				"retry result mismatch calls=%d inputs=%d firstID=%q secondID=%q hashesDiffer=%v resultID=%q keyMatches=%v",
+				store.createCalls,
+				len(store.createInputs),
+				firstID,
+				secondID,
+				hashesDiffer,
+				result.ID,
+				result.Key == "sk-second-secret-0123456789",
+			)
 		}
 	})
 
@@ -630,7 +696,7 @@ func TestServiceCreateInvalidationsAreBestEffortAndSkipValidation(t *testing.T) 
 		invalidator.runtimeReason != "api_key_created" ||
 		invalidator.quotaReason != "api_key_created" ||
 		invalidator.quotaAPIKeyID != "key_created" {
-		t.Fatalf("result=%+v invalidator=%+v", result, invalidator)
+		t.Fatalf("resultID=%q invalidator=%+v", result.ID, invalidator)
 	}
 	if invalidator.validationContextHasDeadline || invalidator.validationContextErr != nil {
 		t.Fatalf("validation invalidation was called: %+v", invalidator)
@@ -656,7 +722,7 @@ func TestServiceCreateInvalidationsUseDetachedBoundedContextAfterRequestCancella
 		t.Fatalf("Create() error = %v", err)
 	}
 	if result.ID != "key_created" || !errors.Is(ctx.Err(), context.Canceled) {
-		t.Fatalf("result=%+v request context error=%v", result, ctx.Err())
+		t.Fatalf("resultID=%q request context error=%v", result.ID, ctx.Err())
 	}
 	if invalidator.runtimeCalls != 1 ||
 		invalidator.quotaCalls != 1 ||

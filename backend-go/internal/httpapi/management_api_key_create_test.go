@@ -103,7 +103,7 @@ func TestManagementAPIKeyCreateHandlerScopesOwnerAndPreservesQuotaNumbers(t *tes
 			handler.ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusCreated {
-				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+				t.Fatalf("status = %d, bodyBytes = %d", rec.Code, rec.Body.Len())
 			}
 			if service.calls != 1 ||
 				service.input.ActorSystemAccountID != "sys_actor" ||
@@ -135,11 +135,15 @@ func TestManagementAPIKeyCreateHandlerScopesOwnerAndPreservesQuotaNumbers(t *tes
 			}
 			if body.Message != "API Key 已创建，请立即复制完整密钥" ||
 				string(body.Data["key"]) != `"sk-created-secret-0123456789"` {
-				t.Fatalf("body = %s", rec.Body.String())
+				t.Fatalf(
+					"response mismatch messageOK=%v keyMatches=%v",
+					body.Message == "API Key 已创建，请立即复制完整密钥",
+					string(body.Data["key"]) == `"sk-created-secret-0123456789"`,
+				)
 			}
 			_, ownerExists := body.Data["systemAccountId"]
 			if ownerExists != test.wantOwnerInBody {
-				t.Fatalf("owner exists = %v, want %v; body = %s", ownerExists, test.wantOwnerInBody, rec.Body.String())
+				t.Fatalf("owner exists = %v, want %v", ownerExists, test.wantOwnerInBody)
 			}
 		})
 	}
@@ -284,7 +288,7 @@ func TestManagementAPIKeyCreateHandlerLogsOnlyAllowedFieldsAfterSuccess(t *testi
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("status = %d, bodyBytes = %d", rec.Code, rec.Body.Len())
 	}
 	input := queueStub.requireInput(t)
 	if input.Module != "api_keys" ||
@@ -313,11 +317,11 @@ func TestManagementAPIKeyCreateHandlerLogsOnlyAllowedFieldsAfterSuccess(t *testi
 	}
 	for _, forbidden := range []string{plaintext, "secret description", "expiresAt", "quotaLimits", "ciphertext", "hash"} {
 		if strings.Contains(string(serialized), forbidden) {
-			t.Fatalf("operation log leaked %q: %s", forbidden, serialized)
+			t.Fatalf("operation log contains forbidden field")
 		}
 	}
 	if !strings.Contains(string(serialized), "sk-creat...23456789") {
-		t.Fatalf("operation log missing marker: %s", serialized)
+		t.Fatal("operation log missing key marker")
 	}
 }
 
@@ -369,7 +373,7 @@ func TestManagementAPIKeyCreateHandlerDoesNotLogFailuresOrOverrideSuccessOnLogFa
 		handler.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusCreated || queueStub.calls != 1 {
-			t.Fatalf("status=%d log calls=%d body=%s", rec.Code, queueStub.calls, rec.Body.String())
+			t.Fatalf("status=%d log calls=%d bodyBytes=%d", rec.Code, queueStub.calls, rec.Body.Len())
 		}
 	})
 }
