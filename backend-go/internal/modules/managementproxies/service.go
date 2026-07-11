@@ -2,30 +2,23 @@ package managementproxies
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 
+	"juhe-ai/backend-go/internal/secretcrypto"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
 const (
-	defaultListPageSize     = 20
-	maxListPageSize         = 200
-	defaultListWindow       = 1001
-	maxDescriptionRunes     = 200
-	defaultCredentialSecret = "juhe-ai-go-development-secret"
+	defaultListPageSize = 20
+	maxListPageSize     = 200
+	defaultListWindow   = 1001
+	maxDescriptionRunes = 200
 
 	proxyUsagePreviewLimit = 3
 	proxyUsageWindowLimit  = proxyUsagePreviewLimit + 1
@@ -253,11 +246,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	}
 	codec := opts.Codec
 	if codec == nil {
-		secret := strings.TrimSpace(opts.Secret)
-		if secret == "" {
-			secret = defaultCredentialSecret
-		}
-		codec = newAESGCMCredentialCodec(secret)
+		codec = secretcrypto.NewJSONCodec(opts.Secret)
 	}
 	providers := opts.ProviderReader
 	if providers == nil {
@@ -748,75 +737,4 @@ func proxyInUseError(bindings []port.ManagementProxyAccountBinding) error {
 		AccountCountIsLowerBound: len(bindings) >= proxyUsageWindowLimit,
 		AccountNames:             names,
 	}
-}
-
-type aesGCMCredentialCodec struct {
-	key [32]byte
-}
-
-func newAESGCMCredentialCodec(secret string) aesGCMCredentialCodec {
-	return aesGCMCredentialCodec{key: sha256.Sum256([]byte(secret))}
-}
-
-func (c aesGCMCredentialCodec) EncryptJSON(value map[string]any) (string, error) {
-	block, err := aes.NewCipher(c.key[:])
-	if err != nil {
-		return "", err
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", err
-	}
-	plain, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	sealed := aead.Seal(nil, nonce, plain, nil)
-	tagSize := aead.Overhead()
-	ciphertext := sealed[:len(sealed)-tagSize]
-	tag := sealed[len(sealed)-tagSize:]
-	encode := base64.RawURLEncoding.EncodeToString
-	return "v1:" + encode(nonce) + ":" + encode(tag) + ":" + encode(ciphertext), nil
-}
-
-func (c aesGCMCredentialCodec) DecryptJSON(value string) (map[string]any, error) {
-	parts := strings.Split(value, ":")
-	if len(parts) != 4 || parts[0] != "v1" {
-		return nil, fmt.Errorf("unsupported encrypted credential format")
-	}
-	decode := base64.RawURLEncoding.DecodeString
-	nonce, err := decode(parts[1])
-	if err != nil {
-		return nil, err
-	}
-	tag, err := decode(parts[2])
-	if err != nil {
-		return nil, err
-	}
-	ciphertext, err := decode(parts[3])
-	if err != nil {
-		return nil, err
-	}
-	block, err := aes.NewCipher(c.key[:])
-	if err != nil {
-		return nil, err
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	sealed := append(append([]byte{}, ciphertext...), tag...)
-	plain, err := aead.Open(nil, nonce, sealed, nil)
-	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	if err := json.Unmarshal(plain, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"juhe-ai/backend-go/internal/apikeysecret"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -49,7 +50,7 @@ func TestServiceAddCreatesHashOnlySecretAndNormalizesLimits(t *testing.T) {
 	if response.APIKey.KeyPrefix != "sk-01234" || response.APIKey.KeySuffix != "89abcdef" {
 		t.Fatalf("api key prefix/suffix = %q/%q", response.APIKey.KeyPrefix, response.APIKey.KeySuffix)
 	}
-	if store.createInput.KeyHash != hashSecret(response.APIKey.Key) {
+	if store.createInput.KeyHash != apikeysecret.Hash(response.APIKey.Key) {
 		t.Fatalf("hash = %q, want sha256 of secret", store.createInput.KeyHash)
 	}
 	if store.createInput.Status != port.PublicAPIKeyStatusActive {

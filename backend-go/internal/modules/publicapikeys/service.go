@@ -2,9 +2,6 @@ package publicapikeys
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"juhe-ai/backend-go/internal/apikeysecret"
 	"juhe-ai/backend-go/internal/modules/apikeyschedule"
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -170,7 +168,13 @@ func NewService(opts Options) *Service {
 	}
 	newSecret := opts.NewSecret
 	if newSecret == nil {
-		newSecret = createAPIKeySecret
+		newSecret = func() (string, error) {
+			secret, err := apikeysecret.Generate()
+			if err != nil {
+				return "", fmt.Errorf("create api key secret: %w", err)
+			}
+			return secret, nil
+		}
 	}
 	return &Service{
 		store:       opts.Store,
@@ -293,9 +297,9 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (APIKeyResponse, 
 			RouteStrategyID:                 strings.TrimSpace(input.RouteStrategyID),
 			Name:                            strings.TrimSpace(input.Name),
 			Description:                     normalizeOptionalText(input.Description),
-			KeyHash:                         hashSecret(secret),
-			KeyPrefix:                       secretPrefix(secret),
-			KeySuffix:                       secretSuffix(secret),
+			KeyHash:                         apikeysecret.Hash(secret),
+			KeyPrefix:                       apikeysecret.Prefix(secret),
+			KeySuffix:                       apikeysecret.Suffix(secret),
 			Status:                          port.PublicAPIKeyStatus(status),
 			ExpiresAt:                       expiresAt,
 			QuotaLimitsJSON:                 quotaJSON,
@@ -794,31 +798,4 @@ func jsonValue(raw *string) any {
 
 func (s *Service) generatedAt() string {
 	return s.now().UTC().Format(time.RFC3339Nano)
-}
-
-func createAPIKeySecret() (string, error) {
-	var bytes [32]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return "", fmt.Errorf("create api key secret: %w", err)
-	}
-	return "sk-" + hex.EncodeToString(bytes[:]), nil
-}
-
-func hashSecret(secret string) string {
-	sum := sha256.Sum256([]byte(secret))
-	return hex.EncodeToString(sum[:])
-}
-
-func secretPrefix(secret string) string {
-	if len(secret) <= 8 {
-		return secret
-	}
-	return secret[:8]
-}
-
-func secretSuffix(secret string) string {
-	if len(secret) <= 8 {
-		return secret
-	}
-	return secret[len(secret)-8:]
 }

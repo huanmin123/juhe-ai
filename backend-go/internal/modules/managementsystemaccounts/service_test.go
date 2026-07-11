@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"juhe-ai/backend-go/internal/apikeysecret"
+	"juhe-ai/backend-go/internal/secretcrypto"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -1151,6 +1153,7 @@ func stringPtr(value string) *string {
 }
 
 func TestCreateSystemAccountNormalizesDefaultsAndDefaultAPIKeys(t *testing.T) {
+	const credentialSecret = "12345678901234567890123456789012"
 	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
 	store := &systemAccountOptionStoreStub{
 		createResult: port.ManagementSystemAccountCreateResult{
@@ -1176,7 +1179,7 @@ func TestCreateSystemAccountNormalizesDefaultsAndDefaultAPIKeys(t *testing.T) {
 		Store:        store,
 		Now:          func() time.Time { return now },
 		HashPassword: func(value string) (string, error) { return "hashed:" + value, nil },
-		Secret:       "12345678901234567890123456789012",
+		Secret:       credentialSecret,
 	})
 
 	result, err := service.Create(context.Background(), CreateInput{
@@ -1207,6 +1210,7 @@ func TestCreateSystemAccountNormalizesDefaultsAndDefaultAPIKeys(t *testing.T) {
 		t.Fatalf("default api keys = %d, want 6", len(input.DefaultAPIKeys))
 	}
 	seen := map[string]bool{}
+	codec := secretcrypto.NewJSONCodec(credentialSecret)
 	for _, item := range input.DefaultAPIKeys {
 		if item.ID == "" || item.KeyHash == "" || item.KeyPrefix == "" || item.KeySuffix == "" || item.KeySecretEncrypted == "" {
 			t.Fatalf("default api key item missing fields: %+v", item)
@@ -1216,6 +1220,17 @@ func TestCreateSystemAccountNormalizesDefaultsAndDefaultAPIKeys(t *testing.T) {
 		}
 		if seen[item.KeyHash] {
 			t.Fatalf("duplicate key hash %q", item.KeyHash)
+		}
+		payload, err := codec.DecryptJSON(item.KeySecretEncrypted)
+		if err != nil {
+			t.Fatalf("decrypt default api key: %v", err)
+		}
+		secret, ok := payload["key"].(string)
+		if !ok ||
+			item.KeyHash != apikeysecret.Hash(secret) ||
+			item.KeyPrefix != apikeysecret.Prefix(secret) ||
+			item.KeySuffix != apikeysecret.Suffix(secret) {
+			t.Fatalf("default api key material mismatch: item=%+v payload=%#v", item, payload)
 		}
 		seen[item.KeyHash] = true
 	}
