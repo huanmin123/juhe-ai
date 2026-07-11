@@ -262,7 +262,7 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     } else if (account.status === 'disabled' && !accountExpired) {
       lines.push('停用账户可手动测试诊断，但不会被测试结果或后台任务自动恢复')
     } else if (account.status === 'pending_test') {
-      lines.push('等待后台健康检查，通过后自动参与调度；人工测试仅用于诊断，不改变账户状态')
+      lines.push(pendingHealthCheckStatusText(account))
     } else if (account.status === 'error') {
       lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
       if (account.cooldownRetestFailureCount) {
@@ -292,7 +292,7 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
   if (effectiveStatus === 'instance_expired') {
     lines.push(account.accountExpiresAt ? `到期时间：${formatDateTime(account.accountExpiresAt)}` : '账户已到期，当前不可用')
   } else if (effectiveStatus === 'instance_pending_test') {
-    lines.push('等待后台健康检查，通过后自动参与调度；人工测试仅用于诊断，不改变账户状态')
+    lines.push(pendingHealthCheckStatusText(account))
   } else if (effectiveStatus === 'instance_disabled') {
     lines.push('已停用，不参与调度')
   } else if (effectiveStatus === 'instance_unschedulable') {
@@ -564,7 +564,7 @@ function isConciseAccountStatus(status: NonNullable<AccountSummary['effectiveAva
 function directAccountStatusText(account: AccountSummary): string {
   const status = account.effectiveAvailability?.status
   if (status === 'instance_expired') return '账户到期'
-  if (status === 'instance_pending_test') return '待检查'
+  if (status === 'instance_pending_test') return isPendingHealthCheckFailed(account) ? '检查失败' : '待检查'
   if (status === 'instance_disabled') return '停用'
   if (status === 'instance_error') return '异常'
   if (isLongTermUnavailableAccount(account)) return '长期不可用'
@@ -573,6 +573,19 @@ function directAccountStatusText(account: AccountSummary): string {
   if (status === 'instance_cooldown') return '冷却中'
   if (status === 'instance_unschedulable') return '停调'
   return statusText(account.status)
+}
+
+function pendingHealthCheckStatusText(account: AccountSummary): string {
+  if (isPendingHealthCheckFailed(account)) {
+    return '后台健康检查未通过，系统将自动重试；人工测试仅用于诊断，不改变账户状态'
+  }
+  return '等待后台健康检查，通过后自动参与调度；人工测试仅用于诊断，不改变账户状态'
+}
+
+function isPendingHealthCheckFailed(account: AccountSummary): boolean {
+  return account.status === 'pending_test'
+    && Boolean(account.lastHealthCheckAt)
+    && Boolean(account.lastHealthCheckErrorCode || account.lastHealthCheckErrorMessage)
 }
 
 export function isCoolingDown(account: AccountSummary) {

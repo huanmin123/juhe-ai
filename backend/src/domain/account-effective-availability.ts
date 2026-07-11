@@ -28,6 +28,9 @@ export type AccountEffectiveAvailabilityInput = Pick<
   | 'cooldownUntil'
   | 'lastErrorCode'
   | 'lastErrorMessage'
+  | 'lastHealthCheckAt'
+  | 'lastHealthCheckErrorCode'
+  | 'lastHealthCheckErrorMessage'
   | 'apiKeyRuntime'
   | 'runtimeAvailability'
 >
@@ -148,6 +151,15 @@ function instanceAccountAvailability(account: AccountEffectiveAvailabilityInput,
     return blocked('instance_disabled', `${instanceLabel}停用`, 'default', blockerScope, `${instanceReasonPrefix}已停用，当前不可用`)
   }
   if (account.status === 'pending_test') {
+    if (isPendingHealthCheckFailed(account)) {
+      return blocked(
+        'instance_pending_test',
+        `${instanceLabel}检查失败`,
+        'red',
+        blockerScope,
+        `${instanceReasonPrefix}后台健康检查未通过，系统将自动重试`
+      )
+    }
     return blocked('instance_pending_test', `${instanceLabel}待检查`, 'blue', blockerScope, `${instanceReasonPrefix}正在等待后台健康检查，检查通过前不会参与调度`)
   }
   if (account.status === 'error') {
@@ -166,6 +178,13 @@ function instanceAccountAvailability(account: AccountEffectiveAvailabilityInput,
     return blocked('instance_unschedulable', `${instanceLabel}停调`, 'orange', blockerScope, `${instanceReasonPrefix}暂时不可调用，恢复前不会参与调度`)
   }
   return undefined
+}
+
+function isPendingHealthCheckFailed(account: AccountEffectiveAvailabilityInput): boolean {
+  return Boolean(
+    account.lastHealthCheckAt
+    && (account.lastHealthCheckErrorCode || account.lastHealthCheckErrorMessage)
+  )
 }
 
 function runtimeAvailability(account: AccountEffectiveAvailabilityInput): AccountEffectiveAvailability | undefined {

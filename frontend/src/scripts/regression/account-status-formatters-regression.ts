@@ -18,6 +18,32 @@ assertStatus('待检查账户', accountFixture({
     reason: '账户正在等待后台健康检查，检查通过前不会参与调度'
   }
 }), '待检查', 'blue')
+const pendingHealthCheckFailedAccount = accountFixture({
+  status: 'pending_test',
+  lastHealthCheckAt: '2026-07-11T01:00:00.000Z',
+  nextHealthCheckAt: '2099-07-11T01:15:00.000Z',
+  healthCheckFailureCount: 1,
+  lastHealthCheckStatusCode: 401,
+  lastHealthCheckErrorCode: 'invalid_api_key',
+  lastHealthCheckErrorMessage: 'Invalid API key',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_pending_test',
+    label: '账户检查失败',
+    color: 'red',
+    blockerScope: 'account',
+    reason: '后台健康检查未通过，系统将自动重试'
+  }
+})
+assertStatus('待检查账户后台检查失败', pendingHealthCheckFailedAccount, '检查失败', 'red')
+assertTrue(
+  accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('系统将自动重试')),
+  '待检查账户失败 tooltip 应说明系统会自动重试'
+)
+assertTrue(
+  accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('Invalid API key')),
+  '待检查账户失败 tooltip 应显示后台检查原因'
+)
 assertStatus('停用账户', accountFixture({
   status: 'disabled',
   effectiveAvailability: {
