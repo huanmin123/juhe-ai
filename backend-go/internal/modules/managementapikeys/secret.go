@@ -12,7 +12,10 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-const apiKeySecretRefreshedReason = "api_key_secret_refreshed"
+const (
+	apiKeySecretRefreshedReason         = "api_key_secret_refreshed"
+	apiKeyValidationInvalidationTimeout = 5 * time.Second
+)
 
 var (
 	ErrAPIKeyNotFound          = errors.New("management API Key not found")
@@ -190,7 +193,12 @@ func (s *Service) Refresh(ctx context.Context, input SecretInput) (RefreshResult
 	if s.invalidator == nil {
 		return RefreshResult{}, fmt.Errorf("management API Key cache invalidator is required")
 	}
-	if err := s.invalidator.InvalidateAPIKeyValidationCache(ctx); err != nil {
+	validationCtx, cancelValidation := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		apiKeyValidationInvalidationTimeout,
+	)
+	defer cancelValidation()
+	if err := s.invalidator.InvalidateAPIKeyValidationCache(validationCtx); err != nil {
 		return RefreshResult{}, fmt.Errorf("invalidate management API Key validation cache: %w", err)
 	}
 	_ = s.invalidator.InvalidateGatewayRuntime(ctx, apiKeySecretRefreshedReason)

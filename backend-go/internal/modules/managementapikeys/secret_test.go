@@ -324,6 +324,7 @@ func TestServiceRefreshReturnsNotFoundBeforeGeneratingSecret(t *testing.T) {
 func TestServiceRefreshValidationFailureOccursAfterCommitAndStopsLaterEffects(t *testing.T) {
 	events := []string{}
 	validationErr := errors.New("validation cache unavailable")
+	ctx, cancel := context.WithCancel(context.Background())
 	store := &managementAPIKeySecretStoreStub{
 		refreshRow: port.ManagementAPIKeyListRow{
 			ID:              "key_1",
@@ -337,6 +338,7 @@ func TestServiceRefreshValidationFailureOccursAfterCommitAndStopsLaterEffects(t 
 		refreshFound: true,
 		updateFound:  true,
 		events:       &events,
+		afterCommit:  cancel,
 	}
 	invalidator := &managementAPIKeyInvalidatorStub{
 		events:        &events,
@@ -351,7 +353,7 @@ func TestServiceRefreshValidationFailureOccursAfterCommitAndStopsLaterEffects(t 
 		NewSecret:        func() (string, error) { return "sk-committed-secret-0123456789", nil },
 	})
 
-	_, err := service.Refresh(context.Background(), SecretInput{
+	_, err := service.Refresh(ctx, SecretInput{
 		ActorSystemAccountID: "sys_admin",
 		ActorRole:            "admin",
 		APIKeyID:             "key_1",
@@ -364,6 +366,13 @@ func TestServiceRefreshValidationFailureOccursAfterCommitAndStopsLaterEffects(t 
 	}
 	if store.commits != 1 || store.updateInput.KeyHash == "" {
 		t.Fatalf("commits=%d update=%+v", store.commits, store.updateInput)
+	}
+	if invalidator.validationContextErr != nil || !invalidator.validationContextHasDeadline {
+		t.Fatalf(
+			"validation context err=%v hasDeadline=%t, want live bounded context",
+			invalidator.validationContextErr,
+			invalidator.validationContextHasDeadline,
+		)
 	}
 	if invalidator.calls != 1 || store.usageCalls != 0 {
 		t.Fatalf("invalidation calls=%d usage calls=%d", invalidator.calls, store.usageCalls)
@@ -445,6 +454,7 @@ type managementAPIKeySecretStoreStub struct {
 	usageCalls   int
 	commits      int
 	rollbacks    int
+	afterCommit  func()
 }
 
 func (s *managementAPIKeySecretStoreStub) ListManagementAPIKeys(
@@ -509,6 +519,9 @@ func (s *managementAPIKeySecretStoreStub) ManagementAPIKeySecretInTx(
 	}
 	s.commits++
 	s.record("tx_commit")
+	if s.afterCommit != nil {
+		s.afterCommit()
+	}
 	return nil
 }
 
@@ -519,18 +532,22 @@ func (s *managementAPIKeySecretStoreStub) record(event string) {
 }
 
 type managementAPIKeyInvalidatorStub struct {
-	events        *[]string
-	calls         int
-	validationErr error
-	runtimeErr    error
-	quotaErr      error
-	runtimeReason string
-	quotaReason   string
-	quotaAPIKeyID string
+	events                       *[]string
+	calls                        int
+	validationErr                error
+	runtimeErr                   error
+	quotaErr                     error
+	runtimeReason                string
+	quotaReason                  string
+	quotaAPIKeyID                string
+	validationContextErr         error
+	validationContextHasDeadline bool
 }
 
-func (s *managementAPIKeyInvalidatorStub) InvalidateAPIKeyValidationCache(context.Context) error {
+func (s *managementAPIKeyInvalidatorStub) InvalidateAPIKeyValidationCache(ctx context.Context) error {
 	s.calls++
+	s.validationContextErr = ctx.Err()
+	_, s.validationContextHasDeadline = ctx.Deadline()
 	s.record("validation")
 	return s.validationErr
 }

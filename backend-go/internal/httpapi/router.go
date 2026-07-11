@@ -526,12 +526,15 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementAPIKeyRefreshHandler != nil {
 				system.With(
+					managementAPIKeyRefreshJSONBodyMiddleware,
 					managementAPIWriteRateLimitMiddleware,
+					managementAPIKeyAdminRoleMiddleware,
 					mutationGuards.Middleware(managementAPIKeyRefreshMutationGuardConfig(managementAPIKeyScopeAdmin)),
 				).Post("/api-keys/{id}/refresh-key", opts.ManagementAPIKeyRefreshHandler.ServeHTTP)
 			}
 			if opts.ManagementMyAPIKeyRefreshHandler != nil {
 				system.With(
+					managementAPIKeyRefreshJSONBodyMiddleware,
 					managementAPIWriteRateLimitMiddleware,
 					mutationGuards.Middleware(managementAPIKeyRefreshMutationGuardConfig(managementAPIKeyScopeSelf)),
 				).Post("/my-api-keys/{id}/refresh-key", opts.ManagementMyAPIKeyRefreshHandler.ServeHTTP)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -114,7 +115,12 @@ func newManagementAPIKeySecretHandler(
 			return
 		}
 
-		result, err := service.Reveal(r, managementAPIKeySecretInput(authContext, r, scope))
+		input, queryError := managementAPIKeySecretInput(authContext, r, scope)
+		if queryError != "" {
+			writeMessageError(w, http.StatusBadRequest, queryError)
+			return
+		}
+		result, err := service.Reveal(r, input)
 		if errors.Is(err, managementapikeys.ErrAPIKeyNotFound) {
 			writeMessageError(w, http.StatusNotFound, "API Key 不存在")
 			return
@@ -149,11 +155,13 @@ func newManagementAPIKeyRefreshHandler(
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
-		if !decodeManagementAPIKeyRefreshBody(w, r) {
+		input, queryError := managementAPIKeySecretInput(authContext, r, scope)
+		if queryError != "" {
+			writeMessageError(w, http.StatusBadRequest, queryError)
 			return
 		}
 
-		result, err := service.Refresh(r, managementAPIKeySecretInput(authContext, r, scope))
+		result, err := service.Refresh(r, input)
 		if errors.Is(err, managementapikeys.ErrAPIKeyNotFound) {
 			writeMessageError(w, http.StatusNotFound, "API Key 不存在")
 			return
@@ -176,7 +184,7 @@ func managementAPIKeySecretInput(
 	authContext managementauth.Context,
 	r *http.Request,
 	scope managementAPIKeyScope,
-) managementapikeys.SecretInput {
+) (managementapikeys.SecretInput, string) {
 	input := managementapikeys.SecretInput{
 		ActorSystemAccountID: authContext.SystemAccountID,
 		ActorRole:            authContext.Role,
@@ -184,42 +192,71 @@ func managementAPIKeySecretInput(
 	}
 	switch scope {
 	case managementAPIKeyScopeAdmin:
-		systemAccountID := firstManagementQueryText(r.URL.Query(), "systemAccountId")
+		rawValues, exists := r.URL.Query()["systemAccountId"]
+		if !exists {
+			return input, ""
+		}
+		if len(rawValues) != 1 {
+			return managementapikeys.SecretInput{}, "Expected string, received array"
+		}
+		systemAccountID := strings.TrimSpace(rawValues[0])
+		if systemAccountID == "" {
+			return managementapikeys.SecretInput{}, "系统账号 ID 不能为空"
+		}
 		if systemAccountID != "all" {
 			input.SystemAccountID = systemAccountID
 		}
 	case managementAPIKeyScopeSelf:
 		input.SystemAccountID = authContext.SystemAccountID
 		input.SelfOnly = true
+	default:
+		return managementapikeys.SecretInput{}, "查询参数不合法"
 	}
-	return input
+	return input, ""
 }
 
-func decodeManagementAPIKeyRefreshBody(w http.ResponseWriter, r *http.Request) bool {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, managementAPIKeyRefreshMaxBodyBytes))
+func managementAPIKeyRefreshJSONBodyMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !managementAPIKeyRefreshJSONContentType(r.Header.Get("Content-Type")) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, managementAPIKeyRefreshMaxBodyBytes))
+		if err != nil {
+			writeManagementGlobalSettingsBodyError(w, err)
+			return
+		}
+		trimmed := bytes.TrimSpace(body)
+		if len(trimmed) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if (trimmed[0] != '{' && trimmed[0] != '[') || !json.Valid(body) {
+			writeMessageError(w, http.StatusBadRequest, "请求体无效")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func managementAPIKeyRefreshJSONContentType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
 	if err != nil {
-		writeManagementGlobalSettingsBodyError(w, err)
 		return false
 	}
-	if len(bytes.TrimSpace(body)) == 0 {
-		return true
-	}
-	var payload map[string]json.RawMessage
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	if err := decoder.Decode(&payload); err != nil {
-		writeManagementGlobalSettingsBodyError(w, err)
-		return false
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		writeManagementGlobalSettingsTrailingBodyError(w, err)
-		return false
-	}
-	if payload == nil || len(payload) != 0 {
-		writeMessageError(w, http.StatusBadRequest, "请求体无效")
-		return false
-	}
-	return true
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	return mediaType == "application/json"
+}
+
+func managementAPIKeyAdminRoleMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func setManagementAPIKeySecretHeaders(w http.ResponseWriter) {

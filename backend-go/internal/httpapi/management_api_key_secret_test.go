@@ -83,6 +83,135 @@ func TestManagementAPIKeySecretHandlersResolveAdminAndSelfScopes(t *testing.T) {
 	})
 }
 
+func TestManagementAPIKeySecretHandlersValidateAdminScopeQueryAndIgnoreSelfQuery(t *testing.T) {
+	for _, endpoint := range []struct {
+		name   string
+		method string
+		path   string
+		call   func(http.Handler, http.ResponseWriter, *http.Request)
+		new    func(*managementAPIKeySecretServiceStub, managementAPIKeyScope) http.Handler
+		calls  func(*managementAPIKeySecretServiceStub) int
+		input  func(*managementAPIKeySecretServiceStub) managementapikeys.SecretInput
+	}{
+		{
+			name:   "reveal",
+			method: http.MethodGet,
+			path:   "/__aisys__/api/api-keys/key_1/secret",
+			call:   func(handler http.Handler, w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) },
+			new: func(service *managementAPIKeySecretServiceStub, scope managementAPIKeyScope) http.Handler {
+				return newManagementAPIKeySecretHandler(service, scope, managementOperationLogOptions{})
+			},
+			calls: func(service *managementAPIKeySecretServiceStub) int { return service.revealCalls },
+			input: func(service *managementAPIKeySecretServiceStub) managementapikeys.SecretInput {
+				return service.revealInput
+			},
+		},
+		{
+			name:   "refresh",
+			method: http.MethodPost,
+			path:   "/__aisys__/api/api-keys/key_1/refresh-key",
+			call:   func(handler http.Handler, w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) },
+			new: func(service *managementAPIKeySecretServiceStub, scope managementAPIKeyScope) http.Handler {
+				return newManagementAPIKeyRefreshHandler(service, scope, managementOperationLogOptions{})
+			},
+			calls: func(service *managementAPIKeySecretServiceStub) int { return service.refreshCalls },
+			input: func(service *managementAPIKeySecretServiceStub) managementapikeys.SecretInput {
+				return service.refreshInput
+			},
+		},
+	} {
+		t.Run(endpoint.name+" admin query", func(t *testing.T) {
+			for _, test := range []struct {
+				name             string
+				rawQuery         string
+				wantStatus       int
+				wantSystemAcctID string
+				wantMessage      string
+			}{
+				{name: "absent", wantStatus: http.StatusOK},
+				{name: "all", rawQuery: "systemAccountId=%20all%20", wantStatus: http.StatusOK},
+				{name: "single trimmed", rawQuery: "systemAccountId=%20sys_owner%20", wantStatus: http.StatusOK, wantSystemAcctID: "sys_owner"},
+				{name: "empty", rawQuery: "systemAccountId=", wantStatus: http.StatusBadRequest, wantMessage: "系统账号 ID 不能为空"},
+				{name: "blank", rawQuery: "systemAccountId=%20%20", wantStatus: http.StatusBadRequest, wantMessage: "系统账号 ID 不能为空"},
+				{name: "repeated", rawQuery: "systemAccountId=sys_a&systemAccountId=sys_b", wantStatus: http.StatusBadRequest, wantMessage: "Expected string, received array"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					service := &managementAPIKeySecretServiceStub{
+						revealResult:  managementapikeys.SecretResult{Key: "sk-secret"},
+						refreshResult: managementapikeys.RefreshResult{Key: "sk-secret"},
+					}
+					handler := endpoint.new(service, managementAPIKeyScopeAdmin)
+					target := endpoint.path
+					if test.rawQuery != "" {
+						target += "?" + test.rawQuery
+					}
+					req := httptest.NewRequest(endpoint.method, target, nil)
+					req = requestWithManagementAPIKeyID(req, "key_1")
+					req = requestWithManagementAPIKeyAuthContext(req, managementauth.Context{
+						SystemAccountID: "sys_admin",
+						Role:            "admin",
+					})
+					rec := httptest.NewRecorder()
+
+					endpoint.call(handler, rec, req)
+
+					if rec.Code != test.wantStatus {
+						t.Fatalf("status = %d, want %d; body = %s", rec.Code, test.wantStatus, rec.Body.String())
+					}
+					wantCalls := 0
+					if test.wantStatus == http.StatusOK {
+						wantCalls = 1
+					}
+					if got := endpoint.calls(service); got != wantCalls {
+						t.Fatalf("service calls = %d, want %d", got, wantCalls)
+					}
+					if test.wantMessage != "" {
+						var body map[string]string
+						if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+							t.Fatalf("decode response: %v", err)
+						}
+						if body["message"] != test.wantMessage {
+							t.Fatalf("message = %q, want %q", body["message"], test.wantMessage)
+						}
+					}
+					if wantCalls == 1 && endpoint.input(service).SystemAccountID != test.wantSystemAcctID {
+						t.Fatalf("input = %+v, want systemAccountId %q", endpoint.input(service), test.wantSystemAcctID)
+					}
+				})
+			}
+		})
+
+		t.Run(endpoint.name+" self query ignored", func(t *testing.T) {
+			service := &managementAPIKeySecretServiceStub{
+				revealResult:  managementapikeys.SecretResult{Key: "sk-secret"},
+				refreshResult: managementapikeys.RefreshResult{Key: "sk-secret"},
+			}
+			handler := endpoint.new(service, managementAPIKeyScopeSelf)
+			req := httptest.NewRequest(
+				endpoint.method,
+				strings.Replace(endpoint.path, "/api-keys/", "/my-api-keys/", 1)+"?systemAccountId=&systemAccountId=sys_forged",
+				nil,
+			)
+			req = requestWithManagementAPIKeyID(req, "key_1")
+			req = requestWithManagementAPIKeyAuthContext(req, managementauth.Context{
+				SystemAccountID: "sys_current",
+				Role:            "user",
+			})
+			rec := httptest.NewRecorder()
+
+			endpoint.call(handler, rec, req)
+
+			if rec.Code != http.StatusOK || endpoint.calls(service) != 1 {
+				t.Fatalf("status=%d calls=%d body=%s", rec.Code, endpoint.calls(service), rec.Body.String())
+			}
+			input := endpoint.input(service)
+			if input.SystemAccountID != "sys_current" || !input.SelfOnly {
+				t.Fatalf("input = %+v", input)
+			}
+		})
+	}
+}
+
 func TestManagementAPIKeySecretHandlerReturnsNoStoreEnvelopeAndMarkerOnlyOperationLog(t *testing.T) {
 	const plaintext = "sk-plaintext-must-never-enter-operation-log"
 	queueStub := &managementAPIKeySecretOperationLogQueueStub{}
@@ -202,8 +331,8 @@ func TestManagementAPIKeySecretHandlerMapsPermissionsAndFailures(t *testing.T) {
 	}
 }
 
-func TestManagementAPIKeyRefreshHandlerAcceptsOptionalEmptyObjectAndReturnsFullSummary(t *testing.T) {
-	for _, body := range []string{"", "{}", " \r\n { } \t"} {
+func TestManagementAPIKeyRefreshHandlerDoesNotApplyBodySchemaAndReturnsFullSummary(t *testing.T) {
+	for _, body := range []string{"", "{}", `{"unexpected":true}`, "[]"} {
 		t.Run(body, func(t *testing.T) {
 			queueStub := &managementAPIKeySecretOperationLogQueueStub{}
 			service := &managementAPIKeySecretServiceStub{
@@ -336,39 +465,6 @@ func TestManagementAPIKeyRefreshHandlerForcesSelfScopeAndHidesOwnerFields(t *tes
 		if strings.Contains(rec.Body.String(), forbidden) {
 			t.Fatalf("self response leaked %q: %s", forbidden, rec.Body.String())
 		}
-	}
-}
-
-func TestManagementAPIKeyRefreshHandlerRejectsInvalidBodyBeforeService(t *testing.T) {
-	tests := []struct {
-		name       string
-		body       string
-		wantStatus int
-	}{
-		{name: "array", body: "[]", wantStatus: http.StatusBadRequest},
-		{name: "nonempty object", body: `{"unexpected":true}`, wantStatus: http.StatusBadRequest},
-		{name: "trailing json", body: "{} {}", wantStatus: http.StatusBadRequest},
-		{name: "malformed", body: "{", wantStatus: http.StatusBadRequest},
-		{name: "too large", body: `{"x":"` + strings.Repeat("a", 256<<10) + `"}`, wantStatus: http.StatusRequestEntityTooLarge},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			service := &managementAPIKeySecretServiceStub{}
-			handler := newManagementAPIKeyRefreshHandler(service, managementAPIKeyScopeAdmin, managementOperationLogOptions{})
-			req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/api-keys/key_1/refresh-key", strings.NewReader(test.body))
-			req = requestWithManagementAPIKeyID(req, "key_1")
-			req = requestWithManagementAPIKeyAuthContext(req, managementauth.Context{
-				SystemAccountID: "sys_admin",
-				Role:            "admin",
-			})
-			rec := httptest.NewRecorder()
-
-			handler.ServeHTTP(rec, req)
-
-			if rec.Code != test.wantStatus || service.refreshCalls != 0 {
-				t.Fatalf("status=%d calls=%d body=%s", rec.Code, service.refreshCalls, rec.Body.String())
-			}
-		})
 	}
 }
 
@@ -553,6 +649,199 @@ func TestRouterRegistersManagementAPIKeySecretRoutesWithCorrectAuthBodyAndMutati
 	}
 }
 
+func TestRouterManagementAPIKeyRefreshMatchesExpressJSONAndMiddlewareOrder(t *testing.T) {
+	t.Run("accepted JSON shapes reach auth limiter and handler in order", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			body string
+		}{
+			{name: "empty body"},
+			{name: "empty object", body: "{}"},
+			{name: "object with fields", body: `{"unexpected":true}`},
+			{name: "array", body: `["accepted"]`},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				events := []string{}
+				fixture := newManagementAPIKeyRefreshRouterFixture(t, "admin", &events)
+				req := httptest.NewRequest(
+					http.MethodPost,
+					"/__aisys__/api/api-keys/key_1/refresh-key?systemAccountId=sys_owner",
+					strings.NewReader(test.body),
+				)
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Cookie", "juhe_ai_session=session-token")
+				rec := httptest.NewRecorder()
+
+				fixture.router.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+				}
+				if got, want := strings.Join(events, ","), "ip_limit,touch_auth,user_limit,refresh"; got != want {
+					t.Fatalf("events = %q, want %q", got, want)
+				}
+				if fixture.service.refreshCalls != 1 {
+					t.Fatalf("refresh calls = %d, want 1", fixture.service.refreshCalls)
+				}
+				assertManagementAPIKeyNoStore(t, rec)
+			})
+		}
+	})
+
+	t.Run("strict JSON rejection happens before auth user limit and mutation claim", func(t *testing.T) {
+		for _, test := range []struct {
+			name       string
+			body       string
+			wantStatus int
+		}{
+			{name: "null", body: "null", wantStatus: http.StatusBadRequest},
+			{name: "number", body: "1", wantStatus: http.StatusBadRequest},
+			{name: "string", body: `"text"`, wantStatus: http.StatusBadRequest},
+			{name: "malformed", body: "{", wantStatus: http.StatusBadRequest},
+			{name: "trailing JSON", body: "{} {}", wantStatus: http.StatusBadRequest},
+			{
+				name:       "oversized",
+				body:       `{"value":"` + strings.Repeat("x", managementAPIKeyRefreshMaxBodyBytes) + `"}`,
+				wantStatus: http.StatusRequestEntityTooLarge,
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				events := []string{}
+				fixture := newManagementAPIKeyRefreshRouterFixture(t, "admin", &events)
+				req := httptest.NewRequest(
+					http.MethodPost,
+					"/__aisys__/api/api-keys/key_1/refresh-key?systemAccountId=sys_owner",
+					strings.NewReader(test.body),
+				)
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Cookie", "juhe_ai_session=session-token")
+				rec := httptest.NewRecorder()
+
+				fixture.router.ServeHTTP(rec, req)
+
+				if rec.Code != test.wantStatus {
+					t.Fatalf("status = %d, want %d; body = %s", rec.Code, test.wantStatus, rec.Body.String())
+				}
+				if fixture.auth.touchCalls != 0 || fixture.userLimiter.calls != 0 || fixture.service.refreshCalls != 0 {
+					t.Fatalf(
+						"touch=%d userLimit=%d refresh=%d, want parser rejection before all three",
+						fixture.auth.touchCalls,
+						fixture.userLimiter.calls,
+						fixture.service.refreshCalls,
+					)
+				}
+				if fixture.ipLimiter.calls != 1 || strings.Join(events, ",") != "ip_limit" {
+					t.Fatalf("IP calls=%d events=%q", fixture.ipLimiter.calls, strings.Join(events, ","))
+				}
+				assertManagementAPIKeyNoStore(t, rec)
+
+				validReq := httptest.NewRequest(
+					http.MethodPost,
+					"/__aisys__/api/api-keys/key_1/refresh-key?systemAccountId=sys_owner",
+					strings.NewReader("{}"),
+				)
+				validReq.Header.Set("Content-Type", "application/json")
+				validReq.Header.Set("Cookie", "juhe_ai_session=session-token")
+				validRec := httptest.NewRecorder()
+				fixture.router.ServeHTTP(validRec, validReq)
+				if validRec.Code != http.StatusOK || fixture.service.refreshCalls != 1 {
+					t.Fatalf(
+						"valid retry status=%d refresh=%d body=%s; parser rejection must not claim mutation",
+						validRec.Code,
+						fixture.service.refreshCalls,
+						validRec.Body.String(),
+					)
+				}
+			})
+		}
+	})
+
+	t.Run("non JSON content type is skipped", func(t *testing.T) {
+		for _, contentType := range []string{"text/plain", "application/problem+json"} {
+			t.Run(contentType, func(t *testing.T) {
+				events := []string{}
+				fixture := newManagementAPIKeyRefreshRouterFixture(t, "admin", &events)
+				req := httptest.NewRequest(
+					http.MethodPost,
+					"/__aisys__/api/api-keys/key_1/refresh-key?systemAccountId=sys_owner",
+					strings.NewReader("not-json"),
+				)
+				req.Header.Set("Content-Type", contentType)
+				req.Header.Set("Cookie", "juhe_ai_session=session-token")
+				rec := httptest.NewRecorder()
+
+				fixture.router.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusOK || fixture.service.refreshCalls != 1 {
+					t.Fatalf("status=%d refresh=%d body=%s", rec.Code, fixture.service.refreshCalls, rec.Body.String())
+				}
+				if got, want := strings.Join(events, ","), "ip_limit,touch_auth,user_limit,refresh"; got != want {
+					t.Fatalf("events = %q, want %q", got, want)
+				}
+			})
+		}
+	})
+
+	t.Run("non admin authenticates and is limited before role rejection without mutation claim", func(t *testing.T) {
+		events := []string{}
+		fixture := newManagementAPIKeyRefreshRouterFixture(t, "user", &events)
+		for attempt := 1; attempt <= 2; attempt++ {
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/__aisys__/api/api-keys/key_1/refresh-key?systemAccountId=sys_owner",
+				strings.NewReader("{}"),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Cookie", "juhe_ai_session=session-token")
+			rec := httptest.NewRecorder()
+
+			fixture.router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("attempt %d status = %d, want 403; body = %s", attempt, rec.Code, rec.Body.String())
+			}
+			assertManagementAPIKeyNoStore(t, rec)
+		}
+		if fixture.auth.touchCalls != 2 || fixture.userLimiter.calls != 2 || fixture.service.refreshCalls != 0 {
+			t.Fatalf(
+				"touch=%d userLimit=%d refresh=%d",
+				fixture.auth.touchCalls,
+				fixture.userLimiter.calls,
+				fixture.service.refreshCalls,
+			)
+		}
+	})
+
+	t.Run("admin query validation remains after auth limiter and mutation guard", func(t *testing.T) {
+		events := []string{}
+		fixture := newManagementAPIKeyRefreshRouterFixture(t, "admin", &events)
+		for attempt, wantStatus := range []int{http.StatusBadRequest, http.StatusConflict} {
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/__aisys__/api/api-keys/key_1/refresh-key?systemAccountId=",
+				strings.NewReader("{}"),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Cookie", "juhe_ai_session=session-token")
+			rec := httptest.NewRecorder()
+
+			fixture.router.ServeHTTP(rec, req)
+
+			if rec.Code != wantStatus {
+				t.Fatalf("attempt %d status = %d, want %d; body = %s", attempt+1, rec.Code, wantStatus, rec.Body.String())
+			}
+		}
+		if fixture.auth.touchCalls != 2 || fixture.userLimiter.calls != 2 || fixture.service.refreshCalls != 0 {
+			t.Fatalf(
+				"touch=%d userLimit=%d refresh=%d",
+				fixture.auth.touchCalls,
+				fixture.userLimiter.calls,
+				fixture.service.refreshCalls,
+			)
+		}
+	})
+}
+
 func TestRouterDoesNotRegisterManagementAPIKeySecretRoutesWhenDisabled(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeData(w, http.StatusOK, map[string]string{"key": "sk-secret"})
@@ -580,6 +869,136 @@ func TestRouterDoesNotRegisterManagementAPIKeySecretRoutesWhenDisabled(t *testin
 			t.Fatalf("%s %s status = %d, want 404", request.method, request.path, rec.Code)
 		}
 	}
+}
+
+type managementAPIKeyRefreshRouterFixture struct {
+	router      http.Handler
+	service     *managementAPIKeySecretServiceStub
+	auth        *managementAPIKeyRefreshAuthStub
+	ipLimiter   *managementAPIKeyRefreshIPLimiterStub
+	userLimiter *managementAPIKeyRefreshUserLimiterStub
+}
+
+func newManagementAPIKeyRefreshRouterFixture(
+	t *testing.T,
+	role string,
+	events *[]string,
+) managementAPIKeyRefreshRouterFixture {
+	t.Helper()
+	service := &managementAPIKeySecretServiceStub{
+		refreshResult: managementapikeys.RefreshResult{
+			ListItem: managementapikeys.ListItem{
+				ID:              "key_1",
+				Name:            "Key",
+				KeyPrefix:       "sk-refre",
+				KeySuffix:       "23456789",
+				Status:          "active",
+				RouteStrategyID: "route_1",
+				QuotaLimits:     port.ManagementRequestQuotaLimits{},
+				Usage:           port.ManagementAccountUsageSummary{},
+			},
+			Key: "sk-refreshed-secret",
+		},
+		events: events,
+	}
+	auth := &managementAPIKeyRefreshAuthStub{
+		context: managementauth.Context{
+			SystemAccountID: "sys_actor",
+			Username:        "actor",
+			Role:            role,
+			SessionID:       "sess_actor",
+		},
+		events: events,
+	}
+	ipLimiter := &managementAPIKeyRefreshIPLimiterStub{events: events}
+	userLimiter := &managementAPIKeyRefreshUserLimiterStub{events: events}
+	router := NewRouter(RouterOptions{
+		Config:                            config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                            slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		SystemAPIRateLimitReader:          systemAPIRateLimitReaderStub{settings: port.SystemAPIRateLimitSettings{IPWritePerMinute: 180, IPWriteBurstPer10Seconds: 40, UserWritePerMinute: 120}},
+		SystemAPIIPRateLimiter:            ipLimiter,
+		SystemAPIAuthenticatedRateLimiter: userLimiter,
+		ManagementAPIAuthMiddleware:       NewManagementAPIAuthMiddleware(auth),
+		ManagementAPIAuthTouchMiddleware:  NewManagementAPIAuthTouchMiddleware(auth),
+		ManagementAPIKeyRefreshHandler:    newManagementAPIKeyRefreshHandler(service, managementAPIKeyScopeAdmin, managementOperationLogOptions{}),
+	})
+	return managementAPIKeyRefreshRouterFixture{
+		router:      router,
+		service:     service,
+		auth:        auth,
+		ipLimiter:   ipLimiter,
+		userLimiter: userLimiter,
+	}
+}
+
+func assertManagementAPIKeyNoStore(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", rec.Header().Get("Cache-Control"))
+	}
+}
+
+type managementAPIKeyRefreshAuthStub struct {
+	context    managementauth.Context
+	events     *[]string
+	readCalls  int
+	touchCalls int
+}
+
+func (s *managementAPIKeyRefreshAuthStub) AuthenticateCookie(
+	context.Context,
+	string,
+) (managementauth.Context, error) {
+	s.readCalls++
+	if s.events != nil {
+		*s.events = append(*s.events, "read_auth")
+	}
+	return s.context, nil
+}
+
+func (s *managementAPIKeyRefreshAuthStub) AuthenticateCookieAndTouch(
+	context.Context,
+	string,
+) (managementauth.Context, error) {
+	s.touchCalls++
+	if s.events != nil {
+		*s.events = append(*s.events, "touch_auth")
+	}
+	return s.context, nil
+}
+
+type managementAPIKeyRefreshIPLimiterStub struct {
+	events *[]string
+	calls  int
+}
+
+func (s *managementAPIKeyRefreshIPLimiterStub) AllowSystemAPIIP(
+	context.Context,
+	string,
+	SystemAPIIPRateLimitSettings,
+) (SystemAPIRateLimitDecision, error) {
+	s.calls++
+	if s.events != nil {
+		*s.events = append(*s.events, "ip_limit")
+	}
+	return SystemAPIRateLimitDecision{Allowed: true}, nil
+}
+
+type managementAPIKeyRefreshUserLimiterStub struct {
+	events *[]string
+	calls  int
+}
+
+func (s *managementAPIKeyRefreshUserLimiterStub) AllowSystemAPIAuthenticated(
+	context.Context,
+	string,
+	int,
+) (SystemAPIRateLimitDecision, error) {
+	s.calls++
+	if s.events != nil {
+		*s.events = append(*s.events, "user_limit")
+	}
+	return SystemAPIRateLimitDecision{Allowed: true}, nil
 }
 
 type managementAPIKeySecretServiceStub struct {
