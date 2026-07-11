@@ -189,8 +189,8 @@ try {
     groupId: group.id
   }, access))
   const protectedStatusResult = repositories.syncAccountAvailabilityScheduleStatuses(new Date('2026-06-03T22:00:00.000Z'))
-  assert.equal(protectedStatusResult.changedIds.includes(pendingTestAccount.id), false, '账户计划不应自动恢复待测试等保护状态')
-  assert.equal(repositories.findAccountSummary(pendingTestAccount.id, access)?.status, 'pending_test', '待测试账户到达计划开始边界后仍应保持待测试')
+  assert.equal(protectedStatusResult.changedIds.includes(pendingTestAccount.id), false, '账户计划不应自动恢复待检查等保护状态')
+  assert.equal(repositories.findAccountSummary(pendingTestAccount.id, access)?.status, 'pending_test', '待检查账户到达计划开始边界后仍应保持待检查')
 
   assert.throws(
     () => accountAvailabilityScheduleFromRequest({

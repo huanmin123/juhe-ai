@@ -122,7 +122,7 @@ assertEqual(typeof apiKeyAccount.groupName, 'string', '模板账号必须保留 
 assertMatch(aiConversionPrompt, /juhe-ai-account-import v1 JSON/, 'AI 提示词应继续要求输出当前导入协议 JSON')
 assertMatch(aiConversionPrompt, /只输出合法 JSON/, 'AI 提示词应继续禁止输出解释或 Markdown')
 assertMatch(aiConversionPrompt, /不要编造来源数据里不存在的 token/, 'AI 提示词应继续约束 token 不可编造')
-assertMatch(aiConversionPrompt, /pending_test 或 disabled/, 'AI 提示词应允许不确定账户导入为待测试或停用')
+assertMatch(aiConversionPrompt, /pending_test 或 disabled/, 'AI 提示词应允许不确定账户导入为待检查或停用')
 assertMatch(aiConversionPrompt, /普通 OpenAI v1 账户可以用 modelMappings 显式填写 Responses -> Chat Completions/, 'AI 提示词应说明普通 OpenAI v1 账户可导入 Responses 到 Chat 映射')
 
 assertMatch(accountImportProtocolMarkdown, /# juhe-ai AI 账户导入协议 v1/, '协议 Markdown 应继续保留标题')
@@ -137,7 +137,7 @@ assertFalse(/\| `clientCompatibility` \| 否 \| string \|/.test(accountImportPro
 assertMatch(accountImportProtocolMarkdown, /\| `providerProtocolProfileId` \| 是 \| string \|/, '协议 Markdown 应把 providerProtocolProfileId 暴露为必填导入字段')
 assertMatch(accountImportProtocolMarkdown, /\| `tags` \| 否 \| string\[\] \|/, '协议 Markdown 应把 tags 暴露为导入字段')
 assertMatch(accountImportProtocolMarkdown, /`active`、`pending_test` 或 `disabled`/, '协议 Markdown 应说明导入状态支持 pending_test')
-assertMatch(accountImportProtocolMarkdown, /`status: "active"` 会转为 `pending_test`/, '协议 Markdown 应说明 active 导入创建会转为待测试')
+assertMatch(accountImportProtocolMarkdown, /`status: "active"` 会转为 `pending_test`/, '协议 Markdown 应说明 active 导入创建会转为待检查')
 assertMatch(accountImportProtocolMarkdown, /下游客户端画像由网关运行时自动识别/, '协议 Markdown 应说明客户端画像由网关内部识别')
 assertFalse(new RegExp(deprecatedGlmProfileField).test(accountImportProtocolMarkdown), '协议 Markdown 不应再暴露已废弃的 GLM 接入类型字段')
 assertMatch(accountImportProtocolMarkdown, /"providerProtocolProfileId": "profile_glm_coding_anthropic_v1"/, '协议 Markdown 应说明 GLM Coding Anthropic profile')

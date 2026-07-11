@@ -123,7 +123,7 @@
 | 恢复 | 冷却复测恢复 | `pnpm --filter juhe-ai-backend test:cooldown-retest-recovery` | 后台恢复、授权实例恢复和配额实例过滤正常 | 已通过 | 通过 |
 | 健康检查 | 账号健康检测 | `pnpm --filter juhe-ai-backend test:account-health-check` | 健康检测队列和账户状态写入正常 | 已通过 | 通过 |
 | GPT 回归 | OpenAI API Key 透传 | `pnpm --filter juhe-ai-backend test:openai-api-key-passthrough` | DeepSeek 接入不破坏现有 GPT API Key 透传 | 已通过 | 通过 |
-| 账号测试 | 待测试账户激活 | `pnpm --filter juhe-ai-backend test:account-pending-test` | 新建账户仍需真实测试通过后才可调度 | 已通过 | 通过 |
+| 账号测试 | 待检查账户激活 | `pnpm --filter juhe-ai-backend test:account-pending-test` | 新建账户仍需真实测试通过后才可调度 | 已通过 | 通过 |
 | 账号测试 | 本地恢复 | `pnpm --filter juhe-ai-backend test:account-test-local-restore` | 自有账户测试成功可恢复临时不可用、限流、异常和不可调度 | 已通过 | 通过 |
 | 账号测试 | 任务边界源码 | `pnpm --filter juhe-ai-backend test:account-test-task-boundary` | 手动测试由后台 worker 队列执行，前端通过任务接口取结果 | 已通过 | 通过 |
 | API Key | 草稿激活 | `pnpm --filter juhe-ai-backend test:account-api-key-draft-activation` | 成功草稿测试可创建 active，配置变化需重测 | 已通过 | 通过 |

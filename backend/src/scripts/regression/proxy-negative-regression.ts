@@ -204,7 +204,7 @@ async function main(): Promise<void> {
       proxyProfileId: proxy.id
     })
     assert(proxiedAccount.proxyProfileId === proxy.id, '代理负向账户应成功绑定代理')
-    assert(proxiedAccount.status === 'pending_test', '代理变更后账户应重新进入待测试')
+    assert(proxiedAccount.status === 'pending_test', '代理变更后账户应重新进入待检查')
     assert(repositories.recordAccountHealthCheckSuccess(account.id, {
       intervalHours: 12,
       jitterMinutes: 0,

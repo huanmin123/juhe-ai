@@ -53,12 +53,12 @@ try {
   mockOpenAIServer.listen(0, '127.0.0.1')
   await onceListening(mockOpenAIServer)
   const address = mockOpenAIServer.address()
-  assert(address && typeof address !== 'string', '待测试账户 mock 上游地址不可用')
+  assert(address && typeof address !== 'string', '待检查账户 mock 上游地址不可用')
   const mockBaseUrl = `http://127.0.0.1:${address.port}`
 
   const owner = repositories.createSystemAccount({
     username: 'account_pending_test_owner',
-    displayName: '待测试账户回归用户',
+    displayName: '待检查账户回归用户',
     password: 'password',
     role: 'user',
     status: 'active',
@@ -66,29 +66,29 @@ try {
   })
   const access = { systemAccountId: owner.id, role: 'user' as const }
   const group = repositories.createGroup({
-    name: '待测试账户回归分组',
+    name: '待检查账户回归分组',
     providerCode: 'gpt'
   }, access)
 
   const pending = repositories.createAccount(accountPayload({
-    name: '默认创建待测试账户',
+    name: '默认创建待检查账户',
     apiKey: 'sk-pending-default',
     groupId: group.id,
     baseUrl: mockBaseUrl
   }), access)
-  assert.equal(pending.status, 'pending_test', '新建账户默认应为待测试')
-  assert.equal(pending.schedulable, false, '待测试账户默认不得参与调度')
+  assert.equal(pending.status, 'pending_test', '新建账户默认应为待检查')
+  assert.equal(pending.schedulable, false, '待检查账户默认不得参与调度')
   assert.equal(pending.healthCheckModel, 'gpt-5.5', '新建账户必须保存属于支持模型的检查模型')
   assert.match(pending.lastErrorMessage ?? '', /等待后台健康检查/, '待检查账户应记录等待后台健康检查的提示')
   assert.equal(
     repositories.listOpenAIAccountsForGroup(group.id, owner.id).some((account) => account.id === pending.id),
     false,
-    '待测试账户不应进入网关调度候选'
+    '待检查账户不应进入网关调度候选'
   )
   assert.equal(
     repositories.clearAccountFailureState(pending.id, access)?.status,
     'pending_test',
-    '普通恢复入口不应激活待测试账户'
+    '普通恢复入口不应激活待检查账户'
   )
 
   const pendingCandidate = repositories.findOpenAIAccountForGroup(
@@ -97,7 +97,7 @@ try {
     owner.id,
     { includeUnavailable: true, ignoreAvailability: true }
   )
-  assert(pendingCandidate, '待测试账户应可作为隔离的人工诊断候选')
+  assert(pendingCandidate, '待检查账户应可作为隔离的人工诊断候选')
   const manualSuccess = await testOpenAIAccount(pending, {
     model: 'gpt-5.5',
     testEndpointMode: 'responses_sse',
@@ -105,7 +105,7 @@ try {
   })
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
-  assert.equal(manualSuccess.success, true, `待测试账户人工测试应成功：${manualSuccess.message}`)
+  assert.equal(manualSuccess.success, true, `待检查账户人工测试应成功：${manualSuccess.message}`)
   const afterManualSuccess = repositories.findAccountSummary(pending.id, access)
   assert.equal(afterManualSuccess?.status, 'pending_test', '人工测试成功不能激活账户')
   assert.equal(afterManualSuccess?.schedulable, false, '人工测试成功不能恢复账户调度')
@@ -127,9 +127,9 @@ try {
   assert.equal(repositories.recordAccountHealthCheckSuccess(pending.id, {
     ...healthSettings,
     statusCode: 200
-  }), true, '后台健康检查成功应激活待测试账户')
+  }), true, '后台健康检查成功应激活待检查账户')
   const activated = repositories.findAccountSummary(pending.id, access)
-  assert.equal(activated?.status, 'active', '后台健康检查成功应把待测试账户改为正常')
+  assert.equal(activated?.status, 'active', '后台健康检查成功应把待检查账户改为正常')
   assert.equal(activated?.schedulable, true, '后台健康检查成功应恢复调度')
 
   const changedCredentials = repositories.updateAccount(pending.id, {
@@ -138,7 +138,7 @@ try {
       base_url: mockBaseUrl
     }
   }, access)
-  assert.equal(changedCredentials?.status, 'pending_test', '关键配置变更后应重新进入待测试')
+  assert.equal(changedCredentials?.status, 'pending_test', '关键配置变更后应重新进入待检查')
   assert.equal(changedCredentials?.schedulable, false, '关键配置变更后后台检查成功前不得调度')
 
   const failedCandidate = repositories.findOpenAIAccountForGroup(
@@ -184,7 +184,7 @@ try {
     version: accountImport.accountImportProtocolVersion,
     accounts: [
       {
-        name: '导入 active 转待测试账户',
+        name: '导入 active 转待检查账户',
         providerCode: 'gpt',
         providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
@@ -200,15 +200,15 @@ try {
   const importedId = importResult.accounts[0]?.accountId
   assert(importedId, '导入结果应返回账户 ID')
   const imported = repositories.findAccountSummary(importedId, access)
-  assert.equal(imported?.status, 'pending_test', '导入 active 账户应落库为待测试')
-  assert.equal(imported?.schedulable, false, '导入后待测试账户不得参与调度')
+  assert.equal(imported?.status, 'pending_test', '导入 active 账户应落库为待检查')
+  assert.equal(imported?.schedulable, false, '导入后待检查账户不得参与调度')
   assert.equal(imported?.healthCheckModel, 'gpt-5.5', '导入应恢复账户检查模型')
 
   const exportResult = accountExport.exportAccountsAsImportDocument({ accountIds: [importedId] }, access)
-  assert.equal(exportResult.document.accounts[0]?.status, 'pending_test', '导出应保留待测试状态')
+  assert.equal(exportResult.document.accounts[0]?.status, 'pending_test', '导出应保留待检查状态')
   assert.equal(exportResult.document.accounts[0]?.healthCheckModel, 'gpt-5.5', '导出应保留账户检查模型')
 
-  console.log('账户待测试回归通过：新建和关键配置变更进入 pending_test，人工测试不改状态或检查模型，只有后台健康检查成功激活')
+  console.log('账户待检查回归通过：新建和关键配置变更进入 pending_test，人工测试不改状态或检查模型，只有后台健康检查成功激活')
 } finally {
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)
