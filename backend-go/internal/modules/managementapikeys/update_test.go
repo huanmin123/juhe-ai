@@ -572,33 +572,41 @@ func TestServiceUpdateInvalidatesBeforeBlockedUsageRead(t *testing.T) {
 func TestServiceUpdateParseFailureStillRunsPostCommitInvalidations(t *testing.T) {
 	tests := []struct {
 		name            string
-		setInvalid      func(*managementAPIKeyUpdateStoreStub)
+		field           string
 		wantText        string
 		malformedBefore bool
 	}{
-		{
-			name: "before malformed quota",
-			setInvalid: func(store *managementAPIKeyUpdateStoreStub) {
-				value := "{"
-				store.result.Before.QuotaLimitsJSON = &value
-			},
-			wantText:        "quota limits",
-			malformedBefore: true,
-		},
-		{
-			name: "after malformed schedule",
-			setInvalid: func(store *managementAPIKeyUpdateStoreStub) {
-				value := "{"
-				store.result.After.AvailabilityScheduleJSON = &value
-			},
-			wantText: "availability schedule",
-		},
+		{name: "before malformed quota", field: "quotaLimits", wantText: "quota limits", malformedBefore: true},
+		{name: "after malformed quota", field: "quotaLimits", wantText: "quota limits"},
+		{name: "before malformed schedule", field: "availabilitySchedule", wantText: "availability schedule", malformedBefore: true},
+		{name: "after malformed schedule", field: "availabilitySchedule", wantText: "availability schedule"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			events := []string{}
 			store := newManagementAPIKeyUpdateStoreStub(&events)
-			test.setInvalid(store)
+			beforeQuota := `{"daily":{"enabled":true,"limit":10}}`
+			afterQuota := `{"daily":{"enabled":true,"limit":20}}`
+			beforeSchedule := `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[{"daysOfWeek":[1],"start":"08:00","end":"10:00"}]}`
+			afterSchedule := `{"enabled":true,"timezone":"Asia/Shanghai","mode":"allow_windows","windows":[{"daysOfWeek":[1],"start":"08:00","end":"10:00"}]}`
+			store.result.Before.QuotaLimitsJSON = &beforeQuota
+			store.result.After.QuotaLimitsJSON = &afterQuota
+			store.result.Before.AvailabilityScheduleJSON = &beforeSchedule
+			store.result.After.AvailabilityScheduleJSON = &afterSchedule
+			store.result.After.Status = "disabled"
+			malformed := "{"
+			target := &store.result.After
+			if test.malformedBefore {
+				target = &store.result.Before
+			}
+			switch test.field {
+			case "quotaLimits":
+				target.QuotaLimitsJSON = &malformed
+			case "availabilitySchedule":
+				target.AvailabilityScheduleJSON = &malformed
+			default:
+				t.Fatalf("unexpected field %q", test.field)
+			}
 			invalidator := &managementAPIKeyInvalidatorStub{events: &events}
 			service := NewServiceWithOptions(ServiceOptions{
 				ListReader:  store,
@@ -625,19 +633,33 @@ func TestServiceUpdateParseFailureStillRunsPostCommitInvalidations(t *testing.T)
 				result.After.ID != "key_1" ||
 				result.After.Name != "新名称" ||
 				result.After.SystemAccountID != "sys_owner" ||
-				result.After.SystemAccountName != "所有者" {
+				result.After.SystemAccountName != "所有者" ||
+				result.Before.Status != "active" ||
+				result.After.Status != "disabled" ||
+				!result.UncertainOperationLogFields[test.field] ||
+				len(result.UncertainOperationLogFields) != 1 {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
-			malformed := result.After
+			malformedItem := result.After
 			if test.malformedBefore {
-				malformed = result.Before
+				malformedItem = result.Before
 			}
-			if !reflect.DeepEqual(
-				malformed.QuotaLimits,
-				port.ManagementRequestQuotaLimits{},
-			) ||
-				malformed.AvailabilitySchedule != nil {
-				t.Fatalf("malformed DTO fabricated parsed fields: %+v", malformed)
+			switch test.field {
+			case "quotaLimits":
+				if !reflect.DeepEqual(
+					malformedItem.QuotaLimits,
+					port.ManagementRequestQuotaLimits{},
+				) ||
+					result.Before.AvailabilitySchedule == nil ||
+					result.After.AvailabilitySchedule == nil {
+					t.Fatalf("result fabricated quota or lost safe schedule: %+v", result)
+				}
+			case "availabilitySchedule":
+				if malformedItem.AvailabilitySchedule != nil ||
+					result.Before.QuotaLimits.Daily == nil ||
+					result.After.QuotaLimits.Daily == nil {
+					t.Fatalf("result fabricated schedule or lost safe quota: %+v", result)
+				}
 			}
 			if got, want := events, []string{"update", "validation", "runtime", "quota"}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("events = %v, want %v", got, want)
