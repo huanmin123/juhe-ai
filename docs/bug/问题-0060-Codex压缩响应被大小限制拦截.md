@@ -27,6 +27,8 @@
 - 新增约 `1.2 MB` 的合法 compaction 单事件回归，确认收到 `response.completed` 后完整释放。
 - 响应检查策略、Codex 客户端策略、OpenAI API Key 透传、请求体硬上限和 TypeScript 类型检查通过。
 - 响应检查网关 E2E 的业务流程执行完成，但 Windows 清理临时 SQLite 文件时存在既有 `EBUSY`，需单独修复测试清理逻辑。
+- 生产 release `20260712-0103-codex-compaction-f55cf6274` 已通过临时服务接管、主服务直连检查、Nginx `main` 回源和 30 秒稳定门禁。
+- 生产保持 `Caddy -> Nginx:3099 -> 3001/3002`，上线后目标 release 日志未再出现 `codex_compaction_contract_mismatch`。
 
 ## 关联 bug
 
