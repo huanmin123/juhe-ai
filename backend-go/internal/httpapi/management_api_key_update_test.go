@@ -248,6 +248,15 @@ func TestManagementAPIKeyUpdateHandlerMapsErrorsAndLogsOnlyCommittedResults(t *t
 				queue.calls != test.wantLogs {
 				t.Fatalf("status=%d logs=%d body=%s", rec.Code, queue.calls, rec.Body.String())
 			}
+			if test.wantLogs == 1 {
+				logInput, err := operationlogjob.DecodeWriteTaskPayload(queue.payload)
+				if err != nil {
+					t.Fatalf("decode operation log: %v", err)
+				}
+				if logInput.StatusCode == nil || *logInput.StatusCode != test.wantStatus {
+					t.Fatalf("operation log status = %v, want %d", logInput.StatusCode, test.wantStatus)
+				}
+			}
 		})
 	}
 }
@@ -415,8 +424,15 @@ func TestRouterManagementAPIKeyUpdateTransportAndAdminBoundary(t *testing.T) {
 		router.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest ||
 			!strings.Contains(rec.Body.String(), "请求体无效") ||
+			rec.Header().Get("Cache-Control") != "no-store" ||
 			authenticator.touchCookieHeader != "" {
-			t.Fatalf("status=%d auth=%q body=%s", rec.Code, authenticator.touchCookieHeader, rec.Body.String())
+			t.Fatalf(
+				"status=%d cache=%q auth=%q body=%s",
+				rec.Code,
+				rec.Header().Get("Cache-Control"),
+				authenticator.touchCookieHeader,
+				rec.Body.String(),
+			)
 		}
 	})
 

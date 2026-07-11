@@ -222,6 +222,7 @@ func exerciseW5ManagementAPIKeyUpdateSmoke(
 			committedFailure.Body.String(),
 		)
 	}
+	assertW5ManagementAPIKeySecretNoStore(t, committedFailure)
 	var committedDescription sql.NullString
 	if err := db.QueryRowContext(ctx, `
 		SELECT description
@@ -567,15 +568,22 @@ func assertW5ManagementAPIKeyUpdateOperationLogs(
 	}
 
 	var committedChanges string
+	var committedStatusCode sql.NullInt32
 	if err := db.QueryRowContext(ctx, `
-		SELECT changes_json
+		SELECT changes_json, status_code
 		FROM juhe_dataset.operation_logs
 		WHERE id = $1
-	`, w5ManagementAPIKeyUpdateCommittedFailureLogID).Scan(&committedChanges); err != nil {
+	`, w5ManagementAPIKeyUpdateCommittedFailureLogID).Scan(
+		&committedChanges,
+		&committedStatusCode,
+	); err != nil {
 		t.Fatalf("read committed failure API Key update operation log: %v", err)
 	}
 	if !strings.Contains(committedChanges, "committed despite validation Redis failure") {
 		t.Fatalf("committed failure changes = %s", committedChanges)
+	}
+	if !committedStatusCode.Valid || committedStatusCode.Int32 != http.StatusInternalServerError {
+		t.Fatalf("committed failure status code = %+v, want %d", committedStatusCode, http.StatusInternalServerError)
 	}
 	for _, forbidden := range []string{"key_hash", "keyHash", "key_secret", "keySecret", "encrypted-", "hash-"} {
 		if strings.Contains(changesJSON, forbidden) || strings.Contains(committedChanges, forbidden) {

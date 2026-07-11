@@ -70,7 +70,7 @@ func TestW5ManagementAPIKeyOperationLogQueueCountMatchesConfiguredIDs(t *testing
 	}
 }
 
-func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
+func TestW5ManagementAPIKeyUpdatePostgresRedisSmoke(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)

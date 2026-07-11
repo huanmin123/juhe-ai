@@ -116,10 +116,16 @@ func newManagementAPIKeyUpdateHandler(
 			HasAvailabilitySchedule: payload.HasAvailabilitySchedule,
 			AvailabilitySchedule:    payload.AvailabilitySchedule,
 		})
-		if result.Committed {
-			recordManagementAPIKeyUpdateOperationLog(r, authContext, scope, result, logOptions)
+		errorStatus, errorMessage, failed := managementAPIKeyUpdateErrorResponse(err)
+		statusCode := http.StatusOK
+		if failed {
+			statusCode = errorStatus
 		}
-		if !writeManagementAPIKeyUpdateError(w, err) {
+		if result.Committed {
+			recordManagementAPIKeyUpdateOperationLog(r, authContext, scope, result, statusCode, logOptions)
+		}
+		if failed {
+			writeMessageError(w, errorStatus, errorMessage)
 			return
 		}
 		if scope == managementAPIKeyScopeSelf {
@@ -253,32 +259,29 @@ func decodeManagementAPIKeyUpdatePayload(
 	return payload, true
 }
 
-func writeManagementAPIKeyUpdateError(w http.ResponseWriter, err error) bool {
+func managementAPIKeyUpdateErrorResponse(err error) (int, string, bool) {
 	if err == nil {
-		return true
+		return 0, "", false
 	}
 	if message, ok := managementapikeys.APIKeyNameExistsMessage(err); ok {
-		writeMessageError(w, http.StatusConflict, message)
-		return false
+		return http.StatusConflict, message, true
 	}
 	switch {
 	case errors.Is(err, managementapikeys.ErrAPIKeyNotFound):
-		writeMessageError(w, http.StatusNotFound, "API Key 不存在")
+		return http.StatusNotFound, "API Key 不存在", true
 	case errors.Is(err, managementapikeys.ErrAPIKeyDefaultRouteChange):
-		writeMessageError(w, http.StatusBadRequest, managementapikeys.ErrAPIKeyDefaultRouteChange.Error())
+		return http.StatusBadRequest, managementapikeys.ErrAPIKeyDefaultRouteChange.Error(), true
 	case errors.Is(err, managementapikeys.ErrAPIKeyRouteStrategyMissing),
 		errors.Is(err, managementapikeys.ErrAPIKeyRouteStrategyOff):
-		writeMessageError(w, http.StatusBadRequest, err.Error())
+		return http.StatusBadRequest, err.Error(), true
 	case errors.Is(err, managementapikeys.ErrAPIKeyUpdateInvalid):
-		writeMessageError(w, http.StatusBadRequest, "API Key 参数无效")
+		return http.StatusBadRequest, "API Key 参数无效", true
 	default:
 		if managementapikeys.IsAPIKeyUpdateValidationError(err) {
-			writeMessageError(w, http.StatusBadRequest, err.Error())
-		} else {
-			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return http.StatusBadRequest, err.Error(), true
 		}
+		return http.StatusInternalServerError, "服务器内部错误", true
 	}
-	return false
 }
 
 func recordManagementAPIKeyUpdateOperationLog(
@@ -286,6 +289,7 @@ func recordManagementAPIKeyUpdateOperationLog(
 	authContext managementauth.Context,
 	scope managementAPIKeyScope,
 	result managementapikeys.UpdateResult,
+	statusCode int,
 	opts managementOperationLogOptions,
 ) {
 	if opts.client == nil {
@@ -295,7 +299,6 @@ func recordManagementAPIKeyUpdateOperationLog(
 	if scope == managementAPIKeyScopeAdmin {
 		mode = "admin"
 	}
-	statusCode := http.StatusOK
 	input := port.OperationLogInput{
 		ID:                            opts.newLogID(),
 		TraceID:                       requestIDFromContext(r.Context()),
