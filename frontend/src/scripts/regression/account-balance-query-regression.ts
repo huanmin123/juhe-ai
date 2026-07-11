@@ -43,6 +43,13 @@ const balanceHelperSource = readFileSync('../frontend/src/views/accounts/account
 assert.match(usageCellSource, /ReloadOutlined/, '余额刷新必须使用裸刷新图标')
 assert.match(balanceHelperSource, /查询失败/, '失败状态必须统一显示查询失败')
 assert.match(usageCellSource, /balanceDisplay\.tooltip/, '失败原因必须通过 tooltip 展示')
+assert.match(editSectionSource, /balance-query-header/, '余额查询开关应放在标题行右侧')
+assert.match(editSectionSource, /QuestionCircleOutlined/, '余额查询应提供帮助说明')
+assert.match(editSectionSource, /立即查询/, '余额配置应提供手动查询入口')
+assert.match(editSectionSource, /queryResult/, '余额配置应展示手动查询结果')
+assert.match(usageCellSource, /balance-label/, '列表余额标签和金额应分层着色')
+assert.match(usageCellSource, /balance-value/, '列表余额金额应独立着色')
+assert.match(usageCellSource, /font-size:\s*11px/, '列表余额刷新图标应弱化为小号图标')
 assert.doesNotMatch(editSectionSource, /oneapi_compatible/i, '前端不能保留 oneapi_compatible')
 
 console.log('account balance query frontend regression passed')

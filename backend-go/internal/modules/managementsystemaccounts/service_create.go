@@ -2,22 +2,16 @@ package managementsystemaccounts
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 
+	"juhe-ai/backend-go/internal/apikeysecret"
+	"juhe-ai/backend-go/internal/secretcrypto"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -141,81 +135,25 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (CreateResult, 
 func (s *Service) defaultAPIKeyInputs() ([]port.ManagementDefaultAPIKeyCreateInput, error) {
 	const defaultRouteResourceCount = 6
 	items := make([]port.ManagementDefaultAPIKeyCreateInput, 0, defaultRouteResourceCount)
+	codec := secretcrypto.NewJSONCodec(s.secret)
 	for i := 0; i < defaultRouteResourceCount; i++ {
-		secret, err := createAPIKeySecret()
+		secret, err := apikeysecret.Generate()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("generate api key secret: %w", err)
 		}
-		encrypted, err := s.encryptJSON(map[string]any{"key": secret})
+		encrypted, err := codec.EncryptJSON(map[string]any{"key": secret})
 		if err != nil {
 			return nil, fmt.Errorf("encrypt default api key: %w", err)
 		}
 		items = append(items, port.ManagementDefaultAPIKeyCreateInput{
 			ID:                 createID("key"),
-			KeyHash:            hashSecret(secret),
-			KeyPrefix:          secretPrefix(secret),
-			KeySuffix:          secretSuffix(secret),
+			KeyHash:            apikeysecret.Hash(secret),
+			KeyPrefix:          apikeysecret.Prefix(secret),
+			KeySuffix:          apikeysecret.Suffix(secret),
 			KeySecretEncrypted: encrypted,
 		})
 	}
 	return items, nil
-}
-
-func createAPIKeySecret() (string, error) {
-	var bytes [32]byte
-	if _, err := io.ReadFull(rand.Reader, bytes[:]); err != nil {
-		return "", fmt.Errorf("generate api key secret: %w", err)
-	}
-	return "sk-" + hex.EncodeToString(bytes[:]), nil
-}
-
-func hashSecret(secret string) string {
-	sum := sha256.Sum256([]byte(secret))
-	return hex.EncodeToString(sum[:])
-}
-
-func secretPrefix(secret string) string {
-	if len(secret) <= 8 {
-		return secret
-	}
-	return secret[:8]
-}
-
-func secretSuffix(secret string) string {
-	if len(secret) <= 8 {
-		return secret
-	}
-	return secret[len(secret)-8:]
-}
-
-func (s *Service) encryptJSON(value map[string]any) (string, error) {
-	secret := strings.TrimSpace(s.secret)
-	if secret == "" {
-		secret = "juhe-ai-go-development-secret"
-	}
-	key := sha256.Sum256([]byte(secret))
-	block, err := aes.NewCipher(key[:])
-	if err != nil {
-		return "", err
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", err
-	}
-	plain, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	sealed := aead.Seal(nil, nonce, plain, nil)
-	tagSize := aead.Overhead()
-	ciphertext := sealed[:len(sealed)-tagSize]
-	tag := sealed[len(sealed)-tagSize:]
-	encode := base64.RawURLEncoding.EncodeToString
-	return "v1:" + encode(nonce) + ":" + encode(tag) + ":" + encode(ciphertext), nil
 }
 
 func normalizeCreateRole(role string) string {

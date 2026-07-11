@@ -275,6 +275,11 @@ func systemSettingOperationLogValue(key string, raw json.RawMessage) any {
 		if err := json.Unmarshal(raw, &value); err == nil {
 			return value
 		}
+	case systemsettings.ValueKindDecimal:
+		var value float64
+		if err := json.Unmarshal(raw, &value); err == nil {
+			return value
+		}
 	case systemsettings.ValueKindTimezone:
 		var value string
 		if err := json.Unmarshal(raw, &value); err == nil {

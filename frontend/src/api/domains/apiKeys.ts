@@ -16,7 +16,7 @@ export interface ApiKeyMutationPayload {
   routeStrategyId?: string
   status?: 'active' | 'disabled'
   expiresAt?: string | null
-  quotaLimits?: ApiKeyQuotaLimits
+  quotaLimits?: ApiKeyQuotaLimits | null
   availabilitySchedule?: ApiKeyAvailabilitySchedule | null
 }
 

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 const (
@@ -33,6 +35,7 @@ const (
 type mutationGuardConfig struct {
 	operationKey string
 	fingerprint  func(http.ResponseWriter, *http.Request) (any, error)
+	failedTTL    *time.Duration
 }
 
 type mutationGuardStore struct {
@@ -81,7 +84,7 @@ func (s *mutationGuardStore) Middleware(config mutationGuardConfig) func(http.Ha
 			completed := false
 			defer func() {
 				if !completed {
-					s.complete(key, mutationStatusFailed)
+					s.complete(key, mutationStatusFailed, config.failedTTL)
 				}
 			}()
 			next.ServeHTTP(recorder, r)
@@ -90,9 +93,9 @@ func (s *mutationGuardStore) Middleware(config mutationGuardConfig) func(http.Ha
 				statusCode = http.StatusOK
 			}
 			if statusCode >= 200 && statusCode < 400 {
-				s.complete(key, mutationStatusSucceeded)
+				s.complete(key, mutationStatusSucceeded, config.failedTTL)
 			} else {
-				s.complete(key, mutationStatusFailed)
+				s.complete(key, mutationStatusFailed, config.failedTTL)
 			}
 			completed = true
 		})
@@ -114,16 +117,26 @@ func (s *mutationGuardStore) claim(key string) (mutationEntry, bool) {
 	return entry, true
 }
 
-func (s *mutationGuardStore) complete(key string, status mutationStatus) {
+func (s *mutationGuardStore) complete(
+	key string,
+	status mutationStatus,
+	failedTTLOverride *time.Duration,
+) {
 	now := time.Now()
 	ttl := defaultMutationFailedTTL
 	if status == mutationStatusSucceeded {
 		ttl = defaultMutationSucceededTTL
+	} else if failedTTLOverride != nil {
+		ttl = *failedTTLOverride
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.entries[key]
 	if !ok || entry.status != mutationStatusProcessing {
+		return
+	}
+	if ttl <= 0 {
+		delete(s.entries, key)
 		return
 	}
 	entry.status = status
@@ -222,6 +235,47 @@ func managementGroupCreateMutationGuardConfig(scope managementGroupOptionScope) 
 				"owner":        ownerSystemAccountID,
 				"providerCode": mutationStringField(fields, "providerCode"),
 				"name":         mutationStringField(fields, "name"),
+			}, nil
+		},
+	}
+}
+
+func managementAPIKeyRefreshMutationGuardConfig(scope managementAPIKeyScope) mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "api_keys.refresh_key",
+		fingerprint: func(_ http.ResponseWriter, r *http.Request) (any, error) {
+			ownerSystemAccountID := ""
+			if authContext, ok := ManagementAuthContextFromRequest(r); ok {
+				ownerSystemAccountID = strings.TrimSpace(authContext.SystemAccountID)
+			}
+			if scope == managementAPIKeyScopeAdmin {
+				selectedSystemAccountID := firstManagementQueryText(r.URL.Query(), "systemAccountId")
+				if selectedSystemAccountID == "all" {
+					selectedSystemAccountID = ""
+				}
+				ownerSystemAccountID = selectedSystemAccountID
+			}
+			return map[string]any{
+				"owner": ownerSystemAccountID,
+				"id":    strings.TrimSpace(chi.URLParam(r, "id")),
+			}, nil
+		},
+	}
+}
+
+func managementAPIKeyCreateMutationGuardConfig(scope managementAPIKeyScope) mutationGuardConfig {
+	releaseFailedClaim := time.Duration(0)
+	return mutationGuardConfig{
+		operationKey: "api_keys.create",
+		failedTTL:    &releaseFailedClaim,
+		fingerprint: func(_ http.ResponseWriter, r *http.Request) (any, error) {
+			validated, ok := managementAPIKeyCreateValidationFromRequest(r)
+			if !ok {
+				return nil, fmt.Errorf("API Key create request was not validated for scope %d", scope)
+			}
+			return map[string]any{
+				"owner": validated.OwnerSystemAccountID,
+				"name":  strings.TrimSpace(validated.Payload.Name),
 			}, nil
 		},
 	}

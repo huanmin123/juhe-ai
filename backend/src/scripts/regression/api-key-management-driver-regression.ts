@@ -268,6 +268,7 @@ async function seedActiveGatewayAccountForGroup(
     },
     concurrencyLimit: 20,
     supportedModels: [driverRegressionModel, driverRegressionUpstreamModel],
+    healthCheckModel: driverRegressionModel,
     modelMappings: [{
       sourceModel: driverRegressionModel,
       sourceEndpointFamily: 'chat_completions',
@@ -276,6 +277,12 @@ async function seedActiveGatewayAccountForGroup(
       enabled: true
     }]
   }, adminAccess)
+  assert.equal(await repositories.recordAccountHealthCheckSuccessAsync(account.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, 'API Key 管理回归账号应显式通过后台健康成功激活')
   return account.id
 }
 

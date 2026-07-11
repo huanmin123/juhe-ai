@@ -641,6 +641,160 @@ type ManagementAccountUsageSummary struct {
 	LastUsedAt         *time.Time `json:"lastUsedAt,omitempty"`
 }
 
+type ManagementAPIKeyListInput struct {
+	SystemAccountID string
+	Keyword         string
+	Status          string
+	RouteStrategyID string
+	Limit           int
+	Offset          int
+}
+
+type ManagementAPIKeyListRow struct {
+	ID                       string
+	SystemAccountID          string
+	SystemAccountName        string
+	Name                     string
+	Description              *string
+	KeyPrefix                string
+	KeySuffix                string
+	Status                   string
+	IsDefault                bool
+	RouteStrategyID          string
+	RouteStrategyName        string
+	RouteStrategyMode        string
+	RouteStrategyStatus      string
+	ExpiresAt                *time.Time
+	QuotaLimitsJSON          *string
+	AvailabilityScheduleJSON *string
+}
+
+type ManagementAPIKeyListPage struct {
+	Rows    []ManagementAPIKeyListRow
+	HasMore bool
+}
+
+var (
+	ErrManagementAPIKeyRouteStrategyNotFound = errors.New("management API Key route strategy not found")
+	ErrManagementAPIKeyRouteStrategyDisabled = errors.New("management API Key route strategy disabled")
+	ErrManagementAPIKeyNameExists            = errors.New("management API Key name exists")
+	ErrManagementAPIKeyHashExists            = errors.New("management API Key hash exists")
+	ErrManagementAPIKeyNotFound              = errors.New("management API Key not found")
+	ErrManagementAPIKeyDefaultRouteChange    = errors.New("management default API Key route change")
+)
+
+type ManagementAPIKeyCreateInput struct {
+	ID                              string
+	SystemAccountID                 string
+	RouteStrategyID                 string
+	Name                            string
+	Description                     *string
+	KeyHash                         string
+	KeyPrefix                       string
+	KeySuffix                       string
+	KeySecretEncrypted              string
+	Status                          string
+	IsDefault                       bool
+	ExpiresAt                       *time.Time
+	QuotaLimitsJSON                 *string
+	HourlyQuotaHours                *int
+	AvailabilityScheduleJSON        *string
+	AvailabilityScheduleNextCheckAt *time.Time
+	CreatedAt                       time.Time
+	UpdatedAt                       time.Time
+}
+
+type ManagementAPIKeyCreator interface {
+	CreateManagementAPIKey(ctx context.Context, input ManagementAPIKeyCreateInput) (ManagementAPIKeyListRow, error)
+}
+
+type ManagementAPIKeyUpdateInput struct {
+	APIKeyID                        string
+	OwnerSystemAccountID            string
+	HasName                         bool
+	Name                            string
+	HasDescription                  bool
+	Description                     *string
+	HasRouteStrategyID              bool
+	RouteStrategyID                 string
+	HasStatus                       bool
+	Status                          string
+	HasExpiresAt                    bool
+	ExpiresAt                       *time.Time
+	HasQuotaLimits                  bool
+	QuotaLimitsJSON                 *string
+	HourlyQuotaHours                *int
+	HasAvailabilitySchedule         bool
+	AvailabilityScheduleJSON        *string
+	AvailabilityScheduleNextCheckAt *time.Time
+	UpdatedAt                       time.Time
+}
+
+type ManagementAPIKeyUpdateResult struct {
+	Before ManagementAPIKeyListRow
+	After  ManagementAPIKeyListRow
+}
+
+type ManagementAPIKeyUpdater interface {
+	UpdateManagementAPIKey(
+		ctx context.Context,
+		input ManagementAPIKeyUpdateInput,
+	) (ManagementAPIKeyUpdateResult, error)
+}
+
+type ManagementAPIKeyUsageScope struct {
+	SystemAccountID string
+	APIKeyID        string
+}
+
+type ManagementAPIKeyUsageRow struct {
+	SystemAccountID string
+	APIKeyID        string
+	Usage           ManagementAccountUsageSummary
+}
+
+type ManagementAPIKeyListReader interface {
+	ListManagementAPIKeys(ctx context.Context, input ManagementAPIKeyListInput) (ManagementAPIKeyListPage, error)
+	ListManagementAPIKeyUsageTotals(ctx context.Context, scopes []ManagementAPIKeyUsageScope) ([]ManagementAPIKeyUsageRow, error)
+}
+
+type ManagementAPIKeySecretScope struct {
+	APIKeyID        string
+	SystemAccountID string
+}
+
+type ManagementAPIKeySecretRow struct {
+	ID                 string
+	SystemAccountID    string
+	Name               string
+	KeyPrefix          string
+	KeySuffix          string
+	KeySecretEncrypted *string
+}
+
+type ManagementAPIKeySecretUpdateInput struct {
+	APIKeyID           string
+	SystemAccountID    string
+	KeyHash            string
+	KeyPrefix          string
+	KeySuffix          string
+	KeySecretEncrypted string
+	UpdatedAt          time.Time
+}
+
+type ManagementAPIKeySecretStore interface {
+	FindManagementAPIKeySecret(ctx context.Context, input ManagementAPIKeySecretScope) (ManagementAPIKeySecretRow, bool, error)
+	LockManagementAPIKeySecretRefreshTarget(ctx context.Context, input ManagementAPIKeySecretScope) (ManagementAPIKeyListRow, bool, error)
+	UpdateManagementAPIKeySecret(ctx context.Context, input ManagementAPIKeySecretUpdateInput) (bool, error)
+}
+
+type ManagementAPIKeySecretTransactor interface {
+	ManagementAPIKeySecretInTx(
+		ctx context.Context,
+		fn func(context.Context, ManagementAPIKeySecretStore) error,
+	) error
+}
+
 type ManagementAccountUsageStatsRange struct {
 	StartDate string `json:"startDate"`
 	EndDate   string `json:"endDate"`
@@ -1381,6 +1535,25 @@ type ManagementGroupUpdateResult struct {
 	GroupAuthorizationID     string
 }
 
+type ManagementGroupDeleteInput struct {
+	GroupID                  string
+	CanAccessAll             bool
+	EffectiveSystemAccountID string
+	DeletedAt                time.Time
+	Now                      time.Time
+}
+
+type ManagementGroupDeletedRouteStrategy struct {
+	ID   string
+	Name string
+}
+
+type ManagementGroupDeleteResult struct {
+	Before                  ManagementGroupMutationSummary
+	OwnerSystemAccountID    string
+	AffectedRouteStrategies []ManagementGroupDeletedRouteStrategy
+}
+
 var (
 	ErrManagementGroupSystemAccountNotFound  = errors.New("management group system account not found")
 	ErrManagementGroupProviderNotFound       = errors.New("management group provider not found")
@@ -1433,6 +1606,10 @@ type ManagementGroupCreator interface {
 
 type ManagementGroupUpdater interface {
 	UpdateManagementGroup(ctx context.Context, input ManagementGroupUpdateInput) (ManagementGroupUpdateResult, error)
+}
+
+type ManagementGroupDeleter interface {
+	DeleteManagementGroup(ctx context.Context, input ManagementGroupDeleteInput) (ManagementGroupDeleteResult, error)
 }
 
 type ManagementAccountOption struct {

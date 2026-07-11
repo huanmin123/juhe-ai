@@ -30,6 +30,7 @@
     "test:account-edit-save-flow": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-edit-save-flow-regression.ts",
     "test:route-strategy-group-bindings": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/route-strategy-group-bindings-regression.ts",
     "test:api-key-hybrid-config": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/api-key-hybrid-config-regression.ts",
+    "test:api-key-update-payload": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/api-key-update-payload-regression.ts",
     "test:account-test-display-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-test-display-formatters-regression.ts",
     "test:model-check-provider-capabilities": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/model-check-provider-capabilities-regression.ts",
     "test:provider-model-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/provider-model-formatters-regression.ts",
@@ -40,7 +41,9 @@
     "test:authorization-search-scheduler": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/authorization-search-scheduler-regression.ts",
     "test:authorization-user-usage-route-filters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/authorization-user-usage-route-filters-regression.ts",
     "test:w3-auth-system-account-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/w3-auth-system-account-smoke-regression.ts",
-    "test:w4-team-authorization-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/w4-team-authorization-smoke-regression.ts"
+    "test:w4-team-authorization-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/w4-team-authorization-smoke-regression.ts",
+    "test:plan0081-real-go-management-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/plan0081-real-go-management-smoke-regression.ts",
+    "smoke:plan0081-real-go-management": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-management-smoke.ts"
   },
   "dependencies": {
     "@ant-design/icons-vue": "^7.0.1",

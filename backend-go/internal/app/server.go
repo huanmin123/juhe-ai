@@ -13,6 +13,7 @@ import (
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
+	"juhe-ai/backend-go/internal/modules/managementapikeys"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
 	"juhe-ai/backend-go/internal/modules/managementauthorizations"
@@ -210,6 +211,16 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProviderCustomModelDeleteHandler:        managementHandlers.ProviderCustomModelDeleteHandler,
 		ManagementRouteStrategyOptionsHandler:             managementHandlers.RouteStrategyOptionsHandler,
 		ManagementMyRouteStrategyOptionsHandler:           managementHandlers.MyRouteStrategyOptionsHandler,
+		ManagementAPIKeyListHandler:                       managementHandlers.APIKeyListHandler,
+		ManagementMyAPIKeyListHandler:                     managementHandlers.MyAPIKeyListHandler,
+		ManagementAPIKeySecretHandler:                     managementHandlers.APIKeySecretHandler,
+		ManagementMyAPIKeySecretHandler:                   managementHandlers.MyAPIKeySecretHandler,
+		ManagementAPIKeyRefreshHandler:                    managementHandlers.APIKeyRefreshHandler,
+		ManagementMyAPIKeyRefreshHandler:                  managementHandlers.MyAPIKeyRefreshHandler,
+		ManagementAPIKeyCreateHandler:                     managementHandlers.APIKeyCreateHandler,
+		ManagementMyAPIKeyCreateHandler:                   managementHandlers.MyAPIKeyCreateHandler,
+		ManagementAPIKeyUpdateHandler:                     managementHandlers.APIKeyUpdateHandler,
+		ManagementMyAPIKeyUpdateHandler:                   managementHandlers.MyAPIKeyUpdateHandler,
 		ManagementGroupListHandler:                        managementHandlers.GroupListHandler,
 		ManagementMyGroupListHandler:                      managementHandlers.MyGroupListHandler,
 		ManagementGroupDetailHandler:                      managementHandlers.GroupDetailHandler,
@@ -218,6 +229,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyGroupCreateHandler:                    managementHandlers.MyGroupCreateHandler,
 		ManagementGroupUpdateHandler:                      managementHandlers.GroupUpdateHandler,
 		ManagementMyGroupUpdateHandler:                    managementHandlers.MyGroupUpdateHandler,
+		ManagementGroupDeleteHandler:                      managementHandlers.GroupDeleteHandler,
+		ManagementMyGroupDeleteHandler:                    managementHandlers.MyGroupDeleteHandler,
 		ManagementGroupOptionsHandler:                     managementHandlers.GroupOptionsHandler,
 		ManagementMyGroupOptionsHandler:                   managementHandlers.MyGroupOptionsHandler,
 		ManagementGroupAccountOptionsHandler:              managementHandlers.GroupAccountOptionsHandler,
@@ -336,6 +349,16 @@ type managementAPIHandlers struct {
 	ProviderCustomModelDeleteHandler        http.Handler
 	RouteStrategyOptionsHandler             http.Handler
 	MyRouteStrategyOptionsHandler           http.Handler
+	APIKeyListHandler                       http.Handler
+	MyAPIKeyListHandler                     http.Handler
+	APIKeySecretHandler                     http.Handler
+	MyAPIKeySecretHandler                   http.Handler
+	APIKeyRefreshHandler                    http.Handler
+	MyAPIKeyRefreshHandler                  http.Handler
+	APIKeyCreateHandler                     http.Handler
+	MyAPIKeyCreateHandler                   http.Handler
+	APIKeyUpdateHandler                     http.Handler
+	MyAPIKeyUpdateHandler                   http.Handler
 	GroupListHandler                        http.Handler
 	MyGroupListHandler                      http.Handler
 	GroupDetailHandler                      http.Handler
@@ -344,6 +367,8 @@ type managementAPIHandlers struct {
 	MyGroupCreateHandler                    http.Handler
 	GroupUpdateHandler                      http.Handler
 	MyGroupUpdateHandler                    http.Handler
+	GroupDeleteHandler                      http.Handler
+	MyGroupDeleteHandler                    http.Handler
 	GroupOptionsHandler                     http.Handler
 	MyGroupOptionsHandler                   http.Handler
 	GroupAccountOptionsHandler              http.Handler
@@ -372,6 +397,7 @@ type managementAPIInvalidator interface {
 	managementauthorizations.AuthorizationInvalidator
 	managementprovidermodels.CustomProviderModelInvalidator
 	managementproxies.ProxyInvalidator
+	managementapikeys.APIKeyGatewayCacheInvalidator
 	managementsettings.GlobalSettingsCacheInvalidator
 	managementsettings.SystemSettingsInvalidator
 }
@@ -419,6 +445,16 @@ func newManagementAPIHandler(
 		Invalidator: systemAccountInvalidator,
 	})
 	routeStrategyService := managementroutestrategies.NewService(store)
+	apiKeyService := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
+		ListReader:               store,
+		Creator:                  store,
+		Updater:                  store,
+		UsageStatsTimezoneReader: store,
+		SecretStore:              store,
+		SecretTransactor:         store,
+		Invalidator:              systemAccountInvalidator,
+		Secret:                   cfg.Secret,
+	})
 	groupService := managementgroups.NewServiceWithOptions(managementgroups.ServiceOptions{
 		Store:                   store,
 		ListStore:               store,
@@ -529,6 +565,16 @@ func newManagementAPIHandler(
 		ProviderCustomModelDeleteHandler:        httpapi.NewManagementProviderCustomModelDeleteHandler(providerModelService),
 		RouteStrategyOptionsHandler:             httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
 		MyRouteStrategyOptionsHandler:           httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
+		APIKeyListHandler:                       httpapi.NewManagementAPIKeyListHandler(apiKeyService),
+		MyAPIKeyListHandler:                     httpapi.NewManagementMyAPIKeyListHandler(apiKeyService),
+		APIKeySecretHandler:                     httpapi.NewManagementAPIKeySecretHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		MyAPIKeySecretHandler:                   httpapi.NewManagementMyAPIKeySecretHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		APIKeyRefreshHandler:                    httpapi.NewManagementAPIKeyRefreshHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		MyAPIKeyRefreshHandler:                  httpapi.NewManagementMyAPIKeyRefreshHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		APIKeyCreateHandler:                     httpapi.NewManagementAPIKeyCreateHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		MyAPIKeyCreateHandler:                   httpapi.NewManagementMyAPIKeyCreateHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		APIKeyUpdateHandler:                     httpapi.NewManagementAPIKeyUpdateHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		MyAPIKeyUpdateHandler:                   httpapi.NewManagementMyAPIKeyUpdateHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		GroupListHandler:                        httpapi.NewManagementGroupListHandler(groupService),
 		MyGroupListHandler:                      httpapi.NewManagementMyGroupListHandler(groupService),
 		GroupDetailHandler:                      httpapi.NewManagementGroupDetailHandler(groupService),
@@ -537,6 +583,8 @@ func newManagementAPIHandler(
 		MyGroupCreateHandler:                    httpapi.NewManagementMyGroupCreateHandlerWithOperationLog(groupService, operationLogOptions),
 		GroupUpdateHandler:                      httpapi.NewManagementGroupUpdateHandlerWithOperationLog(groupService, operationLogOptions),
 		MyGroupUpdateHandler:                    httpapi.NewManagementMyGroupUpdateHandlerWithOperationLog(groupService, operationLogOptions),
+		GroupDeleteHandler:                      httpapi.NewManagementGroupDeleteHandlerWithOperationLog(groupService, operationLogOptions),
+		MyGroupDeleteHandler:                    httpapi.NewManagementMyGroupDeleteHandlerWithOperationLog(groupService, operationLogOptions),
 		GroupOptionsHandler:                     httpapi.NewManagementGroupOptionsHandler(groupService),
 		MyGroupOptionsHandler:                   httpapi.NewManagementMyGroupOptionsHandler(groupService),
 		GroupAccountOptionsHandler:              httpapi.NewManagementGroupAccountOptionsHandler(groupService),

@@ -57,7 +57,7 @@
       :selected-count="selectedAccounts.length"
       @clear="clearSelection"
       @delete="openBatchDeleteConfirm"
-      @disable="batchSetStatus('disabled')"
+      @disable="openBatchDisableConfirm"
       @edit="openBatchEdit"
       @enable="batchSetStatus('active')"
       @restore="batchRestoreSelected"
@@ -73,6 +73,14 @@
       :scope-params="accountScopeParams"
       :tags="accountTagOptions"
       @saved="handleBatchEditSaved"
+    />
+
+    <AccountBatchDisableConfirmModal
+      v-model:open="batchDisableConfirmOpen"
+      :accounts="batchDisableTargets"
+      :loading="batchDisableConfirmLoading"
+      @cancel="batchDisableConfirmOpen = false"
+      @ok="confirmBatchDisable"
     />
 
     <AccountBatchDeleteConfirmModal
@@ -162,6 +170,9 @@
       :auth-loading="authLoading"
       :auth-result="authResult"
       :base-url-placeholder="accountBaseUrlPlaceholder"
+      :balance-query-can-run="Boolean(editingId) && form.balanceQueryEnabled"
+      :balance-query-loading="balanceQueryTesting"
+      :balance-query-snapshot="balanceQueryResult"
       :confirm-loading="modalConfirmLoading"
       :credential-title="selectedAccountTypeTitle"
       :editing="Boolean(editingId)"
@@ -200,6 +211,7 @@
       @group-options-dropdown="handleGroupOptionsDropdown"
       @group-options-search="handleGroupOptionsSearch"
       @advanced-open="loadAdvancedAccountDetail"
+      @balance-query="queryBalanceFromEdit"
       @ok="saveAccount"
       @open-auth-url="openAuthUrl"
       @select-provider="selectProvider"
@@ -249,7 +261,8 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
-import type { AccountSummary, AccountTagSummary } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountSummary, AccountTagSummary } from '@/types/domain'
+import AccountBatchDisableConfirmModal from './AccountBatchDisableConfirmModal.vue'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
 import AccountEditModal from './AccountEditModal.vue'
@@ -275,6 +288,7 @@ import {
 import {
   accountMenuItems,
   canBatchEditAccount,
+  canBatchManageAccount,
   canCloneAccount,
   canDeleteAccount,
   canEditAccount,
@@ -307,6 +321,10 @@ const AccountTrafficMigrationModal = defineAsyncComponent(() => import('./Accoun
 const importModalOpen = ref(false)
 const batchEditOpen = ref(false)
 const balanceRefreshingIds = ref(new Set<string>())
+const balanceQueryTesting = ref(false)
+const balanceQueryResult = ref<AccountBalanceSnapshot>()
+const batchDisableConfirmOpen = ref(false)
+const batchDisableConfirmLoading = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const {
   loading,
@@ -417,6 +435,29 @@ async function refreshAccountBalance(accountId: string) {
   }
 }
 
+async function queryBalanceFromEdit(): Promise<void> {
+  const accountId = editingId.value
+  if (!accountId || balanceQueryTesting.value) return
+  balanceQueryTesting.value = true
+  try {
+    const snapshot = isManagementView.value
+      ? await api.accounts.refreshBalance(accountId, accountScopeParams.value)
+      : await api.myAccounts.refreshBalance(accountId)
+    balanceQueryResult.value = snapshot
+    const account = accounts.value.find((item) => item.id === accountId)
+    if (account) account.balanceSnapshot = snapshot
+    if (snapshot?.status === 'failed') {
+      message.error(snapshot.errorMessage || '余额查询失败')
+    } else {
+      message.success('余额查询成功')
+    }
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '查询上游余额失败'))
+  } finally {
+    balanceQueryTesting.value = false
+  }
+}
+
 const rawColumns = computed(() => buildAccountTableColumns(
   isManagementView.value,
   (field) => resolveAccountColumnSortOrder(accountSorts.value, field)
@@ -465,6 +506,9 @@ const {
   accounts
 })
 const batchEditableAccounts = computed(() => selectedAccounts.value.filter(canBatchEditAccount))
+const batchDisableTargets = computed(() => selectedAccounts.value
+  .filter(canBatchManageAccount)
+  .filter((account) => account.status !== 'disabled'))
 const batchEditDisabled = computed(() => (
   selectedAccounts.value.length < 2
   || selectedAccounts.value.length > 100
@@ -568,6 +612,13 @@ const {
   systemAccountSelection: computed(() => filters.systemAccount),
   systemAccounts
 })
+watch(
+  [() => modalOpen.value, () => editingId.value, () => editingAccountDetail.value?.balanceSnapshot],
+  ([open, accountId, snapshot]) => {
+    balanceQueryResult.value = open && accountId ? snapshot as AccountBalanceSnapshot | undefined : undefined
+  },
+  { immediate: true }
+)
 watch(
   [
     () => form.providerCode,
@@ -784,6 +835,25 @@ async function copyText(value: string) {
 
 async function confirmBatchDelete() {
   await confirmBatchDeleteWith(batchDeleteSelected)
+}
+
+function openBatchDisableConfirm(): void {
+  if (!batchDisableTargets.value.length) {
+    message.warning('所选账户里没有可停用的账户')
+    return
+  }
+  batchDisableConfirmOpen.value = true
+}
+
+async function confirmBatchDisable(): Promise<void> {
+  if (batchDisableConfirmLoading.value) return
+  batchDisableConfirmLoading.value = true
+  try {
+    await batchSetStatus('disabled')
+    batchDisableConfirmOpen.value = false
+  } finally {
+    batchDisableConfirmLoading.value = false
+  }
 }
 
 function openImportModal() {

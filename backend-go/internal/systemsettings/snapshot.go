@@ -190,6 +190,8 @@ func normalizeValue(definition Definition, raw json.RawMessage) (json.RawMessage
 	switch definition.Kind {
 	case ValueKindInteger:
 		return normalizeInteger(definition, trimmed)
+	case ValueKindDecimal:
+		return normalizeDecimal(definition, trimmed)
 	case ValueKindTimezone:
 		return normalizeTimezone(definition.Key, trimmed)
 	default:
@@ -212,6 +214,29 @@ func normalizeInteger(definition Definition, raw []byte) (json.RawMessage, error
 		)
 	}
 	return json.RawMessage(strconv.FormatInt(value, 10)), nil
+}
+
+func normalizeDecimal(definition Definition, raw []byte) (json.RawMessage, error) {
+	value, err := strconv.ParseFloat(string(raw), 64)
+	if err != nil {
+		return nil, validationError(definition.Key, definition.Key+" 必须是数字")
+	}
+	if value < definition.DecimalMinimum || value > definition.DecimalMaximum {
+		return nil, validationError(
+			definition.Key,
+			fmt.Sprintf(
+				"%s 必须在 %s 到 %s 之间",
+				definition.Key,
+				formatDecimal(definition.DecimalMinimum),
+				formatDecimal(definition.DecimalMaximum),
+			),
+		)
+	}
+	return json.RawMessage(formatDecimal(value)), nil
+}
+
+func formatDecimal(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
 func normalizeTimezone(key string, raw []byte) (json.RawMessage, error) {

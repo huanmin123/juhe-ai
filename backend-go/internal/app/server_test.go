@@ -1,6 +1,7 @@
 package app
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -121,12 +122,24 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.ProviderDefaultHealthCheckModelHandler != nil ||
 		handlers.RouteStrategyOptionsHandler != nil ||
 		handlers.MyRouteStrategyOptionsHandler != nil ||
+		handlers.APIKeyListHandler != nil ||
+		handlers.MyAPIKeyListHandler != nil ||
+		handlers.APIKeySecretHandler != nil ||
+		handlers.MyAPIKeySecretHandler != nil ||
+		handlers.APIKeyRefreshHandler != nil ||
+		handlers.MyAPIKeyRefreshHandler != nil ||
+		handlers.APIKeyCreateHandler != nil ||
+		handlers.MyAPIKeyCreateHandler != nil ||
+		handlers.APIKeyUpdateHandler != nil ||
+		handlers.MyAPIKeyUpdateHandler != nil ||
 		handlers.GroupListHandler != nil ||
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
 		handlers.MyGroupCreateHandler != nil ||
 		handlers.GroupUpdateHandler != nil ||
 		handlers.MyGroupUpdateHandler != nil ||
+		handlers.GroupDeleteHandler != nil ||
+		handlers.MyGroupDeleteHandler != nil ||
 		handlers.GroupOptionsHandler != nil ||
 		handlers.MyGroupOptionsHandler != nil ||
 		handlers.GroupAccountOptionsHandler != nil ||
@@ -191,12 +204,24 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.ProviderModelsHandler != nil ||
 		handlers.ProviderDefaultHealthCheckModelHandler != nil ||
 		handlers.RouteStrategyOptionsHandler != nil ||
+		handlers.APIKeyListHandler != nil ||
+		handlers.MyAPIKeyListHandler != nil ||
+		handlers.APIKeySecretHandler != nil ||
+		handlers.MyAPIKeySecretHandler != nil ||
+		handlers.APIKeyRefreshHandler != nil ||
+		handlers.MyAPIKeyRefreshHandler != nil ||
+		handlers.APIKeyCreateHandler != nil ||
+		handlers.MyAPIKeyCreateHandler != nil ||
+		handlers.APIKeyUpdateHandler != nil ||
+		handlers.MyAPIKeyUpdateHandler != nil ||
 		handlers.GroupListHandler != nil ||
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
 		handlers.MyGroupCreateHandler != nil ||
 		handlers.GroupUpdateHandler != nil ||
 		handlers.MyGroupUpdateHandler != nil ||
+		handlers.GroupDeleteHandler != nil ||
+		handlers.MyGroupDeleteHandler != nil ||
 		handlers.GroupOptionsHandler != nil ||
 		handlers.AccountOptionsHandler != nil ||
 		handlers.AccountTagsHandler != nil ||
@@ -266,12 +291,24 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.ProviderDefaultHealthCheckModelHandler == nil ||
 		handlers.RouteStrategyOptionsHandler == nil ||
 		handlers.MyRouteStrategyOptionsHandler == nil ||
+		handlers.APIKeyListHandler == nil ||
+		handlers.MyAPIKeyListHandler == nil ||
+		handlers.APIKeySecretHandler == nil ||
+		handlers.MyAPIKeySecretHandler == nil ||
+		handlers.APIKeyRefreshHandler == nil ||
+		handlers.MyAPIKeyRefreshHandler == nil ||
+		handlers.APIKeyCreateHandler == nil ||
+		handlers.MyAPIKeyCreateHandler == nil ||
+		handlers.APIKeyUpdateHandler == nil ||
+		handlers.MyAPIKeyUpdateHandler == nil ||
 		handlers.GroupListHandler == nil ||
 		handlers.MyGroupListHandler == nil ||
 		handlers.GroupCreateHandler == nil ||
 		handlers.MyGroupCreateHandler == nil ||
 		handlers.GroupUpdateHandler == nil ||
 		handlers.MyGroupUpdateHandler == nil ||
+		handlers.GroupDeleteHandler == nil ||
+		handlers.MyGroupDeleteHandler == nil ||
 		handlers.GroupOptionsHandler == nil ||
 		handlers.MyGroupOptionsHandler == nil ||
 		handlers.GroupAccountOptionsHandler == nil ||
@@ -293,6 +330,27 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.StatsUsageWindowHandler == nil ||
 		handlers.MyStatsUsageWindowHandler == nil {
 		t.Fatal("newManagementAPIHandler() returned nil middleware or handler while enabled")
+	}
+}
+
+func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyMutationDependencies(t *testing.T) {
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"Creator:                  store",
+		"Updater:                  store",
+		"UsageStatsTimezoneReader: store",
+		"APIKeyCreateHandler:",
+		"MyAPIKeyCreateHandler:",
+		"APIKeyUpdateHandler:",
+		"MyAPIKeyUpdateHandler:",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server.go missing explicit API Key mutation wiring %q", required)
+		}
 	}
 }
 

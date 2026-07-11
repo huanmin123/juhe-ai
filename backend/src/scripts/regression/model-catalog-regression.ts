@@ -27,7 +27,8 @@ const [
   { providersRouter, dedupeProviderModelOptions },
   { requireAuth },
   { requestContextMiddleware },
-  repositories
+  repositories,
+  customProviderModelsRepository
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/model-pricing/model-catalog.service.js'),
@@ -35,7 +36,8 @@ const [
   import('../../modules/providers/providers.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/custom-provider-models.repository.js')
 ])
 
 try {
@@ -239,6 +241,70 @@ try {
     actorSystemAccountId: 'sys_admin'
   }), /默认思考级别必须属于支持的思考级别/)
 
+  assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
+    providerCode: 'gpt',
+    model: 'gpt-regression-image-invalid-capabilities',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    mode: 'image',
+    supportedServiceTiers: ['priority'],
+    outputUsdPerImage: 0.02,
+    actorSystemAccountId: 'sys_admin'
+  }), /只有 GPT 文本自定义模型支持服务等级和思考能力配置/)
+  assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
+    providerCode: 'gpt',
+    model: 'gpt-regression-audio-invalid-capabilities',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    mode: 'audio',
+    supportedReasoningEfforts: ['high'],
+    defaultReasoningEffort: 'high',
+    audioInputUsdPer1M: 1,
+    audioOutputUsdPer1M: 2,
+    actorSystemAccountId: 'sys_admin'
+  }), /只有 GPT 文本自定义模型支持服务等级和思考能力配置/)
+  assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
+    providerCode: 'openai',
+    model: 'openai-regression-invalid-capabilities',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    supportedReasoningEfforts: ['high'],
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: 'sys_admin'
+  }), /只有 GPT 文本自定义模型支持服务等级和思考能力配置/)
+
+  const repositoryClearableModel = customProviderModelsRepository.upsertCustomProviderModel({
+    providerCode: 'gpt',
+    model: 'gpt-regression-repository-clear-capabilities',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    mode: 'text',
+    supportedServiceTiers: ['priority'],
+    supportedReasoningEfforts: ['low', 'high'],
+    defaultReasoningEffort: 'high',
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: 'sys_admin'
+  })
+  const repositoryClearedModel = customProviderModelsRepository.upsertCustomProviderModel({
+    id: repositoryClearableModel.id,
+    providerCode: 'gpt',
+    model: repositoryClearableModel.model,
+    scope: repositoryClearableModel.scope,
+    systemAccountId: repositoryClearableModel.systemAccountId,
+    mode: 'image',
+    supportedServiceTiers: [],
+    supportedReasoningEfforts: [],
+    defaultReasoningEffort: null,
+    outputUsdPerImage: 0.02,
+    actorSystemAccountId: 'sys_admin'
+  })
+  assert.equal(repositoryClearedModel.mode, 'image', 'repository 显式清空文本能力后应允许切换为 GPT 图片模型')
+  assert.deepEqual(repositoryClearedModel.supportedServiceTiers, [], 'repository 应接受空数组清理服务等级能力')
+  assert.deepEqual(repositoryClearedModel.supportedReasoningEfforts, [], 'repository 应接受空数组清理思考能力')
+  assert.equal(repositoryClearedModel.defaultReasoningEffort, undefined, 'repository 应接受 null 清理默认思考级别')
+
   const gpt56Alias = modelPricingService.getProviderModelPricing('gpt', 'gpt-5.6')
   assert.equal(gpt56Alias?.model, 'gpt-5.6-sol', 'gpt-5.6 稳定别名必须继承 Sol 能力')
   assert.deepEqual(gpt56Alias?.supportedReasoningEfforts, gpt56WireReasoning)
@@ -263,19 +329,45 @@ try {
   assert(openAICompatibleCatalog.some((item) => item.model === 'openai-regression-personal'), '通用 OpenAI-compatible 自身模型不要求排在其他 OpenAI 协议供应商模型之前')
 
   const dedupedProviderModelOptions = dedupeProviderModelOptions([
-    { providerCode: 'gpt', model: 'shared-model', supportedApiProtocols: ['chat_completions'] },
+    {
+      providerCode: 'gpt',
+      model: 'shared-model',
+      supportedApiProtocols: ['chat_completions'],
+      supportedServiceTiers: ['priority', 'priority'],
+      supportedReasoningEfforts: ['low'],
+      defaultReasoningEffort: 'medium'
+    },
     { providerCode: 'gpt', model: 'Shared-Model', supportedApiProtocols: ['responses'] },
     { providerCode: 'deepseek', model: 'shared-model', supportedApiProtocols: ['chat_completions'] },
-    { providerCode: 'gpt', model: 'shared-model', supportedApiProtocols: ['responses'] },
-    { providerCode: ' GPT ', model: ' shared-model ' },
+    {
+      providerCode: 'gpt',
+      model: 'shared-model',
+      supportedApiProtocols: ['responses'],
+      supportedServiceTiers: ['flex', 'priority'],
+      supportedReasoningEfforts: ['high'],
+      defaultReasoningEffort: 'max'
+    },
+    {
+      providerCode: ' GPT ',
+      model: ' shared-model ',
+      supportedReasoningEfforts: ['max', 'high'],
+      defaultReasoningEffort: 'low'
+    },
     { providerCode: '', model: 'shared-model' },
     { providerCode: 'glm', model: ' ' }
   ])
   assert.deepEqual(dedupedProviderModelOptions, [
-    { providerCode: 'gpt', model: 'shared-model', supportedApiProtocols: ['chat_completions', 'responses'] },
+    {
+      providerCode: 'gpt',
+      model: 'shared-model',
+      supportedApiProtocols: ['chat_completions', 'responses'],
+      supportedServiceTiers: ['priority', 'flex'],
+      supportedReasoningEfforts: ['low', 'high', 'max'],
+      defaultReasoningEffort: 'max'
+    },
     { providerCode: 'gpt', model: 'Shared-Model', supportedApiProtocols: ['responses'] },
     { providerCode: 'deepseek', model: 'shared-model', supportedApiProtocols: ['chat_completions'] }
-  ], '供应商模型选项必须按 providerCode + 大小写敏感 model 去重，并保留合并后的协议能力')
+  ], '供应商模型选项必须稳定地按 providerCode + 大小写敏感 model 去重，并合并能力和选择合并后有效的默认思考级别')
 
   const deepSeekCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'deepseek',
@@ -824,6 +916,50 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       userACookie,
       'POST',
       {
+        model: 'gpt-http-image-invalid-capabilities',
+        mode: 'image',
+        supportedApiProtocols: ['images'],
+        supportedServiceTiers: ['priority'],
+        outputUsdPerImage: 0.02
+      },
+      400,
+      'GPT 图片自定义模型 API 必须拒绝非空服务等级能力'
+    )
+    await assertHttpStatus(
+      `${baseUrl}/__aisys__/api/providers/gpt/models`,
+      userACookie,
+      'POST',
+      {
+        model: 'gpt-http-audio-invalid-capabilities',
+        mode: 'audio',
+        supportedApiProtocols: ['audio'],
+        supportedReasoningEfforts: ['high'],
+        defaultReasoningEffort: 'high',
+        audioInputUsdPer1M: 1,
+        audioOutputUsdPer1M: 2
+      },
+      400,
+      'GPT 音频自定义模型 API 必须拒绝非空思考能力'
+    )
+    await assertHttpStatus(
+      `${baseUrl}/__aisys__/api/providers/openai/models`,
+      userACookie,
+      'POST',
+      {
+        model: 'openai-http-invalid-capabilities',
+        supportedApiProtocols: ['responses'],
+        supportedReasoningEfforts: ['high'],
+        inputUsdPer1M: 1,
+        outputUsdPer1M: 2
+      },
+      400,
+      '非 GPT 自定义模型 API 必须拒绝非空服务等级或思考能力'
+    )
+    await assertHttpStatus(
+      `${baseUrl}/__aisys__/api/providers/gpt/models`,
+      userACookie,
+      'POST',
+      {
         model: 'gpt-http-invalid-reasoning-default',
         supportedApiProtocols: ['responses'],
         supportedReasoningEfforts: ['low'],
@@ -834,6 +970,50 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       400,
       'GPT 自定义模型 API 必须拒绝不属于支持集合的默认思考级别'
     )
+    const userAGptClearableModel = await postEnvelope<{ id: string; model: string }>(
+      baseUrl,
+      '/__aisys__/api/providers/gpt/models',
+      userACookie,
+      {
+        model: 'gpt-http-clear-capabilities',
+        mode: 'text',
+        supportedApiProtocols: ['responses'],
+        supportedServiceTiers: ['priority'],
+        supportedReasoningEfforts: ['low', 'high'],
+        defaultReasoningEffort: 'high',
+        inputUsdPer1M: 1,
+        outputUsdPer1M: 2
+      }
+    )
+    await assertHttpStatus(
+      `${baseUrl}/__aisys__/api/providers/gpt/models/${userAGptClearableModel.id}`,
+      userACookie,
+      'PATCH',
+      { mode: 'image' },
+      400,
+      'GPT 文本模型保留非空能力字段时不应直接切换为图片模式'
+    )
+    const userAGptClearedModel = await patchEnvelope<{
+      mode?: string
+      supportedServiceTiers: string[]
+      supportedReasoningEfforts: string[]
+      defaultReasoningEffort?: string
+    }>(
+      baseUrl,
+      `/__aisys__/api/providers/gpt/models/${userAGptClearableModel.id}`,
+      userACookie,
+      {
+        mode: 'image',
+        supportedApiProtocols: ['images'],
+        supportedServiceTiers: [],
+        supportedReasoningEfforts: [],
+        defaultReasoningEffort: null
+      }
+    )
+    assert.equal(userAGptClearedModel.mode, 'image', 'API 显式清空文本能力后应允许切换为 GPT 图片模型')
+    assert.deepEqual(userAGptClearedModel.supportedServiceTiers, [], 'API 应接受空数组清理服务等级能力')
+    assert.deepEqual(userAGptClearedModel.supportedReasoningEfforts, [], 'API 应接受空数组清理思考能力')
+    assert.equal(userAGptClearedModel.defaultReasoningEffort, undefined, 'API 应接受 null 清理默认思考级别')
 
     const userADraft = await postEnvelope<{ id: string; model: string; status: string }>(
       baseUrl,
@@ -1121,7 +1301,14 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(userAVisible.some((item) => item.model === 'gpt-http-admin-personal'), false, '用户不应看到管理员个人模型')
     assert.equal(userAVisible.some((item) => item.model === 'gpt-http-user-a-draft'), false, '默认管理模型目录不应返回草稿模型')
 
-    const userAGlobalModelOptions = await getEnvelope<Array<{ providerCode: string; model: string; supportedApiProtocols?: string[] }>>(
+    const userAGlobalModelOptions = await getEnvelope<Array<{
+      providerCode: string
+      model: string
+      supportedApiProtocols?: string[]
+      supportedServiceTiers?: string[]
+      supportedReasoningEfforts?: string[]
+      defaultReasoningEffort?: string
+    }>>(
       baseUrl,
       '/__aisys__/api/providers/models/options',
       userACookie
@@ -1130,6 +1317,9 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert(userAGlobalModelOptions.some((item) => item.providerCode === 'openai' && item.model === 'gpt-http-admin-global'), '模型选项应包含管理员全局模型')
     const userAGptGlobalOption = userAGlobalModelOptions.find((item) => item.providerCode === 'gpt' && item.model === 'gpt-http-user-a-gpt')
     assert(userAGptGlobalOption?.supportedApiProtocols?.includes('responses'), '全局模型选项必须返回模型协议能力，供账号模型别名按协议过滤')
+    assert.deepEqual(userAGptGlobalOption?.supportedServiceTiers, ['priority'], '全局模型选项必须返回服务等级能力')
+    assert.deepEqual(userAGptGlobalOption?.supportedReasoningEfforts, ['low', 'high'], '全局模型选项必须返回思考能力')
+    assert.equal(userAGptGlobalOption?.defaultReasoningEffort, 'high', '全局模型选项必须返回有效默认思考级别')
     assert.equal(userAGlobalModelOptions.some((item) => item.providerCode === 'hybrid'), false, '全局模型选项不应把 hybrid 当作真实供应商目录')
     assert.equal(userAGlobalModelOptions.some((item) => item.model === 'hybrid-regression-should-not-list'), false, '全局模型选项不应返回 hybrid 自身模型')
 

@@ -158,8 +158,12 @@
               />
 
               <AccountBalanceQuerySection
+                :can-query="balanceQueryCanRun"
                 :form="form"
+                :query-loading="balanceQueryLoading"
+                :query-snapshot="balanceQuerySnapshot"
                 :readonly="authorizedEditing"
+                @query="emit('balance-query')"
               />
 
               <AccountAvailabilityScheduleSection
@@ -198,7 +202,7 @@
 import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountApiKeyRuntimeDetail, AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountApiKeyRuntimeDetail, AccountBalanceSnapshot, AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
@@ -243,6 +247,9 @@ const props = withDefaults(defineProps<{
   authLoading: boolean
   authResult?: OpenAIAuthURLResult
   baseUrlPlaceholder: string
+  balanceQueryCanRun?: boolean
+  balanceQueryLoading?: boolean
+  balanceQuerySnapshot?: AccountBalanceSnapshot
   confirmLoading: boolean
   credentialTitle: string
   editing: boolean
@@ -274,6 +281,8 @@ const props = withDefaults(defineProps<{
 }>(), {
   advancedLoaded: false,
   advancedLoading: false,
+  balanceQueryCanRun: false,
+  balanceQueryLoading: false,
   loading: false,
   testButtonDisabled: false,
   testLoading: false
@@ -369,6 +378,7 @@ function formatCredentialDate(value: unknown): string | undefined {
 
 const emit = defineEmits<{
   (event: 'advanced-open'): void
+  (event: 'balance-query'): void
   (event: 'cancel'): void
   (event: 'copy-auth-url', value: string): void
   (event: 'delete-tag', tagId: string): void

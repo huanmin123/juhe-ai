@@ -8,18 +8,23 @@ type ValueKind string
 
 const (
 	ValueKindInteger  ValueKind = "integer"
+	ValueKindDecimal  ValueKind = "decimal"
 	ValueKindTimezone ValueKind = "timezone"
 )
 
 type Definition struct {
-	Key     string
-	Kind    ValueKind
-	Minimum int
-	Maximum int
+	Key            string
+	Kind           ValueKind
+	Minimum        int
+	Maximum        int
+	DecimalMinimum float64
+	DecimalMaximum float64
 }
 
 var definitions = []Definition{
 	{Key: "gatewayTextRawBodyLimitMegabytes", Kind: ValueKindInteger, Minimum: 1, Maximum: 64},
+	{Key: "gptPriorityPriceMultiplier", Kind: ValueKindDecimal, DecimalMinimum: 0.01, DecimalMaximum: 100},
+	{Key: "gptFlexPriceMultiplier", Kind: ValueKindDecimal, DecimalMinimum: 0.01, DecimalMaximum: 100},
 	{Key: "systemApiRateLimitIpReadPerMinute", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},
 	{Key: "systemApiRateLimitIpReadBurstPer10Seconds", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},
 	{Key: "systemApiRateLimitIpWritePerMinute", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},

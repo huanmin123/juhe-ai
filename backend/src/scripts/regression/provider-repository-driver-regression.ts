@@ -27,10 +27,12 @@ if (process.env.JUHE_PROVIDER_REPOSITORY_DRIVER_CHILD === 'postgres') {
 const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-provider-driver-'))
 try {
   assertAccountHealthCheckModelRuntimeBoundary()
+  assertDefaultHealthCheckModelRoleLookupBoundary()
   assertModelCatalogPostgresSyncBoundary()
   assertOpenAIAccountSelectorPostgresAuthorizationBoundary()
 
   process.env.JUHE_AI_RUNTIME_MODE = 'standalone'
+  process.env.JUHE_AI_PROCESS_ROLE = 'db-service'
   process.env.JUHE_AI_DATABASE_DRIVER = 'sqlite'
   process.env.JUHE_AI_CACHE_DRIVER = 'memory'
   process.env.JUHE_AI_RUNTIME_STATE_DRIVER = 'memory'
@@ -41,6 +43,8 @@ try {
   process.env.JUHE_AI_USAGE_SHARD_ROOT = join(tempRoot, 'usage-shards')
   process.env.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = join(tempRoot, 'codex-context')
 
+  const databaseModule = await import('../../storage/database.js')
+  databaseModule.getBusinessDatabase()
   const repository = await import('../../storage/provider.repository.js')
   await assertProviderRepositoryAsync(repository)
   await assertRepositoryBarrelAsync()
@@ -92,6 +96,22 @@ function assertModelCatalogPostgresSyncBoundary(): void {
     source,
     /function modelCatalogSourceProviderCodes\([\s\S]*?listOpenAIProtocolProviderCodes\(\)[\s\S]*?runtimeConfig\.databaseDriver === 'postgres'/,
     '模型目录同步路径在 PG 模式下不得先调用 provider.repository'
+  )
+}
+
+function assertDefaultHealthCheckModelRoleLookupBoundary(): void {
+  const srcRoot = join(dirname(fileURLToPath(import.meta.url)), '../..')
+  const source = readFileSync(join(srcRoot, 'storage/provider.repository.ts'), 'utf8')
+  const roleLookupQueries = source.match(/SELECT role\s+FROM [\s\S]*?WHERE id = \?\s+LIMIT 1/g) ?? []
+  assert.equal(
+    roleLookupQueries.length,
+    2,
+    '供应商默认检查模型的同步与异步角色判定都必须按 system_accounts.id 有界读取并 LIMIT 1'
+  )
+  assert.match(
+    source,
+    /async function shouldReadProviderDefaultHealthCheckModelPreferenceAsync[\s\S]*?const client = await getProviderDatabaseClient\(\)[\s\S]*?FROM \$\{providerTable\(client, 'system_accounts'\)\}[\s\S]*?WHERE id = \?[\s\S]*?LIMIT 1/,
+    'PostgreSQL 角色判定必须使用统一 DatabaseClient 和 schema-aware system_accounts 表名'
   )
 }
 
@@ -167,6 +187,12 @@ function assertOpenAIAccountSelectorPostgresAuthorizationBoundary(): void {
 
 async function closeSqliteStorageDatabases(): Promise<void> {
   try {
+    const readWorkerPool = await import('../../storage/sqlite-read-worker-pool.js')
+    await readWorkerPool.closeSqliteReadWorkerPool()
+  } catch {
+    // The regression may fail before the SQLite read worker pool is imported.
+  }
+  try {
     const databaseModule = await import('../../storage/database.js')
     databaseModule.closeStorageDatabases()
   } catch {
@@ -212,6 +238,7 @@ async function assertProviderRepositoryAsync(repository: typeof import('../../st
 
   const defaultModel = await repository.findProviderDefaultHealthCheckModelAsync(GPT_VENDOR_CODE)
   assert.ok(defaultModel, '应能读取供应商默认检查模型')
+  await assertDefaultHealthCheckModelRolePriorityAsync(repository, defaultModel)
   assert.ok((await repository.findProviderDefaultSupportedModelsAsync(GPT_VENDOR_CODE)).includes('gpt-5.6-sol'), '应能读取供应商默认支持模型')
   assert.equal(await repository.findProviderDefaultHealthCheckModelAsync(ANTHROPIC_PROVIDER_CODE), 'claude-opus-4-8', 'Anthropic 默认检查模型应使用 Opus 4.8')
 
@@ -229,4 +256,146 @@ async function assertProviderRepositoryAsync(repository: typeof import('../../st
     repository.requireEnabledProviderProtocolProfileAsync('missing-provider', undefined),
     /不支持的供应商/
   )
+}
+
+async function assertDefaultHealthCheckModelRolePriorityAsync(
+  repository: typeof import('../../storage/provider.repository.js'),
+  fallbackModel: string
+): Promise<void> {
+  const marker = `provider_health_role_${process.pid}_${Date.now()}`
+  const fixtures = {
+    user: {
+      id: `${marker}_user`,
+      username: `${marker}_user`,
+      displayName: `${marker} 普通用户`,
+      role: 'user',
+      model: `${marker}_user_model`
+    },
+    admin: {
+      id: `${marker}_admin`,
+      username: `${marker}_admin`,
+      displayName: `${marker} 管理员`,
+      role: 'admin',
+      model: `${marker}_admin_legacy_model`
+    },
+    superAdmin: {
+      id: `${marker}_super_admin`,
+      username: `${marker}_super_admin`,
+      displayName: `${marker} 超级管理员`,
+      role: 'super_admin',
+      model: `${marker}_super_admin_legacy_model`
+    }
+  } as const
+
+  try {
+    await seedDefaultHealthCheckModelRoleFixturesAsync(fixtures)
+    const sqliteReadWorkerPool = process.env.JUHE_AI_DATABASE_DRIVER === 'postgres'
+      ? undefined
+      : await import('../../storage/sqlite-read-worker-pool.js')
+    const handledJobsBefore = sqliteReadWorkerPool?.getSqliteReadWorkerPoolRuntime().handledJobs
+    assert.equal(
+      await repository.findProviderDefaultHealthCheckModelAsync(GPT_VENDOR_CODE, fixtures.user.id),
+      fixtures.user.model,
+      '普通用户应保持个人偏好优先于系统默认和协议档案'
+    )
+    assert.equal(
+      await repository.findProviderDefaultHealthCheckModelAsync(GPT_VENDOR_CODE, fixtures.admin.id),
+      fallbackModel,
+      '管理员应忽略遗留个人偏好并回退系统默认或协议档案'
+    )
+    assert.equal(
+      await repository.findProviderDefaultHealthCheckModelAsync(GPT_VENDOR_CODE, fixtures.superAdmin.id),
+      fallbackModel,
+      '超级管理员应忽略遗留个人偏好并回退系统默认或协议档案'
+    )
+
+    if (sqliteReadWorkerPool && handledJobsBefore !== undefined) {
+      assert.equal(sqliteReadWorkerPool.sqliteReadWorkerPoolEnabled(), true, 'SQLite provider repository 回归必须启用 read worker')
+      assert.ok(
+        sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs >= handledJobsBefore + 3,
+        'SQLite 默认检查模型 async 角色优先级读取必须由 read worker 执行'
+      )
+      assert.equal(
+        repository.findProviderDefaultHealthCheckModel(GPT_VENDOR_CODE, fixtures.user.id),
+        fixtures.user.model,
+        'SQLite 同步路径应保持普通用户个人偏好优先'
+      )
+      assert.equal(
+        repository.findProviderDefaultHealthCheckModel(GPT_VENDOR_CODE, fixtures.admin.id),
+        fallbackModel,
+        'SQLite 同步路径应忽略管理员遗留个人偏好'
+      )
+      assert.equal(
+        repository.findProviderDefaultHealthCheckModel(GPT_VENDOR_CODE, fixtures.superAdmin.id),
+        fallbackModel,
+        'SQLite 同步路径应忽略超级管理员遗留个人偏好'
+      )
+    }
+  } finally {
+    await cleanupDefaultHealthCheckModelRoleFixturesAsync(Object.values(fixtures).map((fixture) => fixture.id))
+  }
+}
+
+async function seedDefaultHealthCheckModelRoleFixturesAsync(fixtures: Record<string, {
+  id: string
+  username: string
+  displayName: string
+  role: 'user' | 'admin' | 'super_admin'
+  model: string
+}>): Promise<void> {
+  const now = new Date().toISOString()
+  if (process.env.JUHE_AI_DATABASE_DRIVER === 'postgres') {
+    const { getPostgresPool } = await import('../../storage/postgres-client.js')
+    const pool = await getPostgresPool()
+    for (const fixture of Object.values(fixtures)) {
+      await pool.query(`
+        INSERT INTO juhe_business.system_accounts (
+          id, username, display_name, role, status, password_hash,
+          must_change_password, image_generation_enabled, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, 'active', 'provider-repository-regression', 0, 0, $5, $5)
+      `, [fixture.id, fixture.username, fixture.displayName, fixture.role, now])
+      await pool.query(`
+        INSERT INTO juhe_business.provider_default_health_check_models (
+          system_account_id, provider_code, model, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $4)
+      `, [fixture.id, GPT_VENDOR_CODE, fixture.model, now])
+    }
+    return
+  }
+
+  const { getBusinessDatabase } = await import('../../storage/database.js')
+  const database = getBusinessDatabase()
+  const insertSystemAccount = database.prepare(`
+    INSERT INTO system_accounts (
+      id, username, display_name, role, status, password_hash,
+      must_change_password, image_generation_enabled, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'active', 'provider-repository-regression', 0, 0, ?, ?)
+  `)
+  const insertPreference = database.prepare(`
+    INSERT INTO provider_default_health_check_models (
+      system_account_id, provider_code, model, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?)
+  `)
+  for (const fixture of Object.values(fixtures)) {
+    insertSystemAccount.run(fixture.id, fixture.username, fixture.displayName, fixture.role, now, now)
+    insertPreference.run(fixture.id, GPT_VENDOR_CODE, fixture.model, now, now)
+  }
+}
+
+async function cleanupDefaultHealthCheckModelRoleFixturesAsync(systemAccountIds: string[]): Promise<void> {
+  if (process.env.JUHE_AI_DATABASE_DRIVER === 'postgres') {
+    const { getPostgresPool } = await import('../../storage/postgres-client.js')
+    const pool = await getPostgresPool()
+    await pool.query(
+      'DELETE FROM juhe_business.system_accounts WHERE id = ANY($1::text[])',
+      [systemAccountIds]
+    )
+    return
+  }
+
+  const { getBusinessDatabase } = await import('../../storage/database.js')
+  const statement = getBusinessDatabase().prepare('DELETE FROM system_accounts WHERE id = ?')
+  for (const systemAccountId of systemAccountIds) {
+    statement.run(systemAccountId)
+  }
 }

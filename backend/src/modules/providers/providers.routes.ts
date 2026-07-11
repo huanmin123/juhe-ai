@@ -30,7 +30,11 @@ import {
   saveCustomProviderModelAsync,
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
-import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
+import type {
+  GptServiceTier,
+  GptWireReasoningEffort,
+  ProviderModelApiProtocol
+} from '../model-pricing/provider-driver.types.js'
 
 export const providersRouter = Router()
 
@@ -38,6 +42,9 @@ interface ProviderModelOption {
   providerCode: string
   model: string
   supportedApiProtocols?: ProviderModelApiProtocol[]
+  supportedServiceTiers?: GptServiceTier[]
+  supportedReasoningEfforts?: GptWireReasoningEffort[]
+  defaultReasoningEffort?: GptWireReasoningEffort
 }
 
 providersRouter.get('/', requireAdmin, async (req, res, next) => {
@@ -72,7 +79,10 @@ providersRouter.get('/models/options', async (req, res, next) => {
       catalogs.flatMap((catalog) => catalog.map((item) => ({
         providerCode: item.providerCode,
         model: item.model,
-        supportedApiProtocols: item.supportedApiProtocols
+        supportedApiProtocols: item.supportedApiProtocols,
+        supportedServiceTiers: item.supportedServiceTiers,
+        supportedReasoningEfforts: item.supportedReasoningEfforts,
+        defaultReasoningEffort: item.defaultReasoningEffort
       })))
     )
     res.json(ok(options))
@@ -433,28 +443,67 @@ function providerWithDefaultHealthCheckModelPreference(
 }
 
 export function dedupeProviderModelOptions(options: ProviderModelOption[]): ProviderModelOption[] {
-  const seenProviderModels = new Map<string, ProviderModelOption>()
+  const seenProviderModels = new Map<string, number>()
   const result: ProviderModelOption[] = []
+  const defaultReasoningEffortCandidates: GptWireReasoningEffort[][] = []
   for (const option of options) {
     const providerCode = option.providerCode.trim()
     const model = option.model.trim()
     if (!providerCode || !model) continue
     const normalizedProviderCode = providerCode.toLowerCase()
     const providerModelKey = `${normalizedProviderCode}\n${model}`
-    const existing = seenProviderModels.get(providerModelKey)
-    const supportedApiProtocols = normalizedProviderModelApiProtocols([
-      ...(existing?.supportedApiProtocols ?? []),
-      ...(option.supportedApiProtocols ?? [])
-    ])
-    if (existing) {
-      existing.supportedApiProtocols = supportedApiProtocols
+    const supportedApiProtocols = normalizedProviderModelApiProtocols(option.supportedApiProtocols ?? [])
+    const supportedServiceTiers = normalizedProviderModelCapabilities(
+      option.supportedServiceTiers ?? [],
+      providerModelServiceTiers
+    )
+    const supportedReasoningEfforts = normalizedProviderModelCapabilities(
+      option.supportedReasoningEfforts ?? [],
+      providerModelReasoningEfforts
+    )
+    const defaultReasoningEffort = normalizedProviderModelCapability(
+      option.defaultReasoningEffort,
+      providerModelReasoningEfforts
+    )
+    const existingIndex = seenProviderModels.get(providerModelKey)
+    if (existingIndex !== undefined) {
+      const existing = result[existingIndex]
+      assignProviderModelOptionCapabilities(existing, {
+        supportedApiProtocols: normalizedProviderModelApiProtocols([
+          ...(existing.supportedApiProtocols ?? []),
+          ...supportedApiProtocols
+        ]),
+        supportedServiceTiers: normalizedProviderModelCapabilities([
+          ...(existing.supportedServiceTiers ?? []),
+          ...supportedServiceTiers
+        ], providerModelServiceTiers),
+        supportedReasoningEfforts: normalizedProviderModelCapabilities([
+          ...(existing.supportedReasoningEfforts ?? []),
+          ...supportedReasoningEfforts
+        ], providerModelReasoningEfforts)
+      })
+      if (defaultReasoningEffort) {
+        defaultReasoningEffortCandidates[existingIndex].push(defaultReasoningEffort)
+      }
       continue
     }
-    const item: ProviderModelOption = supportedApiProtocols.length
-      ? { providerCode, model, supportedApiProtocols }
-      : { providerCode, model }
-    seenProviderModels.set(providerModelKey, item)
+    const item: ProviderModelOption = { providerCode, model }
+    assignProviderModelOptionCapabilities(item, {
+      supportedApiProtocols,
+      supportedServiceTiers,
+      supportedReasoningEfforts
+    })
+    seenProviderModels.set(providerModelKey, result.length)
     result.push(item)
+    defaultReasoningEffortCandidates.push(defaultReasoningEffort ? [defaultReasoningEffort] : [])
+  }
+  for (let index = 0; index < result.length; index += 1) {
+    const supportedReasoningEfforts = new Set(result[index].supportedReasoningEfforts ?? [])
+    const defaultReasoningEffort = defaultReasoningEffortCandidates[index]
+      .find((candidate) => supportedReasoningEfforts.has(candidate))
+    if (defaultReasoningEffort) {
+      result[index].defaultReasoningEffort = defaultReasoningEffort
+    }
   }
   return result
 }
@@ -463,11 +512,70 @@ function normalizedProviderModelApiProtocols(value: readonly ProviderModelApiPro
   const seen = new Set<ProviderModelApiProtocol>()
   const output: ProviderModelApiProtocol[] = []
   for (const item of value) {
-    if (!item || seen.has(item)) continue
-    seen.add(item)
-    output.push(item)
+    const normalized = item.trim() as ProviderModelApiProtocol
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    output.push(normalized)
   }
   return output
+}
+
+const providerModelServiceTiers = new Set<GptServiceTier>(['priority', 'flex'])
+const providerModelReasoningEfforts = new Set<GptWireReasoningEffort>([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+])
+
+function normalizedProviderModelCapabilities<TValue extends string>(
+  value: readonly TValue[],
+  allowedValues: ReadonlySet<TValue>
+): TValue[] {
+  const seen = new Set<TValue>()
+  const output: TValue[] = []
+  for (const item of value) {
+    const normalized = item.trim() as TValue
+    if (!allowedValues.has(normalized) || seen.has(normalized)) continue
+    seen.add(normalized)
+    output.push(normalized)
+  }
+  return output
+}
+
+function normalizedProviderModelCapability<TValue extends string>(
+  value: TValue | undefined,
+  allowedValues: ReadonlySet<TValue>
+): TValue | undefined {
+  const normalized = value?.trim() as TValue | undefined
+  return normalized && allowedValues.has(normalized) ? normalized : undefined
+}
+
+function assignProviderModelOptionCapabilities(
+  option: ProviderModelOption,
+  capabilities: Pick<
+    ProviderModelOption,
+    'supportedApiProtocols' | 'supportedServiceTiers' | 'supportedReasoningEfforts'
+  >
+): void {
+  if (capabilities.supportedApiProtocols?.length) {
+    option.supportedApiProtocols = capabilities.supportedApiProtocols
+  } else {
+    delete option.supportedApiProtocols
+  }
+  if (capabilities.supportedServiceTiers?.length) {
+    option.supportedServiceTiers = capabilities.supportedServiceTiers
+  } else {
+    delete option.supportedServiceTiers
+  }
+  if (capabilities.supportedReasoningEfforts?.length) {
+    option.supportedReasoningEfforts = capabilities.supportedReasoningEfforts
+  } else {
+    delete option.supportedReasoningEfforts
+  }
 }
 
 async function listProviderModelsForRequestAsync(input: {
@@ -615,6 +723,7 @@ async function validateCustomModelPricing(input: {
 type CustomModelStatus = 'draft' | 'active' | 'disabled'
 type CustomModelPricingInput = CustomModelPriceFields & {
   model?: string
+  mode?: string | null
   pricingModel?: string | null
   supportedApiProtocols?: ProviderModelCatalogItem['supportedApiProtocols']
   supportedServiceTiers?: ProviderModelCatalogItem['supportedServiceTiers']
@@ -627,8 +736,10 @@ function validateCustomModelCapabilities(providerCode: string, input: CustomMode
   const serviceTiers = input.supportedServiceTiers ?? []
   const reasoningEfforts = input.supportedReasoningEfforts ?? []
   const defaultReasoningEffort = input.defaultReasoningEffort ?? undefined
-  if (providerCode !== 'gpt' && (serviceTiers.length || reasoningEfforts.length || defaultReasoningEffort)) {
-    return '只有 GPT 自定义模型支持服务等级和思考能力配置'
+  const isGptTextModel = providerCode === 'gpt'
+    && (input.mode === undefined || input.mode === null || input.mode === 'text')
+  if (!isGptTextModel && (serviceTiers.length || reasoningEfforts.length || defaultReasoningEffort)) {
+    return '只有 GPT 文本自定义模型支持服务等级和思考能力配置'
   }
   if (defaultReasoningEffort && !reasoningEfforts.includes(defaultReasoningEffort)) {
     return '默认思考级别必须属于支持的思考级别'

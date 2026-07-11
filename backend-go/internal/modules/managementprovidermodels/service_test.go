@@ -758,6 +758,31 @@ func TestServiceCreateCustomModelRejectsGlobalForOrdinaryUser(t *testing.T) {
 	}
 }
 
+func TestServiceCreateCustomModelPrioritizesGlobalForbiddenBeforeCapabilityValidation(t *testing.T) {
+	price := 1.25
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"anthropic": {Code: "anthropic", Enabled: true}},
+	}
+	_, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode:         "anthropic",
+		ActorSystemAccountID: "sys_user",
+		ActorRole:            "user",
+		Fields: CustomModelMutation{
+			Scope:                 OptionalString{Set: true, Value: "global"},
+			Model:                 OptionalString{Set: true, Value: "custom-chat"},
+			SupportedServiceTiers: OptionalStringList{Set: true, Value: []string{"priority"}},
+			InputUSDPer1M:         OptionalFloat{Set: true, Value: &price},
+		},
+	})
+	message, ok := CustomModelForbiddenMessage(err)
+	if !ok || message != "只有管理员可以创建全局模型" {
+		t.Fatalf("forbidden message = %q, %v; err = %v", message, ok, err)
+	}
+	if store.saveInput.Model != "" {
+		t.Fatalf("save should not be called, got %+v", store.saveInput)
+	}
+}
+
 func TestServiceCreateCustomModelValidatesPricingModel(t *testing.T) {
 	price := 2.0
 	store := &providerModelStoreStub{

@@ -40,9 +40,10 @@ const (
 	w5SystemSettingsOperationID = "oplog_w5_management_system_settings"
 )
 
-var w5SystemSettingsUpdatedValues = map[string]int{
-	"accountTestTaskConcurrency":       8,
-	"gatewayTextRawBodyLimitMegabytes": 32,
+var w5SystemSettingsUpdatedValues = map[string]string{
+	"accountTestTaskConcurrency":       "8",
+	"gatewayTextRawBodyLimitMegabytes": "32",
+	"gptFlexPriceMultiplier":           "0.75",
 }
 
 func TestW5ManagementSystemSettingsPostgresRedisAsynqSmoke(t *testing.T) {
@@ -223,8 +224,10 @@ func TestW5ManagementSystemSettingsPostgresRedisAsynqSmoke(t *testing.T) {
 	}
 	initialSettings := decodeW5SystemSettingsResponse(t, getRec)
 	assertW5SystemSettingsComplete(t, initialSettings)
-	assertW5SystemSettingInt(t, initialSettings, "accountTestTaskConcurrency", 100)
-	assertW5SystemSettingInt(t, initialSettings, "gatewayTextRawBodyLimitMegabytes", 16)
+	assertW5SystemSettingJSONNumber(t, initialSettings, "accountTestTaskConcurrency", "100")
+	assertW5SystemSettingJSONNumber(t, initialSettings, "gatewayTextRawBodyLimitMegabytes", "16")
+	assertW5SystemSettingJSONNumber(t, initialSettings, "gptPriorityPriceMultiplier", "2")
+	assertW5SystemSettingJSONNumber(t, initialSettings, "gptFlexPriceMultiplier", "0.5")
 	initialTimezone := append(json.RawMessage(nil), initialSettings[systemsettings.UsageStatsTimezoneKey]...)
 	if string(initialTimezone) != `"Asia/Shanghai"` {
 		t.Fatalf("usageStatsTimezone seed = %s, want %q", initialTimezone, "Asia/Shanghai")
@@ -234,7 +237,7 @@ func TestW5ManagementSystemSettingsPostgresRedisAsynqSmoke(t *testing.T) {
 	patchRec := serveW5SystemSettingsRequest(
 		router,
 		http.MethodPatch,
-		`{"gatewayTextRawBodyLimitMegabytes":32,"accountTestTaskConcurrency":8}`,
+		`{"gatewayTextRawBodyLimitMegabytes":32,"accountTestTaskConcurrency":8,"gptFlexPriceMultiplier":0.75}`,
 		"req_w5_management_system_settings_patch",
 	)
 	if patchRec.Code != http.StatusOK {
@@ -243,9 +246,10 @@ func TestW5ManagementSystemSettingsPostgresRedisAsynqSmoke(t *testing.T) {
 	updatedSettings := decodeW5SystemSettingsResponse(t, patchRec)
 	expectedSettings := cloneW5SystemSettings(initialSettings)
 	for key, value := range w5SystemSettingsUpdatedValues {
-		expectedSettings[key] = json.RawMessage(fmt.Sprintf("%d", value))
+		expectedSettings[key] = json.RawMessage(value)
 	}
 	assertW5SystemSettingsEqual(t, updatedSettings, expectedSettings)
+	assertW5SystemSettingJSONNumber(t, updatedSettings, "gptFlexPriceMultiplier", "0.75")
 	if got := updatedSettings[systemsettings.UsageStatsTimezoneKey]; string(got) != string(initialTimezone) {
 		t.Fatalf("usageStatsTimezone changed online from %s to %s", initialTimezone, got)
 	}
@@ -326,8 +330,8 @@ func decodeW5SystemSettingsResponse(
 
 func assertW5SystemSettingsComplete(t *testing.T, settings map[string]json.RawMessage) {
 	t.Helper()
-	if len(settings) != 53 {
-		t.Fatalf("system settings field count = %d, want 53", len(settings))
+	if len(settings) != 55 {
+		t.Fatalf("system settings field count = %d, want 55", len(settings))
 	}
 	for _, definition := range systemsettings.Definitions() {
 		if _, ok := settings[definition.Key]; !ok {
@@ -364,23 +368,23 @@ func cloneW5SystemSettings(input map[string]json.RawMessage) map[string]json.Raw
 	return output
 }
 
-func assertW5SystemSettingInt(
+func assertW5SystemSettingJSONNumber(
 	t *testing.T,
 	settings map[string]json.RawMessage,
 	key string,
-	want int,
+	want string,
 ) {
 	t.Helper()
 	raw, ok := settings[key]
 	if !ok {
-		t.Fatalf("system settings missing integer field %q", key)
+		t.Fatalf("system settings missing numeric field %q", key)
 	}
-	var got int
+	var got json.Number
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("decode system setting %s value %s: %v", key, raw, err)
 	}
-	if got != want {
-		t.Fatalf("system setting %s = %d, want %d", key, got, want)
+	if got.String() != want || string(raw) != want {
+		t.Fatalf("system setting %s = %s, want normalized JSON number %s", key, raw, want)
 	}
 }
 
@@ -416,7 +420,7 @@ func assertW5SystemSettingRow(
 	ctx context.Context,
 	db *sql.DB,
 	key string,
-	wantValue int,
+	wantValueJSON string,
 	wantUpdatedAt time.Time,
 ) {
 	t.Helper()
@@ -430,8 +434,8 @@ func assertW5SystemSettingRow(
 	`, key).Scan(&valueJSON, &updatedAt); err != nil {
 		t.Fatalf("read updated W5 system setting %s: %v", key, err)
 	}
-	if valueJSON != fmt.Sprintf("%d", wantValue) {
-		t.Fatalf("system setting %s value_json = %q, want %d", key, valueJSON, wantValue)
+	if valueJSON != wantValueJSON {
+		t.Fatalf("system setting %s value_json = %q, want %s", key, valueJSON, wantValueJSON)
 	}
 	if !updatedAt.UTC().Equal(wantUpdatedAt.UTC()) {
 		t.Fatalf(
@@ -457,6 +461,7 @@ func restoreW5SystemSettingRows(
 	for _, key := range []string{
 		"accountTestTaskConcurrency",
 		"gatewayTextRawBodyLimitMegabytes",
+		"gptFlexPriceMultiplier",
 	} {
 		row, ok := original[key]
 		if !ok {
@@ -687,7 +692,7 @@ func assertW5SystemSettingsOperationLog(
 		!row.CreatedAt.UTC().Equal(wantCreatedAt.UTC()) {
 		t.Fatalf("system settings operation log = %+v", row)
 	}
-	const wantChanges = `[{"field":"accountTestTaskConcurrency","label":"accountTestTaskConcurrency","before":100,"after":8},{"field":"gatewayTextRawBodyLimitMegabytes","label":"gatewayTextRawBodyLimitMegabytes","before":16,"after":32}]`
+	const wantChanges = `[{"field":"accountTestTaskConcurrency","label":"accountTestTaskConcurrency","before":100,"after":8},{"field":"gatewayTextRawBodyLimitMegabytes","label":"gatewayTextRawBodyLimitMegabytes","before":16,"after":32},{"field":"gptFlexPriceMultiplier","label":"gptFlexPriceMultiplier","before":0.5,"after":0.75}]`
 	if row.ChangesJSON != wantChanges {
 		t.Fatalf("system settings operation log changes = %s, want %s", row.ChangesJSON, wantChanges)
 	}

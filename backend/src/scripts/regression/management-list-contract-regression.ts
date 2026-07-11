@@ -45,6 +45,13 @@ try {
     groupId: group.id,
     status: 'active'
   }, access)
+  assert.equal(account.status, 'pending_test', '管理列表 fixture 新建账户应先进入待检查状态')
+  assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, '管理列表 fixture 应显式通过后台健康成功激活账户')
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '管理列表契约 API Key',
     groupBindings: [{ groupId: group.id, priority: 1, weight: 1, status: 'active' }]

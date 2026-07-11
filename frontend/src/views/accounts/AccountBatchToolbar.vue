@@ -6,16 +6,16 @@
     </div>
     <div class="batch-toolbar-actions">
       <a-button @click="$emit('clear')">清空选择</a-button>
+      <a-button @click="$emit('restore')">批量恢复</a-button>
+      <a-button @click="$emit('enable')">批量启用</a-button>
       <a-tooltip :title="editDisabled ? editDisabledReason : '批量覆盖所选账户的公共配置'">
         <span>
-          <a-button type="primary" :disabled="editDisabled" @click="$emit('edit')">
+          <a-button :disabled="editDisabled" @click="$emit('edit')">
             <template #icon><EditOutlined /></template>
             批量编辑
           </a-button>
         </span>
       </a-tooltip>
-      <a-button @click="$emit('restore')">批量恢复</a-button>
-      <a-button @click="$emit('enable')">批量启用</a-button>
       <a-button danger @click="$emit('disable')">批量停用</a-button>
       <a-button danger :disabled="deletableCount <= 0" @click="$emit('delete')">批量删除</a-button>
     </div>

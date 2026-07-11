@@ -1,4 +1,6 @@
 import { strict as assert } from 'node:assert'
+import type { ChildProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -22,12 +24,19 @@ logger.level = 'silent'
 const [
   databaseModule,
   repositories,
-  usageStatsRepository
+  usageStatsRepository,
+  dbServiceHandlers,
+  dbServiceIpc,
+  backgroundIpc
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/usage-stats.repository.js')
+  import('../../storage/usage-stats.repository.js'),
+  import('../../modules/db-service/db-service-handlers.js'),
+  import('../../modules/db-service/db-service-ipc.js'),
+  import('../../modules/background/background-ipc.js')
 ])
+const healthActivationIpc = createHealthActivationIpcHarness()
 
 interface DirtyRow {
   group_id: string
@@ -74,6 +83,8 @@ try {
     status: 'active'
   }, ownerAccess)
 
+  assert.equal(account.status, 'pending_test', '新建账户即使请求 active 也必须先进入待检查状态')
+  assert.equal(account.schedulable, false, '新建账户健康检查成功前不得参与调度')
   assert.deepEqual(dirtyRows().map((row) => row.group_id), [primaryGroup.id], '创建账户后应只标记所属分组为脏')
   assert.equal(groupStatsRow(primaryGroup.id), undefined, '请求链路不应同步重建 group_account_stats')
   const ownerGroupBeforeStatsRefresh = repositories.listGroupsPage(ownerAccess, { page: 1, pageSize: 20 }).items.find((group) => group.id === primaryGroup.id)
@@ -84,6 +95,47 @@ try {
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应按脏分组刷新统计缓存')
   assert.deepEqual(dirtyRows(), [], '脏分组刷新完成后应清空对应队列')
   assert.equal(groupStatsRow(primaryGroup.id)?.total, 1, 'worker 刷新后应写入分组账户统计')
+  assert.equal(groupStatsRow(primaryGroup.id)?.available, 0, '待检查账户首次聚合不得计入可用账户')
+  assert.equal(groupStatsRow(primaryGroup.id)?.error, 1, '待检查账户首次聚合应计入异常账户')
+  const activation = await healthActivationIpc.request({
+    type: 'record_account_health_check_success',
+    accountId: account.id,
+    input: {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }
+  })
+  assert(activation, 'worker/server/DB service 健康成功 IPC 应返回结果')
+  assert.equal(activation.changed, true, 'DB service 健康成功应写入账户激活状态')
+  const activatedAccountRow = accountRow(account.id)
+  assert.equal(activatedAccountRow?.status, 'active', '健康成功应把待检查账户激活')
+  assert.equal(activatedAccountRow?.schedulable, 1, '健康成功应恢复待检查账户调度')
+  assert.deepEqual(
+    dirtyRows(),
+    [{ group_id: primaryGroup.id, reason: 'account_health_check_success' }],
+    '健康成功实际改变状态或调度后应按账户反查标记关联分组统计为脏'
+  )
+  assert.equal(groupStatsRow(primaryGroup.id)?.available, 0, 'dirty 刷新前统计应继续保留上次 available')
+  assert.equal(groupStatsRow(primaryGroup.id)?.error, 1, 'dirty 刷新前统计应继续保留上次 error')
+  assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, 'worker 应消费健康激活产生的分组脏标记')
+  assert.deepEqual(dirtyRows(), [], '健康激活统计刷新后应清空脏标记')
+  assert.equal(groupStatsRow(primaryGroup.id)?.available, 1, '健康激活后的统计刷新应把账户计入可用数')
+  assert.equal(groupStatsRow(primaryGroup.id)?.error, 0, '健康激活后的统计刷新应清除待检查异常数')
+  const repeatedSuccess = await healthActivationIpc.request({
+    type: 'record_account_health_check_success',
+    accountId: account.id,
+    input: {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }
+  })
+  assert(repeatedSuccess, 'worker/server/DB service 重复健康成功 IPC 应返回结果')
+  assert.equal(repeatedSuccess.changed, true, '重复健康成功仍应刷新健康检查时间')
+  assert.deepEqual(dirtyRows(), [], '健康成功未改变状态或调度时不得重复标记分组统计为脏')
   const ownerGroupAfterStatsRefresh = repositories.listGroupsPage(ownerAccess, { page: 1, pageSize: 20 }).items.find((group) => group.id === primaryGroup.id)
   const ownerGroupAfterStatsRefreshAsync = (await repositories.listGroupsPageAsync(ownerAccess, { page: 1, pageSize: 20 })).items.find((group) => group.id === primaryGroup.id)
   assert.equal(ownerGroupAfterStatsRefresh?.accountStats.total, 1, '同步分组列表应读取预聚合账户总数')
@@ -105,6 +157,7 @@ try {
     credentials: { api_key: 'sk-group-account-stats-dirty-cache-status-lock', base_url: 'https://api.openai.com/v1' },
     status: 'active'
   }, ownerAccess)
+  activateAccount(statusLockAccount.id, '状态写入锁库回归账户')
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '状态写入锁库回归准备账户应先刷新一次统计缓存')
   withStatsWriteLock(() => {
     assert.doesNotThrow(
@@ -151,7 +204,7 @@ try {
   assert.equal(usageStatsRepository.refreshDirtyGroupAccountStatsCache(), 1, '统计锁释放后 worker 应消费业务库脏标记并刷新统计缓存')
   assert.deepEqual(dirtyRows(), [], '业务库脏标记刷新完成后应被清空')
 
-  repositories.createAccount({
+  const additionalAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     groupId: primaryGroup.id,
@@ -160,6 +213,7 @@ try {
     credentials: { api_key: 'sk-group-account-stats-dirty-cache-2', base_url: 'https://api.openai.com/v1' },
     status: 'active'
   }, ownerAccess)
+  activateAccount(additionalAccount.id, '脏缓存新增账户')
   assert.deepEqual(dirtyRows().map((row) => row.group_id), [primaryGroup.id], '已有统计行的分组新增账户后应标记为脏')
   assert.equal(groupStatsRow(primaryGroup.id)?.total, 1, 'worker 刷新前统计缓存仍保留上次聚合值')
   const ownerDirtyGroupBeforeStatsRefresh = repositories.listGroupsPage(ownerAccess, { page: 1, pageSize: 20 }).items.find((group) => group.id === primaryGroup.id)
@@ -251,6 +305,7 @@ try {
 
   console.log('分组账户统计脏缓存回归通过：请求路径只打业务库脏标记，全量影响只写哨兵，统计由 worker 异步刷新，统计库写锁期间业务写入不受影响，缓存缺失或已标脏时列表只读预聚合结果，异步分组摘要读取同一统计口径')
 } finally {
+  healthActivationIpc.close()
   try {
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
@@ -266,6 +321,15 @@ function dirtyRows(): DirtyRow[] {
   return rows.map((row) => ({ group_id: row.group_id, reason: row.reason }))
 }
 
+function activateAccount(accountId: string, label: string): void {
+  assert.equal(repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, `${label}应显式通过后台健康成功激活`)
+}
+
 function assertSourceGuards(): void {
   const source = readFileSync(resolve('src/storage/group-account-stats-cache.repository.ts'), 'utf8')
   assert.doesNotMatch(source, /SELECT id, system_account_id FROM groups'\)\.all\(\)/, '分组统计刷新不应一次性加载全部分组')
@@ -276,18 +340,174 @@ function assertSourceGuards(): void {
   assert.doesNotMatch(invalidationSource, /if \(runtimeConfig\.databaseDriver === 'postgres'\) \{\s*return\s*\}/, 'PG 模式下分组统计标脏不能静默跳过')
   assert.match(invalidationSource, /markPostgresGroupAccountStatsDirtyInBackground\(input\)/, 'PG 模式下同步标脏入口应转入异步写脏队列')
   const accountWriteSource = readFileSync(resolve('src/storage/repositories.ts'), 'utf8')
-  assert.match(accountWriteSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ groupIds: \[groupId\], reason: 'account_created' \}\)/, 'PG 账户创建后必须标记分组账户统计脏队列')
+  assert.match(accountWriteSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ groupIds: \[groupId\], reason: 'account_created' \}, client\)/, 'PG 账户创建后必须在当前 client 中标记分组账户统计脏队列')
   assert.match(accountWriteSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ accountIds: \[id\], reason: 'account_updated' \}\)/, 'PG 账户更新后必须按账户反查标记分组账户统计脏队列')
+  const healthCheckSource = readFileSync(resolve('src/storage/account-health-check.repository.ts'), 'utf8')
+  assert.match(healthCheckSource, /refreshGroupAccountStatsAfterWrite\(\{ accountIds: \[accountId\], reason: 'account_health_check_success' \}\)/, 'SQLite 健康激活后必须按账户 ID 标记分组统计脏队列')
+  assert.match(healthCheckSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ accountIds: \[accountId\], reason: 'account_health_check_success' \}, tx\)/, 'PostgreSQL 健康激活后必须在当前事务按账户 ID 标记分组统计脏队列')
+  const dbServiceSource = readFileSync(resolve('src/modules/db-service/db-service-handlers.ts'), 'utf8')
+  const dispatchHealthSuccessCase = switchCaseBody(
+    functionBody(dbServiceSource, 'handleDbServiceOperationDispatch'),
+    'record_account_health_check_success'
+  )
+  assert.match(dispatchHealthSuccessCase, /await recordAccountHealthCheckSuccessAsync\(operation\.accountId, operation\.input\)/, 'PostgreSQL DB service 健康成功必须走 async repository')
+  assert.doesNotMatch(dispatchHealthSuccessCase, /\brecordAccountHealthCheckSuccess\(/, 'PostgreSQL dispatch case 不得误走同步健康成功 repository')
+  const syncHealthSuccessCase = switchCaseBody(
+    functionBody(dbServiceSource, 'handleDbServiceOperationSync'),
+    'record_account_health_check_success'
+  )
+  assert.match(syncHealthSuccessCase, /recordAccountHealthCheckSuccess\(operation\.accountId, operation\.input\)/, 'SQLite DB service 健康成功必须走 sync repository')
+  assert.doesNotMatch(syncHealthSuccessCase, /recordAccountHealthCheckSuccessAsync/, 'SQLite sync case 不得误走 async 健康成功 repository')
   const bindingSource = readFileSync(resolve('src/storage/account-group-binding-write.repository.ts'), 'utf8')
   assert.match(bindingSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ groupIds: \[previousGroupId, groupId\], reason: 'group_account_binding' \}\)/, 'PG 账户改绑分组后必须标记新旧分组统计脏队列')
   const groupWriteSource = readFileSync(resolve('src/storage/group-write.repository.ts'), 'utf8')
   assert.match(groupWriteSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ groupIds: \[id\], reason: 'group_deleted' \}\)/, 'PG 分组删除后必须标记统计脏队列以清理旧缓存行')
 }
 
-function accountRow(accountId: string): { status: string } | undefined {
+function functionBody(source: string, functionName: string): string {
+  const start = source.indexOf(`function ${functionName}`)
+  assert.ok(start >= 0, `缺少函数 ${functionName}`)
+  const openBrace = source.indexOf('{', start)
+  assert.ok(openBrace >= 0, `函数 ${functionName} 缺少函数体`)
+  let depth = 0
+  for (let index = openBrace; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) return source.slice(openBrace, index + 1)
+    }
+  }
+  throw new Error(`函数 ${functionName} 函数体解析失败`)
+}
+
+function switchCaseBody(source: string, type: string): string {
+  const marker = `case '${type}':`
+  const start = source.indexOf(marker)
+  assert.ok(start >= 0, `缺少 DB service case：${type}`)
+  const nextMarker = /\n\s+(?:case '[^']+':|default:)/
+  const remainder = source.slice(start + marker.length)
+  const next = nextMarker.exec(remainder)
+  const end = next?.index === undefined ? source.length : start + marker.length + next.index
+  return source.slice(start, end)
+}
+
+function createHealthActivationIpcHarness(): {
+  request: (
+    operation: Extract<
+      Parameters<typeof dbServiceHandlers.handleDbServiceOperation>[0],
+      { type: 'record_account_health_check_success' }
+    >
+  ) => Promise<{ changed: boolean } | undefined>
+  close: () => void
+} {
+  const originalProcessSend = process.send
+
+  class FakeDbServiceChild extends EventEmitter {
+    pid = 616161
+    connected = true
+
+    send(message: unknown, callback?: (error?: Error | null) => void): boolean {
+      void this.handleMessage(message)
+      callback?.()
+      return true
+    }
+
+    kill(): boolean {
+      this.connected = false
+      return true
+    }
+
+    private async handleMessage(message: unknown): Promise<void> {
+      if (!isDbServiceRequest(message)) return
+      runtimeConfig.processRole = 'db-service'
+      try {
+        const result = await dbServiceHandlers.handleDbServiceOperation(message.operation)
+        runtimeConfig.processRole = 'server'
+        this.emit('message', {
+          type: 'db_service_response',
+          requestId: message.requestId,
+          ok: true,
+          result
+        })
+      } catch (error) {
+        runtimeConfig.processRole = 'server'
+        this.emit('message', {
+          type: 'db_service_response',
+          requestId: message.requestId,
+          ok: false,
+          errorMessage: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
+  }
+
+  class FakeWorkerChild extends EventEmitter {
+    pid = 626262
+    connected = true
+
+    send(message: unknown, callback?: (error?: Error | null) => void): boolean {
+      runtimeConfig.processRole = 'worker'
+      EventEmitter.prototype.emit.call(process, 'message', message)
+      callback?.()
+      return true
+    }
+
+    kill(): boolean {
+      this.connected = false
+      return true
+    }
+  }
+
+  const dbServiceChild = new FakeDbServiceChild()
+  const workerChild = new FakeWorkerChild()
+  dbServiceIpc.attachDbServiceProcess(dbServiceChild as unknown as ChildProcess)
+  dbServiceChild.emit('message', {
+    type: 'db_service_ready',
+    pid: dbServiceChild.pid,
+    httpHost: '127.0.0.1',
+    httpPort: 1
+  })
+  backgroundIpc.attachBackgroundWorkerProcess(workerChild as unknown as ChildProcess)
+  process.send = ((message: unknown, callback?: (error?: Error | null) => void) => {
+    runtimeConfig.processRole = 'server'
+    workerChild.emit('message', message)
+    callback?.()
+    return true
+  }) as NodeJS.Process['send']
+
+  return {
+    request: async (operation) => {
+      runtimeConfig.processRole = 'worker'
+      return await backgroundIpc.requestBackgroundWorkerDbService(operation, { timeoutMs: 2_000 })
+    },
+    close: () => {
+      process.send = originalProcessSend
+      runtimeConfig.processRole = 'worker'
+      workerChild.emit('exit', 0, null)
+      dbServiceChild.emit('exit', 0, null)
+    }
+  }
+}
+
+function isDbServiceRequest(value: unknown): value is {
+  type: 'db_service_request'
+  requestId: string
+  operation: Parameters<typeof dbServiceHandlers.handleDbServiceOperation>[0]
+} {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>).type === 'db_service_request'
+    && typeof (value as Record<string, unknown>).requestId === 'string'
+    && typeof (value as Record<string, unknown>).operation === 'object'
+    && (value as Record<string, unknown>).operation !== null
+}
+
+function accountRow(accountId: string): { status: string; schedulable: number } | undefined {
   return databaseModule.getBusinessDatabase()
-    .prepare('SELECT status FROM accounts WHERE id = ?')
-    .get(accountId) as unknown as { status: string } | undefined
+    .prepare('SELECT status, schedulable FROM accounts WHERE id = ?')
+    .get(accountId) as unknown as { status: string; schedulable: number } | undefined
 }
 
 function grantStatus(authorizationGrantId: string): string | undefined {
@@ -297,10 +517,10 @@ function grantStatus(authorizationGrantId: string): string | undefined {
   return row?.status
 }
 
-function groupStatsRow(groupId: string): { total: number } | undefined {
+function groupStatsRow(groupId: string): { total: number; available: number; error: number } | undefined {
   return databaseModule.getStatsDatabase()
-    .prepare('SELECT total FROM group_account_stats WHERE group_id = ?')
-    .get(groupId) as unknown as { total: number } | undefined
+    .prepare('SELECT total, available, error FROM group_account_stats WHERE group_id = ?')
+    .get(groupId) as unknown as { total: number; available: number; error: number } | undefined
 }
 
 function assertBusinessIndexExists(indexName: string): void {
