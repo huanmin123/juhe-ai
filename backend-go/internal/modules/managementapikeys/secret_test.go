@@ -269,7 +269,150 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 	}
 }
 
+func TestServiceRefreshKeepsCommittedSecretWhenUsageSummaryFails(t *testing.T) {
+	events := []string{}
+	usageErr := errors.New("usage summary unavailable")
+	store := &managementAPIKeySecretStoreStub{
+		refreshRow: port.ManagementAPIKeyListRow{
+			ID:                       "key_1",
+			SystemAccountID:          "sys_owner",
+			SystemAccountName:        "所有者",
+			Name:                     "生产 Key",
+			KeyPrefix:                "sk-before",
+			KeySuffix:                "before",
+			Status:                   "active",
+			RouteStrategyID:          "route_1",
+			RouteStrategyName:        "默认策略",
+			RouteStrategyMode:        "normal",
+			RouteStrategyStatus:      "active",
+			QuotaLimitsJSON:          ptrSecretText(`{"daily":{"enabled":true,"limit":12}}`),
+			AvailabilityScheduleJSON: nil,
+		},
+		refreshFound: true,
+		updateFound:  true,
+		usageErr:     usageErr,
+		events:       &events,
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		ListReader:       store,
+		SecretStore:      store,
+		SecretTransactor: store,
+		Invalidator:      &managementAPIKeyInvalidatorStub{events: &events},
+		Secret:           "management-api-key-secret-test",
+		NewSecret:        func() (string, error) { return "sk-refreshed-secret-0123456789", nil },
+	})
+
+	result, err := service.Refresh(context.Background(), SecretInput{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+		APIKeyID:             "key_1",
+		SystemAccountID:      "sys_owner",
+	})
+	if err != nil {
+		t.Fatalf("Refresh() error = %v, want nil after committed usage enrichment failure", err)
+	}
+	if !result.Committed ||
+		result.Key != "sk-refreshed-secret-0123456789" ||
+		result.ID != "key_1" ||
+		result.Name != "生产 Key" ||
+		result.KeyPrefix != "sk-refre" ||
+		result.KeySuffix != "23456789" ||
+		result.Status != "active" ||
+		result.RouteStrategyID != "route_1" ||
+		result.OwnerSystemAccountID != "sys_owner" ||
+		result.SystemAccountID != "sys_owner" ||
+		result.SystemAccountName != "所有者" ||
+		result.PreviousKeyMarker != "sk-before...before" ||
+		result.KeyMarker != "sk-refre...23456789" ||
+		result.QuotaLimits.Daily == nil ||
+		result.QuotaLimits.Daily.Limit != 12 {
+		t.Fatalf("Refresh() committed result = %+v", result)
+	}
+	if result.Usage != (port.ManagementAccountUsageSummary{}) {
+		t.Fatalf("Refresh() usage = %+v, want zero-value best-effort summary", result.Usage)
+	}
+	if store.commits != 1 || store.usageCalls != 1 {
+		t.Fatalf("commits=%d usageCalls=%d", store.commits, store.usageCalls)
+	}
+	if got, want := events, []string{"tx_begin", "lock", "update", "tx_commit", "validation", "lookup", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+func TestServiceRefreshKeepsCommittedSecretWhenUsageSummaryTimesOut(t *testing.T) {
+	usageTimeout := 10 * time.Millisecond
+	store := &managementAPIKeySecretStoreStub{
+		refreshRow: port.ManagementAPIKeyListRow{
+			ID:                  "key_1",
+			SystemAccountID:     "sys_owner",
+			SystemAccountName:   "所有者",
+			Name:                "生产 Key",
+			KeyPrefix:           "sk-before",
+			KeySuffix:           "before",
+			Status:              "active",
+			RouteStrategyID:     "route_1",
+			RouteStrategyName:   "默认策略",
+			RouteStrategyMode:   "normal",
+			RouteStrategyStatus: "active",
+		},
+		refreshFound:            true,
+		updateFound:             true,
+		respectUsageContext:     true,
+		waitForUsageContextDone: true,
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		ListReader:          store,
+		SecretStore:         store,
+		SecretTransactor:    store,
+		Invalidator:         &managementAPIKeyInvalidatorStub{},
+		Secret:              "management-api-key-secret-test",
+		NewSecret:           func() (string, error) { return "sk-refreshed-secret-0123456789", nil },
+		RefreshUsageTimeout: usageTimeout,
+	})
+
+	startedAt := time.Now()
+	result, err := service.Refresh(context.Background(), SecretInput{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+		APIKeyID:             "key_1",
+		SystemAccountID:      "sys_owner",
+	})
+	if err != nil {
+		t.Fatalf("Refresh() error = %v, want nil after committed usage timeout", err)
+	}
+	if !result.Committed ||
+		result.Key != "sk-refreshed-secret-0123456789" ||
+		result.ID != "key_1" ||
+		result.Name != "生产 Key" ||
+		result.KeyPrefix != "sk-refre" ||
+		result.KeySuffix != "23456789" ||
+		result.Status != "active" ||
+		result.RouteStrategyID != "route_1" ||
+		result.OwnerSystemAccountID != "sys_owner" ||
+		result.SystemAccountID != "sys_owner" ||
+		result.SystemAccountName != "所有者" {
+		t.Fatalf("Refresh() committed result = %+v", result)
+	}
+	if result.Usage != (port.ManagementAccountUsageSummary{}) {
+		t.Fatalf("Refresh() usage = %+v, want zero-value best-effort summary", result.Usage)
+	}
+	if store.commits != 1 ||
+		store.usageCalls != 1 ||
+		!errors.Is(store.usageContextErr, context.DeadlineExceeded) ||
+		time.Since(startedAt) >= time.Second {
+		t.Fatalf(
+			"commits=%d usageCalls=%d usageContextErr=%v elapsed=%s",
+			store.commits,
+			store.usageCalls,
+			store.usageContextErr,
+			time.Since(startedAt),
+		)
+	}
+}
+
 func TestServiceRefreshUsesIndependentDetachedUsageContextAfterInvalidationDeadline(t *testing.T) {
+	invalidationTimeout := 10 * time.Millisecond
+	usageTimeout := 20 * time.Millisecond
 	events := []string{}
 	ctx, cancel := context.WithCancel(context.Background())
 	store := &managementAPIKeySecretStoreStub{
@@ -304,12 +447,14 @@ func TestServiceRefreshUsesIndependentDetachedUsageContextAfterInvalidationDeadl
 		waitForQuotaContextDone: true,
 	}
 	service := NewServiceWithOptions(ServiceOptions{
-		ListReader:       store,
-		SecretStore:      store,
-		SecretTransactor: store,
-		Invalidator:      invalidator,
-		Secret:           "management-api-key-secret-test",
-		NewSecret:        func() (string, error) { return "sk-refreshed-secret-0123456789", nil },
+		ListReader:                    store,
+		SecretStore:                   store,
+		SecretTransactor:              store,
+		Invalidator:                   invalidator,
+		Secret:                        "management-api-key-secret-test",
+		NewSecret:                     func() (string, error) { return "sk-refreshed-secret-0123456789", nil },
+		ValidationInvalidationTimeout: invalidationTimeout,
+		RefreshUsageTimeout:           usageTimeout,
 	})
 
 	startedAt := time.Now()
@@ -334,8 +479,8 @@ func TestServiceRefreshUsesIndependentDetachedUsageContextAfterInvalidationDeadl
 	}
 	if !errors.Is(invalidator.quotaContext.err, context.DeadlineExceeded) ||
 		!invalidator.quotaContext.hasDeadline ||
-		invalidator.quotaContext.deadline.Before(startedAt.Add(apiKeyValidationInvalidationTimeout-time.Second)) ||
-		invalidator.quotaContext.deadline.After(startedAt.Add(apiKeyValidationInvalidationTimeout+time.Second)) {
+		!invalidator.quotaContext.deadline.After(startedAt) ||
+		invalidator.quotaContext.deadline.After(startedAt.Add(invalidationTimeout+250*time.Millisecond)) {
 		t.Fatalf("quota invalidation context = %+v, startedAt=%s", invalidator.quotaContext, startedAt)
 	}
 	for name, snapshot := range map[string]managementAPIKeyUpdateContextSnapshot{
@@ -360,6 +505,21 @@ func TestServiceRefreshUsesIndependentDetachedUsageContextAfterInvalidationDeadl
 			store.usageContextDeadline,
 			store.usageContextHasDeadline,
 			invalidator.quotaContext.deadline,
+		)
+	}
+}
+
+func TestNewServiceWithOptionsDefaultsRefreshTimeouts(t *testing.T) {
+	service := NewServiceWithOptions(ServiceOptions{
+		Invalidator: &managementAPIKeyInvalidatorStub{},
+	})
+	validationInvalidationTimeout, refreshUsageTimeout := apiKeyRefreshTimeouts(service.invalidator)
+	if validationInvalidationTimeout != 5*time.Second ||
+		refreshUsageTimeout != 5*time.Second {
+		t.Fatalf(
+			"validation invalidation timeout=%s refresh usage timeout=%s",
+			validationInvalidationTimeout,
+			refreshUsageTimeout,
 		)
 	}
 }
@@ -583,6 +743,7 @@ type managementAPIKeySecretStoreStub struct {
 	afterCommit  func()
 
 	respectUsageContext     bool
+	waitForUsageContextDone bool
 	usageContextErr         error
 	usageContextDeadline    time.Time
 	usageContextHasDeadline bool
@@ -602,6 +763,9 @@ func (s *managementAPIKeySecretStoreStub) ListManagementAPIKeyUsageTotals(
 	s.usageCalls++
 	s.usageScopes = append([]port.ManagementAPIKeyUsageScope(nil), scopes...)
 	s.record("usage")
+	if s.waitForUsageContextDone {
+		<-ctx.Done()
+	}
 	s.usageContextErr = ctx.Err()
 	s.usageContextDeadline, s.usageContextHasDeadline = ctx.Deadline()
 	if s.respectUsageContext {
