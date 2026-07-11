@@ -674,6 +674,38 @@ type ManagementAPIKeyListPage struct {
 	HasMore bool
 }
 
+var (
+	ErrManagementAPIKeyRouteStrategyNotFound = errors.New("management API Key route strategy not found")
+	ErrManagementAPIKeyRouteStrategyDisabled = errors.New("management API Key route strategy disabled")
+	ErrManagementAPIKeyNameExists            = errors.New("management API Key name exists")
+	ErrManagementAPIKeyHashExists            = errors.New("management API Key hash exists")
+)
+
+type ManagementAPIKeyCreateInput struct {
+	ID                              string
+	SystemAccountID                 string
+	RouteStrategyID                 string
+	Name                            string
+	Description                     *string
+	KeyHash                         string
+	KeyPrefix                       string
+	KeySuffix                       string
+	KeySecretEncrypted              string
+	Status                          string
+	IsDefault                       bool
+	ExpiresAt                       *time.Time
+	QuotaLimitsJSON                 *string
+	HourlyQuotaHours                *int
+	AvailabilityScheduleJSON        *string
+	AvailabilityScheduleNextCheckAt *time.Time
+	CreatedAt                       time.Time
+	UpdatedAt                       time.Time
+}
+
+type ManagementAPIKeyCreator interface {
+	CreateManagementAPIKey(ctx context.Context, input ManagementAPIKeyCreateInput) (ManagementAPIKeyListRow, error)
+}
+
 type ManagementAPIKeyUsageScope struct {
 	SystemAccountID string
 	APIKeyID        string

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"juhe-ai/backend-go/internal/apikeysecret"
 	"juhe-ai/backend-go/internal/secretcrypto"
 	"juhe-ai/backend-go/internal/store/port"
@@ -35,13 +37,16 @@ type APIKeyGatewayCacheInvalidator interface {
 }
 
 type ServiceOptions struct {
-	ListReader       port.ManagementAPIKeyListReader
-	SecretStore      port.ManagementAPIKeySecretStore
-	SecretTransactor port.ManagementAPIKeySecretTransactor
-	Invalidator      APIKeyGatewayCacheInvalidator
-	Secret           string
-	Now              func() time.Time
-	NewSecret        func() (string, error)
+	ListReader               port.ManagementAPIKeyListReader
+	Creator                  port.ManagementAPIKeyCreator
+	UsageStatsTimezoneReader port.ManagementUsageStatsTimezoneReader
+	SecretStore              port.ManagementAPIKeySecretStore
+	SecretTransactor         port.ManagementAPIKeySecretTransactor
+	Invalidator              APIKeyGatewayCacheInvalidator
+	Secret                   string
+	Now                      func() time.Time
+	NewID                    func(prefix string) string
+	NewSecret                func() (string, error)
 }
 
 type SecretInput struct {
@@ -73,19 +78,28 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	if now == nil {
 		now = time.Now
 	}
+	newID := opts.NewID
+	if newID == nil {
+		newID = func(prefix string) string {
+			return prefix + "_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
 	newSecret := opts.NewSecret
 	if newSecret == nil {
 		newSecret = apikeysecret.Generate
 	}
 	codec := secretcrypto.NewJSONCodec(opts.Secret)
 	return &Service{
-		store:            opts.ListReader,
-		secretStore:      opts.SecretStore,
-		secretTransactor: opts.SecretTransactor,
-		invalidator:      opts.Invalidator,
-		codec:            codec,
-		now:              now,
-		newSecret:        newSecret,
+		store:                    opts.ListReader,
+		creator:                  opts.Creator,
+		usageStatsTimezoneReader: opts.UsageStatsTimezoneReader,
+		secretStore:              opts.SecretStore,
+		secretTransactor:         opts.SecretTransactor,
+		invalidator:              opts.Invalidator,
+		codec:                    codec,
+		now:                      now,
+		newID:                    newID,
+		newSecret:                newSecret,
 	}
 }
 
