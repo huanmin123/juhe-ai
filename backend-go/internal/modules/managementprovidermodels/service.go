@@ -435,6 +435,9 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	if err != nil {
 		return ModelCatalogItem{}, err
 	}
+	if scope == "global" && !isAdminRole(input.ActorRole) {
+		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以创建全局模型"}
+	}
 	ownerSystemAccountID := ""
 	if scope == "personal" {
 		if isAdminRole(input.ActorRole) {
@@ -446,9 +449,6 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	saveInput, err := customModelSaveInputFromCreate(provider.Code, scope, ownerSystemAccountID, actorSystemAccountID, input.Fields)
 	if err != nil {
 		return ModelCatalogItem{}, err
-	}
-	if scope == "global" && !isAdminRole(input.ActorRole) {
-		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以创建全局模型"}
 	}
 	if scope == "personal" && ownerSystemAccountID == "" {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "请选择模型归属的系统账户"}
