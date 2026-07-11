@@ -71,6 +71,7 @@ async function runCooldownAccountRetestQueueItem(
   }
 
   const groupId = account.boundGroupId
+  const diagnosticStartedAt = Date.now()
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'full',
     groupId,
@@ -82,7 +83,15 @@ async function runCooldownAccountRetestQueueItem(
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0
     }
-  })
+  }).catch((error: unknown) => ({
+    success: false as const,
+    message: error instanceof Error ? error.message : '后台冷却复测执行失败',
+    durationMs: Date.now() - diagnosticStartedAt,
+    accountStatus: account.status,
+    accountFailureEligible: false,
+    statusCode: undefined,
+    errorCode: undefined
+  }))
   if (result.success) {
     const restored = await requestBackgroundWorkerDbService({
       type: 'clear_account_failure_state',
@@ -102,32 +111,16 @@ async function runCooldownAccountRetestQueueItem(
     return true
   }
 
-  if (result.accountFailureEligible === false) {
-    logger.warn({
-      event: 'background_cooldown_account_retest_ineligible_failure_discarded',
-      accountId: account.id,
-      accountName: account.name,
-      accountStatus: account.status,
-      attemptIndex: context.attemptIndex,
-      retryNumber: context.retryNumber,
-      statusCode: result.statusCode,
-      errorCode: result.errorCode,
-      durationMs: result.durationMs,
-      message: result.message
-    }, '冷却账户复测未通过，但失败原因不属于账号失败，已跳过失败预算累计')
-    return true
-  }
-
   const failure = await requestBackgroundWorkerDbService({
     type: 'record_cooldown_account_retest_failure',
     accountId: account.id,
     input: {
-    statusCode: result.statusCode,
-    errorCode: result.errorCode,
-    errorMessage: result.message,
-    maxPauseMinutes: item.maxPauseMinutes,
-    maxRecoveryHours: item.maxRecoveryHours,
-    longTermIntervalHours: item.longTermIntervalHours
+      statusCode: result.statusCode,
+      errorCode: result.errorCode,
+      errorMessage: result.message,
+      maxPauseMinutes: item.maxPauseMinutes,
+      maxRecoveryHours: item.maxRecoveryHours,
+      longTermIntervalHours: item.longTermIntervalHours
     }
   })
 
@@ -140,6 +133,7 @@ async function runCooldownAccountRetestQueueItem(
     retryNumber: context.retryNumber,
     statusCode: result.statusCode,
     errorCode: result.errorCode,
+    accountFailureEligible: result.accountFailureEligible,
     durationMs: result.durationMs,
     retestFailureCount: failure?.failureCount ?? 0,
     retestAction: failure?.action,

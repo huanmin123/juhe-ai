@@ -46,6 +46,7 @@ const huygensReadOperationTypes = [
   'list_openai_compatible_vector_store_file_chunks',
   'list_provider_model_catalog',
   'check_api_key_quota',
+  'read_api_key_quota_costs',
   'check_authorization_quota',
   'check_authorization_quota_batch',
   'find_openai_oauth_account_for_refresh',

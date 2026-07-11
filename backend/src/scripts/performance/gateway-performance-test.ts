@@ -180,6 +180,8 @@ const [
   { captureGatewayRawBody },
   { requestContextMiddleware },
   databaseModule,
+  accountHealthChecks,
+  sqliteReadWorkerPool,
   mockdataFixtures,
   gatewayCache,
   usageRecordQueue,
@@ -191,6 +193,8 @@ const [
   import('../../modules/gateway/request/body-middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
+  import('../../storage/account-health-check.repository.js'),
+  import('../../storage/sqlite-read-worker-pool.js'),
   import('../maintenance/mockdata/fixtures.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
@@ -257,8 +261,9 @@ async function main(): Promise<void> {
     await auditLogQueue.flushAllAuditLogQueueAsync()
     await closeServer(appServer)
     await closeServer(upstreamServer)
+    await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
     closeDatabases()
-    rmSync(tempRoot, { recursive: true, force: true })
+    await removeTempRootWithRetry(tempRoot)
   }
 }
 
@@ -292,6 +297,16 @@ function seedGatewayData(config: PerfConfig, upstreamBaseUrl: string): SeededGat
     accountConcurrencyLimit: config.accountConcurrencyLimit
   })
   if (!fixture.apiKey) throw new Error('Mockdata 压测夹具未生成本地网关 Key')
+  for (const account of fixture.accounts) {
+    if (!accountHealthChecks.recordAccountHealthCheckSuccess(account.id, {
+      intervalHours: 24,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    })) {
+      throw new Error(`压测账户激活失败：${account.id}`)
+    }
+  }
   return {
     apiKey: fixture.apiKey.key,
     apiKeyId: fixture.apiKey.id,
@@ -1177,6 +1192,7 @@ async function closeServer(server: http.Server | undefined): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
     server.close((error) => error ? rejectPromise(error) : resolvePromise())
     server.closeIdleConnections?.()
+    server.closeAllConnections?.()
   })
 }
 
@@ -1191,8 +1207,24 @@ function closeDatabases(): void {
   }
 }
 
-main().catch((error) => {
+async function removeTempRootWithRetry(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message) || attempt === 7) {
+        throw error
+      }
+      await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 100 + attempt * 100))
+    }
+  }
+}
+
+main().then(() => {
+  process.exit(0)
+}).catch((error) => {
   console.error('\njuhe-ai 性能综合测试失败')
   console.error(error instanceof Error ? error.stack ?? error.message : error)
-  process.exitCode = 1
+  process.exit(1)
 })

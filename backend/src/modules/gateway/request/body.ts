@@ -45,6 +45,7 @@ export interface GatewayRequestBodyState {
   model?: string
   stream?: boolean
   serviceTier?: 'default' | 'priority' | 'flex'
+  maxOutputTokens?: number
   imageGeneration?: boolean
   imageGenerationForced?: boolean
 }
@@ -91,6 +92,7 @@ export function createGatewayRequestBodyState(input: {
   model?: string
   stream?: boolean
   serviceTier?: 'default' | 'priority' | 'flex'
+  maxOutputTokens?: number
   imageGeneration?: boolean
   imageGenerationForced?: boolean
 }): GatewayRequestBodyState {
@@ -112,11 +114,19 @@ export function createGatewayRequestBodyState(input: {
         ? parsedBody.service_tier
         : 'default'
     ),
+    maxOutputTokens: input.maxOutputTokens ?? parsedMaxOutputTokens(parsedBody),
     imageGeneration: input.imageGeneration ?? (
       imageInspection ? imageInspection.imageToolCount > 0 || imageInspection.forcedImageGeneration : false
     ),
     imageGenerationForced: input.imageGenerationForced ?? imageInspection?.forcedImageGeneration ?? false
   }
+}
+
+function parsedMaxOutputTokens(body: Record<string, unknown> | undefined): number | undefined {
+  if (!body) return undefined
+  const values = [body.max_output_tokens, body.max_tokens]
+    .filter((value): value is number => Number.isSafeInteger(value) && Number(value) >= 0)
+  return values.length > 0 ? Math.max(...values) : undefined
 }
 
 export function getGatewayRequestBodyState(req: Request): GatewayRequestBodyState | undefined {

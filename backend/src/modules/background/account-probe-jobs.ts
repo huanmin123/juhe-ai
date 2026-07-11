@@ -1,4 +1,5 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
+import type { CooldownAccountRetestCursor } from '../../storage/account-cooldown-retest.repository.js'
 import { listAccountApiKeyRuntimeStatesDueForProbeAsync } from '../../storage/account-api-key-runtime-state.repository.js'
 import { listNormalRouteLatencyProbeCandidatesAsync } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
@@ -35,6 +36,7 @@ const normalRouteSpeedFirstRecoveryProbeBatchSize = 10
 const maxOpsExternalIoConcurrency = 10
 const maxOpsFullDiagnosticConcurrency = 3
 const backgroundProbeDbServiceTimeoutMs = 10_000
+let cooldownAccountRetestCursor: CooldownAccountRetestCursor | undefined
 
 type SettingsNumberReader = (key: string, min: number, max: number) => number
 
@@ -96,13 +98,22 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
   const batchSize = deps.settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
   const queueConcurrency = boundedOpsQueueConcurrency(batchSize)
   setCooldownAccountRetestQueueConcurrency(queueConcurrency)
+  const queueBeforeScan = getCooldownAccountRetestQueueSnapshot()
+  const availableQueueSlots = cooldownAccountRetestQueueAvailableSlots(batchSize, queueBeforeScan)
+  if (availableQueueSlots <= 0) return
   const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   const longTermIntervalHours = deps.settingsNumber('cooldownAccountRetestLongTermIntervalHours', 1, 24 * 30)
-  const candidates = await requestBackgroundWorkerDbService({
+  const page = await requestBackgroundWorkerDbService({
     type: 'list_accounts_due_for_cooldown_retest',
-    limit: batchSize
-  }, backgroundProbeDbServiceTimeoutMs) ?? []
+    limit: availableQueueSlots,
+    cursor: cooldownAccountRetestCursor
+  }, backgroundProbeDbServiceTimeoutMs)
+  const candidates = page?.accounts ?? []
+  cooldownAccountRetestCursor = page?.nextCursor
+  if (!page?.nextCursor) {
+    cooldownAccountRetestCursor = undefined
+  }
   const startedAtMs = Date.now()
   let enqueuedCount = 0
   let skippedQueuedCount = 0
@@ -127,6 +138,15 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
       elapsedMs: Date.now() - startedAtMs
     }, '冷却账户复测候选已加入异步队列')
   }
+}
+
+export function cooldownAccountRetestQueueAvailableSlots(
+  batchSize: number,
+  queue: { pendingCount: number; runningCount: number }
+): number {
+  const limit = Math.max(1, Math.trunc(batchSize))
+  const occupied = Math.max(0, Math.trunc(queue.pendingCount)) + Math.max(0, Math.trunc(queue.runningCount))
+  return Math.max(0, limit - occupied)
 }
 
 export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<void> {

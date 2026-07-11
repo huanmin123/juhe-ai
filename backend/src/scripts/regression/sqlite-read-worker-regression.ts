@@ -380,6 +380,10 @@ try {
     apiKey: gatewayApiKeyForQuota
   }), { allowed: true }, 'DB service API Key quota 精确读应经 read worker 返回允许结果')
   assert.deepEqual(await dbServiceHandlers.handleDbServiceOperation({
+    type: 'read_api_key_quota_costs',
+    apiKey: gatewayApiKeyForQuota
+  }), { hourly: 0, daily: 0, weekly: 0, monthly: 0, total: 0 }, 'DB service API Key 在途预占缺少快照时应经 read worker 返回精确成本')
+  assert.deepEqual(await dbServiceHandlers.handleDbServiceOperation({
     type: 'check_authorization_quota',
     groupAuthorizationId: undefined,
     accountAuthorizationId: undefined

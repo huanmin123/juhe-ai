@@ -211,10 +211,14 @@ export {
   findAccountForCooldownRetestAsync,
   listAccountsDueForCooldownRetest,
   listAccountsDueForCooldownRetestAsync,
+  listAccountsDueForCooldownRetestPage,
+  listAccountsDueForCooldownRetestPageAsync,
   recordCooldownAccountRetestFailure,
   recordCooldownAccountRetestFailureAsync,
+  type CooldownAccountRetestCursor,
   type CooldownAccountRetestFailureInput,
-  type CooldownAccountRetestFailureResult
+  type CooldownAccountRetestFailureResult,
+  type CooldownAccountRetestPage
 } from './account-cooldown-retest.repository.js'
 export {
   findAccountForHealthCheck,

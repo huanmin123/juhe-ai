@@ -2,6 +2,7 @@ export interface GatewayJsonBodyMetadata {
   model?: string
   stream?: boolean
   serviceTier?: 'default' | 'priority' | 'flex'
+  maxOutputTokens?: number
   imageGeneration?: boolean
   imageGenerationForced?: boolean
   invalidJson?: boolean
@@ -88,6 +89,18 @@ export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBody
       if (booleanValue) {
         metadata.stream = booleanValue.value
         index = booleanValue.nextIndex
+      } else {
+        const skipped = skipJsonValue(rawBody, index)
+        metadata.invalidJson = metadata.invalidJson || !skipped.ok
+        index = skipped.nextIndex
+      }
+    } else if (key.value === 'max_output_tokens' || key.value === 'max_tokens') {
+      const numberValue = readJsonNonNegativeInteger(rawBody, index)
+      if (numberValue) {
+        metadata.maxOutputTokens = metadata.maxOutputTokens === undefined
+          ? numberValue.value
+          : Math.max(metadata.maxOutputTokens, numberValue.value)
+        index = numberValue.nextIndex
       } else {
         const skipped = skipJsonValue(rawBody, index)
         metadata.invalidJson = metadata.invalidJson || !skipped.ok
@@ -338,6 +351,16 @@ function readJsonBoolean(rawBody: Buffer, index: number): { value: boolean; next
     return { value: false, nextIndex: index + 5 }
   }
   return undefined
+}
+
+function readJsonNonNegativeInteger(rawBody: Buffer, index: number): { value: number; nextIndex: number } | undefined {
+  const result = skipJsonValue(rawBody, index)
+  if (!result.ok) return undefined
+  const text = rawBody.toString('utf8', index, result.nextIndex).trim()
+  const value = Number(text)
+  return Number.isSafeInteger(value) && value >= 0
+    ? { value, nextIndex: result.nextIndex }
+    : undefined
 }
 
 function skipJsonValue(rawBody: Buffer, index: number): JsonReadResult {
