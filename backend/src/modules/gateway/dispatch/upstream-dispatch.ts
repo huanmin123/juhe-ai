@@ -62,6 +62,7 @@ import {
   gatewayAccountConcurrencyLimitsByAccountId
 } from './account-concurrency-identity.js'
 import type { GatewayAccountModelPriority } from './model-filter.js'
+import type { SpeedFirstCutoverReservation } from '../runtime/speed-first-cutover-reservation.service.js'
 
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
@@ -129,7 +130,8 @@ export async function fetchFirstAvailableUpstream(
   accountStateMutationEnabled = true,
   requestClientCompatibility?: ClientCompatibilityCapability,
   modelPriority?: GatewayAccountModelPriority,
-  sameAccountRetryBudget?: SameAccountRetryBudget
+  sameAccountRetryBudget?: SameAccountRetryBudget,
+  preAcquiredConcurrency?: SpeedFirstCutoverReservation
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -216,18 +218,28 @@ export async function fetchFirstAvailableUpstream(
       }
       const concurrencyAccountId = gatewayAccountConcurrencyAccountId(originalAccount)
       let concurrencyAcquire: AccountConcurrencyAcquireResult
-      try {
-        concurrencyAcquire = await acquireAccountConcurrencyWithShortRetry(
-          concurrencyAccountId,
-          originalAccount.concurrencyLimit,
-          concurrencyRetryWaitBudgetMs,
-          signal,
-          requestLane,
-          groupSchedulingPolicy
-        )
-      } catch (error) {
-        halfOpenLease?.release()
-        throw error
+      const reservedSlot = preAcquiredConcurrency?.takeForAccount(originalAccount)
+      if (reservedSlot) {
+        concurrencyAcquire = {
+          slot: reservedSlot,
+          retryCount: 0,
+          waitedMs: 0,
+          remainingWaitBudgetMs: concurrencyRetryWaitBudgetMs
+        }
+      } else {
+        try {
+          concurrencyAcquire = await acquireAccountConcurrencyWithShortRetry(
+            concurrencyAccountId,
+            originalAccount.concurrencyLimit,
+            concurrencyRetryWaitBudgetMs,
+            signal,
+            requestLane,
+            groupSchedulingPolicy
+          )
+        } catch (error) {
+          halfOpenLease?.release()
+          throw error
+        }
       }
       concurrencyRetryWaitBudgetMs = concurrencyAcquire.remainingWaitBudgetMs
       const concurrencySlot = concurrencyAcquire.slot
