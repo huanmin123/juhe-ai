@@ -221,6 +221,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAPIKeyCreateHandler:                   managementHandlers.MyAPIKeyCreateHandler,
 		ManagementAPIKeyUpdateHandler:                     managementHandlers.APIKeyUpdateHandler,
 		ManagementMyAPIKeyUpdateHandler:                   managementHandlers.MyAPIKeyUpdateHandler,
+		ManagementAPIKeyDeleteHandler:                     managementHandlers.APIKeyDeleteHandler,
+		ManagementMyAPIKeyDeleteHandler:                   managementHandlers.MyAPIKeyDeleteHandler,
 		ManagementGroupListHandler:                        managementHandlers.GroupListHandler,
 		ManagementMyGroupListHandler:                      managementHandlers.MyGroupListHandler,
 		ManagementGroupDetailHandler:                      managementHandlers.GroupDetailHandler,
@@ -359,6 +361,8 @@ type managementAPIHandlers struct {
 	MyAPIKeyCreateHandler                   http.Handler
 	APIKeyUpdateHandler                     http.Handler
 	MyAPIKeyUpdateHandler                   http.Handler
+	APIKeyDeleteHandler                     http.Handler
+	MyAPIKeyDeleteHandler                   http.Handler
 	GroupListHandler                        http.Handler
 	MyGroupListHandler                      http.Handler
 	GroupDetailHandler                      http.Handler
@@ -449,6 +453,7 @@ func newManagementAPIHandler(
 		ListReader:               store,
 		Creator:                  store,
 		Updater:                  store,
+		Deleter:                  store,
 		UsageStatsTimezoneReader: store,
 		SecretStore:              store,
 		SecretTransactor:         store,
@@ -576,6 +581,8 @@ func newManagementAPIHandler(
 		MyAPIKeyCreateHandler:                   httpapi.NewManagementMyAPIKeyCreateHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		APIKeyUpdateHandler:                     httpapi.NewManagementAPIKeyUpdateHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		MyAPIKeyUpdateHandler:                   httpapi.NewManagementMyAPIKeyUpdateHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		APIKeyDeleteHandler:                     httpapi.NewManagementAPIKeyDeleteHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		MyAPIKeyDeleteHandler:                   httpapi.NewManagementMyAPIKeyDeleteHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		GroupListHandler:                        httpapi.NewManagementGroupListHandler(groupService),
 		MyGroupListHandler:                      httpapi.NewManagementMyGroupListHandler(groupService),
 		GroupDetailHandler:                      httpapi.NewManagementGroupDetailHandler(groupService),

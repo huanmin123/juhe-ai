@@ -132,6 +132,8 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.MyAPIKeyCreateHandler != nil ||
 		handlers.APIKeyUpdateHandler != nil ||
 		handlers.MyAPIKeyUpdateHandler != nil ||
+		handlers.APIKeyDeleteHandler != nil ||
+		handlers.MyAPIKeyDeleteHandler != nil ||
 		handlers.GroupListHandler != nil ||
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
@@ -214,6 +216,8 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.MyAPIKeyCreateHandler != nil ||
 		handlers.APIKeyUpdateHandler != nil ||
 		handlers.MyAPIKeyUpdateHandler != nil ||
+		handlers.APIKeyDeleteHandler != nil ||
+		handlers.MyAPIKeyDeleteHandler != nil ||
 		handlers.GroupListHandler != nil ||
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
@@ -301,6 +305,8 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.MyAPIKeyCreateHandler == nil ||
 		handlers.APIKeyUpdateHandler == nil ||
 		handlers.MyAPIKeyUpdateHandler == nil ||
+		handlers.APIKeyDeleteHandler == nil ||
+		handlers.MyAPIKeyDeleteHandler == nil ||
 		handlers.GroupListHandler == nil ||
 		handlers.MyGroupListHandler == nil ||
 		handlers.GroupCreateHandler == nil ||
@@ -342,12 +348,17 @@ func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyMutationDependencies(t *t
 	for _, required := range []string{
 		"Creator:                  store",
 		"Updater:                  store",
+		"Deleter:                  store",
 		"UsageStatsTimezoneReader: store",
 		"Logger:                   logger",
 		"APIKeyCreateHandler:",
 		"MyAPIKeyCreateHandler:",
 		"APIKeyUpdateHandler:",
 		"MyAPIKeyUpdateHandler:",
+		"APIKeyDeleteHandler:",
+		"MyAPIKeyDeleteHandler:",
+		"ManagementAPIKeyDeleteHandler:",
+		"ManagementMyAPIKeyDeleteHandler:",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("server.go missing explicit API Key mutation wiring %q", required)

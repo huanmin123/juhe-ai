@@ -100,6 +100,8 @@ type RouterOptions struct {
 	ManagementMyAPIKeyCreateHandler                   http.Handler
 	ManagementAPIKeyUpdateHandler                     http.Handler
 	ManagementMyAPIKeyUpdateHandler                   http.Handler
+	ManagementAPIKeyDeleteHandler                     http.Handler
+	ManagementMyAPIKeyDeleteHandler                   http.Handler
 	ManagementGroupListHandler                        http.Handler
 	ManagementMyGroupListHandler                      http.Handler
 	ManagementGroupDetailHandler                      http.Handler
@@ -286,6 +288,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAPIKeyCreateHandler == nil &&
 				opts.ManagementAPIKeyUpdateHandler == nil &&
 				opts.ManagementMyAPIKeyUpdateHandler == nil &&
+				opts.ManagementAPIKeyDeleteHandler == nil &&
+				opts.ManagementMyAPIKeyDeleteHandler == nil &&
 				opts.ManagementGroupListHandler == nil &&
 				opts.ManagementMyGroupListHandler == nil &&
 				opts.ManagementGroupDetailHandler == nil &&
@@ -577,6 +581,17 @@ func NewRouter(opts RouterOptions) http.Handler {
 					managementAPIWriteRateLimitMiddleware,
 				).Patch("/my-api-keys/{id}", opts.ManagementMyAPIKeyUpdateHandler.ServeHTTP)
 			}
+			if opts.ManagementAPIKeyDeleteHandler != nil {
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementAPIKeyAdminRoleMiddleware,
+				).Delete("/api-keys/{id}", opts.ManagementAPIKeyDeleteHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAPIKeyDeleteHandler != nil {
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+				).Delete("/my-api-keys/{id}", opts.ManagementMyAPIKeyDeleteHandler.ServeHTTP)
+			}
 			if opts.ManagementGroupListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/groups", opts.ManagementGroupListHandler.ServeHTTP)
 			}
@@ -798,6 +813,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAPIKeyCreateHandler != nil ||
 		opts.ManagementAPIKeyUpdateHandler != nil ||
 		opts.ManagementMyAPIKeyUpdateHandler != nil ||
+		opts.ManagementAPIKeyDeleteHandler != nil ||
+		opts.ManagementMyAPIKeyDeleteHandler != nil ||
 		opts.ManagementGroupListHandler != nil ||
 		opts.ManagementMyGroupListHandler != nil ||
 		opts.ManagementGroupDetailHandler != nil ||
@@ -843,6 +860,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAPIKeyCreateHandler != nil ||
 		opts.ManagementAPIKeyUpdateHandler != nil ||
 		opts.ManagementMyAPIKeyUpdateHandler != nil ||
+		opts.ManagementAPIKeyDeleteHandler != nil ||
+		opts.ManagementMyAPIKeyDeleteHandler != nil ||
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||
 		opts.ManagementSystemTeamCreateHandler != nil ||
