@@ -14,19 +14,19 @@ import (
 
 const defaultSecret = "juhe-ai-go-development-secret"
 
-type JSONCodec struct {
+type jsonCodec struct {
 	key [32]byte
 }
 
-func NewJSONCodec(secret string) JSONCodec {
+func NewJSONCodec(secret string) *jsonCodec {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
 		secret = defaultSecret
 	}
-	return JSONCodec{key: sha256.Sum256([]byte(secret))}
+	return &jsonCodec{key: sha256.Sum256([]byte(secret))}
 }
 
-func (c JSONCodec) EncryptJSON(value map[string]any) (string, error) {
+func (c *jsonCodec) EncryptJSON(value map[string]any) (string, error) {
 	aead, err := c.aead()
 	if err != nil {
 		return "", err
@@ -46,7 +46,7 @@ func (c JSONCodec) EncryptJSON(value map[string]any) (string, error) {
 	return "v1:" + encode(nonce) + ":" + encode(tag) + ":" + encode(ciphertext), nil
 }
 
-func (c JSONCodec) DecryptJSON(value string) (map[string]any, error) {
+func (c *jsonCodec) DecryptJSON(value string) (map[string]any, error) {
 	parts := strings.Split(value, ":")
 	if len(parts) != 4 || parts[0] != "v1" || parts[1] == "" || parts[2] == "" || parts[3] == "" {
 		return nil, fmt.Errorf("unsupported encrypted credential format")
@@ -80,10 +80,13 @@ func (c JSONCodec) DecryptJSON(value string) (map[string]any, error) {
 	if err := json.Unmarshal(plain, &out); err != nil {
 		return nil, err
 	}
+	if out == nil {
+		return nil, fmt.Errorf("encrypted credential payload must be a JSON object")
+	}
 	return out, nil
 }
 
-func (c JSONCodec) aead() (cipher.AEAD, error) {
+func (c *jsonCodec) aead() (cipher.AEAD, error) {
 	block, err := aes.NewCipher(c.key[:])
 	if err != nil {
 		return nil, err
