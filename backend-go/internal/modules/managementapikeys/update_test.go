@@ -417,22 +417,38 @@ func TestServiceUpdateValidationFailureReturnsCommittedResultWithBoundedLiveCont
 		HasName:              true,
 		Name:                 "新名称",
 	})
-	if !errors.Is(err, validationErr) {
-		t.Fatalf("Update() error = %v, want %v", err, validationErr)
+	if !errors.Is(err, ErrAPIKeyUpdateValidationCacheInvalidation) {
+		t.Fatalf(
+			"Update() error = %v, want %v",
+			err,
+			ErrAPIKeyUpdateValidationCacheInvalidation,
+		)
+	}
+	if errors.Is(err, validationErr) {
+		t.Fatalf("Update() error leaked validation cause: %v", err)
+	}
+	if err.Error() != ErrAPIKeyUpdateValidationCacheInvalidation.Error() {
+		t.Fatalf(
+			"Update() error text = %q, want stable %q",
+			err.Error(),
+			ErrAPIKeyUpdateValidationCacheInvalidation.Error(),
+		)
 	}
 	if !result.Committed ||
 		result.Before.ID != "key_1" ||
 		result.After.Name != "新名称" ||
-		result.OwnerSystemAccountID != "sys_owner" {
+		result.OwnerSystemAccountID != "sys_owner" ||
+		result.Before.Usage.RequestCount != 9 ||
+		result.After.Usage.RequestCount != 9 {
 		t.Fatalf("result = %+v", result)
 	}
-	if got, want := events, []string{"update", "validation"}; !reflect.DeepEqual(got, want) {
+	if got, want := events, []string{"update", "usage", "validation"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
 	if invalidator.validationContextErr != nil ||
 		!invalidator.validationContextHasDeadline ||
 		invalidator.calls != 1 ||
-		store.usageCalls != 0 {
+		store.usageCalls != 1 {
 		t.Fatalf("invalidator=%+v usageCalls=%d", invalidator, store.usageCalls)
 	}
 }
@@ -469,13 +485,15 @@ func TestServiceUpdateRuntimeQuotaAreBestEffortAndUsageFailureIsCommitted(t *tes
 	})
 
 	t.Run("usage read failure returns committed result and internal error", func(t *testing.T) {
-		store := newManagementAPIKeyUpdateStoreStub(nil)
+		events := []string{}
+		store := newManagementAPIKeyUpdateStoreStub(&events)
 		usageErr := errors.New("usage summary unavailable")
 		store.usageErr = usageErr
+		invalidator := &managementAPIKeyInvalidatorStub{events: &events}
 		service := NewServiceWithOptions(ServiceOptions{
 			ListReader:  store,
 			Updater:     store,
-			Invalidator: &managementAPIKeyInvalidatorStub{},
+			Invalidator: invalidator,
 		})
 		result, err := service.Update(context.Background(), UpdateInput{
 			ActorSystemAccountID: "sys_admin",
@@ -488,6 +506,12 @@ func TestServiceUpdateRuntimeQuotaAreBestEffortAndUsageFailureIsCommitted(t *tes
 			result.Before.ID != "key_1" ||
 			result.After.Status != "disabled" {
 			t.Fatalf("result=%+v err=%v", result, err)
+		}
+		if got, want := events, []string{"update", "usage", "validation", "runtime", "quota"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("events = %v, want %v", got, want)
+		}
+		if invalidator.calls != 3 {
+			t.Fatalf("invalidator calls = %d, want 3", invalidator.calls)
 		}
 	})
 }

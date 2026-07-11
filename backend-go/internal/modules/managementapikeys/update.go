@@ -16,8 +16,9 @@ const (
 )
 
 var (
-	ErrAPIKeyUpdateInvalid      = errors.New("API Key 更新参数无效")
-	ErrAPIKeyDefaultRouteChange = errors.New("默认 API Key 不允许更换策略路由")
+	ErrAPIKeyUpdateInvalid                     = errors.New("API Key 更新参数无效")
+	ErrAPIKeyDefaultRouteChange                = errors.New("默认 API Key 不允许更换策略路由")
+	ErrAPIKeyUpdateValidationCacheInvalidation = errors.New("API Key 更新后校验缓存失效失败")
 )
 
 type apiKeyUpdateValidationError struct {
@@ -160,16 +161,31 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	}
 	result.Committed = true
 
+	usageRows, usageErr := s.store.ListManagementAPIKeyUsageTotals(
+		ctx,
+		[]port.ManagementAPIKeyUsageScope{{
+			SystemAccountID: stored.After.SystemAccountID,
+			APIKeyID:        stored.After.ID,
+		}},
+	)
+	if usageErr == nil {
+		for _, row := range usageRows {
+			if row.SystemAccountID == stored.After.SystemAccountID &&
+				row.APIKeyID == stored.After.ID {
+				result.Before.Usage = row.Usage
+				result.After.Usage = row.Usage
+				break
+			}
+		}
+	}
+
 	validationCtx, cancel := context.WithTimeout(
 		context.WithoutCancel(ctx),
 		apiKeyUpdateInvalidationTimeout,
 	)
 	defer cancel()
 	if err := s.invalidator.InvalidateAPIKeyValidationCache(validationCtx); err != nil {
-		return result, fmt.Errorf(
-			"invalidate management API Key validation cache after update: %w",
-			err,
-		)
+		return result, ErrAPIKeyUpdateValidationCacheInvalidation
 	}
 	_ = s.invalidator.InvalidateGatewayRuntime(ctx, apiKeyUpdatedReason)
 	_ = s.invalidator.InvalidateAPIKeyQuotaChanged(
@@ -178,23 +194,8 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 		apiKeyUpdatedReason,
 	)
 
-	usageRows, err := s.store.ListManagementAPIKeyUsageTotals(
-		ctx,
-		[]port.ManagementAPIKeyUsageScope{{
-			SystemAccountID: stored.After.SystemAccountID,
-			APIKeyID:        stored.After.ID,
-		}},
-	)
-	if err != nil {
-		return result, fmt.Errorf("load management API Key usage after update: %w", err)
-	}
-	for _, row := range usageRows {
-		if row.SystemAccountID == stored.After.SystemAccountID &&
-			row.APIKeyID == stored.After.ID {
-			result.Before.Usage = row.Usage
-			result.After.Usage = row.Usage
-			break
-		}
+	if usageErr != nil {
+		return result, fmt.Errorf("load management API Key usage after update: %w", usageErr)
 	}
 	return result, nil
 }
