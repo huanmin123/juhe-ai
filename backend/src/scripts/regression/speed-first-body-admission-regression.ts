@@ -57,6 +57,35 @@ try {
   assert.equal(sameKeyOverflow.acquired, false, '同一 Key 超过等待上限应拒绝')
   assert.equal(sameKeyOverflow.acquired === false ? sameKeyOverflow.reason : '', 'api_key_queue_full')
 
+  const abortController = new AbortController()
+  const abortPromise = acquireSpeedFirstBodyAdmission({
+    systemAccountId: 'sys_body_admission',
+    routeStrategyId: 'route_speed_first',
+    groupId: 'group_high_concurrency',
+    apiKeyId: 'key_three',
+    capacity: 1,
+    maxQueueWaitMs: 500,
+    maxQueueSize: 2,
+    perApiKeyQueueLimit: 1,
+    signal: abortController.signal
+  })
+  const queueFull = await acquireSpeedFirstBodyAdmission({
+    systemAccountId: 'sys_body_admission',
+    routeStrategyId: 'route_speed_first',
+    groupId: 'group_high_concurrency',
+    apiKeyId: 'key_four',
+    capacity: 1,
+    maxQueueWaitMs: 500,
+    maxQueueSize: 2,
+    perApiKeyQueueLimit: 1
+  })
+  assert.equal(queueFull.acquired, false, '超过分组总等待上限应拒绝')
+  assert.equal(queueFull.acquired === false ? queueFull.reason : '', 'queue_full')
+  abortController.abort()
+  const aborted = await abortPromise
+  assert.equal(aborted.acquired, false, '客户端断开应取消正文 admission 等待')
+  assert.equal(aborted.acquired === false ? aborted.reason : '', 'aborted')
+
   if (first.acquired) first.release()
   const second = await secondPromise
   assert.equal(second.acquired, true, '前一个 lease 释放后应按队列顺序唤醒')

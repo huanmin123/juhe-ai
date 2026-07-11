@@ -3,8 +3,10 @@ import assert from 'node:assert/strict'
 import {
   clearApiKeyInflightQuotaReservationsForTest,
   reserveApiKeyInflightCost,
-  apiKeyInflightQuotaSnapshot
+  apiKeyInflightQuotaSnapshot,
+  estimateGatewayRequestCostUsd
 } from '../../modules/gateway/quota/api-key-inflight-quota.service.js'
+import type { Request } from 'express'
 
 const limits = { total: { enabled: true as const, limit: 1 } }
 const zeroCosts = { hourly: 0, daily: 0, weekly: 0, monthly: 0, total: 0 }
@@ -50,6 +52,22 @@ try {
     releaseDelayMs: 0
   })
   assert.equal(nearLimit.allowed, false, '快照成本与当前请求预估合计达到额度时应拒绝')
+
+  const unpricedRequest = {
+    originalUrl: '/v1/responses',
+    path: '/v1/responses',
+    body: { model: 'model-without-price' },
+    gatewayRequestBody: {
+      rawBodyBytes: 1024,
+      contentType: 'application/json',
+      isJson: true,
+      jsonParseStatus: 'parsed',
+      jsonParseWarningBytes: 2048,
+      model: 'model-without-price',
+      maxOutputTokens: 8192
+    }
+  } as unknown as Request
+  assert.equal(estimateGatewayRequestCostUsd(unpricedRequest, 'gpt'), undefined, '无定价模型不能伪造在途成本')
 
   console.log('API Key 在途额度回归通过：并发原子预留、快照合并与延迟释放符合预期')
 } finally {
