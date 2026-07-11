@@ -24,6 +24,13 @@ const routeAssetLoadErrorPatterns = [
 ]
 
 export function installRouteLoadRecovery(router: Router): void {
+  window.addEventListener('vite:preloadError', (event) => {
+    const preloadEvent = event as Event & { payload?: unknown }
+    if (recoverRouteAssetLoadError(preloadEvent.payload, router)) {
+      event.preventDefault()
+    }
+  })
+
   router.onError((error, to) => {
     if (recoverRouteAssetLoadError(error, router, to?.fullPath)) return
 

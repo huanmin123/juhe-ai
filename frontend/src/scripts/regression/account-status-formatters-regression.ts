@@ -7,17 +7,17 @@ import { apiKeyStatusTagColor, apiKeyStatusTagLabel, apiKeyStatusTooltipLines } 
 const accountStatusValues: AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
 
 assertStatus('正常账户', accountFixture(), '正常', 'green')
-assertStatus('待测试账户', accountFixture({
+assertStatus('待检查账户', accountFixture({
   status: 'pending_test',
   effectiveAvailability: {
     available: false,
     status: 'instance_pending_test',
-    label: '账户待测试',
+    label: '账户待检查',
     color: 'blue',
     blockerScope: 'account',
-    reason: '账户尚未测试通过，当前不会参与调度'
+    reason: '账户正在等待后台健康检查，检查通过前不会参与调度'
   }
-}), '待测试', 'blue')
+}), '待检查', 'blue')
 assertStatus('停用账户', accountFixture({
   status: 'disabled',
   effectiveAvailability: {
@@ -345,7 +345,7 @@ assertEqual(apiKeyStatusTagLabel(apiKeyScheduleInactive), '停用', 'API Key 停
 assertEqual(apiKeyStatusTagColor(apiKeyScheduleInactive), 'default', 'API Key 停用状态颜色应使用停用颜色')
 assertTrue(apiKeyStatusTooltipLines(apiKeyScheduleInactive).some((line) => line.includes('计划边界会自动更新当前运行状态')), 'API Key 配置时间计划时应在状态 tooltip 展示单状态提示')
 
-console.log('账户状态 formatter 回归通过：正常、待测试、停用、异常、限流、冷却、停调、近期失败、近期不稳、频繁失败、质量归因说明、运行态调度降级、运行态短暂避让、运行态事前确认、运行态半开探测、运行态探针确认失败、授权额度、授权绑定、Key 池不可用、派生可用性筛选映射、持久临时不可调用、长期不可用、时间计划提示、无可用权限均可显示和筛选')
+console.log('账户状态 formatter 回归通过：正常、待检查、停用、异常、限流、冷却、停调、近期失败、近期不稳、频繁失败、质量归因说明、运行态调度降级、运行态短暂避让、运行态事前确认、运行态半开探测、运行态探针确认失败、授权额度、授权绑定、Key 池不可用、派生可用性筛选映射、持久临时不可调用、长期不可用、时间计划提示、无可用权限均可显示和筛选')
 
 function assertStatus(name: string, account: AccountSummary, text: string, color: string): void {
   assertEqual(accountStatusText(account), text, `${name} 文案应为 ${text}`)

@@ -14,6 +14,7 @@ import { sanitizeAccountCredentialCarrierResponse, sanitizeAccountResponse } fro
 import { accountErrorPolicyValidationMessage, validateAccountErrorHandlingRules } from '../accounts/account-error-policy-validation.js'
 import { accountResponseInspectionPolicyValidationMessage, validateAccountResponseInspectionRules } from '../accounts/account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from '../accounts/account-gpt-request-overrides.validation.js'
+import { dispatchPendingAccountHealthCheck } from '../accounts/account-health-check-dispatch.service.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -185,6 +186,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         log: buildOAuthCreateLog(account, requestAccess, 'openai_oauth.create_from_code', '通过授权码创建 OpenAI OAuth 账户')
       }
     }, req)
+    dispatchPendingAccountHealthCheck(account)
     res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
     if (error instanceof ProxyProfileUnavailableError) {
@@ -275,6 +277,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         log: buildOAuthCreateLog(account, requestAccess, 'openai_oauth.create_from_refresh_token', '通过 Refresh Token 创建 OpenAI OAuth 账户')
       }
     }, req)
+    dispatchPendingAccountHealthCheck(account)
     res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
     if (error instanceof ProxyProfileUnavailableError) {

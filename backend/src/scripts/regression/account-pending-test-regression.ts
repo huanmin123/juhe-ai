@@ -79,7 +79,7 @@ try {
   assert.equal(pending.status, 'pending_test', '新建账户默认应为待测试')
   assert.equal(pending.schedulable, false, '待测试账户默认不得参与调度')
   assert.equal(pending.healthCheckModel, 'gpt-5.5', '新建账户必须保存属于支持模型的检查模型')
-  assert.match(pending.lastErrorMessage ?? '', /等待后台激活检查/, '待测试账户应记录等待后台激活检查的提示')
+  assert.match(pending.lastErrorMessage ?? '', /等待后台健康检查/, '待检查账户应记录等待后台健康检查的提示')
   assert.equal(
     repositories.listOpenAIAccountsForGroup(group.id, owner.id).some((account) => account.id === pending.id),
     false,

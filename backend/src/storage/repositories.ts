@@ -1628,7 +1628,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     lastErrorMessage: expiredByPackage
       ? '账户套餐已过期，已自动停用'
       : initialStatus === 'pending_test'
-        ? '账户已保存，等待后台激活检查'
+        ? '账户已保存，等待后台健康检查'
         : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     cooldownRetestFailureCount: 0,
     cooldownRetestObservationStartedAt: initialObservationStartedAt,
@@ -1854,7 +1854,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     lastErrorMessage: expiredByPackage
       ? '账户套餐已过期，已自动停用'
       : initialStatus === 'pending_test'
-        ? '账户已保存，等待后台激活检查'
+        ? '账户已保存，等待后台健康检查'
         : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     cooldownRetestFailureCount: 0,
     cooldownRetestObservationStartedAt: initialObservationStartedAt,

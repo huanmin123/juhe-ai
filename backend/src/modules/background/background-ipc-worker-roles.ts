@@ -13,6 +13,7 @@ export function workerMessageTargetRole(message: BackgroundWorkerMessage): Backg
       return 'ingest-worker'
     case 'background_worker_account_test_tasks':
     case 'background_worker_account_test_cancel':
+    case 'background_worker_account_health_check_trigger':
       return 'ops-worker'
     case 'background_worker_record_maintenance':
     case 'background_worker_dataset_write_request':

@@ -367,16 +367,16 @@ export function createAccounts(
   }, adminAccess)
 
   const pendingTest = createMockGptAccount({
-    name: `${namePrefix}待测试账户`,
+    name: `${namePrefix}待检查账户`,
     type: 'api_key',
     status: 'pending_test',
     groupId: groups.experiment.id,
     credentials: apiKeyCredentials('pending-test'),
     supportedModels: ['gpt-5.4-mini'],
-    tags: ['待测试'],
+    tags: ['待检查'],
     concurrencyLimit: 10,
     priority: 90,
-    notes: 'Mockdata 待测试账号，用于待测试状态、手动测试入口和不可调度展示'
+    notes: 'Mockdata 待检查账号，用于待检查状态、人工诊断入口和不可调度展示'
   }, adminAccess)
 
   const disabled = createMockGptAccount({

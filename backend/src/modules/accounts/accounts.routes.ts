@@ -39,6 +39,11 @@ import { registerAccountDetailRoutes } from './account-detail.routes.js'
 import { registerAccountTestDispatchRoutes } from './account-test-dispatch.routes.js'
 import { registerAccountBatchEditRoutes } from './account-batch-edit.routes.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from './account-gpt-request-overrides.validation.js'
+import {
+  accountUpdateNeedsImmediateHealthCheck,
+  dispatchAccountHealthCheck,
+  dispatchPendingAccountHealthCheck
+} from './account-health-check-dispatch.service.js'
 
 export const accountsRouter = Router()
 
@@ -209,6 +214,7 @@ accountsRouter.post('/', mutationGuard({
         }
       }
     }, req)
+    dispatchPendingAccountHealthCheck(account)
     res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
     if (error instanceof ProxyProfileUnavailableError) {
@@ -405,6 +411,9 @@ accountsRouter.patch('/:id', async (req, res) => {
     }, req)
     if (requestedClearFailureState === true || body.status === 'active') {
       await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
+    }
+    if (accountUpdateNeedsImmediateHealthCheck(accountUpdateInput)) {
+      dispatchAccountHealthCheck(account.id)
     }
     res.json(ok(sanitizeAccountResponse(await applyServerAccountRuntimeToAccount(account))))
   } catch (error) {

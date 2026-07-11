@@ -41,6 +41,7 @@ import { getBusinessDatabase, runInDatabaseTransaction } from '../../storage/dat
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { getPostgresPool } from '../../storage/postgres-client.js'
 import { submitApiKeyRelatedCleanup, submitApiKeyRelatedCleanupAsync } from '../api-keys/api-key-cleanup.service.js'
+import { dispatchPendingAccountHealthCheck } from '../accounts/account-health-check-dispatch.service.js'
 import {
   accountCreateInputForPush,
   accountPartialUpdateInputForPush,
@@ -137,10 +138,11 @@ const publicResourceOwnerLookupAccess = {
 
 export async function addPublicWelfareAccountAsync(input: PublicAccountPushInput): Promise<PublicAccountPushResponse> {
   const targetPasswordHash = await autoCreatedTargetPasswordHash()
-  if (runtimeConfig.databaseDriver !== 'postgres') {
-    return writePublicWelfareAccount(input, targetPasswordHash)
-  }
-  return await writePublicWelfareAccountAsync(input, targetPasswordHash)
+  const result = runtimeConfig.databaseDriver !== 'postgres'
+    ? writePublicWelfareAccount(input, targetPasswordHash)
+    : await writePublicWelfareAccountAsync(input, targetPasswordHash)
+  dispatchPendingAccountHealthCheck(result.account)
+  return result
 }
 
 export function updatePublicWelfareAccount(input: PublicAccountUpdateInput): PublicAccountPushResponse {

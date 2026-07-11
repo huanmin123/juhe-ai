@@ -4,7 +4,7 @@ import {
   type BackgroundWorkerQueueRuntime,
   type BackgroundWorkerRuntimeLogQueueRuntime
 } from './modules/background/background-ipc.js'
-import { getBackgroundJobRuntimeSnapshots, startBackgroundJobs } from './modules/background/background-jobs.js'
+import { getBackgroundJobRuntimeSnapshots, startBackgroundJobs, triggerAccountHealthCheckNow } from './modules/background/background-jobs.js'
 import {
   enqueueAuditLogsLocal,
   flushAuditLogQueueForShutdown,
@@ -83,6 +83,7 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_record_maintenance'; items: unknown[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: unknown[] }
   | { type: 'background_worker_account_test_cancel'; taskId: unknown }
+  | { type: 'background_worker_account_health_check_trigger'; accountId: unknown }
   | { type: 'background_worker_runtime_log_line'; line: unknown; sourceKey?: unknown; logFile?: unknown; logOffset?: unknown; lineNumber?: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
   | { type: 'background_worker_dataset_write_request'; requestId: unknown; operation: unknown }
@@ -166,6 +167,16 @@ process.on('message', (message: unknown) => {
     case 'background_worker_account_test_cancel':
       if (typeof message.taskId === 'string') {
         cancelAccountTestTaskLocal(message.taskId)
+      }
+      break
+    case 'background_worker_account_health_check_trigger':
+      if (typeof message.accountId === 'string') {
+        void triggerAccountHealthCheckNow(message.accountId).catch((error) => {
+          logger.warn(errorLogFields(error, {
+            event: 'background_account_health_check_trigger_failed',
+            accountId: message.accountId
+          }), '立即触发账户健康检查失败，等待周期任务兜底')
+        })
       }
       break
     case 'background_worker_runtime_log_line':
@@ -465,6 +476,7 @@ function isOpsWorkerMessage(message: WorkerIncomingMessage): boolean {
   return isWorkerControlMessage(message)
     || message.type === 'background_worker_account_test_tasks'
     || message.type === 'background_worker_account_test_cancel'
+    || message.type === 'background_worker_account_health_check_trigger'
 }
 
 function workerStartedMessage(): string {
