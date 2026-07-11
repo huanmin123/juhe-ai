@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import type { GptRequestOverrideModelCapabilities } from '../../../providers/drivers/gpt/request-overrides.js'
 
 const {
   OpenAIOAuthCodexAdapterError
@@ -29,6 +30,7 @@ export interface OpenAIOAuthCodexNormalizeInput {
   identity: OpenAIOAuthCodexIdentity
   compact: boolean
   modelOverride?: string
+  requestOverrideModelCapabilities?: GptRequestOverrideModelCapabilities
 }
 
 export interface NormalizedCodexBody {
@@ -85,7 +87,8 @@ function applyOpenAIOAuthCodexAccountRequestOverrides(
     overridden = applyGptAccountRequestOverrides(body, {
       credentials: input.account.credentials,
       endpointFamily: 'responses',
-      compact: input.compact
+      compact: input.compact,
+      modelCapabilities: input.requestOverrideModelCapabilities
     })
   } catch (error) {
     if (error instanceof GptAccountRequestOverrideError) {

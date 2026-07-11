@@ -117,7 +117,7 @@ try {
     groupId: group.id,
     mockBaseUrl
   }))
-  assert.equal(savedAccount.status, 'pending_test', '新建 Key 池账户应先进入待测试')
+  assert.equal(savedAccount.status, 'pending_test', '新建 Key 池账户应先进入待检查')
   const savedTask = await submitAccountTest(context, savedAccount.id)
   const savedFinished = await waitForTask(context, savedTask.id)
   assert.equal(savedFinished.status, 'success', '已保存 Key 池账户只要至少一个 Key 可用就应测试成功')

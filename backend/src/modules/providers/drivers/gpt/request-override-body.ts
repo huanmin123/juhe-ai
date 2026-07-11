@@ -4,8 +4,11 @@ import {
   parseGatewayJsonBodyInWorker
 } from '../../../gateway/request/json-parser.js'
 import { GatewayRequestValidationError } from '../../../gateway/request/validation-error.js'
+import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
+import { resolveGptRequestOverrideModelCapabilities } from './request-override-capabilities.js'
 import {
   applyGptAccountRequestOverrides,
+  effectiveGptAccountRequestOverrides,
   GptAccountRequestOverrideError,
   hasApplicableGptAccountRequestOverrides,
   readGptAccountRequestOverrides,
@@ -14,16 +17,29 @@ import {
 
 export async function applyGptAccountRequestOverridesToBody(
   body: Buffer | string | undefined,
-  input: ApplyGptAccountRequestOverridesInput & { signal?: AbortSignal }
+  input: ApplyGptAccountRequestOverridesInput & {
+    account: DispatchAccountSecret
+    upstreamModel?: string
+    signal?: AbortSignal
+  }
 ): Promise<Buffer | string | undefined> {
   const overrides = readGptAccountRequestOverridesForGateway(input.credentials)
   if (!hasApplicableGptAccountRequestOverrides(overrides, input.endpointFamily, input.compact === true)) {
     return body
   }
   const parsed = await parseGptRequestOverrideBody(body, input.signal)
+  const modelCapabilities = input.modelCapabilities
+    ?? await resolveGptRequestOverrideModelCapabilities(input.account, input.upstreamModel ?? requestBodyModel(parsed))
+  const effectiveOverrides = effectiveGptAccountRequestOverrides(overrides, modelCapabilities)
+  if (!hasApplicableGptAccountRequestOverrides(effectiveOverrides, input.endpointFamily, input.compact === true)) {
+    return body
+  }
   let overridden: Record<string, unknown>
   try {
-    overridden = applyGptAccountRequestOverrides(parsed, input)
+    overridden = applyGptAccountRequestOverrides(parsed, {
+      ...input,
+      modelCapabilities
+    })
   } catch (error) {
     throw normalizeGptAccountRequestOverrideError(error)
   }
@@ -91,4 +107,8 @@ function invalidGptRequestOverrideBodyError(): GatewayRequestValidationError {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function requestBodyModel(body: Record<string, unknown>): string | undefined {
+  return typeof body.model === 'string' && body.model.trim() ? body.model.trim() : undefined
 }

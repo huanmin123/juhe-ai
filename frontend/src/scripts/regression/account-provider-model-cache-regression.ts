@@ -67,8 +67,8 @@ try {
   assertEqual(calls.length, 1, '首次加载应请求一次模型目录')
 
   latestModels = [
-    providerModel('gpt-cache-old', ['chat_completions']),
-    providerModel('gpt-cache-old', ['responses']),
+    { ...providerModel('gpt-cache-old', ['chat_completions']), supportedServiceTiers: ['priority'], supportedReasoningEfforts: ['medium'] },
+    { ...providerModel('gpt-cache-old', ['responses']), supportedServiceTiers: ['flex'], supportedReasoningEfforts: ['high'], defaultReasoningEffort: 'high' },
     providerModel('gpt-cache-new', ['responses'])
   ]
   await modelOptions.loadProviderModelOptions('openai')
@@ -87,6 +87,15 @@ try {
     protocolsByValue(modelOptions.providerModelOptions.value),
     { 'gpt-cache-old': ['chat_completions', 'responses'], 'gpt-cache-new': ['responses'] },
     '重复模型去重时必须合并协议能力'
+  )
+  assertDeepEqual(
+    requestCapabilitiesByValue(modelOptions.providerModelOptions.value)['gpt-cache-old'],
+    {
+      supportedServiceTiers: ['priority', 'flex'],
+      supportedReasoningEfforts: ['medium', 'high'],
+      defaultReasoningEffort: 'high'
+    },
+    '重复模型去重时必须合并请求覆盖能力'
   )
   assertEqual(calls.length, 2, '当前供应商失效后应重新请求模型目录')
 

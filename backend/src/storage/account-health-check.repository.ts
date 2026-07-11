@@ -586,9 +586,10 @@ function dueHealthCheckRows(rows: AccountListRow[], options: AccountHealthCheckS
   const dueRows: AccountListRow[] = []
   const recentSuccessSignals = new Map<string, string>()
   for (const row of rows) {
+    const requiresFirstPendingCheck = row.status === 'pending_test' && !normalizedIso(row.last_health_check_at)
     const recentSuccessAt = normalizedIso(row.last_health_success_at)
     const recentSuccessMs = recentSuccessAt ? Date.parse(recentSuccessAt) : NaN
-    if (recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
+    if (!requiresFirstPendingCheck && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
       recentSuccessSignals.set(row.id, recentSuccessAt)
       continue
     }
@@ -604,9 +605,10 @@ async function dueHealthCheckRowsAsync(client: DatabaseClient, rows: AccountList
   const dueRows: AccountListRow[] = []
   const recentSuccessSignals = new Map<string, string>()
   for (const row of rows) {
+    const requiresFirstPendingCheck = row.status === 'pending_test' && !normalizedIso(row.last_health_check_at)
     const recentSuccessAt = normalizedIso(row.last_health_success_at)
     const recentSuccessMs = recentSuccessAt ? Date.parse(recentSuccessAt) : NaN
-    if (recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
+    if (!requiresFirstPendingCheck && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
       recentSuccessSignals.set(row.id, recentSuccessAt)
       continue
     }
@@ -652,7 +654,11 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
             AND (ra.expires_at IS NULL OR ra.expires_at > ?)
           )
         )
-        AND (accounts.next_health_check_at IS NULL OR accounts.next_health_check_at <= ?)
+        AND (
+          (accounts.status = 'pending_test' AND accounts.last_health_check_at IS NULL)
+          OR accounts.next_health_check_at IS NULL
+          OR accounts.next_health_check_at <= ?
+        )
         ${accountIdFilter}
         AND EXISTS (
           SELECT 1
@@ -738,7 +744,11 @@ async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit
           AND (ra.expires_at IS NULL OR ra.expires_at > ?)
         )
       )
-      AND (accounts.next_health_check_at IS NULL OR accounts.next_health_check_at <= ?)
+      AND (
+        (accounts.status = 'pending_test' AND accounts.last_health_check_at IS NULL)
+        OR accounts.next_health_check_at IS NULL
+        OR accounts.next_health_check_at <= ?
+      )
       ${accountIdFilter}
       AND group_bindings.group_id IS NOT NULL
     ORDER BY CASE WHEN accounts.status = 'pending_test' THEN 0 ELSE 1 END ASC,

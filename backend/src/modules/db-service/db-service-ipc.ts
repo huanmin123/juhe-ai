@@ -665,7 +665,7 @@ function handleDbServiceMessage(message: unknown): void {
       break
     case 'background_worker_account_health_check_trigger':
       if (runtimeConfig.processRole === 'server' && typeof record.accountId === 'string') {
-        void forwardAccountHealthCheckTriggerToWorker(record.accountId)
+        void forwardAccountHealthCheckTriggerToWorker(record.accountId, record.reason)
       }
       break
     default:
@@ -1457,10 +1457,11 @@ async function forwardAccountTestCancelToWorker(taskId: string): Promise<void> {
   }
 }
 
-async function forwardAccountHealthCheckTriggerToWorker(accountId: string): Promise<void> {
+async function forwardAccountHealthCheckTriggerToWorker(accountId: string, reason: unknown): Promise<void> {
   const backgroundIpc = await import('../background/background-ipc.js')
+  const { isAccountHealthCheckTriggerReason } = await import('../accounts/account-health-check-trigger.js')
   const normalizedId = normalizedString(accountId)
-  if (normalizedId && !backgroundIpc.sendAccountHealthCheckTriggerToWorker(normalizedId)) {
+  if (normalizedId && isAccountHealthCheckTriggerReason(reason) && !backgroundIpc.sendAccountHealthCheckTriggerToWorker(normalizedId, reason)) {
     logger.warn({
       event: 'db_service_account_health_check_trigger_forward_failed',
       accountId: normalizedId

@@ -15,6 +15,7 @@ import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
 import type { WorkerScheduledJobRuntimeSnapshot } from './worker-scheduler.js'
+import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
 
 export type BackgroundWorkerProcessRole =
   | 'worker'
@@ -143,7 +144,7 @@ export type BackgroundWorkerMessage =
   | { type: 'background_worker_record_maintenance'; items: RecordMaintenanceJob[] }
   | { type: 'background_worker_account_test_tasks'; taskIds: string[] }
   | { type: 'background_worker_account_test_cancel'; taskId: string }
-  | { type: 'background_worker_account_health_check_trigger'; accountId: string }
+  | { type: 'background_worker_account_health_check_trigger'; accountId: string; reason: AccountHealthCheckTriggerReason }
   | ({ type: 'background_worker_runtime_log_line'; line: string } & RuntimeLogLineIndexOptions)
   | { type: 'background_worker_status_request'; requestId: string }
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }

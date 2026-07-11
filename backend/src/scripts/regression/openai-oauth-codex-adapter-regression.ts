@@ -78,12 +78,17 @@ async function testOAuthAccountRequestOverrides(): Promise<void> {
       service_tier_override: 'priority',
       reasoning_effort_override: 'max'
     }
-  }, identity)
+  }, identity, undefined, {
+    requestOverrideModelCapabilities: {
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['low', 'medium', 'high']
+    }
+  })
   const body = parseBody(parts.body)
 
   assert.equal(body.service_tier, 'priority')
   assert.deepEqual(body.reasoning, {
-    effort: 'max',
+    effort: 'high',
     summary: 'detailed'
   })
   assert.equal(body.reasoning_effort, undefined)
@@ -106,7 +111,12 @@ async function testOAuthCompactRequestOverrides(): Promise<void> {
       service_tier_override: 'priority',
       reasoning_effort_override: 'max'
     }
-  }, identity)
+  }, identity, undefined, {
+    requestOverrideModelCapabilities: {
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['max']
+    }
+  })
   const body = parseBody(parts.body)
 
   assert.equal(body.service_tier, 'priority')

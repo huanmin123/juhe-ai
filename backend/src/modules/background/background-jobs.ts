@@ -21,7 +21,8 @@ import type { BackgroundWorkerIngestDrainStatus } from './background-ipc.types.j
 import { requestStatsWriter } from './background-stats-writer.js'
 import { backgroundScheduledJobName } from './background-job-registry.js'
 import { DEFAULT_SYSTEM_SETTINGS } from '../../storage/schema-defaults.js'
-import { enqueueAccountHealthCheckById } from './account-health-check.service.js'
+import { enqueueAccountHealthCheckById, setAccountHealthCheckQueueConcurrency } from './account-health-check.service.js'
+import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
 import {
   runAccountApiKeyCooldownRetest,
   runAccountHealthCheck,
@@ -171,13 +172,18 @@ function handleBackgroundJobsStartError(error: unknown): void {
   setImmediate(() => { throw error })
 }
 
-export async function triggerAccountHealthCheckNow(accountId: string): Promise<boolean> {
+export async function triggerAccountHealthCheckNow(
+  accountId: string,
+  reason: AccountHealthCheckTriggerReason
+): Promise<boolean> {
+  const batchSize = settingsNumber('accountHealthCheckBatchSize', 1, 100)
+  setAccountHealthCheckQueueConcurrency(Math.max(1, Math.min(batchSize, 10)))
   return await enqueueAccountHealthCheckById(accountId, {
     intervalHours: settingsNumber('accountHealthCheckIntervalHours', 1, 168),
     jitterMinutes: settingsNumber('accountHealthCheckJitterMinutes', 0, 1440),
     failureThreshold: settingsNumber('accountHealthCheckFailureThreshold', 1, 10),
     maxPauseMinutes: settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
-  })
+  }, reason)
 }
 
 function isPostgresHighPerformanceMode(): boolean {

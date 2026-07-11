@@ -95,7 +95,7 @@ watch(
       cleared.push('思考级别')
     }
     if (cleared.length) {
-      message.warning(`${cleared.join('和')}已不再被全部支持模型共同支持，已清空对应覆盖`)
+      message.warning(`账户支持模型目录中已无模型支持${cleared.join('和')}，已清空对应覆盖`)
     }
   },
   { immediate: true }
