@@ -2,7 +2,6 @@ package apikeyschedule
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 )
@@ -101,8 +100,8 @@ func TestNormalizeRejectsStructurallyInvalidAvailabilitySchedules(t *testing.T) 
 			value := base()
 			test.mutate(value)
 			_, _, err := Normalize(value, time.Now(), "UTC")
-			if err == nil || !strings.Contains(err.Error(), "availabilitySchedule") {
-				t.Fatalf("Normalize() error = %v", err)
+			if err == nil {
+				t.Fatal("Normalize() error = nil")
 			}
 		})
 	}

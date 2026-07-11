@@ -63,16 +63,16 @@ func Normalize(
 	}
 	for key := range record {
 		if !allowedKeys[key] {
-			return nil, false, invalidf("包含未知字段：%s", key)
+			return nil, false, invalidf("availabilitySchedule 包含未知字段：%s", key)
 		}
 	}
 	enabled, ok := record["enabled"].(bool)
 	if !ok || !enabled {
-		return nil, false, invalidf("enabled 必须为 true")
+		return nil, false, invalidf("availabilitySchedule.enabled 必须为 true")
 	}
 	mode, _ := record["mode"].(string)
 	if strings.TrimSpace(mode) != scheduleModeWindows {
-		return nil, false, invalidf("mode 必须为 allow_windows")
+		return nil, false, invalidf("availabilitySchedule.mode 必须为 allow_windows")
 	}
 	timezone := strings.TrimSpace(defaultTimezone)
 	if timezone == "" {
@@ -81,13 +81,13 @@ func Normalize(
 	if raw, exists := record["timezone"]; exists {
 		text, ok := raw.(string)
 		if !ok || strings.TrimSpace(text) == "" {
-			return nil, false, invalidf("timezone 无效")
+			return nil, false, invalidf("availabilitySchedule.timezone 无效")
 		}
 		timezone = strings.TrimSpace(text)
 	}
 	location, err := time.LoadLocation(timezone)
 	if err != nil {
-		return nil, false, invalidf("timezone 无效")
+		return nil, false, invalidf("availabilitySchedule.timezone 无效")
 	}
 	windows, err := normalizeScheduleWindows(record["windows"])
 	if err != nil {
@@ -134,17 +134,17 @@ func Normalize(
 func normalizeScheduleWindows(raw any) ([]scheduleWindow, error) {
 	items, ok := raw.([]any)
 	if !ok || len(items) < 1 || len(items) > 32 {
-		return nil, invalidf("windows 数量无效")
+		return nil, invalidf("availabilitySchedule.windows 数量无效")
 	}
 	out := make([]scheduleWindow, 0, len(items))
 	for _, item := range items {
 		record, ok := item.(map[string]any)
 		if !ok {
-			return nil, invalidf("windows 项必须是对象")
+			return nil, invalidf("availabilitySchedule.windows 项必须是对象")
 		}
 		for key := range record {
 			if key != "daysOfWeek" && key != "start" && key != "end" {
-				return nil, invalidf("windows 包含未知字段：%s", key)
+				return nil, invalidf("availabilitySchedule.windows 包含未知字段：%s", key)
 			}
 		}
 		days, err := normalizeDaysOfWeek(record["daysOfWeek"])
@@ -153,11 +153,11 @@ func normalizeScheduleWindows(raw any) ([]scheduleWindow, error) {
 		}
 		start, startMin, err := normalizeHHMM(record["start"])
 		if err != nil {
-			return nil, invalidf("windows.start 无效")
+			return nil, invalidf("availabilitySchedule.windows.start 无效")
 		}
 		end, endMin, err := normalizeHHMM(record["end"])
 		if err != nil || startMin == endMin {
-			return nil, invalidf("windows.end 无效")
+			return nil, invalidf("availabilitySchedule.windows.end 无效")
 		}
 		out = append(out, scheduleWindow{
 			daysOfWeek: days,
@@ -201,7 +201,7 @@ func normalizeDaysOfWeek(raw any) ([]int, error) {
 func normalizeScheduleDateRange(raw any, now time.Time) (map[string]any, bool, error) {
 	record, ok := raw.(map[string]any)
 	if !ok {
-		return nil, false, invalidf("dateRange 必须是对象")
+		return nil, false, invalidf("availabilitySchedule.dateRange 必须是对象")
 	}
 	for key := range record {
 		if key != "startDate" && key != "endDate" {
@@ -247,7 +247,7 @@ func normalizeScheduleDateRange(raw any, now time.Time) (map[string]any, bool, e
 func normalizeScheduleExceptions(raw any, now time.Time) ([]map[string]any, bool, bool, error) {
 	items, ok := raw.([]any)
 	if !ok || len(items) > 128 {
-		return nil, false, false, invalidf("exceptions 数量无效")
+		return nil, false, false, invalidf("availabilitySchedule.exceptions 数量无效")
 	}
 	out := make([]map[string]any, 0, len(items))
 	today := now.Format("2006-01-02")
@@ -489,5 +489,5 @@ func containsInt(values []int, want int) bool {
 }
 
 func invalidf(format string, args ...any) error {
-	return fmt.Errorf("availabilitySchedule "+format, args...)
+	return fmt.Errorf(format, args...)
 }

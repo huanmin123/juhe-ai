@@ -452,6 +452,66 @@ func TestServiceRejectsInvalidQuotaScheduleAndExpiresAt(t *testing.T) {
 	}
 }
 
+func TestNormalizeAvailabilityScheduleJSONPreservesPublicErrorMessages(t *testing.T) {
+	validSchedule := func() map[string]any {
+		return map[string]any{
+			"enabled":  true,
+			"timezone": "UTC",
+			"mode":     "allow_windows",
+			"windows": []any{map[string]any{
+				"daysOfWeek": []any{json.Number("1")},
+				"start":      "09:00",
+				"end":        "18:00",
+			}},
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{
+			name: "timezone",
+			mutate: func(schedule map[string]any) {
+				schedule["timezone"] = "Invalid/Timezone"
+			},
+			want: "public api key invalid availability schedule: availabilitySchedule.timezone 无效",
+		},
+		{
+			name: "window start",
+			mutate: func(schedule map[string]any) {
+				schedule["windows"].([]any)[0].(map[string]any)["start"] = "invalid"
+			},
+			want: "public api key invalid availability schedule: availabilitySchedule.windows.start 无效",
+		},
+		{
+			name: "unknown root field",
+			mutate: func(schedule map[string]any) {
+				schedule["unknown"] = true
+			},
+			want: "public api key invalid availability schedule: availabilitySchedule 包含未知字段：unknown",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schedule := validSchedule()
+			tt.mutate(schedule)
+
+			_, _, _, _, err := normalizeAvailabilityScheduleJSON(
+				NewJSONValue(schedule, true),
+				time.Date(2026, 7, 11, 0, 0, 0, 0, time.UTC),
+			)
+
+			if err == nil || err.Error() != tt.want {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			if !errors.Is(err, ErrInvalidAvailabilitySchedule) {
+				t.Fatalf("error = %v, want errors.Is ErrInvalidAvailabilitySchedule", err)
+			}
+		})
+	}
+}
+
 type publicAPIKeyServiceStore struct {
 	targetsByUsername map[string]port.PublicGroupTarget
 	targetsByID       map[string]port.PublicGroupTarget
