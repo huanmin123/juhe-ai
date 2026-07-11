@@ -400,6 +400,7 @@ func TestServiceUpdateValidationFailureReturnsCommittedResultWithBoundedLiveCont
 	ctx, cancel := context.WithCancel(context.Background())
 	store := newManagementAPIKeyUpdateStoreStub(&events)
 	store.afterUpdate = cancel
+	store.respectUsageContext = true
 	validationErr := errors.New("validation unavailable")
 	invalidator := &managementAPIKeyInvalidatorStub{
 		events:        &events,
@@ -411,6 +412,7 @@ func TestServiceUpdateValidationFailureReturnsCommittedResultWithBoundedLiveCont
 		Invalidator: invalidator,
 	})
 
+	startedAt := time.Now()
 	result, err := service.Update(ctx, UpdateInput{
 		ActorSystemAccountID: "sys_admin",
 		APIKeyID:             "key_1",
@@ -445,11 +447,18 @@ func TestServiceUpdateValidationFailureReturnsCommittedResultWithBoundedLiveCont
 	if got, want := events, []string{"update", "usage", "validation"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("original context error = %v, want context canceled", ctx.Err())
+	}
 	if invalidator.validationContextErr != nil ||
 		!invalidator.validationContextHasDeadline ||
 		invalidator.calls != 1 ||
-		store.usageCalls != 1 {
-		t.Fatalf("invalidator=%+v usageCalls=%d", invalidator, store.usageCalls)
+		store.usageCalls != 1 ||
+		store.usageContextErr != nil ||
+		!store.usageContextHasDeadline ||
+		!store.usageContextDeadline.After(startedAt) ||
+		store.usageContextDeadline.After(startedAt.Add(5*time.Second+250*time.Millisecond)) {
+		t.Fatalf("invalidator=%+v store=%+v", invalidator, store)
 	}
 }
 
@@ -577,6 +586,11 @@ type managementAPIKeyUpdateStoreStub struct {
 	afterUpdate func()
 	updateCalls int
 	usageCalls  int
+
+	respectUsageContext     bool
+	usageContextErr         error
+	usageContextDeadline    time.Time
+	usageContextHasDeadline bool
 }
 
 func newManagementAPIKeyUpdateStoreStub(events *[]string) *managementAPIKeyUpdateStoreStub {
@@ -656,11 +670,20 @@ func (s *managementAPIKeyUpdateStoreStub) ListManagementAPIKeys(
 }
 
 func (s *managementAPIKeyUpdateStoreStub) ListManagementAPIKeyUsageTotals(
-	_ context.Context,
+	ctx context.Context,
 	scopes []port.ManagementAPIKeyUsageScope,
 ) ([]port.ManagementAPIKeyUsageRow, error) {
 	s.usageCalls++
 	s.record("usage")
+	s.usageContextErr = ctx.Err()
+	s.usageContextDeadline, s.usageContextHasDeadline = ctx.Deadline()
+	if s.respectUsageContext {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+	}
 	if len(scopes) != 1 ||
 		scopes[0] != (port.ManagementAPIKeyUsageScope{
 			SystemAccountID: "sys_owner",

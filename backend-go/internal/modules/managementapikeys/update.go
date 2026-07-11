@@ -12,6 +12,7 @@ import (
 
 const (
 	apiKeyUpdatedReason             = "api_key_updated"
+	apiKeyUpdateUsageTimeout        = 5 * time.Second
 	apiKeyUpdateInvalidationTimeout = 5 * time.Second
 )
 
@@ -161,13 +162,18 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	}
 	result.Committed = true
 
+	usageCtx, cancelUsage := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		apiKeyUpdateUsageTimeout,
+	)
 	usageRows, usageErr := s.store.ListManagementAPIKeyUsageTotals(
-		ctx,
+		usageCtx,
 		[]port.ManagementAPIKeyUsageScope{{
 			SystemAccountID: stored.After.SystemAccountID,
 			APIKeyID:        stored.After.ID,
 		}},
 	)
+	cancelUsage()
 	if usageErr == nil {
 		for _, row := range usageRows {
 			if row.SystemAccountID == stored.After.SystemAccountID &&
