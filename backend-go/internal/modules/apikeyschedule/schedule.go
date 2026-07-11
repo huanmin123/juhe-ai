@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"juhe-ai/backend-go/internal/timezonecompat"
 )
 
 const (
@@ -89,7 +91,7 @@ func Normalize(
 		}
 		timezone = strings.TrimSpace(text)
 	}
-	location, err := time.LoadLocation(timezone)
+	location, err := timezonecompat.LoadNodeLocation(timezone)
 	if err != nil {
 		return nil, false, invalidf("availabilitySchedule.timezone 无效")
 	}
@@ -145,7 +147,7 @@ func NextCheckAt(schedule map[string]any, now time.Time) *time.Time {
 	if !enabled || timezone == "" {
 		return nil
 	}
-	location, err := time.LoadLocation(timezone)
+	location, err := timezonecompat.LoadNodeLocation(timezone)
 	if err != nil {
 		return nil
 	}

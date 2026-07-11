@@ -127,6 +127,29 @@ func TestNormalizeOmitsEmptyOptionalScheduleSections(t *testing.T) {
 	}
 }
 
+func TestNormalizeAcceptsNodeCompatibleTimezoneCaseAndPreservesText(t *testing.T) {
+	for _, timezone := range []string{"america/new_york", "ASIA/SHANGHAI"} {
+		t.Run(timezone, func(t *testing.T) {
+			got, _, err := Normalize(map[string]any{
+				"enabled":  true,
+				"timezone": timezone,
+				"mode":     "allow_windows",
+				"windows": []any{map[string]any{
+					"daysOfWeek": []any{float64(1)},
+					"start":      "09:00",
+					"end":        "18:00",
+				}},
+			}, time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC), "UTC")
+			if err != nil {
+				t.Fatalf("Normalize() error = %v", err)
+			}
+			if got["timezone"] != timezone {
+				t.Fatalf("timezone = %#v, want %q", got["timezone"], timezone)
+			}
+		})
+	}
+}
+
 func TestNextCheckAtFindsScheduleBoundaries(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -247,6 +270,40 @@ func TestNextCheckAtFindsScheduleBoundaries(t *testing.T) {
 			}
 			if got.Location() != time.UTC {
 				t.Fatalf("NextCheckAt() location = %s, want UTC", got.Location())
+			}
+		})
+	}
+}
+
+func TestNextCheckAtAcceptsNodeCompatibleTimezoneCase(t *testing.T) {
+	tests := []struct {
+		name     string
+		timezone string
+		now      time.Time
+		want     time.Time
+	}{
+		{
+			name:     "lowercase America New York",
+			timezone: "america/new_york",
+			now:      time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC),
+			want:     time.Date(2026, 7, 13, 13, 0, 0, 0, time.UTC),
+		},
+		{
+			name:     "uppercase Asia Shanghai",
+			timezone: "ASIA/SHANGHAI",
+			now:      time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC),
+			want:     time.Date(2026, 7, 13, 1, 0, 0, 0, time.UTC),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := NextCheckAt(normalizedTestSchedule(test.timezone, []int{1}, "09:00", "18:00"), test.now)
+			if got == nil {
+				t.Fatal("NextCheckAt() = nil")
+			}
+			if !got.Equal(test.want) {
+				t.Fatalf("NextCheckAt() = %s, want %s", got.Format(time.RFC3339), test.want.Format(time.RFC3339))
 			}
 		})
 	}
