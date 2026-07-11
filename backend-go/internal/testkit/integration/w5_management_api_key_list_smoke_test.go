@@ -211,6 +211,7 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 	service := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
 		ListReader:               store,
 		Creator:                  store,
+		Updater:                  store,
 		UsageStatsTimezoneReader: store,
 		SecretStore:              store,
 		SecretTransactor:         store,
@@ -230,6 +231,12 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 		w5ManagementAPIKeySecretRepairedRevealLogID,
 		w5ManagementAPIKeyCreateAdminLogID,
 		w5ManagementAPIKeyCreateSelfLogID,
+		w5ManagementAPIKeyUpdateAdminGlobalLogID,
+		w5ManagementAPIKeyUpdateAdminExplicitLogID,
+		w5ManagementAPIKeyUpdateSameDisabledRouteLogID,
+		w5ManagementAPIKeyUpdateSelfScheduleLogID,
+		w5ManagementAPIKeyUpdateSelfClearLogID,
+		w5ManagementAPIKeyUpdateCommittedFailureLogID,
 	}
 	nextLogID := 0
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
@@ -278,6 +285,14 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 			operationLogOptions,
 		),
 		ManagementMyAPIKeyCreateHandler: httpapi.NewManagementMyAPIKeyCreateHandlerWithOperationLog(
+			service,
+			operationLogOptions,
+		),
+		ManagementAPIKeyUpdateHandler: httpapi.NewManagementAPIKeyUpdateHandlerWithOperationLog(
+			service,
+			operationLogOptions,
+		),
+		ManagementMyAPIKeyUpdateHandler: httpapi.NewManagementMyAPIKeyUpdateHandlerWithOperationLog(
 			service,
 			operationLogOptions,
 		),
@@ -667,6 +682,26 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 			defer workerErrMu.Unlock()
 			return workerRunErr
 		},
+		now,
+	)
+	exerciseW5ManagementAPIKeyUpdateSmoke(
+		t,
+		ctx,
+		db,
+		store,
+		router,
+		redisCacheURL,
+		stateRedis,
+		operationLogOptions,
+		inspector,
+		workerDone,
+		func() error {
+			workerErrMu.Lock()
+			defer workerErrMu.Unlock()
+			return workerRunErr
+		},
+		cfg,
+		logger,
 		now,
 	)
 	queueInfo, err := inspector.QueueInfo(operationlogjob.QueueName)

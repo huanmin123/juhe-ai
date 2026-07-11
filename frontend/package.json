@@ -30,6 +30,7 @@
     "test:account-edit-save-flow": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-edit-save-flow-regression.ts",
     "test:route-strategy-group-bindings": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/route-strategy-group-bindings-regression.ts",
     "test:api-key-hybrid-config": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/api-key-hybrid-config-regression.ts",
+    "test:api-key-update-payload": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/api-key-update-payload-regression.ts",
     "test:account-test-display-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-test-display-formatters-regression.ts",
     "test:model-check-provider-capabilities": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/model-check-provider-capabilities-regression.ts",
     "test:provider-model-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/provider-model-formatters-regression.ts",
