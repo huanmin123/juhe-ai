@@ -28,6 +28,53 @@ var (
 	ErrAPIKeyRouteStrategyOff     = errors.New("API Key 只能绑定启用状态的策略路由")
 )
 
+type apiKeyNameExistsError struct {
+	name string
+}
+
+type apiKeyCreateValidationError struct {
+	cause error
+}
+
+func (e apiKeyCreateValidationError) Error() string {
+	return e.cause.Error()
+}
+
+func (e apiKeyCreateValidationError) Unwrap() error {
+	return e.cause
+}
+
+func (e apiKeyNameExistsError) Error() string {
+	return "API Key 名称已存在：" + e.name
+}
+
+func NewAPIKeyNameExistsError(name string) error {
+	return apiKeyNameExistsError{name: strings.TrimSpace(name)}
+}
+
+func APIKeyNameExistsMessage(err error) (string, bool) {
+	var target apiKeyNameExistsError
+	if !errors.As(err, &target) {
+		return "", false
+	}
+	return target.Error(), true
+}
+
+func IsAPIKeyCreateValidationError(err error) bool {
+	if errors.Is(err, ErrAPIKeyCreateInvalid) {
+		return true
+	}
+	var target apiKeyCreateValidationError
+	return errors.As(err, &target)
+}
+
+func newAPIKeyCreateValidationError(err error) error {
+	if err == nil || IsAPIKeyCreateValidationError(err) {
+		return err
+	}
+	return apiKeyCreateValidationError{cause: err}
+}
+
 var serverDateTimePattern = regexp.MustCompile(
 	`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$`,
 )
@@ -135,7 +182,7 @@ func (s *Service) createOnce(
 		case errors.Is(err, port.ErrManagementAPIKeyRouteStrategyDisabled):
 			return CreateResult{}, ErrAPIKeyRouteStrategyOff
 		case errors.Is(err, port.ErrManagementAPIKeyNameExists):
-			return CreateResult{}, fmt.Errorf("API Key 名称已存在：%s", input.name)
+			return CreateResult{}, NewAPIKeyNameExistsError(input.name)
 		default:
 			return CreateResult{}, err
 		}
@@ -171,34 +218,36 @@ func (s *Service) normalizeCreateInput(
 ) (normalizedCreateInput, error) {
 	ownerSystemAccountID, includeOwner, err := createScope(input)
 	if err != nil {
-		return normalizedCreateInput{}, err
+		return normalizedCreateInput{}, newAPIKeyCreateValidationError(err)
 	}
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
-		return normalizedCreateInput{}, errors.New("API Key 名称不能为空")
+		return normalizedCreateInput{}, newAPIKeyCreateValidationError(
+			errors.New("API Key 名称不能为空"),
+		)
 	}
 	description, err := normalizeCreateDescription(input.Description)
 	if err != nil {
-		return normalizedCreateInput{}, err
+		return normalizedCreateInput{}, newAPIKeyCreateValidationError(err)
 	}
 	routeStrategyID := strings.TrimSpace(input.RouteStrategyID)
 	status, err := normalizeCreateStatus(input.Status)
 	if err != nil {
-		return normalizedCreateInput{}, err
+		return normalizedCreateInput{}, newAPIKeyCreateValidationError(err)
 	}
 	expiresAt, err := normalizeCreateExpiresAt(input.ExpiresAt)
 	if err != nil {
-		return normalizedCreateInput{}, err
+		return normalizedCreateInput{}, newAPIKeyCreateValidationError(err)
 	}
 	_, quotaLimitsJSON, hourlyQuotaHours, err := normalizeCreateQuotaLimits(input.QuotaLimits)
 	if err != nil {
-		return normalizedCreateInput{}, err
+		return normalizedCreateInput{}, newAPIKeyCreateValidationError(err)
 	}
 	now := s.now().UTC()
 	_, scheduleJSON, nextCheckAt, allowed, scheduleSet, err :=
 		s.normalizeCreateAvailabilitySchedule(ctx, input.AvailabilitySchedule, now)
 	if err != nil {
-		return normalizedCreateInput{}, err
+		return normalizedCreateInput{}, newAPIKeyCreateValidationError(err)
 	}
 	if scheduleSet {
 		status = "disabled"

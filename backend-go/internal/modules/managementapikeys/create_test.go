@@ -499,6 +499,45 @@ func TestServiceCreateMapsRouteAndDuplicateErrors(t *testing.T) {
 	}
 }
 
+func TestServiceCreateClassifiesValidationErrorsWithoutMatchingMessages(t *testing.T) {
+	tests := []CreateInput{
+		{},
+		func() CreateInput {
+			input := validCreateInput()
+			input.Description = 1
+			return input
+		}(),
+		func() CreateInput {
+			input := validCreateInput()
+			input.Status = "invalid"
+			return input
+		}(),
+		func() CreateInput {
+			input := validCreateInput()
+			input.QuotaLimits = []any{}
+			return input
+		}(),
+		func() CreateInput {
+			input := validCreateInput()
+			input.AvailabilitySchedule = []any{}
+			return input
+		}(),
+	}
+	for index, input := range tests {
+		service := newCreateTestService(&managementAPIKeyCreateStoreStub{}, createTestOptions{})
+		_, err := service.Create(context.Background(), input)
+		if err == nil {
+			t.Fatalf("case %d Create() error = nil", index)
+		}
+		if !IsAPIKeyCreateValidationError(err) {
+			t.Fatalf("case %d Create() error = %T %v, want typed validation error", index, err, err)
+		}
+	}
+	if IsAPIKeyCreateValidationError(errors.New("postgres unavailable")) {
+		t.Fatal("internal error was classified as validation")
+	}
+}
+
 func TestServiceCreateRetriesOnlyDuplicateHashUpToThreeAttempts(t *testing.T) {
 	t.Run("second secret succeeds", func(t *testing.T) {
 		store := &managementAPIKeyCreateStoreStub{

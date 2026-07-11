@@ -217,6 +217,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAPIKeySecretHandler:                   managementHandlers.MyAPIKeySecretHandler,
 		ManagementAPIKeyRefreshHandler:                    managementHandlers.APIKeyRefreshHandler,
 		ManagementMyAPIKeyRefreshHandler:                  managementHandlers.MyAPIKeyRefreshHandler,
+		ManagementAPIKeyCreateHandler:                     managementHandlers.APIKeyCreateHandler,
+		ManagementMyAPIKeyCreateHandler:                   managementHandlers.MyAPIKeyCreateHandler,
 		ManagementGroupListHandler:                        managementHandlers.GroupListHandler,
 		ManagementMyGroupListHandler:                      managementHandlers.MyGroupListHandler,
 		ManagementGroupDetailHandler:                      managementHandlers.GroupDetailHandler,
@@ -351,6 +353,8 @@ type managementAPIHandlers struct {
 	MyAPIKeySecretHandler                   http.Handler
 	APIKeyRefreshHandler                    http.Handler
 	MyAPIKeyRefreshHandler                  http.Handler
+	APIKeyCreateHandler                     http.Handler
+	MyAPIKeyCreateHandler                   http.Handler
 	GroupListHandler                        http.Handler
 	MyGroupListHandler                      http.Handler
 	GroupDetailHandler                      http.Handler
@@ -438,11 +442,13 @@ func newManagementAPIHandler(
 	})
 	routeStrategyService := managementroutestrategies.NewService(store)
 	apiKeyService := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
-		ListReader:       store,
-		SecretStore:      store,
-		SecretTransactor: store,
-		Invalidator:      systemAccountInvalidator,
-		Secret:           cfg.Secret,
+		ListReader:               store,
+		Creator:                  store,
+		UsageStatsTimezoneReader: store,
+		SecretStore:              store,
+		SecretTransactor:         store,
+		Invalidator:              systemAccountInvalidator,
+		Secret:                   cfg.Secret,
 	})
 	groupService := managementgroups.NewServiceWithOptions(managementgroups.ServiceOptions{
 		Store:                   store,
@@ -560,6 +566,8 @@ func newManagementAPIHandler(
 		MyAPIKeySecretHandler:                   httpapi.NewManagementMyAPIKeySecretHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		APIKeyRefreshHandler:                    httpapi.NewManagementAPIKeyRefreshHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		MyAPIKeyRefreshHandler:                  httpapi.NewManagementMyAPIKeyRefreshHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		APIKeyCreateHandler:                     httpapi.NewManagementAPIKeyCreateHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		MyAPIKeyCreateHandler:                   httpapi.NewManagementMyAPIKeyCreateHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		GroupListHandler:                        httpapi.NewManagementGroupListHandler(groupService),
 		MyGroupListHandler:                      httpapi.NewManagementMyGroupListHandler(groupService),
 		GroupDetailHandler:                      httpapi.NewManagementGroupDetailHandler(groupService),
