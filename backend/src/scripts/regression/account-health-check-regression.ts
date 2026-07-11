@@ -49,6 +49,11 @@ try {
   assert.doesNotMatch(postgresSuccessSource, /\(\? IS NULL OR/, 'PostgreSQL 健康成功写回不能使用无法推断参数类型的 NULL 守卫')
   assert.doesNotMatch(postgresFailureSource, /\(\? IS NULL OR/, 'PostgreSQL 健康失败写回不能使用无法推断参数类型的 NULL 守卫')
   assert.match(repositorySource, /CASE WHEN accounts\.status = 'pending_test' THEN 0 ELSE 1 END/, '周期兜底应优先处理待检查账户')
+  assert.equal(
+    repositorySource.match(/accounts\.status = 'pending_test' AND accounts\.last_health_check_at IS NULL/g)?.length,
+    2,
+    'SQLite 和 PostgreSQL 候选查询都应让从未检查的待检查账户忽略遗留复检时间'
+  )
   assert.match(serviceSource, /queuedConfigRevision[\s\S]+currentConfigRevision/, '健康检查队列执行前必须丢弃旧配置版本任务')
   assert.match(serviceSource, /healthCheckGuard/, '达到阈值后的保护状态写入必须携带健康失败快照')
   assert.match(serviceSource, /errorLogFields\(event\.error/, '健康检查队列耗尽日志必须保留真实异常')
@@ -139,8 +144,35 @@ try {
     WHERE id = ?
   `).run(oldCheckAt, recentSuccessAt, recentAccount.id)
 
+  const pendingFirstCheckAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '待检查账户不应继承未来复检时间',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-health-pending-first-check',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: group.id
+  }, access)
+  database.prepare(`
+    UPDATE accounts
+    SET next_health_check_at = ?,
+        last_health_check_at = NULL,
+        last_health_success_at = ?
+    WHERE id = ?
+  `).run(
+    new Date(Date.now() + 12 * 60 * 60_000).toISOString(),
+    new Date().toISOString(),
+    pendingFirstCheckAccount.id
+  )
+
   const due = repositories.listAccountsDueForHealthCheck({ limit: 10, ...healthSettings })
-  assert.deepEqual(due.map((account) => account.id), [dueAccount.id], '候选查询只应返回到期且缺少近期成功信号的正常账号')
+  assert.deepEqual(
+    due.map((account) => account.id),
+    [pendingFirstCheckAccount.id, dueAccount.id],
+    '从未完成后台检查的待检查账户必须忽略遗留的未来复检时间并优先入队'
+  )
 
   const recentAfterSkip = repositories.findAccountSummary(recentAccount.id, access)
   assert.equal(recentAfterSkip?.healthCheckFailureCount, 0, '近期成功信号应清理健康检测失败计数')

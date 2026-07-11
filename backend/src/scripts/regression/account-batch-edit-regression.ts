@@ -239,17 +239,15 @@ try {
     assert.equal(stored?.credentials.reasoning_effort_override, 'high', '批量思考级别应写入 snake_case credentials')
   }
 
-  await assert.rejects(
-    batchEditAccountsAsync({
-      targets: targets(requiredAccount(accountA.id), requiredAccount(accountB.id)),
-      updates: {
-        supportedModels: { enabled: true, value: ['gpt-5.6-sol', 'gpt-5.5'] }
-      }
-    }, access),
-    /gpt-5\.5/,
-    '批量支持模型变化必须重新校验已有思考覆盖的能力交集'
-  )
-  assert.equal(requiredAccount(accountA.id).configRevision, 4, '能力交集失败后不能部分增加版本')
+  const expandedModelsResult = await batchEditAccountsAsync({
+    targets: targets(requiredAccount(accountA.id), requiredAccount(accountB.id)),
+    updates: {
+      supportedModels: { enabled: true, value: ['gpt-5.6-sol', 'gpt-5.5'] }
+    }
+  }, access)
+  for (const account of expandedModelsResult.accounts) {
+    assert.equal(account.configRevision, 5, '增加低能力模型时应保留由其他模型支持的期望覆盖')
+  }
 
   const clearedOverrideResult = await batchEditAccountsAsync({
     targets: targets(requiredAccount(accountA.id), requiredAccount(accountB.id)),
@@ -260,7 +258,7 @@ try {
     }
   }, access)
   for (const account of clearedOverrideResult.accounts) {
-    assert.equal(account.configRevision, 5, '清除 GPT 覆盖后应增加配置版本')
+    assert.equal(account.configRevision, 6, '清除 GPT 覆盖后应增加配置版本')
     const stored = repositories.findAccountForTest(account.id, access)
     assert.equal(stored?.credentials.service_tier_override, undefined, 'null 应清除服务等级覆盖')
     assert.equal(stored?.credentials.reasoning_effort_override, undefined, '空字符串应清除思考级别覆盖')
@@ -288,7 +286,7 @@ try {
     /相同供应商、协议档案和账户类型/,
     '模型配置批次必须拒绝不同账户类型'
   )
-  assert.equal(requiredAccount(accountA.id).configRevision, 5, '异构模型批次失败不应修改既有账户')
+  assert.equal(requiredAccount(accountA.id).configRevision, 6, '异构模型批次失败不应修改既有账户')
 
   await assert.rejects(
     batchEditAccountsAsync({

@@ -16,6 +16,12 @@ export interface ApplyGptAccountRequestOverridesInput {
   credentials?: Record<string, unknown>
   endpointFamily?: GptRequestOverrideEndpointFamily
   compact?: boolean
+  modelCapabilities?: GptRequestOverrideModelCapabilities
+}
+
+export interface GptRequestOverrideModelCapabilities {
+  supportedServiceTiers: readonly GptServiceTier[]
+  supportedReasoningEfforts: readonly GptWireReasoningEffort[]
 }
 
 export class GptAccountRequestOverrideError extends Error {
@@ -44,29 +50,30 @@ export function applyGptAccountRequestOverrides(
   input: ApplyGptAccountRequestOverridesInput
 ): Record<string, unknown> {
   const overrides = readGptAccountRequestOverrides(input.credentials)
-  if (!hasApplicableGptAccountRequestOverrides(overrides, input.endpointFamily, input.compact === true)) {
+  const effectiveOverrides = effectiveGptAccountRequestOverrides(overrides, input.modelCapabilities)
+  if (!hasApplicableGptAccountRequestOverrides(effectiveOverrides, input.endpointFamily, input.compact === true)) {
     return inputBody as Record<string, unknown>
   }
 
   const body: Record<string, unknown> = { ...inputBody }
-  if (overrides.serviceTier === 'default') {
+  if (effectiveOverrides.serviceTier === 'default') {
     delete body.service_tier
-  } else if (overrides.serviceTier) {
-    body.service_tier = overrides.serviceTier
+  } else if (effectiveOverrides.serviceTier) {
+    body.service_tier = effectiveOverrides.serviceTier
   }
 
-  if (input.compact || !overrides.reasoningEffort) {
+  if (input.compact || !effectiveOverrides.reasoningEffort) {
     return body
   }
   if (input.endpointFamily === 'responses') {
     const reasoning = isPlainObject(body.reasoning) ? body.reasoning : {}
     body.reasoning = {
       ...reasoning,
-      effort: overrides.reasoningEffort
+      effort: effectiveOverrides.reasoningEffort
     }
     delete body.reasoning_effort
   } else if (input.endpointFamily === 'chat_completions') {
-    body.reasoning_effort = overrides.reasoningEffort
+    body.reasoning_effort = effectiveOverrides.reasoningEffort
     delete body.reasoning
   }
   return body
@@ -79,6 +86,17 @@ export function hasApplicableGptAccountRequestOverrides(
 ): boolean {
   if (!endpointFamily) return false
   return Boolean(overrides.serviceTier || (!compact && overrides.reasoningEffort))
+}
+
+export function effectiveGptAccountRequestOverrides(
+  overrides: GptAccountRequestOverrides,
+  capabilities: GptRequestOverrideModelCapabilities | undefined
+): GptAccountRequestOverrides {
+  if (!capabilities) return {}
+  return {
+    serviceTier: downgradedServiceTier(overrides.serviceTier, capabilities.supportedServiceTiers),
+    reasoningEffort: downgradedReasoningEffort(overrides.reasoningEffort, capabilities.supportedReasoningEfforts)
+  }
 }
 
 function optionalCredentialEnum<TValue extends string>(
@@ -115,3 +133,45 @@ const gptReasoningEffortOverrides = new Set<GptReasoningEffortOverride>([
   'xhigh',
   'max'
 ])
+
+const gptServiceTierOrder: readonly GptServiceTierOverride[] = ['flex', 'default', 'priority']
+const gptReasoningEffortOrder: readonly GptReasoningEffortOverride[] = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+]
+
+function downgradedServiceTier(
+  configured: GptServiceTierOverride | undefined,
+  supported: readonly GptServiceTier[]
+): GptServiceTierOverride | undefined {
+  if (!configured) return undefined
+  return highestSupportedAtOrBelow(configured, ['default', ...supported], gptServiceTierOrder)
+}
+
+function downgradedReasoningEffort(
+  configured: GptReasoningEffortOverride | undefined,
+  supported: readonly GptWireReasoningEffort[]
+): GptReasoningEffortOverride | undefined {
+  if (!configured) return undefined
+  return highestSupportedAtOrBelow(configured, supported, gptReasoningEffortOrder)
+}
+
+function highestSupportedAtOrBelow<TValue extends string>(
+  configured: TValue,
+  supported: readonly TValue[],
+  order: readonly TValue[]
+): TValue | undefined {
+  const configuredIndex = order.indexOf(configured)
+  if (configuredIndex < 0) return undefined
+  const supportedSet = new Set(supported)
+  for (let index = configuredIndex; index >= 0; index -= 1) {
+    const candidate = order[index]
+    if (candidate && supportedSet.has(candidate)) return candidate
+  }
+  return undefined
+}

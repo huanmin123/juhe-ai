@@ -109,11 +109,15 @@ function testGptAccountRequestOverridePureFunction(): void {
       service_tier_override: 'priority',
       reasoning_effort_override: 'max'
     },
-    endpointFamily: 'responses'
+    endpointFamily: 'responses',
+    modelCapabilities: {
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['low', 'medium', 'high']
+    }
   })
   assert.equal(responsesOutput.service_tier, 'priority')
   assert.deepEqual(responsesOutput.reasoning, {
-    effort: 'max',
+    effort: 'high',
     summary: 'detailed'
   })
   assert.equal(responsesOutput.reasoning_effort, undefined)
@@ -132,7 +136,11 @@ function testGptAccountRequestOverridePureFunction(): void {
       service_tier_override: 'default',
       reasoning_effort_override: 'none'
     },
-    endpointFamily: 'chat_completions'
+    endpointFamily: 'chat_completions',
+    modelCapabilities: {
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['none']
+    }
   })
   assert.equal(chatOutput.service_tier, undefined)
   assert.equal(chatOutput.reasoning_effort, 'none')
@@ -144,9 +152,27 @@ function testGptAccountRequestOverridePureFunction(): void {
     credentials: {
       service_tier_override: 'flex'
     },
-    endpointFamily: 'responses'
+    endpointFamily: 'responses',
+    modelCapabilities: {
+      supportedServiceTiers: ['flex'],
+      supportedReasoningEfforts: []
+    }
   })
   assert.equal(flexOutput.service_tier, 'flex')
+
+  const serviceTierDowngradedOutput = applyGptAccountRequestOverrides({
+    service_tier: 'flex'
+  }, {
+    credentials: {
+      service_tier_override: 'priority'
+    },
+    endpointFamily: 'responses',
+    modelCapabilities: {
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: []
+    }
+  })
+  assert.equal(serviceTierDowngradedOutput.service_tier, undefined, 'Priority 不受支持时应降为模型隐式支持的 Default')
 
   const compactOutput = applyGptAccountRequestOverrides({
     service_tier: 'flex',
@@ -157,6 +183,10 @@ function testGptAccountRequestOverridePureFunction(): void {
       reasoning_effort_override: 'max'
     },
     endpointFamily: 'responses',
+    modelCapabilities: {
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['max']
+    },
     compact: true
   })
   assert.equal(compactOutput.service_tier, 'priority')

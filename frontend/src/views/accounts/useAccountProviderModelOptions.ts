@@ -89,6 +89,9 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
         const existing = output.find((item) => item.value === model)
         if (existing) {
           existing.supportedApiProtocols = mergeModelProtocols(existing.supportedApiProtocols, option.supportedApiProtocols)
+          existing.supportedServiceTiers = mergeOptionalLists(existing.supportedServiceTiers, option.supportedServiceTiers)
+          existing.supportedReasoningEfforts = mergeOptionalLists(existing.supportedReasoningEfforts, option.supportedReasoningEfforts)
+          existing.defaultReasoningEffort ??= option.defaultReasoningEffort
         }
         continue
       }
@@ -107,6 +110,17 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
 
   function cloneOptionalList<TValue>(value: TValue[] | undefined): TValue[] | undefined {
     return value ? [...value] : undefined
+  }
+
+  function mergeOptionalLists<TValue>(left: TValue[] | undefined, right: TValue[] | undefined): TValue[] | undefined {
+    const output = [...(left ?? [])]
+    const seen = new Set(output)
+    for (const value of right ?? []) {
+      if (seen.has(value)) continue
+      seen.add(value)
+      output.push(value)
+    }
+    return output.length ? output : undefined
   }
 
   function mergeModelProtocols(

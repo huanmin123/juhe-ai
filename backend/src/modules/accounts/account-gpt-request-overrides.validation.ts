@@ -70,13 +70,9 @@ export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
     throw new Error('GPT 请求覆盖要求账户至少配置一个支持模型')
   }
   const catalogByModel = new Map(input.catalog.map((item) => [item.model.trim(), item]))
-  const modelItems = supportedModels.map((model) => {
-    const item = catalogByModel.get(model)
-    if (!item) {
-      throw new Error(`模型目录缺少账户支持模型，不能配置 GPT 请求覆盖：${model}`)
-    }
-    return item
-  })
+  const modelItems = supportedModels
+    .map((model) => catalogByModel.get(model))
+    .filter((item): item is ProviderModelCatalogItem => Boolean(item))
 
   if (input.overrides.serviceTier) {
     if (input.accountType === 'oauth' && input.overrides.serviceTier === 'flex') {
@@ -85,23 +81,19 @@ export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
     const requiredTier = input.overrides.serviceTier === 'default'
       ? undefined
       : input.overrides.serviceTier
-    const unsupportedModels = modelItems
-      .filter((item) => requiredTier
-        ? !item.supportedServiceTiers.includes(requiredTier)
-        : item.supportedServiceTiers.length === 0)
-      .map((item) => item.model)
-    if (unsupportedModels.length) {
+    const supported = modelItems.some((item) => requiredTier
+      ? item.supportedServiceTiers.includes(requiredTier)
+      : item.supportedServiceTiers.length > 0)
+    if (!supported) {
       const label = requiredTier ? `服务等级 ${requiredTier}` : '服务等级覆盖'
-      throw new Error(`以下账户支持模型不支持${label}：${unsupportedModels.join('、')}`)
+      throw new Error(`账户支持模型中没有模型支持${label}`)
     }
   }
 
   if (input.overrides.reasoningEffort) {
-    const unsupportedModels = modelItems
-      .filter((item) => !item.supportedReasoningEfforts.includes(input.overrides.reasoningEffort!))
-      .map((item) => item.model)
-    if (unsupportedModels.length) {
-      throw new Error(`以下账户支持模型不支持思考级别 ${input.overrides.reasoningEffort}：${unsupportedModels.join('、')}`)
+    const supported = modelItems.some((item) => item.supportedReasoningEfforts.includes(input.overrides.reasoningEffort!))
+    if (!supported) {
+      throw new Error(`账户支持模型中没有模型支持思考级别 ${input.overrides.reasoningEffort}`)
     }
   }
 }
