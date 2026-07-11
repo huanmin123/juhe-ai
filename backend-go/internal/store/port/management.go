@@ -679,6 +679,8 @@ var (
 	ErrManagementAPIKeyRouteStrategyDisabled = errors.New("management API Key route strategy disabled")
 	ErrManagementAPIKeyNameExists            = errors.New("management API Key name exists")
 	ErrManagementAPIKeyHashExists            = errors.New("management API Key hash exists")
+	ErrManagementAPIKeyNotFound              = errors.New("management API Key not found")
+	ErrManagementAPIKeyDefaultRouteChange    = errors.New("management default API Key route change")
 )
 
 type ManagementAPIKeyCreateInput struct {
@@ -704,6 +706,40 @@ type ManagementAPIKeyCreateInput struct {
 
 type ManagementAPIKeyCreator interface {
 	CreateManagementAPIKey(ctx context.Context, input ManagementAPIKeyCreateInput) (ManagementAPIKeyListRow, error)
+}
+
+type ManagementAPIKeyUpdateInput struct {
+	APIKeyID                        string
+	OwnerSystemAccountID            string
+	HasName                         bool
+	Name                            string
+	HasDescription                  bool
+	Description                     *string
+	HasRouteStrategyID              bool
+	RouteStrategyID                 string
+	HasStatus                       bool
+	Status                          string
+	HasExpiresAt                    bool
+	ExpiresAt                       *time.Time
+	HasQuotaLimits                  bool
+	QuotaLimitsJSON                 *string
+	HourlyQuotaHours                *int
+	HasAvailabilitySchedule         bool
+	AvailabilityScheduleJSON        *string
+	AvailabilityScheduleNextCheckAt *time.Time
+	UpdatedAt                       time.Time
+}
+
+type ManagementAPIKeyUpdateResult struct {
+	Before ManagementAPIKeyListRow
+	After  ManagementAPIKeyListRow
+}
+
+type ManagementAPIKeyUpdater interface {
+	UpdateManagementAPIKey(
+		ctx context.Context,
+		input ManagementAPIKeyUpdateInput,
+	) (ManagementAPIKeyUpdateResult, error)
 }
 
 type ManagementAPIKeyUsageScope struct {
