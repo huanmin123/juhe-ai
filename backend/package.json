@@ -203,6 +203,7 @@
     "test:account-model-mapping": "tsx src/scripts/regression/account-model-mapping-regression.ts",
     "test:cooldown-retest-recovery": "tsx src/scripts/regression/cooldown-retest-recovery-regression.ts",
     "test:speed-first-body-admission": "tsx src/scripts/regression/speed-first-body-admission-regression.ts",
+    "test:speed-first-body-admission-http": "tsx src/scripts/regression/speed-first-body-admission-http-regression.ts",
     "test:speed-first-cutover-reservation": "tsx src/scripts/regression/speed-first-cutover-reservation-regression.ts",
     "test:api-key-inflight-quota": "tsx src/scripts/regression/api-key-inflight-quota-regression.ts",
     "test:usage-record-shard-routing": "tsx src/scripts/regression/usage-record-shard-routing-regression.ts",
