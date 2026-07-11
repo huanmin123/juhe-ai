@@ -10,46 +10,38 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"juhe-ai/backend-go/internal/apikeysecret"
+	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
+	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementauth"
+	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	"juhe-ai/backend-go/internal/secretcrypto"
 )
 
-const w5ManagementAPIKeySecretRuntimeSecret = "w5-management-api-key-secret-runtime-secret"
-
-type w5ManagementAPIKeySecretInvalidator struct {
-	events []string
-}
-
-func (s *w5ManagementAPIKeySecretInvalidator) InvalidateAPIKeyValidationCache(context.Context) error {
-	s.events = append(s.events, "validation")
-	return nil
-}
-
-func (s *w5ManagementAPIKeySecretInvalidator) InvalidateGatewayRuntime(
-	_ context.Context,
-	reason string,
-) error {
-	s.events = append(s.events, "runtime:"+reason)
-	return nil
-}
-
-func (s *w5ManagementAPIKeySecretInvalidator) InvalidateAPIKeyQuotaChanged(
-	_ context.Context,
-	apiKeyID string,
-	reason string,
-) error {
-	s.events = append(s.events, "quota:"+apiKeyID+":"+reason)
-	return nil
-}
+const (
+	w5ManagementAPIKeySecretRuntimeSecret       = "w5-management-api-key-secret-runtime-secret"
+	w5ManagementAPIKeySecretRedisNamespace      = "w5-management-api-key-secret"
+	w5ManagementAPIKeySecretAdminRevealLogID    = "oplog_w5_management_api_key_secret_admin_reveal"
+	w5ManagementAPIKeySecretSelfRevealLogID     = "oplog_w5_management_api_key_secret_self_reveal"
+	w5ManagementAPIKeySecretAdminRefreshLogID   = "oplog_w5_management_api_key_secret_admin_refresh"
+	w5ManagementAPIKeySecretRepairedRevealLogID = "oplog_w5_management_api_key_secret_repaired_reveal"
+)
 
 func exerciseW5ManagementAPIKeySecretSmoke(
 	t *testing.T,
 	ctx context.Context,
 	db *sql.DB,
 	router http.Handler,
-	invalidator *w5ManagementAPIKeySecretInvalidator,
+	cacheRedis *redisplatform.Client,
+	stateRedis *redisplatform.Client,
+	inspector *queue.Inspector,
+	workerDone <-chan struct{},
+	workerErr func() error,
+	sessionLastSeenAt time.Time,
+	now time.Time,
 ) {
 	t.Helper()
 
@@ -78,9 +70,10 @@ func exerciseW5ManagementAPIKeySecretSmoke(
 			"/secret?systemAccountId="+w5ManagementAPIKeyListOtherID,
 		w5ManagementAPIKeyListAdminToken,
 		"",
+		"req_w5_management_api_key_secret_wrong_owner",
 	)
 	if wrongOwner.Code != http.StatusNotFound {
-		t.Fatalf("wrong-owner reveal status = %d, body = %s", wrongOwner.Code, wrongOwner.Body.String())
+		t.Fatalf("wrong-owner reveal status = %d, want %d", wrongOwner.Code, http.StatusNotFound)
 	}
 
 	adminReveal := serveW5ManagementAPIKeySecretRequest(
@@ -89,8 +82,11 @@ func exerciseW5ManagementAPIKeySecretSmoke(
 		"/__aisys__/api/api-keys/"+w5ManagementAPIKeyListOwnerDefaultID+"/secret",
 		w5ManagementAPIKeyListAdminToken,
 		"",
+		"req_w5_management_api_key_secret_admin_reveal",
 	)
 	assertW5ManagementAPIKeySecretReveal(t, adminReveal, existingKey)
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, w5ManagementAPIKeyListAdminSID, sessionLastSeenAt)
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, w5ManagementAPIKeyListOwnerSID, sessionLastSeenAt)
 
 	selfReveal := serveW5ManagementAPIKeySecretRequest(
 		router,
@@ -99,8 +95,11 @@ func exerciseW5ManagementAPIKeySecretSmoke(
 			"/secret?systemAccountId="+w5ManagementAPIKeyListOtherID,
 		w5ManagementAPIKeyListOwnerToken,
 		"",
+		"req_w5_management_api_key_secret_self_reveal",
 	)
 	assertW5ManagementAPIKeySecretReveal(t, selfReveal, existingKey)
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, w5ManagementAPIKeyListAdminSID, sessionLastSeenAt)
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, w5ManagementAPIKeyListOwnerSID, sessionLastSeenAt)
 
 	if _, err := db.ExecContext(ctx, `
 		UPDATE juhe_business.api_keys
@@ -115,21 +114,44 @@ func exerciseW5ManagementAPIKeySecretSmoke(
 		"/__aisys__/api/my-api-keys/"+w5ManagementAPIKeyListEmptyUsageID+"/secret",
 		w5ManagementAPIKeyListOwnerToken,
 		"",
+		"req_w5_management_api_key_secret_null_reveal",
 	)
 	if nullReveal.Code != http.StatusInternalServerError {
-		t.Fatalf("NULL ciphertext reveal status = %d, body = %s", nullReveal.Code, nullReveal.Body.String())
+		t.Fatalf(
+			"NULL ciphertext reveal status = %d, want %d",
+			nullReveal.Code,
+			http.StatusInternalServerError,
+		)
+	}
+
+	wrongOwnerRefresh := serveW5ManagementAPIKeySecretRequest(
+		router,
+		http.MethodPost,
+		"/__aisys__/api/api-keys/"+w5ManagementAPIKeyListEmptyUsageID+
+			"/refresh-key?systemAccountId="+w5ManagementAPIKeyListOtherID,
+		w5ManagementAPIKeyListAdminToken,
+		"{}",
+		"req_w5_management_api_key_secret_wrong_owner_refresh",
+	)
+	if wrongOwnerRefresh.Code != http.StatusNotFound {
+		t.Fatalf(
+			"wrong-owner refresh status = %d, want %d",
+			wrongOwnerRefresh.Code,
+			http.StatusNotFound,
+		)
 	}
 
 	refresh := serveW5ManagementAPIKeySecretRequest(
 		router,
 		http.MethodPost,
-		"/__aisys__/api/my-api-keys/"+w5ManagementAPIKeyListEmptyUsageID+
-			"/refresh-key?systemAccountId="+w5ManagementAPIKeyListOtherID,
-		w5ManagementAPIKeyListOwnerToken,
-		"{}",
+		"/__aisys__/api/api-keys/"+w5ManagementAPIKeyListEmptyUsageID+
+			"/refresh-key?systemAccountId="+w5ManagementAPIKeyListOwnerID,
+		w5ManagementAPIKeyListAdminToken,
+		`{"ignored":true}`,
+		"req_w5_management_api_key_secret_admin_refresh",
 	)
 	if refresh.Code != http.StatusOK {
-		t.Fatalf("self refresh status = %d, body = %s", refresh.Code, refresh.Body.String())
+		t.Fatalf("admin refresh status = %d, want %d", refresh.Code, http.StatusOK)
 	}
 	assertW5ManagementAPIKeySecretNoStore(t, refresh)
 	var refreshEnvelope struct {
@@ -140,29 +162,32 @@ func exerciseW5ManagementAPIKeySecretSmoke(
 		t.Fatalf("decode self refresh response: %v", err)
 	}
 	if refreshEnvelope.Message != "API Key 密钥已刷新，请立即复制完整密钥" {
-		t.Fatalf("self refresh message = %q", refreshEnvelope.Message)
+		t.Fatalf("admin refresh message = %q", refreshEnvelope.Message)
 	}
-	for _, forbidden := range []string{
-		"systemAccountId",
-		"systemAccountName",
-		"keyHash",
-		"keySecretEncrypted",
-	} {
+	for _, forbidden := range []string{"keyHash", "keySecretEncrypted"} {
 		if _, exists := refreshEnvelope.Data[forbidden]; exists {
-			t.Fatalf("self refresh exposed %s: %s", forbidden, refresh.Body.String())
+			t.Fatalf("admin refresh exposed forbidden field %s", forbidden)
 		}
 	}
+	assertW5ManagementAPIKeySecretStringField(
+		t,
+		refreshEnvelope.Data,
+		"systemAccountId",
+		w5ManagementAPIKeyListOwnerID,
+	)
+	assertW5ManagementAPIKeySecretStringField(
+		t,
+		refreshEnvelope.Data,
+		"systemAccountName",
+		"W5 API Key List Owner",
+	)
 	var refreshedKey string
 	if err := json.Unmarshal(refreshEnvelope.Data["key"], &refreshedKey); err != nil || refreshedKey == "" {
-		t.Fatalf("decode refreshed key: key=%q err=%v", refreshedKey, err)
+		t.Fatalf("decode refreshed key: err=%v empty=%t", err, refreshedKey == "")
 	}
-	if got, want := invalidator.events, []string{
-		"validation",
-		"runtime:api_key_secret_refreshed",
-		"quota:" + w5ManagementAPIKeyListEmptyUsageID + ":api_key_secret_refreshed",
-	}; !equalStrings(got, want) {
-		t.Fatalf("secret refresh invalidations = %#v, want %#v", got, want)
-	}
+	assertW5ManagementAPIKeySecretRedisInvalidations(t, ctx, cacheRedis, stateRedis, now)
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, w5ManagementAPIKeyListAdminSID, now)
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, w5ManagementAPIKeyListOwnerSID, sessionLastSeenAt)
 
 	var storedHash string
 	var storedPrefix string
@@ -192,7 +217,7 @@ func exerciseW5ManagementAPIKeySecretSmoke(
 	}
 	storedPayload, err := codec.DecryptJSON(storedEncrypted)
 	if err != nil || storedPayload["key"] != refreshedKey {
-		t.Fatalf("stored refreshed ciphertext payload=%#v err=%v", storedPayload, err)
+		t.Fatalf("stored refreshed ciphertext does not match response: err=%v", err)
 	}
 
 	repairedReveal := serveW5ManagementAPIKeySecretRequest(
@@ -201,8 +226,23 @@ func exerciseW5ManagementAPIKeySecretSmoke(
 		"/__aisys__/api/my-api-keys/"+w5ManagementAPIKeyListEmptyUsageID+"/secret",
 		w5ManagementAPIKeyListOwnerToken,
 		"",
+		"req_w5_management_api_key_secret_repaired_reveal",
 	)
 	assertW5ManagementAPIKeySecretReveal(t, repairedReveal, refreshedKey)
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, w5ManagementAPIKeyListAdminSID, now)
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, w5ManagementAPIKeyListOwnerSID, sessionLastSeenAt)
+
+	if err := waitForOperationLogQueueDrained(ctx, inspector, workerDone, workerErr); err != nil {
+		t.Fatal(err)
+	}
+	queueInfo, err := inspector.QueueInfo(operationlogjob.QueueName)
+	if err != nil {
+		t.Fatalf("read API Key secret operation log queue info: %v", err)
+	}
+	if queueInfo.Archived != 0 || queueInfo.Completed != 4 {
+		t.Fatalf("API Key secret operation log queue info = %+v, want exactly 4 completed and 0 archived", queueInfo)
+	}
+	assertW5ManagementAPIKeySecretOperationLogs(t, ctx, db, existingKey, refreshedKey, now)
 }
 
 func serveW5ManagementAPIKeySecretRequest(
@@ -211,13 +251,18 @@ func serveW5ManagementAPIKeySecretRequest(
 	target string,
 	sessionToken string,
 	body string,
+	requestID string,
 ) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	if sessionToken != "" {
 		req.Header.Set("Cookie", managementauth.SessionCookieName+"="+sessionToken)
 	}
 	req.Header.Set("User-Agent", "w5-management-api-key-secret-smoke")
+	req.Header.Set("X-Request-Id", requestID)
 	req.RemoteAddr = "127.0.0.1:12345"
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	return rec
@@ -230,7 +275,7 @@ func assertW5ManagementAPIKeySecretReveal(
 ) {
 	t.Helper()
 	if rec.Code != http.StatusOK {
-		t.Fatalf("secret reveal status = %d, body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("secret reveal status = %d, want %d", rec.Code, http.StatusOK)
 	}
 	assertW5ManagementAPIKeySecretNoStore(t, rec)
 	var envelope struct {
@@ -240,11 +285,11 @@ func assertW5ManagementAPIKeySecretReveal(
 		t.Fatalf("decode secret reveal response: %v", err)
 	}
 	if len(envelope.Data) != 1 {
-		t.Fatalf("secret reveal fields = %#v", envelope.Data)
+		t.Fatalf("secret reveal field count = %d, want 1", len(envelope.Data))
 	}
 	var key string
 	if err := json.Unmarshal(envelope.Data["key"], &key); err != nil || key != wantKey {
-		t.Fatalf("secret reveal key = %q, want %q, err=%v", key, wantKey, err)
+		t.Fatalf("secret reveal key mismatch: err=%v", err)
 	}
 }
 
@@ -256,14 +301,507 @@ func assertW5ManagementAPIKeySecretNoStore(t *testing.T, rec *httptest.ResponseR
 	}
 }
 
-func equalStrings(left []string, right []string) bool {
-	if len(left) != len(right) {
-		return false
+func assertW5ManagementAPIKeySecretStringField(
+	t *testing.T,
+	fields map[string]json.RawMessage,
+	field string,
+	want string,
+) {
+	t.Helper()
+	var got string
+	if err := json.Unmarshal(fields[field], &got); err != nil {
+		t.Fatalf("decode refresh %s: %v", field, err)
 	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
+	if got != want {
+		t.Fatalf("refresh %s = %q, want %q", field, got, want)
+	}
+}
+
+func assertW5ManagementAPIKeySecretRedisInvalidations(
+	t *testing.T,
+	ctx context.Context,
+	cacheRedis *redisplatform.Client,
+	stateRedis *redisplatform.Client,
+	wantPublishedAt time.Time,
+) {
+	t.Helper()
+	versionKey, err := gatewaycache.SharedCacheVersionKey(
+		w5ManagementAPIKeySecretRedisNamespace,
+		gatewaycache.APIKeyValidationCacheName,
+	)
+	if err != nil {
+		t.Fatalf("build API Key validation cache key: %v", err)
+	}
+	rawVersion, err := cacheRedis.GetRaw(ctx, versionKey)
+	if err != nil {
+		t.Fatalf("read API Key validation cache key %s: %v", versionKey, err)
+	}
+	if got := string(rawVersion); got != "w5-api-key-secret-version-1" {
+		t.Fatalf("API Key validation cache version = %q, want version 1", got)
+	}
+	assertW5ManagementAPIKeySecretInvalidationTopic(
+		t,
+		ctx,
+		stateRedis,
+		gatewaycache.GatewayRuntimeCacheTopic,
+		"w5-api-key-secret-version-2",
+		"",
+		wantPublishedAt,
+	)
+	assertW5ManagementAPIKeySecretInvalidationTopic(
+		t,
+		ctx,
+		stateRedis,
+		gatewaycache.APIKeyQuotaCacheTopic,
+		"w5-api-key-secret-version-3",
+		w5ManagementAPIKeyListEmptyUsageID,
+		wantPublishedAt,
+	)
+}
+
+func assertW5ManagementAPIKeySecretInvalidationTopic(
+	t *testing.T,
+	ctx context.Context,
+	stateRedis *redisplatform.Client,
+	topic string,
+	wantVersion string,
+	wantAPIKeyID string,
+	wantPublishedAt time.Time,
+) {
+	t.Helper()
+	key, err := gatewaycache.RuntimeStateKey(
+		w5ManagementAPIKeySecretRedisNamespace,
+		gatewaycache.RuntimeInvalidationStoreName,
+		"topic:"+topic,
+	)
+	if err != nil {
+		t.Fatalf("build API Key secret invalidation topic %s key: %v", topic, err)
+	}
+	raw, err := stateRedis.GetRaw(ctx, key)
+	if err != nil {
+		t.Fatalf("read API Key secret invalidation topic %s key %s: %v", topic, key, err)
+	}
+	var state struct {
+		Version     string `json:"version"`
+		Reason      string `json:"reason"`
+		APIKeyID    string `json:"apiKeyId,omitempty"`
+		PublishedAt string `json:"publishedAt"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatalf("decode API Key secret invalidation topic %s payload %s: %v", topic, raw, err)
+	}
+	wantPublished := wantPublishedAt.UTC().Format("2006-01-02T15:04:05.000Z")
+	if state.Version != wantVersion ||
+		state.Reason != "api_key_secret_refreshed" ||
+		state.APIKeyID != wantAPIKeyID ||
+		state.PublishedAt != wantPublished {
+		t.Fatalf(
+			"API Key secret invalidation topic %s state = %+v, want version %q reason %q apiKeyId %q publishedAt %q",
+			topic,
+			state,
+			wantVersion,
+			"api_key_secret_refreshed",
+			wantAPIKeyID,
+			wantPublished,
+		)
+	}
+}
+
+func assertW5ManagementAPIKeySecretOperationLogs(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	existingKey string,
+	refreshedKey string,
+	wantCreatedAt time.Time,
+) {
+	t.Helper()
+	var total int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*)
+		FROM juhe_dataset.operation_logs
+		WHERE id IN ($1, $2, $3, $4)
+	`,
+		w5ManagementAPIKeySecretAdminRevealLogID,
+		w5ManagementAPIKeySecretSelfRevealLogID,
+		w5ManagementAPIKeySecretAdminRefreshLogID,
+		w5ManagementAPIKeySecretRepairedRevealLogID,
+	).Scan(&total); err != nil {
+		t.Fatalf("count API Key secret operation logs: %v", err)
+	}
+	if total != 4 {
+		t.Fatalf("API Key secret operation log count = %d, want 4", total)
+	}
+	var failedTotal int
+	if err := db.QueryRowContext(ctx, `
+		SELECT count(*)
+		FROM juhe_dataset.operation_logs
+		WHERE trace_id IN ($1, $2, $3)
+	`,
+		"req_w5_management_api_key_secret_wrong_owner",
+		"req_w5_management_api_key_secret_null_reveal",
+		"req_w5_management_api_key_secret_wrong_owner_refresh",
+	).Scan(&failedTotal); err != nil {
+		t.Fatalf("count failed API Key secret operation logs: %v", err)
+	}
+	if failedTotal != 0 {
+		t.Fatalf("failed API Key secret requests wrote %d operation logs", failedTotal)
+	}
+
+	existingMarker := apikeysecret.Prefix(existingKey) + "..." + apikeysecret.Suffix(existingKey)
+	assertW5ManagementAPIKeySecretRevealOperationLog(
+		t,
+		ctx,
+		db,
+		w5ManagementAPIKeySecretAdminRevealLogID,
+		"req_w5_management_api_key_secret_admin_reveal",
+		w5ManagementAPIKeyListAdminID,
+		"w5-management-api-key-list-admin",
+		"W5 API Key List Admin",
+		"admin",
+		"admin",
+		w5ManagementAPIKeyListOwnerDefaultID,
+		"Owner Default",
+		existingMarker,
+		existingKey,
+		refreshedKey,
+		wantCreatedAt,
+	)
+	assertW5ManagementAPIKeySecretRevealOperationLog(
+		t,
+		ctx,
+		db,
+		w5ManagementAPIKeySecretSelfRevealLogID,
+		"req_w5_management_api_key_secret_self_reveal",
+		w5ManagementAPIKeyListOwnerID,
+		"w5-management-api-key-list-owner",
+		"W5 API Key List Owner",
+		"user",
+		"self",
+		w5ManagementAPIKeyListOwnerDefaultID,
+		"Owner Default",
+		existingMarker,
+		existingKey,
+		refreshedKey,
+		wantCreatedAt,
+	)
+	refreshedMarker := apikeysecret.Prefix(refreshedKey) + "..." + apikeysecret.Suffix(refreshedKey)
+	assertW5ManagementAPIKeySecretRevealOperationLog(
+		t,
+		ctx,
+		db,
+		w5ManagementAPIKeySecretRepairedRevealLogID,
+		"req_w5_management_api_key_secret_repaired_reveal",
+		w5ManagementAPIKeyListOwnerID,
+		"w5-management-api-key-list-owner",
+		"W5 API Key List Owner",
+		"user",
+		"self",
+		w5ManagementAPIKeyListEmptyUsageID,
+		"Beta Empty",
+		refreshedMarker,
+		existingKey,
+		refreshedKey,
+		wantCreatedAt,
+	)
+
+	var row struct {
+		ID                    string
+		TraceID               string
+		ActorSystemAccountID  string
+		ActorUsername         string
+		ActorDisplayName      string
+		ActorRole             string
+		OperationScopeAccount string
+		Mode                  string
+		Module                string
+		Action                string
+		OperationKey          string
+		ResourceType          string
+		ResourceID            string
+		ResourceName          string
+		Summary               string
+		DetailLevel           string
+		VisibilityScope       string
+		ChangesJSON           string
+		MetadataJSON          string
+		Method                string
+		Path                  string
+		StatusCode            int
+		ClientIP              string
+		UserAgent             string
+		CreatedAt             time.Time
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT
+			id,
+			trace_id,
+			actor_system_account_id,
+			actor_username,
+			actor_display_name,
+			actor_role,
+			operation_scope_system_account_id,
+			mode,
+			module,
+			action,
+			operation_key,
+			resource_type,
+			resource_id,
+			resource_name,
+			summary,
+			detail_level,
+			visibility_scope,
+			changes_json,
+			metadata_json,
+			method,
+			path,
+			status_code,
+			client_ip,
+			user_agent,
+			created_at
+		FROM juhe_dataset.operation_logs
+		WHERE id = $1
+	`, w5ManagementAPIKeySecretAdminRefreshLogID).Scan(
+		&row.ID,
+		&row.TraceID,
+		&row.ActorSystemAccountID,
+		&row.ActorUsername,
+		&row.ActorDisplayName,
+		&row.ActorRole,
+		&row.OperationScopeAccount,
+		&row.Mode,
+		&row.Module,
+		&row.Action,
+		&row.OperationKey,
+		&row.ResourceType,
+		&row.ResourceID,
+		&row.ResourceName,
+		&row.Summary,
+		&row.DetailLevel,
+		&row.VisibilityScope,
+		&row.ChangesJSON,
+		&row.MetadataJSON,
+		&row.Method,
+		&row.Path,
+		&row.StatusCode,
+		&row.ClientIP,
+		&row.UserAgent,
+		&row.CreatedAt,
+	); err != nil {
+		t.Fatalf("read API Key refresh operation log: %v", err)
+	}
+	refreshPath := "/__aisys__/api/api-keys/" + w5ManagementAPIKeyListEmptyUsageID + "/refresh-key"
+	if row.ID != w5ManagementAPIKeySecretAdminRefreshLogID ||
+		row.TraceID != "req_w5_management_api_key_secret_admin_refresh" ||
+		row.ActorSystemAccountID != w5ManagementAPIKeyListAdminID ||
+		row.ActorUsername != "w5-management-api-key-list-admin" ||
+		row.ActorDisplayName != "W5 API Key List Admin" ||
+		row.ActorRole != "admin" ||
+		row.OperationScopeAccount != w5ManagementAPIKeyListOwnerID ||
+		row.Mode != "admin" ||
+		row.Module != "api_keys" ||
+		row.Action != "refresh_key" ||
+		row.OperationKey != "api_keys.refresh_key" ||
+		row.ResourceType != "api_key" ||
+		row.ResourceID != w5ManagementAPIKeyListEmptyUsageID ||
+		row.ResourceName != "Beta Empty" ||
+		row.Summary != "刷新 API Key 密钥：Beta Empty" ||
+		row.DetailLevel != "full" ||
+		row.VisibilityScope != "targeted" ||
+		row.Method != http.MethodPost ||
+		row.Path != refreshPath ||
+		row.StatusCode != http.StatusOK ||
+		row.ClientIP != "127.0.0.1" ||
+		row.UserAgent != "w5-management-api-key-secret-smoke" ||
+		!row.CreatedAt.UTC().Equal(wantCreatedAt.UTC()) {
+		t.Fatal("API Key refresh operation log does not match the expected contract")
+	}
+	var changes []struct {
+		Field  string `json:"field"`
+		Label  string `json:"label"`
+		Before string `json:"before"`
+		After  string `json:"after"`
+	}
+	if err := json.Unmarshal([]byte(row.ChangesJSON), &changes); err != nil {
+		t.Fatalf("decode API Key refresh operation log changes: %v", err)
+	}
+	wantAfter := refreshedMarker
+	if len(changes) != 1 ||
+		changes[0].Field != "key" ||
+		changes[0].Label != "密钥标识" ||
+		changes[0].Before != "sk-w5-empty...emp123" ||
+		changes[0].After != wantAfter {
+		t.Fatal("API Key refresh operation log has unexpected marker changes")
+	}
+	if row.MetadataJSON != "{}" {
+		t.Fatal("API Key refresh operation log metadata is not empty")
+	}
+	for _, value := range []string{row.ChangesJSON, row.MetadataJSON, row.Summary, row.ResourceName} {
+		if strings.Contains(value, existingKey) || strings.Contains(value, refreshedKey) {
+			t.Fatal("API Key refresh operation log leaked a full secret")
 		}
 	}
-	return true
+}
+
+func assertW5ManagementAPIKeySecretRevealOperationLog(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	id string,
+	traceID string,
+	actorSystemAccountID string,
+	actorUsername string,
+	actorDisplayName string,
+	actorRole string,
+	mode string,
+	resourceID string,
+	resourceName string,
+	keyMarker string,
+	existingKey string,
+	refreshedKey string,
+	wantCreatedAt time.Time,
+) {
+	t.Helper()
+	var row struct {
+		ID                    string
+		TraceID               string
+		ActorSystemAccountID  string
+		ActorUsername         string
+		ActorDisplayName      string
+		ActorRole             string
+		OperationScopeAccount string
+		Mode                  string
+		Module                string
+		Action                string
+		OperationKey          string
+		ResourceType          string
+		ResourceID            string
+		ResourceName          string
+		Summary               string
+		DetailLevel           string
+		VisibilityScope       string
+		ChangesJSON           string
+		MetadataJSON          string
+		Method                string
+		Path                  string
+		StatusCode            int
+		ClientIP              string
+		UserAgent             string
+		CreatedAt             time.Time
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT
+			id,
+			trace_id,
+			actor_system_account_id,
+			actor_username,
+			actor_display_name,
+			actor_role,
+			operation_scope_system_account_id,
+			mode,
+			module,
+			action,
+			operation_key,
+			resource_type,
+			resource_id,
+			resource_name,
+			summary,
+			detail_level,
+			visibility_scope,
+			changes_json,
+			metadata_json,
+			method,
+			path,
+			status_code,
+			client_ip,
+			user_agent,
+			created_at
+		FROM juhe_dataset.operation_logs
+		WHERE id = $1
+	`, id).Scan(
+		&row.ID,
+		&row.TraceID,
+		&row.ActorSystemAccountID,
+		&row.ActorUsername,
+		&row.ActorDisplayName,
+		&row.ActorRole,
+		&row.OperationScopeAccount,
+		&row.Mode,
+		&row.Module,
+		&row.Action,
+		&row.OperationKey,
+		&row.ResourceType,
+		&row.ResourceID,
+		&row.ResourceName,
+		&row.Summary,
+		&row.DetailLevel,
+		&row.VisibilityScope,
+		&row.ChangesJSON,
+		&row.MetadataJSON,
+		&row.Method,
+		&row.Path,
+		&row.StatusCode,
+		&row.ClientIP,
+		&row.UserAgent,
+		&row.CreatedAt,
+	); err != nil {
+		t.Fatalf("read API Key reveal operation log %s: %v", id, err)
+	}
+	wantPath := "/__aisys__/api/"
+	if mode == "self" {
+		wantPath += "my-api-keys/"
+	} else {
+		wantPath += "api-keys/"
+	}
+	wantPath += resourceID + "/secret"
+	wantSummary := "查看 API Key 完整密钥：" + resourceName
+	if row.ID != id ||
+		row.TraceID != traceID ||
+		row.ActorSystemAccountID != actorSystemAccountID ||
+		row.ActorUsername != actorUsername ||
+		row.ActorDisplayName != actorDisplayName ||
+		row.ActorRole != actorRole ||
+		row.OperationScopeAccount != w5ManagementAPIKeyListOwnerID ||
+		row.Mode != mode ||
+		row.Module != "api_keys" ||
+		row.Action != "reveal_secret" ||
+		row.OperationKey != "api_keys.reveal_secret" ||
+		row.ResourceType != "api_key" ||
+		row.ResourceID != resourceID ||
+		row.ResourceName != resourceName ||
+		row.Summary != wantSummary ||
+		row.DetailLevel != "full" ||
+		row.VisibilityScope != "targeted" ||
+		row.Method != http.MethodGet ||
+		row.Path != wantPath ||
+		row.StatusCode != http.StatusOK ||
+		row.ClientIP != "127.0.0.1" ||
+		row.UserAgent != "w5-management-api-key-secret-smoke" ||
+		!row.CreatedAt.UTC().Equal(wantCreatedAt.UTC()) {
+		t.Fatalf("API Key reveal operation log %s does not match the expected contract", id)
+	}
+	var changes []struct {
+		Field  string  `json:"field"`
+		Label  string  `json:"label"`
+		Before *string `json:"before"`
+		After  string  `json:"after"`
+	}
+	if err := json.Unmarshal([]byte(row.ChangesJSON), &changes); err != nil {
+		t.Fatalf("decode API Key reveal operation log changes %s: %v", id, err)
+	}
+	if len(changes) != 1 ||
+		changes[0].Field != "key" ||
+		changes[0].Label != "密钥标识" ||
+		changes[0].Before != nil ||
+		changes[0].After != keyMarker {
+		t.Fatalf("API Key reveal operation log %s has unexpected marker changes", id)
+	}
+	if row.MetadataJSON != "{}" {
+		t.Fatalf("API Key reveal operation log %s metadata is not empty", id)
+	}
+	for _, value := range []string{row.ChangesJSON, row.MetadataJSON, row.Summary, row.ResourceName} {
+		if strings.Contains(value, existingKey) || strings.Contains(value, refreshedKey) {
+			t.Fatalf("API Key reveal operation log %s leaked a full secret", id)
+		}
+	}
 }

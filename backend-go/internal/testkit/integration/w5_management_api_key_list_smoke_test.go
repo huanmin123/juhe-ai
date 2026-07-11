@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,16 +14,23 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
+	"juhe-ai/backend-go/internal/app"
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
+	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
+	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementapikeys"
 	"juhe-ai/backend-go/internal/modules/managementauth"
+	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
@@ -53,7 +61,7 @@ const (
 func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
 	container, err := tcpostgres.Run(ctx, postgresImage,
@@ -74,6 +82,34 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 	db := openSQLDB(t, postgresURL)
 	defer closeSQLDB(t, db)
 	runGooseMigrations(t, db)
+
+	redisContainer, err := tcredis.Run(ctx, redisImage)
+	if err != nil {
+		t.Fatalf("start redis container: %v", err)
+	}
+	defer terminateContainer(t, ctx, redisContainer)
+
+	redisURL, err := redisContainer.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("redis connection string: %v", err)
+	}
+	redisQueueURL := w3RedisURLWithDB(t, redisURL, 0)
+	redisStateURL := w3RedisURLWithDB(t, redisURL, 1)
+	redisCacheURL := w3RedisURLWithDB(t, redisURL, 2)
+	redisOpts, err := queue.ParseRedisURL(redisQueueURL)
+	if err != nil {
+		t.Fatalf("parse redis queue url: %v", err)
+	}
+	stateRedis, err := redisplatform.NewClient(redisStateURL, w5ManagementAPIKeySecretRedisNamespace+":state")
+	if err != nil {
+		t.Fatalf("open state redis: %v", err)
+	}
+	defer closeRedisClient(t, stateRedis)
+	cacheRedis, err := redisplatform.NewClient(redisCacheURL, w5ManagementAPIKeySecretRedisNamespace+":cache")
+	if err != nil {
+		t.Fatalf("open cache redis: %v", err)
+	}
+	defer closeRedisClient(t, cacheRedis)
 
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	fixtureTimes := insertW5ManagementAPIKeyListFixtures(t, ctx, db, now)
@@ -103,11 +139,63 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 	}
 	defer store.Close()
 
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var invalidationCall int
+	apiKeySecretInvalidator, err := gatewaycache.NewSystemAccountInvalidator(gatewaycache.SystemAccountInvalidatorOptions{
+		Cache:     cacheRedis,
+		State:     stateRedis,
+		Namespace: w5ManagementAPIKeySecretRedisNamespace,
+		Now:       func() time.Time { return now },
+		NewVersion: func(time.Time) (string, error) {
+			invalidationCall++
+			return fmt.Sprintf("w5-api-key-secret-version-%d", invalidationCall), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("create API Key secret invalidator: %v", err)
+	}
+
+	workerCtx, stopWorker := context.WithCancel(ctx)
+	workerDone := make(chan struct{})
+	var workerErrMu sync.Mutex
+	var workerRunErr error
+	go func() {
+		err := app.RunIngestWorker(workerCtx, config.Config{
+			PostgresURL:     postgresURL,
+			RedisQueueURL:   redisQueueURL,
+			RedisNamespace:  "juhe-ai",
+			LogLevel:        "error",
+			ShutdownTimeout: time.Second,
+		}, logger)
+		workerErrMu.Lock()
+		workerRunErr = err
+		workerErrMu.Unlock()
+		close(workerDone)
+	}()
+	defer func() {
+		stopWorker()
+		select {
+		case <-workerDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("ingest worker shutdown timed out")
+		}
+		workerErrMu.Lock()
+		err := workerRunErr
+		workerErrMu.Unlock()
+		if err != nil {
+			t.Fatalf("ingest worker run: %v", err)
+		}
+	}()
+
+	logClient := queue.NewClient(redisOpts)
+	defer closeClient(t, logClient)
+	inspector := queue.NewInspector(redisOpts)
+	defer closeInspector(t, inspector)
+
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
 		Store: store,
 		Now:   func() time.Time { return now },
 	})
-	apiKeySecretInvalidator := &w5ManagementAPIKeySecretInvalidator{}
 	service := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
 		ListReader:       store,
 		SecretStore:      store,
@@ -115,14 +203,38 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 		Invalidator:      apiKeySecretInvalidator,
 		Secret:           w5ManagementAPIKeySecretRuntimeSecret,
 	})
-	router := httpapi.NewRouter(httpapi.RouterOptions{
-		Config: config.Config{
-			Host:                 "127.0.0.1",
-			Port:                 3000,
-			ManagementAPIEnabled: true,
-			TrustProxy:           "false",
+	cfg := config.Config{
+		Host:                 "127.0.0.1",
+		Port:                 3000,
+		ManagementAPIEnabled: true,
+		TrustProxy:           "false",
+	}
+	logIDs := []string{
+		w5ManagementAPIKeySecretAdminRevealLogID,
+		w5ManagementAPIKeySecretSelfRevealLogID,
+		w5ManagementAPIKeySecretAdminRefreshLogID,
+		w5ManagementAPIKeySecretRepairedRevealLogID,
+	}
+	nextLogID := 0
+	operationLogOptions := httpapi.ManagementOperationLogOptions{
+		Config:         cfg,
+		Logger:         logger,
+		Client:         logClient,
+		SettingsReader: store,
+		Now:            func() time.Time { return now },
+		NewLogID: func() string {
+			if nextLogID >= len(logIDs) {
+				t.Fatalf("unexpected extra API Key secret operation log %d", nextLogID+1)
+				return ""
+			}
+			id := logIDs[nextLogID]
+			nextLogID++
+			return id
 		},
-		Logger:                           slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	router := httpapi.NewRouter(httpapi.RouterOptions{
+		Config:                           cfg,
+		Logger:                           logger,
 		ManagementAPIAuthMiddleware:      httpapi.NewManagementAPIAuthMiddleware(authenticator),
 		ManagementAPIAuthTouchMiddleware: httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
 		ManagementAPIKeyListHandler:      httpapi.NewManagementAPIKeyListHandler(service),
@@ -131,19 +243,19 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 		),
 		ManagementAPIKeySecretHandler: httpapi.NewManagementAPIKeySecretHandlerWithOperationLog(
 			service,
-			httpapi.ManagementOperationLogOptions{},
+			operationLogOptions,
 		),
 		ManagementMyAPIKeySecretHandler: httpapi.NewManagementMyAPIKeySecretHandlerWithOperationLog(
 			service,
-			httpapi.ManagementOperationLogOptions{},
+			operationLogOptions,
 		),
 		ManagementAPIKeyRefreshHandler: httpapi.NewManagementAPIKeyRefreshHandlerWithOperationLog(
 			service,
-			httpapi.ManagementOperationLogOptions{},
+			operationLogOptions,
 		),
 		ManagementMyAPIKeyRefreshHandler: httpapi.NewManagementMyAPIKeyRefreshHandlerWithOperationLog(
 			service,
-			httpapi.ManagementOperationLogOptions{},
+			operationLogOptions,
 		),
 	})
 
@@ -504,8 +616,28 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 		ctx,
 		db,
 		router,
-		apiKeySecretInvalidator,
+		cacheRedis,
+		stateRedis,
+		inspector,
+		workerDone,
+		func() error {
+			workerErrMu.Lock()
+			defer workerErrMu.Unlock()
+			return workerRunErr
+		},
+		sessionLastSeenAt,
+		now,
 	)
+	queueInfo, err := inspector.QueueInfo(operationlogjob.QueueName)
+	if err != nil {
+		t.Fatalf("read operation log queue info: %v", err)
+	}
+	if queueInfo.Completed != 4 || queueInfo.Archived != 0 {
+		t.Fatalf("operation log queue info = %+v, want exactly 4 completed and 0 archived", queueInfo)
+	}
+	if nextLogID != len(logIDs) {
+		t.Fatalf("operation log ids consumed = %d, want %d", nextLogID, len(logIDs))
+	}
 }
 
 type w5ManagementAPIKeyListResponse struct {
