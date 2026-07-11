@@ -155,6 +155,7 @@ func TestPublicAPIKeyHandlersMapServiceErrors(t *testing.T) {
 		configure  func(*publicAPIKeyServiceStub)
 		wantStatus int
 		wantMsg    string
+		wantHidden string
 	}{
 		{
 			name: "update not found", path: "/__aipublic__/api-key/update", body: `{"apiKeyId":"key_1","name":"公开 Key"}`,
@@ -198,6 +199,38 @@ func TestPublicAPIKeyHandlersMapServiceErrors(t *testing.T) {
 			},
 			wantStatus: http.StatusBadRequest, wantMsg: "默认 API Key 不允许更换策略路由",
 		},
+		{
+			name: "list infrastructure error", path: "/__aipublic__/api-key/list?targetUsername=admin", body: ``,
+			configure: func(stub *publicAPIKeyServiceStub) {
+				stub.listErr = errors.New("redis GET failed: redis://admin:redis-secret@cache.internal:6379")
+			},
+			wantStatus: http.StatusInternalServerError, wantMsg: "服务器内部错误",
+			wantHidden: "redis://admin:redis-secret@cache.internal:6379",
+		},
+		{
+			name: "add infrastructure error", path: "/__aipublic__/api-key/add", body: `{"targetUsername":"admin","name":"公开 Key","routeStrategyId":"rts_1"}`,
+			configure: func(stub *publicAPIKeyServiceStub) {
+				stub.addErr = errors.New("insert public_api_keys failed: password=sql-add-secret")
+			},
+			wantStatus: http.StatusInternalServerError, wantMsg: "服务器内部错误",
+			wantHidden: "password=sql-add-secret",
+		},
+		{
+			name: "update infrastructure error", path: "/__aipublic__/api-key/update", body: `{"apiKeyId":"key_1","name":"公开 Key"}`,
+			configure: func(stub *publicAPIKeyServiceStub) {
+				stub.updateErr = errors.New("redis publish failed: token=redis-update-secret")
+			},
+			wantStatus: http.StatusInternalServerError, wantMsg: "服务器内部错误",
+			wantHidden: "token=redis-update-secret",
+		},
+		{
+			name: "delete infrastructure error", path: "/__aipublic__/api-key/del", body: `{"apiKeyId":"key_1"}`,
+			configure: func(stub *publicAPIKeyServiceStub) {
+				stub.deleteErr = errors.New("commit delete transaction failed: postgres://admin:sql-delete-secret@db.internal")
+			},
+			wantStatus: http.StatusInternalServerError, wantMsg: "服务器内部错误",
+			wantHidden: "postgres://admin:sql-delete-secret@db.internal",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -225,7 +258,11 @@ func TestPublicAPIKeyHandlersMapServiceErrors(t *testing.T) {
 
 			router.ServeHTTP(rec, req)
 
+			responseBody := rec.Body.String()
 			assertPublicGroupMessageError(t, rec, tt.wantStatus, tt.wantMsg)
+			if tt.wantHidden != "" && strings.Contains(responseBody, tt.wantHidden) {
+				t.Fatalf("response leaked infrastructure error %q: %s", tt.wantHidden, responseBody)
+			}
 		})
 	}
 }
