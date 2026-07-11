@@ -723,6 +723,7 @@ async function validateCustomModelPricing(input: {
 type CustomModelStatus = 'draft' | 'active' | 'disabled'
 type CustomModelPricingInput = CustomModelPriceFields & {
   model?: string
+  mode?: string | null
   pricingModel?: string | null
   supportedApiProtocols?: ProviderModelCatalogItem['supportedApiProtocols']
   supportedServiceTiers?: ProviderModelCatalogItem['supportedServiceTiers']
@@ -735,8 +736,10 @@ function validateCustomModelCapabilities(providerCode: string, input: CustomMode
   const serviceTiers = input.supportedServiceTiers ?? []
   const reasoningEfforts = input.supportedReasoningEfforts ?? []
   const defaultReasoningEffort = input.defaultReasoningEffort ?? undefined
-  if (providerCode !== 'gpt' && (serviceTiers.length || reasoningEfforts.length || defaultReasoningEffort)) {
-    return '只有 GPT 自定义模型支持服务等级和思考能力配置'
+  const isGptTextModel = providerCode === 'gpt'
+    && (input.mode === undefined || input.mode === null || input.mode === 'text')
+  if (!isGptTextModel && (serviceTiers.length || reasoningEfforts.length || defaultReasoningEffort)) {
+    return '只有 GPT 文本自定义模型支持服务等级和思考能力配置'
   }
   if (defaultReasoningEffort && !reasoningEfforts.includes(defaultReasoningEffort)) {
     return '默认思考级别必须属于支持的思考级别'

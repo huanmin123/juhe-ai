@@ -748,7 +748,7 @@ function parseStringArray(raw: string | null | undefined): CustomProviderModelAp
 
 function normalizeCustomProviderModelCapabilities(
   providerCode: string,
-  input: Pick<UpsertCustomProviderModelInput, 'supportedServiceTiers' | 'supportedReasoningEfforts' | 'defaultReasoningEffort'>
+  input: Pick<UpsertCustomProviderModelInput, 'mode' | 'supportedServiceTiers' | 'supportedReasoningEfforts' | 'defaultReasoningEffort'>
 ): {
   supportedServiceTiers: CustomProviderModelServiceTier[]
   supportedReasoningEfforts: CustomProviderModelReasoningEffort[]
@@ -769,8 +769,9 @@ function normalizeCustomProviderModelCapabilities(
     customProviderModelReasoningEfforts,
     '默认思考级别'
   )
-  if (providerCode !== 'gpt' && (supportedServiceTiers.length || supportedReasoningEfforts.length || defaultReasoningEffort)) {
-    throw new Error('只有 GPT 自定义模型支持服务等级和思考能力配置')
+  const isGptTextModel = providerCode === 'gpt' && (optionalText(input.mode) ?? 'text') === 'text'
+  if (!isGptTextModel && (supportedServiceTiers.length || supportedReasoningEfforts.length || defaultReasoningEffort)) {
+    throw new Error('只有 GPT 文本自定义模型支持服务等级和思考能力配置')
   }
   if (defaultReasoningEffort && !supportedReasoningEfforts.includes(defaultReasoningEffort)) {
     throw new Error('默认思考级别必须属于支持的思考级别')
