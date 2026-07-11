@@ -60,6 +60,7 @@ import {
 } from '../_shared/codex-responses-chat-bridge.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
 import { prepareGptAccountBeforeDispatch } from './oauth-dispatch-preparation.js'
+import { resolveGptRequestOverrideModelCapabilities } from './request-override-capabilities.js'
 import { applyGptAccountRequestOverridesToBody } from './request-override-body.js'
 import type { GptRequestOverrideEndpointFamily } from './request-overrides.js'
 
@@ -125,7 +126,9 @@ export const gptProviderDriver: ProviderDriver = {
         headers,
         body: await applyGptAccountRequestOverridesToBody(body, {
           credentials: account.credentials,
+          account,
           endpointFamily: 'chat_completions',
+          upstreamModel: modelMapping.upstreamModel,
           signal
         })
       }
@@ -141,7 +144,9 @@ export const gptProviderDriver: ProviderDriver = {
         headers,
         body: await applyGptAccountRequestOverridesToBody(body, {
           credentials: account.credentials,
+          account,
           endpointFamily: 'chat_completions',
+          upstreamModel: modelMapping.upstreamModel,
           signal
         })
       }
@@ -157,14 +162,21 @@ export const gptProviderDriver: ProviderDriver = {
         headers,
         body: await applyGptAccountRequestOverridesToBody(body, {
           credentials: account.credentials,
+          account,
           endpointFamily: 'chat_completions',
+          upstreamModel: modelMapping.upstreamModel,
           signal
         })
       }
     }
     if (account.type === 'oauth') {
+      const requestOverrideModelCapabilities = await resolveGptRequestOverrideModelCapabilities(
+        account,
+        modelMapping?.upstreamModel ?? requestModel(req)
+      )
       return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal, {
-        modelOverride: modelMapping?.upstreamModel
+        modelOverride: modelMapping?.upstreamModel,
+        requestOverrideModelCapabilities
       })
     }
     const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal, {
@@ -181,10 +193,12 @@ export const gptProviderDriver: ProviderDriver = {
       headers,
       body: await applyGptAccountRequestOverridesToBody(body, {
         credentials: account.credentials,
+        account,
         endpointFamily: gptRequestOverrideEndpointFamily(
           modelMapping?.upstreamEndpointFamily ?? openAIRequestEndpointFamily(req)
         ),
         compact: isOpenAIResponsesCompactRequest(req),
+        upstreamModel: modelMapping?.upstreamModel,
         signal
       })
     }

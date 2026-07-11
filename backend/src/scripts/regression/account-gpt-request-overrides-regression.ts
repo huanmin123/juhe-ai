@@ -19,28 +19,28 @@ assert.doesNotThrow(() => assertAccountGptRequestOverridesSupportedByCatalog({
   },
   supportedModels: ['gpt-a', 'gpt-b'],
   catalog
-}), 'API Key 覆盖必须按全部支持模型的能力交集校验')
+}), 'API Key 覆盖值只需被至少一个账户支持模型声明')
 
-assert.throws(() => assertAccountGptRequestOverridesSupportedByCatalog({
+assert.doesNotThrow(() => assertAccountGptRequestOverridesSupportedByCatalog({
   accountType: 'api_key',
   overrides: { serviceTier: 'flex' },
   supportedModels: ['gpt-a', 'gpt-b'],
   catalog
-}), /gpt-b/, '任一支持模型缺少 Flex 时账户不能保存 Flex 覆盖')
+}), '任一账户支持模型声明 Flex 时即可保存期望覆盖')
 
-assert.throws(() => assertAccountGptRequestOverridesSupportedByCatalog({
+assert.doesNotThrow(() => assertAccountGptRequestOverridesSupportedByCatalog({
   accountType: 'api_key',
   overrides: { reasoningEffort: 'high' },
   supportedModels: ['gpt-a', 'gpt-b'],
   catalog
-}), /gpt-b/, '任一支持模型缺少思考级别时账户不能保存该覆盖')
+}), '任一账户支持模型声明思考级别时即可保存期望上限')
 
 assert.throws(() => assertAccountGptRequestOverridesSupportedByCatalog({
   accountType: 'api_key',
   overrides: { serviceTier: 'default' },
   supportedModels: ['gpt-unknown'],
   catalog
-}), /模型目录缺少/, '未知支持模型不能绕过能力交集校验')
+}), /没有模型支持/, '只有未知支持模型时不能保存无能力依据的覆盖')
 
 assert.throws(() => assertAccountGptRequestOverridesSupportedByCatalog({
   accountType: 'oauth',
@@ -91,7 +91,7 @@ assert.throws(() => normalizeAccountCredentialsForWrite('api_key', {
   protocolVersion: 'v1'
 }), /思考级别覆盖无效/, 'Ultra 只能用于 Codex 模型能力，不能作为账户 wire 覆盖')
 
-console.log('GPT 账户请求覆盖回归通过：能力按全部支持模型取交集，OAuth 禁止 Flex，账户覆盖禁止 Ultra')
+console.log('GPT 账户请求覆盖回归通过：配置按目录能力并集开放，OAuth 禁止 Flex，账户覆盖禁止 Ultra')
 
 function modelItem(
   model: string,

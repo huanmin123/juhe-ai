@@ -84,7 +84,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - `refresh_token`
 - 支持模型（必选；新建时从供应商默认支持模型回填）
 - 检查模型（必选；从支持模型中选择，新建时按有效默认检查模型初始化）
-- 服务等级覆盖、思考级别覆盖（可选；由全部支持模型的精确能力交集决定）
+- 服务等级覆盖、思考级别覆盖（可选；配置选项由支持模型精确能力并集决定）
 - 账户标签（可选，可输入新标签）
 - 代理
 - 并发上限
@@ -115,7 +115,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - `base_url`
 - 支持模型（必选；新建时从供应商默认支持模型回填）
 - 检查模型（必选；从支持模型中选择，新建时按有效默认检查模型初始化）
-- 服务等级覆盖、思考级别覆盖（可选；由全部支持模型的精确能力交集决定）
+- 服务等级覆盖、思考级别覆盖（可选；配置选项由支持模型精确能力并集决定）
 - 账户标签（可选，可输入新标签）
 - 代理
 - 并发上限
@@ -150,7 +150,7 @@ type GptAccountType = 'api_key' | 'oauth'
 
 ### GPT 请求覆盖
 
-GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_override=default|priority|flex` 与 `reasoning_effort_override=none|minimal|low|medium|high|xhigh|max`。空值表示完全保留客户端请求；已配置值优先于客户端值。后端按全部最终上游支持模型的 `supportedServiceTiers`、`supportedReasoningEfforts` 交集和账户适配器能力校验，拒绝 `fast`、`auto`、`ultra` 以及非 GPT 账户提交；OAuth 当前不接受 `flex`。
+GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_override=default|priority|flex` 与 `reasoning_effort_override=none|minimal|low|medium|high|xhigh|max`。空值表示完全保留客户端请求；已配置值是期望上限。保存选项取账户支持模型精确能力并集；运行时在模型映射后按最终上游模型能力独立向下降级，能力未知或无可用低档时保留客户端字段。后端拒绝 `fast`、`auto`、`ultra` 以及非 GPT 账户提交；OAuth 当前不接受 `flex`。
 
 覆盖发生在选中真实账户、完成模型映射、确定 endpoint family 且协议桥接生成目标请求体之后，最终字段清洗和 JSON 序列化之前。Responses 改写 `service_tier` 与 `reasoning.effort`，Chat Completions 改写 `service_tier` 与顶层 `reasoning_effort`；`default` 删除客户端 `service_tier`。API Key 大请求只有存在覆盖时才进入结构化改写，并复用 JSON worker，不能在主线程完整解析。`ultra` 只属于 Codex 客户端多代理能力，不能作为上游 wire effort；公共 Responses Multi-agent Beta 不在本期实现。
 

@@ -20,6 +20,7 @@ import {
 } from './oauth-normalizer.js'
 import { OpenAIOAuthCodexAdapterError } from './oauth-errors.js'
 import { getRequestLogger, sanitizeUrlForLog } from '../../../../shared/request-context.js'
+import type { GptRequestOverrideModelCapabilities } from '../../../providers/drivers/gpt/request-overrides.js'
 
 export {
   isolateOpenAIOAuthCodexSessionId,
@@ -37,13 +38,18 @@ type OpenAIOAuthCodexRawBodyRequest = GatewayRawBodyRequest & {
   openAIOAuthCodexLargeBodyLogged?: boolean
 }
 
+interface OpenAIOAuthCodexRequestOptions {
+  modelOverride?: string
+  requestOverrideModelCapabilities?: GptRequestOverrideModelCapabilities
+}
+
 export async function buildOpenAIOAuthCodexRequestParts(
   req: Request,
   inputHeaders: Record<string, string | string[] | undefined>,
   account: OpenAIOAuthCodexAccount,
   identity: OpenAIOAuthCodexIdentity,
   signal?: AbortSignal,
-  options: { modelOverride?: string } = {}
+  options: OpenAIOAuthCodexRequestOptions = {}
 ): Promise<OpenAIOAuthCodexRequestParts> {
   const compact = isOpenAIOAuthCodexCompactRequest(req)
   const normalizedBody = await normalizeOpenAIOAuthCodexBody(req, inputHeaders, account, identity, compact, signal, options)
@@ -69,7 +75,7 @@ async function normalizeOpenAIOAuthCodexBody(
   identity: OpenAIOAuthCodexIdentity,
   compact: boolean,
   signal?: AbortSignal,
-  options: { modelOverride?: string } = {}
+  options: OpenAIOAuthCodexRequestOptions = {}
 ): Promise<NormalizedCodexBody> {
   if (req.method === 'GET' || req.method === 'HEAD') {
     return { stream: false, session: {} }
@@ -83,7 +89,8 @@ async function normalizeOpenAIOAuthCodexBody(
         account,
         identity,
         compact,
-        modelOverride: options.modelOverride
+        modelOverride: options.modelOverride,
+        requestOverrideModelCapabilities: options.requestOverrideModelCapabilities
       }, undefined, signal)
     } catch (error) {
       if (error instanceof OpenAIOAuthCodexAdapterError) {
@@ -105,7 +112,8 @@ async function normalizeOpenAIOAuthCodexBody(
     account,
     identity,
     compact,
-    modelOverride: options.modelOverride
+    modelOverride: options.modelOverride,
+    requestOverrideModelCapabilities: options.requestOverrideModelCapabilities
   })
 }
 
