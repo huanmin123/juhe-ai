@@ -126,6 +126,7 @@ export async function captureGatewayRawBody(
           model: metadata.model,
           stream: metadata.stream,
           serviceTier: metadata.serviceTier,
+          maxOutputTokens: metadata.maxOutputTokens,
           imageGeneration: metadata.imageGeneration,
           imageGenerationForced: metadata.imageGenerationForced
         })

@@ -31,6 +31,7 @@ const [databaseModule, repositories, gatewayRuntimeCache, cooldownRetestService,
   import('../../modules/background/cooldown-account-retest.service.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
+const { cooldownAccountRetestQueueAvailableSlots } = await import('../../modules/background/account-probe-jobs.js')
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
@@ -456,6 +457,8 @@ try {
   assert(firstFairnessPage.nextCursor, '冷却复测分页必须返回复合游标')
   const secondFairnessPage = repositories.listAccountsDueForCooldownRetestPage(100, firstFairnessPage.nextCursor)
   assert(secondFairnessPage.accounts.some((item) => item.id === fairnessSecondAccount.id), '游标后的到期账户必须能进入后续扫描窗口')
+  assert.equal(cooldownAccountRetestQueueAvailableSlots(10, { pendingCount: 6, runningCount: 3 }), 1, '冷却复测每轮查询数量必须扣除队列已有占用')
+  assert.equal(cooldownAccountRetestQueueAvailableSlots(10, { pendingCount: 8, runningCount: 2 }), 0, '冷却复测队列达到 batch 上限后不得继续扫描入队')
 
   console.log('cooldown retest recovery regression passed')
 } finally {

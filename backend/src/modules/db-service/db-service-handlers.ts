@@ -159,7 +159,7 @@ import {
   orderGatewayApiKeyGroupBindingsForDispatch,
   orderGatewayApiKeyGroupBindingsForDispatchAsync
 } from '../gateway/routing/api-key-group-route-selector.service.js'
-import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaExactAsync, clearApiKeyQuotaCache } from '../gateway/quota/api-key-quota.service.js'
+import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaExactAsync, clearApiKeyQuotaCache, readGatewayApiKeyQuotaCostsExact, readGatewayApiKeyQuotaCostsExactAsync } from '../gateway/quota/api-key-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaBatchByIds,
   checkGatewayAuthorizationQuotaBatchByIdsExactAsync,
@@ -789,6 +789,13 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
             type: 'check_api_key_quota_read_only',
             apiKey: operation.apiKey
           })
+    case 'read_api_key_quota_costs':
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? await readGatewayApiKeyQuotaCostsExactAsync(operation.apiKey)
+        : await requestSqliteReadWorker({
+            type: 'read_api_key_quota_costs_read_only',
+            apiKey: operation.apiKey
+          })
     case 'check_authorization_quota':
       return runtimeConfig.databaseDriver === 'postgres'
         ? await checkGatewayAuthorizationQuotaByIdsExactAsync({
@@ -1196,6 +1203,10 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return runtimeConfig.databaseDriver === 'postgres'
         ? checkGatewayApiKeyQuotaExactAsync(operation.apiKey)
         : checkGatewayApiKeyQuota(operation.apiKey)
+    case 'read_api_key_quota_costs':
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? readGatewayApiKeyQuotaCostsExactAsync(operation.apiKey)
+        : readGatewayApiKeyQuotaCostsExact(operation.apiKey)
     case 'check_authorization_quota':
       return runtimeConfig.databaseDriver === 'postgres'
         ? checkGatewayAuthorizationQuotaByIdsExactAsync({

@@ -3,12 +3,12 @@ import type { Request } from 'express'
 import type { RequestQuotaLimits } from '../../../domain/types.js'
 import { estimateProviderCostUsd } from '../../model-pricing/model-pricing.service.js'
 import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
-import { parseRequestQuotaLimitsJson } from '../../../storage/request-quota-limits.js'
+import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../../storage/request-quota-limits.js'
 import type { RequestQuotaCosts } from './request-quota-checker.js'
-import { isRequestQuotaExceeded } from './request-quota-checker.js'
 import { getGatewayRequestBodyState } from '../request/body.js'
 import { requestModel } from '../request/metadata.js'
 import { readGatewayApiKeyQuotaCostsSnapshotAsync } from './api-key-quota.service.js'
+import { getRequestLogger } from '../../../shared/request-context.js'
 
 const defaultEstimatedOutputTokens = 4096
 const defaultReleaseDelayMs = 65_000
@@ -34,10 +34,26 @@ export async function reserveGatewayApiKeyInflightCost(input: {
   providerCode: string
 }): Promise<ApiKeyInflightQuotaDecision> {
   const limits = parseRequestQuotaLimitsJson(input.apiKey.quota_limits_json)
+  if (!hasEnabledRequestQuotaLimit(limits)) return { allowed: true }
   const estimatedCostUsd = estimateGatewayRequestCostUsd(input.req, input.providerCode)
   if (estimatedCostUsd === undefined || estimatedCostUsd <= 0) return { allowed: true }
-  const currentCosts = await readGatewayApiKeyQuotaCostsSnapshotAsync(input.apiKey)
-  if (!currentCosts) return { allowed: true, estimatedCostUsd }
+  let currentCosts = await readGatewayApiKeyQuotaCostsSnapshotAsync(input.apiKey)
+  if (!currentCosts) {
+    try {
+      const dbService = await import('../../db-service/db-service-ipc.js')
+      currentCosts = await dbService.requestDbService({
+        type: 'read_api_key_quota_costs',
+        apiKey: input.apiKey
+      }, { timeoutMs: 1000 })
+    } catch (error) {
+      getRequestLogger().warn({
+        event: 'gateway_api_key_inflight_quota_exact_cost_failed',
+        apiKeyId: input.apiKey.id,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      }, 'API Key 在途额度缺少成本快照且精确成本读取失败，按保护策略拒绝请求')
+      return { allowed: false, estimatedCostUsd }
+    }
+  }
   return reserveApiKeyInflightCost({
     apiKeyId: input.apiKey.id,
     limits,
@@ -57,7 +73,7 @@ export function reserveApiKeyInflightCost(input: {
   if (estimatedCostUsd <= 0) return { allowed: true }
   const state = states.get(input.apiKeyId) ?? { reservedCostUsd: 0 }
   const projected = addCostToAllWindows(input.currentCosts, state.reservedCostUsd + estimatedCostUsd)
-  if (isRequestQuotaExceeded(input.limits, projected)) {
+  if (isProjectedRequestQuotaExceeded(input.limits, projected)) {
     return { allowed: false, estimatedCostUsd }
   }
   state.reservedCostUsd = normalizedCost(state.reservedCostUsd + estimatedCostUsd)
@@ -67,6 +83,16 @@ export function reserveApiKeyInflightCost(input: {
     estimatedCostUsd,
     reservation: createReservation(input.apiKeyId, estimatedCostUsd, input.releaseDelayMs ?? defaultReleaseDelayMs)
   }
+}
+
+function isProjectedRequestQuotaExceeded(limits: RequestQuotaLimits, costs: RequestQuotaCosts): boolean {
+  return Boolean(
+    (limits.hourly?.enabled && costs.hourly > limits.hourly.limit)
+    || (limits.daily?.enabled && costs.daily > limits.daily.limit)
+    || (limits.weekly?.enabled && costs.weekly > limits.weekly.limit)
+    || (limits.monthly?.enabled && costs.monthly > limits.monthly.limit)
+    || (limits.total?.enabled && costs.total > limits.total.limit)
+  )
 }
 
 export function estimateGatewayRequestCostUsd(req: Request, providerCode: string): number | undefined {

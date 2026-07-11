@@ -16,6 +16,7 @@ import type {
   BackgroundStatsWriteOperationResult
 } from '../background/background-stats-writer.js'
 import type { ApiKeyQuotaDecision } from '../gateway/quota/api-key-quota.service.js'
+import type { RequestQuotaCosts } from '../gateway/quota/request-quota-checker.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/quota/authorization-quota.service.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
@@ -514,6 +515,10 @@ export type DbServiceOperation =
     apiKey: GatewayApiKeyRow
   }
   | {
+    type: 'read_api_key_quota_costs'
+    apiKey: GatewayApiKeyRow
+  }
+  | {
     type: 'check_authorization_quota'
     groupAuthorizationId?: string
     accountAuthorizationId?: string
@@ -889,6 +894,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'list_openai_compatible_vector_store_file_chunks' } ? OpenAICompatibleVectorStoreFileChunkRecord[] :
   T extends { type: 'list_provider_model_catalog' } ? ProviderModelCatalogItem[] :
   T extends { type: 'check_api_key_quota' } ? ApiKeyQuotaDecision :
+  T extends { type: 'read_api_key_quota_costs' } ? RequestQuotaCosts :
   T extends { type: 'check_authorization_quota' } ? AuthorizationQuotaDecision :
   T extends { type: 'check_authorization_quota_batch' } ? AuthorizationQuotaDecision[] :
   T extends { type: 'update_openai_oauth_credentials' } ? { updated: boolean } :

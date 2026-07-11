@@ -5,7 +5,7 @@ import {
   checkGatewayAuthorizationQuotaBatchByIdsReadOnly,
   checkGatewayAuthorizationQuotaByIdsReadOnly
 } from '../modules/gateway/quota/authorization-quota.service.js'
-import { checkGatewayApiKeyQuotaReadOnly } from '../modules/gateway/quota/api-key-quota.service.js'
+import { checkGatewayApiKeyQuotaReadOnly, readGatewayApiKeyQuotaCostsExact } from '../modules/gateway/quota/api-key-quota.service.js'
 import { readGatewaySettingsReadOnly } from '../modules/gateway/policy/account-error-policy.service.js'
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../modules/gateway/routing/api-key-group-route-selector.service.js'
 import { listProviderModelCatalogReadOnly } from '../modules/model-pricing/model-catalog.service.js'
@@ -322,6 +322,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       })
     case 'check_api_key_quota_read_only':
       return checkGatewayApiKeyQuotaReadOnly(operation.apiKey)
+    case 'read_api_key_quota_costs_read_only':
+      return readGatewayApiKeyQuotaCostsExact(operation.apiKey)
     case 'check_authorization_quota_batch_read_only':
       return checkGatewayAuthorizationQuotaBatchByIdsReadOnly({
         groupAuthorizationId: operation.groupAuthorizationId,

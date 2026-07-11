@@ -53,6 +53,16 @@ try {
   })
   assert.equal(nearLimit.allowed, false, '快照成本与当前请求预估合计达到额度时应拒绝')
 
+  const exactLimit = reserveApiKeyInflightCost({
+    apiKeyId: 'key_exact_limit',
+    limits,
+    currentCosts: { ...zeroCosts, total: 0.4 },
+    estimatedCostUsd: 0.6,
+    releaseDelayMs: 0
+  })
+  assert.equal(exactLimit.allowed, true, '投影成本恰好等于额度时应允许当前请求用完余额')
+  exactLimit.reservation?.complete()
+
   const unpricedRequest = {
     originalUrl: '/v1/responses',
     path: '/v1/responses',

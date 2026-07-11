@@ -29,6 +29,7 @@ export const dbServiceOperationAccessModeByType = {
   list_openai_compatible_vector_store_file_chunks: 'read',
   list_provider_model_catalog: 'read',
   check_api_key_quota: 'read',
+  read_api_key_quota_costs: 'read',
   check_authorization_quota: 'read',
   check_authorization_quota_batch: 'read',
   update_openai_oauth_credentials: 'write',

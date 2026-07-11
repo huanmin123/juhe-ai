@@ -120,6 +120,10 @@ try {
     serverSource.indexOf('admitSpeedFirstRequestBody,') < serverSource.indexOf('express.raw({ type: () => true'),
     '正文 admission middleware 必须位于 express.raw 完整读取之前'
   )
+  assert(
+    serverSource.indexOf('rejectGatewayRawBodyByContentLength,') < serverSource.indexOf('admitSpeedFirstRequestBody,'),
+    '无需读取正文即可确认的 413 必须先于 admission 返回'
+  )
 
   console.log('速度优先正文 admission 回归通过：正文前容量 lease、队列公平、单 Key 上限和超时符合预期')
 } finally {

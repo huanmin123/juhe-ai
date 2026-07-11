@@ -98,12 +98,15 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
   const batchSize = deps.settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
   const queueConcurrency = boundedOpsQueueConcurrency(batchSize)
   setCooldownAccountRetestQueueConcurrency(queueConcurrency)
+  const queueBeforeScan = getCooldownAccountRetestQueueSnapshot()
+  const availableQueueSlots = cooldownAccountRetestQueueAvailableSlots(batchSize, queueBeforeScan)
+  if (availableQueueSlots <= 0) return
   const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   const longTermIntervalHours = deps.settingsNumber('cooldownAccountRetestLongTermIntervalHours', 1, 24 * 30)
   const page = await requestBackgroundWorkerDbService({
     type: 'list_accounts_due_for_cooldown_retest',
-    limit: batchSize,
+    limit: availableQueueSlots,
     cursor: cooldownAccountRetestCursor
   }, backgroundProbeDbServiceTimeoutMs)
   const candidates = page?.accounts ?? []
@@ -135,6 +138,15 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
       elapsedMs: Date.now() - startedAtMs
     }, '冷却账户复测候选已加入异步队列')
   }
+}
+
+export function cooldownAccountRetestQueueAvailableSlots(
+  batchSize: number,
+  queue: { pendingCount: number; runningCount: number }
+): number {
+  const limit = Math.max(1, Math.trunc(batchSize))
+  const occupied = Math.max(0, Math.trunc(queue.pendingCount)) + Math.max(0, Math.trunc(queue.runningCount))
+  return Math.max(0, limit - occupied)
 }
 
 export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<void> {
