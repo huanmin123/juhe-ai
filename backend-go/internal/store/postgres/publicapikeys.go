@@ -76,6 +76,13 @@ func (s *Store) DeletePublicAPIKey(ctx context.Context, apiKeyID string, systemA
 	return publicAPIKeyDelete(ctx, s.queries(), apiKeyID, systemAccountID)
 }
 
+func (s *Store) UpsertPublicAPIKeyRecordCleanupTarget(
+	ctx context.Context,
+	input port.PublicAPIKeyRecordCleanupTargetInput,
+) error {
+	return publicAPIKeyUpsertCleanupTarget(ctx, s.queries(), input)
+}
+
 type publicAPIKeyTxStore struct {
 	queries *postgresqueries.Queries
 }
@@ -110,6 +117,13 @@ func (s publicAPIKeyTxStore) UpdatePublicAPIKey(ctx context.Context, input port.
 
 func (s publicAPIKeyTxStore) DeletePublicAPIKey(ctx context.Context, apiKeyID string, systemAccountID string) (bool, error) {
 	return publicAPIKeyDelete(ctx, s.queries, apiKeyID, systemAccountID)
+}
+
+func (s publicAPIKeyTxStore) UpsertPublicAPIKeyRecordCleanupTarget(
+	ctx context.Context,
+	input port.PublicAPIKeyRecordCleanupTargetInput,
+) error {
+	return publicAPIKeyUpsertCleanupTarget(ctx, s.queries, input)
 }
 
 func publicAPIKeyFindTargetByUsername(ctx context.Context, q *postgresqueries.Queries, username string) (port.PublicGroupTarget, bool, error) {
@@ -305,6 +319,32 @@ func publicAPIKeyDelete(ctx context.Context, q *postgresqueries.Queries, apiKeyI
 		return false, fmt.Errorf("delete public api key: %w", err)
 	}
 	return affected > 0, nil
+}
+
+type publicAPIKeyCleanupTargetQueries interface {
+	UpsertPublicAPIKeyRecordCleanupTarget(
+		ctx context.Context,
+		arg postgresqueries.UpsertPublicAPIKeyRecordCleanupTargetParams,
+	) error
+}
+
+func publicAPIKeyUpsertCleanupTarget(
+	ctx context.Context,
+	q publicAPIKeyCleanupTargetQueries,
+	input port.PublicAPIKeyRecordCleanupTargetInput,
+) error {
+	if err := q.UpsertPublicAPIKeyRecordCleanupTarget(
+		ctx,
+		postgresqueries.UpsertPublicAPIKeyRecordCleanupTargetParams{
+			ApiKeyID:        input.APIKeyID,
+			SystemAccountID: input.SystemAccountID,
+			CreatedAt:       pgTimestamptz(input.Now),
+			UpdatedAt:       pgTimestamptz(input.Now),
+		},
+	); err != nil {
+		return fmt.Errorf("upsert public API Key record cleanup target: %w", err)
+	}
+	return nil
 }
 
 func publicAPIKeySummaryFromListRow(row postgresqueries.ListPublicAPIKeysRow) port.PublicAPIKeySummary {

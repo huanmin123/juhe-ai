@@ -286,6 +286,10 @@ func TestServiceDeleteInvalidatesValidationRuntimeAndQuotaAfterTransaction(t *te
 	if response.APIKey == nil || response.APIKey.ID != "key_normal" {
 		t.Fatalf("response = %+v", response)
 	}
+	if store.cleanupInput.APIKeyID != "key_normal" ||
+		store.cleanupInput.SystemAccountID != "sys_admin" {
+		t.Fatalf("cleanup input = %+v", store.cleanupInput)
+	}
 
 	assertEventOrder(t, events, "transaction_committed", "validation", "runtime", "quota")
 	assertAPIKeyGatewayCacheCalls(t, invalidator.calls,
@@ -293,6 +297,49 @@ func TestServiceDeleteInvalidatesValidationRuntimeAndQuotaAfterTransaction(t *te
 		apiKeyGatewayCacheInvalidationCall{method: "runtime", reason: "api_key_deleted"},
 		apiKeyGatewayCacheInvalidationCall{method: "quota", apiKeyID: "key_normal", reason: "api_key_deleted"},
 	)
+}
+
+func TestServiceDeletePersistsCleanupTargetWithUTCMutationTimeInsideTransaction(t *testing.T) {
+	now := time.Date(2026, 7, 12, 10, 11, 12, 123, time.FixedZone("UTC+8", 8*60*60))
+	store := newPublicAPIKeyServiceStore()
+	service := NewService(Options{
+		Store:      store,
+		Transactor: store,
+		Now:        func() time.Time { return now },
+	})
+
+	_, err := service.Delete(context.Background(), DeleteInput{APIKeyID: "key_normal"})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if store.cleanupInput.APIKeyID != "key_normal" ||
+		store.cleanupInput.SystemAccountID != "sys_admin" ||
+		!store.cleanupInput.Now.Equal(now.UTC()) ||
+		store.cleanupInput.Now.Location() != time.UTC {
+		t.Fatalf("cleanup input = %+v", store.cleanupInput)
+	}
+	if strings.Join(store.deleteEvents, ",") != "delete,cleanup" {
+		t.Fatalf("delete transaction events = %v, want delete then cleanup", store.deleteEvents)
+	}
+}
+
+func TestServiceDeleteRollsBackBusinessDeleteWhenCleanupTargetWriteFails(t *testing.T) {
+	wantErr := errors.New("cleanup target write failed")
+	store := newPublicAPIKeyServiceStore()
+	store.cleanupErr = wantErr
+	service := NewService(Options{Store: store, Transactor: store})
+
+	_, err := service.Delete(context.Background(), DeleteInput{APIKeyID: "key_normal"})
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("delete error = %v, want %v", err, wantErr)
+	}
+	if _, ok := store.keys["key_normal"]; !ok {
+		t.Fatal("business delete must roll back when cleanup target write fails")
+	}
+	if store.cleanupInput.APIKeyID != "key_normal" {
+		t.Fatalf("cleanup input = %+v", store.cleanupInput)
+	}
 }
 
 func TestServiceUpdateAndDeletePropagateValidationInvalidationError(t *testing.T) {
@@ -519,10 +566,13 @@ type publicAPIKeyServiceStore struct {
 	routes            map[string]port.PublicAPIKeyRouteStrategyRef
 	keys              map[string]port.PublicAPIKeySummary
 
-	createInput port.PublicAPIKeyCreateInput
-	updateInput port.PublicAPIKeyUpdateInput
+	createInput  port.PublicAPIKeyCreateInput
+	updateInput  port.PublicAPIKeyUpdateInput
+	cleanupInput port.PublicAPIKeyRecordCleanupTargetInput
+	cleanupErr   error
 
 	transactionEvents *[]string
+	deleteEvents      []string
 }
 
 func newPublicAPIKeyServiceStore() *publicAPIKeyServiceStore {
@@ -552,7 +602,12 @@ func newPublicAPIKeyServiceStore() *publicAPIKeyServiceStore {
 }
 
 func (s *publicAPIKeyServiceStore) PublicAPIKeyInTx(ctx context.Context, fn func(ctx context.Context, store port.PublicAPIKeyStore) error) error {
+	keysBefore := make(map[string]port.PublicAPIKeySummary, len(s.keys))
+	for id, key := range s.keys {
+		keysBefore[id] = key
+	}
 	if err := fn(ctx, s); err != nil {
+		s.keys = keysBefore
 		return err
 	}
 	if s.transactionEvents != nil {
@@ -629,11 +684,21 @@ func (s *publicAPIKeyServiceStore) UpdatePublicAPIKey(_ context.Context, input p
 }
 
 func (s *publicAPIKeyServiceStore) DeletePublicAPIKey(_ context.Context, apiKeyID string, _ string) (bool, error) {
+	s.deleteEvents = append(s.deleteEvents, "delete")
 	if _, ok := s.keys[apiKeyID]; !ok {
 		return false, nil
 	}
 	delete(s.keys, apiKeyID)
 	return true, nil
+}
+
+func (s *publicAPIKeyServiceStore) UpsertPublicAPIKeyRecordCleanupTarget(
+	_ context.Context,
+	input port.PublicAPIKeyRecordCleanupTargetInput,
+) error {
+	s.deleteEvents = append(s.deleteEvents, "cleanup")
+	s.cleanupInput = input
+	return s.cleanupErr
 }
 
 type apiKeyGatewayCacheInvalidationCall struct {

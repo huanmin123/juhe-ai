@@ -395,6 +395,12 @@ type PublicAPIKeyUpdateInput struct {
 	Now                             time.Time
 }
 
+type PublicAPIKeyRecordCleanupTargetInput struct {
+	APIKeyID        string
+	SystemAccountID string
+	Now             time.Time
+}
+
 var (
 	ErrPublicAPIKeyDuplicateName = errors.New("public api key duplicate name")
 	ErrPublicAPIKeyDuplicateHash = errors.New("public api key duplicate hash")
@@ -409,6 +415,7 @@ type PublicAPIKeyStore interface {
 	CreatePublicAPIKey(ctx context.Context, input PublicAPIKeyCreateInput) (PublicAPIKeySummary, error)
 	UpdatePublicAPIKey(ctx context.Context, input PublicAPIKeyUpdateInput) (PublicAPIKeySummary, bool, error)
 	DeletePublicAPIKey(ctx context.Context, apiKeyID string, systemAccountID string) (bool, error)
+	UpsertPublicAPIKeyRecordCleanupTarget(ctx context.Context, input PublicAPIKeyRecordCleanupTargetInput) error
 }
 
 type PublicAPIKeyTransactor interface {

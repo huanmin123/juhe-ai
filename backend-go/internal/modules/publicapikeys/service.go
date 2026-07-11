@@ -434,6 +434,16 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (APIKeyResponse
 		if !deleted {
 			return ErrAPIKeyNotFound
 		}
+		if err := store.UpsertPublicAPIKeyRecordCleanupTarget(
+			ctx,
+			port.PublicAPIKeyRecordCleanupTargetInput{
+				APIKeyID:        current.ID,
+				SystemAccountID: current.SystemAccountID,
+				Now:             s.now().UTC(),
+			},
+		); err != nil {
+			return err
+		}
 		apiKeyID = current.ID
 		response = apiKeyResponse("deleted", target, current, "", s.generatedAt())
 		return nil

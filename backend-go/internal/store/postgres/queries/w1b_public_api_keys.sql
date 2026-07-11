@@ -261,3 +261,19 @@ JOIN juhe_business.route_strategies AS route_strategies
 DELETE FROM juhe_business.api_keys
 WHERE id = sqlc.arg(id)
   AND system_account_id = sqlc.arg(system_account_id);
+
+-- name: UpsertPublicAPIKeyRecordCleanupTarget :exec
+INSERT INTO juhe_dataset.api_key_record_cleanup_targets (
+  api_key_id,
+  system_account_id,
+  created_at,
+  updated_at
+) VALUES (
+  sqlc.arg(api_key_id),
+  sqlc.arg(system_account_id),
+  sqlc.arg(created_at),
+  sqlc.arg(updated_at)
+)
+ON CONFLICT (api_key_id) DO UPDATE SET
+  system_account_id = EXCLUDED.system_account_id,
+  updated_at = EXCLUDED.updated_at;

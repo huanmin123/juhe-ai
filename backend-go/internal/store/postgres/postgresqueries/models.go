@@ -516,6 +516,17 @@ type JuheBusinessSystemTeamMember struct {
 	UpdatedAt       pgtype.Timestamptz
 }
 
+type JuheDatasetApiKeyRecordCleanupTarget struct {
+	ApiKeyID          string
+	SystemAccountID   string
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+	AttemptCount      int32
+	LastAttemptAt     pgtype.Timestamptz
+	LastBlockedReason pgtype.Text
+	LastErrorMessage  pgtype.Text
+}
+
 type JuheDatasetOperationLog struct {
 	ID                            string
 	TraceID                       pgtype.Text
