@@ -1,0 +1,129 @@
+package apikeyschedule
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestNormalizeStrictlyValidatesAndCanonicalizesAvailabilitySchedule(t *testing.T) {
+	now := time.Date(2026, 7, 13, 10, 30, 0, 0, time.UTC)
+	got, allowed, err := Normalize(map[string]any{
+		"enabled":  true,
+		"timezone": " Asia/Shanghai ",
+		"mode":     "allow_windows",
+		"windows": []any{map[string]any{
+			"daysOfWeek": []any{float64(7), float64(1), float64(7)},
+			"start":      " 09:00 ",
+			"end":        "18:00",
+		}},
+		"dateRange": map[string]any{
+			"startDate": "2026-07-01",
+			"endDate":   "2026-07-31",
+		},
+		"exceptions": []any{map[string]any{
+			"date":   "2026-07-14",
+			"action": "allow",
+			"windows": []any{map[string]any{
+				"start": "10:00",
+				"end":   "12:00",
+			}},
+		}},
+	}, now, "UTC")
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+	if allowed {
+		t.Fatal("Normalize() allowed = true, want false outside normalized Monday window in Asia/Shanghai")
+	}
+	if got["timezone"] != "Asia/Shanghai" {
+		t.Fatalf("timezone = %#v", got["timezone"])
+	}
+	windows, ok := got["windows"].([]map[string]any)
+	if !ok || len(windows) != 1 {
+		t.Fatalf("windows = %#v", got["windows"])
+	}
+	if !reflect.DeepEqual(windows[0]["daysOfWeek"], []int{1, 7}) ||
+		windows[0]["start"] != "09:00" ||
+		windows[0]["end"] != "18:00" {
+		t.Fatalf("normalized window = %#v", windows[0])
+	}
+}
+
+func TestNormalizeRejectsStructurallyInvalidAvailabilitySchedules(t *testing.T) {
+	base := func() map[string]any {
+		return map[string]any{
+			"enabled":  true,
+			"timezone": "UTC",
+			"mode":     "allow_windows",
+			"windows": []any{map[string]any{
+				"daysOfWeek": []any{float64(1)},
+				"start":      "09:00",
+				"end":        "18:00",
+			}},
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "unknown root field", mutate: func(value map[string]any) { value["unknown"] = true }},
+		{name: "disabled", mutate: func(value map[string]any) { value["enabled"] = false }},
+		{name: "wrong mode", mutate: func(value map[string]any) { value["mode"] = "deny_windows" }},
+		{name: "null timezone", mutate: func(value map[string]any) { value["timezone"] = nil }},
+		{name: "invalid timezone", mutate: func(value map[string]any) { value["timezone"] = "Invalid/Timezone" }},
+		{name: "empty windows", mutate: func(value map[string]any) { value["windows"] = []any{} }},
+		{name: "null date range", mutate: func(value map[string]any) { value["dateRange"] = nil }},
+		{name: "null date range field", mutate: func(value map[string]any) {
+			value["dateRange"] = map[string]any{"startDate": nil}
+		}},
+		{name: "null exceptions", mutate: func(value map[string]any) { value["exceptions"] = nil }},
+		{name: "invalid day", mutate: func(value map[string]any) {
+			value["windows"].([]any)[0].(map[string]any)["daysOfWeek"] = []any{float64(8)}
+		}},
+		{name: "equal endpoints", mutate: func(value map[string]any) {
+			value["windows"].([]any)[0].(map[string]any)["end"] = "09:00"
+		}},
+		{name: "reverse date range", mutate: func(value map[string]any) {
+			value["dateRange"] = map[string]any{"startDate": "2026-08-01", "endDate": "2026-07-01"}
+		}},
+		{name: "deny exception windows", mutate: func(value map[string]any) {
+			value["exceptions"] = []any{map[string]any{
+				"date":    "2026-07-13",
+				"action":  "deny",
+				"windows": []any{},
+			}}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := base()
+			test.mutate(value)
+			_, _, err := Normalize(value, time.Now(), "UTC")
+			if err == nil || !strings.Contains(err.Error(), "availabilitySchedule") {
+				t.Fatalf("Normalize() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestNormalizeOmitsEmptyOptionalScheduleSections(t *testing.T) {
+	got, _, err := Normalize(map[string]any{
+		"enabled":    true,
+		"timezone":   "UTC",
+		"mode":       "allow_windows",
+		"windows":    []any{map[string]any{"daysOfWeek": []any{float64(1)}, "start": "09:00", "end": "18:00"}},
+		"dateRange":  map[string]any{},
+		"exceptions": []any{},
+	}, time.Now(), "UTC")
+	if err != nil {
+		t.Fatalf("Normalize() error = %v", err)
+	}
+	if _, exists := got["dateRange"]; exists {
+		t.Fatalf("dateRange should be omitted: %#v", got)
+	}
+	if _, exists := got["exceptions"]; exists {
+		t.Fatalf("exceptions should be omitted: %#v", got)
+	}
+}

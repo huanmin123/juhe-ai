@@ -12,7 +12,16 @@ import (
 )
 
 const listManagementAPIKeyUsageTotals = `-- name: ListManagementAPIKeyUsageTotals :many
+WITH requested_scopes AS MATERIALIZED (
+  SELECT
+    (($1::text[])[requested.ordinality::int])::text AS system_account_id,
+    requested.api_key_id::text AS api_key_id,
+    requested.ordinality
+  FROM unnest($2::text[])
+    WITH ORDINALITY AS requested(api_key_id, ordinality)
+)
 SELECT
+  requested_scopes.system_account_id,
   usage_stats.scope_id,
   usage_stats.request_count,
   usage_stats.input_tokens,
@@ -27,13 +36,21 @@ SELECT
   usage_stats.output_image_tokens,
   usage_stats.total_cost_usd,
   usage_stats.last_used_at
-FROM juhe_stats.usage_stats_totals AS usage_stats
-WHERE usage_stats.scope_type = 'api_key'
-  AND usage_stats.scope_id = ANY($1::text[])
-ORDER BY usage_stats.scope_id ASC
+FROM requested_scopes
+INNER JOIN juhe_stats.usage_stats_totals AS usage_stats
+  ON usage_stats.system_account_id = requested_scopes.system_account_id
+  AND usage_stats.scope_type = 'api_key'
+  AND usage_stats.scope_id = requested_scopes.api_key_id
+ORDER BY requested_scopes.ordinality ASC
 `
 
+type ListManagementAPIKeyUsageTotalsParams struct {
+	SystemAccountIds []string
+	ApiKeyIds        []string
+}
+
 type ListManagementAPIKeyUsageTotalsRow struct {
+	SystemAccountID    string
 	ScopeID            string
 	RequestCount       int64
 	InputTokens        int64
@@ -50,8 +67,8 @@ type ListManagementAPIKeyUsageTotalsRow struct {
 	LastUsedAt         pgtype.Text
 }
 
-func (q *Queries) ListManagementAPIKeyUsageTotals(ctx context.Context, apiKeyIds []string) ([]ListManagementAPIKeyUsageTotalsRow, error) {
-	rows, err := q.db.Query(ctx, listManagementAPIKeyUsageTotals, apiKeyIds)
+func (q *Queries) ListManagementAPIKeyUsageTotals(ctx context.Context, arg ListManagementAPIKeyUsageTotalsParams) ([]ListManagementAPIKeyUsageTotalsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementAPIKeyUsageTotals, arg.SystemAccountIds, arg.ApiKeyIds)
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +77,7 @@ func (q *Queries) ListManagementAPIKeyUsageTotals(ctx context.Context, apiKeyIds
 	for rows.Next() {
 		var i ListManagementAPIKeyUsageTotalsRow
 		if err := rows.Scan(
+			&i.SystemAccountID,
 			&i.ScopeID,
 			&i.RequestCount,
 			&i.InputTokens,
@@ -114,35 +132,24 @@ WHERE (
     OR api_keys.system_account_id = $1::text
   )
   AND (
-    $2::boolean = false
-    OR (
-      api_keys.name COLLATE "C" >= $3::text
-      AND api_keys.name COLLATE "C" < $4::text
-      AND starts_with(api_keys.name, $3::text)
-    )
+    $2::text = ''
+    OR api_keys.status = $2::text
   )
   AND (
-    $5::text = ''
-    OR api_keys.status = $5::text
-  )
-  AND (
-    $6::text = ''
-    OR api_keys.route_strategy_id = $6::text
+    $3::text = ''
+    OR api_keys.route_strategy_id = $3::text
   )
 ORDER BY
   api_keys.is_default DESC,
   api_keys.updated_at DESC,
   api_keys.created_at DESC,
   api_keys.id DESC
-LIMIT $8::int
-OFFSET $7::int
+LIMIT $5::int
+OFFSET $4::int
 `
 
 type ListManagementAPIKeysParams struct {
 	SystemAccountID string
-	HasKeyword      bool
-	Keyword         string
-	KeywordUpper    string
 	Status          string
 	RouteStrategyID string
 	RowOffset       int32
@@ -171,9 +178,6 @@ type ListManagementAPIKeysRow struct {
 func (q *Queries) ListManagementAPIKeys(ctx context.Context, arg ListManagementAPIKeysParams) ([]ListManagementAPIKeysRow, error) {
 	rows, err := q.db.Query(ctx, listManagementAPIKeys,
 		arg.SystemAccountID,
-		arg.HasKeyword,
-		arg.Keyword,
-		arg.KeywordUpper,
 		arg.Status,
 		arg.RouteStrategyID,
 		arg.RowOffset,
@@ -186,6 +190,133 @@ func (q *Queries) ListManagementAPIKeys(ctx context.Context, arg ListManagementA
 	var items []ListManagementAPIKeysRow
 	for rows.Next() {
 		var i ListManagementAPIKeysRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SystemAccountID,
+			&i.SystemAccountName,
+			&i.Name,
+			&i.Description,
+			&i.KeyPrefix,
+			&i.KeySuffix,
+			&i.Status,
+			&i.IsDefault,
+			&i.RouteStrategyID,
+			&i.RouteStrategyName,
+			&i.RouteStrategyMode,
+			&i.RouteStrategyStatus,
+			&i.ExpiresAt,
+			&i.QuotaLimitsJson,
+			&i.AvailabilityScheduleJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listManagementAPIKeysByKeyword = `-- name: ListManagementAPIKeysByKeyword :many
+WITH matched_api_key_ids AS MATERIALIZED (
+  SELECT keyword_api_keys.id
+  FROM juhe_business.api_keys AS keyword_api_keys
+  WHERE (
+      $5::text = ''
+      OR keyword_api_keys.system_account_id = $5::text
+    )
+    AND keyword_api_keys.name COLLATE "C" >= $6::text
+    AND keyword_api_keys.name COLLATE "C" < $7::text
+    AND starts_with(keyword_api_keys.name, $6::text)
+)
+SELECT
+  api_keys.id,
+  api_keys.system_account_id,
+  system_accounts.display_name AS system_account_name,
+  api_keys.name,
+  api_keys.description,
+  api_keys.key_prefix,
+  api_keys.key_suffix,
+  api_keys.status,
+  api_keys.is_default,
+  api_keys.route_strategy_id,
+  route_strategies.name AS route_strategy_name,
+  route_strategies.mode AS route_strategy_mode,
+  route_strategies.status AS route_strategy_status,
+  api_keys.expires_at,
+  api_keys.quota_limits_json,
+  api_keys.availability_schedule_json
+FROM juhe_business.api_keys AS api_keys
+INNER JOIN juhe_business.system_accounts AS system_accounts
+  ON system_accounts.id = api_keys.system_account_id
+INNER JOIN juhe_business.route_strategies AS route_strategies
+  ON route_strategies.id = api_keys.route_strategy_id
+  AND route_strategies.system_account_id = api_keys.system_account_id
+WHERE api_keys.id IN (SELECT id FROM matched_api_key_ids)
+  AND (
+    $1::text = ''
+    OR api_keys.status = $1::text
+  )
+  AND (
+    $2::text = ''
+    OR api_keys.route_strategy_id = $2::text
+  )
+ORDER BY
+  api_keys.is_default DESC,
+  api_keys.updated_at DESC,
+  api_keys.created_at DESC,
+  api_keys.id DESC
+LIMIT $4::int
+OFFSET $3::int
+`
+
+type ListManagementAPIKeysByKeywordParams struct {
+	Status          string
+	RouteStrategyID string
+	RowOffset       int32
+	RowLimit        int32
+	SystemAccountID string
+	Keyword         string
+	KeywordUpper    string
+}
+
+type ListManagementAPIKeysByKeywordRow struct {
+	ID                       string
+	SystemAccountID          string
+	SystemAccountName        string
+	Name                     string
+	Description              pgtype.Text
+	KeyPrefix                string
+	KeySuffix                string
+	Status                   string
+	IsDefault                bool
+	RouteStrategyID          string
+	RouteStrategyName        string
+	RouteStrategyMode        string
+	RouteStrategyStatus      string
+	ExpiresAt                pgtype.Timestamptz
+	QuotaLimitsJson          pgtype.Text
+	AvailabilityScheduleJson pgtype.Text
+}
+
+func (q *Queries) ListManagementAPIKeysByKeyword(ctx context.Context, arg ListManagementAPIKeysByKeywordParams) ([]ListManagementAPIKeysByKeywordRow, error) {
+	rows, err := q.db.Query(ctx, listManagementAPIKeysByKeyword,
+		arg.Status,
+		arg.RouteStrategyID,
+		arg.RowOffset,
+		arg.RowLimit,
+		arg.SystemAccountID,
+		arg.Keyword,
+		arg.KeywordUpper,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementAPIKeysByKeywordRow
+	for rows.Next() {
+		var i ListManagementAPIKeysByKeywordRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.SystemAccountID,

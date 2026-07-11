@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"juhe-ai/backend-go/internal/store/port"
 	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
 )
@@ -16,7 +18,27 @@ const (
 
 type managementAPIKeyListQueries interface {
 	ListManagementAPIKeys(ctx context.Context, arg postgresqueries.ListManagementAPIKeysParams) ([]postgresqueries.ListManagementAPIKeysRow, error)
-	ListManagementAPIKeyUsageTotals(ctx context.Context, apiKeyIDs []string) ([]postgresqueries.ListManagementAPIKeyUsageTotalsRow, error)
+	ListManagementAPIKeysByKeyword(ctx context.Context, arg postgresqueries.ListManagementAPIKeysByKeywordParams) ([]postgresqueries.ListManagementAPIKeysByKeywordRow, error)
+	ListManagementAPIKeyUsageTotals(ctx context.Context, arg postgresqueries.ListManagementAPIKeyUsageTotalsParams) ([]postgresqueries.ListManagementAPIKeyUsageTotalsRow, error)
+}
+
+type managementAPIKeyListRecord struct {
+	ID                       string
+	SystemAccountID          string
+	SystemAccountName        string
+	Name                     string
+	Description              pgtype.Text
+	KeyPrefix                string
+	KeySuffix                string
+	Status                   string
+	IsDefault                bool
+	RouteStrategyID          string
+	RouteStrategyName        string
+	RouteStrategyMode        string
+	RouteStrategyStatus      string
+	ExpiresAt                pgtype.Timestamptz
+	QuotaLimitsJSON          pgtype.Text
+	AvailabilityScheduleJSON pgtype.Text
 }
 
 func (s *Store) ListManagementAPIKeys(
@@ -28,9 +50,9 @@ func (s *Store) ListManagementAPIKeys(
 
 func (s *Store) ListManagementAPIKeyUsageTotals(
 	ctx context.Context,
-	apiKeyIDs []string,
+	scopes []port.ManagementAPIKeyUsageScope,
 ) ([]port.ManagementAPIKeyUsageRow, error) {
-	return listManagementAPIKeyUsageTotals(ctx, s.queries(), apiKeyIDs)
+	return listManagementAPIKeyUsageTotals(ctx, s.queries(), scopes)
 }
 
 func listManagementAPIKeys(
@@ -43,30 +65,46 @@ func listManagementAPIKeys(
 	}
 	limit := min(input.Limit, maxManagementAPIKeyListRowLimit)
 	keyword := strings.TrimSpace(input.Keyword)
-	keywordUpper := ""
-	if keyword != "" {
-		keywordUpper = textPrefixUpperBound(keyword)
-	}
-	rows, err := q.ListManagementAPIKeys(ctx, postgresqueries.ListManagementAPIKeysParams{
-		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
-		HasKeyword:      keyword != "",
-		Keyword:         keyword,
-		KeywordUpper:    keywordUpper,
-		Status:          strings.TrimSpace(input.Status),
-		RouteStrategyID: strings.TrimSpace(input.RouteStrategyID),
-		RowLimit:        int32(limit),
-		RowOffset:       int32(max(0, input.Offset)),
-	})
-	if err != nil {
-		return port.ManagementAPIKeyListPage{}, fmt.Errorf("list management API Keys: %w", err)
+	systemAccountID := strings.TrimSpace(input.SystemAccountID)
+	status := strings.TrimSpace(input.Status)
+	routeStrategyID := strings.TrimSpace(input.RouteStrategyID)
+	rowLimit := int32(limit)
+	rowOffset := int32(max(0, input.Offset))
+	var records []managementAPIKeyListRecord
+	if keyword == "" {
+		rows, err := q.ListManagementAPIKeys(ctx, postgresqueries.ListManagementAPIKeysParams{
+			SystemAccountID: systemAccountID,
+			Status:          status,
+			RouteStrategyID: routeStrategyID,
+			RowLimit:        rowLimit,
+			RowOffset:       rowOffset,
+		})
+		if err != nil {
+			return port.ManagementAPIKeyListPage{}, fmt.Errorf("list management API Keys: %w", err)
+		}
+		records = managementAPIKeyListRecords(rows)
+	} else {
+		rows, err := q.ListManagementAPIKeysByKeyword(ctx, postgresqueries.ListManagementAPIKeysByKeywordParams{
+			SystemAccountID: systemAccountID,
+			Keyword:         keyword,
+			KeywordUpper:    textPrefixUpperBound(keyword),
+			Status:          status,
+			RouteStrategyID: routeStrategyID,
+			RowLimit:        rowLimit,
+			RowOffset:       rowOffset,
+		})
+		if err != nil {
+			return port.ManagementAPIKeyListPage{}, fmt.Errorf("list management API Keys by keyword: %w", err)
+		}
+		records = managementAPIKeyListKeywordRecords(rows)
 	}
 	pageSize := max(0, limit-1)
-	hasMore := len(rows) > pageSize
+	hasMore := len(records) > pageSize
 	if hasMore {
-		rows = rows[:pageSize]
+		records = records[:pageSize]
 	}
-	items := make([]port.ManagementAPIKeyListRow, 0, len(rows))
-	for _, row := range rows {
+	items := make([]port.ManagementAPIKeyListRow, 0, len(records))
+	for _, row := range records {
 		items = append(items, port.ManagementAPIKeyListRow{
 			ID:                       row.ID,
 			SystemAccountID:          row.SystemAccountID,
@@ -82,23 +120,86 @@ func listManagementAPIKeys(
 			RouteStrategyMode:        row.RouteStrategyMode,
 			RouteStrategyStatus:      row.RouteStrategyStatus,
 			ExpiresAt:                timestamptzPtr(row.ExpiresAt),
-			QuotaLimitsJSON:          textPtr(row.QuotaLimitsJson),
-			AvailabilityScheduleJSON: textPtr(row.AvailabilityScheduleJson),
+			QuotaLimitsJSON:          textPtr(row.QuotaLimitsJSON),
+			AvailabilityScheduleJSON: textPtr(row.AvailabilityScheduleJSON),
 		})
 	}
 	return port.ManagementAPIKeyListPage{Rows: items, HasMore: hasMore}, nil
 }
 
+func managementAPIKeyListRecords(
+	rows []postgresqueries.ListManagementAPIKeysRow,
+) []managementAPIKeyListRecord {
+	result := make([]managementAPIKeyListRecord, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, managementAPIKeyListRecord{
+			ID:                       row.ID,
+			SystemAccountID:          row.SystemAccountID,
+			SystemAccountName:        row.SystemAccountName,
+			Name:                     row.Name,
+			Description:              row.Description,
+			KeyPrefix:                row.KeyPrefix,
+			KeySuffix:                row.KeySuffix,
+			Status:                   row.Status,
+			IsDefault:                row.IsDefault,
+			RouteStrategyID:          row.RouteStrategyID,
+			RouteStrategyName:        row.RouteStrategyName,
+			RouteStrategyMode:        row.RouteStrategyMode,
+			RouteStrategyStatus:      row.RouteStrategyStatus,
+			ExpiresAt:                row.ExpiresAt,
+			QuotaLimitsJSON:          row.QuotaLimitsJson,
+			AvailabilityScheduleJSON: row.AvailabilityScheduleJson,
+		})
+	}
+	return result
+}
+
+func managementAPIKeyListKeywordRecords(
+	rows []postgresqueries.ListManagementAPIKeysByKeywordRow,
+) []managementAPIKeyListRecord {
+	result := make([]managementAPIKeyListRecord, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, managementAPIKeyListRecord{
+			ID:                       row.ID,
+			SystemAccountID:          row.SystemAccountID,
+			SystemAccountName:        row.SystemAccountName,
+			Name:                     row.Name,
+			Description:              row.Description,
+			KeyPrefix:                row.KeyPrefix,
+			KeySuffix:                row.KeySuffix,
+			Status:                   row.Status,
+			IsDefault:                row.IsDefault,
+			RouteStrategyID:          row.RouteStrategyID,
+			RouteStrategyName:        row.RouteStrategyName,
+			RouteStrategyMode:        row.RouteStrategyMode,
+			RouteStrategyStatus:      row.RouteStrategyStatus,
+			ExpiresAt:                row.ExpiresAt,
+			QuotaLimitsJSON:          row.QuotaLimitsJson,
+			AvailabilityScheduleJSON: row.AvailabilityScheduleJson,
+		})
+	}
+	return result
+}
+
 func listManagementAPIKeyUsageTotals(
 	ctx context.Context,
 	q managementAPIKeyListQueries,
-	apiKeyIDs []string,
+	scopes []port.ManagementAPIKeyUsageScope,
 ) ([]port.ManagementAPIKeyUsageRow, error) {
-	ids := uniqueStrings(apiKeyIDs, maxManagementAPIKeyListBatch)
-	if len(ids) == 0 {
+	scopes = uniqueManagementAPIKeyUsageScopes(scopes, maxManagementAPIKeyListBatch)
+	if len(scopes) == 0 {
 		return []port.ManagementAPIKeyUsageRow{}, nil
 	}
-	rows, err := q.ListManagementAPIKeyUsageTotals(ctx, ids)
+	systemAccountIDs := make([]string, 0, len(scopes))
+	apiKeyIDs := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		systemAccountIDs = append(systemAccountIDs, scope.SystemAccountID)
+		apiKeyIDs = append(apiKeyIDs, scope.APIKeyID)
+	}
+	rows, err := q.ListManagementAPIKeyUsageTotals(ctx, postgresqueries.ListManagementAPIKeyUsageTotalsParams{
+		SystemAccountIds: systemAccountIDs,
+		ApiKeyIds:        apiKeyIDs,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list management API Key usage totals: %w", err)
 	}
@@ -109,7 +210,8 @@ func listManagementAPIKeyUsageTotals(
 			return nil, fmt.Errorf("map management API Key usage %q: %w", row.ScopeID, err)
 		}
 		items = append(items, port.ManagementAPIKeyUsageRow{
-			APIKeyID: row.ScopeID,
+			SystemAccountID: row.SystemAccountID,
+			APIKeyID:        row.ScopeID,
 			Usage: port.ManagementAccountUsageSummary{
 				RequestCount:       row.RequestCount,
 				InputTokens:        row.InputTokens,
@@ -129,6 +231,33 @@ func listManagementAPIKeyUsageTotals(
 		})
 	}
 	return items, nil
+}
+
+func uniqueManagementAPIKeyUsageScopes(
+	values []port.ManagementAPIKeyUsageScope,
+	limit int,
+) []port.ManagementAPIKeyUsageScope {
+	if limit <= 0 {
+		return nil
+	}
+	result := make([]port.ManagementAPIKeyUsageScope, 0, min(len(values), limit))
+	seen := make(map[port.ManagementAPIKeyUsageScope]struct{}, min(len(values), limit))
+	for _, value := range values {
+		value.SystemAccountID = strings.TrimSpace(value.SystemAccountID)
+		value.APIKeyID = strings.TrimSpace(value.APIKeyID)
+		if value.SystemAccountID == "" || value.APIKeyID == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+		if len(result) == limit {
+			break
+		}
+	}
+	return result
 }
 
 var _ port.ManagementAPIKeyListReader = (*Store)(nil)

@@ -674,14 +674,20 @@ type ManagementAPIKeyListPage struct {
 	HasMore bool
 }
 
+type ManagementAPIKeyUsageScope struct {
+	SystemAccountID string
+	APIKeyID        string
+}
+
 type ManagementAPIKeyUsageRow struct {
-	APIKeyID string
-	Usage    ManagementAccountUsageSummary
+	SystemAccountID string
+	APIKeyID        string
+	Usage           ManagementAccountUsageSummary
 }
 
 type ManagementAPIKeyListReader interface {
 	ListManagementAPIKeys(ctx context.Context, input ManagementAPIKeyListInput) (ManagementAPIKeyListPage, error)
-	ListManagementAPIKeyUsageTotals(ctx context.Context, apiKeyIDs []string) ([]ManagementAPIKeyUsageRow, error)
+	ListManagementAPIKeyUsageTotals(ctx context.Context, scopes []ManagementAPIKeyUsageScope) ([]ManagementAPIKeyUsageRow, error)
 }
 
 type ManagementAccountUsageStatsRange struct {

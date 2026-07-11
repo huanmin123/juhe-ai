@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
+	"juhe-ai/backend-go/internal/modules/apikeyschedule"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -17,6 +20,7 @@ const (
 	defaultListPageSize = 50
 	maxListPageSize     = 200
 	maxListWindowRows   = 1000
+	maxQuotaAmount      = 9007199254740991
 )
 
 var ErrAPIKeyListInvalid = errors.New("management API Key list invalid")
@@ -100,22 +104,31 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		return listResult(nil, page, pageSize, hasMore), nil
 	}
 
-	apiKeyIDs := make([]string, 0, len(rows))
+	usageScopes := make([]port.ManagementAPIKeyUsageScope, 0, len(rows))
 	for _, row := range rows {
-		apiKeyIDs = append(apiKeyIDs, row.ID)
+		usageScopes = append(usageScopes, port.ManagementAPIKeyUsageScope{
+			SystemAccountID: row.SystemAccountID,
+			APIKeyID:        row.ID,
+		})
 	}
-	usageRows, err := s.store.ListManagementAPIKeyUsageTotals(ctx, apiKeyIDs)
+	usageRows, err := s.store.ListManagementAPIKeyUsageTotals(ctx, usageScopes)
 	if err != nil {
 		return ListResult{}, err
 	}
-	usageByAPIKeyID := make(map[string]port.ManagementAccountUsageSummary, len(usageRows))
+	usageByScope := make(map[port.ManagementAPIKeyUsageScope]port.ManagementAccountUsageSummary, len(usageRows))
 	for _, row := range usageRows {
-		usageByAPIKeyID[row.APIKeyID] = row.Usage
+		usageByScope[port.ManagementAPIKeyUsageScope{
+			SystemAccountID: row.SystemAccountID,
+			APIKeyID:        row.APIKeyID,
+		}] = row.Usage
 	}
 
 	items := make([]ListItem, 0, len(rows))
 	for _, row := range rows {
-		item, err := listItem(row, usageByAPIKeyID[row.ID], includeOwner)
+		item, err := listItem(row, usageByScope[port.ManagementAPIKeyUsageScope{
+			SystemAccountID: row.SystemAccountID,
+			APIKeyID:        row.ID,
+		}], includeOwner)
 		if err != nil {
 			return ListResult{}, err
 		}
@@ -276,9 +289,9 @@ func parseQuotaLimits(raw *string) (port.ManagementRequestQuotaLimits, error) {
 
 func parseQuotaLimit(raw json.RawMessage, hourly bool) (float64, int, error) {
 	var item struct {
-		Enabled bool    `json:"enabled"`
-		Hours   *int    `json:"hours"`
-		Limit   float64 `json:"limit"`
+		Enabled bool        `json:"enabled"`
+		Hours   *int        `json:"hours"`
+		Limit   json.Number `json:"limit"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -288,31 +301,57 @@ func parseQuotaLimit(raw json.RawMessage, hourly bool) (float64, int, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return 0, 0, fmt.Errorf("quota value must contain one object")
 	}
-	if !item.Enabled || item.Limit <= 0 {
+	limit, err := strconv.ParseFloat(item.Limit.String(), 64)
+	if err != nil ||
+		!item.Enabled ||
+		math.IsNaN(limit) ||
+		math.IsInf(limit, 0) ||
+		limit <= 0 ||
+		limit > maxQuotaAmount {
 		return 0, 0, fmt.Errorf("quota must be enabled with a positive limit")
+	}
+	if quotaDecimalPlaces(item.Limit.String()) > 6 {
+		return 0, 0, fmt.Errorf("quota limit must have at most 6 decimal places")
 	}
 	if hourly {
 		if item.Hours == nil || *item.Hours < 1 || *item.Hours > 720 {
 			return 0, 0, fmt.Errorf("hourly hours must be in 1..720")
 		}
-		return item.Limit, *item.Hours, nil
+		return limit, *item.Hours, nil
 	}
 	if item.Hours != nil {
 		return 0, 0, fmt.Errorf("hours are only valid for hourly quota")
 	}
-	return item.Limit, 0, nil
+	return limit, 0, nil
+}
+
+func quotaDecimalPlaces(text string) int {
+	mantissa := text
+	exponent := 0
+	if index := strings.IndexAny(mantissa, "eE"); index >= 0 {
+		parsed, err := strconv.Atoi(mantissa[index+1:])
+		if err != nil {
+			return 7
+		}
+		exponent = parsed
+		mantissa = mantissa[:index]
+	}
+	mantissa = strings.TrimPrefix(strings.TrimPrefix(mantissa, "+"), "-")
+	decimalIndex := strings.IndexByte(mantissa, '.')
+	fractionLength := 0
+	digits := mantissa
+	if decimalIndex >= 0 {
+		fractionLength = len(mantissa) - decimalIndex - 1
+		digits = mantissa[:decimalIndex] + mantissa[decimalIndex+1:]
+	}
+	scale := fractionLength - exponent
+	for scale > 0 && strings.HasSuffix(digits, "0") {
+		digits = strings.TrimSuffix(digits, "0")
+		scale--
+	}
+	return max(0, scale)
 }
 
 func parseAvailabilitySchedule(raw *string) (map[string]any, error) {
-	if raw == nil || strings.TrimSpace(*raw) == "" || strings.TrimSpace(*raw) == "null" {
-		return nil, nil
-	}
-	var value map[string]any
-	if err := json.Unmarshal([]byte(*raw), &value); err != nil {
-		return nil, err
-	}
-	if value == nil {
-		return nil, nil
-	}
-	return value, nil
+	return apikeyschedule.ParseJSON(raw, time.Now().UTC(), "UTC")
 }

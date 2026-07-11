@@ -41,7 +41,8 @@ func TestServiceListMapsAdminSummaryAndLoadsCurrentPageUsageOnce(t *testing.T) {
 			HasMore: true,
 		},
 		usage: []port.ManagementAPIKeyUsageRow{{
-			APIKeyID: "key_1",
+			SystemAccountID: "sys_owner",
+			APIKeyID:        "key_1",
 			Usage: port.ManagementAccountUsageSummary{
 				RequestCount: 12,
 				InputTokens:  20,
@@ -49,6 +50,12 @@ func TestServiceListMapsAdminSummaryAndLoadsCurrentPageUsageOnce(t *testing.T) {
 				TotalTokens:  50,
 				TotalCost:    1.25,
 				LastUsedAt:   &lastUsedAt,
+			},
+		}, {
+			SystemAccountID: "sys_other",
+			APIKeyID:        "key_1",
+			Usage: port.ManagementAccountUsageSummary{
+				RequestCount: 999,
 			},
 		}},
 	}
@@ -79,8 +86,12 @@ func TestServiceListMapsAdminSummaryAndLoadsCurrentPageUsageOnce(t *testing.T) {
 		got.Offset != 0 {
 		t.Fatalf("list input = %+v", got)
 	}
-	if store.usageCalls != 1 || !reflect.DeepEqual(store.usageIDs, []string{"key_1"}) {
-		t.Fatalf("usage calls=%d ids=%#v", store.usageCalls, store.usageIDs)
+	wantUsageScopes := []port.ManagementAPIKeyUsageScope{{
+		SystemAccountID: "sys_owner",
+		APIKeyID:        "key_1",
+	}}
+	if store.usageCalls != 1 || !reflect.DeepEqual(store.usageScopes, wantUsageScopes) {
+		t.Fatalf("usage calls=%d scopes=%#v", store.usageCalls, store.usageScopes)
 	}
 	if len(result.Items) != 1 || result.Total != 2 || !result.HasMore || result.Page != 1 || result.PageSize != 1 {
 		t.Fatalf("result = %+v", result)
@@ -230,17 +241,91 @@ func TestServiceListRejectsMissingActorAndDoesNotMaskStoreOrJSONErrors(t *testin
 			t.Fatalf("List() error = %v, want stored schedule error", err)
 		}
 	})
+
+	t.Run("structurally invalid stored schedule", func(t *testing.T) {
+		invalidSchedule := `{"enabled":true,"timezone":"UTC","mode":"allow_windows","windows":[]}`
+		store := &managementAPIKeyStoreStub{
+			page: port.ManagementAPIKeyListPage{Rows: []port.ManagementAPIKeyListRow{{
+				ID:                       "key_bad_schedule",
+				SystemAccountID:          "sys_admin",
+				Name:                     "bad schedule",
+				KeyPrefix:                "sk-bad",
+				KeySuffix:                "bad",
+				Status:                   "active",
+				RouteStrategyID:          "route_bad",
+				AvailabilityScheduleJSON: &invalidSchedule,
+			}}},
+		}
+		_, err := NewService(store).List(context.Background(), ListInput{
+			ActorSystemAccountID: "sys_admin",
+			ActorRole:            "admin",
+		})
+		if err == nil || !strings.Contains(err.Error(), "availability schedule") {
+			t.Fatalf("List() error = %v, want structural schedule error", err)
+		}
+	})
+}
+
+func TestParseQuotaLimitsMatchesNodeNumberBoundaries(t *testing.T) {
+	valid := []struct {
+		name string
+		raw  string
+		want float64
+	}{
+		{
+			name: "maximum safe integer",
+			raw:  `{"daily":{"enabled":true,"limit":9007199254740991}}`,
+			want: 9007199254740991,
+		},
+		{
+			name: "six decimal places",
+			raw:  `{"daily":{"enabled":true,"limit":1.000001}}`,
+			want: 1.000001,
+		},
+	}
+	for _, test := range valid {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseQuotaLimits(&test.raw)
+			if err != nil {
+				t.Fatalf("parseQuotaLimits() error = %v", err)
+			}
+			if got.Daily == nil || got.Daily.Limit != test.want {
+				t.Fatalf("parseQuotaLimits() = %+v", got)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "above maximum safe integer",
+			raw:  `{"daily":{"enabled":true,"limit":9007199254740992}}`,
+		},
+		{
+			name: "seven decimal places",
+			raw:  `{"daily":{"enabled":true,"limit":1.0000001}}`,
+		},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseQuotaLimits(&test.raw); err == nil {
+				t.Fatal("parseQuotaLimits() error = nil")
+			}
+		})
+	}
 }
 
 type managementAPIKeyStoreStub struct {
-	listInput  port.ManagementAPIKeyListInput
-	usageIDs   []string
-	page       port.ManagementAPIKeyListPage
-	usage      []port.ManagementAPIKeyUsageRow
-	listErr    error
-	usageErr   error
-	listCalls  int
-	usageCalls int
+	listInput   port.ManagementAPIKeyListInput
+	usageScopes []port.ManagementAPIKeyUsageScope
+	page        port.ManagementAPIKeyListPage
+	usage       []port.ManagementAPIKeyUsageRow
+	listErr     error
+	usageErr    error
+	listCalls   int
+	usageCalls  int
 }
 
 func (s *managementAPIKeyStoreStub) ListManagementAPIKeys(
@@ -254,10 +339,10 @@ func (s *managementAPIKeyStoreStub) ListManagementAPIKeys(
 
 func (s *managementAPIKeyStoreStub) ListManagementAPIKeyUsageTotals(
 	_ context.Context,
-	apiKeyIDs []string,
+	scopes []port.ManagementAPIKeyUsageScope,
 ) ([]port.ManagementAPIKeyUsageRow, error) {
 	s.usageCalls++
-	s.usageIDs = append([]string(nil), apiKeyIDs...)
+	s.usageScopes = append([]port.ManagementAPIKeyUsageScope(nil), scopes...)
 	return s.usage, s.usageErr
 }
 

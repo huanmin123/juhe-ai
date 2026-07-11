@@ -11,8 +11,5 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_route_default_updated
 CREATE INDEX IF NOT EXISTS idx_api_keys_name_c_lookup
   ON juhe_business.api_keys (name COLLATE "C", id);
 
-CREATE INDEX IF NOT EXISTS idx_usage_stats_totals_scope_lookup
-  ON juhe_stats.usage_stats_totals (scope_type, scope_id);
-
 -- +goose Down
 -- no-op: management API Key list indexes are part of the current schema.
