@@ -169,8 +169,11 @@ export interface AccountDraftTestAccountPayload {
   notes?: string
 }
 
-export interface AccountDraftTestPayload extends AccountTestPayload {
+export interface AccountDraftTestPayload {
   account: AccountDraftTestAccountPayload
+  testEndpointMode?: AccountSupportedEndpointMode
+  prompt?: string
+  testSessionId?: string
 }
 
 export interface ApiKeyListParams extends ListParams {
