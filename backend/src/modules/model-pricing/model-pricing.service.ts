@@ -28,6 +28,14 @@ export interface ProviderModelPricing {
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
+  priorityInputUsdPer1M?: number
+  priorityOutputUsdPer1M?: number
+  priorityCachedInputUsdPer1M?: number
+  priorityCacheWriteUsdPer1M?: number
+  flexInputUsdPer1M?: number
+  flexOutputUsdPer1M?: number
+  flexCachedInputUsdPer1M?: number
+  flexCacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
@@ -37,6 +45,9 @@ export interface ProviderModelPricing {
   maxInputTokens?: number
   maxOutputTokens?: number
   maxTokens?: number
+  longContextInputTokenThreshold?: number
+  longContextInputCostMultiplier?: number
+  longContextOutputCostMultiplier?: number
   supportsPromptCaching: boolean
   supportedServiceTiers: GptServiceTier[]
   supportedReasoningEfforts: GptWireReasoningEffort[]
@@ -52,6 +63,9 @@ export interface ProviderModelPricing {
 export interface CostInput {
   providerCode: string
   model?: string
+  serviceTier?: 'default' | GptServiceTier
+  priorityPriceMultiplier?: number
+  flexPriceMultiplier?: number
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
@@ -126,10 +140,11 @@ export function estimateProviderCostUsd(input: CostInput): number | undefined {
   const pricing = findProviderModelPricing(input.providerCode, input.model)
   if (!pricing) return undefined
 
-  const inputPrice = normalizePrice(pricing.input_cost_per_token)
-  const outputPrice = normalizePrice(pricing.output_cost_per_token)
-  const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost) ?? inputPrice
-  const cacheWritePrice = normalizePrice(pricing.cache_creation_input_token_cost)
+  const tokenPrices = effectiveRawTokenPrices(pricing, input)
+  const inputPrice = tokenPrices.inputPrice
+  const outputPrice = tokenPrices.outputPrice
+  const cachedInputPrice = tokenPrices.cachedInputPrice ?? inputPrice
+  const cacheWritePrice = tokenPrices.cacheWritePrice
   const cacheWrite1hPrice = normalizePrice(pricing.cache_creation_input_token_cost_above_1hr) ?? cacheWritePrice
   const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token)
   const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token)
@@ -173,7 +188,7 @@ export function estimateProviderCacheWriteCostUsd(input: CostInput): number | un
   const pricing = findProviderModelPricing(input.providerCode, input.model)
   if (!pricing) return undefined
 
-  const cacheWritePrice = normalizePrice(pricing.cache_creation_input_token_cost)
+  const cacheWritePrice = effectiveRawTokenPrices(pricing, input).cacheWritePrice
   const cacheWrite1hPrice = normalizePrice(pricing.cache_creation_input_token_cost_above_1hr) ?? cacheWritePrice
   if (cacheWritePrice === undefined && cacheWrite1hPrice === undefined) return undefined
 
@@ -194,8 +209,8 @@ export function estimateProviderCacheReadCostUsd(input: CostInput): number | und
   const pricing = findProviderModelPricing(input.providerCode, input.model)
   if (!pricing) return undefined
 
-  const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost)
-    ?? normalizePrice(pricing.input_cost_per_token)
+  const tokenPrices = effectiveRawTokenPrices(pricing, input)
+  const cachedInputPrice = tokenPrices.cachedInputPrice ?? tokenPrices.inputPrice
   if (cachedInputPrice === undefined) return undefined
 
   const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
@@ -208,10 +223,11 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
   const pricing = findProviderModelPricing(input.providerCode, input.model)
   if (!pricing) return undefined
 
-  const inputPrice = normalizePrice(pricing.input_cost_per_token)
-  const outputPrice = normalizePrice(pricing.output_cost_per_token)
-  const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost) ?? inputPrice
-  const cacheWritePrice = normalizePrice(pricing.cache_creation_input_token_cost)
+  const tokenPrices = effectiveRawTokenPrices(pricing, input)
+  const inputPrice = tokenPrices.inputPrice
+  const outputPrice = tokenPrices.outputPrice
+  const cachedInputPrice = tokenPrices.cachedInputPrice ?? inputPrice
+  const cacheWritePrice = tokenPrices.cacheWritePrice
   const cacheWrite1hPrice = normalizePrice(pricing.cache_creation_input_token_cost_above_1hr) ?? cacheWritePrice
   const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token)
   const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token)
@@ -342,6 +358,47 @@ function normalizedCacheWrite1hTokens(input: CostInput, cacheWriteTokens: number
   return cacheWriteTokens > 0 ? Math.min(cacheWrite1hTokens, cacheWriteTokens) : cacheWrite1hTokens
 }
 
+function effectiveRawTokenPrices(pricing: RawModelPricing, input: CostInput): {
+  inputPrice?: number
+  outputPrice?: number
+  cachedInputPrice?: number
+  cacheWritePrice?: number
+} {
+  const tier = input.serviceTier
+  const tierSupported = tier === 'priority' || tier === 'flex'
+    ? pricing.supported_service_tiers?.includes(tier) === true
+    : false
+  const fallbackMultiplier = tier === 'priority'
+    ? normalizeMultiplier(input.priorityPriceMultiplier, 2)
+    : tier === 'flex'
+      ? normalizeMultiplier(input.flexPriceMultiplier, 0.5)
+      : 1
+  const tierPrice = (standard: number | undefined, priority: number | undefined, flex: number | undefined): number | undefined => {
+    const specific = tier === 'priority' ? priority : tier === 'flex' ? flex : undefined
+    if (tierSupported) return normalizePrice(specific) ?? multiplyPrice(standard, fallbackMultiplier)
+    return normalizePrice(standard)
+  }
+  const longContext = typeof pricing.long_context_input_token_threshold === 'number'
+    && Math.max(input.inputTokens ?? 0, 0) > pricing.long_context_input_token_threshold
+  const inputMultiplier = longContext ? normalizeMultiplier(pricing.long_context_input_cost_multiplier) : 1
+  const outputMultiplier = longContext ? normalizeMultiplier(pricing.long_context_output_cost_multiplier) : 1
+  return {
+    inputPrice: multiplyPrice(tierPrice(pricing.input_cost_per_token, pricing.input_cost_per_token_priority, pricing.input_cost_per_token_flex), inputMultiplier),
+    outputPrice: multiplyPrice(tierPrice(pricing.output_cost_per_token, pricing.output_cost_per_token_priority, pricing.output_cost_per_token_flex), outputMultiplier),
+    cachedInputPrice: multiplyPrice(tierPrice(pricing.cache_read_input_token_cost, pricing.cache_read_input_token_cost_priority, pricing.cache_read_input_token_cost_flex), inputMultiplier),
+    cacheWritePrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost, pricing.cache_creation_input_token_cost_priority, pricing.cache_creation_input_token_cost_flex), inputMultiplier)
+  }
+}
+
+function multiplyPrice(value: number | undefined, multiplier: number): number | undefined {
+  const price = normalizePrice(value)
+  return price === undefined ? undefined : price * multiplier
+}
+
+function normalizeMultiplier(value: number | undefined, fallback = 1): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
+}
+
 function usesIncludedCacheReadUsage(providerCode: string): boolean {
   return modelPricingProviderDriverForProvider(providerCode)?.usesIncludedCacheReadUsage ?? true
 }
@@ -366,6 +423,14 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     outputUsdPer1M: perMillion(item.output_cost_per_token),
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost),
     cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost),
+    priorityInputUsdPer1M: perMillion(item.input_cost_per_token_priority),
+    priorityOutputUsdPer1M: perMillion(item.output_cost_per_token_priority),
+    priorityCachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_priority),
+    priorityCacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_priority),
+    flexInputUsdPer1M: perMillion(item.input_cost_per_token_flex),
+    flexOutputUsdPer1M: perMillion(item.output_cost_per_token_flex),
+    flexCachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_flex),
+    flexCacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_flex),
     cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr),
     imageInputUsdPer1M: perMillion(item.input_cost_per_image_token),
     imageOutputUsdPer1M: perMillion(item.output_cost_per_image_token),
@@ -375,6 +440,9 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     maxInputTokens: item.max_input_tokens,
     maxOutputTokens: item.max_output_tokens,
     maxTokens: item.max_tokens,
+    longContextInputTokenThreshold: item.long_context_input_token_threshold,
+    longContextInputCostMultiplier: item.long_context_input_cost_multiplier,
+    longContextOutputCostMultiplier: item.long_context_output_cost_multiplier,
     supportsPromptCaching: item.supports_prompt_caching === true,
     supportedServiceTiers,
     supportedReasoningEfforts: item.supported_reasoning_efforts ? [...item.supported_reasoning_efforts] : [],

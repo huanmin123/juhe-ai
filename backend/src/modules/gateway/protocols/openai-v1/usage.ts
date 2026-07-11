@@ -5,21 +5,28 @@ import {
 
 export function parseOpenAIUsageFromJsonBuffer(responseBody: Buffer): ParsedUsage {
   if (responseBody.length === 0) return emptyUsage()
-  return parseOpenAIUsageFromJsonTextFragment(responseBody.toString('utf8'))
+  const text = responseBody.toString('utf8')
+  try {
+    const root = JSON.parse(text) as Record<string, unknown>
+    return extractOpenAIUsage(root.usage, normalizeServiceTier(root.service_tier))
+  } catch {
+    return parseOpenAIUsageFromJsonTextFragment(text)
+  }
 }
 
 export function parseOpenAIUsageFromJsonTextFragment(text?: string): ParsedUsage {
   if (!text) return emptyUsage()
   const usageText = extractJsonObjectPropertyFromTextFragment(text, 'usage')
-  if (!usageText) return emptyUsage()
+  const serviceTier = normalizeServiceTier(extractJsonStringPropertyFromTextFragment(text, 'service_tier'))
+  if (!usageText) return serviceTier ? { serviceTier } : emptyUsage()
   try {
-    return extractOpenAIUsage(JSON.parse(usageText))
+    return extractOpenAIUsage(JSON.parse(usageText), serviceTier)
   } catch {
     return emptyUsage()
   }
 }
 
-export function extractOpenAIUsage(value: unknown): ParsedUsage {
+export function extractOpenAIUsage(value: unknown, serviceTier?: ParsedUsage['serviceTier']): ParsedUsage {
   if (typeof value !== 'object' || value === null) return emptyUsage()
   const usage = value as Record<string, unknown>
   const responsesInputDetails = objectValue(usage.input_tokens_details)
@@ -97,7 +104,20 @@ export function extractOpenAIUsage(value: unknown): ParsedUsage {
   const outputAudioTokens = numberValue(outputDetails?.audio_tokens)
   const thinkingTokens = numberValue(outputDetails?.reasoning_tokens)
   const outputImageCount = outputImageCountValue(usage)
-  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, inputImageTokens, outputImageTokens, inputAudioTokens, outputAudioTokens, thinkingTokens, outputImageCount }
+  return { serviceTier, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens, inputImageTokens, outputImageTokens, inputAudioTokens, outputAudioTokens, thinkingTokens, outputImageCount }
+}
+
+function extractJsonStringPropertyFromTextFragment(text: string, propertyName: string): string | undefined {
+  const pattern = new RegExp(`"${propertyName}"\\s*:\\s*"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)"`, 'g')
+  let value: string | undefined
+  for (const match of text.matchAll(pattern)) value = match[1]
+  return value
+}
+
+function normalizeServiceTier(value: unknown): ParsedUsage['serviceTier'] {
+  if (value === 'priority' || value === 'flex') return value
+  if (value === 'default' || value === 'auto') return 'default'
+  return undefined
 }
 
 function extractJsonObjectPropertyFromTextFragment(text: string, propertyName: string): string | undefined {

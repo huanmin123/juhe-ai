@@ -24,6 +24,8 @@ export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
 export interface GatewaySettings {
   gatewayTextRawBodyLimitMegabytes: number
+  gptPriorityPriceMultiplier?: number
+  gptFlexPriceMultiplier?: number
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
@@ -82,6 +84,8 @@ export function readGatewaySettingsReadOnly(): GatewaySettings {
 function gatewaySettingsFromRawSettings(settings: Record<string, unknown>): GatewaySettings {
   return {
     gatewayTextRawBodyLimitMegabytes: numberSetting(settings.gatewayTextRawBodyLimitMegabytes, 'gatewayTextRawBodyLimitMegabytes', 1, 64),
+    gptPriorityPriceMultiplier: decimalNumberSetting(settings.gptPriorityPriceMultiplier, 'gptPriorityPriceMultiplier', 0.01, 100),
+    gptFlexPriceMultiplier: decimalNumberSetting(settings.gptFlexPriceMultiplier, 'gptFlexPriceMultiplier', 0.01, 100),
     defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
@@ -102,6 +106,8 @@ export async function readGatewaySettingsAsync(): Promise<GatewaySettings> {
   const settings = await getSettingsAsync()
   return {
     gatewayTextRawBodyLimitMegabytes: numberSetting(settings.gatewayTextRawBodyLimitMegabytes, 'gatewayTextRawBodyLimitMegabytes', 1, 64),
+    gptPriorityPriceMultiplier: decimalNumberSetting(settings.gptPriorityPriceMultiplier, 'gptPriorityPriceMultiplier', 0.01, 100),
+    gptFlexPriceMultiplier: decimalNumberSetting(settings.gptFlexPriceMultiplier, 'gptFlexPriceMultiplier', 0.01, 100),
     defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
@@ -360,6 +366,16 @@ function normalizeHeadersInput(headers?: Headers | Record<string, string | strin
 function numberSetting(value: unknown, key: string, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
     throw new Error(`系统设置 ${key} 必须是整数`)
+  }
+  if (value < min || value > max) {
+    throw new Error(`系统设置 ${key} 必须在 ${min} 到 ${max} 之间`)
+  }
+  return value
+}
+
+function decimalNumberSetting(value: unknown, key: string, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`系统设置 ${key} 必须是数字`)
   }
   if (value < min || value > max) {
     throw new Error(`系统设置 ${key} 必须在 ${min} 到 ${max} 之间`)

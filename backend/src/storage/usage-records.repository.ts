@@ -154,6 +154,9 @@ export interface UsageRecordInput {
   model?: string
   upstreamModel?: string
   pricingModel?: string
+  serviceTier?: 'default' | 'priority' | 'flex'
+  priorityPriceMultiplier?: number
+  flexPriceMultiplier?: number
   modelMappingApplied?: boolean
   modelMappingSource?: string
   sourceEndpointFamily?: string
@@ -500,6 +503,9 @@ async function enrichSingleUsageRecordPricingAsync(
         providerCode,
         systemAccountId: catalogSystemAccountId,
         model: costModel,
+        serviceTier: enriched.serviceTier,
+        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
+        flexPriceMultiplier: enriched.flexPriceMultiplier,
         cacheReadTokens: enriched.cacheReadTokens
       })
     }
@@ -512,6 +518,9 @@ async function enrichSingleUsageRecordPricingAsync(
         providerCode,
         systemAccountId: catalogSystemAccountId,
         model: costModel,
+        serviceTier: enriched.serviceTier,
+        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
+        flexPriceMultiplier: enriched.flexPriceMultiplier,
         cacheWriteTokens: enriched.cacheWriteTokens,
         cacheWrite1hTokens: enriched.cacheWrite1hTokens
       })
@@ -522,6 +531,9 @@ async function enrichSingleUsageRecordPricingAsync(
         providerCode,
         systemAccountId: catalogSystemAccountId,
         model: costModel,
+        serviceTier: enriched.serviceTier,
+        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
+        flexPriceMultiplier: enriched.flexPriceMultiplier,
         inputTokens: enriched.inputTokens,
         outputTokens: enriched.outputTokens,
         cacheReadTokens: enriched.cacheReadTokens,

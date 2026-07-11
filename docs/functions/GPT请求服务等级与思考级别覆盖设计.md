@@ -54,9 +54,9 @@
 - `codex-rs/core/src/session/multi_agents.rs`
   - Ultra 令 `MultiAgentMode` 进入 `Proactive`。
 - `codex-rs/models-manager/models.json`
-  - `gpt-5.6-sol`：Codex 级别为 `low|medium|high|xhigh|max|ultra`，服务等级包含 `priority`，`supported_in_api=true`。
-  - `gpt-5.6-terra`：Codex 级别为 `low|medium|high|xhigh|max|ultra`，服务等级包含 `priority`，`supported_in_api=true`。
-  - `gpt-5.6-luna`：Codex 级别为 `low|medium|high|xhigh|max`，服务等级包含 `priority`，`supported_in_api=true`。
+- `gpt-5.6-sol`：Codex 级别为 `low|medium|high|xhigh|max|ultra`，API 服务等级包含 `priority|flex`，`supported_in_api=true`。
+- `gpt-5.6-terra`：Codex 级别为 `low|medium|high|xhigh|max|ultra`，API 服务等级包含 `priority|flex`，`supported_in_api=true`。
+- `gpt-5.6-luna`：Codex 级别为 `low|medium|high|xhigh|max`，API 服务等级包含 `priority|flex`，`supported_in_api=true`。
 
 因此：
 
@@ -373,7 +373,7 @@ OAuth 创建流程的 `credentialsPatch` 必须允许携带两个覆盖字段。
 
 ### 8.3 字段改写
 
-降级顺序固定为：思考级别 `none < minimal < low < medium < high < xhigh < max`；服务等级 `flex < default < priority`。两个字段独立解析，一个字段无法应用时不影响另一个字段。
+思考级别按 `none < minimal < low < medium < high < xhigh < max` 向下选择当前模型支持的最高档。`priority` 与 `flex` 是平级服务档位，不建立高低顺序，也不互相降级；当前模型不支持账户配置档位时不覆盖客户端原值。两个字段独立解析，一个字段无法应用时不影响另一个字段。
 
 Responses：
 
@@ -628,6 +628,11 @@ defaultReasoningEffort?: GptWireReasoningEffort
 
 - Priority 可能产生更高价格，发布前必须确认 GPT-5.6 当前价格数据是否包含 Priority 计价；不能继续按标准价格低估。
 - 上游响应实际 `service_tier` 可能降级，统计和审计以响应实际值为事实，账户配置只表示请求意图。
+- 本次请求成本按响应实际 `service_tier=default|priority|flex` 选择价格；响应未返回有效档位时按标准档计费。GPT-5.6 优先使用目录中的档位专用价格，超过 272K 输入后再应用长上下文输入、缓存和输出倍率。
+- 系统设置提供 `Priority 通用倍率`（默认 `2`）和 `Flex 通用倍率`（默认 `0.5`），管理员可修改并随运行时设置缓存刷新生效。模型目录有档位专用价格时始终优先使用专用价格；只有模型明确支持该档位但缺少专用价格时才使用通用倍率。修改倍率不会自动为模型开放服务档位。
+- Flex 能力只按价格源精确声明。当前纳入 GPT-5、GPT-5 Mini/Nano、GPT-5.4 全系列、GPT-5.5 全系列、GPT-5.6 Sol/Terra/Luna，以及 o3/o4-mini；未声明 Flex 的模型保持仅 Priority 或无服务档位能力。
+- GPT 模型目录将请求能力拆为“服务等级”和“思考级别”两列并使用 Tag 展示；思考列同时保留 API 与 Codex 能力及默认值标识。
+- `outputTokens` 是完整可计费输出，`thinkingTokens` 是其中的观测子集。OpenAI / Anthropic 不重复相加思考 Token；Gemini 将 `candidatesTokenCount + thoughtsTokenCount` 归一为完整输出。
 - 首次发布建议观察：
   - 覆盖配置账户数。
   - Priority 请求数和实际 Priority 响应数。

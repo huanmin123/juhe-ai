@@ -8,6 +8,8 @@ export interface GlobalForm {
 
 export interface SystemForm {
   gatewayTextRawBodyLimitMegabytes: number
+  gptPriorityPriceMultiplier: number
+  gptFlexPriceMultiplier: number
   systemApiRateLimitIpReadPerMinute: number
   systemApiRateLimitIpReadBurstPer10Seconds: number
   systemApiRateLimitIpWritePerMinute: number
@@ -42,6 +44,8 @@ export const defaultGlobalSettings: GlobalForm = {
 
 export const defaultSystemSettings: SystemForm = {
   gatewayTextRawBodyLimitMegabytes: 16,
+  gptPriorityPriceMultiplier: 2,
+  gptFlexPriceMultiplier: 0.5,
   systemApiRateLimitIpReadPerMinute: 600,
   systemApiRateLimitIpReadBurstPer10Seconds: 120,
   systemApiRateLimitIpWritePerMinute: 180,
@@ -79,6 +83,8 @@ export function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): 
 export function normalizeSystemSettings(settings: SystemSettings | SystemForm): SystemForm {
   return {
     gatewayTextRawBodyLimitMegabytes: integerValue(settings.gatewayTextRawBodyLimitMegabytes, '文本请求体上限', 1, 64),
+    gptPriorityPriceMultiplier: decimalValue(settings.gptPriorityPriceMultiplier, 'Priority 通用计价倍率', 0.01, 100),
+    gptFlexPriceMultiplier: decimalValue(settings.gptFlexPriceMultiplier, 'Flex 通用计价倍率', 0.01, 100),
     systemApiRateLimitIpReadPerMinute: integerValue(settings.systemApiRateLimitIpReadPerMinute, 'IP 读请求每分钟上限', 0, 1_000_000),
     systemApiRateLimitIpReadBurstPer10Seconds: integerValue(settings.systemApiRateLimitIpReadBurstPer10Seconds, 'IP 读请求突发上限', 0, 1_000_000),
     systemApiRateLimitIpWritePerMinute: integerValue(settings.systemApiRateLimitIpWritePerMinute, 'IP 写请求每分钟上限', 0, 1_000_000),
@@ -118,6 +124,16 @@ export function buildSystemSettingsPayload(form: SystemForm): SystemSettingsPatc
 function integerValue(value: unknown, label: string, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
     throw new Error(`${label}必须是整数`)
+  }
+  if (value < min || value > max) {
+    throw new Error(`${label}必须在 ${min} 到 ${max} 之间`)
+  }
+  return value
+}
+
+function decimalValue(value: unknown, label: string, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${label}必须是数字`)
   }
   if (value < min || value > max) {
     throw new Error(`${label}必须在 ${min} 到 ${max} 之间`)

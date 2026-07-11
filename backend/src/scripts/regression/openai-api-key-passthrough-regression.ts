@@ -160,7 +160,7 @@ function testGptAccountRequestOverridePureFunction(): void {
   })
   assert.equal(flexOutput.service_tier, 'flex')
 
-  const serviceTierDowngradedOutput = applyGptAccountRequestOverrides({
+  const unsupportedServiceTierOutput = applyGptAccountRequestOverrides({
     service_tier: 'flex'
   }, {
     credentials: {
@@ -172,7 +172,7 @@ function testGptAccountRequestOverridePureFunction(): void {
       supportedReasoningEfforts: []
     }
   })
-  assert.equal(serviceTierDowngradedOutput.service_tier, undefined, 'Priority 不受支持时应降为模型隐式支持的 Default')
+  assert.equal(unsupportedServiceTierOutput.service_tier, 'flex', 'Priority 与 Flex 平级，不支持配置档位时必须保留客户端原值')
 
   const compactOutput = applyGptAccountRequestOverrides({
     service_tier: 'flex',

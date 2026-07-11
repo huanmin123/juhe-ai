@@ -20,6 +20,8 @@ const settingsCacheTtlMs = 60_000
 const businessSchemaName = 'juhe_business'
 export const systemSettingKeys = [
   'gatewayTextRawBodyLimitMegabytes',
+  'gptPriorityPriceMultiplier',
+  'gptFlexPriceMultiplier',
   'systemApiRateLimitIpReadPerMinute',
   'systemApiRateLimitIpReadBurstPer10Seconds',
   'systemApiRateLimitIpWritePerMinute',
@@ -83,6 +85,8 @@ const globalSettingKeys = ['appName', 'appIcon'] as const
 const GLOBAL_SETTING_KEYS = new Set<string>(globalSettingKeys)
 const SYSTEM_SETTING_VALIDATORS: Record<SystemSettingKey, SettingValidator> = {
   gatewayTextRawBodyLimitMegabytes: integerSetting(1, 64),
+  gptPriorityPriceMultiplier: decimalSetting(0.01, 100),
+  gptFlexPriceMultiplier: decimalSetting(0.01, 100),
   systemApiRateLimitIpReadPerMinute: integerSetting(0, 1_000_000),
   systemApiRateLimitIpReadBurstPer10Seconds: integerSetting(0, 1_000_000),
   systemApiRateLimitIpWritePerMinute: integerSetting(0, 1_000_000),
@@ -593,6 +597,18 @@ function integerSetting(min: number, max: number): SettingValidator {
   return (value, key) => {
     if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
       throw new Error(`${key} 必须是整数`)
+    }
+    if (value < min || value > max) {
+      throw new Error(`${key} 必须在 ${min} 到 ${max} 之间`)
+    }
+    return value
+  }
+}
+
+function decimalSetting(min: number, max: number): SettingValidator {
+  return (value, key) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error(`${key} 必须是数字`)
     }
     if (value < min || value > max) {
       throw new Error(`${key} 必须在 ${min} 到 ${max} 之间`)

@@ -79,8 +79,38 @@
               <span v-if="!record.supportedApiProtocols?.length" class="muted-text">-</span>
             </a-space>
           </template>
-          <template v-else-if="column.key === 'capabilities'">
-            <span>{{ formatModelRequestCapabilities(record) }}</span>
+          <template v-else-if="column.key === 'serviceTiers'">
+            <a-space wrap size="small">
+              <a-tag v-for="tier in record.supportedServiceTiers" :key="tier" :color="tier === 'priority' ? 'blue' : 'cyan'">
+                {{ formatModelServiceTier(tier) }}
+              </a-tag>
+              <span v-if="!record.supportedServiceTiers?.length" class="muted-text">-</span>
+            </a-space>
+          </template>
+          <template v-else-if="column.key === 'reasoningEfforts'">
+            <div class="capability-tags">
+              <a-space v-if="record.supportedReasoningEfforts?.length" wrap size="small">
+                <a-tag
+                  v-for="effort in record.supportedReasoningEfforts"
+                  :key="`api-${effort}`"
+                  :color="effort === record.defaultReasoningEffort ? 'gold' : 'default'"
+                >
+                  {{ formatModelReasoningEffort(effort) }}{{ effort === record.defaultReasoningEffort ? '（默认）' : '' }}
+                </a-tag>
+              </a-space>
+              <a-space v-if="record.codexSupportedReasoningLevels?.length" wrap size="small">
+                <span class="capability-prefix">Codex</span>
+                <a-tag
+                  v-for="effort in record.codexSupportedReasoningLevels"
+                  :key="`codex-${effort}`"
+                  :color="effort === record.codexDefaultReasoningLevel ? 'purple' : 'default'"
+                >
+                  {{ formatModelReasoningEffort(effort) }}{{ effort === record.codexDefaultReasoningLevel ? '（默认）' : '' }}
+                </a-tag>
+                <a-tag v-if="record.codexMultiAgentVersion" color="geekblue">多代理 {{ record.codexMultiAgentVersion }}</a-tag>
+              </a-space>
+              <span v-if="!record.supportedReasoningEfforts?.length && !record.codexSupportedReasoningLevels?.length" class="muted-text">-</span>
+            </div>
           </template>
           <template v-else-if="column.key === 'prices'">
             <div class="price-cell">
@@ -143,8 +173,10 @@
               <strong>{{ record.releaseDate || '-' }}</strong>
               <span>接口协议</span>
               <strong>{{ (record.supportedApiProtocols ?? []).map(formatApiProtocol).join(' / ') || '-' }}</strong>
-              <span>请求能力</span>
-              <strong>{{ formatModelRequestCapabilities(record) }}</strong>
+              <span>服务等级</span>
+              <strong>{{ (record.supportedServiceTiers ?? []).map(formatModelServiceTier).join(' / ') || '-' }}</strong>
+              <span>思考级别</span>
+              <strong>{{ formatModelReasoningCapabilities(record) }}</strong>
               <span>价格</span>
               <strong>{{ formatModelPriceSummary(record) }}</strong>
               <span>上下文</span>
@@ -171,7 +203,9 @@ import {
   formatModelCategory,
   formatModelInputTokens,
   formatModelPriceSummary,
-  formatModelRequestCapabilities,
+  formatModelReasoningCapabilities,
+  formatModelReasoningEffort,
+  formatModelServiceTier,
   formatModelScope,
   formatModelStatus,
   formatPrice,
@@ -306,6 +340,17 @@ function handleSystemAccountUpdate(value: string | string[] | undefined): void {
   flex-direction: column;
   gap: 2px;
   line-height: 1.5;
+}
+
+.capability-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.capability-prefix {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
 }
 
 .model-mobile-card {

@@ -22,11 +22,13 @@ export function parseGeminiUsageFromJsonTextFragment(text?: string): ParsedUsage
 export function extractGeminiUsage(value: unknown): ParsedUsage {
   if (typeof value !== 'object' || value === null) return emptyUsage()
   const usage = value as Record<string, unknown>
+  const candidateTokens = numberValue(usage.candidatesTokenCount)
+  const thinkingTokens = numberValue(usage.thoughtsTokenCount)
   return {
     inputTokens: numberValue(usage.promptTokenCount),
-    outputTokens: numberValue(usage.candidatesTokenCount),
+    outputTokens: sumDefined(candidateTokens, thinkingTokens),
     cacheReadTokens: numberValue(usage.cachedContentTokenCount),
-    thinkingTokens: numberValue(usage.thoughtsTokenCount)
+    thinkingTokens
   }
 }
 
@@ -100,4 +102,9 @@ function skipJsonWhitespace(text: string, startIndex: number): number {
 function numberValue(value: unknown): number | undefined {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : undefined
+}
+
+function sumDefined(...values: Array<number | undefined>): number | undefined {
+  const defined = values.filter((value): value is number => value !== undefined)
+  return defined.length ? defined.reduce((sum, value) => sum + value, 0) : undefined
 }
