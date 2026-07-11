@@ -1,9 +1,11 @@
 package publicaccounts
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -13,6 +15,212 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/store/port"
 )
+
+func TestServiceAddDispatchesActivationAfterCommit(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	events := []string{}
+	transactor := &publicAccountTransactorFake{store: store, events: &events}
+	dispatcher := &publicAccountHealthCheckDispatcherFake{events: &events}
+	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, transactor, dispatcher, nil)
+
+	response, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"提交后激活检查账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	if response.Account == nil || response.Account.Status != StatusPendingTest {
+		t.Fatalf("response account = %+v, want pending_test", response.Account)
+	}
+	if got, want := events, []string{"transaction_committed", "dispatch"}; !slices.Equal(got, want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
+		publicAccountHealthCheckDispatchCall{
+			accountID: response.Account.ID,
+			reason:    "activation",
+		},
+	)
+}
+
+func TestServiceAddDispatchesActivationOnceAfterRetry(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	transactor := &publicAccountTransactorFake{
+		store:        store,
+		beforeErrors: []error{port.ErrPublicGroupTargetDuplicateUsername},
+	}
+	dispatcher := &publicAccountHealthCheckDispatcherFake{}
+	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, transactor, dispatcher, nil)
+
+	response, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"重试后激活检查账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account after retry: %v", err)
+	}
+	if transactor.calls != 2 {
+		t.Fatalf("transaction calls = %d, want 2", transactor.calls)
+	}
+	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
+		publicAccountHealthCheckDispatchCall{
+			accountID: response.Account.ID,
+			reason:    "activation",
+		},
+	)
+}
+
+func TestServiceAddSkipsActivationDispatchWhenDisabledOrTransactionFails(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		store := newPublicAccountStoreFake()
+		dispatcher := &publicAccountHealthCheckDispatcherFake{}
+		service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, nil, dispatcher, nil)
+		input := validPublicAccountAddInput("停用账号", "gpt-5.4-mini")
+		input.Status = StatusDisabled
+
+		response, err := service.Add(context.Background(), input)
+		if err != nil {
+			t.Fatalf("add disabled public account: %v", err)
+		}
+		if response.Account == nil || response.Account.Status != StatusDisabled {
+			t.Fatalf("response account = %+v, want disabled", response.Account)
+		}
+		if len(dispatcher.calls) != 0 {
+			t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
+		}
+	})
+
+	t.Run("transaction failure", func(t *testing.T) {
+		store := newPublicAccountStoreFake()
+		commitErr := errors.New("commit failed")
+		transactor := &publicAccountTransactorFake{store: store, commitError: commitErr}
+		dispatcher := &publicAccountHealthCheckDispatcherFake{}
+		service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, transactor, dispatcher, nil)
+
+		_, err := service.Add(context.Background(), validPublicAccountAddInput(
+			"提交失败账号",
+			"gpt-5.4-mini",
+		))
+		if !errors.Is(err, commitErr) {
+			t.Fatalf("add error = %v, want commit failure", err)
+		}
+		if len(dispatcher.calls) != 0 {
+			t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
+		}
+	})
+
+	t.Run("all retries fail", func(t *testing.T) {
+		store := newPublicAccountStoreFake()
+		transactor := &publicAccountTransactorFake{
+			store: store,
+			beforeErrors: []error{
+				port.ErrPublicGroupTargetDuplicateUsername,
+				port.ErrPublicGroupTargetDuplicateUsername,
+				port.ErrPublicGroupTargetDuplicateUsername,
+			},
+		}
+		dispatcher := &publicAccountHealthCheckDispatcherFake{}
+		service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, transactor, dispatcher, nil)
+
+		_, err := service.Add(context.Background(), validPublicAccountAddInput(
+			"持续重试失败账号",
+			"gpt-5.4-mini",
+		))
+		if !errors.Is(err, port.ErrPublicGroupTargetDuplicateUsername) {
+			t.Fatalf("add error = %v, want retryable duplicate", err)
+		}
+		if transactor.calls != 3 {
+			t.Fatalf("transaction calls = %d, want 3", transactor.calls)
+		}
+		if len(dispatcher.calls) != 0 {
+			t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
+		}
+	})
+}
+
+func TestServiceAddDispatchFailureIsBestEffortAndLoggerIsOptional(t *testing.T) {
+	dispatchErr := errors.New("health dispatch failed")
+
+	t.Run("warns when logger configured", func(t *testing.T) {
+		store := newPublicAccountStoreFake()
+		dispatcher := &publicAccountHealthCheckDispatcherFake{err: dispatchErr}
+		var logs bytes.Buffer
+		logger := slog.New(slog.NewJSONHandler(&logs, nil))
+		service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, nil, dispatcher, logger)
+
+		response, err := service.Add(context.Background(), validPublicAccountAddInput(
+			"投递失败仍创建账号",
+			"gpt-5.4-mini",
+		))
+		if err != nil {
+			t.Fatalf("add public account: %v", err)
+		}
+		if response.Action != "created" || response.Account == nil {
+			t.Fatalf("response = %+v, want committed create", response)
+		}
+		logText := logs.String()
+		for _, want := range []string{
+			`"level":"WARN"`,
+			`"event":"public_account_health_check_dispatch_failed"`,
+			`"account_id":"` + response.Account.ID + `"`,
+			`"reason":"activation"`,
+			dispatchErr.Error(),
+		} {
+			if !strings.Contains(logText, want) {
+				t.Fatalf("logs = %q, want substring %q", logText, want)
+			}
+		}
+	})
+
+	t.Run("does not require logger", func(t *testing.T) {
+		store := newPublicAccountStoreFake()
+		dispatcher := &publicAccountHealthCheckDispatcherFake{err: dispatchErr}
+		service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, nil, dispatcher, nil)
+
+		response, err := service.Add(context.Background(), validPublicAccountAddInput(
+			"无日志器投递失败账号",
+			"gpt-5.4-mini",
+		))
+		if err != nil {
+			t.Fatalf("add public account: %v", err)
+		}
+		if response.Action != "created" || response.Account == nil {
+			t.Fatalf("response = %+v, want committed create", response)
+		}
+	})
+}
+
+func TestServiceHealthDispatchDetachesCallerCancellationAndSetsDeadline(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	dispatcher := &publicAccountHealthCheckDispatcherFake{}
+	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, nil, dispatcher, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	startedAt := time.Now()
+
+	_, err := service.Add(ctx, validPublicAccountAddInput(
+		"取消上下文激活检查账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	if len(dispatcher.calls) != 1 {
+		t.Fatalf("dispatch calls = %#v, want one", dispatcher.calls)
+	}
+	call := dispatcher.calls[0]
+	if call.contextErr != nil {
+		t.Fatalf("dispatch context error = %v, want nil", call.contextErr)
+	}
+	if !call.hasDeadline {
+		t.Fatal("dispatch context has no deadline")
+	}
+	timeout := call.deadline.Sub(startedAt)
+	if timeout <= 0 || timeout > 2*time.Second+250*time.Millisecond {
+		t.Fatalf("dispatch deadline timeout = %v, want positive and near 2s", timeout)
+	}
+}
 
 func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *testing.T) {
 	store := newPublicAccountStoreFake()
@@ -579,10 +787,50 @@ func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateDispatchesConfigurationAfterCommit(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	created, err := newPublicAccountServiceForTest(store, nil).Add(
+		context.Background(),
+		validPublicAccountAddInput("提交后配置检查账号", "gpt-5.4-mini"),
+	)
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	account := store.accounts[created.Account.ID]
+	account.Status = port.PublicAccountStatusActive
+	account.Schedulable = true
+	store.accounts[account.ID] = account
+
+	events := []string{}
+	transactor := &publicAccountTransactorFake{store: store, events: &events}
+	dispatcher := &publicAccountHealthCheckDispatcherFake{events: &events}
+	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, transactor, dispatcher, nil)
+	apiKey := "sk-updated-public-account-secret-abcdef0123456789"
+
+	response, err := service.Update(context.Background(), UpdateInput{
+		AccountID: account.ID,
+		APIKey:    &apiKey,
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if response.Account == nil || response.Account.Status != StatusPendingTest {
+		t.Fatalf("response account = %+v, want pending_test", response.Account)
+	}
+	if got, want := events, []string{"transaction_committed", "dispatch"}; !slices.Equal(got, want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
+		publicAccountHealthCheckDispatchCall{
+			accountID: account.ID,
+			reason:    "configuration",
+		},
+	)
+}
+
 func TestServiceUpdateEquivalentCredentialsPreservesActiveScheduling(t *testing.T) {
 	store := newPublicAccountStoreFake()
-	service := newPublicAccountServiceForTest(store, nil)
-	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+	created, err := newPublicAccountServiceForTest(store, nil).Add(context.Background(), validPublicAccountAddInput(
 		"相同凭据账号",
 		"gpt-5.4-mini",
 	))
@@ -593,8 +841,10 @@ func TestServiceUpdateEquivalentCredentialsPreservesActiveScheduling(t *testing.
 	account.Status = port.PublicAccountStatusActive
 	account.Schedulable = true
 	store.accounts[account.ID] = account
+	dispatcher := &publicAccountHealthCheckDispatcherFake{}
+	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, nil, dispatcher, nil)
 
-	apiKey := "sk-public-account-secret-0123456789abcdef"
+	apiKey := " sk-public-account-secret-0123456789abcdef "
 	baseURL := "https://api.openai.com/v1/"
 	response, err := service.Update(context.Background(), UpdateInput{
 		AccountID: account.ID,
@@ -612,12 +862,14 @@ func TestServiceUpdateEquivalentCredentialsPreservesActiveScheduling(t *testing.
 		store.lastUpdateInput.ResetHealthDiagnostics {
 		t.Fatalf("equivalent credentials produced update flags %+v", store.lastUpdateInput)
 	}
+	if len(dispatcher.calls) != 0 {
+		t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
+	}
 }
 
 func TestServiceUpdateConfigurationChangeKeepsExplicitDisabled(t *testing.T) {
 	store := newPublicAccountStoreFake()
-	service := newPublicAccountServiceForTest(store, nil)
-	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+	created, err := newPublicAccountServiceForTest(store, nil).Add(context.Background(), validPublicAccountAddInput(
 		"配置修改并停用账号",
 		"gpt-5.4-mini",
 	))
@@ -628,6 +880,8 @@ func TestServiceUpdateConfigurationChangeKeepsExplicitDisabled(t *testing.T) {
 	account.Status = port.PublicAccountStatusActive
 	account.Schedulable = true
 	store.accounts[account.ID] = account
+	dispatcher := &publicAccountHealthCheckDispatcherFake{}
+	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, nil, dispatcher, nil)
 
 	status := StatusDisabled
 	apiKey := "sk-disabled-updated-abcdef0123456789"
@@ -648,12 +902,17 @@ func TestServiceUpdateConfigurationChangeKeepsExplicitDisabled(t *testing.T) {
 	if !store.lastUpdateInput.ScheduleHealthCheck || !store.lastUpdateInput.ResetHealthDiagnostics {
 		t.Fatal("changed disabled credentials must schedule a health check and reset health diagnostics")
 	}
+	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
+		publicAccountHealthCheckDispatchCall{
+			accountID: account.ID,
+			reason:    "configuration",
+		},
+	)
 }
 
 func TestServiceUpdateNonConfigurationFieldsDoNotForcePendingTest(t *testing.T) {
 	store := newPublicAccountStoreFake()
-	service := newPublicAccountServiceForTest(store, nil)
-	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+	created, err := newPublicAccountServiceForTest(store, nil).Add(context.Background(), validPublicAccountAddInput(
 		"普通字段修改账号",
 		"gpt-5.4-mini",
 	))
@@ -664,6 +923,8 @@ func TestServiceUpdateNonConfigurationFieldsDoNotForcePendingTest(t *testing.T) 
 	account.Status = port.PublicAccountStatusActive
 	account.Schedulable = true
 	store.accounts[account.ID] = account
+	dispatcher := &publicAccountHealthCheckDispatcherFake{}
+	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, nil, dispatcher, nil)
 
 	name := "普通字段修改后账号"
 	concurrency := 32
@@ -688,6 +949,9 @@ func TestServiceUpdateNonConfigurationFieldsDoNotForcePendingTest(t *testing.T) 
 	}
 	if store.lastUpdateInput.ScheduleHealthCheck || store.lastUpdateInput.ResetHealthDiagnostics {
 		t.Fatal("non-configuration fields must not alter health check scheduling")
+	}
+	if len(dispatcher.calls) != 0 {
+		t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
 	}
 }
 
@@ -776,8 +1040,7 @@ func TestServiceUpdateOmittedSupportedModelsPreservesExistingNonEmptyModels(t *t
 func TestServiceUpdateUnorderedEquivalentSupportedModelsSkipsCatalog(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	reader := defaultProviderModelReaderStub()
-	service := newPublicAccountServiceForTest(store, reader)
-	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+	created, err := newPublicAccountServiceForTest(store, reader).Add(context.Background(), validPublicAccountAddInput(
 		"无序相同模型账号",
 		"gpt-5.5",
 		"gpt-5.4-mini",
@@ -789,6 +1052,8 @@ func TestServiceUpdateUnorderedEquivalentSupportedModelsSkipsCatalog(t *testing.
 	account.Status = port.PublicAccountStatusActive
 	account.Schedulable = true
 	store.accounts[account.ID] = account
+	dispatcher := &publicAccountHealthCheckDispatcherFake{}
+	service := newPublicAccountServiceWithHealthDispatchForTest(store, reader, nil, dispatcher, nil)
 
 	reader.resetCalls()
 	store.updateCalls = 0
@@ -825,6 +1090,70 @@ func TestServiceUpdateUnorderedEquivalentSupportedModelsSkipsCatalog(t *testing.
 		!slices.Equal(response.Account.SupportedModels, wantModels) {
 		t.Fatalf("response account = %+v, want supported models %#v", response.Account, wantModels)
 	}
+	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
+		publicAccountHealthCheckDispatchCall{
+			accountID: account.ID,
+			reason:    "configuration",
+		},
+	)
+}
+
+func TestServiceUpdateTransactionFailureSkipsConfigurationDispatch(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	created, err := newPublicAccountServiceForTest(store, nil).Add(
+		context.Background(),
+		validPublicAccountAddInput("更新提交失败账号", "gpt-5.4-mini"),
+	)
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	commitErr := errors.New("update commit failed")
+	transactor := &publicAccountTransactorFake{store: store, commitError: commitErr}
+	dispatcher := &publicAccountHealthCheckDispatcherFake{}
+	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, transactor, dispatcher, nil)
+	apiKey := "sk-update-commit-failed-abcdef0123456789"
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		APIKey:    &apiKey,
+	})
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("update error = %v, want commit failure", err)
+	}
+	if len(dispatcher.calls) != 0 {
+		t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
+	}
+}
+
+func TestServiceUpdateDispatchFailureIsBestEffort(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	created, err := newPublicAccountServiceForTest(store, nil).Add(
+		context.Background(),
+		validPublicAccountAddInput("更新投递失败账号", "gpt-5.4-mini"),
+	)
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	dispatcher := &publicAccountHealthCheckDispatcherFake{err: errors.New("dispatch failed")}
+	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, nil, dispatcher, nil)
+	baseURL := "https://gateway.example.com/openai/v1"
+
+	response, err := service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		BaseURL:   &baseURL,
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if response.Action != "updated" || response.Account == nil {
+		t.Fatalf("response = %+v, want committed update", response)
+	}
+	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
+		publicAccountHealthCheckDispatchCall{
+			accountID: created.Account.ID,
+			reason:    "configuration",
+		},
+	)
 }
 
 func TestServiceUpdateChangedSupportedModelsMarksStoreUpdate(t *testing.T) {
@@ -1063,6 +1392,28 @@ func newPublicAccountServiceForTest(store *publicAccountStoreFake, providerModel
 	})
 }
 
+func newPublicAccountServiceWithHealthDispatchForTest(
+	store *publicAccountStoreFake,
+	providerModels ProviderModelReader,
+	transactor port.PublicAccountTransactor,
+	dispatcher AccountHealthCheckDispatcher,
+	logger *slog.Logger,
+) *Service {
+	if providerModels == nil {
+		providerModels = defaultProviderModelReaderStub()
+	}
+	return NewService(Options{
+		Store:                 store,
+		Transactor:            transactor,
+		ProviderModels:        providerModels,
+		HealthCheckDispatcher: dispatcher,
+		Logger:                logger,
+		Now:                   fixedPublicAccountNow,
+		NewID:                 sequentialPublicAccountID(),
+		Secret:                "public-account-test-secret",
+	})
+}
+
 func validPublicAccountAddInput(name string, models ...string) AddInput {
 	return AddInput{
 		TargetUsername:            "admin",
@@ -1139,6 +1490,79 @@ func (s *providerModelReaderStub) Models(_ context.Context, input managementprov
 func (s *providerModelReaderStub) resetCalls() {
 	s.calls = 0
 	s.inputs = nil
+}
+
+type publicAccountHealthCheckDispatchCall struct {
+	accountID   string
+	reason      string
+	contextErr  error
+	deadline    time.Time
+	hasDeadline bool
+}
+
+type publicAccountHealthCheckDispatcherFake struct {
+	calls  []publicAccountHealthCheckDispatchCall
+	err    error
+	events *[]string
+}
+
+func (d *publicAccountHealthCheckDispatcherFake) Dispatch(ctx context.Context, accountID string, reason string) error {
+	if d.events != nil {
+		*d.events = append(*d.events, "dispatch")
+	}
+	deadline, hasDeadline := ctx.Deadline()
+	d.calls = append(d.calls, publicAccountHealthCheckDispatchCall{
+		accountID:   accountID,
+		reason:      reason,
+		contextErr:  ctx.Err(),
+		deadline:    deadline,
+		hasDeadline: hasDeadline,
+	})
+	return d.err
+}
+
+func assertPublicAccountHealthDispatchCalls(
+	t *testing.T,
+	got []publicAccountHealthCheckDispatchCall,
+	want ...publicAccountHealthCheckDispatchCall,
+) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("dispatch calls = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index].accountID != want[index].accountID || got[index].reason != want[index].reason {
+			t.Fatalf("dispatch calls = %#v, want %#v", got, want)
+		}
+	}
+}
+
+type publicAccountTransactorFake struct {
+	store        *publicAccountStoreFake
+	beforeErrors []error
+	commitError  error
+	events       *[]string
+	calls        int
+}
+
+func (t *publicAccountTransactorFake) PublicAccountInTx(
+	ctx context.Context,
+	fn func(context.Context, port.PublicAccountStore) error,
+) error {
+	t.calls++
+	if index := t.calls - 1; index < len(t.beforeErrors) && t.beforeErrors[index] != nil {
+		return t.beforeErrors[index]
+	}
+	if err := fn(ctx, t.store); err != nil {
+		return err
+	}
+	if t.commitError != nil {
+		return t.commitError
+	}
+	if t.events != nil {
+		*t.events = append(*t.events, "transaction_committed")
+	}
+	return nil
 }
 
 type publicAccountStoreFake struct {
