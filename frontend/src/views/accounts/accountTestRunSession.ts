@@ -2,32 +2,27 @@ import { authState } from '@/composables/useAuth'
 import type {
   AccountModelMapping,
   AccountSummary,
+  AccountSupportedEndpointMode,
   AccountTestResult,
   AccountTestTask
 } from '@/types/domain'
-import type {
-  AccountBatchTestItem,
-  AccountTestEndpointMode,
-  AccountTestMode
-} from './accountTestFlow'
+import type { AccountTestEndpointMode } from './accountTestFlow'
 
 export const accountTestRunSessionStorageTtlMs = 12 * 60 * 60 * 1000
 
 const accountTestRunSessionStoragePrefix = 'juhe-ai:account-test-run-session:'
-const accountTestRunSessionStorageVersion = 2
+const accountTestRunSessionStorageVersion = 5
 
 export interface AccountTestRunSessionSnapshot {
   sessionId: string
   isManagementView: boolean
   scopeParams?: { systemAccountId: string }
-  mode: AccountTestMode
-  draftMode?: 'create' | 'saved'
   model: string
+  modelOptions: Array<{ label: string; value: string }>
   testEndpointMode: AccountTestEndpointMode
-  testingAccount?: AccountSummary
-  batchTestingAccounts: AccountSummary[]
-  activeSingleTestTask?: AccountTestTask
-  batchTestItems: AccountBatchTestItem[]
+  testEndpointModes: AccountSupportedEndpointMode[]
+  testingAccount: AccountSummary
+  activeTask: AccountTestTask
   result?: AccountTestResult
   running: boolean
 }
@@ -42,20 +37,13 @@ interface StoredAccountTestRunSessionSnapshot {
   sessionId: string
   isManagementView: boolean
   scopeParams?: { systemAccountId: string }
-  mode: AccountTestMode
-  draftMode?: 'create' | 'saved'
   model: string
+  modelOptions: Array<{ label: string; value: string }>
   testEndpointMode: AccountTestEndpointMode
-  testingAccount?: StoredAccountSummary
-  batchTestingAccounts: StoredAccountSummary[]
-  activeSingleTestTask?: AccountTestTask
-  batchTestItems: StoredAccountBatchTestItem[]
-  result?: AccountTestResult
+  testEndpointModes: AccountSupportedEndpointMode[]
+  testingAccount: StoredAccountSummary
+  activeTask: AccountTestTask
   running: boolean
-}
-
-interface StoredAccountBatchTestItem extends Omit<AccountBatchTestItem, 'account'> {
-  account: StoredAccountSummary
 }
 
 interface StoredAccountSummary {
@@ -73,8 +61,7 @@ interface StoredAccountSummary {
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
   clientCompatibility: AccountSummary['clientCompatibility']
-  supportedModels?: string[]
-  defaultTestModel?: string
+  healthCheckModel: string
   modelMappings?: AccountModelMapping[]
   proxyProfileId?: string
   proxyProfileUnavailable?: boolean
@@ -85,10 +72,13 @@ interface StoredAccountSummary {
   ownerSystemAccountId?: string
 }
 
-export function readAccountTestRunSession(isManagementView: boolean): AccountTestRunSessionSnapshot | undefined {
+export function readAccountTestRunSession(
+  isManagementView: boolean,
+  accountId: string
+): AccountTestRunSessionSnapshot | undefined {
   const storage = accountTestSessionStorage()
   if (!storage) return undefined
-  const key = accountTestRunSessionStorageKey(isManagementView)
+  const key = accountTestRunSessionStorageKey(isManagementView, accountId)
   try {
     const raw = storage.getItem(key)
     if (!raw) return undefined
@@ -102,7 +92,12 @@ export function readAccountTestRunSession(isManagementView: boolean): AccountTes
       storage.removeItem(key)
       return undefined
     }
-    return restoreSnapshot(parsed.snapshot)
+    const snapshot = restoreSnapshot(parsed.snapshot)
+    if (!snapshot || snapshot.testingAccount.id !== accountId) {
+      storage.removeItem(key)
+      return undefined
+    }
+    return snapshot
   } catch {
     storage.removeItem(key)
     return undefined
@@ -118,26 +113,30 @@ export function writeAccountTestRunSession(snapshot: AccountTestRunSessionSnapsh
       version: accountTestRunSessionStorageVersion,
       snapshot: storeSnapshot(snapshot)
     }
-    storage.setItem(accountTestRunSessionStorageKey(snapshot.isManagementView), JSON.stringify(payload))
+    storage.setItem(
+      accountTestRunSessionStorageKey(snapshot.isManagementView, snapshot.testingAccount.id),
+      JSON.stringify(payload)
+    )
   } catch {
     // 本地会话存储不可用时，后端测试任务仍继续执行。
   }
 }
 
-export function clearAccountTestRunSession(isManagementView: boolean): void {
+export function clearAccountTestRunSession(isManagementView: boolean, accountId: string): void {
   const storage = accountTestSessionStorage()
   if (!storage) return
   try {
-    storage.removeItem(accountTestRunSessionStorageKey(isManagementView))
+    storage.removeItem(accountTestRunSessionStorageKey(isManagementView, accountId))
   } catch {
     // 清理失败不影响后端任务和当前页面内存状态。
   }
 }
 
-function accountTestRunSessionStorageKey(isManagementView: boolean): string {
+function accountTestRunSessionStorageKey(isManagementView: boolean, accountId: string): string {
   const user = authState.currentUser.value
   const userKey = user?.id || user?.username || 'anonymous'
-  return `${accountTestRunSessionStoragePrefix}${userKey}:${isManagementView ? 'management' : 'self'}:v${accountTestRunSessionStorageVersion}`
+  const accountKey = encodeURIComponent(accountId)
+  return `${accountTestRunSessionStoragePrefix}${userKey}:${isManagementView ? 'management' : 'self'}:${accountKey}:v${accountTestRunSessionStorageVersion}`
 }
 
 function accountTestSessionStorage(): Storage | undefined {
@@ -153,18 +152,12 @@ function storeSnapshot(snapshot: AccountTestRunSessionSnapshot): StoredAccountTe
     sessionId: snapshot.sessionId,
     isManagementView: snapshot.isManagementView,
     scopeParams: normalizedScopeParams(snapshot.scopeParams),
-    mode: snapshot.mode,
-    draftMode: snapshot.draftMode,
     model: snapshot.model,
+    modelOptions: normalizeModelOptions(snapshot.modelOptions),
     testEndpointMode: snapshot.testEndpointMode,
-    testingAccount: snapshot.testingAccount ? storeAccountSummary(snapshot.testingAccount) : undefined,
-    batchTestingAccounts: snapshot.batchTestingAccounts.map(storeAccountSummary),
-    activeSingleTestTask: snapshot.activeSingleTestTask,
-    batchTestItems: snapshot.batchTestItems.map((item) => ({
-      ...item,
-      account: storeAccountSummary(item.account)
-    })),
-    result: snapshot.result,
+    testEndpointModes: normalizeEndpointModes(snapshot.testEndpointModes),
+    testingAccount: storeAccountSummary(snapshot.testingAccount),
+    activeTask: storeTask(snapshot.activeTask),
     running: snapshot.running
   }
 }
@@ -172,34 +165,45 @@ function storeSnapshot(snapshot: AccountTestRunSessionSnapshot): StoredAccountTe
 function restoreSnapshot(snapshot: StoredAccountTestRunSessionSnapshot): AccountTestRunSessionSnapshot | undefined {
   if (!snapshot || typeof snapshot !== 'object') return undefined
   if (typeof snapshot.sessionId !== 'string' || !snapshot.sessionId.trim()) return undefined
-  if (snapshot.mode !== 'single' && snapshot.mode !== 'batch') return undefined
-  if (snapshot.draftMode !== undefined && snapshot.draftMode !== 'create' && snapshot.draftMode !== 'saved') return undefined
   if (typeof snapshot.model !== 'string' || !isAccountTestEndpointMode(snapshot.testEndpointMode)) return undefined
-  const testingAccount = snapshot.testingAccount ? restoreAccountSummary(snapshot.testingAccount) : undefined
-  const batchTestingAccounts = Array.isArray(snapshot.batchTestingAccounts)
-    ? snapshot.batchTestingAccounts.map(restoreAccountSummary).filter((account): account is AccountSummary => Boolean(account))
-    : []
-  const batchTestItems = Array.isArray(snapshot.batchTestItems)
-    ? snapshot.batchTestItems
-        .map((item) => restoreBatchTestItem(item))
-        .filter((item): item is AccountBatchTestItem => Boolean(item))
-    : []
-  if (snapshot.mode === 'single' && !testingAccount) return undefined
-  if (snapshot.mode === 'batch' && batchTestingAccounts.length === 0) return undefined
+  const testingAccount = restoreAccountSummary(snapshot.testingAccount)
+  const activeTask = sanitizeTask(snapshot.activeTask)
+  if (!testingAccount || !activeTask || activeTask.accountId !== testingAccount.id) return undefined
   return {
     sessionId: snapshot.sessionId.trim(),
     isManagementView: snapshot.isManagementView === true,
     scopeParams: normalizedScopeParams(snapshot.scopeParams),
-    mode: snapshot.mode,
-    draftMode: snapshot.draftMode,
     model: snapshot.model,
+    modelOptions: normalizeModelOptions(snapshot.modelOptions),
     testEndpointMode: snapshot.testEndpointMode,
+    testEndpointModes: normalizeEndpointModes(snapshot.testEndpointModes),
     testingAccount,
-    batchTestingAccounts,
-    activeSingleTestTask: sanitizeTask(snapshot.activeSingleTestTask),
-    batchTestItems,
-    result: sanitizeResult(snapshot.result),
+    activeTask,
+    result: undefined,
     running: snapshot.running === true
+  }
+}
+
+function storeTask(task: AccountTestTask): AccountTestTask {
+  return {
+    id: task.id,
+    sessionId: task.sessionId,
+    accountId: task.accountId,
+    accountName: task.accountName,
+    providerCode: task.providerCode,
+    providerProtocolProfileId: task.providerProtocolProfileId,
+    protocolCode: task.protocolCode,
+    protocolVersion: task.protocolVersion,
+    type: task.type,
+    status: task.status,
+    model: task.model,
+    testEndpointMode: task.testEndpointMode,
+    cancelRequested: task.cancelRequested,
+    createdAt: task.createdAt,
+    queuedAt: task.queuedAt,
+    startedAt: task.startedAt,
+    finishedAt: task.finishedAt,
+    updatedAt: task.updatedAt
   }
 }
 
@@ -219,8 +223,7 @@ function storeAccountSummary(account: AccountSummary): StoredAccountSummary {
     superPriorityEnabled: account.superPriorityEnabled,
     fallbackEnabled: account.fallbackEnabled,
     clientCompatibility: account.clientCompatibility,
-    supportedModels: account.supportedModels,
-    defaultTestModel: account.defaultTestModel,
+    healthCheckModel: account.healthCheckModel,
     modelMappings: account.modelMappings,
     proxyProfileId: account.proxyProfileId,
     proxyProfileUnavailable: account.proxyProfileUnavailable,
@@ -253,8 +256,7 @@ function restoreAccountSummary(value: StoredAccountSummary): AccountSummary | un
     superPriorityEnabled: value.superPriorityEnabled === true,
     fallbackEnabled: value.fallbackEnabled === true,
     clientCompatibility: value.clientCompatibility,
-    supportedModels: stringList(value.supportedModels),
-    defaultTestModel: optionalString(value.defaultTestModel),
+    healthCheckModel: typeof value.healthCheckModel === 'string' ? value.healthCheckModel : '',
     modelMappings: Array.isArray(value.modelMappings) ? value.modelMappings : undefined,
     proxyProfileId: optionalString(value.proxyProfileId),
     proxyProfileUnavailable: value.proxyProfileUnavailable === true,
@@ -268,34 +270,11 @@ function restoreAccountSummary(value: StoredAccountSummary): AccountSummary | un
   }
 }
 
-function restoreBatchTestItem(value: StoredAccountBatchTestItem): AccountBatchTestItem | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const account = restoreAccountSummary(value.account)
-  if (!account || !isBatchStatus(value.status)) return undefined
-  return {
-    account,
-    status: value.status,
-    taskId: optionalString(value.taskId),
-    result: sanitizeResult(value.result),
-    message: optionalString(value.message),
-    startedAt: optionalNumber(value.startedAt),
-    finishedAt: optionalNumber(value.finishedAt)
-  }
-}
-
 function sanitizeTask(value: unknown): AccountTestTask | undefined {
   if (!value || typeof value !== 'object') return undefined
   const task = value as Partial<AccountTestTask>
   return typeof task.id === 'string' && typeof task.accountId === 'string'
     ? task as AccountTestTask
-    : undefined
-}
-
-function sanitizeResult(value: unknown): AccountTestResult | undefined {
-  if (!value || typeof value !== 'object') return undefined
-  const result = value as Partial<AccountTestResult>
-  return typeof result.accountId === 'string' && typeof result.message === 'string'
-    ? result as AccountTestResult
     : undefined
 }
 
@@ -306,8 +285,11 @@ function normalizedScopeParams(value: unknown): { systemAccountId: string } | un
 }
 
 function isAccountTestEndpointMode(value: unknown): value is AccountTestEndpointMode {
-  return value === 'account_default'
-    || value === 'chat_json'
+  return value === 'account_default' || isAccountSupportedEndpointMode(value)
+}
+
+function isAccountSupportedEndpointMode(value: unknown): value is AccountSupportedEndpointMode {
+  return value === 'chat_json'
     || value === 'chat_sse'
     || value === 'responses_json'
     || value === 'responses_sse'
@@ -320,31 +302,35 @@ function isAccountTestEndpointMode(value: unknown): value is AccountTestEndpoint
     || value === 'embed_content'
 }
 
-function isBatchStatus(value: unknown): value is AccountBatchTestItem['status'] {
-  return value === 'pending'
-    || value === 'queued'
-    || value === 'running'
-    || value === 'success'
-    || value === 'failed'
-    || value === 'stopped'
+function normalizeEndpointModes(value: unknown): AccountSupportedEndpointMode[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.filter(isAccountSupportedEndpointMode))]
+}
+
+function normalizeModelOptions(value: unknown): Array<{ label: string; value: string }> {
+  if (!Array.isArray(value)) return []
+  const values = new Set<string>()
+  const output: Array<{ label: string; value: string }> = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const candidate = item as { label?: unknown; value?: unknown }
+    const model = optionalString(candidate.value)
+    if (!model || values.has(model)) continue
+    values.add(model)
+    output.push({
+      label: optionalString(candidate.label) ?? model,
+      value: model
+    })
+  }
+  return output
 }
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-function optionalNumber(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
 function finiteNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
-}
-
-function stringList(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const items = value.map(optionalString).filter((item): item is string => Boolean(item))
-  return items.length ? items : undefined
 }
 
 function emptyUsage() {

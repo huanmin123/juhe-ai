@@ -12,6 +12,19 @@ export type ProviderModelApiProtocol =
   | 'audio'
   | 'realtime'
 
+export type GptServiceTier = 'priority' | 'flex'
+
+export type GptWireReasoningEffort =
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+
+export type CodexReasoningLevel = GptWireReasoningEffort | 'ultra'
+
 export interface RawModelPricing {
   model: string
   mode?: string
@@ -33,7 +46,12 @@ export interface RawModelPricing {
   shutdown_date?: string
   supported_api_protocols?: readonly ProviderModelApiProtocol[]
   supports_prompt_caching?: boolean
-  supports_service_tier?: boolean
+  supported_service_tiers?: readonly GptServiceTier[]
+  supported_reasoning_efforts?: readonly GptWireReasoningEffort[]
+  default_reasoning_effort?: GptWireReasoningEffort
+  codex_supported_reasoning_levels?: readonly CodexReasoningLevel[]
+  codex_default_reasoning_level?: CodexReasoningLevel
+  codex_multi_agent_version?: 'v2'
   catalog_visible?: boolean
 }
 

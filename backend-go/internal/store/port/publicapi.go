@@ -543,6 +543,8 @@ type PublicAccountUpdateInput struct {
 	SupportedModelsChanged   bool
 	HealthCheckModel         string
 	ResetFailureState        bool
+	ScheduleHealthCheck      bool
+	ResetHealthDiagnostics   bool
 	Schedulable              bool
 	AvailabilityScheduleJSON *string
 	ConcurrencyLimit         int

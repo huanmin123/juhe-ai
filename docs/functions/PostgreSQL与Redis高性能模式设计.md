@@ -151,6 +151,8 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 - SQLite JSON 字符串字段在 PostgreSQL 中按用途选择 `jsonb` 或 `text`。需要按字段筛选、局部更新或索引的配置字段使用 `jsonb`。
 - 所有时间统一保存为 `timestamptz`，接口返回继续使用 ISO 字符串。
 - 金额和成本如果需要精确累加，优先使用 `numeric`；只作为展示缓存且已有浮点口径的字段可以保持 `double precision`，但统计总量字段必须固定类型并写清楚。
+- `juhe_business.accounts` 使用 `health_check_model` 保存账户必填检查模型，不保留 `default_test_model` 或 `health_check_enabled`；`provider_default_health_check_models` 保存个人供应商默认，`provider_system_default_health_check_models` 保存管理员系统默认，协议档案保留内置默认。三层默认只初始化新账户。
+- `juhe_business.custom_provider_models` 为 GPT 模型保存 `supported_service_tiers_json`、`supported_reasoning_efforts_json` 和 `default_reasoning_effort`；GPT 账户凭据 JSON 可选保存 `service_tier_override`、`reasoning_effort_override`。`ultra` 与 Responses Multi-agent Beta 不属于这两个账户覆盖字段。
 
 ### 约束与并发
 
@@ -159,6 +161,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 - PostgreSQL 不存在 SQLite 文件级全局写锁，但仍存在行锁、索引页竞争、连接池耗尽、长事务和 autovacuum 压力；高性能模式不能把所有队列无限并发。
 - System API 管理端 DB 在途请求默认保留保护阈值：standalone 默认 `64`，performance 默认 `256`，可按高性能部署压测继续调整。
 - 同一账号等热点资源的高频并发写入仍会形成行锁排队；需要按资源维度串行、合并写入或把短 TTL 运行态拆到 Redis，不能因为切换 PostgreSQL 就把同一行无限并发写。
+- AI 账户批量编辑必须在单个 PostgreSQL 事务内校验全部自有物理账户、字段白名单、同构模型条件和 `expectedVersions`，任一版本冲突或配置非法时整批回滚。事务提交后再失效缓存和投递必要的后台系统检查。
 
 ## SQL Dialect 与 Repository
 
@@ -196,7 +199,7 @@ repository 迁移原则：
 
 第一条业务 repository 读路径已落地到 `backend/src/storage/provider.repository.ts`：
 
-- 新增 `listProvidersAsync()`、协议供应商列表、协议档案查找、默认测试模型和启用协议档案校验的 async 双 driver 版本。
+- 新增 `listProvidersAsync()`、协议供应商列表、协议档案查找、默认检查模型和启用协议档案校验的 async 双 driver 版本。
 - PostgreSQL 查询通过 `juhe_business` schema 读取 `providers`、`provider_protocol_profiles`、`provider_protocol_profile_families` 和 `protocol_endpoint_families`。
 - `backend/src/storage/repositories.ts` 已导出 async provider API；`/__aisys__/api/providers` 和 `/__aisys__/api/providers/options` 已切到 async repository。
 - `pnpm --filter juhe-ai-backend test:provider-repository-driver` 已覆盖本地 SQLite 和远端 PostgreSQL / Redis URL 下的供应商读取一致性。
@@ -240,12 +243,13 @@ API Key 管理关键路径已落地到 `backend/src/storage/api-key.repository.t
 - 创建和更新保留路由策略绑定边界、同账户名称唯一性、启用策略保护、策略分组优先级唯一性、额度限制、时间计划、密钥加密和网关缓存 / 额度缓存失效语义。
 - 网关 API Key 校验入口已新增 async 双 driver 版本；PG 模式下 `read_gateway_runtime` 能读取有效 API Key、绑定路由策略、网关设置、分组访问元数据、响应检查策略和最小可调度账号候选。候选账号读取已通过 `juhe_business` / `juhe_stats` schema 覆盖策略分组绑定、账号状态、授权实例、支持模型、模型映射、API Key 运行态、代理和质量分窗口；完整 `/v1` PG-ready 仍需继续迁移账号管理写路径、usage / stats、授权额度和审计记录链路。
 - `account_supported_models` 和 `account_model_mappings` 已新增 async replace helper；PG 模式下通过事务先删后写，供账号创建 / 更新迁移复用。`test:api-key-management-driver` 已覆盖创建账号时直接写入最小候选账号模型配置，并从 `read_gateway_runtime` 断言读回。
-- `createAccountAsync` 已新增 PG 最小创建路径：同一事务写入 `accounts`、`group_accounts`、账号名称搜索词、标签绑定、支持模型和模型映射，提交后失效账号 / 分组 / 网关运行态缓存。模型目录读取已新增 async 路径，用于账号创建时校验内置模型和 `custom_provider_models`；`POST /__aisys__/api/accounts` 已切到 async 创建路径并由 `test:performance-system-api-smoke` 覆盖。
-- 自定义模型管理已新增 async PG 路径：`/providers/models/options`、`/providers/:code/models` 列表、创建、更新和删除会通过 async provider、模型目录和 `custom_provider_models` repository 读取 / 写入 PostgreSQL；pricingModel 引用校验、个人模型权限和已绑定账户删除保护保持原语义。`test:model-catalog` 覆盖 SQLite 详细契约，`test:performance-system-api-smoke` 已覆盖 SQLite 与远端 PostgreSQL / Redis 下自定义模型 HTTP 创建、pricingModel 引用、列表、更新和删除。
-- `listAccountsPageAsync()` 已新增 PG 普通 owner 账号列表分页读取：支持分页、账号名称精确 / 前缀 / 词项候选包含搜索、供应商、协议档案、分组、标签、类型、状态、调度状态和基础排序；不做精确 `COUNT(*)`，沿用 `pageSize + 1` 上界 total 语义。该路径暂不返回授权实例列表、质量分排序和 usage 聚合。
+- `createAccountAsync` 的 PG 创建事务统一写入 `accounts.health_check_model`、支持模型和模型映射；新建以及导入请求中的 `active` 都先保存为 `pending_test`，提交后投递后台激活检查，成功后才进入 `active`。人工草稿测试任务 ID 不进入创建事务，也不能作为激活凭证。
+- 自定义模型管理的 PG 路径必须读写 GPT 精确服务等级和思考级别能力字段；`/providers/models/options` 同步返回能力数组，账户保存按最终上游模型能力校验请求覆盖。Codex `/models` 使用独立 Codex 能力事实。
+- `listAccountsPageAsync()` 的 PG 账号列表分页只返回展示、筛选、权限和乐观版本所需摘要，不为测试或编辑提前装配完整支持模型、检查模型、endpoint modes 或凭据；不做精确 `COUNT(*)`，沿用 `pageSize + 1` 上界 total 语义。
 - `listAccountOptionsAsync()` 已新增 PG 普通 owner 账号 options 轻量读取：支持 ID、账号名称精确 / 前缀 / 词项候选包含搜索、供应商、协议档案、分组、标签、类型、状态和调度状态过滤；只返回下拉所需轻量字段，不读取统计库质量分和 usage 聚合。
-- `findAccountSummaryAsync()` / `findAccountForTestAsync()` 已新增 PG 普通 owner 账号详情读取，并补齐授权实例单账号详情读取：从 `accounts`、`group_accounts`、`groups`、授权运行态、源账号事实、支持模型、模型映射和标签表装配 `AccountSummary`，用于 `GET /__aisys__/api/accounts/:id` 回看新建账号和授权实例调度恢复。该路径暂不装配完整授权实例列表、实时 usage / stats、账号质量和 API Key 运行态明细，统计字段按空聚合返回，后续必须接入预聚合窗口而不是在详情请求里扫描明细表。
-- `updateAccountAsync()` 和 `setAccountGroupAsync()` 已新增 PG 普通 owner 账号常规更新路径：支持名称、备注、凭据、状态、并发、优先级、超级优先、降级备用、客户端兼容、支持模型、模型映射、标签、代理、调度开关、过期时间、时间计划和分组绑定更新；更新名称会同步普通授权实例名称搜索索引。
+- `findAccountSummaryAsync()` / 账户详情路径从 `accounts`、支持模型、模型映射、标签和授权来源装配完整配置；列表人工测试另用 `GET .../:id/test-options` 按需读取 `healthCheckModel`、可用请求形态和账户所有者可见的启用文本目录模型，不受 `supportedModels` 限制，也不返回凭据。
+- `updateAccountAsync()` 和 `setAccountGroupAsync()` 的 PG 更新路径不把普通编辑作为状态入口。凭据、Base URL、协议档案或关键代理变化后进入 `pending_test` 并投递后台激活复检；检查模型变化立即投递后台健康检查；支持模型变化必须保证检查模型仍有效；非连接配置不改状态。
+- `batchUpdateAccountsAsync()` 通过独立管理侧 / 用户侧接口处理至少 2 个账户，显式白名单覆盖、拒绝授权实例和身份 / 连接私密 / 状态运行态字段；模型区只在全部目标具有相同 `providerCode + providerProtocolProfileId + type` 时开放，并使用乐观锁全成全败。
 - `clearAccountFailureStateAsync()` 已新增 PG 普通 owner 账号异常状态恢复路径，`updateAuthorizedAccountBindingDispatchAsync()` 已新增 PG 授权实例调度恢复路径：支持将临时不可用、限流中和错误状态恢复为 active，并清理冷却、失败、stream failure 和重测状态字段；套餐过期 owner 账号仍保持 disabled 并写入 `account_expired`。授权实例恢复会校验当前被授权账号、目标分组和运行态授权绑定，避免跨用户恢复。
 - `deleteAccountWithRelatedCleanupAsync()` 已新增 PG 普通 owner 账号逻辑删除路径：事务内撤销该账号资源的授权 grant / runtime authorization / source，逻辑删除源账号和对应授权实例，清理标签绑定与名称搜索索引，提交后失效账号、分组、网关和授权运行态缓存。该路径暂不执行过期已删除账号的物理清理，也不登记 dataset / stats 历史数据清理目标。
 - `returnAccountAuthorizationInstanceForGranteeAsync()` 已新增 PG 授权账户实例归还路径：通过事务把个人直授权 grant 标记为 `returned`，撤销 manual source，并按 active team / paused team / active manual / 无有效来源顺序刷新 runtime authorization；`POST /__aisys__/api/accounts/:id/return-authorization` 已切到 async repository。
@@ -339,6 +343,7 @@ AI 账户运行态探针在 performance 模式下必须按多节点设计运行�
 - 不使用 Redis 分布式锁、分布式全局预算锁、provider 锁、proxy 锁或 baseUrl 锁限制恢复探针预算；预算只做本机保护和 jitter，避免 Redis 锁残留导致恢复并发被误限制。
 - 探针结果回写和探针成功清理前必须校验 generation，避免旧探针覆盖或误删真实成功、手动恢复或后续状态转换产生的新状态。
 - Redis 探针状态只保存非敏感运行态元数据和 due 信息，不保存账号凭据、API Key、OAuth token、代理密码、失败请求 payload、失败请求 model 或 endpoint；执行探针前通过 DB service 重载账号凭据。
+- 运行态恢复探针和持久健康 / 冷却探针严格使用重载账户的 `health_check_model`；缺失或非法时记录配置异常，不从个人默认、系统默认或支持模型首项兜底。
 - server 进程负责 sweep Redis due 索引并执行运行态恢复探针；worker 和 DB service 不执行该类短 TTL 运行态探针。持久冷却复测仍由 ops-worker 负责。
 - `runtime_recovery_probe` 只表示本地 / Redis 运行态恢复探针；持久 `temporary_unavailable / rate_limited` 冷却复测继续使用 `cooldown_retest`。两类探针都不写账号质量分钟样本，不保存完整请求 / 响应正文。
 - Redis state 不可用时，高性能模式不能静默退回进程内 memory；应记录基础设施错误并保守跳过探针或快速失败。
@@ -373,9 +378,10 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - server 进程仍不直接导入管理路由和 repository。
 - DB service 承接系统管理 API、登录态校验、网关关键读写和业务 typed operation。
 - 常驻后台进程收敛为 ingest-worker、stats-worker、ops-worker 三类；写入 PostgreSQL 时按 typed operation、队列优先级和连接池背压并发消费。
-- 高性能模式下 ops-worker 已恢复 API Key / 账户时间计划同步、资源授权过期扫描、过期逻辑删除账户清理、账号健康检测、账号冷却复测、账户内 API Key 冷却复测、代理延迟刷新和 OpenAI OAuth access token 自动刷新；这些任务的候选读取和状态写回必须走 PG async repository / DB service 分支。
+- 高性能模式下 ops-worker 承接 API Key / 账户时间计划同步、资源授权过期扫描、过期逻辑删除账户清理、账户激活检查、始终存在的周期健康检测、账号冷却复测、账户内 API Key 检查 / 冷却复测、代理延迟刷新和 OpenAI OAuth access token 自动刷新；不存在 `health_check_enabled` 候选条件。这些任务的候选读取和状态写回必须走 PG async repository / DB service 分支。
 - 高性能模式下 ingest-worker 仍注册 `data-retention-cleanup`。PG 分支按系统设置投递 `usage_records_cleanup`，并按原始审计固定保全策略投递 `audit_retained_data_cleanup` 到 record-maintenance；操作日志、公开接口日志、运行日志索引 / 游标、模型检测历史、统计窗口、系统指标、表容量快照、系统会话和 Codex 上下文状态走 PostgreSQL async 保留入口按各自 retention 清理。底层单机数据保留清理服务在 PG 下保持 fail-fast，避免回落 SQLite 清理链路。通用 `non_business_data_cleanup` 不再由 PG 定时保留入口复用 usage cutoff 清审计表，审计主表、attempt、payload refs 和错误组只能走专用审计保留策略清理。
 - ops-worker 的账号健康检测和冷却复测执行队列仍是本地短窗口 retry queue，只保存 accountId 等小对象；候选、取消、状态和结果事实以 PostgreSQL 为准。没有真实积压、重启恢复延迟或多 worker 抢占证据前，不把该执行缓冲强行迁入 Redis Streams。
+- 人工账户测试仍是独立单账户诊断任务：每次使用独立 `testSessionId`，A/B 会话互不阻塞，不建立用户级全局锁，也不提供多账户批量测试。测试结果只写任务、使用记录和审计，不修改账户、授权实例、Key、额度快照、健康或 Redis 调度运行态。
 - OpenAI OAuth access token 自动刷新已恢复 PG 调度；OAuth token、refresh token 和代理 URL 不进入 Redis shared cache。远端 smoke 使用测试替身 token endpoint 验证 PG 候选、写回、连续失败异常标记和错误脱敏，真实上游 refresh token 仍按真实账号和生产网络单独验证。代理延迟刷新已恢复 PG 调度，但代理 URL 只在探测进程内即时使用，不作为共享缓存内容。
 - 已退役的 `metrics-worker`、`snapshot-worker`、`probe-worker` 和 `maintenance-worker` 不再作为独立 worker role 出现在调度分支中。
 

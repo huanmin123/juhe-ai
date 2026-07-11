@@ -4,6 +4,16 @@ import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
 export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
+export type AccountGptServiceTierOverride = '' | 'default' | 'priority' | 'flex'
+export type AccountGptReasoningEffortOverride =
+  | ''
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
 export type AccountSupportedEndpointMode =
   | 'chat_json'
   | 'chat_sse'
@@ -34,6 +44,8 @@ export interface AccountCredentials {
   account_id?: string
   chatgpt_user_id?: string
   plan_type?: string
+  service_tier_override?: Exclude<AccountGptServiceTierOverride, ''>
+  reasoning_effort_override?: Exclude<AccountGptReasoningEffortOverride, ''>
   response_inspection_rules?: unknown[]
   [key: string]: unknown
 }
@@ -203,13 +215,9 @@ export interface AccountTagsUpdateResult {
   tags: Array<Pick<AccountTagSummary, 'id' | 'name'>>
 }
 
-export interface AccountDefaultTestModelResult {
-  accountId: string
-  defaultTestModel: string
-}
-
 export interface AccountSummary {
   id: string
+  configRevision?: number
   systemAccountId?: string
   systemAccountName?: string
   providerCode: ProviderCode
@@ -233,7 +241,7 @@ export interface AccountSummary {
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   tags?: AccountTagSummary[]
-  defaultTestModel?: string
+  healthCheckModel: string
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -257,7 +265,6 @@ export interface AccountSummary {
   cooldownRetestObservationStartedAt?: string
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
-  healthCheckEnabled?: boolean
   lastHealthCheckAt?: string
   nextHealthCheckAt?: string
   lastHealthSuccessAt?: string
@@ -299,6 +306,47 @@ export interface AccountSummary {
   authorizationUsageAvailable?: boolean
   authorizationCount?: number
   authorizationTeamCount?: number
+}
+
+export interface AccountBatchEditTarget {
+  accountId: string
+  configRevision: number
+}
+
+export interface AccountBatchEditField<TValue> {
+  enabled: boolean
+  value: TValue
+}
+
+export interface AccountBatchEditUpdates {
+  tags?: AccountBatchEditField<string[]>
+  proxyProfileId?: AccountBatchEditField<string | null>
+  concurrencyLimit?: AccountBatchEditField<number>
+  priority?: AccountBatchEditField<number>
+  superPriorityEnabled?: AccountBatchEditField<boolean>
+  fallbackEnabled?: AccountBatchEditField<boolean>
+  accountExpiresAt?: AccountBatchEditField<string | null>
+  availabilitySchedule?: AccountBatchEditField<AccountAvailabilitySchedule | null>
+  notes?: AccountBatchEditField<string>
+  errorHandlingRules?: AccountBatchEditField<unknown[]>
+  responseInspectionRules?: AccountBatchEditField<unknown[]>
+  supportedModels?: AccountBatchEditField<string[]>
+  healthCheckModel?: AccountBatchEditField<string>
+  modelMappings?: AccountBatchEditField<AccountModelMapping[]>
+  supportedEndpointModes?: AccountBatchEditField<AccountSupportedEndpointMode[]>
+  serviceTierOverride?: AccountBatchEditField<AccountGptServiceTierOverride | null>
+  reasoningEffortOverride?: AccountBatchEditField<AccountGptReasoningEffortOverride | null>
+}
+
+export interface AccountBatchEditRequest {
+  targets: AccountBatchEditTarget[]
+  updates: AccountBatchEditUpdates
+}
+
+export interface AccountBatchEditResult {
+  batchId: string
+  changedFields: string[]
+  accounts: AccountSummary[]
 }
 
 export interface AccountApiKeyRuntimeSummary {

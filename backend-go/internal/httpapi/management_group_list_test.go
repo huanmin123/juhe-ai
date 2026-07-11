@@ -244,30 +244,49 @@ func TestManagementGroupListHandlerRedactsServiceErrors(t *testing.T) {
 }
 
 func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *testing.T) {
+	concurrencyUnavailable := false
 	service := &managementGroupListServiceStub{
 		result: managementgroups.ListResult{
-			Items: []managementgroups.ListItem{{
-				ID:                   "grp_authorized",
-				OwnerSystemAccountID: "sys_owner",
-				Name:                 "授权分组",
-				ProviderCode:         "openai",
-				Enabled:              true,
-				GroupType:            "personal",
-				AccessType:           "authorized",
-				GroupAuthorizationID: "rauthgrant_group",
-				AuthorizationStatus:  "active",
-				AccountCount:         0,
-				AuthorizationSourceSummary: &managementgroups.AuthorizationSourceSummary{
-					ActiveSourceCount: 1,
-					HasManual:         true,
-					TeamNames:         []string{},
+			Items: []managementgroups.ListItem{
+				{
+					ID:                   "grp_owner",
+					OwnerSystemAccountID: "sys_owner",
+					Name:                 "自有分组",
+					ProviderCode:         "openai",
+					Enabled:              true,
+					GroupType:            "personal",
+					AccessType:           "owner",
+					AccountStats: managementgroups.GroupAccountStats{
+						CurrentConcurrency:          17,
+						CurrentConcurrencyAvailable: &concurrencyUnavailable,
+					},
 				},
-			}},
-			Total:    1,
+				{
+					ID:                   "grp_authorized",
+					OwnerSystemAccountID: "sys_owner",
+					Name:                 "授权分组",
+					ProviderCode:         "openai",
+					Enabled:              true,
+					GroupType:            "personal",
+					AccessType:           "authorized",
+					GroupAuthorizationID: "rauthgrant_group",
+					AuthorizationStatus:  "active",
+					AccountCount:         0,
+					AccountStats: managementgroups.GroupAccountStats{
+						CurrentConcurrency: 9,
+					},
+					AuthorizationSourceSummary: &managementgroups.AuthorizationSourceSummary{
+						ActiveSourceCount: 1,
+						HasManual:         true,
+						TeamNames:         []string{},
+					},
+				},
+			},
+			Total:    2,
 			Page:     1,
 			PageSize: 50,
 			RuntimeSnapshot: managementgroups.RuntimeSnapshot{
-				AccountConcurrencyAvailable: true,
+				AccountConcurrencyAvailable: false,
 			},
 		},
 	}
@@ -292,6 +311,27 @@ func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *
 	}
 	if !strings.Contains(raw, "authorizationSourceSummary") {
 		t.Fatalf("response omitted authorization source summary: %s", raw)
+	}
+	var envelope struct {
+		Data struct {
+			Items []struct {
+				AccessType   string                     `json:"accessType"`
+				AccountStats map[string]json.RawMessage `json:"accountStats"`
+			} `json:"items"`
+			RuntimeSnapshot managementgroups.RuntimeSnapshot `json:"runtimeSnapshot"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if envelope.Data.RuntimeSnapshot.AccountConcurrencyAvailable {
+		t.Fatalf("runtime snapshot = %+v", envelope.Data.RuntimeSnapshot)
+	}
+	if got := string(envelope.Data.Items[0].AccountStats["currentConcurrencyAvailable"]); got != "false" {
+		t.Fatalf("owner currentConcurrencyAvailable = %s, want false", got)
+	}
+	if _, exists := envelope.Data.Items[1].AccountStats["currentConcurrencyAvailable"]; exists {
+		t.Fatalf("authorized account stats exposed currentConcurrencyAvailable: %s", raw)
 	}
 }
 

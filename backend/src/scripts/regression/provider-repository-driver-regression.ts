@@ -26,7 +26,7 @@ if (process.env.JUHE_PROVIDER_REPOSITORY_DRIVER_CHILD === 'postgres') {
 
 const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-provider-driver-'))
 try {
-  assertAccountTestDefaultModelRuntimeBoundary()
+  assertAccountHealthCheckModelRuntimeBoundary()
   assertModelCatalogPostgresSyncBoundary()
   assertOpenAIAccountSelectorPostgresAuthorizationBoundary()
 
@@ -95,14 +95,20 @@ function assertModelCatalogPostgresSyncBoundary(): void {
   )
 }
 
-function assertAccountTestDefaultModelRuntimeBoundary(): void {
+function assertAccountHealthCheckModelRuntimeBoundary(): void {
   const srcRoot = join(dirname(fileURLToPath(import.meta.url)), '../..')
   const accountTestServiceSource = readFileSync(join(srcRoot, 'modules/accounts/account-test.service.ts'), 'utf8')
   assert.ok(
-    accountTestServiceSource.includes('listProviderDefaultTestModelPreferencesAsync')
-      && accountTestServiceSource.includes('findProviderProtocolProfileAsync')
-      && accountTestServiceSource.includes('export async function resolveAccountTestModelAsync'),
-    '账号测试默认模型应提供 async 读取路径，避免 PG 模式回退 SQLite'
+    accountTestServiceSource.includes('export async function resolveAccountTestModelAsync')
+      && accountTestServiceSource.includes('const healthCheckModel = stringValue(account.healthCheckModel)')
+      && accountTestServiceSource.includes('if (!supportedModels.includes(healthCheckModel))')
+      && accountTestServiceSource.includes('return healthCheckModel'),
+    '系统复测必须严格读取账户检查模型并验证其属于支持模型'
+  )
+  assert.ok(
+    accountTestServiceSource.includes('const explicitModel = stringValue(input.explicitModel)')
+      && accountTestServiceSource.includes('if (explicitModel) return explicitModel'),
+    '人工测试显式模型应只作为本次诊断输入'
   )
   assert.ok(
     accountTestServiceSource.includes('findAccountForTestAsync')
@@ -117,18 +123,8 @@ function assertAccountTestDefaultModelRuntimeBoundary(): void {
   )
   assert.doesNotMatch(
     accountTestServiceSource,
-    /\bfindProviderDefaultTestModel\b(?!Async)/,
-    '账号测试服务不得导入或调用同步供应商默认测试模型读取入口'
-  )
-  assert.doesNotMatch(
-    accountTestServiceSource,
-    /\bexport function preferredSystemAccountTestModel\b/,
-    '账号测试服务不得继续暴露同步默认测试模型入口'
-  )
-  assert.doesNotMatch(
-    accountTestServiceSource,
-    /\bfunction defaultAccountTestModel\b(?!Async)/,
-    '账号测试服务不得保留同步默认测试模型 fallback'
+    /\bfindProviderDefaultHealthCheckModel\b(?!Async)/,
+    '账号测试服务不得在运行时回退同步供应商默认检查模型读取入口'
   )
 
   for (const relativePath of [
@@ -214,10 +210,10 @@ async function assertProviderRepositoryAsync(repository: typeof import('../../st
   assert.equal(await repository.isProtocolProviderCodeAsync(GEMINI_PROVIDER_CODE, GEMINI_PROTOCOL_CODE, GEMINI_PROTOCOL_VERSION), true, 'Gemini 应支持 Gemini 原生协议')
   assert.equal(await repository.isProtocolProviderCodeAsync(GPT_VENDOR_CODE, ANTHROPIC_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_VERSION), false, 'GPT 不应被误判为 Anthropic 协议供应商')
 
-  const defaultModel = await repository.findProviderDefaultTestModelAsync(GPT_VENDOR_CODE)
-  assert.ok(defaultModel, '应能读取供应商默认测试模型')
+  const defaultModel = await repository.findProviderDefaultHealthCheckModelAsync(GPT_VENDOR_CODE)
+  assert.ok(defaultModel, '应能读取供应商默认检查模型')
   assert.ok((await repository.findProviderDefaultSupportedModelsAsync(GPT_VENDOR_CODE)).includes('gpt-5.6-sol'), '应能读取供应商默认支持模型')
-  assert.equal(await repository.findProviderDefaultTestModelAsync(ANTHROPIC_PROVIDER_CODE), 'claude-opus-4-8', 'Anthropic 默认测试模型应使用 Opus 4.8')
+  assert.equal(await repository.findProviderDefaultHealthCheckModelAsync(ANTHROPIC_PROVIDER_CODE), 'claude-opus-4-8', 'Anthropic 默认检查模型应使用 Opus 4.8')
 
   const defaultProfile = await repository.defaultProviderProtocolProfileAsync(GPT_VENDOR_CODE)
   assert.ok(defaultProfile, '应能读取默认协议档案')

@@ -2,7 +2,6 @@ import type { Router } from 'express'
 
 import { badRequest, ok } from '../../shared/http.js'
 import {
-  AccountTestSessionConflictError,
   cancelAccountTestSessionAsync,
   cancelAccountTestTaskAsync,
   completeAccountTestSessionAsync,
@@ -28,10 +27,6 @@ export function registerAccountTestSessionRoutes(router: Router): void {
     try {
       res.status(201).json(ok(await createAccountTestSessionAsync(requestAccess)))
     } catch (error) {
-      if (error instanceof AccountTestSessionConflictError) {
-        res.status(409).json({ message: error.message, active: error.active })
-        return
-      }
       res.status(400).json(badRequest(error instanceof Error ? error.message : '创建账户测试会话失败'))
     }
   })

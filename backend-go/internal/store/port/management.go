@@ -1277,6 +1277,11 @@ type ManagementGroupAccountStatsRow struct {
 	ConcurrencyLimit   int
 }
 
+type ManagementGroupAccountIDRow struct {
+	GroupID   string
+	AccountID string
+}
+
 type ManagementGroupUsageLookupInput struct {
 	Key             string
 	SystemAccountID string
@@ -1297,6 +1302,17 @@ type ManagementGroupAuthorizationSourceRow struct {
 	SourceType      string
 	Status          string
 	SourceTeamName  string
+}
+
+type ManagementGroupDetailInput struct {
+	GroupID         string
+	SystemAccountID string
+}
+
+type ManagementGroupDetailReader interface {
+	FindManagementGroupDetail(ctx context.Context, input ManagementGroupDetailInput) (ManagementGroupListRow, bool, error)
+	ListManagementGroupDetailAccountIDs(ctx context.Context, input ManagementGroupDetailInput) ([]string, error)
+	ListManagementGroupDetailAuthorizationSources(ctx context.Context, input ManagementGroupDetailInput) ([]ManagementResourceAuthorizationSourceSummary, error)
 }
 
 type ManagementGroupCreateInput struct {
@@ -1324,11 +1340,57 @@ type ManagementGroupSummary struct {
 	SchedulingPolicyJSON *string
 }
 
+type ManagementGroupUpdateInput struct {
+	GroupID                     string
+	ActorSystemAccountID        string
+	CanAccessAll                bool
+	EffectiveSystemAccountID    string
+	HasName                     bool
+	Name                        string
+	HasProviderCode             bool
+	ProviderCode                string
+	HasDescription              bool
+	Description                 *string
+	HasEnabled                  bool
+	Enabled                     bool
+	HasGroupType                bool
+	GroupType                   string
+	HasSchedulingPolicy         bool
+	SchedulingPolicyJSON        *string
+	DefaultSchedulingPolicyJSON string
+	UpdatedAt                   time.Time
+}
+
+type ManagementGroupMutationSummary struct {
+	ID                   string
+	Name                 string
+	ProviderCode         string
+	Description          *string
+	Enabled              bool
+	IsDefault            bool
+	GroupType            string
+	SchedulingPolicyJSON *string
+}
+
+type ManagementGroupUpdateResult struct {
+	Before                   ManagementGroupMutationSummary
+	After                    ManagementGroupMutationSummary
+	AccessType               string
+	OwnerSystemAccountID     string
+	EffectiveSystemAccountID string
+	GroupAuthorizationID     string
+}
+
 var (
-	ErrManagementGroupSystemAccountNotFound = errors.New("management group system account not found")
-	ErrManagementGroupProviderNotFound      = errors.New("management group provider not found")
-	ErrManagementGroupProviderDisabled      = errors.New("management group provider disabled")
-	ErrManagementGroupNameExists            = errors.New("management group name exists")
+	ErrManagementGroupSystemAccountNotFound  = errors.New("management group system account not found")
+	ErrManagementGroupProviderNotFound       = errors.New("management group provider not found")
+	ErrManagementGroupProviderDisabled       = errors.New("management group provider disabled")
+	ErrManagementGroupNameExists             = errors.New("management group name exists")
+	ErrManagementGroupNotFound               = errors.New("management group not found")
+	ErrManagementGroupDefaultReadonly        = errors.New("management group default readonly")
+	ErrManagementGroupProviderHasAccounts    = errors.New("management group provider has accounts")
+	ErrManagementGroupAuthorizedFields       = errors.New("management group authorized fields")
+	ErrManagementGroupRouteStrategyWouldLose = errors.New("management group route strategy would lose")
 )
 
 type ManagementGroupOptionReader interface {
@@ -1344,6 +1406,10 @@ type ManagementGroupAccountStatsReader interface {
 	ListManagementGroupAccountStats(ctx context.Context, groupIDs []string) ([]ManagementGroupAccountStatsRow, error)
 }
 
+type ManagementGroupAccountIDReader interface {
+	ListManagementGroupAccountIDs(ctx context.Context, groupIDs []string) ([]ManagementGroupAccountIDRow, error)
+}
+
 type ManagementGroupUsageReader interface {
 	ListManagementGroupUsageTotals(ctx context.Context, inputs []ManagementGroupUsageLookupInput) ([]ManagementGroupUsageRow, error)
 	ListManagementGroupUsageDaily(ctx context.Context, statDate string, inputs []ManagementGroupUsageLookupInput) ([]ManagementGroupUsageRow, error)
@@ -1356,12 +1422,17 @@ type ManagementGroupAuthorizationSourceReader interface {
 type ManagementGroupListReader interface {
 	ManagementGroupListPageReader
 	ManagementGroupAccountStatsReader
+	ManagementGroupAccountIDReader
 	ManagementGroupUsageReader
 	ManagementGroupAuthorizationSourceReader
 }
 
 type ManagementGroupCreator interface {
 	CreateManagementGroup(ctx context.Context, input ManagementGroupCreateInput) (ManagementGroupSummary, error)
+}
+
+type ManagementGroupUpdater interface {
+	UpdateManagementGroup(ctx context.Context, input ManagementGroupUpdateInput) (ManagementGroupUpdateResult, error)
 }
 
 type ManagementAccountOption struct {

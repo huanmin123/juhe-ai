@@ -18,15 +18,20 @@ const (
 	defaultOptionLimit = 50
 	maxOptionLimit     = 50
 
-	GroupCreatedReason              = "group_created"
-	groupRuntimeInvalidationTimeout = 5 * time.Second
+	GroupCreatedReason                      = "group_created"
+	GroupUpdatedReason                      = "group_updated"
+	GroupAuthorizationSettingsUpdatedReason = "group_authorization_settings_updated"
+	groupRuntimeInvalidationTimeout         = 5 * time.Second
 )
 
 type Service struct {
 	store                   port.ManagementGroupOptionReader
 	listStore               port.ManagementGroupListReader
+	detailStore             port.ManagementGroupDetailReader
 	usageStatsTimezoneStore port.ManagementUsageStatsTimezoneReader
+	accountConcurrency      AccountConcurrencyReader
 	invalidator             RuntimeInvalidator
+	groupLookupInvalidator  GroupLookupInvalidator
 	logger                  *slog.Logger
 	now                     func() time.Time
 	newID                   func(prefix string) string
@@ -35,8 +40,11 @@ type Service struct {
 type ServiceOptions struct {
 	Store                   port.ManagementGroupOptionReader
 	ListStore               port.ManagementGroupListReader
+	DetailStore             port.ManagementGroupDetailReader
 	UsageStatsTimezoneStore port.ManagementUsageStatsTimezoneReader
+	AccountConcurrency      AccountConcurrencyReader
 	Invalidator             RuntimeInvalidator
+	GroupLookupInvalidator  GroupLookupInvalidator
 	Logger                  *slog.Logger
 	Now                     func() time.Time
 	NewID                   func(prefix string) string
@@ -44,6 +52,10 @@ type ServiceOptions struct {
 
 type RuntimeInvalidator interface {
 	InvalidateGatewayRuntime(ctx context.Context, reason string) error
+}
+
+type GroupLookupInvalidator interface {
+	InvalidateGroupLookupCache(ctx context.Context) error
 }
 
 type OptionListInput struct {
@@ -138,16 +150,17 @@ type UsageSummary struct {
 }
 
 type GroupAccountStats struct {
-	Total              int          `json:"total"`
-	Available          int          `json:"available"`
-	Active             int          `json:"active"`
-	Disabled           int          `json:"disabled"`
-	Error              int          `json:"error"`
-	RateLimited        int          `json:"rateLimited"`
-	CurrentConcurrency int          `json:"currentConcurrency"`
-	ConcurrencyLimit   int          `json:"concurrencyLimit"`
-	TodayUsage         UsageSummary `json:"todayUsage"`
-	Usage              UsageSummary `json:"usage"`
+	Total                       int          `json:"total"`
+	Available                   int          `json:"available"`
+	Active                      int          `json:"active"`
+	Disabled                    int          `json:"disabled"`
+	Error                       int          `json:"error"`
+	RateLimited                 int          `json:"rateLimited"`
+	CurrentConcurrency          int          `json:"currentConcurrency"`
+	CurrentConcurrencyAvailable *bool        `json:"currentConcurrencyAvailable,omitempty"`
+	ConcurrencyLimit            int          `json:"concurrencyLimit"`
+	TodayUsage                  UsageSummary `json:"todayUsage"`
+	Usage                       UsageSummary `json:"usage"`
 }
 
 type Summary struct {
@@ -271,6 +284,12 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			listStore = candidate
 		}
 	}
+	detailStore := opts.DetailStore
+	if detailStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementGroupDetailReader); ok {
+			detailStore = candidate
+		}
+	}
 	usageStatsTimezoneStore := opts.UsageStatsTimezoneStore
 	if usageStatsTimezoneStore == nil {
 		if candidate, ok := opts.Store.(port.ManagementUsageStatsTimezoneReader); ok {
@@ -279,11 +298,20 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			usageStatsTimezoneStore = candidate
 		}
 	}
+	groupLookupInvalidator := opts.GroupLookupInvalidator
+	if groupLookupInvalidator == nil {
+		if candidate, ok := opts.Invalidator.(GroupLookupInvalidator); ok {
+			groupLookupInvalidator = candidate
+		}
+	}
 	return &Service{
 		store:                   opts.Store,
 		listStore:               listStore,
+		detailStore:             detailStore,
 		usageStatsTimezoneStore: usageStatsTimezoneStore,
+		accountConcurrency:      opts.AccountConcurrency,
 		invalidator:             opts.Invalidator,
+		groupLookupInvalidator:  groupLookupInvalidator,
 		logger:                  opts.Logger,
 		now:                     now,
 		newID:                   newID,
@@ -474,16 +502,35 @@ func (s *Service) groupCreator() (port.ManagementGroupCreator, error) {
 }
 
 func (s *Service) invalidateRuntime(ctx context.Context) {
+	s.invalidateRuntimeWithReason(ctx, GroupCreatedReason)
+}
+
+func (s *Service) invalidateRuntimeWithReason(ctx context.Context, reason string) {
 	if s.invalidator == nil {
 		return
 	}
 	invalidationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), groupRuntimeInvalidationTimeout)
 	defer cancel()
-	if err := s.invalidator.InvalidateGatewayRuntime(invalidationCtx, GroupCreatedReason); err != nil && s.logger != nil {
+	if err := s.invalidator.InvalidateGatewayRuntime(invalidationCtx, reason); err != nil && s.logger != nil {
 		s.logger.Warn(
-			"分组创建后网关运行态失效失败",
+			"分组写入后网关运行态失效失败",
 			slog.String("event", "management_group_gateway_runtime_invalidation_failed"),
-			slog.String("reason", GroupCreatedReason),
+			slog.String("reason", reason),
+			slog.Any("error", err),
+		)
+	}
+}
+
+func (s *Service) invalidateGroupLookup(ctx context.Context) {
+	if s.groupLookupInvalidator == nil {
+		return
+	}
+	invalidationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), groupRuntimeInvalidationTimeout)
+	defer cancel()
+	if err := s.groupLookupInvalidator.InvalidateGroupLookupCache(invalidationCtx); err != nil && s.logger != nil {
+		s.logger.Warn(
+			"分组写入后共享 lookup 缓存失效失败",
+			slog.String("event", "management_group_lookup_cache_invalidation_failed"),
 			slog.Any("error", err),
 		)
 	}

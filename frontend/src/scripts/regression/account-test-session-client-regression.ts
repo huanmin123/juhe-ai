@@ -5,9 +5,7 @@ import {
   cancelAccountTestTask,
   completeAccountTestSession,
   createAccountTestSession,
-  fetchActiveAccountTestSession,
   fetchAccountTestTask,
-  fetchAccountTestTasks,
   heartbeatAccountTestSession,
   submitAccountTestTask
 } from '../../views/accounts/accountTestSessionClient'
@@ -22,35 +20,19 @@ const apiCalls: ApiCall[] = []
 const now = new Date().toISOString()
 
 stubApiMethod('accounts', 'createTestSession', (...args) => recordCall('accounts.createTestSession', args, sessionFixture('session_management')))
-stubApiMethod('accounts', 'activeTestSession', (...args) => recordCall('accounts.activeTestSession', args, {
-  session: sessionFixture('session_management'),
-  tasks: [taskFixture('task_management_active')]
-}))
 stubApiMethod('accounts', 'heartbeatTestSession', (...args) => recordCall('accounts.heartbeatTestSession', args, sessionFixture('session_management')))
 stubApiMethod('accounts', 'completeTestSession', (...args) => recordCall('accounts.completeTestSession', args, sessionFixture('session_management')))
 stubApiMethod('accounts', 'cancelTestSession', (...args) => recordCall('accounts.cancelTestSession', args, sessionFixture('session_management')))
 stubApiMethod('accounts', 'test', (...args) => recordCall('accounts.test', args, taskFixture('task_management_test')))
 stubApiMethod('accounts', 'testDraft', (...args) => recordCall('accounts.testDraft', args, taskFixture('task_management_draft')))
-stubApiMethod('accounts', 'testTasks', (...args) => recordCall('accounts.testTasks', args, [
-  taskFixture('task_management_fetch_1'),
-  taskFixture('task_management_fetch_2')
-]))
 stubApiMethod('accounts', 'testTask', (...args) => recordCall('accounts.testTask', args, taskFixture('task_management_fetch')))
 stubApiMethod('accounts', 'cancelTestTask', (...args) => recordCall('accounts.cancelTestTask', args, taskFixture('task_management_cancel')))
 stubApiMethod('myAccounts', 'createTestSession', (...args) => recordCall('myAccounts.createTestSession', args, sessionFixture('session_personal')))
-stubApiMethod('myAccounts', 'activeTestSession', (...args) => recordCall('myAccounts.activeTestSession', args, {
-  session: sessionFixture('session_personal'),
-  tasks: [taskFixture('task_personal_active')]
-}))
 stubApiMethod('myAccounts', 'heartbeatTestSession', (...args) => recordCall('myAccounts.heartbeatTestSession', args, sessionFixture('session_personal')))
 stubApiMethod('myAccounts', 'completeTestSession', (...args) => recordCall('myAccounts.completeTestSession', args, sessionFixture('session_personal')))
 stubApiMethod('myAccounts', 'cancelTestSession', (...args) => recordCall('myAccounts.cancelTestSession', args, sessionFixture('session_personal')))
 stubApiMethod('myAccounts', 'test', (...args) => recordCall('myAccounts.test', args, taskFixture('task_personal_test')))
 stubApiMethod('myAccounts', 'testDraft', (...args) => recordCall('myAccounts.testDraft', args, taskFixture('task_personal_draft')))
-stubApiMethod('myAccounts', 'testTasks', (...args) => recordCall('myAccounts.testTasks', args, [
-  taskFixture('task_personal_fetch_1'),
-  taskFixture('task_personal_fetch_2')
-]))
 stubApiMethod('myAccounts', 'testTask', (...args) => recordCall('myAccounts.testTask', args, taskFixture('task_personal_fetch')))
 stubApiMethod('myAccounts', 'cancelTestTask', (...args) => recordCall('myAccounts.cancelTestTask', args, taskFixture('task_personal_cancel')))
 
@@ -67,21 +49,6 @@ assertLastCall('accounts.createTestSession', [scopeParams], '管理端创建测�
 
 await createAccountTestSession({ isManagementView: false, scopeParams })
 assertLastCall('myAccounts.createTestSession', [], '个人端创建测试 session 不应透传管理端 scope')
-
-const activeController = new AbortController()
-await fetchActiveAccountTestSession({ isManagementView: true, scopeParams, signal: activeController.signal })
-assertLastCall(
-  'accounts.activeTestSession',
-  [scopeParams, { signal: activeController.signal }],
-  '管理端恢复活动测试 session 应携带 scope 和 signal'
-)
-
-await fetchActiveAccountTestSession({ isManagementView: false, scopeParams, signal: activeController.signal })
-assertLastCall(
-  'myAccounts.activeTestSession',
-  [{ signal: activeController.signal }],
-  '个人端恢复活动测试 session 不应携带管理端 scope'
-)
 
 await heartbeatAccountTestSession({ isManagementView: true, scopeParams, sessionId: 'session_1' })
 assertLastCall('accounts.heartbeatTestSession', ['session_1', scopeParams], '管理端 heartbeat 应携带 session 与 scope')
@@ -207,37 +174,13 @@ assertLastCall('accounts.testTask', ['task_1', scopeParams, { signal: controller
 await fetchAccountTestTask({ isManagementView: false, scopeParams, signal: controller.signal, taskId: 'task_2' })
 assertLastCall('myAccounts.testTask', ['task_2', { signal: controller.signal }], '个人端拉取测试任务只应携带 signal')
 
-await fetchAccountTestTasks({
-  isManagementView: true,
-  scopeParams,
-  signal: controller.signal,
-  taskIds: ['task_1', 'task_2']
-})
-assertLastCall(
-  'accounts.testTasks',
-  [['task_1', 'task_2'], scopeParams, { signal: controller.signal }],
-  '管理端批量恢复测试任务应携带 scope 和 signal'
-)
-
-await fetchAccountTestTasks({
-  isManagementView: false,
-  scopeParams,
-  signal: controller.signal,
-  taskIds: ['task_3', 'task_4']
-})
-assertLastCall(
-  'myAccounts.testTasks',
-  [['task_3', 'task_4'], { signal: controller.signal }],
-  '个人端批量恢复测试任务不应携带管理端 scope'
-)
-
 await cancelAccountTestTask({ isManagementView: true, scopeParams, taskId: 'task_3' })
 assertLastCall('accounts.cancelTestTask', ['task_3', scopeParams], '管理端取消测试任务应携带 scope')
 
 await cancelAccountTestTask({ isManagementView: false, scopeParams, taskId: 'task_4' })
 assertLastCall('myAccounts.cancelTestTask', ['task_4'], '个人端取消测试任务不应携带管理端 scope')
 
-console.log('账户测试 session client 回归通过：管理端/个人端分流、活动 session 恢复、完成、草稿 scope 和任务轮询/取消均符合预期')
+console.log('账户测试 session client 回归通过：管理端/个人端分流、独立 session、草稿 scope 和单任务轮询/取消均符合预期')
 
 function stubApiMethod(domain: 'accounts' | 'myAccounts', method: string, handler: (...args: unknown[]) => Promise<unknown>): void {
   const target = api[domain] as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>
@@ -296,6 +239,7 @@ function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
+    healthCheckModel: 'gpt-5.5',
     schedulable: true,
     todayUsage: emptyUsage(),
     usage: emptyUsage(),
@@ -313,6 +257,7 @@ function draftAccountFixture(): AccountDraftTestPayload['account'] {
     concurrencyLimit: 1,
     priority: 0,
     supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     modelMappings: [],
     groupId: 'group_1'
   }

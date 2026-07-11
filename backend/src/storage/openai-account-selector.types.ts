@@ -47,7 +47,7 @@ export interface OpenAIAccountSecret {
   supportedEndpointModes?: AccountSupportedEndpointMode[]
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
-  defaultTestModel?: string
+  healthCheckModel?: string
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -143,7 +143,7 @@ export interface OpenAIAccountRow {
   stream_failure_count: number
   stream_failure_window_started_at: string | null
   account_expires_at: string | null
-  default_test_model: string | null
+  health_check_model: string
   authorization_instance_source_account_id?: string | null
   authorization_instance_authorization_id?: string | null
   authorization_instance_owner_system_account_id?: string | null

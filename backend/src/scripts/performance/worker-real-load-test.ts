@@ -323,7 +323,6 @@ function markAccountsDueForOpsJobs(database: DatabaseSync, accountIds: string[],
   const old = new Date(Date.now() - 2 * 3600_000).toISOString()
   const markHealthDue = database.prepare(`
     UPDATE accounts
-    SET health_check_enabled = 1,
         last_health_check_at = NULL,
         next_health_check_at = NULL,
         last_health_success_at = NULL,

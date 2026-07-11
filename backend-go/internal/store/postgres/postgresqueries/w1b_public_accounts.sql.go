@@ -1127,33 +1127,33 @@ SET name = $1,
       ELSE last_error_message
     END,
     next_health_check_at = CASE
-      WHEN $2::text = 'pending_test'
+      WHEN $13::boolean
       THEN NULL
       ELSE next_health_check_at
     END,
     health_check_failure_count = CASE
-      WHEN $2::text = 'pending_test'
+      WHEN $14::boolean
       THEN 0
       ELSE health_check_failure_count
     END,
     last_health_check_status_code = CASE
-      WHEN $2::text = 'pending_test'
+      WHEN $14::boolean
       THEN NULL
       ELSE last_health_check_status_code
     END,
     last_health_check_error_code = CASE
-      WHEN $2::text = 'pending_test'
+      WHEN $14::boolean
       THEN NULL
       ELSE last_health_check_error_code
     END,
     last_health_check_error_message = CASE
-      WHEN $2::text = 'pending_test'
+      WHEN $14::boolean
       THEN NULL
       ELSE last_health_check_error_message
     END,
-    updated_at = $13
-WHERE id = $14
-  AND system_account_id = $15
+    updated_at = $15
+WHERE id = $16
+  AND system_account_id = $17
   AND deleted_at IS NULL
 RETURNING
   id,
@@ -1192,6 +1192,8 @@ type UpdatePublicAccountAllFieldsParams struct {
 	AvailabilityScheduleJson pgtype.Text
 	Notes                    pgtype.Text
 	ResetFailureState        bool
+	ScheduleHealthCheck      bool
+	ResetHealthDiagnostics   bool
 	UpdatedAt                pgtype.Timestamptz
 	ID                       string
 	SystemAccountID          string
@@ -1235,6 +1237,8 @@ func (q *Queries) UpdatePublicAccountAllFields(ctx context.Context, arg UpdatePu
 		arg.AvailabilityScheduleJson,
 		arg.Notes,
 		arg.ResetFailureState,
+		arg.ScheduleHealthCheck,
+		arg.ResetHealthDiagnostics,
 		arg.UpdatedAt,
 		arg.ID,
 		arg.SystemAccountID,

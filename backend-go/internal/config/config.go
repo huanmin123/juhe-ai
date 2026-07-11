@@ -1,10 +1,13 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +15,10 @@ import (
 	env "github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
 )
+
+const defaultRuntimeSecret = "juhe-ai-dev-secret-change-me"
+
+var invalidRedisNamespaceChars = regexp.MustCompile(`[^a-zA-Z0-9_.:-]+`)
 
 type Config struct {
 	Host                          string        `env:"JUHE_AI_HOST" envDefault:"127.0.0.1"`
@@ -22,7 +29,7 @@ type Config struct {
 	RedisCacheURL                 string        `env:"JUHE_AI_REDIS_CACHE_URL"`
 	RedisStateURL                 string        `env:"JUHE_AI_REDIS_STATE_URL"`
 	RedisQueueURL                 string        `env:"JUHE_AI_REDIS_QUEUE_URL"`
-	RedisNamespace                string        `env:"JUHE_AI_REDIS_NAMESPACE" envDefault:"juhe-ai"`
+	RedisNamespace                string        `env:"JUHE_AI_REDIS_NAMESPACE"`
 	Secret                        string        `env:"JUHE_AI_SECRET"`
 	PublicAPIEnabled              bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled          bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
@@ -55,6 +62,9 @@ func Load(opts LoadOptions) (Config, error) {
 		return Config{}, fmt.Errorf("读取 Go 后端环境变量失败: %w", err)
 	}
 	applyProductionCookieDefaults(&cfg)
+	if err := applyRedisNamespace(&cfg); err != nil {
+		return Config{}, err
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -67,6 +77,29 @@ func applyProductionCookieDefaults(cfg *Config) {
 	if strings.EqualFold(strings.TrimSpace(cfg.Env), "production") && os.Getenv("JUHE_AI_COOKIE_SECURE") == "" {
 		cfg.CookieSecure = true
 	}
+}
+
+func applyRedisNamespace(cfg *Config) error {
+	value := strings.TrimSpace(cfg.RedisNamespace)
+	if value == "" {
+		secret := strings.TrimSpace(cfg.Secret)
+		if secret == "" {
+			secret = defaultRuntimeSecret
+		}
+		sum := sha256.Sum256([]byte(secret))
+		value = "env-" + hex.EncodeToString(sum[:])[:12]
+	}
+
+	normalized := invalidRedisNamespaceChars.ReplaceAllString(value, "_")
+	normalized = strings.Trim(normalized, "_")
+	if normalized == "" {
+		return fmt.Errorf("JUHE_AI_REDIS_NAMESPACE 不能为空")
+	}
+	if len(normalized) > 64 {
+		return fmt.Errorf("JUHE_AI_REDIS_NAMESPACE 最多 64 个字符")
+	}
+	cfg.RedisNamespace = normalized
+	return nil
 }
 
 func (cfg Config) Validate() error {

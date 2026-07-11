@@ -10,6 +10,7 @@ import { requestBackgroundWorkerDbService } from './background-ipc.js'
 interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
   accountId: string
   accountName: string
+  configRevision: number
   maxPauseMinutes: number
 }
 
@@ -37,6 +38,7 @@ export function enqueueAccountHealthCheck(
   return accountHealthCheckQueue.enqueue(account.id, {
     accountId: account.id,
     accountName: account.name,
+    configRevision: account.configRevision ?? 1,
     intervalHours: settings.intervalHours,
     jitterMinutes: settings.jitterMinutes,
     failureThreshold: settings.failureThreshold,
@@ -70,12 +72,23 @@ async function runAccountHealthCheckQueueItem(
     }, '账号健康检测任务已失效，跳过')
     return true
   }
+  if ((account.configRevision ?? 1) !== item.configRevision) {
+    logger.debug({
+      event: 'background_account_health_check_stale_config_discarded',
+      accountId: item.accountId,
+      accountName: item.accountName,
+      queuedConfigRevision: item.configRevision,
+      currentConfigRevision: account.configRevision ?? 1
+    }, '账号配置已变化，丢弃旧健康检测任务')
+    return true
+  }
 
   const groupId = account.boundGroupId
+  const observedAt = new Date().toISOString()
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'limited',
     groupId,
-    trafficSource: 'cooldown_retest',
+    trafficSource: 'account_health_check',
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
@@ -93,7 +106,8 @@ async function runAccountHealthCheckQueueItem(
       intervalHours: item.intervalHours,
       jitterMinutes: item.jitterMinutes,
       failureThreshold: item.failureThreshold,
-      statusCode: result.statusCode
+      statusCode: result.statusCode,
+      expectedConfigRevision: item.configRevision
       }
     })
     const changed = healthCheckResult?.changed ?? false
@@ -119,17 +133,26 @@ async function runAccountHealthCheckQueueItem(
       failureThreshold: item.failureThreshold,
       statusCode: result.statusCode,
       errorCode: result.errorCode,
-      errorMessage: result.message
+      errorMessage: result.message,
+      countTowardsThreshold: result.accountFailureEligible !== false,
+      expectedConfigRevision: item.configRevision,
+      observedAt
     }
   })
 
   let markedTemporaryUnavailable = false
-  if (failure?.reachedThreshold && result.accountFailureEligible !== false) {
+  if (account.status !== 'pending_test' && failure?.reachedThreshold && result.accountFailureEligible !== false) {
     const updated = await requestBackgroundWorkerDbService({
       type: 'mark_account_test_temporary_unavailable',
       accountId: account.id,
       reason: accountHealthCheckTemporaryUnavailableReason(failure.failureCount, result),
-      access: { systemAccountId: account.systemAccountId ?? '', role: 'user' }
+      access: { systemAccountId: account.systemAccountId ?? '', role: 'user' },
+      healthCheckGuard: {
+        configRevision: item.configRevision,
+        checkedAt: failure.checkedAt,
+        failureCount: failure.failureCount,
+        observedAt
+      }
     })
     markedTemporaryUnavailable = updated?.updated ?? false
   }
@@ -150,7 +173,7 @@ async function runAccountHealthCheckQueueItem(
     retryNumber: context.retryNumber,
     message: result.message
   }
-  if (failure?.reachedThreshold && result.accountFailureEligible !== false) {
+  if (account.status !== 'pending_test' && failure?.reachedThreshold && result.accountFailureEligible !== false) {
     logger.warn(logFields, '账号健康检测连续失败，已尝试标记为临时不可调用')
   } else {
     logger.warn(logFields, '账号健康检测失败，已记录失败并安排短间隔复检')
@@ -191,8 +214,8 @@ async function loadOpenAIAccountForGroupViaDbService(
 
 function isAccountHealthCheckEligible(account: AccountSummary | undefined): account is AccountSummary & { boundGroupId: string } {
   if (!account) return false
-  if (account.status !== 'active' || !account.schedulable || !account.boundGroupId) return false
-  if (account.healthCheckEnabled === false) return false
+  if (!['active', 'pending_test'].includes(account.status) || !account.boundGroupId) return false
+  if (account.status === 'active' && !account.schedulable) return false
   if (account.accountExpiresAt) {
     const expiresAtMs = Date.parse(account.accountExpiresAt)
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) return false
@@ -201,7 +224,7 @@ function isAccountHealthCheckEligible(account: AccountSummary | undefined): acco
     const nextMs = Date.parse(account.nextHealthCheckAt)
     if (Number.isFinite(nextMs) && nextMs > Date.now()) return false
   }
-  if (account.effectiveAvailability && !account.effectiveAvailability.available) return false
+  if (account.status === 'active' && account.effectiveAvailability && !account.effectiveAvailability.available) return false
   return true
 }
 

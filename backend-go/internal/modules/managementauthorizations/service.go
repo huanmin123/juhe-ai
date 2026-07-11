@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"juhe-ai/backend-go/internal/store/port"
+	"juhe-ai/backend-go/internal/timezonecompat"
 )
 
 const (
@@ -476,7 +477,7 @@ func (s *Service) TeamUsageOverview(ctx context.Context, input UsageOverviewInpu
 	if s.usageStore == nil {
 		return TeamUsageOverview{}, fmt.Errorf("management authorization usage overview reader is required")
 	}
-	storeInput, usageRange, page, pageSize, err := s.authorizationUsageOverviewStoreInput(input)
+	storeInput, usageRange, page, pageSize, err := s.authorizationUsageOverviewStoreInput(ctx, input)
 	if err != nil {
 		return TeamUsageOverview{}, err
 	}
@@ -501,7 +502,7 @@ func (s *Service) UserUsageOverview(ctx context.Context, input UsageOverviewInpu
 	if s.usageStore == nil {
 		return UserUsageOverview{}, fmt.Errorf("management authorization usage overview reader is required")
 	}
-	storeInput, usageRange, page, pageSize, err := s.authorizationUsageOverviewStoreInput(input)
+	storeInput, usageRange, page, pageSize, err := s.authorizationUsageOverviewStoreInput(ctx, input)
 	if err != nil {
 		return UserUsageOverview{}, err
 	}
@@ -526,7 +527,7 @@ func (s *Service) UsageDetail(ctx context.Context, input UsageDetailInput) (Usag
 	if s.usageDetailStore == nil {
 		return UsageDetail{}, false, fmt.Errorf("management resource authorization usage reader is required")
 	}
-	storeInput, usageRange, page, pageSize, err := s.authorizationUsageDetailStoreInput(input)
+	storeInput, usageRange, page, pageSize, err := s.authorizationUsageDetailStoreInput(ctx, input)
 	if err != nil {
 		return UsageDetail{}, false, err
 	}
@@ -546,7 +547,7 @@ func (s *Service) UsageDetail(ctx context.Context, input UsageDetailInput) (Usag
 	}, true, nil
 }
 
-func (s *Service) authorizationUsageOverviewStoreInput(input UsageOverviewInput) (port.ManagementAuthorizationUsageOverviewInput, port.ManagementAccountUsageStatsRange, int, int, error) {
+func (s *Service) authorizationUsageOverviewStoreInput(ctx context.Context, input UsageOverviewInput) (port.ManagementAuthorizationUsageOverviewInput, port.ManagementAccountUsageStatsRange, int, int, error) {
 	actor := strings.TrimSpace(input.ActorSystemAccountID)
 	if actor == "" {
 		return port.ManagementAuthorizationUsageOverviewInput{}, port.ManagementAccountUsageStatsRange{}, 0, 0, ErrAuthorizationUsageInvalid
@@ -557,7 +558,7 @@ func (s *Service) authorizationUsageOverviewStoreInput(input UsageOverviewInput)
 	}
 	pageSize := authorizationUsagePageSize(input.PageSize)
 	page := authorizationUsagePage(input.Page, pageSize)
-	usageRange, err := s.normalizeAuthorizationUsageRange(input.StartDate, input.EndDate)
+	usageRange, err := s.normalizeAuthorizationUsageRange(ctx, input.StartDate, input.EndDate)
 	if err != nil {
 		return port.ManagementAuthorizationUsageOverviewInput{}, port.ManagementAccountUsageStatsRange{}, 0, 0, err
 	}
@@ -581,7 +582,7 @@ func (s *Service) authorizationUsageOverviewStoreInput(input UsageOverviewInput)
 	}, usageRange, page, pageSize, nil
 }
 
-func (s *Service) authorizationUsageDetailStoreInput(input UsageDetailInput) (port.ManagementResourceAuthorizationUsageInput, port.ManagementAccountUsageStatsRange, int, int, error) {
+func (s *Service) authorizationUsageDetailStoreInput(ctx context.Context, input UsageDetailInput) (port.ManagementResourceAuthorizationUsageInput, port.ManagementAccountUsageStatsRange, int, int, error) {
 	authorizationID := strings.TrimSpace(input.AuthorizationID)
 	actor := strings.TrimSpace(input.ActorSystemAccountID)
 	if authorizationID == "" || actor == "" {
@@ -589,7 +590,7 @@ func (s *Service) authorizationUsageDetailStoreInput(input UsageDetailInput) (po
 	}
 	pageSize := authorizationUsageDetailPageSize(input.PageSize)
 	page := authorizationUsagePage(input.Page, pageSize)
-	usageRange, err := s.normalizeAuthorizationUsageRange(input.StartDate, input.EndDate)
+	usageRange, err := s.normalizeAuthorizationUsageRange(ctx, input.StartDate, input.EndDate)
 	if err != nil {
 		return port.ManagementResourceAuthorizationUsageInput{}, port.ManagementAccountUsageStatsRange{}, 0, 0, err
 	}
@@ -1147,16 +1148,32 @@ func authorizationUsagePage(value int, pageSize int) int {
 	return value
 }
 
-func (s *Service) normalizeAuthorizationUsageRange(startDate string, endDate string) (port.ManagementAccountUsageStatsRange, error) {
-	todayText := s.now().In(time.Local).Format("2006-01-02")
+func (s *Service) normalizeAuthorizationUsageRange(ctx context.Context, startDate string, endDate string) (port.ManagementAccountUsageStatsRange, error) {
+	location, err := s.authorizationUsageStatsLocation(ctx)
+	if err != nil {
+		return port.ManagementAccountUsageStatsRange{}, err
+	}
+	todayText := s.now().In(location).Format("2006-01-02")
 	today, _ := time.Parse("2006-01-02", todayText)
 	earliestSupported := today.AddDate(0, 0, -(maxAuthorizationUsageRangeDays - 1))
+
+	startDate = strings.TrimSpace(startDate)
+	endDate = strings.TrimSpace(endDate)
+	if startDate == "" && endDate == "" {
+		startDate = earliestSupported.Format("2006-01-02")
+		endDate = todayText
+	} else {
+		if startDate == "" {
+			startDate = endDate
+		}
+		if endDate == "" {
+			endDate = startDate
+		}
+	}
+
 	end, err := parseOptionalDateKey(endDate)
 	if err != nil {
 		return port.ManagementAccountUsageStatsRange{}, ErrAuthorizationUsageInvalid
-	}
-	if end == nil {
-		end = &today
 	}
 	endValue := *end
 	if endValue.After(today) {
@@ -1169,9 +1186,6 @@ func (s *Service) normalizeAuthorizationUsageRange(startDate string, endDate str
 	start, err := parseOptionalDateKey(startDate)
 	if err != nil {
 		return port.ManagementAccountUsageStatsRange{}, ErrAuthorizationUsageInvalid
-	}
-	if start == nil {
-		start = &today
 	}
 	startValue := *start
 	if startValue.After(today) {
@@ -1195,6 +1209,25 @@ func (s *Service) normalizeAuthorizationUsageRange(startDate string, endDate str
 		Days:      days,
 		MaxDays:   maxAuthorizationUsageRangeDays,
 	}, nil
+}
+
+func (s *Service) authorizationUsageStatsLocation(ctx context.Context) (*time.Location, error) {
+	if s.usageStatsTimezoneStore == nil {
+		return nil, fmt.Errorf("management usage stats timezone reader is required")
+	}
+	timezone, found, err := s.usageStatsTimezoneStore.GetManagementUsageStatsTimezone(ctx)
+	if err != nil {
+		return nil, err
+	}
+	timezone = strings.TrimSpace(timezone)
+	if !found || timezone == "" {
+		return nil, fmt.Errorf("系统设置缺少 usageStatsTimezone")
+	}
+	location, err := timezonecompat.LoadNodeLocation(timezone)
+	if err != nil {
+		return nil, fmt.Errorf("系统设置 usageStatsTimezone 无效: %w", err)
+	}
+	return location, nil
 }
 
 func parseOptionalDateKey(value string) (*time.Time, error) {

@@ -331,6 +331,8 @@ async function assertHiddenAuthorizationInstanceTagsNotMutated(baseUrl: string):
     name: '标签可见性来源账户',
     type: 'api_key',
     credentials: { api_key: 'sk-account-tags-visibility', base_url: 'https://api.openai.com/v1' },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     groupId: ownerGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({

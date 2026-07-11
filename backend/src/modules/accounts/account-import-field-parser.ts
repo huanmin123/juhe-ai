@@ -39,7 +39,7 @@ export const importAccountKeys: ReadonlySet<string> = new Set([
   'superPriorityEnabled',
   'fallbackEnabled',
   'supportedModels',
-  'defaultTestModel',
+  'healthCheckModel',
   'modelMappings',
   'tags',
   'accountExpiresAt',

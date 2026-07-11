@@ -430,6 +430,7 @@ function accountQualityJoinClause(includeQualityInQuery: boolean): string {
 function accountRowSelectColumns(includeCredentials: boolean): string {
   const columns = [
     'accounts.id',
+    'accounts.config_revision',
     'accounts.system_account_id',
     'accounts.provider_code',
     'accounts.provider_protocol_profile_id',
@@ -458,8 +459,7 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     'accounts.cooldown_retest_observation_started_at',
     'accounts.cooldown_retest_last_at',
     'accounts.cooldown_retest_last_status_code',
-    'accounts.default_test_model',
-    'accounts.health_check_enabled',
+    'accounts.health_check_model',
     'accounts.last_health_check_at',
     'accounts.next_health_check_at',
     'accounts.last_health_success_at',
@@ -505,6 +505,7 @@ function sourceAccountSelectColumns(includeCredentials: boolean): string {
 function accountListOuterSelectColumns(): string {
   return [
     'id',
+    'config_revision',
     'system_account_id',
     'provider_code',
     'provider_protocol_profile_id',
@@ -533,8 +534,7 @@ function accountListOuterSelectColumns(): string {
     'cooldown_retest_observation_started_at',
     'cooldown_retest_last_at',
     'cooldown_retest_last_status_code',
-    'default_test_model',
-    'health_check_enabled',
+    'health_check_model',
     'last_health_check_at',
     'next_health_check_at',
     'last_health_success_at',

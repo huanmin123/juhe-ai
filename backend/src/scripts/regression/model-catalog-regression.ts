@@ -23,6 +23,7 @@ logger.level = 'silent'
 const [
   databaseModule,
   catalogService,
+  modelPricingService,
   { providersRouter, dedupeProviderModelOptions },
   { requireAuth },
   { requestContextMiddleware },
@@ -30,6 +31,7 @@ const [
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/model-pricing/model-catalog.service.js'),
+  import('../../modules/model-pricing/model-pricing.service.js'),
   import('../../modules/providers/providers.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
@@ -44,6 +46,19 @@ try {
     systemAccountId: 'sys_admin',
     supportedApiProtocols: ['responses'],
     releaseDate: '2026-01-02',
+    inputUsdPer1M: 2,
+    outputUsdPer1M: 8,
+    actorSystemAccountId: 'sys_admin'
+  })
+  catalogService.saveCustomProviderModel({
+    providerCode: 'gpt',
+    model: 'gpt-regression-capabilities',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    supportedApiProtocols: ['responses'],
+    supportedServiceTiers: ['priority', 'flex'],
+    supportedReasoningEfforts: ['low', 'medium', 'high'],
+    defaultReasoningEffort: 'medium',
     inputUsdPer1M: 2,
     outputUsdPer1M: 8,
     actorSystemAccountId: 'sys_admin'
@@ -173,6 +188,11 @@ try {
   const publicModels = new Set(publicCatalog.map((item) => item.model))
   assert(publicCatalog.some((item) => item.model === 'gpt-regression-global' && item.scope === 'global'), '全局自定义模型应进入当前账号模型目录')
   assert(publicModels.has('gpt-regression-personal'), '当前账号个人自定义模型应进入模型目录')
+  const personalCapabilityModel = publicCatalog.find((item) => item.model === 'gpt-regression-capabilities')
+  assert.deepEqual(personalCapabilityModel?.supportedServiceTiers, ['priority', 'flex'], '自定义模型服务等级能力必须完成 SQLite 往返')
+  assert.deepEqual(personalCapabilityModel?.supportedReasoningEfforts, ['low', 'medium', 'high'], '自定义模型思考能力必须完成 SQLite 往返')
+  assert.equal(personalCapabilityModel?.defaultReasoningEffort, 'medium', '自定义模型默认思考级别必须完成 SQLite 往返')
+  assert.equal(personalCapabilityModel?.supportsServiceTier, true, '自定义模型 supportsServiceTier 必须由精确能力数组派生')
   assert(publicModels.has('gpt-regression-alias'), '带 pricingModel 的个人模型应进入个人公开模型目录')
   assert(publicModels.has('gpt-regression-upstream-target'), '自定义上游目标模型应直接进入公开模型目录')
   assert(publicModels.has('gpt-regression-case-model'), '仅大小写不同的小写自定义模型应进入模型目录')
@@ -182,6 +202,47 @@ try {
   assert.equal(publicModels.has('gpt-regression-draft'), false, '草稿模型不应进入公开模型目录')
   assert.equal(publicModels.has('gpt-regression-overridden-pricing-alias'), false, 'pricingModel 目标被无价自定义模型覆盖时别名不应进入公开模型目录')
   assert.equal(publicModels.has('openai-regression-personal'), false, 'GPT 模型目录不应反向包含 OpenAI 兼容自定义模型')
+
+  const gpt56WireReasoning = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
+  const gpt56ServiceTiers = ['priority']
+  const gpt56CodexReasoning = ['low', 'medium', 'high', 'xhigh', 'max']
+  const gpt56Sol = publicCatalog.find((item) => item.model === 'gpt-5.6-sol')
+  const gpt56Terra = publicCatalog.find((item) => item.model === 'gpt-5.6-terra')
+  const gpt56Luna = publicCatalog.find((item) => item.model === 'gpt-5.6-luna')
+  assert(gpt56Sol && gpt56Terra && gpt56Luna, 'GPT-5.6 Sol / Terra / Luna 必须进入模型目录')
+  for (const item of [gpt56Sol, gpt56Terra, gpt56Luna]) {
+    assert.deepEqual(item.supportedServiceTiers, gpt56ServiceTiers, `${item.model} 必须精确声明 Priority`)
+    assert.deepEqual(item.supportedReasoningEfforts, gpt56WireReasoning, `${item.model} 必须精确声明 wire reasoning effort`)
+    assert.equal(item.supportsServiceTier, true, `${item.model} supportsServiceTier 必须从精确数组派生`)
+    assert.equal(item.supportedReasoningEfforts.includes('ultra' as never), false, `${item.model} wire effort 不能包含 Ultra`)
+  }
+  assert.deepEqual(gpt56Sol.codexSupportedReasoningLevels, [...gpt56CodexReasoning, 'ultra'])
+  assert.deepEqual(gpt56Terra.codexSupportedReasoningLevels, [...gpt56CodexReasoning, 'ultra'])
+  assert.deepEqual(gpt56Luna.codexSupportedReasoningLevels, gpt56CodexReasoning)
+  assert.equal(gpt56Sol.codexDefaultReasoningLevel, 'low')
+  assert.equal(gpt56Terra.codexDefaultReasoningLevel, 'medium')
+  assert.equal(gpt56Luna.codexDefaultReasoningLevel, 'medium')
+  assert.equal(gpt56Sol.codexMultiAgentVersion, 'v2')
+  assert.equal(gpt56Terra.codexMultiAgentVersion, 'v2')
+  assert.equal(gpt56Luna.codexMultiAgentVersion, undefined)
+
+  assert.throws(() => catalogService.saveCustomProviderModel({
+    providerCode: 'gpt',
+    model: 'gpt-regression-invalid-default-reasoning',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    supportedApiProtocols: ['responses'],
+    supportedReasoningEfforts: ['low'],
+    defaultReasoningEffort: 'high',
+    inputUsdPer1M: 1,
+    outputUsdPer1M: 2,
+    actorSystemAccountId: 'sys_admin'
+  }), /默认思考级别必须属于支持的思考级别/)
+
+  const gpt56Alias = modelPricingService.getProviderModelPricing('gpt', 'gpt-5.6')
+  assert.equal(gpt56Alias?.model, 'gpt-5.6-sol', 'gpt-5.6 稳定别名必须继承 Sol 能力')
+  assert.deepEqual(gpt56Alias?.supportedReasoningEfforts, gpt56WireReasoning)
+  assert.deepEqual(gpt56Alias?.codexSupportedReasoningLevels, [...gpt56CodexReasoning, 'ultra'])
 
   const otherUserCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'gpt',
@@ -471,10 +532,25 @@ try {
   assert.equal(codexPersonalModel.visibility, 'list', 'Codex /models visibility 必须可进入列表')
   assert.equal(codexPersonalModel.supported_in_api, true, 'Codex /models 模型必须标记 API 可用')
   assert.equal(codexPersonalModel.default_reasoning_level, 'medium', 'Codex /models 默认 reasoning 应为 medium')
-  assert(codexPersonalModel.supported_reasoning_levels.some((item) => item.effort === 'medium'), 'Codex /models 应包含 medium reasoning 选项')
+  assert.deepEqual(codexPersonalModel.supported_reasoning_levels, [], '能力未知的自定义模型不能伪造统一 reasoning 选项')
+  assert.deepEqual(codexPersonalModel.service_tiers, [], '能力未知的自定义模型不能伪造服务等级')
   assert.equal(typeof codexPersonalModel.base_instructions, 'string', 'Codex /models 必须提供 base_instructions')
   assert.equal(codexPersonalModel.truncation_policy.mode, 'bytes', 'Codex /models 必须提供 truncation_policy')
   assert(codexResponse.models.some((item) => item.slug === 'gpt-regression-upstream-target'), 'Codex /models 应包含启用且可计价的自定义上游目标模型')
+  const codexSol = codexResponse.models.find((item) => item.slug === 'gpt-5.6-sol')
+  const codexTerra = codexResponse.models.find((item) => item.slug === 'gpt-5.6-terra')
+  const codexLuna = codexResponse.models.find((item) => item.slug === 'gpt-5.6-luna')
+  assert(codexSol && codexTerra && codexLuna, 'Codex /models 必须包含 GPT-5.6 三个模型')
+  assert.deepEqual(codexSol.supported_reasoning_levels.map((item) => item.effort), [...gpt56CodexReasoning, 'ultra'])
+  assert.deepEqual(codexTerra.supported_reasoning_levels.map((item) => item.effort), [...gpt56CodexReasoning, 'ultra'])
+  assert.deepEqual(codexLuna.supported_reasoning_levels.map((item) => item.effort), gpt56CodexReasoning)
+  assert.deepEqual(codexSol.additional_speed_tiers, ['fast'])
+  assert.deepEqual(codexTerra.additional_speed_tiers, ['fast'])
+  assert.deepEqual(codexLuna.additional_speed_tiers, ['fast'])
+  assert.deepEqual(codexSol.service_tiers.map((item) => item.id), ['priority'])
+  assert.equal(codexSol.multi_agent_version, 'v2')
+  assert.equal(codexTerra.multi_agent_version, 'v2')
+  assert.equal(codexLuna.multi_agent_version, null)
 
   const aliasCost = catalogService.estimateCatalogCostUsd({
     providerCode: 'gpt',
@@ -718,18 +794,46 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
     assert.notEqual(userACaseLowerModel.id, userACaseUpperModel.id, '同一供应商同一用户应允许创建仅大小写不同的自定义模型')
 
-    const userAGptModel = await postEnvelope<{ id: string; model: string; providerCode: string }>(
+    const userAGptModel = await postEnvelope<{
+      id: string
+      model: string
+      providerCode: string
+      supportedServiceTiers: string[]
+      supportedReasoningEfforts: string[]
+      defaultReasoningEffort?: string
+    }>(
       baseUrl,
       '/__aisys__/api/providers/gpt/models',
       userACookie,
       {
         model: 'gpt-http-user-a-gpt',
         supportedApiProtocols: ['responses'],
+        supportedServiceTiers: ['priority'],
+        supportedReasoningEfforts: ['low', 'high'],
+        defaultReasoningEffort: 'high',
         inputUsdPer1M: 1,
         outputUsdPer1M: 2
       }
     )
     assert.equal(userAGptModel.providerCode, 'gpt', 'GPT 目录新建的个人模型应归属 GPT 供应商')
+    assert.deepEqual(userAGptModel.supportedServiceTiers, ['priority'], 'GPT 自定义模型 API 应返回服务等级能力')
+    assert.deepEqual(userAGptModel.supportedReasoningEfforts, ['low', 'high'], 'GPT 自定义模型 API 应返回思考能力')
+    assert.equal(userAGptModel.defaultReasoningEffort, 'high', 'GPT 自定义模型 API 应返回默认思考级别')
+    await assertHttpStatus(
+      `${baseUrl}/__aisys__/api/providers/gpt/models`,
+      userACookie,
+      'POST',
+      {
+        model: 'gpt-http-invalid-reasoning-default',
+        supportedApiProtocols: ['responses'],
+        supportedReasoningEfforts: ['low'],
+        defaultReasoningEffort: 'high',
+        inputUsdPer1M: 1,
+        outputUsdPer1M: 2
+      },
+      400,
+      'GPT 自定义模型 API 必须拒绝不属于支持集合的默认思考级别'
+    )
 
     const userADraft = await postEnvelope<{ id: string; model: string; status: string }>(
       baseUrl,
@@ -755,25 +859,25 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
     assert.equal(userADeletableModel.scope, 'personal', '普通用户应能创建可删除的个人模型')
 
-    const userADefaultPreference = await putEnvelope<{ providerCode: string; defaultTestModel: string }>(
+    const userADefaultPreference = await putEnvelope<{ providerCode: string; defaultHealthCheckModel: string }>(
       baseUrl,
-      '/__aisys__/api/providers/openai/default-test-model',
+      '/__aisys__/api/providers/openai/default-health-check-model',
       userACookie,
       { model: userADeletableModel.model }
     )
-    assert.equal(userADefaultPreference.defaultTestModel, userADeletableModel.model, '用户应能把自己可见的个人模型设置为默认测试模型')
-    const userAProviderOptions = await getEnvelope<Array<{ code: string; defaultTestModel: string; systemDefaultTestModel?: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
-    assert.equal(userAProviderOptions.find((item) => item.code === 'openai')?.defaultTestModel, userADeletableModel.model, '用户默认测试模型应覆盖自己的供应商选项')
-    assert.notEqual(userAProviderOptions.find((item) => item.code === 'openai')?.systemDefaultTestModel, userADeletableModel.model, '用户默认测试模型不能覆盖系统协议档案默认事实')
-    const userBProviderOptions = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userBCookie)
-    assert.notEqual(userBProviderOptions.find((item) => item.code === 'openai')?.defaultTestModel, userADeletableModel.model, '用户默认测试模型不能泄露给其他用户')
+    assert.equal(userADefaultPreference.defaultHealthCheckModel, userADeletableModel.model, '用户应能把自己可见的个人模型设置为默认检查模型')
+    const userAProviderOptions = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string; systemDefaultHealthCheckModel?: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    assert.equal(userAProviderOptions.find((item) => item.code === 'openai')?.defaultHealthCheckModel, userADeletableModel.model, '用户默认检查模型应覆盖自己的供应商选项')
+    assert.notEqual(userAProviderOptions.find((item) => item.code === 'openai')?.systemDefaultHealthCheckModel, userADeletableModel.model, '用户默认检查模型不能覆盖管理员系统默认事实')
+    const userBProviderOptions = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userBCookie)
+    assert.notEqual(userBProviderOptions.find((item) => item.code === 'openai')?.defaultHealthCheckModel, userADeletableModel.model, '用户默认检查模型不能泄露给其他用户')
     await assertHttpStatus(
-      `${baseUrl}/__aisys__/api/providers/openai/default-test-model`,
+      `${baseUrl}/__aisys__/api/providers/openai/default-health-check-model`,
       userACookie,
       'PUT',
       { model: userADraft.model },
       400,
-      '草稿模型不应允许设置为默认测试模型'
+      '草稿模型不应允许设置为默认检查模型'
     )
 
     const adminGlobalModel = await postEnvelope<{ id: string; model: string; scope: string; systemAccountId?: string }>(
@@ -803,6 +907,63 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       }
     )
     assert.equal(adminPersonalModel.scope, 'personal', '管理员应能维护自己账号下的个人模型')
+
+    const adminProvidersBeforeSystemDefault = await getEnvelope<Array<{
+      code: string
+      protocolProfiles: Array<{ id: string; defaultHealthCheckModel: string }>
+    }>>(baseUrl, '/__aisys__/api/providers', adminCookie)
+    const openAIProviderBeforeSystemDefault = adminProvidersBeforeSystemDefault.find((item) => item.code === 'openai')
+    assert(openAIProviderBeforeSystemDefault, '管理员应能读取 OpenAI 供应商定义')
+    const builtInProfileDefaults = new Map(
+      openAIProviderBeforeSystemDefault.protocolProfiles.map((profile) => [profile.id, profile.defaultHealthCheckModel])
+    )
+
+    await assertHttpStatus(
+      `${baseUrl}/__aisys__/api/providers/openai/default-health-check-model`,
+      adminCookie,
+      'PUT',
+      { model: adminPersonalModel.model },
+      400,
+      '管理员自己的个人模型不能设置为系统默认检查模型'
+    )
+
+    const adminSystemDefault = await putEnvelope<{ providerCode: string; defaultHealthCheckModel: string }>(
+      baseUrl,
+      '/__aisys__/api/providers/openai/default-health-check-model',
+      adminCookie,
+      { model: adminGlobalModel.model }
+    )
+    assert.equal(adminSystemDefault.defaultHealthCheckModel, adminGlobalModel.model, '管理员应能把全局启用文本模型设置为系统默认检查模型')
+
+    const userAOptionsAfterSystemDefault = await getEnvelope<Array<{
+      code: string
+      defaultHealthCheckModel: string
+      systemDefaultHealthCheckModel?: string
+    }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    const userAOpenAIOptions = userAOptionsAfterSystemDefault.find((item) => item.code === 'openai')
+    assert.equal(userAOpenAIOptions?.defaultHealthCheckModel, userADeletableModel.model, '用户 A 已有个人偏好时应继续以个人检查模型为默认')
+    assert.equal(userAOpenAIOptions?.systemDefaultHealthCheckModel, adminGlobalModel.model, '用户 A 仍应看到管理员配置的系统默认检查模型')
+
+    const userBOptionsAfterSystemDefault = await getEnvelope<Array<{
+      code: string
+      defaultHealthCheckModel: string
+      systemDefaultHealthCheckModel?: string
+    }>>(baseUrl, '/__aisys__/api/providers/options', userBCookie)
+    const userBOpenAIOptions = userBOptionsAfterSystemDefault.find((item) => item.code === 'openai')
+    assert.equal(userBOpenAIOptions?.defaultHealthCheckModel, adminGlobalModel.model, '用户 B 未设置个人偏好时应使用管理员系统默认检查模型')
+    assert.equal(userBOpenAIOptions?.systemDefaultHealthCheckModel, adminGlobalModel.model, '用户 B 应看到管理员系统默认检查模型')
+
+    const adminProvidersAfterSystemDefault = await getEnvelope<Array<{
+      code: string
+      protocolProfiles: Array<{ id: string; defaultHealthCheckModel: string }>
+    }>>(baseUrl, '/__aisys__/api/providers', adminCookie)
+    const openAIProviderAfterSystemDefault = adminProvidersAfterSystemDefault.find((item) => item.code === 'openai')
+    assert(openAIProviderAfterSystemDefault, '系统默认更新后管理员仍应能读取 OpenAI 供应商定义')
+    assert.deepEqual(
+      new Map(openAIProviderAfterSystemDefault.protocolProfiles.map((profile) => [profile.id, profile.defaultHealthCheckModel])),
+      builtInProfileDefaults,
+      '管理员设置系统默认检查模型不能改写协议档案内置 defaultHealthCheckModel'
+    )
 
     const adminCreatedUserAModel = await postEnvelope<{ id: string; model: string; scope: string; systemAccountId?: string }>(
       baseUrl,
@@ -868,8 +1029,8 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       200,
       '普通用户应能删除自己未绑定账户的个人模型'
     )
-    const userAProviderOptionsAfterDefaultDelete = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
-    assert.notEqual(userAProviderOptionsAfterDefaultDelete.find((item) => item.code === 'openai')?.defaultTestModel, userADeletableModel.model, '删除个人模型时应清理指向该模型的个人默认测试模型')
+    const userAProviderOptionsAfterDefaultDelete = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    assert.notEqual(userAProviderOptionsAfterDefaultDelete.find((item) => item.code === 'openai')?.defaultHealthCheckModel, userADeletableModel.model, '删除个人模型时应清理指向该模型的个人默认检查模型')
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models/${adminPersonalModel.id}`,
       userACookie,
@@ -909,6 +1070,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       credentials: { api_key: 'sk-model-catalog-bound', base_url: 'https://api.openai.com/v1' },
       groupId: userAGroup.id,
       supportedModels: [userAModel.model, userAUpstreamTarget.model],
+      healthCheckModel: userAModel.model,
       modelMappings: [
         {
           sourceModel: userAModel.model,
@@ -979,15 +1141,15 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert(userAHybridVisible.some((item) => item.providerCode === 'gpt' && item.model === 'gpt-http-user-a-gpt'), '混合供应商模型目录应聚合真实供应商模型')
     assert.equal(userAHybridVisible.some((item) => item.providerCode === 'hybrid'), false, '混合供应商模型目录不应返回 hybrid 自身模型')
     assert.equal(userAHybridVisible.some((item) => item.model === 'hybrid-regression-should-not-list'), false, '混合供应商模型目录不应返回 hybrid 自身模型')
-    const userAHybridDefaultPreference = await putEnvelope<{ providerCode: string; defaultTestModel: string }>(
+    const userAHybridDefaultPreference = await putEnvelope<{ providerCode: string; defaultHealthCheckModel: string }>(
       baseUrl,
-      '/__aisys__/api/providers/hybrid/default-test-model',
+      '/__aisys__/api/providers/hybrid/default-health-check-model',
       userACookie,
       { model: 'gpt-http-user-a-gpt' }
     )
-    assert.equal(userAHybridDefaultPreference.defaultTestModel, 'gpt-http-user-a-gpt', '混合供应商应允许把聚合目录中的真实文本模型设为默认测试模型')
-    const userAProviderOptionsAfterHybridDefault = await getEnvelope<Array<{ code: string; defaultTestModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
-    assert.equal(userAProviderOptionsAfterHybridDefault.find((item) => item.code === 'hybrid')?.defaultTestModel, 'gpt-http-user-a-gpt', '混合供应商默认测试模型偏好应回填到用户供应商选项')
+    assert.equal(userAHybridDefaultPreference.defaultHealthCheckModel, 'gpt-http-user-a-gpt', '混合供应商应允许把聚合目录中的真实文本模型设为默认检查模型')
+    const userAProviderOptionsAfterHybridDefault = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    assert.equal(userAProviderOptionsAfterHybridDefault.find((item) => item.code === 'hybrid')?.defaultHealthCheckModel, 'gpt-http-user-a-gpt', '混合供应商默认检查模型偏好应回填到用户供应商选项')
 
     const userAMaintenanceVisible = await getEnvelope<Array<{ model: string; status: string; providerCode: string }>>(
       baseUrl,

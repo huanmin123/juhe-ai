@@ -391,6 +391,7 @@ async function authorizedAccountSummaryFromRowAsync(
     : emptyAccountUsageSummary()
   return accountSummaryWithEffectiveAvailability({
     id: row.id,
+    configRevision: Number(row.config_revision ?? 1),
     systemAccountId: includeAccountNames ? row.system_account_id : undefined,
     systemAccountName: includeAccountNames ? accountNames.get(row.system_account_id) : undefined,
     ownerSystemAccountId: displayOwnerSystemAccountId,
@@ -412,7 +413,7 @@ async function authorizedAccountSummaryFromRowAsync(
     supportedModels: [...(row.supported_models ?? [])],
     modelMappings: [...(row.model_mappings ?? [])],
     tags: tagsByAccount.get(row.id) ?? [],
-    defaultTestModel: optionalString(row.default_test_model),
+    healthCheckModel: row.health_check_model.trim(),
     proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
     schedulable: effectiveAuthorizedSchedulable,
     availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
@@ -420,7 +421,6 @@ async function authorizedAccountSummaryFromRowAsync(
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
     cooldownRetestFailureCount: 0,
-    healthCheckEnabled: row.health_check_enabled === 1,
     lastHealthCheckAt: row.last_health_check_at ?? undefined,
     nextHealthCheckAt: row.next_health_check_at ?? undefined,
     lastHealthSuccessAt: row.last_health_success_at ?? undefined,
@@ -767,6 +767,7 @@ async function ownerAccountSummariesFromRowsAsync(
     const todayUsage = todayUsageByAccount.get(row.id) ?? emptyAccountUsageSummary()
     return accountSummaryWithEffectiveAvailability({
       id: row.id,
+      configRevision: Number(row.config_revision ?? 1),
       systemAccountId: includeAccountNames ? row.system_account_id : undefined,
       systemAccountName: includeAccountNames ? ownerSystemAccountName : undefined,
       ownerSystemAccountId: row.system_account_id,
@@ -789,7 +790,7 @@ async function ownerAccountSummariesFromRowsAsync(
       supportedModels: [...(row.supported_models ?? [])],
       modelMappings: [...(row.model_mappings ?? [])],
       tags: tagsByAccount.get(row.id) ?? [],
-      defaultTestModel: optionalString(row.default_test_model),
+      healthCheckModel: row.health_check_model.trim(),
       proxyProfileId: row.proxy_profile_id ?? undefined,
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
@@ -801,7 +802,6 @@ async function ownerAccountSummariesFromRowsAsync(
       cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
       cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
-      healthCheckEnabled: row.health_check_enabled === 1,
       lastHealthCheckAt: row.last_health_check_at ?? undefined,
       nextHealthCheckAt: row.next_health_check_at ?? undefined,
       lastHealthSuccessAt: row.last_health_success_at ?? undefined,
@@ -1304,6 +1304,7 @@ function accountSummariesFromRows(
     const authorizationQuotaExceeded = row.authorization_id ? quotaExceededByAuthorization.get(row.authorization_id) : undefined
     return accountSummaryWithEffectiveAvailability({
       id: row.id,
+      configRevision: Number(row.config_revision ?? 1),
       systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
       systemAccountName: includeSystemAccountFields(access) ? accountNames.get(row.system_account_id) : undefined,
       ownerSystemAccountId: displayOwnerSystemAccountId,
@@ -1326,7 +1327,7 @@ function accountSummariesFromRows(
       supportedModels: [...(row.supported_models ?? [])],
       modelMappings: [...(row.model_mappings ?? [])],
       tags: tagsByAccount.get(row.id) ?? [],
-      defaultTestModel: optionalString(row.default_test_model),
+      healthCheckModel: row.health_check_model.trim(),
       qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
       qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
       qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
@@ -1348,7 +1349,6 @@ function accountSummariesFromRows(
       cooldownRetestObservationStartedAt: isAuthorizedView ? undefined : row.cooldown_retest_observation_started_at ?? undefined,
       cooldownRetestLastAt: isAuthorizedView ? undefined : row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: isAuthorizedView ? undefined : optionalNumber(row.cooldown_retest_last_status_code),
-      healthCheckEnabled: row.health_check_enabled === 1,
       lastHealthCheckAt: row.last_health_check_at ?? undefined,
       nextHealthCheckAt: row.next_health_check_at ?? undefined,
       lastHealthSuccessAt: row.last_health_success_at ?? undefined,

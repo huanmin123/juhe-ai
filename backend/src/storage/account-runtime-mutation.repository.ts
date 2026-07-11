@@ -712,7 +712,10 @@ export function clearAuthorizedAccountBindingFailureStateByContext(
 }
 
 export function markAuthorizedAccountBindingTemporaryUnavailableByContext(
-  input: AuthorizedAccountBindingRuntimeTarget & { reason: string }
+  input: AuthorizedAccountBindingRuntimeTarget & {
+    reason: string
+    healthCheckGuard?: AccountHealthCheckMutationGuard
+  }
 ): AccountSummary | undefined {
   return markAuthorizedAccountBindingCooldownByContext({
     ...input,
@@ -721,7 +724,10 @@ export function markAuthorizedAccountBindingTemporaryUnavailableByContext(
 }
 
 export async function markAuthorizedAccountBindingTemporaryUnavailableByContextAsync(
-  input: AuthorizedAccountBindingRuntimeTarget & { reason: string }
+  input: AuthorizedAccountBindingRuntimeTarget & {
+    reason: string
+    healthCheckGuard?: AccountHealthCheckMutationGuard
+  }
 ): Promise<AccountSummary | undefined> {
   return markAuthorizedAccountBindingCooldownByContextAsync({
     ...input,
@@ -730,7 +736,12 @@ export async function markAuthorizedAccountBindingTemporaryUnavailableByContextA
 }
 
 export function markAuthorizedAccountBindingCooldownByContext(
-  input: AuthorizedAccountBindingRuntimeTarget & { cooldownUntil?: string; reason: string; status?: AccountStatus }
+  input: AuthorizedAccountBindingRuntimeTarget & {
+    cooldownUntil?: string
+    reason: string
+    status?: AccountStatus
+    healthCheckGuard?: AccountHealthCheckMutationGuard
+  }
 ): AccountSummary | undefined {
   const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
   if (!target) {
@@ -767,6 +778,7 @@ export function markAuthorizedAccountBindingCooldownByContext(
         AND authorization_instance_authorization_id = ?
         AND deleted_at IS NULL
         AND status NOT IN ('disabled', 'error')
+        ${accountHealthCheckGuardSql(input.healthCheckGuard)}
         AND EXISTS (
           SELECT 1
           FROM group_accounts
@@ -777,7 +789,20 @@ export function markAuthorizedAccountBindingCooldownByContext(
             AND group_accounts.account_authorization_id = ?
         )
     `)
-    .run(cooldownStatus, cooldownUntil, input.reason || null, observationStartedAt ?? null, now, target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId)
+    .run(
+      cooldownStatus,
+      cooldownUntil,
+      input.reason || null,
+      observationStartedAt ?? null,
+      now,
+      target.accountId,
+      target.systemAccountId,
+      target.accountAuthorizationId,
+      ...accountHealthCheckGuardParams(input.healthCheckGuard),
+      target.systemAccountId,
+      target.groupId,
+      target.accountAuthorizationId
+    )
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
@@ -788,7 +813,12 @@ export function markAuthorizedAccountBindingCooldownByContext(
 }
 
 export async function markAuthorizedAccountBindingCooldownByContextAsync(
-  input: AuthorizedAccountBindingRuntimeTarget & { cooldownUntil?: string; reason: string; status?: AccountStatus }
+  input: AuthorizedAccountBindingRuntimeTarget & {
+    cooldownUntil?: string
+    reason: string
+    status?: AccountStatus
+    healthCheckGuard?: AccountHealthCheckMutationGuard
+  }
 ): Promise<AccountSummary | undefined> {
   const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
   if (!target) {
@@ -830,6 +860,7 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
       AND authorization_instance_authorization_id = ?
       AND deleted_at IS NULL
       AND status NOT IN ('disabled', 'error')
+      ${accountHealthCheckGuardSql(input.healthCheckGuard)}
       AND EXISTS (
         SELECT 1
         FROM ${accountRuntimeMutationTable(client, 'group_accounts')} group_accounts
@@ -839,7 +870,20 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
           AND group_accounts.enabled = 1
           AND group_accounts.account_authorization_id = ?
       )
-  `, [cooldownStatus, cooldownUntil, input.reason || null, observationStartedAt ?? null, now, target.accountId, target.systemAccountId, target.accountAuthorizationId, target.systemAccountId, target.groupId, target.accountAuthorizationId])
+  `, [
+    cooldownStatus,
+    cooldownUntil,
+    input.reason || null,
+    observationStartedAt ?? null,
+    now,
+    target.accountId,
+    target.systemAccountId,
+    target.accountAuthorizationId,
+    ...accountHealthCheckGuardParams(input.healthCheckGuard),
+    target.systemAccountId,
+    target.groupId,
+    target.accountAuthorizationId
+  ])
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
@@ -1118,7 +1162,8 @@ export async function clearAccountStreamFailureStateAsync(id: string): Promise<b
 export function markAccountTestTemporaryUnavailable(
   account: AccountSummary,
   reason: string,
-  access?: AccessScope
+  access?: AccessScope,
+  healthCheckGuard?: AccountHealthCheckMutationGuard
 ): AccountSummary | undefined {
   const current = findAccountSummary(account.id, access)
   if (!current || (current.status !== 'active' && !isCoolingAccountStatus(current.status))) {
@@ -1129,18 +1174,26 @@ export function markAccountTestTemporaryUnavailable(
   }
   const message = reason.slice(0, 1000)
   if (current.accessType === 'authorized') {
-    return markAuthorizedAccountBindingTemporaryUnavailable(current, message, access)
+    return markAuthorizedAccountBindingTemporaryUnavailable(current, message, access, healthCheckGuard)
   }
-  return markAccountTemporaryUnavailable(current.id, message)
+  return markAccountTemporaryUnavailable(current.id, message, healthCheckGuard)
+}
+
+interface AccountHealthCheckMutationGuard {
+  configRevision: number
+  checkedAt: string
+  failureCount: number
+  observedAt: string
 }
 
 export async function markAccountTestTemporaryUnavailableAsync(
   account: AccountSummary,
   reason: string,
-  access?: AccessScope
+  access?: AccessScope,
+  healthCheckGuard?: AccountHealthCheckMutationGuard
 ): Promise<AccountSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return markAccountTestTemporaryUnavailable(account, reason, access)
+    return markAccountTestTemporaryUnavailable(account, reason, access, healthCheckGuard)
   }
   const current = await findAccountSummaryAsync(account.id, access)
   if (!current || (current.status !== 'active' && !isCoolingAccountStatus(current.status))) {
@@ -1159,16 +1212,18 @@ export async function markAccountTestTemporaryUnavailableAsync(
       systemAccountId: authorizedBindingSystemAccountId(access),
       groupId: current.boundGroupId,
       accountAuthorizationId: current.accountAuthorizationId,
-      reason: message
+      reason: message,
+      healthCheckGuard
     })
   }
-  return markAccountTemporaryUnavailableAsync(current.id, message)
+  return markAccountTemporaryUnavailableAsync(current.id, message, healthCheckGuard)
 }
 
 function markAuthorizedAccountBindingTemporaryUnavailable(
   account: AccountSummary,
   reason: string,
-  access?: AccessScope
+  access?: AccessScope,
+  healthCheckGuard?: AccountHealthCheckMutationGuard
 ): AccountSummary | undefined {
   if (!account.boundGroupId || !account.accountAuthorizationId) {
     return undefined
@@ -1179,19 +1234,54 @@ function markAuthorizedAccountBindingTemporaryUnavailable(
     systemAccountId,
     groupId: account.boundGroupId,
     accountAuthorizationId: account.accountAuthorizationId,
-    reason
+    reason,
+    healthCheckGuard
   })
 }
 
-export function markAccountTemporaryUnavailable(id: string, reason: string): AccountSummary | undefined {
-  return markAccountCooldown(id, undefined, reason, 'temporary_unavailable')
+function accountHealthCheckGuardSql(guard: AccountHealthCheckMutationGuard | undefined): string {
+  if (!guard) return ''
+  return `
+    AND config_revision = ?
+    AND last_health_check_at = ?
+    AND health_check_failure_count = ?
+    AND (last_health_success_at IS NULL OR last_health_success_at <= ?)
+  `
 }
 
-export async function markAccountTemporaryUnavailableAsync(id: string, reason: string): Promise<AccountSummary | undefined> {
-  return markAccountCooldownAsync(id, undefined, reason, 'temporary_unavailable')
+function accountHealthCheckGuardParams(guard: AccountHealthCheckMutationGuard | undefined): Array<string | number> {
+  if (!guard) return []
+  return [
+    Math.max(1, Math.trunc(guard.configRevision)),
+    guard.checkedAt,
+    Math.max(0, Math.trunc(guard.failureCount)),
+    guard.observedAt
+  ]
 }
 
-export function markAccountCooldown(id: string, until: string | undefined, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {
+export function markAccountTemporaryUnavailable(
+  id: string,
+  reason: string,
+  healthCheckGuard?: AccountHealthCheckMutationGuard
+): AccountSummary | undefined {
+  return markAccountCooldown(id, undefined, reason, 'temporary_unavailable', healthCheckGuard)
+}
+
+export async function markAccountTemporaryUnavailableAsync(
+  id: string,
+  reason: string,
+  healthCheckGuard?: AccountHealthCheckMutationGuard
+): Promise<AccountSummary | undefined> {
+  return markAccountCooldownAsync(id, undefined, reason, 'temporary_unavailable', healthCheckGuard)
+}
+
+export function markAccountCooldown(
+  id: string,
+  until: string | undefined,
+  reason: string,
+  status: AccountStatus = 'temporary_unavailable',
+  healthCheckGuard?: AccountHealthCheckMutationGuard
+): AccountSummary | undefined {
   const current = findInternalAccountSummary(id)
   if (!current) {
     return undefined
@@ -1219,12 +1309,15 @@ export function markAccountCooldown(id: string, until: string | undefined, reaso
             updated_at = ?
         WHERE id = ?
           AND deleted_at IS NULL
+          ${accountHealthCheckGuardSql(healthCheckGuard)}
       `)
-      .run('账户套餐已过期，已自动停用', nowIso(), id)
+      .run('账户套餐已过期，已自动停用', nowIso(), id, ...accountHealthCheckGuardParams(healthCheckGuard))
     if (Number(result.changes ?? 0) > 0) {
       refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
       invalidateAccountLookupCache(id)
       invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
+    } else if (healthCheckGuard) {
+      return undefined
     }
     return findInternalAccountSummary(id)
   }
@@ -1258,18 +1351,35 @@ export function markAccountCooldown(id: string, until: string | undefined, reaso
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
+        ${accountHealthCheckGuardSql(healthCheckGuard)}
     `)
-    .run(cooldownStatus, cooldownUntil, reason || null, cooldownObservationStartedAt ?? null, cooldownNow, id)
+    .run(
+      cooldownStatus,
+      cooldownUntil,
+      reason || null,
+      cooldownObservationStartedAt ?? null,
+      cooldownNow,
+      id,
+      ...accountHealthCheckGuardParams(healthCheckGuard)
+    )
   if (Number(result.changes ?? 0) > 0) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown' })
     invalidateAccountLookupCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown')
+  } else if (healthCheckGuard) {
+    return undefined
   }
 
   return findInternalAccountSummary(id)
 }
 
-export async function markAccountCooldownAsync(id: string, until: string | undefined, reason: string, status: AccountStatus = 'temporary_unavailable'): Promise<AccountSummary | undefined> {
+export async function markAccountCooldownAsync(
+  id: string,
+  until: string | undefined,
+  reason: string,
+  status: AccountStatus = 'temporary_unavailable',
+  healthCheckGuard?: AccountHealthCheckMutationGuard
+): Promise<AccountSummary | undefined> {
   const current = await findAccountSummaryAsync(id, internalAccountReadAccess)
   if (!current) {
     return undefined
@@ -1297,11 +1407,14 @@ export async function markAccountCooldownAsync(id: string, until: string | undef
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
-    `, ['账户套餐已过期，已自动停用', nowIso(), id])
+        ${accountHealthCheckGuardSql(healthCheckGuard)}
+    `, ['账户套餐已过期，已自动停用', nowIso(), id, ...accountHealthCheckGuardParams(healthCheckGuard)])
     if (Number(result.changes ?? 0) > 0) {
       await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_expired' }, client)
       invalidateAccountLookupCache(id)
       invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
+    } else if (healthCheckGuard) {
+      return undefined
     }
     return findAccountSummaryAsync(id, internalAccountReadAccess)
   }
@@ -1339,11 +1452,22 @@ export async function markAccountCooldownAsync(id: string, until: string | undef
         updated_at = ?
     WHERE id = ?
       AND deleted_at IS NULL
-  `, [cooldownStatus, cooldownUntil, reason || null, cooldownObservationStartedAt ?? null, cooldownNow, id])
+      ${accountHealthCheckGuardSql(healthCheckGuard)}
+  `, [
+    cooldownStatus,
+    cooldownUntil,
+    reason || null,
+    cooldownObservationStartedAt ?? null,
+    cooldownNow,
+    id,
+    ...accountHealthCheckGuardParams(healthCheckGuard)
+  ])
   if (Number(result.changes ?? 0) > 0) {
     await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_cooldown' }, client)
     invalidateAccountLookupCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown')
+  } else if (healthCheckGuard) {
+    return undefined
   }
 
   return findAccountSummaryAsync(id, internalAccountReadAccess)
@@ -1600,7 +1724,7 @@ export function updateAuthorizedAccountBindingDispatch(
   }
   const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
   if ((input.clearFailureState === true || hasStatusInput) && current.status === 'pending_test') {
-    throw new Error('待测试账户需手动测试通过后才能参与调度')
+    throw new Error('待检查账户需等待后台健康检查通过后才能参与调度')
   }
   const nextStatus: AccountStatus = hasStatusInput
     ? input.status === 'disabled' ? 'disabled' : 'active'
@@ -1714,7 +1838,7 @@ export async function updateAuthorizedAccountBindingDispatchAsync(
   }
   const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
   if ((input.clearFailureState === true || hasStatusInput) && current.status === 'pending_test') {
-    throw new Error('待测试账户需手动测试通过后才能参与调度')
+    throw new Error('待检查账户需等待后台健康检查通过后才能参与调度')
   }
   const nextStatus: AccountStatus = hasStatusInput
     ? input.status === 'disabled' ? 'disabled' : 'active'

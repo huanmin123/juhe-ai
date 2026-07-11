@@ -820,7 +820,7 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 		input.SupportedReasoningEfforts = []string{}
 	}
 	if fields.DefaultReasoningEffort.Set {
-		defaultReasoningEffort := strings.TrimSpace(fields.DefaultReasoningEffort.Value)
+		defaultReasoningEffort := fields.DefaultReasoningEffort.Value
 		if defaultReasoningEffort != "" {
 			if _, ok := customProviderModelReasoningEfforts[defaultReasoningEffort]; !ok {
 				return &CustomModelValidationError{Message: "自定义模型参数无效"}
@@ -947,15 +947,14 @@ func normalizeCustomModelCapabilityList(values []string, allowed map[string]stru
 	output := make([]string, 0, len(values))
 	seen := map[string]struct{}{}
 	for _, value := range values {
-		normalized := strings.TrimSpace(value)
-		if _, ok := allowed[normalized]; !ok {
+		if _, ok := allowed[value]; !ok {
 			return nil, &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
-		if _, exists := seen[normalized]; exists {
+		if _, exists := seen[value]; exists {
 			continue
 		}
-		seen[normalized] = struct{}{}
-		output = append(output, normalized)
+		seen[value] = struct{}{}
+		output = append(output, value)
 	}
 	return output, nil
 }
@@ -963,7 +962,7 @@ func normalizeCustomModelCapabilityList(values []string, allowed map[string]stru
 func validateCustomModelRequestCapabilities(input port.ManagementCustomProviderModelSaveInput) error {
 	hasCapabilities := len(input.SupportedServiceTiers) > 0 ||
 		len(input.SupportedReasoningEfforts) > 0 ||
-		strings.TrimSpace(input.DefaultReasoningEffort) != ""
+		input.DefaultReasoningEffort != ""
 	mode := strings.TrimSpace(input.Mode)
 	isGPTTextModel := strings.TrimSpace(input.ProviderCode) == "gpt" && (mode == "" || mode == "text")
 	if !isGPTTextModel {
@@ -972,7 +971,7 @@ func validateCustomModelRequestCapabilities(input port.ManagementCustomProviderM
 		}
 		return nil
 	}
-	defaultReasoningEffort := strings.TrimSpace(input.DefaultReasoningEffort)
+	defaultReasoningEffort := input.DefaultReasoningEffort
 	if defaultReasoningEffort == "" {
 		return nil
 	}

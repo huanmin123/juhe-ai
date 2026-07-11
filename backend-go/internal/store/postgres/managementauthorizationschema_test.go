@@ -332,7 +332,7 @@ func TestManagementResourceAuthorizationRevokeQueryKeepsTeamGrantScope(t *testin
 	if err != nil {
 		t.Fatalf("read management authorizations store: %v", err)
 	}
-	code := string(source)
+	code := strings.ReplaceAll(string(source), "\r\n", "\n")
 	for _, want := range []string{
 		"func (s *Store) RevokeManagementResourceAuthorization",
 		"UPDATE juhe_business.resource_authorization_grants",
@@ -360,7 +360,7 @@ func TestManagementResourceAuthorizationAccountInstancePreservesHealthCheckModel
 	if err != nil {
 		t.Fatalf("read management authorizations store: %v", err)
 	}
-	code := string(source)
+	code := strings.ReplaceAll(string(source), "\r\n", "\n")
 	for _, want := range []string{
 		"protocol_version, name, type, concurrency_limit, health_check_model",
 		"health_check_model = $7",

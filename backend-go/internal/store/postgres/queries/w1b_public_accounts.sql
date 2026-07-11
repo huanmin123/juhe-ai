@@ -383,27 +383,27 @@ SET name = sqlc.arg(name),
       ELSE last_error_message
     END,
     next_health_check_at = CASE
-      WHEN sqlc.arg(status)::text = 'pending_test'
+      WHEN sqlc.arg(schedule_health_check)::boolean
       THEN NULL
       ELSE next_health_check_at
     END,
     health_check_failure_count = CASE
-      WHEN sqlc.arg(status)::text = 'pending_test'
+      WHEN sqlc.arg(reset_health_diagnostics)::boolean
       THEN 0
       ELSE health_check_failure_count
     END,
     last_health_check_status_code = CASE
-      WHEN sqlc.arg(status)::text = 'pending_test'
+      WHEN sqlc.arg(reset_health_diagnostics)::boolean
       THEN NULL
       ELSE last_health_check_status_code
     END,
     last_health_check_error_code = CASE
-      WHEN sqlc.arg(status)::text = 'pending_test'
+      WHEN sqlc.arg(reset_health_diagnostics)::boolean
       THEN NULL
       ELSE last_health_check_error_code
     END,
     last_health_check_error_message = CASE
-      WHEN sqlc.arg(status)::text = 'pending_test'
+      WHEN sqlc.arg(reset_health_diagnostics)::boolean
       THEN NULL
       ELSE last_health_check_error_message
     END,

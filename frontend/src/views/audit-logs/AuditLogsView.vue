@@ -120,7 +120,6 @@ import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import type {
-  AuditLogListResult,
   AuditLogSummary,
   AuditOutcome,
   AuditTrafficSource
@@ -135,7 +134,7 @@ import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/pr
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
-import { selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AuditLogList from './AuditLogList.vue'
 import {
   displayAuditGroupName,
@@ -215,7 +214,7 @@ const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   pagination: { current: 1, pageSize },
   pathFilter: '',
   statusCodeFilter: '',
-  systemAccountFilter: '',
+  systemAccountFilter: allSystemAccountsValue,
   systemAccountSelection: undefined,
   traceIdFilter: '',
   trafficSourceFilter: 'all',
@@ -311,6 +310,7 @@ const trafficSourceOptions = [
   { label: '全部来源', value: 'all' },
   { label: '网关请求', value: 'gateway' },
   { label: 'AI账户测试', value: 'manual_account_test' },
+  { label: '健康检查', value: 'account_health_check' },
   { label: '运行态恢复探针', value: 'runtime_recovery_probe' },
   { label: '恢复探活', value: 'cooldown_retest' },
   { label: '混合评分', value: 'hybrid_scoring' },
@@ -411,25 +411,12 @@ function resetFilters(): void {
   void loadData()
 }
 
-async function fetchRecords(pageState: { current: number; pageSize: number }) {
-  if (!selectedSystemAccountId(systemAccountFilter.value, true)) {
-    return emptyAuditLogListResult(pageState)
-  }
-  return await api.auditLogs.list(auditLogRequestParams(pageState))
+function fetchRecords(pageState: { current: number; pageSize: number }) {
+  return api.auditLogs.list(auditLogRequestParams(pageState))
 }
 
 function auditLogRequestParams(pageState: { current: number; pageSize: number }) {
   return auditLogListParams(currentFilterValues.value, pageState)
-}
-
-function emptyAuditLogListResult(pageState: { current: number; pageSize: number }): AuditLogListResult {
-  return {
-    items: [],
-    total: 0,
-    hasMore: false,
-    page: pageState.current,
-    pageSize: pageState.pageSize
-  }
 }
 
 function rememberAuditRecordGroupLabels(items: AuditLogSummary[]): void {

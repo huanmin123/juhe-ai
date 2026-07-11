@@ -1,5 +1,5 @@
 import { api, type AccountDraftTestPayload, type AccountTestPayload } from '@/api/client'
-import type { AccountSummary, AccountTestSession, AccountTestSessionDetail, AccountTestTask } from '@/types/domain'
+import type { AccountSummary, AccountTestSession, AccountTestTask } from '@/types/domain'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 
 export type AccountTestDraftMode = 'create' | 'saved'
@@ -17,12 +17,6 @@ export function createAccountTestSession(input: AccountTestClientScope): Promise
   return input.isManagementView
     ? api.accounts.createTestSession(input.scopeParams)
     : api.myAccounts.createTestSession()
-}
-
-export function fetchActiveAccountTestSession(input: AccountTestClientScope & { signal?: AbortSignal }): Promise<AccountTestSessionDetail | null> {
-  return input.isManagementView
-    ? api.accounts.activeTestSession(input.scopeParams, { signal: input.signal })
-    : api.myAccounts.activeTestSession({ signal: input.signal })
 }
 
 export function heartbeatAccountTestSession(input: AccountTestSessionClientInput): Promise<AccountTestSession> {
@@ -76,15 +70,6 @@ export function fetchAccountTestTask(input: AccountTestClientScope & {
   return input.isManagementView
     ? api.accounts.testTask(input.taskId, input.scopeParams, { signal: input.signal })
     : api.myAccounts.testTask(input.taskId, { signal: input.signal })
-}
-
-export function fetchAccountTestTasks(input: AccountTestClientScope & {
-  signal?: AbortSignal
-  taskIds: string[]
-}): Promise<AccountTestTask[]> {
-  return input.isManagementView
-    ? api.accounts.testTasks(input.taskIds, input.scopeParams, { signal: input.signal })
-    : api.myAccounts.testTasks(input.taskIds, { signal: input.signal })
 }
 
 export function cancelAccountTestTask(input: AccountTestClientScope & { taskId: string }): Promise<AccountTestTask> {

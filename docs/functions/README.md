@@ -42,7 +42,10 @@
 - [IP 级账号回避与自动切号设计](IP级账号回避与自动切号设计.md)
 - [IP 级错误熔断与恶意请求保护设计](IP级错误熔断与恶意请求保护设计.md)
 - [AI 账户导入协议](AI账户导入协议.md)
+- [AI 账户检查模型与人工测试设计](AI账户检查模型与人工测试设计.md)
+- [AI 账户批量编辑设计](AI账户批量编辑设计.md)
 - [OpenAI 账号接入](OpenAI账号接入.md)
+- [GPT 请求服务等级与思考级别覆盖设计](GPT请求服务等级与思考级别覆盖设计.md)
 - [Anthropic 账号接入](Anthropic账号接入.md)
 - [Anthropic 与 GPT 全链路能力对比](Anthropic与GPT全链路能力对比.md)
 - [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)
@@ -91,7 +94,10 @@
 - 新增或调整项目稳定性定位、客户端稳定目标、竞品对比口径或对外表达时，优先更新 [客户端稳定性竞品对比](客户端稳定性竞品对比.md)。
 - 上游 API Key 类型 AI 账户安全识别方案当前已暂缓，不作为待实现功能入口；后续不要因为该历史文档存在而新增安全识别开关、识别模型、阻断处置或相关网关调用。若未来重新立项，再先重写 [上游 API Key 账户安全识别落地方案](上游APIKey账户安全识别落地方案.md)，并按影响同步 [请求处理分层设计](请求处理分层设计.md)、[原始审计日志设计](原始审计日志设计.md)、[安全与日志策略](安全与日志策略.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md) 和 [SQLite 存储说明](SQLite存储说明.md)。
 - 新增或调整上游异常重试、账户错误处理策略、本地账号屏蔽、屏蔽等待、切号救回、流式失败账号副作用、IP 级来源保护、后台探针恢复或多机制排障总链路时，优先更新 [AI 账户运行态探针恢复设计](AI账户运行态探针恢复设计.md)、[网关错误处理完整链路](网关错误处理完整链路.md)、[网关异常重试与兜底策略](网关异常重试与兜底策略.md) 和 [OpenAI 账号接入](OpenAI账号接入.md)。
+- 新增或调整账户检查模型、供应商默认检查模型、新账户后台激活、周期健康检测、人工测试零状态副作用、列表 `test-options`、测试会话隔离或账户批量测试删除时，优先更新 [AI 账户检查模型与人工测试设计](AI账户检查模型与人工测试设计.md)，再按影响同步 [账号健康检测设计](账号健康检测设计.md)、[AI 账户运行态探针恢复设计](AI账户运行态探针恢复设计.md)、[账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md) 和存储文档。
+- 新增或调整 AI 账户批量编辑字段白名单、权限、乐观锁、事务原子性、模型配置同档案限制、缓存失效或后台复检投递时，优先更新 [AI 账户批量编辑设计](AI账户批量编辑设计.md)，再按影响同步 [核心功能设计](核心功能设计.md)、[接口契约与权限矩阵](接口契约与权限矩阵.md)、[SQLite 存储说明](SQLite存储说明.md) 和 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。
 - 新增或调整同一 API Key 账户内多个上游 Key 的轮询 / 权重、Key 级故障隔离、Key 冷却探测、Key 池派生可用性或 Key 状态展示时，优先更新 [OpenAI 账号接入](OpenAI账号接入.md) 和 [账户内 API Key 故障隔离设计](账户内APIKey故障隔离设计.md)；如果影响切号、屏蔽、后台恢复或错误兜底，再同步 [网关错误处理完整链路](网关错误处理完整链路.md) 和 [网关异常重试与兜底策略](网关异常重试与兜底策略.md)。
+- 新增或调整 GPT 账户 `service_tier`、Fast / Priority、reasoning effort、模型级思考能力、Codex Max / Ultra、Responses Multi-agent Beta、账户强制覆盖或 Codex `/models` reasoning / service tier 能力时，优先更新 [GPT 请求服务等级与思考级别覆盖设计](GPT请求服务等级与思考级别覆盖设计.md)，再按影响同步 [OpenAI 账号接入](OpenAI账号接入.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[账户模型限制设计](账户模型限制设计.md)、[自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [请求处理分层设计](请求处理分层设计.md)。
 - 新增或调整 Anthropic 官方直连、Anthropic API Key 账户类型、Anthropic OAuth / Claude Code token 真实验证结论、Claude Code 客户端画像、Anthropic Messages 协议档案、Anthropic 模型目录、Anthropic usage / prompt cache / thinking 统计、Anthropic 本地入口或 Anthropic 账户测试时，优先更新 [Anthropic 账号接入](Anthropic账号接入.md)、[Claude Code 客户端画像兼容设计](ClaudeCode客户端画像兼容设计.md)、[厂商模型目录更新与清洗指南](厂商模型目录更新与清洗指南.md)、[模型价格与用量统计口径](模型价格与用量统计口径.md)、[响应语义检查管线设计](响应语义检查管线设计.md) 和 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)。
 - 新增或调整 OpenAI Chat / Responses 下游请求到 Anthropic Messages 上游的协议桥接、四类入口 JSON / SSE 响应渲染、混合供应商账户 `chat_completions|responses -> messages`、OpenAI 下游错误渲染、Responses 状态或混合智能路由命中 Anthropic 上游模型的承接能力时，优先更新 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)；如果涉及 hosted tools、thinking、图片文件、structured output、MCP、computer、code execution、image_generation 或 compact 高兼容能力，再同步 [OpenAI 到 Anthropic 高兼容能力矩阵](OpenAI到Anthropic高兼容能力矩阵.md)，并按影响同步 [Anthropic 账号接入](Anthropic账号接入.md)、[多模型混合智能分级路由设计](多模型混合智能分级路由设计.md)、[自定义模型与模型映射设计](自定义模型与模型映射设计.md) 和 [请求处理分层设计](请求处理分层设计.md)。如果涉及 OpenAI `file_id`、`/v1/files`、Vector Stores 或 Responses `file_search` 本地承接，还必须同步 [OpenAI 兼容 Files 与 File Search 本地运行时设计](OpenAI兼容Files与FileSearch本地运行时设计.md)；如果涉及 `code_interpreter`、`computer`、`mcp`、`shell`、`skills` 或 `tool_search` 真实执行器，还必须同步 [OpenAI 托管工具运行时设计](OpenAI托管工具运行时设计.md)。
 - 新增或调整 Anthropic Messages 下游请求到 OpenAI Chat Completions 上游的协议桥接、Anthropic JSON / SSE 响应还原、混合供应商账户 `messages -> chat_completions`、Anthropic guidance 渲染或 Claude Code / Anthropic-compatible 客户端访问 Chat-only 上游时，优先更新 [Anthropic Messages 转 Chat Completions 协议转换设计](AnthropicMessages转Chat协议转换设计.md)，再按影响同步 [自定义模型与模型映射设计](自定义模型与模型映射设计.md)、[AI 账户导入协议](AI账户导入协议.md) 和 [请求处理分层设计](请求处理分层设计.md)。

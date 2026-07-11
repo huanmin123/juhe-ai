@@ -97,7 +97,7 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
-export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
+export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
 export type UsageFailureAttribution = 'account_upstream' | 'account_dependency' | 'gateway_capacity' | 'gateway_policy' | 'client_lifecycle'
 export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
 export type UsageRecordSortDirection = 'asc' | 'desc'
@@ -1075,7 +1075,6 @@ async function flushPostgresUsageRecordBusinessSideEffects(
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
-        AND health_check_enabled = 1
         AND (last_health_success_at IS NULL OR last_health_success_at <= ?)
     `, [successAt, successAt, accountId, successAt])
   }
@@ -1647,6 +1646,7 @@ function normalizeUsageRecordTrafficSource(value: unknown): UsageRecordTrafficSo
   if (
     value === 'gateway'
     || value === 'manual_account_test'
+    || value === 'account_health_check'
     || value === 'runtime_recovery_probe'
     || value === 'cooldown_retest'
     || value === 'hybrid_scoring'
@@ -1681,7 +1681,9 @@ function normalizeUsageFailureAttribution(value: unknown): UsageFailureAttributi
 }
 
 function shouldRecordAccountUsageSideEffects(trafficSource: UsageRecordTrafficSource): boolean {
-  return trafficSource !== 'runtime_recovery_probe'
+  return trafficSource !== 'manual_account_test'
+    && trafficSource !== 'account_health_check'
+    && trafficSource !== 'runtime_recovery_probe'
     && trafficSource !== 'cooldown_retest'
     && trafficSource !== 'hybrid_scoring'
     && trafficSource !== 'hybrid_quality_scoring'

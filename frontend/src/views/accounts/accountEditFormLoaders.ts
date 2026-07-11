@@ -22,6 +22,7 @@ import {
   normalizeAccountEndpointModes
 } from './accountEndpointModes'
 import { effectiveAccountTestClientCompatibility } from './accountProviderCapabilities'
+import { accountGptRequestOverridesForForm } from './accountGptRequestOverrides'
 
 export class AccountEditFormLoadError extends Error {
   readonly cause: unknown
@@ -84,6 +85,8 @@ export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEd
     accessToken: asString(credentials.access_token) ?? '',
     refreshToken: asString(credentials.refresh_token) ?? '',
     supportedModels: [...(account.supportedModels ?? [])],
+    healthCheckModel: account.healthCheckModel,
+    ...accountGptRequestOverridesForForm(account.providerCode, credentials),
     modelMappings: cloneAccountModelMappings(account.modelMappings),
     tags: accountTagNames(account.tags),
     availabilitySchedule,
@@ -132,6 +135,8 @@ export function buildAccountCloneFormLoad(input: AccountFormLoadInput): AccountE
     callbackUrl: '',
     oauthMode: 'manual',
     supportedModels: [...(account.supportedModels ?? [])],
+    healthCheckModel: account.healthCheckModel,
+    ...accountGptRequestOverridesForForm(account.providerCode, credentials),
     modelMappings: cloneAccountModelMappings(account.modelMappings),
     tags: accountTagNames(account.tags),
     availabilitySchedule,

@@ -179,6 +179,32 @@ func TestLoadAllowsExplicitCookieSecureOverrideInProduction(t *testing.T) {
 	}
 }
 
+func TestLoadUsesExplicitRedisNamespace(t *testing.T) {
+	t.Setenv("JUHE_AI_REDIS_NAMESPACE", " prod west/1 ")
+	t.Setenv("JUHE_AI_SECRET", "namespace-secret-for-w5-tests-123456789")
+
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.RedisNamespace != "prod_west_1" {
+		t.Fatalf("RedisNamespace = %q, want prod_west_1", cfg.RedisNamespace)
+	}
+}
+
+func TestLoadDerivesRedisNamespaceFromSecret(t *testing.T) {
+	t.Setenv("JUHE_AI_REDIS_NAMESPACE", "")
+	t.Setenv("JUHE_AI_SECRET", "namespace-secret-for-w5-tests-123456789")
+
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.RedisNamespace != "env-2de48e5b74e9" {
+		t.Fatalf("RedisNamespace = %q, want env-2de48e5b74e9", cfg.RedisNamespace)
+	}
+}
+
 func TestConfigRejectsInvalidPort(t *testing.T) {
 	cfg := Config{Host: "127.0.0.1", Port: 70000, RedisNamespace: "juhe-ai", ShutdownTimeout: time.Second}
 	if err := cfg.Validate(); err == nil {

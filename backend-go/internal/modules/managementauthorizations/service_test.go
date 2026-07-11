@@ -1107,8 +1107,9 @@ func TestServiceUsageOverviewNormalizesScopeRangeAndPagination(t *testing.T) {
 		},
 	}
 	service := NewServiceWithOptions(ServiceOptions{
-		UsageStore: store,
-		Now:        func() time.Time { return now },
+		UsageStore:              store,
+		UsageStatsTimezoneStore: &authorizationUsageStatsTimezoneStoreStub{timezone: "UTC", found: true},
+		Now:                     func() time.Time { return now },
 	})
 
 	teamOverview, err := service.TeamUsageOverview(context.Background(), UsageOverviewInput{
@@ -1155,20 +1156,21 @@ func TestServiceUsageOverviewNormalizesScopeRangeAndPagination(t *testing.T) {
 	if !store.userCalled ||
 		store.userInput.CanAccessAll ||
 		store.userInput.ScopedSystemAccountID != "sys_grantee" ||
-		store.userInput.StartDate != "2026-07-09" ||
+		store.userInput.StartDate != "2026-06-09" ||
 		store.userInput.EndDate != "2026-07-09" ||
 		store.userInput.Limit != defaultAuthorizationUsagePageSize+1 {
 		t.Fatalf("user usage input = %+v", store.userInput)
 	}
-	if userOverview.Range.Days != 1 || userOverview.Summary.RequestCount != 7 {
+	if userOverview.Range.Days != 31 || userOverview.Summary.RequestCount != 7 {
 		t.Fatalf("user overview = %+v", userOverview)
 	}
 }
 
 func TestServiceUsageOverviewValidatesInput(t *testing.T) {
 	service := NewServiceWithOptions(ServiceOptions{
-		UsageStore: &authorizationUsageStoreStub{},
-		Now:        func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) },
+		UsageStore:              &authorizationUsageStoreStub{},
+		UsageStatsTimezoneStore: &authorizationUsageStatsTimezoneStoreStub{timezone: "UTC", found: true},
+		Now:                     func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) },
 	})
 	for _, input := range []UsageOverviewInput{
 		{ActorSystemAccountID: "", ResourceType: "account"},
@@ -1179,6 +1181,120 @@ func TestServiceUsageOverviewValidatesInput(t *testing.T) {
 		if _, err := service.TeamUsageOverview(context.Background(), input); !errors.Is(err, ErrAuthorizationUsageInvalid) {
 			t.Fatalf("TeamUsageOverview(%+v) error = %v, want invalid input", input, err)
 		}
+	}
+}
+
+func TestServiceAuthorizationUsageRangeMatchesNodeContract(t *testing.T) {
+	defaultNow := time.Date(2026, 7, 9, 4, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		now       time.Time
+		startDate string
+		endDate   string
+		want      port.ManagementAccountUsageStatsRange
+	}{
+		{
+			name: "no dates defaults to recent 31 calendar days",
+			now:  defaultNow,
+			want: port.ManagementAccountUsageStatsRange{
+				StartDate: "2026-06-09",
+				EndDate:   "2026-07-09",
+				Days:      31,
+				MaxDays:   31,
+			},
+		},
+		{
+			name:      "start date only is a single day",
+			now:       defaultNow,
+			startDate: "2026-07-03",
+			want: port.ManagementAccountUsageStatsRange{
+				StartDate: "2026-07-03",
+				EndDate:   "2026-07-03",
+				Days:      1,
+				MaxDays:   31,
+			},
+		},
+		{
+			name:    "end date only is a single day",
+			now:     defaultNow,
+			endDate: "2026-07-04",
+			want: port.ManagementAccountUsageStatsRange{
+				StartDate: "2026-07-04",
+				EndDate:   "2026-07-04",
+				Days:      1,
+				MaxDays:   31,
+			},
+		},
+		{
+			name:      "complete range is capped at 31 days",
+			now:       defaultNow,
+			startDate: "2026-05-01",
+			endDate:   "2026-07-20",
+			want: port.ManagementAccountUsageStatsRange{
+				StartDate: "2026-06-09",
+				EndDate:   "2026-07-09",
+				Days:      31,
+				MaxDays:   31,
+			},
+		},
+		{
+			name: "configured timezone crosses the UTC date boundary",
+			now:  time.Date(2026, 7, 8, 16, 30, 0, 0, time.UTC),
+			want: port.ManagementAccountUsageStatsRange{
+				StartDate: "2026-06-09",
+				EndDate:   "2026-07-09",
+				Days:      31,
+				MaxDays:   31,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &authorizationUsageStoreStub{detailFound: true}
+			timezoneStore := &authorizationUsageStatsTimezoneStoreStub{timezone: "Asia/Shanghai", found: true}
+			service := NewServiceWithOptions(ServiceOptions{
+				UsageStore:              store,
+				UsageDetailStore:        store,
+				UsageStatsTimezoneStore: timezoneStore,
+				Now:                     func() time.Time { return test.now },
+			})
+
+			overview, err := service.TeamUsageOverview(context.Background(), UsageOverviewInput{
+				ActorSystemAccountID: "sys_actor",
+				StartDate:            test.startDate,
+				EndDate:              test.endDate,
+			})
+			if err != nil {
+				t.Fatalf("TeamUsageOverview() error = %v", err)
+			}
+			if overview.Range != test.want ||
+				store.teamInput.StartDate != test.want.StartDate ||
+				store.teamInput.EndDate != test.want.EndDate {
+				t.Fatalf("overview range/input = %+v / %+v, want %+v", overview.Range, store.teamInput, test.want)
+			}
+
+			detail, found, err := service.UsageDetail(context.Background(), UsageDetailInput{
+				AuthorizationID:      "rauthgrant_main",
+				ActorSystemAccountID: "sys_actor",
+				StartDate:            test.startDate,
+				EndDate:              test.endDate,
+			})
+			if err != nil {
+				t.Fatalf("UsageDetail() error = %v", err)
+			}
+			if !found {
+				t.Fatal("UsageDetail() found = false, want true")
+			}
+			if detail.UsageRange != test.want ||
+				store.detailInput.StartDate != test.want.StartDate ||
+				store.detailInput.EndDate != test.want.EndDate {
+				t.Fatalf("detail range/input = %+v / %+v, want %+v", detail.UsageRange, store.detailInput, test.want)
+			}
+			if !timezoneStore.called {
+				t.Fatal("usageStatsTimezone store was not called")
+			}
+		})
 	}
 }
 
@@ -1227,8 +1343,9 @@ func TestServiceUsageDetailNormalizesScopeRangePaginationAndRedacts(t *testing.T
 		},
 	}
 	service := NewServiceWithOptions(ServiceOptions{
-		UsageDetailStore: store,
-		Now:              func() time.Time { return now },
+		UsageDetailStore:        store,
+		UsageStatsTimezoneStore: &authorizationUsageStatsTimezoneStoreStub{timezone: "UTC", found: true},
+		Now:                     func() time.Time { return now },
 	})
 
 	got, found, err := service.UsageDetail(context.Background(), UsageDetailInput{
@@ -1278,8 +1395,9 @@ func TestServiceUsageDetailNormalizesScopeRangePaginationAndRedacts(t *testing.T
 func TestServiceUsageDetailUsesDefaultPageSizeAndValidatesInput(t *testing.T) {
 	store := &authorizationUsageStoreStub{detailFound: true}
 	service := NewServiceWithOptions(ServiceOptions{
-		UsageDetailStore: store,
-		Now:              func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) },
+		UsageDetailStore:        store,
+		UsageStatsTimezoneStore: &authorizationUsageStatsTimezoneStoreStub{timezone: "UTC", found: true},
+		Now:                     func() time.Time { return time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC) },
 	})
 	if _, _, err := service.UsageDetail(context.Background(), UsageDetailInput{
 		AuthorizationID:      "rauthgrant_main",

@@ -1,7 +1,6 @@
 import axios from 'axios'
 
 import type { AccountTestTask } from '@/types/domain'
-import type { AccountBatchTestItem } from './accountTestFlow'
 
 export const accountTestPollIntervalMs = 1000
 export const accountDiagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000] as const
@@ -26,15 +25,6 @@ export function parseTaskTime(value?: string): number | undefined {
 
 export function isAbortError(error: unknown): boolean {
   return axios.isCancel(error) || (error instanceof DOMException && error.name === 'AbortError')
-}
-
-export function taskStatusToBatchStatus(task: AccountTestTask): AccountBatchTestItem['status'] {
-  if (task.status === 'queued') return 'queued'
-  if (task.status === 'running') return 'running'
-  if (task.status === 'success') return 'success'
-  if (task.status === 'failed') return 'failed'
-  if (task.status === 'canceled') return 'stopped'
-  return 'running'
 }
 
 export async function waitForPollDelay(signal: AbortSignal, maxDelayMs = accountTestPollIntervalMs): Promise<void> {

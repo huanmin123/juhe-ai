@@ -72,6 +72,7 @@ import {
 } from './usage/records.js'
 import { isGatewayForcedDownstreamClose } from './upstream/body.js'
 import {
+  isAccountDiagnosticTrafficSource,
   isAccountProbeTrafficSource,
   normalizeOpenAIGatewayTrafficSource,
   type OpenAIGatewayTrafficSource
@@ -558,7 +559,9 @@ export async function handleOpenAIGatewayRequest(
           contentType,
           streamRequest: isEffectiveOpenAIStreamRequest(req, account)
         })
-        persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, gatewayUsageContext.trafficSource)
+        if (options.disableAccountStateMutation !== true) {
+          persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, gatewayUsageContext.trafficSource)
+        }
 
         let handledResponse: Awaited<ReturnType<typeof handleStreamUpstreamResponse>>
         if (shouldHandleAsStream) {
@@ -1106,7 +1109,7 @@ async function confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(
   auditCapture: ReturnType<typeof createAuditCapture>,
   reason: string
 ): Promise<void> {
-  if (preflight.usageContext.trafficSource === 'manual_account_test') {
+  if (isAccountDiagnosticTrafficSource(preflight.usageContext.trafficSource)) {
     return
   }
   const result = await confirmClientIpAccountAvoidanceAfterFinalFailureAsync(
@@ -1404,7 +1407,7 @@ async function rememberCodexTurnFailureWhenClientRetryIsVisible(input: {
   message: string
 }): Promise<void> {
   if (
-    input.usageContext.trafficSource === 'manual_account_test'
+    isAccountDiagnosticTrafficSource(input.usageContext.trafficSource)
     || input.errorCode !== gatewayStreamClientRetryErrorCode
     || !input.accountId
     || input.clientStrategy?.allowCodexTurnAccountAvoidance !== true
@@ -1434,7 +1437,7 @@ async function recordKnownClientIpRequestError(
   usageContext: GatewayFailureUsageContext,
   auditCapture: ReturnType<typeof createAuditCapture>
 ): Promise<void> {
-  if (usageContext.trafficSource === 'manual_account_test') {
+  if (isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
     return
   }
   const sample = clientIpRequestErrorSample(error)

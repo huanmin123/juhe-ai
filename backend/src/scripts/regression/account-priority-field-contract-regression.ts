@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-priority-contract-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -24,12 +25,33 @@ const [databaseModule, repositories] = await Promise.all([
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
+function createRegressionAccount(
+  input: Record<string, unknown>,
+  scope = access
+) {
+  const supportedModels = Array.isArray(input.supportedModels)
+    ? input.supportedModels
+    : ['gpt-5.5']
+  const normalized = input.providerCode === 'gpt'
+    ? {
+        ...input,
+        providerProtocolProfileId: input.providerProtocolProfileId ?? GPT_OPENAI_V1_PROFILE_ID,
+        supportedModels,
+        healthCheckModel: input.healthCheckModel ?? supportedModels[0]
+      }
+    : input
+  return repositories.createAccount(
+    normalized as Parameters<typeof repositories.createAccount>[0],
+    scope
+  )
+}
+
 try {
   const accountGroup = repositories.createGroup({
     providerCode: 'gpt',
     name: '账户字段契约回归分组'
   }, access)
-  assert.throws(() => repositories.createAccount({
+  assert.throws(() => createRegressionAccount({
     providerCode: 'gpt',
     name: '优先级拼写残留创建检查',
     type: 'api_key',
@@ -41,7 +63,7 @@ try {
     prioritiy: 99
   }, access), /账户创建参数包含未知字段：prioritiy/, '拼错字段 prioritiy 不应在创建账户时被静默忽略')
 
-  const account = repositories.createAccount({
+  const account = createRegressionAccount({
     providerCode: 'gpt',
     name: '优先级拼写残留更新检查',
     type: 'api_key',
@@ -59,7 +81,7 @@ try {
   const updated = repositories.updateAccount(account.id, { priority: 8 }, access)
   assert.equal(updated?.priority, 8, '当前 priority 字段应仍可更新优先级')
 
-  assert.throws(() => repositories.createAccount({
+  assert.throws(() => createRegressionAccount({
     name: '缺失供应商创建检查',
     type: 'api_key',
     credentials: {
@@ -69,7 +91,7 @@ try {
     groupId: accountGroup.id
   }, access), /供应商不能为空/, '创建账户必须显式提供当前供应商')
 
-  assert.throws(() => repositories.createAccount({
+  assert.throws(() => createRegressionAccount({
     providerCode: 'gpt',
     type: 'api_key',
     credentials: {
@@ -79,7 +101,7 @@ try {
     groupId: accountGroup.id
   }, access), /账户名称不能为空/, '创建账户必须显式提供当前账户名称')
 
-  assert.throws(() => repositories.createAccount({
+  assert.throws(() => createRegressionAccount({
     providerCode: 'gpt',
     name: '缺失类型创建检查',
     credentials: {
@@ -89,7 +111,7 @@ try {
     groupId: accountGroup.id
   }, access), /账户类型不能为空/, '创建账户必须显式提供当前账户类型')
 
-  assert.throws(() => repositories.createAccount({
+  assert.throws(() => createRegressionAccount({
     providerCode: 'gpt',
     name: '字符串并发创建检查',
     type: 'api_key',
@@ -101,7 +123,7 @@ try {
     groupId: accountGroup.id
   }, access), /并发限制必须是大于 0 的整数/, '创建账户不应接收数字字符串形式的并发限制')
 
-  assert.throws(() => repositories.createAccount({
+  assert.throws(() => createRegressionAccount({
     providerCode: 'gpt',
     name: '缺失 Base URL 创建检查',
     type: 'api_key',
@@ -117,7 +139,7 @@ try {
     }
   }, access), /Base URL不能为空/, '更新账户不应为凭据补默认 Base URL')
 
-  assert.throws(() => repositories.createAccount({
+  assert.throws(() => createRegressionAccount({
     providerCode: 'gpt',
     name: '凭据旧字段创建检查',
     type: 'api_key',
@@ -137,7 +159,7 @@ try {
     }
   }, access), /账户凭据包含不支持的字段：legacyToken/, '更新账户不应静默保留 credentials 内的旧字段')
 
-  assert.throws(() => repositories.createAccount({
+  assert.throws(() => createRegressionAccount({
     providerCode: 'gpt',
     name: '超长 API Key 创建检查',
     type: 'api_key',
@@ -148,7 +170,7 @@ try {
     groupId: accountGroup.id
   }, access), /API Key不能超过 16384 字节/, '创建账户不应接收超长 API Key 凭据')
 
-  const oauthAccount = repositories.createAccount({
+  const oauthAccount = createRegressionAccount({
     providerCode: 'gpt',
     name: 'OAuth 凭据当前字段检查',
     type: 'oauth',
@@ -168,7 +190,7 @@ try {
   }, access)
   assert.equal(oauthAccount.credentials.client_id, 'client-priority-contract', '当前 OAuth 元数据字段应正常保留')
 
-  assert.throws(() => repositories.createAccount({
+  assert.throws(() => createRegressionAccount({
     providerCode: 'gpt',
     name: 'OAuth 凭据旧字段检查',
     type: 'oauth',
@@ -180,7 +202,7 @@ try {
     groupId: accountGroup.id
   }, access), /账户凭据包含不支持的字段：accountId/, 'OAuth 凭据不应接收 camelCase 旧字段')
 
-  assert.throws(() => repositories.createAccount({
+  assert.throws(() => createRegressionAccount({
     providerCode: 'gpt',
     name: 'OAuth 凭据非法时间检查',
     type: 'oauth',
@@ -192,7 +214,7 @@ try {
     groupId: accountGroup.id
   }, access), /Access Token 到期时间必须是有效时间字符串/, 'OAuth 凭据时间字段不应吞掉非法字符串')
 
-  assert.throws(() => repositories.createAccount({
+  assert.throws(() => createRegressionAccount({
     providerCode: 'gpt',
     name: 'OAuth 凭据整体大小检查',
     type: 'oauth',

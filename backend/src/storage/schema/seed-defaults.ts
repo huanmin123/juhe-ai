@@ -130,7 +130,7 @@ export function seedDefaults(database: DatabaseSync): void {
   const profileStatement = database.prepare(`
     INSERT OR IGNORE INTO provider_protocol_profiles (
       id, provider_code, name, description, enabled, protocol_code, protocol_version,
-      base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
+      base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const profileSeeds = DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS
@@ -148,7 +148,7 @@ export function seedDefaults(database: DatabaseSync): void {
       profile.protocolCode,
       profile.protocolVersion,
       profile.baseUrl,
-      profile.defaultTestModel,
+      profile.defaultHealthCheckModel,
       JSON.stringify(profile.accountTypes),
       JSON.stringify(profile.capabilities),
       now,

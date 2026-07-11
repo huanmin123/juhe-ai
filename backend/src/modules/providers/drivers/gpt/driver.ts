@@ -24,6 +24,7 @@ import {
   isGeminiGenerateContentToChatCompletionsModelMapping,
   isAnthropicMessagesToChatCompletionsModelMapping,
   isOpenAIResponsesToChatCompletionsModelMapping,
+  openAIRequestEndpointFamily,
   openAIModelMappedUpstreamPathAndQuery,
   resolveOpenAIAccountModelMapping,
   resolveOpenAIRequestModelMapping
@@ -59,6 +60,8 @@ import {
 } from '../_shared/codex-responses-chat-bridge.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
 import { prepareGptAccountBeforeDispatch } from './oauth-dispatch-preparation.js'
+import { applyGptAccountRequestOverridesToBody } from './request-override-body.js'
+import type { GptRequestOverrideEndpointFamily } from './request-overrides.js'
 
 function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
   return openAIEndpointModeForRequestShape({
@@ -114,34 +117,49 @@ export const gptProviderDriver: ProviderDriver = {
     if (account.type !== 'oauth' && modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
       const headers = buildUpstreamHeaders(req.headers, account)
       prepareAnthropicMessagesChatBridgeHeaders(headers, req)
+      const body = await buildAnthropicMessagesChatBridgeBody(req, {
+        defaultModel: modelMapping.upstreamModel,
+        modelOverride: modelMapping.upstreamModel
+      }, signal)
       return {
         headers,
-        body: await buildAnthropicMessagesChatBridgeBody(req, {
-          defaultModel: modelMapping.upstreamModel,
-          modelOverride: modelMapping.upstreamModel
-        }, signal)
+        body: await applyGptAccountRequestOverridesToBody(body, {
+          credentials: account.credentials,
+          endpointFamily: 'chat_completions',
+          signal
+        })
       }
     }
     if (account.type !== 'oauth' && modelMapping && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping)) {
       const headers = buildUpstreamHeaders(req.headers, account)
       prepareGeminiGenerateContentChatBridgeHeaders(headers, req)
+      const body = await buildGeminiGenerateContentChatBridgeBody(req, {
+        defaultModel: modelMapping.upstreamModel,
+        modelOverride: modelMapping.upstreamModel
+      }, signal)
       return {
         headers,
-        body: await buildGeminiGenerateContentChatBridgeBody(req, {
-          defaultModel: modelMapping.upstreamModel,
-          modelOverride: modelMapping.upstreamModel
-        }, signal)
+        body: await applyGptAccountRequestOverridesToBody(body, {
+          credentials: account.credentials,
+          endpointFamily: 'chat_completions',
+          signal
+        })
       }
     }
     if (account.type !== 'oauth' && modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
       const headers = buildUpstreamHeaders(req.headers, account)
       prepareCodexResponsesChatBridgeHeaders(headers)
+      const body = await buildCodexResponsesChatBridgeBody(req, {
+        defaultModel: modelMapping.upstreamModel,
+        modelOverride: modelMapping.upstreamModel
+      }, signal)
       return {
         headers,
-        body: await buildCodexResponsesChatBridgeBody(req, {
-          defaultModel: modelMapping.upstreamModel,
-          modelOverride: modelMapping.upstreamModel
-        }, signal)
+        body: await applyGptAccountRequestOverridesToBody(body, {
+          credentials: account.credentials,
+          endpointFamily: 'chat_completions',
+          signal
+        })
       }
     }
     if (account.type === 'oauth') {
@@ -157,9 +175,18 @@ export const gptProviderDriver: ProviderDriver = {
     applyOpenAIClientCompatibilityHeaders(req, account, headers, {
       requestClientCompatibility: context?.requestClientCompatibility
     })
+    const body = compatibilityBody
+      ?? (modelMapping ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal) : buildUpstreamRequestBody(req))
     return {
       headers,
-      body: compatibilityBody ?? (modelMapping ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal) : buildUpstreamRequestBody(req))
+      body: await applyGptAccountRequestOverridesToBody(body, {
+        credentials: account.credentials,
+        endpointFamily: gptRequestOverrideEndpointFamily(
+          modelMapping?.upstreamEndpointFamily ?? openAIRequestEndpointFamily(req)
+        ),
+        compact: isOpenAIResponsesCompactRequest(req),
+        signal
+      })
     }
   },
   transformUpstreamResponse(req, account, response, context) {
@@ -235,4 +262,14 @@ export const gptProviderDriver: ProviderDriver = {
       clientCompatibility: account.clientCompatibility
     })
   }
+}
+
+function isOpenAIResponsesCompactRequest(req: Request): boolean {
+  if (req.method.toUpperCase() !== 'POST') return false
+  const path = (req.originalUrl || req.path || '').split('?', 1)[0]
+  return (path.replace(/^\/v1(?=\/|$)/, '') || '/') === '/responses/compact'
+}
+
+function gptRequestOverrideEndpointFamily(value: string | undefined): GptRequestOverrideEndpointFamily | undefined {
+  return value === 'chat_completions' || value === 'responses' ? value : undefined
 }

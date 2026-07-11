@@ -152,8 +152,8 @@ export interface ProviderDefinition {
   protocolCode: string
   protocolVersion: string
   baseUrl: string
-  defaultTestModel: string
-  systemDefaultTestModel?: string
+  defaultHealthCheckModel: string
+  systemDefaultHealthCheckModel?: string
   defaultSupportedModels: string[]
   accountTypes: AccountType[]
   capabilities: string[]
@@ -175,7 +175,7 @@ export interface ProviderProtocolProfileDefinition {
   protocolCode: string
   protocolVersion: string
   baseUrl: string
-  defaultTestModel: string
+  defaultHealthCheckModel: string
   accountTypes: AccountType[]
   capabilities: string[]
   endpointFamilies: ProtocolEndpointFamilyDefinition[]
@@ -210,6 +210,9 @@ export interface ProviderModelPricing {
   maxTokens?: number
   supportsPromptCaching: boolean
   supportsServiceTier: boolean
+  supportedServiceTiers?: Array<'priority' | 'flex'>
+  supportedReasoningEfforts?: Array<'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>
+  defaultReasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   pricingNotes?: string
   capabilityNotes?: string
   notes?: string
@@ -231,6 +234,8 @@ export interface AccountCredentials {
   account_id?: string
   chatgpt_user_id?: string
   plan_type?: string
+  service_tier_override?: 'default' | 'priority' | 'flex'
+  reasoning_effort_override?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   response_inspection_rules?: unknown[]
   [key: string]: unknown
 }
@@ -465,6 +470,7 @@ export interface GroupAccountStats {
 
 export interface AccountSummary {
   id: string
+  configRevision?: number
   systemAccountId?: string
   systemAccountName?: string
   providerCode: ProviderCode
@@ -488,7 +494,7 @@ export interface AccountSummary {
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   tags?: AccountTagSummary[]
-  defaultTestModel?: string
+  healthCheckModel: string
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -512,7 +518,6 @@ export interface AccountSummary {
   cooldownRetestObservationStartedAt?: string
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
-  healthCheckEnabled?: boolean
   lastHealthCheckAt?: string
   nextHealthCheckAt?: string
   lastHealthSuccessAt?: string
@@ -554,6 +559,17 @@ export interface AccountSummary {
   authorizationUsageAvailable?: boolean
   authorizationCount?: number
   authorizationTeamCount?: number
+}
+
+export interface AccountBatchEditTarget {
+  accountId: string
+  configRevision: number
+}
+
+export interface AccountBatchEditResult {
+  batchId: string
+  changedFields: string[]
+  accounts: AccountSummary[]
 }
 
 export interface AccountApiKeyRuntimeSummary {

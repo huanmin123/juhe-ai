@@ -52,13 +52,27 @@
 
     <AccountBatchToolbar
       :deletable-count="selectedDeletableAccountCount"
+      :edit-disabled="batchEditDisabled"
+      :edit-disabled-reason="batchEditDisabledReason"
       :selected-count="selectedAccounts.length"
       @clear="clearSelection"
       @delete="openBatchDeleteConfirm"
       @disable="batchSetStatus('disabled')"
+      @edit="openBatchEdit"
       @enable="batchSetStatus('active')"
       @restore="batchRestoreSelected"
-      @test="batchTestSelected"
+    />
+
+    <AccountBatchEditModal
+      v-if="batchEditOpen"
+      v-model:open="batchEditOpen"
+      :accounts="selectedAccounts"
+      :is-management-view="isManagementView"
+      :providers="availableProviders"
+      :proxy-options="proxyOptions"
+      :scope-params="accountScopeParams"
+      :tags="accountTagOptions"
+      @saved="handleBatchEditSaved"
     />
 
     <AccountBatchDeleteConfirmModal
@@ -120,16 +134,14 @@
       v-model:open="testModalOpen"
       :model="testForm.model"
       :account="testingAccount"
-      :accounts="batchTestingAccounts"
       :active-task="activeSingleTestTask"
-      :batch-items="batchTestItems"
-      :draft-account="draftTestingAccountPayload"
-      :mode="testMode"
       :model-options="testModelOptions"
+      :model-readonly="testModelReadonly"
       :models-loading="testModelsLoading"
       :provider-name="providerName"
       :result="testResult"
       :running="testRunning"
+      :test-endpoint-modes="testEndpointModes"
       v-model:test-endpoint-mode="testForm.testEndpointMode"
       @close="closeTestModal"
       @copy-result="copyText"
@@ -229,11 +241,12 @@ import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
-import type { AccountTagSummary } from '@/types/domain'
+import type { AccountSummary, AccountTagSummary } from '@/types/domain'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
 import AccountEditModal from './AccountEditModal.vue'
@@ -258,6 +271,7 @@ import {
 } from './accountTableColumns'
 import {
   accountMenuItems,
+  canBatchEditAccount,
   canCloneAccount,
   canDeleteAccount,
   canEditAccount,
@@ -277,16 +291,18 @@ import { accountOperationSystemAccountId } from './accountOperationScope'
 import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountRemovalActions } from './useAccountRemovalActions'
 import { useAccountSelectionActions } from './useAccountSelectionActions'
-import { useAccountTestModal, type SuccessfulDraftActivationTest } from './useAccountTestModal'
+import { useAccountTestModal } from './useAccountTestModal'
 import type { DraftApiKeyTestSnapshot } from './accountDraftApiKeyTestRuntime'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
 
 const AccountImportModal = defineAsyncComponent(() => import('./AccountImportModal.vue'))
+const AccountBatchEditModal = defineAsyncComponent(() => import('./AccountBatchEditModal.vue'))
 const AccountReauthorizeModal = defineAsyncComponent(() => import('./AccountReauthorizeModal.vue'))
 const AccountTestModal = defineAsyncComponent(() => import('./AccountTestModal.vue'))
 const AccountTrafficMigrationModal = defineAsyncComponent(() => import('./AccountTrafficMigrationModal.vue'))
 
 const importModalOpen = ref(false)
+const batchEditOpen = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const {
   loading,
@@ -316,7 +332,6 @@ const {
   handleAccountTableChangeAndLoad,
   handleAccountSortChange,
   handleSystemAccountFilterChange: handleAccountListSystemAccountFilterChange,
-  applyAccountDefaultTestModel,
   removeLoadedAccount,
   resetFilters: resetAccountListFilters
 } = useAccountListData({
@@ -422,6 +437,20 @@ const {
 } = useAccountSelectionActions({
   accounts
 })
+const batchEditableAccounts = computed(() => selectedAccounts.value.filter(canBatchEditAccount))
+const batchEditDisabled = computed(() => (
+  selectedAccounts.value.length < 2
+  || selectedAccounts.value.length > 100
+  || batchEditableAccounts.value.length !== selectedAccounts.value.length
+))
+const batchEditDisabledReason = computed(() => {
+  if (selectedAccounts.value.length < 2) return '至少选择 2 个账户'
+  if (selectedAccounts.value.length > 100) return '一次最多编辑 100 个账户'
+  if (batchEditableAccounts.value.length !== selectedAccounts.value.length) {
+    return '授权实例或无编辑权限账户不能批量编辑'
+  }
+  return ''
+})
 const {
   exportAccounts,
   exportLoading
@@ -433,8 +462,6 @@ const {
   selectedAccounts,
   systemAccounts
 })
-const successfulDraftActivationTest = ref<SuccessfulDraftActivationTest>()
-const successfulSavedDraftUpdateTest = ref<SuccessfulDraftActivationTest>()
 const draftApiKeyTestSnapshot = ref<DraftApiKeyTestSnapshot>()
 const {
   groups,
@@ -512,9 +539,7 @@ const {
   providers,
   draftApiKeyTestSnapshot,
   systemAccountSelection: computed(() => filters.systemAccount),
-  systemAccounts,
-  successfulDraftActivationTest,
-  successfulSavedDraftUpdateTest
+  systemAccounts
 })
 watch(
   [
@@ -561,36 +586,51 @@ const {
 })
 const {
   activeSingleTestTask,
-  batchTestItems,
-  batchTestingAccounts,
   closeTestModal,
-  openBatchTestModal,
-  openDraftTestModal,
-  openSavedDraftTestModal,
+  openDraftTestModal: openDraftTestModalWithHealthCheckModel,
+  openSavedDraftTestModal: openSavedDraftTestModalWithHealthCheckModel,
   openTestModal,
   runAccountTest,
   stopAccountTest,
+  testEndpointModes,
   testForm,
   testModalOpen,
-  testMode,
   testModelOptions,
+  testModelReadonly,
   testModelsLoading,
   testResult,
   testRunning,
-  draftTestingAccountPayload,
   testingAccount,
   updateAccountTestModel
 } = useAccountTestModal({
   accountScopeParams,
-  applyAccountDefaultTestModel,
-  clearSelection,
   isManagementView,
-  loadData,
-  providers: availableProviders,
-  draftApiKeyTestSnapshot,
-  successfulDraftActivationTest,
-  successfulSavedDraftUpdateTest
+  draftApiKeyTestSnapshot
 })
+function openDraftTestModal(
+  account: AccountSummary,
+  draftPayload: AccountDraftTestAccountPayload
+): void {
+  openDraftTestModalWithHealthCheckModel(
+    account,
+    draftPayload,
+    draftHealthCheckModel(draftPayload)
+  )
+}
+function openSavedDraftTestModal(
+  account: AccountSummary,
+  draftPayload: AccountDraftTestAccountPayload
+): void {
+  openSavedDraftTestModalWithHealthCheckModel(
+    account,
+    draftPayload,
+    draftHealthCheckModel(draftPayload)
+  )
+}
+function draftHealthCheckModel(draftPayload: AccountDraftTestAccountPayload): string {
+  const value = (draftPayload as AccountDraftTestAccountPayload & { healthCheckModel?: unknown }).healthCheckModel
+  return typeof value === 'string' ? value.trim() : ''
+}
 const {
   accountEditTestPreparing,
   testAccountFromEditModal
@@ -657,14 +697,12 @@ const {
 })
 const {
   batchRestoreSelected,
-  batchSetStatus,
-  batchTestSelected
+  batchSetStatus
 } = useAccountBatchActions({
   accountScopeParams,
   clearSelection,
   isManagementView,
   loadData,
-  openBatchTestModal,
   selectedAccounts
 })
 const {
@@ -731,6 +769,19 @@ function openImportModal() {
 
 async function handleImportCompleted() {
   clearSelectedAccountIds()
+  await loadData({ forceOptions: true })
+}
+
+function openBatchEdit(): void {
+  if (batchEditDisabled.value) {
+    message.warning(batchEditDisabledReason.value)
+    return
+  }
+  batchEditOpen.value = true
+}
+
+async function handleBatchEditSaved(): Promise<void> {
+  clearSelection()
   await loadData({ forceOptions: true })
 }
 

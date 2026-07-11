@@ -156,7 +156,7 @@ const auditOutcomes = new Set<AuditOutcome | 'all'>([
   'stream_failed',
   'client_aborted'
 ])
-const auditTrafficSources = new Set<AuditTrafficSource>(['gateway', 'manual_account_test', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
+const auditTrafficSources = new Set<AuditTrafficSource>(['gateway', 'manual_account_test', 'account_health_check', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
 
 function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListOptions {
   const rawPage = finiteNumberQueryValue(query.page)

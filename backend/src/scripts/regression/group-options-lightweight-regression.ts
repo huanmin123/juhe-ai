@@ -349,7 +349,7 @@ function seedProvider(code: string): void {
     .prepare(`
       INSERT OR IGNORE INTO provider_protocol_profiles (
         id, provider_code, name, description, enabled, protocol_code, protocol_version,
-        base_url, default_test_model, account_types_json, capabilities_json, created_at, updated_at
+        base_url, default_health_check_model, account_types_json, capabilities_json, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(

@@ -124,7 +124,7 @@ export function accountTypeChoicesForProvider(
       protocolCode: provider.protocolCode,
       protocolVersion: provider.protocolVersion,
       baseUrl: provider.baseUrl,
-      defaultTestModel: provider.defaultTestModel,
+      defaultHealthCheckModel: provider.defaultHealthCheckModel,
       accountTypes: provider.accountTypes,
       capabilities: provider.capabilities,
       endpointFamilies: []

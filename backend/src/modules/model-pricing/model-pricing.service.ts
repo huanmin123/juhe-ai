@@ -1,12 +1,20 @@
 import { normalizeProviderToken } from '../../domain/provider-protocol.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 import type {
+  CodexReasoningLevel,
+  GptServiceTier,
+  GptWireReasoningEffort,
   ModelPricingProviderDriverHelpers,
   ProviderModelApiProtocol,
   RawModelPricing
 } from './provider-driver.types.js'
 
-export type { ProviderModelApiProtocol } from './provider-driver.types.js'
+export type {
+  CodexReasoningLevel,
+  GptServiceTier,
+  GptWireReasoningEffort,
+  ProviderModelApiProtocol
+} from './provider-driver.types.js'
 
 export interface ProviderModelPricing {
   providerCode: string
@@ -30,6 +38,12 @@ export interface ProviderModelPricing {
   maxOutputTokens?: number
   maxTokens?: number
   supportsPromptCaching: boolean
+  supportedServiceTiers: GptServiceTier[]
+  supportedReasoningEfforts: GptWireReasoningEffort[]
+  defaultReasoningEffort?: GptWireReasoningEffort
+  codexSupportedReasoningLevels: CodexReasoningLevel[]
+  codexDefaultReasoningLevel?: CodexReasoningLevel
+  codexMultiAgentVersion?: 'v2'
   supportsServiceTier: boolean
   catalogVisible?: boolean
   source: string
@@ -271,7 +285,14 @@ function findProviderModelPricing(providerCode: string, model: string): RawModel
   if (byExactName && !hasModelShutdown(byExactName)) return byExactName
 
   for (const candidate of driver.buildModelCandidates(normalized)) {
-    const matched = models.find((item) => normalizeModel(item.model) === candidate)
+    const normalizedCandidate = canonicalOpenAIModelAlias(candidate)
+    const matched = models.find((item) => normalizeModel(item.model) === normalizedCandidate)
+    if (matched && !hasModelShutdown(matched)) return matched
+  }
+
+  const canonicalAlias = canonicalOpenAIModelAlias(normalized)
+  if (canonicalAlias !== normalized) {
+    const matched = models.find((item) => normalizeModel(item.model) === canonicalAlias)
     if (matched && !hasModelShutdown(matched)) return matched
   }
 
@@ -328,6 +349,7 @@ function usesIncludedCacheReadUsage(providerCode: string): boolean {
 function toProviderModelPricing(item: RawModelPricing, providerCode: string): ProviderModelPricing {
   const driver = modelPricingProviderDriverForProvider(providerCode)
   const source = driver?.pricingSource ?? 'unknown-pricing-snapshot'
+  const supportedServiceTiers = item.supported_service_tiers ? [...item.supported_service_tiers] : []
   return {
     providerCode,
     model: item.model,
@@ -354,10 +376,22 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     maxOutputTokens: item.max_output_tokens,
     maxTokens: item.max_tokens,
     supportsPromptCaching: item.supports_prompt_caching === true,
-    supportsServiceTier: item.supports_service_tier === true,
+    supportedServiceTiers,
+    supportedReasoningEfforts: item.supported_reasoning_efforts ? [...item.supported_reasoning_efforts] : [],
+    defaultReasoningEffort: item.default_reasoning_effort,
+    codexSupportedReasoningLevels: item.codex_supported_reasoning_levels
+      ? [...item.codex_supported_reasoning_levels]
+      : [],
+    codexDefaultReasoningLevel: item.codex_default_reasoning_level,
+    codexMultiAgentVersion: item.codex_multi_agent_version,
+    supportsServiceTier: supportedServiceTiers.length > 0,
     catalogVisible: item.catalog_visible !== false,
     source
   }
+}
+
+function canonicalOpenAIModelAlias(model: string): string {
+  return model === 'gpt-5.6' ? 'gpt-5.6-sol' : model
 }
 
 function hasModelShutdown(item: RawModelPricing): boolean {

@@ -4,16 +4,9 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import express from 'express'
-
-import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
-import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
-import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
-import type { AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
-import { submitAccountTestAndWait } from '../shared/account-test-task-client.js'
-import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-pending-test-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'account-pending-test.sqlite3')
@@ -22,52 +15,47 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'account-pending-test-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
-runtimeConfig.sqliteReadWorkerPoolSize = 2
-runtimeConfig.sqliteReadWorkerQueueMaxItems = 16
+runtimeConfig.processRole = 'db-service'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
-
-const restoreWorkerParentIpc = installWorkerParentIpcHarness()
 
 const [
   databaseModule,
   repositories,
   accountImport,
   accountExport,
-  accountTestTasks,
-  readWorkerPool,
-  { accountsRouter },
-  { forceSelfAccessScope, requireAuth },
-  { requestContextMiddleware },
-  { flushAllUsageRecordQueue },
-  { flushAllOperationLogQueue }
+  { testOpenAIAccount },
+  { flushGatewayAccountSideEffects },
+  { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
+  { closeSqliteReadWorkerPool }
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/accounts/account-import.service.js'),
   import('../../modules/accounts/account-export.service.js'),
-  import('../../storage/account-test-tasks.repository.js'),
-  import('../../storage/sqlite-read-worker-pool.js'),
-  import('../../modules/accounts/accounts.routes.js'),
-  import('../../modules/auth/auth.middleware.js'),
-  import('../../shared/request-context.js'),
+  import('../../modules/accounts/account-test.service.js'),
+  import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/operation-logs/operation-log-queue.service.js')
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
-const app = express()
-app.use(requestContextMiddleware)
-app.use(express.json({ limit: '1mb' }))
-app.use('/__aisys__/api', requireAuth)
-app.use('/__aisys__/api/my-accounts', forceSelfAccessScope, accountsRouter)
-
-let appServer: ReturnType<typeof app.listen> | undefined
+const healthSettings = {
+  intervalHours: 12,
+  jitterMinutes: 0,
+  failureThreshold: 3
+}
 let mockOpenAIServer: http.Server | undefined
-const mockOpenAIRequests: Array<{ authorization?: string; body: Record<string, unknown> }> = []
 
 try {
+  setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+  mockOpenAIServer = createMockOpenAIServer()
+  mockOpenAIServer.listen(0, '127.0.0.1')
+  await onceListening(mockOpenAIServer)
+  const address = mockOpenAIServer.address()
+  assert(address && typeof address !== 'string', '待测试账户 mock 上游地址不可用')
+  const mockBaseUrl = `http://127.0.0.1:${address.port}`
+
   const owner = repositories.createSystemAccount({
     username: 'account_pending_test_owner',
     displayName: '待测试账户回归用户',
@@ -82,52 +70,101 @@ try {
     providerCode: 'gpt'
   }, access)
 
-  const pending = repositories.createAccount({
-    providerCode: 'gpt',
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+  const pending = repositories.createAccount(accountPayload({
     name: '默认创建待测试账户',
-    type: 'api_key',
-    credentials: { api_key: 'sk-pending-default', base_url: 'https://api.openai.com/v1' },
-    groupId: group.id
-  }, access)
+    apiKey: 'sk-pending-default',
+    groupId: group.id,
+    baseUrl: mockBaseUrl
+  }), access)
   assert.equal(pending.status, 'pending_test', '新建账户默认应为待测试')
   assert.equal(pending.schedulable, false, '待测试账户默认不得参与调度')
-  assert.match(pending.lastErrorMessage ?? '', /测试通过/, '待测试账户应记录需测试通过的提示')
+  assert.equal(pending.healthCheckModel, 'gpt-5.5', '新建账户必须保存属于支持模型的检查模型')
+  assert.match(pending.lastErrorMessage ?? '', /等待后台激活检查/, '待测试账户应记录等待后台激活检查的提示')
   assert.equal(
     repositories.listOpenAIAccountsForGroup(group.id, owner.id).some((account) => account.id === pending.id),
     false,
     '待测试账户不应进入网关调度候选'
   )
   assert.equal(
-    repositories.findOpenAIAccountForGroup(group.id, pending.id, owner.id),
-    undefined,
-    '待测试账户即使指定账号也不应作为可用网关账号返回'
-  )
-  assert.equal(
-    repositories.markAccountTestTemporaryUnavailable(pending, '模拟测试失败', access),
-    undefined,
-    '待测试账户测试失败不应被改写为临时不可调用'
-  )
-  assert.equal(
     repositories.clearAccountFailureState(pending.id, access)?.status,
     'pending_test',
     '普通恢复入口不应激活待测试账户'
   )
-  assert.throws(
-    () => repositories.updateAccount(pending.id, { status: 'disabled' }, access),
-    /待测试账户需手动测试通过/,
-    '待测试账户不应先停用再启用绕过测试'
-  )
 
-  const restored = repositories.clearAccountFailureStateResult(pending.id, access, { allowPendingTestRestore: true })
-  assert.equal(restored.changed, true, '测试成功路径应允许激活待测试账户')
-  assert.equal(restored.account?.status, 'active', '测试成功路径应把待测试账户改为正常')
-  assert.equal(restored.account?.schedulable, true, '测试成功路径应恢复调度')
-  assert.equal(
-    repositories.listOpenAIAccountsForGroup(group.id, owner.id).some((account) => account.id === pending.id),
-    true,
-    '测试成功后账户应进入网关调度候选'
+  const pendingCandidate = repositories.findOpenAIAccountForGroup(
+    group.id,
+    pending.id,
+    owner.id,
+    { includeUnavailable: true, ignoreAvailability: true }
   )
+  assert(pendingCandidate, '待测试账户应可作为隔离的人工诊断候选')
+  const manualSuccess = await testOpenAIAccount(pending, {
+    model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse',
+    candidateAccount: pendingCandidate
+  })
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  assert.equal(manualSuccess.success, true, `待测试账户人工测试应成功：${manualSuccess.message}`)
+  const afterManualSuccess = repositories.findAccountSummary(pending.id, access)
+  assert.equal(afterManualSuccess?.status, 'pending_test', '人工测试成功不能激活账户')
+  assert.equal(afterManualSuccess?.schedulable, false, '人工测试成功不能恢复账户调度')
+  assert.equal(afterManualSuccess?.healthCheckModel, 'gpt-5.5', '人工测试成功不能改写检查模型')
+
+  assert.equal(repositories.recordAccountHealthCheckSuccess(pending.id, {
+    ...healthSettings,
+    statusCode: 200
+  }), true, '后台健康检查成功应激活待测试账户')
+  const activated = repositories.findAccountSummary(pending.id, access)
+  assert.equal(activated?.status, 'active', '后台健康检查成功应把待测试账户改为正常')
+  assert.equal(activated?.schedulable, true, '后台健康检查成功应恢复调度')
+
+  const changedCredentials = repositories.updateAccount(pending.id, {
+    credentials: {
+      api_key: 'sk-manual-failure',
+      base_url: mockBaseUrl
+    }
+  }, access)
+  assert.equal(changedCredentials?.status, 'pending_test', '关键配置变更后应重新进入待测试')
+  assert.equal(changedCredentials?.schedulable, false, '关键配置变更后后台检查成功前不得调度')
+
+  const failedCandidate = repositories.findOpenAIAccountForGroup(
+    group.id,
+    pending.id,
+    owner.id,
+    { includeUnavailable: true, ignoreAvailability: true }
+  )
+  assert(failedCandidate, '关键配置变更后的账户应可作为隔离的人工诊断候选')
+  const manualFailure = await testOpenAIAccount(changedCredentials!, {
+    model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse',
+    candidateAccount: failedCandidate
+  })
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  assert.equal(manualFailure.success, false, '无效凭据的人工测试应返回失败')
+  const afterManualFailure = repositories.findAccountSummary(pending.id, access)
+  assert.equal(afterManualFailure?.status, 'pending_test', '人工测试失败不能改写账户状态')
+  assert.equal(afterManualFailure?.schedulable, false, '人工测试失败不能改写调度状态')
+  assert.equal(afterManualFailure?.healthCheckModel, 'gpt-5.5', '人工测试失败不能改写检查模型')
+
+  assert.equal(repositories.recordAccountHealthCheckSuccess(pending.id, {
+    ...healthSettings,
+    statusCode: 200
+  }), true, '只有后台健康检查成功才能再次激活账户')
+  assert.equal(repositories.findAccountSummary(pending.id, access)?.status, 'active', '后台检查成功后账户应恢复正常')
+
+  const requestedActive = repositories.createAccount({
+    ...accountPayload({
+      name: '请求正常状态的新账户',
+      apiKey: 'sk-requested-active',
+      groupId: group.id,
+      baseUrl: mockBaseUrl
+    }),
+    status: 'active'
+  }, access)
+  assert.equal(requestedActive.status, 'pending_test', '新账户请求正常状态仍应由后台检查激活')
+  assert.equal(requestedActive.schedulable, false, '新账户后台检查成功前不得调度')
 
   const importResult = accountImport.executeAccountImport({
     type: accountImport.accountImportProtocolType,
@@ -141,8 +178,8 @@ try {
         status: 'active',
         groupId: group.id,
         supportedModels: ['gpt-5.5'],
-        defaultTestModel: 'gpt-5.5',
-        credentials: { api_key: 'sk-import-active-to-pending', base_url: 'https://api.openai.com/v1' }
+        healthCheckModel: 'gpt-5.5',
+        credentials: { api_key: 'sk-import-active-to-pending', base_url: mockBaseUrl }
       }
     ]
   }, {}, access)
@@ -152,520 +189,43 @@ try {
   const imported = repositories.findAccountSummary(importedId, access)
   assert.equal(imported?.status, 'pending_test', '导入 active 账户应落库为待测试')
   assert.equal(imported?.schedulable, false, '导入后待测试账户不得参与调度')
-  assert.equal(imported?.defaultTestModel, 'gpt-5.5', '导入应恢复账户级默认测试模型')
+  assert.equal(imported?.healthCheckModel, 'gpt-5.5', '导入应恢复账户检查模型')
 
   const exportResult = accountExport.exportAccountsAsImportDocument({ accountIds: [importedId] }, access)
   assert.equal(exportResult.document.accounts[0]?.status, 'pending_test', '导出应保留待测试状态')
-  assert.equal(exportResult.document.accounts[0]?.defaultTestModel, 'gpt-5.5', '导出应保留账户级默认测试模型')
+  assert.equal(exportResult.document.accounts[0]?.healthCheckModel, 'gpt-5.5', '导出应保留账户检查模型')
 
-  mockOpenAIServer = createMockOpenAIServer()
-  mockOpenAIServer.listen(0, '127.0.0.1')
-  await onceListening(mockOpenAIServer)
-  const mockAddress = mockOpenAIServer.address()
-  if (!mockAddress || typeof mockAddress === 'string') {
-    throw new Error('待测试账户真实 mock 上游地址不可用')
-  }
-
-  appServer = app.listen(0, '127.0.0.1')
-  await onceListening(appServer)
-  const appAddress = appServer.address()
-  if (!appAddress || typeof appAddress === 'string') {
-    throw new Error('待测试账户创建路由回归服务地址不可用')
-  }
-  await assertRouteCreateActivation({
-    baseUrl: `http://127.0.0.1:${appAddress.port}`,
-    cookie: sessionCookie(owner.id),
-    groupId: group.id,
-    mockBaseUrl: `http://127.0.0.1:${mockAddress.port}`,
-    ownerSystemAccountId: owner.id
-  })
-
-  console.log('待测试账户创建与调度保护回归通过：默认隔离、恢复防绕过、测试成功激活、编辑快照测试使用当前表单、导入导出状态一致，真实 mock 上游测试后才允许激活')
+  console.log('账户待测试回归通过：新建和关键配置变更进入 pending_test，人工测试不改状态或检查模型，只有后台健康检查成功激活')
 } finally {
-  await closeServer(appServer)
+  setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)
+  await closeSqliteReadWorkerPool().catch(() => undefined)
   try {
-    await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
-    flushAllUsageRecordQueue()
-    flushAllOperationLogQueue()
     databaseModule.closeStorageDatabases()
   } catch {
   }
-  restoreWorkerParentIpc()
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-interface RouteAccountCreatePayload {
-  providerCode: 'gpt'
-  providerProtocolProfileId: typeof GPT_OPENAI_V1_PROFILE_ID
+function accountPayload(input: {
   name: string
-  type: 'api_key'
-  credentials: Record<string, unknown>
+  apiKey: string
   groupId: string
-  supportedModels: string[]
-  clientCompatibility?: AccountSummary['clientCompatibility']
-  status?: 'active' | 'pending_test'
-  activationTestTaskId?: string
-  defaultTestModel?: string
-}
-
-interface ApiEnvelope<T> {
-  data?: T
-  message?: string
-}
-
-async function assertRouteCreateActivation(input: {
   baseUrl: string
-  cookie: string
-  groupId: string
-  mockBaseUrl: string
-  ownerSystemAccountId: string
-}): Promise<void> {
-  const withoutTask = routeAccountPayload(input.groupId, '路由直接正常无测试账户', 'sk-route-active-without-task')
-  const withoutTaskResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, {
-    ...withoutTask,
-    status: 'active'
-  })
-  assert.equal(withoutTaskResponse.status, 400, '未携带成功草稿测试任务时不应允许创建正常账户')
-  assert.match(responseMessage(withoutTaskResponse.body), /草稿测试/, '未测试直接正常创建应提示需要草稿测试')
-
-  const realFailedDraftPayload = routeAccountPayload(input.groupId, '真实失败草稿测试账户', 'sk-real-fail-draft-test', input.mockBaseUrl)
-  const failedDraftTask = await submitDraftAccountTestAndWait(input.baseUrl, input.cookie, realFailedDraftPayload)
-  assert.equal(failedDraftTask.result?.success, false, '真实 mock 上游失败时，草稿测试结果应失败')
-  assert.equal(failedDraftTask.result?.statusCode, 401, `真实 mock 上游失败应保留上游 HTTP 状态：${JSON.stringify(failedDraftTask.result)}`)
-  const realFailedCreateResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, {
-    ...realFailedDraftPayload,
-    status: 'active',
-    activationTestTaskId: failedDraftTask.id
-  })
-  assert.equal(realFailedCreateResponse.status, 400, '真实失败草稿测试任务不应允许创建正常账户')
-
-  const realSuccessDraftPayload = routeAccountPayload(input.groupId, '真实成功草稿测试账户', 'sk-real-success-draft-test', input.mockBaseUrl)
-  const successDraftTask = await submitDraftAccountTestAndWait(input.baseUrl, input.cookie, realSuccessDraftPayload)
-  assert.equal(successDraftTask.result?.success, true, `真实 mock 上游草稿测试应成功：${successDraftTask.result?.message ?? ''}`)
-  const realSuccessCreateResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, {
-    ...realSuccessDraftPayload,
-    status: 'active',
-    activationTestTaskId: successDraftTask.id,
-    defaultTestModel: successDraftTask.result?.model
-  })
-  assert.equal(realSuccessCreateResponse.status, 201, `真实成功草稿测试应允许创建正常账户：${responseMessage(realSuccessCreateResponse.body)}`)
-  assert.equal(realSuccessCreateResponse.body.data?.status, 'active', '真实成功草稿测试创建的账户应为正常状态')
-  assert.equal(realSuccessCreateResponse.body.data?.schedulable, true, '真实成功草稿测试创建的账户应参与调度')
-  const realSuccessAccount = realSuccessCreateResponse.body.data
-  assert(realSuccessAccount?.id, '真实成功草稿测试创建结果应返回账户 ID')
-
-  const updateWithoutTestResponse = await patchJson<AccountSummary>(input.baseUrl, `/__aisys__/api/my-accounts/${realSuccessAccount.id}`, input.cookie, {
-    credentials: { api_key: 'sk-update-without-test', base_url: input.mockBaseUrl }
-  })
-  assert.equal(updateWithoutTestResponse.status, 400, '已保存账户更换 API Key 时不应允许未测试直接保存')
-  assert.match(responseMessage(updateWithoutTestResponse.body), /测试通过/, '已保存账户更换 API Key 未测试时应提示先测试')
-
-  const savedUpdateDraftPayload = routeAccountPayload(input.groupId, realSuccessAccount.name, 'sk-update-after-saved-draft-test', input.mockBaseUrl)
-  const savedUpdateTask = await submitSavedAccountTestAndWait(input.baseUrl, input.cookie, realSuccessAccount.id, savedUpdateDraftPayload)
-  assert.equal(savedUpdateTask.result?.success, true, `已保存账户编辑快照测试应成功：${savedUpdateTask.result?.message ?? ''}`)
-  const updateAfterTestResponse = await patchJson<AccountSummary>(input.baseUrl, `/__aisys__/api/my-accounts/${realSuccessAccount.id}`, input.cookie, {
-    credentials: savedUpdateDraftPayload.credentials,
-    activationTestTaskId: savedUpdateTask.id,
-    defaultTestModel: savedUpdateTask.result?.model
-  })
-  assert.equal(updateAfterTestResponse.status, 200, `已保存账户更换 API Key 测试通过后应允许保存：${responseMessage(updateAfterTestResponse.body)}`)
-  assert.equal(updateAfterTestResponse.body.data?.status, 'active', '已保存账户更换 API Key 测试通过后应保持正常状态')
-  const updatedStored = repositories.findAccountSummary(realSuccessAccount.id, { systemAccountId: input.ownerSystemAccountId, role: 'user' })
-  assert.equal(updatedStored?.credentials.api_key, 'sk-update-after-saved-draft-test', '测试通过后的新 API Key 应落库')
-
-  const updateChangedAfterTestResponse = await patchJson<AccountSummary>(input.baseUrl, `/__aisys__/api/my-accounts/${realSuccessAccount.id}`, input.cookie, {
-    credentials: { api_key: 'sk-update-changed-after-test', base_url: input.mockBaseUrl },
-    activationTestTaskId: savedUpdateTask.id,
-    defaultTestModel: savedUpdateTask.result?.model
-  })
-  assert.equal(updateChangedAfterTestResponse.status, 400, '测试通过后再次更换 API Key 应要求重新测试')
-  assert.match(responseMessage(updateChangedAfterTestResponse.body), /重新测试/, '测试后 API Key 变化应提示重新测试')
-
-  const realPendingPayload = routeAccountPayload(input.groupId, '真实手动测试激活账户', 'sk-real-manual-test-activate', input.mockBaseUrl)
-  const realPendingCreateResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, realPendingPayload)
-  assert.equal(realPendingCreateResponse.status, 201, `未携带草稿测试时应创建为待测试账户：${responseMessage(realPendingCreateResponse.body)}`)
-  const realPendingAccount = realPendingCreateResponse.body.data
-  assert(realPendingAccount?.id, '待测试账户创建结果应返回账户 ID')
-  assert.equal(realPendingAccount.status, 'pending_test', '未携带草稿测试的新账户应为待测试')
-  assert.equal(realPendingAccount.schedulable, false, '未携带草稿测试的新账户不应参与调度')
-  assert.equal(
-    repositories.listOpenAIAccountsForGroup(input.groupId, input.ownerSystemAccountId).some((account) => account.id === realPendingAccount.id),
-    false,
-    '待测试账户在真实手动测试前不应进入网关调度候选'
-  )
-  const manualTestResult = await submitAccountTestAndWait<AccountTestResult>({
-    baseUrl: input.baseUrl,
-    path: `/__aisys__/api/my-accounts/${realPendingAccount.id}/test`,
-    cookie: input.cookie,
-    body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
-  })
-  assert.equal(manualTestResult.success, true, `待测试账户真实手动测试应通过：${manualTestResult.message}`)
-  assert.equal(manualTestResult.accountStatusChanged, false, '待测试账户测试成功后不应报告状态变化')
-  assert.equal(manualTestResult.accountStatus, 'pending_test', '待测试账户测试成功后结果应保留原状态')
-  const manualPreserved = repositories.findAccountSummary(realPendingAccount.id, { systemAccountId: input.ownerSystemAccountId, role: 'user' })
-  assert.equal(manualPreserved?.status, 'pending_test', '待测试账户真实手动测试通过后不能自动恢复正常')
-  assert.equal(manualPreserved?.schedulable, false, '待测试账户真实手动测试通过后不能自动参与调度')
-  assert.equal(
-    repositories.listOpenAIAccountsForGroup(input.groupId, input.ownerSystemAccountId).some((account) => account.id === realPendingAccount.id),
-    false,
-    '待测试账户真实手动测试通过后仍不能进入网关调度候选'
-  )
-
-  const editSnapshotPayload = routeAccountPayload(input.groupId, '编辑弹框快照测试账户', 'sk-edit-saved-should-not-be-used', input.mockBaseUrl)
-  const editSnapshotCreateResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, editSnapshotPayload)
-  assert.equal(editSnapshotCreateResponse.status, 201, `编辑快照回归账户应创建为待测试：${responseMessage(editSnapshotCreateResponse.body)}`)
-  const editSnapshotAccount = editSnapshotCreateResponse.body.data
-  assert(editSnapshotAccount?.id, '编辑快照回归账户应返回账户 ID')
-  assert.equal(editSnapshotAccount.status, 'pending_test', '编辑快照回归账户初始应为待测试')
-  const beforeEditSnapshotRequestCount = mockOpenAIRequests.length
-  const editSnapshotResult = await submitAccountTestAndWait<AccountTestResult>({
-    baseUrl: input.baseUrl,
-    path: `/__aisys__/api/my-accounts/${editSnapshotAccount.id}/test`,
-    cookie: input.cookie,
-    body: {
-      model: 'gpt-5.5',
-      testEndpointMode: 'responses_sse',
-      account: routeAccountPayload(input.groupId, '编辑弹框快照测试账户（未保存）', 'sk-edit-current-input-test', input.mockBaseUrl)
-    }
-  })
-  assert.equal(editSnapshotResult.success, true, `编辑弹框快照测试应通过：${editSnapshotResult.message}`)
-  assert.equal(editSnapshotResult.accountStatusChanged, false, '编辑弹框快照测试成功后不应报告状态变化')
-  assert.equal(editSnapshotResult.accountStatus, 'pending_test', '编辑弹框快照测试成功后结果应保留原状态')
-  const editSnapshotPreserved = repositories.findAccountSummary(editSnapshotAccount.id, { systemAccountId: input.ownerSystemAccountId, role: 'user' })
-  assert.equal(editSnapshotPreserved?.status, 'pending_test', '编辑弹框快照测试通过后不能直接恢复已保存账户状态')
-  const editSnapshotRequests = mockOpenAIRequests.slice(beforeEditSnapshotRequestCount)
-  assert(
-    editSnapshotRequests.some((request) => request.authorization?.includes('sk-edit-current-input-test')),
-    '编辑弹框快照测试应使用当前表单 API Key'
-  )
-  assert(
-    editSnapshotRequests.every((request) => !request.authorization?.includes('sk-edit-saved-should-not-be-used')),
-    '编辑弹框快照测试不应使用已保存但被表单覆盖的 API Key'
-  )
-
-  const failedTaskPayload = routeAccountPayload(input.groupId, '路由失败测试任务账户', 'sk-route-failed-task')
-  const failedTaskId = createDraftActivationTask({
-    payload: failedTaskPayload,
-    ownerSystemAccountId: input.ownerSystemAccountId,
-    success: false
-  })
-  const failedTaskResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, {
-    ...failedTaskPayload,
-    status: 'active',
-    activationTestTaskId: failedTaskId
-  })
-  assert.equal(failedTaskResponse.status, 400, '失败草稿测试任务不应允许创建正常账户')
-  assert.match(responseMessage(failedTaskResponse.body), /尚未成功/, '失败草稿测试任务应提示不能直接正常创建')
-
-  const originalPayload = routeAccountPayload(input.groupId, '路由错配原始账户', 'sk-route-mismatch-task')
-  const mismatchTaskId = createDraftActivationTask({
-    payload: originalPayload,
-    ownerSystemAccountId: input.ownerSystemAccountId,
-    success: true
-  })
-  const changedPayload = routeAccountPayload(input.groupId, '路由错配变更账户', 'sk-route-mismatch-task')
-  const mismatchResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, {
-    ...changedPayload,
-    status: 'active',
-    activationTestTaskId: mismatchTaskId,
-    defaultTestModel: 'gpt-5.5'
-  })
-  assert.equal(mismatchResponse.status, 400, '草稿测试后修改账户内容不应允许创建正常账户')
-  assert.match(responseMessage(mismatchResponse.body), /内容已变化/, '草稿测试内容变化应提示重新测试')
-
-  const successPayload = routeAccountPayload(input.groupId, '路由测试通过账户', 'sk-route-success-task')
-  const successTaskId = createDraftActivationTask({
-    payload: successPayload,
-    ownerSystemAccountId: input.ownerSystemAccountId,
-    success: true
-  })
-  const successResponse = await postJson<AccountSummary>(input.baseUrl, '/__aisys__/api/my-accounts', input.cookie, {
-    ...successPayload,
-    status: 'active',
-    activationTestTaskId: successTaskId,
-    defaultTestModel: 'gpt-5.5'
-  })
-  assert.equal(successResponse.status, 201, `成功且内容一致的草稿测试应允许创建正常账户：${responseMessage(successResponse.body)}`)
-  assert.equal(successResponse.body.data?.status, 'active', '成功草稿测试创建的账户应为正常状态')
-  assert.equal(successResponse.body.data?.schedulable, true, '成功草稿测试创建的账户应参与调度')
-  assert.equal(
-    repositories.listOpenAIAccountsForGroup(input.groupId, input.ownerSystemAccountId).some((account) => account.id === successResponse.body.data?.id),
-    true,
-    '成功草稿测试创建的正常账户应进入网关调度候选'
-  )
-  assert(
-    mockOpenAIRequests.some((request) => request.authorization?.includes('sk-real-success-draft-test')),
-    '真实成功草稿测试应命中 mock OpenAI 上游'
-  )
-  assert(
-    mockOpenAIRequests.some((request) => request.authorization?.includes('sk-real-manual-test-activate')),
-    '待测试账户手动测试应命中 mock OpenAI 上游'
-  )
-  assert(
-    mockOpenAIRequests.some((request) => request.authorization?.includes('sk-edit-current-input-test')),
-    '编辑快照测试应命中 mock OpenAI 上游'
-  )
-}
-
-function routeAccountPayload(groupId: string, name: string, apiKey: string, baseUrl = 'https://api.openai.com/v1'): RouteAccountCreatePayload {
+}) {
   return {
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    name,
+    name: input.name,
     type: 'api_key',
-    credentials: { api_key: apiKey, base_url: baseUrl },
-    groupId,
-    supportedModels: ['gpt-5.5']
-  }
-}
-
-function createDraftActivationTask(input: {
-  payload: RouteAccountCreatePayload
-  ownerSystemAccountId: string
-  success: boolean
-}): string {
-  const draftAccount = draftActivationSnapshot(input.payload, input.ownerSystemAccountId)
-  const task = accountTestTasks.createAccountTestTask({
-    account: draftAccountSummary(draftAccount),
-    access: { systemAccountId: input.ownerSystemAccountId, role: 'user' as const },
-    diagnostics: 'full',
-    draftAccount
-  })
-  assert(accountTestTasks.markAccountTestTaskRunning(task.id), '草稿测试任务应能进入运行中')
-  const result: AccountTestResult = {
-    accountId: task.accountId,
-    accountName: task.accountName,
-    providerCode: task.providerCode,
-    type: task.type,
-    success: input.success,
-    statusCode: input.success ? 200 : 401,
-    message: input.success ? '草稿测试成功' : '草稿测试失败',
-    model: 'gpt-5.5'
-  }
-  assert(accountTestTasks.completeAccountTestTask(task.id, result), '草稿测试任务应能完成')
-  return task.id
-}
-
-function draftActivationSnapshot(payload: RouteAccountCreatePayload, ownerSystemAccountId: string): AccountTestDraftSnapshot {
-  const clientCompatibility = normalizeOpenAIAccountClientCompatibility(
-    payload.providerCode,
-    payload.type,
-    payload.clientCompatibility,
-    'openai_standard',
-    { protocolCode: OPENAI_PROTOCOL_CODE, protocolVersion: OPENAI_PROTOCOL_VERSION }
-  )
-  return {
-    id: `acctdraft_${payload.name}`,
-    ownerSystemAccountId,
-    groupId: payload.groupId,
-    groupName: '待测试账户回归分组',
-    providerCode: payload.providerCode,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    protocolCode: OPENAI_PROTOCOL_CODE,
-    protocolVersion: OPENAI_PROTOCOL_VERSION,
-    name: payload.name,
-    type: payload.type,
-    credentials: repositories.normalizeAccountCredentialsForWrite(payload.type, payload.credentials),
-    concurrencyLimit: 20,
-    priority: 0,
-    superPriorityEnabled: false,
-    fallbackEnabled: false,
-    clientCompatibility,
-    supportedModels: payload.supportedModels,
-    modelMappings: repositories.normalizeAccountModelMappingsForProvider([], payload.providerCode, ownerSystemAccountId) ?? []
-  }
-}
-
-function draftAccountSummary(draft: AccountTestDraftSnapshot): AccountSummary {
-  const usage = emptyUsageSummary()
-  return {
-    id: draft.id,
-    systemAccountId: draft.ownerSystemAccountId,
-    ownerSystemAccountId: draft.ownerSystemAccountId,
-    providerCode: draft.providerCode,
-    name: draft.name,
-    type: draft.type,
-    credentials: draft.credentials,
-    status: 'active',
-    concurrencyLimit: draft.concurrencyLimit,
-    currentConcurrency: 0,
-    priority: draft.priority,
-    superPriorityEnabled: draft.superPriorityEnabled,
-    fallbackEnabled: draft.fallbackEnabled,
-    clientCompatibility: draft.clientCompatibility,
-    supportedModels: draft.supportedModels,
-    modelMappings: draft.modelMappings,
-    schedulable: true,
-    todayUsage: usage,
-    usage,
-    accessType: 'owner',
-    boundGroupId: draft.groupId,
-    boundGroupName: draft.groupName,
-    groupBindStatus: 'bound',
-    permissions: {
-      canUse: true,
-      canEdit: true,
-      canDelete: true,
-      canAuthorize: false,
-      canViewCredentials: true,
-      canManageAccounts: true,
-      canBindToApiKey: true
+    credentials: {
+      api_key: input.apiKey,
+      base_url: input.baseUrl
     },
-    effectiveAvailability: {
-      available: true,
-      status: 'available',
-      label: '草稿测试',
-      color: 'blue'
-    }
-  }
-}
-
-function emptyUsageSummary(): AccountSummary['usage'] {
-  return {
-    requestCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheReadCost: 0,
-    cacheWriteTokens: 0,
-    cacheWrite1hTokens: 0,
-    cacheWriteCost: 0,
-    thinkingTokens: 0,
-    inputImageTokens: 0,
-    outputImageTokens: 0,
-    totalTokens: 0,
-    totalCost: 0
-  }
-}
-
-async function postJson<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<{ status: number; body: ApiEnvelope<T> }> {
-  const response = await fetch(`${baseUrl}${path}`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      cookie
-    },
-    body: JSON.stringify(body)
-  })
-  return {
-    status: response.status,
-    body: await response.json() as ApiEnvelope<T>
-  }
-}
-
-async function patchJson<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<{ status: number; body: ApiEnvelope<T> }> {
-  const response = await fetch(`${baseUrl}${path}`, {
-    method: 'PATCH',
-    headers: {
-      'content-type': 'application/json',
-      cookie
-    },
-    body: JSON.stringify(body)
-  })
-  return {
-    status: response.status,
-    body: await response.json() as ApiEnvelope<T>
-  }
-}
-
-interface AccountTestTask<T = AccountTestResult> {
-  id: string
-  status: 'queued' | 'running' | 'success' | 'failed' | 'canceled'
-  message?: string
-  result?: T
-}
-
-async function submitDraftAccountTestAndWait(baseUrl: string, cookie: string, account: RouteAccountCreatePayload): Promise<AccountTestTask<AccountTestResult>> {
-  const response = await postJson<AccountTestTask<AccountTestResult>>(baseUrl, '/__aisys__/api/my-accounts/test-draft', cookie, {
-    account,
-    model: 'gpt-5.5',
-    testEndpointMode: 'responses_sse'
-  })
-  assert.equal(response.status, 202, `草稿测试任务应成功入队：${responseMessage(response.body)}`)
-  const task = response.body.data
-  assert(task?.id, '草稿测试任务应返回任务 ID')
-  return waitForAccountTestTask(baseUrl, cookie, task.id)
-}
-
-async function submitSavedAccountTestAndWait(baseUrl: string, cookie: string, accountId: string, account: RouteAccountCreatePayload): Promise<AccountTestTask<AccountTestResult>> {
-  const response = await postJson<AccountTestTask<AccountTestResult>>(baseUrl, `/__aisys__/api/my-accounts/${accountId}/test`, cookie, {
-    account,
-    model: 'gpt-5.5',
-    testEndpointMode: 'responses_sse'
-  })
-  assert.equal(response.status, 202, `已保存账户编辑快照测试任务应成功入队：${responseMessage(response.body)}`)
-  const task = response.body.data
-  assert(task?.id, '已保存账户编辑快照测试任务应返回任务 ID')
-  return waitForAccountTestTask(baseUrl, cookie, task.id)
-}
-
-async function waitForAccountTestTask(baseUrl: string, cookie: string, taskId: string): Promise<AccountTestTask<AccountTestResult>> {
-  const startedAt = Date.now()
-  let lastTask: AccountTestTask<AccountTestResult> | undefined
-  while (Date.now() - startedAt < 30_000) {
-    const tasks = await getEnvelope<Array<AccountTestTask<AccountTestResult>>>(
-      baseUrl,
-      `/__aisys__/api/my-accounts/test-tasks?ids=${encodeURIComponent(taskId)}`,
-      cookie
-    )
-    const task = tasks.find((item) => item.id === taskId)
-    assert(task, `草稿测试任务 ${taskId} 应可查询`)
-    lastTask = task
-    if (task.status === 'success' || task.status === 'failed') {
-      assert(task.result, `草稿测试任务 ${taskId} 已结束但没有结果：status=${task.status} message=${task.message ?? ''}`)
-      return task
-    }
-    if (task.status === 'canceled') {
-      throw new Error(`草稿测试任务 ${taskId} 已取消：${task.message ?? ''}`)
-    }
-    await sleep(100)
-  }
-  throw new Error(`草稿测试任务 ${taskId} 等待超时：最后状态=${lastTask?.status ?? '未查询'} message=${lastTask?.message ?? ''}`)
-}
-
-async function getEnvelope<T>(baseUrl: string, path: string, cookie: string): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, { headers: { cookie } })
-  const text = await response.text()
-  if (!response.ok) {
-    throw new Error(`${path} HTTP ${response.status}: ${text}`)
-  }
-  return (JSON.parse(text) as ApiEnvelope<T>).data as T
-}
-
-function responseMessage(body: ApiEnvelope<unknown>): string {
-  return typeof body.message === 'string' ? body.message : ''
-}
-
-function sessionCookie(systemAccountId: string): string {
-  return `juhe_ai_session=${repositories.createSession(systemAccountId, 1).token}`
-}
-
-async function onceListening(listeningServer: ReturnType<typeof app.listen>): Promise<void> {
-  if (listeningServer.listening) return
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    listeningServer.once('listening', resolvePromise)
-    listeningServer.once('error', rejectPromise)
-  })
-}
-
-async function closeServer(listeningServer?: ReturnType<typeof app.listen>): Promise<void> {
-  if (!listeningServer?.listening) return
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    const timeout = setTimeout(() => {
-      listeningServer.closeAllConnections?.()
-      resolvePromise()
-    }, 1000)
-    listeningServer.close((error) => {
-      clearTimeout(timeout)
-      if (error) {
-        rejectPromise(error)
-      } else {
-        resolvePromise()
-      }
-    })
-    listeningServer.closeIdleConnections?.()
-  })
+    groupId: input.groupId,
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
+  } as const
 }
 
 function createMockOpenAIServer(): http.Server {
@@ -675,62 +235,48 @@ function createMockOpenAIServer(): http.Server {
       res.end(JSON.stringify({ error: { message: 'not found' } }))
       return
     }
-
-    let requestBody = ''
-    req.setEncoding('utf8')
-    req.on('data', (chunk) => {
-      requestBody += chunk
-    })
+    const authorization = String(req.headers.authorization ?? '')
+    req.resume()
     req.on('end', () => {
-      const authorization = typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined
-      const payload = parseJsonObject(requestBody)
-      mockOpenAIRequests.push({ authorization, body: payload })
-      if (authorization?.includes('sk-real-fail-draft-test')) {
+      if (authorization.includes('manual-failure')) {
         res.writeHead(401, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ error: { code: 'invalid_api_key', message: 'mock invalid api key' } }))
-        return
-      }
-      if (authorization?.includes('sk-edit-saved-should-not-be-used')) {
-        res.writeHead(401, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ error: { code: 'saved_api_key_used', message: 'saved api key should not be used' } }))
-        return
-      }
-      const completedEvent = {
-        type: 'response.completed',
-        response: {
-          id: 'resp_pending_test_mock',
-          object: 'response',
-          status: 'completed',
-          output: [
-            {
-              type: 'message',
-              content: [{ type: 'output_text', text: 'OK' }]
-            }
-          ],
-          usage: {
-            input_tokens: 1,
-            output_tokens: 1,
-            total_tokens: 2
+        res.end(JSON.stringify({
+          error: {
+            code: 'invalid_api_key',
+            message: 'Invalid API key',
+            type: 'invalid_request_error'
           }
-        }
+        }))
+        return
       }
-      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
-      res.end(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`)
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        id: 'resp_pending_test_mock',
+        object: 'response',
+        status: 'completed',
+        model: 'gpt-5.5',
+        output: [],
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          total_tokens: 2
+        }
+      }))
     })
   })
 }
 
-function parseJsonObject(requestBody: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(requestBody) as unknown
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
-  } catch {
-  }
-  return {}
+async function onceListening(server: http.Server): Promise<void> {
+  if (server.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    server.once('listening', resolvePromise)
+    server.once('error', rejectPromise)
+  })
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
+async function closeServer(server?: http.Server): Promise<void> {
+  if (!server) return
+  await new Promise<void>((resolvePromise) => {
+    server.close(() => resolvePromise())
+  })
 }

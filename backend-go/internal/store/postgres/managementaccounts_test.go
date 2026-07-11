@@ -211,6 +211,7 @@ func TestManagementAccountTagUpdateSQLScopesAndReplacesBindings(t *testing.T) {
 	for _, want := range []string{
 		"UPDATE juhe_business.accounts",
 		"config_revision = config_revision + 1",
+		"updated_at = now()",
 		"WHERE id = sqlc.arg(account_id)::text",
 		"AND system_account_id = sqlc.arg(system_account_id)::text",
 		"AND deleted_at IS NULL",

@@ -240,7 +240,7 @@ function providerFixture(overrides: {
     protocolCode: overrides.protocolCode,
     protocolVersion: overrides.protocolVersion,
     baseUrl: 'https://example.com/v1',
-    defaultTestModel: '',
+    defaultHealthCheckModel: '',
     defaultSupportedModels: ['gpt-5.5'],
     accountTypes: overrides.accountTypes,
     capabilities: [],
@@ -262,7 +262,7 @@ function providerProfileFixture(overrides: {
     protocolCode: overrides.protocolCode,
     protocolVersion: overrides.protocolVersion,
     baseUrl: 'https://example.com/v1',
-    defaultTestModel: '',
+    defaultHealthCheckModel: '',
     accountTypes: overrides.accountTypes,
     capabilities: [],
     endpointFamilies: []

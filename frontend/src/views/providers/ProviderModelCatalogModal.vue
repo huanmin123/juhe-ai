@@ -56,7 +56,7 @@
           <template v-if="column.key === 'model'">
             <a-space size="small">
               <span class="mono-cell">{{ record.model }}</span>
-              <a-tag v-if="isDefaultTestModel(record)" color="green">默认测试</a-tag>
+              <a-tag v-if="isDefaultHealthCheckModel(record)" color="green">默认检查</a-tag>
               <a-tag color="default">{{ record.providerCode }}</a-tag>
               <a-tag v-if="record.shutdownDate" color="orange">将停用 {{ record.shutdownDate }}</a-tag>
             </a-space>
@@ -78,6 +78,9 @@
               <a-tag v-for="protocol in record.supportedApiProtocols" :key="protocol" :color="getApiProtocolTagColor(protocol)">{{ formatApiProtocol(protocol) }}</a-tag>
               <span v-if="!record.supportedApiProtocols?.length" class="muted-text">-</span>
             </a-space>
+          </template>
+          <template v-else-if="column.key === 'capabilities'">
+            <span>{{ formatModelRequestCapabilities(record) }}</span>
           </template>
           <template v-else-if="column.key === 'prices'">
             <div class="price-cell">
@@ -126,7 +129,7 @@
               <strong class="mono-cell">{{ record.model }}</strong>
               <a-space size="small" wrap>
                 <a-tag color="default">{{ record.providerCode }}</a-tag>
-                <a-tag v-if="isDefaultTestModel(record)" color="green">默认测试</a-tag>
+                <a-tag v-if="isDefaultHealthCheckModel(record)" color="green">默认检查</a-tag>
                 <a-tag>{{ formatModelCategory(record) }}</a-tag>
                 <a-tag :color="modelStatusColor(record.status)">{{ formatModelStatus(record.status) }}</a-tag>
               </a-space>
@@ -140,6 +143,8 @@
               <strong>{{ record.releaseDate || '-' }}</strong>
               <span>接口协议</span>
               <strong>{{ (record.supportedApiProtocols ?? []).map(formatApiProtocol).join(' / ') || '-' }}</strong>
+              <span>请求能力</span>
+              <strong>{{ formatModelRequestCapabilities(record) }}</strong>
               <span>价格</span>
               <strong>{{ formatModelPriceSummary(record) }}</strong>
               <span>上下文</span>
@@ -166,6 +171,7 @@ import {
   formatModelCategory,
   formatModelInputTokens,
   formatModelPriceSummary,
+  formatModelRequestCapabilities,
   formatModelScope,
   formatModelStatus,
   formatPrice,
@@ -188,7 +194,7 @@ const props = withDefaults(defineProps<{
   columns: Array<Record<string, any>>
   models: ProviderModelPricing[]
   currentCategoryCount: number
-  defaultTestModel?: string
+  defaultHealthCheckModel?: string
   loadError?: string
   rowActions: (record: ProviderModelPricing) => RowActionItem[]
   isManagementView?: boolean
@@ -216,8 +222,8 @@ const emit = defineEmits<{
   'system-account-search': [value: string]
 }>()
 
-function isDefaultTestModel(record: ProviderModelPricing): boolean {
-  const defaultModel = props.defaultTestModel?.trim()
+function isDefaultHealthCheckModel(record: ProviderModelPricing): boolean {
+  const defaultModel = props.defaultHealthCheckModel?.trim()
   return Boolean(defaultModel && record.model.trim() === defaultModel)
 }
 

@@ -109,6 +109,29 @@ try {
   assert.equal(Object.prototype.hasOwnProperty.call(editBasicDetail, 'apiKeyRuntimeDetails'), false, '账户编辑首屏详情不应返回 API Key 运行明细')
   assertNoForbiddenCredentialKeysExcept(editBasicDetail, '账户编辑首屏详情响应', new Set(['api_key', 'api_keys', 'api_key_strategy', 'api_key_weights']))
 
+  const batchEditContext = await postEnvelope<AccountResponse[]>(baseUrl, '/__aisys__/api/accounts/batch-edit-context', seed.adminCookie, {
+    accountIds: [seed.apiKeyAccountId, seed.multiApiKeyAccountId]
+  })
+  assert.equal(batchEditContext.length, 2, '批量编辑上下文应一次返回全部目标账户')
+  assert.deepEqual(batchEditContext[0]?.credentials?.error_handling_rules, [{
+    enabled: true,
+    name: '响应脱敏账户错误处理',
+    priority: 10,
+    status_codes: [429],
+    action: 'temp_unschedulable'
+  }], '批量编辑上下文应返回允许覆盖的错误策略')
+  assert.equal(batchEditContext[0]?.credentials?.api_key, undefined, '批量编辑上下文不得返回 API Key')
+  assert.equal(batchEditContext[0]?.credentials?.base_url, undefined, '批量编辑上下文不得返回 Base URL')
+  assertNoForbiddenCredentialKeysExcept(
+    batchEditContext,
+    '批量编辑上下文响应',
+    new Set(['error_handling_rules', 'response_inspection_rules'])
+  )
+  const batchEditContextText = JSON.stringify(batchEditContext)
+  for (const secret of secretValues) {
+    assert.equal(batchEditContextText.includes(secret), false, `批量编辑上下文响应不应包含密钥原文 ${secret}`)
+  }
+
   const multiKeyEditBasicDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.multiApiKeyAccountId}/edit-basic`, seed.adminCookie)
   assert(multiKeyEditBasicDetail.credentials, '账户编辑首屏详情应返回多 API Key 凭据')
   assert.deepEqual(multiKeyEditBasicDetail.credentials.api_keys, ['sk-redaction-multi-a', 'sk-redaction-multi-b'], '账户编辑首屏详情应返回完整多 API Key 列表供用户查看和修改')
@@ -338,6 +361,14 @@ function seedData(): {
     status: 'active',
     groupId: groupB.id
   }, access)
+  for (const account of [apiKeyAccount, oauthAccount, multiApiKeyAccount, targetAccount]) {
+    repositories.recordAccountHealthCheckSuccess(account.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    })
+  }
   return {
     adminCookie: `juhe_ai_session=${repositories.createSession(admin.id, 1).token}`,
     apiKeyAccountId: apiKeyAccount.id,

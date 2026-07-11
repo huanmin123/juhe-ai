@@ -15,7 +15,11 @@ export const openAIGPT5ModelPricingData = [
     cache_creation_input_token_cost: 0.00000625,
     cache_read_input_token_cost: 5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"],
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    codex_supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    codex_default_reasoning_level: "low",
+    codex_multi_agent_version: "v2"
   },
   {
     model: "gpt-5.6-terra",
@@ -29,7 +33,11 @@ export const openAIGPT5ModelPricingData = [
     cache_creation_input_token_cost: 0.000003125,
     cache_read_input_token_cost: 2.5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"],
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    codex_supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    codex_default_reasoning_level: "medium",
+    codex_multi_agent_version: "v2"
   },
   {
     model: "gpt-5.6-luna",
@@ -43,7 +51,10 @@ export const openAIGPT5ModelPricingData = [
     cache_creation_input_token_cost: 0.00000125,
     cache_read_input_token_cost: 1e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"],
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    codex_supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
+    codex_default_reasoning_level: "medium"
   },
   {
     model: "gpt-5-search-api",
@@ -67,7 +78,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 5e-7,
     cache_read_input_token_cost_priority: 0.00000125,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.5-2026-04-23",
@@ -83,7 +94,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 5e-7,
     cache_read_input_token_cost_priority: 0.00000125,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.5-pro",
@@ -95,7 +106,7 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.00003,
     output_cost_per_token: 0.00018,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.5-pro-2026-04-23",
@@ -107,7 +118,7 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.00003,
     output_cost_per_token: 0.00018,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.4",
@@ -123,7 +134,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 2.5e-7,
     cache_read_input_token_cost_priority: 5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.4-2026-03-05",
@@ -139,7 +150,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 2.5e-7,
     cache_read_input_token_cost_priority: 5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.4-mini",
@@ -155,7 +166,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 7.5e-8,
     cache_read_input_token_cost_priority: 1.5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.4-mini-2026-03-17",
@@ -171,7 +182,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 7.5e-8,
     cache_read_input_token_cost_priority: 1.5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.4-nano",
@@ -184,7 +195,7 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00000125,
     cache_read_input_token_cost: 2e-8,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.4-nano-2026-03-17",
@@ -197,7 +208,7 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00000125,
     cache_read_input_token_cost: 2e-8,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.4-pro",
@@ -210,7 +221,7 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00018,
     cache_read_input_token_cost: 0.000003,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.4-pro-2026-03-05",
@@ -223,7 +234,7 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00018,
     cache_read_input_token_cost: 0.000003,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.3-chat-latest",
@@ -254,7 +265,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.75e-7,
     cache_read_input_token_cost_priority: 3.5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.2",
@@ -270,7 +281,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.75e-7,
     cache_read_input_token_cost_priority: 3.5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.2-2025-12-11",
@@ -286,7 +297,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.75e-7,
     cache_read_input_token_cost_priority: 3.5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.2-pro",
@@ -298,7 +309,7 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.000021,
     output_cost_per_token: 0.000168,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.2-pro-2025-12-11",
@@ -310,7 +321,7 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.000021,
     output_cost_per_token: 0.000168,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.2-chat-latest",
@@ -339,7 +350,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost_priority: 3.5e-7,
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.1",
@@ -355,7 +366,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.1-2025-11-13",
@@ -371,7 +382,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.1-chat-latest",
@@ -401,7 +412,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost_priority: 2.5e-7,
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.1-codex-max",
@@ -418,7 +429,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost_priority: 2.5e-7,
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5.1-codex-mini",
@@ -432,7 +443,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 2.5e-8,
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5",
@@ -448,7 +459,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5-2025-08-07",
@@ -464,7 +475,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5-chat-latest",
@@ -494,7 +505,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost_priority: 2.5e-7,
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5-mini",
@@ -510,7 +521,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 2.5e-8,
     cache_read_input_token_cost_priority: 4.5e-8,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5-mini-2025-08-07",
@@ -526,7 +537,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 2.5e-8,
     cache_read_input_token_cost_priority: 4.5e-8,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5-nano",
@@ -542,7 +553,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 5e-9,
     cache_read_input_token_cost_priority: 5e-8,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5-nano-2025-08-07",
@@ -558,7 +569,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 5e-9,
     cache_read_input_token_cost_priority: 5e-8,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5-pro",
@@ -570,7 +581,7 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.000015,
     output_cost_per_token: 0.00012,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   },
   {
     model: "gpt-5-pro-2025-10-06",
@@ -582,6 +593,6 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.000015,
     output_cost_per_token: 0.00012,
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supported_service_tiers: ["priority"]
   }
 ] as const

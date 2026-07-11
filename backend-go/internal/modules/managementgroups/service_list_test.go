@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,10 @@ func TestServiceListMapsAdminOwnerPageFromPreaggregates(t *testing.T) {
 			CurrentConcurrency: 5,
 			ConcurrencyLimit:   8,
 		}},
+		accountIDs: []port.ManagementGroupAccountIDRow{
+			{GroupID: "grp_owner", AccountID: "acct_1"},
+			{GroupID: "grp_owner", AccountID: "acct_2"},
+		},
 		totalUsage: []port.ManagementGroupUsageRow{{
 			Key: "grp_owner",
 			Usage: port.ManagementAccountUsageSummary{
@@ -68,9 +73,13 @@ func TestServiceListMapsAdminOwnerPageFromPreaggregates(t *testing.T) {
 		timezone:      "Asia/Shanghai",
 		timezoneFound: true,
 	}
+	concurrency := &managementGroupConcurrencyReaderStub{
+		values: map[string]int{"acct_1": 2, "acct_2": 4},
+	}
 	service := NewServiceWithOptions(ServiceOptions{
-		Store: store,
-		Now:   func() time.Time { return now },
+		Store:              store,
+		AccountConcurrency: concurrency,
+		Now:                func() time.Time { return now },
 	})
 
 	result, err := service.List(context.Background(), ListInput{
@@ -89,6 +98,15 @@ func TestServiceListMapsAdminOwnerPageFromPreaggregates(t *testing.T) {
 	}
 	if len(store.statsGroupIDs) != 1 || store.statsGroupIDs[0] != "grp_owner" {
 		t.Fatalf("stats group ids = %#v", store.statsGroupIDs)
+	}
+	if len(store.accountIDGroupIDs) != 1 || store.accountIDGroupIDs[0] != "grp_owner" {
+		t.Fatalf("account id group ids = %#v", store.accountIDGroupIDs)
+	}
+	if len(concurrency.calls) != 1 ||
+		len(concurrency.calls[0]) != 2 ||
+		concurrency.calls[0][0] != "acct_1" ||
+		concurrency.calls[0][1] != "acct_2" {
+		t.Fatalf("concurrency calls = %#v", concurrency.calls)
 	}
 	if len(store.totalUsageInputs) != 1 {
 		t.Fatalf("total usage inputs = %+v", store.totalUsageInputs)
@@ -127,6 +145,9 @@ func TestServiceListMapsAdminOwnerPageFromPreaggregates(t *testing.T) {
 	}
 	if item.AccountStats.Total != 4 ||
 		item.AccountStats.Available != 3 ||
+		item.AccountStats.CurrentConcurrency != 6 ||
+		item.AccountStats.CurrentConcurrencyAvailable == nil ||
+		!*item.AccountStats.CurrentConcurrencyAvailable ||
 		item.AccountStats.Usage.TotalTokens != 150 ||
 		item.AccountStats.TodayUsage.TotalTokens != 25 ||
 		item.AccountStats.Usage.LastUsedAt == nil ||
@@ -264,7 +285,230 @@ func TestServiceListMapsTargetAuthorizedRowsAndSourceSummary(t *testing.T) {
 	if result.Items[0].AuthorizationSourceSummary != nil || result.Items[0].AccountCount != 2 {
 		t.Fatalf("owner item = %+v", result.Items[0])
 	}
+	if result.Items[0].AccountStats.CurrentConcurrencyAvailable != nil {
+		t.Fatalf("empty owner concurrency availability = %+v, want omitted", result.Items[0].AccountStats)
+	}
+	if authorized.AccountStats.CurrentConcurrencyAvailable != nil {
+		t.Fatalf("authorized concurrency availability = %+v, want omitted", authorized.AccountStats)
+	}
 	assertManagementGroupListDoesNotExposeDetails(t, result)
+}
+
+func TestServiceListChunksOwnerAccountConcurrencyWithoutReadingAuthorizedAccounts(t *testing.T) {
+	now := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
+	store := &managementGroupListStoreStub{
+		page: port.ManagementGroupListPage{Rows: []port.ManagementGroupListRow{
+			{
+				ID:              "grp_owner_a",
+				SystemAccountID: "sys_owner",
+				Name:            "Owner A",
+				ProviderCode:    "openai",
+				GroupType:       "personal",
+				AccessType:      "owner",
+			},
+			{
+				ID:                   "grp_authorized",
+				SystemAccountID:      "sys_other",
+				Name:                 "Authorized",
+				ProviderCode:         "openai",
+				GroupType:            "personal",
+				AccessType:           "authorized",
+				GroupAuthorizationID: "rauth_group",
+			},
+			{
+				ID:              "grp_owner_empty",
+				SystemAccountID: "sys_owner",
+				Name:            "Owner Empty",
+				ProviderCode:    "openai",
+				GroupType:       "personal",
+				AccessType:      "owner",
+			},
+		}},
+		stats: []port.ManagementGroupAccountStatsRow{
+			{SystemAccountID: "sys_owner", GroupID: "grp_owner_a", CurrentConcurrency: 999},
+			{SystemAccountID: "sys_other", GroupID: "grp_authorized", CurrentConcurrency: 77},
+			{SystemAccountID: "sys_owner", GroupID: "grp_owner_empty", CurrentConcurrency: 8},
+		},
+		timezone:      "UTC",
+		timezoneFound: true,
+	}
+	values := make(map[string]int, 205)
+	for index := 0; index < 205; index++ {
+		accountID := fmt.Sprintf("acct_%03d", index)
+		store.accountIDs = append(store.accountIDs, port.ManagementGroupAccountIDRow{
+			GroupID:   "grp_owner_a",
+			AccountID: accountID,
+		})
+		values[accountID] = 1
+	}
+	concurrency := &managementGroupConcurrencyReaderStub{values: values}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:              store,
+		AccountConcurrency: concurrency,
+		Now:                func() time.Time { return now },
+	})
+
+	result, err := service.List(context.Background(), ListInput{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+	})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(store.accountIDGroupIDs) != 2 ||
+		store.accountIDGroupIDs[0] != "grp_owner_a" ||
+		store.accountIDGroupIDs[1] != "grp_owner_empty" {
+		t.Fatalf("account id group ids = %#v", store.accountIDGroupIDs)
+	}
+	if len(concurrency.calls) != 3 ||
+		len(concurrency.calls[0]) != 100 ||
+		len(concurrency.calls[1]) != 100 ||
+		len(concurrency.calls[2]) != 5 {
+		t.Fatalf("concurrency calls = %#v", concurrency.calls)
+	}
+	owner := result.Items[0]
+	if owner.AccountStats.CurrentConcurrency != 205 ||
+		owner.AccountStats.CurrentConcurrencyAvailable == nil ||
+		!*owner.AccountStats.CurrentConcurrencyAvailable {
+		t.Fatalf("owner stats = %+v", owner.AccountStats)
+	}
+	authorized := result.Items[1]
+	if authorized.AccountStats.CurrentConcurrency != 77 ||
+		authorized.AccountStats.CurrentConcurrencyAvailable != nil {
+		t.Fatalf("authorized stats = %+v", authorized.AccountStats)
+	}
+	emptyOwner := result.Items[2]
+	if emptyOwner.AccountStats.CurrentConcurrency != 8 ||
+		emptyOwner.AccountStats.CurrentConcurrencyAvailable == nil ||
+		!*emptyOwner.AccountStats.CurrentConcurrencyAvailable {
+		t.Fatalf("empty owner stats = %+v", emptyOwner.AccountStats)
+	}
+	if !result.RuntimeSnapshot.AccountConcurrencyAvailable {
+		t.Fatalf("runtime snapshot = %+v", result.RuntimeSnapshot)
+	}
+}
+
+func TestServiceListKeepsPreaggregatesWhenAccountConcurrencyFails(t *testing.T) {
+	now := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
+	store := &managementGroupListStoreStub{
+		page: port.ManagementGroupListPage{Rows: []port.ManagementGroupListRow{
+			{
+				ID:              "grp_owner_live",
+				SystemAccountID: "sys_owner",
+				Name:            "Owner Live",
+				ProviderCode:    "openai",
+				GroupType:       "personal",
+				AccessType:      "owner",
+			},
+			{
+				ID:              "grp_owner_empty",
+				SystemAccountID: "sys_owner",
+				Name:            "Owner Empty",
+				ProviderCode:    "openai",
+				GroupType:       "personal",
+				AccessType:      "owner",
+			},
+			{
+				ID:                   "grp_authorized",
+				SystemAccountID:      "sys_other",
+				Name:                 "Authorized",
+				ProviderCode:         "openai",
+				GroupType:            "personal",
+				AccessType:           "authorized",
+				GroupAuthorizationID: "rauth_group",
+			},
+		}},
+		accountIDs: []port.ManagementGroupAccountIDRow{
+			{GroupID: "grp_owner_live", AccountID: "acct_live"},
+		},
+		stats: []port.ManagementGroupAccountStatsRow{
+			{SystemAccountID: "sys_owner", GroupID: "grp_owner_live", CurrentConcurrency: 17},
+			{SystemAccountID: "sys_owner", GroupID: "grp_owner_empty", CurrentConcurrency: 8},
+			{SystemAccountID: "sys_other", GroupID: "grp_authorized", CurrentConcurrency: 9},
+		},
+		timezone:      "UTC",
+		timezoneFound: true,
+	}
+	concurrency := &managementGroupConcurrencyReaderStub{err: errors.New("redis unavailable")}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:              store,
+		AccountConcurrency: concurrency,
+		Now:                func() time.Time { return now },
+	})
+
+	result, err := service.List(context.Background(), ListInput{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+	})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	liveOwner := result.Items[0]
+	if liveOwner.AccountStats.CurrentConcurrency != 17 ||
+		liveOwner.AccountStats.CurrentConcurrencyAvailable == nil ||
+		*liveOwner.AccountStats.CurrentConcurrencyAvailable {
+		t.Fatalf("live owner stats = %+v", liveOwner.AccountStats)
+	}
+	emptyOwner := result.Items[1]
+	if emptyOwner.AccountStats.CurrentConcurrency != 8 ||
+		emptyOwner.AccountStats.CurrentConcurrencyAvailable != nil {
+		t.Fatalf("empty owner stats = %+v", emptyOwner.AccountStats)
+	}
+	authorized := result.Items[2]
+	if authorized.AccountStats.CurrentConcurrency != 9 ||
+		authorized.AccountStats.CurrentConcurrencyAvailable != nil {
+		t.Fatalf("authorized stats = %+v", authorized.AccountStats)
+	}
+	if result.RuntimeSnapshot.AccountConcurrencyAvailable {
+		t.Fatalf("runtime snapshot = %+v, want unavailable", result.RuntimeSnapshot)
+	}
+}
+
+func TestServiceListAuthorizedOnlySkipsAccountIDAndConcurrencyReads(t *testing.T) {
+	store := &managementGroupListStoreStub{
+		page: port.ManagementGroupListPage{Rows: []port.ManagementGroupListRow{{
+			ID:                   "grp_authorized",
+			SystemAccountID:      "sys_owner",
+			Name:                 "Authorized",
+			ProviderCode:         "openai",
+			GroupType:            "personal",
+			AccessType:           "authorized",
+			GroupAuthorizationID: "rauth_group",
+		}}},
+		stats: []port.ManagementGroupAccountStatsRow{{
+			SystemAccountID:    "sys_owner",
+			GroupID:            "grp_authorized",
+			CurrentConcurrency: 12,
+		}},
+		timezone:      "UTC",
+		timezoneFound: true,
+	}
+	concurrency := &managementGroupConcurrencyReaderStub{
+		err: errors.New("must not be called"),
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:              store,
+		AccountConcurrency: concurrency,
+	})
+
+	result, err := service.List(context.Background(), ListInput{
+		ActorSystemAccountID: "sys_user",
+		ActorRole:            "user",
+	})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if store.accountIDCalls != 0 {
+		t.Fatalf("account id calls = %d, want 0", store.accountIDCalls)
+	}
+	if len(concurrency.calls) != 0 {
+		t.Fatalf("concurrency calls = %#v, want none", concurrency.calls)
+	}
+	if !result.RuntimeSnapshot.AccountConcurrencyAvailable ||
+		result.Items[0].AccountStats.CurrentConcurrency != 12 ||
+		result.Items[0].AccountStats.CurrentConcurrencyAvailable != nil {
+		t.Fatalf("result = %+v", result)
+	}
 }
 
 func TestServiceListForcesSelfScopeForUsersAndAdminMyGroups(t *testing.T) {
@@ -375,6 +619,7 @@ func TestServiceListUsesProgressivePaginationBounds(t *testing.T) {
 				t.Fatalf("empty result = %+v", result)
 			}
 			if store.timezoneCalls != 0 ||
+				store.accountIDCalls != 0 ||
 				store.statsCalls != 0 ||
 				store.totalUsageCalls != 0 ||
 				store.todayUsageCalls != 0 ||
@@ -408,6 +653,7 @@ func TestServiceListDoesNotMaskEnrichmentFailures(t *testing.T) {
 		store *managementGroupListStoreStub
 	}{
 		{name: "list", store: &managementGroupListStoreStub{listErr: wantErr}},
+		{name: "account ids", store: &managementGroupListStoreStub{page: basePage, accountIDsErr: wantErr}},
 		{name: "stats", store: &managementGroupListStoreStub{page: basePage, statsErr: wantErr}},
 		{name: "total usage", store: &managementGroupListStoreStub{page: basePage, totalUsageErr: wantErr}},
 		{
@@ -649,12 +895,14 @@ func stringPointer(value string) *string {
 type managementGroupListStoreStub struct {
 	listInput              port.ManagementGroupListInput
 	statsGroupIDs          []string
+	accountIDGroupIDs      []string
 	totalUsageInputs       []port.ManagementGroupUsageLookupInput
 	todayUsageInputs       []port.ManagementGroupUsageLookupInput
 	dailyStatDate          string
 	sourceAuthorizationIDs []string
 	page                   port.ManagementGroupListPage
 	stats                  []port.ManagementGroupAccountStatsRow
+	accountIDs             []port.ManagementGroupAccountIDRow
 	totalUsage             []port.ManagementGroupUsageRow
 	todayUsage             []port.ManagementGroupUsageRow
 	sources                []port.ManagementGroupAuthorizationSourceRow
@@ -662,12 +910,14 @@ type managementGroupListStoreStub struct {
 	timezoneFound          bool
 	listErr                error
 	statsErr               error
+	accountIDsErr          error
 	totalUsageErr          error
 	todayUsageErr          error
 	sourceErr              error
 	timezoneErr            error
 	listCalls              int
 	statsCalls             int
+	accountIDCalls         int
 	totalUsageCalls        int
 	todayUsageCalls        int
 	sourceCalls            int
@@ -704,6 +954,15 @@ func (s *managementGroupListStoreStub) ListManagementGroupAccountStats(
 	s.statsCalls++
 	s.statsGroupIDs = append([]string(nil), groupIDs...)
 	return s.stats, s.statsErr
+}
+
+func (s *managementGroupListStoreStub) ListManagementGroupAccountIDs(
+	_ context.Context,
+	groupIDs []string,
+) ([]port.ManagementGroupAccountIDRow, error) {
+	s.accountIDCalls++
+	s.accountIDGroupIDs = append([]string(nil), groupIDs...)
+	return s.accountIDs, s.accountIDsErr
 }
 
 func (s *managementGroupListStoreStub) ListManagementGroupUsageTotals(
@@ -745,3 +1004,27 @@ func (s *managementGroupListStoreStub) GetManagementUsageStatsTimezone(
 var _ port.ManagementGroupOptionReader = (*managementGroupListStoreStub)(nil)
 var _ port.ManagementGroupListReader = (*managementGroupListStoreStub)(nil)
 var _ port.ManagementUsageStatsTimezoneReader = (*managementGroupListStoreStub)(nil)
+
+type managementGroupConcurrencyReaderStub struct {
+	calls  [][]string
+	values map[string]int
+	err    error
+}
+
+func (s *managementGroupConcurrencyReaderStub) LoadAccountCurrentConcurrencyByIDs(
+	_ context.Context,
+	accountIDs []string,
+	_ time.Time,
+) (map[string]int, error) {
+	s.calls = append(s.calls, append([]string(nil), accountIDs...))
+	if s.err != nil {
+		return nil, s.err
+	}
+	result := make(map[string]int, len(accountIDs))
+	for _, accountID := range accountIDs {
+		result[accountID] = s.values[accountID]
+	}
+	return result, nil
+}
+
+var _ AccountConcurrencyReader = (*managementGroupConcurrencyReaderStub)(nil)

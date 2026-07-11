@@ -131,6 +131,14 @@
               <a-button type="primary" @click="emit('advanced-open')">加载高级配置</a-button>
             </div>
             <div v-else-if="shouldRenderAdvancedSections" class="advanced-section-stack">
+              <AccountGptRequestOverridesSection
+                v-if="form.providerCode === 'gpt'"
+                :form="form"
+                :model-options="modelOptions"
+                :models-loading="modelsLoading"
+                :readonly="authorizedEditing"
+              />
+
               <AccountStrategySection
                 :form="form"
                 :is-management-view="isManagementView"
@@ -192,6 +200,7 @@ import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountExtraInfoSection from './AccountExtraInfoSection.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
+import AccountGptRequestOverridesSection from './AccountGptRequestOverridesSection.vue'
 import AccountMetaFields from './AccountMetaFields.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
@@ -328,7 +337,9 @@ const advancedConfiguredCount = computed(() => {
     Boolean(form.accountExpiresAt),
     form.availabilitySchedule.enabled,
     errorPolicyRules.value.length > 0,
-    responseInspectionRules.value.length > 0
+    responseInspectionRules.value.length > 0,
+    Boolean(form.serviceTierOverride),
+    Boolean(form.reasoningEffortOverride)
   ]
   return checks.filter(Boolean).length
 })
