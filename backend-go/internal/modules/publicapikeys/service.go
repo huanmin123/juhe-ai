@@ -21,11 +21,12 @@ const (
 	StatusActive   = "active"
 	StatusDisabled = "disabled"
 
-	maxSafeInteger      = 9007199254740991
-	defaultScheduleTZ   = "UTC"
-	apiKeyCreatedReason = "api_key_created"
-	apiKeyUpdatedReason = "api_key_updated"
-	apiKeyDeletedReason = "api_key_deleted"
+	maxSafeInteger            = 9007199254740991
+	defaultScheduleTZ         = "UTC"
+	apiKeyInvalidationTimeout = 5 * time.Second
+	apiKeyCreatedReason       = "api_key_created"
+	apiKeyUpdatedReason       = "api_key_updated"
+	apiKeyDeletedReason       = "api_key_deleted"
 )
 
 var (
@@ -44,6 +45,7 @@ var (
 
 type APIKeyGatewayCacheInvalidator interface {
 	InvalidateAPIKeyValidationCache(ctx context.Context) error
+	InvalidateAPIKeyLookupCache(ctx context.Context, apiKeyID string, reason string) error
 	InvalidateGatewayRuntime(ctx context.Context, reason string) error
 	InvalidateAPIKeyQuotaChanged(ctx context.Context, apiKeyID string, reason string) error
 }
@@ -537,19 +539,39 @@ func (s *Service) invalidateAPIKeyCreated(ctx context.Context, apiKeyID string) 
 	if s.invalidator == nil {
 		return
 	}
-	_ = s.invalidator.InvalidateGatewayRuntime(ctx, apiKeyCreatedReason)
-	_ = s.invalidator.InvalidateAPIKeyQuotaChanged(ctx, apiKeyID, apiKeyCreatedReason)
+	invalidationCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		apiKeyInvalidationTimeout,
+	)
+	defer cancel()
+	_ = s.invalidator.InvalidateAPIKeyLookupCache(
+		invalidationCtx,
+		apiKeyID,
+		apiKeyCreatedReason,
+	)
+	_ = s.invalidator.InvalidateGatewayRuntime(invalidationCtx, apiKeyCreatedReason)
+	_ = s.invalidator.InvalidateAPIKeyQuotaChanged(
+		invalidationCtx,
+		apiKeyID,
+		apiKeyCreatedReason,
+	)
 }
 
 func (s *Service) invalidateAPIKeyChanged(ctx context.Context, apiKeyID string, reason string) error {
 	if s.invalidator == nil {
 		return nil
 	}
-	if err := s.invalidator.InvalidateAPIKeyValidationCache(ctx); err != nil {
+	invalidationCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		apiKeyInvalidationTimeout,
+	)
+	defer cancel()
+	if err := s.invalidator.InvalidateAPIKeyValidationCache(invalidationCtx); err != nil {
 		return err
 	}
-	_ = s.invalidator.InvalidateGatewayRuntime(ctx, reason)
-	_ = s.invalidator.InvalidateAPIKeyQuotaChanged(ctx, apiKeyID, reason)
+	_ = s.invalidator.InvalidateAPIKeyLookupCache(invalidationCtx, apiKeyID, reason)
+	_ = s.invalidator.InvalidateGatewayRuntime(invalidationCtx, reason)
+	_ = s.invalidator.InvalidateAPIKeyQuotaChanged(invalidationCtx, apiKeyID, reason)
 	return nil
 }
 

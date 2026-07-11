@@ -157,6 +157,7 @@ func TestServiceRevealForcesSelfOwnerAndRejectsMissingOrInvalidCiphertext(t *tes
 func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUsage(t *testing.T) {
 	now := time.Date(2026, 7, 11, 5, 6, 7, 0, time.UTC)
 	events := []string{}
+	ctx, cancel := context.WithCancel(context.Background())
 	store := &managementAPIKeySecretStoreStub{
 		refreshRow: port.ManagementAPIKeyListRow{
 			ID:                       "key_1",
@@ -185,7 +186,8 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 				TotalTokens:  30,
 			},
 		}},
-		events: &events,
+		events:      &events,
+		afterCommit: cancel,
 	}
 	invalidator := &managementAPIKeyInvalidatorStub{events: &events}
 	service := NewServiceWithOptions(ServiceOptions{
@@ -198,7 +200,7 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 		NewSecret:        func() (string, error) { return "sk-refreshed-secret-0123456789", nil },
 	})
 
-	result, err := service.Refresh(context.Background(), SecretInput{
+	result, err := service.Refresh(ctx, SecretInput{
 		ActorSystemAccountID: "sys_admin",
 		ActorRole:            "admin",
 		APIKeyID:             " key_1 ",
@@ -207,7 +209,10 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 	if err != nil {
 		t.Fatalf("Refresh() error = %v", err)
 	}
-	if got, want := events, []string{"tx_begin", "lock", "update", "tx_commit", "validation", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("request context error = %v, want canceled", ctx.Err())
+	}
+	if got, want := events, []string{"tx_begin", "lock", "update", "tx_commit", "validation", "lookup", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
 	if store.lockInput != (port.ManagementAPIKeySecretScope{APIKeyID: "key_1", SystemAccountID: "sys_owner"}) {
@@ -226,11 +231,26 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 	if err != nil || payload["key"] != "sk-refreshed-secret-0123456789" {
 		t.Fatalf("encrypted payload = %#v, err = %v", payload, err)
 	}
-	if invalidator.calls != 3 ||
+	if invalidator.calls != 4 ||
+		invalidator.lookupReason != "api_key_secret_refreshed" ||
+		invalidator.lookupAPIKeyID != "key_1" ||
 		invalidator.runtimeReason != "api_key_secret_refreshed" ||
 		invalidator.quotaReason != "api_key_secret_refreshed" ||
 		invalidator.quotaAPIKeyID != "key_1" {
 		t.Fatalf("invalidator = %+v", invalidator)
+	}
+	for name, snapshot := range map[string]managementAPIKeyUpdateContextSnapshot{
+		"validation": invalidator.validationContext,
+		"lookup":     invalidator.lookupContext,
+		"runtime":    invalidator.runtimeContext,
+		"quota":      invalidator.quotaContext,
+	} {
+		if snapshot.err != nil || !snapshot.hasDeadline {
+			t.Fatalf("%s context = %+v, want live bounded context", name, snapshot)
+		}
+		if name != "validation" && !snapshot.deadline.Equal(invalidator.validationContext.deadline) {
+			t.Fatalf("%s deadline = %s, validation deadline = %s", name, snapshot.deadline, invalidator.validationContext.deadline)
+		}
 	}
 	if len(store.usageScopes) != 1 ||
 		store.usageScopes[0] != (port.ManagementAPIKeyUsageScope{SystemAccountID: "sys_owner", APIKeyID: "key_1"}) {
@@ -353,13 +373,23 @@ func TestServiceRefreshValidationFailureOccursAfterCommitAndStopsLaterEffects(t 
 		NewSecret:        func() (string, error) { return "sk-committed-secret-0123456789", nil },
 	})
 
-	_, err := service.Refresh(ctx, SecretInput{
+	result, err := service.Refresh(ctx, SecretInput{
 		ActorSystemAccountID: "sys_admin",
 		ActorRole:            "admin",
 		APIKeyID:             "key_1",
 	})
-	if !errors.Is(err, validationErr) {
-		t.Fatalf("Refresh() error = %v, want %v", err, validationErr)
+	if !errors.Is(err, ErrAPIKeyRefreshValidationCacheInvalidation) {
+		t.Fatalf("Refresh() error = %v, want %v", err, ErrAPIKeyRefreshValidationCacheInvalidation)
+	}
+	if errors.Is(err, validationErr) ||
+		err.Error() != ErrAPIKeyRefreshValidationCacheInvalidation.Error() {
+		t.Fatalf("Refresh() error leaked unstable cause: %v", err)
+	}
+	if !result.Committed ||
+		result.ID != "key_1" ||
+		result.OwnerSystemAccountID != "sys_owner" ||
+		result.Key == "" {
+		t.Fatalf("Refresh() committed result = %+v", result)
 	}
 	if got, want := events, []string{"tx_begin", "lock", "update", "tx_commit", "validation"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
@@ -394,6 +424,7 @@ func TestServiceRefreshRuntimeAndQuotaInvalidationAreBestEffort(t *testing.T) {
 		updateFound:  true,
 	}
 	invalidator := &managementAPIKeyInvalidatorStub{
+		lookupErr:  errors.New("lookup unavailable"),
 		runtimeErr: errors.New("runtime unavailable"),
 		quotaErr:   errors.New("quota unavailable"),
 	}
@@ -414,7 +445,7 @@ func TestServiceRefreshRuntimeAndQuotaInvalidationAreBestEffort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh() error = %v", err)
 	}
-	if result.Key == "" || invalidator.calls != 3 {
+	if result.Key == "" || invalidator.calls != 4 {
 		t.Fatalf("result=%+v invalidator=%+v", result, invalidator)
 	}
 }
@@ -535,38 +566,61 @@ type managementAPIKeyInvalidatorStub struct {
 	events                       *[]string
 	calls                        int
 	validationErr                error
+	lookupErr                    error
 	runtimeErr                   error
 	quotaErr                     error
+	lookupReason                 string
+	lookupAPIKeyID               string
 	runtimeReason                string
 	quotaReason                  string
 	quotaAPIKeyID                string
 	validationContextErr         error
 	validationContextHasDeadline bool
+	validationContext            managementAPIKeyUpdateContextSnapshot
+	lookupContext                managementAPIKeyUpdateContextSnapshot
+	runtimeContext               managementAPIKeyUpdateContextSnapshot
+	quotaContext                 managementAPIKeyUpdateContextSnapshot
 }
 
 func (s *managementAPIKeyInvalidatorStub) InvalidateAPIKeyValidationCache(ctx context.Context) error {
 	s.calls++
 	s.validationContextErr = ctx.Err()
 	_, s.validationContextHasDeadline = ctx.Deadline()
+	s.validationContext = managementAPIKeyUpdateSnapshot(ctx)
 	s.record("validation")
 	return s.validationErr
 }
 
-func (s *managementAPIKeyInvalidatorStub) InvalidateGatewayRuntime(_ context.Context, reason string) error {
+func (s *managementAPIKeyInvalidatorStub) InvalidateAPIKeyLookupCache(
+	ctx context.Context,
+	apiKeyID string,
+	reason string,
+) error {
+	s.calls++
+	s.lookupAPIKeyID = apiKeyID
+	s.lookupReason = reason
+	s.lookupContext = managementAPIKeyUpdateSnapshot(ctx)
+	s.record("lookup")
+	return s.lookupErr
+}
+
+func (s *managementAPIKeyInvalidatorStub) InvalidateGatewayRuntime(ctx context.Context, reason string) error {
 	s.calls++
 	s.runtimeReason = reason
+	s.runtimeContext = managementAPIKeyUpdateSnapshot(ctx)
 	s.record("runtime")
 	return s.runtimeErr
 }
 
 func (s *managementAPIKeyInvalidatorStub) InvalidateAPIKeyQuotaChanged(
-	_ context.Context,
+	ctx context.Context,
 	apiKeyID string,
 	reason string,
 ) error {
 	s.calls++
 	s.quotaAPIKeyID = apiKeyID
 	s.quotaReason = reason
+	s.quotaContext = managementAPIKeyUpdateSnapshot(ctx)
 	s.record("quota")
 	return s.quotaErr
 }

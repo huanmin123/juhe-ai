@@ -6,6 +6,7 @@ const runtimeCacheSource = readFileSync(new URL('../../modules/gateway/runtime/r
 const apiKeyQuotaSource = readFileSync(new URL('../../modules/gateway/quota/api-key-quota.service.ts', import.meta.url), 'utf8')
 const authorizationQuotaSource = readFileSync(new URL('../../modules/gateway/quota/authorization-quota.service.ts', import.meta.url), 'utf8')
 const backgroundIpcSource = readFileSync(new URL('../../modules/background/background-ipc.ts', import.meta.url), 'utf8')
+const repositoryLookupsSource = readFileSync(new URL('../../storage/repository-lookups.ts', import.meta.url), 'utf8')
 
 assert.match(invalidationSource, /createRuntimeStateStore\('gateway_cache_invalidation'\)/, '网关缓存失效应使用 runtime state store 承接跨进程版本')
 assert.match(invalidationSource, /runtimeConfig\.runtimeStateDriver !== 'redis'/, '非 Redis runtime state 模式不应触发跨进程同步')
@@ -17,13 +18,14 @@ assert.match(invalidationSource, /publishGatewayCacheInvalidationToRuntimeState\
 assert.match(invalidationSource, /applyRuntimeStateCacheInvalidation/, '读取侧应把远端版本变化转换为本地 handler 调用')
 assert.match(invalidationSource, /type GatewayRuntimeCacheInvalidationHandler = \(reason: string\) => void/, '网关运行态失效 handler 应保留 reason，避免账户更新误清系统设置缓存')
 assert.match(invalidationSource, /handler\(reason\)/, '本进程网关运行态失效应把 reason 传给 handler')
-assert.match(invalidationSource, /handler\(state\.reason\)/, '跨进程网关运行态失效应把远端 reason 传给 handler')
+assert.match(invalidationSource, /runGatewayRuntimeCacheInvalidators\(state\.reason\)/, '跨进程网关运行态失效应把远端 reason 传给统一 listener')
 assert.match(invalidationSource, /handler\(state\.apiKeyId\)/, 'API Key 额度远端失效应保留定点 apiKeyId')
 assertNotifyPublishesRuntimeState(invalidationSource, 'notifyGatewayRuntimeCacheInvalidation', 'gateway_runtime_cache')
 assertNotifyPublishesRuntimeState(invalidationSource, 'notifyAuthorizationQuotaCacheInvalidation', 'authorization_quota_cache')
 assertNotifyPublishesRuntimeState(invalidationSource, 'notifyApiKeyQuotaCacheInvalidation', 'api_key_quota_cache')
 assertIpcCacheInvalidationRemainsHotPushOnly(backgroundIpcSource)
 assertGatewayRuntimeInvalidationClearsSettingsByReason(runtimeCacheSource)
+assertApiKeyLookupLocalCacheInvalidation(invalidationSource, repositoryLookupsSource)
 
 for (const functionName of [
   'readCachedGatewaySettingsAsync',
@@ -63,10 +65,32 @@ function assertGatewayRuntimeInvalidationClearsSettingsByReason(source: string):
   assert.match(reasonBlock, /!reason \|\| reason === 'settings_updated'/, '只有无 reason 的兼容清理和 settings_updated 才能清系统设置缓存')
 }
 
+function assertApiKeyLookupLocalCacheInvalidation(invalidationSource: string, lookupSource: string): void {
+  assert.match(
+    invalidationSource,
+    /shouldInvalidateApiKeyLookupCache\(reason\)[\s\S]*clearLocalApiKeyLookupCache\(\)/,
+    'gateway runtime listener 应按 API Key mutation reason 清空本进程 lookup LRU'
+  )
+  const helperBlock = sourceFunctionBlock(invalidationSource, 'function shouldInvalidateApiKeyLookupCache')
+  const expectedReasons = ['api_key_created', 'api_key_updated', 'api_key_secret_refreshed', 'api_key_deleted']
+  for (const reason of expectedReasons) {
+    assert.match(helperBlock, new RegExp(`'${reason}'`), `API Key lookup runtime reason 缺少 ${reason}`)
+  }
+  const actualReasons = [...helperBlock.matchAll(/'([^']+)'/g)].map((match) => match[1]).sort()
+  assert.deepEqual(actualReasons, [...expectedReasons].sort(), '只有 API Key create/update/refresh/delete reason 可以清本进程 lookup LRU')
+  const clearBlock = sourceFunctionBlock(lookupSource, 'export function clearLocalApiKeyLookupCache')
+  assert.match(clearBlock, /apiKeyLookupCache\.clear\(\)/, 'API Key lookup 本地清理 helper 必须清空本进程 LRU')
+  assert.doesNotMatch(clearBlock, /apiKeyLookupSharedCache|clearLookupSharedCache/, 'runtime listener 不应重复清 shared lookup cache')
+}
+
 function assertNotifyPublishesRuntimeState(source: string, functionName: string, topic: string): void {
   const block = sourceFunctionBlock(source, `export function ${functionName}`)
   assert.match(block, new RegExp(`publishGatewayCacheInvalidationToRuntimeState\\('${topic}'`), `${functionName} 必须发布 Redis runtime state 版本`)
-  assert.match(block, /runCacheInvalidators/, `${functionName} 应保留本进程 handler 热清理`)
+  if (topic === 'gateway_runtime_cache') {
+    assert.match(block, /runGatewayRuntimeCacheInvalidators\(reason\)/, `${functionName} 应保留本进程统一 listener 热清理`)
+  } else {
+    assert.match(block, /runCacheInvalidators/, `${functionName} 应保留本进程 handler 热清理`)
+  }
   assert.doesNotMatch(block, /process\.send|sendBackgroundWorkerMessage|gateway_runtime_cache_invalidate/, `${functionName} 不能回退成 IPC-only 缓存失效广播`)
 }
 

@@ -490,11 +490,12 @@ func TestServiceUpdateUsesDetachedBoundedPostCommitContexts(t *testing.T) {
 	if !errors.Is(ctx.Err(), context.Canceled) {
 		t.Fatalf("original context error = %v, want context canceled", ctx.Err())
 	}
-	if got, want := events, []string{"update", "validation", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
+	if got, want := events, []string{"update", "validation", "lookup", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
 	for name, snapshot := range map[string]managementAPIKeyUpdateContextSnapshot{
 		"validation": invalidator.validationContext,
+		"lookup":     invalidator.lookupContext,
 		"runtime":    invalidator.runtimeContext,
 		"quota":      invalidator.quotaContext,
 		"usage": {
@@ -553,7 +554,7 @@ func TestServiceUpdateInvalidatesBeforeBlockedUsageRead(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("usage read did not start")
 	}
-	if got, want := events, []string{"update", "validation", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
+	if got, want := events, []string{"update", "validation", "lookup", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events before releasing usage = %v, want %v", got, want)
 	}
 	releaseUsage()
@@ -661,10 +662,10 @@ func TestServiceUpdateParseFailureStillRunsPostCommitInvalidations(t *testing.T)
 					t.Fatalf("result fabricated schedule or lost safe quota: %+v", result)
 				}
 			}
-			if got, want := events, []string{"update", "validation", "runtime", "quota"}; !reflect.DeepEqual(got, want) {
+			if got, want := events, []string{"update", "validation", "lookup", "runtime", "quota"}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("events = %v, want %v", got, want)
 			}
-			if store.usageCalls != 0 || invalidator.calls != 3 {
+			if store.usageCalls != 0 || invalidator.calls != 4 {
 				t.Fatalf("usageCalls=%d invalidator=%+v", store.usageCalls, invalidator)
 			}
 		})
@@ -745,6 +746,7 @@ func TestServiceUpdateRuntimeQuotaAreBestEffortAndUsageFailureIsCommitted(t *tes
 		store.result.Before.AvailabilityScheduleJSON = &scheduleJSON
 		store.result.After.AvailabilityScheduleJSON = &scheduleJSON
 		invalidator := &managementAPIKeyInvalidatorStub{
+			lookupErr:  errors.New("lookup unavailable"),
 			runtimeErr: errors.New("runtime unavailable"),
 			quotaErr:   errors.New("quota unavailable"),
 		}
@@ -761,7 +763,7 @@ func TestServiceUpdateRuntimeQuotaAreBestEffortAndUsageFailureIsCommitted(t *tes
 		})
 		if err != nil ||
 			!result.Committed ||
-			invalidator.calls != 3 ||
+			invalidator.calls != 4 ||
 			!store.updateInput.HasStatus ||
 			store.updateInput.HasAvailabilitySchedule ||
 			result.After.AvailabilitySchedule == nil {
@@ -792,11 +794,11 @@ func TestServiceUpdateRuntimeQuotaAreBestEffortAndUsageFailureIsCommitted(t *tes
 			result.After.Status != "disabled" {
 			t.Fatalf("result=%+v err=%v", result, err)
 		}
-		if got, want := events, []string{"update", "validation", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
+		if got, want := events, []string{"update", "validation", "lookup", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("events = %v, want %v", got, want)
 		}
-		if invalidator.calls != 3 {
-			t.Fatalf("invalidator calls = %d, want 3", invalidator.calls)
+		if invalidator.calls != 4 {
+			t.Fatalf("invalidator calls = %d, want 4", invalidator.calls)
 		}
 	})
 }
@@ -1013,6 +1015,7 @@ type managementAPIKeyUpdateContextSnapshot struct {
 type managementAPIKeyUpdateContextInvalidatorStub struct {
 	events            *[]string
 	validationContext managementAPIKeyUpdateContextSnapshot
+	lookupContext     managementAPIKeyUpdateContextSnapshot
 	runtimeContext    managementAPIKeyUpdateContextSnapshot
 	quotaContext      managementAPIKeyUpdateContextSnapshot
 }
@@ -1022,6 +1025,16 @@ func (s *managementAPIKeyUpdateContextInvalidatorStub) InvalidateAPIKeyValidatio
 ) error {
 	s.validationContext = managementAPIKeyUpdateSnapshot(ctx)
 	s.record("validation")
+	return nil
+}
+
+func (s *managementAPIKeyUpdateContextInvalidatorStub) InvalidateAPIKeyLookupCache(
+	ctx context.Context,
+	_ string,
+	_ string,
+) error {
+	s.lookupContext = managementAPIKeyUpdateSnapshot(ctx)
+	s.record("lookup")
 	return nil
 }
 

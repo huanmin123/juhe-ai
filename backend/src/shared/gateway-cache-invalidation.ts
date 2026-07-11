@@ -3,6 +3,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, runAfterDatabaseCommit } from '../storage/database.js'
 import { scheduleProcessFatalError } from './process-fatal.js'
 import { createRuntimeStateStore } from './runtime-state-store.js'
+import { clearLocalApiKeyLookupCache } from '../storage/repository-lookups.js'
 
 type GatewayRuntimeCacheInvalidationHandler = (reason: string) => void
 type CacheInvalidationMetadata = {
@@ -58,7 +59,7 @@ export function registerApiKeyQuotaCacheInvalidator(handler: ApiKeyQuotaInvalida
 
 export function notifyGatewayRuntimeCacheInvalidation(reason: string): void {
   runGatewayCacheInvalidatorsAfterCommit(() => {
-    runCacheInvalidators('gateway_runtime_cache', reason, gatewayRuntimeCacheInvalidators, (handler) => handler(reason))
+    runGatewayRuntimeCacheInvalidators(reason)
     publishGatewayCacheInvalidationToRuntimeState('gateway_runtime_cache', reason)
   })
 }
@@ -169,7 +170,7 @@ async function syncGatewayCacheInvalidationsFromRuntimeStateUnsafe(): Promise<vo
 
 function applyRuntimeStateCacheInvalidation(topic: GatewayCacheInvalidationTopic, state: GatewayCacheInvalidationState): void {
   if (topic === 'gateway_runtime_cache') {
-    runCacheInvalidators(topic, state.reason, gatewayRuntimeCacheInvalidators, (handler) => handler(state.reason))
+    runGatewayRuntimeCacheInvalidators(state.reason)
     return
   }
   if (topic === 'authorization_quota_cache') {
@@ -179,6 +180,20 @@ function applyRuntimeStateCacheInvalidation(topic: GatewayCacheInvalidationTopic
   runCacheInvalidators(topic, state.reason, apiKeyQuotaCacheInvalidators, (handler) => handler(state.apiKeyId), {
     apiKeyId: state.apiKeyId
   })
+}
+
+function runGatewayRuntimeCacheInvalidators(reason: string): void {
+  if (shouldInvalidateApiKeyLookupCache(reason)) {
+    clearLocalApiKeyLookupCache()
+  }
+  runCacheInvalidators('gateway_runtime_cache', reason, gatewayRuntimeCacheInvalidators, (handler) => handler(reason))
+}
+
+function shouldInvalidateApiKeyLookupCache(reason: string): boolean {
+  return reason === 'api_key_created'
+    || reason === 'api_key_updated'
+    || reason === 'api_key_secret_refreshed'
+    || reason === 'api_key_deleted'
 }
 
 function gatewayCacheInvalidationStateKey(topic: GatewayCacheInvalidationTopic): string {

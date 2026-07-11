@@ -165,6 +165,11 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	)
 	validationErr := s.invalidator.InvalidateAPIKeyValidationCache(invalidationCtx)
 	if validationErr == nil {
+		_ = s.invalidator.InvalidateAPIKeyLookupCache(
+			invalidationCtx,
+			stored.After.ID,
+			apiKeyUpdatedReason,
+		)
 		_ = s.invalidator.InvalidateGatewayRuntime(invalidationCtx, apiKeyUpdatedReason)
 		_ = s.invalidator.InvalidateAPIKeyQuotaChanged(
 			invalidationCtx,

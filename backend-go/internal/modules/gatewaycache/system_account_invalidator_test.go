@@ -264,6 +264,80 @@ func TestSystemAccountInvalidatorInvalidateAPIKeyValidationCacheWritesVersion(t 
 	}
 }
 
+func TestSystemAccountInvalidatorInvalidateAPIKeyLookupCacheWritesNodeCompatibleVersion(t *testing.T) {
+	cache := &rawSetRecorder{}
+	state := &rawSetRecorder{}
+	invalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		Cache:      cache,
+		State:      state,
+		Namespace:  "test-ns",
+		Now:        func() time.Time { return time.Date(2026, 7, 12, 8, 9, 10, 123*int(time.Millisecond), time.UTC) },
+		NewVersion: versionSequence("api-key-lookup-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+
+	if err := invalidator.InvalidateAPIKeyLookupCache(
+		context.Background(),
+		" key_123 ",
+		" api_key_updated ",
+	); err != nil {
+		t.Fatalf("InvalidateAPIKeyLookupCache() error = %v", err)
+	}
+
+	if len(cache.calls) != 1 {
+		t.Fatalf("cache calls = %d, want 1", len(cache.calls))
+	}
+	if cache.calls[0].key != "juhe-ai:test-ns:cache-version:lookup:api-key" {
+		t.Fatalf("cache key = %q", cache.calls[0].key)
+	}
+	if string(cache.calls[0].value) != "api-key-lookup-version" {
+		t.Fatalf("cache version = %q", string(cache.calls[0].value))
+	}
+	if cache.calls[0].ttl != 30*24*time.Hour {
+		t.Fatalf("cache ttl = %v, want 30 days", cache.calls[0].ttl)
+	}
+	if len(state.calls) != 0 {
+		t.Fatalf("runtime state calls = %d, want 0", len(state.calls))
+	}
+}
+
+func TestSystemAccountInvalidatorInvalidateAPIKeyLookupCacheRequiresReasonAndCache(t *testing.T) {
+	withoutCache, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		State:      &rawSetRecorder{},
+		Namespace:  "test-ns",
+		NewVersion: versionSequence("unused"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+	if err := withoutCache.InvalidateAPIKeyLookupCache(
+		context.Background(),
+		"key_1",
+		"api_key_updated",
+	); err == nil || err.Error() != "gateway cache redis setter is required" {
+		t.Fatalf("missing cache error = %v", err)
+	}
+
+	withCache, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		Cache:      &rawSetRecorder{},
+		State:      &rawSetRecorder{},
+		Namespace:  "test-ns",
+		NewVersion: versionSequence("unused"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+	if err := withCache.InvalidateAPIKeyLookupCache(
+		context.Background(),
+		"key_1",
+		" ",
+	); err == nil {
+		t.Fatal("blank reason error = nil, want non-nil")
+	}
+}
+
 func TestSystemAccountInvalidatorInvalidateGlobalSettingsCacheWritesNodeCompatibleVersion(t *testing.T) {
 	cache := &rawSetRecorder{}
 	state := &rawSetRecorder{}

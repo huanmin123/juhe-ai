@@ -482,6 +482,10 @@ export function invalidateApiKeyLookupCache(id?: string): void {
   invalidateLookupCache(apiKeyLookupCache, apiKeyLookupSharedCache, id)
 }
 
+export function clearLocalApiKeyLookupCache(): void {
+  apiKeyLookupCache.clear()
+}
+
 export function invalidateSystemTeamLookupCache(id?: string): void {
   invalidateLookupCache(systemTeamLookupCache, systemTeamLookupSharedCache, id)
 }

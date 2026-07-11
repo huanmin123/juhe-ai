@@ -18,6 +18,7 @@ const (
 	SystemSettingsCacheName   = "settings:system"
 	GroupLookupCacheName      = "lookup:group"
 	GroupAccountIDsCacheName  = "lookup:group-account-ids"
+	APIKeyLookupCacheName     = "lookup:api-key"
 
 	RuntimeInvalidationStoreName = "gateway_cache_invalidation"
 	GatewayRuntimeCacheTopic     = "gateway_runtime_cache"
@@ -143,6 +144,32 @@ func (i *SystemAccountInvalidator) InvalidateProxyChanged(ctx context.Context, r
 
 func (i *SystemAccountInvalidator) InvalidateAPIKeyValidationCache(ctx context.Context) error {
 	return i.clearAPIKeyValidationCache(ctx)
+}
+
+func (i *SystemAccountInvalidator) InvalidateAPIKeyLookupCache(
+	ctx context.Context,
+	_ string,
+	reason string,
+) error {
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("gateway api key lookup invalidation reason is required")
+	}
+	if i.cache == nil {
+		return fmt.Errorf("gateway cache redis setter is required")
+	}
+	now := i.now().UTC()
+	version, err := i.newVersion(now)
+	if err != nil {
+		return fmt.Errorf("generate api key lookup cache version: %w", err)
+	}
+	key, err := SharedCacheVersionKey(i.namespace, APIKeyLookupCacheName)
+	if err != nil {
+		return err
+	}
+	if err := i.cache.SetRaw(ctx, key, []byte(version), SharedCacheVersionTTL); err != nil {
+		return fmt.Errorf("clear api key lookup shared cache: %w", err)
+	}
+	return nil
 }
 
 func (i *SystemAccountInvalidator) InvalidateGlobalSettingsCache(ctx context.Context) error {
