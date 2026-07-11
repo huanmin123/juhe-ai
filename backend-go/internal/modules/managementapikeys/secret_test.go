@@ -1,9 +1,12 @@
 package managementapikeys
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -257,6 +260,7 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 		t.Fatalf("usage scopes = %+v", store.usageScopes)
 	}
 	if result.Key != "sk-refreshed-secret-0123456789" ||
+		!result.UsageAvailable ||
 		result.PreviousKeyMarker != "sk-before...before" ||
 		result.KeyMarker != "sk-refre...23456789" ||
 		result.OwnerSystemAccountID != "sys_owner" ||
@@ -272,6 +276,7 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 func TestServiceRefreshKeepsCommittedSecretWhenUsageSummaryFails(t *testing.T) {
 	events := []string{}
 	usageErr := errors.New("usage summary unavailable")
+	var logs bytes.Buffer
 	store := &managementAPIKeySecretStoreStub{
 		refreshRow: port.ManagementAPIKeyListRow{
 			ID:                       "key_1",
@@ -298,8 +303,11 @@ func TestServiceRefreshKeepsCommittedSecretWhenUsageSummaryFails(t *testing.T) {
 		SecretStore:      store,
 		SecretTransactor: store,
 		Invalidator:      &managementAPIKeyInvalidatorStub{events: &events},
-		Secret:           "management-api-key-secret-test",
-		NewSecret:        func() (string, error) { return "sk-refreshed-secret-0123456789", nil },
+		Logger: slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+		Secret:    "management-api-key-secret-test",
+		NewSecret: func() (string, error) { return "sk-refreshed-secret-0123456789", nil },
 	})
 
 	result, err := service.Refresh(context.Background(), SecretInput{
@@ -331,11 +339,23 @@ func TestServiceRefreshKeepsCommittedSecretWhenUsageSummaryFails(t *testing.T) {
 	if result.Usage != (port.ManagementAccountUsageSummary{}) {
 		t.Fatalf("Refresh() usage = %+v, want zero-value best-effort summary", result.Usage)
 	}
+	if result.UsageAvailable {
+		t.Fatal("Refresh() usageAvailable = true, want false after store error")
+	}
 	if store.commits != 1 || store.usageCalls != 1 {
 		t.Fatalf("commits=%d usageCalls=%d", store.commits, store.usageCalls)
 	}
 	if got, want := events, []string{"tx_begin", "lock", "update", "tx_commit", "validation", "lookup", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
+	}
+	logText := logs.String()
+	if !strings.Contains(logText, `"event":"management_api_key_refresh_usage_enrichment_failed"`) ||
+		!strings.Contains(logText, `"api_key_id":"key_1"`) ||
+		!strings.Contains(logText, usageErr.Error()) {
+		t.Fatalf("warning log = %q", logText)
+	}
+	if strings.Contains(logText, result.Key) {
+		t.Fatalf("warning log leaked refreshed secret: %q", logText)
 	}
 }
 
@@ -395,6 +415,9 @@ func TestServiceRefreshKeepsCommittedSecretWhenUsageSummaryTimesOut(t *testing.T
 	}
 	if result.Usage != (port.ManagementAccountUsageSummary{}) {
 		t.Fatalf("Refresh() usage = %+v, want zero-value best-effort summary", result.Usage)
+	}
+	if result.UsageAvailable {
+		t.Fatal("Refresh() usageAvailable = true, want false after timeout")
 	}
 	if store.commits != 1 ||
 		store.usageCalls != 1 ||
@@ -466,6 +489,7 @@ func TestServiceRefreshUsesIndependentDetachedUsageContextAfterInvalidationDeadl
 	})
 	if err != nil ||
 		!result.Committed ||
+		!result.UsageAvailable ||
 		result.ID != "key_1" ||
 		result.Key != "sk-refreshed-secret-0123456789" ||
 		result.Usage.RequestCount != 9 {
@@ -510,16 +534,44 @@ func TestServiceRefreshUsesIndependentDetachedUsageContextAfterInvalidationDeadl
 }
 
 func TestNewServiceWithOptionsDefaultsRefreshTimeouts(t *testing.T) {
+	invalidator := &managementAPIKeyInvalidatorStub{}
 	service := NewServiceWithOptions(ServiceOptions{
-		Invalidator: &managementAPIKeyInvalidatorStub{},
+		Invalidator: invalidator,
 	})
-	validationInvalidationTimeout, refreshUsageTimeout := apiKeyRefreshTimeouts(service.invalidator)
-	if validationInvalidationTimeout != 5*time.Second ||
-		refreshUsageTimeout != 5*time.Second {
+	if service.validationInvalidationTimeout != 5*time.Second ||
+		service.refreshUsageTimeout != 5*time.Second ||
+		service.logger == nil {
 		t.Fatalf(
-			"validation invalidation timeout=%s refresh usage timeout=%s",
-			validationInvalidationTimeout,
-			refreshUsageTimeout,
+			"validation invalidation timeout=%s refresh usage timeout=%s logger=%v",
+			service.validationInvalidationTimeout,
+			service.refreshUsageTimeout,
+			service.logger,
+		)
+	}
+	if service.invalidator != invalidator {
+		t.Fatalf("invalidator type/value changed: got %T, want %T", service.invalidator, invalidator)
+	}
+}
+
+func TestNewServiceWithOptionsStoresConfiguredRefreshTimeouts(t *testing.T) {
+	invalidator := &managementAPIKeyInvalidatorStub{}
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	service := NewServiceWithOptions(ServiceOptions{
+		Invalidator:                   invalidator,
+		Logger:                        logger,
+		ValidationInvalidationTimeout: 7 * time.Millisecond,
+		RefreshUsageTimeout:           11 * time.Millisecond,
+	})
+	if service.validationInvalidationTimeout != 7*time.Millisecond ||
+		service.refreshUsageTimeout != 11*time.Millisecond ||
+		service.logger != logger ||
+		service.invalidator != invalidator {
+		t.Fatalf(
+			"service timeout/logger/invalidator = %s/%s/%p/%T",
+			service.validationInvalidationTimeout,
+			service.refreshUsageTimeout,
+			service.logger,
+			service.invalidator,
 		)
 	}
 }
@@ -566,6 +618,9 @@ func TestServiceRefreshSelfScopeHidesOwnerAndRepairsNullCiphertext(t *testing.T)
 	}
 	if result.ListItem.SystemAccountID != "" || result.ListItem.SystemAccountName != "" {
 		t.Fatalf("self result leaked owner fields: %+v", result.ListItem)
+	}
+	if !result.UsageAvailable {
+		t.Fatal("Refresh() usageAvailable = false, want true after successful empty usage lookup")
 	}
 }
 

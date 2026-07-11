@@ -6,6 +6,7 @@ import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import type { ApiKeySummary } from '@/types/domain'
+import { refreshedApiKeyListItem } from './apiKeyRefreshRow'
 import type { ApiKeyScopeParams } from './apiKeyScope'
 
 type ScopedApiKeysApi = ReturnType<typeof useScopedApiKeysApi>
@@ -144,7 +145,10 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     keyRefreshingId.value = apiKey.id
     try {
       const result = await input.apiKeysApi.refreshKey(apiKey.id, input.operationScopeParams(apiKey))
-      input.updateItems((item) => item.id === apiKey.id, () => apiKeyListItemWithoutSecret(result))
+      input.updateItems(
+        (item) => item.id === apiKey.id,
+        (current) => refreshedApiKeyListItem(current, result)
+      )
       input.showCreatedKey({
         key: result.key,
         title: 'API Key 密钥已刷新',
@@ -183,10 +187,4 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     copyKeyPreview,
     handleApiKeyAction
   }
-}
-
-function apiKeyListItemWithoutSecret(apiKey: ApiKeySummary): ApiKeySummary {
-  const item: ApiKeySummary = { ...apiKey }
-  delete item.key
-  return item
 }

@@ -206,6 +206,7 @@ export interface ApiKeyListResult {
 
 export interface CreatedApiKey extends ApiKeySummary {
   key: string
+  usageAvailable?: boolean
 }
 
 export interface ApiKeySecretResult {

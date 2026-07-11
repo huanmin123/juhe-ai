@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -26,18 +27,21 @@ const (
 var ErrAPIKeyListInvalid = errors.New("management API Key list invalid")
 
 type Service struct {
-	store                    port.ManagementAPIKeyListReader
-	creator                  port.ManagementAPIKeyCreator
-	updater                  port.ManagementAPIKeyUpdater
-	deleter                  port.ManagementAPIKeyDeleter
-	usageStatsTimezoneReader port.ManagementUsageStatsTimezoneReader
-	secretStore              port.ManagementAPIKeySecretStore
-	secretTransactor         port.ManagementAPIKeySecretTransactor
-	invalidator              APIKeyGatewayCacheInvalidator
-	codec                    secretJSONCodec
-	now                      func() time.Time
-	newID                    func(prefix string) string
-	newSecret                func() (string, error)
+	store                         port.ManagementAPIKeyListReader
+	creator                       port.ManagementAPIKeyCreator
+	updater                       port.ManagementAPIKeyUpdater
+	deleter                       port.ManagementAPIKeyDeleter
+	usageStatsTimezoneReader      port.ManagementUsageStatsTimezoneReader
+	secretStore                   port.ManagementAPIKeySecretStore
+	secretTransactor              port.ManagementAPIKeySecretTransactor
+	invalidator                   APIKeyGatewayCacheInvalidator
+	logger                        *slog.Logger
+	validationInvalidationTimeout time.Duration
+	refreshUsageTimeout           time.Duration
+	codec                         secretJSONCodec
+	now                           func() time.Time
+	newID                         func(prefix string) string
+	newSecret                     func() (string, error)
 }
 
 type ListInput struct {

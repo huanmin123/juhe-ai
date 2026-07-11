@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 
 const (
 	apiKeySecretRefreshedReason                = "api_key_secret_refreshed"
+	apiKeyRefreshUsageEnrichmentFailedEvent    = "management_api_key_refresh_usage_enrichment_failed"
 	defaultAPIKeyRefreshUsageTimeout           = 5 * time.Second
 	defaultAPIKeyValidationInvalidationTimeout = 5 * time.Second
 )
@@ -39,12 +41,6 @@ type APIKeyGatewayCacheInvalidator interface {
 	InvalidateAPIKeyQuotaChanged(ctx context.Context, apiKeyID string, reason string) error
 }
 
-type apiKeyRefreshInvalidator struct {
-	APIKeyGatewayCacheInvalidator
-	validationInvalidationTimeout time.Duration
-	refreshUsageTimeout           time.Duration
-}
-
 type ServiceOptions struct {
 	ListReader                    port.ManagementAPIKeyListReader
 	Creator                       port.ManagementAPIKeyCreator
@@ -54,6 +50,7 @@ type ServiceOptions struct {
 	SecretStore                   port.ManagementAPIKeySecretStore
 	SecretTransactor              port.ManagementAPIKeySecretTransactor
 	Invalidator                   APIKeyGatewayCacheInvalidator
+	Logger                        *slog.Logger
 	ValidationInvalidationTimeout time.Duration
 	RefreshUsageTimeout           time.Duration
 	Secret                        string
@@ -81,6 +78,7 @@ type SecretResult struct {
 type RefreshResult struct {
 	ListItem
 	Key                  string `json:"key"`
+	UsageAvailable       bool   `json:"usageAvailable"`
 	OwnerSystemAccountID string `json:"-"`
 	PreviousKeyMarker    string `json:"-"`
 	KeyMarker            string `json:"-"`
@@ -110,28 +108,27 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	if refreshUsageTimeout <= 0 {
 		refreshUsageTimeout = defaultAPIKeyRefreshUsageTimeout
 	}
-	invalidator := opts.Invalidator
-	if invalidator != nil {
-		invalidator = apiKeyRefreshInvalidator{
-			APIKeyGatewayCacheInvalidator: invalidator,
-			validationInvalidationTimeout: validationInvalidationTimeout,
-			refreshUsageTimeout:           refreshUsageTimeout,
-		}
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
 	codec := secretcrypto.NewJSONCodec(opts.Secret)
 	return &Service{
-		store:                    opts.ListReader,
-		creator:                  opts.Creator,
-		updater:                  opts.Updater,
-		deleter:                  opts.Deleter,
-		usageStatsTimezoneReader: opts.UsageStatsTimezoneReader,
-		secretStore:              opts.SecretStore,
-		secretTransactor:         opts.SecretTransactor,
-		invalidator:              invalidator,
-		codec:                    codec,
-		now:                      now,
-		newID:                    newID,
-		newSecret:                newSecret,
+		store:                         opts.ListReader,
+		creator:                       opts.Creator,
+		updater:                       opts.Updater,
+		deleter:                       opts.Deleter,
+		usageStatsTimezoneReader:      opts.UsageStatsTimezoneReader,
+		secretStore:                   opts.SecretStore,
+		secretTransactor:              opts.SecretTransactor,
+		invalidator:                   opts.Invalidator,
+		logger:                        logger,
+		validationInvalidationTimeout: validationInvalidationTimeout,
+		refreshUsageTimeout:           refreshUsageTimeout,
+		codec:                         codec,
+		now:                           now,
+		newID:                         newID,
+		newSecret:                     newSecret,
 	}
 }
 
@@ -239,10 +236,9 @@ func (s *Service) Refresh(ctx context.Context, input SecretInput) (RefreshResult
 	if s.invalidator == nil {
 		return RefreshResult{}, fmt.Errorf("management API Key cache invalidator is required")
 	}
-	validationInvalidationTimeout, refreshUsageTimeout := apiKeyRefreshTimeouts(s.invalidator)
 	invalidationCtx, cancelInvalidation := context.WithTimeout(
 		context.WithoutCancel(ctx),
-		validationInvalidationTimeout,
+		s.validationInvalidationTimeout,
 	)
 
 	item, parseErr := listItem(row, port.ManagementAccountUsageSummary{}, includeOwner)
@@ -276,7 +272,7 @@ func (s *Service) Refresh(ctx context.Context, input SecretInput) (RefreshResult
 
 	usageCtx, cancelUsage := context.WithTimeout(
 		context.WithoutCancel(ctx),
-		refreshUsageTimeout,
+		s.refreshUsageTimeout,
 	)
 	usageRows, err := s.store.ListManagementAPIKeyUsageTotals(usageCtx, []port.ManagementAPIKeyUsageScope{{
 		SystemAccountID: row.SystemAccountID,
@@ -284,8 +280,16 @@ func (s *Service) Refresh(ctx context.Context, input SecretInput) (RefreshResult
 	}})
 	cancelUsage()
 	if err != nil {
+		s.logger.Warn(
+			"API Key 密钥刷新后用量摘要读取失败",
+			slog.String("event", apiKeyRefreshUsageEnrichmentFailedEvent),
+			slog.String("api_key_id", row.ID),
+			slog.String("system_account_id", row.SystemAccountID),
+			slog.Any("error", err),
+		)
 		return result, nil
 	}
+	result.UsageAvailable = true
 	var usage port.ManagementAccountUsageSummary
 	for _, usageRow := range usageRows {
 		if usageRow.SystemAccountID == row.SystemAccountID && usageRow.APIKeyID == row.ID {
@@ -295,14 +299,6 @@ func (s *Service) Refresh(ctx context.Context, input SecretInput) (RefreshResult
 	}
 	result.ListItem.Usage = usage
 	return result, nil
-}
-
-func apiKeyRefreshTimeouts(invalidator APIKeyGatewayCacheInvalidator) (time.Duration, time.Duration) {
-	configured, ok := invalidator.(apiKeyRefreshInvalidator)
-	if !ok {
-		return defaultAPIKeyValidationInvalidationTimeout, defaultAPIKeyRefreshUsageTimeout
-	}
-	return configured.validationInvalidationTimeout, configured.refreshUsageTimeout
 }
 
 func managementAPIKeySecretScope(
