@@ -50,6 +50,7 @@ function Copy-ReleaseBackendPackageJson {
   $packageJson = Get-Content -Raw -LiteralPath $Source | ConvertFrom-Json
   $packageJson.scripts = [ordered]@{
     'check:runtime' = 'node dist/scripts/preflight/check-node-sqlite.js'
+    'maintenance:backfill-account-balance' = 'node dist/scripts/maintenance/run-account-balance-backfill.js'
     'start' = 'node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js'
   }
   Write-Utf8NoBom -Path $Destination -Content (($packageJson | ConvertTo-Json -Depth 20) + "`n")

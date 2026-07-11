@@ -71,6 +71,15 @@ import {
 import { buildGatewayQuotaSnapshot, buildGatewayQuotaSnapshotAsync } from '../../storage/gateway-quota-snapshot.repository.js'
 import { checkpointSqliteWal } from '../../storage/sqlite-maintenance.js'
 import { getStatsDatabase } from '../../storage/database.js'
+import type { AccountBalanceQueryConfig, AccountBalanceSnapshot } from '../accounts/account-balance.types.js'
+import {
+  deleteAccountBalanceSnapshotAsync,
+  replaceAccountBalanceSnapshotIfCurrentAsync
+} from '../../storage/account-balance.repository.js'
+import {
+  acquireBackgroundJobLeaseAsync,
+  releaseBackgroundJobLeaseAsync
+} from '../../storage/background-task-runs.repository.js'
 
 const statsAggregationBatchPauseMs = 25
 const usageStatsAggregationOnlineBatchSizeCap = 1000
@@ -145,6 +154,30 @@ export type BackgroundStatsWriteOperation =
     inputs: AccountUsageSnapshotUpsertInput[]
   }
   | {
+    type: 'replace_account_balance_snapshot_if_current'
+    input: {
+      accountId: string
+      systemAccountId: string
+      expectedConfigRevision: number
+      expectedConfig: AccountBalanceQueryConfig
+      snapshot: AccountBalanceSnapshot
+      nextRefreshAfter?: string
+    }
+  }
+  | {
+    type: 'delete_account_balance_snapshot'
+    accountId: string
+  }
+  | {
+    type: 'acquire_account_balance_lease'
+    input: Parameters<typeof acquireBackgroundJobLeaseAsync>[0]
+  }
+  | {
+    type: 'release_account_balance_lease'
+    leaseKey: string
+    ownerId: string
+  }
+  | {
     type: 'cleanup_usage_stats_retention'
     input: Parameters<typeof cleanupUsageStatsBucketsBefore>[0]
   }
@@ -187,6 +220,10 @@ export type BackgroundStatsWriteOperationResult<T extends BackgroundStatsWriteOp
   T extends { type: 'list_active_client_ip_policies' } ? ActiveClientIpPolicy[] :
   T extends { type: 'find_active_client_ip_policy_by_hash' } ? ActiveClientIpPolicy | undefined :
   T extends { type: 'upsert_account_usage_snapshots' } ? { upsertedCount: number } :
+  T extends { type: 'replace_account_balance_snapshot_if_current' } ? { written: boolean } :
+  T extends { type: 'delete_account_balance_snapshot' } ? { deleted: true } :
+  T extends { type: 'acquire_account_balance_lease' } ? { acquired: boolean } :
+  T extends { type: 'release_account_balance_lease' } ? { released: boolean } :
   T extends { type: 'cleanup_usage_stats_retention' } ? ReturnType<typeof cleanupUsageStatsBucketsBefore> :
   T extends { type: 'cleanup_system_metrics_retention' } ? ReturnType<typeof cleanupSystemMetricsBefore> :
   T extends { type: 'cleanup_table_storage_snapshots_retention' } ? { deleted: number } :
@@ -202,7 +239,9 @@ export async function requestStatsWriter<T extends BackgroundStatsWriteOperation
   if (currentProcessOwnsStatsWriter()) {
     return await handleStatsWriteOperation(operation) as BackgroundStatsWriteOperationResult<T>
   }
-  const result = await requestBackgroundWorkerStatsWrite(operation, timeoutMs)
+  const result = runtimeConfig.processRole === 'db-service'
+    ? await (await import('../db-service/db-service-ipc.js')).requestDbServiceStatsWrite(operation, timeoutMs)
+    : await requestBackgroundWorkerStatsWrite(operation, timeoutMs)
   if (result === undefined) {
     throw new Error(`stats-writer 不可用，无法执行统计写操作：${operation.type}`)
   }
@@ -275,6 +314,15 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       }
       upsertAccountUsageSnapshots(operation.inputs)
       return { upsertedCount: operation.inputs.length }
+    case 'replace_account_balance_snapshot_if_current':
+      return { written: await replaceAccountBalanceSnapshotIfCurrentAsync(operation.input) }
+    case 'delete_account_balance_snapshot':
+      await deleteAccountBalanceSnapshotAsync(operation.accountId)
+      return { deleted: true }
+    case 'acquire_account_balance_lease':
+      return { acquired: await acquireBackgroundJobLeaseAsync(operation.input) }
+    case 'release_account_balance_lease':
+      return { released: await releaseBackgroundJobLeaseAsync(operation.leaseKey, operation.ownerId) }
     case 'cleanup_usage_stats_retention':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await cleanupUsageStatsBucketsBeforeAsync(operation.input)

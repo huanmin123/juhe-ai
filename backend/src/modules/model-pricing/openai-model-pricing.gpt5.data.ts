@@ -111,6 +111,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 5e-7,
     cache_read_input_token_cost_priority: 0.00000125,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -127,6 +128,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 5e-7,
     cache_read_input_token_cost_priority: 0.00000125,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -139,6 +141,7 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.00003,
     output_cost_per_token: 0.00018,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -151,6 +154,7 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.00003,
     output_cost_per_token: 0.00018,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -167,6 +171,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 2.5e-7,
     cache_read_input_token_cost_priority: 5e-7,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -183,6 +188,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 2.5e-7,
     cache_read_input_token_cost_priority: 5e-7,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -199,6 +205,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 7.5e-8,
     cache_read_input_token_cost_priority: 1.5e-7,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -215,6 +222,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 7.5e-8,
     cache_read_input_token_cost_priority: 1.5e-7,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -228,6 +236,7 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00000125,
     cache_read_input_token_cost: 2e-8,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -241,6 +250,7 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00000125,
     cache_read_input_token_cost: 2e-8,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -254,6 +264,7 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00018,
     cache_read_input_token_cost: 0.000003,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -267,6 +278,7 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00018,
     cache_read_input_token_cost: 0.000003,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["medium", "high", "xhigh"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -314,6 +326,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.75e-7,
     cache_read_input_token_cost_priority: 3.5e-7,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
     supported_service_tiers: ["priority"]
   },
   {
@@ -330,6 +343,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.75e-7,
     cache_read_input_token_cost_priority: 3.5e-7,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
     supported_service_tiers: ["priority"]
   },
   {
@@ -342,6 +356,7 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.000021,
     output_cost_per_token: 0.000168,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["medium", "high", "xhigh"],
     supported_service_tiers: ["priority"]
   },
   {
@@ -354,6 +369,7 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.000021,
     output_cost_per_token: 0.000168,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["medium", "high", "xhigh"],
     supported_service_tiers: ["priority"]
   },
   {
@@ -399,6 +415,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high"],
     supported_service_tiers: ["priority"]
   },
   {
@@ -415,6 +432,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["none", "low", "medium", "high"],
     supported_service_tiers: ["priority"]
   },
   {
@@ -492,6 +510,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["minimal", "low", "medium", "high"],
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -508,6 +527,7 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["minimal", "low", "medium", "high"],
     supported_service_tiers: ["priority", "flex"]
   },
   {

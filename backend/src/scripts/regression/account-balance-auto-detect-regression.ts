@@ -1,0 +1,69 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
+import { detectAccountBalanceAdapter } from '../../modules/background/account-balance-auto-detect.service.js'
+import { queryBuiltinAccountBalance } from '../../modules/accounts/account-balance-query.service.js'
+import type { AccountBalanceDetectionCandidate } from '../../storage/account-balance.repository.js'
+
+const candidate: AccountBalanceDetectionCandidate = {
+  id: 'account-auto-detect',
+  systemAccountId: 'system-owner',
+  configRevision: 7,
+  credentials: { api_key: 'sk-test', base_url: 'https://relay.example/v1' },
+  proxyProfileId: 'proxy-required'
+}
+
+const preferredAttempts: string[] = []
+const resolved = await queryBuiltinAccountBalance({
+  ...candidate,
+  config: { adapter: 'builtin', intervalMinutes: 5, preferredBuiltinAdapter: 'newapi' }
+}, {
+  queryAdapter: async (_input, adapter) => {
+    preferredAttempts.push(adapter)
+    if (adapter === 'newapi') throw new Error('saved preference no longer matches')
+    if (adapter === 'sub2api') return { status: 'fresh', remainingUsd: '8.000000' }
+    throw new Error('should stop at the first fallback success')
+  }
+})
+assert.deepEqual(preferredAttempts, ['newapi', 'sub2api'], '内置适配必须先尝试偏好，失败后从完整规则回退')
+assert.equal(resolved.adapter, 'sub2api')
+
+const attempts: string[] = []
+const detected = await detectAccountBalanceAdapter(candidate, {
+  queryBuiltin: async (input) => {
+    assert.equal(input.proxyProfileId, 'proxy-required', '自动探测必须保留账户绑定代理')
+    attempts.push('builtin')
+    return {
+      adapter: 'litellm',
+      snapshot: { status: 'fresh', remainingUsd: '7.310000', rawRemaining: '7.31', rawUnit: 'usd', basis: 'budget' }
+    }
+  }
+})
+assert.deepEqual(attempts, ['builtin'])
+assert.deepEqual(detected, {
+  config: { adapter: 'builtin', intervalMinutes: 5, preferredBuiltinAdapter: 'litellm' },
+  snapshot: { status: 'fresh', remainingUsd: '7.310000', rawRemaining: '7.31', rawUnit: 'usd', basis: 'budget' }
+})
+
+const unsupported = await detectAccountBalanceAdapter(candidate, {
+  queryBuiltin: async () => { throw new Error('all adapters unsupported') }
+})
+assert.equal(unsupported, undefined, '只有 fresh 或 unlimited 才能自动开启')
+
+const healthSource = readFileSync(resolve('src/modules/background/account-health-check.service.ts'), 'utf8')
+assert.match(healthSource, /account\.status === 'pending_test'.*enqueueAccountBalanceAutoDetection/s, '只有首次激活成功应投递余额自动探测')
+assert.match(healthSource, /changed/, '健康检查写回失败时不能投递余额自动探测')
+
+const querySource = readFileSync(resolve('src/modules/accounts/account-balance-query.service.ts'), 'utf8')
+assert.match(querySource, /resolveProxyUrlForProfileAsync\(candidate\.proxyProfileId\)/, '所有余额查询路径必须解析账户绑定代理')
+
+const backfillSource = readFileSync(resolve('src/scripts/maintenance/backfill-account-balance-auto-detect.ts'), 'utf8')
+assert.match(backfillSource, /afterId/, '全量余额探测必须使用 ID 游标分页')
+assert.match(backfillSource, /concurrency = 2/, '全量余额探测必须限制外部请求并发')
+assert.ok(
+  backfillSource.indexOf('await migrateLegacyAccountBalanceConfigurations()') < backfillSource.lastIndexOf('listAccountBalanceDetectionCandidatePageAsync'),
+  '上线扫描必须先离线转换旧适配器配置，再扫描未开启账户'
+)
+
+console.log('account balance auto detect regression passed')

@@ -28,6 +28,7 @@ export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
 
 export function buildAccountBalancePayload(form: Pick<AccountFormModel,
   | 'type' | 'apiKeys' | 'balanceQueryEnabled' | 'balanceQueryAdapter' | 'balanceQueryIntervalMinutes'
+  | 'balanceQueryPreferredBuiltinAdapter'
   | 'balanceQueryCustomPath' | 'balanceQueryRemainingPointer' | 'balanceQueryTotalPointer'
   | 'balanceQueryUsedPointer' | 'balanceQueryDivisor'
 >): { balanceQueryEnabled: boolean; balanceQueryConfig?: Record<string, unknown> } | undefined {
@@ -37,6 +38,9 @@ export function buildAccountBalancePayload(form: Pick<AccountFormModel,
   const config: Record<string, unknown> = {
     adapter: form.balanceQueryAdapter,
     intervalMinutes: form.balanceQueryIntervalMinutes
+  }
+  if (form.balanceQueryAdapter === 'builtin' && form.balanceQueryPreferredBuiltinAdapter) {
+    config.preferredBuiltinAdapter = form.balanceQueryPreferredBuiltinAdapter
   }
   if (form.balanceQueryAdapter === 'custom') {
     config.custom = compact({
@@ -52,6 +56,7 @@ export function buildAccountBalancePayload(form: Pick<AccountFormModel,
 
 export function validateAccountBalanceForm(form: Pick<AccountFormModel,
   | 'type' | 'apiKeys' | 'balanceQueryEnabled' | 'balanceQueryAdapter' | 'balanceQueryIntervalMinutes'
+  | 'balanceQueryPreferredBuiltinAdapter'
   | 'balanceQueryCustomPath' | 'balanceQueryRemainingPointer' | 'balanceQueryTotalPointer'
   | 'balanceQueryUsedPointer' | 'balanceQueryDivisor'
 >): string | undefined {

@@ -305,6 +305,7 @@ import { useAccountEditGroupOptions } from './useAccountEditGroupOptions'
 import { useAccountListData } from './useAccountListData'
 import { useAccountMenuActions } from './useAccountMenuActions'
 import { accountOperationSystemAccountId } from './accountOperationScope'
+import { buildAccountBalancePayload } from './accountBalanceQuery'
 import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountRemovalActions } from './useAccountRemovalActions'
 import { useAccountSelectionActions } from './useAccountSelectionActions'
@@ -417,7 +418,7 @@ async function refreshAccountBalance(accountId: string) {
   balanceRefreshingIds.value = new Set(balanceRefreshingIds.value).add(accountId)
   try {
     const snapshot = isManagementView.value
-      ? await api.accounts.refreshBalance(accountId, accountScopeParams.value)
+      ? await api.accounts.refreshBalance(accountId, undefined, accountScopeParams.value)
       : await api.myAccounts.refreshBalance(accountId)
     const account = accounts.value.find((item) => item.id === accountId)
     if (account) account.balanceSnapshot = snapshot
@@ -438,11 +439,13 @@ async function refreshAccountBalance(accountId: string) {
 async function queryBalanceFromEdit(): Promise<void> {
   const accountId = editingId.value
   if (!accountId || balanceQueryTesting.value) return
+  const balancePayload = buildAccountBalancePayload(form)
+  if (!balancePayload?.balanceQueryConfig) return
   balanceQueryTesting.value = true
   try {
     const snapshot = isManagementView.value
-      ? await api.accounts.refreshBalance(accountId, accountScopeParams.value)
-      : await api.myAccounts.refreshBalance(accountId)
+      ? await api.accounts.refreshBalance(accountId, balancePayload.balanceQueryConfig, accountScopeParams.value)
+      : await api.myAccounts.refreshBalance(accountId, balancePayload.balanceQueryConfig)
     balanceQueryResult.value = snapshot
     const account = accounts.value.find((item) => item.id === accountId)
     if (account) account.balanceSnapshot = snapshot

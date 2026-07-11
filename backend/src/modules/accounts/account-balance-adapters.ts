@@ -102,6 +102,14 @@ export function parseLiteLlmBalance(payload: unknown): AccountBalanceSnapshot {
   return freshResult(remaining, { rawUnit: 'usd', basis: 'budget' })
 }
 
+export function parseUserBalance(payload: unknown): AccountBalanceSnapshot {
+  const response = objectValue(payload)
+  return freshResult(decimalValue(response.balance, 'balance'), {
+    rawUnit: 'usd',
+    basis: 'wallet'
+  })
+}
+
 function jsonPointerValue(payload: unknown, pointer: string): unknown {
   if (pointer === '') return payload
   return pointer.slice(1).split('/').reduce<unknown>((current, token) => {

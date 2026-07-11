@@ -649,7 +649,7 @@ defaultReasoningEffort?: GptWireReasoningEffort
 - 本次请求成本按响应实际 `service_tier=default|priority|flex` 选择价格；响应未返回有效档位时按标准档计费。GPT-5.6 优先使用目录中的档位专用价格，超过 272K 输入后再应用长上下文输入、缓存和输出倍率。
 - 系统设置提供 `Priority 通用倍率`（默认 `2`）和 `Flex 通用倍率`（默认 `0.5`），管理员可修改并随运行时设置缓存刷新生效。模型目录有档位专用价格时始终优先使用专用价格；只有模型明确支持该档位但缺少专用价格时才使用通用倍率。修改倍率不会自动为模型开放服务档位。
 - Flex 能力只按价格源精确声明。当前纳入 GPT-5、GPT-5 Mini/Nano、GPT-5.4 全系列、GPT-5.5 全系列、GPT-5.6 Sol/Terra/Luna，以及 o3/o4-mini；未声明 Flex 的模型保持仅 Priority 或无服务档位能力。
-- GPT 模型目录将请求能力拆为“服务等级”和“思考级别”两列并使用 Tag 展示；思考列同时保留 API 与 Codex 能力及默认值标识。
+- GPT 管理模型目录将请求能力拆为“服务等级”和“思考级别”两列并使用 Tag 展示；思考列只展示 OpenAI API 可发送的 `reasoning.effort`，不混入 Codex picker 级别、多代理版本或默认值标识。Codex 专用字段仅供 Codex `/models` 协议响应使用。
 - `outputTokens` 是完整可计费输出，`thinkingTokens` 是其中的观测子集。OpenAI / Anthropic 不重复相加思考 Token；Gemini 将 `candidatesTokenCount + thoughtsTokenCount` 归一为完整输出。
 - 首次发布建议观察：
   - 覆盖配置账户数。

@@ -210,12 +210,14 @@ export interface AccountTagSummary {
   updatedAt?: string
 }
 
-export type AccountBalanceAdapter = 'sub2api' | 'newapi' | 'litellm' | 'custom'
+export type AccountBalanceBuiltinAdapter = 'sub2api' | 'newapi' | 'litellm' | 'user_balance'
+export type AccountBalanceAdapter = 'builtin' | 'custom'
 export type AccountBalanceStatus = 'pending' | 'refreshing' | 'fresh' | 'unlimited' | 'unsupported' | 'failed'
 
 export interface AccountBalanceQueryConfig {
   adapter: AccountBalanceAdapter
   intervalMinutes: number
+  preferredBuiltinAdapter?: AccountBalanceBuiltinAdapter
   custom?: {
     path: string
     remainingPointer?: string

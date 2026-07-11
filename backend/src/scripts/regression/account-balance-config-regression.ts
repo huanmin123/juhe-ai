@@ -19,19 +19,21 @@ assert.match(
   '账户使用快照应接受 relay_balance 类型'
 )
 
-assert.deepEqual(normalizeAccountBalanceConfig({ adapter: 'sub2api' }), {
-  adapter: 'sub2api',
+assert.deepEqual(normalizeAccountBalanceConfig({ adapter: 'builtin' }), {
+  adapter: 'builtin',
   intervalMinutes: 5
 })
-assert.equal(normalizeAccountBalanceConfig({ adapter: 'newapi', intervalMinutes: 1 }).intervalMinutes, 1)
-assert.equal(normalizeAccountBalanceConfig({ adapter: 'litellm', intervalMinutes: 10 }).intervalMinutes, 10)
+assert.deepEqual(normalizeAccountBalanceConfig({ adapter: 'builtin', intervalMinutes: 1, preferredBuiltinAdapter: 'newapi' }), {
+  adapter: 'builtin', intervalMinutes: 1, preferredBuiltinAdapter: 'newapi'
+})
 for (const intervalMinutes of [0, 11, 1.5]) {
   assert.throws(
-    () => normalizeAccountBalanceConfig({ adapter: 'sub2api', intervalMinutes }),
+    () => normalizeAccountBalanceConfig({ adapter: 'builtin', intervalMinutes }),
     /刷新周期/,
     `刷新周期 ${intervalMinutes} 应被拒绝`
   )
 }
+assert.throws(() => normalizeAccountBalanceConfig({ adapter: 'sub2api' }), /查询类型/)
 assert.throws(() => normalizeAccountBalanceConfig({ adapter: 'oneapi_compatible' }), /查询类型/)
 assert.deepEqual(normalizeAccountBalanceConfig({
   adapter: 'custom',
@@ -57,6 +59,11 @@ assert.throws(() => normalizeAccountBalanceConfig({
   adapter: 'custom',
   custom: { path: '/balance', remainingPointer: '/balance', divisor: '0' }
 }), /除数/)
+assert.throws(() => normalizeAccountBalanceConfig({
+  adapter: 'custom',
+  preferredBuiltinAdapter: 'sub2api',
+  custom: { path: '/balance', remainingPointer: '/balance' }
+}), /内置适配偏好/)
 
 const physicalApiKeyAccount = {
   type: 'api_key',
@@ -79,7 +86,7 @@ assert.doesNotThrow(() => validateAccountBalanceCapability({ type: 'oauth', cred
 
 const balanceFields = {
   balanceQueryEnabled: true,
-  balanceQueryConfig: { adapter: 'sub2api', intervalMinutes: 5 }
+  balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
 }
 assert.equal(accountCreateSchema.safeParse({
   providerCode: 'gpt',

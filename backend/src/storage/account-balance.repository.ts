@@ -6,29 +6,62 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { decryptJson } from './crypto.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { invalidateAccountLookupCache } from './repository-lookups.js'
 
 export interface AccountBalanceRefreshCandidate {
   id: string
   systemAccountId: string
+  configRevision: number
   credentials: Record<string, unknown>
   config: AccountBalanceQueryConfig
   nextRefreshAt: string
   proxyProfileId?: string
 }
 
+export interface AccountBalanceDetectionCandidate {
+  id: string
+  systemAccountId: string
+  configRevision: number
+  credentials: Record<string, unknown>
+  proxyProfileId?: string
+}
+
+export interface AccountBalanceDetectionCandidatePage {
+  candidates: AccountBalanceDetectionCandidate[]
+  nextAfterId?: string
+}
+
 interface BalanceCandidateRow {
   id: string
   system_account_id: string
+  config_revision: number
   credentials_encrypted: string
   balance_query_config_json: string
   balance_query_next_refresh_at: string
   proxy_profile_id?: string | null
 }
 
+interface BalanceDetectionCandidateRow {
+  id: string
+  system_account_id: string
+  config_revision: number
+  credentials_encrypted: string
+  proxy_profile_id?: string | null
+}
+
+const balanceDetectionCandidateWhere = `
+  status = 'active'
+  AND schedulable = 1
+  AND type = 'api_key'
+  AND balance_query_enabled = 0
+  AND deleted_at IS NULL
+  AND authorization_instance_authorization_id IS NULL
+`
+
 export function listAccountsDueForBalanceRefresh(options: { now?: string; limit?: number } = {}): AccountBalanceRefreshCandidate[] {
   const limit = normalizedLimit(options.limit)
   const rows = getBusinessDatabase().prepare(`
-    SELECT id, system_account_id, credentials_encrypted, balance_query_config_json,
+    SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
            balance_query_next_refresh_at, proxy_profile_id
     FROM accounts
     WHERE status = 'active'
@@ -50,7 +83,7 @@ export async function listAccountsDueForBalanceRefreshAsync(options: { now?: str
   const limit = normalizedLimit(options.limit)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await client.query<BalanceCandidateRow>(`
-    SELECT id, system_account_id, credentials_encrypted, balance_query_config_json,
+    SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
            balance_query_next_refresh_at, proxy_profile_id
     FROM juhe_business.accounts
     WHERE status = 'active'
@@ -69,7 +102,7 @@ export async function listAccountsDueForBalanceRefreshAsync(options: { now?: str
 
 export async function findAccountBalanceRefreshCandidateAsync(accountId: string): Promise<AccountBalanceRefreshCandidate | undefined> {
   const sql = `
-    SELECT id, system_account_id, credentials_encrypted, balance_query_config_json,
+    SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
            balance_query_next_refresh_at, proxy_profile_id
     FROM accounts
     WHERE id = ?
@@ -88,6 +121,129 @@ export async function findAccountBalanceRefreshCandidateAsync(accountId: string)
   }
   const row = getBusinessDatabase().prepare(sql).get(accountId) as unknown as BalanceCandidateRow | undefined
   return row ? balanceCandidatesFromRows([row], 1)[0] : undefined
+}
+
+export async function findAccountBalanceDetectionCandidateAsync(
+  accountId: string,
+  expectedConfigRevision: number
+): Promise<AccountBalanceDetectionCandidate | undefined> {
+  const sql = `
+    SELECT id, system_account_id, config_revision, credentials_encrypted, proxy_profile_id
+    FROM accounts
+    WHERE id = ? AND config_revision = ? AND ${balanceDetectionCandidateWhere}
+    LIMIT 1
+  `
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    const row = await client.one<BalanceDetectionCandidateRow>(sql.replace('FROM accounts', 'FROM juhe_business.accounts'), [accountId, expectedConfigRevision])
+    return row ? balanceDetectionCandidateFromRow(row) : undefined
+  }
+  const row = getBusinessDatabase().prepare(sql).get(accountId, expectedConfigRevision) as unknown as BalanceDetectionCandidateRow | undefined
+  return row ? balanceDetectionCandidateFromRow(row) : undefined
+}
+
+export async function listAccountBalanceDetectionCandidatePageAsync(options: {
+  afterId?: string
+  limit?: number
+} = {}): Promise<AccountBalanceDetectionCandidatePage> {
+  const limit = normalizedLimit(options.limit)
+  const afterId = options.afterId ?? ''
+  const sql = `
+    SELECT id, system_account_id, config_revision, credentials_encrypted, proxy_profile_id
+    FROM accounts
+    WHERE id > ? AND ${balanceDetectionCandidateWhere}
+    ORDER BY id ASC
+    LIMIT ?
+  `
+  let rows: BalanceDetectionCandidateRow[]
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    rows = await client.query<BalanceDetectionCandidateRow>(sql.replace('FROM accounts', 'FROM juhe_business.accounts'), [afterId, limit])
+  } else {
+    rows = getBusinessDatabase().prepare(sql).all(afterId, limit) as unknown as BalanceDetectionCandidateRow[]
+  }
+  return {
+    candidates: rows.map(balanceDetectionCandidateFromRow).filter((candidate): candidate is AccountBalanceDetectionCandidate => Boolean(candidate)),
+    nextAfterId: rows.at(-1)?.id
+  }
+}
+
+export async function enableDetectedAccountBalanceQueryAsync(input: {
+  accountId: string
+  expectedConfigRevision: number
+  config: AccountBalanceQueryConfig
+  nextRefreshAt: string
+}): Promise<boolean> {
+  const config = normalizeAccountBalanceConfig(input.config)
+  const updatedAt = nowIso()
+  const sql = `
+    UPDATE accounts
+    SET balance_query_enabled = 1,
+        balance_query_config_json = ?,
+        balance_query_next_refresh_at = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND config_revision = ?
+      AND ${balanceDetectionCandidateWhere}
+  `
+  let changed = false
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    const result = await client.execute(sql.replace('UPDATE accounts', 'UPDATE juhe_business.accounts'), [
+      JSON.stringify(config), input.nextRefreshAt, updatedAt, input.accountId, input.expectedConfigRevision
+    ])
+    changed = Number(result.changes ?? 0) > 0
+  } else {
+    const result = getBusinessDatabase().prepare(sql).run(
+      JSON.stringify(config), input.nextRefreshAt, updatedAt, input.accountId, input.expectedConfigRevision
+    )
+    changed = Number(result.changes ?? 0) > 0
+  }
+  if (changed) invalidateAccountLookupCache(input.accountId)
+  return changed
+}
+
+export async function commitAccountBalanceRefreshAsync(input: {
+  accountId: string
+  expectedConfigRevision: number
+  expectedConfig: AccountBalanceQueryConfig
+  nextConfig: AccountBalanceQueryConfig
+  nextRefreshAt: string
+}): Promise<boolean> {
+  const expectedConfig = normalizeAccountBalanceConfig(input.expectedConfig)
+  const nextConfig = normalizeAccountBalanceConfig(input.nextConfig)
+  const updatedAt = nowIso()
+  const sql = `
+    UPDATE accounts
+    SET balance_query_config_json = ?,
+        balance_query_next_refresh_at = ?,
+        updated_at = ?
+    WHERE id = ?
+      AND config_revision = ?
+      AND balance_query_enabled = 1
+      AND balance_query_config_json = ?
+      AND deleted_at IS NULL
+  `
+  let changed = false
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    const postgresSql = sql
+      .replace('UPDATE accounts', 'UPDATE juhe_business.accounts')
+      .replace('AND balance_query_config_json = ?', 'AND balance_query_config_json::jsonb = ?::jsonb')
+    const result = await client.execute(postgresSql, [
+      JSON.stringify(nextConfig), input.nextRefreshAt, updatedAt, input.accountId,
+      input.expectedConfigRevision, JSON.stringify(expectedConfig)
+    ])
+    changed = Number(result.changes ?? 0) > 0
+  } else {
+    const result = getBusinessDatabase().prepare(sql).run(
+      JSON.stringify(nextConfig), input.nextRefreshAt, updatedAt, input.accountId,
+      input.expectedConfigRevision, JSON.stringify(expectedConfig)
+    )
+    changed = Number(result.changes ?? 0) > 0
+  }
+  if (changed) invalidateAccountLookupCache(input.accountId)
+  return changed
 }
 
 export function replaceAccountBalanceSnapshot(input: {
@@ -158,6 +314,23 @@ export async function replaceAccountBalanceSnapshotAsync(input: {
   ])
 }
 
+export async function replaceAccountBalanceSnapshotIfCurrentAsync(input: {
+  accountId: string
+  systemAccountId: string
+  expectedConfigRevision: number
+  expectedConfig: AccountBalanceQueryConfig
+  snapshot: AccountBalanceSnapshot
+  nextRefreshAfter?: string
+}): Promise<boolean> {
+  if (!await isAccountBalanceConfigurationCurrentAsync({
+    accountId: input.accountId,
+    expectedConfigRevision: input.expectedConfigRevision,
+    expectedConfig: input.expectedConfig
+  })) return false
+  await replaceAccountBalanceSnapshotAsync(input)
+  return true
+}
+
 export function loadAccountBalanceSnapshotsByAccountIds(accountIds: string[]): Map<string, AccountBalanceSnapshot> {
   const output = new Map<string, AccountBalanceSnapshot>()
   for (const chunk of chunkValues([...new Set(accountIds.filter(Boolean))], 900)) {
@@ -217,9 +390,6 @@ export async function saveAccountBalanceConfigurationAsync(input: {
       SET balance_query_enabled = ?, balance_query_config_json = ?, balance_query_next_refresh_at = ?, updated_at = ?
       WHERE id = ? AND deleted_at IS NULL
     `, [input.enabled ? 1 : 0, JSON.stringify(config ?? {}), nextRefreshAt ?? null, now, input.accountId])
-    if (!input.enabled || configurationChanged(current.balance_query_config_json, config)) {
-      await client.execute(`DELETE FROM juhe_stats.account_usage_snapshots WHERE account_id = ? AND kind = 'relay_balance'`, [input.accountId])
-    }
     return { enabled: input.enabled, config, nextRefreshAt }
   }
   const current = getBusinessDatabase().prepare(`
@@ -233,9 +403,6 @@ export async function saveAccountBalanceConfigurationAsync(input: {
     SET balance_query_enabled = ?, balance_query_config_json = ?, balance_query_next_refresh_at = ?, updated_at = ?
     WHERE id = ? AND deleted_at IS NULL
   `).run(input.enabled ? 1 : 0, JSON.stringify(config ?? {}), nextRefreshAt ?? null, now, input.accountId)
-  if (!input.enabled || configurationChanged(current.balance_query_config_json, config)) {
-    getStatsDatabase().prepare(`DELETE FROM account_usage_snapshots WHERE account_id = ? AND kind = 'relay_balance'`).run(input.accountId)
-  }
   return { enabled: input.enabled, config, nextRefreshAt }
 }
 
@@ -298,6 +465,7 @@ function balanceCandidatesFromRows(rows: BalanceCandidateRow[], limit: number): 
     output.push({
       id: row.id,
       systemAccountId: row.system_account_id,
+      configRevision: Number(row.config_revision),
       credentials,
       config,
       nextRefreshAt: row.balance_query_next_refresh_at,
@@ -306,6 +474,58 @@ function balanceCandidatesFromRows(rows: BalanceCandidateRow[], limit: number): 
     if (output.length >= limit) break
   }
   return output
+}
+
+function balanceDetectionCandidateFromRow(row: BalanceDetectionCandidateRow): AccountBalanceDetectionCandidate | undefined {
+  let credentials: Record<string, unknown>
+  try {
+    credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
+  } catch {
+    return undefined
+  }
+  if (!hasExactlyOneApiKey(credentials)) return undefined
+  return {
+    id: row.id,
+    systemAccountId: row.system_account_id,
+    configRevision: Number(row.config_revision),
+    credentials,
+    proxyProfileId: row.proxy_profile_id ?? undefined
+  }
+}
+
+async function isAccountBalanceConfigurationCurrentAsync(input: {
+  accountId: string
+  expectedConfigRevision: number
+  expectedConfig: AccountBalanceQueryConfig
+}): Promise<boolean> {
+  const expectedConfigJson = JSON.stringify(normalizeAccountBalanceConfig(input.expectedConfig))
+  const sql = `
+    SELECT balance_query_config_json
+    FROM accounts
+    WHERE id = ?
+      AND config_revision = ?
+      AND balance_query_enabled = 1
+      AND deleted_at IS NULL
+    LIMIT 1
+  `
+  let configJson: string | undefined
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    const row = await client.one<{ balance_query_config_json: string }>(
+      sql.replace('FROM accounts', 'FROM juhe_business.accounts'),
+      [input.accountId, input.expectedConfigRevision]
+    )
+    configJson = row?.balance_query_config_json
+  } else {
+    const row = getBusinessDatabase().prepare(sql).get(input.accountId, input.expectedConfigRevision) as unknown as { balance_query_config_json: string } | undefined
+    configJson = row?.balance_query_config_json
+  }
+  if (!configJson) return false
+  try {
+    return JSON.stringify(normalizeAccountBalanceConfig(JSON.parse(configJson))) === expectedConfigJson
+  } catch {
+    return false
+  }
 }
 
 function hasExactlyOneApiKey(credentials: Record<string, unknown>): boolean {

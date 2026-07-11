@@ -176,7 +176,7 @@ export function formatModelServiceTier(value: ProviderModelServiceTier): string 
 }
 
 export function formatModelReasoningEffort(value: ProviderModelReasoningEffort | 'ultra'): string {
-  if (value === 'none') return 'None'
+  if (value === 'none') return '关闭'
   if (value === 'minimal') return 'Minimal'
   if (value === 'low') return 'Low'
   if (value === 'medium') return 'Medium'
@@ -187,20 +187,9 @@ export function formatModelReasoningEffort(value: ProviderModelReasoningEffort |
 }
 
 export function formatModelReasoningCapabilities(item: ProviderModelPricing): string {
-  const parts: string[] = []
-  if (item.supportedReasoningEfforts?.length) {
-    const defaultEffort = item.defaultReasoningEffort
-      ? `，默认 ${formatModelReasoningEffort(item.defaultReasoningEffort)}`
-      : ''
-    parts.push(`思考 ${item.supportedReasoningEfforts.map(formatModelReasoningEffort).join(' / ')}${defaultEffort}`)
-  }
-  if (item.codexSupportedReasoningLevels?.length) {
-    parts.push(`Codex ${item.codexSupportedReasoningLevels.map(formatModelReasoningEffort).join(' / ')}`)
-  }
-  if (item.codexMultiAgentVersion) {
-    parts.push(`多代理编排 ${item.codexMultiAgentVersion}`)
-  }
-  return parts.join('；') || '-'
+  return item.supportedReasoningEfforts?.length
+    ? item.supportedReasoningEfforts.map(formatModelReasoningEffort).join(' / ')
+    : '-'
 }
 
 export function formatModelRequestCapabilities(item: ProviderModelPricing): string {

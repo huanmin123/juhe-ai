@@ -2,6 +2,10 @@ import { performance } from 'node:perf_hooks'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import {
+  commitAccountBalanceRefreshAsync,
+  enableDetectedAccountBalanceQueryAsync
+} from '../../storage/account-balance.repository.js'
+import {
   accountTestTaskCancelMessage,
   accountTestTaskCancelMessageAsync,
   cleanupExpiredAccountTestTasks,
@@ -824,6 +828,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         return { changed }
       }
       return handleDbServiceOperationSync(operation)
+    case 'commit_account_balance_refresh':
+      return { changed: await commitAccountBalanceRefreshAsync(operation.input) }
+    case 'enable_detected_account_balance_query':
+      return { changed: await enableDetectedAccountBalanceQueryAsync(operation.input) }
     case 'record_account_health_check_failure':
       if (runtimeConfig.databaseDriver === 'postgres') {
         const result = await recordAccountHealthCheckFailureAsync(operation.accountId, operation.input)
@@ -1330,6 +1338,9 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       }
       return { changed }
     }
+    case 'commit_account_balance_refresh':
+    case 'enable_detected_account_balance_query':
+      throw new Error(`DB service 操作 ${operation.type} 必须通过异步处理器执行`)
     case 'record_account_health_check_failure': {
       const result = recordAccountHealthCheckFailure(operation.accountId, operation.input)
       if (result.changed) {
