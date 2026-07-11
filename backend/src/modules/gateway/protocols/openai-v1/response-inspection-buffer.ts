@@ -40,7 +40,6 @@ export interface OpenAIResponseInspectionBufferOptions {
 }
 
 const maxBufferedSseEventBytes = 256 * 1024
-const maxDeferredCodexCompactionBytes = 1024 * 1024
 
 export class OpenAIResponseInspectionBuffer {
   private readonly pendingBuffer = new PendingSseEventBuffer()
@@ -53,7 +52,6 @@ export class OpenAIResponseInspectionBuffer {
   private readonly buildFailureEvent: (decision: ResponseInspectionDecision, clientRetryEnabled: boolean) => Buffer | undefined
   private readonly deferredLeadingNoopChunks: Buffer[] = []
   private readonly deferredCodexCompactionChunks: Buffer[] = []
-  private deferredCodexCompactionBytes = 0
   private codexCompactionOutputItemCount = 0
   private codexCompactionItemCount = 0
   private codexCompactionCompleted = false
@@ -84,11 +82,8 @@ export class OpenAIResponseInspectionBuffer {
     }
 
     this.pendingBuffer.push(chunk)
-    if (this.pendingBuffer.length > maxBufferedSseEventBytes) {
+    if (this.pendingBuffer.length > maxBufferedSseEventBytes && !this.shouldInspectCodexCompactionContract()) {
       const buffered = this.pendingBuffer.drain()
-      if (this.shouldInspectCodexCompactionContract()) {
-        return this.interceptOversizedCodexCompactionEvent(buffered)
-      }
       this.parserSkipped = true
       return { chunks: [...this.drainDeferredLeadingNoopChunks(), buffered], pendingEvent: false, parserSkipped: true }
     }
@@ -281,48 +276,6 @@ export class OpenAIResponseInspectionBuffer {
     this.deferredLeadingNoopChunks.length = 0
   }
 
-  private interceptOversizedCodexCompactionEvent(rawBuffer: Buffer): ResponseInspectionSseResult {
-    const contractFrame = codexCompactionContractMismatchFrame({
-      outputItemCount: this.codexCompactionOutputItemCount,
-      compactionItemCount: this.codexCompactionItemCount,
-      transport: 'sse',
-      eventType: 'oversized_sse_event',
-      force: true,
-      message: 'Codex Remote Compaction V2 响应单个 SSE 事件超过网关检查解析上限，已按不可接受响应处理'
-    })!
-    const inspection = inspectResponseSemanticFrames({
-      frames: [contractFrame],
-      policies: this.policies,
-      downstreamWritten: this.downstreamWritten,
-      transport: 'sse',
-      context: this.context
-    })
-    if (!inspection.decision) {
-      this.parserSkipped = true
-      return {
-        chunks: [
-          ...this.drainDeferredLeadingNoopChunks(),
-          ...this.drainDeferredCodexCompactionChunks(),
-          rawBuffer
-        ],
-        observations: inspection.observations,
-        pendingEvent: false,
-        parserSkipped: true
-      }
-    }
-    const decision = inspection.decision
-    this.clearDeferredLeadingNoopChunks()
-    this.clearDeferredCodexCompactionChunks()
-    const failureEvent = this.buildFailureEvent(decision, this.clientRetryEnabled)
-    return {
-      chunks: failureEvent ? [failureEvent] : [],
-      intercepted: decision,
-      observations: inspection.observations,
-      pendingEvent: this.hasPendingProtocolEvent(),
-      parserSkipped: this.parserSkipped
-    }
-  }
-
   private interceptIncompleteCodexCompactionOnEof(observations: ResponseInspectionDecision[] | undefined = undefined): ResponseInspectionSseResult {
     const contractFrame = codexCompactionContractMismatchFrame({
       outputItemCount: this.codexCompactionOutputItemCount,
@@ -386,7 +339,7 @@ export class OpenAIResponseInspectionBuffer {
 
     const terminal = eventType === 'response.completed'
     if (!terminal) {
-      const deferred = this.deferCodexCompactionChunk(rawBuffer, eventType)
+      const deferred = this.deferCodexCompactionChunk(rawBuffer)
       return deferred ?? { defer: true }
     }
 
@@ -425,24 +378,7 @@ export class OpenAIResponseInspectionBuffer {
     this.codexCompactionItemCount += counts.compactionItemCount
   }
 
-  private deferCodexCompactionChunk(
-    rawBuffer: Buffer,
-    eventType: string
-  ): { contractFrame: ResponseSemanticFrame } | undefined {
-    this.deferredCodexCompactionBytes += rawBuffer.length
-    if (this.deferredCodexCompactionBytes > maxDeferredCodexCompactionBytes) {
-      this.clearDeferredCodexCompactionChunks()
-      return {
-        contractFrame: codexCompactionContractMismatchFrame({
-          outputItemCount: this.codexCompactionOutputItemCount,
-          compactionItemCount: this.codexCompactionItemCount,
-          transport: 'sse',
-          eventType,
-          force: true,
-          message: 'Codex Remote Compaction V2 响应在完成前超过网关检查暂存上限，已按不可接受响应处理'
-        })!
-      }
-    }
+  private deferCodexCompactionChunk(rawBuffer: Buffer): { contractFrame: ResponseSemanticFrame } | undefined {
     this.deferredCodexCompactionChunks.push(rawBuffer)
     return undefined
   }
@@ -456,14 +392,12 @@ export class OpenAIResponseInspectionBuffer {
 
   private clearDeferredCodexCompactionChunks(): void {
     this.deferredCodexCompactionChunks.length = 0
-    this.deferredCodexCompactionBytes = 0
   }
 
   private removeLastDeferredCodexCompactionChunk(rawBuffer: Buffer): void {
     const last = this.deferredCodexCompactionChunks[this.deferredCodexCompactionChunks.length - 1]
     if (!last || last !== rawBuffer) return
     this.deferredCodexCompactionChunks.pop()
-    this.deferredCodexCompactionBytes = Math.max(0, this.deferredCodexCompactionBytes - rawBuffer.length)
   }
 
   private canPassThroughUninspectableVisibleOutputTextEvent(event: ParsedOpenAIStreamEvent): boolean {

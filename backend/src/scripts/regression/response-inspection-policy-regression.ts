@@ -997,21 +997,29 @@ assert.equal(validateAccountResponseInspectionRules([
       codexCompactionExpected: true
     }
   })
+  const largeEncryptedContent = 'x'.repeat(1200 * 1024)
   const oversizedEvent = sseEvent('response.output_item.done', {
     output_index: 0,
     item: {
       id: 'item_compaction_oversized',
       type: 'compaction',
       status: 'completed',
-      encrypted_content: 'x'.repeat(300 * 1024)
+      encrypted_content: largeEncryptedContent
     }
   })
-  const result = buffer.pushChunk(oversizedEvent)
-  const responseBody = Buffer.concat(result.chunks).toString('utf8')
-  assert.equal(result.intercepted?.policyId, 'default_codex_compaction_contract', 'Codex compact 超大单事件必须失败关闭，不能绕过契约检查 parser skip')
-  assert.equal(result.parserSkipped, false, 'Codex compact 契约检查命中时不应进入 parser skip 透传')
-  assert(responseBody.includes('upstream_retryable_error'), `Codex compact 超大事件应改写为可重试失败：${responseBody}`)
-  assert(!responseBody.includes('item_compaction_oversized'), `Codex compact 超大事件不应原样透传：${responseBody}`)
+  const first = buffer.pushChunk(oversizedEvent)
+  assert.equal(first.intercepted, undefined, '合法 Codex compact 不能因单事件或累计字节大小被拒绝')
+  assert.equal(first.chunks.length, 0, '大型合法 compact output 仍必须等 response.completed 后释放')
+  const completed = buffer.pushChunk(sseEvent('response.completed', {
+    response: {
+      id: 'resp_large_compaction',
+      status: 'completed'
+    }
+  }))
+  const responseBody = Buffer.concat(completed.chunks).toString('utf8')
+  assert.equal(completed.intercepted, undefined, '超过旧 1 MB 暂存上限的合法 compact 响应必须通过')
+  assert(responseBody.includes(largeEncryptedContent), '大型 compact encrypted_content 必须完整透传')
+  assert(responseBody.includes('response.completed'), '大型 compact 响应必须连同 response.completed 一起释放')
 }
 
 {
