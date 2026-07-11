@@ -384,6 +384,8 @@ func writePublicAPIKeyServiceError(w http.ResponseWriter, err error, fallback st
 		writeMessageError(w, http.StatusBadRequest, "默认 API Key 不允许删除")
 	case errors.Is(err, publicapikeys.ErrDefaultAPIKeyRouteStrategyChange):
 		writeMessageError(w, http.StatusBadRequest, "默认 API Key 不允许更换策略路由")
+	case errors.Is(err, publicapikeys.ErrDeleteTransactorRequired):
+		writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 	case errors.Is(err, publicapikeys.ErrInvalidExpiresAt),
 		errors.Is(err, publicapikeys.ErrInvalidQuotaLimits),
 		errors.Is(err, publicapikeys.ErrInvalidAvailabilitySchedule):

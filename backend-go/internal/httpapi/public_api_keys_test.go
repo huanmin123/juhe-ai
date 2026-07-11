@@ -230,6 +230,26 @@ func TestPublicAPIKeyHandlersMapServiceErrors(t *testing.T) {
 	}
 }
 
+func TestPublicAPIKeyHandlersDeleteHidesMissingTransactorError(t *testing.T) {
+	service := publicapikeys.NewService(publicapikeys.Options{})
+	router := newTestPublicAPIShell(
+		newPublicGroupAPIAuthStub(),
+		&publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}},
+		&publicAPIShellLogQueueStub{},
+		NewPublicAPIKeyHandlers(service),
+		time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/__aipublic__/api-key/del", strings.NewReader(`{"apiKeyId":"key_1"}`))
+	req.Header.Set("Authorization", "Bearer juis_plain")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	assertPublicGroupMessageError(t, rec, http.StatusInternalServerError, "服务器内部错误")
+}
+
 func TestPublicAPIKeyHandlersTestTokenSkipsService(t *testing.T) {
 	authContext := publicAPIShellAuthContext()
 	authContext.IsTestToken = true

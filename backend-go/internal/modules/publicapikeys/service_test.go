@@ -356,7 +356,7 @@ func TestServiceDeleteRequiresTransactorBeforeAnyStoreAccess(t *testing.T) {
 	_, err := service.Delete(context.Background(), DeleteInput{APIKeyID: "key_normal"})
 
 	const wantError = "public api key delete transactor is required"
-	if err == nil || err.Error() != wantError {
+	if !errors.Is(err, ErrDeleteTransactorRequired) || err.Error() != wantError {
 		t.Fatalf("delete error = %v, want %q", err, wantError)
 	}
 	if store.findByIDCalls != 0 || store.deleteCalls != 0 || len(store.deleteEvents) != 0 {

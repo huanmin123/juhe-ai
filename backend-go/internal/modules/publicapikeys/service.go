@@ -41,9 +41,8 @@ var (
 	ErrInvalidExpiresAt                 = errors.New("public api key invalid expires_at")
 	ErrInvalidQuotaLimits               = errors.New("public api key invalid quota limits")
 	ErrInvalidAvailabilitySchedule      = errors.New("public api key invalid availability schedule")
+	ErrDeleteTransactorRequired         = errors.New("public api key delete transactor is required")
 )
-
-var errPublicAPIKeyDeleteTransactorRequired = errors.New("public api key delete transactor is required")
 
 type APIKeyGatewayCacheInvalidator interface {
 	InvalidateAPIKeyValidationCache(ctx context.Context) error
@@ -422,7 +421,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (APIKeyResponse
 
 func (s *Service) Delete(ctx context.Context, input DeleteInput) (APIKeyResponse, error) {
 	if s.transactor == nil {
-		return APIKeyResponse{}, errPublicAPIKeyDeleteTransactorRequired
+		return APIKeyResponse{}, ErrDeleteTransactorRequired
 	}
 	var response APIKeyResponse
 	var apiKeyID string
