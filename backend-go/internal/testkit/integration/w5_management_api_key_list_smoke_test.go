@@ -58,6 +58,18 @@ const (
 	w5ManagementAPIKeyListLowercaseID    = "key_w5_management_api_key_list_lowercase"
 )
 
+func TestW5ManagementAPIKeyOperationLogQueueCountMatchesConfiguredIDs(t *testing.T) {
+	if w5ManagementAPIKeyOperationLogQueueCountMatches(4, 0, 6) {
+		t.Fatal("four completed jobs must not satisfy six configured operation log IDs")
+	}
+	if !w5ManagementAPIKeyOperationLogQueueCountMatches(6, 0, 6) {
+		t.Fatal("six completed jobs should satisfy six configured operation log IDs")
+	}
+	if w5ManagementAPIKeyOperationLogQueueCountMatches(6, 1, 6) {
+		t.Fatal("archived jobs must fail the operation log queue assertion")
+	}
+}
+
 func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 
@@ -661,12 +673,29 @@ func TestW5ManagementAPIKeyListPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read operation log queue info: %v", err)
 	}
-	if queueInfo.Completed != 4 || queueInfo.Archived != 0 {
-		t.Fatalf("operation log queue info = %+v, want exactly 4 completed and 0 archived", queueInfo)
+	if !w5ManagementAPIKeyOperationLogQueueCountMatches(
+		queueInfo.Completed,
+		queueInfo.Archived,
+		len(logIDs),
+	) {
+		t.Fatalf(
+			"operation log queue completed=%d archived=%d, want completed=%d archived=0",
+			queueInfo.Completed,
+			queueInfo.Archived,
+			len(logIDs),
+		)
 	}
 	if nextLogID != len(logIDs) {
 		t.Fatalf("operation log ids consumed = %d, want %d", nextLogID, len(logIDs))
 	}
+}
+
+func w5ManagementAPIKeyOperationLogQueueCountMatches(
+	completed int,
+	archived int,
+	expectedCompleted int,
+) bool {
+	return completed == expectedCompleted && archived == 0
 }
 
 type w5ManagementAPIKeyListResponse struct {
