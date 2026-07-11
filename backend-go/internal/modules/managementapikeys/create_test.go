@@ -598,6 +598,47 @@ func TestServiceCreateInvalidationsAreBestEffortAndSkipValidation(t *testing.T) 
 	}
 }
 
+func TestServiceCreateInvalidationsUseDetachedBoundedContextAfterRequestCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &managementAPIKeyCreateStoreStub{afterCreate: cancel}
+	invalidator := &managementAPIKeyCreateInvalidatorContextStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		ListReader:               store,
+		Creator:                  store,
+		UsageStatsTimezoneReader: store,
+		Invalidator:              invalidator,
+		Secret:                   "management-api-key-create-test",
+		NewID:                    func(string) string { return "key_created" },
+		NewSecret:                func() (string, error) { return "sk-created-secret-0123456789", nil },
+	})
+
+	result, err := service.Create(ctx, validCreateInput())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if result.ID != "key_created" || !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("result=%+v request context error=%v", result, ctx.Err())
+	}
+	if invalidator.runtimeCalls != 1 ||
+		invalidator.quotaCalls != 1 ||
+		invalidator.validationCalls != 0 {
+		t.Fatalf("invalidator calls = %+v", invalidator)
+	}
+	if invalidator.runtimeContextErr != nil ||
+		invalidator.quotaContextErr != nil ||
+		!invalidator.runtimeContextHasDeadline ||
+		!invalidator.quotaContextHasDeadline {
+		t.Fatalf("invalidation contexts = %+v", invalidator)
+	}
+	if !invalidator.runtimeDeadline.Equal(invalidator.quotaDeadline) {
+		t.Fatalf(
+			"runtime deadline=%s quota deadline=%s, want one shared timeout context",
+			invalidator.runtimeDeadline,
+			invalidator.quotaDeadline,
+		)
+	}
+}
+
 type createTestOptions struct {
 	now    time.Time
 	secret string
@@ -682,6 +723,7 @@ type managementAPIKeyCreateStoreStub struct {
 	timezoneErr   error
 	createCalls   int
 	timezoneCalls int
+	afterCreate   func()
 }
 
 func (s *managementAPIKeyCreateStoreStub) ListManagementAPIKeys(
@@ -711,6 +753,9 @@ func (s *managementAPIKeyCreateStoreStub) CreateManagementAPIKey(
 	}
 	if err != nil {
 		return port.ManagementAPIKeyListRow{}, err
+	}
+	if s.afterCreate != nil {
+		s.afterCreate()
 	}
 	return port.ManagementAPIKeyListRow{
 		ID:                       input.ID,
@@ -742,3 +787,45 @@ func (s *managementAPIKeyCreateStoreStub) GetManagementUsageStatsTimezone(
 var _ port.ManagementAPIKeyListReader = (*managementAPIKeyCreateStoreStub)(nil)
 var _ port.ManagementAPIKeyCreator = (*managementAPIKeyCreateStoreStub)(nil)
 var _ port.ManagementUsageStatsTimezoneReader = (*managementAPIKeyCreateStoreStub)(nil)
+
+type managementAPIKeyCreateInvalidatorContextStub struct {
+	runtimeCalls              int
+	quotaCalls                int
+	validationCalls           int
+	runtimeContextErr         error
+	quotaContextErr           error
+	runtimeContextHasDeadline bool
+	quotaContextHasDeadline   bool
+	runtimeDeadline           time.Time
+	quotaDeadline             time.Time
+}
+
+func (s *managementAPIKeyCreateInvalidatorContextStub) InvalidateAPIKeyValidationCache(
+	context.Context,
+) error {
+	s.validationCalls++
+	return nil
+}
+
+func (s *managementAPIKeyCreateInvalidatorContextStub) InvalidateGatewayRuntime(
+	ctx context.Context,
+	_ string,
+) error {
+	s.runtimeCalls++
+	s.runtimeContextErr = ctx.Err()
+	s.runtimeDeadline, s.runtimeContextHasDeadline = ctx.Deadline()
+	return nil
+}
+
+func (s *managementAPIKeyCreateInvalidatorContextStub) InvalidateAPIKeyQuotaChanged(
+	ctx context.Context,
+	_ string,
+	_ string,
+) error {
+	s.quotaCalls++
+	s.quotaContextErr = ctx.Err()
+	s.quotaDeadline, s.quotaContextHasDeadline = ctx.Deadline()
+	return nil
+}
+
+var _ APIKeyGatewayCacheInvalidator = (*managementAPIKeyCreateInvalidatorContextStub)(nil)

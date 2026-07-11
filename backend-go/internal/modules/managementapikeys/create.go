@@ -17,7 +17,10 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-const apiKeyCreatedReason = "api_key_created"
+const (
+	apiKeyCreatedReason             = "api_key_created"
+	apiKeyCreateInvalidationTimeout = 5 * time.Second
+)
 
 var (
 	ErrAPIKeyCreateInvalid        = errors.New("API Key 创建参数无效")
@@ -143,8 +146,17 @@ func (s *Service) createOnce(
 		return CreateResult{}, err
 	}
 	if s.invalidator != nil {
-		_ = s.invalidator.InvalidateGatewayRuntime(ctx, apiKeyCreatedReason)
-		_ = s.invalidator.InvalidateAPIKeyQuotaChanged(ctx, row.ID, apiKeyCreatedReason)
+		invalidationCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx),
+			apiKeyCreateInvalidationTimeout,
+		)
+		defer cancel()
+		_ = s.invalidator.InvalidateGatewayRuntime(invalidationCtx, apiKeyCreatedReason)
+		_ = s.invalidator.InvalidateAPIKeyQuotaChanged(
+			invalidationCtx,
+			row.ID,
+			apiKeyCreatedReason,
+		)
 	}
 	return CreateResult{
 		ListItem:             item,
