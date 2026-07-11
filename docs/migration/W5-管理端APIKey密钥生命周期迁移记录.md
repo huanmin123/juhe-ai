@@ -75,6 +75,8 @@
 | `e02f6747f` | 使用真实 Redis / Asynq operation log smoke，固定 session、缓存失效和密钥日志安全 |
 | `a8ba6d018` | 接入管理 / 个人 API Key 创建 HTTP、strict body、typed error、router/app 与 operation log |
 | `af8c9a974` | 扩展 W5 PostgreSQL / Redis / Asynq smoke，覆盖 API Key 创建真实依赖链路 |
+| `c3498cf0d` | 在 mutation claim 前完成创建 scope / payload 校验，避免无效请求进入失败去重窗口 |
+| `759f9e3d9` | 收口创建 smoke 与 unit test 失败诊断，禁止打印完整 key、hash、ciphertext 或解密 payload |
 
 ## 验证记录
 
@@ -97,6 +99,13 @@ integration smoke 已编码覆盖真实 migrations、PostgreSQL、Redis cache/st
 - 健康检查首次激活优先队列属于 W7 ops worker，当前 Go W5 API Key 密钥切片不消费该队列。
 - GPT 请求覆盖按最终模型能力解析属于 W10 网关和尚未整体迁移的账户配置，不改变当前 Go API Key secret / refresh 契约。
 - 因此本轮不需要为这些 Node 提交修改已迁移 Go 代码；W7 和 W10 接管前必须重新纳入对应语义。
+
+补充审计基线：`ddbb3d3d..759f9e3d9`，当前 Go 实现基线为 `759f9e3d9`（2026-07-11）。该范围内 API Key create 核心生产契约无净漂移：
+
+- `acc61a4e1` 仅澄清测试断言：summary / update 响应不得包含完整 key；create 成功响应仍是完整 key 唯一一次可见的管理生命周期入口，不改变本切片一次性返回契约。
+- `df1dc86ec` 的 gateway quota runtime state 发布、`8bb00ea0a` 的 authorization quota 失效时间语义，以及 `2ec3d776d` 的账户健康检查 / 人工诊断链路，分别属于尚未迁移的网关额度、授权额度和账户健康范围；本切片继续 defer，不提前复制到 API Key create HTTP / service。
+- 因此本次只修正 create 预校验去重边界和测试诊断脱敏，不扩展 gateway quota、authorization quota、account health、OAuth、usage/audit 或 worker 迁移范围。
+- 本机 `TestW5ManagementAPIKeyListPostgresSmoke` 仍因 Docker provider 不可用输出 `SKIP`；该结果只表示真实依赖测试未执行，不是 PostgreSQL / Redis / Asynq / HTTP 通过证据。
 
 ## 剩余门禁
 
