@@ -88,6 +88,8 @@
 
 - 运行态恢复探针：处理 `failure_observed`、`latency_degraded`、`local_suppressed`、`runtime_degraded` 和 `precheck_pending` 这类短 TTL 运行态。standalone 模式可以保存在 Web 进程内；performance 模式必须保存在 Redis runtime state，但不使用 Redis 分布式锁。
 - ops-worker 冷却复测：处理 `accounts.status = temporary_unavailable / rate_limited` 这类持久状态，按冷却时间和退避策略持续复测，直到恢复、进入长期低频复测或用户手动处理。
+- 所有后台系统探针统一采用二元结果：只有完整探测成功才算成功；超时、网络错误、非成功响应、协议错误和业务错误都算本次失败。失败原因只用于日志、状态展示和排障，不能让某类失败跳过失败次数累计或下一次复测时间推进。
+- ops-worker 冷却复测必须按 `(cooldown_until, priority, created_at, id)` 复合游标公平扫描，并在扫描到末尾后回绕。已在队列或执行中的账户不能永久占用固定查询窗口，避免前排账户让后续到期账户长期得不到复测。
 - `error` 只在明确硬异常时写入；可自动恢复的后台任务成功后可以清理，不能把普通上游抖动写成长期硬错误。
 
 ## 状态事件触发探针调度器
