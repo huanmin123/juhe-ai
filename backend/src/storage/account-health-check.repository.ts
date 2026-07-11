@@ -190,6 +190,9 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
   const nextHealthCheckAt = nextHealthCheckAtForAccount(accountId, checkedAt, input)
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
+  const mutationGuard = postgresHealthCheckMutationGuard({
+    expectedConfigRevision
+  })
   const changed = await client.transaction(async (tx) => {
     const row = await tx.one<AccountHealthCheckSuccessStateRow>(`
       SELECT status, schedulable, availability_schedule_json, config_revision
@@ -222,7 +225,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
       WHERE id = ?
         AND deleted_at IS NULL
         AND status IN ('active', 'pending_test')
-        AND (? IS NULL OR config_revision = ?)
+        ${mutationGuard.sql}
     `, [
       activationStatus,
       checkedAt,
@@ -231,8 +234,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
       statusCode,
       checkedAt,
       accountId,
-      expectedConfigRevision ?? null,
-      expectedConfigRevision ?? null
+      ...mutationGuard.params
     ])
     const updated = Number(result.changes ?? 0) > 0
     if (updated && healthCheckSuccessChangesGroupStats(row, activationStatus)) {
@@ -378,6 +380,10 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
   const observedAt = normalizedIso(input.observedAt)
+  const mutationGuard = postgresHealthCheckMutationGuard({
+    expectedConfigRevision,
+    observedAt
+  })
   const mutation = await client.transaction(async (tx) => {
     const row = await tx.one<{
       config_revision?: number
@@ -423,8 +429,7 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
-        AND (? IS NULL OR config_revision = ?)
-        AND (? IS NULL OR last_health_success_at IS NULL OR last_health_success_at <= ?)
+        ${mutationGuard.sql}
     `, [
       checkedAt,
       nextHealthCheckAt,
@@ -434,10 +439,7 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
       errorMessage,
       checkedAt,
       accountId,
-      expectedConfigRevision ?? null,
-      expectedConfigRevision ?? null,
-      observedAt ?? null,
-      observedAt ?? null
+      ...mutationGuard.params
     ])
     return {
       changed: Number(result.changes ?? 0) > 0,
@@ -663,7 +665,9 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
               OR group_accounts.account_authorization_id = accounts.authorization_instance_authorization_id
             )
         )
-      ORDER BY accounts.next_health_check_at IS NOT NULL ASC,
+      ORDER BY CASE WHEN accounts.status = 'pending_test' THEN 0 ELSE 1 END ASC,
+        CASE WHEN accounts.status = 'pending_test' THEN accounts.updated_at END DESC,
+        accounts.next_health_check_at IS NOT NULL ASC,
         accounts.next_health_check_at ASC,
         accounts.last_health_check_at ASC,
         accounts.created_at ASC,
@@ -737,7 +741,9 @@ async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit
       AND (accounts.next_health_check_at IS NULL OR accounts.next_health_check_at <= ?)
       ${accountIdFilter}
       AND group_bindings.group_id IS NOT NULL
-    ORDER BY accounts.next_health_check_at IS NOT NULL ASC,
+    ORDER BY CASE WHEN accounts.status = 'pending_test' THEN 0 ELSE 1 END ASC,
+      CASE WHEN accounts.status = 'pending_test' THEN accounts.updated_at END DESC,
+      accounts.next_health_check_at IS NOT NULL ASC,
       accounts.next_health_check_at ASC,
       accounts.last_health_check_at ASC,
       accounts.created_at ASC,
@@ -748,6 +754,23 @@ async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit
     Boolean(row.source_provider_code)
     && isAuthorizedSourceAccountAvailableForDispatch(row, now)
   ))
+}
+
+function postgresHealthCheckMutationGuard(input: {
+  expectedConfigRevision?: number
+  observedAt?: string
+}): { sql: string; params: Array<string | number> } {
+  const clauses: string[] = []
+  const params: Array<string | number> = []
+  if (input.expectedConfigRevision !== undefined) {
+    clauses.push('AND config_revision = ?')
+    params.push(input.expectedConfigRevision)
+  }
+  if (input.observedAt) {
+    clauses.push('AND (last_health_success_at IS NULL OR last_health_success_at <= ?)')
+    params.push(input.observedAt)
+  }
+  return { sql: clauses.join('\n      '), params }
 }
 
 function healthCheckAccountSelectColumns(): string {

@@ -78,7 +78,8 @@ try {
       jitterMinutes: 0,
       failureThreshold: 2,
       checkedAt,
-      statusCode: 200
+      statusCode: 200,
+      expectedConfigRevision: account.configRevision
     }
   })
   assert.equal(healthSuccess.changed, true, 'PG health check success 应写回成功状态')
@@ -178,7 +179,9 @@ try {
       failureThreshold: 2,
       statusCode: 503,
       errorCode: 'health_probe_smoke',
-      errorMessage: 'PG health smoke'
+      errorMessage: 'PG health smoke',
+      expectedConfigRevision: account.configRevision,
+      observedAt: new Date().toISOString()
     }
   })
   assert.equal(healthFailure.changed, true, 'PG health check failure 应写回失败状态')
