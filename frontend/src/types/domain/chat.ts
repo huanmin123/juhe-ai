@@ -7,6 +7,7 @@ export interface ChatConversation {
   apiKeyId?: string
   apiKeyNameSnapshot: string
   title: string
+  isPinned: boolean
   lastModel?: string
   activeTurnId?: string
   lastMessageAt: string
@@ -43,6 +44,16 @@ export type ChatToolStatus = 'started' | 'updated' | 'completed' | 'failed'
 export interface ChatToolEvent { id: string; type: string; status: ChatToolStatus; item?: Record<string, unknown> }
 
 export interface ChatApiKeyOption { id: string; name: string; status: string }
+
+export type ChatReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type ChatServiceTier = 'priority' | 'flex'
+export interface ChatModelOption {
+  id: string
+  supportedReasoningEfforts: ChatReasoningEffort[]
+  defaultReasoningEffort?: ChatReasoningEffort
+  supportedServiceTiers: ChatServiceTier[]
+  contextWindowTokens?: number
+}
 
 export type ChatStreamEvent =
   | { type: 'message.started'; data: { turnId: string; userMessage: ChatMessage; assistantMessage: ChatMessage } }

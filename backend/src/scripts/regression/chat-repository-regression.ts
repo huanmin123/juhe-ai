@@ -15,7 +15,8 @@ import {
   cleanupChatRetention,
   listChatContextMessages,
   listChatConversations,
-  listChatMessages
+  listChatMessages,
+  updateChatConversation
 } from '../../storage/chat.repository.js'
 
 const database = new DatabaseSync(':memory:')
@@ -32,6 +33,25 @@ const conversation = await createChatConversation(client, {
 assert.equal(conversation.title, '新对话')
 assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 20 })).length, 1)
 assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_2', limit: 20 })).length, 0)
+
+const pinnedConversation = await createChatConversation(client, {
+  id: 'chat_conv_pinned',
+  systemAccountId: 'sys_user_1',
+  apiKeyId: 'key_1',
+  apiKeyNameSnapshot: '默认 Key',
+  now: '2026-07-11T00:00:00.000Z'
+})
+const renamedPinned = await updateChatConversation(client, {
+  conversationId: pinnedConversation.id,
+  systemAccountId: 'sys_user_1',
+  title: '置顶会话',
+  isPinned: true,
+  now: '2026-07-12T00:00:10.000Z'
+})
+assert.equal(renamedPinned?.title, '置顶会话')
+assert.equal(renamedPinned?.isPinned, true)
+assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 20 }))[0]?.id, pinnedConversation.id)
+assert.equal(await deleteChatConversation(client, pinnedConversation.id, 'sys_user_1'), true)
 
 const accepted = await acceptChatTurn(client, {
   conversationId: conversation.id,

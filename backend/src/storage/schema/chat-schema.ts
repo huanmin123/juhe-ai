@@ -12,6 +12,7 @@ export function applyChatSchema(database: DatabaseSync): void {
       api_key_name_snapshot TEXT NOT NULL,
       title TEXT NOT NULL DEFAULT '新对话',
       title_source_message_id TEXT,
+      is_pinned INTEGER NOT NULL DEFAULT 0,
       last_model TEXT,
       next_sequence_no INTEGER NOT NULL DEFAULT 1,
       active_turn_id TEXT,
@@ -19,7 +20,8 @@ export function applyChatSchema(database: DatabaseSync): void {
       last_message_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      CHECK (next_sequence_no >= 1)
+      CHECK (next_sequence_no >= 1),
+      CHECK (is_pinned IN (0, 1))
     );
 
     CREATE TABLE IF NOT EXISTS chat_messages (
@@ -76,6 +78,8 @@ export function applyChatSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_chat_conversations_owner_recent
       ON chat_conversations(system_account_id, last_message_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_conversations_owner_pinned_recent
+      ON chat_conversations(system_account_id, is_pinned DESC, last_message_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_conversations_owner_api_key
       ON chat_conversations(system_account_id, api_key_id);
     CREATE INDEX IF NOT EXISTS idx_chat_conversations_active_started

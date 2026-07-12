@@ -32,11 +32,16 @@ function serialize(node: JSONContent, text: string[], blocks: ChatInputBlock[]):
   }
   if (node.type === 'chatImageAttachment' && typeof node.attrs?.assetId === 'string') {
     flushText(text, blocks)
-    blocks.push({ type: 'input_image', assetId: node.attrs.assetId, previewUrl: typeof node.attrs.previewUrl === 'string' ? node.attrs.previewUrl : undefined })
+    blocks.push({
+      type: 'input_image',
+      assetId: node.attrs.assetId,
+      previewUrl: typeof node.attrs.previewUrl === 'string' ? node.attrs.previewUrl : undefined,
+      dataUrl: typeof node.attrs.dataUrl === 'string' ? node.attrs.dataUrl : undefined
+    })
     return
   }
   if (node.type === 'text' && typeof node.text === 'string') {
-    text.push(node.text)
+    text.push(serializeMarkedText(node))
     return
   }
   if (node.type === 'hardBreak') { text.push('\n'); return }
@@ -46,8 +51,26 @@ function serialize(node: JSONContent, text: string[], blocks: ChatInputBlock[]):
     text.push('\n```\n\n')
     return
   }
+  if (node.type === 'heading') {
+    const level = typeof node.attrs?.level === 'number' ? Math.min(6, Math.max(1, node.attrs.level)) : 1
+    text.push(`${'#'.repeat(level)} `)
+  }
+  if (node.type === 'blockquote') text.push('> ')
   if (node.type === 'listItem') text.push('- ')
   for (const child of node.content ?? []) serialize(child, text, blocks)
   if (node.type === 'paragraph' || node.type === 'heading') flushText(text, blocks)
   else if (['listItem', 'blockquote', 'codeBlock'].includes(node.type ?? '')) text.push('\n')
+}
+
+function serializeMarkedText(node: JSONContent): string {
+  let value = node.text ?? ''
+  for (const mark of node.marks ?? []) {
+    if (mark.type === 'bold') value = `**${value}**`
+    else if (mark.type === 'italic') value = `*${value}*`
+    else if (mark.type === 'strike') value = `~~${value}~~`
+    else if (mark.type === 'code') value = `\`${value}\``
+    else if (mark.type === 'link' && typeof mark.attrs?.href === 'string') value = `[${value}](${mark.attrs.href})`
+    else if (mark.type === 'underline') value = `<u>${value}</u>`
+  }
+  return value
 }

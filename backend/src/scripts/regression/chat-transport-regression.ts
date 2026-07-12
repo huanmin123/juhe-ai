@@ -9,18 +9,22 @@ assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions', 'res
 assert.equal(selectChatTransport({ supportedProtocols: [], toolsEnabled: true }), 'chat_completions')
 
 const responses = buildChatTransportRequest({
-  protocol: 'responses', model: 'model-a', history: [{ role: 'user', content: '此前问题' }], currentContent: '继续', currentBlocks: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', dataUrl: 'data:image/png;base64,abc' }, { type: 'input_text', text: '图片后' }], toolsEnabled: true
+  protocol: 'responses', model: 'model-a', history: [{ role: 'user', content: '此前问题' }], currentContent: '继续', currentBlocks: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', dataUrl: 'data:image/png;base64,abc' }, { type: 'input_text', text: '图片后' }], toolsEnabled: true, reasoningEffort: 'high', serviceTier: 'priority'
 })
 assert.equal(responses.path, '/v1/responses')
 assert.deepEqual(responses.body.input, [{ role: 'user', content: '此前问题' }, { role: 'user', content: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', image_url: 'data:image/png;base64,abc' }, { type: 'input_text', text: '图片后' }] }])
 assert.equal(responses.body.stream, true)
 assert.deepEqual(responses.body.tools, [{ type: 'web_search' }])
+assert.deepEqual(responses.body.reasoning, { effort: 'high' })
+assert.equal(responses.body.service_tier, 'priority')
 
 const chat = buildChatTransportRequest({
-  protocol: 'chat_completions', model: 'model-a', history: [], currentContent: '你好', toolsEnabled: true
+  protocol: 'chat_completions', model: 'model-a', history: [], currentContent: '你好', toolsEnabled: true, reasoningEffort: 'low', serviceTier: 'flex'
 })
 assert.equal(chat.path, '/v1/chat/completions')
 assert.deepEqual(chat.body.messages, [{ role: 'user', content: '你好' }])
+assert.equal(chat.body.reasoning_effort, 'low')
+assert.equal(chat.body.service_tier, 'flex')
 
 const checked: string[] = []
 const protocols = await resolveChatSupportedProtocols({

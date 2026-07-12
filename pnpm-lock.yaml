@@ -104,21 +104,12 @@ importers:
       '@tiptap/core':
         specifier: 3.27.3
         version: 3.27.3(@tiptap/pm@3.27.3)
-      '@tiptap/extension-character-count':
-        specifier: 3.27.3
-        version: 3.27.3(@tiptap/extensions@3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3))
-      '@tiptap/extension-image':
-        specifier: 3.27.3
-        version: 3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))
       '@tiptap/extension-placeholder':
         specifier: 3.27.3
         version: 3.27.3(@tiptap/extensions@3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3))
       '@tiptap/starter-kit':
         specifier: 3.27.3
         version: 3.27.3
-      '@tiptap/suggestion':
-        specifier: 3.27.3
-        version: 3.27.3(@floating-ui/dom@1.8.0)(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)
       '@tiptap/vue-3':
         specifier: 3.27.3
         version: 3.27.3(@floating-ui/dom@1.8.0)(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)(vue@3.5.33(typescript@5.9.3))
@@ -800,11 +791,6 @@ packages:
     peerDependencies:
       '@tiptap/extension-list': 3.27.3
 
-  '@tiptap/extension-character-count@3.27.3':
-    resolution: {integrity: sha512-dtgj4ume0d+4Zkd8osj9mGLNhZpB5BxketX0JkIdi7M5dzF6aAdEzrIl1wYbccUplVrzNsqxVR4Hs7bOjiJ4tA==}
-    peerDependencies:
-      '@tiptap/extensions': 3.27.3
-
   '@tiptap/extension-code-block@3.27.3':
     resolution: {integrity: sha512-3CVnzkpGoqqI5KaXI9l9PMwLkx34SYY63tpeo0I0QjDk4LU+JTAQDTPJFSwB4zTsHZ7ZFMU0jjasFOZ1kZRVgw==}
     peerDependencies:
@@ -853,11 +839,6 @@ packages:
     peerDependencies:
       '@tiptap/core': 3.27.3
       '@tiptap/pm': 3.27.3
-
-  '@tiptap/extension-image@3.27.3':
-    resolution: {integrity: sha512-3OVLRH54Xkh9yrI5oGIempuqZkhLG1plyJBRnapx0N8j9IjEImOLF78kPYoAZzaBuU78M3Zk/E7HQZgmnaNRBg==}
-    peerDependencies:
-      '@tiptap/core': 3.27.3
 
   '@tiptap/extension-italic@3.27.3':
     resolution: {integrity: sha512-7VpVi2vn8kGFAc/HLrt96J/E6+LXOGKn8xLhJS863t150yLIG3EPQLA1h+G5O6eo+/w+9YokvJAAJoeDihj1Jg==}
@@ -927,13 +908,6 @@ packages:
 
   '@tiptap/starter-kit@3.27.3':
     resolution: {integrity: sha512-xX3baFqiC30skntdhxUUvyJo755ON9c1pE83+2Wiq2g+Qnffg9knUuLCZStHoZZ318yB0aBsKAMvHWLtYDo8AA==}
-
-  '@tiptap/suggestion@3.27.3':
-    resolution: {integrity: sha512-2sSpjK3j50n9TLC8yB1PJ/TkL9Ozh1dhkYcl6ZKpXH0FBDauytPhPaZOrcTlYR4f9MXUpMuUcbZ4R5dplhgZ2Q==}
-    peerDependencies:
-      '@floating-ui/dom': ^1.0.0
-      '@tiptap/core': 3.27.3
-      '@tiptap/pm': 3.27.3
 
   '@tiptap/vue-3@3.27.3':
     resolution: {integrity: sha512-/VfDPXTM6R9w913oziODzHoZQMdtB0jFvJLF8LxYbO1FwDopPuX/kCWaeDyvr2CYrutbCe3PBj5FzPExOIJ3zQ==}
@@ -2764,10 +2738,6 @@ snapshots:
     dependencies:
       '@tiptap/extension-list': 3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)
 
-  '@tiptap/extension-character-count@3.27.3(@tiptap/extensions@3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3))':
-    dependencies:
-      '@tiptap/extensions': 3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)
-
   '@tiptap/extension-code-block@3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)':
     dependencies:
       '@tiptap/core': 3.27.3(@tiptap/pm@3.27.3)
@@ -2808,10 +2778,6 @@ snapshots:
     dependencies:
       '@tiptap/core': 3.27.3(@tiptap/pm@3.27.3)
       '@tiptap/pm': 3.27.3
-
-  '@tiptap/extension-image@3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))':
-    dependencies:
-      '@tiptap/core': 3.27.3(@tiptap/pm@3.27.3)
 
   '@tiptap/extension-italic@3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))':
     dependencies:
@@ -2906,12 +2872,6 @@ snapshots:
       '@tiptap/extension-text': 3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))
       '@tiptap/extension-underline': 3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))
       '@tiptap/extensions': 3.27.3(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)
-      '@tiptap/pm': 3.27.3
-
-  '@tiptap/suggestion@3.27.3(@floating-ui/dom@1.8.0)(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)':
-    dependencies:
-      '@floating-ui/dom': 1.8.0
-      '@tiptap/core': 3.27.3(@tiptap/pm@3.27.3)
       '@tiptap/pm': 3.27.3
 
   '@tiptap/vue-3@3.27.3(@floating-ui/dom@1.8.0)(@tiptap/core@3.27.3(@tiptap/pm@3.27.3))(@tiptap/pm@3.27.3)(vue@3.5.33(typescript@5.9.3))':

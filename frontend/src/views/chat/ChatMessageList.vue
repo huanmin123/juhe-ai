@@ -1,11 +1,11 @@
 <template>
-  <div ref="scrollElement" class="message-scroll" @scroll="handleScroll">
+  <div ref="scrollElement" class="message-scroll" tabindex="0" aria-label="对话消息" @scroll="handleScroll" @wheel.passive="handleWheel" @touchstart.passive="handleTouchStart" @touchmove.passive="handleTouchMove">
     <div v-if="loading" class="message-loading"><a-spin size="small" /><span>正在加载对话</span></div>
     <div v-else-if="!messages.length" class="message-empty">
       <MessageOutlined />
       <span>发送一条消息开始对话</span>
     </div>
-    <div v-else class="message-virtual-space" :data-message-count="messages.length" :style="{ height: `${virtualizer.getTotalSize()}px` }">
+    <div v-else ref="virtualSpace" class="message-virtual-space" :data-message-count="messages.length" :style="{ height: `${virtualizer.getTotalSize()}px` }">
       <article
         v-for="item in virtualItems"
         :key="messages[item.index].id"
@@ -35,15 +35,20 @@
 <script setup lang="ts">
 import { MessageOutlined, RobotOutlined, UserOutlined } from '@ant-design/icons-vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ChatMessage, ChatMessageStatus } from '@/types/domain/chat'
 import ChatMarkdown from './ChatMarkdown.vue'
 import ChatToolEvent from './ChatToolEvent.vue'
+import { chatDistanceFromBottom, shouldBreakChatFollowOnWheel, shouldFollowChatBottom, shouldShowChatJumpButton } from './chatScrollPolicy'
 
 const props = defineProps<{ messages: ChatMessage[]; loading: boolean }>()
-const emit = defineEmits<{ (event: 'near-top'): void }>()
+const emit = defineEmits<{ (event: 'near-top'): void; (event: 'jump-visibility', visible: boolean): void }>()
 const scrollElement = ref<HTMLElement>()
+const virtualSpace = ref<HTMLElement>()
 const followLatest = ref(true)
+let lastJumpVisible = false
+let touchStartY = 0
+let resizeObserver: ResizeObserver | undefined
 const virtualizer = useVirtualizer(computed(() => ({
   count: props.messages.length,
   getScrollElement: () => scrollElement.value ?? null,
@@ -56,13 +61,20 @@ const virtualItems = computed(() => virtualizer.value.getVirtualItems())
 function measureElement(element: unknown): void {
   if (element instanceof Element) virtualizer.value.measureElement(element)
 }
-function scrollToBottom(): void { nextTick(() => virtualizer.value.scrollToIndex(Math.max(0, props.messages.length - 1), { align: 'end' })) }
+function scrollToBottom(): void { followLatest.value = true; emitJumpVisibility(false); nextTick(() => virtualizer.value.scrollToIndex(Math.max(0, props.messages.length - 1), { align: 'end' })) }
+function followStream(): void { if (followLatest.value) nextTick(() => virtualizer.value.scrollToIndex(Math.max(0, props.messages.length - 1), { align: 'end' })) }
 function handleScroll(): void {
   const element = scrollElement.value
   if (!element) return
-  followLatest.value = element.scrollHeight - element.scrollTop - element.clientHeight < 96
+  const distance = chatDistanceFromBottom(element)
+  followLatest.value = shouldFollowChatBottom(distance)
+  emitJumpVisibility(shouldShowChatJumpButton(distance))
   if (element.scrollTop < 120) emit('near-top')
 }
+function handleWheel(event: WheelEvent): void { if (shouldBreakChatFollowOnWheel(event.deltaY)) followLatest.value = false }
+function handleTouchStart(event: TouchEvent): void { touchStartY = event.touches[0]?.clientY ?? 0 }
+function handleTouchMove(event: TouchEvent): void { const current = event.touches[0]?.clientY ?? touchStartY; if (current > touchStartY + 4) followLatest.value = false; touchStartY = current }
+function emitJumpVisibility(visible: boolean): void { if (visible === lastJumpVisible) return; lastJumpVisible = visible; emit('jump-visibility', visible) }
 function captureScrollAnchor(): { offset: number; totalSize: number } {
   return { offset: scrollElement.value?.scrollTop ?? 0, totalSize: virtualizer.value.getTotalSize() }
 }
@@ -74,15 +86,18 @@ async function restoreScrollAnchor(anchor: { offset: number; totalSize: number }
 function statusLabel(status: ChatMessageStatus): string { return ({ streaming: '生成中', failed: '失败', canceled: '已停止', completed: '' })[status] }
 function statusColor(status: ChatMessageStatus): string { return ({ streaming: 'processing', failed: 'error', canceled: 'default', completed: 'default' })[status] }
 
-watch(() => [props.messages.length, props.messages.at(-1)?.contentText.length], () => { if (followLatest.value) scrollToBottom() })
-defineExpose({ scrollToBottom, captureScrollAnchor, restoreScrollAnchor })
+watch(() => [props.messages.length, props.messages.at(-1)?.contentText.length, props.messages.at(-1)?.toolEvents?.length, props.messages.at(-1)?.reasoningText?.length], followStream)
+onMounted(() => { resizeObserver = new ResizeObserver(followStream); if (virtualSpace.value) resizeObserver.observe(virtualSpace.value) })
+watch(virtualSpace, (next, previous) => { if (previous) resizeObserver?.unobserve(previous); if (next) resizeObserver?.observe(next) })
+onBeforeUnmount(() => resizeObserver?.disconnect())
+defineExpose({ scrollToBottom, followStream, captureScrollAnchor, restoreScrollAnchor })
 </script>
 
 <style scoped>
-.message-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; background: #fff; scrollbar-gutter: stable; }
+.message-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; outline: none; background: #fff; scrollbar-gutter: stable; }
 .message-virtual-space { position: relative; width: 100%; }
 .message-row { position: absolute; top: 0; left: 0; width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 14px clamp(14px, 3vw, 36px); }
-.message-row-user { justify-content: flex-end; background: #f8fafc; }
+.message-row-user { justify-content: flex-end; }
 .message-row-assistant { justify-content: flex-start; }
 .message-row-user .message-avatar { order: 2; }
 .message-row-user .message-body { order: 1; }

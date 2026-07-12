@@ -16,3 +16,11 @@ export function filterChatComposerCommands(query: string): ChatComposerCommand[]
   const normalized = query.trim().toLowerCase()
   return normalized ? chatComposerCommands.filter((item) => `${item.key} ${item.label} ${item.description}`.toLowerCase().includes(normalized)) : chatComposerCommands
 }
+
+export function moveChatComposerCommandIndex(index: number, direction: 1 | -1, count: number): number {
+  return count > 0 ? (index + direction + count) % count : 0
+}
+
+export function chatComposerCommandQueryRange(cursor: number, query: string): { from: number; to: number } {
+  return { from: Math.max(1, cursor - query.length - 1), to: cursor }
+}

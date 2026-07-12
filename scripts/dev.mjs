@@ -34,9 +34,15 @@ try {
 await new Promise(() => undefined)
 
 function startPnpm(args, label, onOutput) {
+  const childEnv = label === 'backend'
+    ? {
+        ...process.env,
+        JUHE_AI_DEV_AUTO_LOGIN_USERNAME: process.env.JUHE_AI_DEV_AUTO_LOGIN_USERNAME || 'admin'
+      }
+    : process.env
   const child = spawn(pnpmRunner.command, [...pnpmRunner.args, ...args], {
     cwd: root,
-    env: process.env,
+    env: childEnv,
     shell: pnpmRunner.shell,
     stdio: ['inherit', 'pipe', 'pipe']
   })

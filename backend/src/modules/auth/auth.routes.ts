@@ -9,6 +9,7 @@ import { consumeCaptchaIssueAllowanceAsync, createCaptchaChallengeAsync, verifyC
 import { checkLoginAllowedAsync, getLoginClientIp, recordFailedLoginAsync, recordSuccessfulLoginAsync } from './login-guard.service.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
 import { shouldTouchSessionForSystemApiRequest } from '../system-api/system-api-db-access.js'
+import { developmentAutoLoginContextAsync } from './development-auto-login.js'
 
 export const authRouter = Router()
 
@@ -252,6 +253,11 @@ export function clearSessionCookie(res: { cookie: (name: string, value: string, 
 async function requireSessionContext(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = parseCookie(req.headers.cookie ?? '')[sessionCookieName]
   if (!token) {
+    const developmentContext = await developmentAutoLoginContextAsync()
+    if (developmentContext) {
+      withRequestAuthContext(developmentContext, next)
+      return
+    }
     res.status(401).json({ message: '请先登录' })
     return
   }

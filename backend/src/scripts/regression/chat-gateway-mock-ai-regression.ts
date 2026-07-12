@@ -87,8 +87,8 @@ try {
   assert.equal(invalidCreate.status, 400, 'AI 问答参数校验失败必须返回 400 而不是全局 500')
   const created = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
   const conversationId = created.data.id
-  const models = await apiJson<{ data: string[] }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)
-  assert(models.data.includes(testModel), 'AI 问答模型列表应来自绑定 Key 的真实网关 /v1/models')
+  const models = await apiJson<{ data: Array<{ id: string }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)
+  assert(models.data.some((item) => item.id === testModel), 'AI 问答模型列表应来自绑定 Key 的真实网关 /v1/models')
 
   const streamResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
     method: 'POST',

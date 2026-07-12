@@ -4,6 +4,7 @@ import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { parse } from 'dotenv'
+import { assertDevelopmentAutoLoginConfig } from './development.js'
 
 export interface RuntimeConfig {
   runtimeMode: RuntimeMode
@@ -15,6 +16,9 @@ export interface RuntimeConfig {
   queueDriver: QueueDriver
   host: string
   port: number
+  development: {
+    autoLoginUsername?: string
+  }
   httpSecurity: {
     cors: {
       allowedOrigins: string[]
@@ -215,6 +219,14 @@ const configuredRedisQueueUrl = optionalStringConfig('JUHE_AI_REDIS_QUEUE_URL')
 const configuredSecret = secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret)
 const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE', configuredSecret)
 const configuredAllowSharedRedisUrls = booleanConfig('JUHE_AI_ALLOW_SHARED_REDIS_URLS', false)
+const configuredHost = stringConfig('JUHE_AI_HOST', '127.0.0.1')
+const configuredDevelopmentAutoLoginUsername = optionalStringConfig('JUHE_AI_DEV_AUTO_LOGIN_USERNAME')
+
+assertDevelopmentAutoLoginConfig({
+  username: configuredDevelopmentAutoLoginUsername,
+  nodeEnv: rawStringConfig('NODE_ENV'),
+  host: configuredHost
+})
 
 assertRuntimeModeDrivers({
   runtimeMode: configuredRuntimeMode,
@@ -237,8 +249,11 @@ export const runtimeConfig: RuntimeConfig = {
   cacheDriver: configuredCacheDriver,
   runtimeStateDriver: configuredRuntimeStateDriver,
   queueDriver: configuredQueueDriver,
-  host: stringConfig('JUHE_AI_HOST', '127.0.0.1'),
+  host: configuredHost,
   port: numberConfig('JUHE_AI_PORT', 3000, 1, 65535),
+  development: {
+    autoLoginUsername: configuredDevelopmentAutoLoginUsername
+  },
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
   systemApi: {

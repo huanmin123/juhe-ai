@@ -12,6 +12,7 @@ export interface ChatConversation {
   apiKeyId?: string
   apiKeyNameSnapshot: string
   title: string
+  isPinned: boolean
   lastModel?: string
   activeTurnId?: string
   lastMessageAt: string
@@ -79,7 +80,7 @@ export async function listChatConversations(client: DatabaseClient, input: {
     SELECT * FROM ${chatTable(client, 'chat_conversations')}
     WHERE system_account_id = ?
       ${hasCursor ? 'AND (last_message_at < ? OR (last_message_at = ? AND id < ?))' : ''}
-    ORDER BY last_message_at DESC, id DESC
+    ORDER BY is_pinned DESC, last_message_at DESC, id DESC
     LIMIT ?
   `, hasCursor
     ? [input.systemAccountId, input.beforeLastMessageAt, input.beforeLastMessageAt, input.beforeId, Math.max(1, Math.min(input.limit, 50))]
@@ -92,6 +93,26 @@ export async function getChatConversation(client: DatabaseClient, conversationId
     SELECT * FROM ${chatTable(client, 'chat_conversations')} WHERE id = ? AND system_account_id = ?
   `, [conversationId, systemAccountId])
   return row ? mapConversation(row) : undefined
+}
+
+export async function updateChatConversation(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  title?: string
+  isPinned?: boolean
+  now: string
+}): Promise<ChatConversation | undefined> {
+  const current = await getChatConversation(client, input.conversationId, input.systemAccountId)
+  if (!current) return undefined
+  const title = input.title ?? current.title
+  const isPinned = input.isPinned ?? current.isPinned
+  await client.execute(`
+    UPDATE ${chatTable(client, 'chat_conversations')}
+    SET title = ?, title_source_message_id = CASE WHEN ? IS NOT NULL THEN NULL ELSE title_source_message_id END,
+        is_pinned = ?, updated_at = ?
+    WHERE id = ? AND system_account_id = ?
+  `, [title, input.title ?? null, isPinned ? 1 : 0, input.now, input.conversationId, input.systemAccountId])
+  return getChatConversation(client, input.conversationId, input.systemAccountId)
 }
 
 export async function deleteChatConversation(client: DatabaseClient, conversationId: string, systemAccountId: string): Promise<boolean> {
@@ -549,7 +570,7 @@ function mapConversation(row: ConversationRow): ChatConversation {
   return {
     id: String(row.id), systemAccountId: String(row.system_account_id),
     apiKeyId: nullable(row.api_key_id), apiKeyNameSnapshot: String(row.api_key_name_snapshot),
-    title: String(row.title), lastModel: nullable(row.last_model), activeTurnId: nullable(row.active_turn_id),
+    title: String(row.title), isPinned: Number(row.is_pinned ?? 0) === 1, lastModel: nullable(row.last_model), activeTurnId: nullable(row.active_turn_id),
     lastMessageAt: String(row.last_message_at), createdAt: String(row.created_at), updatedAt: String(row.updated_at)
   }
 }

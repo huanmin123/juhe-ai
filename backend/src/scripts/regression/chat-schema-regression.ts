@@ -28,6 +28,7 @@ const indexes = database.prepare(`
 `).all().map((row) => String((row as { name?: string }).name ?? ''))
 
 assert.ok(indexes.includes('idx_chat_conversations_owner_recent'))
+assert.ok(indexes.includes('idx_chat_conversations_owner_pinned_recent'))
 assert.ok(indexes.includes('idx_chat_messages_conversation_sequence'))
 assert.ok(indexes.includes('idx_chat_messages_expiry'))
 assert.ok(indexes.includes('idx_chat_idempotency_expiry'))

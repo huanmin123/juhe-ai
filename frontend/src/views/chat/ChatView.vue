@@ -8,30 +8,24 @@
     </a-drawer>
 
     <main class="chat-main">
-      <header class="chat-toolbar">
-        <a-tooltip v-if="mobile" title="对话记录"><a-button type="text" aria-label="对话记录" @click="conversationDrawerOpen = true"><MenuOutlined /></a-button></a-tooltip>
-        <div class="chat-title-block">
-          <strong>{{ selectedConversation?.title || 'AI 问答' }}</strong>
-          <span v-if="selectedConversation">{{ selectedConversation.apiKeyNameSnapshot }}</span>
-        </div>
-        <a-select
-          v-model:value="selectedModel"
-          class="model-select"
-          :options="modelOptions"
-          :loading="modelsLoading"
-          :disabled="!selectedConversation || generating"
-          placeholder="选择模型"
-          show-search
-        />
-        <a-popconfirm v-if="selectedConversation" title="确定删除这个对话吗？" ok-text="删除" cancel-text="取消" @confirm="removeConversation">
-          <a-tooltip title="删除对话"><a-button type="text" danger aria-label="删除对话"><DeleteOutlined /></a-button></a-tooltip>
-        </a-popconfirm>
-      </header>
-
       <template v-if="selectedConversation">
-        <ChatMessageList ref="messageList" :messages="messages" :loading="messagesLoading" @near-top="loadOlderMessages" />
+        <ChatMessageList ref="messageList" :messages="messages" :loading="messagesLoading" @near-top="loadOlderMessages" @jump-visibility="showJumpToBottom = $event" />
         <footer class="composer-shell">
-          <AIComposer ref="composer" :disabled="generating" @submit="handleComposerSubmit" @stop="stopGeneration" />
+          <a-tooltip v-if="showJumpToBottom" title="回到底部"><a-button class="jump-bottom-button" shape="circle" aria-label="回到底部" @click="messageList?.scrollToBottom()"><ArrowDownOutlined /></a-button></a-tooltip>
+          <AIComposer
+            ref="composer"
+            v-model="selectedModel"
+            v-model:reasoning-effort="selectedReasoningEffort"
+            v-model:service-tier="selectedServiceTier"
+            v-model:context-window-tokens="selectedContextWindowTokens"
+            :disabled="generating"
+            :model-options="models"
+            :models-loading="modelsLoading"
+            :show-conversation-button="mobile"
+            @open-conversations="conversationDrawerOpen = true"
+            @submit="handleComposerSubmit"
+            @stop="stopGeneration"
+          />
         </footer>
       </template>
       <div v-else class="chat-start-state">
@@ -44,16 +38,42 @@
     <a-modal v-model:open="createDialogOpen" title="新建对话" ok-text="创建" cancel-text="取消" :confirm-loading="creating" :ok-button-props="{ disabled: !newApiKeyId }" @ok="createConversation">
       <a-form layout="vertical"><a-form-item label="API Key" required><a-select v-model:value="newApiKeyId" :options="apiKeyOptions" placeholder="选择自己的 API Key" /></a-form-item></a-form>
     </a-modal>
+
+    <div v-if="conversationMenu" class="conversation-context-menu" :style="{ left: `${conversationMenu.x}px`, top: `${conversationMenu.y}px` }" @click.stop>
+      <button type="button" @click="openRenameDialog(conversationMenu.item)">重命名</button>
+      <button type="button" @click="togglePinned(conversationMenu.item)">{{ conversationMenu.item.isPinned ? '取消置顶' : '置顶' }}</button>
+      <button type="button" @click="openDetails(conversationMenu.item)">详情</button>
+      <button type="button" class="is-danger" @click="openDeleteDialog(conversationMenu.item)">删除</button>
+    </div>
+
+    <a-modal v-model:open="renameDialogOpen" title="重命名会话" ok-text="保存" cancel-text="取消" :confirm-loading="conversationUpdating" @ok="renameConversation">
+      <a-input v-model:value="renameTitle" :maxlength="60" placeholder="输入会话标题" @press-enter="renameConversation" />
+    </a-modal>
+    <a-modal v-model:open="detailsDialogOpen" title="会话详情" :closable="false">
+      <a-descriptions v-if="detailConversation" :column="1" size="small" bordered>
+        <a-descriptions-item label="标题">{{ detailConversation.title }}</a-descriptions-item>
+        <a-descriptions-item label="API Key">{{ detailConversation.apiKeyNameSnapshot }}</a-descriptions-item>
+        <a-descriptions-item label="最近模型">{{ detailConversation.lastModel || '未使用' }}</a-descriptions-item>
+        <a-descriptions-item label="状态">{{ detailConversation.activeTurnId ? '生成中' : '空闲' }}</a-descriptions-item>
+        <a-descriptions-item label="置顶">{{ detailConversation.isPinned ? '是' : '否' }}</a-descriptions-item>
+        <a-descriptions-item label="创建时间">{{ formatDetailTime(detailConversation.createdAt) }}</a-descriptions-item>
+        <a-descriptions-item label="更新时间">{{ formatDetailTime(detailConversation.updatedAt) }}</a-descriptions-item>
+      </a-descriptions>
+      <template #footer><a-button @click="detailsDialogOpen = false">关闭</a-button></template>
+    </a-modal>
+    <a-modal v-model:open="deleteDialogOpen" title="删除会话" ok-text="删除" cancel-text="取消" ok-type="danger" :confirm-loading="conversationUpdating" @ok="confirmDeleteConversation">
+      删除后聊天记录无法恢复，确定删除“{{ pendingConversation?.title }}”吗？
+    </a-modal>
   </section>
 </template>
 
 <script setup lang="ts">
-import { DeleteOutlined, MenuOutlined, MessageOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { ArrowDownOutlined, MessageOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { chatApi, streamChatMessage } from '@/api/domains/chat'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { ChatApiKeyOption, ChatConversation, ChatMessage, ChatStreamEvent } from '@/types/domain/chat'
+import type { ChatApiKeyOption, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent } from '@/types/domain/chat'
 import { applyChatStreamEvent } from './chatStream'
 import ChatMessageList from './ChatMessageList.vue'
 import AIComposer from './composer/AIComposer.vue'
@@ -64,8 +84,11 @@ const conversations = ref<ChatConversation[]>([])
 const apiKeys = ref<ChatApiKeyOption[]>([])
 const selectedConversationId = ref<string>()
 const messages = ref<ChatMessage[]>([])
-const models = ref<string[]>([])
+const models = ref<ChatModelOption[]>([])
 const selectedModel = ref<string>()
+const selectedReasoningEffort = ref<ChatReasoningEffort | ''>('')
+const selectedServiceTier = ref<ChatServiceTier | ''>('')
+const selectedContextWindowTokens = ref(0)
 const messagesLoading = ref(false)
 const olderMessagesLoading = ref(false)
 const hasOlderMessages = ref(false)
@@ -76,13 +99,21 @@ const createDialogOpen = ref(false)
 const conversationDrawerOpen = ref(false)
 const newApiKeyId = ref<string>()
 const mobile = ref(false)
+const conversationMenu = ref<{ item: ChatConversation; x: number; y: number }>()
+const renameDialogOpen = ref(false)
+const detailsDialogOpen = ref(false)
+const deleteDialogOpen = ref(false)
+const conversationUpdating = ref(false)
+const showJumpToBottom = ref(false)
+const pendingConversation = ref<ChatConversation>()
+const detailConversation = ref<ChatConversation>()
+const renameTitle = ref('')
 const messageList = ref<InstanceType<typeof ChatMessageList>>()
 const composer = ref<InstanceType<typeof AIComposer>>()
 let streamController: AbortController | undefined
 
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationId.value))
 const apiKeyOptions = computed(() => apiKeys.value.map((item) => ({ label: item.name, value: item.id })))
-const modelOptions = computed(() => models.value.map((item) => ({ label: item, value: item })))
 
 const ConversationPane = defineComponent({
   emits: ['selected'],
@@ -90,7 +121,7 @@ const ConversationPane = defineComponent({
     return () => h('div', { class: 'conversation-pane-inner' }, [
       h('div', { class: 'conversation-pane-toolbar' }, [h('strong', '对话'), h('button', { class: 'conversation-new-button', type: 'button', disabled: !apiKeys.value.length, onClick: openCreateDialog }, [h(PlusOutlined), ' 新建'])]),
       conversations.value.length
-        ? h('div', { class: 'conversation-list' }, conversations.value.map((item) => h('button', { class: ['conversation-item', { active: item.id === selectedConversationId.value }], type: 'button', onClick: () => { void selectConversation(item.id); emit('selected') } }, [h('span', { class: 'conversation-item-title' }, item.title), h('span', { class: 'conversation-item-meta' }, formatConversationTime(item.lastMessageAt))])))
+        ? h('div', { class: 'conversation-list' }, conversations.value.map((item) => h('button', { class: ['conversation-item', { active: item.id === selectedConversationId.value }], type: 'button', title: item.title, onContextmenu: (event: MouseEvent) => openConversationMenu(event, item), onClick: () => { void selectConversation(item.id); emit('selected') } }, item.title)))
         : h('div', { class: 'conversation-list-empty' }, '暂无对话')
     ])
   }
@@ -115,7 +146,7 @@ async function selectConversation(id: string): Promise<void> {
     hasOlderMessages.value = messageItems.length === 100
     models.value = modelItems
     const conversation = conversations.value.find((item) => item.id === id)
-    selectedModel.value = conversation?.lastModel && modelItems.includes(conversation.lastModel) ? conversation.lastModel : modelItems[0]
+    selectedModel.value = conversation?.lastModel && modelItems.some((item) => item.id === conversation.lastModel) ? conversation.lastModel : modelItems[0]?.id
   } catch (error) { message.error(extractApiErrorMessage(error, '加载对话失败')) }
   finally { messagesLoading.value = false; modelsLoading.value = false }
 }
@@ -146,38 +177,47 @@ async function sendMessage(content: string, snapshot?: JSONContent, blocks?: Cha
   const model = selectedModel.value
   if (!conversation || !content.trim() || !model || generating.value) return
   generating.value = true
+  messageList.value?.scrollToBottom()
   streamController = new AbortController()
   try {
-    await streamChatMessage({ conversationId: conversation.id, clientMessageId: crypto.randomUUID(), content, contentBlocks: blocks?.map((block) => block.type === 'input_image' ? { type: block.type, dataUrl: block.dataUrl } : { type: block.type, text: block.text }), model, signal: streamController.signal, onEvent: handleStreamEvent })
+    await streamChatMessage({ conversationId: conversation.id, clientMessageId: crypto.randomUUID(), content, contentBlocks: blocks?.map((block) => block.type === 'input_image' ? { type: block.type, dataUrl: block.dataUrl } : { type: block.type, text: block.text }), model, reasoningEffort: selectedReasoningEffort.value || undefined, serviceTier: selectedServiceTier.value || undefined, contextWindowTokens: selectedContextWindowTokens.value || undefined, signal: streamController.signal, onEvent: handleStreamEvent })
     const current = conversations.value.find((item) => item.id === conversation.id)
     if (current) { current.lastModel = model; current.lastMessageAt = new Date().toISOString(); const first = messages.value.find((item) => item.role === 'user'); if (current.title === '新对话' && first) current.title = first.contentText.slice(0, 60) }
   } catch (error) { if (!streamController.signal.aborted) { if (snapshot) composer.value?.restore(snapshot); message.error(extractApiErrorMessage(error, '发送失败')) } }
   finally { generating.value = false; streamController = undefined }
 }
-function handleStreamEvent(event: ChatStreamEvent): void { applyChatStreamEvent(messages.value, event); if (event.type === 'message.failed') message.error(event.data.message); messageList.value?.scrollToBottom() }
+function handleStreamEvent(event: ChatStreamEvent): void { applyChatStreamEvent(messages.value, event); if (event.type === 'message.failed') message.error(event.data.message) }
 async function stopGeneration(): Promise<void> { const id = selectedConversationId.value; if (!id) return; try { await chatApi.stop(id) } catch {} finally { streamController?.abort(); generating.value = false; await refreshMessages() } }
 async function refreshMessages(): Promise<void> { const id = selectedConversationId.value; if (id) { messages.value = await chatApi.listMessages(id, { limit: 100 }); hasOlderMessages.value = messages.value.length === 100 } }
-async function removeConversation(): Promise<void> { const id = selectedConversationId.value; if (!id) return; try { await chatApi.deleteConversation(id); conversations.value = conversations.value.filter((item) => item.id !== id); selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
+async function removeConversation(id: string): Promise<void> { try { await chatApi.deleteConversation(id); conversations.value = conversations.value.filter((item) => item.id !== id); if (selectedConversationId.value === id) { selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {
   const content = payload.blocks.map((item) => item.type === 'input_image' ? '[图片]' : item.text).join('\n')
   void sendMessage(content, payload.snapshot, payload.blocks)
 }
 function updateMobile(): void { mobile.value = window.innerWidth <= 820 }
-function formatConversationTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) }
-onMounted(() => { updateMobile(); window.addEventListener('resize', updateMobile); void loadInitial() })
-onBeforeUnmount(() => { window.removeEventListener('resize', updateMobile); streamController?.abort() })
+function openConversationMenu(event: MouseEvent, item: ChatConversation): void { event.preventDefault(); conversationMenu.value = { item, x: Math.min(event.clientX, window.innerWidth - 150), y: Math.min(event.clientY, window.innerHeight - 160) } }
+function closeConversationMenu(): void { conversationMenu.value = undefined }
+function openRenameDialog(item: ChatConversation): void { pendingConversation.value = item; renameTitle.value = item.title; renameDialogOpen.value = true; closeConversationMenu() }
+function openDetails(item: ChatConversation): void { detailConversation.value = item; detailsDialogOpen.value = true; closeConversationMenu() }
+function openDeleteDialog(item: ChatConversation): void { pendingConversation.value = item; deleteDialogOpen.value = true; closeConversationMenu() }
+async function renameConversation(): Promise<void> { const item = pendingConversation.value; const title = renameTitle.value.trim(); if (!item || !title || conversationUpdating.value) return; conversationUpdating.value = true; try { replaceConversation(await chatApi.updateConversation(item.id, { title })); renameDialogOpen.value = false } catch (error) { message.error(extractApiErrorMessage(error, '重命名失败')) } finally { conversationUpdating.value = false } }
+async function togglePinned(item: ChatConversation): Promise<void> { closeConversationMenu(); try { replaceConversation(await chatApi.updateConversation(item.id, { isPinned: !item.isPinned })); sortConversations() } catch (error) { message.error(extractApiErrorMessage(error, '更新置顶状态失败')) } }
+async function confirmDeleteConversation(): Promise<void> { const item = pendingConversation.value; if (!item || conversationUpdating.value) return; conversationUpdating.value = true; try { await removeConversation(item.id); deleteDialogOpen.value = false } finally { conversationUpdating.value = false } }
+function replaceConversation(next: ChatConversation): void { const index = conversations.value.findIndex((item) => item.id === next.id); if (index >= 0) conversations.value[index] = next; if (detailConversation.value?.id === next.id) detailConversation.value = next }
+function sortConversations(): void { conversations.value.sort((left, right) => Number(right.isPinned) - Number(left.isPinned) || Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt) || right.id.localeCompare(left.id)) }
+function formatDetailTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false }) }
+function resetModelControls(): void { const model = models.value.find((item) => item.id === selectedModel.value); selectedReasoningEffort.value = model?.defaultReasoningEffort ?? ''; selectedServiceTier.value = ''; selectedContextWindowTokens.value = 0 }
+watch(selectedModel, resetModelControls)
+onMounted(() => { updateMobile(); window.addEventListener('resize', updateMobile); window.addEventListener('click', closeConversationMenu); window.addEventListener('blur', closeConversationMenu); void loadInitial() })
+onBeforeUnmount(() => { window.removeEventListener('resize', updateMobile); window.removeEventListener('click', closeConversationMenu); window.removeEventListener('blur', closeConversationMenu); streamController?.abort() })
 </script>
 
 <style scoped>
 .chat-workspace { height: calc(100vh - 154px); min-height: 520px; display: grid; grid-template-columns: 260px minmax(0, 1fr); overflow: hidden; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
 .conversation-panel { min-width: 0; border-right: 1px solid #e2e8f0; background: #f8fafc; }
 .chat-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.chat-toolbar { height: 58px; flex: 0 0 58px; display: flex; align-items: center; gap: 8px; padding: 0 14px 0 18px; border-bottom: 1px solid #e2e8f0; }
-.chat-title-block { min-width: 0; flex: 1; display: flex; flex-direction: column; }
-.chat-title-block strong { overflow: hidden; color: #172033; font-size: 15px; line-height: 22px; text-overflow: ellipsis; white-space: nowrap; }
-.chat-title-block span { overflow: hidden; color: #64748b; font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
-.model-select { width: min(260px, 34vw); }
-.composer-shell { padding: 12px clamp(12px, 3vw, 28px) 14px; border-top: 1px solid #e2e8f0; background: #fff; }
+.composer-shell { position: relative; padding: 12px clamp(12px, 3vw, 28px) 14px; border-top: 1px solid #e2e8f0; background: #fff; }
+.jump-bottom-button { position: absolute; z-index: 4; top: -46px; left: 50%; color: #475569; background: rgba(255, 255, 255, .96); border-color: #d9e0e8; box-shadow: 0 4px 14px rgba(15, 23, 42, .14); transform: translateX(-50%); }
 .chat-start-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: #64748b; }
 .chat-start-state > :deep(.anticon) { font-size: 36px; color: #94a3b8; }
 .chat-start-state strong { color: #334155; font-size: 16px; }
@@ -187,11 +227,13 @@ onBeforeUnmount(() => { window.removeEventListener('resize', updateMobile); stre
 :deep(.conversation-new-button) { height: 30px; display: inline-flex; align-items: center; padding: 0 9px; color: #1677ff; background: #fff; border: 1px solid #b9d7ff; border-radius: 6px; cursor: pointer; }
 :deep(.conversation-new-button:disabled) { color: #94a3b8; border-color: #e2e8f0; cursor: not-allowed; }
 :deep(.conversation-list) { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; }
-:deep(.conversation-item) { width: 100%; min-height: 54px; display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 2px; margin-bottom: 4px; padding: 8px 10px; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
+:deep(.conversation-item) { width: 100%; height: 38px; display: block; overflow: hidden; margin-bottom: 3px; padding: 0 10px; color: #273449; font-size: 13px; line-height: 36px; text-align: left; text-overflow: ellipsis; white-space: nowrap; background: transparent; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
 :deep(.conversation-item:hover) { background: #fff; border-color: #e2e8f0; }
 :deep(.conversation-item.active) { background: #eaf3ff; border-color: #b9d7ff; }
-:deep(.conversation-item-title) { overflow: hidden; color: #273449; font-size: 13px; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
-:deep(.conversation-item-meta) { color: #8492a6; font-size: 11px; line-height: 16px; }
 :deep(.conversation-list-empty) { padding: 32px 12px; color: #94a3b8; text-align: center; }
-@media (max-width: 820px) { .chat-workspace { height: calc(100vh - 140px); min-height: 440px; grid-template-columns: minmax(0, 1fr); border-right: 0; border-left: 0; border-radius: 0; } .chat-toolbar { padding: 0 8px; } .model-select { width: 42vw; min-width: 120px; } .composer-shell { padding: 9px; } }
+.conversation-context-menu { position: fixed; z-index: 1100; width: 136px; padding: 5px; background: #fff; border: 1px solid #e2e8f0; border-radius: 7px; box-shadow: 0 10px 26px rgba(15, 23, 42, .16); }
+.conversation-context-menu button { width: 100%; display: block; padding: 7px 9px; color: #334155; text-align: left; background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
+.conversation-context-menu button:hover { background: #f1f5f9; }
+.conversation-context-menu button.is-danger { color: #dc2626; }
+@media (max-width: 820px) { .chat-workspace { height: calc(100vh - 140px); min-height: 440px; grid-template-columns: minmax(0, 1fr); border-right: 0; border-left: 0; border-radius: 0; } .composer-shell { padding: 9px; } }
 </style>

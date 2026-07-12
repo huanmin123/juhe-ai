@@ -18,6 +18,7 @@
     "test:perf": "pnpm --filter juhe-ai-backend test:perf",
     "test:scope": "pnpm --filter juhe-ai-backend test:scope",
     "test:auth-must-change-password-boundary": "pnpm --filter juhe-ai-backend test:auth-must-change-password-boundary",
+    "test:development-auto-login": "pnpm --filter juhe-ai-backend test:development-auto-login",
     "test:runtime-secret-production-guard": "pnpm --filter juhe-ai-backend test:runtime-secret-production-guard",
     "test:http-security-production-guard": "pnpm --filter juhe-ai-backend test:http-security-production-guard",
     "test:proxy-negative": "pnpm --filter juhe-ai-backend test:proxy-negative",

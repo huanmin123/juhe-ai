@@ -6,10 +6,20 @@ import { bindRequestContextFields } from '../../shared/request-context.js'
 import { parseCookie, sessionCookieName } from './auth.routes.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
 import { shouldTouchSessionForSystemApiRequest } from '../system-api/system-api-db-access.js'
+import { developmentAutoLoginContextAsync } from './development-auto-login.js'
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = parseCookie(req.headers.cookie ?? '')[sessionCookieName]
   if (!token) {
+    const developmentContext = await developmentAutoLoginContextAsync()
+    if (developmentContext) {
+      bindRequestContextFields({
+        systemAccountId: developmentContext.systemAccountId,
+        role: developmentContext.role
+      })
+      withRequestAuthContext(developmentContext, next)
+      return
+    }
     res.status(401).json({ message: '请先登录' })
     return
   }

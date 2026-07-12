@@ -16,6 +16,7 @@ import {
   listChatContextMessages,
   listChatConversations,
   listChatMessages,
+  updateChatConversation,
   type ChatMessageContentBlock
 } from '../../storage/chat.repository.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
@@ -27,6 +28,9 @@ import { collectOpenAIChatSse } from './chat-gateway-sse.js'
 import { trimChatContextToBudget } from './chat-context-budget.js'
 import { collectChatResponsesSse } from './chat-responses-sse.js'
 import { buildChatTransportRequest, resolveChatSupportedProtocols, selectChatTransport } from './chat-transport.js'
+import { buildChatModelOptions, chatReasoningEfforts, chatServiceTiers } from './chat-model-options.js'
+import { listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
+import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 
 export const chatRouter = Router()
 
@@ -34,9 +38,16 @@ const messageBodySchema = z.object({
   clientMessageId: z.string().trim().min(1).max(100),
   content: z.string().trim().min(1, '请输入消息').max(196_608, '消息内容过长'),
   contentBlocks: z.array(z.object({ type: z.enum(['input_text', 'input_image']), text: z.string().optional(), dataUrl: z.string().max(14 * 1024 * 1024).optional() })).max(8).optional(),
-  model: z.string().trim().min(1, '请选择模型').max(200)
+  model: z.string().trim().min(1, '请选择模型').max(200),
+  reasoningEffort: z.enum(chatReasoningEfforts).optional(),
+  serviceTier: z.enum(chatServiceTiers).optional(),
+  contextWindowTokens: z.number().int().min(16_000).max(2_000_000).optional()
 }).strict()
 const createConversationSchema = z.object({ apiKeyId: z.string().trim().min(1, '请选择 API Key') }).strict()
+const updateConversationSchema = z.object({
+  title: z.string().trim().min(1, '请输入会话标题').max(60, '会话标题最多 60 个字符').optional(),
+  isPinned: z.boolean().optional()
+}).strict().refine((value) => value.title !== undefined || value.isPinned !== undefined, '没有可更新的会话字段')
 const activeStreams = new Map<string, { ownerId: string; turnId: string; controller: AbortController }>()
 const maxMessageBytes = 192 * 1024
 const storageQuotaBytes = 2 * 1024 * 1024 * 1024
@@ -91,6 +102,31 @@ chatRouter.get('/conversations/:conversationId/messages', async (req, res, next)
   } catch (error) { next(error) }
 })
 
+chatRouter.get('/conversations/:conversationId', async (req, res, next) => {
+  try {
+    const auth = requireChatAuth()
+    const conversation = await getChatConversation(await getChatDatabaseClient(), req.params.conversationId, auth.systemAccountId)
+    if (!conversation) { res.status(404).json({ message: '会话不存在' }); return }
+    res.json(ok(conversation))
+  } catch (error) { next(error) }
+})
+
+chatRouter.patch('/conversations/:conversationId', async (req, res, next) => {
+  try {
+    const body = updateConversationSchema.parse(req.body)
+    const auth = requireChatAuth()
+    const conversation = await updateChatConversation(await getChatDatabaseClient(), {
+      conversationId: req.params.conversationId,
+      systemAccountId: auth.systemAccountId,
+      title: body.title,
+      isPinned: body.isPinned,
+      now: new Date().toISOString()
+    })
+    if (!conversation) { res.status(404).json({ message: '会话不存在' }); return }
+    res.json(ok(conversation))
+  } catch (error) { handleChatRouteError(error, res, next) }
+})
+
 chatRouter.get('/conversations/:conversationId/models', async (req, res, next) => {
   try {
     const auth = requireChatAuth()
@@ -100,7 +136,13 @@ chatRouter.get('/conversations/:conversationId/models', async (req, res, next) =
     const payload = await boundedJson(response)
     if (!response.ok) throw new Error(upstreamMessage(payload, `模型列表请求失败（HTTP ${response.status}）`))
     const data = Array.isArray((payload as { data?: unknown }).data) ? (payload as { data: Array<{ id?: unknown }> }).data : []
-    res.json(ok(data.map((item) => String(item.id ?? '')).filter(Boolean)))
+    const modelIds = data.map((item) => String(item.id ?? '')).filter(Boolean)
+    const catalog = await listProviderModelCatalogAsync({
+      providerCode: GPT_VENDOR_CODE,
+      systemAccountId: auth.systemAccountId,
+      includeUnpriced: true
+    })
+    res.json(ok(buildChatModelOptions(modelIds, catalog)))
   } catch (error) { next(error) }
 })
 
@@ -142,7 +184,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       limitTurns: 64,
       now: new Date().toISOString()
     })
-    const context = trimChatContextToBudget({ history: storedContext, currentUserContent: body.content })
+    const context = trimChatContextToBudget({ history: storedContext, currentUserContent: body.content, contextWindowTokens: body.contextWindowTokens })
     controller = new AbortController()
     activeStreams.set(conversation.id, { ownerId, turnId: accepted.turnId, controller })
     res.status(200)
@@ -168,7 +210,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       if (protocol === 'chat_completions' && body.contentBlocks?.some((block) => block.type === 'input_image')) {
         throw new Error('当前路由不支持图片输入，请切换到支持 Responses 的账户或移除图片')
       }
-      const transport = buildChatTransportRequest({ protocol, model: body.model, history: context, currentContent: body.content, currentBlocks: body.contentBlocks, toolsEnabled: true })
+      const transport = buildChatTransportRequest({ protocol, model: body.model, history: context, currentContent: body.content, currentBlocks: body.contentBlocks, toolsEnabled: true, reasoningEffort: body.reasoningEffort, serviceTier: body.serviceTier })
       const upstream = await fetch(gatewayUrl(transport.path), {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKeySecret}`, 'content-type': 'application/json', accept: 'text/event-stream' },

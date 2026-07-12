@@ -1,3 +1,5 @@
+import type { ChatReasoningEffort, ChatServiceTier } from './chat-model-options.js'
+
 export type ChatTransportProtocol = 'chat_completions' | 'responses'
 
 export interface ChatTransportMessage {
@@ -38,6 +40,8 @@ export function buildChatTransportRequest(input: {
   currentContent: string
   currentBlocks?: ChatTransportInputBlock[]
   toolsEnabled: boolean
+  reasoningEffort?: ChatReasoningEffort
+  serviceTier?: ChatServiceTier
 }): { path: '/v1/chat/completions' | '/v1/responses'; body: Record<string, unknown> } {
   const messages = [...input.history, { role: 'user' as const, content: input.currentContent }]
   if (input.protocol === 'responses') {
@@ -50,12 +54,20 @@ export function buildChatTransportRequest(input: {
         model: input.model,
         input: [...input.history, { role: 'user' as const, content: currentContent }],
         stream: true,
+        ...(input.reasoningEffort ? { reasoning: { effort: input.reasoningEffort } } : {}),
+        ...(input.serviceTier ? { service_tier: input.serviceTier } : {}),
         ...(input.toolsEnabled ? { tools: [{ type: 'web_search' }], tool_choice: 'auto' } : {})
       }
     }
   }
   return {
     path: '/v1/chat/completions',
-    body: { model: input.model, messages, stream: true }
+    body: {
+      model: input.model,
+      messages,
+      stream: true,
+      ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
+      ...(input.serviceTier ? { service_tier: input.serviceTier } : {})
+    }
   }
 }
