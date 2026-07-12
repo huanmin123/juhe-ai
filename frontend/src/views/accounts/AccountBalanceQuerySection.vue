@@ -3,7 +3,7 @@
     <div class="balance-query-header">
       <div class="account-config-section-title">
         <span>上游余额查询</span>
-        <a-tooltip title="通过上游接口查询当前 API Key 的可用余额。开启后后台会按刷新周期更新，也可在保存账户后手动查询。">
+        <a-tooltip title="保存后由后台按刷新周期更新；测试查询只验证当前配置，不会保存。">
           <QuestionCircleOutlined class="balance-query-help" />
         </a-tooltip>
       </div>
@@ -39,23 +39,11 @@
       </template>
 
       <div class="balance-query-test">
-        <div class="balance-query-test-copy">
-          <strong>查询验证</strong>
-          <span>{{ canQuery ? '保存当前余额配置并请求上游。' : '新账户保存后可验证余额查询。' }}</span>
-        </div>
+        <span>仅验证当前配置，不会保存</span>
         <a-button :disabled="readonly || !canQuery" :loading="queryLoading" @click="emit('query')">
-          保存并查询
+          测试查询
         </a-button>
       </div>
-
-      <a-alert
-        v-if="queryResult"
-        class="balance-query-result"
-        :type="queryResult.tone === 'failed' ? 'error' : queryResult.tone === 'fresh' || queryResult.tone === 'unlimited' ? 'success' : 'info'"
-        show-icon
-        :message="`查询结果：${queryResult.text}`"
-        :description="queryResultDescription"
-      />
     </template>
   </section>
 </template>
@@ -64,28 +52,17 @@
 import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
-import { formatDateTime } from '@/shared/formatters'
-import type { AccountBalanceSnapshot } from '@/types/domain'
-import { formatAccountBalance } from './accountBalanceQuery'
 import type { AccountFormModel } from './accountFormTypes'
 
 const props = defineProps<{
   canQuery?: boolean
   form: AccountFormModel
   queryLoading?: boolean
-  querySnapshot?: AccountBalanceSnapshot
   readonly?: boolean
 }>()
 const emit = defineEmits<{ (event: 'query'): void }>()
 
 const visible = computed(() => props.form.type === 'api_key' && props.form.apiKeys.map((item) => item.trim()).filter(Boolean).length === 1)
-const queryResult = computed(() => props.querySnapshot ? formatAccountBalance(props.querySnapshot) : undefined)
-const queryResultDescription = computed(() => {
-  if (!props.querySnapshot) return undefined
-  if (props.querySnapshot.status === 'failed') return props.querySnapshot.errorMessage || '上游余额查询失败'
-  const attemptedAt = props.querySnapshot.lastAttemptAt
-  return attemptedAt ? `查询时间：${formatDateTime(attemptedAt)}` : undefined
-})
 const adapterOptions = [
   { label: '内置适配', value: 'builtin' },
   { label: '自定义接口', value: 'custom' }
@@ -134,20 +111,9 @@ const adapterOptions = [
   border-top: 1px solid #eef2f7;
 }
 
-.balance-query-test-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.balance-query-test-copy span {
+.balance-query-test > span {
   color: #64748b;
   font-size: 12px;
-}
-
-.balance-query-result {
-  margin-top: 4px;
 }
 
 @media (max-width: 720px) {

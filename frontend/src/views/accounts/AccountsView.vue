@@ -170,9 +170,8 @@
       :auth-loading="authLoading"
       :auth-result="authResult"
       :base-url-placeholder="accountBaseUrlPlaceholder"
-      :balance-query-can-run="Boolean(editingId) && form.balanceQueryEnabled"
+      :balance-query-can-run="form.balanceQueryEnabled"
       :balance-query-loading="balanceQueryTesting"
-      :balance-query-snapshot="balanceQueryResult"
       :confirm-loading="modalConfirmLoading"
       :credential-title="selectedAccountTypeTitle"
       :editing="Boolean(editingId)"
@@ -261,7 +260,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
-import type { AccountBalanceSnapshot, AccountSummary, AccountTagSummary } from '@/types/domain'
+import type { AccountSummary, AccountTagSummary } from '@/types/domain'
 import AccountBatchDisableConfirmModal from './AccountBatchDisableConfirmModal.vue'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -305,7 +304,7 @@ import { useAccountEditGroupOptions } from './useAccountEditGroupOptions'
 import { useAccountListData } from './useAccountListData'
 import { useAccountMenuActions } from './useAccountMenuActions'
 import { accountOperationSystemAccountId } from './accountOperationScope'
-import { buildAccountBalancePayload } from './accountBalanceQuery'
+import { buildAccountBalancePayload, formatAccountBalance } from './accountBalanceQuery'
 import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountRemovalActions } from './useAccountRemovalActions'
 import { useAccountSelectionActions } from './useAccountSelectionActions'
@@ -323,7 +322,6 @@ const importModalOpen = ref(false)
 const batchEditOpen = ref(false)
 const balanceRefreshingIds = ref(new Set<string>())
 const balanceQueryTesting = ref(false)
-const balanceQueryResult = ref<AccountBalanceSnapshot>()
 const batchDisableConfirmOpen = ref(false)
 const batchDisableConfirmLoading = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -356,6 +354,7 @@ const {
   handleAccountSortChange,
   handleSystemAccountFilterChange: handleAccountListSystemAccountFilterChange,
   removeLoadedAccount,
+  updateLoadedAccountBalance,
   resetFilters: resetAccountListFilters
 } = useAccountListData({
   isManagementView,
@@ -418,10 +417,9 @@ async function refreshAccountBalance(accountId: string) {
   balanceRefreshingIds.value = new Set(balanceRefreshingIds.value).add(accountId)
   try {
     const snapshot = isManagementView.value
-      ? await api.accounts.refreshBalance(accountId, undefined, accountScopeParams.value)
+      ? await api.accounts.refreshBalance(accountId, accountScopeParams.value)
       : await api.myAccounts.refreshBalance(accountId)
-    const account = accounts.value.find((item) => item.id === accountId)
-    if (account) account.balanceSnapshot = snapshot
+    updateLoadedAccountBalance(accountId, snapshot)
     if (snapshot?.status === 'failed') {
       message.error(snapshot.errorMessage || '余额查询失败')
     } else {
@@ -437,22 +435,30 @@ async function refreshAccountBalance(accountId: string) {
 }
 
 async function queryBalanceFromEdit(): Promise<void> {
-  const accountId = editingId.value
-  if (!accountId || balanceQueryTesting.value) return
+  if (balanceQueryTesting.value) return
   const balancePayload = buildAccountBalancePayload(form)
   if (!balancePayload?.balanceQueryConfig) return
+  const account = currentDraftTestPayload()
+  if (!account) {
+    message.error('请先完善并检查当前账户配置')
+    return
+  }
   balanceQueryTesting.value = true
   try {
     const snapshot = isManagementView.value
-      ? await api.accounts.refreshBalance(accountId, balancePayload.balanceQueryConfig, accountScopeParams.value)
-      : await api.myAccounts.refreshBalance(accountId, balancePayload.balanceQueryConfig)
-    balanceQueryResult.value = snapshot
-    const account = accounts.value.find((item) => item.id === accountId)
-    if (account) account.balanceSnapshot = snapshot
+      ? await api.accounts.testBalanceDraft({ account, balanceQueryConfig: balancePayload.balanceQueryConfig }, accountScopeParams.value)
+      : await api.myAccounts.testBalanceDraft({ account, balanceQueryConfig: balancePayload.balanceQueryConfig })
     if (snapshot?.status === 'failed') {
       message.error(snapshot.errorMessage || '余额查询失败')
+    } else if (snapshot) {
+      const result = formatAccountBalance(snapshot)
+      if (snapshot.status === 'unsupported') {
+        message.warning(`余额查询完成：${result.text}`)
+      } else {
+        message.success(`余额查询成功：${result.text}`)
+      }
     } else {
-      message.success('余额查询成功')
+      message.error('余额查询没有返回结果')
     }
   } catch (error) {
     message.error(extractApiErrorMessage(error, '查询上游余额失败'))
@@ -593,6 +599,7 @@ const {
   providerName,
   providerModelOptions,
   strategyModelsLoading,
+  currentDraftTestPayload,
   saveAccount,
   selectAccountTypeChoice,
   selectedAccountTypeTitle,
@@ -615,13 +622,6 @@ const {
   systemAccountSelection: computed(() => filters.systemAccount),
   systemAccounts
 })
-watch(
-  [() => modalOpen.value, () => editingId.value, () => editingAccountDetail.value?.balanceSnapshot],
-  ([open, accountId, snapshot]) => {
-    balanceQueryResult.value = open && accountId ? snapshot as AccountBalanceSnapshot | undefined : undefined
-  },
-  { immediate: true }
-)
 watch(
   [
     () => form.providerCode,
