@@ -2,7 +2,7 @@ import type { JSONContent } from '@tiptap/core'
 
 export type ChatInputBlock =
   | { type: 'input_text'; text: string }
-  | { type: 'input_image'; assetId: string; previewUrl?: string }
+  | { type: 'input_image'; assetId: string; previewUrl?: string; dataUrl?: string }
 
 const maxInputBytes = 192 * 1024
 
@@ -27,7 +27,7 @@ function flushText(text: string[], blocks: ChatInputBlock[]): void {
 function serialize(node: JSONContent, text: string[], blocks: ChatInputBlock[]): void {
   if (node.type === 'image' && typeof node.attrs?.assetId === 'string') {
     flushText(text, blocks)
-    blocks.push({ type: 'input_image', assetId: node.attrs.assetId, previewUrl: typeof node.attrs.previewUrl === 'string' ? node.attrs.previewUrl : undefined })
+    blocks.push({ type: 'input_image', assetId: node.attrs.assetId, previewUrl: typeof node.attrs.previewUrl === 'string' ? node.attrs.previewUrl : undefined, dataUrl: typeof node.attrs.dataUrl === 'string' ? node.attrs.dataUrl : undefined })
     return
   }
   if (node.type === 'chatImageAttachment' && typeof node.attrs?.assetId === 'string') {

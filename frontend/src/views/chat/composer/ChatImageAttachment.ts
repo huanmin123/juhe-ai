@@ -11,7 +11,8 @@ export const ChatImageAttachment = Node.create({
     return {
       assetId: { default: '' },
       previewUrl: { default: '' },
-      fileName: { default: '图片' }
+      fileName: { default: '图片' },
+      dataUrl: { default: '' }
     }
   },
   parseHTML() { return [{ tag: 'img[data-chat-image]' }] },

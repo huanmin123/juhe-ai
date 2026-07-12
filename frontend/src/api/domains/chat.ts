@@ -16,6 +16,7 @@ export async function streamChatMessage(input: {
   conversationId: string
   clientMessageId: string
   content: string
+  contentBlocks?: Array<{ type: 'input_text' | 'input_image'; text?: string; dataUrl?: string }>
   model: string
   signal: AbortSignal
   onEvent: (event: ChatStreamEvent) => void
@@ -25,7 +26,7 @@ export async function streamChatMessage(input: {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
-    body: JSON.stringify({ clientMessageId: input.clientMessageId, content: input.content, model: input.model }),
+    body: JSON.stringify({ clientMessageId: input.clientMessageId, content: input.content, contentBlocks: input.contentBlocks, model: input.model }),
     signal: input.signal
   })
   if (!response.ok || !response.body) throw new Error(await readFetchErrorMessage(response, path))

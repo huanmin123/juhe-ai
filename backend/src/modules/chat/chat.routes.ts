@@ -32,6 +32,7 @@ export const chatRouter = Router()
 const messageBodySchema = z.object({
   clientMessageId: z.string().trim().min(1).max(100),
   content: z.string().trim().min(1, '请输入消息').max(196_608, '消息内容过长'),
+  contentBlocks: z.array(z.object({ type: z.enum(['input_text', 'input_image']), text: z.string().optional(), dataUrl: z.string().max(14 * 1024 * 1024).optional() })).max(8).optional(),
   model: z.string().trim().min(1, '请选择模型').max(200)
 }).strict()
 const createConversationSchema = z.object({ apiKeyId: z.string().trim().min(1, '请选择 API Key') }).strict()
@@ -162,7 +163,10 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         })
       })
       const protocol = selectChatTransport({ supportedProtocols, toolsEnabled: true })
-      const transport = buildChatTransportRequest({ protocol, model: body.model, history: context, currentContent: body.content, toolsEnabled: true })
+      if (protocol === 'chat_completions' && body.contentBlocks?.some((block) => block.type === 'input_image')) {
+        throw new Error('当前路由不支持图片输入，请切换到支持 Responses 的账户或移除图片')
+      }
+      const transport = buildChatTransportRequest({ protocol, model: body.model, history: context, currentContent: body.content, currentBlocks: body.contentBlocks, toolsEnabled: true })
       const upstream = await fetch(gatewayUrl(transport.path), {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKeySecret}`, 'content-type': 'application/json', accept: 'text/event-stream' },

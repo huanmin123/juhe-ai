@@ -141,14 +141,14 @@ async function createConversation(): Promise<void> {
   catch (error) { message.error(extractApiErrorMessage(error, '创建对话失败')) }
   finally { creating.value = false }
 }
-async function sendMessage(content: string, snapshot?: JSONContent): Promise<void> {
+async function sendMessage(content: string, snapshot?: JSONContent, blocks?: ChatInputBlock[]): Promise<void> {
   const conversation = selectedConversation.value
   const model = selectedModel.value
   if (!conversation || !content.trim() || !model || generating.value) return
   generating.value = true
   streamController = new AbortController()
   try {
-    await streamChatMessage({ conversationId: conversation.id, clientMessageId: crypto.randomUUID(), content, model, signal: streamController.signal, onEvent: handleStreamEvent })
+    await streamChatMessage({ conversationId: conversation.id, clientMessageId: crypto.randomUUID(), content, contentBlocks: blocks?.map((block) => block.type === 'input_image' ? { type: block.type, dataUrl: block.dataUrl } : { type: block.type, text: block.text }), model, signal: streamController.signal, onEvent: handleStreamEvent })
     const current = conversations.value.find((item) => item.id === conversation.id)
     if (current) { current.lastModel = model; current.lastMessageAt = new Date().toISOString(); const first = messages.value.find((item) => item.role === 'user'); if (current.title === '新对话' && first) current.title = first.contentText.slice(0, 60) }
   } catch (error) { if (!streamController.signal.aborted) { if (snapshot) composer.value?.restore(snapshot); message.error(extractApiErrorMessage(error, '发送失败')) } }
@@ -159,10 +159,8 @@ async function stopGeneration(): Promise<void> { const id = selectedConversation
 async function refreshMessages(): Promise<void> { const id = selectedConversationId.value; if (id) { messages.value = await chatApi.listMessages(id, { limit: 100 }); hasOlderMessages.value = messages.value.length === 100 } }
 async function removeConversation(): Promise<void> { const id = selectedConversationId.value; if (!id) return; try { await chatApi.deleteConversation(id); conversations.value = conversations.value.filter((item) => item.id !== id); selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {
-  const image = payload.blocks.find((item) => item.type === 'input_image')
-  if (image) { composer.value?.restore(payload.snapshot); message.warning('图片预览已保留，上传接口接入后才能发送图片'); return }
-  const content = payload.blocks.filter((item): item is Extract<ChatInputBlock, { type: 'input_text' }> => item.type === 'input_text').map((item) => item.text).join('')
-  void sendMessage(content, payload.snapshot)
+  const content = payload.blocks.map((item) => item.type === 'input_image' ? '[图片]' : item.text).join('\n')
+  void sendMessage(content, payload.snapshot, payload.blocks)
 }
 function updateMobile(): void { mobile.value = window.innerWidth <= 820 }
 function formatConversationTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) }

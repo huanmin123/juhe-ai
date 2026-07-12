@@ -4,6 +4,7 @@ export interface ChatTransportMessage {
   role: 'user' | 'assistant'
   content: string
 }
+export interface ChatTransportInputBlock { type: 'input_text' | 'input_image'; text?: string; dataUrl?: string }
 
 export function selectChatTransport(input: {
   supportedProtocols: readonly ChatTransportProtocol[]
@@ -35,15 +36,19 @@ export function buildChatTransportRequest(input: {
   model: string
   history: ChatTransportMessage[]
   currentContent: string
+  currentBlocks?: ChatTransportInputBlock[]
   toolsEnabled: boolean
 }): { path: '/v1/chat/completions' | '/v1/responses'; body: Record<string, unknown> } {
   const messages = [...input.history, { role: 'user' as const, content: input.currentContent }]
   if (input.protocol === 'responses') {
+    const currentContent = input.currentBlocks?.length
+      ? input.currentBlocks.map((block) => block.type === 'input_image' ? { type: 'input_image', image_url: block.dataUrl } : { type: 'input_text', text: block.text ?? '' })
+      : input.currentContent
     return {
       path: '/v1/responses',
       body: {
         model: input.model,
-        input: messages,
+        input: [...input.history, { role: 'user' as const, content: currentContent }],
         stream: true,
         ...(input.toolsEnabled ? { tools: [{ type: 'web_search' }], tool_choice: 'auto' } : {})
       }

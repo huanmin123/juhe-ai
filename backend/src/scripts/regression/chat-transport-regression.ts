@@ -9,10 +9,10 @@ assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions', 'res
 assert.equal(selectChatTransport({ supportedProtocols: [], toolsEnabled: true }), 'chat_completions')
 
 const responses = buildChatTransportRequest({
-  protocol: 'responses', model: 'model-a', history: [{ role: 'user', content: '此前问题' }], currentContent: '继续', toolsEnabled: true
+  protocol: 'responses', model: 'model-a', history: [{ role: 'user', content: '此前问题' }], currentContent: '继续', currentBlocks: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', dataUrl: 'data:image/png;base64,abc' }, { type: 'input_text', text: '图片后' }], toolsEnabled: true
 })
 assert.equal(responses.path, '/v1/responses')
-assert.deepEqual(responses.body.input, [{ role: 'user', content: '此前问题' }, { role: 'user', content: '继续' }])
+assert.deepEqual(responses.body.input, [{ role: 'user', content: '此前问题' }, { role: 'user', content: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', image_url: 'data:image/png;base64,abc' }, { type: 'input_text', text: '图片后' }] }])
 assert.equal(responses.body.stream, true)
 assert.deepEqual(responses.body.tools, [{ type: 'web_search' }])
 

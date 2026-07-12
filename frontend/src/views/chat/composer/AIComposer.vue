@@ -102,12 +102,13 @@ function selectCommand(item: ChatComposerCommand): void {
   else if (item.key !== 'image') editor.value.commands.insertContent(item.insert)
   commandOpen.value = false
 }
-function insertImage(file: File): void {
+async function insertImage(file: File): Promise<void> {
   if (!editor.value || !file.type.startsWith('image/') || file.size > 10 * 1024 * 1024 || imageItems.value.length >= 4) return
+  const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result ?? '')); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file) })
   const previewUrl = URL.createObjectURL(file); objectUrls.add(previewUrl)
-  editor.value.commands.insertContent({ type: 'chatImageAttachment', attrs: { assetId: `local-${crypto.randomUUID()}`, previewUrl, fileName: file.name || '图片' } })
+  editor.value.commands.insertContent({ type: 'chatImageAttachment', attrs: { assetId: `local-${crypto.randomUUID()}`, previewUrl, dataUrl, fileName: file.name || '图片' } })
 }
-function handleFileChange(event: Event): void { const files = Array.from((event.target as HTMLInputElement).files ?? []); files.forEach(insertImage); (event.target as HTMLInputElement).value = '' }
+function handleFileChange(event: Event): void { const files = Array.from((event.target as HTMLInputElement).files ?? []); files.forEach((file) => { void insertImage(file) }); (event.target as HTMLInputElement).value = '' }
 function removeImage(assetId: string): void {
   const target = imageItems.value.find((item) => item.assetId === assetId)
   if (!target || !editor.value) return
