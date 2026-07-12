@@ -32,6 +32,7 @@ import {
 import { listProviderModelCatalog, listProviderModelCatalogAsync, type ProviderModelCatalogItem } from '../../model-pricing/model-catalog.service.js'
 import { orderGatewayApiKeyGroupBindingsForDispatchAsync } from '../routing/api-key-group-route-selector.service.js'
 import { requestGatewayDbService } from './gateway-db-service-request.js'
+import { clearAllNormalRouteLatencyDegradationAsync } from './normal-route-latency-degradation.service.js'
 
 const gatewayRuntimeTtlMs = 60_000
 const gatewayRuntimeRetainTtlMs = 10 * 60_000
@@ -1437,3 +1438,10 @@ function clearResponseInspectionPolicySharedCache(): void {
 }
 
 registerGatewayRuntimeCacheInvalidator(clearGatewayRuntimeCache)
+registerGatewayRuntimeCacheInvalidator(async (_reason, metadata) => {
+  if (metadata.source !== 'runtime_state') return
+  return clearAllNormalRouteLatencyDegradationAsync({
+    version: metadata.version,
+    publishedAt: metadata.publishedAt
+  })
+})
