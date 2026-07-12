@@ -231,6 +231,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyRouteStrategyCreateHandler:            managementHandlers.MyRouteStrategyCreateHandler,
 		ManagementRouteStrategyUpdateHandler:              managementHandlers.RouteStrategyUpdateHandler,
 		ManagementMyRouteStrategyUpdateHandler:            managementHandlers.MyRouteStrategyUpdateHandler,
+		ManagementRouteStrategyDeleteHandler:              managementHandlers.RouteStrategyDeleteHandler,
+		ManagementMyRouteStrategyDeleteHandler:            managementHandlers.MyRouteStrategyDeleteHandler,
 		ManagementRouteStrategyDetailHandler:              managementHandlers.RouteStrategyDetailHandler,
 		ManagementMyRouteStrategyDetailHandler:            managementHandlers.MyRouteStrategyDetailHandler,
 		ManagementRouteStrategyOptionsHandler:             managementHandlers.RouteStrategyOptionsHandler,
@@ -379,6 +381,8 @@ type managementAPIHandlers struct {
 	MyRouteStrategyCreateHandler            http.Handler
 	RouteStrategyUpdateHandler              http.Handler
 	MyRouteStrategyUpdateHandler            http.Handler
+	RouteStrategyDeleteHandler              http.Handler
+	MyRouteStrategyDeleteHandler            http.Handler
 	RouteStrategyDetailHandler              http.Handler
 	MyRouteStrategyDetailHandler            http.Handler
 	RouteStrategyOptionsHandler             http.Handler
@@ -619,6 +623,8 @@ func newManagementAPIHandler(
 		MyRouteStrategyCreateHandler:            httpapi.NewManagementMyRouteStrategyCreateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
 		RouteStrategyUpdateHandler:              httpapi.NewManagementRouteStrategyUpdateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
 		MyRouteStrategyUpdateHandler:            httpapi.NewManagementMyRouteStrategyUpdateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
+		RouteStrategyDeleteHandler:              httpapi.NewManagementRouteStrategyDeleteHandlerWithOperationLog(routeStrategyService, operationLogOptions),
+		MyRouteStrategyDeleteHandler:            httpapi.NewManagementMyRouteStrategyDeleteHandlerWithOperationLog(routeStrategyService, operationLogOptions),
 		RouteStrategyDetailHandler:              httpapi.NewManagementRouteStrategyDetailHandler(routeStrategyService),
 		MyRouteStrategyDetailHandler:            httpapi.NewManagementMyRouteStrategyDetailHandler(routeStrategyService),
 		RouteStrategyOptionsHandler:             httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),

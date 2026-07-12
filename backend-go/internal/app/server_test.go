@@ -523,6 +523,49 @@ func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyMutationDependencies(t *t
 	}
 }
 
+func TestNewManagementAPIHandlerRouteStrategyDeleteOptInAndSharedServiceWiring(t *testing.T) {
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	if disabled.RouteStrategyDeleteHandler != nil ||
+		disabled.MyRouteStrategyDeleteHandler != nil {
+		t.Fatal("route strategy delete handlers were created while management API disabled")
+	}
+
+	enabled := newManagementAPIHandler(
+		config.Config{ManagementAPIEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if enabled.RouteStrategyDeleteHandler == nil ||
+		enabled.MyRouteStrategyDeleteHandler == nil {
+		t.Fatal("route strategy delete handlers were not created while management API enabled")
+	}
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"ManagementRouteStrategyDeleteHandler:",
+		"managementHandlers.RouteStrategyDeleteHandler",
+		"ManagementMyRouteStrategyDeleteHandler:",
+		"managementHandlers.MyRouteStrategyDeleteHandler",
+		"RouteStrategyDeleteHandler:",
+		"httpapi.NewManagementRouteStrategyDeleteHandlerWithOperationLog(routeStrategyService, operationLogOptions)",
+		"MyRouteStrategyDeleteHandler:",
+		"httpapi.NewManagementMyRouteStrategyDeleteHandlerWithOperationLog(routeStrategyService, operationLogOptions)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server.go missing shared route strategy delete wiring %q", required)
+		}
+	}
+}
+
 func TestNewGatewaySystemAccountInvalidatorSkipsOnlyWhenDisabled(t *testing.T) {
 	invalidator, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{}, nil)
 	if err != nil {

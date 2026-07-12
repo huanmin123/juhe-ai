@@ -96,6 +96,8 @@ type RouterOptions struct {
 	ManagementMyRouteStrategyCreateHandler            http.Handler
 	ManagementRouteStrategyUpdateHandler              http.Handler
 	ManagementMyRouteStrategyUpdateHandler            http.Handler
+	ManagementRouteStrategyDeleteHandler              http.Handler
+	ManagementMyRouteStrategyDeleteHandler            http.Handler
 	ManagementRouteStrategyDetailHandler              http.Handler
 	ManagementMyRouteStrategyDetailHandler            http.Handler
 	ManagementRouteStrategyOptionsHandler             http.Handler
@@ -301,6 +303,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyRouteStrategyCreateHandler == nil &&
 				opts.ManagementRouteStrategyUpdateHandler == nil &&
 				opts.ManagementMyRouteStrategyUpdateHandler == nil &&
+				opts.ManagementRouteStrategyDeleteHandler == nil &&
+				opts.ManagementMyRouteStrategyDeleteHandler == nil &&
 				opts.ManagementRouteStrategyDetailHandler == nil &&
 				opts.ManagementMyRouteStrategyDetailHandler == nil &&
 				opts.ManagementRouteStrategyOptionsHandler == nil &&
@@ -578,6 +582,16 @@ func NewRouter(opts RouterOptions) http.Handler {
 					managementRouteStrategyCreateJSONBodyMiddleware,
 					managementAPIWriteRateLimitMiddleware,
 				).Patch("/my-route-strategies/{id}", opts.ManagementMyRouteStrategyUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementRouteStrategyDeleteHandler != nil {
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+				).Delete("/route-strategies/{id}", opts.ManagementRouteStrategyDeleteHandler.ServeHTTP)
+			}
+			if opts.ManagementMyRouteStrategyDeleteHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).
+					Delete("/my-route-strategies/{id}", opts.ManagementMyRouteStrategyDeleteHandler.ServeHTTP)
 			}
 			if opts.ManagementRouteStrategyOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/route-strategies/options", opts.ManagementRouteStrategyOptionsHandler.ServeHTTP)
@@ -874,6 +888,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyRouteStrategyCreateHandler != nil ||
 		opts.ManagementRouteStrategyUpdateHandler != nil ||
 		opts.ManagementMyRouteStrategyUpdateHandler != nil ||
+		opts.ManagementRouteStrategyDeleteHandler != nil ||
+		opts.ManagementMyRouteStrategyDeleteHandler != nil ||
 		opts.ManagementRouteStrategyDetailHandler != nil ||
 		opts.ManagementMyRouteStrategyDetailHandler != nil ||
 		opts.ManagementRouteStrategyOptionsHandler != nil ||
@@ -965,6 +981,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyRouteStrategyCreateHandler != nil ||
 		opts.ManagementRouteStrategyUpdateHandler != nil ||
 		opts.ManagementMyRouteStrategyUpdateHandler != nil ||
+		opts.ManagementRouteStrategyDeleteHandler != nil ||
+		opts.ManagementMyRouteStrategyDeleteHandler != nil ||
 		opts.ManagementGroupCreateHandler != nil ||
 		opts.ManagementMyGroupCreateHandler != nil ||
 		opts.ManagementGroupUpdateHandler != nil ||
