@@ -114,6 +114,11 @@ export const accountDraftTestAccountSchema = z.object({
   notes: z.string().optional()
 }).strict()
 
+export const accountBalanceDraftTestSchema = z.object({
+  account: accountDraftTestAccountSchema,
+  balanceQueryConfig: accountBalanceQueryConfigSchema
+}).strict()
+
 export const accountTestSchema = z.object({
   model: z.string().trim().optional(),
   testEndpointMode: accountTestEndpointModeSchema.optional(),

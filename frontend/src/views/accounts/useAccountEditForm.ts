@@ -741,6 +741,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     providerName,
     providerModelOptions,
     providerModelsLoading,
+    currentDraftTestPayload,
     saveAccount,
     selectAccountType,
     selectAccountTypeChoice,

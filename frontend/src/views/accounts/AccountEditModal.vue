@@ -161,7 +161,6 @@
                 :can-query="balanceQueryCanRun"
                 :form="form"
                 :query-loading="balanceQueryLoading"
-                :query-snapshot="balanceQuerySnapshot"
                 :readonly="authorizedEditing"
                 @query="emit('balance-query')"
               />
@@ -202,7 +201,7 @@
 import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountApiKeyRuntimeDetail, AccountBalanceSnapshot, AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountApiKeyRuntimeDetail, AccountSummary, AccountTagSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
@@ -249,7 +248,6 @@ const props = withDefaults(defineProps<{
   baseUrlPlaceholder: string
   balanceQueryCanRun?: boolean
   balanceQueryLoading?: boolean
-  balanceQuerySnapshot?: AccountBalanceSnapshot
   confirmLoading: boolean
   credentialTitle: string
   editing: boolean

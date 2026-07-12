@@ -16,6 +16,7 @@ import type {
   ProviderModelApiProtocol
 } from '@/types/domain'
 import type {
+  AccountBalanceDraftTestPayload,
   AccountDraftTestPayload,
   AccountExportPayload,
   AccountListParams,
@@ -57,7 +58,8 @@ export const accountsApi = {
   importConfirm: (payload: { data: unknown; options?: AccountImportOptions }, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/confirm', payload, { params })),
   create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/accounts', payload, { params })),
   update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload, { params })),
-  refreshBalance: (id: string, balanceQueryConfig?: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary['balanceSnapshot']>(http.post(`/accounts/${id}/balance/refresh`, balanceQueryConfig ? { balanceQueryConfig } : {}, { params })),
+  refreshBalance: (id: string, params?: ListParams) => unwrap<AccountSummary['balanceSnapshot']>(http.post(`/accounts/${id}/balance/refresh`, {}, { params })),
+  testBalanceDraft: (payload: AccountBalanceDraftTestPayload, params?: ListParams) => unwrap<AccountSummary['balanceSnapshot']>(http.post('/accounts/balance/test-draft', payload, { params })),
   batchEditContext: (accountIds: string[], params?: ListParams) => unwrap<AccountSummary[]>(http.post('/accounts/batch-edit-context', { accountIds }, { params })),
   batchUpdate: (payload: AccountBatchEditRequest, params?: ListParams) => unwrap<AccountBatchEditResult>(http.post('/accounts/batch-update', payload, { params })),
   updateTags: (id: string, payload: { tags: string[] }, params?: ListParams) => unwrap<AccountTagsUpdateResult>(http.patch(`/accounts/${id}/tags`, payload, { params })),
@@ -90,7 +92,8 @@ export const myAccountsApi = {
   importConfirm: (payload: { data: unknown; options?: AccountImportOptions }) => unwrap<AccountImportResult>(http.post('/my-accounts/import/confirm', payload)),
   create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-accounts', payload)),
   update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}`, payload)),
-  refreshBalance: (id: string, balanceQueryConfig?: Record<string, unknown>) => unwrap<AccountSummary['balanceSnapshot']>(http.post(`/my-accounts/${id}/balance/refresh`, balanceQueryConfig ? { balanceQueryConfig } : {})),
+  refreshBalance: (id: string) => unwrap<AccountSummary['balanceSnapshot']>(http.post(`/my-accounts/${id}/balance/refresh`, {})),
+  testBalanceDraft: (payload: AccountBalanceDraftTestPayload) => unwrap<AccountSummary['balanceSnapshot']>(http.post('/my-accounts/balance/test-draft', payload)),
   batchEditContext: (accountIds: string[]) => unwrap<AccountSummary[]>(http.post('/my-accounts/batch-edit-context', { accountIds })),
   batchUpdate: (payload: AccountBatchEditRequest) => unwrap<AccountBatchEditResult>(http.post('/my-accounts/batch-update', payload)),
   updateTags: (id: string, payload: { tags: string[] }) => unwrap<AccountTagsUpdateResult>(http.patch(`/my-accounts/${id}/tags`, payload)),

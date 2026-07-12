@@ -9,13 +9,14 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
-import type { AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
+import { replaceAccountBalanceSnapshot } from './accountListMutations'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -185,6 +186,13 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return removeAccountItems((account) => account.id === accountId) > 0
   }
 
+  function updateLoadedAccountBalance(accountId: string, snapshot: AccountBalanceSnapshot | undefined): boolean {
+    const nextAccounts = replaceAccountBalanceSnapshot(accounts.value, accountId, snapshot)
+    if (nextAccounts === accounts.value) return false
+    accounts.value = nextAccounts
+    return true
+  }
+
   function snapshotPageState(): AccountsPageState {
     return {
       filters: { ...filters, tagIds: [...filters.tagIds], status: [...filters.status] },
@@ -279,6 +287,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     handleSystemAccountFilterChange,
     focusCreatedAccount,
     removeLoadedAccount,
+    updateLoadedAccountBalance,
     resetAccountPagination,
     resetFilters
   }
