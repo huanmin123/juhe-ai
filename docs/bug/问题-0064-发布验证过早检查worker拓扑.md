@@ -23,8 +23,16 @@
 - 前两次生产验证因旧脚本竞态自动回滚，旧 release、health、watchdog 和完整拓扑均恢复。
 - 修复后 release `20260712-1043-balance-ui-d0f5e7c87` 通过目标路径、端口、完整拓扑、本机/公网 health、前端哈希、PostgreSQL、Redis 和 90 秒 PID 稳定门禁。
 
+## 2026-07-12 复发记录
+
+- 发布 `20260712-1525-balance-retry-197d2fe7d` 时发现生产主机的 `prepare-temporary-release.sh` 仍是立即读取一次进程树的旧版本，说明问题文档与服务器实际脚本发生漂移；候选 health 成功后因第三个 worker 尚未完成 spawn 而退出。
+- 生产验证器虽已开始轮询 topology，但 `launchctl kickstart -k` 后先捕获了仍处于 running 状态的旧 PID，后续只围绕该旧 PID 检查 cwd 和端口，导致新进程正常接管前被误判并自动回滚。
+- 生产主机持久化 `bin` 中的候选准备脚本现已改为最多轮询 30 秒完整 topology；生产验证器每轮重新读取 launchd PID，并把“同一 PID 的 cwd 指向目标 release、持有生产端口”作为进入后续验收的前置条件。
+- 旧脚本已备份到生产备份目录；修正版均通过 `bash -n`。候选版本通过 60 秒稳定观察，正式版本通过 90 秒 PID 稳定、本机/公网 health、前端哈希、PostgreSQL、Redis 和 `1+1+3` topology 验收。
+
 ## 下次遇到
 
 - health 成功后仍要等待 supervisor 子进程收敛，不能立即断言拓扑。
+- 服务管理器重启后不能只捕获一次 PID；旧进程退出、新进程接管期间，running 状态和 PID 都可能变化，必须在同一轮同时核对最新 PID、目标 cwd 和监听端口。
 - `set -e` 脚本中的计数/探测命令如果允许“暂时未命中”，必须显式吸收该状态，再由业务条件判断。
 - 生产切换必须保留 `current` 回滚陷阱；验证失败时先确认自动回滚完成，再修改验证门禁并重试。
