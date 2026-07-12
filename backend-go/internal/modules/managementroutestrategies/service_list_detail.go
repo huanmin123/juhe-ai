@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -28,11 +29,30 @@ const (
 	defaultProbeIntervalSeconds          = 30
 	defaultDegradedTTLSeconds            = 300
 	defaultMaxFirstByteRetriesPerRequest = 2
+
+	defaultHybridScoringContextMode             = "full_request"
+	defaultHybridQualityPreference              = "balanced"
+	defaultHybridScoringTimeoutMs               = 15000
+	defaultHybridScoringFallbackMaxLevel        = 5
+	defaultHybridScoringCacheTTLSeconds         = 300
+	defaultHybridAffinityTTLSeconds             = 900
+	defaultHybridSwitchMinLevelDelta            = 2
+	defaultHybridDowngradeConsecutiveLowCount   = 2
+	defaultHybridQualityInspectionTriggerMode   = "risk_based"
+	defaultHybridQualityInspectionMaxTrigger    = 6
+	defaultHybridQualityInspectionMaxRetries    = 2
+	defaultHybridQualityInspectionFailureAction = "repair_then_upgrade"
+	defaultHybridQualityInspectionUnavailable   = "pass_through"
+	maxHybridLevelRouteCount                    = 5
 )
 
 var (
 	ErrRouteStrategyListInvalid = errors.New("management route strategy list invalid")
 	ErrRouteStrategyNotFound    = errors.New("策略路由不存在")
+
+	routeStrategyDecimalNumberPattern = regexp.MustCompile(
+		`^[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)$`,
+	)
 )
 
 type ListInput struct {
@@ -275,10 +295,11 @@ func routeStrategyListPageSize(value int, provided bool) int {
 
 func routeStrategyListOffset(page int, pageSize int) int {
 	maxInt := int(^uint(0) >> 1)
-	if page > maxInt/max(1, pageSize) {
+	pageIndex := page - 1
+	if pageIndex > maxInt/max(1, pageSize) {
 		return maxInt - pageSize
 	}
-	return (page - 1) * pageSize
+	return pageIndex * pageSize
 }
 
 func routeStrategyListMode(value string) string {
@@ -407,7 +428,7 @@ func routeStrategyDetailResult(
 }
 
 func parseRouteStrategyRuntimeConfig(raw *string) (routeStrategyRuntimeConfig, error) {
-	if raw == nil || strings.TrimSpace(*raw) == "" {
+	if raw == nil || *raw == "" {
 		return routeStrategyRuntimeConfig{}, nil
 	}
 	decoder := json.NewDecoder(bytes.NewBufferString(*raw))
@@ -436,9 +457,9 @@ func parseRouteStrategyRuntimeConfig(raw *string) (routeStrategyRuntimeConfig, e
 		config.NormalRoutingConfig = normal
 	}
 	if value, exists := record["hybridRoutingConfig"]; exists && routeStrategyConfigValuePresent(value) {
-		hybrid, ok := value.(map[string]any)
-		if !ok || len(hybrid) == 0 {
-			return routeStrategyRuntimeConfig{}, fmt.Errorf("混合路由配置无效")
+		hybrid, err := normalizeManagementHybridRoutingConfig(value)
+		if err != nil {
+			return routeStrategyRuntimeConfig{}, err
 		}
 		config.HybridRoutingConfig = hybrid
 	}
@@ -456,18 +477,33 @@ func routeStrategyConfigValuePresent(value any) bool {
 	case json.Number:
 		number, _ := typed.Float64()
 		return number != 0 && !math.IsNaN(number)
+	case float64:
+		return typed != 0 && !math.IsNaN(typed)
+	case int:
+		return typed != 0
 	default:
 		return true
 	}
 }
 
+func routeStrategyConfigValueMissing(value any) bool {
+	if value == nil {
+		return true
+	}
+	text, ok := value.(string)
+	return ok && text == ""
+}
+
 func normalizeManagementNormalRoutingConfig(value any) (*NormalRoutingConfig, error) {
+	if routeStrategyConfigValueMissing(value) {
+		return &NormalRoutingConfig{SchedulingPreference: defaultSchedulingPreference}, nil
+	}
 	record, ok := value.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("普通路由调度配置无效")
 	}
 	preference := defaultSchedulingPreference
-	if raw, exists := record["schedulingPreference"]; exists && routeStrategyConfigValuePresent(raw) {
+	if raw, exists := record["schedulingPreference"]; exists && !routeStrategyConfigValueMissing(raw) {
 		text, ok := raw.(string)
 		if !ok {
 			return nil, fmt.Errorf("普通路由调度偏好无效")
@@ -501,7 +537,7 @@ func normalizeManagementSpeedFirstConfig(value any) (*SpeedFirstConfig, error) {
 		DegradedTTLSeconds:            defaultDegradedTTLSeconds,
 		MaxFirstByteRetriesPerRequest: defaultMaxFirstByteRetriesPerRequest,
 	}
-	if !routeStrategyConfigValuePresent(value) {
+	if routeStrategyConfigValueMissing(value) {
 		return config, nil
 	}
 	record, ok := value.(map[string]any)
@@ -540,28 +576,11 @@ func routeStrategyConfigInteger(
 	maxValue int,
 	message string,
 ) (int, error) {
-	if !routeStrategyConfigValuePresent(value) {
+	if routeStrategyConfigValueMissing(value) {
 		return fallback, nil
 	}
-	var numeric float64
-	switch typed := value.(type) {
-	case json.Number:
-		parsed, err := typed.Float64()
-		if err != nil {
-			return 0, fmt.Errorf("%s", message)
-		}
-		numeric = parsed
-	case string:
-		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
-		if err != nil {
-			return 0, fmt.Errorf("%s", message)
-		}
-		numeric = parsed
-	case float64:
-		numeric = typed
-	case int:
-		numeric = float64(typed)
-	default:
+	numeric, ok := routeStrategyConfigNumber(value)
+	if !ok {
 		return 0, fmt.Errorf("%s", message)
 	}
 	if math.IsNaN(numeric) || math.IsInf(numeric, 0) || numeric != math.Trunc(numeric) ||
@@ -569,4 +588,516 @@ func routeStrategyConfigInteger(
 		return 0, fmt.Errorf("%s", message)
 	}
 	return int(numeric), nil
+}
+
+func normalizeManagementHybridRoutingConfig(value any) (map[string]any, error) {
+	record, ok := value.(map[string]any)
+	if !ok || record == nil {
+		return nil, fmt.Errorf("混合路由配置不能为空")
+	}
+	scoringModel, err := routeStrategyConfigNonEmptyString(
+		record["scoringModel"],
+		"混合路由评分模型不能为空",
+	)
+	if err != nil {
+		return nil, err
+	}
+	scoringContextMode, err := routeStrategyHybridScoringContextMode(record["scoringContextMode"])
+	if err != nil {
+		return nil, err
+	}
+	qualityPreference, err := routeStrategyHybridQualityPreference(record["qualityPreference"])
+	if err != nil {
+		return nil, err
+	}
+	scoringTimeoutMs, err := routeStrategyConfigInteger(
+		record["scoringTimeoutMs"],
+		defaultHybridScoringTimeoutMs,
+		1000,
+		60000,
+		"混合路由评分超时时间必须是 1000-60000 毫秒",
+	)
+	if err != nil {
+		return nil, err
+	}
+	scoringFallbackMaxLevel, err := routeStrategyConfigInteger(
+		record["scoringFallbackMaxLevel"],
+		defaultHybridScoringFallbackMaxLevel,
+		2,
+		5,
+		"混合路由评分不可用兜底上限必须是 2-5",
+	)
+	if err != nil {
+		return nil, err
+	}
+	scoringCacheTTLSeconds, err := routeStrategyConfigInteger(
+		record["scoringCacheTtlSeconds"],
+		defaultHybridScoringCacheTTLSeconds,
+		1,
+		3600,
+		"混合路由评分缓存 TTL 必须是 1-3600 秒",
+	)
+	if err != nil {
+		return nil, err
+	}
+	affinityTTLSeconds, err := routeStrategyConfigInteger(
+		record["affinityTtlSeconds"],
+		defaultHybridAffinityTTLSeconds,
+		1,
+		86400,
+		"混合路由缓存亲和 TTL 必须是 1-86400 秒",
+	)
+	if err != nil {
+		return nil, err
+	}
+	switchMinLevelDelta, err := routeStrategyConfigInteger(
+		record["switchMinLevelDelta"],
+		defaultHybridSwitchMinLevelDelta,
+		0,
+		9,
+		"混合路由切换等级差必须是 0-9",
+	)
+	if err != nil {
+		return nil, err
+	}
+	downgradeConsecutiveLowCount, err := routeStrategyConfigInteger(
+		record["downgradeConsecutiveLowCount"],
+		defaultHybridDowngradeConsecutiveLowCount,
+		1,
+		20,
+		"混合路由降级确认次数必须是 1-20",
+	)
+	if err != nil {
+		return nil, err
+	}
+	levelRoutes, err := normalizeManagementHybridLevelRoutes(record["levelRoutes"])
+	if err != nil {
+		return nil, err
+	}
+	qualityInspection, err := normalizeManagementHybridQualityInspection(
+		record["qualityInspection"],
+		scoringModel,
+	)
+	if err != nil {
+		return nil, err
+	}
+	output := map[string]any{
+		"scoringModel":                 scoringModel,
+		"scoringContextMode":           scoringContextMode,
+		"qualityPreference":            qualityPreference,
+		"scoringTimeoutMs":             scoringTimeoutMs,
+		"scoringFallbackMaxLevel":      scoringFallbackMaxLevel,
+		"scoringCacheEnabled":          true,
+		"scoringCacheTtlSeconds":       scoringCacheTTLSeconds,
+		"cacheAffinityEnabled":         true,
+		"affinityTtlSeconds":           affinityTTLSeconds,
+		"switchMinLevelDelta":          switchMinLevelDelta,
+		"downgradeConsecutiveLowCount": downgradeConsecutiveLowCount,
+		"levelRoutes":                  levelRoutes,
+		"qualityInspection":            qualityInspection,
+	}
+	if scoringGroupID := routeStrategyConfigOptionalString(record["scoringGroupId"]); scoringGroupID != "" {
+		output["scoringGroupId"] = scoringGroupID
+	}
+	return output, nil
+}
+
+func routeStrategyHybridScoringContextMode(value any) (string, error) {
+	if routeStrategyConfigValueMissing(value) {
+		return defaultHybridScoringContextMode, nil
+	}
+	if value == defaultHybridScoringContextMode {
+		return defaultHybridScoringContextMode, nil
+	}
+	return "", fmt.Errorf("混合路由评分上下文模式无效")
+}
+
+func routeStrategyHybridQualityPreference(value any) (string, error) {
+	if routeStrategyConfigValueMissing(value) {
+		return defaultHybridQualityPreference, nil
+	}
+	switch value {
+	case "cost_first", defaultHybridQualityPreference, "quality_first":
+		return value.(string), nil
+	default:
+		return "", fmt.Errorf("混合路由质量偏好无效")
+	}
+}
+
+type managementHybridLevelRoute struct {
+	MinLevel    int
+	MaxLevel    int
+	TargetModel string
+	Enabled     bool
+}
+
+func normalizeManagementHybridLevelRoutes(value any) ([]map[string]any, error) {
+	rawRoutes, ok := value.([]any)
+	if !ok || len(rawRoutes) == 0 {
+		return nil, fmt.Errorf("混合路由等级范围不能为空")
+	}
+	routes := make([]managementHybridLevelRoute, 0, len(rawRoutes))
+	for _, rawRoute := range rawRoutes {
+		route, err := normalizeManagementHybridLevelRoute(rawRoute)
+		if err != nil {
+			return nil, err
+		}
+		if route.Enabled {
+			routes = append(routes, route)
+		}
+	}
+	if len(routes) == 0 {
+		return nil, fmt.Errorf("混合路由至少需要一个启用的等级范围")
+	}
+	if len(routes) > maxHybridLevelRouteCount {
+		return nil, fmt.Errorf("混合路由最多只能配置 %d 个等级范围", maxHybridLevelRouteCount)
+	}
+	targetModels := make(map[string]struct{}, len(routes))
+	for _, route := range routes {
+		targetModels[strings.ToLower(route.TargetModel)] = struct{}{}
+	}
+	if len(targetModels) < 2 {
+		return nil, fmt.Errorf("混合路由至少需要配置 2 个不同的目标模型")
+	}
+	firstRoute := routes[0]
+	if firstRoute.MinLevel != 1 || firstRoute.MaxLevel < 2 || firstRoute.MaxLevel > 5 {
+		return nil, fmt.Errorf("混合路由最低档必须从等级 1 开始，并覆盖 1-2 到 1-5 之间的范围")
+	}
+	expectedMinLevel := 1
+	for index, route := range routes {
+		if route.MinLevel != expectedMinLevel {
+			return nil, fmt.Errorf(
+				"混合路由第 %d 个等级范围必须从等级 %d 开始",
+				index+1,
+				expectedMinLevel,
+			)
+		}
+		expectedMinLevel = route.MaxLevel + 1
+	}
+	if expectedMinLevel != 11 {
+		return nil, fmt.Errorf("混合路由等级范围必须按从小到大连续覆盖 1-10")
+	}
+	output := make([]map[string]any, 0, len(routes))
+	for _, route := range routes {
+		output = append(output, map[string]any{
+			"minLevel":    route.MinLevel,
+			"maxLevel":    route.MaxLevel,
+			"targetModel": route.TargetModel,
+			"enabled":     route.Enabled,
+		})
+	}
+	return output, nil
+}
+
+func normalizeManagementHybridLevelRoute(value any) (managementHybridLevelRoute, error) {
+	record, ok := value.(map[string]any)
+	if !ok || record == nil {
+		return managementHybridLevelRoute{}, fmt.Errorf("混合路由等级范围无效")
+	}
+	minLevel, err := routeStrategyConfigRequiredInteger(
+		record["minLevel"],
+		1,
+		10,
+		"混合路由最小等级必须是 1-10",
+	)
+	if err != nil {
+		return managementHybridLevelRoute{}, err
+	}
+	maxLevel, err := routeStrategyConfigRequiredInteger(
+		record["maxLevel"],
+		1,
+		10,
+		"混合路由最大等级必须是 1-10",
+	)
+	if err != nil {
+		return managementHybridLevelRoute{}, err
+	}
+	if minLevel > maxLevel {
+		return managementHybridLevelRoute{}, fmt.Errorf("混合路由等级范围最小值不能大于最大值")
+	}
+	targetModel, err := routeStrategyConfigNonEmptyString(
+		record["targetModel"],
+		"混合路由目标模型不能为空",
+	)
+	if err != nil {
+		return managementHybridLevelRoute{}, err
+	}
+	enabled := true
+	if rawEnabled, exists := record["enabled"]; exists {
+		enabled, err = routeStrategyConfigBoolean(
+			rawEnabled,
+			"混合路由等级范围启用状态必须是布尔值",
+		)
+		if err != nil {
+			return managementHybridLevelRoute{}, err
+		}
+	}
+	return managementHybridLevelRoute{
+		MinLevel:    minLevel,
+		MaxLevel:    maxLevel,
+		TargetModel: targetModel,
+		Enabled:     enabled,
+	}, nil
+}
+
+func normalizeManagementHybridQualityInspection(
+	value any,
+	defaultScoringModel string,
+) (map[string]any, error) {
+	if routeStrategyConfigValueMissing(value) {
+		return map[string]any{
+			"enabled":           true,
+			"scoringModel":      defaultScoringModel,
+			"triggerMode":       defaultHybridQualityInspectionTriggerMode,
+			"maxTriggerLevel":   defaultHybridQualityInspectionMaxTrigger,
+			"maxRetries":        defaultHybridQualityInspectionMaxRetries,
+			"failureAction":     defaultHybridQualityInspectionFailureAction,
+			"unavailableAction": defaultHybridQualityInspectionUnavailable,
+		}, nil
+	}
+	record, ok := value.(map[string]any)
+	if !ok || record == nil {
+		return nil, fmt.Errorf("混合路由质量评分配置无效")
+	}
+	enabled := true
+	var err error
+	if rawEnabled, exists := record["enabled"]; exists {
+		enabled, err = routeStrategyConfigBoolean(
+			rawEnabled,
+			"混合路由质量评分开关必须是布尔值",
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	scoringModel := routeStrategyConfigOptionalString(record["scoringModel"])
+	if scoringModel == "" {
+		scoringModel = defaultScoringModel
+	}
+	if enabled && scoringModel == "" {
+		return nil, fmt.Errorf("混合路由质量评分模型不能为空")
+	}
+	triggerMode, err := routeStrategyHybridQualityInspectionTriggerMode(record["triggerMode"])
+	if err != nil {
+		return nil, err
+	}
+	maxTriggerLevel, err := routeStrategyConfigInteger(
+		record["maxTriggerLevel"],
+		defaultHybridQualityInspectionMaxTrigger,
+		1,
+		10,
+		"混合路由质量评分最高触发等级必须是 1-10",
+	)
+	if err != nil {
+		return nil, err
+	}
+	maxRetries, err := routeStrategyConfigInteger(
+		record["maxRetries"],
+		defaultHybridQualityInspectionMaxRetries,
+		0,
+		2,
+		"混合路由质量评分重试次数必须是 0-2",
+	)
+	if err != nil {
+		return nil, err
+	}
+	failureAction, err := routeStrategyHybridQualityInspectionFailureAction(record["failureAction"])
+	if err != nil {
+		return nil, err
+	}
+	unavailableAction, err := routeStrategyHybridQualityInspectionUnavailableAction(record["unavailableAction"])
+	if err != nil {
+		return nil, err
+	}
+	output := map[string]any{
+		"enabled":           enabled,
+		"scoringModel":      scoringModel,
+		"triggerMode":       triggerMode,
+		"maxTriggerLevel":   maxTriggerLevel,
+		"maxRetries":        maxRetries,
+		"failureAction":     failureAction,
+		"unavailableAction": unavailableAction,
+	}
+	if scoringGroupID := routeStrategyConfigOptionalString(record["scoringGroupId"]); scoringGroupID != "" {
+		output["scoringGroupId"] = scoringGroupID
+	}
+	return output, nil
+}
+
+func routeStrategyHybridQualityInspectionTriggerMode(value any) (string, error) {
+	if routeStrategyConfigValueMissing(value) {
+		return defaultHybridQualityInspectionTriggerMode, nil
+	}
+	switch value {
+	case "quality_first_only", defaultHybridQualityInspectionTriggerMode, "always_for_hybrid":
+		return value.(string), nil
+	default:
+		return "", fmt.Errorf("混合路由质量评分触发模式无效")
+	}
+}
+
+func routeStrategyHybridQualityInspectionFailureAction(value any) (string, error) {
+	if routeStrategyConfigValueMissing(value) {
+		return defaultHybridQualityInspectionFailureAction, nil
+	}
+	switch value {
+	case defaultHybridQualityInspectionFailureAction,
+		"upgrade_next_level",
+		"retry_same_model",
+		"return_error":
+		return value.(string), nil
+	default:
+		return "", fmt.Errorf("混合路由质量评分失败动作无效")
+	}
+}
+
+func routeStrategyHybridQualityInspectionUnavailableAction(value any) (string, error) {
+	if routeStrategyConfigValueMissing(value) {
+		return defaultHybridQualityInspectionUnavailable, nil
+	}
+	switch value {
+	case defaultHybridQualityInspectionUnavailable, "return_error":
+		return value.(string), nil
+	default:
+		return "", fmt.Errorf("混合路由质量评分不可用处理方式无效")
+	}
+}
+
+func routeStrategyConfigRequiredInteger(
+	value any,
+	minValue int,
+	maxValue int,
+	message string,
+) (int, error) {
+	if routeStrategyConfigValueMissing(value) {
+		return 0, fmt.Errorf("%s", message)
+	}
+	return routeStrategyConfigInteger(value, 0, minValue, maxValue, message)
+}
+
+func routeStrategyConfigNonEmptyString(value any, message string) (string, error) {
+	text, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("%s", message)
+	}
+	text = routeStrategyTrimECMAScriptWhitespace(text)
+	if text == "" {
+		return "", fmt.Errorf("%s", message)
+	}
+	return text, nil
+}
+
+func routeStrategyConfigOptionalString(value any) string {
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return routeStrategyTrimECMAScriptWhitespace(text)
+}
+
+func routeStrategyConfigBoolean(value any, message string) (bool, error) {
+	enabled, ok := value.(bool)
+	if !ok {
+		return false, fmt.Errorf("%s", message)
+	}
+	return enabled, nil
+}
+
+func routeStrategyConfigNumber(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := typed.Float64()
+		return number, err == nil || math.IsInf(number, 0)
+	case float64:
+		return typed, true
+	case int:
+		return float64(typed), true
+	case bool:
+		if typed {
+			return 1, true
+		}
+		return 0, true
+	case string:
+		return routeStrategyConfigStringNumber(typed)
+	case []any:
+		return routeStrategyConfigStringNumber(routeStrategyConfigArrayString(typed))
+	default:
+		return 0, false
+	}
+}
+
+func routeStrategyConfigStringNumber(value string) (float64, bool) {
+	value = routeStrategyTrimECMAScriptWhitespace(value)
+	if value == "" {
+		return 0, true
+	}
+	switch value {
+	case "Infinity", "+Infinity":
+		return math.Inf(1), true
+	case "-Infinity":
+		return math.Inf(-1), true
+	}
+	if len(value) > 2 && value[0] == '0' {
+		base := 0
+		switch value[1] {
+		case 'x', 'X':
+			base = 16
+		case 'b', 'B':
+			base = 2
+		case 'o', 'O':
+			base = 8
+		}
+		if base != 0 {
+			number, err := strconv.ParseUint(value[2:], base, 64)
+			if err != nil {
+				return 0, false
+			}
+			return float64(number), true
+		}
+	}
+	if !routeStrategyDecimalNumberPattern.MatchString(value) {
+		return 0, false
+	}
+	number, err := strconv.ParseFloat(value, 64)
+	return number, err == nil || math.IsInf(number, 0)
+}
+
+func routeStrategyConfigArrayString(values []any) string {
+	parts := make([]string, len(values))
+	for index, value := range values {
+		switch typed := value.(type) {
+		case nil:
+			parts[index] = ""
+		case string:
+			parts[index] = typed
+		case bool:
+			parts[index] = strconv.FormatBool(typed)
+		case json.Number:
+			parts[index] = typed.String()
+		case float64:
+			parts[index] = strconv.FormatFloat(typed, 'g', -1, 64)
+		case int:
+			parts[index] = strconv.Itoa(typed)
+		case []any:
+			parts[index] = routeStrategyConfigArrayString(typed)
+		default:
+			parts[index] = "[object Object]"
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+func routeStrategyTrimECMAScriptWhitespace(value string) string {
+	return strings.TrimFunc(value, func(character rune) bool {
+		switch character {
+		case '\u0009', '\u000B', '\u000C', '\u0020', '\u00A0', '\u1680',
+			'\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
+			'\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F',
+			'\u205F', '\u3000', '\uFEFF', '\u000A', '\u000D', '\u2028',
+			'\u2029':
+			return true
+		default:
+			return false
+		}
+	})
 }

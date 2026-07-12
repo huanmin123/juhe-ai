@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestServiceListTrimsLookaheadBeforeEnrichment(t *testing.T) {
 					Name:              "混合策略",
 					Mode:              "hybrid_smart",
 					Status:            "disabled",
-					ConfigJSON:        stringPointer(`{"hybridRoutingConfig":{"scoringModel":"gpt-5"}}`),
+					ConfigJSON:        stringPointer(validHybridRuntimeConfigJSON()),
 					CreatedAt:         time.Date(2026, 7, 9, 1, 2, 3, 0, time.UTC),
 					UpdatedAt:         time.Date(2026, 7, 10, 1, 2, 3, 0, time.UTC),
 				},
@@ -128,9 +129,8 @@ func TestServiceListForcesSelfScopeAndOmitsOwnerFields(t *testing.T) {
 
 	result, err := NewService(store).List(context.Background(), ListInput{
 		ActorSystemAccountID: " sys_self ",
-		ActorRole:            "admin",
+		ActorRole:            "user",
 		SystemAccountID:      "sys_other",
-		SelfOnly:             true,
 	})
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
@@ -140,6 +140,40 @@ func TestServiceListForcesSelfScopeAndOmitsOwnerFields(t *testing.T) {
 	}
 	if result.Items[0].SystemAccountID != "" || result.Items[0].SystemAccountName != "" {
 		t.Fatalf("self owner fields = %+v", result.Items[0])
+	}
+}
+
+func TestServiceListAdminAllIncludesOwnerFields(t *testing.T) {
+	store := &routeStrategyReadStoreStub{
+		page: port.ManagementRouteStrategyListPage{
+			Rows: []port.ManagementRouteStrategyListRow{{
+				ID:                "route_admin_all",
+				SystemAccountID:   "sys_owner",
+				SystemAccountName: "所有者",
+				Name:              "全部策略",
+				Mode:              "normal",
+				Status:            "active",
+			}},
+		},
+		enrichment: []port.ManagementRouteStrategyListEnrichment{{
+			ID:              "route_admin_all",
+			SystemAccountID: "sys_owner",
+		}},
+	}
+
+	result, err := NewService(store).List(context.Background(), ListInput{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+		SystemAccountID:      "all",
+	})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if store.listInput.SystemAccountID != "" {
+		t.Fatalf("system account id = %q, want all scope", store.listInput.SystemAccountID)
+	}
+	if result.Items[0].SystemAccountID != "sys_owner" || result.Items[0].SystemAccountName != "所有者" {
+		t.Fatalf("admin owner fields = %+v", result.Items[0])
 	}
 }
 
@@ -207,6 +241,263 @@ func TestServiceDetailReturnsFullBindingsAndNormalizesSpeedConfig(t *testing.T) 
 	}
 }
 
+func TestServiceDetailNormalizesCompleteHybridConfigLikeNode(t *testing.T) {
+	store := &routeStrategyReadStoreStub{
+		detailFound: true,
+		detail: port.ManagementRouteStrategyDetailRow{
+			ManagementRouteStrategyListRow: port.ManagementRouteStrategyListRow{
+				ID:              "route_hybrid",
+				SystemAccountID: "sys_owner",
+				Name:            "混合策略",
+				Mode:            "hybrid_smart",
+				Status:          "active",
+				ConfigJSON: stringPointer(`{
+					"hybridRoutingConfig": {
+						"scoringGroupId": " score_group ",
+						"scoringModel": " scorer-model ",
+						"scoringTimeoutMs": "15000",
+						"scoringCacheEnabled": false,
+						"cacheAffinityEnabled": false,
+						"switchMinLevelDelta": false,
+						"levelRoutes": [
+							{"minLevel": true, "maxLevel": 3, "targetModel": " model-a "},
+							{"minLevel": 4, "maxLevel": 4, "targetModel": "disabled-model", "enabled": false},
+							{"minLevel": 4, "maxLevel": "10", "targetModel": " MODEL-B "}
+						],
+						"qualityInspection": {
+							"enabled": false,
+							"scoringGroupId": " quality_group ",
+							"scoringModel": " ",
+							"maxTriggerLevel": true,
+							"maxRetries": false
+						}
+					}
+				}`),
+			},
+		},
+	}
+
+	result, err := NewService(store).Detail(context.Background(), DetailInput{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+		SystemAccountID:      "sys_owner",
+		RouteStrategyID:      "route_hybrid",
+	})
+	if err != nil {
+		t.Fatalf("Detail() error = %v", err)
+	}
+	assertJSONEqual(t, result.HybridRoutingConfig, `{
+		"scoringGroupId": "score_group",
+		"scoringModel": "scorer-model",
+		"scoringContextMode": "full_request",
+		"qualityPreference": "balanced",
+		"scoringTimeoutMs": 15000,
+		"scoringFallbackMaxLevel": 5,
+		"scoringCacheEnabled": true,
+		"scoringCacheTtlSeconds": 300,
+		"cacheAffinityEnabled": true,
+		"affinityTtlSeconds": 900,
+		"switchMinLevelDelta": 0,
+		"downgradeConsecutiveLowCount": 2,
+		"levelRoutes": [
+			{"minLevel": 1, "maxLevel": 3, "targetModel": "model-a", "enabled": true},
+			{"minLevel": 4, "maxLevel": 10, "targetModel": "MODEL-B", "enabled": true}
+		],
+		"qualityInspection": {
+			"enabled": false,
+			"scoringGroupId": "quality_group",
+			"scoringModel": "scorer-model",
+			"triggerMode": "risk_based",
+			"maxTriggerLevel": 1,
+			"maxRetries": 0,
+			"failureAction": "repair_then_upgrade",
+			"unavailableAction": "pass_through"
+		}
+	}`)
+}
+
+func TestServiceDetailForcesRegularUserSelfScopeAndOmitsOwnerFields(t *testing.T) {
+	store := &routeStrategyReadStoreStub{
+		detailFound: true,
+		detail: port.ManagementRouteStrategyDetailRow{
+			ManagementRouteStrategyListRow: port.ManagementRouteStrategyListRow{
+				ID:                "route_self_detail",
+				SystemAccountID:   "sys_self",
+				SystemAccountName: "本人",
+				Name:              "我的策略",
+				Mode:              "normal",
+				Status:            "active",
+			},
+		},
+	}
+
+	result, err := NewService(store).Detail(context.Background(), DetailInput{
+		ActorSystemAccountID: " sys_self ",
+		ActorRole:            "user",
+		SystemAccountID:      "sys_other",
+		RouteStrategyID:      " route_self_detail ",
+	})
+	if err != nil {
+		t.Fatalf("Detail() error = %v", err)
+	}
+	if store.detailInput.SystemAccountID != "sys_self" {
+		t.Fatalf("system account id = %q", store.detailInput.SystemAccountID)
+	}
+	if result.SystemAccountID != "" || result.SystemAccountName != "" {
+		t.Fatalf("self owner fields = %+v", result)
+	}
+}
+
+func TestParseRouteStrategyRuntimeConfigRejectsInvalidHybridConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "level routes must cover continuously",
+			raw: `{"hybridRoutingConfig":{
+				"scoringModel":"scorer",
+				"levelRoutes":[
+					{"minLevel":1,"maxLevel":3,"targetModel":"model-a"},
+					{"minLevel":5,"maxLevel":10,"targetModel":"model-b"}
+				]
+			}}`,
+		},
+		{
+			name: "level route enabled must be boolean",
+			raw: `{"hybridRoutingConfig":{
+				"scoringModel":"scorer",
+				"levelRoutes":[
+					{"minLevel":1,"maxLevel":3,"targetModel":"model-a","enabled":1},
+					{"minLevel":4,"maxLevel":10,"targetModel":"model-b"}
+				]
+			}}`,
+		},
+		{
+			name: "quality inspection enabled must be boolean",
+			raw: `{"hybridRoutingConfig":{
+				"scoringModel":"scorer",
+				"levelRoutes":[
+					{"minLevel":1,"maxLevel":3,"targetModel":"model-a"},
+					{"minLevel":4,"maxLevel":10,"targetModel":"model-b"}
+				],
+				"qualityInspection":{"enabled":0}
+			}}`,
+		},
+		{
+			name: "scoring timeout must be in range",
+			raw: `{"hybridRoutingConfig":{
+				"scoringModel":"scorer",
+				"scoringTimeoutMs":999,
+				"levelRoutes":[
+					{"minLevel":1,"maxLevel":3,"targetModel":"model-a"},
+					{"minLevel":4,"maxLevel":10,"targetModel":"model-b"}
+				]
+			}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := parseRouteStrategyRuntimeConfig(stringPointer(tt.raw)); err == nil {
+				t.Fatal("parseRouteStrategyRuntimeConfig() error = nil")
+			}
+		})
+	}
+}
+
+func TestParseRouteStrategyRuntimeConfigUsesNodeTopLevelTruthiness(t *testing.T) {
+	for _, raw := range []string{
+		`{"normalRoutingConfig":false}`,
+		`{"normalRoutingConfig":0}`,
+	} {
+		config, err := parseRouteStrategyRuntimeConfig(stringPointer(raw))
+		if err != nil {
+			t.Fatalf("parseRouteStrategyRuntimeConfig(%s) error = %v", raw, err)
+		}
+		if config.NormalRoutingConfig != nil {
+			t.Fatalf("parseRouteStrategyRuntimeConfig(%s) normal config = %+v", raw, config.NormalRoutingConfig)
+		}
+	}
+}
+
+func TestNormalizeManagementNormalRoutingConfigDefaultsMissingValues(t *testing.T) {
+	for _, value := range []any{nil, ""} {
+		config, err := normalizeManagementNormalRoutingConfig(value)
+		if err != nil {
+			t.Fatalf("normalizeManagementNormalRoutingConfig(%#v) error = %v", value, err)
+		}
+		if config.SchedulingPreference != defaultSchedulingPreference || config.SpeedFirstConfig != nil {
+			t.Fatalf("normalizeManagementNormalRoutingConfig(%#v) = %+v", value, config)
+		}
+	}
+}
+
+func TestNormalizeManagementNormalRoutingConfigRejectsFalsyPresentFields(t *testing.T) {
+	tests := []string{
+		`{"normalRoutingConfig":{"schedulingPreference":false}}`,
+		`{"normalRoutingConfig":{"schedulingPreference":0}}`,
+		`{"normalRoutingConfig":{"schedulingPreference":"speed_first","speedFirstConfig":false}}`,
+		`{"normalRoutingConfig":{"schedulingPreference":"speed_first","speedFirstConfig":{"slowTriggerCount":0}}}`,
+	}
+	for _, raw := range tests {
+		if _, err := parseRouteStrategyRuntimeConfig(stringPointer(raw)); err == nil {
+			t.Fatalf("parseRouteStrategyRuntimeConfig(%s) error = nil", raw)
+		}
+	}
+}
+
+func TestRouteStrategyConfigIntegerMatchesNodeNumberSemantics(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     any
+		fallback  int
+		minValue  int
+		maxValue  int
+		want      int
+		wantError bool
+	}{
+		{name: "true is one", value: true, fallback: 2, minValue: 1, maxValue: 3, want: 1},
+		{name: "false is zero", value: false, fallback: 2, minValue: 0, maxValue: 3, want: 0},
+		{name: "empty array is zero", value: []any{}, fallback: 2, minValue: 0, maxValue: 3, want: 0},
+		{name: "single number array", value: []any{json.Number("2")}, fallback: 1, minValue: 0, maxValue: 3, want: 2},
+		{name: "hex string", value: "0x10", fallback: 1, minValue: 0, maxValue: 16, want: 16},
+		{name: "u0085 is not numeric whitespace", value: "\u0085", fallback: 1, minValue: 0, maxValue: 3, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := routeStrategyConfigInteger(
+				tt.value,
+				tt.fallback,
+				tt.minValue,
+				tt.maxValue,
+				"invalid",
+			)
+			if tt.wantError {
+				if err == nil {
+					t.Fatalf("routeStrategyConfigInteger() = %d, want error", got)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("routeStrategyConfigInteger() = (%d, %v), want (%d, nil)", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestRouteStrategyListOffsetUsesPageMinusOneAtOverflowBoundary(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	const pageSize = 2
+	lastSafePage := maxInt/pageSize + 1
+	if got, want := routeStrategyListOffset(lastSafePage, pageSize), (lastSafePage-1)*pageSize; got != want {
+		t.Fatalf("routeStrategyListOffset(last safe page) = %d, want %d", got, want)
+	}
+	if got, want := routeStrategyListOffset(lastSafePage+1, pageSize), maxInt-pageSize; got != want {
+		t.Fatalf("routeStrategyListOffset(overflow page) = %d, want %d", got, want)
+	}
+}
+
 func TestRouteStrategyReadScopeDoesNotBroadenNonECMAScriptWhitespaceOwner(t *testing.T) {
 	const owner = "\u0085"
 	systemAccountID, includeOwner, err := routeStrategyReadScope("sys_admin", "admin", owner, false)
@@ -265,6 +556,54 @@ func TestServiceDetailReturnsNotFoundAndRejectsDamagedConfig(t *testing.T) {
 		RouteStrategyID:      "route_trailing",
 	}); err == nil {
 		t.Fatal("Detail() error = nil, want trailing JSON error")
+	}
+
+	whitespaceStore := &routeStrategyReadStoreStub{
+		detailFound: true,
+		detail: port.ManagementRouteStrategyDetailRow{
+			ManagementRouteStrategyListRow: port.ManagementRouteStrategyListRow{
+				ID:         "route_whitespace",
+				Mode:       "normal",
+				Status:     "active",
+				ConfigJSON: stringPointer(" \t\r\n "),
+			},
+		},
+	}
+	if _, err := NewService(whitespaceStore).Detail(context.Background(), DetailInput{
+		ActorSystemAccountID: "sys_self",
+		SelfOnly:             true,
+		RouteStrategyID:      "route_whitespace",
+	}); err == nil {
+		t.Fatal("Detail() error = nil, want whitespace JSON error")
+	}
+}
+
+func validHybridRuntimeConfigJSON() string {
+	return `{"hybridRoutingConfig":{
+		"scoringModel":"gpt-5",
+		"levelRoutes":[
+			{"minLevel":1,"maxLevel":3,"targetModel":"gpt-5-mini"},
+			{"minLevel":4,"maxLevel":10,"targetModel":"gpt-5"}
+		]
+	}}`
+}
+
+func assertJSONEqual(t *testing.T, got any, wantJSON string) {
+	t.Helper()
+	gotJSON, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal(got) error = %v", err)
+	}
+	var gotValue any
+	if err := json.Unmarshal(gotJSON, &gotValue); err != nil {
+		t.Fatalf("json.Unmarshal(got) error = %v", err)
+	}
+	var wantValue any
+	if err := json.Unmarshal([]byte(wantJSON), &wantValue); err != nil {
+		t.Fatalf("json.Unmarshal(want) error = %v", err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("JSON mismatch\ngot:  %s\nwant: %s", gotJSON, wantJSON)
 	}
 }
 
