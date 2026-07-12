@@ -97,7 +97,7 @@ Go 目标不是复制当前 Node 进程树。
 - worker：保留 `ingest`、`stats`、`ops` 三类角色的业务边界，但不再因为 Node 事件循环阻塞而拆出额外 DB service。
 - maintenance：生产维护脚本以独立命令运行，必须明确 dry run、影响范围和失败行为。
 - DB service：迁移完成后删除。Go 后端直接通过 PostgreSQL 连接池、事务、Redis state/cache/queue 和有界后台队列表达存储边界，不再为 SQLite 单写者保留独立进程。
-- W1b 到 W7 临时例外：Go public account 提交后通过 loopback Node internal bridge best-effort 触发现有健康任务，Node Web 与 `ops-worker` 仍需运行；这不改变最终 Go-only 目标。
+- W1b 到 W7 临时例外：Go public account 仅在新增结果为 `pending_test`，或更新的 API Key / Base URL 实际变化、显式提交 `supportedModels` 时，才在事务提交后通过 loopback Node internal bridge best-effort 触发现有健康任务；普通字段更新、删除和非 `pending_test` 新增不投递。Node Web 与 `ops-worker` 仍需运行；这不改变最终 Go-only 目标。
 
 目标进程拓扑先按独立角色设计，不把所有 worker 长期塞进主 server goroutine：
 
