@@ -100,6 +100,8 @@ try {
   assert.match(streamText, /event: message\.started/)
   assert.match(streamText, /event: message\.delta/)
   if (!realCredential) {
+    assert.match(streamText, /event: tool\.started/)
+    assert.match(streamText, /event: tool\.completed/)
     assert.match(streamText, /"delta":"Mock "/)
     assert.match(streamText, /Markdown/)
   }
@@ -168,23 +170,30 @@ async function seedBulkChatMessages(apiKeyId: string, count: number): Promise<vo
 
 function createMockUpstream(): http.Server {
   return http.createServer((req, res) => {
-    if (req.method !== 'POST' || req.url !== '/v1/chat/completions') { res.writeHead(404).end(); return }
+    if (req.method !== 'POST' || req.url !== '/v1/responses') { res.writeHead(404).end(); return }
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => {
       upstreamAuthorizations.push(String(req.headers.authorization ?? ''))
-      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { stream?: boolean }
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { stream?: boolean; tools?: Array<{ type?: string }> }
       assert.equal(body.stream, true)
+      assert(body.tools?.some((tool) => tool.type === 'web_search'))
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' })
-      res.write(`data: ${JSON.stringify({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', content: 'Mock ' }, finish_reason: null }] })}\n\n`)
+      writeMockResponseEvent(res, 'response.output_item.added', { type: 'response.output_item.added', item: { id: 'search_1', type: 'web_search_call', status: 'in_progress' } })
+      writeMockResponseEvent(res, 'response.output_item.done', { type: 'response.output_item.done', item: { id: 'search_1', type: 'web_search_call', status: 'completed' } })
+      writeMockResponseEvent(res, 'response.output_text.delta', { type: 'response.output_text.delta', delta: 'Mock ' })
       setTimeout(() => {
         const richMarkdown = '**Markdown**\n\n|项目|结果|\n|---|---|\n|流式|通过|\n\n公式：$E=mc^2$\n\n```mermaid\ngraph LR\nA-->B\n```'
-        res.write(`data: ${JSON.stringify({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: richMarkdown }, finish_reason: null }] })}\n\n`)
-        res.write('data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":4,"total_tokens":12}}\n\n')
-        res.end('data: [DONE]\n\n')
+        writeMockResponseEvent(res, 'response.output_text.delta', { type: 'response.output_text.delta', delta: richMarkdown })
+        writeMockResponseEvent(res, 'response.completed', { type: 'response.completed', response: { id: 'resp_mock', status: 'completed', usage: { input_tokens: 8, output_tokens: 4, total_tokens: 12 } } })
+        res.end()
       }, 20)
     })
   })
+}
+
+function writeMockResponseEvent(res: http.ServerResponse, event: string, data: unknown): void {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
 }
 
 function startBackend(port: number): ChildProcess {

@@ -13,6 +13,13 @@ const messages: ChatMessage[] = [{
 }]
 applyChatStreamEvent(messages, event!)
 assert.equal(messages[0].contentText, '你好')
+const reasoning = parseChatSseBlock('event: reasoning.delta\ndata: {"messageId":"msg_2","delta":"先分析"}')
+const tool = parseChatSseBlock('event: tool.started\ndata: {"messageId":"msg_2","item":{"id":"tool_1","type":"web_search_call"}}')
+assert.ok(reasoning && tool)
+applyChatStreamEvent(messages, reasoning)
+applyChatStreamEvent(messages, tool)
+assert.equal(messages[0].reasoningText, '先分析')
+assert.equal(messages[0].toolEvents?.[0]?.type, 'web_search_call')
 
 applyChatStreamEvent(messages, { type: 'message.completed', data: { messageId: 'msg_2', finishReason: 'stop' } })
 assert.equal(messages[0].status, 'completed')

@@ -25,6 +25,7 @@
             <a-tag v-if="messages[item.index].status !== 'completed'" :color="statusColor(messages[item.index].status)">{{ statusLabel(messages[item.index].status) }}</a-tag>
           </div>
           <ChatMarkdown :content="messages[item.index].contentText || (messages[item.index].status === 'streaming' ? '正在思考…' : '')" />
+          <ChatToolEvent v-if="messages[item.index].role === 'assistant' && (messages[item.index].toolEvents?.length || messages[item.index].reasoningText)" :message="messages[item.index]" />
         </div>
       </article>
     </div>
@@ -37,6 +38,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { computed, nextTick, ref, watch } from 'vue'
 import type { ChatMessage, ChatMessageStatus } from '@/types/domain/chat'
 import ChatMarkdown from './ChatMarkdown.vue'
+import ChatToolEvent from './ChatToolEvent.vue'
 
 const props = defineProps<{ messages: ChatMessage[]; loading: boolean }>()
 const emit = defineEmits<{ (event: 'near-top'): void }>()

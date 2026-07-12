@@ -19,9 +19,13 @@ import {
 } from '../../storage/chat.repository.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
 import { findApiKeySecretAsync, listApiKeysAsync } from '../../storage/repositories.js'
+import { validateGatewayApiKeyAsync } from '../../storage/gateway-api-key.repository.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
+import { listCachedOpenAIAccountsForGroupAsync } from '../gateway/runtime/runtime-cache.service.js'
 import { collectOpenAIChatSse } from './chat-gateway-sse.js'
 import { trimChatContextToBudget } from './chat-context-budget.js'
+import { collectChatResponsesSse } from './chat-responses-sse.js'
+import { buildChatTransportRequest, resolveChatSupportedProtocols, selectChatTransport } from './chat-transport.js'
 
 export const chatRouter = Router()
 
@@ -114,6 +118,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     ownerId = auth.systemAccountId
     const conversation = await requireOwnedConversation(req.params.conversationId, ownerId)
     const apiKey = await requireOwnedApiKey(conversation.apiKeyId, ownerId)
+    const apiKeySecret = String(apiKey.key)
     const client = await getChatDatabaseClient()
     accepted = await acceptChatTurn(client, {
       conversationId: conversation.id,
@@ -147,25 +152,49 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(': heartbeat\n\n') }, 15_000)
     heartbeat.unref()
     try {
-      const upstream = await fetch(gatewayUrl('/v1/chat/completions'), {
+      const gatewayKey = await validateGatewayApiKeyAsync(apiKeySecret)
+      const supportedProtocols = await resolveChatSupportedProtocols({
+        groupIds: gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? [],
+        model: body.model,
+        loadAccounts: (groupId, model, endpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, ownerId, {
+          requestedModel: model,
+          requestedEndpointFamily: endpointFamily
+        })
+      })
+      const protocol = selectChatTransport({ supportedProtocols, toolsEnabled: true })
+      const transport = buildChatTransportRequest({ protocol, model: body.model, history: context, currentContent: body.content, toolsEnabled: true })
+      const upstream = await fetch(gatewayUrl(transport.path), {
         method: 'POST',
-        headers: { authorization: `Bearer ${apiKey.key}`, 'content-type': 'application/json', accept: 'text/event-stream' },
-        body: JSON.stringify({ model: body.model, messages: [...context, { role: 'user', content: body.content }], stream: true }),
+        headers: { authorization: `Bearer ${apiKeySecret}`, 'content-type': 'application/json', accept: 'text/event-stream' },
+        body: JSON.stringify(transport.body),
         signal: controller.signal
       })
       if (!upstream.ok || !upstream.body) {
         const payload = await boundedJson(upstream)
         throw new Error(upstreamMessage(payload, `模型请求失败（HTTP ${upstream.status}）`))
       }
-      const result = await collectOpenAIChatSse(readableStreamChunks(upstream.body), maxMessageBytes, (delta) => {
-        partialContent += delta
-        if (!res.writableEnded) writeSse(res, 'message.delta', { messageId: accepted?.assistantMessage.id, delta })
-      })
+      const result = protocol === 'responses'
+        ? await collectChatResponsesSse(readableStreamChunks(upstream.body), (event) => {
+            if (event.type === 'text_delta') {
+              partialContent += event.delta
+              if (!res.writableEnded) writeSse(res, 'message.delta', { messageId: accepted?.assistantMessage.id, delta: event.delta })
+            } else if (event.type === 'reasoning_delta') {
+              if (!res.writableEnded) writeSse(res, 'reasoning.delta', { messageId: accepted?.assistantMessage.id, delta: event.delta })
+            } else if (event.type === 'tool_started' || event.type === 'tool_updated' || event.type === 'tool_completed') {
+              if (!res.writableEnded) writeSse(res, event.type.replace('_', '.'), { messageId: accepted?.assistantMessage.id, item: event.item })
+            } else if (event.type === 'failed') {
+              throw new Error(upstreamMessage(event.error, '模型工具调用失败'))
+            }
+          }, maxMessageBytes)
+        : await collectOpenAIChatSse(readableStreamChunks(upstream.body), maxMessageBytes, (delta) => {
+            partialContent += delta
+            if (!res.writableEnded) writeSse(res, 'message.delta', { messageId: accepted?.assistantMessage.id, delta })
+          })
       await completeChatTurn(client, {
         conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId,
-        assistantContent: result.content, finishReason: result.finishReason ?? 'stop', traceId: getTraceId() ?? '', now: new Date().toISOString()
+        assistantContent: result.content, finishReason: 'finishReason' in result ? result.finishReason ?? 'stop' : 'stop', traceId: getTraceId() ?? '', now: new Date().toISOString()
       })
-      if (!res.writableEnded) writeSse(res, 'message.completed', { messageId: accepted.assistantMessage.id, finishReason: result.finishReason ?? 'stop', traceId: getTraceId() })
+      if (!res.writableEnded) writeSse(res, 'message.completed', { messageId: accepted.assistantMessage.id, finishReason: 'finishReason' in result ? result.finishReason ?? 'stop' : 'stop', traceId: getTraceId() })
     } catch (error) {
       const canceled = controller.signal.aborted
       if (canceled) {

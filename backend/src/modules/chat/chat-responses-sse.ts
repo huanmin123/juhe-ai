@@ -1,5 +1,6 @@
 export type ChatResponsesEvent =
   | { type: 'text_delta'; delta: string }
+  | { type: 'reasoning_delta'; delta: string }
   | { type: 'tool_started'; item: Record<string, unknown> }
   | { type: 'tool_updated'; item: Record<string, unknown> }
   | { type: 'tool_completed'; item: Record<string, unknown> }
@@ -20,7 +21,7 @@ export async function collectChatResponsesSse(
     const split = consumeBlocks(buffer, (block) => {
       const parsed = parseBlock(block)
       if (!parsed) return
-      if (parsed.type === 'text_delta') {
+  if (parsed.type === 'text_delta') {
         content += parsed.delta
         if (new TextEncoder().encode(content).byteLength > maxBytes) throw new Error('模型回答超过 192 KiB 上限')
       }
@@ -63,6 +64,7 @@ function parseBlock(block: string): ChatResponsesEvent | undefined {
   try { payload = JSON.parse(data) as Record<string, unknown> } catch { return undefined }
   const type = String(payload.type ?? eventName ?? '')
   if (type === 'response.output_text.delta') return { type: 'text_delta', delta: String(payload.delta ?? '') }
+  if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') return { type: 'reasoning_delta', delta: String(payload.delta ?? '') }
   if (type === 'response.output_item.added') {
     const item = objectValue(payload.item)
     return ['function_call', 'computer_call', 'web_search_call', 'file_search_call'].includes(String(item.type)) ? { type: 'tool_started', item } : undefined
