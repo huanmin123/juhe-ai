@@ -7,7 +7,7 @@ import {
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
-import { backgroundProbeDbServiceTimeoutMs } from './account-probe-limits.js'
+import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
 interface AccountApiKeyCooldownRetestQueueItem extends AccountApiKeyRuntimeProbeCandidate {
   maxRecoveryHours: number
@@ -19,7 +19,7 @@ const accountApiKeyCooldownRetestQueue = createRetryQueue<AccountApiKeyCooldownR
   name: 'account-api-key-cooldown-retest',
   policy: accountApiKeyCooldownRetestRetryPolicy,
   concurrency: 1,
-  run: runAccountApiKeyCooldownRetestQueueItem,
+  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runAccountApiKeyCooldownRetestQueueItem(item, context)),
   onExhausted: (event) => {
     logger.warn({
       event: 'background_account_api_key_cooldown_retest_retry_exhausted',

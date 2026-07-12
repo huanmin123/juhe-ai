@@ -36,7 +36,8 @@ const {
   backgroundFullDiagnosticConcurrency,
   backgroundFullDiagnosticQueueConcurrency,
   backgroundProbeDbServiceTimeoutMs,
-  cooldownAccountRetestStartupDelayMs
+  cooldownAccountRetestStartupDelayMs,
+  runWithBackgroundFullDiagnosticSlot
 } = await import('../../modules/background/account-probe-limits.js')
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -468,6 +469,15 @@ try {
   assert.equal(backgroundFullDiagnosticConcurrency, 3, '完整后台诊断并发必须保持小上限，不能随 batch 放大到 10')
   assert.equal(backgroundFullDiagnosticQueueConcurrency(10), 3, '批量为 10 时完整后台诊断实际队列并发仍必须限制为 3')
   assert.equal(backgroundFullDiagnosticQueueConcurrency(1), 1, '批量为 1 时完整后台诊断不应人为放大并发')
+  let sharedDiagnosticRunningCount = 0
+  let sharedDiagnosticMaxRunningCount = 0
+  await Promise.all(Array.from({ length: 8 }, () => runWithBackgroundFullDiagnosticSlot(async () => {
+    sharedDiagnosticRunningCount += 1
+    sharedDiagnosticMaxRunningCount = Math.max(sharedDiagnosticMaxRunningCount, sharedDiagnosticRunningCount)
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20))
+    sharedDiagnosticRunningCount -= 1
+  })))
+  assert.equal(sharedDiagnosticMaxRunningCount, 3, '同一 worker 内不同完整诊断队列必须共享最多 3 路门禁')
   assert.equal(backgroundProbeDbServiceTimeoutMs, 30_000, '后台探针 DB service 超时应覆盖启动期统计刷新窗口')
   assert.equal(cooldownAccountRetestStartupDelayMs, 60_000, '冷却复测不得在 worker 启动 2 秒时与统计初始化争抢 DB service')
 

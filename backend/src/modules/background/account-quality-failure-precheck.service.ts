@@ -6,7 +6,7 @@ import type { AccountQualityFailurePrecheckCandidate } from '../../storage/repos
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
-import { backgroundProbeDbServiceTimeoutMs } from './account-probe-limits.js'
+import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
 interface AccountQualityFailurePrecheckQueueItem extends AccountQualityFailurePrecheckCandidate {
   enqueuedAt: string
@@ -20,7 +20,7 @@ const accountQualityFailurePrecheckQueue = createRetryQueue<AccountQualityFailur
   name: 'account-quality-failure-precheck',
   policy: accountQualityFailurePrecheckRetryPolicy,
   concurrency: 1,
-  run: runAccountQualityFailurePrecheckQueueItem,
+  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runAccountQualityFailurePrecheckQueueItem(item, context)),
   onExhausted: (event) => {
     logger.warn({
       event: 'background_account_quality_failure_precheck_exhausted',

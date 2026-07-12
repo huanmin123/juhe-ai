@@ -12,7 +12,7 @@ import {
   type NormalRouteLatencyProbeCandidate
 } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
-import { backgroundProbeDbServiceTimeoutMs } from './account-probe-limits.js'
+import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
 interface NormalRouteSpeedFirstRecoveryProbeQueueItem extends NormalRouteLatencyProbeCandidate {}
 
@@ -22,7 +22,7 @@ const normalRouteSpeedFirstRecoveryProbeQueue = createRetryQueue<NormalRouteSpee
   name: 'normal-route-speed-first-recovery-probe',
   policy: normalRouteSpeedFirstRecoveryProbeRetryPolicy,
   concurrency: 1,
-  run: runNormalRouteSpeedFirstRecoveryProbeQueueItem,
+  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runNormalRouteSpeedFirstRecoveryProbeQueueItem(item, context)),
   onExhausted: (event) => {
     logger.warn({
       event: 'background_normal_route_speed_first_recovery_probe_exhausted',

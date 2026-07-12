@@ -11,7 +11,7 @@ import {
   type AccountHealthCheckTriggerReason
 } from '../accounts/account-health-check-trigger.js'
 import { enqueueAccountBalanceAutoDetection } from './account-balance-auto-detect.service.js'
-import { backgroundProbeDbServiceTimeoutMs } from './account-probe-limits.js'
+import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
 interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
   accountId: string
@@ -30,7 +30,7 @@ const accountHealthCheckQueue = createRetryQueue<AccountHealthCheckQueueItem>({
     priorityAtMost: accountHealthCheckTriggerPriority('configuration'),
     slots: 3
   },
-  run: runAccountHealthCheckQueueItem,
+  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runAccountHealthCheckQueueItem(item, context)),
   onExhausted: (event) => {
     logger.warn(errorLogFields(event.error, {
       event: 'background_account_health_check_exhausted',

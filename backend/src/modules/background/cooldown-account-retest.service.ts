@@ -5,7 +5,7 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
-import { backgroundProbeDbServiceTimeoutMs } from './account-probe-limits.js'
+import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
 interface CooldownAccountRetestQueueItem {
   accountId: string
@@ -21,7 +21,7 @@ const cooldownAccountRetestQueue = createRetryQueue<CooldownAccountRetestQueueIt
   name: 'cooldown-account-retest',
   policy: cooldownAccountRetestRetryPolicy,
   concurrency: 1,
-  run: runCooldownAccountRetestQueueItem,
+  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runCooldownAccountRetestQueueItem(item, context)),
   onExhausted: (event) => {
     logger.warn({
       event: 'background_cooldown_account_retest_retry_exhausted',
