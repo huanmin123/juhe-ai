@@ -69,7 +69,7 @@ interface DbServiceState {
 }
 
 const requestTimeoutMs = 5000
-const invalidateTimeoutMs = 500
+const invalidateTimeoutMs = 3_000
 const unavailableCircuitOpenMs = 3000
 const maxPendingRequests = 2000
 const maxPendingDatasetWriteRequests = 1000
