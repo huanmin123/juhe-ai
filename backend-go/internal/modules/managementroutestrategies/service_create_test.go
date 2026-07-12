@@ -241,6 +241,400 @@ func TestServiceCreateUsesECMAScriptTrimSemantics(t *testing.T) {
 	}
 }
 
+func TestServiceCreateDistinguishesOmittedAndExplicitZeroValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*CreateInput)
+		wantText string
+	}{
+		{
+			name: "explicit empty mode",
+			mutate: func(input *CreateInput) {
+				input.ModeSet = true
+			},
+			wantText: "路由策略模式无效",
+		},
+		{
+			name: "explicit empty status",
+			mutate: func(input *CreateInput) {
+				input.StatusSet = true
+			},
+			wantText: "策略路由状态无效",
+		},
+		{
+			name: "explicit zero priority",
+			mutate: func(input *CreateInput) {
+				input.GroupBindings[0].PrioritySet = true
+			},
+			wantText: "策略路由分组优先级必须是大于 0 的整数",
+		},
+		{
+			name: "explicit zero weight",
+			mutate: func(input *CreateInput) {
+				input.GroupBindings[0].WeightSet = true
+			},
+			wantText: "策略路由分组权重必须是 1-100",
+		},
+		{
+			name: "explicit empty binding status",
+			mutate: func(input *CreateInput) {
+				input.GroupBindings[0].StatusSet = true
+			},
+			wantText: "策略路由分组绑定状态无效",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newManagementRouteStrategyCreateStore()
+			store.target = port.PublicGroupTarget{ID: "sys_owner", Status: "active"}
+			store.groups["group_1"] = port.PublicRouteStrategyBindableGroup{
+				ID: "group_1", SystemAccountID: "sys_owner", Enabled: true,
+			}
+			input := CreateInput{
+				SystemAccountID: "sys_owner",
+				Name:            "测试策略",
+				GroupBindings:   []CreateGroupBindingInput{{GroupID: "group_1"}},
+			}
+			tt.mutate(&input)
+			service, tx, invalidator, _ := newManagementRouteStrategyCreateService(store)
+
+			_, err := service.Create(context.Background(), input)
+			message, ok := ValidationMessage(err)
+			if !ok {
+				t.Fatalf("Create() error = %T %v, want typed validation error", err, err)
+			}
+			if !strings.Contains(message, tt.wantText) {
+				t.Fatalf("validation message = %q, want contains %q", message, tt.wantText)
+			}
+			if tx.calls != 0 || invalidator.calls != 0 {
+				t.Fatalf("transaction calls = %d, invalidation calls = %d, want 0", tx.calls, invalidator.calls)
+			}
+		})
+	}
+}
+
+func TestServiceCreateRejectsNonZodConfigTypes(t *testing.T) {
+	tests := []struct {
+		name   string
+		mode   string
+		config func() any
+		normal bool
+	}{
+		{name: "normal top level boolean", normal: true, config: func() any { return true }},
+		{name: "normal top level string", normal: true, config: func() any { return "" }},
+		{name: "normal top level array", normal: true, config: func() any { return []any{} }},
+		{
+			name:   "normal scheduling preference boolean",
+			normal: true,
+			config: func() any { return map[string]any{"schedulingPreference": true} },
+		},
+		{
+			name:   "normal speed config null",
+			normal: true,
+			config: func() any {
+				return map[string]any{
+					"schedulingPreference": "speed_first",
+					"speedFirstConfig":     nil,
+				}
+			},
+		},
+		{
+			name:   "normal speed config array",
+			normal: true,
+			config: func() any {
+				return map[string]any{
+					"schedulingPreference": "speed_first",
+					"speedFirstConfig":     []any{},
+				}
+			},
+		},
+		{
+			name:   "normal speed config boolean",
+			normal: true,
+			config: func() any {
+				return map[string]any{
+					"schedulingPreference": "speed_first",
+					"speedFirstConfig":     true,
+				}
+			},
+		},
+		{
+			name:   "normal speed config string",
+			normal: true,
+			config: func() any {
+				return map[string]any{
+					"schedulingPreference": "speed_first",
+					"speedFirstConfig":     "config",
+				}
+			},
+		},
+		{
+			name:   "normal numeric string",
+			normal: true,
+			config: func() any {
+				return map[string]any{
+					"schedulingPreference": "speed_first",
+					"speedFirstConfig": map[string]any{
+						"slowTriggerCount": "4",
+					},
+				}
+			},
+		},
+		{
+			name:   "normal numeric object",
+			normal: true,
+			config: func() any {
+				return map[string]any{
+					"schedulingPreference": "speed_first",
+					"speedFirstConfig": map[string]any{
+						"slowTriggerCount": map[string]any{},
+					},
+				}
+			},
+		},
+		{
+			name:   "normal numeric boolean",
+			normal: true,
+			config: func() any {
+				return map[string]any{
+					"schedulingPreference": "speed_first",
+					"speedFirstConfig": map[string]any{
+						"maxFirstByteRetriesPerRequest": true,
+					},
+				}
+			},
+		},
+		{
+			name:   "normal numeric array",
+			normal: true,
+			config: func() any {
+				return map[string]any{
+					"schedulingPreference": "speed_first",
+					"speedFirstConfig": map[string]any{
+						"slowTriggerCount": []any{4},
+					},
+				}
+			},
+		},
+		{name: "hybrid top level boolean", mode: "hybrid_smart", config: func() any { return true }},
+		{name: "hybrid top level string", mode: "hybrid_smart", config: func() any { return "config" }},
+		{name: "hybrid top level array", mode: "hybrid_smart", config: func() any { return []any{} }},
+		{
+			name: "hybrid optional string boolean",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				value["scoringGroupId"] = true
+				return value
+			},
+		},
+		{
+			name: "hybrid optional boolean string",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				value["scoringCacheEnabled"] = "true"
+				return value
+			},
+		},
+		{
+			name: "hybrid numeric string",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				value["scoringTimeoutMs"] = "15000"
+				return value
+			},
+		},
+		{
+			name: "hybrid numeric boolean",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				value["switchMinLevelDelta"] = false
+				return value
+			},
+		},
+		{
+			name: "hybrid level routes object",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				value["levelRoutes"] = map[string]any{}
+				return value
+			},
+		},
+		{
+			name: "hybrid level route boolean",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				value["levelRoutes"] = []any{true}
+				return value
+			},
+		},
+		{
+			name: "hybrid level route numeric string",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				routes := value["levelRoutes"].([]any)
+				routes[0].(map[string]any)["minLevel"] = "1"
+				return value
+			},
+		},
+		{
+			name: "hybrid level route enabled string",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				routes := value["levelRoutes"].([]any)
+				routes[0].(map[string]any)["enabled"] = "true"
+				return value
+			},
+		},
+		{
+			name: "hybrid quality inspection null",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				value["qualityInspection"] = nil
+				return value
+			},
+		},
+		{
+			name: "hybrid quality inspection array",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				value["qualityInspection"] = []any{}
+				return value
+			},
+		},
+		{
+			name: "hybrid quality inspection boolean",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				value["qualityInspection"] = false
+				return value
+			},
+		},
+		{
+			name: "hybrid quality inspection string",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				value["qualityInspection"] = "config"
+				return value
+			},
+		},
+		{
+			name: "hybrid quality optional string array",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				quality := value["qualityInspection"].(map[string]any)
+				quality["scoringModel"] = []any{"quality-model"}
+				return value
+			},
+		},
+		{
+			name: "hybrid quality numeric boolean",
+			mode: "hybrid_smart",
+			config: func() any {
+				value := validManagementHybridCreateConfig()
+				quality := value["qualityInspection"].(map[string]any)
+				quality["maxRetries"] = false
+				return value
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newManagementRouteStrategyCreateStore()
+			store.target = port.PublicGroupTarget{ID: "sys_owner", Status: "active"}
+			store.groups["group_1"] = port.PublicRouteStrategyBindableGroup{
+				ID: "group_1", SystemAccountID: "sys_owner", Enabled: true,
+			}
+			input := CreateInput{
+				SystemAccountID: "sys_owner",
+				Name:            "测试策略",
+				Mode:            tt.mode,
+				GroupBindings:   []CreateGroupBindingInput{{GroupID: "group_1"}},
+			}
+			if tt.normal {
+				input.NormalRoutingConfig = NewConfigInput(tt.config(), true)
+			} else {
+				input.HybridRoutingConfig = NewConfigInput(tt.config(), true)
+			}
+			service, tx, invalidator, _ := newManagementRouteStrategyCreateService(store)
+
+			_, err := service.Create(context.Background(), input)
+			if _, ok := ValidationMessage(err); !ok {
+				t.Fatalf("Create() error = %T %v, want typed validation error", err, err)
+			}
+			if tx.calls != 0 || invalidator.calls != 0 {
+				t.Fatalf("transaction calls = %d, invalidation calls = %d, want 0", tx.calls, invalidator.calls)
+			}
+		})
+	}
+}
+
+func TestServiceCreateAcceptsJSONAndGoNumericConfigTypes(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "json number", value: json.Number("2")},
+		{name: "int", value: int(2)},
+		{name: "int8", value: int8(2)},
+		{name: "int16", value: int16(2)},
+		{name: "int32", value: int32(2)},
+		{name: "int64", value: int64(2)},
+		{name: "uint", value: uint(2)},
+		{name: "uint8", value: uint8(2)},
+		{name: "uint16", value: uint16(2)},
+		{name: "uint32", value: uint32(2)},
+		{name: "uint64", value: uint64(2)},
+		{name: "float32", value: float32(2)},
+		{name: "float64", value: float64(2)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newManagementRouteStrategyCreateStore()
+			store.target = port.PublicGroupTarget{ID: "sys_owner", Status: "active"}
+			store.groups["group_1"] = port.PublicRouteStrategyBindableGroup{
+				ID: "group_1", SystemAccountID: "sys_owner", Enabled: true,
+			}
+			service, _, _, _ := newManagementRouteStrategyCreateService(store)
+
+			result, err := service.Create(context.Background(), CreateInput{
+				SystemAccountID: "sys_owner",
+				Name:            "数字类型",
+				GroupBindings:   []CreateGroupBindingInput{{GroupID: "group_1"}},
+				NormalRoutingConfig: NewConfigInput(map[string]any{
+					"schedulingPreference": "speed_first",
+					"speedFirstConfig": map[string]any{
+						"maxFirstByteRetriesPerRequest": tt.value,
+					},
+				}, true),
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if result.NormalRoutingConfig == nil ||
+				result.NormalRoutingConfig.SpeedFirstConfig == nil ||
+				result.NormalRoutingConfig.SpeedFirstConfig.MaxFirstByteRetriesPerRequest != 2 {
+				t.Fatalf("normal config = %+v", result.NormalRoutingConfig)
+			}
+		})
+	}
+}
+
 func TestServiceCreateStoresSpeedFirstConfigAndOmitsOwnerForSelf(t *testing.T) {
 	store := newManagementRouteStrategyCreateStore()
 	store.target = port.PublicGroupTarget{ID: "sys_self", DisplayName: "本人", Status: "active"}

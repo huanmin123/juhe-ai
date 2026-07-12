@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,10 +82,13 @@ func (i ConfigInput) Value() any {
 }
 
 type CreateGroupBindingInput struct {
-	GroupID  string
-	Priority int
-	Weight   int
-	Status   string
+	GroupID     string
+	Priority    int
+	PrioritySet bool
+	Weight      int
+	WeightSet   bool
+	Status      string
+	StatusSet   bool
 }
 
 type CreateInput struct {
@@ -92,7 +97,9 @@ type CreateInput struct {
 	Name                       string
 	Description                *string
 	Mode                       string
+	ModeSet                    bool
 	Status                     string
+	StatusSet                  bool
 	GroupBindings              []CreateGroupBindingInput
 	NormalRoutingConfig        ConfigInput
 	HybridRoutingConfig        ConfigInput
@@ -203,11 +210,11 @@ func (s *Service) normalizeCreateInput(input CreateInput) (normalizedCreateInput
 	if name == "" {
 		return normalizedCreateInput{}, validationError("策略路由名称不能为空")
 	}
-	mode, err := normalizeCreateMode(input.Mode)
+	mode, err := normalizeCreateMode(input.Mode, input.ModeSet)
 	if err != nil {
 		return normalizedCreateInput{}, err
 	}
-	status, err := normalizeCreateStatus(input.Status)
+	status, err := normalizeCreateStatus(input.Status, input.StatusSet)
 	if err != nil {
 		return normalizedCreateInput{}, err
 	}
@@ -237,10 +244,11 @@ func (s *Service) normalizeCreateInput(input CreateInput) (normalizedCreateInput
 	}, nil
 }
 
-func normalizeCreateMode(value string) (string, error) {
-	switch value {
-	case "":
+func normalizeCreateMode(value string, set bool) (string, error) {
+	if value == "" && !set {
 		return "normal", nil
+	}
+	switch value {
 	case "normal", "hybrid_smart", "weighted", "failover", "round_robin":
 		return value, nil
 	default:
@@ -248,10 +256,11 @@ func normalizeCreateMode(value string) (string, error) {
 	}
 }
 
-func normalizeCreateStatus(value string) (string, error) {
-	switch value {
-	case "":
+func normalizeCreateStatus(value string, set bool) (string, error) {
+	if value == "" && !set {
 		return "active", nil
+	}
+	switch value {
 	case "active", "disabled":
 		return value, nil
 	default:
@@ -296,21 +305,21 @@ func normalizeCreateBindingBasics(
 		groupIDs[groupID] = struct{}{}
 
 		priority := input.Priority
-		if priority == 0 {
+		if priority == 0 && !input.PrioritySet {
 			priority = index + 1
 		}
 		if priority <= 0 {
 			return nil, validationError("策略路由分组优先级必须是大于 0 的整数")
 		}
 		weight := input.Weight
-		if weight == 0 {
+		if weight == 0 && !input.WeightSet {
 			weight = 1
 		}
 		if weight < 1 || weight > 100 {
 			return nil, validationError("策略路由分组权重必须是 1-100")
 		}
 		status := input.Status
-		if status == "" {
+		if status == "" && !input.StatusSet {
 			status = "active"
 		}
 		if status != "active" && status != "disabled" {
@@ -440,7 +449,8 @@ func normalizeCreateConfig(
 		if normalInput.Set() {
 			raw = normalInput.Value()
 		}
-		if err := validateCreateNormalConfigKeys(raw); err != nil {
+		raw, err := normalizeCreateNormalConfigTypes(raw)
+		if err != nil {
 			return routeStrategyRuntimeConfig{}, nil, err
 		}
 		normal, err := normalizeManagementNormalRoutingConfig(raw)
@@ -465,7 +475,8 @@ func normalizeCreateConfig(
 		if hybridInput.Set() {
 			raw = hybridInput.Value()
 		}
-		if err := validateCreateHybridConfigKeys(raw); err != nil {
+		raw, err := normalizeCreateHybridConfigTypes(raw)
+		if err != nil {
 			return routeStrategyRuntimeConfig{}, nil, err
 		}
 		hybrid, err := normalizeManagementHybridRoutingConfig(raw)
@@ -492,26 +503,30 @@ func normalizeCreateConfig(
 	}
 }
 
-func validateCreateNormalConfigKeys(value any) error {
-	if routeStrategyConfigValueMissing(value) {
-		return nil
+func normalizeCreateNormalConfigTypes(value any) (any, error) {
+	if value == nil {
+		return nil, nil
 	}
 	record, ok := value.(map[string]any)
-	if !ok {
-		return nil
+	if !ok || record == nil {
+		return nil, validationError("普通路由调度配置无效")
 	}
 	if err := rejectCreateConfigKeys(record, "schedulingPreference", "speedFirstConfig"); err != nil {
-		return err
+		return nil, err
+	}
+	output := cloneCreateConfigRecord(record)
+	if err := validateCreateConfigStringFields(record, "schedulingPreference"); err != nil {
+		return nil, err
 	}
 	speed, exists := record["speedFirstConfig"]
-	if !exists || routeStrategyConfigValueMissing(speed) {
-		return nil
+	if !exists {
+		return output, nil
 	}
 	speedRecord, ok := speed.(map[string]any)
-	if !ok {
-		return nil
+	if !ok || speedRecord == nil {
+		return nil, validationError("速度优先配置无效")
 	}
-	return rejectCreateConfigKeys(
+	if err := rejectCreateConfigKeys(
 		speedRecord,
 		"firstByteThresholdMs",
 		"slowTriggerCount",
@@ -520,13 +535,34 @@ func validateCreateNormalConfigKeys(value any) error {
 		"probeIntervalSeconds",
 		"degradedTtlSeconds",
 		"maxFirstByteRetriesPerRequest",
-	)
+	); err != nil {
+		return nil, err
+	}
+	normalizedSpeed := cloneCreateConfigRecord(speedRecord)
+	if err := normalizeCreateConfigNumberFields(
+		normalizedSpeed,
+		speedRecord,
+		"firstByteThresholdMs",
+		"slowTriggerCount",
+		"slowWindowSeconds",
+		"recoverySuccessCount",
+		"probeIntervalSeconds",
+		"degradedTtlSeconds",
+		"maxFirstByteRetriesPerRequest",
+	); err != nil {
+		return nil, err
+	}
+	output["speedFirstConfig"] = normalizedSpeed
+	return output, nil
 }
 
-func validateCreateHybridConfigKeys(value any) error {
+func normalizeCreateHybridConfigTypes(value any) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
 	record, ok := value.(map[string]any)
 	if !ok || record == nil {
-		return nil
+		return nil, validationError("混合路由配置不能为空")
 	}
 	if err := rejectCreateConfigKeys(
 		record,
@@ -545,25 +581,84 @@ func validateCreateHybridConfigKeys(value any) error {
 		"levelRoutes",
 		"qualityInspection",
 	); err != nil {
-		return err
+		return nil, err
 	}
-	if routes, ok := record["levelRoutes"].([]any); ok {
-		for _, route := range routes {
-			if routeRecord, ok := route.(map[string]any); ok {
-				if err := rejectCreateConfigKeys(
-					routeRecord,
-					"minLevel",
-					"maxLevel",
-					"targetModel",
-					"enabled",
-				); err != nil {
-					return err
-				}
-			}
+	output := cloneCreateConfigRecord(record)
+	if err := validateCreateConfigStringFields(
+		record,
+		"scoringGroupId",
+		"scoringModel",
+		"scoringContextMode",
+		"qualityPreference",
+	); err != nil {
+		return nil, err
+	}
+	if err := validateCreateConfigBooleanFields(
+		record,
+		"scoringCacheEnabled",
+		"cacheAffinityEnabled",
+	); err != nil {
+		return nil, err
+	}
+	if err := normalizeCreateConfigNumberFields(
+		output,
+		record,
+		"scoringTimeoutMs",
+		"scoringFallbackMaxLevel",
+		"scoringCacheTtlSeconds",
+		"affinityTtlSeconds",
+		"switchMinLevelDelta",
+		"downgradeConsecutiveLowCount",
+	); err != nil {
+		return nil, err
+	}
+
+	if routesValue, exists := record["levelRoutes"]; exists {
+		routes, ok := routesValue.([]any)
+		if !ok {
+			return nil, validationError("混合路由等级范围不能为空")
 		}
+		normalizedRoutes := make([]any, 0, len(routes))
+		for _, route := range routes {
+			routeRecord, ok := route.(map[string]any)
+			if !ok || routeRecord == nil {
+				return nil, validationError("混合路由等级范围无效")
+			}
+			if err := rejectCreateConfigKeys(
+				routeRecord,
+				"minLevel",
+				"maxLevel",
+				"targetModel",
+				"enabled",
+			); err != nil {
+				return nil, err
+			}
+			normalizedRoute := cloneCreateConfigRecord(routeRecord)
+			if err := normalizeCreateConfigNumberFields(
+				normalizedRoute,
+				routeRecord,
+				"minLevel",
+				"maxLevel",
+			); err != nil {
+				return nil, err
+			}
+			if err := validateCreateConfigStringFields(routeRecord, "targetModel"); err != nil {
+				return nil, err
+			}
+			if err := validateCreateConfigBooleanFields(routeRecord, "enabled"); err != nil {
+				return nil, err
+			}
+			normalizedRoutes = append(normalizedRoutes, normalizedRoute)
+		}
+		output["levelRoutes"] = normalizedRoutes
 	}
-	if quality, ok := record["qualityInspection"].(map[string]any); ok {
-		return rejectCreateConfigKeys(
+
+	if qualityValue, exists := record["qualityInspection"]; exists {
+		quality, ok := qualityValue.(map[string]any)
+		if !ok || quality == nil {
+			return nil, validationError("混合路由质量评分配置无效")
+		}
+		if err := rejectCreateConfigKeys(
 			quality,
 			"enabled",
 			"scoringGroupId",
@@ -573,9 +668,107 @@ func validateCreateHybridConfigKeys(value any) error {
 			"maxRetries",
 			"failureAction",
 			"unavailableAction",
-		)
+		); err != nil {
+			return nil, err
+		}
+		normalizedQuality := cloneCreateConfigRecord(quality)
+		if err := validateCreateConfigBooleanFields(quality, "enabled"); err != nil {
+			return nil, err
+		}
+		if err := validateCreateConfigStringFields(
+			quality,
+			"scoringGroupId",
+			"scoringModel",
+			"triggerMode",
+			"failureAction",
+			"unavailableAction",
+		); err != nil {
+			return nil, err
+		}
+		if err := normalizeCreateConfigNumberFields(
+			normalizedQuality,
+			quality,
+			"maxTriggerLevel",
+			"maxRetries",
+		); err != nil {
+			return nil, err
+		}
+		output["qualityInspection"] = normalizedQuality
+	}
+	return output, nil
+}
+
+func cloneCreateConfigRecord(record map[string]any) map[string]any {
+	output := make(map[string]any, len(record))
+	for key, value := range record {
+		output[key] = value
+	}
+	return output
+}
+
+func validateCreateConfigStringFields(record map[string]any, fields ...string) error {
+	for _, field := range fields {
+		value, exists := record[field]
+		if !exists {
+			continue
+		}
+		if _, ok := value.(string); !ok {
+			return validationError("策略路由配置字段类型无效：" + field)
+		}
 	}
 	return nil
+}
+
+func validateCreateConfigBooleanFields(record map[string]any, fields ...string) error {
+	for _, field := range fields {
+		value, exists := record[field]
+		if !exists {
+			continue
+		}
+		if _, ok := value.(bool); !ok {
+			return validationError("策略路由配置字段类型无效：" + field)
+		}
+	}
+	return nil
+}
+
+func normalizeCreateConfigNumberFields(
+	output map[string]any,
+	record map[string]any,
+	fields ...string,
+) error {
+	for _, field := range fields {
+		value, exists := record[field]
+		if !exists {
+			continue
+		}
+		normalized, ok := normalizeCreateConfigNumber(value)
+		if !ok {
+			return validationError("策略路由配置字段类型无效：" + field)
+		}
+		output[field] = normalized
+	}
+	return nil
+}
+
+func normalizeCreateConfigNumber(value any) (any, bool) {
+	if number, ok := value.(json.Number); ok {
+		return number, true
+	}
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() {
+		return nil, false
+	}
+	switch reflected.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return json.Number(strconv.FormatInt(reflected.Int(), 10)), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return json.Number(strconv.FormatUint(reflected.Uint(), 10)), true
+	case reflect.Float32, reflect.Float64:
+		return reflected.Convert(reflect.TypeOf(float64(0))).Float(), true
+	default:
+		return nil, false
+	}
 }
 
 func rejectCreateConfigKeys(record map[string]any, allowed ...string) error {
