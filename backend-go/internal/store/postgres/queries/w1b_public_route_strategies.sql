@@ -151,6 +151,49 @@ ORDER BY route_strategy_groups.route_strategy_id ASC,
   route_strategy_groups.id ASC;
 
 -- name: FindPublicRouteStrategyBindableGroups :many
+WITH locked_groups AS MATERIALIZED (
+  SELECT
+    groups.id,
+    groups.system_account_id,
+    groups.name,
+    groups.provider_code,
+    groups.enabled
+  FROM juhe_business.groups AS groups
+  WHERE groups.id = ANY(sqlc.arg(group_ids)::text[])
+  ORDER BY groups.id ASC
+  FOR UPDATE OF groups
+),
+locked_group_authorizations AS MATERIALIZED (
+  SELECT
+    group_authorization.id,
+    group_authorization.resource_id,
+    group_authorization.resource_owner_system_account_id,
+    group_authorization.grantee_system_account_id,
+    group_authorization.status,
+    group_authorization.expires_at
+  FROM juhe_business.resource_authorizations AS group_authorization
+  JOIN locked_groups AS groups
+    ON group_authorization.resource_id = groups.id
+    AND group_authorization.resource_owner_system_account_id = groups.system_account_id
+  WHERE group_authorization.resource_type = 'group'
+    AND group_authorization.grantee_system_account_id = sqlc.arg(system_account_id)
+  ORDER BY group_authorization.resource_id ASC, group_authorization.id ASC
+  FOR UPDATE OF group_authorization
+),
+locked_group_authorization_settings AS MATERIALIZED (
+  SELECT
+    group_authorization_settings.authorization_id,
+    group_authorization_settings.system_account_id,
+    group_authorization_settings.group_id,
+    group_authorization_settings.enabled
+  FROM juhe_business.group_authorization_settings AS group_authorization_settings
+  JOIN locked_group_authorizations AS group_authorization
+    ON group_authorization_settings.authorization_id = group_authorization.id
+    AND group_authorization_settings.system_account_id = group_authorization.grantee_system_account_id
+    AND group_authorization_settings.group_id = group_authorization.resource_id
+  ORDER BY group_authorization_settings.group_id ASC, group_authorization_settings.authorization_id ASC
+  FOR UPDATE OF group_authorization_settings
+)
 SELECT
   groups.id,
   groups.system_account_id,
@@ -162,31 +205,27 @@ SELECT
       CASE
         WHEN groups.enabled THEN coalesce(group_authorization_settings.enabled, true)
         ELSE false
-      END
+    END
     ELSE false
   END AS enabled
-FROM juhe_business.groups AS groups
-LEFT JOIN juhe_business.resource_authorizations AS group_authorization
-  ON group_authorization.resource_type = 'group'
-  AND group_authorization.resource_id = groups.id
+FROM locked_groups AS groups
+LEFT JOIN locked_group_authorizations AS group_authorization
+  ON group_authorization.resource_id = groups.id
   AND group_authorization.resource_owner_system_account_id = groups.system_account_id
-  AND group_authorization.grantee_system_account_id = sqlc.arg(system_account_id)
   AND group_authorization.status = 'active'
   AND (
     group_authorization.expires_at IS NULL
     OR group_authorization.expires_at > CURRENT_TIMESTAMP
   )
-LEFT JOIN juhe_business.group_authorization_settings AS group_authorization_settings
+LEFT JOIN locked_group_authorization_settings AS group_authorization_settings
   ON group_authorization_settings.authorization_id = group_authorization.id
   AND group_authorization_settings.system_account_id = sqlc.arg(system_account_id)
   AND group_authorization_settings.group_id = groups.id
-WHERE groups.id = ANY(sqlc.arg(group_ids)::text[])
-  AND (
+WHERE (
     groups.system_account_id = sqlc.arg(system_account_id)
     OR group_authorization.id IS NOT NULL
   )
-ORDER BY groups.id ASC
-FOR UPDATE OF groups;
+ORDER BY groups.id ASC;
 
 -- name: InsertPublicRouteStrategy :one
 INSERT INTO juhe_business.route_strategies (

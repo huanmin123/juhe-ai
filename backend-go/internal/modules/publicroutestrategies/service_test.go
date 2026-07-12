@@ -223,6 +223,76 @@ func TestUpdateAllowsAuthorizedCrossOwnerGroupAndHonorsEffectiveEnabled(t *testi
 	}
 }
 
+func TestUpdateWithoutGroupBindingsPreservesCurrentInvalidBinding(t *testing.T) {
+	store := newFakePublicRouteStrategyStore()
+	store.putTarget(publicRouteStrategyTarget("sys_1", "alice", "Alice", "active"))
+	store.putGroup(port.PublicRouteStrategyBindableGroup{ID: "grp_shared", SystemAccountID: "sys_2", Name: "授权分组", ProviderCode: "gpt", Enabled: true})
+	store.putRoute(port.PublicRouteStrategySummary{
+		ID:              "rts_1",
+		SystemAccountID: "sys_1",
+		Name:            "公开策略",
+		Mode:            port.PublicRouteStrategyModeNormal,
+		Status:          port.PublicRouteStrategyStatusActive,
+		GroupBindings: []port.PublicRouteStrategyGroupBindingSummary{{
+			ID: "rsg_1", GroupID: "grp_shared", GroupName: "授权分组", ProviderCode: "gpt", Priority: 1, Weight: 25, Status: port.PublicRouteStrategyStatusActive, GroupEnabled: false,
+		}},
+	})
+	service, _ := newPublicRouteStrategiesTestService(store)
+	nextName := "局部更新策略"
+
+	resp, err := service.Update(context.Background(), UpdateInput{
+		RouteStrategyID: "rts_1",
+		Name:            &nextName,
+	})
+	if err != nil {
+		t.Fatalf("Update() partial update error = %v", err)
+	}
+	if resp.RouteStrategy == nil || resp.RouteStrategy.Name != nextName {
+		t.Fatalf("response = %+v", resp)
+	}
+	if got := store.findBindableGroupsCalls; got != 0 {
+		t.Fatalf("FindPublicRouteStrategyBindableGroups calls = %d, want 0", got)
+	}
+	if got := len(store.updateInputs); got != 1 {
+		t.Fatalf("UpdatePublicRouteStrategy calls = %d, want 1", got)
+	}
+	bindings := store.updateInputs[0].Bindings
+	if len(bindings) != 1 || bindings[0].GroupID != "grp_shared" || bindings[0].Priority != 1 || bindings[0].Weight != 25 || bindings[0].Status != port.PublicRouteStrategyStatusActive {
+		t.Fatalf("preserved bindings = %+v", bindings)
+	}
+}
+
+func TestUpdateWithoutGroupBindingsStillValidatesNextMode(t *testing.T) {
+	store := newFakePublicRouteStrategyStore()
+	store.putTarget(publicRouteStrategyTarget("sys_1", "alice", "Alice", "active"))
+	store.putRoute(port.PublicRouteStrategySummary{
+		ID:              "rts_1",
+		SystemAccountID: "sys_1",
+		Name:            "公开策略",
+		Mode:            port.PublicRouteStrategyModeNormal,
+		Status:          port.PublicRouteStrategyStatusActive,
+		GroupBindings: []port.PublicRouteStrategyGroupBindingSummary{{
+			ID: "rsg_1", GroupID: "grp_missing", GroupName: "已失效分组", ProviderCode: "gpt", Priority: 1, Weight: 1, Status: port.PublicRouteStrategyStatusActive, GroupEnabled: false,
+		}},
+	})
+	service, _ := newPublicRouteStrategiesTestService(store)
+	nextMode := ModeFailover
+
+	_, err := service.Update(context.Background(), UpdateInput{
+		RouteStrategyID: "rts_1",
+		Mode:            &nextMode,
+	})
+	if !errors.Is(err, ErrInvalidBinding) {
+		t.Fatalf("Update() mode validation error = %v, want ErrInvalidBinding", err)
+	}
+	if got := store.findBindableGroupsCalls; got != 0 {
+		t.Fatalf("FindPublicRouteStrategyBindableGroups calls = %d, want 0", got)
+	}
+	if len(store.updateInputs) != 0 {
+		t.Fatalf("UpdatePublicRouteStrategy calls = %d, want 0", len(store.updateInputs))
+	}
+}
+
 func TestUpdateRejectsInvalidBindings(t *testing.T) {
 	store := newFakePublicRouteStrategyStore()
 	store.putTarget(publicRouteStrategyTarget("sys_1", "alice", "Alice", "active"))
@@ -324,6 +394,8 @@ type fakePublicRouteStrategyStore struct {
 	createInputs []port.PublicRouteStrategyCreateInput
 	updateInputs []port.PublicRouteStrategyUpdateInput
 	deleteCalls  []string
+
+	findBindableGroupsCalls int
 }
 
 func newFakePublicRouteStrategyStore() *fakePublicRouteStrategyStore {
@@ -423,6 +495,7 @@ func (s *fakePublicRouteStrategyStore) FindPublicRouteStrategyByID(_ context.Con
 }
 
 func (s *fakePublicRouteStrategyStore) FindPublicRouteStrategyBindableGroups(_ context.Context, systemAccountID string, groupIDs []string) ([]port.PublicRouteStrategyBindableGroup, error) {
+	s.findBindableGroupsCalls++
 	out := make([]port.PublicRouteStrategyBindableGroup, 0, len(groupIDs))
 	for _, groupID := range groupIDs {
 		group, ok := s.bindableGroup(systemAccountID, groupID)

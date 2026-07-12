@@ -350,13 +350,17 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (RouteStrategyR
 		if err != nil {
 			return err
 		}
-		bindingInputs := bindingsFromSummary(current.GroupBindings)
+		var bindings []normalizedBinding
 		if input.GroupBindings.Set() {
-			bindingInputs = input.GroupBindings.Value()
-		}
-		bindings, err := s.normalizeBindings(ctx, store, current.SystemAccountID, nextMode, bindingInputs)
-		if err != nil {
-			return err
+			bindings, err = s.normalizeBindings(ctx, store, current.SystemAccountID, nextMode, input.GroupBindings.Value())
+			if err != nil {
+				return err
+			}
+		} else {
+			bindings = bindingsFromSummary(current.GroupBindings)
+			if err := validateModeBindings(nextMode, bindings); err != nil {
+				return err
+			}
 		}
 		next := current
 		if input.Name != nil {
@@ -627,14 +631,17 @@ func (s *Service) bindingCreateInputs(bindings []normalizedBinding) []port.Publi
 	return out
 }
 
-func bindingsFromSummary(bindings []port.PublicRouteStrategyGroupBindingSummary) []GroupBindingInput {
-	out := make([]GroupBindingInput, 0, len(bindings))
+func bindingsFromSummary(bindings []port.PublicRouteStrategyGroupBindingSummary) []normalizedBinding {
+	out := make([]normalizedBinding, 0, len(bindings))
 	for _, binding := range bindings {
-		out = append(out, GroupBindingInput{
-			GroupID:  binding.GroupID,
-			Priority: binding.Priority,
-			Weight:   binding.Weight,
-			Status:   string(binding.Status),
+		out = append(out, normalizedBinding{
+			GroupID:      binding.GroupID,
+			GroupName:    binding.GroupName,
+			ProviderCode: binding.ProviderCode,
+			Priority:     binding.Priority,
+			Weight:       binding.Weight,
+			Status:       string(binding.Status),
+			GroupEnabled: binding.GroupEnabled,
 		})
 	}
 	return out

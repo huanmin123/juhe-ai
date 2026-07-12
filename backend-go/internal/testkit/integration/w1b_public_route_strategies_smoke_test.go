@@ -6,15 +6,18 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"juhe-ai/backend-go/internal/modules/publicgroups"
 	"juhe-ai/backend-go/internal/modules/publicroutestrategies"
+	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -226,6 +229,61 @@ func TestW1bPublicRouteStrategiesPostgresSmoke(t *testing.T) {
 	}); !errors.Is(err, publicroutestrategies.ErrInvalidBinding) {
 		t.Fatalf("add disabled authorization binding error = %v, want ErrInvalidBinding", err)
 	}
+	if _, err := routeService.Update(ctx, publicroutestrategies.UpdateInput{
+		RouteStrategyID: routeID,
+		GroupBindings: publicroutestrategies.NewOptionalGroupBindings([]publicroutestrategies.GroupBindingInput{{
+			GroupID: other.Group.ID,
+		}}, true),
+	}); !errors.Is(err, publicroutestrategies.ErrInvalidBinding) {
+		t.Fatalf("update disabled authorization binding error = %v, want ErrInvalidBinding", err)
+	}
+
+	partialName := "公开策略局部更新"
+	partialUpdated, err := routeService.Update(ctx, publicroutestrategies.UpdateInput{
+		RouteStrategyID: routeID,
+		Name:            &partialName,
+	})
+	if err != nil {
+		t.Fatalf("partial update with disabled authorization binding: %v", err)
+	}
+	if partialUpdated.RouteStrategy == nil || partialUpdated.RouteStrategy.Name != partialName || len(partialUpdated.RouteStrategy.GroupBindings) != 1 {
+		t.Fatalf("partial updated route strategy = %+v", partialUpdated.RouteStrategy)
+	}
+	if binding := partialUpdated.RouteStrategy.GroupBindings[0]; binding.GroupID != other.Group.ID || binding.GroupEnabled {
+		t.Fatalf("partial updated invalid binding = %+v", binding)
+	}
+
+	setW1bGroupAuthorizationEnabled(t, ctx, db, "rauth_w1b_route_smoke", true, now.Add(2*time.Minute))
+	inactiveAuthorizationCases := []struct {
+		name      string
+		status    string
+		expiresAt *time.Time
+	}{
+		{name: "paused", status: "paused"},
+		{name: "revoked", status: "revoked"},
+		{name: "expired_status", status: "expired", expiresAt: w1bRouteStrategyTimePtr(now.Add(-time.Minute))},
+		{name: "expired_time", status: "active", expiresAt: w1bRouteStrategyTimePtr(now.Add(-time.Minute))},
+	}
+	for index, testCase := range inactiveAuthorizationCases {
+		setW1bGroupAuthorizationState(t, ctx, db, "rauth_w1b_route_smoke", testCase.status, testCase.expiresAt, now.Add(time.Duration(index+3)*time.Minute))
+		if _, err := routeService.Add(ctx, publicroutestrategies.AddInput{
+			TargetUsername: "admin",
+			Name:           "失效授权绑定策略-" + testCase.name,
+			GroupBindings:  []publicroutestrategies.GroupBindingInput{{GroupID: other.Group.ID}},
+		}); !errors.Is(err, publicroutestrategies.ErrGroupBoundary) {
+			t.Fatalf("add %s authorization binding error = %v, want ErrGroupBoundary", testCase.name, err)
+		}
+	}
+	setW1bGroupAuthorizationState(t, ctx, db, "rauth_w1b_route_smoke", "active", nil, now.Add(8*time.Minute))
+	assertW1bPublicRouteStrategyBindableGroupLocks(
+		t,
+		ctx,
+		db,
+		store,
+		created.Target.SystemAccountID,
+		other.Group.ID,
+		"rauth_w1b_route_smoke",
+	)
 
 	listed, err := routeService.List(ctx, publicroutestrategies.ListInput{
 		TargetUsername: "admin",
@@ -324,6 +382,118 @@ func setW1bGroupAuthorizationEnabled(t *testing.T, ctx context.Context, db *sql.
 	}
 }
 
+func setW1bGroupAuthorizationState(t *testing.T, ctx context.Context, db *sql.DB, authorizationID string, status string, expiresAt *time.Time, now time.Time) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE juhe_business.resource_authorizations
+		SET status = $2, expires_at = $3, updated_at = $4
+		WHERE id = $1
+	`, authorizationID, status, expiresAt, now); err != nil {
+		t.Fatalf("update route smoke group authorization state: %v", err)
+	}
+}
+
+func assertW1bPublicRouteStrategyBindableGroupLocks(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	store *postgresstore.Store,
+	systemAccountID string,
+	groupID string,
+	authorizationID string,
+) {
+	t.Helper()
+
+	lockCases := []struct {
+		name string
+		sql  string
+		id   string
+	}{
+		{
+			name: "group",
+			sql:  "UPDATE juhe_business.groups SET updated_at = updated_at WHERE id = $1",
+			id:   groupID,
+		},
+		{
+			name: "authorization",
+			sql:  "UPDATE juhe_business.resource_authorizations SET updated_at = updated_at WHERE id = $1",
+			id:   authorizationID,
+		},
+		{
+			name: "authorization_settings",
+			sql:  "UPDATE juhe_business.group_authorization_settings SET updated_at = updated_at WHERE authorization_id = $1",
+			id:   authorizationID,
+		},
+	}
+
+	for _, lockCase := range lockCases {
+		t.Run("bindable_group_locks_"+lockCase.name, func(t *testing.T) {
+			ready := make(chan error, 1)
+			release := make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
+				done <- store.PublicRouteStrategyInTx(ctx, func(txCtx context.Context, txStore port.PublicRouteStrategyStore) error {
+					groups, err := txStore.FindPublicRouteStrategyBindableGroups(txCtx, systemAccountID, []string{groupID})
+					if err != nil {
+						ready <- err
+						return err
+					}
+					if len(groups) != 1 || groups[0].ID != groupID {
+						err := fmt.Errorf("locked bindable groups = %+v, want %s", groups, groupID)
+						ready <- err
+						return err
+					}
+					ready <- nil
+					select {
+					case <-release:
+						return nil
+					case <-txCtx.Done():
+						return txCtx.Err()
+					}
+				})
+			}()
+
+			released := false
+			defer func() {
+				if !released {
+					close(release)
+					<-done
+				}
+			}()
+			if err := <-ready; err != nil {
+				t.Fatalf("lock bindable group rows: %v", err)
+			}
+
+			conn, err := db.Conn(ctx)
+			if err != nil {
+				t.Fatalf("open competing postgres connection: %v", err)
+			}
+			defer conn.Close()
+			if _, err := conn.ExecContext(ctx, "SET lock_timeout = '250ms'"); err != nil {
+				t.Fatalf("set competing connection lock timeout: %v", err)
+			}
+			_, err = conn.ExecContext(ctx, lockCase.sql, lockCase.id)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+				t.Fatalf("competing %s update error = %v, want PostgreSQL lock timeout 55P03", lockCase.name, err)
+			}
+
+			close(release)
+			released = true
+			if err := <-done; err != nil {
+				t.Fatalf("commit bindable group lock transaction: %v", err)
+			}
+			if _, err := conn.ExecContext(ctx, "SET lock_timeout = 0"); err != nil {
+				t.Fatalf("reset competing connection lock timeout: %v", err)
+			}
+			if _, err := conn.ExecContext(ctx, lockCase.sql, lockCase.id); err != nil {
+				t.Fatalf("update %s after lock release: %v", lockCase.name, err)
+			}
+		})
+	}
+}
+
 func insertW1bDefaultRouteStrategy(t *testing.T, ctx context.Context, db *sql.DB, ownerID string, routeID string, bindingID string, groupID string, now time.Time) {
 	t.Helper()
 
@@ -336,4 +506,8 @@ func insertW1bDefaultRouteStrategy(t *testing.T, ctx context.Context, db *sql.DB
 		t.Fatalf("insert default route strategy: %v", err)
 	}
 	insertW1bRouteStrategyBinding(t, ctx, db, ownerID, routeID, bindingID, groupID, now)
+}
+
+func w1bRouteStrategyTimePtr(value time.Time) *time.Time {
+	return &value
 }
