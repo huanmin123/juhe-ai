@@ -82,11 +82,17 @@ try {
   await myRouteStrategiesApi.update(routeStrategyId, payload)
   await managementApi.update(routeStrategyId, payload, { systemAccountId })
   await personalApi.update(routeStrategyId, payload, { systemAccountId: 'must_not_leak' })
+
+  await routeStrategiesApi.delete(routeStrategyId)
+  await routeStrategiesApi.delete(routeStrategyId, { systemAccountId })
+  await myRouteStrategiesApi.delete(routeStrategyId)
+  await managementApi.delete(routeStrategyId, { systemAccountId })
+  await personalApi.delete(routeStrategyId, { systemAccountId: 'must_not_leak' })
 } finally {
   http.defaults.adapter = originalAdapter
 }
 
-assert.equal(capturedRequests.length, 8, '应捕获创建和更新各四个底层 API / 作用域委派请求')
+assert.equal(capturedRequests.length, 13, '应捕获创建/更新各四个及删除五个底层 API / 作用域委派请求')
 
 assertManagementCreate(capturedRequests[0], 'routeStrategiesApi.create')
 assertPersonalCreate(capturedRequests[1], 'myRouteStrategiesApi.create')
@@ -96,8 +102,21 @@ assertManagementUpdate(capturedRequests[4], 'routeStrategiesApi.update')
 assertPersonalUpdate(capturedRequests[5], 'myRouteStrategiesApi.update')
 assertManagementUpdate(capturedRequests[6], 'useScopedRouteStrategiesApi 管理作用域 update')
 assertPersonalUpdate(capturedRequests[7], 'useScopedRouteStrategiesApi 个人作用域 update')
+assertManagementDelete(capturedRequests[8], undefined, 'routeStrategiesApi.delete 全局管理')
+assertManagementDelete(
+  capturedRequests[9],
+  { systemAccountId },
+  'routeStrategiesApi.delete 显式 owner'
+)
+assertPersonalDelete(capturedRequests[10], 'myRouteStrategiesApi.delete')
+assertManagementDelete(
+  capturedRequests[11],
+  { systemAccountId },
+  'useScopedRouteStrategiesApi 管理作用域 delete'
+)
+assertPersonalDelete(capturedRequests[12], 'useScopedRouteStrategiesApi 个人作用域 delete')
 
-console.log('策略路由创建/更新 API request-capture 回归通过：管理/个人路径、作用域 query 和显式 null body 契约正确')
+console.log('策略路由创建/更新/删除 API request-capture 回归通过：管理/个人路径、作用域 query 和请求 body 契约正确')
 
 function assertManagementCreate(request: CapturedRequest, source: string): void {
   assert.equal(request.method, 'POST', `${source} 必须发送 POST`)
@@ -141,6 +160,32 @@ function assertPersonalUpdate(request: CapturedRequest, source: string): void {
   )
   assert.equal(request.params, undefined, `${source} 不得发送任何 query`)
   assertMutationBody(request.body, source, '更新')
+}
+
+function assertManagementDelete(
+  request: CapturedRequest,
+  params: Record<string, unknown> | undefined,
+  source: string
+): void {
+  assert.equal(request.method, 'DELETE', `${source} 必须发送 DELETE`)
+  assert.equal(
+    request.url,
+    `/route-strategies/${routeStrategyId}`,
+    `${source} 必须请求固定管理端策略路由路径`
+  )
+  assert.deepEqual(request.params, params, `${source} 必须发送正确管理作用域 query`)
+  assert.equal(request.body, undefined, `${source} 不得发送 body`)
+}
+
+function assertPersonalDelete(request: CapturedRequest, source: string): void {
+  assert.equal(request.method, 'DELETE', `${source} 必须发送 DELETE`)
+  assert.equal(
+    request.url,
+    `/my-route-strategies/${routeStrategyId}`,
+    `${source} 必须请求固定个人策略路由路径`
+  )
+  assert.equal(request.params, undefined, `${source} 必须忽略 owner 且不得发送任何 query`)
+  assert.equal(request.body, undefined, `${source} 不得发送 body`)
 }
 
 function assertMutationBody(body: unknown, source: string, action: '创建' | '更新'): void {
