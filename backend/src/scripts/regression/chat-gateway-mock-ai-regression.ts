@@ -10,12 +10,14 @@ import { fileURLToPath } from 'node:url'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { buildChatSystemInstructions } from '../../modules/chat/chat-system-instructions.js'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 
 const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const projectRoot = resolve(backendRoot, '..')
 const tempRoot = resolve(tmpdir(), `juhe-ai-chat-mock-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 const upstreamAuthorizations: string[] = []
+const upstreamBodies: Array<Record<string, unknown>> = []
 let upstream: http.Server | undefined
 let backend: ChildProcess | undefined
 const realCredentialFile = process.env.JUHE_AI_CHAT_REAL_CREDENTIAL_FILE?.trim()
@@ -111,7 +113,34 @@ try {
     body: JSON.stringify({ clientMessageId: 'mock-client-1', content: '重复请求不得再次调用模型', model: testModel })
   })
   assert.equal(duplicateResponse.status, 409, '相同 clientMessageId 必须返回冲突且不再次调用模型')
-  if (!realCredential) assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream'], 'AI 问答必须经过网关并使用 AI 账户凭据访问上游')
+  if (!realCredential) {
+    const overBudgetResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({ clientMessageId: 'mock-client-over-budget', content: '很长'.repeat(20_000), model: testModel, contextWindowTokens: 16_000 })
+    })
+    const overBudgetText = await overBudgetResponse.text()
+    const overBudgetPayload = parseOptionalJson(overBudgetText)
+    const expectedInstructions = buildChatSystemInstructions({ toolsEnabled: true }).text
+    const observedInstructions = upstreamBodies[0]?.instructions
+    const observedTools = Array.isArray(upstreamBodies[0]?.tools) ? upstreamBodies[0].tools as Array<{ type?: string }> : []
+    assert.deepEqual({
+      instructionsMatch: observedInstructions === expectedInstructions,
+      toolDisciplineCount: typeof observedInstructions === 'string' ? observedInstructions.match(/重复调用名称相同/g)?.length ?? 0 : 0,
+      webSearchToolCount: observedTools.filter((tool) => tool.type === 'web_search').length,
+      overBudgetStatus: overBudgetResponse.status,
+      overBudgetCode: overBudgetPayload?.code,
+      upstreamCalls: upstreamAuthorizations.length
+    }, {
+      instructionsMatch: true,
+      toolDisciplineCount: 1,
+      webSearchToolCount: 1,
+      overBudgetStatus: 422,
+      overBudgetCode: 'chat_input_exceeds_context',
+      upstreamCalls: 1
+    }, 'Responses 必须唯一注入工具提示；固定输入超预算必须在落轮次和请求上游前返回 422')
+    assert.match(String(overBudgetPayload?.message ?? ''), /上下文窗口/)
+    assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream'], 'AI 问答必须经过网关并使用 AI 账户凭据访问上游')
+  }
 
   const stored = await apiJson<{ data: Array<{ role: string; status: string; contentText: string; contentBlocks: Array<{ type: string; id?: string; status?: string }> }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
   assert.deepEqual(stored.data.map((item) => [item.role, item.status]), [['user', 'completed'], ['assistant', 'completed']])
@@ -176,7 +205,8 @@ function createMockUpstream(): http.Server {
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => {
       upstreamAuthorizations.push(String(req.headers.authorization ?? ''))
-      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { stream?: boolean; tools?: Array<{ type?: string }> }
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> & { stream?: boolean; tools?: Array<{ type?: string }> }
+      upstreamBodies.push(body)
       assert.equal(body.stream, true)
       assert(body.tools?.some((tool) => tool.type === 'web_search'))
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' })
@@ -211,6 +241,7 @@ async function apiJson<T>(baseUrl: string, path: string, cookie: string, body?: 
   assert.equal(response.ok, true, `${path} HTTP ${response.status}: ${text}`)
   return JSON.parse(text) as T
 }
+function parseOptionalJson(text: string): { code?: unknown; message?: unknown } | undefined { try { return JSON.parse(text) as { code?: unknown; message?: unknown } } catch { return undefined } }
 async function waitForReady(baseUrl: string, cookie: string, child: ChildProcess): Promise<void> { const start = Date.now(); while (Date.now() - start < 30_000) { if (child.exitCode !== null) throw new Error(`临时后端退出：${child.exitCode}`); try { const response = await fetch(`${baseUrl}/__aisys__/api/auth/me`, { headers: { cookie } }); if (response.ok) return } catch {} await sleep(200) } throw new Error('临时后端等待超时') }
 async function freePort(): Promise<number> { return new Promise((resolvePort, reject) => { const server = net.createServer(); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const address = server.address(); if (!address || typeof address === 'string') { reject(new Error('无法分配端口')); return } const port = address.port; server.close((error) => error ? reject(error) : resolvePort(port)) }) }) }
 function onceListening(server: http.Server): Promise<void> { return new Promise((resolveListen, reject) => { server.once('listening', resolveListen); server.once('error', reject) }) }

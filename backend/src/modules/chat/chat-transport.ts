@@ -35,6 +35,7 @@ export async function resolveChatSupportedProtocols(input: {
 
 export function buildChatTransportRequest(input: {
   protocol: ChatTransportProtocol
+  instructions: string
   model: string
   history: ChatTransportMessage[]
   currentContent: string
@@ -43,7 +44,7 @@ export function buildChatTransportRequest(input: {
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier
 }): { path: '/v1/chat/completions' | '/v1/responses'; body: Record<string, unknown> } {
-  const messages = [...input.history, { role: 'user' as const, content: input.currentContent }]
+  const messages = [{ role: 'system' as const, content: input.instructions }, ...input.history, { role: 'user' as const, content: input.currentContent }]
   if (input.protocol === 'responses') {
     const currentContent = input.currentBlocks?.length
       ? input.currentBlocks.map((block) => block.type === 'input_image' ? { type: 'input_image', image_url: block.dataUrl } : { type: 'input_text', text: block.text ?? '' })
@@ -52,6 +53,7 @@ export function buildChatTransportRequest(input: {
       path: '/v1/responses',
       body: {
         model: input.model,
+        instructions: input.instructions,
         input: [...input.history, { role: 'user' as const, content: currentContent }],
         stream: true,
         ...(input.reasoningEffort ? { reasoning: { effort: input.reasoningEffort } } : {}),

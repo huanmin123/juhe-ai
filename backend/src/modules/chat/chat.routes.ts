@@ -25,10 +25,11 @@ import { validateGatewayApiKeyAsync } from '../../storage/gateway-api-key.reposi
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { listCachedOpenAIAccountsForGroupAsync } from '../gateway/runtime/runtime-cache.service.js'
 import { collectOpenAIChatSse } from './chat-gateway-sse.js'
-import { trimChatContextToBudget } from './chat-context-budget.js'
+import { ChatContextBudgetError, resolveEffectiveChatContextWindowTokens, trimChatContextToBudget } from './chat-context-budget.js'
 import { collectChatResponsesSse } from './chat-responses-sse.js'
 import { buildChatTransportRequest, resolveChatSupportedProtocols, selectChatTransport } from './chat-transport.js'
 import { buildChatModelOptions, chatReasoningEfforts, chatServiceTiers } from './chat-model-options.js'
+import { buildChatSystemInstructions } from './chat-system-instructions.js'
 import { listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 
@@ -165,6 +166,57 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     const apiKey = await requireOwnedApiKey(conversation.apiKeyId, ownerId)
     const apiKeySecret = String(apiKey.key)
     const client = await getChatDatabaseClient()
+    const gatewayKey = await validateGatewayApiKeyAsync(apiKeySecret)
+    const supportedProtocols = await resolveChatSupportedProtocols({
+      groupIds: gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? [],
+      model: body.model,
+      loadAccounts: (groupId, model, endpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, ownerId, {
+        requestedModel: model,
+        requestedEndpointFamily: endpointFamily
+      })
+    })
+    const protocol = selectChatTransport({ supportedProtocols, toolsEnabled: true })
+    const toolsEnabled = protocol === 'responses'
+    const imageCount = body.contentBlocks?.filter((block) => block.type === 'input_image').length ?? 0
+    if (protocol === 'chat_completions' && imageCount > 0) {
+      throw new Error('当前路由不支持图片输入，请切换到支持 Responses 的账户或移除图片')
+    }
+    const catalog = await listProviderModelCatalogAsync({
+      providerCode: GPT_VENDOR_CODE,
+      systemAccountId: ownerId,
+      includeUnpriced: true
+    })
+    const catalogItem = catalog.find((item) => item.model === body.model)
+    const contextWindowTokens = resolveEffectiveChatContextWindowTokens({
+      clientContextWindowTokens: body.contextWindowTokens,
+      serverContextWindowTokens: catalogItem?.contextWindowTokens ?? catalogItem?.maxInputTokens
+    })
+    const systemInstructions = buildChatSystemInstructions({ toolsEnabled })
+    const storedContext = await listChatContextMessages(client, {
+      conversationId: conversation.id,
+      systemAccountId: ownerId,
+      limitTurns: 64,
+      now: new Date().toISOString()
+    })
+    const context = trimChatContextToBudget({
+      history: storedContext,
+      currentUserContent: body.content,
+      instructions: systemInstructions.text,
+      toolsEnabled,
+      imageCount,
+      contextWindowTokens
+    })
+    const transport = buildChatTransportRequest({
+      protocol,
+      instructions: systemInstructions.text,
+      model: body.model,
+      history: context,
+      currentContent: body.content,
+      currentBlocks: body.contentBlocks,
+      toolsEnabled,
+      reasoningEffort: body.reasoningEffort,
+      serviceTier: body.serviceTier
+    })
     accepted = await acceptChatTurn(client, {
       conversationId: conversation.id,
       systemAccountId: ownerId,
@@ -178,13 +230,6 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       res.status(409).json({ message: '该消息已提交，请刷新会话', code: 'chat_message_already_exists' })
       return
     }
-    const storedContext = await listChatContextMessages(client, {
-      conversationId: conversation.id,
-      systemAccountId: ownerId,
-      limitTurns: 64,
-      now: new Date().toISOString()
-    })
-    const context = trimChatContextToBudget({ history: storedContext, currentUserContent: body.content, contextWindowTokens: body.contextWindowTokens })
     controller = new AbortController()
     activeStreams.set(conversation.id, { ownerId, turnId: accepted.turnId, controller })
     res.status(200)
@@ -197,20 +242,6 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(': heartbeat\n\n') }, 15_000)
     heartbeat.unref()
     try {
-      const gatewayKey = await validateGatewayApiKeyAsync(apiKeySecret)
-      const supportedProtocols = await resolveChatSupportedProtocols({
-        groupIds: gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? [],
-        model: body.model,
-        loadAccounts: (groupId, model, endpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, ownerId, {
-          requestedModel: model,
-          requestedEndpointFamily: endpointFamily
-        })
-      })
-      const protocol = selectChatTransport({ supportedProtocols, toolsEnabled: true })
-      if (protocol === 'chat_completions' && body.contentBlocks?.some((block) => block.type === 'input_image')) {
-        throw new Error('当前路由不支持图片输入，请切换到支持 Responses 的账户或移除图片')
-      }
-      const transport = buildChatTransportRequest({ protocol, model: body.model, history: context, currentContent: body.content, currentBlocks: body.contentBlocks, toolsEnabled: true, reasoningEffort: body.reasoningEffort, serviceTier: body.serviceTier })
       const upstream = await fetch(gatewayUrl(transport.path), {
         method: 'POST',
         headers: { authorization: `Bearer ${apiKeySecret}`, 'content-type': 'application/json', accept: 'text/event-stream' },
@@ -267,6 +298,10 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     }
     if (error instanceof ChatConflictError) {
       res.status(409).json({ message: error.message, code: error.code })
+      return
+    }
+    if (error instanceof ChatContextBudgetError) {
+      res.status(422).json({ message: error.message, code: error.code })
       return
     }
     handleChatRouteError(error, res, next)
