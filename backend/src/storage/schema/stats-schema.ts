@@ -815,26 +815,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
           CHECK (status IN ('pending', 'processing', 'completed', 'failed'))
         );
 
-    CREATE TABLE IF NOT EXISTS data_archive_manifests (
-          id TEXT PRIMARY KEY,
-          domain TEXT NOT NULL,
-          database_role TEXT NOT NULL,
-          source_table TEXT NOT NULL,
-          archive_action TEXT NOT NULL,
-          storage_uri TEXT NOT NULL,
-          partition_name TEXT,
-          range_start TEXT,
-          range_end TEXT,
-          row_count INTEGER NOT NULL DEFAULT 0,
-          size_bytes INTEGER,
-          status TEXT NOT NULL DEFAULT 'archived',
-          manifest_json TEXT NOT NULL DEFAULT '{}',
-          archived_at TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          CHECK (status IN ('archived', 'deleted'))
-        );
-
     CREATE TABLE IF NOT EXISTS client_ip_registry (
           ip_hash TEXT PRIMARY KEY,
           bucket_no INTEGER NOT NULL,
@@ -1435,10 +1415,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_usage_range_window_requests_expires ON usage_range_window_requests(expires_at, domain, status);
 
-    CREATE INDEX IF NOT EXISTS idx_data_archive_manifests_domain_time ON data_archive_manifests(domain, archived_at DESC, id DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_data_archive_manifests_source ON data_archive_manifests(database_role, source_table, status, archived_at DESC);
-
     CREATE INDEX IF NOT EXISTS idx_client_ip_registry_bucket ON client_ip_registry(bucket_no, ip_hash);
 
     CREATE INDEX IF NOT EXISTS idx_client_ip_registry_last_seen ON client_ip_registry(last_seen_at DESC, ip_hash);
@@ -1525,8 +1501,6 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_latest_id ON table_storage_snapshots(database_role, table_name, sampled_at DESC, id DESC);
 
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_partition ON table_storage_snapshots(database_role, parent_table_name, sampled_at DESC, table_name) WHERE is_partition = 1;
-
-    CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_archive ON table_storage_snapshots(is_archive, sampled_at DESC, database_role, table_name) WHERE is_archive = 1;
 
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_time ON table_storage_snapshots(sampled_at DESC);
   `)

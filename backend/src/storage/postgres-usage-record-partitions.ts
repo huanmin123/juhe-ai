@@ -90,27 +90,9 @@ export async function countPostgresUsageRecordPartitionRows(client: DatabaseClie
   return Number(row?.total ?? 0)
 }
 
-export async function sizePostgresUsageRecordPartitionBytes(client: DatabaseClient, partitionName: string): Promise<number | undefined> {
-  const normalized = normalizePartitionName(partitionName)
-  const row = await client.one<{ bytes?: number | string | null }>(`
-    SELECT pg_total_relation_size('juhe_usage.${normalized}'::regclass) AS bytes
-  `)
-  const bytes = Number(row?.bytes ?? Number.NaN)
-  return Number.isFinite(bytes) ? bytes : undefined
-}
-
-export async function archivePostgresUsageRecordPartition(client: DatabaseClient, partitionName: string): Promise<string> {
-  const normalized = normalizePartitionName(partitionName)
-  await client.execute('CREATE SCHEMA IF NOT EXISTS juhe_archive')
-  await client.execute(`ALTER TABLE juhe_usage.usage_records DETACH PARTITION juhe_usage.${quoteIdentifier(normalized)}`)
-  await client.execute(`ALTER TABLE juhe_usage.${quoteIdentifier(normalized)} SET SCHEMA juhe_archive`)
-  const dateKey = normalized.slice(usageRecordPartitionPrefix.length)
-  ensuredPartitionDateKeys.delete(dateKey)
-  return `postgres:juhe_archive.${normalized}`
-}
-
 export async function dropPostgresUsageRecordPartition(client: DatabaseClient, partitionName: string): Promise<void> {
   const normalized = normalizePartitionName(partitionName)
+  await client.execute(`ALTER TABLE juhe_usage.usage_records DETACH PARTITION juhe_usage.${quoteIdentifier(normalized)}`)
   await client.execute(`DROP TABLE IF EXISTS juhe_usage.${quoteIdentifier(normalized)}`)
   const dateKey = normalized.slice(usageRecordPartitionPrefix.length)
   ensuredPartitionDateKeys.delete(dateKey)

@@ -23,7 +23,7 @@ assert.deepEqual(parseNewApiBalance({ data: { total_available: 3655000 } }, { qu
   status: 'fresh', remainingUsd: '7.310000', rawRemaining: '3655000', rawUnit: 'quota', basis: 'api_key_quota'
 })
 assert.deepEqual(parseNewApiBalance({ data: { unlimited_quota: true } }, { quotaPerUnit: 500000 }), {
-  status: 'unlimited', basis: 'api_key_quota'
+  status: 'unsupported', basis: 'api_key_quota'
 })
 assert.throws(() => parseNewApiBalance({ data: {} }, { quotaPerUnit: 500000 }), /total_available/)
 

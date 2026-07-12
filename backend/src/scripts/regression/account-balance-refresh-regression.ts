@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+import { UpstreamRequestTimeoutError } from '../../modules/gateway/upstream/request.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-balance-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -32,9 +33,15 @@ const balanceRepositorySource = readFileSync(resolve('src/storage/account-balanc
 const accountRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
 const repositoriesSource = readFileSync(resolve('src/storage/repositories.ts'), 'utf8')
 assert.match(balanceServiceSource, /const balanceRefreshLeaseMs = 30_000/)
+assert.match(
+  balanceServiceSource,
+  /const requestTimeoutMs = 15_000/,
+  '余额查询的全部内置适配器应共享 15 秒总 deadline'
+)
 assert.match(balanceRoutesSource, /post\('\/balance\/test-draft'/, '新增和编辑表单必须使用独立草稿余额测试接口')
 assert.match(balanceRoutesSource, /prepareAccountDraftTestSnapshotAsync/, '草稿余额测试必须使用当前表单账户快照')
 assert.match(balanceRoutesSource, /testAccountBalanceCandidate/, '草稿余额测试必须调用无持久化查询入口')
+assert.match(balanceRoutesSource, /refreshAccountBalanceCandidate\(candidate, \{ mode: 'manual' \}\)/, '列表人工刷新必须使用独立 manual 模式')
 assert.ok(!balanceRoutesSource.includes('saveAccountBalanceConfigurationAsync'), '余额路由不能在查询时保存账户配置')
 assert.ok(!balanceRoutesSource.includes('delete_account_balance_snapshot'), '余额测试不能删除或替换已保存快照')
 assert.match(balanceRepositorySource, /balance_query_config_json::jsonb = \?::jsonb/, 'PostgreSQL 偏好条件更新必须按 JSON 语义比较配置')
@@ -55,6 +62,9 @@ try {
   const multi = create('multi', 'api_key', { api_keys: ['sk-a', 'sk-b'], api_key: 'sk-a', base_url: 'https://relay.example/v1' })
   const future = create('future')
   const autoDetect = create('auto-detect')
+  const transientFailure = create('transient-failure')
+  const deterministicFailure = create('deterministic-failure')
+  const manualRefresh = create('manual-refresh')
   const configured = repositories.createAccount({
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'configured', type: 'api_key', credentials: { api_key: 'sk-configured', base_url: 'https://relay.example/v1' },
@@ -84,6 +94,9 @@ try {
   configure.run('active', builtinConfig, dueAt, oauth.id)
   configure.run('active', builtinConfig, dueAt, multi.id)
   configure.run('active', builtinConfig, futureAt, future.id)
+  configure.run('active', builtinConfig, futureAt, transientFailure.id)
+  configure.run('active', builtinConfig, futureAt, deterministicFailure.id)
+  configure.run('active', builtinConfig, futureAt, manualRefresh.id)
   database.prepare(`UPDATE accounts SET status = 'active', schedulable = 1 WHERE id = ?`).run(autoDetect.id)
 
   assert.equal(await balanceRepository.commitAccountBalanceRefreshAsync({
@@ -153,6 +166,33 @@ try {
   assert.equal(snapshot?.errorMessage, '上游鉴权失败（HTTP 401）')
 
   const candidate = balanceRepository.listAccountsDueForBalanceRefresh({ now: '2026-07-11T12:00:00.000Z', limit: 1 })[0]
+  const fallbackAttempts: string[] = []
+  const fallbackResult = await balanceQueryService.queryBuiltinAccountBalance(candidate, {
+    queryAdapter: async (_candidate, adapter) => {
+      fallbackAttempts.push(adapter)
+      return adapter === 'user_balance'
+        ? { status: 'fresh', remainingUsd: '4.790000', rawRemaining: '4.79', rawUnit: 'usd', basis: 'wallet' }
+        : { status: 'unsupported', basis: 'api_key_quota' }
+    }
+  })
+  assert.equal(fallbackResult.adapter, 'user_balance', '内置适配器返回 unsupported 后必须继续回退')
+  assert.equal(fallbackResult.snapshot.remainingUsd, '4.790000')
+  assert.deepEqual(fallbackAttempts, ['sub2api', 'newapi', 'litellm', 'user_balance'])
+  const unsupportedResult = await balanceQueryService.queryBuiltinAccountBalance(candidate, {
+    queryAdapter: async () => ({ status: 'unsupported', basis: 'api_key_quota' })
+  })
+  assert.equal(unsupportedResult.snapshot.status, 'unsupported', '全部内置适配器不支持时应返回可暂停的能力状态')
+  let authenticationAttempts = 0
+  await assert.rejects(
+    balanceQueryService.queryBuiltinAccountBalance(candidate, {
+      queryAdapter: async () => {
+        authenticationAttempts += 1
+        throw new Error('上游鉴权失败（HTTP 401）')
+      }
+    }),
+    /上游鉴权失败/
+  )
+  assert.equal(authenticationAttempts, 1, '确定性鉴权错误不能继续尝试其他适配器')
   const tested = await balanceQueryService.testAccountBalanceCandidate(candidate, {
     query: async () => ({ status: 'fresh', remainingUsd: '8.880000', rawRemaining: '8.88', rawUnit: 'usd', basis: 'wallet' })
   })
@@ -174,6 +214,138 @@ try {
   ])
   assert.equal(queryCount, 1, '同一账户并发刷新必须通过租约只查询一次上游')
 
+  balanceRepository.replaceAccountBalanceSnapshot({
+    accountId: transientFailure.id,
+    systemAccountId: 'sys_admin',
+    snapshot: { status: 'fresh', remainingUsd: '7.310000', lastAttemptAt: dueAt, lastSuccessAt: dueAt }
+  })
+  const transientCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(transientFailure.id)
+  assert.ok(transientCandidate)
+  const timeoutQuery = async () => {
+    throw new UpstreamRequestTimeoutError('上游余额查询超时')
+  }
+  await balanceQueryService.refreshAccountBalanceCandidate(transientCandidate, { query: timeoutQuery })
+  let transientSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([transientFailure.id]).get(transientFailure.id)
+  assert.ok(transientSnapshot)
+  assert.equal(transientSnapshot.status, 'fresh', '第一次临时失败必须保留上次成功状态')
+  assert.equal(transientSnapshot.remainingUsd, '7.310000', '第一次临时失败必须保留上次成功金额')
+  assert.equal(transientSnapshot.consecutiveTransientFailures, 1)
+  assertBalanceRetryDelay(database, transientFailure.id, transientSnapshot.lastAttemptAt, 15)
+  await balanceQueryService.refreshAccountBalanceCandidate(transientCandidate, { query: timeoutQuery })
+  transientSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([transientFailure.id]).get(transientFailure.id)
+  assert.ok(transientSnapshot)
+  assert.equal(transientSnapshot.status, 'fresh', '第二次临时失败仍应保留上次成功状态')
+  assert.equal(transientSnapshot.consecutiveTransientFailures, 2)
+  assertBalanceRetryDelay(database, transientFailure.id, transientSnapshot.lastAttemptAt, 30)
+  await balanceQueryService.refreshAccountBalanceCandidate(transientCandidate, { query: timeoutQuery })
+  transientSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([transientFailure.id]).get(transientFailure.id)
+  assert.ok(transientSnapshot)
+  assert.equal(transientSnapshot.status, 'failed', '连续第三次临时失败才应标记查询失败')
+  assert.equal(transientSnapshot.remainingUsd, undefined, '连续第三次临时失败必须清除旧金额')
+  assert.equal(transientSnapshot.consecutiveTransientFailures, 3)
+  assertBalanceRetryDelay(database, transientFailure.id, transientSnapshot.lastAttemptAt, 60)
+  await balanceQueryService.refreshAccountBalanceCandidate(transientCandidate, { query: timeoutQuery })
+  transientSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([transientFailure.id]).get(transientFailure.id)
+  assert.ok(transientSnapshot)
+  assert.equal(transientSnapshot.consecutiveTransientFailures, 3, '连续失败次数应在 3 封顶')
+  assertBalanceRetryDelay(database, transientFailure.id, transientSnapshot.lastAttemptAt, 60)
+  const recoveryCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(transientFailure.id)
+  assert.ok(recoveryCandidate)
+  await balanceQueryService.refreshAccountBalanceCandidate(recoveryCandidate, {
+    query: async () => ({ status: 'fresh', remainingUsd: '8.880000', rawRemaining: '8.88', rawUnit: 'usd', basis: 'wallet' })
+  })
+  transientSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([transientFailure.id]).get(transientFailure.id)
+  assert.ok(transientSnapshot)
+  assert.equal(transientSnapshot.status, 'fresh')
+  assert.equal(transientSnapshot.remainingUsd, '8.880000')
+  assert.equal(transientSnapshot.consecutiveTransientFailures, undefined, '成功后必须清零连续临时失败次数')
+
+  balanceRepository.replaceAccountBalanceSnapshot({
+    accountId: deterministicFailure.id,
+    systemAccountId: 'sys_admin',
+    snapshot: { status: 'fresh', remainingUsd: '5.550000', lastAttemptAt: dueAt, lastSuccessAt: dueAt }
+  })
+  const deterministicCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(deterministicFailure.id)
+  assert.ok(deterministicCandidate)
+  await balanceQueryService.refreshAccountBalanceCandidate(deterministicCandidate, {
+    query: async () => { throw new Error('上游鉴权失败（HTTP 401）') }
+  })
+  const deterministicSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([deterministicFailure.id]).get(deterministicFailure.id)
+  assert.ok(deterministicSnapshot)
+  assert.equal(deterministicSnapshot.status, 'unsupported', '确定性鉴权错误必须暂停余额能力而不是反复轮询')
+  assert.equal(deterministicSnapshot.remainingUsd, undefined)
+  assert.equal(deterministicSnapshot.consecutiveTransientFailures, undefined)
+  const deterministicRow = database.prepare(`SELECT balance_query_enabled, balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(deterministicFailure.id) as Record<string, unknown>
+  assert.equal(deterministicRow.balance_query_enabled, 1, '能力暂停不能替用户关闭余额开关')
+  assert.equal(deterministicRow.balance_query_next_refresh_at, null, '确定性不支持必须停止后台余额调度')
+  const invalidBaseUrlResult = await balanceQueryService.refreshAccountBalanceCandidate({
+    ...deterministicCandidate,
+    credentials: { api_key: 'sk-invalid-base-url', base_url: 'not-a-valid-url' }
+  })
+  assert.equal(invalidBaseUrlResult.status, 'unsupported')
+  assert.equal(invalidBaseUrlResult.errorMessage, '账户 Base URL 无效', '确定性本地配置错误应保留可读原因')
+  const reactivated = repositories.updateAccount(deterministicFailure.id, {
+    balanceQueryEnabled: true,
+    balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5, preferredBuiltinAdapter: 'sub2api' }
+  }, access)
+  assert.ok(reactivated)
+  const reactivatedRow = database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(deterministicFailure.id) as { balance_query_next_refresh_at?: string | null }
+  assert.ok(reactivatedRow.balance_query_next_refresh_at, '保存账户配置必须重新激活已暂停的余额调度')
+  const reactivatedCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(deterministicFailure.id)
+  assert.ok(reactivatedCandidate)
+  await balanceQueryService.refreshAccountBalanceCandidate(reactivatedCandidate, { query: timeoutQuery })
+  const snapshotAfterReactivationTimeout = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([deterministicFailure.id]).get(deterministicFailure.id)
+  assert.equal(snapshotAfterReactivationTimeout?.status, 'pending', '暂停账户重新激活后的临时失败必须显示待重试，而不是继续显示已暂停')
+  assert.equal(snapshotAfterReactivationTimeout?.consecutiveTransientFailures, 1)
+  assertBalanceRetryDelay(database, deterministicFailure.id, snapshotAfterReactivationTimeout?.lastAttemptAt, 15)
+
+  balanceRepository.replaceAccountBalanceSnapshot({
+    accountId: manualRefresh.id,
+    systemAccountId: 'sys_admin',
+    snapshot: { status: 'fresh', remainingUsd: '6.660000', lastAttemptAt: dueAt, lastSuccessAt: dueAt }
+  })
+  const manualCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(manualRefresh.id)
+  assert.ok(manualCandidate)
+  const manualResult = await balanceQueryService.refreshAccountBalanceCandidate(manualCandidate, {
+    mode: 'manual',
+    query: timeoutQuery
+  })
+  assert.equal(manualResult.status, 'failed', '人工刷新失败必须立即返回本次错误')
+  const storedAfterManualFailure = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([manualRefresh.id]).get(manualRefresh.id)
+  assert.ok(storedAfterManualFailure)
+  assert.equal(storedAfterManualFailure.status, 'fresh', '人工刷新失败不能覆盖已保存状态')
+  assert.equal(storedAfterManualFailure.remainingUsd, '6.660000', '人工刷新失败不能覆盖已保存金额')
+  assert.equal(storedAfterManualFailure.consecutiveTransientFailures, undefined, '人工刷新失败不能累计后台失败次数')
+  assert.equal(
+    database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(manualRefresh.id)?.balance_query_next_refresh_at,
+    futureAt,
+    '人工刷新失败不能推进自动刷新时间'
+  )
+  const manualUnsupported = await balanceQueryService.refreshAccountBalanceCandidate(manualCandidate, {
+    mode: 'manual',
+    query: async () => ({ status: 'unsupported', basis: 'api_key_quota' })
+  })
+  assert.equal(manualUnsupported.status, 'unsupported', '人工刷新必须即时返回能力不支持状态')
+  const storedAfterManualUnsupported = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([manualRefresh.id]).get(manualRefresh.id)
+  assert.equal(storedAfterManualUnsupported?.remainingUsd, '6.660000', '人工能力探测失败不能覆盖已保存金额')
+  assert.equal(
+    database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(manualRefresh.id)?.balance_query_next_refresh_at,
+    futureAt,
+    '人工能力探测失败不能推进自动刷新时间'
+  )
+  await balanceQueryService.refreshAccountBalanceCandidate(manualCandidate, {
+    mode: 'manual',
+    query: async () => ({ status: 'fresh', remainingUsd: '9.010000', rawRemaining: '9.01', rawUnit: 'usd', basis: 'wallet' })
+  })
+  const storedAfterManualSuccess = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([manualRefresh.id]).get(manualRefresh.id)
+  assert.ok(storedAfterManualSuccess)
+  assert.equal(storedAfterManualSuccess.remainingUsd, '9.010000', '人工刷新成功必须保存新金额')
+  assert.notEqual(
+    database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(manualRefresh.id)?.balance_query_next_refresh_at,
+    futureAt,
+    '人工刷新成功必须推进自动刷新时间'
+  )
+
   const staleCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(dueB.id)
   assert.ok(staleCandidate)
   await balanceQueryService.refreshAccountBalanceCandidate(staleCandidate, {
@@ -193,3 +365,19 @@ try {
 }
 
 console.log('account balance refresh regression passed')
+
+function assertBalanceRetryDelay(
+  database: ReturnType<typeof databaseModule.getBusinessDatabase>,
+  accountId: string,
+  lastAttemptAt: string | undefined,
+  expectedMinutes: number
+): void {
+  assert.ok(lastAttemptAt)
+  const row = database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(accountId) as { balance_query_next_refresh_at?: string | null }
+  assert.ok(row.balance_query_next_refresh_at)
+  const delayMs = Date.parse(row.balance_query_next_refresh_at) - Date.parse(lastAttemptAt)
+  assert.ok(
+    Math.abs(delayMs - expectedMinutes * 60_000) < 1_500,
+    `余额临时失败应在约 ${expectedMinutes} 分钟后重试，实际 ${delayMs}ms`
+  )
+}

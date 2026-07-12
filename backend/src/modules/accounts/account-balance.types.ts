@@ -33,4 +33,7 @@ export interface AccountBalanceSnapshot {
   errorMessage?: string
   lastAttemptAt?: string
   lastSuccessAt?: string
+  consecutiveTransientFailures?: number
+  lastTransientErrorMessage?: string
+  lastTransientFailureAt?: string
 }

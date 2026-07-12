@@ -3,7 +3,7 @@
     <div class="balance-query-header">
       <div class="account-config-section-title">
         <span>上游余额查询</span>
-        <a-tooltip title="保存后由后台按刷新周期更新；测试查询只验证当前配置，不会保存。">
+        <a-tooltip title="保存后由后台按刷新周期更新；仅验证当前配置，不会保存。">
           <QuestionCircleOutlined class="balance-query-help" />
         </a-tooltip>
       </div>
@@ -15,7 +15,18 @@
           <a-select v-model:value="form.balanceQueryAdapter" :disabled="readonly" :options="adapterOptions" />
         </a-form-item>
         <a-form-item label="刷新周期">
-          <a-input-number v-model:value="form.balanceQueryIntervalMinutes" :disabled="readonly" :min="1" :max="10" :precision="0" addon-after="分钟" />
+          <div class="balance-query-refresh-control">
+            <a-input-number class="balance-query-interval-input" v-model:value="form.balanceQueryIntervalMinutes" :disabled="readonly" :min="1" :max="10" :precision="0" addon-after="分钟" />
+            <a-button
+              class="balance-query-query-button"
+              html-type="button"
+              :disabled="readonly || !canQuery"
+              :loading="queryLoading"
+              @click="emit('query')"
+            >
+              测试查询
+            </a-button>
+          </div>
         </a-form-item>
       </div>
       <template v-if="form.balanceQueryAdapter === 'custom'">
@@ -38,12 +49,6 @@
         </div>
       </template>
 
-      <div class="balance-query-test">
-        <span>仅验证当前配置，不会保存</span>
-        <a-button :disabled="readonly || !canQuery" :loading="queryLoading" @click="emit('query')">
-          测试查询
-        </a-button>
-      </div>
     </template>
   </section>
 </template>
@@ -102,18 +107,20 @@ const adapterOptions = [
   gap: 0 16px;
 }
 
-.balance-query-test {
-  display: flex;
+.balance-query-refresh-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 0;
-  border-top: 1px solid #eef2f7;
+  gap: 8px;
+  width: 100%;
 }
 
-.balance-query-test > span {
-  color: #64748b;
-  font-size: 12px;
+.balance-query-refresh-control :deep(.ant-input-number-group-wrapper) {
+  width: 100%;
+}
+
+.balance-query-interval-input {
+  width: 100%;
 }
 
 @media (max-width: 720px) {
@@ -121,9 +128,15 @@ const adapterOptions = [
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .balance-query-test {
-    align-items: stretch;
-    flex-direction: column;
+}
+
+@media (max-width: 480px) {
+  .balance-query-refresh-control {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .balance-query-query-button {
+    justify-self: end;
   }
 }
 </style>

@@ -21,6 +21,7 @@
     "test:account-provider-model-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-provider-model-cache-regression.ts",
     "test:account-gpt-request-overrides": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-gpt-request-overrides-regression.ts",
     "test:account-balance-query": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-balance-query-regression.ts",
+    "test:table-monitor-display": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/table-monitor-display-regression.ts",
     "test:account-batch-edit": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-batch-edit-regression.ts",
     "test:route-load-recovery": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/route-load-recovery-regression.ts",
     "test:account-model-mapping-model-options": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-model-mapping-model-options-regression.ts",

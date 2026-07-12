@@ -20,7 +20,7 @@ import { requestUpstream, UpstreamRequestAbortedError, UpstreamRequestTimeoutErr
 import { parseCustomBalance, parseLiteLlmBalance, parseNewApiBalance, parseSub2ApiBalance, parseUserBalance } from './account-balance-adapters.js'
 
 const responseMaxBytes = 256 * 1024
-const requestTimeoutMs = 8_000
+const requestTimeoutMs = 15_000
 const balanceRefreshLeaseMs = 30_000
 const builtinAdapterOrder: AccountBalanceBuiltinAdapter[] = ['sub2api', 'newapi', 'litellm', 'user_balance']
 
@@ -43,9 +43,22 @@ interface AccountBalanceQueryResolution {
   preferredBuiltinAdapter?: AccountBalanceBuiltinAdapter
 }
 
+type AccountBalanceRefreshMode = 'automatic' | 'manual'
+type AccountBalanceFailureKind = 'transient' | 'deterministic'
+
+class AccountBalanceQueryFailure extends Error {
+  constructor(readonly kind: AccountBalanceFailureKind, message: string) {
+    super(message)
+    this.name = 'AccountBalanceQueryFailure'
+  }
+}
+
 export async function refreshAccountBalanceCandidate(
   candidate: AccountBalanceRefreshCandidate,
-  dependencies: { query?: (candidate: AccountBalanceRefreshCandidate) => Promise<AccountBalanceSnapshot> } = {}
+  dependencies: {
+    mode?: AccountBalanceRefreshMode
+    query?: (candidate: AccountBalanceRefreshCandidate) => Promise<AccountBalanceSnapshot>
+  } = {}
 ): Promise<AccountBalanceSnapshot> {
   if (!candidate) throw new Error('余额刷新账户不存在')
   const leaseKey = `account-balance:${candidate.id}`
@@ -70,26 +83,54 @@ export async function refreshAccountBalanceCandidate(
       ? { snapshot: await dependencies.query(candidate) }
       : await queryAccountBalanceResolution(candidate)
     const completedAt = new Date().toISOString()
-    const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
+    const successful = isSuccessfulBalanceSnapshot(resolution.snapshot)
     const snapshot: AccountBalanceSnapshot = {
       ...resolution.snapshot,
       lastAttemptAt: completedAt,
-      ...(resolution.snapshot.status === 'fresh' || resolution.snapshot.status === 'unlimited' || resolution.snapshot.status === 'unsupported'
+      ...(successful
         ? { lastSuccessAt: completedAt }
         : {})
     }
+    if (!successful) {
+      const unsupportedSnapshot: AccountBalanceSnapshot = {
+        ...snapshot,
+        status: 'unsupported',
+        errorMessage: snapshot.errorMessage ?? '当前配置未找到可用余额接口，后台查询已暂停'
+      }
+      if (dependencies.mode === 'manual') return unsupportedSnapshot
+      const nextConfig = resolvedBalanceConfig(candidate.config, undefined)
+      await persistBalanceRefreshIfCurrent(candidate, nextConfig, unsupportedSnapshot, null)
+      return unsupportedSnapshot
+    }
+    const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
     const nextConfig = resolvedBalanceConfig(candidate.config, resolution.preferredBuiltinAdapter)
     await persistBalanceRefreshIfCurrent(candidate, nextConfig, snapshot, nextRefreshAfter)
     return snapshot
   } catch (error) {
     const completedAt = new Date().toISOString()
-    const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
-    const snapshot: AccountBalanceSnapshot = {
+    const errorMessage = accountBalanceErrorMessage(error)
+    const failedSnapshot: AccountBalanceSnapshot = {
       status: 'failed',
-      errorMessage: accountBalanceErrorMessage(error),
+      errorMessage,
       lastAttemptAt: completedAt
     }
-    const nextConfig = resolvedBalanceConfig(candidate.config, undefined)
+    if (dependencies.mode === 'manual') return failedSnapshot
+
+    if (accountBalanceFailureKind(error) === 'deterministic') {
+      const nextConfig = resolvedBalanceConfig(candidate.config, undefined)
+      const unsupportedSnapshot: AccountBalanceSnapshot = {
+        status: 'unsupported',
+        errorMessage,
+        lastAttemptAt: completedAt
+      }
+      await persistBalanceRefreshIfCurrent(candidate, nextConfig, unsupportedSnapshot, null)
+      return unsupportedSnapshot
+    }
+
+    const previousSnapshot = (await loadAccountBalanceSnapshotsByAccountIdsAsync([candidate.id])).get(candidate.id)
+    const snapshot = nextTransientFailureSnapshot(previousSnapshot, errorMessage, completedAt)
+    const nextRefreshAfter = new Date(Date.now() + transientRetryDelayMs(snapshot.consecutiveTransientFailures)).toISOString()
+    const nextConfig = candidate.config
     await persistBalanceRefreshIfCurrent(candidate, nextConfig, snapshot, nextRefreshAfter)
     return snapshot
   } finally {
@@ -114,7 +155,7 @@ export async function testAccountBalanceCandidate(
     return {
       ...snapshot,
       lastAttemptAt: timestamp,
-      ...(snapshot.status === 'fresh' || snapshot.status === 'unlimited' || snapshot.status === 'unsupported'
+      ...(isSuccessfulBalanceSnapshot(snapshot)
         ? { lastSuccessAt: timestamp }
         : {})
     }
@@ -130,12 +171,15 @@ export async function testAccountBalanceCandidate(
 async function queryAccountBalanceResolution(candidate: AccountBalanceQueryCandidate): Promise<AccountBalanceQueryResolution> {
   if (candidate.config.adapter === 'builtin') {
     const result = await queryBuiltinAccountBalance(candidate)
-    return { snapshot: result.snapshot, preferredBuiltinAdapter: result.adapter }
+    return {
+      snapshot: result.snapshot,
+      ...(isSuccessfulBalanceSnapshot(result.snapshot) ? { preferredBuiltinAdapter: result.adapter } : {})
+    }
   }
   const context = await accountBalanceRequestContext(candidate)
-  if (!candidate.config.custom) throw new Error('自定义余额查询配置缺失')
+  if (!candidate.config.custom) throw deterministicBalanceError('自定义余额查询配置缺失')
   const target = new URL(candidate.config.custom.path, context.baseUrl)
-  if (target.origin !== context.baseUrl.origin) throw new Error('自定义余额查询必须与账户 Base URL 同源')
+  if (target.origin !== context.baseUrl.origin) throw deterministicBalanceError('自定义余额查询必须与账户 Base URL 同源')
   return { snapshot: parseCustomBalance(await requestJson(target, context), candidate.config.custom) }
 }
 
@@ -145,31 +189,59 @@ export async function queryBuiltinAccountBalance(
     queryAdapter?: (candidate: AccountBalanceQueryCandidate, adapter: AccountBalanceBuiltinAdapter) => Promise<AccountBalanceSnapshot>
   } = {}
 ): Promise<AccountBalanceBuiltinQueryResult> {
-  if (candidate.config.adapter !== 'builtin') throw new Error('账户未配置内置余额适配')
+  if (candidate.config.adapter !== 'builtin') throw deterministicBalanceError('账户未配置内置余额适配')
   const adapters = preferredBuiltinAdapterOrder(candidate.config.preferredBuiltinAdapter)
   const context = dependencies.queryAdapter ? undefined : await accountBalanceRequestContext(candidate)
   const queryAdapter = dependencies.queryAdapter
     ?? ((_candidate: AccountBalanceQueryCandidate, adapter: AccountBalanceBuiltinAdapter) => queryBuiltinAdapter(context as AccountBalanceRequestContext, adapter))
+  let transientError: unknown
+  let deterministicError: unknown
+  let unsupportedResult: AccountBalanceBuiltinQueryResult | undefined
   for (const adapter of adapters) {
     try {
       const snapshot = await queryAdapter(candidate, adapter)
       if (snapshot.status === 'fresh' || snapshot.status === 'unlimited') {
         return { adapter, snapshot }
       }
-    } catch {
+      if (snapshot.status === 'unsupported') unsupportedResult = { adapter, snapshot }
+    } catch (error) {
       if (context && Date.now() >= context.deadlineAtMs) {
         throw new UpstreamRequestTimeoutError('上游余额查询超时')
       }
+      if (isBalanceAuthenticationError(error)) throw error
+      if (accountBalanceFailureKind(error) === 'transient') transientError = error
+      else deterministicError = error
       // A saved preference can become stale when the relay, key, or proxy changes.
     }
   }
-  throw new Error('内置余额适配器均未匹配')
+  if (transientError) throw transientError
+  if (unsupportedResult) {
+    return {
+      ...unsupportedResult,
+      snapshot: {
+        ...unsupportedResult.snapshot,
+        errorMessage: unsupportedResult.snapshot.errorMessage ?? '当前配置未找到可用余额接口'
+      }
+    }
+  }
+  return {
+    adapter: adapters.at(-1) ?? 'user_balance',
+    snapshot: {
+      status: 'unsupported',
+      errorMessage: deterministicError ? accountBalanceErrorMessage(deterministicError) : '内置余额适配器均未匹配'
+    }
+  }
 }
 
 async function accountBalanceRequestContext(candidate: Pick<AccountBalanceRefreshCandidate, 'credentials' | 'proxyProfileId'>): Promise<AccountBalanceRequestContext> {
   const baseUrlText = typeof candidate.credentials.base_url === 'string' ? candidate.credentials.base_url.trim() : ''
-  if (!baseUrlText) throw new Error('账户未配置 Base URL')
-  const baseUrl = new URL(baseUrlText)
+  if (!baseUrlText) throw deterministicBalanceError('账户未配置 Base URL')
+  let baseUrl: URL
+  try {
+    baseUrl = new URL(baseUrlText)
+  } catch {
+    throw deterministicBalanceError('账户 Base URL 无效')
+  }
   const apiKey = accountApiKey(candidate.credentials)
   const proxyUrl = candidate.proxyProfileId ? await resolveProxyUrlForProfileAsync(candidate.proxyProfileId) : undefined
   return { baseUrl, apiKey, proxyUrl, deadlineAtMs: Date.now() + requestTimeoutMs }
@@ -216,7 +288,7 @@ async function persistBalanceRefreshIfCurrent(
   candidate: AccountBalanceRefreshCandidate,
   nextConfig: AccountBalanceQueryConfig,
   snapshot: AccountBalanceSnapshot,
-  nextRefreshAfter: string
+  nextRefreshAfter: string | null
 ): Promise<boolean> {
   const changed = await commitBalanceRefresh({
     accountId: candidate.id,
@@ -232,7 +304,7 @@ async function persistBalanceRefreshIfCurrent(
     expectedConfigRevision: candidate.configRevision,
     expectedConfig: nextConfig,
     snapshot,
-    nextRefreshAfter
+    ...(nextRefreshAfter ? { nextRefreshAfter } : {})
   }
   if (runtimeConfig.databaseDriver === 'postgres' || !mainDatabaseRuntimeInfo('stats').queryOnly) {
     return await replaceAccountBalanceSnapshotIfCurrentAsync(input)
@@ -274,15 +346,15 @@ async function requestJson(url: URL, context: AccountBalanceRequestContext): Pro
     requestTimeoutMs: remainingMs,
     signal: AbortSignal.timeout(remainingMs)
   })
-  if (response.status === 401 || response.status === 403) throw new Error(`上游鉴权失败（HTTP ${response.status}）`)
-  if (response.status >= 300 && response.status < 400) throw new Error(`上游余额接口禁止重定向（HTTP ${response.status}）`)
+  if (response.status === 401 || response.status === 403) throw deterministicBalanceError(`上游鉴权失败（HTTP ${response.status}）`)
+  if (response.status >= 300 && response.status < 400) throw deterministicBalanceError(`上游余额接口禁止重定向（HTTP ${response.status}）`)
   if (!response.ok) throw new Error(`上游余额接口请求失败（HTTP ${response.status}）`)
-  if (!response.body) throw new Error('上游余额接口响应为空')
+  if (!response.body) throw deterministicBalanceError('上游余额接口响应为空')
   const chunks: Buffer[] = []
   let totalBytes = 0
   for await (const chunk of response.body) {
     totalBytes += chunk.byteLength
-    if (totalBytes > responseMaxBytes) throw new Error('上游余额接口响应超过 256 KiB')
+    if (totalBytes > responseMaxBytes) throw deterministicBalanceError('上游余额接口响应超过 256 KiB')
     chunks.push(Buffer.from(chunk))
   }
   try {
@@ -298,7 +370,7 @@ function accountApiKey(credentials: Record<string, unknown>): string {
     if (keys.length === 1) return keys[0].trim()
   }
   if (typeof credentials.api_key === 'string' && credentials.api_key.trim()) return credentials.api_key.trim()
-  throw new Error('账户没有可用的单 API Key')
+  throw deterministicBalanceError('账户没有可用的单 API Key')
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -310,9 +382,90 @@ function accountBalanceErrorMessage(error: unknown): string {
   if (error instanceof UpstreamRequestTimeoutError || error instanceof UpstreamRequestAbortedError || (error instanceof DOMException && error.name === 'TimeoutError')) {
     return '上游余额查询超时'
   }
+  if (error instanceof AccountBalanceQueryFailure) return error.message.slice(0, 200)
   const message = error instanceof Error ? error.message : '上游余额查询失败'
   if (/上游鉴权失败|禁止重定向|HTTP \d{3}|响应超过|JSON 无效|响应为空|配置缺失|同源|字段|余额|预算|quota/i.test(message)) {
     return message.slice(0, 200)
   }
   return '上游余额查询失败'
+}
+
+function nextTransientFailureSnapshot(
+  previous: AccountBalanceSnapshot | undefined,
+  errorMessage: string,
+  attemptedAt: string
+): AccountBalanceSnapshot {
+  const consecutiveTransientFailures = Math.min(3, (previous?.consecutiveTransientFailures ?? 0) + 1)
+  if (consecutiveTransientFailures >= 3) {
+    return {
+      status: 'failed',
+      errorMessage,
+      lastAttemptAt: attemptedAt,
+      consecutiveTransientFailures,
+      lastTransientErrorMessage: errorMessage,
+      lastTransientFailureAt: attemptedAt
+    }
+  }
+  if (previous?.status === 'fresh' || previous?.status === 'unlimited') {
+    return {
+      ...previous,
+      lastAttemptAt: attemptedAt,
+      consecutiveTransientFailures,
+      lastTransientErrorMessage: errorMessage,
+      lastTransientFailureAt: attemptedAt
+    }
+  }
+  if (previous?.status === 'failed') {
+    return {
+      ...previous,
+      lastAttemptAt: attemptedAt,
+      consecutiveTransientFailures,
+      lastTransientErrorMessage: errorMessage,
+      lastTransientFailureAt: attemptedAt
+    }
+  }
+  return {
+    status: 'pending',
+    lastAttemptAt: attemptedAt,
+    consecutiveTransientFailures,
+    lastTransientErrorMessage: errorMessage,
+    lastTransientFailureAt: attemptedAt
+  }
+}
+
+function transientRetryDelayMs(consecutiveTransientFailures: number | undefined): number {
+  if ((consecutiveTransientFailures ?? 0) <= 1) return 15 * 60_000
+  if (consecutiveTransientFailures === 2) return 30 * 60_000
+  return 60 * 60_000
+}
+
+function isSuccessfulBalanceSnapshot(snapshot: AccountBalanceSnapshot): boolean {
+  return snapshot.status === 'fresh' || snapshot.status === 'unlimited'
+}
+
+function deterministicBalanceError(message: string): AccountBalanceQueryFailure {
+  return new AccountBalanceQueryFailure('deterministic', message)
+}
+
+function accountBalanceFailureKind(error: unknown): AccountBalanceFailureKind {
+  if (error instanceof AccountBalanceQueryFailure) return error.kind
+  if (error instanceof UpstreamRequestTimeoutError || error instanceof UpstreamRequestAbortedError || (error instanceof DOMException && error.name === 'TimeoutError')) {
+    return 'transient'
+  }
+  const message = error instanceof Error ? error.message : ''
+  const statusMatch = /HTTP (\d{3})/i.exec(message)
+  if (statusMatch) {
+    const status = Number(statusMatch[1])
+    if (status === 408 || status === 429 || status >= 500) return 'transient'
+    if (status >= 300 && status < 500) return 'deterministic'
+  }
+  if (/Base URL|单 API Key|配置缺失|同源|响应为空|响应超过|响应结构|字段|必须是|余额不能|JSON Pointer|quota_per_unit|max_budget|remaining|total_available/i.test(message)) {
+    return 'deterministic'
+  }
+  return 'transient'
+}
+
+function isBalanceAuthenticationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : ''
+  return /上游鉴权失败|HTTP (?:401|403)/i.test(message)
 }

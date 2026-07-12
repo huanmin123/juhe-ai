@@ -84,7 +84,7 @@ export function parseSub2ApiBalance(payload: unknown): AccountBalanceSnapshot {
 
 export function parseNewApiBalance(payload: unknown, options: { quotaPerUnit: unknown }): AccountBalanceSnapshot {
   const data = objectValue(objectValue(payload).data)
-  if (data.unlimited_quota === true) return { status: 'unlimited', basis: 'api_key_quota' }
+  if (data.unlimited_quota === true) return { status: 'unsupported', basis: 'api_key_quota' }
   const remaining = decimalValue(data.total_available, 'total_available')
   const divisor = decimalValue(options.quotaPerUnit, 'quota_per_unit')
   return freshResult(remaining, {

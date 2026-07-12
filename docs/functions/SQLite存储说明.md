@@ -255,7 +255,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `process_event_loop_samples`：按采样时间和进程角色保存事件循环额外延迟、RSS、Heap used / total、external 和 array buffers，当前角色为 `server`、`ingest-worker`、`stats-worker`、`ops-worker`、`db-service`，用于区分主 Web 进程、写入 worker、统计 worker、运维 worker 和本地 DB service 哪个进程卡顿或内存爬升。
 - `process_event_loop_hourly`：按 `stat_hour + process_role` 汇总事件循环延迟有效样本数、平均值、最大值，以及进程 RSS / Heap 的平均值和峰值，作为长期粗粒度排障缓存。
 - `process_event_loop_trend_windows`：统计概览范围窗口缓存；管理侧事件循环趋势和进程内存占用趋势均读取该窗口，不在接口请求时扫描 `process_event_loop_samples`。
-- `database_storage_snapshots`：standalone 按采样时间保存业务库、数据集目录库、使用记录目录库和统计结果库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；performance 使用同一张统计表保存 PostgreSQL schema relation size 快照，并额外覆盖 `juhe_archive`（分区归档）和 `juhe_codex_context`（Responses 桥接状态索引）。这是 10 分钟常规采样的主指标。usage shard 文件集合观测仍是表监控后续增强项。
+- `database_storage_snapshots`：standalone 按采样时间保存业务库、数据集目录库、使用记录目录库和统计结果库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；performance 使用同一张统计表保存 PostgreSQL 五个实际 schema 的 relation size 快照，包含 `juhe_codex_context`（Responses 桥接状态索引），不再生成 `juhe_archive` 空占位项。这是 10 分钟常规采样的主指标。usage shard 文件集合观测仍是表监控后续增强项。
 - `table_storage_snapshots`：按采样时间保存表级可选行数、表大小、索引大小、总大小、分区 / 归档状态和 1 小时 / 24 小时增长；表级数据按游标轮转分批刷新，不要求所有表在同一采样时间都有新快照。后台常规采样通过 `dbstat` 叶子页 cell 数滚动写入可推导的行数，不提供精确 `COUNT(*)` 采样分支；SQLite `dbstat` 不可用或表类型不适合推导时，表大小、索引大小、总大小、页数和行数保持为空，不写入伪造的 0。
 - 表监控文件级采样由后台 worker 每 10 分钟执行一次；表级采样默认每轮每个库最多刷新 4 张表，历史默认保留最近一月。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。IP 范围窗口额外使用 `scope_type = client_ip_range_window` 记录窗口刷新 ready/stale 标记，只表达窗口是否完成刷新，不保存数量或范围总量。任务尚未写入状态或滞后无法判断时，`lag_seconds` 保持为空，不按 0 处理。
@@ -982,8 +982,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `runtimeLogIndexRetentionDays = 14`：普通运行日志索引默认保留 14 天，合法范围 `1..90`，用于运行日志页面检索和 facet 索引清理。
 - `publicApiLogRetentionDays = 30`：公开接口调用日志默认保留 30 天，合法范围 `1..365`。
 - `usageRecordOnlineRetentionDays = 7`：使用记录在线热数据默认保留 7 天，后台清理必须等待统计安全游标追平；普通用户页面默认今天，历史翻页或显式日期窗口才读取更早 shard / 分区。
-- `usageRecordArchiveRetentionDays = 90`：使用记录归档默认保留 90 天，归档 manifest 只作为离线取证和人工恢复边界；是否最终清空由运维策略决定。
-- `usageRecordRetentionDays`：旧单一保留口径已拆分为在线热数据和归档保留，不再作为运行时代码的新配置边界；表监控非业务数据硬清理不使用该旧口径。
+- `usageRecordRetentionDays`：使用记录在线保留口径；PostgreSQL 模式在统计安全游标追平后直接删除到期整日分区，不再维护第二套同库归档保留口径。表监控非业务数据硬清理不使用该口径。
 - `usageStatsMinuteRetentionHours = 48`：分钟级统计缓存默认保留 48 小时。
 - `usageStatsHourlyRetentionDays = 60`：小时级统计缓存默认保留 60 天，覆盖 AI 性能最近 31 天小时趋势和边界回查。
 - `usageStatsDailyRetentionDays = 400`：日级统计缓存默认保留 400 天，覆盖一年内自然日查询和月表重建。

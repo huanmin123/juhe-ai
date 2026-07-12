@@ -670,7 +670,7 @@ export type DbServiceOperation =
       expectedConfigRevision: number
       expectedConfig: import('../accounts/account-balance.types.js').AccountBalanceQueryConfig
       nextConfig: import('../accounts/account-balance.types.js').AccountBalanceQueryConfig
-      nextRefreshAt: string
+      nextRefreshAt: string | null
     }
   }
   | {
