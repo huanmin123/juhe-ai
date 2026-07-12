@@ -782,10 +782,18 @@ function createGatewayAccount(name: string, errorHandlingRules: AccountErrorHand
     status: 'active',
     schedulable: true
   }, adminAccess)
+  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), '测试网关账号应能通过健康检查激活')
+  const activeAccount = repositories.findAccountSummary(account.id, adminAccess)
+  assert(activeAccount, '应能读取激活后的测试网关账号')
   const gatewayAccount = repositories.findOpenAIAccountForGroup(group.id, account.id, 'sys_admin', { ignoreAvailability: true })
   assert(gatewayAccount, '应能读取到测试网关账号对象')
   assert.equal(gatewayAccount.status, 'active', '测试网关账号初始应为正常状态')
-  return { account, group, gatewayAccount }
+  return { account: activeAccount, group, gatewayAccount }
 }
 
 function accountErrorRule(name: string, statusCodes: number[], action: AccountErrorHandlingRuleAction): AccountErrorHandlingRule {

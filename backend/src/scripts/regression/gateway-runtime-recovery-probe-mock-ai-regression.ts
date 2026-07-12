@@ -70,6 +70,7 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 
 try {
   gatewayCache.clearGatewayRuntimeCache()
+  await assertGatewayAutomaticProbeConcurrencyLimit()
   let upstreamServer: http.Server | undefined
   let appServer: http.Server | undefined
   try {
@@ -97,6 +98,18 @@ try {
   await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   databaseModule.closeStorageDatabases()
   await removeTempRoot()
+}
+
+async function assertGatewayAutomaticProbeConcurrencyLimit(): Promise<void> {
+  let runningCount = 0
+  let maxRunningCount = 0
+  await Promise.all(Array.from({ length: 8 }, () => accountSideEffects.runWithGatewayAutomaticProbeSlotForTest(async () => {
+    runningCount += 1
+    maxRunningCount = Math.max(maxRunningCount, runningCount)
+    await delay(20)
+    runningCount -= 1
+  })))
+  assert.equal(maxRunningCount, 3, 'server 恢复探针和 precheck 必须共享最多 3 路自动诊断门禁')
 }
 
 async function assertUserFailureOnlySchedulesBackgroundRecovery(baseUrl: string, scenario: GatewayScenario): Promise<void> {
@@ -154,8 +167,15 @@ function createSingleAccountScenario(upstreamBaseUrl: string): GatewayScenario {
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    supportedModels: ['gpt-5.5']
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }, access)
+  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), '后台恢复探针 Mock AI 账户应能通过健康检查激活')
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '后台恢复探针 Mock AI 网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],

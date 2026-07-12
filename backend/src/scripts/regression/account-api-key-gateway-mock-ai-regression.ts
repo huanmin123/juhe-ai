@@ -334,7 +334,7 @@ function createGatewayApiKeyScenario(input: {
     providerCode,
     enabled: true
   }, access)
-  const account = repositories.createAccount({
+  const account = createActiveAccount({
     providerCode,
     providerProtocolProfileId: profileIdForProvider(providerCode),
     name: `${input.name} 账户`,
@@ -366,7 +366,7 @@ function createGptOAuthNonIsolationScenario(upstreamBaseUrl: string): { groupId:
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'A GPT OAuth 非 Key 隔离账户',
@@ -381,7 +381,7 @@ function createGptOAuthNonIsolationScenario(upstreamBaseUrl: string): { groupId:
     schedulable: true,
     priority: 0
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'B GPT OAuth 非 Key 隔离救援账户',
@@ -432,7 +432,7 @@ function createAuthorizedApiKeyScenario(upstreamBaseUrl: string): {
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, granteeAccess)
-  const sourceAccount = repositories.createAccount({
+  const sourceAccount = createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'A 授权 Key 隔离来源账户',
@@ -460,7 +460,7 @@ function createAuthorizedApiKeyScenario(upstreamBaseUrl: string): {
     .prepare('SELECT id FROM accounts WHERE authorization_instance_source_account_id = ? AND system_account_id = ? AND deleted_at IS NULL LIMIT 1')
     .get(sourceAccount.id, grantee.id) as unknown as { id?: string } | undefined
   assert(authorizedInstance?.id, '授权 Key 隔离场景需要被授权实例账户')
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'B 授权 Key 隔离被授权人救援账户',
@@ -495,7 +495,7 @@ function createGatewayApiKeyFailoverScenario(upstreamBaseUrl: string): string {
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'A 多 Key 摘除来源账户',
@@ -511,7 +511,7 @@ function createGatewayApiKeyFailoverScenario(upstreamBaseUrl: string): string {
     schedulable: true,
     priority: 0
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'B 多 Key 摘除救援账户',
@@ -540,7 +540,7 @@ function createGatewayApiKeyAllBadScenario(upstreamBaseUrl: string): { apiKey: s
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
-  const sourceAccount = repositories.createAccount({
+  const sourceAccount = createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'A 全部 Key 摘除来源账户',
@@ -556,7 +556,7 @@ function createGatewayApiKeyAllBadScenario(upstreamBaseUrl: string): { apiKey: s
     schedulable: true,
     priority: 0
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'B 全部 Key 摘除救援账户',
@@ -588,7 +588,7 @@ function createGatewaySuperPriorityScenario(upstreamBaseUrl: string): string {
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'A 超级优先普通账户',
@@ -602,7 +602,7 @@ function createGatewaySuperPriorityScenario(upstreamBaseUrl: string): string {
     schedulable: true,
     priority: 0
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'B 超级优先账户',
@@ -632,7 +632,7 @@ function createGatewayFallbackScenario(upstreamBaseUrl: string): string {
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'A 备用降级主池账户',
@@ -646,7 +646,7 @@ function createGatewayFallbackScenario(upstreamBaseUrl: string): string {
     schedulable: true,
     priority: 50
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'B 备用降级备用账户',
@@ -676,7 +676,7 @@ function createGatewayFallbackFailureScenario(upstreamBaseUrl: string): string {
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'A 备用失败主池账户',
@@ -690,7 +690,7 @@ function createGatewayFallbackFailureScenario(upstreamBaseUrl: string): string {
     schedulable: true,
     priority: 50
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'B 备用失败接管账户',
@@ -721,7 +721,7 @@ function createTrafficMigrationOverrideScenario(upstreamBaseUrl: string): { apiK
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
-  const sourceAccount = repositories.createAccount({
+  const sourceAccount = createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'A 迁移覆盖源账户',
@@ -735,7 +735,7 @@ function createTrafficMigrationOverrideScenario(upstreamBaseUrl: string): { apiK
     schedulable: true,
     priority: 0
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'B 迁移覆盖超级优先账户',
@@ -750,7 +750,7 @@ function createTrafficMigrationOverrideScenario(upstreamBaseUrl: string): { apiK
     priority: 0,
     superPriorityEnabled: true
   }, access)
-  const targetAccount = repositories.createAccount({
+  const targetAccount = createActiveAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'C 迁移覆盖目标备用账户',
@@ -776,6 +776,20 @@ function createTrafficMigrationOverrideScenario(upstreamBaseUrl: string): { apiK
     sourceAccountId: sourceAccount.id,
     targetAccountId: targetAccount.id
   }
+}
+
+function createActiveAccount(
+  input: Parameters<typeof repositories.createAccount>[0],
+  accountAccess: Parameters<typeof repositories.createAccount>[1]
+) {
+  const account = repositories.createAccount(input, accountAccess)
+  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), `Mock AI 测试账户 ${account.id} 应能通过后台健康检查激活`)
+  return account
 }
 
 async function postChatCompletions(backendBaseUrl: string, apiKey: string, count: number): Promise<string> {
