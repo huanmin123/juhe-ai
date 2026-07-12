@@ -18,6 +18,7 @@ import { settingsApi } from './domains/settings'
 import { myStatsApi, statsApi, tableMonitorApi } from './domains/stats'
 import { systemAccountsApi } from './domains/systemAccounts'
 import { myTeamsApi, systemTeamsApi } from './domains/systemTeams'
+import { chatApi } from './domains/chat'
 import { myUsageRecordsApi, usageRecordsApi } from './domains/usageRecords'
 
 export { setMustChangePasswordHandler, setUnauthorizedHandler } from './http'
@@ -61,5 +62,6 @@ export const api = {
   modelChecks: modelChecksApi,
   myModelChecks: myModelChecksApi,
   myStats: myStatsApi,
-  settings: settingsApi
+  settings: settingsApi,
+  chat: chatApi
 }

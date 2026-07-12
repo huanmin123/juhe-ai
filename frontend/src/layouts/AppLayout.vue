@@ -105,6 +105,7 @@ import {
   FundOutlined,
   HistoryOutlined,
   LinkOutlined,
+  MessageOutlined,
   SearchOutlined,
   FileSearchOutlined,
   NodeIndexOutlined,
@@ -247,6 +248,7 @@ const ApiKeyMenuIcon = () =>
   ])
 
 const menuIconMap = {
+  '/my-chat': MessageOutlined,
   '/providers': GlobalOutlined,
   '/my-models': AppstoreOutlined,
   '/my-accounts': UserSwitchOutlined,
