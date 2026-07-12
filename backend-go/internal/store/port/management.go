@@ -1356,6 +1356,78 @@ type ManagementRouteStrategyOptionReader interface {
 	ListManagementRouteStrategyOptions(ctx context.Context, input ManagementRouteStrategyOptionListInput) ([]ManagementRouteStrategyOption, error)
 }
 
+type ManagementRouteStrategyListInput struct {
+	SystemAccountID string
+	Keyword         string
+	Mode            string
+	Status          string
+	Limit           int
+	Offset          int
+}
+
+type ManagementRouteStrategyListRow struct {
+	ID                string
+	SystemAccountID   string
+	SystemAccountName string
+	Name              string
+	Description       *string
+	Mode              string
+	Status            string
+	IsDefault         bool
+	ConfigJSON        *string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type ManagementRouteStrategyListPage struct {
+	Rows    []ManagementRouteStrategyListRow
+	HasMore bool
+}
+
+type ManagementRouteStrategyScope struct {
+	ID              string
+	SystemAccountID string
+}
+
+type ManagementRouteStrategyGroupBinding struct {
+	ID           string
+	GroupID      string
+	GroupName    string
+	ProviderCode string
+	Priority     int
+	Weight       int
+	Status       string
+	GroupEnabled bool
+}
+
+type ManagementRouteStrategyListEnrichment struct {
+	ID                  string
+	SystemAccountID     string
+	GroupBindingPreview []ManagementRouteStrategyGroupBinding
+	BindingCount        int64
+	APIKeyCount         int64
+}
+
+type ManagementRouteStrategyDetailInput struct {
+	RouteStrategyID string
+	SystemAccountID string
+}
+
+type ManagementRouteStrategyDetailRow struct {
+	ManagementRouteStrategyListRow
+	GroupBindings []ManagementRouteStrategyGroupBinding
+	APIKeyCount   int64
+}
+
+type ManagementRouteStrategyListReader interface {
+	ListManagementRouteStrategies(ctx context.Context, input ManagementRouteStrategyListInput) (ManagementRouteStrategyListPage, error)
+	ListManagementRouteStrategyListEnrichment(ctx context.Context, scopes []ManagementRouteStrategyScope) ([]ManagementRouteStrategyListEnrichment, error)
+}
+
+type ManagementRouteStrategyDetailReader interface {
+	FindManagementRouteStrategyDetail(ctx context.Context, input ManagementRouteStrategyDetailInput) (ManagementRouteStrategyDetailRow, bool, error)
+}
+
 type ManagementGroupOption struct {
 	ID                                 string
 	SystemAccountID                    string

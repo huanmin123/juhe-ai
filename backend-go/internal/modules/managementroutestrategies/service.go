@@ -14,7 +14,15 @@ const (
 )
 
 type Service struct {
-	store port.ManagementRouteStrategyOptionReader
+	store        port.ManagementRouteStrategyOptionReader
+	listReader   port.ManagementRouteStrategyListReader
+	detailReader port.ManagementRouteStrategyDetailReader
+}
+
+type ServiceOptions struct {
+	OptionReader port.ManagementRouteStrategyOptionReader
+	ListReader   port.ManagementRouteStrategyListReader
+	DetailReader port.ManagementRouteStrategyDetailReader
 }
 
 type OptionListInput struct {
@@ -37,7 +45,22 @@ type Option struct {
 }
 
 func NewService(store port.ManagementRouteStrategyOptionReader) *Service {
-	return &Service{store: store}
+	options := ServiceOptions{OptionReader: store}
+	if reader, ok := store.(port.ManagementRouteStrategyListReader); ok {
+		options.ListReader = reader
+	}
+	if reader, ok := store.(port.ManagementRouteStrategyDetailReader); ok {
+		options.DetailReader = reader
+	}
+	return NewServiceWithOptions(options)
+}
+
+func NewServiceWithOptions(options ServiceOptions) *Service {
+	return &Service{
+		store:        options.OptionReader,
+		listReader:   options.ListReader,
+		detailReader: options.DetailReader,
+	}
 }
 
 func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option, error) {
