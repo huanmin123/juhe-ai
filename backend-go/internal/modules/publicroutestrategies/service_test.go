@@ -3,6 +3,7 @@ package publicroutestrategies
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -250,8 +251,8 @@ func TestUpdateWithoutGroupBindingsPreservesCurrentInvalidBinding(t *testing.T) 
 	if resp.RouteStrategy == nil || resp.RouteStrategy.Name != nextName {
 		t.Fatalf("response = %+v", resp)
 	}
-	if got := store.findBindableGroupsCalls; got != 0 {
-		t.Fatalf("FindPublicRouteStrategyBindableGroups calls = %d, want 0", got)
+	if got := store.findBindableGroupsCalls; got != 1 {
+		t.Fatalf("FindPublicRouteStrategyBindableGroups lock calls = %d, want 1", got)
 	}
 	if got := len(store.updateInputs); got != 1 {
 		t.Fatalf("UpdatePublicRouteStrategy calls = %d, want 1", got)
@@ -285,11 +286,213 @@ func TestUpdateWithoutGroupBindingsStillValidatesNextMode(t *testing.T) {
 	if !errors.Is(err, ErrInvalidBinding) {
 		t.Fatalf("Update() mode validation error = %v, want ErrInvalidBinding", err)
 	}
-	if got := store.findBindableGroupsCalls; got != 0 {
-		t.Fatalf("FindPublicRouteStrategyBindableGroups calls = %d, want 0", got)
+	if got := store.findBindableGroupsCalls; got != 1 {
+		t.Fatalf("FindPublicRouteStrategyBindableGroups lock calls = %d, want 1", got)
 	}
 	if len(store.updateInputs) != 0 {
 		t.Fatalf("UpdatePublicRouteStrategy calls = %d, want 0", len(store.updateInputs))
+	}
+}
+
+func TestUpdateLocksDependenciesBeforeRouteForExplicitAndOmittedBindings(t *testing.T) {
+	tests := []struct {
+		name       string
+		bindings   OptionalGroupBindings
+		mode       *string
+		wantEvents []string
+	}{
+		{
+			name: "explicit bindings",
+			bindings: NewOptionalGroupBindings([]GroupBindingInput{
+				{GroupID: "grp_2", Priority: 2},
+				{GroupID: "grp_1", Priority: 1},
+			}, true),
+			mode:       stringPtr(ModeWeighted),
+			wantEvents: []string{"bindable-lock:grp_1,grp_2", "route-lock", "update"},
+		},
+		{
+			name:       "omitted bindings",
+			wantEvents: []string{"bindable-lock:grp_1", "route-lock", "update"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakePublicRouteStrategyStore()
+			store.putTarget(publicRouteStrategyTarget("sys_1", "alice", "Alice", "active"))
+			store.putGroup(port.PublicRouteStrategyBindableGroup{ID: "grp_1", SystemAccountID: "sys_1", Name: "主分组", ProviderCode: "gpt", Enabled: true})
+			store.putGroup(port.PublicRouteStrategyBindableGroup{ID: "grp_2", SystemAccountID: "sys_1", Name: "备用分组", ProviderCode: "gpt", Enabled: true})
+			store.putRoute(port.PublicRouteStrategySummary{
+				ID:              "rts_1",
+				SystemAccountID: "sys_1",
+				Name:            "公开策略",
+				Mode:            port.PublicRouteStrategyModeNormal,
+				Status:          port.PublicRouteStrategyStatusActive,
+				GroupBindings: []port.PublicRouteStrategyGroupBindingSummary{{
+					ID: "rsg_1", GroupID: "grp_1", GroupName: "主分组", ProviderCode: "gpt", Priority: 1, Weight: 1, Status: port.PublicRouteStrategyStatusActive, GroupEnabled: true,
+				}},
+			})
+			service, tx := newPublicRouteStrategiesTestService(store)
+			nextName := "更新后"
+
+			_, err := service.Update(context.Background(), UpdateInput{
+				RouteStrategyID: "rts_1",
+				Name:            &nextName,
+				Mode:            tt.mode,
+				GroupBindings:   tt.bindings,
+			})
+			if err != nil {
+				t.Fatalf("Update() error = %v", err)
+			}
+			if tx.calls != 1 || tx.rollbacks != 0 || tx.commits != 1 {
+				t.Fatalf("transaction calls=%d rollbacks=%d commits=%d", tx.calls, tx.rollbacks, tx.commits)
+			}
+			if !reflect.DeepEqual(store.txEvents, tt.wantEvents) {
+				t.Fatalf("transaction events = %#v, want %#v", store.txEvents, tt.wantEvents)
+			}
+			if store.readRouteFindCalls != 1 || store.txRouteFindCalls != 1 {
+				t.Fatalf(
+					"route reads=%d locks=%d, want 1 each",
+					store.readRouteFindCalls,
+					store.txRouteFindCalls,
+				)
+			}
+		})
+	}
+}
+
+func TestUpdateRetriesOmittedBindingsWithLatestGroupIDs(t *testing.T) {
+	store := newFakePublicRouteStrategyStore()
+	store.putTarget(publicRouteStrategyTarget("sys_1", "alice", "Alice", "active"))
+	store.putRoute(port.PublicRouteStrategySummary{
+		ID:              "rts_1",
+		SystemAccountID: "sys_1",
+		Name:            "公开策略",
+		Mode:            port.PublicRouteStrategyModeNormal,
+		Status:          port.PublicRouteStrategyStatusActive,
+		GroupBindings: []port.PublicRouteStrategyGroupBindingSummary{{
+			ID: "rsg_initial", GroupID: "grp_1", GroupName: "初始分组", ProviderCode: "gpt", Priority: 1, Weight: 1, Status: port.PublicRouteStrategyStatusActive, GroupEnabled: true,
+		}},
+	})
+	latest := store.routesByID["rts_1"]
+	latest.GroupBindings = []port.PublicRouteStrategyGroupBindingSummary{{
+		ID: "rsg_concurrent", GroupID: "grp_2", GroupName: "并发分组", ProviderCode: "gpt", Priority: 1, Weight: 25, Status: port.PublicRouteStrategyStatusActive, GroupEnabled: false,
+	}}
+	store.txRouteSnapshots = []port.PublicRouteStrategySummary{latest, latest}
+	service, tx := newPublicRouteStrategiesTestService(store)
+	nextName := "更新后"
+
+	resp, err := service.Update(context.Background(), UpdateInput{
+		RouteStrategyID: "rts_1",
+		Name:            &nextName,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if tx.calls != 2 || tx.rollbacks != 1 || tx.commits != 1 {
+		t.Fatalf("transaction calls=%d rollbacks=%d commits=%d", tx.calls, tx.rollbacks, tx.commits)
+	}
+	wantLockIDs := [][]string{{"grp_1"}, {"grp_2"}}
+	if !reflect.DeepEqual(store.txBindableGroupIDs, wantLockIDs) {
+		t.Fatalf("bindable lock ids = %#v, want %#v", store.txBindableGroupIDs, wantLockIDs)
+	}
+	if len(store.updateInputs) != 1 ||
+		len(store.updateInputs[0].Bindings) != 1 ||
+		store.updateInputs[0].Bindings[0].GroupID != "grp_2" ||
+		store.updateInputs[0].Bindings[0].ID == "rsg_concurrent" {
+		t.Fatalf("update inputs = %+v", store.updateInputs)
+	}
+	if resp.RouteStrategy == nil ||
+		resp.RouteStrategy.GroupBindings[0].GroupID != "grp_2" ||
+		resp.RouteStrategy.GroupBindings[0].ID == "rsg_concurrent" {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
+func TestUpdateExhaustsThreeTotalSnapshotAttempts(t *testing.T) {
+	store := newFakePublicRouteStrategyStore()
+	store.putTarget(publicRouteStrategyTarget("sys_1", "alice", "Alice", "active"))
+	store.putRoute(port.PublicRouteStrategySummary{
+		ID:              "rts_1",
+		SystemAccountID: "sys_1",
+		Name:            "公开策略",
+		Mode:            port.PublicRouteStrategyModeNormal,
+		Status:          port.PublicRouteStrategyStatusActive,
+		GroupBindings: []port.PublicRouteStrategyGroupBindingSummary{{
+			ID: "rsg_initial", GroupID: "grp_1", GroupName: "初始分组", ProviderCode: "gpt", Priority: 1, Weight: 1, Status: port.PublicRouteStrategyStatusActive, GroupEnabled: true,
+		}},
+	})
+	snapshot := func(groupID string) port.PublicRouteStrategySummary {
+		current := store.routesByID["rts_1"]
+		current.GroupBindings = []port.PublicRouteStrategyGroupBindingSummary{{
+			ID: "rsg_" + groupID, GroupID: groupID, GroupName: "并发分组", ProviderCode: "gpt", Priority: 1, Weight: 1, Status: port.PublicRouteStrategyStatusActive, GroupEnabled: true,
+		}}
+		return current
+	}
+	store.txRouteSnapshots = []port.PublicRouteStrategySummary{
+		snapshot("grp_2"),
+		snapshot("grp_3"),
+		snapshot("grp_4"),
+	}
+	service, tx := newPublicRouteStrategiesTestService(store)
+	nextName := "更新后"
+
+	response, err := service.Update(context.Background(), UpdateInput{
+		RouteStrategyID: "rts_1",
+		Name:            &nextName,
+	})
+	var snapshotChanged *routeStrategyBindingSnapshotChangedError
+	if !errors.As(err, &snapshotChanged) {
+		t.Fatalf("Update() error = %T %v, want snapshot changed", err, err)
+	}
+	if !reflect.DeepEqual(snapshotChanged.groupIDs, []string{"grp_4"}) {
+		t.Fatalf("snapshot changed group ids = %#v", snapshotChanged.groupIDs)
+	}
+	if tx.calls != 3 || tx.rollbacks != 3 || tx.commits != 0 {
+		t.Fatalf("transaction calls=%d rollbacks=%d commits=%d", tx.calls, tx.rollbacks, tx.commits)
+	}
+	if len(store.updateInputs) != 0 {
+		t.Fatalf("updates = %d, want 0", len(store.updateInputs))
+	}
+	if !reflect.DeepEqual(response, RouteStrategyResponse{}) {
+		t.Fatalf("response = %+v, want zero", response)
+	}
+}
+
+func TestUpdateReturnsZeroResponseOnCommitFailure(t *testing.T) {
+	store := newFakePublicRouteStrategyStore()
+	store.putTarget(publicRouteStrategyTarget("sys_1", "alice", "Alice", "active"))
+	store.putGroup(port.PublicRouteStrategyBindableGroup{ID: "grp_1", SystemAccountID: "sys_1", Name: "主分组", ProviderCode: "gpt", Enabled: true})
+	store.putRoute(port.PublicRouteStrategySummary{
+		ID:              "rts_1",
+		SystemAccountID: "sys_1",
+		Name:            "公开策略",
+		Mode:            port.PublicRouteStrategyModeNormal,
+		Status:          port.PublicRouteStrategyStatusActive,
+		GroupBindings: []port.PublicRouteStrategyGroupBindingSummary{{
+			ID: "rsg_1", GroupID: "grp_1", GroupName: "主分组", ProviderCode: "gpt", Priority: 1, Weight: 1, Status: port.PublicRouteStrategyStatusActive, GroupEnabled: true,
+		}},
+	})
+	service, tx := newPublicRouteStrategiesTestService(store)
+	commitErr := errors.New("commit failed")
+	tx.afterErr = commitErr
+	nextName := "更新后"
+
+	response, err := service.Update(context.Background(), UpdateInput{
+		RouteStrategyID: "rts_1",
+		Name:            &nextName,
+	})
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("Update() error = %v, want %v", err, commitErr)
+	}
+	if !reflect.DeepEqual(response, RouteStrategyResponse{}) {
+		t.Fatalf("response = %+v, want zero", response)
+	}
+	if tx.calls != 1 || tx.rollbacks != 1 || tx.commits != 0 {
+		t.Fatalf("transaction calls=%d rollbacks=%d commits=%d", tx.calls, tx.rollbacks, tx.commits)
+	}
+	if len(store.updateInputs) != 1 {
+		t.Fatalf("updates = %d, want callback update attempt", len(store.updateInputs))
 	}
 }
 
@@ -373,13 +576,28 @@ func publicRouteStrategyTarget(id string, username string, displayName string, s
 }
 
 type fakePublicRouteStrategyTransactor struct {
-	store *fakePublicRouteStrategyStore
-	calls int
+	store     *fakePublicRouteStrategyStore
+	calls     int
+	rollbacks int
+	commits   int
+	afterErr  error
 }
+
+type publicRouteStrategyTxContextKey struct{}
 
 func (t *fakePublicRouteStrategyTransactor) PublicRouteStrategyInTx(ctx context.Context, fn func(context.Context, port.PublicRouteStrategyStore) error) error {
 	t.calls++
-	return fn(ctx, t.store)
+	txCtx := context.WithValue(ctx, publicRouteStrategyTxContextKey{}, true)
+	if err := fn(txCtx, t.store); err != nil {
+		t.rollbacks++
+		return err
+	}
+	if t.afterErr != nil {
+		t.rollbacks++
+		return t.afterErr
+	}
+	t.commits++
+	return nil
 }
 
 type fakePublicRouteStrategyStore struct {
@@ -396,6 +614,11 @@ type fakePublicRouteStrategyStore struct {
 	deleteCalls  []string
 
 	findBindableGroupsCalls int
+	readRouteFindCalls      int
+	txRouteFindCalls        int
+	txRouteSnapshots        []port.PublicRouteStrategySummary
+	txEvents                []string
+	txBindableGroupIDs      [][]string
 }
 
 func newFakePublicRouteStrategyStore() *fakePublicRouteStrategyStore {
@@ -489,13 +712,29 @@ func (s *fakePublicRouteStrategyStore) ListPublicRouteStrategies(_ context.Conte
 	return port.PublicRouteStrategyListPage{Items: append([]port.PublicRouteStrategySummary(nil), items[start:end]...), Page: page, PageSize: pageSize, PageUpperBound: upper, HasMore: page < upper}, nil
 }
 
-func (s *fakePublicRouteStrategyStore) FindPublicRouteStrategyByID(_ context.Context, routeStrategyID string) (port.PublicRouteStrategySummary, bool, error) {
+func (s *fakePublicRouteStrategyStore) FindPublicRouteStrategyByID(ctx context.Context, routeStrategyID string) (port.PublicRouteStrategySummary, bool, error) {
+	if publicRouteStrategyInTx(ctx) {
+		s.txRouteFindCalls++
+		s.txEvents = append(s.txEvents, "route-lock")
+		if len(s.txRouteSnapshots) >= s.txRouteFindCalls {
+			s.routesByID[routeStrategyID] = clonePublicRouteStrategySummary(
+				s.txRouteSnapshots[s.txRouteFindCalls-1],
+			)
+		}
+	} else {
+		s.readRouteFindCalls++
+	}
 	route, ok := s.routesByID[routeStrategyID]
 	return route, ok, nil
 }
 
-func (s *fakePublicRouteStrategyStore) FindPublicRouteStrategyBindableGroups(_ context.Context, systemAccountID string, groupIDs []string) ([]port.PublicRouteStrategyBindableGroup, error) {
+func (s *fakePublicRouteStrategyStore) FindPublicRouteStrategyBindableGroups(ctx context.Context, systemAccountID string, groupIDs []string) ([]port.PublicRouteStrategyBindableGroup, error) {
 	s.findBindableGroupsCalls++
+	if publicRouteStrategyInTx(ctx) {
+		ids := append([]string(nil), groupIDs...)
+		s.txBindableGroupIDs = append(s.txBindableGroupIDs, ids)
+		s.txEvents = append(s.txEvents, "bindable-lock:"+strings.Join(ids, ","))
+	}
 	out := make([]port.PublicRouteStrategyBindableGroup, 0, len(groupIDs))
 	for _, groupID := range groupIDs {
 		group, ok := s.bindableGroup(systemAccountID, groupID)
@@ -528,7 +767,10 @@ func (s *fakePublicRouteStrategyStore) CreatePublicRouteStrategy(_ context.Conte
 	return route, nil
 }
 
-func (s *fakePublicRouteStrategyStore) UpdatePublicRouteStrategy(_ context.Context, input port.PublicRouteStrategyUpdateInput) (port.PublicRouteStrategySummary, bool, error) {
+func (s *fakePublicRouteStrategyStore) UpdatePublicRouteStrategy(ctx context.Context, input port.PublicRouteStrategyUpdateInput) (port.PublicRouteStrategySummary, bool, error) {
+	if publicRouteStrategyInTx(ctx) {
+		s.txEvents = append(s.txEvents, "update")
+	}
 	s.updateInputs = append(s.updateInputs, input)
 	current, ok := s.routesByID[input.ID]
 	if !ok || current.SystemAccountID != input.SystemAccountID {
@@ -607,4 +849,19 @@ func (s *fakePublicRouteStrategyStore) bindingSummaries(systemAccountID string, 
 
 func stringPtr(value string) *string {
 	return &value
+}
+
+func publicRouteStrategyInTx(ctx context.Context) bool {
+	inTx, _ := ctx.Value(publicRouteStrategyTxContextKey{}).(bool)
+	return inTx
+}
+
+func clonePublicRouteStrategySummary(
+	summary port.PublicRouteStrategySummary,
+) port.PublicRouteStrategySummary {
+	summary.GroupBindings = append(
+		[]port.PublicRouteStrategyGroupBindingSummary(nil),
+		summary.GroupBindings...,
+	)
+	return summary
 }

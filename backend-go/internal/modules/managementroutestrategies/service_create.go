@@ -359,6 +359,14 @@ func normalizeCreateBindingsWithStore(
 	if err != nil {
 		return nil, err
 	}
+	return normalizeCreateBindingsFromGroups(mode, inputs, groups)
+}
+
+func normalizeCreateBindingsFromGroups(
+	mode string,
+	inputs []CreateGroupBindingInput,
+	groups []port.PublicRouteStrategyBindableGroup,
+) ([]normalizedCreateGroupBinding, error) {
 	groupsByID := make(map[string]port.PublicRouteStrategyBindableGroup, len(groups))
 	for _, group := range groups {
 		groupsByID[group.ID] = group
@@ -859,6 +867,18 @@ func createdDetailResult(
 }
 
 func (s *Service) invalidateCreatedRouteStrategy(ctx context.Context) {
+	s.invalidateRouteStrategy(
+		ctx,
+		RouteStrategyCreatedReason,
+		"策略路由创建后网关运行态失效失败",
+	)
+}
+
+func (s *Service) invalidateRouteStrategy(
+	ctx context.Context,
+	reason string,
+	failureMessage string,
+) {
 	if s.invalidator == nil {
 		return
 	}
@@ -869,15 +889,15 @@ func (s *Service) invalidateCreatedRouteStrategy(ctx context.Context) {
 	defer cancel()
 	if err := s.invalidator.InvalidateGatewayRuntime(
 		invalidationCtx,
-		RouteStrategyCreatedReason,
+		reason,
 	); err != nil {
 		s.logger.Warn(
-			"策略路由创建后网关运行态失效失败",
+			failureMessage,
 			slog.String(
 				"event",
 				"management_route_strategy_gateway_runtime_invalidation_failed",
 			),
-			slog.String("reason", RouteStrategyCreatedReason),
+			slog.String("reason", reason),
 			slog.Any("error", err),
 		)
 	}
