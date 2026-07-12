@@ -32,6 +32,12 @@ const [databaseModule, repositories, gatewayRuntimeCache, cooldownRetestService,
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 const { cooldownAccountRetestQueueAvailableSlots } = await import('../../modules/background/account-probe-jobs.js')
+const {
+  backgroundFullDiagnosticConcurrency,
+  backgroundFullDiagnosticQueueConcurrency,
+  backgroundProbeDbServiceTimeoutMs,
+  cooldownAccountRetestStartupDelayMs
+} = await import('../../modules/background/account-probe-limits.js')
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
@@ -459,6 +465,11 @@ try {
   assert(secondFairnessPage.accounts.some((item) => item.id === fairnessSecondAccount.id), '游标后的到期账户必须能进入后续扫描窗口')
   assert.equal(cooldownAccountRetestQueueAvailableSlots(10, { pendingCount: 6, runningCount: 3 }), 1, '冷却复测每轮查询数量必须扣除队列已有占用')
   assert.equal(cooldownAccountRetestQueueAvailableSlots(10, { pendingCount: 8, runningCount: 2 }), 0, '冷却复测队列达到 batch 上限后不得继续扫描入队')
+  assert.equal(backgroundFullDiagnosticConcurrency, 3, '完整后台诊断并发必须保持小上限，不能随 batch 放大到 10')
+  assert.equal(backgroundFullDiagnosticQueueConcurrency(10), 3, '批量为 10 时完整后台诊断实际队列并发仍必须限制为 3')
+  assert.equal(backgroundFullDiagnosticQueueConcurrency(1), 1, '批量为 1 时完整后台诊断不应人为放大并发')
+  assert.equal(backgroundProbeDbServiceTimeoutMs, 30_000, '后台探针 DB service 超时应覆盖启动期统计刷新窗口')
+  assert.equal(cooldownAccountRetestStartupDelayMs, 60_000, '冷却复测不得在 worker 启动 2 秒时与统计初始化争抢 DB service')
 
   console.log('cooldown retest recovery regression passed')
 } finally {

@@ -154,8 +154,15 @@ function createSingleAccountScenario(upstreamBaseUrl: string): GatewayScenario {
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    supportedModels: ['gpt-5.5']
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }, access)
+  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), '后台恢复探针 Mock AI 账户应能通过健康检查激活')
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '后台恢复探针 Mock AI 网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],

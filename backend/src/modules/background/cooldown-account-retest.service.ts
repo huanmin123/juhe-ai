@@ -5,6 +5,7 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
+import { backgroundProbeDbServiceTimeoutMs } from './account-probe-limits.js'
 
 interface CooldownAccountRetestQueueItem {
   accountId: string
@@ -96,7 +97,7 @@ async function runCooldownAccountRetestQueueItem(
     const restored = await requestBackgroundWorkerDbService({
       type: 'clear_account_failure_state',
       accountId: account.id
-    })
+    }, backgroundProbeDbServiceTimeoutMs)
     logger.info({
       event: 'background_cooldown_account_retest_restored',
       accountId: account.id,
@@ -122,7 +123,7 @@ async function runCooldownAccountRetestQueueItem(
       maxRecoveryHours: item.maxRecoveryHours,
       longTermIntervalHours: item.longTermIntervalHours
     }
-  })
+  }, backgroundProbeDbServiceTimeoutMs)
 
   const logFields = {
     event: 'background_cooldown_account_retest_failed',
@@ -162,7 +163,7 @@ async function cooldownRetestAccountForQueueItem(item: CooldownAccountRetestQueu
   return await requestBackgroundWorkerDbService({
     type: 'find_account_for_cooldown_retest',
     accountId: item.accountId
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }
 
 async function loadAccountForTestViaDbService(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
@@ -170,7 +171,7 @@ async function loadAccountForTestViaDbService(accountId: string, access?: Access
     type: 'find_account_for_test',
     accountId,
     access
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }
 
 async function loadOpenAIAccountForGroupViaDbService(
@@ -186,7 +187,7 @@ async function loadOpenAIAccountForGroupViaDbService(
     systemAccountId,
     includeUnavailable: options.includeUnavailable,
     ignoreAvailability: options.ignoreAvailability
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }
 
 function isAccountDueForCooldownRetest(account: AccountSummary): boolean {

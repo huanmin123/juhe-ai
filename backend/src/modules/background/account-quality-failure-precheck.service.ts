@@ -6,6 +6,7 @@ import type { AccountQualityFailurePrecheckCandidate } from '../../storage/repos
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
+import { backgroundProbeDbServiceTimeoutMs } from './account-probe-limits.js'
 
 interface AccountQualityFailurePrecheckQueueItem extends AccountQualityFailurePrecheckCandidate {
   enqueuedAt: string
@@ -120,7 +121,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
     accountId: account.id,
     reason: accountQualityFailurePrecheckReason(item, result),
     access: accountAccess
-  })
+  }, backgroundProbeDbServiceTimeoutMs)
   logger.warn({
     event: 'background_account_quality_failure_precheck_marked',
     accountId: account.id,
@@ -141,7 +142,7 @@ async function loadAccountForTestViaDbService(accountId: string, access?: Access
     type: 'find_account_for_test',
     accountId,
     access
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }
 
 async function loadOpenAIAccountForGroupViaDbService(
@@ -157,7 +158,7 @@ async function loadOpenAIAccountForGroupViaDbService(
     systemAccountId,
     includeUnavailable: options.includeUnavailable,
     ignoreAvailability: options.ignoreAvailability
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }
 
 function isAccountQualityFailurePrecheckEligible(account: AccountSummary | undefined): account is AccountSummary & { boundGroupId: string } {

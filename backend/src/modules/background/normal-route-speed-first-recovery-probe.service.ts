@@ -12,6 +12,7 @@ import {
   type NormalRouteLatencyProbeCandidate
 } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
+import { backgroundProbeDbServiceTimeoutMs } from './account-probe-limits.js'
 
 interface NormalRouteSpeedFirstRecoveryProbeQueueItem extends NormalRouteLatencyProbeCandidate {}
 
@@ -154,7 +155,7 @@ async function loadAccountForTestViaDbService(accountId: string, access?: Access
     type: 'find_account_for_test',
     accountId,
     access
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }
 
 async function loadOpenAIAccountForGroupViaDbService(
@@ -170,7 +171,7 @@ async function loadOpenAIAccountForGroupViaDbService(
     systemAccountId,
     includeUnavailable: options.includeUnavailable,
     ignoreAvailability: options.ignoreAvailability
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }
 
 function isNormalRouteSpeedFirstProbeAccountEligible(account: AccountSummary | undefined): account is AccountSummary {
