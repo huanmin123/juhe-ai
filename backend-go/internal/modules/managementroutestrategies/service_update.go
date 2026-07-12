@@ -88,6 +88,19 @@ type normalizedUpdateInput struct {
 	now              time.Time
 }
 
+type routeStrategyUpdatePreload struct {
+	scope          normalizedUpdateScope
+	current        port.PublicRouteStrategySummary
+	currentVisible bool
+	target         port.PublicGroupTarget
+	targetFound    bool
+}
+
+func (s *Service) PrepareUpdate(ctx context.Context, input UpdateInput) error {
+	_, err := s.preloadUpdate(ctx, input)
+	return err
+}
+
 func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, error) {
 	if s.createStore == nil {
 		return UpdateResult{}, fmt.Errorf("management route strategy update store is required")
@@ -95,59 +108,22 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	if s.transactor == nil {
 		return UpdateResult{}, fmt.Errorf("management route strategy transactor is required")
 	}
-	scope, err := routeStrategyUpdateScope(input)
+	preload, err := s.preloadUpdate(ctx, input)
 	if err != nil {
 		return UpdateResult{}, err
-	}
-
-	preloadedCurrent, found, err := s.createStore.FindPublicRouteStrategyByID(
-		ctx,
-		scope.routeStrategyID,
-	)
-	if err != nil {
-		return UpdateResult{}, err
-	}
-	currentVisible := found &&
-		(scope.ownerSystemAccountID == "" ||
-			preloadedCurrent.SystemAccountID == scope.ownerSystemAccountID)
-
-	var target port.PublicGroupTarget
-	var targetFound bool
-	var preloadedConfig routeStrategyRuntimeConfig
-	var before DetailResult
-	if currentVisible {
-		target, targetFound, err = s.createStore.FindPublicRouteStrategyTargetByID(
-			ctx,
-			preloadedCurrent.SystemAccountID,
-		)
-		if err != nil {
-			return UpdateResult{}, err
-		}
-		preloadedConfig, err = routeStrategyUpdateCurrentConfig(preloadedCurrent)
-		if err != nil {
-			return UpdateResult{}, err
-		}
-		if targetFound {
-			before = routeStrategySummaryDetailResult(
-				preloadedCurrent,
-				target,
-				preloadedConfig,
-				scope.includeOwner,
-			)
-		}
 	}
 
 	normalized, err := s.normalizeUpdatePatchInput(input)
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	if !currentVisible || !targetFound {
-		return UpdateResult{}, routeStrategyNotFound(scope.routeStrategyID)
+	if !preload.currentVisible || !preload.targetFound {
+		return UpdateResult{}, routeStrategyNotFound(preload.scope.routeStrategyID)
 	}
 
 	prelockedGroupIDs := routeStrategyUpdatePrelockGroupIDs(
 		normalized,
-		preloadedCurrent.GroupBindings,
+		preload.current.GroupBindings,
 	)
 	var result UpdateResult
 	for attempt := 0; attempt < maxRouteStrategyUpdateSnapshotTotalAttempts; attempt++ {
@@ -156,7 +132,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 			func(txCtx context.Context, store port.PublicRouteStrategyStore) error {
 				groups, err := store.FindPublicRouteStrategyBindableGroups(
 					txCtx,
-					preloadedCurrent.SystemAccountID,
+					preload.current.SystemAccountID,
 					prelockedGroupIDs,
 				)
 				if err != nil {
@@ -165,23 +141,29 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 
 				current, found, err := store.FindPublicRouteStrategyByID(
 					txCtx,
-					scope.routeStrategyID,
+					preload.scope.routeStrategyID,
 				)
 				if err != nil {
 					return err
 				}
 				currentVisible := found &&
-					(scope.ownerSystemAccountID == "" ||
-						current.SystemAccountID == scope.ownerSystemAccountID)
+					(preload.scope.ownerSystemAccountID == "" ||
+						current.SystemAccountID == preload.scope.ownerSystemAccountID)
 				if !currentVisible ||
-					current.SystemAccountID != preloadedCurrent.SystemAccountID {
-					return routeStrategyNotFound(scope.routeStrategyID)
+					current.SystemAccountID != preload.current.SystemAccountID {
+					return routeStrategyNotFound(preload.scope.routeStrategyID)
 				}
 
 				currentConfig, err := routeStrategyUpdateCurrentConfig(current)
 				if err != nil {
 					return err
 				}
+				before := routeStrategySummaryDetailResult(
+					current,
+					preload.target,
+					currentConfig,
+					preload.scope.includeOwner,
+				)
 				nextName := current.Name
 				if normalized.hasName {
 					nextName = normalized.name
@@ -255,16 +237,16 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 					return err
 				}
 				if !found {
-					return routeStrategyNotFound(scope.routeStrategyID)
+					return routeStrategyNotFound(preload.scope.routeStrategyID)
 				}
 
 				result = UpdateResult{
 					Before: before,
 					RouteStrategy: routeStrategySummaryDetailResult(
 						updated,
-						target,
+						preload.target,
 						nextConfig,
-						scope.includeOwner,
+						preload.scope.includeOwner,
 					),
 					OwnerSystemAccountID: current.SystemAccountID,
 				}
@@ -287,6 +269,49 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 		"策略路由更新后网关运行态失效失败",
 	)
 	return result, nil
+}
+
+func (s *Service) preloadUpdate(
+	ctx context.Context,
+	input UpdateInput,
+) (routeStrategyUpdatePreload, error) {
+	if s.createStore == nil {
+		return routeStrategyUpdatePreload{}, fmt.Errorf(
+			"management route strategy update store is required",
+		)
+	}
+	scope, err := routeStrategyUpdateScope(input)
+	if err != nil {
+		return routeStrategyUpdatePreload{}, err
+	}
+	preload := routeStrategyUpdatePreload{scope: scope}
+	current, found, err := s.createStore.FindPublicRouteStrategyByID(
+		ctx,
+		scope.routeStrategyID,
+	)
+	if err != nil {
+		return routeStrategyUpdatePreload{}, err
+	}
+	preload.current = current
+	preload.currentVisible = found &&
+		(scope.ownerSystemAccountID == "" ||
+			current.SystemAccountID == scope.ownerSystemAccountID)
+	if !preload.currentVisible {
+		return preload, nil
+	}
+
+	preload.target, preload.targetFound, err =
+		s.createStore.FindPublicRouteStrategyTargetByID(
+			ctx,
+			current.SystemAccountID,
+		)
+	if err != nil {
+		return routeStrategyUpdatePreload{}, err
+	}
+	if _, err := routeStrategyUpdateCurrentConfig(current); err != nil {
+		return routeStrategyUpdatePreload{}, err
+	}
+	return preload, nil
 }
 
 func routeStrategyUpdatePrelockGroupIDs(
@@ -370,8 +395,48 @@ func (s *Service) normalizeUpdatePatchInput(input UpdateInput) (normalizedUpdate
 			return normalizedUpdateInput{}, err
 		}
 	}
+	normalized.normalConfig, err = normalizeUpdateNormalConfigInput(
+		input.NormalRoutingConfig,
+	)
+	if err != nil {
+		return normalizedUpdateInput{}, err
+	}
+	normalized.hybridConfig, err = normalizeUpdateHybridConfigInput(
+		input.HybridRoutingConfig,
+	)
+	if err != nil {
+		return normalizedUpdateInput{}, err
+	}
 	normalized.now = s.now().UTC()
 	return normalized, nil
+}
+
+func normalizeUpdateNormalConfigInput(input ConfigInput) (ConfigInput, error) {
+	if !input.Set() || input.Value() == nil {
+		return input, nil
+	}
+	raw, err := normalizeCreateNormalConfigTypes(input.Value())
+	if err != nil {
+		return ConfigInput{}, err
+	}
+	if _, err := normalizeManagementNormalRoutingConfig(raw); err != nil {
+		return ConfigInput{}, validationError(err.Error())
+	}
+	return NewConfigInput(raw, true), nil
+}
+
+func normalizeUpdateHybridConfigInput(input ConfigInput) (ConfigInput, error) {
+	if !input.Set() || input.Value() == nil {
+		return input, nil
+	}
+	raw, err := normalizeCreateHybridConfigTypes(input.Value())
+	if err != nil {
+		return ConfigInput{}, err
+	}
+	if _, err := normalizeManagementHybridRoutingConfig(raw); err != nil {
+		return ConfigInput{}, validationError(err.Error())
+	}
+	return NewConfigInput(raw, true), nil
 }
 
 func routeStrategyUpdateScope(

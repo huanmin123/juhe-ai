@@ -17,6 +17,132 @@ import (
 
 var managementRouteStrategyUpdateTestNow = time.Date(2026, 7, 12, 9, 30, 0, 0, time.UTC)
 
+func TestServicePrepareUpdatePreloadsVisibleStateWithoutPrematureNotFound(t *testing.T) {
+	t.Run("visible malformed current config returns validation error", func(t *testing.T) {
+		store := newManagementRouteStrategyUpdateStore("sys_owner")
+		store.current.ConfigJSON = stringPointer(`{broken`)
+		service, tx, invalidator, _ := newManagementRouteStrategyUpdateService(store, nil)
+
+		err := service.PrepareUpdate(context.Background(), UpdateInput{
+			ActorSystemAccountID: "sys_owner",
+			RouteStrategyID:      "route_1",
+		})
+
+		message, ok := ValidationMessage(err)
+		if !ok || !strings.Contains(message, "现有策略路由配置无效") {
+			t.Fatalf("PrepareUpdate() error=%T %v message=%q", err, err, message)
+		}
+		if store.currentFindCalls != 1 ||
+			store.targetFindCalls != 1 ||
+			tx.calls != 0 ||
+			invalidator.calls != 0 {
+			t.Fatalf(
+				"current=%d target=%d tx=%d invalidation=%d",
+				store.currentFindCalls,
+				store.targetFindCalls,
+				tx.calls,
+				invalidator.calls,
+			)
+		}
+	})
+
+	t.Run("database preload error is returned", func(t *testing.T) {
+		wantErr := errors.New("preload database unavailable")
+		store := newManagementRouteStrategyUpdateStore("sys_owner")
+		store.currentErr = wantErr
+		service, tx, invalidator, _ := newManagementRouteStrategyUpdateService(store, nil)
+
+		err := service.PrepareUpdate(context.Background(), UpdateInput{
+			ActorSystemAccountID: "sys_owner",
+			RouteStrategyID:      "route_1",
+		})
+
+		if !errors.Is(err, wantErr) ||
+			store.currentFindCalls != 1 ||
+			store.targetFindCalls != 0 ||
+			tx.calls != 0 ||
+			invalidator.calls != 0 {
+			t.Fatalf(
+				"error=%v current=%d target=%d tx=%d invalidation=%d",
+				err,
+				store.currentFindCalls,
+				store.targetFindCalls,
+				tx.calls,
+				invalidator.calls,
+			)
+		}
+	})
+
+	tests := []struct {
+		name            string
+		mutate          func(*managementRouteStrategyUpdateStore)
+		input           UpdateInput
+		wantTargetCalls int
+	}{
+		{
+			name: "missing does not return not found",
+			mutate: func(store *managementRouteStrategyUpdateStore) {
+				store.currentFound = false
+			},
+			input: UpdateInput{
+				ActorSystemAccountID: "sys_admin",
+				ActorRole:            "admin",
+				RouteStrategyID:      "route_missing",
+			},
+		},
+		{
+			name: "owner mismatch stays invisible",
+			mutate: func(store *managementRouteStrategyUpdateStore) {
+				store.current.ConfigJSON = stringPointer(`{broken`)
+			},
+			input: UpdateInput{
+				ActorSystemAccountID: "sys_admin",
+				ActorRole:            "admin",
+				SystemAccountID:      "sys_other",
+				RouteStrategyID:      "route_1",
+			},
+		},
+		{
+			name: "target missing does not return not found",
+			mutate: func(store *managementRouteStrategyUpdateStore) {
+				store.targetFound = false
+			},
+			input: UpdateInput{
+				ActorSystemAccountID: "sys_owner",
+				RouteStrategyID:      "route_1",
+			},
+			wantTargetCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newManagementRouteStrategyUpdateStore("sys_owner")
+			tt.mutate(store)
+			service, tx, invalidator, _ := newManagementRouteStrategyUpdateService(store, nil)
+
+			err := service.PrepareUpdate(context.Background(), tt.input)
+
+			if err != nil {
+				t.Fatalf("PrepareUpdate() error=%T %v, want nil", err, err)
+			}
+			if store.currentFindCalls != 1 ||
+				store.targetFindCalls != tt.wantTargetCalls ||
+				tx.calls != 0 ||
+				invalidator.calls != 0 {
+				t.Fatalf(
+					"current=%d target=%d wantTarget=%d tx=%d invalidation=%d",
+					store.currentFindCalls,
+					store.targetFindCalls,
+					tt.wantTargetCalls,
+					tx.calls,
+					invalidator.calls,
+				)
+			}
+		})
+	}
+}
+
 func TestServiceUpdateScopesAndReturnsCompleteBeforeAfter(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -296,6 +422,36 @@ func TestServiceUpdateValidatesPatchBeforeNotFoundForInvisibleCurrent(t *testing
 			},
 			wantText: "策略路由至少需要绑定一个分组",
 		},
+		{
+			name: "invalid normal config",
+			mutate: func(input *UpdateInput) {
+				input.NormalRoutingConfig = NewConfigInput(map[string]any{
+					"schedulingPreference": "invalid",
+				}, true)
+			},
+			wantText: "普通路由调度偏好无效",
+		},
+		{
+			name: "cost first still validates explicit speed config",
+			mutate: func(input *UpdateInput) {
+				input.NormalRoutingConfig = NewConfigInput(map[string]any{
+					"schedulingPreference": "cost_first",
+					"speedFirstConfig": map[string]any{
+						"slowTriggerCount": 999,
+					},
+				}, true)
+			},
+			wantText: "速度优先触发次数必须是 2-10",
+		},
+		{
+			name: "invalid hybrid config",
+			mutate: func(input *UpdateInput) {
+				config := validManagementHybridCreateConfig()
+				config["qualityPreference"] = "invalid"
+				input.HybridRoutingConfig = NewConfigInput(config, true)
+			},
+			wantText: "混合路由质量偏好无效",
+		},
 	}
 
 	for _, resource := range resources {
@@ -333,6 +489,63 @@ func TestServiceUpdateValidatesPatchBeforeNotFoundForInvisibleCurrent(t *testing
 				}
 			})
 		}
+	}
+}
+
+func TestServiceUpdateReturnsNotFoundAfterValidNestedConfigSchema(t *testing.T) {
+	tests := []struct {
+		name  string
+		apply func(*UpdateInput)
+	}{
+		{
+			name: "normal config",
+			apply: func(input *UpdateInput) {
+				input.NormalRoutingConfig = NewConfigInput(map[string]any{
+					"schedulingPreference": "speed_first",
+					"speedFirstConfig": map[string]any{
+						"slowTriggerCount": 5,
+					},
+				}, true)
+			},
+		},
+		{
+			name: "hybrid config",
+			apply: func(input *UpdateInput) {
+				input.HybridRoutingConfig = NewConfigInput(
+					validManagementHybridCreateConfig(),
+					true,
+				)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newManagementRouteStrategyUpdateStore("sys_owner")
+			store.currentFound = false
+			service, tx, invalidator, _ := newManagementRouteStrategyUpdateService(store, nil)
+
+			input := UpdateInput{
+				ActorSystemAccountID: "sys_admin",
+				ActorRole:            "admin",
+				RouteStrategyID:      "route_missing",
+			}
+			tt.apply(&input)
+			_, err := service.Update(context.Background(), input)
+
+			var notFound *NotFoundError
+			if !errors.As(err, &notFound) {
+				t.Fatalf("Update() error = %T %v, want typed not found", err, err)
+			}
+			if tx.calls != 0 || len(store.updateInputs) != 0 || invalidator.calls != 0 {
+				t.Fatalf(
+					"transactions=%d updates=%d invalidations=%d",
+					tx.calls,
+					len(store.updateInputs),
+					invalidator.calls,
+				)
+			}
+		})
 	}
 }
 
@@ -454,6 +667,22 @@ func TestServiceUpdateParsesCurrentConfigBeforePatchValidation(t *testing.T) {
 			name: "invalid bindings",
 			mutate: func(input *UpdateInput) {
 				input.HasGroupBindings = true
+			},
+		},
+		{
+			name: "invalid normal config",
+			mutate: func(input *UpdateInput) {
+				input.NormalRoutingConfig = NewConfigInput(map[string]any{
+					"schedulingPreference": "invalid",
+				}, true)
+			},
+		},
+		{
+			name: "invalid hybrid config",
+			mutate: func(input *UpdateInput) {
+				config := validManagementHybridCreateConfig()
+				config["qualityPreference"] = "invalid"
+				input.HybridRoutingConfig = NewConfigInput(config, true)
 			},
 		},
 	}
@@ -1287,7 +1516,7 @@ func TestServiceUpdateRetriesOmittedBindingsWithLatestGroupIDs(t *testing.T) {
 		store.updateInputs[0].Bindings[0].ID == "binding_concurrent" {
 		t.Fatalf("update inputs = %+v", store.updateInputs)
 	}
-	if result.Before.GroupBindings[0].GroupID != "group_1" ||
+	if result.Before.GroupBindings[0].GroupID != "group_2" ||
 		result.RouteStrategy.GroupBindings[0].GroupID != "group_2" ||
 		result.RouteStrategy.GroupBindings[0].ID == "binding_concurrent" {
 		t.Fatalf("before=%+v after=%+v", result.Before.GroupBindings, result.RouteStrategy.GroupBindings)

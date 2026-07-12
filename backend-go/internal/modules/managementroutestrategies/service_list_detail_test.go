@@ -439,6 +439,7 @@ func TestNormalizeManagementNormalRoutingConfigRejectsFalsyPresentFields(t *test
 		`{"normalRoutingConfig":{"schedulingPreference":0}}`,
 		`{"normalRoutingConfig":{"schedulingPreference":"speed_first","speedFirstConfig":false}}`,
 		`{"normalRoutingConfig":{"schedulingPreference":"speed_first","speedFirstConfig":{"slowTriggerCount":0}}}`,
+		`{"normalRoutingConfig":{"schedulingPreference":"cost_first","speedFirstConfig":{"slowTriggerCount":999}}}`,
 	}
 	for _, raw := range tests {
 		if _, err := parseRouteStrategyRuntimeConfig(stringPointer(raw)); err == nil {

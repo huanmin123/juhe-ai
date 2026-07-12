@@ -510,13 +510,24 @@ func normalizeManagementNormalRoutingConfig(value any) (*NormalRoutingConfig, er
 		}
 		preference = text
 	}
+	var speed *SpeedFirstConfig
+	if raw, exists := record["speedFirstConfig"]; exists {
+		var err error
+		speed, err = normalizeManagementSpeedFirstConfig(raw)
+		if err != nil {
+			return nil, err
+		}
+	}
 	switch preference {
 	case defaultSchedulingPreference:
 		return &NormalRoutingConfig{SchedulingPreference: preference}, nil
 	case schedulingPreferenceSpeedFirst:
-		speed, err := normalizeManagementSpeedFirstConfig(record["speedFirstConfig"])
-		if err != nil {
-			return nil, err
+		if speed == nil {
+			var err error
+			speed, err = normalizeManagementSpeedFirstConfig(nil)
+			if err != nil {
+				return nil, err
+			}
 		}
 		return &NormalRoutingConfig{
 			SchedulingPreference: preference,

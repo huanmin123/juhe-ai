@@ -229,6 +229,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyRouteStrategyListHandler:              managementHandlers.MyRouteStrategyListHandler,
 		ManagementRouteStrategyCreateHandler:              managementHandlers.RouteStrategyCreateHandler,
 		ManagementMyRouteStrategyCreateHandler:            managementHandlers.MyRouteStrategyCreateHandler,
+		ManagementRouteStrategyUpdateHandler:              managementHandlers.RouteStrategyUpdateHandler,
+		ManagementMyRouteStrategyUpdateHandler:            managementHandlers.MyRouteStrategyUpdateHandler,
 		ManagementRouteStrategyDetailHandler:              managementHandlers.RouteStrategyDetailHandler,
 		ManagementMyRouteStrategyDetailHandler:            managementHandlers.MyRouteStrategyDetailHandler,
 		ManagementRouteStrategyOptionsHandler:             managementHandlers.RouteStrategyOptionsHandler,
@@ -375,6 +377,8 @@ type managementAPIHandlers struct {
 	MyRouteStrategyListHandler              http.Handler
 	RouteStrategyCreateHandler              http.Handler
 	MyRouteStrategyCreateHandler            http.Handler
+	RouteStrategyUpdateHandler              http.Handler
+	MyRouteStrategyUpdateHandler            http.Handler
 	RouteStrategyDetailHandler              http.Handler
 	MyRouteStrategyDetailHandler            http.Handler
 	RouteStrategyOptionsHandler             http.Handler
@@ -613,6 +617,8 @@ func newManagementAPIHandler(
 		MyRouteStrategyListHandler:              httpapi.NewManagementMyRouteStrategyListHandler(routeStrategyService),
 		RouteStrategyCreateHandler:              httpapi.NewManagementRouteStrategyCreateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
 		MyRouteStrategyCreateHandler:            httpapi.NewManagementMyRouteStrategyCreateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
+		RouteStrategyUpdateHandler:              httpapi.NewManagementRouteStrategyUpdateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
+		MyRouteStrategyUpdateHandler:            httpapi.NewManagementMyRouteStrategyUpdateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
 		RouteStrategyDetailHandler:              httpapi.NewManagementRouteStrategyDetailHandler(routeStrategyService),
 		MyRouteStrategyDetailHandler:            httpapi.NewManagementMyRouteStrategyDetailHandler(routeStrategyService),
 		RouteStrategyOptionsHandler:             httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),

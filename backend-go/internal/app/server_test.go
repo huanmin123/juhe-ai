@@ -261,6 +261,8 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.ProviderDefaultHealthCheckModelHandler != nil ||
 		handlers.RouteStrategyListHandler != nil ||
 		handlers.MyRouteStrategyListHandler != nil ||
+		handlers.RouteStrategyUpdateHandler != nil ||
+		handlers.MyRouteStrategyUpdateHandler != nil ||
 		handlers.RouteStrategyDetailHandler != nil ||
 		handlers.MyRouteStrategyDetailHandler != nil ||
 		handlers.RouteStrategyOptionsHandler != nil ||
@@ -350,6 +352,8 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.ProviderDefaultHealthCheckModelHandler != nil ||
 		handlers.RouteStrategyListHandler != nil ||
 		handlers.MyRouteStrategyListHandler != nil ||
+		handlers.RouteStrategyUpdateHandler != nil ||
+		handlers.MyRouteStrategyUpdateHandler != nil ||
 		handlers.RouteStrategyDetailHandler != nil ||
 		handlers.MyRouteStrategyDetailHandler != nil ||
 		handlers.RouteStrategyOptionsHandler != nil ||
@@ -442,6 +446,8 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.ProviderDefaultHealthCheckModelHandler == nil ||
 		handlers.RouteStrategyListHandler == nil ||
 		handlers.MyRouteStrategyListHandler == nil ||
+		handlers.RouteStrategyUpdateHandler == nil ||
+		handlers.MyRouteStrategyUpdateHandler == nil ||
 		handlers.RouteStrategyDetailHandler == nil ||
 		handlers.MyRouteStrategyDetailHandler == nil ||
 		handlers.RouteStrategyOptionsHandler == nil ||
