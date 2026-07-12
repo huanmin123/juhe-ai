@@ -5,11 +5,13 @@ import { createSqliteDatabaseClient } from '../../storage/database-client.js'
 import { applyChatSchema } from '../../storage/schema.js'
 import {
   acceptChatTurn,
+  cancelChatTurn,
   ChatConflictError,
   completeChatTurn,
   createChatConversation,
   deleteChatConversation,
   failChatTurn,
+  getChatConversation,
   cleanupChatRetention,
   listChatContextMessages,
   listChatConversations,
@@ -137,18 +139,41 @@ const contextAfterFailure = await listChatContextMessages(client, {
 })
 assert.equal(contextAfterFailure.length, 2, '失败轮次的一问一答都不能进入下一轮上下文')
 
+const canceledTurn = await acceptChatTurn(client, {
+  conversationId: conversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'client_canceled', userContent: '这轮会取消', model: 'mock-model', now: '2026-07-12T00:06:10.000Z', storageQuotaBytes: 1024
+})
+await cancelChatTurn(client, {
+  conversationId: conversation.id, systemAccountId: 'sys_user_1', turnId: canceledTurn.turnId, assistantContent: '已生成的部分', traceId: 'trace_chat_canceled', now: '2026-07-12T00:06:20.000Z'
+})
+const contextAfterCancel = await listChatContextMessages(client, {
+  conversationId: conversation.id, systemAccountId: 'sys_user_1', limitTurns: 64, now: '2026-07-12T00:06:30.000Z'
+})
+assert.equal(contextAfterCancel.length, 2, '取消轮次的用户问题与部分回答都不能进入下一轮上下文')
+
 const stale = await createChatConversation(client, {
   id: 'chat_conv_stale', systemAccountId: 'sys_user_1', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', now: '2026-07-01T00:00:00.000Z'
 })
 await acceptChatTurn(client, {
   conversationId: stale.id, systemAccountId: 'sys_user_1', clientMessageId: 'stale_1', userContent: '过期问题', model: 'mock-model', now: '2026-07-01T00:01:00.000Z', storageQuotaBytes: 1024
 })
+const titleConversation = await createChatConversation(client, {
+  id: 'chat_conv_title', systemAccountId: 'sys_user_1', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', now: '2026-07-01T00:00:00.000Z'
+})
+const oldTitleTurn = await acceptChatTurn(client, {
+  conversationId: titleConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'title_old', userContent: '已经过期的旧标题', model: 'mock-model', now: '2026-07-01T00:01:00.000Z', storageQuotaBytes: 4096
+})
+await completeChatTurn(client, { conversationId: titleConversation.id, systemAccountId: 'sys_user_1', turnId: oldTitleTurn.turnId, assistantContent: '旧回答', finishReason: 'stop', traceId: 'trace_title_old', now: '2026-07-01T00:02:00.000Z' })
+const newTitleTurn = await acceptChatTurn(client, {
+  conversationId: titleConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'title_new', userContent: '仍在保留期的新标题', model: 'mock-model', now: '2026-07-11T00:01:00.000Z', storageQuotaBytes: 4096
+})
+await completeChatTurn(client, { conversationId: titleConversation.id, systemAccountId: 'sys_user_1', turnId: newTitleTurn.turnId, assistantContent: '新回答', finishReason: 'stop', traceId: 'trace_title_new', now: '2026-07-11T00:02:00.000Z' })
 const cleanup = await cleanupChatRetention(client, {
   now: '2026-07-12T00:10:00.000Z', interruptedBefore: '2026-07-12T00:00:00.000Z', limit: 1000
 })
 assert.equal(cleanup.recoveredTurns, 1, '超时 streaming 轮次应先恢复为失败')
-assert.equal(cleanup.deletedMessages, 2, '清理必须按完整轮次成对删除')
+assert.equal(cleanup.deletedMessages, 4, '清理必须按完整轮次成对删除')
 assert.equal(cleanup.deletedConversations, 1, '没有保留消息的会话应删除')
+assert.equal((await getChatConversation(client, titleConversation.id, 'sys_user_1'))?.title, '仍在保留期的新标题', '标题来源过期后应使用最早保留用户消息重算')
 
 await assert.rejects(
   acceptChatTurn(client, {

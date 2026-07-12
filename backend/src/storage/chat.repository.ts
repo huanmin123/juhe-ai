@@ -390,6 +390,30 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
       `, [conversationId, conversationId])
       deletedConversations += deleted.changes
     }
+    const staleTitles = await tx.query<{ id?: unknown; system_account_id?: unknown }>(`
+      SELECT id, system_account_id FROM ${chatTable(tx, 'chat_conversations')} conversation
+      WHERE title_source_message_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM ${chatTable(tx, 'chat_messages')} message
+          WHERE message.conversation_id = conversation.id AND message.id = conversation.title_source_message_id
+        )
+      ORDER BY updated_at ASC, id ASC LIMIT ?
+    `, [Math.max(1, Math.floor(limit / 2))])
+    for (const conversation of staleTitles) {
+      const conversationId = String(conversation.id)
+      const ownerId = String(conversation.system_account_id)
+      const firstUser = await tx.one<{ id?: unknown; content_text?: unknown }>(`
+        SELECT id, content_text FROM ${chatTable(tx, 'chat_messages')}
+        WHERE conversation_id = ? AND system_account_id = ? AND role = 'user' AND expires_at > ?
+        ORDER BY sequence_no ASC LIMIT 1
+      `, [conversationId, ownerId, input.now])
+      if (!firstUser) continue
+      await tx.execute(`
+        UPDATE ${chatTable(tx, 'chat_conversations')}
+        SET title = ?, title_source_message_id = ?, updated_at = ?
+        WHERE id = ? AND system_account_id = ?
+      `, [titleFromContent(String(firstUser.content_text ?? '')), String(firstUser.id), input.now, conversationId, ownerId])
+    }
     const emptyBefore = new Date(new Date(input.now).getTime() - 24 * 60 * 60 * 1000).toISOString()
     const empty = await tx.execute(`
       DELETE FROM ${chatTable(tx, 'chat_conversations')}

@@ -83,6 +83,8 @@ try {
 
   const keys = await apiJson<{ data: Array<{ id: string }> }>(baseUrl, '/__aisys__/api/my-chat/api-keys', cookie)
   assert(keys.data.some((item) => item.id === gatewayKey.id), 'AI 问答应列出当前用户自己的可用 API Key')
+  const invalidCreate = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{}' })
+  assert.equal(invalidCreate.status, 400, 'AI 问答参数校验失败必须返回 400 而不是全局 500')
   const created = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
   const conversationId = created.data.id
   const models = await apiJson<{ data: string[] }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)
@@ -102,6 +104,11 @@ try {
     assert.match(streamText, /Markdown/)
   }
   assert.match(streamText, /event: message\.completed/)
+  const duplicateResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
+    body: JSON.stringify({ clientMessageId: 'mock-client-1', content: '重复请求不得再次调用模型', model: testModel })
+  })
+  assert.equal(duplicateResponse.status, 409, '相同 clientMessageId 必须返回冲突且不再次调用模型')
   if (!realCredential) assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream'], 'AI 问答必须经过网关并使用 AI 账户凭据访问上游')
 
   const stored = await apiJson<{ data: Array<{ role: string; status: string; contentText: string }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)

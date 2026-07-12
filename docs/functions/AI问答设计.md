@@ -80,8 +80,8 @@ flowchart LR
 
 ### 4.1 进程边界
 
-- 主 Node Web 进程承载 AI 问答 HTTP / SSE 路由和本机网关流转发。
-- AI 问答路由挂在主服务的 System API 代理之前，避免长连接占用 DB service HTTP 代理和数据库请求准入槽位。
+- DB service 的 System API 进程承载 AI 问答 HTTP / SSE 路由和本机网关流转发，以复用现有登录 session、权限和 SQLite 单写者边界。
+- 主 Node Web 进程在通用 System API 代理之前为 `/my-chat` 挂载独立代理池，使用独立 128 路准入和 15 分钟流超时；聊天长连接不占用普通管理接口的 256 路 / 30 秒代理池。
 - 主进程不直接读写数据库。登录会话校验、会话 CRUD、消息事务和清理全部通过 DB service typed operations 完成。
 - DB service 不发起长时间模型请求，不持有上游 SSE。
 - `ops-worker` 执行过期消息清理和异常 `streaming` 状态恢复；主 Web 进程不启动定时任务。
@@ -592,17 +592,13 @@ PostgreSQL 约束：
 
 这是对原会话方案的重要修正：不能仅凭聊天上下文保留期，暗中改变全局审计规则。
 
-## 16. 内置客户端来源元数据
+## 16. 内置客户端来源边界
 
-loopback 请求会让网关看到 `127.0.0.1`，因此需要受控传递原始来源信息，但不能信任普通外部 header。
+MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避免让来源标记误入现有网关调度语义。Chat 模块只使用会话绑定的真实 Bearer API Key 调用 loopback 网关，因此鉴权、额度、限流、调度、计费、使用记录与审计均按普通客户端执行。
 
-- 内部元数据只包含原始客户端 IP、原 trace ID、来源 `ai_chat`、时间戳和随机 nonce。
-- 使用 `JUHE_AI_SECRET` 对规范化元数据做 HMAC 签名，不新增第二份敏感密钥配置。
-- 网关仅在 socket 来源为 loopback、签名有效、时间戳在 30 秒窗口且 nonce 未重复时接受。
-- 签名无效或来自公网时忽略内部元数据并按普通请求处理，不允许覆盖 API Key 身份。
-- API Key 所有者仍由真实 Bearer Key 决定；内部元数据不能传递或伪造 `systemAccountId`。
-- 使用记录可以新增 `trafficSource=ai_chat` 便于区分站内问答，但统计和计费口径与普通网关调用一致。
-- 该签名只证明来源 IP、trace 和客户端来源字段由本机 Chat 模块转交，不授予免认证、免限流、免计费、免使用记录或免审计权限。
+- 网关网络层看到的请求来源是 loopback；MVP 不把浏览器原始 IP 写入网关调用事实。
+- 登录用户归属由 Chat repository 的 `system_account_id` 和真实 API Key 所有权保证，不能由客户端 header 覆盖。
+- 后续确需区分站内问答时，应新增独立的“客户端来源”事实字段，不能复用会影响路由分支的 `trafficSource`，并需单独设计防伪与审计契约。
 
 ## 17. 错误、重试与取消
 
@@ -633,7 +629,7 @@ loopback 请求会让网关看到 `127.0.0.1`，因此需要受控传递原始�
 - 清理 worker 每批最多 1000 条过期消息，并限制每轮批次数；涉及会话标题重算时按本批去重会话 ID 批量处理，避免逐消息 N+1。
 - 容量判断只读取 `chat_user_storage_windows` 最近 7 个日桶；禁止请求路径对消息表执行 `SUM`、`COUNT` 或全会话正文累计。
 - 100 用户规模不做分库分表；当聊天物理数据持续达到 200–300 GiB，或聊天 I/O 已影响业务 schema 延迟时，优先迁移到独立 PostgreSQL database / cluster，再评估按 `system_account_id` 哈希分片。
-- KaTeX 和 Mermaid 懒加载；普通文本回答不下载对应模块。
+- AI 问答路由加载 KaTeX；Mermaid 仅在消息实际包含图表时动态加载。其他业务路由不加载两者。
 - 代码高亮只注册常用语言，未知语言按纯文本代码块展示。
 
 ## 19. 验证矩阵
@@ -725,7 +721,7 @@ loopback 请求会让网关看到 `127.0.0.1`，因此需要受控传递原始�
 4. API Key 选择使用独立轻量 options 接口，不拉完整管理列表充当下拉数据。
 5. 新建对话先保留为前端草稿，第一次发送才持久化，降低空会话垃圾。
 6. 用户取消后不依赖已经断开的 SSE 再收到 canceled 事件，页面和存储各自收敛状态。
-7. 主进程承载流式模型请求，但所有数据库读写仍走 DB service，避免破坏 SQLite 单写者和 System API 资源隔离。
+7. System API 进程承载流式模型请求并维持 SQLite 单写者；主进程使用独立聊天代理池隔离长连接，避免占用普通 System API 准入槽。
 8. AI 问答明确作为平台内置客户端接入网关，聊天数据生命周期与网关审计生命周期各自独立。
 9. 高频聊天正文从业务库拆出：standalone 使用独立 SQLite，performance 使用独立 `juhe_chat` schema 和 PostgreSQL 日分区。
 10. 每用户最近 7 天默认 2 GiB 容量门禁由日窗口增量维护；超限不阻断读取、停止与删除。
