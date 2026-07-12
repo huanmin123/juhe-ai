@@ -428,6 +428,15 @@ func TestManagementProviderCustomModelHandlersMapErrors(t *testing.T) {
 			wantMsg:    "自定义模型参数无效",
 		},
 		{
+			name:       "create validation message passthrough",
+			method:     http.MethodPost,
+			target:     "/__aisys__/api/providers/gpt/models",
+			body:       `{"model":"custom-chat","supportedReasoningEfforts":["high"]}`,
+			err:        &managementprovidermodels.CustomModelValidationError{Message: "只有 GPT 文本自定义模型支持服务等级和思考能力配置"},
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "只有 GPT 文本自定义模型支持服务等级和思考能力配置",
+		},
+		{
 			name:       "update not found",
 			method:     http.MethodPatch,
 			target:     "/__aisys__/api/providers/gpt/models/custom_model_1",
@@ -471,6 +480,15 @@ func TestManagementProviderCustomModelHandlersMapErrors(t *testing.T) {
 			err:        &managementprovidermodels.CustomModelForbiddenError{Message: "无权修改该自定义模型"},
 			wantStatus: http.StatusForbidden,
 			wantMsg:    "无权修改该自定义模型",
+		},
+		{
+			name:       "update validation message passthrough",
+			method:     http.MethodPatch,
+			target:     "/__aisys__/api/providers/gpt/models/custom_model_1",
+			body:       `{"defaultReasoningEffort":"high"}`,
+			err:        &managementprovidermodels.CustomModelValidationError{Message: "默认思考级别必须属于支持的思考级别"},
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "默认思考级别必须属于支持的思考级别",
 		},
 		{
 			name:       "delete bound",

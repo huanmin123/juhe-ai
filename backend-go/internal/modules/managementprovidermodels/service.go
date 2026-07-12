@@ -967,7 +967,7 @@ func validateCustomModelRequestCapabilities(input port.ManagementCustomProviderM
 	isGPTTextModel := strings.TrimSpace(input.ProviderCode) == "gpt" && (mode == "" || mode == "text")
 	if !isGPTTextModel {
 		if hasCapabilities {
-			return &CustomModelValidationError{Message: "只有 GPT 文本模型可以配置服务等级和思考级别"}
+			return &CustomModelValidationError{Message: "只有 GPT 文本自定义模型支持服务等级和思考能力配置"}
 		}
 		return nil
 	}
@@ -980,7 +980,7 @@ func validateCustomModelRequestCapabilities(input port.ManagementCustomProviderM
 			return nil
 		}
 	}
-	return &CustomModelValidationError{Message: "默认思考级别必须属于模型支持的思考级别"}
+	return &CustomModelValidationError{Message: "默认思考级别必须属于支持的思考级别"}
 }
 
 func validateOptionalCustomModelDate(value string) error {

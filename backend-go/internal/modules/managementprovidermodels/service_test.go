@@ -573,20 +573,20 @@ func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
 			providerCode:  "gpt",
 			efforts:       []string{"low"},
 			defaultEffort: OptionalString{Set: true, Value: "high"},
-			wantMessage:   "默认思考级别必须属于模型支持的思考级别",
+			wantMessage:   "默认思考级别必须属于支持的思考级别",
 		},
 		{
 			name:         "reject non gpt capabilities",
 			providerCode: "anthropic",
 			serviceTiers: []string{"priority"},
-			wantMessage:  "只有 GPT 文本模型可以配置服务等级和思考级别",
+			wantMessage:  "只有 GPT 文本自定义模型支持服务等级和思考能力配置",
 		},
 		{
 			name:         "reject image capabilities",
 			providerCode: "gpt",
 			mode:         OptionalString{Set: true, Value: "image"},
 			efforts:      []string{"high"},
-			wantMessage:  "只有 GPT 文本模型可以配置服务等级和思考级别",
+			wantMessage:  "只有 GPT 文本自定义模型支持服务等级和思考能力配置",
 		},
 	}
 
@@ -707,7 +707,7 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 		},
 	})
 	message, ok := CustomModelValidationMessage(err)
-	if !ok || message != "默认思考级别必须属于模型支持的思考级别" {
+	if !ok || message != "默认思考级别必须属于支持的思考级别" {
 		t.Fatalf("default membership message = %q, %v; err = %v", message, ok, err)
 	}
 
