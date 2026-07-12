@@ -87,6 +87,11 @@ import {
   recordNormalRouteFirstByteSuccessAsync,
   type NormalRouteLatencySlowResult
 } from './runtime/normal-route-latency-degradation.service.js'
+import {
+  reserveSpeedFirstCutoverTarget,
+  type SpeedFirstCutoverReservation
+} from './runtime/speed-first-cutover-reservation.service.js'
+import { gatewayAccountConcurrencyAccountId } from './dispatch/account-concurrency-identity.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -207,6 +212,7 @@ export async function handleOpenAIGatewayRequest(
   let streamServerRetryCount = 0
   let speedFirstByteRetryCount = 0
   let speedFirstRetryCandidateAccountIds: Set<string> | undefined
+  let speedFirstCutoverReservation: SpeedFirstCutoverReservation | undefined
   let codexTurnAvoidedFallbackEnabled = false
   let fallbackSwitchCount = 0
   const exhaustedAccountIds = new Set<string>()
@@ -278,6 +284,8 @@ export async function handleOpenAIGatewayRequest(
     streamServerRetryCount = 0
     speedFirstByteRetryCount = 0
     speedFirstRetryCandidateAccountIds = undefined
+    speedFirstCutoverReservation?.release()
+    speedFirstCutoverReservation = undefined
     codexTurnAvoidedFallbackEnabled = false
     return 'switched'
   }
@@ -365,6 +373,8 @@ export async function handleOpenAIGatewayRequest(
     streamServerRetryCount = 0
     speedFirstByteRetryCount = 0
     speedFirstRetryCandidateAccountIds = undefined
+    speedFirstCutoverReservation?.release()
+    speedFirstCutoverReservation = undefined
     codexTurnAvoidedFallbackEnabled = false
     return 'switched'
   }
@@ -433,6 +443,8 @@ export async function handleOpenAIGatewayRequest(
       }
       const dispatchSessionAffinityKey = speedFirstRouteOverrideActive ? undefined : sessionAffinityKey
       let upstreamResult: Awaited<ReturnType<typeof fetchFirstAvailableUpstream>>
+      const dispatchCutoverReservation = speedFirstCutoverReservation
+      speedFirstCutoverReservation = undefined
       try {
         upstreamResult = await fetchFirstAvailableUpstream(
           req,
@@ -448,7 +460,8 @@ export async function handleOpenAIGatewayRequest(
           options.disableAccountStateMutation !== true,
           currentPreflight.clientStrategy.requestClientCompatibility,
           modelPriority,
-          currentPreflight.sameAccountRetryBudget
+          currentPreflight.sameAccountRetryBudget,
+          dispatchCutoverReservation
         )
       } catch (error) {
         if (error instanceof UpstreamAttemptError) {
@@ -486,6 +499,10 @@ export async function handleOpenAIGatewayRequest(
           }
         }
         throw error
+      } finally {
+        if (dispatchCutoverReservation && !dispatchCutoverReservation.consumed) {
+          dispatchCutoverReservation.release()
+        }
       }
       const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures } = upstreamResult
       const speedFirstFirstByteDeadlineMs = normalRouteSpeedFirstByteDeadlineMs(normalRouteSpeedFirstConfig)
@@ -512,10 +529,22 @@ export async function handleOpenAIGatewayRequest(
             const maxRetries = normalRouteSpeedFirstConfig.maxFirstByteRetriesPerRequest
             const totalWaitTimedOut = streamClientTotalWaitTimedOut(activeGatewaySettings, startedAt)
             const degradedForCutover = alreadyDegraded || speedFirstSlowObservedForAttempt?.degraded === true
-            speedFirstCutoverAllowedAtDeadline = degradedForCutover
+            const cutoverPreconditionsMet = degradedForCutover
               && speedFirstByteRetryCount < maxRetries
               && remainingCandidateCount > 0
               && !totalWaitTimedOut
+            speedFirstCutoverReservation = cutoverPreconditionsMet
+              ? await reserveSpeedFirstCutoverTarget({
+                  systemAccountId: gatewayUsageContext.systemAccountId,
+                  routeStrategyId: apiKeyRecord?.route_strategy_id ?? '',
+                  groupId: gatewayUsageContext.groupId,
+                  slowAccountId: gatewayAccountConcurrencyAccountId(account),
+                  targets: remainingAccounts,
+                  lane: currentPreflight.requestLane,
+                  groupSchedulingPolicy: currentPreflight.groupSchedulingPolicy
+                })
+              : undefined
+            speedFirstCutoverAllowedAtDeadline = speedFirstCutoverReservation !== undefined
             auditCapture.addGatewayMetadata({
               label: 'normal_route_speed_first_slow_observed',
               metadata: {
@@ -539,7 +568,9 @@ export async function handleOpenAIGatewayRequest(
                       ? 'no_remaining_candidate'
                       : !degradedForCutover
                         ? 'slow_observation_not_degraded'
-                        : 'max_retry_exceeded',
+                      : !cutoverPreconditionsMet
+                        ? 'max_retry_exceeded'
+                        : 'target_slot_or_cutover_budget_unavailable',
                 retryCount: speedFirstByteRetryCount,
                 maxRetries,
                 remainingCandidateCount,
@@ -697,8 +728,11 @@ export async function handleOpenAIGatewayRequest(
               }
             })
             if (retryAllowed) {
-              speedFirstRetryCandidateAccountIds = new Set(remainingAccounts.map((item) => item.id))
-              continue
+              const reservedTargetAccountId = (speedFirstCutoverReservation as SpeedFirstCutoverReservation | undefined)?.targetAccountId
+              if (reservedTargetAccountId) {
+                speedFirstRetryCandidateAccountIds = new Set([reservedTargetAccountId])
+                continue
+              }
             }
             if (remainingCandidateCount <= 0) {
               for (const accountId of streamServerRetryExcludedAccountIds) {
@@ -1082,6 +1116,7 @@ export async function handleOpenAIGatewayRequest(
       usageErrorMessage: message
     })
   } finally {
+    speedFirstCutoverReservation?.release()
     releaseClientIpSlot()
   }
 }

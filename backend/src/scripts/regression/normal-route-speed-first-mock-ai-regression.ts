@@ -559,8 +559,10 @@ function createSpeedFirstScenario(upstreamBaseUrl: string): SpeedFirstScenario {
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    supportedModels: [model]
+    supportedModels: [model],
+    healthCheckModel: model
   }, access)
+  activateFixtureAccount(primary.id)
   const secondary = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -574,8 +576,10 @@ function createSpeedFirstScenario(upstreamBaseUrl: string): SpeedFirstScenario {
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    supportedModels: [model]
+    supportedModels: [model],
+    healthCheckModel: model
   }, access)
+  activateFixtureAccount(secondary.id)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '普通路由速度优先 Mock AI 网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -607,7 +611,7 @@ function createCostFirstScenario(upstreamBaseUrl: string): CostFirstScenario {
     providerCode: GPT_VENDOR_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  const primary = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '01-普通路由成本优先 Mock AI 主号',
@@ -620,9 +624,11 @@ function createCostFirstScenario(upstreamBaseUrl: string): CostFirstScenario {
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    supportedModels: [model]
+    supportedModels: [model],
+    healthCheckModel: model
   }, access)
-  repositories.createAccount({
+  activateFixtureAccount(primary.id)
+  const secondary = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '02-普通路由成本优先 Mock AI 副号',
@@ -635,8 +641,10 @@ function createCostFirstScenario(upstreamBaseUrl: string): CostFirstScenario {
     groupId: group.id,
     status: 'active',
     schedulable: true,
-    supportedModels: [model]
+    supportedModels: [model],
+    healthCheckModel: model
   }, access)
+  activateFixtureAccount(secondary.id)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '普通路由成本优先 Mock AI 网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -666,9 +674,11 @@ function createPriorityTierScenario(upstreamBaseUrl: string): SpeedFirstScenario
     status: 'active',
     schedulable: true,
     supportedModels: [model],
+    healthCheckModel: model,
     superPriorityEnabled: true,
     priority: 0
   }, access)
+  activateFixtureAccount(primary.id)
   const secondary = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -683,8 +693,10 @@ function createPriorityTierScenario(upstreamBaseUrl: string): SpeedFirstScenario
     status: 'active',
     schedulable: true,
     supportedModels: [model],
+    healthCheckModel: model,
     priority: 1
   }, access)
+  activateFixtureAccount(secondary.id)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '普通路由速度优先优先级层 Mock AI 网关 Key',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -960,6 +972,15 @@ function chatSseChunk(content: string): Record<string, unknown> {
       }
     ]
   }
+}
+
+function activateFixtureAccount(accountId: string): void {
+  assert(repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), `Mock AI 测试账户 ${accountId} 应能通过后台健康检查激活`)
 }
 
 function countHits(hits: MockUpstreamHit[], accountKey: MockAccountKey, path: string): number {

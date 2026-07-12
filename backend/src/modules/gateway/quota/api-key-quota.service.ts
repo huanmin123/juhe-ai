@@ -12,7 +12,8 @@ import {
   loadRequestQuotaCosts,
   loadRequestQuotaCostsBatchAsync,
   requestQuotaCostKey,
-  requestQuotaCostKeyAsync
+  requestQuotaCostKeyAsync,
+  type RequestQuotaCosts
 } from './request-quota-checker.js'
 import {
   isGatewayQuotaCostSnapshotIncomplete,
@@ -26,6 +27,43 @@ export const API_KEY_QUOTA_EXCEEDED_MESSAGE = '额度已用完，请联系管理
 export interface ApiKeyQuotaDecision {
   allowed: boolean
   message?: string
+}
+
+export async function readGatewayApiKeyQuotaCostsSnapshotAsync(apiKey: GatewayApiKeyRow) {
+  const limits = parseRequestQuotaLimitsJson(apiKey.quota_limits_json)
+  if (!hasEnabledRequestQuotaLimit(limits)) return undefined
+  return await readGatewayQuotaCostsSnapshotAsync({
+    systemAccountId: apiKey.system_account_id,
+    scopeType: 'api_key',
+    scopeId: apiKey.id,
+    hourlyWindowHours: limits.hourly?.hours
+  })
+}
+
+export function readGatewayApiKeyQuotaCostsExact(apiKey: GatewayApiKeyRow, now = new Date()): RequestQuotaCosts {
+  const limits = parseRequestQuotaLimitsJson(apiKey.quota_limits_json)
+  return loadRequestQuotaCosts(getStatsDatabase(), {
+    systemAccountId: apiKey.system_account_id,
+    scopeType: 'api_key',
+    scopeId: apiKey.id,
+    now,
+    hourlyWindowHours: limits.hourly?.hours
+  })
+}
+
+export async function readGatewayApiKeyQuotaCostsExactAsync(apiKey: GatewayApiKeyRow, now = new Date()): Promise<RequestQuotaCosts> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return readGatewayApiKeyQuotaCostsExact(apiKey, now)
+  const limits = parseRequestQuotaLimitsJson(apiKey.quota_limits_json)
+  const input = {
+    systemAccountId: apiKey.system_account_id,
+    scopeType: 'api_key',
+    scopeId: apiKey.id,
+    now,
+    hourlyWindowHours: limits.hourly?.hours
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const costsByKey = await loadRequestQuotaCostsBatchAsync(client, [input])
+  return costsByKey.get(await requestQuotaCostKeyAsync(input)) ?? emptyRequestQuotaCosts()
 }
 
 type ApiKeyQuotaCacheEntry = ApiKeyQuotaDecision & {

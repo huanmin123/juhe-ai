@@ -119,6 +119,7 @@ import type { ResponseInspectionPolicyListResult, ResponseInspectionPolicySummar
 import type { ModelCatalogListOptions, ProviderModelCatalogItem } from '../modules/model-pricing/model-catalog.service.js'
 import type { AuthorizationQuotaDecision } from '../modules/gateway/quota/authorization-quota.service.js'
 import type { ApiKeyQuotaDecision } from '../modules/gateway/quota/api-key-quota.service.js'
+import type { RequestQuotaCosts } from '../modules/gateway/quota/request-quota-checker.js'
 import type { DbServiceGatewayRuntime } from '../modules/db-service/db-service-types.js'
 import type { GatewayApiKeyRow } from './gateway-api-key.repository.js'
 import type { GatewaySettings } from '../modules/gateway/policy/account-error-policy.service.js'
@@ -478,6 +479,10 @@ export type SqliteReadWorkerOperation =
     apiKey: GatewayApiKeyRow
   }
   | {
+    type: 'read_api_key_quota_costs_read_only'
+    apiKey: GatewayApiKeyRow
+  }
+  | {
     type: 'check_authorization_quota_batch_read_only'
     groupAuthorizationId?: string
     accounts: Array<{
@@ -760,6 +765,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'find_active_client_ip_policy_by_hash_read_only' } ? ActiveClientIpPolicy | undefined :
   T extends { type: 'check_authorization_quota_read_only' } ? AuthorizationQuotaDecision :
   T extends { type: 'check_api_key_quota_read_only' } ? ApiKeyQuotaDecision :
+  T extends { type: 'read_api_key_quota_costs_read_only' } ? RequestQuotaCosts :
   T extends { type: 'check_authorization_quota_batch_read_only' } ? AuthorizationQuotaDecision[] :
   T extends { type: 'list_groups_read_only' } ? GroupSummary[] :
   T extends { type: 'list_groups_page_read_only' } ? GroupListResult :

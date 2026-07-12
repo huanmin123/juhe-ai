@@ -34,7 +34,7 @@ import { extractClientIp, requestEndpoint } from './metadata.js'
 import { buildGatewayUsageContext } from './preflight.js'
 
 type GatewayRawBodyLimitScope = 'gateway' | 'text' | 'image'
-type GatewayBodyRejectReason = 'gateway_body_parser' | 'gateway_body_size_limit' | 'gateway_body_in_flight_limit' | 'gateway_body_metadata_worker'
+type GatewayBodyRejectReason = 'gateway_body_parser' | 'gateway_body_size_limit' | 'gateway_body_in_flight_limit' | 'gateway_body_metadata_worker' | 'gateway_body_admission'
 
 export interface GatewayBodyRejectionInput {
   statusCode: number
@@ -109,6 +109,7 @@ export async function captureGatewayRawBody(
           model: metadata.model,
           stream: metadata.stream,
           serviceTier: metadata.serviceTier,
+          maxOutputTokens: metadata.maxOutputTokens,
           imageGeneration: metadata.imageGeneration,
           imageGenerationForced: metadata.imageGenerationForced,
           invalidJson: metadata.invalidJson
@@ -125,6 +126,7 @@ export async function captureGatewayRawBody(
           model: metadata.model,
           stream: metadata.stream,
           serviceTier: metadata.serviceTier,
+          maxOutputTokens: metadata.maxOutputTokens,
           imageGeneration: metadata.imageGeneration,
           imageGenerationForced: metadata.imageGenerationForced
         })

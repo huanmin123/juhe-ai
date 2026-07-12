@@ -81,6 +81,18 @@ export interface CooldownAccountRetestFailureResult {
   errorMessage: string
 }
 
+export interface CooldownAccountRetestCursor {
+  cooldownUntil: string
+  priority: number
+  createdAt: string
+  id: string
+}
+
+export interface CooldownAccountRetestPage {
+  accounts: AccountSummary[]
+  nextCursor?: CooldownAccountRetestCursor
+}
+
 export function findAccountForCooldownRetest(accountId: string): AccountSummary | undefined {
   disableExpiredAccounts()
   return cooldownRetestDueAccountSummaries(queryAccountsDueForCooldownRetest(1, accountId))[0]
@@ -96,19 +108,35 @@ export async function findAccountForCooldownRetestAsync(accountId: string): Prom
 }
 
 export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
-  disableExpiredAccounts()
-  const normalizedLimit = normalizedCooldownRetestLimit(limit)
-  return cooldownRetestDueAccountSummaries(queryAccountsDueForCooldownRetest(cooldownRetestScanLimit(normalizedLimit))).slice(0, normalizedLimit)
+  return listAccountsDueForCooldownRetestPage(limit).accounts
 }
 
 export async function listAccountsDueForCooldownRetestAsync(limit = 20): Promise<AccountSummary[]> {
+  return (await listAccountsDueForCooldownRetestPageAsync(limit)).accounts
+}
+
+export function listAccountsDueForCooldownRetestPage(
+  limit = 20,
+  cursor?: CooldownAccountRetestCursor
+): CooldownAccountRetestPage {
+  disableExpiredAccounts()
+  const normalizedLimit = normalizedCooldownRetestLimit(limit)
+  const rows = queryAccountsDueForCooldownRetest(cooldownRetestScanLimit(normalizedLimit), undefined, cursor)
+  return cooldownRetestPageFromRows(rows, cooldownRetestDueAccountSummaries(rows), normalizedLimit)
+}
+
+export async function listAccountsDueForCooldownRetestPageAsync(
+  limit = 20,
+  cursor?: CooldownAccountRetestCursor
+): Promise<CooldownAccountRetestPage> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return listAccountsDueForCooldownRetest(limit)
+    return listAccountsDueForCooldownRetestPage(limit, cursor)
   }
   await disableExpiredAccountsAsync()
   const normalizedLimit = normalizedCooldownRetestLimit(limit)
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  return (await cooldownRetestDueAccountSummariesAsync(client, await queryAccountsDueForCooldownRetestAsync(client, cooldownRetestScanLimit(normalizedLimit)))).slice(0, normalizedLimit)
+  const rows = await queryAccountsDueForCooldownRetestAsync(client, cooldownRetestScanLimit(normalizedLimit), undefined, cursor)
+  return cooldownRetestPageFromRows(rows, await cooldownRetestDueAccountSummariesAsync(client, rows), normalizedLimit)
 }
 
 export function recordCooldownAccountRetestFailure(id: string, input: CooldownAccountRetestFailureInput): CooldownAccountRetestFailureResult {
@@ -283,10 +311,17 @@ async function findAccountCooldownRetestStateAsync(accountId: string): Promise<A
   return (await cooldownRetestAccountSummariesAsync(client, await queryAccountCooldownRetestStateAsync(client, accountId)))[0]
 }
 
-function queryAccountsDueForCooldownRetest(limit: number, accountId?: string): AccountListRow[] {
+function queryAccountsDueForCooldownRetest(
+  limit: number,
+  accountId?: string,
+  cursor?: CooldownAccountRetestCursor
+): AccountListRow[] {
   const providerProtocolProfileIds = openAIProtocolProfileIdsForQuery()
   const now = nowIso()
   const accountIdFilter = accountId ? 'AND accounts.id = ?' : ''
+  const cursorFilter = !accountId && cursor
+    ? 'AND (accounts.cooldown_until, accounts.priority, accounts.created_at, accounts.id) > (?, ?, ?, ?)'
+    : ''
   const params: Array<string | number> = [
     ...providerProtocolProfileIds,
     now,
@@ -295,6 +330,9 @@ function queryAccountsDueForCooldownRetest(limit: number, accountId?: string): A
   ]
   if (accountId) {
     params.push(accountId)
+  }
+  if (!accountId && cursor) {
+    params.push(cursor.cooldownUntil, cursor.priority, cursor.createdAt, cursor.id)
   }
   params.push(normalizedCooldownRetestLimit(limit))
   const rows = getBusinessDatabase()
@@ -320,6 +358,7 @@ function queryAccountsDueForCooldownRetest(limit: number, accountId?: string): A
           )
         )
         ${accountIdFilter}
+        ${cursorFilter}
         AND EXISTS (
           SELECT 1
           FROM group_accounts
@@ -342,10 +381,18 @@ function queryAccountsDueForCooldownRetest(limit: number, accountId?: string): A
   ))
 }
 
-async function queryAccountsDueForCooldownRetestAsync(client: DatabaseClient, limit: number, accountId?: string): Promise<AccountListRow[]> {
+async function queryAccountsDueForCooldownRetestAsync(
+  client: DatabaseClient,
+  limit: number,
+  accountId?: string,
+  cursor?: CooldownAccountRetestCursor
+): Promise<AccountListRow[]> {
   const providerProtocolProfileIds = await openAIProtocolProfileIdsForQueryAsync()
   const now = nowIso()
   const accountIdFilter = accountId ? 'AND accounts.id = ?' : ''
+  const cursorFilter = !accountId && cursor
+    ? 'AND (accounts.cooldown_until, accounts.priority, accounts.created_at, accounts.id) > (?, ?, ?, ?)'
+    : ''
   const params: Array<string | number> = [
     ...providerProtocolProfileIds,
     now,
@@ -354,6 +401,9 @@ async function queryAccountsDueForCooldownRetestAsync(client: DatabaseClient, li
   ]
   if (accountId) {
     params.push(accountId)
+  }
+  if (!accountId && cursor) {
+    params.push(cursor.cooldownUntil, cursor.priority, cursor.createdAt, cursor.id)
   }
   params.push(normalizedCooldownRetestLimit(limit))
   const rows = await client.query<AccountListRow>(`
@@ -400,6 +450,7 @@ async function queryAccountsDueForCooldownRetestAsync(client: DatabaseClient, li
         )
       )
       ${accountIdFilter}
+      ${cursorFilter}
       AND group_bindings.group_id IS NOT NULL
     ORDER BY accounts.cooldown_until ASC, accounts.priority ASC, accounts.created_at ASC, accounts.id ASC
     LIMIT ?
@@ -408,6 +459,31 @@ async function queryAccountsDueForCooldownRetestAsync(client: DatabaseClient, li
     Boolean(row.source_provider_code)
     && isAuthorizedSourceAccountAvailableForDispatch(row, now)
   ))
+}
+
+function cooldownRetestPageFromRows(
+  rows: AccountListRow[],
+  summaries: AccountSummary[],
+  limit: number
+): CooldownAccountRetestPage {
+  const accounts = summaries.slice(0, limit)
+  const lastAccountId = accounts.at(-1)?.id
+  const cursorRow = lastAccountId
+    ? rows.find((row) => row.id === lastAccountId)
+    : rows.at(-1)
+  return {
+    accounts,
+    nextCursor: cursorRow ? cooldownRetestCursorFromRow(cursorRow) : undefined
+  }
+}
+
+function cooldownRetestCursorFromRow(row: AccountListRow): CooldownAccountRetestCursor {
+  return {
+    cooldownUntil: String(row.cooldown_until),
+    priority: Number(row.priority),
+    createdAt: String(row.created_at),
+    id: String(row.id)
+  }
 }
 
 function queryAccountCooldownRetestState(accountId: string): AccountListRow[] {

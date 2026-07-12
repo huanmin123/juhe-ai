@@ -58,6 +58,8 @@ import {
   listOpenAIAccountsForGroupResultAsync,
   listAccountsDueForCooldownRetest,
   listAccountsDueForCooldownRetestAsync,
+  listAccountsDueForCooldownRetestPage,
+  listAccountsDueForCooldownRetestPageAsync,
   listAccountsDueForHealthCheck,
   listAccountsDueForHealthCheckAsync,
   listRecoverableUnavailableOpenAIAccountsForGroup,
@@ -157,7 +159,7 @@ import {
   orderGatewayApiKeyGroupBindingsForDispatch,
   orderGatewayApiKeyGroupBindingsForDispatchAsync
 } from '../gateway/routing/api-key-group-route-selector.service.js'
-import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaExactAsync, clearApiKeyQuotaCache } from '../gateway/quota/api-key-quota.service.js'
+import { checkGatewayApiKeyQuota, checkGatewayApiKeyQuotaExactAsync, clearApiKeyQuotaCache, readGatewayApiKeyQuotaCostsExact, readGatewayApiKeyQuotaCostsExactAsync } from '../gateway/quota/api-key-quota.service.js'
 import {
   checkGatewayAuthorizationQuotaBatchByIds,
   checkGatewayAuthorizationQuotaBatchByIdsExactAsync,
@@ -787,6 +789,13 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
             type: 'check_api_key_quota_read_only',
             apiKey: operation.apiKey
           })
+    case 'read_api_key_quota_costs':
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? await readGatewayApiKeyQuotaCostsExactAsync(operation.apiKey)
+        : await requestSqliteReadWorker({
+            type: 'read_api_key_quota_costs_read_only',
+            apiKey: operation.apiKey
+          })
     case 'check_authorization_quota':
       return runtimeConfig.databaseDriver === 'postgres'
         ? await checkGatewayAuthorizationQuotaByIdsExactAsync({
@@ -843,7 +852,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       return handleDbServiceOperationSync(operation)
     case 'list_accounts_due_for_cooldown_retest':
       if (runtimeConfig.databaseDriver === 'postgres') {
-        return await listAccountsDueForCooldownRetestAsync(operation.limit)
+        return await listAccountsDueForCooldownRetestPageAsync(operation.limit, operation.cursor)
       }
       return handleDbServiceOperationSync(operation)
     case 'find_account_for_cooldown_retest':
@@ -1194,6 +1203,10 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return runtimeConfig.databaseDriver === 'postgres'
         ? checkGatewayApiKeyQuotaExactAsync(operation.apiKey)
         : checkGatewayApiKeyQuota(operation.apiKey)
+    case 'read_api_key_quota_costs':
+      return runtimeConfig.databaseDriver === 'postgres'
+        ? readGatewayApiKeyQuotaCostsExactAsync(operation.apiKey)
+        : readGatewayApiKeyQuotaCostsExact(operation.apiKey)
     case 'check_authorization_quota':
       return runtimeConfig.databaseDriver === 'postgres'
         ? checkGatewayAuthorizationQuotaByIdsExactAsync({
@@ -1349,7 +1362,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return result
     }
     case 'list_accounts_due_for_cooldown_retest': {
-      return listAccountsDueForCooldownRetest(operation.limit)
+      return listAccountsDueForCooldownRetestPage(operation.limit, operation.cursor)
     }
     case 'find_account_for_cooldown_retest': {
       return findAccountForCooldownRetest(operation.accountId)

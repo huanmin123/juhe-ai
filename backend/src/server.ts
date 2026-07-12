@@ -17,6 +17,7 @@ import {
 } from './modules/gateway/request/body-middleware.js'
 import { gatewayRawBodyHardLimit, type GatewayRawBodyRequest } from './modules/gateway/request/body.js'
 import { preResolveGatewayRuntime } from './modules/gateway/request/pre-auth.js'
+import { admitSpeedFirstRequestBody } from './modules/gateway/request/speed-first-body-admission.middleware.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { installProcessLogHandlers, logger } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
@@ -363,6 +364,7 @@ app.use(
   openAICompatibleFilesRouter,
   openAICompatibleVectorStoresRouter,
   rejectGatewayRawBodyByContentLength,
+  admitSpeedFirstRequestBody,
   express.raw({ type: () => true, limit: gatewayRawBodyLimit }),
   handleGatewayRawBodyError,
   captureGatewayRawBody,

@@ -16,6 +16,7 @@ import type {
   BackgroundStatsWriteOperationResult
 } from '../background/background-stats-writer.js'
 import type { ApiKeyQuotaDecision } from '../gateway/quota/api-key-quota.service.js'
+import type { RequestQuotaCosts } from '../gateway/quota/request-quota-checker.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/quota/authorization-quota.service.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
@@ -514,6 +515,10 @@ export type DbServiceOperation =
     apiKey: GatewayApiKeyRow
   }
   | {
+    type: 'read_api_key_quota_costs'
+    apiKey: GatewayApiKeyRow
+  }
+  | {
     type: 'check_authorization_quota'
     groupAuthorizationId?: string
     accountAuthorizationId?: string
@@ -695,6 +700,7 @@ export type DbServiceOperation =
   | {
     type: 'list_accounts_due_for_cooldown_retest'
     limit: number
+    cursor?: import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestCursor
   }
   | {
     type: 'find_account_for_cooldown_retest'
@@ -888,6 +894,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'list_openai_compatible_vector_store_file_chunks' } ? OpenAICompatibleVectorStoreFileChunkRecord[] :
   T extends { type: 'list_provider_model_catalog' } ? ProviderModelCatalogItem[] :
   T extends { type: 'check_api_key_quota' } ? ApiKeyQuotaDecision :
+  T extends { type: 'read_api_key_quota_costs' } ? RequestQuotaCosts :
   T extends { type: 'check_authorization_quota' } ? AuthorizationQuotaDecision :
   T extends { type: 'check_authorization_quota_batch' } ? AuthorizationQuotaDecision[] :
   T extends { type: 'update_openai_oauth_credentials' } ? { updated: boolean } :
@@ -908,7 +915,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'commit_account_balance_refresh' } ? { changed: boolean } :
   T extends { type: 'enable_detected_account_balance_query' } ? { changed: boolean } :
   T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt: string; errorCode: string; errorMessage: string } :
-  T extends { type: 'list_accounts_due_for_cooldown_retest' } ? AccountSummary[] :
+  T extends { type: 'list_accounts_due_for_cooldown_retest' } ? import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestPage :
   T extends { type: 'find_account_for_cooldown_retest' } ? AccountSummary | undefined :
   T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; errorCode: string; errorMessage: string } :
   T extends { type: 'mark_account_exception' } ? { updated: boolean; accountStatus?: string } :
