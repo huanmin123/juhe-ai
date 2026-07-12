@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 
+import pLimit from 'p-limit'
+
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { AccountRuntimeAvailability } from '../../db-service/db-service-types.js'
@@ -218,6 +220,7 @@ const distributedRecoveryProbeSuppressionNegativeCacheTtlMs = 500
 const distributedRecoveryProbeSuppressionCacheMaxEntries = 5000
 const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
 const maxSideEffectQueueLength = 5000
+const gatewayAutomaticProbeLimit = pLimit(recoveryProbeMaxConcurrentRuns)
 
 const distributedRecoveryProbeStore = createRuntimeProbeStateStore<DistributedRecoveryProbeState>('gateway-account-recovery')
 const distributedRecoveryProbeFailureMergeOptions = {
@@ -686,7 +689,7 @@ async function runGatewayAccountRecoveryProbe(runtimeKey: string): Promise<void>
   markRecoveryProbeStarted(state, now)
   try {
     const timeoutMs = accountDiagnosticRetryTimeoutMs[0] ?? 10_000
-    const result = await runSingleGatewayAccountPrecheck(state, timeoutMs)
+    const result = await runWithGatewayAutomaticProbeSlot(() => runSingleGatewayAccountPrecheck(state, timeoutMs))
     const latest = currentRecoveryProbeState(runtimeKey, generation)
     if (!latest) {
       rescheduleLatestRecoveryProbeAfterStaleResult(runtimeKey, generation, 'gateway_account_recovery_probe_stale_result_ignored')
@@ -820,7 +823,7 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
     markRecoveryProbeStarted(state, now)
     try {
       const timeoutMs = accountDiagnosticRetryTimeoutMs[0] ?? 10_000
-      const result = await runSingleGatewayAccountPrecheck(state, timeoutMs)
+      const result = await runWithGatewayAutomaticProbeSlot(() => runSingleGatewayAccountPrecheck(state, timeoutMs))
       const latest = await currentDistributedRecoveryProbeState(runtimeKey, generation)
       if (!latest) {
         logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_recovery_probe_stale_result_ignored')
@@ -955,7 +958,7 @@ async function runDistributedGatewayAccountPrecheck(
       return
     }
     const timeoutMs = accountDiagnosticRetryTimeoutMs[attempt] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
-    const result = await runSingleGatewayAccountPrecheck(distributedStateWithAccount(state, account), timeoutMs)
+    const result = await runWithGatewayAutomaticProbeSlot(() => runSingleGatewayAccountPrecheck(distributedStateWithAccount(state, account), timeoutMs))
     const stateAfterResult = await currentDistributedRecoveryProbeState(state.runtimeKey, generation)
     if (!stateAfterResult) {
       logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_result_ignored')
@@ -2009,7 +2012,7 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
         precheckAttemptCount: latestState.attemptCount
       })
       const timeoutMs = accountDiagnosticRetryTimeoutMs[attempt] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
-      const result = await runSingleGatewayAccountPrecheck(latestState, timeoutMs)
+      const result = await runWithGatewayAutomaticProbeSlot(() => runSingleGatewayAccountPrecheck(latestState, timeoutMs))
       const stateAfterResult = currentPrecheckState(runtimeKey, generation)
       if (!stateAfterResult) {
         logStalePrecheckResult(runtimeKey, generation, 'gateway_account_precheck_stale_result_ignored')
@@ -2090,6 +2093,14 @@ function canUseProcessLocalGatewayAccountRuntimeState(): boolean {
   precheckStates.clear()
   recoveryProbeStates.clear()
   return false
+}
+
+async function runWithGatewayAutomaticProbeSlot<T>(task: () => Promise<T>): Promise<T> {
+  return await gatewayAutomaticProbeLimit(task)
+}
+
+export async function runWithGatewayAutomaticProbeSlotForTest<T>(task: () => Promise<T>): Promise<T> {
+  return await runWithGatewayAutomaticProbeSlot(task)
 }
 
 async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: number): Promise<{
