@@ -194,7 +194,11 @@ function startAccountTestSessionStaleSweep(): void {
 }
 
 function sweepManualAccountTestQueue(): void {
-  void runAccountTestTaskMaintenance('sweep')
+  void runAccountTestTaskMaintenance('sweep').catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'manual_account_test_sweep_failed'
+    }), '账号测试队列定时维护失败')
+  })
 }
 
 export function getManualAccountTestQueueSnapshot() {
