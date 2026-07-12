@@ -185,7 +185,7 @@ func TestServiceDetailReturnsFullBindingsAndNormalizesSpeedConfig(t *testing.T) 
 	result, err := NewService(store).Detail(context.Background(), DetailInput{
 		ActorSystemAccountID: "sys_admin",
 		ActorRole:            "super_admin",
-		SystemAccountID:      " sys_owner ",
+		SystemAccountID:      "sys_owner",
 		RouteStrategyID:      " route_speed ",
 	})
 	if err != nil {
@@ -204,6 +204,17 @@ func TestServiceDetailReturnsFullBindingsAndNormalizesSpeedConfig(t *testing.T) 
 	}
 	if len(result.GroupBindings) != 1 || result.APIKeyCount != 7 {
 		t.Fatalf("detail = %+v", result)
+	}
+}
+
+func TestRouteStrategyReadScopeDoesNotBroadenNonECMAScriptWhitespaceOwner(t *testing.T) {
+	const owner = "\u0085"
+	systemAccountID, includeOwner, err := routeStrategyReadScope("sys_admin", "admin", owner, false)
+	if err != nil {
+		t.Fatalf("routeStrategyReadScope() error = %v", err)
+	}
+	if systemAccountID != owner || !includeOwner {
+		t.Fatalf("scope = (%q, %v), want (%q, true)", systemAccountID, includeOwner, owner)
 	}
 }
 
@@ -235,6 +246,25 @@ func TestServiceDetailReturnsNotFoundAndRejectsDamagedConfig(t *testing.T) {
 		RouteStrategyID:      "route_broken",
 	}); err == nil {
 		t.Fatal("Detail() error = nil, want damaged config error")
+	}
+
+	trailingStore := &routeStrategyReadStoreStub{
+		detailFound: true,
+		detail: port.ManagementRouteStrategyDetailRow{
+			ManagementRouteStrategyListRow: port.ManagementRouteStrategyListRow{
+				ID:         "route_trailing",
+				Mode:       "normal",
+				Status:     "active",
+				ConfigJSON: stringPointer(`{} {}`),
+			},
+		},
+	}
+	if _, err := NewService(trailingStore).Detail(context.Background(), DetailInput{
+		ActorSystemAccountID: "sys_self",
+		SelfOnly:             true,
+		RouteStrategyID:      "route_trailing",
+	}); err == nil {
+		t.Fatal("Detail() error = nil, want trailing JSON error")
 	}
 }
 

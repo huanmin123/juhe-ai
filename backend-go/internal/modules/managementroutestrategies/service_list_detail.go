@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"strconv"
 	"strings"
@@ -250,7 +251,6 @@ func routeStrategyReadScope(
 	if selfOnly || !routeStrategyAdminRole(actorRole) {
 		return actorSystemAccountID, false, nil
 	}
-	systemAccountID = strings.TrimSpace(systemAccountID)
 	if systemAccountID == "all" {
 		systemAccountID = ""
 	}
@@ -414,6 +414,13 @@ func parseRouteStrategyRuntimeConfig(raw *string) (routeStrategyRuntimeConfig, e
 	decoder.UseNumber()
 	var parsed any
 	if err := decoder.Decode(&parsed); err != nil {
+		return routeStrategyRuntimeConfig{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return routeStrategyRuntimeConfig{}, fmt.Errorf("策略路由配置包含多余 JSON 值")
+		}
 		return routeStrategyRuntimeConfig{}, err
 	}
 	record, ok := parsed.(map[string]any)
