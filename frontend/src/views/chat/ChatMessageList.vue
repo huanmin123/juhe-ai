@@ -19,7 +19,7 @@
           <UserOutlined v-if="messages[item.index].role === 'user'" />
           <RobotOutlined v-else />
         </div>
-        <div class="message-body">
+        <div class="message-body" :class="messages[item.index].role === 'user' ? 'message-bubble-user' : 'message-bubble-assistant'">
           <div class="message-meta">
             <span>{{ messages[item.index].role === 'user' ? '我' : messages[item.index].model }}</span>
             <a-tag v-if="messages[item.index].status !== 'completed'" :color="statusColor(messages[item.index].status)">{{ statusLabel(messages[item.index].status) }}</a-tag>
@@ -79,14 +79,19 @@ defineExpose({ scrollToBottom, captureScrollAnchor, restoreScrollAnchor })
 <style scoped>
 .message-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; background: #fff; scrollbar-gutter: stable; }
 .message-virtual-space { position: relative; width: 100%; }
-.message-row { position: absolute; top: 0; left: 0; width: 100%; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 12px; padding: 14px clamp(14px, 3vw, 36px); }
-.message-row-user { background: #f8fafc; }
+.message-row { position: absolute; top: 0; left: 0; width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 14px clamp(14px, 3vw, 36px); }
+.message-row-user { justify-content: flex-end; background: #f8fafc; }
+.message-row-assistant { justify-content: flex-start; }
+.message-row-user .message-avatar { order: 2; }
+.message-row-user .message-body { order: 1; }
 .message-avatar { width: 32px; height: 32px; display: grid; place-items: center; color: #475569; background: #fff; border: 1px solid #dfe5ec; border-radius: 6px; }
 .message-row-assistant .message-avatar { color: #1677ff; background: #eef6ff; border-color: #b9d7ff; }
-.message-body { min-width: 0; padding-top: 3px; }
+.message-body { min-width: 0; max-width: min(78%, 860px); padding: 10px 13px; }
+.message-bubble-user { background: #eaf3ff; border: 1px solid #c7ddff; border-radius: 12px 12px 3px 12px; }
+.message-bubble-assistant { background: #fff; border: 1px solid #e5eaf0; border-radius: 3px 12px 12px 12px; }
 .message-meta { min-height: 24px; display: flex; align-items: center; gap: 8px; margin-bottom: 4px; color: #475569; font-size: 12px; font-weight: 600; }
 .message-meta :deep(.ant-tag) { margin: 0; }
 .message-loading, .message-empty { height: 100%; min-height: 260px; display: flex; align-items: center; justify-content: center; gap: 10px; color: #64748b; }
 .message-empty :deep(.anticon) { font-size: 24px; color: #94a3b8; }
-@media (max-width: 720px) { .message-row { grid-template-columns: 28px minmax(0, 1fr); gap: 9px; padding: 12px; } .message-avatar { width: 28px; height: 28px; } }
+@media (max-width: 720px) { .message-row { gap: 8px; padding: 12px; } .message-body { max-width: 84%; padding: 8px 10px; } .message-avatar { width: 28px; height: 28px; } }
 </style>

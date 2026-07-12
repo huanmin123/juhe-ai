@@ -31,11 +31,7 @@
       <template v-if="selectedConversation">
         <ChatMessageList ref="messageList" :messages="messages" :loading="messagesLoading" @near-top="loadOlderMessages" />
         <footer class="composer-shell">
-          <div class="composer">
-            <a-textarea v-model:value="draft" :auto-size="{ minRows: 1, maxRows: 6 }" :maxlength="196608" placeholder="输入消息" :disabled="generating" @keydown="handleComposerKeydown" />
-            <a-tooltip v-if="generating" title="停止生成"><a-button class="send-button" danger aria-label="停止生成" @click="stopGeneration"><StopOutlined /></a-button></a-tooltip>
-            <a-tooltip v-else title="发送"><a-button class="send-button" type="primary" aria-label="发送" :disabled="!canSend" @click="sendMessage"><SendOutlined /></a-button></a-tooltip>
-          </div>
+          <AIComposer ref="composer" :disabled="generating" @submit="handleComposerSubmit" @stop="stopGeneration" />
         </footer>
       </template>
       <div v-else class="chat-start-state">
@@ -52,7 +48,7 @@
 </template>
 
 <script setup lang="ts">
-import { DeleteOutlined, MenuOutlined, MessageOutlined, PlusOutlined, SendOutlined, StopOutlined } from '@ant-design/icons-vue'
+import { DeleteOutlined, MenuOutlined, MessageOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref } from 'vue'
 import { chatApi, streamChatMessage } from '@/api/domains/chat'
@@ -60,6 +56,9 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import type { ChatApiKeyOption, ChatConversation, ChatMessage, ChatStreamEvent } from '@/types/domain/chat'
 import { applyChatStreamEvent } from './chatStream'
 import ChatMessageList from './ChatMessageList.vue'
+import AIComposer from './composer/AIComposer.vue'
+import type { ChatInputBlock } from './composer/chatComposerDocument'
+import type { JSONContent } from '@tiptap/core'
 
 const conversations = ref<ChatConversation[]>([])
 const apiKeys = ref<ChatApiKeyOption[]>([])
@@ -67,7 +66,6 @@ const selectedConversationId = ref<string>()
 const messages = ref<ChatMessage[]>([])
 const models = ref<string[]>([])
 const selectedModel = ref<string>()
-const draft = ref('')
 const messagesLoading = ref(false)
 const olderMessagesLoading = ref(false)
 const hasOlderMessages = ref(false)
@@ -79,12 +77,12 @@ const conversationDrawerOpen = ref(false)
 const newApiKeyId = ref<string>()
 const mobile = ref(false)
 const messageList = ref<InstanceType<typeof ChatMessageList>>()
+const composer = ref<InstanceType<typeof AIComposer>>()
 let streamController: AbortController | undefined
 
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationId.value))
 const apiKeyOptions = computed(() => apiKeys.value.map((item) => ({ label: item.name, value: item.id })))
 const modelOptions = computed(() => models.value.map((item) => ({ label: item, value: item })))
-const canSend = computed(() => Boolean(selectedConversation.value && selectedModel.value && draft.value.trim()))
 
 const ConversationPane = defineComponent({
   emits: ['selected'],
@@ -143,26 +141,29 @@ async function createConversation(): Promise<void> {
   catch (error) { message.error(extractApiErrorMessage(error, '创建对话失败')) }
   finally { creating.value = false }
 }
-async function sendMessage(): Promise<void> {
+async function sendMessage(content: string, snapshot?: JSONContent): Promise<void> {
   const conversation = selectedConversation.value
-  const content = draft.value.trim()
   const model = selectedModel.value
-  if (!conversation || !content || !model || generating.value) return
+  if (!conversation || !content.trim() || !model || generating.value) return
   generating.value = true
-  draft.value = ''
   streamController = new AbortController()
   try {
     await streamChatMessage({ conversationId: conversation.id, clientMessageId: crypto.randomUUID(), content, model, signal: streamController.signal, onEvent: handleStreamEvent })
     const current = conversations.value.find((item) => item.id === conversation.id)
     if (current) { current.lastModel = model; current.lastMessageAt = new Date().toISOString(); const first = messages.value.find((item) => item.role === 'user'); if (current.title === '新对话' && first) current.title = first.contentText.slice(0, 60) }
-  } catch (error) { if (!streamController.signal.aborted) message.error(extractApiErrorMessage(error, '发送失败')) }
+  } catch (error) { if (!streamController.signal.aborted) { if (snapshot) composer.value?.restore(snapshot); message.error(extractApiErrorMessage(error, '发送失败')) } }
   finally { generating.value = false; streamController = undefined }
 }
 function handleStreamEvent(event: ChatStreamEvent): void { applyChatStreamEvent(messages.value, event); if (event.type === 'message.failed') message.error(event.data.message); messageList.value?.scrollToBottom() }
 async function stopGeneration(): Promise<void> { const id = selectedConversationId.value; if (!id) return; try { await chatApi.stop(id) } catch {} finally { streamController?.abort(); generating.value = false; await refreshMessages() } }
 async function refreshMessages(): Promise<void> { const id = selectedConversationId.value; if (id) { messages.value = await chatApi.listMessages(id, { limit: 100 }); hasOlderMessages.value = messages.value.length === 100 } }
 async function removeConversation(): Promise<void> { const id = selectedConversationId.value; if (!id) return; try { await chatApi.deleteConversation(id); conversations.value = conversations.value.filter((item) => item.id !== id); selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
-function handleComposerKeydown(event: KeyboardEvent): void { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void sendMessage() } }
+function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {
+  const image = payload.blocks.find((item) => item.type === 'input_image')
+  if (image) { composer.value?.restore(payload.snapshot); message.warning('图片预览已保留，上传接口接入后才能发送图片'); return }
+  const content = payload.blocks.filter((item): item is Extract<ChatInputBlock, { type: 'input_text' }> => item.type === 'input_text').map((item) => item.text).join('')
+  void sendMessage(content, payload.snapshot)
+}
 function updateMobile(): void { mobile.value = window.innerWidth <= 820 }
 function formatConversationTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) }
 onMounted(() => { updateMobile(); window.addEventListener('resize', updateMobile); void loadInitial() })
@@ -179,10 +180,6 @@ onBeforeUnmount(() => { window.removeEventListener('resize', updateMobile); stre
 .chat-title-block span { overflow: hidden; color: #64748b; font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
 .model-select { width: min(260px, 34vw); }
 .composer-shell { padding: 12px clamp(12px, 3vw, 28px) 14px; border-top: 1px solid #e2e8f0; background: #fff; }
-.composer { display: grid; grid-template-columns: minmax(0, 1fr) 38px; align-items: end; gap: 8px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05); }
-.composer:focus-within { border-color: #1677ff; box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.1); }
-.composer :deep(textarea) { padding: 5px 4px; border: 0; box-shadow: none !important; resize: none; }
-.send-button { width: 38px; height: 38px; padding: 0; }
 .chat-start-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: #64748b; }
 .chat-start-state > :deep(.anticon) { font-size: 36px; color: #94a3b8; }
 .chat-start-state strong { color: #334155; font-size: 16px; }
