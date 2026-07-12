@@ -44,6 +44,13 @@ func TestNodeCompatibleRedisKeys(t *testing.T) {
 	if groupAccountIDsVersionKey != "juhe-ai:juhe-ai:cache-version:lookup:group-account-ids" {
 		t.Fatalf("group account IDs version key = %q", groupAccountIDsVersionKey)
 	}
+	clientIPPolicyVersionKey, err := SharedCacheVersionKey("juhe-ai", ClientIPPolicyByIPCacheName)
+	if err != nil {
+		t.Fatalf("client IP policy SharedCacheVersionKey() error = %v", err)
+	}
+	if clientIPPolicyVersionKey != "juhe-ai:juhe-ai:cache-version:gateway:client-ip-policy-by-ip" {
+		t.Fatalf("client IP policy version key = %q", clientIPPolicyVersionKey)
+	}
 
 	stateKey, err := RuntimeStateKey("juhe-ai", RuntimeInvalidationStoreName, "topic:"+GatewayRuntimeCacheTopic)
 	if err != nil {
@@ -66,6 +73,65 @@ func TestNodeCompatibleRedisKeys(t *testing.T) {
 	}
 	if sanitizedKey != "juhe-ai:prod_west_1:cache-version:gateway_api_key" {
 		t.Fatalf("sanitized version key = %q", sanitizedKey)
+	}
+}
+
+func TestSystemAccountInvalidatorInvalidateClientIPPolicyCacheWritesNodeCompatibleVersion(t *testing.T) {
+	cache := &rawSetRecorder{}
+	invalidator, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		Cache:      cache,
+		State:      &rawSetRecorder{},
+		Namespace:  "test-ns",
+		NewVersion: versionSequence("client-ip-policy-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() error = %v", err)
+	}
+
+	if err := invalidator.InvalidateClientIPPolicyCache(context.Background()); err != nil {
+		t.Fatalf("InvalidateClientIPPolicyCache() error = %v", err)
+	}
+
+	if len(cache.calls) != 1 {
+		t.Fatalf("cache calls = %d, want 1", len(cache.calls))
+	}
+	call := cache.calls[0]
+	if call.key != "juhe-ai:test-ns:cache-version:gateway:client-ip-policy-by-ip" ||
+		string(call.value) != "client-ip-policy-version" ||
+		call.ttl != SharedCacheVersionTTL {
+		t.Fatalf(
+			"client IP policy cache call = key %q value %q ttl %v",
+			call.key,
+			string(call.value),
+			call.ttl,
+		)
+	}
+}
+
+func TestSystemAccountInvalidatorInvalidateClientIPPolicyCachePropagatesErrors(t *testing.T) {
+	withoutCache, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		State:     &rawSetRecorder{},
+		Namespace: "test-ns",
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() without cache error = %v", err)
+	}
+	if err := withoutCache.InvalidateClientIPPolicyCache(context.Background()); err == nil {
+		t.Fatal("InvalidateClientIPPolicyCache() without cache error = nil")
+	}
+
+	wantErr := errors.New("redis cache unavailable")
+	withError, err := NewSystemAccountInvalidator(SystemAccountInvalidatorOptions{
+		Cache:      &rawSetRecorder{err: wantErr},
+		State:      &rawSetRecorder{},
+		Namespace:  "test-ns",
+		NewVersion: versionSequence("client-ip-policy-version"),
+	})
+	if err != nil {
+		t.Fatalf("NewSystemAccountInvalidator() with error cache error = %v", err)
+	}
+	if err := withError.InvalidateClientIPPolicyCache(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("InvalidateClientIPPolicyCache() error = %v, want %v", err, wantErr)
 	}
 }
 
