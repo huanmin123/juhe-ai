@@ -19,6 +19,7 @@ interface CapturedRequest {
 }
 
 const systemAccountId = 'system_account_route_strategy_regression'
+const routeStrategyId = 'route_strategy_update_regression'
 const payload: RouteStrategyMutationPayload = {
   name: '策略路由创建 HTTP 契约回归',
   description: null,
@@ -76,18 +77,27 @@ try {
 
   const personalApi = useScopedRouteStrategiesApi(ref(false))
   await personalApi.create(payload, { systemAccountId: 'must_not_leak' })
+
+  await routeStrategiesApi.update(routeStrategyId, payload, { systemAccountId })
+  await myRouteStrategiesApi.update(routeStrategyId, payload)
+  await managementApi.update(routeStrategyId, payload, { systemAccountId })
+  await personalApi.update(routeStrategyId, payload, { systemAccountId: 'must_not_leak' })
 } finally {
   http.defaults.adapter = originalAdapter
 }
 
-assert.equal(capturedRequests.length, 4, '应捕获两个底层 API 和两个作用域委派请求')
+assert.equal(capturedRequests.length, 8, '应捕获创建和更新各四个底层 API / 作用域委派请求')
 
 assertManagementCreate(capturedRequests[0], 'routeStrategiesApi.create')
 assertPersonalCreate(capturedRequests[1], 'myRouteStrategiesApi.create')
 assertManagementCreate(capturedRequests[2], 'useScopedRouteStrategiesApi 管理作用域')
 assertPersonalCreate(capturedRequests[3], 'useScopedRouteStrategiesApi 个人作用域')
+assertManagementUpdate(capturedRequests[4], 'routeStrategiesApi.update')
+assertPersonalUpdate(capturedRequests[5], 'myRouteStrategiesApi.update')
+assertManagementUpdate(capturedRequests[6], 'useScopedRouteStrategiesApi 管理作用域 update')
+assertPersonalUpdate(capturedRequests[7], 'useScopedRouteStrategiesApi 个人作用域 update')
 
-console.log('策略路由创建 API request-capture 回归通过：管理/个人路径、作用域 query 和显式 null body 契约正确')
+console.log('策略路由创建/更新 API request-capture 回归通过：管理/个人路径、作用域 query 和显式 null body 契约正确')
 
 function assertManagementCreate(request: CapturedRequest, source: string): void {
   assert.equal(request.method, 'POST', `${source} 必须发送 POST`)
@@ -97,22 +107,44 @@ function assertManagementCreate(request: CapturedRequest, source: string): void 
     { systemAccountId },
     `${source} 必须保留 systemAccountId query`
   )
-  assertCreateBody(request.body, source)
+  assertMutationBody(request.body, source, '创建')
 }
 
 function assertPersonalCreate(request: CapturedRequest, source: string): void {
   assert.equal(request.method, 'POST', `${source} 必须发送 POST`)
   assert.equal(request.url, '/my-route-strategies', `${source} 必须请求 /my-route-strategies`)
-  assert.equal(
-    request.params?.systemAccountId,
-    undefined,
-    `${source} 不得发送 systemAccountId query`
-  )
-  assertCreateBody(request.body, source)
+  assert.equal(request.params, undefined, `${source} 不得发送任何 query`)
+  assertMutationBody(request.body, source, '创建')
 }
 
-function assertCreateBody(body: unknown, source: string): void {
-  assert.deepEqual(body, payload, `${source} 必须原样发送策略路由创建 body`)
+function assertManagementUpdate(request: CapturedRequest, source: string): void {
+  assert.equal(request.method, 'PATCH', `${source} 必须发送 PATCH`)
+  assert.equal(
+    request.url,
+    `/route-strategies/${routeStrategyId}`,
+    `${source} 必须请求固定管理端策略路由路径`
+  )
+  assert.deepEqual(
+    request.params,
+    { systemAccountId },
+    `${source} 必须仅发送 systemAccountId query`
+  )
+  assertMutationBody(request.body, source, '更新')
+}
+
+function assertPersonalUpdate(request: CapturedRequest, source: string): void {
+  assert.equal(request.method, 'PATCH', `${source} 必须发送 PATCH`)
+  assert.equal(
+    request.url,
+    `/my-route-strategies/${routeStrategyId}`,
+    `${source} 必须请求固定个人策略路由路径`
+  )
+  assert.equal(request.params, undefined, `${source} 不得发送任何 query`)
+  assertMutationBody(request.body, source, '更新')
+}
+
+function assertMutationBody(body: unknown, source: string, action: '创建' | '更新'): void {
+  assert.deepEqual(body, payload, `${source} 必须原样发送策略路由${action} body`)
   assert.ok(isRecord(body), `${source} body 必须是对象`)
   assert.ok(Object.hasOwn(body, 'normalRoutingConfig'), `${source} 必须保留 normalRoutingConfig 字段`)
   assert.equal(body.normalRoutingConfig, null, `${source} 必须保留 normalRoutingConfig: null`)
