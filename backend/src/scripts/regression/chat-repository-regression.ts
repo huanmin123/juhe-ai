@@ -8,8 +8,10 @@ import {
   ChatConflictError,
   completeChatTurn,
   createChatConversation,
+  deleteChatConversation,
   failChatTurn,
   listChatContextMessages,
+  listChatConversations,
   listChatMessages
 } from '../../storage/chat.repository.js'
 
@@ -25,6 +27,8 @@ const conversation = await createChatConversation(client, {
   now: '2026-07-12T00:00:00.000Z'
 })
 assert.equal(conversation.title, '新对话')
+assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 20 })).length, 1)
+assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_2', limit: 20 })).length, 0)
 
 const accepted = await acceptChatTurn(client, {
   conversationId: conversation.id,
@@ -63,6 +67,16 @@ await assert.rejects(
   }),
   (error) => error instanceof ChatConflictError && error.code === 'chat_message_in_progress'
 )
+
+const disposable = await createChatConversation(client, {
+  id: 'chat_conv_delete',
+  systemAccountId: 'sys_user_1',
+  apiKeyId: 'key_1',
+  apiKeyNameSnapshot: '默认 Key',
+  now: '2026-07-12T00:08:00.000Z'
+})
+assert.equal(await deleteChatConversation(client, disposable.id, 'sys_user_1'), true)
+assert.equal(await deleteChatConversation(client, disposable.id, 'sys_user_1'), false)
 
 await completeChatTurn(client, {
   conversationId: conversation.id,

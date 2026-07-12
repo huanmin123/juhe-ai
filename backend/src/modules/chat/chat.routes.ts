@@ -1,0 +1,241 @@
+import { Router } from 'express'
+import { z } from 'zod'
+
+import { runtimeConfig } from '../../config/runtime.js'
+import { ok } from '../../shared/http.js'
+import { getTraceId } from '../../shared/request-context.js'
+import {
+  acceptChatTurn,
+  cancelChatTurn,
+  ChatConflictError,
+  completeChatTurn,
+  createChatConversation,
+  deleteChatConversation,
+  failChatTurn,
+  getChatConversation,
+  listChatContextMessages,
+  listChatConversations,
+  listChatMessages
+} from '../../storage/chat.repository.js'
+import { getChatDatabaseClient } from '../../storage/chat-client.js'
+import { findApiKeySecretAsync, listApiKeysAsync } from '../../storage/repositories.js'
+import { getRequestAuthContext } from '../auth/request-context.js'
+import { collectOpenAIChatSse } from './chat-gateway-sse.js'
+
+export const chatRouter = Router()
+
+const messageBodySchema = z.object({
+  clientMessageId: z.string().trim().min(1).max(100),
+  content: z.string().trim().min(1, '请输入消息').max(196_608, '消息内容过长'),
+  model: z.string().trim().min(1, '请选择模型').max(200)
+}).strict()
+const createConversationSchema = z.object({ apiKeyId: z.string().trim().min(1, '请选择 API Key') }).strict()
+const activeStreams = new Map<string, { ownerId: string; turnId: string; controller: AbortController }>()
+const maxMessageBytes = 192 * 1024
+const storageQuotaBytes = 2 * 1024 * 1024 * 1024
+
+chatRouter.get('/api-keys', async (_req, res, next) => {
+  try {
+    const auth = requireChatAuth()
+    const keys = await listApiKeysAsync({ systemAccountId: auth.systemAccountId, role: 'user' })
+    res.json(ok(keys.filter((key) => key.status === 'active').map((key) => ({ id: key.id, name: key.name, status: key.status }))))
+  } catch (error) { next(error) }
+})
+
+chatRouter.get('/conversations', async (req, res, next) => {
+  try {
+    const auth = requireChatAuth()
+    const client = await getChatDatabaseClient()
+    res.json(ok(await listChatConversations(client, {
+      systemAccountId: auth.systemAccountId,
+      beforeLastMessageAt: textQuery(req.query.beforeLastMessageAt),
+      beforeId: textQuery(req.query.beforeId),
+      limit: integerQuery(req.query.limit, 30, 1, 50)
+    })))
+  } catch (error) { next(error) }
+})
+
+chatRouter.post('/conversations', async (req, res, next) => {
+  try {
+    const body = createConversationSchema.parse(req.body)
+    const auth = requireChatAuth()
+    const apiKey = await requireOwnedApiKey(body.apiKeyId, auth.systemAccountId)
+    const client = await getChatDatabaseClient()
+    res.status(201).json(ok(await createChatConversation(client, {
+      systemAccountId: auth.systemAccountId,
+      apiKeyId: apiKey.id,
+      apiKeyNameSnapshot: apiKey.name,
+      now: new Date().toISOString()
+    })))
+  } catch (error) { next(error) }
+})
+
+chatRouter.get('/conversations/:conversationId/messages', async (req, res, next) => {
+  try {
+    const auth = requireChatAuth()
+    const client = await getChatDatabaseClient()
+    res.json(ok(await listChatMessages(client, {
+      conversationId: req.params.conversationId,
+      systemAccountId: auth.systemAccountId,
+      beforeSequenceNo: optionalIntegerQuery(req.query.beforeSequenceNo),
+      limit: integerQuery(req.query.limit, 50, 1, 100),
+      now: new Date().toISOString()
+    })))
+  } catch (error) { next(error) }
+})
+
+chatRouter.get('/conversations/:conversationId/models', async (req, res, next) => {
+  try {
+    const auth = requireChatAuth()
+    const conversation = await requireOwnedConversation(req.params.conversationId, auth.systemAccountId)
+    const apiKey = await requireOwnedApiKey(conversation.apiKeyId, auth.systemAccountId)
+    const response = await fetch(gatewayUrl('/v1/models'), { headers: { authorization: `Bearer ${apiKey.key}` } })
+    const payload = await boundedJson(response)
+    if (!response.ok) throw new Error(upstreamMessage(payload, `模型列表请求失败（HTTP ${response.status}）`))
+    const data = Array.isArray((payload as { data?: unknown }).data) ? (payload as { data: Array<{ id?: unknown }> }).data : []
+    res.json(ok(data.map((item) => String(item.id ?? '')).filter(Boolean)))
+  } catch (error) { next(error) }
+})
+
+chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) => {
+  let accepted: Awaited<ReturnType<typeof acceptChatTurn>> | undefined
+  let ownerId = ''
+  let controller: AbortController | undefined
+  let responseClosed = false
+  let partialContent = ''
+  try {
+    const body = messageBodySchema.parse(req.body)
+    if (Buffer.byteLength(body.content, 'utf8') > maxMessageBytes) {
+      res.status(413).json({ message: '消息内容超过 192 KiB 上限' })
+      return
+    }
+    const auth = requireChatAuth()
+    ownerId = auth.systemAccountId
+    const conversation = await requireOwnedConversation(req.params.conversationId, ownerId)
+    const apiKey = await requireOwnedApiKey(conversation.apiKeyId, ownerId)
+    const client = await getChatDatabaseClient()
+    accepted = await acceptChatTurn(client, {
+      conversationId: conversation.id,
+      systemAccountId: ownerId,
+      clientMessageId: body.clientMessageId,
+      userContent: body.content,
+      model: body.model,
+      now: new Date().toISOString(),
+      storageQuotaBytes
+    })
+    if (accepted.duplicate) {
+      res.status(409).json({ message: '该消息已提交，请刷新会话', code: 'chat_message_already_exists' })
+      return
+    }
+    const context = await listChatContextMessages(client, {
+      conversationId: conversation.id,
+      systemAccountId: ownerId,
+      limitTurns: 64,
+      now: new Date().toISOString()
+    })
+    controller = new AbortController()
+    activeStreams.set(conversation.id, { ownerId, turnId: accepted.turnId, controller })
+    res.status(200)
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-cache, no-transform')
+    res.setHeader('X-Accel-Buffering', 'no')
+    res.flushHeaders()
+    writeSse(res, 'message.started', { turnId: accepted.turnId, userMessage: accepted.userMessage, assistantMessage: accepted.assistantMessage })
+    res.on('close', () => { responseClosed = true; controller?.abort() })
+    const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(': heartbeat\n\n') }, 15_000)
+    heartbeat.unref()
+    try {
+      const upstream = await fetch(gatewayUrl('/v1/chat/completions'), {
+        method: 'POST',
+        headers: { authorization: `Bearer ${apiKey.key}`, 'content-type': 'application/json', accept: 'text/event-stream' },
+        body: JSON.stringify({ model: body.model, messages: [...context, { role: 'user', content: body.content }], stream: true }),
+        signal: controller.signal
+      })
+      if (!upstream.ok || !upstream.body) {
+        const payload = await boundedJson(upstream)
+        throw new Error(upstreamMessage(payload, `模型请求失败（HTTP ${upstream.status}）`))
+      }
+      const result = await collectOpenAIChatSse(readableStreamChunks(upstream.body), maxMessageBytes, (delta) => {
+        partialContent += delta
+        if (!res.writableEnded) writeSse(res, 'message.delta', { messageId: accepted?.assistantMessage.id, delta })
+      })
+      await completeChatTurn(client, {
+        conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId,
+        assistantContent: result.content, finishReason: result.finishReason ?? 'stop', traceId: getTraceId() ?? '', now: new Date().toISOString()
+      })
+      if (!res.writableEnded) writeSse(res, 'message.completed', { messageId: accepted.assistantMessage.id, finishReason: result.finishReason ?? 'stop', traceId: getTraceId() })
+    } catch (error) {
+      const canceled = controller.signal.aborted
+      if (canceled) {
+        await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, traceId: getTraceId(), now: new Date().toISOString() })
+      } else {
+        await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, errorCode: 'gateway_stream_failed', traceId: getTraceId(), now: new Date().toISOString() })
+        if (!res.writableEnded) writeSse(res, 'message.failed', { messageId: accepted.assistantMessage.id, code: 'gateway_stream_failed', message: error instanceof Error ? error.message : '模型请求失败' })
+      }
+    } finally {
+      clearInterval(heartbeat)
+      activeStreams.delete(conversation.id)
+      if (!res.writableEnded && !responseClosed) res.end()
+    }
+  } catch (error) {
+    if (res.headersSent) {
+      if (!res.writableEnded) res.end()
+      return
+    }
+    if (error instanceof ChatConflictError) {
+      res.status(409).json({ message: error.message, code: error.code })
+      return
+    }
+    next(error)
+  }
+})
+
+chatRouter.post('/conversations/:conversationId/stop', async (req, res, next) => {
+  try {
+    const auth = requireChatAuth()
+    const active = activeStreams.get(req.params.conversationId)
+    if (!active || active.ownerId !== auth.systemAccountId) {
+      res.status(404).json({ message: '当前没有正在生成的回答' })
+      return
+    }
+    active.controller.abort()
+    res.status(202).json(ok({ stopped: true }))
+  } catch (error) { next(error) }
+})
+
+chatRouter.delete('/conversations/:conversationId', async (req, res, next) => {
+  try {
+    const auth = requireChatAuth()
+    const deleted = await deleteChatConversation(await getChatDatabaseClient(), req.params.conversationId, auth.systemAccountId)
+    if (!deleted) { res.status(404).json({ message: '会话不存在' }); return }
+    res.status(204).end()
+  } catch (error) { next(error) }
+})
+
+async function requireOwnedConversation(conversationId: string, ownerId: string) {
+  const conversation = await getChatConversation(await getChatDatabaseClient(), conversationId, ownerId)
+  if (!conversation) throw new Error('会话不存在')
+  return conversation
+}
+
+async function requireOwnedApiKey(apiKeyId: string | undefined, ownerId: string) {
+  if (!apiKeyId) throw new Error('会话绑定的 API Key 已删除')
+  const key = await findApiKeySecretAsync(apiKeyId, { systemAccountId: ownerId, role: 'user' })
+  if (!key?.key || key.status !== 'active') throw new Error('API Key 不存在或不可用')
+  return key
+}
+
+function requireChatAuth() {
+  const auth = getRequestAuthContext()
+  if (!auth) throw new Error('请先登录')
+  return auth
+}
+
+function gatewayUrl(path: string): string { return `http://127.0.0.1:${runtimeConfig.port}${path}` }
+function textQuery(value: unknown): string | undefined { const raw = Array.isArray(value) ? value[0] : value; return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined }
+function optionalIntegerQuery(value: unknown): number | undefined { const text = textQuery(value); if (!text) return undefined; const result = Number(text); return Number.isInteger(result) && result > 0 ? result : undefined }
+function integerQuery(value: unknown, fallback: number, min: number, max: number): number { const result = optionalIntegerQuery(value); return result === undefined ? fallback : Math.max(min, Math.min(max, result)) }
+function writeSse(res: import('express').Response, event: string, data: unknown): void { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
+async function* readableStreamChunks(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> { const reader = stream.getReader(); try { while (true) { const next = await reader.read(); if (next.done) return; yield next.value } } finally { reader.releaseLock() } }
+async function boundedJson(response: Response): Promise<unknown> { const text = (await response.text()).slice(0, 64 * 1024); try { return JSON.parse(text) } catch { return { message: text } } }
+function upstreamMessage(payload: unknown, fallback: string): string { if (payload && typeof payload === 'object') { const item = payload as { message?: unknown; error?: { message?: unknown } }; if (typeof item.error?.message === 'string') return item.error.message; if (typeof item.message === 'string') return item.message } return fallback }

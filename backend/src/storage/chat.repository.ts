@@ -61,6 +61,65 @@ export async function createChatConversation(client: DatabaseClient, input: {
   return requireConversation(client, id, input.systemAccountId)
 }
 
+export async function listChatConversations(client: DatabaseClient, input: {
+  systemAccountId: string
+  beforeLastMessageAt?: string
+  beforeId?: string
+  limit: number
+}): Promise<ChatConversation[]> {
+  const hasCursor = Boolean(input.beforeLastMessageAt && input.beforeId)
+  const rows = await client.query<ConversationRow>(`
+    SELECT * FROM ${chatTable(client, 'chat_conversations')}
+    WHERE system_account_id = ?
+      ${hasCursor ? 'AND (last_message_at < ? OR (last_message_at = ? AND id < ?))' : ''}
+    ORDER BY last_message_at DESC, id DESC
+    LIMIT ?
+  `, hasCursor
+    ? [input.systemAccountId, input.beforeLastMessageAt, input.beforeLastMessageAt, input.beforeId, Math.max(1, Math.min(input.limit, 50))]
+    : [input.systemAccountId, Math.max(1, Math.min(input.limit, 50))])
+  return rows.map(mapConversation)
+}
+
+export async function getChatConversation(client: DatabaseClient, conversationId: string, systemAccountId: string): Promise<ChatConversation | undefined> {
+  const row = await client.one<ConversationRow>(`
+    SELECT * FROM ${chatTable(client, 'chat_conversations')} WHERE id = ? AND system_account_id = ?
+  `, [conversationId, systemAccountId])
+  return row ? mapConversation(row) : undefined
+}
+
+export async function deleteChatConversation(client: DatabaseClient, conversationId: string, systemAccountId: string): Promise<boolean> {
+  return client.transaction(async (tx) => {
+    const conversation = await tx.one<ConversationRow>(`
+      SELECT * FROM ${chatTable(tx, 'chat_conversations')}
+      WHERE id = ? AND system_account_id = ?${tx.driver === 'postgres' ? ' FOR UPDATE' : ''}
+    `, [conversationId, systemAccountId])
+    if (!conversation) return false
+    if (conversation.active_turn_id) throw new ChatConflictError('chat_message_in_progress')
+    const buckets = await tx.query<{ bucket_date?: unknown; content_bytes?: unknown }>(`
+      SELECT substr(created_at, 1, 10) AS bucket_date, COALESCE(SUM(content_bytes), 0) AS content_bytes
+      FROM ${chatTable(tx, 'chat_messages')}
+      WHERE conversation_id = ? AND system_account_id = ?
+      GROUP BY substr(created_at, 1, 10)
+    `, [conversationId, systemAccountId])
+    for (const bucket of buckets) {
+      await tx.execute(`
+        UPDATE ${chatTable(tx, 'chat_user_storage_windows')}
+        SET content_bytes = CASE WHEN content_bytes > ? THEN content_bytes - ? ELSE 0 END,
+            updated_at = ?
+        WHERE system_account_id = ? AND bucket_date = ?
+      `, [Number(bucket.content_bytes ?? 0), Number(bucket.content_bytes ?? 0), new Date().toISOString(), systemAccountId, String(bucket.bucket_date)])
+    }
+    await tx.execute(`
+      DELETE FROM ${chatTable(tx, 'chat_user_storage_windows')}
+      WHERE system_account_id = ? AND content_bytes = 0
+    `, [systemAccountId])
+    const result = await tx.execute(`
+      DELETE FROM ${chatTable(tx, 'chat_conversations')} WHERE id = ? AND system_account_id = ?
+    `, [conversationId, systemAccountId])
+    return result.changes === 1
+  })
+}
+
 export async function acceptChatTurn(client: DatabaseClient, input: {
   conversationId: string
   systemAccountId: string

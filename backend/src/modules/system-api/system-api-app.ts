@@ -11,6 +11,7 @@ import { authRouter } from '../auth/auth.routes.js'
 import { externalIntegrationsRouter } from '../external-integrations/external-integrations.routes.js'
 import { externalIntegrationSourcesRouter } from '../external-integrations/external-integration-sources.routes.js'
 import { groupsRouter } from '../groups/groups.routes.js'
+import { chatRouter } from '../chat/chat.routes.js'
 import { ipStatsRouter } from '../ip-stats/ip-stats.routes.js'
 import { modelChecksRouter } from '../model-checks/model-checks.routes.js'
 import { myOperationLogsRouter, operationLogsRouter } from '../operation-logs/operation-logs.routes.js'
@@ -101,6 +102,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-model-checks`, forceSelfAccessScope, modelChecksRouter)
   app.use(`${systemApiPrefix}/my-stats`, forceSelfAccessScope, statsRouter)
   app.use(`${systemApiPrefix}/my-operation-logs`, forceSelfAccessScope, myOperationLogsRouter)
+  app.use(`${systemApiPrefix}/my-chat`, forceSelfAccessScope, chatRouter)
   app.use(`${systemApiPrefix}/providers`, providersRouter)
   app.use(`${systemApiPrefix}/response-inspection-policies`, requireAdmin, responseInspectionPoliciesRouter)
   app.use(`${systemApiPrefix}/accounts`, requireAdmin, accountsRouter)
