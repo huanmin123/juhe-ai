@@ -12,7 +12,13 @@
 
 ## 设置与窗口
 
-两层 limiter 都从 `sys_admin` 系统设置读取当前配置，Go 侧缓存设置 60 秒。默认值如下：
+两层 limiter 都从 `sys_admin` 系统设置读取当前配置。IP / user read / write middleware 共用一个可失效快照，并在同一请求内复用同一份设置。快照保留 60 秒 TTL 作为无 Redis 场景和异常恢复兜底，但不再只等待 TTL：
+
+- 同进程 `PATCH /__aisys__/api/settings` 成功提交后直接清理快照，下一请求立即重新读取。
+- 配置 cache Redis 时，每次请求读取 Node 兼容的 `settings:system` shared cache version；版本变化立即清理并重载。
+- shared version 读取失败时返回内部错误，不继续使用可能过期的限流阈值。
+
+默认值如下：
 
 | 设置 | 默认值 | 窗口 |
 | --- | ---: | --- |
@@ -52,6 +58,7 @@ Go 当前 system API 链路按以下顺序执行：
 - Redis key 按 IP / 系统账户、read / write 和时间窗口隔离。
 - 超限统一返回 `429`，设置 `Retry-After`，响应文案为 `请求过于频繁，请稍后重试`。
 - 系统设置读取或 limiter 执行失败按内部错误处理，不把依赖错误详情暴露给客户端。
+- 单次请求先由 IP limiter 读取设置并写入 request context；后续 authenticated user limiter 复用该快照，避免同一请求的两层 bucket 使用不同阈值。
 
 ## 客户端 IP 白名单
 
@@ -68,7 +75,7 @@ Go 当前 system API 链路按以下顺序执行：
 Set-Location backend-go
 . .\scripts\use-go-env.ps1
 go test ./internal/store/postgres -run TestW1PublicSettingsMigrationSeedsAllSystemAPIRateLimits -count=1
-go test ./internal/httpapi -run TestSystemAPIRateLimitSettingsCacheRefreshesAfterTTL -count=1
+go test ./internal/httpapi -run 'Test(RouterSystemAPIRateLimit|SystemAPIRateLimit|RedisSystemAPIRateLimit)' -count=1
 go test ./internal/httpapi -run 'SystemAPI.*Allowlist|ClientIP.*Allowlist' -count=1
 go test ./internal/httpapi ./internal/store/postgres ./internal/app -count=1
 go test -race ./internal/httpapi ./internal/store/postgres ./internal/app -count=1
@@ -78,7 +85,7 @@ go test -v -tags=integration ./internal/testkit/integration -run TestW0PostgresM
 前两条是非 Docker 默认门禁：
 
 - `TestW1PublicSettingsMigrationSeedsAllSystemAPIRateLimits` 直接检查 fresh DB migration 定义，确认六个 system API 限流默认键和值完整为 `600/120/180/40/300/120`。
-- `TestSystemAPIRateLimitSettingsCacheRefreshesAfterTTL` 使用可控时间验证 60 秒 TTL 到期前复用缓存、到期时重新读取设置。
+- System API rate limit settings cache 专项测试验证 60 秒 TTL 兜底、同进程 PATCH 后立即刷新、shared version 跨 runtime 变化、同一请求快照复用、读取期间 clear/version bump 不回填旧值和 Redis 版本读取失败的 500 语义。
 
 `TestW0PostgresMigrationSmoke` 用于在 Docker / testcontainers 可用时补充验证 migration 真实 apply 后的数据库值，不是六项默认值的唯一验证入口。
 
@@ -87,7 +94,7 @@ go test -v -tags=integration ./internal/testkit/integration -run TestW0PostgresM
 - IP read / write 的 minute + burst 窗口、用户 read / write 的 minute 窗口。
 - health 唯一跳过、captcha 纳入、`/auth/*` 与 `settings/public` 跳过用户 limiter。
 - 用户 limiter 位于业务鉴权后，管理业务读 / 写鉴权路由分类正确。
-- Redis / 进程内实现、设置 60 秒缓存及到期刷新、fresh DB migration 六项默认设置值的非 Docker schema guard。
+- Redis / 进程内实现、同进程 PATCH 清缓存、shared version 跨 runtime 立即刷新、同一请求快照复用、并发失效保护、60 秒 TTL 兜底及 fresh DB migration 六项默认设置值的非 Docker schema guard。
 - allowlist 命中 / 未命中、两层 bucket bypass、鉴权不绕过、IPv4 hash、30 秒缓存、policy expiry、shared cache version 失效和读取失败继续限流。
 - `429`、`Retry-After` 和中文文案。
 - 生产 server 同时注入两层 Redis limiter，缺失已认证 limiter 时已注册管理业务路由 fail-fast。
@@ -107,4 +114,5 @@ go test -v -tags=integration ./internal/testkit/integration -run TestW0PostgresM
 - 所有计划接管的 system API 已迁移、已注册并通过 read / write 分类与鉴权顺序测试。
 - IP policy 管理 API 完成迁移，或明确生产共存期由 Node 单 owner 写 policy、Go 只消费。
 - 真实 PostgreSQL policy 查询、Redis limiter bucket、Redis cache version、Node 写 policy 后 Go 缓存失效、policy expiry、可信反向代理客户端 IP 和 `429 Retry-After` smoke 通过。
+- 真实 Redis 中 Node `SharedJsonCache.clear()` 写入 `settings:system` version 后，另一个 Go runtime 的下一请求立即读取新限流设置。
 - 反向代理完成单 owner 切流，并取得 Node limiter 入口删除和静态搜索证据。
