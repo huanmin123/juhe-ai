@@ -129,7 +129,7 @@ export async function refreshAccountBalanceCandidate(
 
     const previousSnapshot = (await loadAccountBalanceSnapshotsByAccountIdsAsync([candidate.id])).get(candidate.id)
     const snapshot = nextTransientFailureSnapshot(previousSnapshot, errorMessage, completedAt)
-    const nextRefreshAfter = new Date(Date.now() + transientRetryDelayMs(snapshot.consecutiveTransientFailures)).toISOString()
+    const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
     const nextConfig = candidate.config
     await persistBalanceRefreshIfCurrent(candidate, nextConfig, snapshot, nextRefreshAfter)
     return snapshot
@@ -431,12 +431,6 @@ function nextTransientFailureSnapshot(
     lastTransientErrorMessage: errorMessage,
     lastTransientFailureAt: attemptedAt
   }
-}
-
-function transientRetryDelayMs(consecutiveTransientFailures: number | undefined): number {
-  if ((consecutiveTransientFailures ?? 0) <= 1) return 15 * 60_000
-  if (consecutiveTransientFailures === 2) return 30 * 60_000
-  return 60 * 60_000
 }
 
 function isSuccessfulBalanceSnapshot(snapshot: AccountBalanceSnapshot): boolean {
