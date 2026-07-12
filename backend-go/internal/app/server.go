@@ -211,6 +211,10 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProviderCustomModelCreateHandler:        managementHandlers.ProviderCustomModelCreateHandler,
 		ManagementProviderCustomModelUpdateHandler:        managementHandlers.ProviderCustomModelUpdateHandler,
 		ManagementProviderCustomModelDeleteHandler:        managementHandlers.ProviderCustomModelDeleteHandler,
+		ManagementRouteStrategyListHandler:                managementHandlers.RouteStrategyListHandler,
+		ManagementMyRouteStrategyListHandler:              managementHandlers.MyRouteStrategyListHandler,
+		ManagementRouteStrategyDetailHandler:              managementHandlers.RouteStrategyDetailHandler,
+		ManagementMyRouteStrategyDetailHandler:            managementHandlers.MyRouteStrategyDetailHandler,
 		ManagementRouteStrategyOptionsHandler:             managementHandlers.RouteStrategyOptionsHandler,
 		ManagementMyRouteStrategyOptionsHandler:           managementHandlers.MyRouteStrategyOptionsHandler,
 		ManagementAPIKeyListHandler:                       managementHandlers.APIKeyListHandler,
@@ -351,6 +355,10 @@ type managementAPIHandlers struct {
 	ProviderCustomModelCreateHandler        http.Handler
 	ProviderCustomModelUpdateHandler        http.Handler
 	ProviderCustomModelDeleteHandler        http.Handler
+	RouteStrategyListHandler                http.Handler
+	MyRouteStrategyListHandler              http.Handler
+	RouteStrategyDetailHandler              http.Handler
+	MyRouteStrategyDetailHandler            http.Handler
 	RouteStrategyOptionsHandler             http.Handler
 	MyRouteStrategyOptionsHandler           http.Handler
 	APIKeyListHandler                       http.Handler
@@ -571,6 +579,10 @@ func newManagementAPIHandler(
 		ProviderCustomModelCreateHandler:        httpapi.NewManagementProviderCustomModelCreateHandler(providerModelService),
 		ProviderCustomModelUpdateHandler:        httpapi.NewManagementProviderCustomModelUpdateHandler(providerModelService),
 		ProviderCustomModelDeleteHandler:        httpapi.NewManagementProviderCustomModelDeleteHandler(providerModelService),
+		RouteStrategyListHandler:                httpapi.NewManagementRouteStrategyListHandler(routeStrategyService),
+		MyRouteStrategyListHandler:              httpapi.NewManagementMyRouteStrategyListHandler(routeStrategyService),
+		RouteStrategyDetailHandler:              httpapi.NewManagementRouteStrategyDetailHandler(routeStrategyService),
+		MyRouteStrategyDetailHandler:            httpapi.NewManagementMyRouteStrategyDetailHandler(routeStrategyService),
 		RouteStrategyOptionsHandler:             httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
 		MyRouteStrategyOptionsHandler:           httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
 		APIKeyListHandler:                       httpapi.NewManagementAPIKeyListHandler(apiKeyService),
