@@ -498,7 +498,7 @@ func (s *Service) normalizeBindings(ctx context.Context, store port.PublicRouteS
 	out := make([]normalizedBinding, 0, len(basics))
 	for _, binding := range basics {
 		group, ok := groupsByID[binding.GroupID]
-		if !ok || group.SystemAccountID != systemAccountID {
+		if !ok {
 			return nil, fmt.Errorf("%w: 策略路由只能绑定自己的分组或有效授权给自己的分组", ErrGroupBoundary)
 		}
 		if binding.Status == StatusActive && !group.Enabled {

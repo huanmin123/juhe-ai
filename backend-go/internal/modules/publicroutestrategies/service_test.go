@@ -61,6 +61,46 @@ func TestAddRequiresExistingTargetAndCreatesRouteStrategy(t *testing.T) {
 	}
 }
 
+func TestAddAllowsAuthorizedCrossOwnerGroupAndReturnsBindingSummary(t *testing.T) {
+	store := newFakePublicRouteStrategyStore()
+	store.putTarget(publicRouteStrategyTarget("sys_1", "alice", "Alice", "active"))
+	store.putTarget(publicRouteStrategyTarget("sys_2", "owner", "Owner", "active"))
+	store.putGroup(port.PublicRouteStrategyBindableGroup{
+		ID:              "grp_shared",
+		SystemAccountID: "sys_2",
+		Name:            "授权分组",
+		ProviderCode:    "gpt",
+		Enabled:         true,
+	})
+	service, _ := newPublicRouteStrategiesTestService(store)
+
+	_, err := service.Add(context.Background(), AddInput{
+		TargetUsername: "alice",
+		Name:           "无授权策略",
+		GroupBindings:  []GroupBindingInput{{GroupID: "grp_shared"}},
+	})
+	if !errors.Is(err, ErrGroupBoundary) {
+		t.Fatalf("Add() ungranted cross-owner error = %v, want ErrGroupBoundary", err)
+	}
+
+	store.authorizeGroup("sys_1", "grp_shared", true)
+	resp, err := service.Add(context.Background(), AddInput{
+		TargetUsername: "alice",
+		Name:           "授权策略",
+		GroupBindings:  []GroupBindingInput{{GroupID: "grp_shared"}},
+	})
+	if err != nil {
+		t.Fatalf("Add() authorized cross-owner error = %v", err)
+	}
+	if resp.RouteStrategy == nil || len(resp.RouteStrategy.GroupBindings) != 1 {
+		t.Fatalf("response = %+v", resp)
+	}
+	binding := resp.RouteStrategy.GroupBindings[0]
+	if binding.GroupID != "grp_shared" || binding.GroupName != "授权分组" || binding.ProviderCode != "gpt" || !binding.GroupEnabled {
+		t.Fatalf("binding summary = %+v", binding)
+	}
+}
+
 func TestAddRejectsDuplicateNameNonIdempotently(t *testing.T) {
 	store := newFakePublicRouteStrategyStore()
 	store.putTarget(publicRouteStrategyTarget("sys_1", "alice", "Alice", "active"))
@@ -132,6 +172,54 @@ func TestUpdateGuardsOwnerAndReplacesBindings(t *testing.T) {
 	input := store.updateInputs[0]
 	if input.Mode != port.PublicRouteStrategyModeFailover || len(input.Bindings) != 2 || input.Bindings[0].GroupID != "grp_1" || input.Bindings[1].GroupID != "grp_2" {
 		t.Fatalf("update input = %+v", input)
+	}
+}
+
+func TestUpdateAllowsAuthorizedCrossOwnerGroupAndHonorsEffectiveEnabled(t *testing.T) {
+	store := newFakePublicRouteStrategyStore()
+	store.putTarget(publicRouteStrategyTarget("sys_1", "alice", "Alice", "active"))
+	store.putTarget(publicRouteStrategyTarget("sys_2", "owner", "Owner", "active"))
+	store.putGroup(port.PublicRouteStrategyBindableGroup{ID: "grp_own", SystemAccountID: "sys_1", Name: "自有分组", ProviderCode: "gpt", Enabled: true})
+	store.putGroup(port.PublicRouteStrategyBindableGroup{ID: "grp_shared", SystemAccountID: "sys_2", Name: "授权分组", ProviderCode: "gpt", Enabled: true})
+	store.putRoute(port.PublicRouteStrategySummary{
+		ID:              "rts_1",
+		SystemAccountID: "sys_1",
+		Name:            "公开策略",
+		Mode:            port.PublicRouteStrategyModeNormal,
+		Status:          port.PublicRouteStrategyStatusActive,
+		GroupBindings: []port.PublicRouteStrategyGroupBindingSummary{{
+			ID: "rsg_1", GroupID: "grp_own", GroupName: "自有分组", ProviderCode: "gpt", Priority: 1, Weight: 1, Status: port.PublicRouteStrategyStatusActive, GroupEnabled: true,
+		}},
+	})
+	service, _ := newPublicRouteStrategiesTestService(store)
+
+	store.authorizeGroup("sys_1", "grp_shared", false)
+	_, err := service.Update(context.Background(), UpdateInput{
+		RouteStrategyID: "rts_1",
+		GroupBindings: NewOptionalGroupBindings([]GroupBindingInput{{
+			GroupID: "grp_shared",
+		}}, true),
+	})
+	if !errors.Is(err, ErrInvalidBinding) {
+		t.Fatalf("Update() disabled authorization error = %v, want ErrInvalidBinding", err)
+	}
+
+	store.authorizeGroup("sys_1", "grp_shared", true)
+	resp, err := service.Update(context.Background(), UpdateInput{
+		RouteStrategyID: "rts_1",
+		GroupBindings: NewOptionalGroupBindings([]GroupBindingInput{{
+			GroupID: "grp_shared",
+		}}, true),
+	})
+	if err != nil {
+		t.Fatalf("Update() authorized cross-owner error = %v", err)
+	}
+	if resp.RouteStrategy == nil || len(resp.RouteStrategy.GroupBindings) != 1 {
+		t.Fatalf("response = %+v", resp)
+	}
+	binding := resp.RouteStrategy.GroupBindings[0]
+	if binding.GroupID != "grp_shared" || binding.GroupName != "授权分组" || !binding.GroupEnabled {
+		t.Fatalf("binding summary = %+v", binding)
 	}
 }
 
@@ -225,12 +313,13 @@ func (t *fakePublicRouteStrategyTransactor) PublicRouteStrategyInTx(ctx context.
 }
 
 type fakePublicRouteStrategyStore struct {
-	targetsByUsername map[string]port.PublicGroupTarget
-	targetsByID       map[string]port.PublicGroupTarget
-	groupsByID        map[string]port.PublicRouteStrategyBindableGroup
-	routesByID        map[string]port.PublicRouteStrategySummary
-	routeOrder        []string
-	apiKeyCounts      map[string]int64
+	targetsByUsername   map[string]port.PublicGroupTarget
+	targetsByID         map[string]port.PublicGroupTarget
+	groupsByID          map[string]port.PublicRouteStrategyBindableGroup
+	groupAuthorizations map[string]map[string]bool
+	routesByID          map[string]port.PublicRouteStrategySummary
+	routeOrder          []string
+	apiKeyCounts        map[string]int64
 
 	createInputs []port.PublicRouteStrategyCreateInput
 	updateInputs []port.PublicRouteStrategyUpdateInput
@@ -239,11 +328,12 @@ type fakePublicRouteStrategyStore struct {
 
 func newFakePublicRouteStrategyStore() *fakePublicRouteStrategyStore {
 	return &fakePublicRouteStrategyStore{
-		targetsByUsername: map[string]port.PublicGroupTarget{},
-		targetsByID:       map[string]port.PublicGroupTarget{},
-		groupsByID:        map[string]port.PublicRouteStrategyBindableGroup{},
-		routesByID:        map[string]port.PublicRouteStrategySummary{},
-		apiKeyCounts:      map[string]int64{},
+		targetsByUsername:   map[string]port.PublicGroupTarget{},
+		targetsByID:         map[string]port.PublicGroupTarget{},
+		groupsByID:          map[string]port.PublicRouteStrategyBindableGroup{},
+		groupAuthorizations: map[string]map[string]bool{},
+		routesByID:          map[string]port.PublicRouteStrategySummary{},
+		apiKeyCounts:        map[string]int64{},
 	}
 }
 
@@ -254,6 +344,13 @@ func (s *fakePublicRouteStrategyStore) putTarget(target port.PublicGroupTarget) 
 
 func (s *fakePublicRouteStrategyStore) putGroup(group port.PublicRouteStrategyBindableGroup) {
 	s.groupsByID[group.ID] = group
+}
+
+func (s *fakePublicRouteStrategyStore) authorizeGroup(systemAccountID string, groupID string, enabled bool) {
+	if s.groupAuthorizations[systemAccountID] == nil {
+		s.groupAuthorizations[systemAccountID] = map[string]bool{}
+	}
+	s.groupAuthorizations[systemAccountID][groupID] = enabled
 }
 
 func (s *fakePublicRouteStrategyStore) putRoute(route port.PublicRouteStrategySummary) {
@@ -328,8 +425,8 @@ func (s *fakePublicRouteStrategyStore) FindPublicRouteStrategyByID(_ context.Con
 func (s *fakePublicRouteStrategyStore) FindPublicRouteStrategyBindableGroups(_ context.Context, systemAccountID string, groupIDs []string) ([]port.PublicRouteStrategyBindableGroup, error) {
 	out := make([]port.PublicRouteStrategyBindableGroup, 0, len(groupIDs))
 	for _, groupID := range groupIDs {
-		group, ok := s.groupsByID[groupID]
-		if ok && group.SystemAccountID == systemAccountID {
+		group, ok := s.bindableGroup(systemAccountID, groupID)
+		if ok {
 			out = append(out, group)
 		}
 	}
@@ -349,7 +446,7 @@ func (s *fakePublicRouteStrategyStore) CreatePublicRouteStrategy(_ context.Conte
 		Mode:            input.Mode,
 		Status:          input.Status,
 		ConfigJSON:      input.ConfigJSON,
-		GroupBindings:   s.bindingSummaries(input.Bindings),
+		GroupBindings:   s.bindingSummaries(input.SystemAccountID, input.Bindings),
 		APIKeyCount:     0,
 		CreatedAt:       input.Now,
 		UpdatedAt:       input.Now,
@@ -372,7 +469,7 @@ func (s *fakePublicRouteStrategyStore) UpdatePublicRouteStrategy(_ context.Conte
 	current.Mode = input.Mode
 	current.Status = input.Status
 	current.ConfigJSON = input.ConfigJSON
-	current.GroupBindings = s.bindingSummaries(input.Bindings)
+	current.GroupBindings = s.bindingSummaries(input.SystemAccountID, input.Bindings)
 	current.UpdatedAt = input.Now
 	s.routesByID[input.ID] = current
 	return current, true, nil
@@ -401,10 +498,26 @@ func (s *fakePublicRouteStrategyStore) routeNameExists(systemAccountID string, n
 	return false
 }
 
-func (s *fakePublicRouteStrategyStore) bindingSummaries(bindings []port.PublicRouteStrategyGroupBindingCreateInput) []port.PublicRouteStrategyGroupBindingSummary {
+func (s *fakePublicRouteStrategyStore) bindableGroup(systemAccountID string, groupID string) (port.PublicRouteStrategyBindableGroup, bool) {
+	group, ok := s.groupsByID[groupID]
+	if !ok {
+		return port.PublicRouteStrategyBindableGroup{}, false
+	}
+	if group.SystemAccountID == systemAccountID {
+		return group, true
+	}
+	enabled, ok := s.groupAuthorizations[systemAccountID][groupID]
+	if !ok {
+		return port.PublicRouteStrategyBindableGroup{}, false
+	}
+	group.Enabled = group.Enabled && enabled
+	return group, true
+}
+
+func (s *fakePublicRouteStrategyStore) bindingSummaries(systemAccountID string, bindings []port.PublicRouteStrategyGroupBindingCreateInput) []port.PublicRouteStrategyGroupBindingSummary {
 	out := make([]port.PublicRouteStrategyGroupBindingSummary, 0, len(bindings))
 	for _, binding := range bindings {
-		group := s.groupsByID[binding.GroupID]
+		group, _ := s.bindableGroup(systemAccountID, binding.GroupID)
 		out = append(out, port.PublicRouteStrategyGroupBindingSummary{
 			ID:           binding.ID,
 			GroupID:      binding.GroupID,

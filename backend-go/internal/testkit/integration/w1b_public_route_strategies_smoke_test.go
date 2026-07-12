@@ -156,6 +156,23 @@ func TestW1bPublicRouteStrategiesPostgresSmoke(t *testing.T) {
 		t.Fatalf("add cross-owner binding error = %v, want ErrGroupBoundary", err)
 	}
 
+	insertW1bGroupAuthorization(t, ctx, db, "rauth_w1b_route_smoke", other.Group.ID, other.Target.SystemAccountID, created.Target.SystemAccountID, true, now)
+	authorizedCreated, err := routeService.Add(ctx, publicroutestrategies.AddInput{
+		TargetUsername: "admin",
+		Name:           "授权跨用户绑定策略",
+		GroupBindings:  []publicroutestrategies.GroupBindingInput{{GroupID: other.Group.ID}},
+	})
+	if err != nil {
+		t.Fatalf("add authorized cross-owner route strategy: %v", err)
+	}
+	if authorizedCreated.RouteStrategy == nil || len(authorizedCreated.RouteStrategy.GroupBindings) != 1 {
+		t.Fatalf("authorized created route strategy = %+v", authorizedCreated.RouteStrategy)
+	}
+	authorizedBinding := authorizedCreated.RouteStrategy.GroupBindings[0]
+	if authorizedBinding.GroupID != other.Group.ID || authorizedBinding.GroupName != "其他分组" || !authorizedBinding.GroupEnabled {
+		t.Fatalf("authorized created binding = %+v", authorizedBinding)
+	}
+
 	mode := publicroutestrategies.ModeFailover
 	updated, err := routeService.Update(ctx, publicroutestrategies.UpdateInput{
 		RouteStrategyID: routeID,
@@ -173,6 +190,41 @@ func TestW1bPublicRouteStrategiesPostgresSmoke(t *testing.T) {
 	}
 	if updated.RouteStrategy.GroupBindings[0].GroupID != primary.Group.ID || updated.RouteStrategy.GroupBindings[1].GroupID != backup.Group.ID {
 		t.Fatalf("binding order = %+v", updated.RouteStrategy.GroupBindings)
+	}
+
+	updatedAuthorized, err := routeService.Update(ctx, publicroutestrategies.UpdateInput{
+		RouteStrategyID: routeID,
+		Mode:            stringPtr(publicroutestrategies.ModeNormal),
+		GroupBindings: publicroutestrategies.NewOptionalGroupBindings([]publicroutestrategies.GroupBindingInput{{
+			GroupID: other.Group.ID,
+		}}, true),
+	})
+	if err != nil {
+		t.Fatalf("update route strategy to authorized cross-owner group: %v", err)
+	}
+	if updatedAuthorized.RouteStrategy == nil || len(updatedAuthorized.RouteStrategy.GroupBindings) != 1 || !updatedAuthorized.RouteStrategy.GroupBindings[0].GroupEnabled {
+		t.Fatalf("updated authorized route strategy = %+v", updatedAuthorized.RouteStrategy)
+	}
+
+	setW1bGroupAuthorizationEnabled(t, ctx, db, "rauth_w1b_route_smoke", false, now.Add(time.Minute))
+	listedDisabledAuthorization, err := routeService.List(ctx, publicroutestrategies.ListInput{
+		TargetUsername: "admin",
+		Keyword:        "公开",
+		Page:           1,
+		PageSize:       10,
+	})
+	if err != nil {
+		t.Fatalf("list route strategy with disabled authorization: %v", err)
+	}
+	if len(listedDisabledAuthorization.Items) != 1 || len(listedDisabledAuthorization.Items[0].GroupBindings) != 1 || listedDisabledAuthorization.Items[0].GroupBindings[0].GroupEnabled {
+		t.Fatalf("disabled authorization binding summary = %+v", listedDisabledAuthorization.Items)
+	}
+	if _, err := routeService.Add(ctx, publicroutestrategies.AddInput{
+		TargetUsername: "admin",
+		Name:           "停用授权绑定策略",
+		GroupBindings:  []publicroutestrategies.GroupBindingInput{{GroupID: other.Group.ID}},
+	}); !errors.Is(err, publicroutestrategies.ErrInvalidBinding) {
+		t.Fatalf("add disabled authorization binding error = %v, want ErrInvalidBinding", err)
 	}
 
 	listed, err := routeService.List(ctx, publicroutestrategies.ListInput{
@@ -235,6 +287,40 @@ func deleteW1bRouteStrategySmokeAPIKey(t *testing.T, ctx context.Context, db *sq
 
 	if _, err := db.ExecContext(ctx, "DELETE FROM juhe_business.api_keys WHERE id = $1", id); err != nil {
 		t.Fatalf("delete route smoke api key: %v", err)
+	}
+}
+
+func insertW1bGroupAuthorization(t *testing.T, ctx context.Context, db *sql.DB, authorizationID string, groupID string, ownerID string, granteeID string, enabled bool, now time.Time) {
+	t.Helper()
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO juhe_business.resource_authorizations (
+			id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
+			scope, status, activated_at, created_by, created_at, updated_at
+		) VALUES ($1, 'group', $2, $3, $4, 'use', 'active', $5, $4, $5, $5)
+	`, authorizationID, groupID, ownerID, granteeID, now)
+	if err != nil {
+		t.Fatalf("insert route smoke group authorization: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO juhe_business.group_authorization_settings (
+			authorization_id, system_account_id, group_id, enabled, group_type, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, 'personal', $5, $5)
+	`, authorizationID, granteeID, groupID, enabled, now)
+	if err != nil {
+		t.Fatalf("insert route smoke group authorization settings: %v", err)
+	}
+}
+
+func setW1bGroupAuthorizationEnabled(t *testing.T, ctx context.Context, db *sql.DB, authorizationID string, enabled bool, now time.Time) {
+	t.Helper()
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE juhe_business.group_authorization_settings
+		SET enabled = $2, updated_at = $3
+		WHERE authorization_id = $1
+	`, authorizationID, enabled, now); err != nil {
+		t.Fatalf("update route smoke group authorization settings: %v", err)
 	}
 }
 
