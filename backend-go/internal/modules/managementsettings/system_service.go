@@ -32,18 +32,24 @@ type SystemSettingsInvalidator interface {
 	InvalidateGatewayRuntime(ctx context.Context, reason string) error
 }
 
+type SystemAPIRateLimitSettingsCacheInvalidator interface {
+	ClearSystemAPIRateLimitSettingsCache()
+}
+
 type SystemService struct {
-	store       SystemStore
-	invalidator SystemSettingsInvalidator
-	logger      *slog.Logger
-	now         func() time.Time
+	store                        SystemStore
+	invalidator                  SystemSettingsInvalidator
+	rateLimitSettingsInvalidator SystemAPIRateLimitSettingsCacheInvalidator
+	logger                       *slog.Logger
+	now                          func() time.Time
 }
 
 type SystemServiceOptions struct {
-	Store       SystemStore
-	Invalidator SystemSettingsInvalidator
-	Logger      *slog.Logger
-	Now         func() time.Time
+	Store                             SystemStore
+	Invalidator                       SystemSettingsInvalidator
+	RateLimitSettingsCacheInvalidator SystemAPIRateLimitSettingsCacheInvalidator
+	Logger                            *slog.Logger
+	Now                               func() time.Time
 }
 
 type SystemUpdateInput struct {
@@ -65,10 +71,11 @@ func NewSystemServiceWithOptions(opts SystemServiceOptions) *SystemService {
 		now = time.Now
 	}
 	return &SystemService{
-		store:       opts.Store,
-		invalidator: opts.Invalidator,
-		logger:      opts.Logger,
-		now:         now,
+		store:                        opts.Store,
+		invalidator:                  opts.Invalidator,
+		rateLimitSettingsInvalidator: opts.RateLimitSettingsCacheInvalidator,
+		logger:                       opts.Logger,
+		now:                          now,
 	}
 }
 
@@ -115,6 +122,9 @@ func (s *SystemService) Update(ctx context.Context, input SystemUpdateInput) (Sy
 		return SystemUpdateResult{}, fmt.Errorf("validate updated management system settings snapshot: %w", err)
 	}
 
+	if s.rateLimitSettingsInvalidator != nil {
+		s.rateLimitSettingsInvalidator.ClearSystemAPIRateLimitSettingsCache()
+	}
 	s.invalidate(ctx)
 	return SystemUpdateResult{
 		Before:   before,

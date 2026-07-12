@@ -19,6 +19,8 @@ type RouterOptions struct {
 	Logger                                            *slog.Logger
 	PublicSettingsService                             *publicsettings.Service
 	SystemAPIRateLimitReader                          port.SystemAPIRateLimitReader
+	SystemAPIRateLimitSettingsCache                   SystemAPIRateLimitSettingsCache
+	SystemAPIRateLimitSettingsVersionReader           SystemAPIRateLimitSettingsVersionReader
 	SystemAPIClientIPAllowlistReader                  port.SystemAPIClientIPAllowlistReader
 	SystemAPIClientIPAllowlistVersionReader           SystemAPIClientIPAllowlistVersionReader
 	SystemAPIIPRateLimiter                            SystemAPIIPRateLimiter
@@ -147,6 +149,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 		opts.SystemAPIClientIPAllowlistReader,
 		opts.SystemAPIClientIPAllowlistVersionReader,
 	)
+	systemAPIRateLimitSettingsCache := opts.SystemAPIRateLimitSettingsCache
+	if systemAPIRateLimitSettingsCache == nil {
+		systemAPIRateLimitSettingsCache = NewSystemAPIRateLimitSettingsCache(
+			opts.SystemAPIRateLimitSettingsVersionReader,
+		)
+	}
 	mutationGuards := newMutationGuardStore()
 
 	health := NewHealthHandler(opts.Config, opts.Logger)
@@ -160,6 +168,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				clientIPs,
 				systemAPIClientIPAllowlist,
 				opts.Logger,
+				systemAPIRateLimitSettingsCache,
 			))
 		}
 		system.Get("/health", health.ServeHTTP)
@@ -196,6 +205,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 						clientIPs,
 						systemAPIClientIPAllowlist,
 						opts.Logger,
+						systemAPIRateLimitSettingsCache,
 					),
 				)
 				if managementAPIWriteAuthMiddleware != nil {
@@ -208,6 +218,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 							clientIPs,
 							systemAPIClientIPAllowlist,
 							opts.Logger,
+							systemAPIRateLimitSettingsCache,
 						),
 					)
 				}

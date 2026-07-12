@@ -77,6 +77,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	cancel()
 
 	var systemAPIClientIPAllowlistVersionReader httpapi.SystemAPIClientIPAllowlistVersionReader
+	var systemAPIRateLimitSettingsVersionReader httpapi.SystemAPIRateLimitSettingsVersionReader
 	var systemAPIClientIPAllowlistCacheRedis *redisplatform.Client
 	if cfg.RedisCacheURL != "" {
 		systemAPIClientIPAllowlistCacheRedis, err = redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
@@ -91,7 +92,17 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		if err != nil {
 			return err
 		}
+		systemAPIRateLimitSettingsVersionReader, err = httpapi.NewRedisSystemAPIRateLimitSettingsVersionReader(
+			systemAPIClientIPAllowlistCacheRedis,
+			cfg.RedisNamespace,
+		)
+		if err != nil {
+			return err
+		}
 	}
+	systemAPIRateLimitSettingsCache := httpapi.NewSystemAPIRateLimitSettingsCache(
+		systemAPIRateLimitSettingsVersionReader,
+	)
 
 	systemAccountInvalidator, closeSystemAccountInvalidator, err := newGatewaySystemAccountInvalidator(ctx, cfg, stateRedis)
 	if err != nil {
@@ -136,12 +147,15 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		logger,
 		systemAccountInvalidator,
 		accountConcurrencyReader,
+		systemAPIRateLimitSettingsCache,
 	)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                                            cfg,
 		Logger:                                            logger,
 		PublicSettingsService:                             &publicSettingsService,
 		SystemAPIRateLimitReader:                          store,
+		SystemAPIRateLimitSettingsCache:                   systemAPIRateLimitSettingsCache,
+		SystemAPIRateLimitSettingsVersionReader:           systemAPIRateLimitSettingsVersionReader,
 		SystemAPIClientIPAllowlistReader:                  store,
 		SystemAPIClientIPAllowlistVersionReader:           systemAPIClientIPAllowlistVersionReader,
 		SystemAPIIPRateLimiter:                            httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, cfg.RedisNamespace),
@@ -429,6 +443,7 @@ func newManagementAPIHandler(
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
+	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 ) managementAPIHandlers {
 	if !cfg.ManagementAPIEnabled && !cfg.ManagementAuthSessionsEnabled {
 		return managementAPIHandlers{}
@@ -504,9 +519,10 @@ func newManagementAPIHandler(
 		GlobalSettingsCacheInvalidator: systemAccountInvalidator,
 	})
 	systemSettingsService := managementsettings.NewSystemServiceWithOptions(managementsettings.SystemServiceOptions{
-		Store:       store,
-		Invalidator: systemAccountInvalidator,
-		Logger:      logger,
+		Store:                             store,
+		Invalidator:                       systemAccountInvalidator,
+		RateLimitSettingsCacheInvalidator: systemAPIRateLimitSettingsCache,
+		Logger:                            logger,
 	})
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
 		Config:         cfg,

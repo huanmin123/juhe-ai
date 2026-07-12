@@ -40,7 +40,7 @@ type systemAPIIPRateLimitMiddleware struct {
 	clientIPs     clientIPResolver
 	allowlist     *systemAPIClientIPAllowlistInspector
 	logger        *slog.Logger
-	settingsCache systemAPIRateLimitSettingsCache
+	settingsCache SystemAPIRateLimitSettingsCache
 }
 
 type systemAPIAuthenticatedRateLimitMiddleware struct {
@@ -50,7 +50,7 @@ type systemAPIAuthenticatedRateLimitMiddleware struct {
 	clientIPs     clientIPResolver
 	allowlist     *systemAPIClientIPAllowlistInspector
 	logger        *slog.Logger
-	settingsCache systemAPIRateLimitSettingsCache
+	settingsCache SystemAPIRateLimitSettingsCache
 }
 
 type systemAPIMethodClass string
@@ -61,9 +61,13 @@ const (
 )
 
 type systemAPIRateLimitSettingsCache struct {
-	mu        sync.Mutex
-	settings  port.SystemAPIRateLimitSettings
-	expiresAt time.Time
+	mu            sync.Mutex
+	settings      port.SystemAPIRateLimitSettings
+	expiresAt     time.Time
+	versionReader SystemAPIRateLimitSettingsVersionReader
+	version       string
+	versionLoaded bool
+	generation    uint64
 }
 
 type systemAPIClientIPAllowlistInspector struct {
@@ -97,7 +101,24 @@ type SystemAPIClientIPAllowlistVersionReader interface {
 	SystemAPIClientIPAllowlistVersion(ctx context.Context) (string, error)
 }
 
+type SystemAPIRateLimitSettingsVersionReader interface {
+	SystemAPIRateLimitSettingsVersion(ctx context.Context) (string, error)
+}
+
+type SystemAPIRateLimitSettingsCache interface {
+	current(
+		ctx context.Context,
+		reader port.SystemAPIRateLimitReader,
+		now time.Time,
+	) (port.SystemAPIRateLimitSettings, error)
+	ClearSystemAPIRateLimitSettingsCache()
+}
+
 type SystemAPIClientIPAllowlistVersionStore interface {
+	GetRaw(ctx context.Context, key string) ([]byte, error)
+}
+
+type SystemAPIRateLimitSettingsVersionStore interface {
 	GetRaw(ctx context.Context, key string) ([]byte, error)
 }
 
@@ -134,6 +155,13 @@ type redisSystemAPIClientIPAllowlistVersionReader struct {
 	key    string
 }
 
+type redisSystemAPIRateLimitSettingsVersionReader struct {
+	client SystemAPIRateLimitSettingsVersionStore
+	key    string
+}
+
+type systemAPIRateLimitSettingsContextKey struct{}
+
 type fixedWindowRateLimiter struct {
 	mu      sync.Mutex
 	window  time.Duration
@@ -151,16 +179,21 @@ func newSystemAPIIPRateLimitMiddleware(
 	clientIPs clientIPResolver,
 	allowlist *systemAPIClientIPAllowlistInspector,
 	logger *slog.Logger,
+	settingsCache SystemAPIRateLimitSettingsCache,
 ) func(http.Handler) http.Handler {
 	if limiter == nil {
 		panic("SystemAPIIPRateLimiter is required when SystemAPIRateLimitReader is configured")
 	}
+	if settingsCache == nil {
+		settingsCache = NewSystemAPIRateLimitSettingsCache(nil)
+	}
 	middleware := &systemAPIIPRateLimitMiddleware{
-		reader:    reader,
-		limiter:   limiter,
-		clientIPs: clientIPs,
-		allowlist: allowlist,
-		logger:    logger,
+		reader:        reader,
+		limiter:       limiter,
+		clientIPs:     clientIPs,
+		allowlist:     allowlist,
+		logger:        logger,
+		settingsCache: settingsCache,
 	}
 	return middleware.handle
 }
@@ -172,19 +205,30 @@ func newSystemAPIAuthenticatedRateLimitMiddleware(
 	clientIPs clientIPResolver,
 	allowlist *systemAPIClientIPAllowlistInspector,
 	logger *slog.Logger,
+	settingsCache SystemAPIRateLimitSettingsCache,
 ) func(http.Handler) http.Handler {
 	if limiter == nil {
 		panic("SystemAPIAuthenticatedRateLimiter is required when authenticated management rate limiting is configured")
 	}
+	if settingsCache == nil {
+		settingsCache = NewSystemAPIRateLimitSettingsCache(nil)
+	}
 	middleware := &systemAPIAuthenticatedRateLimitMiddleware{
-		reader:      reader,
-		limiter:     limiter,
-		methodClass: methodClass,
-		clientIPs:   clientIPs,
-		allowlist:   allowlist,
-		logger:      logger,
+		reader:        reader,
+		limiter:       limiter,
+		methodClass:   methodClass,
+		clientIPs:     clientIPs,
+		allowlist:     allowlist,
+		logger:        logger,
+		settingsCache: settingsCache,
 	}
 	return middleware.handle
+}
+
+func NewSystemAPIRateLimitSettingsCache(
+	versionReader SystemAPIRateLimitSettingsVersionReader,
+) SystemAPIRateLimitSettingsCache {
+	return &systemAPIRateLimitSettingsCache{versionReader: versionReader}
 }
 
 func newSystemAPIClientIPAllowlistInspector(
@@ -254,6 +298,23 @@ func NewRedisSystemAPIClientIPAllowlistVersionReader(
 	}, nil
 }
 
+func NewRedisSystemAPIRateLimitSettingsVersionReader(
+	client SystemAPIRateLimitSettingsVersionStore,
+	namespace string,
+) (SystemAPIRateLimitSettingsVersionReader, error) {
+	if client == nil {
+		return nil, nil
+	}
+	key, err := gatewaycache.SharedCacheVersionKey(namespace, gatewaycache.SystemSettingsCacheName)
+	if err != nil {
+		return nil, err
+	}
+	return &redisSystemAPIRateLimitSettingsVersionReader{
+		client: client,
+		key:    key,
+	}, nil
+}
+
 func (m *systemAPIIPRateLimitMiddleware) handle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !shouldApplySystemAPIIPRateLimit(r) {
@@ -273,6 +334,11 @@ func (m *systemAPIIPRateLimitMiddleware) handle(next http.Handler) http.Handler 
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
+		r = r.WithContext(context.WithValue(
+			r.Context(),
+			systemAPIRateLimitSettingsContextKey{},
+			settings,
+		))
 
 		methodClass := systemAPIMethodClassFor(r.Method)
 		clientIP := m.clientIPs.FromRequest(r)
@@ -314,18 +380,22 @@ func (m *systemAPIAuthenticatedRateLimitMiddleware) handle(next http.Handler) ht
 			return
 		}
 
-		settings, err := m.settingsCache.current(r.Context(), m.reader, time.Now())
-		if err != nil {
-			if m.logger != nil {
-				m.logger.Error("系统 API 认证用户限流设置读取失败",
-					slog.String("path", r.URL.Path),
-					slog.String("method_class", string(m.methodClass)),
-					slog.String("request_id", requestIDFromContext(r.Context())),
-					slog.Any("error", err),
-				)
+		settings, ok := systemAPIRateLimitSettingsFromContext(r.Context())
+		if !ok {
+			var err error
+			settings, err = m.settingsCache.current(r.Context(), m.reader, time.Now())
+			if err != nil {
+				if m.logger != nil {
+					m.logger.Error("系统 API 认证用户限流设置读取失败",
+						slog.String("path", r.URL.Path),
+						slog.String("method_class", string(m.methodClass)),
+						slog.String("request_id", requestIDFromContext(r.Context())),
+						slog.Any("error", err),
+					)
+				}
+				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+				return
 			}
-			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-			return
 		}
 
 		clientIP := m.clientIPs.FromRequest(r)
@@ -480,29 +550,114 @@ func (r *redisSystemAPIClientIPAllowlistVersionReader) SystemAPIClientIPAllowlis
 	return strings.TrimSpace(string(raw)), nil
 }
 
+func (r *redisSystemAPIRateLimitSettingsVersionReader) SystemAPIRateLimitSettingsVersion(
+	ctx context.Context,
+) (string, error) {
+	raw, err := r.client.GetRaw(ctx, r.key)
+	if errors.Is(err, redisplatform.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
 func (c *systemAPIRateLimitSettingsCache) current(
 	ctx context.Context,
 	reader port.SystemAPIRateLimitReader,
 	now time.Time,
 ) (port.SystemAPIRateLimitSettings, error) {
-	c.mu.Lock()
-	if now.Before(c.expiresAt) {
-		settings := c.settings
-		c.mu.Unlock()
-		return settings, nil
-	}
-	c.mu.Unlock()
-
-	settings, err := reader.SystemAPIRateLimitSettings(ctx)
+	version, err := c.readVersion(ctx)
 	if err != nil {
 		return port.SystemAPIRateLimitSettings{}, err
 	}
 
+	for {
+		c.mu.Lock()
+		c.applyVersionLocked(version)
+		if now.Before(c.expiresAt) {
+			settings := c.settings
+			c.mu.Unlock()
+			return settings, nil
+		}
+		generation := c.generation
+		c.mu.Unlock()
+
+		settings, err := reader.SystemAPIRateLimitSettings(ctx)
+		if err != nil {
+			return port.SystemAPIRateLimitSettings{}, err
+		}
+
+		if c.versionReader != nil {
+			latestVersion, err := c.readVersion(ctx)
+			if err != nil {
+				return port.SystemAPIRateLimitSettings{}, err
+			}
+			if latestVersion != version {
+				version = latestVersion
+				continue
+			}
+		}
+
+		c.mu.Lock()
+		if c.generation != generation {
+			c.mu.Unlock()
+			if c.versionReader != nil {
+				version, err = c.readVersion(ctx)
+				if err != nil {
+					return port.SystemAPIRateLimitSettings{}, err
+				}
+			}
+			continue
+		}
+		c.settings = settings
+		c.expiresAt = now.Add(systemAPISettingsCacheTTL)
+		c.mu.Unlock()
+		return settings, nil
+	}
+}
+
+func (c *systemAPIRateLimitSettingsCache) ClearSystemAPIRateLimitSettingsCache() {
 	c.mu.Lock()
-	c.settings = settings
-	c.expiresAt = now.Add(systemAPISettingsCacheTTL)
+	c.clearSnapshotLocked()
 	c.mu.Unlock()
-	return settings, nil
+}
+
+func (c *systemAPIRateLimitSettingsCache) readVersion(ctx context.Context) (string, error) {
+	if c.versionReader == nil {
+		return "", nil
+	}
+	return c.versionReader.SystemAPIRateLimitSettingsVersion(ctx)
+}
+
+func (c *systemAPIRateLimitSettingsCache) applyVersionLocked(version string) {
+	if c.versionReader == nil {
+		return
+	}
+	if !c.versionLoaded {
+		c.version = version
+		c.versionLoaded = true
+		return
+	}
+	if version == c.version {
+		return
+	}
+	c.clearSnapshotLocked()
+	c.version = version
+}
+
+func (c *systemAPIRateLimitSettingsCache) clearSnapshotLocked() {
+	c.settings = port.SystemAPIRateLimitSettings{}
+	c.expiresAt = time.Time{}
+	c.generation++
+}
+
+func systemAPIRateLimitSettingsFromContext(
+	ctx context.Context,
+) (port.SystemAPIRateLimitSettings, bool) {
+	settings, ok := ctx.Value(systemAPIRateLimitSettingsContextKey{}).(port.SystemAPIRateLimitSettings)
+	return settings, ok
 }
 
 func (l *inMemorySystemAPIIPRateLimiter) AllowSystemAPIIP(
