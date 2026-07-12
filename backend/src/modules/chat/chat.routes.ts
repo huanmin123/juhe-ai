@@ -12,6 +12,7 @@ import {
   createChatConversation,
   deleteChatConversation,
   failChatTurn,
+  findChatTurnByClientMessageId,
   getChatConversation,
   listChatContextMessages,
   listChatConversations,
@@ -25,9 +26,9 @@ import { validateGatewayApiKeyAsync } from '../../storage/gateway-api-key.reposi
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { listCachedOpenAIAccountsForGroupAsync } from '../gateway/runtime/runtime-cache.service.js'
 import { collectOpenAIChatSse } from './chat-gateway-sse.js'
-import { ChatContextBudgetError, resolveEffectiveChatContextWindowTokens, trimChatContextToBudget } from './chat-context-budget.js'
+import { ChatContextBudgetError, resolveEffectiveChatContextWindowTokens, trimChatContextToBudget, validateFixedChatInputBudget } from './chat-context-budget.js'
 import { collectChatResponsesSse } from './chat-responses-sse.js'
-import { buildChatTransportRequest, resolveChatSupportedProtocols, selectChatTransport } from './chat-transport.js'
+import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport } from './chat-transport.js'
 import { buildChatModelOptions, chatReasoningEfforts, chatServiceTiers } from './chat-model-options.js'
 import { buildChatSystemInstructions } from './chat-system-instructions.js'
 import { listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
@@ -38,7 +39,7 @@ export const chatRouter = Router()
 const messageBodySchema = z.object({
   clientMessageId: z.string().trim().min(1).max(100),
   content: z.string().trim().min(1, '请输入消息').max(196_608, '消息内容过长'),
-  contentBlocks: z.array(z.object({ type: z.enum(['input_text', 'input_image']), text: z.string().optional(), dataUrl: z.string().max(14 * 1024 * 1024).optional() })).max(8).optional(),
+  contentBlocks: z.array(z.object({ type: z.enum(['input_text', 'input_image']), text: z.string().max(196_608, '文本块内容过长').optional(), dataUrl: z.string().max(14 * 1024 * 1024).optional() })).max(8).optional(),
   model: z.string().trim().min(1, '请选择模型').max(200),
   reasoningEffort: z.enum(chatReasoningEfforts).optional(),
   serviceTier: z.enum(chatServiceTiers).optional(),
@@ -52,6 +53,13 @@ const updateConversationSchema = z.object({
 const activeStreams = new Map<string, { ownerId: string; turnId: string; controller: AbortController }>()
 const maxMessageBytes = 192 * 1024
 const storageQuotaBytes = 2 * 1024 * 1024 * 1024
+
+class ChatRequestError extends Error {
+  constructor(public readonly code: 'chat_image_not_supported', message: string) {
+    super(message)
+    this.name = 'ChatRequestError'
+  }
+}
 
 chatRouter.get('/api-keys', async (_req, res, next) => {
   try {
@@ -163,9 +171,18 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     const auth = requireChatAuth()
     ownerId = auth.systemAccountId
     const conversation = await requireOwnedConversation(req.params.conversationId, ownerId)
+    const client = await getChatDatabaseClient()
+    const existingTurn = await findChatTurnByClientMessageId(client, {
+      conversationId: conversation.id,
+      systemAccountId: ownerId,
+      clientMessageId: body.clientMessageId
+    })
+    if (existingTurn) {
+      res.status(409).json({ message: '该消息已提交，请刷新会话', code: 'chat_message_already_exists' })
+      return
+    }
     const apiKey = await requireOwnedApiKey(conversation.apiKeyId, ownerId)
     const apiKeySecret = String(apiKey.key)
-    const client = await getChatDatabaseClient()
     const gatewayKey = await validateGatewayApiKeyAsync(apiKeySecret)
     const supportedProtocols = await resolveChatSupportedProtocols({
       groupIds: gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? [],
@@ -179,7 +196,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     const toolsEnabled = protocol === 'responses'
     const imageCount = body.contentBlocks?.filter((block) => block.type === 'input_image').length ?? 0
     if (protocol === 'chat_completions' && imageCount > 0) {
-      throw new Error('当前路由不支持图片输入，请切换到支持 Responses 的账户或移除图片')
+      throw new ChatRequestError('chat_image_not_supported', '当前路由不支持图片输入，请切换到支持 Responses 的账户或移除图片')
     }
     const catalog = await listProviderModelCatalogAsync({
       providerCode: GPT_VENDOR_CODE,
@@ -192,31 +209,14 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       serverContextWindowTokens: catalogItem?.contextWindowTokens ?? catalogItem?.maxInputTokens
     })
     const systemInstructions = buildChatSystemInstructions({ toolsEnabled })
-    const storedContext = await listChatContextMessages(client, {
-      conversationId: conversation.id,
-      systemAccountId: ownerId,
-      limitTurns: 64,
-      now: new Date().toISOString()
-    })
-    const context = trimChatContextToBudget({
-      history: storedContext,
-      currentUserContent: body.content,
+    const fixedBudgetInput = {
+      currentUserContent: resolveChatBudgetContent({ protocol, currentContent: body.content, currentBlocks: body.contentBlocks }),
       instructions: systemInstructions.text,
       toolsEnabled,
       imageCount,
       contextWindowTokens
-    })
-    const transport = buildChatTransportRequest({
-      protocol,
-      instructions: systemInstructions.text,
-      model: body.model,
-      history: context,
-      currentContent: body.content,
-      currentBlocks: body.contentBlocks,
-      toolsEnabled,
-      reasoningEffort: body.reasoningEffort,
-      serviceTier: body.serviceTier
-    })
+    }
+    validateFixedChatInputBudget(fixedBudgetInput)
     accepted = await acceptChatTurn(client, {
       conversationId: conversation.id,
       systemAccountId: ownerId,
@@ -230,6 +230,24 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       res.status(409).json({ message: '该消息已提交，请刷新会话', code: 'chat_message_already_exists' })
       return
     }
+    const storedContext = await listChatContextMessages(client, {
+      conversationId: conversation.id,
+      systemAccountId: ownerId,
+      limitTurns: 64,
+      now: new Date().toISOString()
+    })
+    const context = trimChatContextToBudget({ history: storedContext, ...fixedBudgetInput })
+    const transport = buildChatTransportRequest({
+      protocol,
+      instructions: systemInstructions.text,
+      model: body.model,
+      history: context,
+      currentContent: body.content,
+      currentBlocks: body.contentBlocks,
+      toolsEnabled,
+      reasoningEffort: body.reasoningEffort,
+      serviceTier: body.serviceTier
+    })
     controller = new AbortController()
     activeStreams.set(conversation.id, { ownerId, turnId: accepted.turnId, controller })
     res.status(200)
@@ -301,6 +319,10 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       return
     }
     if (error instanceof ChatContextBudgetError) {
+      res.status(422).json({ message: error.message, code: error.code })
+      return
+    }
+    if (error instanceof ChatRequestError) {
       res.status(422).json({ message: error.message, code: error.code })
       return
     }

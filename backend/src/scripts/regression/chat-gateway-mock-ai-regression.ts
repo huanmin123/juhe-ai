@@ -23,6 +23,7 @@ let backend: ChildProcess | undefined
 const realCredentialFile = process.env.JUHE_AI_CHAT_REAL_CREDENTIAL_FILE?.trim()
 const realCredential = realCredentialFile ? readRealCredential(realCredentialFile) : undefined
 const testModel = process.env.JUHE_AI_CHAT_REAL_MODEL?.trim() || realCredential?.models.find((item) => item === 'gpt-5.5') || realCredential?.models[0] || 'gpt-5.5'
+const chatOnlyTestModel = 'gpt-5.4-mini'
 
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.chatDatabasePath = join(tempRoot, 'chat.sqlite3')
@@ -110,7 +111,12 @@ try {
   assert.match(streamText, /event: message\.completed/)
   const duplicateResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
     method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
-    body: JSON.stringify({ clientMessageId: 'mock-client-1', content: '重复请求不得再次调用模型', model: testModel })
+    body: JSON.stringify({
+      clientMessageId: 'mock-client-1',
+      content: '重复请求必须在协议与图片校验前命中',
+      contentBlocks: [{ type: 'input_image', dataUrl: 'data:image/png;base64,abc' }],
+      model: chatOnlyTestModel
+    })
   })
   assert.equal(duplicateResponse.status, 409, '相同 clientMessageId 必须返回冲突且不再次调用模型')
   if (!realCredential) {
@@ -120,6 +126,17 @@ try {
     })
     const overBudgetText = await overBudgetResponse.text()
     const overBudgetPayload = parseOptionalJson(overBudgetText)
+    const blockBudgetResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({
+        clientMessageId: 'mock-client-block-over-budget',
+        content: '短摘要',
+        contentBlocks: [{ type: 'input_text', text: '很长'.repeat(20_000) }],
+        model: testModel,
+        contextWindowTokens: 16_000
+      })
+    })
+    const blockBudgetPayload = parseOptionalJson(await blockBudgetResponse.text())
     const expectedInstructions = buildChatSystemInstructions({ toolsEnabled: true }).text
     const observedInstructions = upstreamBodies[0]?.instructions
     const observedTools = Array.isArray(upstreamBodies[0]?.tools) ? upstreamBodies[0].tools as Array<{ type?: string }> : []
@@ -129,6 +146,8 @@ try {
       webSearchToolCount: observedTools.filter((tool) => tool.type === 'web_search').length,
       overBudgetStatus: overBudgetResponse.status,
       overBudgetCode: overBudgetPayload?.code,
+      blockBudgetStatus: blockBudgetResponse.status,
+      blockBudgetCode: blockBudgetPayload?.code,
       upstreamCalls: upstreamAuthorizations.length
     }, {
       instructionsMatch: true,
@@ -136,9 +155,12 @@ try {
       webSearchToolCount: 1,
       overBudgetStatus: 422,
       overBudgetCode: 'chat_input_exceeds_context',
+      blockBudgetStatus: 422,
+      blockBudgetCode: 'chat_input_exceeds_context',
       upstreamCalls: 1
     }, 'Responses 必须唯一注入工具提示；固定输入超预算必须在落轮次和请求上游前返回 422')
     assert.match(String(overBudgetPayload?.message ?? ''), /上下文窗口/)
+    assert.match(String(blockBudgetPayload?.message ?? ''), /上下文窗口/)
     assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream'], 'AI 问答必须经过网关并使用 AI 账户凭据访问上游')
   }
 

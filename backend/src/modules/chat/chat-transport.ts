@@ -8,6 +8,18 @@ export interface ChatTransportMessage {
 }
 export interface ChatTransportInputBlock { type: 'input_text' | 'input_image'; text?: string; dataUrl?: string }
 
+export function resolveChatBudgetContent(input: {
+  protocol: ChatTransportProtocol
+  currentContent: string
+  currentBlocks?: ChatTransportInputBlock[]
+}): string {
+  if (input.protocol !== 'responses' || !input.currentBlocks?.length) return input.currentContent
+  return input.currentBlocks
+    .filter((block) => block.type === 'input_text')
+    .map((block) => block.text ?? '')
+    .join('\n')
+}
+
 export function selectChatTransport(input: {
   supportedProtocols: readonly ChatTransportProtocol[]
   toolsEnabled: boolean

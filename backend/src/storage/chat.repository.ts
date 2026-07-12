@@ -95,6 +95,19 @@ export async function getChatConversation(client: DatabaseClient, conversationId
   return row ? mapConversation(row) : undefined
 }
 
+export async function findChatTurnByClientMessageId(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  clientMessageId: string
+}): Promise<{ turnId: string } | undefined> {
+  const row = await client.one<{ turn_id?: unknown }>(`
+    SELECT turn_id
+    FROM ${chatTable(client, 'chat_message_idempotency')}
+    WHERE conversation_id = ? AND client_message_id = ? AND system_account_id = ?
+  `, [input.conversationId, input.clientMessageId, input.systemAccountId])
+  return row ? { turnId: String(row.turn_id) } : undefined
+}
+
 export async function updateChatConversation(client: DatabaseClient, input: {
   conversationId: string
   systemAccountId: string

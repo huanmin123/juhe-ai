@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict'
 
 import { buildChatSystemInstructions } from '../../modules/chat/chat-system-instructions.js'
-import { buildChatTransportRequest, resolveChatSupportedProtocols, selectChatTransport } from '../../modules/chat/chat-transport.js'
+import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport } from '../../modules/chat/chat-transport.js'
 
 assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions'], toolsEnabled: true }), 'chat_completions')
 assert.equal(selectChatTransport({ supportedProtocols: ['responses'], toolsEnabled: true }), 'responses')
 assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions', 'responses'], toolsEnabled: true }), 'responses')
 assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions', 'responses'], toolsEnabled: false }), 'chat_completions')
 assert.equal(selectChatTransport({ supportedProtocols: [], toolsEnabled: true }), 'chat_completions')
+assert.equal(resolveChatBudgetContent({
+  protocol: 'responses',
+  currentContent: '短摘要',
+  currentBlocks: [{ type: 'input_text', text: '第一段' }, { type: 'input_image', dataUrl: 'data:image/png;base64,abc' }, { type: 'input_text', text: '第二段' }]
+}), '第一段\n第二段', 'Responses 预算必须使用实际发送的全部 input_text block')
+assert.equal(resolveChatBudgetContent({ protocol: 'chat_completions', currentContent: 'Chat 正文', currentBlocks: [{ type: 'input_text', text: '忽略块' }] }), 'Chat 正文')
 
 const instructions = buildChatSystemInstructions({ toolsEnabled: true }).text
 const responses = buildChatTransportRequest({

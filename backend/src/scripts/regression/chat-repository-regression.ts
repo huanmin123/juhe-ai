@@ -11,6 +11,7 @@ import {
   createChatConversation,
   deleteChatConversation,
   failChatTurn,
+  findChatTurnByClientMessageId,
   getChatConversation,
   cleanupChatRetention,
   listChatContextMessages,
@@ -53,6 +54,11 @@ assert.equal(renamedPinned?.isPinned, true)
 assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 20 }))[0]?.id, pinnedConversation.id)
 assert.equal(await deleteChatConversation(client, pinnedConversation.id, 'sys_user_1'), true)
 
+assert.equal(await findChatTurnByClientMessageId(client, {
+  conversationId: conversation.id,
+  systemAccountId: 'sys_user_1',
+  clientMessageId: 'client_1'
+}), undefined)
 const accepted = await acceptChatTurn(client, {
   conversationId: conversation.id,
   systemAccountId: 'sys_user_1',
@@ -65,6 +71,16 @@ const accepted = await acceptChatTurn(client, {
 assert.equal(accepted.userMessage.sequenceNo, 1)
 assert.equal(accepted.assistantMessage.sequenceNo, 2)
 assert.equal(accepted.duplicate, false)
+assert.deepEqual(await findChatTurnByClientMessageId(client, {
+  conversationId: conversation.id,
+  systemAccountId: 'sys_user_1',
+  clientMessageId: 'client_1'
+}), { turnId: accepted.turnId })
+assert.equal(await findChatTurnByClientMessageId(client, {
+  conversationId: conversation.id,
+  systemAccountId: 'sys_user_2',
+  clientMessageId: 'client_1'
+}), undefined, '只读幂等查询不得跨系统账户命中')
 
 const duplicate = await acceptChatTurn(client, {
   conversationId: conversation.id,

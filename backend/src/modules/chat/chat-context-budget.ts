@@ -18,24 +18,25 @@ export class ChatContextBudgetError extends Error {
   }
 }
 
-export function trimChatContextToBudget(input: {
-  history: ChatContextMessage[]
+interface FixedChatInputBudget {
   currentUserContent: string
   instructions: string
   toolsEnabled: boolean
   imageCount: number
   contextWindowTokens?: number
-}): ChatContextMessage[] {
+}
+
+export function validateFixedChatInputBudget(input: FixedChatInputBudget): void {
   const contextWindow = positiveInteger(input.contextWindowTokens) ?? unknownModelContextTokens
-  const fixedInputTokens = outputReserveTokens
-    + protocolReserveTokens
-    + estimateChatTokens(input.instructions)
-    + estimateChatTokens(input.currentUserContent)
-    + messageOverheadTokens * 2
-    + (input.toolsEnabled ? toolDefinitionReserveTokens : 0)
-    + Math.max(0, Math.floor(input.imageCount)) * imageReserveTokens
-  if (fixedInputTokens > contextWindow) throw new ChatContextBudgetError()
-  const historyBudget = Math.min(maxHistoryTokens, contextWindow - fixedInputTokens)
+  if (fixedChatInputTokens(input) > contextWindow) throw new ChatContextBudgetError()
+}
+
+export function trimChatContextToBudget(input: FixedChatInputBudget & {
+  history: ChatContextMessage[]
+}): ChatContextMessage[] {
+  validateFixedChatInputBudget(input)
+  const contextWindow = positiveInteger(input.contextWindowTokens) ?? unknownModelContextTokens
+  const historyBudget = Math.min(maxHistoryTokens, contextWindow - fixedChatInputTokens(input))
   const completeTurns = toCompleteTurns(input.history)
   let usedTokens = 0
   const selected: ChatContextMessage[][] = []
@@ -47,6 +48,16 @@ export function trimChatContextToBudget(input: {
     usedTokens += turnTokens
   }
   return selected.reverse().flat()
+}
+
+function fixedChatInputTokens(input: FixedChatInputBudget): number {
+  return outputReserveTokens
+    + protocolReserveTokens
+    + estimateChatTokens(input.instructions)
+    + estimateChatTokens(input.currentUserContent)
+    + messageOverheadTokens * 2
+    + (input.toolsEnabled ? toolDefinitionReserveTokens : 0)
+    + Math.max(0, Math.floor(input.imageCount)) * imageReserveTokens
 }
 
 export function resolveEffectiveChatContextWindowTokens(input: {

@@ -4,7 +4,8 @@ import {
   ChatContextBudgetError,
   estimateChatTokens,
   resolveEffectiveChatContextWindowTokens,
-  trimChatContextToBudget
+  trimChatContextToBudget,
+  validateFixedChatInputBudget
 } from '../../modules/chat/chat-context-budget.js'
 
 const history = [
@@ -47,6 +48,11 @@ assert.throws(
   () => trimChatContextToBudget({ ...baseBudgetInput, currentUserContent: '很长'.repeat(20_000), contextWindowTokens: 16_000 }),
   (error) => error instanceof ChatContextBudgetError && error.code === 'chat_input_exceeds_context',
   '固定提示、当前输入和固定预留已经超限时必须明确拒绝'
+)
+assert.throws(
+  () => validateFixedChatInputBudget({ ...baseBudgetInput, currentUserContent: '很长'.repeat(20_000), contextWindowTokens: 16_000 }),
+  (error) => error instanceof ChatContextBudgetError && error.code === 'chat_input_exceeds_context',
+  '固定输入预检必须能在读取历史前独立拒绝超预算请求'
 )
 
 assert.equal(resolveEffectiveChatContextWindowTokens({ clientContextWindowTokens: 2_000_000, serverContextWindowTokens: 128_000 }), 128_000)
