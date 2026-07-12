@@ -51,7 +51,7 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 ### 3.2 本次不包含
 
 - 同源图片资产上传、图片生成和生成产物下载；当前粘贴图片使用受限 Data URL 随本轮 Responses 请求发送，不落入 Markdown 正文。
-- 文件附件、知识库、联网搜索、语音输入。
+- 文件附件、知识库、本站自建联网搜索和语音输入；Responses 可使用上游实际支持的 Hosted Web Search。
 - MCP、Skill、站内 Function Tool、工具审批和工具执行 worker。
 - system prompt、temperature、top_p 等高级模型参数的用户配置；产品内置 Markdown 默认提示不开放给用户编辑。
 - 自动摘要、长期记忆和跨 7 天上下文。
@@ -275,15 +275,23 @@ MVP 使用 `@tanstack/vue-virtual`，不直接复制 `F:\go-project\go-ee-work-t
 
 ### 8.8 默认 Markdown 回答提示
 
-当前聊天请求附加产品内置提示，不再完全依赖模型自行选择回答格式：
+本轮改造为聊天请求增加代码内版本化的产品提示，不再完全依赖模型自行选择回答格式。第一版固定为 `chat-system-v1`，由纯函数按实际能力组合以下小模块：
 
-> 默认使用结构清晰的中文 Markdown 回答，合理使用标题、列表、表格和代码块。用户提到某种编程语言时，默认用 Markdown 讲解，并将该语言代码放入对应代码块；只有用户明确要求生成完整可运行文件、网页或原始内容时，才直接输出完整文件。不要重复执行参数相同的工具调用，除非上一次调用失败或确实需要刷新结果。
+1. **指令优先级**：用户明确要求的语言、格式、长度和交付形态优先于默认偏好。
+2. **默认回答**：使用用户当前语言；无法判断时使用简体中文。在有助于阅读时使用 Markdown，简单回答不强制标题、表格或代码块。
+3. **严格格式**：用户明确要求 JSON、CSV、XML、YAML、纯文本、仅代码、完整文件或补丁时严格按该格式输出，不增加无关说明，也不擅自套 Markdown 围栏。
+4. **真实性**：区分已知事实、合理推断和不确定信息，不声称使用当前未提供的工具或能力。
+5. **工具纪律**：仅在本轮实际启用工具时加入；避免重复调用名称相同且参数等价的工具，前次失败、结果可能过期或用户明确要求刷新时允许重试。
 
 - Chat Completions 把该提示作为第一条 `system` message。
 - Responses 使用顶层 `instructions`，历史 `input` 仍只包含用户和助手消息。
 - 内置提示不保存为聊天消息、不出现在前端、不计入用户可编辑草稿。
-- 该提示是输出偏好，不得覆盖用户明确指定的语言、格式、长度或完整文件要求。
+- Chat Completions 与 Responses 使用同一个构建结果；网关和协议桥接不得再次拼接，避免重复注入。
+- 只把实际启用的工具规则放入提示；Chat-only 回退不能收到虚假的联网能力说明。
+- 记录稳定版本和内容 hash 供回归与排障使用，但第一版不开放管理员或用户编辑任意 system prompt。
 - Hosted tool 是否真正重复执行仍由上游模型决定；本站无法在工具已由上游执行后追回成本，只能用提示降低概率并在展示层聚合真实事件。
+
+设计只借鉴 [prompts.chat](https://github.com/f/prompts.chat) 的任务提示结构，以及 [system_prompts_leaks](https://github.com/asgeirtj/system_prompts_leaks) 中可观察到的模块隔离、工具条件和优先级模式；不复制社区角色模板、厂商品牌身份、泄露提示原文、未实现工具或内部权限规则。Prompt 只提供行为默认值，不能替代代码侧鉴权、工具 allowlist、参数校验和副作用确认。
 
 ### 8.9 最近一轮重新编辑
 
@@ -321,6 +329,7 @@ backend/src/modules/ai-chat/
   ai-chat.routes.ts
   ai-chat.schemas.ts
   ai-chat.types.ts
+  chat-system-instructions.ts
   ai-chat-auth.middleware.ts
   conversation.service.ts
   message.service.ts
@@ -342,7 +351,7 @@ backend/src/storage/
 - conversation service：会话创建、列表、删除、归属和 API Key 固定规则。
 - message service：消息事务、幂等、同会话并发和终态转换。
 - context builder：7 天、完整轮次、数量上限和模型预算。
-- gateway client：只调用本机 `/v1/models` 和 `/v1/chat/completions`。
+- gateway client：只调用本机 `/v1/models`、`/v1/chat/completions` 和 `/v1/responses`。
 - stream parser：解析 OpenAI Chat SSE 的跨 chunk UTF-8、事件和 `[DONE]`。
 - stream service：转换内部事件、合批文本、取消和最终落库。
 - repository：只通过 DB service typed operations 暴露有界读写。
@@ -638,15 +647,23 @@ PostgreSQL 约束：
 ```text
 可用历史输入预算 = min(
   64K MVP 历史上限,
-  模型上下文窗口 - 输出预留 - 协议安全空间 - 当前问题估算
+  有效模型上下文窗口
+  - 输出预留
+  - 协议与工具安全空间
+  - 固定提示估算
+  - 当前内容块估算
+  - 消息结构开销
 )
 ```
 
 - 上下文窗口从本地模型目录元数据读取，不从标准 `/v1/models` 响应猜测。
+- 客户端选择的历史上限不能突破服务端模型目录窗口：`effectiveWindow = min(用户选择, 服务端模型窗口)`。
 - 模型元数据未知时采用保守 16K 总输入预算。
-- 输出最多预留 8K token，并额外保留 4K 协议安全空间。
+- 输出预留 8K token；协议安全空间同时覆盖实际工具定义，固定提示单独估算，不能与当前问题混在一起忽略。
+- 图片输入按张使用保守预留，后续有可靠模型元数据时再替换为能力级估算。
 - MVP 使用保守 UTF-8 字节估算并留安全余量，不引入按供应商维护的重型 tokenizer。
 - 超出预算时只从最旧完整轮次开始删除，不能留下半轮消息。
+- 固定提示加当前输入已经超过预算时，在调用网关前返回明确中文错误，不能只清空历史后继续发送。
 - 第一版不自动摘要，避免额外模型调用和跨 7 天内容延续。
 
 ## 15. 7 天保留与审计边界
@@ -737,6 +754,8 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - 使用真实本地 API Key 进入 `/v1/models` 和 `/v1/chat/completions`。
 - Chat Completions 收到首条 Markdown 默认 `system` message，Responses 收到等价 `instructions`；两者不写入聊天消息历史。
 - 用户明确要求完整文件时不被 Markdown 默认偏好覆盖；相同工具参数的重复调用提示只降低概率，不伪造执行结果。
+- `chat-system-v1` 构建结果稳定且有 hash；Chat-only 请求不含工具纪律段，Responses 工具请求只注入一次。
+- 严格 JSON、CSV、XML、YAML、纯文本、仅代码和补丁请求保持用户原文与格式优先级，不被默认 Markdown 偏好覆盖。
 - API Key 对应路由策略、分组和账户命中正常。
 - 模型逐轮切换不改变会话 API Key 和网关调度边界。
 - 账户代理、错误切换、额度、并发和响应检查继续生效。
