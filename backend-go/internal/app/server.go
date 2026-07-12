@@ -227,6 +227,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProviderCustomModelDeleteHandler:        managementHandlers.ProviderCustomModelDeleteHandler,
 		ManagementRouteStrategyListHandler:                managementHandlers.RouteStrategyListHandler,
 		ManagementMyRouteStrategyListHandler:              managementHandlers.MyRouteStrategyListHandler,
+		ManagementRouteStrategyCreateHandler:              managementHandlers.RouteStrategyCreateHandler,
+		ManagementMyRouteStrategyCreateHandler:            managementHandlers.MyRouteStrategyCreateHandler,
 		ManagementRouteStrategyDetailHandler:              managementHandlers.RouteStrategyDetailHandler,
 		ManagementMyRouteStrategyDetailHandler:            managementHandlers.MyRouteStrategyDetailHandler,
 		ManagementRouteStrategyOptionsHandler:             managementHandlers.RouteStrategyOptionsHandler,
@@ -371,6 +373,8 @@ type managementAPIHandlers struct {
 	ProviderCustomModelDeleteHandler        http.Handler
 	RouteStrategyListHandler                http.Handler
 	MyRouteStrategyListHandler              http.Handler
+	RouteStrategyCreateHandler              http.Handler
+	MyRouteStrategyCreateHandler            http.Handler
 	RouteStrategyDetailHandler              http.Handler
 	MyRouteStrategyDetailHandler            http.Handler
 	RouteStrategyOptionsHandler             http.Handler
@@ -473,7 +477,17 @@ func newManagementAPIHandler(
 		Store:       store,
 		Invalidator: systemAccountInvalidator,
 	})
-	routeStrategyService := managementroutestrategies.NewService(store)
+	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
+		managementroutestrategies.ServiceOptions{
+			OptionReader: store,
+			ListReader:   store,
+			DetailReader: store,
+			CreateStore:  store,
+			Transactor:   store,
+			Invalidator:  systemAccountInvalidator,
+			Logger:       logger,
+		},
+	)
 	apiKeyService := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
 		ListReader:               store,
 		Creator:                  store,
@@ -597,6 +611,8 @@ func newManagementAPIHandler(
 		ProviderCustomModelDeleteHandler:        httpapi.NewManagementProviderCustomModelDeleteHandler(providerModelService),
 		RouteStrategyListHandler:                httpapi.NewManagementRouteStrategyListHandler(routeStrategyService),
 		MyRouteStrategyListHandler:              httpapi.NewManagementMyRouteStrategyListHandler(routeStrategyService),
+		RouteStrategyCreateHandler:              httpapi.NewManagementRouteStrategyCreateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
+		MyRouteStrategyCreateHandler:            httpapi.NewManagementMyRouteStrategyCreateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
 		RouteStrategyDetailHandler:              httpapi.NewManagementRouteStrategyDetailHandler(routeStrategyService),
 		MyRouteStrategyDetailHandler:            httpapi.NewManagementMyRouteStrategyDetailHandler(routeStrategyService),
 		RouteStrategyOptionsHandler:             httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
