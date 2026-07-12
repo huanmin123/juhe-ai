@@ -14,7 +14,7 @@ export interface AccountBalanceRefreshCandidate {
   configRevision: number
   credentials: Record<string, unknown>
   config: AccountBalanceQueryConfig
-  nextRefreshAt: string
+  nextRefreshAt: string | null
   proxyProfileId?: string
 }
 
@@ -37,7 +37,7 @@ interface BalanceCandidateRow {
   config_revision: number
   credentials_encrypted: string
   balance_query_config_json: string
-  balance_query_next_refresh_at: string
+  balance_query_next_refresh_at: string | null
   proxy_profile_id?: string | null
 }
 
@@ -208,7 +208,7 @@ export async function commitAccountBalanceRefreshAsync(input: {
   expectedConfigRevision: number
   expectedConfig: AccountBalanceQueryConfig
   nextConfig: AccountBalanceQueryConfig
-  nextRefreshAt: string
+  nextRefreshAt: string | null
 }): Promise<boolean> {
   const expectedConfig = normalizeAccountBalanceConfig(input.expectedConfig)
   const nextConfig = normalizeAccountBalanceConfig(input.nextConfig)

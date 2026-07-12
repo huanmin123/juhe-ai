@@ -139,7 +139,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 
 高性能模式不继续复制 SQLite usage catalog 明细模型，`juhe_usage.usage_records` 当前按 `created_at` 建日分区父表，主键为 `(created_at, id)`。写入前会按记录时间确保对应日分区存在，列表、详情、统计游标和清理都必须带上时间窗口或由 usage id 推导分区窗口，不能对分区父表做无界扫描。
 
-- 分区键：`created_at` 日 range partition；过期在线数据优先按分区 `DETACH / DROP`，并通过 `juhe_archive.data_archive_manifests` 记录归档 manifest。
+- 分区键：`created_at` 日 range partition；过期在线数据在统计安全游标追平后按分区事务内 `DETACH / DROP`，不保留同库冷归档副本或归档 manifest。
 - 热查询索引白名单以用户维度开头：`system_account_id + created_at + id`、`system_account_id + api_key_id + created_at + id`、`system_account_id + account_id + created_at + id`、`system_account_id + trace_id COLLATE "C" + created_at + id`。
 - 管理员页面也必须先限定用户和日期窗口；低频全局 `created_at + id`、独立 `trace_id`、独立 `request_id`、全局 `model/path/status/client_ip` 不能作为大表默认索引。
 - PostgreSQL 前缀筛选必须显式使用稳定 collation。`trace_id`、`client_ip`、API Key 名称和 AI 性能账号选项名称等文本前缀查询使用 `COLLATE "C"`、二进制上界和对应 C collation 表达式索引；不能依赖 `prefix + '\uffff'`，也不能假设数据库默认 collation 的排序行为和 SQLite 一致。

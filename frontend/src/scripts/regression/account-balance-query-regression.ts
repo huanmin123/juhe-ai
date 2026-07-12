@@ -16,7 +16,9 @@ assert.deepEqual(formatAccountBalance({ status: 'failed', remainingUsd: '7.31', 
   text: '查询失败', tone: 'failed', tooltip: '上游超时', refreshing: false
 })
 assert.equal(formatAccountBalance({ status: 'unlimited' }).text, '无限')
-assert.equal(formatAccountBalance({ status: 'unsupported' }).text, '未提供')
+assert.deepEqual(formatAccountBalance({ status: 'unsupported', errorMessage: '当前配置未找到可用余额接口' }), {
+  text: '已暂停', tone: 'unsupported', tooltip: '当前配置未找到可用余额接口', refreshing: false
+})
 assert.equal(formatAccountBalance({ status: 'refreshing' }).refreshing, true)
 assert.deepEqual(formatAccountBalance({
   status: 'fresh',
@@ -88,6 +90,9 @@ assert.match(editSectionSource, /balance-query-header/, '余额查询开关应�
 assert.match(editSectionSource, /QuestionCircleOutlined/, '余额查询应提供帮助说明')
 assert.match(editSectionSource, /测试查询/, '余额配置应提供无副作用测试入口')
 assert.match(editSectionSource, /仅验证当前配置，不会保存/, '余额测试必须明确不会保存表单或快照')
+assert.match(editSectionSource, /class="balance-query-refresh-control"[\s\S]*?<a-input-number[\s\S]*?<a-button/, '测试查询按钮必须放在刷新周期控件右侧')
+assert.doesNotMatch(editSectionSource, /class="balance-query-test"/, '测试查询不能再单独占据一行')
+assert.match(editSectionSource, /\.balance-query-refresh-control\s*\{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/, '刷新周期控件必须为输入框和按钮保留稳定列宽')
 assert.doesNotMatch(editSectionSource, /保存并查询|queryResult|querySnapshot|a-alert/, '余额测试不能保存或在表单内保留查询结果')
 assert.match(editSectionSource, /内置适配/, '余额配置应只向用户提供内置适配模式')
 assert.doesNotMatch(editSectionSource, /Sub2API|New API|LiteLLM|user_balance/, '前端不能暴露内置适配器实现细节')
@@ -100,8 +105,8 @@ assert.match(accountsApiSource, /refreshBalance:\s*\(id: string,\s*params\?:/, '
 const listRefreshSource = /async function refreshAccountBalance[\s\S]*?\n}/.exec(accountsViewSource)?.[0] ?? ''
 assert.match(listRefreshSource, /updateLoadedAccountBalance\(accountId, snapshot\)/, '列表刷新应通过 shallowRef 列表入口替换当前账户行')
 assert.ok(
-  listRefreshSource.indexOf("snapshot?.status === 'failed'") < listRefreshSource.indexOf('updateLoadedAccountBalance(accountId, snapshot)'),
-  '人工刷新必须先处理失败结果，失败时不能覆盖当前单元格'
+  listRefreshSource.indexOf("snapshot?.status === 'failed' || snapshot?.status === 'unsupported'") < listRefreshSource.indexOf('updateLoadedAccountBalance(accountId, snapshot)'),
+  '人工刷新必须先处理失败或不支持结果，不能覆盖当前单元格'
 )
 assert.doesNotMatch(listRefreshSource, /account\.balanceSnapshot = snapshot/, '列表刷新不能直接修改 shallowRef 内部对象')
 assert.doesNotMatch(listRefreshSource, /refreshData\(/, '列表余额刷新不能重新请求整张账户列表')

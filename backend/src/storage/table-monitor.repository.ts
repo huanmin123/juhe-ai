@@ -24,7 +24,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
-export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'archive' | 'codex-context-state'
+export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
 type SnapshotNumberValue = number | string | null
 
 export interface TableStorageSnapshotSummary {
@@ -100,7 +100,7 @@ interface PreparedTableMonitorTarget {
   cursorTableName?: string
 }
 
-type PostgresMonitoredSchemaName = 'juhe_business' | 'juhe_dataset' | 'juhe_usage' | 'juhe_stats' | 'juhe_archive' | 'juhe_codex_context'
+type PostgresMonitoredSchemaName = 'juhe_business' | 'juhe_dataset' | 'juhe_usage' | 'juhe_stats' | 'juhe_codex_context'
 
 interface PostgresMonitoredSchemaTarget {
   role: MonitoredDatabaseRole
@@ -177,14 +177,13 @@ interface LatestDatabaseSnapshotRow {
 export const tableMonitorSampleRetentionDays = 30
 const defaultTableStorageHistoryLimit = 720
 const tableStorageOverviewCacheTtlMs = 30_000
-const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'archive', 'codex-context-state']
+const monitoredDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'codex-context-state']
 const statsSchemaName = 'juhe_stats'
 const postgresMonitoredSchemaTargets: PostgresMonitoredSchemaTarget[] = [
   { role: 'business', schemaName: 'juhe_business', databasePath: 'postgres:juhe_business' },
   { role: 'dataset', schemaName: 'juhe_dataset', databasePath: 'postgres:juhe_dataset' },
   { role: 'usage-catalog', schemaName: 'juhe_usage', databasePath: 'postgres:juhe_usage' },
   { role: 'stats', schemaName: 'juhe_stats', databasePath: 'postgres:juhe_stats' },
-  { role: 'archive', schemaName: 'juhe_archive', databasePath: 'postgres:juhe_archive' },
   { role: 'codex-context-state', schemaName: 'juhe_codex_context', databasePath: 'postgres:juhe_codex_context' }
 ]
 let tableStorageOverviewCache: { key: string; cachedAtMs: number; value: TableStorageOverview } | undefined
@@ -297,10 +296,11 @@ export function getTableStorageOverview(input: TableStorageOverviewInput = {}): 
         FROM table_storage_snapshots INDEXED BY idx_table_storage_snapshots_latest_id
         WHERE sampled_at >= ?
           AND sampled_at <= ?
+          AND database_role IN (${sqlPlaceholders(monitoredDatabaseRoles.length)})
       )
       WHERE rank = 1
     `)
-    .all(range.startAt, range.endAt) as unknown as LatestTableSnapshotRow[]
+    .all(range.startAt, range.endAt, ...monitoredDatabaseRoles) as unknown as LatestTableSnapshotRow[]
   return {
     sampledAt,
     databases: databases.map(databaseSnapshotFromRow),
@@ -350,6 +350,7 @@ export async function getTableStorageOverviewAsync(input: TableStorageOverviewIn
       FROM ${statsTable(client, 'table_storage_snapshots')}
       WHERE sampled_at >= ?
         AND sampled_at <= ?
+        AND database_role = ANY(?::text[])
       GROUP BY database_role, table_name
     )
     SELECT ${tableStorageSnapshotSelectColumns('latest')}
@@ -364,7 +365,7 @@ export async function getTableStorageOverviewAsync(input: TableStorageOverviewIn
       ORDER BY latest.sampled_at DESC, latest.id DESC
       LIMIT 1
     ) latest
-  `, [range.startAt, range.endAt, range.startAt, range.endAt])
+  `, [range.startAt, range.endAt, monitoredDatabaseRoles, range.startAt, range.endAt])
   overview = {
     sampledAt,
     databases: databases.map(databaseSnapshotFromRow),
@@ -896,7 +897,7 @@ async function collectPostgresTargetTableRows(
       tableKind: row?.table_kind ?? 'table',
       parentTableName: row?.parent_table_name ?? undefined,
       isPartition: booleanFromSnapshot(row?.is_partition),
-      isArchive: target.role === 'archive',
+      isArchive: false,
       rowCount,
       tableBytes,
       indexBytes,

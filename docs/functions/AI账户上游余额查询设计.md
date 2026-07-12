@@ -245,7 +245,7 @@ SQLite 严格 writer 边界下，ops-worker 不直接写业务库或统计库：
 周期刷新只对后台自动请求启用连续失败判定，人工列表刷新和新增/编辑草稿测试不参与该序列。
 
 - 临时错误包括网络连接异常、请求取消或超时、HTTP `408`、`429` 和 `5xx`。连续第 1、2 次临时失败只更新 `consecutiveTransientFailures`、`lastTransientErrorMessage`、`lastTransientFailureAt`，不把余额状态改成 `failed`；第 1、2、3 次及后续失败分别按 15、30、60 分钟安排重试，60 分钟封顶。
-- 已有 `fresh`、`unlimited` 或 `unsupported` 快照时，前两次临时失败保留原状态、金额、依据和 `lastSuccessAt`；列表继续显示上次成功结果，并在 tooltip 中说明“刷新暂时失败（1/3 或 2/3）”。
+- 已有 `fresh` 或 `unlimited` 快照时，前两次临时失败保留原状态、金额、依据和 `lastSuccessAt`；列表继续显示上次成功结果，并在 tooltip 中说明“刷新暂时失败（1/3 或 2/3）”。已暂停账户保存配置重新激活后若先遇到临时失败，则改为 `pending` 并显示“待重试”，不能继续显示“已暂停”。
 - 从未成功且没有可保留结果时，前两次临时失败保存 `status='pending'`，列表显示“待重试（1/3 或 2/3）”，而不是“查询失败”。
 - 连续第 3 次临时失败才保存 `status='failed'`、清除旧金额并显示最近错误；后续临时失败把计数封顶在 3，并保持 60 分钟低频重试。任意后台或人工正式刷新成功都删除临时失败字段并恢复用户配置周期。
 - 确定性错误包括 `401/403` 鉴权失败、账户缺少 Base URL 或单一 API Key、自定义查询缺少配置、跨 Origin 路径、全部内置适配器确定性不匹配以及明确的本地配置校验失败。后台遇到确定性不支持时保存 `status='unsupported'` 和暂停原因，把 `balance_query_next_refresh_at` 置空，但保持 `balance_query_enabled=true`，不能替用户关闭开关。

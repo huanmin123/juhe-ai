@@ -21,7 +21,7 @@ interface PressureConfig {
   usageRows: number
   usageUsers: number
   usageDays: number
-  archiveRows: number
+  cleanupRows: number
   rangeWindowRows: number
   batchSize: number
   queryIterations: number
@@ -96,9 +96,9 @@ interface PressureReport {
   durationMs: number
   seed: {
     hotPartitions: string[]
-    archivePartition: string
+    cleanupPartition: string
     usageRows: number
-    archiveRows: number
+    cleanupRows: number
     rangeWindowRows: number
     insertUsageRowsMs: number
     insertUsageRowsPerSecond: number
@@ -111,14 +111,12 @@ interface PressureReport {
     usageQueryP95Ms: number
     rangeQueryP95Ms: number
   }
-  archive: {
+  retentionDrop: {
     durationMs: number
     deletedRows: number
     droppedPartitions: number
-    archivedPartitions: number
     hasMore: boolean
-    manifestFound: boolean
-    archiveTableFound: boolean
+    partitionRemoved: boolean
   }
   tableMonitor?: {
     durationMs: number
@@ -210,7 +208,7 @@ const marker = `usage_pressure_${Date.now()}_${Math.random().toString(16).slice(
 const systemAccountPrefix = `sys_${marker}`
 const sampledAt = new Date().toISOString()
 const hotPartitions: string[] = []
-let archivePartitionName: string | undefined
+let cleanupPartitionName: string | undefined
 let originalCleanupCursorRows: StatsJobStateRow[] | undefined
 let exitCode = 0
 
@@ -245,22 +243,22 @@ async function runPressure(): Promise<PressureReport> {
   const redis = await sampleRedis()
   const deadlocksBefore = await queryDeadlocks()
   const hotDates = await chooseUnusedHotDates(config.usageDays)
-  const archiveDate = await chooseUnusedArchiveDate()
+  const cleanupDate = await chooseUnusedCleanupDate()
   const hotCreatedAts = hotDates.map((date) => `${date}T00:00:00.000Z`)
-  const archiveBounds = postgresUsageRecordPartitionBounds(isoDateToDateKey(archiveDate))
-  const archiveCreatedAt = `${archiveBounds.startDate}T01:00:00.000Z`
-  archivePartitionName = postgresUsageRecordPartitionName(isoDateToDateKey(archiveDate))
+  const cleanupBounds = postgresUsageRecordPartitionBounds(isoDateToDateKey(cleanupDate))
+  const cleanupCreatedAt = `${cleanupBounds.startDate}T01:00:00.000Z`
+  cleanupPartitionName = postgresUsageRecordPartitionName(isoDateToDateKey(cleanupDate))
   hotPartitions.push(...hotDates.map((date) => postgresUsageRecordPartitionName(isoDateToDateKey(date))))
 
-  await ensurePostgresUsageRecordPartitions(client, [...hotCreatedAts, archiveCreatedAt])
+  await ensurePostgresUsageRecordPartitions(client, [...hotCreatedAts, cleanupCreatedAt])
 
   const usageSeed = await timed(async () => {
     await insertUsageRows(config.usageRows, hotDates, 'hot')
     await analyzeTables(hotPartitions.map((partition) => ['juhe_usage', partition] as const))
   })
-  const archiveSeed = await timed(async () => {
-    await insertUsageRows(config.archiveRows, [archiveDate], 'archive')
-    await analyzeTables([[ 'juhe_usage', archivePartitionName! ]])
+  const cleanupSeed = await timed(async () => {
+    await insertUsageRows(config.cleanupRows, [cleanupDate], 'retention-drop')
+    await analyzeTables([[ 'juhe_usage', cleanupPartitionName! ]])
   })
   const rangeSeed = await timed(async () => {
     await insertRangeWindowRows(config.rangeWindowRows, hotDates)
@@ -275,15 +273,14 @@ async function runPressure(): Promise<PressureReport> {
     : undefined
   const relationSizes = await readRelationSizes([
     ...hotPartitions.map((partition) => ['juhe_usage', partition] as const),
-    ['juhe_usage', archivePartitionName!] as const,
+    ['juhe_usage', cleanupPartitionName!] as const,
     ['juhe_stats', 'usage_scope_range_windows'] as const,
     ['juhe_usage', 'usage_record_shard_entries'] as const
   ])
 
-  await seedCleanupCursorRows(`${archiveBounds.endDate}T00:00:00.000Z`)
-  const archive = await timed(async () => cleanupProcessedUsageRecordsBeforeWithResultAsync(`${archiveBounds.endDate}T00:00:00.000Z`, Math.max(config.archiveRows, 1000)))
-  const archiveTableFound = await tableExists('juhe_archive', archivePartitionName!)
-  const manifestFound = await archiveManifestExists(archivePartitionName!)
+  await seedCleanupCursorRows(`${cleanupBounds.endDate}T00:00:00.000Z`)
+  const retentionDrop = await timed(async () => cleanupProcessedUsageRecordsBeforeWithResultAsync(`${cleanupBounds.endDate}T00:00:00.000Z`, Math.max(config.cleanupRows, 1000)))
+  const partitionRemoved = !await tableExists('juhe_usage', cleanupPartitionName!)
   const catalogMarkerEntries = await countCatalogMarkerEntries()
   const deadlocksAfter = await queryDeadlocks()
   const querySummary = summarizeQueries(queryMetrics)
@@ -293,9 +290,8 @@ async function runPressure(): Promise<PressureReport> {
     explain: explainBeforeQueries,
     deadlocksDelta: Math.max(0, deadlocksAfter - deadlocksBefore),
     catalogMarkerEntries,
-    archiveDeletedRows: archive.value.deletedRows,
-    archiveTableFound,
-    manifestFound
+    cleanupDeletedRows: retentionDrop.value.deletedRows,
+    partitionRemoved
   })
 
   return {
@@ -313,24 +309,22 @@ async function runPressure(): Promise<PressureReport> {
     durationMs: round(performance.now() - startedAtMs),
     seed: {
       hotPartitions,
-      archivePartition: archivePartitionName!,
+      cleanupPartition: cleanupPartitionName!,
       usageRows: config.usageRows,
-      archiveRows: config.archiveRows,
+      cleanupRows: config.cleanupRows,
       rangeWindowRows: actualRangeWindowRows,
-      insertUsageRowsMs: round(usageSeed.durationMs + archiveSeed.durationMs),
-      insertUsageRowsPerSecond: round((config.usageRows + config.archiveRows) / Math.max((usageSeed.durationMs + archiveSeed.durationMs) / 1000, 0.001)),
+      insertUsageRowsMs: round(usageSeed.durationMs + cleanupSeed.durationMs),
+      insertUsageRowsPerSecond: round((config.usageRows + config.cleanupRows) / Math.max((usageSeed.durationMs + cleanupSeed.durationMs) / 1000, 0.001)),
       insertRangeWindowsMs: round(rangeSeed.durationMs),
       insertRangeWindowsPerSecond: round(actualRangeWindowRows / Math.max(rangeSeed.durationMs / 1000, 0.001))
     },
     queries: querySummary,
-    archive: {
-      durationMs: round(archive.durationMs),
-      deletedRows: archive.value.deletedRows,
-      droppedPartitions: archive.value.droppedPartitions ?? 0,
-      archivedPartitions: archive.value.archivedPartitions ?? 0,
-      hasMore: archive.value.hasMore,
-      manifestFound,
-      archiveTableFound
+    retentionDrop: {
+      durationMs: round(retentionDrop.durationMs),
+      deletedRows: retentionDrop.value.deletedRows,
+      droppedPartitions: retentionDrop.value.droppedPartitions ?? 0,
+      hasMore: retentionDrop.value.hasMore,
+      partitionRemoved
     },
     ...(tableMonitor ? {
       tableMonitor: {
@@ -353,7 +347,7 @@ async function runPressure(): Promise<PressureReport> {
   }
 }
 
-async function insertUsageRows(totalRows: number, dates: string[], phase: 'hot' | 'archive'): Promise<void> {
+async function insertUsageRows(totalRows: number, dates: string[], phase: 'hot' | 'retention-drop'): Promise<void> {
   if (totalRows <= 0) return
   for (let offset = 0; offset < totalRows; offset += config.batchSize) {
     const rows = Array.from({ length: Math.min(config.batchSize, totalRows - offset) }, (_item, localIndex) => {
@@ -679,39 +673,23 @@ async function chooseUnusedHotDates(days: number): Promise<string[]> {
   throw new Error('无法为 usage 热数据压测选择空闲 future 分区日期')
 }
 
-async function chooseUnusedArchiveDate(): Promise<string> {
+async function chooseUnusedCleanupDate(): Promise<string> {
   const partitions = await listPostgresUsageRecordPartitions(client)
-  const archiveDates = await listArchiveUsagePartitionDates()
-  const earliest = [...partitions.map((partition) => partition.startDate), ...archiveDates].sort()[0] ?? '2000-01-01'
+  const earliest = partitions.map((partition) => partition.startDate).sort()[0] ?? '2000-01-01'
   for (let offset = 30; offset < 700; offset += 1) {
     const candidate = addIsoDateDays(earliest, -offset)
     if (candidate < '1900-01-01') break
     if (await datesAvailable([candidate])) return candidate
   }
-  throw new Error(`无法为 usage 热数据归档压测选择空闲历史分区日期，当前最早分区：${earliest}`)
+  throw new Error(`无法为 usage 保留期清理压测选择空闲历史分区日期，当前最早分区：${earliest}`)
 }
 
 async function datesAvailable(dates: string[]): Promise<boolean> {
   for (const date of dates) {
     const partitionName = postgresUsageRecordPartitionName(isoDateToDateKey(date))
     if (await tableExists('juhe_usage', partitionName)) return false
-    if (await tableExists('juhe_archive', partitionName)) return false
   }
   return true
-}
-
-async function listArchiveUsagePartitionDates(): Promise<string[]> {
-  const rows = await pool.query(`
-    SELECT child.relname AS table_name
-    FROM pg_class child
-    JOIN pg_namespace namespace ON namespace.oid = child.relnamespace
-    WHERE namespace.nspname = 'juhe_archive'
-      AND child.relkind = 'r'
-      AND child.relname LIKE 'usage_records________'
-  `)
-  return rows.rows
-    .map((row: Record<string, unknown>) => usagePartitionStartDateFromName(row.table_name))
-    .filter((value): value is string => Boolean(value))
 }
 
 async function seedCleanupCursorRows(cursorCreatedAt: string): Promise<void> {
@@ -815,23 +793,13 @@ async function analyzeTables(tables: Array<readonly [string, string]>): Promise<
 }
 
 async function cleanupPressureArtifacts(): Promise<void> {
-  for (const partition of [...hotPartitions, ...(archivePartitionName ? [archivePartitionName] : [])]) {
-    await pool.query(`DROP TABLE IF EXISTS juhe_archive.${quoteIdentifier(partition)}`)
+  for (const partition of [...hotPartitions, ...(cleanupPartitionName ? [cleanupPartitionName] : [])]) {
     await pool.query(`DROP TABLE IF EXISTS juhe_usage.${quoteIdentifier(partition)}`)
-    await client.execute('DELETE FROM juhe_stats.data_archive_manifests WHERE domain = ? AND partition_name = ?', ['usage_records', partition])
   }
   await pool.query('DELETE FROM juhe_stats.usage_scope_range_windows WHERE system_account_id LIKE $1', [`${systemAccountPrefix}_%`])
   await pool.query('DELETE FROM juhe_stats.usage_range_window_requests WHERE system_account_id LIKE $1', [`${systemAccountPrefix}_%`])
   await pool.query('DELETE FROM juhe_stats.table_storage_snapshots WHERE sampled_at = $1', [sampledAt])
   await pool.query('DELETE FROM juhe_stats.database_storage_snapshots WHERE sampled_at = $1', [sampledAt])
-  await pool.query(`
-    DELETE FROM juhe_stats.data_archive_manifests
-    WHERE domain = 'usage_records'
-      AND (
-        storage_uri LIKE $1
-        OR manifest_json::text LIKE $1
-      )
-  `, [`%${marker}%`])
 }
 
 async function countCatalogMarkerEntries(): Promise<number> {
@@ -842,20 +810,6 @@ async function countCatalogMarkerEntries(): Promise<number> {
 async function countRangeWindowRows(): Promise<number> {
   const result = await pool.query('SELECT COUNT(*) AS count FROM juhe_stats.usage_scope_range_windows WHERE system_account_id LIKE $1', [`${systemAccountPrefix}_%`])
   return numberValue(result.rows[0]?.count)
-}
-
-async function archiveManifestExists(partitionName: string): Promise<boolean> {
-  const result = await pool.query(`
-    SELECT 1
-    FROM juhe_stats.data_archive_manifests
-    WHERE domain = 'usage_records'
-      AND archive_action = 'detach_partition'
-      AND partition_name = $1
-      AND storage_uri = $2
-      AND status = 'archived'
-    LIMIT 1
-  `, [partitionName, `postgres:juhe_archive.${partitionName}`])
-  return result.rows.length > 0
 }
 
 async function tableExists(schemaName: string, tableName: string): Promise<boolean> {
@@ -948,9 +902,8 @@ function collectViolations(input: {
   explain: ExplainReport[]
   deadlocksDelta: number
   catalogMarkerEntries: number
-  archiveDeletedRows: number
-  archiveTableFound: boolean
-  manifestFound: boolean
+  cleanupDeletedRows: number
+  partitionRemoved: boolean
 }): string[] {
   const violations: string[] = []
   if (input.querySummary.total.errors > 0) {
@@ -976,14 +929,11 @@ function collectViolations(input: {
   if (input.catalogMarkerEntries !== 0) {
     violations.push(`PG usage catalog marker entries ${input.catalogMarkerEntries} should be 0`)
   }
-  if (input.archiveDeletedRows !== config.archiveRows) {
-    violations.push(`archive deletedRows ${input.archiveDeletedRows} !== archiveRows ${config.archiveRows}`)
+  if (input.cleanupDeletedRows !== config.cleanupRows) {
+    violations.push(`retention drop deletedRows ${input.cleanupDeletedRows} !== cleanupRows ${config.cleanupRows}`)
   }
-  if (!input.archiveTableFound) {
-    violations.push('archive table was not found after cleanup detach')
-  }
-  if (!input.manifestFound) {
-    violations.push('archive manifest was not found')
+  if (!input.partitionRemoved) {
+    violations.push('retention cleanup partition still exists after DETACH/DROP')
   }
   return violations
 }
@@ -994,7 +944,7 @@ function loadConfig(): PressureConfig {
     usageRows: intEnv('JUHE_USAGE_PRESSURE_ROWS', 200_000, 1, 5_000_000),
     usageUsers: intEnv('JUHE_USAGE_PRESSURE_USERS', 200, 1, 50_000),
     usageDays: intEnv('JUHE_USAGE_PRESSURE_DAYS', 3, 1, 31),
-    archiveRows: intEnv('JUHE_USAGE_PRESSURE_ARCHIVE_ROWS', 50_000, 1, 2_000_000),
+    cleanupRows: intEnv('JUHE_USAGE_PRESSURE_CLEANUP_ROWS', 50_000, 1, 2_000_000),
     rangeWindowRows: intEnv('JUHE_USAGE_PRESSURE_RANGE_WINDOW_ROWS', 100_000, 1, 2_000_000),
     batchSize: intEnv('JUHE_USAGE_PRESSURE_BATCH_SIZE', 1000, 1, 3000),
     queryIterations: intEnv('JUHE_USAGE_PRESSURE_QUERY_ITERATIONS', 3000, 1, 200_000),

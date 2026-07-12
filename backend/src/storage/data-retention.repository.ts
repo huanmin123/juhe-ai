@@ -3,12 +3,10 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabas
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
-import { recordDataArchiveManifestAsync } from './data-archive-manifest.repository.js'
 import {
-  archivePostgresUsageRecordPartition,
   countPostgresUsageRecordPartitionRows,
+  dropPostgresUsageRecordPartition,
   listPostgresUsageRecordPartitions,
-  sizePostgresUsageRecordPartitionBytes
 } from './postgres-usage-record-partitions.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { cleanupAuditPayloadBlobsBeforeAsync } from './audit-log-payload-blobs.js'
@@ -130,7 +128,6 @@ export interface ProcessedUsageRecordsCleanupBatchResult {
   safetyCursorId?: string
   deletedRows: number
   droppedPartitions?: number
-  archivedPartitions?: number
   hasMore: boolean
   blockedReason?: string
 }
@@ -360,7 +357,6 @@ export async function cleanupProcessedUsageRecordsBeforeWithResultAsync(cutoffCr
       safetyCursorId: safetyCursor.cursorId,
       deletedRows: partitionDrop.deletedRows,
       droppedPartitions: partitionDrop.droppedPartitions,
-      archivedPartitions: partitionDrop.droppedPartitions,
       hasMore: partitionDrop.hasMore
     }
   }
@@ -395,27 +391,8 @@ async function dropEligiblePostgresUsageRecordPartitions(
     return { deletedRows: 0, droppedPartitions: 0, hasMore: false }
   }
   const rowCount = await countPostgresUsageRecordPartitionRows(client, partition.partitionName)
-  const sizeBytes = await sizePostgresUsageRecordPartitionBytes(client, partition.partitionName)
   await client.transaction(async (tx) => {
-    const storageUri = await archivePostgresUsageRecordPartition(tx, partition.partitionName)
-    await recordDataArchiveManifestAsync(tx, {
-      domain: 'usage_records',
-      databaseRole: 'usage-catalog',
-      sourceTable: 'juhe_usage.usage_records',
-      archiveAction: 'detach_partition',
-      storageUri,
-      partitionName: partition.partitionName,
-      rangeStart: partition.startDate,
-      rangeEnd: partition.endDate,
-      rowCount,
-      sizeBytes,
-      manifest: {
-        sourceSchema: 'juhe_usage',
-        archiveSchema: 'juhe_archive',
-        partitionStartDate: partition.startDate,
-        partitionEndDate: partition.endDate
-      }
-    })
+    await dropPostgresUsageRecordPartition(tx, partition.partitionName)
   })
   return {
     deletedRows: rowCount,
