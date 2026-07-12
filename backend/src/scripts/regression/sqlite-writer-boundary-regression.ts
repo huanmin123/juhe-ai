@@ -12,6 +12,7 @@ process.env.JUHE_AI_SQLITE_WRITER_BOUNDARY_STRICT = 'true'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-sqlite-writer-boundary-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
+runtimeConfig.chatDatabasePath = join(tempRoot, 'chat.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.usageCatalogDatabasePath = join(tempRoot, 'usage-catalog.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
@@ -31,6 +32,7 @@ const repositories = await import('../../storage/repositories.js')
 
 try {
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('business'), 'db-service')
+  assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('chat'), 'db-service')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('codex-context-state'), 'db-service')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('dataset'), 'ingest-worker')
   assert.equal(databaseModule.sqliteWriterOwnerForMainDatabase('usage-catalog'), 'ingest-worker')
@@ -40,12 +42,19 @@ try {
   runtimeConfig.processRole = 'db-service'
   runtimeConfig.workerRole = 'worker'
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), true)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('chat'), true)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), true)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('usage-catalog'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), false)
   assert.equal(usageRecordShards.currentProcessOwnsUsageShardWriter(), false)
   databaseModule.getBusinessDatabase()
+  const chatDatabase = databaseModule.getChatDatabase()
+  assert.equal(
+    (chatDatabase.prepare("SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'table' AND name = 'chat_messages'").get() as { total?: number }).total,
+    1,
+    'DB service 应按需创建独立聊天库 schema'
+  )
   for (const shardIndex of databaseModule.codexContextStateShardIndexes()) {
     databaseModule.getCodexContextStateShardDatabase(shardIndex)
   }
@@ -54,6 +63,7 @@ try {
   runtimeConfig.processRole = 'worker'
   runtimeConfig.workerRole = 'ingest-worker'
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('business'), false)
+  assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('chat'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('codex-context-state'), false)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('dataset'), true)
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('usage-catalog'), true)
@@ -111,6 +121,7 @@ try {
   assert.equal(databaseModule.currentProcessOwnsSqliteMainDatabase('stats'), false)
   assert.equal(usageRecordShards.currentProcessOwnsUsageShardWriter(), false)
   assertNonOwnerWriteBlocked(databaseModule.getBusinessDatabase(), '业务库')
+  assertNonOwnerWriteBlocked(databaseModule.getChatDatabase(), '聊天库')
   for (const shardIndex of databaseModule.codexContextStateShardIndexes()) {
     assertNonOwnerWriteBlocked(
       databaseModule.getCodexContextStateShardDatabase(shardIndex),

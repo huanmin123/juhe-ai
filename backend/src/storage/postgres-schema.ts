@@ -1,10 +1,10 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { applyBusinessSchema, applyCodexContextStateSchema, applyDatasetSchema, applyStatsSchema, applyUsageCatalogSchema } from './schema.js'
+import { applyBusinessSchema, applyChatSchema, applyCodexContextStateSchema, applyDatasetSchema, applyStatsSchema, applyUsageCatalogSchema } from './schema.js'
 import type { DatabaseClient } from './database-client.js'
 import { applyUsageRecordShardBaseSchema } from './usage-record-shards.js'
 
-export type PostgresSchemaName = 'juhe_business' | 'juhe_dataset' | 'juhe_usage' | 'juhe_stats' | 'juhe_codex_context'
+export type PostgresSchemaName = 'juhe_business' | 'juhe_chat' | 'juhe_dataset' | 'juhe_usage' | 'juhe_stats' | 'juhe_codex_context'
 
 export interface PostgresSchemaStatement {
   schemaName: PostgresSchemaName
@@ -20,6 +20,7 @@ interface SchemaSourceDefinition {
 
 const schemaSourceDefinitions: SchemaSourceDefinition[] = [
   { source: 'business', schemaName: 'juhe_business', apply: applyBusinessSchema },
+  { source: 'chat', schemaName: 'juhe_chat', apply: applyChatSchema },
   { source: 'dataset', schemaName: 'juhe_dataset', apply: applyDatasetSchema },
   { source: 'usage-catalog', schemaName: 'juhe_usage', apply: applyUsageCatalogSchema },
   { source: 'usage-records', schemaName: 'juhe_usage', apply: applyUsageRecordShardBaseSchema },
@@ -112,6 +113,7 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
 
 const postgresBigintColumnNames = new Set([
   'bytes',
+  'content_bytes',
   'usage_bytes',
   'storage_offset_bytes',
   'raw_size_bytes',
@@ -339,9 +341,18 @@ function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSch
   })
   transformed = transformed.replace(/\bTEXT\b/gi, 'text')
   transformed = transformUsageRecordsTableForPostgres(transformed, schemaName)
+  transformed = transformChatMessagesTableForPostgres(transformed, schemaName)
   transformed = transformed.replace(/[ \t]+\n/g, '\n')
   transformed = transformed.replace(/\n{3,}/g, '\n\n')
   return transformed
+}
+
+function transformChatMessagesTableForPostgres(sql: string, schemaName: PostgresSchemaName): string {
+  if (schemaName !== 'juhe_chat') return sql
+  if (!/^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+chat_messages\s*\(/i.test(sql.trim())) return sql
+  return sql
+    .replace(/\bid\s+text\s+PRIMARY\s+KEY\b/i, 'id text NOT NULL')
+    .replace(/\n\s*\)\s*$/i, ',\n      PRIMARY KEY (created_at, id)\n    ) PARTITION BY RANGE (created_at)')
 }
 
 function transformUsageRecordsTableForPostgres(sql: string, schemaName: PostgresSchemaName): string {

@@ -57,6 +57,7 @@ export interface RuntimeConfig {
     redisStreamClaimIdleMs: number
   }
   databasePath: string
+  chatDatabasePath: string
   datasetDatabasePath: string
   usageCatalogDatabasePath: string
   statsDatabasePath: string
@@ -162,6 +163,7 @@ export type ImageGenerationProviderApi = 'images' | 'responses'
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
+export const defaultChatDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-chat.sqlite3')
 export const defaultDatasetDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')
 export const defaultUsageCatalogDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-usage-catalog.sqlite3')
 export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
@@ -269,6 +271,7 @@ export const runtimeConfig: RuntimeConfig = {
     redisStreamClaimIdleMs: numberConfig('JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS', 60000, 1000, 3600000)
   },
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', defaultDatabasePath),
+  chatDatabasePath: pathConfig('JUHE_AI_CHAT_DATABASE_PATH', defaultChatDatabasePath),
   datasetDatabasePath: pathConfig('JUHE_AI_DATASET_DATABASE_PATH', defaultDatasetDatabasePath),
   usageCatalogDatabasePath: pathConfig('JUHE_AI_USAGE_CATALOG_DATABASE_PATH', defaultUsageCatalogDatabasePath),
   statsDatabasePath: pathConfig('JUHE_AI_STATS_DATABASE_PATH', defaultStatsDatabasePath),

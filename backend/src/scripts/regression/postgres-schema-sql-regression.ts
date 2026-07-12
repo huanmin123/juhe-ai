@@ -17,8 +17,8 @@ const usageRecordsCreateSql = statements.find((statement) => statement.schemaNam
 assert.ok(statements.length > 100, 'PostgreSQL schema 应从现有 SQLite DDL 收集到完整建表和索引语句')
 assert.deepEqual(
   [...schemaNames].sort(),
-  ['juhe_business', 'juhe_codex_context', 'juhe_dataset', 'juhe_stats', 'juhe_usage'].sort(),
-  'PostgreSQL schema 应覆盖现有业务、数据集、使用记录、统计和 Responses 桥接状态索引存储边界'
+  ['juhe_business', 'juhe_chat', 'juhe_codex_context', 'juhe_dataset', 'juhe_stats', 'juhe_usage'].sort(),
+  'PostgreSQL schema 应覆盖现有业务、聊天、数据集、使用记录、统计和 Responses 桥接状态索引存储边界'
 )
 assert.equal(
   statements.some((statement) => statement.schemaName === 'juhe_usage' && statement.source === 'usage-catalog'),
@@ -71,6 +71,11 @@ assert.doesNotMatch(tableMonitorSource, /juhe_archive|role:\s*'archive'/, '表�
 assert.match(tableMonitorSource, /database_role = ANY\(\?::text\[\]\)/, 'PG 表监控概览必须过滤已移除的历史角色快照')
 assert.doesNotMatch(tableMonitorRoutesSource, /'archive'/, '表监控接口不应再接受 archive 角色')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS codex_context_sessions/, '应包含 Responses 桥接状态索引 schema')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_conversations/, '应包含 AI 问答会话 schema')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_message_idempotency/, '应包含 AI 问答发送幂等登记 schema')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_user_storage_windows/, '应包含 AI 问答用户容量窗口 schema')
+const chatMessagesCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_messages\b/i.test(statement.sql))?.sql ?? ''
+assert.match(chatMessagesCreateSql, /PRIMARY KEY \(created_at, id\)[\s\S]+\) PARTITION BY RANGE \(created_at\)/, 'PG AI 问答消息主表必须按 created_at 日范围分区')
 assert.match(sql, /codex_context_sessions[\s\S]+storage_offset_bytes bigint NOT NULL[\s\S]+raw_size_bytes bigint NOT NULL[\s\S]+compressed_size_bytes bigint NOT NULL/, 'PG Responses 桥接状态文件 offset/大小字段必须使用 bigint')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策略路由表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategy_groups/, '应包含策略路由分组绑定表 schema')

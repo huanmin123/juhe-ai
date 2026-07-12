@@ -373,6 +373,8 @@
     "test:performance-gateway-persistence-readiness": "tsx src/scripts/regression/performance-gateway-persistence-readiness-regression.ts",
     "test:performance-reliability-drill": "tsx src/scripts/performance/performance-reliability-drill.ts",
     "test:postgres-schema-sql": "tsx src/scripts/regression/postgres-schema-sql-regression.ts",
+    "test:chat-schema": "tsx src/scripts/regression/chat-schema-regression.ts",
+    "test:chat-repository": "tsx src/scripts/regression/chat-repository-regression.ts",
     "test:account-balance-config": "tsx src/scripts/regression/account-balance-config-regression.ts",
     "test:account-balance-adapters": "tsx src/scripts/regression/account-balance-adapters-regression.ts",
     "test:account-balance-refresh": "tsx src/scripts/regression/account-balance-refresh-regression.ts",
