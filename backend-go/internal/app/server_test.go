@@ -1,21 +1,23 @@
 package app
 
 import (
-	"bytes"
 	"context"
-	"errors"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"juhe-ai/backend-go/internal/config"
-	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
-	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestNewPublicAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
@@ -64,6 +66,8 @@ func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 		"12345678901234567890123456789012",
 		nil,
 		nil,
+		nil,
+		2*time.Second,
 		nil,
 	)
 	if err != nil {
@@ -122,55 +126,83 @@ func TestNewPublicAccountHealthCheckDispatcherFailsFastOnMissingOrInvalidURL(t *
 	}
 }
 
-func TestNewPublicAccountServicePassesDispatcherAndLoggerToAdd(t *testing.T) {
-	store := &appPublicAccountStoreFake{}
-	dispatcher := &appAccountHealthCheckDispatcherRecorder{
-		err: errors.New("node dispatch unavailable"),
+func TestNewPublicAccountHealthCheckDispatcherTrimsSecretForNodeSignature(t *testing.T) {
+	const trimmedSecret = "node-runtime-trimmed-secret-0123456789"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			http.Error(w, "read failed", http.StatusInternalServerError)
+			return
+		}
+		if got, want := request.Header.Get("X-Juhe-AI-Signature"), appNodeDispatchSignature(
+			trimmedSecret,
+			body,
+		); got != want {
+			http.Error(w, "signature mismatch", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	dispatcher, err := newPublicAccountHealthCheckDispatcher(config.Config{
+		Secret:                     " \t" + trimmedSecret + "\r\n ",
+		NodeInternalBaseURL:        server.URL,
+		NodeInternalRequestTimeout: 2 * time.Second,
+	}, nil)
+	if err != nil {
+		t.Fatalf("newPublicAccountHealthCheckDispatcher() error = %v", err)
 	}
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	service := newPublicAccountService(
-		store,
+	if err := dispatcher.Dispatch(t.Context(), "acc_trimmed_secret", "activation"); err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+}
+
+func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) {
+	const credentialSecret = "  public-account-credential-secret  "
+	const dispatchTimeout = 5 * time.Second
+	dispatcher := &appAccountHealthCheckDispatcherRecorder{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var captured publicaccounts.Options
+	factoryCalls := 0
+
+	handlers, err := newPublicAPIHandlers(
 		nil,
-		appProviderModelReaderStub{},
-		"12345678901234567890123456789012",
+		credentialSecret,
+		nil,
 		dispatcher,
 		logger,
+		dispatchTimeout,
+		func(opts publicaccounts.Options) *publicaccounts.Service {
+			factoryCalls++
+			captured = opts
+			return publicaccounts.NewService(opts)
+		},
 	)
-
-	response, err := service.Add(context.Background(), publicaccounts.AddInput{
-		TargetUsername:            "admin",
-		TargetGroupName:           "公开分组",
-		ProviderCode:              "gpt",
-		ProviderProtocolProfileID: "profile_gpt_openai_v1",
-		Name:                      "生产装配账号",
-		Type:                      publicaccounts.AccountTypeAPIKey,
-		BaseURL:                   "https://api.openai.com/v1",
-		APIKey:                    "sk-production-wiring-0123456789abcdef",
-		SupportedModels: publicaccounts.NewStringListValue(
-			[]string{"gpt-5.4-mini"},
-			true,
-		),
-	})
 	if err != nil {
-		t.Fatalf("Add() error = %v", err)
+		t.Fatalf("newPublicAPIHandlers() error = %v", err)
 	}
-	if response.Account == nil {
-		t.Fatal("Add() account = nil")
+	if len(handlers) != len(publicapicatalog.Endpoints()) {
+		t.Fatalf("handlers = %d, want %d", len(handlers), len(publicapicatalog.Endpoints()))
 	}
-	if len(dispatcher.calls) != 1 {
-		t.Fatalf("dispatch calls = %#v, want one call", dispatcher.calls)
+	if factoryCalls != 1 {
+		t.Fatalf("account service factory calls = %d, want 1", factoryCalls)
 	}
-	if call := dispatcher.calls[0]; call.accountID != response.Account.ID || call.reason != "activation" {
-		t.Fatalf("dispatch call = %#v, want account %q activation", call, response.Account.ID)
+	if captured.HealthCheckDispatcher != dispatcher {
+		t.Fatalf("HealthCheckDispatcher = %T, want injected recorder", captured.HealthCheckDispatcher)
 	}
-	for _, want := range []string{
-		`"event":"public_account_health_check_dispatch_failed"`,
-		`"account_id":"` + response.Account.ID + `"`,
-	} {
-		if !strings.Contains(logs.String(), want) {
-			t.Fatalf("logs = %q, want contains %q", logs.String(), want)
-		}
+	if captured.Logger != logger {
+		t.Fatalf("Logger = %p, want %p", captured.Logger, logger)
+	}
+	if captured.HealthCheckDispatchTimeout != dispatchTimeout {
+		t.Fatalf(
+			"HealthCheckDispatchTimeout = %s, want %s",
+			captured.HealthCheckDispatchTimeout,
+			dispatchTimeout,
+		)
+	}
+	if captured.Secret != credentialSecret {
+		t.Fatalf("Secret = %q, want exact credential secret %q", captured.Secret, credentialSecret)
 	}
 }
 
@@ -549,107 +581,9 @@ func (r *appAccountHealthCheckDispatcherRecorder) Dispatch(
 	return r.err
 }
 
-type appProviderModelReaderStub struct{}
-
-func (appProviderModelReaderStub) Models(
-	_ context.Context,
-	_ managementprovidermodels.ModelListInput,
-) ([]managementprovidermodels.ModelCatalogItem, error) {
-	return []managementprovidermodels.ModelCatalogItem{{
-		ProviderCode: "gpt",
-		Model:        "gpt-5.4-mini",
-		Status:       "active",
-	}}, nil
-}
-
-type appPublicAccountStoreFake struct {
-	port.PublicAccountStore
-}
-
-func (*appPublicAccountStoreFake) FindPublicAccountTargetByUsername(
-	_ context.Context,
-	username string,
-) (port.PublicGroupTarget, bool, error) {
-	return port.PublicGroupTarget{
-		ID:          "sys_app_wiring",
-		Username:    username,
-		DisplayName: "App Wiring",
-		Status:      "active",
-	}, true, nil
-}
-
-func (*appPublicAccountStoreFake) FindPublicAccountProviderProfile(
-	_ context.Context,
-	_ string,
-	_ string,
-	_ string,
-) (port.PublicAccountProviderProfile, bool, error) {
-	return port.PublicAccountProviderProfile{
-		ID:                      "profile_gpt_openai_v1",
-		ProviderCode:            "gpt",
-		Enabled:                 true,
-		ProviderEnabled:         true,
-		ProtocolCode:            "openai",
-		ProtocolVersion:         "v1",
-		AccountTypesJSON:        `["api_key"]`,
-		DefaultSupportedModels:  []string{"gpt-5.4-mini"},
-		DefaultHealthCheckModel: "gpt-5.4-mini",
-	}, true, nil
-}
-
-func (*appPublicAccountStoreFake) FindExistingPublicAccountGroupByName(
-	_ context.Context,
-	_ string,
-	_ string,
-	name string,
-) (port.PublicAccountGroupRef, bool, error) {
-	return port.PublicAccountGroupRef{
-		ID:              "grp_app_wiring",
-		SystemAccountID: "sys_app_wiring",
-		Name:            name,
-		ProviderCode:    "gpt",
-		Enabled:         true,
-		GroupType:       "personal",
-	}, true, nil
-}
-
-func (*appPublicAccountStoreFake) FindExistingPublicAccountByNameInGroup(
-	context.Context,
-	port.PublicAccountNameLookupInput,
-) (port.PublicAccountSummary, bool, error) {
-	return port.PublicAccountSummary{}, false, nil
-}
-
-func (*appPublicAccountStoreFake) CreatePublicAccount(
-	_ context.Context,
-	input port.PublicAccountCreateInput,
-) (port.PublicAccountSummary, error) {
-	groupID := input.GroupID
-	groupName := "公开分组"
-	return port.PublicAccountSummary{
-		ID:                        input.ID,
-		SystemAccountID:           input.SystemAccountID,
-		Name:                      input.Name,
-		ProviderCode:              input.ProviderCode,
-		ProviderProtocolProfileID: input.ProviderProtocolProfileID,
-		ProtocolCode:              input.ProtocolCode,
-		ProtocolVersion:           input.ProtocolVersion,
-		Type:                      input.Type,
-		Status:                    input.Status,
-		CredentialsEncrypted:      input.CredentialsEncrypted,
-		CredentialFingerprint:     input.CredentialFingerprint,
-		CredentialMask:            input.CredentialMask,
-		ClientCompatibility:       input.ClientCompatibility,
-		SupportedModels:           input.SupportedModels,
-		HealthCheckModel:          input.HealthCheckModel,
-		BoundGroupID:              &groupID,
-		BoundGroupName:            &groupName,
-		Schedulable:               input.Schedulable,
-		AvailabilityScheduleJSON:  input.AvailabilityScheduleJSON,
-		ConcurrencyLimit:          input.ConcurrencyLimit,
-		Priority:                  input.Priority,
-		Notes:                     input.Notes,
-		CreatedAt:                 input.Now,
-		UpdatedAt:                 input.Now,
-	}, nil
+func appNodeDispatchSignature(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte("juhe-ai:account-health-check-dispatch:v1\n"))
+	_, _ = mac.Write(body)
+	return "v1=" + hex.EncodeToString(mac.Sum(nil))
 }

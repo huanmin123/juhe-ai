@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"juhe-ai/backend-go/internal/config"
@@ -37,7 +38,6 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicsettings"
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
-	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -756,6 +756,8 @@ func newPublicAPIHandlerWithOptions(
 		opts.APIKeyInvalidator,
 		accountHealthCheckDispatcher,
 		logger,
+		cfg.NodeInternalRequestTimeout,
+		nil,
 	)
 	if err != nil {
 		_ = logQueue.Close()
@@ -783,6 +785,8 @@ func newPublicAPIHandlers(
 	apiKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator,
 	accountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher,
 	logger *slog.Logger,
+	healthCheckDispatchTimeout time.Duration,
+	accountServiceFactory publicAccountServiceFactory,
 ) (map[string]http.Handler, error) {
 	groupService := publicgroups.NewService(publicgroups.Options{Store: store, Transactor: store})
 	routeStrategyService := publicroutestrategies.NewService(publicroutestrategies.Options{Store: store, Transactor: store})
@@ -792,14 +796,18 @@ func newPublicAPIHandlers(
 		Invalidator: apiKeyInvalidator,
 	})
 	providerModelService := managementprovidermodels.NewService(store)
-	accountService := newPublicAccountService(
-		store,
-		store,
-		providerModelService,
-		credentialSecret,
-		accountHealthCheckDispatcher,
-		logger,
-	)
+	if accountServiceFactory == nil {
+		accountServiceFactory = publicaccounts.NewService
+	}
+	accountService := accountServiceFactory(publicaccounts.Options{
+		Store:                      store,
+		Transactor:                 store,
+		ProviderModels:             providerModelService,
+		HealthCheckDispatcher:      accountHealthCheckDispatcher,
+		HealthCheckDispatchTimeout: healthCheckDispatchTimeout,
+		Logger:                     logger,
+		Secret:                     credentialSecret,
+	})
 
 	handlers := map[string]http.Handler{}
 	for _, part := range []map[string]http.Handler{
@@ -833,7 +841,7 @@ func newPublicAccountHealthCheckDispatcher(
 	}
 	dispatcher, err := accounthealthcheckdispatch.NewClientWithTimeout(
 		cfg.NodeInternalBaseURL,
-		cfg.Secret,
+		strings.TrimSpace(cfg.Secret),
 		cfg.NodeInternalRequestTimeout,
 	)
 	if err != nil {
@@ -842,20 +850,4 @@ func newPublicAccountHealthCheckDispatcher(
 	return dispatcher, nil
 }
 
-func newPublicAccountService(
-	store port.PublicAccountStore,
-	transactor port.PublicAccountTransactor,
-	providerModels publicaccounts.ProviderModelReader,
-	credentialSecret string,
-	accountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher,
-	logger *slog.Logger,
-) *publicaccounts.Service {
-	return publicaccounts.NewService(publicaccounts.Options{
-		Store:                 store,
-		Transactor:            transactor,
-		ProviderModels:        providerModels,
-		HealthCheckDispatcher: accountHealthCheckDispatcher,
-		Logger:                logger,
-		Secret:                credentialSecret,
-	})
-}
+type publicAccountServiceFactory func(publicaccounts.Options) *publicaccounts.Service

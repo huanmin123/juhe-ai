@@ -217,8 +217,41 @@ func TestServiceHealthDispatchDetachesCallerCancellationAndSetsDeadline(t *testi
 		t.Fatal("dispatch context has no deadline")
 	}
 	timeout := call.deadline.Sub(startedAt)
-	if timeout <= 0 || timeout > 2*time.Second+250*time.Millisecond {
-		t.Fatalf("dispatch deadline timeout = %v, want positive and near 2s", timeout)
+	if timeout < 1500*time.Millisecond || timeout > 2*time.Second+250*time.Millisecond {
+		t.Fatalf("dispatch deadline timeout = %v, want near 2s", timeout)
+	}
+}
+
+func TestServiceHealthDispatchUsesConfiguredTimeout(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	dispatcher := &publicAccountHealthCheckDispatcherFake{}
+	service := newPublicAccountServiceWithHealthDispatchTimeoutForTest(
+		store,
+		nil,
+		nil,
+		dispatcher,
+		nil,
+		5*time.Second,
+	)
+	startedAt := time.Now()
+
+	_, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"自定义超时激活检查账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	if len(dispatcher.calls) != 1 {
+		t.Fatalf("dispatch calls = %#v, want one", dispatcher.calls)
+	}
+	call := dispatcher.calls[0]
+	if !call.hasDeadline {
+		t.Fatal("dispatch context has no deadline")
+	}
+	timeout := call.deadline.Sub(startedAt)
+	if timeout < 4500*time.Millisecond || timeout > 5*time.Second+250*time.Millisecond {
+		t.Fatalf("dispatch deadline timeout = %v, want near 5s", timeout)
 	}
 }
 
@@ -1399,18 +1432,37 @@ func newPublicAccountServiceWithHealthDispatchForTest(
 	dispatcher AccountHealthCheckDispatcher,
 	logger *slog.Logger,
 ) *Service {
+	return newPublicAccountServiceWithHealthDispatchTimeoutForTest(
+		store,
+		providerModels,
+		transactor,
+		dispatcher,
+		logger,
+		0,
+	)
+}
+
+func newPublicAccountServiceWithHealthDispatchTimeoutForTest(
+	store *publicAccountStoreFake,
+	providerModels ProviderModelReader,
+	transactor port.PublicAccountTransactor,
+	dispatcher AccountHealthCheckDispatcher,
+	logger *slog.Logger,
+	timeout time.Duration,
+) *Service {
 	if providerModels == nil {
 		providerModels = defaultProviderModelReaderStub()
 	}
 	return NewService(Options{
-		Store:                 store,
-		Transactor:            transactor,
-		ProviderModels:        providerModels,
-		HealthCheckDispatcher: dispatcher,
-		Logger:                logger,
-		Now:                   fixedPublicAccountNow,
-		NewID:                 sequentialPublicAccountID(),
-		Secret:                "public-account-test-secret",
+		Store:                      store,
+		Transactor:                 transactor,
+		ProviderModels:             providerModels,
+		HealthCheckDispatcher:      dispatcher,
+		HealthCheckDispatchTimeout: timeout,
+		Logger:                     logger,
+		Now:                        fixedPublicAccountNow,
+		NewID:                      sequentialPublicAccountID(),
+		Secret:                     "public-account-test-secret",
 	})
 }
 

@@ -23,6 +23,7 @@ const (
 	signatureDomain                       = "juhe-ai:account-health-check-dispatch:v1\n"
 	requestTimeout                        = 2 * time.Second
 	transportKeepAlive                    = 30 * time.Second
+	transportIdleConnTimeout              = 30 * time.Second
 	transportMaxIdleConns                 = 16
 	transportMaxIdleConnsPerHost          = 8
 	transportMaxConnsPerHost              = 16
@@ -68,7 +69,7 @@ func NewClientWithTimeout(rawBaseURL string, secret string, timeout time.Duratio
 		MaxIdleConns:           transportMaxIdleConns,
 		MaxIdleConnsPerHost:    transportMaxIdleConnsPerHost,
 		MaxConnsPerHost:        transportMaxConnsPerHost,
-		IdleConnTimeout:        timeout,
+		IdleConnTimeout:        transportIdleConnTimeout,
 		TLSHandshakeTimeout:    timeout,
 		ResponseHeaderTimeout:  timeout,
 		ExpectContinueTimeout:  timeout,

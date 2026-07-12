@@ -229,8 +229,10 @@ func TestNewClientWithTimeoutAppliesCustomTimeouts(t *testing.T) {
 	if !ok {
 		t.Fatalf("transport type = %T, want *http.Transport", client.httpClient.Transport)
 	}
+	if transport.IdleConnTimeout != 30*time.Second {
+		t.Errorf("idle connection timeout = %s, want %s", transport.IdleConnTimeout, 30*time.Second)
+	}
 	for name, got := range map[string]time.Duration{
-		"idle connection": transport.IdleConnTimeout,
 		"TLS handshake":   transport.TLSHandshakeTimeout,
 		"response header": transport.ResponseHeaderTimeout,
 		"expect continue": transport.ExpectContinueTimeout,

@@ -73,26 +73,28 @@ var (
 )
 
 type Service struct {
-	store          port.PublicAccountStore
-	transactor     port.PublicAccountTransactor
-	providerModels ProviderModelReader
-	dispatcher     AccountHealthCheckDispatcher
-	logger         *slog.Logger
-	now            func() time.Time
-	newID          func(prefix string) string
-	codec          CredentialCodec
+	store                      port.PublicAccountStore
+	transactor                 port.PublicAccountTransactor
+	providerModels             ProviderModelReader
+	dispatcher                 AccountHealthCheckDispatcher
+	healthCheckDispatchTimeout time.Duration
+	logger                     *slog.Logger
+	now                        func() time.Time
+	newID                      func(prefix string) string
+	codec                      CredentialCodec
 }
 
 type Options struct {
-	Store                 port.PublicAccountStore
-	Transactor            port.PublicAccountTransactor
-	ProviderModels        ProviderModelReader
-	HealthCheckDispatcher AccountHealthCheckDispatcher
-	Logger                *slog.Logger
-	Now                   func() time.Time
-	NewID                 func(prefix string) string
-	Codec                 CredentialCodec
-	Secret                string
+	Store                      port.PublicAccountStore
+	Transactor                 port.PublicAccountTransactor
+	ProviderModels             ProviderModelReader
+	HealthCheckDispatcher      AccountHealthCheckDispatcher
+	HealthCheckDispatchTimeout time.Duration
+	Logger                     *slog.Logger
+	Now                        func() time.Time
+	NewID                      func(prefix string) string
+	Codec                      CredentialCodec
+	Secret                     string
 }
 
 type CredentialCodec interface {
@@ -248,15 +250,20 @@ func NewService(opts Options) *Service {
 		}
 		codec = newAESGCMCredentialCodec(secret)
 	}
+	healthCheckDispatchTimeout := opts.HealthCheckDispatchTimeout
+	if healthCheckDispatchTimeout <= 0 {
+		healthCheckDispatchTimeout = accountHealthCheckDispatchTimeout
+	}
 	return &Service{
-		store:          opts.Store,
-		transactor:     opts.Transactor,
-		providerModels: opts.ProviderModels,
-		dispatcher:     opts.HealthCheckDispatcher,
-		logger:         opts.Logger,
-		now:            now,
-		newID:          newID,
-		codec:          codec,
+		store:                      opts.Store,
+		transactor:                 opts.Transactor,
+		providerModels:             opts.ProviderModels,
+		dispatcher:                 opts.HealthCheckDispatcher,
+		healthCheckDispatchTimeout: healthCheckDispatchTimeout,
+		logger:                     opts.Logger,
+		now:                        now,
+		newID:                      newID,
+		codec:                      codec,
 	}
 }
 
@@ -881,7 +888,7 @@ func (s *Service) dispatchAccountHealthCheck(ctx context.Context, accountID stri
 	if s.dispatcher == nil {
 		return
 	}
-	dispatchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountHealthCheckDispatchTimeout)
+	dispatchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.healthCheckDispatchTimeout)
 	defer cancel()
 	if err := s.dispatcher.Dispatch(dispatchCtx, accountID, reason); err != nil && s.logger != nil {
 		s.logger.Warn(
