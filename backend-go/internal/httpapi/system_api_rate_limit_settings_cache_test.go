@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,6 +150,154 @@ func TestSystemAPIRateLimitSettingsCacheReloadsAcrossRuntimesOnSharedVersionChan
 	}
 	if reader.calls != 3 {
 		t.Fatalf("settings reader calls = %d, want two prewarms and one version-triggered reload", reader.calls)
+	}
+}
+
+func TestSystemAPIRateLimitSettingsCacheClearWhileReadBlockedDoesNotRefillStaleSettings(t *testing.T) {
+	reader := newBlockingSystemAPIRateLimitReader(
+		port.SystemAPIRateLimitSettings{IPReadPerMinute: 600},
+		port.SystemAPIRateLimitSettings{IPReadPerMinute: 900},
+	)
+	cache := NewSystemAPIRateLimitSettingsCache(nil)
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	result := make(chan systemAPIRateLimitSettingsResult, 1)
+
+	go func() {
+		settings, err := cache.current(context.Background(), reader, now)
+		result <- systemAPIRateLimitSettingsResult{settings: settings, err: err}
+	}()
+
+	waitForSystemAPIRateLimitTestSignal(t, reader.started, "blocked PostgreSQL settings read")
+	cache.ClearSystemAPIRateLimitSettingsCache()
+	close(reader.release)
+
+	got := waitForSystemAPIRateLimitSettingsResult(t, result)
+	if got.err != nil {
+		t.Fatalf("current() error = %v", got.err)
+	}
+	if got.settings.IPReadPerMinute != 900 {
+		t.Fatalf("current() settings = %+v, want post-Clear settings", got.settings)
+	}
+	if reader.Calls() != 2 {
+		t.Fatalf("settings reader calls = %d, want stale read discarded and retried", reader.Calls())
+	}
+
+	cached, err := cache.current(context.Background(), reader, now)
+	if err != nil {
+		t.Fatalf("cached current(): %v", err)
+	}
+	if cached.IPReadPerMinute != 900 || reader.Calls() != 2 {
+		t.Fatalf("cached settings = %+v, reader calls = %d; stale read refilled cache", cached, reader.Calls())
+	}
+}
+
+func TestSystemAPIRateLimitSettingsCacheRetriesWhenVersionChangesDuringRead(t *testing.T) {
+	versionReader := newSequenceSystemAPIRateLimitSettingsVersionReader("version-a", "version-b", "version-b")
+	reader := newSequenceSystemAPIRateLimitReader(
+		port.SystemAPIRateLimitSettings{IPReadPerMinute: 600},
+		port.SystemAPIRateLimitSettings{IPReadPerMinute: 900},
+	)
+	cache := NewSystemAPIRateLimitSettingsCache(versionReader)
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+
+	settings, err := cache.current(context.Background(), reader, now)
+	if err != nil {
+		t.Fatalf("current(): %v", err)
+	}
+	if settings.IPReadPerMinute != 900 {
+		t.Fatalf("settings = %+v, want value read after version-b", settings)
+	}
+	if reader.Calls() != 2 {
+		t.Fatalf("settings reader calls = %d, want retry after version change", reader.Calls())
+	}
+	if versionReader.Calls() != 3 {
+		t.Fatalf("version reader calls = %d, want initial and post-read checks for both attempts", versionReader.Calls())
+	}
+}
+
+func TestRouterSystemAPIRateLimitUserLimiterKeepsRequestSnapshotAfterIPLimiterClearsCache(t *testing.T) {
+	oldSettings := port.SystemAPIRateLimitSettings{
+		IPReadPerMinute:         11,
+		IPReadBurstPer10Seconds: 12,
+		UserReadPerMinute:       31,
+	}
+	newSettings := port.SystemAPIRateLimitSettings{
+		IPReadPerMinute:         111,
+		IPReadBurstPer10Seconds: 112,
+		UserReadPerMinute:       131,
+	}
+	reader := newSynchronizedSystemAPIRateLimitReader(oldSettings)
+	cache := NewSystemAPIRateLimitSettingsCache(nil)
+	ipLimiter := &systemAPIIPRateLimiterHookRecorder{
+		hook: func() {
+			reader.SetSettings(newSettings)
+			cache.ClearSystemAPIRateLimitSettingsCache()
+		},
+	}
+	userLimiter := &systemAPIAuthenticatedRateLimiterRecorder{}
+	router := newSystemAPIRateLimitSettingsTestRouter(
+		t,
+		reader,
+		cache,
+		nil,
+		ipLimiter,
+		userLimiter,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeData(w, http.StatusOK, map[string]bool{"updated": true})
+		}),
+	)
+
+	serveSystemAPIRateLimitSettingsTestRequest(t, router, http.MethodGet, "/__aisys__/api/providers", "")
+	serveSystemAPIRateLimitSettingsTestRequest(t, router, http.MethodGet, "/__aisys__/api/providers", "")
+
+	if got := ipLimiter.Settings(); len(got) != 2 ||
+		got[0] != (SystemAPIIPRateLimitSettings{PerMinute: 11, BurstPer10Seconds: 12}) ||
+		got[1] != (SystemAPIIPRateLimitSettings{PerMinute: 111, BurstPer10Seconds: 112}) {
+		t.Fatalf("IP limiter settings = %+v", got)
+	}
+	if got := userLimiter.limits; len(got) != 2 || got[0] != 31 || got[1] != 131 {
+		t.Fatalf("user limiter settings = %v, want current request 31 then next request 131", got)
+	}
+	if reader.Calls() != 2 {
+		t.Fatalf("settings reader calls = %d, want one read per request around Clear", reader.Calls())
+	}
+}
+
+func TestSystemAPIRateLimitSettingsCacheBlockedReadHonorsCancellationWithoutBlockingClear(t *testing.T) {
+	reader := newContextBlockingSystemAPIRateLimitReader()
+	cache := NewSystemAPIRateLimitSettingsCache(nil)
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan systemAPIRateLimitSettingsResult, 1)
+
+	go func() {
+		settings, err := cache.current(ctx, reader, now)
+		result <- systemAPIRateLimitSettingsResult{settings: settings, err: err}
+	}()
+
+	waitForSystemAPIRateLimitTestSignal(t, reader.started, "context-blocked PostgreSQL settings read")
+	clearDone := make(chan struct{})
+	go func() {
+		cache.ClearSystemAPIRateLimitSettingsCache()
+		close(clearDone)
+	}()
+	waitForSystemAPIRateLimitTestSignal(t, clearDone, "cache Clear while PostgreSQL read is blocked")
+
+	cancel()
+	got := waitForSystemAPIRateLimitSettingsResult(t, result)
+	if !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("current() error = %v, want context.Canceled", got.err)
+	}
+
+	healthyReader := newSynchronizedSystemAPIRateLimitReader(
+		port.SystemAPIRateLimitSettings{IPReadPerMinute: 777},
+	)
+	settings, err := cache.current(context.Background(), healthyReader, now)
+	if err != nil {
+		t.Fatalf("current() after cancellation: %v", err)
+	}
+	if settings.IPReadPerMinute != 777 {
+		t.Fatalf("settings after cancellation = %+v", settings)
 	}
 }
 
@@ -323,6 +472,163 @@ func (r *mutableSystemAPIRateLimitReader) SystemAPIRateLimitSettings(
 	return r.settings, r.err
 }
 
+type systemAPIRateLimitSettingsResult struct {
+	settings port.SystemAPIRateLimitSettings
+	err      error
+}
+
+type blockingSystemAPIRateLimitReader struct {
+	mu       sync.Mutex
+	settings []port.SystemAPIRateLimitSettings
+	calls    int
+	started  chan struct{}
+	release  chan struct{}
+}
+
+func newBlockingSystemAPIRateLimitReader(
+	settings ...port.SystemAPIRateLimitSettings,
+) *blockingSystemAPIRateLimitReader {
+	return &blockingSystemAPIRateLimitReader{
+		settings: settings,
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+}
+
+func (r *blockingSystemAPIRateLimitReader) SystemAPIRateLimitSettings(
+	ctx context.Context,
+) (port.SystemAPIRateLimitSettings, error) {
+	r.mu.Lock()
+	call := r.calls
+	r.calls++
+	settings := r.settings[min(call, len(r.settings)-1)]
+	r.mu.Unlock()
+
+	if call == 0 {
+		close(r.started)
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return port.SystemAPIRateLimitSettings{}, ctx.Err()
+		}
+	}
+	return settings, nil
+}
+
+func (r *blockingSystemAPIRateLimitReader) Calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+type sequenceSystemAPIRateLimitReader struct {
+	mu       sync.Mutex
+	settings []port.SystemAPIRateLimitSettings
+	calls    int
+}
+
+func newSequenceSystemAPIRateLimitReader(
+	settings ...port.SystemAPIRateLimitSettings,
+) *sequenceSystemAPIRateLimitReader {
+	return &sequenceSystemAPIRateLimitReader{settings: settings}
+}
+
+func (r *sequenceSystemAPIRateLimitReader) SystemAPIRateLimitSettings(
+	context.Context,
+) (port.SystemAPIRateLimitSettings, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	settings := r.settings[min(r.calls, len(r.settings)-1)]
+	r.calls++
+	return settings, nil
+}
+
+func (r *sequenceSystemAPIRateLimitReader) Calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+type synchronizedSystemAPIRateLimitReader struct {
+	mu       sync.Mutex
+	settings port.SystemAPIRateLimitSettings
+	calls    int
+}
+
+func newSynchronizedSystemAPIRateLimitReader(
+	settings port.SystemAPIRateLimitSettings,
+) *synchronizedSystemAPIRateLimitReader {
+	return &synchronizedSystemAPIRateLimitReader{settings: settings}
+}
+
+func (r *synchronizedSystemAPIRateLimitReader) SystemAPIRateLimitSettings(
+	context.Context,
+) (port.SystemAPIRateLimitSettings, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	return r.settings, nil
+}
+
+func (r *synchronizedSystemAPIRateLimitReader) SetSettings(settings port.SystemAPIRateLimitSettings) {
+	r.mu.Lock()
+	r.settings = settings
+	r.mu.Unlock()
+}
+
+func (r *synchronizedSystemAPIRateLimitReader) Calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+type sequenceSystemAPIRateLimitSettingsVersionReader struct {
+	mu       sync.Mutex
+	versions []string
+	calls    int
+}
+
+func newSequenceSystemAPIRateLimitSettingsVersionReader(
+	versions ...string,
+) *sequenceSystemAPIRateLimitSettingsVersionReader {
+	return &sequenceSystemAPIRateLimitSettingsVersionReader{versions: versions}
+}
+
+func (r *sequenceSystemAPIRateLimitSettingsVersionReader) SystemAPIRateLimitSettingsVersion(
+	context.Context,
+) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	version := r.versions[min(r.calls, len(r.versions)-1)]
+	r.calls++
+	return version, nil
+}
+
+func (r *sequenceSystemAPIRateLimitSettingsVersionReader) Calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+type contextBlockingSystemAPIRateLimitReader struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func newContextBlockingSystemAPIRateLimitReader() *contextBlockingSystemAPIRateLimitReader {
+	return &contextBlockingSystemAPIRateLimitReader{started: make(chan struct{})}
+}
+
+func (r *contextBlockingSystemAPIRateLimitReader) SystemAPIRateLimitSettings(
+	ctx context.Context,
+) (port.SystemAPIRateLimitSettings, error) {
+	r.once.Do(func() {
+		close(r.started)
+	})
+	<-ctx.Done()
+	return port.SystemAPIRateLimitSettings{}, ctx.Err()
+}
+
 type mutableSystemAPIRateLimitSettingsVersionReader struct {
 	version string
 	err     error
@@ -347,6 +653,31 @@ func (r *systemAPIIPRateLimiterRecorder) AllowSystemAPIIP(
 ) (SystemAPIRateLimitDecision, error) {
 	r.settings = append(r.settings, settings)
 	return SystemAPIRateLimitDecision{Allowed: true}, nil
+}
+
+type systemAPIIPRateLimiterHookRecorder struct {
+	mu       sync.Mutex
+	settings []SystemAPIIPRateLimitSettings
+	once     sync.Once
+	hook     func()
+}
+
+func (r *systemAPIIPRateLimiterHookRecorder) AllowSystemAPIIP(
+	_ context.Context,
+	_ string,
+	settings SystemAPIIPRateLimitSettings,
+) (SystemAPIRateLimitDecision, error) {
+	r.mu.Lock()
+	r.settings = append(r.settings, settings)
+	r.mu.Unlock()
+	r.once.Do(r.hook)
+	return SystemAPIRateLimitDecision{Allowed: true}, nil
+}
+
+func (r *systemAPIIPRateLimiterHookRecorder) Settings() []SystemAPIIPRateLimitSettings {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]SystemAPIIPRateLimitSettings(nil), r.settings...)
 }
 
 type systemAPIAuthenticatedRateLimiterRecorder struct {
@@ -392,4 +723,27 @@ func (s *systemAPIRateLimitSettingsVersionStoreStub) GetRaw(
 ) ([]byte, error) {
 	s.key = key
 	return s.raw, s.err
+}
+
+func waitForSystemAPIRateLimitTestSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func waitForSystemAPIRateLimitSettingsResult(
+	t *testing.T,
+	result <-chan systemAPIRateLimitSettingsResult,
+) systemAPIRateLimitSettingsResult {
+	t.Helper()
+	select {
+	case got := <-result:
+		return got
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for rate limit settings result")
+		return systemAPIRateLimitSettingsResult{}
+	}
 }
