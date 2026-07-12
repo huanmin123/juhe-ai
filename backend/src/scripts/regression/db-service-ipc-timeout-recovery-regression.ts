@@ -71,13 +71,18 @@ try {
   assert.equal(dbServiceIpc.getDbServiceState().ready, true, '测试前 DB service fake child 应处于 ready')
 
   const timedOutBeforeInvalidation = dbServiceIpc.getDbServiceState().timedOutRequestCount
-  child.cacheInvalidationResponseDelayMs = 600
+  child.cacheInvalidationResponseDelayMs = 4_500
   dbServiceIpc.clearDbServiceGatewayRuntimeCache()
-  await new Promise((resolve) => setTimeout(resolve, 700))
+  await new Promise((resolve) => setTimeout(resolve, 4_700))
   assert.equal(
     dbServiceIpc.getDbServiceState().timedOutRequestCount,
     timedOutBeforeInvalidation,
-    '缓存失效通知应容忍短暂 server 事件循环停顿，不能把 600ms 的健康 DB service 响应记为超时'
+    '缓存失效通知应容忍生产观测到的 server 事件循环峰值，不能把 4.5s 的健康 DB service 响应记为超时'
+  )
+  assert.equal(
+    dbServiceIpc.getDbServiceState().pendingRequestCount,
+    0,
+    '缓存失效健康响应应按 requestId 清理 pending，不能只依赖尚未触发的 10s timeout 假通过'
   )
 
   await assert.rejects(
