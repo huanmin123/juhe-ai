@@ -88,6 +88,10 @@ await completeChatTurn(client, {
   assistantContent: '你好，我是 Mock AI。',
   finishReason: 'stop',
   traceId: 'trace_chat_1',
+  contentBlocks: [
+    { type: 'reasoning', text: '先检索资料' },
+    { type: 'tool_call', id: 'search_1', toolType: 'web_search_call', status: 'completed', item: { query: '测试' } }
+  ],
   now: '2026-07-12T00:02:00.000Z'
 })
 
@@ -100,6 +104,10 @@ const messages = await listChatMessages(client, {
 assert.deepEqual(messages.map((message) => [message.role, message.status, message.contentText]), [
   ['user', 'completed', '你好'],
   ['assistant', 'completed', '你好，我是 Mock AI。']
+])
+assert.deepEqual(messages[1].contentBlocks, [
+  { type: 'reasoning', text: '先检索资料' },
+  { type: 'tool_call', id: 'search_1', toolType: 'web_search_call', status: 'completed', item: { query: '测试' } }
 ])
 
 const context = await listChatContextMessages(client, {

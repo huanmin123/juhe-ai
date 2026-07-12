@@ -1,22 +1,25 @@
 <template>
   <div class="chat-process">
-    <div v-for="tool in message.toolEvents ?? []" :key="tool.id" class="chat-process-row">
+    <div v-for="tool in process.toolEvents" :key="tool.id" class="chat-process-row">
       <span class="chat-process-status" :class="`is-${tool.status}`" aria-hidden="true" />
       <details>
         <summary>{{ toolLabel(tool.type) }}<span>{{ statusLabel(tool.status) }}</span></summary>
         <pre v-if="tool.item">{{ compactItem(tool.item) }}</pre>
       </details>
     </div>
-    <details v-if="message.reasoningText" class="chat-reasoning">
+    <details v-if="process.reasoningText" class="chat-reasoning">
       <summary>思考过程</summary>
-      <div>{{ message.reasoningText }}</div>
+      <div>{{ process.reasoningText }}</div>
     </details>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { ChatMessage, ChatToolStatus } from '@/types/domain/chat'
-defineProps<{ message: ChatMessage }>()
+import { projectChatMessageProcess } from './chatMessageProcess'
+const props = defineProps<{ message: ChatMessage }>()
+const process = computed(() => projectChatMessageProcess(props.message))
 function toolLabel(type: string): string { return ({ web_search_call: '联网搜索', function_call: '函数调用', computer_call: '计算机操作' }[type] ?? '工具调用') }
 function statusLabel(status: ChatToolStatus): string { return ({ started: '准备中', updated: '执行中', completed: '已完成', failed: '失败' })[status] }
 function compactItem(item: Record<string, unknown>): string { return JSON.stringify(item, null, 2).slice(0, 4096) }

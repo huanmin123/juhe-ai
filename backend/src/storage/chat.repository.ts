@@ -28,6 +28,7 @@ export interface ChatMessage {
   role: ChatMessageRole
   status: ChatMessageStatus
   contentText: string
+  contentBlocks: ChatMessageContentBlock[]
   model: string
   traceId?: string
   finishReason?: string
@@ -36,6 +37,12 @@ export interface ChatMessage {
   completedAt?: string
   expiresAt: string
 }
+
+export type ChatMessageContentBlock =
+  | { type: 'reasoning'; text: string }
+  | { type: 'tool_call'; id: string; toolType: string; status: 'started' | 'updated' | 'completed' | 'failed'; item?: Record<string, unknown> }
+
+const maxContentBlocksBytes = 256 * 1024
 
 export class ChatConflictError extends Error {
   constructor(public readonly code: 'chat_message_in_progress' | 'chat_storage_quota_exceeded') {
@@ -194,6 +201,7 @@ export async function completeChatTurn(client: DatabaseClient, input: {
   assistantContent: string
   finishReason: string
   traceId: string
+  contentBlocks?: ChatMessageContentBlock[]
   now: string
 }): Promise<ChatMessage> {
   return finalizeChatTurn(client, { ...input, status: 'completed', errorCode: undefined })
@@ -206,6 +214,7 @@ export async function failChatTurn(client: DatabaseClient, input: {
   assistantContent: string
   errorCode: string
   traceId?: string
+  contentBlocks?: ChatMessageContentBlock[]
   now: string
 }): Promise<ChatMessage> {
   return finalizeChatTurn(client, {
@@ -221,6 +230,7 @@ export async function cancelChatTurn(client: DatabaseClient, input: {
   turnId: string
   assistantContent: string
   traceId?: string
+  contentBlocks?: ChatMessageContentBlock[]
   now: string
 }): Promise<ChatMessage> {
   return finalizeChatTurn(client, {
@@ -240,10 +250,12 @@ async function finalizeChatTurn(client: DatabaseClient, input: {
   finishReason?: string
   errorCode?: string
   traceId?: string
+  contentBlocks?: ChatMessageContentBlock[]
   now: string
 }): Promise<ChatMessage> {
   return client.transaction(async (tx) => {
-    const bytes = Buffer.byteLength(input.assistantContent, 'utf8')
+    const contentBlocksJson = serializeContentBlocks(input.contentBlocks ?? [])
+    const bytes = Buffer.byteLength(input.assistantContent, 'utf8') + Buffer.byteLength(contentBlocksJson, 'utf8')
     const current = await tx.one<ChatMessageRow>(`
       SELECT * FROM ${chatTable(tx, 'chat_messages')}
       WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
@@ -252,11 +264,11 @@ async function finalizeChatTurn(client: DatabaseClient, input: {
     if (!current) throw new Error('活动回答不存在')
     const result = await tx.execute(`
       UPDATE ${chatTable(tx, 'chat_messages')}
-      SET status = ?, content_text = ?, content_bytes = ?, trace_id = ?,
+      SET status = ?, content_text = ?, content_blocks_json = ?, content_bytes = ?, trace_id = ?,
           finish_reason = ?, error_code = ?, completed_at = ?
       WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
         AND role = 'assistant' AND status = 'streaming'
-    `, [input.status, input.assistantContent, bytes, input.traceId ?? null, input.finishReason ?? null, input.errorCode ?? null, input.now, input.conversationId, input.systemAccountId, input.turnId])
+    `, [input.status, input.assistantContent, contentBlocksJson, bytes, input.traceId ?? null, input.finishReason ?? null, input.errorCode ?? null, input.now, input.conversationId, input.systemAccountId, input.turnId])
     if (result.changes !== 1) throw new Error('活动回答不存在')
     await incrementStorageWindow(tx, input.systemAccountId, String(current.created_at), bytes)
     await tx.execute(`
@@ -547,10 +559,33 @@ function mapMessage(row: ChatMessageRow): ChatMessage {
     id: String(row.id), conversationId: String(row.conversation_id), turnId: String(row.turn_id),
     sequenceNo: Number(row.sequence_no), clientMessageId: nullable(row.client_message_id),
     role: String(row.role) as ChatMessageRole, status: String(row.status) as ChatMessageStatus,
-    contentText: String(row.content_text ?? ''), model: String(row.model), traceId: nullable(row.trace_id),
+    contentText: String(row.content_text ?? ''), contentBlocks: parseContentBlocks(row.content_blocks_json), model: String(row.model), traceId: nullable(row.trace_id),
     finishReason: nullable(row.finish_reason), errorCode: nullable(row.error_code), createdAt: String(row.created_at),
     completedAt: nullable(row.completed_at), expiresAt: String(row.expires_at)
   }
+}
+
+function serializeContentBlocks(blocks: ChatMessageContentBlock[]): string {
+  const value = JSON.stringify(blocks)
+  if (Buffer.byteLength(value, 'utf8') > maxContentBlocksBytes) throw new Error('消息结构化内容超过 256 KiB 上限')
+  return value
+}
+
+function parseContentBlocks(value: unknown): ChatMessageContentBlock[] {
+  if (typeof value !== 'string' || !value) return []
+  if (Buffer.byteLength(value, 'utf8') > maxContentBlocksBytes) return []
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return Array.isArray(parsed) ? parsed.filter(isChatMessageContentBlock) : []
+  } catch { return [] }
+}
+
+function isChatMessageContentBlock(value: unknown): value is ChatMessageContentBlock {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const block = value as Record<string, unknown>
+  if (block.type === 'reasoning') return typeof block.text === 'string'
+  return block.type === 'tool_call' && typeof block.id === 'string' && typeof block.toolType === 'string'
+    && ['started', 'updated', 'completed', 'failed'].includes(String(block.status))
 }
 
 function nullable(value: unknown): string | undefined {

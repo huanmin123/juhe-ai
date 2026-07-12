@@ -113,9 +113,10 @@ try {
   assert.equal(duplicateResponse.status, 409, '相同 clientMessageId 必须返回冲突且不再次调用模型')
   if (!realCredential) assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream'], 'AI 问答必须经过网关并使用 AI 账户凭据访问上游')
 
-  const stored = await apiJson<{ data: Array<{ role: string; status: string; contentText: string }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
+  const stored = await apiJson<{ data: Array<{ role: string; status: string; contentText: string; contentBlocks: Array<{ type: string; id?: string; status?: string }> }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
   assert.deepEqual(stored.data.map((item) => [item.role, item.status]), [['user', 'completed'], ['assistant', 'completed']])
   if (!realCredential) {
+    assert.deepEqual(stored.data[1].contentBlocks.map((block) => [block.type, block.id, block.status]), [['tool_call', 'search_1', 'completed']])
     assert.match(stored.data[1].contentText, /\|项目\|结果\|/)
     assert.match(stored.data[1].contentText, /\$E=mc\^2\$/)
     assert.match(stored.data[1].contentText, /```mermaid/)

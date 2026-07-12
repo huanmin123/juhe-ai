@@ -32,6 +32,7 @@ export function applyChatSchema(database: DatabaseSync): void {
       role TEXT NOT NULL,
       status TEXT NOT NULL,
       content_text TEXT NOT NULL DEFAULT '',
+      content_blocks_json TEXT NOT NULL DEFAULT '[]',
       content_bytes INTEGER NOT NULL DEFAULT 0,
       model TEXT NOT NULL,
       trace_id TEXT,

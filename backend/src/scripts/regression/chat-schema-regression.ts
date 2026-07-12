@@ -32,4 +32,9 @@ assert.ok(indexes.includes('idx_chat_messages_conversation_sequence'))
 assert.ok(indexes.includes('idx_chat_messages_expiry'))
 assert.ok(indexes.includes('idx_chat_idempotency_expiry'))
 
+const messageColumns = database.prepare('PRAGMA table_info(chat_messages)').all() as Array<{ name?: string; dflt_value?: unknown }>
+const contentBlocksColumn = messageColumns.find((column) => column.name === 'content_blocks_json')
+assert.ok(contentBlocksColumn, '聊天消息必须保存结构化内容块')
+assert.equal(String(contentBlocksColumn?.dflt_value), "'[]'")
+
 console.log('AI 问答 SQLite schema 回归通过')

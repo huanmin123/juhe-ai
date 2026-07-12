@@ -15,7 +15,8 @@ import {
   getChatConversation,
   listChatContextMessages,
   listChatConversations,
-  listChatMessages
+  listChatMessages,
+  type ChatMessageContentBlock
 } from '../../storage/chat.repository.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
 import { findApiKeySecretAsync, listApiKeysAsync } from '../../storage/repositories.js'
@@ -109,6 +110,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
   let controller: AbortController | undefined
   let responseClosed = false
   let partialContent = ''
+  const contentBlocks: ChatMessageContentBlock[] = []
   try {
     const body = messageBodySchema.parse(req.body)
     if (Buffer.byteLength(body.content, 'utf8') > maxMessageBytes) {
@@ -183,8 +185,12 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
               partialContent += event.delta
               if (!res.writableEnded) writeSse(res, 'message.delta', { messageId: accepted?.assistantMessage.id, delta: event.delta })
             } else if (event.type === 'reasoning_delta') {
+              const existing = contentBlocks.find((block): block is Extract<ChatMessageContentBlock, { type: 'reasoning' }> => block.type === 'reasoning')
+              if (existing) existing.text += event.delta
+              else contentBlocks.push({ type: 'reasoning', text: event.delta })
               if (!res.writableEnded) writeSse(res, 'reasoning.delta', { messageId: accepted?.assistantMessage.id, delta: event.delta })
             } else if (event.type === 'tool_started' || event.type === 'tool_updated' || event.type === 'tool_completed') {
+              projectToolEvent(contentBlocks, event.type, event.item)
               if (!res.writableEnded) writeSse(res, event.type.replace('_', '.'), { messageId: accepted?.assistantMessage.id, item: event.item })
             } else if (event.type === 'failed') {
               throw new Error(upstreamMessage(event.error, '模型工具调用失败'))
@@ -196,15 +202,15 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           })
       await completeChatTurn(client, {
         conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId,
-        assistantContent: result.content, finishReason: 'finishReason' in result ? result.finishReason ?? 'stop' : 'stop', traceId: getTraceId() ?? '', now: new Date().toISOString()
+        assistantContent: result.content, contentBlocks, finishReason: 'finishReason' in result ? result.finishReason ?? 'stop' : 'stop', traceId: getTraceId() ?? '', now: new Date().toISOString()
       })
       if (!res.writableEnded) writeSse(res, 'message.completed', { messageId: accepted.assistantMessage.id, finishReason: 'finishReason' in result ? result.finishReason ?? 'stop' : 'stop', traceId: getTraceId() })
     } catch (error) {
       const canceled = controller.signal.aborted
       if (canceled) {
-        await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, traceId: getTraceId(), now: new Date().toISOString() })
+        await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks, traceId: getTraceId(), now: new Date().toISOString() })
       } else {
-        await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, errorCode: 'gateway_stream_failed', traceId: getTraceId(), now: new Date().toISOString() })
+        await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks, errorCode: 'gateway_stream_failed', traceId: getTraceId(), now: new Date().toISOString() })
         if (!res.writableEnded) writeSse(res, 'message.failed', { messageId: accepted.assistantMessage.id, code: 'gateway_stream_failed', message: error instanceof Error ? error.message : '模型请求失败' })
       }
     } finally {
@@ -282,3 +288,11 @@ function writeSse(res: import('express').Response, event: string, data: unknown)
 async function* readableStreamChunks(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> { const reader = stream.getReader(); try { while (true) { const next = await reader.read(); if (next.done) return; yield next.value } } finally { reader.releaseLock() } }
 async function boundedJson(response: Response): Promise<unknown> { const text = (await response.text()).slice(0, 64 * 1024); try { return JSON.parse(text) } catch { return { message: text } } }
 function upstreamMessage(payload: unknown, fallback: string): string { if (payload && typeof payload === 'object') { const item = payload as { message?: unknown; error?: { message?: unknown } }; if (typeof item.error?.message === 'string') return item.error.message; if (typeof item.message === 'string') return item.message } return fallback }
+
+function projectToolEvent(blocks: ChatMessageContentBlock[], eventType: 'tool_started' | 'tool_updated' | 'tool_completed', item: Record<string, unknown>): void {
+  const id = String(item.id ?? item.call_id ?? `tool_${blocks.filter((block) => block.type === 'tool_call').length + 1}`)
+  const status = eventType === 'tool_started' ? 'started' : eventType === 'tool_updated' ? 'updated' : 'completed'
+  const existing = blocks.find((block): block is Extract<ChatMessageContentBlock, { type: 'tool_call' }> => block.type === 'tool_call' && block.id === id)
+  if (existing) { existing.status = status; existing.toolType = String(item.type ?? existing.toolType); existing.item = item; return }
+  blocks.push({ type: 'tool_call', id, toolType: String(item.type ?? 'tool'), status, item })
+}

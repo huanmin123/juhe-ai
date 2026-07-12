@@ -23,6 +23,7 @@ export interface ChatMessage {
   role: ChatMessageRole
   status: ChatMessageStatus
   contentText: string
+  contentBlocks?: ChatMessageContentBlock[]
   model: string
   traceId?: string
   finishReason?: string
@@ -33,6 +34,10 @@ export interface ChatMessage {
   reasoningText?: string
   toolEvents?: ChatToolEvent[]
 }
+
+export type ChatMessageContentBlock =
+  | { type: 'reasoning'; text: string }
+  | { type: 'tool_call'; id: string; toolType: string; status: ChatToolStatus; item?: Record<string, unknown> }
 
 export type ChatToolStatus = 'started' | 'updated' | 'completed' | 'failed'
 export interface ChatToolEvent { id: string; type: string; status: ChatToolStatus; item?: Record<string, unknown> }

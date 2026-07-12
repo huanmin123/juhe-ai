@@ -25,7 +25,7 @@
             <a-tag v-if="messages[item.index].status !== 'completed'" :color="statusColor(messages[item.index].status)">{{ statusLabel(messages[item.index].status) }}</a-tag>
           </div>
           <ChatMarkdown :content="messages[item.index].contentText || (messages[item.index].status === 'streaming' ? '正在思考…' : '')" />
-          <ChatToolEvent v-if="messages[item.index].role === 'assistant' && (messages[item.index].toolEvents?.length || messages[item.index].reasoningText)" :message="messages[item.index]" />
+          <ChatToolEvent v-if="messages[item.index].role === 'assistant' && (messages[item.index].toolEvents?.length || messages[item.index].reasoningText || messages[item.index].contentBlocks?.length)" :message="messages[item.index]" />
         </div>
       </article>
     </div>
