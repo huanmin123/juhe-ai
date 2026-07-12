@@ -12,18 +12,34 @@ export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
     return { text: '查询失败', tone: 'failed', tooltip: snapshot.errorMessage, refreshing: false }
   }
   if (snapshot.status === 'refreshing') return { text: '查询中', tone: 'refreshing', tooltip: undefined, refreshing: true }
-  if (snapshot.status === 'unlimited') return { text: '无限', tone: 'unlimited', tooltip: undefined, refreshing: false }
-  if (snapshot.status === 'unsupported') return { text: '未提供', tone: 'unsupported', tooltip: undefined, refreshing: false }
+  const retryTooltip = transientFailureTooltip(snapshot, true)
+  if (snapshot.status === 'unlimited') return { text: '无限', tone: 'unlimited', tooltip: retryTooltip, refreshing: false }
+  if (snapshot.status === 'unsupported') return { text: '未提供', tone: 'unsupported', tooltip: retryTooltip, refreshing: false }
   if (snapshot.status === 'fresh' && snapshot.remainingUsd !== undefined) {
     const amount = Number(snapshot.remainingUsd)
     return {
       text: Number.isFinite(amount) ? `$${amount.toFixed(2)}` : '查询失败',
       tone: Number.isFinite(amount) ? 'fresh' : 'failed',
-      tooltip: Number.isFinite(amount) ? undefined : '上游返回的余额金额无效',
+      tooltip: Number.isFinite(amount) ? retryTooltip : '上游返回的余额金额无效',
+      refreshing: false
+    }
+  }
+  if (snapshot.status === 'pending' && snapshot.consecutiveTransientFailures) {
+    return {
+      text: `待重试（${snapshot.consecutiveTransientFailures}/3）`,
+      tone: 'pending',
+      tooltip: snapshot.lastTransientErrorMessage,
       refreshing: false
     }
   }
   return { text: '待查询', tone: 'pending', tooltip: undefined, refreshing: false }
+}
+
+function transientFailureTooltip(snapshot: AccountBalanceSnapshot, preservesResult: boolean): string | undefined {
+  const count = snapshot.consecutiveTransientFailures
+  const message = snapshot.lastTransientErrorMessage
+  if (!count || !message) return undefined
+  return `刷新暂时失败（${count}/3）：${message}${preservesResult ? '；当前显示上次成功余额' : ''}`
 }
 
 export function buildAccountBalancePayload(form: Pick<AccountFormModel,
