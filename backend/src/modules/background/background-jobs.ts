@@ -351,7 +351,7 @@ async function ensureUsageRecordsSafeForStatsAggregation(): Promise<void> {
 }
 
 async function usageStatsAggregationSafety(): Promise<UsageStatsAggregationSafety> {
-  const status = await requestIngestWorkerDrainStatus(5000)
+  const status = await requestIngestWorkerDrainStatus(6000)
   const flushFailureCount = status?.snapshot?.usageRecordQueue.flushFailureCount ?? 0
   if (!status?.ready || !status.snapshot) {
     throw new Error('ingest-worker 使用记录队列快照不可用，本轮跳过统计聚合，避免统计游标越过排队记录')

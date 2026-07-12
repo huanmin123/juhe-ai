@@ -1753,7 +1753,7 @@ async function respondToIngestStatusRequest(requestId: string, targetChild: Chil
   if (!child || !child.connected) {
     return
   }
-  const status = await buildIngestWorkerDrainStatus(1000).catch(() => undefined)
+  const status = await buildIngestWorkerDrainStatus(5000).catch(() => undefined)
   try {
     child.send({
       type: 'background_worker_ingest_status_response',

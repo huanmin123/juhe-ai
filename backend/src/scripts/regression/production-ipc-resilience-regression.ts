@@ -10,6 +10,10 @@ const backgroundJobsSource = readFileSync(
   resolve('src/modules/background/background-jobs.ts'),
   'utf8'
 )
+const backgroundIpcSource = readFileSync(
+  resolve('src/modules/background/background-ipc.ts'),
+  'utf8'
+)
 
 const sweepBody = functionBody(accountTestQueueSource, 'sweepManualAccountTestQueue')
 assert.match(
@@ -21,11 +25,18 @@ assert.match(
 const aggregationSafetyBody = functionBody(backgroundJobsSource, 'usageStatsAggregationSafety')
 assert.match(
   aggregationSafetyBody,
-  /requestIngestWorkerDrainStatus\(5000\)/,
-  '统计聚合安全检查必须给 ingest-worker 快照完整 IPC 容错窗口，避免事件循环抖动时误判不可用'
+  /requestIngestWorkerDrainStatus\(6000\)/,
+  '统计聚合安全检查的外层等待必须覆盖父进程 5 秒快照窗口和 IPC 回包开销'
 )
 
-console.log('生产 IPC 韧性回归通过：账号测试维护拒绝已收口，统计安全快照使用 5 秒容错窗口')
+const ingestStatusResponseBody = functionBody(backgroundIpcSource, 'respondToIngestStatusRequest')
+assert.match(
+  ingestStatusResponseBody,
+  /buildIngestWorkerDrainStatus\(5000\)/,
+  '父进程必须给 ingest-worker 快照 5 秒容错窗口，不能继续在 1 秒处提前截断'
+)
+
+console.log('生产 IPC 韧性回归通过：账号测试维护拒绝已收口，统计安全快照使用内层 5 秒/外层 6 秒窗口')
 
 function functionBody(sourceText: string, functionName: string): string {
   const start = sourceText.indexOf(`function ${functionName}`)

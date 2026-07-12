@@ -1300,7 +1300,7 @@ assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestAttemptTimeoutMs
 assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestRunBudgetMs/)
 assert.match(backgroundJobsSource, /const safety = await usageStatsAggregationSafety\(\)/)
 assert.match(backgroundJobsSource, /safeCreatedBefore: safety\.safeCreatedBefore/)
-assert.match(backgroundJobsSource, /requestIngestWorkerDrainStatus\(1000\)/)
+assert.match(backgroundJobsSource, /requestIngestWorkerDrainStatus\(6000\)/)
 assert.match(backgroundJobsSource, /defaultUsageStatsSafeCreatedBeforeIso\(\)/)
 assert.match(backgroundJobsSource, /使用记录 ingest 队列已有/)
 assert.match(backgroundJobsSource, /usageStatsSafeCreatedBeforeForPendingBacklog/)
