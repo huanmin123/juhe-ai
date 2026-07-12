@@ -32,6 +32,11 @@ const balanceRepositorySource = readFileSync(resolve('src/storage/account-balanc
 const accountRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
 const repositoriesSource = readFileSync(resolve('src/storage/repositories.ts'), 'utf8')
 assert.match(balanceServiceSource, /const balanceRefreshLeaseMs = 30_000/)
+assert.match(
+  balanceServiceSource,
+  /const requestTimeoutMs = 15_000/,
+  '余额查询的全部内置适配器应共享 15 秒总 deadline'
+)
 assert.match(balanceRoutesSource, /post\('\/balance\/test-draft'/, '新增和编辑表单必须使用独立草稿余额测试接口')
 assert.match(balanceRoutesSource, /prepareAccountDraftTestSnapshotAsync/, '草稿余额测试必须使用当前表单账户快照')
 assert.match(balanceRoutesSource, /testAccountBalanceCandidate/, '草稿余额测试必须调用无持久化查询入口')

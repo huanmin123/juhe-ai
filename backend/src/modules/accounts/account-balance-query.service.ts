@@ -20,7 +20,7 @@ import { requestUpstream, UpstreamRequestAbortedError, UpstreamRequestTimeoutErr
 import { parseCustomBalance, parseLiteLlmBalance, parseNewApiBalance, parseSub2ApiBalance, parseUserBalance } from './account-balance-adapters.js'
 
 const responseMaxBytes = 256 * 1024
-const requestTimeoutMs = 8_000
+const requestTimeoutMs = 15_000
 const balanceRefreshLeaseMs = 30_000
 const builtinAdapterOrder: AccountBalanceBuiltinAdapter[] = ['sub2api', 'newapi', 'litellm', 'user_balance']
 
