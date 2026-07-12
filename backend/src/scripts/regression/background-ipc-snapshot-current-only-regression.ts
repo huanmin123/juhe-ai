@@ -19,6 +19,7 @@ class FakeWorkerProcess extends EventEmitter {
   killed = false
   pid: number
   respondToStatus = true
+  responseDelayMs = 0
   failSend = false
   role: BackgroundWorkerProcessRole
 
@@ -35,13 +36,13 @@ class FakeWorkerProcess extends EventEmitter {
     }
     callback?.(null)
     if (this.respondToStatus && message.type === 'background_worker_status_request') {
-      setImmediate(() => {
+      setTimeout(() => {
         this.emit('message', {
           type: 'background_worker_status_response',
           requestId: (message as StatusRequest).requestId,
           snapshot: buildWorkerSnapshot(this.pid, this.role)
         })
-      })
+      }, this.responseDelayMs)
     }
     return true
   }
@@ -84,6 +85,15 @@ brokenWorker.failSend = true
 const brokenSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(50)
 assert.equal(brokenSnapshot, undefined, 'worker IPC 发送失败断开时不能返回留存 lastSnapshot')
 brokenWorker.exit()
+
+const delayedIngestWorker = attachReadyWorker(41501, 'ingest-worker')
+delayedIngestWorker.responseDelayMs = 20
+const delayedIngestSnapshot = await backgroundIpc.requestIngestWorkerSnapshot(50)
+assert.equal(delayedIngestSnapshot?.pid, delayedIngestWorker.pid, 'ingest-worker 在容错窗口内延迟回包仍应返回当前 snapshot')
+delayedIngestWorker.responseDelayMs = 50
+const timedOutIngestSnapshot = await backgroundIpc.requestIngestWorkerSnapshot(10)
+assert.equal(timedOutIngestSnapshot, undefined, 'ingest-worker 超过容错窗口仍应 fail-closed 返回不可用')
+delayedIngestWorker.exit()
 
 const opsWorker = attachReadyWorker(42001, 'ops-worker')
 const opsSnapshot = await backgroundIpc.requestOpsWorkerSnapshot(50)
