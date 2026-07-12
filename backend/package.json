@@ -375,6 +375,8 @@
     "test:postgres-schema-sql": "tsx src/scripts/regression/postgres-schema-sql-regression.ts",
     "test:chat-schema": "tsx src/scripts/regression/chat-schema-regression.ts",
     "test:chat-repository": "tsx src/scripts/regression/chat-repository-regression.ts",
+    "test:chat-postgres-partitions": "tsx src/scripts/regression/chat-postgres-partitions-regression.ts",
+    "test:chat-sse-parser": "tsx src/scripts/regression/chat-sse-parser-regression.ts",
     "test:account-balance-config": "tsx src/scripts/regression/account-balance-config-regression.ts",
     "test:account-balance-adapters": "tsx src/scripts/regression/account-balance-adapters-regression.ts",
     "test:account-balance-refresh": "tsx src/scripts/regression/account-balance-refresh-regression.ts",

@@ -8,6 +8,7 @@ import {
   ChatConflictError,
   completeChatTurn,
   createChatConversation,
+  failChatTurn,
   listChatContextMessages,
   listChatMessages
 } from '../../storage/chat.repository.js'
@@ -94,6 +95,45 @@ assert.deepEqual(context.map((message) => [message.role, message.content]), [
   ['user', '你好'],
   ['assistant', '你好，我是 Mock AI。']
 ])
+
+const failedTurn = await acceptChatTurn(client, {
+  conversationId: conversation.id,
+  systemAccountId: 'sys_user_1',
+  clientMessageId: 'client_failed',
+  userContent: '这轮会失败',
+  model: 'mock-model',
+  now: '2026-07-12T00:04:00.000Z',
+  storageQuotaBytes: 1024
+})
+await failChatTurn(client, {
+  conversationId: conversation.id,
+  systemAccountId: 'sys_user_1',
+  turnId: failedTurn.turnId,
+  assistantContent: '部分回答',
+  errorCode: 'mock_interrupted',
+  traceId: 'trace_chat_failed',
+  now: '2026-07-12T00:05:00.000Z'
+})
+const contextAfterFailure = await listChatContextMessages(client, {
+  conversationId: conversation.id,
+  systemAccountId: 'sys_user_1',
+  limitTurns: 64,
+  now: '2026-07-12T00:06:00.000Z'
+})
+assert.equal(contextAfterFailure.length, 2, '失败轮次的一问一答都不能进入下一轮上下文')
+
+await assert.rejects(
+  acceptChatTurn(client, {
+    conversationId: conversation.id,
+    systemAccountId: 'sys_user_1',
+    clientMessageId: 'client_quota',
+    userContent: '超限',
+    model: 'mock-model',
+    now: '2026-07-12T00:07:00.000Z',
+    storageQuotaBytes: 1
+  }),
+  (error) => error instanceof ChatConflictError && error.code === 'chat_storage_quota_exceeded'
+)
 
 await assert.rejects(
   listChatMessages(client, {

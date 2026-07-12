@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { DatabaseClient } from './database-client.js'
+import { ensurePostgresChatMessagePartitions } from './postgres-chat-message-partitions.js'
 
 export type ChatMessageRole = 'user' | 'assistant'
 export type ChatMessageStatus = 'completed' | 'streaming' | 'failed' | 'canceled'
@@ -70,6 +71,7 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
   storageQuotaBytes: number
 }): Promise<{ turnId: string; userMessage: ChatMessage; assistantMessage: ChatMessage; duplicate: boolean }> {
   return client.transaction(async (tx) => {
+    await ensurePostgresChatMessagePartitions(tx, input.now)
     const conversation = await lockConversation(tx, input.conversationId, input.systemAccountId)
     const existing = await tx.one<IdempotencyRow>(`
       SELECT turn_id, user_message_id, assistant_message_id
@@ -135,17 +137,69 @@ export async function completeChatTurn(client: DatabaseClient, input: {
   traceId: string
   now: string
 }): Promise<ChatMessage> {
+  return finalizeChatTurn(client, { ...input, status: 'completed', errorCode: undefined })
+}
+
+export async function failChatTurn(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  turnId: string
+  assistantContent: string
+  errorCode: string
+  traceId?: string
+  now: string
+}): Promise<ChatMessage> {
+  return finalizeChatTurn(client, {
+    ...input,
+    status: 'failed',
+    finishReason: undefined
+  })
+}
+
+export async function cancelChatTurn(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  turnId: string
+  assistantContent: string
+  traceId?: string
+  now: string
+}): Promise<ChatMessage> {
+  return finalizeChatTurn(client, {
+    ...input,
+    status: 'canceled',
+    errorCode: undefined,
+    finishReason: undefined
+  })
+}
+
+async function finalizeChatTurn(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  turnId: string
+  assistantContent: string
+  status: 'completed' | 'failed' | 'canceled'
+  finishReason?: string
+  errorCode?: string
+  traceId?: string
+  now: string
+}): Promise<ChatMessage> {
   return client.transaction(async (tx) => {
     const bytes = Buffer.byteLength(input.assistantContent, 'utf8')
-    const result = await tx.execute(`
-      UPDATE ${chatTable(tx, 'chat_messages')}
-      SET status = 'completed', content_text = ?, content_bytes = ?, trace_id = ?,
-          finish_reason = ?, completed_at = ?
+    const current = await tx.one<ChatMessageRow>(`
+      SELECT * FROM ${chatTable(tx, 'chat_messages')}
       WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
         AND role = 'assistant' AND status = 'streaming'
-    `, [input.assistantContent, bytes, input.traceId, input.finishReason, input.now, input.conversationId, input.systemAccountId, input.turnId])
+    `, [input.conversationId, input.systemAccountId, input.turnId])
+    if (!current) throw new Error('活动回答不存在')
+    const result = await tx.execute(`
+      UPDATE ${chatTable(tx, 'chat_messages')}
+      SET status = ?, content_text = ?, content_bytes = ?, trace_id = ?,
+          finish_reason = ?, error_code = ?, completed_at = ?
+      WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
+        AND role = 'assistant' AND status = 'streaming'
+    `, [input.status, input.assistantContent, bytes, input.traceId ?? null, input.finishReason ?? null, input.errorCode ?? null, input.now, input.conversationId, input.systemAccountId, input.turnId])
     if (result.changes !== 1) throw new Error('活动回答不存在')
-    await incrementStorageWindow(tx, input.systemAccountId, input.now, bytes)
+    await incrementStorageWindow(tx, input.systemAccountId, String(current.created_at), bytes)
     await tx.execute(`
       UPDATE ${chatTable(tx, 'chat_conversations')}
       SET active_turn_id = NULL, active_started_at = NULL, last_message_at = ?, updated_at = ?
