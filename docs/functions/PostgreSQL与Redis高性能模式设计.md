@@ -457,3 +457,13 @@ PostgreSQL 模式下保留 DB service，理由不是规避 SQLite 同步阻塞�
 - 并发 100 如果不经过 PgBouncer 和队列背压，可能把数据库连接耗尽，反而比 SQLite 单写者更不稳定。
 - Redis 8 授权需要生产前确认；如果业务分发方式不接受当前 Redis 授权，必须单独决策替代实现。
 - SQLite 与 PostgreSQL 的 SQL 差异会触及大量 repository；必须先建 dialect 测试矩阵，不能直接批量替换 SQL 字符串。
+# AI 问答聊天存储补充
+
+AI 问答高增长正文使用同一 PostgreSQL 集群内的独立 `juhe_chat` schema，不写入 `juhe_business`：
+
+- `chat_conversations`、`chat_message_idempotency`、`chat_user_storage_windows` 为普通表。
+- `chat_messages` 按 UTC `created_at` 建每日 range partition，并提前创建当天和下一天分区。
+- 保留窗口为精确滚动 `7 × 24` 小时：完整过期日分区直接 drop，最老部分重叠分区按 `(expires_at, id)` 游标小批删除。
+- 每用户最近 7 天默认 2 GiB 门禁只读取 `chat_user_storage_windows` 日桶，不允许 API 请求实时聚合消息明细。
+- Redis 只保存可丢失的取消信号、短期 SSE 协调和运行门禁，不保存聊天正文、会话或模型上下文事实。
+- 普通发布只执行 `juhe_chat` schema-only 同步，不重建 `juhe_business`、`juhe_dataset`、`juhe_usage`、`juhe_stats`、Redis 或其他非本次变更的数据。

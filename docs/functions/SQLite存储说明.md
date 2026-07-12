@@ -8,10 +8,11 @@
 
 ## 默认位置
 
-后端运行时按业务库、数据集目录库、使用记录目录库、统计结果库和 Responses 桥接状态索引库分片组织 SQLite。使用记录明细由使用记录目录库和 usage shard 文件共同组成；未配置这些路径时，直接使用各自默认位置：
+后端运行时按业务库、聊天库、数据集目录库、使用记录目录库、统计结果库和 Responses 桥接状态索引库分片组织 SQLite。使用记录明细由使用记录目录库和 usage shard 文件共同组成；未配置这些路径时，直接使用各自默认位置：
 
 ```text
 业务库：backend/data/juhe-ai.sqlite3
+聊天库：backend/data/juhe-ai-chat.sqlite3
 统计数据集目录库：backend/data/juhe-ai-dataset.sqlite3
 使用记录目录库：backend/data/juhe-ai-usage-catalog.sqlite3
 统计结果库：backend/data/juhe-ai-stats.sqlite3
@@ -26,6 +27,7 @@ Responses 桥接状态 payload 文件：backend/data/codex-context/
 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 JUHE_AI_DATASET_DATABASE_PATH=./data/juhe-ai-dataset.sqlite3
 JUHE_AI_USAGE_CATALOG_DATABASE_PATH=./data/juhe-ai-usage-catalog.sqlite3
+JUHE_AI_CHAT_DATABASE_PATH=./data/juhe-ai-chat.sqlite3
 JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 JUHE_AI_USAGE_SHARD_ROOT=./data/usage-shards
 JUHE_AI_CODEX_CONTEXT_ROOT=./data/codex-context
@@ -40,7 +42,9 @@ JUHE_AI_USAGE_RECORD_WRITER_POOL_SIZE=0
 JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS=5000
 ```
 
-相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3`、`./data/juhe-ai-dataset.sqlite3`、`./data/juhe-ai-usage-catalog.sqlite3`、`./data/juhe-ai-stats.sqlite3`、`./data/usage-shards` 和 `./data/codex-context` 这类项目内相对路径。业务库、数据集目录库、使用记录目录库、统计结果库、usage shard 文件和 Responses 桥接状态索引 shard 文件必须互不相同，usage shard 根目录、Responses 桥接状态 payload 目录和状态索引 shard 根目录也必须与这些文件路径区分；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
+相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3`、`./data/juhe-ai-chat.sqlite3`、`./data/juhe-ai-dataset.sqlite3`、`./data/juhe-ai-usage-catalog.sqlite3`、`./data/juhe-ai-stats.sqlite3`、`./data/usage-shards` 和 `./data/codex-context` 这类项目内相对路径。业务库、聊天库、数据集目录库、使用记录目录库、统计结果库、usage shard 文件和 Responses 桥接状态索引 shard 文件必须互不相同；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
+
+聊天库保存 `chat_conversations`、`chat_messages`、`chat_message_idempotency` 和 `chat_user_storage_windows`。正文只保留滚动 7 天，DB service 是唯一 writer；请求路径按游标读取，容量门禁只读取用户最近 7 个日桶。普通发布不得删除或重建聊天库，只有当前 schema 明确变化且上线方案包含数据处理时才单独同步该文件。
 
 搬到其他电脑或服务器时，保留 `backend/.env` 和当前数据目录即可带走配置与数据；如果本地库结构和当前 schema 不一致，按当前 schema 离线修复或重建，不在运行时代码里放结构适配分支。
 
