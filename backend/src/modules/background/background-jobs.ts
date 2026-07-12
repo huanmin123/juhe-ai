@@ -40,6 +40,7 @@ import {
   runAccountRecordCleanupRetry,
   runApiKeyRecordCleanupRetry,
   runAuditHotRetentionCleanup,
+  runChatRetentionCleanup,
   runDataRetentionCleanup,
   runExpiredDeletedAccountCleanup
 } from './maintenance-cleanup-jobs.js'
@@ -157,6 +158,7 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
       return
     case 'ops-worker':
+      scheduler.schedule({ name: backgroundScheduledJobName('chat-retention-cleanup'), intervalMs: 10 * minuteMs, initialDelayMs: 3 * minuteMs, task: runChatRetentionCleanup })
       scheduler.schedule({ name: backgroundScheduledJobName('api-key-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: secondMs, task: runApiKeyAvailabilityScheduleStatusSync })
       scheduler.schedule({ name: backgroundScheduledJobName('account-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: 2 * secondMs, task: runAccountAvailabilityScheduleStatusSync })
       scheduler.schedule({ name: backgroundScheduledJobName('resource-authorization-expiry-sweep'), intervalMs: minuteMs, initialDelayMs: 54 * secondMs, task: runResourceAuthorizationExpirySweep })

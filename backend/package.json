@@ -379,6 +379,8 @@
     "test:chat-sse-parser": "tsx src/scripts/regression/chat-sse-parser-regression.ts",
     "test:chat-routes-contract": "tsx src/scripts/regression/chat-routes-contract-regression.ts",
     "test:chat-gateway-mock-ai": "tsx src/scripts/regression/chat-gateway-mock-ai-regression.ts",
+    "test:chat-context-budget": "tsx src/scripts/regression/chat-context-budget-regression.ts",
+    "test:chat-postgres-redis-smoke": "tsx src/scripts/regression/chat-postgres-redis-smoke.ts",
     "test:account-balance-config": "tsx src/scripts/regression/account-balance-config-regression.ts",
     "test:account-balance-adapters": "tsx src/scripts/regression/account-balance-adapters-regression.ts",
     "test:account-balance-refresh": "tsx src/scripts/regression/account-balance-refresh-regression.ts",

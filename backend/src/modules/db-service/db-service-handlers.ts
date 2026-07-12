@@ -1,6 +1,8 @@
 import { performance } from 'node:perf_hooks'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { getChatDatabaseClient } from '../../storage/chat-client.js'
+import { cleanupChatRetention } from '../../storage/chat.repository.js'
 import {
   commitAccountBalanceRefreshAsync,
   enableDetectedAccountBalanceQueryAsync
@@ -1016,6 +1018,8 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           ? await cleanupExpiredSystemSessionsAsync(operation.expiredBefore, operation.limit)
           : cleanupExpiredSystemSessions(operation.expiredBefore, operation.limit)
       }
+    case 'cleanup_chat_retention':
+      return await cleanupChatRetention(await getChatDatabaseClient(), operation)
     default:
       if (runtimeConfig.databaseDriver === 'postgres') {
         throw new Error(`PostgreSQL DB service operation 未接入 async driver：${operationType}`)
@@ -1537,6 +1541,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return getRuntimeLogDetailAsync(operation.id)
     case 'get_runtime_log_facets':
       return getRuntimeLogFacetsAsync()
+    case 'cleanup_chat_retention':
+      throw new Error('cleanup_chat_retention 必须走异步 DB service handler')
     case 'status':
       return buildDbServiceRuntimeSnapshot()
     default:

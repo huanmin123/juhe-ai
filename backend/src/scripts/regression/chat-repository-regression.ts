@@ -10,6 +10,7 @@ import {
   createChatConversation,
   deleteChatConversation,
   failChatTurn,
+  cleanupChatRetention,
   listChatContextMessages,
   listChatConversations,
   listChatMessages
@@ -135,6 +136,19 @@ const contextAfterFailure = await listChatContextMessages(client, {
   now: '2026-07-12T00:06:00.000Z'
 })
 assert.equal(contextAfterFailure.length, 2, '失败轮次的一问一答都不能进入下一轮上下文')
+
+const stale = await createChatConversation(client, {
+  id: 'chat_conv_stale', systemAccountId: 'sys_user_1', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', now: '2026-07-01T00:00:00.000Z'
+})
+await acceptChatTurn(client, {
+  conversationId: stale.id, systemAccountId: 'sys_user_1', clientMessageId: 'stale_1', userContent: '过期问题', model: 'mock-model', now: '2026-07-01T00:01:00.000Z', storageQuotaBytes: 1024
+})
+const cleanup = await cleanupChatRetention(client, {
+  now: '2026-07-12T00:10:00.000Z', interruptedBefore: '2026-07-12T00:00:00.000Z', limit: 1000
+})
+assert.equal(cleanup.recoveredTurns, 1, '超时 streaming 轮次应先恢复为失败')
+assert.equal(cleanup.deletedMessages, 2, '清理必须按完整轮次成对删除')
+assert.equal(cleanup.deletedConversations, 1, '没有保留消息的会话应删除')
 
 await assert.rejects(
   acceptChatTurn(client, {

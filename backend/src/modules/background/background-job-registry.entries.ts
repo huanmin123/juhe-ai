@@ -358,6 +358,19 @@ export const backgroundScheduledJobs = [
     writes: ['dataset:*', 'stats:*', 'usage-shards:usage_records']
   }),
   scheduled({
+    jobName: 'chat-retention-cleanup',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'hybrid',
+    defaultRole: 'ops-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['chat:*']
+  }),
+  scheduled({
     jobName: 'expired-deleted-account-cleanup',
     category: 'scheduled',
     kind: 'maintenance',

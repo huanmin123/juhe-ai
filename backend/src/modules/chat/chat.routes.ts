@@ -21,6 +21,7 @@ import { getChatDatabaseClient } from '../../storage/chat-client.js'
 import { findApiKeySecretAsync, listApiKeysAsync } from '../../storage/repositories.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { collectOpenAIChatSse } from './chat-gateway-sse.js'
+import { trimChatContextToBudget } from './chat-context-budget.js'
 
 export const chatRouter = Router()
 
@@ -127,12 +128,13 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       res.status(409).json({ message: '该消息已提交，请刷新会话', code: 'chat_message_already_exists' })
       return
     }
-    const context = await listChatContextMessages(client, {
+    const storedContext = await listChatContextMessages(client, {
       conversationId: conversation.id,
       systemAccountId: ownerId,
       limitTurns: 64,
       now: new Date().toISOString()
     })
+    const context = trimChatContextToBudget({ history: storedContext, currentUserContent: body.content })
     controller = new AbortController()
     activeStreams.set(conversation.id, { ownerId, turnId: accepted.turnId, controller })
     res.status(200)
