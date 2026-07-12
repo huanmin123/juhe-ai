@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：PLAN-0091
-- 状态：已实现，待发布
+- 状态：已完成并生产验证
 - 创建时间：2026-07-12
 - 需求来源：Codex 会话 `019f548b-5364-7223-be51-2237a2a82caf`
 - 关联模块：PostgreSQL / 使用记录保留 / maintenance worker / 表监控 / 统计 schema / 前端
@@ -22,7 +22,7 @@
 - [x] 删除归档恢复 smoke，替换为分区直接删除 smoke；压力脚本改为验证目标分区已删除。
 - [x] 从后端路由、监控角色、PostgreSQL schema 目标和前端类型/文案中移除 `archive`。
 - [x] 更新 PLAN-0080、数据治理、表监控、PostgreSQL 高性能模式、SQLite 存储和测试文档；历史压测报告保留并注明方案已被 PLAN-0091 替换。
-- [ ] 发布迁移只执行 `DROP TABLE IF EXISTS juhe_stats.data_archive_manifests` 和 `DROP SCHEMA IF EXISTS juhe_archive RESTRICT`；普通部署仍保持非业务数据库不重建、Redis 不清理。
+- [x] 发布迁移定向删除 manifest、空归档 schema、25 条历史 archive 监控快照和对应游标；普通部署保持非业务数据库不重建、Redis 不清理。
 
 ## 验证
 
@@ -31,7 +31,7 @@
 - `test:table-monitor-display`：前端监控角色不再包含归档库。
 - `test:data-retention-sql-guards`、类型检查和完整构建继续通过。
 - 测试 PostgreSQL `test:usage-record-partition-drop-postgres-smoke` 已通过：2 条样本随整日分区删除，热 schema 和冷归档 schema 均无目标表残留。
-- 生产发布后确认 `postgres:juhe_archive` 不再产生新采样，旧快照按表监控 30 天保留期自然清理。
+- 生产发布确认 `juhe_archive`、manifest 表、archive 数据库/表监控快照均为 0；新代码不再产生 archive 角色采样。
 
 ## 发布与回滚
 
