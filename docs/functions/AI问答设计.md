@@ -1,13 +1,13 @@
 # AI 问答设计
 
 > 本文定义 `juhe-ai` 第一版 AI 问答功能的目标架构、页面交互、接口、存储、流式协议、安全边界和验收口径。
-> 当前状态：设计已确认，业务代码尚未实现；实施跟踪见 [PLAN-0092](../plans/计划-0092-AI问答MVP.md)。
+> 当前状态：AI 问答 MVP 已完成；输入编辑器与模型内置工具能力进入 PLAN-0092 增量阶段。
 
 ## 1. 功能定位
 
 AI 问答是登录用户使用自己 API Key 的平台内置客户端，不是第二套网关、第二套调度系统或独立 Agent 平台。聊天负责客户端体验，审计负责网关调用留痕，两者是相互独立的模块边界。
 
-模型请求必须携带会话绑定的本地 API Key，重新进入现有 `/v1/chat/completions` 网关入口，并继续遵守：
+模型请求必须携带会话绑定的本地 API Key，重新进入现有 `/v1/chat/completions` 或 `/v1/responses` 网关入口，并继续遵守：
 
 - `API Key -> 路由策略 -> 分组 -> AI 账户 -> 供应商 / 协议能力`。
 - API Key 状态、过期、时间计划、额度和并发限制。
@@ -21,14 +21,14 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 | 事项 | 决策 |
 | --- | --- |
 | 后端范围 | 第一版只在现有 Node 后端实现，不等待 Go 迁移，也不为 Go 写兼容分支 |
-| 模型协议 | 只使用 OpenAI Chat Completions，即 `/v1/chat/completions` |
+| 模型协议 | 普通模型使用 Chat Completions；具备 Responses 能力的模型使用 `/v1/responses`，工具字段由网关透传 |
 | API Key | 新建会话时选择当前用户自己的 API Key，会话创建后固定且不可更换 |
 | 模型 | 每轮都可以切换，但只能选择该 API Key 当前可用模型 |
 | 上下文 | 服务端管理，只使用最近滚动 7 天内的完整成功轮次 |
-| 输入 | 第一版只支持纯文本，不支持图片上传、附件和语音 |
+| 输入 | 使用 Tiptap 3 最小编辑器，支持 Markdown 文本、撤销/重做、图片粘贴预览和 `/` 命令入口 |
 | 输出 | 支持安全 Markdown、列表、表格、代码块、LaTeX、Mermaid 和 HTTPS Markdown 图片 |
 | 消息列表 | 必须使用支持动态高度的虚拟列表和游标分页 |
-| 工具 | 第一版不支持 MCP、Skill、Function Calling、联网搜索或图片生成 |
+| 工具 | 不手写搜索、天气或 Shell；透传模型/上游原生 Responses tools，并展示工具事件 |
 | 历史操作 | 第一版不支持编辑消息、分支、指定回答重新生成、分享或多人会话 |
 | 数据模式 | standalone 使用独立 `juhe-ai-chat.sqlite3`，performance 使用独立 `juhe_chat` schema；两者使用同一业务契约 |
 | 容量门禁 | 每个用户最近 7 天聊天正文默认最多 2 GiB；超限后禁止继续发送，但允许读取、停止和删除 |
@@ -41,7 +41,8 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 - 新建、查看、分页加载和删除自己的会话。
 - 会话绑定自己的一个 API Key，绑定后不可更换。
 - 按 API Key 获取可用模型，并允许每轮切换模型。
-- 纯文本提问、流式回答、停止生成和中文错误提示。
+- Markdown 编辑、撤销/重做、图片粘贴预览、纯文本提问、流式回答、停止生成和中文错误提示。
+- Responses 内置工具事件透传与工具过程展示；不在本模块执行未注册的本地工具。
 - 最近 7 天消息存储、完整轮次上下文和后台有界清理。
 - Markdown、GFM 列表 / 表格、代码高亮、LaTeX、Mermaid 和 HTTPS 图片展示。
 - 动态高度虚拟列表、顶部加载历史、底部跟随和滚动位置保持。
@@ -49,16 +50,16 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 
 ### 3.2 本次不包含
 
-- 图片上传、视觉问答、图片生成和生成产物下载。
+- 图片资产上传、视觉问答、图片生成和生成产物下载；本阶段只做粘贴预览和资产协议占位。
 - 文件附件、知识库、联网搜索、语音输入。
-- MCP、Skill、Function Calling、工具审批和工具执行 worker。
+- MCP、Skill、站内 Function Tool、工具审批和工具执行 worker。
 - system prompt、temperature、top_p 等高级模型参数的用户配置。
 - 自动摘要、长期记忆和跨 7 天上下文。
 - 消息编辑、消息分支、指定回答重新生成、会话分享、多人协作。
 - 管理员读取其他用户聊天正文的管理页面或接口。
 - Go 后端实现或 Node / Go 双写。
 
-这些能力进入后续独立计划，不在 MVP 表结构中提前预留工具、附件或产物字段。
+站内工具执行、MCP、Skill 和产物进入后续独立计划；模型原生工具事件使用当前聊天消息的结构化内容字段，不把第三方 Agent 运行时引入本项目。
 
 ## 4. 总体架构
 
@@ -67,7 +68,7 @@ flowchart LR
   User["登录用户 / AI 问答页"] --> Chat["Node AI 问答模块"]
   Chat --> DB["DB service typed operations"]
   DB --> ChatDB["独立聊天存储：juhe_chat / juhe-ai-chat.sqlite3"]
-  Chat --> Gateway["本机 /v1/chat/completions"]
+  Chat --> Gateway["本机 /v1/chat/completions 或 /v1/responses"]
   Gateway --> APIKey["真实本地 API Key 鉴权"]
   APIKey --> Strategy["路由策略"]
   Strategy --> Group["分组"]
@@ -204,8 +205,10 @@ MVP 使用 `@tanstack/vue-virtual`，不直接复制 `F:\go-project\go-ee-work-t
 - `highlight.js`：常用代码语言高亮，按需注册语言。
 - `katex`：行内和块级 LaTeX。
 - `mermaid`：流程图、时序图等图表。
+- `@tiptap/core`、`@tiptap/vue-3`：输入编辑器内核和 Vue 绑定。
+- Tiptap 最小扩展集：StarterKit、History、Placeholder、CharacterCount、Image、自定义附件节点和 Suggestion。
 
-不引入 Tiptap、LangChain、Mastra、完整 Chat 平台或 Agent UI 运行时。第一版输入只是纯文本，多一套编辑器或 Agent 消息协议没有收益。
+不引入 LangChain、Mastra、完整 Chat 平台或 Agent UI 运行时。Tiptap 只负责编辑状态，不负责模型调用、工具执行或会话持久化。
 
 ### 8.2 支持范围
 
@@ -228,6 +231,26 @@ MVP 使用 `@tanstack/vue-virtual`，不直接复制 `F:\go-project\go-ee-work-t
 - Markdown 原始 HTML 不作为可信内容，最终输出始终经过 DOMPurify。
 - 链接只允许 `http`、`https` 和 `mailto`，外链使用新窗口并附加 `noopener noreferrer`。
 - 图片只允许 HTTPS，设置 `loading=lazy`、`decoding=async` 和 `referrerpolicy=no-referrer`。
+
+### 8.5 AIComposer 编辑器
+
+输入区改为独立 `AIComposer.vue`，不再继续扩展 `a-textarea`。编辑器使用 Tiptap 3 / ProseMirror 的事务和历史栈，业务层只维护聊天需要的内容投影。
+
+- `Enter` 发送，`Shift+Enter` 换行；输入法组合状态期间不发送。
+- 撤销、重做、选区、粘贴和拖放由编辑器内核处理。
+- 文本以 Markdown 语义输入；图片粘贴先生成受限本地预览节点，不把 Data URL 写入聊天正文。
+- `/` 触发命令建议菜单；第一阶段命令只产生结构化输入意图，不执行本地命令。
+- 发送前保存 Tiptap JSON 快照；发送成功清空编辑器，失败恢复快照，停止生成不恢复已经提交的用户消息。
+- 编辑器输出转换为 `input_text` / `input_image` 内容块；纯文本请求仍可降级为现有 `content` 字段。
+
+### 8.6 模型原生工具协议
+
+- 发送前根据 API Key 对应模型能力选择 Chat Completions 或 Responses；不能仅根据模型名称猜测能力。
+- Responses 请求保留上游支持的 `tools`、`tool_choice`、`parallel_tool_calls` 等字段，由网关做协议适配和安全校验。
+- Chat 模块解析 `response.output_item.added`、`response.function_call_arguments.delta`、`response.output_text.delta`、`response.completed` 等事件，并将工具过程投影为消息时间线中的 `tool_call` / `tool_result` 内容块。
+- 上游自行执行的内置工具只展示状态和结果；Chat 模块不重复执行、不伪造工具结果。
+- 模型要求本地未注册的 function tool 时，返回明确的“不支持此工具”状态并结束本轮，不能静默当作普通文本。
+- 工具调用参数、结果和错误均有字节上限、超时和审计 trace；不得把工具原始 JSON 无界写入 SSE 或聊天正文。
 - 禁止 `javascript:`、`data:`、`file:`、iframe、表单、事件属性和任意外部 SVG。
 - Mermaid 使用严格安全模式；生成 SVG 再经过允许 SVG profile 的清洗。
 - 表格、代码和长公式在窄屏横向滚动，不能撑破消息列。
