@@ -138,18 +138,40 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 }
 
 func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
+	priorityInput := 10.0
+	priorityOutput := 60.0
+	priorityCachedInput := 1.0
+	priorityCacheWrite := 12.5
+	flexInput := 2.5
+	flexOutput := 15.0
+	flexCachedInput := 0.25
+	flexCacheWrite := 3.125
+	longContextThreshold := 272000
+	longContextInputMultiplier := 2.0
+	longContextOutputMultiplier := 1.5
 	builtIn := catalogItemFromPort(port.ManagementProviderModelCatalogItem{
-		ProviderCode:                  "gpt",
-		Model:                         "gpt-5.6-sol",
-		Scope:                         "built_in",
-		Status:                        "active",
-		SupportedServiceTiers:         []string{"priority", "priority"},
-		SupportedReasoningEfforts:     []string{"low", "high", "high", "max"},
-		DefaultReasoningEffort:        " high ",
-		CodexSupportedReasoningLevels: []string{"low", "high", "ultra", "ultra"},
-		CodexDefaultReasoningLevel:    " low ",
-		CodexMultiAgentVersion:        " v2 ",
-		SupportsServiceTier:           false,
+		ProviderCode:                    "gpt",
+		Model:                           "gpt-5.6-sol",
+		Scope:                           "built_in",
+		Status:                          "active",
+		SupportedServiceTiers:           []string{"priority", "priority"},
+		SupportedReasoningEfforts:       []string{"low", "high", "high", "max"},
+		DefaultReasoningEffort:          " high ",
+		CodexSupportedReasoningLevels:   []string{"low", "high", "ultra", "ultra"},
+		CodexDefaultReasoningLevel:      " low ",
+		CodexMultiAgentVersion:          " v2 ",
+		SupportsServiceTier:             false,
+		PriorityInputUSDPer1M:           &priorityInput,
+		PriorityOutputUSDPer1M:          &priorityOutput,
+		PriorityCachedInputUSDPer1M:     &priorityCachedInput,
+		PriorityCacheWriteUSDPer1M:      &priorityCacheWrite,
+		FlexInputUSDPer1M:               &flexInput,
+		FlexOutputUSDPer1M:              &flexOutput,
+		FlexCachedInputUSDPer1M:         &flexCachedInput,
+		FlexCacheWriteUSDPer1M:          &flexCacheWrite,
+		LongContextInputTokenThreshold:  &longContextThreshold,
+		LongContextInputCostMultiplier:  &longContextInputMultiplier,
+		LongContextOutputCostMultiplier: &longContextOutputMultiplier,
 	})
 	if !slices.Equal(builtIn.SupportedServiceTiers, []string{"priority"}) ||
 		!slices.Equal(builtIn.SupportedReasoningEfforts, []string{"low", "high", "max"}) ||
@@ -161,6 +183,23 @@ func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 		builtIn.CodexDefaultReasoningLevel != "low" ||
 		builtIn.CodexMultiAgentVersion != "v2" {
 		t.Fatalf("built-in Codex capabilities = %+v", builtIn)
+	}
+	if builtIn.PriorityInputUSDPer1M == nil || *builtIn.PriorityInputUSDPer1M != 10 ||
+		builtIn.PriorityOutputUSDPer1M == nil || *builtIn.PriorityOutputUSDPer1M != 60 ||
+		builtIn.PriorityCachedInputUSDPer1M == nil || *builtIn.PriorityCachedInputUSDPer1M != 1 ||
+		builtIn.PriorityCacheWriteUSDPer1M == nil || *builtIn.PriorityCacheWriteUSDPer1M != 12.5 ||
+		builtIn.PriorityCacheWrite1hUSDPer1M != nil ||
+		builtIn.FlexInputUSDPer1M == nil || *builtIn.FlexInputUSDPer1M != 2.5 ||
+		builtIn.FlexOutputUSDPer1M == nil || *builtIn.FlexOutputUSDPer1M != 15 ||
+		builtIn.FlexCachedInputUSDPer1M == nil || *builtIn.FlexCachedInputUSDPer1M != 0.25 ||
+		builtIn.FlexCacheWriteUSDPer1M == nil || *builtIn.FlexCacheWriteUSDPer1M != 3.125 ||
+		builtIn.FlexCacheWrite1hUSDPer1M != nil {
+		t.Fatalf("built-in tier pricing metadata = %+v", builtIn)
+	}
+	if builtIn.LongContextInputTokenThreshold == nil || *builtIn.LongContextInputTokenThreshold != 272000 ||
+		builtIn.LongContextInputCostMultiplier == nil || *builtIn.LongContextInputCostMultiplier != 2 ||
+		builtIn.LongContextOutputCostMultiplier == nil || *builtIn.LongContextOutputCostMultiplier != 1.5 {
+		t.Fatalf("built-in long-context metadata = %+v", builtIn)
 	}
 
 	custom := catalogItemFromPort(port.ManagementProviderModelCatalogItem{

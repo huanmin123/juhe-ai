@@ -117,12 +117,16 @@ const modelPricingDriverHelpers: ModelPricingProviderDriverHelpers = {
 }
 
 export function listProviderModelPricing(providerCode: string): ProviderModelPricing[] {
+  return listProviderModelPricingAsOf(providerCode, currentUtcDate())
+}
+
+export function listProviderModelPricingAsOf(providerCode: string, asOfDate: string): ProviderModelPricing[] {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return []
   const models = rawModelsForProvider(normalizedProviderCode)
   if (!models.length) return []
   const pricing = models
-    .filter((item) => !hasModelShutdown(item))
+    .filter((item) => !hasModelShutdown(item, asOfDate))
     .map((item) => toProviderModelPricing(item, normalizedProviderCode))
   return pricing.sort(compareProviderModels)
 }
@@ -469,8 +473,8 @@ function canonicalOpenAIModelAlias(model: string): string {
   return model === 'gpt-5.6' ? 'gpt-5.6-sol' : model
 }
 
-function hasModelShutdown(item: RawModelPricing): boolean {
-  return typeof item.shutdown_date === 'string' && item.shutdown_date <= currentUtcDate()
+function hasModelShutdown(item: RawModelPricing, asOfDate = currentUtcDate()): boolean {
+  return typeof item.shutdown_date === 'string' && item.shutdown_date <= asOfDate
 }
 
 function normalizeModel(value: string): string {
