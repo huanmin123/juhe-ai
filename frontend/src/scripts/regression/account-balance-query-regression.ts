@@ -18,6 +18,27 @@ assert.deepEqual(formatAccountBalance({ status: 'failed', remainingUsd: '7.31', 
 assert.equal(formatAccountBalance({ status: 'unlimited' }).text, '无限')
 assert.equal(formatAccountBalance({ status: 'unsupported' }).text, '未提供')
 assert.equal(formatAccountBalance({ status: 'refreshing' }).refreshing, true)
+assert.deepEqual(formatAccountBalance({
+  status: 'fresh',
+  remainingUsd: '7.310000',
+  consecutiveTransientFailures: 1,
+  lastTransientErrorMessage: '上游余额查询超时'
+} as never), {
+  text: '$7.31',
+  tone: 'fresh',
+  tooltip: '刷新暂时失败（1/3）：上游余额查询超时；当前显示上次成功余额',
+  refreshing: false
+})
+assert.deepEqual(formatAccountBalance({
+  status: 'pending',
+  consecutiveTransientFailures: 2,
+  lastTransientErrorMessage: '上游暂时不可用'
+} as never), {
+  text: '待重试（2/3）',
+  tone: 'pending',
+  tooltip: '上游暂时不可用',
+  refreshing: false
+})
 
 const originalAccounts = [
   { id: 'account-a', name: '账户 A', balanceSnapshot: { status: 'fresh', remainingUsd: '1.00' } },
@@ -78,6 +99,10 @@ assert.match(accountsApiSource, /testBalanceDraft:/, '账户 API 必须提供无
 assert.match(accountsApiSource, /refreshBalance:\s*\(id: string,\s*params\?:/, '正式余额刷新不能再接收未保存配置')
 const listRefreshSource = /async function refreshAccountBalance[\s\S]*?\n}/.exec(accountsViewSource)?.[0] ?? ''
 assert.match(listRefreshSource, /updateLoadedAccountBalance\(accountId, snapshot\)/, '列表刷新应通过 shallowRef 列表入口替换当前账户行')
+assert.ok(
+  listRefreshSource.indexOf("snapshot?.status === 'failed'") < listRefreshSource.indexOf('updateLoadedAccountBalance(accountId, snapshot)'),
+  '人工刷新必须先处理失败结果，失败时不能覆盖当前单元格'
+)
 assert.doesNotMatch(listRefreshSource, /account\.balanceSnapshot = snapshot/, '列表刷新不能直接修改 shallowRef 内部对象')
 assert.doesNotMatch(listRefreshSource, /refreshData\(/, '列表余额刷新不能重新请求整张账户列表')
 assert.match(usageCellSource, /balance-label/, '列表余额标签和金额应分层着色')

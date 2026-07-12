@@ -66,7 +66,7 @@ export function registerAccountBalanceRoutes(router: Router): void {
         res.status(400).json(badRequest('账户未开启余额查询，或当前不可用'))
         return
       }
-      res.json(ok(await refreshAccountBalanceCandidate(candidate)))
+      res.json(ok(await refreshAccountBalanceCandidate(candidate, { mode: 'manual' })))
     } catch (error) {
       next(error)
     }
