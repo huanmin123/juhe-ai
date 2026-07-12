@@ -74,7 +74,11 @@ func TestW6SystemAPIClientIPAllowlistQueryUsesBoundedActiveAllowlistExists(t *te
 	if err != nil {
 		t.Fatalf("read W6 client IP allowlist query: %v", err)
 	}
-	sql := strings.ToLower(string(source))
+	sql := strings.ToLower(w6SystemAPIClientIPAllowlistNamedSQLSection(
+		t,
+		string(source),
+		"FindSystemAPIClientIPAllowlistPolicy",
+	))
 
 	for _, want := range []string{
 		"select policies.id, policies.expires_at",
@@ -103,6 +107,24 @@ func TestW6SystemAPIClientIPAllowlistQueryUsesBoundedActiveAllowlistExists(t *te
 			t.Fatalf("W6 client IP allowlist query should not contain %q:\n%s", forbidden, sql)
 		}
 	}
+}
+
+func w6SystemAPIClientIPAllowlistNamedSQLSection(
+	t *testing.T,
+	source string,
+	name string,
+) string {
+	t.Helper()
+	marker := "-- name: " + name + " "
+	start := strings.Index(source, marker)
+	if start < 0 {
+		t.Fatalf("named SQL query %s not found", name)
+	}
+	rest := source[start+len(marker):]
+	if next := strings.Index(rest, "\n-- name: "); next >= 0 {
+		return rest[:next]
+	}
+	return rest
 }
 
 func TestFindSystemAPIClientIPAllowlistPolicyFormatsUTCAndReturnsResult(t *testing.T) {

@@ -11,6 +11,73 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const disableActiveManagementClientIPAllowlistPolicies = `-- name: DisableActiveManagementClientIPAllowlistPolicies :execrows
+UPDATE juhe_stats.client_ip_policies
+SET status = 'disabled',
+  disabled_at = $1::text,
+  disabled_by_system_account_id = $2::text,
+  disabled_reason = $3::text,
+  updated_at = $4::text
+WHERE ip_hash = $5::text
+  AND policy_type = 'allowlist'
+  AND status = 'active'
+`
+
+type DisableActiveManagementClientIPAllowlistPoliciesParams struct {
+	DisabledAt                string
+	DisabledBySystemAccountID string
+	DisabledReason            string
+	UpdatedAt                 string
+	IpHash                    string
+}
+
+func (q *Queries) DisableActiveManagementClientIPAllowlistPolicies(ctx context.Context, arg DisableActiveManagementClientIPAllowlistPoliciesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, disableActiveManagementClientIPAllowlistPolicies,
+		arg.DisabledAt,
+		arg.DisabledBySystemAccountID,
+		arg.DisabledReason,
+		arg.UpdatedAt,
+		arg.IpHash,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const disableActiveManagementClientIPPolicies = `-- name: DisableActiveManagementClientIPPolicies :execrows
+UPDATE juhe_stats.client_ip_policies
+SET status = 'disabled',
+  disabled_at = $1::text,
+  disabled_by_system_account_id = $2::text,
+  disabled_reason = $3::text,
+  updated_at = $4::text
+WHERE ip_hash = $5::text
+  AND status = 'active'
+`
+
+type DisableActiveManagementClientIPPoliciesParams struct {
+	DisabledAt                string
+	DisabledBySystemAccountID string
+	DisabledReason            string
+	UpdatedAt                 string
+	IpHash                    string
+}
+
+func (q *Queries) DisableActiveManagementClientIPPolicies(ctx context.Context, arg DisableActiveManagementClientIPPoliciesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, disableActiveManagementClientIPPolicies,
+		arg.DisabledAt,
+		arg.DisabledBySystemAccountID,
+		arg.DisabledReason,
+		arg.UpdatedAt,
+		arg.IpHash,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const findSystemAPIClientIPAllowlistPolicy = `-- name: FindSystemAPIClientIPAllowlistPolicy :one
 SELECT policies.id, policies.expires_at
 FROM juhe_stats.client_ip_policies AS policies
@@ -41,5 +108,97 @@ func (q *Queries) FindSystemAPIClientIPAllowlistPolicy(ctx context.Context, arg 
 	row := q.db.QueryRow(ctx, findSystemAPIClientIPAllowlistPolicy, arg.IpHash, arg.NowAt)
 	var i FindSystemAPIClientIPAllowlistPolicyRow
 	err := row.Scan(&i.ID, &i.ExpiresAt)
+	return i, err
+}
+
+const insertManagementClientIPAllowlistPolicy = `-- name: InsertManagementClientIPAllowlistPolicy :one
+INSERT INTO juhe_stats.client_ip_policies (
+  id,
+  ip_hash,
+  policy_type,
+  status,
+  reason,
+  expires_at,
+  created_by_system_account_id,
+  created_at,
+  updated_at
+) VALUES (
+  $1::text,
+  $2::text,
+  'allowlist',
+  'active',
+  $3::text,
+  NULL,
+  $4::text,
+  $5::text,
+  $6::text
+)
+RETURNING
+  id,
+  ip_hash,
+  policy_type,
+  status,
+  reason,
+  expires_at,
+  created_by_system_account_id,
+  created_at,
+  updated_at,
+  disabled_at,
+  disabled_by_system_account_id,
+  disabled_reason
+`
+
+type InsertManagementClientIPAllowlistPolicyParams struct {
+	ID                       string
+	IpHash                   string
+	Reason                   pgtype.Text
+	CreatedBySystemAccountID string
+	CreatedAt                string
+	UpdatedAt                string
+}
+
+func (q *Queries) InsertManagementClientIPAllowlistPolicy(ctx context.Context, arg InsertManagementClientIPAllowlistPolicyParams) (JuheStatsClientIpPolicy, error) {
+	row := q.db.QueryRow(ctx, insertManagementClientIPAllowlistPolicy,
+		arg.ID,
+		arg.IpHash,
+		arg.Reason,
+		arg.CreatedBySystemAccountID,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i JuheStatsClientIpPolicy
+	err := row.Scan(
+		&i.ID,
+		&i.IpHash,
+		&i.PolicyType,
+		&i.Status,
+		&i.Reason,
+		&i.ExpiresAt,
+		&i.CreatedBySystemAccountID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DisabledAt,
+		&i.DisabledBySystemAccountID,
+		&i.DisabledReason,
+	)
+	return i, err
+}
+
+const lockManagementClientIPRegistry = `-- name: LockManagementClientIPRegistry :one
+SELECT ip_hash, client_ip
+FROM juhe_stats.client_ip_registry
+WHERE ip_hash = $1::text
+FOR UPDATE
+`
+
+type LockManagementClientIPRegistryRow struct {
+	IpHash   string
+	ClientIp string
+}
+
+func (q *Queries) LockManagementClientIPRegistry(ctx context.Context, ipHash string) (LockManagementClientIPRegistryRow, error) {
+	row := q.db.QueryRow(ctx, lockManagementClientIPRegistry, ipHash)
+	var i LockManagementClientIPRegistryRow
+	err := row.Scan(&i.IpHash, &i.ClientIp)
 	return i, err
 }
