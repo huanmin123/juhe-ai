@@ -2045,7 +2045,7 @@ export async function requestBackgroundWorkerDbService<T extends import('../db-s
       }
       timedOutBackgroundDbServiceRequestCount += 1
       pendingBackgroundDbServiceRequests.delete(requestId)
-      pending.reject(new Error('后台 DB service 请求超时'))
+      pending.reject(new Error(`后台 DB service 请求超时：${operation.type}`))
     }, timeoutMs)
     pendingBackgroundDbServiceRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout, createdAt: Date.now() })
     sendToParentOrServer({

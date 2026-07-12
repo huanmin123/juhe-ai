@@ -6,6 +6,10 @@ import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.servi
 import { requestStatsWriter } from './background-stats-writer.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import {
+  backgroundFullDiagnosticQueueConcurrency,
+  backgroundProbeDbServiceTimeoutMs
+} from './account-probe-limits.js'
+import {
   enqueueAccountApiKeyCooldownRetest,
   getAccountApiKeyCooldownRetestQueueSnapshot,
   setAccountApiKeyCooldownRetestQueueConcurrency
@@ -33,9 +37,6 @@ import {
 
 const accountQualityFailurePrecheckBatchSize = 10
 const normalRouteSpeedFirstRecoveryProbeBatchSize = 10
-const maxOpsExternalIoConcurrency = 10
-const maxOpsFullDiagnosticConcurrency = 3
-const backgroundProbeDbServiceTimeoutMs = 10_000
 let cooldownAccountRetestCursor: CooldownAccountRetestCursor | undefined
 
 type SettingsNumberReader = (key: string, min: number, max: number) => number
@@ -61,7 +62,7 @@ export async function runAccountQualityRefresh(deps: AccountQualityRefreshDeps):
       failureCandidateLimit: accountQualityFailurePrecheckBatchSize
     })
     const failureCandidates = realtimeResult.failureCandidates
-    const queueConcurrency = boundedOpsQueueConcurrency(accountQualityFailurePrecheckBatchSize, maxOpsFullDiagnosticConcurrency)
+    const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(accountQualityFailurePrecheckBatchSize)
     setAccountQualityFailurePrecheckQueueConcurrency(queueConcurrency)
     let failurePrecheckEnqueuedCount = 0
     let failurePrecheckSkippedQueuedCount = 0
@@ -96,7 +97,7 @@ export async function runAccountQualityRefresh(deps: AccountQualityRefreshDeps):
 
 export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise<void> {
   const batchSize = deps.settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
-  const queueConcurrency = boundedOpsQueueConcurrency(batchSize)
+  const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(batchSize)
   setCooldownAccountRetestQueueConcurrency(queueConcurrency)
   const queueBeforeScan = getCooldownAccountRetestQueueSnapshot()
   const availableQueueSlots = cooldownAccountRetestQueueAvailableSlots(batchSize, queueBeforeScan)
@@ -151,7 +152,7 @@ export function cooldownAccountRetestQueueAvailableSlots(
 
 export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<void> {
   const batchSize = deps.settingsNumber('accountHealthCheckBatchSize', 1, 100)
-  const queueConcurrency = boundedOpsQueueConcurrency(batchSize)
+  const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(batchSize)
   setAccountHealthCheckQueueConcurrency(queueConcurrency)
   const intervalHours = deps.settingsNumber('accountHealthCheckIntervalHours', 1, 168)
   const jitterMinutes = deps.settingsNumber('accountHealthCheckJitterMinutes', 0, 1440)
@@ -194,7 +195,7 @@ export async function runAccountHealthCheck(deps: AccountRetestDeps): Promise<vo
 
 export async function runAccountApiKeyCooldownRetest(deps: AccountRetestDeps): Promise<void> {
   const batchSize = deps.settingsNumber('cooldownAccountRetestBatchSize', 1, 100)
-  const queueConcurrency = boundedOpsQueueConcurrency(batchSize)
+  const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(batchSize)
   setAccountApiKeyCooldownRetestQueueConcurrency(queueConcurrency)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
   const candidates = await listAccountApiKeyRuntimeStatesDueForProbeAsync(batchSize)
@@ -226,7 +227,7 @@ export async function runAccountApiKeyCooldownRetest(deps: AccountRetestDeps): P
 
 export async function runNormalRouteSpeedFirstRecoveryProbe(): Promise<void> {
   const batchSize = normalRouteSpeedFirstRecoveryProbeBatchSize
-  const queueConcurrency = boundedOpsQueueConcurrency(batchSize)
+  const queueConcurrency = backgroundFullDiagnosticQueueConcurrency(batchSize)
   setNormalRouteSpeedFirstRecoveryProbeQueueConcurrency(queueConcurrency)
   const candidates = await listNormalRouteLatencyProbeCandidatesAsync(batchSize)
   const startedAtMs = Date.now()
@@ -253,10 +254,4 @@ export async function runNormalRouteSpeedFirstRecoveryProbe(): Promise<void> {
       elapsedMs: Date.now() - startedAtMs
     }, '普通路由速度优先恢复探针候选已加入异步队列')
   }
-}
-
-function boundedOpsQueueConcurrency(batchSize: number, maxConcurrency = maxOpsExternalIoConcurrency): number {
-  const normalizedBatchSize = Number.isFinite(batchSize) ? Math.trunc(batchSize) : 1
-  const normalizedMaxConcurrency = Number.isFinite(maxConcurrency) ? Math.trunc(maxConcurrency) : maxOpsExternalIoConcurrency
-  return Math.max(1, Math.min(normalizedBatchSize, normalizedMaxConcurrency))
 }

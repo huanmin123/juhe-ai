@@ -7,6 +7,7 @@ import {
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
+import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
 interface AccountApiKeyCooldownRetestQueueItem extends AccountApiKeyRuntimeProbeCandidate {
   maxRecoveryHours: number
@@ -18,7 +19,7 @@ const accountApiKeyCooldownRetestQueue = createRetryQueue<AccountApiKeyCooldownR
   name: 'account-api-key-cooldown-retest',
   policy: accountApiKeyCooldownRetestRetryPolicy,
   concurrency: 1,
-  run: runAccountApiKeyCooldownRetestQueueItem,
+  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runAccountApiKeyCooldownRetestQueueItem(item, context)),
   onExhausted: (event) => {
     logger.warn({
       event: 'background_account_api_key_cooldown_retest_retry_exhausted',
@@ -99,7 +100,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_account_api_key_success',
       account: fixedKeyCandidate
-    })
+    }, backgroundProbeDbServiceTimeoutMs)
     logger.info({
       event: 'background_account_api_key_cooldown_retest_restored',
       accountId: account.id,
@@ -123,7 +124,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
       errorCode: result.errorCode,
       errorMessage: result.message
     }
-  })
+  }, backgroundProbeDbServiceTimeoutMs)
   logger.debug({
     event: 'background_account_api_key_cooldown_retest_failed',
     accountId: account.id,
@@ -145,7 +146,7 @@ async function loadAccountForTestViaDbService(accountId: string, access?: Access
     type: 'find_account_for_test',
     accountId,
     access
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }
 
 async function loadOpenAIAccountForGroupViaDbService(
@@ -161,5 +162,5 @@ async function loadOpenAIAccountForGroupViaDbService(
     systemAccountId,
     includeUnavailable: options.includeUnavailable,
     ignoreAvailability: options.ignoreAvailability
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }

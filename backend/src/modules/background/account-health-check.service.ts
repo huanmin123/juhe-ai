@@ -11,6 +11,7 @@ import {
   type AccountHealthCheckTriggerReason
 } from '../accounts/account-health-check-trigger.js'
 import { enqueueAccountBalanceAutoDetection } from './account-balance-auto-detect.service.js'
+import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
 interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
   accountId: string
@@ -29,7 +30,7 @@ const accountHealthCheckQueue = createRetryQueue<AccountHealthCheckQueueItem>({
     priorityAtMost: accountHealthCheckTriggerPriority('configuration'),
     slots: 3
   },
-  run: runAccountHealthCheckQueueItem,
+  run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runAccountHealthCheckQueueItem(item, context)),
   onExhausted: (event) => {
     logger.warn(errorLogFields(event.error, {
       event: 'background_account_health_check_exhausted',
@@ -70,7 +71,7 @@ export async function enqueueAccountHealthCheckById(
   const account = await requestBackgroundWorkerDbService({
     type: 'find_account_for_health_check',
     accountId: normalizedId
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
   return account ? enqueueAccountHealthCheck(account, settings, reason) : false
 }
 
@@ -137,7 +138,7 @@ async function runAccountHealthCheckQueueItem(
       statusCode: result.statusCode,
       expectedConfigRevision: item.configRevision
       }
-    })
+    }, backgroundProbeDbServiceTimeoutMs)
     const changed = healthCheckResult?.changed ?? false
     logger.info({
       event: 'background_account_health_check_passed',
@@ -169,7 +170,7 @@ async function runAccountHealthCheckQueueItem(
       expectedConfigRevision: item.configRevision,
       observedAt
     }
-  })
+  }, backgroundProbeDbServiceTimeoutMs)
 
   let markedTemporaryUnavailable = false
   if (account.status !== 'pending_test' && failure?.reachedThreshold && result.accountFailureEligible !== false) {
@@ -184,7 +185,7 @@ async function runAccountHealthCheckQueueItem(
         failureCount: failure.failureCount,
         observedAt
       }
-    })
+    }, backgroundProbeDbServiceTimeoutMs)
     markedTemporaryUnavailable = updated?.updated ?? false
   }
 
@@ -216,7 +217,7 @@ async function accountForHealthCheckQueueItem(item: AccountHealthCheckQueueItem)
   return await requestBackgroundWorkerDbService({
     type: 'find_account_for_health_check',
     accountId: item.accountId
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }
 
 async function loadAccountForTestViaDbService(accountId: string, access?: AccessScope): Promise<AccountSummary | undefined> {
@@ -224,7 +225,7 @@ async function loadAccountForTestViaDbService(accountId: string, access?: Access
     type: 'find_account_for_test',
     accountId,
     access
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }
 
 async function loadOpenAIAccountForGroupViaDbService(
@@ -240,7 +241,7 @@ async function loadOpenAIAccountForGroupViaDbService(
     systemAccountId,
     includeUnavailable: options.includeUnavailable,
     ignoreAvailability: options.ignoreAvailability
-  }, 10_000)
+  }, backgroundProbeDbServiceTimeoutMs)
 }
 
 function isAccountHealthCheckEligible(account: AccountSummary | undefined): account is AccountSummary & { boundGroupId: string } {
