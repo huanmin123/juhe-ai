@@ -27,10 +27,16 @@ const [databaseModule, repositories, balanceRepository, balanceQueryService] = a
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 const balanceServiceSource = readFileSync(resolve('src/modules/accounts/account-balance-query.service.ts'), 'utf8')
+const balanceRoutesSource = readFileSync(resolve('src/modules/accounts/account-balance.routes.ts'), 'utf8')
 const balanceRepositorySource = readFileSync(resolve('src/storage/account-balance.repository.ts'), 'utf8')
 const accountRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
 const repositoriesSource = readFileSync(resolve('src/storage/repositories.ts'), 'utf8')
 assert.match(balanceServiceSource, /const balanceRefreshLeaseMs = 30_000/)
+assert.match(balanceRoutesSource, /post\('\/balance\/test-draft'/, '新增和编辑表单必须使用独立草稿余额测试接口')
+assert.match(balanceRoutesSource, /prepareAccountDraftTestSnapshotAsync/, '草稿余额测试必须使用当前表单账户快照')
+assert.match(balanceRoutesSource, /testAccountBalanceCandidate/, '草稿余额测试必须调用无持久化查询入口')
+assert.ok(!balanceRoutesSource.includes('saveAccountBalanceConfigurationAsync'), '余额路由不能在查询时保存账户配置')
+assert.ok(!balanceRoutesSource.includes('delete_account_balance_snapshot'), '余额测试不能删除或替换已保存快照')
 assert.match(balanceRepositorySource, /balance_query_config_json::jsonb = \?::jsonb/, 'PostgreSQL 偏好条件更新必须按 JSON 语义比较配置')
 assert.ok(!accountRoutesSource.includes('saveAccountBalanceConfigurationAsync'), '账户路由不应在账户保存后进行第二次余额配置写入')
 assert.match(repositoriesSource, /balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at/)
@@ -147,6 +153,15 @@ try {
   assert.equal(snapshot?.errorMessage, '上游鉴权失败（HTTP 401）')
 
   const candidate = balanceRepository.listAccountsDueForBalanceRefresh({ now: '2026-07-11T12:00:00.000Z', limit: 1 })[0]
+  const tested = await balanceQueryService.testAccountBalanceCandidate(candidate, {
+    query: async () => ({ status: 'fresh', remainingUsd: '8.880000', rawRemaining: '8.88', rawUnit: 'usd', basis: 'wallet' })
+  })
+  assert.equal(tested.remainingUsd, '8.880000')
+  assert.equal(
+    balanceRepository.loadAccountBalanceSnapshotsByAccountIds([candidate.id]).get(candidate.id)?.remainingUsd,
+    undefined,
+    '草稿余额测试不得写入正式余额快照'
+  )
   let queryCount = 0
   const query = async () => {
     queryCount += 1

@@ -101,6 +101,32 @@ export async function queryAccountBalance(candidate: AccountBalanceQueryCandidat
   return (await queryAccountBalanceResolution(candidate)).snapshot
 }
 
+export async function testAccountBalanceCandidate(
+  candidate: AccountBalanceQueryCandidate,
+  dependencies: { query?: (candidate: AccountBalanceQueryCandidate) => Promise<AccountBalanceSnapshot> } = {}
+): Promise<AccountBalanceSnapshot> {
+  const completedAt = () => new Date().toISOString()
+  try {
+    const snapshot = dependencies.query
+      ? await dependencies.query(candidate)
+      : await queryAccountBalance(candidate)
+    const timestamp = completedAt()
+    return {
+      ...snapshot,
+      lastAttemptAt: timestamp,
+      ...(snapshot.status === 'fresh' || snapshot.status === 'unlimited' || snapshot.status === 'unsupported'
+        ? { lastSuccessAt: timestamp }
+        : {})
+    }
+  } catch (error) {
+    return {
+      status: 'failed',
+      errorMessage: accountBalanceErrorMessage(error),
+      lastAttemptAt: completedAt()
+    }
+  }
+}
+
 async function queryAccountBalanceResolution(candidate: AccountBalanceQueryCandidate): Promise<AccountBalanceQueryResolution> {
   if (candidate.config.adapter === 'builtin') {
     const result = await queryBuiltinAccountBalance(candidate)

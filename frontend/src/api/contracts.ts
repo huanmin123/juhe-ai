@@ -176,6 +176,11 @@ export interface AccountDraftTestPayload {
   testSessionId?: string
 }
 
+export interface AccountBalanceDraftTestPayload {
+  account: AccountDraftTestAccountPayload
+  balanceQueryConfig: Record<string, unknown>
+}
+
 export interface ApiKeyListParams extends ListParams {
   page?: number
   pageSize?: number
