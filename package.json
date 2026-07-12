@@ -128,6 +128,7 @@
     "test:gateway-storage-cache-invalidation": "pnpm --filter juhe-ai-backend test:gateway-storage-cache-invalidation",
     "test:api-key-image-permission": "pnpm --filter juhe-ai-backend test:api-key-image-permission",
     "test:gateway-recoverable-unavailable-mock-ai": "pnpm --filter juhe-ai-backend test:gateway-recoverable-unavailable-mock-ai",
+    "test:route-strategy-create-api": "pnpm --filter juhe-ai-frontend test:route-strategy-create-api",
     "test:route-strategy-group-bindings": "pnpm --filter juhe-ai-backend test:route-strategy-group-bindings",
     "test:api-key-route-validation": "pnpm --filter juhe-ai-backend test:api-key-route-validation",
     "test:api-key-availability-schedule": "pnpm --filter juhe-ai-backend test:api-key-availability-schedule",
