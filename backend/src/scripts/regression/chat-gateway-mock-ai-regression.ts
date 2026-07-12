@@ -90,14 +90,25 @@ try {
   assert.match(streamText, /event: message\.started/)
   assert.match(streamText, /event: message\.delta/)
   assert.match(streamText, /"delta":"Mock "/)
-  assert.match(streamText, /"delta":"\*\*Markdown\*\*"/)
+  assert.match(streamText, /Markdown/)
   assert.match(streamText, /event: message\.completed/)
   assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream'], 'AI 问答必须经过网关并使用 AI 账户凭据访问上游')
 
   const stored = await apiJson<{ data: Array<{ role: string; status: string; contentText: string }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
   assert.deepEqual(stored.data.map((item) => [item.role, item.status]), [['user', 'completed'], ['assistant', 'completed']])
-  assert.equal(stored.data[1].contentText, 'Mock **Markdown**')
+  assert.match(stored.data[1].contentText, /\|项目\|结果\|/)
+  assert.match(stored.data[1].contentText, /\$E=mc\^2\$/)
+  assert.match(stored.data[1].contentText, /```mermaid/)
   console.log('AI 问答 Mock AI 全链路回归通过：登录态、Key 绑定、模型列表、现有网关、流式事件和消息终态均正确')
+  if (process.env.JUHE_AI_CHAT_UI_KEEP_ALIVE === '1') {
+    console.log(`CHAT_UI_URL=${baseUrl}/__aisys__/my-chat`)
+    console.log('CHAT_UI_LOGIN=admin/admin')
+    console.log(`CHAT_UI_COOKIE=${cookie}`)
+    await new Promise<void>((resolveStop) => {
+      process.once('SIGINT', resolveStop)
+      process.once('SIGTERM', resolveStop)
+    })
+  }
 } finally {
   await stopProcess(backend)
   await closeServer(upstream)
@@ -115,9 +126,10 @@ function createMockUpstream(): http.Server {
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { stream?: boolean }
       assert.equal(body.stream, true)
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' })
-      res.write('data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Mock "},"finish_reason":null}]}\n\n')
+      res.write(`data: ${JSON.stringify({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', content: 'Mock ' }, finish_reason: null }] })}\n\n`)
       setTimeout(() => {
-        res.write('data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"**Markdown**"},"finish_reason":null}]}\n\n')
+        const richMarkdown = '**Markdown**\n\n|项目|结果|\n|---|---|\n|流式|通过|\n\n公式：$E=mc^2$\n\n```mermaid\ngraph LR\nA-->B\n```'
+        res.write(`data: ${JSON.stringify({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: richMarkdown }, finish_reason: null }] })}\n\n`)
         res.write('data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":4,"total_tokens":12}}\n\n')
         res.end('data: [DONE]\n\n')
       }, 20)
