@@ -1,4 +1,4 @@
-export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'archive' | 'codex-context-state'
+export type MonitoredDatabaseRole = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
 
 export interface DatabaseStorageSnapshotSummary {
   databaseRole: MonitoredDatabaseRole

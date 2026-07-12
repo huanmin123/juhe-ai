@@ -83,14 +83,26 @@ export async function refreshAccountBalanceCandidate(
       ? { snapshot: await dependencies.query(candidate) }
       : await queryAccountBalanceResolution(candidate)
     const completedAt = new Date().toISOString()
-    const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
+    const successful = isSuccessfulBalanceSnapshot(resolution.snapshot)
     const snapshot: AccountBalanceSnapshot = {
       ...resolution.snapshot,
       lastAttemptAt: completedAt,
-      ...(resolution.snapshot.status === 'fresh' || resolution.snapshot.status === 'unlimited' || resolution.snapshot.status === 'unsupported'
+      ...(successful
         ? { lastSuccessAt: completedAt }
         : {})
     }
+    if (!successful) {
+      const unsupportedSnapshot: AccountBalanceSnapshot = {
+        ...snapshot,
+        status: 'unsupported',
+        errorMessage: snapshot.errorMessage ?? '当前配置未找到可用余额接口，后台查询已暂停'
+      }
+      if (dependencies.mode === 'manual') return unsupportedSnapshot
+      const nextConfig = resolvedBalanceConfig(candidate.config, undefined)
+      await persistBalanceRefreshIfCurrent(candidate, nextConfig, unsupportedSnapshot, null)
+      return unsupportedSnapshot
+    }
+    const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
     const nextConfig = resolvedBalanceConfig(candidate.config, resolution.preferredBuiltinAdapter)
     await persistBalanceRefreshIfCurrent(candidate, nextConfig, snapshot, nextRefreshAfter)
     return snapshot
@@ -104,18 +116,21 @@ export async function refreshAccountBalanceCandidate(
     }
     if (dependencies.mode === 'manual') return failedSnapshot
 
-    const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
     if (accountBalanceFailureKind(error) === 'deterministic') {
       const nextConfig = resolvedBalanceConfig(candidate.config, undefined)
-      await persistBalanceRefreshIfCurrent(candidate, nextConfig, failedSnapshot, nextRefreshAfter)
-      return failedSnapshot
+      const unsupportedSnapshot: AccountBalanceSnapshot = {
+        status: 'unsupported',
+        errorMessage,
+        lastAttemptAt: completedAt
+      }
+      await persistBalanceRefreshIfCurrent(candidate, nextConfig, unsupportedSnapshot, null)
+      return unsupportedSnapshot
     }
 
     const previousSnapshot = (await loadAccountBalanceSnapshotsByAccountIdsAsync([candidate.id])).get(candidate.id)
     const snapshot = nextTransientFailureSnapshot(previousSnapshot, errorMessage, completedAt)
-    const nextConfig = (snapshot.consecutiveTransientFailures ?? 0) >= 3
-      ? resolvedBalanceConfig(candidate.config, undefined)
-      : candidate.config
+    const nextRefreshAfter = new Date(Date.now() + transientRetryDelayMs(snapshot.consecutiveTransientFailures)).toISOString()
+    const nextConfig = candidate.config
     await persistBalanceRefreshIfCurrent(candidate, nextConfig, snapshot, nextRefreshAfter)
     return snapshot
   } finally {
@@ -140,7 +155,7 @@ export async function testAccountBalanceCandidate(
     return {
       ...snapshot,
       lastAttemptAt: timestamp,
-      ...(snapshot.status === 'fresh' || snapshot.status === 'unlimited' || snapshot.status === 'unsupported'
+      ...(isSuccessfulBalanceSnapshot(snapshot)
         ? { lastSuccessAt: timestamp }
         : {})
     }
@@ -156,7 +171,10 @@ export async function testAccountBalanceCandidate(
 async function queryAccountBalanceResolution(candidate: AccountBalanceQueryCandidate): Promise<AccountBalanceQueryResolution> {
   if (candidate.config.adapter === 'builtin') {
     const result = await queryBuiltinAccountBalance(candidate)
-    return { snapshot: result.snapshot, preferredBuiltinAdapter: result.adapter }
+    return {
+      snapshot: result.snapshot,
+      ...(isSuccessfulBalanceSnapshot(result.snapshot) ? { preferredBuiltinAdapter: result.adapter } : {})
+    }
   }
   const context = await accountBalanceRequestContext(candidate)
   if (!candidate.config.custom) throw deterministicBalanceError('自定义余额查询配置缺失')
@@ -178,12 +196,14 @@ export async function queryBuiltinAccountBalance(
     ?? ((_candidate: AccountBalanceQueryCandidate, adapter: AccountBalanceBuiltinAdapter) => queryBuiltinAdapter(context as AccountBalanceRequestContext, adapter))
   let transientError: unknown
   let deterministicError: unknown
+  let unsupportedResult: AccountBalanceBuiltinQueryResult | undefined
   for (const adapter of adapters) {
     try {
       const snapshot = await queryAdapter(candidate, adapter)
       if (snapshot.status === 'fresh' || snapshot.status === 'unlimited') {
         return { adapter, snapshot }
       }
+      if (snapshot.status === 'unsupported') unsupportedResult = { adapter, snapshot }
     } catch (error) {
       if (context && Date.now() >= context.deadlineAtMs) {
         throw new UpstreamRequestTimeoutError('上游余额查询超时')
@@ -195,8 +215,22 @@ export async function queryBuiltinAccountBalance(
     }
   }
   if (transientError) throw transientError
-  if (deterministicError) throw deterministicError
-  throw deterministicBalanceError('内置余额适配器均未匹配')
+  if (unsupportedResult) {
+    return {
+      ...unsupportedResult,
+      snapshot: {
+        ...unsupportedResult.snapshot,
+        errorMessage: unsupportedResult.snapshot.errorMessage ?? '当前配置未找到可用余额接口'
+      }
+    }
+  }
+  return {
+    adapter: adapters.at(-1) ?? 'user_balance',
+    snapshot: {
+      status: 'unsupported',
+      errorMessage: deterministicError ? accountBalanceErrorMessage(deterministicError) : '内置余额适配器均未匹配'
+    }
+  }
 }
 
 async function accountBalanceRequestContext(candidate: Pick<AccountBalanceRefreshCandidate, 'credentials' | 'proxyProfileId'>): Promise<AccountBalanceRequestContext> {
@@ -254,7 +288,7 @@ async function persistBalanceRefreshIfCurrent(
   candidate: AccountBalanceRefreshCandidate,
   nextConfig: AccountBalanceQueryConfig,
   snapshot: AccountBalanceSnapshot,
-  nextRefreshAfter: string
+  nextRefreshAfter: string | null
 ): Promise<boolean> {
   const changed = await commitBalanceRefresh({
     accountId: candidate.id,
@@ -270,7 +304,7 @@ async function persistBalanceRefreshIfCurrent(
     expectedConfigRevision: candidate.configRevision,
     expectedConfig: nextConfig,
     snapshot,
-    nextRefreshAfter
+    ...(nextRefreshAfter ? { nextRefreshAfter } : {})
   }
   if (runtimeConfig.databaseDriver === 'postgres' || !mainDatabaseRuntimeInfo('stats').queryOnly) {
     return await replaceAccountBalanceSnapshotIfCurrentAsync(input)
@@ -372,7 +406,7 @@ function nextTransientFailureSnapshot(
       lastTransientFailureAt: attemptedAt
     }
   }
-  if (previous?.status === 'fresh' || previous?.status === 'unlimited' || previous?.status === 'unsupported') {
+  if (previous?.status === 'fresh' || previous?.status === 'unlimited') {
     return {
       ...previous,
       lastAttemptAt: attemptedAt,
@@ -397,6 +431,16 @@ function nextTransientFailureSnapshot(
     lastTransientErrorMessage: errorMessage,
     lastTransientFailureAt: attemptedAt
   }
+}
+
+function transientRetryDelayMs(consecutiveTransientFailures: number | undefined): number {
+  if ((consecutiveTransientFailures ?? 0) <= 1) return 15 * 60_000
+  if (consecutiveTransientFailures === 2) return 30 * 60_000
+  return 60 * 60_000
+}
+
+function isSuccessfulBalanceSnapshot(snapshot: AccountBalanceSnapshot): boolean {
+  return snapshot.status === 'fresh' || snapshot.status === 'unlimited'
 }
 
 function deterministicBalanceError(message: string): AccountBalanceQueryFailure {

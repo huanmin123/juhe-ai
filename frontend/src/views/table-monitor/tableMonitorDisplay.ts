@@ -16,7 +16,7 @@ export const tableMonitorColumns = [
   { title: '采样时间', key: 'sampledAt', width: 190 }
 ]
 
-export const tableMonitorDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'archive', 'codex-context-state']
+export const tableMonitorDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'codex-context-state']
 
 export function tableMonitorRowKey(row: TableStorageSnapshotSummary) {
   return `${row.databaseRole}:${row.tableName}`
@@ -28,7 +28,6 @@ export function databaseRoleLabel(role: MonitoredDatabaseRole) {
     dataset: '数据集目录库',
     'usage-catalog': '使用记录目录库',
     stats: '统计结果库',
-    archive: '归档库',
     'codex-context-state': 'Responses 状态库'
   }[role]
 }
@@ -39,7 +38,6 @@ export function databaseRoleDetailLabel(role: MonitoredDatabaseRole) {
     dataset: '数据集目录库',
     'usage-catalog': '使用记录目录库',
     stats: '统计结果库',
-    archive: '分区归档表所在的 PostgreSQL 归档 schema',
     'codex-context-state': 'Responses 桥接状态索引库'
   }[role]
 }
@@ -50,7 +48,6 @@ export function databaseRoleColor(role: MonitoredDatabaseRole) {
     dataset: 'orange',
     'usage-catalog': 'cyan',
     stats: 'purple',
-    archive: 'magenta',
     'codex-context-state': 'geekblue'
   }[role]
 }

@@ -14,7 +14,14 @@ export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
   if (snapshot.status === 'refreshing') return { text: '查询中', tone: 'refreshing', tooltip: undefined, refreshing: true }
   const retryTooltip = transientFailureTooltip(snapshot, true)
   if (snapshot.status === 'unlimited') return { text: '无限', tone: 'unlimited', tooltip: retryTooltip, refreshing: false }
-  if (snapshot.status === 'unsupported') return { text: '未提供', tone: 'unsupported', tooltip: retryTooltip, refreshing: false }
+  if (snapshot.status === 'unsupported') {
+    return {
+      text: '已暂停',
+      tone: 'unsupported',
+      tooltip: snapshot.errorMessage ?? retryTooltip ?? '当前配置未找到可用余额接口，后台查询已暂停',
+      refreshing: false
+    }
+  }
   if (snapshot.status === 'fresh' && snapshot.remainingUsd !== undefined) {
     const amount = Number(snapshot.remainingUsd)
     return {

@@ -419,8 +419,12 @@ async function refreshAccountBalance(accountId: string) {
     const snapshot = isManagementView.value
       ? await api.accounts.refreshBalance(accountId, accountScopeParams.value)
       : await api.myAccounts.refreshBalance(accountId)
-    if (snapshot?.status === 'failed') {
-      message.error(snapshot.errorMessage || '余额查询失败')
+    if (snapshot?.status === 'failed' || snapshot?.status === 'unsupported') {
+      if (snapshot.status === 'unsupported') {
+        message.warning(snapshot.errorMessage || '当前配置未找到可用余额接口')
+      } else {
+        message.error(snapshot.errorMessage || '余额查询失败')
+      }
       return
     }
     updateLoadedAccountBalance(accountId, snapshot)
