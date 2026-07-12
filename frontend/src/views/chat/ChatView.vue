@@ -29,7 +29,7 @@
       </header>
 
       <template v-if="selectedConversation">
-        <ChatMessageList ref="messageList" :messages="messages" :loading="messagesLoading" />
+        <ChatMessageList ref="messageList" :messages="messages" :loading="messagesLoading" @near-top="loadOlderMessages" />
         <footer class="composer-shell">
           <div class="composer">
             <a-textarea v-model:value="draft" :auto-size="{ minRows: 1, maxRows: 6 }" :maxlength="196608" placeholder="输入消息" :disabled="generating" @keydown="handleComposerKeydown" />
@@ -69,6 +69,8 @@ const models = ref<string[]>([])
 const selectedModel = ref<string>()
 const draft = ref('')
 const messagesLoading = ref(false)
+const olderMessagesLoading = ref(false)
+const hasOlderMessages = ref(false)
 const modelsLoading = ref(false)
 const creating = ref(false)
 const generating = ref(false)
@@ -112,11 +114,26 @@ async function selectConversation(id: string): Promise<void> {
   try {
     const [messageItems, modelItems] = await Promise.all([chatApi.listMessages(id, { limit: 100 }), chatApi.listModels(id)])
     messages.value = messageItems
+    hasOlderMessages.value = messageItems.length === 100
     models.value = modelItems
     const conversation = conversations.value.find((item) => item.id === id)
     selectedModel.value = conversation?.lastModel && modelItems.includes(conversation.lastModel) ? conversation.lastModel : modelItems[0]
   } catch (error) { message.error(extractApiErrorMessage(error, '加载对话失败')) }
   finally { messagesLoading.value = false; modelsLoading.value = false }
+}
+async function loadOlderMessages(): Promise<void> {
+  const id = selectedConversationId.value
+  const first = messages.value[0]
+  if (!id || !first || !hasOlderMessages.value || olderMessagesLoading.value || messagesLoading.value) return
+  olderMessagesLoading.value = true
+  const anchor = messageList.value?.captureScrollAnchor()
+  try {
+    const older = await chatApi.listMessages(id, { beforeSequenceNo: first.sequenceNo, limit: 100 })
+    messages.value = [...older, ...messages.value]
+    hasOlderMessages.value = older.length === 100
+    if (anchor) await messageList.value?.restoreScrollAnchor(anchor)
+  } catch (error) { message.error(extractApiErrorMessage(error, '加载更早消息失败')) }
+  finally { olderMessagesLoading.value = false }
 }
 function openCreateDialog(): void { newApiKeyId.value = apiKeys.value[0]?.id; createDialogOpen.value = true }
 async function createConversation(): Promise<void> {
@@ -143,7 +160,7 @@ async function sendMessage(): Promise<void> {
 }
 function handleStreamEvent(event: ChatStreamEvent): void { applyChatStreamEvent(messages.value, event); if (event.type === 'message.failed') message.error(event.data.message); messageList.value?.scrollToBottom() }
 async function stopGeneration(): Promise<void> { const id = selectedConversationId.value; if (!id) return; try { await chatApi.stop(id) } catch {} finally { streamController?.abort(); generating.value = false; await refreshMessages() } }
-async function refreshMessages(): Promise<void> { const id = selectedConversationId.value; if (id) messages.value = await chatApi.listMessages(id, { limit: 100 }) }
+async function refreshMessages(): Promise<void> { const id = selectedConversationId.value; if (id) { messages.value = await chatApi.listMessages(id, { limit: 100 }); hasOlderMessages.value = messages.value.length === 100 } }
 async function removeConversation(): Promise<void> { const id = selectedConversationId.value; if (!id) return; try { await chatApi.deleteConversation(id); conversations.value = conversations.value.filter((item) => item.id !== id); selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
 function handleComposerKeydown(event: KeyboardEvent): void { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void sendMessage() } }
 function updateMobile(): void { mobile.value = window.innerWidth <= 820 }

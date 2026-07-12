@@ -1,11 +1,11 @@
 <template>
-  <div ref="scrollElement" class="message-scroll" @scroll="emit('scroll')">
+  <div ref="scrollElement" class="message-scroll" @scroll="handleScroll">
     <div v-if="loading" class="message-loading"><a-spin size="small" /><span>正在加载对话</span></div>
     <div v-else-if="!messages.length" class="message-empty">
       <MessageOutlined />
       <span>发送一条消息开始对话</span>
     </div>
-    <div v-else class="message-virtual-space" :style="{ height: `${virtualizer.getTotalSize()}px` }">
+    <div v-else class="message-virtual-space" :data-message-count="messages.length" :style="{ height: `${virtualizer.getTotalSize()}px` }">
       <article
         v-for="item in virtualItems"
         :key="messages[item.index].id"
@@ -39,8 +39,9 @@ import type { ChatMessage, ChatMessageStatus } from '@/types/domain/chat'
 import ChatMarkdown from './ChatMarkdown.vue'
 
 const props = defineProps<{ messages: ChatMessage[]; loading: boolean }>()
-const emit = defineEmits<{ (event: 'scroll'): void }>()
+const emit = defineEmits<{ (event: 'near-top'): void }>()
 const scrollElement = ref<HTMLElement>()
+const followLatest = ref(true)
 const virtualizer = useVirtualizer(computed(() => ({
   count: props.messages.length,
   getScrollElement: () => scrollElement.value ?? null,
@@ -54,11 +55,25 @@ function measureElement(element: unknown): void {
   if (element instanceof Element) virtualizer.value.measureElement(element)
 }
 function scrollToBottom(): void { nextTick(() => virtualizer.value.scrollToIndex(Math.max(0, props.messages.length - 1), { align: 'end' })) }
+function handleScroll(): void {
+  const element = scrollElement.value
+  if (!element) return
+  followLatest.value = element.scrollHeight - element.scrollTop - element.clientHeight < 96
+  if (element.scrollTop < 120) emit('near-top')
+}
+function captureScrollAnchor(): { offset: number; totalSize: number } {
+  return { offset: scrollElement.value?.scrollTop ?? 0, totalSize: virtualizer.value.getTotalSize() }
+}
+async function restoreScrollAnchor(anchor: { offset: number; totalSize: number }): Promise<void> {
+  await nextTick()
+  virtualizer.value.measure()
+  virtualizer.value.scrollToOffset(anchor.offset + Math.max(0, virtualizer.value.getTotalSize() - anchor.totalSize))
+}
 function statusLabel(status: ChatMessageStatus): string { return ({ streaming: '生成中', failed: '失败', canceled: '已停止', completed: '' })[status] }
 function statusColor(status: ChatMessageStatus): string { return ({ streaming: 'processing', failed: 'error', canceled: 'default', completed: 'default' })[status] }
 
-watch(() => [props.messages.length, props.messages.at(-1)?.contentText.length], scrollToBottom)
-defineExpose({ scrollToBottom })
+watch(() => [props.messages.length, props.messages.at(-1)?.contentText.length], () => { if (followLatest.value) scrollToBottom() })
+defineExpose({ scrollToBottom, captureScrollAnchor, restoreScrollAnchor })
 </script>
 
 <style scoped>

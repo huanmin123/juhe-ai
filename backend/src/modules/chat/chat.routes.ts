@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type NextFunction, type Response as ExpressResponse } from 'express'
 import { z } from 'zod'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -68,7 +68,7 @@ chatRouter.post('/conversations', async (req, res, next) => {
       apiKeyNameSnapshot: apiKey.name,
       now: new Date().toISOString()
     })))
-  } catch (error) { next(error) }
+  } catch (error) { handleChatRouteError(error, res, next) }
 })
 
 chatRouter.get('/conversations/:conversationId/messages', async (req, res, next) => {
@@ -188,7 +188,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       res.status(409).json({ message: error.message, code: error.code })
       return
     }
-    next(error)
+    handleChatRouteError(error, res, next)
   }
 })
 
@@ -231,6 +231,14 @@ function requireChatAuth() {
   const auth = getRequestAuthContext()
   if (!auth) throw new Error('请先登录')
   return auth
+}
+
+function handleChatRouteError(error: unknown, res: ExpressResponse, next: NextFunction): void {
+  if (error instanceof z.ZodError) {
+    res.status(400).json({ message: error.issues[0]?.message || '请求参数无效', code: 'chat_invalid_request' })
+    return
+  }
+  next(error)
 }
 
 function gatewayUrl(path: string): string { return `http://127.0.0.1:${runtimeConfig.port}${path}` }

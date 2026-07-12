@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
@@ -18,6 +18,9 @@ const tempRoot = resolve(tmpdir(), `juhe-ai-chat-mock-${Date.now()}-${Math.rando
 const upstreamAuthorizations: string[] = []
 let upstream: http.Server | undefined
 let backend: ChildProcess | undefined
+const realCredentialFile = process.env.JUHE_AI_CHAT_REAL_CREDENTIAL_FILE?.trim()
+const realCredential = realCredentialFile ? readRealCredential(realCredentialFile) : undefined
+const testModel = process.env.JUHE_AI_CHAT_REAL_MODEL?.trim() || realCredential?.models.find((item) => item === 'gpt-5.5') || realCredential?.models[0] || 'gpt-5.5'
 
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.chatDatabasePath = join(tempRoot, 'chat.sqlite3')
@@ -39,10 +42,12 @@ const databaseModule = await import('../../storage/database.js')
 const repositories = await import('../../storage/repositories.js')
 
 try {
-  upstream = createMockUpstream()
-  upstream.listen(0, '127.0.0.1')
-  await onceListening(upstream)
-  const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstream)}/v1`
+  if (!realCredential) {
+    upstream = createMockUpstream()
+    upstream.listen(0, '127.0.0.1')
+    await onceListening(upstream)
+  }
+  const upstreamBaseUrl = realCredential?.baseUrl ?? `http://127.0.0.1:${serverPort(upstream!)}/v1`
   const access = { systemAccountId: 'sys_admin', role: 'user' as const }
   const group = repositories.createGroup({ name: 'AI 问答 Mock 分组', providerCode: GPT_VENDOR_CODE, enabled: true }, access)
   const account = repositories.createAccount({
@@ -50,10 +55,10 @@ try {
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'AI 问答 Mock 账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-chat-upstream', base_url: upstreamBaseUrl },
+    credentials: { api_key: realCredential?.apiKey ?? 'sk-chat-upstream', base_url: upstreamBaseUrl },
     groupId: group.id,
-    supportedModels: ['gpt-5.5'],
-    healthCheckModel: 'gpt-5.5',
+    supportedModels: realCredential?.models ?? ['gpt-5.5'],
+    healthCheckModel: testModel,
     status: 'active',
     schedulable: true
   }, access)
@@ -66,6 +71,9 @@ try {
   assert(gatewayKey.key)
   const session = repositories.createSession('sys_admin', 1)
   const cookie = `juhe_ai_session=${session.token}`
+  if (Number(process.env.JUHE_AI_CHAT_UI_BULK_MESSAGES ?? 0) > 0) {
+    await seedBulkChatMessages(gatewayKey.id, Math.min(5000, Number(process.env.JUHE_AI_CHAT_UI_BULK_MESSAGES)))
+  }
   databaseModule.closeStorageDatabases()
 
   const port = await freePort()
@@ -78,28 +86,34 @@ try {
   const created = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
   const conversationId = created.data.id
   const models = await apiJson<{ data: string[] }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)
-  assert(models.data.includes('gpt-5.5'), 'AI 问答模型列表应来自绑定 Key 的真实网关 /v1/models')
+  assert(models.data.includes(testModel), 'AI 问答模型列表应来自绑定 Key 的真实网关 /v1/models')
 
   const streamResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
-    body: JSON.stringify({ clientMessageId: 'mock-client-1', content: '请返回 Mock Markdown', model: 'gpt-5.5' })
+    body: JSON.stringify({ clientMessageId: 'mock-client-1', content: realCredential ? '请用一句中文回答：7天聊天记录保留策略的核心目的是什么？' : '请返回 Mock Markdown', model: testModel })
   })
   const streamText = await streamResponse.text()
   assert.equal(streamResponse.status, 200, streamText)
   assert.match(streamText, /event: message\.started/)
   assert.match(streamText, /event: message\.delta/)
-  assert.match(streamText, /"delta":"Mock "/)
-  assert.match(streamText, /Markdown/)
+  if (!realCredential) {
+    assert.match(streamText, /"delta":"Mock "/)
+    assert.match(streamText, /Markdown/)
+  }
   assert.match(streamText, /event: message\.completed/)
-  assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream'], 'AI 问答必须经过网关并使用 AI 账户凭据访问上游')
+  if (!realCredential) assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream'], 'AI 问答必须经过网关并使用 AI 账户凭据访问上游')
 
   const stored = await apiJson<{ data: Array<{ role: string; status: string; contentText: string }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
   assert.deepEqual(stored.data.map((item) => [item.role, item.status]), [['user', 'completed'], ['assistant', 'completed']])
-  assert.match(stored.data[1].contentText, /\|项目\|结果\|/)
-  assert.match(stored.data[1].contentText, /\$E=mc\^2\$/)
-  assert.match(stored.data[1].contentText, /```mermaid/)
-  console.log('AI 问答 Mock AI 全链路回归通过：登录态、Key 绑定、模型列表、现有网关、流式事件和消息终态均正确')
+  if (!realCredential) {
+    assert.match(stored.data[1].contentText, /\|项目\|结果\|/)
+    assert.match(stored.data[1].contentText, /\$E=mc\^2\$/)
+    assert.match(stored.data[1].contentText, /```mermaid/)
+  } else {
+    assert(stored.data[1].contentText.trim().length > 0, '真实模型必须返回非空中文回答')
+  }
+  console.log(`AI 问答 ${realCredential ? '真实模型' : 'Mock AI'} 全链路回归通过：登录态、Key 绑定、模型列表、现有网关、流式事件和消息终态均正确`)
   if (process.env.JUHE_AI_CHAT_UI_KEEP_ALIVE === '1') {
     console.log(`CHAT_UI_URL=${baseUrl}/__aisys__/my-chat`)
     console.log('CHAT_UI_LOGIN=admin/admin')
@@ -114,6 +128,35 @@ try {
   await closeServer(upstream)
   databaseModule.closeStorageDatabases()
   await removeTempRoot(tempRoot)
+}
+
+function readRealCredential(path: string): { baseUrl: string; apiKey: string; models: string[] } {
+  const lines = readFileSync(path, 'utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const baseUrl = lines.find((line) => /^https?:\/\//i.test(line))
+  const apiKey = lines.find((line) => /^sk-/i.test(line))
+  const models = [...new Set(lines.flatMap((line) => line.match(/gpt-[\w.-]+/gi) ?? []))]
+  if (!baseUrl || !apiKey || models.length === 0) throw new Error('真实模型凭据文件缺少 Base URL、API Key 或模型列表')
+  return { baseUrl: baseUrl.replace(/\/$/, ''), apiKey, models }
+}
+
+async function seedBulkChatMessages(apiKeyId: string, count: number): Promise<void> {
+  const { createSqliteDatabaseClient } = await import('../../storage/database-client.js')
+  const { createChatConversation } = await import('../../storage/chat.repository.js')
+  const client = createSqliteDatabaseClient(databaseModule.getChatDatabase())
+  const conversation = await createChatConversation(client, {
+    id: 'chat_bulk_conversation', systemAccountId: 'sys_admin', apiKeyId, apiKeyNameSnapshot: 'AI 问答 Mock Key', now: '2099-01-01T00:00:00.000Z'
+  })
+  await client.transaction(async (tx) => {
+    for (let index = 1; index <= count; index += 1) {
+      await tx.execute(`
+        INSERT INTO chat_messages (
+          id, conversation_id, system_account_id, turn_id, sequence_no, client_message_id,
+          role, status, content_text, content_bytes, model, created_at, completed_at, expires_at
+        ) VALUES (?, ?, 'sys_admin', ?, ?, ?, ?, 'completed', ?, ?, 'gpt-5.5', '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '2099-01-08T00:00:00.000Z')
+      `, [`bulk_${index}`, conversation.id, `bulk_turn_${Math.ceil(index / 2)}`, index, index % 2 === 1 ? `bulk_client_${index}` : null, index % 2 === 1 ? 'user' : 'assistant', `合成消息 ${index}`, Buffer.byteLength(`合成消息 ${index}`, 'utf8')])
+    }
+    await tx.execute(`UPDATE chat_conversations SET next_sequence_no = ?, title = '5000 条虚拟列表测试' WHERE id = ?`, [count + 1, conversation.id])
+  })
 }
 
 function createMockUpstream(): http.Server {

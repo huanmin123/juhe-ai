@@ -53,7 +53,7 @@ const renderer: RendererObject = {
 
 marked.use({ gfm: true, breaks: true, renderer })
 
-const html = computed(() => DOMPurify.sanitize(renderMath(marked.parse(props.content, { async: false }) as string), {
+const html = computed(() => DOMPurify.sanitize(enforceSafeImages(renderMathInTextNodes(marked.parse(props.content, { async: false }) as string)), {
   ADD_ATTR: ['target', 'rel', 'loading', 'referrerpolicy'],
   FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed']
 }))
@@ -76,12 +76,38 @@ watch(html, async () => {
   }
 }, { immediate: true, flush: 'post' })
 
-function renderMath(value: string): string {
-  return value
-    .replace(/\$\$([\s\S]+?)\$\$/g, (_match, source: string) => safeKatex(source, true))
-    .replace(/(^|[^\\])\$([^\n$]+?)\$/g, (_match, prefix: string, source: string) => `${prefix}${safeKatex(source, false)}`)
+function renderMathInTextNodes(value: string): string {
+  const template = document.createElement('template')
+  template.innerHTML = value
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT)
+  const nodes: Text[] = []
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text)
+  for (const node of nodes) {
+    if (node.parentElement?.closest('code, pre, a')) continue
+    const rendered = renderMathText(node.data)
+    if (rendered === escapeHtml(node.data)) continue
+    const replacement = document.createElement('template')
+    replacement.innerHTML = rendered
+    node.replaceWith(replacement.content)
+  }
+  return template.innerHTML
 }
-function safeKatex(source: string, displayMode: boolean): string { try { return katex.renderToString(decodeHtml(source), { displayMode, throwOnError: false, strict: 'warn' }) } catch { return escapeHtml(source) } }
+function enforceSafeImages(value: string): string {
+  const template = document.createElement('template')
+  template.innerHTML = value
+  for (const image of template.content.querySelectorAll('img')) {
+    const source = image.getAttribute('src') ?? ''
+    if (/^https:\/\//i.test(source)) continue
+    image.replaceWith(document.createTextNode(image.getAttribute('alt') || '图片'))
+  }
+  return template.innerHTML
+}
+function renderMathText(value: string): string {
+  return escapeHtml(value)
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_match, source: string) => safeKatex(decodeHtml(source), true))
+    .replace(/(^|[^\\])\$([^\n$]+?)\$/g, (_match, prefix: string, source: string) => `${prefix}${safeKatex(decodeHtml(source), false)}`)
+}
+function safeKatex(source: string, displayMode: boolean): string { try { return katex.renderToString(source, { displayMode, throwOnError: false, strict: 'warn' }) } catch { return escapeHtml(source) } }
 function decodeHtml(value: string): string { const textarea = document.createElement('textarea'); textarea.innerHTML = value; return textarea.value }
 function isSafeHref(value: string): boolean { return /^(https?:|mailto:)/i.test(value) }
 function escapeAttribute(value: string): string { return escapeHtml(value).replace(/`/g, '&#96;') }
