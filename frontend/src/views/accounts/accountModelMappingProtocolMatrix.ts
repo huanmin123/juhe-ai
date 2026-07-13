@@ -13,7 +13,6 @@ import {
   isOpenAIProtocolProfile
 } from '@/shared/providerProtocol'
 import type { AccountFormModel } from './accountFormTypes'
-import { responsesEndpointModes } from './accountProviderCapabilities'
 
 export type AccountModelMappingSourceEndpointFamily = AccountFormModel['modelMappings'][number]['sourceEndpointFamily']
 export type AccountModelMappingUpstreamEndpointFamily = AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']
@@ -69,6 +68,7 @@ export const hybridAccountModelMappingProtocolRules: readonly ProtocolConversion
 export function accountModelMappingProtocolValidationMessage(input: {
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
+  enabled?: boolean
   context: AccountModelMappingProtocolContext
 }): string | undefined {
   const { sourceEndpointFamily, upstreamEndpointFamily, context } = input
@@ -87,6 +87,12 @@ export function accountModelMappingProtocolValidationMessage(input: {
     ))
     if (!rule) {
       return unsupportedHybridProtocolConversionMessage(sourceEndpointFamily, upstreamEndpointFamily)
+    }
+    if (input.enabled !== false && !hasAccountModelMappingUpstreamEndpointFamilyCapability(
+      upstreamEndpointFamily,
+      context.supportedEndpointModes
+    )) {
+      return missingUpstreamEndpointFamilyCapabilityMessage(upstreamEndpointFamily)
     }
     return undefined
   }
@@ -127,8 +133,13 @@ export function accountModelMappingProtocolValidationMessage(input: {
   if (!openAIProfile && !anthropicProfile && !geminiNativeProfile) {
     return '当前供应商协议不支持账号模型别名'
   }
-  if (rule.requiresNativeResponses && !hasNativeResponsesEndpointMode(context.supportedEndpointModes ?? [])) {
-    return 'Responses 模型别名只能用于账号真实支持 Responses API 的原生上游'
+  if (input.enabled !== false && !hasAccountModelMappingUpstreamEndpointFamilyCapability(
+    upstreamEndpointFamily,
+    context.supportedEndpointModes
+  )) {
+    return rule.requiresNativeResponses
+      ? 'Responses 模型别名只能用于账号真实支持 Responses API 的原生上游'
+      : missingUpstreamEndpointFamilyCapabilityMessage(upstreamEndpointFamily)
   }
   return undefined
 }
@@ -136,6 +147,7 @@ export function accountModelMappingProtocolValidationMessage(input: {
 export function isAccountModelMappingProtocolAllowed(input: {
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
+  enabled?: boolean
   context: AccountModelMappingProtocolContext
 }): boolean {
   return !accountModelMappingProtocolValidationMessage(input)
@@ -143,13 +155,15 @@ export function isAccountModelMappingProtocolAllowed(input: {
 
 export function isAccountModelMappingSourceEndpointFamilyAllowed(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  context: AccountModelMappingProtocolContext
+  context: AccountModelMappingProtocolContext,
+  enabled = true
 ): boolean {
   return accountModelMappingRulesForContext(context).some((rule) => (
     rule.source === sourceEndpointFamily
     && isAccountModelMappingProtocolAllowed({
       sourceEndpointFamily,
       upstreamEndpointFamily: rule.upstream,
+      enabled,
       context
     })
   ))
@@ -181,7 +195,24 @@ export function isGeminiGenerateContentMappingSource(value: AccountModelMappingS
 }
 
 export function hasNativeResponsesEndpointMode(value: AccountFormModel['supportedEndpointModes']): boolean {
-  return value.some((mode) => responsesEndpointModes.includes(mode))
+  return hasAccountModelMappingUpstreamEndpointFamilyCapability(OPENAI_RESPONSES_FAMILY, value)
+}
+
+export function hasAccountModelMappingUpstreamEndpointFamilyCapability(
+  upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily,
+  value: AccountFormModel['supportedEndpointModes'] | undefined
+): boolean {
+  const modes = value ?? []
+  if (upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY) {
+    return modes.some((mode) => mode === 'chat_json' || mode === 'chat_sse')
+  }
+  if (upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY) {
+    return modes.some((mode) => mode === 'responses_json' || mode === 'responses_sse')
+  }
+  if (upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+    return modes.some((mode) => mode === 'messages_json' || mode === 'messages_sse')
+  }
+  return modes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')
 }
 
 function accountModelMappingProviderProfileId(providerProfile?: AccountModelMappingProviderProfile): string | undefined {
@@ -239,4 +270,10 @@ function preferredUpstreamFamilies(
   return sourceEndpointFamily === OPENAI_RESPONSES_FAMILY
     ? [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
     : [OPENAI_CHAT_COMPLETIONS_FAMILY]
+}
+
+function missingUpstreamEndpointFamilyCapabilityMessage(
+  upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
+): string {
+  return `启用的模型映射上游协议 ${accountModelMappingEndpointFamilyText(upstreamEndpointFamily)} 要求账户至少启用一种对应的上游接口能力`
 }

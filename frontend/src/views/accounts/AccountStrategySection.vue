@@ -26,7 +26,7 @@
             <a-select
               v-model:value="mapping.upstreamEndpointFamily"
               :disabled="authorizedEditing"
-              :options="upstreamEndpointFamilyOptions(mapping.sourceEndpointFamily)"
+              :options="upstreamEndpointFamilyOptions(mapping)"
               class="model-mapping-endpoint"
               placeholder="目标协议"
             />
@@ -168,10 +168,10 @@ watch(() => [
   sourceModelOptionsFingerprint(props.mappingUpstreamModelOptions)
 ].join('|'), () => {
   for (const mapping of props.form.modelMappings) {
-    if (!isAccountModelMappingSourceEndpointFamilyAllowed(mapping.sourceEndpointFamily, modelMappingProtocolContext())) {
+    if (!isAccountModelMappingSourceEndpointFamilyAllowed(mapping.sourceEndpointFamily, modelMappingProtocolContext(), mapping.enabled)) {
       mapping.sourceEndpointFamily = 'chat_completions'
     }
-    if (upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily)) {
+    if (upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily, mapping.enabled)) {
       mapping.upstreamEndpointFamily = defaultUpstreamEndpointFamilyForSource(mapping.sourceEndpointFamily)
     }
     if (!mappingSourceModelAllowed(mapping)) {
@@ -226,20 +226,22 @@ function mappingUpstreamModelAllowed(mapping: AccountFormModel['modelMappings'][
   return options.some((option) => option.value === upstreamModel)
 }
 
-function upstreamEndpointFamilyOptions(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
+function upstreamEndpointFamilyOptions(mapping: AccountFormModel['modelMappings'][number]) {
   return upstreamEndpointFamilyBaseOptions.map((option) => ({
     ...option,
-    disabled: upstreamEndpointFamilyDisabled(sourceEndpointFamily, option.value)
+    disabled: upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, option.value, mapping.enabled)
   }))
 }
 
 function upstreamEndpointFamilyDisabled(
   sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
-  upstreamEndpointFamily: AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']
+  upstreamEndpointFamily: AccountFormModel['modelMappings'][number]['upstreamEndpointFamily'],
+  enabled = true
 ): boolean {
   return !isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily,
     upstreamEndpointFamily,
+    enabled,
     context: modelMappingProtocolContext()
   })
 }
