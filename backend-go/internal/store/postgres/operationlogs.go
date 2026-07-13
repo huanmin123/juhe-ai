@@ -25,7 +25,7 @@ const (
 	operationLogActorSelfViewerReason  = "actor_self"
 	operationLogResourceOwnerReason    = "resource_owner"
 	operationLogAdminManagedReason     = "admin_managed_my_resource"
-	operationLogSearchMinTermRunes     = 2
+	operationLogSearchMinTermRunes     = 1
 	operationLogSearchMaxTermRunes     = 128
 	maxOperationLogSearchTerms         = 1500
 	maxOperationLogSearchTermRunes     = 256
@@ -553,7 +553,7 @@ func operationLogSummarySearchTerms(summary string) []string {
 	for _, source := range append([]string{compact}, parts...) {
 		runes := []rune(source)
 		maxGramLength := min(maxOperationLogSearchGramRunes, len(runes))
-		for size := 2; size <= maxGramLength; size++ {
+		for size := 1; size <= maxGramLength; size++ {
 			for start := 0; start+size <= len(runes); start++ {
 				if add(string(runes[start : start+size])) {
 					return terms

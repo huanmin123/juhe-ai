@@ -16,6 +16,7 @@
     "test:stats-date-range-window": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/stats-date-range-window-regression.ts",
     "test:account-usage-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-usage-formatters-regression.ts",
     "test:usage-record-token-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/usage-record-token-formatters-regression.ts",
+    "test:usage-record-admin-list": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/usage-record-admin-list-regression.ts",
     "test:account-test-session-client": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-test-session-client-regression.ts",
     "test:account-test-run-session": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-test-run-session-regression.ts",
     "test:account-provider-model-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-provider-model-cache-regression.ts",

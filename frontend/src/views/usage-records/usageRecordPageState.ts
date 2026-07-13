@@ -9,11 +9,13 @@ import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
 export type UsageRecordSortField = NonNullable<UsageRecordListParams['sortBy']>
 export type UsageRecordTableSortOrder = 'ascend' | 'descend' | null
+export type UsageRecordDateMode = 'auto' | 'manual'
 
 export type UsageRecordsPageState = {
   accountNameFilter: string
   clientIpFilter: string
   dateRangeFilter?: [string, string]
+  dateMode: UsageRecordDateMode
   groupFilter?: GroupSelection
   modelFilter: string
   pagination: { current: number; pageSize: number }
@@ -34,6 +36,7 @@ export function defaultUsageRecordsPageState(trafficSourceFilter: UsageRecordTra
     accountNameFilter: '',
     clientIpFilter: '',
     dateRangeFilter: [today, today],
+    dateMode: 'auto',
     groupFilter: undefined,
     modelFilter: '',
     pagination: { current: 1, pageSize: usageRecordsPageSize },

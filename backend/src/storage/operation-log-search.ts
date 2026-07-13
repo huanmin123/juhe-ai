@@ -1,4 +1,4 @@
-const operationLogSearchMinTermLength = 2
+const operationLogSearchMinTermLength = 1
 const operationLogSearchMaxTermLength = 128
 const operationLogSearchMaxFieldChars = 256
 const operationLogSearchMaxTermsPerLog = 1500

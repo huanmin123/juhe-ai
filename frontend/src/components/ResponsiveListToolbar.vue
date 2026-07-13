@@ -5,6 +5,7 @@
         v-if="showSearch"
         :value="keyword"
         allow-clear
+        :disabled="searchDisabled"
         :placeholder="searchPlaceholder"
         class="responsive-list-search"
         @update:value="emitKeywordUpdate"
@@ -80,6 +81,7 @@ import { Comment, Fragment, Text, computed, onActivated, onBeforeUnmount, onDeac
 const props = withDefaults(defineProps<{
   keyword?: string
   searchPlaceholder?: string
+  searchDisabled?: boolean
   searchWidth?: string
   filterTitle?: string
   advancedFilterTitle?: string
@@ -96,6 +98,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   keyword: '',
   searchPlaceholder: '搜索...',
+  searchDisabled: false,
   filterTitle: '筛选',
   activeFilterCount: 0,
   advancedFilterCount: 0,

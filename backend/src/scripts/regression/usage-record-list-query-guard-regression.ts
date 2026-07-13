@@ -609,11 +609,39 @@ try {
 
     const routeWithoutSystemAccount = await getEnvelope<UsageRecordListResult>(
       routeBaseUrl,
-      `/__aisys__/api/usage-records?model=${encodeURIComponent(routeDefaultWindowModel)}&page=1&pageSize=20`,
+      '/__aisys__/api/usage-records?page=1&pageSize=20',
       sessionCookie(admin.id)
     )
-    assert.equal(routeWithoutSystemAccount.requiresSystemAccountSelection, true, '管理员使用记录路由未指定系统账户时应要求先选用户')
-    assert.equal(routeWithoutSystemAccount.items.length, 0, '管理员使用记录路由未指定系统账户时不应返回全局列表')
+    assert(routeWithoutSystemAccount.items.some((item) => item.id === routeDefaultWindowInsideId), '管理员使用记录路由未指定系统账户时应返回当天全用户列表')
+    assert(!routeWithoutSystemAccount.items.some((item) => item.id === routeDefaultWindowOutsideId), '管理员使用记录当天全用户列表不应跨出默认日期窗口')
+
+    const routeWithoutSystemAccountFiltered = await fetch(
+      `${routeBaseUrl}/__aisys__/api/usage-records?model=${encodeURIComponent(routeDefaultWindowModel)}&page=1&pageSize=20`,
+      { headers: { cookie: sessionCookie(admin.id) } }
+    )
+    assert.equal(routeWithoutSystemAccountFiltered.status, 400, '管理员未选系统账户时携带业务筛选应返回 400')
+    assert.deepEqual(await routeWithoutSystemAccountFiltered.json(), { message: '请先选择系统账户后筛选' })
+
+    for (const query of [
+      'accountKeyword=guard',
+      'result=all',
+      'statusCode=200',
+      'clientIp=127.0.0.1',
+      `groupId=${encodeURIComponent(group.id)}`,
+      `model=${encodeURIComponent(routeDefaultWindowModel)}`,
+      'traceId=trace-route',
+      'trafficSource=gateway',
+      'startDate=2026-07-01',
+      'endDate=2026-07-13',
+      'sortBy=durationMs',
+      'sortOrder=asc'
+    ]) {
+      const filterResponse: Awaited<ReturnType<typeof fetch>> = await fetch(`${routeBaseUrl}/__aisys__/api/usage-records?page=1&pageSize=20&${query}`, {
+        headers: { cookie: sessionCookie(admin.id) }
+      })
+      assert.equal(filterResponse.status, 400, `管理员全用户使用记录不应接受筛选参数：${query}`)
+      assert.deepEqual(await filterResponse.json(), { message: '请先选择系统账户后筛选' })
+    }
 
     const routePageClamp = await getEnvelope<UsageRecordListResult>(
       routeBaseUrl,
