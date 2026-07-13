@@ -144,7 +144,12 @@ try {
     enabled: true
   }, access)
   assert(repositories.updateAccount(proxyAccount.id, { proxyProfileId: proxy.id }, access), '代理失败边界账户应能绑定启用代理')
-  assert(repositories.updateProxy(proxy.id, { enabled: false }), '代理失败边界代理应能被停用')
+  assert(repositories.recordAccountHealthCheckSuccess(proxyAccount.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), '代理配置变更后必须通过正式健康检查路径恢复可调度状态')
 
   const proxyRun = await runModelCheck({
     targetType: 'account',

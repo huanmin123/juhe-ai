@@ -100,6 +100,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 
 - [x] 评估并选择支持目标模型 encoding、可版本锁定的精确 tokenizer 实现：`js-tiktoken@1.0.21:o200k_base`。
 - [x] 实现 P0 / P1 / P2 精确填充块和实际 outbound 受控请求 Token 复核。
+- [x] 精确填充限制为 2048 Token，使用线性构造并投递到有界单 worker 任务池，避免阻塞服务事件循环。
 - [x] 实现三轮交错顺序、reported / local 差分、slope / intercept 和 95% 置信区间。
 - [ ] 比例和分桶异常原因码已实现；固定 intercept 已保存，但固定灌水强判等待 cohort 固定开销基线。
 - [x] usage 缺失或总输入口径不兼容返回 `unsupported`；当前不做 output 灌水结论，因此不会把隐藏 reasoning 误判为灌水。
@@ -119,6 +120,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - [x] stats-worker 按同一确认游标增量构建 usage 诚信、身份来源特征、版本基线、paired 相似度和账号 latest。
 - [x] 按上游桶限制贡献权重，候选账号使用 leave-one-upstream-out median / MAD / q10 / q90；bootstrap 重采样区间保留为真实样本校准增强，不阻塞当前稳健基线。
 - [x] 按来源桶、样本数和时间跨度输出 bootstrap / candidate / stable，并实现 active / drift_protected / retired 基线版本切换机制。
+- [x] 仅 `observed + observed_model` 有效样本进入聚合；Token 样本还要求 reported usage，失败和缺字段样本不增加轮次、覆盖率、来源数、时间跨度或证据阶段。
 - [x] 实现群体共同漂移保护、MAD 极端样本退出和同一上游桶多账号塌缩限权。
 - [x] 刷新 `model_account_trust_results`，详情 API 只读预聚合结果，不扫 observation 或 usage 明细。
 
@@ -170,6 +172,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 2026-07-14：完成五维报告最小闭环和中文详情展示。由于仓库尚无目标模型精确 tokenizer，Token 诚信与群体证据保持证据不足；observation、HMAC 上游桶、stats-worker 窗口和生产校准尚未实现。
 - 2026-07-14：锁定 `js-tiktoken@1.0.21:o200k_base`，落地 P0 / P1 / P2 三轮输入差分、HMAC observation、ingest 写入、stats-worker 游标窗口、账号 latest 和中文证据覆盖。身份群体指纹、同源塌缩、LOO 稳健基线与漂移版本仍待实现。
 - 2026-07-14：落地静态行为与运行时生成式 canary 的 8 维身份 observation、五模型 paired 随机交错、独立上游桶塌缩、LOO median / MAD / 分位基线、paired 同源 / 降级判断和基线漂移保护版本；生产阈值与版本切换时间窗仍需小流量观察校准。
+- 2026-07-14：修正可信度证据资格：精确 Token 填充移入有界 worker 并改为线性构造；无 response model 的当前报告保持不可用；失败、usage 缺失和模型字段缺失 observation 不再放大样本、轮次、来源、覆盖率或证据阶段。
 
 ## 验收标准
 
@@ -189,6 +192,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 2026-07-13：线上 macOS 只读检查完成，没有改配置、写库、重启服务或追加真实模型消耗。
 - 2026-07-13：8 份关联文档本地链接检查、尾随空白检查、PLAN-0095 唯一性、`git diff --check` 和仅文档变更检查通过；仅有 Git 提示未来可能按工作区配置把 LF 转为 CRLF，没有格式错误。
 - 2026-07-14：`pnpm test:model-trust-identity-baseline`、Token / observation 聚合、完整 profile、严格模型匹配、paired mismatch、存储脱敏、SQLite writer、后台 registry、账户删除清理、`pnpm typecheck` 和 `pnpm build` 通过。Browser 运行时无可用实例，中文详情的 DOM / 交互 / 截图验证仍保留为部署验收项。
+- 2026-07-14：可信度证据资格加固后，完整非 PG 模型检测套件、`test:deleted-account-related-cleanup`、`test:postgres-schema-sql`、`test:server-audit-shutdown`、全工作区 `pnpm typecheck` / `pnpm build` 通过；源码 `tsx` 和构建产物 `.js` 两种 Token worker 入口均验证可启动且退出后无残留。另在 `192.168.1.203` 创建一次性隔离数据库执行 `postgres:init-schema-only`、`test:model-checks-postgres-smoke` 和实际 Token source / window / round 聚合，确认 `padding_mask = 7`、完整轮次与 latest 结果；通过后已终止连接并删除临时数据库，未修改共享测试库 schema。
 
 ## 风险与注意事项
 

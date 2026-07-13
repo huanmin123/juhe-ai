@@ -1022,6 +1022,26 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (system_account_id, account_id, requested_model, cohort_key_hmac, tokenizer_version, probe_set_version)
         );
 
+    CREATE TABLE IF NOT EXISTS model_token_integrity_rounds (
+          system_account_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          requested_model TEXT NOT NULL,
+          cohort_key_hmac TEXT NOT NULL,
+          tokenizer_version TEXT NOT NULL,
+          probe_set_version TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          round_index INTEGER NOT NULL,
+          valid_sample_count INTEGER NOT NULL DEFAULT 0,
+          padding_mask INTEGER NOT NULL DEFAULT 0,
+          first_observed_at TEXT NOT NULL,
+          last_observed_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (
+            system_account_id, account_id, requested_model, cohort_key_hmac, tokenizer_version,
+            probe_set_version, run_id, round_index
+          )
+        );
+
     CREATE TABLE IF NOT EXISTS model_trust_window_sources (
           system_account_id TEXT NOT NULL,
           account_id TEXT NOT NULL,
@@ -1141,6 +1161,8 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_model_account_trust_results_updated ON model_account_trust_results(updated_at, account_id, requested_model);
 
     CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_cohort ON model_token_integrity_windows(cohort_key_hmac, requested_model, updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_model_token_integrity_rounds_account ON model_token_integrity_rounds(account_id, requested_model, updated_at);
 
     CREATE INDEX IF NOT EXISTS idx_model_identity_source_population ON model_identity_source_features(population_key_hmac, requested_model, feature_version, upstream_bucket_hmac);
 

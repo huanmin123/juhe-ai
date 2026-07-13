@@ -27,35 +27,41 @@ export function buildModelCheckTrustReport(
 ): ModelCheckTrustReport {
   const targetChecks = checks.filter((item) => item.itemKey.startsWith('target.'))
   const evidence = targetChecks.map((item) => item.evidenceSummary)
+  const responseEvidence = evidence.filter((item) => item.success === true && Boolean(text(item.responseModel)))
+  const hasModelResponseEvidence = responseEvidence.length > 0
   const mappingApplied = evidence.some((item) => item.modelMappingApplied === true)
-  const modelMismatch = evidence.some((item) => item.modelMismatch === true)
-  const representative = evidence.find((item) => item.requestModel || item.upstreamModel || item.responseModel)
-  const mappedUpstreamModel = text(representative?.upstreamModel) ?? input.requestedModel
+  const modelMismatch = responseEvidence.some((item) => item.modelMismatch === true)
+  const representative = responseEvidence.find((item) => item.requestModel || item.upstreamModel || item.responseModel)
+  const configuredRepresentative = evidence.find((item) => item.requestModel || item.upstreamModel)
+  const mappedUpstreamModel = text(representative?.upstreamModel) ?? text(configuredRepresentative?.upstreamModel) ?? input.requestedModel
   const observedModel = text(representative?.responseModel)
   const mappingStatus: ModelMappingStatus = mappingApplied
     ? 'configured_mapping'
     : modelMismatch
       ? 'undeclared_mismatch'
-      : targetChecks.length
+      : hasModelResponseEvidence
         ? 'direct'
         : 'unknown'
   const protocolChecks = targetChecks.filter((item) => protocolItemTypes.has(item.itemType))
-  const protocolStatus: ModelProtocolStatus = protocolChecks.length === 0
+  const successfulProtocolChecks = protocolChecks.filter((item) => item.evidenceSummary.success === true)
+  const protocolStatus: ModelProtocolStatus = !hasModelResponseEvidence || successfulProtocolChecks.length === 0
     ? 'insufficient_evidence'
-    : protocolChecks.some((item) => item.status === 'failed')
+    : successfulProtocolChecks.some((item) => item.status === 'failed')
       ? 'failed'
-      : protocolChecks.some((item) => item.status === 'warning' || item.status === 'skipped')
+      : protocolChecks.length !== successfulProtocolChecks.length
+        || successfulProtocolChecks.some((item) => item.status === 'warning' || item.status === 'skipped')
         ? 'warning'
         : 'consistent'
   const identityStatus: ModelIdentityStatus = modelMismatch
     ? 'suspected_downgrade'
-    : targetChecks.length
+    : hasModelResponseEvidence
       ? 'consistent'
       : 'insufficient_evidence'
   const reasonCodes = [
     ...(mappingStatus === 'configured_mapping' ? ['configured_model_mapping'] : []),
     ...(mappingStatus === 'undeclared_mismatch' ? ['undeclared_response_model_mismatch'] : []),
     ...(protocolStatus === 'failed' ? ['protocol_check_failed'] : []),
+    ...(!hasModelResponseEvidence ? ['model_response_evidence_unavailable'] : []),
     'tokenizer_calibration_unavailable',
     'population_baseline_unavailable'
   ]
@@ -65,12 +71,12 @@ export function buildModelCheckTrustReport(
     usageIntegrityStatus: 'insufficient_evidence',
     protocolStatus,
     evidenceStatus: 'insufficient',
-    requestedModel: text(representative?.requestModel) ?? input.requestedModel,
+    requestedModel: text(representative?.requestModel) ?? text(configuredRepresentative?.requestModel) ?? input.requestedModel,
     mappedUpstreamModel,
     observedModel,
     mappingApplied,
     probeSetVersion: input.probeSetVersion,
-    evidenceCoverage: boundedPercentage(input.evidenceCoverage),
+    evidenceCoverage: hasModelResponseEvidence ? boundedPercentage(input.evidenceCoverage) : 0,
     reasonCodes
   }
 }

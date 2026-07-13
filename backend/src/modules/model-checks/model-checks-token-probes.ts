@@ -6,12 +6,11 @@ import { createModelCheckProbeRequest, type ModelCheckProbeRequest } from './mod
 import type { GatewayProbeResult } from './model-checks-evaluation.js'
 import {
   analyzeTokenIntegritySamples,
-  buildExactTokenPadding,
-  countModelCheckInputTokens,
   modelCheckTokenizerVersion,
   modelCheckTokenProbeVersion,
   type TokenIntegritySample
 } from './model-checks-token-integrity.js'
+import { prepareModelCheckTokenProbePromptInWorker } from './model-checks-token-worker.service.js'
 import {
   modelCheckCohortKey,
   modelCheckObservationHmac,
@@ -29,6 +28,7 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
   baseUrl: string
   credentialMode: string
   probeSetVersion: string
+  signal?: AbortSignal
   runProbe: (request: ModelCheckProbeRequest, itemKey: string) => Promise<GatewayProbeResult>
 }): Promise<{ item: ModelCheckItemCreateInput; observations: TokenIntegrityObservationSeed[] }> {
   const upstreamBucketHmac = modelCheckObservationHmac(normalizedUpstreamOrigin(input.baseUrl), 'upstream')
@@ -39,7 +39,8 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
     const nonce = createTraceId().replace(/[^a-zA-Z0-9]/g, '').slice(-16)
     const basePrompt = `Controlled token integrity probe ${modelCheckTokenProbeVersion}. Nonce ${nonce}. Reply with exactly OK.\n`
     for (const paddingTokens of paddingVariants(roundIndex)) {
-      const prompt = basePrompt + buildExactTokenPadding(paddingTokens, basePrompt)
+      const preparedPrompt = await prepareModelCheckTokenProbePromptInWorker(basePrompt, paddingTokens, input.signal)
+      const prompt = preparedPrompt.prompt
       const request = createModelCheckProbeRequest('openai_responses', input.model, prompt, {
         maxOutputTokens: 8,
         stream: false,
@@ -47,7 +48,7 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
       })
       const result = await input.runProbe(request, `target.token_integrity.r${roundIndex}.p${paddingTokens}`)
       representative ??= result
-      const localInputTokens = countModelCheckInputTokens(prompt)
+      const localInputTokens = preparedPrompt.localInputTokens
       const reportedInputTokens = usageValue(result.usage, ['input_tokens', 'prompt_tokens'])
       const cachedInputTokens = cachedUsageValue(result.usage)
       samples.push({ roundIndex, paddingTokens, localInputTokens, reportedInputTokens, cachedInputTokens })
@@ -83,7 +84,7 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
         localInputTokens,
         reportedInputTokens,
         cachedInputTokens,
-        observationStatus: result.success ? (reportedInputTokens === undefined ? 'usage_missing' : 'observed') : 'request_failed',
+        observationStatus: tokenObservationStatus(result, reportedInputTokens),
         traceId: result.traceId
       })
     }
@@ -113,6 +114,12 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
     },
     observations
   }
+}
+
+function tokenObservationStatus(result: GatewayProbeResult, reportedInputTokens: number | undefined): string {
+  if (!result.success) return 'request_failed'
+  if (!result.model?.trim()) return 'model_missing'
+  return reportedInputTokens === undefined ? 'usage_missing' : 'observed'
 }
 
 function paddingVariants(roundIndex: number): number[] {

@@ -89,7 +89,7 @@ export function createControlledBehaviorObservations(input: {
       paddingTokens: 0,
       localInputTokens: countModelCheckInputTokens(definition.prompt),
       reportedInputTokens: usageValue(result.usage, ['input_tokens', 'prompt_tokens']),
-      observationStatus: result.success ? 'observed' : 'request_failed',
+      observationStatus: identityObservationStatus(result),
       constraintPassed,
       featureVector: extractIdentityFeatureVector(result.outputText ?? '', result.usage, constraintPassed),
       traceId: result.traceId
@@ -167,7 +167,7 @@ export async function executeModelIdentityObservationProbes(input: {
       localInputTokens: countModelCheckInputTokens(job.definition.prompt),
       reportedInputTokens: usageValue(result.usage, ['input_tokens', 'prompt_tokens']),
       cachedInputTokens: undefined,
-      observationStatus: result.success ? 'observed' : 'request_failed',
+      observationStatus: identityObservationStatus(result),
       constraintPassed,
       featureVector: extractIdentityFeatureVector(output, result.usage, constraintPassed),
       traceId: result.traceId
@@ -194,6 +194,11 @@ export async function executeModelIdentityObservationProbes(input: {
     },
     observations
   }
+}
+
+function identityObservationStatus(result: GatewayProbeResult): string {
+  if (!result.success) return 'request_failed'
+  return result.model?.trim() ? 'observed' : 'model_missing'
 }
 
 export function extractIdentityFeatureVector(output: string, usage: Record<string, unknown> | undefined, constraintPassed: boolean): number[] {

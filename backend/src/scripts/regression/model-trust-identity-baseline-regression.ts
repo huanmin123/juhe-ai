@@ -125,6 +125,35 @@ const protectedExistingTarget = await repository.findModelAccountTrustResultAsyn
 assert.equal(protectedExistingTarget?.baselineVersionStatus, 'drift_protected', '群体漂移必须刷新未出现在当前批次中的同 population latest')
 assert.equal(protectedExistingTarget?.identityStatus, 'insufficient_evidence')
 
+const invalidIdentityObservations: import('../../storage/model-trust.repository.js').ModelCheckObservationInput[] = []
+for (let sourceIndex = 0; sourceIndex < 10; sourceIndex += 1) {
+  for (let probeIndex = 0; probeIndex < 3; probeIndex += 1) {
+    const requestFailed = probeIndex % 2 === 0
+    invalidIdentityObservations.push(identityObservation({
+      accountId: 'acct_failed_identity',
+      upstream: `failed-identity-source-${sourceIndex}`,
+      model: 'gpt-5.6-sol',
+      probeIndex,
+      vector: featureVector(0.2 + sourceIndex * 0.01),
+      createdAt: new Date(Date.UTC(2026, 6, 20 + (sourceIndex % 3), 0, sourceIndex, probeIndex)).toISOString(),
+      observationStatus: requestFailed ? 'request_failed' : 'model_missing',
+      observedModel: requestFailed ? 'gpt-5.6-sol' : null
+    }))
+  }
+}
+await repository.createModelCheckObservationsAsync(invalidIdentityObservations)
+while (await repository.aggregateModelTrustObservationsAsync(13)) {
+}
+assert.equal(
+  await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_failed_identity', 'gpt-5.6-sol'),
+  undefined,
+  '失败或无 response model 的身份 observation 不能生成 latest 结论'
+)
+const failedFeatureCount = database.getStatsDatabase().prepare(`
+  SELECT COUNT(*) AS count FROM model_identity_source_features WHERE account_id = ?
+`).get('acct_failed_identity') as { count: number }
+assert.equal(failedFeatureCount.count, 0, '无效身份 observation 不能进入来源特征或群体基线')
+
 const stored = database.getDatasetDatabase().prepare("SELECT * FROM model_check_observations WHERE probe_family LIKE 'identity_%' LIMIT 1").get() as Record<string, unknown>
 assert(!('prompt' in stored) && !('response_body' in stored) && !('output_text' in stored), '身份 observation 不得持久化题面或回答正文')
 assert.equal(typeof stored.feature_1, 'number')
@@ -145,8 +174,9 @@ function identityObservation(input: {
   probeIndex: number
   vector: number[]
   createdAt: string
-  observedModel?: string
+  observedModel?: string | null
   mappingStatus?: string
+  observationStatus?: string
 }): import('../../storage/model-trust.repository.js').ModelCheckObservationInput {
   const cohort = security.modelCheckObservationHmac(`cohort:${input.model}`, 'cohort')
   return {
@@ -158,7 +188,7 @@ function identityObservation(input: {
     endpointFamily: 'responses',
     requestedModel: input.model,
     mappedUpstreamModel: input.model,
-    observedModel: input.observedModel ?? input.model,
+    observedModel: input.observedModel === null ? undefined : input.observedModel ?? input.model,
     mappingApplied: false,
     upstreamBucketHmac: security.modelCheckObservationHmac(input.upstream, 'upstream'),
     cohortKeyHmac: cohort,
@@ -174,7 +204,7 @@ function identityObservation(input: {
     reportedInputTokens: 32,
     constraintPassed: true,
     featureVector: input.vector,
-    observationStatus: 'observed',
+    observationStatus: input.observationStatus ?? 'observed',
     identityStatus: 'insufficient_evidence',
     mappingStatus: input.mappingStatus ?? 'direct',
     protocolStatus: 'consistent',

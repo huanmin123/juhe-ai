@@ -2,6 +2,7 @@ import { getEncoding } from 'js-tiktoken'
 
 export const modelCheckTokenizerVersion = 'js-tiktoken@1.0.21:o200k_base'
 export const modelCheckTokenProbeVersion = 'token-integrity-v1'
+export const modelCheckTokenPaddingMaxTokens = 2048
 
 let encoding: ReturnType<typeof getEncoding> | undefined
 
@@ -26,27 +27,42 @@ export interface TokenIntegrityAnalysis {
   reasonCodes: string[]
 }
 
+export interface ModelCheckTokenProbePrompt {
+  prompt: string
+  padding: string
+  localInputTokens: number
+}
+
 export function countModelCheckInputTokens(value: string): number {
   encoding ??= getEncoding('o200k_base')
   return encoding.encode(value).length
 }
 
 export function buildExactTokenPadding(targetTokens: number, prefix = ''): string {
-  const target = Math.max(0, Math.trunc(targetTokens))
-  if (target === 0) return ''
+  return buildModelCheckTokenProbePrompt(prefix, targetTokens).padding
+}
+
+export function buildModelCheckTokenProbePrompt(prefix: string, targetTokens: number): ModelCheckTokenProbePrompt {
+  const target = normalizeModelCheckTokenPaddingTarget(targetTokens)
   const prefixTokens = countModelCheckInputTokens(prefix)
-  let padding = ''
-  const unit = ' token-integrity-probe'
-  while (countModelCheckInputTokens(prefix + padding) - prefixTokens < target) {
-    padding += unit
-  }
-  while (countModelCheckInputTokens(prefix + padding) - prefixTokens > target) {
-    padding = padding.slice(0, -1)
-  }
-  if (countModelCheckInputTokens(prefix + padding) - prefixTokens !== target) {
+  // Under the pinned o200k_base encoding, each leading-space x is one stable token.
+  const padding = ' x'.repeat(target)
+  const prompt = prefix + padding
+  const localInputTokens = countModelCheckInputTokens(prompt)
+  if (localInputTokens - prefixTokens !== target) {
     throw new Error(`无法构造 ${target} Token 的精确受控填充块`)
   }
-  return padding
+  return { prompt, padding, localInputTokens }
+}
+
+export function normalizeModelCheckTokenPaddingTarget(targetTokens: number): number {
+  if (!Number.isFinite(targetTokens) || !Number.isInteger(targetTokens)) {
+    throw new Error('模型检测 Token 填充目标必须是整数')
+  }
+  if (targetTokens < 0 || targetTokens > modelCheckTokenPaddingMaxTokens) {
+    throw new Error(`模型检测 Token 填充目标必须在 0 到 ${modelCheckTokenPaddingMaxTokens} 之间`)
+  }
+  return targetTokens
 }
 
 export function analyzeTokenIntegritySamples(samples: TokenIntegritySample[]): TokenIntegrityAnalysis {

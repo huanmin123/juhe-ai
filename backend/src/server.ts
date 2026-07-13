@@ -52,6 +52,7 @@ import { dispatchAccountHealthCheck } from './modules/accounts/account-health-ch
 import {
   mountAccountHealthCheckDispatchBridge
 } from './modules/internal-api/account-health-check-dispatch.routes.js'
+import { stopModelCheckTokenWorker } from './modules/model-checks/model-checks-token-worker.service.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -471,6 +472,7 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
       }, '服务退出前部分请求或审计任务未在时限内排空')
     }
     await stopAuditLogTransportWorker()
+    await stopModelCheckTokenWorker()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'server_shutdown_failed' }), '服务优雅退出失败')
   } finally {

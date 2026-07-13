@@ -4,6 +4,7 @@ import { createPostgresDatabaseClient, createSqliteDatabaseClient, type Database
 import { getPostgresPool } from './postgres-client.js'
 import {
   evaluateIdentityTrust,
+  isIdentityObservation,
   listIdentityAccountModelsForPopulations,
   refreshIdentityBaselines,
   upsertIdentitySourceFeature
@@ -171,10 +172,14 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
     for (const row of rows) {
       await upsertSource(tx, row)
       await upsertWindow(tx, row)
+      await upsertTokenRound(tx, row)
       await upsertIdentitySourceFeature(tx, row)
     }
     const changedPopulations = await refreshIdentityBaselines(tx, rows)
-    const affected = mergeAccountModelKeys(uniqueAccountModels(rows), await listIdentityAccountModelsForPopulations(tx, changedPopulations))
+    const affected = mergeAccountModelKeys(
+      uniqueAccountModels(rows.filter(isValidTrustObservation)),
+      await listIdentityAccountModelsForPopulations(tx, changedPopulations)
+    )
     for (const key of affected) {
       await refreshLatestResult(tx, key, rows)
     }
@@ -222,6 +227,7 @@ export async function findModelAccountTrustResultAsync(systemAccountId: string, 
 }
 
 async function upsertSource(client: DatabaseClient, row: ObservationRow): Promise<void> {
+  if (!isValidTokenObservation(row)) return
   const table = client.dialect.qualifyTable('juhe_stats', 'model_trust_window_sources')
   await client.execute(`
     INSERT INTO ${table} (
@@ -230,17 +236,16 @@ async function upsertSource(client: DatabaseClient, row: ObservationRow): Promis
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
     ON CONFLICT (system_account_id, account_id, cohort_key_hmac, mapped_upstream_model, upstream_bucket_hmac) DO UPDATE SET
       last_observed_at = excluded.last_observed_at,
-      observation_count = observation_count + 1,
+      observation_count = model_trust_window_sources.observation_count + 1,
       updated_at = excluded.updated_at
   `, [row.system_account_id, row.account_id, row.cohort_key_hmac, row.mapped_upstream_model, row.upstream_bucket_hmac, row.created_at, row.created_at, nowIso()])
 }
 
 async function upsertWindow(client: DatabaseClient, row: ObservationRow): Promise<void> {
-  if (row.probe_family !== 'token_input_differential') return
+  if (!isValidTokenObservation(row)) return
   const table = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_windows')
-  const valid = row.reported_input_tokens !== null
-  const local = valid ? row.local_input_tokens : 0
-  const reported = valid ? Number(row.reported_input_tokens) : 0
+  const local = row.local_input_tokens
+  const reported = Number(row.reported_input_tokens)
   await client.execute(`
     INSERT INTO ${table} (
       system_account_id, account_id, requested_model, cohort_key_hmac, tokenizer_version,
@@ -249,27 +254,53 @@ async function upsertWindow(client: DatabaseClient, row: ObservationRow): Promis
       bucket_aligned_count, first_observed_at, last_observed_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (system_account_id, account_id, requested_model, cohort_key_hmac, tokenizer_version, probe_set_version) DO UPDATE SET
-      observation_count = observation_count + 1,
-      valid_sample_count = valid_sample_count + excluded.valid_sample_count,
-      sum_local = sum_local + excluded.sum_local,
-      sum_reported = sum_reported + excluded.sum_reported,
-      sum_local_squared = sum_local_squared + excluded.sum_local_squared,
-      sum_local_reported = sum_local_reported + excluded.sum_local_reported,
-      sum_reported_squared = sum_reported_squared + excluded.sum_reported_squared,
-      bucket_aligned_count = bucket_aligned_count + excluded.bucket_aligned_count,
+      observation_count = model_token_integrity_windows.observation_count + 1,
+      valid_sample_count = model_token_integrity_windows.valid_sample_count + excluded.valid_sample_count,
+      sum_local = model_token_integrity_windows.sum_local + excluded.sum_local,
+      sum_reported = model_token_integrity_windows.sum_reported + excluded.sum_reported,
+      sum_local_squared = model_token_integrity_windows.sum_local_squared + excluded.sum_local_squared,
+      sum_local_reported = model_token_integrity_windows.sum_local_reported + excluded.sum_local_reported,
+      sum_reported_squared = model_token_integrity_windows.sum_reported_squared + excluded.sum_reported_squared,
+      bucket_aligned_count = model_token_integrity_windows.bucket_aligned_count + excluded.bucket_aligned_count,
       last_observed_at = excluded.last_observed_at,
       updated_at = excluded.updated_at
   `, [
     row.system_account_id, row.account_id, row.requested_model, row.cohort_key_hmac,
-    row.tokenizer_version, row.probe_set_version, valid ? 1 : 0, local, reported,
+    row.tokenizer_version, row.probe_set_version, 1, local, reported,
     local * local, local * reported, reported * reported,
-    valid && row.padding_tokens > 0 && reported % 64 === 0 ? 1 : 0,
+    row.padding_tokens > 0 && reported % 64 === 0 ? 1 : 0,
+    row.created_at, row.created_at, nowIso()
+  ])
+}
+
+async function upsertTokenRound(client: DatabaseClient, row: ObservationRow): Promise<void> {
+  if (!isValidTokenObservation(row)) return
+  const table = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_rounds')
+  const paddingMask = tokenPaddingMask(row.padding_tokens)
+  await client.execute(`
+    INSERT INTO ${table} (
+      system_account_id, account_id, requested_model, cohort_key_hmac, tokenizer_version,
+      probe_set_version, run_id, round_index, valid_sample_count, padding_mask,
+      first_observed_at, last_observed_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+    ON CONFLICT (
+      system_account_id, account_id, requested_model, cohort_key_hmac, tokenizer_version,
+      probe_set_version, run_id, round_index
+    ) DO UPDATE SET
+      valid_sample_count = model_token_integrity_rounds.valid_sample_count + 1,
+      padding_mask = model_token_integrity_rounds.padding_mask | excluded.padding_mask,
+      last_observed_at = excluded.last_observed_at,
+      updated_at = excluded.updated_at
+  `, [
+    row.system_account_id, row.account_id, row.requested_model, row.cohort_key_hmac,
+    row.tokenizer_version, row.probe_set_version, row.run_id, row.round_index, paddingMask,
     row.created_at, row.created_at, nowIso()
   ])
 }
 
 async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey, batchRows: ObservationRow[]): Promise<void> {
   const windows = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_windows')
+  const rounds = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_rounds')
   const sources = client.dialect.qualifyTable('juhe_stats', 'model_trust_window_sources')
   const latest = client.dialect.qualifyTable('juhe_stats', 'model_account_trust_results')
   const currentLatest = await client.one<Record<string, unknown>>(`
@@ -290,13 +321,23 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
   `, [window.cohort_key_hmac]) : undefined
   const sourceCount = Number(sourceRow?.source_count ?? 0)
   const regression = window ? regressionFromWindow(window) : undefined
-  const roundCount = window ? Math.floor(Number(window.observation_count) / 3) : 0
+  const validSampleCount = Number(window?.valid_sample_count ?? 0)
+  const roundRow = window ? await client.one<{ round_count: number }>(`
+    SELECT COUNT(*) AS round_count FROM ${rounds}
+    WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
+      AND cohort_key_hmac = ? AND tokenizer_version = ? AND probe_set_version = ?
+      AND (padding_mask & 7) = 7
+  `, [
+    key.systemAccountId, key.accountId, key.requestedModel, window.cohort_key_hmac,
+    window.tokenizer_version, window.probe_set_version
+  ]) : undefined
+  const roundCount = Number(roundRow?.round_count ?? 0)
   const durationDays = window ? Math.max(1, Math.ceil((Date.parse(window.last_observed_at) - Date.parse(window.first_observed_at)) / 86_400_000) + 1) : 0
-  const tokenEvidenceStatus = sourceCount >= 10 && Number(window?.observation_count ?? 0) >= 300 && durationDays >= 14
+  const tokenEvidenceStatus = sourceCount >= 10 && validSampleCount >= 300 && roundCount >= 100 && durationDays >= 14
     ? 'stable'
-    : sourceCount >= 5 && Number(window?.observation_count ?? 0) >= 100 && durationDays >= 7
+    : sourceCount >= 5 && validSampleCount >= 100 && roundCount >= 34 && durationDays >= 7
       ? 'candidate'
-      : sourceCount >= 3 && Number(window?.observation_count ?? 0) >= 30 && durationDays >= 3
+      : sourceCount >= 3 && validSampleCount >= 30 && roundCount >= 10 && durationDays >= 3
         ? 'bootstrap'
         : 'insufficient'
   const usage = window && regression
@@ -314,7 +355,12 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       window.tokenizer_version, window.probe_set_version
     ])
   }
-  const representative = [...batchRows].reverse().find((row) => row.system_account_id === key.systemAccountId && row.account_id === key.accountId && row.requested_model === key.requestedModel)
+  const representative = [...batchRows].reverse().find((row) => (
+    isValidTrustObservation(row)
+    && row.system_account_id === key.systemAccountId
+    && row.account_id === key.accountId
+    && row.requested_model === key.requestedModel
+  ))
   const mappingStatus = representative?.mapping_status ?? optionalText(currentLatest?.mapping_status) ?? 'unknown'
   const protocolStatus = representative?.protocol_status ?? optionalText(currentLatest?.protocol_status) ?? 'insufficient_evidence'
   const reasonCodes = [
@@ -370,7 +416,7 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
     key.systemAccountId, key.accountId, key.requestedModel,
     identity?.identityStatus ?? representative?.identity_status ?? optionalText(currentLatest?.identity_status) ?? 'insufficient_evidence',
     mappingStatus, usage.status, protocolStatus, evidenceStatus, evidenceCoverage,
-    Number(window?.observation_count ?? 0) + Number(identity?.identityObservationCount ?? 0), roundCount,
+    validSampleCount + Number(identity?.identityObservationCount ?? 0), roundCount,
     Math.max(sourceCount, identity?.independentSourceCount ?? 0), identity?.identityObservationCount ?? 0, identity?.pairedProbeCount ?? 0,
     regression?.slope ?? null, regression?.intercept ?? null, identity?.identityDistance ?? null,
     identity?.pairedDistance ?? null, identity?.pairedBaselineMedian ?? null, identity?.pairedBaselineMad ?? null,
@@ -407,6 +453,26 @@ function tokenStatusFromWindow(row: WindowRow, slope: number, low: number, high:
   if (distance > 0.03) return { status: 'warning', reasonCodes: ['slope_warning'] }
   if (row.bucket_aligned_count / row.valid_sample_count >= 0.5) return { status: 'warning', reasonCodes: ['bucket_rounding'] }
   return { status: 'consistent', reasonCodes: [] }
+}
+
+function isValidTokenObservation(row: ObservationRow): boolean {
+  return row.probe_family === 'token_input_differential'
+    && row.observation_status === 'observed'
+    && Boolean(row.observed_model?.trim())
+    && row.reported_input_tokens !== null
+    && Number.isFinite(Number(row.reported_input_tokens))
+    && tokenPaddingMask(row.padding_tokens) !== 0
+}
+
+function isValidTrustObservation(row: ObservationRow): boolean {
+  return isValidTokenObservation(row) || isIdentityObservation(row)
+}
+
+function tokenPaddingMask(paddingTokens: number): number {
+  if (paddingTokens === 0) return 1
+  if (paddingTokens === 512) return 2
+  if (paddingTokens === 2048) return 4
+  return 0
 }
 
 async function readAggregationState(client: DatabaseClient): Promise<{ createdAt: string; id: string }> {

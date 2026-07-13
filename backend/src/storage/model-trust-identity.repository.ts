@@ -63,7 +63,11 @@ export interface IdentityTrustEvaluation {
 }
 
 export function isIdentityObservation(row: ObservationRow): boolean {
-  return row.probe_family.startsWith('identity_') && row.feature_1 !== null
+  return row.probe_family.startsWith('identity_')
+    && row.observation_status === 'observed'
+    && Boolean(row.observed_model?.trim())
+    && observationVector(row).every(Number.isFinite)
+    && identityFeatureValues(row).every((value) => value !== null)
 }
 
 export async function upsertIdentitySourceFeature(client: DatabaseClient, row: ObservationRow): Promise<void> {
@@ -79,15 +83,15 @@ export async function upsertIdentitySourceFeature(client: DatabaseClient, row: O
       constraint_pass_count, first_observed_at, last_observed_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (system_account_id, account_id, population_key_hmac, requested_model, upstream_bucket_hmac, probe_key_hmac, feature_version) DO UPDATE SET
-      sample_count = sample_count + 1,
-      sum_feature_1 = sum_feature_1 + excluded.sum_feature_1,
-      sum_feature_2 = sum_feature_2 + excluded.sum_feature_2,
-      sum_feature_3 = sum_feature_3 + excluded.sum_feature_3,
-      sum_feature_4 = sum_feature_4 + excluded.sum_feature_4,
-      sum_feature_5 = sum_feature_5 + excluded.sum_feature_5,
-      sum_feature_6 = sum_feature_6 + excluded.sum_feature_6,
-      sum_feature_7 = sum_feature_7 + excluded.sum_feature_7,
-      sum_feature_8 = sum_feature_8 + excluded.sum_feature_8,
+      sample_count = model_identity_source_features.sample_count + 1,
+      sum_feature_1 = model_identity_source_features.sum_feature_1 + excluded.sum_feature_1,
+      sum_feature_2 = model_identity_source_features.sum_feature_2 + excluded.sum_feature_2,
+      sum_feature_3 = model_identity_source_features.sum_feature_3 + excluded.sum_feature_3,
+      sum_feature_4 = model_identity_source_features.sum_feature_4 + excluded.sum_feature_4,
+      sum_feature_5 = model_identity_source_features.sum_feature_5 + excluded.sum_feature_5,
+      sum_feature_6 = model_identity_source_features.sum_feature_6 + excluded.sum_feature_6,
+      sum_feature_7 = model_identity_source_features.sum_feature_7 + excluded.sum_feature_7,
+      sum_feature_8 = model_identity_source_features.sum_feature_8 + excluded.sum_feature_8,
       latest_feature_1 = excluded.latest_feature_1,
       latest_feature_2 = excluded.latest_feature_2,
       latest_feature_3 = excluded.latest_feature_3,
@@ -96,7 +100,7 @@ export async function upsertIdentitySourceFeature(client: DatabaseClient, row: O
       latest_feature_6 = excluded.latest_feature_6,
       latest_feature_7 = excluded.latest_feature_7,
       latest_feature_8 = excluded.latest_feature_8,
-      constraint_pass_count = constraint_pass_count + excluded.constraint_pass_count,
+      constraint_pass_count = model_identity_source_features.constraint_pass_count + excluded.constraint_pass_count,
       last_observed_at = excluded.last_observed_at,
       updated_at = excluded.updated_at
   `, [
@@ -371,6 +375,10 @@ function sourceVector(row: SourceFeatureRow): number[] {
 
 function observationVector(row: ObservationRow): number[] {
   return Array.from({ length: featureWidth }, (_, index) => Number(row[`feature_${index + 1}` as keyof ObservationRow] ?? 0))
+}
+
+function identityFeatureValues(row: ObservationRow): Array<number | null> {
+  return Array.from({ length: featureWidth }, (_, index) => row[`feature_${index + 1}` as keyof ObservationRow] as number | null)
 }
 
 function averageVectors(vectors: number[][]): number[] {

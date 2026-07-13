@@ -4,14 +4,38 @@ import {
   analyzeTokenIntegritySamples,
   buildExactTokenPadding,
   countModelCheckInputTokens,
+  modelCheckTokenPaddingMaxTokens,
   type TokenIntegritySample
 } from '../../modules/model-checks/model-checks-token-integrity.js'
+import {
+  getModelCheckTokenWorkerRuntime,
+  prepareModelCheckTokenProbePromptInWorker,
+  stopModelCheckTokenWorker
+} from '../../modules/model-checks/model-checks-token-worker.service.js'
 
 const base = '受控 Token 完整性探针。只回复 OK。'
 const padding512 = buildExactTokenPadding(512)
 const padding2048 = buildExactTokenPadding(2048)
 assert.equal(countModelCheckInputTokens(`${base}${padding512}`) - countModelCheckInputTokens(base), 512)
 assert.equal(countModelCheckInputTokens(`${base}${padding2048}`) - countModelCheckInputTokens(base), 2048)
+assert.throws(() => buildExactTokenPadding(modelCheckTokenPaddingMaxTokens + 1), /0 到 2048/, '填充目标必须有硬上限')
+assert.throws(() => buildExactTokenPadding(1.5), /必须是整数/, '填充目标不能被静默截断')
+
+try {
+  let eventLoopTurnObserved = false
+  const eventLoopTurn = new Promise<void>((resolve) => setImmediate(() => {
+    eventLoopTurnObserved = true
+    resolve()
+  }))
+  const preparedPromise = prepareModelCheckTokenProbePromptInWorker(base, modelCheckTokenPaddingMaxTokens)
+  const [prepared] = await Promise.all([preparedPromise, eventLoopTurn])
+  assert(eventLoopTurnObserved, '精确填充计算期间主事件循环必须可继续运行')
+  assert.notEqual(prepared.workerPid, process.pid, '精确填充必须在有界 worker 子进程中执行')
+  assert.equal(countModelCheckInputTokens(prepared.prompt) - countModelCheckInputTokens(base), modelCheckTokenPaddingMaxTokens)
+  assert.equal(getModelCheckTokenWorkerRuntime().handledJobs, 1)
+} finally {
+  await stopModelCheckTokenWorker()
+}
 
 const honest = samples((local) => local + 17)
 const honestResult = analyzeTokenIntegritySamples(honest)

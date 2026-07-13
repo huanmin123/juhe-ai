@@ -311,6 +311,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           baseUrl: target.candidateAccounts[0].baseUrl,
           credentialMode: target.candidateAccounts[0].type,
           probeSetVersion,
+          signal,
           runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
         })
     const identityObservation = targetUnavailable || target.modelCheckProfile.protocol !== 'openai_responses' || !target.accountId || !target.candidateAccounts?.[0]?.baseUrl
@@ -472,9 +473,11 @@ export async function getModelCheckRun(id: string, access?: AccessScope): Promis
 async function withLatestModelTrustResult(detail: ModelCheckRunDetail, fallbackSystemAccountId?: string): Promise<ModelCheckRunDetail> {
   const systemAccountId = detail.systemAccountId ?? fallbackSystemAccountId
   if (!systemAccountId || !detail.accountId) return detail
+  const current = recordValue(detail.resultSummary.trustReport) ?? {}
+  if (reasonCodes(current.reasonCodes).includes('model_response_evidence_unavailable')) return detail
+  if (detail.level === 'unavailable' && !textValue(current.observedModel)) return detail
   const latest = await findModelAccountTrustResultAsync(systemAccountId, detail.accountId, detail.model)
   if (!latest) return detail
-  const current = recordValue(detail.resultSummary.trustReport) ?? {}
   return {
     ...detail,
     resultSummary: {
@@ -486,6 +489,12 @@ async function withLatestModelTrustResult(detail: ModelCheckRunDetail, fallbackS
       }
     }
   }
+}
+
+function reasonCodes(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : []
 }
 
 async function resolveModelCheckTargetAsync(input: ModelCheckRunRequest & { targetId: string; model: string }, access?: AccessScope): Promise<ModelCheckTarget> {
