@@ -43,6 +43,11 @@
         <a-descriptions-item label="Token 诚信">{{ usageIntegrityStatusText(trustReport.usageIntegrityStatus) }}</a-descriptions-item>
         <a-descriptions-item label="协议一致性">{{ protocolStatusText(trustReport.protocolStatus) }}</a-descriptions-item>
         <a-descriptions-item label="证据充分度">{{ evidenceStatusText(trustReport.evidenceStatus) }}（{{ trustReport.evidenceCoverage }}%）</a-descriptions-item>
+        <a-descriptions-item label="受控样本">{{ trustReport.observationCount ?? 0 }} 个 observation / {{ trustReport.roundCount ?? 0 }} 轮</a-descriptions-item>
+        <a-descriptions-item label="独立来源桶">{{ trustReport.independentSourceCount ?? 0 }}</a-descriptions-item>
+        <a-descriptions-item label="Token 差分">{{ tokenDifferentialText(trustReport) }}</a-descriptions-item>
+        <a-descriptions-item label="Tokenizer">{{ trustReport.tokenizerVersion || '尚无可用结果' }}</a-descriptions-item>
+        <a-descriptions-item label="诊断依据">{{ reasonCodesText(trustReport.reasonCodes) }}</a-descriptions-item>
         <a-descriptions-item label="请求 / 上游 / 响应模型">
           {{ trustReport.requestedModel || '-' }} / {{ trustReport.mappedUpstreamModel || '-' }} / {{ trustReport.observedModel || '-' }}
         </a-descriptions-item>
@@ -114,7 +119,7 @@ const mappingStatusText = (value: ModelCheckTrustReport['mappingStatus']) => ({
   direct: '直接请求', configured_mapping: '已配置模型映射', undeclared_mismatch: '响应模型与请求不一致', unknown: '未知'
 }[value])
 const usageIntegrityStatusText = (value: ModelCheckTrustReport['usageIntegrityStatus']) => ({
-  consistent: '一致', warning: '需关注', suspected_padding: '疑似 Token 灌水', unsupported: '不支持检测', insufficient_evidence: '证据不足'
+  consistent: '输入 Token 差分一致', warning: '输入 Token 需关注', suspected_padding: '疑似输入 Token 灌水', unsupported: '输入 Token 不支持检测', insufficient_evidence: '证据不足'
 }[value])
 const protocolStatusText = (value: ModelCheckTrustReport['protocolStatus']) => ({
   consistent: '一致', warning: '部分异常', failed: '不一致', insufficient_evidence: '证据不足'
@@ -122,6 +127,23 @@ const protocolStatusText = (value: ModelCheckTrustReport['protocolStatus']) => (
 const evidenceStatusText = (value: ModelCheckTrustReport['evidenceStatus']) => ({
   stable: '稳定基线', candidate: '候选基线', bootstrap: '初始基线', insufficient: '证据不足'
 }[value])
+const tokenDifferentialText = (report: ModelCheckTrustReport) => report.slope === undefined
+  ? '尚无预聚合结果'
+  : `斜率 ${report.slope.toFixed(4)}，截距 ${(report.intercept ?? 0).toFixed(2)}`
+const reasonCodesText = (codes: string[]) => codes.length
+  ? codes.map((code) => ({
+      proportional_padding: '差分斜率疑似比例灌水',
+      slope_warning: '差分斜率偏离待复核',
+      bucket_rounding: '上游用量疑似分桶取整',
+      reported_usage_missing: '上游未返回完整输入 Token',
+      reported_usage_incompatible: '上游 usage 口径与总输入不兼容',
+      configured_model_mapping: '已配置模型映射',
+      undeclared_response_model_mismatch: '响应模型与请求不一致',
+      protocol_check_failed: '协议探针未通过',
+      tokenizer_calibration_unavailable: '尚无 Tokenizer 校准结果',
+      population_baseline_unavailable: '群体基线尚未形成'
+    }[code] ?? `未知原因码：${code}`)).join('；')
+  : '未发现已知异常原因'
 
 function modelText(value: string) {
   return modelCheckModelText(value, props.supportedModels)

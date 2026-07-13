@@ -101,6 +101,8 @@ import {
   type ModelCheckProtocolProfile
 } from './model-checks.profiles.js'
 import { requestDatasetWriter } from '../background/background-dataset-writer.js'
+import { findModelAccountTrustResultAsync, type ModelCheckObservationInput } from '../../storage/model-trust.repository.js'
+import { executeModelCheckTokenIntegrityProbes } from './model-checks-token-probes.js'
 
 export class ModelCheckRequestError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -296,6 +298,17 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     throwIfAborted(signal)
     const targetSuite = await executeProbeSuite(target, model, 'target', signal, progress)
     const targetUnavailable = targetSuite.basic?.success !== true
+    const tokenIntegrity = targetUnavailable || target.modelCheckProfile.protocol !== 'openai_responses' || !target.accountId || !target.candidateAccounts?.[0]?.baseUrl
+      ? undefined
+      : await executeModelCheckTokenIntegrityProbes({
+          model,
+          providerCode: target.providerCode,
+          providerProtocolProfileId: target.providerProtocolProfileId ?? target.modelCheckProfile.id,
+          baseUrl: target.candidateAccounts[0].baseUrl,
+          credentialMode: target.candidateAccounts[0].type,
+          probeSetVersion,
+          runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
+        })
     const crossModelComparison = targetUnavailable
       ? undefined
       : await executeCrossModelComparison(target, targetSuite, model, signal, progress)
@@ -315,6 +328,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       : undefined
     const itemInputs = [
       ...targetSuite.items,
+      ...(tokenIntegrity ? [tokenIntegrity.item] : []),
       ...(crossModelComparison ? [crossModelComparison] : []),
       ...(comparisonSuite?.items ?? []),
       ...(trustedComparisonItem ? [trustedComparisonItem] : []),
@@ -332,6 +346,23 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       probeSetVersion,
       evidenceCoverage: evidenceCompleteness.evidenceCompletenessScore
     })
+    if (tokenIntegrity) {
+      await requestDatasetWriter({
+        type: 'create_model_check_observations',
+        observations: tokenIntegrity.observations.map((observation): ModelCheckObservationInput => ({
+          ...observation,
+          runId: run.id,
+          systemAccountId: target.identity.systemAccountId,
+          accountId: target.accountId as string,
+          providerCode: target.providerCode,
+          providerProtocolProfileId: target.providerProtocolProfileId ?? target.modelCheckProfile.id,
+          identityStatus: trustReport.identityStatus,
+          mappingStatus: trustReport.mappingStatus,
+          protocolStatus: trustReport.protocolStatus,
+          evidenceCoverage: trustReport.evidenceCoverage
+        }))
+      })
+    }
     await requestDatasetWriter({
       type: 'finish_model_check_run',
       runId: run.id,
@@ -378,6 +409,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   if (!detail) {
     throw new ModelCheckRequestError(500, '模型检测报告生成失败')
   }
+  const enrichedDetail = await withLatestModelTrustResult(detail, target.identity.systemAccountId)
   emitModelCheckProgress(progress, {
     type: 'run_completed',
     message: detail.message || detail.errorMessage || '模型检测已结束',
@@ -388,7 +420,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     maxScore: detail.maxScore,
     durationMs: detail.durationMs
   })
-  return detail
+  return enrichedDetail
 }
 
 export async function listModelCheckRunPage(access?: AccessScope, query: Record<string, unknown> = {}): Promise<ModelCheckRunListResult> {
@@ -406,7 +438,27 @@ export async function listModelCheckRunPage(access?: AccessScope, query: Record<
 }
 
 export async function getModelCheckRun(id: string, access?: AccessScope): Promise<ModelCheckRunDetail | undefined> {
-  return await getModelCheckRunDetailAsync(id, access)
+  const detail = await getModelCheckRunDetailAsync(id, access)
+  return detail ? await withLatestModelTrustResult(detail, access?.systemAccountFilterId ?? access?.systemAccountId) : undefined
+}
+
+async function withLatestModelTrustResult(detail: ModelCheckRunDetail, fallbackSystemAccountId?: string): Promise<ModelCheckRunDetail> {
+  const systemAccountId = detail.systemAccountId ?? fallbackSystemAccountId
+  if (!systemAccountId || !detail.accountId) return detail
+  const latest = await findModelAccountTrustResultAsync(systemAccountId, detail.accountId, detail.model)
+  if (!latest) return detail
+  const current = recordValue(detail.resultSummary.trustReport) ?? {}
+  return {
+    ...detail,
+    resultSummary: {
+      ...detail.resultSummary,
+      trustReport: {
+        ...current,
+        ...latest,
+        requestedModel: current.requestedModel ?? detail.model
+      }
+    }
+  }
 }
 
 async function resolveModelCheckTargetAsync(input: ModelCheckRunRequest & { targetId: string; model: string }, access?: AccessScope): Promise<ModelCheckTarget> {

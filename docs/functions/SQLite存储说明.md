@@ -67,12 +67,12 @@ JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS=5000
 - `public_api_logs`
 - `operation_logs`、`operation_log_targets`、`operation_log_viewers`
 - `runtime_logs`、`runtime_log_file_cursors`
-- `model_check_runs`、`model_check_items`
+- `model_check_runs`、`model_check_items`、`model_check_observations`（仅受控探针有界脱敏事实，不保存普通用户正文）
 - `api_key_record_cleanup_targets`
 
 统计结果库保存可重建、紧凑且面向查询的结果数据：
 
-- `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、`usage_rank_snapshots`、`stats_job_state`、`usage_record_cleanup_deductions`
+- `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、`usage_rank_snapshots`、`model_token_integrity_windows`、`model_trust_window_sources`、`model_account_trust_results`、`stats_job_state`、`usage_record_cleanup_deductions`
 - `authorization_*_usage_*`、`usage_quota_hourly_windows`、`usage_scope_range_windows`
 - `client_ip_registry`、`client_ip_stats_daily`、`client_ip_usage_range_windows`、`client_ip_policies`、`client_ip_policy_hits`
 - `group_account_stats`、`account_quality_scores`、`account_quality_minute_stats`
@@ -465,7 +465,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录，按策略计算正文保留、压缩、去重和错误聚合，并用短事务批量写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 元数据；超过单次读取窗口的大 blob 保持 plain，文件写入本地数据目录。
 - 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
 - 操作日志在业务库写操作提交成功后入队，worker 从操作日志队列批量写入 `operation_logs`、`operation_log_targets`、`operation_log_viewers` 和 `operation_log_summary_search_terms`；操作日志入队或落库失败只影响追溯数据，不反向回滚已提交业务变更。
-- 数据集目录库、使用记录目录库、usage shard 和统计结果库维护类动作不在管理接口或 DB service 内直接执行；API Key / AI 账户删除后的关联记录清理、表监控手动非业务数据硬清理、OpenAI Codex 用量快照写入等都投递 `recordMaintenanceQueue` 或 stats-writer typed operation。模型检测虽然由 DB service system API 触发，但 `model_check_runs` / `model_check_items` 的创建和完成状态写入必须通过 dataset writer 转发给 ingest-worker。usage shard / usage catalog / dataset 部分由 ingest-worker 分批执行，stats 部分由 stats-worker 执行，stats-only 快照可由 stats-worker 本地合并；非 ingest worker 不消费 usage / dataset 维护队列。表监控硬清理只保留业务库，按截止时间清理数据集目录库、使用记录目录库、统计结果库、usage shard 和审计 payload 外部文件；普通表按 schema 动态枚举可识别时间列，usage shard 和审计 payload 文件走专门物理删除流程；不等待统计安全游标，也不做关联扣减。
+- 数据集目录库、使用记录目录库、usage shard 和统计结果库维护类动作不在管理接口或 DB service 内直接执行；API Key / AI 账户删除后的关联记录清理、表监控手动非业务数据硬清理、OpenAI Codex 用量快照写入等都投递 `recordMaintenanceQueue` 或 stats-writer typed operation。模型检测虽然由 DB service system API 触发，但 `model_check_runs` / `model_check_items` / `model_check_observations` 的创建和完成状态写入必须通过 dataset writer 转发给 ingest-worker；模型可信窗口由 stats-worker 读取 observation 游标增量写入统计结果库，详情 API 只读 `model_account_trust_results`，不在请求链聚合。usage shard / usage catalog / dataset 部分由 ingest-worker 分批执行，stats 部分由 stats-worker 执行，stats-only 快照可由 stats-worker 本地合并；非 ingest worker 不消费 usage / dataset 维护队列。表监控硬清理只保留业务库，按截止时间清理数据集目录库、使用记录目录库、统计结果库、usage shard 和审计 payload 外部文件；普通表按 schema 动态枚举可识别时间列，usage shard 和审计 payload 文件走专门物理删除流程；不等待统计安全游标，也不做关联扣减。
 - 运行日志索引 worker 从 Pino JSONL 输出流旁路接收日志行，按 worker 队列批量写入 `runtime_logs`，并随新增日志增量维护级别 / 事件 facets；常规维护只在 facets 缺失时重建，数据保留清理按已删除索引行扣减 facets，不能每轮或每次清理后对 `runtime_logs` 全量 `COUNT/GROUP BY`。
 - 运行日志 keyword 只查 `runtime_logs.message`；操作日志 `summaryKeyword` 日常读取随操作日志写入同步生成的 `operation_log_summary_search_terms` 摘要倒排词项。词项规则升级后通过发布包维护命令 `maintenance:rebuild-operation-log-search` 离线重建，按 `(created_at, id)` 游标分批处理，不在在线请求路径回填。
 - “日志搜索”索引查询读取当前 SQLite `runtime_logs` 表，使用 `traceId`、级别、事件和日志时间等通用索引条件缩小结果，关键字只对 `message` 列做普通模糊匹配；如果只有 keyword、没有显式开始或结束时间，后端默认只查最近 6 小时。列表默认展示最近 100 条并通过后端分页继续翻页。索引表保留周期由后台清理任务控制。
@@ -481,7 +481,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 | --- | --- | --- | --- | --- |
 | `runtime_logs` | 普通运行日志搜索索引 | 固定最近 3 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只删除 SQLite 搜索索引，不删除后端 `.log` 文件 |
 | `runtime_log_file_cursors` | 当前日志文件增量读取游标 | 固定最近 3 天未更新游标 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 当前存在的日志文件会被追尾任务持续刷新；缺失或长期未更新的过期文件游标会自动删除 |
-| `model_check_runs`、`model_check_items` | 模型检测历史和诊断明细 | 默认 30 天，最多 365 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只保留有界脱敏摘要，过期检测运行和检测项一起删除 |
+| `model_check_runs`、`model_check_items`、`model_check_observations` | 模型检测历史、诊断明细和受控 observation | 默认 30 天，最多 365 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | observation 通过 run 外键级联删除，只保留 HMAC 桶和有界数值，不保存题面或普通流量正文 |
 | `operation_logs`、`operation_log_targets`、`operation_log_viewers`、`operation_log_summary_search_terms` | 业务操作追溯日志 | 默认 365 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只按时间清理，不因资源删除级联删除历史日志；摘要词项随操作日志级联删除 |
 | `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功请求热窗口默认 1 小时，成功长期样本默认 7 天，失败 / 异常事件默认 30 天 | 是，`audit-hot-retention-cleanup` 每分钟裁剪热窗口；`data-retention-cleanup` 按清理间隔清理长期过期数据 | 完全成功请求先全量热保留，超过热窗口后删除未命中 10% 长期采样的成功记录 |
 | `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩 blob 元数据 | 成功样本正文默认 7 天，失败 / 异常正文默认 30 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |

@@ -50,6 +50,7 @@ export type GatewayProbeResult = {
   sourceEndpointFamily?: string
   upstreamEndpointFamily?: string
   usage?: Record<string, unknown>
+  systemFingerprint?: string
   errorMessage?: string
   upstreamStatusCode?: number
   retryAfterMs?: number

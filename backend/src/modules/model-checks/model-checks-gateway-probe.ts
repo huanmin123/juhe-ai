@@ -246,6 +246,7 @@ async function runGatewayProbeAttempt(
     outputText: parsed.outputText,
     model: parsed.model,
     usage: parsed.usage,
+    systemFingerprint: parsed.systemFingerprint,
     errorMessage: parsed.errorMessage ?? parseUpstreamMessage(bodyText),
     upstreamStatusCode: upstreamAttemptStatusCode(lastUpstreamAttempt),
     retryAfterMs: upstreamAttemptRetryAfterMs(lastUpstreamAttempt),

@@ -23,6 +23,13 @@ export interface ModelCheckTrustReport {
   probeSetVersion: string
   evidenceCoverage: number
   reasonCodes: string[]
+  observationCount?: number
+  roundCount?: number
+  independentSourceCount?: number
+  slope?: number
+  intercept?: number
+  tokenizerVersion?: string
+  lastObservedAt?: string
 }
 
 export interface ModelCheckOption {

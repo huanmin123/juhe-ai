@@ -997,6 +997,71 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (scope_type, scope_id, job_name)
         );
 
+    CREATE TABLE IF NOT EXISTS model_token_integrity_windows (
+          system_account_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          requested_model TEXT NOT NULL,
+          cohort_key_hmac TEXT NOT NULL,
+          tokenizer_version TEXT NOT NULL,
+          probe_set_version TEXT NOT NULL,
+          observation_count INTEGER NOT NULL DEFAULT 0,
+          valid_sample_count INTEGER NOT NULL DEFAULT 0,
+          round_count INTEGER NOT NULL DEFAULT 0,
+          sum_local REAL NOT NULL DEFAULT 0,
+          sum_reported REAL NOT NULL DEFAULT 0,
+          sum_local_squared REAL NOT NULL DEFAULT 0,
+          sum_local_reported REAL NOT NULL DEFAULT 0,
+          sum_reported_squared REAL NOT NULL DEFAULT 0,
+          bucket_aligned_count INTEGER NOT NULL DEFAULT 0,
+          slope REAL,
+          intercept REAL,
+          usage_integrity_status TEXT NOT NULL DEFAULT 'insufficient_evidence',
+          first_observed_at TEXT NOT NULL,
+          last_observed_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (system_account_id, account_id, requested_model, cohort_key_hmac, tokenizer_version, probe_set_version)
+        );
+
+    CREATE TABLE IF NOT EXISTS model_trust_window_sources (
+          system_account_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          cohort_key_hmac TEXT NOT NULL,
+          mapped_upstream_model TEXT NOT NULL,
+          upstream_bucket_hmac TEXT NOT NULL,
+          first_observed_at TEXT NOT NULL,
+          last_observed_at TEXT NOT NULL,
+          observation_count INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (system_account_id, account_id, cohort_key_hmac, mapped_upstream_model, upstream_bucket_hmac)
+        );
+
+    CREATE TABLE IF NOT EXISTS model_account_trust_results (
+          system_account_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          requested_model TEXT NOT NULL,
+          identity_status TEXT NOT NULL DEFAULT 'insufficient_evidence',
+          mapping_status TEXT NOT NULL DEFAULT 'unknown',
+          usage_integrity_status TEXT NOT NULL DEFAULT 'insufficient_evidence',
+          protocol_status TEXT NOT NULL DEFAULT 'insufficient_evidence',
+          evidence_status TEXT NOT NULL DEFAULT 'insufficient',
+          evidence_coverage INTEGER NOT NULL DEFAULT 0,
+          observation_count INTEGER NOT NULL DEFAULT 0,
+          round_count INTEGER NOT NULL DEFAULT 0,
+          independent_source_count INTEGER NOT NULL DEFAULT 0,
+          slope REAL,
+          intercept REAL,
+          tokenizer_version TEXT,
+          probe_set_version TEXT,
+          reason_codes_json TEXT NOT NULL DEFAULT '[]',
+          last_observed_at TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (system_account_id, account_id, requested_model)
+        );
+
+    CREATE INDEX IF NOT EXISTS idx_model_account_trust_results_updated ON model_account_trust_results(updated_at, account_id, requested_model);
+
+    CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_cohort ON model_token_integrity_windows(cohort_key_hmac, requested_model, updated_at);
+
     CREATE TABLE IF NOT EXISTS background_task_runs (
           run_id TEXT PRIMARY KEY,
           job_name TEXT NOT NULL,

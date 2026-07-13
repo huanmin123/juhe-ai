@@ -51,6 +51,7 @@ import { runAccountBalanceRefresh } from './account-balance-refresh.job.js'
 
 let started = false
 let usageStatsAggregationRunning = false
+let modelTrustAggregationRunning = false
 let clientIpStatsAggregationRunning = false
 let usageRankSnapshotsRefreshRunning = false
 let groupAccountStatsStartupDirtyMarked = false
@@ -125,6 +126,7 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
       return
     case 'stats-worker':
+      scheduler.schedule({ name: backgroundScheduledJobName('model-trust-observation-aggregation'), intervalMs: 30 * secondMs, initialDelayMs: 12 * secondMs, task: runModelTrustAggregation })
       if (isPostgresHighPerformanceMode()) {
         scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
         scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-aggregation'), intervalMs: usageStatsOnlineAggregationIntervalSeconds() * secondMs, task: runUsageStatsAggregation })
@@ -234,6 +236,23 @@ async function runUsageStatsAggregation(): Promise<void> {
     throw error
   } finally {
     usageStatsAggregationRunning = false
+  }
+}
+
+async function runModelTrustAggregation(): Promise<void> {
+  if (modelTrustAggregationRunning) return
+  modelTrustAggregationRunning = true
+  try {
+    for (let index = 0; index < 10; index += 1) {
+      const result = await requestStatsWriter({ type: 'aggregate_model_trust_observations', batchSize: 500 }) as { processed?: number }
+      if ((result.processed ?? 0) < 500) break
+      await yieldToEventLoop()
+    }
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_model_trust_aggregation_failed' }), '模型可信 observation 增量聚合失败')
+    throw error
+  } finally {
+    modelTrustAggregationRunning = false
   }
 }
 

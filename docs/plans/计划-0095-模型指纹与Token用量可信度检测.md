@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：PLAN-0095
-- 状态：进行中（Phase 0 与五维报告最小闭环已完成，统计增强待实现）
+- 状态：进行中（Phase 0、输入 Token 差分与增量结果闭环已完成，身份群体基线待实现）
 - 创建时间：2026-07-13
 - 需求来源：当前 Codex 会话；用户要求重点提高 GPT-5.6 真伪检测准确率，并确认 Token 灌水检测现状
 - 执行者：Codex；方案与阈值由用户复核后进入实现
@@ -91,19 +91,19 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 ### Task 2：契约与存储设计
 
 - [x] 定义 `identityStatus`、`mappingStatus`、`usageIntegrityStatus`、`protocolStatus` 和 `evidenceStatus` 契约，并在现有报告 JSON 中形成最小闭环。
-- [ ] 定义 `model_check_observations` 当前 schema、有界 JSON 字段、索引和保留期。
+- [x] 定义 `model_check_observations` 当前 schema、有界字段、索引和保留期。
 - [ ] 定义指纹、模型配对、Token 诚信和账号最新结果四类统计窗口。
-- [ ] 定义上游 origin、probe key 和 `system_fingerprint` 的 HMAC 规则与密钥轮换边界。
-- [ ] 同步 SQLite / PostgreSQL 当前 schema、类型、repository、接口和前端 DTO；不增加旧结构兼容分支。
+- [x] 定义上游 origin、probe key 和 `system_fingerprint` 的 HMAC 规则；当前随系统 secret 轮换，不保存 HMAC 输入。
+- [x] 同步 SQLite / PostgreSQL 当前 schema、类型、repository、接口和前端 DTO；不增加旧结构兼容分支。
 
 ### Task 3：Token 用量可信度
 
-- [ ] 评估并选择支持目标模型 encoding、可版本锁定的精确 tokenizer 实现。
-- [ ] 实现 P0 / P1 / P2 精确填充块和实际 outbound 请求 Token 复核。
-- [ ] 实现随机轮次、reported / local delta、robust slope / intercept 和置信区间。
-- [ ] 实现比例、固定和分桶三类异常原因码。
-- [ ] 对隐藏 reasoning、usage 缺失、缓存语义不兼容和 tokenizer 不支持返回 `unsupported` / 证据不足。
-- [ ] 保持 usage 事实和计费逻辑不变，只保存诊断 observation 和窗口结果。
+- [x] 评估并选择支持目标模型 encoding、可版本锁定的精确 tokenizer 实现：`js-tiktoken@1.0.21:o200k_base`。
+- [x] 实现 P0 / P1 / P2 精确填充块和实际 outbound 受控请求 Token 复核。
+- [x] 实现三轮交错顺序、reported / local 差分、slope / intercept 和 95% 置信区间。
+- [ ] 比例和分桶异常原因码已实现；固定 intercept 已保存，但固定灌水强判等待 cohort 固定开销基线。
+- [x] usage 缺失或总输入口径不兼容返回 `unsupported`；当前不做 output 灌水结论，因此不会把隐藏 reasoning 误判为灌水。
+- [x] 保持 usage 事实和计费逻辑不变，只保存诊断 observation 和窗口结果。
 
 ### Task 4：GPT-5.6 指纹 observation
 
@@ -111,28 +111,28 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - [ ] 为约束、代码、推理、错误恢复、多语言、工具 schema 和知识时间窗输出结构化 feature。
 - [ ] 把长上下文从固定三档改为 profile 驱动的低 / 中 / 高 / 可选极限阶梯。
 - [ ] 随机交错执行 Sol / Terra / Luna 和 5.5 / 5.4 paired probes。
-- [ ] 采集 HMAC 后的 `system_fingerprint` 辅助信号，但不把它作为硬身份凭据。
-- [ ] 所有 observation 通过 ingest 队列写入，禁止检测 API 同步聚合。
+- [x] 采集 HMAC 后的 `system_fingerprint` 辅助信号，但不把它作为硬身份凭据。
+- [x] 所有当前 Token observation 通过 dataset-writer / ingest-worker 写入，检测 API 不同步聚合。
 
 ### Task 5：群体基线与账号结论
 
-- [ ] stats-worker 按游标增量构建 cohort 指纹窗口、paired 相似度窗口和 usage 诚信窗口。
+- [ ] stats-worker 已按游标增量构建 usage 诚信窗口、来源桶和账号 latest；指纹窗口与 paired 相似度窗口待实现。
 - [ ] 按上游桶限制贡献权重，使用 leave-one-upstream-out、median / MAD、分位数和 bootstrap 区间。
-- [ ] 实现 bootstrap / candidate / stable 基线状态和基线版本切换。
+- [ ] 已按来源桶、样本数和时间跨度实现 bootstrap / candidate / stable 状态；基线版本漂移切换待实现。
 - [ ] 实现群体共同漂移保护、异常样本退出稳定基线和单供应商投毒保护。
-- [ ] 刷新 `model_account_trust_results`，API 只读预聚合结果，不扫 observation 或 usage 明细。
+- [x] 刷新 `model_account_trust_results`，详情 API 只读预聚合结果，不扫 observation 或 usage 明细。
 
 ### Task 6：评分与中文前端
 
-- [ ] 保留现有总览等级，同时展示模型身份、映射、Token 诚信、协议和证据充分度五个分项。
-- [ ] 详情页展示 requested / upstream / observed model、probe / baseline version、来源桶数、样本轮次和中文原因码。
-- [ ] 显式映射显示“已配置模型映射”，未声明冲突显示“响应模型与请求不一致”。
-- [ ] 证据不足、unsupported、网络失败和统计异常使用不同中文状态，禁止统一显示“假模型”。
-- [ ] 前端不展示隐藏题面、明文上游 origin、HMAC 输入或敏感响应。
+- [x] 保留现有总览等级，同时展示模型身份、映射、Token 诚信、协议和证据充分度五个分项。
+- [x] 详情页展示 requested / upstream / observed model、probe / tokenizer version、来源桶数、样本轮次、差分斜率 / 截距和中文原因码。
+- [x] 显式映射显示“已配置模型映射”，未声明冲突显示“响应模型与请求不一致”。
+- [x] 证据不足、unsupported、网络失败和统计异常使用不同中文状态，禁止统一显示“假模型”。
+- [x] 前端不展示隐藏题面、明文上游 origin、HMAC 输入或敏感响应。
 
 ### Task 7：校准、发布与观察
 
-- [ ] mock 注入诚实 usage、5% / 10% 比例放大、固定增加、64-token 取整和 missing usage。
+- [x] 回归覆盖诚实 usage、5% / 10% 比例放大、固定增加、64-token 取整、missing usage 和不兼容 usage。
 - [ ] mock 注入显式 Sol -> Luna、未声明 Sol -> Luna、5.5 -> 5.4 和三个模型同源行为。
 - [ ] 测试环境收集至少一个完整 baseline window，校验离线重建和在线增量一致。
 - [ ] 生产先以小流量、仅诊断、不自动处置方式运行，观察成本、误报和上游限流。
@@ -149,16 +149,16 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 | 映射 | 显式与未声明模型冲突 | 严格模型匹配回归 | 两种场景分别为 configured mapping 和硬冲突 | 已通过 | 2026-07-14 五维报告断言通过 |
 | 模型指纹 | 三模型同源塌缩 | 新增多轮统计回归 | 命中 `suspected_same_source` | 未执行 | 待实现 |
 | 模型指纹 | 相近但正常分布 | 新增抗误报回归 | 不因单题相似误报 | 未执行 | 待实现 |
-| Token | 诚实 usage | 新增差分 Token 回归 | slope 置信区间包含 1 | 未执行 | 待实现 |
-| Token | 5% / 10% 比例灌水 | 新增差分 Token 回归 | 5% 进入校准边界，10% 稳定异常 | 未执行 | 待实现 |
-| Token | 固定与分桶灌水 | 新增差分 Token 回归 | 分别输出 fixed / bucketed 原因码 | 未执行 | 待实现 |
-| Token | reasoning 无 breakdown | 新增边界回归 | 输出 unsupported，不误报 | 未执行 | 待实现 |
+| Token | 诚实 usage | `pnpm test:model-check-token-integrity` | slope 置信区间包含 1 | 已通过 | slope=1，固定正常开销保留为 intercept |
+| Token | 5% / 10% 比例灌水 | `pnpm test:model-check-token-integrity` | 5% 进入校准边界，10% 稳定异常 | 已通过 | 5% warning，10% suspected_padding |
+| Token | 固定与分桶灌水 | `pnpm test:model-check-token-integrity` | 固定值不脱离 cohort 强判，分桶输出原因码 | 已通过 | intercept 可复算，64-token 取整 warning |
+| Token | reasoning 无 breakdown | 输入差分边界 | 不形成 output 灌水误报 | 已通过 | 当前仅判 input；usage 缺失 / 不兼容为 unsupported |
 | 基线 | 单上游大量账号投毒 | stats-worker 回归 | 同一上游桶权重受限 | 未执行 | 待实现 |
 | 基线 | 群体模型升级漂移 | baseline version 回归 | 创建新版本并暂停强结论 | 未执行 | 待实现 |
-| 存储 | observation 脱敏与大小上限 | sanitizer / repository 回归 | 无题面、凭据、明文 origin 或无界 payload | 未执行 | 待实现 |
-| 统计 | 增量与离线重建一致 | worker 回归 / smoke | 窗口结果一致，游标仅在完整处理后推进 | 未执行 | 待实现 |
+| 存储 | observation 脱敏与大小上限 | `pnpm test:model-trust-observation-aggregation` | 无题面、凭据、明文 origin 或无界 payload | 已通过 | SQLite 事实与 PG schema 转译已覆盖 |
+| 统计 | 增量游标与 latest | `pnpm test:model-trust-observation-aggregation` | 游标仅在完整处理后推进，API 只读 latest | 已通过 | 4+5 分批后不重复，结果 slope=1 / intercept=10 |
 | 前端 | 中文状态与证据详情 | 前端回归和浏览器验证 | 中文、无敏感字段、状态不混淆 | 未执行 | 待实现 |
-| 全量 | 类型、构建、关联回归 | `pnpm typecheck`、`pnpm build`、定向回归 | 全部通过 | 未执行 | 代码实现后执行 |
+| 全量 | 类型、构建、关联回归 | `pnpm typecheck`、`pnpm build`、定向回归 | 全部通过 | 已通过 | 2026-07-14 类型、构建和定向回归通过；浏览器插件当前无可用实例 |
 
 ## 进度记录
 
@@ -168,6 +168,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 2026-07-13：完成长期设计、审计报告、架构 / 用量口径和计划索引同步；等待用户复核后再编写文件级实施步骤并修改代码。
 - 2026-07-14：完成 Phase 0：同步 GPT-5.6 三模型目录边界，通过健康检查成功路径修复共享 fixture，恢复完整 profile 等全链路回归。
 - 2026-07-14：完成五维报告最小闭环和中文详情展示。由于仓库尚无目标模型精确 tokenizer，Token 诚信与群体证据保持证据不足；observation、HMAC 上游桶、stats-worker 窗口和生产校准尚未实现。
+- 2026-07-14：锁定 `js-tiktoken@1.0.21:o200k_base`，落地 P0 / P1 / P2 三轮输入差分、HMAC observation、ingest 写入、stats-worker 游标窗口、账号 latest 和中文证据覆盖。身份群体指纹、同源塌缩、LOO 稳健基线与漂移版本仍待实现。
 
 ## 验收标准
 
@@ -200,4 +201,4 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 
 ## 完成总结
 
-当前完成 Phase 0 和五维报告最小闭环：模型目录、共享回归 fixture、报告 JSON、显式映射 / 未声明冲突判定及中文详情页已经落地。尚未完成 observation / 统计表、ingest 队列、stats-worker 群体基线、精确 tokenizer 差分 Token 探针、同源塌缩统计和生产校准；这些能力未被当前代码或页面宣称为可用。
+当前完成 Phase 0、五维报告、输入 Token 差分和增量结果闭环：模型目录、共享回归 fixture、精确 tokenizer、P0 / P1 / P2 三轮探针、脱敏 observation、ingest 单写者、stats-worker 游标窗口、账号 latest 及中文证据已经落地。尚未完成生成式行为 observation、群体指纹 / paired 相似度、同源塌缩、leave-one-upstream-out 稳健统计、基线漂移版本切换和生产真实样本校准；当前实现不会自动停号、改账或改写 usage。
