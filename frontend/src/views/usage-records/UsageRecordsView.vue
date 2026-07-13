@@ -71,7 +71,7 @@
 <script setup lang="ts">
 import { message } from '@/lib/antd'
 import type { Dayjs } from 'dayjs'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
@@ -113,7 +113,6 @@ import { useUsageRecordModelOptions } from './useUsageRecordModelOptions'
 import { useUsageRecordTraceRoute } from './useUsageRecordTraceRoute'
 
 type TraceTarget = 'audit' | 'runtime'
-let autoDateRolloverTimer: ReturnType<typeof setTimeout> | undefined
 const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 const route = useRoute()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -130,6 +129,8 @@ const clientIpFilter = ref(initialPageState.clientIpFilter ?? '')
 const dateRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseUsageRecordDateRange(initialPageState.dateRangeFilter))
 const dateMode = ref(initialPageState.dateMode)
 const deploymentTimezone = ref(browserTimezone)
+const autoDateRolloverTimer = ref<ReturnType<typeof setTimeout>>()
+const autoDateLifecycleActive = ref(false)
 const groupFilterSelection = ref<GroupSelection | undefined>(initialPageState.groupFilter)
 const modelFilter = ref(initialPageState.modelFilter ?? '')
 const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
@@ -325,7 +326,9 @@ function resetFilters(): void {
 async function handleTableChange(paginationInfo: unknown, _filters: unknown, sorter: unknown): Promise<void> {
   updatePaginationFromTable(paginationInfo)
   const normalized = normalizeUsageRecordTableSorter(sorter)
-  sortState.value = normalized ?? { field: 'createdAt', order: 'descend' }
+  sortState.value = businessFiltersDisabled.value
+    ? { field: 'createdAt', order: 'descend' }
+    : normalized ?? { field: 'createdAt', order: 'descend' }
   await loadData()
 }
 
@@ -486,7 +489,7 @@ function snapshotPageState(): UsageRecordsPageState {
 }
 
 function refreshAutoDateAfterRollover(): void {
-  if (dateMode.value !== 'auto') return
+  if (!autoDateLifecycleActive.value || dateMode.value !== 'auto') return
   const nextRange = autoTodayDateRange()
   const current = usageRecordDateRangeParam(dateRangeFilter.value)
   const next = usageRecordDateRangeParam(nextRange)
@@ -498,9 +501,9 @@ function refreshAutoDateAfterRollover(): void {
 
 function scheduleAutoDateRollover(): void {
   clearAutoDateRolloverTimer()
-  if (dateMode.value !== 'auto') return
+  if (!autoDateLifecycleActive.value || dateMode.value !== 'auto') return
   const now = new Date()
-  autoDateRolloverTimer = setTimeout(() => {
+  autoDateRolloverTimer.value = setTimeout(() => {
     refreshAutoDateAfterRollover()
     scheduleAutoDateRollover()
   }, millisecondsUntilNextDeploymentDay(now) + 100)
@@ -550,9 +553,9 @@ async function loadDeploymentTimezone(): Promise<void> {
 }
 
 function clearAutoDateRolloverTimer(): void {
-  if (autoDateRolloverTimer === undefined) return
-  clearTimeout(autoDateRolloverTimer)
-  autoDateRolloverTimer = undefined
+  if (autoDateRolloverTimer.value === undefined) return
+  clearTimeout(autoDateRolloverTimer.value)
+  autoDateRolloverTimer.value = undefined
 }
 
 function handleVisibilityChange(): void {
@@ -564,6 +567,24 @@ function handleVisibilityChange(): void {
 function handleWindowFocus(): void {
   refreshAutoDateAfterRollover()
   scheduleAutoDateRollover()
+}
+
+function activateAutoDateLifecycle(): void {
+  if (autoDateLifecycleActive.value) return
+  autoDateLifecycleActive.value = true
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  window.addEventListener('focus', handleWindowFocus)
+  refreshAutoDateAfterRollover()
+  scheduleAutoDateRollover()
+}
+
+function deactivateAutoDateLifecycle(): void {
+  if (autoDateLifecycleActive.value) {
+    autoDateLifecycleActive.value = false
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
+    window.removeEventListener('focus', handleWindowFocus)
+  }
+  clearAutoDateRolloverTimer()
 }
 
 watch(snapshotPageState, () => {
@@ -591,16 +612,15 @@ watch(dateMode, scheduleAutoDateRollover)
 
 onBeforeUnmount(() => {
   clearGroupOptionsSearchTimer()
-  clearAutoDateRolloverTimer()
-  document.removeEventListener('visibilitychange', handleVisibilityChange)
-  window.removeEventListener('focus', handleWindowFocus)
+  deactivateAutoDateLifecycle()
   traceRoute.stop()
 })
 
+onActivated(activateAutoDateLifecycle)
+onDeactivated(deactivateAutoDateLifecycle)
+
 onMounted(() => {
-  document.addEventListener('visibilitychange', handleVisibilityChange)
-  window.addEventListener('focus', handleWindowFocus)
-  scheduleAutoDateRollover()
+  activateAutoDateLifecycle()
   void loadDeploymentTimezone()
   void loadData()
 })

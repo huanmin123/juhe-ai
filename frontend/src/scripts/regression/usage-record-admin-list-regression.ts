@@ -31,7 +31,12 @@ assert.doesNotMatch(viewSource, /return emptyUsageRecordListResult\(pageState, t
 assert.match(viewSource, /visibilitychange/, 'auto 日期模式应在页面重新可见时检查跨日')
 assert.match(viewSource, /addEventListener\('focus'/, 'auto 日期模式应在窗口聚焦时检查跨日')
 assert.match(viewSource, /setTimeout\(/, 'auto 日期模式应设置零点计时器')
+assert.match(viewSource, /const autoDateRolloverTimer = ref</, '零点计时器句柄必须保存在组件实例 ref 中')
+assert.match(viewSource, /onActivated\(/, 'KeepAlive 页面重新激活时应恢复 auto 日期生命周期')
+assert.match(viewSource, /onDeactivated\(/, 'KeepAlive 页面停用时应清理当前实例的计时器和监听器')
 assert.match(viewSource, /dateMode/, '页面应显式维护 auto/manual 日期模式')
+const tableChangeSource = viewSource.match(/async function handleTableChange[\s\S]*?\n}/)?.[0] ?? ''
+assert.match(tableChangeSource, /businessFiltersDisabled\.value[\s\S]*field: 'createdAt'[\s\S]*order: 'descend'/, '全用户列表处理表格排序时必须强制 createdAt 降序')
 assert.match(toolbarSource, /businessFiltersDisabled/, '全用户模式应统一禁用业务筛选')
 assert.match(toolbarSource, /:disabled="businessFiltersDisabled"/, '全用户模式的业务筛选控件应处于禁用态')
 
