@@ -435,7 +435,7 @@ else:
 
 列表默认按请求次数降序，再按 IP hash 稳定排序；状态是否正常通过状态筛选解决，不参与默认排序。
 
-## 管理 API 草案
+## 管理 API
 
 管理接口只允许管理员 Cookie 调用。
 
@@ -447,6 +447,8 @@ POST /__aisys__/api/ip-stats/:ipHash/unblock
 POST /__aisys__/api/ip-stats/:ipHash/allowlist
 POST /__aisys__/api/ip-stats/:ipHash/unallowlist
 ```
+
+Node 当前提供上述六条完整产品接口。Go 渐进迁移当前只将 `allowlist` / `unallowlist` 两条 admin-only 写接口纳入 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；列表、详情、blacklist 和 unblock 继续由 Node 单 owner 处理。两条 Go 写路由使用 `256 KiB` strict JSON、写 session touch、两层 write limiter、进程内 mutation guard、PostgreSQL 注册表行锁和提交后 `gateway:client-ip-policy-by-ip` shared cache version 失效。Go 已补 blacklist / unblock 的 port、PostgreSQL 和 service 基础但尚未挂载 HTTP；策略 created / updated / disabled / expires 时间统一写成 Node `Date.toISOString()` 等价的 UTC 三位毫秒文本。详细门禁见 [W6 管理端客户端 IP 策略迁移记录](../migration/W6-管理端客户端IP策略迁移记录.md)。
 
 列表查询参数：
 
@@ -552,6 +554,16 @@ interface ClientIpBlacklistRequest {
   durationDays?: number
 }
 ```
+
+加入 / 移出白名单请求只允许可选原因：
+
+```ts
+interface ClientIpAllowlistRequest {
+  reason?: string
+}
+```
+
+`reason` trim 后最多 500 个 JavaScript UTF-16 code unit；白名单不接受期限字段。移出白名单没有 active policy 时返回 `{ disabledCount: 0 }`，仍视为成功并记录操作日志。
 
 封禁时长规则：
 
@@ -660,7 +672,7 @@ GET /__aipublic__/access/info
 - 非 IPv4 来源不会进入 IP 注册、统计或封禁策略。
 - IP 列表可以按成本、Token、请求数、失败率和最近使用排序。
 - 封禁后网关请求被本地拒绝，解封后恢复。
-- IP 管理策略只表达封禁和解封。
+- IP 管理策略只表达封禁、解封、加入白名单和移出白名单，不承载 API Key、账户或分组路由配置。
 - 普通用户无法访问 IP 统计接口和页面。
 - 外部来源接口不返回封禁策略和内部业务关系。
 - IP 管理列表不返回范围总统计或统计滞后卡片，只验证 IP 行维度数据和分页状态。
