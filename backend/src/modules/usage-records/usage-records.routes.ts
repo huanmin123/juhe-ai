@@ -57,7 +57,7 @@ const allSystemAccountUnsupportedFilterKeys = [
   'endDate'
 ] as const
 
-export type UsageRecordResponse = UsageRecordSummary & {
+export type UsageRecordResponse = Omit<UsageRecordSummary, 'pricingSnapshot'> & {
   costBreakdown?: ProviderCostBreakdown
 }
 
@@ -72,28 +72,34 @@ function hasAllSystemAccountUnsupportedFilters(query: Record<string, unknown>): 
 
 export function withCostBreakdown(record: UsageRecordSummary): UsageRecordResponse {
   const costBreakdown = usageRecordCostBreakdown(record)
+  const { pricingSnapshot: _pricingSnapshot, ...publicRecord } = record
+  void _pricingSnapshot
   return {
-    ...record,
+    ...publicRecord,
     costBreakdown
   }
 }
 
 export async function withCostBreakdownAsync(record: UsageRecordSummary): Promise<UsageRecordResponse> {
   const costBreakdown = await usageRecordCostBreakdownAsync(record)
+  const { pricingSnapshot: _pricingSnapshot, ...publicRecord } = record
+  void _pricingSnapshot
   return {
-    ...record,
+    ...publicRecord,
     costBreakdown
   }
 }
 
 function usageRecordCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown | undefined {
-  if (!record.success || runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.cacheDriver === 'redis') return undefined
+  if (!record.success) return undefined
+  if (record.pricingSnapshot) return record.pricingSnapshot
+  if (runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.cacheDriver === 'redis') return undefined
   return usageRecordCatalogCostBreakdown(record) ?? fallbackUsageRecordCostBreakdown(record)
 }
 
 async function usageRecordCostBreakdownAsync(record: UsageRecordSummary): Promise<ProviderCostBreakdown | undefined> {
   if (!record.success) return undefined
-  return await usageRecordCatalogCostBreakdownAsync(record) ?? fallbackUsageRecordCostBreakdown(record)
+  return record.pricingSnapshot ?? await usageRecordCatalogCostBreakdownAsync(record) ?? fallbackUsageRecordCostBreakdown(record)
 }
 
 function usageRecordCatalogCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown | undefined {
@@ -103,6 +109,7 @@ function usageRecordCatalogCostBreakdown(record: UsageRecordSummary): ProviderCo
       providerCode: record.providerCode,
       systemAccountId: record.systemAccountId,
       model,
+      serviceTier: record.billedServiceTier,
       inputTokens: record.inputTokens,
       outputTokens: record.outputTokens,
       cacheReadTokens: record.cacheReadTokens,
@@ -128,6 +135,7 @@ async function usageRecordCatalogCostBreakdownAsync(record: UsageRecordSummary):
       providerCode: record.providerCode,
       systemAccountId: record.systemAccountId,
       model,
+      serviceTier: record.billedServiceTier,
       inputTokens: record.inputTokens,
       outputTokens: record.outputTokens,
       cacheReadTokens: record.cacheReadTokens,
@@ -167,7 +175,8 @@ function fallbackUsageRecordCostBreakdown(record: UsageRecordSummary): ProviderC
     cacheWriteCostUsd: record.cacheWriteCostUsd,
     thinkingTokens: record.thinkingTokens,
     accountChargeUsd: record.costUsd,
-    multiplier: 1
+    multiplier: 1,
+    serviceTierPricingSource: 'unknown'
   }
 }
 

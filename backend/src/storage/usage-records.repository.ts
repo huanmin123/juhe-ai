@@ -35,11 +35,15 @@ import {
   postgresUsageRecordPartitionPruningClauseForId
 } from './postgres-usage-record-partitions.js'
 import {
+  buildCatalogCostBreakdown,
+  buildCatalogCostBreakdownAsync,
   estimateCatalogCacheReadCostUsdAsync,
   estimateCatalogCacheWriteCostUsdAsync,
   estimateCatalogCostUsdAsync,
   resolveCatalogPricingModelAsync
 } from '../modules/model-pricing/model-catalog.service.js'
+import type { ProviderCostBreakdown } from '../modules/model-pricing/model-pricing.service.js'
+import type { UsageReasoningEffort } from '../modules/gateway/usage/reasoning-effort.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 export interface UsageRecordLogSnapshot {
@@ -70,6 +74,9 @@ export interface UsageRecordSummary {
   effectiveServiceTier?: 'default' | 'priority' | 'flex'
   reportedServiceTier?: 'default' | 'priority' | 'flex'
   billedServiceTier?: 'default' | 'priority' | 'flex'
+  requestedReasoningEffort?: UsageReasoningEffort
+  effectiveReasoningEffort?: UsageReasoningEffort
+  pricingSnapshot?: ProviderCostBreakdown
   modelMappingApplied?: boolean
   modelMappingSource?: string
   sourceEndpointFamily?: string
@@ -161,6 +168,9 @@ export interface UsageRecordInput {
   effectiveServiceTier?: 'default' | 'priority' | 'flex'
   reportedServiceTier?: 'default' | 'priority' | 'flex'
   billedServiceTier?: 'default' | 'priority' | 'flex'
+  requestedReasoningEffort?: UsageReasoningEffort
+  effectiveReasoningEffort?: UsageReasoningEffort
+  pricingSnapshot?: ProviderCostBreakdown
   priorityPriceMultiplier?: number
   flexPriceMultiplier?: number
   modelMappingApplied?: boolean
@@ -533,6 +543,29 @@ async function enrichSingleUsageRecordPricingAsync(
       })
     }
 
+    if (enriched.pricingSnapshot === undefined && hasUsageRecordCostDimension(enriched)) {
+      enriched.pricingSnapshot = await buildCatalogCostBreakdownAsync({
+        providerCode,
+        systemAccountId: catalogSystemAccountId,
+        model: costModel,
+        serviceTier: enriched.billedServiceTier,
+        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
+        flexPriceMultiplier: enriched.flexPriceMultiplier,
+        inputTokens: enriched.inputTokens,
+        outputTokens: enriched.outputTokens,
+        cacheReadTokens: enriched.cacheReadTokens,
+        cacheWriteTokens: enriched.cacheWriteTokens,
+        cacheWrite1hTokens: enriched.cacheWrite1hTokens,
+        thinkingTokens: enriched.thinkingTokens,
+        inputImageTokens: enriched.inputImageTokens,
+        outputImageTokens: enriched.outputImageTokens,
+        inputAudioTokens: enriched.inputAudioTokens,
+        outputAudioTokens: enriched.outputAudioTokens,
+        outputImageCount: enriched.outputImageCount,
+        costUsd: enriched.costUsd
+      })
+    }
+
     return enriched
   } catch (error) {
     logger.warn(errorLogFields(error, {
@@ -587,6 +620,60 @@ function hasUsageRecordCostDimension(input: UsageRecordInput): boolean {
     || input.outputImageCount !== undefined
 }
 
+function usageRecordPricingSnapshotForWrite(input: UsageRecordInput): ProviderCostBreakdown | undefined {
+  if (input.pricingSnapshot) return input.pricingSnapshot
+  if (!hasUsageRecordPricingSnapshotFact(input)) {
+    return undefined
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres' && input.providerCode && hasUsageRecordCostDimension(input)) {
+    const model = normalizeUsageRecordPricingModel(input.pricingModel)
+      ?? normalizeUsageRecordPricingModel(input.upstreamModel)
+      ?? normalizeUsageRecordPricingModel(input.model)
+    const catalogSnapshot = model
+      ? buildCatalogCostBreakdown({
+          providerCode: input.providerCode,
+          systemAccountId: input.accountOwnerSystemAccountId || input.systemAccountId,
+          model,
+          serviceTier: input.billedServiceTier ?? input.reportedServiceTier ?? input.effectiveServiceTier ?? input.requestedServiceTier,
+          priorityPriceMultiplier: input.priorityPriceMultiplier,
+          flexPriceMultiplier: input.flexPriceMultiplier,
+          inputTokens: input.inputTokens,
+          outputTokens: input.outputTokens,
+          cacheReadTokens: input.cacheReadTokens,
+          cacheWriteTokens: input.cacheWriteTokens,
+          cacheWrite1hTokens: input.cacheWrite1hTokens,
+          thinkingTokens: input.thinkingTokens,
+          inputImageTokens: input.inputImageTokens,
+          outputImageTokens: input.outputImageTokens,
+          inputAudioTokens: input.inputAudioTokens,
+          outputAudioTokens: input.outputAudioTokens,
+          outputImageCount: input.outputImageCount,
+          costUsd: input.costUsd
+        })
+      : undefined
+    if (catalogSnapshot) return catalogSnapshot
+  }
+  return {
+    cacheReadCostUsd: finiteUsageNumber(input.cacheReadCostUsd),
+    cacheWriteCostUsd: finiteUsageNumber(input.cacheWriteCostUsd),
+    thinkingTokens: finiteUsageNumber(input.thinkingTokens),
+    accountChargeUsd: finiteUsageNumber(input.costUsd),
+    multiplier: 1,
+    serviceTierPricingSource: 'unknown'
+  }
+}
+
+function hasUsageRecordPricingSnapshotFact(input: UsageRecordInput): boolean {
+  return hasUsageRecordCostDimension(input)
+    || finiteUsageNumber(input.cacheReadCostUsd) !== undefined
+    || finiteUsageNumber(input.cacheWriteCostUsd) !== undefined
+    || finiteUsageNumber(input.costUsd) !== undefined
+}
+
+function finiteUsageNumber(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
 function normalizeUsageRecordBatchWriteError(errors: unknown[]): Error {
   const first = errors[0]
   if (first instanceof Error) {
@@ -623,6 +710,7 @@ function buildUsageRecordBatchWritePlan(
       : usageAccessMetadata({ ...input, systemAccountId }, accessLookupContext)
     const trafficSource = normalizeUsageRecordTrafficSource(input.trafficSource)
     const failureAttribution = usageFailureAttributionForInput(input)
+    const pricingSnapshot = usageRecordPricingSnapshotForWrite(input)
     const row: UsageRecordShardWriteRow = {
       id,
       params: [
@@ -645,6 +733,9 @@ function buildUsageRecordBatchWritePlan(
         input.effectiveServiceTier ?? input.requestedServiceTier ?? 'default',
         input.reportedServiceTier ?? null,
         input.billedServiceTier ?? input.reportedServiceTier ?? input.effectiveServiceTier ?? input.requestedServiceTier ?? 'default',
+        input.requestedReasoningEffort ?? null,
+        input.effectiveReasoningEffort ?? null,
+        pricingSnapshot ? JSON.stringify(pricingSnapshot) : null,
         input.modelMappingApplied ? 1 : 0,
         input.modelMappingSource ?? null,
         input.sourceEndpointFamily ?? null,
@@ -771,6 +862,9 @@ const postgresUsageRecordColumns = [
   'effective_service_tier',
   'reported_service_tier',
   'billed_service_tier',
+  'requested_reasoning_effort',
+  'effective_reasoning_effort',
+  'cost_breakdown_snapshot_json',
   'model_mapping_applied',
   'model_mapping_source',
   'source_endpoint_family',
@@ -1309,6 +1403,13 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.model,
             ur.upstream_model,
             ur.pricing_model,
+            ur.requested_service_tier,
+            ur.effective_service_tier,
+            ur.reported_service_tier,
+            ur.billed_service_tier,
+            ur.requested_reasoning_effort,
+            ur.effective_reasoning_effort,
+            ur.cost_breakdown_snapshot_json,
             ur.model_mapping_applied,
             ur.model_mapping_source,
             ur.source_endpoint_family,
@@ -1369,6 +1470,13 @@ async function loadUsageRecordRowsByEntriesAsync(client: DatabaseClient, entries
         ur.model,
         ur.upstream_model,
         ur.pricing_model,
+        ur.requested_service_tier,
+        ur.effective_service_tier,
+        ur.reported_service_tier,
+        ur.billed_service_tier,
+        ur.requested_reasoning_effort,
+        ur.effective_reasoning_effort,
+        ur.cost_breakdown_snapshot_json,
         ur.model_mapping_applied,
         ur.model_mapping_source,
         ur.source_endpoint_family,
@@ -1429,6 +1537,13 @@ async function listPostgresUsageRecordRows(
       ur.model,
       ur.upstream_model,
       ur.pricing_model,
+      ur.requested_service_tier,
+      ur.effective_service_tier,
+      ur.reported_service_tier,
+      ur.billed_service_tier,
+      ur.requested_reasoning_effort,
+      ur.effective_reasoning_effort,
+      ur.cost_breakdown_snapshot_json,
       ur.model_mapping_applied,
       ur.model_mapping_source,
       ur.source_endpoint_family,
@@ -1514,6 +1629,13 @@ function listUsageRecordRowsFromShards(
           ur.model,
           ur.upstream_model,
           ur.pricing_model,
+          ur.requested_service_tier,
+          ur.effective_service_tier,
+          ur.reported_service_tier,
+          ur.billed_service_tier,
+          ur.requested_reasoning_effort,
+          ur.effective_reasoning_effort,
+          ur.cost_breakdown_snapshot_json,
           ur.model_mapping_applied,
           ur.model_mapping_source,
           ur.source_endpoint_family,

@@ -1279,6 +1279,8 @@ export function buildGatewayUsageContext(input: {
     endpoint,
     requestSnapshot,
     requestedServiceTier: requestSnapshot.requestedServiceTier ?? 'default',
-    effectiveServiceTier: requestSnapshot.requestedServiceTier ?? 'default'
+    effectiveServiceTier: requestSnapshot.requestedServiceTier ?? 'default',
+    requestedReasoningEffort: requestSnapshot.requestedReasoningEffort,
+    effectiveReasoningEffort: requestSnapshot.requestedReasoningEffort
   }
 }

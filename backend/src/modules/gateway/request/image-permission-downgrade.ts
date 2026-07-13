@@ -79,6 +79,8 @@ function markGatewayJsonBodyInvalid(req: Request): void {
     jsonParseStatus: 'invalid_json',
     model: previousState?.model,
     stream: previousState?.stream,
+    serviceTier: previousState?.serviceTier,
+    reasoningEffort: previousState?.reasoningEffort,
     imageGeneration: previousState?.imageGeneration,
     imageGenerationForced: previousState?.imageGenerationForced
   })

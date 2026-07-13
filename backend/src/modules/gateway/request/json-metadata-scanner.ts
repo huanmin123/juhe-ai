@@ -2,6 +2,7 @@ export interface GatewayJsonBodyMetadata {
   model?: string
   stream?: boolean
   serviceTier?: 'default' | 'priority' | 'flex'
+  reasoningEffort?: UsageReasoningEffort
   maxOutputTokens?: number
   imageGeneration?: boolean
   imageGenerationForced?: boolean
@@ -84,6 +85,21 @@ export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBody
         metadata.invalidJson = metadata.invalidJson || !skipped.ok
         index = skipped.nextIndex
       }
+    } else if (key.value === 'reasoning_effort') {
+      const value = readJsonStringToken(rawBody, index)
+      if (value) {
+        metadata.reasoningEffort = metadata.reasoningEffort ?? normalizeUsageReasoningEffort(value.value)
+        index = value.nextIndex
+      } else {
+        const skipped = skipJsonValue(rawBody, index)
+        metadata.invalidJson = metadata.invalidJson || !skipped.ok
+        index = skipped.nextIndex
+      }
+    } else if (key.value === 'reasoning') {
+      const result = readJsonObjectStringProperty(rawBody, index, 'effort')
+      metadata.reasoningEffort = normalizeUsageReasoningEffort(result.value) ?? metadata.reasoningEffort
+      metadata.invalidJson = metadata.invalidJson || !result.ok
+      index = result.nextIndex
     } else if (key.value === 'stream') {
       const booleanValue = readJsonBoolean(rawBody, index)
       if (booleanValue) {
@@ -169,6 +185,66 @@ export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBody
   metadata.imageGeneration = inspection.imageToolCount > 0 || inspection.forcedImageGeneration
   metadata.imageGenerationForced = inspection.forcedImageGeneration
   return metadata
+}
+
+type UsageReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+const usageReasoningEfforts = new Set<UsageReasoningEffort>([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+])
+
+function normalizeUsageReasoningEffort(value: unknown): UsageReasoningEffort | undefined {
+  return typeof value === 'string' && usageReasoningEfforts.has(value as UsageReasoningEffort)
+    ? value as UsageReasoningEffort
+    : undefined
+}
+
+function readJsonObjectStringProperty(
+  rawBody: Buffer,
+  index: number,
+  propertyName: string
+): { nextIndex: number; value?: string; ok: boolean } {
+  index = skipJsonWhitespace(rawBody, index)
+  if (rawBody[index] !== jsonObjectOpenByte) {
+    const skipped = skipJsonValue(rawBody, index)
+    return { nextIndex: skipped.nextIndex, ok: skipped.ok }
+  }
+
+  index += 1
+  let value: string | undefined
+  while (index < rawBody.length) {
+    index = skipJsonWhitespace(rawBody, index)
+    if (rawBody[index] === jsonObjectCloseByte) {
+      return { nextIndex: index + 1, value, ok: true }
+    }
+    if (rawBody[index] === jsonCommaByte) {
+      index += 1
+      continue
+    }
+    const key = readJsonStringToken(rawBody, index)
+    if (!key) return { nextIndex: rawBody.length, value, ok: false }
+    index = skipJsonWhitespace(rawBody, key.nextIndex)
+    if (rawBody[index] !== jsonColonByte) return { nextIndex: rawBody.length, value, ok: false }
+    index = skipJsonWhitespace(rawBody, index + 1)
+    if (key.value === propertyName) {
+      const propertyValue = readJsonStringToken(rawBody, index)
+      if (propertyValue) {
+        value = propertyValue.value
+        index = propertyValue.nextIndex
+        continue
+      }
+    }
+    const skipped = skipJsonValue(rawBody, index)
+    if (!skipped.ok) return { nextIndex: skipped.nextIndex, value, ok: false }
+    index = skipped.nextIndex
+  }
+  return { nextIndex: rawBody.length, value, ok: false }
 }
 
 function createEmptyImageGenerationToolInspection(): ImageGenerationToolInspection {

@@ -61,6 +61,11 @@ try {
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       model: 'gpt-5.5',
+      requestedServiceTier: 'flex' as const,
+      effectiveServiceTier: 'priority' as const,
+      billedServiceTier: 'priority' as const,
+      requestedReasoningEffort: 'low' as const,
+      effectiveReasoningEffort: 'high' as const,
       stream: false,
       statusCode: index % 3 === 0 ? 429 : 200,
       success: index % 3 !== 0,
@@ -101,6 +106,9 @@ try {
     assert.equal(deepPage.page, 1000, '使用记录深翻页应按固定候选窗口收敛到最多 1000 页')
     assert.equal(deepPage.items.length, 1, '深翻页仍应返回窗口内最后一条记录')
     assert.equal(deepPage.items[0]?.id, records[300].id, '深翻页应只读取固定 shard 候选窗口内的末尾记录')
+    assert.equal(deepPage.items[0]?.billedServiceTier, 'priority', 'SQLite 使用记录列表投影必须保留实际服务档位')
+    assert.equal(deepPage.items[0]?.requestedReasoningEffort, 'low', 'SQLite 使用记录列表投影必须保留请求思考级别')
+    assert.equal(deepPage.items[0]?.effectiveReasoningEffort, 'high', 'SQLite 使用记录列表投影必须保留实际上游思考级别')
     assert.equal(deepPage.hasMore, true, 'shard 多取一条应标记窗口内还有后续记录')
   } finally {
     for (const restore of shardRestorers) restore()

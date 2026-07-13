@@ -41,6 +41,7 @@ import {
 import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import { resolveUsageServiceTiers, type UsageServiceTier } from './service-tier.js'
+import type { UsageReasoningEffort } from './reasoning-effort.js'
 
 type UpstreamAccount = OpenAIAccountSecret
 
@@ -86,6 +87,8 @@ export interface GatewayUsageContext {
   requestSnapshot: UsageRequestSnapshot
   requestedServiceTier?: UsageServiceTier
   effectiveServiceTier?: UsageServiceTier
+  requestedReasoningEffort?: UsageReasoningEffort
+  effectiveReasoningEffort?: UsageReasoningEffort
 }
 
 export interface GatewayFailureUsageContext extends GatewayUsageContext {
@@ -189,6 +192,10 @@ export async function recordFailedUpstreamAttempt(
     statusCode: input.statusCode,
     success: false,
     failureAttribution: failedUpstreamAttemptAttribution(input),
+    requestedServiceTier: usageContext.requestedServiceTier,
+    effectiveServiceTier: usageContext.effectiveServiceTier,
+    requestedReasoningEffort: usageContext.requestedReasoningEffort,
+    effectiveReasoningEffort: usageContext.effectiveReasoningEffort,
     durationMs: Date.now() - input.startedAt,
     errorCode,
     errorMessage,
@@ -222,6 +229,8 @@ export async function recordCompletedUpstreamAttempt(
     usage: ParsedUsage
     requestedServiceTier?: UsageServiceTier
     effectiveServiceTier?: UsageServiceTier
+    requestedReasoningEffort?: UsageReasoningEffort
+    effectiveReasoningEffort?: UsageReasoningEffort
     errorCode?: string
     errorMessage?: string
     failureAttribution?: UsageFailureAttribution
@@ -275,6 +284,8 @@ export async function recordCompletedUpstreamAttempt(
     cacheWrite1hTokens: input.usage.cacheWrite1hTokens,
     thinkingTokens: input.usage.thinkingTokens,
     ...serviceTiers,
+    requestedReasoningEffort: input.requestedReasoningEffort,
+    effectiveReasoningEffort: input.effectiveReasoningEffort,
     ...pricingMultipliers,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
@@ -444,6 +455,10 @@ export async function recordClientAbortedUpstreamAttempt(
     stream: boolean
     firstTokenMs?: number
     startedAt: number
+    requestedServiceTier?: UsageServiceTier
+    effectiveServiceTier?: UsageServiceTier
+    requestedReasoningEffort?: UsageReasoningEffort
+    effectiveReasoningEffort?: UsageReasoningEffort
     requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
@@ -514,6 +529,10 @@ export async function recordGatewayFailure(
     statusCode: input.statusCode,
     success: false,
     failureAttribution: input.failureAttribution ?? 'gateway_policy',
+    requestedServiceTier: usageContext.requestedServiceTier,
+    effectiveServiceTier: usageContext.effectiveServiceTier,
+    requestedReasoningEffort: usageContext.requestedReasoningEffort,
+    effectiveReasoningEffort: usageContext.effectiveReasoningEffort,
     durationMs: Date.now() - input.startedAt,
     errorCode,
     errorMessage,

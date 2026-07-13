@@ -373,6 +373,8 @@ export function runtimeOpenAIAccountCredentials(credentials: Record<string, unkn
   const output: Record<string, unknown> = {}
   copyRuntimeCredentialText(credentials, output, 'account_id')
   copyRuntimeCredentialText(credentials, output, 'api_key_strategy')
+  copyRuntimeCredentialText(credentials, output, 'service_tier_override')
+  copyRuntimeCredentialText(credentials, output, 'reasoning_effort_override')
   copyRuntimeCredentialValue(credentials, output, 'supported_endpoint_modes')
   copyRuntimeCredentialValue(credentials, output, 'api_key_weights')
   copyRuntimeCredentialValue(credentials, output, 'error_handling_rules')

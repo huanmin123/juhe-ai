@@ -445,7 +445,9 @@ function buildCatalogCostBreakdownFromPricing(
     outputImageUnitCostUsd,
     outputUsdPerImage: pricing.outputUsdPerImage,
     accountChargeUsd: input.costUsd ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, cacheWrite1hCostUsd, inputImageCostUsd, outputImageCostUsd, inputAudioCostUsd, outputAudioCostUsd, outputImageUnitCostUsd),
-    multiplier: 1
+    multiplier: 1,
+    serviceTierPricingSource: tokenPrices.serviceTierPricingSource,
+    serviceTierMultiplier: tokenPrices.serviceTierMultiplier
   }
 }
 
@@ -792,6 +794,8 @@ function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: C
   cachedInputPrice?: number
   cacheWritePrice?: number
   cacheWrite1hPrice?: number
+  serviceTierPricingSource: ProviderCostBreakdown['serviceTierPricingSource']
+  serviceTierMultiplier?: number
 } {
   const tier = input.serviceTier
   const tierSupported = (tier === 'priority' || tier === 'flex') && pricing.supportedServiceTiers.includes(tier)
@@ -809,13 +813,50 @@ function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: C
     && Math.max(input.inputTokens ?? 0, 0) > pricing.longContextInputTokenThreshold
   const inputMultiplier = longContext ? normalizeCatalogMultiplier(pricing.longContextInputCostMultiplier) : 1
   const outputMultiplier = longContext ? normalizeCatalogMultiplier(pricing.longContextOutputCostMultiplier) : 1
+  const serviceTierPricing = catalogServiceTierPricingMetadata(pricing, input, tierSupported, fallbackMultiplier)
   return {
     inputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.inputUsdPer1M, pricing.priorityInputUsdPer1M, pricing.flexInputUsdPer1M), inputMultiplier)),
     outputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.outputUsdPer1M, pricing.priorityOutputUsdPer1M, pricing.flexOutputUsdPer1M), outputMultiplier)),
     cachedInputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cachedInputUsdPer1M, pricing.priorityCachedInputUsdPer1M, pricing.flexCachedInputUsdPer1M), inputMultiplier)),
     cacheWritePrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWriteUsdPer1M, pricing.priorityCacheWriteUsdPer1M, pricing.flexCacheWriteUsdPer1M), inputMultiplier)),
-    cacheWrite1hPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWrite1hUsdPer1M, pricing.priorityCacheWrite1hUsdPer1M, pricing.flexCacheWrite1hUsdPer1M), inputMultiplier))
+    cacheWrite1hPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWrite1hUsdPer1M, pricing.priorityCacheWrite1hUsdPer1M, pricing.flexCacheWrite1hUsdPer1M), inputMultiplier)),
+    ...serviceTierPricing
   }
+}
+
+function catalogServiceTierPricingMetadata(
+  pricing: ProviderModelCatalogItem,
+  input: CostInput,
+  tierSupported: boolean,
+  fallbackMultiplier: number
+): Pick<ProviderCostBreakdown, 'serviceTierPricingSource' | 'serviceTierMultiplier'> {
+  const tier = input.serviceTier
+  if (!tierSupported || (tier !== 'priority' && tier !== 'flex')) {
+    return { serviceTierPricingSource: 'default' }
+  }
+  const pairs = [
+    [pricing.inputUsdPer1M, tier === 'priority' ? pricing.priorityInputUsdPer1M : pricing.flexInputUsdPer1M],
+    [pricing.outputUsdPer1M, tier === 'priority' ? pricing.priorityOutputUsdPer1M : pricing.flexOutputUsdPer1M],
+    [pricing.cachedInputUsdPer1M, tier === 'priority' ? pricing.priorityCachedInputUsdPer1M : pricing.flexCachedInputUsdPer1M],
+    [pricing.cacheWriteUsdPer1M, tier === 'priority' ? pricing.priorityCacheWriteUsdPer1M : pricing.flexCacheWriteUsdPer1M],
+    [pricing.cacheWrite1hUsdPer1M, tier === 'priority' ? pricing.priorityCacheWrite1hUsdPer1M : pricing.flexCacheWrite1hUsdPer1M]
+  ] as const
+  let specificCount = 0
+  let fallbackCount = 0
+  for (const [standard, specific] of pairs) {
+    if (specific !== undefined) {
+      specificCount += 1
+    } else if (standard !== undefined) {
+      fallbackCount += 1
+    }
+  }
+  if (specificCount > 0 && fallbackCount > 0) {
+    return { serviceTierPricingSource: 'mixed', serviceTierMultiplier: fallbackMultiplier }
+  }
+  if (specificCount > 0) {
+    return { serviceTierPricingSource: 'tier_specific' }
+  }
+  return { serviceTierPricingSource: 'multiplier', serviceTierMultiplier: fallbackMultiplier }
 }
 
 function multiplyCatalogPrice(value: number | undefined, multiplier: number): number | undefined {
