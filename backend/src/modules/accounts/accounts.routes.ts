@@ -28,7 +28,6 @@ import { normalizeAccountBalanceConfig, validateAccountBalanceCapability } from 
 import {
   loadAccountBalanceConfigurationsByAccountIdsAsync,
 } from '../../storage/account-balance.repository.js'
-import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { registerAccountExportRoutes } from './account-export.routes.js'
 import { registerAccountTestSessionRoutes } from './account-test-session.routes.js'
 import { registerAccountTestStatusRoutes } from './account-test-status.routes.js'
@@ -50,6 +49,7 @@ import {
   dispatchAccountHealthCheck,
   dispatchPendingAccountHealthCheck
 } from './account-health-check-dispatch.service.js'
+import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapshot-cleanup.service.js'
 
 export const accountsRouter = Router()
 
@@ -406,7 +406,13 @@ accountsRouter.patch('/:id', async (req, res) => {
         || balanceDecision.autoDisabledForMultipleApiKeys
         || (currentBalance?.enabled === true && finalBalance?.enabled === false)
       ) {
-        await requestStatsWriter({ type: 'delete_account_balance_snapshot', accountId: account.id }).catch(() => undefined)
+        await cleanupAccountBalanceSnapshotAfterSave({
+          accountId: account.id,
+          configRevision: account.configRevision ?? 1,
+          reason: balanceDecision.autoDisabledForMultipleApiKeys
+            ? 'multiple_api_keys'
+            : 'balance_configuration_changed'
+        })
       }
       if (finalBalance) {
         account = {

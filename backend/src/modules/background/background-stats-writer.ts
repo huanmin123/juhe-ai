@@ -172,6 +172,7 @@ export type BackgroundStatsWriteOperation =
   | {
     type: 'delete_account_balance_snapshot'
     accountId: string
+    updatedBefore?: string
   }
   | {
     type: 'acquire_account_balance_lease'
@@ -324,7 +325,7 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
     case 'replace_account_balance_snapshot_if_current':
       return { written: await replaceAccountBalanceSnapshotIfCurrentAsync(operation.input) }
     case 'delete_account_balance_snapshot':
-      await deleteAccountBalanceSnapshotAsync(operation.accountId)
+      await deleteAccountBalanceSnapshotAsync(operation.accountId, { updatedBefore: operation.updatedBefore })
       return { deleted: true }
     case 'acquire_account_balance_lease':
       return { acquired: await acquireBackgroundJobLeaseAsync(operation.input) }

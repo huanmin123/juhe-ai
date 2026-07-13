@@ -15,6 +15,7 @@ export interface RedisStreamQueueOptions<T> {
   redisUrl?: string
   encode?: (payload: T) => string
   decode?: (payload: string) => T
+  producerClient?: () => Promise<RedisCommandClient>
 }
 
 export interface RedisStreamMessage<T> {
@@ -50,6 +51,7 @@ export class RedisStreamQueue<T> {
   private readonly redisUrl: string
   private readonly encode: (payload: T) => string
   private readonly decode: (payload: string) => T
+  private readonly producerClient: () => Promise<RedisCommandClient>
   private consumerClientPromise: Promise<RedisCommandClient> | undefined
   private groupReadyPromise: Promise<void> | undefined
 
@@ -65,6 +67,7 @@ export class RedisStreamQueue<T> {
     this.redisUrl = options.redisUrl ?? requiredRedisQueueUrl()
     this.encode = options.encode ?? ((payload) => JSON.stringify(payload))
     this.decode = options.decode ?? ((payload) => JSON.parse(payload) as T)
+    this.producerClient = options.producerClient ?? (() => getRedisClient(this.redisUrl))
   }
 
   async enqueue(payload: T): Promise<string> {
@@ -72,7 +75,7 @@ export class RedisStreamQueue<T> {
   }
 
   async enqueueEncoded(encodedPayload: string): Promise<string> {
-    const client = await getRedisClient(this.redisUrl)
+    const client = await this.producerClient()
     const command = ['XADD', this.streamKey, '*', 'payload', encodedPayload]
     const id = await client.sendCommand(command)
     return String(id ?? '')

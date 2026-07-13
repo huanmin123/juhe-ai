@@ -1026,7 +1026,8 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     auditLogTransport,
     auditLogQueue,
     accountConcurrency,
-    highConcurrencyQueue
+    highConcurrencyQueue,
+    accountBalanceSnapshotCleanup
   ] = await Promise.all([
     import('../background/background-ipc.js'),
     import('../gateway/runtime/account-side-effects.service.js'),
@@ -1034,7 +1035,8 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     import('../audit-logs/audit-log-transport.service.js'),
     import('../audit-logs/audit-log-queue.service.js'),
     import('../../shared/account-concurrency.js'),
-    import('../gateway/runtime/high-concurrency-queue.service.js')
+    import('../gateway/runtime/high-concurrency-queue.service.js'),
+    import('../accounts/account-balance-snapshot-cleanup.service.js')
   ])
   const [
     ingestWorkerSnapshot,
@@ -1053,6 +1055,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
 
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
+    accountBalanceSnapshotCleanup: accountBalanceSnapshotCleanup.getAccountBalanceSnapshotCleanupRuntime(),
     ingestWorker: {
       pid: ingestWorkerSnapshot?.pid ?? ingestWorkerState?.pid,
       ready: ingestWorkerSnapshot?.ready ?? ingestWorkerState?.ready ?? false,

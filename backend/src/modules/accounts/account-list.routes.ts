@@ -3,8 +3,9 @@ import type { Router } from 'express'
 import { ok } from '../../shared/http.js'
 import { listAccountOptionsAsync, listAccountsPageAsync } from '../../storage/repositories.js'
 import {
+  accountBalanceSnapshotMatchesConfiguration,
   loadAccountBalanceConfigurationsByAccountIdsAsync,
-  loadAccountBalanceSnapshotsByAccountIdsAsync
+  loadAccountBalanceSnapshotRecordsByAccountIdsAsync
 } from '../../storage/account-balance.repository.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { applyServerAccountConcurrencyToAccountList } from '../gateway/runtime/runtime-snapshot.service.js'
@@ -15,6 +16,7 @@ import {
 } from './account-list-runtime-status-filter.js'
 import { parseAccountListOptions, parseAccountOptionsQuery } from './account-list-query.js'
 import { sanitizeAccountListResponse } from './account-response-sanitizer.js'
+import { isAccountBalanceSnapshotSuppressed } from './account-balance-snapshot-cleanup.service.js'
 
 export function registerAccountListRoutes(router: Router): void {
   router.get('/', async (req, res, next) => {
@@ -77,19 +79,24 @@ async function hydrateAccountBalances<T extends { items: import('../../domain/ty
   if (physicalIds.length === 0) return result
   const [configurations, snapshots] = await Promise.all([
     loadAccountBalanceConfigurationsByAccountIdsAsync(physicalIds),
-    loadAccountBalanceSnapshotsByAccountIdsAsync(physicalIds)
+    loadAccountBalanceSnapshotRecordsByAccountIdsAsync(physicalIds)
   ])
   return {
     ...result,
     items: result.items.map((account) => {
       const configuration = configurations.get(account.id)
       if (!configuration) return account
+      const snapshotRecord = snapshots.get(account.id)
       return {
         ...account,
         balanceQueryEnabled: configuration.enabled,
         balanceQueryConfig: configuration.config,
         balanceQueryNextRefreshAt: configuration.nextRefreshAt,
-        balanceSnapshot: configuration.enabled ? snapshots.get(account.id) : undefined
+        balanceSnapshot: configuration.enabled
+          && !isAccountBalanceSnapshotSuppressed(account.id)
+          && accountBalanceSnapshotMatchesConfiguration(configuration, snapshotRecord)
+          ? snapshotRecord.snapshot
+          : undefined
       }
     })
   }

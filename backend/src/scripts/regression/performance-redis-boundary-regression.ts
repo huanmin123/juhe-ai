@@ -254,7 +254,10 @@ function assertQueueContracts(): void {
       assert.match(content, /export function enqueueRecordMaintenanceJobWithResult\(input: RecordMaintenanceJob\): RecordMaintenanceEnqueueResult \{[\s\S]*droppedReason: 'redis_stream_async_required'/, '数据维护同步 withResult 在 redis_stream 下不能假报 queued=true')
       assert.doesNotMatch(content, /export function enqueueRecordMaintenanceJobWithResult\(input: RecordMaintenanceJob\): RecordMaintenanceEnqueueResult \{[\s\S]*void enqueueRecordMaintenanceJobToRedisStream/, '数据维护同步 withResult 禁止 fire-and-forget 写 Redis Stream')
     } else if (contract.file === 'modules/runtime-logs/runtime-log-index-queue.service.ts') {
-      assert.match(content, /catch\(recordRuntimeLogRedisStreamEnqueueFailure\)/, '运行日志索引 Redis Stream 入队失败必须记录丢弃事实和可观测错误')
+      assert.match(content, /runtimeLogRedisProducer\.enqueue\(input, estimateRuntimeLogBytes\(input\)\)/, '运行日志索引 Redis Stream 入队必须先经过有界 producer')
+      assert.match(content, /onDrop: recordRuntimeLogRedisStreamDrop/, '运行日志索引 Redis Stream 入队失败必须记录分类丢弃事实和可观测错误')
+      assert.match(content, /disableOfflineQueue: true/, '运行日志专用 Redis producer 必须禁用 node-redis offline queue')
+      assert.match(content, /commandsQueueMaxLength: runtimeLogRedisProducerCommandQueueMaxLength/, '运行日志专用 Redis producer 必须限制底层命令队列')
       assert.doesNotMatch(content, /scheduleProcessFatalError/, '派生运行日志索引单次入队失败不得终止业务主进程')
     } else {
       assert.match(content, /catch\(scheduleProcessFatalError\)/, `${contract.file} 同步入口 Redis Stream 入队失败必须进入受控 fail-fast，不能退化为未处理 Promise`)

@@ -5,7 +5,6 @@ import type {
   AccountStatus,
   AccountSupportedEndpointMode
 } from '../../domain/types.js'
-import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   assertAnthropicEndpointModesCompatible
@@ -36,8 +35,6 @@ import {
   nextAccountAvailabilityScheduleCheckAt
 } from '../../storage/account-availability-schedule.js'
 import { normalizeAccountCredentialsForWrite } from '../../storage/account-credentials-normalization.js'
-import { deleteAccountBalanceSnapshotAsync } from '../../storage/account-balance.repository.js'
-import { mainDatabaseRuntimeInfo } from '../../storage/database.js'
 import {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   assertAccountSupportedModelsRequired,
@@ -55,7 +52,7 @@ import type { AccountBatchEditRequest } from './account-request.schemas.js'
 import { normalizeAccountResponseInspectionRules } from './account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from './account-gpt-request-overrides.validation.js'
 import { effectiveAccountApiKeyCount } from './account-balance-config.js'
-import { requestStatsWriter } from '../background/background-stats-writer.js'
+import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapshot-cleanup.service.js'
 
 const modelConfigurationFields = new Set([
   'supportedModels',
@@ -117,7 +114,11 @@ export async function batchEditAccountsAsync(
     access,
     prepare: async ({ client, accounts }) => prepareBatchUpdatesAsync(client, accounts, updates)
   })
-  await cleanupDisabledBalanceSnapshots(repositoryResult.balanceSnapshotCleanupAccountIds, repositoryResult.batchId)
+  await cleanupDisabledBalanceSnapshots(
+    repositoryResult.balanceSnapshotCleanupAccountIds,
+    repositoryResult.configRevisions,
+    repositoryResult.batchId
+  )
   let accounts: AccountSummary[]
   try {
     const refreshed = await Promise.all(
@@ -351,24 +352,20 @@ async function prepareAccountUpdateAsync(
   }
 }
 
-async function cleanupDisabledBalanceSnapshots(accountIds: string[], batchId: string): Promise<void> {
+async function cleanupDisabledBalanceSnapshots(
+  accountIds: string[],
+  configRevisions: Record<string, number>,
+  batchId: string
+): Promise<void> {
   if (accountIds.length === 0) return
-  const results = await Promise.allSettled(accountIds.map(async (accountId) => {
-    if (runtimeConfig.databaseDriver === 'postgres' || !mainDatabaseRuntimeInfo('stats').queryOnly) {
-      await deleteAccountBalanceSnapshotAsync(accountId)
-      return
-    }
-    await requestStatsWriter({ type: 'delete_account_balance_snapshot', accountId })
+  await Promise.all(accountIds.map(async (accountId) => {
+    await cleanupAccountBalanceSnapshotAfterSave({
+      accountId,
+      configRevision: configRevisions[accountId] ?? 1,
+      reason: 'batch_multiple_api_keys',
+      batchId
+    })
   }))
-  const failedCount = results.filter((result) => result.status === 'rejected').length
-  if (failedCount > 0) {
-    logger.warn({
-      event: 'account_batch_balance_snapshot_cleanup_failed',
-      batchId,
-      accountCount: accountIds.length,
-      failedCount
-    }, '批量编辑已提交，但部分余额快照异步清理失败')
-  }
 }
 
 function applyNullableCredentialOverride(

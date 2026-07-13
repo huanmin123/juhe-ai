@@ -262,8 +262,31 @@ async function backgroundQueueRuntimeRows(runtime: DbServiceServerRuntimeSnapsho
     ...await redisStreamRuntimeQueueRows(),
     ...dbServiceRuntimeQueueRows(runtime),
     ...gatewayAccountSideEffectQueueRows(runtime),
+    ...accountBalanceSnapshotCleanupRuntimeRows(runtime),
     ...highConcurrencyRuntimeQueueRows(runtime)
   ]
+}
+
+function accountBalanceSnapshotCleanupRuntimeRows(runtime: DbServiceServerRuntimeSnapshot): BackgroundJobRuntimeRow[] {
+  const state = runtime.accountBalanceSnapshotCleanup
+  if (!state) return []
+  return [
+    localQueueBackgroundJobRow('AI 账户余额旧快照清理', 'server', {
+      queueLength: state.pendingCount,
+      completedCount: state.completedCount,
+      flushFailureCount: state.failedAttemptCount,
+      flushLastSuccessAt: state.lastSuccessAt,
+      flushLastError: state.lastError,
+      suppressedAccountCount: state.suppressedAccountCount,
+      exhaustedAccountCount: state.exhaustedAccountCount,
+      exhaustedCount: state.exhaustedCount
+    }, {
+      queueType: 'retry',
+      runningCount: state.runningCount,
+      nextRunAt: state.nextRunAt,
+      lastError: state.lastError
+    })
+  ].filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
 }
 
 async function redisStreamRuntimeQueueRows(): Promise<BackgroundJobRuntimeRow[]> {
