@@ -52,12 +52,20 @@ const (
 	w6ManagementClientIPPolicyZeroTrace        = "req_w6_client_ip_policy_unallow_zero"
 	w6ManagementClientIPPolicyConcurrentATrace = "req_w6_client_ip_policy_concurrent_a"
 	w6ManagementClientIPPolicyConcurrentBTrace = "req_w6_client_ip_policy_concurrent_b"
+	w6ManagementClientIPPolicyBlacklistTrace   = "req_w6_client_ip_policy_blacklist"
+	w6ManagementClientIPPolicyUnblockTrace     = "req_w6_client_ip_policy_unblock"
+	w6ManagementClientIPPolicyUnblockZeroTrace = "req_w6_client_ip_policy_unblock_zero"
 
 	w6ManagementClientIPPolicyReplaceReason     = "替换现有封禁策略"
 	w6ManagementClientIPPolicyUnallowReason     = "管理员手动移出白名单"
 	w6ManagementClientIPPolicyZeroReason        = "再次确认无活动白名单"
 	w6ManagementClientIPPolicyConcurrentAReason = "并发白名单原因 A"
 	w6ManagementClientIPPolicyConcurrentBReason = "并发白名单原因 B"
+	w6ManagementClientIPPolicyBlacklistReason   = "定时封禁并替换活动白名单"
+	w6ManagementClientIPPolicyUnblockReason     = "管理员手动解除封禁"
+	w6ManagementClientIPPolicyUnblockZeroReason = "再次确认无活动封禁"
+
+	w6ManagementClientIPPolicyBlacklistDurationMinutes = 90
 )
 
 func TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke(t *testing.T) {
@@ -127,7 +135,7 @@ func TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke(t *testing.T) {
 	}
 	defer closeRedisClient(t, stateRedis)
 
-	now := time.Date(2026, 7, 14, 9, 30, 0, 0, time.UTC)
+	now := time.Date(2026, 7, 14, 9, 30, 0, 123_000_000, time.UTC)
 	sessionCreatedAt := now.Add(-2 * time.Minute)
 	insertW6ManagementClientIPPolicyFixtures(t, ctx, db, now, sessionCreatedAt)
 
@@ -171,12 +179,15 @@ func TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create client IP policy invalidator: %v", err)
 	}
-	allowlistVersionReader, err := httpapi.NewRedisSystemAPIClientIPAllowlistVersionReader(
+	redisAllowlistVersionReader, err := httpapi.NewRedisSystemAPIClientIPAllowlistVersionReader(
 		cacheRedis,
 		w6ManagementClientIPPolicyNamespace,
 	)
 	if err != nil {
 		t.Fatalf("create client IP allowlist version reader: %v", err)
+	}
+	allowlistVersionReader := &w6ManagementClientIPPolicyVersionReader{
+		delegate: redisAllowlistVersionReader,
 	}
 	rateLimitSettingsVersionReader, err := httpapi.NewRedisSystemAPIRateLimitSettingsVersionReader(
 		cacheRedis,
@@ -307,6 +318,14 @@ func TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke(t *testing.T) {
 			service,
 			operationLogOptions,
 		),
+		ManagementClientIPBlacklistHandler: httpapi.NewManagementClientIPBlacklistHandlerWithOperationLog(
+			service,
+			operationLogOptions,
+		),
+		ManagementClientIPUnblockHandler: httpapi.NewManagementClientIPUnblockHandlerWithOperationLog(
+			service,
+			operationLogOptions,
+		),
 	})
 
 	forbidden := serveW6ManagementClientIPPolicyRequest(
@@ -323,7 +342,7 @@ func TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke(t *testing.T) {
 		http.StatusForbidden,
 		"需要管理员权限",
 	)
-	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 1, 1, 0)
+	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 1, 1, 0, 1)
 	assertW6ManagementClientIPPolicyCacheVersion(
 		t,
 		ctx,
@@ -386,7 +405,7 @@ func TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke(t *testing.T) {
 		t.Fatalf("replace cache version = %q, want sequence 1", versionAfterReplace)
 	}
 	assertW6ManagementClientIPPolicyInitialReplacement(t, ctx, db, replaced.ID, now)
-	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 2, 1, 1)
+	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 2, 1, 1, 0)
 	assertW2ManagementSessionLastSeenAt(
 		t,
 		ctx,
@@ -439,7 +458,7 @@ func TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke(t *testing.T) {
 		w6ManagementClientIPPolicyUnallowReason,
 		now,
 	)
-	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 2, 0, 0)
+	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 2, 0, 0, 0)
 	assertW2ManagementSessionLastSeenAt(
 		t,
 		ctx,
@@ -477,7 +496,7 @@ func TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke(t *testing.T) {
 	if versionAfterZero != "w6-client-ip-policy-version-3" {
 		t.Fatalf("zero-row cache version = %q, want sequence 3", versionAfterZero)
 	}
-	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 2, 0, 0)
+	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 2, 0, 0, 0)
 	assertW6ManagementClientIPPolicyRateLimiterCalls(
 		t,
 		ipRateLimiter,
@@ -579,7 +598,7 @@ func TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke(t *testing.T) {
 		t.Fatalf("concurrent allowlist responses reused policy ID: %+v", concurrentPolicies)
 	}
 	assertW6ManagementClientIPPolicyConcurrentRows(t, ctx, db, concurrentPolicies, now)
-	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 4, 1, 1)
+	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 4, 1, 1, 0)
 	versionAfterConcurrent := assertW6ManagementClientIPPolicyCacheVersionChanged(
 		t,
 		ctx,
@@ -604,6 +623,161 @@ func TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke(t *testing.T) {
 		5,
 		5,
 	)
+
+	activeAllowlistID := readW6ManagementClientIPPolicyActivePolicyID(
+		t,
+		ctx,
+		db,
+		"allowlist",
+	)
+	blacklistExpiresAt := now.Add(
+		w6ManagementClientIPPolicyBlacklistDurationMinutes * time.Minute,
+	)
+	blacklistVersionObservationStart := allowlistVersionReader.observationCount()
+	blacklistRec := serveW6ManagementClientIPPolicyBlacklistRequest(
+		ctx,
+		router,
+		w6ManagementClientIPPolicyAdminToken,
+		w6ManagementClientIPPolicyBlacklistReason,
+		w6ManagementClientIPPolicyBlacklistDurationMinutes,
+		w6ManagementClientIPPolicyBlacklistTrace,
+	)
+	blacklist := decodeW6ManagementClientIPPolicyBlacklistResponse(t, blacklistRec)
+	assertW6ManagementClientIPPolicyBlacklistSummary(
+		t,
+		blacklist,
+		w6ManagementClientIPPolicyBlacklistReason,
+		now,
+		blacklistExpiresAt,
+	)
+	versionAfterBlacklist := assertW6ManagementClientIPPolicyCacheVersionChanged(
+		t,
+		ctx,
+		cacheRedis,
+		versionKey,
+		versionAfterConcurrent,
+	)
+	if versionAfterBlacklist != "w6-client-ip-policy-version-6" {
+		t.Fatalf("blacklist cache version = %q, want sequence 6", versionAfterBlacklist)
+	}
+	assertW6ManagementClientIPPolicyVersionObservedSince(
+		t,
+		allowlistVersionReader,
+		blacklistVersionObservationStart,
+		versionAfterConcurrent,
+	)
+	assertW6ManagementClientIPPolicyDisabled(
+		t,
+		ctx,
+		db,
+		activeAllowlistID,
+		"被新的封禁策略替换",
+		now,
+	)
+	assertW6ManagementClientIPPolicyBlacklistStored(
+		t,
+		ctx,
+		db,
+		blacklist.ID,
+		w6ManagementClientIPPolicyBlacklistReason,
+		now,
+		blacklistExpiresAt,
+	)
+	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 5, 1, 0, 1)
+	assertW6ManagementClientIPPolicyRateLimiterCalls(
+		t,
+		ipRateLimiter,
+		authenticatedRateLimiter,
+		5,
+		5,
+	)
+
+	unblockVersionObservationStart := allowlistVersionReader.observationCount()
+	unblockRec := serveW6ManagementClientIPPolicyRequest(
+		ctx,
+		router,
+		"unblock",
+		w6ManagementClientIPPolicyAdminToken,
+		w6ManagementClientIPPolicyUnblockReason,
+		w6ManagementClientIPPolicyUnblockTrace,
+	)
+	unblock := decodeW6ManagementClientIPPolicyUnblockResponse(t, unblockRec)
+	if unblock.DisabledCount != 1 {
+		t.Fatalf("unblock disabledCount = %d, want 1", unblock.DisabledCount)
+	}
+	versionAfterUnblock := assertW6ManagementClientIPPolicyCacheVersionChanged(
+		t,
+		ctx,
+		cacheRedis,
+		versionKey,
+		versionAfterBlacklist,
+	)
+	if versionAfterUnblock != "w6-client-ip-policy-version-7" {
+		t.Fatalf("unblock cache version = %q, want sequence 7", versionAfterUnblock)
+	}
+	assertW6ManagementClientIPPolicyVersionObservedSince(
+		t,
+		allowlistVersionReader,
+		unblockVersionObservationStart,
+		versionAfterBlacklist,
+	)
+	assertW6ManagementClientIPPolicyDisabled(
+		t,
+		ctx,
+		db,
+		blacklist.ID,
+		w6ManagementClientIPPolicyUnblockReason,
+		now,
+	)
+	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 5, 0, 0, 0)
+	assertW6ManagementClientIPPolicyRateLimiterCalls(
+		t,
+		ipRateLimiter,
+		authenticatedRateLimiter,
+		6,
+		6,
+	)
+
+	unblockZeroVersionObservationStart := allowlistVersionReader.observationCount()
+	unblockZeroRec := serveW6ManagementClientIPPolicyRequest(
+		ctx,
+		router,
+		"unblock",
+		w6ManagementClientIPPolicyAdminToken,
+		w6ManagementClientIPPolicyUnblockZeroReason,
+		w6ManagementClientIPPolicyUnblockZeroTrace,
+	)
+	unblockZero := decodeW6ManagementClientIPPolicyUnblockResponse(t, unblockZeroRec)
+	if unblockZero.DisabledCount != 0 {
+		t.Fatalf("zero-row unblock disabledCount = %d, want 0", unblockZero.DisabledCount)
+	}
+	versionAfterUnblockZero := assertW6ManagementClientIPPolicyCacheVersionChanged(
+		t,
+		ctx,
+		cacheRedis,
+		versionKey,
+		versionAfterUnblock,
+	)
+	if versionAfterUnblockZero != "w6-client-ip-policy-version-8" {
+		t.Fatalf("zero-row unblock cache version = %q, want sequence 8", versionAfterUnblockZero)
+	}
+	assertW6ManagementClientIPPolicyVersionObservedSince(
+		t,
+		allowlistVersionReader,
+		unblockZeroVersionObservationStart,
+		versionAfterUnblock,
+	)
+	assertW6ManagementClientIPPolicyCounts(t, ctx, db, 5, 0, 0, 0)
+	assertW6ManagementClientIPPolicyRateLimiterCalls(
+		t,
+		ipRateLimiter,
+		authenticatedRateLimiter,
+		7,
+		7,
+	)
+	if invalidationSequence.Load() != 8 {
+		t.Fatalf("client IP policy invalidations = %d, want 8", invalidationSequence.Load())
+	}
 
 	if err := waitForOperationLogQueueDrained(ctx, inspector, workerDone, workerErr); err != nil {
 		t.Fatalf("wait for client IP policy operation logs: %v", err)
@@ -641,10 +815,31 @@ func TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke(t *testing.T) {
 				reason:   w6ManagementClientIPPolicyConcurrentBReason,
 				policyID: concurrentPolicies[w6ManagementClientIPPolicyConcurrentBTrace].ID,
 			},
+			w6ManagementClientIPPolicyBlacklistTrace: {
+				action:             "blacklist",
+				reason:             w6ManagementClientIPPolicyBlacklistReason,
+				policyID:           blacklist.ID,
+				durationLabel:      "90 分钟",
+				expiresAt:          formatW6ManagementClientIPPolicyTime(blacklistExpiresAt),
+				durationMinutes:    w6ManagementClientIPPolicyBlacklistDurationMinutes,
+				hasDurationMinutes: true,
+			},
+			w6ManagementClientIPPolicyUnblockTrace: {
+				action:           "unblock",
+				reason:           w6ManagementClientIPPolicyUnblockReason,
+				disabledCount:    1,
+				hasDisabledCount: true,
+			},
+			w6ManagementClientIPPolicyUnblockZeroTrace: {
+				action:           "unblock",
+				reason:           w6ManagementClientIPPolicyUnblockZeroReason,
+				disabledCount:    0,
+				hasDisabledCount: true,
+			},
 		},
 	)
-	if operationLogIDSequence.Load() != 5 {
-		t.Fatalf("operation log IDs generated = %d, want 5", operationLogIDSequence.Load())
+	if operationLogIDSequence.Load() != 8 {
+		t.Fatalf("operation log IDs generated = %d, want 8", operationLogIDSequence.Load())
 	}
 }
 
@@ -674,6 +869,31 @@ func (l *w6ManagementClientIPPolicyAuthenticatedRateLimiter) AllowSystemAPIAuthe
 ) (httpapi.SystemAPIRateLimitDecision, error) {
 	l.calls.Add(1)
 	return l.delegate.AllowSystemAPIAuthenticated(ctx, key, limit)
+}
+
+type w6ManagementClientIPPolicyVersionReader struct {
+	delegate httpapi.SystemAPIClientIPAllowlistVersionReader
+	mu       sync.Mutex
+	versions []string
+}
+
+func (r *w6ManagementClientIPPolicyVersionReader) SystemAPIClientIPAllowlistVersion(
+	ctx context.Context,
+) (string, error) {
+	version, err := r.delegate.SystemAPIClientIPAllowlistVersion(ctx)
+	if err != nil {
+		return "", err
+	}
+	r.mu.Lock()
+	r.versions = append(r.versions, version)
+	r.mu.Unlock()
+	return version, nil
+}
+
+func (r *w6ManagementClientIPPolicyVersionReader) observationCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.versions)
 }
 
 type w6ManagementClientIPPolicyBarrierTransactor struct {
@@ -952,7 +1172,46 @@ func serveW6ManagementClientIPPolicyRequest(
 	reason string,
 	requestID string,
 ) *httptest.ResponseRecorder {
-	body, _ := json.Marshal(map[string]string{"reason": reason})
+	return serveW6ManagementClientIPPolicyRequestBody(
+		ctx,
+		router,
+		action,
+		sessionToken,
+		map[string]any{"reason": reason},
+		requestID,
+	)
+}
+
+func serveW6ManagementClientIPPolicyBlacklistRequest(
+	ctx context.Context,
+	router http.Handler,
+	sessionToken string,
+	reason string,
+	durationMinutes int,
+	requestID string,
+) *httptest.ResponseRecorder {
+	return serveW6ManagementClientIPPolicyRequestBody(
+		ctx,
+		router,
+		"blacklist",
+		sessionToken,
+		map[string]any{
+			"reason":          reason,
+			"durationMinutes": durationMinutes,
+		},
+		requestID,
+	)
+}
+
+func serveW6ManagementClientIPPolicyRequestBody(
+	ctx context.Context,
+	router http.Handler,
+	action string,
+	sessionToken string,
+	payload map[string]any,
+	requestID string,
+) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(payload)
 	req := httptest.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -1028,6 +1287,48 @@ func decodeW6ManagementClientIPPolicyUnallowlistResponse(
 	return response.Data
 }
 
+func decodeW6ManagementClientIPPolicyBlacklistResponse(
+	t *testing.T,
+	rec *httptest.ResponseRecorder,
+) managementclientippolicies.PolicySummary {
+	t.Helper()
+	if rec == nil {
+		t.Fatal("blacklist recorder is nil")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("blacklist status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	assertW6ManagementClientIPPolicyNoStore(t, rec)
+	var response struct {
+		Data managementclientippolicies.PolicySummary `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode blacklist response: %v", err)
+	}
+	return response.Data
+}
+
+func decodeW6ManagementClientIPPolicyUnblockResponse(
+	t *testing.T,
+	rec *httptest.ResponseRecorder,
+) managementclientippolicies.UnblockResult {
+	t.Helper()
+	if rec == nil {
+		t.Fatal("unblock recorder is nil")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unblock status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	assertW6ManagementClientIPPolicyNoStore(t, rec)
+	var response struct {
+		Data managementclientippolicies.UnblockResult `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode unblock response: %v", err)
+	}
+	return response.Data
+}
+
 func assertW6ManagementClientIPPolicyNoStore(
 	t *testing.T,
 	rec *httptest.ResponseRecorder,
@@ -1062,6 +1363,39 @@ func assertW6ManagementClientIPPolicyAllowlistSummary(
 	}
 }
 
+func assertW6ManagementClientIPPolicyBlacklistSummary(
+	t *testing.T,
+	policy managementclientippolicies.PolicySummary,
+	wantReason string,
+	now time.Time,
+	wantExpiresAt time.Time,
+) {
+	t.Helper()
+	wantExpiry := formatW6ManagementClientIPPolicyTime(wantExpiresAt)
+	if policy.ID == "" ||
+		policy.IPHash != w6ManagementClientIPPolicyIPHash ||
+		policy.PolicyType != "blacklist" ||
+		policy.Status != "active" ||
+		policy.Reason == nil ||
+		*policy.Reason != wantReason ||
+		policy.ExpiresAt == nil ||
+		*policy.ExpiresAt != wantExpiry ||
+		len(*policy.ExpiresAt) != len("2006-01-02T15:04:05.000Z") ||
+		policy.CreatedBySystemAccountID != w6ManagementClientIPPolicyAdminID ||
+		policy.CreatedAt != formatW6ManagementClientIPPolicyTime(now) ||
+		policy.UpdatedAt != formatW6ManagementClientIPPolicyTime(now) ||
+		policy.DisabledAt != nil ||
+		policy.DisabledBySystemAccountID != nil ||
+		policy.DisabledReason != nil {
+		t.Fatalf(
+			"blacklist policy = %+v, want active reason %q expiry %q",
+			policy,
+			wantReason,
+			wantExpiry,
+		)
+	}
+}
+
 func assertW6ManagementClientIPPolicyCounts(
 	t *testing.T,
 	ctx context.Context,
@@ -1069,34 +1403,43 @@ func assertW6ManagementClientIPPolicyCounts(
 	wantTotal int,
 	wantActive int,
 	wantActiveAllowlist int,
+	wantActiveBlacklist int,
 ) {
 	t.Helper()
 	var total int
 	var active int
 	var activeAllowlist int
+	var activeBlacklist int
 	if err := db.QueryRowContext(ctx, `
 		SELECT
 			count(*),
 			count(*) FILTER (WHERE status = 'active'),
-			count(*) FILTER (WHERE status = 'active' AND policy_type = 'allowlist')
+			count(*) FILTER (WHERE status = 'active' AND policy_type = 'allowlist'),
+			count(*) FILTER (WHERE status = 'active' AND policy_type = 'blacklist')
 		FROM juhe_stats.client_ip_policies
 		WHERE ip_hash = $1
 	`, w6ManagementClientIPPolicyIPHash).Scan(
 		&total,
 		&active,
 		&activeAllowlist,
+		&activeBlacklist,
 	); err != nil {
 		t.Fatalf("count client IP policies: %v", err)
 	}
-	if total != wantTotal || active != wantActive || activeAllowlist != wantActiveAllowlist {
+	if total != wantTotal ||
+		active != wantActive ||
+		activeAllowlist != wantActiveAllowlist ||
+		activeBlacklist != wantActiveBlacklist {
 		t.Fatalf(
-			"client IP policy counts = total:%d active:%d active_allowlist:%d, want %d/%d/%d",
+			"client IP policy counts = total:%d active:%d active_allowlist:%d active_blacklist:%d, want %d/%d/%d/%d",
 			total,
 			active,
 			activeAllowlist,
+			activeBlacklist,
 			wantTotal,
 			wantActive,
 			wantActiveAllowlist,
+			wantActiveBlacklist,
 		)
 	}
 }
@@ -1204,6 +1547,100 @@ func assertW6ManagementClientIPPolicyDisabled(
 			disabledAt,
 			disabledBy,
 			disabledReason,
+		)
+	}
+}
+
+func readW6ManagementClientIPPolicyActivePolicyID(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	policyType string,
+) string {
+	t.Helper()
+	var id string
+	if err := db.QueryRowContext(ctx, `
+		SELECT id
+		FROM juhe_stats.client_ip_policies
+		WHERE ip_hash = $1
+		  AND policy_type = $2
+		  AND status = 'active'
+	`, w6ManagementClientIPPolicyIPHash, policyType).Scan(&id); err != nil {
+		t.Fatalf("read active %s client IP policy: %v", policyType, err)
+	}
+	return id
+}
+
+func assertW6ManagementClientIPPolicyBlacklistStored(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	policyID string,
+	wantReason string,
+	now time.Time,
+	wantExpiresAt time.Time,
+) {
+	t.Helper()
+	var ipHash string
+	var policyType string
+	var status string
+	var reason sql.NullString
+	var expiresAt sql.NullString
+	var createdBy string
+	var createdAt string
+	var updatedAt string
+	var disabledAt sql.NullString
+	if err := db.QueryRowContext(ctx, `
+		SELECT
+			ip_hash,
+			policy_type,
+			status,
+			reason,
+			expires_at,
+			created_by_system_account_id,
+			created_at,
+			updated_at,
+			disabled_at
+		FROM juhe_stats.client_ip_policies
+		WHERE id = $1
+	`, policyID).Scan(
+		&ipHash,
+		&policyType,
+		&status,
+		&reason,
+		&expiresAt,
+		&createdBy,
+		&createdAt,
+		&updatedAt,
+		&disabledAt,
+	); err != nil {
+		t.Fatalf("read stored blacklist policy %s: %v", policyID, err)
+	}
+	wantTimestamp := formatW6ManagementClientIPPolicyTime(now)
+	wantExpiry := formatW6ManagementClientIPPolicyTime(wantExpiresAt)
+	if ipHash != w6ManagementClientIPPolicyIPHash ||
+		policyType != "blacklist" ||
+		status != "active" ||
+		!reason.Valid ||
+		reason.String != wantReason ||
+		!expiresAt.Valid ||
+		expiresAt.String != wantExpiry ||
+		createdBy != w6ManagementClientIPPolicyAdminID ||
+		createdAt != wantTimestamp ||
+		updatedAt != wantTimestamp ||
+		disabledAt.Valid {
+		t.Fatalf(
+			"stored blacklist %s = hash:%q type:%q status:%q reason:%+v expiry:%+v creator:%q created:%q updated:%q disabled:%+v",
+			policyID,
+			ipHash,
+			policyType,
+			status,
+			reason,
+			expiresAt,
+			createdBy,
+			createdAt,
+			updatedAt,
+			disabledAt,
 		)
 	}
 }
@@ -1374,12 +1811,41 @@ func readW6ManagementClientIPPolicyCacheVersion(
 	return strings.TrimSpace(string(value))
 }
 
+func assertW6ManagementClientIPPolicyVersionObservedSince(
+	t *testing.T,
+	reader *w6ManagementClientIPPolicyVersionReader,
+	start int,
+	want string,
+) {
+	t.Helper()
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	if start < 0 || start > len(reader.versions) {
+		t.Fatalf("invalid client IP policy version observation start %d for %d observations", start, len(reader.versions))
+	}
+	for _, version := range reader.versions[start:] {
+		if version == want {
+			return
+		}
+	}
+	t.Fatalf(
+		"client IP policy version reader did not observe %q after index %d: got %v",
+		want,
+		start,
+		reader.versions[start:],
+	)
+}
+
 type w6ManagementClientIPPolicyOperationLogExpectation struct {
-	action           string
-	reason           string
-	policyID         string
-	disabledCount    int64
-	hasDisabledCount bool
+	action             string
+	reason             string
+	policyID           string
+	disabledCount      int64
+	hasDisabledCount   bool
+	durationLabel      string
+	expiresAt          string
+	durationMinutes    int
+	hasDurationMinutes bool
 }
 
 type w6ManagementClientIPPolicyOperationLogRow struct {
@@ -1632,9 +2098,21 @@ func assertW6ManagementClientIPPolicyOperationLogRow(
 ) {
 	t.Helper()
 	wantResourceName := w6ManagementClientIPPolicyIPHash[:12]
-	wantSummary := "加入 IP 白名单：" + wantResourceName
-	if expected.action == "unallowlist" {
+	wantPolicyType := "allowlist"
+	wantSummary := ""
+	switch expected.action {
+	case "allowlist":
+		wantSummary = "加入 IP 白名单：" + wantResourceName
+	case "unallowlist":
 		wantSummary = "移出 IP 白名单：" + wantResourceName
+	case "blacklist":
+		wantPolicyType = "blacklist"
+		wantSummary = "封禁 IP：" + wantResourceName
+	case "unblock":
+		wantPolicyType = "blacklist"
+		wantSummary = "解除 IP 封禁：" + wantResourceName
+	default:
+		t.Fatalf("unsupported client IP policy operation log expectation: %+v", expected)
 	}
 	if !strings.HasPrefix(row.id, "oplog_w6_management_client_ip_policy_") ||
 		row.actorSystemAccountID != w6ManagementClientIPPolicyAdminID ||
@@ -1666,7 +2144,7 @@ func assertW6ManagementClientIPPolicyOperationLogRow(
 		t.Fatalf("decode client IP policy operation log metadata %s: %v", row.metadataJSON, err)
 	}
 	if metadata["ipHash"] != w6ManagementClientIPPolicyIPHash ||
-		metadata["policyType"] != "allowlist" ||
+		metadata["policyType"] != wantPolicyType ||
 		metadata["reason"] != expected.reason {
 		t.Fatalf("client IP policy operation log metadata = %+v", metadata)
 	}
@@ -1679,34 +2157,53 @@ func assertW6ManagementClientIPPolicyOperationLogRow(
 	for _, change := range changes {
 		changeByField[change.Field] = change
 	}
-	if expected.action == "allowlist" {
+	if expected.action == "allowlist" || expected.action == "blacklist" {
+		wantDurationLabel := "永久"
+		var wantExpiresAt any
+		if expected.action == "blacklist" {
+			if !expected.hasDurationMinutes || expected.durationLabel == "" || expected.expiresAt == "" {
+				t.Fatalf("blacklist expectation lacks duration details: %+v", expected)
+			}
+			wantDurationLabel = expected.durationLabel
+			wantExpiresAt = expected.expiresAt
+		}
 		if len(changes) != 4 ||
 			metadata["policyId"] != expected.policyID ||
-			metadata["durationLabel"] != "永久" ||
+			metadata["durationLabel"] != wantDurationLabel ||
 			changeByField["reason"].After != expected.reason ||
-			changeByField["policyType"].After != "allowlist" ||
-			changeByField["duration"].After != "永久" ||
-			changeByField["expiresAt"].After != nil {
+			changeByField["policyType"].After != wantPolicyType ||
+			changeByField["duration"].After != wantDurationLabel ||
+			changeByField["expiresAt"].After != wantExpiresAt {
 			t.Fatalf(
-				"allowlist operation log metadata=%+v changes=%+v",
+				"client IP policy create operation log metadata=%+v changes=%+v",
 				metadata,
 				changes,
+			)
+		}
+		if expected.action == "blacklist" &&
+			(metadata["expiresAt"] != expected.expiresAt ||
+				metadata["durationMinutes"] != float64(expected.durationMinutes)) {
+			t.Fatalf(
+				"blacklist operation log duration metadata=%+v, want expiry %q minutes %d",
+				metadata,
+				expected.expiresAt,
+				expected.durationMinutes,
 			)
 		}
 		return
 	}
 	if !expected.hasDisabledCount {
-		t.Fatalf("unallowlist expectation lacks disabled count: %+v", expected)
+		t.Fatalf("client IP policy disable expectation lacks disabled count: %+v", expected)
 	}
 	wantDisabledCount := float64(expected.disabledCount)
 	if len(changes) != 3 ||
 		metadata["disabledCount"] != wantDisabledCount ||
 		changeByField["disabledCount"].After != wantDisabledCount ||
-		changeByField["policyType"].Before != "allowlist" ||
+		changeByField["policyType"].Before != wantPolicyType ||
 		changeByField["policyType"].After != nil ||
 		changeByField["reason"].After != expected.reason {
 		t.Fatalf(
-			"unallowlist operation log metadata=%+v changes=%+v",
+			"client IP policy disable operation log metadata=%+v changes=%+v",
 			metadata,
 			changes,
 		)
