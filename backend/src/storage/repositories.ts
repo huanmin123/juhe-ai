@@ -648,6 +648,7 @@ export {
   createUsageRecord,
   createUsageRecordsBatchAsync,
   createUsageRecordsBatch,
+  freezeUsageRecordPricingFactsAsync,
   getUsageRecordDetail,
   getUsageRecordDetailAsync,
   listUsageRecords,

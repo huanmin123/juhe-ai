@@ -197,19 +197,26 @@ export async function handleOpenAIGatewayRequest(
     }
   })
 
-  const preflight = await prepareOpenAIGatewayDispatchContext({
-    req,
-    res,
-    auditCapture,
-    options: { ...options, trafficSource, requestLane },
-    startedAt,
-    traceId,
-    clientIp,
-    endpoint,
-    requestSnapshot,
-    signal: abortController.signal
-  })
+  let preflight: Awaited<ReturnType<typeof prepareOpenAIGatewayDispatchContext>>
+  try {
+    preflight = await prepareOpenAIGatewayDispatchContext({
+      req,
+      res,
+      auditCapture,
+      options: { ...options, trafficSource, requestLane },
+      startedAt,
+      traceId,
+      clientIp,
+      endpoint,
+      requestSnapshot,
+      signal: abortController.signal
+    })
+  } catch (error) {
+    auditCapture.cancel()
+    throw error
+  }
   if (!preflight) {
+    auditCapture.cancel()
     return
   }
   let currentPreflight = preflight
@@ -1127,6 +1134,7 @@ export async function handleOpenAIGatewayRequest(
   } finally {
     speedFirstCutoverReservation?.release()
     releaseClientIpSlot()
+    auditCapture.cancel()
   }
 }
 

@@ -19,6 +19,7 @@ import {
 import { gatewayProtocolClientErrorProtocolForRequest } from '../protocols/registry.js'
 import type { UsageFailureAttribution } from '../../../storage/repositories.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
+import { trackGatewayFailureUsageFinalization } from '../usage/failure-finalization.service.js'
 
 interface SendGatewayFailureResponseInput {
   req: Request
@@ -70,7 +71,7 @@ export async function sendGatewayFailureResponse(input: SendGatewayFailureRespon
     errorMessage: audit.errorMessage ?? responsePayload.error.message
   })
   if (recordUsage) {
-    void httpCompletion.wait().then(async (completedAtMs) => {
+    const usageFinalization = httpCompletion.wait().then(async (completedAtMs) => {
       await recordGatewayFailure(req, usageContext, {
         statusCode,
         startedAt,
@@ -88,6 +89,7 @@ export async function sendGatewayFailureResponse(input: SendGatewayFailureRespon
         errorMessage: error instanceof Error ? error.message : String(error)
       }, '网关错误响应已返回客户端，但使用记录异步收尾失败')
     })
+    trackGatewayFailureUsageFinalization(usageFinalization)
   }
 }
 

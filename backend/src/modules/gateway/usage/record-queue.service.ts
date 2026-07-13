@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import { nowIso } from '../../../storage/database.js'
-import { createUsageRecordsBatch, createUsageRecordsBatchAsync, type UsageRecordInput } from '../../../storage/repositories.js'
+import {
+  createUsageRecordsBatch,
+  createUsageRecordsBatchAsync,
+  freezeUsageRecordPricingFactsAsync,
+  type UsageRecordInput
+} from '../../../storage/repositories.js'
 import { generateUsageRecordId } from '../../../storage/usage-record-shards.js'
 import { closeUsageRecordWriterPool, getUsageRecordWriterPoolRuntime, usageRecordWriterPoolEnabled } from '../../../storage/usage-record-writer-pool.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
@@ -63,7 +68,8 @@ interface UsageRecordFlushOptions {
 export async function enqueueUsageRecord(input: UsageRecordInput): Promise<void> {
   const queuedInput = normalizeUsageRecordInput(input)
   if (shouldEnqueueUsageRecordToRedisStream()) {
-    await enqueueUsageRecordToRedisStream(queuedInput).catch(scheduleProcessFatalError)
+    const frozenInput = await freezeUsageRecordPricingFactsAsync(queuedInput)
+    await enqueueUsageRecordToRedisStream(frozenInput).catch(scheduleProcessFatalError)
     return
   }
   if (shouldDispatchUsageRecordToIngestWorker()) {

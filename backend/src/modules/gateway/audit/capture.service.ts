@@ -172,6 +172,7 @@ export class AuditCaptureContext {
   private httpCompletedAtMs?: number
   private pendingFinalizeInput?: FinalizeAuditInput
   private releaseHttpCompletionListener?: () => void
+  private activeCaptureRegistered = false
 
   constructor(input: AuditCaptureContextInput) {
     const settings = readAuditLogSettings()
@@ -193,8 +194,6 @@ export class AuditCaptureContext {
     if (!this.enabled) {
       return
     }
-    activeAuditCaptureCount += 1
-    this.releaseHttpCompletionListener = this.httpCompletion?.onCompleted(this.markHttpCompleted)
     this.gatewayContext.trafficSource = this.trafficSource
     if (this.metadataOnly) {
       this.addPayload({
@@ -206,11 +205,12 @@ export class AuditCaptureContext {
         }),
         contentType: 'application/json; audit=gateway-metadata'
       })
-      return
-    }
-    if (this.shouldCaptureSuccessPayloads()) {
+    } else if (this.shouldCaptureSuccessPayloads()) {
       this.addClientRequestPayload()
     }
+    activeAuditCaptureCount += 1
+    this.activeCaptureRegistered = true
+    this.releaseHttpCompletionListener = this.httpCompletion?.onCompleted(this.markHttpCompleted)
   }
 
   bindContext(context: AuditGatewayContext): void {
@@ -423,6 +423,13 @@ export class AuditCaptureContext {
     }
   }
 
+  cancel(): void {
+    if (this.finalized) return
+    this.finalized = true
+    this.pendingFinalizeInput = undefined
+    this.releaseActiveCapture()
+  }
+
   private readonly markHttpCompleted = (completedAtMs: number): void => {
     if (this.httpCompletedAtMs !== undefined) return
     this.httpCompletedAtMs = completedAtMs
@@ -435,9 +442,7 @@ export class AuditCaptureContext {
     const input = this.pendingFinalizeInput
     if (!input) return
     this.pendingFinalizeInput = undefined
-    activeAuditCaptureCount = Math.max(0, activeAuditCaptureCount - 1)
-    this.releaseHttpCompletionListener?.()
-    this.releaseHttpCompletionListener = undefined
+    this.releaseActiveCapture()
 
     const endedAtMs = Date.now()
     const clientAborted = this.clientAborted && !input.success
@@ -534,6 +539,14 @@ export class AuditCaptureContext {
       sampleReason: auditLog.sampleReason
     }, '网关审计捕获已完成，准备投递')
     enqueueAuditLog(auditLog)
+  }
+
+  private releaseActiveCapture(): void {
+    if (!this.activeCaptureRegistered) return
+    this.activeCaptureRegistered = false
+    activeAuditCaptureCount = Math.max(0, activeAuditCaptureCount - 1)
+    this.releaseHttpCompletionListener?.()
+    this.releaseHttpCompletionListener = undefined
   }
 
   private addClientRequestPayload(): void {

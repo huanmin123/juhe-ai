@@ -215,6 +215,7 @@
     "test:speed-first-cutover-reservation": "tsx src/scripts/regression/speed-first-cutover-reservation-regression.ts",
     "test:api-key-inflight-quota": "tsx src/scripts/regression/api-key-inflight-quota-regression.ts",
     "test:usage-record-shard-routing": "tsx src/scripts/regression/usage-record-shard-routing-regression.ts",
+    "test:usage-record-request-time-pricing": "tsx src/scripts/regression/usage-record-request-time-pricing-regression.ts",
     "test:usage-record-writer-pool": "tsx src/scripts/regression/usage-record-writer-pool-regression.ts",
     "test:usage-stats-authorization-shard-context": "tsx src/scripts/regression/usage-stats-authorization-shard-context-regression.ts",
     "test:usage-stats-rebuild-shard-cursor": "tsx src/scripts/regression/usage-stats-rebuild-shard-cursor-regression.ts",

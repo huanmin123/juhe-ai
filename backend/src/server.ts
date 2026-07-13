@@ -53,6 +53,10 @@ import {
   mountAccountHealthCheckDispatchBridge
 } from './modules/internal-api/account-health-check-dispatch.routes.js'
 import { stopModelCheckTokenWorker } from './modules/model-checks/model-checks-token-worker.service.js'
+import {
+  getPendingGatewayFailureUsageFinalizationCount,
+  waitForGatewayFailureUsageFinalizationsIdle
+} from './modules/gateway/usage/failure-finalization.service.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -456,17 +460,22 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
 
   try {
     const httpClosed = await closeHttpServer(httpServer, httpShutdownGraceMs)
-    const captureIdle = await waitForActiveAuditCapturesIdle(8_000)
+    const [failureUsageIdle, captureIdle] = await Promise.all([
+      waitForGatewayFailureUsageFinalizationsIdle(8_000),
+      waitForActiveAuditCapturesIdle(8_000)
+    ])
     const dispatchIdle = await waitForAuditLogServerDispatchIdle(8_000)
     const ingestAuditIdle = await waitForIngestAuditDrain(5_000)
-    if (!httpClosed || !captureIdle || !dispatchIdle || !ingestAuditIdle) {
+    if (!httpClosed || !failureUsageIdle || !captureIdle || !dispatchIdle || !ingestAuditIdle) {
       logger.warn({
         event: 'server_shutdown_drain_incomplete',
         httpClosed,
+        failureUsageIdle,
         captureIdle,
         dispatchIdle,
         ingestAuditIdle,
         activeAuditCaptureCount: getActiveAuditCaptureCount(),
+        pendingFailureUsageFinalizationCount: getPendingGatewayFailureUsageFinalizationCount(),
         pendingAuditDispatchCount: getAuditLogServerDispatchPendingCount(),
         auditLogTransport: getAuditLogTransportRuntime()
       }, '服务退出前部分请求或审计任务未在时限内排空')

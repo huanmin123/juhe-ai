@@ -444,9 +444,14 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.match(functionBody(usageRecordsSource, 'recordHybridScoringAttempt'), /await enqueueUsageRecord/, '高性能混合评分使用记录必须等待 Redis Stream 接收')
   assert.match(functionBody(usageRecordsSource, 'recordGatewayFailure'), /await enqueueUsageRecord/, '高性能网关失败使用记录必须等待 Redis Stream 接收')
 
+  const usageRecordQueueSource = source('modules/gateway/usage/record-queue.service.ts')
+  assert.match(functionBody(usageRecordQueueSource, 'enqueueUsageRecord'), /shouldEnqueueUsageRecordToRedisStream\(\)[\s\S]*await freezeUsageRecordPricingFactsAsync\(queuedInput\)[\s\S]*enqueueUsageRecordToRedisStream\(frozenInput\)/, '高性能使用记录必须在 Redis Stream 入队前异步固化请求时计价事实')
+  assert.doesNotMatch(functionBody(usageRecordQueueSource, 'enqueueUsageRecord'), /buildCatalogCostBreakdown\(/, '高性能使用记录请求路径不得同步扫描目录生成计价快照')
+
   const usageRecordsRepositorySource = source('storage/usage-records.repository.ts')
   assert.match(usageRecordsRepositorySource, /estimateCatalogCostUsdAsync/, 'PostgreSQL 使用记录写入必须使用异步模型目录补算成本')
   assert.match(functionBody(usageRecordsRepositorySource, 'createUsageRecordsBatchPostgres'), /await enrichUsageRecordPricingAsync\(inputs\)[\s\S]*buildUsageRecordBatchWritePlan\(enrichedInputs/, 'PostgreSQL 使用记录写入必须先异步补齐 pricingModel/costUsd，再生成写入计划')
+  assert.match(functionBody(usageRecordsRepositorySource, 'enrichSingleUsageRecordPricingAsync'), /input\.pricingSnapshot !== undefined\) return input/, 'Redis consumer 不得用未来目录覆盖已固化计价快照')
 
   const auditCaptureSource = source('modules/gateway/audit/capture.service.ts')
   assert.match(functionBody(auditCaptureSource, 'auditModelAccounting'), /runtimeConfig\.cacheDriver !== 'redis'[\s\S]*resolveCatalogPricingModel/, '高性能审计尝试记录不能同步读取模型目录解析 pricingModel')

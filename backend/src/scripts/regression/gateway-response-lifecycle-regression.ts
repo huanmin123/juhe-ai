@@ -19,6 +19,7 @@ const { observeGatewayHttpCompletion } = await import('../../modules/gateway/aud
 const { sendGatewayFailureResponse } = await import('../../modules/gateway/response/failure-response.js')
 const { gatewayErrorPayload } = await import('../../modules/gateway/response/responses.js')
 const usageRecordQueue = await import('../../modules/gateway/usage/record-queue.service.js')
+const failureUsageFinalization = await import('../../modules/gateway/usage/failure-finalization.service.js')
 
 class MockResponse extends EventEmitter {
   destroyed = false
@@ -152,6 +153,7 @@ await sendGatewayFailureResponse({
 assert.equal((failureResponse as unknown as MockResponse).statusCode, 503, '失败响应必须先写给客户端')
 assert.deepEqual(finalizeOrder, ['response_sent_before_audit_finalize'], '审计 finalize 必须发生在错误响应写出之后')
 assert.equal(usageRecordQueue.pendingUsageRecordCount(), 0, 'HTTP 尚未 finish/close 时不得提前写入失败使用记录')
+assert.equal(failureUsageFinalization.getPendingGatewayFailureUsageFinalizationCount(), 1, '等待 HTTP finish 的失败 usage 收尾必须登记到统一 pending 集合')
 await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 20))
 assert.equal(usageRecordQueue.pendingUsageRecordCount(), 0, '使用记录异步收尾等待不得反向阻塞或延迟客户端错误响应')
 
@@ -159,6 +161,8 @@ const finishWindowStart = Date.now()
 failureResponse.emit('finish')
 const finishWindowEnd = Date.now()
 await waitFor(() => usageRecordQueue.pendingUsageRecordCount() === 1)
+assert.equal(await failureUsageFinalization.waitForGatewayFailureUsageFinalizationsIdle(2_000), true, 'HTTP finish 后失败 usage 收尾应在有界时间内排空')
+assert.equal(failureUsageFinalization.getPendingGatewayFailureUsageFinalizationCount(), 0, '失败 usage 收尾完成后必须清理 pending 登记')
 const queuedFailureUsage = usageRecordQueue.peekPendingUsageRecordForTest()
 assert(queuedFailureUsage, 'HTTP finish 后应异步投递失败使用记录')
 const usageCompletedAtMs = Date.parse(queuedFailureUsage.createdAt ?? '')
