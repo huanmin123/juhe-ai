@@ -7,8 +7,11 @@ export async function initializeAcceptedChatTurn<T>(input: {
   } catch (error) {
     try {
       await input.failAcceptedTurn()
-    } catch {
-      // Preserve the initialization error for the route's existing error handler.
+    } catch (finalizationError) {
+      throw new AggregateError(
+        [error, finalizationError],
+        '聊天轮次初始化失败，且终结失败'
+      )
     }
     throw error
   }

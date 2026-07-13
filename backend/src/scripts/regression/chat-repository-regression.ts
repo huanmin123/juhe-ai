@@ -290,4 +290,19 @@ assert.deepEqual(initializationMessages.map((message) => [message.role, message.
   ['assistant', 'failed', 'chat_initialization_failed']
 ])
 
+const initializationError = new Error('初始化读取失败')
+const finalizationError = new Error('终结写入失败')
+await assert.rejects(
+  initializeAcceptedChatTurn({
+    initialize: async () => { throw initializationError },
+    failAcceptedTurn: async () => { throw finalizationError }
+  }),
+  (error) => error instanceof AggregateError
+    && error.message === '聊天轮次初始化失败，且终结失败'
+    && error.errors.length === 2
+    && error.errors[0] === initializationError
+    && error.errors[1] === finalizationError,
+  '初始化与终结同时失败时必须保留两个原始错误供外层日志记录'
+)
+
 console.log('AI 问答 repository 回归通过')
