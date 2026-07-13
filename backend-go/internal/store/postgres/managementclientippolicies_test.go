@@ -228,8 +228,8 @@ func TestManagementClientIPPolicyStoreWritesUTCAndMapsSummary(t *testing.T) {
 			Status:                   "active",
 			Reason:                   pgtype.Text{String: reason, Valid: true},
 			CreatedBySystemAccountID: "sys_admin",
-			CreatedAt:                "2026-07-12T08:30:00.123456789Z",
-			UpdatedAt:                "2026-07-12T08:30:00.123456789Z",
+			CreatedAt:                "2026-07-12T08:30:00.123Z",
+			UpdatedAt:                "2026-07-12T08:30:00.123Z",
 		},
 		disableAllCount:       2,
 		disableAllowlistCount: 1,
@@ -244,7 +244,7 @@ func TestManagementClientIPPolicyStoreWritesUTCAndMapsSummary(t *testing.T) {
 	if err != nil || count != 2 {
 		t.Fatalf("disable all count=%d error=%v", count, err)
 	}
-	if q.disableAllArg.DisabledAt != "2026-07-12T08:30:00.123456789Z" ||
+	if q.disableAllArg.DisabledAt != "2026-07-12T08:30:00.123Z" ||
 		q.disableAllArg.UpdatedAt != q.disableAllArg.DisabledAt ||
 		q.disableAllArg.DisabledBySystemAccountID != "sys_admin" ||
 		q.disableAllArg.DisabledReason != "被新的白名单策略替换" {
@@ -269,15 +269,15 @@ func TestManagementClientIPPolicyStoreWritesUTCAndMapsSummary(t *testing.T) {
 		summary.PolicyType != port.ManagementClientIPPolicyTypeAllowlist ||
 		summary.Status != port.ManagementClientIPPolicyStatusActive ||
 		summary.Reason == nil || *summary.Reason != reason ||
-		!summary.CreatedAt.Equal(now.UTC()) ||
-		!summary.UpdatedAt.Equal(now.UTC()) ||
+		!summary.CreatedAt.Equal(now.UTC().Truncate(time.Millisecond)) ||
+		!summary.UpdatedAt.Equal(now.UTC().Truncate(time.Millisecond)) ||
 		summary.ExpiresAt != nil ||
 		summary.DisabledAt != nil ||
 		summary.DisabledBySystemAccountID != nil ||
 		summary.DisabledReason != nil {
 		t.Fatalf("allowlist summary=%+v", summary)
 	}
-	if q.insertArg.CreatedAt != "2026-07-12T08:30:00.123456789Z" ||
+	if q.insertArg.CreatedAt != "2026-07-12T08:30:00.123Z" ||
 		q.insertArg.UpdatedAt != q.insertArg.CreatedAt ||
 		!q.insertArg.Reason.Valid || q.insertArg.Reason.String != reason {
 		t.Fatalf("insert arg=%+v", q.insertArg)
@@ -369,9 +369,17 @@ type managementClientIPPolicyQueriesStub struct {
 	insertErr error
 	insertArg postgresqueries.InsertManagementClientIPAllowlistPolicyParams
 
+	insertBlacklistRow postgresqueries.JuheStatsClientIpPolicy
+	insertBlacklistErr error
+	insertBlacklistArg postgresqueries.InsertManagementClientIPBlacklistPolicyParams
+
 	disableAllowlistCount int64
 	disableAllowlistErr   error
 	disableAllowlistArg   postgresqueries.DisableActiveManagementClientIPAllowlistPoliciesParams
+
+	disableBlacklistCount int64
+	disableBlacklistErr   error
+	disableBlacklistArg   postgresqueries.DisableActiveManagementClientIPBlacklistPoliciesParams
 }
 
 type managementClientIPPolicyTxStub struct {
@@ -418,10 +426,26 @@ func (s *managementClientIPPolicyQueriesStub) InsertManagementClientIPAllowlistP
 	return s.insertRow, s.insertErr
 }
 
+func (s *managementClientIPPolicyQueriesStub) InsertManagementClientIPBlacklistPolicy(
+	_ context.Context,
+	arg postgresqueries.InsertManagementClientIPBlacklistPolicyParams,
+) (postgresqueries.JuheStatsClientIpPolicy, error) {
+	s.insertBlacklistArg = arg
+	return s.insertBlacklistRow, s.insertBlacklistErr
+}
+
 func (s *managementClientIPPolicyQueriesStub) DisableActiveManagementClientIPAllowlistPolicies(
 	_ context.Context,
 	arg postgresqueries.DisableActiveManagementClientIPAllowlistPoliciesParams,
 ) (int64, error) {
 	s.disableAllowlistArg = arg
 	return s.disableAllowlistCount, s.disableAllowlistErr
+}
+
+func (s *managementClientIPPolicyQueriesStub) DisableActiveManagementClientIPBlacklistPolicies(
+	_ context.Context,
+	arg postgresqueries.DisableActiveManagementClientIPBlacklistPoliciesParams,
+) (int64, error) {
+	s.disableBlacklistArg = arg
+	return s.disableBlacklistCount, s.disableBlacklistErr
 }

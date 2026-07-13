@@ -44,7 +44,7 @@ func TestServiceAllowlistNormalizesInputAndCommitsBeforeInvalidation(t *testing.
 				IPHash:               strings.Repeat("a", 64),
 				ActorSystemAccountID: "sys_admin",
 				Reason:               "被新的白名单策略替换",
-				Now:                  now.UTC(),
+				Now:                  now.UTC().Truncate(time.Millisecond),
 			}
 			if !reflect.DeepEqual(input, want) {
 				t.Fatalf("disable input = %+v, want %+v", input, want)
@@ -55,7 +55,7 @@ func TestServiceAllowlistNormalizesInputAndCommitsBeforeInvalidation(t *testing.
 			if input.ID != "ip_policy_fixed" ||
 				input.IPHash != strings.Repeat("a", 64) ||
 				input.ActorSystemAccountID != "sys_admin" ||
-				!input.Now.Equal(now.UTC()) ||
+				!input.Now.Equal(now.UTC().Truncate(time.Millisecond)) ||
 				input.Now.Location() != time.UTC ||
 				input.Reason == nil ||
 				*input.Reason != "可信来源" {
@@ -107,8 +107,8 @@ func TestServiceAllowlistNormalizesInputAndCommitsBeforeInvalidation(t *testing.
 		result.Reason == nil ||
 		*result.Reason != "可信来源" ||
 		result.CreatedBySystemAccountID != "sys_admin" ||
-		result.CreatedAt != "2026-07-12T08:30:00.123456789Z" ||
-		result.UpdatedAt != "2026-07-12T08:30:00.123456789Z" ||
+		result.CreatedAt != "2026-07-12T08:30:00.123Z" ||
+		result.UpdatedAt != "2026-07-12T08:30:00.123Z" ||
 		result.ExpiresAt != nil ||
 		result.DisabledAt != nil ||
 		result.DisabledBySystemAccountID != nil ||
@@ -206,7 +206,7 @@ func TestServiceUnallowlistLocksBestEffortAndAcceptsMissingRegistryAndZeroRows(t
 				IPHash:               strings.Repeat("c", 64),
 				ActorSystemAccountID: "sys_admin",
 				Reason:               "管理员解除策略",
-				Now:                  now.UTC(),
+				Now:                  now.UTC().Truncate(time.Millisecond),
 			}
 			if !reflect.DeepEqual(input, want) {
 				t.Fatalf("disable allowlist input = %+v, want %+v", input, want)
@@ -554,7 +554,9 @@ type callbackStore struct {
 	lock             func(context.Context, string) (port.ManagementClientIPRegistryRow, bool, error)
 	disableAll       func(context.Context, port.ManagementClientIPPolicyDisableInput) (int64, error)
 	insertAllowlist  func(context.Context, port.ManagementClientIPAllowlistCreateInput) (port.ManagementClientIPPolicySummary, error)
+	insertBlacklist  func(context.Context, port.ManagementClientIPBlacklistCreateInput) (port.ManagementClientIPPolicySummary, error)
 	disableAllowlist func(context.Context, port.ManagementClientIPPolicyDisableInput) (int64, error)
+	disableBlacklist func(context.Context, port.ManagementClientIPPolicyDisableInput) (int64, error)
 }
 
 func (s *callbackStore) LockManagementClientIPRegistry(
@@ -590,6 +592,17 @@ func (s *callbackStore) InsertManagementClientIPAllowlistPolicy(
 	return s.insertAllowlist(ctx, input)
 }
 
+func (s *callbackStore) InsertManagementClientIPBlacklistPolicy(
+	ctx context.Context,
+	input port.ManagementClientIPBlacklistCreateInput,
+) (port.ManagementClientIPPolicySummary, error) {
+	appendEvent(s.events, "insert_blacklist")
+	if s.insertBlacklist == nil {
+		panic("unexpected InsertManagementClientIPBlacklistPolicy call")
+	}
+	return s.insertBlacklist(ctx, input)
+}
+
 func (s *callbackStore) DisableActiveManagementClientIPAllowlistPolicies(
 	ctx context.Context,
 	input port.ManagementClientIPPolicyDisableInput,
@@ -599,6 +612,17 @@ func (s *callbackStore) DisableActiveManagementClientIPAllowlistPolicies(
 		panic("unexpected DisableActiveManagementClientIPAllowlistPolicies call")
 	}
 	return s.disableAllowlist(ctx, input)
+}
+
+func (s *callbackStore) DisableActiveManagementClientIPBlacklistPolicies(
+	ctx context.Context,
+	input port.ManagementClientIPPolicyDisableInput,
+) (int64, error) {
+	appendEvent(s.events, "disable_blacklist")
+	if s.disableBlacklist == nil {
+		panic("unexpected DisableActiveManagementClientIPBlacklistPolicies call")
+	}
+	return s.disableBlacklist(ctx, input)
 }
 
 type callbackInvalidator struct {

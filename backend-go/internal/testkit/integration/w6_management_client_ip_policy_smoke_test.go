@@ -768,6 +768,10 @@ type w6ManagementClientIPPolicyConcurrentResult struct {
 	recorder *httptest.ResponseRecorder
 }
 
+func formatW6ManagementClientIPPolicyTime(value time.Time) string {
+	return value.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
+}
+
 func waitW6ManagementClientIPPolicyBarrier(
 	t *testing.T,
 	ctx context.Context,
@@ -908,7 +912,7 @@ func insertW6ManagementClientIPPolicyFixtures(
 		sessionCreatedAt,
 	)
 
-	timestamp := now.Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	timestamp := formatW6ManagementClientIPPolicyTime(now.Add(-time.Hour))
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO juhe_stats.client_ip_registry (
 			ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version,
@@ -1049,8 +1053,8 @@ func assertW6ManagementClientIPPolicyAllowlistSummary(
 		*policy.Reason != wantReason ||
 		policy.ExpiresAt != nil ||
 		policy.CreatedBySystemAccountID != w6ManagementClientIPPolicyAdminID ||
-		policy.CreatedAt != now.UTC().Format(time.RFC3339Nano) ||
-		policy.UpdatedAt != now.UTC().Format(time.RFC3339Nano) ||
+		policy.CreatedAt != formatW6ManagementClientIPPolicyTime(now) ||
+		policy.UpdatedAt != formatW6ManagementClientIPPolicyTime(now) ||
 		policy.DisabledAt != nil ||
 		policy.DisabledBySystemAccountID != nil ||
 		policy.DisabledReason != nil {
@@ -1123,7 +1127,7 @@ func assertW6ManagementClientIPPolicyInitialReplacement(
 	}
 	if initialStatus != "disabled" ||
 		!initialDisabledAt.Valid ||
-		initialDisabledAt.String != now.UTC().Format(time.RFC3339Nano) ||
+		initialDisabledAt.String != formatW6ManagementClientIPPolicyTime(now) ||
 		!initialDisabledBy.Valid ||
 		initialDisabledBy.String != w6ManagementClientIPPolicyAdminID ||
 		!initialDisabledReason.Valid ||
@@ -1188,7 +1192,7 @@ func assertW6ManagementClientIPPolicyDisabled(
 	}
 	if status != "disabled" ||
 		!disabledAt.Valid ||
-		disabledAt.String != now.UTC().Format(time.RFC3339Nano) ||
+		disabledAt.String != formatW6ManagementClientIPPolicyTime(now) ||
 		!disabledBy.Valid ||
 		disabledBy.String != w6ManagementClientIPPolicyAdminID ||
 		!disabledReason.Valid ||
@@ -1292,7 +1296,7 @@ func assertW6ManagementClientIPPolicyConcurrentRows(
 		case "disabled":
 			disabledCount++
 			if !disabledAt.Valid ||
-				disabledAt.String != now.UTC().Format(time.RFC3339Nano) ||
+				disabledAt.String != formatW6ManagementClientIPPolicyTime(now) ||
 				!disabledBy.Valid ||
 				disabledBy.String != w6ManagementClientIPPolicyAdminID ||
 				!disabledReason.Valid ||
