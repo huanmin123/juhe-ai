@@ -12,7 +12,7 @@
         :ref="measureElement"
         :data-index="item.index"
         class="message-row"
-        :class="`message-row-${messages[item.index].role}`"
+        :class="[`message-row-${messages[item.index].role}`, { 'is-editing-turn': messages[item.index].turnId === editingTurnId }]"
         :style="{ transform: `translateY(${item.start}px)` }"
       >
         <div class="message-avatar" aria-hidden="true">
@@ -23,6 +23,7 @@
           <div class="message-meta">
             <span>{{ messages[item.index].role === 'user' ? '我' : messages[item.index].model }}</span>
             <a-tag v-if="messages[item.index].status !== 'completed'" :color="statusColor(messages[item.index].status)">{{ statusLabel(messages[item.index].status) }}</a-tag>
+            <a-button v-if="messages[item.index].id === editableMessageId" type="text" size="small" aria-label="编辑这条消息" @click="emit('edit-message', messages[item.index])">编辑</a-button>
           </div>
           <ChatMarkdown :content="messages[item.index].contentText || (messages[item.index].status === 'streaming' ? '正在思考…' : '')" />
           <ChatToolEvent v-if="messages[item.index].role === 'assistant' && (messages[item.index].toolEvents?.length || messages[item.index].reasoningText || messages[item.index].contentBlocks?.length)" :message="messages[item.index]" />
@@ -41,8 +42,8 @@ import ChatMarkdown from './ChatMarkdown.vue'
 import ChatToolEvent from './ChatToolEvent.vue'
 import { chatDistanceFromBottom, shouldBreakChatFollowOnWheel, shouldFollowChatBottom, shouldShowChatJumpButton } from './chatScrollPolicy'
 
-const props = defineProps<{ messages: ChatMessage[]; loading: boolean }>()
-const emit = defineEmits<{ (event: 'near-top'): void; (event: 'jump-visibility', visible: boolean): void }>()
+const props = defineProps<{ messages: ChatMessage[]; loading: boolean; editableMessageId?: string; editingTurnId?: string }>()
+const emit = defineEmits<{ (event: 'near-top'): void; (event: 'jump-visibility', visible: boolean): void; (event: 'edit-message', message: ChatMessage): void }>()
 const scrollElement = ref<HTMLElement>()
 const virtualSpace = ref<HTMLElement>()
 const followLatest = ref(true)
@@ -99,6 +100,7 @@ defineExpose({ scrollToBottom, followStream, captureScrollAnchor, restoreScrollA
 .message-row { position: absolute; top: 0; left: 0; width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 14px clamp(14px, 3vw, 36px); }
 .message-row-user { justify-content: flex-end; }
 .message-row-assistant { justify-content: flex-start; }
+.message-row.is-editing-turn { opacity: .42; }
 .message-row-user .message-avatar { order: 2; }
 .message-row-user .message-body { order: 1; }
 .message-avatar { width: 32px; height: 32px; display: grid; place-items: center; color: #475569; background: #fff; border: 1px solid #dfe5ec; border-radius: 6px; }

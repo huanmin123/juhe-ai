@@ -18,8 +18,13 @@ export function parseChatSseBlock(block: string): ChatStreamEvent | undefined {
   return undefined
 }
 
-export function applyChatStreamEvent(messages: ChatMessage[], event: ChatStreamEvent): void {
+export function applyChatStreamEvent(messages: ChatMessage[], event: ChatStreamEvent, options?: { replaceTurnId?: string }): void {
   if (event.type === 'message.started') {
+    if (options?.replaceTurnId) {
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (messages[index]?.turnId === options.replaceTurnId) messages.splice(index, 1)
+      }
+    }
     const known = new Set(messages.map((message) => message.id))
     if (!known.has(event.data.userMessage.id)) messages.push(event.data.userMessage)
     if (!known.has(event.data.assistantMessage.id)) messages.push(event.data.assistantMessage)

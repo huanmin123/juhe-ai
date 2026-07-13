@@ -13,9 +13,21 @@ export const chatApi = {
   deleteConversation: (conversationId: string) => http.delete(`/my-chat/conversations/${conversationId}`)
 }
 
+export class ChatStreamHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string | undefined,
+    message: string
+  ) {
+    super(message)
+    this.name = 'ChatStreamHttpError'
+  }
+}
+
 export async function streamChatMessage(input: {
   conversationId: string
   clientMessageId: string
+  replaceTurnId?: string
   content: string
   contentBlocks?: Array<{ type: 'input_text' | 'input_image'; text?: string; dataUrl?: string }>
   model: string
@@ -30,10 +42,14 @@ export async function streamChatMessage(input: {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
-    body: JSON.stringify({ clientMessageId: input.clientMessageId, content: input.content, contentBlocks: input.contentBlocks, model: input.model, reasoningEffort: input.reasoningEffort, serviceTier: input.serviceTier, contextWindowTokens: input.contextWindowTokens }),
+    body: JSON.stringify({ clientMessageId: input.clientMessageId, replaceTurnId: input.replaceTurnId, content: input.content, contentBlocks: input.contentBlocks, model: input.model, reasoningEffort: input.reasoningEffort, serviceTier: input.serviceTier, contextWindowTokens: input.contextWindowTokens }),
     signal: input.signal
   })
-  if (!response.ok || !response.body) throw new Error(await readFetchErrorMessage(response, path))
+  if (!response.ok || !response.body) {
+    const message = await readFetchErrorMessage(response.clone(), path)
+    const code = await readChatErrorCode(response)
+    throw new ChatStreamHttpError(response.status, code, message)
+  }
   const reader = response.body.getReader()
   const decoder = new TextDecoder('utf-8', { fatal: true })
   let buffer = ''
@@ -55,6 +71,15 @@ export async function streamChatMessage(input: {
     if (event) input.onEvent(event)
   } finally {
     reader.releaseLock()
+  }
+}
+
+async function readChatErrorCode(response: Response): Promise<string | undefined> {
+  try {
+    const payload = JSON.parse(await response.text()) as { code?: unknown }
+    return typeof payload.code === 'string' && payload.code.trim() ? payload.code : undefined
+  } catch {
+    return undefined
   }
 }
 

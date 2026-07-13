@@ -164,13 +164,80 @@ try {
     assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream'], 'AI 问答必须经过网关并使用 AI 账户凭据访问上游')
   }
 
-  const stored = await apiJson<{ data: Array<{ role: string; status: string; contentText: string; contentBlocks: Array<{ type: string; id?: string; status?: string }> }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
+  const stored = await apiJson<{ data: Array<{ id: string; turnId: string; sequenceNo: number; clientMessageId?: string; role: string; status: string; contentText: string; contentBlocks: Array<{ type: string; id?: string; status?: string; inputType?: string; order?: number }> }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
   assert.deepEqual(stored.data.map((item) => [item.role, item.status]), [['user', 'completed'], ['assistant', 'completed']])
   if (!realCredential) {
     assert.deepEqual(stored.data[1].contentBlocks.map((block) => [block.type, block.id, block.status]), [['tool_call', 'search_1', 'completed']])
     assert.match(stored.data[1].contentText, /\|项目\|结果\|/)
     assert.match(stored.data[1].contentText, /\$E=mc\^2\$/)
     assert.match(stored.data[1].contentText, /```mermaid/)
+
+    const outOfRangeCursor = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/messages?beforeSequenceNo=2147483648`, { headers: { cookie } })
+    const outOfRangePayload = parseOptionalJson(await outOfRangeCursor.text())
+    assert.deepEqual([outOfRangeCursor.status, outOfRangePayload?.code], [400, 'chat_invalid_request'], '消息游标超过 PostgreSQL int4 必须在 HTTP 边界拒绝')
+
+    const upstreamCallsBeforeConflict = upstreamAuthorizations.length
+    const longReplaceTurnId = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({ clientMessageId: 'mock-client-long-replace', replaceTurnId: 'x'.repeat(101), content: '过长替换参数', model: testModel })
+    })
+    const longReplacePayload = parseOptionalJson(await longReplaceTurnId.text())
+    assert.deepEqual([longReplaceTurnId.status, longReplacePayload?.code, upstreamAuthorizations.length], [400, 'chat_invalid_request', upstreamCallsBeforeConflict], 'replaceTurnId 最多 100 字符且校验失败不能调用上游')
+    const replaceConflict = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({ clientMessageId: 'mock-client-replace-conflict', replaceTurnId: 'turn_missing', content: '冲突草稿', contentBlocks: [{ type: 'input_text', text: '冲突草稿' }], model: testModel })
+    })
+    const replaceConflictPayload = parseOptionalJson(await replaceConflict.text())
+    assert.deepEqual([replaceConflict.status, replaceConflictPayload?.code, upstreamAuthorizations.length], [409, 'chat_replace_conflict', upstreamCallsBeforeConflict], '替换冲突必须返回稳定机器码且不能调用上游')
+
+    const originalTurnId = stored.data[0]!.turnId
+    const originalSequenceNumbers = stored.data.map((item) => item.sequenceNo)
+    const upstreamCallsBeforeReplace = upstreamAuthorizations.length
+    const replaceResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({
+        clientMessageId: 'mock-client-replace-success',
+        replaceTurnId: originalTurnId,
+        content: '修正后的 Markdown 问题',
+        contentBlocks: [{ type: 'input_text', text: '修正后的 Markdown 问题' }],
+        model: testModel
+      })
+    })
+    const replaceStream = await replaceResponse.text()
+    assert.equal(replaceResponse.status, 200, replaceStream)
+    assert.match(replaceStream, /event: message\.started/)
+    assert.match(replaceStream, /event: message\.completed/)
+    assert.equal(upstreamAuthorizations.length, upstreamCallsBeforeReplace + 1, '成功替换只能调用一次上游')
+    const replaced = await apiJson<typeof stored>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
+    assert.equal(replaced.data.length, 2, '替换后旧轮次必须完整消失')
+    assert.equal(replaced.data.some((item) => item.turnId === originalTurnId), false)
+    assert.deepEqual(replaced.data.map((item) => item.sequenceNo), originalSequenceNumbers, '新轮次必须复用旧轮次的两个序号')
+    assert.equal(replaced.data[0]?.contentText, '修正后的 Markdown 问题')
+    assert.deepEqual(replaced.data[0]?.contentBlocks, [{ type: 'input_marker', inputType: 'input_text', order: 0 }])
+
+    const imageConversation = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
+    const imageDataUrl = 'data:image/png;base64,iVBORw0KGgo='
+    const imageResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${imageConversation.data.id}/stream`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({
+        clientMessageId: 'mock-client-image-markers',
+        content: '图片前\n[图片]\n图片后',
+        contentBlocks: [
+          { type: 'input_text', text: '图片前' },
+          { type: 'input_image', dataUrl: imageDataUrl },
+          { type: 'input_text', text: '图片后' }
+        ],
+        model: testModel
+      })
+    })
+    assert.equal(imageResponse.status, 200, await imageResponse.text())
+    const imageStored = await apiJson<typeof stored>(baseUrl, `/__aisys__/api/my-chat/conversations/${imageConversation.data.id}/messages`, cookie)
+    assert.deepEqual(imageStored.data[0]?.contentBlocks, [
+      { type: 'input_marker', inputType: 'input_text', order: 0 },
+      { type: 'input_marker', inputType: 'input_image', order: 1 },
+      { type: 'input_marker', inputType: 'input_text', order: 2 }
+    ], '图片轮次只保存顺序标记')
+    assert.equal(JSON.stringify(imageStored.data[0]?.contentBlocks).includes(imageDataUrl), false, '图片 Data URL 不得落库')
   } else {
     assert(stored.data[1].contentText.trim().length > 0, '真实模型必须返回非空中文回答')
   }

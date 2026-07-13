@@ -9,9 +9,22 @@
 
     <main class="chat-main">
       <template v-if="selectedConversation">
-        <ChatMessageList ref="messageList" :messages="messages" :loading="messagesLoading" @near-top="loadOlderMessages" @jump-visibility="showJumpToBottom = $event" />
+        <ChatMessageList
+          ref="messageList"
+          :messages="messages"
+          :loading="messagesLoading"
+          :editable-message-id="generating ? undefined : editableUserMessageId"
+          :editing-turn-id="editingTurn?.turnId"
+          @near-top="loadOlderMessages"
+          @jump-visibility="showJumpToBottom = $event"
+          @edit-message="beginTurnEdit"
+        />
         <footer class="composer-shell">
           <a-tooltip v-if="showJumpToBottom" title="回到底部"><a-button class="jump-bottom-button" shape="circle" aria-label="回到底部" @click="messageList?.scrollToBottom()"><ArrowDownOutlined /></a-button></a-tooltip>
+          <div v-if="editingTurn" class="turn-editing-bar">
+            <span>正在修改最近一轮消息</span>
+            <a-button type="link" size="small" :disabled="editingTurn.phase === 'submitting'" @click="cancelTurnEdit">取消编辑</a-button>
+          </div>
           <AIComposer
             ref="composer"
             v-model="selectedModel"
@@ -71,14 +84,33 @@
 import { ArrowDownOutlined, MessageOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { chatApi, streamChatMessage } from '@/api/domains/chat'
+import { chatApi, ChatStreamHttpError, streamChatMessage } from '@/api/domains/chat'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { ChatApiKeyOption, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent } from '@/types/domain/chat'
+import type { ChatApiKeyOption, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 import { applyChatStreamEvent } from './chatStream'
+import { beginLatestTurnEdit, resolveChatReconciliationNotice, resolveChatSubmitFailure } from './chatTurnEditing'
+import { reconcileChatSubmission } from './chatTurnReconciliation'
 import ChatMessageList from './ChatMessageList.vue'
 import AIComposer from './composer/AIComposer.vue'
 import type { ChatInputBlock } from './composer/chatComposerDocument'
 import type { JSONContent } from '@tiptap/core'
+
+interface ChatTurnEditingState {
+  conversationId: string
+  turnId: string
+  userMessageId: string
+  assistantMessageId: string
+  content: string
+  displacedDraft: JSONContent
+  phase: 'editing' | 'submitting'
+}
+
+interface ChatRequestContext {
+  readonly conversationId: string
+  readonly clientMessageId: string
+  readonly replaceTurnId?: string
+  readonly snapshot: JSONContent
+}
 
 const conversations = ref<ChatConversation[]>([])
 const apiKeys = ref<ChatApiKeyOption[]>([])
@@ -110,10 +142,15 @@ const detailConversation = ref<ChatConversation>()
 const renameTitle = ref('')
 const messageList = ref<InstanceType<typeof ChatMessageList>>()
 const composer = ref<InstanceType<typeof AIComposer>>()
+const editingTurn = ref<ChatTurnEditingState>()
 let streamController: AbortController | undefined
 
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationId.value))
 const apiKeyOptions = computed(() => apiKeys.value.map((item) => ({ label: item.name, value: item.id })))
+const editableUserMessageId = computed(() => {
+  const candidate = messages.value[messages.value.length - 2]
+  return candidate && beginLatestTurnEdit(messages.value, candidate.id)?.userMessageId
+})
 
 const ConversationPane = defineComponent({
   emits: ['selected'],
@@ -137,6 +174,7 @@ async function loadInitial(): Promise<void> {
 }
 async function selectConversation(id: string): Promise<void> {
   if (generating.value || selectedConversationId.value === id) return
+  await cancelTurnEdit()
   selectedConversationId.value = id
   messagesLoading.value = true
   modelsLoading.value = true
@@ -172,28 +210,141 @@ async function createConversation(): Promise<void> {
   catch (error) { message.error(extractApiErrorMessage(error, '创建对话失败')) }
   finally { creating.value = false }
 }
-async function sendMessage(content: string, snapshot?: JSONContent, blocks?: ChatInputBlock[]): Promise<void> {
+async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatInputBlock[]): Promise<void> {
   const conversation = selectedConversation.value
   const model = selectedModel.value
   if (!conversation || !content.trim() || !model || generating.value) return
+  const activeEdit = editingTurn.value?.conversationId === conversation.id ? editingTurn.value : undefined
+  if (activeEdit) activeEdit.phase = 'submitting'
+  const requestContext: ChatRequestContext = Object.freeze({
+    conversationId: conversation.id,
+    clientMessageId: crypto.randomUUID(),
+    replaceTurnId: activeEdit?.turnId,
+    snapshot: cloneDocument(snapshot)
+  })
   generating.value = true
   messageList.value?.scrollToBottom()
-  streamController = new AbortController()
+  const controller = new AbortController()
+  streamController = controller
+  let streamStarted = false
+  let streamTerminal = false
+  let startedTurnId: string | undefined
   try {
-    await streamChatMessage({ conversationId: conversation.id, clientMessageId: crypto.randomUUID(), content, contentBlocks: blocks?.map((block) => block.type === 'input_image' ? { type: block.type, dataUrl: block.dataUrl } : { type: block.type, text: block.text }), model, reasoningEffort: selectedReasoningEffort.value || undefined, serviceTier: selectedServiceTier.value || undefined, contextWindowTokens: selectedContextWindowTokens.value || undefined, signal: streamController.signal, onEvent: handleStreamEvent })
+    await streamChatMessage({
+      conversationId: requestContext.conversationId,
+      clientMessageId: requestContext.clientMessageId,
+      replaceTurnId: requestContext.replaceTurnId,
+      content,
+      contentBlocks: blocks.map((block) => block.type === 'input_image' ? { type: block.type, dataUrl: block.dataUrl } : { type: block.type, text: block.text }),
+      model,
+      reasoningEffort: selectedReasoningEffort.value || undefined,
+      serviceTier: selectedServiceTier.value || undefined,
+      contextWindowTokens: selectedContextWindowTokens.value || undefined,
+      signal: controller.signal,
+      onEvent: (event) => {
+        if (selectedConversationId.value !== requestContext.conversationId) return
+        if (event.type === 'message.started') {
+          streamStarted = true
+          startedTurnId = event.data.turnId
+          applyChatStreamEvent(messages.value, event, { replaceTurnId: requestContext.replaceTurnId })
+          finishAcceptedTurnEdit(requestContext)
+        } else {
+          applyChatStreamEvent(messages.value, event)
+        }
+        if (event.type === 'message.completed' || event.type === 'message.failed') streamTerminal = true
+        if (event.type === 'message.failed') message.error(event.data.message)
+      }
+    })
+    if (!streamStarted) throw new Error('模型响应缺少开始事件，请刷新后确认消息状态')
+    if (!streamTerminal) throw new Error('模型流已中断，正在确认消息终态')
     const current = conversations.value.find((item) => item.id === conversation.id)
     if (current) { current.lastModel = model; current.lastMessageAt = new Date().toISOString(); const first = messages.value.find((item) => item.role === 'user'); if (current.title === '新对话' && first) current.title = first.contentText.slice(0, 60) }
-  } catch (error) { if (!streamController.signal.aborted) { if (snapshot) composer.value?.restore(snapshot); message.error(extractApiErrorMessage(error, '发送失败')) } }
-  finally { generating.value = false; streamController = undefined }
+  } catch (error) {
+    await handleSubmitFailure(error, requestContext, streamStarted, startedTurnId, controller.signal.aborted)
+  } finally {
+    generating.value = false
+    if (streamController === controller) streamController = undefined
+  }
 }
-function handleStreamEvent(event: ChatStreamEvent): void { applyChatStreamEvent(messages.value, event); if (event.type === 'message.failed') message.error(event.data.message) }
-async function stopGeneration(): Promise<void> { const id = selectedConversationId.value; if (!id) return; try { await chatApi.stop(id) } catch {} finally { streamController?.abort(); generating.value = false; await refreshMessages() } }
-async function refreshMessages(): Promise<void> { const id = selectedConversationId.value; if (id) { messages.value = await chatApi.listMessages(id, { limit: 100 }); hasOlderMessages.value = messages.value.length === 100 } }
+async function stopGeneration(): Promise<void> { const id = selectedConversationId.value; if (!id) return; try { await chatApi.stop(id) } catch {} finally { streamController?.abort() } }
+async function refreshMessages(conversationId = selectedConversationId.value): Promise<ChatMessage[]> {
+  if (!conversationId) return []
+  const latest = await chatApi.listMessages(conversationId, { limit: 100 })
+  if (selectedConversationId.value === conversationId) {
+    messages.value = latest
+    hasOlderMessages.value = latest.length === 100
+  }
+  return latest
+}
 async function removeConversation(id: string): Promise<void> { try { await chatApi.deleteConversation(id); conversations.value = conversations.value.filter((item) => item.id !== id); if (selectedConversationId.value === id) { selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {
   const content = payload.blocks.map((item) => item.type === 'input_image' ? '[图片]' : item.text).join('\n')
   void sendMessage(content, payload.snapshot, payload.blocks)
 }
+function beginTurnEdit(messageItem: ChatMessage): void {
+  if (generating.value || editingTurn.value) return
+  const candidate = beginLatestTurnEdit(messages.value, messageItem.id)
+  const editor = composer.value
+  if (!candidate || !editor || candidate.conversationId !== selectedConversationId.value) return
+  editingTurn.value = {
+    ...candidate,
+    displacedDraft: editor.getSnapshot(),
+    phase: 'editing'
+  }
+  editor.setText(candidate.content)
+  editor.focus()
+}
+async function cancelTurnEdit(): Promise<void> {
+  const current = editingTurn.value
+  if (!current || current.phase === 'submitting') return
+  editingTurn.value = undefined
+  composer.value?.restore(current.displacedDraft)
+}
+function finishAcceptedTurnEdit(request: ChatRequestContext): void {
+  const current = editingTurn.value
+  if (!request.replaceTurnId || current?.turnId !== request.replaceTurnId) return
+  editingTurn.value = undefined
+  composer.value?.restore(current.displacedDraft)
+}
+async function handleSubmitFailure(error: unknown, request: ChatRequestContext, streamStarted: boolean, startedTurnId: string | undefined, silent: boolean): Promise<void> {
+  const replaceConflict = error instanceof ChatStreamHttpError && error.code === 'chat_replace_conflict'
+  let accepted = streamStarted
+  let terminal = false
+  let assistantStatus: ChatMessage['status'] | undefined
+  try {
+    const reconciliation = await reconcileChatSubmission({
+      clientMessageId: request.clientMessageId,
+      acceptedTurnId: startedTurnId,
+      confirmPendingAcceptance: !(error instanceof ChatStreamHttpError) || error.code === 'chat_message_already_exists',
+      listMessages: () => refreshMessages(request.conversationId),
+      stop: async () => { await chatApi.stop(request.conversationId) }
+    })
+    accepted ||= reconciliation.accepted
+    terminal = reconciliation.terminal
+    assistantStatus = reconciliation.assistantStatus
+  } catch {
+  }
+  const resolution = resolveChatSubmitFailure({ streamStarted, accepted, replaceConflict })
+  if (resolution.clearEditing) {
+    if (accepted && !replaceConflict) finishAcceptedTurnEdit(request)
+    else editingTurn.value = undefined
+  } else {
+    const currentEdit = editingTurn.value
+    if (currentEdit && currentEdit.turnId === request.replaceTurnId) currentEdit.phase = 'editing'
+  }
+  if (resolution.restoreSubmittedDraft) composer.value?.restore(request.snapshot)
+  if (replaceConflict) {
+    message.warning('最近一轮已变化，已保留当前草稿，请重新确认后发送')
+    return
+  }
+  const notice = resolveChatReconciliationNotice({ accepted, assistantStatus: terminal ? assistantStatus : 'streaming', silent })
+  if (notice === 'none') return
+  if (notice === 'pending') message.warning('消息已提交，后台仍在结束生成，请稍后刷新会话')
+  else if (notice === 'stopped') message.warning('连接已中断，本轮生成已停止')
+  else if (notice === 'failed') message.error('消息已提交，但模型生成失败')
+  else message.error(extractApiErrorMessage(error, '发送失败'))
+}
+function cloneDocument(document: JSONContent): JSONContent { return JSON.parse(JSON.stringify(document)) as JSONContent }
 function updateMobile(): void { mobile.value = window.innerWidth <= 820 }
 function openConversationMenu(event: MouseEvent, item: ChatConversation): void { event.preventDefault(); conversationMenu.value = { item, x: Math.min(event.clientX, window.innerWidth - 150), y: Math.min(event.clientY, window.innerHeight - 160) } }
 function closeConversationMenu(): void { conversationMenu.value = undefined }
@@ -217,6 +368,7 @@ onBeforeUnmount(() => { window.removeEventListener('resize', updateMobile); wind
 .conversation-panel { min-width: 0; border-right: 1px solid #e2e8f0; background: #f8fafc; }
 .chat-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .composer-shell { position: relative; padding: 12px clamp(12px, 3vw, 28px) 14px; border-top: 1px solid #e2e8f0; background: #fff; }
+.turn-editing-bar { display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 4px 4px; color: #64748b; font-size: 12px; }
 .jump-bottom-button { position: absolute; z-index: 4; top: -46px; left: 50%; color: #475569; background: rgba(255, 255, 255, .96); border-color: #d9e0e8; box-shadow: 0 4px 14px rgba(15, 23, 42, .14); transform: translateX(-50%); }
 .chat-start-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: #64748b; }
 .chat-start-state > :deep(.anticon) { font-size: 36px; color: #94a3b8; }

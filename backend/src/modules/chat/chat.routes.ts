@@ -39,12 +39,17 @@ export const chatRouter = Router()
 
 const messageBodySchema = z.object({
   clientMessageId: z.string().trim().min(1).max(100),
+  replaceTurnId: z.string().trim().min(1).max(100).optional(),
   content: z.string().trim().min(1, '请输入消息').max(196_608, '消息内容过长'),
   contentBlocks: z.array(z.object({ type: z.enum(['input_text', 'input_image']), text: z.string().max(196_608, '文本块内容过长').optional(), dataUrl: z.string().max(14 * 1024 * 1024).optional() })).max(8).optional(),
   model: z.string().trim().min(1, '请选择模型').max(200),
   reasoningEffort: z.enum(chatReasoningEfforts).optional(),
   serviceTier: z.enum(chatServiceTiers).optional(),
   contextWindowTokens: z.number().int().min(16_000).max(2_000_000).optional()
+}).strict()
+const messagesQuerySchema = z.object({
+  beforeSequenceNo: z.preprocess(queryScalar, z.coerce.number().int().min(1).max(2_147_483_647).optional()),
+  limit: z.preprocess(queryScalar, z.coerce.number().int().min(1).max(100).default(50))
 }).strict()
 const createConversationSchema = z.object({ apiKeyId: z.string().trim().min(1, '请选择 API Key') }).strict()
 const updateConversationSchema = z.object({
@@ -100,16 +105,17 @@ chatRouter.post('/conversations', async (req, res, next) => {
 
 chatRouter.get('/conversations/:conversationId/messages', async (req, res, next) => {
   try {
+    const query = messagesQuerySchema.parse(req.query)
     const auth = requireChatAuth()
     const client = await getChatDatabaseClient()
     res.json(ok(await listChatMessages(client, {
       conversationId: req.params.conversationId,
       systemAccountId: auth.systemAccountId,
-      beforeSequenceNo: optionalIntegerQuery(req.query.beforeSequenceNo),
-      limit: integerQuery(req.query.limit, 50, 1, 100),
+      beforeSequenceNo: query.beforeSequenceNo,
+      limit: query.limit,
       now: new Date().toISOString()
     })))
-  } catch (error) { next(error) }
+  } catch (error) { handleChatRouteError(error, res, next) }
 })
 
 chatRouter.get('/conversations/:conversationId', async (req, res, next) => {
@@ -223,9 +229,11 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       systemAccountId: ownerId,
       clientMessageId: body.clientMessageId,
       userContent: body.content,
+      contentBlocks: body.contentBlocks,
       model: body.model,
       now: new Date().toISOString(),
-      storageQuotaBytes
+      storageQuotaBytes,
+      replaceTurnId: body.replaceTurnId
     })
     if (accepted.duplicate) {
       res.status(409).json({ message: '该消息已提交，请刷新会话', code: 'chat_message_already_exists' })
@@ -398,6 +406,7 @@ function handleChatRouteError(error: unknown, res: ExpressResponse, next: NextFu
 }
 
 function gatewayUrl(path: string): string { return `http://127.0.0.1:${runtimeConfig.port}${path}` }
+function queryScalar(value: unknown): unknown { return Array.isArray(value) ? value[0] : value === '' ? undefined : value }
 function textQuery(value: unknown): string | undefined { const raw = Array.isArray(value) ? value[0] : value; return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined }
 function optionalIntegerQuery(value: unknown): number | undefined { const text = textQuery(value); if (!text) return undefined; const result = Number(text); return Number.isInteger(result) && result > 0 ? result : undefined }
 function integerQuery(value: unknown, fallback: number, min: number, max: number): number { const result = optionalIntegerQuery(value); return result === undefined ? fallback : Math.max(min, Math.min(max, result)) }

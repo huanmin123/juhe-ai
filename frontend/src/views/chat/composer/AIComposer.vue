@@ -28,7 +28,7 @@ import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { JSONContent } from '@tiptap/core'
-import { composerDocumentToBlocks, type ChatInputBlock } from './chatComposerDocument'
+import { composerDocumentToBlocks, composerTextToDocument, type ChatInputBlock } from './chatComposerDocument'
 import { createChatComposerSubmission } from './chatComposerSubmission'
 import { ChatImageAttachment } from './ChatImageAttachment'
 import { chatComposerCommandQueryRange, chatComposerCommands, filterChatComposerCommands, moveChatComposerCommandIndex, type ChatComposerCommand } from './chatComposerCommands'
@@ -48,6 +48,7 @@ const fileInput = ref<HTMLInputElement>()
 const commandOpen = ref(false)
 const commandQuery = ref('')
 const commandIndex = ref(0)
+const contentRevision = ref(0)
 const objectUrls = new Set<string>()
 
 const editor = useEditor({
@@ -82,6 +83,7 @@ const editor = useEditor({
     }
   },
   onUpdate: ({ editor: nextEditor }) => {
+    contentRevision.value += 1
     const text = nextEditor.getText()
     const slash = /(?:^|\s)\/([^\s]*)$/.exec(text)
     commandOpen.value = Boolean(slash)
@@ -97,8 +99,12 @@ const modelSelectOptions = computed(() => props.modelOptions.map((item) => ({ la
 const reasoningOptions = computed(() => [{ label: '思考 自动', value: '' }, ...(selectedModelOption.value?.supportedReasoningEfforts ?? []).map((value) => ({ label: reasoningEffortLabel(value), value }))])
 const serviceTierOptions = computed(() => [{ label: '服务 默认', value: '' }, ...(selectedModelOption.value?.supportedServiceTiers ?? []).map((value) => ({ label: value === 'priority' ? '服务 优先' : '服务 Flex', value }))])
 const contextOptions = computed(() => chatContextOptions(selectedModelOption.value))
-const hasContent = computed(() => Boolean(editor.value && (editor.value.getText().trim() || imageItems.value.length)))
+const hasContent = computed(() => {
+  contentRevision.value
+  return Boolean(editor.value && (editor.value.getText().trim() || imageItems.value.length))
+})
 const imageItems = computed(() => {
+  contentRevision.value
   const items: Array<{ assetId: string; previewUrl: string; fileName: string }> = []
   editor.value?.state.doc.descendants((node) => {
     if (node.type.name === 'chatImageAttachment') items.push({ assetId: String(node.attrs.assetId ?? ''), previewUrl: String(node.attrs.previewUrl ?? ''), fileName: String(node.attrs.fileName ?? '图片') })
@@ -114,7 +120,17 @@ function submit(): void {
   editor.value.commands.clearContent(true)
   emit('submit', { ...payload, snapshot: submission.snapshot as JSONContent })
 }
-function restore(snapshot: JSONContent): void { editor.value?.commands.setContent(snapshot, { emitUpdate: false }); editor.value?.commands.focus('end') }
+function getSnapshot(): JSONContent {
+  return editor.value ? cloneDocument(editor.value.getJSON()) : { type: 'doc', content: [{ type: 'paragraph' }] }
+}
+function setText(content: string): void {
+  editor.value?.commands.setContent(composerTextToDocument(content), { emitUpdate: false })
+  contentRevision.value += 1
+}
+function restore(snapshot: JSONContent): void { editor.value?.commands.setContent(cloneDocument(snapshot), { emitUpdate: false }); contentRevision.value += 1; editor.value?.commands.focus('end') }
+function clear(): void { editor.value?.commands.clearContent(true) }
+function focus(): void { editor.value?.commands.focus() }
+function cloneDocument(document: JSONContent): JSONContent { return JSON.parse(JSON.stringify(document)) as JSONContent }
 function selectCommand(item: ChatComposerCommand): void {
   if (!editor.value) return
   if (item.key === 'clear') {
@@ -134,7 +150,7 @@ async function insertImage(file: File): Promise<void> {
   editor.value.commands.insertContent({ type: 'chatImageAttachment', attrs: { assetId: `local-${crypto.randomUUID()}`, previewUrl, dataUrl, fileName: file.name || '图片' } })
 }
 function handleFileChange(event: Event): void { const files = Array.from((event.target as HTMLInputElement).files ?? []); files.forEach((file) => { void insertImage(file) }); (event.target as HTMLInputElement).value = '' }
-defineExpose({ restore, focus: () => editor.value?.commands.focus() })
+defineExpose({ getSnapshot, setText, restore, clear, focus })
 onBeforeUnmount(() => objectUrls.forEach((url) => URL.revokeObjectURL(url)))
 </script>
 

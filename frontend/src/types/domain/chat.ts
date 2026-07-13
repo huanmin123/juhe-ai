@@ -39,6 +39,7 @@ export interface ChatMessage {
 export type ChatMessageContentBlock =
   | { type: 'reasoning'; text: string }
   | { type: 'tool_call'; id: string; toolType: string; status: ChatToolStatus; item?: Record<string, unknown> }
+  | { type: 'input_marker'; inputType: 'input_text' | 'input_image'; order: number }
 
 export type ChatToolStatus = 'started' | 'updated' | 'completed' | 'failed'
 export interface ChatToolEvent { id: string; type: string; status: ChatToolStatus; item?: Record<string, unknown> }

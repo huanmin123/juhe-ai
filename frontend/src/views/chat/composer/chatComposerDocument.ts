@@ -6,6 +6,17 @@ export type ChatInputBlock =
 
 const maxInputBytes = 192 * 1024
 
+export function composerTextToDocument(content: string): JSONContent {
+  const normalized = content.replace(/\r\n?/g, '\n')
+  const inline: JSONContent[] = []
+  const lines = normalized.split('\n')
+  lines.forEach((line, index) => {
+    if (line) inline.push({ type: 'text', text: line })
+    if (index < lines.length - 1) inline.push({ type: 'hardBreak' })
+  })
+  return { type: 'doc', content: [{ type: 'paragraph', ...(inline.length ? { content: inline } : {}) }] }
+}
+
 export function composerDocumentToBlocks(document: JSONContent): ChatInputBlock[] {
   const blocks: ChatInputBlock[] = []
   const text: string[] = []
@@ -19,7 +30,7 @@ export function composerDocumentToBlocks(document: JSONContent): ChatInputBlock[
 
 function flushText(text: string[], blocks: ChatInputBlock[]): void {
   if (!text.length) return
-  const value = text.join('').replace(/\n{3,}/g, '\n\n').trimEnd()
+  const value = text.join('').trimEnd()
   if (value) blocks.push({ type: 'input_text', text: value })
   text.length = 0
 }
