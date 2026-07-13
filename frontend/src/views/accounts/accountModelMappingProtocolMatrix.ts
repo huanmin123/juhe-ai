@@ -175,6 +175,21 @@ export function isAccountModelMappingSourceEndpointFamilyAllowed(
   ))
 }
 
+export function defaultAccountModelMappingSourceEndpointFamily(
+  context: AccountModelMappingProtocolContext
+): AccountModelMappingSourceEndpointFamily {
+  const preferred = [
+    OPENAI_RESPONSES_FAMILY,
+    OPENAI_CHAT_COMPLETIONS_FAMILY,
+    ANTHROPIC_MESSAGES_FAMILY,
+    GEMINI_GENERATE_CONTENT_FAMILY,
+    GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+  ] as const
+  return preferred.find((sourceEndpointFamily) => (
+    isAccountModelMappingSourceEndpointFamilyAllowed(sourceEndpointFamily, context)
+  )) ?? OPENAI_CHAT_COMPLETIONS_FAMILY
+}
+
 export function shouldResetAccountModelMappingUpstreamEndpointFamily(
   input: AccountModelMappingProtocolStructureInput
 ): boolean {
@@ -185,7 +200,12 @@ export function defaultAccountModelMappingUpstreamEndpointFamily(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   context: AccountModelMappingProtocolContext
 ): AccountModelMappingUpstreamEndpointFamily {
-  const preferred = preferredUpstreamFamilies(sourceEndpointFamily)
+  const preferred = [
+    ...preferredUpstreamFamilies(sourceEndpointFamily),
+    ...accountModelMappingRulesForContext(context)
+      .filter((rule) => rule.source === sourceEndpointFamily)
+      .map((rule) => rule.upstream)
+  ]
   return preferred.find((upstreamEndpointFamily) => isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily,
     upstreamEndpointFamily,

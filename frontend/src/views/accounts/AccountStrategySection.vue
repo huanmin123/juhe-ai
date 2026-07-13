@@ -109,6 +109,7 @@ import {
 } from './accountProviderCapabilities'
 import {
   defaultAccountModelMappingUpstreamEndpointFamily,
+  defaultAccountModelMappingSourceEndpointFamily,
   isAccountModelMappingProtocolAllowed,
   isAccountModelMappingSourceEndpointFamilyAllowed,
   shouldResetAccountModelMappingUpstreamEndpointFamily
@@ -170,7 +171,7 @@ watch(() => [
 ].join('|'), () => {
   for (const mapping of props.form.modelMappings) {
     if (!isAccountModelMappingSourceEndpointFamilyAllowed(mapping.sourceEndpointFamily, modelMappingProtocolContext())) {
-      mapping.sourceEndpointFamily = 'chat_completions'
+      mapping.sourceEndpointFamily = defaultAccountModelMappingSourceEndpointFamily(modelMappingProtocolContext())
     }
     if (shouldResetAccountModelMappingUpstreamEndpointFamily({
       sourceEndpointFamily: mapping.sourceEndpointFamily,
@@ -264,11 +265,12 @@ function isOpenAIResponsesToChatMapping(mapping: AccountFormModel['modelMappings
 }
 
 function addModelMapping(): void {
+  const sourceEndpointFamily = defaultAccountModelMappingSourceEndpointFamily(modelMappingProtocolContext())
   props.form.modelMappings.push({
     sourceModel: '',
-    sourceEndpointFamily: OPENAI_CHAT_COMPLETIONS_FAMILY,
+    sourceEndpointFamily,
     upstreamModel: '',
-    upstreamEndpointFamily: OPENAI_CHAT_COMPLETIONS_FAMILY,
+    upstreamEndpointFamily: defaultAccountModelMappingUpstreamEndpointFamily(sourceEndpointFamily, modelMappingProtocolContext()),
     enabled: true
   })
 }

@@ -338,6 +338,8 @@ try {
     .get(accountA.id) as unknown as { next_health_check_at: string | null }
   assert.equal(healthScheduleRow.next_health_check_at, null, '单独修改检查模型应安排后台立即检查')
 
+  await assertBatchModelMappingTargetCapabilities(group.id)
+
   console.log('account-batch-edit-regression passed')
 } finally {
   try {
@@ -439,4 +441,52 @@ function assertCredentialPoliciesMerged(accountId: string, expectedApiKey: strin
     action: 'retry_next',
     status_codes: [429]
   }], '批量规则覆盖应只 merge 指定凭据键')
+}
+
+async function assertBatchModelMappingTargetCapabilities(groupId: string): Promise<void> {
+  const create = (suffix: string) => repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: `批量映射目标能力账户 ${suffix}`,
+    type: 'api_key',
+    credentials: {
+      api_key: `sk-account-batch-mapping-${suffix}`,
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['chat_json', 'responses_sse']
+    },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    groupId
+  }, access)
+  const accountC = create('C')
+  const accountD = create('D')
+  const enabledMapping = {
+    sourceModel: 'gpt-5.5',
+    sourceEndpointFamily: 'responses' as const,
+    upstreamModel: 'gpt-5.5',
+    upstreamEndpointFamily: 'chat_completions' as const,
+    enabled: true
+  }
+  await assert.rejects(batchEditAccountsAsync({
+    targets: targets(requiredAccount(accountC.id), requiredAccount(accountD.id)),
+    updates: {
+      supportedEndpointModes: { enabled: true, value: ['responses_sse'] },
+      modelMappings: { enabled: true, value: [enabledMapping] }
+    }
+  }, access), /Chat Completions.*上游接口能力/, '批量后端必须拒绝目标族能力缺失的启用映射')
+  assert.equal(requiredAccount(accountC.id).configRevision, 1, '批量映射能力冲突被拒绝后账户 C 版本必须不变')
+  assert.equal(requiredAccount(accountD.id).configRevision, 1, '批量映射能力冲突被拒绝后账户 D 版本必须不变')
+
+  const disabledMapping = { ...enabledMapping, enabled: false }
+  const accepted = await batchEditAccountsAsync({
+    targets: targets(requiredAccount(accountC.id), requiredAccount(accountD.id)),
+    updates: {
+      supportedEndpointModes: { enabled: true, value: ['responses_sse'] },
+      modelMappings: { enabled: true, value: [disabledMapping] }
+    }
+  }, access)
+  assert.equal(accepted.accounts.length, 2, '批量后端应允许目标族能力缺失的停用映射')
+  for (const account of accepted.accounts) {
+    assert.deepEqual(account.modelMappings, [disabledMapping], '批量后端应原样保留停用映射')
+  }
 }

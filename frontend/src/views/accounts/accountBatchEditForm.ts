@@ -25,6 +25,7 @@ import {
   validateAccountResponseInspectionRules
 } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
+import { accountModelMappingProtocolValidationMessage } from './accountModelMappingProtocolMatrix'
 
 export type AccountBatchEditFieldKey =
   | 'tags'
@@ -196,6 +197,8 @@ export function buildAccountBatchEditRequest(
   if (invalidMappingIndex >= 0) {
     return { message: `请完整填写第 ${invalidMappingIndex + 1} 条模型映射` }
   }
+  const mappingValidation = validateBatchAccountModelMappings(accounts, form)
+  if (mappingValidation) return { message: mappingValidation }
 
   const updates: AccountBatchEditRequest['updates'] = {}
   addUpdate(updates, 'tags', form.enabled.tags, normalizedTextList(form.tags))
@@ -246,6 +249,42 @@ export function buildAccountBatchEditRequest(
   addUpdate(updates, 'reasoningEffortOverride', form.enabled.reasoningEffortOverride, form.reasoningEffortOverride)
 
   return { payload: { targets, updates } }
+}
+
+export function intersectAccountSupportedEndpointModes(
+  accounts: AccountSummary[]
+): AccountSupportedEndpointMode[] {
+  if (!accounts.length) return []
+  const [first, ...rest] = accounts.map((account) => accountSupportedEndpointModes(account))
+  return first.filter((mode) => rest.every((modes) => modes.includes(mode)))
+}
+
+function validateBatchAccountModelMappings(
+  accounts: AccountSummary[],
+  form: AccountBatchEditForm
+): string | undefined {
+  if (!form.enabled.modelMappings && !form.enabled.supportedEndpointModes) return undefined
+  for (const account of accounts) {
+    const mappings = form.enabled.modelMappings ? form.modelMappings : account.modelMappings ?? []
+    const supportedEndpointModes = form.enabled.supportedEndpointModes
+      ? form.supportedEndpointModes
+      : accountSupportedEndpointModes(account)
+    for (const mapping of mappings) {
+      const message = accountModelMappingProtocolValidationMessage({
+        sourceEndpointFamily: mapping.sourceEndpointFamily,
+        upstreamEndpointFamily: mapping.upstreamEndpointFamily,
+        enabled: mapping.enabled,
+        context: { providerProfile: account, supportedEndpointModes }
+      })
+      if (message) return message
+    }
+  }
+  return undefined
+}
+
+function accountSupportedEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
+  const value = account.credentials?.supported_endpoint_modes
+  return Array.isArray(value) ? value as AccountSupportedEndpointMode[] : []
 }
 
 function addUpdate<TKey extends keyof AccountBatchEditRequest['updates']>(

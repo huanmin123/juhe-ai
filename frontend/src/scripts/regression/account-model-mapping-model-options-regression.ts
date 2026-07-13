@@ -7,6 +7,8 @@ import {
 } from '../../views/accounts/accountModelMappingModelOptions'
 import {
   accountModelMappingProtocolValidationMessage,
+  defaultAccountModelMappingSourceEndpointFamily,
+  defaultAccountModelMappingUpstreamEndpointFamily,
   isAccountModelMappingProtocolAllowed,
   isAccountModelMappingSourceEndpointFamilyAllowed,
   shouldResetAccountModelMappingUpstreamEndpointFamily
@@ -63,6 +65,25 @@ const geminiNativeProfile = {
   protocolCode: 'gemini',
   protocolVersion: 'v1beta'
 }
+
+assertDefaultMappingFamilies(
+  { providerProfile: openAIProfile, supportedEndpointModes: ['responses_json'] },
+  'responses',
+  'responses',
+  'Responses-only OpenAI 新增映射'
+)
+assertDefaultMappingFamilies(
+  { providerProfile: anthropicProfile, supportedEndpointModes: ['messages_json'] },
+  'messages',
+  'messages',
+  'Anthropic 新增映射'
+)
+assertDefaultMappingFamilies(
+  { providerProfile: geminiNativeProfile, supportedEndpointModes: ['generate_content_sse'] },
+  'generate_content',
+  'generate_content',
+  'Gemini native 新增映射'
+)
 
 assertEqual(
   isAccountModelMappingSourceEndpointFamilyAllowed('chat_completions', {
@@ -144,6 +165,8 @@ assertMatch(
 assertIncludes(accountSavePayloadSource, 'enabled: item.enabled', '前端保存校验必须把映射启停状态传给统一协议矩阵')
 assertIncludes(accountStrategySectionSource, 'upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, option.value, mapping.enabled)', '前端目标协议下拉联动必须区分启用与停用映射')
 assertIncludes(accountStrategySectionSource, 'shouldResetAccountModelMappingUpstreamEndpointFamily', '前端 watcher 必须仅按转换结构决定是否重写目标族')
+assertIncludes(accountStrategySectionSource, 'defaultAccountModelMappingSourceEndpointFamily', '主编辑器新增映射和结构 fallback 必须使用共享默认来源族')
+assertNotIncludes(accountStrategySectionSource, "sourceEndpointFamily: OPENAI_CHAT_COMPLETIONS_FAMILY", '主编辑器新增映射不得硬编码 Chat 来源族')
 
 console.log('账号模型别名协议模型选项回归通过')
 
@@ -181,4 +204,19 @@ function assertMatch(actual: string, expected: RegExp, message: string): void {
   if (!expected.test(actual)) {
     throw new Error(`${message}，实际 ${actual}，预期匹配 ${expected}`)
   }
+}
+
+function assertDefaultMappingFamilies(
+  context: Parameters<typeof defaultAccountModelMappingSourceEndpointFamily>[0],
+  expectedSource: ReturnType<typeof defaultAccountModelMappingSourceEndpointFamily>,
+  expectedUpstream: ReturnType<typeof defaultAccountModelMappingUpstreamEndpointFamily>,
+  message: string
+): void {
+  const source = defaultAccountModelMappingSourceEndpointFamily(context)
+  assertEqual(source, expectedSource, `${message}来源族错误`)
+  assertEqual(
+    defaultAccountModelMappingUpstreamEndpointFamily(source, context),
+    expectedUpstream,
+    `${message}目标族错误`
+  )
 }
