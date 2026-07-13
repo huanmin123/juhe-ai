@@ -14,13 +14,29 @@ func TestOperationLogSummarySearchTermsCoverChineseSummary(t *testing.T) {
 	if len(terms) == 0 {
 		t.Fatal("operationLogSummarySearchTerms() returned no terms")
 	}
-	for _, want := range []string{"更新账户标签:主账号", "更新账户标签主账号", "更新", "账户", "标签", "主账"} {
+	for _, want := range []string{"更新账户标签:主账号", "更新账户标签主账号", "更", "账", "更新", "账户", "标签", "主账"} {
 		if !containsString(terms, want) {
 			t.Fatalf("terms missing %q: %#v", want, terms[:min(len(terms), 20)])
 		}
 	}
 	if len(terms) > maxOperationLogSearchTerms {
 		t.Fatalf("terms = %d, want <= %d", len(terms), maxOperationLogSearchTerms)
+	}
+}
+
+func TestOperationLogSummarySearchTermsCoverSingleEnglishAndNumberTerms(t *testing.T) {
+	terms := operationLogSummarySearchTerms("API Key 7")
+	for _, want := range []string{"a", "p", "i", "k", "e", "y", "7"} {
+		if !containsString(terms, want) {
+			t.Fatalf("terms missing %q: %#v", want, terms)
+		}
+	}
+	if len(terms) > maxOperationLogSearchTerms {
+		t.Fatalf("terms = %d, want <= %d", len(terms), maxOperationLogSearchTerms)
+	}
+	term, hasSearch, invalidSearch := operationLogSearchTermFromKeyword("７")
+	if term != "7" || !hasSearch || invalidSearch {
+		t.Fatalf("operationLogSearchTermFromKeyword() = (%q, %v, %v), want (7, true, false)", term, hasSearch, invalidSearch)
 	}
 }
 

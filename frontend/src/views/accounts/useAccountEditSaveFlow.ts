@@ -242,6 +242,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       notes: options.form.notes,
       supportedModels,
       healthCheckModel,
+      healthCheckEndpointFamily: options.form.healthCheckEndpointFamily,
       credentials: buildBasicEditCredentialsPatch(options.form)
     }
     try {
@@ -328,6 +329,7 @@ type AccountBasicEditPayload = {
   notes: string
   supportedModels: string[]
   healthCheckModel: string
+  healthCheckEndpointFamily: AccountFormModel['healthCheckEndpointFamily']
   credentials: Record<string, unknown>
 }
 

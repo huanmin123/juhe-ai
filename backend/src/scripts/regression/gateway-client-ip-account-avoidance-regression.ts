@@ -727,6 +727,7 @@ function createTestAccount(
     superPriorityEnabled: options.superPriorityEnabled ?? false,
     fallbackEnabled: options.fallbackEnabled ?? false,
     clientCompatibility: 'openai_standard',
+    healthCheckEndpointFamily: 'responses',
     supportedModels: []
   }
 }

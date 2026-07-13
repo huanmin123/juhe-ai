@@ -1,4 +1,4 @@
-import type { AccountClientCompatibility, AccountSupportedEndpointMode, AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountClientCompatibility, AccountHealthCheckEndpointFamily, AccountSupportedEndpointMode, AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
@@ -19,10 +19,12 @@ import {
   responsesEndpointModes
 } from './accountProviderCapabilities'
 import { FALLBACK_PROVIDERS } from './accountOptions'
+import { accountHealthCheckEndpointMode } from './accountHealthCheckEndpointFamily'
 
 export type AccountEndpointModeLabelContext = AccountProviderProfileLike | ProviderProtocolProfileDefinition | ProviderDefinition | undefined
 export type AccountTestEndpointModeSource = AccountProviderProfileLike & {
   credentials?: Record<string, unknown>
+  healthCheckEndpointFamily?: AccountHealthCheckEndpointFamily
 }
 export type AccountTestEndpointModeDraftSource = {
   providerCode?: string
@@ -32,6 +34,7 @@ export type AccountTestEndpointModeDraftSource = {
   type?: unknown
   credentials?: Record<string, unknown>
   clientCompatibility?: AccountClientCompatibility
+  healthCheckEndpointFamily?: AccountHealthCheckEndpointFamily
 }
 
 export const accountEndpointModeOptions: Array<{ label: string; value: AccountSupportedEndpointMode }> = [
@@ -191,7 +194,22 @@ export function accountTestEndpointModesForAccount(
   )
   const supportedModes = normalizeAccountEndpointModes(source.credentials?.supported_endpoint_modes, fallback)
   const supportedSet = new Set(supportedModes)
-  return accountTestEndpointModeOrder(source).filter((mode) => supportedSet.has(mode))
+  return prioritizeAccountTestEndpointModes(
+    accountTestEndpointModeOrder(source).filter((mode) => supportedSet.has(mode)),
+    source.healthCheckEndpointFamily
+  )
+}
+
+export function prioritizeAccountTestEndpointModes(
+  modes: readonly AccountSupportedEndpointMode[],
+  family?: AccountHealthCheckEndpointFamily
+): AccountSupportedEndpointMode[] {
+  const normalized = [...new Set(modes)]
+  if (!family) return normalized
+  const preferred = accountHealthCheckEndpointMode(family)
+  return normalized.includes(preferred)
+    ? [preferred, ...normalized.filter((mode) => mode !== preferred)]
+    : normalized
 }
 
 export function defaultAccountTestEndpointModeForSelection(
@@ -211,10 +229,10 @@ export function defaultAccountTestEndpointModeForSelection(
 
 export function accountTestEndpointModeOrder(account?: AccountProviderProfileLike): AccountSupportedEndpointMode[] {
   const protocolKind = accountProviderProtocolKind(account)
-  if (protocolKind === 'anthropic_v1') return ['messages_sse', 'messages_json']
-  if (protocolKind === 'gemini_v1beta') return ['generate_content_sse', 'generate_content_json']
-  if (account?.type === 'oauth') return ['responses_sse', 'responses_json']
-  return ['chat_sse', 'responses_sse', 'chat_json', 'responses_json']
+  if (protocolKind === 'anthropic_v1') return ['messages_json', 'messages_sse']
+  if (protocolKind === 'gemini_v1beta') return ['generate_content_json', 'generate_content_sse']
+  if (account?.type === 'oauth') return ['responses_json', 'responses_sse']
+  return ['chat_json', 'responses_json', 'chat_sse', 'responses_sse']
 }
 
 function chatCapabilityName(context?: AccountEndpointModeLabelContext): string {

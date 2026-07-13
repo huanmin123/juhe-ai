@@ -118,7 +118,7 @@ try {
     credentials: {
       api_key: 'sk-account-test-responses-contract',
       base_url: mockBaseUrl,
-      supported_endpoint_modes: ['responses_sse', 'chat_sse']
+      supported_endpoint_modes: ['responses_json', 'responses_sse', 'chat_json', 'chat_sse']
     }
   }, access)
   assert.equal(account.clientCompatibility, 'codex_responses', 'GPT API Key 账户创建时默认应使用 Codex Responses 兼容')
@@ -128,10 +128,10 @@ try {
   const manualTestOptions = await accountManualTestOptionsAsync(fullAccountForManualTest!)
   assert.deepEqual(
     manualTestOptions.testEndpointModes,
-    ['chat_sse', 'responses_sse'],
+    ['responses_json', 'chat_sse', 'responses_sse', 'chat_json'],
     '人工测试选项应按完整保存账户能力返回稳定顺序，不能依赖列表摘要或模型协议标签'
   )
-  assert.equal(manualTestOptions.defaultTestEndpointMode, 'chat_sse', '人工测试默认请求形态应为稳定顺序第一项')
+  assert.equal(manualTestOptions.defaultTestEndpointMode, 'responses_json', '账户默认测试应使用保存协议族对应的非流式 JSON')
   assert.equal('credentials' in manualTestOptions, false, '人工测试选项不得暴露账户凭据')
 
   assert.equal(account.healthCheckModel, providerDefaultHealthCheckModel, '新账户应按协议档案系统默认值初始化检查模型')

@@ -284,6 +284,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
       health_check_model TEXT NOT NULL,
+      health_check_endpoint_family TEXT NOT NULL CHECK (health_check_endpoint_family IN ('chat_completions', 'responses', 'messages', 'generate_content')),
       last_health_check_at TEXT,
       next_health_check_at TEXT,
       last_health_success_at TEXT,

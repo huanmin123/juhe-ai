@@ -261,11 +261,11 @@ func insertW3ProviderModelCRUDBoundAccountFixture(t *testing.T, ctx context.Cont
 		INSERT INTO juhe_business.accounts (
 			id, system_account_id, provider_code, provider_protocol_profile_id,
 			protocol_code, protocol_version, name, type, status,
-			credentials_encrypted, credential_mask, created_at, updated_at
+			credentials_encrypted, credential_mask, health_check_model, health_check_endpoint_family, created_at, updated_at
 		) VALUES (
 			'acct_w3_model_crud_bound', 'sys_w2_proxy_options', 'gpt', 'profile_gpt_openai_v1',
 			'openai', 'v1', 'W3 Model CRUD Bound Account', 'api_key', 'active',
-			'encrypted', 'sk-***', $1, $2
+			'encrypted', 'sk-***', 'gpt-5.4-mini', 'responses', $1, $2
 		)
 	`, now, now)
 	if err != nil {

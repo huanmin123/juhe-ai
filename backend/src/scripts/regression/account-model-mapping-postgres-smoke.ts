@@ -57,10 +57,11 @@ try {
     credentials: {
       api_key: `sk-${marker}`,
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['chat_json', 'responses_sse']
+      supported_endpoint_modes: ['chat_json', 'responses_json', 'responses_sse']
     },
     supportedModels: [model],
     healthCheckModel: model,
+    healthCheckEndpointFamily: 'responses' as const,
     modelMappings: [enabledMapping],
     groupId: group.id
   }, access)
@@ -71,7 +72,7 @@ try {
       credentials: {
         api_key: `sk-${marker}`,
         base_url: 'https://api.openai.com/v1',
-        supported_endpoint_modes: ['responses_sse']
+        supported_endpoint_modes: ['responses_json', 'responses_sse']
       }
     }, access),
     /Chat Completions.*上游接口能力/,
@@ -80,7 +81,7 @@ try {
   const preserved = await findAccountForTestAsync(account.id, access)
   assert.deepEqual(
     preserved?.credentials.supported_endpoint_modes,
-    ['chat_json', 'responses_sse'],
+    ['chat_json', 'responses_json', 'responses_sse'],
     'PG 异步账户更新被拒绝后必须保留原上游接口能力'
   )
   assert.deepEqual(
@@ -99,10 +100,11 @@ try {
     credentials: {
       api_key: `sk-import-${marker}-${mapping.enabled ? 'enabled' : 'disabled'}`,
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['responses_sse']
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     supportedModels: [model],
     healthCheckModel: model,
+    healthCheckEndpointFamily: 'responses' as const,
     modelMappings: [mapping]
   })
   const rejectedImport = await previewAccountImportAsync({
@@ -122,6 +124,29 @@ try {
   }, {}, access)
   assert.equal(acceptedImport.canImport, true, 'PG 异步导入预览应保留并接受目标族能力缺失的停用映射')
 
+  await assert.rejects(
+    prepareAccountDraftTestSnapshotAsync({
+      accountInput: {
+        providerCode: GPT_VENDOR_CODE,
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+        name: `健康检查协议族PG异步草稿-${marker}`,
+        type: 'api_key',
+        credentials: {
+          api_key: `sk-draft-family-${marker}`,
+          base_url: 'https://api.openai.com/v1',
+          supported_endpoint_modes: ['chat_json', 'responses_sse']
+        },
+        supportedModels: [model],
+        healthCheckModel: model,
+        healthCheckEndpointFamily: 'responses',
+        groupId: group.id
+      },
+      requestAccess: access
+    }),
+    /账户健康检查协议族 responses 未启用对应 JSON 能力/,
+    'PG 异步草稿必须按最终 endpoint modes 拒绝缺少 responses_json 的 Responses 健康检查协议族'
+  )
+
   const draftInput = (mapping: AccountModelMapping) => ({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -130,10 +155,11 @@ try {
     credentials: {
       api_key: `sk-draft-${marker}-${mapping.enabled ? 'enabled' : 'disabled'}`,
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['responses_sse']
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     supportedModels: [model],
     healthCheckModel: model,
+    healthCheckEndpointFamily: 'responses' as const,
     modelMappings: [mapping],
     groupId: group.id
   })

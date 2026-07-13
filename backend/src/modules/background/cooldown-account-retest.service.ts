@@ -1,4 +1,5 @@
 import type { AccountSummary } from '../../domain/types.js'
+import { healthCheckEndpointMode } from '../../domain/account-health-check-endpoint-family.js'
 import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
@@ -77,6 +78,7 @@ async function runCooldownAccountRetestQueueItem(
     diagnostics: 'full',
     groupId,
     trafficSource: 'cooldown_retest',
+    testEndpointMode: healthCheckEndpointMode(account.healthCheckEndpointFamily),
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,

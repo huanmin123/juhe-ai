@@ -26,6 +26,13 @@ const accountSupportedEndpointModeSchema = z.enum([
   'embed_content'
 ])
 
+const accountHealthCheckEndpointFamilySchema = z.enum([
+  'chat_completions',
+  'responses',
+  'messages',
+  'generate_content'
+])
+
 function batchUpdateFieldSchema<T extends z.ZodTypeAny>(valueSchema: T) {
   return z.discriminatedUnion('enabled', [
     z.object({
@@ -54,6 +61,7 @@ export const accountCreateSchema = z.object({
   credentials: z.record(z.unknown()).optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
   healthCheckModel: z.string().trim().min(1).optional(),
+  healthCheckEndpointFamily: accountHealthCheckEndpointFamilySchema.optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   tags: z.array(z.string().trim()).max(24).optional(),
   status: z.enum(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
@@ -76,6 +84,7 @@ export const accountUpdateSchema = z.object({
   credentials: z.record(z.unknown()).optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
   healthCheckModel: z.string().trim().min(1).optional(),
+  healthCheckEndpointFamily: accountHealthCheckEndpointFamilySchema.optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   tags: z.array(z.string().trim()).max(24).optional(),
   status: z.enum(['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
@@ -102,6 +111,7 @@ export const accountDraftTestAccountSchema = z.object({
   credentials: z.record(z.unknown()).optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
   healthCheckModel: z.string().trim().min(1),
+  healthCheckEndpointFamily: accountHealthCheckEndpointFamilySchema,
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().min(0).optional(),
@@ -191,6 +201,7 @@ export const accountBatchEditSchema = z.object({
     responseInspectionRules: batchUpdateFieldSchema(z.array(z.unknown()).max(20)).optional(),
     supportedModels: batchUpdateFieldSchema(z.array(z.string().trim().min(1)).min(1).max(500)).optional(),
     healthCheckModel: batchUpdateFieldSchema(z.string().trim().min(1)).optional(),
+    healthCheckEndpointFamily: batchUpdateFieldSchema(accountHealthCheckEndpointFamilySchema).optional(),
     modelMappings: batchUpdateFieldSchema(z.array(accountModelMappingSchema).max(500)).optional(),
     supportedEndpointModes: batchUpdateFieldSchema(z.array(accountSupportedEndpointModeSchema).min(1).max(11)).optional(),
     serviceTierOverride: batchUpdateFieldSchema(

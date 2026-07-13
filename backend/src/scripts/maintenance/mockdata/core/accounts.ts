@@ -42,6 +42,7 @@ function createMockGptAccount(input: Record<string, unknown>, access: AccessScop
     providerCode,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     ...(supportedModels[0] ? { healthCheckModel: supportedModels[0] } : {}),
+    healthCheckEndpointFamily: 'responses',
     ...input
   }, access)
 }
@@ -54,6 +55,7 @@ function createMockOpenAICompatibleAccount(input: Record<string, unknown>, acces
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     ...(supportedModels[0] ? { healthCheckModel: supportedModels[0] } : {}),
+    healthCheckEndpointFamily: 'chat_completions',
     ...input
   }, access)
 }

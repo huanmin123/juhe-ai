@@ -1,4 +1,5 @@
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
+import { healthCheckEndpointMode } from '../../domain/account-health-check-endpoint-family.js'
 import { logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
@@ -93,6 +94,7 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
     groupId: item.scope.groupId,
     systemAccountId: item.scope.systemAccountId,
     trafficSource: 'runtime_recovery_probe',
+    testEndpointMode: healthCheckEndpointMode(account.healthCheckEndpointFamily),
     candidateAccount,
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,

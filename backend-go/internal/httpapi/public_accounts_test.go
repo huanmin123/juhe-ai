@@ -36,6 +36,7 @@ func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
 				ClientCompatibility:       publicaccounts.DefaultClientCompat,
 				Status:                    publicaccounts.StatusPendingTest,
 				SupportedModels:           []string{"gpt-5.5"},
+				HealthCheckEndpointFamily: "responses",
 				BoundGroupID:              "grp_1",
 				BoundGroupName:            "公开分组",
 				Schedulable:               false,
@@ -78,6 +79,9 @@ func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
 	}
 	if _, ok := account["healthCheckModel"]; ok {
 		t.Fatalf("response exposed internal healthCheckModel: %#v", account)
+	}
+	if account["healthCheckEndpointFamily"] != "responses" {
+		t.Fatalf("response healthCheckEndpointFamily = %#v, want responses", account["healthCheckEndpointFamily"])
 	}
 
 	log := singlePublicAPILog(t, logQueue)

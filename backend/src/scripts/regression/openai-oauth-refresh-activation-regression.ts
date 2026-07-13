@@ -129,6 +129,7 @@ function oauthDraftActivationSnapshot(input: {
     clientCompatibility,
     supportedModels: ['gpt-5.5'],
     healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointFamily: 'responses',
     modelMappings: []
   }
 }
@@ -150,6 +151,7 @@ function oauthCreateRequest(input: {
     priority: 0,
     supportedModels: ['gpt-5.5'],
     healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointFamily: 'responses',
     modelMappings: []
   }
 }
@@ -184,6 +186,7 @@ function draftAccountSummary(draft: AccountTestDraftSnapshot): AccountSummary {
     clientCompatibility: draft.clientCompatibility,
     supportedModels: draft.supportedModels,
     healthCheckModel: draft.healthCheckModel,
+    healthCheckEndpointFamily: draft.healthCheckEndpointFamily,
     modelMappings: draft.modelMappings,
     schedulable: true,
     todayUsage: usage,

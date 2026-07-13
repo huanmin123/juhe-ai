@@ -61,6 +61,7 @@ const apiKeyAccount: OpenAIAccountSecret = {
   fallbackEnabled: false,
   clientCompatibility: 'openai_standard',
   healthCheckModel: 'gpt-5.4',
+  healthCheckEndpointFamily: 'responses',
   baseUrl: 'https://api.openai.com/v1',
   streamFailureCount: 0,
   credentials: {}

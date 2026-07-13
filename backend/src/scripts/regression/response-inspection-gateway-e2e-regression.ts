@@ -252,7 +252,7 @@ async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBase
     credentials: {
       api_key: `sk-upstream-polluted-${scenario}`,
       base_url: upstreamBaseUrl,
-      supported_endpoint_modes: ['responses_sse']
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     groupId: group.id,
     status: 'active',

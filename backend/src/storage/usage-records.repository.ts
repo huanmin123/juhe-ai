@@ -1,6 +1,6 @@
 import type { SQLInputValue } from 'node:sqlite'
 
-import { buildSystemAccountScopeClause, canAccessAll, includeSystemAccountFields, scopedSystemAccountId, type AccessScope } from './access-scope.js'
+import { buildSystemAccountScopeClause, includeSystemAccountFields, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getUsageCatalogDatabase, mainDatabaseRuntimeInfo, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMapByIds, loadSystemAccountNameMapByIdsAsync } from './repository-lookups.js'
@@ -129,7 +129,6 @@ export interface UsageRecordListResult {
   hasMore: boolean
   page: number
   pageSize: number
-  requiresSystemAccountSelection?: boolean
 }
 
 export interface UsageRecordInput {
@@ -202,9 +201,6 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
     throw new Error('JUHE_AI_DATABASE_DRIVER=postgres 时请使用 listUsageRecordsAsync 读取使用记录')
   }
   const listOptions = normalizeUsageRecordListOptions(options)
-  if (usageRecordListRequiresSystemAccountSelection(access)) {
-    return emptyUsageRecordListResult(listOptions, true)
-  }
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const offset = (listOptions.page - 1) * listOptions.pageSize
   const rows = listUsageRecordRowsFromShards(
@@ -229,21 +225,6 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   }
 }
 
-function usageRecordListRequiresSystemAccountSelection(access?: AccessScope): boolean {
-  return canAccessAll(access) && !scopedSystemAccountId(access)
-}
-
-function emptyUsageRecordListResult(listOptions: NormalizedUsageRecordListOptions, requiresSystemAccountSelection = false): UsageRecordListResult {
-  return {
-    items: [],
-    total: 0,
-    hasMore: false,
-    page: listOptions.page,
-    pageSize: listOptions.pageSize,
-    requiresSystemAccountSelection
-  }
-}
-
 export async function listUsageRecordsAsync(access?: AccessScope, options?: UsageRecordListOptions): Promise<UsageRecordListResult> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
@@ -257,9 +238,6 @@ export async function listUsageRecordsAsync(access?: AccessScope, options?: Usag
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const listOptions = normalizeUsageRecordListOptions(options)
-  if (usageRecordListRequiresSystemAccountSelection(access)) {
-    return emptyUsageRecordListResult(listOptions, true)
-  }
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const offset = (listOptions.page - 1) * listOptions.pageSize
   const filters = await buildUsageRecordFiltersAsync(client, access, options)

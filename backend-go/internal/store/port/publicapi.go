@@ -472,6 +472,7 @@ type PublicAccountSummary struct {
 	ClientCompatibility       string
 	SupportedModels           []string
 	HealthCheckModel          string
+	HealthCheckEndpointFamily string
 	BoundGroupID              *string
 	BoundGroupName            *string
 	Schedulable               bool
@@ -529,6 +530,7 @@ type PublicAccountCreateInput struct {
 	ClientCompatibility       string
 	SupportedModels           []string
 	HealthCheckModel          string
+	HealthCheckEndpointFamily string
 	Schedulable               bool
 	AvailabilityScheduleJSON  *string
 	ConcurrencyLimit          int
@@ -538,26 +540,27 @@ type PublicAccountCreateInput struct {
 }
 
 type PublicAccountUpdateInput struct {
-	ID                       string
-	SystemAccountID          string
-	ProviderCode             string
-	Name                     string
-	Status                   PublicAccountStatus
-	CredentialsEncrypted     string
-	CredentialFingerprint    *string
-	CredentialMask           string
-	SupportedModels          []string
-	SupportedModelsChanged   bool
-	HealthCheckModel         string
-	ResetFailureState        bool
-	ScheduleHealthCheck      bool
-	ResetHealthDiagnostics   bool
-	Schedulable              bool
-	AvailabilityScheduleJSON *string
-	ConcurrencyLimit         int
-	Priority                 int
-	Notes                    *string
-	Now                      time.Time
+	ID                        string
+	SystemAccountID           string
+	ProviderCode              string
+	Name                      string
+	Status                    PublicAccountStatus
+	CredentialsEncrypted      string
+	CredentialFingerprint     *string
+	CredentialMask            string
+	SupportedModels           []string
+	SupportedModelsChanged    bool
+	HealthCheckModel          string
+	HealthCheckEndpointFamily string
+	ResetFailureState         bool
+	ScheduleHealthCheck       bool
+	ResetHealthDiagnostics    bool
+	Schedulable               bool
+	AvailabilityScheduleJSON  *string
+	ConcurrencyLimit          int
+	Priority                  int
+	Notes                     *string
+	Now                       time.Time
 }
 
 var ErrPublicAccountDuplicateName = errors.New("public account duplicate name")

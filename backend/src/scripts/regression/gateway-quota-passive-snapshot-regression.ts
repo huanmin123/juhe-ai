@@ -604,6 +604,7 @@ function passiveAccount(id: string, accountAuthorizationId?: string, accountAuth
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
+    healthCheckEndpointFamily: 'responses',
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-passive-quota',
     streamFailureCount: 0,

@@ -333,9 +333,9 @@ function seedAccount(accountId: string, systemAccountId: string): void {
     .prepare(`
       INSERT INTO accounts (
         id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-        name, type, status, credentials_encrypted, health_check_model, schedulable, created_at, updated_at
+        name, type, status, credentials_encrypted, health_check_model, health_check_endpoint_family, schedulable, created_at, updated_at
       )
-      VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, 'oauth', 'active', ?, 'gpt-5.5', 1, ?, ?)
+      VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, 'oauth', 'active', ?, 'gpt-5.5', 'responses', 1, ?, ?)
     `)
     .run(accountId, systemAccountId, accountId, '{}', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
 }

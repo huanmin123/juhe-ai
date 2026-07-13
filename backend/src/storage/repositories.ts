@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import type { AccountClientCompatibility, AccountGroupBindStatus, AccountModelMapping, AccountStatus, AccountSummary, AccountSupportedEndpointMode, AccountType, AccountUsageStatsOverview, AccountUsageStatsRange, ProviderCode, ResourceAuthorizationListResult, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { deriveOpenAIAccountClientCompatibility, normalizeOpenAIAccountClientCompatibility } from '../domain/account-client-compatibility.js'
+import { resolveHealthCheckEndpointFamily } from '../domain/account-health-check-endpoint-family.js'
 import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../domain/anthropic-endpoint-modes.js'
 import { assertGeminiEndpointModesCompatible } from '../domain/gemini-endpoint-modes.js'
@@ -356,6 +357,7 @@ interface OpenAIOAuthRefreshCandidateRow {
   last_error_code: string | null
   last_error_message: string | null
   health_check_model: string
+  health_check_endpoint_family: import('../domain/types.js').AccountHealthCheckEndpointFamily
 }
 
 export type { AccountListOptions, AccountOptionListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
@@ -1409,7 +1411,7 @@ export function listOpenAIOAuthAccountsDueForAccessTokenRefresh(input: {
       SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
         proxy_profile_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
-        last_error_code, last_error_message, health_check_model
+        last_error_code, last_error_message, health_check_model, health_check_endpoint_family
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
         AND deleted_at IS NULL
@@ -1442,7 +1444,7 @@ export async function listOpenAIOAuthAccountsDueForAccessTokenRefreshAsync(input
     SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
       proxy_profile_id, concurrency_limit, priority,
       super_priority_enabled, fallback_enabled, client_compatibility, schedulable, account_expires_at, cooldown_until,
-      last_error_code, last_error_message, health_check_model
+      last_error_code, last_error_message, health_check_model, health_check_endpoint_family
     FROM ${accountWriteTable(client, 'accounts')}
     WHERE authorization_instance_authorization_id IS NULL
       AND deleted_at IS NULL
@@ -1467,7 +1469,7 @@ export function listOpenAIOAuthStoppedRefreshExceptionAccounts(input: {
       SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted,
         proxy_profile_id, concurrency_limit, priority,
         super_priority_enabled, fallback_enabled, schedulable, account_expires_at, cooldown_until,
-        last_error_code, last_error_message, health_check_model
+        last_error_code, last_error_message, health_check_model, health_check_endpoint_family
       FROM accounts
       WHERE authorization_instance_authorization_id IS NULL
         AND provider_protocol_profile_id = ?
@@ -1507,6 +1509,7 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
     ),
     supportedModels: [],
     healthCheckModel: row.health_check_model.trim(),
+    healthCheckEndpointFamily: row.health_check_endpoint_family,
     proxyProfileId: row.proxy_profile_id ?? undefined,
     schedulable: row.schedulable === 1,
     accountExpiresAt: row.account_expires_at ?? undefined,
@@ -1593,6 +1596,12 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
       ?? providerProfile.defaultHealthCheckModel,
     supportedModels
   )
+  const healthCheckEndpointFamily = resolveHealthCheckEndpointFamily({
+    value: input.healthCheckEndpointFamily,
+    providerCode,
+    providerProtocolProfileId: providerProfile.id,
+    enabledEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+  })
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const requestedStatus = normalizedAccountStatusInput(input.status, 'pending_test')
   const initialStatus: AccountStatus = requestedStatus === 'disabled' ? 'disabled' : 'pending_test'
@@ -1648,6 +1657,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     modelMappings,
     tags: tagNames.map((name) => ({ id: '', name })),
     healthCheckModel,
+    healthCheckEndpointFamily,
     proxyProfileId,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
@@ -1685,9 +1695,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
-          health_check_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
+          health_check_model, health_check_endpoint_family, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
           balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -1719,6 +1729,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.lastErrorCode ?? null,
         account.lastErrorMessage ?? null,
         account.healthCheckModel,
+        account.healthCheckEndpointFamily,
         account.cooldownRetestObservationStartedAt ?? null,
         0,
         null,
@@ -1823,6 +1834,12 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
       ?? providerProfile.defaultHealthCheckModel,
     supportedModels
   )
+  const healthCheckEndpointFamily = resolveHealthCheckEndpointFamily({
+    value: input.healthCheckEndpointFamily,
+    providerCode,
+    providerProtocolProfileId: providerProfile.id,
+    enabledEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+  })
   const tagNames = normalizeAccountTagNamesInput(input.tags) ?? []
   const requestedStatus = normalizedAccountStatusInput(input.status, 'pending_test')
   const initialStatus: AccountStatus = requestedStatus === 'disabled' ? 'disabled' : 'pending_test'
@@ -1882,6 +1899,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     modelMappings,
     tags: tagNames.map((name) => ({ id: '', name })),
     healthCheckModel,
+    healthCheckEndpointFamily,
     proxyProfileId,
     schedulable: expiredByPackage || accountStatusForcesSchedulableOff(nextStatus) ? false : createSchedulable,
     availabilitySchedule,
@@ -1916,9 +1934,9 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
-          health_check_model, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
+          health_check_model, health_check_endpoint_family, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
           balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         account.id,
         systemAccountId,
@@ -1949,6 +1967,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
         account.lastErrorCode ?? null,
         account.lastErrorMessage ?? null,
         account.healthCheckModel,
+        account.healthCheckEndpointFamily,
         account.cooldownRetestObservationStartedAt ?? null,
         0,
         null,
@@ -2049,6 +2068,12 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     hasOwnInput(input, 'healthCheckModel') ? input.healthCheckModel : current.healthCheckModel,
     nextSupportedModels
   )
+  const nextHealthCheckEndpointFamily = resolveHealthCheckEndpointFamily({
+    value: hasOwnInput(input, 'healthCheckEndpointFamily') ? input.healthCheckEndpointFamily : current.healthCheckEndpointFamily,
+    providerCode: current.providerCode,
+    providerProtocolProfileId: current.providerProtocolProfileId ?? '',
+    enabledEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+  })
   const endpointModesChanged = hasOwnInput(input, 'credentials')
     && !isDeepStrictEqual(
       current.credentials?.supported_endpoint_modes,
@@ -2093,6 +2118,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const requiresHealthCheckSchedule = requiresBackgroundRecheck
     || hasSupportedModelsInput
     || hasOwnInput(input, 'healthCheckModel')
+    || hasOwnInput(input, 'healthCheckEndpointFamily')
     || hasModelMappingsInput
     || endpointModesChanged
 
@@ -2205,6 +2231,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     clientCompatibility: nextClientCompatibility,
     supportedModels: nextSupportedModels,
     healthCheckModel: nextHealthCheckModel,
+    healthCheckEndpointFamily: nextHealthCheckEndpointFamily,
     modelMappings: nextModelMappings,
     tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
     proxyProfileId: nextProxyProfileId,
@@ -2248,7 +2275,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?,
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?, health_check_endpoint_family = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
             balance_query_config_json = CASE WHEN ? = 1 THEN ? ELSE balance_query_config_json END,
             balance_query_next_refresh_at = CASE WHEN ? = 1 THEN ? ELSE balance_query_next_refresh_at END,
@@ -2282,6 +2309,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
         next.healthCheckModel,
+        next.healthCheckEndpointFamily,
         balanceUpdate.present ? 1 : 0,
         balanceUpdate.enabled ? 1 : 0,
         balanceUpdate.present ? 1 : 0,
@@ -2423,6 +2451,12 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     hasOwnInput(input, 'healthCheckModel') ? input.healthCheckModel : current.healthCheckModel,
     nextSupportedModels
   )
+  const nextHealthCheckEndpointFamily = resolveHealthCheckEndpointFamily({
+    value: hasOwnInput(input, 'healthCheckEndpointFamily') ? input.healthCheckEndpointFamily : current.healthCheckEndpointFamily,
+    providerCode: current.providerCode,
+    providerProtocolProfileId: current.providerProtocolProfileId ?? '',
+    enabledEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+  })
   const endpointModesChanged = hasOwnInput(input, 'credentials')
     && !isDeepStrictEqual(
       current.credentials?.supported_endpoint_modes,
@@ -2468,6 +2502,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   const requiresHealthCheckSchedule = requiresBackgroundRecheck
     || hasSupportedModelsInput
     || hasOwnInput(input, 'healthCheckModel')
+    || hasOwnInput(input, 'healthCheckEndpointFamily')
     || hasModelMappingsInput
     || endpointModesChanged
 
@@ -2580,6 +2615,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     clientCompatibility: nextClientCompatibility,
     supportedModels: nextSupportedModels,
     healthCheckModel: nextHealthCheckModel,
+    healthCheckEndpointFamily: nextHealthCheckEndpointFamily,
     modelMappings: nextModelMappings,
     tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
     proxyProfileId,
@@ -2622,7 +2658,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?,
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?, health_check_endpoint_family = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
             balance_query_config_json = CASE WHEN ? = 1 THEN ? ELSE balance_query_config_json END,
             balance_query_next_refresh_at = CASE WHEN ? = 1 THEN ? ELSE balance_query_next_refresh_at END,
@@ -2657,6 +2693,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
         next.healthCheckModel,
+        next.healthCheckEndpointFamily,
         balanceUpdate.present ? 1 : 0,
         balanceUpdate.enabled ? 1 : 0,
         balanceUpdate.present ? 1 : 0,

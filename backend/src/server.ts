@@ -15,7 +15,7 @@ import {
   recordGatewayBodyRejection,
   rejectGatewayRawBodyByContentLength
 } from './modules/gateway/request/body-middleware.js'
-import { gatewayRawBodyHardLimit, type GatewayRawBodyRequest } from './modules/gateway/request/body.js'
+import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes, type GatewayRawBodyRequest } from './modules/gateway/request/body.js'
 import { preResolveGatewayRuntime } from './modules/gateway/request/pre-auth.js'
 import { admitSpeedFirstRequestBody } from './modules/gateway/request/speed-first-body-admission.middleware.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
@@ -73,7 +73,9 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
     rawBodyBytes: Number(error.received ?? error.length ?? error.limit ?? 0),
     reason: 'gateway_body_parser',
     errorCode: error.type,
-    errorMessage: message
+    errorMessage: message,
+    limitBytes: statusCode === 413 ? Number(error.limit ?? gatewayRawBodyHardLimitBytes) : undefined,
+    limitScope: statusCode === 413 ? 'gateway' : undefined
   })
   getRequestLogger().warn({
     event: 'gateway_raw_body_rejected',

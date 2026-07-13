@@ -110,6 +110,7 @@ function buildAccountErrorHandlingOperation(
       superPriorityEnabled: false,
       fallbackEnabled: true,
       clientCompatibility: 'openai_standard',
+      healthCheckEndpointFamily: 'chat_completions',
       baseUrl: 'https://api.openai.com/v1',
       apiKey: 'sk-regression',
       streamFailureCount: 0,

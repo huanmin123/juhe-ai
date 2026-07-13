@@ -32,6 +32,7 @@ const [databaseModule, repositories, backgroundIpc, usageRecordQueue, usageRecor
 ])
 const auditCapture = await import('../../modules/gateway/audit/capture.service.js')
 const auditQueue = await import('../../modules/audit-logs/audit-log-queue.service.js')
+const gatewayBodyMiddleware = await import('../../modules/gateway/request/body-middleware.js')
 
 assertAuditPayloadCleanupUsesAsyncFiles()
 
@@ -201,17 +202,79 @@ try {
     statusCode: 413,
     errorPhase: 'gateway',
     errorCode: 'entity.too.large',
-    errorMessage: '请求体过大'
+    errorMessage: '请求体过大',
+    contentType: 'application/json'
   })
   auditQueue.flushAllAuditLogQueue()
   const rejectedEvents = repositories.listAuditLogs({ traceId: 'trace-body-rejected-retained' })
   assert.equal(rejectedEvents.total, 1, '请求体被网关拒绝时也应保留失败事件')
   assert.equal(rejectedEvents.items[0]?.captureStatus, 'overflow', '请求体被网关拒绝时应标记为 overflow')
   const rejectedDetail = repositories.getAuditLogDetail(rejectedEvents.items[0]?.id ?? '')
+  const rejectedClientPayload = rejectedDetail?.payloads.find((payload) => payload.partType === 'client_request')
+  assert(rejectedClientPayload, '请求体被网关拒绝时应保留无正文客户端请求 payload')
+  assert.equal(rejectedClientPayload.captureStatus, 'overflow', '被拒绝正文的 payload 应标记为 overflow')
+  assert.equal(rejectedClientPayload.sizeBytes, 1024 * 1024, '被拒绝正文的 payload 应保留原始字节数')
+  assert.equal(rejectedClientPayload.contentType, 'application/json', '被拒绝正文的 payload 可保留 content type')
+  assert.equal(rejectedClientPayload.hasHeaders, false, '被拒绝正文的 payload 不应保存 headers')
+  assert.equal(rejectedClientPayload.hasBody, false, '被拒绝正文的 payload 不应保存 body')
   assert(rejectedDetail?.queryString?.includes('body-rejected-query-token'), '早期拒绝审计 queryString 应保留 token 参数原文')
   assert(rejectedDetail?.queryString?.includes('body-rejected-api-key'), '早期拒绝审计 queryString 应保留 api_key 参数原文')
   assert.equal(rejectedDetail?.queryString?.includes('token=%5Bredacted%5D'), false, '早期拒绝审计 queryString 不应写入 token 脱敏占位')
   assert.equal(rejectedDetail?.queryString?.includes('api_key=%5Bredacted%5D'), false, '早期拒绝审计 queryString 不应写入 api_key 脱敏占位')
+
+  auditQueue.recordDroppedAuditCapture({
+    traceId: 'trace-body-overloaded-without-overflow-payload',
+    auditOutcome: 'gateway_failed',
+    success: false,
+    bytes: 512 * 1024,
+    reason: 'gateway_body_rejected',
+    method: 'POST',
+    path: '/v1/responses',
+    statusCode: 503,
+    errorPhase: 'gateway',
+    errorCode: 'gateway_body_in_flight_limit_exceeded',
+    errorMessage: '网关请求体在途总量过高，请稍后重试',
+    contentType: 'application/json'
+  })
+  auditQueue.flushAllAuditLogQueue()
+  const overloadedEvents = repositories.listAuditLogs({ traceId: 'trace-body-overloaded-without-overflow-payload' })
+  const overloadedDetail = repositories.getAuditLogDetail(overloadedEvents.items[0]?.id ?? '')
+  assert.equal(
+    overloadedDetail?.payloads.some((payload) => payload.captureStatus === 'overflow'),
+    false,
+    '非 413 body rejection 不应生成 overflow payload'
+  )
+
+  await gatewayBodyMiddleware.recordGatewayBodyRejection({
+    method: 'POST',
+    path: '/v1/responses',
+    originalUrl: '/v1/responses',
+    headers: { 'content-type': 'application/json' }
+  } as never, {
+    statusCode: 413,
+    responsePayload: {
+      error: {
+        message: '请求体过大',
+        type: 'request_too_large'
+      }
+    },
+    rawBodyBytes: 2 * 1024 * 1024 + 8,
+    reason: 'gateway_body_size_limit',
+    errorCode: 'request_too_large',
+    errorMessage: '请求体过大',
+    limitBytes: 2 * 1024 * 1024,
+    limitScope: 'text'
+  })
+  auditQueue.flushAllAuditLogQueue()
+  const limitedEvents = repositories.listAuditLogs({ path: '/v1/responses', statusCode: 413 })
+  const limitedDetail = limitedEvents.items
+    .map((event) => repositories.getAuditLogDetail(event.id))
+    .find((detail) => detail?.errorMessage?.includes('limitScope=text'))
+  assert.match(
+    limitedDetail?.errorMessage ?? '',
+    /rawBodyBytes=2097160, limitBytes=2097152, limitScope=text/,
+    '正文超限审计错误描述应包含实际字节数、上限和作用域'
+  )
 
   const largeFailedTraceId = 'trace-large-failed-payload-summary'
   finalizeFailedRequestWithBody(largeFailedTraceId, largeFailedRequestBody)

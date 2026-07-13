@@ -18,6 +18,7 @@ import { glmProviderDriver } from './glm/driver.js'
 import { gptProviderDriver } from './gpt/driver.js'
 import { hybridProviderDriver } from './hybrid/driver.js'
 import { openAICompatibleProviderDriver } from './openai-compatible/driver.js'
+import { codexResponsesContextAllowsAccount } from '../../gateway/codex-responses/chat-bridge-state.js'
 
 const providerDrivers: readonly ProviderDriver[] = [
   openAICompatibleProviderDriver,
@@ -87,6 +88,9 @@ export function accountSupportsGatewayRequest(
   account: DispatchAccountSecret,
   context?: ProviderGatewayRequestContext
 ): boolean {
+  if (!codexResponsesContextAllowsAccount(req, account)) {
+    return false
+  }
   const driver = providerDriverForAccount(account)
   if (!driver) {
     return false

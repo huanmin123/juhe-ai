@@ -5,6 +5,7 @@ import type {
   AccountBatchEditRequest,
   AccountGptReasoningEffortOverride,
   AccountGptServiceTierOverride,
+  AccountHealthCheckEndpointFamily,
   AccountModelMapping,
   AccountSummary,
   AccountSupportedEndpointMode
@@ -26,6 +27,7 @@ import {
 } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { accountModelMappingProtocolValidationMessage } from './accountModelMappingProtocolMatrix'
+import { accountHealthCheckEndpointFamilyOptions } from './accountHealthCheckEndpointFamily'
 
 export type AccountBatchEditFieldKey =
   | 'tags'
@@ -41,6 +43,7 @@ export type AccountBatchEditFieldKey =
   | 'responseInspectionRules'
   | 'supportedModels'
   | 'healthCheckModel'
+  | 'healthCheckEndpointFamily'
   | 'modelMappings'
   | 'supportedEndpointModes'
   | 'serviceTierOverride'
@@ -61,6 +64,7 @@ export interface AccountBatchEditForm {
   responseInspectionRules: AccountResponseInspectionRuleForm[]
   supportedModels: string[]
   healthCheckModel: string
+  healthCheckEndpointFamily: AccountHealthCheckEndpointFamily
   modelMappings: AccountModelMapping[]
   supportedEndpointModes: AccountSupportedEndpointMode[]
   serviceTierOverride: AccountGptServiceTierOverride
@@ -86,6 +90,7 @@ export const accountBatchEditFieldLabels: Record<AccountBatchEditFieldKey, strin
   responseInspectionRules: '响应检查策略',
   supportedModels: '支持模型',
   healthCheckModel: '检查模型',
+  healthCheckEndpointFamily: '检查协议',
   modelMappings: '模型映射',
   supportedEndpointModes: '上游接口能力',
   serviceTierOverride: 'GPT 服务等级',
@@ -110,6 +115,7 @@ export function createAccountBatchEditForm(): AccountBatchEditForm {
     responseInspectionRules: [],
     supportedModels: [],
     healthCheckModel: '',
+    healthCheckEndpointFamily: 'chat_completions',
     modelMappings: [],
     supportedEndpointModes: [],
     serviceTierOverride: '',
@@ -186,6 +192,14 @@ export function buildAccountBatchEditRequest(
   if (form.enabled.supportedEndpointModes && !form.supportedEndpointModes.length) {
     return { message: '批量覆盖上游接口能力时至少选择一项' }
   }
+  if (form.enabled.healthCheckEndpointFamily) {
+    const endpointModes = form.enabled.supportedEndpointModes
+      ? form.supportedEndpointModes
+      : intersectAccountSupportedEndpointModes(accounts)
+    if (!accountHealthCheckEndpointFamilyOptions(endpointModes).some((option) => option.value === form.healthCheckEndpointFamily)) {
+      return { message: '检查协议必须选择全部目标账户已启用的非流式 JSON 能力' }
+    }
+  }
   const invalidMappingIndex = form.enabled.modelMappings
     ? form.modelMappings.findIndex((mapping) => (
         !mapping.sourceModel.trim()
@@ -229,6 +243,7 @@ export function buildAccountBatchEditRequest(
   )
   addUpdate(updates, 'supportedModels', form.enabled.supportedModels, supportedModels)
   addUpdate(updates, 'healthCheckModel', form.enabled.healthCheckModel, healthCheckModel)
+  addUpdate(updates, 'healthCheckEndpointFamily', form.enabled.healthCheckEndpointFamily, form.healthCheckEndpointFamily)
   addUpdate(
     updates,
     'modelMappings',

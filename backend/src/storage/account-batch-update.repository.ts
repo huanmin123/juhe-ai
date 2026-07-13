@@ -1,6 +1,7 @@
 import type {
   AccountAvailabilitySchedule,
   AccountClientCompatibility,
+  AccountHealthCheckEndpointFamily,
   AccountModelMapping,
   AccountStatus,
   AccountType
@@ -57,6 +58,7 @@ export interface AccountBatchUpdateLockedAccount {
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
   healthCheckModel: string
+  healthCheckEndpointFamily: AccountHealthCheckEndpointFamily
   supportedModels: string[]
   modelMappings: AccountModelMapping[]
   tags: string[]
@@ -85,6 +87,7 @@ export interface AccountBatchUpdatePreparedAccount {
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
   healthCheckModel: string
+  healthCheckEndpointFamily: AccountHealthCheckEndpointFamily
   supportedModels: string[]
   modelMappings: AccountModelMapping[]
   tags: string[]
@@ -169,6 +172,7 @@ export async function updateAccountsBatchAsync(input: {
             cooldown_retest_last_at = ?,
             cooldown_retest_last_status_code = ?,
             health_check_model = ?,
+            health_check_endpoint_family = ?,
             next_health_check_at = CASE WHEN ? = 1 THEN NULL ELSE next_health_check_at END,
             config_revision = config_revision + 1,
             updated_at = ?
@@ -198,6 +202,7 @@ export async function updateAccountsBatchAsync(input: {
         prepared.cooldownRetestLastAt ?? null,
         prepared.cooldownRetestLastStatusCode ?? null,
         prepared.healthCheckModel,
+        prepared.healthCheckEndpointFamily,
         prepared.resetHealthCheckState ? 1 : 0,
         updatedAt,
         prepared.accountId,
@@ -329,6 +334,7 @@ async function loadLockedAccountsAsync(
       cooldown_retest_last_at,
       cooldown_retest_last_status_code,
       health_check_model,
+      health_check_endpoint_family,
       authorization_instance_source_account_id,
       authorization_instance_authorization_id
     FROM ${accountBatchTable(client, 'accounts')}
@@ -369,6 +375,7 @@ async function loadLockedAccountsAsync(
     cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
     cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
     healthCheckModel: row.health_check_model.trim(),
+    healthCheckEndpointFamily: row.health_check_endpoint_family,
     supportedModels: related.supportedModels.get(row.id) ?? [],
     modelMappings: related.modelMappings.get(row.id) ?? [],
     tags: related.tags.get(row.id) ?? []
@@ -528,6 +535,7 @@ interface AccountBatchAccountRow {
   cooldown_retest_last_at: string | null
   cooldown_retest_last_status_code: number | null
   health_check_model: string
+  health_check_endpoint_family: AccountHealthCheckEndpointFamily
   authorization_instance_source_account_id: string | null
   authorization_instance_authorization_id: string | null
 }

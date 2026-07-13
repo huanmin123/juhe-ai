@@ -87,7 +87,7 @@ import {
 } from './authorization-preflight.js'
 import { resolveHybridGatewayRoute, type HybridGatewayRuntimeRoute } from '../hybrid/routing.service.js'
 import { resolveNormalGatewayModelRoute } from '../routing/normal-model-route.service.js'
-import { applyCodexResponsesChatBridgeStatePreflight } from '../codex-responses/chat-bridge-state.js'
+import { applyCodexResponsesContextStatePreflight } from '../codex-responses/chat-bridge-state.js'
 import { applyCodexResponsesChatBridgeCompactPreflight } from '../codex-responses/compact-preflight.js'
 import {
   recoverableUnavailableMaxWaitMs,
@@ -635,7 +635,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       }
     })
   }
-  const codexBridgeStatePreflight = await applyCodexResponsesChatBridgeStatePreflight({
+  const codexBridgeStatePreflight = await applyCodexResponsesContextStatePreflight({
     req,
     res,
     auditCapture,
@@ -645,8 +645,6 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyId,
     groupId,
     groupAccess,
-    requestClientCompatibility: clientStrategy.requestClientCompatibility,
-    rawCandidateAccounts,
     signal
   })
   if (codexBridgeStatePreflight === 'completed') {
@@ -801,7 +799,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     sameAccountRetryBudget,
     signal
   })
-  if (codexBridgeCompactPreflight === 'completed') {
+  if (codexBridgeCompactPreflight.outcome === 'completed') {
     dispatchPreparation.releaseClientIpConcurrency()
     return undefined
   }
@@ -809,7 +807,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   return {
     activeGatewaySettings,
     usageContext,
-    accounts: dispatchPreparation.accounts,
+    accounts: codexBridgeCompactPreflight.accounts,
     sessionAffinityKey,
     clientStrategy,
     clientIpAccountAvoidanceTracker,

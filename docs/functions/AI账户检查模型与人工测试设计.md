@@ -12,6 +12,13 @@
 - 列表保持轻量，测试所需交互数据在用户打开测试功能时按需获取。
 - 删除账户批量测试，避免用户一次性制造大量不稳定上游请求和复杂任务状态。
 
+## 健康检查协议族
+
+- 当前账户必须保存不可空 `healthCheckEndpointFamily`，数据库字段为 `health_check_endpoint_family`，仅允许 `chat_completions`、`responses`、`messages`、`generate_content`。
+- 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试固定映射为 `chat_json`、`responses_json`、`messages_json`、`generate_content_json`，系统探针始终非流式；人工测试仍可显式选择账户已启用的 SSE 请求形态。
+- 新账户默认：GPT 官方 API Key / OAuth 优先 Responses；通用 OpenAI-compatible、DeepSeek、GLM 和 Gemini OpenAI profile 优先 Chat Completions；Anthropic profile 优先 Messages；Gemini Native 优先 GenerateContent。
+- 首选族未启用时，取账户 `supported_endpoint_modes` 中第一个已启用的 JSON 族；没有任何可用 JSON 族时拒绝保存，不做旧字段兼容或运行时协议猜测。
+
 ## 2. 名称与字段
 
 页面名称：
@@ -49,7 +56,7 @@
 - 删除支持模型时如果命中当前检查模型，必须先重新选择，不能静默切换到其他模型。
 - 后台任务发现检查模型缺失、不可见或不属于支持模型时，记录“检查模型配置异常”并停止本轮探针，不能猜测其他模型，也不能因此把账户标记为上游不可用。
 
-检查请求的 endpoint / stream 形态由账户协议档案、账户声明的 endpoint modes 和模型协议能力统一解析，不增加用户可配置的“检查请求形态”字段。
+账户只向用户暴露必填的“健康检查协议族”，用于在已启用 JSON 能力中明确选择 Chat Completions、Responses、Messages 或 GenerateContent。系统不会暴露 stream / raw mode 等底层检查请求形态；协议族固定映射到对应非流式 JSON mode，人工测试才允许显式选择已启用的 SSE mode。
 
 ## 4. 默认检查模型
 

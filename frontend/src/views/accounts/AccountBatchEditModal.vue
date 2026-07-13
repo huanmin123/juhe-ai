@@ -49,6 +49,22 @@
               </AccountBatchEditField>
 
               <AccountBatchEditField
+                v-model:checked="form.enabled.healthCheckEndpointFamily"
+                :disabled="!homogeneousModelConfiguration"
+                label="检查协议"
+                description="后台检查固定使用所选协议族的非流式 JSON 请求。"
+              >
+                <template #default="{ disabled }">
+                  <a-select
+                    v-model:value="form.healthCheckEndpointFamily"
+                    :disabled="disabled || !healthCheckEndpointFamilyOptions.length"
+                    :options="healthCheckEndpointFamilyOptions"
+                    placeholder="选择检查协议"
+                  />
+                </template>
+              </AccountBatchEditField>
+
+              <AccountBatchEditField
                 v-model:checked="form.enabled.proxyProfileId"
                 label="代理"
                 description="选择统一代理；留空表示全部改为不使用代理。"
@@ -415,6 +431,7 @@ import {
   type AccountBatchEditForm
 } from './accountBatchEditForm'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
+import { accountHealthCheckEndpointFamilyOptions } from './accountHealthCheckEndpointFamily'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import {
   accountGptRequestOverrideCapabilities,
@@ -488,6 +505,12 @@ const effectiveBatchModels = computed(() => (
   form.enabled.supportedModels ? normalizedTextList(form.supportedModels) : sharedSupportedModels.value
 ))
 const healthCheckModelOptions = computed(() => effectiveBatchModels.value.map((model) => ({ label: model, value: model })))
+const effectiveBatchEndpointModes = computed(() => (
+  form.enabled.supportedEndpointModes
+    ? form.supportedEndpointModes
+    : intersectAccountSupportedEndpointModes(accountDetails.value)
+))
+const healthCheckEndpointFamilyOptions = computed(() => accountHealthCheckEndpointFamilyOptions(effectiveBatchEndpointModes.value))
 const mappingUpstreamModelOptions = computed(() => {
   const labels = new Map(modelOptions.value.map((option) => [option.value, option.label]))
   return effectiveBatchModels.value.map((model) => ({ label: labels.get(model) ?? model, value: model }))

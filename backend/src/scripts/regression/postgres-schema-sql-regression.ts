@@ -11,6 +11,13 @@ const dataRetentionSource = readFileSync('src/storage/data-retention.repository.
 const usagePartitionSource = readFileSync('src/storage/postgres-usage-record-partitions.ts', 'utf8')
 const tableMonitorSource = readFileSync('src/storage/table-monitor.repository.ts', 'utf8')
 const tableMonitorRoutesSource = readFileSync('src/modules/table-monitor/table-monitor.routes.ts', 'utf8')
+const postgresAccountFixtureSources = [
+  'src/scripts/regression/account-list-postgres-smoke.ts',
+  'src/scripts/regression/authorization-usage-range-postgres-smoke.ts',
+  'src/scripts/regression/client-ip-stats-postgres-smoke.ts',
+  'src/scripts/regression/performance-gateway-persistence-readiness-regression.ts',
+  'src/scripts/regression/usage-record-list-postgres-smoke.ts'
+].map((path) => ({ path, source: readFileSync(path, 'utf8') }))
 const schemaNames = new Set(statements.map((statement) => statement.schemaName))
 const usageRecordsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_usage' && /^CREATE TABLE IF NOT EXISTS usage_records\b/i.test(statement.sql))?.sql ?? ''
 
@@ -75,8 +82,16 @@ assert.match(sql, /codex_context_sessions[\s\S]+storage_offset_bytes bigint NOT 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策略路由表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategy_groups/, '应包含策略路由分组绑定表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_model text NOT NULL/, 'AI 账户新建 schema 应直接包含账户检查模型字段')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_endpoint_family text NOT NULL[\s\S]+CHECK \(health_check_endpoint_family IN \('chat_completions', 'responses', 'messages', 'generate_content'\)\)/, 'AI 账户新建 schema 应直接包含受约束的健康检查协议族')
 assert.doesNotMatch(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+last_successful_test_model text/, 'AI 账户新建 schema 不应继续包含旧的最后成功测试模型字段')
 assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+health_check_model text NOT NULL/, 'Go 公开账户 baseline 应包含账户检查模型字段')
+assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+health_check_endpoint_family text NOT NULL[\s\S]+CHECK \(health_check_endpoint_family IN \('chat_completions', 'responses', 'messages', 'generate_content'\)\)/, 'Go 公开账户 baseline 应包含受约束的健康检查协议族')
+for (const fixture of postgresAccountFixtureSources) {
+  for (const match of fixture.source.matchAll(/INSERT INTO juhe_business\.accounts\s*\(([\s\S]*?)\)\s*(?:VALUES|SELECT)/gi)) {
+    assert.match(match[1], /\bhealth_check_model\b/, `${fixture.path} 的账户 fixture 必须写入 health_check_model`)
+    assert.match(match[1], /\bhealth_check_endpoint_family\b/, `${fixture.path} 的账户 fixture 必须写入 health_check_endpoint_family`)
+  }
+}
 assert.doesNotMatch(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+last_successful_test_model text/, 'Go 公开账户 baseline 不应包含旧的最后成功测试模型字段')
 assert.match(sql, /route_strategy_id text NOT NULL/, 'api_keys 建表语句应强制绑定 route_strategy_id')
 assert.match(sql, /api_keys[\s\S]+is_default integer NOT NULL DEFAULT 0/, 'api_keys 建表语句应包含默认 API Key 标识')

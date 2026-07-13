@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   last_error_code text,
   last_error_message text,
   health_check_model text NOT NULL,
+  health_check_endpoint_family text NOT NULL
+    CHECK (health_check_endpoint_family IN ('chat_completions', 'responses', 'messages', 'generate_content')),
   deleted_at timestamptz,
   deleted_by text,
   created_at timestamptz NOT NULL,

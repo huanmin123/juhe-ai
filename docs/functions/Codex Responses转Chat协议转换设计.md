@@ -176,6 +176,29 @@ Chat 上游通常不认识 `previous_response_id`。目标设计中，该字段�
 3. 恢复后的完整上下文重新进入 Responses -> Chat 转换，Chat 上游只收到普通 `messages`、`tools` 和供应商允许的字段。
 4. 状态找不到、过期、跨分组、跨供应商或工具状态不完整时，返回受控错误，不把缺失历史的请求发给上游。
 
+### 混合候选账号的请求渲染边界
+
+同一分组可能同时包含原生 Responses 账号和显式 `responses -> chat_completions` 映射账号。此时不能在账号筛选前按“分组里存在桥接账号”提前改写请求体，否则桥接状态、网关自有 compact 摘要或已删除的 `previous_response_id` 会污染随后选中的原生 Responses 上游。
+
+请求处理固定分为两阶段：
+
+1. 预检阶段只解析规范请求体、解析 `juhecmp.v2` 引用并识别 `previous_response_id` 来源，不修改网关请求体。
+2. 每次实际派发前，按本次选中的账号重新从规范请求体渲染上游请求；切号重试时不得复用上一账号改写后的 body。
+
+规范请求体不是“最早预检快照”。图像权限、路由模型选择等公共预检在首次派发前产生的合法改写必须合入派发基线；质量检查重试等在派发期间追加的修复内容也必须更新下一次渲染基线。账号专属渲染结果本身不能反向覆盖基线，只有账号渲染之后出现的新公共改写才允许同步。
+
+按实际账号的渲染规则：
+
+- 显式 Responses -> Chat 映射账号：恢复网关内部状态，消费内部 `previous_response_id`，把网关 compact 摘要展开为 Chat history；成功完成后才续写桥接状态。
+- 原生 Responses 账号：保留原生 Responses item；如果请求里包含网关内部 `juhecmp.v1` 摘要，则转成普通 `developer` 文本消息，禁止把网关私有 envelope 发送给原生上游。
+- 原生上游返回的 opaque `encrypted_content` 不属于网关 compact，不解码、不改写。
+- 网关已识别的内部桥接 `previous_response_id` 不发送给原生上游；无法识别为本地桥接状态的外部 `previous_response_id` 保留给原生 Responses 上游，并排除显式 Chat bridge 账号。
+- `clientCompatibility=codex_responses` 只是客户端兼容画像，不能替代账号的显式模型映射，也不能单独触发 Chat bridge 状态处理。
+
+`POST /responses/compact` 也必须先区分状态来源：内部 bridge `previous_response_id` 只进入网关摘要链路且摘要候选只包含显式 Chat bridge 账号；外部原生 `previous_response_id` 只进入原生 Responses 账号。请求没有 previous id 且候选池同时存在原生与 bridge 账号时优先原生 compact，不能因为池中“存在一个 bridge”就全局截获。
+
+内部桥接 response id 只识别共享 Responses -> Chat 转换层当前生成的固定前缀。不能把所有 `resp_*` 都当成本地状态，因为原生 OpenAI Responses 的合法 id 使用同一公共前缀。
+
 ### Gateway summary compact 目标处理
 
 Chat-only compact 的摘要模型只能在当前请求授权边界内选择：

@@ -2,7 +2,7 @@
   <a-card class="page-card responsive-page-card">
     <UsageRecordsFilterToolbar
       v-model:keyword="accountNameFilter"
-      v-model:date-range="dateRangeFilter"
+      :date-range="dateRangeFilter"
       v-model:group-id="groupFilter"
       v-model:group-selection="groupFilterSelection"
       v-model:client-ip="clientIpFilter"
@@ -15,6 +15,7 @@
       v-model:traffic-source="trafficSourceFilter"
       :active-filter-count="activeFilterCount"
       :advanced-filter-count="advancedFilterCount"
+      :business-filters-disabled="businessFiltersDisabled"
       :group-disabled="groupFilterDisabled"
       :group-options="groups"
       :group-options-loading="groupOptionsLoading"
@@ -35,6 +36,7 @@
       @system-account-change="handleSystemAccountFilterChange"
       @system-account-dropdown="handleSystemAccountOptionsDropdown"
       @system-account-search="handleSystemAccountOptionsSearch"
+      @update:date-range="handleDateRangeUpdate"
     >
       <template #actions>
         <TableColumnManager
@@ -56,7 +58,7 @@
       :loading-more="mobileLoadingMore"
       :pagination="tablePagination"
       :records="filteredRecords"
-      :empty-description="usageRecordEmptyDescription"
+      empty-description="当前条件下没有使用记录。"
       @change="handleTableChange"
       @copy-trace-id="copyTraceId"
       @mobile-load-more="loadMoreMobileRecords"
@@ -69,10 +71,11 @@
 <script setup lang="ts">
 import { message } from '@/lib/antd'
 import type { Dayjs } from 'dayjs'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
+import { api } from '@/api/client'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
@@ -84,7 +87,7 @@ import { copyTextToClipboard } from '@/shared/clipboard'
 import { rememberGroupLabel, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { trimmedRouteQueryValue } from '@/shared/routeQuery'
-import type { UsageRecordListResult, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
+import type { UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
 import UsageRecordsTable from './UsageRecordsTable.vue'
@@ -110,10 +113,11 @@ import { useUsageRecordModelOptions } from './useUsageRecordModelOptions'
 import { useUsageRecordTraceRoute } from './useUsageRecordTraceRoute'
 
 type TraceTarget = 'audit' | 'runtime'
+const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 const route = useRoute()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const defaultPageState = () => defaultUsageRecordsPageState(defaultUsageRecordTrafficSourceFilter(route.meta.viewScope === 'admin'))
-const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultPageState, { version: 10 })
+const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultPageState, { version: 11 })
 const initialRouteTraceId = trimmedRouteQueryValue(route.query.traceId)
 const cachedInitialPageState = pageStateCache.read()
 const initialPageState = initialRouteTraceId
@@ -123,6 +127,10 @@ const initialPageState = initialRouteTraceId
 const accountNameFilter = ref(initialPageState.accountNameFilter)
 const clientIpFilter = ref(initialPageState.clientIpFilter ?? '')
 const dateRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseUsageRecordDateRange(initialPageState.dateRangeFilter))
+const dateMode = ref(initialPageState.dateMode)
+const deploymentTimezone = ref(browserTimezone)
+const autoDateRolloverTimer = ref<ReturnType<typeof setTimeout>>()
+const autoDateLifecycleActive = ref(false)
 const groupFilterSelection = ref<GroupSelection | undefined>(initialPageState.groupFilter)
 const modelFilter = ref(initialPageState.modelFilter ?? '')
 const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
@@ -141,8 +149,11 @@ const groupFilter = computed({
     groupFilterSelection.value = selectedGroupSelection(id)
   }
 })
-const requiresSystemAccountSelection = ref(isManagementView.value && !scopedSystemAccountId(systemAccountFilter.value))
 const groupFilterDisabled = computed(() => isManagementView.value && !scopedSystemAccountId(systemAccountFilter.value))
+const businessFiltersDisabled = computed(() => isManagementView.value && !scopedSystemAccountId(systemAccountFilter.value))
+if (businessFiltersDisabled.value) {
+  restoreAllSystemAccountsAutoFilters()
+}
 const { loadModelOptions, modelOptions, modelOptionsLoading } = useUsageRecordModelOptions()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
@@ -221,9 +232,6 @@ const {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载使用记录失败'))
   },
-  onLoaded: (result) => {
-    requiresSystemAccountSelection.value = Boolean((result as UsageRecordListResult).requiresSystemAccountSelection)
-  }
 })
 
 const resultOptions = [
@@ -253,7 +261,7 @@ function filterCountInput() {
   return {
     accountName: accountNameFilter.value,
     clientIp: clientIpFilter.value,
-    dateRangeSelected: Boolean(dateRangeFilter.value),
+    dateRangeSelected: dateMode.value === 'manual' && Boolean(dateRangeFilter.value),
     groupId: groupFilter.value,
     model: modelFilter.value,
     result: resultFilter.value,
@@ -267,8 +275,6 @@ function filterCountInput() {
 
 const filteredRecords = computed(() => records.value)
 const mobileRecords = computed(() => records.value)
-const usageRecordEmptyDescription = computed(() => requiresSystemAccountSelection.value ? '请先选择系统账户。' : '当前条件下没有使用记录。')
-
 const rawColumns = computed(() => {
   return usageRecordTableColumns({
     isManagementView: isManagementView.value,
@@ -299,7 +305,8 @@ function resetFilters(): void {
   const defaults = defaultPageState()
   accountNameFilter.value = defaults.accountNameFilter
   clientIpFilter.value = defaults.clientIpFilter
-  dateRangeFilter.value = parseUsageRecordDateRange(defaults.dateRangeFilter)
+  dateRangeFilter.value = autoTodayDateRange()
+  dateMode.value = defaults.dateMode
   groupFilterSelection.value = defaults.groupFilter
   modelFilter.value = defaults.modelFilter
   resultFilter.value = defaults.resultFilter
@@ -319,7 +326,9 @@ function resetFilters(): void {
 async function handleTableChange(paginationInfo: unknown, _filters: unknown, sorter: unknown): Promise<void> {
   updatePaginationFromTable(paginationInfo)
   const normalized = normalizeUsageRecordTableSorter(sorter)
-  sortState.value = normalized ?? { field: 'createdAt', order: 'descend' }
+  sortState.value = businessFiltersDisabled.value
+    ? { field: 'createdAt', order: 'descend' }
+    : normalized ?? { field: 'createdAt', order: 'descend' }
   await loadData()
 }
 
@@ -338,6 +347,11 @@ function applyFilters(): void {
   traceRoute.clearRouteTraceIdForManualState()
   resetPagination()
   void loadData()
+}
+
+function handleDateRangeUpdate(value?: [Dayjs, Dayjs]): void {
+  dateRangeFilter.value = value
+  dateMode.value = 'manual'
 }
 
 function refreshRecords(): void {
@@ -363,6 +377,7 @@ function applyPageState(state: UsageRecordsPageState): void {
   accountNameFilter.value = state.accountNameFilter
   clientIpFilter.value = state.clientIpFilter
   dateRangeFilter.value = parseUsageRecordDateRange(state.dateRangeFilter)
+  dateMode.value = state.dateMode
   groupFilterSelection.value = state.groupFilter
   modelFilter.value = state.modelFilter
   resultFilter.value = state.resultFilter
@@ -376,6 +391,9 @@ function applyPageState(state: UsageRecordsPageState): void {
   pagination.pageSize = state.pagination.pageSize
   resetSystemAccountOptionsSearch()
   resetGroupOptionsSearch()
+  if (businessFiltersDisabled.value) {
+    restoreAllSystemAccountsAutoFilters()
+  }
 }
 
 function handleGroupFilterChange(): void {
@@ -387,6 +405,7 @@ function handleSystemAccountFilterChange(): void {
   groupFilterSelection.value = undefined
   if (systemAccountFilter.value === allSystemAccountsValue) {
     systemAccountFilterSelection.value = undefined
+    restoreAllSystemAccountsAutoFilters()
   }
   resetSystemAccountOptionsSearch()
   resetGroupOptionsSearch()
@@ -394,22 +413,22 @@ function handleSystemAccountFilterChange(): void {
   void loadData({ forceOptions: true })
 }
 
-async function fetchRecords(pageState: { current: number; pageSize: number }) {
-  if (isManagementView.value && !scopedSystemAccountId(systemAccountFilter.value)) {
-    return emptyUsageRecordListResult(pageState, true)
-  }
-  return usageRecordsApi.list(usageRecordRequestParams(pageState))
+function restoreAllSystemAccountsAutoFilters(): void {
+  accountNameFilter.value = ''
+  clientIpFilter.value = ''
+  dateRangeFilter.value = autoTodayDateRange()
+  dateMode.value = 'auto'
+  groupFilterSelection.value = undefined
+  modelFilter.value = ''
+  resultFilter.value = 'all'
+  statusCodeFilter.value = ''
+  traceIdFilter.value = ''
+  trafficSourceFilter.value = 'all'
+  sortState.value = { field: 'createdAt', order: 'descend' }
 }
 
-function emptyUsageRecordListResult(pageState: { current: number; pageSize: number }, requiresSystemAccountSelection = false): UsageRecordListResult {
-  return {
-    items: [],
-    total: 0,
-    hasMore: false,
-    page: pageState.current,
-    pageSize: pageState.pageSize,
-    requiresSystemAccountSelection
-  }
+async function fetchRecords(pageState: { current: number; pageSize: number }) {
+  return usageRecordsApi.list(usageRecordRequestParams(pageState))
 }
 
 function usageRecordRequestParams(pageState: { current: number; pageSize: number }) {
@@ -419,7 +438,7 @@ function usageRecordRequestParams(pageState: { current: number; pageSize: number
     pageSize: pageState.pageSize,
     accountName: accountNameFilter.value,
     clientIp: clientIpFilter.value,
-    dateRange: usageRecordDateRangeParam(dateRangeFilter.value),
+    dateRange: dateMode.value === 'manual' ? usageRecordDateRangeParam(dateRangeFilter.value) : undefined,
     groupId: groupFilter.value,
     model: modelFilter.value,
     result: resultFilter.value,
@@ -455,6 +474,7 @@ function snapshotPageState(): UsageRecordsPageState {
     accountNameFilter: accountNameFilter.value,
     clientIpFilter: clientIpFilter.value,
     dateRangeFilter: usageRecordDateRangeParam(dateRangeFilter.value),
+    dateMode: dateMode.value,
     groupFilter: groupFilterSelection.value,
     modelFilter: modelFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
@@ -466,6 +486,105 @@ function snapshotPageState(): UsageRecordsPageState {
     traceIdFilter: traceIdFilter.value,
     trafficSourceFilter: trafficSourceFilter.value
   }
+}
+
+function refreshAutoDateAfterRollover(): void {
+  if (!autoDateLifecycleActive.value || dateMode.value !== 'auto') return
+  const nextRange = autoTodayDateRange()
+  const current = usageRecordDateRangeParam(dateRangeFilter.value)
+  const next = usageRecordDateRangeParam(nextRange)
+  if (current?.[0] === next?.[0] && current?.[1] === next?.[1]) return
+  dateRangeFilter.value = nextRange
+  resetPagination()
+  void loadData()
+}
+
+function scheduleAutoDateRollover(): void {
+  clearAutoDateRolloverTimer()
+  if (!autoDateLifecycleActive.value || dateMode.value !== 'auto') return
+  const now = new Date()
+  autoDateRolloverTimer.value = setTimeout(() => {
+    refreshAutoDateAfterRollover()
+    scheduleAutoDateRollover()
+  }, millisecondsUntilNextDeploymentDay(now) + 100)
+}
+
+function autoTodayDateRange(): [Dayjs, Dayjs] | undefined {
+  const today = deploymentDateKey(new Date())
+  return parseUsageRecordDateRange([today, today])
+}
+
+function deploymentDateKey(value: Date): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: deploymentTimezone.value,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(value)
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? ''
+  return `${part('year')}-${part('month')}-${part('day')}`
+}
+
+function millisecondsUntilNextDeploymentDay(now: Date): number {
+  const currentKey = deploymentDateKey(now)
+  let low = now.getTime()
+  let high = low + 30 * 60 * 60 * 1000
+  while (high - low > 1000) {
+    const middle = low + Math.floor((high - low) / 2)
+    if (deploymentDateKey(new Date(middle)) === currentKey) {
+      low = middle
+    } else {
+      high = middle
+    }
+  }
+  return Math.max(1, high - now.getTime())
+}
+
+async function loadDeploymentTimezone(): Promise<void> {
+  if (!isManagementView.value) return
+  try {
+    const settings = await api.settings.get()
+    deploymentTimezone.value = settings.usageStatsTimezone
+    refreshAutoDateAfterRollover()
+    scheduleAutoDateRollover()
+  } catch {
+    // The list API still applies the deployment timezone when auto mode omits dates.
+  }
+}
+
+function clearAutoDateRolloverTimer(): void {
+  if (autoDateRolloverTimer.value === undefined) return
+  clearTimeout(autoDateRolloverTimer.value)
+  autoDateRolloverTimer.value = undefined
+}
+
+function handleVisibilityChange(): void {
+  if (document.visibilityState !== 'visible') return
+  refreshAutoDateAfterRollover()
+  scheduleAutoDateRollover()
+}
+
+function handleWindowFocus(): void {
+  refreshAutoDateAfterRollover()
+  scheduleAutoDateRollover()
+}
+
+function activateAutoDateLifecycle(): void {
+  if (autoDateLifecycleActive.value) return
+  autoDateLifecycleActive.value = true
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  window.addEventListener('focus', handleWindowFocus)
+  refreshAutoDateAfterRollover()
+  scheduleAutoDateRollover()
+}
+
+function deactivateAutoDateLifecycle(): void {
+  if (autoDateLifecycleActive.value) {
+    autoDateLifecycleActive.value = false
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
+    window.removeEventListener('focus', handleWindowFocus)
+  }
+  clearAutoDateRolloverTimer()
 }
 
 watch(snapshotPageState, () => {
@@ -489,11 +608,20 @@ watch(records, (items) => {
   syncSelectedGroupSelection()
 }, { immediate: true })
 watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
+watch(dateMode, scheduleAutoDateRollover)
 
 onBeforeUnmount(() => {
   clearGroupOptionsSearchTimer()
+  deactivateAutoDateLifecycle()
   traceRoute.stop()
 })
 
-onMounted(loadData)
+onActivated(activateAutoDateLifecycle)
+onDeactivated(deactivateAutoDateLifecycle)
+
+onMounted(() => {
+  activateAutoDateLifecycle()
+  void loadDeploymentTimezone()
+  void loadData()
+})
 </script>

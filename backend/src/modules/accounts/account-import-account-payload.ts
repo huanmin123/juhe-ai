@@ -1,4 +1,4 @@
-import { type AccountAvailabilitySchedule, type AccountModelMapping, type AccountType } from '../../domain/types.js'
+import { type AccountAvailabilitySchedule, type AccountHealthCheckEndpointFamily, type AccountModelMapping, type AccountType } from '../../domain/types.js'
 import { type AccountImportStatus } from './account-import-field-parser.js'
 
 export interface AccountImportCreatePayloadAccount {
@@ -14,6 +14,7 @@ export interface AccountImportCreatePayloadAccount {
   fallbackEnabled?: boolean
   supportedModels?: string[]
   healthCheckModel?: string
+  healthCheckEndpointFamily?: AccountHealthCheckEndpointFamily
   modelMappings?: AccountModelMapping[]
   tags?: string[]
   accountExpiresAt?: string
@@ -46,6 +47,7 @@ export function buildAccountImportCreatePayload(
   if (account.fallbackEnabled !== undefined) payload.fallbackEnabled = account.fallbackEnabled
   if (account.supportedModels !== undefined) payload.supportedModels = account.supportedModels
   if (account.healthCheckModel !== undefined) payload.healthCheckModel = account.healthCheckModel
+  if (account.healthCheckEndpointFamily !== undefined) payload.healthCheckEndpointFamily = account.healthCheckEndpointFamily
   if (account.modelMappings !== undefined) payload.modelMappings = account.modelMappings
   if (account.tags !== undefined) payload.tags = account.tags
   if (account.accountExpiresAt !== undefined) payload.accountExpiresAt = account.accountExpiresAt

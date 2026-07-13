@@ -11,6 +11,7 @@ import type {
 } from '@/api/domains/accounts'
 import { accountOperationScopeParams } from './accountOperationScope'
 import type { AccountTestEndpointMode, AccountTestForm } from './accountTestFlow'
+import { prioritizeAccountTestEndpointModes } from './accountEndpointModes'
 
 type UseAccountTestModelsInput = {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -42,14 +43,15 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
         : await api.myAccounts.testOptions(account.id)
       if (!isCurrentModelRequest(requestToken) || response.accountId !== account.id) return undefined
       testModelOptions.value = normalizeModelOptions(response.models)
-      testEndpointModes.value = normalizeEndpointModes(response.testEndpointModes)
+      testEndpointModes.value = prioritizeAccountTestEndpointModes(
+        normalizeEndpointModes(response.testEndpointModes),
+        account.healthCheckEndpointFamily
+      )
       const defaultModel = response.defaultModel.trim()
       input.testForm.model = testModelOptions.value.some((option) => option.value === defaultModel)
         ? defaultModel
         : testModelOptions.value[0]?.value ?? ''
-      input.testForm.testEndpointMode = testEndpointModes.value.includes(response.defaultTestEndpointMode)
-        ? response.defaultTestEndpointMode
-        : testEndpointModes.value[0] ?? 'account_default'
+      input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'
       return response
     } finally {
       if (isCurrentModelRequest(requestToken)) {

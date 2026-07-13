@@ -14,7 +14,7 @@ import { transformGatewayUpstreamResponseForAccount } from '../../providers/driv
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import {
   codexResponsesChatBridgeCompletionHandlerForRequest,
-  getCodexResponsesChatBridgeRequestState
+  getCodexResponsesContextState
 } from '../codex-responses/chat-bridge-state.js'
 
 interface PerformUpstreamRequestAttemptInput {
@@ -119,12 +119,13 @@ export async function performUpstreamRequestAttempt(
     })
   }
 
-  const codexBridgeState = getCodexResponsesChatBridgeRequestState(req)
+  const codexBridgeState = getCodexResponsesContextState(req)
+  const codexBridgeCompletionHandler = codexResponsesChatBridgeCompletionHandlerForRequest(req, account)
   return transformGatewayUpstreamResponseForAccount(req, account, response, {
     requestClientCompatibility,
     continueUpstreamJsonRequest,
-    codexResponsesChatBridgePreviousResponseId: codexBridgeState?.previousResponseId,
-    codexResponsesChatBridgeCompletionHandler: codexResponsesChatBridgeCompletionHandlerForRequest(req, account),
+    codexResponsesChatBridgePreviousResponseId: codexBridgeCompletionHandler ? codexBridgeState?.previousResponseId : undefined,
+    codexResponsesChatBridgeCompletionHandler: codexBridgeCompletionHandler,
     codexResponsesChatBridgeContinueChatRequest: async (nextBody) => {
       return continueUpstreamJsonRequest(nextBody, 'gateway_codex_bridge_continue_chat_request_started')
     }
