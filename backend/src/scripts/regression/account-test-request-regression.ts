@@ -154,7 +154,7 @@ const serviceSource = readFileSync(resolve('src/modules/accounts/account-test.se
 assert.match(serviceSource, /normalizedAccountTestEndpointModes/, '测试服务必须从账号接口能力限制解析可测试形态')
 assert.match(serviceSource, /resolveAccountTestEndpointMode/, '测试服务必须校验本次 testEndpointMode 是否被账号接口能力限制允许')
 assert.match(serviceSource, /handleOpenAIGatewayRequest/, '真实网关测试编排仍应留在 account-test.service.ts')
-assert.match(serviceSource, /candidateAccounts:\s*\[resolved\.account\]/, '测试服务仍应固定候选账号')
+assert.match(serviceSource, /candidateAccounts:\s*\[diagnosticCandidate\]/, '测试服务仍应固定当前诊断候选账号')
 assert.match(serviceSource, /disableSessionAffinity:\s*true/, '测试服务仍应禁用 session affinity')
 assert.match(serviceSource, /trafficSource:\s*input\.trafficSource\s*\?\?\s*'manual_account_test'/, '测试服务仍应保留 manual_account_test 默认来源')
 assert.match(serviceSource, /resolveOpenAIRequestModelMapping/, '账户测试必须解析本次真实请求命中的模型映射')

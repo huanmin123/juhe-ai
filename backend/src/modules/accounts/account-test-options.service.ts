@@ -3,7 +3,10 @@ import {
   isGeminiProtocolProfile,
   isOpenAIProtocolProfile
 } from '../../domain/provider-protocol.js'
-import type { AccountSummary } from '../../domain/types.js'
+import { normalizeAnthropicEndpointModesForRuntime } from '../../domain/anthropic-endpoint-modes.js'
+import { normalizeGeminiEndpointModesForRuntime } from '../../domain/gemini-endpoint-modes.js'
+import { normalizeOpenAIEndpointModesForRuntime } from '../../domain/openai-endpoint-modes.js'
+import type { AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
   listProviderModelCatalogAsync,
   type ProviderModelCatalogItem
@@ -19,6 +22,8 @@ export interface AccountManualTestOptions {
   accountId: string
   defaultModel: string
   models: AccountManualTestOption[]
+  testEndpointModes: AccountSupportedEndpointMode[]
+  defaultTestEndpointMode: AccountSupportedEndpointMode
 }
 
 export async function accountManualTestOptionsAsync(account: AccountSummary): Promise<AccountManualTestOptions> {
@@ -40,10 +45,17 @@ export async function accountManualTestOptionsAsync(account: AccountSummary): Pr
   if (!models.some((item) => item.model === account.healthCheckModel)) {
     throw new Error(`账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：${account.healthCheckModel}`)
   }
+  const testEndpointModes = accountManualTestEndpointModes(account)
+  const defaultTestEndpointMode = testEndpointModes[0]
+  if (!defaultTestEndpointMode) {
+    throw new Error('账户接口能力限制中没有可用于连接测试的请求形态')
+  }
   return {
     accountId: account.id,
     defaultModel: account.healthCheckModel,
-    models
+    models,
+    testEndpointModes,
+    defaultTestEndpointMode
   }
 }
 
@@ -73,4 +85,52 @@ function isAccountManualTestModel(item: ProviderModelCatalogItem, account: Accou
     return protocols.some((protocol) => protocol === 'generate_content' || protocol === 'stream_generate_content')
   }
   return false
+}
+
+function accountManualTestEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
+  const modes = normalizedAccountEndpointModes(account)
+  return accountTestEndpointModeOrder(account).filter((mode) => modes.includes(mode))
+}
+
+function normalizedAccountEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
+  if (isAnthropicProtocolProfile(account)) {
+    return normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
+      providerCode: account.providerCode,
+      accountType: account.type,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion,
+      providerProtocolProfileId: account.providerProtocolProfileId
+    })
+  }
+  if (isGeminiProtocolProfile(account)) {
+    return normalizeGeminiEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
+      providerCode: account.providerCode,
+      accountType: account.type,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion,
+      providerProtocolProfileId: account.providerProtocolProfileId
+    })
+  }
+  if (isOpenAIProtocolProfile(account)) {
+    return normalizeOpenAIEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      accountType: account.type,
+      clientCompatibility: account.clientCompatibility
+    })
+  }
+  return []
+}
+
+function accountTestEndpointModeOrder(account: AccountSummary): AccountSupportedEndpointMode[] {
+  if (isAnthropicProtocolProfile(account)) {
+    return ['messages_sse', 'messages_json']
+  }
+  if (isGeminiProtocolProfile(account)) {
+    return ['generate_content_sse', 'generate_content_json']
+  }
+  if (account.type === 'oauth') {
+    return ['responses_sse', 'responses_json']
+  }
+  return ['chat_sse', 'responses_sse', 'chat_json', 'responses_json']
 }

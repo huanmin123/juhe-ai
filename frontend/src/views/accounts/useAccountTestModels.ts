@@ -3,15 +3,13 @@ import { ref, type ComputedRef } from 'vue'
 import { api } from '@/api/client'
 import type {
   AccountSupportedEndpointMode,
-  AccountSummary,
-  ProviderModelApiProtocol
+  AccountSummary
 } from '@/types/domain'
 import type {
   AccountTestModelOption,
   AccountTestOptions
 } from '@/api/domains/accounts'
 import { accountOperationScopeParams } from './accountOperationScope'
-import { accountTestEndpointModesForAccount } from './accountEndpointModes'
 import type { AccountTestEndpointMode, AccountTestForm } from './accountTestFlow'
 
 type UseAccountTestModelsInput = {
@@ -26,11 +24,9 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
   const testModelReadonly = ref(false)
   const testEndpointModes = ref<AccountSupportedEndpointMode[]>([])
   let modelRequestToken = 0
-  let selectableAccount: AccountSummary | undefined
 
   async function loadSavedAccountTestOptions(account: AccountSummary): Promise<AccountTestOptions | undefined> {
     const requestToken = nextModelRequestToken()
-    selectableAccount = undefined
     testModelsLoading.value = true
     testModelReadonly.value = false
     testModelOptions.value = []
@@ -45,13 +41,15 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
         )
         : await api.myAccounts.testOptions(account.id)
       if (!isCurrentModelRequest(requestToken) || response.accountId !== account.id) return undefined
-      selectableAccount = account
       testModelOptions.value = normalizeModelOptions(response.models)
+      testEndpointModes.value = normalizeEndpointModes(response.testEndpointModes)
       const defaultModel = response.defaultModel.trim()
       input.testForm.model = testModelOptions.value.some((option) => option.value === defaultModel)
         ? defaultModel
         : testModelOptions.value[0]?.value ?? ''
-      refreshSelectableEndpointModes()
+      input.testForm.testEndpointMode = testEndpointModes.value.includes(response.defaultTestEndpointMode)
+        ? response.defaultTestEndpointMode
+        : testEndpointModes.value[0] ?? 'account_default'
       return response
     } finally {
       if (isCurrentModelRequest(requestToken)) {
@@ -62,7 +60,6 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
 
   function useFixedTestModel(model: string, endpointModes: AccountSupportedEndpointMode[]): void {
     nextModelRequestToken()
-    selectableAccount = undefined
     const normalizedModel = model.trim()
     testModelsLoading.value = false
     testModelReadonly.value = true
@@ -82,9 +79,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     const normalizedModel = model.trim()
     if (normalizedModel) {
       input.testForm.model = normalizedModel
-      if (testModelOptions.value.some((option) => option.value === normalizedModel)) {
-        refreshSelectableEndpointModes()
-      } else if (fallbackEndpointModes.length) {
+      if (!testEndpointModes.value.length && fallbackEndpointModes.length) {
         testEndpointModes.value = normalizeEndpointModes(fallbackEndpointModes)
       }
     }
@@ -101,12 +96,10 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     const normalizedModel = model.trim()
     if (!testModelOptions.value.some((option) => option.value === normalizedModel)) return
     input.testForm.model = normalizedModel
-    refreshSelectableEndpointModes()
   }
 
   function resetTestModels(): void {
     nextModelRequestToken()
-    selectableAccount = undefined
     testModelsLoading.value = false
     testModelReadonly.value = false
     testModelOptions.value = []
@@ -122,18 +115,6 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
 
   function isCurrentModelRequest(requestToken: number): boolean {
     return requestToken === modelRequestToken
-  }
-
-  function refreshSelectableEndpointModes(): void {
-    if (!selectableAccount) return
-    const selectedOption = testModelOptions.value.find((option) => option.value === input.testForm.model)
-    testEndpointModes.value = endpointModesForModel(selectableAccount, selectedOption?.supportedApiProtocols ?? [])
-    if (
-      input.testForm.testEndpointMode === 'account_default'
-      || !testEndpointModes.value.includes(input.testForm.testEndpointMode)
-    ) {
-      input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'
-    }
   }
 
   return {
@@ -167,40 +148,4 @@ function normalizeModelOptions(options: AccountTestOptions['models']): AccountTe
 
 function normalizeEndpointModes(modes: AccountSupportedEndpointMode[]): AccountSupportedEndpointMode[] {
   return [...new Set(modes)]
-}
-
-function endpointModesForModel(
-  account: AccountSummary,
-  supportedApiProtocols: ProviderModelApiProtocol[]
-): AccountSupportedEndpointMode[] {
-  const accountModes = accountTestEndpointModesForAccount(account)
-  const protocolModes = normalizeEndpointModes(
-    supportedApiProtocols.flatMap((protocol) => endpointModesForProtocol(protocol))
-  )
-  if (!protocolModes.length) return accountModes
-  const supportedModes = new Set(protocolModes)
-  return accountModes.filter((mode) => supportedModes.has(mode))
-}
-
-function endpointModesForProtocol(protocol: ProviderModelApiProtocol): AccountSupportedEndpointMode[] {
-  switch (protocol) {
-    case 'chat_completions':
-      return ['chat_sse', 'chat_json']
-    case 'responses':
-      return ['responses_sse', 'responses_json']
-    case 'messages':
-      return ['messages_sse', 'messages_json']
-    case 'message_token_counting':
-      return ['message_token_counting']
-    case 'generate_content':
-      return ['generate_content_json']
-    case 'stream_generate_content':
-      return ['generate_content_sse']
-    case 'count_tokens':
-      return ['count_tokens']
-    case 'embed_content':
-      return ['embed_content']
-    default:
-      return []
-  }
 }
