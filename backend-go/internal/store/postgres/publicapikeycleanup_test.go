@@ -74,7 +74,7 @@ func TestAPIKeyCleanupTargetSQLCNameIsSharedAcrossPostgresAdapters(t *testing.T)
 			if err != nil {
 				t.Fatalf("read %s: %v", tt.path, err)
 			}
-			text := string(source)
+			text := strings.ReplaceAll(string(source), "\r\n", "\n")
 			for _, required := range tt.required {
 				if !strings.Contains(text, required) {
 					t.Fatalf("%s missing %q", tt.path, required)
