@@ -18,6 +18,7 @@ import { requestBackgroundWorkerDbService } from '../background/background-ipc.j
 import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { requestUpstream, UpstreamRequestAbortedError, UpstreamRequestTimeoutError } from '../gateway/upstream/request.js'
 import { parseCustomBalance, parseLiteLlmBalance, parseNewApiBalance, parseSub2ApiBalance, parseUserBalance } from './account-balance-adapters.js'
+import { effectiveAccountApiKeys, MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE } from './account-balance-config.js'
 
 const responseMaxBytes = 256 * 1024
 const requestTimeoutMs = 15_000
@@ -365,11 +366,9 @@ async function requestJson(url: URL, context: AccountBalanceRequestContext): Pro
 }
 
 function accountApiKey(credentials: Record<string, unknown>): string {
-  if (Array.isArray(credentials.api_keys)) {
-    const keys = credentials.api_keys.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    if (keys.length === 1) return keys[0].trim()
-  }
-  if (typeof credentials.api_key === 'string' && credentials.api_key.trim()) return credentials.api_key.trim()
+  const keys = effectiveAccountApiKeys(credentials)
+  if (keys.length > 1) throw deterministicBalanceError(MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE)
+  if (keys.length === 1) return keys[0]
   throw deterministicBalanceError('账户没有可用的单 API Key')
 }
 

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 
 import { buildPostgresSchemaSql } from '../../storage/postgres-schema.js'
 import {
+  effectiveAccountApiKeys,
   effectiveAccountApiKeyCount,
+  MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE,
   normalizeAccountBalanceConfig,
   validateAccountBalanceCapability
 } from '../../modules/accounts/account-balance-config.js'
@@ -83,7 +85,9 @@ assert.deepEqual(validateAccountBalanceCapability({
   autoDisabledForMultipleApiKeys: true
 }, '多 Key 必须优先保存并自动关闭余额查询')
 assert.equal(effectiveAccountApiKeyCount({ api_keys: ['sk-one', ' sk-one ', 'sk-two'] }), 2, '最终有效 Key 数必须去空白并去重')
+assert.deepEqual(effectiveAccountApiKeys({ api_keys: ['sk-one', ' sk-one ', 'sk-two'] }), ['sk-one', 'sk-two'], '余额查询必须复用最终有效 Key 归一化结果')
 assert.equal(effectiveAccountApiKeyCount({ api_keys: [], api_key: 'sk-one' }), 1, '空 Key 池应回退单 Key 字段')
+assert.equal(MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE, '多 Key 账户不支持余额查询，保存后将自动关闭余额查询')
 assert.throws(() => validateAccountBalanceCapability({
   ...physicalApiKeyAccount,
   authorizationInstanceAuthorizationId: 'authorization-test'

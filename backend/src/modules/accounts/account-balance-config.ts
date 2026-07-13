@@ -9,6 +9,8 @@ const decimalPattern = /^(?:0|[1-9]\d*)(?:\.\d+)?$/
 const jsonPointerPattern = /^(?:\/(?:[^~/]|~[01])*)*$/
 const accountBalanceBuiltinAdapterSchema = z.enum(['sub2api', 'newapi', 'litellm', 'user_balance'])
 
+export const MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE = '多 Key 账户不支持余额查询，保存后将自动关闭余额查询'
+
 const accountBalanceCustomConfigSchema = z.object({
   path: z.string().trim().min(1),
   remainingPointer: z.string().trim().optional(),
@@ -115,6 +117,10 @@ export function validateAccountBalanceCapability(
 }
 
 export function effectiveAccountApiKeyCount(credentials: Record<string, unknown> | undefined): number {
+  return effectiveAccountApiKeys(credentials).length
+}
+
+export function effectiveAccountApiKeys(credentials: Record<string, unknown> | undefined): string[] {
   const pool = Array.isArray(credentials?.api_keys)
     ? credentials.api_keys
     : []
@@ -124,6 +130,7 @@ export function effectiveAccountApiKeyCount(credentials: Record<string, unknown>
       .map((value) => value.trim())
       .filter(Boolean)
   )
-  if (keys.size > 0) return keys.size
-  return typeof credentials?.api_key === 'string' && credentials.api_key.trim().length > 0 ? 1 : 0
+  if (keys.size > 0) return [...keys]
+  const legacyKey = typeof credentials?.api_key === 'string' ? credentials.api_key.trim() : ''
+  return legacyKey ? [legacyKey] : []
 }

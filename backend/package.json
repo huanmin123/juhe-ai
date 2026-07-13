@@ -387,6 +387,7 @@
     "test:postgres-schema-sql": "tsx src/scripts/regression/postgres-schema-sql-regression.ts",
     "test:account-balance-config": "tsx src/scripts/regression/account-balance-config-regression.ts",
     "test:account-balance-adapters": "tsx src/scripts/regression/account-balance-adapters-regression.ts",
+    "test:account-balance-draft-guard": "tsx src/scripts/regression/account-balance-draft-guard-regression.ts",
     "test:account-balance-refresh": "tsx src/scripts/regression/account-balance-refresh-regression.ts",
     "test:account-balance-auto-detect": "tsx src/scripts/regression/account-balance-auto-detect-regression.ts",
     "test:postgres-seed-defaults": "tsx src/scripts/regression/postgres-seed-defaults-regression.ts",

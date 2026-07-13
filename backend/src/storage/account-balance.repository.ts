@@ -1,6 +1,6 @@
 import { runtimeConfig } from '../config/runtime.js'
 import type { AccountBalanceQueryConfig, AccountBalanceSnapshot } from '../modules/accounts/account-balance.types.js'
-import { normalizeAccountBalanceConfig } from '../modules/accounts/account-balance-config.js'
+import { effectiveAccountApiKeyCount, normalizeAccountBalanceConfig } from '../modules/accounts/account-balance-config.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { decryptJson } from './crypto.js'
@@ -530,11 +530,7 @@ async function isAccountBalanceConfigurationCurrentAsync(input: {
 }
 
 function hasExactlyOneApiKey(credentials: Record<string, unknown>): boolean {
-  const pool = Array.isArray(credentials.api_keys)
-    ? credentials.api_keys.filter((value) => typeof value === 'string' && value.trim().length > 0)
-    : []
-  if (pool.length > 0) return pool.length === 1
-  return typeof credentials.api_key === 'string' && credentials.api_key.trim().length > 0
+  return effectiveAccountApiKeyCount(credentials) === 1
 }
 
 function normalizedLimit(value: number | undefined): number {
