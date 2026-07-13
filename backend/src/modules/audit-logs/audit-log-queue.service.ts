@@ -137,7 +137,7 @@ export function recordDroppedAuditCapture(input: {
     startedAt: timestamp,
     endedAt: timestamp,
     attempts: [],
-    payloads: input.reason === 'gateway_body_rejected'
+    payloads: input.reason === 'gateway_body_rejected' && input.statusCode === 413
       ? [{
           partType: 'client_request',
           sequenceIndex: 0,

@@ -222,6 +222,29 @@ try {
   assert.equal(rejectedDetail?.queryString?.includes('token=%5Bredacted%5D'), false, '早期拒绝审计 queryString 不应写入 token 脱敏占位')
   assert.equal(rejectedDetail?.queryString?.includes('api_key=%5Bredacted%5D'), false, '早期拒绝审计 queryString 不应写入 api_key 脱敏占位')
 
+  auditQueue.recordDroppedAuditCapture({
+    traceId: 'trace-body-overloaded-without-overflow-payload',
+    auditOutcome: 'gateway_failed',
+    success: false,
+    bytes: 512 * 1024,
+    reason: 'gateway_body_rejected',
+    method: 'POST',
+    path: '/v1/responses',
+    statusCode: 503,
+    errorPhase: 'gateway',
+    errorCode: 'gateway_body_in_flight_limit_exceeded',
+    errorMessage: '网关请求体在途总量过高，请稍后重试',
+    contentType: 'application/json'
+  })
+  auditQueue.flushAllAuditLogQueue()
+  const overloadedEvents = repositories.listAuditLogs({ traceId: 'trace-body-overloaded-without-overflow-payload' })
+  const overloadedDetail = repositories.getAuditLogDetail(overloadedEvents.items[0]?.id ?? '')
+  assert.equal(
+    overloadedDetail?.payloads.some((payload) => payload.captureStatus === 'overflow'),
+    false,
+    '非 413 body rejection 不应生成 overflow payload'
+  )
+
   await gatewayBodyMiddleware.recordGatewayBodyRejection({
     method: 'POST',
     path: '/v1/responses',
