@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { createSqliteDatabaseClient } from '../../storage/database-client.js'
 import { applyChatSchema } from '../../storage/schema.js'
+import { initializeAcceptedChatTurn } from '../../modules/chat/chat-turn-initialization.js'
 import {
   acceptChatTurn,
   cancelChatTurn,
@@ -241,5 +242,52 @@ await assert.rejects(
   }),
   /会话不存在/
 )
+
+const initializationConversation = await createChatConversation(client, {
+  id: 'chat_conv_initialization_failure',
+  systemAccountId: 'sys_user_1',
+  apiKeyId: 'key_1',
+  apiKeyNameSnapshot: '默认 Key',
+  now: '2026-07-12T01:00:00.000Z'
+})
+const initializationTurn = await acceptChatTurn(client, {
+  conversationId: initializationConversation.id,
+  systemAccountId: 'sys_user_1',
+  clientMessageId: 'client_initialization_failure',
+  userContent: '触发初始化失败',
+  model: 'mock-model',
+  now: '2026-07-12T01:00:01.000Z',
+  storageQuotaBytes: 4096
+})
+let upstreamRequests = 0
+await assert.rejects((async () => {
+  await initializeAcceptedChatTurn({
+    initialize: async () => { throw new Error('受控历史读取失败') },
+    failAcceptedTurn: async () => {
+      await failChatTurn(client, {
+        conversationId: initializationConversation.id,
+        systemAccountId: 'sys_user_1',
+        turnId: initializationTurn.turnId,
+        assistantContent: '',
+        errorCode: 'chat_initialization_failed',
+        traceId: 'trace_initialization_failure',
+        now: '2026-07-12T01:00:02.000Z'
+      })
+    }
+  })
+  upstreamRequests += 1
+})(), /受控历史读取失败/)
+assert.equal(upstreamRequests, 0, '接受轮次后的初始化失败不得请求上游')
+assert.equal((await getChatConversation(client, initializationConversation.id, 'sys_user_1'))?.activeTurnId, undefined, '初始化失败必须清除 active_turn_id')
+const initializationMessages = await listChatMessages(client, {
+  conversationId: initializationConversation.id,
+  systemAccountId: 'sys_user_1',
+  limit: 10,
+  now: '2026-07-12T01:00:03.000Z'
+})
+assert.deepEqual(initializationMessages.map((message) => [message.role, message.status, message.errorCode]), [
+  ['user', 'completed', undefined],
+  ['assistant', 'failed', 'chat_initialization_failed']
+])
 
 console.log('AI 问答 repository 回归通过')

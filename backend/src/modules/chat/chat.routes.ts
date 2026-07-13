@@ -31,6 +31,7 @@ import { collectChatResponsesSse } from './chat-responses-sse.js'
 import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport } from './chat-transport.js'
 import { buildChatModelOptions, chatReasoningEfforts, chatServiceTiers } from './chat-model-options.js'
 import { buildChatSystemInstructions } from './chat-system-instructions.js'
+import { initializeAcceptedChatTurn } from './chat-turn-initialization.js'
 import { listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 
@@ -230,23 +231,40 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       res.status(409).json({ message: '该消息已提交，请刷新会话', code: 'chat_message_already_exists' })
       return
     }
-    const storedContext = await listChatContextMessages(client, {
-      conversationId: conversation.id,
-      systemAccountId: ownerId,
-      limitTurns: 64,
-      now: new Date().toISOString()
-    })
-    const context = trimChatContextToBudget({ history: storedContext, ...fixedBudgetInput })
-    const transport = buildChatTransportRequest({
-      protocol,
-      instructions: systemInstructions.text,
-      model: body.model,
-      history: context,
-      currentContent: body.content,
-      currentBlocks: body.contentBlocks,
-      toolsEnabled,
-      reasoningEffort: body.reasoningEffort,
-      serviceTier: body.serviceTier
+    const acceptedTurn = accepted
+    const transport = await initializeAcceptedChatTurn({
+      initialize: async () => {
+        const storedContext = await listChatContextMessages(client, {
+          conversationId: conversation.id,
+          systemAccountId: ownerId,
+          limitTurns: 64,
+          now: new Date().toISOString()
+        })
+        const context = trimChatContextToBudget({ history: storedContext, ...fixedBudgetInput })
+        return buildChatTransportRequest({
+          protocol,
+          instructions: systemInstructions.text,
+          model: body.model,
+          history: context,
+          currentContent: body.content,
+          currentBlocks: body.contentBlocks,
+          toolsEnabled,
+          reasoningEffort: body.reasoningEffort,
+          serviceTier: body.serviceTier
+        })
+      },
+      failAcceptedTurn: async () => {
+        await failChatTurn(client, {
+          conversationId: conversation.id,
+          systemAccountId: ownerId,
+          turnId: acceptedTurn.turnId,
+          assistantContent: '',
+          contentBlocks: [],
+          errorCode: 'chat_initialization_failed',
+          traceId: getTraceId(),
+          now: new Date().toISOString()
+        })
+      }
     })
     controller = new AbortController()
     activeStreams.set(conversation.id, { ownerId, turnId: accepted.turnId, controller })
