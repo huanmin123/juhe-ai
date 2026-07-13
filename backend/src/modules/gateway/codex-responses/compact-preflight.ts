@@ -30,6 +30,7 @@ import { readUpstreamBodyLimited } from '../upstream/body.js'
 import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
 import {
   createCodexResponsesChatBridgeCompactSnapshot,
+  codexResponsesContextAllowsAccount,
   hasExplicitCodexResponsesChatBridgeRuntimeAccount,
   prepareCodexResponsesCompactDispatchForAccounts,
   restoreCodexResponsesChatBridgeInputForCompact
@@ -56,10 +57,16 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   groupSchedulingPolicy?: GroupSchedulingPolicy
   sameAccountRetryBudget: SameAccountRetryBudget
   signal?: AbortSignal
-}): Promise<'continued' | 'completed'> {
+}): Promise<
+  | { outcome: 'continued'; accounts: UpstreamAccount[] }
+  | { outcome: 'completed' }
+> {
   if (!isOpenAIResponsesCompactPostRequest(input.req)
     || !prepareCodexResponsesCompactDispatchForAccounts(input.req, input.dispatchAccounts)) {
-    return 'continued'
+    return {
+      outcome: 'continued',
+      accounts: input.dispatchAccounts.filter((account) => codexResponsesContextAllowsAccount(input.req, account))
+    }
   }
   const bridgeDispatchAccounts = input.dispatchAccounts.filter((account) => (
     hasExplicitCodexResponsesChatBridgeRuntimeAccount(input.req, [account])
@@ -79,7 +86,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   })
   if (restoreResult.outcome !== 'found' && restoreResult.outcome !== 'no_previous') {
     await sendCompactFailure(input, restoreFailureForCompact(restoreResult.outcome))
-    return 'completed'
+    return { outcome: 'completed' }
   }
 
   const summaryRequest = buildCompactSummaryChatBody({
@@ -119,7 +126,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
         code: 'codex_bridge_compact_summary_empty',
         message: '上游摘要模型没有返回可用的压缩摘要'
       })
-      return 'completed'
+      return { outcome: 'completed' }
     }
     const summaryUpstreamModel = resolveGatewayUsageModel(
       upstreamResult.account,
@@ -160,7 +167,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       responsePartType: 'gateway_response',
       accountId: upstreamResult.account.id
     })
-    return 'completed'
+    return { outcome: 'completed' }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await sendCompactFailure(input, {
@@ -169,7 +176,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       code: 'codex_bridge_compact_summary_failed',
       message: `上游摘要请求失败：${message}`
     })
-    return 'completed'
+    return { outcome: 'completed' }
   } finally {
     upstreamResult?.releaseConcurrency()
   }

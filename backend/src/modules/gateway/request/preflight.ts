@@ -799,7 +799,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     sameAccountRetryBudget,
     signal
   })
-  if (codexBridgeCompactPreflight === 'completed') {
+  if (codexBridgeCompactPreflight.outcome === 'completed') {
     dispatchPreparation.releaseClientIpConcurrency()
     return undefined
   }
@@ -807,7 +807,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   return {
     activeGatewaySettings,
     usageContext,
-    accounts: dispatchPreparation.accounts,
+    accounts: codexBridgeCompactPreflight.accounts,
     sessionAffinityKey,
     clientStrategy,
     clientIpAccountAvoidanceTracker,
