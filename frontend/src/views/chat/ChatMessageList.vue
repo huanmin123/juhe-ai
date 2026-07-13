@@ -120,9 +120,9 @@ defineExpose({ scrollToBottom, followStream, captureScrollAnchor, restoreScrollA
 .message-row-assistant { justify-content: flex-start; }
 .message-row.is-editing-turn { opacity: .42; }
 .message-body { min-width: 0; }
-.message-row-user .message-body { max-width: min(78%, 720px); }
+.message-row-user .message-body { max-width: min(78%, 720px); display: flex; flex-direction: column; align-items: flex-end; }
 .message-row-assistant .message-body { width: min(100%, 960px); max-width: min(100%, 960px); }
-.message-bubble-user { padding: 9px 13px; background: #f5f5f5; border-radius: 10px 10px 3px 10px; }
+.message-bubble-user { width: fit-content; max-width: 100%; padding: 9px 13px; background: #f5f5f5; border-radius: 10px 10px 3px 10px; }
 .message-bubble-assistant { padding: 4px 0; background: transparent; border: 0; box-shadow: none; }
 .message-status-text { margin-top: 6px; color: #98a2b3; font-size: 12px; }
 .message-actions { min-height: 32px; display: flex; justify-content: flex-end; }

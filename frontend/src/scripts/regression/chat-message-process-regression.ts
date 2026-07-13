@@ -112,6 +112,15 @@ const malformed = projectChatMessageProcess(message([
 ]))
 assert.equal(malformed.toolGroups.length, 4, '无法识别的动作必须按 callId 或事件位置 fail-open，不能误合并')
 assert.equal(new Set(malformed.toolGroups.map((group) => group.key)).size, 4, '畸形动作也必须生成稳定唯一 key')
+assert(malformed.toolGroups.every((group) => group.summaries.length === 0), 'fail-open callId 只能留在内部 key，不能进入用户摘要')
+assert.doesNotMatch(JSON.stringify(malformed.toolGroups.map((group) => group.summaries)), /unknown_|event-|tool_/i, '畸形工具摘要不得泄露 callId 或协议 fallback id')
+
+const searchPreparing = projectChatMessageProcess(message([
+  { id: 'ws_private_protocol_id', type: 'web_search_call', status: 'started', item: { id: 'ws_private_protocol_id', type: 'web_search_call', status: 'in_progress' } }
+]))
+assert.equal(searchPreparing.toolGroups.length, 1)
+assert.deepEqual(searchPreparing.toolGroups[0]?.summaries, [], '尚无可识别 action 的搜索只能显示通用状态行')
+assert.doesNotMatch(JSON.stringify(searchPreparing.toolGroups[0]?.summaries), /ws_|private|protocol/i, '搜索准备态不能显示协议 id')
 
 const persisted = projectChatMessageProcess({
   contentBlocks: [

@@ -101,7 +101,7 @@ function canonicalizeToolAction(tool: LifecycleTool): CanonicalToolAction {
   const failOpenId = tool.callId || `event-${tool.fallbackIndex}`
   return {
     key: stableJson([tool.type, { unrecognizedCallId: failOpenId }]),
-    summaries: [`${toolLabel(tool.type)} · ${failOpenId}`]
+    summaries: []
   }
 }
 
@@ -245,10 +245,6 @@ function mergeToolItem(previous: Record<string, unknown> | undefined, current: R
   const merged = { ...previous, ...current }
   if (previousAction || currentAction) merged.action = { ...previousAction, ...currentAction }
   return merged
-}
-
-function toolLabel(type: string): string {
-  return ({ web_search_call: '联网搜索', file_search_call: '文件检索', function_call: '函数调用', computer_call: '计算机操作' }[type] ?? '工具调用')
 }
 
 const searchEnvelopeKeys = new Set(['id', 'call_id', 'item_id', 'type', 'status', 'time', 'timestamp', 'created_at', 'createdat', 'updated_at', 'updatedat', 'result', 'results', 'output', 'delta'])

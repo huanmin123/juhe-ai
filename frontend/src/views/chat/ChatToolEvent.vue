@@ -1,17 +1,23 @@
 <template>
   <div class="chat-process">
-    <details v-for="tool in process.toolGroups" :key="tool.key" class="chat-process-group">
-      <summary>
+    <template v-for="tool in process.toolGroups" :key="tool.key">
+      <details v-if="tool.summaries.length || tool.duplicateCount" class="chat-process-group">
+        <summary>
+          <span class="chat-process-status" :class="`is-${tool.status}`" aria-hidden="true" />
+          <span>{{ toolLabel(tool.type) }} {{ statusLabel(tool.status) }}<template v-if="tool.callCount > 1"> · {{ tool.callCount }} 次</template></span>
+        </summary>
+        <div class="chat-process-details">
+          <ul v-if="tool.summaries.length">
+            <li v-for="summary in tool.summaries" :key="summary">{{ summary }}</li>
+          </ul>
+          <p v-if="tool.duplicateCount">相同条件重复 {{ tool.duplicateCount }} 次</p>
+        </div>
+      </details>
+      <div v-else class="chat-process-group chat-process-summary-only">
         <span class="chat-process-status" :class="`is-${tool.status}`" aria-hidden="true" />
         <span>{{ toolLabel(tool.type) }} {{ statusLabel(tool.status) }}<template v-if="tool.callCount > 1"> · {{ tool.callCount }} 次</template></span>
-      </summary>
-      <div class="chat-process-details">
-        <ul v-if="tool.summaries.length">
-          <li v-for="summary in tool.summaries" :key="summary">{{ summary }}</li>
-        </ul>
-        <p v-if="tool.duplicateCount">相同条件重复 {{ tool.duplicateCount }} 次</p>
       </div>
-    </details>
+    </template>
     <details v-if="process.reasoningText" class="chat-reasoning">
       <summary>思考摘要</summary>
       <div>{{ process.reasoningText }}</div>
@@ -38,7 +44,8 @@ function statusLabel(status: ChatToolStatus): string {
 <style scoped>
 .chat-process { margin-top: 8px; color: #718096; font-size: 12px; }
 .chat-process-group, .chat-reasoning { margin-top: 4px; }
-.chat-process summary { display: flex; width: fit-content; max-width: 100%; align-items: center; gap: 7px; color: #718096; cursor: pointer; user-select: none; }
+.chat-process summary, .chat-process-summary-only { display: flex; width: fit-content; max-width: 100%; align-items: center; gap: 7px; color: #718096; user-select: none; }
+.chat-process summary { cursor: pointer; }
 .chat-process-status { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #94a3b8; }
 .chat-process-status.is-started, .chat-process-status.is-updated { background: #4b8fe8; }
 .chat-process-status.is-completed { background: #52a447; }

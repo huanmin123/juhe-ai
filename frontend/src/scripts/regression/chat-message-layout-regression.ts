@@ -10,6 +10,8 @@ assert.match(source, /message-bubble-user/, '用户消息需要独立气泡样�
 assert.doesNotMatch(source, /message-avatar|UserOutlined|RobotOutlined/, 'A 方案不能显示用户或 AI 头像')
 assert.doesNotMatch(source, /message-meta|messages\[item\.index\]\.model|>我</, 'A 方案不能显示角色名、模型名或“我”')
 assert.match(source, /message-bubble-user\s*\{[^}]*background:\s*#f[0-9a-f]{5}/is, '用户消息必须使用浅灰小气泡')
+assert.match(source, /message-row-user\s+\.message-body\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*align-items:\s*flex-end/is, '用户消息 body 必须按列右对齐，不能让操作栏拉伸短气泡')
+assert.match(source, /message-bubble-user\s*\{[^}]*width:\s*fit-content[^}]*max-width:\s*100%/is, '用户气泡必须按正文宽度收缩且不能溢出')
 assert.match(source, /message-bubble-assistant\s*\{[^}]*background:\s*transparent[^}]*border:\s*0[^}]*box-shadow:\s*none/is, 'AI 正文必须无背景、无边框、无阴影')
 assert.match(source, /message-row-assistant[\s\S]*?\.message-body\s*\{[^}]*max-width:\s*min\(100%,\s*960px\)/, 'AI 正文宽度必须为 min(100%, 960px)')
 assert.match(source, /<time\s+:datetime=/, '用户操作区必须使用语义化 time 和 datetime')
@@ -36,5 +38,7 @@ assert.match(toolSource, /思考摘要/, 'reasoning 折叠必须命名为“思�
 assert.doesNotMatch(toolSource, /思考过程|JSON\.stringify|compactItem/, '过程区不能暴露“思考过程”或原始工具 JSON')
 assert.match(toolSource, /相同条件重复/, '重复工具详情必须只显示重复次数')
 assert.match(toolSource, /callCount/, '工具摘要必须显示聚合后的调用次数')
+assert.match(toolSource, /v-if="tool\.summaries\.length \|\| tool\.duplicateCount"/, '只有存在可读详情时才允许渲染可展开 details')
+assert.match(toolSource, /chat-process-summary-only/, '没有可读详情的工具只能显示不可展开摘要行')
 
 console.log('AI 问答 A 方案消息布局与低噪过程展示回归通过')

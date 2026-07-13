@@ -14,7 +14,7 @@ import katex from 'katex'
 import { marked, type RendererObject } from 'marked'
 import { message as antdMessage } from 'ant-design-vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ChatCodeCopyResetController } from './chatCodeCopyState'
+import { ChatCodeCopyLifecycle, ChatCodeCopyResetController } from './chatCodeCopyState'
 import 'highlight.js/styles/github.css'
 import 'katex/dist/katex.min.css'
 
@@ -34,6 +34,7 @@ const codeCopyResetController = new ChatCodeCopyResetController(
   (callback, delay) => window.setTimeout(callback, delay),
   (timer) => window.clearTimeout(timer)
 )
+const codeCopyLifecycle = new ChatCodeCopyLifecycle(codeCopyResetController)
 let renderVersion = 0
 
 const renderer: RendererObject = {
@@ -102,10 +103,13 @@ watch(html, async () => {
   }
 }, { immediate: true, flush: 'post' })
 
-onMounted(() => root.value?.addEventListener('click', handleRootClick))
+onMounted(() => {
+  codeCopyLifecycle.activate()
+  root.value?.addEventListener('click', handleRootClick)
+})
 onBeforeUnmount(() => {
   root.value?.removeEventListener('click', handleRootClick)
-  codeCopyResetController.dispose()
+  codeCopyLifecycle.dispose()
 })
 
 async function handleRootClick(event: MouseEvent): Promise<void> {
@@ -117,12 +121,13 @@ async function handleRootClick(event: MouseEvent): Promise<void> {
   if (!wrapper) return
   const code = wrapper.querySelector<HTMLElement>(':scope > pre > code')
   if (!code) return
-  try {
-    await navigator.clipboard.writeText(code.textContent ?? '')
-    codeCopyResetController.markCopied(button)
-  } catch {
-    antdMessage.error('复制失败，请稍后重试')
-  }
+  await codeCopyLifecycle.copy(
+    button,
+    code.textContent ?? '',
+    (value) => navigator.clipboard.writeText(value),
+    () => Boolean(root.value?.contains(button)),
+    () => antdMessage.error('复制失败，请稍后重试')
+  )
 }
 
 function renderMathInTextNodes(value: string): string {

@@ -19,6 +19,7 @@ assert.match(copyStateSource, /已复制/, '成功后必须短暂显示“已复
 assert.match(source, /复制失败，请稍后重试/, '代码复制失败必须显示中文提示')
 assert.doesNotMatch(source, /let copyResetTimer:/, '不能用单一 timer 让快速复制的不同代码块互相取消恢复')
 assert.match(source, /ChatCodeCopyResetController/, '代码块复制恢复必须使用按按钮隔离的状态 helper')
+assert.match(source, /ChatCodeCopyLifecycle/, '异步剪贴板必须由带 mounted generation 的生命周期 helper 隔离')
 assert.match(source, /mermaid\.render\(/, 'Mermaid 必须先通过 render 得到 SVG 字符串')
 assert.match(source, /DOMPurify\.sanitize\([^)]*svg[\s\S]{0,180}USE_PROFILES:\s*\{\s*svg:\s*true,\s*svgFilters:\s*true\s*\}/, 'Mermaid SVG 插入前必须使用 SVG profile 再净化')
 assert.doesNotMatch(source, /mermaid\.run\(/, '不能在已净化 DOM 上调用 mermaid.run 注入未净化 SVG')
@@ -27,7 +28,7 @@ assert.match(source, /\.chat-code-block[\s\S]{0,120}overflow/, '代码块必须�
 assert.match(source, /\.chat-markdown\s+:deep\(table\)[\s\S]{0,120}overflow-x:\s*auto/, '表格必须局部横向滚动')
 assert.match(source, /\.chat-markdown\s+:deep\(\.katex-display\)[\s\S]{0,100}overflow-x:\s*auto/, '公式必须局部横向滚动')
 
-const { ChatCodeCopyResetController } = await import('../../views/chat/chatCodeCopyState')
+const { ChatCodeCopyLifecycle, ChatCodeCopyResetController } = await import('../../views/chat/chatCodeCopyState')
 const scheduled = new Map<number, () => void>()
 const canceled: number[] = []
 let nextTimer = 0
@@ -55,5 +56,63 @@ controller.markCopied(secondButton)
 controller.dispose()
 assert.equal(scheduled.size, 0, '组件卸载时必须清理全部代码块 timer')
 assert.deepEqual(canceled.slice(-2), [3, 4])
+firstButton.textContent = '复制'
+controller.markCopied(firstButton)
+assert.equal(firstButton.textContent, '复制', 'reset controller dispose 后必须永久拒绝新状态与 timer')
+assert.equal(scheduled.size, 0)
+
+function deferred(): { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
+  let resolve!: () => void
+  let reject!: (error: Error) => void
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => { resolve = resolvePromise; reject = rejectPromise })
+  return { promise, resolve, reject }
+}
+function lifecycleHarness() {
+  const pendingTimers = new Map<number, () => void>()
+  let timerId = 0
+  const reset = new ChatCodeCopyResetController(
+    (callback) => { const timer = ++timerId; pendingTimers.set(timer, callback); return timer },
+    (timer) => { pendingTimers.delete(timer) }
+  )
+  return { lifecycle: new ChatCodeCopyLifecycle(reset), pendingTimers }
+}
+
+const resolvedCopy = deferred()
+const resolvedHarness = lifecycleHarness()
+const resolvedButton = { textContent: '复制', isConnected: true }
+let resolvedFailureNotices = 0
+resolvedHarness.lifecycle.activate()
+const resolving = resolvedHarness.lifecycle.copy(
+  resolvedButton,
+  'const answer = 42',
+  () => resolvedCopy.promise,
+  () => true,
+  () => { resolvedFailureNotices += 1 }
+)
+resolvedHarness.lifecycle.dispose()
+resolvedCopy.resolve()
+await resolving
+assert.equal(resolvedButton.textContent, '复制', 'clipboard resolve 晚于卸载时不得改写旧按钮')
+assert.equal(resolvedHarness.pendingTimers.size, 0, 'clipboard resolve 晚于卸载时不得创建恢复 timer')
+assert.equal(resolvedFailureNotices, 0)
+
+const rejectedCopy = deferred()
+const rejectedHarness = lifecycleHarness()
+const rejectedButton = { textContent: '复制', isConnected: true }
+let rejectedFailureNotices = 0
+rejectedHarness.lifecycle.activate()
+const rejecting = rejectedHarness.lifecycle.copy(
+  rejectedButton,
+  'const answer = 42',
+  () => rejectedCopy.promise,
+  () => true,
+  () => { rejectedFailureNotices += 1 }
+)
+rejectedHarness.lifecycle.dispose()
+rejectedCopy.reject(new Error('clipboard denied'))
+await rejecting
+assert.equal(rejectedButton.textContent, '复制')
+assert.equal(rejectedHarness.pendingTimers.size, 0)
+assert.equal(rejectedFailureNotices, 0, 'clipboard reject 晚于卸载时不得显示过期失败提示')
 
 console.log('AI 问答 Markdown、代码复制与 Mermaid 安全回归通过')
