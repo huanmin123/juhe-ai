@@ -137,6 +137,7 @@ docs/plans/
 
 | 编号 | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| PLAN-0095 | AI 问答上下文与多模态降负 | 待开始 | 2026-07-13 | AI 问答 / 上下文 / 图片资产 / Responses / worker / 前端 | `docs/plans/计划-0095-AI问答上下文与多模态降负.md` |
 | PLAN-0094 | AI 问答展示与重编辑 | 已完成 | 2026-07-13 | AI 问答 / system instructions / Markdown / 工具投影 / 最近轮次事务 / 前端 | `docs/plans/计划-0094-AI问答展示与重编辑.md` |
 | PLAN-0093 | AI 问答编辑器与模型工具 | 已完成 | 2026-07-12 | AI 问答 / Tiptap / Responses / 原生工具 / 多模态输入 / 前端 | `docs/plans/计划-0093-AI问答编辑器与模型工具.md` |
 | PLAN-0092 | AI 问答 MVP | 已完成 | 2026-07-12 | 前端 / Node 后端 / 独立聊天存储 / DB service / 网关 / API Key / worker / 审计 / 验证 | `docs/plans/计划-0092-AI问答MVP.md` |
