@@ -255,8 +255,8 @@ function localQueueBackgroundJobRow(
   })
 }
 
-async function backgroundQueueRuntimeRows(runtime: DbServiceServerRuntimeSnapshot | undefined): Promise<BackgroundJobRuntimeRow[]> {
-  if (!runtime) return []
+async function backgroundQueueRuntimeRows(runtime: DbServiceServerRuntimeSnapshot | undefined): Promise<BackgroundJobRuntimeRow[] | undefined> {
+  if (!runtime) return undefined
   return [
     ...queueHealthRuntimeRows(runtime),
     ...await redisStreamRuntimeQueueRows(),
