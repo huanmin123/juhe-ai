@@ -205,6 +205,53 @@ const validSourceCount = database.getStatsDatabase().prepare(`
 `).get('acct_invalid_evidence') as { count: number }
 assert.equal(validSourceCount.count, 1)
 
+const hardConflictObservedAt = new Date(Date.UTC(2026, 6, 18)).toISOString()
+await trustRepository.createModelCheckObservationsAsync([tokenObservation({
+  accountId: 'acct_protocol_conflict_token',
+  upstream: 'protocol-conflict-token-source',
+  cohortKeyHmac: security.modelCheckObservationHmac('protocol-conflict-token-cohort', 'cohort'),
+  observationStatus: 'observed',
+  reportedInputTokens: 100,
+  createdAt: hardConflictObservedAt,
+  protocolStatus: 'failed'
+})])
+while (await trustRepository.aggregateModelTrustObservationsAsync(7)) {
+}
+const hardConflictLatest = await trustRepository.findModelAccountTrustResultAsync('sys_model_trust', 'acct_protocol_conflict_token', 'gpt-5.6-sol')
+assert.equal(hardConflictLatest?.protocolStatus, 'failed', 'Token 协议硬冲突必须保留 latest 诊断事实')
+assert.equal(hardConflictLatest?.observationCount, 0, '协议硬冲突不得增加 Token 有效样本')
+assert(hardConflictLatest?.reasonCodes.includes('protocol_check_failed'))
+assert.equal(
+  (database.getStatsDatabase().prepare('SELECT COUNT(*) AS count FROM model_token_integrity_windows WHERE account_id = ?').get('acct_protocol_conflict_token') as { count: number }).count,
+  0,
+  '协议硬冲突不得进入 Token 窗口'
+)
+assert.equal(
+  (database.getStatsDatabase().prepare('SELECT COUNT(*) AS count FROM model_trust_window_sources WHERE account_id = ?').get('acct_protocol_conflict_token') as { count: number }).count,
+  0,
+  '协议硬冲突不得进入 cohort 来源'
+)
+assert.equal(
+  (database.getDatasetDatabase().prepare('SELECT COUNT(*) AS count FROM model_check_observations WHERE account_id = ?').get('acct_protocol_conflict_token') as { count: number }).count,
+  1,
+  '协议硬冲突 observation 本身必须保留'
+)
+
+const sourceIndexColumns = database.getStatsDatabase().prepare("PRAGMA index_info('idx_model_trust_window_sources_cohort')").all() as Array<{ seqno: number; name: string }>
+assert.deepEqual(
+  sourceIndexColumns.sort((left, right) => left.seqno - right.seqno).map((column) => column.name),
+  ['cohort_key_hmac', 'upstream_bucket_hmac'],
+  'cohort 来源 COUNT 索引必须以前导等值列开始，并覆盖 DISTINCT 来源桶'
+)
+const sourceCountPlan = database.getStatsDatabase().prepare(`
+  EXPLAIN QUERY PLAN
+  SELECT COUNT(DISTINCT upstream_bucket_hmac) FROM model_trust_window_sources WHERE cohort_key_hmac = ?
+`).all(cohortKeyHmac) as Array<{ detail: string }>
+assert(
+  sourceCountPlan.some((row) => row.detail.includes('idx_model_trust_window_sources_cohort')),
+  `cohort 来源 COUNT 必须命中新索引，实际计划：${sourceCountPlan.map((row) => row.detail).join(' | ')}`
+)
+
 const stored = database.getDatasetDatabase().prepare('SELECT * FROM model_check_observations LIMIT 1').get() as Record<string, unknown>
 const serialized = JSON.stringify(stored)
 assert(!serialized.includes(origin), 'observation 不得保存明文上游 origin')
@@ -216,6 +263,7 @@ assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_check_observations'))
 assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_token_integrity_windows'))
 assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_token_integrity_rounds'))
 assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_account_trust_results'))
+assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_trust_window_sources_cohort ON model_trust_window_sources(cohort_key_hmac, upstream_bucket_hmac)'))
 
 console.log('模型可信 observation 聚合回归通过：脱敏事实、游标增量、窗口结果和 PostgreSQL schema 同步符合预期')
 
@@ -228,6 +276,7 @@ function tokenObservation(input: {
   createdAt: string
   roundIndex?: number
   paddingTokens?: number
+  protocolStatus?: string
 }): import('../../storage/model-trust.repository.js').ModelCheckObservationInput {
   return {
     runId: run.id,
@@ -255,7 +304,7 @@ function tokenObservation(input: {
     observationStatus: input.observationStatus,
     identityStatus: 'consistent',
     mappingStatus: 'direct',
-    protocolStatus: 'consistent',
+    protocolStatus: input.protocolStatus ?? 'consistent',
     evidenceCoverage: 100,
     createdAt: input.createdAt
   }

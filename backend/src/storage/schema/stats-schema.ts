@@ -1164,6 +1164,8 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_model_token_integrity_rounds_account ON model_token_integrity_rounds(account_id, requested_model, updated_at);
 
+    CREATE INDEX IF NOT EXISTS idx_model_trust_window_sources_cohort ON model_trust_window_sources(cohort_key_hmac, upstream_bucket_hmac);
+
     CREATE INDEX IF NOT EXISTS idx_model_identity_source_population ON model_identity_source_features(population_key_hmac, requested_model, feature_version, upstream_bucket_hmac);
 
     CREATE INDEX IF NOT EXISTS idx_model_identity_baseline_active ON model_identity_baseline_versions(population_key_hmac, requested_model, feature_version, version_status, baseline_version);

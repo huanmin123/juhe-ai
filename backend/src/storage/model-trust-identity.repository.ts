@@ -10,6 +10,11 @@ import {
 } from './model-trust-statistics.js'
 
 const featureWidth = 8
+const driftCandidatePromotionDays = 3
+const driftCandidateExpiryDays = 7
+const driftCandidateShiftedShare = 0.6
+const driftCandidateRecoveredShare = 0.4
+const driftCandidateMaxDistance = 1.5
 
 type AccountModelKey = { systemAccountId: string; accountId: string; requestedModel: string }
 
@@ -24,6 +29,14 @@ type SourceFeatureRow = {
   constraint_pass_count: number
   first_observed_at: string
   last_observed_at: string
+  sum_feature_1: number
+  sum_feature_2: number
+  sum_feature_3: number
+  sum_feature_4: number
+  sum_feature_5: number
+  sum_feature_6: number
+  sum_feature_7: number
+  sum_feature_8: number
   latest_feature_1: number
   latest_feature_2: number
   latest_feature_3: number
@@ -66,8 +79,13 @@ export function isIdentityObservation(row: ObservationRow): boolean {
   return row.probe_family.startsWith('identity_')
     && row.observation_status === 'observed'
     && Boolean(row.observed_model?.trim())
+    && !hasHardTrustConflict(row)
     && observationVector(row).every(Number.isFinite)
     && identityFeatureValues(row).every((value) => value !== null)
+}
+
+export function hasHardTrustConflict(row: ObservationRow): boolean {
+  return row.mapping_status === 'undeclared_mismatch' || row.protocol_status === 'failed'
 }
 
 export async function upsertIdentitySourceFeature(client: DatabaseClient, row: ObservationRow): Promise<void> {
@@ -158,7 +176,7 @@ export async function evaluateIdentityTrust(client: DatabaseClient, key: Account
   const signatures = collapseSourceSignatures(populationRows)
   const targetPopulationRows = populationRows.filter((row) => row.requested_model === key.requestedModel)
   const ownBuckets = new Set(ownRows.map((row) => row.upstream_bucket_hmac))
-  const ownVector = averageVectors(ownRows.map(sourceVector))
+  const ownVector = aggregateSourceVector(ownRows)
   const looTarget = signatures.filter((item) => item.model === key.requestedModel && !ownBuckets.has(item.upstreamBucket))
   const looSummary = robustVectorSummary(looTarget.map((item) => item.vector))
   const identityDistance = looSummary.median.length ? robustVectorDistance(ownVector, looSummary.median, looSummary.mad) : undefined
@@ -169,7 +187,7 @@ export async function evaluateIdentityTrust(client: DatabaseClient, key: Account
   const pair = pairedModels(key.requestedModel)
   const ownAlternateRows = populationRows.filter((row) => row.account_id === key.accountId && pair.includes(row.requested_model) && row.requested_model !== key.requestedModel)
   const ownAlternateByModel = groupRowsByModel(ownAlternateRows)
-  const pairDistances = [...ownAlternateByModel.values()].map((rows) => euclideanVectorDistance(ownVector, averageVectors(rows.map(sourceVector))))
+  const pairDistances = [...ownAlternateByModel.values()].map((rows) => euclideanVectorDistance(ownVector, aggregateSourceVector(rows)))
   const pairedDistance = pairDistances.length ? Math.min(...pairDistances) : undefined
   const populationPairDistances = independentPairDistances(signatures, key.requestedModel, pair).filter((item) => !ownBuckets.has(item.upstreamBucket))
   const distanceValues = populationPairDistances.map((item) => item.distance)
@@ -270,24 +288,44 @@ async function refreshBaseline(client: DatabaseClient, key: { populationKey: str
   const activeMedian = parseVector(active.median_vector_json)
   const activeMad = parseVector(active.mad_vector_json)
   const shiftedShare = signatures.filter((vector) => robustVectorDistance(vector, activeMedian, activeMad) >= 3).length / signatures.length
-  if (signatures.length >= 5 && shiftedShare >= 0.6) {
-    const candidateVersion = Number(active.baseline_version) + 1
-    const candidate = await client.one<BaselineRow>(`
-      SELECT * FROM ${baselineTable}
-      WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ? AND baseline_version = ?
-      LIMIT 1
-    `, [key.populationKey, key.model, key.featureVersion, candidateVersion])
-    if (!candidate) {
-      await insertBaseline(client, baselineTable, key, candidateVersion, 'drift_protected', evidence, summary, last, last)
-      return true
-    }
+  const candidate = await client.one<BaselineRow>(`
+    SELECT * FROM ${baselineTable}
+    WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ? AND version_status = 'drift_protected'
+    ORDER BY baseline_version DESC LIMIT 1
+  `, [key.populationKey, key.model, key.featureVersion])
+  if (candidate) {
     const candidateAgeDays = durationDays(candidate.first_observed_at, last)
     const candidateDistance = robustVectorDistance(summary.median, parseVector(candidate.median_vector_json), parseVector(candidate.mad_vector_json))
-    if (candidateAgeDays >= 3 && candidateDistance <= 1.5 && evidence !== 'insufficient') {
-      await client.execute(`UPDATE ${baselineTable} SET version_status = 'retired', updated_at = ? WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ? AND baseline_version = ?`, [nowIso(), key.populationKey, key.model, key.featureVersion, active.baseline_version])
-      await client.execute(`UPDATE ${baselineTable} SET version_status = 'active', evidence_status = ?, last_observed_at = ?, updated_at = ? WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ? AND baseline_version = ?`, [evidence, last, nowIso(), key.populationKey, key.model, key.featureVersion, candidateVersion])
+    if (shiftedShare <= driftCandidateRecoveredShare) {
+      await closeDriftCandidate(client, baselineTable, key, candidate.baseline_version, 'recovered', evidence, summary, last)
       return true
     }
+    if (candidateAgeDays >= driftCandidatePromotionDays && candidateDistance <= driftCandidateMaxDistance && evidence !== 'insufficient') {
+      await client.execute(`UPDATE ${baselineTable} SET version_status = 'retired', updated_at = ? WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ? AND baseline_version = ?`, [nowIso(), key.populationKey, key.model, key.featureVersion, active.baseline_version])
+      await client.execute(`
+        UPDATE ${baselineTable}
+        SET version_status = 'active', evidence_status = ?, independent_source_count = ?, retained_source_count = ?, excluded_source_count = ?,
+          last_observed_at = ?, updated_at = ?
+        WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ? AND baseline_version = ?
+      `, [
+        evidence, signatures.length, summary.retainedCount, summary.excludedCount, last, nowIso(),
+        key.populationKey, key.model, key.featureVersion, candidate.baseline_version
+      ])
+      return true
+    }
+    if (candidateAgeDays >= driftCandidateExpiryDays) {
+      await closeDriftCandidate(client, baselineTable, key, candidate.baseline_version, 'expired', evidence, summary, last)
+      return true
+    }
+    if (candidateAgeDays >= driftCandidatePromotionDays && candidateDistance > driftCandidateMaxDistance) {
+      await closeDriftCandidate(client, baselineTable, key, candidate.baseline_version, 'rejected', evidence, summary, last)
+      return true
+    }
+    await updateDriftCandidateEvidence(client, baselineTable, key, candidate.baseline_version, evidence, summary, last)
+  } else if (signatures.length >= 5 && shiftedShare >= driftCandidateShiftedShare) {
+    const candidateVersion = await nextBaselineVersion(client, baselineTable, key)
+    await insertBaseline(client, baselineTable, key, candidateVersion, 'drift_protected', evidence, summary, last, last)
+    return true
   }
   const populationChanged = active.evidence_status !== evidence || Number(active.independent_source_count) !== signatures.length
   await client.execute(`
@@ -297,6 +335,55 @@ async function refreshBaseline(client: DatabaseClient, key: { populationKey: str
     WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ? AND baseline_version = ?
   `, [evidence, signatures.length, summary.retainedCount, summary.excludedCount, last, nowIso(), key.populationKey, key.model, key.featureVersion, active.baseline_version])
   return populationChanged
+}
+
+async function nextBaselineVersion(client: DatabaseClient, table: string, key: { populationKey: string; model: string; featureVersion: string }): Promise<number> {
+  const row = await client.one<{ baseline_version: number | null }>(`
+    SELECT MAX(baseline_version) AS baseline_version FROM ${table}
+    WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ?
+  `, [key.populationKey, key.model, key.featureVersion])
+  return Number(row?.baseline_version ?? 0) + 1
+}
+
+async function closeDriftCandidate(
+  client: DatabaseClient,
+  table: string,
+  key: { populationKey: string; model: string; featureVersion: string },
+  version: number,
+  status: 'recovered' | 'rejected' | 'expired',
+  evidence: string,
+  summary: ReturnType<typeof robustVectorSummary>,
+  last: string
+): Promise<void> {
+  await client.execute(`
+    UPDATE ${table}
+    SET version_status = ?, evidence_status = ?, independent_source_count = ?, retained_source_count = ?, excluded_source_count = ?,
+      last_observed_at = ?, updated_at = ?
+    WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ? AND baseline_version = ?
+  `, [
+    status, evidence, summary.retainedCount + summary.excludedCount, summary.retainedCount, summary.excludedCount,
+    last, nowIso(), key.populationKey, key.model, key.featureVersion, version
+  ])
+}
+
+async function updateDriftCandidateEvidence(
+  client: DatabaseClient,
+  table: string,
+  key: { populationKey: string; model: string; featureVersion: string },
+  version: number,
+  evidence: string,
+  summary: ReturnType<typeof robustVectorSummary>,
+  last: string
+): Promise<void> {
+  await client.execute(`
+    UPDATE ${table}
+    SET evidence_status = ?, independent_source_count = ?, retained_source_count = ?, excluded_source_count = ?,
+      last_observed_at = ?, updated_at = ?
+    WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ? AND baseline_version = ?
+  `, [
+    evidence, summary.retainedCount + summary.excludedCount, summary.retainedCount, summary.excludedCount,
+    last, nowIso(), key.populationKey, key.model, key.featureVersion, version
+  ])
 }
 
 async function insertBaseline(client: DatabaseClient, table: string, key: { populationKey: string; model: string; featureVersion: string }, version: number, status: string, evidence: string, summary: ReturnType<typeof robustVectorSummary>, first: string, last: string): Promise<void> {
@@ -342,14 +429,14 @@ async function upsertPairedWindow(client: DatabaseClient, input: {
 }
 
 function collapseSourceSignatures(rows: SourceFeatureRow[]): Array<{ upstreamBucket: string; model: string; vector: number[] }> {
-  const groups = new Map<string, { upstreamBucket: string; model: string; vectors: number[][] }>()
+  const groups = new Map<string, { upstreamBucket: string; model: string; rows: SourceFeatureRow[] }>()
   for (const row of rows) {
     const key = `${row.upstream_bucket_hmac}\u0000${row.requested_model}`
-    const group = groups.get(key) ?? { upstreamBucket: row.upstream_bucket_hmac, model: row.requested_model, vectors: [] }
-    group.vectors.push(sourceVector(row))
+    const group = groups.get(key) ?? { upstreamBucket: row.upstream_bucket_hmac, model: row.requested_model, rows: [] }
+    group.rows.push(row)
     groups.set(key, group)
   }
-  return [...groups.values()].map((group) => ({ upstreamBucket: group.upstreamBucket, model: group.model, vector: averageVectors(group.vectors) }))
+  return [...groups.values()].map((group) => ({ upstreamBucket: group.upstreamBucket, model: group.model, vector: aggregateSourceVector(group.rows) }))
 }
 
 function independentPairDistances(signatures: Array<{ upstreamBucket: string; model: string; vector: number[] }>, targetModel: string, models: string[]): Array<{ upstreamBucket: string; distance: number }> {
@@ -370,7 +457,19 @@ function independentPairDistances(signatures: Array<{ upstreamBucket: string; mo
 }
 
 function sourceVector(row: SourceFeatureRow): number[] {
-  return Array.from({ length: featureWidth }, (_, index) => Number(row[`latest_feature_${index + 1}` as keyof SourceFeatureRow] ?? 0))
+  const sampleCount = Math.max(1, Number(row.sample_count) || 0)
+  return Array.from({ length: featureWidth }, (_, index) => index === 0
+    ? Math.max(0, Math.min(1, Number(row.constraint_pass_count ?? 0) / sampleCount))
+    : Number(row[`sum_feature_${index + 1}` as keyof SourceFeatureRow] ?? 0) / sampleCount)
+}
+
+function aggregateSourceVector(rows: SourceFeatureRow[]): number[] {
+  if (!rows.length) return []
+  const sampleCount = rows.reduce((sum, row) => sum + Math.max(0, Number(row.sample_count) || 0), 0)
+  if (sampleCount <= 0) return averageVectors(rows.map(sourceVector))
+  return Array.from({ length: featureWidth }, (_, index) => index === 0
+    ? rows.reduce((sum, row) => sum + Math.max(0, Number(row.constraint_pass_count) || 0), 0) / sampleCount
+    : rows.reduce((sum, row) => sum + Number(row[`sum_feature_${index + 1}` as keyof SourceFeatureRow] ?? 0), 0) / sampleCount)
 }
 
 function observationVector(row: ObservationRow): number[] {
