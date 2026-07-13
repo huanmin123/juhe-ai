@@ -312,6 +312,26 @@ func managementAPIKeyCreateMutationGuardConfig(scope managementAPIKeyScope) muta
 	}
 }
 
+func managementClientIPPolicyMutationGuardConfig(action string) mutationGuardConfig {
+	if action != managementClientIPPolicyActionAllowlist &&
+		action != managementClientIPPolicyActionUnallowlist {
+		panic("unsupported management client IP policy mutation action")
+	}
+	return mutationGuardConfig{
+		operationKey: "client_ip_stats." + action,
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := managementGroupCreateMutationJSONFields(w, r)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"ipHash": chi.URLParam(r, "ipHash"),
+				"reason": mutationAnyField(fields, "reason"),
+			}, nil
+		},
+	}
+}
+
 func managementGroupCreateMutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
