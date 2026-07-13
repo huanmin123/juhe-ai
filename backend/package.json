@@ -202,6 +202,7 @@
     "test:gpt-model-capabilities": "tsx src/scripts/regression/gpt-model-capabilities-regression.ts",
     "test:account-gpt-request-overrides": "tsx src/scripts/regression/account-gpt-request-overrides-regression.ts",
     "test:account-model-mapping": "tsx src/scripts/regression/account-model-mapping-regression.ts",
+    "test:account-model-mapping-postgres-smoke": "tsx src/scripts/regression/account-model-mapping-postgres-smoke.ts",
     "test:cooldown-retest-recovery": "tsx src/scripts/regression/cooldown-retest-recovery-regression.ts",
     "test:speed-first-body-admission": "tsx src/scripts/regression/speed-first-body-admission-regression.ts",
     "test:speed-first-body-admission-http": "tsx src/scripts/regression/speed-first-body-admission-http-regression.ts",
