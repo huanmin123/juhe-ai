@@ -37,6 +37,17 @@
         <a-descriptions-item label="Trace ID">{{ run.traceId || '-' }}</a-descriptions-item>
       </a-descriptions>
 
+      <a-descriptions v-if="trustReport" bordered size="small" :column="descriptionColumns" class="run-descriptions" title="可信度分项">
+        <a-descriptions-item label="模型身份">{{ identityStatusText(trustReport.identityStatus) }}</a-descriptions-item>
+        <a-descriptions-item label="模型映射">{{ mappingStatusText(trustReport.mappingStatus) }}</a-descriptions-item>
+        <a-descriptions-item label="Token 诚信">{{ usageIntegrityStatusText(trustReport.usageIntegrityStatus) }}</a-descriptions-item>
+        <a-descriptions-item label="协议一致性">{{ protocolStatusText(trustReport.protocolStatus) }}</a-descriptions-item>
+        <a-descriptions-item label="证据充分度">{{ evidenceStatusText(trustReport.evidenceStatus) }}（{{ trustReport.evidenceCoverage }}%）</a-descriptions-item>
+        <a-descriptions-item label="请求 / 上游 / 响应模型">
+          {{ trustReport.requestedModel || '-' }} / {{ trustReport.mappedUpstreamModel || '-' }} / {{ trustReport.observedModel || '-' }}
+        </a-descriptions-item>
+      </a-descriptions>
+
       <div v-if="run.checks.length" class="check-list">
         <div v-for="check in run.checks" :key="check.id" class="check-item">
           <div class="check-item-head">
@@ -57,8 +68,9 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { formatDateTime } from '@/shared/formatters'
-import type { ModelCheckOption, ModelCheckRunDetail, ModelCheckRunSummary } from '@/types/domain'
+import type { ModelCheckOption, ModelCheckRunDetail, ModelCheckRunSummary, ModelCheckTrustReport } from '@/types/domain'
 import {
   checkExtra,
   checkMessage,
@@ -89,6 +101,27 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'update:open', value: boolean): void
 }>()
+
+const trustReport = computed(() => {
+  const value = props.run?.resultSummary?.trustReport
+  return value && typeof value === 'object' ? value as ModelCheckTrustReport : undefined
+})
+
+const identityStatusText = (value: ModelCheckTrustReport['identityStatus']) => ({
+  consistent: '当前受控探针一致', suspected_downgrade: '疑似降级', suspected_same_source: '疑似同源', population_outlier: '群体离群', insufficient_evidence: '证据不足'
+}[value])
+const mappingStatusText = (value: ModelCheckTrustReport['mappingStatus']) => ({
+  direct: '直接请求', configured_mapping: '已配置模型映射', undeclared_mismatch: '响应模型与请求不一致', unknown: '未知'
+}[value])
+const usageIntegrityStatusText = (value: ModelCheckTrustReport['usageIntegrityStatus']) => ({
+  consistent: '一致', warning: '需关注', suspected_padding: '疑似 Token 灌水', unsupported: '不支持检测', insufficient_evidence: '证据不足'
+}[value])
+const protocolStatusText = (value: ModelCheckTrustReport['protocolStatus']) => ({
+  consistent: '一致', warning: '部分异常', failed: '不一致', insufficient_evidence: '证据不足'
+}[value])
+const evidenceStatusText = (value: ModelCheckTrustReport['evidenceStatus']) => ({
+  stable: '稳定基线', candidate: '候选基线', bootstrap: '初始基线', insufficient: '证据不足'
+}[value])
 
 function modelText(value: string) {
   return modelCheckModelText(value, props.supportedModels)

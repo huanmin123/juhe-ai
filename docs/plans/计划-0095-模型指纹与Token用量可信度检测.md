@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：PLAN-0095
-- 状态：进行中（设计评审阶段，尚未开始代码实现）
+- 状态：进行中（Phase 0 与五维报告最小闭环已完成，统计增强待实现）
 - 创建时间：2026-07-13
 - 需求来源：当前 Codex 会话；用户要求重点提高 GPT-5.6 真伪检测准确率，并确认 Token 灌水检测现状
 - 执行者：Codex；方案与阈值由用户复核后进入实现
@@ -82,15 +82,15 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 
 ### Task 1：恢复现有回归门禁
 
-- [ ] 按 2026-07-13 官方模型页同步 GPT-5.6 context / max input / max output 目录事实和对应回归，移除旧 `372000` 运行口径。
-- [ ] 按当前账户状态规则修改共享 mock fixture，通过正式激活 / 测试流程获得可调度账号。
-- [ ] 重跑现有完整 profile、严格模型匹配、paired mismatch、分布相似度和长上下文回归。
-- [ ] 确认测试确实请求 mock 上游，而不是在账号选择阶段提前退出。
-- [ ] 固化当前报告 JSON 和评分行为，作为增强前回归基线。
+- [x] 按 2026-07-13 官方模型页同步 GPT-5.6 context / max input / max output 目录事实和对应回归，移除旧 `372000` 运行口径。
+- [x] 按当前账户状态规则修改共享 mock fixture，通过正式健康检查成功路径获得可调度账号。
+- [x] 重跑现有完整 profile、严格模型匹配、paired mismatch、分布相似度和长上下文回归。
+- [x] 确认测试确实请求 mock 上游，而不是在账号选择阶段提前退出。
+- [x] 固化当前报告 JSON 和评分行为，作为增强前回归基线。
 
 ### Task 2：契约与存储设计
 
-- [ ] 定义 `identityStatus`、`mappingStatus`、`usageIntegrityStatus`、`protocolStatus` 和 `evidenceStatus` 契约。
+- [x] 定义 `identityStatus`、`mappingStatus`、`usageIntegrityStatus`、`protocolStatus` 和 `evidenceStatus` 契约，并在现有报告 JSON 中形成最小闭环。
 - [ ] 定义 `model_check_observations` 当前 schema、有界 JSON 字段、索引和保留期。
 - [ ] 定义指纹、模型配对、Token 诚信和账号最新结果四类统计窗口。
 - [ ] 定义上游 origin、probe key 和 `system_fingerprint` 的 HMAC 规则与密钥轮换边界。
@@ -144,9 +144,9 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 | 测试类型 | 测试项 | 验证方式 / 命令 | 预期结果 | 状态 | 实际结果或备注 |
 | --- | --- | --- | --- | --- | --- |
 | 现有回归 | 协议 profile | `pnpm test:model-check-protocol-profiles` | 通过 | 已通过 | 2026-07-13 已通过 |
-| 现有回归 | 完整 profile 等五条全链路 | 见审计报告命令表 | 全部执行到 mock 上游并通过 | 未通过 | 当前被共享 fixture `pending_test` 阻塞，Phase 0 修复 |
-| 模型目录 | GPT-5.6 官方上下文边界 | 模型目录与能力回归 | 三个 5.6 使用当前官方 1,050,000 context / 922,000 max input / 128,000 max output 语义 | 未执行 | 当前运行值仍为旧 `372000` |
-| 映射 | 显式与未声明 Sol -> Luna | 新增后端回归 | 两种场景分别为 configured mapping 和硬冲突 | 未执行 | 待实现 |
+| 现有回归 | 完整 profile 等五条全链路 | 见审计报告命令表 | 全部执行到 mock 上游并通过 | 已通过 | 2026-07-14 共享 fixture 修复后全部到达 mock 上游并通过 |
+| 模型目录 | GPT-5.6 官方上下文边界 | 模型目录与能力回归 | 三个 5.6 使用当前官方 1,050,000 context / 922,000 max input / 128,000 max output 语义 | 已通过 | 2026-07-14 模型目录与生成快照回归通过 |
+| 映射 | 显式与未声明模型冲突 | 严格模型匹配回归 | 两种场景分别为 configured mapping 和硬冲突 | 已通过 | 2026-07-14 五维报告断言通过 |
 | 模型指纹 | 三模型同源塌缩 | 新增多轮统计回归 | 命中 `suspected_same_source` | 未执行 | 待实现 |
 | 模型指纹 | 相近但正常分布 | 新增抗误报回归 | 不因单题相似误报 | 未执行 | 待实现 |
 | Token | 诚实 usage | 新增差分 Token 回归 | slope 置信区间包含 1 | 未执行 | 待实现 |
@@ -166,6 +166,8 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 2026-07-13：确认当前只有通用行为指纹，没有 GPT-5.6 子版本统计基线，也没有 Token padding 检测。
 - 2026-07-13：确认 Pro / Max / 思考档位等账号权益能力不进入模型身份判据。
 - 2026-07-13：完成长期设计、审计报告、架构 / 用量口径和计划索引同步；等待用户复核后再编写文件级实施步骤并修改代码。
+- 2026-07-14：完成 Phase 0：同步 GPT-5.6 三模型目录边界，通过健康检查成功路径修复共享 fixture，恢复完整 profile 等全链路回归。
+- 2026-07-14：完成五维报告最小闭环和中文详情展示。由于仓库尚无目标模型精确 tokenizer，Token 诚信与群体证据保持证据不足；observation、HMAC 上游桶、stats-worker 窗口和生产校准尚未实现。
 
 ## 验收标准
 
@@ -198,4 +200,4 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 
 ## 完成总结
 
-当前仅完成设计、现状审计和计划落盘，尚未修改运行代码、数据库 schema、接口或前端。用户复核方案后，再补文件级实施计划并按 Task 1 至 Task 7 执行。
+当前完成 Phase 0 和五维报告最小闭环：模型目录、共享回归 fixture、报告 JSON、显式映射 / 未声明冲突判定及中文详情页已经落地。尚未完成 observation / 统计表、ingest 队列、stats-worker 群体基线、精确 tokenizer 差分 Token 探针、同源塌缩统计和生产校准；这些能力未被当前代码或页面宣称为可用。

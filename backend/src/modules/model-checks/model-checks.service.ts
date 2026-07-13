@@ -84,6 +84,7 @@ import {
   type ModelCheckProbePrefix,
   type ProbeSuiteResult
 } from './model-checks-evaluation.js'
+import { buildModelCheckTrustReport } from './model-checks-trust-report.js'
 import {
   runGatewayProbe,
   type ModelCheckGatewayProbeTarget
@@ -326,6 +327,11 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     })
     const summary = summarizeChecks(checks, { trustedComparison })
     const evidenceCompleteness = summarizeEvidenceCompleteness(checks)
+    const trustReport = buildModelCheckTrustReport(checks, {
+      requestedModel: model,
+      probeSetVersion,
+      evidenceCoverage: evidenceCompleteness.evidenceCompletenessScore
+    })
     await requestDatasetWriter({
       type: 'finish_model_check_run',
       runId: run.id,
@@ -342,6 +348,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           skippedCount: checks.filter((item) => item.status === 'skipped').length,
           requestFailureCount: checks.filter((item) => recordValue(item.evidenceSummary)?.requestFailure === true).length,
           evidenceCompleteness,
+          trustReport,
           trustedComparison,
           trustedComparisonAccountId: comparison?.targetId
         }

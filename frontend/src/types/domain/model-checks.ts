@@ -4,6 +4,26 @@ export type ModelCheckProfile = 'full'
 export type ModelCheckLevel = 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable'
 export type ModelCheckStatus = 'running' | 'completed' | 'failed' | 'canceled'
 export type ModelCheckItemStatus = 'passed' | 'warning' | 'failed' | 'skipped'
+export type ModelIdentityStatus = 'consistent' | 'suspected_downgrade' | 'suspected_same_source' | 'population_outlier' | 'insufficient_evidence'
+export type ModelMappingStatus = 'direct' | 'configured_mapping' | 'undeclared_mismatch' | 'unknown'
+export type UsageIntegrityStatus = 'consistent' | 'warning' | 'suspected_padding' | 'unsupported' | 'insufficient_evidence'
+export type ModelProtocolStatus = 'consistent' | 'warning' | 'failed' | 'insufficient_evidence'
+export type ModelEvidenceStatus = 'stable' | 'candidate' | 'bootstrap' | 'insufficient'
+
+export interface ModelCheckTrustReport {
+  identityStatus: ModelIdentityStatus
+  mappingStatus: ModelMappingStatus
+  usageIntegrityStatus: UsageIntegrityStatus
+  protocolStatus: ModelProtocolStatus
+  evidenceStatus: ModelEvidenceStatus
+  requestedModel?: string
+  mappedUpstreamModel?: string
+  observedModel?: string
+  mappingApplied: boolean
+  probeSetVersion: string
+  evidenceCoverage: number
+  reasonCodes: string[]
+}
 
 export interface ModelCheckOption {
   value: string

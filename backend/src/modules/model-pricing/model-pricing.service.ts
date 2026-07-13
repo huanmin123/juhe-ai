@@ -44,6 +44,7 @@ export interface ProviderModelPricing {
   audioInputUsdPer1M?: number
   audioOutputUsdPer1M?: number
   outputUsdPerImage?: number
+  contextWindowTokens?: number
   maxInputTokens?: number
   maxOutputTokens?: number
   maxTokens?: number
@@ -448,6 +449,7 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     audioInputUsdPer1M: perMillion(item.input_cost_per_audio_token),
     audioOutputUsdPer1M: perMillion(item.output_cost_per_audio_token),
     outputUsdPerImage: normalizePrice(item.output_cost_per_image),
+    contextWindowTokens: item.context_window_tokens,
     maxInputTokens: item.max_input_tokens,
     maxOutputTokens: item.max_output_tokens,
     maxTokens: item.max_tokens,
