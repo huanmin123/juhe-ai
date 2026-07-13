@@ -26,6 +26,7 @@ export type AccountSupportedEndpointMode =
   | 'generate_content_sse'
   | 'count_tokens'
   | 'embed_content'
+export type AccountHealthCheckEndpointFamily = 'chat_completions' | 'responses' | 'messages' | 'generate_content'
 export type AccountApiKeyRuntimeStatus = 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 
 export interface AccountCredentials {
@@ -270,6 +271,7 @@ export interface AccountSummary {
   modelMappings?: AccountModelMapping[]
   tags?: AccountTagSummary[]
   healthCheckModel: string
+  healthCheckEndpointFamily: AccountHealthCheckEndpointFamily
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -364,6 +366,7 @@ export interface AccountBatchEditUpdates {
   responseInspectionRules?: AccountBatchEditField<unknown[]>
   supportedModels?: AccountBatchEditField<string[]>
   healthCheckModel?: AccountBatchEditField<string>
+  healthCheckEndpointFamily?: AccountBatchEditField<AccountHealthCheckEndpointFamily>
   modelMappings?: AccountBatchEditField<AccountModelMapping[]>
   supportedEndpointModes?: AccountBatchEditField<AccountSupportedEndpointMode[]>
   serviceTierOverride?: AccountBatchEditField<AccountGptServiceTierOverride | null>

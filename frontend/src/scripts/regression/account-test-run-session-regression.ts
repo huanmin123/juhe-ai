@@ -110,6 +110,8 @@ function accountFixture(id: string, name: string): AccountSummary {
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointFamily: 'responses',
     modelMappings: [{
       sourceModel: 'gpt-5.5',
       sourceEndpointFamily: 'responses',

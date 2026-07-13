@@ -45,8 +45,8 @@ try {
   const accountInsert = databaseModule.getBusinessDatabase().prepare(`
     INSERT INTO accounts (
       id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-      name, type, status, credentials_encrypted, credential_mask, created_at, updated_at
-    ) VALUES (?, 'sys_admin', 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-client-ip-stats', ?, ?)
+      name, type, status, credentials_encrypted, credential_mask, health_check_model, health_check_endpoint_family, created_at, updated_at
+    ) VALUES (?, 'sys_admin', 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', ?, 'sk-client-ip-stats', 'gpt-5.5', 'responses', ?, ?)
   `)
   for (const account of [
     { id: 'acct_client_ip_primary', name: 'IP详情主账号' },

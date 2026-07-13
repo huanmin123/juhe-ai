@@ -2,6 +2,7 @@ import type { AccountType, ProviderDefinition } from '@/types/domain'
 import { defaultProviderProtocolProfileId, isHybridProviderCode, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import { defaultAccountEndpointModes } from './accountEndpointModes'
+import { defaultAccountHealthCheckEndpointFamily } from './accountHealthCheckEndpointFamily'
 import { defaultAccountClientCompatibilityForProvider } from './accountProviderCapabilities'
 import type { AccountFormModel } from './accountFormTypes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS } from './accountOptions'
@@ -35,6 +36,7 @@ export function defaultAccountForm(
   const resolvedType = type || (accountTypes.includes('api_key') ? 'api_key' : accountTypes[0] ?? '')
   const clientCompatibility = defaultAccountClientCompatibility(resolvedProviderCode, providerList, profile?.id)
   const supportedModels = defaultSupportedModelsForProvider(provider)
+  const supportedEndpointModes = defaultAccountEndpointModes(resolvedProviderCode, resolvedType, undefined, { provider, protocolProfile: profile })
   return {
     providerCode: resolvedProviderCode,
     providerProtocolProfileId: profile?.id || providerProtocolProfileId || defaultProviderProtocolProfileId(provider),
@@ -55,9 +57,10 @@ export function defaultAccountForm(
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
     clientCompatibility,
-    supportedEndpointModes: defaultAccountEndpointModes(resolvedProviderCode, resolvedType, undefined, { provider, protocolProfile: profile }),
+    supportedEndpointModes,
     supportedModels,
     healthCheckModel: defaultHealthCheckModelForProvider(provider, profile, supportedModels),
+    healthCheckEndpointFamily: defaultAccountHealthCheckEndpointFamily(resolvedProviderCode, profile?.id ?? '', supportedEndpointModes),
     serviceTierOverride: '',
     reasoningEffortOverride: '',
     modelMappings: [],

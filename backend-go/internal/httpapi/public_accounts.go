@@ -258,6 +258,7 @@ func parsePublicAccountAddBody(r *http.Request) (publicaccounts.AddInput, error)
 		"baseUrl":                   true,
 		"apiKey":                    true,
 		"supportedModels":           true,
+		"healthCheckEndpointFamily": true,
 		"status":                    true,
 		"concurrencyLimit":          true,
 		"priority":                  true,
@@ -307,6 +308,10 @@ func parsePublicAccountAddBody(r *http.Request) (publicaccounts.AddInput, error)
 	if err != nil {
 		return publicaccounts.AddInput{}, err
 	}
+	healthCheckEndpointFamily, err := optionalBodyEnum(body, "healthCheckEndpointFamily", []string{"chat_completions", "responses", "messages", "generate_content"})
+	if err != nil {
+		return publicaccounts.AddInput{}, err
+	}
 	status, err := optionalBodyEnum(body, "status", []string{publicaccounts.StatusActive, publicaccounts.StatusDisabled})
 	if err != nil {
 		return publicaccounts.AddInput{}, err
@@ -338,6 +343,7 @@ func parsePublicAccountAddBody(r *http.Request) (publicaccounts.AddInput, error)
 		BaseURL:                   baseURL,
 		APIKey:                    apiKey,
 		SupportedModels:           supportedModels,
+		HealthCheckEndpointFamily: healthCheckEndpointFamily,
 		Status:                    status,
 		ConcurrencyLimit:          concurrencyLimit,
 		Priority:                  priority,
@@ -358,6 +364,7 @@ func parsePublicAccountUpdateBody(r *http.Request) (publicaccounts.UpdateInput, 
 		"baseUrl":                   true,
 		"apiKey":                    true,
 		"supportedModels":           true,
+		"healthCheckEndpointFamily": true,
 		"status":                    true,
 		"concurrencyLimit":          true,
 		"priority":                  true,
@@ -407,6 +414,10 @@ func parsePublicAccountUpdateBody(r *http.Request) (publicaccounts.UpdateInput, 
 	if err != nil {
 		return publicaccounts.UpdateInput{}, err
 	}
+	healthCheckEndpointFamily, err := optionalBodyEnumPtr(body, "healthCheckEndpointFamily", []string{"chat_completions", "responses", "messages", "generate_content"})
+	if err != nil {
+		return publicaccounts.UpdateInput{}, err
+	}
 	status, err := optionalBodyEnumPtr(body, "status", []string{publicaccounts.StatusActive, publicaccounts.StatusDisabled})
 	if err != nil {
 		return publicaccounts.UpdateInput{}, err
@@ -427,7 +438,7 @@ func parsePublicAccountUpdateBody(r *http.Request) (publicaccounts.UpdateInput, 
 	if err != nil {
 		return publicaccounts.UpdateInput{}, err
 	}
-	if name == nil && accountType == nil && baseURL == nil && apiKey == nil && !supportedModels.Set() &&
+	if name == nil && accountType == nil && baseURL == nil && apiKey == nil && !supportedModels.Set() && healthCheckEndpointFamily == nil &&
 		status == nil && concurrencyLimit == nil && priority == nil && !availabilitySchedule.Set() && !notesState.Set() {
 		return publicaccounts.UpdateInput{}, fmt.Errorf("账号修改至少提供一个要修改的字段")
 	}
@@ -442,6 +453,7 @@ func parsePublicAccountUpdateBody(r *http.Request) (publicaccounts.UpdateInput, 
 		BaseURL:                   baseURL,
 		APIKey:                    apiKey,
 		SupportedModels:           supportedModels,
+		HealthCheckEndpointFamily: healthCheckEndpointFamily,
 		Status:                    status,
 		ConcurrencyLimit:          concurrencyLimit,
 		Priority:                  priority,

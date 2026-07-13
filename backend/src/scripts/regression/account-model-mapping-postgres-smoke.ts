@@ -61,6 +61,7 @@ try {
     },
     supportedModels: [model],
     healthCheckModel: model,
+    healthCheckEndpointFamily: 'chat_completions' as const,
     modelMappings: [enabledMapping],
     groupId: group.id
   }, access)
@@ -103,6 +104,7 @@ try {
     },
     supportedModels: [model],
     healthCheckModel: model,
+    healthCheckEndpointFamily: 'chat_completions' as const,
     modelMappings: [mapping]
   })
   const rejectedImport = await previewAccountImportAsync({
@@ -134,6 +136,7 @@ try {
     },
     supportedModels: [model],
     healthCheckModel: model,
+    healthCheckEndpointFamily: 'chat_completions' as const,
     modelMappings: [mapping],
     groupId: group.id
   })

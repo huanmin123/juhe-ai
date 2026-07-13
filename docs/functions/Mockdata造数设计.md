@@ -76,7 +76,7 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - 授权样例必须覆盖个人直授权、团队授权、AI 账户授权、分组授权、有效授权、暂停授权、过期授权、回收授权和归还授权；授权调用方至少覆盖研发、测试、运维、财务、观察用户和超级管理员，不能只围绕单一用户或单一团队造数。
 - 授权分组既作为分组列表、我的授权和授权用量统计样本展示，也会作为授权调用方路由策略的号池样本。`mockdata-summary.json` 会通过 `routeStrategyBindingRule` 和 `authorizationSamples[].bindableToRouteStrategy` 显式标记有效授权分组可绑定。
 - 授权调用方的 Mock API Key 会选择混合绑定有效授权分组和该调用方自己默认分组的路由策略；admin 也会生成一个绑定有效授权分组的 Mock 路由策略和 API Key。授权账户样本仍会放入调用方本地分组，授权分组消耗样本用于验证路由策略命中授权分组后的统计和审计口径。
-- AI 账户必须覆盖 API Key、OAuth、Anthropic API Key、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待检查、停用、限流、临时不可用、错误、账号不可调度和时间计划不生效样本；Anthropic 样本只使用 API Key，不生成 OAuth / Claude Code token。
+- AI 账户必须覆盖 API Key、OAuth、Anthropic API Key、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待检查、停用、限流、临时不可用、错误、账号不可调度和时间计划不生效样本；GPT 造数显式保存 `healthCheckEndpointFamily=responses`，通用 OpenAI-compatible 造数显式保存 `chat_completions`，用于检查配置回显和系统 JSON 探针验收；Anthropic 样本只使用 API Key，不生成 OAuth / Claude Code token。
 - API Key 必须覆盖 `priority_failover`、`round_robin`、`weighted_round_robin` 路由策略，路由策略分组绑定状态必须同时包含 active 和 disabled；额度窗口、过期 Key、停用 Key、时间计划不生效 Key 都需要有样本。
 - 自定义模型目录必须覆盖当前存储支持的模型范围、active / draft / disabled 状态，以及文本、图像和音频等不同能力类型；账号模型映射和使用记录需要出现至少一条实际命中样本。当前 SQLite 自定义模型表只允许 personal 范围时，Mockdata 覆盖校验不强制要求 global 样本。
 - 使用记录必须覆盖 gateway、manual_account_test 和 cooldown_retest 来源，OpenAI models、responses、chat completions 和 images 端点，Anthropic messages、models 和 count tokens 端点，成功、失败、图片 token、模型映射命中、缓存读取、流式与非流式样本。

@@ -34,6 +34,7 @@ try {
   assert.equal(accountUpdateNeedsImmediateHealthCheck({ notes: '仅改备注' }), false)
   assert.equal(accountUpdateNeedsImmediateHealthCheck({ credentials: { api_key: 'sk-updated' } }), true)
   assert.equal(accountUpdateNeedsImmediateHealthCheck({ healthCheckModel: 'gpt-5.5' }), true)
+  assert.equal(accountUpdateNeedsImmediateHealthCheck({ healthCheckEndpointFamily: 'responses' }), true)
   assert.deepEqual([
     accountHealthCheckTriggerPriority('activation'),
     accountHealthCheckTriggerPriority('configuration'),

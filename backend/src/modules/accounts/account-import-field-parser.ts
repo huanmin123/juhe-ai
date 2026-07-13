@@ -1,5 +1,6 @@
 import type {
   AccountAvailabilitySchedule,
+  AccountHealthCheckEndpointFamily,
   AccountModelMapping,
   AccountModelMappingSourceEndpointFamily,
   AccountModelMappingUpstreamEndpointFamily
@@ -40,6 +41,7 @@ export const importAccountKeys: ReadonlySet<string> = new Set([
   'fallbackEnabled',
   'supportedModels',
   'healthCheckModel',
+  'healthCheckEndpointFamily',
   'modelMappings',
   'tags',
   'accountExpiresAt',
@@ -177,6 +179,21 @@ export function optionalStringArrayField(record: Record<string, unknown>, key: s
     items.push(item.trim())
   }
   return items
+}
+
+export function optionalHealthCheckEndpointFamilyField(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+  messages: string[]
+): AccountHealthCheckEndpointFamily | undefined {
+  if (!hasOwnField(record, key)) return undefined
+  const value = record[key]
+  if (value === 'chat_completions' || value === 'responses' || value === 'messages' || value === 'generate_content') {
+    return value
+  }
+  messages.push(`${label}仅支持 chat_completions、responses、messages 或 generate_content`)
+  return undefined
 }
 
 export function optionalAccountTagsField(record: Record<string, unknown>, key: string, label: string, messages: string[]): string[] | undefined {

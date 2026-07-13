@@ -98,6 +98,7 @@ function upstreamAccountWithoutAuthorizationQuota(id: string): OpenAIAccountSecr
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
+    healthCheckEndpointFamily: 'responses',
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-fast-path',
     streamFailureCount: 0,

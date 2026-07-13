@@ -50,6 +50,9 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 	if created.HealthCheckModel != defaultGPTHealthCheckModel {
 		t.Fatalf("stored health check model = %q, want %q", created.HealthCheckModel, defaultGPTHealthCheckModel)
 	}
+	if created.HealthCheckEndpointFamily != "responses" {
+		t.Fatalf("stored health check endpoint family = %q, want responses", created.HealthCheckEndpointFamily)
+	}
 	if created.CredentialsEncrypted == "" ||
 		strings.Contains(created.CredentialsEncrypted, "sk-public-account-secret") ||
 		strings.Contains(created.CredentialsEncrypted, "api.openai.com") {
@@ -65,6 +68,21 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 		if strings.Contains(lower, strings.ToLower(forbidden)) {
 			t.Fatalf("response leaked %q in %s", forbidden, string(data))
 		}
+	}
+}
+
+func TestServiceAddRejectsUnsupportedHealthCheckEndpointFamily(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+	input := validPublicAccountAddInput("非法健康检查协议", "gpt-5.4-mini")
+	input.HealthCheckEndpointFamily = "messages"
+
+	_, err := service.Add(context.Background(), input)
+	if !errors.Is(err, ErrInvalidHealthCheckEndpointFamily) {
+		t.Fatalf("add error = %v, want ErrInvalidHealthCheckEndpointFamily", err)
+	}
+	if len(store.accounts) != 0 {
+		t.Fatalf("invalid health check endpoint family wrote accounts: %#v", store.accounts)
 	}
 }
 
@@ -1302,6 +1320,7 @@ func (s *publicAccountStoreFake) CreatePublicAccount(_ context.Context, input po
 		ClientCompatibility:       input.ClientCompatibility,
 		SupportedModels:           input.SupportedModels,
 		HealthCheckModel:          input.HealthCheckModel,
+		HealthCheckEndpointFamily: input.HealthCheckEndpointFamily,
 		BoundGroupID:              &group.ID,
 		BoundGroupName:            &group.Name,
 		Schedulable:               input.Schedulable,
@@ -1332,7 +1351,7 @@ func (s *publicAccountStoreFake) UpdatePublicAccount(_ context.Context, input po
 		account.SupportedModels = input.SupportedModels
 	}
 	account.HealthCheckModel = input.HealthCheckModel
-	account.HealthCheckModel = input.HealthCheckModel
+	account.HealthCheckEndpointFamily = input.HealthCheckEndpointFamily
 	account.Schedulable = input.Schedulable
 	account.AvailabilityScheduleJSON = input.AvailabilityScheduleJSON
 	account.ConcurrencyLimit = input.ConcurrencyLimit

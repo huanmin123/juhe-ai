@@ -36,6 +36,7 @@ type JuheBusinessAccount struct {
 	LastErrorCode                             pgtype.Text
 	LastErrorMessage                          pgtype.Text
 	HealthCheckModel                          string
+	HealthCheckEndpointFamily                 string
 	DeletedAt                                 pgtype.Timestamptz
 	DeletedBy                                 pgtype.Text
 	CreatedAt                                 pgtype.Timestamptz

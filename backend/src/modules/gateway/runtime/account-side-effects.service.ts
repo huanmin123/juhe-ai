@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { healthCheckEndpointMode } from '../../../domain/account-health-check-endpoint-family.js'
 
 import pLimit from 'p-limit'
 
@@ -2122,6 +2123,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     groupId: state.groupId,
     systemAccountId: state.systemAccountId,
     trafficSource: 'runtime_recovery_probe',
+    testEndpointMode: healthCheckEndpointMode(account.healthCheckEndpointFamily),
     signal,
     disableAccountStateMutation: true,
     candidateAccount: state.account,

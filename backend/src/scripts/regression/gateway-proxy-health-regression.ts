@@ -245,6 +245,7 @@ function account(
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
+    healthCheckEndpointFamily: 'responses',
     schedulable: true,
     proxyProfileId,
     proxyUrl,

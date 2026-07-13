@@ -123,6 +123,8 @@ try {
       status: 'active',
       schedulable: true,
       supportedModels: ['deepseek-ai-v4-flash', 'deepseek-ai-v4-pro'],
+      healthCheckModel: 'deepseek-ai-v4-flash',
+      healthCheckEndpointFamily: 'chat_completions',
       modelMappings: [
         {
           sourceModel: 'deepseek-ai-v4-flash',
@@ -155,7 +157,9 @@ try {
       groupId: bodyInterruptedGroup.id,
       status: 'active',
       schedulable: true,
-      supportedModels: ['deepseek-ai-v4-flash']
+      supportedModels: ['deepseek-ai-v4-flash'],
+      healthCheckModel: 'deepseek-ai-v4-flash',
+      healthCheckEndpointFamily: 'chat_completions'
     }, access)
     repositories.createAccount({
       providerCode: DEEPSEEK_PROVIDER_CODE,
@@ -170,7 +174,9 @@ try {
       status: 'active',
       schedulable: true,
       priority: 10,
-      supportedModels: ['deepseek-ai-v4-flash']
+      supportedModels: ['deepseek-ai-v4-flash'],
+      healthCheckModel: 'deepseek-ai-v4-flash',
+      healthCheckEndpointFamily: 'chat_completions'
     }, access)
 
     const retryGroup = repositories.createGroup({
@@ -191,6 +197,8 @@ try {
       status: 'active',
       schedulable: true,
       supportedModels: ['deepseek-ai-v4-flash', 'deepseek-ai-v4-pro'],
+      healthCheckModel: 'deepseek-ai-v4-flash',
+      healthCheckEndpointFamily: 'chat_completions',
       modelMappings: [
         {
           sourceModel: 'deepseek-ai-v4-flash',
@@ -215,6 +223,8 @@ try {
       schedulable: true,
       priority: 10,
       supportedModels: ['deepseek-ai-v4-flash', 'deepseek-ai-v4-pro'],
+      healthCheckModel: 'deepseek-ai-v4-flash',
+      healthCheckEndpointFamily: 'chat_completions',
       modelMappings: [
         {
           sourceModel: 'deepseek-ai-v4-flash',
@@ -248,7 +258,9 @@ try {
         status: 'active',
         schedulable: true,
         priority: item.priority,
-        supportedModels: ['deepseek-ai-v4-flash']
+        supportedModels: ['deepseek-ai-v4-flash'],
+        healthCheckModel: 'deepseek-ai-v4-flash',
+        healthCheckEndpointFamily: 'chat_completions'
       }, access)
     }
 
@@ -270,6 +282,8 @@ try {
       status: 'active',
       schedulable: true,
       supportedModels: ['deepseek-ai-v4-flash'],
+      healthCheckModel: 'deepseek-ai-v4-flash',
+      healthCheckEndpointFamily: 'chat_completions',
       modelMappings: [{
         sourceModel: 'deepseek-v4-flash',
         sourceEndpointFamily: 'responses',
@@ -286,6 +300,15 @@ try {
     }, access)
     assert.deepEqual(codexBridgeAccount.credentials.supported_endpoint_modes, ['chat_json', 'chat_sse'])
     assertDeepSeekCodexDispatchCapability(codexBridgeGroup.id, codexBridgeAccount.id)
+
+    for (const created of repositories.listAccounts(access).filter((item) => item.providerCode === DEEPSEEK_PROVIDER_CODE)) {
+      repositories.recordAccountHealthCheckSuccess(created.id, {
+        intervalHours: 24,
+        jitterMinutes: 0,
+        failureThreshold: 3,
+        expectedConfigRevision: created.configRevision
+      })
+    }
 
     const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'DeepSeek Mock AI 回归 Key',
@@ -357,8 +380,9 @@ try {
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+  await import('../../storage/sqlite-read-worker-pool.js').then((module) => module.closeSqliteReadWorkerPool()).catch(() => undefined)
   databaseModule.closeStorageDatabases()
-  rmSync(tempRoot, { recursive: true, force: true })
+  rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 }
 
 function assertDeepSeekSeeds(): void {

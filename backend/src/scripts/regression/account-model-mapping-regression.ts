@@ -94,7 +94,8 @@ function createRegressionAccount(
   const normalized = supportedModels && supportedModels.length > 0
     ? {
         ...input,
-        healthCheckModel: input.healthCheckModel ?? supportedModels[0]
+        healthCheckModel: input.healthCheckModel ?? supportedModels[0],
+        healthCheckEndpointFamily: input.healthCheckEndpointFamily ?? 'chat_completions' as const
       }
     : input
   const created = repositories.createAccount(
@@ -1261,6 +1262,7 @@ function assertImportAndDraftValidateTargetCapabilities(groupId: string): void {
     },
     supportedModels: [chatCompletionsUpstreamModel],
     healthCheckModel: chatCompletionsUpstreamModel,
+    healthCheckEndpointFamily: 'chat_completions' as const,
     modelMappings: [mapping]
   })
   const rejectedImport = previewAccountImport({
@@ -1289,6 +1291,7 @@ function assertImportAndDraftValidateTargetCapabilities(groupId: string): void {
     },
     supportedModels: [chatCompletionsUpstreamModel],
     healthCheckModel: chatCompletionsUpstreamModel,
+    healthCheckEndpointFamily: 'chat_completions' as const,
     modelMappings: [mapping],
     groupId
   })

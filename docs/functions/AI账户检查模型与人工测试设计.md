@@ -12,6 +12,13 @@
 - 列表保持轻量，测试所需交互数据在用户打开测试功能时按需获取。
 - 删除账户批量测试，避免用户一次性制造大量不稳定上游请求和复杂任务状态。
 
+## 健康检查协议族
+
+- 当前账户必须保存不可空 `healthCheckEndpointFamily`，数据库字段为 `health_check_endpoint_family`，仅允许 `chat_completions`、`responses`、`messages`、`generate_content`。
+- 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试固定映射为 `chat_json`、`responses_json`、`messages_json`、`generate_content_json`，系统探针始终非流式；人工测试仍可显式选择账户已启用的 SSE 请求形态。
+- 新账户默认：GPT 官方 API Key / OAuth 优先 Responses；通用 OpenAI-compatible、DeepSeek、GLM 和 Gemini OpenAI profile 优先 Chat Completions；Anthropic profile 优先 Messages；Gemini Native 优先 GenerateContent。
+- 首选族未启用时，取账户 `supported_endpoint_modes` 中第一个已启用的 JSON 族；没有任何可用 JSON 族时拒绝保存，不做旧字段兼容或运行时协议猜测。
+
 ## 2. 名称与字段
 
 页面名称：

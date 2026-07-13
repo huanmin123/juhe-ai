@@ -1,4 +1,5 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
+import { healthCheckEndpointMode } from '../../domain/account-health-check-endpoint-family.js'
 import { normalizeOpenAIEndpointModesForRuntime } from '../../domain/openai-endpoint-modes.js'
 import { normalizeAnthropicEndpointModesForRuntime } from '../../domain/anthropic-endpoint-modes.js'
 import { normalizeGeminiEndpointModesForRuntime } from '../../domain/gemini-endpoint-modes.js'
@@ -467,16 +468,21 @@ function resolveAccountTestEndpointMode(
 }
 
 function accountTestEndpointModeOrder(account: AccountSummary): AccountSupportedEndpointMode[] {
+  const defaultMode = healthCheckEndpointMode(account.healthCheckEndpointFamily)
   if (isAnthropicProtocolProfile(account)) {
-    return ['messages_sse', 'messages_json']
+    return uniqueEndpointModes(defaultMode, 'messages_sse')
   }
   if (isGeminiProtocolProfile(account)) {
-    return ['generate_content_sse', 'generate_content_json']
+    return uniqueEndpointModes(defaultMode, 'generate_content_sse')
   }
   if (account.type === 'oauth') {
-    return ['responses_sse', 'responses_json']
+    return uniqueEndpointModes(defaultMode, 'responses_sse')
   }
-  return ['chat_sse', 'responses_sse', 'chat_json', 'responses_json']
+  return uniqueEndpointModes(defaultMode, 'chat_sse', 'responses_sse', 'chat_json', 'responses_json')
+}
+
+function uniqueEndpointModes(...modes: AccountSupportedEndpointMode[]): AccountSupportedEndpointMode[] {
+  return [...new Set(modes)]
 }
 
 function accountTestClientCompatibility(

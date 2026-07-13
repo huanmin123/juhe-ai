@@ -431,6 +431,7 @@ accountsRouter.patch('/:id', async (req, res) => {
               clientCompatibility: '客户端兼容',
               supportedModels: '支持模型',
               healthCheckModel: '检查模型',
+              healthCheckEndpointFamily: '检查协议',
               modelMappings: '模型映射',
               tags: '标签',
               proxyProfileId: '代理',
