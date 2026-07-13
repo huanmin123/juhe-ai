@@ -29,10 +29,7 @@ export async function buildOpenAIClientCompatibilityBody(
   signal?: AbortSignal,
   options: OpenAIClientCompatibilityOptions = {}
 ): Promise<Buffer | undefined> {
-  if (!shouldApplyCodexResponsesCompatibility(options.requestClientCompatibility)) {
-    return undefined
-  }
-  if (!isOpenAIResponsesPostRequest(req)) {
+  if (!shouldForceOpenAICodexResponsesSse(req, options.requestClientCompatibility)) {
     return undefined
   }
   const body = await parseOpenAIClientCompatibilityJsonBody(req, signal)
@@ -48,10 +45,7 @@ export function applyOpenAIClientCompatibilityHeaders(
   headers: Headers,
   options: Pick<OpenAIClientCompatibilityOptions, 'requestClientCompatibility'> = {}
 ): void {
-  if (!shouldApplyCodexResponsesCompatibility(options.requestClientCompatibility)) {
-    return
-  }
-  if (!isOpenAIResponsesPostRequest(req)) {
+  if (!shouldForceOpenAICodexResponsesSse(req, options.requestClientCompatibility)) {
     return
   }
   headers.set('accept', 'text/event-stream')
@@ -64,10 +58,12 @@ export function applyOpenAIClientCompatibilityHeaders(
   }
 }
 
-function shouldApplyCodexResponsesCompatibility(
+export function shouldForceOpenAICodexResponsesSse(
+  req: Request,
   requestClientCompatibility?: ClientCompatibilityCapability
 ): boolean {
   return requestClientCompatibility === 'codex_responses'
+    && isOpenAIResponsesPostRequest(req)
 }
 
 function isOpenAIResponsesPostRequest(req: Request): boolean {

@@ -34,7 +34,11 @@ import {
 import { buildAnthropicUpstreamUrl, buildAnthropicUpstreamUrlsForAccount } from '../../../gateway/protocols/anthropic-v1/route-helpers.js'
 import { buildGeminiUpstreamUrl, buildGeminiUpstreamUrlsForAccount, isGeminiModelsRequest, isGeminiNativeRequest } from '../../../gateway/protocols/gemini-v1beta/route-helpers.js'
 import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/registry.js'
-import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody } from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
+import {
+  applyOpenAIClientCompatibilityHeaders,
+  buildOpenAIClientCompatibilityBody,
+  shouldForceOpenAICodexResponsesSse
+} from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import {
   buildOpenAIModelMappedJsonBody,
   geminiGenerateContentModelMappedUpstreamPathAndQuery,
@@ -179,9 +183,9 @@ export const hybridProviderDriver: ProviderDriver = {
     if (target === 'gemini') return hybridGeminiEndpointModeForGatewayRequest(req, account)
     return undefined
   },
-  accountSupportsRequest(req, account) {
+  accountSupportsRequest(req, account, context) {
     const target = hybridUpstreamTargetForRequest(req, account)
-    if (target === 'openai') return hybridOpenAIAccountSupportsRequest(req, account)
+    if (target === 'openai') return hybridOpenAIAccountSupportsRequest(req, account, context)
     if (target === 'anthropic') return hybridAnthropicAccountSupportsRequest(req, account)
     if (target === 'gemini') return hybridGeminiAccountSupportsRequest(req, account)
     return false
@@ -293,7 +297,7 @@ function transformHybridOpenAIResponse(req: Request, account: DispatchAccountSec
   })
 }
 
-function hybridOpenAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
+function hybridOpenAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount, context?: ProviderGatewayRequestContext) {
   const mapping = resolveOpenAIRequestModelMapping(req, account)
   if (isAnthropicMessagesToChatCompletionsModelMapping(mapping)) {
     return anthropicMessagesChatBridgeRequiredEndpointMode(isEffectiveOpenAIStreamRequest(req, account))
@@ -306,11 +310,13 @@ function hybridOpenAIEndpointModeForGatewayRequest(req: Request, account: Provid
   }
   return openAIEndpointModeForRequestShape({
     endpoint: req.path || req.originalUrl.split('?', 1)[0],
-    stream: isEffectiveOpenAIStreamRequest(req, account)
+    stream: account.type === 'api_key' && shouldForceOpenAICodexResponsesSse(req, context?.requestClientCompatibility)
+      ? true
+      : isEffectiveOpenAIStreamRequest(req, account)
   })
 }
 
-function hybridOpenAIAccountSupportsRequest(req: Request, account: ProviderDriverAccount): boolean {
+function hybridOpenAIAccountSupportsRequest(req: Request, account: ProviderDriverAccount, context?: ProviderGatewayRequestContext): boolean {
   const mapping = resolveOpenAIRequestModelMapping(req, account)
   if (mapping && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY) {
     const mode = hybridOpenAIEndpointModeForGatewayRequest(req, account)
@@ -318,7 +324,7 @@ function hybridOpenAIAccountSupportsRequest(req: Request, account: ProviderDrive
     return accountSupportsOpenAIEndpointMode(openAIEndpointModeSupportInput(account, mode))
   }
   if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE) || isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE)) return false
-  const mode = hybridOpenAIEndpointModeForGatewayRequest(req, account)
+  const mode = hybridOpenAIEndpointModeForGatewayRequest(req, account, context)
   if (!mode) return false
   return accountSupportsOpenAIEndpointMode(openAIEndpointModeSupportInput(account, mode))
 }

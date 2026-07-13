@@ -237,8 +237,14 @@ assert.throws(
 
 const chatOnly = account('chat-only', ['chat_json', 'chat_sse'])
 const responsesOnly = account('responses-only', ['responses_json', 'responses_sse'])
+const responsesJsonOnly = account('responses-json-only', ['responses_json'])
+const responsesSseOnly = account('responses-sse-only', ['responses_sse'])
 const jsonOnly = account('json-only', ['chat_json', 'responses_json'])
 const codexCapableApiKey = gptApiKeyAccount('gpt-api-key-codex', ['responses_json', 'responses_sse'])
+const gptResponsesJsonOnly = gptApiKeyAccount('gpt-responses-json-only', ['responses_json'])
+const gptResponsesSseOnly = gptApiKeyAccount('gpt-responses-sse-only', ['responses_sse'])
+const hybridResponsesJsonOnly = hybridOpenAIAccount('hybrid-responses-json-only', ['responses_json'])
+const hybridResponsesSseOnly = hybridOpenAIAccount('hybrid-responses-sse-only', ['responses_sse'])
 const deepSeekChatOnlyAccount = deepSeekApiKeyAccount('deepseek-chat-only', ['chat_json', 'chat_sse'], 'codex_responses')
 const deepSeekResponsesToChatMappedAccount = deepSeekApiKeyAccount('deepseek-responses-to-chat', ['chat_json', 'chat_sse'], 'codex_responses', [
   {
@@ -291,6 +297,20 @@ assert.deepEqual(
   }).accounts.map((item) => item.id),
   ['responses-only', 'gpt-api-key-codex'],
   '普通 OpenAI Responses 请求只能命中 OpenAI-compatible 账号，GPT API Key 可同时承接'
+)
+assert.deepEqual(
+  filterGatewayAccountsByRequestCapability(request('/v1/responses', false), [
+    responsesJsonOnly,
+    responsesSseOnly,
+    gptResponsesJsonOnly,
+    gptResponsesSseOnly,
+    hybridResponsesJsonOnly,
+    hybridResponsesSseOnly
+  ], {
+    requestClientCompatibility: 'codex_responses'
+  }).accounts.map((item) => item.id),
+  ['responses-sse-only', 'gpt-responses-sse-only', 'hybrid-responses-sse-only'],
+  'Codex 原生 Responses API Key 请求即使原始 stream=false，也必须统一按最终 responses_sse 能力筛选'
 )
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [responsesOnly, codexCapableApiKey, oauthAccount('oauth-codex')], {
@@ -413,6 +433,16 @@ function oauthAccount(id: string, modes: AccountSupportedEndpointMode[] = ['resp
     providerCode: 'gpt',
     providerProtocolProfileId: 'profile_gpt_openai_v1',
     clientCompatibility: 'codex_responses'
+  } as unknown as UpstreamAccount
+}
+
+function hybridOpenAIAccount(id: string, modes: AccountSupportedEndpointMode[]): UpstreamAccount {
+  return {
+    ...account(id, modes),
+    providerCode: HYBRID_PROVIDER_CODE,
+    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+    supportedEndpointModes: modes,
+    credentials: { supported_endpoint_modes: modes }
   } as unknown as UpstreamAccount
 }
 
