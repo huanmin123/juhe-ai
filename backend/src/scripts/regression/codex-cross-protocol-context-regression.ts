@@ -7,6 +7,7 @@ import {
   applyCodexResponsesContextStatePreflight,
   codexResponsesContextAllowsAccount,
   codexResponsesChatBridgeCompletionHandlerForRequest,
+  getCodexResponsesContextState,
   hasExplicitCodexResponsesChatBridgeRuntimeAccount,
   prepareCodexResponsesCompactDispatchForAccounts,
   setCodexResponsesContextStateForRequest
@@ -45,6 +46,11 @@ const canonicalBody = {
   }],
   previous_response_id: 'resp_deepseek_bridge_previous'
 }
+const historicalInput = {
+  type: 'message',
+  role: 'assistant',
+  content: [{ type: 'output_text', text: 'Historical response that must not be saved as current input.' }]
+}
 
 const req = request(canonicalBody)
 setCodexResponsesContextStateForRequest(req, {
@@ -58,7 +64,8 @@ setCodexResponsesContextStateForRequest(req, {
   canonicalBody,
   currentBody: canonicalBody,
   currentInput: canonicalBody.input,
-  materializedInput: canonicalBody.input,
+  materializedInput: [historicalInput, ...canonicalBody.input],
+  materializedCurrentInputStartIndex: 1,
   previousResponseId: canonicalBody.previous_response_id,
   previousResponseKind: 'internal',
   sessionId: 'session_test',
@@ -107,7 +114,9 @@ const nativeBody = jsonBody(nativeParts.body)
 assert.equal(nativeBody.model, model)
 assert.equal(nativeBody.previous_response_id, undefined)
 assert.equal(Array.isArray(nativeBody.input), true)
-assert.deepEqual((nativeBody.input as unknown[])[0], {
+assert.deepEqual((nativeBody.input as unknown[]).find((item) => (
+  typeof item === 'object' && item !== null && (item as Record<string, unknown>).role === 'developer'
+)), {
   type: 'message',
   role: 'developer',
   content: [{ type: 'input_text', text: summary }]
@@ -132,6 +141,10 @@ const bridgeAgain = jsonBody((await buildPreparedUpstreamRequestParts(req, bridg
 assert.match(JSON.stringify(bridgeAgain.messages), /Earlier turns established the deployment constraints/)
 assert.match(JSON.stringify(bridgeAgain.messages), /Apply the hybrid quality repair instruction/)
 assert.doesNotMatch(JSON.stringify(bridgeAgain), /native-upstream-encrypted-content/)
+const updatedState = getCodexResponsesContextState(req)
+assert.match(JSON.stringify(updatedState?.currentInput), /Apply the hybrid quality repair instruction/)
+assert.doesNotMatch(JSON.stringify(updatedState?.currentInput), /Historical response that must not be saved as current input/)
+assert.match(JSON.stringify(updatedState?.materializedInput), /Historical response that must not be saved as current input/)
 
 const externalReq = request({
   model,

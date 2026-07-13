@@ -76,6 +76,7 @@ export interface CodexResponsesContextRequestState {
   previousResponseKind: 'none' | 'internal' | 'external'
   sessionId?: string
   restored: boolean
+  materializedCurrentInputStartIndex?: number
   activeBridgeAccountId?: string
   lastRenderedBody?: JsonRecord
   compactDispatchMode?: 'bridge' | 'native'
@@ -270,6 +271,10 @@ export async function applyCodexResponsesContextStatePreflight(input: {
   setCodexResponsesContextStateForRequest(input.req, {
     ...baseState,
     materializedInput: restoredInput,
+    materializedCurrentInputStartIndex: Math.max(
+      0,
+      restoredInput.length - responsesInputAsItems(materializedCurrentInput).length
+    ),
     previousResponseKind: 'internal',
     sessionId: readResult.sessionId,
     restored: true
@@ -673,10 +678,23 @@ function synchronizeCodexResponsesDispatchBaseline(
   if (!currentBody || currentBody === state.lastRenderedBody) return
   if (state.lastRenderedBody) {
     state.materializedInput = currentBody.input
-    state.currentInput = currentBody.input
+    state.currentInput = currentInputFromMaterializedMutation(state, currentBody.input)
   }
   state.canonicalBody = { ...currentBody }
   state.currentBody = { ...currentBody }
+}
+
+function currentInputFromMaterializedMutation(
+  state: CodexResponsesContextRequestState,
+  materializedInput: unknown
+): unknown {
+  const startIndex = state.materializedCurrentInputStartIndex
+  if (state.previousResponseKind !== 'internal'
+    || startIndex === undefined
+    || !Array.isArray(materializedInput)) {
+    return materializedInput
+  }
+  return cloneArray(materializedInput.slice(Math.min(startIndex, materializedInput.length)))
 }
 
 function currentGatewayJsonBody(req: Request): JsonRecord | undefined {
