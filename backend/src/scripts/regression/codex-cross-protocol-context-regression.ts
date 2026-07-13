@@ -1,0 +1,219 @@
+import assert from 'node:assert/strict'
+import type { Request } from 'express'
+
+import type { AccountModelMapping } from '../../domain/types.js'
+import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
+import {
+  applyCodexResponsesContextStatePreflight,
+  codexResponsesContextAllowsAccount,
+  codexResponsesChatBridgeCompletionHandlerForRequest,
+  hasExplicitCodexResponsesChatBridgeRuntimeAccount,
+  setCodexResponsesContextStateForRequest
+} from '../../modules/gateway/codex-responses/chat-bridge-state.js'
+import { buildPreparedUpstreamRequestParts } from '../../modules/gateway/dispatch/account-preparation.js'
+import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
+import type { GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
+
+const model = 'gpt-5.5'
+const summary = 'Earlier turns established the deployment constraints.'
+const inlineSummary = `juhecmp.v1.${Buffer.from(JSON.stringify({ summary }), 'utf8').toString('base64url')}`
+const canonicalBody = {
+  model,
+  stream: true,
+  input: [
+    {
+      type: 'compaction_summary',
+      encrypted_content: inlineSummary
+    },
+    {
+      type: 'reasoning',
+      encrypted_content: 'native-upstream-encrypted-content',
+      summary: []
+    },
+    {
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Continue.' }]
+    }
+  ],
+  previous_response_id: 'resp_deepseek_bridge_previous'
+}
+
+const req = request(canonicalBody)
+setCodexResponsesContextStateForRequest(req, {
+  boundary: {
+    systemAccountId: 'sys_test',
+    apiKeyId: 'key_test',
+    groupId: 'group_test',
+    providerCode: 'openai-compatible'
+  },
+  canonicalBody,
+  currentBody: canonicalBody,
+  currentInput: canonicalBody.input,
+  materializedInput: canonicalBody.input,
+  previousResponseId: canonicalBody.previous_response_id,
+  previousResponseKind: 'internal',
+  sessionId: 'session_test',
+  restored: true
+})
+
+const bridgeAccount = account('bridge', [{
+  sourceModel: model,
+  sourceEndpointFamily: 'responses',
+  upstreamModel: 'gpt-5.5-chat',
+  upstreamEndpointFamily: 'chat_completions',
+  enabled: true
+}])
+const nativeAccount = account('native')
+const usageContext = {
+  systemAccountId: 'sys_test',
+  groupId: 'group_test',
+  trafficSource: 'gateway'
+} as GatewayUsageContext
+
+assert.equal(codexResponsesContextAllowsAccount(req, bridgeAccount), true)
+assert.equal(hasExplicitCodexResponsesChatBridgeRuntimeAccount(req, [nativeAccount]), false)
+assert.equal(hasExplicitCodexResponsesChatBridgeRuntimeAccount(req, [bridgeAccount]), true)
+const bridgeParts = await buildPreparedUpstreamRequestParts(req, bridgeAccount, usageContext, undefined, {
+  requestClientCompatibility: 'codex_responses'
+})
+const bridgeBody = jsonBody(bridgeParts.body)
+assert.equal(bridgeBody.model, 'gpt-5.5-chat')
+assert.equal(bridgeBody.stream, true)
+assert.equal(Array.isArray(bridgeBody.messages), true)
+assert.match(JSON.stringify(bridgeBody.messages), /Earlier turns established the deployment constraints/)
+assert.doesNotMatch(JSON.stringify(bridgeBody), /juhecmp\.v[12]/)
+assert.equal(typeof codexResponsesChatBridgeCompletionHandlerForRequest(req, bridgeAccount), 'function')
+
+const nativeParts = await buildPreparedUpstreamRequestParts(req, nativeAccount, usageContext, undefined, {
+  requestClientCompatibility: 'codex_responses'
+})
+const nativeBody = jsonBody(nativeParts.body)
+assert.equal(nativeBody.model, model)
+assert.equal(nativeBody.previous_response_id, undefined)
+assert.equal(Array.isArray(nativeBody.input), true)
+assert.deepEqual((nativeBody.input as unknown[])[0], {
+  type: 'message',
+  role: 'developer',
+  content: [{ type: 'input_text', text: summary }]
+})
+assert.match(JSON.stringify(nativeBody), /native-upstream-encrypted-content/)
+assert.doesNotMatch(JSON.stringify(nativeBody), /juhecmp\.v[12]/)
+assert.equal(codexResponsesChatBridgeCompletionHandlerForRequest(req, nativeAccount), undefined)
+
+const bridgeAgain = jsonBody((await buildPreparedUpstreamRequestParts(req, bridgeAccount, usageContext)).body)
+assert.match(JSON.stringify(bridgeAgain.messages), /Earlier turns established the deployment constraints/)
+assert.doesNotMatch(JSON.stringify(bridgeAgain), /native-upstream-encrypted-content/)
+
+const externalReq = request({
+  model,
+  stream: true,
+  input: 'Continue native session.',
+  previous_response_id: 'resp_external_native'
+})
+const externalRawBody = Buffer.from((externalReq as unknown as GatewayRawBodyRequest).rawBody ?? Buffer.alloc(0))
+const externalPreflightResult = await applyCodexResponsesContextStatePreflight({
+  req: externalReq,
+  res: {} as never,
+  auditCapture: { addGatewayMetadata() {} } as never,
+  usageContext,
+  startedAt: Date.now(),
+  systemAccountId: 'sys_test',
+  apiKeyId: 'key_test',
+  groupId: 'group_test',
+  groupAccess: {
+    groupOwnerSystemAccountId: 'sys_test',
+    providerCode: 'openai',
+    groupAccessType: 'owner'
+  }
+})
+assert.equal(externalPreflightResult, 'continued')
+assert.deepEqual((externalReq as unknown as GatewayRawBodyRequest).rawBody, externalRawBody)
+assert.equal(codexResponsesContextAllowsAccount(externalReq, bridgeAccount), false)
+assert.equal(codexResponsesContextAllowsAccount(externalReq, nativeAccount), true)
+const externalNativeBody = jsonBody((await buildPreparedUpstreamRequestParts(externalReq, nativeAccount, usageContext)).body)
+assert.equal(externalNativeBody.previous_response_id, 'resp_external_native')
+
+const compatibilityOnlyAccount = account('compatibility-only')
+assert.equal(hasExplicitCodexResponsesChatBridgeRuntimeAccount(externalReq, [compatibilityOnlyAccount]), false)
+assert.equal(codexResponsesContextAllowsAccount(externalReq, compatibilityOnlyAccount), true)
+
+const untouchedReq = request({ model, stream: true, input: 'Canonical request body.' })
+const untouchedRawBody = Buffer.from((untouchedReq as unknown as GatewayRawBodyRequest).rawBody ?? Buffer.alloc(0))
+const preflightResult = await applyCodexResponsesContextStatePreflight({
+  req: untouchedReq,
+  res: {} as never,
+  auditCapture: { addGatewayMetadata() {} } as never,
+  usageContext,
+  startedAt: Date.now(),
+  systemAccountId: 'sys_test',
+  apiKeyId: 'key_test',
+  groupId: 'group_test',
+  groupAccess: {
+    groupOwnerSystemAccountId: 'sys_test',
+    providerCode: 'openai',
+    groupAccessType: 'owner'
+  }
+})
+assert.equal(preflightResult, 'continued')
+assert.deepEqual((untouchedReq as unknown as GatewayRawBodyRequest).rawBody, untouchedRawBody)
+
+console.log('跨协议 Codex 上下文回归通过：内部摘要按实际账号渲染，原生加密内容和外部 previous_response_id 保持边界')
+
+function request(body: Record<string, unknown>): Request {
+  const rawBody = Buffer.from(JSON.stringify(body), 'utf8')
+  return {
+    method: 'POST',
+    path: '/responses',
+    originalUrl: '/v1/responses',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body,
+    rawBody,
+    gatewayParsedJsonBodyAvailable: true,
+    gatewayParsedJsonBody: body
+  } as unknown as Request & GatewayRawBodyRequest
+}
+
+function account(id: string, modelMappings: AccountModelMapping[] = []): UpstreamAccount {
+  const modes = ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'] as const
+  return {
+    id,
+    name: id,
+    providerCode: 'openai',
+    providerProtocolProfileId: 'profile_openai_openai_v1',
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    systemAccountId: 'sys_test',
+    accountOwnerSystemAccountId: 'sys_test',
+    groupOwnerSystemAccountId: 'sys_test',
+    accountAccessType: 'owner',
+    groupAccessType: 'owner',
+    type: 'api_key',
+    status: 'active',
+    concurrencyLimit: 10,
+    priority: 0,
+    superPriorityEnabled: false,
+    fallbackEnabled: false,
+    clientCompatibility: 'codex_responses',
+    supportedEndpointModes: [...modes],
+    supportedModels: [model, 'gpt-5.5-chat'],
+    modelMappings,
+    baseUrl: 'https://example.test/v1',
+    apiKey: 'sk-test',
+    streamFailureCount: 0,
+    credentials: {
+      api_key: 'sk-test',
+      base_url: 'https://example.test/v1',
+      supported_endpoint_modes: [...modes]
+    }
+  } as UpstreamAccount
+}
+
+function jsonBody(body: Buffer | string | undefined): Record<string, unknown> {
+  assert.ok(body, '上游请求必须包含 JSON body')
+  const text = Buffer.isBuffer(body) ? body.toString('utf8') : body
+  return JSON.parse(text) as Record<string, unknown>
+}

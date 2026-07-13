@@ -30,7 +30,7 @@ import { readUpstreamBodyLimited } from '../upstream/body.js'
 import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
 import {
   createCodexResponsesChatBridgeCompactSnapshot,
-  hasCodexResponsesChatBridgeRuntimeAccount,
+  hasExplicitCodexResponsesChatBridgeRuntimeAccount,
   restoreCodexResponsesChatBridgeInputForCompact
 } from './chat-bridge-state.js'
 
@@ -56,7 +56,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   sameAccountRetryBudget: SameAccountRetryBudget
   signal?: AbortSignal
 }): Promise<'continued' | 'completed'> {
-  if (!isChatOnlyCodexResponsesCompactRequest(input.req, input.requestClientCompatibility, input.dispatchAccounts)) {
+  if (!isChatOnlyCodexResponsesCompactRequest(input.req, input.dispatchAccounts)) {
     return 'continued'
   }
   const body = await parseGatewayJsonObject(input.req, input.signal)
@@ -298,11 +298,10 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
 
 function isChatOnlyCodexResponsesCompactRequest(
   req: Request,
-  requestClientCompatibility: ClientCompatibilityCapability,
   accounts: readonly UpstreamAccount[]
 ): boolean {
   return isOpenAIResponsesCompactPostRequest(req)
-    && hasCodexResponsesChatBridgeRuntimeAccount(req, accounts, requestClientCompatibility)
+    && hasExplicitCodexResponsesChatBridgeRuntimeAccount(req, accounts)
 }
 
 function isOpenAIResponsesCompactPostRequest(req: Request): boolean {

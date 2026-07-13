@@ -32,6 +32,7 @@ import { requestEndpoint } from '../request/metadata.js'
 import { localAccountApiKeyRuntimeStatesForDispatch } from '../runtime/account-api-key-failure-guard.service.js'
 import { extractGatewayJsonBodyMetadata } from '../request/json-metadata-scanner.js'
 import type { UsageServiceTier } from '../usage/service-tier.js'
+import { prepareCodexResponsesContextForAccount } from '../codex-responses/chat-bridge-state.js'
 
 export interface PreparedUpstreamRequestParts {
   headers: Headers
@@ -229,6 +230,7 @@ export async function buildPreparedUpstreamRequestParts(
   context?: ProviderGatewayRequestContext
 ): Promise<PreparedUpstreamRequestParts> {
   try {
+    prepareCodexResponsesContextForAccount(req, account)
     const parts = await buildGatewayUpstreamRequestParts(req, account, {
       systemAccountId: usageContext.systemAccountId,
       apiKeyId: usageContext.apiKeyId,
