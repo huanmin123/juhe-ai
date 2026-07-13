@@ -16,6 +16,11 @@ import {
 import { closePostgresPool } from '../../storage/postgres-client.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '账号模型映射 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
+assert.equal(
+  process.env.JUHE_AI_ALLOW_ACCOUNT_MODEL_MAPPING_POSTGRES_SMOKE,
+  '1',
+  '账号模型映射 PG smoke 需要显式设置 JUHE_AI_ALLOW_ACCOUNT_MODEL_MAPPING_POSTGRES_SMOKE=1'
+)
 
 const access = {
   systemAccountId: 'sys_admin',
@@ -160,9 +165,13 @@ try {
     disabledDraftAccepted: true
   }))
 } finally {
-  for (const accountId of createdAccountIds.reverse()) {
-    await deleteAccountAsync(accountId, access).catch(() => false)
+  try {
+    for (const accountId of createdAccountIds.reverse()) {
+      assert.equal(await deleteAccountAsync(accountId, access), true, `PG smoke 临时账户清理失败：${accountId}`)
+      assert.equal(await findAccountForTestAsync(accountId, access), undefined, `PG smoke 临时账户清理后仍可查询：${accountId}`)
+    }
+  } finally {
+    await closeRedisClients()
+    await closePostgresPool()
   }
-  await closeRedisClients()
-  await closePostgresPool()
 }
