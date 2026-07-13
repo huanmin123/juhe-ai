@@ -33,7 +33,7 @@ import { gatewayErrorPayload, type GatewayErrorPayload } from '../response/respo
 import { extractClientIp, requestEndpoint } from './metadata.js'
 import { buildGatewayUsageContext } from './preflight.js'
 
-type GatewayRawBodyLimitScope = 'gateway' | 'text' | 'image'
+export type GatewayRawBodyLimitScope = 'gateway' | 'text' | 'image'
 type GatewayBodyRejectReason = 'gateway_body_parser' | 'gateway_body_size_limit' | 'gateway_body_in_flight_limit' | 'gateway_body_metadata_worker' | 'gateway_body_admission'
 
 export interface GatewayBodyRejectionInput {
@@ -43,6 +43,8 @@ export interface GatewayBodyRejectionInput {
   reason: GatewayBodyRejectReason
   errorCode?: string
   errorMessage?: string
+  limitBytes?: number
+  limitScope?: GatewayRawBodyLimitScope
 }
 
 export async function captureGatewayRawBody(
@@ -197,7 +199,9 @@ export async function rejectGatewayRawBodyByContentLength(
     rawBodyBytes: contentLength,
     reason: 'gateway_body_size_limit',
     errorCode: 'request_too_large',
-    errorMessage: '请求体过大'
+    errorMessage: '请求体过大',
+    limitBytes: requestLimit.limitBytes,
+    limitScope: requestLimit.scope
   })
   if (!res.headersSent) {
     res.status(413).json({
@@ -290,7 +294,9 @@ async function rejectGatewayRawBodyTooLarge(
     rawBodyBytes: rawBody.length,
     reason: 'gateway_body_size_limit',
     errorCode: 'request_too_large',
-    errorMessage: '请求体过大'
+    errorMessage: '请求体过大',
+    limitBytes,
+    limitScope
   })
   if (!res.headersSent) {
     res.status(413).json({
@@ -444,6 +450,9 @@ export async function recordGatewayBodyRejection(req: GatewayRawBodyRequest, inp
     const runtime = req.gatewayRuntime
     const apiKey = runtime?.apiKey
     const groupUsageFields = runtime?.groupAccess ? groupUsageMetadata(runtime.groupAccess) : undefined
+    const auditErrorMessage = input.limitBytes !== undefined && input.limitScope
+      ? `${input.errorMessage ?? input.responsePayload.error.message}（rawBodyBytes=${input.rawBodyBytes}, limitBytes=${input.limitBytes}, limitScope=${input.limitScope}）`
+      : input.errorMessage ?? input.responsePayload.error.message
     recordDroppedAuditCapture({
       traceId,
       auditOutcome: 'gateway_failed',
@@ -456,7 +465,8 @@ export async function recordGatewayBodyRejection(req: GatewayRawBodyRequest, inp
       statusCode: input.statusCode,
       errorPhase: 'gateway',
       errorCode: input.errorCode,
-      errorMessage: input.errorMessage ?? input.responsePayload.error.message,
+      errorMessage: auditErrorMessage,
+      contentType: requestHeaderValue(req, 'content-type'),
       clientIp,
       userAgent: requestHeaderValue(req, 'user-agent'),
       trafficSource: 'gateway',

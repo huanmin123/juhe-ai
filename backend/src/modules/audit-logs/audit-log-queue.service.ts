@@ -98,6 +98,7 @@ export function recordDroppedAuditCapture(input: {
   errorPhase?: string
   errorCode?: string
   errorMessage?: string
+  contentType?: string
   clientIp?: string
   userAgent?: string
   systemAccountId?: string
@@ -136,7 +137,15 @@ export function recordDroppedAuditCapture(input: {
     startedAt: timestamp,
     endedAt: timestamp,
     attempts: [],
-    payloads: []
+    payloads: input.reason === 'gateway_body_rejected'
+      ? [{
+          partType: 'client_request',
+          sequenceIndex: 0,
+          contentType: input.contentType,
+          rawBodySizeBytes: input.bytes,
+          captureStatus: 'overflow'
+        }]
+      : []
   })
 }
 

@@ -175,6 +175,12 @@ try {
     const chatOversizeBody = JSON.stringify({ model: 'gpt-5.4', messages: [{ role: 'user', content: 'x'.repeat(configuredTextLimitBytes) }] })
     const chatOversize = await postJson(`${baseUrl}/v1/chat/completions`, chatOversizeBody, apiKey.key, 'chatOversize')
     assert.equal(chatOversize.status, 413, '超过系统设置里的 Chat Completions 文本请求体上限应在读取 body 前返回 413')
+    assert.deepEqual(JSON.parse(chatOversize.text), {
+      error: {
+        message: '请求体过大',
+        type: 'request_too_large'
+      }
+    }, '正文超限审计增强不得改变客户端 413 响应契约')
     assert.equal(rawBodyMiddlewareHitCount, rawBodyHitsBeforeChatOversize, '超过动态文本上限且 URL 可确定文本端点时不应进入 raw body 读取链路')
 
     const rawBodyHitsBeforeMessagesOversize = rawBodyMiddlewareHitCount
