@@ -225,6 +225,7 @@ assert.equal(codexResponsesContextAllowsAccount(mixedCompactReq, bridgeAccount),
 assert.equal(codexResponsesContextAllowsAccount(mixedCompactReq, nativeAccount), true)
 
 const untouchedReq = request({ model, stream: true, input: 'Canonical request body.' })
+const untouchedBody = untouchedReq.body
 const untouchedRawBody = Buffer.from((untouchedReq as unknown as GatewayRawBodyRequest).rawBody ?? Buffer.alloc(0))
 const preflightResult = await applyCodexResponsesContextStatePreflight({
   req: untouchedReq,
@@ -243,6 +244,10 @@ const preflightResult = await applyCodexResponsesContextStatePreflight({
 })
 assert.equal(preflightResult, 'continued')
 assert.deepEqual((untouchedReq as unknown as GatewayRawBodyRequest).rawBody, untouchedRawBody)
+const untouchedParts = await buildPreparedUpstreamRequestParts(untouchedReq, nativeAccount, usageContext)
+assert.equal(untouchedReq.body, untouchedBody, '原生 Responses 无转换派发不得替换请求 body 引用')
+assert.deepEqual((untouchedReq as unknown as GatewayRawBodyRequest).rawBody, untouchedRawBody, '原生 Responses 无转换派发不得重写 rawBody')
+assert.deepEqual(jsonBody(untouchedParts.body), untouchedBody, '原生 Responses 无转换派发的上游 body 语义应保持不变')
 
 console.log('跨协议 Codex 上下文回归通过：内部摘要按实际账号渲染，原生加密内容和外部 previous_response_id 保持边界')
 
@@ -284,6 +289,7 @@ function account(id: string, modelMappings: AccountModelMapping[] = []): Upstrea
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'codex_responses',
+    healthCheckEndpointFamily: 'chat_completions',
     supportedEndpointModes: [...modes],
     supportedModels: [model, 'gpt-5.5-chat'],
     modelMappings,

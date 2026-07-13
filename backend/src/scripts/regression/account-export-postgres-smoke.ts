@@ -56,6 +56,8 @@ try {
     proxyProfileId: proxy.id,
     tags: [tagName],
     supportedModels: ['gpt-4o-mini'],
+    healthCheckModel: 'gpt-4o-mini',
+    healthCheckEndpointFamily: 'responses',
     status: 'disabled'
   }, access)
   createdAccountIds.push(account.id)

@@ -84,7 +84,7 @@ assertDeepEqual(
     protocolCode: 'openai',
     protocolVersion: 'v1'
   })),
-  { model: 'gpt-5.1', testEndpointMode: 'chat_sse' },
+  { model: 'gpt-5.1', testEndpointMode: 'chat_json' },
   'GPT API Key 默认测试形态应从上游接口能力中明确提交 endpoint mode'
 )
 assertDeepEqual(
@@ -104,7 +104,7 @@ assertDeepEqual(
     protocolCode: 'anthropic',
     protocolVersion: 'v1'
   })),
-  { model: 'claude-opus-4-8', testEndpointMode: 'messages_sse' },
+  { model: 'claude-opus-4-8', testEndpointMode: 'messages_json' },
   'Anthropic 测试应从上游接口能力中明确提交 Messages endpoint mode'
 )
 

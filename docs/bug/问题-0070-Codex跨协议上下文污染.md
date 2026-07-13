@@ -54,7 +54,8 @@
 | 状态存储 | 分片恢复、并发写入和清理屏障 | `test:codex-context-state-sharding`、`test:codex-context-state-writer-pool` | 通过 | 通过 | 已执行 |
 | 端点能力 | OpenAI/Anthropic 端点能力矩阵 | `pnpm --filter juhe-ai-backend test:openai-endpoint-modes` | 通过 | 通过 | 已执行 |
 | 类型检查 | 后端 TypeScript | `pnpm --filter juhe-ai-backend typecheck` | 通过 | 通过 | 已执行 |
-| 相邻 E2E | Codex 轮次切号 | `pnpm --filter juhe-ai-backend test:codex-turn-switch-e2e` | 通过 | 被基线健康检查模型夹具拦截，待 PLAN-0094 健康检查提交合入后复跑 | 待复跑 |
+| 相邻 E2E | Codex 轮次切号 | `pnpm --filter juhe-ai-backend test:codex-turn-switch-e2e` | 通过 | 补齐检查模型和 `pending_test` 健康成功夹具后完整通过 | 已执行 |
+| 原生零重写 | 无 previous、无 compact 的原生 Responses | `pnpm --filter juhe-ai-backend test:account-test-responses-contract`、`test:codex-cross-protocol-context` | 不替换只读内存请求的 body/rawBody | 通过 | 已执行 |
 
 ## 复发记录
 
@@ -72,5 +73,5 @@
 ## 完成总结
 
 - 完成时间：2026-07-13
-- 结论：代码与专项回归已完成，待合入健康检查夹具修复后补轮次切号 E2E，并待生产验证。
+- 结论：代码、专项回归、轮次切号 E2E 和原生 Responses 零重写回归均已完成，待生产验证。
 - 后续建议：发布后检查跨协议请求审计的上游 body 类型与账号命中结果。

@@ -621,8 +621,16 @@ export function prepareCodexResponsesContextForAccount(req: Request, account: Up
     delete body.previous_response_id
   }
   state.activeBridgeAccountId = explicitBridge ? account.id : undefined
-  state.lastRenderedBody = body
-  replaceGatewayJsonBody(req, body)
+  const currentBody = currentGatewayJsonBody(req)
+  const bodyChanged = explicitBridge
+    || body.input !== currentBody?.input
+    || (state.previousResponseKind === 'internal' && Object.prototype.hasOwnProperty.call(currentBody ?? {}, 'previous_response_id'))
+  if (bodyChanged) {
+    state.lastRenderedBody = body
+    replaceGatewayJsonBody(req, body)
+  } else {
+    state.lastRenderedBody = currentBody ?? state.canonicalBody
+  }
   return explicitBridge
 }
 
@@ -667,7 +675,13 @@ function isExplicitCodexResponsesChatBridgeAccount(req: Request, account: Upstre
 
 function nativeResponsesInputFromMaterialized(value: unknown): unknown {
   if (!Array.isArray(value)) return value
-  return value.map((item) => nativeResponsesItemFromMaterialized(item))
+  let changed = false
+  const transformed = value.map((item) => {
+    const next = nativeResponsesItemFromMaterialized(item)
+    if (next !== item) changed = true
+    return next
+  })
+  return changed ? transformed : value
 }
 
 function synchronizeCodexResponsesDispatchBaseline(
