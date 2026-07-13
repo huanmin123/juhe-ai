@@ -102,6 +102,7 @@
     "test:model-check-storage-sanitizer": "pnpm --filter juhe-ai-backend test:model-check-storage-sanitizer",
     "test:model-check-token-integrity": "pnpm --filter juhe-ai-backend test:model-check-token-integrity",
     "test:model-trust-observation-aggregation": "pnpm --filter juhe-ai-backend test:model-trust-observation-aggregation",
+    "test:model-trust-identity-baseline": "pnpm --filter juhe-ai-backend test:model-trust-identity-baseline",
     "test:model-check-strict-model-match": "pnpm --filter juhe-ai-backend test:model-check-strict-model-match",
     "test:model-check-cross-model-paired-mismatch": "pnpm --filter juhe-ai-backend test:model-check-cross-model-paired-mismatch",
     "test:model-check-distribution-similarity": "pnpm --filter juhe-ai-backend test:model-check-distribution-similarity",

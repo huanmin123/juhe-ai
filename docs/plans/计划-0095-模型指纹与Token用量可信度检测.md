@@ -92,7 +92,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 
 - [x] 定义 `identityStatus`、`mappingStatus`、`usageIntegrityStatus`、`protocolStatus` 和 `evidenceStatus` 契约，并在现有报告 JSON 中形成最小闭环。
 - [x] 定义 `model_check_observations` 当前 schema、有界字段、索引和保留期。
-- [ ] 定义指纹、模型配对、Token 诚信和账号最新结果四类统计窗口。
+- [x] 定义并实现身份来源特征 / 版本基线、模型配对、Token 诚信和账号最新结果四类统计窗口。
 - [x] 定义上游 origin、probe key 和 `system_fingerprint` 的 HMAC 规则；当前随系统 secret 轮换，不保存 HMAC 输入。
 - [x] 同步 SQLite / PostgreSQL 当前 schema、类型、repository、接口和前端 DTO；不增加旧结构兼容分支。
 
@@ -107,19 +107,19 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 
 ### Task 4：GPT-5.6 指纹 observation
 
-- [ ] 把 probe catalog 拆为公开类别和隐藏版本化题面，加入运行时生成式 canary。
+- [x] 保留公开行为类别，并把版本化运行时生成式 canary 独立到身份 observation 模块；题面和回答正文均不落库。
 - [ ] 为约束、代码、推理、错误恢复、多语言、工具 schema 和知识时间窗输出结构化 feature。
 - [ ] 把长上下文从固定三档改为 profile 驱动的低 / 中 / 高 / 可选极限阶梯。
-- [ ] 随机交错执行 Sol / Terra / Luna 和 5.5 / 5.4 paired probes。
+- [x] 随机交错执行 Sol / Terra / Luna 和 5.5 / 5.4 paired probes。
 - [x] 采集 HMAC 后的 `system_fingerprint` 辅助信号，但不把它作为硬身份凭据。
 - [x] 所有当前 Token observation 通过 dataset-writer / ingest-worker 写入，检测 API 不同步聚合。
 
 ### Task 5：群体基线与账号结论
 
-- [ ] stats-worker 已按游标增量构建 usage 诚信窗口、来源桶和账号 latest；指纹窗口与 paired 相似度窗口待实现。
-- [ ] 按上游桶限制贡献权重，使用 leave-one-upstream-out、median / MAD、分位数和 bootstrap 区间。
-- [ ] 已按来源桶、样本数和时间跨度实现 bootstrap / candidate / stable 状态；基线版本漂移切换待实现。
-- [ ] 实现群体共同漂移保护、异常样本退出稳定基线和单供应商投毒保护。
+- [x] stats-worker 按同一确认游标增量构建 usage 诚信、身份来源特征、版本基线、paired 相似度和账号 latest。
+- [x] 按上游桶限制贡献权重，候选账号使用 leave-one-upstream-out median / MAD / q10 / q90；bootstrap 重采样区间保留为真实样本校准增强，不阻塞当前稳健基线。
+- [x] 按来源桶、样本数和时间跨度输出 bootstrap / candidate / stable，并实现 active / drift_protected / retired 基线版本切换机制。
+- [x] 实现群体共同漂移保护、MAD 极端样本退出和同一上游桶多账号塌缩限权。
 - [x] 刷新 `model_account_trust_results`，详情 API 只读预聚合结果，不扫 observation 或 usage 明细。
 
 ### Task 6：评分与中文前端
@@ -133,7 +133,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 ### Task 7：校准、发布与观察
 
 - [x] 回归覆盖诚实 usage、5% / 10% 比例放大、固定增加、64-token 取整、missing usage 和不兼容 usage。
-- [ ] mock 注入显式 Sol -> Luna、未声明 Sol -> Luna、5.5 -> 5.4 和三个模型同源行为。
+- [x] mock 覆盖既有显式映射，并新增未声明 Sol -> Luna、5.5 -> 5.4 行为降级和三个模型同源塌缩。
 - [ ] 测试环境收集至少一个完整 baseline window，校验离线重建和在线增量一致。
 - [ ] 生产先以小流量、仅诊断、不自动处置方式运行，观察成本、误报和上游限流。
 - [ ] 根据真实样本校准阈值并记录版本；未达到独立来源门槛时保持证据不足。
@@ -147,14 +147,14 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 | 现有回归 | 完整 profile 等五条全链路 | 见审计报告命令表 | 全部执行到 mock 上游并通过 | 已通过 | 2026-07-14 共享 fixture 修复后全部到达 mock 上游并通过 |
 | 模型目录 | GPT-5.6 官方上下文边界 | 模型目录与能力回归 | 三个 5.6 使用当前官方 1,050,000 context / 922,000 max input / 128,000 max output 语义 | 已通过 | 2026-07-14 模型目录与生成快照回归通过 |
 | 映射 | 显式与未声明模型冲突 | 严格模型匹配回归 | 两种场景分别为 configured mapping 和硬冲突 | 已通过 | 2026-07-14 五维报告断言通过 |
-| 模型指纹 | 三模型同源塌缩 | 新增多轮统计回归 | 命中 `suspected_same_source` | 未执行 | 待实现 |
+| 模型指纹 | 三模型同源塌缩 | `pnpm test:model-trust-identity-baseline` | 命中 `suspected_same_source` | 已通过 | Sol / Terra / Luna 相同 paired 特征命中同源原因码 |
 | 模型指纹 | 相近但正常分布 | 新增抗误报回归 | 不因单题相似误报 | 未执行 | 待实现 |
 | Token | 诚实 usage | `pnpm test:model-check-token-integrity` | slope 置信区间包含 1 | 已通过 | slope=1，固定正常开销保留为 intercept |
 | Token | 5% / 10% 比例灌水 | `pnpm test:model-check-token-integrity` | 5% 进入校准边界，10% 稳定异常 | 已通过 | 5% warning，10% suspected_padding |
 | Token | 固定与分桶灌水 | `pnpm test:model-check-token-integrity` | 固定值不脱离 cohort 强判，分桶输出原因码 | 已通过 | intercept 可复算，64-token 取整 warning |
 | Token | reasoning 无 breakdown | 输入差分边界 | 不形成 output 灌水误报 | 已通过 | 当前仅判 input；usage 缺失 / 不兼容为 unsupported |
-| 基线 | 单上游大量账号投毒 | stats-worker 回归 | 同一上游桶权重受限 | 未执行 | 待实现 |
-| 基线 | 群体模型升级漂移 | baseline version 回归 | 创建新版本并暂停强结论 | 未执行 | 待实现 |
+| 基线 | 单上游大量账号投毒 | `pnpm test:model-trust-identity-baseline` | 同一上游桶权重受限 | 已通过 | 先按 upstream HMAC 桶塌缩再进入 LOO |
+| 基线 | 群体模型升级漂移 | `pnpm test:model-trust-identity-baseline` | 创建新版本并暂停强结论 | 已通过 | 创建 `drift_protected` v2，身份降为证据不足 |
 | 存储 | observation 脱敏与大小上限 | `pnpm test:model-trust-observation-aggregation` | 无题面、凭据、明文 origin 或无界 payload | 已通过 | SQLite 事实与 PG schema 转译已覆盖 |
 | 统计 | 增量游标与 latest | `pnpm test:model-trust-observation-aggregation` | 游标仅在完整处理后推进，API 只读 latest | 已通过 | 4+5 分批后不重复，结果 slope=1 / intercept=10 |
 | 前端 | 中文状态与证据详情 | 前端回归和浏览器验证 | 中文、无敏感字段、状态不混淆 | 未执行 | 待实现 |
@@ -169,6 +169,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 2026-07-14：完成 Phase 0：同步 GPT-5.6 三模型目录边界，通过健康检查成功路径修复共享 fixture，恢复完整 profile 等全链路回归。
 - 2026-07-14：完成五维报告最小闭环和中文详情展示。由于仓库尚无目标模型精确 tokenizer，Token 诚信与群体证据保持证据不足；observation、HMAC 上游桶、stats-worker 窗口和生产校准尚未实现。
 - 2026-07-14：锁定 `js-tiktoken@1.0.21:o200k_base`，落地 P0 / P1 / P2 三轮输入差分、HMAC observation、ingest 写入、stats-worker 游标窗口、账号 latest 和中文证据覆盖。身份群体指纹、同源塌缩、LOO 稳健基线与漂移版本仍待实现。
+- 2026-07-14：落地静态行为与运行时生成式 canary 的 8 维身份 observation、五模型 paired 随机交错、独立上游桶塌缩、LOO median / MAD / 分位基线、paired 同源 / 降级判断和基线漂移保护版本；生产阈值与版本切换时间窗仍需小流量观察校准。
 
 ## 验收标准
 
@@ -187,6 +188,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 2026-07-13：五条模型检测全链路回归被共享 fixture 账号状态阻塞，失败发生在探针前；详细结果见审计报告。
 - 2026-07-13：线上 macOS 只读检查完成，没有改配置、写库、重启服务或追加真实模型消耗。
 - 2026-07-13：8 份关联文档本地链接检查、尾随空白检查、PLAN-0095 唯一性、`git diff --check` 和仅文档变更检查通过；仅有 Git 提示未来可能按工作区配置把 LF 转为 CRLF，没有格式错误。
+- 2026-07-14：`pnpm test:model-trust-identity-baseline`、Token / observation 聚合、完整 profile、严格模型匹配、paired mismatch、存储脱敏、SQLite writer、后台 registry、账户删除清理、`pnpm typecheck` 和 `pnpm build` 通过。Browser 运行时无可用实例，中文详情的 DOM / 交互 / 截图验证仍保留为部署验收项。
 
 ## 风险与注意事项
 
@@ -201,4 +203,4 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 
 ## 完成总结
 
-当前完成 Phase 0、五维报告、输入 Token 差分和增量结果闭环：模型目录、共享回归 fixture、精确 tokenizer、P0 / P1 / P2 三轮探针、脱敏 observation、ingest 单写者、stats-worker 游标窗口、账号 latest 及中文证据已经落地。尚未完成生成式行为 observation、群体指纹 / paired 相似度、同源塌缩、leave-one-upstream-out 稳健统计、基线漂移版本切换和生产真实样本校准；当前实现不会自动停号、改账或改写 usage。
+当前完成 Phase 0、五维报告、输入 Token 差分、生成式身份 observation 和增量群体基线闭环：五模型 paired 探针、脱敏有界特征、独立上游桶限权、leave-one-upstream-out 稳健分布、同源 / 降级诊断、群体漂移保护、账号 latest 及中文证据已经落地。尚未完成全类别结构化特征、profile 驱动动态长上下文、测试环境离线重建对照和生产真实样本阈值校准；当前机制始终仅诊断，不会自动停号、改账或改写 usage。

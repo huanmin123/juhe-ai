@@ -2,6 +2,12 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getDatasetDatabase, getStatsDatabase, newId, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import {
+  evaluateIdentityTrust,
+  listIdentityAccountModelsForPopulations,
+  refreshIdentityBaselines,
+  upsertIdentitySourceFeature
+} from './model-trust-identity.repository.js'
 
 const aggregationJobName = 'model-trust-observation-aggregation'
 
@@ -19,16 +25,20 @@ export interface ModelCheckObservationInput {
   mappingApplied: boolean
   upstreamBucketHmac: string
   cohortKeyHmac: string
+  populationKeyHmac: string
   probeKeyHmac: string
   systemFingerprintHmac?: string
   probeFamily: string
   probeSetVersion: string
   tokenizerVersion: string
+  featureVersion: string
   roundIndex: number
   paddingTokens: number
   localInputTokens: number
   reportedInputTokens?: number
   cachedInputTokens?: number
+  constraintPassed?: boolean
+  featureVector?: number[]
   observationStatus: string
   identityStatus: string
   mappingStatus: string
@@ -48,15 +58,24 @@ export interface ModelAccountTrustResult {
   observationCount: number
   roundCount: number
   independentSourceCount: number
+  identityObservationCount: number
+  pairedProbeCount: number
   slope?: number
   intercept?: number
+  identityDistance?: number
+  pairedDistance?: number
+  pairedBaselineMedian?: number
+  pairedBaselineMad?: number
+  baselineVersion?: number
+  baselineVersionStatus?: string
+  featureVersion?: string
   tokenizerVersion?: string
   probeSetVersion?: string
   reasonCodes: string[]
   lastObservedAt?: string
 }
 
-interface ObservationRow {
+export interface ObservationRow {
   id: string
   run_id: string
   system_account_id: string
@@ -70,16 +89,27 @@ interface ObservationRow {
   mapping_applied: number
   upstream_bucket_hmac: string
   cohort_key_hmac: string
+  population_key_hmac: string
   probe_key_hmac: string
   system_fingerprint_hmac: string | null
   probe_family: string
   probe_set_version: string
   tokenizer_version: string
+  feature_version: string
   round_index: number
   padding_tokens: number
   local_input_tokens: number
   reported_input_tokens: number | null
   cached_input_tokens: number | null
+  constraint_passed: number | null
+  feature_1: number | null
+  feature_2: number | null
+  feature_3: number | null
+  feature_4: number | null
+  feature_5: number | null
+  feature_6: number | null
+  feature_7: number | null
+  feature_8: number | null
   observation_status: string
   identity_status: string
   mapping_status: string
@@ -113,11 +143,12 @@ export async function createModelCheckObservationsAsync(inputs: ModelCheckObserv
         INSERT INTO ${table} (
           id, run_id, system_account_id, account_id, provider_code, provider_protocol_profile_id,
           endpoint_family, requested_model, mapped_upstream_model, observed_model, mapping_applied,
-          upstream_bucket_hmac, cohort_key_hmac, probe_key_hmac, system_fingerprint_hmac, probe_family, probe_set_version,
-          tokenizer_version, round_index, padding_tokens, local_input_tokens, reported_input_tokens,
-          cached_input_tokens, observation_status, identity_status, mapping_status, protocol_status,
+          upstream_bucket_hmac, cohort_key_hmac, population_key_hmac, probe_key_hmac, system_fingerprint_hmac, probe_family, probe_set_version,
+          tokenizer_version, feature_version, round_index, padding_tokens, local_input_tokens, reported_input_tokens,
+          cached_input_tokens, constraint_passed, feature_1, feature_2, feature_3, feature_4, feature_5, feature_6, feature_7, feature_8,
+          observation_status, identity_status, mapping_status, protocol_status,
           evidence_coverage, trace_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, Object.values(row))
     }
   })
@@ -140,8 +171,10 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
     for (const row of rows) {
       await upsertSource(tx, row)
       await upsertWindow(tx, row)
+      await upsertIdentitySourceFeature(tx, row)
     }
-    const affected = uniqueAccountModels(rows)
+    const changedPopulations = await refreshIdentityBaselines(tx, rows)
+    const affected = mergeAccountModelKeys(uniqueAccountModels(rows), await listIdentityAccountModelsForPopulations(tx, changedPopulations))
     for (const key of affected) {
       await refreshLatestResult(tx, key, rows)
     }
@@ -170,8 +203,17 @@ export async function findModelAccountTrustResultAsync(systemAccountId: string, 
     observationCount: Number(row.observation_count ?? 0),
     roundCount: Number(row.round_count ?? 0),
     independentSourceCount: Number(row.independent_source_count ?? 0),
+    identityObservationCount: Number(row.identity_observation_count ?? 0),
+    pairedProbeCount: Number(row.paired_probe_count ?? 0),
     slope: optionalNumber(row.slope),
     intercept: optionalNumber(row.intercept),
+    identityDistance: optionalNumber(row.identity_distance),
+    pairedDistance: optionalNumber(row.paired_distance),
+    pairedBaselineMedian: optionalNumber(row.paired_baseline_median),
+    pairedBaselineMad: optionalNumber(row.paired_baseline_mad),
+    baselineVersion: optionalNumber(row.baseline_version),
+    baselineVersionStatus: optionalText(row.baseline_version_status),
+    featureVersion: optionalText(row.feature_version),
     tokenizerVersion: optionalText(row.tokenizer_version),
     probeSetVersion: optionalText(row.probe_set_version),
     reasonCodes: parseReasonCodes(row.reason_codes_json),
@@ -194,6 +236,7 @@ async function upsertSource(client: DatabaseClient, row: ObservationRow): Promis
 }
 
 async function upsertWindow(client: DatabaseClient, row: ObservationRow): Promise<void> {
+  if (row.probe_family !== 'token_input_differential') return
   const table = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_windows')
   const valid = row.reported_input_tokens !== null
   const local = valid ? row.local_input_tokens : 0
@@ -229,53 +272,74 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
   const windows = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_windows')
   const sources = client.dialect.qualifyTable('juhe_stats', 'model_trust_window_sources')
   const latest = client.dialect.qualifyTable('juhe_stats', 'model_account_trust_results')
+  const currentLatest = await client.one<Record<string, unknown>>(`
+    SELECT * FROM ${latest}
+    WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
+    LIMIT 1
+  `, [key.systemAccountId, key.accountId, key.requestedModel])
   const window = await client.one<WindowRow & { cohort_key_hmac: string; tokenizer_version: string; probe_set_version: string }>(`
     SELECT * FROM ${windows}
     WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
     ORDER BY last_observed_at DESC LIMIT 1
   `, [key.systemAccountId, key.accountId, key.requestedModel])
-  if (!window) return
-  const sourceRow = await client.one<{ source_count: number }>(`
+  const identity = await evaluateIdentityTrust(client, key)
+  if (!window && !identity) return
+  const sourceRow = window ? await client.one<{ source_count: number }>(`
     SELECT COUNT(DISTINCT upstream_bucket_hmac) AS source_count FROM ${sources}
     WHERE cohort_key_hmac = ?
-  `, [window.cohort_key_hmac])
+  `, [window.cohort_key_hmac]) : undefined
   const sourceCount = Number(sourceRow?.source_count ?? 0)
-  const regression = regressionFromWindow(window)
-  const roundCount = Math.floor(Number(window.observation_count) / 3)
-  const durationDays = Math.max(1, Math.ceil((Date.parse(window.last_observed_at) - Date.parse(window.first_observed_at)) / 86_400_000) + 1)
-  const evidenceStatus = sourceCount >= 10 && window.observation_count >= 300 && durationDays >= 14
+  const regression = window ? regressionFromWindow(window) : undefined
+  const roundCount = window ? Math.floor(Number(window.observation_count) / 3) : 0
+  const durationDays = window ? Math.max(1, Math.ceil((Date.parse(window.last_observed_at) - Date.parse(window.first_observed_at)) / 86_400_000) + 1) : 0
+  const tokenEvidenceStatus = sourceCount >= 10 && Number(window?.observation_count ?? 0) >= 300 && durationDays >= 14
     ? 'stable'
-    : sourceCount >= 5 && window.observation_count >= 100 && durationDays >= 7
+    : sourceCount >= 5 && Number(window?.observation_count ?? 0) >= 100 && durationDays >= 7
       ? 'candidate'
-      : sourceCount >= 3 && window.observation_count >= 30 && durationDays >= 3
+      : sourceCount >= 3 && Number(window?.observation_count ?? 0) >= 30 && durationDays >= 3
         ? 'bootstrap'
         : 'insufficient'
-  const usage = tokenStatusFromWindow(window, regression.slope, regression.confidenceLow, regression.confidenceHigh, roundCount)
-  await client.execute(`
-    UPDATE ${windows}
-    SET round_count = ?, slope = ?, intercept = ?, usage_integrity_status = ?, updated_at = ?
-    WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
-      AND cohort_key_hmac = ? AND tokenizer_version = ? AND probe_set_version = ?
-  `, [
-    roundCount, regression.slope, regression.intercept, usage.status, nowIso(),
-    key.systemAccountId, key.accountId, key.requestedModel, window.cohort_key_hmac,
-    window.tokenizer_version, window.probe_set_version
-  ])
+  const usage = window && regression
+    ? tokenStatusFromWindow(window, regression.slope, regression.confidenceLow, regression.confidenceHigh, roundCount)
+    : { status: 'insufficient_evidence', reasonCodes: [] }
+  if (window && regression) {
+    await client.execute(`
+      UPDATE ${windows}
+      SET round_count = ?, slope = ?, intercept = ?, usage_integrity_status = ?, updated_at = ?
+      WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
+        AND cohort_key_hmac = ? AND tokenizer_version = ? AND probe_set_version = ?
+    `, [
+      roundCount, regression.slope, regression.intercept, usage.status, nowIso(),
+      key.systemAccountId, key.accountId, key.requestedModel, window.cohort_key_hmac,
+      window.tokenizer_version, window.probe_set_version
+    ])
+  }
   const representative = [...batchRows].reverse().find((row) => row.system_account_id === key.systemAccountId && row.account_id === key.accountId && row.requested_model === key.requestedModel)
+  const mappingStatus = representative?.mapping_status ?? optionalText(currentLatest?.mapping_status) ?? 'unknown'
+  const protocolStatus = representative?.protocol_status ?? optionalText(currentLatest?.protocol_status) ?? 'insufficient_evidence'
   const reasonCodes = [
     ...usage.reasonCodes,
-    ...(representative?.mapping_status === 'configured_mapping' ? ['configured_model_mapping'] : []),
-    ...(representative?.mapping_status === 'undeclared_mismatch' ? ['undeclared_response_model_mismatch'] : []),
-    ...(representative?.protocol_status === 'failed' ? ['protocol_check_failed'] : [])
+    ...(identity?.reasonCodes ?? []),
+    ...(mappingStatus === 'configured_mapping' ? ['configured_model_mapping'] : []),
+    ...(mappingStatus === 'undeclared_mismatch' ? ['undeclared_response_model_mismatch'] : []),
+    ...(protocolStatus === 'failed' ? ['protocol_check_failed'] : [])
   ]
-  const evidenceCoverage = Math.min(100, Math.round((Math.min(roundCount, 3) / 3) * 50 + (Math.min(sourceCount, 3) / 3) * 50))
+  const identityCoverage = identity ? (Math.min(identity.identityObservationCount, 9) / 9) * 25 + (Math.min(identity.independentSourceCount, 3) / 3) * 25 : 0
+  const tokenCoverage = window ? (Math.min(roundCount, 3) / 3) * 25 + (Math.min(sourceCount, 3) / 3) * 25 : 0
+  const evidenceCoverage = Math.min(100, Math.round(identityCoverage + tokenCoverage))
+  const evidenceStatus = identity?.baselineVersionStatus === 'drift_protected'
+    ? 'insufficient'
+    : strongerEvidenceStatus(identity?.evidenceStatus, tokenEvidenceStatus)
+  const lastObservedAt = [window?.last_observed_at, identity?.lastObservedAt].filter((value): value is string => Boolean(value)).sort().at(-1)
   await client.execute(`
     INSERT INTO ${latest} (
       system_account_id, account_id, requested_model, identity_status, mapping_status,
       usage_integrity_status, protocol_status, evidence_status, evidence_coverage,
-      observation_count, round_count, independent_source_count, slope, intercept,
+      observation_count, round_count, independent_source_count, identity_observation_count, paired_probe_count,
+      slope, intercept, identity_distance, paired_distance, paired_baseline_median, paired_baseline_mad,
+      baseline_version, baseline_version_status, feature_version,
       tokenizer_version, probe_set_version, reason_codes_json, last_observed_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (system_account_id, account_id, requested_model) DO UPDATE SET
       identity_status = excluded.identity_status,
       mapping_status = excluded.mapping_status,
@@ -286,8 +350,17 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       observation_count = excluded.observation_count,
       round_count = excluded.round_count,
       independent_source_count = excluded.independent_source_count,
+      identity_observation_count = excluded.identity_observation_count,
+      paired_probe_count = excluded.paired_probe_count,
       slope = excluded.slope,
       intercept = excluded.intercept,
+      identity_distance = excluded.identity_distance,
+      paired_distance = excluded.paired_distance,
+      paired_baseline_median = excluded.paired_baseline_median,
+      paired_baseline_mad = excluded.paired_baseline_mad,
+      baseline_version = excluded.baseline_version,
+      baseline_version_status = excluded.baseline_version_status,
+      feature_version = excluded.feature_version,
       tokenizer_version = excluded.tokenizer_version,
       probe_set_version = excluded.probe_set_version,
       reason_codes_json = excluded.reason_codes_json,
@@ -295,11 +368,21 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       updated_at = excluded.updated_at
   `, [
     key.systemAccountId, key.accountId, key.requestedModel,
-    representative?.identity_status ?? 'insufficient_evidence', representative?.mapping_status ?? 'unknown',
-    usage.status, representative?.protocol_status ?? 'insufficient_evidence', evidenceStatus, evidenceCoverage,
-    window.observation_count, roundCount, sourceCount, regression.slope, regression.intercept,
-    window.tokenizer_version, window.probe_set_version, JSON.stringify(reasonCodes), window.last_observed_at, nowIso()
+    identity?.identityStatus ?? representative?.identity_status ?? optionalText(currentLatest?.identity_status) ?? 'insufficient_evidence',
+    mappingStatus, usage.status, protocolStatus, evidenceStatus, evidenceCoverage,
+    Number(window?.observation_count ?? 0) + Number(identity?.identityObservationCount ?? 0), roundCount,
+    Math.max(sourceCount, identity?.independentSourceCount ?? 0), identity?.identityObservationCount ?? 0, identity?.pairedProbeCount ?? 0,
+    regression?.slope ?? null, regression?.intercept ?? null, identity?.identityDistance ?? null,
+    identity?.pairedDistance ?? null, identity?.pairedBaselineMedian ?? null, identity?.pairedBaselineMad ?? null,
+    identity?.baselineVersion ?? null, identity?.baselineVersionStatus ?? null, identity?.featureVersion ?? null,
+    window?.tokenizer_version ?? null, window?.probe_set_version ?? representative?.probe_set_version ?? null,
+    JSON.stringify([...new Set(reasonCodes)]), lastObservedAt ?? null, nowIso()
   ])
+}
+
+function strongerEvidenceStatus(identityStatus: string | undefined, tokenStatus: string): string {
+  const rank = new Map([['insufficient', 0], ['bootstrap', 1], ['candidate', 2], ['stable', 3]])
+  return (rank.get(identityStatus ?? 'insufficient') ?? 0) >= (rank.get(tokenStatus) ?? 0) ? identityStatus ?? 'insufficient' : tokenStatus
 }
 
 function regressionFromWindow(row: WindowRow): { slope: number; intercept: number; confidenceLow: number; confidenceHigh: number } {
@@ -368,15 +451,24 @@ function normalizedObservation(input: ModelCheckObservationInput): Record<string
     account_id: boundedText(input.accountId), provider_code: boundedText(input.providerCode), provider_protocol_profile_id: boundedText(input.providerProtocolProfileId),
     endpoint_family: boundedText(input.endpointFamily), requested_model: boundedText(input.requestedModel), mapped_upstream_model: boundedText(input.mappedUpstreamModel),
     observed_model: optionalBoundedText(input.observedModel), mapping_applied: input.mappingApplied ? 1 : 0,
-    upstream_bucket_hmac: boundedHmac(input.upstreamBucketHmac), cohort_key_hmac: boundedHmac(input.cohortKeyHmac), probe_key_hmac: boundedHmac(input.probeKeyHmac),
+    upstream_bucket_hmac: boundedHmac(input.upstreamBucketHmac), cohort_key_hmac: boundedHmac(input.cohortKeyHmac), population_key_hmac: boundedHmac(input.populationKeyHmac), probe_key_hmac: boundedHmac(input.probeKeyHmac),
     system_fingerprint_hmac: input.systemFingerprintHmac ? boundedHmac(input.systemFingerprintHmac) : null,
-    probe_family: boundedText(input.probeFamily), probe_set_version: boundedText(input.probeSetVersion), tokenizer_version: boundedText(input.tokenizerVersion),
+    probe_family: boundedText(input.probeFamily), probe_set_version: boundedText(input.probeSetVersion), tokenizer_version: boundedText(input.tokenizerVersion), feature_version: boundedText(input.featureVersion),
     round_index: nonNegativeInteger(input.roundIndex), padding_tokens: nonNegativeInteger(input.paddingTokens), local_input_tokens: nonNegativeInteger(input.localInputTokens),
     reported_input_tokens: optionalNonNegativeInteger(input.reportedInputTokens), cached_input_tokens: optionalNonNegativeInteger(input.cachedInputTokens),
+    constraint_passed: input.constraintPassed === undefined ? null : input.constraintPassed ? 1 : 0,
+    ...normalizedFeatureVector(input.featureVector),
     observation_status: boundedText(input.observationStatus), identity_status: boundedText(input.identityStatus), mapping_status: boundedText(input.mappingStatus),
     protocol_status: boundedText(input.protocolStatus), evidence_coverage: Math.min(100, nonNegativeInteger(input.evidenceCoverage)), trace_id: optionalBoundedText(input.traceId),
     created_at: input.createdAt ?? nowIso()
   }
+}
+
+function normalizedFeatureVector(values?: number[]): Record<string, number | null> {
+  return Object.fromEntries(Array.from({ length: 8 }, (_, index) => {
+    const value = values?.[index]
+    return [`feature_${index + 1}`, value === undefined || !Number.isFinite(value) ? null : Math.max(0, Math.min(1, value))]
+  }))
 }
 
 type AccountModelKey = { systemAccountId: string; accountId: string; requestedModel: string }
@@ -386,6 +478,14 @@ function uniqueAccountModels(rows: ObservationRow[]): AccountModelKey[] {
   for (const row of rows) {
     const key = { systemAccountId: row.system_account_id, accountId: row.account_id, requestedModel: row.requested_model }
     map.set(`${key.systemAccountId}\u0000${key.accountId}\u0000${key.requestedModel}`, key)
+  }
+  return [...map.values()]
+}
+
+function mergeAccountModelKeys(...groups: AccountModelKey[][]): AccountModelKey[] {
+  const map = new Map<string, AccountModelKey>()
+  for (const group of groups) {
+    for (const key of group) map.set(`${key.systemAccountId}\u0000${key.accountId}\u0000${key.requestedModel}`, key)
   }
   return [...map.values()]
 }

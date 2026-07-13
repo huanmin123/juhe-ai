@@ -26,8 +26,17 @@ export interface ModelCheckTrustReport {
   observationCount?: number
   roundCount?: number
   independentSourceCount?: number
+  identityObservationCount?: number
+  pairedProbeCount?: number
   slope?: number
   intercept?: number
+  identityDistance?: number
+  pairedDistance?: number
+  pairedBaselineMedian?: number
+  pairedBaselineMad?: number
+  baselineVersion?: number
+  baselineVersionStatus?: 'active' | 'drift_protected' | 'retired'
+  featureVersion?: string
   tokenizerVersion?: string
   lastObservedAt?: string
 }

@@ -1035,6 +1035,77 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (system_account_id, account_id, cohort_key_hmac, mapped_upstream_model, upstream_bucket_hmac)
         );
 
+    CREATE TABLE IF NOT EXISTS model_identity_source_features (
+          system_account_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          population_key_hmac TEXT NOT NULL,
+          requested_model TEXT NOT NULL,
+          upstream_bucket_hmac TEXT NOT NULL,
+          probe_key_hmac TEXT NOT NULL,
+          feature_version TEXT NOT NULL,
+          sample_count INTEGER NOT NULL DEFAULT 0,
+          sum_feature_1 REAL NOT NULL DEFAULT 0,
+          sum_feature_2 REAL NOT NULL DEFAULT 0,
+          sum_feature_3 REAL NOT NULL DEFAULT 0,
+          sum_feature_4 REAL NOT NULL DEFAULT 0,
+          sum_feature_5 REAL NOT NULL DEFAULT 0,
+          sum_feature_6 REAL NOT NULL DEFAULT 0,
+          sum_feature_7 REAL NOT NULL DEFAULT 0,
+          sum_feature_8 REAL NOT NULL DEFAULT 0,
+          latest_feature_1 REAL NOT NULL DEFAULT 0,
+          latest_feature_2 REAL NOT NULL DEFAULT 0,
+          latest_feature_3 REAL NOT NULL DEFAULT 0,
+          latest_feature_4 REAL NOT NULL DEFAULT 0,
+          latest_feature_5 REAL NOT NULL DEFAULT 0,
+          latest_feature_6 REAL NOT NULL DEFAULT 0,
+          latest_feature_7 REAL NOT NULL DEFAULT 0,
+          latest_feature_8 REAL NOT NULL DEFAULT 0,
+          constraint_pass_count INTEGER NOT NULL DEFAULT 0,
+          first_observed_at TEXT NOT NULL,
+          last_observed_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (system_account_id, account_id, population_key_hmac, requested_model, upstream_bucket_hmac, probe_key_hmac, feature_version)
+        );
+
+    CREATE TABLE IF NOT EXISTS model_identity_baseline_versions (
+          population_key_hmac TEXT NOT NULL,
+          requested_model TEXT NOT NULL,
+          feature_version TEXT NOT NULL,
+          baseline_version INTEGER NOT NULL,
+          version_status TEXT NOT NULL,
+          evidence_status TEXT NOT NULL,
+          independent_source_count INTEGER NOT NULL DEFAULT 0,
+          retained_source_count INTEGER NOT NULL DEFAULT 0,
+          excluded_source_count INTEGER NOT NULL DEFAULT 0,
+          median_vector_json TEXT NOT NULL DEFAULT '[]',
+          mad_vector_json TEXT NOT NULL DEFAULT '[]',
+          q10_vector_json TEXT NOT NULL DEFAULT '[]',
+          q90_vector_json TEXT NOT NULL DEFAULT '[]',
+          first_observed_at TEXT NOT NULL,
+          last_observed_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (population_key_hmac, requested_model, feature_version, baseline_version)
+        );
+
+    CREATE TABLE IF NOT EXISTS model_paired_similarity_windows (
+          system_account_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          population_key_hmac TEXT NOT NULL,
+          pair_key TEXT NOT NULL,
+          feature_version TEXT NOT NULL,
+          baseline_version INTEGER,
+          paired_probe_count INTEGER NOT NULL DEFAULT 0,
+          independent_source_count INTEGER NOT NULL DEFAULT 0,
+          median_distance REAL,
+          loo_median_distance REAL,
+          loo_mad_distance REAL,
+          loo_q10_distance REAL,
+          similarity_status TEXT NOT NULL DEFAULT 'insufficient_evidence',
+          last_observed_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (system_account_id, account_id, population_key_hmac, pair_key, feature_version)
+        );
+
     CREATE TABLE IF NOT EXISTS model_account_trust_results (
           system_account_id TEXT NOT NULL,
           account_id TEXT NOT NULL,
@@ -1048,8 +1119,17 @@ export function applyStatsSchema(database: DatabaseSync): void {
           observation_count INTEGER NOT NULL DEFAULT 0,
           round_count INTEGER NOT NULL DEFAULT 0,
           independent_source_count INTEGER NOT NULL DEFAULT 0,
+          identity_observation_count INTEGER NOT NULL DEFAULT 0,
+          paired_probe_count INTEGER NOT NULL DEFAULT 0,
           slope REAL,
           intercept REAL,
+          identity_distance REAL,
+          paired_distance REAL,
+          paired_baseline_median REAL,
+          paired_baseline_mad REAL,
+          baseline_version INTEGER,
+          baseline_version_status TEXT,
+          feature_version TEXT,
           tokenizer_version TEXT,
           probe_set_version TEXT,
           reason_codes_json TEXT NOT NULL DEFAULT '[]',
@@ -1061,6 +1141,12 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_model_account_trust_results_updated ON model_account_trust_results(updated_at, account_id, requested_model);
 
     CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_cohort ON model_token_integrity_windows(cohort_key_hmac, requested_model, updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_model_identity_source_population ON model_identity_source_features(population_key_hmac, requested_model, feature_version, upstream_bucket_hmac);
+
+    CREATE INDEX IF NOT EXISTS idx_model_identity_baseline_active ON model_identity_baseline_versions(population_key_hmac, requested_model, feature_version, version_status, baseline_version);
+
+    CREATE INDEX IF NOT EXISTS idx_model_paired_similarity_account ON model_paired_similarity_windows(account_id, updated_at);
 
     CREATE TABLE IF NOT EXISTS background_task_runs (
           run_id TEXT PRIMARY KEY,

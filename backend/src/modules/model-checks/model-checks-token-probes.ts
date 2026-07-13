@@ -69,6 +69,7 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
         mappingApplied: result.modelMappingApplied === true,
         upstreamBucketHmac,
         cohortKeyHmac: modelCheckObservationHmac(cohortKey, 'cohort'),
+        populationKeyHmac: modelCheckObservationHmac(cohortKey, 'cohort'),
         probeKeyHmac: modelCheckObservationHmac(`${modelCheckTokenProbeVersion}:${roundIndex}:${paddingTokens}`, 'probe'),
         systemFingerprintHmac: result.systemFingerprint
           ? modelCheckObservationHmac(result.systemFingerprint, 'fingerprint')
@@ -76,6 +77,7 @@ export async function executeModelCheckTokenIntegrityProbes(input: {
         probeFamily: 'token_input_differential',
         probeSetVersion: input.probeSetVersion,
         tokenizerVersion: modelCheckTokenizerVersion,
+        featureVersion: 'none',
         roundIndex,
         paddingTokens,
         localInputTokens,

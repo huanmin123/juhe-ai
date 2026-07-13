@@ -70,6 +70,7 @@ export type ProbeSuiteResult = {
   items: ModelCheckItemCreateInput[]
   basic?: GatewayProbeResult
   behavior?: GatewayProbeResult
+  behaviorObservations?: BehaviorProbeObservation[]
   longContext?: GatewayProbeResult
 }
 

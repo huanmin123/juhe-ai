@@ -45,6 +45,10 @@
         <a-descriptions-item label="证据充分度">{{ evidenceStatusText(trustReport.evidenceStatus) }}（{{ trustReport.evidenceCoverage }}%）</a-descriptions-item>
         <a-descriptions-item label="受控样本">{{ trustReport.observationCount ?? 0 }} 个 observation / {{ trustReport.roundCount ?? 0 }} 轮</a-descriptions-item>
         <a-descriptions-item label="独立来源桶">{{ trustReport.independentSourceCount ?? 0 }}</a-descriptions-item>
+        <a-descriptions-item label="身份特征">{{ trustReport.identityObservationCount ?? 0 }} 个 observation / {{ trustReport.pairedProbeCount ?? 0 }} 组配对</a-descriptions-item>
+        <a-descriptions-item label="身份偏离">{{ identityDistanceText(trustReport) }}</a-descriptions-item>
+        <a-descriptions-item label="模型配对距离">{{ pairedDistanceText(trustReport) }}</a-descriptions-item>
+        <a-descriptions-item label="群体基线">{{ baselineVersionText(trustReport) }}</a-descriptions-item>
         <a-descriptions-item label="Token 差分">{{ tokenDifferentialText(trustReport) }}</a-descriptions-item>
         <a-descriptions-item label="Tokenizer">{{ trustReport.tokenizerVersion || '尚无可用结果' }}</a-descriptions-item>
         <a-descriptions-item label="诊断依据">{{ reasonCodesText(trustReport.reasonCodes) }}</a-descriptions-item>
@@ -130,6 +134,15 @@ const evidenceStatusText = (value: ModelCheckTrustReport['evidenceStatus']) => (
 const tokenDifferentialText = (report: ModelCheckTrustReport) => report.slope === undefined
   ? '尚无预聚合结果'
   : `斜率 ${report.slope.toFixed(4)}，截距 ${(report.intercept ?? 0).toFixed(2)}`
+const identityDistanceText = (report: ModelCheckTrustReport) => report.identityDistance === undefined
+  ? '尚无 leave-one-upstream-out 结果'
+  : `稳健偏离 ${report.identityDistance.toFixed(3)}`
+const pairedDistanceText = (report: ModelCheckTrustReport) => report.pairedDistance === undefined
+  ? '尚无可比配对结果'
+  : `当前 ${report.pairedDistance.toFixed(4)}，群体中位数 ${(report.pairedBaselineMedian ?? 0).toFixed(4)}，MAD ${(report.pairedBaselineMad ?? 0).toFixed(4)}`
+const baselineVersionText = (report: ModelCheckTrustReport) => report.baselineVersion === undefined
+  ? '尚未形成版本化基线'
+  : `v${report.baselineVersion} / ${{ active: '生效中', drift_protected: '群体漂移保护', retired: '已退役' }[report.baselineVersionStatus ?? 'active']} / ${report.featureVersion || '未知特征版本'}`
 const reasonCodesText = (codes: string[]) => codes.length
   ? codes.map((code) => ({
       proportional_padding: '差分斜率疑似比例灌水',
@@ -141,7 +154,11 @@ const reasonCodesText = (codes: string[]) => codes.length
       undeclared_response_model_mismatch: '响应模型与请求不一致',
       protocol_check_failed: '协议探针未通过',
       tokenizer_calibration_unavailable: '尚无 Tokenizer 校准结果',
-      population_baseline_unavailable: '群体基线尚未形成'
+      population_baseline_unavailable: '群体基线尚未形成',
+      paired_models_collapsed: '配对模型行为距离异常收缩，疑似同源',
+      closer_to_lower_model_baseline: '行为特征更接近较低版本模型基线',
+      identity_population_outlier: '身份特征偏离 leave-one-upstream-out 群体基线',
+      population_drift_protected: '群体发生共同漂移，已暂停强身份结论'
     }[code] ?? `未知原因码：${code}`)).join('；')
   : '未发现已知异常原因'
 

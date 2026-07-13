@@ -4,8 +4,26 @@ import { runtimeConfig } from '../../config/runtime.js'
 
 const hmacVersion = 'hmac-sha256-v1'
 
-export function modelCheckObservationHmac(value: string, purpose: 'upstream' | 'cohort' | 'probe' | 'fingerprint'): string {
+export function modelCheckObservationHmac(value: string, purpose: 'upstream' | 'cohort' | 'population' | 'probe' | 'fingerprint'): string {
   return `${hmacVersion}:${createHmac('sha256', runtimeConfig.secret).update(`${purpose}\u0000${value}`).digest('hex')}`
+}
+
+export function modelCheckPopulationKey(input: {
+  providerCode: string
+  providerProtocolProfileId: string
+  endpointFamily: string
+  credentialMode: string
+  probeSetVersion: string
+  featureVersion: string
+}): string {
+  return [
+    input.providerCode,
+    input.providerProtocolProfileId,
+    input.endpointFamily,
+    input.credentialMode,
+    input.probeSetVersion,
+    input.featureVersion
+  ].join('\u0000')
 }
 
 export function normalizedUpstreamOrigin(baseUrl: string): string {

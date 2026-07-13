@@ -103,6 +103,10 @@ import {
 import { requestDatasetWriter } from '../background/background-dataset-writer.js'
 import { findModelAccountTrustResultAsync, type ModelCheckObservationInput } from '../../storage/model-trust.repository.js'
 import { executeModelCheckTokenIntegrityProbes } from './model-checks-token-probes.js'
+import {
+  createControlledBehaviorObservations,
+  executeModelIdentityObservationProbes
+} from './model-checks-identity-features.js'
 
 export class ModelCheckRequestError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -309,6 +313,17 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           probeSetVersion,
           runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
         })
+    const identityObservation = targetUnavailable || target.modelCheckProfile.protocol !== 'openai_responses' || !target.accountId || !target.candidateAccounts?.[0]?.baseUrl
+      ? undefined
+      : await executeModelIdentityObservationProbes({
+          model,
+          providerCode: target.providerCode,
+          providerProtocolProfileId: target.providerProtocolProfileId ?? target.modelCheckProfile.id,
+          baseUrl: target.candidateAccounts[0].baseUrl,
+          credentialMode: target.candidateAccounts[0].type,
+          probeSetVersion,
+          runProbe: async (request, itemKey) => await runModelCheckProbeRequest(target, request, itemKey, signal, progress)
+        })
     const crossModelComparison = targetUnavailable
       ? undefined
       : await executeCrossModelComparison(target, targetSuite, model, signal, progress)
@@ -329,6 +344,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     const itemInputs = [
       ...targetSuite.items,
       ...(tokenIntegrity ? [tokenIntegrity.item] : []),
+      ...(identityObservation ? [identityObservation.item] : []),
       ...(crossModelComparison ? [crossModelComparison] : []),
       ...(comparisonSuite?.items ?? []),
       ...(trustedComparisonItem ? [trustedComparisonItem] : []),
@@ -346,10 +362,21 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       probeSetVersion,
       evidenceCoverage: evidenceCompleteness.evidenceCompletenessScore
     })
-    if (tokenIntegrity) {
+    if (tokenIntegrity || identityObservation) {
+      const controlledBehavior = targetSuite.behaviorObservations && target.candidateAccounts?.[0]?.baseUrl
+        ? createControlledBehaviorObservations({
+            model,
+            providerCode: target.providerCode,
+            providerProtocolProfileId: target.providerProtocolProfileId ?? target.modelCheckProfile.id,
+            baseUrl: target.candidateAccounts[0].baseUrl,
+            credentialMode: target.candidateAccounts[0].type,
+            probeSetVersion,
+            observations: targetSuite.behaviorObservations
+          })
+        : []
       await requestDatasetWriter({
         type: 'create_model_check_observations',
-        observations: tokenIntegrity.observations.map((observation): ModelCheckObservationInput => ({
+        observations: [...(tokenIntegrity?.observations ?? []), ...(identityObservation?.observations ?? []), ...controlledBehavior].map((observation): ModelCheckObservationInput => ({
           ...observation,
           runId: run.id,
           systemAccountId: target.identity.systemAccountId,
@@ -669,7 +696,7 @@ async function executeProbeSuite(target: ModelCheckTarget, model: SupportedModel
   }
   pushProbeItem(items, evaluateStabilityProbe(stabilityResults, model, prefix), progress)
 
-  return { items, basic, behavior: behaviorObservations[0]?.result, longContext: longContextObservations[longContextObservations.length - 1]?.result }
+  return { items, basic, behavior: behaviorObservations[0]?.result, behaviorObservations, longContext: longContextObservations[longContextObservations.length - 1]?.result }
 }
 
 async function executeCrossModelComparison(target: ModelCheckTarget, targetSuite: ProbeSuiteResult, model: SupportedModel, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckItemCreateInput> {
