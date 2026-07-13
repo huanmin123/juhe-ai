@@ -386,6 +386,7 @@
     "test:chat-transport": "tsx src/scripts/regression/chat-transport-regression.ts",
     "test:chat-model-options": "tsx src/scripts/regression/chat-model-options-regression.ts",
     "test:chat-postgres-redis-smoke": "tsx src/scripts/regression/chat-postgres-redis-smoke.ts",
+    "test:chat-smoke-cleanup": "tsx src/scripts/regression/chat-smoke-cleanup-regression.ts",
     "test:account-balance-config": "tsx src/scripts/regression/account-balance-config-regression.ts",
     "test:account-balance-adapters": "tsx src/scripts/regression/account-balance-adapters-regression.ts",
     "test:account-balance-refresh": "tsx src/scripts/regression/account-balance-refresh-regression.ts",

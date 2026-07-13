@@ -52,6 +52,8 @@ export interface ChatInputContentBlock {
 
 const maxContentBlocksBytes = 256 * 1024
 const maxInputContentBlocks = 8
+const postgresIntegerMin = -2_147_483_648
+const postgresIntegerMax = 2_147_483_647
 
 export class ChatConflictError extends Error {
   constructor(public readonly code: 'chat_message_in_progress' | 'chat_storage_quota_exceeded' | 'chat_replace_conflict') {
@@ -381,7 +383,9 @@ export async function listChatMessages(client: DatabaseClient, input: {
   now: string
 }): Promise<ChatMessage[]> {
   await requireConversation(client, input.conversationId, input.systemAccountId)
-  const hasCursor = input.beforeSequenceNo !== undefined
+  const hasCursor = Number.isSafeInteger(input.beforeSequenceNo)
+    && Number(input.beforeSequenceNo) >= postgresIntegerMin
+    && Number(input.beforeSequenceNo) <= postgresIntegerMax
   const rows = await client.query<ChatMessageRow>(`
     SELECT * FROM ${chatTable(client, 'chat_messages')}
     WHERE conversation_id = ? AND system_account_id = ? AND expires_at > ?

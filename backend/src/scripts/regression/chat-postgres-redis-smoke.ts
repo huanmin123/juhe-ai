@@ -6,6 +6,7 @@ import { createClient } from 'redis'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { applyPostgresSchema } from '../../storage/postgres-schema.js'
 import { acceptChatTurn, cleanupChatRetention, completeChatTurn, createChatConversation, listChatContextMessages, listChatMessages } from '../../storage/chat.repository.js'
+import { runChatSmokeWithCleanup } from './chat-smoke-cleanup.js'
 
 const adminUrl = requiredEnv('JUHE_AI_TEST_POSTGRES_URL')
 const redisUrl = requiredEnv('JUHE_AI_TEST_REDIS_URL')
@@ -14,7 +15,8 @@ const adminPool = new Pool({ connectionString: adminUrl, max: 1 })
 let targetPool: Pool | undefined
 let redis: ReturnType<typeof createClient> | undefined
 
-try {
+await runChatSmokeWithCleanup({
+  run: async () => {
   await adminPool.query(`CREATE DATABASE "${databaseName}"`)
   const targetUrl = new URL(adminUrl)
   targetUrl.pathname = `/${databaseName}`
@@ -57,14 +59,18 @@ try {
   await redis.set(redisKey, 'ok', { EX: 30 })
   assert.equal(await redis.get(redisKey), 'ok')
   await redis.del(redisKey)
-  console.log('AI 问答 PostgreSQL/Redis smoke 通过：独立数据库、juhe_chat schema、日分区、repository 和临时 Redis namespace 均正常')
-} finally {
-  if (redis?.isOpen) await redis.quit().catch(() => undefined)
-  if (targetPool) await targetPool.end().catch(() => undefined)
-  await adminPool.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`, [databaseName]).catch(() => undefined)
-  await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}"`).catch(() => undefined)
-  await adminPool.end()
-}
+  },
+  cleanupSteps: [
+    { name: 'redis-quit', run: async () => { if (redis?.isOpen) await redis.quit() } },
+    { name: 'target-pool-end', run: async () => { if (targetPool) await targetPool.end() } },
+    { name: 'terminate-target-connections', run: async () => { await adminPool.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`, [databaseName]) } },
+    { name: 'drop-target-database', run: async () => { await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}"`) } },
+    { name: 'admin-pool-end', run: async () => { await adminPool.end() } }
+  ],
+  onSuccess: () => {
+    console.log('AI 问答 PostgreSQL/Redis smoke 通过：独立数据库、juhe_chat schema、日分区、repository、临时 Redis namespace 和清理验证均正常')
+  }
+})
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim()

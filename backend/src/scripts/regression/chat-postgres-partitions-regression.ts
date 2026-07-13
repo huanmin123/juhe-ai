@@ -75,6 +75,17 @@ const unboundedListQuery = [...postgresContractQueries].reverse().find((item) =>
 assert(unboundedListQuery, 'PostgreSQL 契约必须捕获消息列表查询')
 assert.doesNotMatch(unboundedListQuery.sql, /sequence_no\s*<\s*\?/i, '无 beforeSequenceNo 时不得绑定超出 PostgreSQL integer 的哨兵值')
 assert.equal(unboundedListQuery.params.includes(Number.MAX_SAFE_INTEGER), false, '无游标列表不得向 PostgreSQL 绑定 Number.MAX_SAFE_INTEGER')
+await listChatMessages(postgresContractClient, {
+  conversationId: conversation.id,
+  systemAccountId: 'sys_pg_contract',
+  beforeSequenceNo: Number.MAX_SAFE_INTEGER,
+  limit: 20,
+  now: '2026-08-20T00:04:00.000Z'
+})
+const oversizedCursorQuery = [...postgresContractQueries].reverse().find((item) => /FROM\s+"chat_messages"/i.test(item.sql) && /expires_at\s*>\s*\?/i.test(item.sql))
+assert(oversizedCursorQuery, 'PostgreSQL 契约必须捕获超范围游标查询')
+assert.doesNotMatch(oversizedCursorQuery.sql, /sequence_no\s*<\s*\?/i, '超过 PostgreSQL int4 上限的游标应按无界查询处理')
+assert.equal(oversizedCursorQuery.params.includes(Number.MAX_SAFE_INTEGER), false, 'repository 不得向 PostgreSQL 绑定超 int4 游标')
 
 console.log('AI 问答 PostgreSQL 日分区回归通过')
 
