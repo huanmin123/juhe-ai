@@ -17,4 +17,57 @@ const result = await collectChatResponsesSse(chunks(), (event) => events.push(ev
 assert.deepEqual(events, ['tool_started', 'tool_updated', 'tool_completed', 'text_delta', 'completed'])
 assert.equal(result.content, '结果已返回')
 
+async function* truncatedChunks(): AsyncGenerator<Uint8Array> {
+  yield new TextEncoder().encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"部分回答"}\n\n')
+}
+await assert.rejects(
+  () => collectChatResponsesSse(truncatedChunks(), () => undefined),
+  /缺少 response\.completed/,
+  'Responses 只有 delta 就断流时不得被持久化为 completed'
+)
+
+async function* oversizedReasoningChunks(): AsyncGenerator<Uint8Array> {
+  const delta = '思'.repeat(100_000)
+  yield new TextEncoder().encode(`event: response.reasoning_text.delta\ndata: ${JSON.stringify({ type: 'response.reasoning_text.delta', delta })}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n`)
+}
+await assert.rejects(
+  () => collectChatResponsesSse(oversizedReasoningChunks(), () => undefined),
+  /结构化过程超过|单个事件超过/,
+  'reasoning/tool 辅助过程必须有独立累计和单事件字节上限'
+)
+
+async function* cumulativeReasoningChunks(): AsyncGenerator<Uint8Array> {
+  for (let index = 0; index < 4; index += 1) {
+    const delta = 'r'.repeat(50 * 1024)
+    yield new TextEncoder().encode(`event: response.reasoning_text.delta\ndata: ${JSON.stringify({ type: 'response.reasoning_text.delta', delta })}\n\n`)
+  }
+  yield new TextEncoder().encode('event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n')
+}
+await assert.rejects(
+  () => collectChatResponsesSse(cumulativeReasoningChunks(), () => undefined),
+  /结构化过程超过/,
+  '多个合法小事件累计后也不得突破结构化过程上限'
+)
+
+async function* unterminatedOversizedBlock(): AsyncGenerator<Uint8Array> {
+  yield new TextEncoder().encode(`event: response.output_text.delta\ndata: ${'x'.repeat(80 * 1024)}`)
+}
+await assert.rejects(
+  () => collectChatResponsesSse(unterminatedOversizedBlock(), () => undefined),
+  /单个事件超过/,
+  '没有 SSE 分隔符的 pending block 也必须有界'
+)
+
+async function* tooManyEvents(): AsyncGenerator<Uint8Array> {
+  for (let index = 0; index < 2050; index += 1) {
+    yield new TextEncoder().encode('event: response.reasoning_text.delta\ndata: {"type":"response.reasoning_text.delta","delta":""}\n\n')
+  }
+  yield new TextEncoder().encode('event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n')
+}
+await assert.rejects(
+  () => collectChatResponsesSse(tooManyEvents(), () => undefined),
+  /事件数量超过/,
+  'Responses 事件总数必须有界且不得无界保留事件数组'
+)
+
 console.log('AI 问答 Responses SSE 工具事件回归通过')

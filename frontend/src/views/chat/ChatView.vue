@@ -95,6 +95,7 @@ import { applyChatStreamEvent } from './chatStream'
 import { beginLatestTurnEdit, isDefinitiveChatHttpRejection, resolveChatReconciliationNotice, resolveChatSubmitFailure } from './chatTurnEditing'
 import { applyChatReconciliationIfActive, reconcileChatSubmission, type ChatSubmissionReconciliation } from './chatTurnReconciliation'
 import { createChatConversationSummaryRefresher, mergeChatConversationSummary } from './chatConversationSummary'
+import { isCurrentChatConversationLoad } from './chatConversationLoad'
 import { stopActiveChatGeneration } from './chatStopGeneration'
 import ChatMessageList from './ChatMessageList.vue'
 import AIComposer from './composer/AIComposer.vue'
@@ -127,6 +128,9 @@ interface PendingSubmissionConfirmation {
 }
 
 const conversations = ref<ChatConversation[]>([])
+const conversationCursor = ref<ChatConversation>()
+const conversationsLoadingMore = ref(false)
+const hasMoreConversations = ref(false)
 const apiKeys = ref<ChatApiKeyOption[]>([])
 const selectedConversationId = ref<string>()
 const messages = ref<ChatMessage[]>([])
@@ -163,6 +167,7 @@ const editingTurn = ref<ChatTurnEditingState>()
 let streamController: AbortController | undefined
 let activeSendSettled: Promise<void> | undefined
 let pendingConfirmationTimer: number | undefined
+let conversationLoadEpoch = 0
 let disposed = false
 
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationId.value))
@@ -187,7 +192,10 @@ const ConversationPane = defineComponent({
     return () => h('div', { class: 'conversation-pane-inner' }, [
       h('div', { class: 'conversation-pane-toolbar' }, [h('strong', '对话'), h('button', { class: 'conversation-new-button', type: 'button', disabled: !apiKeys.value.length, onClick: openCreateDialog }, [h(PlusOutlined), ' 新建'])]),
       conversations.value.length
-        ? h('div', { class: 'conversation-list' }, conversations.value.map((item) => h('button', { class: ['conversation-item', { active: item.id === selectedConversationId.value }], type: 'button', title: item.title, onContextmenu: (event: MouseEvent) => openConversationMenu(event, item), onClick: () => { void selectConversation(item.id); emit('selected') } }, item.title)))
+        ? h('div', { class: 'conversation-list' }, [
+            ...conversations.value.map((item) => h('button', { class: ['conversation-item', { active: item.id === selectedConversationId.value }], type: 'button', title: item.title, onContextmenu: (event: MouseEvent) => openConversationMenu(event, item), onClick: () => { void selectConversation(item.id); emit('selected') } }, item.title)),
+            ...(hasMoreConversations.value ? [h('button', { class: 'conversation-load-more', type: 'button', disabled: conversationsLoadingMore.value, onClick: () => { void loadMoreConversations() } }, conversationsLoadingMore.value ? '正在加载' : '加载更多')] : [])
+          ])
         : h('div', { class: 'conversation-list-empty' }, '暂无对话')
     ])
   }
@@ -198,38 +206,81 @@ async function loadInitial(): Promise<void> {
     const [keyItems, conversationItems] = await Promise.all([chatApi.listApiKeys(), chatApi.listConversations({ limit: 50 })])
     apiKeys.value = keyItems
     conversations.value = conversationItems
+    conversationCursor.value = conversationItems.at(-1)
+    hasMoreConversations.value = conversationItems.length === 50
     if (conversationItems[0]) await selectConversation(conversationItems[0].id)
   } catch (error) { message.error(extractApiErrorMessage(error, '加载 AI 问答失败')) }
+}
+async function loadMoreConversations(): Promise<void> {
+  const last = conversationCursor.value
+  if (!last || !hasMoreConversations.value || conversationsLoadingMore.value) return
+  conversationsLoadingMore.value = true
+  try {
+    const items = await chatApi.listConversations({ beforeIsPinned: last.isPinned, beforeLastMessageAt: last.lastMessageAt, beforeId: last.id, limit: 50 })
+    const knownIds = new Set(conversations.value.map((item) => item.id))
+    conversations.value.push(...items.filter((item) => !knownIds.has(item.id)))
+    conversationCursor.value = items.at(-1) ?? last
+    hasMoreConversations.value = items.length === 50
+  } catch (error) {
+    message.error(extractApiErrorMessage(error, '加载更多会话失败'))
+  } finally {
+    conversationsLoadingMore.value = false
+  }
 }
 async function selectConversation(id: string): Promise<void> {
   if (generating.value || submissionBlocked.value || selectedConversationId.value === id) return
   await cancelTurnEdit()
+  const loadEpoch = ++conversationLoadEpoch
   selectedConversationId.value = id
+  messages.value = []
+  models.value = []
+  selectedModel.value = undefined
+  hasOlderMessages.value = false
+  olderMessagesLoading.value = false
+  showJumpToBottom.value = false
   messagesLoading.value = true
   modelsLoading.value = true
   try {
     const [messageItems, modelItems] = await Promise.all([chatApi.listMessages(id, { limit: 100 }), chatApi.listModels(id)])
+    if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return
     messages.value = messageItems
     hasOlderMessages.value = messageItems.length === 100
     models.value = modelItems
     const conversation = conversations.value.find((item) => item.id === id)
     selectedModel.value = conversation?.lastModel && modelItems.some((item) => item.id === conversation.lastModel) ? conversation.lastModel : modelItems[0]?.id
-  } catch (error) { message.error(extractApiErrorMessage(error, '加载对话失败')) }
-  finally { messagesLoading.value = false; modelsLoading.value = false }
+  } catch (error) {
+    if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
+      message.error(extractApiErrorMessage(error, '加载对话失败'))
+    }
+  } finally {
+    if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
+      messagesLoading.value = false
+      modelsLoading.value = false
+    }
+  }
 }
 async function loadOlderMessages(): Promise<void> {
   const id = selectedConversationId.value
+  const loadEpoch = conversationLoadEpoch
   const first = messages.value[0]
   if (!id || !first || !hasOlderMessages.value || olderMessagesLoading.value || messagesLoading.value) return
   olderMessagesLoading.value = true
   const anchor = messageList.value?.captureScrollAnchor()
   try {
     const older = await chatApi.listMessages(id, { beforeSequenceNo: first.sequenceNo, limit: 100 })
+    if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return
     messages.value = [...older, ...messages.value]
     hasOlderMessages.value = older.length === 100
     if (anchor) await messageList.value?.restoreScrollAnchor(anchor)
-  } catch (error) { message.error(extractApiErrorMessage(error, '加载更早消息失败')) }
-  finally { olderMessagesLoading.value = false }
+  } catch (error) {
+    if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
+      message.error(extractApiErrorMessage(error, '加载更早消息失败'))
+    }
+  } finally {
+    if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
+      olderMessagesLoading.value = false
+    }
+  }
 }
 function openCreateDialog(): void { newApiKeyId.value = apiKeys.value[0]?.id; createDialogOpen.value = true }
 async function createConversation(): Promise<void> {
@@ -319,6 +370,11 @@ async function refreshMessages(conversationId = selectedConversationId.value): P
 async function removeConversation(id: string): Promise<void> { try { await chatApi.deleteConversation(id); conversations.value = conversations.value.filter((item) => item.id !== id); if (selectedConversationId.value === id) { selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {
   if (generating.value || submissionBlocked.value) { composer.value?.restore(payload.snapshot); return }
+  if (!selectedConversation.value || !selectedModel.value || modelsLoading.value) {
+    composer.value?.restore(payload.snapshot)
+    message.warning(modelsLoading.value ? '模型仍在加载，请稍后发送' : '当前没有可用模型')
+    return
+  }
   const content = payload.blocks.map((item) => item.type === 'input_image' ? '[图片]' : item.text).join('\n')
   const sendSettled = sendMessage(content, payload.snapshot, payload.blocks)
   activeSendSettled = sendSettled
@@ -464,11 +520,11 @@ function formatDetailTime(value: string): string { const date = new Date(value);
 function resetModelControls(): void { const model = models.value.find((item) => item.id === selectedModel.value); selectedReasoningEffort.value = model?.defaultReasoningEffort ?? ''; selectedServiceTier.value = ''; selectedContextWindowTokens.value = 0 }
 watch(selectedModel, resetModelControls)
 onMounted(() => { updateMobile(); window.addEventListener('resize', updateMobile); window.addEventListener('click', closeConversationMenu); window.addEventListener('blur', closeConversationMenu); void loadInitial() })
-onBeforeUnmount(() => { disposed = true; window.removeEventListener('resize', updateMobile); window.removeEventListener('click', closeConversationMenu); window.removeEventListener('blur', closeConversationMenu); if (pendingConfirmationTimer !== undefined) { window.clearTimeout(pendingConfirmationTimer); pendingConfirmationTimer = undefined }; streamController?.abort() })
+onBeforeUnmount(() => { disposed = true; conversationLoadEpoch += 1; window.removeEventListener('resize', updateMobile); window.removeEventListener('click', closeConversationMenu); window.removeEventListener('blur', closeConversationMenu); if (pendingConfirmationTimer !== undefined) { window.clearTimeout(pendingConfirmationTimer); pendingConfirmationTimer = undefined }; streamController?.abort() })
 </script>
 
 <style scoped>
-.chat-workspace { height: calc(100vh - 154px); min-height: 520px; display: grid; grid-template-columns: 260px minmax(0, 1fr); overflow: hidden; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
+.chat-workspace { height: 100vh; height: 100dvh; min-height: 520px; display: grid; grid-template-columns: 260px minmax(0, 1fr); overflow: hidden; background: #fff; border: 0; border-radius: 0; }
 .conversation-panel { min-width: 0; border-right: 1px solid #e2e8f0; background: #f8fafc; }
 .chat-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .composer-shell { position: relative; padding: 12px clamp(12px, 3vw, 28px) 14px; border-top: 1px solid #e2e8f0; background: #fff; }
@@ -487,10 +543,14 @@ onBeforeUnmount(() => { disposed = true; window.removeEventListener('resize', up
 :deep(.conversation-item) { width: 100%; height: 38px; display: block; overflow: hidden; margin-bottom: 3px; padding: 0 10px; color: #273449; font-size: 13px; line-height: 36px; text-align: left; text-overflow: ellipsis; white-space: nowrap; background: transparent; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
 :deep(.conversation-item:hover) { background: #fff; border-color: #e2e8f0; }
 :deep(.conversation-item.active) { background: #eaf3ff; border-color: #b9d7ff; }
+:deep(.conversation-load-more) { width: 100%; height: 34px; color: #64748b; background: transparent; border: 0; cursor: pointer; }
+:deep(.conversation-load-more:hover) { color: #1677ff; }
+:deep(.conversation-load-more:disabled) { color: #94a3b8; cursor: wait; }
 :deep(.conversation-list-empty) { padding: 32px 12px; color: #94a3b8; text-align: center; }
 .conversation-context-menu { position: fixed; z-index: 1100; width: 136px; padding: 5px; background: #fff; border: 1px solid #e2e8f0; border-radius: 7px; box-shadow: 0 10px 26px rgba(15, 23, 42, .16); }
 .conversation-context-menu button { width: 100%; display: block; padding: 7px 9px; color: #334155; text-align: left; background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
 .conversation-context-menu button:hover { background: #f1f5f9; }
 .conversation-context-menu button.is-danger { color: #dc2626; }
-@media (max-width: 820px) { .chat-workspace { height: calc(100vh - 140px); min-height: 440px; grid-template-columns: minmax(0, 1fr); border-right: 0; border-left: 0; border-radius: 0; } .composer-shell { padding: 9px; } }
+@media (max-width: 991px) and (min-width: 821px) { :deep(.conversation-pane-toolbar) { padding-left: 56px; } }
+@media (max-width: 820px) { .chat-workspace { height: 100vh; height: 100dvh; min-height: 440px; grid-template-columns: minmax(0, 1fr); } .composer-shell { padding: 9px; } :deep(.message-virtual-space) { margin-top: 52px; } :deep(.message-loading), :deep(.message-empty) { padding-top: 52px; } }
 </style>

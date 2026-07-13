@@ -27,4 +27,21 @@ await assert.rejects(
   /缺少 \[DONE\]/
 )
 
+await assert.rejects(
+  collectOpenAIChatSse(async function* () {
+    yield encoder.encode(`data: ${'x'.repeat(80 * 1024)}`)
+  }(), 1024),
+  /单个事件超过/,
+  'Chat Completions 无分隔 pending block 必须有硬上限'
+)
+
+await assert.rejects(
+  collectOpenAIChatSse(async function* () {
+    for (let index = 0; index < 2050; index += 1) yield encoder.encode(': heartbeat\n\n')
+    yield encoder.encode('data: [DONE]\n\n')
+  }(), 1024),
+  /事件数量超过/,
+  'Chat Completions 事件数量必须有界'
+)
+
 console.log('AI 问答 OpenAI SSE 解析回归通过')

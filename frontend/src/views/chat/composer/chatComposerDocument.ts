@@ -22,10 +22,24 @@ export function composerDocumentToBlocks(document: JSONContent): ChatInputBlock[
   const text: string[] = []
   serialize(document, text, blocks)
   flushText(text, blocks)
-  const textBytes = blocks.filter((item): item is Extract<ChatInputBlock, { type: 'input_text' }> => item.type === 'input_text')
+  const normalizedBlocks = mergeAdjacentInputTextBlocks(blocks)
+  const textBytes = normalizedBlocks.filter((item): item is Extract<ChatInputBlock, { type: 'input_text' }> => item.type === 'input_text')
     .reduce((total, item) => total + new TextEncoder().encode(item.text).byteLength, 0)
   if (textBytes > maxInputBytes) throw new Error('消息内容超过 192 KiB 上限')
-  return blocks.filter((item) => item.type !== 'input_text' || item.text.length > 0)
+  return normalizedBlocks.filter((item) => item.type !== 'input_text' || item.text.length > 0)
+}
+
+function mergeAdjacentInputTextBlocks(blocks: ChatInputBlock[]): ChatInputBlock[] {
+  const merged: ChatInputBlock[] = []
+  for (const block of blocks) {
+    const previous = merged.at(-1)
+    if (block.type === 'input_text' && previous?.type === 'input_text') {
+      previous.text = `${previous.text}\n\n${block.text}`
+    } else {
+      merged.push(block)
+    }
+  }
+  return merged
 }
 
 function flushText(text: string[], blocks: ChatInputBlock[]): void {

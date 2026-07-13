@@ -51,7 +51,7 @@ export interface ChatInputContentBlock {
 }
 
 const maxContentBlocksBytes = 256 * 1024
-const maxInputContentBlocks = 8
+const maxInputContentBlocks = 9
 const postgresIntegerMin = -2_147_483_648
 const postgresIntegerMax = 2_147_483_647
 
@@ -85,19 +85,21 @@ export async function createChatConversation(client: DatabaseClient, input: {
 
 export async function listChatConversations(client: DatabaseClient, input: {
   systemAccountId: string
+  beforeIsPinned?: boolean
   beforeLastMessageAt?: string
   beforeId?: string
   limit: number
 }): Promise<ChatConversation[]> {
-  const hasCursor = Boolean(input.beforeLastMessageAt && input.beforeId)
+  const hasCursor = input.beforeIsPinned !== undefined && Boolean(input.beforeLastMessageAt && input.beforeId)
+  const beforePinnedValue = input.beforeIsPinned ? 1 : 0
   const rows = await client.query<ConversationRow>(`
     SELECT * FROM ${chatTable(client, 'chat_conversations')}
     WHERE system_account_id = ?
-      ${hasCursor ? 'AND (last_message_at < ? OR (last_message_at = ? AND id < ?))' : ''}
+      ${hasCursor ? 'AND (is_pinned < ? OR (is_pinned = ? AND (last_message_at < ? OR (last_message_at = ? AND id < ?))))' : ''}
     ORDER BY is_pinned DESC, last_message_at DESC, id DESC
     LIMIT ?
   `, hasCursor
-    ? [input.systemAccountId, input.beforeLastMessageAt, input.beforeLastMessageAt, input.beforeId, Math.max(1, Math.min(input.limit, 50))]
+    ? [input.systemAccountId, beforePinnedValue, beforePinnedValue, input.beforeLastMessageAt, input.beforeLastMessageAt, input.beforeId, Math.max(1, Math.min(input.limit, 50))]
     : [input.systemAccountId, Math.max(1, Math.min(input.limit, 50))])
   return rows.map(mapConversation)
 }
@@ -135,10 +137,10 @@ export async function updateChatConversation(client: DatabaseClient, input: {
   const isPinned = input.isPinned ?? current.isPinned
   await client.execute(`
     UPDATE ${chatTable(client, 'chat_conversations')}
-    SET title = ?, title_source_message_id = CASE WHEN ? IS NOT NULL THEN NULL ELSE title_source_message_id END,
+    SET title = ?, title_source_message_id = CASE WHEN ? THEN NULL ELSE title_source_message_id END,
         is_pinned = ?, updated_at = ?
     WHERE id = ? AND system_account_id = ?
-  `, [title, input.title ?? null, isPinned ? 1 : 0, input.now, input.conversationId, input.systemAccountId])
+  `, [title, input.title !== undefined, isPinned ? 1 : 0, input.now, input.conversationId, input.systemAccountId])
   return getChatConversation(client, input.conversationId, input.systemAccountId)
 }
 
@@ -188,6 +190,7 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
 }): Promise<{ turnId: string; userMessage: ChatMessage; assistantMessage: ChatMessage; duplicate: boolean }> {
   return client.transaction(async (tx) => {
     await ensurePostgresChatMessagePartitions(tx, input.now)
+    await lockChatUserStorageQuota(tx, input.systemAccountId)
     const conversation = await lockConversation(tx, input.conversationId, input.systemAccountId)
     const existing = await tx.one<IdempotencyRow>(`
       SELECT turn_id, user_message_id, assistant_message_id
@@ -676,6 +679,11 @@ async function recentStorageBytes(client: DatabaseClient, systemAccountId: strin
     WHERE system_account_id = ? AND bucket_date >= ?
   `, [systemAccountId, start.toISOString().slice(0, 10)])
   return Number(row?.total ?? 0)
+}
+
+async function lockChatUserStorageQuota(client: DatabaseClient, systemAccountId: string): Promise<void> {
+  if (client.driver !== 'postgres') return
+  await client.execute('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [`juhe-ai:chat-storage:${systemAccountId}`])
 }
 
 async function incrementStorageWindow(client: DatabaseClient, systemAccountId: string, now: string, bytes: number): Promise<void> {

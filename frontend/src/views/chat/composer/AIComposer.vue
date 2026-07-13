@@ -16,7 +16,7 @@
         <a-select v-if="contextOptions.length > 1" :value="contextWindowTokens" :options="contextOptions" :disabled="disabled" size="small" :bordered="false" :popup-match-select-width="false" aria-label="上下文大小" @update:value="emit('update:contextWindowTokens', $event)" />
       </div>
       <a-tooltip v-if="disabled" title="停止生成"><a-button danger type="primary" aria-label="停止生成" @click="emit('stop')"><StopOutlined /></a-button></a-tooltip>
-      <a-tooltip v-else title="发送"><a-button type="primary" aria-label="发送" :disabled="!hasContent" @click="submit"><SendOutlined /></a-button></a-tooltip>
+      <a-tooltip v-else title="发送"><a-button type="primary" aria-label="发送" :disabled="!canSubmit" @click="submit"><SendOutlined /></a-button></a-tooltip>
     </div>
   </div>
 </template>
@@ -26,14 +26,15 @@ import { MenuOutlined, SendOutlined, StopOutlined } from '@ant-design/icons-vue'
 import Placeholder from '@tiptap/extension-placeholder'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { JSONContent } from '@tiptap/core'
 import { composerDocumentToBlocks, composerTextToDocument, type ChatInputBlock } from './chatComposerDocument'
 import { createChatComposerSubmission } from './chatComposerSubmission'
 import { ChatImageAttachment } from './ChatImageAttachment'
 import { chatComposerCommandQueryRange, chatComposerCommands, filterChatComposerCommands, moveChatComposerCommandIndex, type ChatComposerCommand } from './chatComposerCommands'
 import { chatContextOptions, reasoningEffortLabel } from './chatModelControls'
-import { replaceEditorDocumentWithoutHistory } from './chatEditorDocumentBoundary'
+import { replaceEditorContentWithoutHistory } from './chatEditorDocumentBoundary'
+import { maxChatImageCount, selectChatImageFiles } from './chatImageSelection'
 import type { ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 
 const props = defineProps<{ disabled: boolean; modelOptions: ChatModelOption[]; modelValue?: string; modelsLoading: boolean; reasoningEffort: ChatReasoningEffort | ''; serviceTier: ChatServiceTier | ''; contextWindowTokens: number; showConversationButton: boolean }>()
@@ -50,7 +51,8 @@ const commandOpen = ref(false)
 const commandQuery = ref('')
 const commandIndex = ref(0)
 const contentRevision = ref(0)
-const objectUrls = new Set<string>()
+let imageInsertionQueue = Promise.resolve()
+let editorDocumentGeneration = 0
 
 const editor = useEditor({
   extensions: [StarterKit, Placeholder.configure({ placeholder: '输入消息；Enter 发送，Shift+Enter 换行，粘贴图片，/ 打开命令' }), ChatImageAttachment],
@@ -77,9 +79,8 @@ const editor = useEditor({
     },
     handlePaste: (_view, event) => {
       const files = Array.from(event.clipboardData?.files ?? [])
-      const image = files.find((file) => file.type.startsWith('image/'))
-      if (!image) return false
-      insertImage(image)
+      if (!files.some((file) => file.type.startsWith('image/'))) return false
+      enqueueImages(files)
       return true
     }
   },
@@ -104,6 +105,7 @@ const hasContent = computed(() => {
   contentRevision.value
   return Boolean(editor.value && (editor.value.getText().trim() || imageItems.value.length))
 })
+const canSubmit = computed(() => Boolean(hasContent.value && props.modelValue && !props.modelsLoading))
 const imageItems = computed(() => {
   contentRevision.value
   const items: Array<{ assetId: string; previewUrl: string; fileName: string }> = []
@@ -114,28 +116,32 @@ const imageItems = computed(() => {
 })
 
 function submit(): void {
-  if (!editor.value || !hasContent.value || props.disabled) return
+  if (!editor.value || !canSubmit.value || props.disabled) return
   const snapshot = editor.value.getJSON()
   const payload = { blocks: composerDocumentToBlocks(snapshot), snapshot }
   const submission = createChatComposerSubmission(snapshot as Record<string, unknown>)
-  editor.value.commands.clearContent(true)
+  editorDocumentGeneration += 1
+  replaceEditorContentWithoutHistory(editor.value, emptyComposerDocument())
+  contentRevision.value += 1
   emit('submit', { ...payload, snapshot: submission.snapshot as JSONContent })
 }
 function getSnapshot(): JSONContent {
   return editor.value ? cloneDocument(editor.value.getJSON()) : { type: 'doc', content: [{ type: 'paragraph' }] }
 }
 function setText(content: string): void {
-  if (editor.value) replaceEditorDocumentWithoutHistory(editor.value, composerTextToDocument(content))
+  editorDocumentGeneration += 1
+  if (editor.value) replaceEditorContentWithoutHistory(editor.value, composerTextToDocument(content))
   contentRevision.value += 1
 }
-function restore(snapshot: JSONContent): void { if (editor.value) replaceEditorDocumentWithoutHistory(editor.value, cloneDocument(snapshot)); contentRevision.value += 1; editor.value?.commands.focus('end') }
-function clear(): void { editor.value?.commands.clearContent(true) }
+function restore(snapshot: JSONContent): void { editorDocumentGeneration += 1; if (editor.value) replaceEditorContentWithoutHistory(editor.value, cloneDocument(snapshot)); contentRevision.value += 1; editor.value?.commands.focus('end') }
+function clear(): void { editorDocumentGeneration += 1; if (editor.value) replaceEditorContentWithoutHistory(editor.value, emptyComposerDocument()); contentRevision.value += 1 }
 function focus(): void { editor.value?.commands.focus() }
 function cloneDocument(document: JSONContent): JSONContent { return JSON.parse(JSON.stringify(document)) as JSONContent }
+function emptyComposerDocument(): JSONContent { return { type: 'doc', content: [{ type: 'paragraph' }] } }
 function selectCommand(item: ChatComposerCommand): void {
   if (!editor.value) return
   if (item.key === 'clear') {
-    editor.value.commands.clearContent(true)
+    clear()
   } else {
     const cursor = editor.value.state.selection.from
     editor.value.chain().focus().deleteRange(chatComposerCommandQueryRange(cursor, commandQuery.value)).run()
@@ -144,15 +150,22 @@ function selectCommand(item: ChatComposerCommand): void {
   }
   commandOpen.value = false
 }
-async function insertImage(file: File): Promise<void> {
-  if (!editor.value || !file.type.startsWith('image/') || file.size > 10 * 1024 * 1024 || imageItems.value.length >= 4) return
+async function insertImage(file: File, generation: number): Promise<void> {
+  if (!editor.value || generation !== editorDocumentGeneration || imageItems.value.length >= maxChatImageCount) return
   const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result ?? '')); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file) })
-  const previewUrl = URL.createObjectURL(file); objectUrls.add(previewUrl)
+  if (!editor.value || generation !== editorDocumentGeneration || imageItems.value.length >= maxChatImageCount) return
+  const previewUrl = dataUrl
   editor.value.commands.insertContent({ type: 'chatImageAttachment', attrs: { assetId: `local-${crypto.randomUUID()}`, previewUrl, dataUrl, fileName: file.name || '图片' } })
 }
-function handleFileChange(event: Event): void { const files = Array.from((event.target as HTMLInputElement).files ?? []); files.forEach((file) => { void insertImage(file) }); (event.target as HTMLInputElement).value = '' }
+function enqueueImages(files: readonly File[]): void {
+  const generation = editorDocumentGeneration
+  imageInsertionQueue = imageInsertionQueue.then(async () => {
+    if (generation !== editorDocumentGeneration) return
+    for (const file of selectChatImageFiles(files, imageItems.value.length)) await insertImage(file, generation)
+  }).catch(() => undefined)
+}
+function handleFileChange(event: Event): void { const input = event.target as HTMLInputElement; enqueueImages(Array.from(input.files ?? [])); input.value = '' }
 defineExpose({ getSnapshot, setText, restore, clear, focus })
-onBeforeUnmount(() => objectUrls.forEach((url) => URL.revokeObjectURL(url)))
 </script>
 
 <style scoped>

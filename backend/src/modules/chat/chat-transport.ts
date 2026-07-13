@@ -7,6 +7,15 @@ export interface ChatTransportMessage {
   content: string
 }
 export interface ChatTransportInputBlock { type: 'input_text' | 'input_image'; text?: string; dataUrl?: string }
+interface ChatTransportAccount {
+  supportedEndpointModes?: readonly string[]
+  modelMappings?: ReadonlyArray<{
+    enabled?: boolean
+    sourceModel: string
+    sourceEndpointFamily: string
+    upstreamEndpointFamily: string
+  }>
+}
 
 export function resolveChatBudgetContent(input: {
   protocol: ChatTransportProtocol
@@ -32,17 +41,41 @@ export function selectChatTransport(input: {
 export async function resolveChatSupportedProtocols(input: {
   groupIds: readonly string[]
   model: string
-  loadAccounts: (groupId: string, model: string, endpointFamily: ChatTransportProtocol) => Promise<readonly unknown[]>
+  loadAccounts: (groupId: string, model: string, endpointFamily: ChatTransportProtocol) => Promise<readonly ChatTransportAccount[]>
 }): Promise<ChatTransportProtocol[]> {
-  const protocols: ChatTransportProtocol[] = ['chat_completions']
+  const protocolOrder: ChatTransportProtocol[] = ['chat_completions', 'responses']
+  const supported = new Set<ChatTransportProtocol>()
   for (const groupId of [...new Set(input.groupIds.filter(Boolean))]) {
-    const accounts = await input.loadAccounts(groupId, input.model, 'responses')
-    if (accounts.length) {
-      protocols.push('responses')
-      break
+    for (const endpointFamily of protocolOrder) {
+      if (supported.has(endpointFamily)) continue
+      const accounts = await input.loadAccounts(groupId, input.model, endpointFamily)
+      if (accounts.some((account) => chatTransportAccountSupportsProtocol(account, input.model, endpointFamily))) {
+        supported.add(endpointFamily)
+      }
     }
+    if (supported.size === protocolOrder.length) break
   }
-  return protocols
+  return protocolOrder.filter((protocol) => supported.has(protocol))
+}
+
+function chatTransportAccountSupportsProtocol(
+  account: ChatTransportAccount,
+  model: string,
+  protocol: ChatTransportProtocol
+): boolean {
+  const mapping = account.modelMappings?.find((item) => (
+    item.enabled !== false
+    && item.sourceModel === model
+    && item.sourceEndpointFamily === protocol
+  ))
+  const upstreamProtocol = mapping?.upstreamEndpointFamily ?? protocol
+  const requiredMode = {
+    responses: 'responses_sse',
+    chat_completions: 'chat_sse',
+    messages: 'messages_sse',
+    generate_content: 'generate_content_sse'
+  }[upstreamProtocol]
+  return Boolean(requiredMode && account.supportedEndpointModes?.includes(requiredMode))
 }
 
 export function buildChatTransportRequest(input: {

@@ -14,6 +14,7 @@ declare module 'vue-router' {
     description: string
     keepAlive?: boolean
     heavy?: boolean
+    immersive?: boolean
     menuGroup?: string
     menuGroupTitle?: string
     public?: boolean
@@ -33,7 +34,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       description: '使用自己的 API Key 与可用模型进行对话。',
       viewScope: 'self',
       keepAlive: false,
-      heavy: true
+      heavy: true,
+      immersive: true
     }
   },
   {

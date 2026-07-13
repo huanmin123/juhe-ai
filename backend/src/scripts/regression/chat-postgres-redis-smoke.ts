@@ -5,7 +5,7 @@ import { createClient } from 'redis'
 
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { applyPostgresSchema } from '../../storage/postgres-schema.js'
-import { acceptChatTurn, cleanupChatRetention, completeChatTurn, createChatConversation, listChatContextMessages, listChatMessages } from '../../storage/chat.repository.js'
+import { acceptChatTurn, ChatConflictError, cleanupChatRetention, completeChatTurn, createChatConversation, listChatContextMessages, listChatConversations, listChatMessages, updateChatConversation } from '../../storage/chat.repository.js'
 import { runChatSmokeWithCleanup } from './chat-smoke-cleanup.js'
 
 const adminUrl = requiredEnv('JUHE_AI_TEST_POSTGRES_URL')
@@ -52,6 +52,32 @@ await runChatSmokeWithCleanup({
   assert(cleanup.deletedConversations >= 1, '日分区删除后应收口空会话')
   const partitions = await targetPool.query("SELECT COUNT(*)::int AS total FROM pg_inherits i JOIN pg_class p ON p.oid=i.inhparent JOIN pg_namespace n ON n.oid=p.relnamespace WHERE n.nspname='juhe_chat' AND p.relname='chat_messages'")
   assert(Number(partitions.rows[0]?.total) >= 2, '写入时应确保当天和下一天消息分区')
+
+  const quotaAccountId = 'sys_pg_quota_race'
+  const [quotaConversationA, quotaConversationB] = await Promise.all([
+    createChatConversation(client, { id: 'chat_pg_quota_a', systemAccountId: quotaAccountId, apiKeyId: 'key_pg', apiKeyNameSnapshot: 'PG Key', now: '2026-07-12T00:20:00.000Z' }),
+    createChatConversation(client, { id: 'chat_pg_quota_b', systemAccountId: quotaAccountId, apiKeyId: 'key_pg', apiKeyNameSnapshot: 'PG Key', now: '2026-07-12T00:20:00.000Z' })
+  ])
+  const quotaContent = 'x'.repeat(1000)
+  const quotaBytes = 1500
+  const quotaResults = await Promise.allSettled([
+    acceptChatTurn(client, { conversationId: quotaConversationA.id, systemAccountId: quotaAccountId, clientMessageId: 'pg_quota_a', userContent: quotaContent, model: 'mock-model', now: '2026-07-12T00:21:00.000Z', storageQuotaBytes: quotaBytes }),
+    acceptChatTurn(client, { conversationId: quotaConversationB.id, systemAccountId: quotaAccountId, clientMessageId: 'pg_quota_b', userContent: quotaContent, model: 'mock-model', now: '2026-07-12T00:21:00.000Z', storageQuotaBytes: quotaBytes })
+  ])
+  assert.equal(quotaResults.filter((result) => result.status === 'fulfilled').length, 1, '同一用户跨会话并发提交只能有一个通过存储配额')
+  const quotaRejected = quotaResults.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+  assert(quotaRejected?.reason instanceof ChatConflictError && quotaRejected.reason.code === 'chat_storage_quota_exceeded', '另一个并发提交必须返回稳定容量冲突')
+  const quotaWindow = await targetPool.query("SELECT COALESCE(SUM(content_bytes), 0)::bigint AS total FROM juhe_chat.chat_user_storage_windows WHERE system_account_id = $1", [quotaAccountId])
+  const storedQuotaBytes = Number(quotaWindow.rows[0]?.total ?? 0)
+  assert(storedQuotaBytes > 0 && storedQuotaBytes <= quotaBytes, '并发配额冲突后容量窗口不得超过上限')
+
+  const cursorAccountId = 'sys_pg_cursor'
+  const cursorPinned = await createChatConversation(client, { id: 'chat_pg_cursor_pinned', systemAccountId: cursorAccountId, apiKeyId: 'key_pg', apiKeyNameSnapshot: 'PG Key', now: '2026-07-12T01:00:00.000Z' })
+  const cursorUnpinned = await createChatConversation(client, { id: 'chat_pg_cursor_unpinned', systemAccountId: cursorAccountId, apiKeyId: 'key_pg', apiKeyNameSnapshot: 'PG Key', now: '2026-07-12T02:00:00.000Z' })
+  await updateChatConversation(client, { conversationId: cursorPinned.id, systemAccountId: cursorAccountId, isPinned: true, now: '2026-07-12T03:00:00.000Z' })
+  const cursorFirstPage = await listChatConversations(client, { systemAccountId: cursorAccountId, limit: 1 })
+  const cursorSecondPage = await listChatConversations(client, { systemAccountId: cursorAccountId, beforeIsPinned: cursorFirstPage[0]?.isPinned, beforeLastMessageAt: cursorFirstPage[0]?.lastMessageAt, beforeId: cursorFirstPage[0]?.id, limit: 1 })
+  assert.deepEqual([cursorFirstPage[0]?.id, cursorSecondPage[0]?.id], [cursorPinned.id, cursorUnpinned.id], 'PostgreSQL 置顶三元游标必须跨到更晚的非置顶会话')
 
   redis = createClient({ url: redisUrl })
   await redis.connect()

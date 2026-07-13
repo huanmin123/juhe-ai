@@ -7,7 +7,12 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import {
+  GPT_OPENAI_V1_PROFILE_ID,
+  GPT_VENDOR_CODE,
+  OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+  OPENAI_COMPATIBLE_PROVIDER_CODE
+} from '../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { buildChatSystemInstructions } from '../../modules/chat/chat-system-instructions.js'
@@ -18,12 +23,14 @@ const projectRoot = resolve(backendRoot, '..')
 const tempRoot = resolve(tmpdir(), `juhe-ai-chat-mock-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 const upstreamAuthorizations: string[] = []
 const upstreamBodies: Array<Record<string, unknown>> = []
+const upstreamPaths: string[] = []
+const upstreamTraceIds: string[] = []
 let upstream: http.Server | undefined
 let backend: ChildProcess | undefined
 const realCredentialFile = process.env.JUHE_AI_CHAT_REAL_CREDENTIAL_FILE?.trim()
 const realCredential = realCredentialFile ? readRealCredential(realCredentialFile) : undefined
 const testModel = process.env.JUHE_AI_CHAT_REAL_MODEL?.trim() || realCredential?.models.find((item) => item === 'gpt-5.5') || realCredential?.models[0] || 'gpt-5.5'
-const chatOnlyTestModel = 'gpt-5.4-mini'
+const chatOnlyTestModel = 'chat-only-model'
 
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.chatDatabasePath = join(tempRoot, 'chat.sqlite3')
@@ -43,6 +50,7 @@ logger.level = 'silent'
 
 const databaseModule = await import('../../storage/database.js')
 const repositories = await import('../../storage/repositories.js')
+const modelCatalogService = await import('../../modules/model-pricing/model-catalog.service.js')
 
 try {
   if (!realCredential) {
@@ -60,7 +68,7 @@ try {
     type: 'api_key',
     credentials: { api_key: realCredential?.apiKey ?? 'sk-chat-upstream', base_url: upstreamBaseUrl },
     groupId: group.id,
-    supportedModels: realCredential?.models ?? ['gpt-5.5'],
+    supportedModels: realCredential?.models ?? [testModel],
     healthCheckModel: testModel,
     status: 'active',
     schedulable: true
@@ -72,6 +80,55 @@ try {
     status: 'active'
   }, access)
   assert(gatewayKey.key)
+  let chatOnlyGatewayKeyId: string | undefined
+  let chatOnlyGroupId: string | undefined
+  if (!realCredential) {
+    modelCatalogService.saveCustomProviderModel({
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      model: chatOnlyTestModel,
+      scope: 'personal',
+      systemAccountId: access.systemAccountId,
+      status: 'active',
+      supportedApiProtocols: ['chat_completions'],
+      inputUsdPer1M: 0.001,
+      outputUsdPer1M: 0.001,
+      actorSystemAccountId: access.systemAccountId
+    })
+    const chatOnlyGroup = repositories.createGroup({ name: 'AI 问答 Chat-only 分组', providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE, enabled: true }, access)
+    chatOnlyGroupId = chatOnlyGroup.id
+    const chatOnlyAccount = repositories.createAccount({
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
+      name: 'AI 问答 Chat-only 账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-chat-only-upstream',
+        base_url: upstreamBaseUrl,
+        supported_endpoint_modes: ['chat_json', 'chat_sse']
+      },
+      groupId: chatOnlyGroup.id,
+      supportedModels: [chatOnlyTestModel],
+      healthCheckModel: chatOnlyTestModel,
+      status: 'active',
+      schedulable: true
+    }, access)
+    assert.equal(chatOnlyAccount.clientCompatibility, 'openai_standard')
+    assert.deepEqual(chatOnlyAccount.credentials.supported_endpoint_modes, ['chat_json', 'chat_sse'])
+    assert(repositories.recordAccountHealthCheckSuccess(chatOnlyAccount.id, { intervalHours: 24, jitterMinutes: 0, failureThreshold: 3, statusCode: 200 }))
+    const chatOnlyGatewayKey = createApiKeyRecordWithRouteStrategy(repositories, {
+      name: 'AI 问答 Chat-only Key',
+      groupBindings: [{ groupId: chatOnlyGroup.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(chatOnlyGatewayKey.key)
+    chatOnlyGatewayKeyId = chatOnlyGatewayKey.id
+    const chatOnlySelection = repositories.listOpenAIAccountsForGroupResult(chatOnlyGroup.id, access.systemAccountId, {
+      requestedModel: chatOnlyTestModel,
+      requestedEndpointFamily: 'chat_completions'
+    })
+    assert.equal(chatOnlySelection.accounts.length, 1, `Chat-only 账户应进入调度候选：${JSON.stringify(chatOnlySelection.diagnostics)}`)
+    assert.deepEqual(chatOnlySelection.accounts[0]?.supportedEndpointModes, ['chat_json', 'chat_sse'])
+  }
   const session = repositories.createSession('sys_admin', 1)
   const cookie = `juhe_ai_session=${session.token}`
   if (Number(process.env.JUHE_AI_CHAT_UI_BULK_MESSAGES ?? 0) > 0) {
@@ -95,7 +152,7 @@ try {
 
   const streamResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
     method: 'POST',
-    headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
+    headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream', 'x-trace-id': 'chat-mock-trace-responses' },
     body: JSON.stringify({ clientMessageId: 'mock-client-1', content: realCredential ? '请用一句中文回答：7天聊天记录保留策略的核心目的是什么？' : '请返回 Mock Markdown', model: testModel })
   })
   const streamText = await streamResponse.text()
@@ -109,6 +166,28 @@ try {
     assert.match(streamText, /Markdown/)
   }
   assert.match(streamText, /event: message\.completed/)
+  if (!realCredential) {
+    assert(chatOnlyGatewayKeyId)
+    assert(chatOnlyGroupId)
+    const chatConversation = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: chatOnlyGatewayKeyId })
+    const chatModels = await apiJson<{ data: Array<{ id: string }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${chatConversation.data.id}/models`, cookie)
+    assert(chatModels.data.some((item) => item.id === chatOnlyTestModel), 'Chat-only 会话必须列出绑定账户模型')
+    const chatStreamResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${chatConversation.data.id}/stream`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream', 'x-trace-id': 'chat-mock-trace-chat' },
+      body: JSON.stringify({ clientMessageId: 'mock-client-chat-only', content: '请返回 Chat Markdown', model: chatOnlyTestModel })
+    })
+    const chatStreamText = await chatStreamResponse.text()
+    assert.equal(chatStreamResponse.status, 200, chatStreamText)
+    const chatBody = upstreamBodies.find((body) => Array.isArray(body.messages))
+    assert(chatBody, `Chat Completions 请求必须命中 mock 上游，当前路径 ${JSON.stringify(upstreamPaths)}`)
+    const chatMessages = Array.isArray(chatBody?.messages) ? chatBody.messages as Array<{ role?: string; content?: string }> : []
+    assert.equal(chatMessages.filter((message) => message.role === 'system').length, 1, 'Chat Completions 必须且只能注入一条 system 消息')
+    assert.equal(chatMessages[0]?.content, buildChatSystemInstructions({ toolsEnabled: false }).text)
+    assert.equal(Object.hasOwn(chatBody ?? {}, 'instructions'), false, 'Chat Completions 不得发送 Responses instructions 字段')
+    assert.equal(Object.hasOwn(chatBody ?? {}, 'tools'), false, 'Chat-only 模型不得发送 Responses Hosted Tools')
+    assert.match(chatStreamText, /event: message\.completed/, 'Chat Completions 全链路必须完成')
+  }
   const duplicateResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
     method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
     body: JSON.stringify({
@@ -157,15 +236,18 @@ try {
       overBudgetCode: 'chat_input_exceeds_context',
       blockBudgetStatus: 422,
       blockBudgetCode: 'chat_input_exceeds_context',
-      upstreamCalls: 1
+      upstreamCalls: 2
     }, 'Responses 必须唯一注入工具提示；固定输入超预算必须在落轮次和请求上游前返回 422')
     assert.match(String(overBudgetPayload?.message ?? ''), /上下文窗口/)
     assert.match(String(blockBudgetPayload?.message ?? ''), /上下文窗口/)
-    assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream'], 'AI 问答必须经过网关并使用 AI 账户凭据访问上游')
+    assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream', 'Bearer sk-chat-only-upstream'], 'AI 问答双协议都必须经过网关并使用各自 AI 账户凭据访问上游')
+    assert.deepEqual(upstreamPaths.slice(0, 2), ['POST /v1/responses', 'POST /v1/chat/completions'], 'Mock AI 必须真实覆盖 Responses 与 Chat Completions 两条 HTTP 路径')
+    assert.deepEqual(upstreamTraceIds.slice(0, 2), ['chat-mock-trace-responses', 'chat-mock-trace-chat'], 'Chat route 必须把外层 trace 原样传给内部网关')
   }
 
-  const stored = await apiJson<{ data: Array<{ id: string; turnId: string; sequenceNo: number; clientMessageId?: string; role: string; status: string; contentText: string; contentBlocks: Array<{ type: string; id?: string; status?: string; inputType?: string; order?: number }> }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
+  const stored = await apiJson<{ data: Array<{ id: string; turnId: string; sequenceNo: number; clientMessageId?: string; role: string; status: string; contentText: string; traceId?: string; contentBlocks: Array<{ type: string; id?: string; status?: string; inputType?: string; order?: number }> }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
   assert.deepEqual(stored.data.map((item) => [item.role, item.status]), [['user', 'completed'], ['assistant', 'completed']])
+  assert.equal(stored.data[1]?.traceId, 'chat-mock-trace-responses', '聊天消息 trace 必须与网关 usage/audit trace 一致')
   if (!realCredential) {
     assert.deepEqual(stored.data[1].contentBlocks.map((block) => [block.type, block.id, block.status]), [['tool_call', 'search_1', 'completed']])
     assert.match(stored.data[1].contentText, /\|项目\|结果\|/)
@@ -216,16 +298,22 @@ try {
     assert.deepEqual(replaced.data[0]?.contentBlocks, [{ type: 'input_marker', inputType: 'input_text', order: 0 }])
 
     const imageConversation = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
-    const imageDataUrl = 'data:image/png;base64,iVBORw0KGgo='
+    const imageDataUrl = `data:image/png;base64,${'A'.repeat(300 * 1024)}`
     const imageResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${imageConversation.data.id}/stream`, {
       method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
       body: JSON.stringify({
         clientMessageId: 'mock-client-image-markers',
         content: '图片前\n[图片]\n图片后',
         contentBlocks: [
-          { type: 'input_text', text: '图片前' },
+          { type: 'input_text', text: '图片 1 前' },
           { type: 'input_image', dataUrl: imageDataUrl },
-          { type: 'input_text', text: '图片后' }
+          { type: 'input_text', text: '图片 2 前' },
+          { type: 'input_image', dataUrl: imageDataUrl },
+          { type: 'input_text', text: '图片 3 前' },
+          { type: 'input_image', dataUrl: imageDataUrl },
+          { type: 'input_text', text: '图片 4 前' },
+          { type: 'input_image', dataUrl: imageDataUrl },
+          { type: 'input_text', text: '图片 4 后' }
         ],
         model: testModel
       })
@@ -235,8 +323,14 @@ try {
     assert.deepEqual(imageStored.data[0]?.contentBlocks, [
       { type: 'input_marker', inputType: 'input_text', order: 0 },
       { type: 'input_marker', inputType: 'input_image', order: 1 },
-      { type: 'input_marker', inputType: 'input_text', order: 2 }
-    ], '图片轮次只保存顺序标记')
+      { type: 'input_marker', inputType: 'input_text', order: 2 },
+      { type: 'input_marker', inputType: 'input_image', order: 3 },
+      { type: 'input_marker', inputType: 'input_text', order: 4 },
+      { type: 'input_marker', inputType: 'input_image', order: 5 },
+      { type: 'input_marker', inputType: 'input_text', order: 6 },
+      { type: 'input_marker', inputType: 'input_image', order: 7 },
+      { type: 'input_marker', inputType: 'input_text', order: 8 }
+    ], '4 张图片与前后文字交错的 9 个块必须通过 HTTP 契约且只保存顺序标记')
     assert.equal(JSON.stringify(imageStored.data[0]?.contentBlocks).includes(imageDataUrl), false, '图片 Data URL 不得落库')
   } else {
     assert(stored.data[1].contentText.trim().length > 0, '真实模型必须返回非空中文回答')
@@ -289,14 +383,24 @@ async function seedBulkChatMessages(apiKeyId: string, count: number): Promise<vo
 
 function createMockUpstream(): http.Server {
   return http.createServer((req, res) => {
-    if (req.method !== 'POST' || req.url !== '/v1/responses') { res.writeHead(404).end(); return }
+    upstreamPaths.push(`${req.method ?? ''} ${req.url ?? ''}`)
+    if (req.method !== 'POST' || (req.url !== '/v1/responses' && req.url !== '/v1/chat/completions')) { res.writeHead(404).end(); return }
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => {
       upstreamAuthorizations.push(String(req.headers.authorization ?? ''))
+      upstreamTraceIds.push(String(req.headers['x-trace-id'] ?? ''))
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> & { stream?: boolean; tools?: Array<{ type?: string }> }
       upstreamBodies.push(body)
       assert.equal(body.stream, true)
+      if (req.url === '/v1/chat/completions') {
+        const created = Math.floor(Date.now() / 1000)
+        const chunk = { id: 'chatcmpl_chat_mock', object: 'chat.completion.chunk', created, model: chatOnlyTestModel, choices: [{ index: 0, delta: { role: 'assistant', content: 'Chat **Markdown**' }, finish_reason: null }] }
+        const done = { id: 'chatcmpl_chat_mock', object: 'chat.completion.chunk', created, model: chatOnlyTestModel, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 } }
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' })
+        res.end(`data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(done)}\n\ndata: [DONE]\n\n`)
+        return
+      }
       assert(body.tools?.some((tool) => tool.type === 'web_search'))
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' })
       writeMockResponseEvent(res, 'response.output_item.added', { type: 'response.output_item.added', item: { id: 'search_1', type: 'web_search_call', status: 'in_progress' } })

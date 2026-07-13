@@ -53,6 +53,7 @@ type BodyParserError = Error & {
 }
 
 export const systemApiJsonBodyLimit = '256kb'
+export const chatSystemApiJsonBodyLimit = '24mb'
 export { systemApiDbServiceAdmissionControl, systemApiDbServiceMaxInFlight }
 
 export function createSystemApiApp(options: SystemApiAppOptions): express.Express {
@@ -68,6 +69,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(createHttpCompressionMiddleware())
   app.use(systemApiPrefix, noStoreSystemApiResponse)
   app.use(systemApiPrefix, systemApiIpRateLimit)
+  app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))
   app.use(publicApiPrefix, capturePublicApiLog, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
@@ -102,7 +104,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-model-checks`, forceSelfAccessScope, modelChecksRouter)
   app.use(`${systemApiPrefix}/my-stats`, forceSelfAccessScope, statsRouter)
   app.use(`${systemApiPrefix}/my-operation-logs`, forceSelfAccessScope, myOperationLogsRouter)
-  app.use(`${systemApiPrefix}/my-chat`, forceSelfAccessScope, chatRouter)
   app.use(`${systemApiPrefix}/providers`, providersRouter)
   app.use(`${systemApiPrefix}/response-inspection-policies`, requireAdmin, responseInspectionPoliciesRouter)
   app.use(`${systemApiPrefix}/accounts`, requireAdmin, accountsRouter)

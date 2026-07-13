@@ -15,6 +15,8 @@ assert.match(source, /target\.closest<HTMLButtonElement>\('button\.chat-code-cop
 assert.match(source, /button\.closest<HTMLElement>\('\.chat-code-block'\)/, '委托必须限制在最近代码块 wrapper')
 assert.match(source, /wrapper\.querySelector<HTMLElement>\(':scope\s*>\s*pre\s*>\s*code'\)/, '复制只能读取 wrapper 的直接 pre/code')
 assert.match(source, /code\.textContent/, '复制必须读取 textContent，不能读取 HTML 或响应式原文')
+assert.match(source, /import\s*\{\s*writeTextToClipboard\s*\}\s*from\s*'@\/shared\/clipboard'/, '代码复制必须复用带选区降级的公共剪贴板能力')
+assert.match(source, /writeTextToClipboard\(value\)/, '代码复制不能只依赖 navigator.clipboard')
 assert.match(copyStateSource, /已复制/, '成功后必须短暂显示“已复制”')
 assert.match(source, /复制失败，请稍后重试/, '代码复制失败必须显示中文提示')
 assert.doesNotMatch(source, /let copyResetTimer:/, '不能用单一 timer 让快速复制的不同代码块互相取消恢复')

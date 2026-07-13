@@ -53,6 +53,15 @@ const renamedPinned = await updateChatConversation(client, {
 assert.equal(renamedPinned?.title, '置顶会话')
 assert.equal(renamedPinned?.isPinned, true)
 assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 20 }))[0]?.id, pinnedConversation.id)
+const pinnedPage = await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 1 })
+const unpinnedPage = await listChatConversations(client, {
+  systemAccountId: 'sys_user_1',
+  beforeIsPinned: pinnedPage[0]?.isPinned,
+  beforeLastMessageAt: pinnedPage[0]?.lastMessageAt,
+  beforeId: pinnedPage[0]?.id,
+  limit: 1
+})
+assert.equal(unpinnedPage[0]?.id, conversation.id, '置顶游标之后必须继续返回时间更新的非置顶会话')
 assert.equal(await deleteChatConversation(client, pinnedConversation.id, 'sys_user_1'), true)
 
 assert.equal(await findChatTurnByClientMessageId(client, {

@@ -1,4 +1,4 @@
-import { Node, mergeAttributes } from '@tiptap/core'
+import { Node } from '@tiptap/core'
 
 export const ChatImageAttachment = Node.create({
   name: 'chatImageAttachment',
@@ -17,6 +17,12 @@ export const ChatImageAttachment = Node.create({
   },
   parseHTML() { return [{ tag: 'img[data-chat-image]' }] },
   renderHTML({ HTMLAttributes }) {
-    return ['img', mergeAttributes(HTMLAttributes, { 'data-chat-image': '', class: 'chat-composer-image' })]
+    return ['img', {
+      'data-chat-image': '',
+      'data-asset-id': String(HTMLAttributes.assetId ?? ''),
+      class: 'chat-composer-image',
+      src: String(HTMLAttributes.previewUrl ?? ''),
+      alt: String(HTMLAttributes.fileName ?? '图片')
+    }]
   }
 })

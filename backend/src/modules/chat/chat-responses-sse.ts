@@ -11,36 +11,49 @@ export async function collectChatResponsesSse(
   chunks: AsyncIterable<Uint8Array>,
   onEvent: (event: ChatResponsesEvent) => void,
   maxBytes = 192 * 1024
-): Promise<{ content: string; events: ChatResponsesEvent[] }> {
+): Promise<{ content: string }> {
   const decoder = new TextDecoder('utf-8', { fatal: true })
+  const encoder = new TextEncoder()
+  const maxEventBytes = 64 * 1024
+  const maxAuxiliaryBytes = 192 * 1024
+  const maxEvents = 2048
   let buffer = ''
   let content = ''
-  const events: ChatResponsesEvent[] = []
+  let completed = false
+  let auxiliaryBytes = 0
+  let eventCount = 0
+  const consumeEvent = (parsed: ChatResponsesEvent): void => {
+    eventCount += 1
+    if (eventCount > maxEvents) throw new Error('上游 Responses 事件数量超过 2048 上限')
+    if (parsed.type === 'text_delta') {
+      content += parsed.delta
+      if (encoder.encode(content).byteLength > maxBytes) throw new Error('模型回答超过 192 KiB 上限')
+    } else if (parsed.type === 'reasoning_delta') {
+      auxiliaryBytes += encoder.encode(parsed.delta).byteLength
+    } else if (parsed.type === 'tool_started' || parsed.type === 'tool_updated' || parsed.type === 'tool_completed') {
+      auxiliaryBytes += encoder.encode(JSON.stringify(parsed.item)).byteLength
+    }
+    if (auxiliaryBytes > maxAuxiliaryBytes) throw new Error('模型结构化过程超过 192 KiB 上限')
+    if (parsed.type === 'completed') completed = true
+    onEvent(parsed)
+  }
   for await (const chunk of chunks) {
     buffer += decoder.decode(chunk, { stream: true })
     const split = consumeBlocks(buffer, (block) => {
+      if (encoder.encode(block).byteLength > maxEventBytes) throw new Error('上游 Responses 单个事件超过 64 KiB 上限')
       const parsed = parseBlock(block)
       if (!parsed) return
-  if (parsed.type === 'text_delta') {
-        content += parsed.delta
-        if (new TextEncoder().encode(content).byteLength > maxBytes) throw new Error('模型回答超过 192 KiB 上限')
-      }
-      events.push(parsed)
-      onEvent(parsed)
+      consumeEvent(parsed)
     })
     buffer = split.rest
+    if (encoder.encode(buffer).byteLength > maxEventBytes) throw new Error('上游 Responses 单个事件超过 64 KiB 上限')
   }
   buffer += decoder.decode()
+  if (encoder.encode(buffer).byteLength > maxEventBytes) throw new Error('上游 Responses 单个事件超过 64 KiB 上限')
   const parsed = parseBlock(buffer)
-  if (parsed) {
-    if (parsed.type === 'text_delta') {
-      content += parsed.delta
-      if (new TextEncoder().encode(content).byteLength > maxBytes) throw new Error('模型回答超过 192 KiB 上限')
-    }
-    events.push(parsed)
-    onEvent(parsed)
-  }
-  return { content, events }
+  if (parsed) consumeEvent(parsed)
+  if (!completed) throw new Error('上游 Responses 流缺少 response.completed')
+  return { content }
 }
 
 function consumeBlocks(input: string, onBlock: (block: string) => void): { rest: string } {

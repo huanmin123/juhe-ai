@@ -12,7 +12,25 @@
       @menu-click="handleMenuClick"
     />
     <a-layout class="main-shell">
+      <a-dropdown v-if="immersiveLayout && isMobile" :trigger="['click']" placement="bottomLeft">
+        <button class="immersive-mobile-menu-trigger" type="button" aria-label="打开系统菜单">
+          <MenuOutlined />
+        </button>
+        <template #overlay>
+          <a-menu @click="handleImmersiveMenuClick">
+            <a-menu-item key="navigation">打开导航</a-menu-item>
+            <a-menu-divider />
+            <a-menu-item v-if="canSwitchMenuMode" key="switch-mode">{{ switchMenuModeLabel }}</a-menu-item>
+            <a-menu-divider v-if="canSwitchMenuMode" />
+            <a-menu-item key="display-name">修改名称</a-menu-item>
+            <a-menu-item key="password">修改密码</a-menu-item>
+            <a-menu-item key="sessions">会话管理</a-menu-item>
+            <a-menu-item key="logout" danger>退出登录</a-menu-item>
+          </a-menu>
+        </template>
+      </a-dropdown>
       <AppHeader
+        v-if="!immersiveLayout"
         :announcement-bell-shaking="hasNewAnnouncements"
         :can-switch-menu-mode="canSwitchMenuMode"
         :description="currentPageDescription"
@@ -28,7 +46,7 @@
         @open-sidebar="sidebarOpen = true"
         @user-menu-click="handleUserMenuClick"
       />
-      <a-layout-content class="content">
+      <a-layout-content class="content" :class="{ 'content-immersive': immersiveLayout }">
         <div v-if="routeSwitching" class="route-switch-indicator" role="status" aria-live="polite">
           <a-spin size="small" />
           <span>正在打开页面</span>
@@ -106,6 +124,7 @@ import {
   HistoryOutlined,
   LinkOutlined,
   MessageOutlined,
+  MenuOutlined,
   SearchOutlined,
   FileSearchOutlined,
   NodeIndexOutlined,
@@ -199,6 +218,7 @@ const openMenuKeys = computed(() => {
 })
 const currentUser = authState.currentUser
 const mustChangePassword = computed(() => Boolean(currentUser.value?.mustChangePassword))
+const immersiveLayout = computed(() => !mustChangePassword.value && route.meta.immersive === true)
 const currentPageTitle = computed(() => mustChangePassword.value ? '修改登录密码' : pendingMenuRoute.value?.meta?.title || route.meta.title || '轻量中转管理')
 const currentPageDescription = computed(() => mustChangePassword.value ? '请先完成初始密码修改' : pendingMenuRoute.value?.meta?.description || route.meta.description || 'OpenAI OAuth + API Key')
 const requireOldPasswordForPasswordChange = computed(() => !mustChangePassword.value)
@@ -402,6 +422,14 @@ async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onCl
     await logout()
     await router.replace('/login')
   }
+}
+
+async function handleImmersiveMenuClick(event: Parameters<NonNullable<MenuProps['onClick']>>[0]) {
+  if (event.key === 'navigation') {
+    sidebarOpen.value = true
+    return
+  }
+  await handleUserMenuClick(event)
 }
 
 async function openAnnouncements() {
@@ -846,6 +874,29 @@ watch(
     #f5f7fb;
 }
 
+.content-immersive {
+  padding: 0;
+  background: #fff;
+}
+
+.immersive-mobile-menu-trigger {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  z-index: 8;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #475569;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #dbe3ec;
+  border-radius: 50%;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  cursor: pointer;
+}
+
 .route-switch-indicator {
   position: sticky;
   top: 12px;
@@ -992,6 +1043,10 @@ watch(
 @media (max-width: 991px) {
   .content {
     padding: 16px;
+  }
+
+  .content-immersive {
+    padding: 0;
   }
 
   .route-switch-summary-grid {

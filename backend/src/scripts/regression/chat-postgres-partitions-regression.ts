@@ -62,6 +62,7 @@ const replacement = await acceptChatTurn(postgresContractClient, {
 })
 assert.equal(replacement.userMessage.sequenceNo, original.userMessage.sequenceNo)
 assert.equal(replacement.assistantMessage.sequenceNo, original.assistantMessage.sequenceNo)
+assert(postgresContractQueries.filter((item) => /pg_advisory_xact_lock/.test(item.sql)).length >= 2, 'PostgreSQL 接受和替换轮次都必须获取用户级容量事务锁')
 assert.deepEqual((await listChatMessages(postgresContractClient, {
   conversationId: conversation.id,
   systemAccountId: 'sys_pg_contract',
@@ -100,6 +101,7 @@ function asPostgresContractClient(sqliteClient: DatabaseClient, queries: Array<{
     one: (sql, params) => client.one(stripPostgresOnlySql(sql), params),
     execute: (sql, params) => {
       if (/PARTITION OF juhe_chat\.chat_messages/.test(sql)) return Promise.resolve({ changes: 0 })
+      if (/pg_advisory_xact_lock/.test(sql)) { queries.push({ sql, params: params ?? [] }); return Promise.resolve({ changes: 1 }) }
       return client.execute(stripPostgresOnlySql(sql), params)
     },
     transaction: (operation) => client.transaction((tx) => operation(wrap(tx)))

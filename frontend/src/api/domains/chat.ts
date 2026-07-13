@@ -4,7 +4,7 @@ import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 export const chatApi = {
   listApiKeys: () => unwrap<ChatApiKeyOption[]>(http.get('/my-chat/api-keys')),
-  listConversations: (params?: { beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
+  listConversations: (params?: { beforeIsPinned?: boolean; beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
   createConversation: (apiKeyId: string) => unwrap<ChatConversation>(http.post('/my-chat/conversations', { apiKeyId })),
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${conversationId}`)),
   listMessages: (conversationId: string, params?: { beforeSequenceNo?: number; limit?: number }) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${conversationId}/messages`, { params })),

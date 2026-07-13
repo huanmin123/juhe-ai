@@ -14,6 +14,7 @@ import katex from 'katex'
 import { marked, type RendererObject } from 'marked'
 import { message as antdMessage } from 'ant-design-vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { writeTextToClipboard } from '@/shared/clipboard'
 import { ChatCodeCopyLifecycle, ChatCodeCopyResetController } from './chatCodeCopyState'
 import 'highlight.js/styles/github.css'
 import 'katex/dist/katex.min.css'
@@ -124,7 +125,7 @@ async function handleRootClick(event: MouseEvent): Promise<void> {
   await codeCopyLifecycle.copy(
     button,
     code.textContent ?? '',
-    (value) => navigator.clipboard.writeText(value),
+    (value) => writeTextToClipboard(value),
     () => Boolean(root.value?.contains(button)),
     () => antdMessage.error('复制失败，请稍后重试')
   )

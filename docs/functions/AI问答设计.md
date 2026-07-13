@@ -1,7 +1,7 @@
 # AI 问答设计
 
 > 本文定义 `juhe-ai` 第一版 AI 问答功能的目标架构、页面交互、接口、存储、流式协议、安全边界和验收口径。
-> 当前状态：AI 问答 MVP 已完成；Tiptap 输入、Responses 原生工具与多模态输入按 PLAN-0093 增量实现和验证。
+> 当前状态：AI 问答 MVP、Tiptap 输入、Responses 原生工具、版本化系统提示、极简 Markdown 消息流和最近纯文本成功轮次重编辑均已在隔离分支实现；当前发布边界见 PLAN-0094。
 
 ## 1. 功能定位
 
@@ -81,10 +81,10 @@ flowchart LR
 
 ### 4.1 进程边界
 
-- DB service 的 System API 进程承载 AI 问答 HTTP / SSE 路由和本机网关流转发，以复用现有登录 session、权限和 SQLite 单写者边界。
+- DB service 的 System API 进程承载 AI 问答 HTTP / SSE 路由、上下文组装和本机网关流转发，以复用现有登录 session、权限和 SQLite 单写者边界；该进程在一轮生成期间持有上游 SSE，但不直接绕过网关访问供应商。
 - 主 Node Web 进程在通用 System API 代理之前为 `/my-chat` 挂载独立代理池，使用独立 128 路准入和 15 分钟流超时；聊天长连接不占用普通管理接口的 256 路 / 30 秒代理池。
 - 主进程不直接读写数据库。登录会话校验、会话 CRUD、消息事务和清理全部通过 DB service typed operations 完成。
-- DB service 不发起长时间模型请求，不持有上游 SSE。
+- DB service 的数据库 typed operation 不持有上游 SSE；长连接只存在于 System API 的 Chat route，数据库事务在上游请求前后分别短时执行。
 - `ops-worker` 执行过期消息清理和异常 `streaming` 状态恢复；主 Web 进程不启动定时任务。
 
 ### 4.2 网关边界
@@ -92,7 +92,7 @@ flowchart LR
 - AI 问答是平台内置客户端；loopback HTTP 只是服务端代客户端发起请求的传输方式，不代表网关内部特权调用。
 - Chat 模块从受控存储读取会话绑定 API Key 的完整密钥，仅在服务端内存中短暂使用。
 - 前端只接触 API Key ID、名称、前后缀和状态，不接触完整密钥。
-- 模型请求通过 loopback HTTP 调用当前主服务 `/v1/chat/completions`，不得直接调用供应商 Base URL。
+- 模型请求通过 loopback HTTP 调用当前主服务 `/v1/chat/completions` 或 `/v1/responses`，不得直接调用供应商 Base URL。协议选择必须以候选账户的实际端点模式和本轮模型映射为准，不能只凭候选查询返回非空判断支持。
 - 内部请求仍使用真实 `Authorization: Bearer <本地 API Key>`，不得使用内部 identity 绕过网关鉴权。
 - 网关是模型可用性、额度、路由、账户候选、代理和错误切换的最终裁决者；Chat 模块不重复实现或缓存第二套调度规则。
 - 认证、额度、并发、调度、计费、使用记录、原始审计和错误处理与其他客户端完全一致；不得因请求来自 AI 问答而跳过或弱化其中任何环节。
@@ -126,49 +126,48 @@ flowchart LR
 
 ### 6.1 页面布局
 
-桌面端使用左侧会话栏和右侧对话区；移动端会话列表进入抽屉。页面是工作台，不增加营销式说明区或嵌套卡片。
+AI 问答路由使用沉浸布局：隐藏全局 Header、清除内容区外边距，工作区占满可用视口。桌面端使用左侧单行会话栏和右侧对话区；移动端会话列表进入抽屉。模型、思考级别、服务等级和上下文大小放在输入框底部，不占用独立顶部栏。
 
 ```text
 ┌───────────────┬────────────────────────────────────┐
-│ 新建对话       │ API Key：工作 Key   模型：gpt-xxx │
-│               ├────────────────────────────────────┤
-│ 今天           │                                    │
+│ 新建对话       │                                    │
 │ 会话 A         │        动态高度虚拟消息列表          │
 │ 会话 B         │                                    │
 │               │                                    │
-│ 更早           ├────────────────────────────────────┤
-│ 会话 C         │ 输入消息                 停止 / 发送 │
+│               ├────────────────────────────────────┤
+│ 会话 C         │ 输入消息                           │
+│               │ 模型 / 思考 / 服务 / 上下文    发送 │
 └───────────────┴────────────────────────────────────┘
 ```
 
 ### 6.2 新建会话
 
-1. 用户点击“新建对话”，前端创建本地草稿，不立即写数据库。
-2. 用户选择自己的 API Key；没有可用 Key 时提供进入“我的 API Key”的明确入口。
-3. 前端读取该 Key 的模型列表并选择模型。
-4. 用户第一次发送时，先创建会话，再提交消息流请求。
-5. 如果会话已创建但消息请求未到达，后台清理超过 24 小时且没有消息的空会话。
+1. 用户点击“新建对话”并选择自己的 API Key；没有可用 Key 时禁用创建。
+2. `POST /conversations` 立即创建会话，绑定后不允许更换 API Key。
+3. 创建成功后按会话读取模型列表并选择最近模型或首个可用模型。
+4. 空会话属于正常可删除会话，不为其引入请求路径扫描或特殊兼容逻辑。
 
 ### 6.3 发送与停止
 
 - `Enter` 发送，`Shift + Enter` 换行；输入法组合输入期间不得误发送。
-- 发送后立即显示本地用户消息和助手生成中状态。
-- 同一会话生成期间禁用再次发送，但允许切换到其他会话并在其他会话发送。
-- 点击停止时调用当前 `fetch` 的 `AbortController.abort()`，不增加单独 stop 接口。
-- 浏览器主动取消后，页面立即显示“已停止”；服务端保存已接收部分并标记 `canceled`。
+- 服务端接受轮次并发出 `message.started` 后，前端投影用户消息和助手生成中状态；接受前不伪造已提交消息。
+- 生成、停止或待确认期间统一禁止再次发送、编辑和切换会话，避免请求上下文跨会话漂移。
+- 点击停止时先中止当前 `fetch`，再调用 `POST /conversations/:id/stop` 让服务端权威收口；停止 HTTP 与旧发送对账完成前保持门禁。
+- 客户端断流或终态不确定时按 `clientMessageId` 刷新对账；无法确认时进入后台重试的待确认状态，不能直接恢复草稿造成重复计费。
 
 ### 6.4 会话列表
 
 - 按 `last_message_at DESC, id DESC` 稳定排序。
 - 会话标题取第一条仍在保留期内的用户消息首个非空行，去除控制字符并压缩空白，最多 60 个字符。
-- 列表按“今天 / 近 7 天 / 更早”仅做前端展示分组，不改变后端分页口径。
+- 会话列表只显示单行标题并省略超长内容，不显示日期分组或时间。
+- 右键菜单提供重命名、置顶 / 取消置顶、详情和删除；详情承载 API Key、最近模型、状态与时间等低频信息。
 - 删除会话需要二次确认；删除聊天表中的会话和消息，不删除 API Key、使用记录或原始审计。
 
 ## 7. 前端虚拟列表
 
 ### 7.1 选型
 
-MVP 使用 `@tanstack/vue-virtual`，不直接复制 `F:\go-project\go-ee-work-tool` 的完整自研 `DynamicVirtualList`。
+MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态深度耦合的自研虚拟列表。
 
 参考项目可借鉴：
 
@@ -181,7 +180,7 @@ MVP 使用 `@tanstack/vue-virtual`，不直接复制 `F:\go-project\go-ee-work-t
 不直接复制的原因：
 
 - 参考组件与原项目滚动容器、Agent 消息类型和大量内部工具状态耦合。
-- 第一版没有 Agent、工具卡片、Tiptap 编辑器和复杂消息分段需求。
+- 当前只需要原生工具的低噪投影、Tiptap 输入和结构化消息块，不引入完整 Agent 运行时。
 - 引入成熟虚拟化库能缩小维护面，但仍需为聊天动态高度补自己的锚定控制。
 
 ### 7.2 行为约束
@@ -194,7 +193,7 @@ MVP 使用 `@tanstack/vue-virtual`，不直接复制 `F:\go-project\go-ee-work-t
 - 用户位于底部容差范围内时自动跟随；主动向上滚动后停止抢占滚动，并显示“回到底部”图标按钮。
 - 顶部加载前记录首个可见 `messageId` 和像素偏移，prepend 后恢复锚点。
 - 历史消息使用 `beforeSequenceNo` 游标分页，不能一次加载最近 7 天全部消息。
-- 首屏默认读取最新 30 条，单页最大 50 条，虚拟列表 overscan 保持有界。
+- 首屏默认读取最新 50 条；当前页面为减少顶部往返首次读取 100 条，后续历史同样最多 100 条，虚拟列表 overscan 保持有界。
 
 ## 8. 富文本渲染
 
@@ -206,7 +205,7 @@ MVP 使用 `@tanstack/vue-virtual`，不直接复制 `F:\go-project\go-ee-work-t
 - `katex`：行内和块级 LaTeX。
 - `mermaid`：流程图、时序图等图表。
 - `@tiptap/core`、`@tiptap/vue-3`：输入编辑器内核和 Vue 绑定。
-- Tiptap 最小扩展集：StarterKit、History、Placeholder、CharacterCount、Image、自定义附件节点和 Suggestion。
+- Tiptap 最小扩展集：StarterKit（含基础 History）、Placeholder 和自定义行内图片附件节点；命令列表由本地轻量状态驱动，不引入 Suggestion、CharacterCount 或通用 Image 扩展。
 
 不引入 LangChain、Mastra、完整 Chat 平台或 Agent UI 运行时。Tiptap 只负责编辑状态，不负责模型调用、工具执行或会话持久化。
 
@@ -214,10 +213,10 @@ MVP 使用 `@tanstack/vue-virtual`，不直接复制 `F:\go-project\go-ee-work-t
 
 - 标题、段落、粗体、斜体、删除线、引用和水平线。
 - 有序列表、无序列表、任务列表和表格。
-- 行内代码、围栏代码块、语言标识、高亮、复制和自动换行开关。
+- 行内代码、围栏代码块、语言标识、高亮、复制和代码区横向滚动。
 - 行内与块级 LaTeX。
 - Mermaid 流程图、时序图、状态图等 Mermaid 自身支持的安全图表。
-- HTTPS Markdown 图片、懒加载、预览和加载失败占位。
+- HTTPS Markdown 图片、懒加载和安全替代文本；原生 HTML 图片也必须经过同一 HTTPS-only 策略。
 
 ### 8.3 流式稳定化
 
@@ -239,7 +238,7 @@ MVP 使用 `@tanstack/vue-virtual`，不直接复制 `F:\go-project\go-ee-work-t
 - `Enter` 发送，`Shift+Enter` 换行；输入法组合状态期间不发送。
 - 撤销、重做、选区、粘贴和拖放由编辑器内核处理。
 - 文本以 Markdown 语义输入；图片是行内编辑节点，保持“文字、图片、文字”的原始顺序。
-- 图片 Data URL 只存在编辑器快照和本轮结构化请求中，不拼入 `content_text`；单张不超过 10 MiB，最多 4 张。
+- 图片 Data URL 只存在编辑器快照和本轮结构化请求中，不拼入 `content_text`；单张不超过 4 MiB，最多 4 张。编辑器直接复用 Data URL 预览，不额外创建跨轮次滞留的 Blob URL。
 - `/` 触发命令建议菜单；第一阶段命令只产生结构化输入意图，不执行本地命令。
 - 发送前保存 Tiptap JSON 快照；发送成功清空编辑器，失败恢复快照，停止生成不恢复已经提交的用户消息。
 - 编辑器输出转换为 `input_text` / `input_image` 内容块；纯文本请求仍可降级为现有 `content` 字段。
@@ -325,129 +324,110 @@ MVP 使用 `@tanstack/vue-virtual`，不直接复制 `F:\go-project\go-ee-work-t
 ## 9. 后端模块划分
 
 ```text
-backend/src/modules/ai-chat/
-  ai-chat.routes.ts
-  ai-chat.schemas.ts
-  ai-chat.types.ts
+backend/src/modules/chat/
+  chat.routes.ts
+  chat-transport.ts
   chat-system-instructions.ts
-  ai-chat-auth.middleware.ts
-  conversation.service.ts
-  message.service.ts
-  context-builder.service.ts
-  gateway-chat-client.service.ts
-  gateway-chat-stream-parser.ts
-  chat-stream.service.ts
-  internal-gateway-metadata.ts
-  chat-error-mapper.ts
+  chat-context-budget.ts
+  chat-gateway-sse.ts
+  chat-responses-sse.ts
+  chat-active-streams.ts
+  chat-bounded-json.ts
+  chat-content-blocks.ts
+  chat-model-options.ts
+  chat-turn-initialization.ts
 
 backend/src/storage/
-  ai-chat.repository.ts
-  ai-chat-mappers.ts
+  chat-client.ts
+  chat.repository.ts
+  schema/chat-schema.ts
+  postgres-chat-message-partitions.ts
 ```
 
 职责边界：
 
-- routes：HTTP 参数、登录态、SSE 生命周期和错误返回。
-- conversation service：会话创建、列表、删除、归属和 API Key 固定规则。
-- message service：消息事务、幂等、同会话并发和终态转换。
-- context builder：7 天、完整轮次、数量上限和模型预算。
-- gateway client：只调用本机 `/v1/models`、`/v1/chat/completions` 和 `/v1/responses`。
-- stream parser：解析 OpenAI Chat SSE 的跨 chunk UTF-8、事件和 `[DONE]`。
-- stream service：转换内部事件、合批文本、取消和最终落库。
-- repository：只通过 DB service typed operations 暴露有界读写。
+- `chat.routes.ts`：HTTP 参数、登录态、会话归属、SSE 生命周期、停止门禁、对账错误和本机网关调用。
+- `chat-transport.ts`：按账户实际端点和模型映射选择 Chat / Responses，构造对应请求体。
+- `chat-system-instructions.ts`：纯函数构建版本化产品提示、版本与 hash。
+- `chat-context-budget.ts`：为 system instructions、历史、当前输入、图片和工具预留统一上下文预算。
+- Chat / Responses SSE parser：有界解析跨 chunk UTF-8、文本、reasoning、工具事件、完成和流内失败。
+- `chat-active-streams.ts`：按会话和 turn ID 条件删除停止句柄，防止旧流清理误删新流。
+- `chat-bounded-json.ts`：模型目录和上游错误的普通 JSON 流式限长读取，超限立即取消 reader。
+- `chat-content-blocks.ts`：完成、取消和失败终态写库前统一压缩结构块，避免工具过程突破持久化边界。
+- `chat-turn-initialization.ts`：接受轮次后的初始化失败终结；初始化与终结同时失败时保留两个错误。
+- repository：会话、消息、幂等、容量窗口、最近轮次事务替换和清理，全部通过 DB service typed operations。
 
 ## 10. API 契约
 
-所有接口位于 `/__aisys__/api/my-chat`，只操作当前登录用户数据。成功响应继续遵循当前 System API `{ data, message? }` 包装；流式发送接口除外。
+所有接口位于 `/__aisys__/api/my-chat`，只操作当前登录用户数据。成功响应遵循 System API `{ data, message? }` 包装；流式发送接口除外。
 
 ### 10.1 API Key 选项
 
 ```http
-GET /__aisys__/api/my-chat/api-keys/options?query=...&cursor=...&limit=30
+GET /__aisys__/api/my-chat/api-keys
 ```
 
-- 只返回当前用户已启用、未过期且未业务删除的 API Key 摘要；额度和路由运行态仍在发送时由网关最终校验。
-- 支持名称搜索和游标分页，最大 50 条。
-- 返回 `id`、`name`、状态、过期摘要、前后缀和是否当前可发送。
-- 不返回完整密钥。
+- 返回当前用户状态为 `active` 的轻量 `{ id, name, status }` 列表，不返回完整密钥。
+- API Key 的所有权、当前密钥、额度、路由和运行态在创建会话或发送时继续由服务端与网关校验。
 
-使用独立轻量 options 接口，不让页面为了一个选择器分页拉取完整“我的 API Key”管理列表。
-
-### 10.2 可用模型
-
-```http
-GET /__aisys__/api/my-chat/api-keys/:apiKeyId/models
-```
-
-1. 校验 API Key 属于当前用户。
-2. 服务端读取完整本地 API Key。
-3. 使用真实 Bearer Key 调用本机 `/v1/models`。
-4. 只返回模型 `id` 和必要展示摘要。
-5. 不把完整 Key 返回前端。
-
-### 10.3 创建会话
+### 10.2 会话与模型
 
 ```http
 POST /__aisys__/api/my-chat/conversations
-Content-Type: application/json
-
-{
-  "apiKeyId": "key_xxx"
-}
+GET /__aisys__/api/my-chat/conversations?beforeLastMessageAt=...&beforeId=...&limit=30
+GET /__aisys__/api/my-chat/conversations/:id
+PATCH /__aisys__/api/my-chat/conversations/:id
+GET /__aisys__/api/my-chat/conversations/:id/models
+DELETE /__aisys__/api/my-chat/conversations/:id
 ```
 
-返回会话 ID、标题“新对话”、API Key 摘要和空 `lastModel`。会话创建后不提供修改 API Key 接口。
+- 创建请求只接受 `apiKeyId`，成功返回 `201`；会话绑定后不提供更换 API Key 的接口。
+- 会话列表使用 `(last_message_at, id)` 复合游标，默认 30、最大 50，只返回摘要。
+- PATCH 只接受 `title` 和 `isPinned`，至少提供一个字段；标题最长 60 字符。
+- 模型列表先校验会话归属，再使用绑定 Key 调用本机 `/v1/models`，返回模型控制所需能力摘要。
+- DELETE 返回 `204`，不删除网关使用记录或原始审计。
 
-### 10.4 会话列表
+### 10.3 消息列表
 
 ```http
-GET /__aisys__/api/my-chat/conversations?cursor=...&limit=30
+GET /__aisys__/api/my-chat/conversations/:id/messages?beforeSequenceNo=120&limit=50
 ```
 
-- 游标由 `(last_message_at, id)` 组成。
-- 默认 30，最大 50。
-- 只返回摘要，不携带消息正文集合。
-- 只查当前 `systemAccountId`。
-
-### 10.5 消息列表
-
-```http
-GET /__aisys__/api/my-chat/conversations/:id/messages?beforeSequenceNo=120&limit=30
-```
-
-- 默认从最新消息向前读取。
-- 返回前按 `sequenceNo ASC` 排列。
-- 默认 30，最大 50。
+- 默认从最新消息向前读取 50 条，最大 100，返回前按 `sequenceNo ASC` 排列。
+- `beforeSequenceNo` 必须在 PostgreSQL `integer` 范围内；缺少游标时不绑定超范围哨兵值。
 - 已过期并清理的消息不可恢复。
 
-### 10.6 发送消息
+### 10.4 流式发送与停止
 
 ```http
-POST /__aisys__/api/my-chat/conversations/:id/messages
+POST /__aisys__/api/my-chat/conversations/:id/stream
 Accept: text/event-stream
 Content-Type: application/json
 
 {
   "clientMessageId": "client_uuid",
-  "model": "gpt-xxx",
+  "replaceTurnId": "turn_xxx",
   "content": "用户问题",
-  "replaceTurnId": "turn_xxx"
+  "contentBlocks": [{ "type": "input_text", "text": "用户问题" }],
+  "model": "gpt-xxx",
+  "reasoningEffort": "medium",
+  "serviceTier": "priority",
+  "contextWindowTokens": 128000
 }
 ```
 
-- `clientMessageId` 由前端生成，用于防止重复点击和网络重试。
-- `replaceTurnId` 可选；存在时只允许指向当前会话最近一个纯文本完整成功轮次，并按 8.9 的事务语义替换。
-- `content` 必须是非空纯文本，UTF-8 正文最大 `192 KiB`。
-- System API JSON 总上限继续为 `256 KiB`。
-- 同一会话同时只允许一个生成任务。
-
-### 10.7 删除会话
+- `clientMessageId` 必填且最长 100 字符；重复 ID 返回 `409 chat_message_already_exists`，不得再次请求上游。
+- `replaceTurnId` 可选，只允许最近纯文本完整成功轮次；冲突返回 `409 chat_replace_conflict`。
+- `content` 最大 `192 KiB`；相邻文本在图片边界之间合并，结构块最多 9 个（4 张图片与 5 段交错文本），当前支持 `input_text` / `input_image`，图片只允许 Responses 路径。
+- `/my-chat` 使用独立 `24 MiB` JSON 上限以容纳 Base64 膨胀，但必须先经过 session 鉴权、登录用户限流和 DB service 准入控制；其他 System API 继续保持 `256 KiB`。
+- 同一会话同时只允许一个生成任务。服务端接受后才发送 `message.started`；接受后的初始化失败必须把占位助手消息终结为失败。
 
 ```http
-DELETE /__aisys__/api/my-chat/conversations/:id
+POST /__aisys__/api/my-chat/conversations/:id/stop
 ```
 
-幂等返回 `204`。只删除聊天业务表数据，不删除网关使用记录和原始审计数据。
+- 仅会话所有者可以停止当前活动轮次；接受停止返回 `202`。
+- 没有活动轮次返回 `404`，页面仍需完成旧请求对账后再解除发送门禁。
 
 ## 11. 内部 SSE 协议
 
@@ -457,31 +437,39 @@ DELETE /__aisys__/api/my-chat/conversations/:id
 
 ```text
 event: message.started
-data: {"conversationId":"chat_xxx","turnId":"turn_xxx","userMessageId":"msg_xxx","assistantMessageId":"msg_xxx","traceId":"trace_xxx","model":"gpt-xxx"}
+data: {"turnId":"turn_xxx","userMessage":{...},"assistantMessage":{...}}
 
 event: message.delta
 data: {"messageId":"msg_xxx","delta":"新增文本"}
+
+event: reasoning.delta
+data: {"messageId":"msg_xxx","delta":"思考增量"}
+
+event: tool.started | tool.updated | tool.completed
+data: {"messageId":"msg_xxx","item":{...}}
 
 event: message.completed
 data: {"messageId":"msg_xxx","finishReason":"stop","traceId":"trace_xxx"}
 
 event: message.failed
-data: {"messageId":"msg_xxx","code":"gateway_unavailable","message":"当前没有可用的 AI 账户，请稍后重试","retryable":true}
+data: {"messageId":"msg_xxx","code":"gateway_stream_failed","message":"模型请求失败"}
 ```
 
 - 每 15 秒发送 SSE comment heartbeat。
-- 只有收到网关 `[DONE]` 才判定正常完成。
-- HTTP 正常关闭但没有 `[DONE]` 仍按流中断处理。
+- Chat Completions 以 `[DONE]` 与 finish reason 收口；Responses 必须收到 `response.completed` 才能成功。HTTP EOF 不能替代协议终态。
+- Chat Completions 与 Responses 的单事件和 pending block 最大 `64 KiB`、单轮最多 2048 个事件；Responses reasoning/tool 辅助过程累计最大 `192 KiB`。超限进入失败终态，不能把无界过程写入内存或消息结构。
+- 非 SSE 的模型目录响应最大 `4 MiB`，上游错误响应最大 `64 KiB`；必须边读流边计数并在超限时取消 reader，不能先完整 `response.text()` 后再截断。
 - 用户主动取消后浏览器连接已经关闭，不依赖 `message.canceled` 送达；服务端落库状态为 `canceled`，页面刷新后以存储状态为准。
+- 工具 item 完整持久化供排障和历史恢复，普通 UI 按规范化动作聚合，不直接显示原始 ID 或 JSON。
 - 不把上游堆栈、内部 URL、账号凭据或完整内部错误返回前端。
 
 ### 11.2 解析要求
 
-- 正确处理 SSE 数据跨 TCP chunk。
-- 使用流式 `TextDecoder` 处理 UTF-8 汉字在字节中间切分。
-- 支持多行 `data:` 和 comment heartbeat。
-- 识别 `[DONE]`、`finish_reason`、流内错误和无终止事件断流。
-- 解析器设置事件数、单事件和累计正文上限，禁止无界拼接。
+- 正确处理 SSE 数据跨 TCP chunk，并用流式 `TextDecoder` 处理 UTF-8 字符在字节中间切分。
+- 支持多行 `data:`、comment heartbeat、Chat `[DONE]` 与 Responses 事件序列。
+- 识别文本、reasoning、工具生命周期、完成、流内失败和无终止事件断流。
+- 解析器设置单事件、事件数和累计正文字节上限，禁止无界拼接。
+- Chat Completions 和 Responses 使用相同的事件/pending 上限基线；任何协议新增解析器时都必须同时补无分隔大块、事件洪泛、截断终态和 UTF-8 跨 chunk 回归。
 
 ## 12. 数据模型与存储拓扑
 
@@ -503,6 +491,7 @@ MVP 只新增会话、消息、发送幂等登记和紧凑容量窗口四类聊�
 | `api_key_name_snapshot` | Key 删除或改名后的历史展示兜底，非敏感 |
 | `title` | 当前标题，默认“新对话” |
 | `title_source_message_id` | 当前标题来源用户消息，可空 |
+| `is_pinned` | 当前用户是否置顶，默认 false |
 | `last_model` | 最近一次已接受发送所选模型，可空 |
 | `next_sequence_no` | 下一消息序号，默认 1 |
 | `active_turn_id` | 当前生成轮次；空表示无生成任务 |
@@ -531,6 +520,7 @@ PostgreSQL 中 `chat_conversations` 不分区；它是小型元数据表。会�
 | `role` | 仅 `user`、`assistant` |
 | `status` | `completed`、`streaming`、`failed`、`canceled` |
 | `content_text` | 纯文本 Markdown；不保存渲染 HTML |
+| `content_blocks_json` | 有界结构块：用户输入类型标记、助手 reasoning 和工具生命周期；不保存用户图片 Data URL |
 | `model` | 本轮实际请求模型 |
 | `trace_id` | 关联网关使用记录和审计 |
 | `finish_reason` | 正常完成原因，可空 |
@@ -727,7 +717,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - 消息列表只用游标分页和虚拟化，不支持深 offset 或整会话加载。
 - Chat API 不扫描使用记录做统计；成本、Token 和账户命中继续读取现有预聚合或使用记录页面。
 - 清理 worker 每批最多 1000 条过期消息，并限制每轮批次数；涉及会话标题重算时按本批去重会话 ID 批量处理，避免逐消息 N+1。
-- 容量判断只读取 `chat_user_storage_windows` 最近 7 个日桶；禁止请求路径对消息表执行 `SUM`、`COUNT` 或全会话正文累计。
+- 容量判断只读取 `chat_user_storage_windows` 最近 7 个日桶；PostgreSQL 接受轮次时按 `system_account_id` 持有事务级配额锁，使跨会话“读取、判断、占用”原子化。禁止请求路径对消息表执行 `SUM`、`COUNT` 或全会话正文累计。
 - 100 用户规模不做分库分表；当聊天物理数据持续达到 200–300 GiB，或聊天 I/O 已影响业务 schema 延迟时，优先迁移到独立 PostgreSQL database / cluster，再评估按 `system_account_id` 哈希分片。
 - AI 问答路由加载 KaTeX；Mermaid 仅在消息实际包含图表时动态加载。其他业务路由不加载两者。
 - 代码高亮只注册常用语言，未知语言按纯文本代码块展示。
@@ -742,6 +732,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - Key 停用、过期、额度耗尽和路由不可用时不能继续发送。
 - 同一 `clientMessageId` 不产生第二次网关请求。
 - 同会话并发发送返回 `409`，不同会话允许并发。
+- 同一用户不同会话并发占用容量时，配额检查串行化且最终窗口不得超过上限。
 - 只有最近一个纯文本完整轮次可以携带 `replaceTurnId`；旧轮次、图片轮次、生成中和并发替换返回 `409 chat_replace_conflict`。
 - 替换事务复用原轮次序号、删除旧幂等登记，且新请求上下文不包含被替换的旧轮次。
 - SQLite standalone 与 PostgreSQL performance 使用相同契约。
@@ -759,14 +750,13 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - API Key 对应路由策略、分组和账户命中正常。
 - 模型逐轮切换不改变会话 API Key 和网关调度边界。
 - 账户代理、错误切换、额度、并发和响应检查继续生效。
-- 使用记录包含正确用户、Key、分组、账户、模型、trace 和 `ai_chat` 来源。
+- 使用记录包含正确用户、Key、分组、账户、模型和 trace；MVP 不伪造独立 `ai_chat` 来源字段。
 - Chat 模块不存在直接请求公共上游的代码路径。
-- 外部请求伪造内部 IP / trace 元数据不会被网关采信。
 
 ### 19.3 流式
 
 - SSE 数据跨 chunk、多行 `data:` 和 UTF-8 中间切分。
-- 正常 `[DONE]`、缺少 `[DONE]`、建流前 JSON 错误和建流后中断。
+- 正常 `[DONE]` / `response.completed`、缺少终止事件、超大/过多 Responses 辅助事件、建流前 JSON 错误和建流后中断。
 - 用户主动停止、客户端断网和主进程异常退出。
 - `finish_reason=length`、429、503、504 和流内错误。
 - 部分输出后不会自动重放。
@@ -778,6 +768,8 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - 用户和助手无头像、无角色名；用户右侧浅灰内容块，助手左侧无边框正文流。
 - 用户消息悬浮、键盘聚焦和触屏操作入口可用；只有最近可编辑轮次显示编辑按钮。
 - 编辑态恢复文本到 AIComposer，旧轮次降低强调；取消不改后端，重新发送后替换旧轮次。
+- 提交清空不进入 UndoRedo 历史；模型未选中或仍在加载时不清空草稿；图片读取任务跨清空/恢复代次后不得写回旧文档。
+- 会话列表使用 `(is_pinned, last_message_at, id)` 完整游标并提供加载更多，置顶会话不能使普通会话漏页。
 - 相同联网搜索聚合为一行并显示真实次数，展开只显示可读查询摘要，不显示原始 JSON。
 - 行内 / 块级 LaTeX、Mermaid 成功与错误回退、HTTPS 图片失败占位。
 - `script`、事件属性、`javascript:`、恶意 SVG 和 Mermaid 安全用例。

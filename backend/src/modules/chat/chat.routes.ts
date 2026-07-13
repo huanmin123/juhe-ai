@@ -31,17 +31,28 @@ import { collectChatResponsesSse } from './chat-responses-sse.js'
 import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport } from './chat-transport.js'
 import { buildChatModelOptions, chatReasoningEfforts, chatServiceTiers } from './chat-model-options.js'
 import { buildChatSystemInstructions } from './chat-system-instructions.js'
+import { deleteActiveChatStreamIfMatches } from './chat-active-streams.js'
+import { sanitizeChatContentBlocksForPersistence } from './chat-content-blocks.js'
+import { readChatJsonResponse } from './chat-bounded-json.js'
 import { initializeAcceptedChatTurn } from './chat-turn-initialization.js'
 import { listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 
 export const chatRouter = Router()
 
+const messageContentBlocksSchema = z.array(z.object({
+  type: z.enum(['input_text', 'input_image']),
+  text: z.string().max(196_608, '文本块内容过长').optional(),
+  dataUrl: z.string().max(6 * 1024 * 1024, '单张图片不能超过 4 MiB').optional()
+})).max(9).refine(
+  (blocks) => blocks.filter((block) => block.type === 'input_image').length <= 4,
+  '最多粘贴 4 张图片'
+)
 const messageBodySchema = z.object({
   clientMessageId: z.string().trim().min(1).max(100),
   replaceTurnId: z.string().trim().min(1).max(100).optional(),
   content: z.string().trim().min(1, '请输入消息').max(196_608, '消息内容过长'),
-  contentBlocks: z.array(z.object({ type: z.enum(['input_text', 'input_image']), text: z.string().max(196_608, '文本块内容过长').optional(), dataUrl: z.string().max(14 * 1024 * 1024).optional() })).max(8).optional(),
+  contentBlocks: messageContentBlocksSchema.optional(),
   model: z.string().trim().min(1, '请选择模型').max(200),
   reasoningEffort: z.enum(chatReasoningEfforts).optional(),
   serviceTier: z.enum(chatServiceTiers).optional(),
@@ -81,6 +92,7 @@ chatRouter.get('/conversations', async (req, res, next) => {
     const client = await getChatDatabaseClient()
     res.json(ok(await listChatConversations(client, {
       systemAccountId: auth.systemAccountId,
+      beforeIsPinned: optionalBooleanQuery(req.query.beforeIsPinned),
       beforeLastMessageAt: textQuery(req.query.beforeLastMessageAt),
       beforeId: textQuery(req.query.beforeId),
       limit: integerQuery(req.query.limit, 30, 1, 50)
@@ -149,7 +161,7 @@ chatRouter.get('/conversations/:conversationId/models', async (req, res, next) =
     const conversation = await requireOwnedConversation(req.params.conversationId, auth.systemAccountId)
     const apiKey = await requireOwnedApiKey(conversation.apiKeyId, auth.systemAccountId)
     const response = await fetch(gatewayUrl('/v1/models'), { headers: { authorization: `Bearer ${apiKey.key}` } })
-    const payload = await boundedJson(response)
+    const payload = await readChatJsonResponse(response, 4 * 1024 * 1024)
     if (!response.ok) throw new Error(upstreamMessage(payload, `模型列表请求失败（HTTP ${response.status}）`))
     const data = Array.isArray((payload as { data?: unknown }).data) ? (payload as { data: Array<{ id?: unknown }> }).data : []
     const modelIds = data.map((item) => String(item.id ?? '')).filter(Boolean)
@@ -171,6 +183,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
   const contentBlocks: ChatMessageContentBlock[] = []
   try {
     const body = messageBodySchema.parse(req.body)
+    const traceId = getTraceId()
     if (Buffer.byteLength(body.content, 'utf8') > maxMessageBytes) {
       res.status(413).json({ message: '消息内容超过 192 KiB 上限' })
       return
@@ -269,7 +282,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           assistantContent: '',
           contentBlocks: [],
           errorCode: 'chat_initialization_failed',
-          traceId: getTraceId(),
+          traceId,
           now: new Date().toISOString()
         })
       }
@@ -288,12 +301,17 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     try {
       const upstream = await fetch(gatewayUrl(transport.path), {
         method: 'POST',
-        headers: { authorization: `Bearer ${apiKeySecret}`, 'content-type': 'application/json', accept: 'text/event-stream' },
+        headers: {
+          authorization: `Bearer ${apiKeySecret}`,
+          'content-type': 'application/json',
+          accept: 'text/event-stream',
+          ...(traceId ? { 'x-trace-id': traceId } : {})
+        },
         body: JSON.stringify(transport.body),
         signal: controller.signal
       })
       if (!upstream.ok || !upstream.body) {
-        const payload = await boundedJson(upstream)
+        const payload = await readChatJsonResponse(upstream, 64 * 1024)
         throw new Error(upstreamMessage(payload, `模型请求失败（HTTP ${upstream.status}）`))
       }
       const result = protocol === 'responses'
@@ -317,22 +335,24 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
             partialContent += delta
             if (!res.writableEnded) writeSse(res, 'message.delta', { messageId: accepted?.assistantMessage.id, delta })
           })
+      const finishReason = 'finishReason' in result && typeof result.finishReason === 'string' ? result.finishReason : 'stop'
       await completeChatTurn(client, {
         conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId,
-        assistantContent: result.content, contentBlocks, finishReason: 'finishReason' in result ? result.finishReason ?? 'stop' : 'stop', traceId: getTraceId() ?? '', now: new Date().toISOString()
+        assistantContent: result.content, contentBlocks: sanitizeChatContentBlocksForPersistence(contentBlocks), finishReason, traceId: traceId ?? '', now: new Date().toISOString()
       })
-      if (!res.writableEnded) writeSse(res, 'message.completed', { messageId: accepted.assistantMessage.id, finishReason: 'finishReason' in result ? result.finishReason ?? 'stop' : 'stop', traceId: getTraceId() })
+      if (!res.writableEnded) writeSse(res, 'message.completed', { messageId: accepted.assistantMessage.id, finishReason, traceId })
     } catch (error) {
       const canceled = controller.signal.aborted
+      const persistedContentBlocks = sanitizeChatContentBlocksForPersistence(contentBlocks)
       if (canceled) {
-        await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks, traceId: getTraceId(), now: new Date().toISOString() })
+        await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, traceId, now: new Date().toISOString() })
       } else {
-        await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks, errorCode: 'gateway_stream_failed', traceId: getTraceId(), now: new Date().toISOString() })
+        await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, errorCode: 'gateway_stream_failed', traceId, now: new Date().toISOString() })
         if (!res.writableEnded) writeSse(res, 'message.failed', { messageId: accepted.assistantMessage.id, code: 'gateway_stream_failed', message: error instanceof Error ? error.message : '模型请求失败' })
       }
     } finally {
       clearInterval(heartbeat)
-      activeStreams.delete(conversation.id)
+      deleteActiveChatStreamIfMatches(activeStreams, conversation.id, accepted.turnId)
       if (!res.writableEnded && !responseClosed) res.end()
     }
   } catch (error) {
@@ -409,10 +429,10 @@ function gatewayUrl(path: string): string { return `http://127.0.0.1:${runtimeCo
 function queryScalar(value: unknown): unknown { return Array.isArray(value) ? value[0] : value === '' ? undefined : value }
 function textQuery(value: unknown): string | undefined { const raw = Array.isArray(value) ? value[0] : value; return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined }
 function optionalIntegerQuery(value: unknown): number | undefined { const text = textQuery(value); if (!text) return undefined; const result = Number(text); return Number.isInteger(result) && result > 0 ? result : undefined }
+function optionalBooleanQuery(value: unknown): boolean | undefined { const text = textQuery(value)?.toLowerCase(); if (text === 'true' || text === '1') return true; if (text === 'false' || text === '0') return false; return undefined }
 function integerQuery(value: unknown, fallback: number, min: number, max: number): number { const result = optionalIntegerQuery(value); return result === undefined ? fallback : Math.max(min, Math.min(max, result)) }
 function writeSse(res: import('express').Response, event: string, data: unknown): void { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
 async function* readableStreamChunks(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> { const reader = stream.getReader(); try { while (true) { const next = await reader.read(); if (next.done) return; yield next.value } } finally { reader.releaseLock() } }
-async function boundedJson(response: Response): Promise<unknown> { const text = (await response.text()).slice(0, 64 * 1024); try { return JSON.parse(text) } catch { return { message: text } } }
 function upstreamMessage(payload: unknown, fallback: string): string { if (payload && typeof payload === 'object') { const item = payload as { message?: unknown; error?: { message?: unknown } }; if (typeof item.error?.message === 'string') return item.error.message; if (typeof item.message === 'string') return item.message } return fallback }
 
 function projectToolEvent(blocks: ChatMessageContentBlock[], eventType: 'tool_started' | 'tool_updated' | 'tool_completed', item: Record<string, unknown>): void {

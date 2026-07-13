@@ -50,6 +50,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { message as antdMessage } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { writeTextToClipboard } from '@/shared/clipboard'
 import type { ChatMessage, ChatMessageStatus } from '@/types/domain/chat'
 import ChatMarkdown from './ChatMarkdown.vue'
 import ChatToolEvent from './ChatToolEvent.vue'
@@ -102,7 +103,7 @@ function statusLabel(status: ChatMessageStatus): string {
 }
 function formatMessageTime(value: string): string { return dayjs(value).format('HH:mm') }
 async function copyMessage(content: string): Promise<void> {
-  try { await navigator.clipboard.writeText(content) } catch { antdMessage.error('复制失败，请稍后重试') }
+  try { await writeTextToClipboard(content) } catch { antdMessage.error('复制失败，请稍后重试') }
 }
 
 watch(() => [props.messages.length, props.messages.at(-1)?.contentText.length, props.messages.at(-1)?.toolEvents?.length, props.messages.at(-1)?.reasoningText?.length], followStream)

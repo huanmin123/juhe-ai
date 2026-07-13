@@ -10,10 +10,14 @@ export async function collectOpenAIChatSse(
   onDelta?: (delta: string) => void
 ): Promise<OpenAIChatSseResult> {
   const decoder = new TextDecoder('utf-8', { fatal: true })
+  const encoder = new TextEncoder()
+  const maxEventBytes = 64 * 1024
+  const maxEvents = 2048
   let buffer = ''
   let content = ''
   let finishReason: string | undefined
   let done = false
+  let eventCount = 0
 
   const consumeEvent = (eventText: string): void => {
     const dataLines = eventText.split(/\r?\n/)
@@ -47,13 +51,23 @@ export async function collectOpenAIChatSse(
     buffer += decoder.decode(chunk, { stream: true })
     let boundary = findEventBoundary(buffer)
     while (boundary) {
-      consumeEvent(buffer.slice(0, boundary.index))
+      const eventText = buffer.slice(0, boundary.index)
+      eventCount += 1
+      if (eventCount > maxEvents) throw new Error('上游 Chat Completions 事件数量超过 2048 上限')
+      if (encoder.encode(eventText).byteLength > maxEventBytes) throw new Error('上游 Chat Completions 单个事件超过 64 KiB 上限')
+      consumeEvent(eventText)
       buffer = buffer.slice(boundary.index + boundary.length)
       boundary = findEventBoundary(buffer)
     }
+    if (encoder.encode(buffer).byteLength > maxEventBytes) throw new Error('上游 Chat Completions 单个事件超过 64 KiB 上限')
   }
   buffer += decoder.decode()
-  if (buffer.trim()) consumeEvent(buffer)
+  if (encoder.encode(buffer).byteLength > maxEventBytes) throw new Error('上游 Chat Completions 单个事件超过 64 KiB 上限')
+  if (buffer.trim()) {
+    eventCount += 1
+    if (eventCount > maxEvents) throw new Error('上游 Chat Completions 事件数量超过 2048 上限')
+    consumeEvent(buffer)
+  }
   if (!done) throw new Error('上游流式响应缺少 [DONE]')
   return { content, finishReason, done }
 }
