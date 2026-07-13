@@ -5,7 +5,7 @@ import { createClient } from 'redis'
 
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { applyPostgresSchema } from '../../storage/postgres-schema.js'
-import { acceptChatTurn, cleanupChatRetention, completeChatTurn, createChatConversation, listChatContextMessages } from '../../storage/chat.repository.js'
+import { acceptChatTurn, cleanupChatRetention, completeChatTurn, createChatConversation, listChatContextMessages, listChatMessages } from '../../storage/chat.repository.js'
 
 const adminUrl = requiredEnv('JUHE_AI_TEST_POSTGRES_URL')
 const redisUrl = requiredEnv('JUHE_AI_TEST_REDIS_URL')
@@ -27,6 +27,21 @@ try {
   await completeChatTurn(client, { conversationId: conversation.id, systemAccountId: 'sys_pg', turnId: turn.turnId, assistantContent: 'PG 回答', finishReason: 'stop', traceId: 'trace_pg', now: '2026-07-12T00:02:00.000Z' })
   const context = await listChatContextMessages(client, { conversationId: conversation.id, systemAccountId: 'sys_pg', limitTurns: 64, now: '2026-07-12T00:03:00.000Z' })
   assert.deepEqual(context.map((item) => item.content), ['PG 测试', 'PG 回答'])
+  const replacement = await acceptChatTurn(client, {
+    conversationId: conversation.id,
+    systemAccountId: 'sys_pg',
+    clientMessageId: 'pg_client_replace',
+    userContent: 'PG 修正后的问题',
+    contentBlocks: [{ type: 'input_text' }],
+    model: 'mock-model',
+    now: '2026-07-12T00:04:00.000Z',
+    storageQuotaBytes: 1024 * 1024,
+    replaceTurnId: turn.turnId
+  })
+  assert.equal(replacement.userMessage.sequenceNo, turn.userMessage.sequenceNo)
+  assert.equal(replacement.assistantMessage.sequenceNo, turn.assistantMessage.sequenceNo)
+  await completeChatTurn(client, { conversationId: conversation.id, systemAccountId: 'sys_pg', turnId: replacement.turnId, assistantContent: 'PG 修正后的回答', finishReason: 'stop', traceId: 'trace_pg_replace', now: '2026-07-12T00:05:00.000Z' })
+  assert.deepEqual((await listChatMessages(client, { conversationId: conversation.id, systemAccountId: 'sys_pg', limit: 20, now: '2026-07-12T00:06:00.000Z' })).map((item) => item.contentText), ['PG 修正后的问题', 'PG 修正后的回答'])
   const expiredConversation = await createChatConversation(client, { id: 'chat_pg_expired', systemAccountId: 'sys_pg', apiKeyId: 'key_pg', apiKeyNameSnapshot: 'PG Key', now: '2026-07-01T00:00:00.000Z' })
   const expiredTurn = await acceptChatTurn(client, { conversationId: expiredConversation.id, systemAccountId: 'sys_pg', clientMessageId: 'pg_expired_1', userContent: '过期问题', model: 'mock-model', now: '2026-07-01T00:01:00.000Z', storageQuotaBytes: 1024 * 1024 })
   await completeChatTurn(client, { conversationId: expiredConversation.id, systemAccountId: 'sys_pg', turnId: expiredTurn.turnId, assistantContent: '过期回答', finishReason: 'stop', traceId: 'trace_expired', now: '2026-07-01T00:02:00.000Z' })

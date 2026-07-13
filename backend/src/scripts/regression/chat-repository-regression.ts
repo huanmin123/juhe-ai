@@ -158,6 +158,268 @@ assert.deepEqual(context.map((message) => [message.role, message.content]), [
   ['assistant', '你好，我是 Mock AI。']
 ])
 
+const replaceAccountId = 'sys_replace'
+const replaceConversation = await createChatConversation(client, {
+  id: 'chat_conv_replace',
+  systemAccountId: replaceAccountId,
+  apiKeyId: 'key_1',
+  apiKeyNameSnapshot: '默认 Key',
+  now: '2026-07-13T00:00:00.000Z'
+})
+const replaceOriginal = await acceptChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  clientMessageId: 'client_replace_original',
+  userContent: '旧问题',
+  contentBlocks: [{ type: 'input_text', text: '不会写入结构化标记' }],
+  model: 'mock-model',
+  now: '2026-07-13T00:01:00.000Z',
+  storageQuotaBytes: 4096
+})
+await completeChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  turnId: replaceOriginal.turnId,
+  assistantContent: '这是需要被原子移除的旧回答。'.repeat(12),
+  finishReason: 'stop',
+  traceId: 'trace_replace_original',
+  now: '2026-07-13T00:02:00.000Z'
+})
+const oldStorageBytes = Number((database.prepare(`
+  SELECT content_bytes FROM chat_user_storage_windows
+  WHERE system_account_id = ? AND bucket_date = ?
+`).get(replaceAccountId, '2026-07-13') as { content_bytes?: unknown })?.content_bytes ?? 0)
+const replacementContent = '修正后的问题'
+const replacementMarkerJson = JSON.stringify([
+  { type: 'input_marker', inputType: 'input_text', order: 0 }
+])
+const replacementUserBytes = Buffer.byteLength(replacementContent, 'utf8') + Buffer.byteLength(replacementMarkerJson, 'utf8')
+assert(oldStorageBytes > replacementUserBytes, '测试前提：旧问答占用必须大于替换后的新问题')
+const duplicateWithOldClientId = await acceptChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  clientMessageId: 'client_replace_original',
+  userContent: '复用旧 clientMessageId 不得触发替换',
+  contentBlocks: [{ type: 'input_text' }],
+  model: 'mock-model',
+  now: '2026-07-13T00:59:00.000Z',
+  storageQuotaBytes: 1,
+  replaceTurnId: replaceOriginal.turnId
+})
+assert.equal(duplicateWithOldClientId.duplicate, true)
+assert.equal(duplicateWithOldClientId.turnId, replaceOriginal.turnId)
+const replacement = await acceptChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  clientMessageId: 'client_replace_new',
+  userContent: replacementContent,
+  contentBlocks: [{ type: 'input_text', text: replacementContent }],
+  model: 'mock-model',
+  now: '2026-07-13T01:00:00.000Z',
+  storageQuotaBytes: replacementUserBytes,
+  replaceTurnId: replaceOriginal.turnId
+})
+assert.equal(replacement.userMessage.sequenceNo, replaceOriginal.userMessage.sequenceNo)
+assert.equal(replacement.assistantMessage.sequenceNo, replaceOriginal.assistantMessage.sequenceNo)
+assert.deepEqual(replacement.userMessage.contentBlocks, [
+  { type: 'input_marker', inputType: 'input_text', order: 0 }
+])
+const replacementReplay = await acceptChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  clientMessageId: 'client_replace_new',
+  userContent: replacementContent,
+  contentBlocks: [{ type: 'input_text' }],
+  model: 'mock-model',
+  now: '2026-07-13T01:00:00.500Z',
+  storageQuotaBytes: 1,
+  replaceTurnId: replaceOriginal.turnId
+})
+assert.equal(replacementReplay.duplicate, true)
+assert.equal(replacementReplay.turnId, replacement.turnId)
+assert.equal((await listChatMessages(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  limit: 20,
+  now: '2026-07-13T01:00:01.000Z'
+})).some((message) => message.turnId === replaceOriginal.turnId), false)
+assert.equal(await findChatTurnByClientMessageId(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  clientMessageId: 'client_replace_original'
+}), undefined, '替换必须删除旧 clientMessageId 幂等登记')
+assert.equal((database.prepare('SELECT next_sequence_no FROM chat_conversations WHERE id = ?').get(replaceConversation.id) as { next_sequence_no?: unknown })?.next_sequence_no, 3)
+assert.equal((await getChatConversation(client, replaceConversation.id, replaceAccountId))?.title, replacementContent, '标题来源被替换时必须按新内容重算')
+assert.equal(Number((database.prepare(`
+  SELECT content_bytes FROM chat_user_storage_windows
+  WHERE system_account_id = ? AND bucket_date = ?
+`).get(replaceAccountId, '2026-07-13') as { content_bytes?: unknown })?.content_bytes ?? 0), replacementUserBytes, '容量窗口必须先扣除旧问答再加入新用户消息')
+
+await assert.rejects(
+  acceptChatTurn(client, {
+    conversationId: replaceConversation.id,
+    systemAccountId: replaceAccountId,
+    clientMessageId: 'client_replace_while_active',
+    userContent: '活动会话不得替换',
+    contentBlocks: [{ type: 'input_text' }],
+    model: 'mock-model',
+    now: '2026-07-13T01:00:02.000Z',
+    storageQuotaBytes: 4096,
+    replaceTurnId: replacement.turnId
+  }),
+  (error) => error instanceof ChatConflictError && error.code === 'chat_replace_conflict',
+  '存在 active turn 时替换必须返回专用冲突码'
+)
+await completeChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  turnId: replacement.turnId,
+  assistantContent: '新回答',
+  finishReason: 'stop',
+  traceId: 'trace_replace_new',
+  now: '2026-07-13T01:01:00.000Z'
+})
+const replaceLatest = await acceptChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  clientMessageId: 'client_replace_latest',
+  userContent: '第二轮',
+  contentBlocks: [{ type: 'input_text' }],
+  model: 'mock-model',
+  now: '2026-07-13T01:02:00.000Z',
+  storageQuotaBytes: 4096
+})
+await completeChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  turnId: replaceLatest.turnId,
+  assistantContent: '第二轮回答',
+  finishReason: 'stop',
+  traceId: 'trace_replace_latest',
+  now: '2026-07-13T01:03:00.000Z'
+})
+await assert.rejects(
+  acceptChatTurn(client, {
+    conversationId: replaceConversation.id,
+    systemAccountId: replaceAccountId,
+    clientMessageId: 'client_replace_not_latest',
+    userContent: '不能修改旧轮次',
+    contentBlocks: [{ type: 'input_text' }],
+    model: 'mock-model',
+    now: '2026-07-13T01:04:00.000Z',
+    storageQuotaBytes: 4096,
+    replaceTurnId: replacement.turnId
+  }),
+  (error) => error instanceof ChatConflictError && error.code === 'chat_replace_conflict'
+)
+
+const replacementStateBeforeQuotaFailure = {
+  messages: await listChatMessages(client, { conversationId: replaceConversation.id, systemAccountId: replaceAccountId, limit: 20, now: '2026-07-13T01:05:00.000Z' }),
+  storageBytes: Number((database.prepare('SELECT COALESCE(SUM(content_bytes), 0) AS total FROM chat_user_storage_windows WHERE system_account_id = ?').get(replaceAccountId) as { total?: unknown })?.total ?? 0),
+  conversation: database.prepare('SELECT title, title_source_message_id, next_sequence_no, active_turn_id FROM chat_conversations WHERE id = ?').get(replaceConversation.id)
+}
+await assert.rejects(
+  acceptChatTurn(client, {
+    conversationId: replaceConversation.id, systemAccountId: replaceAccountId, clientMessageId: 'client_replace_quota_failure', userContent: '容量不足时必须完整回滚', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T01:05:01.000Z', storageQuotaBytes: 1, replaceTurnId: replaceLatest.turnId
+  }),
+  (error) => error instanceof ChatConflictError && error.code === 'chat_storage_quota_exceeded'
+)
+assert.deepEqual(await listChatMessages(client, { conversationId: replaceConversation.id, systemAccountId: replaceAccountId, limit: 20, now: '2026-07-13T01:05:02.000Z' }), replacementStateBeforeQuotaFailure.messages, '替换容量失败不得删除旧消息')
+assert.equal(Number((database.prepare('SELECT COALESCE(SUM(content_bytes), 0) AS total FROM chat_user_storage_windows WHERE system_account_id = ?').get(replaceAccountId) as { total?: unknown })?.total ?? 0), replacementStateBeforeQuotaFailure.storageBytes, '替换容量失败不得改变容量窗口')
+assert.deepEqual(database.prepare('SELECT title, title_source_message_id, next_sequence_no, active_turn_id FROM chat_conversations WHERE id = ?').get(replaceConversation.id), replacementStateBeforeQuotaFailure.conversation, '替换容量失败不得改变会话状态')
+
+const failedReplaceConversation = await createChatConversation(client, {
+  id: 'chat_conv_replace_failed', systemAccountId: 'sys_user_1', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', now: '2026-07-13T02:00:00.000Z'
+})
+const failedReplaceTurn = await acceptChatTurn(client, {
+  conversationId: failedReplaceConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'client_replace_failed', userContent: '失败轮次', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T02:01:00.000Z', storageQuotaBytes: 4096
+})
+await failChatTurn(client, {
+  conversationId: failedReplaceConversation.id, systemAccountId: 'sys_user_1', turnId: failedReplaceTurn.turnId, assistantContent: '失败回答', errorCode: 'mock_failed', now: '2026-07-13T02:02:00.000Z'
+})
+await assert.rejects(
+  acceptChatTurn(client, {
+    conversationId: failedReplaceConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'client_replace_failed_new', userContent: '不能替换失败轮次', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T02:03:00.000Z', storageQuotaBytes: 4096, replaceTurnId: failedReplaceTurn.turnId
+  }),
+  (error) => error instanceof ChatConflictError && error.code === 'chat_replace_conflict'
+)
+
+const malformedMarkerConversation = await createChatConversation(client, {
+  id: 'chat_conv_replace_malformed_marker', systemAccountId: 'sys_user_1', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', now: '2026-07-13T03:10:00.000Z'
+})
+const malformedMarkerTurn = await acceptChatTurn(client, {
+  conversationId: malformedMarkerConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'client_replace_malformed_marker', userContent: '标记损坏', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T03:11:00.000Z', storageQuotaBytes: 4096
+})
+await completeChatTurn(client, { conversationId: malformedMarkerConversation.id, systemAccountId: 'sys_user_1', turnId: malformedMarkerTurn.turnId, assistantContent: '回答', finishReason: 'stop', traceId: 'trace_malformed_marker', now: '2026-07-13T03:12:00.000Z' })
+database.prepare("UPDATE chat_messages SET content_blocks_json = '{malformed' WHERE id = ?").run(malformedMarkerTurn.userMessage.id)
+await assert.rejects(
+  acceptChatTurn(client, {
+    conversationId: malformedMarkerConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'client_replace_malformed_marker_new', userContent: '损坏标记不得降级成纯文本', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T03:13:00.000Z', storageQuotaBytes: 4096, replaceTurnId: malformedMarkerTurn.turnId
+  }),
+  (error) => error instanceof ChatConflictError && error.code === 'chat_replace_conflict',
+  '未知或畸形输入标记必须 fail closed'
+)
+
+const missingWindowConversation = await createChatConversation(client, {
+  id: 'chat_conv_replace_missing_window', systemAccountId: 'sys_missing_window', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', now: '2026-07-13T03:20:00.000Z'
+})
+const missingWindowTurn = await acceptChatTurn(client, {
+  conversationId: missingWindowConversation.id, systemAccountId: 'sys_missing_window', clientMessageId: 'client_replace_missing_window', userContent: '容量窗口损坏', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T03:21:00.000Z', storageQuotaBytes: 4096
+})
+await completeChatTurn(client, { conversationId: missingWindowConversation.id, systemAccountId: 'sys_missing_window', turnId: missingWindowTurn.turnId, assistantContent: '回答', finishReason: 'stop', traceId: 'trace_missing_window', now: '2026-07-13T03:22:00.000Z' })
+database.prepare('DELETE FROM chat_user_storage_windows WHERE system_account_id = ?').run('sys_missing_window')
+await assert.rejects(
+  acceptChatTurn(client, {
+    conversationId: missingWindowConversation.id, systemAccountId: 'sys_missing_window', clientMessageId: 'client_replace_missing_window_new', userContent: '不得掩盖容量窗口损坏', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T03:23:00.000Z', storageQuotaBytes: 4096, replaceTurnId: missingWindowTurn.turnId
+  }),
+  /容量窗口数据不一致/
+)
+assert.equal((await listChatMessages(client, { conversationId: missingWindowConversation.id, systemAccountId: 'sys_missing_window', limit: 20, now: '2026-07-13T03:24:00.000Z' }))[0]?.turnId, missingWindowTurn.turnId, '容量窗口损坏时旧轮次必须保留')
+
+const imageReplaceConversation = await createChatConversation(client, {
+  id: 'chat_conv_replace_image', systemAccountId: 'sys_user_1', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', now: '2026-07-13T03:00:00.000Z'
+})
+const imageDataUrl = 'data:image/png;base64,TOP_SECRET_IMAGE_BYTES'
+const imageReplaceTurn = await acceptChatTurn(client, {
+  conversationId: imageReplaceConversation.id,
+  systemAccountId: 'sys_user_1',
+  clientMessageId: 'client_replace_image',
+  userContent: '文字 图片 文字',
+  contentBlocks: [
+    { type: 'input_text', text: '前文' },
+    { type: 'input_image', dataUrl: imageDataUrl },
+    { type: 'input_text', text: '后文' }
+  ],
+  model: 'mock-model',
+  now: '2026-07-13T03:01:00.000Z',
+  storageQuotaBytes: 4096
+})
+await completeChatTurn(client, {
+  conversationId: imageReplaceConversation.id, systemAccountId: 'sys_user_1', turnId: imageReplaceTurn.turnId, assistantContent: '图片回答', finishReason: 'stop', traceId: 'trace_replace_image', now: '2026-07-13T03:02:00.000Z'
+})
+const imageMessages = await listChatMessages(client, {
+  conversationId: imageReplaceConversation.id, systemAccountId: 'sys_user_1', limit: 20, now: '2026-07-13T03:03:00.000Z'
+})
+assert.deepEqual(imageMessages[0]?.contentBlocks, [
+  { type: 'input_marker', inputType: 'input_text', order: 0 },
+  { type: 'input_marker', inputType: 'input_image', order: 1 },
+  { type: 'input_marker', inputType: 'input_text', order: 2 }
+])
+assert.equal(JSON.stringify(imageMessages[0]?.contentBlocks).includes(imageDataUrl), false, '用户输入标记不得保存 Data URL')
+await assert.rejects(
+  acceptChatTurn(client, {
+    conversationId: imageReplaceConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'client_replace_image_new', userContent: '不能替换图片轮次', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T03:04:00.000Z', storageQuotaBytes: 4096, replaceTurnId: imageReplaceTurn.turnId
+  }),
+  (error) => error instanceof ChatConflictError && error.code === 'chat_replace_conflict'
+)
+
+await assert.rejects(
+  acceptChatTurn(client, {
+    conversationId: replaceConversation.id, systemAccountId: replaceAccountId, clientMessageId: 'client_replace_other_conversation', userContent: '跨会话替换', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T04:00:00.000Z', storageQuotaBytes: 4096, replaceTurnId: imageReplaceTurn.turnId
+  }),
+  (error) => error instanceof ChatConflictError && error.code === 'chat_replace_conflict'
+)
+
 const failedTurn = await acceptChatTurn(client, {
   conversationId: conversation.id,
   systemAccountId: 'sys_user_1',

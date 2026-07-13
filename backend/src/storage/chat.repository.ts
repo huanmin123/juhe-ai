@@ -42,12 +42,24 @@ export interface ChatMessage {
 export type ChatMessageContentBlock =
   | { type: 'reasoning'; text: string }
   | { type: 'tool_call'; id: string; toolType: string; status: 'started' | 'updated' | 'completed' | 'failed'; item?: Record<string, unknown> }
+  | { type: 'input_marker'; inputType: 'input_text' | 'input_image'; order: number }
+
+export interface ChatInputContentBlock {
+  type: 'input_text' | 'input_image'
+  text?: string
+  dataUrl?: string
+}
 
 const maxContentBlocksBytes = 256 * 1024
+const maxInputContentBlocks = 8
 
 export class ChatConflictError extends Error {
-  constructor(public readonly code: 'chat_message_in_progress' | 'chat_storage_quota_exceeded') {
-    super(code === 'chat_message_in_progress' ? '当前会话正在生成回答' : '最近 7 天聊天容量已达到上限，请先删除部分会话')
+  constructor(public readonly code: 'chat_message_in_progress' | 'chat_storage_quota_exceeded' | 'chat_replace_conflict') {
+    super({
+      chat_message_in_progress: '当前会话正在生成回答',
+      chat_storage_quota_exceeded: '最近 7 天聊天容量已达到上限，请先删除部分会话',
+      chat_replace_conflict: '最近一轮已变化，请重新确认后再编辑'
+    }[code])
   }
 }
 
@@ -166,9 +178,11 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
   systemAccountId: string
   clientMessageId: string
   userContent: string
+  contentBlocks?: readonly ChatInputContentBlock[]
   model: string
   now: string
   storageQuotaBytes: number
+  replaceTurnId?: string
 }): Promise<{ turnId: string; userMessage: ChatMessage; assistantMessage: ChatMessage; duplicate: boolean }> {
   return client.transaction(async (tx) => {
     await ensurePostgresChatMessagePartitions(tx, input.now)
@@ -182,25 +196,59 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
       const pair = await loadMessagePair(tx, input.conversationId, input.systemAccountId, String(existing.turn_id))
       return { turnId: String(existing.turn_id), ...pair, duplicate: true }
     }
-    if (conversation.active_turn_id) throw new ChatConflictError('chat_message_in_progress')
 
-    const userBytes = Buffer.byteLength(input.userContent, 'utf8')
-    const usedBytes = await recentStorageBytes(tx, input.systemAccountId, input.now)
-    if (usedBytes + userBytes > input.storageQuotaBytes) throw new ChatConflictError('chat_storage_quota_exceeded')
+    const userContentBlocksJson = serializeInputContentMarkers(input.contentBlocks)
+    const userBytes = Buffer.byteLength(input.userContent, 'utf8') + Buffer.byteLength(userContentBlocksJson, 'utf8')
+    let userSequence = Number(conversation.next_sequence_no)
+    let assistantSequence = userSequence + 1
+    let replacedUserMessageId: string | undefined
+    if (input.replaceTurnId) {
+      if (conversation.active_turn_id) throw new ChatConflictError('chat_replace_conflict')
+      const replacement = await requireReplaceableTurn(tx, {
+        conversation,
+        conversationId: input.conversationId,
+        systemAccountId: input.systemAccountId,
+        replaceTurnId: input.replaceTurnId,
+        now: input.now
+      })
+      userSequence = Number(replacement.userMessage.sequence_no)
+      assistantSequence = Number(replacement.assistantMessage.sequence_no)
+      replacedUserMessageId = String(replacement.userMessage.id)
+      const usedBytes = await recentStorageBytes(tx, input.systemAccountId, input.now)
+      if (usedBytes < replacement.totalBytes) throw new Error('聊天容量窗口数据不一致：最近窗口小于待替换轮次')
+      if (usedBytes - replacement.totalBytes + userBytes > input.storageQuotaBytes) {
+        throw new ChatConflictError('chat_storage_quota_exceeded')
+      }
+      for (const [bucketDate, bytes] of replacement.bytesByBucket) {
+        await decrementStorageWindowStrict(tx, input.systemAccountId, bucketDate, bytes, input.now)
+      }
+      const deletedIdempotency = await tx.execute(`
+        DELETE FROM ${chatTable(tx, 'chat_message_idempotency')}
+        WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
+      `, [input.conversationId, input.systemAccountId, input.replaceTurnId])
+      if (deletedIdempotency.changes !== 1) throw new ChatConflictError('chat_replace_conflict')
+      const deletedMessages = await tx.execute(`
+        DELETE FROM ${chatTable(tx, 'chat_messages')}
+        WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
+      `, [input.conversationId, input.systemAccountId, input.replaceTurnId])
+      if (deletedMessages.changes !== 2) throw new ChatConflictError('chat_replace_conflict')
+    } else {
+      if (conversation.active_turn_id) throw new ChatConflictError('chat_message_in_progress')
+      const usedBytes = await recentStorageBytes(tx, input.systemAccountId, input.now)
+      if (usedBytes + userBytes > input.storageQuotaBytes) throw new ChatConflictError('chat_storage_quota_exceeded')
+    }
 
     const turnId = chatId('turn')
     const userMessageId = chatId('msg')
     const assistantMessageId = chatId('msg')
-    const userSequence = Number(conversation.next_sequence_no)
-    const assistantSequence = userSequence + 1
     const expiresAt = addDays(input.now, 7)
     const messagesTable = chatTable(tx, 'chat_messages')
     await tx.execute(`
       INSERT INTO ${messagesTable} (
         id, conversation_id, system_account_id, turn_id, sequence_no, client_message_id,
-        role, status, content_text, content_bytes, model, created_at, completed_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'user', 'completed', ?, ?, ?, ?, ?, ?)
-    `, [userMessageId, input.conversationId, input.systemAccountId, turnId, userSequence, input.clientMessageId, input.userContent, userBytes, input.model, input.now, input.now, expiresAt])
+        role, status, content_text, content_blocks_json, content_bytes, model, created_at, completed_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'user', 'completed', ?, ?, ?, ?, ?, ?, ?)
+    `, [userMessageId, input.conversationId, input.systemAccountId, turnId, userSequence, input.clientMessageId, input.userContent, userContentBlocksJson, userBytes, input.model, input.now, input.now, expiresAt])
     await tx.execute(`
       INSERT INTO ${messagesTable} (
         id, conversation_id, system_account_id, turn_id, sequence_no,
@@ -215,14 +263,24 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
     `, [input.conversationId, input.clientMessageId, input.systemAccountId, turnId, userMessageId, assistantMessageId, input.now, expiresAt])
     await incrementStorageWindow(tx, input.systemAccountId, input.now, userBytes)
     const title = titleFromContent(input.userContent)
-    await tx.execute(`
-      UPDATE ${chatTable(tx, 'chat_conversations')}
-      SET title = CASE WHEN next_sequence_no = 1 THEN ? ELSE title END,
-          title_source_message_id = CASE WHEN next_sequence_no = 1 THEN ? ELSE title_source_message_id END,
-          next_sequence_no = ?, active_turn_id = ?, active_started_at = ?,
-          last_model = ?, last_message_at = ?, updated_at = ?
-      WHERE id = ? AND system_account_id = ?
-    `, [title, userMessageId, assistantSequence + 1, turnId, input.now, input.model, input.now, input.now, input.conversationId, input.systemAccountId])
+    if (replacedUserMessageId) {
+      await tx.execute(`
+        UPDATE ${chatTable(tx, 'chat_conversations')}
+        SET title = CASE WHEN title_source_message_id = ? THEN ? ELSE title END,
+            title_source_message_id = CASE WHEN title_source_message_id = ? THEN ? ELSE title_source_message_id END,
+            active_turn_id = ?, active_started_at = ?, last_model = ?, last_message_at = ?, updated_at = ?
+        WHERE id = ? AND system_account_id = ?
+      `, [replacedUserMessageId, title, replacedUserMessageId, userMessageId, turnId, input.now, input.model, input.now, input.now, input.conversationId, input.systemAccountId])
+    } else {
+      await tx.execute(`
+        UPDATE ${chatTable(tx, 'chat_conversations')}
+        SET title = CASE WHEN next_sequence_no = 1 THEN ? ELSE title END,
+            title_source_message_id = CASE WHEN next_sequence_no = 1 THEN ? ELSE title_source_message_id END,
+            next_sequence_no = ?, active_turn_id = ?, active_started_at = ?,
+            last_model = ?, last_message_at = ?, updated_at = ?
+        WHERE id = ? AND system_account_id = ?
+      `, [title, userMessageId, assistantSequence + 1, turnId, input.now, input.model, input.now, input.now, input.conversationId, input.systemAccountId])
+    }
     const pair = await loadMessagePair(tx, input.conversationId, input.systemAccountId, turnId)
     return { turnId, ...pair, duplicate: false }
   })
@@ -501,6 +559,79 @@ function storageWindowCutoffDate(now: string): string {
   return date.toISOString().slice(0, 10)
 }
 
+async function requireReplaceableTurn(client: DatabaseClient, input: {
+  conversation: ConversationRow
+  conversationId: string
+  systemAccountId: string
+  replaceTurnId: string
+  now: string
+}): Promise<{
+  userMessage: ChatMessageRow
+  assistantMessage: ChatMessageRow
+  bytesByBucket: Map<string, number>
+  totalBytes: number
+}> {
+  const rows = await client.query<ChatMessageRow>(`
+    SELECT * FROM ${chatTable(client, 'chat_messages')}
+    WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
+    ORDER BY sequence_no ASC
+  `, [input.conversationId, input.systemAccountId, input.replaceTurnId])
+  if (rows.length !== 2) throw new ChatConflictError('chat_replace_conflict')
+  const [userMessage, assistantMessage] = rows
+  const userSequence = Number(userMessage.sequence_no)
+  const assistantSequence = Number(assistantMessage.sequence_no)
+  if (
+    String(userMessage.role) !== 'user'
+    || String(assistantMessage.role) !== 'assistant'
+    || String(userMessage.status) !== 'completed'
+    || String(assistantMessage.status) !== 'completed'
+    || !Number.isSafeInteger(userSequence)
+    || !Number.isSafeInteger(assistantSequence)
+    || assistantSequence !== userSequence + 1
+    || String(userMessage.expires_at) <= input.now
+    || String(assistantMessage.expires_at) <= input.now
+  ) throw new ChatConflictError('chat_replace_conflict')
+
+  const maxSequenceRow = await client.one<{ max_sequence_no?: unknown }>(`
+    SELECT MAX(sequence_no) AS max_sequence_no
+    FROM ${chatTable(client, 'chat_messages')}
+    WHERE conversation_id = ? AND system_account_id = ?
+  `, [input.conversationId, input.systemAccountId])
+  if (Number(maxSequenceRow?.max_sequence_no) !== assistantSequence) throw new ChatConflictError('chat_replace_conflict')
+
+  const inputMarkers = parseStoredInputMarkers(userMessage.content_blocks_json)
+  if (!inputMarkers || inputMarkers.some((marker) => marker.inputType === 'input_image')) {
+    throw new ChatConflictError('chat_replace_conflict')
+  }
+
+  const idempotencyRows = await client.query<IdempotencyRow & { client_message_id?: unknown; system_account_id?: unknown }>(`
+    SELECT * FROM ${chatTable(client, 'chat_message_idempotency')}
+    WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
+  `, [input.conversationId, input.systemAccountId, input.replaceTurnId])
+  const idempotency = idempotencyRows[0]
+  if (
+    idempotencyRows.length !== 1
+    || String(idempotency.user_message_id) !== String(userMessage.id)
+    || String(idempotency.assistant_message_id) !== String(assistantMessage.id)
+    || String(idempotency.client_message_id) !== String(userMessage.client_message_id)
+    || String(idempotency.system_account_id) !== input.systemAccountId
+    || String(input.conversation.title_source_message_id ?? '') === String(assistantMessage.id)
+  ) throw new ChatConflictError('chat_replace_conflict')
+
+  const bytesByBucket = new Map<string, number>()
+  let totalBytes = 0
+  for (const row of rows) {
+    const bytes = Number(row.content_bytes)
+    const bucketDate = String(row.created_at ?? '').slice(0, 10)
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || !/^\d{4}-\d{2}-\d{2}$/.test(bucketDate)) {
+      throw new ChatConflictError('chat_replace_conflict')
+    }
+    bytesByBucket.set(bucketDate, (bytesByBucket.get(bucketDate) ?? 0) + bytes)
+    totalBytes += bytes
+  }
+  return { userMessage, assistantMessage, bytesByBucket, totalBytes }
+}
+
 async function lockConversation(client: DatabaseClient, conversationId: string, systemAccountId: string): Promise<ConversationRow> {
   const suffix = client.driver === 'postgres' ? ' FOR UPDATE' : ''
   const row = await client.one<ConversationRow>(`
@@ -560,6 +691,20 @@ async function incrementStorageWindow(client: DatabaseClient, systemAccountId: s
   `, [systemAccountId, bucketDate, bytes, now])
 }
 
+async function decrementStorageWindowStrict(client: DatabaseClient, systemAccountId: string, bucketDate: string, bytes: number, now: string): Promise<void> {
+  const table = chatTable(client, 'chat_user_storage_windows')
+  const result = await client.execute(`
+    UPDATE ${table}
+    SET content_bytes = content_bytes - ?, updated_at = ?
+    WHERE system_account_id = ? AND bucket_date = ? AND content_bytes >= ?
+  `, [bytes, now, systemAccountId, bucketDate, bytes])
+  if (result.changes !== 1) throw new Error(`聊天容量窗口数据不一致：${bucketDate} 日桶缺失或不足`)
+  await client.execute(`
+    DELETE FROM ${table}
+    WHERE system_account_id = ? AND bucket_date = ? AND content_bytes = 0
+  `, [systemAccountId, bucketDate])
+}
+
 function chatTable(client: DatabaseClient, name: string): string {
   return client.dialect.qualifyTable('juhe_chat', name)
 }
@@ -577,6 +722,16 @@ function addDays(value: string, days: number): string {
 function titleFromContent(content: string): string {
   const firstLine = content.replace(/[\u0000-\u001f\u007f]/g, ' ').split(/\r?\n/, 1)[0].replace(/\s+/g, ' ').trim()
   return firstLine.slice(0, 60) || '新对话'
+}
+
+function serializeInputContentMarkers(blocks: readonly ChatInputContentBlock[] | undefined): string {
+  const normalized = blocks && blocks.length > 0 ? blocks : [{ type: 'input_text' as const }]
+  if (normalized.length > maxInputContentBlocks) throw new Error(`用户输入块不能超过 ${maxInputContentBlocks} 个`)
+  const markers: ChatMessageContentBlock[] = normalized.map((block, order) => {
+    if (block?.type !== 'input_text' && block?.type !== 'input_image') throw new Error('用户输入块类型无效')
+    return { type: 'input_marker', inputType: block.type, order }
+  })
+  return serializeContentBlocks(markers)
 }
 
 function mapConversation(row: ConversationRow): ChatConversation {
@@ -618,8 +773,33 @@ function isChatMessageContentBlock(value: unknown): value is ChatMessageContentB
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const block = value as Record<string, unknown>
   if (block.type === 'reasoning') return typeof block.text === 'string'
+  if (block.type === 'input_marker') {
+    return (block.inputType === 'input_text' || block.inputType === 'input_image')
+      && Number.isSafeInteger(block.order) && Number(block.order) >= 0 && Number(block.order) < maxInputContentBlocks
+  }
   return block.type === 'tool_call' && typeof block.id === 'string' && typeof block.toolType === 'string'
     && ['started', 'updated', 'completed', 'failed'].includes(String(block.status))
+}
+
+function parseStoredInputMarkers(value: unknown): Array<Extract<ChatMessageContentBlock, { type: 'input_marker' }>> | undefined {
+  if (typeof value !== 'string' || !value || Buffer.byteLength(value, 'utf8') > maxContentBlocksBytes) return undefined
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > maxInputContentBlocks) return undefined
+    const markers: Array<Extract<ChatMessageContentBlock, { type: 'input_marker' }>> = []
+    for (let order = 0; order < parsed.length; order += 1) {
+      const valueAtOrder = parsed[order]
+      if (!valueAtOrder || typeof valueAtOrder !== 'object' || Array.isArray(valueAtOrder)) return undefined
+      const marker = valueAtOrder as Record<string, unknown>
+      const keys = Object.keys(marker).sort()
+      if (keys.length !== 3 || keys[0] !== 'inputType' || keys[1] !== 'order' || keys[2] !== 'type') return undefined
+      if (marker.type !== 'input_marker' || (marker.inputType !== 'input_text' && marker.inputType !== 'input_image') || marker.order !== order) return undefined
+      markers.push({ type: 'input_marker', inputType: marker.inputType, order })
+    }
+    return markers
+  } catch {
+    return undefined
+  }
 }
 
 function nullable(value: unknown): string | undefined {
