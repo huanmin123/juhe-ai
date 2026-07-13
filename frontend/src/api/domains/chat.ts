@@ -6,6 +6,7 @@ export const chatApi = {
   listApiKeys: () => unwrap<ChatApiKeyOption[]>(http.get('/my-chat/api-keys')),
   listConversations: (params?: { beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
   createConversation: (apiKeyId: string) => unwrap<ChatConversation>(http.post('/my-chat/conversations', { apiKeyId })),
+  getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${conversationId}`)),
   listMessages: (conversationId: string, params?: { beforeSequenceNo?: number; limit?: number }) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${conversationId}/messages`, { params })),
   listModels: (conversationId: string) => unwrap<ChatModelOption[]>(http.get(`/my-chat/conversations/${conversationId}/models`)),
   updateConversation: (conversationId: string, payload: { title?: string; isPinned?: boolean }) => unwrap<ChatConversation>(http.patch(`/my-chat/conversations/${conversationId}`, payload)),

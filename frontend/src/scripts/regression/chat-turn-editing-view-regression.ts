@@ -18,12 +18,17 @@ assert.match(viewSource, /reconcileChatSubmission/, '接受后断流必须使用
 assert.match(viewSource, /resolveChatReconciliationNotice\(\{ accepted, assistantStatus:[^}]+silent \}\)/, '主动停止与 completed 终态必须通过可测试的提示决策，不能一律显示发送失败')
 assert.match(viewSource, /function cancelTurnEdit/, '取消编辑必须是独立的零后端副作用操作')
 assert.match(viewSource, /await cancelTurnEdit\(\)[\s\S]{0,300}selectedConversationId\.value = id/, '切换会话前必须先退出编辑态')
-assert.match(viewSource, /:editable-message-id="generating \? undefined : editableUserMessageId"/, '提交期间必须移除编辑入口')
+assert.match(viewSource, /:editable-message-id="generating \|\| stopping \? undefined : editableUserMessageId"/, '提交或停止门禁期间必须移除编辑入口')
 assert.match(viewSource, /@edit-message="beginTurnEdit"/, '消息列表编辑入口必须接入页面状态')
 
 assert.match(listSource, /editableMessageId\?: string/, '消息列表必须只接收一个后端事实可编辑消息 id')
 assert.match(listSource, /editingTurnId\?: string/, '消息列表必须能淡化正在编辑的完整轮次')
 assert.match(listSource, /edit-message/, '消息列表必须向页面发出编辑事件')
 assert.match(listSource, /is-editing-turn/, '编辑中的用户与助手消息必须共享低强调样式')
+
+assert.match(viewSource, /const stopping = ref\(false\)/, '慢 stop HTTP 与旧发送对账期间必须持有独立 stopping gate')
+assert.match(viewSource, /if \(generating\.value \|\| stopping\.value/, '发送、编辑或切换必须拒绝跨越 stopping gate')
+assert.match(viewSource, /:disabled="generating \|\| stopping"/, 'stopping 期间 composer 必须持续禁用，即使旧 send finally 已把 generating 置 false')
+assert.match(viewSource, /const controller = streamController[\s\S]{0,300}stopActiveChatGeneration/, 'stop 必须捕获旧 controller 并交给隔离 helper')
 
 console.log('AI 问答编辑/取消/替换页面竞态接线回归通过')
