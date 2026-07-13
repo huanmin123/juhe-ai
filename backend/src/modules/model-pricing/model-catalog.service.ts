@@ -486,6 +486,9 @@ function cloneProviderModelCatalogItems(items: ProviderModelCatalogItem[]): Prov
   return items.map((item) => ({
     ...item,
     supportedApiProtocols: [...item.supportedApiProtocols],
+    inputModalities: [...item.inputModalities],
+    outputModalities: [...item.outputModalities],
+    supportedTools: [...item.supportedTools],
     supportedServiceTiers: [...item.supportedServiceTiers],
     supportedReasoningEfforts: [...item.supportedReasoningEfforts],
     codexSupportedReasoningLevels: [...item.codexSupportedReasoningLevels]
@@ -547,6 +550,9 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     releaseDate: item.releaseDate,
     shutdownDate: item.shutdownDate,
     supportedApiProtocols: item.supportedApiProtocols as ProviderModelApiProtocol[],
+    inputModalities: [],
+    outputModalities: [],
+    supportedTools: [],
     inputUsdPer1M: item.inputUsdPer1M,
     outputUsdPer1M: item.outputUsdPer1M,
     cachedInputUsdPer1M: item.cachedInputUsdPer1M,

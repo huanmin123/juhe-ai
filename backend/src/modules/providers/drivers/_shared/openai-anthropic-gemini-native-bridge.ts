@@ -303,6 +303,8 @@ function finalizeGeminiBody(
     const toolConfig = geminiToolConfigFromSource(body)
     if (toolConfig) output.toolConfig = toolConfig
   }
+  const serviceTier = geminiServiceTierFromSource(body)
+  if (serviceTier) output.serviceTier = serviceTier
   return output
 }
 
@@ -547,10 +549,28 @@ function generationConfigFromSource(
   if (responseMimeType) config.responseMimeType = responseMimeType
   const schema = responseSchemaFromSource(body)
   if (schema) config.responseSchema = schema
+  const thinkingLevel = geminiThinkingLevelFromSource(body)
+  if (thinkingLevel) config.thinkingConfig = { thinkingLevel }
   if (body.logprobs !== undefined || body.top_logprobs !== undefined) {
     throw guidance(req, mapping, `当前${providerLabel(providerName)} Gemini native 上游不能保真承载 OpenAI logprobs。请移除 logprobs 后重试。`, 'unsupported_logprobs_for_gemini_native')
   }
   return config
+}
+
+function geminiThinkingLevelFromSource(body: JsonRecord): string | undefined {
+  const reasoning = objectValue(body.reasoning)
+  const effort = stringValue(reasoning?.effort) ?? stringValue(body.reasoning_effort)
+  if (effort === 'minimal' || effort === 'low' || effort === 'medium' || effort === 'high') {
+    return effort.toUpperCase()
+  }
+  return undefined
+}
+
+function geminiServiceTierFromSource(body: JsonRecord): string | undefined {
+  const tier = stringValue(body.service_tier)
+  if (tier === 'priority' || tier === 'flex') return tier
+  if (tier === 'default') return 'standard'
+  return undefined
 }
 
 function responseMimeTypeFromSource(body: JsonRecord): string | undefined {

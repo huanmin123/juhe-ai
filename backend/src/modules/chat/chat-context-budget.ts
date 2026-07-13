@@ -3,9 +3,6 @@ export interface ChatContextMessage {
   content: string
 }
 
-const unknownModelContextTokens = 16_000
-const maxHistoryTokens = 64_000
-const outputReserveTokens = 8_000
 const protocolReserveTokens = 4_000
 const toolDefinitionReserveTokens = 2_048
 const imageReserveTokens = 4_096
@@ -23,21 +20,23 @@ interface FixedChatInputBudget {
   instructions: string
   toolsEnabled: boolean
   imageCount: number
-  contextWindowTokens?: number
+  maxInputTokens?: number
 }
 
 export function validateFixedChatInputBudget(input: FixedChatInputBudget): void {
-  const contextWindow = positiveInteger(input.contextWindowTokens) ?? unknownModelContextTokens
-  if (fixedChatInputTokens(input) > contextWindow) throw new ChatContextBudgetError()
+  const maxInputTokens = positiveInteger(input.maxInputTokens)
+  if (!maxInputTokens) return
+  if (fixedChatInputTokens(input) > maxInputTokens) throw new ChatContextBudgetError()
 }
 
 export function trimChatContextToBudget(input: FixedChatInputBudget & {
   history: ChatContextMessage[]
 }): ChatContextMessage[] {
   validateFixedChatInputBudget(input)
-  const contextWindow = positiveInteger(input.contextWindowTokens) ?? unknownModelContextTokens
-  const historyBudget = Math.min(maxHistoryTokens, contextWindow - fixedChatInputTokens(input))
   const completeTurns = toCompleteTurns(input.history)
+  const maxInputTokens = positiveInteger(input.maxInputTokens)
+  if (!maxInputTokens) return completeTurns.flat()
+  const historyBudget = maxInputTokens - fixedChatInputTokens(input)
   let usedTokens = 0
   const selected: ChatContextMessage[][] = []
   for (let index = completeTurns.length - 1; index >= 0; index -= 1) {
@@ -51,22 +50,12 @@ export function trimChatContextToBudget(input: FixedChatInputBudget & {
 }
 
 function fixedChatInputTokens(input: FixedChatInputBudget): number {
-  return outputReserveTokens
-    + protocolReserveTokens
+  return protocolReserveTokens
     + estimateChatTokens(input.instructions)
     + estimateChatTokens(input.currentUserContent)
     + messageOverheadTokens * 2
     + (input.toolsEnabled ? toolDefinitionReserveTokens : 0)
     + Math.max(0, Math.floor(input.imageCount)) * imageReserveTokens
-}
-
-export function resolveEffectiveChatContextWindowTokens(input: {
-  clientContextWindowTokens?: number
-  serverContextWindowTokens?: number
-}): number {
-  const serverWindow = positiveInteger(input.serverContextWindowTokens) ?? unknownModelContextTokens
-  const clientWindow = positiveInteger(input.clientContextWindowTokens) ?? serverWindow
-  return Math.min(clientWindow, serverWindow)
 }
 
 export function estimateChatTokens(content: string): number {

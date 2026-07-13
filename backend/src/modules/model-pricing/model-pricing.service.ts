@@ -6,6 +6,7 @@ import type {
   GptWireReasoningEffort,
   ModelPricingProviderDriverHelpers,
   ProviderModelApiProtocol,
+  ProviderModelModality,
   RawModelPricing
 } from './provider-driver.types.js'
 
@@ -13,7 +14,8 @@ export type {
   CodexReasoningLevel,
   GptServiceTier,
   GptWireReasoningEffort,
-  ProviderModelApiProtocol
+  ProviderModelApiProtocol,
+  ProviderModelModality
 } from './provider-driver.types.js'
 
 export interface ProviderModelPricing {
@@ -24,6 +26,9 @@ export interface ProviderModelPricing {
   releaseDate?: string
   shutdownDate?: string
   supportedApiProtocols: ProviderModelApiProtocol[]
+  inputModalities: ProviderModelModality[]
+  outputModalities: ProviderModelModality[]
+  supportedTools: string[]
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
@@ -44,6 +49,7 @@ export interface ProviderModelPricing {
   audioInputUsdPer1M?: number
   audioOutputUsdPer1M?: number
   outputUsdPerImage?: number
+  contextWindowTokens?: number
   maxInputTokens?: number
   maxOutputTokens?: number
   maxTokens?: number
@@ -424,6 +430,9 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     supportedApiProtocols: driver?.inferModelApiProtocols(item, modelPricingDriverHelpers)
       ?? (item.supported_api_protocols ? [...item.supported_api_protocols] : undefined)
       ?? [],
+    inputModalities: item.input_modalities ? [...item.input_modalities] : [],
+    outputModalities: item.output_modalities ? [...item.output_modalities] : [],
+    supportedTools: item.supported_tools ? [...item.supported_tools] : [],
     inputUsdPer1M: perMillion(item.input_cost_per_token),
     outputUsdPer1M: perMillion(item.output_cost_per_token),
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost),
@@ -444,6 +453,7 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     audioInputUsdPer1M: perMillion(item.input_cost_per_audio_token),
     audioOutputUsdPer1M: perMillion(item.output_cost_per_audio_token),
     outputUsdPerImage: normalizePrice(item.output_cost_per_image),
+    contextWindowTokens: item.context_window_tokens,
     maxInputTokens: item.max_input_tokens,
     maxOutputTokens: item.max_output_tokens,
     maxTokens: item.max_tokens,

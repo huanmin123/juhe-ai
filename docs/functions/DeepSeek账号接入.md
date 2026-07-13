@@ -298,23 +298,19 @@ DeepSeek OpenAI-compatible 返回应优先按 OpenAI v1 Chat 语义解析：
 
 DeepSeek 模型目录必须单独维护在 `deepseek` 供应商下，不要混进 GPT 价格文件。
 
-当前目录，列表顺序同时作为账户测试和模型下拉框的默认优先顺序；同代模型先展示 DeepSeek 官方模型 ID，再展示第三方上游别名，最后展示退役日前可用的历史兼容名：
+当前内置官方目录只保留官网公开 ID，列表顺序同时作为账户测试和模型下拉框的默认优先顺序：
 
 - `deepseek-v4-flash`
 - `deepseek-v4-pro`
-- `deepseek-ai-v4-flash`：第三方上游别名，映射到 DeepSeek V4 Flash 价格口径
-- `deepseek-ai-v4-pro`：第三方上游别名，映射到 DeepSeek V4 Pro 价格口径
-- `deepseek-chat`：官方历史兼容名，退役日前可见，计价沿用官方 legacy 价格口径
-- `deepseek-reasoner`：官方历史兼容名，退役日前可见，计价沿用官方 legacy 价格口径
 
 截至 `2026-06-22`，官方 V4 价格和窗口按 DeepSeek Pricing 文档记录如下：
 
 | 模型 | 上下文窗口 | 最大输出 | Cache hit 输入 / 1M tokens | Cache miss / 常规输入 / 1M tokens | 输出 / 1M tokens |
 | --- | --- | --- | --- | --- | --- |
-| `deepseek-v4-flash` / `deepseek-ai-v4-flash` | 1,000,000 | 384,000 | USD 0.0028 | USD 0.14 | USD 0.28 |
-| `deepseek-v4-pro` / `deepseek-ai-v4-pro` | 1,000,000 | 384,000 | USD 0.003625 | USD 0.435 | USD 0.87 |
+| `deepseek-v4-flash` | 1,000,000 | 384,000 | USD 0.0028 | USD 0.14 | USD 0.28 |
+| `deepseek-v4-pro` | 1,000,000 | 384,000 | USD 0.003625 | USD 0.435 | USD 0.87 |
 
-旧别名 `deepseek-chat` 和 `deepseek-reasoner` 已被官方标记为将于 `2026-07-24 15:59 UTC` 退役。当前在目录中可以作为历史兼容别名保留，但不应作为新建账户或新默认检查模型的首选。
+`deepseek-ai-v4-*` 属于第三方中转别名，`deepseek-chat` 和 `deepseek-reasoner` 是将于 `2026-07-24 15:59 UTC` 退役的兼容别名；它们均不进入当前内置官网目录。确需连接第三方别名时，由用户在对应供应商下显式创建自定义模型和映射。
 
 模型目录字段要求：
 

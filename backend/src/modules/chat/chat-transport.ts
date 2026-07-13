@@ -31,11 +31,12 @@ export function resolveChatBudgetContent(input: {
 
 export function selectChatTransport(input: {
   supportedProtocols: readonly ChatTransportProtocol[]
-  toolsEnabled: boolean
+  preferResponses: boolean
 }): ChatTransportProtocol {
-  return input.toolsEnabled && input.supportedProtocols.includes('responses')
-    ? 'responses'
-    : 'chat_completions'
+  if (input.preferResponses && input.supportedProtocols.includes('responses')) return 'responses'
+  if (input.supportedProtocols.includes('chat_completions')) return 'chat_completions'
+  if (input.supportedProtocols.includes('responses')) return 'responses'
+  return 'chat_completions'
 }
 
 export async function resolveChatSupportedProtocols(input: {

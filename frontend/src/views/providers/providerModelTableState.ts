@@ -3,7 +3,9 @@ import type { ProviderModelPricing } from '@/types/domain'
 import {
   formatApiProtocol,
   formatModelCategory,
+  formatModelModalities,
   formatModelScope,
+  formatModelTools,
   getModelCategory,
   hasAnyNumber,
   hasDirectModelPrice,
@@ -19,6 +21,7 @@ export const baseModelColumns = [
   { title: '发布时间', key: 'releaseDate', width: 120 },
   { title: '用途', key: 'category', width: 120 },
   { title: '接口协议', key: 'protocols', width: 230 },
+  { title: '模态与工具', key: 'modalities', width: 280 },
   { title: '服务等级', key: 'serviceTiers', width: 150 },
   { title: '思考级别', key: 'reasoningEfforts', width: 360 },
   { title: '计费', key: 'prices', width: 230 },
@@ -48,6 +51,9 @@ export function buildProviderModelColumns(category: ModelCategoryKey, rows: Prov
   }
   if (rows.some((item) => hasAnyNumber(item.maxInputTokens, item.contextWindowTokens, item.maxOutputTokens))) {
     visibleKeys.add('context')
+  }
+  if (rows.some((item) => item.inputModalities?.length || item.outputModalities?.length || item.supportedTools?.length)) {
+    visibleKeys.add('modalities')
   }
 
   return baseModelColumns.filter((column) => visibleKeys.has(column.key))
@@ -79,6 +85,9 @@ export function filterProviderModelsByKeyword(models: ProviderModelPricing[], ke
       || item.model.toLowerCase().includes(keyword)
       || formatModelCategory(item).toLowerCase().includes(keyword)
       || (item.supportedApiProtocols ?? []).some((protocol) => formatApiProtocol(protocol).toLowerCase().includes(keyword))
+      || formatModelModalities(item.inputModalities).toLowerCase().includes(keyword)
+      || formatModelModalities(item.outputModalities).toLowerCase().includes(keyword)
+      || formatModelTools(item.supportedTools).toLowerCase().includes(keyword)
     return keywordMatches
   })
 }

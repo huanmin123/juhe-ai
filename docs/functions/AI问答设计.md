@@ -126,7 +126,7 @@ flowchart LR
 
 ### 6.1 页面布局
 
-AI 问答路由使用沉浸布局：隐藏全局 Header、清除内容区外边距，工作区占满可用视口。桌面端使用左侧单行会话栏和右侧对话区；移动端会话列表进入抽屉。模型、思考级别、服务等级和上下文大小放在输入框底部，不占用独立顶部栏。
+AI 问答路由使用沉浸布局：隐藏全局 Header、清除内容区外边距，工作区占满可用视口。桌面端使用左侧单行会话栏和右侧对话区；移动端会话列表进入抽屉。模型、思考级别和服务等级放在输入框底部，不占用独立顶部栏；上下文不允许人工选择，后续只显示模型目录窗口对应的只读圆形状态。
 
 ```text
 ┌───────────────┬────────────────────────────────────┐
@@ -136,7 +136,7 @@ AI 问答路由使用沉浸布局：隐藏全局 Header、清除内容区外边�
 │               │                                    │
 │               ├────────────────────────────────────┤
 │ 会话 C         │ 输入消息                           │
-│               │ 模型 / 思考 / 服务 / 上下文    发送 │
+│               │ 模型 / 思考 / 服务              发送 │
 └───────────────┴────────────────────────────────────┘
 ```
 
@@ -243,14 +243,20 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 发送前保存 Tiptap JSON 快照；发送成功清空编辑器，失败恢复快照，停止生成不恢复已经提交的用户消息。
 - 编辑器输出转换为 `input_text` / `input_image` 内容块；纯文本请求仍可降级为现有 `content` 字段。
 - 输入框不显示独立工具栏；撤销/重做使用编辑器原生快捷键，图片通过粘贴或 `/image`，交互说明合并到 placeholder。
-- 模型、思考级别、服务等级和上下文大小放在输入框底部左侧，发送/停止放在右侧。能力来自模型目录；未知能力不按模型名猜测。
-- 思考级别与服务等级分别投影为 Responses `reasoning.effort` / `service_tier` 或 Chat Completions `reasoning_effort` / `service_tier`；上下文大小只约束本站装配的历史预算，不伪造成上游字段。
+- 模型、思考级别和服务等级放在输入框底部左侧，发送/停止放在右侧。选项只来自服务端模型目录；未知能力不按模型名猜测，也不补“自动”选项。
+- 思考级别不提供“无思考”和“自动”；模型返回能力包含 `medium` 时默认选择“中”，否则使用模型目录的有效默认值或第一项能力。
+- 服务等级不提供“自动”；模型声明服务等级能力时显式提供并默认选择 `default`，请求必须发送 `service_tier: "default"`，避免省略字段后被上游按 `auto` 处理。
+- 思考级别、服务等级、输入/输出模态和工具按“上游可用模型 ID 与本地官方能力快照”返回；同名模型存在多个可达供应商候选时取共同能力。模型未声明对应能力时不显示控件，也不发送字段。
+- 图片命令、粘贴提示和服务端验收同时读取模型 `inputModalities`；仅凭 Responses 协议可用不能推导图片能力。
+- 上下文不再由客户端提交 `contextWindowTokens`；服务端区分模型目录的总窗口、最大输入和最大输出。官方没有独立最大输入时，按 `contextWindowTokens - maxOutputTokens` 派生保守输入预算。
 
 ### 8.6 模型原生工具协议
 
-- 发送前根据 API Key 对应模型能力选择 Chat Completions 或 Responses；不能仅根据模型名称猜测能力。
+- 发送前按 API Key 可达账户、模型映射和协议桥接结果选择 Chat Completions 或 Responses；模型目录里的原生协议用于能力说明，不能覆盖显式的 source endpoint mapping。
 - Responses 请求保留上游支持的 `tools`、`tool_choice`、`parallel_tool_calls` 等字段，由网关做协议适配和安全校验。
 - Chat 模块解析 `response.output_item.added`、`response.function_call_arguments.delta`、`response.output_text.delta`、`response.completed` 等事件，并将工具过程投影为消息时间线中的 `tool_call` / `tool_result` 内容块。
+- 只有模型目录明确声明 `web_search` 且最终走 Responses 时才注入联网搜索；不能因为使用 Responses 就给所有模型强塞工具。
+- OpenAI Chat / Responses 映射到 Gemini native 时，思考级别转换为 `generationConfig.thinkingConfig.thinkingLevel`，服务等级转换为 Gemini 顶层 `serviceTier`；不能只在下游请求保留无效的 OpenAI 字段。
 - 上游自行执行的内置工具只展示状态和结果；Chat 模块不重复执行、不伪造工具结果。
 - 模型要求本地未注册的 function tool 时，返回明确的“不支持此工具”状态并结束本轮，不能静默当作普通文本。
 - 工具调用参数、结果和错误均有字节上限、超时和审计 trace；不得把工具原始 JSON 无界写入 SSE 或聊天正文。
@@ -384,7 +390,10 @@ DELETE /__aisys__/api/my-chat/conversations/:id
 - 创建请求只接受 `apiKeyId`，成功返回 `201`；会话绑定后不提供更换 API Key 的接口。
 - 会话列表使用 `(last_message_at, id)` 复合游标，默认 30、最大 50，只返回摘要。
 - PATCH 只接受 `title` 和 `isPinned`，至少提供一个字段；标题最长 60 字符。
-- 模型列表先校验会话归属，再使用绑定 Key 调用本机 `/v1/models`，返回模型控制所需能力摘要。
+- 模型列表先校验会话归属，再使用绑定 Key 调用本机 `/v1/models`；能力摘要只加载该 API Key 路由实际可达账户对应的供应商目录，不再固定读取 GPT 供应商。
+- 能力摘要只保留模型目录真实声明：思考列表移除产品不开放的 `none`，存在 `medium` 时把它作为页面默认；服务列表在模型声明 Priority/Flex 能力时显式加入标准 `default`；上下文返回 `maxInputTokens`，缺少时才使用 `contextWindowTokens`。
+- 同一模型 ID 可命中多个实际供应商时，思考级别和服务档位取能力交集，最大输入窗口取所有候选的最小值；任一候选缺少窗口事实时不伪造窗口。这样切号后仍不会把某个账户不支持的字段发送给上游。
+- 发送接口按最新能力摘要再次校验并补默认值，不能只信前端；不支持的思考/服务值返回 `422 chat_model_capability_mismatch`。
 - DELETE 返回 `204`，不删除网关使用记录或原始审计。
 
 ### 10.3 消息列表
@@ -411,8 +420,7 @@ Content-Type: application/json
   "contentBlocks": [{ "type": "input_text", "text": "用户问题" }],
   "model": "gpt-xxx",
   "reasoningEffort": "medium",
-  "serviceTier": "priority",
-  "contextWindowTokens": 128000
+  "serviceTier": "default"
 }
 ```
 
@@ -637,28 +645,24 @@ PostgreSQL 约束：
 每轮按当前选择模型重新计算预算：
 
 ```text
-可用历史输入预算 = min(
-  64K MVP 历史上限,
-  有效模型上下文窗口
-  - 输出预留
+可用历史输入预算 = 有效模型最大输入窗口
   - 协议与工具安全空间
   - 固定提示估算
   - 当前内容块估算
   - 消息结构开销
-)
 ```
 
 - 上下文窗口从本地模型目录元数据读取，不从标准 `/v1/models` 响应猜测。
-- 客户端选择的历史上限不能突破服务端模型目录窗口：`effectiveWindow = min(用户选择, 服务端模型窗口)`。
-- 模型元数据未知时采用保守 16K 总输入预算。
-- 输出预留 8K token；协议安全空间同时覆盖实际工具定义，固定提示单独估算，不能与当前问题混在一起忽略。
+- 客户端不提交上下文窗口；有效输入上限优先读取 `maxInputTokens`，否则用 `contextWindowTokens - maxOutputTokens` 派生。
+- 模型目录未返回 `maxInputTokens` / `contextWindowTokens` 时不伪造 16K 或其他窗口，当前请求交由上游执行真实窗口校验。
+- `maxInputTokens` 已经是输入上限，不能再次扣减固定输出预留；只有从总上下文派生时才扣除模型最大输出。协议安全空间同时覆盖实际工具定义，固定提示单独估算，不能与当前问题混在一起忽略。
 - 图片输入按张使用保守预留，后续有可靠模型元数据时再替换为能力级估算。
 - MVP 使用保守 UTF-8 字节估算并留安全余量，不引入按供应商维护的重型 tokenizer。
 - 超出预算时只从最旧完整轮次开始删除，不能留下半轮消息。
 - 固定提示加当前输入已经超过预算时，在调用网关前返回明确中文错误，不能只清空历史后继续发送。
 - 第一版不自动摘要，避免额外模型调用和跨 7 天内容延续。
 
-上述 64K 上限、客户端窗口选择、16K 未知模型回退和 UTF-8 字节估算只描述当前 MVP，已确认不适合作为长期实现。目标方案见 [AI 问答上下文管理设计](AI问答上下文管理设计.md)：删除窗口下拉，使用模型最大有效窗口；优先采用 `/responses/input_tokens` 和上游真实 usage；token 与最终 JSON 字节分别预算；压缩成功后原子安装 checkpoint，失败保留旧上下文。
+客户端窗口选择、64K 历史上限和 16K 未知模型回退已经删除；当前仍使用 UTF-8 字节估算、固定预留和 64 轮有界查询。目标方案见 [AI 问答上下文管理设计](AI问答上下文管理设计.md)：优先采用 `/responses/input_tokens` 和上游真实 usage；token 与最终 JSON 字节分别预算；压缩成功后原子安装 checkpoint，失败保留旧上下文。
 
 ## 15. 7 天保留与审计边界
 

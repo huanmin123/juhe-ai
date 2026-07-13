@@ -147,8 +147,10 @@ try {
   assert.equal(invalidCreate.status, 400, 'AI 问答参数校验失败必须返回 400 而不是全局 500')
   const created = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
   const conversationId = created.data.id
-  const models = await apiJson<{ data: Array<{ id: string }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)
-  assert(models.data.some((item) => item.id === testModel), 'AI 问答模型列表应来自绑定 Key 的真实网关 /v1/models')
+  const models = await apiJson<{ data: Array<{ id: string; supportedApiProtocols: string[] }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)
+  const selectedModel = models.data.find((item) => item.id === testModel)
+  assert(selectedModel, 'AI 问答模型列表应来自绑定 Key 的真实网关 /v1/models')
+  assert(selectedModel.supportedApiProtocols.includes('responses'), '聊天模型能力必须包含当前 API Key 实际可用的 Responses 路由')
 
   const streamResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
     method: 'POST',
@@ -170,8 +172,10 @@ try {
     assert(chatOnlyGatewayKeyId)
     assert(chatOnlyGroupId)
     const chatConversation = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: chatOnlyGatewayKeyId })
-    const chatModels = await apiJson<{ data: Array<{ id: string }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${chatConversation.data.id}/models`, cookie)
-    assert(chatModels.data.some((item) => item.id === chatOnlyTestModel), 'Chat-only 会话必须列出绑定账户模型')
+    const chatModels = await apiJson<{ data: Array<{ id: string; supportedApiProtocols: string[] }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${chatConversation.data.id}/models`, cookie)
+    const chatOnlyModel = chatModels.data.find((item) => item.id === chatOnlyTestModel)
+    assert(chatOnlyModel, 'Chat-only 会话必须列出绑定账户模型')
+    assert.deepEqual(chatOnlyModel.supportedApiProtocols, ['chat_completions'], '聊天模型能力必须只暴露当前 API Key 真正可用的协议')
     const chatStreamResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${chatConversation.data.id}/stream`, {
       method: 'POST',
       headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream', 'x-trace-id': 'chat-mock-trace-chat' },
@@ -199,23 +203,6 @@ try {
   })
   assert.equal(duplicateResponse.status, 409, '相同 clientMessageId 必须返回冲突且不再次调用模型')
   if (!realCredential) {
-    const overBudgetResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
-      method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
-      body: JSON.stringify({ clientMessageId: 'mock-client-over-budget', content: '很长'.repeat(20_000), model: testModel, contextWindowTokens: 16_000 })
-    })
-    const overBudgetText = await overBudgetResponse.text()
-    const overBudgetPayload = parseOptionalJson(overBudgetText)
-    const blockBudgetResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
-      method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
-      body: JSON.stringify({
-        clientMessageId: 'mock-client-block-over-budget',
-        content: '短摘要',
-        contentBlocks: [{ type: 'input_text', text: '很长'.repeat(20_000) }],
-        model: testModel,
-        contextWindowTokens: 16_000
-      })
-    })
-    const blockBudgetPayload = parseOptionalJson(await blockBudgetResponse.text())
     const expectedInstructions = buildChatSystemInstructions({ toolsEnabled: true }).text
     const observedInstructions = upstreamBodies[0]?.instructions
     const observedTools = Array.isArray(upstreamBodies[0]?.tools) ? upstreamBodies[0].tools as Array<{ type?: string }> : []
@@ -223,23 +210,13 @@ try {
       instructionsMatch: observedInstructions === expectedInstructions,
       toolDisciplineCount: typeof observedInstructions === 'string' ? observedInstructions.match(/重复调用名称相同/g)?.length ?? 0 : 0,
       webSearchToolCount: observedTools.filter((tool) => tool.type === 'web_search').length,
-      overBudgetStatus: overBudgetResponse.status,
-      overBudgetCode: overBudgetPayload?.code,
-      blockBudgetStatus: blockBudgetResponse.status,
-      blockBudgetCode: blockBudgetPayload?.code,
       upstreamCalls: upstreamAuthorizations.length
     }, {
       instructionsMatch: true,
       toolDisciplineCount: 1,
       webSearchToolCount: 1,
-      overBudgetStatus: 422,
-      overBudgetCode: 'chat_input_exceeds_context',
-      blockBudgetStatus: 422,
-      blockBudgetCode: 'chat_input_exceeds_context',
       upstreamCalls: 2
-    }, 'Responses 必须唯一注入工具提示；固定输入超预算必须在落轮次和请求上游前返回 422')
-    assert.match(String(overBudgetPayload?.message ?? ''), /上下文窗口/)
-    assert.match(String(blockBudgetPayload?.message ?? ''), /上下文窗口/)
+    }, 'Responses 必须唯一注入工具提示，且 AI 问答双协议只能产生预期上游请求')
     assert.deepEqual(upstreamAuthorizations, ['Bearer sk-chat-upstream', 'Bearer sk-chat-only-upstream'], 'AI 问答双协议都必须经过网关并使用各自 AI 账户凭据访问上游')
     assert.deepEqual(upstreamPaths.slice(0, 2), ['POST /v1/responses', 'POST /v1/chat/completions'], 'Mock AI 必须真实覆盖 Responses 与 Chat Completions 两条 HTTP 路径')
     assert.deepEqual(upstreamTraceIds.slice(0, 2), ['chat-mock-trace-responses', 'chat-mock-trace-chat'], 'Chat route 必须把外层 trace 原样传给内部网关')

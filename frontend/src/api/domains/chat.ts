@@ -34,7 +34,6 @@ export async function streamChatMessage(input: {
   model: string
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier
-  contextWindowTokens?: number
   signal: AbortSignal
   onEvent: (event: ChatStreamEvent) => void
 }): Promise<void> {
@@ -43,7 +42,7 @@ export async function streamChatMessage(input: {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
-    body: JSON.stringify({ clientMessageId: input.clientMessageId, replaceTurnId: input.replaceTurnId, content: input.content, contentBlocks: input.contentBlocks, model: input.model, reasoningEffort: input.reasoningEffort, serviceTier: input.serviceTier, contextWindowTokens: input.contextWindowTokens }),
+    body: JSON.stringify({ clientMessageId: input.clientMessageId, replaceTurnId: input.replaceTurnId, content: input.content, contentBlocks: input.contentBlocks, model: input.model, reasoningEffort: input.reasoningEffort, serviceTier: input.serviceTier }),
     signal: input.signal
   })
   if (!response.ok || !response.body) {

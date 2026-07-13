@@ -1,4 +1,4 @@
-// Curated from official OpenAI model, pricing, and deprecation docs on 2026-05-08.
+// Curated from official OpenAI model, pricing, and deprecation docs on 2026-07-13.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
 // Current o-series reasoning model prices.
 
@@ -8,21 +8,31 @@ export const openAIReasoningModelPricingData = [
     litellm_provider: "openai",
     mode: "chat",
     max_tokens: 100000,
-    max_input_tokens: 200000,
+    context_window_tokens: 200000,
     max_output_tokens: 100000,
+    input_modalities: ["text", "image"],
+    output_modalities: ["text"],
+    supported_api_protocols: ["chat_completions", "responses"],
+    supported_tools: ["function_calling", "file_search", "mcp"],
     input_cost_per_token: 0.000015,
     output_cost_per_token: 0.00006,
     cache_read_input_token_cost: 0.0000075,
     shutdown_date: "2026-10-23",
-    supports_prompt_caching: true
+    supports_prompt_caching: true,
+    supported_reasoning_efforts: ["low", "medium", "high"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "o1-pro",
     litellm_provider: "openai",
     mode: "responses",
     max_tokens: 100000,
-    max_input_tokens: 200000,
+    context_window_tokens: 200000,
     max_output_tokens: 100000,
+    input_modalities: ["text", "image"],
+    output_modalities: ["text"],
+    supported_api_protocols: ["responses"],
+    supported_tools: ["function_calling", "file_search", "mcp"],
     input_cost_per_token: 0.00015,
     output_cost_per_token: 0.0006,
     shutdown_date: "2026-10-23",
@@ -33,8 +43,12 @@ export const openAIReasoningModelPricingData = [
     litellm_provider: "openai",
     mode: "chat",
     max_tokens: 100000,
-    max_input_tokens: 200000,
+    context_window_tokens: 200000,
     max_output_tokens: 100000,
+    input_modalities: ["text", "image"],
+    output_modalities: ["text"],
+    supported_api_protocols: ["chat_completions", "responses"],
+    supported_tools: ["function_calling", "file_search", "image_generation", "code_interpreter", "mcp", "web_search"],
     input_cost_per_token: 0.000002,
     input_cost_per_token_priority: 0.0000035,
     output_cost_per_token: 0.000008,
@@ -42,6 +56,8 @@ export const openAIReasoningModelPricingData = [
     cache_read_input_token_cost: 5e-7,
     cache_read_input_token_cost_priority: 8.75e-7,
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["low", "medium", "high"],
+    default_reasoning_effort: "medium",
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -49,8 +65,12 @@ export const openAIReasoningModelPricingData = [
     litellm_provider: "openai",
     mode: "responses",
     max_tokens: 100000,
-    max_input_tokens: 200000,
+    context_window_tokens: 200000,
     max_output_tokens: 100000,
+    input_modalities: ["text", "image"],
+    output_modalities: ["text"],
+    supported_api_protocols: ["responses"],
+    supported_tools: ["function_calling", "file_search", "image_generation", "mcp", "web_search"],
     input_cost_per_token: 0.00002,
     output_cost_per_token: 0.00008,
     supports_prompt_caching: true
@@ -60,21 +80,31 @@ export const openAIReasoningModelPricingData = [
     litellm_provider: "openai",
     mode: "chat",
     max_tokens: 100000,
-    max_input_tokens: 200000,
+    context_window_tokens: 200000,
     max_output_tokens: 100000,
+    input_modalities: ["text"],
+    output_modalities: ["text"],
+    supported_api_protocols: ["chat_completions", "responses"],
+    supported_tools: ["function_calling", "file_search", "code_interpreter", "mcp", "image_generation"],
     input_cost_per_token: 0.0000011,
     output_cost_per_token: 0.0000044,
     cache_read_input_token_cost: 5.5e-7,
     shutdown_date: "2026-10-23",
-    supports_prompt_caching: true
+    supports_prompt_caching: true,
+    supported_reasoning_efforts: ["low", "medium", "high"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "o4-mini",
     litellm_provider: "openai",
     mode: "chat",
     max_tokens: 100000,
-    max_input_tokens: 200000,
+    context_window_tokens: 200000,
     max_output_tokens: 100000,
+    input_modalities: ["text", "image"],
+    output_modalities: ["text"],
+    supported_api_protocols: ["chat_completions", "responses"],
+    supported_tools: ["function_calling", "file_search", "code_interpreter", "mcp", "web_search"],
     input_cost_per_token: 0.0000011,
     input_cost_per_token_priority: 0.000002,
     output_cost_per_token: 0.0000044,
@@ -83,6 +113,8 @@ export const openAIReasoningModelPricingData = [
     cache_read_input_token_cost_priority: 5e-7,
     shutdown_date: "2026-10-23",
     supports_prompt_caching: true,
+    supported_reasoning_efforts: ["low", "medium", "high"],
+    default_reasoning_effort: "medium",
     supported_service_tiers: ["priority", "flex"]
   }
 ] as const

@@ -2,7 +2,7 @@
 
 > 本文定义站内 AI 问答的渲染历史、模型上下文、附件资产、主动压缩和请求体预算。本文是 [AI 问答设计](AI问答设计.md) 的第二阶段专题设计；网关级 Responses compact 继续以 [Responses 上下文压缩落地方案](Responses上下文压缩落地方案.md) 为准。
 >
-> 当前状态：方案已形成，尚未实现。实施追踪见 [PLAN-0095](../plans/计划-0095-AI问答上下文与多模态降负.md)。
+> 当前状态：方案已形成；模型能力控件已删除上下文人工选择，并改为模型目录驱动的思考/服务默认值，其余 checkpoint、主动压缩和图片资产链路尚未实现。实施追踪见 [PLAN-0095](../plans/计划-0095-AI问答上下文与多模态降负.md)。
 
 ## 1. 目标与边界
 
@@ -161,11 +161,13 @@ PLAN-0095 只实现本机有界文件存储；对象存储仅作为未来扩展�
 
 ### 6.2 有效窗口
 
-前端不再让用户选择上下文大小。服务端始终使用模型目录声明的最大有效窗口：
+前端不再让用户选择上下文大小。服务端先使用模型目录明确给出的最大输入；厂商只给总窗口和最大输出时，再派生保守输入上限：
 
 ```text
-effectiveInputLimit = floor(modelContextWindow * effectivePercent)
-  - maxOutputTokens
+effectiveInputLimit = modelMaxInputTokens
+  ?? (modelContextWindow - maxOutputTokens)
+
+historyBudget = effectiveInputLimit
   - protocolAndToolReserve
   - emergencyReserve
 ```

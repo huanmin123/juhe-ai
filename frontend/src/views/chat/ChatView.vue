@@ -34,8 +34,8 @@
             v-model="selectedModel"
             v-model:reasoning-effort="selectedReasoningEffort"
             v-model:service-tier="selectedServiceTier"
-            v-model:context-window-tokens="selectedContextWindowTokens"
             :disabled="generating || submissionBlocked"
+            :image-input-supported="Boolean(selectedModelOption?.inputModalities.includes('image') && selectedModelOption.supportedApiProtocols.includes('responses'))"
             :model-options="models"
             :models-loading="modelsLoading"
             :show-conversation-button="mobile"
@@ -100,6 +100,7 @@ import { stopActiveChatGeneration } from './chatStopGeneration'
 import ChatMessageList from './ChatMessageList.vue'
 import AIComposer from './composer/AIComposer.vue'
 import type { ChatInputBlock } from './composer/chatComposerDocument'
+import { defaultChatReasoningEffort, defaultChatServiceTier } from './composer/chatModelControls'
 import type { JSONContent } from '@tiptap/core'
 
 interface ChatTurnEditingState {
@@ -138,7 +139,6 @@ const models = ref<ChatModelOption[]>([])
 const selectedModel = ref<string>()
 const selectedReasoningEffort = ref<ChatReasoningEffort | ''>('')
 const selectedServiceTier = ref<ChatServiceTier | ''>('')
-const selectedContextWindowTokens = ref(0)
 const messagesLoading = ref(false)
 const olderMessagesLoading = ref(false)
 const hasOlderMessages = ref(false)
@@ -171,6 +171,7 @@ let conversationLoadEpoch = 0
 let disposed = false
 
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationId.value))
+const selectedModelOption = computed(() => models.value.find((item) => item.id === selectedModel.value))
 const apiKeyOptions = computed(() => apiKeys.value.map((item) => ({ label: item.name, value: item.id })))
 const editableUserMessageId = computed(() => {
   const candidate = messages.value[messages.value.length - 2]
@@ -319,7 +320,6 @@ async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatI
       model,
       reasoningEffort: selectedReasoningEffort.value || undefined,
       serviceTier: selectedServiceTier.value || undefined,
-      contextWindowTokens: selectedContextWindowTokens.value || undefined,
       signal: controller.signal,
       onEvent: (event) => {
         if (selectedConversationId.value !== requestContext.conversationId) return
@@ -517,7 +517,7 @@ async function confirmDeleteConversation(): Promise<void> { const item = pending
 function replaceConversation(next: ChatConversation): void { const index = conversations.value.findIndex((item) => item.id === next.id); if (index >= 0) conversations.value[index] = next; if (detailConversation.value?.id === next.id) detailConversation.value = next }
 function sortConversations(): void { conversations.value.sort((left, right) => Number(right.isPinned) - Number(left.isPinned) || Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt) || right.id.localeCompare(left.id)) }
 function formatDetailTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false }) }
-function resetModelControls(): void { const model = models.value.find((item) => item.id === selectedModel.value); selectedReasoningEffort.value = model?.defaultReasoningEffort ?? ''; selectedServiceTier.value = ''; selectedContextWindowTokens.value = 0 }
+function resetModelControls(): void { selectedReasoningEffort.value = defaultChatReasoningEffort(selectedModelOption.value); selectedServiceTier.value = defaultChatServiceTier(selectedModelOption.value) }
 watch(selectedModel, resetModelControls)
 onMounted(() => { updateMobile(); window.addEventListener('resize', updateMobile); window.addEventListener('click', closeConversationMenu); window.addEventListener('blur', closeConversationMenu); void loadInitial() })
 onBeforeUnmount(() => { disposed = true; conversationLoadEpoch += 1; window.removeEventListener('resize', updateMobile); window.removeEventListener('click', closeConversationMenu); window.removeEventListener('blur', closeConversationMenu); if (pendingConfirmationTimer !== undefined) { window.clearTimeout(pendingConfirmationTimer); pendingConfirmationTimer = undefined }; streamController?.abort() })

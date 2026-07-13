@@ -26,17 +26,17 @@ import { validateGatewayApiKeyAsync } from '../../storage/gateway-api-key.reposi
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { listCachedOpenAIAccountsForGroupAsync } from '../gateway/runtime/runtime-cache.service.js'
 import { collectOpenAIChatSse } from './chat-gateway-sse.js'
-import { ChatContextBudgetError, resolveEffectiveChatContextWindowTokens, trimChatContextToBudget, validateFixedChatInputBudget } from './chat-context-budget.js'
+import { ChatContextBudgetError, trimChatContextToBudget, validateFixedChatInputBudget } from './chat-context-budget.js'
 import { collectChatResponsesSse } from './chat-responses-sse.js'
 import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport } from './chat-transport.js'
-import { buildChatModelOptions, chatReasoningEfforts, chatServiceTiers } from './chat-model-options.js'
+import { buildChatModelOptions, ChatModelCapabilityError, chatReasoningEfforts, chatServiceTiers, resolveChatModelRequestOptions, type ChatModelOption } from './chat-model-options.js'
 import { buildChatSystemInstructions } from './chat-system-instructions.js'
 import { deleteActiveChatStreamIfMatches } from './chat-active-streams.js'
 import { sanitizeChatContentBlocksForPersistence } from './chat-content-blocks.js'
 import { readChatJsonResponse } from './chat-bounded-json.js'
 import { initializeAcceptedChatTurn } from './chat-turn-initialization.js'
-import { listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
-import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import { listProviderModelCatalogAsync, type ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
+import { GPT_VENDOR_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 
 export const chatRouter = Router()
 
@@ -55,8 +55,7 @@ const messageBodySchema = z.object({
   contentBlocks: messageContentBlocksSchema.optional(),
   model: z.string().trim().min(1, '请选择模型').max(200),
   reasoningEffort: z.enum(chatReasoningEfforts).optional(),
-  serviceTier: z.enum(chatServiceTiers).optional(),
-  contextWindowTokens: z.number().int().min(16_000).max(2_000_000).optional()
+  serviceTier: z.enum(chatServiceTiers).optional()
 }).strict()
 const messagesQuerySchema = z.object({
   beforeSequenceNo: z.preprocess(queryScalar, z.coerce.number().int().min(1).max(2_147_483_647).optional()),
@@ -165,12 +164,18 @@ chatRouter.get('/conversations/:conversationId/models', async (req, res, next) =
     if (!response.ok) throw new Error(upstreamMessage(payload, `模型列表请求失败（HTTP ${response.status}）`))
     const data = Array.isArray((payload as { data?: unknown }).data) ? (payload as { data: Array<{ id?: unknown }> }).data : []
     const modelIds = data.map((item) => String(item.id ?? '')).filter(Boolean)
-    const catalog = await listProviderModelCatalogAsync({
-      providerCode: GPT_VENDOR_CODE,
-      systemAccountId: auth.systemAccountId,
-      includeUnpriced: true
+    const gatewayKey = await validateGatewayApiKeyAsync(String(apiKey.key))
+    const groupIds = gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? []
+    const catalog = await listChatModelCatalog({
+      groupIds,
+      systemAccountId: auth.systemAccountId
     })
-    res.json(ok(buildChatModelOptions(modelIds, catalog)))
+    const modelOptions = await resolveRouteChatModelOptions({
+      modelOptions: buildChatModelOptions(modelIds, catalog),
+      groupIds,
+      systemAccountId: auth.systemAccountId
+    })
+    res.json(ok(modelOptions))
   } catch (error) { next(error) }
 })
 
@@ -204,7 +209,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     const apiKey = await requireOwnedApiKey(conversation.apiKeyId, ownerId)
     const apiKeySecret = String(apiKey.key)
     const gatewayKey = await validateGatewayApiKeyAsync(apiKeySecret)
-    const supportedProtocols = await resolveChatSupportedProtocols({
+    const accountSupportedProtocols = await resolveChatSupportedProtocols({
       groupIds: gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? [],
       model: body.model,
       loadAccounts: (groupId, model, endpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, ownerId, {
@@ -212,21 +217,29 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         requestedEndpointFamily: endpointFamily
       })
     })
-    const protocol = selectChatTransport({ supportedProtocols, toolsEnabled: true })
-    const toolsEnabled = protocol === 'responses'
-    const imageCount = body.contentBlocks?.filter((block) => block.type === 'input_image').length ?? 0
-    if (protocol === 'chat_completions' && imageCount > 0) {
-      throw new ChatRequestError('chat_image_not_supported', '当前路由不支持图片输入，请切换到支持 Responses 的账户或移除图片')
+    if (!accountSupportedProtocols.length) {
+      throw new ChatModelCapabilityError('当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射')
     }
-    const catalog = await listProviderModelCatalogAsync({
-      providerCode: GPT_VENDOR_CODE,
+    const imageCount = body.contentBlocks?.filter((block) => block.type === 'input_image').length ?? 0
+    const catalog = await listChatModelCatalog({
+      groupIds: gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? [],
       systemAccountId: ownerId,
-      includeUnpriced: true
+      requestedModel: body.model
     })
-    const catalogItem = catalog.find((item) => item.model === body.model)
-    const contextWindowTokens = resolveEffectiveChatContextWindowTokens({
-      clientContextWindowTokens: body.contextWindowTokens,
-      serverContextWindowTokens: catalogItem?.contextWindowTokens ?? catalogItem?.maxInputTokens
+    const modelOption = buildChatModelOptions([body.model], catalog)[0]
+    if (!modelOption) throw new ChatModelCapabilityError('当前模型能力信息不可用，请刷新模型列表')
+    const supportsWebSearch = modelOption.supportedTools.includes('web_search')
+    const protocol = selectChatTransport({
+      supportedProtocols: accountSupportedProtocols,
+      preferResponses: supportsWebSearch || imageCount > 0
+    })
+    const toolsEnabled = protocol === 'responses' && supportsWebSearch
+    if (imageCount > 0 && (!modelOption.inputModalities.includes('image') || protocol !== 'responses')) {
+      throw new ChatRequestError('chat_image_not_supported', '当前模型或路由不支持图片输入，请切换模型或移除图片')
+    }
+    const modelRequestOptions = resolveChatModelRequestOptions(modelOption, {
+      reasoningEffort: body.reasoningEffort,
+      serviceTier: body.serviceTier
     })
     const systemInstructions = buildChatSystemInstructions({ toolsEnabled })
     const fixedBudgetInput = {
@@ -234,7 +247,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       instructions: systemInstructions.text,
       toolsEnabled,
       imageCount,
-      contextWindowTokens
+      maxInputTokens: modelRequestOptions.maxInputTokens
     }
     validateFixedChatInputBudget(fixedBudgetInput)
     accepted = await acceptChatTurn(client, {
@@ -270,8 +283,8 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           currentContent: body.content,
           currentBlocks: body.contentBlocks,
           toolsEnabled,
-          reasoningEffort: body.reasoningEffort,
-          serviceTier: body.serviceTier
+          reasoningEffort: modelRequestOptions.reasoningEffort,
+          serviceTier: modelRequestOptions.serviceTier
         })
       },
       failAcceptedTurn: async () => {
@@ -372,6 +385,10 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       res.status(422).json({ message: error.message, code: error.code })
       return
     }
+    if (error instanceof ChatModelCapabilityError) {
+      res.status(422).json({ message: error.message, code: error.code })
+      return
+    }
     handleChatRouteError(error, res, next)
   }
 })
@@ -426,6 +443,63 @@ function handleChatRouteError(error: unknown, res: ExpressResponse, next: NextFu
 }
 
 function gatewayUrl(path: string): string { return `http://127.0.0.1:${runtimeConfig.port}${path}` }
+async function listChatModelCatalog(input: { groupIds: readonly string[]; systemAccountId: string; requestedModel?: string }): Promise<ProviderModelCatalogItem[]> {
+  const accountLists = await Promise.all([...new Set(input.groupIds.filter(Boolean))].map((groupId) => (
+    listCachedOpenAIAccountsForGroupAsync(groupId, input.systemAccountId, { requestedModel: input.requestedModel })
+  )))
+  const accounts = accountLists.flat()
+  const providerCodes = [...new Set(accounts.map((account) => normalizeProviderToken(account.providerCode)).filter((code): code is string => Boolean(code)))]
+  const catalogs = await Promise.all(providerCodes.map(async (providerCode) => {
+    const items = await listProviderModelCatalogAsync({
+      providerCode,
+      systemAccountId: input.systemAccountId,
+      includeUnpriced: true
+    })
+    const providerAccounts = accounts.filter((account) => normalizeProviderToken(account.providerCode) === providerCode)
+    return items
+      .filter((item) => normalizeProviderToken(item.providerCode) === providerCode)
+      .map((item) => constrainCatalogItemForAccountTypes(item, providerCode, providerAccounts.map((account) => account.type)))
+  }))
+  return catalogs.flat()
+}
+
+async function resolveRouteChatModelOptions(input: {
+  modelOptions: readonly ChatModelOption[]
+  groupIds: readonly string[]
+  systemAccountId: string
+}): Promise<ChatModelOption[]> {
+  const result: ChatModelOption[] = []
+  const batchSize = 8
+  for (let offset = 0; offset < input.modelOptions.length; offset += batchSize) {
+    const batch = await Promise.all(input.modelOptions.slice(offset, offset + batchSize).map(async (modelOption) => {
+      const supportedApiProtocols = await resolveChatSupportedProtocols({
+        groupIds: input.groupIds,
+        model: modelOption.id,
+        loadAccounts: (groupId, model, endpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, input.systemAccountId, {
+          requestedModel: model,
+          requestedEndpointFamily: endpointFamily
+        })
+      })
+      return supportedApiProtocols.length ? { ...modelOption, supportedApiProtocols } : undefined
+    }))
+    result.push(...batch.filter((item): item is ChatModelOption => Boolean(item)))
+  }
+  return result
+}
+
+function constrainCatalogItemForAccountTypes(
+  item: ProviderModelCatalogItem,
+  providerCode: string,
+  accountTypes: readonly string[]
+): ProviderModelCatalogItem {
+  if (providerCode !== GPT_VENDOR_CODE || !accountTypes.includes('oauth')) return item
+  const supportedServiceTiers = item.supportedServiceTiers.filter((tier) => tier === 'priority')
+  return {
+    ...item,
+    supportedServiceTiers,
+    supportsServiceTier: supportedServiceTiers.length > 0
+  }
+}
 function queryScalar(value: unknown): unknown { return Array.isArray(value) ? value[0] : value === '' ? undefined : value }
 function textQuery(value: unknown): string | undefined { const raw = Array.isArray(value) ? value[0] : value; return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined }
 function optionalIntegerQuery(value: unknown): number | undefined { const text = textQuery(value); if (!text) return undefined; const result = Number(text); return Number.isInteger(result) && result > 0 ? result : undefined }

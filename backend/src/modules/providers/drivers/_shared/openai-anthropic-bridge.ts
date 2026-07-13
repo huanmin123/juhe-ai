@@ -380,7 +380,7 @@ const defaultAnthropicMaxTokens = 4096
 const structuredOutputSyntheticToolName = 'emit_structured_output'
 const structuredOutputSchemaMismatchCode = 'openai_anthropic_bridge_structured_output_schema_mismatch'
 const localRuntimeMaxModelToolLoopRounds = 4
-const supportedAnthropicBridgeReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high'])
+const supportedAnthropicBridgeReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 const supportedAnthropicBridgeReasoningSummaries = new Set(['auto', 'concise', 'detailed', 'none'])
 const supportedOpenAIResponsesIncludesForAnthropicBridge = new Set(['file_search_call.results'])
 const openAIResponsesIncludesHandledByDedicatedValidators = new Set([
@@ -1927,7 +1927,7 @@ function validateOpenAIToAnthropicReasoningOptions(
   if (hasOpenAIReasoningEffortRequest(body) && (effort === undefined || !supportedAnthropicBridgeReasoningEfforts.has(effort))) {
     throw openAIToAnthropicCapabilityGuidance(
       guidanceContext,
-      'OpenAI 到 Anthropic 桥接当前只支持 reasoning.effort / reasoning_effort 为 none、minimal、low、medium、high；xhigh 或未知值需要上游 profile 明确支持后才能启用',
+      'OpenAI 到 Anthropic 桥接只支持 reasoning.effort / reasoning_effort 为 none、minimal、low、medium、high、xhigh、max',
       'openai_anthropic_bridge_reasoning_effort_unsupported'
     )
   }
@@ -2352,7 +2352,15 @@ function normalizedOpenAIEnumValue(value: unknown): string | undefined {
 
 function applyAnthropicThinkingFromOpenAIReasoning(output: JsonRecord, body: JsonRecord): void {
   const effort = reasoningEffortFromOpenAIBody(body)
-  if (!effort) return
+  if (!effort || effort === 'none') return
+  if (effort === 'low' || effort === 'medium' || effort === 'high' || effort === 'xhigh' || effort === 'max') {
+    output.thinking = { type: 'adaptive' }
+    output.output_config = {
+      ...(objectValue(output.output_config) ?? {}),
+      effort
+    }
+    return
+  }
   const budgetTokens = anthropicThinkingBudgetTokens(effort)
   if (!budgetTokens) return
   const maxTokens = integerValue(output.max_tokens) ?? defaultAnthropicMaxTokens

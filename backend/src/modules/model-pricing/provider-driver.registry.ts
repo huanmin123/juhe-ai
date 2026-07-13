@@ -171,11 +171,6 @@ function buildDeepSeekModelCandidates(model: string): string[] {
   const withoutDate = model.replace(modelDateSuffixPattern, '')
   if (withoutDate !== model) candidates.add(withoutDate)
 
-  if (model.startsWith('deepseek-ai-v4-flash')) candidates.add('deepseek-v4-flash')
-  if (model.startsWith('deepseek-v4-flash')) candidates.add('deepseek-ai-v4-flash')
-  if (model.startsWith('deepseek-ai-v4-pro')) candidates.add('deepseek-v4-pro')
-  if (model.startsWith('deepseek-v4-pro')) candidates.add('deepseek-ai-v4-pro')
-
   return Array.from(candidates)
 }
 

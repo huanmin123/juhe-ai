@@ -39,6 +39,10 @@ export const apiProtocolLabels: Record<string, string> = {
   responses: 'Responses',
   messages: 'Messages',
   message_token_counting: 'Message Token Counting',
+  generate_content: 'Generate Content',
+  stream_generate_content: 'Stream Generate Content',
+  count_tokens: 'Count Tokens',
+  embed_content: 'Embed Content',
   completions: 'Completions',
   images: 'Images API',
   audio: 'Audio API',
@@ -210,6 +214,12 @@ export function getApiProtocolTagColor(protocol?: string): string {
       return 'purple'
     case 'messages':
       return 'green'
+    case 'generate_content':
+    case 'stream_generate_content':
+      return 'geekblue'
+    case 'count_tokens':
+    case 'embed_content':
+      return 'gold'
     case 'message_token_counting':
       return 'lime'
     case 'images':
@@ -334,6 +344,33 @@ export function formatTokens(value?: number): string {
 
 export function formatModelInputTokens(item: ProviderModelPricing): string {
   return formatTokens(item.maxInputTokens ?? item.contextWindowTokens)
+}
+
+export function formatModelModalities(values?: readonly string[]): string {
+  const labels: Record<string, string> = { text: '文本', image: '图片', audio: '音频', video: '视频', file: '文件' }
+  return values?.length ? values.map((value) => labels[value] ?? value).join(' / ') : '-'
+}
+
+export function formatModelTools(values?: readonly string[]): string {
+  const labels: Record<string, string> = {
+    function_calling: '函数调用',
+    web_search: '联网搜索',
+    google_search_grounding: 'Google 搜索',
+    google_maps_grounding: 'Google 地图检索',
+    file_search: '文件搜索',
+    image_generation: '图像生成',
+    code_interpreter: '代码解释器',
+    code_execution: '代码执行',
+    hosted_shell: '托管终端',
+    apply_patch: '文件补丁',
+    skills: '技能',
+    computer_use: '计算机操作',
+    mcp: 'MCP',
+    tool_search: '工具搜索',
+    structured_outputs: '结构化输出',
+    url_context: 'URL 上下文'
+  }
+  return values?.length ? values.map((value) => labels[value] ?? value).join(' / ') : '-'
 }
 
 export function trimNumber(value: number): string {

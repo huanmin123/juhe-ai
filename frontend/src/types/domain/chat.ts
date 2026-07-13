@@ -46,14 +46,20 @@ export interface ChatToolEvent { id: string; type: string; status: ChatToolStatu
 
 export interface ChatApiKeyOption { id: string; name: string; status: string }
 
-export type ChatReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-export type ChatServiceTier = 'priority' | 'flex'
+export type ChatReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type ChatServiceTier = 'default' | 'priority' | 'flex'
 export interface ChatModelOption {
   id: string
   supportedReasoningEfforts: ChatReasoningEffort[]
   defaultReasoningEffort?: ChatReasoningEffort
   supportedServiceTiers: ChatServiceTier[]
   contextWindowTokens?: number
+  maxInputTokens?: number
+  maxOutputTokens?: number
+  supportedApiProtocols: string[]
+  inputModalities: string[]
+  outputModalities: string[]
+  supportedTools: string[]
 }
 
 export type ChatStreamEvent =

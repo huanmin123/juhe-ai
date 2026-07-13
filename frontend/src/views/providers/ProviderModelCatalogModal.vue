@@ -79,6 +79,13 @@
               <span v-if="!record.supportedApiProtocols?.length" class="muted-text">-</span>
             </a-space>
           </template>
+          <template v-else-if="column.key === 'modalities'">
+            <div class="price-cell">
+              <span>输入 {{ formatModelModalities(record.inputModalities) }}</span>
+              <span>输出 {{ formatModelModalities(record.outputModalities) }}</span>
+              <span v-if="record.supportedTools?.length">工具 {{ formatModelTools(record.supportedTools) }}</span>
+            </div>
+          </template>
           <template v-else-if="column.key === 'serviceTiers'">
             <a-space wrap size="small">
               <a-tag v-for="tier in record.supportedServiceTiers" :key="tier" :color="tier === 'priority' ? 'blue' : 'cyan'">
@@ -131,8 +138,9 @@
           </template>
           <template v-else-if="column.key === 'context'">
             <div class="price-cell">
-              <span>输入 {{ formatModelInputTokens(record) }}</span>
-              <span>输出 {{ formatTokens(record.maxOutputTokens) }}</span>
+              <span>窗口 {{ formatTokens(record.contextWindowTokens) }}</span>
+              <span>最大输入 {{ formatTokens(record.maxInputTokens) }}</span>
+              <span>最大输出 {{ formatTokens(record.maxOutputTokens) }}</span>
             </div>
           </template>
           <template v-else-if="column.key === 'actions'">
@@ -159,6 +167,10 @@
               <strong>{{ record.releaseDate || '-' }}</strong>
               <span>接口协议</span>
               <strong>{{ (record.supportedApiProtocols ?? []).map(formatApiProtocol).join(' / ') || '-' }}</strong>
+              <span>输入 / 输出模态</span>
+              <strong>{{ formatModelModalities(record.inputModalities) }} / {{ formatModelModalities(record.outputModalities) }}</strong>
+              <span>工具</span>
+              <strong>{{ formatModelTools(record.supportedTools) }}</strong>
               <span>服务等级</span>
               <strong>{{ (record.supportedServiceTiers ?? []).map(formatModelServiceTier).join(' / ') || '-' }}</strong>
               <span>思考级别</span>
@@ -166,7 +178,7 @@
               <span>价格</span>
               <strong>{{ formatModelPriceSummary(record) }}</strong>
               <span>上下文</span>
-              <strong>{{ formatModelInputTokens(record) }} / {{ formatTokens(record.maxOutputTokens) }}</strong>
+              <strong>窗口 {{ formatTokens(record.contextWindowTokens) }} / 输入 {{ formatTokens(record.maxInputTokens) }} / 输出 {{ formatTokens(record.maxOutputTokens) }}</strong>
             </div>
             <RowActions v-if="rowActions(record).length" variant="button" :actions="rowActions(record)" @action-click="emit('model-action', $event, record)" />
           </article>
@@ -187,7 +199,8 @@ import type { ProviderModelPricing, SystemAccountPrincipalSummary } from '@/type
 import {
   formatApiProtocol,
   formatModelCategory,
-  formatModelInputTokens,
+  formatModelModalities,
+  formatModelTools,
   formatModelPriceSummary,
   formatModelReasoningCapabilities,
   formatModelReasoningEffort,

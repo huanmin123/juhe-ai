@@ -1,6 +1,6 @@
 <template>
   <div class="ai-composer" :class="{ 'is-disabled': disabled }">
-    <input ref="fileInput" class="ai-composer-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple @change="handleFileChange" />
+    <input ref="fileInput" class="ai-composer-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" :disabled="!imageInputSupported" multiple @change="handleFileChange" />
     <EditorContent :editor="editor" class="ai-composer-editor" />
     <div v-if="commandOpen" class="ai-composer-command-menu" role="listbox">
       <button v-for="(item, index) in commandItems" :key="item.key" type="button" role="option" :aria-selected="index === commandIndex" :class="{ 'is-active': index === commandIndex }" @mouseenter="commandIndex = index" @mousedown.prevent="selectCommand(item)">
@@ -11,9 +11,8 @@
       <div class="ai-composer-model-controls">
         <a-tooltip v-if="showConversationButton" title="对话记录"><a-button type="text" size="small" aria-label="对话记录" @click="emit('open-conversations')"><MenuOutlined /></a-button></a-tooltip>
         <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled" size="small" :bordered="false" :popup-match-select-width="false" aria-label="选择模型" @update:value="emit('update:modelValue', $event)" />
-        <a-select v-if="reasoningOptions.length > 1" :value="reasoningEffort" :options="reasoningOptions" :disabled="disabled" size="small" :bordered="false" :popup-match-select-width="false" aria-label="思考级别" @update:value="emit('update:reasoningEffort', $event)" />
-        <a-select v-if="serviceTierOptions.length > 1" :value="serviceTier" :options="serviceTierOptions" :disabled="disabled" size="small" :bordered="false" :popup-match-select-width="false" aria-label="服务等级" @update:value="emit('update:serviceTier', $event)" />
-        <a-select v-if="contextOptions.length > 1" :value="contextWindowTokens" :options="contextOptions" :disabled="disabled" size="small" :bordered="false" :popup-match-select-width="false" aria-label="上下文大小" @update:value="emit('update:contextWindowTokens', $event)" />
+        <a-select v-if="reasoningOptions.length" :value="reasoningEffort" :options="reasoningOptions" :disabled="disabled" size="small" :bordered="false" :popup-match-select-width="false" aria-label="思考级别" @update:value="emit('update:reasoningEffort', $event)" />
+        <a-select v-if="serviceTierOptions.length" :value="serviceTier" :options="serviceTierOptions" :disabled="disabled" size="small" :bordered="false" :popup-match-select-width="false" aria-label="服务等级" @update:value="emit('update:serviceTier', $event)" />
       </div>
       <a-tooltip v-if="disabled" title="停止生成"><a-button danger type="primary" aria-label="停止生成" @click="emit('stop')"><StopOutlined /></a-button></a-tooltip>
       <a-tooltip v-else title="发送"><a-button type="primary" aria-label="发送" :disabled="!canSubmit" @click="submit"><SendOutlined /></a-button></a-tooltip>
@@ -28,23 +27,23 @@ import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { computed, ref, watch } from 'vue'
 import type { JSONContent } from '@tiptap/core'
+import { message } from '@/lib/antd'
 import { composerDocumentToBlocks, composerTextToDocument, type ChatInputBlock } from './chatComposerDocument'
 import { createChatComposerSubmission } from './chatComposerSubmission'
 import { ChatImageAttachment } from './ChatImageAttachment'
 import { chatComposerCommandQueryRange, chatComposerCommands, filterChatComposerCommands, moveChatComposerCommandIndex, type ChatComposerCommand } from './chatComposerCommands'
-import { chatContextOptions, reasoningEffortLabel } from './chatModelControls'
+import { reasoningEffortLabel, selectableChatReasoningEfforts } from './chatModelControls'
 import { replaceEditorContentWithoutHistory } from './chatEditorDocumentBoundary'
 import { maxChatImageCount, selectChatImageFiles } from './chatImageSelection'
 import type { ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 
-const props = defineProps<{ disabled: boolean; modelOptions: ChatModelOption[]; modelValue?: string; modelsLoading: boolean; reasoningEffort: ChatReasoningEffort | ''; serviceTier: ChatServiceTier | ''; contextWindowTokens: number; showConversationButton: boolean }>()
+const props = defineProps<{ disabled: boolean; imageInputSupported: boolean; modelOptions: ChatModelOption[]; modelValue?: string; modelsLoading: boolean; reasoningEffort: ChatReasoningEffort | ''; serviceTier: ChatServiceTier | ''; showConversationButton: boolean }>()
 const emit = defineEmits<{
   (event: 'submit', payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void
   (event: 'stop' | 'open-conversations'): void
   (event: 'update:modelValue', value?: string): void
   (event: 'update:reasoningEffort', value: ChatReasoningEffort | ''): void
   (event: 'update:serviceTier', value: ChatServiceTier | ''): void
-  (event: 'update:contextWindowTokens', value: number): void
 }>()
 const fileInput = ref<HTMLInputElement>()
 const commandOpen = ref(false)
@@ -55,7 +54,7 @@ let imageInsertionQueue = Promise.resolve()
 let editorDocumentGeneration = 0
 
 const editor = useEditor({
-  extensions: [StarterKit, Placeholder.configure({ placeholder: '输入消息；Enter 发送，Shift+Enter 换行，粘贴图片，/ 打开命令' }), ChatImageAttachment],
+  extensions: [StarterKit, Placeholder.configure({ placeholder: () => props.imageInputSupported ? '输入消息；Enter 发送，Shift+Enter 换行，可粘贴图片，/ 打开命令' : '输入消息；Enter 发送，Shift+Enter 换行，/ 打开命令' }), ChatImageAttachment],
   content: { type: 'doc', content: [{ type: 'paragraph' }] },
   editable: !props.disabled,
   editorProps: {
@@ -80,6 +79,7 @@ const editor = useEditor({
     handlePaste: (_view, event) => {
       const files = Array.from(event.clipboardData?.files ?? [])
       if (!files.some((file) => file.type.startsWith('image/'))) return false
+      if (!props.imageInputSupported) { message.warning('当前模型不支持图片输入'); return true }
       enqueueImages(files)
       return true
     }
@@ -95,17 +95,12 @@ const editor = useEditor({
 })
 watch(() => props.disabled, (disabled) => editor.value?.setEditable(!disabled), { immediate: true })
 
-const commandItems = computed(() => commandOpen.value ? filterChatComposerCommands(commandQuery.value) : chatComposerCommands)
+const commandItems = computed(() => (commandOpen.value ? filterChatComposerCommands(commandQuery.value) : chatComposerCommands)
+  .filter((item) => props.imageInputSupported || item.key !== 'image'))
 const selectedModelOption = computed(() => props.modelOptions.find((item) => item.id === props.modelValue))
 const modelSelectOptions = computed(() => props.modelOptions.map((item) => ({ label: item.id, value: item.id })))
-const reasoningOptions = computed(() => [{ label: '思考 自动', value: '' }, ...(selectedModelOption.value?.supportedReasoningEfforts ?? []).map((value) => ({ label: reasoningEffortLabel(value), value }))])
-const serviceTierOptions = computed(() => [{ label: '服务 默认', value: '' }, ...(selectedModelOption.value?.supportedServiceTiers ?? []).map((value) => ({ label: value === 'priority' ? '服务 优先' : '服务 Flex', value }))])
-const contextOptions = computed(() => chatContextOptions(selectedModelOption.value))
-const hasContent = computed(() => {
-  contentRevision.value
-  return Boolean(editor.value && (editor.value.getText().trim() || imageItems.value.length))
-})
-const canSubmit = computed(() => Boolean(hasContent.value && props.modelValue && !props.modelsLoading))
+const reasoningOptions = computed(() => selectableChatReasoningEfforts(selectedModelOption.value).map((value) => ({ label: `思考 ${reasoningEffortLabel(value)}`, value })))
+const serviceTierOptions = computed(() => (selectedModelOption.value?.supportedServiceTiers ?? []).map((value) => ({ label: value === 'default' ? '服务 默认' : value === 'priority' ? '服务 优先' : '服务 Flex', value })))
 const imageItems = computed(() => {
   contentRevision.value
   const items: Array<{ assetId: string; previewUrl: string; fileName: string }> = []
@@ -113,6 +108,15 @@ const imageItems = computed(() => {
     if (node.type.name === 'chatImageAttachment') items.push({ assetId: String(node.attrs.assetId ?? ''), previewUrl: String(node.attrs.previewUrl ?? ''), fileName: String(node.attrs.fileName ?? '图片') })
   })
   return items
+})
+const hasContent = computed(() => {
+  contentRevision.value
+  return Boolean(editor.value && (editor.value.getText().trim() || imageItems.value.length))
+})
+const canSubmit = computed(() => Boolean(hasContent.value && props.modelValue && !props.modelsLoading && (props.imageInputSupported || imageItems.value.length === 0)))
+watch(() => props.imageInputSupported, () => {
+  if (editor.value) editor.value.view.dispatch(editor.value.state.tr)
+  if (!props.imageInputSupported && imageItems.value.length) message.warning('当前模型不支持已粘贴的图片，请移除图片或切换模型')
 })
 
 function submit(): void {
@@ -151,17 +155,21 @@ function selectCommand(item: ChatComposerCommand): void {
   commandOpen.value = false
 }
 async function insertImage(file: File, generation: number): Promise<void> {
-  if (!editor.value || generation !== editorDocumentGeneration || imageItems.value.length >= maxChatImageCount) return
+  if (!props.imageInputSupported || !editor.value || generation !== editorDocumentGeneration || imageItems.value.length >= maxChatImageCount) return
   const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result ?? '')); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file) })
-  if (!editor.value || generation !== editorDocumentGeneration || imageItems.value.length >= maxChatImageCount) return
+  if (!props.imageInputSupported || !editor.value || generation !== editorDocumentGeneration || imageItems.value.length >= maxChatImageCount) return
   const previewUrl = dataUrl
   editor.value.commands.insertContent({ type: 'chatImageAttachment', attrs: { assetId: `local-${crypto.randomUUID()}`, previewUrl, dataUrl, fileName: file.name || '图片' } })
 }
 function enqueueImages(files: readonly File[]): void {
+  if (!props.imageInputSupported) { message.warning('当前模型不支持图片输入'); return }
   const generation = editorDocumentGeneration
   imageInsertionQueue = imageInsertionQueue.then(async () => {
     if (generation !== editorDocumentGeneration) return
-    for (const file of selectChatImageFiles(files, imageItems.value.length)) await insertImage(file, generation)
+    for (const file of selectChatImageFiles(files, imageItems.value.length)) {
+      if (!props.imageInputSupported) break
+      await insertImage(file, generation)
+    }
   }).catch(() => undefined)
 }
 function handleFileChange(event: Event): void { const input = event.target as HTMLInputElement; enqueueImages(Array.from(input.files ?? [])); input.value = '' }

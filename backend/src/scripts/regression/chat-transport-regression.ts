@@ -3,11 +3,12 @@ import assert from 'node:assert/strict'
 import { buildChatSystemInstructions } from '../../modules/chat/chat-system-instructions.js'
 import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport } from '../../modules/chat/chat-transport.js'
 
-assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions'], toolsEnabled: true }), 'chat_completions')
-assert.equal(selectChatTransport({ supportedProtocols: ['responses'], toolsEnabled: true }), 'responses')
-assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions', 'responses'], toolsEnabled: true }), 'responses')
-assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions', 'responses'], toolsEnabled: false }), 'chat_completions')
-assert.equal(selectChatTransport({ supportedProtocols: [], toolsEnabled: true }), 'chat_completions')
+assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions'], preferResponses: true }), 'chat_completions')
+assert.equal(selectChatTransport({ supportedProtocols: ['responses'], preferResponses: true }), 'responses')
+assert.equal(selectChatTransport({ supportedProtocols: ['responses'], preferResponses: false }), 'responses')
+assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions', 'responses'], preferResponses: true }), 'responses')
+assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions', 'responses'], preferResponses: false }), 'chat_completions')
+assert.equal(selectChatTransport({ supportedProtocols: [], preferResponses: true }), 'chat_completions')
 assert.equal(resolveChatBudgetContent({
   protocol: 'responses',
   currentContent: '短摘要',
@@ -17,7 +18,7 @@ assert.equal(resolveChatBudgetContent({ protocol: 'chat_completions', currentCon
 
 const instructions = buildChatSystemInstructions({ toolsEnabled: true }).text
 const responses = buildChatTransportRequest({
-  protocol: 'responses', instructions, model: 'model-a', history: [{ role: 'user', content: '此前问题' }], currentContent: '继续', currentBlocks: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', dataUrl: 'data:image/png;base64,abc' }, { type: 'input_text', text: '图片后' }], toolsEnabled: true, reasoningEffort: 'high', serviceTier: 'priority'
+  protocol: 'responses', instructions, model: 'model-a', history: [{ role: 'user', content: '此前问题' }], currentContent: '继续', currentBlocks: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', dataUrl: 'data:image/png;base64,abc' }, { type: 'input_text', text: '图片后' }], toolsEnabled: true, reasoningEffort: 'high', serviceTier: 'default'
 })
 assert.equal(responses.path, '/v1/responses')
 assert.equal(responses.body.instructions, instructions)
@@ -26,7 +27,7 @@ assert.equal((responses.body.input as Array<{ role: string }>).some((item) => it
 assert.equal(responses.body.stream, true)
 assert.deepEqual(responses.body.tools, [{ type: 'web_search' }])
 assert.deepEqual(responses.body.reasoning, { effort: 'high' })
-assert.equal(responses.body.service_tier, 'priority')
+assert.equal(responses.body.service_tier, 'default')
 
 const chat = buildChatTransportRequest({
   protocol: 'chat_completions', instructions, model: 'model-a', history: [{ role: 'assistant', content: '此前回答' }], currentContent: '你好', toolsEnabled: true, reasoningEffort: 'low', serviceTier: 'flex'
