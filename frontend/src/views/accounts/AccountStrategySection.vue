@@ -110,7 +110,8 @@ import {
 import {
   defaultAccountModelMappingUpstreamEndpointFamily,
   isAccountModelMappingProtocolAllowed,
-  isAccountModelMappingSourceEndpointFamilyAllowed
+  isAccountModelMappingSourceEndpointFamilyAllowed,
+  shouldResetAccountModelMappingUpstreamEndpointFamily
 } from './accountModelMappingProtocolMatrix'
 
 const props = defineProps<{
@@ -168,10 +169,14 @@ watch(() => [
   sourceModelOptionsFingerprint(props.mappingUpstreamModelOptions)
 ].join('|'), () => {
   for (const mapping of props.form.modelMappings) {
-    if (!isAccountModelMappingSourceEndpointFamilyAllowed(mapping.sourceEndpointFamily, modelMappingProtocolContext(), mapping.enabled)) {
+    if (!isAccountModelMappingSourceEndpointFamilyAllowed(mapping.sourceEndpointFamily, modelMappingProtocolContext())) {
       mapping.sourceEndpointFamily = 'chat_completions'
     }
-    if (upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily, mapping.enabled)) {
+    if (shouldResetAccountModelMappingUpstreamEndpointFamily({
+      sourceEndpointFamily: mapping.sourceEndpointFamily,
+      upstreamEndpointFamily: mapping.upstreamEndpointFamily,
+      context: modelMappingProtocolContext()
+    })) {
       mapping.upstreamEndpointFamily = defaultUpstreamEndpointFamilyForSource(mapping.sourceEndpointFamily)
     }
     if (!mappingSourceModelAllowed(mapping)) {

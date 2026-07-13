@@ -7,7 +7,9 @@ import {
 } from '../../views/accounts/accountModelMappingModelOptions'
 import {
   accountModelMappingProtocolValidationMessage,
-  isAccountModelMappingProtocolAllowed
+  isAccountModelMappingProtocolAllowed,
+  isAccountModelMappingSourceEndpointFamilyAllowed,
+  shouldResetAccountModelMappingUpstreamEndpointFamily
 } from '../../views/accounts/accountModelMappingProtocolMatrix'
 
 const accountEditModalSource = readFileSync(new URL('../../views/accounts/AccountEditModal.vue', import.meta.url), 'utf8')
@@ -62,6 +64,33 @@ const geminiNativeProfile = {
   protocolVersion: 'v1beta'
 }
 
+assertEqual(
+  isAccountModelMappingSourceEndpointFamilyAllowed('chat_completions', {
+    providerProfile: openAIProfile,
+    supportedEndpointModes: ['responses_json']
+  }),
+  true,
+  '来源 Chat Completions 是否可选只能看 profile 和转换白名单，不能被右侧 Chat 上游能力缺失禁用'
+)
+assertEqual(
+  shouldResetAccountModelMappingUpstreamEndpointFamily({
+    sourceEndpointFamily: 'responses',
+    upstreamEndpointFamily: 'chat_completions',
+    context: { providerProfile: openAIProfile, supportedEndpointModes: ['responses_json'] }
+  }),
+  false,
+  '目标 Chat 能力缺失但转换结构仍合法时，watcher 不应静默重写映射目标族'
+)
+assertEqual(
+  shouldResetAccountModelMappingUpstreamEndpointFamily({
+    sourceEndpointFamily: 'chat_completions',
+    upstreamEndpointFamily: 'responses',
+    context: { providerProfile: openAIProfile, supportedEndpointModes: ['responses_json'] }
+  }),
+  true,
+  '普通 OpenAI Chat -> Responses 转换结构非法时，watcher 仍应重置目标族'
+)
+
 assertMatch(
   accountModelMappingProtocolValidationMessage({
     sourceEndpointFamily: 'responses',
@@ -113,7 +142,8 @@ assertMatch(
   '前端 Gemini 目标族必须要求 GenerateContent JSON 或 SSE 上游能力'
 )
 assertIncludes(accountSavePayloadSource, 'enabled: item.enabled', '前端保存校验必须把映射启停状态传给统一协议矩阵')
-assertIncludes(accountStrategySectionSource, 'mapping.upstreamEndpointFamily, mapping.enabled', '前端目标协议选项联动必须区分启用与停用映射')
+assertIncludes(accountStrategySectionSource, 'upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, option.value, mapping.enabled)', '前端目标协议下拉联动必须区分启用与停用映射')
+assertIncludes(accountStrategySectionSource, 'shouldResetAccountModelMappingUpstreamEndpointFamily', '前端 watcher 必须仅按转换结构决定是否重写目标族')
 
 console.log('账号模型别名协议模型选项回归通过')
 

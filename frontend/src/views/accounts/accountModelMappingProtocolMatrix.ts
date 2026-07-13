@@ -65,12 +65,34 @@ export const hybridAccountModelMappingProtocolRules: readonly ProtocolConversion
   { source: ANTHROPIC_MESSAGES_FAMILY, upstream: GEMINI_GENERATE_CONTENT_FAMILY, upstreamProfile: 'gemini' }
 ] as const
 
-export function accountModelMappingProtocolValidationMessage(input: {
+type AccountModelMappingProtocolStructureInput = {
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
-  enabled?: boolean
   context: AccountModelMappingProtocolContext
-}): string | undefined {
+}
+
+export function accountModelMappingProtocolValidationMessage(
+  input: AccountModelMappingProtocolStructureInput & { enabled?: boolean }
+): string | undefined {
+  const structuralValidation = accountModelMappingProtocolStructureValidationMessage(input)
+  if (structuralValidation || input.enabled === false) return structuralValidation
+  if (hasAccountModelMappingUpstreamEndpointFamilyCapability(
+    input.upstreamEndpointFamily,
+    input.context.supportedEndpointModes
+  )) {
+    return undefined
+  }
+  const rule = accountModelMappingRulesForContext(input.context).find((item) => (
+    item.source === input.sourceEndpointFamily && item.upstream === input.upstreamEndpointFamily
+  ))
+  return rule?.requiresNativeResponses
+    ? 'Responses 模型别名只能用于账号真实支持 Responses API 的原生上游'
+    : missingUpstreamEndpointFamilyCapabilityMessage(input.upstreamEndpointFamily)
+}
+
+function accountModelMappingProtocolStructureValidationMessage(
+  input: AccountModelMappingProtocolStructureInput
+): string | undefined {
   const { sourceEndpointFamily, upstreamEndpointFamily, context } = input
   const providerProfile = context.providerProfile
   const openAIProfile = isOpenAIProtocolProfile(providerProfile)
@@ -87,12 +109,6 @@ export function accountModelMappingProtocolValidationMessage(input: {
     ))
     if (!rule) {
       return unsupportedHybridProtocolConversionMessage(sourceEndpointFamily, upstreamEndpointFamily)
-    }
-    if (input.enabled !== false && !hasAccountModelMappingUpstreamEndpointFamilyCapability(
-      upstreamEndpointFamily,
-      context.supportedEndpointModes
-    )) {
-      return missingUpstreamEndpointFamilyCapabilityMessage(upstreamEndpointFamily)
     }
     return undefined
   }
@@ -133,14 +149,6 @@ export function accountModelMappingProtocolValidationMessage(input: {
   if (!openAIProfile && !anthropicProfile && !geminiNativeProfile) {
     return '当前供应商协议不支持账号模型别名'
   }
-  if (input.enabled !== false && !hasAccountModelMappingUpstreamEndpointFamilyCapability(
-    upstreamEndpointFamily,
-    context.supportedEndpointModes
-  )) {
-    return rule.requiresNativeResponses
-      ? 'Responses 模型别名只能用于账号真实支持 Responses API 的原生上游'
-      : missingUpstreamEndpointFamilyCapabilityMessage(upstreamEndpointFamily)
-  }
   return undefined
 }
 
@@ -155,18 +163,22 @@ export function isAccountModelMappingProtocolAllowed(input: {
 
 export function isAccountModelMappingSourceEndpointFamilyAllowed(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  context: AccountModelMappingProtocolContext,
-  enabled = true
+  context: AccountModelMappingProtocolContext
 ): boolean {
   return accountModelMappingRulesForContext(context).some((rule) => (
     rule.source === sourceEndpointFamily
-    && isAccountModelMappingProtocolAllowed({
+    && !accountModelMappingProtocolStructureValidationMessage({
       sourceEndpointFamily,
       upstreamEndpointFamily: rule.upstream,
-      enabled,
       context
     })
   ))
+}
+
+export function shouldResetAccountModelMappingUpstreamEndpointFamily(
+  input: AccountModelMappingProtocolStructureInput
+): boolean {
+  return Boolean(accountModelMappingProtocolStructureValidationMessage(input))
 }
 
 export function defaultAccountModelMappingUpstreamEndpointFamily(
