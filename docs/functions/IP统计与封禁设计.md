@@ -448,7 +448,7 @@ POST /__aisys__/api/ip-stats/:ipHash/allowlist
 POST /__aisys__/api/ip-stats/:ipHash/unallowlist
 ```
 
-Node 当前提供上述六条完整产品接口。Go 渐进迁移当前只将 `allowlist` / `unallowlist` 两条 admin-only 写接口纳入 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；列表、详情、blacklist 和 unblock 继续由 Node 单 owner 处理。两条 Go 写路由使用 `256 KiB` strict JSON、写 session touch、两层 write limiter、进程内 mutation guard、PostgreSQL 注册表行锁和提交后 `gateway:client-ip-policy-by-ip` shared cache version 失效。Go 已补 blacklist / unblock 的 port、PostgreSQL 和 service 基础但尚未挂载 HTTP；策略 created / updated / disabled / expires 时间统一写成 Node `Date.toISOString()` 等价的 UTC 三位毫秒文本。详细门禁见 [W6 管理端客户端 IP 策略迁移记录](../migration/W6-管理端客户端IP策略迁移记录.md)。
+Node 当前提供上述六条完整产品接口。Go 渐进迁移已将 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条 admin-only 写接口纳入 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；列表和详情继续由 Node 单 owner 处理。四条 Go 写路由使用 `256 KiB` strict JSON、写 session touch、两层 write limiter、进程内 mutation guard、PostgreSQL 注册表行锁和提交后 `gateway:client-ip-policy-by-ip` shared cache version 失效；blacklist 支持永久、分钟或按固定 24 小时天数封禁，unallowlist / unblock 在无活动策略时返回 `disabledCount=0` 成功。策略 created / updated / disabled / expires 时间统一写成 Node `Date.toISOString()` 等价的 UTC 三位毫秒文本。详细门禁见 [W6 管理端客户端 IP 策略迁移记录](../migration/W6-管理端客户端IP策略迁移记录.md)。
 
 列表查询参数：
 
