@@ -141,6 +141,12 @@ func TestNormalizeUsageRangeMatchesNodeFallbackAndClampRules(t *testing.T) {
 			want:      UsageRange{StartDate: "2026-07-14", EndDate: "2026-07-14", Days: 1, MaxDays: 31},
 		},
 		{
+			name:      "non ECMAScript whitespace does not reveal a hidden date",
+			startDate: "\u00852026-07-01\u0085",
+			endDate:   "\u00852026-07-01\u0085",
+			want:      UsageRange{StartDate: "2026-07-14", EndDate: "2026-07-14", Days: 1, MaxDays: 31},
+		},
+		{
 			name:      "range is limited to the latest thirty one days",
 			startDate: "2020-01-01",
 			endDate:   "2026-07-14",
@@ -363,7 +369,8 @@ func TestServiceListMapsNodeDTOAndOptionalFields(t *testing.T) {
 		*first.RangeUsage.MaxDurationMs != maxDuration {
 		t.Fatalf("first item optional metrics = %+v", first.RangeUsage)
 	}
-	if result.Items[1].Status != "allowlisted" || result.Items[1].LastSeenAt != nil ||
+	if result.Items[1].Status != "allowlisted" || result.Items[1].LastSeenAt == nil ||
+		*result.Items[1].LastSeenAt != "" ||
 		result.Items[1].RangeUsage.MaxDurationMs != nil {
 		t.Fatalf("second item optional fields = %+v", result.Items[1])
 	}
@@ -382,8 +389,8 @@ func TestServiceListMapsNodeDTOAndOptionalFields(t *testing.T) {
 		t.Fatalf("non-finite averageFirstTokenMs leaked into JSON: %s", raw)
 	}
 	second := items[1].(map[string]any)
-	if _, exists := second["lastSeenAt"]; exists {
-		t.Fatalf("empty lastSeenAt leaked into JSON: %s", raw)
+	if value, exists := second["lastSeenAt"]; !exists || value != "" {
+		t.Fatalf("empty lastSeenAt was not preserved in JSON: %s", raw)
 	}
 }
 
@@ -395,6 +402,24 @@ func TestServiceListTrimsStoreFiltersAndDefaultsStatus(t *testing.T) {
 	}
 	if store.listInput.Keyword != "203.0.113" || store.listInput.Status != port.ManagementClientIPStatsStatusAll {
 		t.Fatalf("store filters = keyword %q status %q", store.listInput.Keyword, store.listInput.Status)
+	}
+}
+
+func TestServiceListPreservesNonECMAScriptWhitespaceFilters(t *testing.T) {
+	const nonECMAScriptWhitespace = "\u0085"
+	store := readyClientIPStatsStore("UTC")
+	service := newClientIPStatsTestService(store, fixedClientIPStatsNow)
+	if _, err := service.List(context.Background(), ListInput{
+		Keyword:           nonECMAScriptWhitespace,
+		LastUsedStartDate: nonECMAScriptWhitespace,
+	}); err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if store.listInput.Keyword != nonECMAScriptWhitespace {
+		t.Fatalf("keyword = %q, want preserved U+0085", store.listInput.Keyword)
+	}
+	if store.listInput.LastUsedStartAt == nil || store.listInput.LastUsedEndExclusiveAt == nil {
+		t.Fatal("U+0085 last-used input must remain provided and normalize to today's window")
 	}
 }
 

@@ -137,7 +137,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		EndDate:                rangeValue.EndDate,
 		LastUsedStartAt:        lastUsedStartAt,
 		LastUsedEndExclusiveAt: lastUsedEndExclusiveAt,
-		Keyword:                strings.TrimSpace(input.Keyword),
+		Keyword:                trimECMAScriptWhitespace(input.Keyword),
 		Status:                 normalizeStatus(input.Status),
 		SortField:              sortField,
 		SortOrder:              sortOrder,
@@ -185,7 +185,7 @@ func (s *Service) usageStatsLocation(ctx context.Context) (*time.Location, error
 	if err != nil {
 		return nil, err
 	}
-	timezone = strings.TrimSpace(timezone)
+	timezone = trimECMAScriptWhitespace(timezone)
 	if !found || timezone == "" {
 		return nil, fmt.Errorf("系统设置缺少 usageStatsTimezone")
 	}
@@ -201,13 +201,13 @@ func normalizeUsageRange(startDate string, endDate string, now time.Time, locati
 	today, _ := time.Parse(time.DateOnly, todayText)
 	earliestSupported := today.AddDate(0, 0, -(maxUsageRangeDays - 1))
 
-	end, ok := parseDateKey(strings.TrimSpace(endDate))
+	end, ok := parseDateKey(trimECMAScriptWhitespace(endDate))
 	if !ok {
 		end = today
 	}
 	end = clampDate(end, earliestSupported, today)
 
-	start, ok := parseDateKey(strings.TrimSpace(startDate))
+	start, ok := parseDateKey(trimECMAScriptWhitespace(startDate))
 	if !ok {
 		start = today
 	}
@@ -234,7 +234,7 @@ func normalizeLastUsedWindow(
 	now time.Time,
 	location *time.Location,
 ) (*time.Time, *time.Time) {
-	if strings.TrimSpace(startDate) == "" && strings.TrimSpace(endDate) == "" {
+	if trimECMAScriptWhitespace(startDate) == "" && trimECMAScriptWhitespace(endDate) == "" {
 		return nil, nil
 	}
 	rangeValue := normalizeUsageRange(startDate, endDate, now, location)
@@ -318,7 +318,7 @@ func listItem(row port.ManagementClientIPStatsListRow) ListItem {
 	return ListItem{
 		IPHash:         row.IPHash,
 		AggregateIPKey: row.AggregateIPKey,
-		LastSeenAt:     optionalString(row.LastSeenAt),
+		LastSeenAt:     stringPointer(row.LastSeenAt),
 		Status:         listItemStatus(row.Status),
 		RangeUsage:     usageSummary(row.RangeUsage),
 	}
@@ -391,10 +391,7 @@ func cloneString(value *string) *string {
 	return &result
 }
 
-func optionalString(value string) *string {
-	if value == "" {
-		return nil
-	}
+func stringPointer(value string) *string {
 	result := value
 	return &result
 }
@@ -405,4 +402,19 @@ func positiveInt64(value *int64) *int64 {
 	}
 	result := *value
 	return &result
+}
+
+func trimECMAScriptWhitespace(value string) string {
+	return strings.TrimFunc(value, func(character rune) bool {
+		switch character {
+		case '\u0009', '\u000B', '\u000C', '\u0020', '\u00A0', '\u1680',
+			'\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
+			'\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F',
+			'\u205F', '\u3000', '\uFEFF', '\u000A', '\u000D', '\u2028',
+			'\u2029':
+			return true
+		default:
+			return false
+		}
+	})
 }

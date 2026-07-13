@@ -72,7 +72,7 @@ func listManagementClientIPStats(
 	if err != nil {
 		return port.ManagementClientIPStatsListPage{}, err
 	}
-	keyword := strings.TrimSpace(input.Keyword)
+	keyword := managementClientIPStatsTrimECMAScriptWhitespace(input.Keyword)
 	keywordUpper := ""
 	if keyword != "" {
 		keywordUpper = textPrefixUpperBound(keyword)
@@ -249,6 +249,21 @@ func managementClientIPStatsMaxDuration(maximum int64, count int64) *int64 {
 
 func managementClientIPStatsTimeText(value time.Time) string {
 	return value.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
+}
+
+func managementClientIPStatsTrimECMAScriptWhitespace(value string) string {
+	return strings.TrimFunc(value, func(character rune) bool {
+		switch character {
+		case '\u0009', '\u000B', '\u000C', '\u0020', '\u00A0', '\u1680',
+			'\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
+			'\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F',
+			'\u205F', '\u3000', '\uFEFF', '\u000A', '\u000D', '\u2028',
+			'\u2029':
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 var _ port.ManagementClientIPStatsListReader = (*Store)(nil)

@@ -18,7 +18,7 @@ SELECT CASE
     LIMIT 1
   ) THEN false
   WHEN EXISTS (SELECT 1 FROM range_state) THEN COALESCE(
-    (SELECT last_success_at IS NOT NULL FROM range_state),
+    (SELECT last_success_at IS NOT NULL AND last_success_at <> '' FROM range_state),
     false
   )
   ELSE EXISTS (

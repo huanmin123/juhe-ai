@@ -71,6 +71,7 @@ func TestW6ManagementClientIPStatsSQLIsPreaggregatedBoundedAndStatic(t *testing.
 		"scope_type = 'client_ip_range_window'",
 		"job_name = 'client_ip_range_window_refresh'",
 		"last_success_at IS NOT NULL",
+		"last_success_at <> ''",
 		"ELSE EXISTS",
 		"client_ip_usage_range_windows",
 	} {
@@ -293,6 +294,30 @@ func TestListManagementClientIPStatsClampsAdapterInputs(t *testing.T) {
 		call.RowLimit != 101 ||
 		call.RowOffset != 0 {
 		t.Fatalf("clamped list params = %+v", call)
+	}
+}
+
+func TestListManagementClientIPStatsPreservesNonECMAScriptWhitespaceKeyword(t *testing.T) {
+	const keyword = "\u0085"
+	q := &managementClientIPStatsQueriesStub{ready: true}
+	_, err := listManagementClientIPStats(
+		context.Background(),
+		q,
+		port.ManagementClientIPStatsListInput{
+			StartDate: "2026-07-01",
+			EndDate:   "2026-07-07",
+			Keyword:   keyword,
+			Limit:     21,
+		},
+	)
+	if err != nil {
+		t.Fatalf("listManagementClientIPStats() error = %v", err)
+	}
+	if got := q.listCalls[0].Keyword; got != keyword {
+		t.Fatalf("keyword = %q, want preserved %q", got, keyword)
+	}
+	if got := q.listCalls[0].KeywordUpper; got != "\u0086" {
+		t.Fatalf("keyword upper = %q, want U+0086", got)
 	}
 }
 
