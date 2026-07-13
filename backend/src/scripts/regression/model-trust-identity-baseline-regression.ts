@@ -83,7 +83,7 @@ const sameSource = await repository.findModelAccountTrustResultAsync('sys_identi
 assert(sameSource)
 assert.equal(sameSource.identityStatus, 'suspected_same_source')
 assert(sameSource.reasonCodes.includes('paired_models_collapsed'))
-assert.equal(sameSource.independentSourceCount, 6, '基线来源数必须按六个独立上游桶计数，不按 observation 数量放大')
+assert.equal(sameSource.independentSourceCount, 5, '未声明模型冲突不得作为第六个独立上游桶污染基线')
 assert.equal(sameSource.pairedProbeCount, 2)
 assert.equal(sameSource.baselineVersion, 1)
 
@@ -96,6 +96,10 @@ const undeclared = await repository.findModelAccountTrustResultAsync('sys_identi
 assert(undeclared)
 assert.equal(undeclared.mappingStatus, 'undeclared_mismatch')
 assert(undeclared.reasonCodes.includes('undeclared_response_model_mismatch'))
+const undeclaredFeatureCount = database.getStatsDatabase().prepare(`
+  SELECT COUNT(*) AS count FROM model_identity_source_features WHERE account_id = ?
+`).get('acct_undeclared') as { count: number }
+assert.equal(undeclaredFeatureCount.count, 0, '未声明模型冲突 observation 只保留诊断事实，不得进入身份来源或群体基线')
 
 const robust = statistics.robustVectorSummary([
   featureVector(0.1), featureVector(0.11), featureVector(0.12), featureVector(0.95)
@@ -154,18 +158,187 @@ const failedFeatureCount = database.getStatsDatabase().prepare(`
 `).get('acct_failed_identity') as { count: number }
 assert.equal(failedFeatureCount.count, 0, '无效身份 observation 不能进入来源特征或群体基线')
 
+const protocolConflict = identityObservation({
+  accountId: 'acct_protocol_conflict', upstream: 'protocol-conflict-source', model: 'gpt-5.6-sol', probeIndex: 0,
+  vector: featureVector(0.2), createdAt: new Date(Date.UTC(2026, 6, 24)).toISOString(), protocolStatus: 'failed'
+})
+await repository.createModelCheckObservationsAsync([protocolConflict])
+while (await repository.aggregateModelTrustObservationsAsync(13)) {
+}
+const protocolConflictLatest = await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_protocol_conflict', 'gpt-5.6-sol')
+assert.equal(protocolConflictLatest?.protocolStatus, 'failed', '协议硬冲突必须保留 latest 诊断事实')
+assert(protocolConflictLatest?.reasonCodes.includes('protocol_check_failed'))
+assert.equal(protocolConflictLatest?.identityObservationCount, 0, '协议硬冲突不得计入身份 observation')
+assert.equal(
+  (database.getStatsDatabase().prepare('SELECT COUNT(*) AS count FROM model_identity_source_features WHERE account_id = ?').get('acct_protocol_conflict') as { count: number }).count,
+  0,
+  '协议硬冲突不得进入身份来源或群体基线'
+)
+assert.equal(
+  (database.getDatasetDatabase().prepare('SELECT COUNT(*) AS count FROM model_check_observations WHERE account_id = ?').get('acct_protocol_conflict') as { count: number }).count,
+  1,
+  '协议硬冲突 observation 本身必须保留'
+)
+
+const meanPopulationKeyHmac = security.modelCheckObservationHmac('identity-cumulative-mean-population', 'population')
+const cumulativeMeanObservations = [
+  identityObservation({ accountId: 'acct_cumulative_mean', upstream: 'cumulative-mean-source', model: 'gpt-5.6-sol', probeIndex: 0, vector: [1, ...Array(7).fill(0.1)], constraintPassed: true, populationKeyHmac: meanPopulationKeyHmac, createdAt: new Date(Date.UTC(2026, 6, 25, 0, 0, 0)).toISOString() }),
+  identityObservation({ accountId: 'acct_cumulative_mean', upstream: 'cumulative-mean-source', model: 'gpt-5.6-terra', probeIndex: 0, vector: [0, ...Array(7).fill(0.9)], constraintPassed: false, populationKeyHmac: meanPopulationKeyHmac, createdAt: new Date(Date.UTC(2026, 6, 25, 0, 0, 1)).toISOString() }),
+  identityObservation({ accountId: 'acct_cumulative_mean', upstream: 'cumulative-mean-source', model: 'gpt-5.6-sol', probeIndex: 0, vector: [0, ...Array(7).fill(0.9)], constraintPassed: false, populationKeyHmac: meanPopulationKeyHmac, createdAt: new Date(Date.UTC(2026, 6, 25, 0, 0, 2)).toISOString() }),
+  identityObservation({ accountId: 'acct_cumulative_mean', upstream: 'cumulative-mean-source', model: 'gpt-5.6-terra', probeIndex: 0, vector: [1, ...Array(7).fill(0.1)], constraintPassed: true, populationKeyHmac: meanPopulationKeyHmac, createdAt: new Date(Date.UTC(2026, 6, 25, 0, 0, 3)).toISOString() })
+]
+await repository.createModelCheckObservationsAsync(cumulativeMeanObservations)
+while (await repository.aggregateModelTrustObservationsAsync(13)) {
+}
+const cumulativeMean = await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_cumulative_mean', 'gpt-5.6-sol')
+assert(cumulativeMean)
+assert(Math.abs(Number(cumulativeMean.pairedDistance)) < 0.000001, 'paired 来源向量必须使用累计均值，不能由两个不同的 latest_feature 制造距离')
+const cumulativeSource = database.getStatsDatabase().prepare(`
+  SELECT sample_count, constraint_pass_count, sum_feature_2, latest_feature_2
+  FROM model_identity_source_features WHERE account_id = ? AND requested_model = ?
+`).get('acct_cumulative_mean', 'gpt-5.6-sol') as Record<string, number>
+assert.equal(cumulativeSource.sample_count, 2)
+assert.equal(cumulativeSource.constraint_pass_count / cumulativeSource.sample_count, 0.5, '约束维度必须按累计通过率计算')
+assert.equal(cumulativeSource.sum_feature_2 / cumulativeSource.sample_count, 0.5)
+assert.equal(cumulativeSource.latest_feature_2, 0.9, '回归样本必须确保 latest 与累计均值不同')
+
+const recoveryObservations: import('../../storage/model-trust.repository.js').ModelCheckObservationInput[] = []
+for (let repeat = 0; repeat < 40; repeat += 1) {
+  for (let sourceIndex = 0; sourceIndex < 5; sourceIndex += 1) {
+    for (let probeIndex = 0; probeIndex < 3; probeIndex += 1) {
+      recoveryObservations.push(identityObservation({
+        accountId: `acct_source_${sourceIndex}`, upstream: `source-${sourceIndex}`, model: 'gpt-5.6-sol', probeIndex,
+        vector: featureVector(Number(modelBase.get('gpt-5.6-sol')) + sourceIndex * 0.012 + probeIndex * 0.004),
+        createdAt: new Date(Date.UTC(2026, 6, 26 + Math.floor(repeat / 10), repeat % 10, sourceIndex, probeIndex)).toISOString()
+      }))
+    }
+  }
+}
+await repository.createModelCheckObservationsAsync(recoveryObservations)
+while (await repository.aggregateModelTrustObservationsAsync(5000)) {
+}
+const recovered = await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_source_0', 'gpt-5.6-sol')
+assert.equal(recovered?.baselineVersionStatus, 'active', '群体恢复后必须重新使用 active 基线，不能永久优先旧候选')
+assert(!recovered?.reasonCodes.includes('population_drift_protected'))
+
+const rejectedPopulationKeyHmac = security.modelCheckObservationHmac('identity-rejected-candidate-population', 'population')
+await aggregateIdentityBatch([
+  ...populationObservationBatch({ label: 'rejected', populationKeyHmac: rejectedPopulationKeyHmac, base: 0.1, observedAt: new Date(Date.UTC(2026, 6, 31)).toISOString() }),
+  ...populationObservationBatch({ label: 'rejected', populationKeyHmac: rejectedPopulationKeyHmac, base: 0.1, observedAt: new Date(Date.UTC(2026, 7, 2)).toISOString() })
+])
+await aggregateIdentityBatch(populationObservationBatch({
+  label: 'rejected', populationKeyHmac: rejectedPopulationKeyHmac, base: 0.9,
+  observedAt: new Date(Date.UTC(2026, 7, 3)).toISOString()
+}))
+const rejectedProtected = await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_rejected_0', 'gpt-5.6-sol')
+assert.equal(rejectedProtected?.baselineVersionStatus, 'drift_protected')
+await aggregateIdentityBatch(populationObservationBatch({
+  label: 'rejected', populationKeyHmac: rejectedPopulationKeyHmac, base: 0.99,
+  observedAt: new Date(Date.UTC(2026, 7, 5)).toISOString()
+}))
+const rejectedRows = baselineStatuses(rejectedPopulationKeyHmac)
+assert.deepEqual(rejectedRows, ['active', 'rejected'], '候选分布在固定验证窗内继续失稳时必须拒绝，不能永久保持 drift_protected')
+assert.equal(
+  (await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_rejected_0', 'gpt-5.6-sol'))?.baselineVersionStatus,
+  'active',
+  '拒绝候选后 latest 必须回到 active 基线'
+)
+
+const expiredPopulationKeyHmac = security.modelCheckObservationHmac('identity-expired-candidate-population', 'population')
+await aggregateIdentityBatch(populationObservationBatch({
+  label: 'expired', populationKeyHmac: expiredPopulationKeyHmac, base: 0.1, probeCount: 1,
+  observedAt: new Date(Date.UTC(2026, 7, 10)).toISOString()
+}))
+await aggregateIdentityBatch(populationObservationBatch({
+  label: 'expired', populationKeyHmac: expiredPopulationKeyHmac, base: 0.9, probeCount: 1,
+  observedAt: new Date(Date.UTC(2026, 7, 11)).toISOString()
+}))
+const expiredProtected = await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_expired_0', 'gpt-5.6-sol')
+assert.equal(expiredProtected?.baselineVersionStatus, 'drift_protected')
+await aggregateIdentityBatch(populationObservationBatch({
+  label: 'expired', populationKeyHmac: expiredPopulationKeyHmac, base: 0.9, probeCount: 1,
+  observedAt: new Date(Date.UTC(2026, 7, 18)).toISOString()
+}))
+assert.deepEqual(baselineStatuses(expiredPopulationKeyHmac), ['active', 'expired'], '证据不足的候选超过固定生命周期后必须过期')
+assert.equal(
+  (await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_expired_0', 'gpt-5.6-sol'))?.baselineVersionStatus,
+  'active',
+  '候选过期后 latest 必须回到 active 基线'
+)
+
+const promotedPopulationKeyHmac = security.modelCheckObservationHmac('identity-promoted-candidate-population', 'population')
+await aggregateIdentityBatch([
+  ...populationObservationBatch({ label: 'promoted', populationKeyHmac: promotedPopulationKeyHmac, base: 0.1, observedAt: new Date(Date.UTC(2026, 7, 20)).toISOString() }),
+  ...populationObservationBatch({ label: 'promoted', populationKeyHmac: promotedPopulationKeyHmac, base: 0.1, observedAt: new Date(Date.UTC(2026, 7, 22)).toISOString() })
+])
+await aggregateIdentityBatch(populationObservationBatch({
+  label: 'promoted', populationKeyHmac: promotedPopulationKeyHmac, base: 0.9,
+  observedAt: new Date(Date.UTC(2026, 7, 23)).toISOString()
+}))
+assert.equal(
+  (await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_promoted_0', 'gpt-5.6-sol'))?.baselineVersionStatus,
+  'drift_protected'
+)
+await aggregateIdentityBatch(populationObservationBatch({
+  label: 'promoted', populationKeyHmac: promotedPopulationKeyHmac, base: (0.1 + 0.1 + 0.9) / 3,
+  observedAt: new Date(Date.UTC(2026, 7, 25)).toISOString()
+}))
+assert.deepEqual(baselineStatuses(promotedPopulationKeyHmac), ['retired', 'active'], '候选稳定满 3 天且证据充分时必须晋升为 active')
+const promoted = await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_promoted_0', 'gpt-5.6-sol')
+assert.equal(promoted?.baselineVersion, 2)
+assert.equal(promoted?.baselineVersionStatus, 'active')
+
 const stored = database.getDatasetDatabase().prepare("SELECT * FROM model_check_observations WHERE probe_family LIKE 'identity_%' LIMIT 1").get() as Record<string, unknown>
 assert(!('prompt' in stored) && !('response_body' in stored) && !('output_text' in stored), '身份 observation 不得持久化题面或回答正文')
 assert.equal(typeof stored.feature_1, 'number')
-const baselineRows = database.getStatsDatabase().prepare("SELECT baseline_version, version_status FROM model_identity_baseline_versions WHERE requested_model = 'gpt-5.6-sol' ORDER BY baseline_version").all() as Array<Record<string, unknown>>
-assert.deepEqual(baselineRows.map((row) => row.version_status), ['active', 'drift_protected'])
+const baselineRows = database.getStatsDatabase().prepare("SELECT baseline_version, version_status FROM model_identity_baseline_versions WHERE population_key_hmac = ? AND requested_model = 'gpt-5.6-sol' ORDER BY baseline_version").all(populationKeyHmac) as Array<Record<string, unknown>>
+assert.deepEqual(baselineRows.map((row) => row.version_status), ['active', 'recovered'])
 const { buildPostgresSchemaSql } = await import('../../storage/postgres-schema.js')
 const postgresSql = buildPostgresSchemaSql()
 assert(postgresSql.includes('CREATE TABLE IF NOT EXISTS model_identity_source_features'))
 assert(postgresSql.includes('CREATE TABLE IF NOT EXISTS model_identity_baseline_versions'))
 assert(postgresSql.includes('CREATE TABLE IF NOT EXISTS model_paired_similarity_windows'))
 
-console.log('模型身份稳健基线回归通过：paired 同源、降级、LOO 限权、异常退出与群体漂移保护符合预期')
+console.log('模型身份稳健基线回归通过：累计均值、硬冲突门禁、LOO 限权与群体漂移恢复/拒绝/过期符合预期')
+
+async function aggregateIdentityBatch(inputs: import('../../storage/model-trust.repository.js').ModelCheckObservationInput[]): Promise<void> {
+  await repository.createModelCheckObservationsAsync(inputs)
+  while (await repository.aggregateModelTrustObservationsAsync(5000)) {
+  }
+}
+
+function populationObservationBatch(input: {
+  label: string
+  populationKeyHmac: string
+  base: number
+  observedAt: string
+  probeCount?: number
+}): import('../../storage/model-trust.repository.js').ModelCheckObservationInput[] {
+  const observations: import('../../storage/model-trust.repository.js').ModelCheckObservationInput[] = []
+  for (let sourceIndex = 0; sourceIndex < 5; sourceIndex += 1) {
+    for (let probeIndex = 0; probeIndex < (input.probeCount ?? 3); probeIndex += 1) {
+      observations.push(identityObservation({
+        accountId: `acct_${input.label}_${sourceIndex}`,
+        upstream: `${input.label}-source-${sourceIndex}`,
+        model: 'gpt-5.6-sol',
+        probeIndex,
+        vector: featureVector(Math.min(0.99, input.base + sourceIndex * 0.001 + probeIndex * 0.0001)),
+        populationKeyHmac: input.populationKeyHmac,
+        createdAt: new Date(Date.parse(input.observedAt) + sourceIndex * 1_000 + probeIndex).toISOString()
+      }))
+    }
+  }
+  return observations
+}
+
+function baselineStatuses(population: string): string[] {
+  const rows = database.getStatsDatabase().prepare(`
+    SELECT version_status FROM model_identity_baseline_versions
+    WHERE population_key_hmac = ? AND requested_model = 'gpt-5.6-sol'
+    ORDER BY baseline_version
+  `).all(population) as Array<{ version_status: string }>
+  return rows.map((row) => row.version_status)
+}
 
 function identityObservation(input: {
   accountId: string
@@ -176,7 +349,10 @@ function identityObservation(input: {
   createdAt: string
   observedModel?: string | null
   mappingStatus?: string
+  protocolStatus?: string
   observationStatus?: string
+  constraintPassed?: boolean
+  populationKeyHmac?: string
 }): import('../../storage/model-trust.repository.js').ModelCheckObservationInput {
   const cohort = security.modelCheckObservationHmac(`cohort:${input.model}`, 'cohort')
   return {
@@ -192,7 +368,7 @@ function identityObservation(input: {
     mappingApplied: false,
     upstreamBucketHmac: security.modelCheckObservationHmac(input.upstream, 'upstream'),
     cohortKeyHmac: cohort,
-    populationKeyHmac,
+    populationKeyHmac: input.populationKeyHmac ?? populationKeyHmac,
     probeKeyHmac: security.modelCheckObservationHmac(`probe-${input.probeIndex}`, 'probe'),
     probeFamily: 'identity_generated_canary',
     probeSetVersion: 'identity-mock-v1',
@@ -202,12 +378,12 @@ function identityObservation(input: {
     paddingTokens: 0,
     localInputTokens: 32,
     reportedInputTokens: 32,
-    constraintPassed: true,
+    constraintPassed: input.constraintPassed ?? true,
     featureVector: input.vector,
     observationStatus: input.observationStatus ?? 'observed',
     identityStatus: 'insufficient_evidence',
     mappingStatus: input.mappingStatus ?? 'direct',
-    protocolStatus: 'consistent',
+    protocolStatus: input.protocolStatus ?? 'consistent',
     evidenceCoverage: 0,
     createdAt: input.createdAt
   }

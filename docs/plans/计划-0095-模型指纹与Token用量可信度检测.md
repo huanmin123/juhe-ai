@@ -156,7 +156,8 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 | Token | 固定与分桶灌水 | `pnpm test:model-check-token-integrity` | 固定值不脱离 cohort 强判，分桶输出原因码 | 已通过 | intercept 可复算，64-token 取整 warning |
 | Token | reasoning 无 breakdown | 输入差分边界 | 不形成 output 灌水误报 | 已通过 | 当前仅判 input；usage 缺失 / 不兼容为 unsupported |
 | 基线 | 单上游大量账号投毒 | `pnpm test:model-trust-identity-baseline` | 同一上游桶权重受限 | 已通过 | 先按 upstream HMAC 桶塌缩再进入 LOO |
-| 基线 | 群体模型升级漂移 | `pnpm test:model-trust-identity-baseline` | 创建新版本并暂停强结论 | 已通过 | 创建 `drift_protected` v2，身份降为证据不足 |
+| 基线 | 群体模型升级漂移 | `pnpm test:model-trust-identity-baseline` | 创建新版本并暂停强结论；恢复、失稳或超期后不再永久优先候选 | 已通过 | `drift_protected` 期间身份降为证据不足；固定 observation 时间覆盖 `recovered` / `rejected` / `expired` |
+| 基线 | 累计来源向量与硬冲突门禁 | `pnpm test:model-trust-identity-baseline` | 使用累计均值和约束通过率；模型 / 协议硬冲突不进入来源或基线 | 已通过 | latest feature 与累计均值相反的 paired 样本距离为 0；冲突只保留 dataset / latest 诊断 |
 | 存储 | observation 脱敏与大小上限 | `pnpm test:model-trust-observation-aggregation` | 无题面、凭据、明文 origin 或无界 payload | 已通过 | SQLite 事实与 PG schema 转译已覆盖 |
 | 统计 | 增量游标与 latest | `pnpm test:model-trust-observation-aggregation` | 游标仅在完整处理后推进，API 只读 latest | 已通过 | 4+5 分批后不重复，结果 slope=1 / intercept=10 |
 | 前端 | 中文状态与证据详情 | 前端回归和浏览器验证 | 中文、无敏感字段、状态不混淆 | 未执行 | 待实现 |
@@ -173,6 +174,8 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 2026-07-14：锁定 `js-tiktoken@1.0.21:o200k_base`，落地 P0 / P1 / P2 三轮输入差分、HMAC observation、ingest 写入、stats-worker 游标窗口、账号 latest 和中文证据覆盖。身份群体指纹、同源塌缩、LOO 稳健基线与漂移版本仍待实现。
 - 2026-07-14：落地静态行为与运行时生成式 canary 的 8 维身份 observation、五模型 paired 随机交错、独立上游桶塌缩、LOO median / MAD / 分位基线、paired 同源 / 降级判断和基线漂移保护版本；生产阈值与版本切换时间窗仍需小流量观察校准。
 - 2026-07-14：修正可信度证据资格：精确 Token 填充移入有界 worker 并改为线性构造；无 response model 的当前报告保持不可用；失败、usage 缺失和模型字段缺失 observation 不再放大样本、轮次、来源、覆盖率或证据阶段。
+- 2026-07-14：复查修正身份来源累计语义：特征使用 `sum/sample_count`，约束使用通过率；`undeclared_mismatch` / `protocol failed` observation 只保留事实和 latest 诊断，不进入 Token / 身份来源及基线。漂移候选按 observation 时间补齐恢复、拒绝、7 天过期和 3 天稳定晋升，历史候选不再永久优先 active。
+- 2026-07-14：为 cohort 独立来源 `COUNT(DISTINCT upstream_bucket_hmac)` 增加 `idx_model_trust_window_sources_cohort(cohort_key_hmac, upstream_bucket_hmac)`，SQLite 查询计划和生成 PostgreSQL DDL 同步。生产本批首次创建可信度 8 表 / 11 索引，不执行旧表清空；曾试跑旧聚合的非生产环境需停 worker 后离线重建派生结果。
 
 ## 验收标准
 
@@ -193,6 +196,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 2026-07-13：8 份关联文档本地链接检查、尾随空白检查、PLAN-0095 唯一性、`git diff --check` 和仅文档变更检查通过；仅有 Git 提示未来可能按工作区配置把 LF 转为 CRLF，没有格式错误。
 - 2026-07-14：`pnpm test:model-trust-identity-baseline`、Token / observation 聚合、完整 profile、严格模型匹配、paired mismatch、存储脱敏、SQLite writer、后台 registry、账户删除清理、`pnpm typecheck` 和 `pnpm build` 通过。Browser 运行时无可用实例，中文详情的 DOM / 交互 / 截图验证仍保留为部署验收项。
 - 2026-07-14：可信度证据资格加固后，完整非 PG 模型检测套件、`test:deleted-account-related-cleanup`、`test:postgres-schema-sql`、`test:server-audit-shutdown`、全工作区 `pnpm typecheck` / `pnpm build` 通过；源码 `tsx` 和构建产物 `.js` 两种 Token worker 入口均验证可启动且退出后无残留。另在 `192.168.1.203` 创建一次性隔离数据库执行 `postgres:init-schema-only`、`test:model-checks-postgres-smoke` 和实际 Token source / window / round 聚合，确认 `padding_mask = 7`、完整轮次与 latest 结果；通过后已终止连接并删除临时数据库，未修改共享测试库 schema。
+- 2026-07-14：基线复查修复后，累计均值 / 约束通过率、映射与协议硬冲突门禁、`recovered` / `rejected` / `expired` 固定时间状态和 SQLite cohort COUNT 查询计划均通过；完整非 PG 模型检测套件、账户删除清理、`test:postgres-schema-sql`、全工作区 `pnpm typecheck` / `pnpm build` 再次通过。新索引的真实 PostgreSQL 建表与 explain 随本批 8 表 / 11 索引迁移演练执行，本提交不连接或修改生产库。
 
 ## 风险与注意事项
 
@@ -200,6 +204,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 无官方对照时群体基线可能集体被污染，必须按独立上游桶限权并保留证据不足状态。
 - 如果多数独立上游桶都做相同替换，群体基线可能无法发现；第一版优先输出塌缩 / 离群，不承诺点名物理模型。
 - 模型快照和服务端版本更新会引发群体漂移，必须版本化基线，不能把升级当降级。
+- 漂移候选只按 observation 时间判断，不依赖 server 当前时间；群体恢复记为 `recovered`，候选分布失稳记为 `rejected`，证据不足超过 7 天记为 `expired`，三类历史状态均不再覆盖 active 基线。
 - 长上下文和多轮探针成本高、持续时间长，需有启动节奏和极限档显式确认。
 - 精确 tokenizer 仍不能复现所有服务端消息模板，Token 判断必须以差分斜率为主，固定 intercept 只做 cohort 对照。
 - 输出 Token 可能包含隐藏 reasoning；没有 breakdown 时不能据可见文本差值判断灌水。

@@ -4,6 +4,7 @@ import { createPostgresDatabaseClient, createSqliteDatabaseClient, type Database
 import { getPostgresPool } from './postgres-client.js'
 import {
   evaluateIdentityTrust,
+  hasHardTrustConflict,
   isIdentityObservation,
   listIdentityAccountModelsForPopulations,
   refreshIdentityBaselines,
@@ -177,7 +178,7 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
     }
     const changedPopulations = await refreshIdentityBaselines(tx, rows)
     const affected = mergeAccountModelKeys(
-      uniqueAccountModels(rows.filter(isValidTrustObservation)),
+      uniqueAccountModels(rows.filter(isDiagnosticTrustObservation)),
       await listIdentityAccountModelsForPopulations(tx, changedPopulations)
     )
     for (const key of affected) {
@@ -314,7 +315,13 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
     ORDER BY last_observed_at DESC LIMIT 1
   `, [key.systemAccountId, key.accountId, key.requestedModel])
   const identity = await evaluateIdentityTrust(client, key)
-  if (!window && !identity) return
+  const representative = [...batchRows].reverse().find((row) => (
+    isDiagnosticTrustObservation(row)
+    && row.system_account_id === key.systemAccountId
+    && row.account_id === key.accountId
+    && row.requested_model === key.requestedModel
+  ))
+  if (!window && !identity && !representative) return
   const sourceRow = window ? await client.one<{ source_count: number }>(`
     SELECT COUNT(DISTINCT upstream_bucket_hmac) AS source_count FROM ${sources}
     WHERE cohort_key_hmac = ?
@@ -355,12 +362,6 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       window.tokenizer_version, window.probe_set_version
     ])
   }
-  const representative = [...batchRows].reverse().find((row) => (
-    isValidTrustObservation(row)
-    && row.system_account_id === key.systemAccountId
-    && row.account_id === key.accountId
-    && row.requested_model === key.requestedModel
-  ))
   const mappingStatus = representative?.mapping_status ?? optionalText(currentLatest?.mapping_status) ?? 'unknown'
   const protocolStatus = representative?.protocol_status ?? optionalText(currentLatest?.protocol_status) ?? 'insufficient_evidence'
   const reasonCodes = [
@@ -376,7 +377,7 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
   const evidenceStatus = identity?.baselineVersionStatus === 'drift_protected'
     ? 'insufficient'
     : strongerEvidenceStatus(identity?.evidenceStatus, tokenEvidenceStatus)
-  const lastObservedAt = [window?.last_observed_at, identity?.lastObservedAt].filter((value): value is string => Boolean(value)).sort().at(-1)
+  const lastObservedAt = [window?.last_observed_at, identity?.lastObservedAt, representative?.created_at].filter((value): value is string => Boolean(value)).sort().at(-1)
   await client.execute(`
     INSERT INTO ${latest} (
       system_account_id, account_id, requested_model, identity_status, mapping_status,
@@ -459,6 +460,7 @@ function isValidTokenObservation(row: ObservationRow): boolean {
   return row.probe_family === 'token_input_differential'
     && row.observation_status === 'observed'
     && Boolean(row.observed_model?.trim())
+    && !hasHardTrustConflict(row)
     && row.reported_input_tokens !== null
     && Number.isFinite(Number(row.reported_input_tokens))
     && tokenPaddingMask(row.padding_tokens) !== 0
@@ -466,6 +468,15 @@ function isValidTokenObservation(row: ObservationRow): boolean {
 
 function isValidTrustObservation(row: ObservationRow): boolean {
   return isValidTokenObservation(row) || isIdentityObservation(row)
+}
+
+function isDiagnosticTrustObservation(row: ObservationRow): boolean {
+  return isValidTrustObservation(row) || (
+    (row.probe_family === 'token_input_differential' || row.probe_family.startsWith('identity_'))
+    && row.observation_status === 'observed'
+    && Boolean(row.observed_model?.trim())
+    && hasHardTrustConflict(row)
+  )
 }
 
 function tokenPaddingMask(paddingTokens: number): number {
