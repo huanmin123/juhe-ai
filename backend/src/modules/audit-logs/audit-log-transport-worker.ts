@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { parentPort } from 'node:worker_threads'
 
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
@@ -6,6 +5,9 @@ import type { AuditLogInput } from '../../storage/audit-log-types.js'
 const {
   encodeAuditLogStreamPayload
 } = await import(resolveWorkerModuleUrl('./audit-log-stream-codec')) as typeof import('./audit-log-stream-codec.js')
+const {
+  summarizeAuditPayloadForLimit
+} = await import(resolveWorkerModuleUrl('./audit-payload-summary')) as typeof import('./audit-payload-summary.js')
 
 const auditTransportMaxBytes = 4 * 1024 * 1024
 const auditTransportSuccessBodyMaxBytes = 512 * 1024
@@ -28,11 +30,15 @@ workerPort.on('message', (message: AuditLogTransportWorkerRequest) => {
   try {
     const input = rehydrateAuditLogBuffers(message.input)
     const prepared = prepareAuditLogForTransport(input)
+    const encoded = encodeAuditLogStreamPayload(prepared)
+    if (encodedTransportBytes(encoded) > auditTransportMaxBytes) {
+      throw new Error('审计传输 worker 输出超过 4MiB 消息预算')
+    }
     if (message.mode === 'redis_stream') {
       workerPort.postMessage({
         id: message.id,
         ok: true,
-        encoded: encodeAuditLogStreamPayload(prepared)
+        encoded
       })
       return
     }
@@ -64,61 +70,79 @@ function prepareAuditLogForTransport(input: AuditLogInput): AuditLogInput {
   const bodyMaxBytes = input.success
     ? auditTransportSuccessBodyMaxBytes
     : auditTransportFailureBodyMaxBytes
-  let estimatedBytes = 2048 + Math.min(input.attempts.length, 16) * 1024
-  let changed = input.attempts.length > 16 || input.payloads.length > 32
+  let structureDropped = input.attempts.length > 16 || input.payloads.length > 32
   const sourcePayloads = input.payloads.length <= 32
     ? input.payloads
     : [...input.payloads.slice(0, 31), input.payloads[input.payloads.length - 1]].filter(Boolean)
   const payloads = sourcePayloads.map((payload) => {
-    const headerBytes = estimateHeadersBytes(payload.headers)
-    const bodyBytes = auditPayloadBodyBytes(payload.body)
-    const shouldDropBody = bodyBytes > bodyMaxBytes
-      || estimatedBytes + headerBytes + bodyBytes + 512 > auditTransportMaxBytes
-    estimatedBytes += headerBytes + (shouldDropBody ? 0 : bodyBytes) + 512
-    if (!shouldDropBody) return payload
-    changed = true
-    return hashOnlyPayload(payload, bodyBytes)
+    const preparedPayload = truncatePayloadStrings({ ...payload })
+    summarizeAuditPayloadForLimit(preparedPayload, bodyMaxBytes)
+    return preparedPayload
   })
-
-  if (estimatedBytes > auditTransportMaxBytes) {
-    for (let index = 0; index < payloads.length; index += 1) {
-      const payload = payloads[index]
-      if (!payload?.headers) continue
-      estimatedBytes = Math.max(0, estimatedBytes - estimateHeadersBytes(payload.headers))
-      payloads[index] = {
-        ...payload,
-        headers: undefined,
-        captureStatus: payload.captureStatus === 'complete' || payload.captureStatus === undefined
-          ? 'dropped'
-          : payload.captureStatus
-      }
-      changed = true
-      if (estimatedBytes <= auditTransportMaxBytes) break
-    }
-  }
-
-  return {
+  let prepared: AuditLogInput = {
     ...truncateAuditLogStrings(input),
     attempts: input.attempts.length <= 16
       ? input.attempts.map(truncateAttemptStrings)
       : [...input.attempts.slice(0, 15), input.attempts[input.attempts.length - 1]].filter(Boolean).map(truncateAttemptStrings),
     payloads,
-    captureStatus: changed && input.captureStatus !== 'overflow' ? 'dropped' : input.captureStatus
+    captureStatus: structureDropped && input.captureStatus !== 'overflow' ? 'dropped' : input.captureStatus
   }
+
+  if (auditLogTransportEncodedBytes(prepared) <= auditTransportMaxBytes) {
+    return prepared
+  }
+
+  const bodyIndexes = prepared.payloads
+    .map((payload, index) => ({ index, bytes: auditPayloadBodyBytes(payload.body) }))
+    .filter((item) => item.bytes > 0)
+    .sort((left, right) => right.bytes - left.bytes)
+  for (const item of bodyIndexes) {
+    const payload = prepared.payloads[item.index]
+    if (!payload) continue
+    summarizeAuditPayloadForLimit(payload, bodyMaxBytes, {
+      force: true,
+      includeGatewayMetadata: true,
+      reason: 'transport_message_budget'
+    })
+    if (auditLogTransportEncodedBytes(prepared) <= auditTransportMaxBytes) {
+      return prepared
+    }
+  }
+
+  const headerIndexes = prepared.payloads
+    .map((payload, index) => ({ index, bytes: estimateHeadersBytes(payload.headers) }))
+    .filter((item) => item.bytes > 0)
+    .sort((left, right) => right.bytes - left.bytes)
+  for (const item of headerIndexes) {
+    const payload = prepared.payloads[item.index]
+    if (!payload?.headers) continue
+    prepared.payloads[item.index] = { ...payload, headers: undefined }
+    structureDropped = true
+    if (auditLogTransportEncodedBytes(prepared) <= auditTransportMaxBytes) {
+      return markAuditLogStructureDropped(prepared)
+    }
+  }
+
+  while (prepared.payloads.length > 2 && auditLogTransportEncodedBytes(prepared) > auditTransportMaxBytes) {
+    prepared = {
+      ...prepared,
+      payloads: [
+        ...prepared.payloads.slice(0, Math.floor(prepared.payloads.length / 2)),
+        ...prepared.payloads.slice(Math.floor(prepared.payloads.length / 2) + 1)
+      ]
+    }
+    structureDropped = true
+  }
+  if (structureDropped) {
+    prepared = markAuditLogStructureDropped(prepared)
+  }
+  return prepared
 }
 
-function hashOnlyPayload(
-  payload: AuditLogInput['payloads'][number],
-  bodyBytes: number
-): AuditLogInput['payloads'][number] {
-  const bodySha256 = payload.bodySha256 ?? auditPayloadBodySha256(payload.body)
+function markAuditLogStructureDropped(input: AuditLogInput): AuditLogInput {
   return {
-    ...payload,
-    body: undefined,
-    bodySha256,
-    rawBodySizeBytes: payload.rawBodySizeBytes ?? bodyBytes,
-    contentEncoding: undefined,
-    captureStatus: bodySha256 ? 'hash_only' : 'dropped'
+    ...input,
+    captureStatus: input.captureStatus === 'overflow' ? 'overflow' : 'dropped'
   }
 }
 
@@ -127,14 +151,28 @@ function auditPayloadBodyBytes(body: Buffer | string | undefined): number {
   return Buffer.isBuffer(body) ? body.byteLength : Buffer.byteLength(body, 'utf8')
 }
 
-function auditPayloadBodySha256(body: Buffer | string | undefined): string | undefined {
-  if (body === undefined) return undefined
-  return createHash('sha256').update(Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8')).digest('hex')
-}
-
 function estimateHeadersBytes(headers: Record<string, string | string[]> | undefined): number {
   if (!headers) return 0
   return Buffer.byteLength(JSON.stringify(headers), 'utf8')
+}
+
+function truncatePayloadStrings(payload: AuditLogInput['payloads'][number]): AuditLogInput['payloads'][number] {
+  return {
+    ...payload,
+    id: truncateOptionalString(payload.id, 256),
+    attemptTempId: truncateOptionalString(payload.attemptTempId, 256),
+    contentType: truncateOptionalString(payload.contentType, 512),
+    contentEncoding: truncateOptionalString(payload.contentEncoding, 128),
+    createdAt: truncateOptionalString(payload.createdAt, 128)
+  }
+}
+
+function auditLogTransportEncodedBytes(input: AuditLogInput): number {
+  return encodedTransportBytes(encodeAuditLogStreamPayload(input))
+}
+
+function encodedTransportBytes(encoded: string): number {
+  return Buffer.byteLength(encoded, 'utf8')
 }
 
 function truncateAuditLogStrings(input: AuditLogInput): AuditLogInput {

@@ -1,6 +1,10 @@
 import type { Request, Response } from 'express'
 
-import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
+import {
+  observeGatewayHttpCompletion,
+  responseHeadersToObject,
+  type AuditCaptureContext
+} from '../audit/capture.service.js'
 import {
   gatewayErrorPayload,
   gatewayErrorPayloadForProtocol,
@@ -14,6 +18,7 @@ import {
 } from '../usage/records.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from '../protocols/registry.js'
 import type { UsageFailureAttribution } from '../../../storage/repositories.js'
+import { getRequestLogger } from '../../../shared/request-context.js'
 
 interface SendGatewayFailureResponseInput {
   req: Request
@@ -49,17 +54,9 @@ export async function sendGatewayFailureResponse(input: SendGatewayFailureRespon
   } = input
   const protocol = gatewayErrorProtocolForRequest(req)
   const clientPayload = gatewayErrorPayloadForProtocol(responsePayload, protocol)
+  const httpCompletion = observeGatewayHttpCompletion(res)
+  const requestLogger = getRequestLogger()
 
-  if (recordUsage) {
-    await recordGatewayFailure(req, usageContext, {
-      statusCode,
-      startedAt,
-      responsePayload,
-      errorMessage: usageErrorMessage,
-      failureAttribution: input.failureAttribution,
-      responseSnapshot: buildGatewayErrorResponseSnapshot(statusCode, clientPayload)
-    })
-  }
   sendGatewayErrorResponse(res, statusCode, responsePayload, { protocol })
   auditCapture.finalize({
     outcome: audit.outcome,
@@ -72,6 +69,26 @@ export async function sendGatewayFailureResponse(input: SendGatewayFailureRespon
     errorCode: audit.errorCode,
     errorMessage: audit.errorMessage ?? responsePayload.error.message
   })
+  if (recordUsage) {
+    void httpCompletion.wait().then(async (completedAtMs) => {
+      await recordGatewayFailure(req, usageContext, {
+        statusCode,
+        startedAt,
+        completedAtMs,
+        responsePayload,
+        errorMessage: usageErrorMessage,
+        failureAttribution: input.failureAttribution,
+        responseSnapshot: buildGatewayErrorResponseSnapshot(statusCode, clientPayload)
+      })
+    }).catch((error) => {
+      requestLogger.warn({
+        event: 'gateway_failure_usage_finalize_failed',
+        traceId: usageContext.traceId,
+        statusCode,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      }, '网关错误响应已返回客户端，但使用记录异步收尾失败')
+    })
+  }
 }
 
 function gatewayErrorProtocolForRequest(req: Request) {

@@ -1,20 +1,58 @@
 import { strict as assert } from 'node:assert'
 import { EventEmitter } from 'node:events'
-import type { NextFunction, Response } from 'express'
+import type { NextFunction, Request, Response } from 'express'
+import type { AuditCaptureContext } from '../../modules/gateway/audit/capture.service.js'
+import type { GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
 
-import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
-import {
+process.env.JUHE_AI_PROCESS_ROLE = 'worker'
+process.env.JUHE_AI_WORKER_ROLE = 'ingest-worker'
+process.env.JUHE_AI_RUNTIME_MODE = 'standalone'
+process.env.JUHE_AI_QUEUE_DRIVER = 'memory'
+
+const { captureGatewayRawBody } = await import('../../modules/gateway/request/body-middleware.js')
+const {
   clearGatewayRequestBodyInFlightForTest,
-  getGatewayRequestBodyInFlightState,
-  type GatewayRawBodyRequest
-} from '../../modules/gateway/request/body.js'
-import { attachAccountSlotRelease } from '../../modules/gateway/routes.js'
-import { observeGatewayHttpCompletion } from '../../modules/gateway/audit/capture.service.js'
+  getGatewayRequestBodyInFlightState
+} = await import('../../modules/gateway/request/body.js')
+const { attachAccountSlotRelease } = await import('../../modules/gateway/routes.js')
+const { observeGatewayHttpCompletion } = await import('../../modules/gateway/audit/capture.service.js')
+const { sendGatewayFailureResponse } = await import('../../modules/gateway/response/failure-response.js')
+const { gatewayErrorPayload } = await import('../../modules/gateway/response/responses.js')
+const usageRecordQueue = await import('../../modules/gateway/usage/record-queue.service.js')
 
 class MockResponse extends EventEmitter {
   destroyed = false
   writableEnded = false
   writableFinished = false
+  headersSent = false
+  statusCode = 200
+  body: unknown
+  private readonly headers = new Map<string, string | number | readonly string[]>()
+
+  status(statusCode: number): this {
+    this.statusCode = statusCode
+    return this
+  }
+
+  json(body: unknown): this {
+    this.body = body
+    this.headersSent = true
+    this.writableEnded = true
+    return this
+  }
+
+  setHeader(name: string, value: string | number | readonly string[]): this {
+    this.headers.set(name.toLowerCase(), value)
+    return this
+  }
+
+  getHeader(name: string): string | number | readonly string[] | undefined {
+    return this.headers.get(name.toLowerCase())
+  }
+
+  getHeaders(): Record<string, string | number | readonly string[]> {
+    return Object.fromEntries(this.headers)
+  }
 }
 
 clearGatewayRequestBodyInFlightForTest()
@@ -58,10 +96,90 @@ assert.equal(accountReleaseCount, 1, '账户并发槽释放必须幂等')
 
 const timingResponse = new MockResponse() as unknown as Response
 const httpCompletion = observeGatewayHttpCompletion(timingResponse)
+assert.equal(observeGatewayHttpCompletion(timingResponse), httpCompletion, '同一响应必须复用同一个 HTTP 完成观察器')
 timingResponse.emit('finish')
 const observedCompletedAtMs = httpCompletion.completedAtMs()
 await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 10))
 assert.equal(await httpCompletion.wait(), observedCompletedAtMs, '监听后再等待必须复用真实 HTTP finish 时间，不能混入后置副作用耗时')
 
+usageRecordQueue.clearUsageRecordQueueForTest()
+const failureRequest = {
+  body: { model: 'gpt-5.6-sol', stream: false },
+  headers: {},
+  method: 'POST',
+  path: '/responses',
+  originalUrl: '/v1/responses',
+  header: () => undefined
+} as unknown as Request
+const failureResponse = new MockResponse() as unknown as Response
+const finalizeOrder: string[] = []
+const auditCapture = {
+  finalize: () => {
+    finalizeOrder.push((failureResponse as unknown as MockResponse).body ? 'response_sent_before_audit_finalize' : 'audit_finalized_before_response')
+  }
+} as unknown as AuditCaptureContext
+const failureStartedAt = Date.now() - 250
+
+await sendGatewayFailureResponse({
+  req: failureRequest,
+  res: failureResponse,
+  auditCapture,
+  usageContext: {
+    traceId: 'trace-failure-response-lifecycle',
+    trafficSource: 'gateway',
+    systemAccountId: 'sys_failure_response_lifecycle',
+    apiKeyId: 'key_failure_response_lifecycle',
+    groupId: 'group_failure_response_lifecycle',
+    endpoint: '/v1/responses',
+    requestSnapshot: {
+      method: 'POST',
+      path: '/v1/responses',
+      originalUrl: '/v1/responses',
+      traceId: 'trace-failure-response-lifecycle',
+      headers: {}
+    }
+  },
+  startedAt: failureStartedAt,
+  statusCode: 503,
+  responsePayload: gatewayErrorPayload('上游暂时不可用，请重试', 'service_unavailable'),
+  audit: {
+    outcome: 'upstream_failed',
+    errorPhase: 'dispatch',
+    errorCode: 'service_unavailable'
+  }
+})
+
+assert.equal((failureResponse as unknown as MockResponse).statusCode, 503, '失败响应必须先写给客户端')
+assert.deepEqual(finalizeOrder, ['response_sent_before_audit_finalize'], '审计 finalize 必须发生在错误响应写出之后')
+assert.equal(usageRecordQueue.pendingUsageRecordCount(), 0, 'HTTP 尚未 finish/close 时不得提前写入失败使用记录')
+await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 20))
+assert.equal(usageRecordQueue.pendingUsageRecordCount(), 0, '使用记录异步收尾等待不得反向阻塞或延迟客户端错误响应')
+
+const finishWindowStart = Date.now()
+failureResponse.emit('finish')
+const finishWindowEnd = Date.now()
+await waitFor(() => usageRecordQueue.pendingUsageRecordCount() === 1)
+const queuedFailureUsage = usageRecordQueue.peekPendingUsageRecordForTest()
+assert(queuedFailureUsage, 'HTTP finish 后应异步投递失败使用记录')
+const usageCompletedAtMs = Date.parse(queuedFailureUsage.createdAt ?? '')
+assert(
+  usageCompletedAtMs >= finishWindowStart && usageCompletedAtMs <= finishWindowEnd,
+  '失败使用记录 completedAt 必须取真实 HTTP finish/close 时间'
+)
+assert.equal(
+  queuedFailureUsage.durationMs,
+  usageCompletedAtMs - failureStartedAt,
+  '失败使用记录 duration 必须截止到同一次 HTTP finish/close'
+)
+usageRecordQueue.clearUsageRecordQueueForTest()
+
 clearGatewayRequestBodyInFlightForTest()
-console.log('网关响应生命周期回归通过：请求体 lease、账户并发槽和完成时间均以同一次 HTTP finish/close 为边界')
+console.log('网关响应生命周期回归通过：错误响应先返回，usage 异步收尾，lease、并发槽和耗时统一以 HTTP finish/close 为边界')
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000
+  while (!predicate()) {
+    assert(Date.now() < deadline, '等待失败使用记录异步入队超时')
+    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 5))
+  }
+}

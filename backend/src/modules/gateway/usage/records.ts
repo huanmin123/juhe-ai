@@ -480,6 +480,7 @@ export async function recordGatewayFailure(
   input: {
     statusCode: number
     startedAt: number
+    completedAtMs?: number
     responsePayload: GatewayErrorPayload
     errorMessage?: string
     errorCode?: string
@@ -487,6 +488,7 @@ export async function recordGatewayFailure(
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
 ): Promise<void> {
+  const completedAtMs = input.completedAtMs ?? Date.now()
   const errorMessage = input.errorMessage ?? input.responsePayload.error.message
   const errorCode = input.errorCode
     ?? (typeof input.responsePayload.error.code === 'string' ? input.responsePayload.error.code : undefined)
@@ -494,7 +496,7 @@ export async function recordGatewayFailure(
   logGatewayAttemptFailure(usageContext, {
     event: 'gateway_request_failed',
     statusCode: input.statusCode,
-    durationMs: Date.now() - input.startedAt,
+    durationMs: Math.max(0, completedAtMs - input.startedAt),
     errorMessage,
     errorCode,
     apiKeyId: usageContext.apiKeyId,
@@ -534,14 +536,15 @@ export async function recordGatewayFailure(
     effectiveServiceTier: usageContext.effectiveServiceTier,
     requestedReasoningEffort: usageContext.requestedReasoningEffort,
     effectiveReasoningEffort: usageContext.effectiveReasoningEffort,
-    durationMs: Date.now() - input.startedAt,
+    durationMs: Math.max(0, completedAtMs - input.startedAt),
     errorCode,
     errorMessage,
     requestSnapshot: usageRecordSnapshot(usageContext, usageContext.requestSnapshot),
     responseSnapshot: usageRecordSnapshot(
       usageContext,
       input.responseSnapshot ?? buildGatewayErrorResponseSnapshot(input.statusCode, input.responsePayload)
-    )
+    ),
+    createdAt: new Date(completedAtMs).toISOString()
   })
 }
 

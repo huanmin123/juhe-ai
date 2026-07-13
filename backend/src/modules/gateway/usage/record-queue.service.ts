@@ -570,6 +570,11 @@ export function pendingUsageRecordCount(): number {
   return pendingUsageRecords.length
 }
 
+export function peekPendingUsageRecordForTest(): UsageRecordInput | undefined {
+  const input = pendingUsageRecords[0]?.input
+  return input ? { ...input } : undefined
+}
+
 export function isUsageRecordInput(value: unknown): value is UsageRecordInput {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false
