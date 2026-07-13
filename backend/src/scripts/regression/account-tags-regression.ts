@@ -175,7 +175,7 @@ try {
   assert.deepEqual(
     exported.document.accounts[0]?.credentials.supported_endpoint_modes,
     ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'],
-    '账户导出应保留接口能力限制'
+    '账户导出应保留上游接口能力'
   )
   assert.equal(
     Object.prototype.hasOwnProperty.call(exported.document.accounts[0] ?? {}, 'clientCompatibility'),
@@ -251,7 +251,7 @@ try {
   assert.equal(invalidEndpointModePreview.canImport, false, '接口能力组合非法时导入预览应阻止导入')
   assert.match(
     invalidEndpointModePreview.accounts[0]?.messages.join('\n') ?? '',
-    /Codex Responses 兼容能力必须启用 Responses API \(Streaming\)/,
+    /Codex Responses 账户上游接口能力必须启用 Responses API \(Streaming\)/,
     '导入预览应返回接口能力组合错误'
   )
 

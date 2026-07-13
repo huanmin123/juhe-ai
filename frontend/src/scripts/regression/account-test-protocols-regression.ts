@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import type { AccountSummary, AccountUsageSummary } from '@/types/domain'
 import {
   isAnthropicProtocolProfile,
@@ -11,6 +15,7 @@ import {
   isGatewaySupportedTestSelection
 } from '../../views/accounts/accountDerivedState'
 import { canTestAccount } from '../../views/accounts/accountRules'
+import { validateAccountEndpointModes } from '../../views/accounts/accountEndpointModes'
 
 const openAIAccount = accountFixture({
   id: 'acct_openai_protocol_test',
@@ -55,6 +60,17 @@ const geminiOpenAIChatAccount = accountFixture({
   }
 })
 
+const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+const accountTestModelsSource = readFileSync(
+  resolve(frontendRoot, 'src/views/accounts/useAccountTestModels.ts'),
+  'utf8'
+)
+const updateSelectableTestModelSource = sourceSection(
+  accountTestModelsSource,
+  'function updateSelectableTestModel',
+  'function resetTestModels'
+)
+
 assertTrue(isOpenAIProtocolProfile(openAIAccount), 'OpenAI v1 账户应识别为 OpenAI 协议档案')
 assertTrue(isAnthropicProtocolProfile(anthropicAccount), 'Anthropic v1 账户应识别为 Anthropic 协议档案')
 assertTrue(isGeminiProtocolProfile(geminiAccount), 'Gemini v1beta 账户应识别为 Gemini 协议档案')
@@ -71,6 +87,46 @@ assertTrue(canTestAccount(geminiAccount), 'Gemini API Key 正常账户应可测�
 assertTrue(canTestAccount(geminiOpenAIChatAccount), 'Gemini OpenAI Chat API Key 正常账户应可测试')
 assertFalse(canTestAccount(unsupportedAccount), '未支持协议账户应不可测试')
 
+assertEqual(
+  validateAccountEndpointModes({ modes: [], type: 'api_key' }),
+  '请至少选择一项上游接口能力',
+  '空 endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({
+    modes: ['responses_json'],
+    allowedModes: ['chat_json', 'chat_sse'],
+    type: 'api_key'
+  }),
+  '当前供应商协议不支持上游接口能力：Responses API (JSON)',
+  '供应商 endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({ modes: ['chat_json', 'messages_json'], type: 'api_key' }),
+  '不同协议的上游接口能力不能混选',
+  '跨协议 endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({ modes: ['chat_json'], type: 'oauth' }),
+  'OAuth 账户上游接口能力只能选择 Responses API (JSON) 或 Responses API (Streaming)',
+  'OAuth endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({ modes: ['message_token_counting'], type: 'api_key' }),
+  'Anthropic API Key 上游接口能力至少需要启用 Messages API (JSON) 或 Messages API (Streaming)',
+  'Anthropic 必选 endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({ modes: ['count_tokens'], type: 'api_key' }),
+  'Gemini API Key 上游接口能力至少需要启用 generateContent (JSON) 或 streamGenerateContent (SSE)',
+  'Gemini 必选 endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({ modes: ['responses_json'], type: 'oauth' }),
+  'OAuth 账户上游接口能力必须启用 Responses API (Streaming)',
+  'OAuth 流式 endpoint mode 校验必须使用上游接口能力文案'
+)
+
 assertTrue(isGatewaySupportedTestSelection(anthropicAccount), 'Anthropic 单账户选择应允许加载作用域默认模型信息')
 assertTrue(isGatewaySupportedTestSelection(geminiAccount), 'Gemini 单账户选择应允许加载作用域默认模型信息')
 assertFalse(hasSingleProviderProfileForAccountSelection([openAIAccount, anthropicAccount]), 'OpenAI 与 Anthropic 混合选择不应被视为同一供应商协议')
@@ -78,6 +134,10 @@ assertFalse(isGatewaySupportedTestSelection([openAIAccount, anthropicAccount]), 
 assertFalse(isGatewaySupportedTestSelection([anthropicAccount, unsupportedAccount]), '混入未支持协议时不应加载供应商默认模型')
 assertFalse(isGatewaySupportedTestSelection([anthropicAccount, geminiAccount]), 'Anthropic 与 Gemini 混合选择不应加载单一供应商默认模型')
 assertFalse(isGatewaySupportedTestSelection([geminiAccount, geminiOpenAIChatAccount]), 'Gemini 原生与 Gemini OpenAI Chat 混合选择不应被视为同一协议档案')
+
+assertIncludes(accountTestModelsSource, 'testEndpointModes.value = normalizeEndpointModes(response.testEndpointModes)', '保存账户测试应保留后端返回的完整请求形态')
+assertNotIncludes(updateSelectableTestModelSource, 'testEndpointModes', '切换模型不能改写账户显式启用的请求形态')
+assertNotIncludes(updateSelectableTestModelSource, 'supportedApiProtocols', '切换模型不能按模型协议标签隐藏 Responses')
 
 assertDeepEqual(
   optionValues(buildTestModelOptions({
@@ -156,5 +216,32 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
   const expectedJson = JSON.stringify(expected)
   if (actualJson !== expectedJson) {
     throw new Error(`${message}，实际 ${actualJson}，预期 ${expectedJson}`)
+  }
+}
+
+function assertEqual<T>(actual: T, expected: T, message: string): void {
+  if (!Object.is(actual, expected)) {
+    throw new Error(`${message}，实际 ${String(actual)}，预期 ${String(expected)}`)
+  }
+}
+
+function sourceSection(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker)
+  const end = source.indexOf(endMarker, start)
+  if (start < 0 || end < 0) {
+    throw new Error(`无法提取源码片段：${startMarker} -> ${endMarker}`)
+  }
+  return source.slice(start, end)
+}
+
+function assertIncludes(source: string, expected: string, message: string): void {
+  if (!source.includes(expected)) {
+    throw new Error(`${message}，未找到 ${expected}`)
+  }
+}
+
+function assertNotIncludes(source: string, unexpected: string, message: string): void {
+  if (source.includes(unexpected)) {
+    throw new Error(`${message}，不应包含 ${unexpected}`)
   }
 }

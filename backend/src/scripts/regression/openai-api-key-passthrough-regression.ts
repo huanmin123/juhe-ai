@@ -391,7 +391,9 @@ async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
   const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
   const parts = await buildGatewayUpstreamRequestParts(req, {
     ...apiKeyAccount,
-    clientCompatibility: 'codex_responses'
+    providerCode: 'openai',
+    providerProtocolProfileId: 'profile_openai_openai_v1',
+    clientCompatibility: 'openai_standard'
   }, testIdentity, undefined, {
     requestClientCompatibility: 'codex_responses'
   })

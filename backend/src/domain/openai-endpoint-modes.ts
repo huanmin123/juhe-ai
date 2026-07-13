@@ -69,7 +69,7 @@ export function defaultOpenAIEndpointModes(input: OpenAIEndpointModeDefaultConte
 export function normalizeOpenAIEndpointModesForWrite(
   value: unknown,
   defaults: OpenAIEndpointModeDefaultContext,
-  label = '接口能力限制'
+  label = '上游接口能力'
 ): AccountSupportedEndpointMode[] {
   if (value === undefined) {
     return defaultOpenAIEndpointModes(defaults)
@@ -168,14 +168,14 @@ export function assertOpenAIEndpointModesCompatible(input: {
   if (input.accountType === 'oauth') {
     const unsupported = input.modes.filter((mode) => !OPENAI_RESPONSES_ENDPOINT_MODES.includes(mode))
     if (unsupported.length) {
-      throw new Error(`OAuth 账户接口能力只能选择 ${openAIEndpointModeLabel('responses_json', input)} 或 ${openAIEndpointModeLabel('responses_sse', input)}`)
+      throw new Error(`OAuth 账户上游接口能力只能选择 ${openAIEndpointModeLabel('responses_json', input)} 或 ${openAIEndpointModeLabel('responses_sse', input)}`)
     }
     if (!input.modes.includes('responses_sse')) {
-      throw new Error(`OAuth 账户必须支持 ${openAIEndpointModeLabel('responses_sse', input)}`)
+      throw new Error(`OAuth 账户上游接口能力必须启用 ${openAIEndpointModeLabel('responses_sse', input)}`)
     }
   }
   if (input.clientCompatibility === 'codex_responses' && !input.modes.includes('responses_sse')) {
-    throw new Error(`Codex Responses 兼容能力必须启用 ${openAIEndpointModeLabel('responses_sse', input)}`)
+    throw new Error(`Codex Responses 账户上游接口能力必须启用 ${openAIEndpointModeLabel('responses_sse', input)}`)
   }
 }
 

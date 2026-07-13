@@ -1,6 +1,5 @@
 import type { Request } from 'express'
 
-import { accountSupportsClientCompatibility } from '../../../../domain/account-client-compatibility.js'
 import {
   OPENAI_CHAT_ENDPOINT_MODES,
   accountSupportsOpenAIEndpointMode,
@@ -142,12 +141,12 @@ export const deepSeekProviderDriver: ProviderDriver = {
         }, signal)
       }
     }
-    const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal, {
+    const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, signal, {
       modelOverride: modelMapping?.upstreamModel,
       requestClientCompatibility: context?.requestClientCompatibility
     })
     const headers = buildUpstreamHeaders(req.headers, account)
-    applyOpenAIClientCompatibilityHeaders(req, account, headers, {
+    applyOpenAIClientCompatibilityHeaders(req, headers, {
       requestClientCompatibility: context?.requestClientCompatibility
     })
     return {
@@ -184,7 +183,7 @@ export const deepSeekProviderDriver: ProviderDriver = {
     })
   },
   endpointModeForRequest: openAIEndpointModeForGatewayRequest,
-  accountSupportsRequest(req, account, context) {
+  accountSupportsRequest(req, account) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
     if (modelMapping && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping)) {
       return accountSupportsOpenAIEndpointMode({
@@ -218,9 +217,6 @@ export const deepSeekProviderDriver: ProviderDriver = {
         accountType: account.type,
         clientCompatibility: account.clientCompatibility
       })
-    }
-    if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) {
-      return false
     }
     const mode = openAIEndpointModeForGatewayRequest(req, account)
     if (!mode || !OPENAI_CHAT_ENDPOINT_MODES.includes(mode)) return false

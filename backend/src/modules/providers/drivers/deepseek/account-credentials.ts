@@ -42,7 +42,7 @@ export const deepSeekAccountCredentialDriver: ProviderAccountCredentialDriver = 
       })
       const unsupported = modes.filter((mode) => !anthropicMessagesEndpointModes.includes(mode as 'messages_json' | 'messages_sse'))
       if (unsupported.length) {
-        throw new Error(`DeepSeek Anthropic 账户接口能力只支持 Messages API (JSON) 或 Messages API (Streaming)：${unsupported.join(', ')}`)
+        throw new Error(`DeepSeek Anthropic 账户上游接口能力只支持 Messages API (JSON) 或 Messages API (Streaming)：${unsupported.join(', ')}`)
       }
       return modes
     }
@@ -52,7 +52,7 @@ export const deepSeekAccountCredentialDriver: ProviderAccountCredentialDriver = 
     })
     const unsupported = modes.filter((mode) => !OPENAI_CHAT_ENDPOINT_MODES.includes(mode))
     if (unsupported.length) {
-      throw new Error(`DeepSeek 账户接口能力只支持 Chat Completion (JSON) 或 Chat Completion (Streaming)：${unsupported.join(', ')}`)
+      throw new Error(`DeepSeek 账户上游接口能力只支持 Chat Completion (JSON) 或 Chat Completion (Streaming)：${unsupported.join(', ')}`)
     }
     return modes
   }

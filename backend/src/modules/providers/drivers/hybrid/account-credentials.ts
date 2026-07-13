@@ -25,7 +25,7 @@ export const hybridAccountCredentialDriver: ProviderAccountCredentialDriver = {
   }
 }
 
-function normalizeHybridEndpointModesForWrite(value: unknown, label = '接口能力限制'): AccountSupportedEndpointMode[] {
+function normalizeHybridEndpointModesForWrite(value: unknown, label = '上游接口能力'): AccountSupportedEndpointMode[] {
   if (value === undefined) {
     return [...HYBRID_ENDPOINT_MODE_VALUES]
   }

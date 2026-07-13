@@ -38,7 +38,7 @@ export function defaultGeminiEndpointModes(_input: GeminiEndpointModeDefaultCont
 export function normalizeGeminiEndpointModesForWrite(
   value: unknown,
   defaults: GeminiEndpointModeDefaultContext = {},
-  label = '接口能力限制'
+  label = '上游接口能力'
 ): AccountSupportedEndpointMode[] {
   if (value === undefined) {
     return defaultGeminiEndpointModes(defaults)
@@ -156,10 +156,10 @@ export function assertGeminiEndpointModesCompatible(input: {
   }
   const unsupported = input.modes.filter((mode) => !GEMINI_ENDPOINT_MODE_VALUES.includes(mode))
   if (unsupported.length) {
-    throw new Error(`Gemini API Key 账户接口能力不支持：${unsupported.join(', ')}`)
+    throw new Error(`Gemini API Key 账户上游接口能力不支持：${unsupported.join(', ')}`)
   }
   if (!input.modes.includes('generate_content_json') && !input.modes.includes('generate_content_sse')) {
-    throw new Error('Gemini API Key 账户必须至少支持 generateContent JSON 或 streamGenerateContent')
+    throw new Error('Gemini API Key 账户上游接口能力必须至少启用 generateContent JSON 或 streamGenerateContent')
   }
 }
 

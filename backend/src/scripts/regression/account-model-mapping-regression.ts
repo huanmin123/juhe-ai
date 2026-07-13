@@ -36,6 +36,7 @@ import { flushAllUsageRecordQueue } from '../../modules/gateway/usage/record-que
 import { createAuditCapture } from '../../modules/gateway/audit/capture.service.js'
 import { flushAllAuditLogQueue } from '../../modules/audit-logs/audit-log-queue.service.js'
 import { previewAccountImport } from '../../modules/accounts/account-import.service.js'
+import { prepareAccountDraftTestSnapshot } from '../../modules/accounts/account-draft-test.service.js'
 import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
 import { customProviderModelBindings } from '../../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
@@ -213,6 +214,11 @@ function assertUnchangedModelConfigPatchSkipsProviderCatalogValidation(): void {
   assert.match(source, /normalizeModelMappingsIfUnchanged\(input\.modelMappings, current\.modelMappings\)/, '账户 PATCH 相同 modelMappings 应先本地比较，避免重复查询跨协议模型池')
   assert.match(source, /unchangedSupportedModelsInput \?\? await normalizeAccountSupportedModelsForProviderAsync/, 'PG 账号 PATCH 相同 supportedModels 不应继续走 provider catalog async 校验')
   assert.match(source, /unchangedModelMappingsInput \?\? await normalizeAccountModelMappingsForProviderAsync/, 'PG 账号 PATCH 相同 modelMappings 不应继续走 provider catalog async 校验')
+  assert.match(
+    source,
+    /const nextModelMappings = hasModelMappingsInput \|\| endpointModesChanged[\s\S]{0,700}normalizeAccountModelMappingsForProviderAsync/,
+    'PG async 更新仅修改 endpoint modes 时也必须进入模型映射能力重验'
+  )
 }
 
 try {
@@ -450,6 +456,7 @@ try {
   }).mappingSourceAccountCount, 1, '大写模型绑定统计不应合并小写模型映射')
 
   assertNativeResponsesUpstreamRequiresEndpointModes()
+  await assertEndpointModeUpdateValidatesEnabledMappings(group.id)
   assertRuntimeIgnoresUnsupportedChatToResponsesMapping()
   assertRuntimeIgnoresPersistentCrossProtocolMappings()
   await assertCompactSyntheticChatUsesResponsesModelMapping()
@@ -528,6 +535,7 @@ try {
   assertImportPreviewRejectsInvalidMapping(group.id)
   assertImportPreviewRejectsNonNativeResponsesMapping(group.id)
   assertImportPreviewRejectsUnsupportedMessagesMapping(group.id)
+  assertImportAndDraftValidateTargetCapabilities(group.id)
 
   console.log('account model mapping regression passed')
 } finally {
@@ -662,6 +670,84 @@ function assertNativeResponsesUpstreamRequiresEndpointModes(): void {
       groupId: openAICompatibleGroup.id
     }, ownerAccess)
   }, 'OpenAI v1 Responses -> Chat bridge 的下游别名允许选择当前供应商 Chat-only 模型')
+}
+
+async function assertEndpointModeUpdateValidatesEnabledMappings(groupId: string): Promise<void> {
+  const account = createRegressionAccount({
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '账号模型映射能力更新校验账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-model-mapping-capability-update',
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['chat_json', 'responses_sse']
+    },
+    supportedModels: [chatCompletionsUpstreamModel],
+    modelMappings: [
+      responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
+    ],
+    groupId
+  }, ownerAccess)
+
+  assert.throws(() => repositories.updateAccount(account.id, {
+    credentials: {
+      api_key: 'sk-account-model-mapping-capability-update',
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['responses_sse']
+    }
+  }, ownerAccess), /Chat Completions.*上游接口能力/, '仅修改上游接口能力时，后端仍须校验已有启用映射的右侧目标族')
+
+  const updated = repositories.updateAccount(account.id, {
+    credentials: {
+      api_key: 'sk-account-model-mapping-capability-update',
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['responses_sse']
+    },
+    modelMappings: [
+      responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel, false)
+    ]
+  }, ownerAccess)
+  assert.deepEqual(updated?.modelMappings, [
+    responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel, false)
+  ], '停用映射在目标族能力缺失时应原样保留，不能被静默删除')
+
+  const asyncAccount = createRegressionAccount({
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '账号模型映射异步能力更新校验账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-model-mapping-async-capability-update',
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['chat_json', 'responses_sse']
+    },
+    supportedModels: [chatCompletionsUpstreamModel],
+    modelMappings: [responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)],
+    groupId
+  }, ownerAccess)
+  await assert.rejects(
+    repositories.updateAccountAsync(asyncAccount.id, {
+      credentials: {
+        api_key: 'sk-account-model-mapping-async-capability-update',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['responses_sse']
+      }
+    }, ownerAccess),
+    /Chat Completions.*上游接口能力/,
+    '异步账户更新仅修改 endpoint modes 时也必须重验已有启用映射'
+  )
+  const preserved = repositories.findAccountForTest(asyncAccount.id, ownerAccess)
+  assert.deepEqual(
+    preserved?.credentials.supported_endpoint_modes,
+    ['chat_json', 'responses_sse'],
+    '异步 endpoint modes 更新被拒绝后必须保留原凭据能力'
+  )
+  assert.deepEqual(
+    preserved?.modelMappings,
+    [responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)],
+    '异步 endpoint modes 更新被拒绝后必须保留原映射'
+  )
 }
 
 function assertRuntimeIgnoresUnsupportedChatToResponsesMapping(): void {
@@ -933,11 +1019,28 @@ function assertProtocolMatrixHelper(): void {
   }), /账号模型别名只支持同协议映射/, '后端矩阵应拒绝无原生 Responses 能力的 Chat -> Responses')
   assert.doesNotThrow(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'responses',
-    upstreamEndpointFamily: 'chat_completions'
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
   }, {
     providerProfile: openAIProfile,
     supportedEndpointModes: ['chat_sse']
   }), '后端矩阵应允许 OpenAI v1 Responses -> Chat Completions bridge')
+  assert.throws(() => assertAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'responses',
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
+  }, {
+    providerProfile: openAIProfile,
+    supportedEndpointModes: ['responses_json']
+  }), /Chat Completions.*上游接口能力/, 'Responses -> Chat 启用映射必须按右侧要求 Chat 上游能力，不能被左侧 Responses 能力放行')
+  assert.doesNotThrow(() => assertAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'responses',
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: false
+  }, {
+    providerProfile: openAIProfile,
+    supportedEndpointModes: ['responses_json']
+  }), 'Responses -> Chat 停用映射在 Chat 上游能力缺失时仍应允许保留')
   assert.throws(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'messages',
     upstreamEndpointFamily: 'responses'
@@ -954,18 +1057,36 @@ function assertProtocolMatrixHelper(): void {
   }), '后端矩阵应允许原生 Responses 同协议别名')
   assert.doesNotThrow(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'messages',
-    upstreamEndpointFamily: 'messages'
+    upstreamEndpointFamily: 'messages',
+    enabled: true
   }, {
     providerProfile: anthropicProfile,
     supportedEndpointModes: ['messages_json']
   }), '后端矩阵应允许 Anthropic Messages 同协议别名')
+  assert.throws(() => assertAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'messages',
+    upstreamEndpointFamily: 'messages',
+    enabled: true
+  }, {
+    providerProfile: anthropicProfile,
+    supportedEndpointModes: ['message_token_counting']
+  }), /Messages.*上游接口能力/, 'Messages 启用映射不能把 token-counting 当作 Messages 请求能力')
   assert.doesNotThrow(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'stream_generate_content',
-    upstreamEndpointFamily: 'generate_content'
+    upstreamEndpointFamily: 'generate_content',
+    enabled: true
   }, {
     providerProfile: geminiNativeProfile,
     supportedEndpointModes: ['generate_content_json', 'generate_content_sse']
   }), '后端矩阵应允许 Gemini StreamGenerateContent 到 GenerateContent 别名')
+  assert.throws(() => assertAccountModelMappingProtocolAllowed({
+    sourceEndpointFamily: 'stream_generate_content',
+    upstreamEndpointFamily: 'generate_content',
+    enabled: true
+  }, {
+    providerProfile: geminiNativeProfile,
+    supportedEndpointModes: ['count_tokens']
+  }), /Gemini GenerateContent.*上游接口能力/, 'Gemini 启用映射必须要求 GenerateContent JSON 或 SSE 上游能力')
   assert.throws(() => assertAccountModelMappingProtocolAllowed({
     sourceEndpointFamily: 'responses',
     upstreamEndpointFamily: 'generate_content'
@@ -1121,6 +1242,65 @@ function assertImportPreviewRejectsUnsupportedMessagesMapping(groupId: string): 
   assert.equal(result.canImport, false, 'Messages 到 Responses 非法映射导入预览不应允许确认导入')
   assert.equal(result.accounts[0]?.action, 'failed', 'Messages 到 Responses 非法映射导入预览应标记账户失败')
   assert(result.accounts[0]?.messages.some((message) => message.includes('账号模型别名不支持 Anthropic Messages 跨协议映射')), '导入预览应暴露 Messages 下游协议方向约束错误')
+}
+
+function assertImportAndDraftValidateTargetCapabilities(groupId: string): void {
+  const enabledMapping = responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
+  const disabledMapping = responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel, false)
+  const importAccount = (mapping: AccountModelMapping) => ({
+    name: `目标能力导入回归-${mapping.enabled ? '启用' : '停用'}`,
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    type: 'api_key' as const,
+    status: 'active' as const,
+    groupId,
+    credentials: {
+      api_key: `sk-import-target-capability-${mapping.enabled ? 'enabled' : 'disabled'}`,
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['responses_sse']
+    },
+    supportedModels: [chatCompletionsUpstreamModel],
+    healthCheckModel: chatCompletionsUpstreamModel,
+    modelMappings: [mapping]
+  })
+  const rejectedImport = previewAccountImport({
+    type: 'juhe-ai-account-import',
+    version: 1,
+    accounts: [importAccount(enabledMapping)]
+  }, {}, ownerAccess)
+  assert.equal(rejectedImport.canImport, false, '导入预览必须拒绝目标族能力缺失的启用映射')
+  assert(rejectedImport.accounts[0]?.messages.some((message) => /Chat Completions.*上游接口能力/.test(message)), '导入预览应返回右侧目标族能力错误')
+  const acceptedImport = previewAccountImport({
+    type: 'juhe-ai-account-import',
+    version: 1,
+    accounts: [importAccount(disabledMapping)]
+  }, {}, ownerAccess)
+  assert.equal(acceptedImport.canImport, true, '导入预览应允许目标族能力缺失的停用映射')
+
+  const draftInput = (mapping: AccountModelMapping) => ({
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: `目标能力草稿回归-${mapping.enabled ? '启用' : '停用'}`,
+    type: 'api_key',
+    credentials: {
+      api_key: `sk-draft-target-capability-${mapping.enabled ? 'enabled' : 'disabled'}`,
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['responses_sse']
+    },
+    supportedModels: [chatCompletionsUpstreamModel],
+    healthCheckModel: chatCompletionsUpstreamModel,
+    modelMappings: [mapping],
+    groupId
+  })
+  assert.throws(() => prepareAccountDraftTestSnapshot({
+    accountInput: draftInput(enabledMapping),
+    requestAccess: ownerAccess
+  }), /Chat Completions.*上游接口能力/, '草稿测试必须拒绝目标族能力缺失的启用映射')
+  const acceptedDraft = prepareAccountDraftTestSnapshot({
+    accountInput: draftInput(disabledMapping),
+    requestAccess: ownerAccess
+  })
+  assert.deepEqual(acceptedDraft.draftAccount.modelMappings, [disabledMapping], '草稿测试应保留目标族能力缺失的停用映射')
 }
 
 function loadStoredMappings(accountId: string): AccountModelMapping[] {

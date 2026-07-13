@@ -401,6 +401,7 @@ function validateAccountModelMappings(
     const protocolValidation = accountModelMappingProtocolValidationMessage({
       sourceEndpointFamily,
       upstreamEndpointFamily,
+      enabled: item.enabled,
       context: { providerProfile, supportedEndpointModes }
     })
     if (protocolValidation) return protocolValidation

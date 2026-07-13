@@ -4,8 +4,10 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  accountBatchEditFieldLabels,
   buildAccountBatchEditRequest,
-  createAccountBatchEditForm
+  createAccountBatchEditForm,
+  intersectAccountSupportedEndpointModes
 } from '../../views/accounts/accountBatchEditForm'
 import type { AccountSummary } from '../../types/domain'
 
@@ -55,6 +57,63 @@ assert.equal(
   '支持模型与检查模型必须按最终快照校验'
 )
 
+const differingEndpointModeAccounts = [
+  accountFixture('account_batch_frontend_chat', 11, ['chat_sse']),
+  accountFixture('account_batch_frontend_responses', 13, ['responses_json'])
+]
+assert.deepEqual(
+  intersectAccountSupportedEndpointModes(differingEndpointModeAccounts),
+  [],
+  '所选同构账户的目标能力上下文必须取全部账户交集'
+)
+const conflictingMappingForm = createAccountBatchEditForm()
+conflictingMappingForm.enabled.modelMappings = true
+conflictingMappingForm.modelMappings = [{
+  sourceModel: 'gpt-source',
+  sourceEndpointFamily: 'responses',
+  upstreamModel: 'gpt-5.5',
+  upstreamEndpointFamily: 'chat_completions',
+  enabled: true
+}]
+assert.match(
+  buildAccountBatchEditRequest(differingEndpointModeAccounts, conflictingMappingForm).message ?? '',
+  /Chat Completions.*上游接口能力/,
+  '未覆盖接口能力时，批量映射必须按全部所选账户能力交集校验，不能只看首账户'
+)
+
+const disabledConflictingMappingForm = createAccountBatchEditForm()
+disabledConflictingMappingForm.enabled.modelMappings = true
+disabledConflictingMappingForm.modelMappings = conflictingMappingForm.modelMappings.map((mapping) => ({ ...mapping, enabled: false }))
+assert.ok(
+  buildAccountBatchEditRequest(differingEndpointModeAccounts, disabledConflictingMappingForm).payload,
+  '停用映射应允许在目标族能力交集为空时原样提交'
+)
+
+const overwrittenEndpointModeForm = createAccountBatchEditForm()
+overwrittenEndpointModeForm.enabled.modelMappings = true
+overwrittenEndpointModeForm.modelMappings = conflictingMappingForm.modelMappings.map((mapping) => ({ ...mapping }))
+overwrittenEndpointModeForm.enabled.supportedEndpointModes = true
+overwrittenEndpointModeForm.supportedEndpointModes = ['chat_json']
+assert.ok(
+  buildAccountBatchEditRequest(differingEndpointModeAccounts, overwrittenEndpointModeForm).payload,
+  '显式覆盖接口能力时，批量映射必须使用表单中的目标能力校验'
+)
+
+const structurallyInvalidDisabledMappingForm = createAccountBatchEditForm()
+structurallyInvalidDisabledMappingForm.enabled.modelMappings = true
+structurallyInvalidDisabledMappingForm.modelMappings = [{
+  sourceModel: 'gpt-source',
+  sourceEndpointFamily: 'chat_completions',
+  upstreamModel: 'gpt-5.5',
+  upstreamEndpointFamily: 'responses',
+  enabled: false
+}]
+assert.match(
+  buildAccountBatchEditRequest(differingEndpointModeAccounts, structurallyInvalidDisabledMappingForm).message ?? '',
+  /账号模型别名只支持同协议映射/,
+  '停用映射只豁免目标能力冲突，不能豁免 provider/profile 转换结构冲突'
+)
+
 const missingVersionAccounts = accounts.map((account) => ({ ...account, configRevision: undefined }))
 const noVersionForm = createAccountBatchEditForm()
 noVersionForm.enabled.notes = true
@@ -70,6 +129,13 @@ const formSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/accoun
 const accountsViewSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/AccountsView.vue'), 'utf8')
 const accountApiSource = readFileSync(resolve(frontendRoot, 'src/api/domains/accounts.ts'), 'utf8')
 assert.match(modalSource, /batchEditContext\(/, '批量编辑应在打开弹窗后一次性按需读取去敏上下文')
+assert.match(modalSource, /label="上游接口能力"/, '批量编辑必须使用上游接口能力标签')
+assert.match(modalSource, /覆盖账户真实上游支持的接口形态/, '批量编辑说明必须表达真实上游能力')
+assert.doesNotMatch(modalSource, /接口能力限制|可承接的请求形态/, '批量编辑不得继续展示旧能力文案')
+assert.equal(accountBatchEditFieldLabels.supportedEndpointModes, '上游接口能力', '批量字段摘要必须使用上游接口能力')
+assert.match(modalSource, /isAccountModelMappingSourceEndpointFamilyAllowed/, '批量来源协议选项必须复用结构矩阵过滤')
+assert.match(modalSource, /enabled: mapping\.enabled/, '批量目标协议选项必须传入每条映射启停状态')
+assert.match(modalSource, /intersectAccountSupportedEndpointModes\(accountDetails\.value\)/, '批量目标协议选项必须使用全部账户能力交集')
 assert.doesNotMatch(modalSource, /advancedDetail\(/, '批量编辑不得逐账户读取高级详情')
 assert.match(formSource, /configRevision/, '批量编辑请求必须使用乐观版本')
 assert.match(accountsViewSource, /@edit="openBatchEdit"/, '账户列表批量工具栏应接入批量编辑入口')
@@ -82,7 +148,11 @@ assert.doesNotMatch(accountsViewSource, /batchTestSelected|openBatchTestModal/, 
 
 console.log('账户批量编辑前端回归通过：显式覆盖、清空语义、版本校验和按需详情加载符合契约')
 
-function accountFixture(id: string, configRevision: number): AccountSummary {
+function accountFixture(
+  id: string,
+  configRevision: number,
+  supportedEndpointModes: AccountSummary['credentials']['supported_endpoint_modes'] = ['chat_sse']
+): AccountSummary {
   return {
     id,
     configRevision,
@@ -92,7 +162,7 @@ function accountFixture(id: string, configRevision: number): AccountSummary {
     protocolVersion: 'v1',
     name: id,
     type: 'api_key',
-    credentials: { supported_endpoint_modes: ['chat_sse'] },
+    credentials: { supported_endpoint_modes: supportedEndpointModes },
     status: 'active',
     concurrencyLimit: 1,
     currentConcurrency: 0,

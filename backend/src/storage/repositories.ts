@@ -2049,14 +2049,25 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     hasOwnInput(input, 'healthCheckModel') ? input.healthCheckModel : current.healthCheckModel,
     nextSupportedModels
   )
+  const endpointModesChanged = hasOwnInput(input, 'credentials')
+    && !isDeepStrictEqual(
+      current.credentials?.supported_endpoint_modes,
+      credentials.supported_endpoint_modes
+    )
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
-  const unchangedModelMappingsInput = hasModelMappingsInput
+  const unchangedModelMappingsInput = hasModelMappingsInput && !endpointModesChanged
     ? normalizeModelMappingsIfUnchanged(input.modelMappings, current.modelMappings)
     : undefined
-  const nextModelMappings = hasModelMappingsInput
-    ? unchangedModelMappingsInput ?? normalizeAccountModelMappingsForProvider(input.modelMappings, current.providerCode, systemAccountId, current, {
+  const nextModelMappings = hasModelMappingsInput || endpointModesChanged
+    ? unchangedModelMappingsInput ?? normalizeAccountModelMappingsForProvider(
+      hasModelMappingsInput ? input.modelMappings : current.modelMappings,
+      current.providerCode,
+      systemAccountId,
+      current,
+      {
         supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
-      }) ?? []
+      }
+    ) ?? []
     : current.modelMappings ?? []
   assertAccountSupportedModelsRequired(nextSupportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
@@ -2079,11 +2090,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     nextProxyProfileId,
     credentialsInputPresent: hasOwnInput(input, 'credentials')
   })
-  const endpointModesChanged = hasOwnInput(input, 'credentials')
-    && !isDeepStrictEqual(
-      current.credentials?.supported_endpoint_modes,
-      credentials.supported_endpoint_modes
-    )
   const requiresHealthCheckSchedule = requiresBackgroundRecheck
     || hasSupportedModelsInput
     || hasOwnInput(input, 'healthCheckModel')
@@ -2417,14 +2423,25 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     hasOwnInput(input, 'healthCheckModel') ? input.healthCheckModel : current.healthCheckModel,
     nextSupportedModels
   )
+  const endpointModesChanged = hasOwnInput(input, 'credentials')
+    && !isDeepStrictEqual(
+      current.credentials?.supported_endpoint_modes,
+      credentials.supported_endpoint_modes
+    )
   const hasModelMappingsInput = hasOwnInput(input, 'modelMappings')
-  const unchangedModelMappingsInput = hasModelMappingsInput
+  const unchangedModelMappingsInput = hasModelMappingsInput && !endpointModesChanged
     ? normalizeModelMappingsIfUnchanged(input.modelMappings, current.modelMappings)
     : undefined
-  const nextModelMappings = hasModelMappingsInput
-    ? unchangedModelMappingsInput ?? await normalizeAccountModelMappingsForProviderAsync(input.modelMappings, current.providerCode, systemAccountId, current, {
+  const nextModelMappings = hasModelMappingsInput || endpointModesChanged
+    ? unchangedModelMappingsInput ?? await normalizeAccountModelMappingsForProviderAsync(
+      hasModelMappingsInput ? input.modelMappings : current.modelMappings,
+      current.providerCode,
+      systemAccountId,
+      current,
+      {
         supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
-      }) ?? []
+      }
+    ) ?? []
     : current.modelMappings ?? []
   assertAccountSupportedModelsRequired(nextSupportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(nextModelMappings, nextSupportedModels)
@@ -2448,11 +2465,6 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     nextProxyProfileId: proxyProfileId,
     credentialsInputPresent: hasOwnInput(input, 'credentials')
   })
-  const endpointModesChanged = hasOwnInput(input, 'credentials')
-    && !isDeepStrictEqual(
-      current.credentials?.supported_endpoint_modes,
-      credentials.supported_endpoint_modes
-    )
   const requiresHealthCheckSchedule = requiresBackgroundRecheck
     || hasSupportedModelsInput
     || hasOwnInput(input, 'healthCheckModel')

@@ -1,6 +1,5 @@
 import type { Request } from 'express'
 
-import { accountSupportsClientCompatibility } from '../../../../domain/account-client-compatibility.js'
 import {
   accountSupportsOpenAIEndpointMode,
   openAIEndpointModeForRequestShape
@@ -18,7 +17,11 @@ import {
 } from '../../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/registry.js'
-import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody } from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
+import {
+  applyOpenAIClientCompatibilityHeaders,
+  buildOpenAIClientCompatibilityBody,
+  shouldForceOpenAICodexResponsesSse
+} from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import {
   buildOpenAIModelMappedJsonBody,
   isGeminiGenerateContentToChatCompletionsModelMapping,
@@ -53,12 +56,14 @@ import {
   prepareCodexResponsesChatBridgeHeaders,
   transformCodexResponsesChatBridgeUpstreamResponse
 } from '../_shared/codex-responses-chat-bridge.js'
-import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
+import type { ProviderDriver, ProviderDriverAccount, ProviderGatewayRequestContext } from '../_shared/types.js'
 
-function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
+function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount, context?: ProviderGatewayRequestContext) {
   return openAIEndpointModeForRequestShape({
     endpoint: req.path || req.originalUrl.split('?', 1)[0],
-    stream: isEffectiveOpenAIStreamRequest(req, account)
+    stream: account.type === 'api_key' && shouldForceOpenAICodexResponsesSse(req, context?.requestClientCompatibility)
+      ? true
+      : isEffectiveOpenAIStreamRequest(req, account)
   })
 }
 
@@ -169,12 +174,12 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
         }, signal)
       }
     }
-    const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal, {
+    const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, signal, {
       modelOverride: modelMapping?.upstreamModel,
       requestClientCompatibility: context?.requestClientCompatibility
     })
     const headers = buildUpstreamHeaders(req.headers, account)
-    applyOpenAIClientCompatibilityHeaders(req, account, headers, {
+    applyOpenAIClientCompatibilityHeaders(req, headers, {
       requestClientCompatibility: context?.requestClientCompatibility
     })
     return {
@@ -240,10 +245,7 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
         clientCompatibility: account.clientCompatibility
       })
     }
-    if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) {
-      return false
-    }
-    const mode = openAIEndpointModeForGatewayRequest(req, account)
+    const mode = openAIEndpointModeForGatewayRequest(req, account, context)
     if (!mode) return true
     return accountSupportsOpenAIEndpointMode({
       mode,

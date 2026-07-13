@@ -1,6 +1,5 @@
 import type { Request } from 'express'
 
-import { accountSupportsClientCompatibility } from '../../../../domain/account-client-compatibility.js'
 import {
   accountSupportsAnthropicEndpointMode,
   anthropicEndpointModeForRequestShape
@@ -206,7 +205,7 @@ export const anthropicProviderDriver: ProviderDriver = {
     })
   },
   endpointModeForRequest: anthropicEndpointModeForGatewayRequest,
-  accountSupportsRequest(req, account, context) {
+  accountSupportsRequest(req, account) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
     if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE)) {
       if (!isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping)) {
@@ -239,9 +238,6 @@ export const anthropicProviderDriver: ProviderDriver = {
         protocolVersion: account.protocolVersion,
         providerProtocolProfileId: account.providerProtocolProfileId
       })
-    }
-    if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) {
-      return false
     }
     const mode = anthropicEndpointModeForGatewayRequest(req, account)
     if (!mode) return true
