@@ -376,6 +376,26 @@ await assert.rejects(
 )
 assert.equal((await listChatMessages(client, { conversationId: missingWindowConversation.id, systemAccountId: 'sys_missing_window', limit: 20, now: '2026-07-13T03:24:00.000Z' }))[0]?.turnId, missingWindowTurn.turnId, '容量窗口损坏时旧轮次必须保留')
 
+const crossDayAccountId = 'sys_replace_cross_day'
+const crossDayConversation = await createChatConversation(client, {
+  id: 'chat_conv_replace_cross_day', systemAccountId: crossDayAccountId, apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', now: '2026-07-13T23:50:00.000Z'
+})
+const crossDayOriginal = await acceptChatTurn(client, {
+  conversationId: crossDayConversation.id, systemAccountId: crossDayAccountId, clientMessageId: 'client_replace_cross_day_old', userContent: '前一天的问题', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T23:58:00.000Z', storageQuotaBytes: 4096
+})
+await completeChatTurn(client, {
+  conversationId: crossDayConversation.id, systemAccountId: crossDayAccountId, turnId: crossDayOriginal.turnId, assistantContent: '跨过午夜完成的旧回答', finishReason: 'stop', traceId: 'trace_replace_cross_day_old', now: '2026-07-14T00:01:00.000Z'
+})
+assert(Number((database.prepare('SELECT content_bytes FROM chat_user_storage_windows WHERE system_account_id = ? AND bucket_date = ?').get(crossDayAccountId, '2026-07-13') as { content_bytes?: unknown })?.content_bytes ?? 0) > 0, '旧轮次应计入创建时所在日桶')
+const crossDayNewContent = '次日修正的问题'
+const crossDayNewUserBytes = Buffer.byteLength(crossDayNewContent, 'utf8') + Buffer.byteLength(replacementMarkerJson, 'utf8')
+await acceptChatTurn(client, {
+  conversationId: crossDayConversation.id, systemAccountId: crossDayAccountId, clientMessageId: 'client_replace_cross_day_new', userContent: crossDayNewContent, contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-14T00:02:00.000Z', storageQuotaBytes: crossDayNewUserBytes, replaceTurnId: crossDayOriginal.turnId
+})
+assert.equal(database.prepare('SELECT content_bytes FROM chat_user_storage_windows WHERE system_account_id = ? AND bucket_date = ?').get(crossDayAccountId, '2026-07-13'), undefined, '跨日替换必须准确扣除并删除旧日空桶')
+assert.equal(Number((database.prepare('SELECT content_bytes FROM chat_user_storage_windows WHERE system_account_id = ? AND bucket_date = ?').get(crossDayAccountId, '2026-07-14') as { content_bytes?: unknown })?.content_bytes ?? 0), crossDayNewUserBytes, '跨日替换的新日桶只能增加新用户消息字节')
+assert.equal(Number((database.prepare('SELECT COALESCE(SUM(content_bytes), 0) AS total FROM chat_user_storage_windows WHERE system_account_id = ?').get(crossDayAccountId) as { total?: unknown })?.total ?? 0), crossDayNewUserBytes, '跨日替换后的总额必须等于净额')
+
 const imageReplaceConversation = await createChatConversation(client, {
   id: 'chat_conv_replace_image', systemAccountId: 'sys_user_1', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', now: '2026-07-13T03:00:00.000Z'
 })

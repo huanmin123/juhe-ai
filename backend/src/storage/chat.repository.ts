@@ -381,13 +381,16 @@ export async function listChatMessages(client: DatabaseClient, input: {
   now: string
 }): Promise<ChatMessage[]> {
   await requireConversation(client, input.conversationId, input.systemAccountId)
-  const before = input.beforeSequenceNo ?? Number.MAX_SAFE_INTEGER
+  const hasCursor = input.beforeSequenceNo !== undefined
   const rows = await client.query<ChatMessageRow>(`
     SELECT * FROM ${chatTable(client, 'chat_messages')}
-    WHERE conversation_id = ? AND system_account_id = ? AND expires_at > ? AND sequence_no < ?
+    WHERE conversation_id = ? AND system_account_id = ? AND expires_at > ?
+      ${hasCursor ? 'AND sequence_no < ?' : ''}
     ORDER BY sequence_no DESC
     LIMIT ?
-  `, [input.conversationId, input.systemAccountId, input.now, before, Math.max(1, Math.min(input.limit, 100))])
+  `, hasCursor
+    ? [input.conversationId, input.systemAccountId, input.now, input.beforeSequenceNo, Math.max(1, Math.min(input.limit, 100))]
+    : [input.conversationId, input.systemAccountId, input.now, Math.max(1, Math.min(input.limit, 100))])
   return rows.reverse().map(mapMessage)
 }
 
