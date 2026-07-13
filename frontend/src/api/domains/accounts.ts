@@ -13,6 +13,7 @@ import type {
   AccountTestTask,
   AccountTrafficMigrationResult,
   AccountTrafficMigrationSourceStatus,
+  AccountSupportedEndpointMode,
   ProviderModelApiProtocol
 } from '@/types/domain'
 import type {
@@ -43,6 +44,8 @@ export interface AccountTestOptions {
   accountId: string
   defaultModel: string
   models: AccountManualTestModelOption[]
+  testEndpointModes: AccountSupportedEndpointMode[]
+  defaultTestEndpointMode: AccountSupportedEndpointMode
 }
 
 export const accountsApi = {

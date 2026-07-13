@@ -16,12 +16,19 @@ import {
   HYBRID_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
 import {
-  defaultAnthropicEndpointModes
+  assertAnthropicEndpointModesCompatible,
+  defaultAnthropicEndpointModes,
+  normalizeAnthropicEndpointModesForWrite
 } from '../../domain/anthropic-endpoint-modes.js'
 import {
+  assertOpenAIEndpointModesCompatible,
   defaultOpenAIEndpointModes,
   normalizeOpenAIEndpointModesForWrite
 } from '../../domain/openai-endpoint-modes.js'
+import {
+  assertGeminiEndpointModesCompatible,
+  normalizeGeminiEndpointModesForWrite
+} from '../../domain/gemini-endpoint-modes.js'
 import type { AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import { mergeAccountCredentialsForUpdate } from '../../modules/accounts/account-credential-update.js'
 import { filterGatewayAccountsByRequestCapability } from '../../modules/gateway/dispatch/account-capability-filter.js'
@@ -109,8 +116,53 @@ assert.deepEqual(
 )
 assert.throws(
   () => normalizeOpenAIEndpointModesForWrite(['chat_json', 'bad_mode'], { providerCode: 'openai', accountType: 'api_key' }),
-  /不支持的能力/,
-  '接口能力写入必须拒绝未知枚举'
+  /上游接口能力包含不支持的能力：bad_mode/,
+  'OpenAI 上游接口能力写入必须拒绝未知枚举并返回统一文案'
+)
+assert.throws(
+  () => normalizeAnthropicEndpointModesForWrite(['bad_mode']),
+  /上游接口能力包含不支持的能力：bad_mode/,
+  'Anthropic 上游接口能力写入必须拒绝未知枚举并返回统一文案'
+)
+assert.throws(
+  () => normalizeGeminiEndpointModesForWrite(['bad_mode']),
+  /上游接口能力包含不支持的能力：bad_mode/,
+  'Gemini 上游接口能力写入必须拒绝未知枚举并返回统一文案'
+)
+assert.throws(
+  () => assertOpenAIEndpointModesCompatible({ modes: ['chat_json'], accountType: 'oauth' }),
+  /OAuth 账户上游接口能力只能选择/,
+  'OAuth 上游接口能力兼容校验必须返回统一文案'
+)
+assert.throws(
+  () => assertAnthropicEndpointModesCompatible({ modes: ['chat_json'], accountType: 'api_key' }),
+  /Anthropic API Key 账户上游接口能力不支持：chat_json/,
+  'Anthropic 上游接口能力兼容校验必须返回统一文案'
+)
+assert.throws(
+  () => assertGeminiEndpointModesCompatible({ modes: ['chat_json'], accountType: 'api_key' }),
+  /Gemini API Key 账户上游接口能力不支持：chat_json/,
+  'Gemini 上游接口能力兼容校验必须返回统一文案'
+)
+assert.throws(
+  () => assertAnthropicEndpointModesCompatible({ modes: ['message_token_counting'], accountType: 'api_key' }),
+  /Anthropic API Key 账户上游接口能力必须至少启用 Messages API/,
+  'Anthropic 必选上游接口能力校验必须返回统一文案'
+)
+assert.throws(
+  () => assertGeminiEndpointModesCompatible({ modes: ['count_tokens'], accountType: 'api_key' }),
+  /Gemini API Key 账户上游接口能力必须至少启用 generateContent JSON/,
+  'Gemini 必选上游接口能力校验必须返回统一文案'
+)
+assert.throws(
+  () => assertOpenAIEndpointModesCompatible({ modes: ['responses_json'], accountType: 'oauth' }),
+  /OAuth 账户上游接口能力必须启用 Responses API \(Streaming\)/,
+  'OAuth 必选流式上游接口能力校验必须返回统一文案'
+)
+assert.throws(
+  () => assertOpenAIEndpointModesCompatible({ modes: ['chat_json'], clientCompatibility: 'codex_responses' }),
+  /Codex Responses 账户上游接口能力必须启用 Responses API \(Streaming\)/,
+  'Codex Responses 必选上游接口能力校验必须返回统一文案'
 )
 assert.deepEqual(
   mergeAccountCredentialsForUpdate({
@@ -124,7 +176,7 @@ assert.deepEqual(
     api_key: 'sk-new'
   }).supported_endpoint_modes,
   ['chat_json'],
-  '账户部分凭据更新必须保留已有接口能力限制'
+  '账户部分凭据更新必须保留已有上游接口能力'
 )
 assert.deepEqual(
   normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-openai', base_url: 'https://example.com/v1' }, {
@@ -169,7 +221,7 @@ assert.throws(
     protocolVersion: 'v1',
     providerProtocolProfileId: 'profile_deepseek_openai_v1'
   }),
-  /DeepSeek 账户接口能力只支持 Chat Completion \(JSON\) 或 Chat Completion \(Streaming\)/,
+  /DeepSeek 账户上游接口能力只支持 Chat Completion \(JSON\) 或 Chat Completion \(Streaming\)/,
   'DeepSeek API Key 凭据归一化应拒绝 Responses 能力'
 )
 assert.deepEqual(
@@ -205,7 +257,7 @@ assert.throws(
     protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
     providerProtocolProfileId: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID
   }),
-  /DeepSeek Anthropic 账户接口能力只支持 Messages API/,
+  /DeepSeek Anthropic 账户上游接口能力只支持 Messages API/,
   'DeepSeek Claude Code 凭据归一化应拒绝 count_tokens 能力'
 )
 assert.deepEqual(
@@ -231,14 +283,20 @@ assert.throws(
     protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
     providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID
   }),
-  /智谱 GLM Coding Anthropic 账户接口能力只支持 Messages API/,
+  /智谱 GLM Coding Anthropic 账户上游接口能力只支持 Messages API/,
   'GLM Coding Anthropic 凭据归一化应拒绝 count_tokens 能力'
 )
 
 const chatOnly = account('chat-only', ['chat_json', 'chat_sse'])
 const responsesOnly = account('responses-only', ['responses_json', 'responses_sse'])
+const responsesJsonOnly = account('responses-json-only', ['responses_json'])
+const responsesSseOnly = account('responses-sse-only', ['responses_sse'])
 const jsonOnly = account('json-only', ['chat_json', 'responses_json'])
 const codexCapableApiKey = gptApiKeyAccount('gpt-api-key-codex', ['responses_json', 'responses_sse'])
+const gptResponsesJsonOnly = gptApiKeyAccount('gpt-responses-json-only', ['responses_json'])
+const gptResponsesSseOnly = gptApiKeyAccount('gpt-responses-sse-only', ['responses_sse'])
+const hybridResponsesJsonOnly = hybridOpenAIAccount('hybrid-responses-json-only', ['responses_json'])
+const hybridResponsesSseOnly = hybridOpenAIAccount('hybrid-responses-sse-only', ['responses_sse'])
 const deepSeekChatOnlyAccount = deepSeekApiKeyAccount('deepseek-chat-only', ['chat_json', 'chat_sse'], 'codex_responses')
 const deepSeekResponsesToChatMappedAccount = deepSeekApiKeyAccount('deepseek-responses-to-chat', ['chat_json', 'chat_sse'], 'codex_responses', [
   {
@@ -293,25 +351,39 @@ assert.deepEqual(
   '普通 OpenAI Responses 请求只能命中 OpenAI-compatible 账号，GPT API Key 可同时承接'
 )
 assert.deepEqual(
+  filterGatewayAccountsByRequestCapability(request('/v1/responses', false), [
+    responsesJsonOnly,
+    responsesSseOnly,
+    gptResponsesJsonOnly,
+    gptResponsesSseOnly,
+    hybridResponsesJsonOnly,
+    hybridResponsesSseOnly
+  ], {
+    requestClientCompatibility: 'codex_responses'
+  }).accounts.map((item) => item.id),
+  ['responses-sse-only', 'gpt-responses-sse-only', 'hybrid-responses-sse-only'],
+  'Codex 原生 Responses API Key 请求即使原始 stream=false，也必须统一按最终 responses_sse 能力筛选'
+)
+assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [responsesOnly, codexCapableApiKey, oauthAccount('oauth-codex')], {
     requestClientCompatibility: 'codex_responses'
   }).accounts.map((item) => item.id),
-  ['gpt-api-key-codex', 'oauth-codex'],
-  'Codex Responses 请求只能命中具备 Codex 兼容能力的账号'
+  ['responses-only', 'gpt-api-key-codex', 'oauth-codex'],
+  'Codex Responses 请求可命中具备原生 responses_sse 能力的普通 OpenAI-compatible 账号'
 )
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [responsesOnly, deepSeekChatOnlyAccount], {
     requestClientCompatibility: 'codex_responses'
   }).accounts.map((item) => item.id),
-  [],
-  '没有显式 Responses -> Chat 模型映射时，Codex Responses 请求不能命中普通 DeepSeek Chat-only 账号'
+  ['responses-only'],
+  '没有显式 Responses -> Chat 模型映射时，Codex Responses 请求仍不能命中普通 DeepSeek Chat-only 账号'
 )
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true, 'gpt-5.5'), [responsesOnly, deepSeekResponsesToChatMappedAccount], {
     requestClientCompatibility: 'codex_responses'
   }).accounts.map((item) => item.id),
-  ['deepseek-responses-to-chat'],
-  'Codex Responses 请求命中显式 Responses -> Chat 模型映射时应允许 DeepSeek Chat-only 账号承接'
+  ['responses-only', 'deepseek-responses-to-chat'],
+  'Codex Responses 请求可由原生 Responses 账号或显式 Responses -> Chat 映射账号承接'
 )
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true, 'gpt-5.4-mini'), [deepSeekHybridTargetMappedAccount], {
@@ -413,6 +485,16 @@ function oauthAccount(id: string, modes: AccountSupportedEndpointMode[] = ['resp
     providerCode: 'gpt',
     providerProtocolProfileId: 'profile_gpt_openai_v1',
     clientCompatibility: 'codex_responses'
+  } as unknown as UpstreamAccount
+}
+
+function hybridOpenAIAccount(id: string, modes: AccountSupportedEndpointMode[]): UpstreamAccount {
+  return {
+    ...account(id, modes),
+    providerCode: HYBRID_PROVIDER_CODE,
+    providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
+    supportedEndpointModes: modes,
+    credentials: { supported_endpoint_modes: modes }
   } as unknown as UpstreamAccount
 }
 

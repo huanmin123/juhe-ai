@@ -149,10 +149,13 @@ GET /__aisys__/api/my-accounts/:id/test-options
 - `accountId`
 - 当前供应商和协议可测试的模型选项
 - 默认选中的账户检查模型，响应字段为 `defaultModel`
-- 可用人工测试请求形态
+- 可用人工测试请求形态，响应字段为 `testEndpointModes`
+- 默认人工测试请求形态，响应字段为 `defaultTestEndpointMode`
 - 供应商、协议档案和必要展示摘要
 
 接口不得返回凭据。测试执行仍由后端按账户 ID 读取受控凭据。
+
+`testEndpointModes` 必须由后端基于完整账户的上游接口能力返回。前端不能从列表裁剪账户重新推导，也不能与模型目录的协议标签取交集后隐藏用户显式启用的请求形态；模型目录协议标签只用于候选模型和风险提示。
 
 新增和编辑表单直接使用当前表单中的 `supportedModels`、`healthCheckModel`、endpoint modes 和未保存配置，不额外读取已保存详情。表单测试不再请求自由模型选项。
 

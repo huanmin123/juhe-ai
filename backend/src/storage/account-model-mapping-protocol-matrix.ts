@@ -68,7 +68,7 @@ export function assertSupportedAccountModelMappingEndpointFamilyConversion(
 }
 
 export function assertAccountModelMappingProtocolAllowed(
-  mapping: Pick<AccountModelMapping, 'sourceEndpointFamily' | 'upstreamEndpointFamily'>,
+  mapping: Pick<AccountModelMapping, 'sourceEndpointFamily' | 'upstreamEndpointFamily'> & Partial<Pick<AccountModelMapping, 'enabled'>>,
   options: {
     providerProfile: ProviderProtocolProfileDefinition
     supportedEndpointModes?: readonly AccountSupportedEndpointMode[]
@@ -114,13 +114,19 @@ export function assertAccountModelMappingProtocolAllowed(
   if (isGeminiGenerateContentMappingSource(mapping.sourceEndpointFamily) && !geminiNativeProfile) {
     throw new Error('当前供应商协议不支持 Gemini native 账号模型别名')
   }
-  if (rule.requiresNativeResponses && !hasNativeResponsesEndpointMode(options.supportedEndpointModes)) {
-    throw new Error('上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游')
+  if (mapping.enabled !== false && !hasAccountModelMappingUpstreamEndpointFamilyCapability(
+    mapping.upstreamEndpointFamily,
+    options.supportedEndpointModes
+  )) {
+    if (rule.requiresNativeResponses) {
+      throw new Error('上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游')
+    }
+    throw new Error(missingUpstreamEndpointFamilyCapabilityMessage(mapping.upstreamEndpointFamily))
   }
 }
 
 export function assertHybridAccountModelMappingProtocolAllowed(
-  mapping: Pick<AccountModelMapping, 'sourceEndpointFamily' | 'upstreamEndpointFamily'>,
+  mapping: Pick<AccountModelMapping, 'sourceEndpointFamily' | 'upstreamEndpointFamily'> & Partial<Pick<AccountModelMapping, 'enabled'>>,
   options: {
     providerProfile: ProviderProtocolProfileDefinition
     supportedEndpointModes?: readonly AccountSupportedEndpointMode[]
@@ -132,8 +138,14 @@ export function assertHybridAccountModelMappingProtocolAllowed(
   if (!rule) {
     throw new Error(unsupportedHybridProtocolConversionMessage(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily))
   }
-  if (rule.requiresNativeResponses && !hasNativeResponsesEndpointMode(options.supportedEndpointModes)) {
-    throw new Error('上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游')
+  if (mapping.enabled !== false && !hasAccountModelMappingUpstreamEndpointFamilyCapability(
+    mapping.upstreamEndpointFamily,
+    options.supportedEndpointModes
+  )) {
+    if (rule.requiresNativeResponses) {
+      throw new Error('上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游')
+    }
+    throw new Error(missingUpstreamEndpointFamilyCapabilityMessage(mapping.upstreamEndpointFamily))
   }
 }
 
@@ -164,7 +176,24 @@ export function isGeminiGenerateContentMappingSource(value: AccountModelMappingS
 }
 
 export function hasNativeResponsesEndpointMode(value: readonly AccountSupportedEndpointMode[] | undefined): boolean {
-  return (value ?? []).some((mode) => mode === 'responses_json' || mode === 'responses_sse')
+  return hasAccountModelMappingUpstreamEndpointFamilyCapability(OPENAI_RESPONSES_FAMILY, value)
+}
+
+export function hasAccountModelMappingUpstreamEndpointFamilyCapability(
+  upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily,
+  value: readonly AccountSupportedEndpointMode[] | undefined
+): boolean {
+  const modes = value ?? []
+  if (upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY) {
+    return modes.some((mode) => mode === 'chat_json' || mode === 'chat_sse')
+  }
+  if (upstreamEndpointFamily === OPENAI_RESPONSES_FAMILY) {
+    return modes.some((mode) => mode === 'responses_json' || mode === 'responses_sse')
+  }
+  if (upstreamEndpointFamily === ANTHROPIC_MESSAGES_FAMILY) {
+    return modes.some((mode) => mode === 'messages_json' || mode === 'messages_sse')
+  }
+  return modes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')
 }
 
 export function accountModelMappingEndpointFamilyLabel(value: AccountModelMappingEndpointFamily): string {
@@ -193,4 +222,10 @@ function unsupportedHybridProtocolConversionMessage(
   upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
 ): string {
   return `混合供应商账户暂不支持 ${accountModelMappingEndpointFamilyLabel(sourceEndpointFamily)} 到 ${accountModelMappingEndpointFamilyLabel(upstreamEndpointFamily)} 的协议转换`
+}
+
+function missingUpstreamEndpointFamilyCapabilityMessage(
+  upstreamEndpointFamily: AccountModelMappingUpstreamEndpointFamily
+): string {
+  return `启用的模型映射上游协议 ${accountModelMappingEndpointFamilyLabel(upstreamEndpointFamily)} 要求账户至少启用一种对应的上游接口能力`
 }

@@ -455,13 +455,13 @@ function resolveAccountTestEndpointMode(
       throw new AccountTestConfigurationError(`当前账户协议不支持该测试请求形态：${requestedMode}`)
     }
     if (!allowedModes.includes(requestedMode)) {
-      throw new AccountTestConfigurationError(`测试请求形态不在账户接口能力限制中：${requestedMode}`)
+      throw new AccountTestConfigurationError(`测试请求形态不在账户上游接口能力中：${requestedMode}`)
     }
     return requestedMode
   }
   const mode = allowedModes[0]
   if (!mode) {
-    throw new AccountTestConfigurationError('账户接口能力限制中没有可用于连接测试的请求形态')
+    throw new AccountTestConfigurationError('账户上游接口能力中没有可用于连接测试的请求形态')
   }
   return mode
 }

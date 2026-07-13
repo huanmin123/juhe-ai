@@ -246,8 +246,8 @@
               <AccountBatchEditField
                 v-model:checked="form.enabled.supportedEndpointModes"
                 :disabled="!homogeneousModelConfiguration"
-                label="接口能力限制"
-                description="直接覆盖账户可承接的请求形态。"
+                label="上游接口能力"
+                description="直接覆盖账户真实上游支持的接口形态。"
               >
                 <template #default="{ disabled }">
                   <a-checkbox-group
@@ -411,6 +411,7 @@ import {
   buildAccountBatchEditRequest,
   createAccountBatchEditForm,
   enabledAccountBatchEditFieldLabels,
+  intersectAccountSupportedEndpointModes,
   type AccountBatchEditForm
 } from './accountBatchEditForm'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
@@ -421,8 +422,10 @@ import {
   availableAccountGptServiceTierOptions
 } from './accountGptRequestOverrides'
 import {
+  defaultAccountModelMappingSourceEndpointFamily,
   defaultAccountModelMappingUpstreamEndpointFamily,
-  isAccountModelMappingProtocolAllowed
+  isAccountModelMappingProtocolAllowed,
+  isAccountModelMappingSourceEndpointFamilyAllowed
 } from './accountModelMappingProtocolMatrix'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { endpointModesForProfile } from './accountProviderCapabilities'
@@ -519,13 +522,17 @@ const confirmTitle = computed(() => (
   `确认用当前值覆盖 ${props.accounts.length} 个账户的 ${enabledLabels.value.join('、')}？`
 ))
 
-const sourceEndpointOptions = [
+const sourceEndpointBaseOptions = [
   { label: 'Chat Completions', value: 'chat_completions' },
   { label: 'Responses', value: 'responses' },
   { label: 'Messages', value: 'messages' },
   { label: 'Gemini GenerateContent', value: 'generate_content' },
   { label: 'Gemini StreamGenerateContent', value: 'stream_generate_content' }
 ] as const
+const sourceEndpointOptions = computed(() => sourceEndpointBaseOptions.map((option) => ({
+  ...option,
+  disabled: !isAccountModelMappingSourceEndpointFamilyAllowed(option.value, mappingContext())
+})))
 const upstreamEndpointBaseOptions = [
   { label: 'Chat Completions', value: 'chat_completions' },
   { label: 'Responses', value: 'responses' },
@@ -630,7 +637,7 @@ function close(): void {
 }
 
 function addMapping(): void {
-  const sourceEndpointFamily = 'chat_completions' as const
+  const sourceEndpointFamily = defaultAccountModelMappingSourceEndpointFamily(mappingContext())
   const upstreamEndpointFamily = defaultAccountModelMappingUpstreamEndpointFamily(
     sourceEndpointFamily,
     mappingContext()
@@ -654,6 +661,7 @@ function upstreamEndpointOptionsFor(mapping: AccountModelMapping) {
     disabled: !isAccountModelMappingProtocolAllowed({
       sourceEndpointFamily: mapping.sourceEndpointFamily,
       upstreamEndpointFamily: option.value,
+      enabled: mapping.enabled,
       context: mappingContext()
     })
   }))
@@ -664,7 +672,7 @@ function mappingContext() {
     providerProfile: selectedProtocolProfile.value ?? homogeneousAccount.value,
     supportedEndpointModes: form.enabled.supportedEndpointModes
       ? form.supportedEndpointModes
-      : homogeneousAccount.value?.credentials.supported_endpoint_modes
+      : intersectAccountSupportedEndpointModes(accountDetails.value)
   }
 }
 

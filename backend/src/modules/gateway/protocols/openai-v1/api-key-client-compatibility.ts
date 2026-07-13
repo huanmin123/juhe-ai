@@ -1,9 +1,5 @@
 import type { Request } from 'express'
 
-import {
-  accountSupportsClientCompatibility,
-  type AccountClientCompatibilityProfile
-} from '../../../../domain/account-client-compatibility.js'
 import type { ClientCompatibilityCapability } from '../../../../domain/types.js'
 import {
   getGatewayRequestBodyState,
@@ -23,14 +19,6 @@ import {
 } from '../../adapters/gpt-codex/client-headers.js'
 import { normalizeOpenAICodexBuiltinTools } from '../../adapters/gpt-codex/builtin-tools.js'
 
-export interface OpenAIClientCompatibilityAccount {
-  providerCode?: AccountClientCompatibilityProfile['providerCode']
-  type?: AccountClientCompatibilityProfile['accountType']
-  clientCompatibility?: AccountClientCompatibilityProfile['clientCompatibility']
-  protocolCode?: AccountClientCompatibilityProfile['protocolCode']
-  protocolVersion?: AccountClientCompatibilityProfile['protocolVersion']
-}
-
 export interface OpenAIClientCompatibilityOptions {
   modelOverride?: string
   requestClientCompatibility?: ClientCompatibilityCapability
@@ -38,14 +26,10 @@ export interface OpenAIClientCompatibilityOptions {
 
 export async function buildOpenAIClientCompatibilityBody(
   req: Request,
-  account: OpenAIClientCompatibilityAccount,
   signal?: AbortSignal,
   options: OpenAIClientCompatibilityOptions = {}
 ): Promise<Buffer | undefined> {
-  if (!shouldApplyCodexResponsesCompatibility(account, options.requestClientCompatibility)) {
-    return undefined
-  }
-  if (!isOpenAIResponsesPostRequest(req)) {
+  if (!shouldForceOpenAICodexResponsesSse(req, options.requestClientCompatibility)) {
     return undefined
   }
   const body = await parseOpenAIClientCompatibilityJsonBody(req, signal)
@@ -58,14 +42,10 @@ export async function buildOpenAIClientCompatibilityBody(
 
 export function applyOpenAIClientCompatibilityHeaders(
   req: Request,
-  account: OpenAIClientCompatibilityAccount,
   headers: Headers,
   options: Pick<OpenAIClientCompatibilityOptions, 'requestClientCompatibility'> = {}
 ): void {
-  if (!shouldApplyCodexResponsesCompatibility(account, options.requestClientCompatibility)) {
-    return
-  }
-  if (!isOpenAIResponsesPostRequest(req)) {
+  if (!shouldForceOpenAICodexResponsesSse(req, options.requestClientCompatibility)) {
     return
   }
   headers.set('accept', 'text/event-stream')
@@ -78,18 +58,12 @@ export function applyOpenAIClientCompatibilityHeaders(
   }
 }
 
-function shouldApplyCodexResponsesCompatibility(
-  account: OpenAIClientCompatibilityAccount,
+export function shouldForceOpenAICodexResponsesSse(
+  req: Request,
   requestClientCompatibility?: ClientCompatibilityCapability
 ): boolean {
   return requestClientCompatibility === 'codex_responses'
-    && accountSupportsClientCompatibility({
-      providerCode: account.providerCode,
-      accountType: account.type,
-      clientCompatibility: account.clientCompatibility,
-      protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion
-    }, 'codex_responses')
+    && isOpenAIResponsesPostRequest(req)
 }
 
 function isOpenAIResponsesPostRequest(req: Request): boolean {

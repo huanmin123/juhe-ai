@@ -52,7 +52,7 @@ assert.equal(tokenCredentials.refresh_token, 'server-refresh', 'credentialsPatch
 assert.equal(tokenCredentials.expires_at, '2026-01-01T00:00:00.000Z', 'credentialsPatch 不能覆盖服务端 token 过期时间')
 assert.equal(tokenCredentials.client_id, 'server-client', 'credentialsPatch 不能覆盖 OAuth client_id')
 assert.equal(tokenCredentials.base_url, 'https://api.openai.com/v1', 'credentialsPatch 不能覆盖 OpenAI base_url')
-assert.deepEqual(tokenCredentials.supported_endpoint_modes, ['responses_json', 'responses_sse'], 'credentialsPatch 应保留 OAuth 接口能力限制')
+assert.deepEqual(tokenCredentials.supported_endpoint_modes, ['responses_json', 'responses_sse'], 'credentialsPatch 应保留 OAuth 上游接口能力')
 assert.equal(tokenCredentials.service_tier_override, 'priority', 'credentialsPatch 应保留 OAuth 服务等级覆盖')
 assert.equal(tokenCredentials.reasoning_effort_override, 'high', 'credentialsPatch 应保留 OAuth 思考级别覆盖')
 assert.deepEqual(tokenCredentials.error_handling_rules, legacyErrorHandlingRules, 'credentialsPatch 应保留账户级错误处理规则')

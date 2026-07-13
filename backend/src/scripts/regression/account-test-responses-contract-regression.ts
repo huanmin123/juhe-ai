@@ -25,6 +25,7 @@ const providerDefaultHealthCheckModel = 'gpt-5.6-sol'
 
 const [
   { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries },
+  { accountManualTestOptionsAsync },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
   databaseModule,
@@ -34,6 +35,7 @@ const [
   { closeSqliteReadWorkerPool }
 ] = await Promise.all([
   import('../../modules/accounts/account-test.service.js'),
+  import('../../modules/accounts/account-test-options.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../storage/database.js'),
@@ -113,9 +115,24 @@ try {
     type: 'api_key',
     groupId: group.id,
     supportedModels: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
-    credentials: { api_key: 'sk-account-test-responses-contract', base_url: mockBaseUrl }
+    credentials: {
+      api_key: 'sk-account-test-responses-contract',
+      base_url: mockBaseUrl,
+      supported_endpoint_modes: ['responses_sse', 'chat_sse']
+    }
   }, access)
   assert.equal(account.clientCompatibility, 'codex_responses', 'GPT API Key 账户创建时默认应使用 Codex Responses 兼容')
+
+  const fullAccountForManualTest = repositories.findAccountForTest(account.id, access)
+  assert.equal(fullAccountForManualTest?.credentials.api_key, 'sk-account-test-responses-contract', '人工测试受控读取应取得完整保存凭据')
+  const manualTestOptions = await accountManualTestOptionsAsync(fullAccountForManualTest!)
+  assert.deepEqual(
+    manualTestOptions.testEndpointModes,
+    ['chat_sse', 'responses_sse'],
+    '人工测试选项应按完整保存账户能力返回稳定顺序，不能依赖列表摘要或模型协议标签'
+  )
+  assert.equal(manualTestOptions.defaultTestEndpointMode, 'chat_sse', '人工测试默认请求形态应为稳定顺序第一项')
+  assert.equal('credentials' in manualTestOptions, false, '人工测试选项不得暴露账户凭据')
 
   assert.equal(account.healthCheckModel, providerDefaultHealthCheckModel, '新账户应按协议档案系统默认值初始化检查模型')
   assert.equal(await resolveAccountTestModelAsync(account), providerDefaultHealthCheckModel, '系统复测应严格使用已保存的账户检查模型')
@@ -236,6 +253,11 @@ try {
     status: 'active',
     mustChangePassword: false
   })
+  const bindingUserAccess = { systemAccountId: bindingUser.id, role: 'user' as const }
+  const bindingUserGroup = repositories.createGroup({
+    name: '账户测试普通用户默认模型分组',
+    providerCode: 'gpt'
+  }, bindingUserAccess)
   await upsertProviderDefaultHealthCheckModelPreferenceAsync({
     systemAccountId: admin.id,
     providerCode: 'gpt',
@@ -273,17 +295,24 @@ try {
     /账户检查模型不在支持模型列表中/,
     '草稿支持模型移除账户检查模型时应直接报配置错误，不能动态回退个人或系统默认'
   )
+  await upsertProviderDefaultHealthCheckModelPreferenceAsync({
+    systemAccountId: bindingUser.id,
+    providerCode: 'gpt',
+    model: 'gpt-5.4-mini'
+  })
   const userDefaultModelAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '测试 Responses 个人默认初始化检查模型账户',
     type: 'api_key',
-    groupId: group.id,
+    groupId: bindingUserGroup.id,
     supportedModels: ['gpt-5.6-sol', 'gpt-5.4-mini'],
     credentials: { api_key: 'sk-account-test-user-default-model', base_url: mockBaseUrl }
-  }, access)
-  const userDefaultModelTested = await testOpenAIAccount(userDefaultModelAccount, {
-    systemAccountId: admin.id,
+  }, bindingUserAccess)
+  const fullUserDefaultModelAccount = repositories.findAccountForTest(userDefaultModelAccount.id, bindingUserAccess)
+  assert(fullUserDefaultModelAccount, '普通用户个人默认初始化账户应能按受控测试路径读取')
+  const userDefaultModelTested = await testOpenAIAccount(fullUserDefaultModelAccount, {
+    systemAccountId: bindingUser.id,
     testEndpointMode: 'responses_sse'
   })
   await flushGatewayAccountSideEffects()
