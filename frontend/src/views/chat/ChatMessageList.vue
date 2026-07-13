@@ -38,6 +38,16 @@
               </a-tooltip>
             </div>
           </div>
+          <div v-if="messages[item.index].role === 'assistant'" class="message-actions message-actions-assistant">
+            <div class="message-actions-controls">
+              <time :datetime="messages[item.index].createdAt">{{ formatMessageTime(messages[item.index].createdAt) }}</time>
+              <a-tooltip title="复制回答">
+                <a-button type="text" class="message-action-button" aria-label="复制 AI 回答" @click="copyMessage(messages[item.index].contentText)">
+                  <template #icon><CopyOutlined /></template>
+                </a-button>
+              </a-tooltip>
+            </div>
+          </div>
         </div>
       </article>
     </div>
@@ -127,9 +137,12 @@ defineExpose({ scrollToBottom, followStream, captureScrollAnchor, restoreScrollA
 .message-bubble-assistant { padding: 4px 0; background: transparent; border: 0; box-shadow: none; }
 .message-status-text { margin-top: 6px; color: #98a2b3; font-size: 12px; }
 .message-actions { min-height: 32px; display: flex; justify-content: flex-end; }
+.message-actions-assistant { justify-content: flex-start; }
 .message-actions-controls { min-height: 32px; display: flex; align-items: center; gap: 2px; color: #98a2b3; font-size: 11px; opacity: 0; pointer-events: none; transition: opacity .12s ease; }
 .message-row-user:hover .message-actions-controls,
-.message-row-user:focus-within .message-actions-controls { opacity: 1; pointer-events: auto; }
+.message-row-user:focus-within .message-actions-controls,
+.message-row-assistant:hover .message-actions-controls,
+.message-row-assistant:focus-within .message-actions-controls { opacity: 1; pointer-events: auto; }
 .message-action-button { min-width: 32px; min-height: 32px; padding: 0; color: #8b95a3; }
 .message-action-button:hover, .message-action-button:focus-visible { color: #344054; }
 .message-loading, .message-empty { height: 100%; min-height: 260px; display: flex; align-items: center; justify-content: center; gap: 10px; color: #64748b; }
