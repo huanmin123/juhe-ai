@@ -57,11 +57,11 @@ try {
     credentials: {
       api_key: `sk-${marker}`,
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['chat_json', 'responses_sse']
+      supported_endpoint_modes: ['chat_json', 'responses_json', 'responses_sse']
     },
     supportedModels: [model],
     healthCheckModel: model,
-    healthCheckEndpointFamily: 'chat_completions' as const,
+    healthCheckEndpointFamily: 'responses' as const,
     modelMappings: [enabledMapping],
     groupId: group.id
   }, access)
@@ -72,7 +72,7 @@ try {
       credentials: {
         api_key: `sk-${marker}`,
         base_url: 'https://api.openai.com/v1',
-        supported_endpoint_modes: ['responses_sse']
+        supported_endpoint_modes: ['responses_json', 'responses_sse']
       }
     }, access),
     /Chat Completions.*上游接口能力/,
@@ -81,7 +81,7 @@ try {
   const preserved = await findAccountForTestAsync(account.id, access)
   assert.deepEqual(
     preserved?.credentials.supported_endpoint_modes,
-    ['chat_json', 'responses_sse'],
+    ['chat_json', 'responses_json', 'responses_sse'],
     'PG 异步账户更新被拒绝后必须保留原上游接口能力'
   )
   assert.deepEqual(
@@ -100,11 +100,11 @@ try {
     credentials: {
       api_key: `sk-import-${marker}-${mapping.enabled ? 'enabled' : 'disabled'}`,
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['responses_sse']
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     supportedModels: [model],
     healthCheckModel: model,
-    healthCheckEndpointFamily: 'chat_completions' as const,
+    healthCheckEndpointFamily: 'responses' as const,
     modelMappings: [mapping]
   })
   const rejectedImport = await previewAccountImportAsync({
@@ -155,11 +155,11 @@ try {
     credentials: {
       api_key: `sk-draft-${marker}-${mapping.enabled ? 'enabled' : 'disabled'}`,
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['responses_sse']
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     supportedModels: [model],
     healthCheckModel: model,
-    healthCheckEndpointFamily: 'chat_completions' as const,
+    healthCheckEndpointFamily: 'responses' as const,
     modelMappings: [mapping],
     groupId: group.id
   })
