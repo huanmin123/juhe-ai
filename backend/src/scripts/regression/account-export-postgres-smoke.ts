@@ -65,7 +65,7 @@ try {
   assert(exported, 'PG 按 ID 导出应返回账号')
   assert.equal(exported.ref, account.id, 'PG 按 ID 导出应保留账号 ID ref')
   assert.equal(exported.credentials.api_key, `sk-account-export-pg-smoke-${marker}`, 'PG 导出应读取账号密钥凭据')
-  assert.deepEqual(exported.credentials.supported_endpoint_modes, ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'], 'PG 导出应保留接口能力限制')
+  assert.deepEqual(exported.credentials.supported_endpoint_modes, ['chat_json', 'chat_sse', 'responses_json', 'responses_sse'], 'PG 导出应保留上游接口能力')
   assert.deepEqual(exported.tags, [tagName], 'PG 导出应保留标签')
   assert.deepEqual(exported.supportedModels, ['gpt-4o-mini'], 'PG 导出应保留支持模型')
   assert.equal(exported.groupName, group.name, 'PG 导出应优先输出分组名称')

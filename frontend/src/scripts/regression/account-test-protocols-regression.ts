@@ -15,6 +15,7 @@ import {
   isGatewaySupportedTestSelection
 } from '../../views/accounts/accountDerivedState'
 import { canTestAccount } from '../../views/accounts/accountRules'
+import { validateAccountEndpointModes } from '../../views/accounts/accountEndpointModes'
 
 const openAIAccount = accountFixture({
   id: 'acct_openai_protocol_test',
@@ -85,6 +86,46 @@ assertTrue(canTestAccount(anthropicAccount), 'Anthropic API Key 正常账户应�
 assertTrue(canTestAccount(geminiAccount), 'Gemini API Key 正常账户应可测试')
 assertTrue(canTestAccount(geminiOpenAIChatAccount), 'Gemini OpenAI Chat API Key 正常账户应可测试')
 assertFalse(canTestAccount(unsupportedAccount), '未支持协议账户应不可测试')
+
+assertEqual(
+  validateAccountEndpointModes({ modes: [], type: 'api_key' }),
+  '请至少选择一项上游接口能力',
+  '空 endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({
+    modes: ['responses_json'],
+    allowedModes: ['chat_json', 'chat_sse'],
+    type: 'api_key'
+  }),
+  '当前供应商协议不支持上游接口能力：Responses API (JSON)',
+  '供应商 endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({ modes: ['chat_json', 'messages_json'], type: 'api_key' }),
+  '不同协议的上游接口能力不能混选',
+  '跨协议 endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({ modes: ['chat_json'], type: 'oauth' }),
+  'OAuth 账户上游接口能力只能选择 Responses API (JSON) 或 Responses API (Streaming)',
+  'OAuth endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({ modes: ['message_token_counting'], type: 'api_key' }),
+  'Anthropic API Key 上游接口能力至少需要启用 Messages API (JSON) 或 Messages API (Streaming)',
+  'Anthropic 必选 endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({ modes: ['count_tokens'], type: 'api_key' }),
+  'Gemini API Key 上游接口能力至少需要启用 generateContent (JSON) 或 streamGenerateContent (SSE)',
+  'Gemini 必选 endpoint mode 校验必须使用上游接口能力文案'
+)
+assertEqual(
+  validateAccountEndpointModes({ modes: ['responses_json'], type: 'oauth' }),
+  'OAuth 账户上游接口能力必须启用 Responses API (Streaming)',
+  'OAuth 流式 endpoint mode 校验必须使用上游接口能力文案'
+)
 
 assertTrue(isGatewaySupportedTestSelection(anthropicAccount), 'Anthropic 单账户选择应允许加载作用域默认模型信息')
 assertTrue(isGatewaySupportedTestSelection(geminiAccount), 'Gemini 单账户选择应允许加载作用域默认模型信息')
@@ -175,6 +216,12 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
   const expectedJson = JSON.stringify(expected)
   if (actualJson !== expectedJson) {
     throw new Error(`${message}，实际 ${actualJson}，预期 ${expectedJson}`)
+  }
+}
+
+function assertEqual<T>(actual: T, expected: T, message: string): void {
+  if (!Object.is(actual, expected)) {
+    throw new Error(`${message}，实际 ${String(actual)}，预期 ${String(expected)}`)
   }
 }
 

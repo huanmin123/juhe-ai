@@ -55,7 +55,7 @@
         新增别名
       </a-button>
     </a-form-item>
-    <a-form-item label="接口能力限制" tooltip="限制这个账号可承接的接口形态。未勾选的请求不会进入该账号候选；OAuth 账号按来源能力只读。">
+    <a-form-item label="上游接口能力" tooltip="声明这个账号真实上游支持的接口形态。未勾选的上游请求不会进入该账号候选；OAuth 账号按来源能力只读。">
       <a-checkbox-group
         v-model:value="form.supportedEndpointModes"
         :disabled="authorizedEditing || isOAuthForm"

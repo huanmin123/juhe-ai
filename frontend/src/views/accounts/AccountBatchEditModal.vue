@@ -246,8 +246,8 @@
               <AccountBatchEditField
                 v-model:checked="form.enabled.supportedEndpointModes"
                 :disabled="!homogeneousModelConfiguration"
-                label="接口能力限制"
-                description="直接覆盖账户可承接的请求形态。"
+                label="上游接口能力"
+                description="直接覆盖账户真实上游支持的接口形态。"
               >
                 <template #default="{ disabled }">
                   <a-checkbox-group

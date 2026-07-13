@@ -48,7 +48,7 @@ export async function accountManualTestOptionsAsync(account: AccountSummary): Pr
   const testEndpointModes = accountManualTestEndpointModes(account)
   const defaultTestEndpointMode = testEndpointModes[0]
   if (!defaultTestEndpointMode) {
-    throw new Error('账户接口能力限制中没有可用于连接测试的请求形态')
+    throw new Error('账户上游接口能力中没有可用于连接测试的请求形态')
   }
   return {
     accountId: account.id,

@@ -57,6 +57,15 @@ assertEqual(accountModelMappingEndpointFamilyProtocol('responses'), 'responses',
 assertEqual(accountModelMappingEndpointFamilyProtocol('messages'), 'messages', 'Messages 协议映射错误')
 assertIncludes(accountEditModalSource, 'for (const item of props.form.supportedModels)', '账号模型别名右侧下拉只能从账户支持模型构建')
 assertNotIncludes(accountEditModalSource, 'buildAccountModelMappingUpstreamOptions', '账号模型别名右侧下拉不应合并整个供应商模型目录')
+assertIncludes(
+  accountEditModalSource,
+  "credentialItem('supported_endpoint_modes', '上游接口能力'",
+  '账户详情必须把 supported_endpoint_modes 展示为上游接口能力'
+)
+assertIncludes(accountStrategySectionSource, 'label="上游接口能力"', '账户表单必须使用上游接口能力标签')
+assertIncludes(accountStrategySectionSource, '真实上游支持的接口形态', '账户表单提示必须解释真实上游能力语义')
+assertNotIncludes(accountStrategySectionSource, '接口能力限制', '账户表单不得继续展示旧接口能力限制文案')
+assertNotIncludes(accountStrategySectionSource, '可承接的接口形态', '账户表单不得把上游能力描述成客户端可承接请求')
 
 const openAIProfile = { protocolCode: 'openai', protocolVersion: 'v1' }
 const anthropicProfile = { protocolCode: 'anthropic', protocolVersion: 'v1' }

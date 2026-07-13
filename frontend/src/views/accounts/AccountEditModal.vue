@@ -295,7 +295,7 @@ const publicCredentialItems = computed(() => {
     credentialItem('account_id', 'OpenAI 账户 ID', credentials.account_id),
     credentialItem('chatgpt_user_id', 'ChatGPT 用户 ID', credentials.chatgpt_user_id),
     credentialItem('plan_type', '套餐类型', credentials.plan_type),
-    credentialItem('supported_endpoint_modes', '接口能力', accountEndpointModeText(credentials.supported_endpoint_modes, props.accountDetail ?? props.form))
+    credentialItem('supported_endpoint_modes', '上游接口能力', accountEndpointModeText(credentials.supported_endpoint_modes, props.accountDetail ?? props.form))
   ]
   return items.filter((item): item is { key: string; label: string; value: string } => Boolean(item))
 })

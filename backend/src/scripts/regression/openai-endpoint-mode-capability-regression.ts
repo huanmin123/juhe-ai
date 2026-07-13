@@ -16,12 +16,19 @@ import {
   HYBRID_PROVIDER_CODE
 } from '../../domain/provider-protocol.js'
 import {
-  defaultAnthropicEndpointModes
+  assertAnthropicEndpointModesCompatible,
+  defaultAnthropicEndpointModes,
+  normalizeAnthropicEndpointModesForWrite
 } from '../../domain/anthropic-endpoint-modes.js'
 import {
+  assertOpenAIEndpointModesCompatible,
   defaultOpenAIEndpointModes,
   normalizeOpenAIEndpointModesForWrite
 } from '../../domain/openai-endpoint-modes.js'
+import {
+  assertGeminiEndpointModesCompatible,
+  normalizeGeminiEndpointModesForWrite
+} from '../../domain/gemini-endpoint-modes.js'
 import type { AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import { mergeAccountCredentialsForUpdate } from '../../modules/accounts/account-credential-update.js'
 import { filterGatewayAccountsByRequestCapability } from '../../modules/gateway/dispatch/account-capability-filter.js'
@@ -109,8 +116,53 @@ assert.deepEqual(
 )
 assert.throws(
   () => normalizeOpenAIEndpointModesForWrite(['chat_json', 'bad_mode'], { providerCode: 'openai', accountType: 'api_key' }),
-  /不支持的能力/,
-  '接口能力写入必须拒绝未知枚举'
+  /上游接口能力包含不支持的能力：bad_mode/,
+  'OpenAI 上游接口能力写入必须拒绝未知枚举并返回统一文案'
+)
+assert.throws(
+  () => normalizeAnthropicEndpointModesForWrite(['bad_mode']),
+  /上游接口能力包含不支持的能力：bad_mode/,
+  'Anthropic 上游接口能力写入必须拒绝未知枚举并返回统一文案'
+)
+assert.throws(
+  () => normalizeGeminiEndpointModesForWrite(['bad_mode']),
+  /上游接口能力包含不支持的能力：bad_mode/,
+  'Gemini 上游接口能力写入必须拒绝未知枚举并返回统一文案'
+)
+assert.throws(
+  () => assertOpenAIEndpointModesCompatible({ modes: ['chat_json'], accountType: 'oauth' }),
+  /OAuth 账户上游接口能力只能选择/,
+  'OAuth 上游接口能力兼容校验必须返回统一文案'
+)
+assert.throws(
+  () => assertAnthropicEndpointModesCompatible({ modes: ['chat_json'], accountType: 'api_key' }),
+  /Anthropic API Key 账户上游接口能力不支持：chat_json/,
+  'Anthropic 上游接口能力兼容校验必须返回统一文案'
+)
+assert.throws(
+  () => assertGeminiEndpointModesCompatible({ modes: ['chat_json'], accountType: 'api_key' }),
+  /Gemini API Key 账户上游接口能力不支持：chat_json/,
+  'Gemini 上游接口能力兼容校验必须返回统一文案'
+)
+assert.throws(
+  () => assertAnthropicEndpointModesCompatible({ modes: ['message_token_counting'], accountType: 'api_key' }),
+  /Anthropic API Key 账户上游接口能力必须至少启用 Messages API/,
+  'Anthropic 必选上游接口能力校验必须返回统一文案'
+)
+assert.throws(
+  () => assertGeminiEndpointModesCompatible({ modes: ['count_tokens'], accountType: 'api_key' }),
+  /Gemini API Key 账户上游接口能力必须至少启用 generateContent JSON/,
+  'Gemini 必选上游接口能力校验必须返回统一文案'
+)
+assert.throws(
+  () => assertOpenAIEndpointModesCompatible({ modes: ['responses_json'], accountType: 'oauth' }),
+  /OAuth 账户上游接口能力必须启用 Responses API \(Streaming\)/,
+  'OAuth 必选流式上游接口能力校验必须返回统一文案'
+)
+assert.throws(
+  () => assertOpenAIEndpointModesCompatible({ modes: ['chat_json'], clientCompatibility: 'codex_responses' }),
+  /Codex Responses 账户上游接口能力必须启用 Responses API \(Streaming\)/,
+  'Codex Responses 必选上游接口能力校验必须返回统一文案'
 )
 assert.deepEqual(
   mergeAccountCredentialsForUpdate({
@@ -124,7 +176,7 @@ assert.deepEqual(
     api_key: 'sk-new'
   }).supported_endpoint_modes,
   ['chat_json'],
-  '账户部分凭据更新必须保留已有接口能力限制'
+  '账户部分凭据更新必须保留已有上游接口能力'
 )
 assert.deepEqual(
   normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-openai', base_url: 'https://example.com/v1' }, {
@@ -169,7 +221,7 @@ assert.throws(
     protocolVersion: 'v1',
     providerProtocolProfileId: 'profile_deepseek_openai_v1'
   }),
-  /DeepSeek 账户接口能力只支持 Chat Completion \(JSON\) 或 Chat Completion \(Streaming\)/,
+  /DeepSeek 账户上游接口能力只支持 Chat Completion \(JSON\) 或 Chat Completion \(Streaming\)/,
   'DeepSeek API Key 凭据归一化应拒绝 Responses 能力'
 )
 assert.deepEqual(
@@ -205,7 +257,7 @@ assert.throws(
     protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
     providerProtocolProfileId: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID
   }),
-  /DeepSeek Anthropic 账户接口能力只支持 Messages API/,
+  /DeepSeek Anthropic 账户上游接口能力只支持 Messages API/,
   'DeepSeek Claude Code 凭据归一化应拒绝 count_tokens 能力'
 )
 assert.deepEqual(
@@ -231,7 +283,7 @@ assert.throws(
     protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
     providerProtocolProfileId: GLM_CODING_ANTHROPIC_V1_PROFILE_ID
   }),
-  /智谱 GLM Coding Anthropic 账户接口能力只支持 Messages API/,
+  /智谱 GLM Coding Anthropic 账户上游接口能力只支持 Messages API/,
   'GLM Coding Anthropic 凭据归一化应拒绝 count_tokens 能力'
 )
 

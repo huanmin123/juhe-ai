@@ -87,7 +87,7 @@ export const accountBatchEditFieldLabels: Record<AccountBatchEditFieldKey, strin
   supportedModels: '支持模型',
   healthCheckModel: '检查模型',
   modelMappings: '模型映射',
-  supportedEndpointModes: '接口能力限制',
+  supportedEndpointModes: '上游接口能力',
   serviceTierOverride: 'GPT 服务等级',
   reasoningEffortOverride: 'GPT 思考级别'
 }
@@ -184,7 +184,7 @@ export function buildAccountBatchEditRequest(
     return { message: '检查模型必须属于本次覆盖的支持模型' }
   }
   if (form.enabled.supportedEndpointModes && !form.supportedEndpointModes.length) {
-    return { message: '批量覆盖接口能力时至少选择一项' }
+    return { message: '批量覆盖上游接口能力时至少选择一项' }
   }
   const invalidMappingIndex = form.enabled.modelMappings
     ? form.modelMappings.findIndex((mapping) => (

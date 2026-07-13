@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  accountBatchEditFieldLabels,
   buildAccountBatchEditRequest,
   createAccountBatchEditForm,
   intersectAccountSupportedEndpointModes
@@ -128,6 +129,10 @@ const formSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/accoun
 const accountsViewSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/AccountsView.vue'), 'utf8')
 const accountApiSource = readFileSync(resolve(frontendRoot, 'src/api/domains/accounts.ts'), 'utf8')
 assert.match(modalSource, /batchEditContext\(/, '批量编辑应在打开弹窗后一次性按需读取去敏上下文')
+assert.match(modalSource, /label="上游接口能力"/, '批量编辑必须使用上游接口能力标签')
+assert.match(modalSource, /覆盖账户真实上游支持的接口形态/, '批量编辑说明必须表达真实上游能力')
+assert.doesNotMatch(modalSource, /接口能力限制|可承接的请求形态/, '批量编辑不得继续展示旧能力文案')
+assert.equal(accountBatchEditFieldLabels.supportedEndpointModes, '上游接口能力', '批量字段摘要必须使用上游接口能力')
 assert.match(modalSource, /isAccountModelMappingSourceEndpointFamilyAllowed/, '批量来源协议选项必须复用结构矩阵过滤')
 assert.match(modalSource, /enabled: mapping\.enabled/, '批量目标协议选项必须传入每条映射启停状态')
 assert.match(modalSource, /intersectAccountSupportedEndpointModes\(accountDetails\.value\)/, '批量目标协议选项必须使用全部账户能力交集')
