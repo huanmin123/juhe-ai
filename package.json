@@ -156,7 +156,10 @@
     "test:non-business-data-hard-cleanup": "pnpm --filter juhe-ai-backend test:non-business-data-hard-cleanup",
     "test:upstream-base-url-ssrf-policy": "pnpm --filter juhe-ai-backend test:upstream-base-url-ssrf-policy",
     "test:plan0081-real-go-management-smoke": "pnpm --filter juhe-ai-frontend test:plan0081-real-go-management-smoke",
-    "smoke:plan0081-real-go-management": "pnpm --filter juhe-ai-frontend smoke:plan0081-real-go-management"
+    "smoke:plan0081-real-go-management": "pnpm --filter juhe-ai-frontend smoke:plan0081-real-go-management",
+    "test:plan0081-real-go-client-ip-allowlist-smoke": "pnpm --filter juhe-ai-frontend test:plan0081-real-go-client-ip-allowlist-smoke",
+    "smoke:plan0081-real-go-client-ip-allowlist": "pnpm --filter juhe-ai-frontend smoke:plan0081-real-go-client-ip-allowlist",
+    "smoke:plan0081-real-go-client-ip-allowlist-cleanup-only": "pnpm --filter juhe-ai-frontend smoke:plan0081-real-go-client-ip-allowlist-cleanup-only"
   },
   "engines": {
     "node": ">=22.13.0 <23 || >=24.11.0 <25",
