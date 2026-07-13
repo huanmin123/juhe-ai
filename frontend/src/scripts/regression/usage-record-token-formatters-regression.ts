@@ -9,6 +9,9 @@ import {
 } from '../../views/usage-records/usageRecordCostDetails'
 import {
   formatRecordTokens,
+  usageRecordLatencyParts,
+  usageRecordReasoningEffortText,
+  usageRecordServiceTierText,
   usageRecordTokenParts
 } from '../../views/usage-records/usageRecordFormatters'
 
@@ -88,10 +91,11 @@ const anthropicCostRecord = usageRecordFixture({
     outputUsdPerImage: 0.04,
     thinkingTokens: 40,
     accountChargeUsd: 0.00708,
-    multiplier: 1
+    multiplier: 1,
+    serviceTierPricingSource: 'default'
   }
 })
-assertEqual(usageRecordCostDetailTitle(anthropicCostRecord), '成本明细（Anthropic口径）', '成本明细标题应按供应商口径展示')
+assertEqual(usageRecordCostDetailTitle(anthropicCostRecord), '成本明细', '成本明细标题不再展示供应商或模型口径')
 assertArrayEqual(rowTexts(usageRecordCostTokenRows(anthropicCostRecord)), [
   '5m 缓存写入 Tokens 30',
   '1h 缓存写入 Tokens 30',
@@ -134,7 +138,8 @@ const openAICostRecord = usageRecordFixture({
     outputUsdPer1M: 10,
     cacheReadUsdPer1M: 0.1,
     accountChargeUsd: 0.003625,
-    multiplier: 1
+    multiplier: 1,
+    serviceTierPricingSource: 'default'
   }
 })
 assertArrayEqual(rowTexts(usageRecordCostTokenRows(openAICostRecord)), [], 'OpenAI 普通文本记录没有扩展 Token 时不应展示额外 Token 明细')
@@ -162,14 +167,15 @@ const openAICacheWriteCostRecord = usageRecordFixture({
     cacheReadUsdPer1M: 0.1,
     cacheWriteUsdPer1M: 1.25,
     accountChargeUsd: 0.003725,
-    multiplier: 1
+    multiplier: 1,
+    serviceTierPricingSource: 'default'
   }
 })
-assertEqual(usageRecordCostDetailTitle(openAICacheWriteCostRecord), '成本明细（OpenAI 兼容口径）', 'OpenAI 兼容成本明细标题应标注兼容口径')
+assertEqual(usageRecordCostDetailTitle(openAICacheWriteCostRecord), '成本明细', 'OpenAI 兼容成本明细标题不再显示模型口径')
 assertEqual(
   usageRecordCostDetailTitle(usageRecordFixture({ providerCode: 'openai-compatible' })),
-  '成本明细（OpenAI 兼容口径）',
-  'OpenAI-compatible 驱动别名也应按 OpenAI 兼容口径展示'
+  '成本明细',
+  'OpenAI-compatible 驱动别名也不应展示模型口径'
 )
 assertArrayEqual(rowTexts(usageRecordCostTokenRows(openAICacheWriteCostRecord)), [
   '缓存写入 Tokens 80'
@@ -191,7 +197,7 @@ const openAICacheWriteTokenOnlyRecord = usageRecordFixture({
 assertArrayEqual(rowTexts(usageRecordCostTokenRows(openAICacheWriteTokenOnlyRecord)), [
   '缓存写入 Tokens 42'
 ], '没有成本拆解但有缓存写入 Token 时仍应生成成本明细 Token 行')
-assertTrue(usageRecordHasCostDetails(openAICacheWriteTokenOnlyRecord), '没有成本拆解但有缓存写入 Token 时仍应展示成本明细浮层')
+assertTrue(!usageRecordHasCostDetails(openAICacheWriteTokenOnlyRecord), '只有 Token、没有计价事实时不应展示成本明细浮层')
 
 const mappedCostRecord = usageRecordFixture({
   model: 'gpt-5.5',
@@ -204,20 +210,34 @@ const mappedCostRecord = usageRecordFixture({
   requestedServiceTier: 'flex',
   effectiveServiceTier: 'priority',
   reportedServiceTier: 'priority',
-  billedServiceTier: 'priority'
+  billedServiceTier: 'priority',
+  costBreakdown: {
+    accountChargeUsd: 0.25,
+    multiplier: 1,
+    serviceTierPricingSource: 'multiplier',
+    serviceTierMultiplier: 2
+  }
 })
 assertArrayEqual(rowTexts(usageRecordCostMetadataRows(mappedCostRecord)), [
-  '请求模型 gpt-5.5',
-  '实际上游模型 gpt-5.6-terra',
   '计价模型 gpt-5.6-terra',
-  '映射来源 账户配置',
-  '协议映射 responses -> responses',
-  '客户端服务档位 Flex',
-  '实际上游服务档位 Priority',
-  '上游报告服务档位 Priority',
-  '计费服务档位 Priority'
-], '成本明细应展示请求模型、实际上游模型、计价模型、映射来源和协议族')
-assertTrue(usageRecordHasCostDetails(mappedCostRecord), '只有模型映射元数据时也应允许查看成本明细')
+  '实际服务档位 Priority',
+  '计价来源 基础价 2x'
+], '成本明细只展示计价模型、实际档位和计价来源')
+assertTrue(usageRecordHasCostDetails(mappedCostRecord), '存在锁定计价事实时应允许查看成本明细')
+assertArrayEqual(rowTexts(usageRecordCostMetadataRows(usageRecordFixture({
+  pricingModel: 'gpt-5.6-sol',
+  billedServiceTier: 'default'
+}))), ['计价模型 gpt-5.6-sol'], 'Default 档位不应占用成本明细空间')
+
+const displayFactsRecord = usageRecordFixture({
+  billedServiceTier: 'flex',
+  effectiveReasoningEffort: 'xhigh',
+  firstTokenMs: 320,
+  durationMs: 1250
+})
+assertEqual(usageRecordServiceTierText(displayFactsRecord) ?? '', 'Flex', '模型列应展示实际计费档位')
+assertEqual(usageRecordReasoningEffortText(displayFactsRecord) ?? '', '超高', '模型列应展示有效思考级别')
+assertArrayEqual(usageRecordLatencyParts(displayFactsRecord), ['首 token 0.32s', '总耗时 1.3s'], '延迟列必须合并首 token 与总耗时')
 
 console.log('使用记录 Token 与成本明细 formatter 回归通过：列表三项展示和供应商成本明细均符合预期')
 

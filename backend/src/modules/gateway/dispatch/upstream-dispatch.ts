@@ -317,6 +317,7 @@ export async function fetchFirstAvailableUpstream(
             body = requestParts.body
             effectiveServiceTier = requestParts.effectiveServiceTier
             usageContext.effectiveServiceTier = effectiveServiceTier
+            usageContext.effectiveReasoningEffort = requestParts.effectiveReasoningEffort
           } catch (error) {
             if (error instanceof GatewayAgentGuidanceResponse && error.accountScoped) {
               lastAttempt = accountScopedGuidanceAttempt(account, error)

@@ -110,6 +110,8 @@ export interface ProviderCostBreakdown {
   outputUsdPerImage?: number
   accountChargeUsd?: number
   multiplier: 1
+  serviceTierPricingSource: 'default' | 'tier_specific' | 'multiplier' | 'mixed' | 'unknown'
+  serviceTierMultiplier?: number
 }
 
 const modelPricingDriverHelpers: ModelPricingProviderDriverHelpers = {
@@ -290,7 +292,9 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
     outputImageUnitCostUsd,
     outputUsdPerImage: outputImageUnitPrice,
     accountChargeUsd: normalizePrice(input.costUsd) ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, cacheWrite1hCostUsd, inputImageCostUsd, outputImageCostUsd, inputAudioCostUsd, outputAudioCostUsd, outputImageUnitCostUsd),
-    multiplier: 1
+    multiplier: 1,
+    serviceTierPricingSource: tokenPrices.serviceTierPricingSource,
+    serviceTierMultiplier: tokenPrices.serviceTierMultiplier
   }
 }
 
@@ -372,6 +376,8 @@ function effectiveRawTokenPrices(pricing: RawModelPricing, input: CostInput): {
   cachedInputPrice?: number
   cacheWritePrice?: number
   cacheWrite1hPrice?: number
+  serviceTierPricingSource: ProviderCostBreakdown['serviceTierPricingSource']
+  serviceTierMultiplier?: number
 } {
   const tier = input.serviceTier
   const tierSupported = tier === 'priority' || tier === 'flex'
@@ -391,13 +397,57 @@ function effectiveRawTokenPrices(pricing: RawModelPricing, input: CostInput): {
     && Math.max(input.inputTokens ?? 0, 0) > pricing.long_context_input_token_threshold
   const inputMultiplier = longContext ? normalizeMultiplier(pricing.long_context_input_cost_multiplier) : 1
   const outputMultiplier = longContext ? normalizeMultiplier(pricing.long_context_output_cost_multiplier) : 1
+  const serviceTierPricing = rawServiceTierPricingMetadata(pricing, input, tierSupported, fallbackMultiplier)
   return {
     inputPrice: multiplyPrice(tierPrice(pricing.input_cost_per_token, pricing.input_cost_per_token_priority, pricing.input_cost_per_token_flex), inputMultiplier),
     outputPrice: multiplyPrice(tierPrice(pricing.output_cost_per_token, pricing.output_cost_per_token_priority, pricing.output_cost_per_token_flex), outputMultiplier),
     cachedInputPrice: multiplyPrice(tierPrice(pricing.cache_read_input_token_cost, pricing.cache_read_input_token_cost_priority, pricing.cache_read_input_token_cost_flex), inputMultiplier),
     cacheWritePrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost, pricing.cache_creation_input_token_cost_priority, pricing.cache_creation_input_token_cost_flex), inputMultiplier),
-    cacheWrite1hPrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost_above_1hr, pricing.cache_creation_input_token_cost_above_1hr_priority, pricing.cache_creation_input_token_cost_above_1hr_flex), inputMultiplier)
+    cacheWrite1hPrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost_above_1hr, pricing.cache_creation_input_token_cost_above_1hr_priority, pricing.cache_creation_input_token_cost_above_1hr_flex), inputMultiplier),
+    ...serviceTierPricing
   }
+}
+
+function rawServiceTierPricingMetadata(
+  pricing: RawModelPricing,
+  input: CostInput,
+  tierSupported: boolean,
+  fallbackMultiplier: number
+): Pick<ProviderCostBreakdown, 'serviceTierPricingSource' | 'serviceTierMultiplier'> {
+  const tier = input.serviceTier
+  if (!tierSupported || (tier !== 'priority' && tier !== 'flex')) {
+    return { serviceTierPricingSource: 'default' }
+  }
+  const pairs = [
+    [pricing.input_cost_per_token, tier === 'priority' ? pricing.input_cost_per_token_priority : pricing.input_cost_per_token_flex],
+    [pricing.output_cost_per_token, tier === 'priority' ? pricing.output_cost_per_token_priority : pricing.output_cost_per_token_flex],
+    [pricing.cache_read_input_token_cost, tier === 'priority' ? pricing.cache_read_input_token_cost_priority : pricing.cache_read_input_token_cost_flex],
+    [pricing.cache_creation_input_token_cost, tier === 'priority' ? pricing.cache_creation_input_token_cost_priority : pricing.cache_creation_input_token_cost_flex],
+    [pricing.cache_creation_input_token_cost_above_1hr, tier === 'priority' ? pricing.cache_creation_input_token_cost_above_1hr_priority : pricing.cache_creation_input_token_cost_above_1hr_flex]
+  ] as const
+  return serviceTierPricingMetadataFromPairs(pairs, fallbackMultiplier)
+}
+
+function serviceTierPricingMetadataFromPairs(
+  pairs: ReadonlyArray<readonly [number | undefined, number | undefined]>,
+  fallbackMultiplier: number
+): Pick<ProviderCostBreakdown, 'serviceTierPricingSource' | 'serviceTierMultiplier'> {
+  let specificCount = 0
+  let fallbackCount = 0
+  for (const [standard, specific] of pairs) {
+    if (normalizePrice(specific) !== undefined) {
+      specificCount += 1
+    } else if (normalizePrice(standard) !== undefined) {
+      fallbackCount += 1
+    }
+  }
+  if (specificCount > 0 && fallbackCount > 0) {
+    return { serviceTierPricingSource: 'mixed', serviceTierMultiplier: fallbackMultiplier }
+  }
+  if (specificCount > 0) {
+    return { serviceTierPricingSource: 'tier_specific' }
+  }
+  return { serviceTierPricingSource: 'multiplier', serviceTierMultiplier: fallbackMultiplier }
 }
 
 function multiplyPrice(value: number | undefined, multiplier: number): number | undefined {

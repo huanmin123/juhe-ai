@@ -81,6 +81,9 @@ export function usageRecordSummaryFromRow(
     effectiveServiceTier: usageServiceTier(row.effective_service_tier),
     reportedServiceTier: usageServiceTier(row.reported_service_tier),
     billedServiceTier: usageServiceTier(row.billed_service_tier),
+    requestedReasoningEffort: usageReasoningEffort(row.requested_reasoning_effort),
+    effectiveReasoningEffort: usageReasoningEffort(row.effective_reasoning_effort),
+    pricingSnapshot: parseOptionalJsonObject(row.cost_breakdown_snapshot_json) as UsageRecordSummary['pricingSnapshot'],
     modelMappingApplied: row.model_mapping_applied === 1,
     modelMappingSource: optionalString(row.model_mapping_source),
     sourceEndpointFamily: optionalString(row.source_endpoint_family),
@@ -111,6 +114,18 @@ export function usageRecordSummaryFromRow(
     responseSnapshot: includeSnapshots ? parseOptionalJsonObject(row.response_snapshot_json) : undefined,
     createdAt: String(row.created_at)
   }
+}
+
+function usageReasoningEffort(value: unknown): UsageRecordSummary['effectiveReasoningEffort'] {
+  return value === 'none'
+    || value === 'minimal'
+    || value === 'low'
+    || value === 'medium'
+    || value === 'high'
+    || value === 'xhigh'
+    || value === 'max'
+    ? value
+    : undefined
 }
 
 function usageServiceTier(value: unknown): UsageRecordSummary['billedServiceTier'] {

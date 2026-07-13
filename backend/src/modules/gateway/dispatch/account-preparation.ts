@@ -32,12 +32,14 @@ import { requestEndpoint } from '../request/metadata.js'
 import { localAccountApiKeyRuntimeStatesForDispatch } from '../runtime/account-api-key-failure-guard.service.js'
 import { extractGatewayJsonBodyMetadata } from '../request/json-metadata-scanner.js'
 import type { UsageServiceTier } from '../usage/service-tier.js'
+import type { UsageReasoningEffort } from '../usage/reasoning-effort.js'
 import { prepareCodexResponsesContextForAccount } from '../codex-responses/chat-bridge-state.js'
 
 export interface PreparedUpstreamRequestParts {
   headers: Headers
   body?: Buffer | string
   effectiveServiceTier: UsageServiceTier
+  effectiveReasoningEffort?: UsageReasoningEffort
 }
 
 type GatewayAccountFailurePrecheckRecorder = (
@@ -237,11 +239,11 @@ export async function buildPreparedUpstreamRequestParts(
       groupId: usageContext.groupId
     }, signal, context)
     const bodyBuffer = typeof parts.body === 'string' ? Buffer.from(parts.body, 'utf8') : parts.body
+    const metadata = bodyBuffer ? extractGatewayJsonBodyMetadata(bodyBuffer) : undefined
     return {
       ...parts,
-      effectiveServiceTier: bodyBuffer
-        ? extractGatewayJsonBodyMetadata(bodyBuffer).serviceTier ?? 'default'
-        : 'default'
+      effectiveServiceTier: metadata?.serviceTier ?? 'default',
+      effectiveReasoningEffort: metadata?.reasoningEffort
     }
   } catch (error) {
     if (error instanceof OpenAIOAuthCodexAdapterError) {

@@ -12,15 +12,14 @@ export function usageRecordTableColumns(input: {
   }
   baseColumns.push(
     { title: '接口', dataIndex: 'endpoint', key: 'endpoint', width: 150 },
-    { title: '模型', dataIndex: 'model', key: 'model', width: 170 },
+    { title: '模型', dataIndex: 'model', key: 'model', width: 240 },
     { title: '类型', key: 'stream', width: 90 },
     { title: '状态', key: 'success', width: 90 },
     { title: '状态码', dataIndex: 'statusCode', key: 'statusCode', width: 110 },
     { title: '请求来源', key: 'trafficSource', width: 110 },
     { title: 'Token 用量', key: 'tokens', width: 150 },
     { title: '成本', key: 'cost', width: 110 },
-    { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100 },
-    { title: '总耗时', dataIndex: 'durationMs', key: 'durationMs', width: 100 },
+    { title: '延迟', key: 'latency', width: 150 },
     { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 180, sorter: true, sortOrder: input.columnSortOrder('createdAt') },
     { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
     { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
