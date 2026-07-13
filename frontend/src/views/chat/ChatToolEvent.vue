@@ -1,14 +1,19 @@
 <template>
   <div class="chat-process">
-    <div v-for="tool in process.toolEvents" :key="tool.id" class="chat-process-row">
-      <span class="chat-process-status" :class="`is-${tool.status}`" aria-hidden="true" />
-      <details>
-        <summary>{{ toolLabel(tool.type) }}<span>{{ statusLabel(tool.status) }}</span></summary>
-        <pre v-if="tool.item">{{ compactItem(tool.item) }}</pre>
-      </details>
-    </div>
+    <details v-for="tool in process.toolGroups" :key="tool.key" class="chat-process-group">
+      <summary>
+        <span class="chat-process-status" :class="`is-${tool.status}`" aria-hidden="true" />
+        <span>{{ toolLabel(tool.type) }} {{ statusLabel(tool.status) }}<template v-if="tool.callCount > 1"> · {{ tool.callCount }} 次</template></span>
+      </summary>
+      <div class="chat-process-details">
+        <ul v-if="tool.summaries.length">
+          <li v-for="summary in tool.summaries" :key="summary">{{ summary }}</li>
+        </ul>
+        <p v-if="tool.duplicateCount">相同条件重复 {{ tool.duplicateCount }} 次</p>
+      </div>
+    </details>
     <details v-if="process.reasoningText" class="chat-reasoning">
-      <summary>思考过程</summary>
+      <summary>思考摘要</summary>
       <div>{{ process.reasoningText }}</div>
     </details>
   </div>
@@ -18,24 +23,31 @@
 import { computed } from 'vue'
 import type { ChatMessage, ChatToolStatus } from '@/types/domain/chat'
 import { projectChatMessageProcess } from './chatMessageProcess'
+
 const props = defineProps<{ message: ChatMessage }>()
 const process = computed(() => projectChatMessageProcess(props.message))
-function toolLabel(type: string): string { return ({ web_search_call: '联网搜索', function_call: '函数调用', computer_call: '计算机操作' }[type] ?? '工具调用') }
-function statusLabel(status: ChatToolStatus): string { return ({ started: '准备中', updated: '执行中', completed: '已完成', failed: '失败' })[status] }
-function compactItem(item: Record<string, unknown>): string { return JSON.stringify(item, null, 2).slice(0, 4096) }
+
+function toolLabel(type: string): string {
+  return ({ web_search_call: '联网搜索', file_search_call: '文件检索', function_call: '函数调用', computer_call: '计算机操作' }[type] ?? '工具调用')
+}
+function statusLabel(status: ChatToolStatus): string {
+  return ({ started: '准备中', updated: '执行中', completed: '已完成', failed: '失败' })[status]
+}
 </script>
 
 <style scoped>
-.chat-process { margin-top: 8px; color: #64748b; font-size: 12px; }
-.chat-process-row { display: flex; align-items: flex-start; gap: 6px; margin-top: 5px; }
-.chat-process-status { width: 6px; height: 6px; flex: 0 0 6px; margin-top: 7px; border-radius: 50%; background: #94a3b8; }
-.chat-process-status.is-started, .chat-process-status.is-updated { background: #1677ff; }
-.chat-process-status.is-completed { background: #52c41a; }
-.chat-process-status.is-failed { background: #ff4d4f; }
-.chat-process details { min-width: 0; flex: 1; }
-.chat-process summary, .chat-reasoning summary { cursor: pointer; color: #64748b; user-select: none; }
-.chat-process summary span { margin-left: 8px; color: #94a3b8; }
-.chat-process pre { max-height: 180px; margin: 5px 0 0; padding: 7px; overflow: auto; background: #f8fafc; border: 1px solid #eef2f7; border-radius: 5px; font-size: 11px; }
-.chat-reasoning { margin-top: 7px; padding-top: 5px; border-top: 1px solid #f1f5f9; color: #8492a6; }
-.chat-reasoning div { max-height: 180px; margin-top: 5px; padding: 6px 8px; overflow: auto; white-space: pre-wrap; background: #fafafa; border-left: 2px solid #dbe3ec; }
+.chat-process { margin-top: 8px; color: #718096; font-size: 12px; }
+.chat-process-group, .chat-reasoning { margin-top: 4px; }
+.chat-process summary { display: flex; width: fit-content; max-width: 100%; align-items: center; gap: 7px; color: #718096; cursor: pointer; user-select: none; }
+.chat-process-status { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: #94a3b8; }
+.chat-process-status.is-started, .chat-process-status.is-updated { background: #4b8fe8; }
+.chat-process-status.is-completed { background: #52a447; }
+.chat-process-status.is-failed { background: #d9534f; }
+.chat-process-details { max-height: 168px; margin: 5px 0 0 13px; padding-left: 9px; overflow: auto; border-left: 2px solid #edf1f5; color: #7b8796; }
+.chat-process-details ul { margin: 0; padding-left: 17px; }
+.chat-process-details li { margin: 2px 0; overflow-wrap: anywhere; }
+.chat-process-details p { margin: 4px 0 0; color: #98a2b3; }
+.chat-reasoning { color: #8995a5; }
+.chat-reasoning summary { color: #8995a5; }
+.chat-reasoning div { max-height: 168px; margin: 5px 0 0 13px; padding: 5px 9px; overflow: auto; white-space: pre-wrap; border-left: 2px solid #edf1f5; color: #7b8796; }
 </style>

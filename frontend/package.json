@@ -25,6 +25,7 @@
     "test:chat-scroll-policy": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-scroll-policy-regression.ts",
     "test:chat-message-layout": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-message-layout-regression.ts",
     "test:chat-message-process": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-message-process-regression.ts",
+    "test:chat-markdown-code": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-markdown-code-regression.ts",
     "test:account-basic-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-basic-formatters-regression.ts",
     "test:account-import-protocol": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-import-protocol-regression.ts",
     "test:account-status-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-status-formatters-regression.ts",

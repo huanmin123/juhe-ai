@@ -12,7 +12,8 @@ import typescript from 'highlight.js/lib/languages/typescript'
 import xml from 'highlight.js/lib/languages/xml'
 import katex from 'katex'
 import { marked, type RendererObject } from 'marked'
-import { computed, nextTick, ref, watch } from 'vue'
+import { message as antdMessage } from 'ant-design-vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import 'highlight.js/styles/github.css'
 import 'katex/dist/katex.min.css'
 
@@ -27,9 +28,14 @@ hljs.registerLanguage('html', xml)
 
 const props = defineProps<{ content: string }>()
 const root = ref<HTMLElement>()
+const mermaidPrefix = `chat-mermaid-${Date.now()}-${Math.random().toString(36).slice(2)}`
 let renderVersion = 0
+let copyResetTimer: number | undefined
 
 const renderer: RendererObject = {
+  html({ text }) {
+    return escapeHtml(text)
+  },
   link({ href, title, tokens }) {
     const label = this.parser.parseInline(tokens)
     if (!isSafeHref(href)) return label
@@ -42,19 +48,21 @@ const renderer: RendererObject = {
     return `<img src="${escapeAttribute(href)}" alt="${escapeAttribute(text || '')}"${titleAttribute} loading="lazy" referrerpolicy="no-referrer" />`
   },
   code({ text, lang }) {
-    const language = (lang || '').trim().toLowerCase()
+    const language = normalizeLanguage(lang)
     if (language === 'mermaid') return `<pre class="mermaid-source"><code>${escapeHtml(text)}</code></pre>`
     const highlighted = language && hljs.getLanguage(language)
       ? hljs.highlight(text, { language }).value
       : escapeHtml(text)
-    return `<pre><code class="hljs language-${escapeAttribute(language || 'text')}">${highlighted}</code></pre>`
+    const label = escapeHtml(language || 'text')
+    const codeClass = escapeAttribute(language || 'text')
+    return `<div class="chat-code-block"><div class="chat-code-header"><span class="chat-code-language">${label}</span><button class="chat-code-copy" type="button" data-copy-code aria-label="复制代码">复制</button></div><pre><code class="hljs language-${codeClass}">${highlighted}</code></pre></div>`
   }
 }
 
 marked.use({ gfm: true, breaks: true, renderer })
 
 const html = computed(() => DOMPurify.sanitize(enforceSafeImages(renderMathInTextNodes(marked.parse(props.content, { async: false }) as string)), {
-  ADD_ATTR: ['target', 'rel', 'loading', 'referrerpolicy'],
+  ADD_ATTR: ['target', 'rel', 'loading', 'referrerpolicy', 'data-copy-code', 'aria-label'],
   FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed']
 }))
 
@@ -66,15 +74,57 @@ watch(html, async () => {
   if (!sources.length) return
   const mermaid = (await import('mermaid')).default
   mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'neutral' })
-  for (const source of sources) {
+  for (const [index, source] of sources.entries()) {
     if (version !== renderVersion) return
-    const container = document.createElement('div')
-    container.className = 'mermaid'
-    container.textContent = source.textContent ?? ''
-    source.replaceWith(container)
-    try { await mermaid.run({ nodes: [container], suppressErrors: true }) } catch { container.className = 'mermaid-error'; container.textContent = source.textContent ?? '' }
+    const diagram = source.textContent ?? ''
+    try {
+      const { svg } = await mermaid.render(`${mermaidPrefix}-${version}-${index}`, diagram)
+      if (version !== renderVersion || !source.isConnected) return
+      const container = document.createElement('div')
+      container.className = 'mermaid'
+      container.innerHTML = DOMPurify.sanitize(svg, {
+        USE_PROFILES: { svg: true, svgFilters: true },
+        FORBID_TAGS: ['script', 'foreignObject'],
+        FORBID_ATTR: ['onload', 'onclick', 'onerror']
+      })
+      source.replaceWith(container)
+    } catch {
+      if (version !== renderVersion || !source.isConnected) return
+      const error = document.createElement('pre')
+      error.className = 'mermaid-error'
+      error.textContent = diagram
+      source.replaceWith(error)
+    }
   }
 }, { immediate: true, flush: 'post' })
+
+onMounted(() => root.value?.addEventListener('click', handleRootClick))
+onBeforeUnmount(() => {
+  root.value?.removeEventListener('click', handleRootClick)
+  if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer)
+})
+
+async function handleRootClick(event: MouseEvent): Promise<void> {
+  const target = event.target
+  if (!(target instanceof Element)) return
+  const button = target.closest<HTMLButtonElement>('button.chat-code-copy[data-copy-code]')
+  if (!button || !root.value?.contains(button)) return
+  const wrapper = button.closest<HTMLElement>('.chat-code-block')
+  if (!wrapper) return
+  const code = wrapper.querySelector<HTMLElement>(':scope > pre > code')
+  if (!code) return
+  try {
+    await navigator.clipboard.writeText(code.textContent ?? '')
+    button.textContent = '已复制'
+    if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer)
+    copyResetTimer = window.setTimeout(() => {
+      if (button.isConnected) button.textContent = '复制'
+      copyResetTimer = undefined
+    }, 1200)
+  } catch {
+    antdMessage.error('复制失败，请稍后重试')
+  }
+}
 
 function renderMathInTextNodes(value: string): string {
   const template = document.createElement('template')
@@ -83,7 +133,7 @@ function renderMathInTextNodes(value: string): string {
   const nodes: Text[] = []
   while (walker.nextNode()) nodes.push(walker.currentNode as Text)
   for (const node of nodes) {
-    if (node.parentElement?.closest('code, pre, a')) continue
+    if (node.parentElement?.closest('code, pre, a, button')) continue
     const rendered = renderMathText(node.data)
     if (rendered === escapeHtml(node.data)) continue
     const replacement = document.createElement('template')
@@ -110,20 +160,41 @@ function renderMathText(value: string): string {
 function safeKatex(source: string, displayMode: boolean): string { try { return katex.renderToString(source, { displayMode, throwOnError: false, strict: 'warn' }) } catch { return escapeHtml(source) } }
 function decodeHtml(value: string): string { const textarea = document.createElement('textarea'); textarea.innerHTML = value; return textarea.value }
 function isSafeHref(value: string): boolean { return /^(https?:|mailto:)/i.test(value) }
+function normalizeLanguage(value: string | undefined): string { return (value || '').trim().toLowerCase().replace(/[^a-z0-9_+-]/g, '') }
 function escapeAttribute(value: string): string { return escapeHtml(value).replace(/`/g, '&#96;') }
 function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!) }
 </script>
 
 <style scoped>
-.chat-markdown { color: #1f2937; font-size: 14px; line-height: 1.75; overflow-wrap: anywhere; }
-.chat-markdown :deep(p:first-child) { margin-top: 0; }
+.chat-markdown { color: #202936; font-size: 14px; line-height: 1.72; overflow-wrap: anywhere; }
+.chat-markdown :deep(p) { margin: 0 0 9px; }
 .chat-markdown :deep(p:last-child) { margin-bottom: 0; }
-.chat-markdown :deep(pre) { max-width: 100%; overflow: auto; margin: 10px 0; padding: 12px 14px; background: #f6f8fa; border: 1px solid #e5e7eb; border-radius: 6px; }
+.chat-markdown :deep(h1), .chat-markdown :deep(h2), .chat-markdown :deep(h3), .chat-markdown :deep(h4) { margin: 16px 0 7px; color: #182230; font-weight: 650; line-height: 1.35; }
+.chat-markdown :deep(h1:first-child), .chat-markdown :deep(h2:first-child), .chat-markdown :deep(h3:first-child) { margin-top: 0; }
+.chat-markdown :deep(h1) { font-size: 20px; }
+.chat-markdown :deep(h2) { font-size: 17px; }
+.chat-markdown :deep(h3), .chat-markdown :deep(h4) { font-size: 15px; }
+.chat-markdown :deep(ul), .chat-markdown :deep(ol) { margin: 7px 0 9px; padding-left: 23px; }
+.chat-markdown :deep(li) { margin: 2px 0; }
+.chat-markdown :deep(.task-list-item) { list-style: none; }
+.chat-markdown :deep(.task-list-item input) { margin: 0 7px 0 -21px; }
+.chat-markdown :deep(blockquote) { margin: 10px 0; padding: 3px 0 3px 12px; color: #5f6c7b; border-left: 3px solid #d8dee8; }
+.chat-markdown :deep(blockquote p) { margin: 0; }
+.chat-markdown :deep(a) { color: #1677ff; text-underline-offset: 2px; }
+.chat-markdown :deep(:not(pre) > code) { padding: 1px 5px; color: #9f1239; background: #f5f6f8; border: 1px solid #e8ebef; border-radius: 4px; font-size: .92em; }
 .chat-markdown :deep(code) { font-family: "Cascadia Code", Consolas, monospace; }
-.chat-markdown :deep(table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
-.chat-markdown :deep(th), .chat-markdown :deep(td) { padding: 7px 10px; border: 1px solid #d9d9d9; }
+.chat-markdown :deep(.chat-code-block) { max-width: 100%; margin: 10px 0; overflow: hidden; background: #f7f8fa; border: 1px solid #e3e7ec; border-radius: 6px; }
+.chat-markdown :deep(.chat-code-header) { min-height: 30px; display: flex; align-items: center; justify-content: space-between; padding: 0 6px 0 12px; color: #7a8491; border-bottom: 1px solid #e6e9ed; font-size: 11px; }
+.chat-markdown :deep(.chat-code-language) { text-transform: lowercase; }
+.chat-markdown :deep(.chat-code-copy) { min-width: 48px; min-height: 28px; padding: 0 7px; color: #667085; background: transparent; border: 0; border-radius: 4px; cursor: pointer; font: inherit; }
+.chat-markdown :deep(.chat-code-copy:hover), .chat-markdown :deep(.chat-code-copy:focus-visible) { color: #182230; background: #eceff3; outline: none; }
+.chat-markdown :deep(.chat-code-block > pre) { max-width: 100%; margin: 0; padding: 12px 14px; overflow-x: auto; background: transparent; }
+.chat-markdown :deep(table) { display: block; max-width: 100%; margin: 10px 0; overflow-x: auto; border-collapse: collapse; }
+.chat-markdown :deep(th), .chat-markdown :deep(td) { padding: 6px 9px; border: 1px solid #dfe3e8; text-align: left; white-space: nowrap; }
+.chat-markdown :deep(th) { background: #f7f8fa; font-weight: 600; }
 .chat-markdown :deep(img) { display: block; max-width: 100%; max-height: 520px; margin: 10px 0; object-fit: contain; border-radius: 6px; }
-.chat-markdown :deep(.katex-display) { overflow-x: auto; overflow-y: hidden; }
-.chat-markdown :deep(.mermaid) { overflow-x: auto; margin: 12px 0; text-align: center; }
-.chat-markdown :deep(.mermaid-error) { white-space: pre-wrap; color: #b42318; }
+.chat-markdown :deep(.katex-display) { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.chat-markdown :deep(.mermaid) { max-width: 100%; margin: 12px 0; overflow-x: auto; text-align: center; }
+.chat-markdown :deep(.mermaid svg) { max-width: 100%; height: auto; }
+.chat-markdown :deep(.mermaid-error) { max-height: 168px; margin: 10px 0; padding: 9px; overflow: auto; white-space: pre-wrap; color: #b42318; background: #fff7f6; border: 1px solid #ffd8d3; border-radius: 5px; }
 </style>
