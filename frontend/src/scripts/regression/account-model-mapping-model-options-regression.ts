@@ -17,6 +17,9 @@ import {
 const accountEditModalSource = readFileSync(new URL('../../views/accounts/AccountEditModal.vue', import.meta.url), 'utf8')
 const accountSavePayloadSource = readFileSync(new URL('../../views/accounts/accountSavePayload.ts', import.meta.url), 'utf8')
 const accountStrategySectionSource = readFileSync(new URL('../../views/accounts/AccountStrategySection.vue', import.meta.url), 'utf8')
+const userHelpSource = readFileSync(new URL('../../../public/help/user/index.html', import.meta.url), 'utf8')
+const adminHelpSource = readFileSync(new URL('../../../public/help/admin/index.html', import.meta.url), 'utf8')
+const publicHelpSource = `${userHelpSource}\n${adminHelpSource}`
 
 const options: AccountModelMappingModelOption[] = [
   { label: 'gpt-chat-only', value: 'gpt-chat-only', supportedApiProtocols: ['chat_completions'] },
@@ -66,6 +69,11 @@ assertIncludes(accountStrategySectionSource, 'label="上游接口能力"', '账�
 assertIncludes(accountStrategySectionSource, '真实上游支持的接口形态', '账户表单提示必须解释真实上游能力语义')
 assertNotIncludes(accountStrategySectionSource, '接口能力限制', '账户表单不得继续展示旧接口能力限制文案')
 assertNotIncludes(accountStrategySectionSource, '可承接的接口形态', '账户表单不得把上游能力描述成客户端可承接请求')
+assertIncludes(userHelpSource, '<h3>上游接口能力</h3>', '用户帮助必须使用上游接口能力标题')
+assertIncludes(userHelpSource, '只声明账号真实上游支持的接口形态', '用户帮助必须解释真实上游能力边界')
+assertIncludes(userHelpSource, '模型别名命中时按映射右侧的目标协议检查', '用户帮助必须解释模型映射按右侧上游能力检查')
+assertNotIncludes(publicHelpSource, '接口能力限制', '公开帮助不得继续展示接口能力限制旧文案')
+assertNotIncludes(publicHelpSource, '账号可承接的请求形态', '公开帮助不得展示派生的可承接请求形态')
 
 const openAIProfile = { protocolCode: 'openai', protocolVersion: 'v1' }
 const anthropicProfile = { protocolCode: 'anthropic', protocolVersion: 'v1' }
