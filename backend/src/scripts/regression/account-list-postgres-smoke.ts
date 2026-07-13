@@ -371,12 +371,13 @@ async function seedAccountListPlannerRows(keyword: string): Promise<void> {
   await pool.query(`
     INSERT INTO juhe_business.accounts (
       id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-      name, type, status, credentials_encrypted, credential_mask, created_at, updated_at
+      name, type, status, credentials_encrypted, credential_mask, health_check_model, health_check_endpoint_family, created_at, updated_at
     )
     SELECT *
     FROM UNNEST(
       $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
-      $7::text[], $8::text[], $9::text[], $10::text[], $11::text[], $12::text[], $13::text[]
+      $7::text[], $8::text[], $9::text[], $10::text[], $11::text[], $12::text[], $13::text[],
+      $14::text[], $15::text[]
     )
     ON CONFLICT (id) DO NOTHING
   `, [
@@ -391,6 +392,8 @@ async function seedAccountListPlannerRows(keyword: string): Promise<void> {
     accountIds.map(() => 'active'),
     accountIds.map(() => '{}'),
     accountIds.map(() => ''),
+    accountIds.map(() => 'gpt-5.4-mini'),
+    accountIds.map(() => 'responses'),
     accountIds.map(() => now),
     accountIds.map(() => now)
   ])
