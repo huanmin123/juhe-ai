@@ -50,6 +50,7 @@
 | 验证类型 | 验证内容 | 命令 / 步骤 | 预期结果 | 实际结果 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | 专项回归 | bridge -> native -> bridge、内部摘要、外部 previous id、兼容画像 | `pnpm --filter juhe-ai-backend test:codex-cross-protocol-context` | 按实际账号渲染且无状态泄漏 | 通过 | 已执行 |
+| 公共改写与 compact | 权限预检/质量重试改写不被覆盖；外部 compact 只选 native；混合池不全局截获 | 同上 | 公共改写保留，compact 按状态来源选协议 | 通过 | 已执行 |
 | 状态存储 | 分片恢复、并发写入和清理屏障 | `test:codex-context-state-sharding`、`test:codex-context-state-writer-pool` | 通过 | 通过 | 已执行 |
 | 端点能力 | OpenAI/Anthropic 端点能力矩阵 | `pnpm --filter juhe-ai-backend test:openai-endpoint-modes` | 通过 | 通过 | 已执行 |
 | 类型检查 | 后端 TypeScript | `pnpm --filter juhe-ai-backend typecheck` | 通过 | 通过 | 已执行 |

@@ -8,11 +8,12 @@ import {
   codexResponsesContextAllowsAccount,
   codexResponsesChatBridgeCompletionHandlerForRequest,
   hasExplicitCodexResponsesChatBridgeRuntimeAccount,
+  prepareCodexResponsesCompactDispatchForAccounts,
   setCodexResponsesContextStateForRequest
 } from '../../modules/gateway/codex-responses/chat-bridge-state.js'
 import { buildPreparedUpstreamRequestParts } from '../../modules/gateway/dispatch/account-preparation.js'
 import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
-import type { GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
+import { replaceGatewayJsonBody, type GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
 
 const model = 'gpt-5.5'
 const summary = 'Earlier turns established the deployment constraints.'
@@ -36,11 +37,18 @@ const canonicalBody = {
       content: [{ type: 'input_text', text: 'Continue.' }]
     }
   ],
+  tools: [{
+    type: 'function',
+    name: 'permission_filtered_tool',
+    description: 'This tool must not be restored after permission preflight.',
+    parameters: { type: 'object', properties: {} }
+  }],
   previous_response_id: 'resp_deepseek_bridge_previous'
 }
 
 const req = request(canonicalBody)
 setCodexResponsesContextStateForRequest(req, {
+  requestKind: 'responses',
   boundary: {
     systemAccountId: 'sys_test',
     apiKeyId: 'key_test',
@@ -55,6 +63,11 @@ setCodexResponsesContextStateForRequest(req, {
   previousResponseKind: 'internal',
   sessionId: 'session_test',
   restored: true
+})
+replaceGatewayJsonBody(req, {
+  ...canonicalBody,
+  instructions: 'Only use capabilities allowed after permission preflight.',
+  tools: []
 })
 
 const bridgeAccount = account('bridge', [{
@@ -81,6 +94,8 @@ const bridgeBody = jsonBody(bridgeParts.body)
 assert.equal(bridgeBody.model, 'gpt-5.5-chat')
 assert.equal(bridgeBody.stream, true)
 assert.equal(Array.isArray(bridgeBody.messages), true)
+assert.match(JSON.stringify(bridgeBody.messages), /Only use capabilities allowed after permission preflight/)
+assert.equal(bridgeBody.tools, undefined)
 assert.match(JSON.stringify(bridgeBody.messages), /Earlier turns established the deployment constraints/)
 assert.doesNotMatch(JSON.stringify(bridgeBody), /juhecmp\.v[12]/)
 assert.equal(typeof codexResponsesChatBridgeCompletionHandlerForRequest(req, bridgeAccount), 'function')
@@ -101,8 +116,21 @@ assert.match(JSON.stringify(nativeBody), /native-upstream-encrypted-content/)
 assert.doesNotMatch(JSON.stringify(nativeBody), /juhecmp\.v[12]/)
 assert.equal(codexResponsesChatBridgeCompletionHandlerForRequest(req, nativeAccount), undefined)
 
+replaceGatewayJsonBody(req, {
+  ...(req.body as Record<string, unknown>),
+  input: [
+    ...((req.body as Record<string, unknown>).input as unknown[]),
+    {
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Apply the hybrid quality repair instruction.' }]
+    }
+  ]
+})
+
 const bridgeAgain = jsonBody((await buildPreparedUpstreamRequestParts(req, bridgeAccount, usageContext)).body)
 assert.match(JSON.stringify(bridgeAgain.messages), /Earlier turns established the deployment constraints/)
+assert.match(JSON.stringify(bridgeAgain.messages), /Apply the hybrid quality repair instruction/)
 assert.doesNotMatch(JSON.stringify(bridgeAgain), /native-upstream-encrypted-content/)
 
 const externalReq = request({
@@ -138,6 +166,51 @@ const compatibilityOnlyAccount = account('compatibility-only')
 assert.equal(hasExplicitCodexResponsesChatBridgeRuntimeAccount(externalReq, [compatibilityOnlyAccount]), false)
 assert.equal(codexResponsesContextAllowsAccount(externalReq, compatibilityOnlyAccount), true)
 
+const externalCompactReq = request({
+  model,
+  input: 'Compact the native session.',
+  previous_response_id: 'resp_external_native'
+}, '/v1/responses/compact')
+const externalCompactPreflight = await applyCodexResponsesContextStatePreflight({
+  req: externalCompactReq,
+  res: {} as never,
+  auditCapture: { addGatewayMetadata() {} } as never,
+  usageContext,
+  startedAt: Date.now(),
+  systemAccountId: 'sys_test',
+  apiKeyId: 'key_test',
+  groupId: 'group_test',
+  groupAccess: {
+    groupOwnerSystemAccountId: 'sys_test',
+    providerCode: 'openai',
+    groupAccessType: 'owner'
+  }
+})
+assert.equal(externalCompactPreflight, 'continued')
+assert.equal(codexResponsesContextAllowsAccount(externalCompactReq, bridgeAccount), false)
+assert.equal(codexResponsesContextAllowsAccount(externalCompactReq, nativeAccount), true)
+assert.equal(prepareCodexResponsesCompactDispatchForAccounts(externalCompactReq, [nativeAccount]), false)
+
+const mixedCompactReq = request({ model, input: 'Compact this full input.' }, '/v1/responses/compact')
+await applyCodexResponsesContextStatePreflight({
+  req: mixedCompactReq,
+  res: {} as never,
+  auditCapture: { addGatewayMetadata() {} } as never,
+  usageContext,
+  startedAt: Date.now(),
+  systemAccountId: 'sys_test',
+  apiKeyId: 'key_test',
+  groupId: 'group_test',
+  groupAccess: {
+    groupOwnerSystemAccountId: 'sys_test',
+    providerCode: 'openai',
+    groupAccessType: 'owner'
+  }
+})
+assert.equal(prepareCodexResponsesCompactDispatchForAccounts(mixedCompactReq, [bridgeAccount, nativeAccount]), false)
+assert.equal(codexResponsesContextAllowsAccount(mixedCompactReq, bridgeAccount), false)
+assert.equal(codexResponsesContextAllowsAccount(mixedCompactReq, nativeAccount), true)
+
 const untouchedReq = request({ model, stream: true, input: 'Canonical request body.' })
 const untouchedRawBody = Buffer.from((untouchedReq as unknown as GatewayRawBodyRequest).rawBody ?? Buffer.alloc(0))
 const preflightResult = await applyCodexResponsesContextStatePreflight({
@@ -160,12 +233,12 @@ assert.deepEqual((untouchedReq as unknown as GatewayRawBodyRequest).rawBody, unt
 
 console.log('跨协议 Codex 上下文回归通过：内部摘要按实际账号渲染，原生加密内容和外部 previous_response_id 保持边界')
 
-function request(body: Record<string, unknown>): Request {
+function request(body: Record<string, unknown>, originalUrl = '/v1/responses'): Request {
   const rawBody = Buffer.from(JSON.stringify(body), 'utf8')
   return {
     method: 'POST',
-    path: '/responses',
-    originalUrl: '/v1/responses',
+    path: originalUrl.replace(/^\/v1/, ''),
+    originalUrl,
     headers: {
       'content-type': 'application/json',
       accept: 'text/event-stream'

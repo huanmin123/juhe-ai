@@ -31,6 +31,7 @@ import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
 import {
   createCodexResponsesChatBridgeCompactSnapshot,
   hasExplicitCodexResponsesChatBridgeRuntimeAccount,
+  prepareCodexResponsesCompactDispatchForAccounts,
   restoreCodexResponsesChatBridgeInputForCompact
 } from './chat-bridge-state.js'
 
@@ -56,9 +57,13 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   sameAccountRetryBudget: SameAccountRetryBudget
   signal?: AbortSignal
 }): Promise<'continued' | 'completed'> {
-  if (!isChatOnlyCodexResponsesCompactRequest(input.req, input.dispatchAccounts)) {
+  if (!isOpenAIResponsesCompactPostRequest(input.req)
+    || !prepareCodexResponsesCompactDispatchForAccounts(input.req, input.dispatchAccounts)) {
     return 'continued'
   }
+  const bridgeDispatchAccounts = input.dispatchAccounts.filter((account) => (
+    hasExplicitCodexResponsesChatBridgeRuntimeAccount(input.req, [account])
+  ))
   const body = await parseGatewayJsonObject(input.req, input.signal)
   const previousResponseId = normalizedOptionalText(body.previous_response_id)
   const boundary = {
@@ -86,7 +91,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   try {
     upstreamResult = await fetchFirstAvailableUpstream(
       syntheticReq,
-      [...input.dispatchAccounts],
+      bridgeDispatchAccounts,
       input.activeGatewaySettings,
       input.usageContext,
       input.auditCapture,
@@ -294,14 +299,6 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
     ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
     : JSON.parse(rawBody.toString('utf8')) as unknown
   return isPlainObject(parsed) ? { ...parsed } : {}
-}
-
-function isChatOnlyCodexResponsesCompactRequest(
-  req: Request,
-  accounts: readonly UpstreamAccount[]
-): boolean {
-  return isOpenAIResponsesCompactPostRequest(req)
-    && hasExplicitCodexResponsesChatBridgeRuntimeAccount(req, accounts)
 }
 
 function isOpenAIResponsesCompactPostRequest(req: Request): boolean {
