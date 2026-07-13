@@ -274,6 +274,7 @@
     "test:runtime-log-grep-path": "tsx src/scripts/regression/runtime-log-grep-path-regression.ts",
     "test:runtime-log-keyword-only-sql": "tsx src/scripts/regression/runtime-log-keyword-only-sql-regression.ts",
     "test:runtime-log-index-large-line": "tsx src/scripts/regression/runtime-log-index-large-line-regression.ts",
+    "test:runtime-log-redis-enqueue-failure-boundary": "tsx src/scripts/regression/runtime-log-redis-enqueue-failure-boundary-regression.ts",
     "test:runtime-log-file-import-source": "tsx src/scripts/regression/runtime-log-file-import-source-regression.ts",
     "test:runtime-log-search-guard": "tsx src/scripts/regression/runtime-log-search-guard-regression.ts",
     "test:runtime-snapshot-unavailable-contract": "tsx src/scripts/regression/runtime-snapshot-unavailable-contract-regression.ts",

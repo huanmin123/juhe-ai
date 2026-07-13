@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
@@ -45,6 +44,8 @@ let droppedRuntimeLogCount = 0
 let droppedRuntimeLogOverflowCount = 0
 let droppedRuntimeLogOversizeCount = 0
 let droppedRuntimeLogSampledCount = 0
+let runtimeLogRedisEnqueueFailureCount = 0
+let runtimeLogRedisEnqueueLastErrorAt: string | undefined
 let flushLastSuccessAt: string | undefined
 let flushLastError: string | undefined
 let shutdownHooksInstalled = false
@@ -74,6 +75,8 @@ export interface RuntimeLogIndexRuntime {
   droppedOverflowCount: number
   droppedOversizeCount: number
   droppedSampledCount: number
+  redisEnqueueFailureCount: number
+  redisEnqueueLastErrorAt?: string
   flushLastSuccessAt?: string
   flushLastError?: string
   retentionDays: number
@@ -83,7 +86,7 @@ export function enqueueRuntimeLogLine(rawLine: string, options: RuntimeLogLineIn
   if (shouldEnqueueRuntimeLogToRedisStream()) {
     const input = runtimeLogInputFromLine(rawLine, options)
     if (!input) return
-    void enqueueRuntimeLogToRedisStream(input, rawLine, options).catch(scheduleProcessFatalError)
+    void enqueueRuntimeLogToRedisStream(input).catch(recordRuntimeLogRedisStreamEnqueueFailure)
     return
   }
   if (runtimeConfig.processRole === 'db-service') {
@@ -308,6 +311,8 @@ export function getRuntimeLogIndexRuntime(): RuntimeLogIndexRuntime {
     droppedOverflowCount: droppedRuntimeLogOverflowCount,
     droppedOversizeCount: droppedRuntimeLogOversizeCount,
     droppedSampledCount: droppedRuntimeLogSampledCount,
+    redisEnqueueFailureCount: runtimeLogRedisEnqueueFailureCount,
+    redisEnqueueLastErrorAt: runtimeLogRedisEnqueueLastErrorAt,
     flushLastSuccessAt,
     flushLastError,
     retentionDays: runtimeLogIndexRetentionDays
@@ -336,6 +341,8 @@ export function clearRuntimeLogIndexQueueForTest(): void {
   droppedRuntimeLogOverflowCount = 0
   droppedRuntimeLogOversizeCount = 0
   droppedRuntimeLogSampledCount = 0
+  runtimeLogRedisEnqueueFailureCount = 0
+  runtimeLogRedisEnqueueLastErrorAt = undefined
   flushLastSuccessAt = undefined
   flushLastError = undefined
   shutdownHooksInstalled = false
@@ -482,14 +489,35 @@ function writeRuntimeLogIndexError(message: string): void {
   process.stderr.write(`[runtime-log-index] ${message}\n`)
 }
 
-async function enqueueRuntimeLogToRedisStream(input: RuntimeLogIndexInput, _rawLine: string, _options: RuntimeLogLineIndexOptions): Promise<void> {
-  try {
-    await runtimeLogRedisStreamQueue().enqueue(input)
-  } catch (error) {
-    flushLastError = error instanceof Error ? error.message : String(error)
-    writeRuntimeLogIndexError(`运行日志索引写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列：${flushLastError}`)
-    throw error
-  }
+async function enqueueRuntimeLogToRedisStream(input: RuntimeLogIndexInput): Promise<void> {
+  await runtimeLogRedisStreamQueue().enqueue(input)
+}
+
+function recordRuntimeLogRedisStreamEnqueueFailure(error: unknown): void {
+  runtimeLogRedisEnqueueFailureCount += 1
+  droppedRuntimeLogCount += 1
+  runtimeLogRedisEnqueueLastErrorAt = nowIso()
+  flushLastError = runtimeLogRedisErrorText(error)
+  writeRuntimeLogIndexError(
+    `event=runtime_log_redis_stream_enqueue_failed failure_count=${runtimeLogRedisEnqueueFailureCount} dropped=true error=${flushLastError}`
+  )
+}
+
+export function recordRuntimeLogRedisStreamEnqueueFailureForTest(error: unknown): void {
+  recordRuntimeLogRedisStreamEnqueueFailure(error)
+}
+
+function runtimeLogRedisErrorText(error: unknown): string {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : undefined
+  const parts = [
+    error instanceof Error && error.name.trim() ? error.name.trim() : undefined,
+    typeof record?.code === 'string' && record.code.trim() ? `code=${record.code.trim()}` : undefined,
+    error instanceof Error && error.message.trim() ? error.message.trim() : undefined,
+    !(error instanceof Error) && String(error).trim() ? String(error).trim() : undefined
+  ].filter((value): value is string => Boolean(value))
+  return (parts.join(' ') || 'unknown_error')
+    .replace(/(rediss?:\/\/[^:\s]+:)[^@\s]+@/gi, '$1***@')
+    .slice(0, 1024)
 }
 
 async function runRuntimeLogRedisStreamConsumer(): Promise<void> {
