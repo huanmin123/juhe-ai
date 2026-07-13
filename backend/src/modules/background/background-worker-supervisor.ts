@@ -207,12 +207,10 @@ function installSupervisorShutdownHooks(): void {
   }
   shutdownHooksInstalled = true
 
-  process.once('exit', () => stopWorkerProcess())
-  process.once('SIGINT', () => exitAfterWorkerStop(0))
-  process.once('SIGTERM', () => exitAfterWorkerStop(0))
+  process.once('exit', () => stopBackgroundWorkerSupervisor())
 }
 
-function stopWorkerProcess(): void {
+export function stopBackgroundWorkerSupervisor(): void {
   stopping = true
   for (const state of supervisedWorkers.values()) {
     if (state.restartTimer) {
@@ -223,11 +221,6 @@ function stopWorkerProcess(): void {
       state.process.kill('SIGTERM')
     }
   }
-}
-
-function exitAfterWorkerStop(exitCode: number): never {
-  stopWorkerProcess()
-  process.exit(exitCode)
 }
 
 function supervisedWorkerState(role: BackgroundWorkerProcessRole): SupervisedWorkerState {

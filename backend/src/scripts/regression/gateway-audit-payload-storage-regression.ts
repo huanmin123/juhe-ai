@@ -161,6 +161,9 @@ async function assertHotRetainedNonStreamSuccess(gatewayBaseUrl: string, upstrea
 
   const detail = auditDetailByTrace(traceId)
   assert.equal(detail.auditOutcome, 'success', '成功热保留请求应写入 success 审计')
+  assert(detail.httpCompletedAt, '成功审计应保存 HTTP 返回客户端时间')
+  assert.equal(typeof detail.httpDurationMs, 'number', '成功审计应保存 HTTP 客户端耗时')
+  assert((detail.durationMs ?? 0) >= (detail.httpDurationMs ?? 0), '审计总耗时不得早于 HTTP 客户端耗时')
   await assertPayloadBodyEquals(detail, 'upstream_response', nonStreamSuccessBody)
   await assertPayloadBodyEquals(detail, 'gateway_response', nonStreamSuccessBody)
   await assertPayloadBodyContains(detail, 'client_request', 'audit non stream success')

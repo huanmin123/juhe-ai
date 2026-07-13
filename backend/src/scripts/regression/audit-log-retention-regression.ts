@@ -1,10 +1,11 @@
 import { strict as assert } from 'node:assert'
 import { createHash } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
-import type { Request } from 'express'
+import type { Request, Response } from 'express'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
@@ -53,6 +54,7 @@ const largeSuccessRequestBody = Buffer.from(JSON.stringify({
 }), 'utf8')
 
 try {
+  assertHttpCompletionTiming()
   const unsampledTraceId = traceIdForBucket((bucket) => bucket >= 1000)
   const sampledTraceId = traceIdForBucket((bucket) => bucket < 1000)
   finalizeSuccessfulRequest(unsampledTraceId)
@@ -582,6 +584,38 @@ function assertAuditPayloadCleanupUsesAsyncFiles(): void {
 
 function finalizeSuccessfulRequest(traceId: string): void {
   finalizeSuccessfulRequestWithBody(traceId, Buffer.from(JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' }), 'utf8'))
+}
+
+function assertHttpCompletionTiming(): void {
+  const traceId = 'trace-audit-http-completion-timing'
+  const activeCaptureCountBefore = auditCapture.getActiveAuditCaptureCount()
+  const response = Object.assign(new EventEmitter(), {
+    writableFinished: false,
+    destroyed: false
+  }) as unknown as Response
+  const startedAtMs = Date.now() - 25
+  const capture = auditCapture.createAuditCapture({
+    req: auditRequest(),
+    res: response,
+    traceId,
+    clientIp: '127.0.0.1',
+    startedAtMs
+  })
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore + 1, 'HTTP 请求处理中应计入活动审计捕获')
+  capture.finalize({
+    outcome: 'success',
+    success: true,
+    statusCode: 200
+  })
+  assert.equal(repositories.listAuditLogs({ traceId }).total, 0, 'HTTP 未完成前审计不得提前固化错误的客户端时间')
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore + 1, '等待 HTTP 完成的审计仍应计入活动捕获')
+  response.emit('finish')
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore, 'HTTP finish 后审计活动计数应归还')
+  auditQueue.flushAllAuditLogQueue()
+  const summary = repositories.listAuditLogs({ traceId }).items[0]
+  assert(summary?.httpCompletedAt, 'HTTP finish 后审计应保存返回客户端时间')
+  assert((summary?.httpDurationMs ?? 0) >= 25, 'HTTP 客户端耗时应从请求开始计算')
+  assert((summary?.durationMs ?? 0) >= (summary?.httpDurationMs ?? 0), '审计完成耗时不得早于 HTTP 客户端耗时')
 }
 
 function finalizeSuccessfulRequestWithBody(traceId: string, body: Buffer<ArrayBufferLike>): void {

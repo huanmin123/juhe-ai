@@ -74,6 +74,8 @@ export function auditLogSummaryFromRow(row: AuditLogRow, systemAccountNames: Map
     startedAt: String(row.started_at),
     endedAt: String(row.ended_at),
     durationMs: numberValue(row.duration_ms),
+    httpCompletedAt: optionalString(row.http_completed_at),
+    httpDurationMs: numberValue(row.http_duration_ms),
     firstTokenMs: numberValue(row.first_token_ms),
     createdAt: String(row.created_at)
   }

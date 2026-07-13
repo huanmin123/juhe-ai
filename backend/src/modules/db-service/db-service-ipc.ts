@@ -1023,12 +1023,16 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     backgroundIpc,
     gatewaySideEffects,
     auditCapture,
+    auditLogTransport,
+    auditLogQueue,
     accountConcurrency,
     highConcurrencyQueue
   ] = await Promise.all([
     import('../background/background-ipc.js'),
     import('../gateway/runtime/account-side-effects.service.js'),
     import('../gateway/audit/capture.service.js'),
+    import('../audit-logs/audit-log-transport.service.js'),
+    import('../audit-logs/audit-log-queue.service.js'),
     import('../../shared/account-concurrency.js'),
     import('../gateway/runtime/high-concurrency-queue.service.js')
   ])
@@ -1177,7 +1181,11 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     },
     highConcurrencyQueues: highConcurrencyQueue.highConcurrencyGroupQueueSnapshot(),
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
-    activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount()
+    activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount(),
+    auditLogTransport: {
+      ...auditLogTransport.getAuditLogTransportRuntime(),
+      pendingDispatchCount: auditLogQueue.getAuditLogServerDispatchPendingCount()
+    }
   }
 }
 

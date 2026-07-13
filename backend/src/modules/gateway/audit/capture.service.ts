@@ -39,6 +39,8 @@ type RawBodyRequest = Request & { rawBody?: Buffer }
 
 interface AuditCaptureContextInput {
   req: Request
+  res?: Response
+  httpCompletion?: GatewayHttpCompletionObserver
   traceId: string
   clientIp?: string
   startedAtMs: number
@@ -142,6 +144,7 @@ const auditActiveCaptureHardLimitBytes = 64 * 1024 * 1024
 
 export class AuditCaptureContext {
   private readonly req: Request
+  private readonly httpCompletion?: GatewayHttpCompletionObserver
   private readonly traceId: string
   private readonly clientIp?: string
   private readonly startedAtMs: number
@@ -166,6 +169,9 @@ export class AuditCaptureContext {
   private approximateBytes = 0
   private sequenceIndex = 0
   private clientRequestPayloadCaptured = false
+  private httpCompletedAtMs?: number
+  private pendingFinalizeInput?: FinalizeAuditInput
+  private releaseHttpCompletionListener?: () => void
 
   constructor(input: AuditCaptureContextInput) {
     const settings = readAuditLogSettings()
@@ -173,6 +179,7 @@ export class AuditCaptureContext {
     this.successSampleRate = settings.successSampleRate
     this.activeCaptureMaxBytes = Math.min(settings.activeCaptureMaxBytes, auditActiveCaptureHardLimitBytes)
     this.req = input.req
+    this.httpCompletion = input.httpCompletion ?? (input.res ? observeGatewayHttpCompletion(input.res) : undefined)
     this.traceId = input.traceId
     this.clientIp = input.clientIp
     this.startedAtMs = input.startedAtMs
@@ -187,6 +194,7 @@ export class AuditCaptureContext {
       return
     }
     activeAuditCaptureCount += 1
+    this.releaseHttpCompletionListener = this.httpCompletion?.onCompleted(this.markHttpCompleted)
     this.gatewayContext.trafficSource = this.trafficSource
     if (this.metadataOnly) {
       this.addPayload({
@@ -403,7 +411,33 @@ export class AuditCaptureContext {
     if (this.finalized) return
     this.finalized = true
     if (!this.enabled) return
+
+    this.pendingFinalizeInput = input
+    if (!this.httpCompletion || this.httpCompletedAtMs !== undefined) {
+      this.flushFinalizedAudit()
+      return
+    }
+    const completedAtMs = this.httpCompletion.completedAtMs()
+    if (completedAtMs !== undefined) {
+      this.markHttpCompleted(completedAtMs)
+    }
+  }
+
+  private readonly markHttpCompleted = (completedAtMs: number): void => {
+    if (this.httpCompletedAtMs !== undefined) return
+    this.httpCompletedAtMs = completedAtMs
+    if (this.pendingFinalizeInput) {
+      this.flushFinalizedAudit()
+    }
+  }
+
+  private flushFinalizedAudit(): void {
+    const input = this.pendingFinalizeInput
+    if (!input) return
+    this.pendingFinalizeInput = undefined
     activeAuditCaptureCount = Math.max(0, activeAuditCaptureCount - 1)
+    this.releaseHttpCompletionListener?.()
+    this.releaseHttpCompletionListener = undefined
 
     const endedAtMs = Date.now()
     const clientAborted = this.clientAborted && !input.success
@@ -483,6 +517,8 @@ export class AuditCaptureContext {
       startedAt: this.startedAtIso,
       endedAt: new Date(endedAtMs).toISOString(),
       durationMs: endedAtMs - this.startedAtMs,
+      httpCompletedAt: this.httpCompletedAtMs === undefined ? undefined : new Date(this.httpCompletedAtMs).toISOString(),
+      httpDurationMs: this.httpCompletedAtMs === undefined ? undefined : this.httpCompletedAtMs - this.startedAtMs,
       firstTokenMs: input.firstTokenMs,
       attempts: this.attempts,
       payloads: this.payloads
@@ -516,8 +552,10 @@ export class AuditCaptureContext {
   private addPayload(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {
     if (!this.enabled) return
     if (this.overflowed) return
-    summarizePayloadForLimit(payload, failedAuditFullBodyLimitBytes)
-    const nextApproximateBytes = this.approximateBytes + estimatePayloadBytes(payload)
+    if (!shouldOffloadAuditPayloadRetention()) {
+      summarizePayloadForLimit(payload, failedAuditFullBodyLimitBytes)
+    }
+    const nextApproximateBytes = this.approximateBytes + estimateRetainedPayloadBytes(payload, failedAuditFullBodyLimitBytes)
     if (nextApproximateBytes > this.activeCaptureMaxBytes) {
       this.overflowed = true
       this.payloads.length = 0
@@ -542,6 +580,13 @@ export class AuditCaptureContext {
     const fullBodyLimit = mode === 'success'
       ? successAuditFullBodyLimitBytes
       : failedAuditFullBodyLimitBytes
+    if (shouldOffloadAuditPayloadRetention()) {
+      this.approximateBytes = this.payloads.reduce(
+        (total, payload) => total + estimateRetainedPayloadBytes(payload, fullBodyLimit),
+        0
+      )
+      return
+    }
     for (const payload of this.payloads) {
       summarizePayloadForLimit(payload, fullBodyLimit)
     }
@@ -599,8 +644,51 @@ export function createAuditCapture(input: AuditCaptureContextInput): AuditCaptur
   return new AuditCaptureContext(input)
 }
 
+export function observeGatewayHttpCompletion(res: Response): GatewayHttpCompletionObserver {
+  let completedAtMs: number | undefined
+  let resolveCompletion: ((value: number) => void) | undefined
+  const listeners = new Set<(value: number) => void>()
+  const completion = new Promise<number>((resolvePromise) => {
+    resolveCompletion = resolvePromise
+  })
+  const complete = (): void => {
+    if (completedAtMs !== undefined) return
+    completedAtMs = Date.now()
+    res.off('finish', complete)
+    res.off('close', complete)
+    resolveCompletion?.(completedAtMs)
+    resolveCompletion = undefined
+    for (const listener of listeners) listener(completedAtMs)
+    listeners.clear()
+  }
+  res.once('finish', complete)
+  res.once('close', complete)
+  if (res.writableFinished || res.destroyed) complete()
+  return {
+    completedAtMs: () => completedAtMs,
+    wait: async () => await completion,
+    onCompleted(listener) {
+      if (completedAtMs !== undefined) {
+        listener(completedAtMs)
+        return () => undefined
+      }
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    }
+  }
+}
+
 export function getActiveAuditCaptureCount(): number {
   return activeAuditCaptureCount
+}
+
+export async function waitForActiveAuditCapturesIdle(timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + Math.max(1, timeoutMs)
+  while (activeAuditCaptureCount > 0) {
+    if (Date.now() >= deadline) return false
+    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 5))
+  }
+  return true
 }
 
 export function responseHeadersToObject(res: Response): Record<string, string | string[]> {
@@ -920,6 +1008,36 @@ function estimatePayloadBytes(payload: Omit<AuditLogPayloadInput, 'sequenceIndex
   const bodyBytes = payloadBodyByteLength(body)
   const headerBytes = payload.headers ? estimateHeadersBytes(payload.headers) : 0
   return bodyBytes + headerBytes + 512
+}
+
+export interface GatewayHttpCompletionObserver {
+  completedAtMs(): number | undefined
+  wait(): Promise<number>
+  onCompleted(listener: (completedAtMs: number) => void): () => void
+}
+
+function estimateRetainedPayloadBytes(
+  payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>,
+  fullBodyLimitBytes: number
+): number {
+  if (
+    !shouldOffloadAuditPayloadRetention()
+    || payload.partType === 'gateway_metadata'
+    || payload.body === undefined
+    || (payload.captureStatus !== undefined && payload.captureStatus !== 'complete')
+  ) {
+    return estimatePayloadBytes(payload)
+  }
+  const bodyBytes = payloadBodyByteLength(payload.body)
+  const retainedBodyBytes = bodyBytes <= fullBodyLimitBytes
+    ? bodyBytes
+    : Math.min(bodyBytes, Math.max(fullBodyLimitBytes, auditBodySummaryEdgeBytes * 3))
+  const headerBytes = payload.headers ? estimateHeadersBytes(payload.headers) : 0
+  return retainedBodyBytes + headerBytes + 512
+}
+
+function shouldOffloadAuditPayloadRetention(): boolean {
+  return runtimeConfig.processRole === 'server'
 }
 
 function payloadBodyByteLength(body: Buffer | string | undefined): number {

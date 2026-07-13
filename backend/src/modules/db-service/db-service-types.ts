@@ -328,6 +328,17 @@ export interface DbServiceServerRuntimeSnapshot {
   }>
   gatewayAccountSideEffects?: Record<string, unknown>
   activeAuditCaptureCount?: number
+  auditLogTransport?: {
+    queuedJobs: number
+    queuedBytes: number
+    activeJobs: number
+    activeBytes: number
+    workerCount: number
+    completedCount: number
+    failedCount: number
+    rejectedCount: number
+    pendingDispatchCount: number
+  }
 }
 
 export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency' | 'account_runtime'

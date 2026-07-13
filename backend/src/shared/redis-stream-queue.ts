@@ -68,8 +68,12 @@ export class RedisStreamQueue<T> {
   }
 
   async enqueue(payload: T): Promise<string> {
+    return await this.enqueueEncoded(this.encode(payload))
+  }
+
+  async enqueueEncoded(encodedPayload: string): Promise<string> {
     const client = await getRedisClient(this.redisUrl)
-    const command = ['XADD', this.streamKey, '*', 'payload', this.encode(payload)]
+    const command = ['XADD', this.streamKey, '*', 'payload', encodedPayload]
     const id = await client.sendCommand(command)
     return String(id ?? '')
   }

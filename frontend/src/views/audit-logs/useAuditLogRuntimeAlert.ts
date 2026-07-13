@@ -16,6 +16,8 @@ export function useAuditLogRuntimeAlert() {
     if (positiveRuntimeCount(info.droppedFailureCount)) reasons.push(`失败审计丢弃 ${info.droppedFailureCount} 条`)
     if (positiveRuntimeCount(info.droppedOverflowCount)) reasons.push(`队列溢出丢弃 ${info.droppedOverflowCount} 条`)
     if (positiveRuntimeCount(info.droppedOversizeCount)) reasons.push(`超限审计丢弃 ${info.droppedOversizeCount} 条`)
+    if (positiveRuntimeCount(info.transport.failedCount)) reasons.push(`审计传输处理失败 ${info.transport.failedCount} 次`)
+    if (positiveRuntimeCount(info.transport.rejectedCount)) reasons.push(`审计传输容量拒绝 ${info.transport.rejectedCount} 次`)
     return reasons
   })
 
@@ -60,6 +62,6 @@ function runtimeReadyText(value: boolean | null): string {
   return '状态未知'
 }
 
-function positiveRuntimeCount(value: number | null): boolean {
+function positiveRuntimeCount(value: number | null | undefined): boolean {
   return typeof value === 'number' && value > 0
 }

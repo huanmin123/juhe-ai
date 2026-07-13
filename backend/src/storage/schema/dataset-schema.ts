@@ -98,6 +98,8 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           started_at TEXT NOT NULL,
           ended_at TEXT NOT NULL,
           duration_ms INTEGER,
+          http_completed_at TEXT,
+          http_duration_ms INTEGER,
           first_token_ms INTEGER,
           created_at TEXT NOT NULL
         );

@@ -219,6 +219,7 @@ export async function recordCompletedUpstreamAttempt(
     stream: boolean
     firstTokenMs?: number
     startedAt: number
+    completedAtMs?: number
     usage: ParsedUsage
     requestedServiceTier?: UsageServiceTier
     effectiveServiceTier?: UsageServiceTier
@@ -267,7 +268,7 @@ export async function recordCompletedUpstreamAttempt(
     success: input.success,
     failureAttribution: input.success ? undefined : input.failureAttribution ?? 'account_upstream',
     firstTokenMs: input.firstTokenMs,
-    durationMs: Date.now() - input.startedAt,
+    durationMs: Math.max(0, (input.completedAtMs ?? Date.now()) - input.startedAt),
     inputTokens: input.usage.inputTokens,
     outputTokens: input.usage.outputTokens,
     cacheReadTokens: input.usage.cacheReadTokens,

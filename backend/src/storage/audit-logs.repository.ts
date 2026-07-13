@@ -102,8 +102,8 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
       model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
       compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
-      duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      duration_ms, http_completed_at, http_duration_ms, first_token_ms, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const insertAttempt = database.prepare(`
@@ -194,6 +194,8 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
         input.startedAt,
         input.endedAt,
         input.durationMs ?? null,
+        input.httpCompletedAt ?? null,
+        input.httpDurationMs ?? null,
         input.firstTokenMs ?? null,
         createdAt
       )
@@ -333,8 +335,8 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
       model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
       compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
-      duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      duration_ms, http_completed_at, http_duration_ms, first_token_ms, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const insertAttempt = database.prepare(`
@@ -405,6 +407,8 @@ export async function createAuditLogsBatchAsync(inputs: AuditLogInput[]): Promis
         input.startedAt,
         input.endedAt,
         input.durationMs ?? null,
+        input.httpCompletedAt ?? null,
+        input.httpDurationMs ?? null,
         input.firstTokenMs ?? null,
         createdAt
       )
@@ -698,8 +702,8 @@ async function insertPostgresAuditLog(client: DatabaseClient, prepared: Prepared
       model, upstream_model, pricing_model, model_mapping_applied, model_mapping_source, source_endpoint_family, upstream_endpoint_family, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, raw_payload_bytes,
       compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
-      duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      duration_ms, http_completed_at, http_duration_ms, first_token_ms, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `, [
     id,
@@ -741,6 +745,8 @@ async function insertPostgresAuditLog(client: DatabaseClient, prepared: Prepared
     input.startedAt,
     input.endedAt,
     input.durationMs ?? null,
+    input.httpCompletedAt ?? null,
+    input.httpDurationMs ?? null,
     input.firstTokenMs ?? null,
     createdAt
   ])
