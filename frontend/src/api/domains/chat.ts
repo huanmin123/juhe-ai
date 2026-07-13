@@ -1,5 +1,5 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
-import type { ChatApiKeyOption, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent } from '@/types/domain/chat'
+import type { ChatApiKeyOption, ChatAsset, ChatContextStatus, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 export const chatApi = {
@@ -9,9 +9,30 @@ export const chatApi = {
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${conversationId}`)),
   listMessages: (conversationId: string, params?: { beforeSequenceNo?: number; limit?: number }) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${conversationId}/messages`, { params })),
   listModels: (conversationId: string) => unwrap<ChatModelOption[]>(http.get(`/my-chat/conversations/${conversationId}/models`)),
+  getContextStatus: (conversationId: string) => unwrap<ChatContextStatus>(http.get(`/my-chat/conversations/${conversationId}/context-status`)),
+  uploadAsset: (
+    conversationId: string,
+    file: File,
+    options?: { signal?: AbortSignal; onProgress?: (percent: number) => void }
+  ) => {
+    const body = new FormData()
+    body.append('file', file, file.name)
+    return unwrap<ChatAsset>(http.post(`/my-chat/conversations/${conversationId}/assets`, body, {
+      signal: options?.signal,
+      timeout: 0,
+      onUploadProgress: (event) => {
+        if (!event.total || event.total <= 0) return
+        options?.onProgress?.(Math.min(100, Math.max(0, Math.round((event.loaded / event.total) * 100))))
+      }
+    }))
+  },
   updateConversation: (conversationId: string, payload: { title?: string; isPinned?: boolean }) => unwrap<ChatConversation>(http.patch(`/my-chat/conversations/${conversationId}`, payload)),
   stop: (conversationId: string) => unwrap<{ stopped: boolean }>(http.post(`/my-chat/conversations/${conversationId}/stop`)),
   deleteConversation: (conversationId: string) => http.delete(`/my-chat/conversations/${conversationId}`)
+}
+
+export function chatAssetContentUrl(conversationId: string, assetId: string): string {
+  return apiUrl(`/my-chat/conversations/${encodeURIComponent(conversationId)}/assets/${encodeURIComponent(assetId)}/content`)
 }
 
 export class ChatStreamHttpError extends Error {
@@ -30,7 +51,7 @@ export async function streamChatMessage(input: {
   clientMessageId: string
   replaceTurnId?: string
   content: string
-  contentBlocks?: Array<{ type: 'input_text' | 'input_image'; text?: string; dataUrl?: string }>
+  contentBlocks?: Array<{ type: 'input_text'; text: string } | { type: 'input_image'; assetId: string }>
   model: string
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier

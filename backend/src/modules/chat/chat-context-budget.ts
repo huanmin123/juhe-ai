@@ -1,11 +1,12 @@
 export interface ChatContextMessage {
   role: 'user' | 'assistant'
-  content: string
+  content: string | Array<{ type: 'input_text' | 'input_image'; text?: string; dataUrl?: string }>
 }
+
+import { countChatJsonTokens, countChatTextTokens } from './chat-token-count.js'
 
 const protocolReserveTokens = 4_000
 const toolDefinitionReserveTokens = 2_048
-const imageReserveTokens = 4_096
 const messageOverheadTokens = 12
 
 export class ChatContextBudgetError extends Error {
@@ -19,7 +20,7 @@ interface FixedChatInputBudget {
   currentUserContent: string
   instructions: string
   toolsEnabled: boolean
-  imageCount: number
+  imageTokenEstimate: number
   maxInputTokens?: number
 }
 
@@ -41,12 +42,19 @@ export function trimChatContextToBudget(input: FixedChatInputBudget & {
   const selected: ChatContextMessage[][] = []
   for (let index = completeTurns.length - 1; index >= 0; index -= 1) {
     const turn = completeTurns[index]
-    const turnTokens = turn.reduce((total, message) => total + estimateChatTokens(message.content) + messageOverheadTokens, 0)
+    const turnTokens = turn.reduce((total, message) => total + estimateChatContentTokens(message.content) + messageOverheadTokens, 0)
     if (usedTokens + turnTokens > historyBudget) break
     selected.push(turn)
     usedTokens += turnTokens
   }
   return selected.reverse().flat()
+}
+
+export function estimateChatInputTokens(input: FixedChatInputBudget & { history: ChatContextMessage[] }): number {
+  return fixedChatInputTokens(input) + input.history.reduce(
+    (total, message) => total + estimateChatContentTokens(message.content) + messageOverheadTokens,
+    0
+  )
 }
 
 function fixedChatInputTokens(input: FixedChatInputBudget): number {
@@ -55,11 +63,15 @@ function fixedChatInputTokens(input: FixedChatInputBudget): number {
     + estimateChatTokens(input.currentUserContent)
     + messageOverheadTokens * 2
     + (input.toolsEnabled ? toolDefinitionReserveTokens : 0)
-    + Math.max(0, Math.floor(input.imageCount)) * imageReserveTokens
+    + Math.max(0, Math.floor(input.imageTokenEstimate))
 }
 
 export function estimateChatTokens(content: string): number {
-  return Math.max(1, Math.ceil(Buffer.byteLength(content, 'utf8') / 3))
+  return Math.max(1, countChatTextTokens(content))
+}
+
+function estimateChatContentTokens(content: ChatContextMessage['content']): number {
+  return typeof content === 'string' ? estimateChatTokens(content) : Math.max(1, countChatJsonTokens(content))
 }
 
 function toCompleteTurns(history: ChatContextMessage[]): ChatContextMessage[][] {

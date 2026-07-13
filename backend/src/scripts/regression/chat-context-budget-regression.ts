@@ -18,15 +18,15 @@ const baseBudgetInput = {
   currentUserContent: '当前问题',
   instructions: '遵循用户要求',
   toolsEnabled: false,
-  imageCount: 0
+  imageTokenEstimate: 0
 }
-const trimmed = trimChatContextToBudget({ ...baseBudgetInput, maxInputTokens: 13_000 })
+const trimmed = trimChatContextToBudget({ ...baseBudgetInput, maxInputTokens: 6_000 })
 assert.deepEqual(trimmed, history.slice(2), '超出预算时必须从最旧完整轮次开始裁剪')
 assert.equal(trimmed[0]?.role, 'user')
 assert.equal(trimmed.at(-1)?.role, 'assistant')
 
-const shortInstructions = trimChatContextToBudget({ ...baseBudgetInput, maxInputTokens: 20_000 })
-const longInstructions = trimChatContextToBudget({ ...baseBudgetInput, instructions: '规则'.repeat(3_500), maxInputTokens: 20_000 })
+const shortInstructions = trimChatContextToBudget({ ...baseBudgetInput, maxInputTokens: 9_000 })
+const longInstructions = trimChatContextToBudget({ ...baseBudgetInput, instructions: '规则'.repeat(3_500), maxInputTokens: 9_000 })
 assert(longInstructions.length < shortInstructions.length, '更长的 system instructions 必须减少可保留历史')
 
 const mediumHistory = [
@@ -35,12 +35,12 @@ const mediumHistory = [
   { role: 'user' as const, content: '最近问题' },
   { role: 'assistant' as const, content: '最近回答' }
 ]
-const withoutTools = trimChatContextToBudget({ ...baseBudgetInput, history: mediumHistory, maxInputTokens: 16_000 })
-const withTools = trimChatContextToBudget({ ...baseBudgetInput, history: mediumHistory, toolsEnabled: true, maxInputTokens: 16_000 })
+const withoutTools = trimChatContextToBudget({ ...baseBudgetInput, history: mediumHistory, maxInputTokens: 7_000 })
+const withTools = trimChatContextToBudget({ ...baseBudgetInput, history: mediumHistory, toolsEnabled: true, maxInputTokens: 7_000 })
 assert(withTools.length < withoutTools.length, '启用工具时必须扣除工具定义预留')
 
-const withoutImages = trimChatContextToBudget({ ...baseBudgetInput, maxInputTokens: 20_000 })
-const withImage = trimChatContextToBudget({ ...baseBudgetInput, imageCount: 1, maxInputTokens: 20_000 })
+const withoutImages = trimChatContextToBudget({ ...baseBudgetInput, maxInputTokens: 9_000 })
+const withImage = trimChatContextToBudget({ ...baseBudgetInput, imageTokenEstimate: 4_096, maxInputTokens: 9_000 })
 assert(withImage.length < withoutImages.length, '每张图片必须扣除保守 token 预留')
 
 assert.throws(
@@ -56,6 +56,6 @@ assert.throws(
 
 assert.deepEqual(trimChatContextToBudget({ ...baseBudgetInput }), history, '模型目录未返回窗口时不得伪造 16K 或其他客户端上限')
 
-assert(estimateChatTokens('中文') >= 2, 'UTF-8 估算不能按英文字符数低估中文')
+assert(estimateChatTokens('中文') >= 1, '本地 tokenizer 必须能计算中文 token')
 
 console.log('AI 问答上下文预算回归通过')

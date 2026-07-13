@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { createSqliteDatabaseClient } from '../../storage/database-client.js'
 import { applyChatSchema } from '../../storage/schema.js'
 import { initializeAcceptedChatTurn } from '../../modules/chat/chat-turn-initialization.js'
+import { completeChatAssetProcessing, createChatAsset, getChatAsset } from '../../storage/chat-assets.repository.js'
 import {
   acceptChatTurn,
   cancelChatTurn,
@@ -200,7 +201,7 @@ const oldStorageBytes = Number((database.prepare(`
 `).get(replaceAccountId, '2026-07-13') as { content_bytes?: unknown })?.content_bytes ?? 0)
 const replacementContent = '修正后的问题'
 const replacementMarkerJson = JSON.stringify([
-  { type: 'input_marker', inputType: 'input_text', order: 0 }
+  { type: 'input_text', text: replacementContent, order: 0 }
 ])
 const replacementUserBytes = Buffer.byteLength(replacementContent, 'utf8') + Buffer.byteLength(replacementMarkerJson, 'utf8')
 assert(oldStorageBytes > replacementUserBytes, '测试前提：旧问答占用必须大于替换后的新问题')
@@ -231,7 +232,7 @@ const replacement = await acceptChatTurn(client, {
 assert.equal(replacement.userMessage.sequenceNo, replaceOriginal.userMessage.sequenceNo)
 assert.equal(replacement.assistantMessage.sequenceNo, replaceOriginal.assistantMessage.sequenceNo)
 assert.deepEqual(replacement.userMessage.contentBlocks, [
-  { type: 'input_marker', inputType: 'input_text', order: 0 }
+  { type: 'input_text', text: replacementContent, order: 0 }
 ])
 const replacementReplay = await acceptChatTurn(client, {
   conversationId: replaceConversation.id,
@@ -397,7 +398,8 @@ await completeChatTurn(client, {
 })
 assert(Number((database.prepare('SELECT content_bytes FROM chat_user_storage_windows WHERE system_account_id = ? AND bucket_date = ?').get(crossDayAccountId, '2026-07-13') as { content_bytes?: unknown })?.content_bytes ?? 0) > 0, '旧轮次应计入创建时所在日桶')
 const crossDayNewContent = '次日修正的问题'
-const crossDayNewUserBytes = Buffer.byteLength(crossDayNewContent, 'utf8') + Buffer.byteLength(replacementMarkerJson, 'utf8')
+const crossDayMarkerJson = JSON.stringify([{ type: 'input_text', text: '', order: 0 }])
+const crossDayNewUserBytes = Buffer.byteLength(crossDayNewContent, 'utf8') + Buffer.byteLength(crossDayMarkerJson, 'utf8')
 await acceptChatTurn(client, {
   conversationId: crossDayConversation.id, systemAccountId: crossDayAccountId, clientMessageId: 'client_replace_cross_day_new', userContent: crossDayNewContent, contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-14T00:02:00.000Z', storageQuotaBytes: crossDayNewUserBytes, replaceTurnId: crossDayOriginal.turnId
 })
@@ -408,7 +410,31 @@ assert.equal(Number((database.prepare('SELECT COALESCE(SUM(content_bytes), 0) AS
 const imageReplaceConversation = await createChatConversation(client, {
   id: 'chat_conv_replace_image', systemAccountId: 'sys_user_1', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', now: '2026-07-13T03:00:00.000Z'
 })
-const imageDataUrl = 'data:image/png;base64,TOP_SECRET_IMAGE_BYTES'
+const imageAssetId = 'chat_asset_11111111111111111111111111111111'
+await createChatAsset(client, {
+  id: imageAssetId,
+  systemAccountId: 'sys_user_1',
+  conversationId: imageReplaceConversation.id,
+  originalFilename: 'repository-test.png',
+  originalMimeType: 'image/png',
+  originalWidth: 1,
+  originalHeight: 1,
+  originalBytes: 68,
+  originalSha256: '1'.repeat(64),
+  now: '2026-07-13T03:00:10.000Z'
+})
+await completeChatAssetProcessing(client, {
+  assetId: imageAssetId,
+  systemAccountId: 'sys_user_1',
+  conversationId: imageReplaceConversation.id,
+  processedMimeType: 'image/png',
+  processedWidth: 1,
+  processedHeight: 1,
+  processedBytes: 68,
+  processedSha256: '2'.repeat(64),
+  storageKey: 'repository-tests/ready-image.png',
+  now: '2026-07-13T03:00:20.000Z'
+})
 const imageReplaceTurn = await acceptChatTurn(client, {
   conversationId: imageReplaceConversation.id,
   systemAccountId: 'sys_user_1',
@@ -416,7 +442,7 @@ const imageReplaceTurn = await acceptChatTurn(client, {
   userContent: '文字 图片 文字',
   contentBlocks: [
     { type: 'input_text', text: '前文' },
-    { type: 'input_image', dataUrl: imageDataUrl },
+    { type: 'input_image', assetId: imageAssetId },
     { type: 'input_text', text: '后文' }
   ],
   model: 'mock-model',
@@ -430,17 +456,47 @@ const imageMessages = await listChatMessages(client, {
   conversationId: imageReplaceConversation.id, systemAccountId: 'sys_user_1', limit: 20, now: '2026-07-13T03:03:00.000Z'
 })
 assert.deepEqual(imageMessages[0]?.contentBlocks, [
-  { type: 'input_marker', inputType: 'input_text', order: 0 },
-  { type: 'input_marker', inputType: 'input_image', order: 1 },
-  { type: 'input_marker', inputType: 'input_text', order: 2 }
+  { type: 'input_text', text: '前文', order: 0 },
+  { type: 'input_image', assetId: imageAssetId, order: 1 },
+  { type: 'input_text', text: '后文', order: 2 }
 ])
-assert.equal(JSON.stringify(imageMessages[0]?.contentBlocks).includes(imageDataUrl), false, '用户输入标记不得保存 Data URL')
-await assert.rejects(
-  acceptChatTurn(client, {
-    conversationId: imageReplaceConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'client_replace_image_new', userContent: '不能替换图片轮次', contentBlocks: [{ type: 'input_text' }], model: 'mock-model', now: '2026-07-13T03:04:00.000Z', storageQuotaBytes: 4096, replaceTurnId: imageReplaceTurn.turnId
-  }),
-  (error) => error instanceof ChatConflictError && error.code === 'chat_replace_conflict'
+const committedImageAsset = await getChatAsset(client, {
+  assetId: imageAssetId,
+  systemAccountId: 'sys_user_1',
+  conversationId: imageReplaceConversation.id
+})
+assert.deepEqual(
+  [committedImageAsset?.turnId, committedImageAsset?.messageId],
+  [imageReplaceTurn.turnId, imageReplaceTurn.userMessage.id],
+  '图片资产必须在接受轮次的同一事务中绑定用户消息'
 )
+const replacedImageTurn = await acceptChatTurn(client, {
+  conversationId: imageReplaceConversation.id,
+  systemAccountId: 'sys_user_1',
+  clientMessageId: 'client_replace_image_new',
+  userContent: '修正后的文字 图片 文字',
+  contentBlocks: [
+    { type: 'input_text', text: '修正前文' },
+    { type: 'input_image', assetId: imageAssetId },
+    { type: 'input_text', text: '修正后文' }
+  ],
+  model: 'mock-model',
+  now: '2026-07-13T03:04:00.000Z',
+  storageQuotaBytes: 4096,
+  replaceTurnId: imageReplaceTurn.turnId
+})
+assert.notEqual(replacedImageTurn.turnId, imageReplaceTurn.turnId)
+const reboundImageAsset = await getChatAsset(client, { assetId: imageAssetId, systemAccountId: 'sys_user_1', conversationId: imageReplaceConversation.id })
+assert.deepEqual([reboundImageAsset?.turnId, reboundImageAsset?.messageId], [replacedImageTurn.turnId, replacedImageTurn.userMessage.id], '含图片的最近一轮重新生成时必须把原资产原子改绑到新轮次')
+await completeChatTurn(client, {
+  conversationId: imageReplaceConversation.id,
+  systemAccountId: 'sys_user_1',
+  turnId: replacedImageTurn.turnId,
+  assistantContent: '修正后的图片回答',
+  finishReason: 'stop',
+  traceId: 'trace_replace_image_new',
+  now: '2026-07-13T03:05:00.000Z'
+})
 
 await assert.rejects(
   acceptChatTurn(client, {

@@ -67,6 +67,7 @@ export interface RuntimeConfig {
   statsDatabasePath: string
   usageShardRoot: string
   codexContextRoot: string
+  chatAssetsRoot: string
   openAICompatibleFilesRoot: string
   codexContextStateShardRoot: string
   codexContextStateShardCount: number
@@ -173,6 +174,7 @@ export const defaultUsageCatalogDatabasePath = resolve(backendRoot, 'data', 'juh
 export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
 export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'usage-shards')
 export const defaultCodexContextRoot = resolve(backendRoot, 'data', 'codex-context')
+export const defaultChatAssetsRoot = resolve(backendRoot, 'data', 'chat-assets')
 export const defaultOpenAICompatibleFilesRoot = resolve(backendRoot, 'data', 'openai-compatible-files')
 export const defaultCodeInterpreterTempRoot = resolve(backendRoot, 'data', 'code-interpreter-tmp')
 export const defaultCodexContextStateShardRoot = resolve(defaultCodexContextRoot, 'state-shards')
@@ -292,6 +294,7 @@ export const runtimeConfig: RuntimeConfig = {
   statsDatabasePath: pathConfig('JUHE_AI_STATS_DATABASE_PATH', defaultStatsDatabasePath),
   usageShardRoot: pathConfig('JUHE_AI_USAGE_SHARD_ROOT', defaultUsageShardRoot),
   codexContextRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_ROOT', defaultCodexContextRoot),
+  chatAssetsRoot: pathConfig('JUHE_AI_CHAT_ASSETS_ROOT', defaultChatAssetsRoot),
   openAICompatibleFilesRoot: pathConfig('JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT', defaultOpenAICompatibleFilesRoot),
   codexContextStateShardRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT', defaultCodexContextStateShardRoot),
   codexContextStateShardCount: numberConfig('JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT', 16, 1, 256),

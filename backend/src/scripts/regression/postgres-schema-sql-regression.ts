@@ -74,8 +74,23 @@ assert.match(sql, /CREATE TABLE IF NOT EXISTS codex_context_sessions/, '应包�
 assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_conversations/, '应包含 AI 问答会话 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_message_idempotency/, '应包含 AI 问答发送幂等登记 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_user_storage_windows/, '应包含 AI 问答用户容量窗口 schema')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_context_checkpoints/, '应包含 AI 问答模型上下文 checkpoint schema')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_context_entries/, '应包含 AI 问答模型上下文 entry schema')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_assets/, '应包含 AI 问答私有图片资产 schema')
 const chatMessagesCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_messages\b/i.test(statement.sql))?.sql ?? ''
+const chatConversationsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_conversations\b/i.test(statement.sql))?.sql ?? ''
+const chatCheckpointsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_context_checkpoints\b/i.test(statement.sql))?.sql ?? ''
+const chatEntriesCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_context_entries\b/i.test(statement.sql))?.sql ?? ''
+const chatAssetsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_assets\b/i.test(statement.sql))?.sql ?? ''
 assert.match(chatMessagesCreateSql, /PRIMARY KEY \(created_at, id\)[\s\S]+\) PARTITION BY RANGE \(created_at\)/, 'PG AI 问答消息主表必须按 created_at 日范围分区')
+assert.match(chatConversationsCreateSql, /next_sequence_no bigint NOT NULL DEFAULT 1[\s\S]+context_revision bigint NOT NULL DEFAULT 0[\s\S]+compacted_through_sequence bigint NOT NULL DEFAULT 0/, 'PG AI 问答会话的上下文版本与消息序号必须使用 bigint')
+assert.match(chatCheckpointsCreateSql, /source_revision bigint NOT NULL[\s\S]+source_from_sequence bigint NOT NULL[\s\S]+source_through_sequence bigint NOT NULL[\s\S]+request_body_bytes bigint NOT NULL/, 'PG checkpoint 来源序号和请求字节必须使用 bigint')
+assert.match(chatEntriesCreateSql, /sequence bigint NOT NULL[\s\S]+content_bytes bigint NOT NULL[\s\S]+token_count bigint/, 'PG checkpoint entry 序号、字节和 token 必须使用 bigint')
+assert.match(chatAssetsCreateSql, /original_bytes bigint NOT NULL[\s\S]+processed_bytes bigint/, 'PG 图片资产原图和处理后字节数必须使用 bigint')
+assert.match(chatAssetsCreateSql, /observation_status text NOT NULL DEFAULT 'not_requested'[\s\S]+cleanup_status text NOT NULL DEFAULT 'active'/, 'PG 图片资产必须持久化隐藏说明与对象清理状态')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_chat_messages_compaction_source\s+ON chat_messages\(conversation_id, system_account_id, status, sequence_no\)/, 'PG 压缩来源分页必须有匹配索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_chat_context_checkpoints_cleanup\s+ON chat_context_checkpoints\(expires_at, status, id\)/, 'PG checkpoint 到期清理必须有匹配索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_chat_assets_cleanup\s+ON chat_assets\(cleanup_status, cleanup_retry_at, expires_at, id\)/, 'PG 图片资产清理必须有匹配索引')
 assert.match(sql, /codex_context_sessions[\s\S]+storage_offset_bytes bigint NOT NULL[\s\S]+raw_size_bytes bigint NOT NULL[\s\S]+compressed_size_bytes bigint NOT NULL/, 'PG Responses 桥接状态文件 offset/大小字段必须使用 bigint')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策略路由表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategy_groups/, '应包含策略路由分组绑定表 schema')

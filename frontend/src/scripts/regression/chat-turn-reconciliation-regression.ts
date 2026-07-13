@@ -5,7 +5,7 @@ import type { ChatMessage } from '../../types/domain/chat'
 
 function pair(status: ChatMessage['status']): ChatMessage[] {
   return [
-    { id: 'user_1', conversationId: 'conv_1', turnId: 'turn_1', sequenceNo: 1, clientMessageId: 'client_1', role: 'user', status: 'completed', contentText: '问题', contentBlocks: [{ type: 'input_marker', inputType: 'input_text', order: 0 }], model: 'mock', createdAt: '2026-07-13T00:00:00.000Z', expiresAt: '2026-07-20T00:00:00.000Z' },
+    { id: 'user_1', conversationId: 'conv_1', turnId: 'turn_1', sequenceNo: 1, clientMessageId: 'client_1', role: 'user', status: 'completed', contentText: '问题', contentBlocks: [{ type: 'input_text', text: '问题', order: 0 }], model: 'mock', createdAt: '2026-07-13T00:00:00.000Z', expiresAt: '2026-07-20T00:00:00.000Z' },
     { id: 'assistant_1', conversationId: 'conv_1', turnId: 'turn_1', sequenceNo: 2, role: 'assistant', status, contentText: '', contentBlocks: [], model: 'mock', createdAt: '2026-07-13T00:00:00.000Z', expiresAt: '2026-07-20T00:00:00.000Z' }
   ]
 }

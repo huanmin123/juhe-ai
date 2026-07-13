@@ -3,6 +3,8 @@ import { performance } from 'node:perf_hooks'
 import { runtimeConfig } from '../../config/runtime.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
 import { cleanupChatRetention } from '../../storage/chat.repository.js'
+import { cleanupExpiredChatAssets } from '../chat/chat-asset-cleanup.js'
+import { cleanupExpiredChatContextCheckpoints, recoverStaleChatContextCompactions } from '../../storage/chat-context.repository.js'
 import {
   commitAccountBalanceRefreshAsync,
   enableDetectedAccountBalanceQueryAsync
@@ -1018,8 +1020,18 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           ? await cleanupExpiredSystemSessionsAsync(operation.expiredBefore, operation.limit)
           : cleanupExpiredSystemSessions(operation.expiredBefore, operation.limit)
       }
-    case 'cleanup_chat_retention':
-      return await cleanupChatRetention(await getChatDatabaseClient(), operation)
+    case 'cleanup_chat_retention': {
+      const client = await getChatDatabaseClient()
+      const retention = await cleanupChatRetention(client, operation)
+      const recoveredCompactions = await recoverStaleChatContextCompactions(client, {
+        now: operation.now,
+        staleClaimBefore: operation.interruptedBefore,
+        limit: operation.limit
+      })
+      const context = await cleanupExpiredChatContextCheckpoints(client, { now: operation.now, limit: operation.limit })
+      const assets = await cleanupExpiredChatAssets({ client, now: operation.now, limit: operation.limit })
+      return { ...retention, recoveredCompactions, ...context, ...assets, hasMoreCheckpoints: context.hasMore, hasMore: retention.hasMore || context.hasMore || assets.hasMoreAssets }
+    }
     default:
       if (runtimeConfig.databaseDriver === 'postgres') {
         throw new Error(`PostgreSQL DB service operation 未接入 async driver：${operationType}`)

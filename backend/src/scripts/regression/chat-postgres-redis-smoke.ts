@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { Pool } from 'pg'
 import { createClient } from 'redis'
 
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { applyPostgresSchema } from '../../storage/postgres-schema.js'
 import { acceptChatTurn, ChatConflictError, cleanupChatRetention, completeChatTurn, createChatConversation, listChatContextMessages, listChatConversations, listChatMessages, updateChatConversation } from '../../storage/chat.repository.js'
+import { claimExpiredChatAssetsForCleanup, completeChatAssetDeletion, completeChatAssetProcessing, createChatAsset, getChatAsset, setChatAssetObservation } from '../../storage/chat-assets.repository.js'
+import { claimChatContextCompaction, cleanupExpiredChatContextCheckpoints, installChatContextCheckpoint, loadChatCompactionSourcePage, loadChatModelContext, recordChatContextCompactionProgress, requestChatContextCompaction } from '../../storage/chat-context.repository.js'
 import { runChatSmokeWithCleanup } from './chat-smoke-cleanup.js'
 
 const adminUrl = requiredEnv('JUHE_AI_TEST_POSTGRES_URL')
@@ -59,12 +61,12 @@ await runChatSmokeWithCleanup({
     createChatConversation(client, { id: 'chat_pg_quota_b', systemAccountId: quotaAccountId, apiKeyId: 'key_pg', apiKeyNameSnapshot: 'PG Key', now: '2026-07-12T00:20:00.000Z' })
   ])
   const quotaContent = 'x'.repeat(1000)
-  const quotaBytes = 1500
+  const quotaBytes = 2500
   const quotaResults = await Promise.allSettled([
     acceptChatTurn(client, { conversationId: quotaConversationA.id, systemAccountId: quotaAccountId, clientMessageId: 'pg_quota_a', userContent: quotaContent, model: 'mock-model', now: '2026-07-12T00:21:00.000Z', storageQuotaBytes: quotaBytes }),
     acceptChatTurn(client, { conversationId: quotaConversationB.id, systemAccountId: quotaAccountId, clientMessageId: 'pg_quota_b', userContent: quotaContent, model: 'mock-model', now: '2026-07-12T00:21:00.000Z', storageQuotaBytes: quotaBytes })
   ])
-  assert.equal(quotaResults.filter((result) => result.status === 'fulfilled').length, 1, '同一用户跨会话并发提交只能有一个通过存储配额')
+  assert.equal(quotaResults.filter((result) => result.status === 'fulfilled').length, 1, `同一用户跨会话并发提交只能有一个通过存储配额：${quotaResults.map((result) => result.status === 'rejected' ? String(result.reason instanceof Error ? `${result.reason.name}:${result.reason.message}` : result.reason) : 'fulfilled').join(' | ')}`)
   const quotaRejected = quotaResults.find((result): result is PromiseRejectedResult => result.status === 'rejected')
   assert(quotaRejected?.reason instanceof ChatConflictError && quotaRejected.reason.code === 'chat_storage_quota_exceeded', '另一个并发提交必须返回稳定容量冲突')
   const quotaWindow = await targetPool.query("SELECT COALESCE(SUM(content_bytes), 0)::bigint AS total FROM juhe_chat.chat_user_storage_windows WHERE system_account_id = $1", [quotaAccountId])
@@ -78,6 +80,152 @@ await runChatSmokeWithCleanup({
   const cursorFirstPage = await listChatConversations(client, { systemAccountId: cursorAccountId, limit: 1 })
   const cursorSecondPage = await listChatConversations(client, { systemAccountId: cursorAccountId, beforeIsPinned: cursorFirstPage[0]?.isPinned, beforeLastMessageAt: cursorFirstPage[0]?.lastMessageAt, beforeId: cursorFirstPage[0]?.id, limit: 1 })
   assert.deepEqual([cursorFirstPage[0]?.id, cursorSecondPage[0]?.id], [cursorPinned.id, cursorUnpinned.id], 'PostgreSQL 置顶三元游标必须跨到更晚的非置顶会话')
+
+  const contextOwnerId = 'sys_pg_context'
+  const contextConversation = await createChatConversation(client, {
+    id: 'chat_pg_context',
+    systemAccountId: contextOwnerId,
+    apiKeyId: 'key_pg',
+    apiKeyNameSnapshot: 'PG Context Key',
+    now: '2026-07-12T04:00:00.000Z'
+  })
+  const pgAsset = await createChatAsset(client, {
+    id: `chat_asset_${'d'.repeat(32)}`,
+    systemAccountId: contextOwnerId,
+    conversationId: contextConversation.id,
+    originalFilename: 'PG 上下文图片.png',
+    originalMimeType: 'image/png',
+    originalWidth: 32,
+    originalHeight: 32,
+    originalBytes: 128,
+    originalSha256: 'a'.repeat(64),
+    now: '2026-07-12T04:00:10.000Z'
+  })
+  await completeChatAssetProcessing(client, {
+    assetId: pgAsset.id,
+    systemAccountId: contextOwnerId,
+    conversationId: contextConversation.id,
+    processedMimeType: 'image/png',
+    processedWidth: 32,
+    processedHeight: 32,
+    processedBytes: 96,
+    processedSha256: 'b'.repeat(64),
+    storageKey: `aa/bb/${pgAsset.id}.png`,
+    now: '2026-07-12T04:00:20.000Z'
+  })
+  for (let index = 1; index <= 3; index += 1) {
+    const now = `2026-07-12T04:0${index}:00.000Z`
+    const accepted = await acceptChatTurn(client, {
+      conversationId: contextConversation.id,
+      systemAccountId: contextOwnerId,
+      clientMessageId: `pg_context_${index}`,
+      userContent: index === 1 ? '请记住 PG-CONTEXT-731 和图片' : `PG 上下文第 ${index} 轮`,
+      contentBlocks: index === 1 ? [
+        { type: 'input_text', text: '请记住 PG-CONTEXT-731' },
+        { type: 'input_image', assetId: pgAsset.id }
+      ] : undefined,
+      model: 'mock-model',
+      now,
+      storageQuotaBytes: 1024 * 1024
+    })
+    await completeChatTurn(client, {
+      conversationId: contextConversation.id,
+      systemAccountId: contextOwnerId,
+      turnId: accepted.turnId,
+      assistantContent: `PG 上下文回答 ${index}`,
+      finishReason: 'stop',
+      traceId: `trace_pg_context_${index}`,
+      now
+    })
+  }
+  await setChatAssetObservation(client, {
+    assetId: pgAsset.id,
+    systemAccountId: contextOwnerId,
+    conversationId: contextConversation.id,
+    status: 'ready',
+    observation: { summary: '图片包含 PG-CONTEXT-731' },
+    now: '2026-07-12T04:04:00.000Z'
+  })
+  const boundAsset = await getChatAsset(client, { assetId: pgAsset.id, systemAccountId: contextOwnerId, conversationId: contextConversation.id })
+  assert.ok(boundAsset?.turnId && boundAsset.messageId && boundAsset.observationStatus === 'ready', 'PG chat_assets 必须绑定用户消息并保存图片说明')
+  assert.equal(await requestChatContextCompaction(client, {
+    conversationId: contextConversation.id,
+    systemAccountId: contextOwnerId,
+    expectedRevision: 3,
+    sourceThroughSequence: 4,
+    now: '2026-07-12T04:05:00.000Z'
+  }), true)
+  const contextClaim = await claimChatContextCompaction(client, {
+    conversationId: contextConversation.id,
+    systemAccountId: contextOwnerId,
+    expectedRevision: 3,
+    sourceThroughSequence: 4,
+    now: '2026-07-12T04:05:01.000Z',
+    staleClaimBefore: '2026-07-12T03:00:00.000Z'
+  })
+  assert.ok(contextClaim)
+  const contextPage = await loadChatCompactionSourcePage(client, {
+    conversationId: contextConversation.id,
+    systemAccountId: contextOwnerId,
+    claimId: contextClaim!.claimId,
+    afterSequence: 0,
+    now: '2026-07-12T04:05:02.000Z',
+    limit: 20,
+    maxBytes: 1024 * 1024
+  })
+  assert.deepEqual(contextPage?.messages.map((message) => message.sequenceNo), [1, 2, 3, 4])
+  assert.equal(await recordChatContextCompactionProgress(client, {
+    conversationId: contextConversation.id,
+    systemAccountId: contextOwnerId,
+    claimId: contextClaim!.claimId,
+    throughSequence: 4,
+    earliestExpiresAt: contextPage!.earliestExpiresAt!,
+    now: '2026-07-12T04:05:03.000Z'
+  }), true)
+  const contextEntries = [
+    { kind: 'durable_memory' as const, content: { durableMemory: ['PG-CONTEXT-731'], constraints: [], decisions: [] }, provenance: 'assistant' as const, trustLevel: 'assistant_derived' as const },
+    { kind: 'task_state' as const, content: { currentGoal: '验证 PG 上下文', completed: [], pending: [], recentUserIntent: '继续测试', uncertainties: [] }, provenance: 'assistant' as const, trustLevel: 'assistant_derived' as const }
+  ]
+  const contextPayload = JSON.stringify(contextEntries)
+  await installChatContextCheckpoint(client, {
+    claimId: contextClaim!.claimId,
+    conversationId: contextConversation.id,
+    systemAccountId: contextOwnerId,
+    sourceRevision: 3,
+    sourceThroughSequence: 4,
+    expiresAt: contextPage!.earliestExpiresAt!,
+    payloadDigest: createHash('sha256').update(contextPayload).digest('hex'),
+    estimatedInputTokens: 80,
+    requestBodyBytes: Buffer.byteLength(contextPayload),
+    modelId: 'mock-model',
+    endpointFamily: 'responses',
+    promptVersion: 'pg-smoke-v1',
+    entries: contextEntries,
+    now: '2026-07-12T04:05:04.000Z'
+  })
+  const pgContext = await loadChatModelContext(client, {
+    conversationId: contextConversation.id,
+    systemAccountId: contextOwnerId,
+    now: '2026-07-12T04:06:00.000Z',
+    maxRows: 50,
+    maxBytes: 1024 * 1024
+  })
+  assert.match(JSON.stringify(pgContext?.entries), /PG-CONTEXT-731/)
+  assert.deepEqual(pgContext?.suffix.map((message) => message.sequenceNo), [5, 6])
+  const pgTableCounts = await targetPool.query(`
+    SELECT
+      (SELECT COUNT(*)::int FROM juhe_chat.chat_assets WHERE conversation_id = $1) AS assets,
+      (SELECT COUNT(*)::int FROM juhe_chat.chat_context_checkpoints WHERE conversation_id = $1) AS checkpoints,
+      (SELECT COUNT(*)::int FROM juhe_chat.chat_context_entries WHERE conversation_id = $1) AS entries
+  `, [contextConversation.id])
+  assert.deepEqual([Number(pgTableCounts.rows[0]?.assets), Number(pgTableCounts.rows[0]?.checkpoints), Number(pgTableCounts.rows[0]?.entries)], [1, 1, 2])
+  const checkpointCleanup = await cleanupExpiredChatContextCheckpoints(client, { now: contextPage!.earliestExpiresAt!, limit: 10 })
+  assert.equal(checkpointCleanup.deletedCheckpoints, 1, 'PG 过期 checkpoint 必须级联删除 entries')
+  const afterCheckpointCleanup = await targetPool.query('SELECT COUNT(*)::int AS total FROM juhe_chat.chat_context_entries WHERE conversation_id = $1', [contextConversation.id])
+  assert.equal(Number(afterCheckpointCleanup.rows[0]?.total), 0)
+  const assetCleanupClaim = await claimExpiredChatAssetsForCleanup(client, { now: boundAsset!.expiresAt, limit: 10 })
+  assert.deepEqual(assetCleanupClaim.assets.map((asset) => asset.id), [pgAsset.id])
+  assert.equal(await completeChatAssetDeletion(client, { assetId: pgAsset.id, claimId: assetCleanupClaim.claimId }), true)
 
   redis = createClient({ url: redisUrl })
   await redis.connect()

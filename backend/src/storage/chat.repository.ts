@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { DatabaseClient } from './database-client.js'
 import { ensurePostgresChatMessagePartitions } from './postgres-chat-message-partitions.js'
+import { commitChatAssetsToMessageInClient, expireChatAssetsForConversationInClient } from './chat-assets.repository.js'
 
 export type ChatMessageRole = 'user' | 'assistant'
 export type ChatMessageStatus = 'completed' | 'streaming' | 'failed' | 'canceled'
@@ -42,12 +43,13 @@ export interface ChatMessage {
 export type ChatMessageContentBlock =
   | { type: 'reasoning'; text: string }
   | { type: 'tool_call'; id: string; toolType: string; status: 'started' | 'updated' | 'completed' | 'failed'; item?: Record<string, unknown> }
-  | { type: 'input_marker'; inputType: 'input_text' | 'input_image'; order: number }
+  | { type: 'input_text'; text: string; order: number }
+  | { type: 'input_image'; assetId: string; order: number }
 
 export interface ChatInputContentBlock {
   type: 'input_text' | 'input_image'
   text?: string
-  dataUrl?: string
+  assetId?: string
 }
 
 const maxContentBlocksBytes = 256 * 1024
@@ -170,6 +172,11 @@ export async function deleteChatConversation(client: DatabaseClient, conversatio
       DELETE FROM ${chatTable(tx, 'chat_user_storage_windows')}
       WHERE system_account_id = ? AND content_bytes = 0
     `, [systemAccountId])
+    await expireChatAssetsForConversationInClient(tx, {
+      systemAccountId,
+      conversationId,
+      now: new Date().toISOString()
+    })
     const result = await tx.execute(`
       DELETE FROM ${chatTable(tx, 'chat_conversations')} WHERE id = ? AND system_account_id = ?
     `, [conversationId, systemAccountId])
@@ -202,7 +209,7 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
       return { turnId: String(existing.turn_id), ...pair, duplicate: true }
     }
 
-    const userContentBlocksJson = serializeInputContentMarkers(input.contentBlocks)
+    const userContentBlocksJson = serializeInputContentMarkers(input.contentBlocks, input.userContent)
     const userBytes = Buffer.byteLength(input.userContent, 'utf8') + Buffer.byteLength(userContentBlocksJson, 'utf8')
     let userSequence = Number(conversation.next_sequence_no)
     let assistantSequence = userSequence + 1
@@ -232,6 +239,11 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
         WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
       `, [input.conversationId, input.systemAccountId, input.replaceTurnId])
       if (deletedIdempotency.changes !== 1) throw new ChatConflictError('chat_replace_conflict')
+      await tx.execute(`
+        UPDATE ${chatTable(tx, 'chat_assets')}
+        SET turn_id = NULL, message_id = NULL, committed_at = NULL, updated_at = ?
+        WHERE system_account_id = ? AND conversation_id = ? AND message_id = ?
+      `, [input.now, input.systemAccountId, input.conversationId, replacedUserMessageId])
       const deletedMessages = await tx.execute(`
         DELETE FROM ${chatTable(tx, 'chat_messages')}
         WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
@@ -254,6 +266,13 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
         role, status, content_text, content_blocks_json, content_bytes, model, created_at, completed_at, expires_at
       ) VALUES (?, ?, ?, ?, ?, ?, 'user', 'completed', ?, ?, ?, ?, ?, ?, ?)
     `, [userMessageId, input.conversationId, input.systemAccountId, turnId, userSequence, input.clientMessageId, input.userContent, userContentBlocksJson, userBytes, input.model, input.now, input.now, expiresAt])
+    await commitChatAssetsToMessageInClient(tx, {
+      assetIds: input.contentBlocks?.filter((block) => block.type === 'input_image').map((block) => block.assetId ?? '') ?? [],
+      systemAccountId: input.systemAccountId,
+      conversationId: input.conversationId,
+      messageId: userMessageId,
+      now: input.now
+    })
     await tx.execute(`
       INSERT INTO ${messagesTable} (
         id, conversation_id, system_account_id, turn_id, sequence_no,
@@ -273,6 +292,7 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
         UPDATE ${chatTable(tx, 'chat_conversations')}
         SET title = CASE WHEN title_source_message_id = ? THEN ? ELSE title END,
             title_source_message_id = CASE WHEN title_source_message_id = ? THEN ? ELSE title_source_message_id END,
+            context_revision = context_revision + 1,
             active_turn_id = ?, active_started_at = ?, last_model = ?, last_message_at = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `, [replacedUserMessageId, title, replacedUserMessageId, userMessageId, turnId, input.now, input.model, input.now, input.now, input.conversationId, input.systemAccountId])
@@ -281,6 +301,7 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
         UPDATE ${chatTable(tx, 'chat_conversations')}
         SET title = CASE WHEN next_sequence_no = 1 THEN ? ELSE title END,
             title_source_message_id = CASE WHEN next_sequence_no = 1 THEN ? ELSE title_source_message_id END,
+            context_revision = context_revision + 1,
             next_sequence_no = ?, active_turn_id = ?, active_started_at = ?,
             last_model = ?, last_message_at = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
@@ -427,6 +448,13 @@ export interface ChatRetentionCleanupResult {
   deletedMessages: number
   deletedConversations: number
   recoveredTurns: number
+  recoveredCompactions: number
+  claimedAssets: number
+  deletedAssets: number
+  failedAssets: number
+  hasMoreAssets: boolean
+  deletedCheckpoints: number
+  hasMoreCheckpoints: boolean
   hasMore: boolean
 }
 
@@ -535,7 +563,20 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
         AND NOT EXISTS (SELECT 1 FROM ${chatTable(tx, 'chat_messages')} WHERE conversation_id = ${chatTable(tx, 'chat_conversations')}.id LIMIT 1)
     `, [emptyBefore])
     deletedConversations += empty.changes
-    return { droppedPartitions, deletedMessages, deletedConversations, recoveredTurns, hasMore: expiredTurns.length * 2 >= limit || staleTurns.length * 2 >= limit }
+    return {
+      droppedPartitions,
+      deletedMessages,
+      deletedConversations,
+      recoveredTurns,
+      recoveredCompactions: 0,
+      claimedAssets: 0,
+      deletedAssets: 0,
+      failedAssets: 0,
+      hasMoreAssets: false,
+      deletedCheckpoints: 0,
+      hasMoreCheckpoints: false,
+      hasMore: expiredTurns.length * 2 >= limit || staleTurns.length * 2 >= limit
+    }
   })
 }
 
@@ -610,7 +651,7 @@ async function requireReplaceableTurn(client: DatabaseClient, input: {
   if (Number(maxSequenceRow?.max_sequence_no) !== assistantSequence) throw new ChatConflictError('chat_replace_conflict')
 
   const inputMarkers = parseStoredInputMarkers(userMessage.content_blocks_json)
-  if (!inputMarkers || inputMarkers.some((marker) => marker.inputType === 'input_image')) {
+  if (!inputMarkers) {
     throw new ChatConflictError('chat_replace_conflict')
   }
 
@@ -739,12 +780,17 @@ function titleFromContent(content: string): string {
   return firstLine.slice(0, 60) || '新对话'
 }
 
-function serializeInputContentMarkers(blocks: readonly ChatInputContentBlock[] | undefined): string {
-  const normalized = blocks && blocks.length > 0 ? blocks : [{ type: 'input_text' as const }]
+function serializeInputContentMarkers(blocks: readonly ChatInputContentBlock[] | undefined, userContent: string): string {
+  const normalized = blocks && blocks.length > 0 ? blocks : [{ type: 'input_text' as const, text: userContent }]
   if (normalized.length > maxInputContentBlocks) throw new Error(`用户输入块不能超过 ${maxInputContentBlocks} 个`)
   const markers: ChatMessageContentBlock[] = normalized.map((block, order) => {
     if (block?.type !== 'input_text' && block?.type !== 'input_image') throw new Error('用户输入块类型无效')
-    return { type: 'input_marker', inputType: block.type, order }
+    if (block.type === 'input_image') {
+      const assetId = block.assetId?.trim()
+      if (!assetId) throw new Error('图片资产 ID 不能为空')
+      return { type: 'input_image', order, assetId }
+    }
+    return { type: 'input_text', text: block.text ?? '', order }
   })
   return serializeContentBlocks(markers)
 }
@@ -788,28 +834,37 @@ function isChatMessageContentBlock(value: unknown): value is ChatMessageContentB
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const block = value as Record<string, unknown>
   if (block.type === 'reasoning') return typeof block.text === 'string'
-  if (block.type === 'input_marker') {
-    return (block.inputType === 'input_text' || block.inputType === 'input_image')
-      && Number.isSafeInteger(block.order) && Number(block.order) >= 0 && Number(block.order) < maxInputContentBlocks
+  if (block.type === 'input_text' || block.type === 'input_image') {
+    if (!Number.isSafeInteger(block.order) || Number(block.order) < 0 || Number(block.order) >= maxInputContentBlocks) return false
+    return block.type === 'input_text'
+      ? typeof block.text === 'string'
+      : typeof block.assetId === 'string' && Boolean(block.assetId.trim())
   }
   return block.type === 'tool_call' && typeof block.id === 'string' && typeof block.toolType === 'string'
     && ['started', 'updated', 'completed', 'failed'].includes(String(block.status))
 }
 
-function parseStoredInputMarkers(value: unknown): Array<Extract<ChatMessageContentBlock, { type: 'input_marker' }>> | undefined {
+function parseStoredInputMarkers(value: unknown): Array<Extract<ChatMessageContentBlock, { type: 'input_text' | 'input_image' }>> | undefined {
   if (typeof value !== 'string' || !value || Buffer.byteLength(value, 'utf8') > maxContentBlocksBytes) return undefined
   try {
     const parsed = JSON.parse(value) as unknown
     if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > maxInputContentBlocks) return undefined
-    const markers: Array<Extract<ChatMessageContentBlock, { type: 'input_marker' }>> = []
+    const markers: Array<Extract<ChatMessageContentBlock, { type: 'input_text' | 'input_image' }>> = []
     for (let order = 0; order < parsed.length; order += 1) {
       const valueAtOrder = parsed[order]
       if (!valueAtOrder || typeof valueAtOrder !== 'object' || Array.isArray(valueAtOrder)) return undefined
       const marker = valueAtOrder as Record<string, unknown>
+      if (marker.order !== order) return undefined
+      if (marker.type === 'input_text') {
+        const keys = Object.keys(marker).sort()
+        if (keys.length !== 3 || keys[0] !== 'order' || keys[1] !== 'text' || keys[2] !== 'type' || typeof marker.text !== 'string') return undefined
+        markers.push({ type: 'input_text', text: marker.text, order })
+        continue
+      }
       const keys = Object.keys(marker).sort()
-      if (keys.length !== 3 || keys[0] !== 'inputType' || keys[1] !== 'order' || keys[2] !== 'type') return undefined
-      if (marker.type !== 'input_marker' || (marker.inputType !== 'input_text' && marker.inputType !== 'input_image') || marker.order !== order) return undefined
-      markers.push({ type: 'input_marker', inputType: marker.inputType, order })
+      if (keys.length !== 3 || keys[0] !== 'assetId' || keys[1] !== 'order' || keys[2] !== 'type') return undefined
+      if (marker.type !== 'input_image' || typeof marker.assetId !== 'string' || !marker.assetId.trim()) return undefined
+      markers.push({ type: 'input_image', order, assetId: marker.assetId.trim() })
     }
     return markers
   } catch {

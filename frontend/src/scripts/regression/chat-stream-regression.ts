@@ -26,7 +26,7 @@ assert.equal(messages[0].status, 'completed')
 assert.equal(messages[0].finishReason, 'stop')
 
 const oldTurn: ChatMessage[] = [
-  { id: 'old_user', conversationId: 'conv_1', turnId: 'old_turn', sequenceNo: 1, role: 'user', status: 'completed', contentText: '旧问题', contentBlocks: [{ type: 'input_marker', inputType: 'input_text', order: 0 }], model: 'mock-model', createdAt: '2026-07-12T00:00:00.000Z', expiresAt: '2026-07-19T00:00:00.000Z' },
+  { id: 'old_user', conversationId: 'conv_1', turnId: 'old_turn', sequenceNo: 1, role: 'user', status: 'completed', contentText: '旧问题', contentBlocks: [{ type: 'input_text', text: '旧问题', order: 0 }], model: 'mock-model', createdAt: '2026-07-12T00:00:00.000Z', expiresAt: '2026-07-19T00:00:00.000Z' },
   { id: 'old_assistant', conversationId: 'conv_1', turnId: 'old_turn', sequenceNo: 2, role: 'assistant', status: 'completed', contentText: '旧回答', model: 'mock-model', createdAt: '2026-07-12T00:00:01.000Z', expiresAt: '2026-07-19T00:00:01.000Z' }
 ]
 const replacementStarted = {

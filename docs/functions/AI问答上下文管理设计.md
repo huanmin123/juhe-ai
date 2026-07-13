@@ -2,7 +2,7 @@
 
 > 本文定义站内 AI 问答的渲染历史、模型上下文、附件资产、主动压缩和请求体预算。本文是 [AI 问答设计](AI问答设计.md) 的第二阶段专题设计；网关级 Responses compact 继续以 [Responses 上下文压缩落地方案](Responses上下文压缩落地方案.md) 为准。
 >
-> 当前状态：方案已形成；模型能力控件已删除上下文人工选择，并改为模型目录驱动的思考/服务默认值，其余 checkpoint、主动压缩和图片资产链路尚未实现。实施追踪见 [PLAN-0095](../plans/计划-0095-AI问答上下文与多模态降负.md)。
+> 当前状态：multipart 图片资产、服务端缩放、隐藏图片说明、checkpoint + recent suffix、结构化主动压缩、真实流式 usage、本地 tokenizer 兜底、请求体字节预检和只读圆环已经在隔离分支实现，并通过 Mock、真实模型、真实 PostgreSQL/Redis 和桌面/移动端浏览器验收。实施追踪见 [PLAN-0095](../plans/计划-0095-AI问答上下文与多模态降负.md)。
 
 ## 1. 目标与边界
 
@@ -16,9 +16,9 @@
 - 图片二进制、模型可见的图片 token 和图片语义记忆必须分开管理。
 - 本设计只服务站内 AI 问答，不改变普通客户端的网关上下文语义。
 
-## 2. 当前问题
+## 2. 已修复的旧实现问题
 
-当前实现存在四个确定问题：
+本轮改造前存在四个确定问题，现均由 PLAN-0095 主链路替换：
 
 1. `chat_messages.content_text` 同时承担页面展示和模型历史，渲染历史与模型上下文没有隔离。
 2. 上下文只读取最近 64 个完整轮次，历史再被硬限制为 64K token；模型即使支持 272K 或 1M，也无法使用真实窗口。
@@ -90,7 +90,7 @@ PLAN-0095 只实现本机有界文件存储；对象存储仅作为未来扩展�
 
 ### 5.1 上传协议
 
-新增 `POST /__aisys__/api/my-chat/assets`：
+新增 `POST /__aisys__/api/my-chat/conversations/:conversationId/assets`：
 
 - 使用 multipart 流式上传，不接受聊天 JSON 中的 Data URL。
 - 上传接口先验证登录用户、会话归属、MIME、单图/总图预算和解码后的真实格式。
@@ -138,8 +138,8 @@ PLAN-0095 只实现本机有界文件存储；对象存储仅作为未来扩展�
 如果用户在说明生成完成前立即发送下一轮：
 
 - 先等待同一已有任务最多 1 秒，不新建重复任务。
-- 仍未完成且压缩图满足 token/字节预算时，只为本轮重新携带压缩图，不携带原图。
-- 压缩图也无法放入预算时返回可重试的中文状态，不使用空占位假装模型仍记得图片。
+- 仍未完成时返回可重试的中文状态，不把历史图片重新编码成 Data URL，也不使用空占位假装模型仍记得图片。
+- 未完成隐藏说明的图片轮次禁止进入 checkpoint；说明完成后再允许压缩，避免图片二进制被移出上下文后永久丢失语义。
 - 说明生成后，后续轮次只携带说明；用户明确要求精确重看时再重新加载压缩图。
 
 ## 6. Token 与请求体双预算
@@ -239,6 +239,16 @@ historyBudget = effectiveInputLimit
 
 压缩在临时上下文上完成，只有成功后才原子推进 `context_revision`。失败继续使用旧 checkpoint，不能删除页面消息或静默截断最老轮次。
 
+已落地的恢复门禁还包括：
+
+- 每个已接受轮次都推进 `context_revision`；usage 写回和 checkpoint 安装都按期望 revision 做 CAS，旧任务不能覆盖新状态。
+- 第二次及后续压缩必须完整重建旧 checkpoint 的 `durable_memory`、`task_state`、`tool_result` 和 `image_observation`，不能只继承任务状态。
+- 本地装载达到 512 条消息或 16 MiB 上限时，先执行一次紧急压缩再重新装载，不能在压缩触发前把会话卡死。
+- 失败或取消的助手轮次不参与模型上下文，但后续成功轮次仍按 `turnId` 正确配对，不能因数组错位被连带丢弃。
+- 最终请求体超过 15 MiB 时先压缩历史并重建一次请求；仍超限才返回明确错误。
+- 图片说明调用使用 90 秒超时，结构化压缩调用使用 120 秒超时；超时保留旧上下文并进入可重试状态。
+- 维护任务会恢复 stale `compacting` claim，再清理过期 checkpoint，避免长期占用批次导致清理饥饿。
+
 ## 8. 存储设计
 
 建议新增以下当前结构，不保留旧结构兼容分支：
@@ -310,10 +320,10 @@ historyBudget = effectiveInputLimit
 
 ## 11. API 增量
 
-- `POST /my-chat/assets`：流式上传并返回处理后的资产元数据。
-- `DELETE /my-chat/assets/:id`：删除未被已提交消息引用的资产。
+- `POST /my-chat/conversations/:id/assets`：流式上传并返回处理后的资产元数据。
+- `GET /my-chat/conversations/:id/assets/:assetId/content`：按会话归属读取私有处理图。
 - `GET /my-chat/conversations/:id/context-status`：返回圆环所需的 token、窗口、状态和估算标记。
-- `POST /my-chat/conversations/:id/messages/stream`：删除 `contextWindowTokens`，图片块只接收 `assetId`。
+- `POST /my-chat/conversations/:id/stream`：删除 `contextWindowTokens`，图片块只接收 `assetId`。
 
 服务端不信任客户端提供的 token、尺寸、MIME、asset owner 或上下文窗口。
 

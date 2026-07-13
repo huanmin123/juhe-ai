@@ -114,6 +114,9 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
 const postgresBigintColumnNames = new Set([
   'bytes',
   'content_bytes',
+  'original_bytes',
+  'processed_bytes',
+  'request_body_bytes',
   'usage_bytes',
   'storage_offset_bytes',
   'raw_size_bytes',
@@ -157,7 +160,26 @@ const postgresBigintColumnNames = new Set([
   'growth_bytes_1h',
   'growth_rows_1h',
   'growth_bytes_24h',
-  'growth_rows_24h'
+  'growth_rows_24h',
+  'next_sequence_no',
+  'sequence_no',
+  'context_revision',
+  'compacted_through_sequence',
+  'context_claim_revision',
+  'context_claim_through_sequence',
+  'context_progress_sequence',
+  'source_revision',
+  'source_from_sequence',
+  'source_through_sequence',
+  'recent_tail_from_sequence',
+  'entry_from_sequence',
+  'entry_through_sequence',
+  'sequence',
+  'active_context_tokens',
+  'effective_context_limit_tokens',
+  'estimated_input_tokens',
+  'upstream_input_tokens',
+  'token_count'
 ])
 
 export function collectPostgresSchemaStatements(): PostgresSchemaStatement[] {

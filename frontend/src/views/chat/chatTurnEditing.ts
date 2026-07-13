@@ -6,6 +6,7 @@ export interface ChatTurnEditCandidate {
   userMessageId: string
   assistantMessageId: string
   content: string
+  contentBlocks: Array<{ type: 'input_text'; text: string } | { type: 'input_image'; assetId: string }>
 }
 
 export interface ChatSubmitFailureResolution {
@@ -33,13 +34,15 @@ export function beginLatestTurnEdit(messages: readonly ChatMessage[], userMessag
   if (userMessage.turnId !== assistantMessage.turnId || userMessage.conversationId !== assistantMessage.conversationId) return undefined
   if (assistantMessage.sequenceNo !== userMessage.sequenceNo + 1) return undefined
   if (userMessage.status !== 'completed' || assistantMessage.status !== 'completed') return undefined
-  if (!userMessage.contentText.trim() || !isStrictTextInputMarkers(userMessage.contentBlocks)) return undefined
+  const contentBlocks = strictInputBlocks(userMessage.contentBlocks)
+  if (!contentBlocks?.length) return undefined
   return {
     conversationId: userMessage.conversationId,
     turnId: userMessage.turnId,
     userMessageId: userMessage.id,
     assistantMessageId: assistantMessage.id,
-    content: userMessage.contentText
+    content: userMessage.contentText,
+    contentBlocks
   }
 }
 
@@ -67,10 +70,21 @@ export function resolveChatReconciliationNotice(input: {
   return input.assistantStatus === 'failed' ? 'failed' : 'stopped'
 }
 
-function isStrictTextInputMarkers(blocks: readonly ChatMessageContentBlock[] | undefined): boolean {
-  if (!blocks?.length) return false
-  return blocks.every((block, order) => {
-    if (block.type !== 'input_marker' || block.inputType !== 'input_text' || block.order !== order) return false
-    return Object.keys(block).sort().join(',') === 'inputType,order,type'
-  })
+function strictInputBlocks(blocks: readonly ChatMessageContentBlock[] | undefined): ChatTurnEditCandidate['contentBlocks'] | undefined {
+  if (!blocks?.length) return undefined
+  const result: ChatTurnEditCandidate['contentBlocks'] = []
+  for (let order = 0; order < blocks.length; order += 1) {
+    const block = blocks[order]
+    if (!block || (block.type !== 'input_text' && block.type !== 'input_image') || block.order !== order) return undefined
+    if (block.type === 'input_text' && typeof block.text === 'string' && Object.keys(block).sort().join(',') === 'order,text,type') {
+      result.push({ type: 'input_text', text: block.text })
+      continue
+    }
+    if (block.type === 'input_image' && typeof block.assetId === 'string' && block.assetId && Object.keys(block).sort().join(',') === 'assetId,order,type') {
+      result.push({ type: 'input_image', assetId: block.assetId })
+      continue
+    }
+    return undefined
+  }
+  return result
 }

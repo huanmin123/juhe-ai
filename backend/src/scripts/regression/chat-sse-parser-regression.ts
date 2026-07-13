@@ -7,6 +7,7 @@ const payload = [
   'data: {"choices":[{"delta":{"content":"你"}}]}\n\n',
   ': heartbeat\n\n',
   'data: {"choices":[{"delta":{"content":"好"},"finish_reason":"stop"}]}\n\n',
+  'data: {"choices":[],"usage":{"prompt_tokens":19,"completion_tokens":3}}\n\n',
   'data: [DONE]\n\n'
 ].join('')
 const bytes = encoder.encode(payload)
@@ -19,6 +20,8 @@ const result = await collectOpenAIChatSse(async function* () {
 assert.equal(result.content, '你好')
 assert.equal(result.finishReason, 'stop')
 assert.equal(result.done, true)
+assert.equal(result.inputTokens, 19)
+assert.equal(result.outputTokens, 3)
 
 await assert.rejects(
   collectOpenAIChatSse(async function* () {

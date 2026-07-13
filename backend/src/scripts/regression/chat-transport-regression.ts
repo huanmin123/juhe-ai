@@ -22,7 +22,7 @@ const responses = buildChatTransportRequest({
 })
 assert.equal(responses.path, '/v1/responses')
 assert.equal(responses.body.instructions, instructions)
-assert.deepEqual(responses.body.input, [{ role: 'user', content: '此前问题' }, { role: 'user', content: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', image_url: 'data:image/png;base64,abc' }, { type: 'input_text', text: '图片后' }] }])
+assert.deepEqual(responses.body.input, [{ role: 'user', content: '此前问题' }, { role: 'user', content: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', image_url: 'data:image/png;base64,abc', detail: 'high' }, { type: 'input_text', text: '图片后' }] }])
 assert.equal((responses.body.input as Array<{ role: string }>).some((item) => item.role === 'system'), false)
 assert.equal(responses.body.stream, true)
 assert.deepEqual(responses.body.tools, [{ type: 'web_search' }])
@@ -38,6 +38,7 @@ assert.equal((chat.body.messages as Array<{ role: string }>).filter((item) => it
 assert.equal('tools' in chat.body, false, 'Chat Completions 不应因 toolsEnabled 注入 Responses 工具字段')
 assert.equal(chat.body.reasoning_effort, 'low')
 assert.equal(chat.body.service_tier, 'flex')
+assert.deepEqual(chat.body.stream_options, { include_usage: true })
 
 const checked: string[] = []
 const protocols = await resolveChatSupportedProtocols({
@@ -70,6 +71,16 @@ const chatOnlyProtocols = await resolveChatSupportedProtocols({
 })
 assert.deepEqual(chatOnlyProtocols, ['chat_completions'], '候选查询非空不代表支持 Responses，协议选择必须校验账户 endpoint modes')
 
+const unsupportedModelProtocols = await resolveChatSupportedProtocols({
+  groupIds: ['group-limited-model'],
+  model: 'model-not-supported',
+  loadAccounts: async () => [{
+    supportedEndpointModes: ['chat_sse', 'responses_sse'],
+    supportedModels: ['model-supported']
+  }]
+})
+assert.deepEqual(unsupportedModelProtocols, [], '候选查询可能包含普通窗口账号，聊天模型列表仍必须校验账户 supportedModels')
+
 const responsesBridgeProtocols = await resolveChatSupportedProtocols({
   groupIds: ['group-responses-bridge'],
   model: 'responses-alias',
@@ -80,10 +91,11 @@ const responsesBridgeProtocols = await resolveChatSupportedProtocols({
       sourceEndpointFamily: 'responses',
       upstreamModel: 'chat-upstream',
       upstreamEndpointFamily: 'chat_completions'
-    }]
+    }],
+    supportedModels: ['chat-upstream']
   }]
 })
-assert.deepEqual(responsesBridgeProtocols, ['chat_completions', 'responses'], '显式 Responses 到 Chat 映射必须按上游 chat_sse 能力保留 Responses 协议')
+assert.deepEqual(responsesBridgeProtocols, ['responses'], '显式 Responses 到 Chat 映射必须按上游 chat_sse 能力保留 Responses 协议，且不得误报未映射的 Chat Completions')
 
 for (const [upstreamEndpointFamily, supportedEndpointMode] of [
   ['messages', 'messages_sse'],

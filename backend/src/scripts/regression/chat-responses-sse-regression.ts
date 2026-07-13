@@ -7,7 +7,7 @@ async function* chunks(): AsyncGenerator<Uint8Array> {
     + 'event: response.function_call_arguments.delta\ndata: {"type":"response.function_call_arguments.delta","delta":"{\\"q\\":\\"天气\\"}"}\n\n'
     + 'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"web_search_call","status":"completed"}}\n\n'
     + 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"结果已返回"}\n\n'
-    + 'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+    + 'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":123,"output_tokens":17}}}\n\n'
   const bytes = new TextEncoder().encode(text)
   yield bytes.slice(0, 17); yield bytes.slice(17)
 }
@@ -16,6 +16,8 @@ const events: string[] = []
 const result = await collectChatResponsesSse(chunks(), (event) => events.push(event.type))
 assert.deepEqual(events, ['tool_started', 'tool_updated', 'tool_completed', 'text_delta', 'completed'])
 assert.equal(result.content, '结果已返回')
+assert.equal(result.inputTokens, 123)
+assert.equal(result.outputTokens, 17)
 
 async function* truncatedChunks(): AsyncGenerator<Uint8Array> {
   yield new TextEncoder().encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"部分回答"}\n\n')

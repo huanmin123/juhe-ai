@@ -17,7 +17,8 @@
       >
         <div class="message-body">
           <div :class="messages[item.index].role === 'user' ? 'message-bubble-user' : 'message-bubble-assistant'">
-            <ChatMarkdown :content="messages[item.index].contentText" />
+            <ChatUserMessageContent v-if="messages[item.index].role === 'user'" :message="messages[item.index]" />
+            <ChatMarkdown v-else :content="messages[item.index].contentText" />
             <ChatToolEvent v-if="messages[item.index].role === 'assistant' && (messages[item.index].toolEvents?.length || messages[item.index].reasoningText || messages[item.index].contentBlocks?.length)" :message="messages[item.index]" />
             <div v-if="messages[item.index].status !== 'completed'" class="message-status-text" role="status">
               {{ statusLabel(messages[item.index].status) }}
@@ -64,7 +65,8 @@ import { writeTextToClipboard } from '@/shared/clipboard'
 import type { ChatMessage, ChatMessageStatus } from '@/types/domain/chat'
 import ChatMarkdown from './ChatMarkdown.vue'
 import ChatToolEvent from './ChatToolEvent.vue'
-import { chatDistanceFromBottom, shouldBreakChatFollowOnWheel, shouldFollowChatBottom, shouldShowChatJumpButton } from './chatScrollPolicy'
+import ChatUserMessageContent from './ChatUserMessageContent.vue'
+import { chatDistanceFromBottom, resolveChatFollowState, shouldBreakChatFollowOnWheel, shouldShowChatJumpButton } from './chatScrollPolicy'
 
 const props = defineProps<{ messages: ChatMessage[]; loading: boolean; editableMessageId?: string; editingTurnId?: string }>()
 const emit = defineEmits<{ (event: 'near-top'): void; (event: 'jump-visibility', visible: boolean): void; (event: 'edit-message', message: ChatMessage): void }>()
@@ -73,6 +75,7 @@ const virtualSpace = ref<HTMLElement>()
 const followLatest = ref(true)
 let lastJumpVisible = false
 let touchStartY = 0
+let userDetachedFromBottom = false
 let resizeObserver: ResizeObserver | undefined
 const virtualizer = useVirtualizer(computed(() => ({
   count: props.messages.length,
@@ -86,19 +89,21 @@ const virtualItems = computed(() => virtualizer.value.getVirtualItems())
 function measureElement(element: unknown): void {
   if (element instanceof Element) virtualizer.value.measureElement(element)
 }
-function scrollToBottom(): void { followLatest.value = true; emitJumpVisibility(false); nextTick(() => virtualizer.value.scrollToIndex(Math.max(0, props.messages.length - 1), { align: 'end' })) }
+function scrollToBottom(): void { userDetachedFromBottom = false; followLatest.value = true; emitJumpVisibility(false); nextTick(() => virtualizer.value.scrollToIndex(Math.max(0, props.messages.length - 1), { align: 'end' })) }
 function followStream(): void { if (followLatest.value) nextTick(() => virtualizer.value.scrollToIndex(Math.max(0, props.messages.length - 1), { align: 'end' })) }
 function handleScroll(): void {
   const element = scrollElement.value
   if (!element) return
   const distance = chatDistanceFromBottom(element)
-  followLatest.value = shouldFollowChatBottom(distance)
+  const next = resolveChatFollowState({ distance, userDetached: userDetachedFromBottom })
+  followLatest.value = next.followLatest
+  userDetachedFromBottom = next.userDetached
   emitJumpVisibility(shouldShowChatJumpButton(distance))
   if (element.scrollTop < 120) emit('near-top')
 }
-function handleWheel(event: WheelEvent): void { if (shouldBreakChatFollowOnWheel(event.deltaY)) followLatest.value = false }
+function handleWheel(event: WheelEvent): void { if (shouldBreakChatFollowOnWheel(event.deltaY)) { userDetachedFromBottom = true; followLatest.value = false } }
 function handleTouchStart(event: TouchEvent): void { touchStartY = event.touches[0]?.clientY ?? 0 }
-function handleTouchMove(event: TouchEvent): void { const current = event.touches[0]?.clientY ?? touchStartY; if (current > touchStartY + 4) followLatest.value = false; touchStartY = current }
+function handleTouchMove(event: TouchEvent): void { const current = event.touches[0]?.clientY ?? touchStartY; if (current > touchStartY + 4) { userDetachedFromBottom = true; followLatest.value = false }; touchStartY = current }
 function emitJumpVisibility(visible: boolean): void { if (visible === lastJumpVisible) return; lastJumpVisible = visible; emit('jump-visibility', visible) }
 function captureScrollAnchor(): { offset: number; totalSize: number } {
   return { offset: scrollElement.value?.scrollTop ?? 0, totalSize: virtualizer.value.getTotalSize() }

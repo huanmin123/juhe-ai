@@ -34,6 +34,8 @@
             v-model="selectedModel"
             v-model:reasoning-effort="selectedReasoningEffort"
             v-model:service-tier="selectedServiceTier"
+            :conversation-id="selectedConversation.id"
+            :context-status="contextStatus"
             :disabled="generating || submissionBlocked"
             :image-input-supported="Boolean(selectedModelOption?.inputModalities.includes('image') && selectedModelOption.supportedApiProtocols.includes('responses'))"
             :model-options="models"
@@ -87,10 +89,10 @@
 <script setup lang="ts">
 import { ArrowDownOutlined, MessageOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { chatApi, ChatStreamHttpError, streamChatMessage } from '@/api/domains/chat'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { ChatApiKeyOption, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatApiKeyOption, ChatContextStatus, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 import { applyChatStreamEvent } from './chatStream'
 import { beginLatestTurnEdit, isDefinitiveChatHttpRejection, resolveChatReconciliationNotice, resolveChatSubmitFailure } from './chatTurnEditing'
 import { applyChatReconciliationIfActive, reconcileChatSubmission, type ChatSubmissionReconciliation } from './chatTurnReconciliation'
@@ -109,6 +111,7 @@ interface ChatTurnEditingState {
   userMessageId: string
   assistantMessageId: string
   content: string
+  contentBlocks: ChatInputBlock[]
   displacedDraft: JSONContent
   phase: 'editing' | 'submitting'
 }
@@ -139,6 +142,7 @@ const models = ref<ChatModelOption[]>([])
 const selectedModel = ref<string>()
 const selectedReasoningEffort = ref<ChatReasoningEffort | ''>('')
 const selectedServiceTier = ref<ChatServiceTier | ''>('')
+const contextStatus = ref<ChatContextStatus>()
 const messagesLoading = ref(false)
 const olderMessagesLoading = ref(false)
 const hasOlderMessages = ref(false)
@@ -167,6 +171,7 @@ const editingTurn = ref<ChatTurnEditingState>()
 let streamController: AbortController | undefined
 let activeSendSettled: Promise<void> | undefined
 let pendingConfirmationTimer: number | undefined
+let contextStatusTimer: number | undefined
 let conversationLoadEpoch = 0
 let disposed = false
 
@@ -236,6 +241,7 @@ async function selectConversation(id: string): Promise<void> {
   messages.value = []
   models.value = []
   selectedModel.value = undefined
+  contextStatus.value = undefined
   hasOlderMessages.value = false
   olderMessagesLoading.value = false
   showJumpToBottom.value = false
@@ -249,6 +255,7 @@ async function selectConversation(id: string): Promise<void> {
     models.value = modelItems
     const conversation = conversations.value.find((item) => item.id === id)
     selectedModel.value = conversation?.lastModel && modelItems.some((item) => item.id === conversation.lastModel) ? conversation.lastModel : modelItems[0]?.id
+    void refreshContextStatus(id)
   } catch (error) {
     if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
       message.error(extractApiErrorMessage(error, '加载对话失败'))
@@ -257,6 +264,10 @@ async function selectConversation(id: string): Promise<void> {
     if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
       messagesLoading.value = false
       modelsLoading.value = false
+      await nextTick()
+      if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
+        messageList.value?.scrollToBottom()
+      }
     }
   }
 }
@@ -316,7 +327,7 @@ async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatI
       clientMessageId: requestContext.clientMessageId,
       replaceTurnId: requestContext.replaceTurnId,
       content,
-      contentBlocks: blocks.map((block) => block.type === 'input_image' ? { type: block.type, dataUrl: block.dataUrl } : { type: block.type, text: block.text }),
+      contentBlocks: blocks.map((block) => block.type === 'input_image' ? { type: block.type, assetId: block.assetId } : { type: block.type, text: block.text }),
       model,
       reasoningEffort: selectedReasoningEffort.value || undefined,
       serviceTier: selectedServiceTier.value || undefined,
@@ -339,6 +350,8 @@ async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatI
     if (!streamStarted) throw new Error('模型响应缺少开始事件，请刷新后确认消息状态')
     if (!streamTerminal) throw new Error('模型流已中断，正在确认消息终态')
     await refreshConversationSummary(requestContext.conversationId)
+    await refreshContextStatus(requestContext.conversationId)
+    composer.value?.releaseSubmittedAssets()
   } catch (error) {
     await handleSubmitFailure(error, requestContext, streamStarted, startedTurnId, controller.signal.aborted)
   } finally {
@@ -390,7 +403,7 @@ function beginTurnEdit(messageItem: ChatMessage): void {
     displacedDraft: editor.getSnapshot(),
     phase: 'editing'
   }
-  editor.setText(candidate.content)
+  editor.setBlocks(candidate.contentBlocks)
   editor.focus()
 }
 async function cancelTurnEdit(): Promise<void> {
@@ -449,6 +462,7 @@ async function applySubmissionOutcome(input: {
     if (currentEdit && currentEdit.turnId === input.request.replaceTurnId) currentEdit.phase = 'editing'
   }
   if (resolution.restoreSubmittedDraft) composer.value?.restore(input.request.snapshot)
+  else if (accepted) composer.value?.releaseSubmittedAssets()
   if (input.replaceConflict) {
     message.warning('最近一轮已变化，已保留当前草稿，请重新确认后发送')
     return
@@ -505,6 +519,15 @@ function isDefinitiveChatRejection(error: unknown): boolean {
   return isDefinitiveChatHttpRejection({ status: error.status, code: error.code })
 }
 function cloneDocument(document: JSONContent): JSONContent { return JSON.parse(JSON.stringify(document)) as JSONContent }
+async function refreshContextStatus(conversationId = selectedConversationId.value): Promise<void> {
+  if (!conversationId) return
+  try {
+    const next = await chatApi.getContextStatus(conversationId)
+    if (!disposed && selectedConversationId.value === conversationId) contextStatus.value = next
+  } catch {
+    if (!disposed && selectedConversationId.value === conversationId) contextStatus.value = undefined
+  }
+}
 function updateMobile(): void { mobile.value = window.innerWidth <= 820 }
 function openConversationMenu(event: MouseEvent, item: ChatConversation): void { event.preventDefault(); conversationMenu.value = { item, x: Math.min(event.clientX, window.innerWidth - 150), y: Math.min(event.clientY, window.innerHeight - 160) } }
 function closeConversationMenu(): void { conversationMenu.value = undefined }
@@ -519,8 +542,8 @@ function sortConversations(): void { conversations.value.sort((left, right) => N
 function formatDetailTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false }) }
 function resetModelControls(): void { selectedReasoningEffort.value = defaultChatReasoningEffort(selectedModelOption.value); selectedServiceTier.value = defaultChatServiceTier(selectedModelOption.value) }
 watch(selectedModel, resetModelControls)
-onMounted(() => { updateMobile(); window.addEventListener('resize', updateMobile); window.addEventListener('click', closeConversationMenu); window.addEventListener('blur', closeConversationMenu); void loadInitial() })
-onBeforeUnmount(() => { disposed = true; conversationLoadEpoch += 1; window.removeEventListener('resize', updateMobile); window.removeEventListener('click', closeConversationMenu); window.removeEventListener('blur', closeConversationMenu); if (pendingConfirmationTimer !== undefined) { window.clearTimeout(pendingConfirmationTimer); pendingConfirmationTimer = undefined }; streamController?.abort() })
+onMounted(() => { updateMobile(); window.addEventListener('resize', updateMobile); window.addEventListener('click', closeConversationMenu); window.addEventListener('blur', closeConversationMenu); contextStatusTimer = window.setInterval(() => { void refreshContextStatus() }, 5_000); void loadInitial() })
+onBeforeUnmount(() => { disposed = true; conversationLoadEpoch += 1; window.removeEventListener('resize', updateMobile); window.removeEventListener('click', closeConversationMenu); window.removeEventListener('blur', closeConversationMenu); if (pendingConfirmationTimer !== undefined) { window.clearTimeout(pendingConfirmationTimer); pendingConfirmationTimer = undefined }; if (contextStatusTimer !== undefined) { window.clearInterval(contextStatusTimer); contextStatusTimer = undefined }; streamController?.abort() })
 </script>
 
 <style scoped>

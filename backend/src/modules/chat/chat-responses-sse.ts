@@ -11,7 +11,7 @@ export async function collectChatResponsesSse(
   chunks: AsyncIterable<Uint8Array>,
   onEvent: (event: ChatResponsesEvent) => void,
   maxBytes = 192 * 1024
-): Promise<{ content: string }> {
+): Promise<{ content: string; inputTokens?: number; outputTokens?: number }> {
   const decoder = new TextDecoder('utf-8', { fatal: true })
   const encoder = new TextEncoder()
   const maxEventBytes = 64 * 1024
@@ -22,6 +22,8 @@ export async function collectChatResponsesSse(
   let completed = false
   let auxiliaryBytes = 0
   let eventCount = 0
+  let inputTokens: number | undefined
+  let outputTokens: number | undefined
   const consumeEvent = (parsed: ChatResponsesEvent): void => {
     eventCount += 1
     if (eventCount > maxEvents) throw new Error('上游 Responses 事件数量超过 2048 上限')
@@ -34,7 +36,12 @@ export async function collectChatResponsesSse(
       auxiliaryBytes += encoder.encode(JSON.stringify(parsed.item)).byteLength
     }
     if (auxiliaryBytes > maxAuxiliaryBytes) throw new Error('模型结构化过程超过 192 KiB 上限')
-    if (parsed.type === 'completed') completed = true
+    if (parsed.type === 'completed') {
+      completed = true
+      const usage = objectValue(parsed.response.usage)
+      inputTokens = nonNegativeInteger(usage.input_tokens) ?? inputTokens
+      outputTokens = nonNegativeInteger(usage.output_tokens) ?? outputTokens
+    }
     onEvent(parsed)
   }
   for await (const chunk of chunks) {
@@ -53,7 +60,7 @@ export async function collectChatResponsesSse(
   const parsed = parseBlock(buffer)
   if (parsed) consumeEvent(parsed)
   if (!completed) throw new Error('上游 Responses 流缺少 response.completed')
-  return { content }
+  return { content, inputTokens, outputTokens }
 }
 
 function consumeBlocks(input: string, onBlock: (block: string) => void): { rest: string } {
@@ -93,3 +100,4 @@ function parseBlock(block: string): ChatResponsesEvent | undefined {
 }
 
 function objectValue(value: unknown): Record<string, unknown> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {} }
+function nonNegativeInteger(value: unknown): number | undefined { const number = Number(value); return Number.isSafeInteger(number) && number >= 0 ? number : undefined }

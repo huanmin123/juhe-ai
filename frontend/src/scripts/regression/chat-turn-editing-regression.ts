@@ -15,7 +15,7 @@ function message(overrides: Partial<ChatMessage> & Pick<ChatMessage, 'id' | 'tur
     status: 'completed',
     contentText: overrides.role === 'user' ? '原始 **Markdown**' : '回答',
     contentBlocks: overrides.role === 'user'
-      ? [{ type: 'input_marker', inputType: 'input_text', order: 0 }]
+      ? [{ type: 'input_text', text: '原始 **Markdown**', order: 0 }]
       : [],
     model: 'mock-model',
     createdAt: '2026-07-13T00:00:00.000Z',
@@ -33,8 +33,8 @@ const latestUser = message({
   role: 'user',
   clientMessageId: 'client_latest',
   contentBlocks: [
-    { type: 'input_marker', inputType: 'input_text', order: 0 },
-    { type: 'input_marker', inputType: 'input_text', order: 1 }
+    { type: 'input_text', text: '原始 ', order: 0 },
+    { type: 'input_text', text: '**Markdown**', order: 1 }
   ]
 })
 const latestAssistant = message({ id: 'assistant_latest', turnId: 'turn_latest', sequenceNo: 4, role: 'assistant' })
@@ -47,8 +47,30 @@ assert.deepEqual(beginLatestTurnEdit(messages, latestUser.id), {
   turnId: 'turn_latest',
   userMessageId: 'user_latest',
   assistantMessageId: 'assistant_latest',
-  content: '原始 **Markdown**'
+  content: '原始 **Markdown**',
+  contentBlocks: [
+    { type: 'input_text', text: '原始 ' },
+    { type: 'input_text', text: '**Markdown**' }
+  ]
 })
+
+const imageEdit = beginLatestTurnEdit([
+  message({
+    ...latestUser,
+    contentText: '图片前\n[图片]\n图片后',
+    contentBlocks: [
+      { type: 'input_text', text: '图片前', order: 0 },
+      { type: 'input_image', assetId: 'asset_1', order: 1 },
+      { type: 'input_text', text: '图片后', order: 2 }
+    ]
+  }),
+  latestAssistant
+], latestUser.id)
+assert.deepEqual(imageEdit?.contentBlocks, [
+  { type: 'input_text', text: '图片前' },
+  { type: 'input_image', assetId: 'asset_1' },
+  { type: 'input_text', text: '图片后' }
+], '最近一轮含图片时也必须恢复原始文字与图片顺序')
 
 for (const invalid of [
   [latestUser],
@@ -58,16 +80,17 @@ for (const invalid of [
   [message({ ...latestUser, status: 'streaming' }), latestAssistant],
   [latestUser, message({ ...latestAssistant, status: 'failed' })],
   [latestUser, message({ ...latestAssistant, status: 'canceled' })],
-  [message({ ...latestUser, contentText: '   ' }), latestAssistant],
   [message({ ...latestUser, contentBlocks: [] }), latestAssistant],
-  [message({ ...latestUser, contentBlocks: [{ type: 'input_marker', inputType: 'input_image', order: 0 }] }), latestAssistant],
-  [message({ ...latestUser, contentBlocks: [{ type: 'input_marker', inputType: 'input_text', order: 1 }] }), latestAssistant],
+  [message({ ...latestUser, contentBlocks: [{ type: 'input_text', text: '原始 **Markdown**', order: 1 }] }), latestAssistant],
   [message({ ...latestUser, contentBlocks: [
-    { type: 'input_marker', inputType: 'input_text', order: 0 },
-    { type: 'input_marker', inputType: 'input_text', order: 2 }
+    { type: 'input_text', text: '原始 ', order: 0 },
+    { type: 'input_text', text: '**Markdown**', order: 2 }
   ] }), latestAssistant],
   [message({ ...latestUser, contentBlocks: [
-    { type: 'input_marker', inputType: 'input_text', order: 0, unexpected: true } as unknown as NonNullable<ChatMessage['contentBlocks']>[number]
+    { type: 'input_text', text: '原始 **Markdown**', order: 0, unexpected: true } as unknown as NonNullable<ChatMessage['contentBlocks']>[number]
+  ] }), latestAssistant],
+  [message({ ...latestUser, contentBlocks: [
+    { type: 'input_text', order: 0 } as unknown as NonNullable<ChatMessage['contentBlocks']>[number]
   ] }), latestAssistant],
   [message({ ...latestUser, contentBlocks: [{ type: 'reasoning', text: '畸形用户块' }] }), latestAssistant]
 ] satisfies ChatMessage[][]) {

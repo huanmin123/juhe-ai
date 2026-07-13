@@ -39,12 +39,32 @@ export interface ChatMessage {
 export type ChatMessageContentBlock =
   | { type: 'reasoning'; text: string }
   | { type: 'tool_call'; id: string; toolType: string; status: ChatToolStatus; item?: Record<string, unknown> }
-  | { type: 'input_marker'; inputType: 'input_text' | 'input_image'; order: number }
+  | { type: 'input_text'; text: string; order: number }
+  | { type: 'input_image'; assetId: string; order: number }
 
 export type ChatToolStatus = 'started' | 'updated' | 'completed' | 'failed'
 export interface ChatToolEvent { id: string; type: string; status: ChatToolStatus; item?: Record<string, unknown> }
 
 export interface ChatApiKeyOption { id: string; name: string; status: string }
+
+export interface ChatAsset {
+  id: string
+  fileName: string
+  mimeType: string
+  width: number
+  height: number
+  byteSize: number
+}
+
+export interface ChatContextStatus {
+  usedTokens: number
+  limitTokens?: number
+  ratio: number
+  state: 'ready' | 'compact_pending' | 'compacting' | 'compact_failed'
+  usageEstimated: boolean
+  compactedThroughSequence: number
+  revision: number
+}
 
 export type ChatReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type ChatServiceTier = 'default' | 'priority' | 'flex'

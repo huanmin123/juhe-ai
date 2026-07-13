@@ -4,15 +4,17 @@ export type ChatTransportProtocol = 'chat_completions' | 'responses'
 
 export interface ChatTransportMessage {
   role: 'user' | 'assistant'
-  content: string
+  content: string | ChatTransportInputBlock[]
 }
 export interface ChatTransportInputBlock { type: 'input_text' | 'input_image'; text?: string; dataUrl?: string }
 interface ChatTransportAccount {
   supportedEndpointModes?: readonly string[]
+  supportedModels?: readonly string[]
   modelMappings?: ReadonlyArray<{
     enabled?: boolean
     sourceModel: string
     sourceEndpointFamily: string
+    upstreamModel: string
     upstreamEndpointFamily: string
   }>
 }
@@ -69,6 +71,11 @@ function chatTransportAccountSupportsProtocol(
     && item.sourceModel === model
     && item.sourceEndpointFamily === protocol
   ))
+  const supportedModels = account.supportedModels ?? []
+  if (supportedModels.length > 0) {
+    const routedModel = mapping?.upstreamModel ?? model
+    if (!supportedModels.includes(routedModel)) return false
+  }
   const upstreamProtocol = mapping?.upstreamEndpointFamily ?? protocol
   const requiredMode = {
     responses: 'responses_sse',
@@ -93,14 +100,14 @@ export function buildChatTransportRequest(input: {
   const messages = [{ role: 'system' as const, content: input.instructions }, ...input.history, { role: 'user' as const, content: input.currentContent }]
   if (input.protocol === 'responses') {
     const currentContent = input.currentBlocks?.length
-      ? input.currentBlocks.map((block) => block.type === 'input_image' ? { type: 'input_image', image_url: block.dataUrl } : { type: 'input_text', text: block.text ?? '' })
+      ? toResponsesBlocks(input.currentBlocks)
       : input.currentContent
     return {
       path: '/v1/responses',
       body: {
         model: input.model,
         instructions: input.instructions,
-        input: [...input.history, { role: 'user' as const, content: currentContent }],
+        input: [...input.history.map((message) => ({ ...message, content: typeof message.content === 'string' ? message.content : toResponsesBlocks(message.content) })), { role: 'user' as const, content: currentContent }],
         stream: true,
         ...(input.reasoningEffort ? { reasoning: { effort: input.reasoningEffort } } : {}),
         ...(input.serviceTier ? { service_tier: input.serviceTier } : {}),
@@ -114,8 +121,15 @@ export function buildChatTransportRequest(input: {
       model: input.model,
       messages,
       stream: true,
+      stream_options: { include_usage: true },
       ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
       ...(input.serviceTier ? { service_tier: input.serviceTier } : {})
     }
   }
+}
+
+function toResponsesBlocks(blocks: ChatTransportInputBlock[]): Array<Record<string, unknown>> {
+  return blocks.map((block) => block.type === 'input_image'
+    ? { type: 'input_image', image_url: block.dataUrl, detail: 'high' }
+    : { type: 'input_text', text: block.text ?? '' })
 }

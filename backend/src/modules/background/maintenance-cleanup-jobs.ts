@@ -118,7 +118,7 @@ export async function runChatRetentionCleanup(): Promise<void> {
     limit: 1000
   }, { timeoutMs: 60_000, priority: 'low' })
   if (!result) throw new Error('DB service 未返回 AI 问答保留清理结果')
-  if (result.droppedPartitions > 0 || result.deletedMessages > 0 || result.deletedConversations > 0 || result.recoveredTurns > 0) {
+  if (result.droppedPartitions > 0 || result.deletedMessages > 0 || result.deletedConversations > 0 || result.recoveredTurns > 0 || result.recoveredCompactions > 0 || result.deletedCheckpoints > 0 || result.claimedAssets > 0 || result.failedAssets > 0) {
     logger.info({ event: 'chat_retention_cleanup_completed', ...result }, 'AI 问答 7 天保留清理与中断轮次恢复完成')
   }
 }

@@ -2,6 +2,8 @@ export interface OpenAIChatSseResult {
   content: string
   finishReason?: string
   done: boolean
+  inputTokens?: number
+  outputTokens?: number
 }
 
 export async function collectOpenAIChatSse(
@@ -17,6 +19,8 @@ export async function collectOpenAIChatSse(
   let content = ''
   let finishReason: string | undefined
   let done = false
+  let inputTokens: number | undefined
+  let outputTokens: number | undefined
   let eventCount = 0
 
   const consumeEvent = (eventText: string): void => {
@@ -29,13 +33,17 @@ export async function collectOpenAIChatSse(
       done = true
       return
     }
-    let payload: { choices?: Array<{ delta?: { content?: unknown }; finish_reason?: unknown }>; error?: { message?: unknown } }
+    let payload: { choices?: Array<{ delta?: { content?: unknown }; finish_reason?: unknown }>; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown }; error?: { message?: unknown } }
     try {
       payload = JSON.parse(data) as typeof payload
     } catch {
       throw new Error('上游返回了无效的 SSE JSON')
     }
     if (payload.error) throw new Error(String(payload.error.message ?? '上游流式请求失败'))
+    const nextInputTokens = nonNegativeInteger(payload.usage?.prompt_tokens)
+    const nextOutputTokens = nonNegativeInteger(payload.usage?.completion_tokens)
+    if (nextInputTokens !== undefined) inputTokens = nextInputTokens
+    if (nextOutputTokens !== undefined) outputTokens = nextOutputTokens
     const choice = payload.choices?.[0]
     const delta = typeof choice?.delta?.content === 'string' ? choice.delta.content : ''
     if (delta) {
@@ -69,7 +77,12 @@ export async function collectOpenAIChatSse(
     consumeEvent(buffer)
   }
   if (!done) throw new Error('上游流式响应缺少 [DONE]')
-  return { content, finishReason, done }
+  return { content, finishReason, done, inputTokens, outputTokens }
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+  const number = Number(value)
+  return Number.isSafeInteger(number) && number >= 0 ? number : undefined
 }
 
 function findEventBoundary(value: string): { index: number; length: number } | undefined {
