@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   ACCOUNT_HEALTH_CHECK_ENDPOINT_FAMILIES,
@@ -77,5 +78,12 @@ assert.throws(() => resolveDefaultHealthCheckEndpointFamily({
   providerProtocolProfileId: 'profile_openai_openai_v1',
   enabledEndpointModes: ['chat_sse', 'responses_sse']
 }), /JSON/)
+
+const draftServiceSource = readFileSync(new URL('../../modules/accounts/account-draft-test.service.ts', import.meta.url), 'utf8')
+assert.equal(
+  draftServiceSource.match(/resolveHealthCheckEndpointFamily\(\{/g)?.length,
+  2,
+  '同步和异步草稿账户构造都必须按最终 endpoint modes 解析健康检查协议族'
+)
 
 console.log('AI 账户健康检查协议族领域回归通过')

@@ -545,13 +545,13 @@ func insertW2AccountOptionsFixture(t *testing.T, ctx context.Context, db *sql.DB
 				id, system_account_id, provider_code, provider_protocol_profile_id,
 				protocol_code, protocol_version, name, type, status, credentials_encrypted,
 				credential_fingerprint, credential_mask, concurrency_limit, priority,
-				super_priority_enabled, fallback_enabled, client_compatibility, schedulable,
+				super_priority_enabled, fallback_enabled, client_compatibility, schedulable, health_check_model, health_check_endpoint_family,
 				cooldown_until, created_at, updated_at
 			) VALUES (
 				$1, $2, $3, $4,
 				$5, $6, $7, 'api_key', $8, 'encrypted-fixture',
 				NULL, 'sk-test', 20, $9,
-				false, false, 'openai_standard', $10,
+				false, false, 'openai_standard', $10, 'gpt-5.6-sol', 'chat_completions',
 				$11, $12, $13
 			)
 		`, item.id, item.systemAccountID, item.providerCode, item.profileID,
@@ -623,14 +623,14 @@ func insertW2AccountAuthorizationFixture(t *testing.T, ctx context.Context, db *
 				id, system_account_id, provider_code, provider_protocol_profile_id,
 				protocol_code, protocol_version, name, type, status, credentials_encrypted,
 				credential_fingerprint, credential_mask, concurrency_limit, priority,
-				super_priority_enabled, fallback_enabled, client_compatibility, schedulable,
+				super_priority_enabled, fallback_enabled, client_compatibility, schedulable, health_check_model, health_check_endpoint_family,
 				authorization_instance_source_account_id, authorization_instance_authorization_id,
 				authorization_instance_owner_system_account_id, created_at, updated_at
 			) VALUES (
 				$1, 'sys_w2_proxy_options', 'openai', 'profile_openai_openai_v1',
 				'openai', 'v1', $2, 'api_key', 'active', 'encrypted-fixture',
 				NULL, 'sk-test', 20, $3,
-				false, false, 'openai_standard', true,
+				false, false, 'openai_standard', true, 'gpt-5.6-sol', 'chat_completions',
 				CASE WHEN $4 = 'auth_account_w2_unbound' THEN 'acct_w2_unbound_source'
 					WHEN $4 = 'auth_account_w2_revoked' THEN 'acct_w2_revoked_source'
 					ELSE 'acct_w2_other'

@@ -682,9 +682,10 @@ async function assertEndpointModeUpdateValidatesEnabledMappings(groupId: string)
     credentials: {
       api_key: 'sk-account-model-mapping-capability-update',
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['chat_json', 'responses_sse']
+      supported_endpoint_modes: ['chat_json', 'responses_json', 'responses_sse']
     },
     supportedModels: [chatCompletionsUpstreamModel],
+    healthCheckEndpointFamily: 'responses',
     modelMappings: [
       responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
     ],
@@ -695,7 +696,7 @@ async function assertEndpointModeUpdateValidatesEnabledMappings(groupId: string)
     credentials: {
       api_key: 'sk-account-model-mapping-capability-update',
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['responses_sse']
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
     }
   }, ownerAccess), /Chat Completions.*上游接口能力/, '仅修改上游接口能力时，后端仍须校验已有启用映射的右侧目标族')
 
@@ -703,7 +704,7 @@ async function assertEndpointModeUpdateValidatesEnabledMappings(groupId: string)
     credentials: {
       api_key: 'sk-account-model-mapping-capability-update',
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['responses_sse']
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     modelMappings: [
       responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel, false)
@@ -721,9 +722,10 @@ async function assertEndpointModeUpdateValidatesEnabledMappings(groupId: string)
     credentials: {
       api_key: 'sk-account-model-mapping-async-capability-update',
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['chat_json', 'responses_sse']
+      supported_endpoint_modes: ['chat_json', 'responses_json', 'responses_sse']
     },
     supportedModels: [chatCompletionsUpstreamModel],
+    healthCheckEndpointFamily: 'responses',
     modelMappings: [responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)],
     groupId
   }, ownerAccess)
@@ -732,7 +734,7 @@ async function assertEndpointModeUpdateValidatesEnabledMappings(groupId: string)
       credentials: {
         api_key: 'sk-account-model-mapping-async-capability-update',
         base_url: 'https://api.openai.com/v1',
-        supported_endpoint_modes: ['responses_sse']
+        supported_endpoint_modes: ['responses_json', 'responses_sse']
       }
     }, ownerAccess),
     /Chat Completions.*上游接口能力/,
@@ -741,7 +743,7 @@ async function assertEndpointModeUpdateValidatesEnabledMappings(groupId: string)
   const preserved = repositories.findAccountForTest(asyncAccount.id, ownerAccess)
   assert.deepEqual(
     preserved?.credentials.supported_endpoint_modes,
-    ['chat_json', 'responses_sse'],
+    ['chat_json', 'responses_json', 'responses_sse'],
     '异步 endpoint modes 更新被拒绝后必须保留原凭据能力'
   )
   assert.deepEqual(
@@ -1258,11 +1260,11 @@ function assertImportAndDraftValidateTargetCapabilities(groupId: string): void {
     credentials: {
       api_key: `sk-import-target-capability-${mapping.enabled ? 'enabled' : 'disabled'}`,
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['responses_sse']
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     supportedModels: [chatCompletionsUpstreamModel],
     healthCheckModel: chatCompletionsUpstreamModel,
-    healthCheckEndpointFamily: 'chat_completions' as const,
+    healthCheckEndpointFamily: 'responses' as const,
     modelMappings: [mapping]
   })
   const rejectedImport = previewAccountImport({
@@ -1279,6 +1281,25 @@ function assertImportAndDraftValidateTargetCapabilities(groupId: string): void {
   }, {}, ownerAccess)
   assert.equal(acceptedImport.canImport, true, '导入预览应允许目标族能力缺失的停用映射')
 
+  assert.throws(() => prepareAccountDraftTestSnapshot({
+    accountInput: {
+      providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name: '草稿健康协议族最终能力校验',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-draft-health-family-capability',
+        base_url: 'https://api.openai.com/v1',
+        supported_endpoint_modes: ['chat_json', 'responses_sse']
+      },
+      supportedModels: [chatCompletionsUpstreamModel],
+      healthCheckModel: chatCompletionsUpstreamModel,
+      healthCheckEndpointFamily: 'responses',
+      groupId
+    },
+    requestAccess: ownerAccess
+  }), /账户健康检查协议族 responses 未启用对应 JSON 能力/, '草稿测试必须按最终 endpoint modes 拒绝不可用健康检查协议族')
+
   const draftInput = (mapping: AccountModelMapping) => ({
     providerCode: GPT_VENDOR_CODE,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -1287,11 +1308,11 @@ function assertImportAndDraftValidateTargetCapabilities(groupId: string): void {
     credentials: {
       api_key: `sk-draft-target-capability-${mapping.enabled ? 'enabled' : 'disabled'}`,
       base_url: 'https://api.openai.com/v1',
-      supported_endpoint_modes: ['responses_sse']
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     supportedModels: [chatCompletionsUpstreamModel],
     healthCheckModel: chatCompletionsUpstreamModel,
-    healthCheckEndpointFamily: 'chat_completions' as const,
+    healthCheckEndpointFamily: 'responses' as const,
     modelMappings: [mapping],
     groupId
   })

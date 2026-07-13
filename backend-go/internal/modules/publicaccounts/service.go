@@ -118,6 +118,7 @@ type AccountSummary struct {
 	ClientCompatibility       string   `json:"clientCompatibility,omitempty"`
 	Status                    string   `json:"status"`
 	SupportedModels           []string `json:"supportedModels,omitempty"`
+	HealthCheckEndpointFamily string   `json:"healthCheckEndpointFamily"`
 	BoundGroupID              string   `json:"boundGroupId,omitempty"`
 	BoundGroupName            string   `json:"boundGroupName,omitempty"`
 	Schedulable               bool     `json:"schedulable"`
@@ -1198,6 +1199,7 @@ func publicAccountSummary(account port.PublicAccountSummary, listShape bool) Acc
 		ClientCompatibility:       account.ClientCompatibility,
 		Status:                    string(account.Status),
 		SupportedModels:           append([]string(nil), account.SupportedModels...),
+		HealthCheckEndpointFamily: account.HealthCheckEndpointFamily,
 		Schedulable:               account.Schedulable,
 		AvailabilitySchedule:      jsonValue(account.AvailabilityScheduleJSON),
 	}

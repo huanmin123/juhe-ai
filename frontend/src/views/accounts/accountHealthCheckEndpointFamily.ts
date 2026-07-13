@@ -13,6 +13,10 @@ export function accountHealthCheckEndpointFamilyOptions(endpointModes: readonly 
     .map(({ label, value }) => ({ label, value }))
 }
 
+export function accountHealthCheckEndpointMode(family: AccountHealthCheckEndpointFamily): AccountSupportedEndpointMode {
+  return options.find((option) => option.value === family)?.mode ?? 'chat_json'
+}
+
 export function defaultAccountHealthCheckEndpointFamily(
   providerCode: string,
   providerProtocolProfileId: string,

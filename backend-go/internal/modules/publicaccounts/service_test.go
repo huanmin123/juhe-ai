@@ -40,6 +40,9 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 	if response.Account == nil || response.Account.Status != StatusPendingTest || response.Account.Schedulable {
 		t.Fatalf("response account = %+v, want pending_test and unschedulable", response.Account)
 	}
+	if response.Account.HealthCheckEndpointFamily != "responses" {
+		t.Fatalf("response health check endpoint family = %q, want responses", response.Account.HealthCheckEndpointFamily)
+	}
 	if got := response.Account.SupportedModels; len(got) != 2 || got[0] != "gpt-5.5" || got[1] != "gpt-5.4-mini" {
 		t.Fatalf("supported models = %#v", got)
 	}
@@ -93,6 +96,31 @@ func TestPublicAccountSummaryDoesNotExposeHealthCheckModel(t *testing.T) {
 		jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
 		if field.Name == "HealthCheckModel" || jsonName == "healthCheckModel" {
 			t.Fatalf("public account summary exposes health check model through field %s", field.Name)
+		}
+	}
+}
+
+func TestPublicAccountSummaryExposesHealthCheckEndpointFamily(t *testing.T) {
+	account := port.PublicAccountSummary{
+		ID:                        "acct_public_summary_family",
+		Name:                      "公开协议族账号",
+		ProviderCode:              "gpt",
+		ProviderProtocolProfileID: "profile_gpt_openai_v1",
+		Type:                      AccountTypeAPIKey,
+		Status:                    port.PublicAccountStatusActive,
+		HealthCheckEndpointFamily: "responses",
+	}
+	for _, listShape := range []bool{false, true} {
+		summary := publicAccountSummary(account, listShape)
+		if summary.HealthCheckEndpointFamily != "responses" {
+			t.Fatalf("summary listShape=%t health check endpoint family = %q, want responses", listShape, summary.HealthCheckEndpointFamily)
+		}
+		data, err := json.Marshal(summary)
+		if err != nil {
+			t.Fatalf("marshal summary listShape=%t: %v", listShape, err)
+		}
+		if !strings.Contains(string(data), `"healthCheckEndpointFamily":"responses"`) {
+			t.Fatalf("summary listShape=%t JSON missing healthCheckEndpointFamily: %s", listShape, data)
 		}
 	}
 }
@@ -586,6 +614,9 @@ func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 			}
 			if response.Account == nil || response.Account.Status != StatusPendingTest || response.Account.Schedulable {
 				t.Fatalf("response account = %+v, want pending_test and unschedulable", response.Account)
+			}
+			if response.Account.HealthCheckEndpointFamily != "responses" {
+				t.Fatalf("updated response health check endpoint family = %q, want responses", response.Account.HealthCheckEndpointFamily)
 			}
 			if !store.lastUpdateInput.ResetFailureState {
 				t.Fatal("credential submission must reset failure state")

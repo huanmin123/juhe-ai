@@ -1,4 +1,5 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
+import { resolveHealthCheckEndpointFamily } from '../../domain/account-health-check-endpoint-family.js'
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
 import { assertGeminiEndpointModesCompatible } from '../../domain/gemini-endpoint-modes.js'
@@ -419,13 +420,19 @@ function draftTestAccountSummary(input: {
   const usage = emptyAccountUsageSummary()
   const supportedModels = draftSupportedModels(input.account.providerCode, input.account.supportedModels, input.defaultSupportedModels)
   const healthCheckModel = requiredDraftHealthCheckModel(input.account.healthCheckModel, supportedModels)
-  const healthCheckEndpointFamily = input.account.healthCheckEndpointFamily
+  const enabledEndpointModes = input.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+  const healthCheckEndpointFamily = resolveHealthCheckEndpointFamily({
+    value: input.account.healthCheckEndpointFamily,
+    providerCode: input.account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    enabledEndpointModes
+  })
   const modelMappings = normalizeDraftAccountModelMappings(input.account.modelMappings, input.account.providerCode, input.ownerSystemAccountId, {
     providerCode: input.account.providerCode,
     providerProtocolProfileId: input.providerProtocolProfileId,
     protocolCode: input.protocolCode,
     protocolVersion: input.protocolVersion
-  }, input.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]) ?? []
+  }, enabledEndpointModes) ?? []
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
   return {
     id: input.id ?? newId('acctdraft'),
@@ -494,13 +501,19 @@ async function draftTestAccountSummaryAsync(input: {
   const usage = emptyAccountUsageSummary()
   const supportedModels = draftSupportedModels(input.account.providerCode, input.account.supportedModels, input.defaultSupportedModels)
   const healthCheckModel = requiredDraftHealthCheckModel(input.account.healthCheckModel, supportedModels)
-  const healthCheckEndpointFamily = input.account.healthCheckEndpointFamily
+  const enabledEndpointModes = input.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+  const healthCheckEndpointFamily = resolveHealthCheckEndpointFamily({
+    value: input.account.healthCheckEndpointFamily,
+    providerCode: input.account.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    enabledEndpointModes
+  })
   const modelMappings = await normalizeDraftAccountModelMappingsAsync(input.account.modelMappings, input.account.providerCode, input.ownerSystemAccountId, {
     providerCode: input.account.providerCode,
     providerProtocolProfileId: input.providerProtocolProfileId,
     protocolCode: input.protocolCode,
     protocolVersion: input.protocolVersion
-  }, input.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]) ?? []
+  }, enabledEndpointModes) ?? []
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
   return {
     id: input.id ?? newId('acctdraft'),
