@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import {
   beginLatestTurnEdit,
+  isDefinitiveChatHttpRejection,
   isLatestEditableUserMessage,
   resolveChatReconciliationNotice,
   resolveChatSubmitFailure
@@ -89,6 +90,11 @@ assert.deepEqual(resolveChatSubmitFailure({ streamStarted: false, accepted: fals
   restoreSubmittedDraft: true,
   clearEditing: true
 }, '替换冲突应保留提交草稿，但清除已经失效的 replaceTurnId')
+assert.deepEqual(resolveChatSubmitFailure({ streamStarted: false, accepted: false, confirmed: false, replaceConflict: false }), {
+  restoreSubmittedDraft: false,
+  clearEditing: false,
+  pendingConfirmation: true
+}, '权威读取全部失败时不得恢复旧 replaceTurnId 草稿，必须进入待确认门禁')
 
 assert.equal(resolveChatReconciliationNotice({ accepted: true, assistantStatus: 'completed', silent: false }), 'none', '仓库已完成时不得把真实成功误报为发送失败')
 assert.equal(resolveChatReconciliationNotice({ accepted: true, assistantStatus: 'canceled', silent: true }), 'none', '用户主动停止并已取消时保持静默')
@@ -97,5 +103,9 @@ assert.equal(resolveChatReconciliationNotice({ accepted: true, assistantStatus: 
 assert.equal(resolveChatReconciliationNotice({ accepted: true, assistantStatus: 'streaming', silent: false }), 'pending')
 assert.equal(resolveChatReconciliationNotice({ accepted: false, silent: false }), 'transport_error')
 assert.equal(resolveChatReconciliationNotice({ accepted: false, silent: true }), 'none')
+assert.equal(isDefinitiveChatHttpRejection({ status: 401, code: 'future_auth_code' }), true)
+assert.equal(isDefinitiveChatHttpRejection({ status: 429, code: 'future_rate_limit_code' }), true)
+assert.equal(isDefinitiveChatHttpRejection({ status: 409, code: 'chat_message_already_exists' }), false, '幂等已接受必须继续权威对账')
+assert.equal(isDefinitiveChatHttpRejection({ status: 500, code: 'unknown_server_error' }), false, '5xx 可能发生在 accept 后，不能恢复旧 replaceTurnId')
 
 console.log('AI 问答最近轮次编辑资格与失败对账回归通过')

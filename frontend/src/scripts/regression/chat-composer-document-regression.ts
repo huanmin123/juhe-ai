@@ -37,8 +37,9 @@ assert.equal((composerDocumentToBlocks(composerTextToDocument(multipleBlankLines
 
 const composerSource = readFileSync('../frontend/src/views/chat/composer/AIComposer.vue', 'utf8')
 assert.match(composerSource, /defineExpose\(\{\s*getSnapshot,\s*setText,\s*restore,\s*clear,\s*focus\s*\}\)/, 'AIComposer 必须暴露完整且受控的编辑接口')
-assert.match(composerSource, /setContent\(composerTextToDocument\(content\)/, 'setText 必须使用 Tiptap JSON 文档写入字面文本')
-assert.doesNotMatch(composerSource, /setText[\s\S]{0,300}setContent\(content/, 'setText 绝不能把用户 Markdown 当 HTML 交给 setContent')
+assert.match(composerSource, /replaceEditorDocumentWithoutHistory\(editor\.value, composerTextToDocument\(content\)\)/, 'setText 必须用无历史边界写入 Tiptap JSON 字面文本')
+assert.doesNotMatch(composerSource, /setText[\s\S]{0,300}setContent\(/, 'setText 绝不能把用户 Markdown 当 HTML 或可撤销 transaction 写入')
+assert.match(composerSource, /replaceEditorDocumentWithoutHistory\(editor\.value, cloneDocument\(snapshot\)\)/, 'restore 也必须切断 displaced draft 的 UndoRedo 历史')
 assert.match(composerSource, /contentRevision\.value \+= 1/, 'emitUpdate=false 的 setText/restore 仍必须显式驱动发送按钮状态刷新')
 assert.match(composerSource, /const hasContent = computed\(\(\) => \{\s*contentRevision\.value/, 'hasContent 必须订阅编辑器内容修订号')
 assert.match(composerSource, /const imageItems = computed\(\(\) => \{\s*contentRevision\.value/, '图片附件投影也必须订阅修订号，恢复含图草稿后不能沿用旧缓存')

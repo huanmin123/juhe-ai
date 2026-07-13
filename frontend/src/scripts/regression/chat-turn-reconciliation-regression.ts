@@ -58,4 +58,52 @@ const notAccepted = await reconcileChatSubmission({
 })
 assert.deepEqual({ accepted: notAccepted.accepted, terminal: notAccepted.terminal, definitiveLists }, { accepted: false, terminal: false, definitiveLists: 1 }, '明确 HTTP 拒绝不应无意义轮询')
 
+let completedAfterErrorReads = 0
+const completedAfterError = await reconcileChatSubmission({
+  clientMessageId: 'client_1',
+  confirmPendingAcceptance: true,
+  listMessages: async () => {
+    completedAfterErrorReads += 1
+    if (completedAfterErrorReads === 1) throw new Error('临时 GET 失败')
+    return pair('completed')
+  },
+  stop: async () => undefined,
+  wait: async () => undefined,
+  maxAttempts: 3
+})
+assert.deepEqual({ confirmed: completedAfterError.confirmed, accepted: completedAfterError.accepted, status: completedAfterError.assistantStatus, reads: completedAfterErrorReads }, {
+  confirmed: true, accepted: true, status: 'completed', reads: 2
+}, '单次 listMessages 异常必须在窗口内重试并识别 completed')
+
+let canceledAfterErrorReads = 0
+const canceledAfterError = await reconcileChatSubmission({
+  clientMessageId: 'client_1',
+  acceptedTurnId: 'turn_1',
+  confirmPendingAcceptance: true,
+  listMessages: async () => {
+    canceledAfterErrorReads += 1
+    if (canceledAfterErrorReads === 1) throw new Error('临时 GET 失败')
+    return pair('canceled')
+  },
+  stop: async () => undefined,
+  wait: async () => undefined,
+  maxAttempts: 3
+})
+assert.deepEqual({ confirmed: canceledAfterError.confirmed, status: canceledAfterError.assistantStatus, reads: canceledAfterErrorReads }, {
+  confirmed: true, status: 'canceled', reads: 2
+}, '已知 turn 的首轮 GET 异常后仍必须识别 canceled')
+
+let failedReads = 0
+const unknown = await reconcileChatSubmission({
+  clientMessageId: 'client_unknown',
+  confirmPendingAcceptance: true,
+  listMessages: async () => { failedReads += 1; throw new Error('持续不可用') },
+  stop: async () => undefined,
+  wait: async () => undefined,
+  maxAttempts: 3
+})
+assert.deepEqual({ confirmed: unknown.confirmed, accepted: unknown.accepted, terminal: unknown.terminal, failedReads }, {
+  confirmed: false, accepted: false, terminal: false, failedReads: 3
+}, '全部权威读取失败只能返回 unknown，绝不能伪装成未接受')
+
 console.log('AI 问答接受后断流与停止终态对账回归通过')

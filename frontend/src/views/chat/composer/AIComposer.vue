@@ -33,6 +33,7 @@ import { createChatComposerSubmission } from './chatComposerSubmission'
 import { ChatImageAttachment } from './ChatImageAttachment'
 import { chatComposerCommandQueryRange, chatComposerCommands, filterChatComposerCommands, moveChatComposerCommandIndex, type ChatComposerCommand } from './chatComposerCommands'
 import { chatContextOptions, reasoningEffortLabel } from './chatModelControls'
+import { replaceEditorDocumentWithoutHistory } from './chatEditorDocumentBoundary'
 import type { ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 
 const props = defineProps<{ disabled: boolean; modelOptions: ChatModelOption[]; modelValue?: string; modelsLoading: boolean; reasoningEffort: ChatReasoningEffort | ''; serviceTier: ChatServiceTier | ''; contextWindowTokens: number; showConversationButton: boolean }>()
@@ -124,10 +125,10 @@ function getSnapshot(): JSONContent {
   return editor.value ? cloneDocument(editor.value.getJSON()) : { type: 'doc', content: [{ type: 'paragraph' }] }
 }
 function setText(content: string): void {
-  editor.value?.commands.setContent(composerTextToDocument(content), { emitUpdate: false })
+  if (editor.value) replaceEditorDocumentWithoutHistory(editor.value, composerTextToDocument(content))
   contentRevision.value += 1
 }
-function restore(snapshot: JSONContent): void { editor.value?.commands.setContent(cloneDocument(snapshot), { emitUpdate: false }); contentRevision.value += 1; editor.value?.commands.focus('end') }
+function restore(snapshot: JSONContent): void { if (editor.value) replaceEditorDocumentWithoutHistory(editor.value, cloneDocument(snapshot)); contentRevision.value += 1; editor.value?.commands.focus('end') }
 function clear(): void { editor.value?.commands.clearContent(true) }
 function focus(): void { editor.value?.commands.focus() }
 function cloneDocument(document: JSONContent): JSONContent { return JSON.parse(JSON.stringify(document)) as JSONContent }

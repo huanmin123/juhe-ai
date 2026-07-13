@@ -11,9 +11,14 @@ export interface ChatTurnEditCandidate {
 export interface ChatSubmitFailureResolution {
   restoreSubmittedDraft: boolean
   clearEditing: boolean
+  pendingConfirmation?: boolean
 }
 
 export type ChatReconciliationNotice = 'none' | 'stopped' | 'failed' | 'pending' | 'transport_error'
+
+export function isDefinitiveChatHttpRejection(input: { status: number; code?: string }): boolean {
+  return input.status >= 400 && input.status < 500 && input.code !== 'chat_message_already_exists'
+}
 
 export function isLatestEditableUserMessage(messages: readonly ChatMessage[], userMessageId: string): boolean {
   return beginLatestTurnEdit(messages, userMessageId) !== undefined
@@ -41,9 +46,11 @@ export function beginLatestTurnEdit(messages: readonly ChatMessage[], userMessag
 export function resolveChatSubmitFailure(input: {
   streamStarted: boolean
   accepted: boolean
+  confirmed?: boolean
   replaceConflict: boolean
 }): ChatSubmitFailureResolution {
   if (input.replaceConflict) return { restoreSubmittedDraft: true, clearEditing: true }
+  if (input.confirmed === false) return { restoreSubmittedDraft: false, clearEditing: false, pendingConfirmation: true }
   if (input.streamStarted || input.accepted) return { restoreSubmittedDraft: false, clearEditing: true }
   return { restoreSubmittedDraft: true, clearEditing: false }
 }
