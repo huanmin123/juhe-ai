@@ -63,6 +63,13 @@
         </div>
       </div>
     </a-form-item>
+    <a-alert
+      v-if="filledApiKeyCount > 1"
+      class="multi-key-balance-notice"
+      message="多 Key 账户不支持余额查询，保存后将自动关闭余额查询。"
+      show-icon
+      type="warning"
+    />
     <a-form-item label="Base URL" required :tooltip="baseUrlTooltip">
       <a-input
         v-model:value="form.baseUrl"
@@ -308,6 +315,10 @@ function uniqueNonEmptyStrings(values: string[]): string[] {
 
 .api-key-batch-delete-button {
   padding-inline: 0;
+}
+
+.multi-key-balance-notice {
+  margin: -4px 0 16px;
 }
 
 :deep(.ant-form-item-label > label:has(.api-key-label)) {

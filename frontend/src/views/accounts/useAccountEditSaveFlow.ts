@@ -19,6 +19,7 @@ import {
   type AccountSavePayload
 } from './accountSavePayload'
 import { validateOpenAICompatibleBaseUrl } from './accountBaseUrlValidation'
+import { accountBalanceWillAutoDisable, buildAccountBalancePayload } from './accountBalanceQuery'
 import {
   normalizedAccountApiKeys,
   normalizedAccountApiKeyWeights
@@ -94,6 +95,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       return
     }
 
+    const balanceAutoDisabled = accountBalanceWillAutoDisable(options.form)
     const payload = buildAccountSavePayload({
       accounts: options.accounts.value,
       accountDetail: options.editingAccountDetail.value,
@@ -112,13 +114,15 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
           await api.myAccounts.update(options.editingId.value, updatePayload)
         }
         invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
-        message.success('账户已更新')
+        message.success(balanceAutoDisabled ? '账户已更新，已因多 Key 自动关闭余额查询' : '账户已更新')
       } else if (options.form.type === 'oauth') {
         const created = await createOAuthAccountFromUnifiedForm()
         message.success(created?.status === 'active' ? 'OAuth 账户已创建并启用' : 'OAuth 账户已创建，等待后台检查')
       } else {
         const created = await createApiKeyAccount(payload)
-        message.success(created?.status === 'active' ? '账户已创建并启用' : '账户已创建，等待后台检查')
+        message.success(balanceAutoDisabled
+          ? '账户已创建，已因多 Key 自动关闭余额查询'
+          : created?.status === 'active' ? '账户已创建并启用' : '账户已创建，等待后台检查')
       }
       invalidateAccountTagOptions(options.editingId.value ? options.editingAccountScopeParams() : options.createScopeParams.value)
       options.modalOpen.value = false
@@ -233,6 +237,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       message.warning('检查模型必须从账户支持模型中选择')
       return
     }
+    const balanceAutoDisabled = accountBalanceWillAutoDisable(options.form)
     const payload: AccountBasicEditPayload = {
       name: options.form.name.trim(),
       concurrencyLimit: Math.trunc(concurrencyLimit),
@@ -243,7 +248,8 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       supportedModels,
       healthCheckModel,
       healthCheckEndpointFamily: options.form.healthCheckEndpointFamily,
-      credentials: buildBasicEditCredentialsPatch(options.form)
+      credentials: buildBasicEditCredentialsPatch(options.form),
+      ...buildAccountBalancePayload(options.form)
     }
     try {
       if (options.isManagementView.value) {
@@ -253,7 +259,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       }
       invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
       invalidateAccountTagOptions(options.editingAccountScopeParams())
-      message.success('账户基础信息已更新')
+      message.success(balanceAutoDisabled ? '账户基础信息已更新，已因多 Key 自动关闭余额查询' : '账户基础信息已更新')
       options.modalOpen.value = false
       await options.loadData()
     } catch (error) {
@@ -331,6 +337,8 @@ type AccountBasicEditPayload = {
   healthCheckModel: string
   healthCheckEndpointFamily: AccountFormModel['healthCheckEndpointFamily']
   credentials: Record<string, unknown>
+  balanceQueryEnabled?: boolean
+  balanceQueryConfig?: Record<string, unknown>
 }
 
 function validateBasicEditCredentialFields(form: AccountFormModel): string | undefined {

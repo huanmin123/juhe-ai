@@ -54,6 +54,7 @@ const balanceDetectionCandidateWhere = `
   AND schedulable = 1
   AND type = 'api_key'
   AND balance_query_enabled = 0
+  AND balance_query_config_json = '{}'
   AND deleted_at IS NULL
   AND authorization_instance_authorization_id IS NULL
 `

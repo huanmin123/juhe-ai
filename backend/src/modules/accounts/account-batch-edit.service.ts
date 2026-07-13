@@ -5,6 +5,7 @@ import type {
   AccountStatus,
   AccountSupportedEndpointMode
 } from '../../domain/types.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   assertAnthropicEndpointModesCompatible
@@ -35,6 +36,8 @@ import {
   nextAccountAvailabilityScheduleCheckAt
 } from '../../storage/account-availability-schedule.js'
 import { normalizeAccountCredentialsForWrite } from '../../storage/account-credentials-normalization.js'
+import { deleteAccountBalanceSnapshotAsync } from '../../storage/account-balance.repository.js'
+import { mainDatabaseRuntimeInfo } from '../../storage/database.js'
 import {
   assertAccountModelMappingUpstreamsAllowedBySupportedModels,
   assertAccountSupportedModelsRequired,
@@ -51,6 +54,8 @@ import { normalizeAccountErrorHandlingRules } from './account-error-policy-valid
 import type { AccountBatchEditRequest } from './account-request.schemas.js'
 import { normalizeAccountResponseInspectionRules } from './account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from './account-gpt-request-overrides.validation.js'
+import { effectiveAccountApiKeyCount } from './account-balance-config.js'
+import { requestStatsWriter } from '../background/background-stats-writer.js'
 
 const modelConfigurationFields = new Set([
   'supportedModels',
@@ -112,6 +117,7 @@ export async function batchEditAccountsAsync(
     access,
     prepare: async ({ client, accounts }) => prepareBatchUpdatesAsync(client, accounts, updates)
   })
+  await cleanupDisabledBalanceSnapshots(repositoryResult.balanceSnapshotCleanupAccountIds, repositoryResult.batchId)
   let accounts: AccountSummary[]
   try {
     const refreshed = await Promise.all(
@@ -340,7 +346,28 @@ async function prepareAccountUpdateAsync(
     dispatchChanged: account.priority !== nextPriority
       || account.superPriorityEnabled !== nextSuperPriorityEnabled
       || account.fallbackEnabled !== nextFallbackEnabled,
-    resetHealthCheckState: shouldScheduleHealthCheck && nextStatus !== 'disabled'
+    resetHealthCheckState: shouldScheduleHealthCheck && nextStatus !== 'disabled',
+    disableBalanceQuery: account.type === 'api_key' && effectiveAccountApiKeyCount(nextCredentials) > 1
+  }
+}
+
+async function cleanupDisabledBalanceSnapshots(accountIds: string[], batchId: string): Promise<void> {
+  if (accountIds.length === 0) return
+  const results = await Promise.allSettled(accountIds.map(async (accountId) => {
+    if (runtimeConfig.databaseDriver === 'postgres' || !mainDatabaseRuntimeInfo('stats').queryOnly) {
+      await deleteAccountBalanceSnapshotAsync(accountId)
+      return
+    }
+    await requestStatsWriter({ type: 'delete_account_balance_snapshot', accountId })
+  }))
+  const failedCount = results.filter((result) => result.status === 'rejected').length
+  if (failedCount > 0) {
+    logger.warn({
+      event: 'account_batch_balance_snapshot_cleanup_failed',
+      batchId,
+      accountCount: accountIds.length,
+      failedCount
+    }, '批量编辑已提交，但部分余额快照异步清理失败')
   }
 }
 
