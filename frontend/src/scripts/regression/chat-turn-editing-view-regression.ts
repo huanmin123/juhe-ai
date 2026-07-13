@@ -37,6 +37,9 @@ assert.match(viewSource, /submissionBlocked/, '待确认期间必须统一禁止
 assert.match(viewSource, /let disposed = false/, '组件必须记录卸载状态')
 assert.match(viewSource, /disposed = true[\s\S]{0,300}clearTimeout\(pendingConfirmationTimer\)/, '卸载时必须清理待确认 timer')
 assert.match(viewSource, /if \(disposed \|\| pendingConfirmation\.value !== pending\) return/, '进行中的重新确认在卸载后不得 apply 结果')
+assert.match(viewSource, /applyChatReconciliationIfActive/, '初始失败对账必须通过卸载感知边界应用结果')
+assert.match(viewSource, /async function applySubmissionOutcome[\s\S]{0,300}if \(disposed\) return/, '结果副作用入口必须拒绝已卸载组件')
+assert.match(viewSource, /function enterPendingConfirmation[\s\S]{0,120}if \(disposed\) return/, '待确认状态入口必须拒绝已卸载组件')
 assert.match(viewSource, /\.submission-confirmation-bar\s*\{/, '待确认提示必须有基础布局样式')
 
 console.log('AI 问答编辑/取消/替换页面竞态接线回归通过')

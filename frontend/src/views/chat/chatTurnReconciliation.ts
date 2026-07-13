@@ -11,6 +11,17 @@ export interface ChatSubmissionReconciliation {
 
 const retryDelays = [50, 100, 200, 300, 500, 750, 750]
 
+export async function applyChatReconciliationIfActive<T>(input: {
+  reconcile: () => Promise<T>
+  isDisposed: () => boolean
+  apply: (reconciliation: T) => Promise<void> | void
+}): Promise<boolean> {
+  const reconciliation = await input.reconcile()
+  if (input.isDisposed()) return false
+  await input.apply(reconciliation)
+  return true
+}
+
 export async function reconcileChatSubmission(input: {
   clientMessageId: string
   acceptedTurnId?: string

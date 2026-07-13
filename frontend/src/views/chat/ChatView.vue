@@ -93,7 +93,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import type { ChatApiKeyOption, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 import { applyChatStreamEvent } from './chatStream'
 import { beginLatestTurnEdit, isDefinitiveChatHttpRejection, resolveChatReconciliationNotice, resolveChatSubmitFailure } from './chatTurnEditing'
-import { reconcileChatSubmission, type ChatSubmissionReconciliation } from './chatTurnReconciliation'
+import { applyChatReconciliationIfActive, reconcileChatSubmission, type ChatSubmissionReconciliation } from './chatTurnReconciliation'
 import { createChatConversationSummaryRefresher, mergeChatConversationSummary } from './chatConversationSummary'
 import { stopActiveChatGeneration } from './chatStopGeneration'
 import ChatMessageList from './ChatMessageList.vue'
@@ -175,6 +175,7 @@ const submissionBlocked = computed(() => stopping.value || Boolean(pendingConfir
 const refreshConversationSummary = createChatConversationSummaryRefresher({
   load: chatApi.getConversation,
   apply: (item) => {
+    if (disposed) return
     replaceConversation(mergeChatConversationSummary(conversations.value.find((current) => current.id === item.id), item))
     sortConversations()
   }
@@ -351,18 +352,23 @@ function finishAcceptedTurnEdit(request: ChatRequestContext): void {
 async function handleSubmitFailure(error: unknown, request: ChatRequestContext, streamStarted: boolean, startedTurnId: string | undefined, silent: boolean): Promise<void> {
   const replaceConflict = error instanceof ChatStreamHttpError && error.code === 'chat_replace_conflict'
   const errorMessage = extractApiErrorMessage(error, '发送失败')
-  const reconciliation = await reconcileChatSubmission({
-    clientMessageId: request.clientMessageId,
-    acceptedTurnId: startedTurnId,
-    confirmPendingAcceptance: !(error instanceof ChatStreamHttpError) || error.code === 'chat_message_already_exists',
-    listMessages: () => refreshMessages(request.conversationId),
-    stop: async () => { await chatApi.stop(request.conversationId) }
+  await applyChatReconciliationIfActive({
+    reconcile: () => reconcileChatSubmission({
+      clientMessageId: request.clientMessageId,
+      acceptedTurnId: startedTurnId,
+      confirmPendingAcceptance: !(error instanceof ChatStreamHttpError) || error.code === 'chat_message_already_exists',
+      listMessages: () => refreshMessages(request.conversationId),
+      stop: async () => { await chatApi.stop(request.conversationId) }
+    }),
+    isDisposed: () => disposed,
+    apply: async (reconciliation) => {
+      if (!reconciliation.confirmed && !replaceConflict && !isDefinitiveChatRejection(error)) {
+        enterPendingConfirmation({ request, streamStarted, startedTurnId, silent, errorMessage })
+        return
+      }
+      await applySubmissionOutcome({ request, streamStarted, silent, errorMessage, replaceConflict, reconciliation })
+    }
   })
-  if (!reconciliation.confirmed && !replaceConflict && !isDefinitiveChatRejection(error)) {
-    enterPendingConfirmation({ request, streamStarted, startedTurnId, silent, errorMessage })
-    return
-  }
-  await applySubmissionOutcome({ request, streamStarted, silent, errorMessage, replaceConflict, reconciliation })
 }
 async function applySubmissionOutcome(input: {
   request: ChatRequestContext
@@ -372,9 +378,11 @@ async function applySubmissionOutcome(input: {
   replaceConflict: boolean
   reconciliation: ChatSubmissionReconciliation
 }): Promise<void> {
+  if (disposed) return
   const accepted = input.streamStarted || input.reconciliation.accepted
   if (input.reconciliation.accepted) {
     try { await refreshConversationSummary(input.request.conversationId) } catch {}
+    if (disposed) return
   }
   const resolution = resolveChatSubmitFailure({ streamStarted: input.streamStarted, accepted, confirmed: true, replaceConflict: input.replaceConflict })
   if (resolution.clearEditing) {
@@ -397,6 +405,7 @@ async function applySubmissionOutcome(input: {
   else message.error(input.errorMessage)
 }
 function enterPendingConfirmation(input: PendingSubmissionConfirmation): void {
+  if (disposed) return
   pendingConfirmation.value = Object.freeze(input)
   message.warning('暂时无法确认消息是否已提交，已暂停新的发送并将在后台重试')
   schedulePendingConfirmation()

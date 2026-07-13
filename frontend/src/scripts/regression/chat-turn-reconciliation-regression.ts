@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { reconcileChatSubmission } from '../../views/chat/chatTurnReconciliation'
+import { applyChatReconciliationIfActive, reconcileChatSubmission } from '../../views/chat/chatTurnReconciliation'
 import type { ChatMessage } from '../../types/domain/chat'
 
 function pair(status: ChatMessage['status']): ChatMessage[] {
@@ -105,5 +105,30 @@ const unknown = await reconcileChatSubmission({
 assert.deepEqual({ confirmed: unknown.confirmed, accepted: unknown.accepted, terminal: unknown.terminal, failedReads }, {
   confirmed: false, accepted: false, terminal: false, failedReads: 3
 }, '全部权威读取失败只能返回 unknown，绝不能伪装成未接受')
+
+for (const reconciliation of [
+  { messages: [], confirmed: false, accepted: false, terminal: false },
+  { messages: pair('streaming'), confirmed: true, accepted: true, terminal: false, turnId: 'turn_1', assistantStatus: 'streaming' as const }
+]) {
+  let disposed = false
+  let resolveReconciliation!: (value: typeof reconciliation) => void
+  const deferred = new Promise<typeof reconciliation>((resolve) => { resolveReconciliation = resolve })
+  let pendingWrites = 0
+  let notices = 0
+  let summaryRefreshes = 0
+  const applying = applyChatReconciliationIfActive({
+    reconcile: () => deferred,
+    isDisposed: () => disposed,
+    apply: async () => {
+      pendingWrites += 1
+      notices += 1
+      summaryRefreshes += 1
+    }
+  })
+  disposed = true
+  resolveReconciliation(reconciliation)
+  assert.equal(await applying, false, '卸载后返回的延迟对账不得进入副作用阶段')
+  assert.deepEqual({ pendingWrites, notices, summaryRefreshes }, { pendingWrites: 0, notices: 0, summaryRefreshes: 0 }, 'unknown/streaming 对账在卸载后不得写 pending、提示或刷新摘要')
+}
 
 console.log('AI 问答接受后断流与停止终态对账回归通过')
