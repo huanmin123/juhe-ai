@@ -305,6 +305,8 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.GlobalSettingsUpdateHandler != nil ||
 		handlers.ClientIPAllowlistHandler != nil ||
 		handlers.ClientIPUnallowlistHandler != nil ||
+		handlers.ClientIPBlacklistHandler != nil ||
+		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.MyOperationLogsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
@@ -388,6 +390,8 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.GlobalSettingsUpdateHandler != nil ||
 		handlers.ClientIPAllowlistHandler != nil ||
 		handlers.ClientIPUnallowlistHandler != nil ||
+		handlers.ClientIPBlacklistHandler != nil ||
+		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
 		handlers.MyStatsUsageWindowHandler != nil {
@@ -494,6 +498,8 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.GlobalSettingsUpdateHandler == nil ||
 		handlers.ClientIPAllowlistHandler == nil ||
 		handlers.ClientIPUnallowlistHandler == nil ||
+		handlers.ClientIPBlacklistHandler == nil ||
+		handlers.ClientIPUnblockHandler == nil ||
 		handlers.OperationLogsHandler == nil ||
 		handlers.MyOperationLogsHandler == nil ||
 		handlers.StatsUsageWindowHandler == nil ||
@@ -532,7 +538,9 @@ func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyMutationDependencies(t *t
 func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *testing.T) {
 	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ClientIPAllowlistHandler != nil ||
-		disabled.ClientIPUnallowlistHandler != nil {
+		disabled.ClientIPUnallowlistHandler != nil ||
+		disabled.ClientIPBlacklistHandler != nil ||
+		disabled.ClientIPUnblockHandler != nil {
 		t.Fatal("client IP policy handlers were created while management API disabled")
 	}
 
@@ -547,7 +555,9 @@ func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *tes
 		nil,
 	)
 	if enabled.ClientIPAllowlistHandler == nil ||
-		enabled.ClientIPUnallowlistHandler == nil {
+		enabled.ClientIPUnallowlistHandler == nil ||
+		enabled.ClientIPBlacklistHandler == nil ||
+		enabled.ClientIPUnblockHandler == nil {
 		t.Fatal("client IP policy handlers were not created while management API enabled")
 	}
 
@@ -561,10 +571,16 @@ func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *tes
 		"managementHandlers.ClientIPAllowlistHandler",
 		"ManagementClientIPUnallowlistHandler:",
 		"managementHandlers.ClientIPUnallowlistHandler",
+		"ManagementClientIPBlacklistHandler:",
+		"managementHandlers.ClientIPBlacklistHandler",
+		"ManagementClientIPUnblockHandler:",
+		"managementHandlers.ClientIPUnblockHandler",
 		"Transactor:  store",
 		"Invalidator: systemAccountInvalidator",
 		"httpapi.NewManagementClientIPAllowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
 		"httpapi.NewManagementClientIPUnallowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
+		"httpapi.NewManagementClientIPBlacklistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
+		"httpapi.NewManagementClientIPUnblockHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("server.go missing client IP policy wiring %q", required)

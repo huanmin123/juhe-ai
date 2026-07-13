@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -314,7 +316,9 @@ func managementAPIKeyCreateMutationGuardConfig(scope managementAPIKeyScope) muta
 
 func managementClientIPPolicyMutationGuardConfig(action string) mutationGuardConfig {
 	if action != managementClientIPPolicyActionAllowlist &&
-		action != managementClientIPPolicyActionUnallowlist {
+		action != managementClientIPPolicyActionUnallowlist &&
+		action != managementClientIPPolicyActionBlacklist &&
+		action != managementClientIPPolicyActionUnblock {
 		panic("unsupported management client IP policy mutation action")
 	}
 	return mutationGuardConfig{
@@ -324,10 +328,15 @@ func managementClientIPPolicyMutationGuardConfig(action string) mutationGuardCon
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{
+			fingerprint := map[string]any{
 				"ipHash": chi.URLParam(r, "ipHash"),
 				"reason": mutationAnyField(fields, "reason"),
-			}, nil
+			}
+			if action == managementClientIPPolicyActionBlacklist {
+				fingerprint["durationMinutes"] = mutationNodeJSONNumberField(fields, "durationMinutes")
+				fingerprint["durationDays"] = mutationNodeJSONNumberField(fields, "durationDays")
+			}
+			return fingerprint, nil
 		},
 	}
 }
@@ -395,6 +404,25 @@ func mutationAnyField(fields map[string]json.RawMessage, name string) any {
 		return nil
 	}
 	return value
+}
+
+func mutationNodeJSONNumberField(fields map[string]json.RawMessage, name string) any {
+	value := mutationAnyField(fields, name)
+	number, ok := value.(json.Number)
+	if !ok {
+		return value
+	}
+	normalized, err := strconv.ParseFloat(number.String(), 64)
+	if math.IsInf(normalized, 0) {
+		return nil
+	}
+	if err != nil {
+		return number
+	}
+	if normalized == 0 {
+		return float64(0)
+	}
+	return normalized
 }
 
 func mutationSensitiveFingerprint(value string) string {

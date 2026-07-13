@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +23,8 @@ const managementClientIPPolicyMaxBodyBytes = 256 << 10
 const (
 	managementClientIPPolicyActionAllowlist   = "allowlist"
 	managementClientIPPolicyActionUnallowlist = "unallowlist"
+	managementClientIPPolicyActionBlacklist   = "blacklist"
+	managementClientIPPolicyActionUnblock     = "unblock"
 )
 
 type managementClientIPPolicyHTTPService interface {
@@ -32,6 +36,14 @@ type managementClientIPPolicyHTTPService interface {
 		r *http.Request,
 		input managementclientippolicies.UnallowlistInput,
 	) (managementclientippolicies.UnallowlistResult, error)
+	Blacklist(
+		r *http.Request,
+		input managementclientippolicies.BlacklistInput,
+	) (managementclientippolicies.PolicySummary, error)
+	Unblock(
+		r *http.Request,
+		input managementclientippolicies.UnblockInput,
+	) (managementclientippolicies.UnblockResult, error)
 }
 
 type managementClientIPPolicyServiceAdapter struct {
@@ -50,6 +62,20 @@ func (a managementClientIPPolicyServiceAdapter) Unallowlist(
 	input managementclientippolicies.UnallowlistInput,
 ) (managementclientippolicies.UnallowlistResult, error) {
 	return a.service.Unallowlist(r.Context(), input)
+}
+
+func (a managementClientIPPolicyServiceAdapter) Blacklist(
+	r *http.Request,
+	input managementclientippolicies.BlacklistInput,
+) (managementclientippolicies.PolicySummary, error) {
+	return a.service.Blacklist(r.Context(), input)
+}
+
+func (a managementClientIPPolicyServiceAdapter) Unblock(
+	r *http.Request,
+	input managementclientippolicies.UnblockInput,
+) (managementclientippolicies.UnblockResult, error) {
+	return a.service.Unblock(r.Context(), input)
 }
 
 func NewManagementClientIPAllowlistHandlerWithOperationLog(
@@ -74,13 +100,37 @@ func NewManagementClientIPUnallowlistHandlerWithOperationLog(
 	)
 }
 
+func NewManagementClientIPBlacklistHandlerWithOperationLog(
+	service *managementclientippolicies.Service,
+	options ManagementOperationLogOptions,
+) http.Handler {
+	return newManagementClientIPPolicyHandler(
+		managementClientIPPolicyServiceAdapter{service: service},
+		managementClientIPPolicyActionBlacklist,
+		newManagementOperationLogOptions(options),
+	)
+}
+
+func NewManagementClientIPUnblockHandlerWithOperationLog(
+	service *managementclientippolicies.Service,
+	options ManagementOperationLogOptions,
+) http.Handler {
+	return newManagementClientIPPolicyHandler(
+		managementClientIPPolicyServiceAdapter{service: service},
+		managementClientIPPolicyActionUnblock,
+		newManagementOperationLogOptions(options),
+	)
+}
+
 func newManagementClientIPPolicyHandler(
 	service managementClientIPPolicyHTTPService,
 	action string,
 	operationLogOptions managementOperationLogOptions,
 ) http.Handler {
 	if action != managementClientIPPolicyActionAllowlist &&
-		action != managementClientIPPolicyActionUnallowlist {
+		action != managementClientIPPolicyActionUnallowlist &&
+		action != managementClientIPPolicyActionBlacklist &&
+		action != managementClientIPPolicyActionUnblock {
 		panic("unsupported management client IP policy action")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +139,7 @@ func newManagementClientIPPolicyHandler(
 			writeMessageError(w, http.StatusBadRequest, "IP 标识无效")
 			return
 		}
-		reason, ok := decodeManagementClientIPPolicyBody(w, r)
+		body, ok := decodeManagementClientIPPolicyBody(w, r, action)
 		if !ok {
 			return
 		}
@@ -108,7 +158,7 @@ func newManagementClientIPPolicyHandler(
 			result, err := service.Allowlist(r, managementclientippolicies.AllowlistInput{
 				IPHash:               ipHash,
 				ActorSystemAccountID: authContext.SystemAccountID,
-				Reason:               reason,
+				Reason:               body.reason,
 			})
 			if !writeManagementClientIPPolicyServiceError(w, err) {
 				return
@@ -117,10 +167,10 @@ func newManagementClientIPPolicyHandler(
 				r,
 				authContext,
 				ipHash,
-				reason,
+				body,
 				action,
 				result,
-				managementclientippolicies.UnallowlistResult{},
+				0,
 				operationLogOptions,
 			)
 			writeData(w, http.StatusOK, result)
@@ -128,7 +178,7 @@ func newManagementClientIPPolicyHandler(
 			result, err := service.Unallowlist(r, managementclientippolicies.UnallowlistInput{
 				IPHash:               ipHash,
 				ActorSystemAccountID: authContext.SystemAccountID,
-				Reason:               reason,
+				Reason:               body.reason,
 			})
 			if !writeManagementClientIPPolicyServiceError(w, err) {
 				return
@@ -137,10 +187,52 @@ func newManagementClientIPPolicyHandler(
 				r,
 				authContext,
 				ipHash,
-				reason,
+				body,
 				action,
 				managementclientippolicies.PolicySummary{},
+				result.DisabledCount,
+				operationLogOptions,
+			)
+			writeData(w, http.StatusOK, result)
+		case managementClientIPPolicyActionBlacklist:
+			result, err := service.Blacklist(r, managementclientippolicies.BlacklistInput{
+				IPHash:               ipHash,
+				ActorSystemAccountID: authContext.SystemAccountID,
+				Reason:               body.reason,
+				DurationMinutes:      body.durationMinutes,
+				DurationDays:         body.durationDays,
+			})
+			if !writeManagementClientIPPolicyServiceError(w, err) {
+				return
+			}
+			recordManagementClientIPPolicyOperationLog(
+				r,
+				authContext,
+				ipHash,
+				body,
+				action,
 				result,
+				0,
+				operationLogOptions,
+			)
+			writeData(w, http.StatusOK, result)
+		case managementClientIPPolicyActionUnblock:
+			result, err := service.Unblock(r, managementclientippolicies.UnblockInput{
+				IPHash:               ipHash,
+				ActorSystemAccountID: authContext.SystemAccountID,
+				Reason:               body.reason,
+			})
+			if !writeManagementClientIPPolicyServiceError(w, err) {
+				return
+			}
+			recordManagementClientIPPolicyOperationLog(
+				r,
+				authContext,
+				ipHash,
+				body,
+				action,
+				managementclientippolicies.PolicySummary{},
+				result.DisabledCount,
 				operationLogOptions,
 			)
 			writeData(w, http.StatusOK, result)
@@ -148,10 +240,18 @@ func newManagementClientIPPolicyHandler(
 	})
 }
 
+type managementClientIPPolicyBody struct {
+	reason          *string
+	durationMinutes *int
+	durationDays    *int
+}
+
 func decodeManagementClientIPPolicyBody(
 	w http.ResponseWriter,
 	r *http.Request,
-) (*string, bool) {
+	action string,
+) (managementClientIPPolicyBody, bool) {
+	var result managementClientIPPolicyBody
 	limited := http.MaxBytesReader(w, r.Body, managementClientIPPolicyMaxBodyBytes)
 	body, err := io.ReadAll(limited)
 	_ = limited.Close()
@@ -162,7 +262,7 @@ func decodeManagementClientIPPolicyBody(
 		} else {
 			writeMessageError(w, http.StatusBadRequest, "请求体无效")
 		}
-		return nil, false
+		return result, false
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		body = []byte("{}")
@@ -171,38 +271,87 @@ func decodeManagementClientIPPolicyBody(
 	var payload map[string]json.RawMessage
 	if err := decoder.Decode(&payload); err != nil || payload == nil {
 		writeMessageError(w, http.StatusBadRequest, "IP 策略参数无效")
-		return nil, false
+		return result, false
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		writeMessageError(w, http.StatusBadRequest, "请求体无效")
-		return nil, false
+		return result, false
 	}
 	for field := range payload {
-		if field != "reason" {
+		if field != "reason" &&
+			(action != managementClientIPPolicyActionBlacklist ||
+				(field != "durationMinutes" && field != "durationDays")) {
 			writeMessageError(w, http.StatusBadRequest, "IP 策略参数包含未知字段")
-			return nil, false
+			return result, false
 		}
 	}
 	rawReason, exists := payload["reason"]
-	if !exists {
-		return nil, true
+	if exists {
+		if bytes.Equal(bytes.TrimSpace(rawReason), []byte("null")) {
+			writeMessageError(w, http.StatusBadRequest, "IP 策略参数无效")
+			return result, false
+		}
+		var reason string
+		if err := json.Unmarshal(rawReason, &reason); err != nil {
+			writeMessageError(w, http.StatusBadRequest, "IP 策略参数无效")
+			return result, false
+		}
+		reason = strings.TrimFunc(reason, managementGroupListECMAScriptWhitespace)
+		if managementClientIPPolicyUTF16Length(reason) > 500 {
+			writeMessageError(w, http.StatusBadRequest, "原因不能超过 500 个字符")
+			return result, false
+		}
+		result.reason = &reason
 	}
-	if bytes.Equal(bytes.TrimSpace(rawReason), []byte("null")) {
-		writeMessageError(w, http.StatusBadRequest, "IP 策略参数无效")
-		return nil, false
+	if action != managementClientIPPolicyActionBlacklist {
+		return result, true
 	}
-	var reason string
-	if err := json.Unmarshal(rawReason, &reason); err != nil {
-		writeMessageError(w, http.StatusBadRequest, "IP 策略参数无效")
-		return nil, false
+	for _, field := range []struct {
+		name   string
+		target **int
+	}{
+		{name: "durationMinutes", target: &result.durationMinutes},
+		{name: "durationDays", target: &result.durationDays},
+	} {
+		raw, exists := payload[field.name]
+		if !exists {
+			continue
+		}
+		value, valid := managementClientIPPolicyJSONInteger(raw)
+		if !valid {
+			writeMessageError(w, http.StatusBadRequest, "IP 策略参数无效")
+			return managementClientIPPolicyBody{}, false
+		}
+		*field.target = &value
 	}
-	reason = strings.TrimFunc(reason, managementGroupListECMAScriptWhitespace)
-	if managementClientIPPolicyUTF16Length(reason) > 500 {
-		writeMessageError(w, http.StatusBadRequest, "原因不能超过 500 个字符")
-		return nil, false
+	return result, true
+}
+
+func managementClientIPPolicyJSONInteger(raw json.RawMessage) (int, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return 0, false
 	}
-	return &reason, true
+	number, ok := decoded.(json.Number)
+	if !ok {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(number.String(), 64)
+	if err != nil || math.IsInf(value, 0) || math.IsNaN(value) || math.Trunc(value) != value {
+		return 0, false
+	}
+	maxInt := int(^uint(0) >> 1)
+	minInt := -maxInt - 1
+	if value >= float64(maxInt) {
+		return maxInt, true
+	}
+	if value <= float64(minInt) {
+		return minInt, true
+	}
+	return int(value), true
 }
 
 func validManagementClientIPHash(value string) bool {
@@ -247,10 +396,10 @@ func recordManagementClientIPPolicyOperationLog(
 	r *http.Request,
 	authContext managementauth.Context,
 	ipHash string,
-	reason *string,
+	body managementClientIPPolicyBody,
 	action string,
-	allowlistResult managementclientippolicies.PolicySummary,
-	unallowlistResult managementclientippolicies.UnallowlistResult,
+	policyResult managementclientippolicies.PolicySummary,
+	disabledCount int64,
 	opts managementOperationLogOptions,
 ) {
 	if opts.client == nil {
@@ -289,37 +438,82 @@ func recordManagementClientIPPolicyOperationLog(
 		UserAgent:            r.UserAgent(),
 		CreatedAt:            now().UTC(),
 	}
-	if action == managementClientIPPolicyActionAllowlist {
-		input.Summary = "加入 IP 白名单：" + resourceName
+	switch action {
+	case managementClientIPPolicyActionAllowlist, managementClientIPPolicyActionBlacklist:
+		policyType := "allowlist"
+		summary := "加入 IP 白名单：" + resourceName
+		durationLabel := "永久"
+		durationChangeLabel := "白名单时长"
+		var expiresAt any
+		if action == managementClientIPPolicyActionBlacklist {
+			policyType = "blacklist"
+			summary = "封禁 IP：" + resourceName
+			durationLabel = managementClientIPPolicyDurationLabel(body)
+			durationChangeLabel = "封禁时长"
+			expiresAt = managementClientIPPolicyOptionalStringValue(policyResult.ExpiresAt)
+		}
+		input.Summary = summary
 		input.Changes = []port.OperationLogChange{
-			{Field: "reason", Label: "原因", After: managementClientIPPolicyReasonValue(reason)},
-			{Field: "policyType", Label: "策略类型", After: "allowlist"},
-			{Field: "duration", Label: "白名单时长", After: "永久"},
-			{Field: "expiresAt", Label: "过期时间", After: nil},
+			{Field: "reason", Label: "原因", After: managementClientIPPolicyReasonValue(body.reason)},
+			{Field: "policyType", Label: "策略类型", After: policyType},
+			{Field: "duration", Label: durationChangeLabel, After: durationLabel},
+			{Field: "expiresAt", Label: "过期时间", After: expiresAt},
 		}
 		input.Metadata = map[string]any{
 			"ipHash":        ipHash,
-			"policyId":      allowlistResult.ID,
-			"policyType":    "allowlist",
-			"durationLabel": "永久",
+			"policyId":      policyResult.ID,
+			"policyType":    policyType,
+			"durationLabel": durationLabel,
 		}
-	} else {
-		input.Summary = "移出 IP 白名单：" + resourceName
+		if policyResult.ExpiresAt != nil {
+			input.Metadata["expiresAt"] = *policyResult.ExpiresAt
+		}
+		if body.durationMinutes != nil {
+			input.Metadata["durationMinutes"] = *body.durationMinutes
+		}
+		if body.durationDays != nil {
+			input.Metadata["durationDays"] = *body.durationDays
+		}
+	case managementClientIPPolicyActionUnallowlist, managementClientIPPolicyActionUnblock:
+		policyType := "allowlist"
+		summary := "移出 IP 白名单：" + resourceName
+		if action == managementClientIPPolicyActionUnblock {
+			policyType = "blacklist"
+			summary = "解除 IP 封禁：" + resourceName
+		}
+		input.Summary = summary
 		input.Changes = []port.OperationLogChange{
-			{Field: "disabledCount", Label: "停用策略数", After: unallowlistResult.DisabledCount},
-			{Field: "policyType", Label: "策略类型", Before: "allowlist", After: nil},
-			{Field: "reason", Label: "原因", After: managementClientIPPolicyReasonValue(reason)},
+			{Field: "disabledCount", Label: "停用策略数", After: disabledCount},
+			{Field: "policyType", Label: "策略类型", Before: policyType, After: nil},
+			{Field: "reason", Label: "原因", After: managementClientIPPolicyReasonValue(body.reason)},
 		}
 		input.Metadata = map[string]any{
 			"ipHash":        ipHash,
-			"policyType":    "allowlist",
-			"disabledCount": unallowlistResult.DisabledCount,
+			"policyType":    policyType,
+			"disabledCount": disabledCount,
 		}
 	}
-	if reason != nil {
-		input.Metadata["reason"] = *reason
+	if body.reason != nil {
+		input.Metadata["reason"] = *body.reason
 	}
 	enqueueManagementOperationLog(r.Context(), opts, input)
+}
+
+func managementClientIPPolicyDurationLabel(body managementClientIPPolicyBody) string {
+	if body.durationMinutes != nil {
+		return strconv.Itoa(*body.durationMinutes) + " 分钟"
+	}
+	if body.durationDays != nil {
+		return strconv.Itoa(*body.durationDays) + " 天"
+	}
+	return "永久"
+}
+
+func managementClientIPPolicyOptionalStringValue(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func managementClientIPPolicyReasonValue(reason *string) any {

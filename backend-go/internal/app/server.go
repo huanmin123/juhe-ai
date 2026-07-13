@@ -278,6 +278,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementGlobalSettingsUpdateHandler:             managementHandlers.GlobalSettingsUpdateHandler,
 		ManagementClientIPAllowlistHandler:                managementHandlers.ClientIPAllowlistHandler,
 		ManagementClientIPUnallowlistHandler:              managementHandlers.ClientIPUnallowlistHandler,
+		ManagementClientIPBlacklistHandler:                managementHandlers.ClientIPBlacklistHandler,
+		ManagementClientIPUnblockHandler:                  managementHandlers.ClientIPUnblockHandler,
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
@@ -430,6 +432,8 @@ type managementAPIHandlers struct {
 	GlobalSettingsUpdateHandler             http.Handler
 	ClientIPAllowlistHandler                http.Handler
 	ClientIPUnallowlistHandler              http.Handler
+	ClientIPBlacklistHandler                http.Handler
+	ClientIPUnblockHandler                  http.Handler
 	OperationLogsHandler                    http.Handler
 	MyOperationLogsHandler                  http.Handler
 	StatsUsageWindowHandler                 http.Handler
@@ -682,6 +686,8 @@ func newManagementAPIHandler(
 		GlobalSettingsUpdateHandler:             httpapi.NewManagementGlobalSettingsUpdateHandlerWithOperationLog(globalSettingsUpdateService, operationLogOptions),
 		ClientIPAllowlistHandler:                httpapi.NewManagementClientIPAllowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
 		ClientIPUnallowlistHandler:              httpapi.NewManagementClientIPUnallowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
+		ClientIPBlacklistHandler:                httpapi.NewManagementClientIPBlacklistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
+		ClientIPUnblockHandler:                  httpapi.NewManagementClientIPUnblockHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),

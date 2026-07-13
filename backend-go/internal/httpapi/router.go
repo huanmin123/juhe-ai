@@ -142,6 +142,8 @@ type RouterOptions struct {
 	ManagementGlobalSettingsUpdateHandler             http.Handler
 	ManagementClientIPAllowlistHandler                http.Handler
 	ManagementClientIPUnallowlistHandler              http.Handler
+	ManagementClientIPBlacklistHandler                http.Handler
+	ManagementClientIPUnblockHandler                  http.Handler
 	ManagementOperationLogsHandler                    http.Handler
 	ManagementMyOperationLogsHandler                  http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
@@ -351,6 +353,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementGlobalSettingsUpdateHandler == nil &&
 				opts.ManagementClientIPAllowlistHandler == nil &&
 				opts.ManagementClientIPUnallowlistHandler == nil &&
+				opts.ManagementClientIPBlacklistHandler == nil &&
+				opts.ManagementClientIPUnblockHandler == nil &&
 				opts.ManagementOperationLogsHandler == nil &&
 				opts.ManagementMyOperationLogsHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
@@ -793,6 +797,22 @@ func NewRouter(opts RouterOptions) http.Handler {
 					mutationGuards.Middleware(managementClientIPPolicyMutationGuardConfig(managementClientIPPolicyActionUnallowlist)),
 				).Post("/ip-stats/{ipHash}/unallowlist", opts.ManagementClientIPUnallowlistHandler.ServeHTTP)
 			}
+			if opts.ManagementClientIPBlacklistHandler != nil {
+				system.With(
+					managementGroupCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementClientIPPolicyMutationGuardConfig(managementClientIPPolicyActionBlacklist)),
+				).Post("/ip-stats/{ipHash}/blacklist", opts.ManagementClientIPBlacklistHandler.ServeHTTP)
+			}
+			if opts.ManagementClientIPUnblockHandler != nil {
+				system.With(
+					managementGroupCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementClientIPPolicyMutationGuardConfig(managementClientIPPolicyActionUnblock)),
+				).Post("/ip-stats/{ipHash}/unblock", opts.ManagementClientIPUnblockHandler.ServeHTTP)
+			}
 			if opts.ManagementOperationLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/operation-logs", opts.ManagementOperationLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/operation-logs/{id}", opts.ManagementOperationLogsHandler.ServeHTTP)
@@ -954,6 +974,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||
 		opts.ManagementClientIPUnallowlistHandler != nil ||
+		opts.ManagementClientIPBlacklistHandler != nil ||
+		opts.ManagementClientIPUnblockHandler != nil ||
 		opts.ManagementOperationLogsHandler != nil ||
 		opts.ManagementMyOperationLogsHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
@@ -1018,5 +1040,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||
-		opts.ManagementClientIPUnallowlistHandler != nil
+		opts.ManagementClientIPUnallowlistHandler != nil ||
+		opts.ManagementClientIPBlacklistHandler != nil ||
+		opts.ManagementClientIPUnblockHandler != nil
 }

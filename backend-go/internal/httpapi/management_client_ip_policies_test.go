@@ -455,6 +455,14 @@ type managementClientIPPolicyHTTPServiceStub struct {
 	unallowlistInput  managementclientippolicies.UnallowlistInput
 	unallowlistResult managementclientippolicies.UnallowlistResult
 	unallowlistErr    error
+	blacklistCalls    int
+	blacklistInput    managementclientippolicies.BlacklistInput
+	blacklistResult   managementclientippolicies.PolicySummary
+	blacklistErr      error
+	unblockCalls      int
+	unblockInput      managementclientippolicies.UnblockInput
+	unblockResult     managementclientippolicies.UnblockResult
+	unblockErr        error
 	events            *[]string
 }
 
@@ -480,4 +488,28 @@ func (s *managementClientIPPolicyHTTPServiceStub) Unallowlist(
 		*s.events = append(*s.events, "unallowlist")
 	}
 	return s.unallowlistResult, s.unallowlistErr
+}
+
+func (s *managementClientIPPolicyHTTPServiceStub) Blacklist(
+	_ *http.Request,
+	input managementclientippolicies.BlacklistInput,
+) (managementclientippolicies.PolicySummary, error) {
+	s.blacklistCalls++
+	s.blacklistInput = input
+	if s.events != nil {
+		*s.events = append(*s.events, "blacklist")
+	}
+	return s.blacklistResult, s.blacklistErr
+}
+
+func (s *managementClientIPPolicyHTTPServiceStub) Unblock(
+	_ *http.Request,
+	input managementclientippolicies.UnblockInput,
+) (managementclientippolicies.UnblockResult, error) {
+	s.unblockCalls++
+	s.unblockInput = input
+	if s.events != nil {
+		*s.events = append(*s.events, "unblock")
+	}
+	return s.unblockResult, s.unblockErr
 }
