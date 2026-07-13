@@ -14,6 +14,7 @@ import katex from 'katex'
 import { marked, type RendererObject } from 'marked'
 import { message as antdMessage } from 'ant-design-vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ChatCodeCopyResetController } from './chatCodeCopyState'
 import 'highlight.js/styles/github.css'
 import 'katex/dist/katex.min.css'
 
@@ -29,8 +30,11 @@ hljs.registerLanguage('html', xml)
 const props = defineProps<{ content: string }>()
 const root = ref<HTMLElement>()
 const mermaidPrefix = `chat-mermaid-${Date.now()}-${Math.random().toString(36).slice(2)}`
+const codeCopyResetController = new ChatCodeCopyResetController(
+  (callback, delay) => window.setTimeout(callback, delay),
+  (timer) => window.clearTimeout(timer)
+)
 let renderVersion = 0
-let copyResetTimer: number | undefined
 
 const renderer: RendererObject = {
   html({ text }) {
@@ -101,7 +105,7 @@ watch(html, async () => {
 onMounted(() => root.value?.addEventListener('click', handleRootClick))
 onBeforeUnmount(() => {
   root.value?.removeEventListener('click', handleRootClick)
-  if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer)
+  codeCopyResetController.dispose()
 })
 
 async function handleRootClick(event: MouseEvent): Promise<void> {
@@ -115,12 +119,7 @@ async function handleRootClick(event: MouseEvent): Promise<void> {
   if (!code) return
   try {
     await navigator.clipboard.writeText(code.textContent ?? '')
-    button.textContent = '已复制'
-    if (copyResetTimer !== undefined) window.clearTimeout(copyResetTimer)
-    copyResetTimer = window.setTimeout(() => {
-      if (button.isConnected) button.textContent = '复制'
-      copyResetTimer = undefined
-    }, 1200)
+    codeCopyResetController.markCopied(button)
   } catch {
     antdMessage.error('复制失败，请稍后重试')
   }

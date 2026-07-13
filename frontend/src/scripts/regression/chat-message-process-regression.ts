@@ -25,6 +25,17 @@ assert.equal(streamedFunction.toolGroups.length, 1, '函数参数增量必须按
 assert.equal(streamedFunction.toolGroups[0]?.status, 'updated')
 assert.match(streamedFunction.toolGroups[0]?.summaries[0] ?? '', /^lookup/, '增量事件不能丢失前一阶段的函数名与可读参数')
 
+const persistedTerminalFunction = projectChatMessageProcess({
+  contentBlocks: [
+    { type: 'tool_call', id: 'fn_persisted', toolType: 'function_call', status: 'completed', item: { id: 'fn_persisted', type: 'function_call', name: 'lookup', arguments: '{"q":"北京"}' } },
+    { type: 'tool_call', id: 'tool_2', toolType: 'response.function_call_arguments.delta', status: 'updated', item: { type: 'response.function_call_arguments.delta', item_id: 'fn_persisted', delta: '京"}' } }
+  ]
+} as ChatMessage)
+assert.equal(persistedTerminalFunction.toolGroups.length, 1, '持久化的后置参数增量必须按 item_id 归回原调用')
+assert.equal(persistedTerminalFunction.toolGroups[0]?.callCount, 1)
+assert.equal(persistedTerminalFunction.toolGroups[0]?.status, 'completed', '后置 updated 不能把已完成生命周期降级')
+assert.match(persistedTerminalFunction.toolGroups[0]?.summaries[0] ?? '', /^lookup/, '终态合并后必须保留原函数摘要')
+
 const duplicateSearch = projectChatMessageProcess(message([
   { id: 'search_a', type: 'web_search_call', status: 'completed', item: { action: { queries: [' 上海 天气 ', '北京   天气', '北京 天气'] } } },
   { id: 'search_b', type: 'web_search_call', status: 'completed', item: { action: { queries: ['北京 天气', '上海 天气'] } } }
@@ -39,6 +50,25 @@ const differentSearch = projectChatMessageProcess(message([
   { id: 'search_shanghai', type: 'web_search_call', status: 'completed', item: { query: '上海天气' } }
 ]))
 assert.equal(differentSearch.toolGroups.length, 2, '不同搜索条件不能误合并')
+
+const sameQueryDifferentAction = projectChatMessageProcess(message([
+  { id: 'search_action', type: 'web_search_call', status: 'completed', item: { action: { type: 'search', query: '同一个目标' } } },
+  { id: 'open_action', type: 'web_search_call', status: 'completed', item: { action: { type: 'open_page', query: '同一个目标', url: 'https://example.com/detail' } } }
+]))
+assert.equal(sameQueryDifferentAction.toolGroups.length, 2, '同 query 的不同完整 action 不能误合并')
+
+const duplicateOpenPage = projectChatMessageProcess(message([
+  { id: 'open_1', type: 'web_search_call', status: 'completed', item: { action: { type: 'open_page', url: 'https://example.com/detail' } } },
+  { id: 'open_2', type: 'web_search_call', status: 'completed', item: { action: { url: 'https://example.com/detail', type: 'open_page' } } }
+]))
+assert.equal(duplicateOpenPage.toolGroups.length, 1, '无 query 的相同 open_page action 仍应聚合')
+assert.match(duplicateOpenPage.toolGroups[0]?.summaries[0] ?? '', /打开页面.*example\.com/, '无 query action 必须提供可读动作与页面目标')
+
+const volatileSearchFields = projectChatMessageProcess(message([
+  { id: 'volatile_1', type: 'web_search_call', status: 'completed', item: { action: { type: 'open_page', url: 'https://example.com/detail', id: 'first', status: 'running', time: 1 } } },
+  { id: 'volatile_2', type: 'web_search_call', status: 'completed', item: { action: { time: 999, status: 'done', id: 'second', url: 'https://example.com/detail', type: 'open_page' } } }
+]))
+assert.equal(volatileSearchFields.toolGroups.length, 1, '完整 action 中 id/status/time 等易变字段不能阻止聚合')
 
 const stableFunction = projectChatMessageProcess(message([
   { id: 'fn_1', type: 'function_call', status: 'completed', item: { name: 'lookup', arguments: '{"b":2,"a":{"y":2,"x":1}}' } },

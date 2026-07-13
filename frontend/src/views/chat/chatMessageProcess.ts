@@ -46,7 +46,7 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
     lifecycle.set(lifecycleKey, {
       callId,
       type,
-      status: event.status,
+      status: mergeLifecycleStatus(previous?.status, event.status),
       item: mergeToolItem(previous?.item, event.item),
       fallbackIndex: previous?.fallbackIndex ?? index
     })
@@ -79,13 +79,9 @@ function groupToolEvents(events: ChatToolEvent[]): ChatToolProcessGroup[] {
 
 function canonicalizeToolAction(tool: LifecycleTool): CanonicalToolAction {
   const item = tool.item ?? {}
-  if (tool.type === 'web_search_call') {
-    const queries = extractQueries(item)
-    if (queries.length) return { key: stableJson([tool.type, { queries }]), summaries: queries }
-  }
-  if (tool.type === 'file_search_call') {
-    const queries = extractQueries(item)
-    if (queries.length) return { key: stableJson([tool.type, { queries }]), summaries: queries }
+  if (tool.type === 'web_search_call' || tool.type === 'file_search_call') {
+    const action = canonicalizeSearchAction(item)
+    if (action) return { key: stableJson([tool.type, action]), summaries: describeSearchAction(tool.type, action) }
   }
   if (tool.type === 'function_call') {
     const name = normalizeWhitespace(readString(item.name) || readString(asRecord(item.action)?.name))
@@ -109,14 +105,63 @@ function canonicalizeToolAction(tool: LifecycleTool): CanonicalToolAction {
   }
 }
 
-function extractQueries(item: Record<string, unknown>): string[] {
-  const action = asRecord(item.action)
-  const candidates = [action?.queries, action?.query, item.queries, item.query]
+function canonicalizeSearchAction(item: Record<string, unknown>): Record<string, unknown> | undefined {
+  const nestedAction = asRecord(item.action)
+  const actionSource = nestedAction ?? Object.fromEntries(Object.entries(item).filter(([key]) => !searchEnvelopeKeys.has(key.toLowerCase())))
+  const action = normalizeActionRecord(actionSource)
+  return Object.keys(action).length ? action : undefined
+}
+
+function normalizeActionRecord(value: Record<string, unknown>): Record<string, unknown> {
+  const normalized = Object.fromEntries(Object.keys(value)
+    .filter((key) => key !== 'query' && key !== 'queries' && !isVolatileActionKey(key))
+    .sort()
+    .map((key) => [key, normalizeActionValue(value[key])]))
+  const queries = normalizeQueries([value.query, value.queries])
+  if (queries.length) normalized.queries = queries
+  return normalized
+}
+
+function normalizeActionValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => asRecord(entry) ? normalizeActionRecord(entry) : normalizeJsonValue(entry))
+  const record = asRecord(value)
+  return record ? normalizeActionRecord(record) : normalizeJsonValue(value)
+}
+
+function normalizeQueries(candidates: unknown[]): string[] {
   const queries = candidates.flatMap((candidate) => Array.isArray(candidate) ? candidate : [candidate])
     .filter((candidate): candidate is string => typeof candidate === 'string')
     .map(normalizeWhitespace)
     .filter(Boolean)
   return [...new Set(queries)].sort((left, right) => left.localeCompare(right, 'zh-CN'))
+}
+
+function describeSearchAction(toolType: string, action: Record<string, unknown>): string[] {
+  const queries = normalizeQueries([action.queries])
+  const actionType = normalizeWhitespace(readString(action.type) || readString(action.action))
+  const actionLabel = readableSearchAction(actionType, toolType)
+  const target = ['url', 'page_url', 'page', 'target', 'link']
+    .map((key) => normalizeWhitespace(readString(action[key])))
+    .find(Boolean)
+  if (actionType && !['search', 'file_search'].includes(actionType)) {
+    const detail = target || queries.join('，')
+    return [detail ? `${actionLabel} · ${detail}` : actionLabel]
+  }
+  if (queries.length) return queries
+  if (target) return [`${actionLabel} · ${target}`]
+  return [actionLabel]
+}
+
+function readableSearchAction(actionType: string, toolType: string): string {
+  const labels: Record<string, string> = {
+    search: toolType === 'file_search_call' ? '文件检索' : '搜索',
+    file_search: '文件检索',
+    open_page: '打开页面',
+    open: '打开页面',
+    click: '打开链接',
+    find: '页内查找'
+  }
+  return labels[actionType] ?? (actionType ? normalizeWhitespace(actionType.replace(/[_-]+/g, ' ')) : toolType === 'file_search_call' ? '文件检索' : '联网搜索操作')
 }
 
 function normalizeFunctionArguments(value: unknown): unknown {
@@ -134,7 +179,7 @@ function normalizeJsonValue(value: unknown): unknown {
 
 function stripVolatileFields(value: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.keys(value)
-    .filter((key) => !/^(?:id|call_?id|status|time|timestamp|created_?at|updated_?at)$/i.test(key))
+    .filter((key) => !isVolatileActionKey(key))
     .sort()
     .map((key) => {
       const child = value[key]
@@ -173,6 +218,12 @@ function resolveGroupStatus(statuses: ChatToolStatus[]): ChatToolStatus {
   return 'completed'
 }
 
+function mergeLifecycleStatus(previous: ChatToolStatus | undefined, current: ChatToolStatus): ChatToolStatus {
+  if (!previous) return current
+  const priority: Record<ChatToolStatus, number> = { started: 0, updated: 1, completed: 2, failed: 3 }
+  return priority[current] > priority[previous] ? current : previous
+}
+
 function resolveToolType(event: ChatToolEvent): string {
   const itemType = normalizeIdentifier(event.item?.type)
   if (['web_search_call', 'file_search_call', 'function_call', 'computer_call'].includes(itemType)) return itemType
@@ -200,8 +251,11 @@ function toolLabel(type: string): string {
   return ({ web_search_call: '联网搜索', file_search_call: '文件检索', function_call: '函数调用', computer_call: '计算机操作' }[type] ?? '工具调用')
 }
 
+const searchEnvelopeKeys = new Set(['id', 'call_id', 'item_id', 'type', 'status', 'time', 'timestamp', 'created_at', 'createdat', 'updated_at', 'updatedat', 'result', 'results', 'output', 'delta'])
+
 function normalizeIdentifier(value: unknown): string { return typeof value === 'string' ? value.trim() : '' }
 function normalizeWhitespace(value: string): string { return value.replace(/\s+/g, ' ').trim() }
+function isVolatileActionKey(value: string): boolean { return /^(?:id|call_?id|item_?id|status|time|timestamp|created_?at|updated_?at)$/i.test(value) }
 function limitSummary(value: string): string { return value.length <= summaryLimit ? value : `${value.slice(0, summaryLimit - 1)}…` }
 function readString(value: unknown): string { return typeof value === 'string' ? value : '' }
 function asRecord(value: unknown): Record<string, unknown> | undefined {
