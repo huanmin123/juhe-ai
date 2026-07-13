@@ -296,22 +296,22 @@ assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [responsesOnly, codexCapableApiKey, oauthAccount('oauth-codex')], {
     requestClientCompatibility: 'codex_responses'
   }).accounts.map((item) => item.id),
-  ['gpt-api-key-codex', 'oauth-codex'],
-  'Codex Responses 请求只能命中具备 Codex 兼容能力的账号'
+  ['responses-only', 'gpt-api-key-codex', 'oauth-codex'],
+  'Codex Responses 请求可命中具备原生 responses_sse 能力的普通 OpenAI-compatible 账号'
 )
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true), [responsesOnly, deepSeekChatOnlyAccount], {
     requestClientCompatibility: 'codex_responses'
   }).accounts.map((item) => item.id),
-  [],
-  '没有显式 Responses -> Chat 模型映射时，Codex Responses 请求不能命中普通 DeepSeek Chat-only 账号'
+  ['responses-only'],
+  '没有显式 Responses -> Chat 模型映射时，Codex Responses 请求仍不能命中普通 DeepSeek Chat-only 账号'
 )
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true, 'gpt-5.5'), [responsesOnly, deepSeekResponsesToChatMappedAccount], {
     requestClientCompatibility: 'codex_responses'
   }).accounts.map((item) => item.id),
-  ['deepseek-responses-to-chat'],
-  'Codex Responses 请求命中显式 Responses -> Chat 模型映射时应允许 DeepSeek Chat-only 账号承接'
+  ['responses-only', 'deepseek-responses-to-chat'],
+  'Codex Responses 请求可由原生 Responses 账号或显式 Responses -> Chat 映射账号承接'
 )
 assert.deepEqual(
   filterGatewayAccountsByRequestCapability(request('/v1/responses', true, 'gpt-5.4-mini'), [deepSeekHybridTargetMappedAccount], {

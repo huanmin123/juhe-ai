@@ -1,6 +1,5 @@
 import type { Request } from 'express'
 
-import { accountSupportsClientCompatibility } from '../../../../domain/account-client-compatibility.js'
 import {
   accountSupportsOpenAIEndpointMode,
   openAIEndpointModeForRequestShape
@@ -179,12 +178,12 @@ export const gptProviderDriver: ProviderDriver = {
         requestOverrideModelCapabilities
       })
     }
-    const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal, {
+    const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, signal, {
       modelOverride: modelMapping?.upstreamModel,
       requestClientCompatibility: context?.requestClientCompatibility
     })
     const headers = buildUpstreamHeaders(req.headers, account)
-    applyOpenAIClientCompatibilityHeaders(req, account, headers, {
+    applyOpenAIClientCompatibilityHeaders(req, headers, {
       requestClientCompatibility: context?.requestClientCompatibility
     })
     const body = compatibilityBody
@@ -261,7 +260,9 @@ export const gptProviderDriver: ProviderDriver = {
         clientCompatibility: account.clientCompatibility
       })
     }
-    if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) {
+    if (account.type === 'oauth'
+      && context?.requestClientCompatibility
+      && context.requestClientCompatibility !== 'codex_responses') {
       return false
     }
     const mode = openAIEndpointModeForGatewayRequest(req, account)

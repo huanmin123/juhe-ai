@@ -1,6 +1,5 @@
 import type { Request } from 'express'
 
-import { accountSupportsClientCompatibility } from '../../../../domain/account-client-compatibility.js'
 import {
   accountSupportsAnthropicEndpointMode,
   anthropicEndpointModeForRequestShape
@@ -180,10 +179,10 @@ export const hybridProviderDriver: ProviderDriver = {
     if (target === 'gemini') return hybridGeminiEndpointModeForGatewayRequest(req, account)
     return undefined
   },
-  accountSupportsRequest(req, account, context) {
+  accountSupportsRequest(req, account) {
     const target = hybridUpstreamTargetForRequest(req, account)
-    if (target === 'openai') return hybridOpenAIAccountSupportsRequest(req, account, context)
-    if (target === 'anthropic') return hybridAnthropicAccountSupportsRequest(req, account, context)
+    if (target === 'openai') return hybridOpenAIAccountSupportsRequest(req, account)
+    if (target === 'anthropic') return hybridAnthropicAccountSupportsRequest(req, account)
     if (target === 'gemini') return hybridGeminiAccountSupportsRequest(req, account)
     return false
   }
@@ -257,12 +256,12 @@ async function buildHybridOpenAIRequestParts(req: Request, account: DispatchAcco
     }
   }
   const requestClientCompatibility = context?.requestClientCompatibility
-  const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal, {
+  const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, signal, {
     modelOverride: mapping?.upstreamModel,
     requestClientCompatibility
   })
   const headers = buildUpstreamHeaders(req.headers, account)
-  applyOpenAIClientCompatibilityHeaders(req, account, headers, {
+  applyOpenAIClientCompatibilityHeaders(req, headers, {
     requestClientCompatibility
   })
   return {
@@ -311,7 +310,7 @@ function hybridOpenAIEndpointModeForGatewayRequest(req: Request, account: Provid
   })
 }
 
-function hybridOpenAIAccountSupportsRequest(req: Request, account: ProviderDriverAccount, context?: { requestClientCompatibility?: Parameters<typeof accountSupportsClientCompatibility>[1] }): boolean {
+function hybridOpenAIAccountSupportsRequest(req: Request, account: ProviderDriverAccount): boolean {
   const mapping = resolveOpenAIRequestModelMapping(req, account)
   if (mapping && mapping.upstreamEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY) {
     const mode = hybridOpenAIEndpointModeForGatewayRequest(req, account)
@@ -319,7 +318,6 @@ function hybridOpenAIAccountSupportsRequest(req: Request, account: ProviderDrive
     return accountSupportsOpenAIEndpointMode(openAIEndpointModeSupportInput(account, mode))
   }
   if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE) || isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE)) return false
-  if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) return false
   const mode = hybridOpenAIEndpointModeForGatewayRequest(req, account)
   if (!mode) return false
   return accountSupportsOpenAIEndpointMode(openAIEndpointModeSupportInput(account, mode))
@@ -419,7 +417,7 @@ function hybridAnthropicEndpointModeForGatewayRequest(req: Request, account: Pro
   })
 }
 
-function hybridAnthropicAccountSupportsRequest(req: Request, account: ProviderDriverAccount, context?: { requestClientCompatibility?: Parameters<typeof accountSupportsClientCompatibility>[1] }): boolean {
+function hybridAnthropicAccountSupportsRequest(req: Request, account: ProviderDriverAccount): boolean {
   const mapping = resolveOpenAIRequestModelMapping(req, account)
   if (isGeminiGenerateContentToAnthropicMessagesModelMapping(mapping) || isOpenAIToAnthropicMessagesModelMapping(req, account)) {
     const mode = hybridAnthropicEndpointModeForGatewayRequest(req, account)
@@ -427,7 +425,6 @@ function hybridAnthropicAccountSupportsRequest(req: Request, account: ProviderDr
     return accountSupportsAnthropicEndpointMode(anthropicEndpointModeSupportInput(account, mode))
   }
   if (isGatewayProtocolNativeRequest(req, OPENAI_PROTOCOL_CODE) || isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE)) return false
-  if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) return false
   const mode = hybridAnthropicEndpointModeForGatewayRequest(req, account)
   if (!mode) return false
   return accountSupportsAnthropicEndpointMode(anthropicEndpointModeSupportInput(account, mode))
