@@ -62,6 +62,45 @@ assert.throws(() => assertAccountGptRequestOverridesSupportedByCatalog({
   catalog
 }), /OAuth.*Flex/, 'OAuth 账户必须禁止 Flex')
 
+assert.throws(() => assertAccountGptRequestOverridesSupportedByCatalog({
+  providerCode: 'gemini',
+  accountType: 'api_key',
+  overrides: { serviceTier: 'priority' },
+  supportedModels: ['gemini-test'],
+  catalog: [{
+    providerCode: 'gemini',
+    model: 'gemini-test',
+    supportedServiceTiers: ['priority'],
+    supportedReasoningEfforts: ['low']
+  } as unknown as ProviderModelCatalogItem]
+}), /Gemini.*没有可确认的服务等级 wire 字段/, 'Gemini 服务等级必须在账户保存时拒绝，不能延迟到运行时失败')
+
+assert.doesNotThrow(() => assertAccountGptRequestOverridesSupportedByCatalog({
+  providerCode: 'gemini',
+  accountType: 'api_key',
+  overrides: { reasoningEffort: 'low' },
+  supportedModels: ['gemini-test'],
+  catalog: [{
+    providerCode: 'gemini',
+    model: 'gemini-test',
+    supportedServiceTiers: [],
+    supportedReasoningEfforts: ['low']
+  } as unknown as ProviderModelCatalogItem]
+}), 'Gemini thinking level 有明确 wire 映射时应允许保存')
+
+assert.throws(() => assertAccountGptRequestOverridesSupportedByCatalog({
+  providerCode: 'deepseek',
+  accountType: 'api_key',
+  overrides: { reasoningEffort: 'high' },
+  supportedModels: ['deepseek-test'],
+  catalog: [{
+    providerCode: 'deepseek',
+    model: 'deepseek-test',
+    supportedServiceTiers: [],
+    supportedReasoningEfforts: ['high']
+  } as unknown as ProviderModelCatalogItem]
+}), /供应商 deepseek 没有可确认的账户请求覆盖 wire 映射/, '目录声明不能绕过 provider driver 映射边界')
+
 const normalizedApiKeyCredentials = normalizeAccountCredentialsForWrite('api_key', {
   api_key: 'sk-regression',
   base_url: 'https://api.openai.com/v1',
