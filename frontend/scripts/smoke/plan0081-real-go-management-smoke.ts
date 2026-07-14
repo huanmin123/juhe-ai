@@ -43,6 +43,8 @@ export interface RealGoManagementSmokeSummary {
   selectedGroupId: string
   providerCount: number
   modelOptionCount: number
+  clientIpItemCount: number
+  clientIpRangeReady: boolean
 }
 
 interface NormalizedRealGoManagementSmokeConfig extends RealGoManagementSmokeConfig {
@@ -99,6 +101,23 @@ interface ProviderRecord {
 interface ModelOptionRecord {
   providerCode: string
   model: string
+}
+
+interface ClientIPStatsRange {
+  startDate: string
+  endDate: string
+  days: number
+  maxDays: number
+}
+
+interface ClientIPStatsListResult {
+  items: unknown[]
+  pageUpperBound: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+  range: ClientIPStatsRange
+  rangeReady: boolean
 }
 
 interface TemporaryGroupIdentity {
@@ -181,7 +200,9 @@ export function formatRealGoManagementSmokeSummary(summary: RealGoManagementSmok
     'PLAN-0081 real Go management smoke passed',
     `groups=${summary.groupCount}`,
     `providers=${summary.providerCount}`,
-    `modelOptions=${summary.modelOptionCount}`
+    `modelOptions=${summary.modelOptionCount}`,
+    `clientIpItems=${summary.clientIpItemCount}`,
+    `clientIpRangeReady=${summary.clientIpRangeReady}`
   ].join(' ')
 }
 
@@ -212,6 +233,13 @@ async function runReadOnlySmoke(
     expect(providerCodes.has(option.providerCode), 'Model option references an unknown provider')
   }
 
+  const clientIPStatsData = await getEnvelopeData(
+    clientIPStatsListUrl(config),
+    config,
+    'client IP stats list'
+  )
+  const clientIPStats = assertClientIPStatsList(clientIPStatsData)
+
   return {
     selectedGroup,
     providers,
@@ -219,7 +247,9 @@ async function runReadOnlySmoke(
       groupCount: groupList.items.length,
       selectedGroupId: detail.id,
       providerCount: providers.length,
-      modelOptionCount: modelOptions.length
+      modelOptionCount: modelOptions.length,
+      clientIpItemCount: clientIPStats.items.length,
+      clientIpRangeReady: clientIPStats.rangeReady
     }
   }
 }
@@ -454,6 +484,15 @@ function groupDetailUrl(config: NormalizedRealGoManagementSmokeConfig, groupId: 
   })
 }
 
+function clientIPStatsListUrl(config: NormalizedRealGoManagementSmokeConfig): URL {
+  return endpointUrl(config.baseUrl, '/ip-stats', {
+    page: '1',
+    pageSize: '20',
+    sortField: 'requestCount',
+    sortOrder: 'desc'
+  })
+}
+
 function normalizeManagementApiBaseUrl(rawValue: string): string {
   let url: URL
   try {
@@ -599,6 +638,115 @@ function assertGroupList(value: unknown): GroupListResult {
   return value as unknown as GroupListResult
 }
 
+function assertClientIPStatsList(value: unknown): ClientIPStatsListResult {
+  expect(isRecord(value), 'client IP stats list data must be an object')
+  expect(Array.isArray(value.items), 'client IP stats list items must be an array')
+  expect(isNonNegativeInteger(value.pageUpperBound), 'client IP stats list pageUpperBound must be a non-negative integer')
+  expect(typeof value.hasMore === 'boolean', 'client IP stats list hasMore must be boolean')
+  expect(value.page === 1, 'client IP stats list page must be 1')
+  expect(value.pageSize === 20, 'client IP stats list pageSize must be 20')
+  expect(typeof value.rangeReady === 'boolean', 'client IP stats list rangeReady must be boolean')
+  const range = assertClientIPStatsRange(value.range)
+  expect(value.items.length <= value.pageSize, 'client IP stats list must not exceed pageSize')
+
+  if (!value.rangeReady) {
+    expect(value.items.length === 0, 'client IP stats list must be empty when rangeReady is false')
+    expect(value.pageUpperBound === 0, 'client IP stats list pageUpperBound must be 0 when rangeReady is false')
+    expect(value.hasMore === false, 'client IP stats list hasMore must be false when rangeReady is false')
+  } else {
+    value.items.forEach((item, index) => assertClientIPStatsItem(item, range.days, index))
+    expect(
+      value.pageUpperBound === value.items.length + (value.hasMore ? 1 : 0),
+      'client IP stats list pageUpperBound must be the progressive first-page upper bound'
+    )
+    if (value.hasMore) {
+      expect(value.items.length === value.pageSize, 'client IP stats list hasMore requires a full page')
+    }
+  }
+
+  return value as unknown as ClientIPStatsListResult
+}
+
+function assertClientIPStatsRange(value: unknown): ClientIPStatsRange {
+  expect(isRecord(value), 'client IP stats list range must be an object')
+  expect(isDateKey(value.startDate), 'client IP stats list range.startDate must be YYYY-MM-DD')
+  expect(isDateKey(value.endDate), 'client IP stats list range.endDate must be YYYY-MM-DD')
+  expect(isNonNegativeInteger(value.days) && value.days > 0, 'client IP stats list range.days must be a positive integer')
+  expect(value.maxDays === 31, 'client IP stats list range.maxDays must be 31')
+  const expectedDays = inclusiveDateKeyDays(value.startDate, value.endDate)
+  expect(expectedDays > 0, 'client IP stats list range must not end before it starts')
+  expect(value.days === expectedDays, 'client IP stats list range.days must match its inclusive date range')
+  expect(value.days <= value.maxDays, 'client IP stats list range.days must not exceed maxDays')
+  return value as unknown as ClientIPStatsRange
+}
+
+function assertClientIPStatsItem(value: unknown, rangeDays: number, index: number): void {
+  const label = `client IP stats list item ${index}`
+  expect(isRecord(value), `${label} must be an object`)
+  expect(isNonEmptyString(value.ipHash), `${label}.ipHash must be a non-empty string`)
+  expect(isNonEmptyString(value.aggregateIpKey), `${label}.aggregateIpKey must be a non-empty string`)
+  assertOptionalString(value, 'lastSeenAt', label)
+  expect(
+    value.status === 'normal' || value.status === 'blacklisted' || value.status === 'allowlisted',
+    `${label}.status is invalid`
+  )
+  expect(isRecord(value.rangeUsage), `${label}.rangeUsage must be an object`)
+
+  const usage = value.rangeUsage
+  for (const field of [
+    'requestCount',
+    'successCount',
+    'errorCount',
+    'inputTokens',
+    'outputTokens',
+    'cacheReadTokens',
+    'cacheWriteTokens',
+    'cacheWrite1hTokens',
+    'thinkingTokens',
+    'inputImageTokens',
+    'outputImageTokens',
+    'totalTokens',
+    'activeDays'
+  ]) {
+    expect(isNonNegativeInteger(usage[field]), `${label}.rangeUsage.${field} must be a non-negative integer`)
+  }
+  for (const field of ['errorRate', 'cacheReadCost', 'cacheWriteCost', 'totalCost']) {
+    expect(isNonNegativeFiniteNumber(usage[field]), `${label}.rangeUsage.${field} must be a finite non-negative number`)
+  }
+  expect(
+    usage.totalTokens === Number(usage.inputTokens) + Number(usage.outputTokens),
+    `${label}.rangeUsage.totalTokens must equal inputTokens plus outputTokens`
+  )
+  const expectedErrorRate = usage.requestCount === 0
+    ? 0
+    : Number(usage.errorCount) / Number(usage.requestCount)
+  expect(
+    numbersNearlyEqual(Number(usage.errorRate), expectedErrorRate),
+    `${label}.rangeUsage.errorRate must match errorCount divided by requestCount`
+  )
+  expect(Number(usage.activeDays) <= rangeDays, `${label}.rangeUsage.activeDays must not exceed range.days`)
+
+  for (const field of ['averageDurationMs', 'averageFirstTokenMs']) {
+    if (Object.hasOwn(usage, field)) {
+      expect(isNonNegativeFiniteNumber(usage[field]), `${label}.rangeUsage.${field} must be a finite non-negative number`)
+    }
+  }
+  if (Object.hasOwn(usage, 'maxDurationMs')) {
+    expect(
+      isNonNegativeInteger(usage.maxDurationMs) && Number(usage.maxDurationMs) > 0,
+      `${label}.rangeUsage.maxDurationMs must be a positive integer`
+    )
+  }
+  assertOptionalString(usage, 'lastUsedAt', `${label}.rangeUsage`)
+  assertOptionalString(usage, 'lastErrorAt', `${label}.rangeUsage`)
+}
+
+function assertOptionalString(value: Record<string, unknown>, field: string, label: string): void {
+  if (Object.hasOwn(value, field)) {
+    expect(typeof value[field] === 'string', `${label}.${field} must be a string when present`)
+  }
+}
+
 function selectOwnerNonDefaultGroup(items: unknown[], requestedGroupId?: string): GroupRecord {
   const groups = items.map((item, index) => assertGroup(item, `groups list item ${index}`))
   if (requestedGroupId) {
@@ -730,6 +878,38 @@ function optionalPositiveIntegerEnvironmentValue(env: SmokeEnvironment, name: st
 function assertStringArray(value: unknown, label: string): asserts value is string[] {
   expect(Array.isArray(value), `${label} must be an array`)
   expect(value.every((item) => typeof item === 'string'), `${label} must contain only strings`)
+}
+
+function isDateKey(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false
+  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) {
+    return false
+  }
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day
+}
+
+function inclusiveDateKeyDays(startDate: string, endDate: string): number {
+  const start = Date.parse(`${startDate}T00:00:00.000Z`)
+  const end = Date.parse(`${endDate}T00:00:00.000Z`)
+  return Math.trunc((end - start) / 86_400_000) + 1
+}
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function numbersNearlyEqual(actual: number, expected: number): boolean {
+  const tolerance = Number.EPSILON * Math.max(1, Math.abs(actual), Math.abs(expected)) * 4
+  return Math.abs(actual - expected) <= tolerance
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

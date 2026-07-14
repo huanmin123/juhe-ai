@@ -27,6 +27,16 @@ const ipHashes = {
   unallowlistEmpty: 'unallowlist/empty?source=ui#10'
 } as const
 const reason = '管理员确认该客户端 IP 可正常访问'
+const listParams = {
+  page: 2,
+  pageSize: 20,
+  keyword: '203.0.113.',
+  status: 'blacklisted',
+  startDate: '2026-07-08',
+  endDate: '2026-07-14',
+  sortField: 'requestCount',
+  sortOrder: 'desc'
+} as const
 const detailParams = {
   page: 2,
   pageSize: 25,
@@ -43,6 +53,49 @@ const blacklistPermanentPayload = {}
 const blacklistDaysPayload = { durationDays: 1 }
 const unblockPayload = { reason: '管理员确认解除该客户端 IP 封禁' }
 const responseFixtures = {
+  list: {
+    items: [{
+      ipHash: 'client_ip_list_regression',
+      aggregateIpKey: '203.0.113.0/24',
+      lastSeenAt: '2026-07-14T08:30:00.000Z',
+      status: 'blacklisted',
+      rangeUsage: {
+        requestCount: 12,
+        successCount: 9,
+        errorCount: 3,
+        errorRate: 0.25,
+        inputTokens: 1200,
+        outputTokens: 300,
+        cacheReadTokens: 80,
+        cacheReadCost: 0.001,
+        cacheWriteTokens: 40,
+        cacheWrite1hTokens: 20,
+        cacheWriteCost: 0.002,
+        thinkingTokens: 10,
+        inputImageTokens: 2,
+        outputImageTokens: 1,
+        totalTokens: 1500,
+        totalCost: 0.03,
+        activeDays: 5,
+        averageDurationMs: 420.5,
+        averageFirstTokenMs: 85.25,
+        maxDurationMs: 900,
+        lastUsedAt: '2026-07-14T08:25:00.000Z',
+        lastErrorAt: '2026-07-13T17:00:00.000Z'
+      }
+    }],
+    pageUpperBound: 21,
+    hasMore: false,
+    page: 2,
+    pageSize: 20,
+    range: {
+      startDate: listParams.startDate,
+      endDate: listParams.endDate,
+      days: 7,
+      maxDays: 31
+    },
+    rangeReady: true
+  },
   detail: {
     ipHash: ipHashes.detail,
     aggregateIpKey: 'client_ip_detail_regression',
@@ -87,6 +140,7 @@ const responseFixtures = {
   unallowlistEmpty: { disabledCount: 0 }
 } as const
 const mockResponsesByUrl = new Map<string, unknown>([
+  ['/ip-stats', responseFixtures.list],
   [ipStatsPath(ipHashes.detail, 'detail'), responseFixtures.detail],
   [ipStatsPath(ipHashes.blacklistMinutes, 'blacklist'), responseFixtures.blacklistMinutes],
   [ipStatsPath(ipHashes.blacklistPermanent, 'blacklist'), responseFixtures.blacklistPermanent],
@@ -133,6 +187,7 @@ let unallowlistReasonResult: Awaited<ReturnType<typeof ipStatsApi.unallowlist>>
 let emptyAllowlistResult: Awaited<ReturnType<typeof ipStatsApi.allowlist>>
 let emptyUnblockResult: Awaited<ReturnType<typeof ipStatsApi.unblock>>
 let emptyUnallowlistResult: Awaited<ReturnType<typeof ipStatsApi.unallowlist>>
+let listResult: Awaited<ReturnType<typeof ipStatsApi.list>>
 
 try {
   http.defaults.adapter = requestCaptureAdapter
@@ -147,11 +202,12 @@ try {
   emptyAllowlistResult = await ipStatsApi.allowlist(ipHashes.allowlistEmpty, {})
   emptyUnblockResult = await ipStatsApi.unblock(ipHashes.unblockEmpty, {})
   emptyUnallowlistResult = await ipStatsApi.unallowlist(ipHashes.unallowlistEmpty, {})
+  listResult = await ipStatsApi.list(listParams)
 } finally {
   http.defaults.adapter = originalAdapter
 }
 
-assert.equal(capturedRequests.length, 10, '应捕获详情、三种封禁 payload 及白名单/解封的 reason 与空 payload 请求')
+assert.equal(capturedRequests.length, 11, '应捕获列表、详情、三种封禁 payload 及白名单/解封的 reason 与空 payload 请求')
 assertDetailRequest(capturedRequests[0], ipHashes.detail)
 assertPolicyRequest(capturedRequests[1], 'blacklist', ipHashes.blacklistMinutes, blacklistMinutesPayload, '分钟封禁')
 assertPolicyRequest(capturedRequests[2], 'blacklist', ipHashes.blacklistPermanent, blacklistPermanentPayload, '永久封禁')
@@ -162,7 +218,9 @@ assertPolicyRequest(capturedRequests[6], 'unallowlist', ipHashes.unallowlistReas
 assertPolicyRequest(capturedRequests[7], 'allowlist', ipHashes.allowlistEmpty, {}, '空 payload 加入白名单')
 assertPolicyRequest(capturedRequests[8], 'unblock', ipHashes.unblockEmpty, {}, '空 payload 解除封禁')
 assertPolicyRequest(capturedRequests[9], 'unallowlist', ipHashes.unallowlistEmpty, {}, '空 payload 移出白名单')
+assertListRequest(capturedRequests[10])
 
+assert.deepEqual(listResult, responseFixtures.list, '列表接口必须解包自己的独立 data 响应')
 assert.deepEqual(detailResult, responseFixtures.detail, '详情接口必须解包自己的 data 响应')
 assert.deepEqual(blacklistMinutesResult, responseFixtures.blacklistMinutes, '分钟封禁接口必须解包自己的 data 响应')
 assert.deepEqual(blacklistPermanentResult, responseFixtures.blacklistPermanent, '永久封禁接口必须解包自己的 data 响应')
@@ -174,7 +232,14 @@ assert.deepEqual(emptyAllowlistResult, responseFixtures.allowlistEmpty, '空 pay
 assert.deepEqual(emptyUnblockResult, responseFixtures.unblockEmpty, '空 payload 解除封禁必须解包自己的 data 响应')
 assert.deepEqual(emptyUnallowlistResult, responseFixtures.unallowlistEmpty, '空 payload 移出白名单必须解包自己的 data 响应')
 
-console.log('客户端 IP 详情/策略 API request-capture 回归通过：独立编码路径、UI 默认/边界 body 与响应解包契约正确')
+console.log('客户端 IP 列表/详情/策略 API request-capture 回归通过：完整列表 query、独立编码路径、UI 默认/边界 body 与响应解包契约正确')
+
+function assertListRequest(request: CapturedRequest): void {
+  assert.equal(request.method, 'GET', 'list 必须发送 GET')
+  assert.equal(request.url, '/ip-stats', 'list 必须请求客户端 IP 统计列表路径')
+  assert.deepEqual(request.params, listParams, 'list 必须原样发送页面使用的完整筛选、范围与排序 query')
+  assert.equal(request.body, undefined, 'list 不得发送 body')
+}
 
 function assertDetailRequest(request: CapturedRequest, ipHash: string): void {
   assert.equal(request.method, 'GET', 'detail 必须发送 GET')
