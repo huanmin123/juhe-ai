@@ -181,6 +181,7 @@ async function cleanupSmokeRows(ids: string[]): Promise<void> {
   await pool.query('DELETE FROM juhe_stats.model_token_integrity_windows WHERE account_id = $1', [accountId])
   await pool.query('DELETE FROM juhe_stats.model_trust_window_sources WHERE account_id = $1', [accountId])
   await pool.query('DELETE FROM juhe_stats.model_account_trust_results WHERE account_id = $1', [accountId])
+  await pool.query('DELETE FROM juhe_stats.model_trust_latest_dirty_accounts WHERE account_id = $1', [accountId])
   await pool.query('DELETE FROM juhe_stats.model_token_intercept_baseline_versions WHERE probe_set_version = $1', ['postgres-smoke'])
   await pool.query('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY($1::text[])', [ids])
   await pool.query('DELETE FROM juhe_dataset.model_check_observations WHERE run_id = ANY($1::text[])', [ids])

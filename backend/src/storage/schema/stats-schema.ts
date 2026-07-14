@@ -1188,7 +1188,18 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (system_account_id, account_id, requested_model)
         );
 
+    CREATE TABLE IF NOT EXISTS model_trust_latest_dirty_accounts (
+          system_account_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          requested_model TEXT NOT NULL,
+          dirty_reason TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (system_account_id, account_id, requested_model)
+        );
+
     CREATE INDEX IF NOT EXISTS idx_model_account_trust_results_updated ON model_account_trust_results(updated_at, account_id, requested_model);
+
+    CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated ON model_trust_latest_dirty_accounts(updated_at, system_account_id, account_id, requested_model);
 
     CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_cohort ON model_token_integrity_windows(cohort_key_hmac, requested_model, updated_at);
 

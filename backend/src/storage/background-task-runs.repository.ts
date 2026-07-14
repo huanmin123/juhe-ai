@@ -453,7 +453,8 @@ export async function acquireBackgroundJobLeaseAsync(input: {
   return result.changes > 0
 }
 
-async function renewBackgroundJobLeaseAsync(leaseKey: string, ownerId: string, leaseUntil: string, now: string, client?: DatabaseClient): Promise<boolean> {
+export async function renewBackgroundJobLeaseAsync(leaseKey: string, ownerId: string, leaseUntil: string, now = nowIso(), client?: DatabaseClient): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return renewBackgroundJobLease(leaseKey, ownerId, leaseUntil, now)
   const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
   const result = await databaseClient.execute(`
     UPDATE ${backgroundTaskRunTable(databaseClient, 'background_job_leases')}

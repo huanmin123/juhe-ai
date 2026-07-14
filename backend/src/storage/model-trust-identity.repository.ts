@@ -164,34 +164,6 @@ export async function refreshIdentityBaselines(client: DatabaseClient, rows: Obs
   return [...keys.values()]
 }
 
-export async function listIdentityAccountModelsForScopes(
-  client: DatabaseClient,
-  scopes: IdentityPopulationScope[],
-  limit = 500
-): Promise<AccountModelKey[]> {
-  const table = client.dialect.qualifyTable('juhe_stats', 'model_identity_source_features')
-  const result = new Map<string, AccountModelKey>()
-  const uniqueScopes = new Map<string, IdentityPopulationScope>()
-  for (const scope of scopes) {
-    uniqueScopes.set(`${scope.populationKey}\u0000${scope.requestedModel}\u0000${scope.featureVersion}`, scope)
-  }
-  for (const scope of uniqueScopes.values()) {
-    const remaining = Math.max(0, limit - result.size)
-    if (remaining === 0) break
-    const members = await client.query<{ system_account_id: string; account_id: string; requested_model: string }>(`
-      SELECT DISTINCT system_account_id, account_id, requested_model FROM ${table}
-      WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ?
-      ORDER BY system_account_id, account_id, requested_model
-      LIMIT ?
-    `, [scope.populationKey, scope.requestedModel, scope.featureVersion, remaining])
-    for (const member of members) {
-      const key = { systemAccountId: member.system_account_id, accountId: member.account_id, requestedModel: member.requested_model }
-      result.set(`${key.systemAccountId}\u0000${key.accountId}\u0000${key.requestedModel}`, key)
-    }
-  }
-  return [...result.values()]
-}
-
 export async function evaluateIdentityTrust(client: DatabaseClient, key: AccountModelKey): Promise<IdentityTrustEvaluation | undefined> {
   const table = client.dialect.qualifyTable('juhe_stats', 'model_identity_source_features')
   // Scope timestamps define recency; opaque keys only make exact ties deterministic across database drivers.
@@ -204,7 +176,7 @@ export async function evaluateIdentityTrust(client: DatabaseClient, key: Account
     GROUP BY population_key_hmac, feature_version
     LIMIT ${maximumIdentityAccountRows + 1}
   `, [key.systemAccountId, key.accountId, key.requestedModel])
-  if (currentScopes.length > maximumIdentityAccountRows) return undefined
+  if (currentScopes.length > maximumIdentityAccountRows) throw identityOverflow('账号 scope', maximumIdentityAccountRows)
   const currentScope = [...currentScopes].sort(compareCurrentIdentityScopes)[0]
   if (!currentScope) return undefined
   const ownRows = await client.query<SourceFeatureRow>(`
@@ -217,14 +189,15 @@ export async function evaluateIdentityTrust(client: DatabaseClient, key: Account
     key.systemAccountId, key.accountId, key.requestedModel,
     currentScope.population_key_hmac, currentScope.feature_version
   ])
-  if (!ownRows.length || ownRows.length > maximumIdentityAccountRows) return undefined
+  if (!ownRows.length) return undefined
+  if (ownRows.length > maximumIdentityAccountRows) throw identityOverflow('账号特征', maximumIdentityAccountRows)
   const populationRows = await client.query<SourceFeatureRow>(`
     SELECT * FROM ${table}
     WHERE population_key_hmac = ? AND feature_version = ?
     ORDER BY upstream_bucket_hmac, requested_model, account_id
     LIMIT ${maximumIdentityPopulationRows + 1}
   `, [currentScope.population_key_hmac, currentScope.feature_version])
-  if (populationRows.length > maximumIdentityPopulationRows) return undefined
+  if (populationRows.length > maximumIdentityPopulationRows) throw identityOverflow('population', maximumIdentityPopulationRows)
   const signatures = collapseSourceSignatures(populationRows)
   const targetPopulationRows = populationRows.filter((row) => row.requested_model === key.requestedModel)
   const ownBuckets = new Set(ownRows.map((row) => row.upstream_bucket_hmac))
@@ -323,7 +296,7 @@ async function refreshBaseline(client: DatabaseClient, key: { populationKey: str
     ORDER BY upstream_bucket_hmac, account_id
     LIMIT ${maximumIdentityPopulationRows + 1}
   `, [key.populationKey, key.model, key.featureVersion])
-  if (rows.length > maximumIdentityPopulationRows) return false
+  if (rows.length > maximumIdentityPopulationRows) throw identityOverflow('population 基线', maximumIdentityPopulationRows)
   const signatures = collapseSourceSignatures(rows).map((item) => item.vector)
   if (signatures.length < 3) return false
   const summary = robustVectorSummary(signatures)
@@ -543,6 +516,10 @@ function groupRowsByModel(rows: SourceFeatureRow[]): Map<string, SourceFeatureRo
   const result = new Map<string, SourceFeatureRow[]>()
   for (const row of rows) result.set(row.requested_model, [...(result.get(row.requested_model) ?? []), row])
   return result
+}
+
+function identityOverflow(scope: string, limit: number): Error {
+  return new Error(`模型可信 identity ${scope} 超过单批上限 ${limit}，已回滚并等待离线分阶段重建`)
 }
 
 function compareCurrentIdentityScopes(left: CurrentIdentityScopeRow, right: CurrentIdentityScopeRow): number {

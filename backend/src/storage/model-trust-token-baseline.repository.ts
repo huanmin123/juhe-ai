@@ -70,8 +70,7 @@ export async function refreshTokenInterceptBaselines(
 ): Promise<Map<string, TokenInterceptEvaluationContext>> {
   const contexts = new Map<string, TokenInterceptEvaluationContext>()
   for (const scope of uniqueScopes(scopes)) {
-    const snapshot = await loadSourceInterceptSnapshot(client, scope, false)
-    if (!snapshot) continue
+    const snapshot = await loadSourceInterceptSnapshot(client, scope)
     const sources = snapshot.sources
     if (sources.length) {
       const active = await findBaseline(client, scope, 'active')
@@ -165,8 +164,7 @@ export async function activateTokenInterceptBaselineVersion(client: DatabaseClie
       input.requestedModel, input.tokenizerVersion, input.probeSetVersion, input.baselineVersion
     ])
     if (activated.changes !== 1) throw new Error('固定截距基线激活冲突，请刷新后重试')
-    const snapshot = await loadSourceInterceptSnapshot(tx, input, true)
-    if (!snapshot) throw new Error('固定截距 cohort 超过单批聚合上限，需要离线分阶段重建')
+    const snapshot = await loadSourceInterceptSnapshot(tx, input)
     const active = await findBaseline(tx, input, 'active')
     if (!active) throw new Error('固定截距基线激活后读取失败')
     await rematerializeTokenInterceptLatest(tx, contextFor(input, active, snapshot))
@@ -222,9 +220,8 @@ async function findBaseline(client: DatabaseClient, scope: TokenInterceptScope, 
 
 async function loadSourceInterceptSnapshot(
   client: DatabaseClient,
-  scope: TokenInterceptScope,
-  failOnOverflow: boolean
-): Promise<SourceSnapshot | undefined> {
+  scope: TokenInterceptScope
+): Promise<SourceSnapshot> {
   const windows = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_windows')
   const sources = client.dialect.qualifyTable('juhe_stats', 'model_trust_window_sources')
   const rows = await client.query<SourceInterceptRow>(`
@@ -250,8 +247,7 @@ async function loadSourceInterceptSnapshot(
     LIMIT ${maximumBaselineRows + 1}
   `, [scope.cohortKeyHmac, scope.requestedModel, scope.tokenizerVersion, scope.probeSetVersion])
   if (rows.length > maximumBaselineRows) {
-    if (failOnOverflow) throw new Error('固定截距 cohort 超过单批聚合上限，需要离线分阶段重建')
-    return undefined
+    throw new Error('固定截距 cohort 超过单批聚合上限，已回滚并等待离线分阶段重建')
   }
   const bucketsByAccount = new Map<string, Set<string>>()
   const accountKeys = new Map<string, TokenInterceptAccountKey>()

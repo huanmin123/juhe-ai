@@ -2,7 +2,10 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
+import { runtimeConfig } from '../../config/runtime.js'
+import { mainDatabaseRuntimeInfo } from '../../storage/database.js'
 import { activateModelTokenInterceptBaselineAsync } from '../../storage/model-trust.repository.js'
+import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -58,7 +61,11 @@ modelChecksRouter.post('/token-intercept-baselines/activate', requireAdmin, asyn
     return
   }
   try {
-    await activateModelTokenInterceptBaselineAsync(parsed.data)
+    if (runtimeConfig.databaseDriver === 'postgres' || !mainDatabaseRuntimeInfo('stats').queryOnly) {
+      await activateModelTokenInterceptBaselineAsync(parsed.data)
+    } else {
+      await requestStatsWriter({ type: 'activate_model_token_intercept_baseline', input: parsed.data }, 120_000)
+    }
     res.json(ok({ activated: true, baselineVersion: parsed.data.baselineVersion }))
   } catch (error) {
     const message = error instanceof Error ? error.message : '固定截距基线激活失败'

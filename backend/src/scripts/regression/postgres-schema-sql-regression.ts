@@ -73,6 +73,8 @@ assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_stats_totals/, '应包含统
 assert.match(sql, /CREATE TABLE IF NOT EXISTS model_token_integrity_windows/, 'PG 统计库应包含模型 Token 可信窗口')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS model_token_intercept_baseline_versions/, 'PG 统计库应包含固定截距基线版本')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS model_account_trust_results/, 'PG 统计库应包含账号模型可信最新结果')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS model_trust_latest_dirty_accounts/, 'PG 统计库应包含模型可信 latest 可重试脏队列')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated ON model_trust_latest_dirty_accounts\(updated_at, system_account_id, account_id, requested_model\)/, 'PG 模型可信脏队列必须有有界续跑索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_activation ON model_token_integrity_windows\(cohort_key_hmac, requested_model, tokenizer_version, probe_set_version, account_id\)/, 'PG 固定截距激活物化必须有匹配索引')
 assert.match(sql, /usage_stats_totals[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+input_tokens bigint NOT NULL DEFAULT 0[\s\S]+duration_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 统计累计字段必须使用 bigint，避免生产聚合溢出')
 assert.match(sql, /usage_scope_range_windows[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+first_token_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 范围窗口累计字段必须使用 bigint')

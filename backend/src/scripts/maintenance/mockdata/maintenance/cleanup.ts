@@ -179,7 +179,8 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
       'model_trust_window_sources',
       'model_identity_source_features',
       'model_paired_similarity_windows',
-      'model_account_trust_results'
+      'model_account_trust_results',
+      'model_trust_latest_dirty_accounts'
     ]) {
       deleteWhereIn(database, tableName, 'account_id', mockAccountIds)
     }

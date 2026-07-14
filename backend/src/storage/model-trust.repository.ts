@@ -2,13 +2,13 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getDatasetDatabase, getStatsDatabase, newId, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
-import { acquireBackgroundJobLeaseAsync, releaseBackgroundJobLeaseAsync } from './background-task-runs.repository.js'
+import { acquireBackgroundJobLeaseAsync, releaseBackgroundJobLeaseAsync, renewBackgroundJobLeaseAsync } from './background-task-runs.repository.js'
 import {
   evaluateIdentityTrust,
   hasHardTrustConflict,
   isIdentityObservation,
-  listIdentityAccountModelsForScopes,
   refreshIdentityBaselines,
+  type IdentityPopulationScope,
   upsertIdentitySourceFeature
 } from './model-trust-identity.repository.js'
 import {
@@ -24,7 +24,8 @@ import {
 const aggregationJobName = 'model-trust-observation-aggregation'
 const aggregationLeaseKey = 'scheduled:model-trust-observation-aggregation:global'
 const aggregationLeaseDurationMs = 5 * 60_000
-const maximumIdentityPropagationAccounts = 500
+const aggregationLeaseRenewIntervalMs = 60_000
+const maximumDirtyAccountsPerBatch = 500
 
 export interface ModelCheckObservationInput {
   id?: string
@@ -185,14 +186,26 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
     leaseUntil: new Date(Date.now() + aggregationLeaseDurationMs).toISOString()
   })
   if (!acquired) return 0
+  let renewalRunning = false
+  const renewalTimer = setInterval(() => {
+    if (renewalRunning) return
+    renewalRunning = true
+    void renewBackgroundJobLeaseAsync(
+      aggregationLeaseKey,
+      ownerId,
+      new Date(Date.now() + aggregationLeaseDurationMs).toISOString()
+    ).catch(() => false).finally(() => { renewalRunning = false })
+  }, aggregationLeaseRenewIntervalMs)
+  renewalTimer.unref()
   try {
-    return await aggregateModelTrustObservationsWithLeaseAsync(limit)
+    return await aggregateModelTrustObservationsWithLeaseAsync(limit, ownerId)
   } finally {
+    clearInterval(renewalTimer)
     await releaseBackgroundJobLeaseAsync(aggregationLeaseKey, ownerId)
   }
 }
 
-async function aggregateModelTrustObservationsWithLeaseAsync(limit: number): Promise<number> {
+async function aggregateModelTrustObservationsWithLeaseAsync(limit: number, ownerId: string): Promise<number> {
   const dataset = await datasetClient()
   const stats = await statsClient()
   const observationsTable = dataset.dialect.qualifyTable('juhe_dataset', 'model_check_observations')
@@ -203,7 +216,6 @@ async function aggregateModelTrustObservationsWithLeaseAsync(limit: number): Pro
     ORDER BY created_at, id
     LIMIT ?
   `, [state.createdAt, state.createdAt, state.id, boundedLimit(limit)])
-  if (!rows.length) return 0
   await stats.transaction(async (tx) => {
     for (const row of rows) {
       await upsertSource(tx, row)
@@ -212,10 +224,9 @@ async function aggregateModelTrustObservationsWithLeaseAsync(limit: number): Pro
       await upsertIdentitySourceFeature(tx, row)
     }
     const touchedIdentityScopes = await refreshIdentityBaselines(tx, rows)
-    const affected = mergeAccountModelKeys(
-      uniqueAccountModels(rows.filter(isDiagnosticTrustObservation)),
-      await listIdentityAccountModelsForScopes(tx, touchedIdentityScopes, maximumIdentityPropagationAccounts)
-    )
+    await enqueueIdentityLatestDirtyAccounts(tx, touchedIdentityScopes)
+    const dirtyAccounts = await listModelTrustLatestDirtyAccounts(tx, maximumDirtyAccountsPerBatch)
+    const affected = mergeAccountModelKeys(uniqueAccountModels(rows.filter(isDiagnosticTrustObservation)), dirtyAccounts)
     for (const key of affected) {
       await refreshLatestResult(tx, key, rows)
     }
@@ -232,8 +243,10 @@ async function aggregateModelTrustObservationsWithLeaseAsync(limit: number): Pro
     for (const key of tokenAffected) {
       await refreshLatestResult(tx, key, rows, tokenContexts)
     }
-    const last = rows[rows.length - 1] as ObservationRow
-    await writeAggregationState(tx, last.created_at, last.id)
+    await deleteModelTrustLatestDirtyAccounts(tx, dirtyAccounts)
+    await assertAggregationLeaseOwner(tx, ownerId)
+    const last = rows.at(-1)
+    if (last) await writeAggregationState(tx, last.created_at, last.id)
   })
   return rows.length
 }
@@ -604,6 +617,59 @@ async function readAggregationState(client: DatabaseClient): Promise<{ createdAt
     WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
   `, [aggregationJobName])
   return { createdAt: row?.cursor_created_at ?? '', id: row?.cursor_id ?? '' }
+}
+
+async function enqueueIdentityLatestDirtyAccounts(client: DatabaseClient, scopes: IdentityPopulationScope[]): Promise<void> {
+  if (!scopes.length) return
+  const sources = client.dialect.qualifyTable('juhe_stats', 'model_identity_source_features')
+  const dirty = client.dialect.qualifyTable('juhe_stats', 'model_trust_latest_dirty_accounts')
+  const updatedAt = nowIso()
+  for (const scope of scopes) {
+    await client.execute(`
+      INSERT INTO ${dirty} (system_account_id, account_id, requested_model, dirty_reason, updated_at)
+      SELECT DISTINCT system_account_id, account_id, requested_model, 'identity_baseline_changed', ?
+      FROM ${sources}
+      WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ?
+      ON CONFLICT (system_account_id, account_id, requested_model) DO NOTHING
+    `, [updatedAt, scope.populationKey, scope.requestedModel, scope.featureVersion])
+  }
+}
+
+async function listModelTrustLatestDirtyAccounts(client: DatabaseClient, limit: number): Promise<AccountModelKey[]> {
+  const table = client.dialect.qualifyTable('juhe_stats', 'model_trust_latest_dirty_accounts')
+  const rows = await client.query<{ system_account_id: string; account_id: string; requested_model: string }>(`
+    SELECT system_account_id, account_id, requested_model FROM ${table}
+    ORDER BY updated_at, system_account_id, account_id, requested_model
+    LIMIT ?
+  `, [limit])
+  return rows.map((row) => ({
+    systemAccountId: row.system_account_id,
+    accountId: row.account_id,
+    requestedModel: row.requested_model
+  }))
+}
+
+async function deleteModelTrustLatestDirtyAccounts(client: DatabaseClient, keys: AccountModelKey[]): Promise<void> {
+  if (!keys.length) return
+  const table = client.dialect.qualifyTable('juhe_stats', 'model_trust_latest_dirty_accounts')
+  for (let index = 0; index < keys.length; index += 100) {
+    const batch = keys.slice(index, index + 100)
+    const tuples = batch.map(() => '(?, ?, ?)').join(', ')
+    await client.execute(`
+      DELETE FROM ${table}
+      WHERE (system_account_id, account_id, requested_model) IN (${tuples})
+    `, batch.flatMap((key) => [key.systemAccountId, key.accountId, key.requestedModel]))
+  }
+}
+
+async function assertAggregationLeaseOwner(client: DatabaseClient, ownerId: string): Promise<void> {
+  const table = client.dialect.qualifyTable('juhe_stats', 'background_job_leases')
+  const lease = await client.one<{ owner_id: string }>(`
+    SELECT owner_id FROM ${table}
+    WHERE lease_key = ? AND owner_id = ? AND lease_until > ?
+    LIMIT 1
+  `, [aggregationLeaseKey, ownerId, nowIso()])
+  if (!lease) throw new Error('模型可信聚合租约已失效，当前事务已回滚并等待新 owner 重试')
 }
 
 async function writeAggregationState(client: DatabaseClient, createdAt: string, id: string): Promise<void> {
