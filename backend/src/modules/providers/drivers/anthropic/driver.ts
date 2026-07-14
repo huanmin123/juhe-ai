@@ -157,7 +157,7 @@ export const anthropicProviderDriver: ProviderDriver = {
           defaultModel: modelMapping.upstreamModel,
           guidanceProviderName: guidanceProviderNameForAccount(account),
           modelOverride: modelMapping.upstreamModel
-        }, signal), modelMapping.upstreamModel)
+        }, signal), modelMapping.upstreamModel, signal)
       }
     }
     if (shouldUseOpenAIToAnthropicBridge(req, account)) {
@@ -179,14 +179,17 @@ export const anthropicProviderDriver: ProviderDriver = {
           codeInterpreterExecutor: openAICompatibleCodeInterpreterExecutorForGatewayRequest(req),
           computerExecutor: openAICompatibleComputerExecutorForGatewayRequest(req),
           imageGenerationExecutor: openAICompatibleImageGenerationExecutorForGatewayRequest()
-        }, signal), openAIToAnthropicBridgeUpstreamModel(req, account))
+        }, signal), openAIToAnthropicBridgeUpstreamModel(req, account), signal)
       }
     }
+    const nativeBody = modelMapping
+      ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal)
+      : buildAnthropicNativePassthroughBody(req)
     return {
       headers,
-      body: await applyAnthropicOverrides(account, modelMapping
-        ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal)
-        : buildAnthropicNativePassthroughBody(req), modelMapping?.upstreamModel ?? requestModel(req))
+      body: isAnthropicMessagesPath(req)
+        ? await applyAnthropicOverrides(account, nativeBody, modelMapping?.upstreamModel ?? requestModel(req), signal)
+        : nativeBody
     }
   },
   transformUpstreamResponse(req, account, response, context) {
@@ -258,13 +261,15 @@ export const anthropicProviderDriver: ProviderDriver = {
 async function applyAnthropicOverrides(
   account: DispatchAccountSecret,
   body: Buffer | string | undefined,
-  upstreamModel: string | undefined
+  upstreamModel: string | undefined,
+  signal?: AbortSignal
 ): Promise<Buffer | string | undefined> {
   if (account.providerCode !== ANTHROPIC_PROVIDER_CODE) return body
   return await applyProviderAccountRequestOverridesToBody(body, {
     account,
     upstreamModel,
-    wireFormat: 'anthropic_messages'
+    wireFormat: 'anthropic_messages',
+    signal
   })
 }
 

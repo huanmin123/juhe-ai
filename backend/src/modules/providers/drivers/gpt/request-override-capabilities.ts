@@ -1,6 +1,5 @@
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import { listCachedProviderModelCatalogAsync } from '../../../gateway/runtime/runtime-cache.service.js'
-import { getProviderModelPricing } from '../../../model-pricing/model-pricing.service.js'
 import { modelPricingProviderDriverForProvider } from '../../../model-pricing/provider-driver.registry.js'
 import {
   readGptAccountRequestOverrides,
@@ -18,14 +17,6 @@ export async function resolveGptRequestOverrideModelCapabilities(
 
   const providerCode = account.providerCode?.trim()
   if (!providerCode) return undefined
-  const builtIn = getProviderModelPricing(providerCode, model)
-  if (builtIn) {
-    return {
-      supportedServiceTiers: builtIn.supportedServiceTiers,
-      supportedReasoningEfforts: builtIn.supportedReasoningEfforts
-    }
-  }
-
   const catalog = await listCachedProviderModelCatalogAsync({
     providerCode,
     systemAccountId: account.accountOwnerSystemAccountId,
