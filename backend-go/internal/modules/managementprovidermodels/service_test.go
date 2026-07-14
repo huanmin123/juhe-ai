@@ -11,63 +11,107 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-func TestServiceModelOptionsUsesProtocolScopeAndDedupe(t *testing.T) {
-	store := &providerModelStoreStub{
-		protocolCodes: map[string][]string{
-			"openai:v1": {"gpt"},
+func TestServiceModelOptionsSelectsHighestPriorityCatalogScope(t *testing.T) {
+	builtIn := port.ManagementProviderModelCatalogItem{
+		ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active",
+		SupportedAPIProtocols:     []string{"chat_completions"},
+		SupportedServiceTiers:     []string{"priority"},
+		SupportedReasoningEfforts: []string{"low"},
+		DefaultReasoningEffort:    "low",
+	}
+	global := port.ManagementProviderModelCatalogItem{
+		ProviderCode: "gpt", Model: "gpt-5.5", Scope: "global", Status: "active",
+		SupportedAPIProtocols:     []string{"responses"},
+		SupportedServiceTiers:     []string{"flex"},
+		SupportedReasoningEfforts: []string{"high"},
+		DefaultReasoningEffort:    "high",
+	}
+	personal := port.ManagementProviderModelCatalogItem{
+		ProviderCode: "gpt", Model: "gpt-5.5", Scope: "personal", Status: "active",
+		SupportedAPIProtocols:     []string{"messages"},
+		SupportedReasoningEfforts: []string{"max"},
+		DefaultReasoningEffort:    "max",
+	}
+	personalWithUnsupportedDefault := personal
+	personalWithUnsupportedDefault.DefaultReasoningEffort = "low"
+	tests := []struct {
+		name                 string
+		catalog              []port.ManagementProviderModelCatalogItem
+		wantProtocols        []string
+		wantServiceTiers     []string
+		wantReasoningEfforts []string
+		wantDefaultReasoning string
+	}{
+		{
+			name:                 "personal overrides global and built-in",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn, global, personal},
+			wantProtocols:        []string{"messages"},
+			wantReasoningEfforts: []string{"max"},
+			wantDefaultReasoning: "max",
 		},
-		catalog: []port.ManagementProviderModelCatalogItem{
-			{
-				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active",
-				SupportedAPIProtocols:     []string{"chat_completions"},
-				SupportedServiceTiers:     []string{"priority", "priority"},
-				SupportedReasoningEfforts: []string{"low"},
-				DefaultReasoningEffort:    "ultra",
-			},
-			{
-				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "global", Status: "active",
-				SupportedAPIProtocols:     []string{"responses"},
-				SupportedServiceTiers:     []string{"flex", "priority"},
-				SupportedReasoningEfforts: []string{"high"},
-				DefaultReasoningEffort:    " max ",
-			},
-			{
-				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "personal", Status: "active",
-				SupportedReasoningEfforts: []string{"max", "high"},
-				DefaultReasoningEffort:    "low",
-			},
+		{
+			name:                 "global replaces missing personal",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn, global},
+			wantProtocols:        []string{"responses"},
+			wantServiceTiers:     []string{"flex"},
+			wantReasoningEfforts: []string{"high"},
+			wantDefaultReasoning: "high",
+		},
+		{
+			name:                 "built-in replaces missing custom scopes",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn},
+			wantProtocols:        []string{"chat_completions"},
+			wantServiceTiers:     []string{"priority"},
+			wantReasoningEfforts: []string{"low"},
+			wantDefaultReasoning: "low",
+		},
+		{
+			name:                 "invalid personal default does not fall back to lower scope",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn, global, personalWithUnsupportedDefault},
+			wantProtocols:        []string{"messages"},
+			wantReasoningEfforts: []string{"max"},
 		},
 	}
-	service := NewService(store)
 
-	options, err := service.ModelOptions(context.Background(), ModelOptionListInput{
-		SystemAccountID: " sys_user ",
-		Protocol:        "openai",
-	})
-	if err != nil {
-		t.Fatalf("ModelOptions() error = %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &providerModelStoreStub{
+				protocolCodes: map[string][]string{"openai:v1": {"gpt"}},
+				catalog:       tt.catalog,
+			}
+			service := NewService(store)
 
-	if len(options) != 1 {
-		t.Fatalf("options = %+v, want 1 deduped item", options)
-	}
-	if options[0].ProviderCode != "gpt" || options[0].Model != "gpt-5.5" {
-		t.Fatalf("option = %+v", options[0])
-	}
-	if len(options[0].SupportedAPIProtocols) != 2 || options[0].SupportedAPIProtocols[0] != "chat_completions" || options[0].SupportedAPIProtocols[1] != "responses" {
-		t.Fatalf("protocols = %+v", options[0].SupportedAPIProtocols)
-	}
-	if !slices.Equal(options[0].SupportedServiceTiers, []string{"priority", "flex"}) {
-		t.Fatalf("service tiers = %+v", options[0].SupportedServiceTiers)
-	}
-	if !slices.Equal(options[0].SupportedReasoningEfforts, []string{"low", "high", "max"}) {
-		t.Fatalf("reasoning efforts = %+v", options[0].SupportedReasoningEfforts)
-	}
-	if options[0].DefaultReasoningEffort != "max" {
-		t.Fatalf("default reasoning effort = %q, want first valid candidate max", options[0].DefaultReasoningEffort)
-	}
-	if store.catalogInput.SystemAccountID != "sys_user" || store.catalogInput.IncludeInactive {
-		t.Fatalf("catalog input = %+v", store.catalogInput)
+			options, err := service.ModelOptions(context.Background(), ModelOptionListInput{
+				SystemAccountID: " sys_user ",
+				Protocol:        "openai",
+			})
+			if err != nil {
+				t.Fatalf("ModelOptions() error = %v", err)
+			}
+			if len(options) != 1 {
+				t.Fatalf("options = %+v, want 1 effective item", options)
+			}
+
+			option := options[0]
+			if option.ProviderCode != "gpt" || option.Model != "gpt-5.5" {
+				t.Fatalf("option = %+v", option)
+			}
+			if !slices.Equal(option.SupportedAPIProtocols, tt.wantProtocols) {
+				t.Fatalf("protocols = %+v, want %+v", option.SupportedAPIProtocols, tt.wantProtocols)
+			}
+			if !slices.Equal(option.SupportedServiceTiers, tt.wantServiceTiers) {
+				t.Fatalf("service tiers = %+v, want %+v", option.SupportedServiceTiers, tt.wantServiceTiers)
+			}
+			if !slices.Equal(option.SupportedReasoningEfforts, tt.wantReasoningEfforts) {
+				t.Fatalf("reasoning efforts = %+v, want %+v", option.SupportedReasoningEfforts, tt.wantReasoningEfforts)
+			}
+			if option.DefaultReasoningEffort != tt.wantDefaultReasoning {
+				t.Fatalf("default reasoning effort = %q, want %q", option.DefaultReasoningEffort, tt.wantDefaultReasoning)
+			}
+			if store.catalogInput.SystemAccountID != "sys_user" || store.catalogInput.IncludeInactive {
+				t.Fatalf("catalog input = %+v", store.catalogInput)
+			}
+		})
 	}
 }
 

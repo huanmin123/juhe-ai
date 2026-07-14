@@ -322,7 +322,7 @@ func (s *Service) ModelOptions(ctx context.Context, input ModelOptionListInput) 
 	if err != nil {
 		return nil, err
 	}
-	items := sortCatalogItems(rows)
+	items := sortCatalogItems(mergeCatalogItems(rows, mergeKeyProviderModel))
 	return dedupeModelOptions(items), nil
 }
 
