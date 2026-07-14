@@ -93,3 +93,38 @@ type ManagementClientIPStatsListReader interface {
 		input ManagementClientIPStatsListInput,
 	) (ManagementClientIPStatsListPage, error)
 }
+
+type ManagementClientIPStatsDetailInput struct {
+	IPHash    string
+	StartDate string
+	EndDate   string
+	SortField ManagementClientIPStatsSortField
+	SortOrder ManagementClientIPStatsSortOrder
+	Limit     int
+	Offset    int
+}
+
+type ManagementClientIPAccountUsageRow struct {
+	AccountID                     string
+	AccountName                   *string
+	AccountOwnerSystemAccountID   *string
+	AccountOwnerSystemAccountName *string
+	RangeUsage                    ManagementClientIPUsageSummary
+}
+
+type ManagementClientIPStatsDetailPage struct {
+	Found          bool
+	IPHash         string
+	AggregateIPKey string
+	LastSeenAt     string
+	Rows           []ManagementClientIPAccountUsageRow
+	HasMore        bool
+	RangeReady     bool
+}
+
+type ManagementClientIPStatsDetailReader interface {
+	GetManagementClientIPStatsDetail(
+		ctx context.Context,
+		input ManagementClientIPStatsDetailInput,
+	) (ManagementClientIPStatsDetailPage, error)
+}
