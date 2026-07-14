@@ -44,7 +44,6 @@ const (
 	providerModelsRequiredMessage             = "public account provider models reader is required"
 	hybridProviderCode                        = "hybrid"
 	accountHealthCheckReasonActivation        = "activation"
-	accountHealthCheckReasonConfiguration     = "configuration"
 	accountHealthCheckDispatchFailedEvent     = "public_account_health_check_dispatch_failed"
 	accountHealthCheckDispatchTimeout         = 2 * time.Second
 	deepSeekOpenAIProfileID                   = "profile_deepseek_openai_v1"
@@ -431,7 +430,7 @@ func (s *Service) Add(ctx context.Context, input AddInput) (AccountResponse, err
 			continue
 		}
 		if err == nil && response.Account != nil && response.Account.Status == StatusPendingTest {
-			s.dispatchAccountHealthCheck(ctx, response.Account.ID, accountHealthCheckReasonActivation)
+			s.dispatchAccountHealthCheckAsync(ctx, response.Account.ID, accountHealthCheckReasonActivation)
 		}
 		return response, err
 	}
@@ -564,7 +563,6 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 
 func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountResponse, error) {
 	var response AccountResponse
-	var healthCheckAccountID string
 	err := s.inTx(ctx, func(ctx context.Context, store port.PublicAccountStore) error {
 		current, target, err := s.accountAndTargetForWrite(ctx, store, input.AccountID, input.TargetUsername)
 		if err != nil {
@@ -718,15 +716,9 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		if !ok {
 			return ErrAccountNotFound
 		}
-		if scheduleHealthCheck {
-			healthCheckAccountID = updated.ID
-		}
 		response = accountResponse("updated", target, nil, updated, false, s.generatedAt())
 		return nil
 	})
-	if err == nil && healthCheckAccountID != "" {
-		s.dispatchAccountHealthCheck(ctx, healthCheckAccountID, accountHealthCheckReasonConfiguration)
-	}
 	return response, err
 }
 
@@ -1125,11 +1117,16 @@ func (s *Service) inTx(ctx context.Context, fn func(context.Context, port.Public
 	return fn(ctx, s.store)
 }
 
-func (s *Service) dispatchAccountHealthCheck(ctx context.Context, accountID string, reason string) {
+func (s *Service) dispatchAccountHealthCheckAsync(ctx context.Context, accountID string, reason string) {
 	if s.dispatcher == nil {
 		return
 	}
-	dispatchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.healthCheckDispatchTimeout)
+	dispatchCtx := context.WithoutCancel(ctx)
+	go s.dispatchAccountHealthCheck(dispatchCtx, accountID, reason)
+}
+
+func (s *Service) dispatchAccountHealthCheck(ctx context.Context, accountID string, reason string) {
+	dispatchCtx, cancel := context.WithTimeout(ctx, s.healthCheckDispatchTimeout)
 	defer cancel()
 	if err := s.dispatcher.Dispatch(dispatchCtx, accountID, reason); err != nil && s.logger != nil {
 		s.logger.Warn(
