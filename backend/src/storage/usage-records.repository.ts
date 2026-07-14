@@ -425,6 +425,7 @@ export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): 
 }
 
 export async function freezeUsageRecordPricingFactsAsync(input: UsageRecordInput): Promise<UsageRecordInput> {
+  if (!hasUsageRecordPricingSnapshotFact(input)) return input
   const enriched = (await enrichUsageRecordPricingAsync([input]))[0] ?? input
   if (enriched.pricingSnapshot !== undefined) {
     return enriched
@@ -476,6 +477,7 @@ async function enrichSingleUsageRecordPricingAsync(
   resolvePricingModel: (input: { providerCode: string; model?: string; systemAccountId?: string }) => Promise<string | undefined>
 ): Promise<UsageRecordInput> {
   if (input.pricingSnapshot !== undefined) return input
+  if (!hasUsageRecordPricingSnapshotFact(input)) return input
   if (!input.providerCode) return input
   const providerCode = input.providerCode
   const catalogSystemAccountId = input.accountOwnerSystemAccountId || input.systemAccountId

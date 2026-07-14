@@ -32,6 +32,22 @@ const [databaseModule, catalogService, repositories, usageRecordShards] = await 
 try {
   assertRedisStreamFreezesBeforeEnqueue()
 
+  const failureWithoutUsage = {
+    traceId: 'trace-request-time-pricing-failure-without-usage',
+    trafficSource: 'gateway' as const,
+    systemAccountId: 'sys_admin',
+    endpoint: '/v1/responses',
+    providerCode: 'gpt',
+    model: 'gpt-request-time-pricing-regression',
+    success: false,
+    statusCode: 503
+  }
+  assert.deepEqual(
+    await repositories.freezeUsageRecordPricingFactsAsync(failureWithoutUsage),
+    failureWithoutUsage,
+    '没有 token 或成本事实的失败尝试不得查询模型目录或伪造计价快照'
+  )
+
   const model = 'gpt-request-time-pricing-regression'
   const saved = catalogService.saveCustomProviderModel({
     providerCode: 'gpt',
@@ -116,5 +132,15 @@ function assertRedisStreamFreezesBeforeEnqueue(): void {
     repositorySource,
     /async function enrichSingleUsageRecordPricingAsync\([\s\S]*if \(input\.pricingSnapshot !== undefined\) return input/,
     'consumer 必须把已固化 pricing snapshot 当作不可变事实'
+  )
+  assert.match(
+    repositorySource,
+    /freezeUsageRecordPricingFactsAsync\(input: UsageRecordInput\): Promise<UsageRecordInput> \{\s*if \(!hasUsageRecordPricingSnapshotFact\(input\)\) return input\s*const enriched/,
+    '失败尝试没有 token 或成本事实时，必须在任何异步目录解析前短路'
+  )
+  assert.match(
+    repositorySource,
+    /async function enrichSingleUsageRecordPricingAsync\([\s\S]*if \(input\.pricingSnapshot !== undefined\) return input\s*if \(!hasUsageRecordPricingSnapshotFact\(input\)\) return input\s*if \(!input\.providerCode\) return input/,
+    'consumer 也不得用未来目录重新解释没有计费事实的失败记录'
   )
 }
