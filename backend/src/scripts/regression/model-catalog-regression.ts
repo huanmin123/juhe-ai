@@ -75,6 +75,18 @@ try {
   })
   catalogService.saveCustomProviderModel({
     providerCode: 'gpt',
+    model: 'gpt-regression-tier-only',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    supportedApiProtocols: ['responses'],
+    supportedServiceTiers: ['priority'],
+    serviceTierPrices: {
+      priority: { inputUsdPer1M: 4, outputUsdPer1M: 16 }
+    },
+    actorSystemAccountId: 'sys_admin'
+  })
+  catalogService.saveCustomProviderModel({
+    providerCode: 'gpt',
     model: 'gpt-regression-global',
     scope: 'global',
     supportedApiProtocols: ['responses'],
@@ -205,6 +217,7 @@ try {
   assert.equal(personalCapabilityModel?.supportsServiceTier, true, '自定义模型 supportsServiceTier 必须由精确能力数组派生')
   assert(publicModels.has('gpt-regression-alias'), '带直接价格的个人模型应进入个人公开模型目录')
   assert(publicModels.has('gpt-regression-upstream-target'), '自定义上游目标模型应直接进入公开模型目录')
+  assert(publicModels.has('gpt-regression-tier-only'), '只有精确档位价格的模型也应进入公开模型目录')
   assert(publicModels.has('gpt-regression-case-model'), '仅大小写不同的小写自定义模型应进入模型目录')
   assert(publicModels.has('GPT-regression-case-model'), '仅大小写不同的大写自定义模型应进入模型目录')
   assert(publicModels.has('gpt-regression-audio'), '只有音频价格的自定义模型应进入公开模型目录')
@@ -678,6 +691,15 @@ try {
     model: 'gpt-regression-alias'
   })
   assert.equal(aliasPricingModelAsync, 'gpt-regression-alias', '异步计价模型应保持最终上游模型自身')
+  const tierOnlyCost = catalogService.estimateCatalogCostUsd({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_admin',
+    model: 'gpt-regression-tier-only',
+    serviceTier: 'priority',
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000
+  })
+  assert.equal(tierOnlyCost, 20, '只有精确档位价格的模型必须按 serviceTierPrices 计价')
   const lowerCaseModelCost = catalogService.estimateCatalogCostUsd({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',

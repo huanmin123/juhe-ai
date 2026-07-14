@@ -206,8 +206,7 @@ function catalogRowSQL(row: ProviderModelPricing): string {
     `    ${values.slice(22, 27).join(', ')},`,
     `    ${values.slice(27, 32).join(', ')},`,
     `    ${values.slice(32, 35).join(', ')},`,
-    `    ${values.slice(35, 42).join(', ')},`,
-    `    ${values.slice(42).join(', ')}`,
+    `    ${values.slice(35).join(', ')}`,
     '  )'
   ].join('\n')
 }

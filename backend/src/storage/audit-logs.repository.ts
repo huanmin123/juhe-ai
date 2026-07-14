@@ -581,13 +581,7 @@ async function enrichSinglePostgresAuditLogPricing(
       providerCode: input.providerCode,
       systemAccountId,
       model
-    }) ?? (requestedModel && requestedModel !== model
-      ? await resolvePricingModel({
-          providerCode: input.providerCode,
-          systemAccountId,
-          model: requestedModel
-        })
-      : undefined)
+    })
     return pricingModel ? { ...input, pricingModel } : input
   } catch (error) {
     logger.warn(errorLogFields(error, {

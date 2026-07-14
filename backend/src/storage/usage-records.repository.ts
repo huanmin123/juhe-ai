@@ -595,18 +595,12 @@ async function resolveUsageRecordPricingModelAsync(input: {
   requestedModel?: string
   resolvePricingModel: (input: { providerCode: string; model?: string; systemAccountId?: string }) => Promise<string | undefined>
 }): Promise<string | undefined> {
-  const upstreamPricingModel = await input.resolvePricingModel({
-    providerCode: input.providerCode,
-    systemAccountId: input.systemAccountId,
-    model: input.upstreamModel
-  })
-  if (upstreamPricingModel) return upstreamPricingModel
-
-  if (!input.requestedModel || input.requestedModel === input.upstreamModel) return undefined
+  const actualModel = input.upstreamModel ?? input.requestedModel
+  if (!actualModel) return undefined
   return await input.resolvePricingModel({
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId,
-    model: input.requestedModel
+    model: actualModel
   })
 }
 

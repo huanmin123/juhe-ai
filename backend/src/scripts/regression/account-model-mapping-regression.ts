@@ -1609,8 +1609,8 @@ async function assertUsageRecordFields(
   assert(unpricedRecord, '上游别名未在价格目录命中时也应写入使用记录')
   assert.equal(unpricedRecord.model, sourceModel, '上游别名未定价时使用记录仍应保留下游模型')
   assert.equal(unpricedRecord.upstreamModel, unpricedUpstreamModel, '上游别名未定价时使用记录仍应记录实际上游模型')
-  assert.equal(unpricedRecord.pricingModel, sourceModel, '上游别名未定价时应回落到下游来源模型计价')
-  assert.equal(unpricedRecord.costUsd, 3, '上游别名未定价时不应把成本错误记录为 0')
+  assert.equal(unpricedRecord.pricingModel, undefined, '实际上游模型未定价时不能虚构下游计价模型')
+  assert.equal(unpricedRecord.costUsd, undefined, '实际上游模型未定价时成本必须保持未知，不能回落到下游价格')
 }
 
 async function assertAuditLogFields(
