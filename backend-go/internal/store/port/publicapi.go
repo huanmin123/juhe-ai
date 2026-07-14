@@ -442,6 +442,7 @@ type PublicAccountProviderProfile struct {
 	ProtocolCode            string
 	ProtocolVersion         string
 	AccountTypesJSON        string
+	EnabledEndpointModes    []string
 	DefaultSupportedModels  []string
 	DefaultHealthCheckModel string
 }

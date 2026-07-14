@@ -442,7 +442,8 @@ SELECT
   ) AS default_health_check_model,
   profiles.protocol_code,
   profiles.protocol_version,
-  profiles.account_types_json
+  profiles.account_types_json,
+  profiles.capabilities_json
 FROM juhe_business.provider_protocol_profiles AS profiles
 JOIN juhe_business.providers AS providers
   ON providers.code = profiles.provider_code
@@ -476,6 +477,7 @@ type FindPublicAccountProviderProfileRow struct {
 	ProtocolCode               string
 	ProtocolVersion            string
 	AccountTypesJson           string
+	CapabilitiesJson           string
 }
 
 func (q *Queries) FindPublicAccountProviderProfile(ctx context.Context, arg FindPublicAccountProviderProfileParams) (FindPublicAccountProviderProfileRow, error) {
@@ -492,6 +494,7 @@ func (q *Queries) FindPublicAccountProviderProfile(ctx context.Context, arg Find
 		&i.ProtocolCode,
 		&i.ProtocolVersion,
 		&i.AccountTypesJson,
+		&i.CapabilitiesJson,
 	)
 	return i, err
 }

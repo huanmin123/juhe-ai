@@ -330,6 +330,114 @@ func TestServiceAddRejectsUnsupportedHealthCheckEndpointFamily(t *testing.T) {
 	}
 }
 
+func TestServiceAddFallsBackToFirstEnabledJSONFamily(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	profileKey := "gpt|profile_gpt_openai_v1"
+	profile := store.profiles[profileKey]
+	profile.EnabledEndpointModes = []string{"generate_content_json", "chat_json"}
+	store.profiles[profileKey] = profile
+	service := newPublicAccountServiceForTest(store, nil)
+
+	response, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"首个 JSON 能力回退账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	if response.Account == nil || response.Account.HealthCheckEndpointFamily != "generate_content" {
+		t.Fatalf("response account = %+v, want generate_content family", response.Account)
+	}
+}
+
+func TestServiceAddRejectsProfileWithoutJSONFamily(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	profileKey := "gpt|profile_gpt_openai_v1"
+	profile := store.profiles[profileKey]
+	profile.EnabledEndpointModes = nil
+	store.profiles[profileKey] = profile
+	service := newPublicAccountServiceForTest(store, nil)
+
+	_, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"无 JSON 能力账号",
+		"gpt-5.4-mini",
+	))
+	if !errors.Is(err, ErrInvalidHealthCheckEndpointFamily) || !strings.Contains(err.Error(), "至少需要启用一个") {
+		t.Fatalf("add error = %v, want no JSON family error", err)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("create calls = %d, want 0", store.createCalls)
+	}
+}
+
+func TestServiceHybridAnthropicMessagesProfileCanAddAndUpdate(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	store.profiles["hybrid|profile_hybrid_anthropic_messages_v1"] = port.PublicAccountProviderProfile{
+		ID:                      "profile_hybrid_anthropic_messages_v1",
+		ProviderCode:            hybridProviderCode,
+		Name:                    "Hybrid / Anthropic Messages",
+		Enabled:                 true,
+		ProviderEnabled:         true,
+		ProtocolCode:            "anthropic",
+		ProtocolVersion:         "v1",
+		AccountTypesJSON:        `["api_key"]`,
+		EnabledEndpointModes:    []string{"messages_json"},
+		DefaultSupportedModels:  []string{"hybrid-direct-model"},
+		DefaultHealthCheckModel: "hybrid-direct-model",
+	}
+	service := newPublicAccountServiceForTest(store, nil)
+	input := validPublicAccountAddInput("混合 Anthropic 账号", "hybrid-direct-model")
+	input.ProviderCode = hybridProviderCode
+	input.ProviderProtocolProfileID = "profile_hybrid_anthropic_messages_v1"
+
+	created, err := service.Add(context.Background(), input)
+	if err != nil {
+		t.Fatalf("add hybrid Anthropic account: %v", err)
+	}
+	if created.Account == nil || created.Account.HealthCheckEndpointFamily != "messages" {
+		t.Fatalf("created account = %+v, want messages family", created.Account)
+	}
+
+	name := "混合 Anthropic 更新账号"
+	updated, err := service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		Name:      &name,
+	})
+	if err != nil {
+		t.Fatalf("update hybrid Anthropic account: %v", err)
+	}
+	if updated.Account == nil || updated.Account.Name != name || updated.Account.HealthCheckEndpointFamily != "messages" {
+		t.Fatalf("updated account = %+v, want updated messages account", updated.Account)
+	}
+}
+
+func TestServiceUpdateRejectsCurrentFamilyWithoutEnabledJSONMode(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"当前协议族无效账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	account := store.accounts[created.Account.ID]
+	account.HealthCheckEndpointFamily = "messages"
+	store.accounts[account.ID] = account
+	name := "不应写入的新名称"
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID: account.ID,
+		Name:      &name,
+	})
+	if !errors.Is(err, ErrInvalidHealthCheckEndpointFamily) || !strings.Contains(err.Error(), "未启用对应 JSON 能力") {
+		t.Fatalf("update error = %v, want disabled current family error", err)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("update calls = %d, want 0", store.updateCalls)
+	}
+}
+
 func TestPublicAccountSummaryDoesNotExposeHealthCheckModel(t *testing.T) {
 	summaryType := reflect.TypeOf(AccountSummary{})
 	for index := 0; index < summaryType.NumField(); index++ {
@@ -1693,6 +1801,7 @@ func newPublicAccountStoreFake() *publicAccountStoreFake {
 				ProtocolCode:            "openai",
 				ProtocolVersion:         "v1",
 				AccountTypesJSON:        `["oauth","api_key"]`,
+				EnabledEndpointModes:    []string{"responses_json", "chat_json"},
 				DefaultSupportedModels:  append([]string(nil), defaultGPTSupportedModels...),
 				DefaultHealthCheckModel: defaultGPTHealthCheckModel,
 			},
@@ -1705,6 +1814,7 @@ func newPublicAccountStoreFake() *publicAccountStoreFake {
 				ProtocolCode:            "openai",
 				ProtocolVersion:         "v1",
 				AccountTypesJSON:        `["api_key"]`,
+				EnabledEndpointModes:    []string{"chat_json", "responses_json", "messages_json", "generate_content_json"},
 				DefaultSupportedModels:  []string{"hybrid-direct-model"},
 				DefaultHealthCheckModel: "hybrid-direct-model",
 			},

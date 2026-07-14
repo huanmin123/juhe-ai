@@ -231,6 +231,10 @@ func publicAccountProviderProfileFromRow(row postgresqueries.FindPublicAccountPr
 	if err != nil {
 		return port.PublicAccountProviderProfile{}, err
 	}
+	capabilities, err := decodeProviderStringArray(row.CapabilitiesJson, "provider profile capabilities_json")
+	if err != nil {
+		return port.PublicAccountProviderProfile{}, err
+	}
 	return port.PublicAccountProviderProfile{
 		ID:                      row.ID,
 		ProviderCode:            row.ProviderCode,
@@ -240,9 +244,27 @@ func publicAccountProviderProfileFromRow(row postgresqueries.FindPublicAccountPr
 		ProtocolCode:            row.ProtocolCode,
 		ProtocolVersion:         row.ProtocolVersion,
 		AccountTypesJSON:        row.AccountTypesJson,
+		EnabledEndpointModes:    publicAccountEnabledEndpointModes(capabilities),
 		DefaultSupportedModels:  defaultSupportedModels,
 		DefaultHealthCheckModel: strings.TrimSpace(row.DefaultHealthCheckModel),
 	}, nil
+}
+
+func publicAccountEnabledEndpointModes(capabilities []string) []string {
+	modes := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		switch capability {
+		case "chat":
+			modes = append(modes, "chat_json")
+		case "responses":
+			modes = append(modes, "responses_json")
+		case "messages":
+			modes = append(modes, "messages_json")
+		case "generate_content":
+			modes = append(modes, "generate_content_json")
+		}
+	}
+	return modes
 }
 
 func publicAccountFindExistingGroupByName(ctx context.Context, q *postgresqueries.Queries, systemAccountID string, providerCode string, name string) (port.PublicAccountGroupRef, bool, error) {

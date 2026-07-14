@@ -34,7 +34,8 @@ SELECT
   ) AS default_health_check_model,
   profiles.protocol_code,
   profiles.protocol_version,
-  profiles.account_types_json
+  profiles.account_types_json,
+  profiles.capabilities_json
 FROM juhe_business.provider_protocol_profiles AS profiles
 JOIN juhe_business.providers AS providers
   ON providers.code = profiles.provider_code

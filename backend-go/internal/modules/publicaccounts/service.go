@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -448,7 +447,16 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 		if err != nil {
 			return err
 		}
-		healthCheckEndpointFamily, err := normalizeHealthCheckEndpointFamily(input.HealthCheckEndpointFamily, input.ProviderCode, profile.ID)
+		var requestedHealthCheckEndpointFamily *string
+		if input.HealthCheckEndpointFamily != "" {
+			requestedHealthCheckEndpointFamily = &input.HealthCheckEndpointFamily
+		}
+		healthCheckEndpointFamily, err := resolveHealthCheckEndpointFamily(
+			requestedHealthCheckEndpointFamily,
+			input.ProviderCode,
+			profile.ID,
+			profile.EnabledEndpointModes,
+		)
 		if err != nil {
 			return err
 		}
@@ -510,6 +518,16 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			return fmt.Errorf("%w: 公开账号接口仅支持 API Key 账户", ErrUnsupportedAccountType)
 		}
 		if err := s.assertAccountFilters(ctx, store, current, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
+			return err
+		}
+		profile, err := s.requireProviderProfile(
+			ctx,
+			store,
+			current.SystemAccountID,
+			current.ProviderCode,
+			current.ProviderProtocolProfileID,
+		)
+		if err != nil {
 			return err
 		}
 
@@ -583,11 +601,16 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		}
 		next.SupportedModels = models
 		next.HealthCheckModel = healthCheckModel
+		healthCheckEndpointFamily := &current.HealthCheckEndpointFamily
 		if input.HealthCheckEndpointFamily != nil {
-			next.HealthCheckEndpointFamily, err = normalizeHealthCheckEndpointFamily(*input.HealthCheckEndpointFamily, current.ProviderCode, current.ProviderProtocolProfileID)
-		} else {
-			next.HealthCheckEndpointFamily, err = normalizeHealthCheckEndpointFamily(current.HealthCheckEndpointFamily, current.ProviderCode, current.ProviderProtocolProfileID)
+			healthCheckEndpointFamily = input.HealthCheckEndpointFamily
 		}
+		next.HealthCheckEndpointFamily, err = resolveHealthCheckEndpointFamily(
+			healthCheckEndpointFamily,
+			current.ProviderCode,
+			current.ProviderProtocolProfileID,
+			profile.EnabledEndpointModes,
+		)
 		if err != nil {
 			return err
 		}
@@ -1017,40 +1040,97 @@ func normalizeAccountHealthCheckModel(value string, supportedModels []string) (s
 	return "", fmt.Errorf("%w: %s", ErrInvalidHealthCheckModel, invalidHealthCheckModelUnsupportedMessage)
 }
 
-func normalizeHealthCheckEndpointFamily(value string, providerCode string, profileID string) (string, error) {
-	allowed := healthCheckEndpointFamiliesForProfile(providerCode, profileID)
-	family := strings.TrimSpace(value)
-	if family == "" {
-		if strings.TrimSpace(providerCode) == "gpt" && slices.Contains(allowed, "responses") {
-			return "responses", nil
-		}
-		if slices.Contains(allowed, "chat_completions") {
-			return "chat_completions", nil
-		}
-		if len(allowed) > 0 {
-			return allowed[0], nil
-		}
+func resolveHealthCheckEndpointFamily(value *string, providerCode string, profileID string, enabledEndpointModes []string) (string, error) {
+	if value == nil {
+		return defaultHealthCheckEndpointFamily(providerCode, profileID, enabledEndpointModes)
 	}
-	if slices.Contains(allowed, family) {
-		return family, nil
+	family := strings.TrimSpace(*value)
+	mode, ok := healthCheckEndpointMode(family)
+	if !ok {
+		return "", fmt.Errorf("%w: 账户健康检查协议族无效", ErrInvalidHealthCheckEndpointFamily)
 	}
-	return "", fmt.Errorf("%w: 当前协议档案未启用健康检查协议族 %s", ErrInvalidHealthCheckEndpointFamily, family)
+	if !stringListContains(enabledEndpointModes, mode) {
+		return "", fmt.Errorf(
+			"%w: 账户健康检查协议族 %s 未启用对应 JSON 能力",
+			ErrInvalidHealthCheckEndpointFamily,
+			family,
+		)
+	}
+	return family, nil
 }
 
-func healthCheckEndpointFamiliesForProfile(providerCode string, profileID string) []string {
-	switch strings.TrimSpace(profileID) {
-	case "profile_gemini_native_v1beta":
-		return []string{"generate_content"}
-	case "profile_anthropic_anthropic_v1", "profile_deepseek_anthropic_v1", "profile_glm_coding_anthropic_v1":
-		return []string{"messages"}
-	case "profile_gpt_openai_v1":
-		return []string{"chat_completions", "responses"}
-	default:
-		if strings.TrimSpace(providerCode) == "anthropic" {
-			return []string{"messages"}
+func defaultHealthCheckEndpointFamily(providerCode string, profileID string, enabledEndpointModes []string) (string, error) {
+	enabledFamilies := make([]string, 0, len(enabledEndpointModes))
+	for _, mode := range enabledEndpointModes {
+		if family, ok := healthCheckEndpointFamilyFromMode(mode); ok {
+			enabledFamilies = append(enabledFamilies, family)
 		}
-		return []string{"chat_completions"}
 	}
+	preferred := preferredHealthCheckEndpointFamily(providerCode, profileID)
+	if stringListContains(enabledFamilies, preferred) {
+		return preferred, nil
+	}
+	if len(enabledFamilies) > 0 {
+		return enabledFamilies[0], nil
+	}
+	return "", fmt.Errorf(
+		"%w: 账户至少需要启用一个可用于健康检查的 JSON 端点族",
+		ErrInvalidHealthCheckEndpointFamily,
+	)
+}
+
+func preferredHealthCheckEndpointFamily(providerCode string, profileID string) string {
+	providerCode = strings.TrimSpace(providerCode)
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "profile_gemini_native_v1beta" {
+		return "generate_content"
+	}
+	if strings.Contains(profileID, "anthropic") || providerCode == "anthropic" {
+		return "messages"
+	}
+	if providerCode == "gpt" {
+		return "responses"
+	}
+	return "chat_completions"
+}
+
+func healthCheckEndpointMode(family string) (string, bool) {
+	switch family {
+	case "chat_completions":
+		return "chat_json", true
+	case "responses":
+		return "responses_json", true
+	case "messages":
+		return "messages_json", true
+	case "generate_content":
+		return "generate_content_json", true
+	default:
+		return "", false
+	}
+}
+
+func healthCheckEndpointFamilyFromMode(mode string) (string, bool) {
+	switch strings.TrimSpace(mode) {
+	case "chat_json":
+		return "chat_completions", true
+	case "responses_json":
+		return "responses", true
+	case "messages_json":
+		return "messages", true
+	case "generate_content_json":
+		return "generate_content", true
+	default:
+		return "", false
+	}
+}
+
+func stringListContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, systemAccountID string, providerCode string, models []string) error {
