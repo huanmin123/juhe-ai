@@ -278,6 +278,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
 		ManagementGlobalSettingsUpdateHandler:             managementHandlers.GlobalSettingsUpdateHandler,
 		ManagementClientIPStatsHandler:                    managementHandlers.ClientIPStatsHandler,
+		ManagementClientIPStatsDetailHandler:              managementHandlers.ClientIPStatsDetailHandler,
 		ManagementClientIPAllowlistHandler:                managementHandlers.ClientIPAllowlistHandler,
 		ManagementClientIPUnallowlistHandler:              managementHandlers.ClientIPUnallowlistHandler,
 		ManagementClientIPBlacklistHandler:                managementHandlers.ClientIPBlacklistHandler,
@@ -433,6 +434,7 @@ type managementAPIHandlers struct {
 	GlobalSettingsHandler                   http.Handler
 	GlobalSettingsUpdateHandler             http.Handler
 	ClientIPStatsHandler                    http.Handler
+	ClientIPStatsDetailHandler              http.Handler
 	ClientIPAllowlistHandler                http.Handler
 	ClientIPUnallowlistHandler              http.Handler
 	ClientIPBlacklistHandler                http.Handler
@@ -569,6 +571,7 @@ func newManagementAPIHandler(
 	clientIPStatsService := managementclientipstats.NewServiceWithOptions(
 		managementclientipstats.ServiceOptions{
 			ListReader:               store,
+			DetailReader:             store,
 			UsageStatsTimezoneReader: store,
 		},
 	)
@@ -694,6 +697,7 @@ func newManagementAPIHandler(
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),
 		GlobalSettingsUpdateHandler:             httpapi.NewManagementGlobalSettingsUpdateHandlerWithOperationLog(globalSettingsUpdateService, operationLogOptions),
 		ClientIPStatsHandler:                    httpapi.NewManagementClientIPStatsHandler(clientIPStatsService),
+		ClientIPStatsDetailHandler:              httpapi.NewManagementClientIPStatsDetailHandler(clientIPStatsService),
 		ClientIPAllowlistHandler:                httpapi.NewManagementClientIPAllowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
 		ClientIPUnallowlistHandler:              httpapi.NewManagementClientIPUnallowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
 		ClientIPBlacklistHandler:                httpapi.NewManagementClientIPBlacklistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),

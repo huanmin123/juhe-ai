@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/modules/managementauth"
@@ -141,6 +144,74 @@ func TestRouterManagementClientIPStatsRequiresAuthenticatedReadLimiter(t *testin
 	}()
 
 	_ = NewRouter(opts)
+}
+
+func TestRouterManagementClientIPStatsDetailUsesAuthenticatedReadPipeline(t *testing.T) {
+	events := []string{}
+	authenticator := &managementClientIPStatsRouterAuthenticator{
+		events: &events,
+		authContext: managementauth.Context{
+			SystemAccountID: "sys_admin",
+			Username:        "admin",
+			Role:            "admin",
+			SessionID:       "sess_admin",
+		},
+	}
+	ipLimiter := &managementClientIPStatsRouterIPLimiter{
+		events:   &events,
+		decision: SystemAPIRateLimitDecision{Allowed: true},
+	}
+	userLimiter := &managementClientIPStatsRouterUserLimiter{
+		events:   &events,
+		decision: SystemAPIRateLimitDecision{Allowed: true},
+	}
+	hash := strings.Repeat("a", 64)
+	router := NewRouter(RouterOptions{
+		Config: config.Config{
+			Host:                 "127.0.0.1",
+			Port:                 3000,
+			ManagementAPIEnabled: true,
+		},
+		SystemAPIRateLimitReader: systemAPIRateLimitReaderStub{
+			settings: port.SystemAPIRateLimitSettings{
+				IPReadPerMinute:         600,
+				IPReadBurstPer10Seconds: 120,
+				UserReadPerMinute:       300,
+			},
+		},
+		SystemAPIIPRateLimiter:            ipLimiter,
+		SystemAPIAuthenticatedRateLimiter: userLimiter,
+		ManagementAPIAuthMiddleware:       NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware:  NewManagementAPIAuthTouchMiddleware(authenticator),
+		ManagementClientIPStatsDetailHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			events = append(events, "handler")
+			if got := chi.URLParam(r, "ipHash"); got != hash {
+				t.Fatalf("ipHash = %q, want %q", got, hash)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/ip-stats/"+hash+"/detail", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body = %s", rec.Code, rec.Body.String())
+	}
+	if authenticator.readCalls != 1 || authenticator.touchCalls != 0 || ipLimiter.calls != 1 || userLimiter.calls != 1 {
+		t.Fatalf("pipeline calls = auth %d touch %d ip %d user %d", authenticator.readCalls, authenticator.touchCalls, ipLimiter.calls, userLimiter.calls)
+	}
+	if want := []string{"ip-limit", "read-auth", "user-limit", "handler"}; !slices.Equal(events, want) {
+		t.Fatalf("pipeline events = %v, want %v", events, want)
+	}
+	if !managementBusinessRoutesConfigured(RouterOptions{ManagementClientIPStatsDetailHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})}) {
+		t.Fatal("client IP stats detail route was not classified as a management business route")
+	}
+	if managementWriteRoutesConfigured(RouterOptions{ManagementClientIPStatsDetailHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})}) {
+		t.Fatal("client IP stats detail route was incorrectly classified as a management write route")
+	}
 }
 
 type managementClientIPStatsRouterAuthenticator struct {

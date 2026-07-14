@@ -141,6 +141,7 @@ type RouterOptions struct {
 	ManagementGlobalSettingsHandler                   http.Handler
 	ManagementGlobalSettingsUpdateHandler             http.Handler
 	ManagementClientIPStatsHandler                    http.Handler
+	ManagementClientIPStatsDetailHandler              http.Handler
 	ManagementClientIPAllowlistHandler                http.Handler
 	ManagementClientIPUnallowlistHandler              http.Handler
 	ManagementClientIPBlacklistHandler                http.Handler
@@ -353,6 +354,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementGlobalSettingsHandler == nil &&
 				opts.ManagementGlobalSettingsUpdateHandler == nil &&
 				opts.ManagementClientIPStatsHandler == nil &&
+				opts.ManagementClientIPStatsDetailHandler == nil &&
 				opts.ManagementClientIPAllowlistHandler == nil &&
 				opts.ManagementClientIPUnallowlistHandler == nil &&
 				opts.ManagementClientIPBlacklistHandler == nil &&
@@ -786,6 +788,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementClientIPStatsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/ip-stats", opts.ManagementClientIPStatsHandler.ServeHTTP)
 			}
+			if opts.ManagementClientIPStatsDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/ip-stats/{ipHash}/detail", opts.ManagementClientIPStatsDetailHandler.ServeHTTP)
+			}
 			if opts.ManagementClientIPAllowlistHandler != nil {
 				system.With(
 					managementGroupCreateJSONBodyMiddleware,
@@ -978,6 +983,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementGlobalSettingsHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPStatsHandler != nil ||
+		opts.ManagementClientIPStatsDetailHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||
 		opts.ManagementClientIPUnallowlistHandler != nil ||
 		opts.ManagementClientIPBlacklistHandler != nil ||
