@@ -381,7 +381,8 @@ try {
     assert.equal(row.balance_query_next_refresh_at, null, '批量编辑关闭余额必须在同一事务清空调度')
     assert.deepEqual(JSON.parse(String(row.balance_query_config_json)), { adapter: 'builtin', intervalMinutes: 5 }, '批量编辑必须为旧空配置写入已配置关闭标记')
   }
-  assert.equal(balanceRepository.loadAccountBalanceSnapshotsByAccountIds([multiA.id, multiB.id]).size, 0, '批量事务提交后必须幂等清理旧余额快照')
+  await waitFor(() => balanceRepository.loadAccountBalanceSnapshotsByAccountIds([multiA.id, multiB.id]).size === 0)
+  assert.equal(balanceRepository.loadAccountBalanceSnapshotsByAccountIds([multiA.id, multiB.id]).size, 0, '批量事务提交后登记的有界后台任务必须最终幂等清理旧余额快照')
 
   await assertBatchModelMappingTargetCapabilities(group.id)
 
@@ -473,6 +474,14 @@ function targets(...accounts: Array<{ id: string; configRevision?: number }>) {
     accountId: account.id,
     configRevision: account.configRevision as number
   }))
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('等待批量余额快照后台清理超时')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
 }
 
 function assertCredentialPoliciesMerged(accountId: string, expectedApiKey: string): void {

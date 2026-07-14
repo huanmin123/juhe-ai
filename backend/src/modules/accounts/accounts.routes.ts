@@ -406,7 +406,7 @@ accountsRouter.patch('/:id', async (req, res) => {
         || balanceDecision.autoDisabledForMultipleApiKeys
         || (currentBalance?.enabled === true && finalBalance?.enabled === false)
       ) {
-        await cleanupAccountBalanceSnapshotAfterSave({
+        cleanupAccountBalanceSnapshotAfterSave({
           accountId: account.id,
           configRevision: account.configRevision ?? 1,
           reason: balanceDecision.autoDisabledForMultipleApiKeys

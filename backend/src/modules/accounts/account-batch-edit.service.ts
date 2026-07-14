@@ -114,7 +114,7 @@ export async function batchEditAccountsAsync(
     access,
     prepare: async ({ client, accounts }) => prepareBatchUpdatesAsync(client, accounts, updates)
   })
-  await cleanupDisabledBalanceSnapshots(
+  cleanupDisabledBalanceSnapshots(
     repositoryResult.balanceSnapshotCleanupAccountIds,
     repositoryResult.configRevisions,
     repositoryResult.batchId
@@ -352,20 +352,20 @@ async function prepareAccountUpdateAsync(
   }
 }
 
-async function cleanupDisabledBalanceSnapshots(
+function cleanupDisabledBalanceSnapshots(
   accountIds: string[],
   configRevisions: Record<string, number>,
   batchId: string
-): Promise<void> {
+): void {
   if (accountIds.length === 0) return
-  await Promise.all(accountIds.map(async (accountId) => {
-    await cleanupAccountBalanceSnapshotAfterSave({
+  for (const accountId of accountIds) {
+    cleanupAccountBalanceSnapshotAfterSave({
       accountId,
       configRevision: configRevisions[accountId] ?? 1,
       reason: 'batch_multiple_api_keys',
       batchId
     })
-  }))
+  }
 }
 
 function applyNullableCredentialOverride(

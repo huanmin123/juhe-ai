@@ -34,6 +34,7 @@ export interface AccountBalanceDetectionCandidatePage {
 export interface AccountBalanceSnapshotRecord {
   snapshot: AccountBalanceSnapshot
   nextRefreshAfter?: string
+  updatedAt: string
 }
 
 interface BalanceCandidateRow {
@@ -345,14 +346,15 @@ export function loadAccountBalanceSnapshotRecordsByAccountIds(accountIds: string
   const output = new Map<string, AccountBalanceSnapshotRecord>()
   for (const chunk of chunkValues([...new Set(accountIds.filter(Boolean))], 900)) {
     const rows = getStatsDatabase().prepare(`
-      SELECT account_id, snapshot_json, next_refresh_after
+      SELECT account_id, snapshot_json, next_refresh_after, updated_at
       FROM account_usage_snapshots
       WHERE kind = 'relay_balance' AND account_id IN (${sqlPlaceholders(chunk.length)})
-    `).all(...chunk) as unknown as Array<{ account_id: string; snapshot_json: string; next_refresh_after?: string | null }>
+    `).all(...chunk) as unknown as Array<{ account_id: string; snapshot_json: string; next_refresh_after?: string | null; updated_at: string }>
     for (const row of rows) {
       output.set(row.account_id, {
         snapshot: parseSnapshot(row.snapshot_json),
-        nextRefreshAfter: row.next_refresh_after ?? undefined
+        nextRefreshAfter: row.next_refresh_after ?? undefined,
+        updatedAt: row.updated_at
       })
     }
   }
@@ -368,15 +370,16 @@ export async function loadAccountBalanceSnapshotRecordsByAccountIdsAsync(account
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const output = new Map<string, AccountBalanceSnapshotRecord>()
   for (const chunk of chunkValues([...new Set(accountIds.filter(Boolean))], 900)) {
-    const rows = await client.query<{ account_id: string; snapshot_json: string; next_refresh_after?: string | null }>(`
-      SELECT account_id, snapshot_json, next_refresh_after
+    const rows = await client.query<{ account_id: string; snapshot_json: string; next_refresh_after?: string | null; updated_at: string }>(`
+      SELECT account_id, snapshot_json, next_refresh_after, updated_at
       FROM juhe_stats.account_usage_snapshots
       WHERE kind = 'relay_balance' AND account_id = ANY(?::text[])
     `, [chunk])
     for (const row of rows) {
       output.set(row.account_id, {
         snapshot: parseSnapshot(row.snapshot_json),
-        nextRefreshAfter: row.next_refresh_after ?? undefined
+        nextRefreshAfter: row.next_refresh_after ?? undefined,
+        updatedAt: row.updated_at
       })
     }
   }

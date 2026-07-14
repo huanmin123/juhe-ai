@@ -93,7 +93,7 @@ async function hydrateAccountBalances<T extends { items: import('../../domain/ty
         balanceQueryConfig: configuration.config,
         balanceQueryNextRefreshAt: configuration.nextRefreshAt,
         balanceSnapshot: configuration.enabled
-          && !isAccountBalanceSnapshotSuppressed(account.id)
+          && !isAccountBalanceSnapshotSuppressed(account.id, { configuration, snapshotRecord })
           && accountBalanceSnapshotMatchesConfiguration(configuration, snapshotRecord)
           ? snapshotRecord.snapshot
           : undefined
