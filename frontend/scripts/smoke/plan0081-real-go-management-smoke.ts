@@ -282,7 +282,7 @@ async function runReadOnlySmoke(
     'client IP stats list'
   )
   const clientIPStats = assertClientIPStatsList(clientIPStatsData)
-  const clientIPDetailRequired = config.requireClientIpDetail || config.clientIpHash !== undefined
+  const clientIPDetailRequested = config.requireClientIpDetail || config.clientIpHash !== undefined
   const clientIPDetailTarget = selectClientIPStatsDetailTarget(config, clientIPStats)
   let clientIpDetailChecked = false
   if (clientIPDetailTarget) {
@@ -291,16 +291,20 @@ async function runReadOnlySmoke(
       config,
       'client IP stats detail'
     )
-    assertClientIPStatsDetail(
+    const clientIPDetail = assertClientIPStatsDetail(
       clientIPDetailData,
       clientIPDetailTarget.ipHash,
       clientIPDetailTarget.listItem,
       clientIPStats.range
     )
+    if (config.requireClientIpDetail) {
+      expect(clientIPDetail.rangeReady, 'client IP stats detail is required but rangeReady is false')
+      expect(clientIPDetail.items.length > 0, 'client IP stats detail is required but items is empty')
+    }
     clientIpDetailChecked = true
   }
   expect(
-    !clientIPDetailRequired || clientIpDetailChecked,
+    !clientIPDetailRequested || clientIpDetailChecked,
     `client IP detail is required but no verifiable target is available; set ${realGoManagementSmokeEnv.clientIpHash} to a known 64-character hexadecimal hash`
   )
 

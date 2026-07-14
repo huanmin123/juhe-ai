@@ -22,6 +22,8 @@ type MockScenario =
   | 'normal'
   | 'ip_stats_not_ready'
   | 'ip_stats_empty'
+  | 'ip_stats_detail_not_ready'
+  | 'ip_stats_detail_empty'
   | 'ip_stats_failure'
   | 'ip_stats_timeout'
   | 'patch_failure'
@@ -75,6 +77,7 @@ try {
   await assertClientIPRangeNotReadySmoke(baseUrl)
   await assertClientIPRangeEmptySmoke(baseUrl)
   await assertStrictClientIPDetailRequiresTarget(baseUrl)
+  await assertStrictClientIPDetailResponseRequirements(baseUrl)
   await assertExplicitClientIPHashSmoke(baseUrl)
   await assertSuccessfulMutationSmoke(baseUrl)
   await assertPatchFailureStillCleansUp(baseUrl)
@@ -207,29 +210,73 @@ async function assertStrictClientIPDetailRequiresTarget(baseUrl: string): Promis
   }
 }
 
-async function assertExplicitClientIPHashSmoke(baseUrl: string): Promise<void> {
-  resetMock('ip_stats_empty')
-  const output: string[] = []
-  const env = smokeEnvironment(baseUrl, {
-    [realGoManagementSmokeEnv.clientIpHash]: explicitClientIPHash.toUpperCase()
-  })
-  const loadedConfig = loadRealGoManagementSmokeConfig(env)
-  assert.equal(loadedConfig.clientIpHash, explicitClientIPHash)
-  assert.equal(loadedConfig.requireClientIpDetail, false)
+async function assertStrictClientIPDetailResponseRequirements(baseUrl: string): Promise<void> {
+  const cases = [
+    {
+      scenario: 'ip_stats_detail_not_ready',
+      expectedMessage: 'client IP stats detail is required but rangeReady is false'
+    },
+    {
+      scenario: 'ip_stats_detail_empty',
+      expectedMessage: 'client IP stats detail is required but items is empty'
+    }
+  ] as const
 
-  const summary = await runRealGoManagementSmokeFromEnvironment(env, (message) => output.push(message))
-  assert.deepEqual(summary, expectedSummary(true, 0, true))
-  assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
-  assert.deepEqual(requestPaths(), [
-    groupsListPath(),
-    groupDetailPath(selectedGroupId),
-    providersPath(),
-    modelOptionsPath(),
-    clientIPStatsPath(),
-    clientIPStatsDetailPath(explicitClientIPHash)
-  ])
-  assertNoEnvironmentIdentifierLeak(output, baseUrl)
-  assertRequestHeaders()
+  for (const testCase of cases) {
+    resetMock(testCase.scenario)
+    const output: string[] = []
+    const failureMessage = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl, {
+        [realGoManagementSmokeEnv.requireClientIpDetail]: '1'
+      }), (message) => output.push(message))
+    )
+
+    assert.equal(failureMessage, testCase.expectedMessage)
+    assert.deepEqual(output, [])
+    assert.deepEqual(requestPaths(), [
+      groupsListPath(),
+      groupDetailPath(selectedGroupId),
+      providersPath(),
+      modelOptionsPath(),
+      clientIPStatsPath(),
+      clientIPStatsDetailPath()
+    ])
+    assertNoEnvironmentIdentifierLeak([failureMessage], baseUrl)
+    assertRequestHeaders()
+  }
+}
+
+async function assertExplicitClientIPHashSmoke(baseUrl: string): Promise<void> {
+  const cases = [
+    { scenario: 'ip_stats_empty', expectedItemCount: 0 },
+    { scenario: 'ip_stats_detail_not_ready', expectedItemCount: 3 },
+    { scenario: 'ip_stats_detail_empty', expectedItemCount: 3 }
+  ] as const
+
+  for (const testCase of cases) {
+    resetMock(testCase.scenario)
+    const output: string[] = []
+    const env = smokeEnvironment(baseUrl, {
+      [realGoManagementSmokeEnv.clientIpHash]: explicitClientIPHash.toUpperCase()
+    })
+    const loadedConfig = loadRealGoManagementSmokeConfig(env)
+    assert.equal(loadedConfig.clientIpHash, explicitClientIPHash)
+    assert.equal(loadedConfig.requireClientIpDetail, false)
+
+    const summary = await runRealGoManagementSmokeFromEnvironment(env, (message) => output.push(message))
+    assert.deepEqual(summary, expectedSummary(true, testCase.expectedItemCount, true))
+    assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
+    assert.deepEqual(requestPaths(), [
+      groupsListPath(),
+      groupDetailPath(selectedGroupId),
+      providersPath(),
+      modelOptionsPath(),
+      clientIPStatsPath(),
+      clientIPStatsDetailPath(explicitClientIPHash)
+    ])
+    assertNoEnvironmentIdentifierLeak(output, baseUrl)
+    assertRequestHeaders()
+  }
 }
 
 async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> {
@@ -572,7 +619,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   const clientIPHash = clientIPHashFromDetailPath(url.pathname)
   if (req.method === 'GET' && clientIPHash) {
-    sendEnvelope(res, clientIPStatsDetailFixture(clientIPHash))
+    sendEnvelope(res, clientIPStatsDetailFixture(clientIPHash, scenario))
     return
   }
 
@@ -932,44 +979,49 @@ function clientIPStatsListFixture(rangeReady: boolean, includeItems = rangeReady
   }
 }
 
-function clientIPStatsDetailFixture(ipHash: string): Record<string, unknown> {
+function clientIPStatsDetailFixture(ipHash: string, requestScenario: MockScenario): Record<string, unknown> {
+  const rangeReady = requestScenario !== 'ip_stats_detail_not_ready'
+  const includeItems = rangeReady && requestScenario !== 'ip_stats_detail_empty'
+  const items = includeItems
+    ? [
+        {
+          accountId: 'acct_plan0081_low_usage',
+          accountName: '低用量账号',
+          accountOwnerSystemAccountId: systemAccountId,
+          accountOwnerSystemAccountName: 'PLAN-0081 系统账号',
+          rangeUsage: clientIPUsageFixture({
+            requestCount: 2,
+            successCount: 2,
+            errorCount: 0,
+            inputTokens: 200,
+            outputTokens: 50,
+            activeDays: 1,
+            averageDurationMs: 180.5,
+            averageFirstTokenMs: 35.25,
+            maxDurationMs: 260,
+            lastUsedAt: '2026-07-14T07:30:00.000Z',
+            lastErrorAt: '2026-07-14T06:30:00.000Z'
+          })
+        },
+        {
+          accountId: 'acct_plan0081_high_usage',
+          rangeUsage: clientIPUsageFixture({
+            requestCount: 8,
+            successCount: 6,
+            errorCount: 2,
+            inputTokens: 1_000,
+            outputTokens: 250,
+            activeDays: 1
+          })
+        }
+      ]
+    : []
   return {
     ipHash,
     aggregateIpKey: '203.0.113.0/24',
     lastSeenAt: '2026-07-14T08:30:00.000Z',
-    items: [
-      {
-        accountId: 'acct_plan0081_low_usage',
-        accountName: '低用量账号',
-        accountOwnerSystemAccountId: systemAccountId,
-        accountOwnerSystemAccountName: 'PLAN-0081 系统账号',
-        rangeUsage: clientIPUsageFixture({
-          requestCount: 2,
-          successCount: 2,
-          errorCount: 0,
-          inputTokens: 200,
-          outputTokens: 50,
-          activeDays: 1,
-          averageDurationMs: 180.5,
-          averageFirstTokenMs: 35.25,
-          maxDurationMs: 260,
-          lastUsedAt: '2026-07-14T07:30:00.000Z',
-          lastErrorAt: '2026-07-14T06:30:00.000Z'
-        })
-      },
-      {
-        accountId: 'acct_plan0081_high_usage',
-        rangeUsage: clientIPUsageFixture({
-          requestCount: 8,
-          successCount: 6,
-          errorCount: 2,
-          inputTokens: 1_000,
-          outputTokens: 250,
-          activeDays: 1
-        })
-      }
-    ],
-    pageUpperBound: 2,
+    items,
+    pageUpperBound: items.length,
     hasMore: false,
     page: 1,
     pageSize: 20,
@@ -979,7 +1031,7 @@ function clientIPStatsDetailFixture(ipHash: string): Record<string, unknown> {
       days: 1,
       maxDays: 31
     },
-    rangeReady: true
+    rangeReady
   }
 }
 
