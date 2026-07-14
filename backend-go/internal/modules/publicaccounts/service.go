@@ -38,6 +38,8 @@ const (
 	defaultTargetDescription                  = "由公开接口自动创建"
 	defaultTargetPassword                     = "go-public-auto-created-target-password-hash"
 	defaultCredentialSecret                   = "juhe-ai-go-development-secret"
+	accountAPIKeyListMaxItems                 = 50
+	accountCredentialSecretMaxBytes           = 16 * 1024
 	invalidSupportedModelsRequiredMessage     = "账户支持模型不能为空，请至少选择一个该 Base URL 支持的模型"
 	invalidHealthCheckModelRequiredMessage    = "账户检查模型不能为空"
 	invalidHealthCheckModelUnsupportedMessage = "账户检查模型必须属于账户支持模型"
@@ -631,7 +633,11 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			return err
 		}
 		if input.APIKey != nil {
-			credentials["api_key"] = *input.APIKey
+			apiKey, err := normalizeCredentialAPIKey(*input.APIKey)
+			if err != nil {
+				return err
+			}
+			credentials["api_key"] = apiKey
 		}
 		if input.BaseURL != nil {
 			credentials["base_url"] = *input.BaseURL
@@ -961,17 +967,15 @@ func (s *Service) encryptedCredentials(
 }
 
 func (s *Service) encryptedCredentialMap(credentials map[string]any) (encryptedCredential, error) {
-	apiKey, _ := credentials["api_key"].(string)
-	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" {
-		return encryptedCredential{}, ErrInvalidAPIKey
-	}
-	baseURL, _ := credentials["base_url"].(string)
-	baseURL, err := normalizeBaseURL(baseURL)
+	apiKey, err := normalizeCredentialAPIKeyFields(credentials)
 	if err != nil {
 		return encryptedCredential{}, err
 	}
-	credentials["api_key"] = apiKey
+	baseURL, _ := credentials["base_url"].(string)
+	baseURL, err = normalizeBaseURL(baseURL)
+	if err != nil {
+		return encryptedCredential{}, err
+	}
 	credentials["base_url"] = baseURL
 	encrypted, err := s.codec.EncryptJSON(credentials)
 	if err != nil {
@@ -990,17 +994,151 @@ func (s *Service) currentCredentials(encrypted string) (map[string]any, string, 
 	if err != nil {
 		return nil, "", "", fmt.Errorf("%w: %v", ErrCredentialCodecUnusable, err)
 	}
-	apiKey, _ := credentials["api_key"].(string)
+	apiKeys, err := normalizedCredentialAPIKeys(credentials)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("%w: 当前账号凭据不完整: %v", ErrInvalidCredentials, err)
+	}
 	baseURL, _ := credentials["base_url"].(string)
-	if strings.TrimSpace(apiKey) == "" || strings.TrimSpace(baseURL) == "" {
+	if strings.TrimSpace(baseURL) == "" {
 		return nil, "", "", fmt.Errorf("%w: 当前账号凭据不完整", ErrInvalidCredentials)
 	}
-	apiKey = strings.TrimSpace(apiKey)
 	baseURL, err = normalizeBaseURL(baseURL)
 	if err != nil {
 		return nil, "", "", err
 	}
-	return credentials, apiKey, baseURL, nil
+	return credentials, apiKeys[0], baseURL, nil
+}
+
+func normalizeCredentialAPIKeyFields(credentials map[string]any) (string, error) {
+	apiKeys, err := normalizedCredentialAPIKeys(credentials)
+	if err != nil {
+		return "", err
+	}
+	credentials["api_key"] = apiKeys[0]
+	if len(apiKeys) == 1 {
+		delete(credentials, "api_keys")
+		delete(credentials, "api_key_strategy")
+		delete(credentials, "api_key_weights")
+		return apiKeys[0], nil
+	}
+
+	credentials["api_keys"] = apiKeys
+	strategy, _ := credentials["api_key_strategy"].(string)
+	if strategy != "weighted_round_robin" {
+		credentials["api_key_strategy"] = "round_robin"
+		delete(credentials, "api_key_weights")
+		return apiKeys[0], nil
+	}
+	credentials["api_key_strategy"] = strategy
+	weights, err := normalizeCredentialAPIKeyWeights(credentials["api_key_weights"], len(apiKeys))
+	if err != nil {
+		return "", err
+	}
+	credentials["api_key_weights"] = weights
+	return apiKeys[0], nil
+}
+
+func normalizedCredentialAPIKeys(credentials map[string]any) ([]string, error) {
+	values := []any{credentials["api_key"]}
+	switch raw := credentials["api_keys"].(type) {
+	case []any:
+		if len(raw) > 0 {
+			values = raw
+		}
+	case []string:
+		if len(raw) > 0 {
+			values = make([]any, len(raw))
+			for index, value := range raw {
+				values[index] = value
+			}
+		}
+	}
+	if len(values) > accountAPIKeyListMaxItems {
+		return nil, fmt.Errorf("%w: 单个账户最多配置 %d 个 API Key", ErrInvalidAPIKey, accountAPIKeyListMaxItems)
+	}
+
+	apiKeys := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		apiKey, err := normalizeCredentialAPIKey(value)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[apiKey]; duplicate {
+			continue
+		}
+		seen[apiKey] = struct{}{}
+		apiKeys = append(apiKeys, apiKey)
+	}
+	if len(apiKeys) == 0 {
+		return nil, ErrInvalidAPIKey
+	}
+	return apiKeys, nil
+}
+
+func normalizeCredentialAPIKey(value any) (string, error) {
+	apiKey, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("%w: API Key 不能为空", ErrInvalidAPIKey)
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return "", fmt.Errorf("%w: API Key 不能为空", ErrInvalidAPIKey)
+	}
+	if len([]byte(apiKey)) > accountCredentialSecretMaxBytes {
+		return "", fmt.Errorf("%w: API Key 不能超过 %d 字节", ErrInvalidAPIKey, accountCredentialSecretMaxBytes)
+	}
+	return apiKey, nil
+}
+
+func normalizeCredentialAPIKeyWeights(value any, count int) ([]int, error) {
+	values := []any{}
+	switch raw := value.(type) {
+	case []any:
+		values = raw
+	case []int:
+		values = make([]any, len(raw))
+		for index, item := range raw {
+			values[index] = item
+		}
+	}
+	weights := make([]int, count)
+	for index := range weights {
+		if index >= len(values) {
+			weights[index] = 1
+			continue
+		}
+		weight, ok := credentialAPIKeyWeight(values[index])
+		if !ok {
+			return nil, fmt.Errorf("%w: API Key 权重必须是 1-100 之间的整数", ErrInvalidCredentials)
+		}
+		weights[index] = weight
+	}
+	return weights, nil
+}
+
+func credentialAPIKeyWeight(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, typed >= 1 && typed <= 100
+	case int32:
+		return int(typed), typed >= 1 && typed <= 100
+	case int64:
+		return int(typed), typed >= 1 && typed <= 100
+	case float64:
+		if typed < 1 || typed > 100 || typed != float64(int(typed)) {
+			return 0, false
+		}
+		return int(typed), true
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil || parsed < 1 || parsed > 100 {
+			return 0, false
+		}
+		return int(parsed), true
+	default:
+		return 0, false
+	}
 }
 
 func normalizeCredentialSupportedEndpointModes(

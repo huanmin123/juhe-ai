@@ -1260,6 +1260,108 @@ func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 	}
 }
 
+func TestServiceUpdatePreservesEffectiveMultiAPIKeyPool(t *testing.T) {
+	const (
+		primaryAPIKey   = "sk-public-account-secret-0123456789abcdef"
+		secondaryAPIKey = "sk-public-account-secondary-abcdef0123456789"
+		requestedAPIKey = "sk-public-account-requested-abcdef0123456789"
+	)
+	tests := []struct {
+		name   string
+		update func() UpdateInput
+	}{
+		{
+			name: "single api key input leaves existing pool authoritative",
+			update: func() UpdateInput {
+				apiKey := requestedAPIKey
+				return UpdateInput{APIKey: &apiKey}
+			},
+		},
+		{
+			name: "non credential update preserves existing pool",
+			update: func() UpdateInput {
+				name := "多 Key 账号改名"
+				return UpdateInput{Name: &name}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newPublicAccountStoreFake()
+			service := newPublicAccountServiceForTest(store, nil)
+			created, err := service.Add(context.Background(), validPublicAccountAddInput(
+				"多 Key 公开账号",
+				"gpt-5.4-mini",
+			))
+			if err != nil {
+				t.Fatalf("add public account: %v", err)
+			}
+
+			account := store.accounts[created.Account.ID]
+			credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+			if err != nil {
+				t.Fatalf("decrypt current credentials: %v", err)
+			}
+			credentials["api_key"] = primaryAPIKey
+			credentials["api_keys"] = []any{primaryAPIKey, secondaryAPIKey}
+			credentials["api_key_strategy"] = "weighted_round_robin"
+			credentials["api_key_weights"] = []any{float64(2), float64(3)}
+			account.CredentialsEncrypted, err = service.codec.EncryptJSON(credentials)
+			if err != nil {
+				t.Fatalf("encrypt multi-key credentials: %v", err)
+			}
+			fingerprint := hashSecret(primaryAPIKey)
+			account.CredentialFingerprint = &fingerprint
+			account.CredentialMask = maskSecret(primaryAPIKey)
+			account.Status = port.PublicAccountStatusActive
+			account.Schedulable = true
+			store.accounts[account.ID] = account
+
+			input := tt.update()
+			input.AccountID = account.ID
+			response, err := service.Update(context.Background(), input)
+			if err != nil {
+				t.Fatalf("update public account: %v", err)
+			}
+
+			stored := store.accounts[account.ID]
+			updatedCredentials, err := service.codec.DecryptJSON(stored.CredentialsEncrypted)
+			if err != nil {
+				t.Fatalf("decrypt updated credentials: %v", err)
+			}
+			if got := updatedCredentials["api_key"]; got != primaryAPIKey {
+				t.Fatalf("canonical api_key = %#v, want pool primary %q", got, primaryAPIKey)
+			}
+			wantAPIKeys := []any{primaryAPIKey, secondaryAPIKey}
+			if got := updatedCredentials["api_keys"]; !reflect.DeepEqual(got, wantAPIKeys) {
+				t.Fatalf("api_keys = %#v, want %#v", got, wantAPIKeys)
+			}
+			if got := updatedCredentials["api_key_strategy"]; got != "weighted_round_robin" {
+				t.Fatalf("api_key_strategy = %#v, want weighted_round_robin", got)
+			}
+			wantWeights := []any{float64(2), float64(3)}
+			if got := updatedCredentials["api_key_weights"]; !reflect.DeepEqual(got, wantWeights) {
+				t.Fatalf("api_key_weights = %#v, want %#v", got, wantWeights)
+			}
+			if stored.CredentialFingerprint == nil || *stored.CredentialFingerprint != hashSecret(primaryAPIKey) {
+				t.Fatalf("credential fingerprint = %v, want effective pool primary", stored.CredentialFingerprint)
+			}
+			if stored.CredentialMask != maskSecret(primaryAPIKey) {
+				t.Fatalf("credential mask = %q, want effective pool primary mask", stored.CredentialMask)
+			}
+			if response.Account == nil || response.Account.Status != StatusActive || !response.Account.Schedulable {
+				t.Fatalf("response account = %+v, want active and schedulable", response.Account)
+			}
+			if store.lastUpdateInput.ResetFailureState ||
+				store.lastUpdateInput.ScheduleHealthCheck ||
+				store.lastUpdateInput.ResetHealthDiagnostics {
+				t.Fatalf("unchanged effective key pool produced update flags %+v", store.lastUpdateInput)
+			}
+		})
+	}
+}
+
 func TestServiceUpdateSchedulesHealthCheckWithoutImmediateDispatch(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	created, err := newPublicAccountServiceForTest(store, nil).Add(
