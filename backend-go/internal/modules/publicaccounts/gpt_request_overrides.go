@@ -9,58 +9,46 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 )
 
-const gptRequestOverridesModelsRequiredMessage = "GPT 请求覆盖要求账户至少配置一个支持模型"
+const accountRequestOverridesModelsRequiredMessage = "请求覆盖要求账户至少配置一个支持模型"
 
-type gptRequestOverrides struct {
+type accountRequestOverrides struct {
 	serviceTier     string
 	reasoningEffort string
 }
 
-func (o gptRequestOverrides) configured() bool {
+func (o accountRequestOverrides) configured() bool {
 	return o.serviceTier != "" || o.reasoningEffort != ""
 }
 
-func preflightGPTRequestOverrides(
-	providerCode string,
+func preflightAccountRequestOverrides(
 	credentials map[string]any,
-) (gptRequestOverrides, error) {
-	serviceTier, err := readGPTRequestOverride(
+) (accountRequestOverrides, error) {
+	serviceTier, err := readAccountRequestOverride(
 		credentials,
 		"service_tier_override",
-		isGPTServiceTierOverride,
 	)
 	if err != nil {
-		return gptRequestOverrides{}, err
+		return accountRequestOverrides{}, err
 	}
-	reasoningEffort, err := readGPTRequestOverride(
+	reasoningEffort, err := readAccountRequestOverride(
 		credentials,
 		"reasoning_effort_override",
-		isGPTReasoningEffortOverride,
 	)
 	if err != nil {
-		return gptRequestOverrides{}, err
+		return accountRequestOverrides{}, err
 	}
-	overrides := gptRequestOverrides{
+	return accountRequestOverrides{
 		serviceTier:     serviceTier,
 		reasoningEffort: reasoningEffort,
-	}
-	if !overrides.configured() {
-		return overrides, nil
-	}
-	if strings.TrimSpace(providerCode) != "gpt" {
-		return gptRequestOverrides{}, fmt.Errorf(
-			"%w: 只有 GPT 账户支持服务等级和思考级别覆盖",
-			ErrInvalidCredentials,
-		)
-	}
-	return overrides, nil
+	}, nil
 }
 
-func (s *Service) validateGPTRequestOverridesInProviderCatalog(
+func (s *Service) validateAccountRequestOverridesInProviderCatalog(
 	ctx context.Context,
 	systemAccountID string,
 	providerCode string,
-	overrides gptRequestOverrides,
+	accountType string,
+	overrides accountRequestOverrides,
 	models []string,
 ) error {
 	if !overrides.configured() {
@@ -68,6 +56,9 @@ func (s *Service) validateGPTRequestOverridesInProviderCatalog(
 	}
 
 	providerCode = strings.TrimSpace(providerCode)
+	if err := validateAccountRequestOverrideProvider(providerCode, overrides); err != nil {
+		return err
+	}
 	if s.providerModels == nil {
 		return errors.New(providerModelsRequiredMessage)
 	}
@@ -80,12 +71,12 @@ func (s *Service) validateGPTRequestOverridesInProviderCatalog(
 	if err != nil {
 		return err
 	}
-	models = uniqueGPTRequestOverrideModels(models)
+	models = uniqueAccountRequestOverrideModels(models)
 	if len(models) == 0 {
 		return fmt.Errorf(
 			"%w: %s",
 			ErrInvalidSupportedModels,
-			gptRequestOverridesModelsRequiredMessage,
+			accountRequestOverridesModelsRequiredMessage,
 		)
 	}
 
@@ -115,6 +106,12 @@ func (s *Service) validateGPTRequestOverridesInProviderCatalog(
 	}
 
 	if overrides.serviceTier != "" {
+		if providerCode == "gpt" && strings.TrimSpace(accountType) == "oauth" && overrides.serviceTier == "flex" {
+			return fmt.Errorf(
+				"%w: OpenAI OAuth 账户不支持 Flex 服务等级覆盖",
+				ErrInvalidCredentials,
+			)
+		}
 		for _, item := range modelItems {
 			supported := overrides.serviceTier == "default" && len(item.SupportedServiceTiers) > 0
 			if overrides.serviceTier != "default" {
@@ -143,10 +140,9 @@ func (s *Service) validateGPTRequestOverridesInProviderCatalog(
 	return nil
 }
 
-func readGPTRequestOverride(
+func readAccountRequestOverride(
 	credentials map[string]any,
 	key string,
-	valid func(string) bool,
 ) (string, error) {
 	raw, exists := credentials[key]
 	if !exists || raw == nil {
@@ -156,13 +152,50 @@ func readGPTRequestOverride(
 	if ok && value == "" {
 		return "", nil
 	}
-	if !ok || !valid(value) {
-		return "", fmt.Errorf("%w: GPT 账户请求覆盖字段 %s 无效", ErrInvalidCredentials, key)
+	if !ok || !validAccountRequestOverrideToken(value) {
+		return "", fmt.Errorf("%w: 账户请求覆盖字段 %s 无效", ErrInvalidCredentials, key)
 	}
 	return value, nil
 }
 
-func uniqueGPTRequestOverrideModels(values []string) []string {
+func validateAccountRequestOverrideProvider(providerCode string, overrides accountRequestOverrides) error {
+	switch providerCode {
+	case "gpt", "openai", "anthropic", "gemini":
+	default:
+		return fmt.Errorf(
+			"%w: 供应商 %s 没有可确认的账户请求覆盖 wire 映射",
+			ErrInvalidCredentials,
+			providerCode,
+		)
+	}
+	if providerCode == "gemini" && overrides.serviceTier != "" {
+		return fmt.Errorf(
+			"%w: Gemini 原生请求没有可确认的服务等级 wire 字段，不能保存账户服务等级覆盖",
+			ErrInvalidCredentials,
+		)
+	}
+	return nil
+}
+
+func validAccountRequestOverrideToken(value string) bool {
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	for index, char := range value {
+		if (char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') {
+			continue
+		}
+		if index > 0 && (char == '.' || char == '_' || char == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func uniqueAccountRequestOverrideModels(values []string) []string {
 	models := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
@@ -177,22 +210,4 @@ func uniqueGPTRequestOverrideModels(values []string) []string {
 		models = append(models, model)
 	}
 	return models
-}
-
-func isGPTServiceTierOverride(value string) bool {
-	switch value {
-	case "default", "priority", "flex":
-		return true
-	default:
-		return false
-	}
-}
-
-func isGPTReasoningEffortOverride(value string) bool {
-	switch value {
-	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
-		return true
-	default:
-		return false
-	}
 }

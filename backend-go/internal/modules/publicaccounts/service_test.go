@@ -1521,7 +1521,7 @@ func TestServiceUpdateEmptyModelsPreservesGPTCatalogOrdering(t *testing.T) {
 			overrides: map[string]any{
 				"service_tier_override": "priority",
 			},
-			wantMessage:      gptRequestOverridesModelsRequiredMessage,
+			wantMessage:      accountRequestOverridesModelsRequiredMessage,
 			wantCatalogCalls: 1,
 		},
 		{
@@ -1645,26 +1645,26 @@ func TestServiceUpdateRejectsUnsupportedGPTRequestOverridesWithoutWriting(t *tes
 			wantMessage: "账户全部支持模型必须共同支持服务等级覆盖",
 		},
 		{
-			name: "specified tier must be common to every model",
+			name: "dynamic tier must be common to every model",
 			overrides: map[string]any{
-				"service_tier_override": "priority",
+				"service_tier_override": "fast",
 			},
 			catalog: []managementprovidermodels.ModelCatalogItem{
-				gptProviderModelCatalogItemForTest(defaultGPTHealthCheckModel, []string{"priority"}, nil),
-				gptProviderModelCatalogItemForTest("gpt-5.5", []string{"flex"}, nil),
+				gptProviderModelCatalogItemForTest(defaultGPTHealthCheckModel, []string{"fast"}, nil),
+				gptProviderModelCatalogItemForTest("gpt-5.5", []string{"priority"}, nil),
 			},
-			wantMessage: "账户全部支持模型必须共同支持服务等级 priority",
+			wantMessage: "账户全部支持模型必须共同支持服务等级 fast",
 		},
 		{
-			name: "specified effort must be common to every model",
+			name: "dynamic effort must be common to every model",
 			overrides: map[string]any{
-				"reasoning_effort_override": "high",
+				"reasoning_effort_override": "ultra",
 			},
 			catalog: []managementprovidermodels.ModelCatalogItem{
-				gptProviderModelCatalogItemForTest(defaultGPTHealthCheckModel, nil, []string{"high"}),
-				gptProviderModelCatalogItemForTest("gpt-5.5", nil, []string{"low"}),
+				gptProviderModelCatalogItemForTest(defaultGPTHealthCheckModel, nil, []string{"ultra"}),
+				gptProviderModelCatalogItemForTest("gpt-5.5", nil, []string{"high"}),
 			},
-			wantMessage: "账户全部支持模型必须共同支持思考级别 high",
+			wantMessage: "账户全部支持模型必须共同支持思考级别 ultra",
 		},
 	}
 
@@ -1720,21 +1720,30 @@ func TestServiceUpdateRejectsUnsupportedGPTRequestOverridesWithoutWriting(t *tes
 	}
 }
 
-func TestServiceUpdateRejectsInvalidGPTRequestOverrideEnumsWithoutWriting(t *testing.T) {
+func TestServiceUpdateAcceptsCatalogSupportedDynamicGPTRequestOverrideTokens(t *testing.T) {
 	tests := []struct {
 		name      string
 		overrides map[string]any
+		catalog   []managementprovidermodels.ModelCatalogItem
 	}{
 		{
-			name: "service tier",
+			name: "dynamic service tier",
 			overrides: map[string]any{
 				"service_tier_override": "fast",
 			},
+			catalog: []managementprovidermodels.ModelCatalogItem{
+				gptProviderModelCatalogItemForTest(defaultGPTHealthCheckModel, []string{"fast"}, nil),
+				gptProviderModelCatalogItemForTest("gpt-5.5", []string{"fast"}, nil),
+			},
 		},
 		{
-			name: "reasoning effort",
+			name: "dynamic reasoning effort",
 			overrides: map[string]any{
 				"reasoning_effort_override": "ultra",
+			},
+			catalog: []managementprovidermodels.ModelCatalogItem{
+				gptProviderModelCatalogItemForTest(defaultGPTHealthCheckModel, nil, []string{"ultra"}),
+				gptProviderModelCatalogItemForTest("gpt-5.5", nil, []string{"ultra"}),
 			},
 		},
 	}
@@ -1742,11 +1751,12 @@ func TestServiceUpdateRejectsInvalidGPTRequestOverrideEnumsWithoutWriting(t *tes
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newPublicAccountStoreFake()
-			reader := defaultProviderModelReaderStub()
+			reader := providerModelReaderWithItems(tt.catalog...)
 			service := newPublicAccountServiceForTest(store, reader)
 			created, err := service.Add(context.Background(), validPublicAccountAddInput(
-				"非法覆盖枚举账号",
+				"动态覆盖 token 账号",
 				defaultGPTHealthCheckModel,
+				"gpt-5.5",
 			))
 			if err != nil {
 				t.Fatalf("add public account: %v", err)
@@ -1754,98 +1764,38 @@ func TestServiceUpdateRejectsInvalidGPTRequestOverrideEnumsWithoutWriting(t *tes
 			setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, tt.overrides)
 			reader.resetCalls()
 			store.updateCalls = 0
-			name := "不应保存的名称"
+			name := "动态覆盖 token 账号改名"
 
-			_, err = service.Update(context.Background(), UpdateInput{
+			if _, err := service.Update(context.Background(), UpdateInput{
 				AccountID: created.Account.ID,
 				Name:      &name,
-			})
-			if !errors.Is(err, ErrInvalidCredentials) {
-				t.Fatalf("update error = %v, want ErrInvalidCredentials", err)
+			}); err != nil {
+				t.Fatalf("update public account: %v", err)
 			}
-			if reader.calls != 0 {
-				t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
+			if reader.calls != 1 {
+				t.Fatalf("provider model reader calls = %d, want 1", reader.calls)
 			}
-			if store.updateCalls != 0 {
-				t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+			if store.updateCalls != 1 {
+				t.Fatalf("store update calls = %d, want 1", store.updateCalls)
+			}
+			credentials, err := service.codec.DecryptJSON(store.accounts[created.Account.ID].CredentialsEncrypted)
+			if err != nil {
+				t.Fatalf("decrypt updated credentials: %v", err)
+			}
+			for key, want := range tt.overrides {
+				if got := credentials[key]; got != want {
+					t.Fatalf("credential %s = %#v, want %#v", key, got, want)
+				}
 			}
 		})
 	}
 }
 
-func TestServiceUpdateInvalidGPTOverridePrecedesExplicitEmptySupportedModels(t *testing.T) {
+func TestServiceUpdateRejectsRequestOverridesForProviderWithoutWireMappingWithoutWriting(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	reader := defaultProviderModelReaderStub()
 	service := newPublicAccountServiceForTest(store, reader)
-	created, err := service.Add(context.Background(), validPublicAccountAddInput(
-		"非法覆盖空模型账号",
-		defaultGPTHealthCheckModel,
-	))
-	if err != nil {
-		t.Fatalf("add public account: %v", err)
-	}
-	setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, map[string]any{
-		"service_tier_override": "fast",
-	})
-	before := store.accounts[created.Account.ID]
-	reader.resetCalls()
-	store.updateCalls = 0
-
-	_, err = service.Update(context.Background(), UpdateInput{
-		AccountID:       created.Account.ID,
-		SupportedModels: NewStringListValue([]string{}, true),
-	})
-	if !errors.Is(err, ErrInvalidCredentials) {
-		t.Fatalf("update error = %v, want ErrInvalidCredentials", err)
-	}
-	if reader.calls != 0 {
-		t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
-	}
-	if store.updateCalls != 0 {
-		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
-	}
-	if after := store.accounts[created.Account.ID]; !reflect.DeepEqual(after, before) {
-		t.Fatalf("stored account changed after rejected update:\nbefore = %+v\nafter  = %+v", before, after)
-	}
-}
-
-func TestServiceUpdateInvalidGPTOverrideUnknownModelFailsBeforeCatalog(t *testing.T) {
-	store := newPublicAccountStoreFake()
-	reader := defaultProviderModelReaderStub()
-	service := newPublicAccountServiceForTest(store, reader)
-	created, err := service.Add(context.Background(), validPublicAccountAddInput(
-		"非法覆盖未知模型账号",
-		defaultGPTHealthCheckModel,
-	))
-	if err != nil {
-		t.Fatalf("add public account: %v", err)
-	}
-	setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, map[string]any{
-		"service_tier_override": "fast",
-	})
-	reader.resetCalls()
-	store.updateCalls = 0
-
-	_, err = service.Update(context.Background(), UpdateInput{
-		AccountID:       created.Account.ID,
-		SupportedModels: NewStringListValue([]string{"unknown-update-model"}, true),
-	})
-	if !errors.Is(err, ErrInvalidCredentials) {
-		t.Fatalf("update error = %v, want ErrInvalidCredentials", err)
-	}
-	if reader.calls != 0 {
-		t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
-	}
-	if store.updateCalls != 0 {
-		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
-	}
-}
-
-func TestServiceUpdateRejectsGPTRequestOverridesForNonGPTProviderWithoutWriting(t *testing.T) {
-	store := newPublicAccountStoreFake()
-	reader := defaultProviderModelReaderStub()
-	service := newPublicAccountServiceForTest(store, reader)
-	input := validPublicAccountAddInput("非 GPT 覆盖账号", "hybrid-direct-model")
+	input := validPublicAccountAddInput("无覆盖映射账号", "hybrid-direct-model")
 	input.ProviderCode = hybridProviderCode
 	input.ProviderProtocolProfileID = "profile_hybrid_openai_v1"
 	created, err := service.Add(context.Background(), input)
