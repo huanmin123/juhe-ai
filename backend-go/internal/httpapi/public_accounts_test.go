@@ -17,7 +17,7 @@ import (
 	publicapiratelimit "juhe-ai/backend-go/internal/modules/publicapi/ratelimit"
 )
 
-func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
+func TestPublicAccountHandlersAddThroughShellPreservesCapturedLogValues(t *testing.T) {
 	secret := "sk-live-public-account-secret-0123456789abcdef0123456789abcdef"
 	service := &publicAccountServiceStub{
 		addResponse: publicaccounts.AccountResponse{
@@ -89,14 +89,14 @@ func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
 		t.Fatalf("log status/success = %v/%v", log.StatusCode, log.Success)
 	}
 	requestBody := log.RequestData["body"].(map[string]any)
-	if requestBody["apiKey"] != "[redacted]" {
-		t.Fatalf("logged apiKey = %#v, want redacted", requestBody["apiKey"])
+	if requestBody["apiKey"] != secret {
+		t.Fatalf("logged apiKey = %#v, want original value", requestBody["apiKey"])
 	}
-	if requestBody["baseUrl"] != "[redacted]" {
-		t.Fatalf("logged baseUrl = %#v, want redacted", requestBody["baseUrl"])
+	if requestBody["baseUrl"] != "https://user:password@api.openai.com/v1" {
+		t.Fatalf("logged baseUrl = %#v, want original value", requestBody["baseUrl"])
 	}
-	if strings.Contains(fmt.Sprint(log.RequestData), secret) || strings.Contains(fmt.Sprint(log.ResponseData), secret) {
-		t.Fatalf("public api log leaked upstream secret: request=%#v response=%#v", log.RequestData, log.ResponseData)
+	if !strings.Contains(fmt.Sprint(log.RequestData), secret) {
+		t.Fatalf("public api log request did not preserve upstream key: %#v", log.RequestData)
 	}
 }
 

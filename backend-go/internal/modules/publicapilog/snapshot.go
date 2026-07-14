@@ -4,8 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"net/url"
-	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -90,39 +89,6 @@ func BuildResponseSnapshot(input ResponseSnapshotInput) Snapshot {
 		"statusCode": input.StatusCode,
 		"body":       input.Body,
 	}, bodySize)
-}
-
-func SanitizeQueryString(rawQuery string) string {
-	if rawQuery == "" {
-		return ""
-	}
-	parts := strings.Split(rawQuery, "&")
-	for index, part := range parts {
-		if part == "" {
-			continue
-		}
-		key, value, hasValue := strings.Cut(part, "=")
-		decodedKey := queryUnescapeOrRaw(key)
-		if sensitiveSnapshotKey(decodedKey) {
-			if hasValue {
-				parts[index] = key + "=[redacted]"
-			} else {
-				parts[index] = "[redacted]"
-			}
-			continue
-		}
-		if !hasValue {
-			if sensitiveSnapshotString(queryUnescapeOrRaw(key)) {
-				parts[index] = "[redacted]"
-			}
-			continue
-		}
-		decodedValue := queryUnescapeOrRaw(value)
-		if sensitiveSnapshotString(decodedValue) {
-			parts[index] = key + "=[redacted]"
-		}
-	}
-	return strings.Join(parts, "&")
 }
 
 func BoundedSnapshot(data map[string]any, sizeBytes int64) Snapshot {
@@ -218,7 +184,7 @@ func cloneSnapshotValue(value any, budget *snapshotBudget, depth int) any {
 		return cloneSnapshotString(typed.UTC().Format(time.RFC3339Nano), budget)
 	case json.Number:
 		chargeSnapshotBytes(budget, len(typed.String()))
-		return typed.String()
+		return typed
 	case int:
 		return cloneSnapshotNumber(typed, budget)
 	case int8:
@@ -285,21 +251,26 @@ func cloneSnapshotValue(value any, budget *snapshotBudget, depth int) any {
 
 func cloneSnapshotMap(value map[string]any, budget *snapshotBudget, depth int) map[string]any {
 	chargeSnapshotBytes(budget, 2)
-	out := make(map[string]any, min(len(value), SnapshotMaxEntries))
-	count := 0
-	for key, item := range value {
-		if count >= SnapshotMaxEntries || budget.remainingBytes <= 0 {
+	keys := make([]string, 0, len(value))
+	for key := range value {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	limit := min(len(keys), SnapshotMaxEntries)
+	out := make(map[string]any, limit+1)
+	for _, key := range keys[:limit] {
+		if budget.remainingBytes <= 0 {
 			out["__truncated"] = true
 			budget.truncated = true
 			break
 		}
-		count++
 		chargeSnapshotBytes(budget, len([]byte(key))+4)
-		if sensitiveSnapshotKey(key) && !snapshotKeyMayContainStructuredPublicData(key, item) {
-			out[key] = cloneSnapshotString("[redacted]", budget)
-			continue
-		}
-		out[key] = cloneSnapshotValue(item, budget, depth+1)
+		out[key] = cloneSnapshotValue(value[key], budget, depth+1)
+	}
+	if len(keys) > limit {
+		out["__truncated"] = true
+		budget.truncated = true
 	}
 	return out
 }
@@ -355,9 +326,6 @@ func cloneSnapshotBytes(value []byte, budget *snapshotBudget) map[string]any {
 }
 
 func cloneSnapshotString(value string, budget *snapshotBudget) string {
-	if sensitiveSnapshotString(value) {
-		return cloneSnapshotString("[redacted]", budget)
-	}
 	size := len([]byte(value))
 	if size <= budget.remainingBytes {
 		chargeSnapshotBytes(budget, size)
@@ -423,77 +391,3 @@ func emptyStringAsNil(value string) any {
 	}
 	return value
 }
-
-func queryUnescapeOrRaw(value string) string {
-	decoded, err := url.QueryUnescape(value)
-	if err != nil {
-		return value
-	}
-	return decoded
-}
-
-func sensitiveSnapshotKey(key string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(key))
-	normalized = strings.NewReplacer("-", "", "_", "", ".", "").Replace(normalized)
-	switch normalized {
-	case "authorization",
-		"cookie",
-		"password",
-		"passwd",
-		"secret",
-		"token",
-		"apikey",
-		"key",
-		"hash",
-		"keyhash",
-		"tokenhash",
-		"apikeyhash",
-		"proxy",
-		"proxyurl",
-		"proxyuri",
-		"accesstoken",
-		"refreshtoken",
-		"tokensecretencrypted",
-		"keysecretencrypted":
-		return true
-	default:
-		return strings.HasSuffix(normalized, "secret") ||
-			strings.HasSuffix(normalized, "token") ||
-			strings.HasSuffix(normalized, "apikey") ||
-			strings.HasSuffix(normalized, "hash")
-	}
-}
-
-func snapshotKeyMayContainStructuredPublicData(key string, value any) bool {
-	normalized := strings.ToLower(strings.TrimSpace(key))
-	normalized = strings.NewReplacer("-", "", "_", "", ".", "").Replace(normalized)
-	if normalized != "apikey" {
-		return false
-	}
-	_, ok := value.(map[string]any)
-	return ok
-}
-
-func sensitiveSnapshotString(value string) bool {
-	text := strings.TrimSpace(value)
-	if len(text) < 12 {
-		return false
-	}
-	lower := strings.ToLower(text)
-	if strings.HasPrefix(lower, "bearer ") || strings.HasPrefix(text, "juis_") {
-		return true
-	}
-	if strings.HasPrefix(text, "sk-") && len(text) >= 32 {
-		return true
-	}
-	if strings.Contains(text, "://") {
-		if parsed, err := url.Parse(text); err == nil && parsed.User != nil {
-			return true
-		}
-	}
-	return secretHashSnapshotPattern.MatchString(text) || secretLikeSnapshotPattern.MatchString(text)
-}
-
-var secretLikeSnapshotPattern = regexp.MustCompile(`(?i)(bearer\s+[a-z0-9._~+/=-]{12,}|(?:api[_-]?key|token|secret)=([^&\s]{8,}))`)
-
-var secretHashSnapshotPattern = regexp.MustCompile(`(?i)^(?:sha256:)?[a-f0-9]{64}$`)

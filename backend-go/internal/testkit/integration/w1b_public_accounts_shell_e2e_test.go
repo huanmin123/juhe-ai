@@ -29,7 +29,7 @@ import (
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
-func TestW1bPublicAccountsShellE2E(t *testing.T) {
+func TestW1bPublicAccountsShellE2EPreservesRawPublicAPILogCapture(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -124,11 +124,11 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 
 	initialSecret := "sk-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	addBody := `{"targetUsername":"admin","targetDisplayName":"管理员","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"` + initialSecret + `","status":"active"}`
-	addRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/add", token, "trace_account_add", addBody)
+	addRec := serveW1bShellRawCaptureRequest(router, http.MethodPost, "/__aipublic__/account/add", token, "trace_account_add", addBody)
 	if addRec.Code != http.StatusCreated {
 		t.Fatalf("add status = %d, body = %s", addRec.Code, addRec.Body.String())
 	}
-	assertW1bPublicAccountResponseNoSecret(t, addRec.Body.String(), initialSecret)
+	assertW1bPublicAccountResponseExcludesCredentials(t, addRec.Body.String(), initialSecret)
 	var addResponse struct {
 		Data publicaccounts.AccountResponse `json:"data"`
 	}
@@ -146,11 +146,11 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 
 	emptyModelsAccountName := "空模型账号"
 	emptyModelsBody := `{"targetUsername":"admin","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"` + emptyModelsAccountName + `","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"` + initialSecret + `","supportedModels":[]}`
-	emptyModelsRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/add", token, "trace_account_add_empty_models", emptyModelsBody)
+	emptyModelsRec := serveW1bShellRawCaptureRequest(router, http.MethodPost, "/__aipublic__/account/add", token, "trace_account_add_empty_models", emptyModelsBody)
 	if emptyModelsRec.Code != http.StatusBadRequest {
 		t.Fatalf("explicit empty supportedModels status = %d, body = %s", emptyModelsRec.Code, emptyModelsRec.Body.String())
 	}
-	assertW1bPublicAccountResponseNoSecret(t, emptyModelsRec.Body.String(), initialSecret)
+	assertW1bPublicAccountResponseExcludesCredentials(t, emptyModelsRec.Body.String(), initialSecret)
 	var emptyModelsResponse struct {
 		Message string `json:"message"`
 	}
@@ -163,11 +163,11 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 	assertW1bPublicAccountNameCount(t, ctx, db, emptyModelsAccountName, 0)
 
 	duplicateEmptyModelsBody := `{"targetUsername":"admin","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"` + initialSecret + `","supportedModels":[]}`
-	duplicateEmptyModelsRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/add", token, "trace_account_add_duplicate_empty_models", duplicateEmptyModelsBody)
+	duplicateEmptyModelsRec := serveW1bShellRawCaptureRequest(router, http.MethodPost, "/__aipublic__/account/add", token, "trace_account_add_duplicate_empty_models", duplicateEmptyModelsBody)
 	if duplicateEmptyModelsRec.Code != http.StatusConflict {
 		t.Fatalf("duplicate add with explicit empty supportedModels status = %d, body = %s", duplicateEmptyModelsRec.Code, duplicateEmptyModelsRec.Body.String())
 	}
-	assertW1bPublicAccountResponseNoSecret(t, duplicateEmptyModelsRec.Body.String(), initialSecret)
+	assertW1bPublicAccountResponseExcludesCredentials(t, duplicateEmptyModelsRec.Body.String(), initialSecret)
 	var duplicateEmptyModelsResponse struct {
 		Message string `json:"message"`
 	}
@@ -179,20 +179,20 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 	}
 	assertW1bPublicAccountNameCount(t, ctx, db, "公开账号", 1)
 
-	listRec := serveW1bShellRequest(router, http.MethodGet, "/__aipublic__/account/list?targetUsername=admin&targetGroupName=%E8%B4%A6%E5%8F%B7%E5%88%86%E7%BB%84&providerCode=gpt&providerProtocolProfileId=profile_gpt_openai_v1&keyword="+w1bAccountShellSecretLikeKeyword+"&page=1&pageSize=10", token, "trace_account_list", "")
+	listRec := serveW1bShellRawCaptureRequest(router, http.MethodGet, "/__aipublic__/account/list?targetUsername=admin&targetGroupName=%E8%B4%A6%E5%8F%B7%E5%88%86%E7%BB%84&providerCode=gpt&providerProtocolProfileId=profile_gpt_openai_v1&keyword="+w1bAccountShellRawKeyword+"&page=1&pageSize=10", token, "trace_account_list", "")
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
 	}
-	assertW1bPublicAccountResponseNoSecret(t, listRec.Body.String(), initialSecret)
+	assertW1bPublicAccountResponseExcludesCredentials(t, listRec.Body.String(), initialSecret)
 
 	updatedSecret := "sk-fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	userInfoURL := "https://user:pass@example.com/private?token=notes-secret-value"
 	updateBody := `{"accountId":"` + accountID + `","targetUsername":"admin","targetGroupName":"账号分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号更新","status":"disabled","baseUrl":"https://api.openai.com/v2","apiKey":"` + updatedSecret + `","supportedModels":["` + w1bProfileDefaultHealthCheckModel + `"],"concurrencyLimit":7,"priority":3,"notes":"` + userInfoURL + `"}`
-	updateRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/update", token, "trace_account_update", updateBody)
+	updateRec := serveW1bShellRawCaptureRequest(router, http.MethodPost, "/__aipublic__/account/update", token, "trace_account_update", updateBody)
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("update status = %d, body = %s", updateRec.Code, updateRec.Body.String())
 	}
-	assertW1bPublicAccountResponseNoSecret(t, updateRec.Body.String(), updatedSecret)
+	assertW1bPublicAccountResponseExcludesCredentials(t, updateRec.Body.String(), updatedSecret)
 	var updateResponse struct {
 		Data publicaccounts.AccountResponse `json:"data"`
 	}
@@ -206,13 +206,13 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bProfileDefaultHealthCheckModel})
 	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bProfileDefaultHealthCheckModel)
 
-	deleteRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/account/del", token, "trace_account_delete", `{"accountId":"`+accountID+`","targetUsername":"admin","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
+	deleteRec := serveW1bShellRawCaptureRequest(router, http.MethodPost, "/__aipublic__/account/del", token, "trace_account_delete", `{"accountId":"`+accountID+`","targetUsername":"admin","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1"}`)
 	if deleteRec.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, body = %s", deleteRec.Code, deleteRec.Body.String())
 	}
-	assertW1bPublicAccountResponseNoSecret(t, deleteRec.Body.String(), updatedSecret)
+	assertW1bPublicAccountResponseExcludesCredentials(t, deleteRec.Body.String(), updatedSecret)
 
-	limitedRec := serveW1bShellRequest(router, http.MethodGet, "/__aipublic__/account/list?targetUsername=admin&page=1&pageSize=10", token, "trace_account_limited", "")
+	limitedRec := serveW1bShellRawCaptureRequest(router, http.MethodGet, "/__aipublic__/account/list?targetUsername=admin&page=1&pageSize=10", token, "trace_account_limited", "")
 	if limitedRec.Code != http.StatusTooManyRequests {
 		t.Fatalf("limited status = %d, body = %s", limitedRec.Code, limitedRec.Body.String())
 	}
@@ -228,14 +228,14 @@ func TestW1bPublicAccountsShellE2E(t *testing.T) {
 
 	assertW1bPublicAccountSoftDeleted(t, ctx, db, accountID)
 	assertW1bAccountShellLastUsed(t, ctx, db, w1bPublicAccountsShellNow())
-	assertW1bAccountShellPublicAPILogs(t, ctx, db, token, initialSecret, updatedSecret, userInfoURL, accountID)
+	assertW1bAccountShellPublicAPILogsPreserveRawValues(t, ctx, db, token, initialSecret, updatedSecret, userInfoURL, accountID)
 }
 
 func w1bPublicAccountsShellNow() time.Time {
 	return time.Date(2026, 7, 7, 12, 30, 0, 0, time.UTC)
 }
 
-const w1bAccountShellSecretLikeKeyword = "sk-cccccccccccccccccccccccccccccccc"
+const w1bAccountShellRawKeyword = "sk-cccccccccccccccccccccccccccccccc"
 
 func insertW1bAccountShellSourceAndToken(t *testing.T, ctx context.Context, db *sql.DB, token string, now time.Time) {
 	t.Helper()
@@ -267,7 +267,7 @@ func assertW1bAccountShellLastUsed(t *testing.T, ctx context.Context, db *sql.DB
 	assertTimestampEquals(t, db, "SELECT last_used_at FROM juhe_business.external_integration_source_tokens WHERE id = $1", "exttok_w1b_account_shell", want)
 }
 
-func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *sql.DB, token string, initialSecret string, updatedSecret string, userInfoURL string, accountID string) {
+func assertW1bAccountShellPublicAPILogsPreserveRawValues(t *testing.T, ctx context.Context, db *sql.DB, token string, initialSecret string, updatedSecret string, userInfoURL string, accountID string) {
 	t.Helper()
 
 	rows, err := db.QueryContext(ctx, `
@@ -345,23 +345,25 @@ func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *s
 	}
 
 	expected := []struct {
-		id         string
-		traceID    string
-		method     string
-		path       string
-		statusCode int
-		success    bool
-		errorCode  string
-		action     string
-		message    string
+		id               string
+		traceID          string
+		method           string
+		path             string
+		queryString      string
+		statusCode       int
+		success          bool
+		errorCode        string
+		action           string
+		message          string
+		requestAccountID string
 	}{
 		{id: "publog_w1b_account_shell_1", traceID: "trace_account_add", method: http.MethodPost, path: "/__aipublic__/account/add", statusCode: http.StatusCreated, success: true, action: "created"},
 		{id: "publog_w1b_account_shell_2", traceID: "trace_account_add_empty_models", method: http.MethodPost, path: "/__aipublic__/account/add", statusCode: http.StatusBadRequest, success: false, message: w1bInvalidSupportedModelsMessage},
 		{id: "publog_w1b_account_shell_3", traceID: "trace_account_add_duplicate_empty_models", method: http.MethodPost, path: "/__aipublic__/account/add", statusCode: http.StatusConflict, success: false, message: w1bDuplicateAccountNameMessage},
-		{id: "publog_w1b_account_shell_4", traceID: "trace_account_list", method: http.MethodGet, path: "/__aipublic__/account/list", statusCode: http.StatusOK, success: true},
-		{id: "publog_w1b_account_shell_5", traceID: "trace_account_update", method: http.MethodPost, path: "/__aipublic__/account/update", statusCode: http.StatusOK, success: true, action: "updated"},
-		{id: "publog_w1b_account_shell_6", traceID: "trace_account_delete", method: http.MethodPost, path: "/__aipublic__/account/del", statusCode: http.StatusOK, success: true, action: "deleted"},
-		{id: "publog_w1b_account_shell_7", traceID: "trace_account_limited", method: http.MethodGet, path: "/__aipublic__/account/list", statusCode: http.StatusTooManyRequests, success: false, errorCode: "external_source_rate_limited"},
+		{id: "publog_w1b_account_shell_4", traceID: "trace_account_list", method: http.MethodGet, path: "/__aipublic__/account/list", queryString: "targetUsername=admin&targetGroupName=%E8%B4%A6%E5%8F%B7%E5%88%86%E7%BB%84&providerCode=gpt&providerProtocolProfileId=profile_gpt_openai_v1&keyword=" + w1bAccountShellRawKeyword + "&page=1&pageSize=10", statusCode: http.StatusOK, success: true},
+		{id: "publog_w1b_account_shell_5", traceID: "trace_account_update", method: http.MethodPost, path: "/__aipublic__/account/update", statusCode: http.StatusOK, success: true, action: "updated", requestAccountID: accountID},
+		{id: "publog_w1b_account_shell_6", traceID: "trace_account_delete", method: http.MethodPost, path: "/__aipublic__/account/del", statusCode: http.StatusOK, success: true, action: "deleted", requestAccountID: accountID},
+		{id: "publog_w1b_account_shell_7", traceID: "trace_account_limited", method: http.MethodGet, path: "/__aipublic__/account/list", queryString: "targetUsername=admin&page=1&pageSize=10", statusCode: http.StatusTooManyRequests, success: false, errorCode: "external_source_rate_limited"},
 	}
 
 	for index, want := range expected {
@@ -378,44 +380,43 @@ func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *s
 		if row.statusCode != want.statusCode || row.success != want.success || row.errorCode != want.errorCode {
 			t.Fatalf("log[%d] status/success/error = %d/%v/%q, want %d/%v/%q", index, row.statusCode, row.success, row.errorCode, want.statusCode, want.success, want.errorCode)
 		}
-		for _, secret := range []string{token, initialSecret, updatedSecret, w1bAccountShellSecretLikeKeyword, userInfoURL, "user:pass", "notes-secret-value"} {
-			if strings.Contains(strings.ToLower(row.queryString), strings.ToLower(secret)) {
-				t.Fatalf("log[%d] query_string leaked secret %q: %s", index, secret, row.queryString)
-			}
+		if row.queryString != want.queryString {
+			t.Fatalf("log[%d] query_string = %q, want original %q", index, row.queryString, want.queryString)
 		}
 		if row.requestCaptureStatus != "complete" || row.responseCaptureStatus != "complete" {
 			t.Fatalf("log[%d] capture status = %s/%s, want complete/complete", index, row.requestCaptureStatus, row.responseCaptureStatus)
 		}
 		requestData := decodeW1bShellLogJSON(t, row.requestJSON)
 		responseData := decodeW1bShellLogJSON(t, row.responseJSON)
+		assertW1bShellSnapshotsExcludeUncapturedCredentials(t, index, requestData, row.requestJSON, row.responseJSON, token)
+		if want.requestAccountID != "" && nestedStringFromW1bShellLog(t, requestData, "body", "accountId") != want.requestAccountID {
+			t.Fatalf("log[%d] request accountId = %#v, want original %q", index, requestData["body"], want.requestAccountID)
+		}
 		if got := intFromW1bShellLog(responseData["statusCode"]); got != want.statusCode {
 			t.Fatalf("log[%d] response statusCode = %d, want %d", index, got, want.statusCode)
 		}
 		if want.traceID == "trace_account_list" {
-			if !strings.Contains(row.queryString, "keyword=[redacted]") {
-				t.Fatalf("log[%d] query_string = %s, want redacted keyword", index, row.queryString)
-			}
-			if nestedStringFromW1bShellLog(t, requestData, "query", "keyword") != "[redacted]" {
-				t.Fatalf("log[%d] query keyword = %#v, want redacted", index, requestData["query"])
+			if nestedStringFromW1bShellLog(t, requestData, "query", "keyword") != w1bAccountShellRawKeyword {
+				t.Fatalf("log[%d] query keyword = %#v, want original %q", index, requestData["query"], w1bAccountShellRawKeyword)
 			}
 		}
 		if want.traceID == "trace_account_add" || want.traceID == "trace_account_add_empty_models" || want.traceID == "trace_account_add_duplicate_empty_models" {
-			if nestedStringFromW1bShellLog(t, requestData, "body", "apiKey") != "[redacted]" {
-				t.Fatalf("log[%d] add apiKey should be redacted: %#v", index, requestData["body"])
+			if nestedStringFromW1bShellLog(t, requestData, "body", "apiKey") != initialSecret {
+				t.Fatalf("log[%d] add apiKey = %#v, want original request value", index, requestData["body"])
 			}
-			if nestedStringFromW1bShellLog(t, requestData, "body", "baseUrl") != "[redacted]" {
-				t.Fatalf("log[%d] add baseUrl should be redacted: %#v", index, requestData["body"])
+			if nestedStringFromW1bShellLog(t, requestData, "body", "baseUrl") != "https://api.openai.com/v1" {
+				t.Fatalf("log[%d] add baseUrl = %#v, want original request value", index, requestData["body"])
 			}
 		}
 		if want.traceID == "trace_account_update" {
-			if nestedStringFromW1bShellLog(t, requestData, "body", "apiKey") != "[redacted]" {
-				t.Fatalf("log[%d] update apiKey should be redacted: %#v", index, requestData["body"])
+			if nestedStringFromW1bShellLog(t, requestData, "body", "apiKey") != updatedSecret {
+				t.Fatalf("log[%d] update apiKey = %#v, want original request value", index, requestData["body"])
 			}
-			if nestedStringFromW1bShellLog(t, requestData, "body", "baseUrl") != "[redacted]" {
-				t.Fatalf("log[%d] update baseUrl should be redacted: %#v", index, requestData["body"])
+			if nestedStringFromW1bShellLog(t, requestData, "body", "baseUrl") != "https://api.openai.com/v2" {
+				t.Fatalf("log[%d] update baseUrl = %#v, want original request value", index, requestData["body"])
 			}
-			if nestedStringFromW1bShellLog(t, requestData, "body", "notes") != "[redacted]" {
-				t.Fatalf("log[%d] URL userinfo note should be redacted: %#v", index, requestData["body"])
+			if nestedStringFromW1bShellLog(t, requestData, "body", "notes") != userInfoURL {
+				t.Fatalf("log[%d] URL userinfo note = %#v, want original %q", index, requestData["body"], userInfoURL)
 			}
 		}
 		if want.action != "" && nestedStringFromW1bShellLog(t, responseData, "body", "data", "action") != want.action {
@@ -435,30 +436,22 @@ func assertW1bAccountShellPublicAPILogs(t *testing.T, ctx context.Context, db *s
 				t.Fatalf("log[%d] maxRequests = %d, want 6", index, got)
 			}
 		}
-		assertW1bShellLogNoSecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, token)
-		assertW1bShellLogNoAPIKeySecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, initialSecret)
-		assertW1bShellLogNoAPIKeySecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, updatedSecret)
-		assertW1bShellLogNoAPIKeySecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, w1bAccountShellSecretLikeKeyword)
-		assertW1bShellLogNoAPIKeySecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, userInfoURL)
-		assertW1bShellLogNoAPIKeySecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, "user:pass")
-		assertW1bShellLogNoAPIKeySecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, "notes-secret-value")
-		assertW1bPublicAccountResponseNoSecret(t, row.responseJSON, initialSecret)
-		assertW1bPublicAccountResponseNoSecret(t, row.responseJSON, updatedSecret)
+		assertW1bPublicAccountResponseExcludesCredentials(t, row.responseJSON, initialSecret, updatedSecret)
 	}
 }
 
-func assertW1bPublicAccountResponseNoSecret(t *testing.T, response string, secrets ...string) {
+func assertW1bPublicAccountResponseExcludesCredentials(t *testing.T, response string, credentials ...string) {
 	t.Helper()
 
 	normalized := strings.ToLower(response)
 	for _, forbidden := range []string{"\"apikey\"", "\"baseurl\"", "\"credentials\"", "\"healthcheckmodel\"", "\"health_check_model\""} {
 		if strings.Contains(normalized, forbidden) {
-			t.Fatalf("public account response leaked forbidden field %s in %s", forbidden, response)
+			t.Fatalf("public account response exposed internal credential field %s in %s", forbidden, response)
 		}
 	}
-	for _, secret := range secrets {
-		if secret != "" && strings.Contains(normalized, strings.ToLower(secret)) {
-			t.Fatalf("public account response leaked secret %q in %s", secret, response)
+	for _, credential := range credentials {
+		if credential != "" && strings.Contains(normalized, strings.ToLower(credential)) {
+			t.Fatalf("public account response exposed internal credential %q in %s", credential, response)
 		}
 	}
 }

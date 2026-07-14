@@ -1,6 +1,8 @@
 package publicapilog
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -91,6 +93,46 @@ func TestBoundedSnapshotPreservesLargeIntegerShape(t *testing.T) {
 	}
 }
 
+func TestBoundedSnapshotPreservesJSONNumberShape(t *testing.T) {
+	snapshot := BoundedSnapshot(map[string]any{
+		"body": map[string]any{
+			"weight": json.Number("10"),
+			"ratio":  json.Number("1.25"),
+		},
+	}, 0)
+
+	encoded, err := json.Marshal(snapshot.Data)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	text := string(encoded)
+	if !strings.Contains(text, `"weight":10`) || !strings.Contains(text, `"ratio":1.25`) {
+		t.Fatalf("snapshot JSON numbers changed shape: %s", text)
+	}
+}
+
+func TestBoundedSnapshotUsesDeterministicEntryWindow(t *testing.T) {
+	data := make(map[string]any, SnapshotMaxEntries+1)
+	for index := SnapshotMaxEntries; index >= 0; index-- {
+		data[fmt.Sprintf("key%03d", index)] = index
+	}
+
+	snapshot := BoundedSnapshot(map[string]any{"body": data}, 0)
+	if snapshot.Status != port.PublicAPILogCaptureTruncated {
+		t.Fatalf("status = %q, want truncated", snapshot.Status)
+	}
+	preview, ok := snapshot.Data["preview"].(string)
+	if !ok {
+		t.Fatalf("preview = %#v, want string", snapshot.Data["preview"])
+	}
+	if !strings.Contains(preview, `"key000":0`) || !strings.Contains(preview, `"key199":199`) {
+		t.Fatalf("preview did not retain deterministic first window: %s", preview)
+	}
+	if strings.Contains(preview, `"key200":200`) {
+		t.Fatalf("preview retained entry outside deterministic window: %s", preview)
+	}
+}
+
 func TestSnapshotDoesNotIncludeAuthorizationHeaders(t *testing.T) {
 	snapshot := BuildRequestSnapshot(RequestSnapshotInput{
 		Method:        "GET",
@@ -111,8 +153,13 @@ func TestSnapshotDoesNotIncludeAuthorizationHeaders(t *testing.T) {
 	}
 }
 
-func TestSnapshotRedactsRecursiveSecrets(t *testing.T) {
+func TestSnapshotPreservesCapturedValues(t *testing.T) {
 	hash := strings.Repeat("a", 64)
+	apiKey := "sk-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	sourceToken := "juis_plain_secret_value"
+	proxyURL := "http://proxy-user:proxy-pass@example.com:8080"
+	callbackURL := "/callback?token=plain_secret_value"
+	baseURL := "https://user:password@example.com/v1"
 	snapshot := BuildResponseSnapshot(ResponseSnapshotInput{
 		StatusCode: 201,
 		Body: map[string]any{
@@ -120,65 +167,43 @@ func TestSnapshotRedactsRecursiveSecrets(t *testing.T) {
 				"apiKey": map[string]any{
 					"id":        "key_public",
 					"keyPrefix": "sk-12345",
-					"key":       "sk-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+					"key":       apiKey,
 				},
-				"sourceToken": "juis_plain_secret_value",
+				"sourceToken": sourceToken,
 				"tokenHash":   hash,
-				"proxyUrl":    "http://proxy-user:proxy-pass@example.com:8080",
+				"proxyUrl":    proxyURL,
 			},
-			"url":     "/callback?token=plain_secret_value",
-			"baseUrl": "https://user:password@example.com/v1",
+			"url":     callbackURL,
+			"baseUrl": baseURL,
 			"ids":     []any{"not-secret", hash},
 		},
 	})
 
 	data := snapshot.Data["body"].(map[string]any)["data"].(map[string]any)
-	apiKey := data["apiKey"].(map[string]any)
-	if apiKey["key"] != "[redacted]" {
-		t.Fatalf("api key secret = %#v, want redacted", apiKey["key"])
+	apiKeyData := data["apiKey"].(map[string]any)
+	if apiKeyData["key"] != apiKey {
+		t.Fatalf("api key = %#v, want original value", apiKeyData["key"])
 	}
-	if data["sourceToken"] != "[redacted]" {
-		t.Fatalf("source token = %#v, want redacted", data["sourceToken"])
+	if data["sourceToken"] != sourceToken {
+		t.Fatalf("source token = %#v, want original value", data["sourceToken"])
 	}
-	if data["tokenHash"] != "[redacted]" {
-		t.Fatalf("token hash = %#v, want redacted", data["tokenHash"])
+	if data["tokenHash"] != hash {
+		t.Fatalf("token hash = %#v, want original value", data["tokenHash"])
 	}
-	if data["proxyUrl"] != "[redacted]" {
-		t.Fatalf("proxyUrl = %#v, want redacted", data["proxyUrl"])
+	if data["proxyUrl"] != proxyURL {
+		t.Fatalf("proxyUrl = %#v, want original value", data["proxyUrl"])
 	}
-	if snapshot.Data["body"].(map[string]any)["url"] != "[redacted]" {
-		t.Fatalf("url secret = %#v, want redacted", snapshot.Data["body"].(map[string]any)["url"])
+	if snapshot.Data["body"].(map[string]any)["url"] != callbackURL {
+		t.Fatalf("url = %#v, want original value", snapshot.Data["body"].(map[string]any)["url"])
 	}
-	if snapshot.Data["body"].(map[string]any)["baseUrl"] != "[redacted]" {
-		t.Fatalf("baseUrl userinfo = %#v, want redacted", snapshot.Data["body"].(map[string]any)["baseUrl"])
+	if snapshot.Data["body"].(map[string]any)["baseUrl"] != baseURL {
+		t.Fatalf("baseUrl = %#v, want original value", snapshot.Data["body"].(map[string]any)["baseUrl"])
 	}
 	ids := snapshot.Data["body"].(map[string]any)["ids"].([]any)
-	if ids[1] != "[redacted]" {
-		t.Fatalf("hash string = %#v, want redacted", ids[1])
+	if ids[1] != hash {
+		t.Fatalf("hash string = %#v, want original value", ids[1])
 	}
-	if apiKey["keyPrefix"] != "sk-12345" {
-		t.Fatalf("keyPrefix = %#v, want preserved", apiKey["keyPrefix"])
-	}
-}
-
-func TestSanitizeQueryStringRedactsSecrets(t *testing.T) {
-	hash := strings.Repeat("a", 64)
-	got := SanitizeQueryString("targetUsername=admin&keyword=sk-0123456789abcdef0123456789abcdef&authorization=Bearer%20abcdefghijklmnop&tokenHash=" + hash + "&empty=&plain=value")
-	if strings.Contains(got, "sk-0123456789abcdef0123456789abcdef") ||
-		strings.Contains(got, "Bearer") ||
-		strings.Contains(got, hash) {
-		t.Fatalf("sanitized query leaked secret: %s", got)
-	}
-	for _, want := range []string{
-		"targetUsername=admin",
-		"keyword=[redacted]",
-		"authorization=[redacted]",
-		"tokenHash=[redacted]",
-		"empty=",
-		"plain=value",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("sanitized query = %s, want to contain %s", got, want)
-		}
+	if apiKeyData["keyPrefix"] != "sk-12345" {
+		t.Fatalf("keyPrefix = %#v, want original value", apiKeyData["keyPrefix"])
 	}
 }

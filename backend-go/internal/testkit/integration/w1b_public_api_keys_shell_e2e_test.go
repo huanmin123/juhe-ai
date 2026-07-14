@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -30,7 +31,7 @@ import (
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
-func TestW1bPublicAPIKeysShellE2E(t *testing.T) {
+func TestW1bPublicAPIKeysShellE2EPreservesRawPublicAPILogCapture(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -135,7 +136,7 @@ func TestW1bPublicAPIKeysShellE2E(t *testing.T) {
 		t.Fatalf("seed route: %v", err)
 	}
 
-	secret := "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	generatedAPIKey := "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	var apiKeyIDSeq atomic.Int32
 	apiKeyService := publicapikeys.NewService(publicapikeys.Options{
 		Store:      store,
@@ -144,7 +145,7 @@ func TestW1bPublicAPIKeysShellE2E(t *testing.T) {
 		NewID: func(prefix string) string {
 			return prefix + "_w1b_api_key_shell_" + strconv.Itoa(int(apiKeyIDSeq.Add(1)))
 		},
-		NewSecret: fixedIntegrationSecret(secret),
+		NewSecret: fixedIntegrationSecret(generatedAPIKey),
 	})
 	var logSeq atomic.Int32
 	router := httpapi.NewPublicAPIShell(httpapi.PublicAPIShellOptions{
@@ -160,7 +161,7 @@ func TestW1bPublicAPIKeysShellE2E(t *testing.T) {
 	})
 
 	addBody := `{"targetUsername":"admin","name":"公开 API Key","routeStrategyId":"` + route.RouteStrategy.ID + `","quotaLimits":{"daily":{"enabled":true,"limit":100}}}`
-	addRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/api-key/add", token, "trace_api_key_add", addBody)
+	addRec := serveW1bShellRawCaptureRequest(router, http.MethodPost, "/__aipublic__/api-key/add", token, "trace_api_key_add", addBody)
 	if addRec.Code != http.StatusCreated {
 		t.Fatalf("add status = %d, body = %s", addRec.Code, addRec.Body.String())
 	}
@@ -170,27 +171,27 @@ func TestW1bPublicAPIKeysShellE2E(t *testing.T) {
 	if err := json.NewDecoder(addRec.Body).Decode(&addResponse); err != nil {
 		t.Fatalf("decode add response: %v", err)
 	}
-	if addResponse.Data.Action != "created" || addResponse.Data.APIKey == nil || addResponse.Data.APIKey.Key != secret {
+	if addResponse.Data.Action != "created" || addResponse.Data.APIKey == nil || addResponse.Data.APIKey.Key != generatedAPIKey {
 		t.Fatalf("add response = %+v", addResponse.Data)
 	}
 	apiKeyID := addResponse.Data.APIKey.ID
 
-	listRec := serveW1bShellRequest(router, http.MethodGet, "/__aipublic__/api-key/list?targetUsername=admin&keyword="+w1bAPIKeyShellSecretLikeKeyword+"&page=1&pageSize=10", token, "trace_api_key_list", "")
+	listRec := serveW1bShellRawCaptureRequest(router, http.MethodGet, "/__aipublic__/api-key/list?targetUsername=admin&keyword="+w1bAPIKeyShellRawKeyword+"&page=1&pageSize=10", token, "trace_api_key_list", "")
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
 	}
 
-	updateRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/api-key/update", token, "trace_api_key_update", `{"apiKeyId":"`+apiKeyID+`","name":"公开 API Key 更新"}`)
+	updateRec := serveW1bShellRawCaptureRequest(router, http.MethodPost, "/__aipublic__/api-key/update", token, "trace_api_key_update", `{"apiKeyId":"`+apiKeyID+`","name":"公开 API Key 更新"}`)
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("update status = %d, body = %s", updateRec.Code, updateRec.Body.String())
 	}
 
-	deleteRec := serveW1bShellRequest(router, http.MethodPost, "/__aipublic__/api-key/del", token, "trace_api_key_delete", `{"apiKeyId":"`+apiKeyID+`"}`)
+	deleteRec := serveW1bShellRawCaptureRequest(router, http.MethodPost, "/__aipublic__/api-key/del", token, "trace_api_key_delete", `{"apiKeyId":"`+apiKeyID+`"}`)
 	if deleteRec.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, body = %s", deleteRec.Code, deleteRec.Body.String())
 	}
 
-	limitedRec := serveW1bShellRequest(router, http.MethodGet, "/__aipublic__/api-key/list?targetUsername=admin&page=1&pageSize=10", token, "trace_api_key_limited", "")
+	limitedRec := serveW1bShellRawCaptureRequest(router, http.MethodGet, "/__aipublic__/api-key/list?targetUsername=admin&page=1&pageSize=10", token, "trace_api_key_limited", "")
 	if limitedRec.Code != http.StatusTooManyRequests {
 		t.Fatalf("limited status = %d, body = %s", limitedRec.Code, limitedRec.Body.String())
 	}
@@ -206,14 +207,37 @@ func TestW1bPublicAPIKeysShellE2E(t *testing.T) {
 
 	assertW1bShellAPIKeyDeleted(t, ctx, db, apiKeyID)
 	assertW1bAPIKeyShellLastUsed(t, ctx, db, w1bPublicAPIKeysShellNow())
-	assertW1bAPIKeyShellPublicAPILogs(t, ctx, db, token, secret, apiKeyID)
+	assertW1bAPIKeyShellPublicAPILogsPreserveRawValues(t, ctx, db, token, generatedAPIKey, apiKeyID, route.RouteStrategy.ID)
 }
 
 func w1bPublicAPIKeysShellNow() time.Time {
 	return time.Date(2026, 7, 7, 10, 30, 0, 0, time.UTC)
 }
 
-const w1bAPIKeyShellSecretLikeKeyword = "sk-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+const (
+	w1bAPIKeyShellRawKeyword    = "sk-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	w1bShellCaptureCookieSecret = "w1b-shell-cookie-secret"
+	w1bShellCaptureCookie       = "juhe_ai_session=" + w1bShellCaptureCookieSecret
+)
+
+func serveW1bShellRawCaptureRequest(router http.Handler, method string, target string, token string, traceID string, body string) *httptest.ResponseRecorder {
+	var req *http.Request
+	if body != "" {
+		req = httptest.NewRequest(method, target, strings.NewReader(body))
+	} else {
+		req = httptest.NewRequest(method, target, nil)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Cookie", w1bShellCaptureCookie)
+	req.Header.Set("X-Request-Id", traceID)
+	req.Header.Set("User-Agent", "w1b-shell-e2e")
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
 
 func insertW1bAPIKeyShellSourceAndToken(t *testing.T, ctx context.Context, db *sql.DB, token string, now time.Time) {
 	t.Helper()
@@ -261,7 +285,7 @@ func assertW1bAPIKeyShellLastUsed(t *testing.T, ctx context.Context, db *sql.DB,
 	assertTimestampEquals(t, db, "SELECT last_used_at FROM juhe_business.external_integration_source_tokens WHERE id = $1", "exttok_w1b_api_key_shell", want)
 }
 
-func assertW1bAPIKeyShellPublicAPILogs(t *testing.T, ctx context.Context, db *sql.DB, token string, secret string, apiKeyID string) {
+func assertW1bAPIKeyShellPublicAPILogsPreserveRawValues(t *testing.T, ctx context.Context, db *sql.DB, token string, generatedAPIKey string, apiKeyID string, routeStrategyID string) {
 	t.Helper()
 
 	rows, err := db.QueryContext(ctx, `
@@ -332,20 +356,24 @@ func assertW1bAPIKeyShellPublicAPILogs(t *testing.T, ctx context.Context, db *sq
 	}
 
 	expected := []struct {
-		id         string
-		traceID    string
-		method     string
-		path       string
-		statusCode int
-		success    bool
-		errorCode  string
-		action     string
+		id                     string
+		traceID                string
+		method                 string
+		path                   string
+		queryString            string
+		statusCode             int
+		success                bool
+		errorCode              string
+		action                 string
+		requestAPIKeyID        string
+		requestName            string
+		requestRouteStrategyID string
 	}{
-		{id: "publog_w1b_api_key_shell_1", traceID: "trace_api_key_add", method: http.MethodPost, path: "/__aipublic__/api-key/add", statusCode: http.StatusCreated, success: true, action: "created"},
-		{id: "publog_w1b_api_key_shell_2", traceID: "trace_api_key_list", method: http.MethodGet, path: "/__aipublic__/api-key/list", statusCode: http.StatusOK, success: true},
-		{id: "publog_w1b_api_key_shell_3", traceID: "trace_api_key_update", method: http.MethodPost, path: "/__aipublic__/api-key/update", statusCode: http.StatusOK, success: true, action: "updated"},
-		{id: "publog_w1b_api_key_shell_4", traceID: "trace_api_key_delete", method: http.MethodPost, path: "/__aipublic__/api-key/del", statusCode: http.StatusOK, success: true, action: "deleted"},
-		{id: "publog_w1b_api_key_shell_5", traceID: "trace_api_key_limited", method: http.MethodGet, path: "/__aipublic__/api-key/list", statusCode: http.StatusTooManyRequests, success: false, errorCode: "external_source_rate_limited"},
+		{id: "publog_w1b_api_key_shell_1", traceID: "trace_api_key_add", method: http.MethodPost, path: "/__aipublic__/api-key/add", statusCode: http.StatusCreated, success: true, action: "created", requestName: "公开 API Key", requestRouteStrategyID: routeStrategyID},
+		{id: "publog_w1b_api_key_shell_2", traceID: "trace_api_key_list", method: http.MethodGet, path: "/__aipublic__/api-key/list", queryString: "targetUsername=admin&keyword=" + w1bAPIKeyShellRawKeyword + "&page=1&pageSize=10", statusCode: http.StatusOK, success: true},
+		{id: "publog_w1b_api_key_shell_3", traceID: "trace_api_key_update", method: http.MethodPost, path: "/__aipublic__/api-key/update", statusCode: http.StatusOK, success: true, action: "updated", requestAPIKeyID: apiKeyID, requestName: "公开 API Key 更新"},
+		{id: "publog_w1b_api_key_shell_4", traceID: "trace_api_key_delete", method: http.MethodPost, path: "/__aipublic__/api-key/del", statusCode: http.StatusOK, success: true, action: "deleted", requestAPIKeyID: apiKeyID},
+		{id: "publog_w1b_api_key_shell_5", traceID: "trace_api_key_limited", method: http.MethodGet, path: "/__aipublic__/api-key/list", queryString: "targetUsername=admin&page=1&pageSize=10", statusCode: http.StatusTooManyRequests, success: false, errorCode: "external_source_rate_limited"},
 	}
 
 	for index, want := range expected {
@@ -359,19 +387,27 @@ func assertW1bAPIKeyShellPublicAPILogs(t *testing.T, ctx context.Context, db *sq
 		if row.statusCode != want.statusCode || row.success != want.success || row.errorCode != want.errorCode {
 			t.Fatalf("log[%d] status/success/error = %d/%v/%q, want %d/%v/%q", index, row.statusCode, row.success, row.errorCode, want.statusCode, want.success, want.errorCode)
 		}
-		if strings.Contains(strings.ToLower(row.queryString), strings.ToLower(secret)) ||
-			strings.Contains(strings.ToLower(row.queryString), strings.ToLower(token)) ||
-			strings.Contains(strings.ToLower(row.queryString), strings.ToLower(w1bAPIKeyShellSecretLikeKeyword)) {
-			t.Fatalf("log[%d] query_string leaked secret: %s", index, row.queryString)
-		}
-		if want.traceID == "trace_api_key_list" && !strings.Contains(row.queryString, "keyword=[redacted]") {
-			t.Fatalf("log[%d] query_string = %s, want redacted keyword", index, row.queryString)
+		if row.queryString != want.queryString {
+			t.Fatalf("log[%d] query_string = %q, want original %q", index, row.queryString, want.queryString)
 		}
 		if row.requestCaptureStatus != "complete" || row.responseCaptureStatus != "complete" {
 			t.Fatalf("log[%d] capture status = %s/%s, want complete/complete", index, row.requestCaptureStatus, row.responseCaptureStatus)
 		}
 		requestData := decodeW1bShellLogJSON(t, row.requestJSON)
 		responseData := decodeW1bShellLogJSON(t, row.responseJSON)
+		assertW1bShellSnapshotsExcludeUncapturedCredentials(t, index, requestData, row.requestJSON, row.responseJSON, token)
+		if want.traceID == "trace_api_key_list" && nestedStringFromW1bShellLog(t, requestData, "query", "keyword") != w1bAPIKeyShellRawKeyword {
+			t.Fatalf("log[%d] query keyword = %#v, want original %q", index, requestData["query"], w1bAPIKeyShellRawKeyword)
+		}
+		if want.requestAPIKeyID != "" && nestedStringFromW1bShellLog(t, requestData, "body", "apiKeyId") != want.requestAPIKeyID {
+			t.Fatalf("log[%d] request apiKeyId = %#v, want original %q", index, requestData["body"], want.requestAPIKeyID)
+		}
+		if want.requestName != "" && nestedStringFromW1bShellLog(t, requestData, "body", "name") != want.requestName {
+			t.Fatalf("log[%d] request name = %#v, want original %q", index, requestData["body"], want.requestName)
+		}
+		if want.requestRouteStrategyID != "" && nestedStringFromW1bShellLog(t, requestData, "body", "routeStrategyId") != want.requestRouteStrategyID {
+			t.Fatalf("log[%d] request routeStrategyId = %#v, want original %q", index, requestData["body"], want.requestRouteStrategyID)
+		}
 		if got := intFromW1bShellLog(responseData["statusCode"]); got != want.statusCode {
 			t.Fatalf("log[%d] response statusCode = %d, want %d", index, got, want.statusCode)
 		}
@@ -381,23 +417,35 @@ func assertW1bAPIKeyShellPublicAPILogs(t *testing.T, ctx context.Context, db *sq
 		if want.action != "" && nestedStringFromW1bShellLog(t, responseData, "body", "data", "apiKey", "id") != apiKeyID {
 			t.Fatalf("log[%d] response api key id = %#v, want %s", index, responseData["body"], apiKeyID)
 		}
-		if want.action == "created" && nestedStringFromW1bShellLog(t, responseData, "body", "data", "apiKey", "key") != "[redacted]" {
-			t.Fatalf("log[%d] response api key secret should be redacted: %#v", index, responseData["body"])
+		if want.action == "created" && nestedStringFromW1bShellLog(t, responseData, "body", "data", "apiKey", "key") != generatedAPIKey {
+			t.Fatalf("log[%d] response api key = %#v, want original generated key", index, responseData["body"])
 		}
-		if row.method == http.MethodPost && index < 4 {
-			_ = nestedValueFromW1bShellLog(t, requestData, "body")
-		}
-		assertW1bShellLogNoSecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, token)
-		assertW1bShellLogNoAPIKeySecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, secret)
-		assertW1bShellLogNoAPIKeySecret(t, row.requestJSON, row.responseJSON, row.errorMessage+"\n"+row.queryString, w1bAPIKeyShellSecretLikeKeyword)
 	}
 }
 
-func assertW1bShellLogNoAPIKeySecret(t *testing.T, requestJSON string, responseJSON string, errorMessage string, secret string) {
+func assertW1bShellSnapshotsExcludeUncapturedCredentials(t *testing.T, index int, requestData map[string]any, requestJSON string, responseJSON string, sourceToken string) {
 	t.Helper()
 
-	combined := strings.ToLower(requestJSON + "\n" + responseJSON + "\n" + errorMessage)
-	if strings.Contains(combined, strings.ToLower(secret)) {
-		t.Fatalf("public api log leaked generated api key secret in %s", combined)
+	headersValue := nestedValueFromW1bShellLog(t, requestData, "headers")
+	headers, ok := headersValue.(map[string]any)
+	if !ok {
+		t.Fatalf("log[%d] request headers = %#v, want captured header map", index, headersValue)
+	}
+	for key := range headers {
+		if strings.EqualFold(key, "authorization") || strings.EqualFold(key, "cookie") {
+			t.Fatalf("log[%d] request snapshot captured excluded credential header %q: %#v", index, key, headers)
+		}
+	}
+	combinedSnapshots := strings.ToLower(requestJSON + "\n" + responseJSON)
+	for _, credential := range []struct {
+		label string
+		value string
+	}{
+		{label: "source bearer token", value: sourceToken},
+		{label: "cookie value", value: w1bShellCaptureCookieSecret},
+	} {
+		if strings.Contains(combinedSnapshots, strings.ToLower(credential.value)) {
+			t.Fatalf("log[%d] snapshots included uncaptured %s", index, credential.label)
+		}
 	}
 }

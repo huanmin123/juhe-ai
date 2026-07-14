@@ -15,7 +15,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicapikeys"
 )
 
-func TestPublicAPIKeyHandlersAddThroughShellRedactsLogSecret(t *testing.T) {
+func TestPublicAPIKeyHandlersAddThroughShellPreservesCapturedLogSecret(t *testing.T) {
 	secret := "sk-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	service := &publicAPIKeyServiceStub{
 		addResponse: publicapikeys.APIKeyResponse{
@@ -67,11 +67,11 @@ func TestPublicAPIKeyHandlersAddThroughShellRedactsLogSecret(t *testing.T) {
 	responseBody := log.ResponseData["body"].(map[string]any)
 	data := responseBody["data"].(map[string]any)
 	apiKey := data["apiKey"].(map[string]any)
-	if apiKey["key"] != "[redacted]" {
-		t.Fatalf("logged api key secret = %#v, want redacted", apiKey["key"])
+	if apiKey["key"] != secret {
+		t.Fatalf("logged api key secret = %#v, want original value", apiKey["key"])
 	}
-	if strings.Contains(fmt.Sprint(log.ResponseData), secret) {
-		t.Fatalf("log response leaked secret: %#v", log.ResponseData)
+	if !strings.Contains(fmt.Sprint(log.ResponseData), secret) {
+		t.Fatalf("log response did not preserve generated key: %#v", log.ResponseData)
 	}
 }
 

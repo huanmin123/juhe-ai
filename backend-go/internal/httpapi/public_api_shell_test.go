@@ -41,7 +41,10 @@ func TestPublicAPIShellSuccessCapturesAndEnqueuesLog(t *testing.T) {
 		}),
 	}, now)
 
-	req := httptest.NewRequest(http.MethodGet, "/__aipublic__/group/list?targetUsername=admin", nil)
+	const querySecret = "sk-0123456789abcdef0123456789abcdef"
+	const queryBearer = "Bearer abcdefghijklmnop"
+	const rawQuery = "targetUsername=admin&keyword=" + querySecret + "&authorization=Bearer%20abcdefghijklmnop"
+	req := httptest.NewRequest(http.MethodGet, "/__aipublic__/group/list?"+rawQuery, nil)
 	req.Header.Set("Authorization", "Bearer juis_plain")
 	req.Header.Set("Cookie", "session=secret")
 	req.Header.Set("User-Agent", "shell-test")
@@ -69,7 +72,7 @@ func TestPublicAPIShellSuccessCapturesAndEnqueuesLog(t *testing.T) {
 	if log.ID != "publog_test_1" || log.TraceID != "trace_public_shell" {
 		t.Fatalf("log id/trace = %s/%s", log.ID, log.TraceID)
 	}
-	if log.Method != http.MethodGet || log.Path != "/__aipublic__/group/list" || log.QueryString != "targetUsername=admin" {
+	if log.Method != http.MethodGet || log.Path != "/__aipublic__/group/list" || log.QueryString != rawQuery {
 		t.Fatalf("log request = %s %s ? %s", log.Method, log.Path, log.QueryString)
 	}
 	if log.ClientIP != "198.51.100.9" || log.UserAgent != "shell-test" {
@@ -85,15 +88,59 @@ func TestPublicAPIShellSuccessCapturesAndEnqueuesLog(t *testing.T) {
 	if !ok {
 		t.Fatalf("request headers = %#v", log.RequestData["headers"])
 	}
-	if _, ok := headers["authorization"]; ok {
-		t.Fatalf("request snapshot must not include authorization: %#v", headers)
+	for key := range headers {
+		if strings.EqualFold(key, "authorization") || strings.EqualFold(key, "cookie") {
+			t.Fatalf("request snapshot must not include credential header %q: %#v", key, headers)
+		}
 	}
-	if _, ok := headers["cookie"]; ok {
-		t.Fatalf("request snapshot must not include cookie: %#v", headers)
+	query, ok := log.RequestData["query"].(map[string]any)
+	if !ok || query["keyword"] != querySecret || query["authorization"] != queryBearer {
+		t.Fatalf("request query = %#v, want original captured values", log.RequestData["query"])
 	}
 	responseBody, ok := log.ResponseData["body"].(map[string]any)
 	if !ok || responseBody["data"] == nil {
 		t.Fatalf("response body = %#v", log.ResponseData["body"])
+	}
+}
+
+func TestPublicAPIShellPreservesJSONNumberShapeInSnapshots(t *testing.T) {
+	authenticator := &publicAPIShellAuthStub{ctx: publicAPIShellAuthContext()}
+	limiter := &publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}}
+	logQueue := &publicAPIShellLogQueueStub{}
+	router := newTestPublicAPIShell(authenticator, limiter, logQueue, map[string]http.Handler{
+		"group-add": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"data": map[string]any{"weight": 20, "ratio": 2.5},
+			})
+		}),
+	}, time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC))
+
+	req := httptest.NewRequest(http.MethodPost, "/__aipublic__/group/add", strings.NewReader(`{"weight":10,"ratio":1.25}`))
+	req.Header.Set("Authorization", "Bearer juis_plain")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	log := singlePublicAPILog(t, logQueue)
+	requestBody, ok := log.RequestData["body"].(map[string]any)
+	requestWeight, weightOK := requestBody["weight"].(float64)
+	requestRatio, ratioOK := requestBody["ratio"].(float64)
+	if !ok || !weightOK || !ratioOK || requestWeight != 10 || requestRatio != 1.25 {
+		t.Fatalf("request body numbers = %#v, want JSON number values", log.RequestData["body"])
+	}
+	responseBody, ok := log.ResponseData["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("response body = %#v, want object", log.ResponseData["body"])
+	}
+	responseData, ok := responseBody["data"].(map[string]any)
+	responseWeight, weightOK := responseData["weight"].(float64)
+	responseRatio, ratioOK := responseData["ratio"].(float64)
+	if !ok || !weightOK || !ratioOK || responseWeight != 20 || responseRatio != 2.5 {
+		t.Fatalf("response data numbers = %#v, want JSON number values", responseBody["data"])
 	}
 }
 
