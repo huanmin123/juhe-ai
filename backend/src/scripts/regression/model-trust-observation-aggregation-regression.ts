@@ -90,7 +90,11 @@ for (let roundIndex = 0; roundIndex < 3; roundIndex += 1) {
   }
 }
 assert.equal(await trustRepository.createModelCheckObservationsAsync(observations), 9)
-assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(4), 4)
+const concurrentAggregation = await Promise.all([
+  trustRepository.aggregateModelTrustObservationsAsync(4),
+  trustRepository.aggregateModelTrustObservationsAsync(4)
+])
+assert.deepEqual([...concurrentAggregation].sort((left, right) => left - right), [0, 4], '并发聚合只能由一个数据库租约 owner 推进游标')
 assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 5)
 assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0, '游标不能重复聚合已完成 observation')
 

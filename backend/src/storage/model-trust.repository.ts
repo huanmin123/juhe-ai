@@ -2,6 +2,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getDatasetDatabase, getStatsDatabase, newId, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import { acquireBackgroundJobLeaseAsync, releaseBackgroundJobLeaseAsync } from './background-task-runs.repository.js'
 import {
   evaluateIdentityTrust,
   hasHardTrustConflict,
@@ -11,14 +12,19 @@ import {
   upsertIdentitySourceFeature
 } from './model-trust-identity.repository.js'
 import {
+  activateTokenInterceptBaselineVersion,
   evaluateTokenInterceptBaseline,
   refreshTokenInterceptBaselines,
   tokenInterceptScopeKey,
   type TokenInterceptBaselineEvaluation,
-  type TokenInterceptEvaluationContext
+  type TokenInterceptEvaluationContext,
+  type TokenInterceptScope
 } from './model-trust-token-baseline.repository.js'
 
 const aggregationJobName = 'model-trust-observation-aggregation'
+const aggregationLeaseKey = 'scheduled:model-trust-observation-aggregation:global'
+const aggregationLeaseDurationMs = 5 * 60_000
+const maximumIdentityPropagationAccounts = 500
 
 export interface ModelCheckObservationInput {
   id?: string
@@ -170,6 +176,23 @@ export async function createModelCheckObservationsAsync(inputs: ModelCheckObserv
 }
 
 export async function aggregateModelTrustObservationsAsync(limit = 500): Promise<number> {
+  const ownerId = `${runtimeConfig.processRole}:${process.pid}:${newId('model_trust_lease')}`
+  const acquired = await acquireBackgroundJobLeaseAsync({
+    leaseKey: aggregationLeaseKey,
+    jobName: aggregationJobName,
+    shardKey: 'global',
+    ownerId,
+    leaseUntil: new Date(Date.now() + aggregationLeaseDurationMs).toISOString()
+  })
+  if (!acquired) return 0
+  try {
+    return await aggregateModelTrustObservationsWithLeaseAsync(limit)
+  } finally {
+    await releaseBackgroundJobLeaseAsync(aggregationLeaseKey, ownerId)
+  }
+}
+
+async function aggregateModelTrustObservationsWithLeaseAsync(limit: number): Promise<number> {
   const dataset = await datasetClient()
   const stats = await statsClient()
   const observationsTable = dataset.dialect.qualifyTable('juhe_dataset', 'model_check_observations')
@@ -191,7 +214,7 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
     const touchedIdentityScopes = await refreshIdentityBaselines(tx, rows)
     const affected = mergeAccountModelKeys(
       uniqueAccountModels(rows.filter(isDiagnosticTrustObservation)),
-      await listIdentityAccountModelsForScopes(tx, touchedIdentityScopes)
+      await listIdentityAccountModelsForScopes(tx, touchedIdentityScopes, maximumIdentityPropagationAccounts)
     )
     for (const key of affected) {
       await refreshLatestResult(tx, key, rows)
@@ -204,8 +227,7 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
       probeSetVersion: row.probe_set_version
     })))
     const tokenAffected = mergeAccountModelKeys(
-      uniqueAccountModels(tokenRows),
-      [...tokenContexts.values()].flatMap((context) => context.accountKeys)
+      uniqueAccountModels(tokenRows)
     )
     for (const key of tokenAffected) {
       await refreshLatestResult(tx, key, rows, tokenContexts)
@@ -214,6 +236,14 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
     await writeAggregationState(tx, last.created_at, last.id)
   })
   return rows.length
+}
+
+export async function activateModelTokenInterceptBaselineAsync(input: TokenInterceptScope & {
+  baselineVersion: number
+  strongThresholdIntercept: number
+  calibrationNote: string
+}): Promise<void> {
+  await activateTokenInterceptBaselineVersion(await statsClient(), input)
 }
 
 export async function findModelAccountTrustResultAsync(systemAccountId: string, accountId: string, requestedModel: string): Promise<ModelAccountTrustResult | undefined> {
@@ -435,6 +465,9 @@ async function refreshLatestResult(
     ...(mappingStatus === 'undeclared_mismatch' ? ['undeclared_response_model_mismatch'] : []),
     ...(protocolStatus === 'failed' ? ['protocol_check_failed'] : [])
   ]
+  const identityObservationCount = identity?.identityObservationCount ?? Number(currentLatest?.identity_observation_count ?? 0)
+  const identitySourceCount = identity?.independentSourceCount ?? Number(currentLatest?.independent_source_count ?? 0)
+  const pairedProbeCount = identity?.pairedProbeCount ?? Number(currentLatest?.paired_probe_count ?? 0)
   const identityCoverage = identity ? (Math.min(identity.identityObservationCount, 9) / 9) * 25 + (Math.min(identity.independentSourceCount, 3) / 3) * 25 : 0
   const tokenCoverage = window ? (Math.min(roundCount, 3) / 3) * 25 + (Math.min(sourceCount, 3) / 3) * 25 : 0
   const evidenceCoverage = Math.min(100, Math.round(identityCoverage + tokenCoverage))
@@ -488,14 +521,18 @@ async function refreshLatestResult(
     key.systemAccountId, key.accountId, key.requestedModel,
     identity?.identityStatus ?? representative?.identity_status ?? optionalText(currentLatest?.identity_status) ?? 'insufficient_evidence',
     mappingStatus, usage.status, protocolStatus, evidenceStatus, evidenceCoverage,
-    validSampleCount + Number(identity?.identityObservationCount ?? 0), roundCount,
-    Math.max(sourceCount, identity?.independentSourceCount ?? 0), identity?.identityObservationCount ?? 0, identity?.pairedProbeCount ?? 0,
+    validSampleCount + identityObservationCount, roundCount,
+    Math.max(sourceCount, identitySourceCount), identityObservationCount, pairedProbeCount,
     regression?.slope ?? null, regression?.intercept ?? null,
     interceptBaseline.looMedian ?? null, interceptBaseline.looMad ?? null,
     interceptBaseline.baselineVersion ?? null, interceptBaseline.baselineStatus,
-    interceptBaseline.strongGateEnabled ? 1 : 0, identity?.identityDistance ?? null,
-    identity?.pairedDistance ?? null, identity?.pairedBaselineMedian ?? null, identity?.pairedBaselineMad ?? null,
-    identity?.baselineVersion ?? null, identity?.baselineVersionStatus ?? null, identity?.featureVersion ?? null,
+    interceptBaseline.strongGateEnabled ? 1 : 0, identity?.identityDistance ?? optionalNumber(currentLatest?.identity_distance) ?? null,
+    identity?.pairedDistance ?? optionalNumber(currentLatest?.paired_distance) ?? null,
+    identity?.pairedBaselineMedian ?? optionalNumber(currentLatest?.paired_baseline_median) ?? null,
+    identity?.pairedBaselineMad ?? optionalNumber(currentLatest?.paired_baseline_mad) ?? null,
+    identity?.baselineVersion ?? optionalNumber(currentLatest?.baseline_version) ?? null,
+    identity?.baselineVersionStatus ?? optionalText(currentLatest?.baseline_version_status) ?? null,
+    identity?.featureVersion ?? optionalText(currentLatest?.feature_version) ?? null,
     window?.tokenizer_version ?? null, window?.probe_set_version ?? representative?.probe_set_version ?? null,
     JSON.stringify([...new Set(reasonCodes)]), lastObservedAt ?? null, nowIso()
   ])

@@ -365,15 +365,7 @@ export function acquireBackgroundJobLease(input: {
 }): boolean {
   const now = input.now ?? nowIso()
   const database = getStatsDatabase()
-  const existing = database.prepare(`
-    SELECT lease_until AS leaseUntil
-    FROM background_job_leases
-    WHERE lease_key = ?
-  `).get(input.leaseKey) as { leaseUntil?: string } | undefined
-  if (existing && existing.leaseUntil && existing.leaseUntil > now) {
-    return false
-  }
-  database.prepare(`
+  const result = database.prepare(`
     INSERT INTO background_job_leases (
       lease_key, job_name, shard_key, owner_id, run_id, lease_until, heartbeat_at, started_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -386,6 +378,7 @@ export function acquireBackgroundJobLease(input: {
       heartbeat_at = excluded.heartbeat_at,
       started_at = excluded.started_at,
       updated_at = excluded.updated_at
+    WHERE background_job_leases.lease_until <= ?
   `).run(
     input.leaseKey,
     input.jobName,
@@ -395,9 +388,10 @@ export function acquireBackgroundJobLease(input: {
     input.leaseUntil,
     now,
     now,
+    now,
     now
   )
-  return true
+  return result.changes > 0
 }
 
 function renewBackgroundJobLease(leaseKey: string, ownerId: string, leaseUntil: string, now: string): boolean {
@@ -430,18 +424,8 @@ export async function acquireBackgroundJobLeaseAsync(input: {
   if (runtimeConfig.databaseDriver !== 'postgres') return acquireBackgroundJobLease(input)
   const now = input.now ?? nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  return await client.transaction(async (tx) => {
-    const existing = await tx.one<{ lease_until?: string | null }>(`
-      SELECT lease_until
-      FROM ${backgroundTaskRunTable(tx, 'background_job_leases')}
-      WHERE lease_key = ?
-      FOR UPDATE
-    `, [input.leaseKey])
-    if (existing?.lease_until && existing.lease_until > now) {
-      return false
-    }
-    await tx.execute(`
-      INSERT INTO ${backgroundTaskRunTable(tx, 'background_job_leases')} (
+  const result = await client.execute(`
+      INSERT INTO ${backgroundTaskRunTable(client, 'background_job_leases')} (
         lease_key, job_name, shard_key, owner_id, run_id, lease_until, heartbeat_at, started_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(lease_key) DO UPDATE SET
@@ -453,6 +437,7 @@ export async function acquireBackgroundJobLeaseAsync(input: {
         heartbeat_at = excluded.heartbeat_at,
         started_at = excluded.started_at,
         updated_at = excluded.updated_at
+      WHERE background_job_leases.lease_until <= ?
     `, [
       input.leaseKey,
       input.jobName,
@@ -462,10 +447,10 @@ export async function acquireBackgroundJobLeaseAsync(input: {
       input.leaseUntil,
       now,
       now,
+      now,
       now
     ])
-    return true
-  })
+  return result.changes > 0
 }
 
 async function renewBackgroundJobLeaseAsync(leaseKey: string, ownerId: string, leaseUntil: string, now: string, client?: DatabaseClient): Promise<boolean> {

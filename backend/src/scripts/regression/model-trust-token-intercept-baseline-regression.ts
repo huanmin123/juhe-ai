@@ -66,6 +66,21 @@ database.prepare(`
     system_account_id, account_id, requested_model, reason_codes_json, updated_at
   ) VALUES (?, ?, ?, '[]', ?)
 `).run('sys_intercept', 'acct_intercept_9', scope.requestedModel, lastObservedAt)
+database.prepare(`
+  INSERT INTO model_token_integrity_windows (
+    system_account_id, account_id, requested_model, cohort_key_hmac, tokenizer_version, probe_set_version,
+    observation_count, valid_sample_count, round_count, sum_local, sum_reported, sum_local_squared,
+    sum_local_reported, sum_reported_squared, bucket_aligned_count, slope, intercept,
+    usage_integrity_status, first_observed_at, last_observed_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, 1, 1, 1, 1, 1, 0, NULL, NULL, 'unsupported', ?, ?, ?)
+`).run('sys_intercept', 'acct_intercept_empty', scope.requestedModel, scope.cohortKeyHmac,
+  scope.tokenizerVersion, scope.probeSetVersion, lastObservedAt, lastObservedAt, lastObservedAt)
+database.prepare(`
+  INSERT INTO model_account_trust_results (
+    system_account_id, account_id, requested_model, intercept_baseline_status,
+    reason_codes_json, updated_at
+  ) VALUES (?, ?, ?, 'calibration_pending', '["fixed_intercept_calibration_pending"]', ?)
+`).run('sys_intercept', 'acct_intercept_empty', scope.requestedModel, lastObservedAt)
 
 const contexts = await baseline.refreshTokenInterceptBaselines(countingClient, [scope])
 assert.equal(cohortScanCount, 1, '同一 cohort 每批只能加载一次固定截距来源快照')
@@ -118,6 +133,14 @@ assert.equal(rematerialized.usage_integrity_status, 'suspected_padding', '激活
 assert.equal(rematerialized.intercept_baseline_status, 'active')
 assert.equal(rematerialized.intercept_strong_gate_enabled, 1)
 assert(String(rematerialized.reason_codes_json).includes('fixed_intercept_padding'))
+const emptyInterceptLatest = database.prepare(`
+  SELECT usage_integrity_status, intercept_baseline_status, intercept_strong_gate_enabled, reason_codes_json
+  FROM model_account_trust_results WHERE account_id = 'acct_intercept_empty'
+`).get() as Record<string, unknown>
+assert.equal(emptyInterceptLatest.usage_integrity_status, 'unsupported')
+assert.equal(emptyInterceptLatest.intercept_baseline_status, 'active', '空 intercept 账号也必须清理旧基线状态')
+assert.equal(emptyInterceptLatest.intercept_strong_gate_enabled, 0)
+assert(!String(emptyInterceptLatest.reason_codes_json).includes('fixed_intercept_calibration_pending'))
 
 const stitchedScope = { ...scope, cohortKeyHmac: `hmac-sha256-v1:${'b'.repeat(64)}` }
 for (let index = 0; index < 10; index += 1) {

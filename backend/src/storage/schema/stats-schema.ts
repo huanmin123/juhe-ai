@@ -1192,6 +1192,8 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_cohort ON model_token_integrity_windows(cohort_key_hmac, requested_model, updated_at);
 
+    CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_activation ON model_token_integrity_windows(cohort_key_hmac, requested_model, tokenizer_version, probe_set_version, account_id);
+
     CREATE INDEX IF NOT EXISTS idx_model_token_integrity_rounds_account ON model_token_integrity_rounds(account_id, requested_model, updated_at);
 
     CREATE INDEX IF NOT EXISTS idx_model_token_intercept_baseline_active ON model_token_intercept_baseline_versions(cohort_key_hmac, requested_model, tokenizer_version, probe_set_version, version_status, baseline_version);

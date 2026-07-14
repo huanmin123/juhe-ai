@@ -2,6 +2,8 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
+import { activateModelTokenInterceptBaselineAsync } from '../../storage/model-trust.repository.js'
+import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
@@ -38,6 +40,35 @@ const modelCheckRunSchema = z.object({
   trustedComparison: z.boolean().optional(),
   trustedComparisonAccountId: z.string().trim().optional()
 }).strict()
+
+const tokenInterceptBaselineActivationSchema = z.object({
+  cohortKeyHmac: z.string().trim().regex(/^hmac-sha256-v1:[a-f0-9]{64}$/i, 'cohort key 格式无效'),
+  requestedModel: z.string().trim().min(1).max(200),
+  tokenizerVersion: z.string().trim().min(1).max(200),
+  probeSetVersion: z.string().trim().min(1).max(200),
+  baselineVersion: z.number().int().positive(),
+  strongThresholdIntercept: z.number().finite().nonnegative(),
+  calibrationNote: z.string().trim().min(1).max(500)
+}).strict()
+
+modelChecksRouter.post('/token-intercept-baselines/activate', requireAdmin, async (req, res, next) => {
+  const parsed = tokenInterceptBaselineActivationSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '固定截距基线激活参数无效'))
+    return
+  }
+  try {
+    await activateModelTokenInterceptBaselineAsync(parsed.data)
+    res.json(ok({ activated: true, baselineVersion: parsed.data.baselineVersion }))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '固定截距基线激活失败'
+    if (message.startsWith('固定截距')) {
+      res.status(409).json({ message })
+      return
+    }
+    next(error)
+  }
+})
 
 modelChecksRouter.get('/options', (req, res, next) => {
   try {

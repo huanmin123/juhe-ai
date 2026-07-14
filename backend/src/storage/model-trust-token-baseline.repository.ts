@@ -70,7 +70,8 @@ export async function refreshTokenInterceptBaselines(
 ): Promise<Map<string, TokenInterceptEvaluationContext>> {
   const contexts = new Map<string, TokenInterceptEvaluationContext>()
   for (const scope of uniqueScopes(scopes)) {
-    const snapshot = await loadSourceInterceptSnapshot(client, scope)
+    const snapshot = await loadSourceInterceptSnapshot(client, scope, false)
+    if (!snapshot) continue
     const sources = snapshot.sources
     if (sources.length) {
       const active = await findBaseline(client, scope, 'active')
@@ -164,7 +165,8 @@ export async function activateTokenInterceptBaselineVersion(client: DatabaseClie
       input.requestedModel, input.tokenizerVersion, input.probeSetVersion, input.baselineVersion
     ])
     if (activated.changes !== 1) throw new Error('固定截距基线激活冲突，请刷新后重试')
-    const snapshot = await loadSourceInterceptSnapshot(tx, input)
+    const snapshot = await loadSourceInterceptSnapshot(tx, input, true)
+    if (!snapshot) throw new Error('固定截距 cohort 超过单批聚合上限，需要离线分阶段重建')
     const active = await findBaseline(tx, input, 'active')
     if (!active) throw new Error('固定截距基线激活后读取失败')
     await rematerializeTokenInterceptLatest(tx, contextFor(input, active, snapshot))
@@ -218,7 +220,11 @@ async function findBaseline(client: DatabaseClient, scope: TokenInterceptScope, 
   `, [scope.cohortKeyHmac, scope.requestedModel, scope.tokenizerVersion, scope.probeSetVersion, status])
 }
 
-async function loadSourceInterceptSnapshot(client: DatabaseClient, scope: TokenInterceptScope): Promise<SourceSnapshot> {
+async function loadSourceInterceptSnapshot(
+  client: DatabaseClient,
+  scope: TokenInterceptScope,
+  failOnOverflow: boolean
+): Promise<SourceSnapshot | undefined> {
   const windows = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_windows')
   const sources = client.dialect.qualifyTable('juhe_stats', 'model_trust_window_sources')
   const rows = await client.query<SourceInterceptRow>(`
@@ -243,7 +249,10 @@ async function loadSourceInterceptSnapshot(client: DatabaseClient, scope: TokenI
     ORDER BY s.upstream_bucket_hmac, w.last_observed_at DESC
     LIMIT ${maximumBaselineRows + 1}
   `, [scope.cohortKeyHmac, scope.requestedModel, scope.tokenizerVersion, scope.probeSetVersion])
-  if (rows.length > maximumBaselineRows) throw new Error('固定截距 cohort 超过单批聚合上限，需要离线分阶段重建')
+  if (rows.length > maximumBaselineRows) {
+    if (failOnOverflow) throw new Error('固定截距 cohort 超过单批聚合上限，需要离线分阶段重建')
+    return undefined
+  }
   const bucketsByAccount = new Map<string, Set<string>>()
   const accountKeys = new Map<string, TokenInterceptAccountKey>()
   const byBucket = new Map<string, SourceInterceptRow[]>()
@@ -310,22 +319,41 @@ async function rematerializeTokenInterceptLatest(
     throw new Error('固定截距基线影响账户超过激活上限，需要离线分阶段重物化')
   }
   const updatedAt = new Date().toISOString()
+  const writes: unknown[][] = []
   for (const row of rows) {
-    if (row.intercept === null || !Number.isFinite(Number(row.intercept))) continue
-    const evaluation = evaluateTokenInterceptBaseline(context, {
-      systemAccountId: row.system_account_id,
-      accountId: row.account_id,
-      requestedModel: row.requested_model
-    }, Number(row.intercept))
+    const hasIntercept = row.intercept !== null && Number.isFinite(Number(row.intercept))
+    const evaluation = hasIntercept
+      ? evaluateTokenInterceptBaseline(context, {
+          systemAccountId: row.system_account_id,
+          accountId: row.account_id,
+          requestedModel: row.requested_model
+        }, Number(row.intercept))
+      : {
+          baselineVersion: Number(context.baseline?.baseline_version),
+          baselineStatus: 'active' as const,
+          evidenceStatus: context.baseline?.evidence_status ?? 'insufficient',
+          strongGateEnabled: false,
+          suspectedFixedPadding: false
+        }
     const reasonCodes = parseReasonCodes(row.reason_codes_json)
       .filter((code) => code !== 'fixed_intercept_padding' && code !== 'fixed_intercept_calibration_pending')
     if (evaluation.suspectedFixedPadding) reasonCodes.push('fixed_intercept_padding')
+    writes.push([
+      row.system_account_id, row.account_id, row.requested_model,
+      evaluation.suspectedFixedPadding ? 'suspected_padding' : row.usage_integrity_status,
+      evaluation.looMedian ?? null, evaluation.looMad ?? null, evaluation.baselineVersion ?? null,
+      evaluation.baselineStatus, evaluation.strongGateEnabled ? 1 : 0,
+      JSON.stringify([...new Set(reasonCodes)]), updatedAt
+    ])
+  }
+  for (const batch of chunks(writes, 50)) {
+    const values = batch.map(() => `(${Array.from({ length: 11 }, () => '?').join(', ')})`).join(', ')
     await client.execute(`
       INSERT INTO ${latest} (
         system_account_id, account_id, requested_model, usage_integrity_status,
         intercept_baseline_median, intercept_baseline_mad, intercept_baseline_version,
         intercept_baseline_status, intercept_strong_gate_enabled, reason_codes_json, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES ${values}
       ON CONFLICT (system_account_id, account_id, requested_model) DO UPDATE SET
         usage_integrity_status = excluded.usage_integrity_status,
         intercept_baseline_median = excluded.intercept_baseline_median,
@@ -335,14 +363,14 @@ async function rematerializeTokenInterceptLatest(
         intercept_strong_gate_enabled = excluded.intercept_strong_gate_enabled,
         reason_codes_json = excluded.reason_codes_json,
         updated_at = excluded.updated_at
-    `, [
-      row.system_account_id, row.account_id, row.requested_model,
-      evaluation.suspectedFixedPadding ? 'suspected_padding' : row.usage_integrity_status,
-      evaluation.looMedian ?? null, evaluation.looMad ?? null, evaluation.baselineVersion ?? null,
-      evaluation.baselineStatus, evaluation.strongGateEnabled ? 1 : 0,
-      JSON.stringify([...new Set(reasonCodes)]), updatedAt
-    ])
+    `, batch.flat())
   }
+}
+
+function chunks<T>(values: T[], size: number): T[][] {
+  const result: T[][] = []
+  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size))
+  return result
 }
 
 function tokenInterceptEvidence(sources: CollapsedSourceIntercept[]): { status: string; retainedSourceCount: number } {
