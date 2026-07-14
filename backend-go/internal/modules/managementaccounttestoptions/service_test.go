@@ -279,6 +279,29 @@ func TestServiceGetFiltersModelsWithoutIntersectingSupportedModelsAndPreservesOr
 	}
 }
 
+func TestServiceGetFiltersEligibleModelsWithoutEndpointModesFromResponse(t *testing.T) {
+	source := baseAccountTestOptionsSource()
+	service := serviceForOptions(source, map[string]any{
+		"supported_endpoint_modes": []any{"chat_json"},
+	}, []managementprovidermodels.ModelCatalogItem{
+		activeCatalogModel("model-default", "chat_completions"),
+		activeCatalogModel("responses-only", "responses"),
+		activeCatalogModel("another-chat-model", "chat_completions"),
+	})
+
+	got, found, err := service.Get(context.Background(), Input{AccountID: source.ID, SystemAccountID: "viewer"})
+	if err != nil || !found {
+		t.Fatalf("Get() found = %t, err = %v", found, err)
+	}
+	want := []ModelOption{
+		{Model: "model-default", SupportedAPIProtocols: []string{"chat_completions"}, TestEndpointModes: []string{"chat_json"}},
+		{Model: "another-chat-model", SupportedAPIProtocols: []string{"chat_completions"}, TestEndpointModes: []string{"chat_json"}},
+	}
+	if !reflect.DeepEqual(got.Models, want) {
+		t.Fatalf("models = %#v, want %#v", got.Models, want)
+	}
+}
+
 func TestServiceGetComputesPerModelModesWithAccountMappings(t *testing.T) {
 	source := baseAccountTestOptionsSource()
 	source.ProviderCode = "hybrid"
@@ -539,26 +562,26 @@ func TestServiceGetReturnsValidationErrorsForBusinessFailures(t *testing.T) {
 			name: "health check model unavailable",
 			source: func() port.ManagementAccountTestOptionsSource {
 				source := baseAccountTestOptionsSource()
-				source.HealthCheckModel = "  model-default\t"
-				return source
-			}(),
-			credentials: map[string]any{"supported_endpoint_modes": []any{"chat_json"}},
-			catalog:     []managementprovidermodels.ModelCatalogItem{activeCatalogModel("another-model", "chat_completions")},
-			wantMessage: "账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：model-default",
-		},
-		{
-			name: "default model has no generation endpoint mode",
-			source: func() port.ManagementAccountTestOptionsSource {
-				source := baseAccountTestOptionsSource()
 				source.ProviderCode = "anthropic"
 				source.ProtocolCode = "anthropic"
 				source.ProtocolVersion = "v1"
+				source.HealthCheckModel = "  model-default\t"
 				source.HealthCheckEndpointMode = "messages_json"
 				return source
 			}(),
 			credentials: map[string]any{"supported_endpoint_modes": []any{"message_token_counting"}},
-			catalog:     []managementprovidermodels.ModelCatalogItem{activeCatalogModel("model-default", "messages")},
+			catalog:     []managementprovidermodels.ModelCatalogItem{activeCatalogModel("another-model", "messages")},
 			wantMessage: "账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：model-default",
+		},
+		{
+			name:        "eligible default model without endpoint modes",
+			source:      baseAccountTestOptionsSource(),
+			credentials: map[string]any{"supported_endpoint_modes": []any{"chat_json"}},
+			catalog: []managementprovidermodels.ModelCatalogItem{
+				activeCatalogModel("model-default", "responses"),
+				activeCatalogModel("another-model", "chat_completions"),
+			},
+			wantMessage: "账户上游接口能力中没有可用于连接测试的请求形态",
 		},
 	}
 

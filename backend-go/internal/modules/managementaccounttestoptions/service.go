@@ -183,12 +183,12 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, bool, error) {
 	}
 
 	accountEndpointModes := accountManualTestEndpointModes(account, credentials)
-	models := make([]ModelOption, 0, len(catalog))
+	eligibleModels := make([]ModelOption, 0, len(catalog))
 	for _, item := range catalog {
 		if item.Status != "active" || !isAccountManualTestModel(item, account) {
 			continue
 		}
-		model := ModelOption{
+		eligibleModels = append(eligibleModels, ModelOption{
 			Model:                 item.Model,
 			SupportedAPIProtocols: append([]string{}, item.SupportedAPIProtocols...),
 			TestEndpointModes: accountManualTestEndpointModesForModel(
@@ -197,13 +197,9 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, bool, error) {
 				catalog,
 				accountEndpointModes,
 			),
-		}
-		if len(model.TestEndpointModes) == 0 {
-			continue
-		}
-		models = append(models, model)
+		})
 	}
-	defaultModel := findModel(models, healthCheckModel)
+	defaultModel := findModel(eligibleModels, healthCheckModel)
 	if defaultModel == nil {
 		return Result{}, false, &ValidationError{Message: "账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：" + healthCheckModel}
 	}
@@ -211,6 +207,13 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, bool, error) {
 	testEndpointModes := append([]string{}, defaultModel.TestEndpointModes...)
 	if len(testEndpointModes) == 0 {
 		return Result{}, false, &ValidationError{Message: "账户上游接口能力中没有可用于连接测试的请求形态"}
+	}
+
+	models := make([]ModelOption, 0, len(eligibleModels))
+	for _, model := range eligibleModels {
+		if len(model.TestEndpointModes) > 0 {
+			models = append(models, model)
+		}
 	}
 	return Result{
 		AccountID:               account.ID,

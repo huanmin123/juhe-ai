@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import type { AccountSummary } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-test-responses-contract-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -22,10 +23,13 @@ logger.level = 'silent'
 
 const seenResponsesPayloads: Record<string, unknown>[] = []
 const providerDefaultHealthCheckModel = 'gpt-5.6-sol'
+const responsesOnlyManualTestModel = 'account-test-responses-only-no-mode'
+const missingManualTestModel = 'account-test-missing-default'
 
 const [
   { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries },
   { accountManualTestOptionsAsync },
+  { saveCustomProviderModel },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
   databaseModule,
@@ -36,6 +40,7 @@ const [
 ] = await Promise.all([
   import('../../modules/accounts/account-test.service.js'),
   import('../../modules/accounts/account-test-options.service.js'),
+  import('../../modules/model-pricing/model-catalog.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../storage/database.js'),
@@ -61,6 +66,15 @@ try {
   const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
   assert(admin, '默认管理员不存在')
   const access = { systemAccountId: admin.id, role: 'admin' as const }
+  saveCustomProviderModel({
+    providerCode: 'gpt',
+    model: responsesOnlyManualTestModel,
+    scope: 'personal',
+    systemAccountId: admin.id,
+    status: 'active',
+    supportedApiProtocols: ['responses'],
+    actorSystemAccountId: admin.id
+  })
   const group = repositories.createGroup({
     name: '账户测试 Responses 当前契约分组',
     providerCode: 'gpt'
@@ -133,6 +147,47 @@ try {
   )
   assert.equal(manualTestOptions.defaultTestEndpointMode, 'responses_sse', 'GPT 账户默认测试应使用保存的 Responses 流式检查协议')
   assert.equal('credentials' in manualTestOptions, false, '人工测试选项不得暴露账户凭据')
+
+  const chatOnlyManualTestAccount: AccountSummary = {
+    ...fullAccountForManualTest!,
+    credentials: {
+      ...fullAccountForManualTest!.credentials,
+      supported_endpoint_modes: ['chat_json']
+    }
+  }
+  const chatOnlyManualTestOptions = await accountManualTestOptionsAsync(chatOnlyManualTestAccount)
+  assert.equal(
+    chatOnlyManualTestOptions.models.some((item) => item.model === responsesOnlyManualTestModel),
+    false,
+    '人工测试响应 models 仍应过滤账户能力下没有可用 endpoint mode 的模型'
+  )
+  await assert.rejects(
+    () => accountManualTestOptionsAsync({
+      ...chatOnlyManualTestAccount,
+      healthCheckModel: responsesOnlyManualTestModel
+    }),
+    (error: unknown) => {
+      assert(error instanceof Error)
+      assert.equal(error.message, '账户上游接口能力中没有可用于连接测试的请求形态')
+      return true
+    },
+    'active 且可人工测试的默认模型存在但没有可用 endpoint mode 时应优先返回能力错误'
+  )
+  await assert.rejects(
+    () => accountManualTestOptionsAsync({
+      ...chatOnlyManualTestAccount,
+      healthCheckModel: missingManualTestModel
+    }),
+    (error: unknown) => {
+      assert(error instanceof Error)
+      assert.equal(
+        error.message,
+        `账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：${missingManualTestModel}`
+      )
+      return true
+    },
+    '默认模型不在 active 且可人工测试目录中时应保持目录错误'
+  )
 
   assert.equal(account.healthCheckModel, providerDefaultHealthCheckModel, '新账户应按协议档案系统默认值初始化检查模型')
   assert.equal(await resolveAccountTestModelAsync(account), providerDefaultHealthCheckModel, '系统复测应严格使用已保存的账户检查模型')
@@ -342,7 +397,7 @@ try {
   assert.equal(systemFallbackAccount.healthCheckModel, providerDefaultHealthCheckModel, '显式检查模型应按账户支持模型保存')
   assert.equal(systemFallbackTested.model, providerDefaultHealthCheckModel, '系统复测应使用账户已保存的系统默认初始化值')
 
-  console.log('账户测试 Responses 当前契约回归通过：人工显式模型不持久化，系统复测严格使用账户检查模型，初始化优先级和模型映射符合预期')
+  console.log('账户测试 Responses 当前契约回归通过：人工显式模型不持久化，系统复测严格使用账户检查模型，初始化优先级、模型映射、人工测试选项错误优先级与响应过滤符合预期')
 } finally {
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)
