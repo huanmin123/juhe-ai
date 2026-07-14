@@ -371,7 +371,7 @@
     "test:retry-queue-linear-scan": "tsx src/scripts/regression/retry-queue-linear-scan-regression.ts",
     "test:retry-queue-concurrency-limit": "tsx src/scripts/regression/retry-queue-concurrency-limit-regression.ts",
     "test:retry-queue-priority": "tsx src/scripts/regression/retry-queue-priority-regression.ts",
-    "test:service-tier-billing": "tsx src/scripts/regression/service-tier-billing-regression.ts",
+    "test:service-tier-billing": "tsx src/scripts/regression/service-tier-billing-runner.ts",
     "test:record-maintenance-index-guard": "tsx src/scripts/regression/record-maintenance-index-guard-regression.ts",
     "test:runtime-state-cache-driver": "tsx src/scripts/regression/runtime-state-cache-driver-regression.ts",
     "test:runtime-state-cache-redis": "tsx src/scripts/regression/runtime-state-cache-redis-regression.ts",

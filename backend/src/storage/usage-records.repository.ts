@@ -71,10 +71,10 @@ export interface UsageRecordSummary {
   model?: string
   upstreamModel?: string
   pricingModel?: string
-  requestedServiceTier?: 'default' | 'priority' | 'flex'
-  effectiveServiceTier?: 'default' | 'priority' | 'flex'
-  reportedServiceTier?: 'default' | 'priority' | 'flex'
-  billedServiceTier?: 'default' | 'priority' | 'flex'
+  requestedServiceTier?: string
+  effectiveServiceTier?: string
+  reportedServiceTier?: string
+  billedServiceTier?: string
   requestedReasoningEffort?: UsageReasoningEffort
   effectiveReasoningEffort?: UsageReasoningEffort
   pricingSnapshot?: ProviderCostBreakdown
@@ -165,15 +165,13 @@ export interface UsageRecordInput {
   model?: string
   upstreamModel?: string
   pricingModel?: string
-  requestedServiceTier?: 'default' | 'priority' | 'flex'
-  effectiveServiceTier?: 'default' | 'priority' | 'flex'
-  reportedServiceTier?: 'default' | 'priority' | 'flex'
-  billedServiceTier?: 'default' | 'priority' | 'flex'
+  requestedServiceTier?: string
+  effectiveServiceTier?: string
+  reportedServiceTier?: string
+  billedServiceTier?: string
   requestedReasoningEffort?: UsageReasoningEffort
   effectiveReasoningEffort?: UsageReasoningEffort
   pricingSnapshot?: ProviderCostBreakdown
-  priorityPriceMultiplier?: number
-  flexPriceMultiplier?: number
   modelMappingApplied?: boolean
   modelMappingSource?: string
   sourceEndpointFamily?: string
@@ -517,8 +515,6 @@ async function enrichSingleUsageRecordPricingAsync(
         systemAccountId: catalogSystemAccountId,
         model: costModel,
         serviceTier: enriched.billedServiceTier,
-        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
-        flexPriceMultiplier: enriched.flexPriceMultiplier,
         cacheReadTokens: enriched.cacheReadTokens
       })
     }
@@ -532,8 +528,6 @@ async function enrichSingleUsageRecordPricingAsync(
         systemAccountId: catalogSystemAccountId,
         model: costModel,
         serviceTier: enriched.billedServiceTier,
-        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
-        flexPriceMultiplier: enriched.flexPriceMultiplier,
         cacheWriteTokens: enriched.cacheWriteTokens,
         cacheWrite1hTokens: enriched.cacheWrite1hTokens
       })
@@ -545,8 +539,6 @@ async function enrichSingleUsageRecordPricingAsync(
         systemAccountId: catalogSystemAccountId,
         model: costModel,
         serviceTier: enriched.billedServiceTier,
-        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
-        flexPriceMultiplier: enriched.flexPriceMultiplier,
         inputTokens: enriched.inputTokens,
         outputTokens: enriched.outputTokens,
         cacheReadTokens: enriched.cacheReadTokens,
@@ -567,8 +559,6 @@ async function enrichSingleUsageRecordPricingAsync(
         systemAccountId: catalogSystemAccountId,
         model: costModel,
         serviceTier: enriched.billedServiceTier,
-        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
-        flexPriceMultiplier: enriched.flexPriceMultiplier,
         inputTokens: enriched.inputTokens,
         outputTokens: enriched.outputTokens,
         cacheReadTokens: enriched.cacheReadTokens,
@@ -653,8 +643,6 @@ function usageRecordPricingSnapshotForWrite(input: UsageRecordInput): ProviderCo
           systemAccountId: input.accountOwnerSystemAccountId || input.systemAccountId,
           model,
           serviceTier: input.billedServiceTier ?? input.reportedServiceTier ?? input.effectiveServiceTier ?? input.requestedServiceTier,
-          priorityPriceMultiplier: input.priorityPriceMultiplier,
-          flexPriceMultiplier: input.flexPriceMultiplier,
           inputTokens: input.inputTokens,
           outputTokens: input.outputTokens,
           cacheReadTokens: input.cacheReadTokens,

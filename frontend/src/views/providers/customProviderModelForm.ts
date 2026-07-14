@@ -2,6 +2,7 @@ import type {
   ProviderModelApiProtocol,
   ProviderModelMode,
   ProviderModelPricing,
+  ProviderModelPriceSet,
   ProviderModelReasoningEffort,
   ProviderModelServiceTier,
   CustomProviderModelScope,
@@ -37,6 +38,8 @@ export interface CustomModelForm {
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
+  cacheWrite1hUsdPer1M?: number
+  serviceTierPrices: Record<string, ProviderModelPriceSet>
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
@@ -51,7 +54,8 @@ export const emptyCustomModelForm: CustomModelForm = {
   mode: 'text',
   supportedApiProtocols: ['responses', 'chat_completions'],
   supportedServiceTiers: [],
-  supportedReasoningEfforts: []
+  supportedReasoningEfforts: [],
+  serviceTierPrices: {}
 }
 
 export function createCustomModelFormFromPricing(
@@ -79,6 +83,8 @@ export function createCustomModelFormFromPricing(
     outputUsdPer1M: record.outputUsdPer1M,
     cachedInputUsdPer1M: record.cachedInputUsdPer1M,
     cacheWriteUsdPer1M: record.cacheWriteUsdPer1M,
+    cacheWrite1hUsdPer1M: record.cacheWrite1hUsdPer1M,
+    serviceTierPrices: cloneServiceTierPrices(record.serviceTierPrices),
     imageInputUsdPer1M: record.imageInputUsdPer1M,
     imageOutputUsdPer1M: record.imageOutputUsdPer1M,
     audioInputUsdPer1M: record.audioInputUsdPer1M,
@@ -88,9 +94,6 @@ export function createCustomModelFormFromPricing(
 
   const category = categoryFromModeOrModel(form.mode, form.model)
   clearCustomModelPricesOutsideCategory(form, category)
-  if (record.pricingModel) {
-    applyPricingTemplateToCustomModelForm(form, providerModels, record.pricingModel)
-  }
   return form
 }
 
@@ -107,11 +110,11 @@ export function buildCustomModelPayload(
     status: form.status,
     mode: form.mode,
     supportedApiProtocols: [...form.supportedApiProtocols],
-    pricingModel: null,
     releaseDate: trimToNull(form.releaseDate),
     shutdownDate: trimToNull(form.shutdownDate),
     contextWindowTokens: numberToNull(form.contextWindowTokens),
     maxOutputTokens: numberToNull(form.maxOutputTokens),
+    serviceTierPrices: cloneServiceTierPrices(form.serviceTierPrices),
     ...buildCustomModelDirectPricePayload(form, category)
   }
   if (options.includeRequestCapabilities) {
@@ -160,6 +163,11 @@ export function applyPricingTemplateToCustomModelForm(
   for (const field of directPriceFieldKeys) {
     form[field] = visibleFields.has(field) ? template[field] : undefined
   }
+  form.serviceTierPrices = cloneServiceTierPrices(template.serviceTierPrices)
+}
+
+function cloneServiceTierPrices(value?: Record<string, ProviderModelPriceSet>): Record<string, ProviderModelPriceSet> {
+  return Object.fromEntries(Object.entries(value ?? {}).map(([tier, prices]) => [tier, { ...prices }]))
 }
 
 export function clearCustomModelPricesOutsideCategory(form: CustomModelForm, category: ModelCategoryKey): void {

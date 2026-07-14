@@ -108,7 +108,7 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 		catalog: []port.ManagementProviderModelCatalogItem{
 			{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &basePrice},
 			{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "global", Status: "active", Source: "custom-global", InputUSDPer1M: &basePrice},
-			{ProviderCode: "gpt", Model: "gpt-alias", Scope: "personal", SystemAccountID: "sys_user", Status: "active", Source: "custom-personal", PricingModel: "gpt-5.5"},
+			{ProviderCode: "gpt", Model: "gpt-alias", Scope: "personal", SystemAccountID: "sys_user", Status: "active", Source: "custom-personal", InputUSDPer1M: &basePrice},
 			{ProviderCode: "gpt", Model: "draft-model", Scope: "personal", Status: "draft", Source: "custom-personal"},
 			{ProviderCode: "gpt", Model: "unpriced-model", Scope: "global", Status: "active", Source: "custom-global"},
 		},
@@ -129,7 +129,7 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 		t.Fatalf("models = %+v, want priced base and alias", models)
 	}
 	alias := findModelCatalogItem(models, "gpt-alias")
-	if alias == nil || alias.Scope != "personal" || alias.Source != "custom-personal" || alias.PricingModel != "gpt-5.5" {
+	if alias == nil || alias.Scope != "personal" || alias.Source != "custom-personal" || alias.InputUSDPer1M == nil {
 		t.Fatalf("alias model = %+v", alias)
 	}
 	if !store.catalogInput.IncludeInactive || store.catalogInput.SystemAccountID != "sys_user" {
@@ -140,35 +140,27 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 	priorityInput := 10.0
 	priorityOutput := 60.0
-	priorityCachedInput := 1.0
-	priorityCacheWrite := 12.5
 	flexInput := 2.5
 	flexOutput := 15.0
-	flexCachedInput := 0.25
-	flexCacheWrite := 3.125
 	longContextThreshold := 272000
 	longContextInputMultiplier := 2.0
 	longContextOutputMultiplier := 1.5
 	builtIn := catalogItemFromPort(port.ManagementProviderModelCatalogItem{
-		ProviderCode:                    "gpt",
-		Model:                           "gpt-5.6-sol",
-		Scope:                           "built_in",
-		Status:                          "active",
-		SupportedServiceTiers:           []string{"priority", "priority"},
-		SupportedReasoningEfforts:       []string{"low", "high", "high", "max"},
-		DefaultReasoningEffort:          " high ",
-		CodexSupportedReasoningLevels:   []string{"low", "high", "ultra", "ultra"},
-		CodexDefaultReasoningLevel:      " low ",
-		CodexMultiAgentVersion:          " v2 ",
-		SupportsServiceTier:             false,
-		PriorityInputUSDPer1M:           &priorityInput,
-		PriorityOutputUSDPer1M:          &priorityOutput,
-		PriorityCachedInputUSDPer1M:     &priorityCachedInput,
-		PriorityCacheWriteUSDPer1M:      &priorityCacheWrite,
-		FlexInputUSDPer1M:               &flexInput,
-		FlexOutputUSDPer1M:              &flexOutput,
-		FlexCachedInputUSDPer1M:         &flexCachedInput,
-		FlexCacheWriteUSDPer1M:          &flexCacheWrite,
+		ProviderCode:                  "gpt",
+		Model:                         "gpt-5.6-sol",
+		Scope:                         "built_in",
+		Status:                        "active",
+		SupportedServiceTiers:         []string{"priority", "priority"},
+		SupportedReasoningEfforts:     []string{"low", "high", "high", "max"},
+		DefaultReasoningEffort:        " high ",
+		CodexSupportedReasoningLevels: []string{"low", "high", "ultra", "ultra"},
+		CodexDefaultReasoningLevel:    " low ",
+		CodexMultiAgentVersion:        " v2 ",
+		SupportsServiceTier:           false,
+		ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+			"priority": {InputUSDPer1M: &priorityInput, OutputUSDPer1M: &priorityOutput},
+			"flex":     {InputUSDPer1M: &flexInput, OutputUSDPer1M: &flexOutput},
+		},
 		LongContextInputTokenThreshold:  &longContextThreshold,
 		LongContextInputCostMultiplier:  &longContextInputMultiplier,
 		LongContextOutputCostMultiplier: &longContextOutputMultiplier,
@@ -184,16 +176,10 @@ func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 		builtIn.CodexMultiAgentVersion != "v2" {
 		t.Fatalf("built-in Codex capabilities = %+v", builtIn)
 	}
-	if builtIn.PriorityInputUSDPer1M == nil || *builtIn.PriorityInputUSDPer1M != 10 ||
-		builtIn.PriorityOutputUSDPer1M == nil || *builtIn.PriorityOutputUSDPer1M != 60 ||
-		builtIn.PriorityCachedInputUSDPer1M == nil || *builtIn.PriorityCachedInputUSDPer1M != 1 ||
-		builtIn.PriorityCacheWriteUSDPer1M == nil || *builtIn.PriorityCacheWriteUSDPer1M != 12.5 ||
-		builtIn.PriorityCacheWrite1hUSDPer1M != nil ||
-		builtIn.FlexInputUSDPer1M == nil || *builtIn.FlexInputUSDPer1M != 2.5 ||
-		builtIn.FlexOutputUSDPer1M == nil || *builtIn.FlexOutputUSDPer1M != 15 ||
-		builtIn.FlexCachedInputUSDPer1M == nil || *builtIn.FlexCachedInputUSDPer1M != 0.25 ||
-		builtIn.FlexCacheWriteUSDPer1M == nil || *builtIn.FlexCacheWriteUSDPer1M != 3.125 ||
-		builtIn.FlexCacheWrite1hUSDPer1M != nil {
+	if builtIn.ServiceTierPrices["priority"].InputUSDPer1M == nil || *builtIn.ServiceTierPrices["priority"].InputUSDPer1M != 10 ||
+		builtIn.ServiceTierPrices["priority"].OutputUSDPer1M == nil || *builtIn.ServiceTierPrices["priority"].OutputUSDPer1M != 60 ||
+		builtIn.ServiceTierPrices["flex"].InputUSDPer1M == nil || *builtIn.ServiceTierPrices["flex"].InputUSDPer1M != 2.5 ||
+		builtIn.ServiceTierPrices["flex"].OutputUSDPer1M == nil || *builtIn.ServiceTierPrices["flex"].OutputUSDPer1M != 15 {
 		t.Fatalf("built-in tier pricing metadata = %+v", builtIn)
 	}
 	if builtIn.LongContextInputTokenThreshold == nil || *builtIn.LongContextInputTokenThreshold != 272000 ||
@@ -822,16 +808,12 @@ func TestServiceCreateCustomModelPrioritizesGlobalForbiddenBeforeCapabilityValid
 	}
 }
 
-func TestServiceCreateCustomModelValidatesPricingModel(t *testing.T) {
+func TestServiceCreateCustomModelRequiresOwnPriceWhenActive(t *testing.T) {
 	price := 2.0
 	store := &providerModelStoreStub{
 		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
-		catalog: []port.ManagementProviderModelCatalogItem{
-			{ProviderCode: "gpt", Model: "base-model", Scope: "built_in", Status: "active", InputUSDPer1M: &price},
-			{ProviderCode: "gpt", Model: "alias-model", Scope: "global", Status: "active", PricingModel: "base-model"},
-		},
 	}
-	service := NewServiceWithOptions(ServiceOptions{Store: store, NewID: func(prefix string) string { return prefix + "_pricing" }})
+	service := NewServiceWithOptions(ServiceOptions{Store: store, NewID: func(prefix string) string { return prefix + "_price" }})
 
 	_, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
 		ProviderCode:          "gpt",
@@ -839,13 +821,13 @@ func TestServiceCreateCustomModelValidatesPricingModel(t *testing.T) {
 		ActorRole:             "admin",
 		TargetSystemAccountID: "sys_user",
 		Fields: CustomModelMutation{
-			Model:        OptionalString{Set: true, Value: "custom-alias"},
-			PricingModel: OptionalString{Set: true, Value: "alias-model"},
+			Model:  OptionalString{Set: true, Value: "custom-unpriced"},
+			Status: OptionalString{Set: true, Value: "active"},
 		},
 	})
 	message, ok := CustomModelValidationMessage(err)
-	if !ok || message != "pricingModel 只能指向有直接价格的模型，不能递归指向另一个 pricingModel" {
-		t.Fatalf("recursive pricing message = %q, %v; err = %v", message, ok, err)
+	if !ok || message != "启用的自定义模型必须配置价格" {
+		t.Fatalf("missing pricing message = %q, %v; err = %v", message, ok, err)
 	}
 
 	result, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
@@ -854,15 +836,17 @@ func TestServiceCreateCustomModelValidatesPricingModel(t *testing.T) {
 		ActorRole:             "admin",
 		TargetSystemAccountID: "sys_user",
 		Fields: CustomModelMutation{
-			Model:        OptionalString{Set: true, Value: "custom-alias"},
-			PricingModel: OptionalString{Set: true, Value: "base-model"},
+			Model:                 OptionalString{Set: true, Value: "custom-tier-priced"},
+			Status:                OptionalString{Set: true, Value: "active"},
+			ServiceTierPrices:     OptionalProviderModelPriceMap{Set: true, Value: map[string]port.ManagementProviderModelPriceSet{"priority": {InputUSDPer1M: &price}}},
+			SupportedServiceTiers: OptionalStringList{Set: true, Value: []string{"priority"}},
 		},
 	})
 	if err != nil {
-		t.Fatalf("CreateCustomModel() with pricing model error = %v", err)
+		t.Fatalf("CreateCustomModel() with tier price error = %v", err)
 	}
-	if result.PricingModel != "base-model" || store.saveInput.PricingModel != "base-model" {
-		t.Fatalf("pricing model result=%+v save=%+v", result, store.saveInput)
+	if result.ServiceTierPrices["priority"].InputUSDPer1M == nil || *result.ServiceTierPrices["priority"].InputUSDPer1M != price {
+		t.Fatalf("tier pricing result=%+v save=%+v", result, store.saveInput)
 	}
 }
 
@@ -1215,6 +1199,21 @@ type providerModelStoreStub struct {
 	clearSystemErr         error
 }
 
+func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput) (bool, error) {
+	for index := range s.catalog {
+		if s.catalog[index].ID == input.ID && s.catalog[index].ProviderCode == input.ProviderCode {
+			s.catalog[index].InputUSDPer1M = cloneFloatPtr(input.InputUSDPer1M)
+			s.catalog[index].OutputUSDPer1M = cloneFloatPtr(input.OutputUSDPer1M)
+			s.catalog[index].CachedInputUSDPer1M = cloneFloatPtr(input.CachedInputUSDPer1M)
+			s.catalog[index].CacheWriteUSDPer1M = cloneFloatPtr(input.CacheWriteUSDPer1M)
+			s.catalog[index].CacheWrite1hUSDPer1M = cloneFloatPtr(input.CacheWrite1hUSDPer1M)
+			s.catalog[index].ServiceTierPrices = cloneProviderModelPriceMap(input.ServiceTierPrices)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *providerModelStoreStub) FindManagementProviderModelProvider(_ context.Context, code string) (port.ManagementProviderModelProvider, bool, error) {
 	provider, ok := s.providers[code]
 	return provider, ok, nil
@@ -1317,13 +1316,14 @@ func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Con
 		SupportedServiceTiers:     append([]string(nil), input.SupportedServiceTiers...),
 		SupportedReasoningEfforts: append([]string(nil), input.SupportedReasoningEfforts...),
 		DefaultReasoningEffort:    input.DefaultReasoningEffort,
-		PricingModel:              input.PricingModel,
 		ContextWindowTokens:       input.ContextWindowTokens,
 		MaxOutputTokens:           input.MaxOutputTokens,
 		InputUSDPer1M:             input.InputUSDPer1M,
 		OutputUSDPer1M:            input.OutputUSDPer1M,
 		CachedInputUSDPer1M:       input.CachedInputUSDPer1M,
 		CacheWriteUSDPer1M:        input.CacheWriteUSDPer1M,
+		CacheWrite1hUSDPer1M:      input.CacheWrite1hUSDPer1M,
+		ServiceTierPrices:         cloneProviderModelPriceMap(input.ServiceTierPrices),
 		ImageInputUSDPer1M:        input.ImageInputUSDPer1M,
 		ImageOutputUSDPer1M:       input.ImageOutputUSDPer1M,
 		AudioInputUSDPer1M:        input.AudioInputUSDPer1M,

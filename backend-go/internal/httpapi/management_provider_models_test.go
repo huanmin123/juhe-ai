@@ -12,8 +12,10 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"juhe-ai/backend-go/internal/config"
+	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestManagementProviderModelOptionsHandlerParsesScopeAndProtocol(t *testing.T) {
@@ -89,25 +91,21 @@ func TestManagementProviderModelsHandlerParsesQueryAndProvider(t *testing.T) {
 	longContextOutputMultiplier := 1.5
 	service := &managementProviderModelServiceStub{
 		models: []managementprovidermodels.ModelCatalogItem{{
-			ProviderCode:                    "gpt",
-			Model:                           "gpt-5.6-sol",
-			Scope:                           "built_in",
-			Status:                          "active",
-			SupportedServiceTiers:           []string{"priority"},
-			SupportedReasoningEfforts:       []string{"low", "high", "max"},
-			DefaultReasoningEffort:          "high",
-			CodexSupportedReasoningLevels:   []string{"low", "high", "ultra"},
-			CodexDefaultReasoningLevel:      "low",
-			CodexMultiAgentVersion:          "v2",
-			SupportsServiceTier:             true,
-			PriorityInputUSDPer1M:           &priorityInput,
-			PriorityOutputUSDPer1M:          &priorityOutput,
-			PriorityCachedInputUSDPer1M:     &priorityCachedInput,
-			PriorityCacheWriteUSDPer1M:      &priorityCacheWrite,
-			FlexInputUSDPer1M:               &flexInput,
-			FlexOutputUSDPer1M:              &flexOutput,
-			FlexCachedInputUSDPer1M:         &flexCachedInput,
-			FlexCacheWriteUSDPer1M:          &flexCacheWrite,
+			ProviderCode:                  "gpt",
+			Model:                         "gpt-5.6-sol",
+			Scope:                         "built_in",
+			Status:                        "active",
+			SupportedServiceTiers:         []string{"priority"},
+			SupportedReasoningEfforts:     []string{"low", "high", "max"},
+			DefaultReasoningEffort:        "high",
+			CodexSupportedReasoningLevels: []string{"low", "high", "ultra"},
+			CodexDefaultReasoningLevel:    "low",
+			CodexMultiAgentVersion:        "v2",
+			SupportsServiceTier:           true,
+			ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+				"priority": {InputUSDPer1M: &priorityInput, OutputUSDPer1M: &priorityOutput, CachedInputUSDPer1M: &priorityCachedInput, CacheWriteUSDPer1M: &priorityCacheWrite},
+				"flex":     {InputUSDPer1M: &flexInput, OutputUSDPer1M: &flexOutput, CachedInputUSDPer1M: &flexCachedInput, CacheWriteUSDPer1M: &flexCacheWrite},
+			},
 			LongContextInputTokenThreshold:  &longContextThreshold,
 			LongContextInputCostMultiplier:  &longContextInputMultiplier,
 			LongContextOutputCostMultiplier: &longContextOutputMultiplier,
@@ -146,16 +144,8 @@ func TestManagementProviderModelsHandlerParsesQueryAndProvider(t *testing.T) {
 		body.Data[0].CodexDefaultReasoningLevel != "low" ||
 		body.Data[0].CodexMultiAgentVersion != "v2" ||
 		!body.Data[0].SupportsServiceTier ||
-		body.Data[0].PriorityInputUSDPer1M == nil || *body.Data[0].PriorityInputUSDPer1M != 10 ||
-		body.Data[0].PriorityOutputUSDPer1M == nil || *body.Data[0].PriorityOutputUSDPer1M != 60 ||
-		body.Data[0].PriorityCachedInputUSDPer1M == nil || *body.Data[0].PriorityCachedInputUSDPer1M != 1 ||
-		body.Data[0].PriorityCacheWriteUSDPer1M == nil || *body.Data[0].PriorityCacheWriteUSDPer1M != 12.5 ||
-		body.Data[0].PriorityCacheWrite1hUSDPer1M != nil ||
-		body.Data[0].FlexInputUSDPer1M == nil || *body.Data[0].FlexInputUSDPer1M != 2.5 ||
-		body.Data[0].FlexOutputUSDPer1M == nil || *body.Data[0].FlexOutputUSDPer1M != 15 ||
-		body.Data[0].FlexCachedInputUSDPer1M == nil || *body.Data[0].FlexCachedInputUSDPer1M != 0.25 ||
-		body.Data[0].FlexCacheWriteUSDPer1M == nil || *body.Data[0].FlexCacheWriteUSDPer1M != 3.125 ||
-		body.Data[0].FlexCacheWrite1hUSDPer1M != nil ||
+		body.Data[0].ServiceTierPrices["priority"].InputUSDPer1M == nil || *body.Data[0].ServiceTierPrices["priority"].InputUSDPer1M != 10 ||
+		body.Data[0].ServiceTierPrices["flex"].InputUSDPer1M == nil || *body.Data[0].ServiceTierPrices["flex"].InputUSDPer1M != 2.5 ||
 		body.Data[0].LongContextInputTokenThreshold == nil || *body.Data[0].LongContextInputTokenThreshold != 272000 ||
 		body.Data[0].LongContextInputCostMultiplier == nil || *body.Data[0].LongContextInputCostMultiplier != 2 ||
 		body.Data[0].LongContextOutputCostMultiplier == nil || *body.Data[0].LongContextOutputCostMultiplier != 1.5 {
@@ -163,14 +153,10 @@ func TestManagementProviderModelsHandlerParsesQueryAndProvider(t *testing.T) {
 	}
 	responseJSON := string(responseBytes)
 	for _, field := range []string{
-		`"priorityInputUsdPer1M":10`,
-		`"priorityOutputUsdPer1M":60`,
-		`"priorityCachedInputUsdPer1M":1`,
-		`"priorityCacheWriteUsdPer1M":12.5`,
-		`"flexInputUsdPer1M":2.5`,
-		`"flexOutputUsdPer1M":15`,
-		`"flexCachedInputUsdPer1M":0.25`,
-		`"flexCacheWriteUsdPer1M":3.125`,
+		`"serviceTierPrices":{"flex"`,
+		`"inputUsdPer1M":2.5`,
+		`"priority"`,
+		`"outputUsdPer1M":60`,
 		`"longContextInputTokenThreshold":272000`,
 		`"longContextInputCostMultiplier":2`,
 		`"longContextOutputCostMultiplier":1.5`,
@@ -179,7 +165,7 @@ func TestManagementProviderModelsHandlerParsesQueryAndProvider(t *testing.T) {
 			t.Fatalf("response JSON missing %s: %s", field, responseJSON)
 		}
 	}
-	for _, field := range []string{"priorityCacheWrite1hUsdPer1M", "flexCacheWrite1hUsdPer1M"} {
+	for _, field := range []string{"priorityInputUsdPer1M", "flexInputUsdPer1M"} {
 		if strings.Contains(responseJSON, field) {
 			t.Fatalf("response JSON must omit undefined Node metadata field %s: %s", field, responseJSON)
 		}
@@ -431,6 +417,46 @@ func TestManagementProviderCustomModelUpdateHandlerParsesCapabilityClears(t *tes
 	}
 	if levels, ok := data["codexSupportedReasoningLevels"].([]any); !ok || len(levels) != 0 {
 		t.Fatalf("codexSupportedReasoningLevels = %#v", data["codexSupportedReasoningLevels"])
+	}
+}
+
+func TestManagementProviderBuiltInModelPriceUpdateEnqueuesOperationLog(t *testing.T) {
+	inputPrice := 4.0
+	queueStub := &operationLogQueueStub{}
+	service := &managementProviderModelServiceStub{customModelResult: managementprovidermodels.ModelCatalogItem{
+		ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "active",
+		InputUSDPer1M: &inputPrice,
+	}}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", DisplayName: "管理员", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementProviderCustomModelUpdateHandler(service, newManagementOperationLogOptions(ManagementOperationLogOptions{
+		Client:   queueStub,
+		NewLogID: func() string { return "oplog_provider_model_price" },
+	})))
+
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/provider_model_gpt_test", strings.NewReader(`{"inputUsdPer1M":4}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if queueStub.calls != 1 {
+		t.Fatalf("operation log calls = %d, want 1", queueStub.calls)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("decode operation log: %v", err)
+	}
+	if logInput.OperationKey != "providers.models.update_prices" || logInput.ResourceID != "provider_model_gpt_test" || len(logInput.Changes) != 1 {
+		t.Fatalf("operation log = %+v", logInput)
+	}
+	encodedPrices, ok := logInput.Changes[0].After.(string)
+	if !ok {
+		t.Fatalf("price change = %#v", logInput.Changes[0].After)
+	}
+	var prices map[string]any
+	if err := json.Unmarshal([]byte(encodedPrices), &prices); err != nil || prices["inputUsdPer1M"] != inputPrice {
+		t.Fatalf("price change = %#v, decode error = %v", logInput.Changes[0].After, err)
 	}
 }
 

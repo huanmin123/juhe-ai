@@ -77,7 +77,7 @@ try {
       maxOutputTokens: 8192
     }
   } as unknown as Request
-  assert.equal(estimateGatewayRequestCostUsd(unpricedRequest, 'gpt'), undefined, '无定价模型不能伪造在途成本')
+  assert.equal(await estimateGatewayRequestCostUsd(unpricedRequest, 'gpt'), undefined, '无定价模型不能伪造在途成本')
 
   console.log('API Key 在途额度回归通过：并发原子预留、快照合并与延迟释放符合预期')
 } finally {
