@@ -10,6 +10,29 @@ import {
   providerModelCatalogSnapshotSQL
 } from './generate-provider-model-catalog.js'
 
+const lfSnapshotFixture = 'catalog-model-a\ncatalog-model-b\n'
+const crlfSnapshotFixture = lfSnapshotFixture.replace(/\n/g, '\r\n')
+assert.equal(
+  normalizeSnapshotLineEndings(crlfSnapshotFixture),
+  normalizeSnapshotLineEndings(lfSnapshotFixture),
+  'snapshot comparison must treat LF and CRLF as equivalent'
+)
+assert.notEqual(
+  normalizeSnapshotLineEndings(lfSnapshotFixture.replace('catalog-model-b', 'catalog-model-c')),
+  normalizeSnapshotLineEndings(lfSnapshotFixture),
+  'snapshot comparison must retain real character differences'
+)
+assert.notEqual(
+  normalizeSnapshotLineEndings(lfSnapshotFixture.replace('catalog-model-b\n', 'catalog-model-b \n')),
+  normalizeSnapshotLineEndings(lfSnapshotFixture),
+  'snapshot comparison must retain horizontal whitespace differences'
+)
+assert.notEqual(
+  normalizeSnapshotLineEndings(lfSnapshotFixture.slice(0, -1)),
+  normalizeSnapshotLineEndings(lfSnapshotFixture),
+  'snapshot comparison must retain the trailing newline contract'
+)
+
 assert.equal(
   PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE,
   '2026-07-12',
@@ -42,9 +65,15 @@ assert.equal(providerModelCatalogSnapshotSQL.includes('input_usd_per_1m = EXCLUD
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /\n[ \t]+\n/, 'generated catalog SQL must not contain whitespace-only value rows')
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /,\n\s*\n\s*\)/, 'generated catalog SQL must not leave a trailing comma before a tuple closes')
 assert.equal(
-  readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000047_w2_sync_provider_model_catalog_unified_pricing.sql'), 'utf8'),
-  providerModelCatalogSnapshotSQL,
+  normalizeSnapshotLineEndings(
+    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000047_w2_sync_provider_model_catalog_unified_pricing.sql'), 'utf8')
+  ),
+  normalizeSnapshotLineEndings(providerModelCatalogSnapshotSQL),
   'unified provider catalog seed migration must match the generated current-schema snapshot'
 )
 
 console.log('provider model catalog snapshot regression passed')
+
+function normalizeSnapshotLineEndings(value: string): string {
+  return value.replace(/\r\n/g, '\n')
+}
