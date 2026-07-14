@@ -488,6 +488,18 @@ func TestResolveHealthCheckEndpointModeAllowsNonGPTStreamingAndRejectsToolModes(
 	}
 }
 
+func TestResolveHealthCheckEndpointModeFallsBackToFirstEnabledJSONMode(t *testing.T) {
+	mode, err := resolveHealthCheckEndpointMode(
+		nil,
+		"gpt",
+		"profile_gpt_openai_v1",
+		[]string{"generate_content_json", "chat_json"},
+	)
+	if err != nil || mode != "generate_content_json" {
+		t.Fatalf("resolve fallback mode = %q, %v; want generate_content_json", mode, err)
+	}
+}
+
 func TestServiceHybridAnthropicMessagesProfileCanAddAndUpdate(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	store.profiles["hybrid|profile_hybrid_anthropic_messages_v1"] = port.PublicAccountProviderProfile{
