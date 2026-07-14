@@ -86,6 +86,17 @@ assert(sameSource.reasonCodes.includes('paired_models_collapsed'))
 assert.equal(sameSource.independentSourceCount, 5, '未声明模型冲突不得作为第六个独立上游桶污染基线')
 assert.equal(sameSource.pairedProbeCount, 2)
 assert.equal(sameSource.baselineVersion, 1)
+const sameSourcePairedModels = database.getStatsDatabase().prepare(`
+  SELECT requested_model, pair_key FROM model_paired_similarity_windows
+  WHERE system_account_id = ? AND account_id = ?
+  ORDER BY requested_model
+`).all('sys_identity', 'acct_same_source') as Array<{ requested_model: string; pair_key: string }>
+assert.deepEqual(
+  sameSourcePairedModels.map((row) => row.requested_model),
+  ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'],
+  '同一账户同一三模型 pair 的 target-specific paired window 不得互相覆盖'
+)
+assert.equal(new Set(sameSourcePairedModels.map((row) => row.pair_key)).size, 1)
 
 const downgrade = await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_downgrade', 'gpt-5.5')
 assert(downgrade)
@@ -441,6 +452,11 @@ const postgresSql = buildPostgresSchemaSql()
 assert(postgresSql.includes('CREATE TABLE IF NOT EXISTS model_identity_source_features'))
 assert(postgresSql.includes('CREATE TABLE IF NOT EXISTS model_identity_baseline_versions'))
 assert(postgresSql.includes('CREATE TABLE IF NOT EXISTS model_paired_similarity_windows'))
+assert.match(
+  postgresSql,
+  /model_paired_similarity_windows[\s\S]*requested_model text NOT NULL[\s\S]*PRIMARY KEY \(system_account_id, account_id, population_key_hmac, requested_model, pair_key, feature_version\)/,
+  'PostgreSQL paired window 必须保留 target model 主键维度'
+)
 
 console.log('模型身份稳健基线回归通过：累计均值、population/feature 隔离、硬冲突门禁、LOO 限权与群体漂移恢复/拒绝/过期符合预期')
 

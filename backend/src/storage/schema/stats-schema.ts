@@ -1111,6 +1111,7 @@ export function applyStatsSchema(database: DatabaseSync): void {
           system_account_id TEXT NOT NULL,
           account_id TEXT NOT NULL,
           population_key_hmac TEXT NOT NULL,
+          requested_model TEXT NOT NULL,
           pair_key TEXT NOT NULL,
           feature_version TEXT NOT NULL,
           baseline_version INTEGER,
@@ -1123,7 +1124,7 @@ export function applyStatsSchema(database: DatabaseSync): void {
           similarity_status TEXT NOT NULL DEFAULT 'insufficient_evidence',
           last_observed_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
-          PRIMARY KEY (system_account_id, account_id, population_key_hmac, pair_key, feature_version)
+          PRIMARY KEY (system_account_id, account_id, population_key_hmac, requested_model, pair_key, feature_version)
         );
 
     CREATE TABLE IF NOT EXISTS model_account_trust_results (

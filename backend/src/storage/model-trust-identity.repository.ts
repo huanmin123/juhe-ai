@@ -453,17 +453,17 @@ async function upsertPairedWindow(client: DatabaseClient, input: {
   const table = client.dialect.qualifyTable('juhe_stats', 'model_paired_similarity_windows')
   await client.execute(`
     INSERT INTO ${table} (
-      system_account_id, account_id, population_key_hmac, pair_key, feature_version, baseline_version,
+      system_account_id, account_id, population_key_hmac, requested_model, pair_key, feature_version, baseline_version,
       paired_probe_count, independent_source_count, median_distance, loo_median_distance, loo_mad_distance,
       loo_q10_distance, similarity_status, last_observed_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (system_account_id, account_id, population_key_hmac, pair_key, feature_version) DO UPDATE SET
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (system_account_id, account_id, population_key_hmac, requested_model, pair_key, feature_version) DO UPDATE SET
       baseline_version = excluded.baseline_version, paired_probe_count = excluded.paired_probe_count,
       independent_source_count = excluded.independent_source_count, median_distance = excluded.median_distance,
       loo_median_distance = excluded.loo_median_distance, loo_mad_distance = excluded.loo_mad_distance,
       loo_q10_distance = excluded.loo_q10_distance, similarity_status = excluded.similarity_status,
       last_observed_at = excluded.last_observed_at, updated_at = excluded.updated_at
-  `, [input.key.systemAccountId, input.key.accountId, input.populationKey, input.pairKey, input.featureVersion, input.baselineVersion ?? null, input.pairedProbeCount, input.independentSourceCount, input.pairedDistance ?? null, input.pairedBaselineMedian ?? null, input.pairedBaselineMad ?? null, input.pairedQ10 ?? null, input.status, input.lastObservedAt, nowIso()])
+  `, [input.key.systemAccountId, input.key.accountId, input.populationKey, input.key.requestedModel, input.pairKey, input.featureVersion, input.baselineVersion ?? null, input.pairedProbeCount, input.independentSourceCount, input.pairedDistance ?? null, input.pairedBaselineMedian ?? null, input.pairedBaselineMad ?? null, input.pairedQ10 ?? null, input.status, input.lastObservedAt, nowIso()])
 }
 
 function collapseSourceSignatures(rows: SourceFeatureRow[]): Array<{ upstreamBucket: string; model: string; vector: number[] }> {
