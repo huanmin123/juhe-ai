@@ -223,8 +223,8 @@ async function loadSourceInterceptSnapshot(client: DatabaseClient, scope: TokenI
   const sources = client.dialect.qualifyTable('juhe_stats', 'model_trust_window_sources')
   const rows = await client.query<SourceInterceptRow>(`
     SELECT w.system_account_id, w.account_id, s.upstream_bucket_hmac,
-      w.intercept, w.slope, w.round_count, s.observation_count AS valid_sample_count,
-      s.first_observed_at, s.last_observed_at
+      w.intercept, w.slope, w.round_count, w.valid_sample_count,
+      w.first_observed_at, w.last_observed_at
     FROM ${windows} w
     INNER JOIN ${sources} s
       ON s.system_account_id = w.system_account_id
@@ -233,7 +233,13 @@ async function loadSourceInterceptSnapshot(client: DatabaseClient, scope: TokenI
     WHERE w.cohort_key_hmac = ? AND w.requested_model = ? AND w.tokenizer_version = ?
       AND w.probe_set_version = ? AND w.intercept IS NOT NULL AND w.slope BETWEEN 0.97 AND 1.03
       AND w.round_count >= 3 AND w.valid_sample_count >= 6
-      AND s.observation_count = w.valid_sample_count
+      AND NOT EXISTS (
+        SELECT 1 FROM ${sources} other
+        WHERE other.system_account_id = s.system_account_id
+          AND other.account_id = s.account_id
+          AND other.cohort_key_hmac = s.cohort_key_hmac
+          AND other.upstream_bucket_hmac <> s.upstream_bucket_hmac
+      )
     ORDER BY s.upstream_bucket_hmac, w.last_observed_at DESC
     LIMIT ${maximumBaselineRows + 1}
   `, [scope.cohortKeyHmac, scope.requestedModel, scope.tokenizerVersion, scope.probeSetVersion])

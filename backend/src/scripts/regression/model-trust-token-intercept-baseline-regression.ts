@@ -58,6 +58,10 @@ for (let index = 0; index < 10; index += 1) {
     `hmac-sha256-v1:${String(index).padStart(64, '0')}`, firstObservedAt, lastObservedAt, lastObservedAt)
 }
 database.prepare(`
+  UPDATE model_trust_window_sources SET observation_count = 60
+  WHERE account_id = 'acct_intercept_0'
+`).run()
+database.prepare(`
   INSERT INTO model_account_trust_results (
     system_account_id, account_id, requested_model, reason_codes_json, updated_at
   ) VALUES (?, ?, ?, '[]', ?)
@@ -72,6 +76,7 @@ const pending = database.prepare(`
 `).get() as Record<string, unknown>
 assert.equal(pending.evidence_status, 'stable')
 assert.equal(pending.independent_source_count, 10)
+assert.equal(pending.retained_source_count, 10, 'mapped source 可累计多个 requested model，但当前 requested window 的样本资格必须独立计算')
 assert.equal(pending.strong_gate_enabled, 0, '真实样本校准前强判门必须默认关闭')
 
 const beforeActivation = baseline.evaluateTokenInterceptBaseline(context, {
