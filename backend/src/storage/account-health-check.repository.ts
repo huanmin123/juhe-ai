@@ -1,5 +1,5 @@
 import type { AccountSummary } from '../domain/types.js'
-import { GPT_OPENAI_V1_PROFILE_ID } from '../domain/provider-protocol.js'
+import { ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES } from '../domain/account-health-check-endpoint-mode.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../shared/account-concurrency.js'
@@ -29,7 +29,6 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
 import { getPostgresPool } from './postgres-client.js'
-import { listOpenAIProtocolProfileIds, listOpenAIProtocolProfileIdsAsync } from './provider.repository.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { isResourceAuthorizationExpired } from './resource-authorization-helpers.js'
@@ -752,11 +751,11 @@ async function dueHealthCheckRowsAsync(client: DatabaseClient, rows: AccountList
 }
 
 function queryAccountsDueForHealthCheck(limit: number, accountId: string | undefined): AccountListRow[] {
-  const providerProtocolProfileIds = openAIProtocolProfileIdsForQuery()
+  const endpointModes = [...ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES]
   const now = nowIso()
   const accountIdFilter = accountId ? 'AND accounts.id = ?' : ''
   const params: Array<string | number> = [
-    ...providerProtocolProfileIds,
+    ...endpointModes,
     now,
     now,
     now,
@@ -769,10 +768,10 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
   return hydrateAccountRowsWithRuntimeState(getBusinessDatabase()
     .prepare(`
       SELECT ${healthCheckAccountSelectColumns()}
-      FROM accounts
+      FROM accounts INDEXED BY idx_accounts_health_check_candidate_order
       LEFT JOIN resource_authorizations ra
         ON ra.id = accounts.authorization_instance_authorization_id
-      WHERE accounts.provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
+      WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
         AND accounts.type IN ('api_key', 'oauth')
         AND accounts.deleted_at IS NULL
         AND accounts.status IN ('active', 'pending_test')
@@ -821,11 +820,11 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
 }
 
 async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit: number, accountId: string | undefined): Promise<AccountListRow[]> {
-  const providerProtocolProfileIds = await openAIProtocolProfileIdsForQueryAsync()
+  const endpointModes = [...ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES]
   const now = nowIso()
   const accountIdFilter = accountId ? 'AND accounts.id = ?' : ''
   const params: Array<string | number> = [
-    ...providerProtocolProfileIds,
+    ...endpointModes,
     now,
     now,
     now,
@@ -862,7 +861,7 @@ async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit
     ) group_bindings ON TRUE
     LEFT JOIN ${healthCheckTable(client, 'groups')} bound_groups
       ON bound_groups.id = group_bindings.group_id
-    WHERE accounts.provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
+    WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
       AND accounts.type IN ('api_key', 'oauth')
       AND accounts.deleted_at IS NULL
       AND accounts.status IN ('active', 'pending_test')
@@ -1194,6 +1193,18 @@ function nextHealthCheckAtForAccount(accountId: string, baseIso: string, options
   return new Date(safeBaseMs + intervalMs + jitterMs).toISOString()
 }
 
+export function accountHealthSuccessSignalSchedule(
+  accountId: string,
+  successAt: string,
+  options: Partial<AccountHealthCheckSettings>
+): { nextHealthCheckAt: string; refreshAfterAt: string } {
+  const settings = normalizedHealthCheckSettings(options)
+  return {
+    nextHealthCheckAt: nextHealthCheckAtForAccount(accountId, successAt, settings),
+    refreshAfterAt: healthSuccessRefreshAfterAt(successAt, settings.intervalHours)
+  }
+}
+
 function nextHealthCheckAtAfterFailure(baseIso: string, failureCount: number, intervalHours: number): string {
   const baseMs = Date.parse(baseIso)
   const safeBaseMs = Number.isFinite(baseMs) ? baseMs : Date.now()
@@ -1303,16 +1314,6 @@ function supportedModelAccountIdForRow(row: AccountListRow): string {
     return row.authorization_instance_source_account_id
   }
   return row.id
-}
-
-function openAIProtocolProfileIdsForQuery(): string[] {
-  const profileIds = listOpenAIProtocolProfileIds().map((profileId) => profileId.trim()).filter(Boolean)
-  return profileIds.length ? profileIds : [GPT_OPENAI_V1_PROFILE_ID]
-}
-
-async function openAIProtocolProfileIdsForQueryAsync(): Promise<string[]> {
-  const profileIds = (await listOpenAIProtocolProfileIdsAsync()).map((profileId) => profileId.trim()).filter(Boolean)
-  return profileIds.length ? profileIds : [GPT_OPENAI_V1_PROFILE_ID]
 }
 
 function healthCheckTable(client: DatabaseClient, table: string): string {

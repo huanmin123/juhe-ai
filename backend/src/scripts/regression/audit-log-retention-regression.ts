@@ -187,11 +187,12 @@ try {
   auditQueue.flushAllAuditLogQueue()
   const overflowEvents = repositories.listAuditLogs({ traceId: overflowTraceId })
   assert.equal(overflowEvents.total, 1, 'active capture 超限时应保留失败事件')
-  assert.equal(overflowEvents.items[0]?.captureStatus, 'complete', '超大失败 body 摘要化后事件主状态应保持完整')
+  assert.equal(overflowEvents.items[0]?.captureStatus, 'overflow', 'server 常驻正文超过 64MiB 后事件必须标记 overflow')
   assert(overflowEvents.items[0]?.payloadCount > 0, '超大失败 body 应保留摘要 payload')
   const overflowDetail = repositories.getAuditLogDetail(overflowEvents.items[0]?.id ?? '')
-  const overflowClientPayload = overflowDetail?.payloads.find((payload) => payload.partType === 'client_request')
-  assert.equal(overflowClientPayload?.captureStatus, 'summary_only', '超大失败 body 不应保留完整原文，应保留摘要')
+  assert.equal(overflowDetail?.payloads.some((payload) => payload.partType === 'client_request'), false, '超限后不得继续持有 client_request 正文')
+  const overflowMetadata = overflowDetail?.payloads.find((payload) => payload.partType === 'gateway_metadata')
+  assert.equal(overflowMetadata?.captureStatus, 'overflow', '超限后应保留轻量 overflow metadata')
 
   auditQueue.recordDroppedAuditCapture({
     traceId: 'trace-body-rejected-retained',
@@ -703,12 +704,19 @@ function finalizeFailedRequestWithBody(traceId: string, body: Buffer<ArrayBuffer
 }
 
 function finalizeOverflowFailedRequest(traceId: string): void {
-  const capture = auditCapture.createAuditCapture({
-    req: auditRequest(Buffer.alloc(65 * 1024 * 1024, 'x')),
-    traceId,
-    clientIp: '127.0.0.1',
-    startedAtMs: Date.parse(now)
-  })
+  const previousProcessRole = runtimeConfig.processRole
+  let capture: ReturnType<typeof auditCapture.createAuditCapture>
+  try {
+    runtimeConfig.processRole = 'server'
+    capture = auditCapture.createAuditCapture({
+      req: auditRequest(Buffer.alloc(65 * 1024 * 1024, 'x')),
+      traceId,
+      clientIp: '127.0.0.1',
+      startedAtMs: Date.parse(now)
+    })
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
   capture.finalize({
     outcome: 'gateway_failed',
     success: false,

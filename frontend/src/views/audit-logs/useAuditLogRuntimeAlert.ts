@@ -49,6 +49,7 @@ export function useAuditLogRuntimeAlert() {
   }
 
   return {
+    auditRuntimeSettings: computed(() => runtime.value?.settings),
     auditRuntimeAlertDescription,
     auditRuntimeAlertVisible,
     cancelAuditRuntimeRequest,

@@ -77,24 +77,24 @@ export interface AccountBatchEditBuildResult {
 }
 
 export const accountBatchEditFieldLabels: Record<AccountBatchEditFieldKey, string> = {
-  tags: '标签',
+  tags: '账户标签',
   proxyProfileId: '代理',
   concurrencyLimit: '并发上限',
   priority: '优先级',
   superPriorityEnabled: '超级优先',
   fallbackEnabled: '降级备用',
   accountExpiresAt: '账户到期时间',
-  availabilitySchedule: '可用时间计划',
-  notes: '备注',
+  availabilitySchedule: '时间计划',
+  notes: '说明',
   errorHandlingRules: '错误处理策略',
   responseInspectionRules: '响应检查策略',
   supportedModels: '支持模型',
   healthCheckModel: '检查模型',
-  healthCheckEndpointMode: '检查协议',
-  modelMappings: '模型映射',
+  healthCheckEndpointMode: '检查请求形态',
+  modelMappings: '账号模型别名',
   supportedEndpointModes: '上游接口能力',
-  serviceTierOverride: 'GPT 服务等级',
-  reasoningEffortOverride: 'GPT 思考级别'
+  serviceTierOverride: '服务等级',
+  reasoningEffortOverride: '思考级别'
 }
 
 export function createAccountBatchEditForm(): AccountBatchEditForm {
@@ -209,7 +209,7 @@ export function buildAccountBatchEditRequest(
       ))
     : -1
   if (invalidMappingIndex >= 0) {
-    return { message: `请完整填写第 ${invalidMappingIndex + 1} 条模型映射` }
+    return { message: `请完整填写第 ${invalidMappingIndex + 1} 条账号模型别名` }
   }
   const mappingValidation = validateBatchAccountModelMappings(accounts, form)
   if (mappingValidation) return { message: mappingValidation }

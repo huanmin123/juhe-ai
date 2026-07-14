@@ -53,5 +53,18 @@ assert.equal(columnKeys.includes('statusCode'), false, 'HTTP 状态码不应继�
 assert.equal(columnKeys.includes('status'), true, '结果状态和 HTTP 状态码应合并为状态列')
 const tableSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordsTable.vue'), 'utf8')
 assert.match(tableSource, /column\.key === 'status'[\s\S]*UsageRecordResultCell[\s\S]*statusCodeText\(record\)/, '状态列必须显示结果和 HTTP 状态码两个标签，并保留失败原因提示')
+assert.match(tableSource, /<a-tag v-if="typeof record\.statusCode === 'number'" :color="statusCodeColor\(record\)">/, '状态码缺失时不得渲染空标签')
+
+const resultCellSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordResultCell.vue'), 'utf8')
+const failedResultTemplate = resultCellSource.match(/<span v-if="!record\.success"[\s\S]*?<\/span>/)?.[0] ?? ''
+assert.ok(
+  failedResultTemplate.indexOf('InfoCircleOutlined') < failedResultTemplate.indexOf('<a-tag color="red">失败</a-tag>'),
+  '失败原因图标必须显示在失败标签左侧'
+)
+
+const costCellSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordCostCell.vue'), 'utf8')
+assert.doesNotMatch(costCellSource, />计价信息</, '成本明细不得保留独立计价信息分组')
+assert.match(costCellSource, />最终单价<[\s\S]*v-for="row in finalPriceRows"/, '最终单价分组必须展示合并后的计价事实和单价')
+assert.match(costCellSource, /finalPriceRows = computed\(\(\) => \[\.\.\.metadataRows\.value, \.\.\.unitPriceRows\.value\]\)/, '计价模型等计价事实必须并入最终单价行列表')
 
 console.log('管理员使用记录前端回归通过：列表状态合并、列顺序、auto/manual 日期模式、跨日刷新与筛选锁定均已接入')

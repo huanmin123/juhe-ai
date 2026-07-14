@@ -601,14 +601,18 @@ function numberConfig(name: string, fallback: number, min: number, max: number):
 
 export function parseAuditLogRuntimeConfig(values: Record<string, string | undefined>): RuntimeConfig['auditLog'] {
   const read = (name: string): string | undefined => values[name]?.trim()
-  const successHotRetentionHours = strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS', 1, 1, 168)
-  const successRetentionDays = strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS', 3, 1, 3650)
-  if (successRetentionDays * 24 < successHotRetentionHours) {
+  const successHotRetentionHours = strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS', 1, 0, 168)
+  const successSampleRate = strictDecimalValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE', 0.1, 0, 1, 4)
+  const successRetentionDays = strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS', 3, 0, 3650)
+  if ((successSampleRate === 0) !== (successRetentionDays === 0)) {
+    throw new Error('JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE 和 JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS 必须同时为 0 或同时大于 0')
+  }
+  if (successRetentionDays > 0 && successRetentionDays * 24 < successHotRetentionHours) {
     throw new Error('JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS 必须覆盖 JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS')
   }
   return {
     successHotRetentionHours,
-    successSampleRate: strictDecimalValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE', 0.1, 0.0001, 1, 4),
+    successSampleRate,
     successRetentionDays,
     problemRetentionDays: strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS', 7, 1, 3650),
     successFullBodyLimitBytes: strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_FULL_BODY_LIMIT_KB', 512, 0, 512) * 1024,

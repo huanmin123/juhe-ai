@@ -128,11 +128,52 @@ const modalSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/Accou
 const formSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/accountBatchEditForm.ts'), 'utf8')
 const accountsViewSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/AccountsView.vue'), 'utf8')
 const accountApiSource = readFileSync(resolve(frontendRoot, 'src/api/domains/accounts.ts'), 'utf8')
+const accountMetaFieldsSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/AccountMetaFields.vue'), 'utf8')
+const accountScheduleSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/AccountAvailabilityScheduleSection.vue'), 'utf8')
+const accountStrategySource = readFileSync(resolve(frontendRoot, 'src/views/accounts/AccountStrategySection.vue'), 'utf8')
+const accountGptOverridesSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/AccountGptRequestOverridesSection.vue'), 'utf8')
+const generalTabSource = modalSource.match(/<a-tab-pane key="general"[\s\S]*?<a-tab-pane key="rules"/)?.[0] ?? ''
+const modelsTabSource = modalSource.match(/<a-tab-pane key="models"[\s\S]*?<\/a-tab-pane>/)?.[0] ?? ''
 assert.match(modalSource, /batchEditContext\(/, '批量编辑应在打开弹窗后一次性按需读取去敏上下文')
 assert.match(modalSource, /label="上游接口能力"/, '批量编辑必须使用上游接口能力标签')
 assert.match(modalSource, /覆盖账户真实上游支持的接口形态/, '批量编辑说明必须表达真实上游能力')
 assert.doesNotMatch(modalSource, /接口能力限制|可承接的请求形态/, '批量编辑不得继续展示旧能力文案')
 assert.equal(accountBatchEditFieldLabels.supportedEndpointModes, '上游接口能力', '批量字段摘要必须使用上游接口能力')
+assert.equal(accountBatchEditFieldLabels.healthCheckEndpointMode, '检查请求形态', '批量确认摘要必须使用检查请求形态')
+assert.doesNotMatch(generalTabSource, /form\.enabled\.healthCheckEndpointMode/, '检查请求形态不得继续放在通用配置页签')
+assert.match(
+  modelsTabSource,
+  /class="batch-edit-two-columns"[\s\S]*form\.enabled\.healthCheckModel[\s\S]*form\.enabled\.healthCheckEndpointMode/,
+  '检查模型与检查请求形态必须在模型与协议页签同一行，并分别保留覆盖复选框'
+)
+assert.deepEqual({
+  tags: accountBatchEditFieldLabels.tags,
+  availabilitySchedule: accountBatchEditFieldLabels.availabilitySchedule,
+  notes: accountBatchEditFieldLabels.notes,
+  modelMappings: accountBatchEditFieldLabels.modelMappings,
+  serviceTierOverride: accountBatchEditFieldLabels.serviceTierOverride,
+  reasoningEffortOverride: accountBatchEditFieldLabels.reasoningEffortOverride
+}, {
+  tags: '账户标签',
+  availabilitySchedule: '时间计划',
+  notes: '说明',
+  modelMappings: '账号模型别名',
+  serviceTierOverride: '服务等级',
+  reasoningEffortOverride: '思考级别'
+}, '批量字段标签和确认摘要必须使用单编辑同款中文文案')
+for (const [source, expectedText] of [
+  [accountMetaFieldsSource, 'label="账户标签"'],
+  [accountMetaFieldsSource, 'label="说明"'],
+  [accountScheduleSource, 'label="时间计划"'],
+  [accountStrategySource, 'label="账号模型别名"'],
+  [accountStrategySource, '新增别名'],
+  [accountStrategySource, 'placeholder="目标模型"'],
+  [accountGptOverridesSource, 'label="服务等级"'],
+  [accountGptOverridesSource, 'label="思考级别"']
+] as const) {
+  assert.ok(source.includes(expectedText), `单编辑必须保留统一文案：${expectedText}`)
+  assert.ok(modalSource.includes(expectedText), `批量编辑必须使用统一文案：${expectedText}`)
+}
 assert.match(modalSource, /isAccountModelMappingSourceEndpointFamilyAllowed/, '批量来源协议选项必须复用结构矩阵过滤')
 assert.match(modalSource, /enabled: mapping\.enabled/, '批量目标协议选项必须传入每条映射启停状态')
 assert.match(modalSource, /intersectAccountSupportedEndpointModes\(accountDetails\.value\)/, '批量目标协议选项必须使用全部账户能力交集')

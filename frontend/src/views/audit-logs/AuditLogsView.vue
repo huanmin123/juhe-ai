@@ -96,6 +96,7 @@
       :mobile-has-more="currentMobileHasMore"
       :mobile-pagination="viewMode === 'list'"
       :loading-more="currentMobileLoadingMore"
+      :empty-description="auditEmptyDescription"
       @change="handleCurrentTableChange"
       @detail="openDetail"
       @mobile-load-more="loadMoreCurrentMobileRecords"
@@ -158,6 +159,7 @@ import { useAuditLogDetailPayload } from './useAuditLogDetailPayload'
 import { useAuditLogHotSearchState } from './useAuditLogHotSearchState'
 import { useAuditLogModeBridge } from './useAuditLogModeBridge'
 import { useAuditLogRuntimeAlert } from './useAuditLogRuntimeAlert'
+import { auditLogEmptyDescription } from './auditLogRetentionText'
 import {
   auditLogRouteTraceId,
   useAuditLogTraceRoute
@@ -185,11 +187,13 @@ const {
   selectedIds: () => [systemAccountFilter.value]
 })
 const {
+  auditRuntimeSettings,
   auditRuntimeAlertDescription,
   auditRuntimeAlertVisible,
   cancelAuditRuntimeRequest,
   refreshAuditRuntimeQuietly
 } = useAuditLogRuntimeAlert()
+const auditEmptyDescription = computed(() => auditLogEmptyDescription(auditRuntimeSettings.value))
 
 const pageSize = 100
 type AuditLogsPageState = {

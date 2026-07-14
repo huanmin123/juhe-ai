@@ -7,6 +7,9 @@ import {
   resolveHealthCheckEndpointMode
 } from '../../domain/account-health-check-endpoint-mode.js'
 import { accountManualTestEndpointModes } from '../../modules/accounts/account-test-endpoint-modes.js'
+import { accountManualTestEndpointModesForModel } from '../../modules/accounts/account-test-options.service.js'
+import type { AccountSummary } from '../../domain/types.js'
+import type { ProviderModelCatalogItem } from '../../modules/model-pricing/model-catalog.service.js'
 import {
   normalizeGptHealthCheckCredentials,
   resolveLegacyHealthCheckEndpointMode
@@ -175,6 +178,39 @@ assert.deepEqual(accountManualTestEndpointModes({
     supported_endpoint_modes: ['chat_json', 'messages_sse', 'generate_content_sse', 'count_tokens']
   }
 }), ['messages_sse', 'chat_json', 'generate_content_sse'], '混合供应商应返回全部已启用生成 mode，并排除工具接口')
+
+const hybridModelAccount = {
+  providerCode: 'hybrid',
+  providerProtocolProfileId: 'profile_hybrid_openai_chat_v1',
+  protocolCode: 'openai',
+  protocolVersion: 'v1',
+  type: 'api_key',
+  clientCompatibility: 'openai_standard',
+  healthCheckEndpointMode: 'messages_sse',
+  credentials: { supported_endpoint_modes: ['chat_json', 'messages_sse', 'responses_sse'] },
+  modelMappings: [{
+    sourceModel: 'claude-source',
+    sourceEndpointFamily: 'messages',
+    upstreamModel: 'chat-upstream',
+    upstreamEndpointFamily: 'chat_completions',
+    enabled: true
+  }]
+} as AccountSummary
+const modelCatalog = [
+  { model: 'claude-source', status: 'active', supportedApiProtocols: ['messages'] },
+  { model: 'chat-upstream', status: 'active', supportedApiProtocols: ['chat_completions'] },
+  { model: 'responses-only', status: 'active', supportedApiProtocols: ['responses'] }
+] as ProviderModelCatalogItem[]
+assert.deepEqual(
+  accountManualTestEndpointModesForModel(hybridModelAccount, modelCatalog[0]!, modelCatalog),
+  ['messages_sse'],
+  '混合供应商合法 Messages 到 Chat 映射必须保留 source mode，不能按上游 Chat 协议误杀'
+)
+assert.deepEqual(
+  accountManualTestEndpointModesForModel(hybridModelAccount, modelCatalog[2]!, modelCatalog),
+  ['responses_sse'],
+  '无映射模型只能展示模型目录和账户能力共同支持的 mode'
+)
 
 assert.deepEqual(normalizeGptHealthCheckCredentials({}, 'oauth'), {
   credentials: {

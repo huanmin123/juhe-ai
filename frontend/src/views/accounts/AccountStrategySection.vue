@@ -58,7 +58,7 @@
           </div>
           <div class="model-mapping-actions">
             <a-switch v-model:checked="mapping.enabled" :disabled="authorizedEditing" />
-            <a-tooltip title="删除映射">
+            <a-tooltip title="删除别名">
               <a-button type="text" danger :disabled="authorizedEditing" @click="removeModelMapping(index)">
                 <template #icon><DeleteOutlined /></template>
               </a-button>

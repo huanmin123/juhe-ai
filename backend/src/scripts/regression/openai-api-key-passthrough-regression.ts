@@ -114,14 +114,14 @@ function testGptAccountRequestOverridePureFunction(): void {
     endpointFamily: 'responses',
     modelCapabilities: {
       supportedServiceTiers: ['priority'],
-      supportedReasoningEfforts: ['low', 'medium', 'high']
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'max']
     }
   })
   assert.equal(responsesOutput.service_tier, 'priority')
   assert.deepEqual(responsesOutput.reasoning, {
-    effort: 'high',
+    effort: 'max',
     summary: 'detailed'
-  })
+  }, '目标模型明确支持 Max 时必须精确写入，不能向下降级')
   assert.equal(responsesOutput.reasoning_effort, undefined)
   assert.equal(responsesInput.service_tier, 'flex', '纯函数不能修改输入对象')
   assert.deepEqual(responsesInput.reasoning, {
@@ -162,19 +162,28 @@ function testGptAccountRequestOverridePureFunction(): void {
   })
   assert.equal(flexOutput.service_tier, 'flex')
 
-  const unsupportedServiceTierOutput = applyGptAccountRequestOverrides({
-    service_tier: 'flex'
-  }, {
-    credentials: {
-      service_tier_override: 'priority'
-    },
+  assert.throws(() => applyGptAccountRequestOverrides({ service_tier: 'flex' }, {
+    credentials: { service_tier_override: 'priority' },
     endpointFamily: 'responses',
     modelCapabilities: {
       supportedServiceTiers: [],
       supportedReasoningEfforts: []
     }
-  })
-  assert.equal(unsupportedServiceTierOutput.service_tier, 'flex', 'Priority 与 Flex 平级，不支持配置档位时必须保留客户端原值')
+  }), /service_tier_override=priority.*不受目标模型支持/, '目标模型不支持配置档位时必须明确失败，不能静默保留客户端原值')
+
+  assert.throws(() => applyGptAccountRequestOverrides({}, {
+    credentials: { reasoning_effort_override: 'max' },
+    endpointFamily: 'responses',
+    modelCapabilities: {
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: ['high']
+    }
+  }), /reasoning_effort_override=max.*不受目标模型支持/, '目标模型不支持精确思考级别时不能向下降级')
+
+  assert.throws(() => applyGptAccountRequestOverrides({}, {
+    credentials: { service_tier_override: 'priority' },
+    endpointFamily: 'responses'
+  }), /缺少目标模型能力/, '运行时缺少目录能力时不能静默忽略账户覆盖')
 
   const compactOutput = applyGptAccountRequestOverrides({
     service_tier: 'flex',

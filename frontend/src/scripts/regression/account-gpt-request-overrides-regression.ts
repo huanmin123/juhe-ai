@@ -67,17 +67,17 @@ const apiKeyCapabilities = accountGptRequestOverrideCapabilities({
   modelOptions,
   supportedModels: ['gpt-5.6-sol', 'gpt-5.6-terra']
 })
-assert.deepEqual(apiKeyCapabilities.serviceTiers, ['priority', 'flex'], '配置页服务等级必须取账户支持模型目录能力并集')
-assert.deepEqual(apiKeyCapabilities.reasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'], '配置页思考级别必须取账户支持模型目录能力并集')
+assert.deepEqual(apiKeyCapabilities.serviceTiers, ['priority'], '配置页服务等级必须取账户支持模型目录能力交集')
+assert.deepEqual(apiKeyCapabilities.reasoningEfforts, ['medium', 'high', 'max'], '配置页思考级别必须取账户支持模型目录能力交集')
 assert.deepEqual(
   availableAccountGptServiceTierOptions(apiKeyCapabilities).map((option) => option.value),
-  ['', 'default', 'priority', 'flex'],
-  '存在任一模型支持非标准服务等级时应开放期望覆盖配置'
+  ['', 'default', 'priority'],
+  '只有全部模型共同支持的非标准服务等级才能开放覆盖配置'
 )
 assert.deepEqual(
   availableAccountGptReasoningEffortOptions(apiKeyCapabilities).map((option) => option.value),
-  ['', 'low', 'medium', 'high', 'xhigh', 'max'],
-  '账户思考级别选项应包含任一支持模型可承接的期望上限'
+  ['', 'medium', 'high', 'max'],
+  '账户思考级别选项只能包含全部支持模型的共同值'
 )
 
 const unknownCapabilities = accountGptRequestOverrideCapabilities({
@@ -87,8 +87,8 @@ const unknownCapabilities = accountGptRequestOverrideCapabilities({
 })
 assert.deepEqual(
   unknownCapabilities,
-  { serviceTiers: ['priority', 'flex'], reasoningEfforts: ['low', 'medium', 'high', 'max'] },
-  '能力未知模型不能抹掉其他已知模型的可配置能力'
+  { serviceTiers: [], reasoningEfforts: [] },
+  '能力未知模型必须阻断覆盖选项，不能由其他已知模型掩盖'
 )
 
 const oauthFlexOnlyCapabilities = accountGptRequestOverrideCapabilities({
@@ -203,7 +203,7 @@ assert.doesNotMatch(
   '账户请求覆盖永远不能显示 Ultra'
 )
 
-console.log('GPT 请求覆盖前端回归通过：目录能力并集、OAuth 限制、持久化和自定义模型能力均符合契约')
+console.log('GPT 请求覆盖前端回归通过：完整目录能力交集、OAuth 限制、持久化和自定义模型能力均符合契约')
 
 function gptForm(type: 'api_key' | 'oauth'): AccountFormModel {
   const form = defaultAccountForm('gpt', type, FALLBACK_PROVIDERS)

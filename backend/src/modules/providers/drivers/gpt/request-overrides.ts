@@ -92,10 +92,24 @@ export function effectiveGptAccountRequestOverrides(
   overrides: GptAccountRequestOverrides,
   capabilities: GptRequestOverrideModelCapabilities | undefined
 ): GptAccountRequestOverrides {
-  if (!capabilities) return {}
+  if (!overrides.serviceTier && !overrides.reasoningEffort) return {}
+  if (!capabilities) {
+    throw new GptAccountRequestOverrideError('GPT 账户请求覆盖缺少目标模型能力，无法精确生效')
+  }
+  if (overrides.serviceTier) {
+    const supported = overrides.serviceTier === 'default'
+      ? capabilities.supportedServiceTiers.length > 0
+      : capabilities.supportedServiceTiers.includes(overrides.serviceTier)
+    if (!supported) {
+      throw new GptAccountRequestOverrideError(`GPT 账户请求覆盖 service_tier_override=${overrides.serviceTier} 不受目标模型支持`)
+    }
+  }
+  if (overrides.reasoningEffort && !capabilities.supportedReasoningEfforts.includes(overrides.reasoningEffort)) {
+    throw new GptAccountRequestOverrideError(`GPT 账户请求覆盖 reasoning_effort_override=${overrides.reasoningEffort} 不受目标模型支持`)
+  }
   return {
-    serviceTier: downgradedServiceTier(overrides.serviceTier, capabilities.supportedServiceTiers),
-    reasoningEffort: downgradedReasoningEffort(overrides.reasoningEffort, capabilities.supportedReasoningEfforts)
+    serviceTier: overrides.serviceTier,
+    reasoningEffort: overrides.reasoningEffort
   }
 }
 
@@ -133,45 +147,3 @@ const gptReasoningEffortOverrides = new Set<GptReasoningEffortOverride>([
   'xhigh',
   'max'
 ])
-
-const gptReasoningEffortOrder: readonly GptReasoningEffortOverride[] = [
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-]
-
-function downgradedServiceTier(
-  configured: GptServiceTierOverride | undefined,
-  supported: readonly GptServiceTier[]
-): GptServiceTierOverride | undefined {
-  if (!configured) return undefined
-  if (configured === 'default') return supported.length ? 'default' : undefined
-  return supported.includes(configured) ? configured : undefined
-}
-
-function downgradedReasoningEffort(
-  configured: GptReasoningEffortOverride | undefined,
-  supported: readonly GptWireReasoningEffort[]
-): GptReasoningEffortOverride | undefined {
-  if (!configured) return undefined
-  return highestSupportedAtOrBelow(configured, supported, gptReasoningEffortOrder)
-}
-
-function highestSupportedAtOrBelow<TValue extends string>(
-  configured: TValue,
-  supported: readonly TValue[],
-  order: readonly TValue[]
-): TValue | undefined {
-  const configuredIndex = order.indexOf(configured)
-  if (configuredIndex < 0) return undefined
-  const supportedSet = new Set(supported)
-  for (let index = configuredIndex; index >= 0; index -= 1) {
-    const candidate = order[index]
-    if (candidate && supportedSet.has(candidate)) return candidate
-  }
-  return undefined
-}

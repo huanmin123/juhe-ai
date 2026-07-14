@@ -1,5 +1,5 @@
 import type { AccountSummary } from '../domain/types.js'
-import { GPT_OPENAI_V1_PROFILE_ID } from '../domain/provider-protocol.js'
+import { ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES } from '../domain/account-health-check-endpoint-mode.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../shared/account-concurrency.js'
@@ -23,13 +23,12 @@ import {
 } from './account-summary.repository.js'
 import { isCoolingAccountStatus } from './account-status.js'
 import { decryptJson } from './crypto.js'
-import { getBusinessDatabase, nowIso } from './database.js'
+import { getBusinessDatabase, nowIso, runInDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
 import { getPostgresPool } from './postgres-client.js'
-import { listOpenAIProtocolProfileIds, listOpenAIProtocolProfileIdsAsync } from './provider.repository.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { isResourceAuthorizationExpired } from './resource-authorization-helpers.js'
 import { authorizedAccountPermissions, ownerPermissions } from './resource-permissions.js'
@@ -144,6 +143,10 @@ export async function listAccountsDueForCooldownRetestPageAsync(
 }
 
 export function recordCooldownAccountRetestFailure(id: string, input: CooldownAccountRetestFailureInput): CooldownAccountRetestFailureResult {
+  return runInDatabaseTransaction(() => recordCooldownAccountRetestFailureInSqliteTransaction(id, input))
+}
+
+function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input: CooldownAccountRetestFailureInput): CooldownAccountRetestFailureResult {
   const current = findAccountCooldownRetestState(id)
   const errorCode = normalizedCooldownRetestErrorCode(input)
   const testErrorMessage = normalizedCooldownRetestErrorMessage(input, errorCode)
@@ -243,100 +246,117 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return recordCooldownAccountRetestFailure(id, input)
   }
-  const current = await findAccountCooldownRetestStateAsync(id)
   const errorCode = normalizedCooldownRetestErrorCode(input)
   const testErrorMessage = normalizedCooldownRetestErrorMessage(input, errorCode)
-  if (!current || !isCoolingAccountStatus(current.status)) {
-    return {
-      action: 'discard',
-      changed: false,
-      failureCount: current?.cooldownRetestFailureCount ?? 0,
-      account: current,
-      errorCode,
-      errorMessage: testErrorMessage
-    }
-  }
-
-  const nowDate = new Date()
-  const now = nowDate.toISOString()
-  const failureCount = Math.max(0, current.cooldownRetestFailureCount ?? 0) + 1
-  const lastStatusCode = typeof input.statusCode === 'number' && Number.isFinite(input.statusCode) ? Math.trunc(input.statusCode) : null
-  const observationStartedAt = current.cooldownRetestObservationStartedAt ?? now
-  const recovery = cooldownRetestRecoveryPlan(failureCount, {
-    ...input,
-    maxPauseMinutes: input.maxPauseMinutes ?? await defaultTemporaryUnschedulableMinutesAsync()
-  }, nowDate, observationStartedAt)
-
-  const transitionedToError = recovery.stage === 'terminal'
-  const cooldownUntil = transitionedToError
-    ? undefined
-    : new Date(nowDate.getTime() + recovery.backoffSeconds * 1000).toISOString()
-  const persistedErrorCode = transitionedToError
-    ? cooldownRetestObservationTimeoutCode
-    : recovery.stage === 'long_term' ? cooldownRetestLongTermUnavailableCode : errorCode
-  const cooldownMessage = cooldownRetestFailureMessage(failureCount, recovery, testErrorMessage)
+  const maxPauseMinutes = input.maxPauseMinutes ?? await defaultTemporaryUnschedulableMinutesAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const result = await client.execute(`
-    UPDATE ${cooldownRetestTable(client, 'accounts')}
-    SET status = CASE WHEN ? = 1 THEN 'error' ELSE status END,
-        schedulable = CASE WHEN ? = 1 THEN 0 ELSE 1 END,
-        cooldown_until = ?,
-        last_error_code = ?,
-        last_error_message = ?,
-        cooldown_retest_failure_count = ?,
-        cooldown_retest_observation_started_at = COALESCE(cooldown_retest_observation_started_at, ?),
-        cooldown_retest_last_at = ?,
-        cooldown_retest_last_status_code = ?,
-        stream_failure_count = 0,
-        stream_failure_window_started_at = NULL,
-        updated_at = ?
-    WHERE id = ?
-      AND deleted_at IS NULL
-      AND status = ?
-  `, [
-    transitionedToError ? 1 : 0,
-    transitionedToError ? 1 : 0,
-    cooldownUntil ?? null,
-    persistedErrorCode,
-    cooldownMessage,
-    failureCount,
-    observationStartedAt,
-    now,
-    lastStatusCode,
-    now,
-    id,
-    current.status
-  ])
-  const changed = Number(result.changes ?? 0) > 0
-  if (changed) {
-    await refreshGroupAccountStatsAfterWriteAsync({
-      accountIds: [id],
-      reason: transitionedToError ? 'account_cooldown_retest_timeout' : 'account_cooldown_retest_backoff'
-    }, client)
+  const transactionResult = await client.transaction(async (tx) => {
+    const current = (await queryAccountCooldownRetestStateAsync(tx, id, { forUpdate: true }))[0]
+    if (!current || !isCoolingAccountStatus(current.status)) {
+      return {
+        changed: false,
+        found: Boolean(current),
+        transitionedToError: false,
+        result: {
+          action: 'discard',
+          changed: false,
+          failureCount: Math.max(0, Number(current?.cooldown_retest_failure_count ?? 0)),
+          errorCode,
+          errorMessage: testErrorMessage
+        } satisfies CooldownAccountRetestFailureResult
+      }
+    }
+
+    const nowDate = new Date()
+    const now = nowDate.toISOString()
+    const failureCount = Math.max(0, Number(current.cooldown_retest_failure_count ?? 0)) + 1
+    const lastStatusCode = typeof input.statusCode === 'number' && Number.isFinite(input.statusCode) ? Math.trunc(input.statusCode) : null
+    const observationStartedAt = current.cooldown_retest_observation_started_at ?? now
+    const recovery = cooldownRetestRecoveryPlan(failureCount, {
+      ...input,
+      maxPauseMinutes
+    }, nowDate, observationStartedAt)
+    const transitionedToError = recovery.stage === 'terminal'
+    const cooldownUntil = transitionedToError
+      ? undefined
+      : new Date(nowDate.getTime() + recovery.backoffSeconds * 1000).toISOString()
+    const persistedErrorCode = transitionedToError
+      ? cooldownRetestObservationTimeoutCode
+      : recovery.stage === 'long_term' ? cooldownRetestLongTermUnavailableCode : errorCode
+    const cooldownMessage = cooldownRetestFailureMessage(failureCount, recovery, testErrorMessage)
+    const update = await tx.execute(`
+      UPDATE ${cooldownRetestTable(tx, 'accounts')}
+      SET status = CASE WHEN ? = 1 THEN 'error' ELSE status END,
+          schedulable = CASE WHEN ? = 1 THEN 0 ELSE 1 END,
+          cooldown_until = ?,
+          last_error_code = ?,
+          last_error_message = ?,
+          cooldown_retest_failure_count = ?,
+          cooldown_retest_observation_started_at = COALESCE(cooldown_retest_observation_started_at, ?),
+          cooldown_retest_last_at = ?,
+          cooldown_retest_last_status_code = ?,
+          stream_failure_count = 0,
+          stream_failure_window_started_at = NULL,
+          updated_at = ?
+      WHERE id = ?
+        AND deleted_at IS NULL
+        AND status = ?
+    `, [
+      transitionedToError ? 1 : 0,
+      transitionedToError ? 1 : 0,
+      cooldownUntil ?? null,
+      persistedErrorCode,
+      cooldownMessage,
+      failureCount,
+      observationStartedAt,
+      now,
+      lastStatusCode,
+      now,
+      id,
+      current.status
+    ])
+    const changed = Number(update.changes ?? 0) > 0
+    if (changed) {
+      await refreshGroupAccountStatsAfterWriteAsync({
+        accountIds: [id],
+        reason: transitionedToError ? 'account_cooldown_retest_timeout' : 'account_cooldown_retest_backoff'
+      }, tx)
+    }
+    return {
+      changed,
+      found: true,
+      transitionedToError,
+      result: {
+        action: cooldownRetestAction(recovery.stage),
+        changed,
+        failureCount,
+        cooldownUntil,
+        backoffSeconds: transitionedToError ? undefined : recovery.backoffSeconds,
+        backoffMinutes: transitionedToError ? undefined : secondsToCeilMinutes(recovery.backoffSeconds),
+        recoveryStage: recovery.stage,
+        fastThresholdSeconds: recovery.fastThresholdSeconds,
+        maxPauseSeconds: recovery.maxPauseSeconds,
+        maxRecoverySeconds: recovery.maxRecoverySeconds,
+        longTermIntervalSeconds: recovery.longTermIntervalSeconds,
+        maxedFailureCount: recovery.maxedFailureCount,
+        observationStartedAt: recovery.observationStartedAt,
+        observationElapsedSeconds: recovery.observationElapsedSeconds,
+        observationTimeoutSeconds: recovery.observationTimeoutSeconds,
+        transitionedToError: changed && transitionedToError,
+        errorCode: persistedErrorCode,
+        errorMessage: cooldownMessage
+      } satisfies CooldownAccountRetestFailureResult
+    }
+  })
+  if (transactionResult.changed) {
     invalidateAccountLookupCache(id)
-    invalidateGatewayRuntimeAfterBusinessWrite(transitionedToError ? 'account_cooldown_retest_timeout' : 'account_cooldown_retest_backoff')
+    invalidateGatewayRuntimeAfterBusinessWrite(transactionResult.transitionedToError ? 'account_cooldown_retest_timeout' : 'account_cooldown_retest_backoff')
   }
-  const action = cooldownRetestAction(recovery.stage)
   return {
-    action,
-    changed,
-    failureCount,
-    account: await failureAccountSummaryAsync(id, current),
-    cooldownUntil,
-    backoffSeconds: transitionedToError ? undefined : recovery.backoffSeconds,
-    backoffMinutes: transitionedToError ? undefined : secondsToCeilMinutes(recovery.backoffSeconds),
-    recoveryStage: recovery.stage,
-    fastThresholdSeconds: recovery.fastThresholdSeconds,
-    maxPauseSeconds: recovery.maxPauseSeconds,
-    maxRecoverySeconds: recovery.maxRecoverySeconds,
-    longTermIntervalSeconds: recovery.longTermIntervalSeconds,
-    maxedFailureCount: recovery.maxedFailureCount,
-    observationStartedAt: recovery.observationStartedAt,
-    observationElapsedSeconds: recovery.observationElapsedSeconds,
-    observationTimeoutSeconds: recovery.observationTimeoutSeconds,
-    transitionedToError: changed && transitionedToError,
-    errorCode: persistedErrorCode,
-    errorMessage: cooldownMessage
+    ...transactionResult.result,
+    account: transactionResult.found
+      ? await findAccountCooldownRetestStateAsync(id)
+      : undefined
   }
 }
 
@@ -356,14 +376,14 @@ function queryAccountsDueForCooldownRetest(
   accountId?: string,
   cursor?: CooldownAccountRetestCursor
 ): AccountListRow[] {
-  const providerProtocolProfileIds = openAIProtocolProfileIdsForQuery()
+  const endpointModes = [...ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES]
   const now = nowIso()
   const accountIdFilter = accountId ? 'AND accounts.id = ?' : ''
   const cursorFilter = !accountId && cursor
     ? 'AND (accounts.cooldown_until, accounts.priority, accounts.created_at, accounts.id) > (?, ?, ?, ?)'
     : ''
   const params: Array<string | number> = [
-    ...providerProtocolProfileIds,
+    ...endpointModes,
     now,
     now,
     now
@@ -378,10 +398,10 @@ function queryAccountsDueForCooldownRetest(
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT ${cooldownRetestAccountSelectColumns()}
-      FROM accounts
+      FROM accounts INDEXED BY idx_accounts_cooldown_retest_candidate_order
       LEFT JOIN resource_authorizations ra
         ON ra.id = accounts.authorization_instance_authorization_id
-      WHERE accounts.provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
+      WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
         AND accounts.type IN ('api_key', 'oauth')
         AND accounts.deleted_at IS NULL
         AND accounts.status IN ('temporary_unavailable', 'rate_limited')
@@ -427,14 +447,14 @@ async function queryAccountsDueForCooldownRetestAsync(
   accountId?: string,
   cursor?: CooldownAccountRetestCursor
 ): Promise<AccountListRow[]> {
-  const providerProtocolProfileIds = await openAIProtocolProfileIdsForQueryAsync()
+  const endpointModes = [...ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES]
   const now = nowIso()
   const accountIdFilter = accountId ? 'AND accounts.id = ?' : ''
   const cursorFilter = !accountId && cursor
     ? 'AND (accounts.cooldown_until, accounts.priority, accounts.created_at, accounts.id) > (?, ?, ?, ?)'
     : ''
   const params: Array<string | number> = [
-    ...providerProtocolProfileIds,
+    ...endpointModes,
     now,
     now,
     now
@@ -473,7 +493,7 @@ async function queryAccountsDueForCooldownRetestAsync(
     ) group_bindings ON TRUE
     LEFT JOIN ${cooldownRetestTable(client, 'groups')} bound_groups
       ON bound_groups.id = group_bindings.group_id
-    WHERE accounts.provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
+    WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
       AND accounts.type IN ('api_key', 'oauth')
       AND accounts.deleted_at IS NULL
       AND accounts.status IN ('temporary_unavailable', 'rate_limited')
@@ -529,7 +549,7 @@ function cooldownRetestCursorFromRow(row: AccountListRow): CooldownAccountRetest
 function queryAccountCooldownRetestState(accountId: string): AccountListRow[] {
   const normalizedAccountId = accountId.trim()
   if (!normalizedAccountId) return []
-  const providerProtocolProfileIds = openAIProtocolProfileIdsForQuery()
+  const endpointModes = [...ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES]
   return hydrateAccountRowsWithRuntimeState(getBusinessDatabase()
     .prepare(`
       SELECT ${cooldownRetestAccountSelectColumns()}
@@ -537,18 +557,22 @@ function queryAccountCooldownRetestState(accountId: string): AccountListRow[] {
       LEFT JOIN resource_authorizations ra
         ON ra.id = accounts.authorization_instance_authorization_id
       WHERE accounts.id = ?
-        AND accounts.provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
+        AND accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
         AND accounts.type IN ('api_key', 'oauth')
         AND accounts.deleted_at IS NULL
       LIMIT 1
     `)
-    .all(normalizedAccountId, ...providerProtocolProfileIds) as unknown as AccountListRow[], { includeCredentials: true })
+    .all(normalizedAccountId, ...endpointModes) as unknown as AccountListRow[], { includeCredentials: true })
 }
 
-async function queryAccountCooldownRetestStateAsync(client: DatabaseClient, accountId: string): Promise<AccountListRow[]> {
+async function queryAccountCooldownRetestStateAsync(
+  client: DatabaseClient,
+  accountId: string,
+  options: { forUpdate?: boolean } = {}
+): Promise<AccountListRow[]> {
   const normalizedAccountId = accountId.trim()
   if (!normalizedAccountId) return []
-  const providerProtocolProfileIds = await openAIProtocolProfileIdsForQueryAsync()
+  const endpointModes = [...ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES]
   return await client.query<AccountListRow>(`
     SELECT ${cooldownRetestAccountSelectColumnsAsync()}
     FROM ${cooldownRetestTable(client, 'accounts')} accounts
@@ -573,11 +597,12 @@ async function queryAccountCooldownRetestStateAsync(client: DatabaseClient, acco
     LEFT JOIN ${cooldownRetestTable(client, 'groups')} bound_groups
       ON bound_groups.id = group_bindings.group_id
     WHERE accounts.id = ?
-      AND accounts.provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
+      AND accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
       AND accounts.type IN ('api_key', 'oauth')
       AND accounts.deleted_at IS NULL
     LIMIT 1
-  `, [normalizedAccountId, ...providerProtocolProfileIds])
+    ${options.forUpdate ? 'FOR UPDATE OF accounts' : ''}
+  `, [normalizedAccountId, ...endpointModes])
 }
 
 function cooldownRetestAccountSelectColumns(): string {
@@ -851,10 +876,6 @@ function failureAccountSummary(id: string, fallback: AccountSummary): AccountSum
   return findAccountCooldownRetestState(id) ?? fallback
 }
 
-async function failureAccountSummaryAsync(id: string, fallback: AccountSummary): Promise<AccountSummary> {
-  return await findAccountCooldownRetestStateAsync(id) ?? fallback
-}
-
 function normalizedCooldownRetestErrorMessage(input: CooldownAccountRetestFailureInput, errorCode: string): string {
   const message = optionalString(input.errorMessage) ?? '后台冷却复测失败'
   const parts: string[] = []
@@ -1005,15 +1026,6 @@ function supportedModelAccountIdForRow(row: AccountListRow): string {
   return row.id
 }
 
-function openAIProtocolProfileIdsForQuery(): string[] {
-  const profileIds = listOpenAIProtocolProfileIds().map((profileId) => profileId.trim()).filter(Boolean)
-  return profileIds.length ? profileIds : [GPT_OPENAI_V1_PROFILE_ID]
-}
-
-async function openAIProtocolProfileIdsForQueryAsync(): Promise<string[]> {
-  const profileIds = (await listOpenAIProtocolProfileIdsAsync()).map((profileId) => profileId.trim()).filter(Boolean)
-  return profileIds.length ? profileIds : [GPT_OPENAI_V1_PROFILE_ID]
-}
 
 function defaultTemporaryUnschedulableMinutes(): number {
   const value = runtimeConfig.databaseDriver === 'postgres'

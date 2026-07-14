@@ -33,8 +33,8 @@
             <div class="batch-edit-section">
               <AccountBatchEditField
                 v-model:checked="form.enabled.tags"
-                label="标签"
-                description="直接覆盖全部目标账户的标签；留空表示清空标签。"
+                label="账户标签"
+                description="直接覆盖全部目标账户的账户标签；留空表示清空账户标签。"
               >
                 <template #default="{ disabled }">
                   <a-select
@@ -44,22 +44,6 @@
                     :disabled="disabled"
                     :options="tagOptions"
                     placeholder="输入或选择标签"
-                  />
-                </template>
-              </AccountBatchEditField>
-
-              <AccountBatchEditField
-                v-model:checked="form.enabled.healthCheckEndpointMode"
-                :disabled="!homogeneousModelConfiguration"
-                label="检查请求形态"
-                description="后台检查直接使用所选请求形态；GPT 建议使用 Responses API（Streaming）。"
-              >
-                <template #default="{ disabled }">
-                  <a-select
-                    v-model:value="form.healthCheckEndpointMode"
-                    :disabled="disabled || !healthCheckEndpointModeOptions.length"
-                    :options="healthCheckEndpointModeOptions"
-                    placeholder="选择检查请求形态"
                   />
                 </template>
               </AccountBatchEditField>
@@ -77,6 +61,30 @@
                     :options="proxyOptions"
                     placeholder="不使用代理"
                   />
+                </template>
+              </AccountBatchEditField>
+
+              <AccountBatchEditField
+                v-model:checked="form.enabled.supportedEndpointModes"
+                :disabled="!homogeneousModelConfiguration"
+                label="上游接口能力"
+                description="直接覆盖账户真实上游支持的接口形态。"
+              >
+                <template #default="{ disabled }">
+                  <a-checkbox-group
+                    v-model:value="form.supportedEndpointModes"
+                    :disabled="disabled"
+                  >
+                    <div class="endpoint-mode-grid">
+                      <a-checkbox
+                        v-for="option in endpointModeOptions"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </a-checkbox>
+                    </div>
+                  </a-checkbox-group>
                 </template>
               </AccountBatchEditField>
 
@@ -147,15 +155,15 @@
 
               <AccountBatchEditField
                 v-model:checked="form.enabled.availabilitySchedule"
-                label="可用时间计划"
+                label="时间计划"
                 description="关闭计划开关并保存表示清除现有时间计划。"
               >
                 <template #default="{ disabled }">
                   <TimeScheduleSection
                     :form="scheduleForm"
                     :readonly="disabled"
-                    label="可用时间计划"
-                    readonly-label="可用时间计划"
+                    label="时间计划"
+                    readonly-label="时间计划"
                     row-key-prefix="account_batch_schedule_window"
                   />
                 </template>
@@ -163,15 +171,15 @@
 
               <AccountBatchEditField
                 v-model:checked="form.enabled.notes"
-                label="备注"
-                description="留空表示清空备注。"
+                label="说明"
+                description="留空表示清空说明。"
               >
                 <template #default="{ disabled }">
                   <a-textarea
                     v-model:value="form.notes"
                     :disabled="disabled"
                     :rows="3"
-                    placeholder="统一写入账户备注"
+                    placeholder="统一写入账户说明"
                   />
                 </template>
               </AccountBatchEditField>
@@ -241,53 +249,47 @@
                 </template>
               </AccountBatchEditField>
 
-              <AccountBatchEditField
-                v-model:checked="form.enabled.healthCheckModel"
-                :disabled="!homogeneousModelConfiguration"
-                label="检查模型"
-                description="后台激活、周期检查和恢复探测统一使用该模型。"
-              >
-                <template #default="{ disabled }">
-                  <a-select
-                    v-model:value="form.healthCheckModel"
-                    show-search
-                    option-filter-prop="label"
-                    :disabled="disabled || !healthCheckModelOptions.length"
-                    :options="healthCheckModelOptions"
-                    placeholder="选择检查模型"
-                  />
-                </template>
-              </AccountBatchEditField>
+              <div class="batch-edit-two-columns">
+                <AccountBatchEditField
+                  v-model:checked="form.enabled.healthCheckModel"
+                  :disabled="!homogeneousModelConfiguration"
+                  label="检查模型"
+                  description="后台激活、周期检查和恢复探测统一使用该模型。"
+                >
+                  <template #default="{ disabled }">
+                    <a-select
+                      v-model:value="form.healthCheckModel"
+                      show-search
+                      option-filter-prop="label"
+                      :disabled="disabled || !healthCheckModelOptions.length"
+                      :options="healthCheckModelOptions"
+                      placeholder="选择检查模型"
+                    />
+                  </template>
+                </AccountBatchEditField>
 
-              <AccountBatchEditField
-                v-model:checked="form.enabled.supportedEndpointModes"
-                :disabled="!homogeneousModelConfiguration"
-                label="上游接口能力"
-                description="直接覆盖账户真实上游支持的接口形态。"
-              >
-                <template #default="{ disabled }">
-                  <a-checkbox-group
-                    v-model:value="form.supportedEndpointModes"
-                    :disabled="disabled"
-                  >
-                    <div class="endpoint-mode-grid">
-                      <a-checkbox
-                        v-for="option in endpointModeOptions"
-                        :key="option.value"
-                        :value="option.value"
-                      >
-                        {{ option.label }}
-                      </a-checkbox>
-                    </div>
-                  </a-checkbox-group>
-                </template>
-              </AccountBatchEditField>
+                <AccountBatchEditField
+                  v-model:checked="form.enabled.healthCheckEndpointMode"
+                  :disabled="!homogeneousModelConfiguration"
+                  label="检查请求形态"
+                  description="后台检查直接使用所选请求形态；GPT 建议使用 Responses API（Streaming）。"
+                >
+                  <template #default="{ disabled }">
+                    <a-select
+                      v-model:value="form.healthCheckEndpointMode"
+                      :disabled="disabled || !healthCheckEndpointModeOptions.length"
+                      :options="healthCheckEndpointModeOptions"
+                      placeholder="选择检查请求形态"
+                    />
+                  </template>
+                </AccountBatchEditField>
+              </div>
 
               <AccountBatchEditField
                 v-model:checked="form.enabled.modelMappings"
                 :disabled="!homogeneousModelConfiguration"
-                label="模型映射"
-                description="直接覆盖全部映射；留空表示清空映射。"
+                label="账号模型别名"
+                description="直接覆盖全部账号模型别名；留空表示清空。"
               >
                 <template #default="{ disabled }">
                   <div class="mapping-list">
@@ -321,10 +323,10 @@
                         option-filter-prop="label"
                         :disabled="disabled"
                         :options="mappingUpstreamModelOptions"
-                        placeholder="上游模型"
+                        placeholder="目标模型"
                       />
                       <a-switch v-model:checked="mapping.enabled" :disabled="disabled" />
-                      <a-tooltip title="删除映射">
+                      <a-tooltip title="删除别名">
                         <a-button
                           danger
                           type="text"
@@ -342,7 +344,7 @@
                       @click="addMapping"
                     >
                       <template #icon><PlusOutlined /></template>
-                      新增映射
+                      新增别名
                     </a-button>
                   </div>
                 </template>
@@ -352,7 +354,7 @@
                 <div class="batch-edit-two-columns">
                   <AccountBatchEditField
                     v-model:checked="form.enabled.serviceTierOverride"
-                    label="GPT 服务等级"
+                    label="服务等级"
                     description="不覆盖客户端设置表示清除账户覆盖。"
                   >
                     <template #default="{ disabled }">
@@ -365,7 +367,7 @@
                   </AccountBatchEditField>
                   <AccountBatchEditField
                     v-model:checked="form.enabled.reasoningEffortOverride"
-                    label="GPT 思考级别"
+                    label="思考级别"
                     description="不覆盖客户端设置表示清除账户覆盖。"
                   >
                     <template #default="{ disabled }">

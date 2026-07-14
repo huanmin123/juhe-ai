@@ -41,6 +41,7 @@
     "test:db-service-read-write-dispatch-simulation": "pnpm --filter juhe-ai-backend test:db-service-read-write-dispatch-simulation",
     "test:disabled-account-state-guard": "pnpm --filter juhe-ai-backend test:disabled-account-state-guard",
     "test:account-health-check": "pnpm --filter juhe-ai-backend test:account-health-check",
+    "test:usage-health-check-settings-snapshot": "pnpm --filter juhe-ai-backend test:usage-health-check-settings-snapshot",
     "test:account-list-stable-sort": "pnpm --filter juhe-ai-backend test:account-list-stable-sort",
     "test:account-list-stats-lock": "pnpm --filter juhe-ai-backend test:account-list-stats-lock",
     "test:sqlite-read-worker": "pnpm --filter juhe-ai-backend test:sqlite-read-worker",

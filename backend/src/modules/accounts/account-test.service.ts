@@ -29,6 +29,7 @@ import {
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountTestFailureEligibleForAccount } from './account-test-failure-eligibility.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
+import { hasAccountTestProtocolSuccessEvidence } from './account-test-success-evidence.js'
 import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
@@ -292,7 +293,15 @@ export async function testOpenAIAccount(
       : geminiTestMode
         ? extractGeminiResponseOutputText(responseText)
       : extractOpenAIResponseOutputText(responseText)
-    const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
+    const httpSucceeded = response.statusCode >= 200 && response.statusCode < 300
+    const protocolSuccessEvidence = Boolean(
+      testEndpointMode
+      && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseText)
+    )
+    const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence
+    const protocolEvidenceError = httpSucceeded && !streamFailureMessage && !protocolSuccessEvidence
+      ? '上游返回 HTTP 2xx，但响应中缺少所选检查协议的完成证据'
+      : undefined
     const diagnosticStatusCode = accountTestDiagnosticStatusCode(response.statusCode, success, diagnosticLastAttempt)
     const responseTruncated = response.bodyTruncated()
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
@@ -307,10 +316,10 @@ export async function testOpenAIAccount(
       traceId,
       success,
       statusCode: diagnosticStatusCode,
-      errorCode: success ? undefined : upstreamErrorCode,
+      errorCode: success ? undefined : protocolEvidenceError ? 'invalid_protocol_success_response' : upstreamErrorCode,
       message: success
         ? accountTestSuccessMessage(account, responseTruncated, requestUrl)
-        : proxyFailureMessage || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
+        : proxyFailureMessage || protocolEvidenceError || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
       model: testRequest?.model,
       ...accountTestModelMappingFields(modelMapping),
       testEndpointMode,
@@ -332,8 +341,8 @@ export async function testOpenAIAccount(
         ? false
         : accountTestFailureEligibleForAccount({
             statusCode: diagnosticStatusCode,
-            errorCode: upstreamErrorCode,
-            message: proxyFailureMessage || upstreamMessage || streamFailureMessage
+            errorCode: protocolEvidenceError ? 'invalid_protocol_success_response' : upstreamErrorCode,
+            message: proxyFailureMessage || protocolEvidenceError || upstreamMessage || streamFailureMessage
           })
     }), limitedDiagnostics)
   } catch (error) {

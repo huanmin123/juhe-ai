@@ -188,6 +188,10 @@ function validateGeminiGenerateContentChatBridgeBody(
   if (body.cachedContent !== undefined) {
     throw geminiGenerateContentGuidance(req, model, `当前${providerLabel(providerName)} Chat Completions 上游不能保真承载 Gemini cachedContent。请客户端改用真实支持 cachedContent 的 Gemini 原生上游，或移除 cachedContent 后重试。`, 'unsupported_gemini_cached_content')
   }
+  const generationConfig = objectValue(body.generationConfig)
+  if (generationConfig?.thinkingConfig !== undefined && generationConfig.thinkingConfig !== null) {
+    throw geminiGenerateContentGuidance(req, model, `当前${providerLabel(providerName)} Chat Completions 上游不能保真承载 Gemini thinkingConfig。请移除思考配置，或改用支持该字段的 Gemini 原生上游。`, 'unsupported_gemini_thinking_config')
+  }
 }
 
 function geminiGenerateContentBodyToChatCompletionsBody(

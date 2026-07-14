@@ -57,6 +57,8 @@ app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
 interface AccountTestResult {
   success: boolean
   statusCode?: number
+  errorCode?: string
+  accountFailureEligible?: boolean
   accountStatusChanged?: boolean
   accountStatus?: string
   traceId?: string
@@ -162,7 +164,19 @@ try {
     }
   })
 
-  console.log('手动账号测试状态隔离回归通过：自有账户测试成功不会改写临时不可调用、限流、异常和不可调度状态')
+  await assertInvalidProtocolEvidenceDoesNotActivatePendingAccount({
+    appBaseUrl,
+    mockBaseUrl,
+    groupId: group.id
+  })
+
+  await assertInvalidProtocolEvidenceDegradesActiveAccount({
+    appBaseUrl,
+    mockBaseUrl,
+    groupId: group.id
+  })
+
+  console.log('手动账号测试状态隔离回归通过：无协议完成证据不会激活待检查账户，active 账户会累计失败并按阈值停调')
 } finally {
   await closeServer(appServer)
   await closeServer(mockOpenAIServer)
@@ -237,6 +251,102 @@ async function assertManualTestRestoresAccount(input: {
   )
 }
 
+async function assertInvalidProtocolEvidenceDoesNotActivatePendingAccount(input: {
+  appBaseUrl: string
+  mockBaseUrl: string
+  groupId: string
+}): Promise<void> {
+  const account = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: 'HTTP 200 无协议完成证据',
+    type: 'api_key',
+    credentials: { api_key: 'sk-manual-invalid-protocol-evidence', base_url: input.mockBaseUrl },
+    status: 'pending_test',
+    schedulable: false,
+    groupId: input.groupId
+  }, adminAccess)
+  const before = repositories.findAccountSummary(account.id, adminAccess)
+  assert.equal(before?.status, 'pending_test', '无效协议证据账户测试前应处于待检查')
+  assert.equal(before?.schedulable, false, '无效协议证据账户测试前不应可调度')
+
+  const result = await submitAccountTestAndWait<AccountTestResult>({
+    baseUrl: input.appBaseUrl,
+    path: `/__aisys__/api/accounts/${account.id}/test`,
+    cookie: sessionCookie(),
+    body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
+  })
+  assert.equal(result.success, false, '只有 [DONE] 的 HTTP 200 流响应不得判定为检查成功')
+  assert.equal(result.errorCode, 'invalid_protocol_success_response', '应返回缺少协议完成证据错误码')
+  assert.equal(result.accountFailureEligible, true, '上游无效协议响应应计入账户健康失败')
+
+  const after = repositories.findAccountSummary(account.id, adminAccess)
+  assert.equal(after?.status, 'pending_test', '无协议完成证据不得激活待检查账户')
+  assert.equal(after?.schedulable, false, '无协议完成证据不得让待检查账户进入号池')
+}
+
+async function assertInvalidProtocolEvidenceDegradesActiveAccount(input: {
+  appBaseUrl: string
+  mockBaseUrl: string
+  groupId: string
+}): Promise<void> {
+  const account = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: 'HTTP 200 无协议证据的正常账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-manual-invalid-protocol-evidence', base_url: input.mockBaseUrl },
+    status: 'active',
+    schedulable: true,
+    groupId: input.groupId
+  }, adminAccess)
+  assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 2,
+    statusCode: 200
+  }), true, '正常账户应先记录健康成功基线')
+
+  let thresholdFailure: ReturnType<typeof repositories.recordAccountHealthCheckFailure> | undefined
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const observedAt = new Date().toISOString()
+    const result = await submitAccountTestAndWait<AccountTestResult>({
+      baseUrl: input.appBaseUrl,
+      path: `/__aisys__/api/accounts/${account.id}/test`,
+      cookie: sessionCookie(),
+      body: { model: 'gpt-5.5', testEndpointMode: 'responses_sse' }
+    })
+    assert.equal(result.success, false, `正常账户第 ${attempt} 次无效协议响应应失败`)
+    assert.equal(result.accountFailureEligible, true, `正常账户第 ${attempt} 次无效协议响应应计入失败阈值`)
+    thresholdFailure = repositories.recordAccountHealthCheckFailure(account.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 2,
+      errorCode: result.errorCode,
+      errorMessage: result.message,
+      countTowardsThreshold: result.accountFailureEligible,
+      observedAt
+    })
+    assert.equal(thresholdFailure.failureCount, attempt, `正常账户第 ${attempt} 次协议失败应正确累计`)
+  }
+  assert.equal(thresholdFailure?.reachedThreshold, true, '无效协议响应累计后应达到健康失败阈值')
+
+  const active = repositories.findAccountSummary(account.id, adminAccess)
+  assert(active?.configRevision, '达到阈值的正常账户应包含配置版本')
+  const degraded = repositories.markAccountTestTemporaryUnavailable(
+    active,
+    '无效协议响应达到健康失败阈值',
+    adminAccess,
+    {
+      configRevision: active.configRevision,
+      checkedAt: thresholdFailure!.checkedAt,
+      failureCount: thresholdFailure!.failureCount,
+      observedAt: thresholdFailure!.checkedAt
+    }
+  )
+  assert.equal(degraded?.status, 'temporary_unavailable', 'active 账户无效协议响应达到阈值后应临时停调')
+}
+
 function accountAvailabilityState(account: AccountSummary | undefined) {
   return {
     status: account?.status,
@@ -255,6 +365,11 @@ function createMockOpenAIServer(): http.Server {
       return
     }
     req.on('end', () => {
+      if (req.headers.authorization?.includes('sk-manual-invalid-protocol-evidence')) {
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+        res.end('data: [DONE]\n\n')
+        return
+      }
       const completedEvent = {
         type: 'response.completed',
         response: {
