@@ -1,1 +1,2 @@
 *.sh text eol=lf
+backend-go/internal/modules/publicapi/external_public_api_catalog.generated.json text eol=lf
