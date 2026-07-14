@@ -4,15 +4,26 @@ package integration
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/pressly/goose/v3"
+	"github.com/testcontainers/testcontainers-go"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+
+	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/modules/managementclientipstats"
+	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
 const (
@@ -24,7 +35,189 @@ const (
 	w6ManagementClientIPStatsSecondaryAccountName = "Node Go IP Stats Secondary"
 	w6ManagementClientIPStatsSecondaryOwnerID     = "sys_node_go_ip_stats_secondary"
 	w6ManagementClientIPStatsSecondaryOwnerName   = "Node Go IP Stats Secondary Owner"
+
+	w6ManagementClientIPStatsDetailGooseBaselineVersion = int64(40)
+	w6ManagementClientIPStatsDetailGooseTargetVersion   = int64(41)
+	w6ManagementClientIPStatsDetailSchemaModeEnv        = "JUHE_AI_NODE_GO_IP_STATS_SCHEMA_MODE"
+	w6ManagementClientIPStatsDetailSchemaMode           = "goose-000041"
+	w6ManagementClientIPStatsDetailListTable            = "juhe_stats.client_ip_usage_range_windows"
+	w6ManagementClientIPStatsDetailTable                = "juhe_stats.client_ip_account_usage_range_windows"
+	w6ManagementClientIPStatsDetailIndex                = "juhe_stats.idx_client_ip_account_range_requests"
 )
+
+func TestW6ManagementClientIPStatsDetailMigrationNodeWriterGoReaderSmoke(t *testing.T) {
+	nodePath, backendDir, helperPath := w6ManagementClientIPStatsNodeWriterPrerequisites(t)
+	testcontainers.SkipIfProviderIsNotHealthy(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+
+	postgresContainer, err := tcpostgres.Run(ctx, postgresImage,
+		tcpostgres.WithDatabase("juhe_ai"),
+		tcpostgres.WithUsername("juhe_ai"),
+		tcpostgres.WithPassword(w6ManagementClientIPStatsNodeWriterPassword),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		t.Fatalf("start PostgreSQL container for detail migration: %v", err)
+	}
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		terminateContainer(t, cleanupCtx, postgresContainer)
+	}()
+
+	postgresURL, err := postgresContainer.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("build detail migration PostgreSQL connection string: %v", err)
+	}
+	db := openSQLDB(t, postgresURL)
+	defer closeSQLDB(t, db)
+
+	w6ManagementClientIPStatsRunDetailGooseTo(t, db, w6ManagementClientIPStatsDetailGooseBaselineVersion)
+	w6ManagementClientIPStatsAssertDetailGooseVersion(t, db, w6ManagementClientIPStatsDetailGooseBaselineVersion)
+	w6ManagementClientIPStatsAssertDetailMigrationObjects(t, db, false)
+
+	w6ManagementClientIPStatsRunDetailGooseTo(t, db, w6ManagementClientIPStatsDetailGooseTargetVersion)
+	w6ManagementClientIPStatsAssertDetailGooseVersion(t, db, w6ManagementClientIPStatsDetailGooseTargetVersion)
+	w6ManagementClientIPStatsAssertDetailMigrationObjects(t, db, true)
+
+	fixture := w6ManagementClientIPStatsRunNodeWriterFixture(
+		t,
+		ctx,
+		nodePath,
+		backendDir,
+		helperPath,
+		postgresURL,
+		w6ManagementClientIPStatsDetailSchemaModeEnv+"="+w6ManagementClientIPStatsDetailSchemaMode,
+	)
+	w6ManagementClientIPStatsAssertFixtureContract(t, fixture)
+	t.Setenv("JUHE_AI_USAGE_STATS_TIMEZONE", fixture.Timezone)
+	w6ManagementClientIPStatsAssertDetailGooseVersion(t, db, w6ManagementClientIPStatsDetailGooseTargetVersion)
+	w6ManagementClientIPStatsAssertDetailMigrationObjects(t, db, true)
+
+	store, err := postgresstore.Open(ctx, postgresURL)
+	if err != nil {
+		t.Fatalf(
+			"open production PostgreSQL detail store: %s",
+			w6ManagementClientIPStatsRedactSensitiveText(err.Error(), postgresURL),
+		)
+	}
+	defer store.Close()
+	storedTimezone, found, err := store.GetManagementUsageStatsTimezone(ctx)
+	if err != nil {
+		t.Fatalf("read production Go detail usage statistics timezone: %v", err)
+	}
+	if !found || storedTimezone != fixture.Timezone {
+		t.Fatalf(
+			"production Go detail usage statistics timezone = %q, found %v; want %q",
+			storedTimezone,
+			found,
+			fixture.Timezone,
+		)
+	}
+
+	service := managementclientipstats.NewServiceWithOptions(
+		managementclientipstats.ServiceOptions{
+			RegistryReader:           store,
+			DetailReader:             store,
+			UsageStatsTimezoneReader: store,
+			Now:                      time.Now,
+		},
+	)
+	router := httpapi.NewRouter(httpapi.RouterOptions{
+		Config: config.Config{
+			Host:                 "127.0.0.1",
+			Port:                 3000,
+			ManagementAPIEnabled: true,
+			TrustProxy:           "false",
+		},
+		Logger:                            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		SystemAPIRateLimitReader:          store,
+		SystemAPIIPRateLimiter:            httpapi.NewInMemorySystemAPIIPRateLimiter(),
+		SystemAPIAuthenticatedRateLimiter: httpapi.NewInMemorySystemAPIAuthenticatedRateLimiter(),
+		ManagementAPIAuthMiddleware: httpapi.NewManagementAPIAuthMiddleware(
+			w6ManagementClientIPStatsNodeWriterAuthenticator{},
+		),
+		ManagementClientIPStatsDetailHandler: httpapi.NewManagementClientIPStatsDetailHandler(service),
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	w6ManagementClientIPStatsAssertNodeWriterDetail(t, ctx, server, fixture)
+}
+
+func w6ManagementClientIPStatsRunDetailGooseTo(t *testing.T, db *sql.DB, targetVersion int64) {
+	t.Helper()
+
+	if err := goose.SetDialect("postgres"); err != nil {
+		t.Fatalf("set Goose dialect for detail migration %06d: %v", targetVersion, err)
+	}
+	migrationDir := filepath.Join(repoRoot(t), "db", "migrations")
+	if err := goose.UpTo(db, migrationDir, targetVersion); err != nil {
+		t.Fatalf("Goose up to detail migration %06d: %v", targetVersion, err)
+	}
+}
+
+func w6ManagementClientIPStatsAssertDetailGooseVersion(t *testing.T, db *sql.DB, wantVersion int64) {
+	t.Helper()
+
+	version, err := goose.GetDBVersion(db)
+	if err != nil {
+		t.Fatalf("inspect current Goose detail migration version: %v", err)
+	}
+	if version != wantVersion {
+		t.Fatalf("current Goose detail migration version = %d, want exactly %d", version, wantVersion)
+	}
+
+	var applied bool
+	if err := db.QueryRow(`
+SELECT is_applied
+FROM goose_db_version
+WHERE version_id = $1
+ORDER BY id DESC
+LIMIT 1
+`, wantVersion).Scan(&applied); err != nil {
+		t.Fatalf("inspect Goose detail migration %06d: %v", wantVersion, err)
+	}
+	if !applied {
+		t.Fatalf("Goose detail migration %06d is not applied", wantVersion)
+	}
+
+	var newerApplied int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM goose_db_version WHERE version_id > $1 AND is_applied = TRUE",
+		wantVersion,
+	).Scan(&newerApplied); err != nil {
+		t.Fatalf("inspect Goose detail migrations newer than %06d: %v", wantVersion, err)
+	}
+	if newerApplied != 0 {
+		t.Fatalf("Goose applied %d migration(s) newer than detail target %06d", newerApplied, wantVersion)
+	}
+}
+
+func w6ManagementClientIPStatsAssertDetailMigrationObjects(t *testing.T, db *sql.DB, wantDetail bool) {
+	t.Helper()
+
+	objects := []struct {
+		name string
+		want bool
+	}{
+		{name: w6ManagementClientIPStatsDetailListTable, want: true},
+		{name: w6ManagementClientIPStatsDetailTable, want: wantDetail},
+		{name: w6ManagementClientIPStatsDetailIndex, want: wantDetail},
+	}
+	for _, object := range objects {
+		var regclass sql.NullString
+		if err := db.QueryRow("SELECT to_regclass($1)::text", object.name).Scan(&regclass); err != nil {
+			t.Fatalf("inspect Goose detail migration object %s: %v", object.name, err)
+		}
+		exists := regclass.Valid && regclass.String != ""
+		if exists != object.want {
+			t.Fatalf("Goose detail migration object %s exists = %v, want %v", object.name, exists, object.want)
+		}
+	}
+}
 
 type w6ManagementClientIPStatsNodeWriterDetailUsageExpected struct {
 	RequestCount        int64   `json:"requestCount"`

@@ -8,7 +8,7 @@ import { refreshClientIpUsageRangeWindowsAsync } from '../../storage/client-ip-u
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import type { DatabaseClient } from '../../storage/database-client.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
-import { applyPostgresSchema } from '../../storage/postgres-schema.js'
+import { applyPostgresSchema, collectPostgresSchemaStatements } from '../../storage/postgres-schema.js'
 import { seedPostgresDefaults } from '../../storage/postgres-seed-defaults.js'
 import {
   clearUsageStatsTimezoneCache,
@@ -19,6 +19,9 @@ import {
 import type { UsageStatsRecordRow } from '../../storage/usage-stats-types.js'
 
 const fixtureEnabledEnv = 'JUHE_AI_NODE_GO_IP_STATS_FIXTURE'
+const fixtureSchemaModeEnv = 'JUHE_AI_NODE_GO_IP_STATS_SCHEMA_MODE'
+const fullSchemaMode = 'node-full'
+const gooseDetailSchemaMode = 'goose-000041'
 const outputPrefix = 'JUHE_AI_NODE_GO_IP_STATS '
 const clientIp = '198.18.250.42'
 const primaryAccount = {
@@ -49,12 +52,23 @@ async function main(): Promise<void> {
   assert.equal(runtimeConfig.databaseDriver, 'postgres', 'fixture requires PostgreSQL')
   assert.equal(runtimeConfig.processRole, 'worker', 'fixture requires worker process role')
   assert.equal(runtimeConfig.workerRole, 'stats-worker', 'fixture requires stats-worker role')
+  const schemaMode = process.env[fixtureSchemaModeEnv] ?? fullSchemaMode
+  assert(
+    schemaMode === fullSchemaMode || schemaMode === gooseDetailSchemaMode,
+    `${fixtureSchemaModeEnv} must be ${fullSchemaMode} or ${gooseDetailSchemaMode}`
+  )
 
   const pool = await getPostgresPool()
   try {
     const client = createPostgresDatabaseClient(pool)
-    await applyPostgresSchema(client)
-    await seedPostgresDefaults(client)
+    if (schemaMode === gooseDetailSchemaMode) {
+      await assertGooseDetailMigrationReady(client)
+      await applyGooseDetailWriterSupportSchema(client)
+      await assertGooseDetailMigrationReady(client)
+    } else {
+      await applyPostgresSchema(client)
+      await seedPostgresDefaults(client)
+    }
 
     const timezoneSelection = selectFixtureTimezone(new Date())
     await configureFixtureTimezone(client, timezoneSelection.timezone)
@@ -220,6 +234,52 @@ async function main(): Promise<void> {
     })}`)
   } finally {
     await closePostgresPool()
+  }
+}
+
+async function assertGooseDetailMigrationReady(client: DatabaseClient): Promise<void> {
+  const state = await client.one<{
+    version_id?: string
+    is_applied?: boolean
+    detail_table_exists?: boolean
+    detail_index_exists?: boolean
+  }>(`
+    SELECT
+      latest.version_id::text AS version_id,
+      latest.is_applied,
+      to_regclass('juhe_stats.client_ip_account_usage_range_windows') IS NOT NULL AS detail_table_exists,
+      to_regclass('juhe_stats.idx_client_ip_account_range_requests') IS NOT NULL AS detail_index_exists
+    FROM (
+      SELECT version_id, is_applied
+      FROM goose_db_version
+      ORDER BY id DESC
+      LIMIT 1
+    ) latest
+  `)
+  assert(state, 'Goose migration state should exist before the detail writer fixture runs')
+  assert.equal(state.version_id, '41', 'detail writer fixture requires Goose version exactly 41')
+  assert.equal(state.is_applied, true, 'Goose version 41 should be applied')
+  assert.equal(state.detail_table_exists, true, 'Goose 000041 should create the detail range table')
+  assert.equal(state.detail_index_exists, true, 'Goose 000041 should create the detail range index')
+}
+
+async function applyGooseDetailWriterSupportSchema(client: DatabaseClient): Promise<void> {
+  const supportStatementPrefixes = [
+    'CREATE TABLE IF NOT EXISTS client_ip_stats_daily (',
+    'CREATE TABLE IF NOT EXISTS client_ip_account_stats_daily (',
+    'CREATE INDEX IF NOT EXISTS idx_client_ip_stats_daily_date ',
+    'CREATE INDEX IF NOT EXISTS idx_client_ip_account_daily_date ',
+    'CREATE INDEX IF NOT EXISTS idx_client_ip_account_daily_ip_date '
+  ] as const
+  const statsStatements = collectPostgresSchemaStatements()
+    .filter((statement) => statement.schemaName === 'juhe_stats')
+
+  for (const prefix of supportStatementPrefixes) {
+    const matches = statsStatements.filter((statement) => statement.sql.startsWith(prefix))
+    assert.equal(matches.length, 1, `production stats schema should contain exactly one ${prefix.trim()} statement`)
+    const statement = matches[0]
+    assert(statement, `production stats schema statement ${prefix.trim()} should exist`)
+    await client.execute(`SET search_path TO "juhe_stats", public;\n${statement.sql}`)
   }
 }
 

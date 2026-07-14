@@ -130,7 +130,6 @@ func TestW6ManagementClientIPStatsNodeWriterGoReaderSmoke(t *testing.T) {
 		managementclientipstats.ServiceOptions{
 			ListReader:               store,
 			RegistryReader:           store,
-			DetailReader:             store,
 			UsageStatsTimezoneReader: store,
 			Now:                      time.Now,
 		},
@@ -149,15 +148,13 @@ func TestW6ManagementClientIPStatsNodeWriterGoReaderSmoke(t *testing.T) {
 		ManagementAPIAuthMiddleware: httpapi.NewManagementAPIAuthMiddleware(
 			w6ManagementClientIPStatsNodeWriterAuthenticator{},
 		),
-		ManagementClientIPStatsHandler:       httpapi.NewManagementClientIPStatsHandler(service),
-		ManagementClientIPStatsDetailHandler: httpapi.NewManagementClientIPStatsDetailHandler(service),
+		ManagementClientIPStatsHandler: httpapi.NewManagementClientIPStatsHandler(service),
 	})
 	server := httptest.NewServer(router)
 	defer server.Close()
 
 	response := w6ManagementClientIPStatsRequestNodeWriterResult(t, ctx, server, fixture)
 	w6ManagementClientIPStatsAssertNodeWriterResult(t, response, fixture)
-	w6ManagementClientIPStatsAssertNodeWriterDetail(t, ctx, server, fixture)
 }
 
 type w6ManagementClientIPStatsNodeWriterExpected struct {
@@ -310,6 +307,7 @@ func w6ManagementClientIPStatsRunNodeWriterFixture(
 	backendDir string,
 	helperPath string,
 	postgresURL string,
+	additionalEnvironment ...string,
 ) w6ManagementClientIPStatsNodeWriterFixture {
 	t.Helper()
 
@@ -319,7 +317,10 @@ func w6ManagementClientIPStatsRunNodeWriterFixture(
 	stderr := newW6ManagementClientIPStatsBoundedOutput(w6ManagementClientIPStatsNodeWriterOutputLimit)
 	command := exec.CommandContext(nodeCtx, nodePath, "--import", "tsx", helperPath)
 	command.Dir = backendDir
-	command.Env = w6ManagementClientIPStatsNodeWriterEnvironment(postgresURL)
+	command.Env = append(
+		w6ManagementClientIPStatsNodeWriterEnvironment(postgresURL),
+		additionalEnvironment...,
+	)
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.WaitDelay = 5 * time.Second
