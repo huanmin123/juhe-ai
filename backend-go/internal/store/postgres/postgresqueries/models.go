@@ -51,6 +51,7 @@ type JuheBusinessAccount struct {
 	LastHealthCheckErrorCode                  pgtype.Text
 	LastHealthCheckErrorMessage               pgtype.Text
 	ConfigRevision                            int32
+	HealthCheckFailureStartedAt               pgtype.Timestamptz
 }
 
 type JuheBusinessAccountModelMapping struct {
@@ -622,6 +623,57 @@ type JuheDatasetPublicApiLog struct {
 	StartedAt             pgtype.Timestamptz
 	EndedAt               pgtype.Timestamptz
 	CreatedAt             pgtype.Timestamptz
+}
+
+type JuheDatasetRuntimeLog struct {
+	ID           string
+	LogFile      pgtype.Text
+	LogOffset    pgtype.Int8
+	LineNumber   pgtype.Int4
+	Time         string
+	Level        string
+	TraceID      pgtype.Text
+	Event        pgtype.Text
+	Message      pgtype.Text
+	ErrorMessage pgtype.Text
+	RawJson      string
+	CreatedAt    string
+}
+
+type JuheDatasetRuntimeLogEventFacet struct {
+	BucketKey  string
+	Event      string
+	Count      int64
+	LatestTime pgtype.Text
+	UpdatedAt  string
+}
+
+type JuheDatasetRuntimeLogFacetSummary struct {
+	BucketKey    string
+	TotalCount   int64
+	EarliestTime pgtype.Text
+	LatestTime   pgtype.Text
+	UpdatedAt    string
+}
+
+type JuheDatasetRuntimeLogFileCursor struct {
+	LogFile          string
+	FileIdentity     pgtype.Text
+	CursorOffset     int64
+	LineNumber       int32
+	FileSize         int64
+	FileMtimeMs      pgtype.Int8
+	LastReadAt       pgtype.Text
+	LastErrorMessage pgtype.Text
+	CreatedAt        string
+	UpdatedAt        string
+}
+
+type JuheDatasetRuntimeLogLevelFacet struct {
+	BucketKey string
+	Level     string
+	Count     int64
+	UpdatedAt string
 }
 
 type JuheStatsAuthorizationTeamUsageRangeWindow struct {
