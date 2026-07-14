@@ -20,6 +20,16 @@ interface RequestRecord {
 
 type MockScenario =
   | 'normal'
+  | 'account_test_options_not_object'
+  | 'account_test_options_account_mismatch'
+  | 'account_test_options_default_model_empty'
+  | 'account_test_options_models_empty'
+  | 'account_test_options_model_empty'
+  | 'account_test_options_protocols_invalid'
+  | 'account_test_options_default_model_missing'
+  | 'account_test_options_endpoint_modes_empty'
+  | 'account_test_options_endpoint_mode_invalid'
+  | 'account_test_options_default_endpoint_mode_mismatch'
   | 'ip_stats_not_ready'
   | 'ip_stats_empty'
   | 'ip_stats_detail_not_ready'
@@ -59,6 +69,8 @@ const sensitiveClientIPHash = 'a'.repeat(64)
 const explicitClientIPHash = 'd'.repeat(64)
 const selectedRouteStrategyId = 'route_plan0081_normal_sensitive'
 const missingRouteStrategyId = 'route_plan0081_missing_sensitive'
+const configuredAccountId = 'acct_plan0081/encoded target?read-only'
+const mismatchedAccountId = 'acct_plan0081_mismatched_sensitive'
 const requestRecords: RequestRecord[] = []
 const groups = new Map<string, MockGroup>()
 let scenario: MockScenario = 'normal'
@@ -82,6 +94,8 @@ try {
   await assertLogBoundaryRedaction(baseUrl)
   await assertRouteStrategyReadScenarios(baseUrl)
   await assertReadOnlySmoke(baseUrl)
+  await assertAccountTestOptionsReadSmoke(baseUrl)
+  await assertAccountTestOptionsResponseRequirements(baseUrl)
   await assertClientIPRangeNotReadySmoke(baseUrl)
   await assertClientIPRangeEmptySmoke(baseUrl)
   await assertStrictClientIPDetailRequiresTarget(baseUrl)
@@ -209,10 +223,12 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   resetMock('normal')
   const output: string[] = []
   const env = smokeEnvironment(baseUrl, {
+    [realGoManagementSmokeEnv.accountId]: '   ',
     [realGoManagementSmokeEnv.allowGroupMutations]: '0',
     [realGoManagementSmokeEnv.requireClientIpDetail]: '1'
   })
   const loadedConfig = loadRealGoManagementSmokeConfig(env)
+  assert.equal(loadedConfig.accountId, undefined)
   assert.equal(loadedConfig.requireClientIpDetail, true)
   assert.equal(loadedConfig.clientIpHash, undefined)
   const summary = await runRealGoManagementSmokeFromEnvironment(env, (message) => output.push(message))
@@ -221,7 +237,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
@@ -231,6 +247,75 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assertNoCookieLeak(output)
   assertNoEnvironmentIdentifierLeak(output, baseUrl)
   assertRequestHeaders()
+}
+
+async function assertAccountTestOptionsReadSmoke(baseUrl: string): Promise<void> {
+  resetMock('normal')
+  const output: string[] = []
+  const env = smokeEnvironment(baseUrl, {
+    [realGoManagementSmokeEnv.accountId]: `  ${configuredAccountId}  `
+  })
+  const loadedConfig = loadRealGoManagementSmokeConfig(env)
+  assert.equal(loadedConfig.accountId, configuredAccountId)
+
+  const summary = await runRealGoManagementSmokeFromEnvironment(env, (message) => output.push(message))
+  assert.deepEqual(summary, expectedSummary(true, 3, true, 1, true, true))
+  assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
+  assert.deepEqual(requestPaths(), [
+    groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
+    providersPath(), modelOptionsPath(), accountTestOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
+  ])
+
+  const accountTestOptionsRequests = requestRecords.filter((record) =>
+    record.url?.startsWith(`/__aisys__/api/accounts/${encodeURIComponent(configuredAccountId)}/test-options`)
+  )
+  assert.equal(accountTestOptionsRequests.length, 1)
+  assert.equal(accountTestOptionsRequests[0]?.method, 'GET')
+  assert.equal(accountTestOptionsRequests[0]?.body, undefined)
+  assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
+  assert.equal(
+    requestRecords.some((record) => /\/accounts\/[^/]+\/test(?:\?|$)/.test(record.url ?? '')),
+    false,
+    'account test-options smoke must not call the account test mutation endpoint'
+  )
+  assertNoCookieLeak(output)
+  assertNoEnvironmentIdentifierLeak(output, baseUrl)
+  assertRequestHeaders()
+}
+
+async function assertAccountTestOptionsResponseRequirements(baseUrl: string): Promise<void> {
+  const cases = [
+    ['account_test_options_not_object', /account test options data must be an object/],
+    ['account_test_options_account_mismatch', /account test options data\.accountId must match the configured account/],
+    ['account_test_options_default_model_empty', /account test options data\.defaultModel must be a non-empty string/],
+    ['account_test_options_models_empty', /account test options data\.models must be a non-empty array/],
+    ['account_test_options_model_empty', /account test options data\.models item 0\.model must be a non-empty string/],
+    ['account_test_options_protocols_invalid', /account test options data\.models item 0\.supportedApiProtocols must contain only strings/],
+    ['account_test_options_default_model_missing', /account test options data\.defaultModel must reference a model/],
+    ['account_test_options_endpoint_modes_empty', /account test options data\.testEndpointModes must be a non-empty array/],
+    ['account_test_options_endpoint_mode_invalid', /account test options data\.testEndpointModes must contain only non-empty strings/],
+    ['account_test_options_default_endpoint_mode_mismatch', /account test options data\.defaultTestEndpointMode must equal the first testEndpointModes item/]
+  ] as const
+
+  for (const [requestScenario, expectedMessage] of cases) {
+    resetMock(requestScenario)
+    const output: string[] = []
+    const failureMessage = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl, {
+        [realGoManagementSmokeEnv.accountId]: configuredAccountId
+      }), (message) => output.push(message))
+    )
+
+    assert.match(failureMessage, expectedMessage)
+    assert.deepEqual(output, [])
+    assert.deepEqual(requestPaths(), [
+      groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
+      providersPath(), modelOptionsPath(), accountTestOptionsPath()
+    ])
+    assert.equal(requestRecords.every((record) => record.method === 'GET' && record.body === undefined), true)
+    assertNoEnvironmentIdentifierLeak([failureMessage], baseUrl)
+    assertRequestHeaders()
+  }
 }
 
 async function assertStrictClientIPDetailRequiresTarget(baseUrl: string): Promise<void> {
@@ -330,7 +415,7 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
@@ -353,7 +438,7 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
@@ -655,6 +740,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     ])
     return
   }
+  const accountTestOptionsAccountId = accountTestOptionsAccountIdFromPath(url.pathname)
+  if (req.method === 'GET' && accountTestOptionsAccountId !== undefined) {
+    sendEnvelope(res, accountTestOptionsFixture(accountTestOptionsAccountId, scenario))
+    return
+  }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/ip-stats') {
     await handleClientIPStatsRequest(res, scenario)
     return
@@ -898,6 +988,60 @@ function providerFixture(code: string, name: string): Record<string, unknown> {
   }
 }
 
+function accountTestOptionsFixture(accountId: string, requestScenario: MockScenario): unknown {
+  if (requestScenario === 'account_test_options_not_object') {
+    return []
+  }
+
+  const result: Record<string, unknown> = {
+    accountId,
+    defaultModel: 'gpt-test-options-sensitive',
+    models: [
+      {
+        model: 'gpt-test-options-sensitive',
+        supportedApiProtocols: ['responses']
+      },
+      {
+        model: 'gpt-test-options-secondary',
+        supportedApiProtocols: []
+      }
+    ],
+    testEndpointModes: ['responses_json', 'responses_sse'],
+    defaultTestEndpointMode: 'responses_json'
+  }
+
+  switch (requestScenario) {
+    case 'account_test_options_account_mismatch':
+      result.accountId = mismatchedAccountId
+      break
+    case 'account_test_options_default_model_empty':
+      result.defaultModel = '   '
+      break
+    case 'account_test_options_models_empty':
+      result.models = []
+      break
+    case 'account_test_options_model_empty':
+      result.models = [{ model: '', supportedApiProtocols: ['responses'] }]
+      break
+    case 'account_test_options_protocols_invalid':
+      result.models = [{ model: 'gpt-test-options-sensitive', supportedApiProtocols: ['responses', 1] }]
+      break
+    case 'account_test_options_default_model_missing':
+      result.defaultModel = 'gpt-test-options-missing'
+      break
+    case 'account_test_options_endpoint_modes_empty':
+      result.testEndpointModes = []
+      break
+    case 'account_test_options_endpoint_mode_invalid':
+      result.testEndpointModes = ['responses_json', '']
+      break
+    case 'account_test_options_default_endpoint_mode_mismatch':
+      result.defaultTestEndpointMode = 'responses_sse'
+      break
+  }
+  return result
+}
+
 function sendEnvelope(res: ServerResponse, data: unknown): void {
   res.end(JSON.stringify({ data }))
 }
@@ -909,6 +1053,11 @@ function groupIdFromPath(pathname: string): string | undefined {
 
 function routeStrategyIdFromPath(pathname: string): string | undefined {
   const match = /^\/__aisys__\/api\/route-strategies\/([^/]+)$/.exec(pathname)
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined
+}
+
+function accountTestOptionsAccountIdFromPath(pathname: string): string | undefined {
+  const match = /^\/__aisys__\/api\/accounts\/([^/]+)\/test-options$/.exec(pathname)
   return match?.[1] ? decodeURIComponent(match[1]) : undefined
 }
 
@@ -941,9 +1090,11 @@ function expectedSummary(
   clientIpItemCount = clientIpRangeReady ? 3 : 0,
   clientIpDetailChecked = clientIpRangeReady && clientIpItemCount > 0,
   routeStrategyCount = 1,
-  routeStrategyDetailChecked = routeStrategyCount > 0
+  routeStrategyDetailChecked = routeStrategyCount > 0,
+  accountTestOptionsChecked = false
 ): Record<string, unknown> {
   return {
+    accountTestOptionsChecked,
     groupCount: 3,
     selectedGroupId,
     providerCount: 2,
@@ -1026,6 +1177,10 @@ function modelOptionsPath(): string {
   return `GET /__aisys__/api/providers/models/options?systemAccountId=${systemAccountId}`
 }
 
+function accountTestOptionsPath(accountId = configuredAccountId): string {
+  return `GET /__aisys__/api/accounts/${encodeURIComponent(accountId)}/test-options?systemAccountId=${systemAccountId}`
+}
+
 function clientIPStatsPath(): string {
   return 'GET /__aisys__/api/ip-stats?page=1&pageSize=20&sortField=requestCount&sortOrder=desc'
 }
@@ -1065,6 +1220,8 @@ function assertNoEnvironmentIdentifierLeak(
     explicitClientIPHash,
     selectedRouteStrategyId,
     missingRouteStrategyId,
+    configuredAccountId,
+    mismatchedAccountId,
     'PLAN-0081 normal route sensitive name',
     'PLAN-0081 sensitive route owner',
     'route-config-sensitive-model',

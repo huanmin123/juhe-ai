@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 
 export const realGoManagementSmokeEnv = {
+  accountId: 'JUHE_REAL_GO_MANAGEMENT_ACCOUNT_ID',
   allowGroupMutations: 'JUHE_REAL_GO_MANAGEMENT_ALLOW_GROUP_MUTATIONS',
   baseUrl: 'JUHE_REAL_GO_MANAGEMENT_BASE_URL',
   clientIpHash: 'JUHE_REAL_GO_MANAGEMENT_CLIENT_IP_HASH',
@@ -32,6 +33,7 @@ const mutationSchedulingPolicy = {
 export type SmokeEnvironment = Readonly<Record<string, string | undefined>>
 
 export interface RealGoManagementSmokeConfig {
+  accountId?: string
   allowGroupMutations?: boolean
   baseUrl: string
   clientIpHash?: string
@@ -45,6 +47,7 @@ export interface RealGoManagementSmokeConfig {
 }
 
 export interface RealGoManagementSmokeSummary {
+  accountTestOptionsChecked: boolean
   groupCount: number
   selectedGroupId: string
   providerCount: number
@@ -127,6 +130,11 @@ interface ModelOptionRecord {
   model: string
 }
 
+interface AccountTestOptionModel {
+  model: string
+  supportedApiProtocols: string[]
+}
+
 interface ClientIPStatsRange {
   startDate: string
   endDate: string
@@ -200,6 +208,7 @@ export function loadRealGoManagementSmokeConfig(
   expect(!/[\r\n]/.test(cookie), `${realGoManagementSmokeEnv.cookie} must be a single Cookie header line`)
 
   return {
+    accountId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.accountId),
     allowGroupMutations: optionalBinaryFlag(env, realGoManagementSmokeEnv.allowGroupMutations),
     baseUrl: normalizeManagementApiBaseUrl(baseUrl),
     clientIpHash: optionalClientIPHashEnvironmentValue(env, realGoManagementSmokeEnv.clientIpHash),
@@ -266,7 +275,8 @@ export function formatRealGoManagementSmokeSummary(summary: RealGoManagementSmok
     `clientIpRangeReady=${summary.clientIpRangeReady}`,
     `clientIpDetailChecked=${summary.clientIpDetailChecked}`,
     `routeStrategies=${summary.routeStrategyCount}`,
-    `routeStrategyDetailChecked=${summary.routeStrategyDetailChecked}`
+    `routeStrategyDetailChecked=${summary.routeStrategyDetailChecked}`,
+    `accountTestOptionsChecked=${summary.accountTestOptionsChecked}`
   ].join(' ')
 }
 
@@ -319,6 +329,19 @@ async function runReadOnlySmoke(
     expect(providerCodes.has(option.providerCode), 'Model option references an unknown provider')
   }
 
+  let accountTestOptionsChecked = false
+  if (config.accountId) {
+    const accountTestOptionsData = await getEnvelopeData(
+      endpointUrl(config.baseUrl, `/accounts/${encodeURIComponent(config.accountId)}/test-options`, {
+        systemAccountId: config.systemAccountId
+      }),
+      config,
+      'account test options'
+    )
+    assertAccountTestOptions(accountTestOptionsData, config.accountId)
+    accountTestOptionsChecked = true
+  }
+
   const clientIPStatsData = await getEnvelopeData(
     clientIPStatsListUrl(config),
     config,
@@ -355,6 +378,7 @@ async function runReadOnlySmoke(
     selectedGroup,
     providers,
     summary: {
+      accountTestOptionsChecked,
       groupCount: groupList.items.length,
       selectedGroupId: detail.id,
       providerCount: providers.length,
@@ -514,6 +538,7 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
   }
   return {
     ...config,
+    accountId: config.accountId?.trim() || undefined,
     allowGroupMutations: config.allowGroupMutations ?? false,
     baseUrl: normalizeManagementApiBaseUrl(config.baseUrl),
     clientIpHash: config.clientIpHash?.trim().toLowerCase() || undefined,
@@ -1179,6 +1204,39 @@ function assertModelOptions(value: unknown): ModelOptionRecord[] {
     }
     return item as unknown as ModelOptionRecord
   })
+}
+
+function assertAccountTestOptions(value: unknown, expectedAccountId: string): void {
+  const label = 'account test options data'
+  expect(isRecord(value), `${label} must be an object`)
+  expect(value.accountId === expectedAccountId, `${label}.accountId must match the configured account`)
+  expect(isNonEmptyString(value.defaultModel), `${label}.defaultModel must be a non-empty string`)
+  expect(Array.isArray(value.models) && value.models.length > 0, `${label}.models must be a non-empty array`)
+
+  const models = value.models.map((item, index): AccountTestOptionModel => {
+    const itemLabel = `${label}.models item ${index}`
+    expect(isRecord(item), `${itemLabel} must be an object`)
+    expect(isNonEmptyString(item.model), `${itemLabel}.model must be a non-empty string`)
+    assertStringArray(item.supportedApiProtocols, `${itemLabel}.supportedApiProtocols`)
+    return item as unknown as AccountTestOptionModel
+  })
+  expect(
+    models.some((item) => item.model === value.defaultModel),
+    `${label}.defaultModel must reference a model`
+  )
+
+  expect(
+    Array.isArray(value.testEndpointModes) && value.testEndpointModes.length > 0,
+    `${label}.testEndpointModes must be a non-empty array`
+  )
+  expect(
+    value.testEndpointModes.every(isNonEmptyString),
+    `${label}.testEndpointModes must contain only non-empty strings`
+  )
+  expect(
+    value.defaultTestEndpointMode === value.testEndpointModes[0],
+    `${label}.defaultTestEndpointMode must equal the first testEndpointModes item`
+  )
 }
 
 function requiredEnvironmentValue(env: SmokeEnvironment, name: string): string {
