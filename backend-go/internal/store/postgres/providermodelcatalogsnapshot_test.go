@@ -149,10 +149,11 @@ func TestProviderModelCatalogSnapshotMigrationAddsTierPricingColumnsAndNodeValue
 		}
 	}
 
-	const solValues = `NULL, NULL, 5, 30, 0.5, 6.25, NULL,
+	const solValues = `NULL, 1050000, 5, 30, 0.5, 6.25, NULL,
     10, 60, 1, 12.5, NULL,
     2.5, 15, 0.25, 3.125, NULL,
-    272000, 2, 1.5,`
+    272000, 2, 1.5,
+    NULL, NULL, NULL, NULL, NULL, 922000, 128000,`
 	if !strings.Contains(sql, solValues) {
 		t.Fatalf("gpt-5.6-sol tier pricing and long-context metadata drifted from Node values")
 	}

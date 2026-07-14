@@ -1,5 +1,6 @@
 export interface RedisCommandClient {
   isOpen?: boolean
+  isReady?: boolean
   connect(): Promise<unknown>
   get(key: string): Promise<string | null>
   set(key: string, value: string, options?: Record<string, unknown>): Promise<string | null>
@@ -9,6 +10,12 @@ export interface RedisCommandClient {
   quit?(): Promise<unknown>
   destroy?(): void
   on(event: string, listener: (...args: unknown[]) => void): unknown
+}
+
+export interface DedicatedRedisClientOptions {
+  disableOfflineQueue?: boolean
+  commandsQueueMaxLength?: number
+  connectTimeoutMs?: number
 }
 
 const redisClients = new Map<string, Promise<RedisCommandClient>>()
@@ -32,8 +39,8 @@ export function hasRedisClient(url: string): boolean {
   return redisClients.has(normalizeRedisUrl(url))
 }
 
-export function createDedicatedRedisClient(url: string): Promise<RedisCommandClient> {
-  return createRedisClient(normalizeRedisUrl(url))
+export function createDedicatedRedisClient(url: string, options: DedicatedRedisClientOptions = {}): Promise<RedisCommandClient> {
+  return createRedisClient(normalizeRedisUrl(url), options)
 }
 
 export async function closeRedisClients(): Promise<void> {
@@ -65,12 +72,18 @@ async function closeRedisClient(client: RedisCommandClient): Promise<void> {
   }
 }
 
-async function createRedisClient(url: string): Promise<RedisCommandClient> {
+async function createRedisClient(url: string, options: DedicatedRedisClientOptions = {}): Promise<RedisCommandClient> {
   const { createClient } = await import('redis')
+  const connectTimeoutMs = normalizedPositiveInteger(options.connectTimeoutMs, redisClientConnectTimeoutMs)
+  const commandsQueueMaxLength = options.commandsQueueMaxLength === undefined
+    ? undefined
+    : normalizedPositiveInteger(options.commandsQueueMaxLength, 1)
   const client = createClient({
     url,
+    ...(options.disableOfflineQueue === true ? { disableOfflineQueue: true } : {}),
+    ...(commandsQueueMaxLength === undefined ? {} : { commandsQueueMaxLength }),
     socket: {
-      connectTimeout: 10000,
+      connectTimeout: connectTimeoutMs,
       reconnectStrategy: (retries) => Math.min(5000, 250 + retries * 250)
     }
   }) as unknown as RedisCommandClient
@@ -78,12 +91,18 @@ async function createRedisClient(url: string): Promise<RedisCommandClient> {
     // node-redis emits connection errors; command promises still reject for callers.
   })
   try {
-    await withTimeout(client.connect(), redisClientConnectTimeoutMs, 'Redis connect timeout')
+    await withTimeout(client.connect(), connectTimeoutMs, 'Redis connect timeout')
   } catch (error) {
     client.destroy?.()
     throw error
   }
   return client
+}
+
+function normalizedPositiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(1, Math.trunc(value))
+    : fallback
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

@@ -39,8 +39,8 @@ assert.equal(deepSeekAtShutdown.has('deepseek-reasoner'), false, 'as-of listing 
 
 const migrationSQL = readFileSync(migrationPath, 'utf8')
 assert.equal(
-  migrationSQL,
-  providerModelCatalogSnapshotSQL,
+  normalizeLineEndings(migrationSQL),
+  normalizeLineEndings(providerModelCatalogSnapshotSQL),
   '000039 must match the complete Node built-in catalog generated at the fixed snapshot date'
 )
 assert(
@@ -49,3 +49,7 @@ assert(
 )
 
 console.log('provider model catalog snapshot regression passed')
+
+function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n/g, '\n')
+}

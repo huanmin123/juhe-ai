@@ -1,10 +1,11 @@
 import { strict as assert } from 'node:assert'
 import { createHash } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
-import type { Request } from 'express'
+import type { Request, Response } from 'express'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
@@ -53,6 +54,8 @@ const largeSuccessRequestBody = Buffer.from(JSON.stringify({
 }), 'utf8')
 
 try {
+  assertHttpCompletionTiming()
+  assertCaptureCancellationLifecycle()
   const unsampledTraceId = traceIdForBucket((bucket) => bucket >= 1000)
   const sampledTraceId = traceIdForBucket((bucket) => bucket < 1000)
   finalizeSuccessfulRequest(unsampledTraceId)
@@ -582,6 +585,86 @@ function assertAuditPayloadCleanupUsesAsyncFiles(): void {
 
 function finalizeSuccessfulRequest(traceId: string): void {
   finalizeSuccessfulRequestWithBody(traceId, Buffer.from(JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' }), 'utf8'))
+}
+
+function assertHttpCompletionTiming(): void {
+  const traceId = 'trace-audit-http-completion-timing'
+  const activeCaptureCountBefore = auditCapture.getActiveAuditCaptureCount()
+  const response = Object.assign(new EventEmitter(), {
+    writableFinished: false,
+    destroyed: false
+  }) as unknown as Response
+  const startedAtMs = Date.now() - 25
+  const capture = auditCapture.createAuditCapture({
+    req: auditRequest(),
+    res: response,
+    traceId,
+    clientIp: '127.0.0.1',
+    startedAtMs
+  })
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore + 1, 'HTTP 请求处理中应计入活动审计捕获')
+  capture.finalize({
+    outcome: 'success',
+    success: true,
+    statusCode: 200
+  })
+  assert.equal(repositories.listAuditLogs({ traceId }).total, 0, 'HTTP 未完成前审计不得提前固化错误的客户端时间')
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore + 1, '等待 HTTP 完成的审计仍应计入活动捕获')
+  response.emit('finish')
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore, 'HTTP finish 后审计活动计数应归还')
+  auditQueue.flushAllAuditLogQueue()
+  const summary = repositories.listAuditLogs({ traceId }).items[0]
+  assert(summary?.httpCompletedAt, 'HTTP finish 后审计应保存返回客户端时间')
+  assert((summary?.httpDurationMs ?? 0) >= 25, 'HTTP 客户端耗时应从请求开始计算')
+  assert((summary?.durationMs ?? 0) >= (summary?.httpDurationMs ?? 0), '审计完成耗时不得早于 HTTP 客户端耗时')
+}
+
+function assertCaptureCancellationLifecycle(): void {
+  const routesSource = readFileSync(join(backendRoot, 'src', 'modules', 'gateway', 'routes.ts'), 'utf8')
+  assert.match(
+    routesSource,
+    /try \{[\s\S]*preflight = await prepareOpenAIGatewayDispatchContext\([\s\S]*\} catch \(error\) \{[\s\S]*auditCapture\.cancel\(\)[\s\S]*throw error[\s\S]*if \(!preflight\) \{[\s\S]*auditCapture\.cancel\(\)/,
+    '初始 preflight 抛错或无上下文返回时必须取消未 finalize 的审计捕获'
+  )
+
+  const activeCaptureCountBefore = auditCapture.getActiveAuditCaptureCount()
+  const response = Object.assign(new EventEmitter(), {
+    writableFinished: false,
+    destroyed: false
+  }) as unknown as Response
+  const canceledTraceId = 'trace-audit-preflight-canceled'
+  const canceledCapture = auditCapture.createAuditCapture({
+    req: auditRequest(),
+    res: response,
+    traceId: canceledTraceId,
+    clientIp: '127.0.0.1',
+    startedAtMs: Date.now()
+  })
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore + 1, 'preflight 开始后应登记活动捕获')
+  canceledCapture.cancel()
+  canceledCapture.cancel()
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore, 'preflight 抛错取消必须幂等归还活动捕获')
+  response.emit('finish')
+  canceledCapture.finalize({ outcome: 'gateway_failed', success: false, statusCode: 500 })
+  auditQueue.flushAllAuditLogQueue()
+  assert.equal(repositories.listAuditLogs({ traceId: canceledTraceId }).total, 0, '已取消捕获不得在迟到 finish/finalize 后重新写入')
+
+  const finalizedResponse = Object.assign(new EventEmitter(), {
+    writableFinished: false,
+    destroyed: false
+  }) as unknown as Response
+  const finalizedCapture = auditCapture.createAuditCapture({
+    req: auditRequest(),
+    res: finalizedResponse,
+    traceId: 'trace-audit-finalize-wins-over-cancel',
+    clientIp: '127.0.0.1',
+    startedAtMs: Date.now()
+  })
+  finalizedCapture.finalize({ outcome: 'success', success: true, statusCode: 200 })
+  finalizedCapture.cancel()
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore + 1, '已请求 finalize 的捕获不得被迟到 cancel 提前丢弃')
+  finalizedResponse.emit('finish')
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore, 'finalize 等到 HTTP finish 后必须只归还一次活动捕获')
 }
 
 function finalizeSuccessfulRequestWithBody(traceId: string, body: Buffer<ArrayBufferLike>): void {

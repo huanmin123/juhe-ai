@@ -213,7 +213,7 @@ function catalogRowSQL(row: ProviderModelPricing): string {
     sqlNullableText(row.codexDefaultReasoningLevel),
     sqlNullableText(row.codexMultiAgentVersion),
     'NULL',
-    'NULL',
+    sqlNullableNumber(row.contextWindowTokens),
     sqlNullableNumber(row.inputUsdPer1M),
     sqlNullableNumber(row.outputUsdPer1M),
     sqlNullableNumber(row.cachedInputUsdPer1M),

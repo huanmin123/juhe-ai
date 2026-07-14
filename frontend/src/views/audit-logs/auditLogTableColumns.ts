@@ -21,7 +21,7 @@ export const auditLogColumns = [
   { title: 'API Key', key: 'apiKey', width: 150 },
   { title: '分组', key: 'group', width: 150 },
   { title: '系统账户', key: 'systemAccount', width: 150 },
-  { title: '耗时', key: 'duration', width: 90 },
+  { title: '链路耗时', key: 'duration', width: 100 },
   { title: '时间', key: 'createdAt', width: 180 },
   { title: '操作', key: 'actions', fixed: 'right' }
 ]

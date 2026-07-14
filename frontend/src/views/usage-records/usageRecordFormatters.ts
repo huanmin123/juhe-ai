@@ -71,6 +71,33 @@ export function formatDuration(value?: unknown): string {
   return formatMillisecondsAsSeconds(numberValue(value))
 }
 
+export function usageRecordLatencyParts(record: UsageRecordSummary): string[] {
+  return [
+    `首 token ${formatDuration(record.firstTokenMs)}`,
+    `总耗时 ${formatDuration(record.durationMs)}`
+  ]
+}
+
+export function usageRecordServiceTierText(record: UsageRecordSummary): string | undefined {
+  if (record.billedServiceTier === 'priority') return 'Priority'
+  if (record.billedServiceTier === 'flex') return 'Flex'
+  return undefined
+}
+
+export function usageRecordReasoningEffortText(record: UsageRecordSummary): string | undefined {
+  const effort = record.effectiveReasoningEffort
+  if (!effort) return undefined
+  return {
+    none: '不思考',
+    minimal: '极低',
+    low: '低',
+    medium: '中',
+    high: '高',
+    xhigh: '超高',
+    max: '最大'
+  }[effort]
+}
+
 export function statusCodeColor(record: UsageRecordSummary): string {
   const value = record.statusCode
   if (!value) return 'default'

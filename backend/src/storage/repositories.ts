@@ -7,6 +7,7 @@ import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-m
 import { assertAnthropicEndpointModesCompatible } from '../domain/anthropic-endpoint-modes.js'
 import { assertGeminiEndpointModesCompatible } from '../domain/gemini-endpoint-modes.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isAnthropicProtocolProfile, isGeminiProtocolProfile, isGptVendorCode, isHybridProviderCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
+import { validateAccountBalanceCapability } from '../modules/accounts/account-balance-config.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { cooldownRetestObservationStartedAtForStatus, initialCooldownUntilForStatus, invalidateGatewayRuntimeAfterBusinessWrite, isAccountExpired } from './account-runtime-mutation-helpers.js'
@@ -647,6 +648,7 @@ export {
   createUsageRecord,
   createUsageRecordsBatchAsync,
   createUsageRecordsBatch,
+  freezeUsageRecordPricingFactsAsync,
   getUsageRecordDetail,
   getUsageRecordDetailAsync,
   listUsageRecords,
@@ -1523,35 +1525,66 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
   }))
 }
 
-function accountBalanceWriteValues(input: Record<string, unknown>, now: string): {
+const defaultDisabledMultiKeyBalanceConfig = { adapter: 'builtin', intervalMinutes: 5 } as const
+
+function accountBalanceWriteValues(
+  input: Record<string, unknown>,
+  now: string,
+  account: { type: string; credentials: Record<string, unknown> }
+): {
   enabled: boolean
   config?: AccountSummary['balanceQueryConfig']
   nextRefreshAt?: string
 } {
-  const enabled = input.balanceQueryEnabled === true
+  const decision = validateAccountBalanceCapability(account, input.balanceQueryEnabled === true)
   const config = input.balanceQueryConfig && typeof input.balanceQueryConfig === 'object' && !Array.isArray(input.balanceQueryConfig)
     ? input.balanceQueryConfig as AccountSummary['balanceQueryConfig']
-    : undefined
-  if (enabled && !config) throw new Error('开启上游余额查询时必须选择查询类型')
-  return { enabled, config, nextRefreshAt: enabled ? now : undefined }
+    : decision.autoDisabledForMultipleApiKeys
+      ? { ...defaultDisabledMultiKeyBalanceConfig }
+      : undefined
+  if (decision.enabled && !config) throw new Error('开启上游余额查询时必须选择查询类型')
+  return { enabled: decision.enabled, config, nextRefreshAt: decision.enabled ? now : undefined }
 }
 
-function accountBalanceUpdateValues(input: Record<string, unknown>, now: string): {
+function accountBalanceUpdateValues(
+  input: Record<string, unknown>,
+  now: string,
+  account: { type: string; credentials: Record<string, unknown> }
+): {
   present: boolean
   enabled?: boolean
   config?: AccountSummary['balanceQueryConfig']
+  configPresent?: boolean
+  seedDefaultConfigWhenEmpty?: boolean
   nextRefreshAt?: string
 } {
-  const present = hasOwnInput(input, 'balanceQueryEnabled') || hasOwnInput(input, 'balanceQueryConfig')
+  const requestedPresent = hasOwnInput(input, 'balanceQueryEnabled') || hasOwnInput(input, 'balanceQueryConfig')
+  const decision = validateAccountBalanceCapability(account, requestedPresent && input.balanceQueryEnabled === true)
+  const present = requestedPresent || decision.autoDisabledForMultipleApiKeys
   if (!present) return { present: false }
-  return { present: true, ...accountBalanceWriteValues(input, now) }
+  const configPresent = hasOwnInput(input, 'balanceQueryConfig')
+    && input.balanceQueryConfig !== undefined
+    && typeof input.balanceQueryConfig === 'object'
+    && input.balanceQueryConfig !== null
+    && !Array.isArray(input.balanceQueryConfig)
+  const config = configPresent
+    ? input.balanceQueryConfig as AccountSummary['balanceQueryConfig']
+    : undefined
+  if (decision.enabled && !config) throw new Error('开启上游余额查询时必须选择查询类型')
+  return {
+    present: true,
+    enabled: decision.enabled,
+    config,
+    configPresent,
+    seedDefaultConfigWhenEmpty: decision.autoDisabledForMultipleApiKeys && !configPresent,
+    nextRefreshAt: decision.enabled ? now : undefined
+  }
 }
 
 export function createAccount(input: Record<string, unknown>, access?: AccessScope): AccountSummary {
   assertKnownInputKeys(input, accountCreateInputKeys, '账户创建参数')
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
-  const balance = accountBalanceWriteValues(input, now)
   const id = newId('acc')
   const providerCode = requiredTextInput(input.providerCode, '供应商')
   const providerProfile = requireEnabledProviderProtocolProfile(providerCode, input.providerProtocolProfileId)
@@ -1572,6 +1605,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     protocolCode: providerProfile.protocolCode,
     protocolVersion: providerProfile.protocolVersion
   })
+  const balance = accountBalanceWriteValues(input, now, { type: accountType, credentials })
   const credentialSource = requiredAccountCredentialSource(accountType, credentials)
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountCredentialFingerprint(credentialSource)
@@ -1789,7 +1823,6 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   assertKnownInputKeys(input, accountCreateInputKeys, '账户创建参数')
   const nowMs = Date.now()
   const now = new Date(nowMs).toISOString()
-  const balance = accountBalanceWriteValues(input, now)
   const id = newId('acc')
   const providerCode = requiredTextInput(input.providerCode, '供应商')
   const providerProfile = await requireEnabledProviderProtocolProfileAsync(providerCode, input.providerProtocolProfileId)
@@ -1810,6 +1843,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     protocolCode: providerProfile.protocolCode,
     protocolVersion: providerProfile.protocolVersion
   })
+  const balance = accountBalanceWriteValues(input, now, { type: accountType, credentials })
   const credentialSource = requiredAccountCredentialSource(accountType, credentials)
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountCredentialFingerprint(credentialSource)
@@ -2134,7 +2168,10 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用恢复异常')
   }
   const updateNowMs = Date.now()
-  const balanceUpdate = accountBalanceUpdateValues(input, new Date(updateNowMs).toISOString())
+  const balanceUpdate = accountBalanceUpdateValues(input, new Date(updateNowMs).toISOString(), {
+    type: current.type,
+    credentials
+  })
   const scheduledStatus = expiredByPackage
     ? 'disabled'
     : hasAvailabilityScheduleInput
@@ -2277,7 +2314,11 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?, health_check_endpoint_family = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
-            balance_query_config_json = CASE WHEN ? = 1 THEN ? ELSE balance_query_config_json END,
+            balance_query_config_json = CASE
+              WHEN ? = 1 THEN ?
+              WHEN ? = 1 AND balance_query_config_json = '{}' THEN ?
+              ELSE balance_query_config_json
+            END,
             balance_query_next_refresh_at = CASE WHEN ? = 1 THEN ? ELSE balance_query_next_refresh_at END,
             config_revision = config_revision + 1, updated_at = ?
         WHERE id = ? AND system_account_id = ?
@@ -2312,8 +2353,10 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.healthCheckEndpointFamily,
         balanceUpdate.present ? 1 : 0,
         balanceUpdate.enabled ? 1 : 0,
-        balanceUpdate.present ? 1 : 0,
+        balanceUpdate.configPresent ? 1 : 0,
         JSON.stringify(balanceUpdate.config ?? {}),
+        balanceUpdate.seedDefaultConfigWhenEmpty ? 1 : 0,
+        JSON.stringify(defaultDisabledMultiKeyBalanceConfig),
         balanceUpdate.present ? 1 : 0,
         balanceUpdate.nextRefreshAt ?? null,
         updatedAt,
@@ -2518,7 +2561,10 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用恢复异常')
   }
   const updateNowMs = Date.now()
-  const balanceUpdate = accountBalanceUpdateValues(input, new Date(updateNowMs).toISOString())
+  const balanceUpdate = accountBalanceUpdateValues(input, new Date(updateNowMs).toISOString(), {
+    type: current.type,
+    credentials
+  })
   const scheduledStatus = expiredByPackage
     ? 'disabled'
     : hasAvailabilityScheduleInput
@@ -2660,7 +2706,11 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?, health_check_endpoint_family = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
-            balance_query_config_json = CASE WHEN ? = 1 THEN ? ELSE balance_query_config_json END,
+            balance_query_config_json = CASE
+              WHEN ? = 1 THEN ?
+              WHEN ? = 1 AND balance_query_config_json = '{}' THEN ?
+              ELSE balance_query_config_json
+            END,
             balance_query_next_refresh_at = CASE WHEN ? = 1 THEN ? ELSE balance_query_next_refresh_at END,
             config_revision = config_revision + 1, updated_at = ?
         WHERE id = ?
@@ -2696,8 +2746,10 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         next.healthCheckEndpointFamily,
         balanceUpdate.present ? 1 : 0,
         balanceUpdate.enabled ? 1 : 0,
-        balanceUpdate.present ? 1 : 0,
+        balanceUpdate.configPresent ? 1 : 0,
         JSON.stringify(balanceUpdate.config ?? {}),
+        balanceUpdate.seedDefaultConfigWhenEmpty ? 1 : 0,
+        JSON.stringify(defaultDisabledMultiKeyBalanceConfig),
         balanceUpdate.present ? 1 : 0,
         balanceUpdate.nextRefreshAt ?? null,
         updatedAt,

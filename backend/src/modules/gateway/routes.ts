@@ -25,7 +25,11 @@ import {
   shouldHandleOpenAIUpstreamResponseAsStream,
   writeGatewayStreamFailureEvent
 } from './response/responses.js'
-import { createAuditCapture, responseHeadersToObject } from './audit/capture.service.js'
+import {
+  createAuditCapture,
+  observeGatewayHttpCompletion,
+  responseHeadersToObject
+} from './audit/capture.service.js'
 import {
   type UpstreamAccount
 } from './protocols/openai-v1/route-helpers.js'
@@ -150,6 +154,7 @@ export async function handleOpenAIGatewayRequest(
   options: OpenAIGatewayHandleOptions = {}
 ): Promise<void> {
   const startedAt = Date.now()
+  const httpCompletion = observeGatewayHttpCompletion(res)
   const abortController = new AbortController()
   const traceId = getTraceId() ?? createTraceId()
   const clientIp = extractClientIp(req)
@@ -159,6 +164,7 @@ export async function handleOpenAIGatewayRequest(
   const requestSnapshot = buildUsageRequestSnapshot(req, traceId, clientIp)
   const auditCapture = createAuditCapture({
     req,
+    httpCompletion,
     traceId,
     clientIp,
     startedAtMs: startedAt,
@@ -191,19 +197,26 @@ export async function handleOpenAIGatewayRequest(
     }
   })
 
-  const preflight = await prepareOpenAIGatewayDispatchContext({
-    req,
-    res,
-    auditCapture,
-    options: { ...options, trafficSource, requestLane },
-    startedAt,
-    traceId,
-    clientIp,
-    endpoint,
-    requestSnapshot,
-    signal: abortController.signal
-  })
+  let preflight: Awaited<ReturnType<typeof prepareOpenAIGatewayDispatchContext>>
+  try {
+    preflight = await prepareOpenAIGatewayDispatchContext({
+      req,
+      res,
+      auditCapture,
+      options: { ...options, trafficSource, requestLane },
+      startedAt,
+      traceId,
+      clientIp,
+      endpoint,
+      requestSnapshot,
+      signal: abortController.signal
+    })
+  } catch (error) {
+    auditCapture.cancel()
+    throw error
+  }
   if (!preflight) {
+    auditCapture.cancel()
     return
   }
   let currentPreflight = preflight
@@ -505,6 +518,7 @@ export async function handleOpenAIGatewayRequest(
         }
       }
       const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures } = upstreamResult
+      const releaseAccountSlot = attachAccountSlotRelease(res, releaseConcurrency)
       const speedFirstFirstByteDeadlineMs = normalRouteSpeedFirstByteDeadlineMs(normalRouteSpeedFirstConfig)
       const speedFirstLatencyScope = normalRouteLatencyDegradationScope({
         systemAccountId: gatewayUsageContext.systemAccountId,
@@ -1013,6 +1027,7 @@ export async function handleOpenAIGatewayRequest(
             }
           }
         }
+        const httpCompletedAtMs = await httpCompletion.wait()
         await finalizeHandledUpstreamResponse({
           req,
           res,
@@ -1024,6 +1039,7 @@ export async function handleOpenAIGatewayRequest(
           settings: activeGatewaySettings,
           usageContext: gatewayUsageContext,
           startedAt,
+          completedAtMs: httpCompletedAtMs,
           signal: abortController.signal,
           result: handledResponse,
           clientIpAccountAvoidanceTracker,
@@ -1032,7 +1048,7 @@ export async function handleOpenAIGatewayRequest(
         await confirmSameAccountApiKeyFailures()
         return
       } finally {
-        releaseConcurrency()
+        releaseAccountSlot()
       }
     }
   } catch (error) {
@@ -1118,6 +1134,7 @@ export async function handleOpenAIGatewayRequest(
   } finally {
     speedFirstCutoverReservation?.release()
     releaseClientIpSlot()
+    auditCapture.cancel()
   }
 }
 
@@ -1186,6 +1203,17 @@ function attachClientIpSlotRelease(res: Response, preflight: OpenAIGatewayDispat
   res.once('finish', releaseClientIpSlot)
   res.once('close', releaseClientIpSlot)
   return releaseClientIpSlot
+}
+
+export function attachAccountSlotRelease(res: Response, releaseConcurrency: () => void): () => void {
+  const release = once(() => {
+    res.off('finish', release)
+    res.off('close', release)
+    releaseConcurrency()
+  })
+  res.once('finish', release)
+  res.once('close', release)
+  return release
 }
 
 function streamServerRetryFallbackReason(retryReason: StreamServerRetryReason): string {

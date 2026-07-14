@@ -51,6 +51,8 @@ import { normalizeAccountErrorHandlingRules } from './account-error-policy-valid
 import type { AccountBatchEditRequest } from './account-request.schemas.js'
 import { normalizeAccountResponseInspectionRules } from './account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from './account-gpt-request-overrides.validation.js'
+import { effectiveAccountApiKeyCount } from './account-balance-config.js'
+import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapshot-cleanup.service.js'
 
 const modelConfigurationFields = new Set([
   'supportedModels',
@@ -112,6 +114,11 @@ export async function batchEditAccountsAsync(
     access,
     prepare: async ({ client, accounts }) => prepareBatchUpdatesAsync(client, accounts, updates)
   })
+  cleanupDisabledBalanceSnapshots(
+    repositoryResult.balanceSnapshotCleanupAccountIds,
+    repositoryResult.configRevisions,
+    repositoryResult.batchId
+  )
   let accounts: AccountSummary[]
   try {
     const refreshed = await Promise.all(
@@ -340,7 +347,24 @@ async function prepareAccountUpdateAsync(
     dispatchChanged: account.priority !== nextPriority
       || account.superPriorityEnabled !== nextSuperPriorityEnabled
       || account.fallbackEnabled !== nextFallbackEnabled,
-    resetHealthCheckState: shouldScheduleHealthCheck && nextStatus !== 'disabled'
+    resetHealthCheckState: shouldScheduleHealthCheck && nextStatus !== 'disabled',
+    disableBalanceQuery: account.type === 'api_key' && effectiveAccountApiKeyCount(nextCredentials) > 1
+  }
+}
+
+function cleanupDisabledBalanceSnapshots(
+  accountIds: string[],
+  configRevisions: Record<string, number>,
+  batchId: string
+): void {
+  if (accountIds.length === 0) return
+  for (const accountId of accountIds) {
+    cleanupAccountBalanceSnapshotAfterSave({
+      accountId,
+      configRevision: configRevisions[accountId] ?? 1,
+      reason: 'batch_multiple_api_keys',
+      batchId
+    })
   }
 }
 

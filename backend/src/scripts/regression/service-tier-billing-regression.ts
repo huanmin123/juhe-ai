@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { parseGeminiUsageFromJsonBuffer } from '../../modules/gateway/protocols/gemini-v1beta/usage.js'
 import { parseOpenAIUsageFromJsonBuffer } from '../../modules/gateway/protocols/openai-v1/usage.js'
 import { estimateCatalogCostUsd } from '../../modules/model-pricing/model-catalog.service.js'
-import { estimateProviderCostUsd, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
+import { buildProviderCostBreakdown, estimateProviderCostUsd, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
 import { resolveUsageServiceTiers } from '../../modules/gateway/usage/service-tier.js'
 import { extractGatewayJsonBodyMetadata } from '../../modules/gateway/request/json-metadata-scanner.js'
 import { readFileSync } from 'node:fs'
@@ -59,6 +59,23 @@ assert.equal(estimateCatalogCostUsd({
   inputTokens: 100_000,
   outputTokens: 100_000
 }), 7, '网关使用的模型目录计价必须应用实际服务档位')
+assert.equal(buildProviderCostBreakdown({
+  providerCode: 'gpt',
+  model: 'gpt-5.6-sol',
+  serviceTier: 'priority',
+  inputTokens: 100_000,
+  outputTokens: 100_000
+})?.serviceTierPricingSource, 'tier_specific', '模型档位专用价必须锁定为 tier_specific 计价来源')
+const multiplierBreakdown = buildProviderCostBreakdown({
+  providerCode: 'gpt',
+  model: 'gpt-5.4-nano',
+  serviceTier: 'priority',
+  priorityPriceMultiplier: 3,
+  inputTokens: 100_000,
+  outputTokens: 100_000
+})
+assert.equal(multiplierBreakdown?.serviceTierPricingSource, 'multiplier', '缺少档位专用价时必须锁定为 multiplier 计价来源')
+assert.equal(multiplierBreakdown?.serviceTierMultiplier, 3, '计价快照必须保留请求时实际倍率')
 
 const openAIUsage = parseOpenAIUsageFromJsonBuffer(Buffer.from(JSON.stringify({
   service_tier: 'priority',
@@ -84,6 +101,19 @@ assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
   model: 'gpt-5.4',
   max_tokens: 4096
 }))).maxOutputTokens, 4096, '大 JSON metadata scanner 应兼容提取 max_tokens')
+assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
+  model: 'gpt-5.6-sol',
+  reasoning: { effort: 'high', summary: 'auto' }
+}))).reasoningEffort, 'high', 'Responses 最终上游 body 必须提取 reasoning.effort')
+assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
+  model: 'gpt-5.6-sol',
+  reasoning_effort: 'medium'
+}))).reasoningEffort, 'medium', 'Chat Completions 最终上游 body 必须提取 reasoning_effort')
+assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
+  model: 'gpt-5.6-sol',
+  reasoning: { effort: 'high' },
+  reasoning_effort: 'low'
+}))).reasoningEffort, 'high', '两种字段并存时大 JSON scanner 结果不能受字段顺序影响')
 
 const geminiUsage = parseGeminiUsageFromJsonBuffer(Buffer.from(JSON.stringify({
   usageMetadata: {
@@ -111,7 +141,7 @@ assert.equal(resolveUsageServiceTiers({
 }).billedServiceTier, 'priority', '上游明确报告实际档位时必须优先采用上游事实')
 
 const usageSchemaSource = readFileSync(new URL('../../storage/usage-record-shards.ts', import.meta.url), 'utf8')
-for (const column of ['requested_service_tier', 'effective_service_tier', 'reported_service_tier', 'billed_service_tier']) {
+for (const column of ['requested_service_tier', 'effective_service_tier', 'reported_service_tier', 'billed_service_tier', 'requested_reasoning_effort', 'effective_reasoning_effort', 'cost_breakdown_snapshot_json']) {
   assert(usageSchemaSource.includes(column), `usage records schema 必须持久化 ${column}`)
 }
 const mappedServiceTiers = usageRecordSummaryFromRow({
@@ -124,12 +154,18 @@ const mappedServiceTiers = usageRecordSummaryFromRow({
   effective_service_tier: 'priority',
   reported_service_tier: 'priority',
   billed_service_tier: 'priority',
+  requested_reasoning_effort: 'low',
+  effective_reasoning_effort: 'high',
+  cost_breakdown_snapshot_json: JSON.stringify(multiplierBreakdown),
   created_at: '2026-07-11T00:00:00.000Z'
 }, false, new Map())
 assert.equal(mappedServiceTiers.requestedServiceTier, 'flex')
 assert.equal(mappedServiceTiers.effectiveServiceTier, 'priority')
 assert.equal(mappedServiceTiers.reportedServiceTier, 'priority')
 assert.equal(mappedServiceTiers.billedServiceTier, 'priority')
+assert.equal(mappedServiceTiers.requestedReasoningEffort, 'low')
+assert.equal(mappedServiceTiers.effectiveReasoningEffort, 'high')
+assert.equal(mappedServiceTiers.pricingSnapshot?.serviceTierMultiplier, 3)
 
 console.log('服务档位计费回归通过：GPT-5.6 三档、长上下文和思考 Token 口径正确')
 

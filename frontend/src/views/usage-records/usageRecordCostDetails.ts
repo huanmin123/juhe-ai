@@ -1,5 +1,5 @@
 import type { UsageRecordSummary } from '@/types/domain'
-import { formatCacheRate, formatCost, formatTokens, formatUnitPrice } from './usageRecordFormatters'
+import { formatCost, formatTokens, formatUnitPrice } from './usageRecordFormatters'
 
 export type UsageRecordCostProviderFamily = 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'glm' | 'generic'
 
@@ -10,42 +10,26 @@ export interface UsageRecordCostDetailRow {
 }
 
 export function usageRecordCostDetailTitle(record: UsageRecordSummary): string {
-  const label = usageRecordCostProviderLabel(record)
-  return label ? `成本明细（${label}口径）` : '成本明细'
+  void record
+  return '成本明细'
 }
 
 export function usageRecordHasCostDetails(record: UsageRecordSummary): boolean {
   return usageRecordCostMetadataRows(record).length > 0
-    || usageRecordCostTokenRows(record).length > 0
     || usageRecordCostAmountRows(record).length > 0
     || usageRecordCostPriceRows(record).length > 0
 }
 
 export function usageRecordCostMetadataRows(record: UsageRecordSummary): UsageRecordCostDetailRow[] {
   const rows: UsageRecordCostDetailRow[] = []
-  if (record.model) {
-    rows.push({ key: 'requestModel', label: '请求模型', value: record.model })
-  }
-  if (record.upstreamModel && record.upstreamModel !== record.model) {
-    rows.push({ key: 'upstreamModel', label: '实际上游模型', value: record.upstreamModel })
-  }
   if (record.pricingModel) {
     rows.push({ key: 'pricingModel', label: '计价模型', value: record.pricingModel })
   }
-  if (record.modelMappingApplied && record.modelMappingSource) {
-    rows.push({ key: 'modelMappingSource', label: '映射来源', value: modelMappingSourceText(record.modelMappingSource) })
+  pushServiceTierRow(rows, 'billedServiceTier', '实际服务档位', record.billedServiceTier)
+  const pricingSource = serviceTierPricingSourceText(record)
+  if (pricingSource) {
+    rows.push({ key: 'serviceTierPricingSource', label: '计价来源', value: pricingSource })
   }
-  if (record.modelMappingApplied && record.sourceEndpointFamily && record.upstreamEndpointFamily) {
-    rows.push({
-      key: 'endpointFamily',
-      label: '协议映射',
-      value: `${record.sourceEndpointFamily} -> ${record.upstreamEndpointFamily}`
-    })
-  }
-  pushServiceTierRow(rows, 'requestedServiceTier', '客户端服务档位', record.requestedServiceTier)
-  pushServiceTierRow(rows, 'effectiveServiceTier', '实际上游服务档位', record.effectiveServiceTier)
-  pushServiceTierRow(rows, 'reportedServiceTier', '上游报告服务档位', record.reportedServiceTier)
-  pushServiceTierRow(rows, 'billedServiceTier', '计费服务档位', record.billedServiceTier)
   return rows
 }
 
@@ -55,7 +39,7 @@ function pushServiceTierRow(
   label: string,
   tier: UsageRecordSummary['billedServiceTier']
 ): void {
-  if (!tier) return
+  if (tier !== 'priority' && tier !== 'flex') return
   rows.push({
     key,
     label,
@@ -108,14 +92,8 @@ export function usageRecordCostAmountRows(record: UsageRecordSummary): UsageReco
   pushCostRow(rows, 'outputAudioCostUsd', '音频输出成本', costBreakdown.outputAudioCostUsd, activeDimension(record.outputAudioTokens, costBreakdown.outputAudioCostUsd))
   pushCostRow(rows, 'outputImageUnitCostUsd', '图片张数成本', costBreakdown.outputImageUnitCostUsd, activeDimension(record.outputImageCount, costBreakdown.outputImageUnitCostUsd))
 
-  if (shouldShowCacheRate(record)) {
-    rows.push({ key: 'cacheRate', label: '缓存读占比', value: formatCacheRate(record) })
-  }
   if (isFiniteNumber(costBreakdown.accountChargeUsd)) {
     rows.push({ key: 'accountChargeUsd', label: '合计成本', value: formatCost(costBreakdown.accountChargeUsd) })
-  }
-  if (isFiniteNumber(costBreakdown.multiplier) && costBreakdown.multiplier !== 1) {
-    rows.push({ key: 'multiplier', label: '倍率', value: `${costBreakdown.multiplier}x` })
   }
   return rows
 }
@@ -166,17 +144,6 @@ function isOpenAICompatibleFamily(value: string): boolean {
   return value === 'openai' || value === 'openai-compatible' || value === 'gpt'
 }
 
-function usageRecordCostProviderLabel(record: UsageRecordSummary): string {
-  return {
-    openai: 'OpenAI 兼容',
-    anthropic: 'Anthropic',
-    gemini: 'Gemini',
-    deepseek: 'DeepSeek',
-    glm: 'GLM',
-    generic: ''
-  }[usageRecordCostProviderFamily(record)]
-}
-
 function cacheWriteTokenLabel(family: UsageRecordCostProviderFamily): string {
   return family === 'anthropic' ? '5m 缓存写入 Tokens' : '缓存写入 Tokens'
 }
@@ -195,17 +162,21 @@ function thinkingTokenLabel(family: UsageRecordCostProviderFamily): string {
     : '思考 Tokens'
 }
 
-function modelMappingSourceText(value: string): string {
-  if (value === 'account') return '账户配置'
-  return value
+function serviceTierPricingSourceText(record: UsageRecordSummary): string | undefined {
+  if (record.billedServiceTier !== 'priority' && record.billedServiceTier !== 'flex') return undefined
+  const breakdown = record.costBreakdown
+  if (!breakdown) return undefined
+  if (breakdown.serviceTierPricingSource === 'tier_specific') return '档位专用价'
+  const multiplier = breakdown.serviceTierMultiplier
+  const multiplierText = isFiniteNumber(multiplier) ? `${multiplier}x` : '配置倍率'
+  if (breakdown.serviceTierPricingSource === 'mixed') return `档位专用价 + 基础价 ${multiplierText}`
+  if (breakdown.serviceTierPricingSource === 'multiplier') return `基础价 ${multiplierText}`
+  if (breakdown.serviceTierPricingSource === 'unknown') return undefined
+  return '标准价'
 }
 
 function standardCacheWriteTokens(record: UsageRecordSummary): number {
   return Math.max(positiveNumber(record.cacheWriteTokens) - positiveNumber(record.cacheWrite1hTokens), 0)
-}
-
-function shouldShowCacheRate(record: UsageRecordSummary): boolean {
-  return positiveNumber(record.cacheReadTokens) > 0 || positiveNumber(record.cacheWriteTokens) > 0
 }
 
 function activeDimension(tokens: number | undefined, cost: number | undefined): boolean {

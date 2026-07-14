@@ -5,6 +5,7 @@ import {
 } from '../../modules/accounts/account-gpt-request-overrides.validation.js'
 import type { ProviderModelCatalogItem } from '../../modules/model-pricing/model-catalog.service.js'
 import { normalizeAccountCredentialsForWrite } from '../../storage/account-credentials-normalization.js'
+import { runtimeOpenAIAccountCredentials } from '../../storage/openai-account-selector.repository.js'
 
 const catalog = [
   modelItem('gpt-a', ['priority', 'flex'], ['low', 'high']),
@@ -64,6 +65,16 @@ const normalizedApiKeyCredentials = normalizeAccountCredentialsForWrite('api_key
 })
 assert.equal(normalizedApiKeyCredentials.service_tier_override, 'priority')
 assert.equal(normalizedApiKeyCredentials.reasoning_effort_override, 'low')
+
+const runtimeCredentials = runtimeOpenAIAccountCredentials({
+  account_id: 'runtime-account',
+  service_tier_override: 'priority',
+  reasoning_effort_override: 'high',
+  api_key: 'must-not-leak-through-runtime-projection'
+})
+assert.equal(runtimeCredentials.service_tier_override, 'priority', '运行时凭据投影必须保留服务档位覆盖')
+assert.equal(runtimeCredentials.reasoning_effort_override, 'high', '运行时凭据投影必须保留思考级别覆盖')
+assert.equal(runtimeCredentials.api_key, undefined, '运行时凭据投影不能因此放宽密钥字段白名单')
 
 assert.throws(() => normalizeAccountCredentialsForWrite('oauth', {
   refresh_token: 'refresh-regression',

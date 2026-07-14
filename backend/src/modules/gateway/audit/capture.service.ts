@@ -14,6 +14,10 @@ import type {
   OpenAIAccountSecret
 } from '../../../storage/repositories.js'
 import { enqueueAuditLog } from '../../audit-logs/audit-log-queue.service.js'
+import {
+  auditBodySummaryEdgeBytes,
+  summarizeAuditPayloadForLimit
+} from '../../audit-logs/audit-payload-summary.js'
 import { readAuditLogSettings } from '../../audit-logs/audit-log-settings.js'
 import { requestModel, requestStream } from '../request/metadata.js'
 import {
@@ -39,6 +43,8 @@ type RawBodyRequest = Request & { rawBody?: Buffer }
 
 interface AuditCaptureContextInput {
   req: Request
+  res?: Response
+  httpCompletion?: GatewayHttpCompletionObserver
   traceId: string
   clientIp?: string
   startedAtMs: number
@@ -129,19 +135,16 @@ interface AuditAttemptState {
 }
 
 let activeAuditCaptureCount = 0
+const gatewayHttpCompletionObservers = new WeakMap<Response, GatewayHttpCompletionObserver>()
 
 const failedAuditFullBodyLimitBytes = 2 * 1024 * 1024
 const successAuditFullBodyLimitBytes = 512 * 1024
-const auditBodySummaryEdgeBytes = 256 * 1024
-const auditBodySummaryTextPreviewBytes = 4 * 1024
-const auditJsonSummaryParseMaxBytes = 512 * 1024
-const auditJsonSummaryMaxKeys = 50
 const auditInlineSha256MaxBytes = 1024 * 1024
-const auditPayloadSummaryContentType = 'application/json; audit=payload-summary'
 const auditActiveCaptureHardLimitBytes = 64 * 1024 * 1024
 
 export class AuditCaptureContext {
   private readonly req: Request
+  private readonly httpCompletion?: GatewayHttpCompletionObserver
   private readonly traceId: string
   private readonly clientIp?: string
   private readonly startedAtMs: number
@@ -166,6 +169,10 @@ export class AuditCaptureContext {
   private approximateBytes = 0
   private sequenceIndex = 0
   private clientRequestPayloadCaptured = false
+  private httpCompletedAtMs?: number
+  private pendingFinalizeInput?: FinalizeAuditInput
+  private releaseHttpCompletionListener?: () => void
+  private activeCaptureRegistered = false
 
   constructor(input: AuditCaptureContextInput) {
     const settings = readAuditLogSettings()
@@ -173,6 +180,7 @@ export class AuditCaptureContext {
     this.successSampleRate = settings.successSampleRate
     this.activeCaptureMaxBytes = Math.min(settings.activeCaptureMaxBytes, auditActiveCaptureHardLimitBytes)
     this.req = input.req
+    this.httpCompletion = input.httpCompletion ?? (input.res ? observeGatewayHttpCompletion(input.res) : undefined)
     this.traceId = input.traceId
     this.clientIp = input.clientIp
     this.startedAtMs = input.startedAtMs
@@ -186,7 +194,6 @@ export class AuditCaptureContext {
     if (!this.enabled) {
       return
     }
-    activeAuditCaptureCount += 1
     this.gatewayContext.trafficSource = this.trafficSource
     if (this.metadataOnly) {
       this.addPayload({
@@ -198,11 +205,12 @@ export class AuditCaptureContext {
         }),
         contentType: 'application/json; audit=gateway-metadata'
       })
-      return
-    }
-    if (this.shouldCaptureSuccessPayloads()) {
+    } else if (this.shouldCaptureSuccessPayloads()) {
       this.addClientRequestPayload()
     }
+    activeAuditCaptureCount += 1
+    this.activeCaptureRegistered = true
+    this.releaseHttpCompletionListener = this.httpCompletion?.onCompleted(this.markHttpCompleted)
   }
 
   bindContext(context: AuditGatewayContext): void {
@@ -403,7 +411,38 @@ export class AuditCaptureContext {
     if (this.finalized) return
     this.finalized = true
     if (!this.enabled) return
-    activeAuditCaptureCount = Math.max(0, activeAuditCaptureCount - 1)
+
+    this.pendingFinalizeInput = input
+    if (!this.httpCompletion || this.httpCompletedAtMs !== undefined) {
+      this.flushFinalizedAudit()
+      return
+    }
+    const completedAtMs = this.httpCompletion.completedAtMs()
+    if (completedAtMs !== undefined) {
+      this.markHttpCompleted(completedAtMs)
+    }
+  }
+
+  cancel(): void {
+    if (this.finalized) return
+    this.finalized = true
+    this.pendingFinalizeInput = undefined
+    this.releaseActiveCapture()
+  }
+
+  private readonly markHttpCompleted = (completedAtMs: number): void => {
+    if (this.httpCompletedAtMs !== undefined) return
+    this.httpCompletedAtMs = completedAtMs
+    if (this.pendingFinalizeInput) {
+      this.flushFinalizedAudit()
+    }
+  }
+
+  private flushFinalizedAudit(): void {
+    const input = this.pendingFinalizeInput
+    if (!input) return
+    this.pendingFinalizeInput = undefined
+    this.releaseActiveCapture()
 
     const endedAtMs = Date.now()
     const clientAborted = this.clientAborted && !input.success
@@ -483,6 +522,8 @@ export class AuditCaptureContext {
       startedAt: this.startedAtIso,
       endedAt: new Date(endedAtMs).toISOString(),
       durationMs: endedAtMs - this.startedAtMs,
+      httpCompletedAt: this.httpCompletedAtMs === undefined ? undefined : new Date(this.httpCompletedAtMs).toISOString(),
+      httpDurationMs: this.httpCompletedAtMs === undefined ? undefined : this.httpCompletedAtMs - this.startedAtMs,
       firstTokenMs: input.firstTokenMs,
       attempts: this.attempts,
       payloads: this.payloads
@@ -498,6 +539,14 @@ export class AuditCaptureContext {
       sampleReason: auditLog.sampleReason
     }, '网关审计捕获已完成，准备投递')
     enqueueAuditLog(auditLog)
+  }
+
+  private releaseActiveCapture(): void {
+    if (!this.activeCaptureRegistered) return
+    this.activeCaptureRegistered = false
+    activeAuditCaptureCount = Math.max(0, activeAuditCaptureCount - 1)
+    this.releaseHttpCompletionListener?.()
+    this.releaseHttpCompletionListener = undefined
   }
 
   private addClientRequestPayload(): void {
@@ -516,8 +565,10 @@ export class AuditCaptureContext {
   private addPayload(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {
     if (!this.enabled) return
     if (this.overflowed) return
-    summarizePayloadForLimit(payload, failedAuditFullBodyLimitBytes)
-    const nextApproximateBytes = this.approximateBytes + estimatePayloadBytes(payload)
+    if (!shouldOffloadAuditPayloadRetention()) {
+      summarizeAuditPayloadForLimit(payload, failedAuditFullBodyLimitBytes)
+    }
+    const nextApproximateBytes = this.approximateBytes + estimateRetainedPayloadBytes(payload, failedAuditFullBodyLimitBytes)
     if (nextApproximateBytes > this.activeCaptureMaxBytes) {
       this.overflowed = true
       this.payloads.length = 0
@@ -542,8 +593,15 @@ export class AuditCaptureContext {
     const fullBodyLimit = mode === 'success'
       ? successAuditFullBodyLimitBytes
       : failedAuditFullBodyLimitBytes
+    if (shouldOffloadAuditPayloadRetention()) {
+      this.approximateBytes = this.payloads.reduce(
+        (total, payload) => total + estimateRetainedPayloadBytes(payload, fullBodyLimit),
+        0
+      )
+      return
+    }
     for (const payload of this.payloads) {
-      summarizePayloadForLimit(payload, fullBodyLimit)
+      summarizeAuditPayloadForLimit(payload, fullBodyLimit)
     }
     this.recalculateApproximateBytes()
   }
@@ -599,8 +657,55 @@ export function createAuditCapture(input: AuditCaptureContextInput): AuditCaptur
   return new AuditCaptureContext(input)
 }
 
+export function observeGatewayHttpCompletion(res: Response): GatewayHttpCompletionObserver {
+  const existing = gatewayHttpCompletionObservers.get(res)
+  if (existing) return existing
+  let completedAtMs: number | undefined
+  let resolveCompletion: ((value: number) => void) | undefined
+  const listeners = new Set<(value: number) => void>()
+  const completion = new Promise<number>((resolvePromise) => {
+    resolveCompletion = resolvePromise
+  })
+  const complete = (): void => {
+    if (completedAtMs !== undefined) return
+    completedAtMs = Date.now()
+    res.off('finish', complete)
+    res.off('close', complete)
+    resolveCompletion?.(completedAtMs)
+    resolveCompletion = undefined
+    for (const listener of listeners) listener(completedAtMs)
+    listeners.clear()
+  }
+  res.once('finish', complete)
+  res.once('close', complete)
+  const observer: GatewayHttpCompletionObserver = {
+    completedAtMs: () => completedAtMs,
+    wait: async () => await completion,
+    onCompleted(listener) {
+      if (completedAtMs !== undefined) {
+        listener(completedAtMs)
+        return () => undefined
+      }
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    }
+  }
+  gatewayHttpCompletionObservers.set(res, observer)
+  if (res.writableFinished || res.destroyed) complete()
+  return observer
+}
+
 export function getActiveAuditCaptureCount(): number {
   return activeAuditCaptureCount
+}
+
+export async function waitForActiveAuditCapturesIdle(timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + Math.max(1, timeoutMs)
+  while (activeAuditCaptureCount > 0) {
+    if (Date.now() >= deadline) return false
+    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 5))
+  }
+  return true
 }
 
 export function responseHeadersToObject(res: Response): Record<string, string | string[]> {
@@ -640,276 +745,6 @@ function headerValue(headers: Record<string, string | string[]> | Headers | unde
   return Array.isArray(value) ? value.join(', ') : value
 }
 
-function summarizePayloadForLimit(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>, fullBodyLimitBytes: number): void {
-  if (payload.partType === 'gateway_metadata' || payload.body === undefined) {
-    return
-  }
-  if (payload.captureStatus && payload.captureStatus !== 'complete') {
-    updateExistingPayloadSummaryLimit(payload, fullBodyLimitBytes)
-    return
-  }
-  const bodyBuffer = bodyToBuffer(payload.body)
-  const originalBodySizeBytes = payload.rawBodySizeBytes ?? bodyBuffer.byteLength
-  if (originalBodySizeBytes <= fullBodyLimitBytes) {
-    return
-  }
-  const originalContentType = payload.contentType
-  const originalContentEncoding = payload.contentEncoding
-  const originalSha256 = payload.bodySha256 ?? sha256Buffer(bodyBuffer)
-  payload.body = JSON.stringify(buildPayloadSummary({
-    body: bodyBuffer,
-    originalSha256,
-    originalBodySizeBytes,
-    originalContentType,
-    originalContentEncoding,
-    fullBodyLimitBytes
-  }))
-  payload.bodySha256 = originalSha256
-  payload.rawBodySizeBytes = originalBodySizeBytes
-  payload.captureStatus = 'summary_only'
-  payload.contentType = auditPayloadSummaryContentType
-  payload.contentEncoding = undefined
-}
-
-function updateExistingPayloadSummaryLimit(
-  payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>,
-  fullBodyLimitBytes: number
-): void {
-  if (payload.captureStatus !== 'summary_only' || typeof payload.body !== 'string') {
-    return
-  }
-  try {
-    const summary = JSON.parse(payload.body) as Record<string, unknown>
-    if (summary.type !== 'audit_payload_summary') {
-      return
-    }
-    summary.fullBodyLimitBytes = fullBodyLimitBytes
-    payload.body = JSON.stringify(summary)
-  } catch {
-    return
-  }
-}
-
-function buildPayloadSummary(input: {
-  body: Buffer
-  originalSha256?: string
-  originalBodySizeBytes: number
-  originalContentType?: string
-  originalContentEncoding?: string
-  fullBodyLimitBytes: number
-}): Record<string, unknown> {
-  const head = input.body.subarray(0, Math.min(auditBodySummaryEdgeBytes, input.body.byteLength))
-  const tailStart = Math.max(0, input.body.byteLength - auditBodySummaryEdgeBytes)
-  const tail = input.body.subarray(tailStart)
-  const hasSeparatedTail = tailStart >= head.byteLength
-  const retainedBodyBytes = head.byteLength + (hasSeparatedTail ? tail.byteLength : Math.max(0, input.body.byteLength - head.byteLength))
-  const summary: Record<string, unknown> = {
-    type: 'audit_payload_summary',
-    captureStatus: 'summary_only',
-    reason: 'body_exceeded_full_capture_limit',
-    fullBodyLimitBytes: input.fullBodyLimitBytes,
-    originalSha256: input.originalSha256,
-    originalSizeBytes: input.originalBodySizeBytes,
-    originalContentType: input.originalContentType,
-    originalContentEncoding: input.originalContentEncoding,
-    retainedHeadBytes: head.byteLength,
-    retainedTailBytes: tail.byteLength,
-    omittedMiddleBytes: Math.max(0, input.originalBodySizeBytes - retainedBodyBytes),
-    headBase64: head.toString('base64'),
-    tailBase64: tail.toString('base64')
-  }
-  if (isTextLikePayload(input.originalContentType, input.originalContentEncoding)) {
-    summary.textPreview = {
-      head: textPreview(head),
-      tail: textPreview(tail)
-    }
-  }
-  const json = summarizeJsonPayload(input.body, input.originalContentType, input.originalContentEncoding)
-  if (json) {
-    summary.json = json
-  }
-  return summary
-}
-
-function summarizeJsonPayload(body: Buffer, contentType?: string, contentEncoding?: string): Record<string, unknown> | undefined {
-  if (!isJsonLikePayload(body, contentType, contentEncoding)) {
-    return undefined
-  }
-  const headText = body.subarray(0, Math.min(body.byteLength, auditBodySummaryEdgeBytes)).toString('utf8')
-  if (body.byteLength > auditJsonSummaryParseMaxBytes) {
-    return {
-      parseable: false,
-      reason: 'body_too_large_for_inline_parse',
-      topLevelType: inferJsonTopLevelType(headText),
-      topLevelKeys: extractTopLevelObjectKeysFromJsonPrefix(headText)
-    }
-  }
-  try {
-    return summarizeParsedJsonValue(JSON.parse(body.toString('utf8')))
-  } catch {
-    return {
-      parseable: false,
-      reason: 'json_parse_failed',
-      topLevelType: inferJsonTopLevelType(headText),
-      topLevelKeys: extractTopLevelObjectKeysFromJsonPrefix(headText)
-    }
-  }
-}
-
-function summarizeParsedJsonValue(value: unknown): Record<string, unknown> {
-  if (Array.isArray(value)) {
-    return {
-      parseable: true,
-      topLevelType: 'array',
-      topLevelLength: value.length,
-      firstItemType: jsonValueType(value[0]),
-      firstItemKeys: value[0] && typeof value[0] === 'object' && !Array.isArray(value[0])
-        ? topLevelObjectKeys(value[0] as Record<string, unknown>).keys
-        : undefined
-    }
-  }
-  if (value && typeof value === 'object') {
-    const keys = topLevelObjectKeys(value as Record<string, unknown>)
-    return {
-      parseable: true,
-      topLevelType: 'object',
-      topLevelKeyCountAtLeast: keys.countAtLeast,
-      topLevelKeys: keys.keys,
-      topLevelKeysTruncated: keys.truncated
-    }
-  }
-  return {
-    parseable: true,
-    topLevelType: jsonValueType(value)
-  }
-}
-
-function topLevelObjectKeys(value: Record<string, unknown>): { keys: string[]; countAtLeast: number; truncated: boolean } {
-  const keys: string[] = []
-  let countAtLeast = 0
-  let truncated = false
-  for (const key in value) {
-    if (!Object.prototype.hasOwnProperty.call(value, key)) continue
-    countAtLeast += 1
-    if (countAtLeast > auditJsonSummaryMaxKeys) {
-      truncated = true
-      break
-    }
-    if (keys.length < auditJsonSummaryMaxKeys) {
-      keys.push(key)
-    }
-  }
-  return { keys, countAtLeast: Math.min(countAtLeast, auditJsonSummaryMaxKeys), truncated }
-}
-
-function isJsonLikePayload(body: Buffer, contentType?: string, contentEncoding?: string): boolean {
-  const encoding = contentEncoding?.trim().toLowerCase()
-  if (encoding && encoding !== 'identity') {
-    return false
-  }
-  const normalizedContentType = contentType?.toLowerCase() ?? ''
-  if (normalizedContentType.includes('json')) {
-    return true
-  }
-  const head = body.subarray(0, Math.min(body.byteLength, 512)).toString('utf8')
-  const firstChar = firstNonWhitespaceChar(head)
-  return firstChar === '{' || firstChar === '['
-}
-
-function isTextLikePayload(contentType?: string, contentEncoding?: string): boolean {
-  const encoding = contentEncoding?.trim().toLowerCase()
-  if (encoding && encoding !== 'identity') {
-    return false
-  }
-  const type = contentType?.toLowerCase() ?? ''
-  return type.includes('json')
-    || type.includes('text')
-    || type.includes('xml')
-    || type.includes('event-stream')
-    || type.includes('javascript')
-    || type.includes('x-www-form-urlencoded')
-}
-
-function textPreview(buffer: Buffer): string {
-  return buffer.subarray(0, Math.min(buffer.byteLength, auditBodySummaryTextPreviewBytes)).toString('utf8')
-}
-
-function inferJsonTopLevelType(text: string): string {
-  const firstChar = firstNonWhitespaceChar(text)
-  if (firstChar === '{') return 'object'
-  if (firstChar === '[') return 'array'
-  if (firstChar === '"') return 'string'
-  if (firstChar === 't' || firstChar === 'f') return 'boolean'
-  if (firstChar === 'n') return 'null'
-  if (firstChar && /[-0-9]/.test(firstChar)) return 'number'
-  return 'unknown'
-}
-
-function extractTopLevelObjectKeysFromJsonPrefix(text: string): string[] {
-  const keys: string[] = []
-  let depth = 0
-  let index = 0
-  while (index < text.length && keys.length < auditJsonSummaryMaxKeys) {
-    const char = text[index]
-    if (char === '"') {
-      const parsed = readJsonStringAt(text, index)
-      if (!parsed) break
-      const nextIndex = skipJsonWhitespace(text, parsed.end)
-      if (depth === 1 && text[nextIndex] === ':') {
-        keys.push(parsed.value)
-      }
-      index = parsed.end
-      continue
-    }
-    if (char === '{' || char === '[') {
-      depth += 1
-    } else if (char === '}' || char === ']') {
-      depth = Math.max(0, depth - 1)
-    }
-    index += 1
-  }
-  return [...new Set(keys)]
-}
-
-function readJsonStringAt(text: string, start: number): { value: string; end: number } | undefined {
-  let escaped = false
-  for (let index = start + 1; index < text.length; index += 1) {
-    const char = text[index]
-    if (escaped) {
-      escaped = false
-      continue
-    }
-    if (char === '\\') {
-      escaped = true
-      continue
-    }
-    if (char === '"') {
-      const raw = text.slice(start, index + 1)
-      try {
-        return { value: JSON.parse(raw) as string, end: index + 1 }
-      } catch {
-        return { value: raw.slice(1, -1), end: index + 1 }
-      }
-    }
-  }
-}
-
-function skipJsonWhitespace(text: string, start: number): number {
-  let index = start
-  while (index < text.length && /\s/.test(text[index])) {
-    index += 1
-  }
-  return index
-}
-
-function firstNonWhitespaceChar(text: string): string {
-  return text.trimStart().charAt(0)
-}
-
-function jsonValueType(value: unknown): string {
-  return Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value
-}
-
 function sampleBucketForTraceId(traceId: string): number {
   const digest = createHash('sha256').update(traceId).digest()
   return digest.readUInt32BE(0) % 10000
@@ -920,6 +755,36 @@ function estimatePayloadBytes(payload: Omit<AuditLogPayloadInput, 'sequenceIndex
   const bodyBytes = payloadBodyByteLength(body)
   const headerBytes = payload.headers ? estimateHeadersBytes(payload.headers) : 0
   return bodyBytes + headerBytes + 512
+}
+
+export interface GatewayHttpCompletionObserver {
+  completedAtMs(): number | undefined
+  wait(): Promise<number>
+  onCompleted(listener: (completedAtMs: number) => void): () => void
+}
+
+function estimateRetainedPayloadBytes(
+  payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>,
+  fullBodyLimitBytes: number
+): number {
+  if (
+    !shouldOffloadAuditPayloadRetention()
+    || payload.partType === 'gateway_metadata'
+    || payload.body === undefined
+    || (payload.captureStatus !== undefined && payload.captureStatus !== 'complete')
+  ) {
+    return estimatePayloadBytes(payload)
+  }
+  const bodyBytes = payloadBodyByteLength(payload.body)
+  const retainedBodyBytes = bodyBytes <= fullBodyLimitBytes
+    ? bodyBytes
+    : Math.min(bodyBytes, Math.max(fullBodyLimitBytes, auditBodySummaryEdgeBytes * 3))
+  const headerBytes = payload.headers ? estimateHeadersBytes(payload.headers) : 0
+  return retainedBodyBytes + headerBytes + 512
+}
+
+function shouldOffloadAuditPayloadRetention(): boolean {
+  return runtimeConfig.processRole === 'server'
 }
 
 function payloadBodyByteLength(body: Buffer | string | undefined): number {

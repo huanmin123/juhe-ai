@@ -50,6 +50,7 @@ export interface RawModelPricing {
   output_cost_per_image_token?: number
   input_cost_per_audio_token?: number
   output_cost_per_audio_token?: number
+  context_window_tokens?: number
   max_input_tokens?: number
   max_output_tokens?: number
   max_tokens?: number

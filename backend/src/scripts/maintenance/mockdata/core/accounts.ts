@@ -278,11 +278,13 @@ export function createAccounts(
     status: 'active',
     groupId: groups.main.id,
     credentials: multiApiKeyCredentials('multi-key-pool', 'weighted_round_robin'),
+    balanceQueryEnabled: true,
+    balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 },
     supportedModels: ['gpt-5.4-mini', 'gpt-4.1-mini'],
-    tags: ['多Key', '故障隔离'],
+    tags: ['多Key', '故障隔离', '余额自动关闭'],
     concurrencyLimit: 70,
     priority: 18,
-    notes: 'Mockdata 账户内多 API Key，用于 key 级故障隔离、轮换策略和运行态汇总展示'
+    notes: 'Mockdata 账户内多 API Key；创建请求携带余额开启状态，最终应自动关闭并保留配置'
   }, adminAccess)
   seedAccountApiKeyRuntimeStates(multiKeyPool)
 

@@ -141,6 +141,20 @@ export interface DbServiceRuntimeSnapshot {
 export interface DbServiceServerRuntimeSnapshot {
   accountConcurrency?: Record<string, number>
   accountRuntimeAvailability?: Record<string, AccountRuntimeAvailability>
+  accountBalanceSnapshotCleanup?: {
+    name: string
+    pendingCount: number
+    runningCount: number
+    nextRunAt?: string
+    suppressedAccountCount: number
+    exhaustedAccountCount: number
+    completedCount: number
+    failedAttemptCount: number
+    exhaustedCount: number
+    lastSuccessAt?: string
+    lastErrorAt?: string
+    lastError?: string
+  }
   ingestWorker?: {
     pid?: number
     ready: boolean
@@ -328,6 +342,17 @@ export interface DbServiceServerRuntimeSnapshot {
   }>
   gatewayAccountSideEffects?: Record<string, unknown>
   activeAuditCaptureCount?: number
+  auditLogTransport?: {
+    queuedJobs: number
+    queuedBytes: number
+    activeJobs: number
+    activeBytes: number
+    workerCount: number
+    completedCount: number
+    failedCount: number
+    rejectedCount: number
+    pendingDispatchCount: number
+  }
 }
 
 export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency' | 'account_runtime'

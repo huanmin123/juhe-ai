@@ -37,13 +37,15 @@ try {
   const handledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
   const response = await usageRecordsRoutes.withCostBreakdownAsync(usageRecordFixture())
   assert(response.costBreakdown, '成功使用记录应返回成本明细')
-  assert((response.costBreakdown.inputCostUsd ?? 0) > 0, '成本明细应按模型目录计算输入成本')
-  assert(
-    readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs > handledJobsBefore,
-    'SQLite DB service 下使用记录费用拆分必须通过 read worker 读取模型目录'
+  assert.equal(response.costBreakdown.inputCostUsd, undefined, '缺少请求时价格快照的旧记录不得按当前目录重算输入成本')
+  assert.equal(response.costBreakdown.serviceTierPricingSource, 'unknown', '缺少请求时价格快照的旧记录必须标记价格来源未知')
+  assert.equal(
+    readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs,
+    handledJobsBefore,
+    '历史费用拆分不得读取当前模型目录，避免未来价格污染旧记录'
   )
 
-  console.log('使用记录费用拆分 read worker 回归通过：SQLite 成本明细装饰不再绕过 read worker 同步读模型目录')
+  console.log('使用记录费用拆分 read worker 回归通过：无请求时价格快照的旧记录不读取当前目录且价格来源保持未知')
 } finally {
   await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   try {

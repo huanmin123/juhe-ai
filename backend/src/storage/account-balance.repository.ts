@@ -1,6 +1,6 @@
 import { runtimeConfig } from '../config/runtime.js'
 import type { AccountBalanceQueryConfig, AccountBalanceSnapshot } from '../modules/accounts/account-balance.types.js'
-import { normalizeAccountBalanceConfig } from '../modules/accounts/account-balance-config.js'
+import { effectiveAccountApiKeyCount, normalizeAccountBalanceConfig } from '../modules/accounts/account-balance-config.js'
 import { getBusinessDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { decryptJson } from './crypto.js'
@@ -31,6 +31,12 @@ export interface AccountBalanceDetectionCandidatePage {
   nextAfterId?: string
 }
 
+export interface AccountBalanceSnapshotRecord {
+  snapshot: AccountBalanceSnapshot
+  nextRefreshAfter?: string
+  updatedAt: string
+}
+
 interface BalanceCandidateRow {
   id: string
   system_account_id: string
@@ -54,6 +60,7 @@ const balanceDetectionCandidateWhere = `
   AND schedulable = 1
   AND type = 'api_key'
   AND balance_query_enabled = 0
+  AND balance_query_config_json = '{}'
   AND deleted_at IS NULL
   AND authorization_instance_authorization_id IS NULL
 `
@@ -332,31 +339,59 @@ export async function replaceAccountBalanceSnapshotIfCurrentAsync(input: {
 }
 
 export function loadAccountBalanceSnapshotsByAccountIds(accountIds: string[]): Map<string, AccountBalanceSnapshot> {
-  const output = new Map<string, AccountBalanceSnapshot>()
+  return snapshotsFromRecords(loadAccountBalanceSnapshotRecordsByAccountIds(accountIds))
+}
+
+export function loadAccountBalanceSnapshotRecordsByAccountIds(accountIds: string[]): Map<string, AccountBalanceSnapshotRecord> {
+  const output = new Map<string, AccountBalanceSnapshotRecord>()
   for (const chunk of chunkValues([...new Set(accountIds.filter(Boolean))], 900)) {
     const rows = getStatsDatabase().prepare(`
-      SELECT account_id, snapshot_json
+      SELECT account_id, snapshot_json, next_refresh_after, updated_at
       FROM account_usage_snapshots
       WHERE kind = 'relay_balance' AND account_id IN (${sqlPlaceholders(chunk.length)})
-    `).all(...chunk) as unknown as Array<{ account_id: string; snapshot_json: string }>
-    for (const row of rows) output.set(row.account_id, parseSnapshot(row.snapshot_json))
+    `).all(...chunk) as unknown as Array<{ account_id: string; snapshot_json: string; next_refresh_after?: string | null; updated_at: string }>
+    for (const row of rows) {
+      output.set(row.account_id, {
+        snapshot: parseSnapshot(row.snapshot_json),
+        nextRefreshAfter: row.next_refresh_after ?? undefined,
+        updatedAt: row.updated_at
+      })
+    }
   }
   return output
 }
 
 export async function loadAccountBalanceSnapshotsByAccountIdsAsync(accountIds: string[]): Promise<Map<string, AccountBalanceSnapshot>> {
-  if (runtimeConfig.databaseDriver !== 'postgres') return loadAccountBalanceSnapshotsByAccountIds(accountIds)
+  return snapshotsFromRecords(await loadAccountBalanceSnapshotRecordsByAccountIdsAsync(accountIds))
+}
+
+export async function loadAccountBalanceSnapshotRecordsByAccountIdsAsync(accountIds: string[]): Promise<Map<string, AccountBalanceSnapshotRecord>> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return loadAccountBalanceSnapshotRecordsByAccountIds(accountIds)
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const output = new Map<string, AccountBalanceSnapshot>()
+  const output = new Map<string, AccountBalanceSnapshotRecord>()
   for (const chunk of chunkValues([...new Set(accountIds.filter(Boolean))], 900)) {
-    const rows = await client.query<{ account_id: string; snapshot_json: string }>(`
-      SELECT account_id, snapshot_json
+    const rows = await client.query<{ account_id: string; snapshot_json: string; next_refresh_after?: string | null; updated_at: string }>(`
+      SELECT account_id, snapshot_json, next_refresh_after, updated_at
       FROM juhe_stats.account_usage_snapshots
       WHERE kind = 'relay_balance' AND account_id = ANY(?::text[])
     `, [chunk])
-    for (const row of rows) output.set(row.account_id, parseSnapshot(row.snapshot_json))
+    for (const row of rows) {
+      output.set(row.account_id, {
+        snapshot: parseSnapshot(row.snapshot_json),
+        nextRefreshAfter: row.next_refresh_after ?? undefined,
+        updatedAt: row.updated_at
+      })
+    }
   }
   return output
+}
+
+export function accountBalanceSnapshotMatchesConfiguration(
+  configuration: { nextRefreshAt?: string },
+  record: AccountBalanceSnapshotRecord | undefined
+): record is AccountBalanceSnapshotRecord {
+  if (!record) return false
+  return (record.nextRefreshAfter ?? undefined) === (configuration.nextRefreshAt ?? undefined)
 }
 
 export function updateAccountBalanceNextRefresh(accountId: string, nextRefreshAt: string | null): void {
@@ -406,13 +441,24 @@ export async function saveAccountBalanceConfigurationAsync(input: {
   return { enabled: input.enabled, config, nextRefreshAt }
 }
 
-export async function deleteAccountBalanceSnapshotAsync(accountId: string): Promise<void> {
+export async function deleteAccountBalanceSnapshotAsync(accountId: string, options: { updatedBefore?: string } = {}): Promise<void> {
+  const updatedBefore = options.updatedBefore?.trim()
   if (runtimeConfig.databaseDriver === 'postgres') {
     const client = createPostgresDatabaseClient(await getPostgresPool())
-    await client.execute(`DELETE FROM juhe_stats.account_usage_snapshots WHERE account_id = ? AND kind = 'relay_balance'`, [accountId])
+    await client.execute(`
+      DELETE FROM juhe_stats.account_usage_snapshots
+      WHERE account_id = ?
+        AND kind = 'relay_balance'
+        ${updatedBefore ? 'AND updated_at <= ?' : ''}
+    `, updatedBefore ? [accountId, updatedBefore] : [accountId])
     return
   }
-  getStatsDatabase().prepare(`DELETE FROM account_usage_snapshots WHERE account_id = ? AND kind = 'relay_balance'`).run(accountId)
+  getStatsDatabase().prepare(`
+    DELETE FROM account_usage_snapshots
+    WHERE account_id = ?
+      AND kind = 'relay_balance'
+      ${updatedBefore ? 'AND updated_at <= ?' : ''}
+  `).run(...(updatedBefore ? [accountId, updatedBefore] : [accountId]))
 }
 
 export async function loadAccountBalanceConfigurationsByAccountIdsAsync(accountIds: string[]): Promise<Map<string, {
@@ -529,11 +575,7 @@ async function isAccountBalanceConfigurationCurrentAsync(input: {
 }
 
 function hasExactlyOneApiKey(credentials: Record<string, unknown>): boolean {
-  const pool = Array.isArray(credentials.api_keys)
-    ? credentials.api_keys.filter((value) => typeof value === 'string' && value.trim().length > 0)
-    : []
-  if (pool.length > 0) return pool.length === 1
-  return typeof credentials.api_key === 'string' && credentials.api_key.trim().length > 0
+  return effectiveAccountApiKeyCount(credentials) === 1
 }
 
 function normalizedLimit(value: number | undefined): number {
@@ -544,6 +586,10 @@ function normalizedLimit(value: number | undefined): number {
 function parseSnapshot(value: string): AccountBalanceSnapshot {
   const parsed = JSON.parse(value) as AccountBalanceSnapshot
   return parsed
+}
+
+function snapshotsFromRecords(records: Map<string, AccountBalanceSnapshotRecord>): Map<string, AccountBalanceSnapshot> {
+  return new Map([...records].map(([accountId, record]) => [accountId, record.snapshot]))
 }
 
 function configurationChanged(currentJson: string, config: AccountBalanceQueryConfig | undefined): boolean {

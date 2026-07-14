@@ -55,9 +55,31 @@ export function buildAccountBalancePayload(form: Pick<AccountFormModel,
   | 'balanceQueryCustomPath' | 'balanceQueryRemainingPointer' | 'balanceQueryTotalPointer'
   | 'balanceQueryUsedPointer' | 'balanceQueryDivisor'
 >): { balanceQueryEnabled: boolean; balanceQueryConfig?: Record<string, unknown> } | undefined {
-  const apiKeys = form.apiKeys.map((item) => item.trim()).filter(Boolean)
-  if (form.type !== 'api_key' || apiKeys.length !== 1) return undefined
+  const apiKeys = effectiveFormApiKeys(form.apiKeys)
+  if (form.type !== 'api_key' || apiKeys.length === 0) return undefined
+  if (apiKeys.length > 1) {
+    return {
+      balanceQueryEnabled: false,
+      balanceQueryConfig: validateBalanceQueryConfigForm(form)
+        ? { adapter: 'builtin', intervalMinutes: 5 }
+        : buildBalanceQueryConfig(form)
+    }
+  }
   if (!form.balanceQueryEnabled) return { balanceQueryEnabled: false }
+  return { balanceQueryEnabled: true, balanceQueryConfig: buildBalanceQueryConfig(form) }
+}
+
+export function accountBalanceWillAutoDisable(form: Pick<AccountFormModel, 'type' | 'apiKeys' | 'balanceQueryEnabled'>): boolean {
+  return form.type === 'api_key'
+    && form.balanceQueryEnabled
+    && effectiveFormApiKeys(form.apiKeys).length > 1
+}
+
+function buildBalanceQueryConfig(form: Pick<AccountFormModel,
+  | 'balanceQueryAdapter' | 'balanceQueryIntervalMinutes' | 'balanceQueryPreferredBuiltinAdapter'
+  | 'balanceQueryCustomPath' | 'balanceQueryRemainingPointer' | 'balanceQueryTotalPointer'
+  | 'balanceQueryUsedPointer' | 'balanceQueryDivisor'
+>): Record<string, unknown> {
   const config: Record<string, unknown> = {
     adapter: form.balanceQueryAdapter,
     intervalMinutes: form.balanceQueryIntervalMinutes
@@ -74,7 +96,7 @@ export function buildAccountBalancePayload(form: Pick<AccountFormModel,
       divisor: form.balanceQueryDivisor.trim()
     })
   }
-  return { balanceQueryEnabled: true, balanceQueryConfig: config }
+  return config
 }
 
 export function validateAccountBalanceForm(form: Pick<AccountFormModel,
@@ -84,8 +106,18 @@ export function validateAccountBalanceForm(form: Pick<AccountFormModel,
   | 'balanceQueryUsedPointer' | 'balanceQueryDivisor'
 >): string | undefined {
   if (!form.balanceQueryEnabled) return undefined
-  const apiKeys = form.apiKeys.map((item) => item.trim()).filter(Boolean)
-  if (form.type !== 'api_key' || apiKeys.length !== 1) return '上游余额查询仅支持单 API Key 账户'
+  const apiKeys = effectiveFormApiKeys(form.apiKeys)
+  if (form.type !== 'api_key') return '上游余额查询仅支持 API Key 账户'
+  if (apiKeys.length > 1) return undefined
+  if (apiKeys.length !== 1) return '上游余额查询需要一个有效的 API Key'
+  return validateBalanceQueryConfigForm(form)
+}
+
+function validateBalanceQueryConfigForm(form: Pick<AccountFormModel,
+  | 'balanceQueryAdapter' | 'balanceQueryIntervalMinutes'
+  | 'balanceQueryCustomPath' | 'balanceQueryRemainingPointer' | 'balanceQueryTotalPointer'
+  | 'balanceQueryUsedPointer' | 'balanceQueryDivisor'
+>): string | undefined {
   if (!Number.isInteger(form.balanceQueryIntervalMinutes) || form.balanceQueryIntervalMinutes < 1 || form.balanceQueryIntervalMinutes > 10) {
     return '余额刷新周期必须是 1 到 10 分钟的整数'
   }
@@ -105,4 +137,8 @@ export function validateAccountBalanceForm(form: Pick<AccountFormModel,
 
 function compact(value: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== ''))
+}
+
+function effectiveFormApiKeys(values: readonly string[]): string[] {
+  return [...new Set(values.map((item) => item.trim()).filter(Boolean))]
 }

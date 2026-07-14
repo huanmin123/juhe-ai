@@ -22,11 +22,13 @@ logger.level = 'silent'
 const [
   { createSystemApiApp },
   databaseModule,
-  repositories
+  repositories,
+  usageStatsRepository
 ] = await Promise.all([
   import('../../modules/system-api/system-api-app.js'),
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/usage-stats.repository.js')
 ])
 
 interface ApiEnvelope<T> {
@@ -137,6 +139,9 @@ interface GroupListResponse {
 let server: http.Server | undefined
 
 try {
+  // Read-only query workers require the dataset and stats files to exist first.
+  databaseModule.getDatasetDatabase()
+  databaseModule.getStatsDatabase()
   const seed = seedData()
   const app = createSystemApiApp({ systemApiPrefix: '/__aisys__/api' })
   server = app.listen(0, '127.0.0.1')
@@ -227,6 +232,8 @@ try {
   console.log('运行态快照不可用契约回归通过：API 不再把 unknown 伪装成 0、false、[] 或默认天数')
 } finally {
   await closeServer(server)
+  const { closeSqliteReadWorkerPool } = await import('../../storage/sqlite-read-worker-pool.js')
+  await closeSqliteReadWorkerPool().catch(() => undefined)
   try {
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
@@ -258,6 +265,13 @@ function seedData(): { accountId: string; adminCookie: string; groupId: string }
     schedulable: true,
     groupId: group.id
   }, access)
+  assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, '运行态契约 fixture 应显式通过后台健康检查激活账户')
+  usageStatsRepository.refreshDirtyGroupAccountStatsCache()
   return {
     accountId: account.id,
     adminCookie: `juhe_ai_session=${repositories.createSession(admin.id, 1).token}`,

@@ -9,7 +9,7 @@
     :loading-more="loadingMore"
     :mobile-has-more="mobileHasMore"
     :pagination="pagination"
-    :scroll-x="isManagementView ? 2460 : 2280"
+    :scroll-x="isManagementView ? 2480 : 2300"
     mobile-pagination
     pull-refresh-enabled
     :refreshing="loading"
@@ -67,9 +67,11 @@
         <span v-else class="muted-cell">-</span>
       </template>
       <template v-else-if="column.key === 'model'">
-        <span v-if="record.model" class="model-cell">
-          <a-tag color="blue">{{ record.model }}</a-tag>
+        <span v-if="record.model || usageRecordServiceTierText(record) || usageRecordReasoningEffortText(record)" class="model-cell">
+          <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
           <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
+          <a-tag v-if="usageRecordServiceTierText(record)" color="gold">{{ usageRecordServiceTierText(record) }}</a-tag>
+          <a-tag v-if="usageRecordReasoningEffortText(record)" color="cyan">思考 {{ usageRecordReasoningEffortText(record) }}</a-tag>
         </span>
         <span v-else class="muted-cell">-</span>
       </template>
@@ -93,11 +95,10 @@
       <template v-else-if="column.key === 'cost'">
         <UsageRecordCostCell :record="record" />
       </template>
-      <template v-else-if="column.key === 'firstTokenMs'">
-        <span>{{ formatDuration(record.firstTokenMs) }}</span>
-      </template>
-      <template v-else-if="column.key === 'durationMs'">
-        <span>{{ formatDuration(record.durationMs) }}</span>
+      <template v-else-if="column.key === 'latency'">
+        <div class="latency-cell">
+          <span v-for="part in usageRecordLatencyParts(record)" :key="part">{{ part }}</span>
+        </div>
       </template>
       <template v-else-if="column.key === 'createdAt'">
         <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
@@ -128,12 +129,14 @@ import {
   displayName,
   displayUsageRecordGroupName,
   formatDateTime,
-  formatDuration,
   formatEndpoint,
   statusCodeColor,
   statusCodeText,
   trafficSourceColor,
   trafficSourceText,
+  usageRecordLatencyParts,
+  usageRecordReasoningEffortText,
+  usageRecordServiceTierText,
   usageRecordTokenParts,
   usageRecordSystemAccountText
 } from './usageRecordFormatters'
@@ -191,6 +194,15 @@ function handleTableChange(...args: unknown[]): void {
   gap: 4px;
   max-width: 260px;
   vertical-align: bottom;
+}
+
+.latency-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.3;
 }
 
 .trace-id-cell {

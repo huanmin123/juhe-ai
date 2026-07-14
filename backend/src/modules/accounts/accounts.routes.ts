@@ -28,7 +28,6 @@ import { normalizeAccountBalanceConfig, validateAccountBalanceCapability } from 
 import {
   loadAccountBalanceConfigurationsByAccountIdsAsync,
 } from '../../storage/account-balance.repository.js'
-import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { registerAccountExportRoutes } from './account-export.routes.js'
 import { registerAccountTestSessionRoutes } from './account-test-session.routes.js'
 import { registerAccountTestStatusRoutes } from './account-test-status.routes.js'
@@ -50,6 +49,7 @@ import {
   dispatchAccountHealthCheck,
   dispatchPendingAccountHealthCheck
 } from './account-health-check-dispatch.service.js'
+import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapshot-cleanup.service.js'
 
 export const accountsRouter = Router()
 
@@ -144,12 +144,15 @@ accountsRouter.post('/', mutationGuard({
     res.status(400).json(badRequest(responseInspectionValidationMessage))
     return
   }
-  const balanceQueryEnabled = parsed.data.balanceQueryEnabled ?? false
+  let balanceQueryEnabled = parsed.data.balanceQueryEnabled ?? false
   const balanceQueryConfig = parsed.data.balanceQueryConfig
     ? normalizeAccountBalanceConfig(parsed.data.balanceQueryConfig)
     : undefined
   try {
-    validateAccountBalanceCapability({ type: parsed.data.type, credentials: parsed.data.credentials }, balanceQueryEnabled)
+    balanceQueryEnabled = validateAccountBalanceCapability(
+      { type: parsed.data.type, credentials: parsed.data.credentials },
+      balanceQueryEnabled
+    ).enabled
     if (balanceQueryEnabled && !balanceQueryConfig) throw new Error('开启上游余额查询时必须选择查询类型')
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '余额查询配置无效'))
@@ -339,29 +342,30 @@ accountsRouter.patch('/:id', async (req, res) => {
   if (Object.prototype.hasOwnProperty.call(body, 'credentials') && requestedCredentials) {
     accountUpdateInput.credentials = mergeAccountCredentialsForUpdate(existingAccount, requestedCredentials)
   }
-  const hasAccountUpdateInput = Object.keys(accountUpdateInput).length > 0
   const canUseExistingWithoutAccountUpdate = existingAccount.accessType !== 'authorized' && !existingAccount.accountAuthorizationId
   try {
     const nextCredentials = credentialsRecordValue(accountUpdateInput.credentials) ?? existingAccount.credentials
     const currentBalance = (await loadAccountBalanceConfigurationsByAccountIdsAsync([existingAccount.id])).get(existingAccount.id)
-    const nextBalanceEnabled = requestedBalanceQueryEnabled ?? currentBalance?.enabled ?? false
+    const requestedNextBalanceEnabled = requestedBalanceQueryEnabled ?? currentBalance?.enabled ?? false
     const nextBalanceConfig = requestedBalanceQueryConfig
       ? normalizeAccountBalanceConfig(requestedBalanceQueryConfig)
       : currentBalance?.config
-    validateAccountBalanceCapability({
+    const balanceDecision = validateAccountBalanceCapability({
       type: existingAccount.type,
       credentials: nextCredentials,
       accountAuthorizationId: existingAccount.accountAuthorizationId,
       authorizationInstanceAuthorizationId: existingAccount.authorizationInstanceSourceAccountId,
       accessType: existingAccount.accessType
-    }, nextBalanceEnabled)
+    }, requestedNextBalanceEnabled)
+    const nextBalanceEnabled = balanceDecision.enabled
     if (nextBalanceEnabled && !nextBalanceConfig) throw new Error('开启上游余额查询时必须选择查询类型')
-    if (requestedBalanceQueryEnabled !== undefined || requestedBalanceQueryConfig !== undefined) {
+    if (requestedBalanceQueryEnabled !== undefined || requestedBalanceQueryConfig !== undefined || balanceDecision.autoDisabledForMultipleApiKeys) {
       Object.assign(accountUpdateInput, {
         balanceQueryEnabled: nextBalanceEnabled,
-        balanceQueryConfig: nextBalanceConfig
+        ...(nextBalanceConfig ? { balanceQueryConfig: nextBalanceConfig } : {})
       })
     }
+    const hasAccountUpdateInput = Object.keys(accountUpdateInput).length > 0
     await assertAccountGptRequestOverridesSupportedAsync({
       providerCode: existingAccount.providerCode,
       accountType: existingAccount.type,
@@ -395,14 +399,27 @@ accountsRouter.patch('/:id', async (req, res) => {
         }
         account = nextAccount
       }
-      if (requestedBalanceQueryEnabled !== undefined || requestedBalanceQueryConfig !== undefined) {
-        await requestStatsWriter({ type: 'delete_account_balance_snapshot', accountId: account.id }).catch(() => undefined)
-      } else if (currentBalance) {
+      const finalBalance = (await loadAccountBalanceConfigurationsByAccountIdsAsync([account.id])).get(account.id)
+      if (
+        requestedBalanceQueryEnabled !== undefined
+        || requestedBalanceQueryConfig !== undefined
+        || balanceDecision.autoDisabledForMultipleApiKeys
+        || (currentBalance?.enabled === true && finalBalance?.enabled === false)
+      ) {
+        cleanupAccountBalanceSnapshotAfterSave({
+          accountId: account.id,
+          configRevision: account.configRevision ?? 1,
+          reason: balanceDecision.autoDisabledForMultipleApiKeys
+            ? 'multiple_api_keys'
+            : 'balance_configuration_changed'
+        })
+      }
+      if (finalBalance) {
         account = {
           ...account,
-          balanceQueryEnabled: currentBalance.enabled,
-          balanceQueryConfig: currentBalance.config,
-          balanceQueryNextRefreshAt: currentBalance.nextRefreshAt
+          balanceQueryEnabled: finalBalance.enabled,
+          balanceQueryConfig: finalBalance.config,
+          balanceQueryNextRefreshAt: finalBalance.nextRefreshAt
         }
       }
       const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
