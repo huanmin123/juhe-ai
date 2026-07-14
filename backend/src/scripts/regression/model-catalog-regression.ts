@@ -213,6 +213,9 @@ try {
   const gpt56Luna = publicCatalog.find((item) => item.model === 'gpt-5.6-luna')
   assert(gpt56Sol && gpt56Terra && gpt56Luna, 'GPT-5.6 Sol / Terra / Luna 必须进入模型目录')
   for (const item of [gpt56Sol, gpt56Terra, gpt56Luna]) {
+    assert.equal(item.contextWindowTokens, 1_050_000, `${item.model} 上下文窗口必须跟随官方 1,050,000 Token 边界`)
+    assert.equal(item.maxInputTokens, 922_000, `${item.model} 最大输入必须跟随官方 922,000 Token 边界`)
+    assert.equal(item.maxOutputTokens, 128_000, `${item.model} 最大输出必须跟随官方 128,000 Token 边界`)
     assert.deepEqual(item.supportedServiceTiers, gpt56ServiceTiers, `${item.model} 必须精确声明 Priority 与 Flex`)
     assert.deepEqual(item.supportedReasoningEfforts, gpt56WireReasoning, `${item.model} 必须精确声明 wire reasoning effort`)
     assert.equal(item.supportsServiceTier, true, `${item.model} supportsServiceTier 必须从精确数组派生`)

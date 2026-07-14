@@ -136,6 +136,59 @@ async function verifyRuntimeStateStore(): Promise<void> {
 
   await stateStore.setJson('ttl', { value: 1 }, 5)
   await waitFor(async () => (await stateStore.getJson('ttl')) === undefined, 'Redis state TTL 应按毫秒过期')
+
+  assert.equal(
+    await stateStore.compareSetJson('cas', undefined, { version: 1 }, 1000),
+    true,
+    'Redis compareSetJson 应能原子创建不存在的 key'
+  )
+  assert.equal(
+    await stateStore.compareSetJson('cas', { version: 0 }, { version: 2 }, 1000),
+    false,
+    'Redis compareSetJson expected 不匹配时不能覆盖当前值'
+  )
+  assert.equal(
+    await stateStore.compareSetJson('cas', { version: 1 }, { version: 2 }, 1000),
+    true,
+    'Redis compareSetJson expected 匹配时应原子更新'
+  )
+  assert.deepEqual(await stateStore.getJson('cas'), { version: 2 })
+  await stateStore.setJson('cas-stale-index', { keys: ['a'] }, 1000)
+  const staleIndexSnapshot = await stateStore.getJson<{ keys: string[] }>('cas-stale-index')
+  assert(staleIndexSnapshot, 'Redis stale index CAS 回归应读取旧快照')
+  assert.equal(
+    await stateStore.compareSetJson(
+      'cas-stale-index',
+      staleIndexSnapshot,
+      { keys: ['a', 'b'] },
+      1000
+    ),
+    true,
+    'Redis compareSetJson 应允许第一个旧快照 owner 提交'
+  )
+  assert.equal(
+    await stateStore.compareSetJson(
+      'cas-stale-index',
+      staleIndexSnapshot,
+      { keys: ['a', 'c'] },
+      1000
+    ),
+    false,
+    'Redis compareSetJson 必须拒绝第二个陈旧快照 owner 覆盖'
+  )
+  assert.deepEqual(await stateStore.getJson('cas-stale-index'), { keys: ['a', 'b'] })
+  await stateStore.setJson('cas-delete', { mutation: 'current' }, 1000)
+  assert.equal(
+    await stateStore.compareDeleteJson('cas-delete', { mutation: 'stale' }),
+    false,
+    'Redis compareDeleteJson 不能删除 expected 不匹配的新值'
+  )
+  assert.equal(
+    await stateStore.compareDeleteJson('cas-delete', { mutation: 'current' }),
+    true,
+    'Redis compareDeleteJson 应原子删除精确匹配值'
+  )
+  assert.equal(await stateStore.getJson('cas-delete'), undefined)
 }
 
 async function verifyLoginGuard(): Promise<void> {

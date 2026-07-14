@@ -63,10 +63,6 @@ try {
   const before = await sampleStream()
   clearRuntimeLogIndexQueueForTest()
 
-  runtimeConfig.processRole = 'worker'
-  runtimeConfig.workerRole = 'ingest-worker'
-  startRuntimeLogRedisStreamConsumer()
-
   runtimeConfig.processRole = 'server'
   runtimeConfig.workerRole = 'worker'
   enqueueRuntimeLogLine(JSON.stringify({
@@ -77,7 +73,15 @@ try {
     msg: `运行日志 Redis Stream 冒烟 ${smokeId}`
   }), { sourceKey })
 
-  const drained = await waitForSmokeMessageDrained()
+  if (!await waitForSmokeStreamEntry()) {
+    throw new Error('runtime log producer did not expose the smoke message in Redis Stream')
+  }
+
+  runtimeConfig.processRole = 'worker'
+  runtimeConfig.workerRole = 'ingest-worker'
+  startRuntimeLogRedisStreamConsumer()
+
+  const drained = await waitForSmokeMessageDrained(true)
   await stopRuntimeLogRedisStreamConsumer()
   const cleaned = await cleanupSmokeMessage()
 
@@ -111,9 +115,18 @@ try {
 
 process.exit(exitCode)
 
-async function waitForSmokeMessageDrained(): Promise<{ foundStreamEntry: boolean; foundPgRow: boolean; snapshot: StreamSnapshot }> {
+async function waitForSmokeStreamEntry(): Promise<boolean> {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const recent = await recentStreamEntries()
+    if (recent.some((entry) => entry.payload.id === expectedRuntimeLogId)) return true
+    await delay(25)
+  }
+  return false
+}
+
+async function waitForSmokeMessageDrained(initialFoundStreamEntry = false): Promise<{ foundStreamEntry: boolean; foundPgRow: boolean; snapshot: StreamSnapshot }> {
   let lastSnapshot = await sampleStream()
-  let foundStreamEntry = false
+  let foundStreamEntry = initialFoundStreamEntry
   let foundPgRow = false
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const recent = await recentStreamEntries()

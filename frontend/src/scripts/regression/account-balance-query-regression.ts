@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import {
+  accountBalanceWillAutoDisable,
   buildAccountBalancePayload,
   formatAccountBalance,
   validateAccountBalanceForm
@@ -69,7 +70,22 @@ assert.deepEqual(buildAccountBalancePayload(apiKeyForm), {
   balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
 })
 assert.equal(buildAccountBalancePayload({ ...apiKeyForm, type: 'oauth' }), undefined)
-assert.equal(buildAccountBalancePayload({ ...apiKeyForm, apiKeys: ['sk-one', 'sk-two'] }), undefined)
+assert.deepEqual(buildAccountBalancePayload({ ...apiKeyForm, apiKeys: ['sk-one', 'sk-two'] }), {
+  balanceQueryEnabled: false,
+  balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
+})
+assert.equal(accountBalanceWillAutoDisable({ ...apiKeyForm, apiKeys: ['sk-one', 'sk-two'] }), true)
+assert.equal(accountBalanceWillAutoDisable({ ...apiKeyForm, apiKeys: ['sk-one', ' sk-one '] }), false, '重复 Key 不应误判为多 Key')
+assert.equal(validateAccountBalanceForm({ ...apiKeyForm, apiKeys: ['sk-one', 'sk-two'] }), undefined, '多 Key 自动关闭余额查询，不能阻断保存')
+assert.deepEqual(buildAccountBalancePayload({
+  ...apiKeyForm,
+  apiKeys: ['sk-one', 'sk-two'],
+  balanceQueryAdapter: 'custom',
+  balanceQueryCustomPath: ''
+}), {
+  balanceQueryEnabled: false,
+  balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
+}, '多 Key 隐藏余额配置后不能因未完成的自定义草稿阻断保存')
 assert.equal(validateAccountBalanceForm(apiKeyForm), undefined)
 assert.match(validateAccountBalanceForm({
   ...apiKeyForm,
@@ -80,6 +96,8 @@ assert.match(validateAccountBalanceForm({
 
 const usageCellSource = readFileSync('../frontend/src/views/accounts/AccountUsageCell.vue', 'utf8')
 const editSectionSource = readFileSync('../frontend/src/views/accounts/AccountBalanceQuerySection.vue', 'utf8')
+const apiKeySectionSource = readFileSync('../frontend/src/views/accounts/AccountApiKeySection.vue', 'utf8')
+const saveFlowSource = readFileSync('../frontend/src/views/accounts/useAccountEditSaveFlow.ts', 'utf8')
 const balanceHelperSource = readFileSync('../frontend/src/views/accounts/accountBalanceQuery.ts', 'utf8')
 const accountsViewSource = readFileSync('../frontend/src/views/accounts/AccountsView.vue', 'utf8')
 const accountsApiSource = readFileSync('../frontend/src/api/domains/accounts.ts', 'utf8')
@@ -88,6 +106,9 @@ assert.match(balanceHelperSource, /查询失败/, '失败状态必须统一显�
 assert.match(usageCellSource, /balanceDisplay\.tooltip/, '失败原因必须通过 tooltip 展示')
 assert.match(editSectionSource, /balance-query-header/, '余额查询开关应放在标题行右侧')
 assert.match(editSectionSource, /QuestionCircleOutlined/, '余额查询应提供帮助说明')
+assert.match(apiKeySectionSource, /多 Key 账户不支持余额查询，保存后将自动关闭余额查询/, 'API Key 区域必须明确提示多 Key 自动关闭余额查询')
+assert.match(saveFlowSource, /buildAccountBalancePayload\(options\.form\)/, '基础编辑也必须明确提交多 Key 余额关闭状态')
+assert.match(saveFlowSource, /已因多 Key 自动关闭余额查询/, '保存成功后应明确提示自动关闭结果')
 assert.match(editSectionSource, /测试查询/, '余额配置应提供无副作用测试入口')
 assert.match(editSectionSource, /仅验证当前配置，不会保存/, '余额测试必须明确不会保存表单或快照')
 assert.match(editSectionSource, /class="balance-query-refresh-control"[\s\S]*?<a-input-number[\s\S]*?<a-button/, '测试查询按钮必须放在刷新周期控件右侧')

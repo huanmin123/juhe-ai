@@ -63,6 +63,10 @@ try {
   assert.equal(detail.status, 'completed')
   assert.equal(detail.level, 'suspicious', '变体模型响应不能被判为较可信或高可信')
   assert.match(detail.message, /不一致|降级/, '总览消息应提示模型字段不一致')
+  const trustReport = detail.resultSummary.trustReport as Record<string, unknown> | undefined
+  assert.equal(trustReport?.mappingStatus, 'undeclared_mismatch', '未声明响应模型冲突必须与显式映射分开')
+  assert.equal(trustReport?.identityStatus, 'suspected_downgrade', '未声明模型冲突应形成疑似降级身份结论')
+  assert.equal(trustReport?.usageIntegrityStatus, 'insufficient_evidence', '只有 usage 形态时不能冒充 Token 诚信结论')
 
   const mismatchItems = detail.checks.filter((item) => item.evidenceSummary.modelMismatch === true)
   assert(mismatchItems.length >= 5, '关键 Responses 探针都应记录模型不匹配证据')
@@ -104,6 +108,9 @@ try {
   assert.equal(mappedBasic.evidenceSummary.expectedModel, mappedUpstreamModel, '映射命中后应按实际上游模型校验返回模型')
   assert.equal(mappedBasic.evidenceSummary.responseModel, mappedUpstreamModel, '映射命中后应保存上游返回模型')
   assert.equal(mappedBasic.evidenceSummary.modelMappingApplied, true, '模型检测证据应明确标记模型映射已命中')
+  const mappedTrustReport = mappedDetail.resultSummary.trustReport as Record<string, unknown> | undefined
+  assert.equal(mappedTrustReport?.mappingStatus, 'configured_mapping', '显式模型映射必须展示为已配置映射')
+  assert.notEqual(mappedTrustReport?.identityStatus, 'suspected_downgrade', '显式映射不能被身份维度误判为降级')
 
   console.log('模型检测严格模型匹配回归通过：变体模型不会冒充目标模型，合法模型映射按实际上游模型校验')
 } finally {

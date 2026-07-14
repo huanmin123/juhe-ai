@@ -184,6 +184,11 @@ func (s *Service) createOnce(
 			apiKeyCreateInvalidationTimeout,
 		)
 		defer cancel()
+		_ = s.invalidator.InvalidateAPIKeyLookupCache(
+			invalidationCtx,
+			row.ID,
+			apiKeyCreatedReason,
+		)
 		_ = s.invalidator.InvalidateGatewayRuntime(invalidationCtx, apiKeyCreatedReason)
 		_ = s.invalidator.InvalidateAPIKeyQuotaChanged(
 			invalidationCtx,

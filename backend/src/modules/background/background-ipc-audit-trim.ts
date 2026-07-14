@@ -5,11 +5,16 @@ import type { AuditLogInput } from '../../storage/repositories.js'
 
 export const auditWorkerMessageMaxBytes = 4 * 1024 * 1024
 
-const auditWorkerPayloadBodyInlineMaxBytes = 2 * 1024 * 1024
+const auditWorkerSuccessPayloadBodyInlineMaxBytes = 512 * 1024
+const auditWorkerFailurePayloadBodyInlineMaxBytes = 2 * 1024 * 1024
 const auditWorkerMessageEstimateMaxBytes = 8 * 1024 * 1024 + 1
 const auditWorkerMessageEstimateMaxNodes = 20_000
 
 export function trimAuditLogsForWorkerIpc(items: AuditLogInput[]): AuditLogInput[] {
+  return prepareAuditLogsForBoundedTransport(items)
+}
+
+export function prepareAuditLogsForBoundedTransport(items: AuditLogInput[]): AuditLogInput[] {
   return items.map(trimAuditLogForWorkerIpc)
 }
 
@@ -51,11 +56,14 @@ function trimAuditLogTopLevelStringsForWorkerIpc(item: AuditLogInput): AuditLogI
 function trimAuditLogPayloadBodiesForWorkerIpc(item: AuditLogInput): AuditLogInput {
   let bytes = 2048 + auditAttemptsBytes(item.attempts)
   let changed = false
+  const inlineBodyMaxBytes = item.success
+    ? auditWorkerSuccessPayloadBodyInlineMaxBytes
+    : auditWorkerFailurePayloadBodyInlineMaxBytes
   const payloads: AuditLogInput['payloads'] = item.payloads.map((payload) => {
     const headerBytes = payload.headers ? estimateJsonBytes(payload.headers) : 0
     const bodyBytes = auditPayloadBodyBytes(payload.body)
     const nextBytes = headerBytes + bodyBytes + 512
-    const shouldDropBody = bodyBytes > auditWorkerPayloadBodyInlineMaxBytes || bytes + nextBytes > auditWorkerMessageMaxBytes
+    const shouldDropBody = bodyBytes > inlineBodyMaxBytes || bytes + nextBytes > auditWorkerMessageMaxBytes
     bytes += shouldDropBody ? headerBytes + 512 : nextBytes
     if (!shouldDropBody) {
       return payload

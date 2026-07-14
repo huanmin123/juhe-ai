@@ -161,6 +161,9 @@ async function assertHotRetainedNonStreamSuccess(gatewayBaseUrl: string, upstrea
 
   const detail = auditDetailByTrace(traceId)
   assert.equal(detail.auditOutcome, 'success', '成功热保留请求应写入 success 审计')
+  assert(detail.httpCompletedAt, '成功审计应保存 HTTP 返回客户端时间')
+  assert.equal(typeof detail.httpDurationMs, 'number', '成功审计应保存 HTTP 客户端耗时')
+  assert((detail.durationMs ?? 0) >= (detail.httpDurationMs ?? 0), '审计总耗时不得早于 HTTP 客户端耗时')
   await assertPayloadBodyEquals(detail, 'upstream_response', nonStreamSuccessBody)
   await assertPayloadBodyEquals(detail, 'gateway_response', nonStreamSuccessBody)
   await assertPayloadBodyContains(detail, 'client_request', 'audit non stream success')
@@ -214,7 +217,7 @@ async function assertAllUpstreamFailureCapturesUpstreamResponse(gatewayBaseUrl: 
   const detail = auditDetailByTrace(traceId)
   assert.equal(detail.auditOutcome, 'upstream_failed', '全失败应写入 upstream_failed 审计')
   await assertPayloadBodyEquals(detail, 'upstream_response', allFailureBody, detail.attempts[0]?.id)
-  await assertPayloadBodyContains(detail, 'gateway_error', '没有可用的上游账户')
+  await assertPayloadBodyEquals(detail, 'gateway_error', text)
 }
 
 async function assertHotRetainedStreamSuccess(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -254,13 +257,13 @@ async function assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseU
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `流式失败会按 SSE 200 透传失败事件，实际 ${response.status}: ${text}`)
-  assert.match(text, /response\.failed/, '流式失败响应应包含 failed 事件')
+  assert.equal(response.status, 503, `普通客户端预输出流失败应转换为可重试 503，实际 ${response.status}: ${text}`)
+  assert.match(text, /upstream_retryable_error/, '普通客户端预输出流失败应返回稳定可重试错误码')
 
   const detail = auditDetailByTrace(traceId)
-  assert.equal(detail.auditOutcome, 'stream_failed', '流式失败应写入 stream_failed 审计')
+  assert.equal(detail.auditOutcome, 'upstream_failed', '客户端尚未收到流数据的失败应写入 upstream_failed 审计')
   await assertPayloadBodyContains(detail, 'upstream_response', 'response.failed')
-  await assertPayloadBodyContains(detail, 'gateway_response', 'response.failed')
+  await assertPayloadBodyEquals(detail, 'gateway_error', text)
 }
 
 async function assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -277,11 +280,11 @@ async function assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayB
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `图像流失败会按 SSE 200 透传失败事件，实际 ${response.status}: ${text}`)
-  assert.match(text, /response\.failed/, '图像流失败响应应包含 failed 事件')
+  assert.equal(response.status, 503, `普通客户端图像流预输出失败应转换为可重试 503，实际 ${response.status}: ${text}`)
+  assert.match(text, /upstream_retryable_error/, '图像流预输出失败应返回稳定可重试错误码')
 
   const detail = auditDetailByTrace(traceId)
-  assert.equal(detail.auditOutcome, 'stream_failed', '图像流失败应写入 stream_failed 审计')
+  assert.equal(detail.auditOutcome, 'upstream_failed', '客户端尚未收到图像流数据的失败应写入 upstream_failed 审计')
   await assertPayloadBodyContains(detail, 'client_request', 'audit image stream failure should keep request payload')
   await assertPayloadBodyContains(detail, 'upstream_request', 'audit image stream failure should keep request payload')
 }
@@ -410,7 +413,7 @@ function seedGatewayRoute(upstreamBaseUrl: string, label: string, upstreamKeys: 
     enabled: true
   }, access)
   for (const [index, upstreamKey] of upstreamKeys.entries()) {
-    repositories.createAccount({
+    const account = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `${label}账户-${String(index + 1).padStart(2, '0')}`,
@@ -419,10 +422,15 @@ function seedGatewayRoute(upstreamBaseUrl: string, label: string, upstreamKeys: 
         api_key: upstreamKey,
         base_url: upstreamBaseUrl
       },
-      groupId: group.id,
-      status: 'active',
-      schedulable: true
+      groupId: group.id
     }, access)
+    const activated = repositories.recordAccountHealthCheckSuccess(account.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    })
+    assert(activated, `${label}账户-${String(index + 1).padStart(2, '0')} 应通过健康检查成功入口从 pending_test 激活`)
   }
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${label} API Key`,

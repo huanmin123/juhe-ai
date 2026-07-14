@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/go-chi/chi/v5"
 
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
@@ -36,6 +39,78 @@ func NewManagementMyRouteStrategyOptionsHandler(service *managementroutestrategi
 	return newManagementRouteStrategyOptionsHandler(managementRouteStrategyOptionServiceAdapter{service: service}, managementRouteStrategyScopeSelf)
 }
 
+type managementRouteStrategyListService interface {
+	List(r *http.Request, input managementroutestrategies.ListInput) (managementroutestrategies.ListResult, error)
+}
+
+type managementRouteStrategyListServiceAdapter struct {
+	service *managementroutestrategies.Service
+}
+
+func (s managementRouteStrategyListServiceAdapter) List(
+	r *http.Request,
+	input managementroutestrategies.ListInput,
+) (managementroutestrategies.ListResult, error) {
+	return s.service.List(r.Context(), input)
+}
+
+func NewManagementRouteStrategyListHandler(service *managementroutestrategies.Service) http.Handler {
+	return newManagementRouteStrategyListHandler(
+		managementRouteStrategyListServiceFrom(service),
+		managementRouteStrategyScopeAdmin,
+	)
+}
+
+func NewManagementMyRouteStrategyListHandler(service *managementroutestrategies.Service) http.Handler {
+	return newManagementRouteStrategyListHandler(
+		managementRouteStrategyListServiceFrom(service),
+		managementRouteStrategyScopeSelf,
+	)
+}
+
+func managementRouteStrategyListServiceFrom(service *managementroutestrategies.Service) managementRouteStrategyListService {
+	if service == nil {
+		return nil
+	}
+	return managementRouteStrategyListServiceAdapter{service: service}
+}
+
+type managementRouteStrategyDetailService interface {
+	Detail(r *http.Request, input managementroutestrategies.DetailInput) (managementroutestrategies.DetailResult, error)
+}
+
+type managementRouteStrategyDetailServiceAdapter struct {
+	service *managementroutestrategies.Service
+}
+
+func (s managementRouteStrategyDetailServiceAdapter) Detail(
+	r *http.Request,
+	input managementroutestrategies.DetailInput,
+) (managementroutestrategies.DetailResult, error) {
+	return s.service.Detail(r.Context(), input)
+}
+
+func NewManagementRouteStrategyDetailHandler(service *managementroutestrategies.Service) http.Handler {
+	return newManagementRouteStrategyDetailHandler(
+		managementRouteStrategyDetailServiceFrom(service),
+		managementRouteStrategyScopeAdmin,
+	)
+}
+
+func NewManagementMyRouteStrategyDetailHandler(service *managementroutestrategies.Service) http.Handler {
+	return newManagementRouteStrategyDetailHandler(
+		managementRouteStrategyDetailServiceFrom(service),
+		managementRouteStrategyScopeSelf,
+	)
+}
+
+func managementRouteStrategyDetailServiceFrom(service *managementroutestrategies.Service) managementRouteStrategyDetailService {
+	if service == nil {
+		return nil
+	}
+	return managementRouteStrategyDetailServiceAdapter{service: service}
+}
+
 func newManagementRouteStrategyOptionsHandler(service managementRouteStrategyOptionService, scope managementRouteStrategyOptionScope) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authContext, ok := ManagementAuthContextFromRequest(r)
@@ -54,6 +129,119 @@ func newManagementRouteStrategyOptionsHandler(service managementRouteStrategyOpt
 			return
 		}
 		writeData(w, http.StatusOK, options)
+	})
+}
+
+func newManagementRouteStrategyListHandler(
+	service managementRouteStrategyListService,
+	scope managementRouteStrategyOptionScope,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if scope == managementRouteStrategyScopeAdmin && !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+
+		result, err := service.List(r, managementRouteStrategyListInput(authContext, r.URL.Query(), scope))
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, result)
+	})
+}
+
+func managementRouteStrategyListInput(
+	authContext managementauth.Context,
+	values url.Values,
+	scope managementRouteStrategyOptionScope,
+) managementroutestrategies.ListInput {
+	page, _ := managementGroupListIntegerQueryValue(values, "page")
+	pageSize, pageSizeProvided := managementGroupListIntegerQueryValue(values, "pageSize")
+	input := managementroutestrategies.ListInput{
+		ActorSystemAccountID: authContext.SystemAccountID,
+		ActorRole:            authContext.Role,
+		Page:                 page,
+		PageSize:             pageSize,
+		PageSizeProvided:     pageSizeProvided,
+		Keyword:              firstManagementRouteStrategyListQueryText(values, "keyword"),
+		Mode:                 firstManagementRouteStrategyListQueryText(values, "mode"),
+		Status:               firstManagementRouteStrategyListQueryText(values, "status"),
+	}
+	switch scope {
+	case managementRouteStrategyScopeAdmin:
+		systemAccountID := firstManagementRouteStrategyListQueryText(values, "systemAccountId")
+		if systemAccountID != "all" {
+			input.SystemAccountID = systemAccountID
+		}
+	case managementRouteStrategyScopeSelf:
+		input.SystemAccountID = authContext.SystemAccountID
+		input.SelfOnly = true
+	}
+	return input
+}
+
+func firstManagementRouteStrategyListQueryText(values url.Values, key string) string {
+	items := values[key]
+	if len(items) == 0 {
+		return ""
+	}
+	return strings.TrimFunc(items[0], managementGroupListECMAScriptWhitespace)
+}
+
+func newManagementRouteStrategyDetailHandler(
+	service managementRouteStrategyDetailService,
+	scope managementRouteStrategyOptionScope,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if scope == managementRouteStrategyScopeAdmin && !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+
+		systemAccountID := ""
+		selfOnly := scope == managementRouteStrategyScopeSelf
+		if !selfOnly {
+			var message string
+			systemAccountID, message, ok = managementGroupDetailSystemAccountID(r.URL.Query())
+			if !ok {
+				writeMessageError(w, http.StatusBadRequest, message)
+				return
+			}
+		}
+		result, err := service.Detail(r, managementroutestrategies.DetailInput{
+			ActorSystemAccountID: authContext.SystemAccountID,
+			ActorRole:            authContext.Role,
+			SystemAccountID:      systemAccountID,
+			SelfOnly:             selfOnly,
+			RouteStrategyID:      chi.URLParam(r, "id"),
+		})
+		switch {
+		case errors.Is(err, managementroutestrategies.ErrRouteStrategyNotFound):
+			writeMessageError(w, http.StatusNotFound, "策略路由不存在")
+		case err != nil:
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+		default:
+			writeData(w, http.StatusOK, result)
+		}
 	})
 }
 

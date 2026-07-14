@@ -6,26 +6,20 @@
           <div class="cost-detail-panel">
             <div class="cost-detail-title">{{ detailTitle }}</div>
           <template v-if="metadataRows.length">
-            <div class="cost-detail-section-title">模型口径</div>
+            <div class="cost-detail-section-title">计价信息</div>
             <div v-for="row in metadataRows" :key="row.key" class="cost-detail-row">
               <span>{{ row.label }}</span>
               <span class="cost-detail-value">{{ row.value }}</span>
             </div>
           </template>
-          <div v-if="metadataRows.length && tokenDetailRows.length" class="cost-detail-divider"></div>
-          <template v-if="tokenDetailRows.length">
-            <div class="cost-detail-section-title">Token 明细</div>
-            <div v-for="row in tokenDetailRows" :key="row.key" class="cost-detail-row">
-              <span>{{ row.label }}</span>
-              <span class="cost-detail-value">{{ row.value }}</span>
-            </div>
-          </template>
-          <div v-if="tokenDetailRows.length && costAmountRows.length" class="cost-detail-divider"></div>
+          <div v-if="metadataRows.length && costAmountRows.length" class="cost-detail-divider"></div>
+          <div v-if="costAmountRows.length" class="cost-detail-section-title">成本小计</div>
           <div v-for="row in costAmountRows" :key="row.key" class="cost-detail-row">
             <span>{{ row.label }}</span>
             <span class="cost-detail-value">{{ row.value }}</span>
           </div>
           <div v-if="unitPriceRows.length" class="cost-detail-divider"></div>
+          <div v-if="unitPriceRows.length" class="cost-detail-section-title">最终单价</div>
           <div v-for="row in unitPriceRows" :key="row.key" class="cost-detail-row">
             <span>{{ row.label }}</span>
             <span class="cost-detail-value">{{ row.value }}</span>
@@ -47,8 +41,7 @@ import {
   usageRecordCostDetailTitle,
   usageRecordHasCostDetails,
   usageRecordCostMetadataRows,
-  usageRecordCostPriceRows,
-  usageRecordCostTokenRows
+  usageRecordCostPriceRows
 } from './usageRecordCostDetails'
 import { formatCost } from './usageRecordFormatters'
 
@@ -60,7 +53,6 @@ const costBreakdown = computed(() => props.record.costBreakdown)
 const displayCostUsd = computed(() => props.record.costUsd ?? costBreakdown.value?.accountChargeUsd)
 const detailTitle = computed(() => usageRecordCostDetailTitle(props.record))
 const metadataRows = computed(() => usageRecordCostMetadataRows(props.record))
-const tokenDetailRows = computed(() => usageRecordCostTokenRows(props.record))
 const costAmountRows = computed(() => usageRecordCostAmountRows(props.record))
 const unitPriceRows = computed(() => usageRecordCostPriceRows(props.record))
 const hasCostDetails = computed(() => usageRecordHasCostDetails(props.record))

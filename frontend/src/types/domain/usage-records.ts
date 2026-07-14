@@ -26,6 +26,8 @@ export interface UsageRecordCostBreakdown {
   outputUsdPerImage?: number
   accountChargeUsd?: number
   multiplier: 1
+  serviceTierPricingSource: 'default' | 'tier_specific' | 'multiplier' | 'mixed' | 'unknown'
+  serviceTierMultiplier?: number
 }
 
 export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'account_health_check' | 'runtime_recovery_probe' | 'cooldown_retest' | 'hybrid_scoring' | 'hybrid_quality_scoring'
@@ -55,6 +57,8 @@ export interface UsageRecordSummary {
   effectiveServiceTier?: 'default' | 'priority' | 'flex'
   reportedServiceTier?: 'default' | 'priority' | 'flex'
   billedServiceTier?: 'default' | 'priority' | 'flex'
+  requestedReasoningEffort?: UsageRecordReasoningEffort
+  effectiveReasoningEffort?: UsageRecordReasoningEffort
   modelMappingApplied?: boolean
   modelMappingSource?: string
   sourceEndpointFamily?: string
@@ -86,6 +90,8 @@ export interface UsageRecordSummary {
   responseSnapshot?: UsageRecordLogSnapshot
   createdAt: string
 }
+
+export type UsageRecordReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export interface UsageRecordListResult {
   items: UsageRecordSummary[]

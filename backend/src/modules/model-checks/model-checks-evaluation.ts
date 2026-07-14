@@ -50,6 +50,7 @@ export type GatewayProbeResult = {
   sourceEndpointFamily?: string
   upstreamEndpointFamily?: string
   usage?: Record<string, unknown>
+  systemFingerprint?: string
   errorMessage?: string
   upstreamStatusCode?: number
   retryAfterMs?: number
@@ -69,6 +70,7 @@ export type ProbeSuiteResult = {
   items: ModelCheckItemCreateInput[]
   basic?: GatewayProbeResult
   behavior?: GatewayProbeResult
+  behaviorObservations?: BehaviorProbeObservation[]
   longContext?: GatewayProbeResult
 }
 

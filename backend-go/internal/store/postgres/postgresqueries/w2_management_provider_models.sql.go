@@ -523,6 +523,19 @@ SELECT
   cached_input_usd_per_1m,
   cache_write_usd_per_1m,
   cache_write_1h_usd_per_1m,
+  priority_input_usd_per_1m,
+  priority_output_usd_per_1m,
+  priority_cached_input_usd_per_1m,
+  priority_cache_write_usd_per_1m,
+  priority_cache_write_1h_usd_per_1m,
+  flex_input_usd_per_1m,
+  flex_output_usd_per_1m,
+  flex_cached_input_usd_per_1m,
+  flex_cache_write_usd_per_1m,
+  flex_cache_write_1h_usd_per_1m,
+  long_context_input_token_threshold,
+  long_context_input_cost_multiplier,
+  long_context_output_cost_multiplier,
   image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
@@ -577,6 +590,19 @@ SELECT
   cached_input_usd_per_1m,
   cache_write_usd_per_1m,
   NULL::double precision AS cache_write_1h_usd_per_1m,
+  NULL::double precision AS priority_input_usd_per_1m,
+  NULL::double precision AS priority_output_usd_per_1m,
+  NULL::double precision AS priority_cached_input_usd_per_1m,
+  NULL::double precision AS priority_cache_write_usd_per_1m,
+  NULL::double precision AS priority_cache_write_1h_usd_per_1m,
+  NULL::double precision AS flex_input_usd_per_1m,
+  NULL::double precision AS flex_output_usd_per_1m,
+  NULL::double precision AS flex_cached_input_usd_per_1m,
+  NULL::double precision AS flex_cache_write_usd_per_1m,
+  NULL::double precision AS flex_cache_write_1h_usd_per_1m,
+  NULL::integer AS long_context_input_token_threshold,
+  NULL::double precision AS long_context_input_cost_multiplier,
+  NULL::double precision AS long_context_output_cost_multiplier,
   image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
@@ -642,6 +668,19 @@ type ListManagementProviderModelCatalogRow struct {
 	CachedInputUsdPer1m               pgtype.Float8
 	CacheWriteUsdPer1m                pgtype.Float8
 	CacheWrite1hUsdPer1m              pgtype.Float8
+	PriorityInputUsdPer1m             pgtype.Float8
+	PriorityOutputUsdPer1m            pgtype.Float8
+	PriorityCachedInputUsdPer1m       pgtype.Float8
+	PriorityCacheWriteUsdPer1m        pgtype.Float8
+	PriorityCacheWrite1hUsdPer1m      pgtype.Float8
+	FlexInputUsdPer1m                 pgtype.Float8
+	FlexOutputUsdPer1m                pgtype.Float8
+	FlexCachedInputUsdPer1m           pgtype.Float8
+	FlexCacheWriteUsdPer1m            pgtype.Float8
+	FlexCacheWrite1hUsdPer1m          pgtype.Float8
+	LongContextInputTokenThreshold    pgtype.Int4
+	LongContextInputCostMultiplier    pgtype.Float8
+	LongContextOutputCostMultiplier   pgtype.Float8
 	ImageInputUsdPer1m                pgtype.Float8
 	ImageOutputUsdPer1m               pgtype.Float8
 	AudioInputUsdPer1m                pgtype.Float8
@@ -702,6 +741,19 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 			&i.CachedInputUsdPer1m,
 			&i.CacheWriteUsdPer1m,
 			&i.CacheWrite1hUsdPer1m,
+			&i.PriorityInputUsdPer1m,
+			&i.PriorityOutputUsdPer1m,
+			&i.PriorityCachedInputUsdPer1m,
+			&i.PriorityCacheWriteUsdPer1m,
+			&i.PriorityCacheWrite1hUsdPer1m,
+			&i.FlexInputUsdPer1m,
+			&i.FlexOutputUsdPer1m,
+			&i.FlexCachedInputUsdPer1m,
+			&i.FlexCacheWriteUsdPer1m,
+			&i.FlexCacheWrite1hUsdPer1m,
+			&i.LongContextInputTokenThreshold,
+			&i.LongContextInputCostMultiplier,
+			&i.LongContextOutputCostMultiplier,
 			&i.ImageInputUsdPer1m,
 			&i.ImageOutputUsdPer1m,
 			&i.AudioInputUsdPer1m,

@@ -58,6 +58,7 @@ import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
 import type { AccountFormModel } from './accountFormTypes'
+import { normalizedAccountApiKeys } from './accountCredentials'
 
 const props = defineProps<{
   canQuery?: boolean
@@ -67,7 +68,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ (event: 'query'): void }>()
 
-const visible = computed(() => props.form.type === 'api_key' && props.form.apiKeys.map((item) => item.trim()).filter(Boolean).length === 1)
+const visible = computed(() => props.form.type === 'api_key' && normalizedAccountApiKeys(props.form).length === 1)
 const adapterOptions = [
   { label: '内置适配', value: 'builtin' },
   { label: '自定义接口', value: 'custom' }

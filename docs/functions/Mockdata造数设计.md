@@ -79,7 +79,7 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - AI 账户必须覆盖 API Key、OAuth、Anthropic API Key、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待检查、停用、限流、临时不可用、错误、账号不可调度和时间计划不生效样本；GPT 造数显式保存 `healthCheckEndpointFamily=responses`，通用 OpenAI-compatible 造数显式保存 `chat_completions`，用于检查配置回显和系统 JSON 探针验收；Anthropic 样本只使用 API Key，不生成 OAuth / Claude Code token。
 - API Key 必须覆盖 `priority_failover`、`round_robin`、`weighted_round_robin` 路由策略，路由策略分组绑定状态必须同时包含 active 和 disabled；额度窗口、过期 Key、停用 Key、时间计划不生效 Key 都需要有样本。
 - 自定义模型目录必须覆盖当前存储支持的模型范围、active / draft / disabled 状态，以及文本、图像和音频等不同能力类型；账号模型映射和使用记录需要出现至少一条实际命中样本。当前 SQLite 自定义模型表只允许 personal 范围时，Mockdata 覆盖校验不强制要求 global 样本。
-- 使用记录必须覆盖 gateway、manual_account_test 和 cooldown_retest 来源，OpenAI models、responses、chat completions 和 images 端点，Anthropic messages、models 和 count tokens 端点，成功、失败、图片 token、模型映射命中、缓存读取、流式与非流式样本。
+- 使用记录必须覆盖 gateway、manual_account_test 和 cooldown_retest 来源，OpenAI models、responses、chat completions 和 images 端点，Anthropic messages、models 和 count tokens 端点，成功、失败、图片 token、模型映射命中、缓存读取、流式与非流式样本；GPT 文本记录还必须包含 Priority、Flex 实际计费档位、请求 / 最终思考强度及写入时计价快照样本。
 - 脚本会创建一个 `mockdata_admin` 普通管理员账号，以及若干 `mockdata_*` 普通用户。普通管理员用于管理员模式下验证管理员自有分组、AI 账户、API Key、筛选和创建目标；普通用户用于团队成员、授权调用方、公告已读和操作日志可见性。这些账号都是配套数据。
 - 本地网关 Key、上游 API Key、OAuth Token 和代理密码均为模拟值，不会真实请求 OpenAI。
 - 统计数据来自脚本写入的 `usage_records`，再通过现有聚合器重建预聚合表；页面读取路径仍然和真实数据一致。
@@ -108,10 +108,10 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - 授权列表中应出现普通用户授权给 admin 的分组和 AI 账户记录，用于超级管理员被授权资源验收；不应出现资源归属人给自己授权的记录。
 - 使用记录、审计日志、操作日志、运行日志均可按 `mockdata` 或 `造数` 检索。
 - 公开接口日志、外部来源系统、响应检查策略、IP 统计、IP 封禁策略、后台清理目标、用量统计、AI 性能监控、授权用量、API Key 额度窗口、系统指标趋势和表空间监控均有近 31 天数据。
-- AI 账户列表应能看到待检查、停用、限流、临时不可用、错误、不可调度、时间计划不生效、多 Key、图像生成、模型映射和不同客户端兼容能力样本。
+- AI 账户列表应能看到待检查、停用、限流、临时不可用、错误、不可调度、时间计划不生效、多 Key、图像生成、模型映射和不同客户端兼容能力样本；多 Key 样本创建时故意携带余额开启配置，用于验证最终状态自动关闭、列表不展示旧余额且编辑页保留配置。
 - API Key 列表和详情应能看到优先级故障转移、轮询、加权轮询、路由策略绑定禁用、停用、过期、时间计划和额度窗口样本。
 - 自定义模型目录应能看到全局模型、个人模型、草稿模型、停用模型、图像模型和音频模型样本。
-- 使用记录应能看到 gateway、手动账号测试、冷却重试、图片生成和模型映射命中样本。
+- 使用记录应能看到 gateway、手动账号测试、冷却重试、图片生成、模型映射命中、Priority / Flex 实际档位和最终思考强度样本；悬浮成本应读取写入时计价快照并展示档位计价来源与最终单价。
 - 模型检测历史会覆盖管理端与用户侧可见路径，包含运行中、已完成、失败和已取消样本，以及可信对比样本，用于模型检测页筛选、列表和详情验收。
 - `backend/data/mockdata-summary.json` 中的 active API Key 可用于本地网关请求验证；其中 `authorizationSamples` 里的 active 分组授权用于验证授权展示、授权统计和路由策略授权分组绑定。
 - `pnpm mockdata` 会执行内置覆盖断言；如果数据库缺少关键状态、类型、路由策略、账号内 Key 运行态、自定义模型状态 / 范围、图片 token 或模型映射命中记录，脚本应直接失败，不能生成看似成功但覆盖不完整的数据。

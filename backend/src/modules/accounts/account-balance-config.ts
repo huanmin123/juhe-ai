@@ -9,6 +9,8 @@ const decimalPattern = /^(?:0|[1-9]\d*)(?:\.\d+)?$/
 const jsonPointerPattern = /^(?:\/(?:[^~/]|~[01])*)*$/
 const accountBalanceBuiltinAdapterSchema = z.enum(['sub2api', 'newapi', 'litellm', 'user_balance'])
 
+export const MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE = '多 Key 账户不支持余额查询，保存后将自动关闭余额查询'
+
 const accountBalanceCustomConfigSchema = z.object({
   path: z.string().trim().min(1),
   remainingPointer: z.string().trim().optional(),
@@ -80,22 +82,55 @@ interface AccountBalanceCapabilityInput {
   accessType?: string
 }
 
-export function validateAccountBalanceCapability(account: AccountBalanceCapabilityInput, enabled: boolean): void {
-  if (!enabled) return
-  if (account.authorizationInstanceAuthorizationId || account.accountAuthorizationId || account.accessType === 'authorized') {
-    throw new Error('授权实例不能配置上游余额查询')
+export interface AccountBalanceCapabilityDecision {
+  enabled: boolean
+  autoDisabledForMultipleApiKeys: boolean
+}
+
+export function validateAccountBalanceCapability(
+  account: AccountBalanceCapabilityInput,
+  enabled: boolean
+): AccountBalanceCapabilityDecision {
+  const authorizedInstance = Boolean(
+    account.authorizationInstanceAuthorizationId
+    || account.accountAuthorizationId
+    || account.accessType === 'authorized'
+  )
+  if (authorizedInstance) {
+    if (enabled) throw new Error('授权实例不能配置上游余额查询')
+    return { enabled: false, autoDisabledForMultipleApiKeys: false }
   }
-  if (account.type !== 'api_key') {
+  if (enabled && account.type !== 'api_key') {
     throw new Error('上游余额查询仅支持 API Key 账户')
   }
-  const apiKeys = Array.isArray(account.credentials?.api_keys)
-    ? account.credentials.api_keys.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    : []
-  if (apiKeys.length > 1) {
-    throw new Error('上游余额查询仅支持单 API Key 账户')
+  const apiKeyCount = effectiveAccountApiKeyCount(account.credentials)
+  if (account.type === 'api_key' && apiKeyCount > 1) {
+    return { enabled: false, autoDisabledForMultipleApiKeys: true }
   }
-  const singleApiKey = typeof account.credentials?.api_key === 'string' && account.credentials.api_key.trim().length > 0
-  if (!singleApiKey && apiKeys.length !== 1) {
+  if (!enabled) {
+    return { enabled: false, autoDisabledForMultipleApiKeys: false }
+  }
+  if (apiKeyCount !== 1) {
     throw new Error('上游余额查询需要一个有效的 API Key')
   }
+  return { enabled: true, autoDisabledForMultipleApiKeys: false }
+}
+
+export function effectiveAccountApiKeyCount(credentials: Record<string, unknown> | undefined): number {
+  return effectiveAccountApiKeys(credentials).length
+}
+
+export function effectiveAccountApiKeys(credentials: Record<string, unknown> | undefined): string[] {
+  const pool = Array.isArray(credentials?.api_keys)
+    ? credentials.api_keys
+    : []
+  const keys = new Set(
+    pool
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter(Boolean)
+  )
+  if (keys.size > 0) return [...keys]
+  const legacyKey = typeof credentials?.api_key === 'string' ? credentials.api_key.trim() : ''
+  return legacyKey ? [legacyKey] : []
 }

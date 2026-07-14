@@ -20,6 +20,7 @@ export interface ParsedModelCheckProbeResponse {
   outputText?: string
   model?: string
   usage?: Record<string, unknown>
+  systemFingerprint?: string
   errorMessage?: string
   streamFailureMessage?: string
 }
@@ -48,6 +49,7 @@ function parseOpenAIResponsesProbeResponse(bodyText: string): ParsedModelCheckPr
     outputText: extractOpenAIResponseOutputText(bodyText),
     model: textValue(json?.model) ?? modelFromSse(bodyText),
     usage: recordValue(json?.usage) ?? usageFromSse(bodyText),
+    systemFingerprint: textValue(json?.system_fingerprint),
     errorMessage: parseUpstreamMessage(bodyText),
     streamFailureMessage: parseOpenAIStreamFailureMessage(bodyText)
   }

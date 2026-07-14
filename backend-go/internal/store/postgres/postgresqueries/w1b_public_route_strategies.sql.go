@@ -66,12 +66,81 @@ func (q *Queries) DeletePublicRouteStrategyBindings(ctx context.Context, arg Del
 }
 
 const findPublicRouteStrategyBindableGroups = `-- name: FindPublicRouteStrategyBindableGroups :many
-SELECT id, system_account_id, name, provider_code, enabled
-FROM juhe_business.groups
-WHERE system_account_id = $1
-  AND id = ANY($2::text[])
-ORDER BY id ASC
-FOR UPDATE
+WITH locked_groups AS MATERIALIZED (
+  SELECT
+    groups.id,
+    groups.system_account_id,
+    groups.name,
+    groups.provider_code,
+    groups.enabled
+  FROM juhe_business.groups AS groups
+  WHERE groups.id = ANY($2::text[])
+  ORDER BY groups.id ASC
+  FOR UPDATE OF groups
+),
+locked_group_authorizations AS MATERIALIZED (
+  SELECT
+    group_authorization.id,
+    group_authorization.resource_id,
+    group_authorization.resource_owner_system_account_id,
+    group_authorization.grantee_system_account_id,
+    group_authorization.status,
+    group_authorization.expires_at
+  FROM juhe_business.resource_authorizations AS group_authorization
+  JOIN locked_groups AS groups
+    ON group_authorization.resource_id = groups.id
+    AND group_authorization.resource_owner_system_account_id = groups.system_account_id
+  WHERE group_authorization.resource_type = 'group'
+    AND group_authorization.grantee_system_account_id = $1
+  ORDER BY group_authorization.resource_id ASC, group_authorization.id ASC
+  FOR UPDATE OF group_authorization
+),
+locked_group_authorization_settings AS MATERIALIZED (
+  SELECT
+    group_authorization_settings.authorization_id,
+    group_authorization_settings.system_account_id,
+    group_authorization_settings.group_id,
+    group_authorization_settings.enabled
+  FROM juhe_business.group_authorization_settings AS group_authorization_settings
+  JOIN locked_group_authorizations AS group_authorization
+    ON group_authorization_settings.authorization_id = group_authorization.id
+    AND group_authorization_settings.system_account_id = group_authorization.grantee_system_account_id
+    AND group_authorization_settings.group_id = group_authorization.resource_id
+  ORDER BY group_authorization_settings.group_id ASC, group_authorization_settings.authorization_id ASC
+  FOR UPDATE OF group_authorization_settings
+)
+SELECT
+  groups.id,
+  groups.system_account_id,
+  groups.name,
+  groups.provider_code,
+  CASE
+    WHEN groups.system_account_id = $1 THEN groups.enabled
+    WHEN group_authorization.id IS NOT NULL THEN
+      CASE
+        WHEN groups.enabled THEN coalesce(group_authorization_settings.enabled, true)
+        ELSE false
+    END
+    ELSE false
+  END AS enabled
+FROM locked_groups AS groups
+LEFT JOIN locked_group_authorizations AS group_authorization
+  ON group_authorization.resource_id = groups.id
+  AND group_authorization.resource_owner_system_account_id = groups.system_account_id
+  AND group_authorization.status = 'active'
+  AND (
+    group_authorization.expires_at IS NULL
+    OR group_authorization.expires_at > CURRENT_TIMESTAMP
+  )
+LEFT JOIN locked_group_authorization_settings AS group_authorization_settings
+  ON group_authorization_settings.authorization_id = group_authorization.id
+  AND group_authorization_settings.system_account_id = $1
+  AND group_authorization_settings.group_id = groups.id
+WHERE (
+    groups.system_account_id = $1
+    OR group_authorization.id IS NOT NULL
+  )
+ORDER BY groups.id ASC
 `
 
 type FindPublicRouteStrategyBindableGroupsParams struct {
@@ -488,6 +557,51 @@ func (q *Queries) ListPublicRouteStrategies(ctx context.Context, arg ListPublicR
 }
 
 const listPublicRouteStrategyBindingsByStrategyIDs = `-- name: ListPublicRouteStrategyBindingsByStrategyIDs :many
+WITH requested_bindings AS MATERIALIZED (
+  SELECT
+    route_strategy_groups.id,
+    route_strategy_groups.route_strategy_id,
+    route_strategy_groups.group_id,
+    route_strategy_groups.system_account_id,
+    route_strategy_groups.priority,
+    route_strategy_groups.weight,
+    route_strategy_groups.status,
+    route_strategy_groups.created_at
+  FROM juhe_business.route_strategy_groups AS route_strategy_groups
+  WHERE route_strategy_groups.route_strategy_id = ANY($1::text[])
+),
+binding_group_summaries AS MATERIALIZED (
+  SELECT
+    route_strategy_groups.id AS binding_id,
+    groups.name AS group_name,
+    groups.provider_code,
+    CASE
+      WHEN groups.system_account_id = route_strategy_groups.system_account_id THEN groups.enabled
+      WHEN group_authorization.id IS NOT NULL THEN
+        CASE
+          WHEN groups.enabled THEN coalesce(group_authorization_settings.enabled, true)
+          ELSE false
+        END
+      ELSE false
+    END AS group_enabled
+  FROM requested_bindings AS route_strategy_groups
+  LEFT JOIN juhe_business.groups AS groups
+    ON groups.id = route_strategy_groups.group_id
+  LEFT JOIN juhe_business.resource_authorizations AS group_authorization
+    ON group_authorization.resource_type = 'group'
+    AND group_authorization.resource_id = groups.id
+    AND group_authorization.resource_owner_system_account_id = groups.system_account_id
+    AND group_authorization.grantee_system_account_id = route_strategy_groups.system_account_id
+    AND group_authorization.status = 'active'
+    AND (
+      group_authorization.expires_at IS NULL
+      OR group_authorization.expires_at > CURRENT_TIMESTAMP
+    )
+  LEFT JOIN juhe_business.group_authorization_settings AS group_authorization_settings
+    ON group_authorization_settings.authorization_id = group_authorization.id
+    AND group_authorization_settings.system_account_id = route_strategy_groups.system_account_id
+    AND group_authorization_settings.group_id = groups.id
+)
 SELECT
   route_strategy_groups.id,
   route_strategy_groups.route_strategy_id,
@@ -495,14 +609,12 @@ SELECT
   route_strategy_groups.priority,
   route_strategy_groups.weight,
   route_strategy_groups.status,
-  groups.name AS group_name,
-  groups.provider_code,
-  groups.enabled AS group_enabled
-FROM juhe_business.route_strategy_groups AS route_strategy_groups
-LEFT JOIN juhe_business.groups AS groups
-  ON groups.id = route_strategy_groups.group_id
-  AND groups.system_account_id = route_strategy_groups.system_account_id
-WHERE route_strategy_groups.route_strategy_id = ANY($1::text[])
+  binding_group_summaries.group_name,
+  binding_group_summaries.provider_code,
+  binding_group_summaries.group_enabled
+FROM requested_bindings AS route_strategy_groups
+LEFT JOIN binding_group_summaries
+  ON binding_group_summaries.binding_id = route_strategy_groups.id
 ORDER BY route_strategy_groups.route_strategy_id ASC,
   CASE WHEN route_strategy_groups.status = 'active' THEN 0 ELSE 1 END ASC,
   route_strategy_groups.priority ASC,

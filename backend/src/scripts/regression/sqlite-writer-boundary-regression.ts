@@ -186,7 +186,7 @@ function assertRuntimeWriteQueueSourceGuards(): void {
   }
 
   const datasetWriterSource = readFileSync(resolve('src/modules/background/background-dataset-writer.ts'), 'utf8')
-  for (const required of ['create_model_check_run', 'create_model_check_items', 'finish_model_check_run']) {
+  for (const required of ['create_model_check_run', 'create_model_check_items', 'create_model_check_observations', 'finish_model_check_run']) {
     assert(datasetWriterSource.includes(required), `dataset writer 必须登记模型检测写操作：${required}`)
   }
 

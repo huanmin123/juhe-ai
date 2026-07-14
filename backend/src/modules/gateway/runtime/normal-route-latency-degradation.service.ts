@@ -36,6 +36,7 @@ export interface NormalRouteLatencySuccessResult {
 
 export interface NormalRouteLatencyProbeCandidate {
   stateKey: string
+  generation: string
   accountId: string
   accountName?: string
   runtimeKey: string
@@ -47,6 +48,7 @@ export interface NormalRouteLatencyProbeCandidate {
 }
 
 interface NormalRouteLatencyState {
+  generation: string
   accountId: string
   accountName?: string
   runtimeKey: string
@@ -61,16 +63,42 @@ interface NormalRouteLatencyState {
   reason: string
 }
 
+interface NormalRouteLatencyStateLock {
+  key: string
+  lockKey: string
+  token: string
+}
+
+type NormalRouteLatencyStatePredicate = (state: NormalRouteLatencyState) => boolean
+
+export interface NormalRouteLatencyGenerationEvent {
+  version: string
+  publishedAt: string
+}
+
 const latencyStateStore = createRuntimeStateStore('gateway-normal-route-latency-degradation')
 const latencyStateVersion = 'v1'
+const latencyStateGenerationKey = `${latencyStateVersion}:generation`
 const latencyStateAllIndexKey = `${latencyStateVersion}:all-index`
 const latencyStateProbeIndexKey = `${latencyStateVersion}:probe-index`
 const latencyStateAllIndexLockKey = `${latencyStateVersion}:all-index-lock`
 const latencyStateProbeIndexLockKey = `${latencyStateVersion}:probe-index-lock`
 const latencyStateIndexMaxKeys = 10_000
 const latencyStateIndexTtlMs = 24 * 60 * 60 * 1000
-const latencyStateIndexLockTtlMs = 2000
-const latencyStateMutationLockTtlMs = 2000
+const latencyStateGenerationTtlMs = 48 * 60 * 60 * 1000
+const latencyStateExactClearConcurrency = 8
+const latencyStateLockAcquireMaxAttempts = 50
+const latencyStateLockAcquireMaxDelayMs = 100
+const latencyStateMutationLockTtlMs =
+  2 * latencyStateLockAcquireMaxAttempts * latencyStateLockAcquireMaxDelayMs
+  + 5000
+const latencyStateIndexLockTtlMs = latencyStateMutationLockTtlMs
+const latencyStateGenerationCasMaxAttempts = 8
+const latencyStateIndexCasMaxAttempts = 8
+const latencyStateInitialGenerationEvent: NormalRouteLatencyGenerationEvent = {
+  version: 'initial',
+  publishedAt: '1970-01-01T00:00:00.000Z'
+}
 
 export async function orderGatewayAccountsByNormalRouteLatencyDegradationAsync<T extends SuppressibleGatewayAccount>(
   accounts: T[],
@@ -87,10 +115,11 @@ export async function orderGatewayAccountsByNormalRouteLatencyDegradationAsync<T
     }
   }
 
+  const generation = await loadLatencyStateGeneration()
   const now = Date.now()
   const states = await Promise.all(accounts.map(async (account) => ({
     account,
-    state: await loadLatencyState(accountLatencyStateKey(scope, account))
+    state: await loadLatencyState(accountLatencyStateKey(scope, account), generation)
   })))
   const normalAccounts: T[] = []
   const degradedAccounts: T[] = []
@@ -138,7 +167,10 @@ export async function recordNormalRouteFirstByteSlowAsync(
 ): Promise<NormalRouteLatencySlowResult | undefined> {
   if (!scope || !config) return undefined
   const key = accountLatencyStateKey(scope, account)
-  return withLatencyStateMutationLock(key, () => recordNormalRouteFirstByteSlowLockedAsync(account, scope, config, reason, key))
+  const generation = await loadLatencyStateGeneration()
+  return withLatencyStateMutationLock(key, generation, () =>
+    recordNormalRouteFirstByteSlowLockedAsync(account, scope, config, reason, key, generation)
+  )
 }
 
 async function recordNormalRouteFirstByteSlowLockedAsync(
@@ -146,10 +178,11 @@ async function recordNormalRouteFirstByteSlowLockedAsync(
   scope: NormalRouteLatencyDegradationScope,
   config: RouteStrategySpeedFirstConfig,
   reason: string,
-  key: string
+  key: string,
+  generation: string
 ): Promise<NormalRouteLatencySlowResult> {
   const now = Date.now()
-  const current = await loadLatencyState(key)
+  const current = await loadLatencyState(key, generation)
   const slowWindowMs = Math.max(60, config.slowWindowSeconds) * 1000
   const withinWindow = current && now - current.firstSlowAtMs <= slowWindowMs
   const slowCount = withinWindow ? current.slowCount + 1 : 1
@@ -164,6 +197,7 @@ async function recordNormalRouteFirstByteSlowLockedAsync(
     : current?.nextProbeAtMs
   const runtimeKey = gatewayAccountRuntimeKey(account)
   const state: NormalRouteLatencyState = {
+    generation,
     accountId: account.id,
     accountName: optionalAccountName(account),
     runtimeKey,
@@ -177,11 +211,13 @@ async function recordNormalRouteFirstByteSlowLockedAsync(
     nextProbeAtMs,
     reason
   }
-  await latencyStateStore.setJson(key, state, latencyStateTtlMs(config, degraded))
-  await addLatencyStateAllIndexKey(key)
-  if (degraded) {
-    await addLatencyStateProbeIndexKey(key)
-  }
+  await writeLatencyStateAndIndexesStrictAsync(
+    key,
+    current,
+    state,
+    latencyStateTtlMs(config, degraded),
+    degraded
+  )
   return {
     accountId: account.id,
     slowCount,
@@ -200,20 +236,23 @@ export async function recordNormalRouteFirstByteSuccessAsync(
 ): Promise<NormalRouteLatencySuccessResult | undefined> {
   if (!scope || !config || firstByteMs === undefined || firstByteMs > config.firstByteThresholdMs) return undefined
   const key = accountLatencyStateKey(scope, account)
-  return withLatencyStateMutationLock(key, async () => recordNormalRouteFirstByteSuccessLockedAsync(account, config, key))
+  const generation = await loadLatencyStateGeneration()
+  return withLatencyStateMutationLock(key, generation, () =>
+    recordNormalRouteFirstByteSuccessLockedAsync(account, config, key, generation)
+  )
 }
 
 async function recordNormalRouteFirstByteSuccessLockedAsync(
   account: SuppressibleGatewayAccount,
   config: RouteStrategySpeedFirstConfig,
-  key: string
+  key: string,
+  generation: string
 ): Promise<NormalRouteLatencySuccessResult | undefined> {
-  const current = await loadLatencyState(key)
+  const current = await loadLatencyState(key, generation)
   if (!current) return undefined
   const now = Date.now()
   if (!current.degradedUntilMs || current.degradedUntilMs <= now) {
-    await latencyStateStore.delete(key)
-    await removeLatencyStateIndexKeys([key])
+    await deleteLatencyStateAndIndexesStrictAsync(key)
     return {
       accountId: account.id,
       cleared: true,
@@ -223,8 +262,7 @@ async function recordNormalRouteFirstByteSuccessLockedAsync(
   }
   const successCount = current.successCount + 1
   if (successCount >= config.recoverySuccessCount) {
-    await latencyStateStore.delete(key)
-    await removeLatencyStateIndexKeys([key])
+    await deleteLatencyStateAndIndexesStrictAsync(key)
     return {
       accountId: account.id,
       cleared: true,
@@ -250,7 +288,8 @@ export async function isNormalRouteAccountLatencyDegradedAsync(
   scope: NormalRouteLatencyDegradationScope | undefined
 ): Promise<boolean> {
   if (!scope) return false
-  const current = await loadLatencyState(accountLatencyStateKey(scope, account))
+  const generation = await loadLatencyStateGeneration()
+  const current = await loadLatencyState(accountLatencyStateKey(scope, account), generation)
   return Boolean(current?.degradedUntilMs && current.degradedUntilMs > Date.now())
 }
 
@@ -262,33 +301,20 @@ export async function listNormalRouteLatencyProbeCandidatesAsync(
   const keys = await loadLatencyStateIndexKeys(latencyStateProbeIndexKey)
   if (keys.length === 0) return []
 
-  const staleKeys: string[] = []
+  const generation = await loadLatencyStateGeneration()
   const candidates: Array<NormalRouteLatencyProbeCandidate & { nextProbeAtMs: number }> = []
   for (const key of keys) {
-    const state = await loadLatencyState(key)
-    if (!state) {
-      staleKeys.push(key)
-      continue
-    }
-    if (!state.degradedUntilMs) {
-      continue
-    }
-    if (state.degradedUntilMs <= now) {
-      staleKeys.push(key)
+    const state = await loadLatencyState(key, generation)
+    if (!state?.degradedUntilMs || state.degradedUntilMs <= now) {
       continue
     }
     if (!state.nextProbeAtMs || state.nextProbeAtMs > now) {
       continue
     }
     const candidate = probeCandidateFromState(key, state)
-    if (!candidate) {
-      staleKeys.push(key)
-      continue
+    if (candidate) {
+      candidates.push({ ...candidate, nextProbeAtMs: state.nextProbeAtMs })
     }
-    candidates.push({ ...candidate, nextProbeAtMs: state.nextProbeAtMs })
-  }
-  if (staleKeys.length > 0) {
-    await removeLatencyStateIndexKeys(staleKeys)
   }
   return candidates
     .sort((left, right) => left.nextProbeAtMs - right.nextProbeAtMs || left.accountId.localeCompare(right.accountId))
@@ -300,25 +326,27 @@ export async function recordNormalRouteProbeFailureAsync(
   candidate: NormalRouteLatencyProbeCandidate,
   reason = '普通路由速度优先恢复探针未达标'
 ): Promise<NormalRouteLatencySlowResult | undefined> {
-  return withLatencyStateMutationLock(candidate.stateKey, () => recordNormalRouteProbeFailureLockedAsync(candidate, reason))
+  return withLatencyStateMutationLock(candidate.stateKey, candidate.generation, () =>
+    recordNormalRouteProbeFailureLockedAsync(candidate, reason)
+  )
 }
 
 async function recordNormalRouteProbeFailureLockedAsync(
   candidate: NormalRouteLatencyProbeCandidate,
   reason: string
 ): Promise<NormalRouteLatencySlowResult | undefined> {
-  const current = await loadLatencyState(candidate.stateKey)
+  const current = await loadLatencyState(candidate.stateKey, candidate.generation)
   const now = Date.now()
-  if (!current || !current.degradedUntilMs || current.degradedUntilMs <= now) {
-    await latencyStateStore.delete(candidate.stateKey)
-    await removeLatencyStateIndexKeys([candidate.stateKey])
+  if (!current) return undefined
+  if (!current.degradedUntilMs || current.degradedUntilMs <= now) {
+    await deleteLatencyStateAndIndexesStrictAsync(candidate.stateKey)
     return undefined
   }
   const config = current.config ?? candidate.config
   const degradedUntilMs = Math.max(current.degradedUntilMs, now + Math.max(60, config.degradedTtlSeconds) * 1000)
   const nextProbeAtMs = now + nextProbeDelayMs(config, candidate.stateKey)
   const slowCount = Math.max(current.slowCount, config.slowTriggerCount)
-  await latencyStateStore.setJson(candidate.stateKey, {
+  const state: NormalRouteLatencyState = {
     ...current,
     config,
     lastSlowAtMs: now,
@@ -327,9 +355,14 @@ async function recordNormalRouteProbeFailureLockedAsync(
     successCount: 0,
     nextProbeAtMs,
     reason
-  }, latencyStateTtlMs(config, true))
-  await addLatencyStateAllIndexKey(candidate.stateKey)
-  await addLatencyStateProbeIndexKey(candidate.stateKey)
+  }
+  await writeLatencyStateAndIndexesStrictAsync(
+    candidate.stateKey,
+    current,
+    state,
+    latencyStateTtlMs(config, true),
+    true
+  )
   return {
     accountId: current.accountId,
     slowCount,
@@ -340,26 +373,59 @@ async function recordNormalRouteProbeFailureLockedAsync(
   }
 }
 
-export async function discardNormalRouteLatencyProbeCandidateAsync(candidate: NormalRouteLatencyProbeCandidate): Promise<void> {
-  await latencyStateStore.delete(candidate.stateKey)
-  await removeLatencyStateIndexKeys([candidate.stateKey])
+export async function discardNormalRouteLatencyProbeCandidateAsync(
+  candidate: NormalRouteLatencyProbeCandidate
+): Promise<void> {
+  await withLatencyStateMutationLock(candidate.stateKey, candidate.generation, async () => {
+    const current = await loadLatencyState(candidate.stateKey, candidate.generation)
+    if (!current) return
+    await deleteLatencyStateAndIndexesStrictAsync(candidate.stateKey)
+  })
 }
 
-export async function clearNormalRouteLatencyDegradationForRouteStrategyAsync(routeStrategyId: string): Promise<number> {
+export async function clearNormalRouteLatencyDegradationForRouteStrategyAsync(
+  routeStrategyId: string
+): Promise<number> {
   const normalizedRouteStrategyId = routeStrategyId.trim()
   if (!normalizedRouteStrategyId) return 0
   const keys = await loadLatencyStateIndexKeys(latencyStateAllIndexKey)
   if (keys.length === 0) return 0
-  const keysToClear: string[] = []
-  for (const key of keys) {
-    const state = await loadLatencyState(key)
-    if (!state || state.scope.routeStrategyId === normalizedRouteStrategyId) {
-      keysToClear.push(key)
+  const generation = await loadLatencyStateGeneration()
+  return clearCurrentGenerationLatencyStateKeysAsync(
+    keys,
+    generation,
+    (state) => state.scope.routeStrategyId === normalizedRouteStrategyId
+  )
+}
+
+export async function clearAllNormalRouteLatencyDegradationAsync(
+  event: NormalRouteLatencyGenerationEvent
+): Promise<void | false> {
+  const normalizedEvent = normalizeLatencyGenerationEvent(event)
+  for (let attempt = 0; attempt < latencyStateGenerationCasMaxAttempts; attempt += 1) {
+    const current = await loadLatencyGenerationEvent()
+    if (current && compareLatencyGenerationEvents(normalizedEvent, current) <= 0) {
+      if (await latencyStateStore.compareSetJson(
+        latencyStateGenerationKey,
+        current,
+        current,
+        latencyStateGenerationTtlMs
+      )) {
+        return
+      }
+      continue
     }
+    if (!await latencyStateStore.compareSetJson(
+      latencyStateGenerationKey,
+      current,
+      normalizedEvent,
+      latencyStateGenerationTtlMs
+    )) {
+      continue
+    }
+    return
   }
-  await Promise.all(keysToClear.map((key) => latencyStateStore.delete(key)))
-  await removeLatencyStateIndexKeys(keysToClear)
-  return keysToClear.length
+  return false
 }
 
 export async function clearNormalRouteLatencyDegradationForAccountBindingAsync(input: {
@@ -373,24 +439,15 @@ export async function clearNormalRouteLatencyDegradationForAccountBindingAsync(i
   if (!systemAccountId || !accountId || groupIds.size === 0) return 0
   const keys = await loadLatencyStateIndexKeys(latencyStateAllIndexKey)
   if (keys.length === 0) return 0
-  const keysToClear: string[] = []
-  for (const key of keys) {
-    const state = await loadLatencyState(key)
-    if (!state) {
-      keysToClear.push(key)
-      continue
-    }
-    if (
+  const generation = await loadLatencyStateGeneration()
+  return clearCurrentGenerationLatencyStateKeysAsync(
+    keys,
+    generation,
+    (state) =>
       state.scope.systemAccountId === systemAccountId
       && groupIds.has(state.scope.groupId)
       && (state.accountId === accountId || runtimeAccountIdFromKey(state.runtimeKey) === accountId)
-    ) {
-      keysToClear.push(key)
-    }
-  }
-  await Promise.all(keysToClear.map((key) => latencyStateStore.delete(key)))
-  await removeLatencyStateIndexKeys(keysToClear)
-  return keysToClear.length
+  )
 }
 
 export function normalRouteLatencyDegradationScope(input: {
@@ -405,9 +462,91 @@ export function normalRouteLatencyDegradationScope(input: {
   return { systemAccountId, routeStrategyId, groupId }
 }
 
-async function loadLatencyState(key: string): Promise<NormalRouteLatencyState | undefined> {
+async function loadLatencyStateGeneration(): Promise<string> {
+  return latencyGenerationToken(await loadOrCreateLatencyGenerationEvent())
+}
+
+async function loadLatencyGenerationEvent(): Promise<NormalRouteLatencyGenerationEvent | undefined> {
+  const event = await latencyStateStore.getJson<unknown>(latencyStateGenerationKey)
+  return isNormalRouteLatencyGenerationEvent(event) ? event : undefined
+}
+
+async function loadOrCreateLatencyGenerationEvent(): Promise<NormalRouteLatencyGenerationEvent> {
+  for (let attempt = 0; attempt < latencyStateGenerationCasMaxAttempts; attempt += 1) {
+    const current = await loadLatencyGenerationEvent()
+    if (current) return current
+    if (await latencyStateStore.compareSetJson(
+      latencyStateGenerationKey,
+      undefined,
+      latencyStateInitialGenerationEvent,
+      latencyStateGenerationTtlMs
+    )) {
+      return latencyStateInitialGenerationEvent
+    }
+  }
+  throw new Error(
+    `普通路由速度优先 generation marker CAS 初始化重试耗尽（${latencyStateGenerationCasMaxAttempts} 次）`
+  )
+}
+
+async function renewLatencyStateGenerationAsync(generation: string): Promise<boolean> {
+  const current = await loadLatencyGenerationEvent()
+  if (!current || latencyGenerationToken(current) !== generation) {
+    return false
+  }
+  return latencyStateStore.compareSetJson(
+    latencyStateGenerationKey,
+    current,
+    current,
+    latencyStateGenerationTtlMs
+  )
+}
+
+function normalizeLatencyGenerationEvent(
+  event: NormalRouteLatencyGenerationEvent
+): NormalRouteLatencyGenerationEvent {
+  const version = event.version.trim()
+  const publishedAt = event.publishedAt.trim()
+  if (!version) {
+    throw new Error('普通路由速度优先 generation event 缺少 version')
+  }
+  if (!Number.isFinite(Date.parse(publishedAt))) {
+    throw new Error(`普通路由速度优先 generation event publishedAt 无效：${publishedAt}`)
+  }
+  return { version, publishedAt }
+}
+
+function compareLatencyGenerationEvents(
+  left: NormalRouteLatencyGenerationEvent,
+  right: NormalRouteLatencyGenerationEvent
+): number {
+  const publishedAtDifference = Date.parse(left.publishedAt) - Date.parse(right.publishedAt)
+  if (publishedAtDifference !== 0) {
+    return publishedAtDifference
+  }
+  if (left.version === right.version) return 0
+  return left.version > right.version ? 1 : -1
+}
+
+function latencyGenerationToken(
+  event: NormalRouteLatencyGenerationEvent | undefined
+): string {
+  if (!event) return 'initial'
+  return JSON.stringify([Date.parse(event.publishedAt), event.version])
+}
+
+async function loadLatencyState(
+  key: string,
+  generation: string
+): Promise<NormalRouteLatencyState | undefined> {
+  const state = await loadLatencyStateRaw(key)
+  return state?.generation === generation ? state : undefined
+}
+
+async function loadLatencyStateRaw(key: string): Promise<NormalRouteLatencyState | undefined> {
   const state = await latencyStateStore.getJson<NormalRouteLatencyState>(key)
   if (!state || typeof state !== 'object') return undefined
+  if (typeof state.generation !== 'string' || !state.generation) return undefined
   if (typeof state.accountId !== 'string') return undefined
   if (typeof state.runtimeKey !== 'string') return undefined
   if (!isNormalRouteLatencyDegradationScope(state.scope)) return undefined
@@ -429,10 +568,14 @@ function accountLatencyStateKey(scope: NormalRouteLatencyDegradationScope, accou
   ].join(':')
 }
 
-function probeCandidateFromState(key: string, state: NormalRouteLatencyState): NormalRouteLatencyProbeCandidate | undefined {
+function probeCandidateFromState(
+  key: string,
+  state: NormalRouteLatencyState
+): NormalRouteLatencyProbeCandidate | undefined {
   if (!state.degradedUntilMs || !state.nextProbeAtMs) return undefined
   return {
     stateKey: key,
+    generation: state.generation,
     accountId: state.accountId,
     accountName: state.accountName,
     runtimeKey: state.runtimeKey,
@@ -464,8 +607,20 @@ function stableProbeJitterRatio(key: string): number {
 }
 
 async function loadLatencyStateIndexKeys(indexKey: string): Promise<string[]> {
-  const index = await latencyStateStore.getJson<{ keys?: unknown }>(indexKey)
-  return normalizeLatencyStateIndexKeys(index?.keys)
+  return (await loadLatencyStateIndexSnapshot(indexKey)).keys
+}
+
+async function loadLatencyStateIndexSnapshot(
+  indexKey: string
+): Promise<{ value: unknown; keys: string[] }> {
+  const value = await latencyStateStore.getJson<unknown>(indexKey)
+  const index = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as { keys?: unknown }
+    : undefined
+  return {
+    value,
+    keys: normalizeLatencyStateIndexKeys(index?.keys)
+  }
 }
 
 async function addLatencyStateAllIndexKey(key: string): Promise<void> {
@@ -483,54 +638,229 @@ async function addLatencyStateIndexKey(indexKey: string, lockKey: string, key: s
   })
 }
 
-async function removeLatencyStateIndexKeys(keysToRemove: string[]): Promise<void> {
+async function removeLatencyStateIndexKeysStrict(keysToRemove: string[]): Promise<void> {
   if (keysToRemove.length === 0) return
   const removeSet = new Set(keysToRemove)
-  await Promise.all([
-    mutateLatencyStateIndexKeys(latencyStateAllIndexKey, latencyStateAllIndexLockKey, (keys) => keys.filter((key) => !removeSet.has(key))),
-    mutateLatencyStateIndexKeys(latencyStateProbeIndexKey, latencyStateProbeIndexLockKey, (keys) => keys.filter((key) => !removeSet.has(key)))
-  ])
+  await mutateLatencyStateIndexKeys(
+    latencyStateProbeIndexKey,
+    latencyStateProbeIndexLockKey,
+    (keys) => keys.filter((key) => !removeSet.has(key))
+  )
+  await mutateLatencyStateIndexKeys(
+    latencyStateAllIndexKey,
+    latencyStateAllIndexLockKey,
+    (keys) => keys.filter((key) => !removeSet.has(key))
+  )
 }
 
-async function mutateLatencyStateIndexKeys(indexKey: string, lockKey: string, mutator: (keys: string[]) => string[]): Promise<void> {
+async function mutateLatencyStateIndexKeys(
+  indexKey: string,
+  lockKey: string,
+  mutator: (keys: string[]) => string[]
+): Promise<void> {
   const token = randomUUID()
   const locked = await acquireLatencyStateIndexLock(lockKey, token)
   if (!locked) {
-    return
+    throw new Error(`普通路由速度优先索引锁获取失败：${indexKey}`)
   }
   try {
-    const current = await loadLatencyStateIndexKeys(indexKey)
-    const next = normalizeLatencyStateIndexKeys(mutator(current))
-    await latencyStateStore.setJson(indexKey, { keys: next }, latencyStateIndexTtlMs)
+    for (let attempt = 0; attempt < latencyStateIndexCasMaxAttempts; attempt += 1) {
+      const current = await loadLatencyStateIndexSnapshot(indexKey)
+      const next = {
+        keys: normalizeLatencyStateIndexKeys(mutator(current.keys))
+      }
+      if (await latencyStateStore.compareSetJson(
+        indexKey,
+        current.value,
+        next,
+        latencyStateIndexTtlMs
+      )) {
+        return
+      }
+    }
+    throw new Error(
+      `普通路由速度优先索引 CAS 重试耗尽（${latencyStateIndexCasMaxAttempts} 次）：${indexKey}`
+    )
   } finally {
     await latencyStateStore.releaseLock(lockKey, token)
   }
 }
 
-async function withLatencyStateMutationLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  const lockKey = `${latencyStateVersion}:mutation-lock:${key}`
-  const token = randomUUID()
-  const locked = await acquireLatencyStateLock(lockKey, token)
-  if (!locked) {
-    return undefined as T
-  }
+async function writeLatencyStateAndIndexesStrictAsync(
+  key: string,
+  previous: NormalRouteLatencyState | undefined,
+  state: NormalRouteLatencyState,
+  ttlMs: number,
+  addProbeIndex: boolean
+): Promise<void> {
+  await latencyStateStore.setJson(key, state, ttlMs)
+  let allIndexApplied = false
+  let probeIndexApplied = false
   try {
+    await addLatencyStateAllIndexKey(key)
+    allIndexApplied = true
+    if (addProbeIndex) {
+      await addLatencyStateProbeIndexKey(key)
+      probeIndexApplied = true
+    }
+  } catch (error) {
+    const rollbackErrors: unknown[] = []
+    let stateRolledBack = false
+    try {
+      stateRolledBack = previous
+        ? await latencyStateStore.compareSetJson(
+          key,
+          state,
+          previous,
+          latencyStateTtlMs(previous.config, Boolean(previous.degradedUntilMs))
+        )
+        : await latencyStateStore.compareDeleteJson(key, state)
+      if (!stateRolledBack) {
+        rollbackErrors.push(
+          new Error(`普通路由速度优先 state rollback CAS 失败：${key}`)
+        )
+      }
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError)
+    }
+    if (stateRolledBack && !previous && (allIndexApplied || probeIndexApplied)) {
+      try {
+        await removeLatencyStateIndexKeysStrict([key])
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError)
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        `普通路由速度优先 state/index 写入失败且回滚存在 ${rollbackErrors.length} 个错误`
+      )
+    }
+    throw error
+  }
+}
+
+async function withLatencyStateMutationLock<T>(
+  key: string,
+  generation: string,
+  operation: () => Promise<T>
+): Promise<T | undefined> {
+  const lock = await acquireLatencyStateMutationLock(key)
+  if (!lock) return undefined
+  try {
+    if (!await renewLatencyStateGenerationAsync(generation)) {
+      return undefined
+    }
     return await operation()
   } finally {
-    await latencyStateStore.releaseLock(lockKey, token)
+    await latencyStateStore.releaseLock(lock.lockKey, lock.token)
   }
+}
+
+async function clearCurrentGenerationLatencyStateKeysAsync(
+  keys: string[],
+  generation: string,
+  predicate: NormalRouteLatencyStatePredicate
+): Promise<number> {
+  if (keys.length === 0) return 0
+  let nextIndex = 0
+  const workers = Array.from(
+    { length: Math.min(latencyStateExactClearConcurrency, keys.length) },
+    async () => {
+      let workerCleared = 0
+      while (nextIndex < keys.length) {
+        const key = keys[nextIndex]
+        nextIndex += 1
+        if (!key) continue
+        workerCleared += await clearCurrentGenerationLatencyStateKeyAsync(
+          key,
+          generation,
+          predicate
+        )
+      }
+      return workerCleared
+    }
+  )
+  const workerResults = await Promise.allSettled(workers)
+  const errors = workerResults.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : []
+  )
+  if (errors.length > 0) {
+    throw new AggregateError(
+      errors,
+      `普通路由速度优先逐 key 精确清理存在 ${errors.length} 个失败`
+    )
+  }
+  return workerResults.reduce(
+    (total, result) => total + (result.status === 'fulfilled' ? result.value : 0),
+    0
+  )
+}
+
+async function clearCurrentGenerationLatencyStateKeyAsync(
+  key: string,
+  generation: string,
+  predicate: NormalRouteLatencyStatePredicate
+): Promise<number> {
+  const lock = await acquireLatencyStateMutationLockStrictAsync(key)
+  try {
+    if (!await renewLatencyStateGenerationAsync(generation)) return 0
+    const state = await loadLatencyStateRaw(key)
+    if (!state) {
+      await removeLatencyStateIndexKeysStrict([key])
+      return 0
+    }
+    if (state.generation !== generation || !predicate(state)) {
+      return 0
+    }
+    await deleteLatencyStateAndIndexesStrictAsync(key)
+    return 1
+  } finally {
+    await latencyStateStore.releaseLock(lock.lockKey, lock.token)
+  }
+}
+
+async function deleteLatencyStateAndIndexesStrictAsync(key: string): Promise<void> {
+  await latencyStateStore.delete(key)
+  await removeLatencyStateIndexKeysStrict([key])
+}
+
+async function acquireLatencyStateMutationLock(
+  key: string,
+  ttlMs = latencyStateMutationLockTtlMs
+): Promise<NormalRouteLatencyStateLock | undefined> {
+  const lockKey = latencyStateMutationLockKey(key)
+  const token = randomUUID()
+  const locked = await acquireLatencyStateLock(lockKey, token, ttlMs)
+  return locked ? { key, lockKey, token } : undefined
+}
+
+async function acquireLatencyStateMutationLockStrictAsync(key: string): Promise<NormalRouteLatencyStateLock> {
+  const lock = await acquireLatencyStateMutationLock(key)
+  if (!lock) {
+    throw new Error(`普通路由速度优先状态 mutation lock 获取失败：${key}`)
+  }
+  return lock
+}
+
+function latencyStateMutationLockKey(key: string): string {
+  return `${latencyStateVersion}:mutation-lock:${key}`
 }
 
 async function acquireLatencyStateIndexLock(lockKey: string, token: string): Promise<boolean> {
   return acquireLatencyStateLock(lockKey, token, latencyStateIndexLockTtlMs)
 }
 
-async function acquireLatencyStateLock(lockKey: string, token: string, ttlMs = latencyStateMutationLockTtlMs): Promise<boolean> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+async function acquireLatencyStateLock(
+  lockKey: string,
+  token: string,
+  ttlMs = latencyStateMutationLockTtlMs
+): Promise<boolean> {
+  for (let attempt = 0; attempt < latencyStateLockAcquireMaxAttempts; attempt += 1) {
     if (await latencyStateStore.acquireLock(lockKey, { ttlMs, token })) {
       return true
     }
-    await delay(Math.min(100, 20 + attempt * 5))
+    await delay(Math.min(latencyStateLockAcquireMaxDelayMs, 20 + attempt * 5))
   }
   return false
 }
@@ -580,6 +910,17 @@ function isRouteStrategySpeedFirstConfig(value: unknown): value is RouteStrategy
 
 function isFinitePositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0
+}
+
+function isNormalRouteLatencyGenerationEvent(
+  value: unknown
+): value is NormalRouteLatencyGenerationEvent {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return typeof record.version === 'string'
+    && record.version.trim() !== ''
+    && typeof record.publishedAt === 'string'
+    && Number.isFinite(Date.parse(record.publishedAt))
 }
 
 function normalizePositiveInteger(value: unknown, fallback: number, min: number, max: number): number {

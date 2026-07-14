@@ -176,12 +176,10 @@ function installSupervisorShutdownHooks(): void {
   }
   shutdownHooksInstalled = true
 
-  process.once('exit', () => stopDbServiceProcess())
-  process.once('SIGINT', () => exitAfterDbServiceStop(0))
-  process.once('SIGTERM', () => exitAfterDbServiceStop(0))
+  process.once('exit', () => stopDbServiceSupervisor())
 }
 
-function stopDbServiceProcess(): void {
+export function stopDbServiceSupervisor(): void {
   stopping = true
   if (restartTimer) {
     clearTimeout(restartTimer)
@@ -190,9 +188,4 @@ function stopDbServiceProcess(): void {
   if (dbServiceProcess && !dbServiceProcess.killed) {
     dbServiceProcess.kill('SIGTERM')
   }
-}
-
-function exitAfterDbServiceStop(exitCode: number): never {
-  stopDbServiceProcess()
-  process.exit(exitCode)
 }

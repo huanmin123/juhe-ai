@@ -11,6 +11,7 @@ import {
   listModelCheckRunsAsync
 } from '../../storage/model-checks.repository.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
+import { createModelCheckObservationsAsync } from '../../storage/model-trust.repository.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '模型检测 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -78,6 +79,36 @@ try {
     }
   ])
   assert.equal(items.length, 2, 'PG model check items should be inserted')
+  assert.equal(await createModelCheckObservationsAsync([{
+    id: `mco_${marker}`,
+    runId: run.id,
+    systemAccountId,
+    accountId,
+    providerCode: 'gpt',
+    providerProtocolProfileId: 'gpt-openai-v1',
+    endpointFamily: 'responses',
+    requestedModel: 'gpt-5.5',
+    mappedUpstreamModel: 'gpt-5.5',
+    observedModel: 'gpt-5.5',
+    mappingApplied: false,
+    upstreamBucketHmac: `hmac-sha256-v1:${'a'.repeat(64)}`,
+    cohortKeyHmac: `hmac-sha256-v1:${'b'.repeat(64)}`,
+    populationKeyHmac: `hmac-sha256-v1:${'b'.repeat(64)}`,
+    probeKeyHmac: `hmac-sha256-v1:${'c'.repeat(64)}`,
+    probeFamily: 'token_input_differential',
+    probeSetVersion: 'postgres-smoke',
+    tokenizerVersion: 'js-tiktoken@1.0.21:o200k_base',
+    featureVersion: 'none',
+    roundIndex: 0,
+    paddingTokens: 0,
+    localInputTokens: 100,
+    reportedInputTokens: 110,
+    observationStatus: 'observed',
+    identityStatus: 'consistent',
+    mappingStatus: 'direct',
+    protocolStatus: 'consistent',
+    evidenceCoverage: 10
+  }]), 1, 'PG model check observation should be inserted through current schema repository')
 
   const finished = await finishModelCheckRunAsync(run.id, {
     level: 'likely',
@@ -132,5 +163,6 @@ async function cleanupSmokeRows(ids: string[]): Promise<void> {
   if (!ids.length) return
   const pool = await getPostgresPool()
   await pool.query('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY($1::text[])', [ids])
+  await pool.query('DELETE FROM juhe_dataset.model_check_observations WHERE run_id = ANY($1::text[])', [ids])
   await pool.query('DELETE FROM juhe_dataset.model_check_runs WHERE id = ANY($1::text[])', [ids])
 }

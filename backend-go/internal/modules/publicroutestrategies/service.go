@@ -34,6 +34,7 @@ const (
 	defaultDegradedTTLSeconds            = 300
 	defaultMaxFirstByteRetriesPerRequest = 2
 	maxRouteStrategyGroupBindings        = 20
+	maxRouteStrategyUpdateTotalAttempts  = 3
 )
 
 var (
@@ -47,6 +48,14 @@ var (
 	ErrInvalidBinding             = errors.New("public route strategy invalid binding")
 	ErrInvalidConfig              = errors.New("public route strategy invalid config")
 )
+
+type routeStrategyBindingSnapshotChangedError struct {
+	groupIDs []string
+}
+
+func (e *routeStrategyBindingSnapshotChangedError) Error() string {
+	return "public route strategy group bindings changed concurrently"
+}
 
 type Service struct {
 	store      port.PublicRouteStrategyStore
@@ -331,67 +340,165 @@ func (s *Service) Add(ctx context.Context, input AddInput) (RouteStrategyRespons
 }
 
 func (s *Service) Update(ctx context.Context, input UpdateInput) (RouteStrategyResponse, error) {
+	preloadedCurrent, _, err := s.routeStrategyAndTargetForWrite(
+		ctx,
+		s.store,
+		input.RouteStrategyID,
+		input.TargetUsername,
+	)
+	if err != nil {
+		return RouteStrategyResponse{}, err
+	}
+
+	var explicitBindings []GroupBindingInput
+	if input.GroupBindings.Set() {
+		explicitBindings, err = normalizeBindingBasics(input.GroupBindings.Value())
+		if err != nil {
+			return RouteStrategyResponse{}, err
+		}
+	}
+	prelockedGroupIDs := routeStrategyUpdatePrelockGroupIDs(
+		explicitBindings,
+		preloadedCurrent.GroupBindings,
+		input.GroupBindings.Set(),
+	)
+
 	var response RouteStrategyResponse
-	err := s.inTx(ctx, func(ctx context.Context, store port.PublicRouteStrategyStore) error {
-		current, target, err := s.routeStrategyAndTargetForWrite(ctx, store, input.RouteStrategyID, input.TargetUsername)
-		if err != nil {
-			return err
-		}
-		currentConfig := parseConfig(current.ConfigJSON)
-		nextMode := string(current.Mode)
-		if input.Mode != nil {
-			nextMode = normalizeMode(*input.Mode)
-		}
-		nextStatus := string(current.Status)
-		if input.Status != nil {
-			nextStatus = normalizeStatus(*input.Status, string(current.Status))
-		}
-		configJSON, err := configJSONForUpdate(nextMode, current.Mode, currentConfig, input.NormalRoutingConfig, input.HybridRoutingConfig)
-		if err != nil {
-			return err
-		}
-		bindingInputs := bindingsFromSummary(current.GroupBindings)
-		if input.GroupBindings.Set() {
-			bindingInputs = input.GroupBindings.Value()
-		}
-		bindings, err := s.normalizeBindings(ctx, store, current.SystemAccountID, nextMode, bindingInputs)
-		if err != nil {
-			return err
-		}
-		next := current
-		if input.Name != nil {
-			next.Name = strings.TrimSpace(*input.Name)
-		}
-		if input.Description.Set() {
-			next.Description = input.Description.Value()
-		}
-		next.Mode = port.PublicRouteStrategyMode(nextMode)
-		next.Status = port.PublicRouteStrategyStatus(nextStatus)
-		next.ConfigJSON = configJSON
-		updated, ok, err := store.UpdatePublicRouteStrategy(ctx, port.PublicRouteStrategyUpdateInput{
-			ID:              current.ID,
-			SystemAccountID: current.SystemAccountID,
-			Name:            next.Name,
-			Description:     next.Description,
-			Mode:            next.Mode,
-			Status:          next.Status,
-			ConfigJSON:      next.ConfigJSON,
-			Bindings:        s.bindingCreateInputs(bindings),
-			Now:             s.now().UTC(),
+	for attempt := 0; attempt < maxRouteStrategyUpdateTotalAttempts; attempt++ {
+		err = s.inTx(ctx, func(ctx context.Context, store port.PublicRouteStrategyStore) error {
+			groups, err := store.FindPublicRouteStrategyBindableGroups(
+				ctx,
+				preloadedCurrent.SystemAccountID,
+				prelockedGroupIDs,
+			)
+			if err != nil {
+				return err
+			}
+			current, target, err := s.routeStrategyAndTargetForWrite(ctx, store, input.RouteStrategyID, input.TargetUsername)
+			if err != nil {
+				return err
+			}
+			if current.SystemAccountID != preloadedCurrent.SystemAccountID {
+				return ErrRouteStrategyNotFound
+			}
+
+			currentConfig := parseConfig(current.ConfigJSON)
+			nextMode := string(current.Mode)
+			if input.Mode != nil {
+				nextMode = normalizeMode(*input.Mode)
+			}
+			nextStatus := string(current.Status)
+			if input.Status != nil {
+				nextStatus = normalizeStatus(*input.Status, string(current.Status))
+			}
+			configJSON, err := configJSONForUpdate(nextMode, current.Mode, currentConfig, input.NormalRoutingConfig, input.HybridRoutingConfig)
+			if err != nil {
+				return err
+			}
+			var bindings []normalizedBinding
+			if input.GroupBindings.Set() {
+				bindings, err = normalizeBindingsFromGroups(
+					nextMode,
+					explicitBindings,
+					groups,
+				)
+				if err != nil {
+					return err
+				}
+			} else {
+				latestGroupIDs := routeStrategyBindingGroupIDs(current.GroupBindings)
+				if !sameRouteStrategyGroupIDs(prelockedGroupIDs, latestGroupIDs) {
+					return &routeStrategyBindingSnapshotChangedError{
+						groupIDs: latestGroupIDs,
+					}
+				}
+				bindings = bindingsFromSummary(current.GroupBindings)
+				if err := validateModeBindings(nextMode, bindings); err != nil {
+					return err
+				}
+			}
+			next := current
+			if input.Name != nil {
+				next.Name = strings.TrimSpace(*input.Name)
+			}
+			if input.Description.Set() {
+				next.Description = input.Description.Value()
+			}
+			next.Mode = port.PublicRouteStrategyMode(nextMode)
+			next.Status = port.PublicRouteStrategyStatus(nextStatus)
+			next.ConfigJSON = configJSON
+			updated, ok, err := store.UpdatePublicRouteStrategy(ctx, port.PublicRouteStrategyUpdateInput{
+				ID:              current.ID,
+				SystemAccountID: current.SystemAccountID,
+				Name:            next.Name,
+				Description:     next.Description,
+				Mode:            next.Mode,
+				Status:          next.Status,
+				ConfigJSON:      next.ConfigJSON,
+				Bindings:        s.bindingCreateInputs(bindings),
+				Now:             s.now().UTC(),
+			})
+			if errors.Is(err, port.ErrPublicRouteStrategyDuplicateName) {
+				return fmt.Errorf("%w: %s", ErrDuplicateRouteStrategyName, next.Name)
+			}
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return ErrRouteStrategyNotFound
+			}
+			response = routeStrategyResponse("updated", target, updated, s.generatedAt())
+			return nil
 		})
-		if errors.Is(err, port.ErrPublicRouteStrategyDuplicateName) {
-			return fmt.Errorf("%w: %s", ErrDuplicateRouteStrategyName, next.Name)
+		var snapshotChanged *routeStrategyBindingSnapshotChangedError
+		if !errors.As(err, &snapshotChanged) {
+			break
 		}
-		if err != nil {
-			return err
+		prelockedGroupIDs = snapshotChanged.groupIDs
+	}
+	if err != nil {
+		return RouteStrategyResponse{}, err
+	}
+	return response, nil
+}
+
+func routeStrategyUpdatePrelockGroupIDs(
+	explicit []GroupBindingInput,
+	current []port.PublicRouteStrategyGroupBindingSummary,
+	hasExplicit bool,
+) []string {
+	if hasExplicit {
+		groupIDs := make([]string, 0, len(explicit))
+		for _, binding := range explicit {
+			groupIDs = append(groupIDs, binding.GroupID)
 		}
-		if !ok {
-			return ErrRouteStrategyNotFound
+		sort.Strings(groupIDs)
+		return groupIDs
+	}
+	return routeStrategyBindingGroupIDs(current)
+}
+
+func routeStrategyBindingGroupIDs(
+	bindings []port.PublicRouteStrategyGroupBindingSummary,
+) []string {
+	groupIDs := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		groupIDs = append(groupIDs, binding.GroupID)
+	}
+	sort.Strings(groupIDs)
+	return groupIDs
+}
+
+func sameRouteStrategyGroupIDs(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
 		}
-		response = routeStrategyResponse("updated", target, updated, s.generatedAt())
-		return nil
-	})
-	return response, err
+	}
+	return true
 }
 
 func (s *Service) Delete(ctx context.Context, input DeleteInput) (RouteStrategyResponse, error) {
@@ -491,6 +598,14 @@ func (s *Service) normalizeBindings(ctx context.Context, store port.PublicRouteS
 	if err != nil {
 		return nil, err
 	}
+	return normalizeBindingsFromGroups(mode, basics, groups)
+}
+
+func normalizeBindingsFromGroups(
+	mode string,
+	basics []GroupBindingInput,
+	groups []port.PublicRouteStrategyBindableGroup,
+) ([]normalizedBinding, error) {
 	groupsByID := make(map[string]port.PublicRouteStrategyBindableGroup, len(groups))
 	for _, group := range groups {
 		groupsByID[group.ID] = group
@@ -498,7 +613,7 @@ func (s *Service) normalizeBindings(ctx context.Context, store port.PublicRouteS
 	out := make([]normalizedBinding, 0, len(basics))
 	for _, binding := range basics {
 		group, ok := groupsByID[binding.GroupID]
-		if !ok || group.SystemAccountID != systemAccountID {
+		if !ok {
 			return nil, fmt.Errorf("%w: 策略路由只能绑定自己的分组或有效授权给自己的分组", ErrGroupBoundary)
 		}
 		if binding.Status == StatusActive && !group.Enabled {
@@ -627,14 +742,17 @@ func (s *Service) bindingCreateInputs(bindings []normalizedBinding) []port.Publi
 	return out
 }
 
-func bindingsFromSummary(bindings []port.PublicRouteStrategyGroupBindingSummary) []GroupBindingInput {
-	out := make([]GroupBindingInput, 0, len(bindings))
+func bindingsFromSummary(bindings []port.PublicRouteStrategyGroupBindingSummary) []normalizedBinding {
+	out := make([]normalizedBinding, 0, len(bindings))
 	for _, binding := range bindings {
-		out = append(out, GroupBindingInput{
-			GroupID:  binding.GroupID,
-			Priority: binding.Priority,
-			Weight:   binding.Weight,
-			Status:   string(binding.Status),
+		out = append(out, normalizedBinding{
+			GroupID:      binding.GroupID,
+			GroupName:    binding.GroupName,
+			ProviderCode: binding.ProviderCode,
+			Priority:     binding.Priority,
+			Weight:       binding.Weight,
+			Status:       string(binding.Status),
+			GroupEnabled: binding.GroupEnabled,
 		})
 	}
 	return out

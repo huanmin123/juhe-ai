@@ -29,23 +29,46 @@ const missingProviderResponse = withCostBreakdown(usageRecordFixture({
 }))
 assert.equal(missingProviderResponse.costBreakdown?.accountChargeUsd, 0.123, '缺少供应商编码的历史记录应回退基础成本明细，不能让列表 / 详情 500')
 
-const mappedAliasResponse = withCostBreakdown(usageRecordFixture({
-  id: 'usage_record_cost_breakdown_mapped_alias',
+const legacyRecordResponse = withCostBreakdown(usageRecordFixture({
+  id: 'usage_record_cost_breakdown_legacy_without_snapshot',
   success: true,
   providerCode: GPT_VENDOR_CODE,
   model: 'gpt-5.5',
   upstreamModel: 'gpt-5.5-pro20x',
+  billedServiceTier: 'priority',
   inputTokens: 1_000_000,
   outputTokens: 1_000_000,
   cacheReadTokens: 500_000,
-  thinkingTokens: 435
+  thinkingTokens: 435,
+  cacheReadCostUsd: 0.25,
+  costUsd: 3.5
 }))
-assert(mappedAliasResponse.costBreakdown?.inputCostUsd !== undefined, '上游别名未命中价格时应回落来源模型展示输入成本')
-assert(mappedAliasResponse.costBreakdown?.outputCostUsd !== undefined, '上游别名未命中价格时应回落来源模型展示输出成本')
-assert(mappedAliasResponse.costBreakdown?.inputUsdPer1M !== undefined, '上游别名未命中价格时应回落来源模型展示输入单价')
-assert(mappedAliasResponse.costBreakdown?.outputUsdPer1M !== undefined, '上游别名未命中价格时应回落来源模型展示输出单价')
-assert((mappedAliasResponse.costBreakdown?.accountChargeUsd ?? 0) > 0, '上游别名未命中价格时不应把成本明细展示为 0')
-assert.equal(mappedAliasResponse.costBreakdown?.thinkingTokens, 435, '成本明细应保留思考 Tokens')
+assert.equal(legacyRecordResponse.costBreakdown?.accountChargeUsd, 3.5, '旧空快照只能展示当时已落库的总成本')
+assert.equal(legacyRecordResponse.costBreakdown?.cacheReadCostUsd, 0.25, '旧空快照应保留当时已落库的缓存成本')
+assert.equal(legacyRecordResponse.costBreakdown?.thinkingTokens, 435, '旧空快照应保留当时已落库的思考 Tokens')
+assert.equal(legacyRecordResponse.costBreakdown?.serviceTierPricingSource, 'unknown', '旧空快照必须明确标记计价来源未知')
+assert.equal(legacyRecordResponse.costBreakdown?.inputUsdPer1M, undefined, '旧空快照禁止使用当前目录伪造历史单价')
+
+const lockedSnapshot = {
+  inputCostUsd: 1.25,
+  inputUsdPer1M: 2.5,
+  accountChargeUsd: 1.25,
+  multiplier: 1 as const,
+  serviceTierPricingSource: 'multiplier' as const,
+  serviceTierMultiplier: 2.25
+}
+const lockedSnapshotResponse = withCostBreakdown(usageRecordFixture({
+  id: 'usage_record_cost_breakdown_locked_snapshot',
+  providerCode: GPT_VENDOR_CODE,
+  model: 'gpt-5.6-sol',
+  pricingModel: 'gpt-5.6-sol',
+  billedServiceTier: 'priority',
+  pricingSnapshot: lockedSnapshot,
+  inputTokens: 500_000,
+  costUsd: 1.25
+}))
+assert.deepEqual(lockedSnapshotResponse.costBreakdown, lockedSnapshot, '使用记录响应必须优先返回请求时锁定的计价快照')
+assert.equal('pricingSnapshot' in lockedSnapshotResponse, false, '内部计价快照字段不能重复暴露给前端')
 
 const failedRecord = usageRecordFixture({
   id: 'usage_record_cost_breakdown_failed',

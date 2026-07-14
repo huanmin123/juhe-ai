@@ -342,14 +342,30 @@ func managementAPIKeyUpdateOperationChanges(
 	before := result.Before
 	after := result.After
 	changes := make([]port.OperationLogChange, 0, 7)
-	changes = appendManagementAPIKeyUpdateChange(changes, "name", "名称", before.Name, after.Name)
-	changes = appendManagementAPIKeyUpdateChange(changes, "description", "说明", before.Description, after.Description)
-	changes = appendManagementAPIKeyUpdateChange(changes, "routeStrategyId", "策略路由", before.RouteStrategyID, after.RouteStrategyID)
-	changes = appendManagementAPIKeyUpdateChange(changes, "status", "状态", before.Status, after.Status)
-	changes = appendManagementAPIKeyUpdateChange(changes, "expiresAt", "过期时间", before.ExpiresAt, after.ExpiresAt)
-	changes = appendManagementAPIKeyUpdateChange(changes, "quotaLimits", "额度限制", before.QuotaLimits, after.QuotaLimits)
+	uncertain := result.UncertainOperationLogFields
+	changes = appendManagementAPIKeyUpdateChange(changes, uncertain, "name", "名称", before.Name, after.Name)
+	changes = appendManagementAPIKeyUpdateChange(changes, uncertain, "description", "说明", before.Description, after.Description)
 	changes = appendManagementAPIKeyUpdateChange(
 		changes,
+		uncertain,
+		"routeStrategyId",
+		"策略路由",
+		before.RouteStrategyID,
+		after.RouteStrategyID,
+	)
+	changes = appendManagementAPIKeyUpdateChange(changes, uncertain, "status", "状态", before.Status, after.Status)
+	changes = appendManagementAPIKeyUpdateChange(changes, uncertain, "expiresAt", "过期时间", before.ExpiresAt, after.ExpiresAt)
+	changes = appendManagementAPIKeyUpdateChange(
+		changes,
+		uncertain,
+		"quotaLimits",
+		"额度限制",
+		before.QuotaLimits,
+		after.QuotaLimits,
+	)
+	changes = appendManagementAPIKeyUpdateChange(
+		changes,
+		uncertain,
 		"availabilitySchedule",
 		"时间计划",
 		before.AvailabilitySchedule,
@@ -360,12 +376,13 @@ func managementAPIKeyUpdateOperationChanges(
 
 func appendManagementAPIKeyUpdateChange(
 	changes []port.OperationLogChange,
+	uncertain map[string]bool,
 	field string,
 	label string,
 	before any,
 	after any,
 ) []port.OperationLogChange {
-	if reflect.DeepEqual(before, after) {
+	if uncertain[field] || reflect.DeepEqual(before, after) {
 		return changes
 	}
 	return append(changes, port.OperationLogChange{

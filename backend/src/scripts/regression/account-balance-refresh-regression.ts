@@ -47,6 +47,10 @@ assert.ok(!balanceRoutesSource.includes('delete_account_balance_snapshot'), '余
 assert.match(balanceRepositorySource, /balance_query_config_json::jsonb = \?::jsonb/, 'PostgreSQL 偏好条件更新必须按 JSON 语义比较配置')
 assert.ok(!accountRoutesSource.includes('saveAccountBalanceConfigurationAsync'), '账户路由不应在账户保存后进行第二次余额配置写入')
 assert.match(repositoriesSource, /balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at/)
+assert.match(accountRoutesSource, /balanceDecision\.autoDisabledForMultipleApiKeys/, '账户编辑路由必须接受 repository 之前的多 Key 自动关闭决策')
+assert.match(accountRoutesSource, /currentBalance\?\.enabled === true && finalBalance\?\.enabled === false/, '后端兜底关闭余额时必须异步清理旧快照')
+assert.match(balanceServiceSource, /loadCurrentGenerationBalanceSnapshot\(candidate\)/, '租约冲突与瞬时失败只能复用当前刷新代次的余额快照')
+assert.doesNotMatch(balanceServiceSource, /loadAccountBalanceSnapshotsByAccountIdsAsync/, '余额刷新 fallback 不能绕过刷新代次直接读取快照金额')
 
 try {
   const group = repositories.createGroup({ name: '余额回归分组', providerCode: 'gpt', enabled: true }, access)
@@ -74,6 +78,9 @@ try {
   assert.equal(configured.balanceQueryEnabled, true)
   assert.deepEqual(configured.balanceQueryConfig, { adapter: 'builtin', intervalMinutes: 10, preferredBuiltinAdapter: 'sub2api' })
   const database = databaseModule.getBusinessDatabase()
+  const unconfiguredMultiRow = database.prepare(`SELECT balance_query_enabled, balance_query_config_json FROM accounts WHERE id = ?`).get(multi.id) as Record<string, unknown>
+  assert.equal(unconfiguredMultiRow.balance_query_enabled, 0)
+  assert.deepEqual(JSON.parse(String(unconfiguredMultiRow.balance_query_config_json)), { adapter: 'builtin', intervalMinutes: 5 }, '多 Key 新建即使未提交余额配置，也必须写入已配置关闭标记')
   const configuredRow = database.prepare(`SELECT balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(configured.id) as Record<string, unknown>
   assert.equal(configuredRow.balance_query_enabled, 1)
   assert.deepEqual(JSON.parse(String(configuredRow.balance_query_config_json)), { adapter: 'builtin', intervalMinutes: 10, preferredBuiltinAdapter: 'sub2api' })
@@ -84,6 +91,123 @@ try {
   }, access)
   assert.equal(configuredDisabled?.balanceQueryEnabled, false)
   assert.equal(database.prepare(`SELECT balance_query_enabled FROM accounts WHERE id = ?`).get(configured.id)?.balance_query_enabled, 0)
+  const multiKeyRequestedBalance = repositories.createAccount({
+    providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: 'multi-key-requested-balance', type: 'api_key',
+    credentials: { api_keys: ['sk-multi-a', 'sk-multi-b'], base_url: 'https://relay.example/v1' },
+    groupId: group.id, balanceQueryEnabled: true,
+    balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 7, preferredBuiltinAdapter: 'user_balance' }
+  }, access)
+  assert.equal(multiKeyRequestedBalance.balanceQueryEnabled, false, '新建多 Key 即使请求开启余额也必须保存成功并自动关闭')
+  const multiKeyRequestedBalanceRow = database.prepare(`
+    SELECT balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
+    FROM accounts WHERE id = ?
+  `).get(multiKeyRequestedBalance.id) as Record<string, unknown>
+  assert.equal(multiKeyRequestedBalanceRow.balance_query_enabled, 0)
+  assert.equal(multiKeyRequestedBalanceRow.balance_query_next_refresh_at, null)
+  assert.deepEqual(JSON.parse(String(multiKeyRequestedBalanceRow.balance_query_config_json)), {
+    adapter: 'builtin', intervalMinutes: 7, preferredBuiltinAdapter: 'user_balance'
+  }, '多 Key 自动关闭不能丢失余额查询配置')
+
+  const singleToMulti = repositories.createAccount({
+    providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: 'single-to-multi', type: 'api_key', credentials: { api_key: 'sk-single', base_url: 'https://relay.example/v1' },
+    groupId: group.id, balanceQueryEnabled: true,
+    balanceQueryConfig: { adapter: 'custom', intervalMinutes: 6, custom: { path: '/balance', remainingPointer: '/remaining' } }
+  }, access)
+  const singleToMultiOldGeneration = '2000-01-01T00:00:00.000Z'
+  database.prepare(`UPDATE accounts SET balance_query_next_refresh_at = ? WHERE id = ?`).run(singleToMultiOldGeneration, singleToMulti.id)
+  balanceRepository.replaceAccountBalanceSnapshot({
+    accountId: singleToMulti.id,
+    systemAccountId: 'sys_admin',
+    snapshot: {
+      status: 'fresh',
+      remainingUsd: '41.000000',
+      lastAttemptAt: singleToMultiOldGeneration,
+      lastSuccessAt: singleToMultiOldGeneration
+    },
+    nextRefreshAfter: singleToMultiOldGeneration
+  })
+  const singleToMultiRevision = singleToMulti.configRevision ?? 1
+  const singleToMultiUpdated = repositories.updateAccount(singleToMulti.id, {
+    credentials: { api_keys: ['sk-single', 'sk-second'], base_url: 'https://relay.example/v1' }
+  }, access)
+  assert.ok(singleToMultiUpdated)
+  assert.equal(singleToMultiUpdated.balanceQueryEnabled, false, '只更新凭据的直接 repository 入口也必须中央关闭余额')
+  const singleToMultiRow = database.prepare(`
+    SELECT balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, config_revision
+    FROM accounts WHERE id = ?
+  `).get(singleToMulti.id) as Record<string, unknown>
+  assert.equal(singleToMultiRow.balance_query_enabled, 0)
+  assert.equal(singleToMultiRow.balance_query_next_refresh_at, null)
+  assert.deepEqual(JSON.parse(String(singleToMultiRow.balance_query_config_json)), {
+    adapter: 'custom', intervalMinutes: 6, custom: { path: '/balance', remainingPointer: '/remaining' }
+  }, '凭据更新触发自动关闭时必须原样保留既有余额配置')
+  assert.equal(await balanceRepository.commitAccountBalanceRefreshAsync({
+    accountId: singleToMulti.id,
+    expectedConfigRevision: singleToMultiRevision,
+    expectedConfig: { adapter: 'custom', intervalMinutes: 6, custom: { path: '/balance', remainingPointer: '/remaining' } },
+    nextConfig: { adapter: 'custom', intervalMinutes: 6, custom: { path: '/balance', remainingPointer: '/remaining' } },
+    nextRefreshAt: new Date().toISOString()
+  }), false, '多 Key 保存递增配置版本后，进行中的旧余额结果不得提交')
+  const returnedToSingle = repositories.updateAccount(singleToMulti.id, {
+    credentials: { api_key: 'sk-single', base_url: 'https://relay.example/v1' }
+  }, access)
+  assert.ok(returnedToSingle)
+  assert.equal(database.prepare(`SELECT balance_query_enabled FROM accounts WHERE id = ?`).get(singleToMulti.id)?.balance_query_enabled, 0, '多 Key 改回单 Key 后不能自动恢复余额查询')
+  database.prepare(`UPDATE accounts SET status = 'active', schedulable = 1 WHERE id = ?`).run(singleToMulti.id)
+  assert.equal(
+    await balanceRepository.findAccountBalanceDetectionCandidateAsync(singleToMulti.id, returnedToSingle.configRevision ?? Number(singleToMultiRow.config_revision) + 1),
+    undefined,
+    '保留的余额配置必须阻止单 Key 恢复后被首次探测重新开启'
+  )
+  assert.equal(
+    balanceRepository.loadAccountBalanceSnapshotsByAccountIds([singleToMulti.id]).get(singleToMulti.id)?.remainingUsd,
+    '41.000000',
+    '模拟 stats 清理失败和进程重启时，旧 Key 余额快照应仍留在持久化层'
+  )
+  const resumedSingle = repositories.updateAccount(singleToMulti.id, {
+    balanceQueryEnabled: true,
+    balanceQueryConfig: { adapter: 'custom', intervalMinutes: 6, custom: { path: '/balance', remainingPointer: '/remaining' } }
+  }, access)
+  assert.ok(resumedSingle)
+  const resumedCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(singleToMulti.id)
+  assert.ok(resumedCandidate)
+  assert.notEqual(resumedCandidate.nextRefreshAt, singleToMultiOldGeneration, '重新启用必须产生与旧快照不同的刷新代次')
+  let markResumedQueryStarted: (() => void) | undefined
+  const resumedQueryStarted = new Promise<void>((resolve) => {
+    markResumedQueryStarted = resolve
+  })
+  let releaseResumedQuery: (() => void) | undefined
+  const resumedQueryGate = new Promise<void>((resolve) => {
+    releaseResumedQuery = resolve
+  })
+  const resumedRefresh = balanceQueryService.refreshAccountBalanceCandidate(resumedCandidate, {
+    query: async () => {
+      markResumedQueryStarted?.()
+      await resumedQueryGate
+      throw new UpstreamRequestTimeoutError('恢复单 Key 后首次余额查询超时')
+    }
+  })
+  await resumedQueryStarted
+  let unexpectedLeaseFallbackQueryCount = 0
+  const leaseFallback = await balanceQueryService.refreshAccountBalanceCandidate(resumedCandidate, {
+    query: async () => {
+      unexpectedLeaseFallbackQueryCount += 1
+      return { status: 'fresh', remainingUsd: '100.000000' }
+    }
+  })
+  assert.equal(unexpectedLeaseFallbackQueryCount, 0, '未获得余额租约时不能再次请求上游')
+  assert.equal(leaseFallback.status, 'refreshing', '未获得租约且持久化快照代次失配时只能返回刷新中')
+  assert.equal(leaseFallback.remainingUsd, undefined, '未获得租约时不能回传旧 Key 的余额')
+  releaseResumedQuery?.()
+  const resumedFailure = await resumedRefresh
+  assert.equal(resumedFailure.status, 'pending', '恢复单 Key后的首次瞬时失败不能复制旧 Key 的成功状态')
+  assert.equal(resumedFailure.remainingUsd, undefined, '恢复单 Key后的首次瞬时失败不能把旧余额洗成当前代次')
+  const resumedFailureRecord = balanceRepository.loadAccountBalanceSnapshotRecordsByAccountIds([singleToMulti.id]).get(singleToMulti.id)
+  assert.equal(resumedFailureRecord?.snapshot.status, 'pending')
+  assert.equal(resumedFailureRecord?.snapshot.remainingUsd, undefined)
+  assert.notEqual(resumedFailureRecord?.nextRefreshAfter, singleToMultiOldGeneration, '新失败快照必须写入当前刷新链的新代次')
   const dueAt = '2026-07-11T00:00:00.000Z'
   const futureAt = '2026-07-12T00:00:00.000Z'
   const configure = database.prepare(`UPDATE accounts SET status = ?, schedulable = 1, balance_query_enabled = 1, balance_query_config_json = ?, balance_query_next_refresh_at = ? WHERE id = ?`)
@@ -217,9 +341,10 @@ try {
   balanceRepository.replaceAccountBalanceSnapshot({
     accountId: transientFailure.id,
     systemAccountId: 'sys_admin',
-    snapshot: { status: 'fresh', remainingUsd: '7.310000', lastAttemptAt: dueAt, lastSuccessAt: dueAt }
+    snapshot: { status: 'fresh', remainingUsd: '7.310000', lastAttemptAt: dueAt, lastSuccessAt: dueAt },
+    nextRefreshAfter: futureAt
   })
-  const transientCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(transientFailure.id)
+  let transientCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(transientFailure.id)
   assert.ok(transientCandidate)
   const timeoutQuery = async () => {
     throw new UpstreamRequestTimeoutError('上游余额查询超时')
@@ -231,12 +356,16 @@ try {
   assert.equal(transientSnapshot.remainingUsd, '7.310000', '第一次临时失败必须保留上次成功金额')
   assert.equal(transientSnapshot.consecutiveTransientFailures, 1)
   assertBalanceRetryDelay(database, transientFailure.id, transientSnapshot.lastAttemptAt, 5)
+  transientCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(transientFailure.id)
+  assert.ok(transientCandidate)
   await balanceQueryService.refreshAccountBalanceCandidate(transientCandidate, { query: timeoutQuery })
   transientSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([transientFailure.id]).get(transientFailure.id)
   assert.ok(transientSnapshot)
   assert.equal(transientSnapshot.status, 'fresh', '第二次临时失败仍应保留上次成功状态')
   assert.equal(transientSnapshot.consecutiveTransientFailures, 2)
   assertBalanceRetryDelay(database, transientFailure.id, transientSnapshot.lastAttemptAt, 5)
+  transientCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(transientFailure.id)
+  assert.ok(transientCandidate)
   await balanceQueryService.refreshAccountBalanceCandidate(transientCandidate, { query: timeoutQuery })
   transientSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([transientFailure.id]).get(transientFailure.id)
   assert.ok(transientSnapshot)
@@ -244,6 +373,8 @@ try {
   assert.equal(transientSnapshot.remainingUsd, undefined, '连续第三次临时失败必须清除旧金额')
   assert.equal(transientSnapshot.consecutiveTransientFailures, 3)
   assertBalanceRetryDelay(database, transientFailure.id, transientSnapshot.lastAttemptAt, 5)
+  transientCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(transientFailure.id)
+  assert.ok(transientCandidate)
   await balanceQueryService.refreshAccountBalanceCandidate(transientCandidate, { query: timeoutQuery })
   transientSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([transientFailure.id]).get(transientFailure.id)
   assert.ok(transientSnapshot)
@@ -350,10 +481,18 @@ try {
   assert.ok(staleCandidate)
   await balanceQueryService.refreshAccountBalanceCandidate(staleCandidate, {
     query: async () => {
-      database.prepare(`UPDATE accounts SET balance_query_enabled = 0, balance_query_next_refresh_at = NULL WHERE id = ?`).run(dueB.id)
+      const updated = repositories.updateAccount(dueB.id, {
+        credentials: { api_keys: ['sk-due-b', 'sk-due-b-second'], base_url: 'https://relay.example/v1' }
+      }, access)
+      assert.ok(updated)
+      assert.equal(updated.balanceQueryEnabled, false)
       return { status: 'fresh', remainingUsd: '12.340000', rawRemaining: '12.34', rawUnit: 'usd', basis: 'wallet' }
     }
   })
+  const staleRow = database.prepare(`SELECT balance_query_enabled, balance_query_next_refresh_at, config_revision FROM accounts WHERE id = ?`).get(dueB.id) as Record<string, unknown>
+  assert.equal(staleRow.balance_query_enabled, 0)
+  assert.equal(staleRow.balance_query_next_refresh_at, null)
+  assert.ok(Number(staleRow.config_revision) > staleCandidate.configRevision, '多 Key 保存必须递增配置版本，使在途查询结果失效')
   assert.equal(
     balanceRepository.loadAccountBalanceSnapshotsByAccountIds([dueB.id]).has(dueB.id),
     false,

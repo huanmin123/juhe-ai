@@ -62,6 +62,7 @@ assert.match(usageRecordsCreateSql, /PRIMARY KEY \(created_at, id\)[\s\S]+\) PAR
 assert.doesNotMatch(usageRecordsCreateSql, /\bid text PRIMARY KEY\b/, 'PG 使用记录分区父表不能保留只包含 id 的主键')
 assert.match(sql, /usage_records[\s\S]+failure_attribution text/, '使用记录主表建表语句应直接包含失败归因字段')
 assert.match(usageRecordsCreateSql, /requested_service_tier text NOT NULL DEFAULT 'default'[\s\S]+effective_service_tier text NOT NULL DEFAULT 'default'[\s\S]+reported_service_tier text[\s\S]+billed_service_tier text NOT NULL DEFAULT 'default'/, 'PG 使用记录主表必须包含请求、实际上游、上游报告和计费服务档位')
+assert.match(usageRecordsCreateSql, /requested_reasoning_effort text[\s\S]+effective_reasoning_effort text[\s\S]+cost_breakdown_snapshot_json text/, 'PG 使用记录主表必须包含请求/实际上游思考级别与不可变计价快照')
 assert.match(sql, /usage_records[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 使用记录主表必须包含模型映射可观测字段')
 assert.match(sql, /usage_records[\s\S]+input_audio_tokens integer[\s\S]+output_audio_tokens integer[\s\S]+output_image_count integer/, '使用记录主表建表语句应包含音频 token 和输出图片数量字段')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_stats_totals/, '应包含统计库 schema')

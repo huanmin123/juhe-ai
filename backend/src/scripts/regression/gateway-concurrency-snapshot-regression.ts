@@ -117,6 +117,14 @@ try {
     schedulable: true,
     groupId: group.id
   }, access)
+  for (const account of [accountA, accountB]) {
+    assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }), true, `实时并发快照 fixture 应先激活账户：${account.id}`)
+  }
   repositories.setAccountGroup(accountA.id, group.id, access)
   repositories.setAccountGroup(accountB.id, group.id, access)
   repositories.createResourceAuthorization({

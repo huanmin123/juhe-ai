@@ -96,8 +96,12 @@ function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMock
 function assertUsageCoverage(): void {
   const trafficSources = new Set<string>()
   const endpoints = new Set<string>()
+  const billedServiceTiers = new Set<string>()
+  const requestedReasoningEfforts = new Set<string>()
+  const effectiveReasoningEfforts = new Set<string>()
   let imageTokenRows = 0
   let modelMappingRows = 0
+  let pricingSnapshotRows = 0
   for (const location of listUsageRecordShardLocations()) {
     const database = getUsageRecordShardDatabase(location)
     for (const row of database.prepare("SELECT DISTINCT traffic_source AS value FROM usage_records WHERE id LIKE 'mockdata_%'").all() as Array<{ value?: string }>) {
@@ -106,13 +110,27 @@ function assertUsageCoverage(): void {
     for (const row of database.prepare("SELECT DISTINCT endpoint AS value FROM usage_records WHERE id LIKE 'mockdata_%'").all() as Array<{ value?: string }>) {
       if (row.value) endpoints.add(row.value)
     }
+    for (const row of database.prepare("SELECT DISTINCT billed_service_tier AS value FROM usage_records WHERE id LIKE 'mockdata_%'").all() as Array<{ value?: string }>) {
+      if (row.value) billedServiceTiers.add(row.value)
+    }
+    for (const row of database.prepare("SELECT DISTINCT requested_reasoning_effort AS value FROM usage_records WHERE id LIKE 'mockdata_%'").all() as Array<{ value?: string }>) {
+      if (row.value) requestedReasoningEfforts.add(row.value)
+    }
+    for (const row of database.prepare("SELECT DISTINCT effective_reasoning_effort AS value FROM usage_records WHERE id LIKE 'mockdata_%'").all() as Array<{ value?: string }>) {
+      if (row.value) effectiveReasoningEfforts.add(row.value)
+    }
     imageTokenRows += scalar(database, "SELECT COUNT(*) AS value FROM usage_records WHERE id LIKE 'mockdata_%' AND (COALESCE(input_image_tokens, 0) > 0 OR COALESCE(output_image_tokens, 0) > 0)")
     modelMappingRows += scalar(database, "SELECT COUNT(*) AS value FROM usage_records WHERE id LIKE 'mockdata_%' AND model_mapping_applied = 1")
+    pricingSnapshotRows += scalar(database, "SELECT COUNT(*) AS value FROM usage_records WHERE id LIKE 'mockdata_%' AND cost_breakdown_snapshot_json IS NOT NULL")
   }
   assertPresent('使用记录来源覆盖不完整', trafficSources, ['gateway', 'manual_account_test', 'account_health_check', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
   assertPresent('使用记录端点覆盖不完整', endpoints, ['GET /v1/models', 'POST /v1/responses', 'POST /v1/chat/completions', 'POST /v1/images/generations'])
+  assertPresent('使用记录实际服务档位覆盖不完整', billedServiceTiers, ['priority', 'flex'])
+  assertPresent('使用记录请求思考强度覆盖不完整', requestedReasoningEfforts, ['low', 'medium'])
+  assertPresent('使用记录最终思考强度覆盖不完整', effectiveReasoningEfforts, ['high'])
   assertMinimum('图片 token 使用记录样本缺失', imageTokenRows, 1)
   assertMinimum('模型映射使用记录样本缺失', modelMappingRows, 1)
+  assertMinimum('使用记录写入时计价快照样本缺失', pricingSnapshotRows, 1)
 }
 
 function assertCreatedShape(created: CreatedMockdata): void {

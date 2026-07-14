@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -27,7 +26,6 @@ import (
 	"juhe-ai/backend-go/internal/httpapi"
 	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/jobs/queue"
-	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementapikeys"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
@@ -152,17 +150,15 @@ func TestW5ManagementAPIKeyUpdatePostgresRedisSmoke(t *testing.T) {
 	defer store.Close()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	var invalidationCall int
-	apiKeySecretInvalidator, err := gatewaycache.NewSystemAccountInvalidator(gatewaycache.SystemAccountInvalidatorOptions{
-		Cache:     cacheRedis,
-		State:     stateRedis,
-		Namespace: w5ManagementAPIKeySecretRedisNamespace,
-		Now:       func() time.Time { return now },
-		NewVersion: func(time.Time) (string, error) {
-			invalidationCall++
-			return fmt.Sprintf("w5-api-key-secret-version-%d", invalidationCall), nil
-		},
-	})
+	var invalidationVersion int
+	var lookupVersion int
+	apiKeySecretInvalidator, err := newW5ManagementAPIKeySmokeInvalidator(
+		cacheRedis,
+		stateRedis,
+		now,
+		&invalidationVersion,
+		&lookupVersion,
+	)
 	if err != nil {
 		t.Fatalf("create API Key secret invalidator: %v", err)
 	}
@@ -212,11 +208,13 @@ func TestW5ManagementAPIKeyUpdatePostgresRedisSmoke(t *testing.T) {
 		ListReader:               store,
 		Creator:                  store,
 		Updater:                  store,
+		Deleter:                  store,
 		UsageStatsTimezoneReader: store,
 		SecretStore:              store,
 		SecretTransactor:         store,
 		Invalidator:              apiKeySecretInvalidator,
 		Secret:                   w5ManagementAPIKeySecretRuntimeSecret,
+		Now:                      func() time.Time { return now },
 	})
 	cfg := config.Config{
 		Host:                 "127.0.0.1",
@@ -237,6 +235,9 @@ func TestW5ManagementAPIKeyUpdatePostgresRedisSmoke(t *testing.T) {
 		w5ManagementAPIKeyUpdateSelfScheduleLogID,
 		w5ManagementAPIKeyUpdateSelfClearLogID,
 		w5ManagementAPIKeyUpdateCommittedFailureLogID,
+		w5ManagementAPIKeyDeleteAdminGlobalLogID,
+		w5ManagementAPIKeyDeleteSelfLogID,
+		w5ManagementAPIKeyDeleteCommittedFailureLogID,
 	}
 	nextLogID := 0
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
@@ -293,6 +294,14 @@ func TestW5ManagementAPIKeyUpdatePostgresRedisSmoke(t *testing.T) {
 			operationLogOptions,
 		),
 		ManagementMyAPIKeyUpdateHandler: httpapi.NewManagementMyAPIKeyUpdateHandlerWithOperationLog(
+			service,
+			operationLogOptions,
+		),
+		ManagementAPIKeyDeleteHandler: httpapi.NewManagementAPIKeyDeleteHandlerWithOperationLog(
+			service,
+			operationLogOptions,
+		),
+		ManagementMyAPIKeyDeleteHandler: httpapi.NewManagementMyAPIKeyDeleteHandlerWithOperationLog(
 			service,
 			operationLogOptions,
 		),
@@ -703,6 +712,29 @@ func TestW5ManagementAPIKeyUpdatePostgresRedisSmoke(t *testing.T) {
 		cfg,
 		logger,
 		now,
+	)
+	exerciseW5ManagementAPIKeyDeleteSmoke(
+		t,
+		ctx,
+		db,
+		store,
+		router,
+		cacheRedis,
+		redisCacheURL,
+		stateRedis,
+		operationLogOptions,
+		inspector,
+		workerDone,
+		func() error {
+			workerErrMu.Lock()
+			defer workerErrMu.Unlock()
+			return workerRunErr
+		},
+		cfg,
+		logger,
+		now,
+		&invalidationVersion,
+		&lookupVersion,
 	)
 	queueInfo, err := inspector.QueueInfo(operationlogjob.QueueName)
 	if err != nil {

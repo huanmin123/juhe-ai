@@ -72,10 +72,11 @@ type UpdateInput struct {
 }
 
 type UpdateResult struct {
-	Before               ListItem
-	After                ListItem
-	OwnerSystemAccountID string
-	Committed            bool
+	Before                      ListItem
+	After                       ListItem
+	OwnerSystemAccountID        string
+	Committed                   bool
+	UncertainOperationLogFields map[string]bool
 }
 
 type normalizedUpdateInput struct {
@@ -164,6 +165,11 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	)
 	validationErr := s.invalidator.InvalidateAPIKeyValidationCache(invalidationCtx)
 	if validationErr == nil {
+		_ = s.invalidator.InvalidateAPIKeyLookupCache(
+			invalidationCtx,
+			stored.After.ID,
+			apiKeyUpdatedReason,
+		)
 		_ = s.invalidator.InvalidateGatewayRuntime(invalidationCtx, apiKeyUpdatedReason)
 		_ = s.invalidator.InvalidateAPIKeyQuotaChanged(
 			invalidationCtx,
@@ -326,43 +332,37 @@ func updateResultFromRows(
 	stored port.ManagementAPIKeyUpdateResult,
 	includeOwner bool,
 ) (UpdateResult, error) {
-	result := UpdateResult{
-		Before:               updateResultIdentity(stored.Before, includeOwner),
-		After:                updateResultIdentity(stored.After, includeOwner),
-		OwnerSystemAccountID: stored.After.SystemAccountID,
-	}
-	before, err := listItem(
+	before, beforeUncertain, beforeErr := listItemDetailed(
 		stored.Before,
 		port.ManagementAccountUsageSummary{},
 		includeOwner,
 	)
-	if err != nil {
-		return result, err
-	}
-	result.Before = before
-	after, err := listItem(
+	after, afterUncertain, afterErr := listItemDetailed(
 		stored.After,
 		port.ManagementAccountUsageSummary{},
 		includeOwner,
 	)
-	if err != nil {
-		return result, err
+	uncertain := make(map[string]bool, len(beforeUncertain)+len(afterUncertain))
+	for field := range beforeUncertain {
+		uncertain[field] = true
 	}
-	result.After = after
+	for field := range afterUncertain {
+		uncertain[field] = true
+	}
+	if len(uncertain) == 0 {
+		uncertain = nil
+	}
+	result := UpdateResult{
+		Before:                      before,
+		After:                       after,
+		OwnerSystemAccountID:        stored.After.SystemAccountID,
+		UncertainOperationLogFields: uncertain,
+	}
+	if beforeErr != nil {
+		return result, beforeErr
+	}
+	if afterErr != nil {
+		return result, afterErr
+	}
 	return result, nil
-}
-
-func updateResultIdentity(
-	row port.ManagementAPIKeyListRow,
-	includeOwner bool,
-) ListItem {
-	item := ListItem{
-		ID:   row.ID,
-		Name: row.Name,
-	}
-	if includeOwner {
-		item.SystemAccountID = row.SystemAccountID
-		item.SystemAccountName = row.SystemAccountName
-	}
-	return item
 }

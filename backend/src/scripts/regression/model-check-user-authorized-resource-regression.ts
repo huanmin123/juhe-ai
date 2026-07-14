@@ -221,6 +221,12 @@ function seedData(upstreamBaseUrl: string): SeedState {
     status: 'active',
     schedulable: true
   }, ownerAccess)
+  assert(repositories.recordAccountHealthCheckSuccess(ownerAccount.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), '授权来源账户必须通过正式健康检查路径进入可调度状态')
   const granteeGroup = repositories.createGroup({
     name: '模型检测授权用户分组',
     providerCode: 'gpt',

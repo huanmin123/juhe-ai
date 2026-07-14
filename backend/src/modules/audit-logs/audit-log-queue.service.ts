@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { nowIso } from '../../storage/database.js'
-import type { AuditLogInput, AuditLogPayloadInput } from '../../storage/audit-log-types.js'
+import type { AuditLogInput } from '../../storage/audit-log-types.js'
 import { createAuditLogsBatch, createAuditLogsBatchAsync } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
@@ -11,6 +11,14 @@ import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendAuditLogsToWorker } from '../background/background-ipc.js'
 import { readAuditLogSettings } from './audit-log-settings.js'
+import { decodeAuditLogStreamPayload, encodeAuditLogStreamPayload } from './audit-log-stream-codec.js'
+import {
+  AuditLogTransportError,
+  AuditLogTransportQueueFullError,
+  encodeAuditLogForRedisStreamInWorker,
+  prepareAuditLogForIpcInWorker,
+  stopAuditLogTransportWorker
+} from './audit-log-transport.service.js'
 
 const auditLogRetryPolicy = fixedRetryPolicy('audit_log_queue_flush', 5000)
 const auditLogFlushBatchMaxBytes = 8 * 1024 * 1024
@@ -19,6 +27,7 @@ const auditLogFlushBatchYieldMs = 5
 const auditLogShutdownFlushMaxBatches = 100
 const auditLogEstimateMaxBytes = 64 * 1024 * 1024 + 1
 const auditLogEstimateMaxStringChars = 16 * 1024
+const auditLogInlineTransportMaxBytes = 256 * 1024
 const auditLogPostgresFlushBatchSize = 25
 const auditLogPostgresRedisConsumerConcurrency = 1
 const auditLogRedisStreamKey = 'juhe-ai:queue:audit-logs'
@@ -43,6 +52,7 @@ let auditLogRedisConsumerQueueInstances: Array<RedisStreamQueue<AuditLogInput> |
 let auditLogRedisConsumerStarted = false
 let auditLogRedisConsumerStopping = false
 let auditLogRedisConsumerPromises: Array<Promise<void>> = []
+const pendingAuditLogServerDispatches = new Set<Promise<void>>()
 
 interface QueuedAuditLog {
   input: AuditLogInput
@@ -54,19 +64,6 @@ interface AuditLogFlushOptions {
   drain?: boolean
   retryOnFailure?: boolean
   maxBatches?: number
-}
-
-interface SerializedAuditLogInput extends Omit<AuditLogInput, 'payloads'> {
-  payloads: SerializedAuditLogPayloadInput[]
-}
-
-interface SerializedAuditLogPayloadInput extends Omit<AuditLogPayloadInput, 'body'> {
-  body?: string | SerializedAuditLogBuffer
-}
-
-interface SerializedAuditLogBuffer {
-  __juheAuditBuffer: true
-  base64: string
 }
 
 export interface AuditLogQueueRuntime {
@@ -164,8 +161,20 @@ function sanitizeDroppedAuditUrl(path?: string, queryString?: string): { path: s
 
 export function enqueueAuditLog(input: AuditLogInput): void {
   const queuedInput = normalizeAuditLogInput(input)
+  if (runtimeConfig.processRole === 'server' && estimateAuditLogBytes(queuedInput) > auditLogInlineTransportMaxBytes) {
+    trackAuditLogServerDispatch(
+      dispatchAuditLogFromServer(queuedInput),
+      (error) => handleAuditLogServerDispatchError(queuedInput, error)
+    )
+    return
+  }
   if (shouldEnqueueAuditLogToRedisStream()) {
-    void enqueueAuditLogToRedisStream(queuedInput).catch(scheduleProcessFatalError)
+    const dispatch = enqueueAuditLogToRedisStream(queuedInput)
+    if (runtimeConfig.processRole === 'server') {
+      trackAuditLogServerDispatch(dispatch, scheduleProcessFatalError)
+    } else {
+      void dispatch.catch(scheduleProcessFatalError)
+    }
     return
   }
   if (shouldDispatchAuditLogToIngestWorker()) {
@@ -191,6 +200,75 @@ export function enqueueAuditLog(input: AuditLogInput): void {
   }
 
   enqueueAuditLogLocal(queuedInput)
+}
+
+function trackAuditLogServerDispatch(dispatch: Promise<void>, onError: (error: unknown) => void): void {
+  pendingAuditLogServerDispatches.add(dispatch)
+  void dispatch
+    .catch(onError)
+    .finally(() => pendingAuditLogServerDispatches.delete(dispatch))
+}
+
+export function getAuditLogServerDispatchPendingCount(): number {
+  return pendingAuditLogServerDispatches.size
+}
+
+export async function waitForAuditLogServerDispatchIdle(timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + Math.max(1, timeoutMs)
+  while (pendingAuditLogServerDispatches.size > 0) {
+    if (Date.now() >= deadline) return false
+    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 5))
+  }
+  await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
+  return true
+}
+
+function handleAuditLogServerDispatchError(input: AuditLogInput, error: unknown): void {
+  if (error instanceof AuditLogTransportQueueFullError) {
+    logger.error(errorLogFields(error, {
+      event: 'audit_log_transport_capacity_rejected',
+      auditLogId: input.id,
+      traceId: input.traceId,
+      auditOutcome: input.auditOutcome
+    }), '审计传输 worker 容量不足，已明确记录本条审计丢弃')
+    recordAuditLogDispatchFailure(input)
+    return
+  }
+  if (error instanceof AuditLogTransportError) {
+    logger.error(errorLogFields(error, {
+      event: 'audit_log_transport_failed',
+      auditLogId: input.id,
+      traceId: input.traceId,
+      auditOutcome: input.auditOutcome
+    }), '审计传输 worker 处理失败，已明确记录本条审计丢弃')
+    recordAuditLogDispatchFailure(input)
+    return
+  }
+  scheduleProcessFatalError(error)
+}
+
+async function dispatchAuditLogFromServer(input: AuditLogInput): Promise<void> {
+  if (shouldEnqueueAuditLogToRedisStream()) {
+    const encoded = await encodeAuditLogForRedisStreamInWorker(input)
+    await enqueueAuditLogToRedisStream(input, encoded)
+    return
+  }
+  if (shouldDispatchAuditLogToIngestWorker()) {
+    const prepared = await prepareAuditLogForIpcInWorker(input)
+    const dispatched = sendAuditLogsToWorker([prepared])
+    logger.debug({
+      event: 'audit_log_dispatch_to_ingest_worker',
+      traceId: prepared.traceId,
+      auditOutcome: prepared.auditOutcome,
+      success: prepared.success,
+      dispatched
+    }, '审计日志已投递 ingest-worker')
+    if (!dispatched) {
+      recordAuditLogDispatchFailure(prepared)
+    }
+    return
+  }
+  enqueueAuditLogLocal(input)
 }
 
 export function enqueueAuditLogsLocal(inputs: AuditLogInput[]): void {
@@ -455,6 +533,7 @@ export function clearAuditLogQueueForTest(): void {
   }
   auditLogRedisStreamQueueInstance = undefined
   auditLogRedisConsumerQueueInstances = []
+  void stopAuditLogTransportWorker().catch(() => undefined)
 }
 
 export function setDbServiceAuditLogLocalWriteAllowedForTest(value: boolean): void {
@@ -542,9 +621,14 @@ function recordAuditLogDispatchFailure(input: AuditLogInput): void {
   }, 'overflow')
 }
 
-async function enqueueAuditLogToRedisStream(input: AuditLogInput): Promise<void> {
+async function enqueueAuditLogToRedisStream(input: AuditLogInput, encodedPayload?: string): Promise<void> {
   try {
-    await auditLogRedisStreamQueue().enqueue(input)
+    const queue = auditLogRedisStreamQueue()
+    if (encodedPayload === undefined) {
+      await queue.enqueue(input)
+    } else {
+      await queue.enqueueEncoded(encodedPayload)
+    }
   } catch (error) {
     logger.error(errorLogFields(error, {
       event: 'audit_log_redis_stream_enqueue_failed',
@@ -635,73 +719,6 @@ export async function getAuditLogRedisStreamRuntime(): Promise<RedisStreamQueueR
 
 function auditLogRedisConsumerConcurrency(): number {
   return runtimeConfig.databaseDriver === 'postgres' ? auditLogPostgresRedisConsumerConcurrency : 1
-}
-
-function encodeAuditLogStreamPayload(input: AuditLogInput): string {
-  return JSON.stringify(serializeAuditLogInput(input))
-}
-
-function decodeAuditLogStreamPayload(payload: string): AuditLogInput {
-  return deserializeAuditLogInput(JSON.parse(payload) as SerializedAuditLogInput)
-}
-
-function serializeAuditLogInput(input: AuditLogInput): SerializedAuditLogInput {
-  return {
-    ...input,
-    payloads: input.payloads.map(serializeAuditLogPayloadInput)
-  }
-}
-
-function serializeAuditLogPayloadInput(payload: AuditLogPayloadInput): SerializedAuditLogPayloadInput {
-  const { body, ...rest } = payload
-  if (Buffer.isBuffer(body)) {
-    return {
-      ...rest,
-      body: {
-        __juheAuditBuffer: true,
-        base64: body.toString('base64')
-      }
-    }
-  }
-  if (typeof body === 'string') {
-    return {
-      ...rest,
-      body
-    }
-  }
-  return rest
-}
-
-function deserializeAuditLogInput(input: SerializedAuditLogInput): AuditLogInput {
-  return {
-    ...input,
-    payloads: input.payloads.map(deserializeAuditLogPayloadInput)
-  }
-}
-
-function deserializeAuditLogPayloadInput(payload: SerializedAuditLogPayloadInput): AuditLogPayloadInput {
-  const { body, ...rest } = payload
-  if (isSerializedAuditLogBuffer(body)) {
-    return {
-      ...rest,
-      body: Buffer.from(body.base64, 'base64')
-    }
-  }
-  if (typeof body === 'string') {
-    return {
-      ...rest,
-      body
-    }
-  }
-  return rest
-}
-
-function isSerializedAuditLogBuffer(value: unknown): value is SerializedAuditLogBuffer {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false
-  }
-  const record = value as Record<string, unknown>
-  return record.__juheAuditBuffer === true && typeof record.base64 === 'string'
 }
 
 function sendAuditLogFromDbServiceToServer(input: AuditLogInput): boolean {

@@ -294,7 +294,7 @@ function markAccountConcurrencyUnavailable(account: AccountSummary): AccountSumm
 }
 
 function markGroupConcurrencyUnavailable(group: GroupSummary): GroupSummary {
-  if (group.accessType === 'authorized' || group.accountIds.length === 0) {
+  if (group.accessType === 'authorized' || (group.accountIds.length === 0 && group.accountStats.total === 0)) {
     return group
   }
   return {
@@ -310,6 +310,9 @@ function applyAccountConcurrencyToGroups(groups: GroupSummary[], concurrency: Ac
   return groups.map((group) => {
     if (group.accessType === 'authorized') {
       return group
+    }
+    if (group.accountIds.length === 0 && group.accountStats.total > 0) {
+      return markGroupConcurrencyUnavailable(group)
     }
     const currentConcurrency = sumCurrentConcurrency(group.accountIds, concurrency)
     return {
@@ -328,7 +331,7 @@ function accountsRequireServerConcurrencySnapshot(accounts: AccountSummary[]): b
 }
 
 function groupsRequireServerConcurrencySnapshot(groups: GroupSummary[]): boolean {
-  return groups.some((group) => group.accessType !== 'authorized' && group.accountIds.length > 0)
+  return groups.some((group) => group.accessType !== 'authorized' && (group.accountIds.length > 0 || group.accountStats.total > 0))
 }
 
 function accountRuntimeAvailabilityKey(account: AccountSummary): string {

@@ -184,7 +184,11 @@ async function runHttpSmoke(): Promise<void> {
   let server: http.Server | undefined
   try {
     console.log(`[performance-system-api-smoke:${label}] start app`)
-    const app = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', trustProxy: true })
+    const app = createSystemApiApp({
+      systemApiPrefix: '/__aisys__/api',
+      trustProxy: true,
+      bypassSystemApiRateLimitForTest: true
+    })
     server = app.listen(0, '127.0.0.1')
     await listen(server)
     const baseUrl = `http://127.0.0.1:${serverAddress(server).port}`
@@ -373,13 +377,14 @@ async function runHttpSmoke(): Promise<void> {
       providerCode: 'gpt',
       providerProtocolProfileId: gptProviderProfileId,
       type: 'api_key',
-      status: 'temporary_unavailable',
+      status: 'disabled',
       groupId: createdGroup.id,
       credentials: {
         api_key: `sk-smoke-account-${aiAccountSuffix}`,
         base_url: 'https://example.invalid/v1'
       },
       supportedModels: [smokeModel],
+      healthCheckModel: smokeModel,
       modelMappings: [{
         sourceModel: smokeFallbackModel,
         sourceEndpointFamily: 'chat_completions',
@@ -390,10 +395,14 @@ async function runHttpSmoke(): Promise<void> {
       concurrencyLimit: 20
     }, cookie)
     createdAiAccountIds.push(createdAiAccount.id)
-    assert.equal(createdAiAccount.status, 'temporary_unavailable', 'performance smoke 应能创建临时不可用 AI 账户')
+    assert.equal(createdAiAccount.status, 'disabled', 'performance smoke 应能创建停用 AI 账户，避免依赖后台首次健康检查')
     assert.equal(createdAiAccount.boundGroupId, createdGroup.id, 'performance smoke AI 账户应绑定目标分组')
     assert.deepEqual(createdAiAccount.supportedModels, [smokeModel], 'performance smoke AI 账户应保存支持模型')
     assert.equal(createdAiAccount.modelMappings?.[0]?.sourceModel, smokeFallbackModel, 'performance smoke AI 账户应保存同协议模型别名映射')
+    const temporarilyUnavailableAiAccount = await patchEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
+      status: 'temporary_unavailable'
+    }, cookie)
+    assert.equal(temporarilyUnavailableAiAccount.status, 'temporary_unavailable', 'performance smoke 应能把停用 AI 账户切换为临时不可用')
     const aiAccountBasicDetail = await getEnvelope<{
       id: string
       status: string

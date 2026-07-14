@@ -240,6 +240,37 @@ func managementGroupCreateMutationGuardConfig(scope managementGroupOptionScope) 
 	}
 }
 
+func managementRouteStrategyCreateMutationGuardConfig(
+	scope managementRouteStrategyOptionScope,
+) mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "route_strategies.create",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := managementGroupCreateMutationJSONFields(w, r)
+			if err != nil {
+				return nil, err
+			}
+			ownerSystemAccountID := ""
+			if authContext, ok := ManagementAuthContextFromRequest(r); ok {
+				ownerSystemAccountID = strings.TrimSpace(authContext.SystemAccountID)
+			}
+			if scope == managementRouteStrategyScopeAdmin {
+				selectedSystemAccountID := firstManagementQueryText(
+					r.URL.Query(),
+					"systemAccountId",
+				)
+				if selectedSystemAccountID != "" && selectedSystemAccountID != "all" {
+					ownerSystemAccountID = selectedSystemAccountID
+				}
+			}
+			return map[string]any{
+				"owner": ownerSystemAccountID,
+				"name":  mutationStringField(fields, "name"),
+			}, nil
+		},
+	}
+}
+
 func managementAPIKeyRefreshMutationGuardConfig(scope managementAPIKeyScope) mutationGuardConfig {
 	return mutationGuardConfig{
 		operationKey: "api_keys.refresh_key",

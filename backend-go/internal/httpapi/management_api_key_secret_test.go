@@ -353,6 +353,7 @@ func TestManagementAPIKeyRefreshHandlerDoesNotApplyBodySchemaAndReturnsFullSumma
 						Usage:               port.ManagementAccountUsageSummary{RequestCount: 3},
 					},
 					Key:                  "sk-refreshed-secret-0123456789",
+					UsageAvailable:       false,
 					OwnerSystemAccountID: "sys_owner",
 					PreviousKeyMarker:    "sk-before...before",
 					KeyMarker:            "sk-refre...23456789",
@@ -404,6 +405,7 @@ func TestManagementAPIKeyRefreshHandlerDoesNotApplyBodySchemaAndReturnsFullSumma
 				envelope.Data["id"] != "key_1" ||
 				envelope.Data["systemAccountId"] != "sys_owner" ||
 				envelope.Data["key"] != "sk-refreshed-secret-0123456789" ||
+				envelope.Data["usageAvailable"] != false ||
 				envelope.Data["keySecretEncrypted"] != nil {
 				t.Fatalf("response = %#v message=%q", envelope.Data, envelope.Message)
 			}

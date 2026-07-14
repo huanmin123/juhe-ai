@@ -111,6 +111,7 @@ export async function captureGatewayRawBody(
           model: metadata.model,
           stream: metadata.stream,
           serviceTier: metadata.serviceTier,
+          reasoningEffort: metadata.reasoningEffort,
           maxOutputTokens: metadata.maxOutputTokens,
           imageGeneration: metadata.imageGeneration,
           imageGenerationForced: metadata.imageGenerationForced,
@@ -128,6 +129,7 @@ export async function captureGatewayRawBody(
           model: metadata.model,
           stream: metadata.stream,
           serviceTier: metadata.serviceTier,
+          reasoningEffort: metadata.reasoningEffort,
           maxOutputTokens: metadata.maxOutputTokens,
           imageGeneration: metadata.imageGeneration,
           imageGenerationForced: metadata.imageGenerationForced
@@ -157,7 +159,6 @@ export async function captureGatewayRawBody(
       releaseGatewayRequestBodyInFlightBytes(req)
       return
     }
-    releaseGatewayRequestBodyInFlightBytes(req)
     next()
   } catch (error) {
     releaseGatewayRequestBodyInFlightBytes(req)

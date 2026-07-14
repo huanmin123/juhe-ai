@@ -25,7 +25,12 @@
           <a-descriptions-item label="API Key">{{ displayName(detail.apiKeyName, detail.apiKeyId) }}</a-descriptions-item>
           <a-descriptions-item label="分组">{{ displayAuditGroupName(detail.groupName, detail.groupId) }}</a-descriptions-item>
           <a-descriptions-item label="系统账户">{{ displayName(detail.systemAccountName, detail.systemAccountId) }}</a-descriptions-item>
-          <a-descriptions-item label="耗时">{{ formatDuration(detail.durationMs) }}</a-descriptions-item>
+          <a-descriptions-item v-if="detail.httpCompletedAt" label="返回客户端">
+            {{ detail.httpCompletedAt ? formatDateTime(detail.httpCompletedAt) : '-' }} · {{ formatDuration(detail.httpDurationMs) }}
+          </a-descriptions-item>
+          <a-descriptions-item label="审计完成">
+            {{ formatDateTime(detail.endedAt) }} · {{ formatDuration(detail.durationMs) }}
+          </a-descriptions-item>
           <a-descriptions-item label="采样" :span="2">{{ detail.sampleReason }} / {{ detail.sampleBucket }}</a-descriptions-item>
           <a-descriptions-item label="错误" :span="2">{{ detail.errorMessage ?? '-' }}</a-descriptions-item>
         </a-descriptions>
@@ -379,18 +384,19 @@ function createGatewayResultRow(
   sequenceText: string
 ): RequestChainRow {
   const partType = payload?.partType ?? (detail.success ? 'gateway_response' : 'gateway_error')
+  const hasHttpCompletion = detail.httpCompletedAt !== undefined
   return {
     id: payload?.id ?? `gateway-result:${detail.id}`,
     sequenceText,
     phaseText: payloadPartText(partType),
-    title: detail.success ? '返回客户端' : '网关错误',
+    title: hasHttpCompletion ? (detail.success ? '返回客户端' : '网关错误') : (detail.success ? '内部链路完成' : '内部链路错误'),
     partType,
     accountId: detail.accountId,
     accountName: detail.accountName,
     success: detail.success,
     statusText: gatewayStatusText(detail),
-    time: payload?.createdAt ?? detail.endedAt,
-    durationMs: detail.durationMs,
+    time: detail.httpCompletedAt ?? detail.endedAt,
+    durationMs: detail.httpDurationMs ?? detail.durationMs,
     sizeBytes: payload?.sizeBytes,
     captureStatus: payload?.captureStatus,
     url: detail.errorMessage || auditDetailPath(detail),

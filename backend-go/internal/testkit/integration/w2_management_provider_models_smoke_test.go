@@ -52,6 +52,7 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	assertW2ProviderModelCatalogSnapshot(t, ctx, db)
 	priorityFlexTiers := []string{"priority", "flex"}
 	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-sol", priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
+	assertW2ProviderModelTierPricingRow(t, ctx, db, "gpt-5.6-sol")
 	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-terra", priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
 	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "gpt-5.6-luna", priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
 	assertW2ProviderModelRequestCapabilitiesRow(t, ctx, db, "o3", priorityFlexTiers, []string{}, "", []string{}, "", "")
@@ -84,6 +85,7 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 		t.Fatalf("seeded gpt-5.6-sol model missing: %+v", models)
 	}
 	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-sol"), "2026-06-26", 372000, 0.5, 6.25)
+	assertW2ProviderModelTierPricing(t, findW2ProviderModel(models, "gpt-5.6-sol"))
 	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-terra"), "2026-06-26", 372000, 0.25, 3.125)
 	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-luna"), "2026-06-26", 372000, 0.1, 1.25)
 	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-sol"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
@@ -171,13 +173,16 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	var modelsBody struct {
 		Data []managementprovidermodels.ModelCatalogItem `json:"data"`
 	}
-	if err := json.NewDecoder(rec.Body).Decode(&modelsBody); err != nil {
+	modelsResponseBody := append([]byte(nil), rec.Body.Bytes()...)
+	if err := json.Unmarshal(modelsResponseBody, &modelsBody); err != nil {
 		t.Fatalf("decode models response: %v", err)
 	}
 	if findW2ProviderModel(modelsBody.Data, "w2-personal-model") == nil {
 		t.Fatalf("HTTP provider models response missing personal model: %+v", modelsBody.Data)
 	}
 	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-sol"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
+	assertW2ProviderModelTierPricing(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-sol"))
+	assertW2ProviderModelWireTierPricing(t, modelsResponseBody, "gpt-5.6-sol")
 	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-terra"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
 	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "gpt-5.6-luna"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
 	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(modelsBody.Data, "o3"), priorityFlexTiers, []string{}, "", []string{}, "", "")
@@ -319,6 +324,70 @@ func assertW2ProviderModelPricing(t *testing.T, item *managementprovidermodels.M
 	if item.CacheWriteUSDPer1M == nil || *item.CacheWriteUSDPer1M != cacheWriteUSDPer1M {
 		t.Fatalf("%s cache write price = %v, want %v", item.Model, item.CacheWriteUSDPer1M, cacheWriteUSDPer1M)
 	}
+}
+
+func assertW2ProviderModelTierPricing(t *testing.T, item *managementprovidermodels.ModelCatalogItem) {
+	t.Helper()
+	if item == nil {
+		t.Fatalf("provider model missing")
+	}
+	if item.PriorityInputUSDPer1M == nil || *item.PriorityInputUSDPer1M != 10 ||
+		item.PriorityOutputUSDPer1M == nil || *item.PriorityOutputUSDPer1M != 60 ||
+		item.PriorityCachedInputUSDPer1M == nil || *item.PriorityCachedInputUSDPer1M != 1 ||
+		item.PriorityCacheWriteUSDPer1M == nil || *item.PriorityCacheWriteUSDPer1M != 12.5 ||
+		item.PriorityCacheWrite1hUSDPer1M != nil ||
+		item.FlexInputUSDPer1M == nil || *item.FlexInputUSDPer1M != 2.5 ||
+		item.FlexOutputUSDPer1M == nil || *item.FlexOutputUSDPer1M != 15 ||
+		item.FlexCachedInputUSDPer1M == nil || *item.FlexCachedInputUSDPer1M != 0.25 ||
+		item.FlexCacheWriteUSDPer1M == nil || *item.FlexCacheWriteUSDPer1M != 3.125 ||
+		item.FlexCacheWrite1hUSDPer1M != nil {
+		t.Fatalf("%s tier pricing metadata = %+v", item.Model, item)
+	}
+	if item.LongContextInputTokenThreshold == nil || *item.LongContextInputTokenThreshold != 272000 ||
+		item.LongContextInputCostMultiplier == nil || *item.LongContextInputCostMultiplier != 2 ||
+		item.LongContextOutputCostMultiplier == nil || *item.LongContextOutputCostMultiplier != 1.5 {
+		t.Fatalf("%s long-context metadata = %+v", item.Model, item)
+	}
+}
+
+func assertW2ProviderModelWireTierPricing(t *testing.T, body []byte, model string) {
+	t.Helper()
+	var payload struct {
+		Data []map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode provider model wire payload: %v", err)
+	}
+	for _, item := range payload.Data {
+		var actualModel string
+		if err := json.Unmarshal(item["model"], &actualModel); err != nil || actualModel != model {
+			continue
+		}
+		for field, want := range map[string]string{
+			"priorityInputUsdPer1M":           "10",
+			"priorityOutputUsdPer1M":          "60",
+			"priorityCachedInputUsdPer1M":     "1",
+			"priorityCacheWriteUsdPer1M":      "12.5",
+			"flexInputUsdPer1M":               "2.5",
+			"flexOutputUsdPer1M":              "15",
+			"flexCachedInputUsdPer1M":         "0.25",
+			"flexCacheWriteUsdPer1M":          "3.125",
+			"longContextInputTokenThreshold":  "272000",
+			"longContextInputCostMultiplier":  "2",
+			"longContextOutputCostMultiplier": "1.5",
+		} {
+			if string(item[field]) != want {
+				t.Fatalf("%s wire field %s = %s, want %s", model, field, item[field], want)
+			}
+		}
+		for _, field := range []string{"priorityCacheWrite1hUsdPer1M", "flexCacheWrite1hUsdPer1M"} {
+			if _, ok := item[field]; ok {
+				t.Fatalf("%s wire field %s must be omitted for undefined Node metadata", model, field)
+			}
+		}
+		return
+	}
+	t.Fatalf("provider model %s missing from wire payload", model)
 }
 
 func assertW2ProviderModelRequestCapabilities(
@@ -557,6 +626,61 @@ func assertW2ProviderModelRequestCapabilitiesRow(
 	}
 	if codexMultiAgent.String != codexMultiAgentVersion {
 		t.Fatalf("%s PG Codex multi-agent version = %q, want %q", model, codexMultiAgent.String, codexMultiAgentVersion)
+	}
+}
+
+func assertW2ProviderModelTierPricingRow(t *testing.T, ctx context.Context, db *sql.DB, model string) {
+	t.Helper()
+	var priorityInput, priorityOutput, priorityCachedInput, priorityCacheWrite sql.NullFloat64
+	var priorityCacheWrite1h sql.NullFloat64
+	var flexInput, flexOutput, flexCachedInput, flexCacheWrite sql.NullFloat64
+	var flexCacheWrite1h sql.NullFloat64
+	var longContextThreshold sql.NullInt64
+	var longContextInputMultiplier, longContextOutputMultiplier sql.NullFloat64
+	if err := db.QueryRowContext(ctx, `
+		SELECT
+			priority_input_usd_per_1m,
+			priority_output_usd_per_1m,
+			priority_cached_input_usd_per_1m,
+			priority_cache_write_usd_per_1m,
+			priority_cache_write_1h_usd_per_1m,
+			flex_input_usd_per_1m,
+			flex_output_usd_per_1m,
+			flex_cached_input_usd_per_1m,
+			flex_cache_write_usd_per_1m,
+			flex_cache_write_1h_usd_per_1m,
+			long_context_input_token_threshold,
+			long_context_input_cost_multiplier,
+			long_context_output_cost_multiplier
+		FROM juhe_business.provider_model_catalog
+		WHERE provider_code = 'gpt' AND model = $1
+	`, model).Scan(
+		&priorityInput,
+		&priorityOutput,
+		&priorityCachedInput,
+		&priorityCacheWrite,
+		&priorityCacheWrite1h,
+		&flexInput,
+		&flexOutput,
+		&flexCachedInput,
+		&flexCacheWrite,
+		&flexCacheWrite1h,
+		&longContextThreshold,
+		&longContextInputMultiplier,
+		&longContextOutputMultiplier,
+	); err != nil {
+		t.Fatalf("query %s tier pricing metadata: %v", model, err)
+	}
+	if priorityInput.Float64 != 10 || priorityOutput.Float64 != 60 ||
+		priorityCachedInput.Float64 != 1 || priorityCacheWrite.Float64 != 12.5 ||
+		priorityCacheWrite1h.Valid ||
+		flexInput.Float64 != 2.5 || flexOutput.Float64 != 15 ||
+		flexCachedInput.Float64 != 0.25 || flexCacheWrite.Float64 != 3.125 ||
+		flexCacheWrite1h.Valid ||
+		longContextThreshold.Int64 != 272000 ||
+		longContextInputMultiplier.Float64 != 2 ||
+		longContextOutputMultiplier.Float64 != 1.5 {
+		t.Fatalf("%s PG tier pricing metadata drifted from Node values", model)
 	}
 }
 

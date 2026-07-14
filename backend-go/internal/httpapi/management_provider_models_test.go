@@ -76,19 +76,41 @@ func TestManagementProviderModelOptionsHandlerUsesSelfScopeForOrdinaryUser(t *te
 }
 
 func TestManagementProviderModelsHandlerParsesQueryAndProvider(t *testing.T) {
+	priorityInput := 10.0
+	priorityOutput := 60.0
+	priorityCachedInput := 1.0
+	priorityCacheWrite := 12.5
+	flexInput := 2.5
+	flexOutput := 15.0
+	flexCachedInput := 0.25
+	flexCacheWrite := 3.125
+	longContextThreshold := 272000
+	longContextInputMultiplier := 2.0
+	longContextOutputMultiplier := 1.5
 	service := &managementProviderModelServiceStub{
 		models: []managementprovidermodels.ModelCatalogItem{{
-			ProviderCode:                  "gpt",
-			Model:                         "gpt-5.6-sol",
-			Scope:                         "built_in",
-			Status:                        "active",
-			SupportedServiceTiers:         []string{"priority"},
-			SupportedReasoningEfforts:     []string{"low", "high", "max"},
-			DefaultReasoningEffort:        "high",
-			CodexSupportedReasoningLevels: []string{"low", "high", "ultra"},
-			CodexDefaultReasoningLevel:    "low",
-			CodexMultiAgentVersion:        "v2",
-			SupportsServiceTier:           true,
+			ProviderCode:                    "gpt",
+			Model:                           "gpt-5.6-sol",
+			Scope:                           "built_in",
+			Status:                          "active",
+			SupportedServiceTiers:           []string{"priority"},
+			SupportedReasoningEfforts:       []string{"low", "high", "max"},
+			DefaultReasoningEffort:          "high",
+			CodexSupportedReasoningLevels:   []string{"low", "high", "ultra"},
+			CodexDefaultReasoningLevel:      "low",
+			CodexMultiAgentVersion:          "v2",
+			SupportsServiceTier:             true,
+			PriorityInputUSDPer1M:           &priorityInput,
+			PriorityOutputUSDPer1M:          &priorityOutput,
+			PriorityCachedInputUSDPer1M:     &priorityCachedInput,
+			PriorityCacheWriteUSDPer1M:      &priorityCacheWrite,
+			FlexInputUSDPer1M:               &flexInput,
+			FlexOutputUSDPer1M:              &flexOutput,
+			FlexCachedInputUSDPer1M:         &flexCachedInput,
+			FlexCacheWriteUSDPer1M:          &flexCacheWrite,
+			LongContextInputTokenThreshold:  &longContextThreshold,
+			LongContextInputCostMultiplier:  &longContextInputMultiplier,
+			LongContextOutputCostMultiplier: &longContextOutputMultiplier,
 		}},
 	}
 	handler := chi.NewRouter()
@@ -112,7 +134,8 @@ func TestManagementProviderModelsHandlerParsesQueryAndProvider(t *testing.T) {
 	var body struct {
 		Data []managementprovidermodels.ModelCatalogItem `json:"data"`
 	}
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+	responseBytes := append([]byte(nil), rec.Body.Bytes()...)
+	if err := json.Unmarshal(responseBytes, &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(body.Data) != 1 ||
@@ -122,8 +145,44 @@ func TestManagementProviderModelsHandlerParsesQueryAndProvider(t *testing.T) {
 		len(body.Data[0].CodexSupportedReasoningLevels) != 3 ||
 		body.Data[0].CodexDefaultReasoningLevel != "low" ||
 		body.Data[0].CodexMultiAgentVersion != "v2" ||
-		!body.Data[0].SupportsServiceTier {
+		!body.Data[0].SupportsServiceTier ||
+		body.Data[0].PriorityInputUSDPer1M == nil || *body.Data[0].PriorityInputUSDPer1M != 10 ||
+		body.Data[0].PriorityOutputUSDPer1M == nil || *body.Data[0].PriorityOutputUSDPer1M != 60 ||
+		body.Data[0].PriorityCachedInputUSDPer1M == nil || *body.Data[0].PriorityCachedInputUSDPer1M != 1 ||
+		body.Data[0].PriorityCacheWriteUSDPer1M == nil || *body.Data[0].PriorityCacheWriteUSDPer1M != 12.5 ||
+		body.Data[0].PriorityCacheWrite1hUSDPer1M != nil ||
+		body.Data[0].FlexInputUSDPer1M == nil || *body.Data[0].FlexInputUSDPer1M != 2.5 ||
+		body.Data[0].FlexOutputUSDPer1M == nil || *body.Data[0].FlexOutputUSDPer1M != 15 ||
+		body.Data[0].FlexCachedInputUSDPer1M == nil || *body.Data[0].FlexCachedInputUSDPer1M != 0.25 ||
+		body.Data[0].FlexCacheWriteUSDPer1M == nil || *body.Data[0].FlexCacheWriteUSDPer1M != 3.125 ||
+		body.Data[0].FlexCacheWrite1hUSDPer1M != nil ||
+		body.Data[0].LongContextInputTokenThreshold == nil || *body.Data[0].LongContextInputTokenThreshold != 272000 ||
+		body.Data[0].LongContextInputCostMultiplier == nil || *body.Data[0].LongContextInputCostMultiplier != 2 ||
+		body.Data[0].LongContextOutputCostMultiplier == nil || *body.Data[0].LongContextOutputCostMultiplier != 1.5 {
 		t.Fatalf("body = %+v", body)
+	}
+	responseJSON := string(responseBytes)
+	for _, field := range []string{
+		`"priorityInputUsdPer1M":10`,
+		`"priorityOutputUsdPer1M":60`,
+		`"priorityCachedInputUsdPer1M":1`,
+		`"priorityCacheWriteUsdPer1M":12.5`,
+		`"flexInputUsdPer1M":2.5`,
+		`"flexOutputUsdPer1M":15`,
+		`"flexCachedInputUsdPer1M":0.25`,
+		`"flexCacheWriteUsdPer1M":3.125`,
+		`"longContextInputTokenThreshold":272000`,
+		`"longContextInputCostMultiplier":2`,
+		`"longContextOutputCostMultiplier":1.5`,
+	} {
+		if !strings.Contains(responseJSON, field) {
+			t.Fatalf("response JSON missing %s: %s", field, responseJSON)
+		}
+	}
+	for _, field := range []string{"priorityCacheWrite1hUsdPer1M", "flexCacheWrite1hUsdPer1M"} {
+		if strings.Contains(responseJSON, field) {
+			t.Fatalf("response JSON must omit undefined Node metadata field %s: %s", field, responseJSON)
+		}
 	}
 }
 
@@ -428,6 +487,38 @@ func TestManagementProviderCustomModelHandlersMapErrors(t *testing.T) {
 			wantMsg:    "自定义模型参数无效",
 		},
 		{
+			name:   "create rejects built in tier pricing metadata",
+			method: http.MethodPost,
+			target: "/__aisys__/api/providers/gpt/models",
+			body: `{
+				"model":"custom-chat",
+				"priorityInputUsdPer1M":10,
+				"priorityOutputUsdPer1M":60,
+				"priorityCachedInputUsdPer1M":1,
+				"priorityCacheWriteUsdPer1M":12.5,
+				"priorityCacheWrite1hUsdPer1M":20,
+				"flexInputUsdPer1M":2.5,
+				"flexOutputUsdPer1M":15,
+				"flexCachedInputUsdPer1M":0.25,
+				"flexCacheWriteUsdPer1M":3.125,
+				"flexCacheWrite1hUsdPer1M":5,
+				"longContextInputTokenThreshold":272000,
+				"longContextInputCostMultiplier":2,
+				"longContextOutputCostMultiplier":1.5
+			}`,
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "自定义模型参数无效",
+		},
+		{
+			name:       "create validation message passthrough",
+			method:     http.MethodPost,
+			target:     "/__aisys__/api/providers/gpt/models",
+			body:       `{"model":"custom-chat","supportedReasoningEfforts":["high"]}`,
+			err:        &managementprovidermodels.CustomModelValidationError{Message: "只有 GPT 文本自定义模型支持服务等级和思考能力配置"},
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "只有 GPT 文本自定义模型支持服务等级和思考能力配置",
+		},
+		{
 			name:       "update not found",
 			method:     http.MethodPatch,
 			target:     "/__aisys__/api/providers/gpt/models/custom_model_1",
@@ -471,6 +562,15 @@ func TestManagementProviderCustomModelHandlersMapErrors(t *testing.T) {
 			err:        &managementprovidermodels.CustomModelForbiddenError{Message: "无权修改该自定义模型"},
 			wantStatus: http.StatusForbidden,
 			wantMsg:    "无权修改该自定义模型",
+		},
+		{
+			name:       "update validation message passthrough",
+			method:     http.MethodPatch,
+			target:     "/__aisys__/api/providers/gpt/models/custom_model_1",
+			body:       `{"defaultReasoningEffort":"high"}`,
+			err:        &managementprovidermodels.CustomModelValidationError{Message: "默认思考级别必须属于支持的思考级别"},
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "默认思考级别必须属于支持的思考级别",
 		},
 		{
 			name:       "delete bound",

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"slices"
@@ -43,6 +44,10 @@ const (
 	invalidHealthCheckModelUnsupportedMessage = "账户检查模型必须属于账户支持模型"
 	providerModelsRequiredMessage             = "public account provider models reader is required"
 	hybridProviderCode                        = "hybrid"
+	accountHealthCheckReasonActivation        = "activation"
+	accountHealthCheckReasonConfiguration     = "configuration"
+	accountHealthCheckDispatchFailedEvent     = "public_account_health_check_dispatch_failed"
+	accountHealthCheckDispatchTimeout         = 2 * time.Second
 )
 
 var (
@@ -70,22 +75,28 @@ var (
 )
 
 type Service struct {
-	store          port.PublicAccountStore
-	transactor     port.PublicAccountTransactor
-	providerModels ProviderModelReader
-	now            func() time.Time
-	newID          func(prefix string) string
-	codec          CredentialCodec
+	store                      port.PublicAccountStore
+	transactor                 port.PublicAccountTransactor
+	providerModels             ProviderModelReader
+	dispatcher                 AccountHealthCheckDispatcher
+	healthCheckDispatchTimeout time.Duration
+	logger                     *slog.Logger
+	now                        func() time.Time
+	newID                      func(prefix string) string
+	codec                      CredentialCodec
 }
 
 type Options struct {
-	Store          port.PublicAccountStore
-	Transactor     port.PublicAccountTransactor
-	ProviderModels ProviderModelReader
-	Now            func() time.Time
-	NewID          func(prefix string) string
-	Codec          CredentialCodec
-	Secret         string
+	Store                      port.PublicAccountStore
+	Transactor                 port.PublicAccountTransactor
+	ProviderModels             ProviderModelReader
+	HealthCheckDispatcher      AccountHealthCheckDispatcher
+	HealthCheckDispatchTimeout time.Duration
+	Logger                     *slog.Logger
+	Now                        func() time.Time
+	NewID                      func(prefix string) string
+	Codec                      CredentialCodec
+	Secret                     string
 }
 
 type CredentialCodec interface {
@@ -95,6 +106,10 @@ type CredentialCodec interface {
 
 type ProviderModelReader interface {
 	Models(ctx context.Context, input managementprovidermodels.ModelListInput) ([]managementprovidermodels.ModelCatalogItem, error)
+}
+
+type AccountHealthCheckDispatcher interface {
+	Dispatch(ctx context.Context, accountID string, reason string) error
 }
 
 type Target struct {
@@ -240,13 +255,20 @@ func NewService(opts Options) *Service {
 		}
 		codec = newAESGCMCredentialCodec(secret)
 	}
+	healthCheckDispatchTimeout := opts.HealthCheckDispatchTimeout
+	if healthCheckDispatchTimeout <= 0 {
+		healthCheckDispatchTimeout = accountHealthCheckDispatchTimeout
+	}
 	return &Service{
-		store:          opts.Store,
-		transactor:     opts.Transactor,
-		providerModels: opts.ProviderModels,
-		now:            now,
-		newID:          newID,
-		codec:          codec,
+		store:                      opts.Store,
+		transactor:                 opts.Transactor,
+		providerModels:             opts.ProviderModels,
+		dispatcher:                 opts.HealthCheckDispatcher,
+		healthCheckDispatchTimeout: healthCheckDispatchTimeout,
+		logger:                     opts.Logger,
+		now:                        now,
+		newID:                      newID,
+		codec:                      codec,
 	}
 }
 
@@ -356,6 +378,9 @@ func (s *Service) Add(ctx context.Context, input AddInput) (AccountResponse, err
 		response, err = s.addOnce(ctx, input)
 		if publicAccountAddRetryable(err) {
 			continue
+		}
+		if err == nil && response.Account != nil && response.Account.Status == StatusPendingTest {
+			s.dispatchAccountHealthCheck(ctx, response.Account.ID, accountHealthCheckReasonActivation)
 		}
 		return response, err
 	}
@@ -472,6 +497,7 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 
 func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountResponse, error) {
 	var response AccountResponse
+	var healthCheckAccountID string
 	err := s.inTx(ctx, func(ctx context.Context, store port.PublicAccountStore) error {
 		current, target, err := s.accountAndTargetForWrite(ctx, store, input.AccountID, input.TargetUsername)
 		if err != nil {
@@ -570,6 +596,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			next.Schedulable = false
 		}
 		resetFailureState := input.Status != nil || connectionConfigurationChanged
+		scheduleHealthCheck := connectionConfigurationChanged || input.SupportedModels.Set() || input.HealthCheckEndpointFamily != nil
 		updated, ok, err := store.UpdatePublicAccount(ctx, port.PublicAccountUpdateInput{
 			ID:                        current.ID,
 			SystemAccountID:           current.SystemAccountID,
@@ -584,7 +611,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			HealthCheckModel:          next.HealthCheckModel,
 			HealthCheckEndpointFamily: next.HealthCheckEndpointFamily,
 			ResetFailureState:         resetFailureState,
-			ScheduleHealthCheck:       connectionConfigurationChanged || input.SupportedModels.Set() || input.HealthCheckEndpointFamily != nil,
+			ScheduleHealthCheck:       scheduleHealthCheck,
 			ResetHealthDiagnostics:    connectionConfigurationChanged,
 			Schedulable:               next.Schedulable,
 			AvailabilityScheduleJSON:  next.AvailabilityScheduleJSON,
@@ -602,9 +629,15 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		if !ok {
 			return ErrAccountNotFound
 		}
+		if scheduleHealthCheck {
+			healthCheckAccountID = updated.ID
+		}
 		response = accountResponse("updated", target, nil, updated, false, s.generatedAt())
 		return nil
 	})
+	if err == nil && healthCheckAccountID != "" {
+		s.dispatchAccountHealthCheck(ctx, healthCheckAccountID, accountHealthCheckReasonConfiguration)
+	}
 	return response, err
 }
 
@@ -868,6 +901,23 @@ func (s *Service) inTx(ctx context.Context, fn func(context.Context, port.Public
 		return s.transactor.PublicAccountInTx(ctx, fn)
 	}
 	return fn(ctx, s.store)
+}
+
+func (s *Service) dispatchAccountHealthCheck(ctx context.Context, accountID string, reason string) {
+	if s.dispatcher == nil {
+		return
+	}
+	dispatchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.healthCheckDispatchTimeout)
+	defer cancel()
+	if err := s.dispatcher.Dispatch(dispatchCtx, accountID, reason); err != nil && s.logger != nil {
+		s.logger.Warn(
+			"公开账户健康检查投递失败",
+			slog.String("event", accountHealthCheckDispatchFailedEvent),
+			slog.String("account_id", accountID),
+			slog.String("reason", reason),
+			slog.Any("error", err),
+		)
+	}
 }
 
 func publicAccountAddRetryable(err error) bool {

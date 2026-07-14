@@ -72,6 +72,7 @@ import { buildGatewayQuotaSnapshot, buildGatewayQuotaSnapshotAsync } from '../..
 import { checkpointSqliteWal } from '../../storage/sqlite-maintenance.js'
 import { getStatsDatabase } from '../../storage/database.js'
 import type { AccountBalanceQueryConfig, AccountBalanceSnapshot } from '../accounts/account-balance.types.js'
+import { aggregateModelTrustObservationsAsync } from '../../storage/model-trust.repository.js'
 import {
   deleteAccountBalanceSnapshotAsync,
   replaceAccountBalanceSnapshotIfCurrentAsync
@@ -86,6 +87,10 @@ const usageStatsAggregationOnlineBatchSizeCap = 1000
 const usageStatsAggregationMaxRunMsCap = 60_000
 
 export type BackgroundStatsWriteOperation =
+  | {
+    type: 'aggregate_model_trust_observations'
+    batchSize: number
+  }
   | {
     type: 'aggregate_usage_stats'
     batchSize: number
@@ -167,6 +172,7 @@ export type BackgroundStatsWriteOperation =
   | {
     type: 'delete_account_balance_snapshot'
     accountId: string
+    updatedBefore?: string
   }
   | {
     type: 'acquire_account_balance_lease'
@@ -250,6 +256,8 @@ export async function requestStatsWriter<T extends BackgroundStatsWriteOperation
 
 export async function handleStatsWriteOperation(operation: BackgroundStatsWriteOperation): Promise<unknown> {
   switch (operation.type) {
+    case 'aggregate_model_trust_observations':
+      return { processed: await aggregateModelTrustObservationsAsync(operation.batchSize) }
     case 'aggregate_usage_stats':
       return await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore)
     case 'aggregate_client_ip_stats':
@@ -317,7 +325,7 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
     case 'replace_account_balance_snapshot_if_current':
       return { written: await replaceAccountBalanceSnapshotIfCurrentAsync(operation.input) }
     case 'delete_account_balance_snapshot':
-      await deleteAccountBalanceSnapshotAsync(operation.accountId)
+      await deleteAccountBalanceSnapshotAsync(operation.accountId, { updatedBefore: operation.updatedBefore })
       return { deleted: true }
     case 'acquire_account_balance_lease':
       return { acquired: await acquireBackgroundJobLeaseAsync(operation.input) }

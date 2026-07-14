@@ -31,12 +31,17 @@
 16. [W5 管理端分组详情迁移记录](W5-管理端分组详情迁移记录.md)：`GET /groups/{id}` 与 `GET /my-groups/{id}` 的 owner / authorized 详情 DTO、实时账户并发、授权来源、权限和真实依赖门禁。
 17. [W5 管理端分组更新迁移记录](W5-管理端分组更新迁移记录.md)：`PATCH /groups/{id}` 与 `PATCH /my-groups/{id}` 的 owner / authorized 字段边界、事务保护、路由绑定保护、缓存与运行态失效、操作日志和真实依赖门禁。
 18. [W5 管理端分组删除迁移记录](W5-管理端分组删除迁移记录.md)：`DELETE /groups/{id}` 与 `DELETE /my-groups/{id}` 的 owner-only 权限、默认分组和路由策略保护、硬删除级联、统计脏标记、缓存与运行态失效、操作日志和真实依赖门禁。
-19. [W5 管理端 API Key 密钥生命周期迁移记录](W5-管理端APIKey密钥生命周期迁移记录.md)：管理端 / 个人端 API Key 创建、完整密钥查看与刷新、加密存储、权限、缓存失效、操作日志、真实依赖和剩余 CRUD 门禁。
-20. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前仅覆盖管理侧 / 个人侧 `usage-window` 固定 31 天窗口 Go opt-in。
-21. [W6 System API 限流对齐记录](W6-System-API限流对齐记录.md)：system API IP read / write、已认证用户 read / write、client IP allowlist bypass、缓存失效、验证和剩余 Node 差异。
-22. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
-23. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
-24. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
+19. [W5 管理端策略路由列表与详情迁移记录](W5-管理端策略路由列表与详情迁移记录.md)：管理 / 个人四条 GET 的 admin global / owner narrowing、self 强制本人、渐进分页、大小写敏感名称前缀、轻量列表、完整详情和真实依赖门禁；Go opt-in 已实现，真实 PostgreSQL smoke 因 Docker 不可用待复跑，不代表生产接管。
+20. [W5 管理端策略路由创建迁移记录](W5-管理端策略路由创建迁移记录.md)：管理 / 个人两条 POST 的 strict JSON、五模式、授权分组事务锁、运行态失效、操作日志、前端 request-capture 和真实依赖门禁。
+21. [W5 管理端策略路由更新迁移记录](W5-管理端策略路由更新迁移记录.md)：管理 / 个人两条 PATCH 的 strict partial JSON、事务锁定、绑定整体替换、错误优先级、运行态失效、操作日志、前端 request-capture 和真实依赖门禁。
+22. [W5 管理端策略路由删除迁移记录](W5-管理端策略路由删除迁移记录.md)：管理 / 个人两条 DELETE 的 admin global / owner narrowing、self actor、默认与 API Key 引用保护、事务锁读、204 空响应、运行态失效、操作日志、前端 request-capture 和真实依赖门禁。
+23. [W5 管理端 API Key 密钥生命周期迁移记录](W5-管理端APIKey密钥生命周期迁移记录.md)：管理端 / 个人端 API Key 创建、完整密钥查看与刷新、加密存储、权限、缓存失效、操作日志和真实依赖门禁。
+24. [W5 管理端 API Key 删除迁移记录](W5-管理端APIKey删除迁移记录.md)：`DELETE /api-keys/{id}` 与 `DELETE /my-api-keys/{id}` 的作用域、204 空响应、原子硬删除、cleanup target、提交后失效、操作日志、残余安全风险和真实依赖门禁。
+25. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前仅覆盖管理侧 / 个人侧 `usage-window` 固定 31 天窗口 Go opt-in。
+26. [W6 System API 限流对齐记录](W6-System-API限流对齐记录.md)：system API IP read / write、已认证用户 read / write、client IP allowlist bypass、缓存失效、验证和剩余 Node 差异。
+27. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
+28. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
+28. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
 
 ## 3. 目录职责
 
@@ -61,7 +66,12 @@
 | `W5-管理端分组详情迁移记录.md` | W5 `GET /groups/{id}` 与 `GET /my-groups/{id}` 已进入 Go opt-in；固定 admin / self 作用域、owner / authorized 可见性、owner `accountIds` 与 Redis v2 实时并发、authorized 账户 ID 隐藏与预聚合统计、完整授权来源、两层 read limiter、真实 PostgreSQL / Redis smoke 和删除门禁 |
 | `W5-管理端分组更新迁移记录.md` | W5 `PATCH /groups/{id}` 与 `PATCH /my-groups/{id}` 已进入 Go opt-in；固定 owner / authorized 字段边界、strict partial JSON、PostgreSQL 事务与路由绑定保护、授权本地设置、完整详情回读、shared cache / runtime 失效、`groups.update` operation log、真实 PostgreSQL / Redis smoke 和删除门禁 |
 | `W5-管理端分组删除迁移记录.md` | W5 `DELETE /groups/{id}` 与 `DELETE /my-groups/{id}` 已进入 Go opt-in；固定 owner-only、authorized 404、默认分组和全作用域路由策略保护、硬删除级联、事务内统计脏标记、双 shared cache / runtime 失效、`groups.delete` operation log、真实 PostgreSQL / Redis smoke 和删除门禁 |
-| `W5-管理端APIKey密钥生命周期迁移记录.md` | W5 `POST /api-keys` / `POST /my-api-keys`、`GET .../secret` 与 `POST .../refresh-key` 管理 / 个人双路由已进入 Go opt-in；固定 owner scope、strict create body、AES-GCM 密文、一次性明文返回、create runtime/quota 与 refresh validation/runtime/quota 失效、session touch、operation log marker 和真实 PostgreSQL / Redis / Asynq 门禁；不代表 API Key CRUD 整体接管 |
+| `W5-管理端策略路由列表与详情迁移记录.md` | W5 策略路由管理 / 个人四条 GET 迁移记录；固定 admin global / owner narrowing、self 强制本人、`pageSize=50` 默认与 `1..200`、无最大页、大小写敏感名称字面前缀、非法 mode/status 忽略、`pageSize+1` progressive total、列表最多 3 条绑定预览与计数、详情完整 bindings/config，以及真实 PostgreSQL / HTTP / 前端 / 切流 / 回滚 / Node 删除门禁；Go opt-in 已实现，真实 PostgreSQL smoke 待健康 Docker 环境复跑 |
+| `W5-管理端策略路由创建迁移记录.md` | W5 策略路由管理 / 个人两条 POST 迁移记录；固定 strict JSON / presence、五种模式、停用目标账户、授权分组事务锁、重复名称、提交后运行态失效、operation log、前端 request-capture 和真实 PostgreSQL / 前端 / 切流 / Node 删除门禁 |
+| `W5-管理端策略路由更新迁移记录.md` | W5 策略路由管理 / 个人两条 PATCH 迁移记录；固定 strict partial JSON、admin global / owner narrowing、self actor scope、事务内锁定快照、绑定整体替换、完整独立配置校验、错误优先级、`route_strategy_updated` 运行态失效、operation log、前端 request-capture 和真实 PostgreSQL / Redis 互操作 / 前端 / 切流 / Node 删除门禁 |
+| `W5-管理端策略路由删除迁移记录.md` | W5 策略路由管理 / 个人两条 DELETE 迁移记录；固定 admin global / owner narrowing、self actor scope、无 body parser / mutation guard、默认和 API Key 引用 400 保护、事务 `FOR UPDATE`、204 空 body、`route_strategy_deleted` 失效、marker-only operation log、前端 request-capture，以及真实 PostgreSQL / Redis 互操作 / 前端 / 切流 / Node 删除门禁 |
+| `W5-管理端APIKey密钥生命周期迁移记录.md` | W5 `POST /api-keys` / `POST /my-api-keys`、`GET .../secret` 与 `POST .../refresh-key` 管理 / 个人双路由已进入 Go opt-in；固定 owner scope、strict create body、AES-GCM 密文、一次性明文返回、create runtime/quota 与 refresh validation/runtime/quota 失效、session touch、operation log marker 和真实 PostgreSQL / Redis / Asynq 门禁；删除由独立迁移记录维护，不代表 API Key 生产接管 |
+| `W5-管理端APIKey删除迁移记录.md` | W5 `DELETE /api-keys/{id}` 与 `DELETE /my-api-keys/{id}` 已进入 Go opt-in；固定 admin global / owner narrowing、self actor scope、写鉴权与限流、204 空 body / no-store、默认 Key 保护、PostgreSQL 原子硬删除与 cleanup-target upsert、validation 必需失效、`api_keys.delete` 操作日志、残余失效重试风险和真实依赖门禁 |
 | `W6-记录与统计读接口迁移记录.md` | W6 记录、日志和统计只读接口迁移记录；当前固定管理侧 / 个人侧 `usage-window` 权限、时区、31 天窗口、无明细扫描和删除门禁 |
 | `W6-System-API限流对齐记录.md` | system API 两层 read / write 限流记录；固定六项设置默认值、鉴权前 IP 层、鉴权后已注册业务路由用户层、Redis / 内存实现、client IP allowlist 两层 bypass、30 秒缓存 / shared version 失效、429 语义，以及已认证未知路径 / 错误 method 尚未对齐的删除门禁 |
 | `测试与验收策略.md` | 单模块、系统、网关、性能、安全和发布验收 |

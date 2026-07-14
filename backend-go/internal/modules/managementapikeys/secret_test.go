@@ -1,9 +1,12 @@
 package managementapikeys
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,6 +160,7 @@ func TestServiceRevealForcesSelfOwnerAndRejectsMissingOrInvalidCiphertext(t *tes
 func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUsage(t *testing.T) {
 	now := time.Date(2026, 7, 11, 5, 6, 7, 0, time.UTC)
 	events := []string{}
+	ctx, cancel := context.WithCancel(context.Background())
 	store := &managementAPIKeySecretStoreStub{
 		refreshRow: port.ManagementAPIKeyListRow{
 			ID:                       "key_1",
@@ -185,7 +189,8 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 				TotalTokens:  30,
 			},
 		}},
-		events: &events,
+		events:      &events,
+		afterCommit: cancel,
 	}
 	invalidator := &managementAPIKeyInvalidatorStub{events: &events}
 	service := NewServiceWithOptions(ServiceOptions{
@@ -198,7 +203,7 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 		NewSecret:        func() (string, error) { return "sk-refreshed-secret-0123456789", nil },
 	})
 
-	result, err := service.Refresh(context.Background(), SecretInput{
+	result, err := service.Refresh(ctx, SecretInput{
 		ActorSystemAccountID: "sys_admin",
 		ActorRole:            "admin",
 		APIKeyID:             " key_1 ",
@@ -207,7 +212,10 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 	if err != nil {
 		t.Fatalf("Refresh() error = %v", err)
 	}
-	if got, want := events, []string{"tx_begin", "lock", "update", "tx_commit", "validation", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("request context error = %v, want canceled", ctx.Err())
+	}
+	if got, want := events, []string{"tx_begin", "lock", "update", "tx_commit", "validation", "lookup", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
 	if store.lockInput != (port.ManagementAPIKeySecretScope{APIKeyID: "key_1", SystemAccountID: "sys_owner"}) {
@@ -226,17 +234,33 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 	if err != nil || payload["key"] != "sk-refreshed-secret-0123456789" {
 		t.Fatalf("encrypted payload = %#v, err = %v", payload, err)
 	}
-	if invalidator.calls != 3 ||
+	if invalidator.calls != 4 ||
+		invalidator.lookupReason != "api_key_secret_refreshed" ||
+		invalidator.lookupAPIKeyID != "key_1" ||
 		invalidator.runtimeReason != "api_key_secret_refreshed" ||
 		invalidator.quotaReason != "api_key_secret_refreshed" ||
 		invalidator.quotaAPIKeyID != "key_1" {
 		t.Fatalf("invalidator = %+v", invalidator)
+	}
+	for name, snapshot := range map[string]managementAPIKeyUpdateContextSnapshot{
+		"validation": invalidator.validationContext,
+		"lookup":     invalidator.lookupContext,
+		"runtime":    invalidator.runtimeContext,
+		"quota":      invalidator.quotaContext,
+	} {
+		if snapshot.err != nil || !snapshot.hasDeadline {
+			t.Fatalf("%s context = %+v, want live bounded context", name, snapshot)
+		}
+		if name != "validation" && !snapshot.deadline.Equal(invalidator.validationContext.deadline) {
+			t.Fatalf("%s deadline = %s, validation deadline = %s", name, snapshot.deadline, invalidator.validationContext.deadline)
+		}
 	}
 	if len(store.usageScopes) != 1 ||
 		store.usageScopes[0] != (port.ManagementAPIKeyUsageScope{SystemAccountID: "sys_owner", APIKeyID: "key_1"}) {
 		t.Fatalf("usage scopes = %+v", store.usageScopes)
 	}
 	if result.Key != "sk-refreshed-secret-0123456789" ||
+		!result.UsageAvailable ||
 		result.PreviousKeyMarker != "sk-before...before" ||
 		result.KeyMarker != "sk-refre...23456789" ||
 		result.OwnerSystemAccountID != "sys_owner" ||
@@ -246,6 +270,309 @@ func TestServiceRefreshLocksUpdatesCommitsThenInvalidatesAndLoadsPreaggregatedUs
 		result.ListItem.QuotaLimits.Daily == nil ||
 		result.ListItem.QuotaLimits.Daily.Limit != 12 {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestServiceRefreshKeepsCommittedSecretWhenUsageSummaryFails(t *testing.T) {
+	events := []string{}
+	usageErr := errors.New("usage summary unavailable")
+	var logs bytes.Buffer
+	store := &managementAPIKeySecretStoreStub{
+		refreshRow: port.ManagementAPIKeyListRow{
+			ID:                       "key_1",
+			SystemAccountID:          "sys_owner",
+			SystemAccountName:        "所有者",
+			Name:                     "生产 Key",
+			KeyPrefix:                "sk-before",
+			KeySuffix:                "before",
+			Status:                   "active",
+			RouteStrategyID:          "route_1",
+			RouteStrategyName:        "默认策略",
+			RouteStrategyMode:        "normal",
+			RouteStrategyStatus:      "active",
+			QuotaLimitsJSON:          ptrSecretText(`{"daily":{"enabled":true,"limit":12}}`),
+			AvailabilityScheduleJSON: nil,
+		},
+		refreshFound: true,
+		updateFound:  true,
+		usageErr:     usageErr,
+		events:       &events,
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		ListReader:       store,
+		SecretStore:      store,
+		SecretTransactor: store,
+		Invalidator:      &managementAPIKeyInvalidatorStub{events: &events},
+		Logger: slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+		Secret:    "management-api-key-secret-test",
+		NewSecret: func() (string, error) { return "sk-refreshed-secret-0123456789", nil },
+	})
+
+	result, err := service.Refresh(context.Background(), SecretInput{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+		APIKeyID:             "key_1",
+		SystemAccountID:      "sys_owner",
+	})
+	if err != nil {
+		t.Fatalf("Refresh() error = %v, want nil after committed usage enrichment failure", err)
+	}
+	if !result.Committed ||
+		result.Key != "sk-refreshed-secret-0123456789" ||
+		result.ID != "key_1" ||
+		result.Name != "生产 Key" ||
+		result.KeyPrefix != "sk-refre" ||
+		result.KeySuffix != "23456789" ||
+		result.Status != "active" ||
+		result.RouteStrategyID != "route_1" ||
+		result.OwnerSystemAccountID != "sys_owner" ||
+		result.SystemAccountID != "sys_owner" ||
+		result.SystemAccountName != "所有者" ||
+		result.PreviousKeyMarker != "sk-before...before" ||
+		result.KeyMarker != "sk-refre...23456789" ||
+		result.QuotaLimits.Daily == nil ||
+		result.QuotaLimits.Daily.Limit != 12 {
+		t.Fatalf("Refresh() committed result = %+v", result)
+	}
+	if result.Usage != (port.ManagementAccountUsageSummary{}) {
+		t.Fatalf("Refresh() usage = %+v, want zero-value best-effort summary", result.Usage)
+	}
+	if result.UsageAvailable {
+		t.Fatal("Refresh() usageAvailable = true, want false after store error")
+	}
+	if store.commits != 1 || store.usageCalls != 1 {
+		t.Fatalf("commits=%d usageCalls=%d", store.commits, store.usageCalls)
+	}
+	if got, want := events, []string{"tx_begin", "lock", "update", "tx_commit", "validation", "lookup", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	logText := logs.String()
+	if !strings.Contains(logText, `"event":"management_api_key_refresh_usage_enrichment_failed"`) ||
+		!strings.Contains(logText, `"api_key_id":"key_1"`) ||
+		!strings.Contains(logText, usageErr.Error()) {
+		t.Fatalf("warning log = %q", logText)
+	}
+	if strings.Contains(logText, result.Key) {
+		t.Fatalf("warning log leaked refreshed secret: %q", logText)
+	}
+}
+
+func TestServiceRefreshKeepsCommittedSecretWhenUsageSummaryTimesOut(t *testing.T) {
+	usageTimeout := 10 * time.Millisecond
+	store := &managementAPIKeySecretStoreStub{
+		refreshRow: port.ManagementAPIKeyListRow{
+			ID:                  "key_1",
+			SystemAccountID:     "sys_owner",
+			SystemAccountName:   "所有者",
+			Name:                "生产 Key",
+			KeyPrefix:           "sk-before",
+			KeySuffix:           "before",
+			Status:              "active",
+			RouteStrategyID:     "route_1",
+			RouteStrategyName:   "默认策略",
+			RouteStrategyMode:   "normal",
+			RouteStrategyStatus: "active",
+		},
+		refreshFound:            true,
+		updateFound:             true,
+		respectUsageContext:     true,
+		waitForUsageContextDone: true,
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		ListReader:          store,
+		SecretStore:         store,
+		SecretTransactor:    store,
+		Invalidator:         &managementAPIKeyInvalidatorStub{},
+		Secret:              "management-api-key-secret-test",
+		NewSecret:           func() (string, error) { return "sk-refreshed-secret-0123456789", nil },
+		RefreshUsageTimeout: usageTimeout,
+	})
+
+	startedAt := time.Now()
+	result, err := service.Refresh(context.Background(), SecretInput{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+		APIKeyID:             "key_1",
+		SystemAccountID:      "sys_owner",
+	})
+	if err != nil {
+		t.Fatalf("Refresh() error = %v, want nil after committed usage timeout", err)
+	}
+	if !result.Committed ||
+		result.Key != "sk-refreshed-secret-0123456789" ||
+		result.ID != "key_1" ||
+		result.Name != "生产 Key" ||
+		result.KeyPrefix != "sk-refre" ||
+		result.KeySuffix != "23456789" ||
+		result.Status != "active" ||
+		result.RouteStrategyID != "route_1" ||
+		result.OwnerSystemAccountID != "sys_owner" ||
+		result.SystemAccountID != "sys_owner" ||
+		result.SystemAccountName != "所有者" {
+		t.Fatalf("Refresh() committed result = %+v", result)
+	}
+	if result.Usage != (port.ManagementAccountUsageSummary{}) {
+		t.Fatalf("Refresh() usage = %+v, want zero-value best-effort summary", result.Usage)
+	}
+	if result.UsageAvailable {
+		t.Fatal("Refresh() usageAvailable = true, want false after timeout")
+	}
+	if store.commits != 1 ||
+		store.usageCalls != 1 ||
+		!errors.Is(store.usageContextErr, context.DeadlineExceeded) ||
+		time.Since(startedAt) >= time.Second {
+		t.Fatalf(
+			"commits=%d usageCalls=%d usageContextErr=%v elapsed=%s",
+			store.commits,
+			store.usageCalls,
+			store.usageContextErr,
+			time.Since(startedAt),
+		)
+	}
+}
+
+func TestServiceRefreshUsesIndependentDetachedUsageContextAfterInvalidationDeadline(t *testing.T) {
+	invalidationTimeout := 10 * time.Millisecond
+	usageTimeout := 20 * time.Millisecond
+	events := []string{}
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &managementAPIKeySecretStoreStub{
+		refreshRow: port.ManagementAPIKeyListRow{
+			ID:                "key_1",
+			SystemAccountID:   "sys_owner",
+			SystemAccountName: "所有者",
+			Name:              "生产 Key",
+			KeyPrefix:         "sk-before",
+			KeySuffix:         "before",
+			Status:            "active",
+			RouteStrategyID:   "route_1",
+		},
+		refreshFound: true,
+		updateFound:  true,
+		usage: []port.ManagementAPIKeyUsageRow{{
+			SystemAccountID: "sys_owner",
+			APIKeyID:        "key_1",
+			Usage: port.ManagementAccountUsageSummary{
+				RequestCount: 9,
+				InputTokens:  10,
+				OutputTokens: 20,
+				TotalTokens:  30,
+			},
+		}},
+		events:              &events,
+		afterCommit:         cancel,
+		respectUsageContext: true,
+	}
+	invalidator := &managementAPIKeyInvalidatorStub{
+		events:                  &events,
+		waitForQuotaContextDone: true,
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		ListReader:                    store,
+		SecretStore:                   store,
+		SecretTransactor:              store,
+		Invalidator:                   invalidator,
+		Secret:                        "management-api-key-secret-test",
+		NewSecret:                     func() (string, error) { return "sk-refreshed-secret-0123456789", nil },
+		ValidationInvalidationTimeout: invalidationTimeout,
+		RefreshUsageTimeout:           usageTimeout,
+	})
+
+	startedAt := time.Now()
+	result, err := service.Refresh(ctx, SecretInput{
+		ActorSystemAccountID: "sys_admin",
+		ActorRole:            "admin",
+		APIKeyID:             "key_1",
+		SystemAccountID:      "sys_owner",
+	})
+	if err != nil ||
+		!result.Committed ||
+		!result.UsageAvailable ||
+		result.ID != "key_1" ||
+		result.Key != "sk-refreshed-secret-0123456789" ||
+		result.Usage.RequestCount != 9 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("request context error = %v, want canceled", ctx.Err())
+	}
+	if got, want := events, []string{"tx_begin", "lock", "update", "tx_commit", "validation", "lookup", "runtime", "quota", "usage"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	if !errors.Is(invalidator.quotaContext.err, context.DeadlineExceeded) ||
+		!invalidator.quotaContext.hasDeadline ||
+		!invalidator.quotaContext.deadline.After(startedAt) ||
+		invalidator.quotaContext.deadline.After(startedAt.Add(invalidationTimeout+250*time.Millisecond)) {
+		t.Fatalf("quota invalidation context = %+v, startedAt=%s", invalidator.quotaContext, startedAt)
+	}
+	for name, snapshot := range map[string]managementAPIKeyUpdateContextSnapshot{
+		"validation": invalidator.validationContext,
+		"lookup":     invalidator.lookupContext,
+		"runtime":    invalidator.runtimeContext,
+	} {
+		if snapshot.err != nil ||
+			!snapshot.hasDeadline ||
+			!snapshot.deadline.Equal(invalidator.quotaContext.deadline) {
+			t.Fatalf("%s invalidation context = %+v, quota context = %+v", name, snapshot, invalidator.quotaContext)
+		}
+	}
+	if store.usageCalls != 1 ||
+		store.usageContextErr != nil ||
+		!store.usageContextHasDeadline ||
+		!store.usageContextDeadline.After(invalidator.quotaContext.deadline) {
+		t.Fatalf(
+			"usage calls=%d context err=%v deadline=%s hasDeadline=%t, invalidation deadline=%s",
+			store.usageCalls,
+			store.usageContextErr,
+			store.usageContextDeadline,
+			store.usageContextHasDeadline,
+			invalidator.quotaContext.deadline,
+		)
+	}
+}
+
+func TestNewServiceWithOptionsDefaultsRefreshTimeouts(t *testing.T) {
+	invalidator := &managementAPIKeyInvalidatorStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		Invalidator: invalidator,
+	})
+	if service.validationInvalidationTimeout != 5*time.Second ||
+		service.refreshUsageTimeout != 5*time.Second ||
+		service.logger == nil {
+		t.Fatalf(
+			"validation invalidation timeout=%s refresh usage timeout=%s logger=%v",
+			service.validationInvalidationTimeout,
+			service.refreshUsageTimeout,
+			service.logger,
+		)
+	}
+	if service.invalidator != invalidator {
+		t.Fatalf("invalidator type/value changed: got %T, want %T", service.invalidator, invalidator)
+	}
+}
+
+func TestNewServiceWithOptionsStoresConfiguredRefreshTimeouts(t *testing.T) {
+	invalidator := &managementAPIKeyInvalidatorStub{}
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	service := NewServiceWithOptions(ServiceOptions{
+		Invalidator:                   invalidator,
+		Logger:                        logger,
+		ValidationInvalidationTimeout: 7 * time.Millisecond,
+		RefreshUsageTimeout:           11 * time.Millisecond,
+	})
+	if service.validationInvalidationTimeout != 7*time.Millisecond ||
+		service.refreshUsageTimeout != 11*time.Millisecond ||
+		service.logger != logger ||
+		service.invalidator != invalidator {
+		t.Fatalf(
+			"service timeout/logger/invalidator = %s/%s/%p/%T",
+			service.validationInvalidationTimeout,
+			service.refreshUsageTimeout,
+			service.logger,
+			service.invalidator,
+		)
 	}
 }
 
@@ -291,6 +618,9 @@ func TestServiceRefreshSelfScopeHidesOwnerAndRepairsNullCiphertext(t *testing.T)
 	}
 	if result.ListItem.SystemAccountID != "" || result.ListItem.SystemAccountName != "" {
 		t.Fatalf("self result leaked owner fields: %+v", result.ListItem)
+	}
+	if !result.UsageAvailable {
+		t.Fatal("Refresh() usageAvailable = false, want true after successful empty usage lookup")
 	}
 }
 
@@ -353,13 +683,23 @@ func TestServiceRefreshValidationFailureOccursAfterCommitAndStopsLaterEffects(t 
 		NewSecret:        func() (string, error) { return "sk-committed-secret-0123456789", nil },
 	})
 
-	_, err := service.Refresh(ctx, SecretInput{
+	result, err := service.Refresh(ctx, SecretInput{
 		ActorSystemAccountID: "sys_admin",
 		ActorRole:            "admin",
 		APIKeyID:             "key_1",
 	})
-	if !errors.Is(err, validationErr) {
-		t.Fatalf("Refresh() error = %v, want %v", err, validationErr)
+	if !errors.Is(err, ErrAPIKeyRefreshValidationCacheInvalidation) {
+		t.Fatalf("Refresh() error = %v, want %v", err, ErrAPIKeyRefreshValidationCacheInvalidation)
+	}
+	if errors.Is(err, validationErr) ||
+		err.Error() != ErrAPIKeyRefreshValidationCacheInvalidation.Error() {
+		t.Fatalf("Refresh() error leaked unstable cause: %v", err)
+	}
+	if !result.Committed ||
+		result.ID != "key_1" ||
+		result.OwnerSystemAccountID != "sys_owner" ||
+		result.Key == "" {
+		t.Fatalf("Refresh() committed result = %+v", result)
 	}
 	if got, want := events, []string{"tx_begin", "lock", "update", "tx_commit", "validation"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
@@ -394,6 +734,7 @@ func TestServiceRefreshRuntimeAndQuotaInvalidationAreBestEffort(t *testing.T) {
 		updateFound:  true,
 	}
 	invalidator := &managementAPIKeyInvalidatorStub{
+		lookupErr:  errors.New("lookup unavailable"),
 		runtimeErr: errors.New("runtime unavailable"),
 		quotaErr:   errors.New("quota unavailable"),
 	}
@@ -414,7 +755,7 @@ func TestServiceRefreshRuntimeAndQuotaInvalidationAreBestEffort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh() error = %v", err)
 	}
-	if result.Key == "" || invalidator.calls != 3 {
+	if result.Key == "" || invalidator.calls != 4 {
 		t.Fatalf("result=%+v invalidator=%+v", result, invalidator)
 	}
 }
@@ -455,6 +796,12 @@ type managementAPIKeySecretStoreStub struct {
 	commits      int
 	rollbacks    int
 	afterCommit  func()
+
+	respectUsageContext     bool
+	waitForUsageContextDone bool
+	usageContextErr         error
+	usageContextDeadline    time.Time
+	usageContextHasDeadline bool
 }
 
 func (s *managementAPIKeySecretStoreStub) ListManagementAPIKeys(
@@ -465,12 +812,24 @@ func (s *managementAPIKeySecretStoreStub) ListManagementAPIKeys(
 }
 
 func (s *managementAPIKeySecretStoreStub) ListManagementAPIKeyUsageTotals(
-	_ context.Context,
+	ctx context.Context,
 	scopes []port.ManagementAPIKeyUsageScope,
 ) ([]port.ManagementAPIKeyUsageRow, error) {
 	s.usageCalls++
 	s.usageScopes = append([]port.ManagementAPIKeyUsageScope(nil), scopes...)
 	s.record("usage")
+	if s.waitForUsageContextDone {
+		<-ctx.Done()
+	}
+	s.usageContextErr = ctx.Err()
+	s.usageContextDeadline, s.usageContextHasDeadline = ctx.Deadline()
+	if s.respectUsageContext {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+	}
 	return s.usage, s.usageErr
 }
 
@@ -535,32 +894,55 @@ type managementAPIKeyInvalidatorStub struct {
 	events                       *[]string
 	calls                        int
 	validationErr                error
+	lookupErr                    error
 	runtimeErr                   error
 	quotaErr                     error
+	lookupReason                 string
+	lookupAPIKeyID               string
 	runtimeReason                string
 	quotaReason                  string
 	quotaAPIKeyID                string
 	validationContextErr         error
 	validationContextHasDeadline bool
+	validationContext            managementAPIKeyUpdateContextSnapshot
+	lookupContext                managementAPIKeyUpdateContextSnapshot
+	runtimeContext               managementAPIKeyUpdateContextSnapshot
+	quotaContext                 managementAPIKeyUpdateContextSnapshot
+	waitForQuotaContextDone      bool
 }
 
 func (s *managementAPIKeyInvalidatorStub) InvalidateAPIKeyValidationCache(ctx context.Context) error {
 	s.calls++
 	s.validationContextErr = ctx.Err()
 	_, s.validationContextHasDeadline = ctx.Deadline()
+	s.validationContext = managementAPIKeyUpdateSnapshot(ctx)
 	s.record("validation")
 	return s.validationErr
 }
 
-func (s *managementAPIKeyInvalidatorStub) InvalidateGatewayRuntime(_ context.Context, reason string) error {
+func (s *managementAPIKeyInvalidatorStub) InvalidateAPIKeyLookupCache(
+	ctx context.Context,
+	apiKeyID string,
+	reason string,
+) error {
+	s.calls++
+	s.lookupAPIKeyID = apiKeyID
+	s.lookupReason = reason
+	s.lookupContext = managementAPIKeyUpdateSnapshot(ctx)
+	s.record("lookup")
+	return s.lookupErr
+}
+
+func (s *managementAPIKeyInvalidatorStub) InvalidateGatewayRuntime(ctx context.Context, reason string) error {
 	s.calls++
 	s.runtimeReason = reason
+	s.runtimeContext = managementAPIKeyUpdateSnapshot(ctx)
 	s.record("runtime")
 	return s.runtimeErr
 }
 
 func (s *managementAPIKeyInvalidatorStub) InvalidateAPIKeyQuotaChanged(
-	_ context.Context,
+	ctx context.Context,
 	apiKeyID string,
 	reason string,
 ) error {
@@ -568,6 +950,10 @@ func (s *managementAPIKeyInvalidatorStub) InvalidateAPIKeyQuotaChanged(
 	s.quotaAPIKeyID = apiKeyID
 	s.quotaReason = reason
 	s.record("quota")
+	if s.waitForQuotaContextDone {
+		<-ctx.Done()
+	}
+	s.quotaContext = managementAPIKeyUpdateSnapshot(ctx)
 	return s.quotaErr
 }
 

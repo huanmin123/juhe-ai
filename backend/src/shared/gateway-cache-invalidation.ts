@@ -3,8 +3,21 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, runAfterDatabaseCommit } from '../storage/database.js'
 import { scheduleProcessFatalError } from './process-fatal.js'
 import { createRuntimeStateStore } from './runtime-state-store.js'
+import { clearLocalApiKeyLookupCache } from '../storage/repository-lookups.js'
 
-type GatewayRuntimeCacheInvalidationHandler = (reason: string) => void
+export type GatewayRuntimeCacheInvalidationMetadata =
+  | { source: 'local' }
+  | {
+      source: 'runtime_state'
+      version: string
+      publishedAt: string
+    }
+
+type GatewayRuntimeCacheInvalidationResult = void | false
+type GatewayRuntimeCacheInvalidationHandler = (
+  reason: string,
+  metadata: GatewayRuntimeCacheInvalidationMetadata
+) => GatewayRuntimeCacheInvalidationResult | Promise<GatewayRuntimeCacheInvalidationResult>
 type CacheInvalidationMetadata = {
   publishedAt?: string
 }
@@ -32,6 +45,7 @@ const gatewayCacheInvalidationTopics: GatewayCacheInvalidationTopic[] = [
 ]
 
 const lastSeenGatewayCacheInvalidationVersions = new Map<GatewayCacheInvalidationTopic, string>()
+const deferredGatewayCacheInvalidationTopics = new Set<GatewayCacheInvalidationTopic>()
 let lastGatewayCacheInvalidationSyncAt = 0
 let gatewayCacheInvalidationSyncPromise: Promise<void> | undefined
 
@@ -58,7 +72,7 @@ export function registerApiKeyQuotaCacheInvalidator(handler: ApiKeyQuotaInvalida
 
 export function notifyGatewayRuntimeCacheInvalidation(reason: string): void {
   runGatewayCacheInvalidatorsAfterCommit(() => {
-    runCacheInvalidators('gateway_runtime_cache', reason, gatewayRuntimeCacheInvalidators, (handler) => handler(reason))
+    runGatewayRuntimeCacheInvalidators(reason)
     publishGatewayCacheInvalidationToRuntimeState('gateway_runtime_cache', reason)
   })
 }
@@ -112,21 +126,60 @@ function runCacheInvalidators<THandler>(
   cacheName: string,
   reason: string,
   handlers: Set<THandler>,
-  invoke: (handler: THandler) => void,
+  invoke: (handler: THandler) => GatewayRuntimeCacheInvalidationResult | Promise<GatewayRuntimeCacheInvalidationResult>,
   fields: Record<string, unknown> = {}
 ): void {
   for (const handler of handlers) {
     try {
-      invoke(handler)
+      const result = invoke(handler)
+      if (result) {
+        void result.catch((error) => {
+          logCacheInvalidationFailure(error, cacheName, reason, fields)
+        })
+      }
     } catch (error) {
-      logger.warn(errorLogFields(error, {
-        event: 'gateway_cache_invalidation_failed',
-        cacheName,
-        reason,
-        ...fields
-      }), '网关缓存失效通知失败')
+      logCacheInvalidationFailure(error, cacheName, reason, fields)
     }
   }
+}
+
+async function runCacheInvalidatorsAsync<THandler>(
+  cacheName: string,
+  reason: string,
+  handlers: Set<THandler>,
+  invoke: (handler: THandler) => GatewayRuntimeCacheInvalidationResult | Promise<GatewayRuntimeCacheInvalidationResult>,
+  fields: Record<string, unknown> = {}
+): Promise<boolean> {
+  const errors: unknown[] = []
+  let applied = true
+  for (const handler of handlers) {
+    try {
+      if (await invoke(handler) === false) {
+        applied = false
+      }
+    } catch (error) {
+      logCacheInvalidationFailure(error, cacheName, reason, fields)
+      errors.push(error)
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, `${cacheName} 缓存失效存在 ${errors.length} 个 handler 失败`)
+  }
+  return applied
+}
+
+function logCacheInvalidationFailure(
+  error: unknown,
+  cacheName: string,
+  reason: string,
+  fields: Record<string, unknown>
+): void {
+  logger.warn(errorLogFields(error, {
+    event: 'gateway_cache_invalidation_failed',
+    cacheName,
+    reason,
+    ...fields
+  }), '网关缓存失效通知失败')
 }
 
 function publishGatewayCacheInvalidationToRuntimeState(
@@ -141,7 +194,9 @@ function publishGatewayCacheInvalidationToRuntimeState(
     apiKeyId: fields.apiKeyId,
     publishedAt: fields.publishedAt ?? new Date().toISOString()
   }
-  lastSeenGatewayCacheInvalidationVersions.set(topic, state.version)
+  if (!deferredGatewayCacheInvalidationTopics.has(topic)) {
+    lastSeenGatewayCacheInvalidationVersions.set(topic, state.version)
+  }
   void gatewayCacheInvalidationState
     .setJson(gatewayCacheInvalidationStateKey(topic), state, gatewayCacheInvalidationStateTtlMs)
     .catch((error) => {
@@ -162,23 +217,74 @@ async function syncGatewayCacheInvalidationsFromRuntimeStateUnsafe(): Promise<vo
     const state = await gatewayCacheInvalidationState.getJson<GatewayCacheInvalidationState>(gatewayCacheInvalidationStateKey(topic))
     if (!state?.version) continue
     if (lastSeenGatewayCacheInvalidationVersions.get(topic) === state.version) continue
-    lastSeenGatewayCacheInvalidationVersions.set(topic, state.version)
-    applyRuntimeStateCacheInvalidation(topic, state)
+    try {
+      const applied = await applyRuntimeStateCacheInvalidation(topic, state)
+      if (applied) {
+        deferredGatewayCacheInvalidationTopics.delete(topic)
+        lastSeenGatewayCacheInvalidationVersions.set(topic, state.version)
+      } else {
+        deferredGatewayCacheInvalidationTopics.add(topic)
+      }
+    } catch (error) {
+      deferredGatewayCacheInvalidationTopics.add(topic)
+      throw error
+    }
   }
 }
 
-function applyRuntimeStateCacheInvalidation(topic: GatewayCacheInvalidationTopic, state: GatewayCacheInvalidationState): void {
+async function applyRuntimeStateCacheInvalidation(
+  topic: GatewayCacheInvalidationTopic,
+  state: GatewayCacheInvalidationState
+): Promise<boolean> {
   if (topic === 'gateway_runtime_cache') {
-    runCacheInvalidators(topic, state.reason, gatewayRuntimeCacheInvalidators, (handler) => handler(state.reason))
-    return
+    return runGatewayRuntimeCacheInvalidatorsAsync(state.reason, {
+      source: 'runtime_state',
+      version: state.version,
+      publishedAt: state.publishedAt
+    })
   }
   if (topic === 'authorization_quota_cache') {
     runCacheInvalidators(topic, state.reason, authorizationQuotaCacheInvalidators, (handler) => handler({ publishedAt: state.publishedAt }))
-    return
+    return true
   }
   runCacheInvalidators(topic, state.reason, apiKeyQuotaCacheInvalidators, (handler) => handler(state.apiKeyId), {
     apiKeyId: state.apiKeyId
   })
+  return true
+}
+
+function runGatewayRuntimeCacheInvalidators(reason: string): void {
+  if (shouldInvalidateApiKeyLookupCache(reason)) {
+    clearLocalApiKeyLookupCache()
+  }
+  runCacheInvalidators(
+    'gateway_runtime_cache',
+    reason,
+    gatewayRuntimeCacheInvalidators,
+    (handler) => handler(reason, { source: 'local' })
+  )
+}
+
+async function runGatewayRuntimeCacheInvalidatorsAsync(
+  reason: string,
+  metadata: Extract<GatewayRuntimeCacheInvalidationMetadata, { source: 'runtime_state' }>
+): Promise<boolean> {
+  if (shouldInvalidateApiKeyLookupCache(reason)) {
+    clearLocalApiKeyLookupCache()
+  }
+  return runCacheInvalidatorsAsync(
+    'gateway_runtime_cache',
+    reason,
+    gatewayRuntimeCacheInvalidators,
+    (handler) => handler(reason, metadata)
+  )
+}
+
+function shouldInvalidateApiKeyLookupCache(reason: string): boolean {
+  return reason === 'api_key_created'
+    || reason === 'api_key_updated'
+    || reason === 'api_key_secret_refreshed'
+    || reason === 'api_key_deleted'
 }
 
 function gatewayCacheInvalidationStateKey(topic: GatewayCacheInvalidationTopic): string {

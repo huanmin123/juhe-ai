@@ -47,6 +47,8 @@ export interface AuditLogSummary {
   startedAt: string
   endedAt: string
   durationMs?: number
+  httpCompletedAt?: string
+  httpDurationMs?: number
   firstTokenMs?: number
   createdAt: string
 }
@@ -132,6 +134,18 @@ export interface AuditLogRuntime {
   droppedOverflowCount: number | null
   droppedOversizeCount: number | null
   activeCaptureCount: number | null
+  transport: {
+    available: boolean
+    queuedJobs: number | null
+    queuedBytes: number | null
+    activeJobs: number | null
+    activeBytes: number | null
+    workerCount: number | null
+    completedCount: number | null
+    failedCount: number | null
+    rejectedCount: number | null
+    pendingDispatchCount: number | null
+  }
   worker: {
     available: boolean
     snapshotAvailable: boolean

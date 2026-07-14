@@ -234,47 +234,60 @@ func CustomModelBoundMessage(err error) (string, bool) {
 }
 
 type ModelCatalogItem struct {
-	ID                            string   `json:"id,omitempty"`
-	ProviderCode                  string   `json:"providerCode"`
-	Model                         string   `json:"model"`
-	Scope                         string   `json:"scope"`
-	Status                        string   `json:"status"`
-	SystemAccountID               string   `json:"systemAccountId,omitempty"`
-	PricingModel                  string   `json:"pricingModel,omitempty"`
-	Mode                          string   `json:"mode,omitempty"`
-	CatalogOrder                  *int     `json:"catalogOrder,omitempty"`
-	ReleaseDate                   string   `json:"releaseDate,omitempty"`
-	ShutdownDate                  string   `json:"shutdownDate,omitempty"`
-	ContextWindowTokens           *int     `json:"contextWindowTokens,omitempty"`
-	SupportedAPIProtocols         []string `json:"supportedApiProtocols"`
-	SupportedServiceTiers         []string `json:"supportedServiceTiers"`
-	SupportedReasoningEfforts     []string `json:"supportedReasoningEfforts"`
-	DefaultReasoningEffort        string   `json:"defaultReasoningEffort,omitempty"`
-	CodexSupportedReasoningLevels []string `json:"codexSupportedReasoningLevels"`
-	CodexDefaultReasoningLevel    string   `json:"codexDefaultReasoningLevel,omitempty"`
-	CodexMultiAgentVersion        string   `json:"codexMultiAgentVersion,omitempty"`
-	InputUSDPer1M                 *float64 `json:"inputUsdPer1M,omitempty"`
-	OutputUSDPer1M                *float64 `json:"outputUsdPer1M,omitempty"`
-	CachedInputUSDPer1M           *float64 `json:"cachedInputUsdPer1M,omitempty"`
-	CacheWriteUSDPer1M            *float64 `json:"cacheWriteUsdPer1M,omitempty"`
-	CacheWrite1hUSDPer1M          *float64 `json:"cacheWrite1hUsdPer1M,omitempty"`
-	ImageInputUSDPer1M            *float64 `json:"imageInputUsdPer1M,omitempty"`
-	ImageOutputUSDPer1M           *float64 `json:"imageOutputUsdPer1M,omitempty"`
-	AudioInputUSDPer1M            *float64 `json:"audioInputUsdPer1M,omitempty"`
-	AudioOutputUSDPer1M           *float64 `json:"audioOutputUsdPer1M,omitempty"`
-	OutputUSDPerImage             *float64 `json:"outputUsdPerImage,omitempty"`
-	MaxInputTokens                *int     `json:"maxInputTokens,omitempty"`
-	MaxOutputTokens               *int     `json:"maxOutputTokens,omitempty"`
-	MaxTokens                     *int     `json:"maxTokens,omitempty"`
-	SupportsPromptCaching         bool     `json:"supportsPromptCaching"`
-	SupportsServiceTier           bool     `json:"supportsServiceTier"`
-	CatalogVisible                bool     `json:"catalogVisible"`
-	PricingNotes                  string   `json:"pricingNotes,omitempty"`
-	CapabilityNotes               string   `json:"capabilityNotes,omitempty"`
-	Notes                         string   `json:"notes,omitempty"`
-	CreatedAt                     string   `json:"createdAt,omitempty"`
-	UpdatedAt                     string   `json:"updatedAt,omitempty"`
-	Source                        string   `json:"source"`
+	ID                              string   `json:"id,omitempty"`
+	ProviderCode                    string   `json:"providerCode"`
+	Model                           string   `json:"model"`
+	Scope                           string   `json:"scope"`
+	Status                          string   `json:"status"`
+	SystemAccountID                 string   `json:"systemAccountId,omitempty"`
+	PricingModel                    string   `json:"pricingModel,omitempty"`
+	Mode                            string   `json:"mode,omitempty"`
+	CatalogOrder                    *int     `json:"catalogOrder,omitempty"`
+	ReleaseDate                     string   `json:"releaseDate,omitempty"`
+	ShutdownDate                    string   `json:"shutdownDate,omitempty"`
+	ContextWindowTokens             *int     `json:"contextWindowTokens,omitempty"`
+	SupportedAPIProtocols           []string `json:"supportedApiProtocols"`
+	SupportedServiceTiers           []string `json:"supportedServiceTiers"`
+	SupportedReasoningEfforts       []string `json:"supportedReasoningEfforts"`
+	DefaultReasoningEffort          string   `json:"defaultReasoningEffort,omitempty"`
+	CodexSupportedReasoningLevels   []string `json:"codexSupportedReasoningLevels"`
+	CodexDefaultReasoningLevel      string   `json:"codexDefaultReasoningLevel,omitempty"`
+	CodexMultiAgentVersion          string   `json:"codexMultiAgentVersion,omitempty"`
+	InputUSDPer1M                   *float64 `json:"inputUsdPer1M,omitempty"`
+	OutputUSDPer1M                  *float64 `json:"outputUsdPer1M,omitempty"`
+	CachedInputUSDPer1M             *float64 `json:"cachedInputUsdPer1M,omitempty"`
+	CacheWriteUSDPer1M              *float64 `json:"cacheWriteUsdPer1M,omitempty"`
+	CacheWrite1hUSDPer1M            *float64 `json:"cacheWrite1hUsdPer1M,omitempty"`
+	PriorityInputUSDPer1M           *float64 `json:"priorityInputUsdPer1M,omitempty"`
+	PriorityOutputUSDPer1M          *float64 `json:"priorityOutputUsdPer1M,omitempty"`
+	PriorityCachedInputUSDPer1M     *float64 `json:"priorityCachedInputUsdPer1M,omitempty"`
+	PriorityCacheWriteUSDPer1M      *float64 `json:"priorityCacheWriteUsdPer1M,omitempty"`
+	PriorityCacheWrite1hUSDPer1M    *float64 `json:"priorityCacheWrite1hUsdPer1M,omitempty"`
+	FlexInputUSDPer1M               *float64 `json:"flexInputUsdPer1M,omitempty"`
+	FlexOutputUSDPer1M              *float64 `json:"flexOutputUsdPer1M,omitempty"`
+	FlexCachedInputUSDPer1M         *float64 `json:"flexCachedInputUsdPer1M,omitempty"`
+	FlexCacheWriteUSDPer1M          *float64 `json:"flexCacheWriteUsdPer1M,omitempty"`
+	FlexCacheWrite1hUSDPer1M        *float64 `json:"flexCacheWrite1hUsdPer1M,omitempty"`
+	LongContextInputTokenThreshold  *int     `json:"longContextInputTokenThreshold,omitempty"`
+	LongContextInputCostMultiplier  *float64 `json:"longContextInputCostMultiplier,omitempty"`
+	LongContextOutputCostMultiplier *float64 `json:"longContextOutputCostMultiplier,omitempty"`
+	ImageInputUSDPer1M              *float64 `json:"imageInputUsdPer1M,omitempty"`
+	ImageOutputUSDPer1M             *float64 `json:"imageOutputUsdPer1M,omitempty"`
+	AudioInputUSDPer1M              *float64 `json:"audioInputUsdPer1M,omitempty"`
+	AudioOutputUSDPer1M             *float64 `json:"audioOutputUsdPer1M,omitempty"`
+	OutputUSDPerImage               *float64 `json:"outputUsdPerImage,omitempty"`
+	MaxInputTokens                  *int     `json:"maxInputTokens,omitempty"`
+	MaxOutputTokens                 *int     `json:"maxOutputTokens,omitempty"`
+	MaxTokens                       *int     `json:"maxTokens,omitempty"`
+	SupportsPromptCaching           bool     `json:"supportsPromptCaching"`
+	SupportsServiceTier             bool     `json:"supportsServiceTier"`
+	CatalogVisible                  bool     `json:"catalogVisible"`
+	PricingNotes                    string   `json:"pricingNotes,omitempty"`
+	CapabilityNotes                 string   `json:"capabilityNotes,omitempty"`
+	Notes                           string   `json:"notes,omitempty"`
+	CreatedAt                       string   `json:"createdAt,omitempty"`
+	UpdatedAt                       string   `json:"updatedAt,omitempty"`
+	Source                          string   `json:"source"`
 }
 
 func NewService(store Store) *Service {
@@ -967,7 +980,7 @@ func validateCustomModelRequestCapabilities(input port.ManagementCustomProviderM
 	isGPTTextModel := strings.TrimSpace(input.ProviderCode) == "gpt" && (mode == "" || mode == "text")
 	if !isGPTTextModel {
 		if hasCapabilities {
-			return &CustomModelValidationError{Message: "只有 GPT 文本模型可以配置服务等级和思考级别"}
+			return &CustomModelValidationError{Message: "只有 GPT 文本自定义模型支持服务等级和思考能力配置"}
 		}
 		return nil
 	}
@@ -980,7 +993,7 @@ func validateCustomModelRequestCapabilities(input port.ManagementCustomProviderM
 			return nil
 		}
 	}
-	return &CustomModelValidationError{Message: "默认思考级别必须属于模型支持的思考级别"}
+	return &CustomModelValidationError{Message: "默认思考级别必须属于支持的思考级别"}
 }
 
 func validateOptionalCustomModelDate(value string) error {
@@ -1364,42 +1377,55 @@ func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCata
 		defaultReasoningEffort = ""
 	}
 	output := ModelCatalogItem{
-		ID:                        item.ID,
-		ProviderCode:              item.ProviderCode,
-		Model:                     item.Model,
-		Scope:                     item.Scope,
-		Status:                    item.Status,
-		SystemAccountID:           item.SystemAccountID,
-		PricingModel:              item.PricingModel,
-		Mode:                      item.Mode,
-		CatalogOrder:              cloneIntPtr(item.CatalogOrder),
-		ReleaseDate:               item.ReleaseDate,
-		ShutdownDate:              item.ShutdownDate,
-		ContextWindowTokens:       cloneIntPtr(item.ContextWindowTokens),
-		SupportedAPIProtocols:     dedupeStrings(item.SupportedAPIProtocols),
-		SupportedServiceTiers:     supportedServiceTiers,
-		SupportedReasoningEfforts: supportedReasoningEfforts,
-		DefaultReasoningEffort:    defaultReasoningEffort,
-		InputUSDPer1M:             cloneFloatPtr(item.InputUSDPer1M),
-		OutputUSDPer1M:            cloneFloatPtr(item.OutputUSDPer1M),
-		CachedInputUSDPer1M:       cloneFloatPtr(item.CachedInputUSDPer1M),
-		CacheWriteUSDPer1M:        cloneFloatPtr(item.CacheWriteUSDPer1M),
-		CacheWrite1hUSDPer1M:      cloneFloatPtr(item.CacheWrite1hUSDPer1M),
-		ImageInputUSDPer1M:        cloneFloatPtr(item.ImageInputUSDPer1M),
-		ImageOutputUSDPer1M:       cloneFloatPtr(item.ImageOutputUSDPer1M),
-		AudioInputUSDPer1M:        cloneFloatPtr(item.AudioInputUSDPer1M),
-		AudioOutputUSDPer1M:       cloneFloatPtr(item.AudioOutputUSDPer1M),
-		OutputUSDPerImage:         cloneFloatPtr(item.OutputUSDPerImage),
-		MaxInputTokens:            cloneIntPtr(item.MaxInputTokens),
-		MaxOutputTokens:           cloneIntPtr(item.MaxOutputTokens),
-		MaxTokens:                 cloneIntPtr(item.MaxTokens),
-		SupportsPromptCaching:     item.SupportsPromptCaching,
-		SupportsServiceTier:       len(supportedServiceTiers) > 0,
-		CatalogVisible:            item.CatalogVisible,
-		PricingNotes:              item.PricingNotes,
-		CapabilityNotes:           item.CapabilityNotes,
-		Notes:                     item.Notes,
-		Source:                    item.Source,
+		ID:                              item.ID,
+		ProviderCode:                    item.ProviderCode,
+		Model:                           item.Model,
+		Scope:                           item.Scope,
+		Status:                          item.Status,
+		SystemAccountID:                 item.SystemAccountID,
+		PricingModel:                    item.PricingModel,
+		Mode:                            item.Mode,
+		CatalogOrder:                    cloneIntPtr(item.CatalogOrder),
+		ReleaseDate:                     item.ReleaseDate,
+		ShutdownDate:                    item.ShutdownDate,
+		ContextWindowTokens:             cloneIntPtr(item.ContextWindowTokens),
+		SupportedAPIProtocols:           dedupeStrings(item.SupportedAPIProtocols),
+		SupportedServiceTiers:           supportedServiceTiers,
+		SupportedReasoningEfforts:       supportedReasoningEfforts,
+		DefaultReasoningEffort:          defaultReasoningEffort,
+		InputUSDPer1M:                   cloneFloatPtr(item.InputUSDPer1M),
+		OutputUSDPer1M:                  cloneFloatPtr(item.OutputUSDPer1M),
+		CachedInputUSDPer1M:             cloneFloatPtr(item.CachedInputUSDPer1M),
+		CacheWriteUSDPer1M:              cloneFloatPtr(item.CacheWriteUSDPer1M),
+		CacheWrite1hUSDPer1M:            cloneFloatPtr(item.CacheWrite1hUSDPer1M),
+		PriorityInputUSDPer1M:           cloneFloatPtr(item.PriorityInputUSDPer1M),
+		PriorityOutputUSDPer1M:          cloneFloatPtr(item.PriorityOutputUSDPer1M),
+		PriorityCachedInputUSDPer1M:     cloneFloatPtr(item.PriorityCachedInputUSDPer1M),
+		PriorityCacheWriteUSDPer1M:      cloneFloatPtr(item.PriorityCacheWriteUSDPer1M),
+		PriorityCacheWrite1hUSDPer1M:    cloneFloatPtr(item.PriorityCacheWrite1hUSDPer1M),
+		FlexInputUSDPer1M:               cloneFloatPtr(item.FlexInputUSDPer1M),
+		FlexOutputUSDPer1M:              cloneFloatPtr(item.FlexOutputUSDPer1M),
+		FlexCachedInputUSDPer1M:         cloneFloatPtr(item.FlexCachedInputUSDPer1M),
+		FlexCacheWriteUSDPer1M:          cloneFloatPtr(item.FlexCacheWriteUSDPer1M),
+		FlexCacheWrite1hUSDPer1M:        cloneFloatPtr(item.FlexCacheWrite1hUSDPer1M),
+		LongContextInputTokenThreshold:  cloneIntPtr(item.LongContextInputTokenThreshold),
+		LongContextInputCostMultiplier:  cloneFloatPtr(item.LongContextInputCostMultiplier),
+		LongContextOutputCostMultiplier: cloneFloatPtr(item.LongContextOutputCostMultiplier),
+		ImageInputUSDPer1M:              cloneFloatPtr(item.ImageInputUSDPer1M),
+		ImageOutputUSDPer1M:             cloneFloatPtr(item.ImageOutputUSDPer1M),
+		AudioInputUSDPer1M:              cloneFloatPtr(item.AudioInputUSDPer1M),
+		AudioOutputUSDPer1M:             cloneFloatPtr(item.AudioOutputUSDPer1M),
+		OutputUSDPerImage:               cloneFloatPtr(item.OutputUSDPerImage),
+		MaxInputTokens:                  cloneIntPtr(item.MaxInputTokens),
+		MaxOutputTokens:                 cloneIntPtr(item.MaxOutputTokens),
+		MaxTokens:                       cloneIntPtr(item.MaxTokens),
+		SupportsPromptCaching:           item.SupportsPromptCaching,
+		SupportsServiceTier:             len(supportedServiceTiers) > 0,
+		CatalogVisible:                  item.CatalogVisible,
+		PricingNotes:                    item.PricingNotes,
+		CapabilityNotes:                 item.CapabilityNotes,
+		Notes:                           item.Notes,
+		Source:                          item.Source,
 	}
 	if item.Scope == "built_in" {
 		output.CodexSupportedReasoningLevels = dedupeStrings(item.CodexSupportedReasoningLevels)

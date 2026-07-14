@@ -836,8 +836,8 @@ async function testGatewayRawBodyInFlightLimit(): Promise<void> {
     assert.equal(nextA, true)
     assert.equal(reqA.rawBody?.length, rawBodyA.length)
     assert.deepEqual(getGatewayRequestBodyInFlightState(), {
-      currentBytes: 0,
-      requestCount: 0,
+      currentBytes: rawBodyA.length,
+      requestCount: 1,
       maxBytes,
       rejectedCount: 1
     })

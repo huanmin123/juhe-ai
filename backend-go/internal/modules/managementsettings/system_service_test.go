@@ -80,11 +80,14 @@ func TestSystemServiceUpdateValidatesRawPatchUsesUTCAndInvalidatesSeparately(t *
 			Settings: after,
 		},
 	}
-	invalidator := &systemSettingsInvalidatorStub{}
+	events := []string{}
+	invalidator := &systemSettingsInvalidatorStub{events: &events}
+	rateLimitCache := &systemAPIRateLimitSettingsCacheInvalidatorStub{events: &events}
 	service := NewSystemServiceWithOptions(SystemServiceOptions{
-		Store:       store,
-		Invalidator: invalidator,
-		Now:         func() time.Time { return now },
+		Store:                             store,
+		Invalidator:                       invalidator,
+		RateLimitSettingsCacheInvalidator: rateLimitCache,
+		Now:                               func() time.Time { return now },
 	})
 
 	result, err := service.Update(context.Background(), SystemUpdateInput{
@@ -125,6 +128,9 @@ func TestSystemServiceUpdateValidatesRawPatchUsesUTCAndInvalidatesSeparately(t *
 	if invalidator.systemCacheCalls != 1 {
 		t.Fatalf("InvalidateSystemSettingsCache() calls = %d, want 1", invalidator.systemCacheCalls)
 	}
+	if rateLimitCache.calls != 1 {
+		t.Fatalf("ClearSystemAPIRateLimitSettingsCache() calls = %d, want 1", rateLimitCache.calls)
+	}
 	if invalidator.runtimeCalls != 1 || invalidator.runtimeReasons[0] != SystemSettingsUpdatedReason {
 		t.Fatalf("InvalidateGatewayRuntime() calls=%d reasons=%v", invalidator.runtimeCalls, invalidator.runtimeReasons)
 	}
@@ -132,6 +138,12 @@ func TestSystemServiceUpdateValidatesRawPatchUsesUTCAndInvalidatesSeparately(t *
 		invalidator.callOrder[0] != "system_cache" ||
 		invalidator.callOrder[1] != "gateway_runtime" {
 		t.Fatalf("invalidation order = %v", invalidator.callOrder)
+	}
+	if len(events) != 3 ||
+		events[0] != "rate_limit_cache" ||
+		events[1] != "system_cache" ||
+		events[2] != "gateway_runtime" {
+		t.Fatalf("all invalidation order = %v", events)
 	}
 }
 
@@ -204,9 +216,11 @@ func TestSystemServiceUpdateStoreErrorSkipsInvalidation(t *testing.T) {
 	wantErr := errors.New("postgres down")
 	store := &systemSettingsStoreStub{updateErr: wantErr}
 	invalidator := &systemSettingsInvalidatorStub{}
+	rateLimitCache := &systemAPIRateLimitSettingsCacheInvalidatorStub{}
 	service := NewSystemServiceWithOptions(SystemServiceOptions{
-		Store:       store,
-		Invalidator: invalidator,
+		Store:                             store,
+		Invalidator:                       invalidator,
+		RateLimitSettingsCacheInvalidator: rateLimitCache,
 	})
 
 	_, err := service.Update(context.Background(), SystemUpdateInput{
@@ -224,6 +238,9 @@ func TestSystemServiceUpdateStoreErrorSkipsInvalidation(t *testing.T) {
 	}
 	if invalidator.systemCacheCalls != 0 || invalidator.runtimeCalls != 0 {
 		t.Fatalf("invalidation calls = %d/%d, want 0/0", invalidator.systemCacheCalls, invalidator.runtimeCalls)
+	}
+	if rateLimitCache.calls != 0 {
+		t.Fatalf("rate limit cache invalidation calls = %d, want 0", rateLimitCache.calls)
 	}
 }
 
@@ -284,11 +301,13 @@ func TestSystemServiceUpdateIgnoresEachInvalidationErrorAndStillCallsBoth(t *tes
 		systemCacheErr: errors.New("cache redis down"),
 		runtimeErr:     errors.New("state redis down"),
 	}
+	rateLimitCache := &systemAPIRateLimitSettingsCacheInvalidatorStub{}
 	var logs bytes.Buffer
 	service := NewSystemServiceWithOptions(SystemServiceOptions{
-		Store:       store,
-		Invalidator: invalidator,
-		Logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
+		Store:                             store,
+		Invalidator:                       invalidator,
+		RateLimitSettingsCacheInvalidator: rateLimitCache,
+		Logger:                            slog.New(slog.NewJSONHandler(&logs, nil)),
 	})
 
 	requestCtx, cancel := context.WithCancel(context.Background())
@@ -307,6 +326,9 @@ func TestSystemServiceUpdateIgnoresEachInvalidationErrorAndStillCallsBoth(t *tes
 	}
 	if invalidator.systemCacheCalls != 1 || invalidator.runtimeCalls != 1 {
 		t.Fatalf("invalidation calls = %d/%d, want 1/1", invalidator.systemCacheCalls, invalidator.runtimeCalls)
+	}
+	if rateLimitCache.calls != 1 {
+		t.Fatalf("rate limit cache invalidation calls = %d, want 1", rateLimitCache.calls)
 	}
 	if invalidator.systemCacheContextErr != nil || invalidator.runtimeContextErr != nil {
 		t.Fatalf(
@@ -402,12 +424,16 @@ type systemSettingsInvalidatorStub struct {
 	runtimeErr            error
 	runtimeContextErr     error
 	callOrder             []string
+	events                *[]string
 }
 
 func (s *systemSettingsInvalidatorStub) InvalidateSystemSettingsCache(ctx context.Context) error {
 	s.systemCacheCalls++
 	s.systemCacheContextErr = ctx.Err()
 	s.callOrder = append(s.callOrder, "system_cache")
+	if s.events != nil {
+		*s.events = append(*s.events, "system_cache")
+	}
 	return s.systemCacheErr
 }
 
@@ -416,7 +442,24 @@ func (s *systemSettingsInvalidatorStub) InvalidateGatewayRuntime(ctx context.Con
 	s.runtimeContextErr = ctx.Err()
 	s.runtimeReasons = append(s.runtimeReasons, reason)
 	s.callOrder = append(s.callOrder, "gateway_runtime")
+	if s.events != nil {
+		*s.events = append(*s.events, "gateway_runtime")
+	}
 	return s.runtimeErr
 }
 
 var _ SystemSettingsInvalidator = (*systemSettingsInvalidatorStub)(nil)
+
+type systemAPIRateLimitSettingsCacheInvalidatorStub struct {
+	calls  int
+	events *[]string
+}
+
+func (s *systemAPIRateLimitSettingsCacheInvalidatorStub) ClearSystemAPIRateLimitSettingsCache() {
+	s.calls++
+	if s.events != nil {
+		*s.events = append(*s.events, "rate_limit_cache")
+	}
+}
+
+var _ SystemAPIRateLimitSettingsCacheInvalidator = (*systemAPIRateLimitSettingsCacheInvalidatorStub)(nil)

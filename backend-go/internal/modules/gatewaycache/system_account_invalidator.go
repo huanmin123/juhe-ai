@@ -13,11 +13,13 @@ import (
 const (
 	redisRootPrefix = "juhe-ai:"
 
-	APIKeyValidationCacheName = "gateway:api-key-validation"
-	GlobalSettingsCacheName   = "settings:global"
-	SystemSettingsCacheName   = "settings:system"
-	GroupLookupCacheName      = "lookup:group"
-	GroupAccountIDsCacheName  = "lookup:group-account-ids"
+	APIKeyValidationCacheName   = "gateway:api-key-validation"
+	GlobalSettingsCacheName     = "settings:global"
+	SystemSettingsCacheName     = "settings:system"
+	GroupLookupCacheName        = "lookup:group"
+	GroupAccountIDsCacheName    = "lookup:group-account-ids"
+	APIKeyLookupCacheName       = "lookup:api-key"
+	ClientIPPolicyByIPCacheName = "gateway:client-ip-policy-by-ip"
 
 	RuntimeInvalidationStoreName = "gateway_cache_invalidation"
 	GatewayRuntimeCacheTopic     = "gateway_runtime_cache"
@@ -145,6 +147,32 @@ func (i *SystemAccountInvalidator) InvalidateAPIKeyValidationCache(ctx context.C
 	return i.clearAPIKeyValidationCache(ctx)
 }
 
+func (i *SystemAccountInvalidator) InvalidateAPIKeyLookupCache(
+	ctx context.Context,
+	_ string,
+	reason string,
+) error {
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("gateway api key lookup invalidation reason is required")
+	}
+	if i.cache == nil {
+		return fmt.Errorf("gateway cache redis setter is required")
+	}
+	now := i.now().UTC()
+	version, err := i.newVersion(now)
+	if err != nil {
+		return fmt.Errorf("generate api key lookup cache version: %w", err)
+	}
+	key, err := SharedCacheVersionKey(i.namespace, APIKeyLookupCacheName)
+	if err != nil {
+		return err
+	}
+	if err := i.cache.SetRaw(ctx, key, []byte(version), SharedCacheVersionTTL); err != nil {
+		return fmt.Errorf("clear api key lookup shared cache: %w", err)
+	}
+	return nil
+}
+
 func (i *SystemAccountInvalidator) InvalidateGlobalSettingsCache(ctx context.Context) error {
 	if i.cache == nil {
 		return fmt.Errorf("gateway cache redis setter is required")
@@ -217,6 +245,25 @@ func (i *SystemAccountInvalidator) InvalidateGroupAccountIDsCache(ctx context.Co
 	}
 	if err := i.cache.SetRaw(ctx, key, []byte(version), SharedCacheVersionTTL); err != nil {
 		return fmt.Errorf("clear group account IDs shared cache: %w", err)
+	}
+	return nil
+}
+
+func (i *SystemAccountInvalidator) InvalidateClientIPPolicyCache(ctx context.Context) error {
+	if i.cache == nil {
+		return fmt.Errorf("gateway cache redis setter is required")
+	}
+	now := i.now().UTC()
+	version, err := i.newVersion(now)
+	if err != nil {
+		return fmt.Errorf("generate client IP policy cache version: %w", err)
+	}
+	key, err := SharedCacheVersionKey(i.namespace, ClientIPPolicyByIPCacheName)
+	if err != nil {
+		return err
+	}
+	if err := i.cache.SetRaw(ctx, key, []byte(version), SharedCacheVersionTTL); err != nil {
+		return fmt.Errorf("clear client IP policy shared cache: %w", err)
 	}
 	return nil
 }

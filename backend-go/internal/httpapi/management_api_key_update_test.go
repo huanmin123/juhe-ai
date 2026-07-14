@@ -290,6 +290,112 @@ func TestManagementAPIKeyUpdateHandlerMapsErrorsAndLogsOnlyCommittedResults(t *t
 	}
 }
 
+func TestManagementAPIKeyUpdateHandlerSkipsUncertainCommittedParseChanges(t *testing.T) {
+	tests := []struct {
+		name      string
+		uncertain string
+	}{
+		{name: "before malformed quota", uncertain: "quotaLimits"},
+		{name: "after malformed quota", uncertain: "quotaLimits"},
+		{name: "before malformed schedule", uncertain: "availabilitySchedule"},
+		{name: "after malformed schedule", uncertain: "availabilitySchedule"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			queue := &operationLogQueueStub{}
+			before := managementAPIKeyUpdateListItem("key_1", "sys_owner", "旧名称")
+			after := managementAPIKeyUpdateListItem("key_1", "sys_owner", "新名称")
+			before.Description = managementAPIKeyUpdateStringPtr("旧说明")
+			after.Description = nil
+			before.RouteStrategyID = "route_1"
+			after.RouteStrategyID = "route_2"
+			before.Status = "active"
+			after.Status = "disabled"
+			before.ExpiresAt = managementAPIKeyUpdateTimePtr(
+				time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+			)
+			after.ExpiresAt = nil
+			before.QuotaLimits.Daily = &port.ManagementRequestQuotaLimit{
+				Enabled: true,
+				Limit:   10,
+			}
+			after.QuotaLimits.Daily = &port.ManagementRequestQuotaLimit{
+				Enabled: true,
+				Limit:   20,
+			}
+			before.AvailabilitySchedule = map[string]any{"timezone": "UTC"}
+			after.AvailabilitySchedule = map[string]any{"timezone": "Asia/Shanghai"}
+			service := &managementAPIKeyUpdateServiceStub{
+				result: managementapikeys.UpdateResult{
+					Before:                      before,
+					After:                       after,
+					OwnerSystemAccountID:        "sys_owner",
+					Committed:                   true,
+					UncertainOperationLogFields: map[string]bool{test.uncertain: true},
+				},
+				err: errors.New("parse management API Key result"),
+			}
+			handler := newManagementAPIKeyUpdateHandler(
+				service,
+				managementAPIKeyScopeAdmin,
+				newManagementOperationLogOptions(ManagementOperationLogOptions{
+					Client:   queue,
+					NewLogID: func() string { return "oplog_parse_failure" },
+				}),
+			)
+			req := httptest.NewRequest(
+				http.MethodPatch,
+				"/api-keys/key_1",
+				strings.NewReader(`{"name":"新名称"}`),
+			)
+			req = requestWithManagementAPIKeyID(req, "key_1")
+			req = requestWithManagementAPIKeyAuthContext(req, managementauth.Context{
+				SystemAccountID: "sys_admin",
+				Role:            "admin",
+			})
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusInternalServerError || queue.calls != 1 {
+				t.Fatalf("status=%d logs=%d body=%s", rec.Code, queue.calls, rec.Body.String())
+			}
+			logInput, err := operationlogjob.DecodeWriteTaskPayload(queue.payload)
+			if err != nil {
+				t.Fatalf("decode operation log: %v", err)
+			}
+			if logInput.StatusCode == nil ||
+				*logInput.StatusCode != http.StatusInternalServerError ||
+				logInput.ResourceID != "key_1" ||
+				logInput.ResourceName != "新名称" {
+				t.Fatalf("operation log = %+v", logInput)
+			}
+			wantFields := map[string]bool{
+				"name":                 true,
+				"description":          true,
+				"routeStrategyId":      true,
+				"status":               true,
+				"expiresAt":            true,
+				"quotaLimits":          true,
+				"availabilitySchedule": true,
+			}
+			delete(wantFields, test.uncertain)
+			if len(logInput.Changes) != len(wantFields) {
+				t.Fatalf("changes = %+v, want fields %v", logInput.Changes, wantFields)
+			}
+			for _, change := range logInput.Changes {
+				if !wantFields[change.Field] {
+					t.Fatalf("unexpected change = %+v, want fields %v", change, wantFields)
+				}
+				delete(wantFields, change.Field)
+			}
+			if len(wantFields) != 0 {
+				t.Fatalf("missing changes: %v", wantFields)
+			}
+		})
+	}
+}
+
 func TestManagementAPIKeyUpdateHandlerOperationLogContainsOnlyActualSafeChanges(t *testing.T) {
 	queue := &operationLogQueueStub{}
 	before := managementAPIKeyUpdateListItem("key_1", "sys_owner", "旧名称")

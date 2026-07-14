@@ -1527,6 +1527,8 @@ async function assertUsageRecordFields(
     success: true,
     stream: false,
     startedAt: Date.now(),
+    requestedReasoningEffort: 'low',
+    effectiveReasoningEffort: 'high',
     usage: {
       inputTokens: 1_000_000,
       outputTokens: 1_000_000
@@ -1542,6 +1544,8 @@ async function assertUsageRecordFields(
   assert.equal(record.pricingModel, upstreamModel, '使用记录 pricingModel 应记录实际计价模型')
   assert.equal(record.modelMappingApplied, true, '使用记录应标记命中模型映射')
   assert.equal(record.modelMappingSource, 'account', '使用记录映射来源应固定为 account')
+  assert.equal(record.requestedReasoningEffort, 'low', '使用记录应保存客户端请求思考级别')
+  assert.equal(record.effectiveReasoningEffort, 'high', '使用记录应保存最终上游思考级别')
   assert.equal(record.costUsd, 12, '授权调用应按资源账号所有者个人映射目标模型计价')
 
   const compactTraceId = 'trace-account-model-mapping-compact-summary-regression'

@@ -98,7 +98,8 @@ assert.match(redisStreamQueueSource, /this\.streamKey = redisNamespacedKey\(opti
 assert.match(redisStreamQueueSource, /this\.groupName = redisNamespacedGroup\(options\.groupName\)/, 'Redis Stream queue should namespace consumer groups')
 assert.match(redisStreamQueueSource, /const redisInspectPendingMessagesScript = `[\s\S]*XPENDING[\s\S]*XRANGE/, 'Redis Stream backlog inspection should fetch pending ids and payloads in one Lua call')
 assert.match(redisStreamQueueSource, /async inspectBacklog\(limit = 256\)[\s\S]*pendingTruncated[\s\S]*undeliveredTruncated/, 'Redis Stream backlog inspection should expose truncation flags for stats safety windows')
-assert.match(redisStreamQueueSource, /const command = \['XADD', this\.streamKey, '\*', 'payload', this\.encode\(payload\)\]/, 'Redis Stream enqueue should build XADD command explicitly')
+assert.match(redisStreamQueueSource, /async enqueue\(payload: T\)[\s\S]*this\.enqueueEncoded\(this\.encode\(payload\)\)/, 'Redis Stream enqueue should encode ordinary payloads before delegating')
+assert.match(redisStreamQueueSource, /async enqueueEncoded\(encodedPayload: string\)[\s\S]*const command = \['XADD', this\.streamKey, '\*', 'payload', encodedPayload\]/, 'Redis Stream should support pre-encoded worker payloads without re-stringifying them')
 assert.match(redisStreamQueueSource, /async ack\(ids: string\[\]\): Promise<number>[\s\S]*redisAckAndDeleteMessagesScript/, 'Redis Stream ack should use a single Lua script for XACK and XDEL')
 assert.match(redisStreamQueueSource, /const redisAckAndDeleteMessagesScript = `[\s\S]*XACK[\s\S]*if result > 0 then[\s\S]*XDEL/, 'Redis Stream ack should delete only messages successfully acknowledged by XACK')
 assert.match(redisStreamQueueSource, /async inspectRuntime\(\): Promise<RedisStreamQueueRuntime>[\s\S]*'XLEN', this\.streamKey[\s\S]*streamLength:/, 'Redis Stream runtime should expose XLEN for queue capacity monitoring')
@@ -117,6 +118,8 @@ assert.match(usageQueueSource, /Redis Stream 使用记录落库失败，消息�
 assert.doesNotMatch(usageQueueSource, /AfterRedisStreamFailure/, 'usage record Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const auditQueueSource = readFileSync(new URL('../../modules/audit-logs/audit-log-queue.service.ts', import.meta.url), 'utf8')
+const auditCodecSource = readFileSync(new URL('../../modules/audit-logs/audit-log-stream-codec.ts', import.meta.url), 'utf8')
+const auditTransportSource = readFileSync(new URL('../../modules/audit-logs/audit-log-transport.service.ts', import.meta.url), 'utf8')
 assert.match(auditQueueSource, /shouldEnqueueAuditLogToRedisStream/, 'audit log queue should route producers through Redis Stream in redis_stream mode')
 assertProducerPrefersRedisStream(auditQueueSource, 'enqueueAuditLog', 'shouldEnqueueAuditLogToRedisStream()', [
   'sendAuditLogsToWorker',
@@ -133,8 +136,10 @@ assert.match(auditQueueSource, /readCount: runtimeConfig\.databaseDriver === 'po
 assert.match(auditQueueSource, /auditLogPostgresFlushBatchSize = 25/, 'audit log Redis Stream consumer should keep PG audit batches short to avoid long transactions')
 assert.match(auditQueueSource, /auditLogPostgresRedisConsumerConcurrency = 1/, 'audit log Redis Stream consumer should stay single-lane to avoid PG audit write lock pressure')
 assert.match(auditQueueSource, /Array\.from\(\{ length: concurrency \}/, 'audit log Redis Stream consumer should start all bounded consumer loops')
-assert.match(auditQueueSource, /__juheAuditBuffer/, 'audit log Redis Stream payload encoding should preserve Buffer bodies')
-assert.match(auditQueueSource, /Buffer\.from\(body\.base64, 'base64'\)/, 'audit log Redis Stream payload decoding should restore Buffer bodies')
+assert.match(auditCodecSource, /__juheAuditBuffer/, 'audit log Redis Stream payload encoding should preserve Buffer bodies')
+assert.match(auditCodecSource, /Buffer\.from\(body\.base64, 'base64'\)/, 'audit log Redis Stream payload decoding should restore Buffer bodies')
+assert.match(auditQueueSource, /encodeAuditLogForRedisStreamInWorker/, 'large audit Redis encoding should be offloaded from the server event loop')
+assert.match(auditTransportSource, /auditLogTransportMaxTotalBytes/, 'audit transport worker should have a hard total-byte budget')
 
 const operationQueueSource = readFileSync(new URL('../../modules/operation-logs/operation-log-queue.service.ts', import.meta.url), 'utf8')
 assert.match(operationQueueSource, /shouldEnqueueOperationLogToRedisStream/, 'operation log queue should route producers through Redis Stream in redis_stream mode')
