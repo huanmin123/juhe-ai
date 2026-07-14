@@ -15,6 +15,7 @@ import {
   directPriceFieldKeys,
   directPriceFieldsByCategory,
   getModelCategory,
+  modelStatusOptions,
   type DirectPriceFieldKey,
   type ModelCategoryKey
 } from './providerModelFormatters'
@@ -166,6 +167,20 @@ export function applyPricingTemplateToCustomModelForm(
     form[field] = visibleFields.has(field) ? template[field] : undefined
   }
   form.serviceTierPrices = cloneServiceTierPrices(template.serviceTierPrices)
+  reconcileCustomModelServiceTierPrices(form)
+}
+
+export function reconcileCustomModelServiceTierPrices(form: CustomModelForm): void {
+  const tiers = normalizeServiceTiers(form.supportedServiceTiers)
+  const current = form.serviceTierPrices
+  form.supportedServiceTiers = tiers
+  form.serviceTierPrices = Object.fromEntries(tiers.map((tier) => [tier, { ...(current[tier] ?? {}) }]))
+}
+
+export function availableCustomModelStatusOptions(canManagePrices: boolean, originalStatus?: ProviderModelStatus) {
+  return canManagePrices || originalStatus === 'active'
+    ? modelStatusOptions
+    : modelStatusOptions.filter((option) => option.value !== 'active')
 }
 
 function cloneServiceTierPrices(value?: Record<string, ProviderModelPriceSet>): Record<string, ProviderModelPriceSet> {
@@ -179,6 +194,7 @@ export function clearCustomModelPricesOutsideCategory(form: CustomModelForm, cat
       form[field] = undefined
     }
   }
+  if (category !== 'text') form.serviceTierPrices = {}
 }
 
 function buildCustomModelDirectPricePayload(form: CustomModelForm, category: ModelCategoryKey) {

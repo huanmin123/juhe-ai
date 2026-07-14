@@ -668,6 +668,7 @@ func TestServiceCreateCustomModelAllowsExplicitCapabilityClearsOutsideGPTText(t 
 				TargetSystemAccountID: "sys_user",
 				Fields: CustomModelMutation{
 					Model:                     OptionalString{Set: true, Value: "custom-model"},
+					Status:                    OptionalString{Set: true, Value: "draft"},
 					Mode:                      OptionalString{Set: input.mode != "", Value: input.mode},
 					SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{}},
 					SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{}},
@@ -744,6 +745,7 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 		ActorSystemAccountID: "sys_user",
 		ActorRole:            "user",
 		Fields: CustomModelMutation{
+			Status:                    OptionalString{Set: true, Value: "draft"},
 			Mode:                      OptionalString{Set: true, Value: "image"},
 			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{}},
 			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{}},
@@ -878,6 +880,34 @@ func TestServiceCreateCustomModelRequiresOwnPriceWhenActive(t *testing.T) {
 	}
 	if result.ServiceTierPrices["priority"].InputUSDPer1M == nil || *result.ServiceTierPrices["priority"].InputUSDPer1M != price {
 		t.Fatalf("tier pricing result=%+v save=%+v", result, store.saveInput)
+	}
+}
+
+func TestServiceCreateCustomModelRejectsOrphanTierPrices(t *testing.T) {
+	price := 1.0
+	store := &providerModelStoreStub{providers: map[string]port.ManagementProviderModelProvider{
+		"anthropic": {Code: "anthropic", Enabled: true},
+	}}
+	service := NewService(store)
+
+	_, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "anthropic", ActorSystemAccountID: "sys_admin", ActorRole: "admin", TargetSystemAccountID: "sys_user",
+		Fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "image-orphan"}, Mode: OptionalString{Set: true, Value: "image"},
+			ServiceTierPrices: OptionalProviderModelPriceMap{Set: true, Value: map[string]port.ManagementProviderModelPriceSet{"fast": {InputUSDPer1M: &price}}}},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "只有文本自定义模型支持服务档位价格" {
+		t.Fatalf("non-text tier price message = %q, %v; err = %v", message, ok, err)
+	}
+
+	_, err = service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "anthropic", ActorSystemAccountID: "sys_admin", ActorRole: "admin", TargetSystemAccountID: "sys_user",
+		Fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "text-orphan"}, SupportedServiceTiers: OptionalStringList{Set: true, Value: []string{"fast"}},
+			ServiceTierPrices: OptionalProviderModelPriceMap{Set: true, Value: map[string]port.ManagementProviderModelPriceSet{"priority": {InputUSDPer1M: &price}}}},
+	})
+	message, ok = CustomModelValidationMessage(err)
+	if !ok || message != "服务档位价格必须属于模型支持的服务等级" {
+		t.Fatalf("orphan tier price message = %q, %v; err = %v", message, ok, err)
 	}
 }
 

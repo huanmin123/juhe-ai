@@ -272,12 +272,14 @@ import { invalidateAccountProviderModelOptionsCache } from '@/views/accounts/use
 import ProviderModelCatalogModal from './ProviderModelCatalogModal.vue'
 import {
   applyPricingTemplateToCustomModelForm,
+  availableCustomModelStatusOptions,
   buildCustomModelPayload as buildCustomModelUpsertPayload,
   clearCustomModelGptCapabilities,
   clearCustomModelPricesOutsideCategory,
   createCustomModelFormFromPricing,
   emptyCustomModelForm,
   normalizeCustomModelDefaultReasoningEffort,
+  reconcileCustomModelServiceTierPrices,
   type CustomModelForm
 } from './customProviderModelForm'
 import {
@@ -291,7 +293,6 @@ import {
   formatProviderCapability,
   getModelCategory,
   modelModeOptions,
-  modelStatusOptions,
   visibleProviderCapabilities,
   type ModelCategoryKey
 } from './providerModelFormatters'
@@ -325,6 +326,7 @@ const modelSystemAccountFilterSelection = ref<PrincipalSelection>()
 const editingCustomModelId = ref<string>()
 const editingCustomModelProviderCode = ref<string>()
 const editingModelScope = ref<ProviderModelPricing['scope']>()
+const editingOriginalStatus = ref<ProviderModelPricing['status']>()
 
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
 const canManageModelPrices = authState.isAdmin
@@ -367,9 +369,7 @@ const activeProviderDefaultHealthCheckModel = computed(() => activeProvider.valu
 const customModelModalTitle = computed(() => editingBuiltInModel.value ? '编辑模型价格' : customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
 const showCustomModelRequestCapabilities = computed(() => customModelPricingCategory.value === 'text')
-const customModelStatusOptions = computed(() => canManageModelPrices.value || (customModelEditing.value && customModelForm.status === 'active')
-  ? modelStatusOptions
-  : modelStatusOptions.filter((option) => option.value !== 'active'))
+const customModelStatusOptions = computed(() => availableCustomModelStatusOptions(canManageModelPrices.value, editingOriginalStatus.value))
 const customModelDefaultReasoningOptions = computed(() => customModelForm.supportedReasoningEfforts.map((value) => ({
   value,
   label: formatModelReasoningEffort(value)
@@ -466,6 +466,7 @@ function openEditCustomModel(record: ProviderModelPricing) {
   editingCustomModelId.value = record.id
   editingCustomModelProviderCode.value = record.providerCode
   editingModelScope.value = record.scope
+  editingOriginalStatus.value = record.status ?? 'active'
   Object.assign(customModelForm, createCustomModelFormFromPricing(record, providerModels.value))
   ensureServiceTierPriceRows()
   customModelModalOpen.value = true
@@ -546,6 +547,7 @@ function resetCustomModelForm() {
   editingCustomModelId.value = undefined
   editingCustomModelProviderCode.value = undefined
   editingModelScope.value = undefined
+  editingOriginalStatus.value = undefined
   Object.assign(customModelForm, {
     ...emptyCustomModelForm,
     supportedApiProtocols: [...emptyCustomModelForm.supportedApiProtocols],
@@ -603,11 +605,7 @@ function ensureServiceTierPriceRows(): void {
 }
 
 function handleCustomModelServiceTiersChange(): void {
-  const supported = new Set(customModelForm.supportedServiceTiers)
-  for (const tier of Object.keys(customModelForm.serviceTierPrices)) {
-    if (!supported.has(tier)) delete customModelForm.serviceTierPrices[tier]
-  }
-  ensureServiceTierPriceRows()
+  reconcileCustomModelServiceTierPrices(customModelForm)
 }
 
 function handleCustomModelModeChange() {

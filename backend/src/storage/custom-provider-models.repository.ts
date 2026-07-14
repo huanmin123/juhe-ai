@@ -761,7 +761,7 @@ function parseJsonObject(raw: string | null | undefined): unknown {
 
 function normalizeCustomProviderModelCapabilities(
   providerCode: string,
-  input: Pick<UpsertCustomProviderModelInput, 'mode' | 'supportedServiceTiers' | 'supportedReasoningEfforts' | 'defaultReasoningEffort'>
+  input: Pick<UpsertCustomProviderModelInput, 'mode' | 'supportedServiceTiers' | 'supportedReasoningEfforts' | 'defaultReasoningEffort' | 'serviceTierPrices'>
 ): {
   supportedServiceTiers: CustomProviderModelServiceTier[]
   supportedReasoningEfforts: CustomProviderModelReasoningEffort[]
@@ -793,8 +793,15 @@ function normalizeCustomProviderModelCapabilities(
     }
   }
   const isTextModel = (optionalText(input.mode) ?? 'text') === 'text'
+  const serviceTierPriceKeys = Object.keys(normalizeServiceTierPrices(input.serviceTierPrices))
   if (!isTextModel && (supportedServiceTiers.length || supportedReasoningEfforts.length || defaultReasoningEffort)) {
     throw new Error('只有文本自定义模型支持服务等级和思考能力配置')
+  }
+  if (!isTextModel && serviceTierPriceKeys.length) {
+    throw new Error('只有文本自定义模型支持服务档位价格')
+  }
+  if (serviceTierPriceKeys.some((tier) => !supportedServiceTiers.includes(tier))) {
+    throw new Error('服务档位价格必须属于模型支持的服务等级')
   }
   if (defaultReasoningEffort && !supportedReasoningEfforts.includes(defaultReasoningEffort)) {
     throw new Error('默认思考级别必须属于支持的思考级别')

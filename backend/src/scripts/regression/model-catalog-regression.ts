@@ -36,7 +36,10 @@ const [
   { requireAuth },
   { requestContextMiddleware },
   repositories,
-  customProviderModelsRepository
+  customProviderModelsRepository,
+  providerModelCatalogRepository,
+  gatewayCacheInvalidation,
+  inflightQuotaService
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/model-pricing/model-catalog.service.js'),
@@ -45,7 +48,10 @@ const [
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/custom-provider-models.repository.js')
+  import('../../storage/custom-provider-models.repository.js'),
+  import('../../storage/provider-model-catalog.repository.js'),
+  import('../../shared/gateway-cache-invalidation.js'),
+  import('../../modules/gateway/quota/api-key-inflight-quota.service.js')
 ])
 
 try {
@@ -275,6 +281,14 @@ try {
     outputUsdPerImage: 0.02,
     actorSystemAccountId: 'sys_admin'
   }), /只有文本自定义模型支持服务等级和思考能力配置/)
+  assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
+    providerCode: 'gpt', model: 'gpt-regression-image-orphan-tier-price', scope: 'personal', systemAccountId: 'sys_admin',
+    mode: 'image', serviceTierPrices: { priority: { inputUsdPer1M: 1 } }, actorSystemAccountId: 'sys_admin'
+  }), /只有文本自定义模型支持服务档位价格/)
+  assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
+    providerCode: 'anthropic', model: 'anthropic-regression-orphan-tier-price', scope: 'personal', systemAccountId: 'sys_admin',
+    mode: 'text', supportedServiceTiers: ['fast'], serviceTierPrices: { priority: { inputUsdPer1M: 1 } }, actorSystemAccountId: 'sys_admin'
+  }), /服务档位价格必须属于模型支持的服务等级/)
   assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
     providerCode: 'gpt',
     model: 'gpt-regression-audio-invalid-capabilities',
@@ -766,6 +780,17 @@ try {
   })
   assert.equal(imageUnitBreakdown?.outputImageUnitCostUsd, 0.08, '按张图片成本应进入成本拆解')
   assert.equal(imageUnitBreakdown?.outputUsdPerImage, 0.04, '每张图片单价应进入成本拆解')
+  const scopedInflightEstimate = await inflightQuotaService.estimateGatewayRequestCostUsd({
+    originalUrl: '/v1/responses',
+    path: '/v1/responses',
+    body: { model: 'gpt-regression-personal' },
+    gatewayRequestBody: {
+      rawBodyBytes: 4,
+      model: 'gpt-regression-personal',
+      maxOutputTokens: 1
+    }
+  } as never, 'gpt', 'sys_admin')
+  assert.notEqual(scopedInflightEstimate, undefined, 'API Key 在途额度估算应命中所属账户的个人模型价格')
 
   catalogService.saveCustomProviderModel({
     id: pricedModel.id,
@@ -788,6 +813,26 @@ try {
   assert.equal(remappedCost, undefined, '清空直接价格后不得回落其他模型价格')
 
   await assertProviderModelHttpContracts()
+
+  const partialPatchTarget = providerModelCatalogRepository.listBuiltInProviderModels(['gpt'])
+    .find((item) => item.inputUsdPer1M !== undefined && item.outputUsdPer1M !== undefined)
+  assert(partialPatchTarget, '缺少可验证部分价格 PATCH 的内置模型')
+  const partialPatchSaved = await providerModelCatalogRepository.updateBuiltInProviderModelPricesAsync(partialPatchTarget.id, {
+    inputUsdPer1M: (partialPatchTarget.inputUsdPer1M ?? 0) + 0.125
+  })
+  assert(partialPatchSaved, '内置模型部分价格 PATCH 后应返回模型')
+  assert.equal(partialPatchSaved.outputUsdPer1M, partialPatchTarget.outputUsdPer1M, '部分价格 PATCH 不得清空未提交的输出价格')
+  assert.deepEqual(partialPatchSaved.serviceTierPrices, partialPatchTarget.serviceTierPrices, '部分价格 PATCH 不得清空未提交的档位价格')
+
+  const unregisterFailingInvalidator = gatewayCacheInvalidation.registerGatewayRuntimeCacheInvalidator(async () => {
+    throw new Error('model catalog invalidation regression sentinel')
+  })
+  await assert.rejects(
+    gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('provider_model_price_updated'),
+    /gateway_runtime_cache 缓存失效存在 1 个 handler 失败/,
+    '可等待的网关缓存失效必须向调用方传播 Redis/handler 失败'
+  )
+  unregisterFailingInvalidator()
 
   console.log('model catalog regression passed')
 } finally {
@@ -1037,6 +1082,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       `/__aisys__/api/providers/gpt/models/${userAGptClearableModel.id}`,
       userACookie,
       {
+        status: 'draft',
         mode: 'image',
         supportedApiProtocols: ['images'],
         supportedServiceTiers: [],

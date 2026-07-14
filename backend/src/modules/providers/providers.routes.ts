@@ -336,6 +336,11 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         res.status(400).json(badRequest('内置模型只允许修改价格字段'))
         return
       }
+      const tierPriceMessage = validateServiceTierPriceKeys(builtIn.mode, builtIn.supportedServiceTiers ?? [], parsedPrice.data.serviceTierPrices)
+      if (tierPriceMessage) {
+        res.status(400).json(badRequest(tierPriceMessage))
+        return
+      }
       const saved = await updateBuiltInProviderModelPricesAsync(builtIn.id, parsedPrice.data)
       if (!saved) {
         sendNotFound(res, '模型不存在')
@@ -759,6 +764,8 @@ function validateCustomModelCapabilities(providerCode: string, input: CustomMode
   const reasoningEfforts = input.supportedReasoningEfforts ?? []
   const defaultReasoningEffort = input.defaultReasoningEffort ?? undefined
   const isTextModel = input.mode === undefined || input.mode === null || input.mode === 'text'
+  const tierPriceMessage = validateServiceTierPriceKeys(input.mode, serviceTiers, input.serviceTierPrices)
+  if (tierPriceMessage) return tierPriceMessage
   if (!isTextModel && (serviceTiers.length || reasoningEfforts.length || defaultReasoningEffort)) {
     return '只有文本自定义模型支持服务等级和思考能力配置'
   }
@@ -778,17 +785,19 @@ function validateCustomModelCapabilities(providerCode: string, input: CustomMode
 }
 
 function customInputHasDirectPrice(input: CustomModelPriceFields): boolean {
+  const mode = 'mode' in input && typeof input.mode === 'string' ? input.mode : 'text'
+  if (mode === 'image') {
+    return typeof input.imageInputUsdPer1M === 'number' || typeof input.imageOutputUsdPer1M === 'number' || typeof input.outputUsdPerImage === 'number'
+  }
+  if (mode === 'audio') {
+    return typeof input.audioInputUsdPer1M === 'number' || typeof input.audioOutputUsdPer1M === 'number'
+  }
   return typeof input.inputUsdPer1M === 'number'
     || typeof input.outputUsdPer1M === 'number'
     || typeof input.cachedInputUsdPer1M === 'number'
     || typeof input.cacheWriteUsdPer1M === 'number'
     || typeof input.cacheWrite1hUsdPer1M === 'number'
-    || (input.serviceTierPrices !== null && typeof input.serviceTierPrices === 'object' && Object.keys(input.serviceTierPrices ?? {}).length > 0)
-    || typeof input.imageInputUsdPer1M === 'number'
-    || typeof input.imageOutputUsdPer1M === 'number'
-    || typeof input.audioInputUsdPer1M === 'number'
-    || typeof input.audioOutputUsdPer1M === 'number'
-    || typeof input.outputUsdPerImage === 'number'
+    || serviceTierPriceKeys(input.serviceTierPrices).length > 0
 }
 
 type CustomModelPriceFields = Partial<Record<
@@ -803,7 +812,24 @@ type CustomModelPriceFields = Partial<Record<
   | 'audioOutputUsdPer1M'
   | 'outputUsdPerImage',
   number | null
->> & { serviceTierPrices?: unknown }
+>> & { mode?: string | null; serviceTierPrices?: unknown }
+
+function validateServiceTierPriceKeys(mode: unknown, supportedServiceTiers: readonly string[], value: unknown): string | undefined {
+  const keys = serviceTierPriceKeys(value)
+  if (!keys.length) return undefined
+  if (mode === 'image' || mode === 'audio') return '只有文本自定义模型支持服务档位价格'
+  if (keys.some((tier) => !supportedServiceTiers.includes(tier))) return '服务档位价格必须属于模型支持的服务等级'
+  return undefined
+}
+
+function serviceTierPriceKeys(value: unknown): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+  return Object.entries(value)
+    .filter(([, prices]) => prices && typeof prices === 'object' && !Array.isArray(prices)
+      && Object.values(prices).some((price) => typeof price === 'number' && Number.isFinite(price) && price >= 0))
+    .map(([tier]) => tier.trim())
+    .filter(Boolean)
+}
 
 function customInputHasAnyPriceField(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false

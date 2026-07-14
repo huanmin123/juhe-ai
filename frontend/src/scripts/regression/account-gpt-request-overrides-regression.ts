@@ -16,9 +16,13 @@ import {
   validateAccountSaveForm
 } from '../../views/accounts/accountSavePayload'
 import {
+  applyPricingTemplateToCustomModelForm,
+  availableCustomModelStatusOptions,
   buildCustomModelPayload,
+  clearCustomModelPricesOutsideCategory,
   createCustomModelFormFromPricing,
-  emptyCustomModelForm
+  emptyCustomModelForm,
+  reconcileCustomModelServiceTierPrices
 } from '../../views/providers/customProviderModelForm'
 import {
   formatModelReasoningCapabilities,
@@ -216,6 +220,19 @@ for (const priceField of [
 ]) {
   assert.equal(Object.prototype.hasOwnProperty.call(ordinaryUserPayload, priceField), false, `普通用户 payload 必须省略价格字段 ${priceField}`)
 }
+customModelForm.serviceTierPrices = { priority: { inputUsdPer1M: 2 }, orphan: { inputUsdPer1M: 9 } }
+reconcileCustomModelServiceTierPrices(customModelForm)
+assert.deepEqual(Object.keys(customModelForm.serviceTierPrices), ['priority', 'flex'], '动态档位价格行必须只保留当前支持档位并补齐缺失行')
+applyPricingTemplateToCustomModelForm(customModelForm, [providerModel({
+  model: 'template-pricing',
+  serviceTierPrices: { priority: { inputUsdPer1M: 3 } }
+})], 'template-pricing')
+assert.deepEqual(Object.keys(customModelForm.serviceTierPrices), ['priority', 'flex'], '价格模板应用后必须按当前档位重建价格行')
+assert.deepEqual(customModelForm.serviceTierPrices.flex, {}, '模板缺少的当前档位必须补空行，避免渲染访问 undefined')
+clearCustomModelPricesOutsideCategory(customModelForm, 'image')
+assert.deepEqual(customModelForm.serviceTierPrices, {}, '切换到非文本模型必须清空服务档位价格')
+assert(availableCustomModelStatusOptions(false, 'active').some((option) => option.value === 'active'), '普通用户编辑原 active 模型时必须稳定保留 active 选项')
+assert.equal(availableCustomModelStatusOptions(false, 'draft').some((option) => option.value === 'active'), false, '普通用户不能把 draft 模型主动激活')
 const imageCustomPayload = buildCustomModelPayload(customModelForm, 'image', { includeRequestCapabilities: true })
 assert.deepEqual(imageCustomPayload?.supportedServiceTiers, [], 'GPT 非文本自定义模型保存时必须清空服务等级能力')
 assert.deepEqual(imageCustomPayload?.supportedReasoningEfforts, [], 'GPT 非文本自定义模型保存时必须清空思考能力')

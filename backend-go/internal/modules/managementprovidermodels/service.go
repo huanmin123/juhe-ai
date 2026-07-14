@@ -585,6 +585,9 @@ func (s *Service) updateBuiltInModelPrices(ctx context.Context, existing port.Ma
 	if input.Fields.ServiceTierPrices.Set {
 		updated.ServiceTierPrices = cloneProviderModelPriceMap(input.Fields.ServiceTierPrices.Value)
 	}
+	if err := validateServiceTierPriceKeys(updated.Mode, updated.SupportedServiceTiers, updated.ServiceTierPrices); err != nil {
+		return ModelCatalogItem{}, err
+	}
 	ok, err := s.store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
 		ID: updated.ID, ProviderCode: updated.ProviderCode, InputUSDPer1M: updated.InputUSDPer1M, OutputUSDPer1M: updated.OutputUSDPer1M,
 		CachedInputUSDPer1M: updated.CachedInputUSDPer1M, CacheWriteUSDPer1M: updated.CacheWriteUSDPer1M,
@@ -1075,6 +1078,9 @@ func validateCustomModelRequestCapabilities(input port.ManagementCustomProviderM
 		input.DefaultReasoningEffort != ""
 	mode := strings.TrimSpace(input.Mode)
 	isTextModel := mode == "" || mode == "text"
+	if err := validateServiceTierPriceKeys(mode, input.SupportedServiceTiers, input.ServiceTierPrices); err != nil {
+		return err
+	}
 	if !isTextModel {
 		if hasCapabilities {
 			return &CustomModelValidationError{Message: "只有文本自定义模型支持服务等级和思考能力配置"}
@@ -1158,17 +1164,42 @@ func (s *Service) validateCustomModelPricing(ctx context.Context, input port.Man
 }
 
 func customModelSaveInputHasDirectPrice(input port.ManagementCustomProviderModelSaveInput) bool {
-	return input.InputUSDPer1M != nil ||
-		input.OutputUSDPer1M != nil ||
-		input.CachedInputUSDPer1M != nil ||
-		input.CacheWriteUSDPer1M != nil ||
-		input.CacheWrite1hUSDPer1M != nil ||
-		len(input.ServiceTierPrices) > 0 ||
-		input.ImageInputUSDPer1M != nil ||
-		input.ImageOutputUSDPer1M != nil ||
-		input.AudioInputUSDPer1M != nil ||
-		input.AudioOutputUSDPer1M != nil ||
-		input.OutputUSDPerImage != nil
+	switch strings.TrimSpace(input.Mode) {
+	case "image":
+		return input.ImageInputUSDPer1M != nil || input.ImageOutputUSDPer1M != nil || input.OutputUSDPerImage != nil
+	case "audio":
+		return input.AudioInputUSDPer1M != nil || input.AudioOutputUSDPer1M != nil
+	default:
+		return input.InputUSDPer1M != nil || input.OutputUSDPer1M != nil || input.CachedInputUSDPer1M != nil ||
+			input.CacheWriteUSDPer1M != nil || input.CacheWrite1hUSDPer1M != nil || providerModelPriceMapHasAnyPrice(input.ServiceTierPrices)
+	}
+}
+
+func validateServiceTierPriceKeys(mode string, supported []string, prices map[string]port.ManagementProviderModelPriceSet) error {
+	if len(prices) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(mode) == "image" || strings.TrimSpace(mode) == "audio" {
+		return &CustomModelValidationError{Message: "只有文本自定义模型支持服务档位价格"}
+	}
+	supportedSet := stringSet(supported)
+	for tier := range prices {
+		if _, ok := supportedSet[strings.TrimSpace(tier)]; !ok {
+			return &CustomModelValidationError{Message: "服务档位价格必须属于模型支持的服务等级"}
+		}
+	}
+	return nil
+}
+
+func providerModelPriceMapHasAnyPrice(prices map[string]port.ManagementProviderModelPriceSet) bool {
+	for _, price := range prices {
+		if price.InputUSDPer1M != nil || price.OutputUSDPer1M != nil || price.CachedInputUSDPer1M != nil ||
+			price.CacheWriteUSDPer1M != nil || price.CacheWrite1hUSDPer1M != nil || price.ImageInputUSDPer1M != nil ||
+			price.ImageOutputUSDPer1M != nil || price.AudioInputUSDPer1M != nil || price.AudioOutputUSDPer1M != nil || price.OutputUSDPerImage != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func canMutateCustomProviderModel(scope string, ownerSystemAccountID string, actorSystemAccountID string, actorRole string) bool {
