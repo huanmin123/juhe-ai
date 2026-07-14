@@ -161,13 +161,17 @@ export async function listIdentityAccountModelsForPopulations(client: DatabaseCl
 
 export async function evaluateIdentityTrust(client: DatabaseClient, key: AccountModelKey): Promise<IdentityTrustEvaluation | undefined> {
   const table = client.dialect.qualifyTable('juhe_stats', 'model_identity_source_features')
-  const ownRows = await client.query<SourceFeatureRow>(`
+  const accountModelRows = await client.query<SourceFeatureRow>(`
     SELECT * FROM ${table}
     WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
     ORDER BY last_observed_at DESC
   `, [key.systemAccountId, key.accountId, key.requestedModel])
-  if (!ownRows.length) return undefined
-  const current = ownRows[0] as SourceFeatureRow
+  if (!accountModelRows.length) return undefined
+  const current = accountModelRows[0] as SourceFeatureRow
+  const ownRows = accountModelRows.filter((row) => (
+    row.population_key_hmac === current.population_key_hmac
+    && row.feature_version === current.feature_version
+  ))
   const populationRows = await client.query<SourceFeatureRow>(`
     SELECT * FROM ${table}
     WHERE population_key_hmac = ? AND feature_version = ?

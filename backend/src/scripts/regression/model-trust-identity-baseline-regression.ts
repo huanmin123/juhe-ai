@@ -202,6 +202,70 @@ assert.equal(cumulativeSource.constraint_pass_count / cumulativeSource.sample_co
 assert.equal(cumulativeSource.sum_feature_2 / cumulativeSource.sample_count, 0.5)
 assert.equal(cumulativeSource.latest_feature_2, 0.9, '回归样本必须确保 latest 与累计均值不同')
 
+const obsoletePopulationKeyHmac = security.modelCheckObservationHmac('identity-obsolete-population', 'population')
+const currentPopulationKeyHmac = security.modelCheckObservationHmac('identity-current-population', 'population')
+const isolationAccountId = 'acct_population_feature_isolation'
+const isolationObservations: import('../../storage/model-trust.repository.js').ModelCheckObservationInput[] = [
+  identityObservation({
+    accountId: isolationAccountId,
+    upstream: 'isolation-reference-0',
+    model: 'gpt-5.6-sol',
+    probeIndex: 0,
+    vector: featureVector(0.95),
+    populationKeyHmac: obsoletePopulationKeyHmac,
+    featureVersion: 'identity-features-v2',
+    createdAt: new Date(Date.UTC(2026, 6, 25, 1, 0, 0)).toISOString()
+  }),
+  identityObservation({
+    accountId: isolationAccountId,
+    upstream: 'isolation-reference-1',
+    model: 'gpt-5.6-sol',
+    probeIndex: 0,
+    vector: featureVector(0.95),
+    populationKeyHmac: currentPopulationKeyHmac,
+    featureVersion: 'identity-features-v1',
+    createdAt: new Date(Date.UTC(2026, 6, 25, 1, 0, 1)).toISOString()
+  })
+]
+for (let sourceIndex = 0; sourceIndex < 5; sourceIndex += 1) {
+  isolationObservations.push(identityObservation({
+    accountId: `acct_isolation_reference_${sourceIndex}`,
+    upstream: `isolation-reference-${sourceIndex}`,
+    model: 'gpt-5.6-sol',
+    probeIndex: 0,
+    vector: featureVector(0.2 + sourceIndex * 0.002),
+    populationKeyHmac: currentPopulationKeyHmac,
+    featureVersion: 'identity-features-v2',
+    createdAt: new Date(Date.UTC(2026, 6, 25, 2, 0, sourceIndex)).toISOString()
+  }))
+}
+isolationObservations.push(identityObservation({
+  accountId: isolationAccountId,
+  upstream: 'isolation-current-target',
+  model: 'gpt-5.6-sol',
+  probeIndex: 0,
+  vector: featureVector(0.204),
+  populationKeyHmac: currentPopulationKeyHmac,
+  featureVersion: 'identity-features-v2',
+  createdAt: new Date(Date.UTC(2026, 6, 25, 2, 1, 0)).toISOString()
+}))
+await aggregateIdentityBatch(isolationObservations)
+const isolatedSources = database.getStatsDatabase().prepare(`
+  SELECT population_key_hmac, feature_version
+  FROM model_identity_source_features
+  WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
+`).all('sys_identity', isolationAccountId, 'gpt-5.6-sol') as Array<{ population_key_hmac: string; feature_version: string }>
+assert.equal(isolatedSources.length, 3, '回归样本必须同时保留旧 population、旧 feature 和当前来源事实')
+assert(isolatedSources.some((row) => row.population_key_hmac === obsoletePopulationKeyHmac && row.feature_version === 'identity-features-v2'))
+assert(isolatedSources.some((row) => row.population_key_hmac === currentPopulationKeyHmac && row.feature_version === 'identity-features-v1'))
+assert(isolatedSources.some((row) => row.population_key_hmac === currentPopulationKeyHmac && row.feature_version === 'identity-features-v2'))
+const isolatedTrust = await repository.findModelAccountTrustResultAsync('sys_identity', isolationAccountId, 'gpt-5.6-sol')
+assert(isolatedTrust)
+assert.equal(isolatedTrust.featureVersion, 'identity-features-v2', 'latest 必须使用当前 feature version')
+assert.equal(isolatedTrust.identityObservationCount, 1, '当前身份观察数不得累计旧 population 或旧 feature 样本')
+assert.equal(isolatedTrust.independentSourceCount, 5, '旧 population / feature 的来源桶不得污染当前 LOO 排除集合')
+assert(Math.abs(Number(isolatedTrust.identityDistance)) < 0.000001, '旧 v1 target 向量不得污染当前 v2 身份距离')
+
 const recoveryObservations: import('../../storage/model-trust.repository.js').ModelCheckObservationInput[] = []
 for (let repeat = 0; repeat < 40; repeat += 1) {
   for (let sourceIndex = 0; sourceIndex < 5; sourceIndex += 1) {
@@ -299,7 +363,7 @@ assert(postgresSql.includes('CREATE TABLE IF NOT EXISTS model_identity_source_fe
 assert(postgresSql.includes('CREATE TABLE IF NOT EXISTS model_identity_baseline_versions'))
 assert(postgresSql.includes('CREATE TABLE IF NOT EXISTS model_paired_similarity_windows'))
 
-console.log('模型身份稳健基线回归通过：累计均值、硬冲突门禁、LOO 限权与群体漂移恢复/拒绝/过期符合预期')
+console.log('模型身份稳健基线回归通过：累计均值、population/feature 隔离、硬冲突门禁、LOO 限权与群体漂移恢复/拒绝/过期符合预期')
 
 async function aggregateIdentityBatch(inputs: import('../../storage/model-trust.repository.js').ModelCheckObservationInput[]): Promise<void> {
   await repository.createModelCheckObservationsAsync(inputs)
@@ -353,6 +417,7 @@ function identityObservation(input: {
   observationStatus?: string
   constraintPassed?: boolean
   populationKeyHmac?: string
+  featureVersion?: string
 }): import('../../storage/model-trust.repository.js').ModelCheckObservationInput {
   const cohort = security.modelCheckObservationHmac(`cohort:${input.model}`, 'cohort')
   return {
@@ -373,7 +438,7 @@ function identityObservation(input: {
     probeFamily: 'identity_generated_canary',
     probeSetVersion: 'identity-mock-v1',
     tokenizerVersion: 'js-tiktoken@1.0.21:o200k_base',
-    featureVersion: 'identity-features-v1',
+    featureVersion: input.featureVersion ?? 'identity-features-v1',
     roundIndex: 0,
     paddingTokens: 0,
     localInputTokens: 32,
