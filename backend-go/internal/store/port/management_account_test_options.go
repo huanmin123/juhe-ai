@@ -7,6 +7,14 @@ type ManagementAccountTestOptionsInput struct {
 	SystemAccountID string
 }
 
+type ManagementAccountTestModelMapping struct {
+	SourceModel            string
+	SourceEndpointFamily   string
+	UpstreamModel          string
+	UpstreamEndpointFamily string
+	Enabled                bool
+}
+
 type ManagementAccountTestOptionsSource struct {
 	ID                        string
 	OwnerSystemAccountID      string
@@ -19,6 +27,7 @@ type ManagementAccountTestOptionsSource struct {
 	HealthCheckModel          string
 	HealthCheckEndpointMode   string
 	CredentialsEncrypted      string
+	ModelMappings             []ManagementAccountTestModelMapping
 }
 
 type ManagementAccountTestOptionsReader interface {

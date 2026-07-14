@@ -127,7 +127,7 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 				result,
 				"acct_w2_test_hybrid",
 				"w2-hybrid-owner-model",
-				[]string{"messages_sse", "chat_json", "generate_content_sse"},
+				[]string{"messages_sse"},
 			)
 		}
 
@@ -170,10 +170,10 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 			wantModes    []string
 		}{
 			{
-				name:         "hybrid filters tool modes and promotes health mode",
+				name:         "hybrid intersects the default model with account modes and mappings",
 				accountID:    "acct_w2_test_hybrid",
 				defaultModel: "w2-hybrid-owner-model",
-				wantModes:    []string{"messages_sse", "chat_json", "generate_content_sse"},
+				wantModes:    []string{"messages_sse"},
 			},
 			{
 				name:         "anthropic defaults exclude token counting",
@@ -205,6 +205,29 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 		}
 	})
 
+	t.Run("hybrid model mappings produce per-model modes and filter empty models", func(t *testing.T) {
+		rec := requestW2AccountTestOptions(
+			t,
+			router,
+			"/__aisys__/api/my-accounts/acct_w2_test_hybrid/test-options",
+			w2AccountTestOptionsOwnerToken,
+		)
+		result := decodeW2AccountTestOptionsResult(t, rec, http.StatusOK)
+		assertW2AccountTestOptionsResult(
+			t,
+			result,
+			"acct_w2_test_hybrid",
+			"w2-hybrid-owner-model",
+			[]string{"messages_sse"},
+		)
+		assertW2AccountTestOptionsModelModes(t, result, "w2-hybrid-owner-model", []string{"messages_sse"})
+		assertW2AccountTestOptionsModelModes(t, result, "w2-hybrid-chat-upstream", []string{"chat_json"})
+		assertW2AccountTestOptionsModelModes(t, result, "w2-hybrid-reduced-model", []string{"chat_json"})
+		if option := findW2AccountTestOptionsModel(result.Models, "w2-hybrid-filtered-model"); option != nil {
+			t.Fatalf("hybrid model with no effective endpoint modes was not filtered: %+v", option)
+		}
+	})
+
 	t.Run("authorized instance uses source semantics and source catalog owner", func(t *testing.T) {
 		source, found, err := store.GetManagementAccountTestOptionsSource(ctx, port.ManagementAccountTestOptionsInput{
 			AccountID:       "acct_w2_test_authorized",
@@ -230,6 +253,18 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 		if err != nil || credentials["api_key"] != "sk-authorized-source" {
 			t.Fatalf("authorized source credentials = %#v, err=%v", credentials, err)
 		}
+		wantSourceMappings := []port.ManagementAccountTestModelMapping{
+			{
+				SourceModel:            "w2-source-owner-model",
+				SourceEndpointFamily:   "chat_completions",
+				UpstreamModel:          "w2-source-chat-upstream",
+				UpstreamEndpointFamily: "chat_completions",
+				Enabled:                true,
+			},
+		}
+		if !reflect.DeepEqual(source.ModelMappings, wantSourceMappings) {
+			t.Fatalf("authorized mappings = %#v, want source account mappings %#v", source.ModelMappings, wantSourceMappings)
+		}
 
 		rec := requestW2AccountTestOptions(
 			t,
@@ -249,6 +284,12 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 			!reflect.DeepEqual(option.SupportedAPIProtocols, []string{"chat_completions"}) {
 			t.Fatalf("authorized source owner model = %+v", option)
 		}
+		assertW2AccountTestOptionsModelModes(
+			t,
+			result,
+			"w2-source-chat-upstream",
+			[]string{"chat_sse", "chat_json"},
+		)
 		if findW2AccountTestOptionsModel(result.Models, "w2-grantee-only-model") != nil {
 			t.Fatalf("authorized response leaked grantee catalog: %+v", result.Models)
 		}
@@ -432,6 +473,8 @@ func insertW2AccountTestOptionsFixtures(
 		sourceAccountID:      "acct_w2_test_source", authorizationID: "auth_w2_test_options_account",
 		sourceOwnerSystemAccountID: "sys_w2_test_options_source_owner",
 	}, now.Add(20*time.Second))
+
+	insertW2AccountTestOptionsModelMappings(t, ctx, db, now.Add(30*time.Second))
 }
 
 type w2AccountTestOptionsAccountFixture struct {
@@ -503,6 +546,38 @@ func insertW2AccountTestOptionsAccount(
 	}
 }
 
+func insertW2AccountTestOptionsModelMappings(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO juhe_business.account_model_mappings (
+			account_id, provider_code, source_model, source_endpoint_family,
+			upstream_model, upstream_endpoint_family, enabled, created_at, updated_at
+		) VALUES
+			(
+				'acct_w2_test_hybrid', 'hybrid', 'w2-hybrid-owner-model', 'messages',
+				'w2-hybrid-chat-upstream', 'chat_completions', true, $1, $1
+			),
+			(
+				'acct_w2_test_hybrid', 'hybrid', 'w2-hybrid-reduced-model', 'messages',
+				'w2-hybrid-responses-target', 'chat_completions', true, $1, $1
+			),
+			(
+				'acct_w2_test_hybrid', 'hybrid', 'w2-hybrid-filtered-model', 'messages',
+				'w2-hybrid-responses-target', 'chat_completions', true, $1, $1
+			),
+			(
+				'acct_w2_test_source', 'deepseek', 'w2-source-owner-model', 'chat_completions',
+				'w2-source-chat-upstream', 'chat_completions', true, $1, $1
+			),
+			(
+				'acct_w2_test_authorized', 'gemini', 'w2-source-owner-model', 'chat_completions',
+				'w2-source-responses-target', 'chat_completions', true, $1, $1
+			)
+	`, now); err != nil {
+		t.Fatalf("insert account test options model mappings: %v", err)
+	}
+}
+
 func insertW2AccountTestOptionsCustomModels(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {
 	t.Helper()
 	fixtures := []struct {
@@ -513,10 +588,16 @@ func insertW2AccountTestOptionsCustomModels(t *testing.T, ctx context.Context, d
 		protocolsJSON   string
 	}{
 		{id: "custom_w2_test_hybrid", providerCode: "gpt", model: "w2-hybrid-owner-model", systemAccountID: "sys_w2_test_options_owner", protocolsJSON: `["messages"]`},
+		{id: "custom_w2_test_hybrid_chat_upstream", providerCode: "deepseek", model: "w2-hybrid-chat-upstream", systemAccountID: "sys_w2_test_options_owner", protocolsJSON: `["chat_completions"]`},
+		{id: "custom_w2_test_hybrid_reduced", providerCode: "gpt", model: "w2-hybrid-reduced-model", systemAccountID: "sys_w2_test_options_owner", protocolsJSON: `["messages","chat_completions"]`},
+		{id: "custom_w2_test_hybrid_filtered", providerCode: "gpt", model: "w2-hybrid-filtered-model", systemAccountID: "sys_w2_test_options_owner", protocolsJSON: `["messages"]`},
+		{id: "custom_w2_test_hybrid_responses_target", providerCode: "gpt", model: "w2-hybrid-responses-target", systemAccountID: "sys_w2_test_options_owner", protocolsJSON: `["responses"]`},
 		{id: "custom_w2_test_anthropic", providerCode: "anthropic", model: "w2-anthropic-owner-model", systemAccountID: "sys_w2_test_options_owner", protocolsJSON: `["messages"]`},
 		{id: "custom_w2_test_gemini", providerCode: "gemini", model: "w2-gemini-owner-model", systemAccountID: "sys_w2_test_options_owner", protocolsJSON: `["generate_content"]`},
 		{id: "custom_w2_test_gpt_oauth", providerCode: "gpt", model: "w2-gpt-oauth-model", systemAccountID: "sys_w2_test_options_owner", protocolsJSON: `["responses"]`},
 		{id: "custom_w2_test_source", providerCode: "deepseek", model: "w2-source-owner-model", systemAccountID: "sys_w2_test_options_source_owner", protocolsJSON: `["chat_completions"]`},
+		{id: "custom_w2_test_source_chat_upstream", providerCode: "deepseek", model: "w2-source-chat-upstream", systemAccountID: "sys_w2_test_options_source_owner", protocolsJSON: `["chat_completions"]`},
+		{id: "custom_w2_test_source_responses_target", providerCode: "deepseek", model: "w2-source-responses-target", systemAccountID: "sys_w2_test_options_source_owner", protocolsJSON: `["responses"]`},
 		{id: "custom_w2_test_grantee", providerCode: "deepseek", model: "w2-grantee-only-model", systemAccountID: "sys_w2_test_options_grantee", protocolsJSON: `["chat_completions"]`},
 	}
 	for index, fixture := range fixtures {
@@ -598,6 +679,35 @@ func assertW2AccountTestOptionsResult(
 	}
 	if findW2AccountTestOptionsModel(result.Models, wantDefaultModel) == nil {
 		t.Fatalf("account test options models missing default %q: %+v", wantDefaultModel, result.Models)
+	}
+	defaultModel := findW2AccountTestOptionsModel(result.Models, wantDefaultModel)
+	if !reflect.DeepEqual(result.TestEndpointModes, defaultModel.TestEndpointModes) {
+		t.Fatalf(
+			"account test options top-level modes = %+v, default model modes = %+v",
+			result.TestEndpointModes,
+			defaultModel.TestEndpointModes,
+		)
+	}
+	for _, model := range result.Models {
+		if len(model.TestEndpointModes) == 0 {
+			t.Fatalf("account test options model has no test endpoint modes: %+v", model)
+		}
+	}
+}
+
+func assertW2AccountTestOptionsModelModes(
+	t *testing.T,
+	result managementaccounttestoptions.Result,
+	model string,
+	want []string,
+) {
+	t.Helper()
+	option := findW2AccountTestOptionsModel(result.Models, model)
+	if option == nil {
+		t.Fatalf("account test options models missing %q: %+v", model, result.Models)
+	}
+	if !reflect.DeepEqual(option.TestEndpointModes, want) {
+		t.Fatalf("account test options model %q modes = %+v, want %+v", model, option.TestEndpointModes, want)
 	}
 }
 

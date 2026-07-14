@@ -27,6 +27,22 @@ func TestGetManagementAccountTestOptionsSourceMapsOwnerGlobalAndNarrowScopes(t *
 		HealthCheckModel:          "gpt-5.1-codex-mini",
 		HealthCheckEndpointMode:   "responses_sse",
 		CredentialsEncrypted:      "v1:owner-ciphertext",
+		ModelMappings: []port.ManagementAccountTestModelMapping{
+			{
+				SourceModel:            "gpt-5-codex",
+				SourceEndpointFamily:   "responses",
+				UpstreamModel:          "gpt-5.1-codex",
+				UpstreamEndpointFamily: "responses",
+				Enabled:                true,
+			},
+			{
+				SourceModel:            "gpt-5.1-codex-mini",
+				SourceEndpointFamily:   "responses",
+				UpstreamModel:          "gpt-5.1-codex-mini",
+				UpstreamEndpointFamily: "responses",
+				Enabled:                false,
+			},
+		},
 	}
 
 	tests := []struct {
@@ -40,7 +56,8 @@ func TestGetManagementAccountTestOptionsSourceMapsOwnerGlobalAndNarrowScopes(t *
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			q := &managementAccountTestOptionsQueriesStub{
-				row: managementAccountTestOptionsRow(want),
+				row:         managementAccountTestOptionsRow(want, "account_owner"),
+				mappingRows: managementAccountTestOptionsMappingRows(want.ModelMappings),
 			}
 			got, found, err := getManagementAccountTestOptionsSource(
 				context.Background(),
@@ -63,6 +80,9 @@ func TestGetManagementAccountTestOptionsSourceMapsOwnerGlobalAndNarrowScopes(t *
 			if !reflect.DeepEqual(q.calls, []postgresqueries.GetManagementAccountTestOptionsSourceParams{wantParams}) {
 				t.Fatalf("query calls = %#v, want %#v", q.calls, wantParams)
 			}
+			if !reflect.DeepEqual(q.mappingCalls, []string{"account_owner"}) {
+				t.Fatalf("mapping query calls = %#v, want account_owner", q.mappingCalls)
+			}
 		})
 	}
 }
@@ -80,6 +100,15 @@ func TestGetManagementAccountTestOptionsSourceMapsAuthorizedInstanceForGlobalAnd
 		HealthCheckModel:          "instance-test-model",
 		HealthCheckEndpointMode:   "messages_sse",
 		CredentialsEncrypted:      "v1:source-ciphertext",
+		ModelMappings: []port.ManagementAccountTestModelMapping{
+			{
+				SourceModel:            "claude-sonnet-4-5",
+				SourceEndpointFamily:   "messages",
+				UpstreamModel:          "claude-sonnet-4-5-20250929",
+				UpstreamEndpointFamily: "messages",
+				Enabled:                true,
+			},
+		},
 	}
 	for _, tt := range []struct {
 		name            string
@@ -89,7 +118,10 @@ func TestGetManagementAccountTestOptionsSourceMapsAuthorizedInstanceForGlobalAnd
 		{name: "viewer narrow", systemAccountID: "sys_grantee"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			q := &managementAccountTestOptionsQueriesStub{row: managementAccountTestOptionsRow(want)}
+			q := &managementAccountTestOptionsQueriesStub{
+				row:         managementAccountTestOptionsRow(want, "account_source"),
+				mappingRows: managementAccountTestOptionsMappingRows(want.ModelMappings),
+			}
 			got, found, err := getManagementAccountTestOptionsSource(
 				context.Background(),
 				q,
@@ -107,6 +139,9 @@ func TestGetManagementAccountTestOptionsSourceMapsAuthorizedInstanceForGlobalAnd
 			if len(q.calls) != 1 || q.calls[0].AccountID != "account_instance" || q.calls[0].SystemAccountID != tt.systemAccountID {
 				t.Fatalf("authorized query calls = %#v", q.calls)
 			}
+			if !reflect.DeepEqual(q.mappingCalls, []string{"account_source"}) {
+				t.Fatalf("authorized mapping query calls = %#v, want source account", q.mappingCalls)
+			}
 		})
 	}
 }
@@ -123,17 +158,20 @@ func TestGetManagementAccountTestOptionsSourceNarrowScopeRejectsOtherViewerAccou
 					SystemAccountID: "sys_other_viewer",
 				},
 			)
-			if err != nil || found || got != (port.ManagementAccountTestOptionsSource{}) {
+			if err != nil || found || !reflect.DeepEqual(got, port.ManagementAccountTestOptionsSource{}) {
 				t.Fatalf("source = %#v, found = %v, err = %v", got, found, err)
 			}
 			if len(q.calls) != 1 || q.calls[0].AccountID != accountID || q.calls[0].SystemAccountID != "sys_other_viewer" {
 				t.Fatalf("narrow query calls = %#v", q.calls)
 			}
+			if len(q.mappingCalls) != 0 {
+				t.Fatalf("mapping query calls = %#v, want none", q.mappingCalls)
+			}
 		})
 	}
 }
 
-func TestGetManagementAccountTestOptionsSourceHandlesNotFoundAndWrapsErrors(t *testing.T) {
+func TestGetManagementAccountTestOptionsSourceHandlesNotFoundAndWrapsQueryErrors(t *testing.T) {
 	t.Run("not found", func(t *testing.T) {
 		q := &managementAccountTestOptionsQueriesStub{err: pgx.ErrNoRows}
 		got, found, err := getManagementAccountTestOptionsSource(
@@ -141,8 +179,11 @@ func TestGetManagementAccountTestOptionsSourceHandlesNotFoundAndWrapsErrors(t *t
 			q,
 			port.ManagementAccountTestOptionsInput{AccountID: "missing"},
 		)
-		if err != nil || found || got != (port.ManagementAccountTestOptionsSource{}) {
+		if err != nil || found || !reflect.DeepEqual(got, port.ManagementAccountTestOptionsSource{}) {
 			t.Fatalf("source = %#v, found = %v, err = %v", got, found, err)
+		}
+		if len(q.mappingCalls) != 0 {
+			t.Fatalf("mapping query calls = %#v, want none", q.mappingCalls)
 		}
 	})
 
@@ -154,11 +195,37 @@ func TestGetManagementAccountTestOptionsSourceHandlesNotFoundAndWrapsErrors(t *t
 			q,
 			port.ManagementAccountTestOptionsInput{AccountID: "account_1"},
 		)
-		if found || got != (port.ManagementAccountTestOptionsSource{}) {
+		if found || !reflect.DeepEqual(got, port.ManagementAccountTestOptionsSource{}) {
 			t.Fatalf("source = %#v, found = %v", got, found)
 		}
 		if !errors.Is(err, queryErr) || !strings.Contains(err.Error(), "get management account test options source") {
 			t.Fatalf("wrapped error = %v", err)
+		}
+		if len(q.mappingCalls) != 0 {
+			t.Fatalf("mapping query calls = %#v, want none", q.mappingCalls)
+		}
+	})
+
+	t.Run("model mapping query error", func(t *testing.T) {
+		queryErr := errors.New("mapping query failed")
+		source := port.ManagementAccountTestOptionsSource{ID: "account_instance"}
+		q := &managementAccountTestOptionsQueriesStub{
+			row:        managementAccountTestOptionsRow(source, "account_source"),
+			mappingErr: queryErr,
+		}
+		got, found, err := getManagementAccountTestOptionsSource(
+			context.Background(),
+			q,
+			port.ManagementAccountTestOptionsInput{AccountID: "account_instance"},
+		)
+		if found || !reflect.DeepEqual(got, port.ManagementAccountTestOptionsSource{}) {
+			t.Fatalf("source = %#v, found = %v", got, found)
+		}
+		if !errors.Is(err, queryErr) || !strings.Contains(err.Error(), "list management account test option model mappings") {
+			t.Fatalf("wrapped mapping error = %v", err)
+		}
+		if !reflect.DeepEqual(q.mappingCalls, []string{"account_source"}) {
+			t.Fatalf("mapping query calls = %#v, want account_source", q.mappingCalls)
 		}
 	})
 }
@@ -202,6 +269,7 @@ func TestManagementAccountTestOptionsSQLUsesSourceAndInstanceFieldsWithExactScop
 		"accounts.id = sqlc.arg(account_id)::text",
 		"accounts.system_account_id = sqlc.arg(system_account_id)::text",
 		"accounts.deleted_at IS NULL",
+		"test_options_sources.model_mapping_account_id",
 	} {
 		if !strings.Contains(querySQL, required) {
 			t.Fatalf("management account test options SQL missing %q", required)
@@ -212,9 +280,14 @@ func TestManagementAccountTestOptionsSQLUsesSourceAndInstanceFieldsWithExactScop
 	if len(parts) != 2 {
 		t.Fatalf("management account test options SQL must have owner and authorized branches")
 	}
+	ownerSQL := parts[0]
+	if !strings.Contains(ownerSQL, "\n    accounts.id AS model_mapping_account_id,") {
+		t.Fatalf("owner test options SQL must use the owner account model mappings")
+	}
 	authorizedSQL := strings.SplitN(parts[1], ")\nSELECT\n", 2)[0]
 	for _, required := range []string{
 		"    accounts.id,",
+		"    source_accounts.id AS model_mapping_account_id,",
 		"    source_accounts.provider_code,",
 		"    source_accounts.provider_protocol_profile_id,",
 		"    source_accounts.protocol_code,",
@@ -241,6 +314,7 @@ func TestManagementAccountTestOptionsSQLUsesSourceAndInstanceFieldsWithExactScop
 		"\n    source_accounts.health_check_model,",
 		"\n    source_accounts.health_check_endpoint_mode,",
 		"\n    accounts.credentials_encrypted",
+		"\n    accounts.id AS model_mapping_account_id,",
 		"'revoked'",
 		"LEFT JOIN juhe_business.accounts AS source_accounts",
 		"sqlc.arg(system_account_id)::text <> ''",
@@ -252,12 +326,40 @@ func TestManagementAccountTestOptionsSQLUsesSourceAndInstanceFieldsWithExactScop
 	if count := strings.Count(querySQL, "sqlc.arg(system_account_id)::text = ''"); count != 2 {
 		t.Fatalf("owner and authorized branches must both support global scope, count = %d", count)
 	}
+	if count := strings.Count(querySQL, "source_accounts.id AS model_mapping_account_id"); count != 1 {
+		t.Fatalf("authorized branch must select exactly one source mapping account id, count = %d", count)
+	}
+
+	mappingMarker := "-- name: ListManagementAccountTestOptionModelMappings :many"
+	mappingMarkerIndex := strings.Index(sql, mappingMarker)
+	if mappingMarkerIndex < 0 {
+		t.Fatalf("management account test options SQL is missing %q", mappingMarker)
+	}
+	mappingSQL := sql[mappingMarkerIndex:]
+	for _, required := range []string{
+		"account_model_mappings.source_model",
+		"account_model_mappings.source_endpoint_family",
+		"account_model_mappings.upstream_model",
+		"account_model_mappings.upstream_endpoint_family",
+		"account_model_mappings.enabled",
+		"FROM juhe_business.account_model_mappings AS account_model_mappings",
+		"WHERE account_model_mappings.account_id = sqlc.arg(account_id)::text",
+		"ORDER BY\n  account_model_mappings.source_model ASC,\n  account_model_mappings.source_endpoint_family ASC",
+	} {
+		if !strings.Contains(mappingSQL, required) {
+			t.Fatalf("management account model mappings SQL missing %q", required)
+		}
+	}
 }
 
-func managementAccountTestOptionsRow(source port.ManagementAccountTestOptionsSource) postgresqueries.GetManagementAccountTestOptionsSourceRow {
+func managementAccountTestOptionsRow(
+	source port.ManagementAccountTestOptionsSource,
+	modelMappingAccountID string,
+) postgresqueries.GetManagementAccountTestOptionsSourceRow {
 	return postgresqueries.GetManagementAccountTestOptionsSourceRow{
 		ID:                        source.ID,
 		OwnerSystemAccountID:      source.OwnerSystemAccountID,
+		ModelMappingAccountID:     modelMappingAccountID,
 		ProviderCode:              source.ProviderCode,
 		ProviderProtocolProfileID: source.ProviderProtocolProfileID,
 		ProtocolCode:              source.ProtocolCode,
@@ -270,10 +372,29 @@ func managementAccountTestOptionsRow(source port.ManagementAccountTestOptionsSou
 	}
 }
 
+func managementAccountTestOptionsMappingRows(
+	mappings []port.ManagementAccountTestModelMapping,
+) []postgresqueries.ListManagementAccountTestOptionModelMappingsRow {
+	rows := make([]postgresqueries.ListManagementAccountTestOptionModelMappingsRow, 0, len(mappings))
+	for _, mapping := range mappings {
+		rows = append(rows, postgresqueries.ListManagementAccountTestOptionModelMappingsRow{
+			SourceModel:            mapping.SourceModel,
+			SourceEndpointFamily:   mapping.SourceEndpointFamily,
+			UpstreamModel:          mapping.UpstreamModel,
+			UpstreamEndpointFamily: mapping.UpstreamEndpointFamily,
+			Enabled:                mapping.Enabled,
+		})
+	}
+	return rows
+}
+
 type managementAccountTestOptionsQueriesStub struct {
-	row   postgresqueries.GetManagementAccountTestOptionsSourceRow
-	err   error
-	calls []postgresqueries.GetManagementAccountTestOptionsSourceParams
+	row          postgresqueries.GetManagementAccountTestOptionsSourceRow
+	err          error
+	mappingRows  []postgresqueries.ListManagementAccountTestOptionModelMappingsRow
+	mappingErr   error
+	calls        []postgresqueries.GetManagementAccountTestOptionsSourceParams
+	mappingCalls []string
 }
 
 func (s *managementAccountTestOptionsQueriesStub) GetManagementAccountTestOptionsSource(
@@ -282,6 +403,14 @@ func (s *managementAccountTestOptionsQueriesStub) GetManagementAccountTestOption
 ) (postgresqueries.GetManagementAccountTestOptionsSourceRow, error) {
 	s.calls = append(s.calls, arg)
 	return s.row, s.err
+}
+
+func (s *managementAccountTestOptionsQueriesStub) ListManagementAccountTestOptionModelMappings(
+	_ context.Context,
+	accountID string,
+) ([]postgresqueries.ListManagementAccountTestOptionModelMappingsRow, error) {
+	s.mappingCalls = append(s.mappingCalls, accountID)
+	return s.mappingRows, s.mappingErr
 }
 
 var _ managementAccountTestOptionsQueries = (*managementAccountTestOptionsQueriesStub)(nil)

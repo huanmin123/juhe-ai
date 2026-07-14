@@ -26,9 +26,13 @@ type MockScenario =
   | 'account_test_options_models_empty'
   | 'account_test_options_model_empty'
   | 'account_test_options_protocols_invalid'
+  | 'account_test_options_model_endpoint_modes_missing'
+  | 'account_test_options_model_endpoint_modes_empty'
+  | 'account_test_options_model_endpoint_mode_invalid'
   | 'account_test_options_default_model_missing'
   | 'account_test_options_endpoint_modes_empty'
   | 'account_test_options_endpoint_mode_invalid'
+  | 'account_test_options_default_model_modes_mismatch'
   | 'account_test_options_default_endpoint_mode_mismatch'
   | 'ip_stats_not_ready'
   | 'ip_stats_empty'
@@ -402,9 +406,13 @@ async function assertAccountTestOptionsResponseRequirements(baseUrl: string): Pr
     ['account_test_options_models_empty', /account test options data\.models must be a non-empty array/],
     ['account_test_options_model_empty', /account test options data\.models item 0\.model must be a non-empty string/],
     ['account_test_options_protocols_invalid', /account test options data\.models item 0\.supportedApiProtocols must contain only strings/],
+    ['account_test_options_model_endpoint_modes_missing', /account test options data\.models item 0\.testEndpointModes must be a non-empty array/],
+    ['account_test_options_model_endpoint_modes_empty', /account test options data\.models item 0\.testEndpointModes must be a non-empty array/],
+    ['account_test_options_model_endpoint_mode_invalid', /account test options data\.models item 0\.testEndpointModes must contain only legal account test endpoint modes/],
     ['account_test_options_default_model_missing', /account test options data\.defaultModel must reference a model/],
     ['account_test_options_endpoint_modes_empty', /account test options data\.testEndpointModes must be a non-empty array/],
-    ['account_test_options_endpoint_mode_invalid', /account test options data\.testEndpointModes must contain only non-empty strings/],
+    ['account_test_options_endpoint_mode_invalid', /account test options data\.testEndpointModes must contain only legal account test endpoint modes/],
+    ['account_test_options_default_model_modes_mismatch', /account test options data\.testEndpointModes must equal the default model testEndpointModes/],
     ['account_test_options_default_endpoint_mode_mismatch', /account test options data\.defaultTestEndpointMode must equal the first testEndpointModes item/]
   ] as const
 
@@ -1183,11 +1191,13 @@ function accountTestOptionsFixture(accountId: string, requestScenario: MockScena
     models: [
       {
         model: 'gpt-test-options-sensitive',
-        supportedApiProtocols: ['responses']
+        supportedApiProtocols: ['responses'],
+        testEndpointModes: ['responses_json', 'responses_sse']
       },
       {
         model: 'gpt-test-options-secondary',
-        supportedApiProtocols: []
+        supportedApiProtocols: [],
+        testEndpointModes: ['chat_json', 'chat_sse']
       }
     ],
     testEndpointModes: ['responses_json', 'responses_sse'],
@@ -1205,10 +1215,38 @@ function accountTestOptionsFixture(accountId: string, requestScenario: MockScena
       result.models = []
       break
     case 'account_test_options_model_empty':
-      result.models = [{ model: '', supportedApiProtocols: ['responses'] }]
+      result.models = [{
+        model: '',
+        supportedApiProtocols: ['responses'],
+        testEndpointModes: ['responses_json']
+      }]
       break
     case 'account_test_options_protocols_invalid':
-      result.models = [{ model: 'gpt-test-options-sensitive', supportedApiProtocols: ['responses', 1] }]
+      result.models = [{
+        model: 'gpt-test-options-sensitive',
+        supportedApiProtocols: ['responses', 1],
+        testEndpointModes: ['responses_json']
+      }]
+      break
+    case 'account_test_options_model_endpoint_modes_missing':
+      result.models = [{
+        model: 'gpt-test-options-sensitive',
+        supportedApiProtocols: ['responses']
+      }]
+      break
+    case 'account_test_options_model_endpoint_modes_empty':
+      result.models = [{
+        model: 'gpt-test-options-sensitive',
+        supportedApiProtocols: ['responses'],
+        testEndpointModes: []
+      }]
+      break
+    case 'account_test_options_model_endpoint_mode_invalid':
+      result.models = [{
+        model: 'gpt-test-options-sensitive',
+        supportedApiProtocols: ['responses'],
+        testEndpointModes: ['responses_json', 'invalid_mode']
+      }]
       break
     case 'account_test_options_default_model_missing':
       result.defaultModel = 'gpt-test-options-missing'
@@ -1217,7 +1255,10 @@ function accountTestOptionsFixture(accountId: string, requestScenario: MockScena
       result.testEndpointModes = []
       break
     case 'account_test_options_endpoint_mode_invalid':
-      result.testEndpointModes = ['responses_json', '']
+      result.testEndpointModes = ['responses_json', 'invalid_mode']
+      break
+    case 'account_test_options_default_model_modes_mismatch':
+      result.testEndpointModes = ['responses_sse']
       break
     case 'account_test_options_default_endpoint_mode_mismatch':
       result.defaultTestEndpointMode = 'responses_sse'

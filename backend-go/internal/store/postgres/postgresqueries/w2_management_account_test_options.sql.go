@@ -14,6 +14,7 @@ WITH test_options_sources AS (
   SELECT
     accounts.id,
     accounts.system_account_id AS owner_system_account_id,
+    accounts.id AS model_mapping_account_id,
     accounts.provider_code,
     accounts.provider_protocol_profile_id,
     accounts.protocol_code,
@@ -42,6 +43,7 @@ WITH test_options_sources AS (
       accounts.authorization_instance_owner_system_account_id,
       resource_authorizations.resource_owner_system_account_id
     ) AS owner_system_account_id,
+    source_accounts.id AS model_mapping_account_id,
     source_accounts.provider_code,
     source_accounts.provider_protocol_profile_id,
     source_accounts.protocol_code,
@@ -79,6 +81,7 @@ WITH test_options_sources AS (
 SELECT
   test_options_sources.id,
   test_options_sources.owner_system_account_id,
+  test_options_sources.model_mapping_account_id,
   test_options_sources.provider_code,
   test_options_sources.provider_protocol_profile_id,
   test_options_sources.protocol_code,
@@ -99,6 +102,7 @@ type GetManagementAccountTestOptionsSourceParams struct {
 type GetManagementAccountTestOptionsSourceRow struct {
 	ID                        string
 	OwnerSystemAccountID      string
+	ModelMappingAccountID     string
 	ProviderCode              string
 	ProviderProtocolProfileID string
 	ProtocolCode              string
@@ -116,6 +120,7 @@ func (q *Queries) GetManagementAccountTestOptionsSource(ctx context.Context, arg
 	err := row.Scan(
 		&i.ID,
 		&i.OwnerSystemAccountID,
+		&i.ModelMappingAccountID,
 		&i.ProviderCode,
 		&i.ProviderProtocolProfileID,
 		&i.ProtocolCode,
@@ -127,4 +132,52 @@ func (q *Queries) GetManagementAccountTestOptionsSource(ctx context.Context, arg
 		&i.CredentialsEncrypted,
 	)
 	return i, err
+}
+
+const listManagementAccountTestOptionModelMappings = `-- name: ListManagementAccountTestOptionModelMappings :many
+SELECT
+  account_model_mappings.source_model,
+  account_model_mappings.source_endpoint_family,
+  account_model_mappings.upstream_model,
+  account_model_mappings.upstream_endpoint_family,
+  account_model_mappings.enabled
+FROM juhe_business.account_model_mappings AS account_model_mappings
+WHERE account_model_mappings.account_id = $1::text
+ORDER BY
+  account_model_mappings.source_model ASC,
+  account_model_mappings.source_endpoint_family ASC
+`
+
+type ListManagementAccountTestOptionModelMappingsRow struct {
+	SourceModel            string
+	SourceEndpointFamily   string
+	UpstreamModel          string
+	UpstreamEndpointFamily string
+	Enabled                bool
+}
+
+func (q *Queries) ListManagementAccountTestOptionModelMappings(ctx context.Context, accountID string) ([]ListManagementAccountTestOptionModelMappingsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementAccountTestOptionModelMappings, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementAccountTestOptionModelMappingsRow
+	for rows.Next() {
+		var i ListManagementAccountTestOptionModelMappingsRow
+		if err := rows.Scan(
+			&i.SourceModel,
+			&i.SourceEndpointFamily,
+			&i.UpstreamModel,
+			&i.UpstreamEndpointFamily,
+			&i.Enabled,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

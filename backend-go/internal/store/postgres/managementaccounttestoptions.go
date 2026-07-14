@@ -17,6 +17,10 @@ type managementAccountTestOptionsQueries interface {
 		ctx context.Context,
 		arg postgresqueries.GetManagementAccountTestOptionsSourceParams,
 	) (postgresqueries.GetManagementAccountTestOptionsSourceRow, error)
+	ListManagementAccountTestOptionModelMappings(
+		ctx context.Context,
+		accountID string,
+	) ([]postgresqueries.ListManagementAccountTestOptionModelMappingsRow, error)
 }
 
 func (s *Store) GetManagementAccountTestOptionsSource(
@@ -47,6 +51,23 @@ func getManagementAccountTestOptionsSource(
 			err,
 		)
 	}
+	mappingRows, err := q.ListManagementAccountTestOptionModelMappings(ctx, row.ModelMappingAccountID)
+	if err != nil {
+		return port.ManagementAccountTestOptionsSource{}, false, fmt.Errorf(
+			"list management account test option model mappings: %w",
+			err,
+		)
+	}
+	modelMappings := make([]port.ManagementAccountTestModelMapping, 0, len(mappingRows))
+	for _, mappingRow := range mappingRows {
+		modelMappings = append(modelMappings, port.ManagementAccountTestModelMapping{
+			SourceModel:            mappingRow.SourceModel,
+			SourceEndpointFamily:   mappingRow.SourceEndpointFamily,
+			UpstreamModel:          mappingRow.UpstreamModel,
+			UpstreamEndpointFamily: mappingRow.UpstreamEndpointFamily,
+			Enabled:                mappingRow.Enabled,
+		})
+	}
 
 	return port.ManagementAccountTestOptionsSource{
 		ID:                        row.ID,
@@ -60,6 +81,7 @@ func getManagementAccountTestOptionsSource(
 		HealthCheckModel:          row.HealthCheckModel,
 		HealthCheckEndpointMode:   row.HealthCheckEndpointMode,
 		CredentialsEncrypted:      row.CredentialsEncrypted,
+		ModelMappings:             modelMappings,
 	}, true, nil
 }
 

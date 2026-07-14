@@ -65,7 +65,7 @@ func TestServiceGetGPTOAuthOptionsAndExactJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal result: %v", err)
 	}
-	wantJSON := `{"accountId":"account-oauth","defaultModel":"gpt-5.1-codex","models":[{"model":"gpt-5.1-codex","supportedApiProtocols":["responses"]}],"testEndpointModes":["responses_sse","responses_json"],"defaultTestEndpointMode":"responses_sse"}`
+	wantJSON := `{"accountId":"account-oauth","defaultModel":"gpt-5.1-codex","models":[{"model":"gpt-5.1-codex","supportedApiProtocols":["responses"],"testEndpointModes":["responses_sse","responses_json"]}],"testEndpointModes":["responses_sse","responses_json"],"defaultTestEndpointMode":"responses_sse"}`
 	if string(encoded) != wantJSON {
 		t.Fatalf("result JSON = %s, want %s", encoded, wantJSON)
 	}
@@ -96,6 +96,9 @@ func TestServiceGetAnthropicIncludesSSEAndJSONButExcludesTools(t *testing.T) {
 	if got.DefaultTestEndpointMode != "messages_sse" {
 		t.Fatalf("default endpoint mode = %q", got.DefaultTestEndpointMode)
 	}
+	if len(got.Models) != 1 || !reflect.DeepEqual(got.Models[0].TestEndpointModes, want) {
+		t.Fatalf("model endpoint modes = %#v, want %#v", got.Models, want)
+	}
 }
 
 func TestServiceGetGeminiRuntimeFallbackIncludesJSONAndStreaming(t *testing.T) {
@@ -109,7 +112,7 @@ func TestServiceGetGeminiRuntimeFallbackIncludesJSONAndStreaming(t *testing.T) {
 	service := serviceForOptions(source, map[string]any{
 		"supported_endpoint_modes": "invalid-runtime-shape",
 	}, []managementprovidermodels.ModelCatalogItem{
-		activeCatalogModel("gemini-2.5-pro", "stream_generate_content"),
+		activeCatalogModel("gemini-2.5-pro", "generate_content", "stream_generate_content"),
 	})
 
 	got, found, err := service.Get(context.Background(), Input{AccountID: source.ID, SystemAccountID: "viewer"})
@@ -122,7 +125,7 @@ func TestServiceGetGeminiRuntimeFallbackIncludesJSONAndStreaming(t *testing.T) {
 	}
 }
 
-func TestServiceGetHybridTakesPriorityAndExcludesToolModes(t *testing.T) {
+func TestServiceGetHybridIntersectsModelProtocolsAndExcludesToolModes(t *testing.T) {
 	source := baseAccountTestOptionsSource()
 	source.ProviderCode = " HYBRID "
 	source.ProtocolCode = "openai"
@@ -145,9 +148,12 @@ func TestServiceGetHybridTakesPriorityAndExcludesToolModes(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("Get() found = %t, err = %v", found, err)
 	}
-	want := []string{"messages_sse", "chat_json"}
+	want := []string{"messages_sse"}
 	if !reflect.DeepEqual(got.TestEndpointModes, want) {
 		t.Fatalf("test endpoint modes = %#v, want %#v", got.TestEndpointModes, want)
+	}
+	if len(got.Models) != 1 || !reflect.DeepEqual(got.Models[0].TestEndpointModes, want) {
+		t.Fatalf("model endpoint modes = %#v, want %#v", got.Models, want)
 	}
 }
 
@@ -179,7 +185,7 @@ func TestServiceGetRuntimeNormalizerFallsBackToDefaults(t *testing.T) {
 			if err != nil || !found {
 				t.Fatalf("Get() found = %t, err = %v", found, err)
 			}
-			want := []string{"chat_json", "chat_sse", "responses_sse", "responses_json"}
+			want := []string{"chat_json", "chat_sse"}
 			if !reflect.DeepEqual(got.TestEndpointModes, want) {
 				t.Fatalf("test endpoint modes = %#v, want %#v", got.TestEndpointModes, want)
 			}
@@ -257,9 +263,9 @@ func TestServiceGetFiltersModelsWithoutIntersectingSupportedModelsAndPreservesOr
 		t.Fatalf("Get() found = %t, err = %v", found, err)
 	}
 	want := []ModelOption{
-		{Model: "model-no-protocols", SupportedAPIProtocols: []string{}},
-		{Model: "model-messages", SupportedAPIProtocols: []string{"messages"}},
-		{Model: "model-mixed", SupportedAPIProtocols: []string{"responses", "messages"}},
+		{Model: "model-no-protocols", SupportedAPIProtocols: []string{}, TestEndpointModes: []string{"messages_json"}},
+		{Model: "model-messages", SupportedAPIProtocols: []string{"messages"}, TestEndpointModes: []string{"messages_json"}},
+		{Model: "model-mixed", SupportedAPIProtocols: []string{"responses", "messages"}, TestEndpointModes: []string{"messages_json"}},
 	}
 	if !reflect.DeepEqual(got.Models, want) {
 		t.Fatalf("models = %#v, want %#v", got.Models, want)
@@ -268,8 +274,189 @@ func TestServiceGetFiltersModelsWithoutIntersectingSupportedModelsAndPreservesOr
 	if err != nil {
 		t.Fatalf("marshal model: %v", err)
 	}
-	if string(encoded) != `{"model":"model-no-protocols","supportedApiProtocols":[]}` {
+	if string(encoded) != `{"model":"model-no-protocols","supportedApiProtocols":[],"testEndpointModes":["messages_json"]}` {
 		t.Fatalf("empty protocols JSON = %s", encoded)
+	}
+}
+
+func TestServiceGetComputesPerModelModesWithAccountMappings(t *testing.T) {
+	source := baseAccountTestOptionsSource()
+	source.ProviderCode = "hybrid"
+	source.ProviderProtocolProfileID = "profile_hybrid_openai_chat_v1"
+	source.HealthCheckModel = "claude-source"
+	source.HealthCheckEndpointMode = "messages_sse"
+	source.ModelMappings = []port.ManagementAccountTestModelMapping{
+		{
+			SourceModel:            "claude-source",
+			SourceEndpointFamily:   "messages",
+			UpstreamModel:          "chat-upstream",
+			UpstreamEndpointFamily: "chat_completions",
+			Enabled:                true,
+		},
+		{
+			SourceModel:            "blocked-source",
+			SourceEndpointFamily:   "messages",
+			UpstreamModel:          "responses-only",
+			UpstreamEndpointFamily: "chat_completions",
+			Enabled:                true,
+		},
+		{
+			SourceModel:            "missing-upstream-source",
+			SourceEndpointFamily:   "messages",
+			UpstreamModel:          "catalog-miss",
+			UpstreamEndpointFamily: "chat_completions",
+			Enabled:                true,
+		},
+	}
+	service := serviceForOptions(source, map[string]any{
+		"supported_endpoint_modes": []any{"chat_json", "messages_sse", "responses_sse"},
+	}, []managementprovidermodels.ModelCatalogItem{
+		activeCatalogModel("claude-source", "messages"),
+		activeCatalogModel("chat-upstream", "chat_completions"),
+		activeCatalogModel("responses-only", "responses"),
+		activeCatalogModel("blocked-source", "messages"),
+		activeCatalogModel("missing-upstream-source", "messages"),
+	})
+
+	got, found, err := service.Get(context.Background(), Input{AccountID: source.ID, SystemAccountID: "viewer"})
+	if err != nil || !found {
+		t.Fatalf("Get() found = %t, err = %v", found, err)
+	}
+	want := []ModelOption{
+		{Model: "claude-source", SupportedAPIProtocols: []string{"messages"}, TestEndpointModes: []string{"messages_sse"}},
+		{Model: "chat-upstream", SupportedAPIProtocols: []string{"chat_completions"}, TestEndpointModes: []string{"chat_json"}},
+		{Model: "responses-only", SupportedAPIProtocols: []string{"responses"}, TestEndpointModes: []string{"responses_sse"}},
+		{Model: "missing-upstream-source", SupportedAPIProtocols: []string{"messages"}, TestEndpointModes: []string{"messages_sse"}},
+	}
+	if !reflect.DeepEqual(got.Models, want) {
+		t.Fatalf("models = %#v, want %#v", got.Models, want)
+	}
+	if !reflect.DeepEqual(got.TestEndpointModes, []string{"messages_sse"}) || got.DefaultTestEndpointMode != "messages_sse" {
+		t.Fatalf("default modes = %#v, default = %q", got.TestEndpointModes, got.DefaultTestEndpointMode)
+	}
+}
+
+func TestResolveAccountModelMappingMatchesNodeRuntimeRules(t *testing.T) {
+	baseMapping := port.ManagementAccountTestModelMapping{
+		SourceModel:            "source-model",
+		SourceEndpointFamily:   "messages",
+		UpstreamModel:          "upstream-model",
+		UpstreamEndpointFamily: "chat_completions",
+		Enabled:                true,
+	}
+	tests := []struct {
+		name         string
+		mutateSource func(*port.ManagementAccountTestOptionsSource)
+		mapping      port.ManagementAccountTestModelMapping
+		sourceFamily string
+		wantMapping  bool
+	}{
+		{
+			name:        "hybrid supports messages to chat",
+			mapping:     baseMapping,
+			wantMapping: true,
+		},
+		{
+			name: "disabled mapping is ignored",
+			mapping: func() port.ManagementAccountTestModelMapping {
+				mapping := baseMapping
+				mapping.Enabled = false
+				return mapping
+			}(),
+		},
+		{
+			name: "identity mapping is ignored",
+			mapping: func() port.ManagementAccountTestModelMapping {
+				mapping := baseMapping
+				mapping.UpstreamModel = mapping.SourceModel
+				mapping.UpstreamEndpointFamily = mapping.SourceEndpointFamily
+				return mapping
+			}(),
+		},
+		{
+			name: "gemini openai chat profile rejects messages mapping",
+			mutateSource: func(source *port.ManagementAccountTestOptionsSource) {
+				source.ProviderProtocolProfileID = geminiOpenAIChatProfileID
+			},
+			mapping: baseMapping,
+		},
+		{
+			name: "gemini stream to generate is supported outside hybrid",
+			mutateSource: func(source *port.ManagementAccountTestOptionsSource) {
+				source.ProviderCode = "gemini"
+				source.ProtocolCode = "gemini"
+				source.ProtocolVersion = "v1beta"
+			},
+			mapping: func() port.ManagementAccountTestModelMapping {
+				mapping := baseMapping
+				mapping.SourceEndpointFamily = "stream_generate_content"
+				mapping.UpstreamEndpointFamily = "generate_content"
+				return mapping
+			}(),
+			sourceFamily: "stream_generate_content",
+			wantMapping:  true,
+		},
+		{
+			name: "openai responses to chat is supported outside hybrid",
+			mutateSource: func(source *port.ManagementAccountTestOptionsSource) {
+				source.ProviderCode = "gpt"
+				source.ProtocolCode = "openai"
+				source.ProtocolVersion = "v1"
+			},
+			mapping: func() port.ManagementAccountTestModelMapping {
+				mapping := baseMapping
+				mapping.SourceEndpointFamily = "responses"
+				return mapping
+			}(),
+			sourceFamily: "responses",
+			wantMapping:  true,
+		},
+		{
+			name: "non hybrid messages to chat is rejected",
+			mutateSource: func(source *port.ManagementAccountTestOptionsSource) {
+				source.ProviderCode = "anthropic"
+				source.ProtocolCode = "anthropic"
+				source.ProtocolVersion = "v1"
+			},
+			mapping: baseMapping,
+		},
+		{
+			name: "hybrid chat to responses is rejected",
+			mapping: func() port.ManagementAccountTestModelMapping {
+				mapping := baseMapping
+				mapping.SourceEndpointFamily = "chat_completions"
+				mapping.UpstreamEndpointFamily = "responses"
+				return mapping
+			}(),
+			sourceFamily: "chat_completions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := baseAccountTestOptionsSource()
+			source.ProviderCode = "hybrid"
+			source.ProviderProtocolProfileID = "profile_hybrid_openai_chat_v1"
+			if tt.mutateSource != nil {
+				tt.mutateSource(&source)
+			}
+			source.ModelMappings = []port.ManagementAccountTestModelMapping{tt.mapping}
+			sourceFamily := tt.sourceFamily
+			if sourceFamily == "" {
+				sourceFamily = tt.mapping.SourceEndpointFamily
+			}
+
+			got := resolveAccountModelMapping(source, tt.mapping.SourceModel, sourceFamily)
+			if tt.wantMapping {
+				if got == nil || !reflect.DeepEqual(*got, tt.mapping) {
+					t.Fatalf("resolve mapping = %#v, want %#v", got, tt.mapping)
+				}
+				return
+			}
+			if got != nil {
+				t.Fatalf("resolve mapping = %#v, want nil", got)
+			}
+		})
 	}
 }
 
@@ -360,7 +547,7 @@ func TestServiceGetReturnsValidationErrorsForBusinessFailures(t *testing.T) {
 			wantMessage: "账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：model-default",
 		},
 		{
-			name: "no generation endpoint mode",
+			name: "default model has no generation endpoint mode",
 			source: func() port.ManagementAccountTestOptionsSource {
 				source := baseAccountTestOptionsSource()
 				source.ProviderCode = "anthropic"
@@ -371,7 +558,7 @@ func TestServiceGetReturnsValidationErrorsForBusinessFailures(t *testing.T) {
 			}(),
 			credentials: map[string]any{"supported_endpoint_modes": []any{"message_token_counting"}},
 			catalog:     []managementprovidermodels.ModelCatalogItem{activeCatalogModel("model-default", "messages")},
-			wantMessage: "账户上游接口能力中没有可用于连接测试的请求形态",
+			wantMessage: "账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：model-default",
 		},
 	}
 

@@ -19,8 +19,15 @@ const (
 	anthropicProtocolVersion  = "v1"
 	geminiProtocolCode        = "gemini"
 	geminiProtocolVersion     = "v1beta"
+	geminiOpenAIChatProfileID = "profile_gemini_openai_chat_v1beta"
 	deepSeekAnthropicProfile  = "profile_deepseek_anthropic_v1"
 	glmCodingAnthropicProfile = "profile_glm_coding_anthropic_v1"
+
+	chatCompletionsFamily       = "chat_completions"
+	responsesFamily             = "responses"
+	messagesFamily              = "messages"
+	generateContentFamily       = "generate_content"
+	streamGenerateContentFamily = "stream_generate_content"
 )
 
 var (
@@ -101,6 +108,7 @@ type Input struct {
 type ModelOption struct {
 	Model                 string   `json:"model"`
 	SupportedAPIProtocols []string `json:"supportedApiProtocols"`
+	TestEndpointModes     []string `json:"testEndpointModes"`
 }
 
 type Result struct {
@@ -174,21 +182,33 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, bool, error) {
 		return Result{}, false, err
 	}
 
+	accountEndpointModes := accountManualTestEndpointModes(account, credentials)
 	models := make([]ModelOption, 0, len(catalog))
 	for _, item := range catalog {
 		if item.Status != "active" || !isAccountManualTestModel(item, account) {
 			continue
 		}
-		models = append(models, ModelOption{
+		model := ModelOption{
 			Model:                 item.Model,
 			SupportedAPIProtocols: append([]string{}, item.SupportedAPIProtocols...),
-		})
+			TestEndpointModes: accountManualTestEndpointModesForModel(
+				account,
+				item,
+				catalog,
+				accountEndpointModes,
+			),
+		}
+		if len(model.TestEndpointModes) == 0 {
+			continue
+		}
+		models = append(models, model)
 	}
-	if !containsModel(models, healthCheckModel) {
+	defaultModel := findModel(models, healthCheckModel)
+	if defaultModel == nil {
 		return Result{}, false, &ValidationError{Message: "账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：" + healthCheckModel}
 	}
 
-	testEndpointModes := accountManualTestEndpointModes(account, credentials)
+	testEndpointModes := append([]string{}, defaultModel.TestEndpointModes...)
 	if len(testEndpointModes) == 0 {
 		return Result{}, false, &ValidationError{Message: "账户上游接口能力中没有可用于连接测试的请求形态"}
 	}
@@ -201,13 +221,142 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, bool, error) {
 	}, true, nil
 }
 
-func containsModel(models []ModelOption, model string) bool {
-	for _, item := range models {
-		if item.Model == model {
+func findModel(models []ModelOption, model string) *ModelOption {
+	for index := range models {
+		if models[index].Model == model {
+			return &models[index]
+		}
+	}
+	return nil
+}
+
+func accountManualTestEndpointModesForModel(
+	account port.ManagementAccountTestOptionsSource,
+	model managementprovidermodels.ModelCatalogItem,
+	catalog []managementprovidermodels.ModelCatalogItem,
+	accountEndpointModes []string,
+) []string {
+	output := make([]string, 0, len(accountEndpointModes))
+	for _, mode := range accountEndpointModes {
+		sourceFamily := endpointModeProtocol(mode)
+		mapping := resolveAccountModelMapping(account, model.Model, sourceFamily)
+		if mapping == nil {
+			if modelSupportsProtocol(model, sourceFamily) {
+				output = append(output, mode)
+			}
+			continue
+		}
+		if !modelSupportsProtocol(model, sourceFamily) {
+			continue
+		}
+		upstreamModel := findCatalogModel(catalog, mapping.UpstreamModel)
+		if upstreamModel == nil || modelSupportsProtocol(*upstreamModel, mapping.UpstreamEndpointFamily) {
+			output = append(output, mode)
+		}
+	}
+	return output
+}
+
+func endpointModeProtocol(mode string) string {
+	switch mode {
+	case "chat_json", "chat_sse":
+		return chatCompletionsFamily
+	case "responses_json", "responses_sse":
+		return responsesFamily
+	case "messages_json", "messages_sse":
+		return messagesFamily
+	case "generate_content_sse":
+		return streamGenerateContentFamily
+	default:
+		return generateContentFamily
+	}
+}
+
+func modelSupportsProtocol(item managementprovidermodels.ModelCatalogItem, protocol string) bool {
+	if len(item.SupportedAPIProtocols) == 0 {
+		return true
+	}
+	for _, candidate := range item.SupportedAPIProtocols {
+		if candidate == protocol {
 			return true
 		}
 	}
 	return false
+}
+
+func resolveAccountModelMapping(
+	account port.ManagementAccountTestOptionsSource,
+	requestedModel string,
+	sourceEndpointFamily string,
+) *port.ManagementAccountTestModelMapping {
+	model := strings.TrimSpace(requestedModel)
+	if model == "" || !isModelMappingSourceEndpointFamily(sourceEndpointFamily) {
+		return nil
+	}
+	if account.ProviderProtocolProfileID == geminiOpenAIChatProfileID && sourceEndpointFamily == messagesFamily {
+		return nil
+	}
+	for index := range account.ModelMappings {
+		mapping := &account.ModelMappings[index]
+		if !mapping.Enabled || mapping.SourceModel != model || mapping.SourceEndpointFamily != sourceEndpointFamily {
+			continue
+		}
+		if mapping.UpstreamModel == mapping.SourceModel && mapping.UpstreamEndpointFamily == mapping.SourceEndpointFamily {
+			return nil
+		}
+		if !isModelMappingRuntimeConversionSupported(*mapping, account) {
+			return nil
+		}
+		return mapping
+	}
+	return nil
+}
+
+func isModelMappingSourceEndpointFamily(value string) bool {
+	switch value {
+	case chatCompletionsFamily, responsesFamily, messagesFamily, generateContentFamily, streamGenerateContentFamily:
+		return true
+	default:
+		return false
+	}
+}
+
+func isModelMappingRuntimeConversionSupported(
+	mapping port.ManagementAccountTestModelMapping,
+	account port.ManagementAccountTestOptionsSource,
+) bool {
+	source := mapping.SourceEndpointFamily
+	upstream := mapping.UpstreamEndpointFamily
+	if source == upstream || source == streamGenerateContentFamily && upstream == generateContentFamily {
+		return true
+	}
+	if source == responsesFamily && upstream == chatCompletionsFamily && isProtocol(account, openAIProtocolCode, openAIProtocolVersion) {
+		return true
+	}
+	if !isHybridProvider(account.ProviderCode) {
+		return false
+	}
+	return source == responsesFamily && upstream == chatCompletionsFamily ||
+		source == messagesFamily && upstream == chatCompletionsFamily ||
+		(source == generateContentFamily || source == streamGenerateContentFamily) && upstream == chatCompletionsFamily ||
+		source == chatCompletionsFamily && upstream == messagesFamily ||
+		source == responsesFamily && upstream == messagesFamily ||
+		(source == generateContentFamily || source == streamGenerateContentFamily) && upstream == messagesFamily ||
+		source == chatCompletionsFamily && upstream == generateContentFamily ||
+		source == responsesFamily && upstream == generateContentFamily ||
+		source == messagesFamily && upstream == generateContentFamily
+}
+
+func findCatalogModel(
+	catalog []managementprovidermodels.ModelCatalogItem,
+	model string,
+) *managementprovidermodels.ModelCatalogItem {
+	for index := range catalog {
+		if catalog[index].Model == model {
+			return &catalog[index]
+		}
+	}
+	return nil
 }
 
 func isAccountManualTestModel(item managementprovidermodels.ModelCatalogItem, account port.ManagementAccountTestOptionsSource) bool {

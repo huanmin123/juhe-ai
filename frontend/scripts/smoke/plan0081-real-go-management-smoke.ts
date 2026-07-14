@@ -23,6 +23,17 @@ const temporaryGroupNamePrefix = 'PLAN-0081 real Go management smoke '
 const temporaryGroupDescription = 'PLAN-0081 W5 group CRUD real Go smoke'
 const defaultTimeoutMs = 15_000
 const maximumTimeoutMs = 2_147_483_647
+const accountTestEndpointModeValues = [
+  'chat_json',
+  'chat_sse',
+  'responses_json',
+  'responses_sse',
+  'messages_json',
+  'messages_sse',
+  'generate_content_json',
+  'generate_content_sse'
+] as const
+const accountTestEndpointModeSet = new Set<string>(accountTestEndpointModeValues)
 const mutationSchedulingPolicy = {
   defaultSoftConcurrency: 7,
   maxQueueWaitMs: 45_000,
@@ -134,9 +145,20 @@ interface ModelOptionRecord {
   model: string
 }
 
+type AccountTestEndpointMode = typeof accountTestEndpointModeValues[number]
+
 interface AccountTestOptionModel {
   model: string
   supportedApiProtocols: string[]
+  testEndpointModes: AccountTestEndpointMode[]
+}
+
+interface AccountTestOptionsRecord {
+  accountId: string
+  defaultModel: string
+  models: AccountTestOptionModel[]
+  testEndpointModes: AccountTestEndpointMode[]
+  defaultTestEndpointMode: AccountTestEndpointMode
 }
 
 type PublicApiLogCaptureStatus = 'complete' | 'truncated' | 'empty' | 'dropped'
@@ -1358,7 +1380,7 @@ function assertModelOptions(value: unknown): ModelOptionRecord[] {
   })
 }
 
-function assertAccountTestOptions(value: unknown, expectedAccountId: string): void {
+function assertAccountTestOptions(value: unknown, expectedAccountId: string): AccountTestOptionsRecord {
   const label = 'account test options data'
   expect(isRecord(value), `${label} must be an object`)
   expect(value.accountId === expectedAccountId, `${label}.accountId must match the configured account`)
@@ -1370,25 +1392,29 @@ function assertAccountTestOptions(value: unknown, expectedAccountId: string): vo
     expect(isRecord(item), `${itemLabel} must be an object`)
     expect(isNonEmptyString(item.model), `${itemLabel}.model must be a non-empty string`)
     assertStringArray(item.supportedApiProtocols, `${itemLabel}.supportedApiProtocols`)
+    assertAccountTestEndpointModes(item.testEndpointModes, `${itemLabel}.testEndpointModes`)
     return item as unknown as AccountTestOptionModel
   })
-  expect(
-    models.some((item) => item.model === value.defaultModel),
-    `${label}.defaultModel must reference a model`
-  )
+  const defaultModel = models.find((item) => item.model === value.defaultModel)
+  expect(defaultModel, `${label}.defaultModel must reference a model`)
 
-  expect(
-    Array.isArray(value.testEndpointModes) && value.testEndpointModes.length > 0,
-    `${label}.testEndpointModes must be a non-empty array`
+  const testEndpointModes = assertAccountTestEndpointModes(
+    value.testEndpointModes,
+    `${label}.testEndpointModes`
   )
   expect(
-    value.testEndpointModes.every(isNonEmptyString),
-    `${label}.testEndpointModes must contain only non-empty strings`
+    endpointModesEqual(defaultModel.testEndpointModes, testEndpointModes),
+    `${label}.testEndpointModes must equal the default model testEndpointModes`
   )
   expect(
-    value.defaultTestEndpointMode === value.testEndpointModes[0],
+    isAccountTestEndpointMode(value.defaultTestEndpointMode),
+    `${label}.defaultTestEndpointMode must be a legal account test endpoint mode`
+  )
+  expect(
+    value.defaultTestEndpointMode === testEndpointModes[0],
     `${label}.defaultTestEndpointMode must equal the first testEndpointModes item`
   )
+  return value as unknown as AccountTestOptionsRecord
 }
 
 function requiredEnvironmentValue(env: SmokeEnvironment, name: string): string {
@@ -1437,6 +1463,23 @@ function optionalPositiveIntegerEnvironmentValue(env: SmokeEnvironment, name: st
 function assertStringArray(value: unknown, label: string): asserts value is string[] {
   expect(Array.isArray(value), `${label} must be an array`)
   expect(value.every((item) => typeof item === 'string'), `${label} must contain only strings`)
+}
+
+function assertAccountTestEndpointModes(value: unknown, label: string): AccountTestEndpointMode[] {
+  expect(Array.isArray(value) && value.length > 0, `${label} must be a non-empty array`)
+  expect(
+    value.every(isAccountTestEndpointMode),
+    `${label} must contain only legal account test endpoint modes`
+  )
+  return value
+}
+
+function isAccountTestEndpointMode(value: unknown): value is AccountTestEndpointMode {
+  return typeof value === 'string' && accountTestEndpointModeSet.has(value)
+}
+
+function endpointModesEqual(left: AccountTestEndpointMode[], right: AccountTestEndpointMode[]): boolean {
+  return left.length === right.length && left.every((mode, index) => mode === right[index])
 }
 
 function isDateKey(value: unknown): value is string {

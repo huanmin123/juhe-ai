@@ -153,7 +153,11 @@ func TestManagementAccountTestOptionsHandlerReturnsExactDTO(t *testing.T) {
 			AccountID:    "acct_1",
 			DefaultModel: "gpt-5.2",
 			Models: []managementaccounttestoptions.ModelOption{
-				{Model: "gpt-5.2", SupportedAPIProtocols: []string{"responses", "chat_completions"}},
+				{
+					Model:                 "gpt-5.2",
+					SupportedAPIProtocols: []string{"responses", "chat_completions"},
+					TestEndpointModes:     []string{"responses_sse", "chat_sse"},
+				},
 			},
 			TestEndpointModes:       []string{"responses_sse", "chat_sse"},
 			DefaultTestEndpointMode: "responses_sse",
@@ -184,7 +188,7 @@ func TestManagementAccountTestOptionsHandlerReturnsExactDTO(t *testing.T) {
 		"data": {
 			"accountId": "acct_1",
 			"defaultModel": "gpt-5.2",
-			"models": [{"model": "gpt-5.2", "supportedApiProtocols": ["responses", "chat_completions"]}],
+			"models": [{"model": "gpt-5.2", "supportedApiProtocols": ["responses", "chat_completions"], "testEndpointModes": ["responses_sse", "chat_sse"]}],
 			"testEndpointModes": ["responses_sse", "chat_sse"],
 			"defaultTestEndpointMode": "responses_sse"
 		}

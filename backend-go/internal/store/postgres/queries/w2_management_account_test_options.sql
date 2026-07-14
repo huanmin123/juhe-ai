@@ -3,6 +3,7 @@ WITH test_options_sources AS (
   SELECT
     accounts.id,
     accounts.system_account_id AS owner_system_account_id,
+    accounts.id AS model_mapping_account_id,
     accounts.provider_code,
     accounts.provider_protocol_profile_id,
     accounts.protocol_code,
@@ -31,6 +32,7 @@ WITH test_options_sources AS (
       accounts.authorization_instance_owner_system_account_id,
       resource_authorizations.resource_owner_system_account_id
     ) AS owner_system_account_id,
+    source_accounts.id AS model_mapping_account_id,
     source_accounts.provider_code,
     source_accounts.provider_protocol_profile_id,
     source_accounts.protocol_code,
@@ -68,6 +70,7 @@ WITH test_options_sources AS (
 SELECT
   test_options_sources.id,
   test_options_sources.owner_system_account_id,
+  test_options_sources.model_mapping_account_id,
   test_options_sources.provider_code,
   test_options_sources.provider_protocol_profile_id,
   test_options_sources.protocol_code,
@@ -78,3 +81,16 @@ SELECT
   test_options_sources.health_check_endpoint_mode,
   test_options_sources.credentials_encrypted
 FROM test_options_sources;
+
+-- name: ListManagementAccountTestOptionModelMappings :many
+SELECT
+  account_model_mappings.source_model,
+  account_model_mappings.source_endpoint_family,
+  account_model_mappings.upstream_model,
+  account_model_mappings.upstream_endpoint_family,
+  account_model_mappings.enabled
+FROM juhe_business.account_model_mappings AS account_model_mappings
+WHERE account_model_mappings.account_id = sqlc.arg(account_id)::text
+ORDER BY
+  account_model_mappings.source_model ASC,
+  account_model_mappings.source_endpoint_family ASC;
