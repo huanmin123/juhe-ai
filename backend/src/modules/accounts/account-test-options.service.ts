@@ -1,6 +1,7 @@
 import {
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
+  isHybridProviderCode,
   isOpenAIProtocolProfile
 } from '../../domain/provider-protocol.js'
 import { normalizeAnthropicEndpointModesForRuntime } from '../../domain/anthropic-endpoint-modes.js'
@@ -12,6 +13,7 @@ import {
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
 import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
+import { normalizeHybridEndpointModesForRuntime } from '../providers/drivers/hybrid/account-credentials.js'
 
 export interface AccountManualTestOption {
   model: string
@@ -75,6 +77,15 @@ function isAccountManualTestModel(item: ProviderModelCatalogItem, account: Accou
   if (item.mode === 'image' || item.mode === 'audio') return false
   const protocols = item.supportedApiProtocols ?? []
   if (!protocols.length) return true
+  if (isHybridProviderCode(account.providerCode)) {
+    return protocols.some((protocol) => (
+      protocol === 'chat_completions'
+      || protocol === 'responses'
+      || protocol === 'messages'
+      || protocol === 'generate_content'
+      || protocol === 'stream_generate_content'
+    ))
+  }
   if (isOpenAIProtocolProfile(account)) {
     return protocols.some((protocol) => protocol === 'chat_completions' || protocol === 'responses')
   }
@@ -93,6 +104,9 @@ function accountManualTestEndpointModes(account: AccountSummary): AccountSupport
 }
 
 function normalizedAccountEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
+  if (isHybridProviderCode(account.providerCode)) {
+    return normalizeHybridEndpointModesForRuntime(account.credentials.supported_endpoint_modes)
+  }
   if (isAnthropicProtocolProfile(account)) {
     return normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
       providerCode: account.providerCode,
@@ -124,6 +138,19 @@ function normalizedAccountEndpointModes(account: AccountSummary): AccountSupport
 
 function accountTestEndpointModeOrder(account: AccountSummary): AccountSupportedEndpointMode[] {
   const defaultMode = account.healthCheckEndpointMode
+  if (isHybridProviderCode(account.providerCode)) {
+    return uniqueEndpointModes(
+      defaultMode,
+      'chat_json',
+      'chat_sse',
+      'responses_json',
+      'responses_sse',
+      'messages_json',
+      'messages_sse',
+      'generate_content_json',
+      'generate_content_sse'
+    )
+  }
   if (isAnthropicProtocolProfile(account)) {
     return uniqueEndpointModes(defaultMode, 'messages_sse')
   }

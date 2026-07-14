@@ -127,6 +127,11 @@ function createProviderDefaultHealthCheckModelCoverage(created: CreatedMockdata)
   for (const [systemAccountId, providerCode, model] of rows) {
     statement.run(systemAccountId, providerCode, model, now, now)
   }
+  database.prepare(`
+    INSERT INTO provider_system_default_health_check_models (provider_code, model, created_at, updated_at)
+    VALUES ('gpt', 'mockdata-global-long-context', ?, ?)
+    ON CONFLICT(provider_code) DO NOTHING
+  `).run(now, now)
 }
 
 function createAccountTestCoverage(created: CreatedMockdata): void {

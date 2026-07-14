@@ -42,6 +42,18 @@ const draftEndpointModes = accountTestEndpointModesForAccount({
 })
 assert.equal(draftEndpointModes[0], 'responses_sse', '草稿账户默认测试必须优先使用保存的精确请求形态')
 assert(draftEndpointModes.includes('responses_json'), '人工测试仍应保留显式选择其他已启用请求形态的能力')
+const hybridEndpointModes = accountTestEndpointModesForAccount({
+  providerCode: 'hybrid',
+  providerProtocolProfileId: 'profile_hybrid_openai_chat_v1',
+  protocolCode: 'openai',
+  protocolVersion: 'v1',
+  type: 'api_key',
+  healthCheckEndpointMode: 'messages_sse',
+  credentials: {
+    supported_endpoint_modes: ['chat_json', 'messages_sse', 'generate_content_sse', 'count_tokens']
+  }
+})
+assert.deepEqual(hybridEndpointModes, ['messages_sse', 'chat_json', 'generate_content_sse'], '混合供应商人工测试应保留全部已启用生成协议并排除工具接口')
 
 for (const relativePath of [
   '../../views/accounts/accountBatchEditForm.ts',

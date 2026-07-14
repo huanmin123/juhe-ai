@@ -226,6 +226,18 @@ export function defaultAccountTestEndpointModeForSelection(
 }
 
 export function accountTestEndpointModeOrder(account?: AccountProviderProfileLike): AccountSupportedEndpointMode[] {
+  if (isHybridProviderCode(contextProviderCode(account))) {
+    return [
+      'chat_json',
+      'chat_sse',
+      'responses_json',
+      'responses_sse',
+      'messages_json',
+      'messages_sse',
+      'generate_content_json',
+      'generate_content_sse'
+    ]
+  }
   const protocolKind = accountProviderProtocolKind(account)
   if (protocolKind === 'anthropic_v1') return ['messages_json', 'messages_sse']
   if (protocolKind === 'gemini_v1beta') return ['generate_content_json', 'generate_content_sse']

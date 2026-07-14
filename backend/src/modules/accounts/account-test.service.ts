@@ -10,6 +10,7 @@ import {
   OPENAI_RESPONSES_FAMILY,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
+  isHybridProviderCode,
   isOpenAIProtocolProfile
 } from '../../domain/provider-protocol.js'
 import type {
@@ -72,6 +73,7 @@ import {
   createGeminiTestRequest,
   createOpenAITestRequest
 } from './account-test-request.js'
+import { normalizeHybridEndpointModesForRuntime } from '../providers/drivers/hybrid/account-credentials.js'
 
 type AccountTestInput = {
   model?: string
@@ -192,7 +194,9 @@ export async function testOpenAIAccount(
       systemAccountId: input.systemAccountId,
       sourceFamilies: [accountTestEndpointModeSourceFamily(testEndpointMode)]
     })
-    testRequest = anthropicProtocol
+    const messagesTestMode = isMessagesTestEndpointMode(testEndpointMode)
+    const geminiTestMode = isGeminiTestEndpointMode(testEndpointMode)
+    testRequest = messagesTestMode
       ? createAnthropicTestRequest({
         explicitModel,
         fallbackModel: model,
@@ -200,7 +204,7 @@ export async function testOpenAIAccount(
         supportedEndpointModes,
         testEndpointMode
       })
-      : geminiProtocol
+      : geminiTestMode
         ? createGeminiTestRequest({
           explicitModel,
           fallbackModel: model,
@@ -276,20 +280,20 @@ export async function testOpenAIAccount(
     const finalAccountStatus = finalSummary?.status ?? finalAccount.status
     const responseText = response.bodyText()
     const diagnosticAttemptText = diagnosticLastAttempt?.responseBodyText?.trim() ?? ''
-    const upstreamMessage = anthropicProtocol
+    const upstreamMessage = messagesTestMode
       ? parseAnthropicUpstreamMessage(diagnosticAttemptText) ?? parseAnthropicUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
-      : geminiProtocol
+      : geminiTestMode
         ? parseGeminiUpstreamMessage(diagnosticAttemptText) ?? parseGeminiUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
       : parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
     const upstreamErrorCode = parseUpstreamErrorCode(diagnosticAttemptText) ?? parseUpstreamErrorCode(responseText)
-    const streamFailureMessage = anthropicProtocol
+    const streamFailureMessage = messagesTestMode
       ? parseAnthropicStreamFailureMessage(responseText) ?? parseOpenAIStreamFailureMessage(responseText)
-      : geminiProtocol
+      : geminiTestMode
         ? parseGeminiStreamFailureMessage(responseText) ?? parseOpenAIStreamFailureMessage(responseText)
       : parseOpenAIStreamFailureMessage(responseText)
-    const outputText = anthropicProtocol
+    const outputText = messagesTestMode
       ? extractAnthropicResponseOutputText(responseText)
-      : geminiProtocol
+      : geminiTestMode
         ? extractGeminiResponseOutputText(responseText)
       : extractOpenAIResponseOutputText(responseText)
     const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
@@ -415,6 +419,9 @@ function sanitizeAccountTestResult(result: AccountTestResult): AccountTestResult
 }
 
 function normalizedAccountTestEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
+  if (isHybridProviderCode(account.providerCode)) {
+    return normalizeHybridEndpointModesForRuntime(account.credentials.supported_endpoint_modes)
+  }
   if (isAnthropicProtocolProfile(account)) {
     return normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
       providerCode: account.providerCode,
@@ -468,6 +475,19 @@ function resolveAccountTestEndpointMode(
 
 function accountTestEndpointModeOrder(account: AccountSummary): AccountSupportedEndpointMode[] {
   const defaultMode = account.healthCheckEndpointMode
+  if (isHybridProviderCode(account.providerCode)) {
+    return uniqueEndpointModes(
+      defaultMode,
+      'chat_json',
+      'chat_sse',
+      'responses_json',
+      'responses_sse',
+      'messages_json',
+      'messages_sse',
+      'generate_content_json',
+      'generate_content_sse'
+    )
+  }
   if (isAnthropicProtocolProfile(account)) {
     return uniqueEndpointModes(defaultMode, 'messages_sse')
   }
@@ -489,6 +509,9 @@ function accountTestClientCompatibility(
   testEndpointMode: AccountSupportedEndpointMode,
   accountClientCompatibility: AccountClientCompatibility
 ): AccountClientCompatibility {
+  if (isMessagesTestEndpointMode(testEndpointMode) || isGeminiTestEndpointMode(testEndpointMode)) {
+    return 'openai_standard'
+  }
   if (!isOpenAIProtocolProfile(account)) {
     return 'openai_standard'
   }
@@ -505,6 +528,14 @@ function accountTestClientCompatibility(
     account.clientCompatibility,
     account
   )
+}
+
+function isMessagesTestEndpointMode(mode: AccountSupportedEndpointMode | undefined): boolean {
+  return mode === 'messages_json' || mode === 'messages_sse'
+}
+
+function isGeminiTestEndpointMode(mode: AccountSupportedEndpointMode | undefined): boolean {
+  return mode === 'generate_content_json' || mode === 'generate_content_sse'
 }
 
 function accountTestDiagnosticStatusCode(downstreamStatusCode: number, success: boolean, lastAttempt?: UpstreamAttempt): number | undefined {

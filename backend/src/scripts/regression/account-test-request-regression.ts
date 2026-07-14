@@ -122,6 +122,13 @@ assert.deepEqual(anthropicRequest.body.thinking, { type: 'adaptive' }, 'Anthropi
 assert.deepEqual(anthropicRequest.body.output_config, { effort: 'high' }, 'Anthropic 账户测试应使用 Claude Code output_config')
 assert.equal(Array.isArray(anthropicRequest.body.system), true, 'Anthropic 账户测试应使用 Claude Code system block 数组')
 assert.match(JSON.stringify(anthropicRequest.body), /Claude Agent SDK/, 'Anthropic 账户测试应使用真实 Claude Code SDK system 文案')
+const anthropicSseRequest = createAnthropicTestRequest({
+  fallbackModel: 'claude-opus-4-8',
+  prompt: 'ok',
+  supportedEndpointModes: ['messages_sse'],
+  testEndpointMode: 'messages_sse'
+})
+assert.equal(anthropicSseRequest.body.stream, true, 'Messages SSE 测试必须使用 stream=true')
 
 const geminiRequest = createGeminiTestRequest({
   fallbackModel: 'gemini-2.5-pro',
@@ -154,6 +161,8 @@ const serviceSource = readFileSync(resolve('src/modules/accounts/account-test.se
 const optionsServiceSource = readFileSync(resolve('src/modules/accounts/account-test-options.service.ts'), 'utf8')
 assert.match(serviceSource, /normalizedAccountTestEndpointModes/, '测试服务必须从账号上游接口能力解析可测试形态')
 assert.match(serviceSource, /resolveAccountTestEndpointMode/, '测试服务必须校验本次 testEndpointMode 是否被账号上游接口能力允许')
+assert.match(serviceSource, /isMessagesTestEndpointMode\(testEndpointMode\)/, '混合供应商测试请求必须按本次 mode 分派 Messages 请求构造与解析')
+assert.match(serviceSource, /isGeminiTestEndpointMode\(testEndpointMode\)/, '混合供应商测试请求必须按本次 mode 分派 Gemini 请求构造与解析')
 assert.match(serviceSource, /测试请求形态不在账户上游接口能力中/, '账户测试请求形态错误必须使用上游接口能力文案')
 assert.match(serviceSource, /账户上游接口能力中没有可用于连接测试的请求形态/, '账户测试空能力错误必须使用上游接口能力文案')
 assert.match(optionsServiceSource, /账户上游接口能力中没有可用于连接测试的请求形态/, '测试选项空能力错误必须使用上游接口能力文案')

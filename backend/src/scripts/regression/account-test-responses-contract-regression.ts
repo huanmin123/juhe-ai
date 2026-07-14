@@ -128,10 +128,10 @@ try {
   const manualTestOptions = await accountManualTestOptionsAsync(fullAccountForManualTest!)
   assert.deepEqual(
     manualTestOptions.testEndpointModes,
-    ['responses_json', 'chat_sse', 'responses_sse', 'chat_json'],
+    ['responses_sse', 'chat_sse', 'chat_json', 'responses_json'],
     '人工测试选项应按完整保存账户能力返回稳定顺序，不能依赖列表摘要或模型协议标签'
   )
-  assert.equal(manualTestOptions.defaultTestEndpointMode, 'responses_json', '账户默认测试应使用保存协议族对应的非流式 JSON')
+  assert.equal(manualTestOptions.defaultTestEndpointMode, 'responses_sse', 'GPT 账户默认测试应使用保存的 Responses 流式检查协议')
   assert.equal('credentials' in manualTestOptions, false, '人工测试选项不得暴露账户凭据')
 
   assert.equal(account.healthCheckModel, providerDefaultHealthCheckModel, '新账户应按协议档案系统默认值初始化检查模型')

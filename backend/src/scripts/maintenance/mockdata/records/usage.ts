@@ -433,6 +433,22 @@ function appendCoverageUsageRecords(records: UsageRecordSeed[], created: Created
       account: created.accounts.managerPrimary
     },
     {
+      ordinal: nextOrdinal(records.length + 1450, (value) => value % 41 !== 0 && value % 11 !== 0 && value % 3 !== 0),
+      idSuffix: 'coverage_account_health_check',
+      modelOverride: created.accounts.primary.healthCheckModel,
+      successOverride: true,
+      scenario: {
+        key: created.apiKeys.adminMain,
+        owner: created.users.admin,
+        group: created.groups.main,
+        accounts: [created.accounts.primary],
+        label: 'admin-account-health-check-coverage',
+        clientIpBase: '10.10.19.',
+        trafficSource: 'account_health_check'
+      },
+      account: created.accounts.primary
+    },
+    {
       ordinal: nextOrdinal(records.length + 1500, (value) => value % 41 !== 0 && value % 11 !== 0 && value % 3 !== 0),
       idSuffix: 'coverage_cooldown_retest',
       scenario: {

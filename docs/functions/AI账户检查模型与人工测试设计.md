@@ -70,6 +70,8 @@ pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-
 
 账户向用户暴露必填的“健康检查请求形态”，只能选择账户已经启用的 JSON / Streaming mode。保存值就是后台探针最终使用值；人工测试仍可为单次诊断临时选择其他已启用 mode。
 
+混合供应商账户可以从自身上游接口能力中选择 Chat Completions、Responses、Messages 或 GenerateContent 的 JSON / Streaming 生成形态，不受账户初始协议档案裁剪。人工测试和后台检查必须按本次选中的精确 mode 构造下游诊断请求，再由混合账户模型映射决定实际上游协议和模型；`message_token_counting`、`count_tokens`、`embed_content` 等工具接口不进入检查协议选项。
+
 ## 4. 默认检查模型
 
 模型目录允许为供应商设置默认检查模型，当前有效优先级：
