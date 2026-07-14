@@ -9,6 +9,7 @@ import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import type { DatabaseClient } from '../../storage/database-client.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import { applyPostgresSchema } from '../../storage/postgres-schema.js'
+import { seedPostgresDefaults } from '../../storage/postgres-seed-defaults.js'
 import {
   clearUsageStatsTimezoneCache,
   dateKey,
@@ -20,6 +21,18 @@ import type { UsageStatsRecordRow } from '../../storage/usage-stats-types.js'
 const fixtureEnabledEnv = 'JUHE_AI_NODE_GO_IP_STATS_FIXTURE'
 const outputPrefix = 'JUHE_AI_NODE_GO_IP_STATS '
 const clientIp = '198.18.250.42'
+const primaryAccount = {
+  id: 'acct_node_go_ip_stats_primary',
+  name: 'Node Go IP Stats Primary',
+  ownerSystemAccountId: 'sys_node_go_ip_stats_primary',
+  ownerSystemAccountName: 'Node Go IP Stats Primary Owner'
+} as const
+const secondaryAccount = {
+  id: 'acct_node_go_ip_stats_secondary',
+  name: 'Node Go IP Stats Secondary',
+  ownerSystemAccountId: 'sys_node_go_ip_stats_secondary',
+  ownerSystemAccountName: 'Node Go IP Stats Secondary Owner'
+} as const
 const fixtureTimezones = ['Asia/Shanghai', 'America/New_York'] as const
 const minimumMidnightDistanceMinutes = 5 * 60
 const minuteMs = 60 * 1000
@@ -41,9 +54,11 @@ async function main(): Promise<void> {
   try {
     const client = createPostgresDatabaseClient(pool)
     await applyPostgresSchema(client)
+    await seedPostgresDefaults(client)
 
     const timezoneSelection = selectFixtureTimezone(new Date())
     await configureFixtureTimezone(client, timezoneSelection.timezone)
+    await seedFixtureAccounts(client)
     clearUsageStatsTimezoneCache()
     const timezone = await usageStatsTimezoneAsync()
     assert.equal(timezone, timezoneSelection.timezone, 'production usage statistics timezone should read the fixture setting')
@@ -79,6 +94,7 @@ async function main(): Promise<void> {
         inputImageTokens: 29,
         outputImageTokens: 31,
         costUsd: 0.0101,
+        accountId: primaryAccount.id,
         createdAt: firstCreatedAt
       }),
       usageRow({
@@ -99,6 +115,7 @@ async function main(): Promise<void> {
         inputImageTokens: 58,
         outputImageTokens: 62,
         costUsd: 0.0202,
+        accountId: primaryAccount.id,
         createdAt: errorCreatedAt
       }),
       usageRow({
@@ -119,6 +136,7 @@ async function main(): Promise<void> {
         inputImageTokens: 87,
         outputImageTokens: 93,
         costUsd: 0.0303,
+        accountId: secondaryAccount.id,
         createdAt: lastSuccessCreatedAt
       }),
       usageRow({
@@ -139,6 +157,7 @@ async function main(): Promise<void> {
         inputImageTokens: 9007,
         outputImageTokens: 9008,
         costUsd: 9.009,
+        accountId: null,
         createdAt: nextDateCreatedAt
       })
     ]
@@ -222,6 +241,7 @@ interface UsageRowInput {
   inputImageTokens: number
   outputImageTokens: number
   costUsd: number
+  accountId: string | null
   createdAt: string
 }
 
@@ -283,6 +303,55 @@ async function configureFixtureTimezone(client: DatabaseClient, timezone: string
         value_json = EXCLUDED.value_json,
         updated_at = EXCLUDED.updated_at
     `, [JSON.stringify(timezone), updatedAt])
+  })
+}
+
+async function seedFixtureAccounts(client: DatabaseClient): Promise<void> {
+  const updatedAt = new Date().toISOString()
+  await client.transaction(async (transaction) => {
+    for (const account of [primaryAccount, secondaryAccount]) {
+      await transaction.execute(`
+        INSERT INTO "juhe_business"."system_accounts" (
+          id, username, display_name, description, role, status, password_hash,
+          must_change_password, image_generation_enabled, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          display_name = EXCLUDED.display_name,
+          updated_at = EXCLUDED.updated_at
+      `, [
+        account.ownerSystemAccountId,
+        account.ownerSystemAccountId,
+        account.ownerSystemAccountName,
+        'Node writer to Go detail reader integration fixture',
+        'user',
+        'active',
+        'node-go-ip-stats-owner-password-hash',
+        false,
+        false,
+        updatedAt,
+        updatedAt
+      ])
+      await transaction.execute(`
+        INSERT INTO "juhe_business"."accounts" (
+          id, system_account_id, provider_code, provider_protocol_profile_id,
+          protocol_code, protocol_version, name, type, status,
+          credentials_encrypted, credential_mask, health_check_model,
+          health_check_endpoint_family, created_at, updated_at
+        ) VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?,
+          'api_key', 'active', '{}', '', 'gpt-5.5', 'responses', ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          system_account_id = EXCLUDED.system_account_id,
+          name = EXCLUDED.name,
+          deleted_at = NULL,
+          updated_at = EXCLUDED.updated_at
+      `, [
+        account.id,
+        account.ownerSystemAccountId,
+        account.name,
+        updatedAt,
+        updatedAt
+      ])
+    }
   })
 }
 
@@ -362,7 +431,7 @@ function usageRow(input: UsageRowInput): UsageStatsRecordRow {
     client_ip: clientIp,
     api_key_id: null,
     group_id: null,
-    account_id: null,
+    account_id: input.accountId,
     endpoint: '/v1/responses',
     provider_code: 'openai',
     model: 'gpt-5.1',
