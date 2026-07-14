@@ -81,8 +81,9 @@ export interface AuditLogQueueRuntime {
   droppedOversizeCount: number
   successHotRetentionHours: number
   successRetentionDays: number
-  failureRetentionDays: number
-  errorGroupRetentionDays: number
+  problemRetentionDays: number
+  successFullBodyLimitBytes: number
+  problemFullBodyLimitBytes: number
 }
 
 export function recordDroppedAuditCapture(input: {
@@ -561,8 +562,9 @@ export function getAuditLogQueueRuntime(): AuditLogQueueRuntime {
     droppedOversizeCount,
     successHotRetentionHours: settings.successHotRetentionHours,
     successRetentionDays: settings.successRetentionDays,
-    failureRetentionDays: settings.failureRetentionDays,
-    errorGroupRetentionDays: settings.errorGroupRetentionDays
+    problemRetentionDays: settings.problemRetentionDays,
+    successFullBodyLimitBytes: settings.successFullBodyLimitBytes,
+    problemFullBodyLimitBytes: settings.problemFullBodyLimitBytes
   }
 }
 

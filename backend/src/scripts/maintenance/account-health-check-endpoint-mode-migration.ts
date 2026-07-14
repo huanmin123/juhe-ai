@@ -9,6 +9,13 @@ const legacyModeMap = {
   generate_content: 'generate_content_json'
 } as const
 
+const legacyFamilyGenerationModes = {
+  chat_completions: ['chat_json', 'chat_sse'],
+  responses: ['responses_json', 'responses_sse'],
+  messages: ['messages_json', 'messages_sse'],
+  generate_content: ['generate_content_json', 'generate_content_sse']
+} as const
+
 const exactModeSet = new Set<string>(ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES)
 
 export interface AccountHealthCheckEndpointModeMigrationOptions {
@@ -110,6 +117,7 @@ async function executeMigration(client: PostgresPoolClient, batchSize: number): 
   try {
     await client.query('LOCK TABLE juhe_business.accounts IN ACCESS EXCLUSIVE MODE')
     await assertColumnState(client, 'legacy')
+    await dropLegacyColumnConstraints(client)
     const stats = await scanLegacyAccounts(client, batchSize, true)
     await replaceLegacyColumn(client)
     await verifyExactRows(client, batchSize)
@@ -157,32 +165,47 @@ async function scanLegacyAccounts(
       if (!(row.health_check_endpoint_family in legacyModeMap)) {
         throw new Error(`账户 ${row.id} 的历史健康检查协议族无效`)
       }
-      const nextMode = row.provider_code === 'gpt'
-        ? 'responses_sse'
-        : legacyModeMap[row.health_check_endpoint_family]
+      const credentials = decryptCredentialRecord(row.id, row.credentials_encrypted)
+      const nextMode = resolveLegacyHealthCheckEndpointMode({
+        accountId: row.id,
+        accountType: row.type,
+        providerCode: row.provider_code,
+        legacyFamily: row.health_check_endpoint_family,
+        credentials
+      })
       stats.modeCounts[nextMode] = (stats.modeCounts[nextMode] ?? 0) + 1
       if (row.authorization_instance_authorization_id) stats.authorizationInstances += 1
-      if (row.provider_code !== 'gpt') continue
+      if (row.provider_code !== 'gpt') {
+        if (apply) {
+          await client.query(`
+            UPDATE juhe_business.accounts
+            SET health_check_endpoint_family = $1
+            WHERE id = $2
+          `, [nextMode, row.id])
+        }
+        continue
+      }
       stats.gptAccounts += 1
-      const credentials = decryptCredentialRecord(row.id, row.credentials_encrypted)
       const normalized = normalizeGptHealthCheckCredentials(credentials, row.type)
       const compatibilityChanged = row.client_compatibility !== 'codex_responses'
       if (normalized.changed) stats.credentialUpdates += 1
       if (compatibilityChanged) stats.clientCompatibilityUpdates += 1
-      if (!apply || (!normalized.changed && !compatibilityChanged)) continue
+      if (!apply) continue
       if (normalized.changed) {
         await client.query(`
           UPDATE juhe_business.accounts
           SET credentials_encrypted = $1,
-              client_compatibility = 'codex_responses'
-          WHERE id = $2
-        `, [encryptJson(normalized.credentials), row.id])
+              client_compatibility = 'codex_responses',
+              health_check_endpoint_family = $2
+          WHERE id = $3
+        `, [encryptJson(normalized.credentials), nextMode, row.id])
       } else {
         await client.query(`
           UPDATE juhe_business.accounts
-          SET client_compatibility = 'codex_responses'
-          WHERE id = $1
-        `, [row.id])
+          SET client_compatibility = 'codex_responses',
+              health_check_endpoint_family = $1
+          WHERE id = $2
+        `, [nextMode, row.id])
       }
     }
     afterId = rows.at(-1)?.id ?? afterId
@@ -191,7 +214,7 @@ async function scanLegacyAccounts(
   return stats
 }
 
-async function replaceLegacyColumn(client: PostgresPoolClient): Promise<void> {
+async function dropLegacyColumnConstraints(client: PostgresPoolClient): Promise<void> {
   await client.query(`
     DO $$
     DECLARE
@@ -208,24 +231,12 @@ async function replaceLegacyColumn(client: PostgresPoolClient): Promise<void> {
       END LOOP;
     END $$
   `)
+}
+
+async function replaceLegacyColumn(client: PostgresPoolClient): Promise<void> {
   await client.query(`
     ALTER TABLE juhe_business.accounts
     RENAME COLUMN health_check_endpoint_family TO health_check_endpoint_mode
-  `)
-  await client.query(`
-    UPDATE juhe_business.accounts
-    SET health_check_endpoint_mode = CASE
-      WHEN provider_code = 'gpt' THEN 'responses_sse'
-      WHEN health_check_endpoint_mode = 'chat_completions' THEN 'chat_json'
-      WHEN health_check_endpoint_mode = 'responses' THEN 'responses_json'
-      WHEN health_check_endpoint_mode = 'messages' THEN 'messages_json'
-      WHEN health_check_endpoint_mode = 'generate_content' THEN 'generate_content_json'
-      ELSE health_check_endpoint_mode
-    END,
-    client_compatibility = CASE
-      WHEN provider_code = 'gpt' THEN 'codex_responses'
-      ELSE client_compatibility
-    END
   `)
   await client.query(`
     ALTER TABLE juhe_business.accounts
@@ -261,6 +272,15 @@ async function verifyExactRows(
       if (!exactModeSet.has(row.health_check_endpoint_mode)) {
         throw new Error(`账户 ${row.id} 的健康检查请求形态无效`)
       }
+      const credentials = decryptCredentialRecord(row.id, row.credentials_encrypted)
+      const supportedModes = supportedGenerationModesForExactVerification(
+        row.id,
+        credentials,
+        row.health_check_endpoint_mode
+      )
+      if (!supportedModes.includes(row.health_check_endpoint_mode)) {
+        throw new Error(`账户 ${row.id} 的健康检查请求形态 ${row.health_check_endpoint_mode} 不在加密上游生成能力中`)
+      }
       stats.modeCounts[row.health_check_endpoint_mode] = (stats.modeCounts[row.health_check_endpoint_mode] ?? 0) + 1
       if (row.authorization_instance_authorization_id) stats.authorizationInstances += 1
       if (row.provider_code !== 'gpt') continue
@@ -271,9 +291,7 @@ async function verifyExactRows(
       if (row.client_compatibility !== 'codex_responses') {
         throw new Error(`GPT 账户 ${row.id} 未切换到 codex_responses`)
       }
-      const credentials = decryptCredentialRecord(row.id, row.credentials_encrypted)
-      const modes = credentials.supported_endpoint_modes
-      if (!Array.isArray(modes) || !modes.includes('responses_sse')) {
+      if (!supportedModes.includes('responses_sse')) {
         throw new Error(`GPT 账户 ${row.id} 的加密 supported_endpoint_modes 缺少 responses_sse`)
       }
     }
@@ -281,6 +299,67 @@ async function verifyExactRows(
     writeProgress('verify', afterId, stats)
   }
   return stats
+}
+
+export function resolveLegacyHealthCheckEndpointMode(input: {
+  accountId: string
+  accountType: string
+  providerCode: string
+  legacyFamily: keyof typeof legacyModeMap
+  credentials: Record<string, unknown>
+}): string {
+  if (input.providerCode === 'gpt') return 'responses_sse'
+  const candidates = legacyFamilyGenerationModes[input.legacyFamily]
+  const supportedModes = supportedGenerationModes(
+    input.accountId,
+    input.credentials,
+    [...candidates]
+  )
+  const selected = candidates.find((mode) => supportedModes.includes(mode))
+  if (selected) return selected
+  throw new Error(`账户 ${input.accountId} 的历史检查协议族 ${input.legacyFamily} 没有已启用的 JSON 或 Streaming 生成能力`)
+}
+
+function supportedGenerationModesForExactVerification(
+  accountId: string,
+  credentials: Record<string, unknown>,
+  exactMode: string
+): string[] {
+  const fallbackModes = exactModeSet.has(exactMode)
+    ? generationFamilyModes(exactMode)
+    : []
+  return supportedGenerationModes(accountId, credentials, fallbackModes)
+}
+
+function supportedGenerationModes(
+  accountId: string,
+  credentials: Record<string, unknown>,
+  fallbackModes: string[]
+): string[] {
+  const rawModes = credentials.supported_endpoint_modes
+  if (rawModes === undefined) return [...fallbackModes]
+  if (!Array.isArray(rawModes)) {
+    throw new Error(`账户 ${accountId} 的 supported_endpoint_modes 必须是字符串数组`)
+  }
+  const output: string[] = []
+  for (const value of rawModes) {
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new Error(`账户 ${accountId} 的 supported_endpoint_modes 必须是非空字符串数组`)
+    }
+    const mode = value.trim()
+    if (exactModeSet.has(mode) && !output.includes(mode)) output.push(mode)
+  }
+  return output
+}
+
+function generationFamilyModes(mode: string): string[] {
+  if (mode === 'chat_json' || mode === 'chat_sse') return ['chat_json', 'chat_sse']
+  if (mode === 'responses_json' || mode === 'responses_sse') return ['responses_json', 'responses_sse']
+  if (mode === 'messages_json' || mode === 'messages_sse') return ['messages_json', 'messages_sse']
+  if (mode === 'generate_content_json' || mode === 'generate_content_sse') {
+    return ['generate_content_json', 'generate_content_sse']
+  }
+  return []
 }
 
 async function assertColumnState(client: PostgresPoolClient, expected: 'legacy' | 'exact'): Promise<void> {

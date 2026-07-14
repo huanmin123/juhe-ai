@@ -137,8 +137,6 @@ interface AuditAttemptState {
 let activeAuditCaptureCount = 0
 const gatewayHttpCompletionObservers = new WeakMap<Response, GatewayHttpCompletionObserver>()
 
-const failedAuditFullBodyLimitBytes = 2 * 1024 * 1024
-const successAuditFullBodyLimitBytes = 512 * 1024
 const auditInlineSha256MaxBytes = 1024 * 1024
 const auditActiveCaptureHardLimitBytes = 64 * 1024 * 1024
 
@@ -158,6 +156,8 @@ export class AuditCaptureContext {
   private readonly enabled: boolean
   private readonly successSampleRate: number
   private readonly activeCaptureMaxBytes: number
+  private readonly successFullBodyLimitBytes: number
+  private readonly problemFullBodyLimitBytes: number
   private readonly payloads: AuditLogPayloadInput[] = []
   private readonly attempts: AuditLogAttemptInput[] = []
   private gatewayContext: AuditGatewayContext = { providerCode: OPENAI_PROTOCOL_CODE }
@@ -179,6 +179,8 @@ export class AuditCaptureContext {
     this.enabled = settings.enabled
     this.successSampleRate = settings.successSampleRate
     this.activeCaptureMaxBytes = Math.min(settings.activeCaptureMaxBytes, auditActiveCaptureHardLimitBytes)
+    this.successFullBodyLimitBytes = settings.successFullBodyLimitBytes
+    this.problemFullBodyLimitBytes = settings.problemFullBodyLimitBytes
     this.req = input.req
     this.httpCompletion = input.httpCompletion ?? (input.res ? observeGatewayHttpCompletion(input.res) : undefined)
     this.traceId = input.traceId
@@ -566,9 +568,9 @@ export class AuditCaptureContext {
     if (!this.enabled) return
     if (this.overflowed) return
     if (!shouldOffloadAuditPayloadRetention()) {
-      summarizeAuditPayloadForLimit(payload, failedAuditFullBodyLimitBytes)
+      summarizeAuditPayloadForLimit(payload, this.problemFullBodyLimitBytes)
     }
-    const nextApproximateBytes = this.approximateBytes + estimateRetainedPayloadBytes(payload, failedAuditFullBodyLimitBytes)
+    const nextApproximateBytes = this.approximateBytes + estimateRetainedPayloadBytes(payload, this.problemFullBodyLimitBytes)
     if (nextApproximateBytes > this.activeCaptureMaxBytes) {
       this.overflowed = true
       this.payloads.length = 0
@@ -591,8 +593,8 @@ export class AuditCaptureContext {
 
   private applyPayloadRetention(mode: 'success' | 'failure'): void {
     const fullBodyLimit = mode === 'success'
-      ? successAuditFullBodyLimitBytes
-      : failedAuditFullBodyLimitBytes
+      ? this.successFullBodyLimitBytes
+      : this.problemFullBodyLimitBytes
     if (shouldOffloadAuditPayloadRetention()) {
       this.approximateBytes = this.payloads.reduce(
         (total, payload) => total + estimateRetainedPayloadBytes(payload, fullBodyLimit),
@@ -778,7 +780,7 @@ function estimateRetainedPayloadBytes(
   const bodyBytes = payloadBodyByteLength(payload.body)
   const retainedBodyBytes = bodyBytes <= fullBodyLimitBytes
     ? bodyBytes
-    : Math.min(bodyBytes, Math.max(fullBodyLimitBytes, auditBodySummaryEdgeBytes * 3))
+    : Math.min(bodyBytes, fullBodyLimitBytes, auditBodySummaryEdgeBytes * 2)
   const headerBytes = payload.headers ? estimateHeadersBytes(payload.headers) : 0
   return retainedBodyBytes + headerBytes + 512
 }

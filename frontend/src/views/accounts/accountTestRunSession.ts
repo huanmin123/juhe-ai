@@ -6,6 +6,7 @@ import type {
   AccountTestResult,
   AccountTestTask
 } from '@/types/domain'
+import { isAccountHealthCheckEndpointMode } from './accountHealthCheckEndpointMode'
 import type { AccountTestEndpointMode } from './accountTestFlow'
 
 export const accountTestRunSessionStorageTtlMs = 12 * 60 * 60 * 1000
@@ -241,7 +242,7 @@ function restoreAccountSummary(value: StoredAccountSummary): AccountSummary | un
   if (!value || typeof value !== 'object') return undefined
   if (typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.providerCode !== 'string') return undefined
   if (value.type !== 'api_key' && value.type !== 'oauth') return undefined
-  if (!['chat_completions', 'responses', 'messages', 'generate_content'].includes(value.healthCheckEndpointMode)) return undefined
+  if (!isAccountHealthCheckEndpointMode(value.healthCheckEndpointMode)) return undefined
   return {
     id: value.id,
     systemAccountId: optionalString(value.systemAccountId),

@@ -1,4 +1,4 @@
-import { parentPort } from 'node:worker_threads'
+import { parentPort, workerData } from 'node:worker_threads'
 
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
 
@@ -10,8 +10,12 @@ const {
 } = await import(resolveWorkerModuleUrl('./audit-payload-summary')) as typeof import('./audit-payload-summary.js')
 
 const auditTransportMaxBytes = 4 * 1024 * 1024
-const auditTransportSuccessBodyMaxBytes = 512 * 1024
-const auditTransportFailureBodyMaxBytes = 2 * 1024 * 1024
+interface AuditLogTransportWorkerData {
+  successFullBodyLimitBytes: number
+  problemFullBodyLimitBytes: number
+}
+
+const transportSettings = workerData as AuditLogTransportWorkerData
 
 type AuditLogTransportMode = 'ipc' | 'redis_stream'
 
@@ -67,9 +71,9 @@ function rehydrateAuditLogBuffers(input: AuditLogInput): AuditLogInput {
 }
 
 function prepareAuditLogForTransport(input: AuditLogInput): AuditLogInput {
-  const bodyMaxBytes = input.success
-    ? auditTransportSuccessBodyMaxBytes
-    : auditTransportFailureBodyMaxBytes
+  const bodyMaxBytes = input.auditOutcome === 'success'
+    ? transportSettings.successFullBodyLimitBytes
+    : transportSettings.problemFullBodyLimitBytes
   let structureDropped = input.attempts.length > 16 || input.payloads.length > 32
   const sourcePayloads = input.payloads.length <= 32
     ? input.payloads

@@ -1,7 +1,4 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
-import { normalizeOpenAIEndpointModesForRuntime } from '../../domain/openai-endpoint-modes.js'
-import { normalizeAnthropicEndpointModesForRuntime } from '../../domain/anthropic-endpoint-modes.js'
-import { normalizeGeminiEndpointModesForRuntime } from '../../domain/gemini-endpoint-modes.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
   GEMINI_GENERATE_CONTENT_FAMILY,
@@ -10,7 +7,6 @@ import {
   OPENAI_RESPONSES_FAMILY,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
-  isHybridProviderCode,
   isOpenAIProtocolProfile
 } from '../../domain/provider-protocol.js'
 import type {
@@ -32,6 +28,7 @@ import {
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountTestFailureEligibleForAccount } from './account-test-failure-eligibility.js'
+import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
 import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
@@ -73,7 +70,6 @@ import {
   createGeminiTestRequest,
   createOpenAITestRequest
 } from './account-test-request.js'
-import { normalizeHybridEndpointModesForRuntime } from '../providers/drivers/hybrid/account-credentials.js'
 
 type AccountTestInput = {
   model?: string
@@ -179,8 +175,8 @@ export async function testOpenAIAccount(
   const traceId = createTraceId()
 
   try {
-    const supportedEndpointModes = normalizedAccountTestEndpointModes(account)
-    testEndpointMode = resolveAccountTestEndpointMode(account, supportedEndpointModes, input.testEndpointMode)
+    const supportedEndpointModes = accountManualTestEndpointModes(account)
+    testEndpointMode = resolveAccountTestEndpointMode(supportedEndpointModes, input.testEndpointMode)
     clientCompatibility = accountTestClientCompatibility(account, testEndpointMode, accountClientCompatibility)
     const resolved = await resolveAccountTestCandidate(account, {
       groupId: stringValue(input.groupId),
@@ -418,49 +414,12 @@ function sanitizeAccountTestResult(result: AccountTestResult): AccountTestResult
   return sanitizeDiagnosticPayload(result)
 }
 
-function normalizedAccountTestEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
-  if (isHybridProviderCode(account.providerCode)) {
-    return normalizeHybridEndpointModesForRuntime(account.credentials.supported_endpoint_modes)
-  }
-  if (isAnthropicProtocolProfile(account)) {
-    return normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-      providerCode: account.providerCode,
-      accountType: account.type,
-      protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion,
-      providerProtocolProfileId: account.providerProtocolProfileId
-    }).filter((mode) => mode === 'messages_json' || mode === 'messages_sse')
-  }
-  if (isGeminiProtocolProfile(account)) {
-    return normalizeGeminiEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-      providerCode: account.providerCode,
-      accountType: account.type,
-      protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion,
-      providerProtocolProfileId: account.providerProtocolProfileId
-    }).filter((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')
-  }
-  if (isOpenAIProtocolProfile(account)) {
-    return normalizeOpenAIEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-      providerCode: account.providerCode,
-      providerProtocolProfileId: account.providerProtocolProfileId,
-      accountType: account.type,
-      clientCompatibility: account.clientCompatibility
-    })
-  }
-  return []
-}
-
 function resolveAccountTestEndpointMode(
-  account: AccountSummary,
   supportedModes: AccountSupportedEndpointMode[],
   requestedMode?: AccountSupportedEndpointMode
 ): AccountSupportedEndpointMode {
-  const allowedModes = accountTestEndpointModeOrder(account).filter((mode) => supportedModes.includes(mode))
+  const allowedModes = supportedModes
   if (requestedMode) {
-    if (!accountTestEndpointModeOrder(account).includes(requestedMode)) {
-      throw new AccountTestConfigurationError(`当前账户协议不支持该测试请求形态：${requestedMode}`)
-    }
     if (!allowedModes.includes(requestedMode)) {
       throw new AccountTestConfigurationError(`测试请求形态不在账户上游接口能力中：${requestedMode}`)
     }
@@ -471,37 +430,6 @@ function resolveAccountTestEndpointMode(
     throw new AccountTestConfigurationError('账户上游接口能力中没有可用于连接测试的请求形态')
   }
   return mode
-}
-
-function accountTestEndpointModeOrder(account: AccountSummary): AccountSupportedEndpointMode[] {
-  const defaultMode = account.healthCheckEndpointMode
-  if (isHybridProviderCode(account.providerCode)) {
-    return uniqueEndpointModes(
-      defaultMode,
-      'chat_json',
-      'chat_sse',
-      'responses_json',
-      'responses_sse',
-      'messages_json',
-      'messages_sse',
-      'generate_content_json',
-      'generate_content_sse'
-    )
-  }
-  if (isAnthropicProtocolProfile(account)) {
-    return uniqueEndpointModes(defaultMode, 'messages_sse')
-  }
-  if (isGeminiProtocolProfile(account)) {
-    return uniqueEndpointModes(defaultMode, 'generate_content_sse')
-  }
-  if (account.type === 'oauth') {
-    return uniqueEndpointModes(defaultMode, 'responses_sse')
-  }
-  return uniqueEndpointModes(defaultMode, 'chat_sse', 'responses_sse', 'chat_json', 'responses_json')
-}
-
-function uniqueEndpointModes(...modes: AccountSupportedEndpointMode[]): AccountSupportedEndpointMode[] {
-  return [...new Set(modes)]
 }
 
 function accountTestClientCompatibility(

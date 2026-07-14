@@ -93,9 +93,9 @@ assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_busines
 assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+health_check_endpoint_mode text NOT NULL[\s\S]+CHECK \(health_check_endpoint_mode IN \('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse'\)\)/, 'Go 公开账户 baseline 应包含受约束的健康检查请求形态')
 assert.match(healthCheckEndpointModeOfflineMigration, /LOCK TABLE juhe_business\.accounts IN ACCESS EXCLUSIVE MODE/, '历史字段切换必须通过停服离线事务锁定账户表')
 assert.match(healthCheckEndpointModeOfflineMigration, /RENAME COLUMN health_check_endpoint_family TO health_check_endpoint_mode/, '离线迁移必须直接替换旧列，不能双字段兼容')
-assert.match(healthCheckEndpointModeOfflineMigration, /WHEN provider_code = 'gpt' THEN 'responses_sse'/, '离线迁移必须把全部 GPT 账户切到 Responses Streaming')
-assert.match(healthCheckEndpointModeOfflineMigration, /WHEN health_check_endpoint_mode = 'chat_completions' THEN 'chat_json'[\s\S]+WHEN health_check_endpoint_mode = 'responses' THEN 'responses_json'[\s\S]+WHEN health_check_endpoint_mode = 'messages' THEN 'messages_json'[\s\S]+WHEN health_check_endpoint_mode = 'generate_content' THEN 'generate_content_json'/, '离线迁移必须把其他历史协议族映射为精确 JSON mode')
-assert.match(healthCheckEndpointModeOfflineMigration, /decryptJson\(encrypted\)/, '离线迁移必须通过应用层 codec 解密 GPT supported endpoint modes')
+assert.match(healthCheckEndpointModeOfflineMigration, /if \(input\.providerCode === 'gpt'\) return 'responses_sse'/, '离线迁移必须把全部 GPT 账户切到 Responses Streaming')
+assert.match(healthCheckEndpointModeOfflineMigration, /legacyFamilyGenerationModes[\s\S]+chat_completions: \['chat_json', 'chat_sse'\][\s\S]+messages: \['messages_json', 'messages_sse'\][\s\S]+generate_content: \['generate_content_json', 'generate_content_sse'\]/, '离线迁移必须按历史协议族从加密能力中选择 JSON 或 Streaming')
+assert.match(healthCheckEndpointModeOfflineMigration, /decryptJson\(encrypted\)/, '离线迁移必须通过应用层 codec 解密全部账户 supported endpoint modes')
 assert.match(healthCheckEndpointModeOfflineMigration, /encryptJson\(normalized\.credentials\)/, '离线迁移必须通过应用层 codec 重新加密 GPT supported endpoint modes')
 for (const fixture of postgresAccountFixtureSources) {
   for (const match of fixture.source.matchAll(/INSERT INTO juhe_business\.accounts\s*\(([\s\S]*?)\)\s*(?:VALUES|SELECT)/gi)) {
