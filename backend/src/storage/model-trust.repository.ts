@@ -6,7 +6,7 @@ import {
   evaluateIdentityTrust,
   hasHardTrustConflict,
   isIdentityObservation,
-  listIdentityAccountModelsForPopulations,
+  listIdentityAccountModelsForScopes,
   refreshIdentityBaselines,
   upsertIdentitySourceFeature
 } from './model-trust-identity.repository.js'
@@ -176,10 +176,10 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
       await upsertTokenRound(tx, row)
       await upsertIdentitySourceFeature(tx, row)
     }
-    const changedPopulations = await refreshIdentityBaselines(tx, rows)
+    const touchedIdentityScopes = await refreshIdentityBaselines(tx, rows)
     const affected = mergeAccountModelKeys(
       uniqueAccountModels(rows.filter(isDiagnosticTrustObservation)),
-      await listIdentityAccountModelsForPopulations(tx, changedPopulations)
+      await listIdentityAccountModelsForScopes(tx, touchedIdentityScopes)
     )
     for (const key of affected) {
       await refreshLatestResult(tx, key, rows)

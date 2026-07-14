@@ -266,6 +266,85 @@ assert.equal(isolatedTrust.identityObservationCount, 1, '当前身份观察数�
 assert.equal(isolatedTrust.independentSourceCount, 5, '旧 population / feature 的来源桶不得污染当前 LOO 排除集合')
 assert(Math.abs(Number(isolatedTrust.identityDistance)) < 0.000001, '旧 v1 target 向量不得污染当前 v2 身份距离')
 
+const peerRefreshPopulationKeyHmac = security.modelCheckObservationHmac('identity-peer-refresh-population', 'population')
+const peerRefreshInitialBases = [0.20, 0.21, 0.22, 0.23, 0.24]
+await aggregateIdentityBatch(peerRefreshInitialBases.map((base, sourceIndex) => identityObservation({
+  accountId: `acct_peer_refresh_${sourceIndex}`,
+  upstream: `peer-refresh-source-${sourceIndex}`,
+  model: 'gpt-5.6-sol',
+  probeIndex: 0,
+  vector: featureVector(base),
+  populationKeyHmac: peerRefreshPopulationKeyHmac,
+  createdAt: new Date(Date.UTC(2026, 6, 25, 3, 0, sourceIndex)).toISOString()
+})))
+const peerRefreshBefore = await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_peer_refresh_1', 'gpt-5.6-sol')
+assert(peerRefreshBefore?.identityDistance !== undefined)
+await aggregateIdentityBatch([
+  identityObservation({
+    accountId: 'acct_peer_refresh_0', upstream: 'peer-refresh-source-0', model: 'gpt-5.6-sol', probeIndex: 0,
+    vector: featureVector(0.23), populationKeyHmac: peerRefreshPopulationKeyHmac,
+    createdAt: new Date(Date.UTC(2026, 6, 25, 4, 0, 0)).toISOString()
+  }),
+  identityObservation({
+    accountId: 'acct_peer_refresh_2', upstream: 'peer-refresh-source-2', model: 'gpt-5.6-sol', probeIndex: 0,
+    vector: featureVector(0.25), populationKeyHmac: peerRefreshPopulationKeyHmac,
+    createdAt: new Date(Date.UTC(2026, 6, 25, 4, 0, 1)).toISOString()
+  }),
+  identityObservation({
+    accountId: 'acct_peer_refresh_3', upstream: 'peer-refresh-source-3', model: 'gpt-5.6-sol', probeIndex: 0,
+    vector: featureVector(0.26), populationKeyHmac: peerRefreshPopulationKeyHmac,
+    createdAt: new Date(Date.UTC(2026, 6, 25, 4, 0, 2)).toISOString()
+  })
+])
+const peerRefreshAfter = await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_peer_refresh_1', 'gpt-5.6-sol')
+assert(peerRefreshAfter?.identityDistance !== undefined)
+assert(
+  Number(peerRefreshAfter.identityDistance) > Number(peerRefreshBefore.identityDistance) + 1,
+  '同 scope 其他来源累计向量变化时，即使 baseline 版本和来源数未变，也必须刷新未参与本批的 peer LOO latest'
+)
+assert(Math.abs(Number(peerRefreshAfter.identityDistance) - 2.75) < 0.000001)
+
+const tiedPopulationA = security.modelCheckObservationHmac('identity-tied-population-a', 'population')
+const tiedPopulationB = security.modelCheckObservationHmac('identity-tied-population-b', 'population')
+const tiedAccountId = 'acct_tied_identity_scope'
+const tiedObservedAt = new Date(Date.UTC(2026, 6, 25, 5, 0, 0)).toISOString()
+await aggregateIdentityBatch([
+  identityObservation({
+    accountId: tiedAccountId, upstream: 'tied-scope-a', model: 'gpt-5.6-sol', probeIndex: 0,
+    vector: featureVector(0.2), populationKeyHmac: tiedPopulationA, featureVersion: 'identity-features-tied-a',
+    createdAt: tiedObservedAt
+  }),
+  identityObservation({
+    accountId: tiedAccountId, upstream: 'tied-scope-b', model: 'gpt-5.6-sol', probeIndex: 0,
+    vector: featureVector(0.8), populationKeyHmac: tiedPopulationB, featureVersion: 'identity-features-tied-b',
+    createdAt: tiedObservedAt
+  })
+])
+const expectedTiedFeature = tiedPopulationA > tiedPopulationB
+  ? 'identity-features-tied-a'
+  : 'identity-features-tied-b'
+const tiedTrustBefore = await repository.findModelAccountTrustResultAsync('sys_identity', tiedAccountId, 'gpt-5.6-sol')
+assert.equal(tiedTrustBefore?.featureVersion, expectedTiedFeature, '同毫秒 scope 必须按稳定的 scope 级排序选择 current')
+await aggregateIdentityBatch([
+  identityObservation({
+    accountId: 'acct_tied_scope_refresh', upstream: 'tied-scope-refresh', model: 'gpt-5.6-sol', probeIndex: 0,
+    vector: featureVector(0.3), populationKeyHmac: tiedPopulationA, featureVersion: 'identity-features-tied-a',
+    createdAt: new Date(Date.UTC(2026, 6, 25, 6, 0, 0)).toISOString()
+  })
+])
+const tiedTrustAfter = await repository.findModelAccountTrustResultAsync('sys_identity', tiedAccountId, 'gpt-5.6-sol')
+assert.equal(tiedTrustAfter?.featureVersion, expectedTiedFeature, 'peer scope 刷新触发重复 evaluate 后 current 选择不得翻转')
+const tiedPairedWindows = database.getStatsDatabase().prepare(`
+  SELECT population_key_hmac, feature_version FROM model_paired_similarity_windows
+  WHERE system_account_id = ? AND account_id = ?
+`).all('sys_identity', tiedAccountId) as Array<{ population_key_hmac: string; feature_version: string }>
+assert.equal(tiedPairedWindows.length, 1, '重复 evaluate 只能写一个 current paired window')
+assert.equal(
+  tiedPairedWindows[0]?.population_key_hmac,
+  expectedTiedFeature === 'identity-features-tied-a' ? tiedPopulationA : tiedPopulationB
+)
+assert.equal(tiedPairedWindows[0]?.feature_version, expectedTiedFeature)
+
 const recoveryObservations: import('../../storage/model-trust.repository.js').ModelCheckObservationInput[] = []
 for (let repeat = 0; repeat < 40; repeat += 1) {
   for (let sourceIndex = 0; sourceIndex < 5; sourceIndex += 1) {

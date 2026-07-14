@@ -18,6 +18,19 @@ const driftCandidateMaxDistance = 1.5
 
 type AccountModelKey = { systemAccountId: string; accountId: string; requestedModel: string }
 
+export type IdentityPopulationScope = {
+  populationKey: string
+  requestedModel: string
+  featureVersion: string
+}
+
+type CurrentIdentityScopeRow = {
+  population_key_hmac: string
+  feature_version: string
+  first_observed_at: string
+  last_observed_at: string
+}
+
 type SourceFeatureRow = {
   system_account_id: string
   account_id: string
@@ -129,28 +142,39 @@ export async function upsertIdentitySourceFeature(client: DatabaseClient, row: O
   ])
 }
 
-export async function refreshIdentityBaselines(client: DatabaseClient, rows: ObservationRow[]): Promise<string[]> {
-  const keys = new Map<string, { populationKey: string; model: string; featureVersion: string }>()
+export async function refreshIdentityBaselines(client: DatabaseClient, rows: ObservationRow[]): Promise<IdentityPopulationScope[]> {
+  const keys = new Map<string, IdentityPopulationScope>()
   for (const row of rows.filter(isIdentityObservation)) {
-    const key = { populationKey: row.population_key_hmac, model: row.requested_model, featureVersion: row.feature_version }
-    keys.set(`${key.populationKey}\u0000${key.model}\u0000${key.featureVersion}`, key)
+    const key = {
+      populationKey: row.population_key_hmac,
+      requestedModel: row.requested_model,
+      featureVersion: row.feature_version
+    }
+    keys.set(`${key.populationKey}\u0000${key.requestedModel}\u0000${key.featureVersion}`, key)
   }
-  const changedPopulations = new Set<string>()
   for (const key of keys.values()) {
-    if (await refreshBaseline(client, key)) changedPopulations.add(key.populationKey)
+    await refreshBaseline(client, {
+      populationKey: key.populationKey,
+      model: key.requestedModel,
+      featureVersion: key.featureVersion
+    })
   }
-  return [...changedPopulations]
+  return [...keys.values()]
 }
 
-export async function listIdentityAccountModelsForPopulations(client: DatabaseClient, populations: string[]): Promise<AccountModelKey[]> {
+export async function listIdentityAccountModelsForScopes(client: DatabaseClient, scopes: IdentityPopulationScope[]): Promise<AccountModelKey[]> {
   const table = client.dialect.qualifyTable('juhe_stats', 'model_identity_source_features')
   const result = new Map<string, AccountModelKey>()
-  for (const population of [...new Set(populations)]) {
+  const uniqueScopes = new Map<string, IdentityPopulationScope>()
+  for (const scope of scopes) {
+    uniqueScopes.set(`${scope.populationKey}\u0000${scope.requestedModel}\u0000${scope.featureVersion}`, scope)
+  }
+  for (const scope of uniqueScopes.values()) {
     const members = await client.query<{ system_account_id: string; account_id: string; requested_model: string }>(`
       SELECT DISTINCT system_account_id, account_id, requested_model FROM ${table}
-      WHERE population_key_hmac = ?
+      WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ?
       ORDER BY system_account_id, account_id, requested_model
-    `, [population])
+    `, [scope.populationKey, scope.requestedModel, scope.featureVersion])
     for (const member of members) {
       const key = { systemAccountId: member.system_account_id, accountId: member.account_id, requestedModel: member.requested_model }
       result.set(`${key.systemAccountId}\u0000${key.accountId}\u0000${key.requestedModel}`, key)
@@ -161,22 +185,32 @@ export async function listIdentityAccountModelsForPopulations(client: DatabaseCl
 
 export async function evaluateIdentityTrust(client: DatabaseClient, key: AccountModelKey): Promise<IdentityTrustEvaluation | undefined> {
   const table = client.dialect.qualifyTable('juhe_stats', 'model_identity_source_features')
-  const accountModelRows = await client.query<SourceFeatureRow>(`
+  // Scope timestamps define recency; opaque keys only make exact ties deterministic across database drivers.
+  const currentScopes = await client.query<CurrentIdentityScopeRow>(`
+    SELECT population_key_hmac, feature_version,
+      MIN(first_observed_at) AS first_observed_at,
+      MAX(last_observed_at) AS last_observed_at
+    FROM ${table}
+    WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
+    GROUP BY population_key_hmac, feature_version
+  `, [key.systemAccountId, key.accountId, key.requestedModel])
+  const currentScope = [...currentScopes].sort(compareCurrentIdentityScopes)[0]
+  if (!currentScope) return undefined
+  const ownRows = await client.query<SourceFeatureRow>(`
     SELECT * FROM ${table}
     WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
-    ORDER BY last_observed_at DESC
-  `, [key.systemAccountId, key.accountId, key.requestedModel])
-  if (!accountModelRows.length) return undefined
-  const current = accountModelRows[0] as SourceFeatureRow
-  const ownRows = accountModelRows.filter((row) => (
-    row.population_key_hmac === current.population_key_hmac
-    && row.feature_version === current.feature_version
-  ))
+      AND population_key_hmac = ? AND feature_version = ?
+    ORDER BY upstream_bucket_hmac, probe_key_hmac
+  `, [
+    key.systemAccountId, key.accountId, key.requestedModel,
+    currentScope.population_key_hmac, currentScope.feature_version
+  ])
+  if (!ownRows.length) return undefined
   const populationRows = await client.query<SourceFeatureRow>(`
     SELECT * FROM ${table}
     WHERE population_key_hmac = ? AND feature_version = ?
     ORDER BY upstream_bucket_hmac, requested_model, account_id
-  `, [current.population_key_hmac, current.feature_version])
+  `, [currentScope.population_key_hmac, currentScope.feature_version])
   const signatures = collapseSourceSignatures(populationRows)
   const targetPopulationRows = populationRows.filter((row) => row.requested_model === key.requestedModel)
   const ownBuckets = new Set(ownRows.map((row) => row.upstream_bucket_hmac))
@@ -184,7 +218,7 @@ export async function evaluateIdentityTrust(client: DatabaseClient, key: Account
   const looTarget = signatures.filter((item) => item.model === key.requestedModel && !ownBuckets.has(item.upstreamBucket))
   const looSummary = robustVectorSummary(looTarget.map((item) => item.vector))
   const identityDistance = looSummary.median.length ? robustVectorDistance(ownVector, looSummary.median, looSummary.mad) : undefined
-  const baseline = await latestBaseline(client, current.population_key_hmac, key.requestedModel, current.feature_version)
+  const baseline = await latestBaseline(client, currentScope.population_key_hmac, key.requestedModel, currentScope.feature_version)
   const driftProtected = baseline?.version_status === 'drift_protected'
   const durationDays = populationDurationDays(targetPopulationRows)
   const evidenceStatus = evidenceStatusFor(looSummary.retainedCount, targetPopulationRows.reduce((sum, row) => sum + Number(row.sample_count), 0), durationDays)
@@ -235,8 +269,8 @@ export async function evaluateIdentityTrust(client: DatabaseClient, key: Account
   }
   await upsertPairedWindow(client, {
     key,
-    populationKey: current.population_key_hmac,
-    featureVersion: current.feature_version,
+    populationKey: currentScope.population_key_hmac,
+    featureVersion: currentScope.feature_version,
     baselineVersion: baseline?.baseline_version,
     pairKey: pair.join(':'),
     pairedProbeCount: pairDistances.length,
@@ -246,7 +280,7 @@ export async function evaluateIdentityTrust(client: DatabaseClient, key: Account
     pairedBaselineMad,
     pairedQ10,
     status: sameSource ? 'suspected_same_source' : evidenceStatus === 'insufficient' ? 'insufficient_evidence' : 'consistent',
-    lastObservedAt: current.last_observed_at
+    lastObservedAt: currentScope.last_observed_at
   })
   return {
     identityStatus,
@@ -260,8 +294,8 @@ export async function evaluateIdentityTrust(client: DatabaseClient, key: Account
     pairedBaselineMad,
     baselineVersion: baseline?.baseline_version,
     baselineVersionStatus: baseline?.version_status,
-    featureVersion: current.feature_version,
-    lastObservedAt: current.last_observed_at,
+    featureVersion: currentScope.feature_version,
+    lastObservedAt: currentScope.last_observed_at,
     reasonCodes
   }
 }
@@ -493,6 +527,17 @@ function groupRowsByModel(rows: SourceFeatureRow[]): Map<string, SourceFeatureRo
   const result = new Map<string, SourceFeatureRow[]>()
   for (const row of rows) result.set(row.requested_model, [...(result.get(row.requested_model) ?? []), row])
   return result
+}
+
+function compareCurrentIdentityScopes(left: CurrentIdentityScopeRow, right: CurrentIdentityScopeRow): number {
+  return compareTextDescending(left.last_observed_at, right.last_observed_at)
+    || compareTextDescending(left.first_observed_at, right.first_observed_at)
+    || compareTextDescending(left.population_key_hmac, right.population_key_hmac)
+    || compareTextDescending(left.feature_version, right.feature_version)
+}
+
+function compareTextDescending(left: string, right: string): number {
+  return left === right ? 0 : left > right ? -1 : 1
 }
 
 function pairedModels(model: string): string[] {
