@@ -149,6 +149,7 @@ func TestManagementClientIPStatsDetailSQLStaysOnPreaggregatedWindow(t *testing.T
 	for _, required := range []string{
 		"FROM juhe_stats.client_ip_account_usage_range_windows AS range_stats",
 		"ORDER BY range_stats.request_count DESC, range_stats.account_id ASC",
+		"range_stats.error_count::real / range_stats.request_count ELSE 0::real",
 		"CASE WHEN sqlc.arg(sort_order)::text = 'asc' THEN range_stats.account_id END DESC",
 		"LIMIT sqlc.arg(row_limit)::int",
 		"OFFSET sqlc.arg(row_offset)::int",
@@ -157,7 +158,7 @@ func TestManagementClientIPStatsDetailSQLStaysOnPreaggregatedWindow(t *testing.T
 			t.Fatalf("detail SQL missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"usage_records", "client_ip_account_stats_daily", "SUM(", "GROUP BY"} {
+	for _, forbidden := range []string{"usage_records", "client_ip_account_stats_daily", "double precision", "SUM(", "GROUP BY"} {
 		if strings.Contains(sql, forbidden) {
 			t.Fatalf("detail request SQL must not contain %q", forbidden)
 		}
