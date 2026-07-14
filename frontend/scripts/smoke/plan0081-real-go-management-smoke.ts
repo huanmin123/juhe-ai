@@ -23,6 +23,24 @@ const temporaryGroupNamePrefix = 'PLAN-0081 real Go management smoke '
 const temporaryGroupDescription = 'PLAN-0081 W5 group CRUD real Go smoke'
 const defaultTimeoutMs = 15_000
 const maximumTimeoutMs = 2_147_483_647
+const externalIntegrationSourceScopeOptions = [
+  { value: 'juhe_ai_public:api_key_list:read', label: 'GET API Key 列表' },
+  { value: 'juhe_ai_public:route_strategy_list:read', label: 'GET 路由策略列表' },
+  { value: 'juhe_ai_public:group_list:read', label: 'GET 分组列表' },
+  { value: 'juhe_ai_public:account_list:read', label: 'GET 账号列表' },
+  { value: 'juhe_ai_public:api_key_add:write', label: 'POST API Key 新增' },
+  { value: 'juhe_ai_public:api_key_update:write', label: 'POST API Key 修改' },
+  { value: 'juhe_ai_public:api_key_delete:write', label: 'POST API Key 删除' },
+  { value: 'juhe_ai_public:route_strategy_add:write', label: 'POST 路由策略新增' },
+  { value: 'juhe_ai_public:route_strategy_update:write', label: 'POST 路由策略修改' },
+  { value: 'juhe_ai_public:route_strategy_delete:write', label: 'POST 路由策略删除' },
+  { value: 'juhe_ai_public:group_add:write', label: 'POST 分组新增' },
+  { value: 'juhe_ai_public:group_update:write', label: 'POST 分组修改' },
+  { value: 'juhe_ai_public:group_delete:write', label: 'POST 分组删除' },
+  { value: 'juhe_ai_public:account_add:write', label: 'POST 账号新增' },
+  { value: 'juhe_ai_public:account_update:write', label: 'POST 账号修改' },
+  { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' }
+] as const
 const accountTestEndpointModeValues = [
   'chat_json',
   'chat_sse',
@@ -366,6 +384,13 @@ async function runReadOnlySmoke(
     assertPublicAPILogDetail(publicAPILogDetailData, config.publicApiLogId)
     publicApiLogDetailChecked = true
   }
+
+  const externalIntegrationSourceScopesData = await getEnvelopeData(
+    endpointUrl(config.baseUrl, '/external-integration-sources/scopes', {}),
+    config,
+    'external integration source scopes'
+  )
+  assertExternalIntegrationSourceScopes(externalIntegrationSourceScopesData)
 
   const listData = await getEnvelopeData(groupsListUrl(config), config, 'groups list')
   const groupList = assertGroupList(listData)
@@ -932,6 +957,37 @@ function assertPublicAPILogList(value: unknown): PublicApiLogListResult {
     page: value.page,
     pageSize: value.pageSize
   }
+}
+
+function assertExternalIntegrationSourceScopes(value: unknown): void {
+  const label = 'external integration source scopes data'
+  expect(Array.isArray(value), `${label} must be an array`)
+  expect(
+    value.length === externalIntegrationSourceScopeOptions.length,
+    `${label} must contain exactly ${externalIntegrationSourceScopeOptions.length} items`
+  )
+
+  const seenValues = new Set<string>()
+  const seenLabels = new Set<string>()
+  value.forEach((item, index) => {
+    const itemLabel = `${label} item ${index}`
+    expect(isRecord(item), `${itemLabel} must be an object`)
+    const keys = Object.keys(item)
+    expect(
+      keys.length === 2 && keys.includes('value') && keys.includes('label'),
+      `${itemLabel} must contain only value and label`
+    )
+    expect(typeof item.value === 'string', `${itemLabel}.value must be a string`)
+    expect(typeof item.label === 'string', `${itemLabel}.label must be a string`)
+    expect(!seenValues.has(item.value), `${label} must not contain duplicate values`)
+    expect(!seenLabels.has(item.label), `${label} must not contain duplicate labels`)
+    seenValues.add(item.value)
+    seenLabels.add(item.label)
+
+    const expectedOption = externalIntegrationSourceScopeOptions[index]
+    expect(item.value === expectedOption.value, `${itemLabel}.value must equal ${expectedOption.value}`)
+    expect(item.label === expectedOption.label, `${itemLabel}.label must equal ${expectedOption.label}`)
+  })
 }
 
 function assertPublicAPILogDetail(value: unknown, expectedId: string): void {

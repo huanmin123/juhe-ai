@@ -311,6 +311,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.MyOperationLogsHandler != nil ||
+		handlers.ExternalIntegrationSourceScopesHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
 		handlers.MyStatsUsageWindowHandler != nil {
 		t.Fatal("newManagementAPIHandler() returned middleware or handler while disabled")
@@ -397,6 +398,7 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.ClientIPBlacklistHandler != nil ||
 		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
+		handlers.ExternalIntegrationSourceScopesHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
 		handlers.MyStatsUsageWindowHandler != nil {
 		t.Fatal("newManagementAPIHandler() returned non-session management handlers while only session switch enabled")
@@ -508,9 +510,60 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.ClientIPUnblockHandler == nil ||
 		handlers.OperationLogsHandler == nil ||
 		handlers.MyOperationLogsHandler == nil ||
+		handlers.ExternalIntegrationSourceScopesHandler == nil ||
 		handlers.StatsUsageWindowHandler == nil ||
 		handlers.MyStatsUsageWindowHandler == nil {
 		t.Fatal("newManagementAPIHandler() returned nil middleware or handler while enabled")
+	}
+}
+
+func TestNewManagementAPIHandlerExternalIntegrationSourceScopesOptIn(t *testing.T) {
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	if disabled.ExternalIntegrationSourceScopesHandler != nil {
+		t.Fatal("external integration source scopes handler was created while management API disabled")
+	}
+
+	sessionOnly := newManagementAPIHandler(
+		config.Config{ManagementAuthSessionsEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if sessionOnly.ExternalIntegrationSourceScopesHandler != nil {
+		t.Fatal("external integration source scopes handler was created while only session switch enabled")
+	}
+
+	enabled := newManagementAPIHandler(
+		config.Config{ManagementAPIEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if enabled.ExternalIntegrationSourceScopesHandler == nil {
+		t.Fatal("external integration source scopes handler was not created while management API enabled")
+	}
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"ManagementExternalIntegrationSourceScopesHandler:",
+		"managementHandlers.ExternalIntegrationSourceScopesHandler",
+		"httpapi.NewManagementExternalIntegrationSourceScopesHandler()",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server.go missing external integration source scopes wiring %q", required)
+		}
 	}
 }
 

@@ -292,6 +292,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementRuntimeLogsHandler:                      managementHandlers.RuntimeLogsHandler,
+		ManagementExternalIntegrationSourceScopesHandler:  managementHandlers.ExternalIntegrationSourceScopesHandler,
 		ManagementPublicAPILogsHandler:                    managementHandlers.PublicAPILogsHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
 		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
@@ -452,6 +453,7 @@ type managementAPIHandlers struct {
 	OperationLogsHandler                    http.Handler
 	MyOperationLogsHandler                  http.Handler
 	RuntimeLogsHandler                      http.Handler
+	ExternalIntegrationSourceScopesHandler  http.Handler
 	PublicAPILogsHandler                    http.Handler
 	StatsUsageWindowHandler                 http.Handler
 	MyStatsUsageWindowHandler               http.Handler
@@ -727,6 +729,7 @@ func newManagementAPIHandler(
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService),
+		ExternalIntegrationSourceScopesHandler:  httpapi.NewManagementExternalIntegrationSourceScopesHandler(),
 		PublicAPILogsHandler:                    httpapi.NewManagementPublicAPILogsHandler(publicAPILogService),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),

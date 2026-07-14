@@ -88,3 +88,55 @@ func TestEndpointsReturnsCopy(t *testing.T) {
 		t.Fatal("Endpoints() returned mutable package backing slice")
 	}
 }
+
+func TestScopeOptionsFreezeExternalIntegrationCatalog(t *testing.T) {
+	want := []ScopeOption{
+		{Value: ScopeAPIKeyListRead, Label: "GET API Key 列表"},
+		{Value: ScopeRouteStrategyListRead, Label: "GET 路由策略列表"},
+		{Value: ScopeGroupListRead, Label: "GET 分组列表"},
+		{Value: ScopeAccountListRead, Label: "GET 账号列表"},
+		{Value: ScopeAPIKeyAddWrite, Label: "POST API Key 新增"},
+		{Value: ScopeAPIKeyUpdateWrite, Label: "POST API Key 修改"},
+		{Value: ScopeAPIKeyDeleteWrite, Label: "POST API Key 删除"},
+		{Value: ScopeRouteStrategyAddWrite, Label: "POST 路由策略新增"},
+		{Value: ScopeRouteStrategyUpdateWrite, Label: "POST 路由策略修改"},
+		{Value: ScopeRouteStrategyDeleteWrite, Label: "POST 路由策略删除"},
+		{Value: ScopeGroupAddWrite, Label: "POST 分组新增"},
+		{Value: ScopeGroupUpdateWrite, Label: "POST 分组修改"},
+		{Value: ScopeGroupDeleteWrite, Label: "POST 分组删除"},
+		{Value: ScopeAccountAddWrite, Label: "POST 账号新增"},
+		{Value: ScopeAccountUpdateWrite, Label: "POST 账号修改"},
+		{Value: ScopeAccountDeleteWrite, Label: "POST 账号删除"},
+	}
+
+	options := ScopeOptions()
+	if got, wantLength := len(options), 16; got != wantLength {
+		t.Fatalf("len(ScopeOptions()) = %d, want %d", got, wantLength)
+	}
+	for i, option := range options {
+		if option != want[i] {
+			t.Fatalf("scope option[%d] = %+v, want %+v", i, option, want[i])
+		}
+	}
+
+	optionValues := make(map[string]struct{}, len(options))
+	for _, option := range options {
+		optionValues[option.Value] = struct{}{}
+	}
+	for _, endpoint := range Endpoints() {
+		if _, ok := optionValues[endpoint.Scope]; !ok {
+			t.Errorf("endpoint %q scope %q is missing from ScopeOptions()", endpoint.ID, endpoint.Scope)
+		}
+	}
+}
+
+func TestScopeOptionsReturnsCopy(t *testing.T) {
+	options := ScopeOptions()
+	options[0].Value = "mutated"
+	options[0].Label = "已修改"
+
+	fresh := ScopeOptions()
+	if fresh[0].Value == "mutated" || fresh[0].Label == "已修改" {
+		t.Fatal("ScopeOptions() returned mutable package backing slice")
+	}
+}

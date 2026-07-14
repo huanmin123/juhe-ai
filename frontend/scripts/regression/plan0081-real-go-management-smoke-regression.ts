@@ -34,6 +34,8 @@ type MockScenario =
   | 'account_test_options_endpoint_mode_invalid'
   | 'account_test_options_default_model_modes_mismatch'
   | 'account_test_options_default_endpoint_mode_mismatch'
+  | 'external_integration_source_scopes_missing_item'
+  | 'external_integration_source_scopes_invalid_field'
   | 'ip_stats_not_ready'
   | 'ip_stats_empty'
   | 'ip_stats_detail_not_ready'
@@ -109,6 +111,7 @@ try {
   const baseUrl = serverBaseUrl(server)
 
   await assertPublicAPILogReadScenarios(baseUrl)
+  await assertExternalIntegrationSourceScopesReadScenarios(baseUrl)
   await assertLogBoundaryRedaction(baseUrl)
   await assertRouteStrategyReadScenarios(baseUrl)
   await assertReadOnlySmoke(baseUrl)
@@ -222,6 +225,49 @@ async function assertPublicAPILogReadScenarios(baseUrl: string): Promise<void> {
   )
 }
 
+async function assertExternalIntegrationSourceScopesReadScenarios(baseUrl: string): Promise<void> {
+  resetMock('normal')
+  await runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
+
+  const scopeRequests = requestRecords.filter((record) =>
+    record.url?.startsWith('/__aisys__/api/external-integration-sources')
+  )
+  assert.deepEqual(
+    scopeRequests.map((record) => `${record.method} ${record.url}`),
+    [externalIntegrationSourceScopesPath()]
+  )
+  assert.equal(scopeRequests[0]?.method, 'GET')
+  assert.equal(scopeRequests[0]?.body, undefined)
+  assertRequestHeaders()
+
+  const cases = [
+    [
+      'external_integration_source_scopes_missing_item',
+      /external integration source scopes data must contain exactly 16 items/
+    ],
+    [
+      'external_integration_source_scopes_invalid_field',
+      /external integration source scopes data item 0\.label must be a string/
+    ]
+  ] as const
+  for (const [requestScenario, expectedMessage] of cases) {
+    resetMock(requestScenario)
+    const output: string[] = []
+    const failureMessage = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(
+        smokeEnvironment(baseUrl),
+        (message) => output.push(message)
+      )
+    )
+
+    assert.match(failureMessage, expectedMessage)
+    assert.deepEqual(output, [])
+    assert.deepEqual(requestPaths(), [publicAPILogsListPath(), externalIntegrationSourceScopesPath()])
+    assert.equal(requestRecords.every((record) => record.method === 'GET' && record.body === undefined), true)
+    assertRequestHeaders()
+  }
+}
+
 async function assertLogBoundaryRedaction(baseUrl: string): Promise<void> {
   const messages: string[] = []
 
@@ -293,6 +339,7 @@ async function assertRouteStrategyReadScenarios(baseUrl: string): Promise<void> 
   assert.deepEqual(emptySummary, expectedSummary(true, 3, true, 0, false))
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
+    externalIntegrationSourceScopesPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -308,7 +355,8 @@ async function assertRouteStrategyReadScenarios(baseUrl: string): Promise<void> 
   )
   assert.equal(missingMessage, 'Configured route strategy was not returned by route strategies list')
   assert.deepEqual(requestPaths(), [
-    publicAPILogsListPath(), groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath()
+    publicAPILogsListPath(), externalIntegrationSourceScopesPath(),
+    groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath()
   ])
 
   const safeFailures = [missingMessage]
@@ -354,6 +402,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
+    externalIntegrationSourceScopesPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -377,6 +426,7 @@ async function assertAccountTestOptionsReadSmoke(baseUrl: string): Promise<void>
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
+    externalIntegrationSourceScopesPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), accountTestOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -429,6 +479,7 @@ async function assertAccountTestOptionsResponseRequirements(baseUrl: string): Pr
     assert.deepEqual(output, [])
     assert.deepEqual(requestPaths(), [
       publicAPILogsListPath(),
+      externalIntegrationSourceScopesPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), accountTestOptionsPath()
     ])
@@ -455,6 +506,7 @@ async function assertStrictClientIPDetailRequiresTarget(baseUrl: string): Promis
     assert.deepEqual(output, [])
     assert.deepEqual(requestPaths(), [
       publicAPILogsListPath(),
+      externalIntegrationSourceScopesPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath()
     ])
@@ -488,6 +540,7 @@ async function assertStrictClientIPDetailResponseRequirements(baseUrl: string): 
     assert.deepEqual(output, [])
     assert.deepEqual(requestPaths(), [
       publicAPILogsListPath(),
+      externalIntegrationSourceScopesPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
     ])
@@ -518,6 +571,7 @@ async function assertExplicitClientIPHashSmoke(baseUrl: string): Promise<void> {
     assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
     assert.deepEqual(requestPaths(), [
       publicAPILogsListPath(),
+      externalIntegrationSourceScopesPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(explicitClientIPHash)
     ])
@@ -542,6 +596,7 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
+    externalIntegrationSourceScopesPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath()
   ])
@@ -566,6 +621,7 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
+    externalIntegrationSourceScopesPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath()
   ])
@@ -589,6 +645,7 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
   assert.equal(groups.has(temporaryGroupId), false)
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
+    externalIntegrationSourceScopesPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(),
     groupsCreatePath(),
@@ -822,6 +879,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const publicApiLogId = publicAPILogIdFromPath(url.pathname)
   if (req.method === 'GET' && publicApiLogId !== undefined) {
     handlePublicAPILogDetailRequest(res, publicApiLogId, scenario)
+    return
+  }
+  if (req.method === 'GET' && url.pathname === '/__aisys__/api/external-integration-sources/scopes') {
+    const scopes = externalIntegrationSourceScopesFixture()
+    if (scenario === 'external_integration_source_scopes_missing_item') {
+      scopes.pop()
+    }
+    if (scenario === 'external_integration_source_scopes_invalid_field' && scopes[0]) {
+      scopes[0].label = 42
+    }
+    sendEnvelope(res, scopes)
     return
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/groups') {
@@ -1416,6 +1484,27 @@ function routeStrategyFixture(detail: boolean): Record<string, unknown> {
     : { ...shared, groupBindingPreview: bindings.slice(0, 3), bindingCount: 4, apiKeyCount: 2 }
 }
 
+function externalIntegrationSourceScopesFixture(): Array<Record<string, unknown>> {
+  return [
+    { value: 'juhe_ai_public:api_key_list:read', label: 'GET API Key 列表' },
+    { value: 'juhe_ai_public:route_strategy_list:read', label: 'GET 路由策略列表' },
+    { value: 'juhe_ai_public:group_list:read', label: 'GET 分组列表' },
+    { value: 'juhe_ai_public:account_list:read', label: 'GET 账号列表' },
+    { value: 'juhe_ai_public:api_key_add:write', label: 'POST API Key 新增' },
+    { value: 'juhe_ai_public:api_key_update:write', label: 'POST API Key 修改' },
+    { value: 'juhe_ai_public:api_key_delete:write', label: 'POST API Key 删除' },
+    { value: 'juhe_ai_public:route_strategy_add:write', label: 'POST 路由策略新增' },
+    { value: 'juhe_ai_public:route_strategy_update:write', label: 'POST 路由策略修改' },
+    { value: 'juhe_ai_public:route_strategy_delete:write', label: 'POST 路由策略删除' },
+    { value: 'juhe_ai_public:group_add:write', label: 'POST 分组新增' },
+    { value: 'juhe_ai_public:group_update:write', label: 'POST 分组修改' },
+    { value: 'juhe_ai_public:group_delete:write', label: 'POST 分组删除' },
+    { value: 'juhe_ai_public:account_add:write', label: 'POST 账号新增' },
+    { value: 'juhe_ai_public:account_update:write', label: 'POST 账号修改' },
+    { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' }
+  ]
+}
+
 function requestPaths(): string[] {
   return requestRecords.map((record) => `${record.method} ${record.url}`)
 }
@@ -1426,6 +1515,10 @@ function publicAPILogsListPath(): string {
 
 function publicAPILogDetailPath(publicApiLogId = configuredPublicApiLogId): string {
   return `GET /__aisys__/api/public-api-logs/${encodeURIComponent(publicApiLogId)}`
+}
+
+function externalIntegrationSourceScopesPath(): string {
+  return 'GET /__aisys__/api/external-integration-sources/scopes'
 }
 
 function groupsListPath(): string {
