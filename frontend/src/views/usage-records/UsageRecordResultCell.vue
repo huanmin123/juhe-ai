@@ -1,12 +1,12 @@
 <template>
   <span v-if="!record.success" class="result-cell">
-    <a-tag color="red">失败</a-tag>
     <a-popover trigger="hover" placement="right" overlay-class-name="usage-error-popover">
       <template #content>
         <div class="usage-error-message">{{ errorText(record) }}</div>
       </template>
       <InfoCircleOutlined class="usage-error-icon" />
     </a-popover>
+    <a-tag color="red">失败</a-tag>
   </span>
   <a-tag v-else color="green">成功</a-tag>
 </template>

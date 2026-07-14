@@ -81,7 +81,7 @@
       <template v-else-if="column.key === 'status'">
         <span class="status-cell">
           <UsageRecordResultCell :record="record" />
-          <a-tag :color="statusCodeColor(record)">{{ statusCodeText(record) }}</a-tag>
+          <a-tag v-if="typeof record.statusCode === 'number'" :color="statusCodeColor(record)">{{ statusCodeText(record) }}</a-tag>
         </span>
       </template>
       <template v-else-if="column.key === 'success'">

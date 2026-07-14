@@ -12,7 +12,9 @@ import {
   GptAccountRequestOverrideError,
   hasApplicableGptAccountRequestOverrides,
   readGptAccountRequestOverrides,
-  type ApplyGptAccountRequestOverridesInput
+  type ApplyGptAccountRequestOverridesInput,
+  type GptAccountRequestOverrides,
+  type GptRequestOverrideModelCapabilities
 } from './request-overrides.js'
 
 export async function applyGptAccountRequestOverridesToBody(
@@ -28,9 +30,11 @@ export async function applyGptAccountRequestOverridesToBody(
     return body
   }
   const parsed = await parseGptRequestOverrideBody(body, input.signal)
-  const modelCapabilities = input.modelCapabilities
-    ?? await resolveGptRequestOverrideModelCapabilities(input.account, input.upstreamModel ?? requestBodyModel(parsed))
-  const effectiveOverrides = effectiveGptAccountRequestOverrides(overrides, modelCapabilities)
+  const { modelCapabilities, effectiveOverrides } = await normalizeGptRequestOverrideCapabilitiesForGateway({
+    ...input,
+    overrides,
+    upstreamModel: input.upstreamModel ?? requestBodyModel(parsed)
+  })
   if (!hasApplicableGptAccountRequestOverrides(effectiveOverrides, input.endpointFamily, input.compact === true)) {
     return body
   }
@@ -45,6 +49,32 @@ export async function applyGptAccountRequestOverridesToBody(
   }
   const serialized = JSON.stringify(overridden)
   return typeof body === 'string' ? serialized : Buffer.from(serialized, 'utf8')
+}
+
+export async function normalizeGptRequestOverrideCapabilitiesForGateway(
+  input: ApplyGptAccountRequestOverridesInput & {
+    account: DispatchAccountSecret
+    upstreamModel?: string
+    overrides?: GptAccountRequestOverrides
+  }
+): Promise<{
+  modelCapabilities: GptRequestOverrideModelCapabilities | undefined
+  effectiveOverrides: GptAccountRequestOverrides
+}> {
+  try {
+    const overrides = input.overrides ?? readGptAccountRequestOverrides(input.credentials)
+    if (!hasApplicableGptAccountRequestOverrides(overrides, input.endpointFamily, input.compact === true)) {
+      return { modelCapabilities: input.modelCapabilities, effectiveOverrides: {} }
+    }
+    const modelCapabilities = input.modelCapabilities
+      ?? await resolveGptRequestOverrideModelCapabilities(input.account, input.upstreamModel)
+    return {
+      modelCapabilities,
+      effectiveOverrides: effectiveGptAccountRequestOverrides(overrides, modelCapabilities)
+    }
+  } catch (error) {
+    throw normalizeGptAccountRequestOverrideError(error)
+  }
 }
 
 function readGptAccountRequestOverridesForGateway(credentials: Record<string, unknown> | undefined) {

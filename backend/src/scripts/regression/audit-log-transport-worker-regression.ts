@@ -52,8 +52,8 @@ try {
 
   const aggregateEncoded = await encodeAuditLogForRedisStreamInWorker(
     auditInput('trace-audit-transport-codec-budget', [
-      Buffer.alloc(Math.floor(1.9 * mib), 0x62),
-      Buffer.alloc(Math.floor(1.9 * mib), 0x63)
+      Buffer.alloc(3 * mib, 0x62),
+      Buffer.alloc(3 * mib, 0x63)
     ], false)
   )
   assert(
@@ -61,7 +61,7 @@ try {
     '两个 1.9MiB 正文经 codec/base64 放大后仍必须严格不超过 4MiB'
   )
   const aggregatePayloads = decodeAuditLogStreamPayload(aggregateEncoded).payloads
-  assert(aggregatePayloads.some((item) => item.captureStatus === 'summary_only'), '聚合输出越界时应在 worker 内按摘要契约收敛正文')
+  assert(aggregatePayloads.every((item) => item.captureStatus === 'summary_only'), '两个 3MiB 正文必须都按有限摘要契约收敛')
   assert(aggregatePayloads.every((item) => item.captureStatus !== 'hash_only'), '聚合输出收敛不得退化为 hash_only')
 
   const successEncoded = await encodeAuditLogForRedisStreamInWorker(

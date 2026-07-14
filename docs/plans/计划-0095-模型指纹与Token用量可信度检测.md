@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：PLAN-0095
-- 状态：进行中（Phase 0、输入 Token 差分与增量结果闭环已完成，身份群体基线待实现）
+- 状态：进行中（Phase 0、输入 Token 差分、增量结果和身份群体基线闭环已完成；固定 intercept cohort、全类别结构化特征、profile 驱动长上下文和真实样本校准待完成）
 - 创建时间：2026-07-13
 - 需求来源：当前 Codex 会话；用户要求重点提高 GPT-5.6 真伪检测准确率，并确认 Token 灌水检测现状
 - 执行者：Codex；方案与阈值由用户复核后进入实现
@@ -139,7 +139,8 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - [ ] 测试环境收集至少一个完整 baseline window，校验离线重建和在线增量一致。
 - [ ] 生产先以小流量、仅诊断、不自动处置方式运行，观察成本、误报和上游限流。
 - [ ] 根据真实样本校准阈值并记录版本；未达到独立来源门槛时保持证据不足。
-- [ ] 完成构建、类型检查、回归、部署验收和发布后观察，再更新本计划状态。
+- [x] 完成构建、类型检查和定向回归。
+- [ ] 完成部署验收和发布后观察，再更新本计划状态。
 
 ## 测试项
 
@@ -150,7 +151,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 | 模型目录 | GPT-5.6 官方上下文边界 | 模型目录与能力回归 | 三个 5.6 使用当前官方 1,050,000 context / 922,000 max input / 128,000 max output 语义 | 已通过 | 2026-07-14 模型目录与生成快照回归通过 |
 | 映射 | 显式与未声明模型冲突 | 严格模型匹配回归 | 两种场景分别为 configured mapping 和硬冲突 | 已通过 | 2026-07-14 五维报告断言通过 |
 | 模型指纹 | 三模型同源塌缩 | `pnpm test:model-trust-identity-baseline` | 命中 `suspected_same_source` | 已通过 | Sol / Terra / Luna 相同 paired 特征命中同源原因码 |
-| 模型指纹 | 相近但正常分布 | 新增抗误报回归 | 不因单题相似误报 | 未执行 | 待实现 |
+| 模型指纹 | 相近但正常分布 | `pnpm test:model-trust-identity-baseline` | 不因单题或局部特征相似误报 | 已通过 | 2026-07-14 增加正常 cohort 成员不得进入同源、降级或群体离群状态的明确断言 |
 | Token | 诚实 usage | `pnpm test:model-check-token-integrity` | slope 置信区间包含 1 | 已通过 | slope=1，固定正常开销保留为 intercept |
 | Token | 5% / 10% 比例灌水 | `pnpm test:model-check-token-integrity` | 5% 进入校准边界，10% 稳定异常 | 已通过 | 5% warning，10% suspected_padding |
 | Token | 固定与分桶灌水 | `pnpm test:model-check-token-integrity` | 固定值不脱离 cohort 强判，分桶输出原因码 | 已通过 | intercept 可复算，64-token 取整 warning |
@@ -160,7 +161,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 | 基线 | 累计来源向量与硬冲突门禁 | `pnpm test:model-trust-identity-baseline` | 使用累计均值和约束通过率；模型 / 协议硬冲突不进入来源或基线 | 已通过 | latest feature 与累计均值相反的 paired 样本距离为 0；冲突只保留 dataset / latest 诊断 |
 | 存储 | observation 脱敏与大小上限 | `pnpm test:model-trust-observation-aggregation` | 无题面、凭据、明文 origin 或无界 payload | 已通过 | SQLite 事实与 PG schema 转译已覆盖 |
 | 统计 | 增量游标与 latest | `pnpm test:model-trust-observation-aggregation` | 游标仅在完整处理后推进，API 只读 latest | 已通过 | 4+5 分批后不重复，结果 slope=1 / intercept=10 |
-| 前端 | 中文状态与证据详情 | 前端回归和浏览器验证 | 中文、无敏感字段、状态不混淆 | 未执行 | 待实现 |
+| 前端 | 中文状态与证据详情 | 前端专项回归和浏览器验证 | 中文、无敏感字段、状态不混淆 | 部分完成 | 五维中文详情代码已实现；专门自动化契约和登录态浏览器验收尚未完成，不能由构建通过替代 |
 | 全量 | 类型、构建、关联回归 | `pnpm typecheck`、`pnpm build`、定向回归 | 全部通过 | 已通过 | 2026-07-14 类型、构建和定向回归通过；浏览器插件当前无可用实例 |
 
 ## 进度记录

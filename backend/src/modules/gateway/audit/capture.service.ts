@@ -167,6 +167,7 @@ export class AuditCaptureContext {
   private clientAborted = false
   private overflowed = false
   private approximateBytes = 0
+  private residentPayloadBytes = 0
   private sequenceIndex = 0
   private clientRequestPayloadCaptured = false
   private httpCompletedAtMs?: number
@@ -457,7 +458,7 @@ export class AuditCaptureContext {
     if (input.accountId) {
       this.bindContext({ accountId: input.accountId })
     }
-    const shouldCapture = this.metadataOnly || outcome !== 'success' || this.successHotRetentionEnabled || this.successCaptureSelected
+    const shouldCapture = outcome !== 'success' || this.successHotRetentionEnabled || this.successCaptureSelected
     if (!shouldCapture) {
       logger.debug({
         event: 'gateway_audit_capture_skipped',
@@ -570,11 +571,14 @@ export class AuditCaptureContext {
     if (!shouldOffloadAuditPayloadRetention()) {
       summarizeAuditPayloadForLimit(payload, this.problemFullBodyLimitBytes)
     }
+    const nextResidentPayloadBytes = this.residentPayloadBytes + estimatePayloadBytes(payload)
+    if (nextResidentPayloadBytes > this.activeCaptureMaxBytes) {
+      this.markResidentPayloadOverflow(nextResidentPayloadBytes)
+      return
+    }
     const nextApproximateBytes = this.approximateBytes + estimateRetainedPayloadBytes(payload, this.problemFullBodyLimitBytes)
     if (nextApproximateBytes > this.activeCaptureMaxBytes) {
-      this.overflowed = true
-      this.payloads.length = 0
-      this.approximateBytes = nextApproximateBytes
+      this.markResidentPayloadOverflow(nextResidentPayloadBytes)
       return
     }
     this.payloads.push({
@@ -584,11 +588,40 @@ export class AuditCaptureContext {
       createdAt: nowIso()
     })
     this.approximateBytes = nextApproximateBytes
+    this.residentPayloadBytes = nextResidentPayloadBytes
+    this.sequenceIndex += 1
+  }
+
+  private markResidentPayloadOverflow(residentPayloadBytes: number): void {
+    this.overflowed = true
+    this.payloads.length = 0
+    const body = JSON.stringify({
+      type: 'gateway_metadata',
+      label: 'active_capture_overflow',
+      metadata: {
+        auditBodyPayloadsOmitted: true,
+        residentPayloadBytes,
+        activeCaptureMaxBytes: this.activeCaptureMaxBytes
+      }
+    })
+    const payload: AuditLogPayloadInput = {
+      id: `audpay_${Date.now()}_${randomUUID()}`,
+      partType: 'gateway_metadata',
+      sequenceIndex: this.sequenceIndex,
+      body,
+      contentType: 'application/json; audit=gateway-metadata',
+      captureStatus: 'overflow',
+      createdAt: nowIso()
+    }
+    this.payloads.push(payload)
+    this.approximateBytes = estimatePayloadBytes(payload)
+    this.residentPayloadBytes = this.approximateBytes
     this.sequenceIndex += 1
   }
 
   private recalculateApproximateBytes(): void {
     this.approximateBytes = this.payloads.reduce((total, payload) => total + estimatePayloadBytes(payload), 0)
+    this.residentPayloadBytes = this.approximateBytes
   }
 
   private applyPayloadRetention(mode: 'success' | 'failure'): void {

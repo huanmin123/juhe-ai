@@ -834,15 +834,27 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_health_check_due
       ON accounts(status, next_health_check_at, updated_at, id)
       WHERE deleted_at IS NULL;
-    CREATE INDEX IF NOT EXISTS idx_accounts_health_check_pg_due
-      ON accounts(provider_protocol_profile_id, status, next_health_check_at ASC, updated_at ASC, id ASC)
-      WHERE deleted_at IS NULL;
-    CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_due
-      ON accounts(status, cooldown_until ASC, updated_at ASC, id ASC)
-      WHERE deleted_at IS NULL AND cooldown_until IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_pg_due
-      ON accounts(provider_protocol_profile_id, status, cooldown_until ASC, priority ASC, created_at ASC, id ASC)
-      WHERE deleted_at IS NULL AND cooldown_until IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_health_check_candidate_order
+      ON accounts(
+        (CASE WHEN status = 'pending_test' THEN 0 ELSE 1 END) ASC,
+        (CASE WHEN status = 'pending_test' THEN updated_at END) DESC,
+        (next_health_check_at IS NOT NULL) ASC,
+        next_health_check_at ASC,
+        last_health_check_at ASC,
+        created_at ASC,
+        id ASC
+      )
+      WHERE deleted_at IS NULL
+        AND status IN ('active', 'pending_test')
+        AND (status = 'pending_test' OR schedulable = 1)
+        AND type IN ('api_key', 'oauth');
+    CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_candidate_order
+      ON accounts(cooldown_until ASC, priority ASC, created_at ASC, id ASC, health_check_endpoint_mode)
+      WHERE deleted_at IS NULL
+        AND cooldown_until IS NOT NULL
+        AND schedulable = 1
+        AND type IN ('api_key', 'oauth')
+        AND status IN ('temporary_unavailable', 'rate_limited');
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;

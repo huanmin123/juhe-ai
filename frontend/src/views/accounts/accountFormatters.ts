@@ -199,7 +199,7 @@ function accountCooldownRetestText(account: AccountSummary): string {
   }
   const nextText = accountRetestNextText(account)
   if (nextText) {
-    parts.push(`下次：${nextText}`)
+    parts.push(`下次冷却复测：${nextText}`)
   }
   return parts.length ? `后台复测：${parts.join('，')}` : ''
 }
@@ -326,17 +326,17 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
 function accountHealthCheckTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
   if (account.lastHealthCheckAt) {
-    lines.push(`最近后台检测：${formatDateTime(account.lastHealthCheckAt)}`)
+    lines.push(`最近主动健康检查：${formatDateTime(account.lastHealthCheckAt)}`)
   }
   if (account.lastHealthSuccessAt) {
     lines.push(`最近健康成功信号：${formatDateTime(account.lastHealthSuccessAt)}`)
   }
-  if (account.nextHealthCheckAt) {
+  if ((account.status === 'active' || account.status === 'pending_test') && account.nextHealthCheckAt) {
     const nextTimestamp = serverDateTimeTimestamp(account.nextHealthCheckAt)
     const nextText = nextTimestamp !== undefined && nextTimestamp <= Date.now()
-      ? `检测排队中（计划 ${formatDateTime(account.nextHealthCheckAt)}）`
+      ? `等待复核（计划 ${formatDateTime(account.nextHealthCheckAt)}）`
       : formatDateTime(account.nextHealthCheckAt)
-    lines.push(`下次后台检测：${nextText}`)
+    lines.push(`下次健康复核：${nextText}`)
   }
   if (account.healthCheckFailureCount) {
     const status = account.lastHealthCheckStatusCode ? `，HTTP ${account.lastHealthCheckStatusCode}` : ''

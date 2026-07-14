@@ -12,9 +12,39 @@ import {
   createOpenAITestRequest,
   testPathFromEndpointMode
 } from '../../modules/accounts/account-test-request.js'
+import { hasAccountTestProtocolSuccessEvidence } from '../../modules/accounts/account-test-success-evidence.js'
 
 assert.equal(accountTestDefaultPrompt, '只输出 OK', '账号测试默认 prompt 应保持中文默认值')
 assert.equal(accountTestModelsPath, '/v1/models', '模型列表探测路径应保持 /v1/models')
+
+const protocolSuccessFixtures = [
+  ['chat_json', JSON.stringify({ object: 'chat.completion', choices: [{ finish_reason: 'stop', message: { content: 'OK' } }] })],
+  ['chat_sse', `data: ${JSON.stringify({ object: 'chat.completion.chunk', choices: [{ finish_reason: 'stop', delta: {} }] })}\n\ndata: [DONE]\n\n`],
+  ['responses_json', JSON.stringify({ object: 'response', status: 'completed', output: [] })],
+  ['responses_sse', `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { object: 'response', status: 'completed', output: [] } })}\n\n`],
+  ['messages_json', JSON.stringify({ type: 'message', stop_reason: 'end_turn', content: [] })],
+  ['messages_sse', `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`],
+  ['generate_content_json', JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'OK' }] } }] })],
+  ['generate_content_sse', `data: ${JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'OK' }] } }] })}\n\n`]
+] as const
+for (const [mode, body] of protocolSuccessFixtures) {
+  assert.equal(hasAccountTestProtocolSuccessEvidence(mode, body), true, `${mode} 应识别协议完成证据`)
+  for (const invalid of ['', 'data: [DONE]\n\n', '<html>ok</html>', '{invalid json']) {
+    assert.equal(hasAccountTestProtocolSuccessEvidence(mode, invalid), false, `${mode} 不得把空白、仅 DONE、HTML 或畸形 JSON 当作成功`)
+  }
+}
+assert.equal(hasAccountTestProtocolSuccessEvidence(
+  'chat_sse',
+  `data: ${JSON.stringify({ choices: [{ delta: { content: 'OK' }, finish_reason: null }] })}\n\ndata: [DONE]\n\n`
+), true, '兼容 Chat SSE 有非空 content chunk 且以 [DONE] 结束时应视为成功')
+assert.equal(hasAccountTestProtocolSuccessEvidence(
+  'chat_sse',
+  `data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant' }, finish_reason: null }] })}\n\ndata: [DONE]\n\n`
+), false, '只有角色 chunk 和 [DONE] 不构成模型输出成功证据')
+assert.equal(hasAccountTestProtocolSuccessEvidence(
+  'chat_sse',
+  `data: [DONE]\n\ndata: ${JSON.stringify({ choices: [{ delta: { content: 'late' }, finish_reason: null }] })}\n\n`
+), false, '[DONE] 之后追加内容属于非法事件顺序，不得构成成功证据')
 
 assert.equal(testPathFromEndpointMode('chat_json'), '/v1/chat/completions', 'Chat JSON 测试应使用 Chat Completions 路径')
 assert.equal(testPathFromEndpointMode('chat_sse'), '/v1/chat/completions', 'Chat SSE 测试应使用 Chat Completions 路径')

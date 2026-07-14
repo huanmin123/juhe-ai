@@ -63,8 +63,7 @@ import {
 } from '../_shared/codex-responses-chat-bridge.js'
 import type { ProviderDriver, ProviderDriverAccount, ProviderGatewayRequestContext } from '../_shared/types.js'
 import { prepareGptAccountBeforeDispatch } from './oauth-dispatch-preparation.js'
-import { resolveGptRequestOverrideModelCapabilities } from './request-override-capabilities.js'
-import { applyGptAccountRequestOverridesToBody } from './request-override-body.js'
+import { applyGptAccountRequestOverridesToBody, normalizeGptRequestOverrideCapabilitiesForGateway } from './request-override-body.js'
 import type { GptRequestOverrideEndpointFamily } from './request-overrides.js'
 
 function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount, context?: ProviderGatewayRequestContext) {
@@ -175,10 +174,13 @@ export const gptProviderDriver: ProviderDriver = {
       }
     }
     if (account.type === 'oauth') {
-      const requestOverrideModelCapabilities = await resolveGptRequestOverrideModelCapabilities(
+      const { modelCapabilities: requestOverrideModelCapabilities } = await normalizeGptRequestOverrideCapabilitiesForGateway({
+        credentials: account.credentials,
         account,
-        modelMapping?.upstreamModel ?? requestModel(req)
-      )
+        endpointFamily: 'responses',
+        compact: isOpenAIResponsesCompactRequest(req),
+        upstreamModel: modelMapping?.upstreamModel ?? requestModel(req)
+      })
       return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal, {
         modelOverride: modelMapping?.upstreamModel,
         requestOverrideModelCapabilities

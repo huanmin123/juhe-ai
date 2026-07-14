@@ -33,11 +33,13 @@ export interface AccountTestModelOption {
   label: string
   value: string
   supportedApiProtocols: ProviderModelApiProtocol[]
+  testEndpointModes: AccountSupportedEndpointMode[]
 }
 
 export interface AccountManualTestModelOption {
   model: string
   supportedApiProtocols: ProviderModelApiProtocol[]
+  testEndpointModes: AccountSupportedEndpointMode[]
 }
 
 export interface AccountTestOptions {

@@ -57,6 +57,34 @@ assertTrue(
   accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'toggle-status' && item.label === '停用账户'),
   '检查失败的自有待检查账户应允许停用'
 )
+const activeHealthTimeline = accountStatusTooltipLines(accountFixture({
+  lastHealthCheckAt: '2026-07-11T01:00:00.000Z',
+  lastHealthSuccessAt: '2026-07-11T01:05:00.000Z',
+  nextHealthCheckAt: '2099-07-11T02:00:00.000Z'
+}))
+assertTrue(activeHealthTimeline.some((line) => line.includes('最近主动健康检查')), '正常账户应区分主动健康检查时间')
+assertTrue(activeHealthTimeline.some((line) => line.includes('最近健康成功信号')), '正常账户应保留健康成功信号文案')
+assertTrue(activeHealthTimeline.some((line) => line.includes('下次健康复核')), '正常账户应显示下次健康复核')
+
+const coolingHealthTimeline = accountStatusTooltipLines(accountFixture({
+  status: 'temporary_unavailable',
+  lastHealthCheckAt: '2026-07-11T01:00:00.000Z',
+  lastHealthSuccessAt: '2026-07-11T01:05:00.000Z',
+  nextHealthCheckAt: '2020-07-11T02:00:00.000Z',
+  cooldownUntil: '2099-07-11T03:00:00.000Z'
+}))
+assertTrue(coolingHealthTimeline.some((line) => line.includes('下次冷却复测')), '冷却账户应显示冷却复测时间')
+assertTrue(!coolingHealthTimeline.some((line) => line.includes('下次健康复核')), '冷却账户不得混入周期健康复核计划')
+assertTrue(!coolingHealthTimeline.some((line) => line.includes('等待复核')), '冷却账户的过期健康计划不得显示为等待复核')
+
+for (const status of ['disabled', 'error'] as const) {
+  const terminalTimeline = accountStatusTooltipLines(accountFixture({
+    status,
+    nextHealthCheckAt: '2020-07-11T02:00:00.000Z'
+  }))
+  assertTrue(!terminalTimeline.some((line) => line.includes('下次健康复核')), `${status} 账户不得显示下次健康复核`)
+  assertTrue(!terminalTimeline.some((line) => line.includes('等待复核')), `${status} 账户不得显示过期计划等待复核`)
+}
 assertStatus('停用账户', accountFixture({
   status: 'disabled',
   effectiveAvailability: {

@@ -74,11 +74,51 @@ function updateExistingPayloadSummaryLimit(
     if (summary.type !== 'audit_payload_summary') {
       return
     }
+    shrinkExistingPayloadSummary(summary, fullBodyLimitBytes)
     summary.fullBodyLimitBytes = fullBodyLimitBytes
     payload.body = JSON.stringify(summary)
   } catch {
     return
   }
+}
+
+function shrinkExistingPayloadSummary(summary: Record<string, unknown>, fullBodyLimitBytes: number): void {
+  const head = decodedSummaryWindow(summary.headBase64)
+  const tail = decodedSummaryWindow(summary.tailBase64)
+  if (!head || !tail) return
+  const retainedBytes = Math.min(
+    head.byteLength + tail.byteLength,
+    Math.max(0, Math.trunc(fullBodyLimitBytes))
+  )
+  const headBytes = Math.min(head.byteLength, Math.ceil(retainedBytes / 2))
+  const tailBytes = Math.min(tail.byteLength, Math.floor(retainedBytes / 2))
+  const nextHead = head.subarray(0, headBytes)
+  const nextTail = tail.subarray(Math.max(0, tail.byteLength - tailBytes))
+  const originalSizeBytes = numericSummaryValue(summary.originalSizeBytes)
+  summary.retainedHeadBytes = nextHead.byteLength
+  summary.retainedTailBytes = nextTail.byteLength
+  summary.omittedMiddleBytes = Math.max(0, originalSizeBytes - nextHead.byteLength - nextTail.byteLength)
+  summary.headBase64 = nextHead.toString('base64')
+  summary.tailBase64 = nextTail.toString('base64')
+  if (summary.textPreview && typeof summary.textPreview === 'object' && !Array.isArray(summary.textPreview)) {
+    summary.textPreview = {
+      head: textPreview(nextHead),
+      tail: textPreview(nextTail)
+    }
+  }
+}
+
+function decodedSummaryWindow(value: unknown): Buffer | undefined {
+  if (typeof value !== 'string') return undefined
+  try {
+    return Buffer.from(value, 'base64')
+  } catch {
+    return undefined
+  }
+}
+
+function numericSummaryValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
 }
 
 function buildAuditPayloadSummary(input: {

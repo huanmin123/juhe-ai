@@ -62,14 +62,14 @@ export function accountGptRequestOverrideCapabilities(input: {
   supportedModels: string[]
 }): AccountGptRequestOverrideCapabilities {
   const supportedModels = uniqueTextList(input.supportedModels)
-  const serviceTiers = unionModelCapability(
+  const serviceTiers = intersectModelCapability(
     supportedModels,
     input.modelOptions,
     (option) => option.supportedServiceTiers,
     serviceTierOrder,
     serviceTierSet
   ).filter((tier) => input.accountType !== 'oauth' || tier !== 'flex')
-  const reasoningEfforts = unionModelCapability(
+  const reasoningEfforts = intersectModelCapability(
     supportedModels,
     input.modelOptions,
     (option) => option.supportedReasoningEfforts,
@@ -152,7 +152,7 @@ interface AccountGptRequestOverrideForm {
   reasoningEffortOverride: AccountGptReasoningEffortOverride
 }
 
-function unionModelCapability<TValue extends string>(
+function intersectModelCapability<TValue extends string>(
   supportedModels: string[],
   modelOptions: AccountGptModelCapabilityOption[],
   readValues: (option: AccountGptModelCapabilityOption) => TValue[] | undefined,
@@ -161,16 +161,18 @@ function unionModelCapability<TValue extends string>(
 ): TValue[] {
   if (!supportedModels.length) return []
   const optionsByModel = new Map(modelOptions.map((option) => [option.value.trim(), option]))
-  const union = new Set<TValue>()
+  let intersection = new Set<TValue>(order)
   for (const model of supportedModels) {
     const option = optionsByModel.get(model)
     const rawValues = option ? readValues(option) : undefined
-    if (!option || !Array.isArray(rawValues)) continue
+    if (!option || !Array.isArray(rawValues)) return []
+    const supported = new Set<TValue>()
     for (const value of rawValues) {
-      if (allowedValues.has(value)) union.add(value)
+      if (allowedValues.has(value)) supported.add(value)
     }
+    intersection = new Set([...intersection].filter((value) => supported.has(value)))
   }
-  return order.filter((value) => union.has(value))
+  return order.filter((value) => intersection.has(value))
 }
 
 function normalizeServiceTierOverride(value: unknown): AccountGptServiceTierOverride {

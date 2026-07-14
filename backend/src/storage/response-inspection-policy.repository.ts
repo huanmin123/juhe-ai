@@ -230,11 +230,10 @@ const systemDefaultRules: ResponseInspectionPolicySummary[] = [
     protocolCode: OPENAI_PROTOCOL_CODE,
     providerCode: GPT_VENDOR_CODE,
     match: {
-      clientProfiles: ['codex'],
       errorCodes: ['cyber_policy']
     },
     action: 'retry_no_avoidance',
-    notes: 'GPT / Codex 上游 cyber_policy 局部规则；不能扩散为所有 OpenAI-compatible 供应商语义。'
+    notes: 'GPT 供应商 cyber_policy 规则，适用于该供应商的所有下游客户端；不能扩散为所有 OpenAI-compatible 供应商语义。'
   },
   {
     id: 'default_anthropic_error_object',

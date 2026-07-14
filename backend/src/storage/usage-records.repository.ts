@@ -25,7 +25,7 @@ import {
 import { writeUsageRecordShardRowsWithWriterPool } from './usage-record-writer-pool.js'
 import { optionalString } from './value-utils.js'
 import type { ResourceAuthorizationSourceType } from '../domain/types.js'
-import { recordAccountHealthSuccessSignals } from './account-health-check.repository.js'
+import { accountHealthSuccessSignalSchedule, recordAccountHealthSuccessSignals } from './account-health-check.repository.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -45,6 +45,7 @@ import {
 import type { ProviderCostBreakdown } from '../modules/model-pricing/model-pricing.service.js'
 import type { UsageReasoningEffort } from '../modules/gateway/usage/reasoning-effort.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
+import { readUsageHealthCheckSettingsSnapshot } from './usage-health-check-settings-snapshot.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -444,13 +445,18 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Prom
     shardLocationMode: 'postgres'
   })
   if (writePlan.shardEntries.length === 0) return
+  const hasAccountHealthSuccess = [...writePlan.rowsByShard.values()]
+    .some((shardRows) => shardRows.rows.some((row) => Boolean(row.accountHealthSuccessAt)))
+  const healthCheckSettings = hasAccountHealthSuccess
+    ? await readUsageHealthCheckSettingsSnapshot()
+    : undefined
 
   await client.transaction(async (tx) => {
     for (const shardRows of writePlan.rowsByShard.values()) {
       await insertPostgresUsageRecordRows(tx, shardRows.rows)
       collectPostgresUsageRecordBusinessSideEffects(accountLastUsedAt, accountHealthSuccessAt, shardRows.rows)
     }
-    await flushPostgresUsageRecordBusinessSideEffects(tx, accountLastUsedAt, accountHealthSuccessAt)
+    await flushPostgresUsageRecordBusinessSideEffects(tx, accountLastUsedAt, accountHealthSuccessAt, healthCheckSettings)
   })
 }
 
@@ -1165,7 +1171,12 @@ function mergePostgresMaxIsoValue(target: Map<string, string>, key: string, valu
 async function flushPostgresUsageRecordBusinessSideEffects(
   client: DatabaseClient,
   accountLastUsedAt: Map<string, string>,
-  accountHealthSuccessAt: Map<string, string>
+  accountHealthSuccessAt: Map<string, string>,
+  healthCheckSettings?: {
+    intervalHours: number
+    jitterMinutes: number
+    failureThreshold: number
+  }
 ): Promise<void> {
   for (const [accountId, lastUsedAt] of accountLastUsedAt) {
     await client.execute(`
@@ -1177,9 +1188,11 @@ async function flushPostgresUsageRecordBusinessSideEffects(
     `, [lastUsedAt, lastUsedAt, accountId, lastUsedAt])
   }
   for (const [accountId, successAt] of accountHealthSuccessAt) {
+    const schedule = accountHealthSuccessSignalSchedule(accountId, successAt, healthCheckSettings ?? {})
     await client.execute(`
       UPDATE juhe_business.accounts
       SET last_health_success_at = ?,
+          next_health_check_at = ?,
           health_check_failure_count = 0,
           health_check_failure_started_at = NULL,
           last_health_check_error_code = NULL,
@@ -1188,7 +1201,23 @@ async function flushPostgresUsageRecordBusinessSideEffects(
       WHERE id = ?
         AND deleted_at IS NULL
         AND (last_health_success_at IS NULL OR last_health_success_at <= ?)
-    `, [successAt, successAt, accountId, successAt])
+        AND (
+          next_health_check_at IS NULL
+          OR next_health_check_at < ?
+          OR next_health_check_at > ?
+          OR health_check_failure_count <> 0
+          OR last_health_check_error_code IS NOT NULL
+          OR last_health_check_error_message IS NOT NULL
+        )
+    `, [
+      successAt,
+      schedule.nextHealthCheckAt,
+      successAt,
+      accountId,
+      successAt,
+      schedule.refreshAfterAt,
+      schedule.nextHealthCheckAt
+    ])
   }
 }
 

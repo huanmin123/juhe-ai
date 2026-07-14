@@ -10,6 +10,7 @@ const {
 } = await import(resolveWorkerModuleUrl('./audit-payload-summary')) as typeof import('./audit-payload-summary.js')
 
 const auditTransportMaxBytes = 4 * 1024 * 1024
+const auditTransportMinimumSummaryWindowBytes = 4 * 1024
 interface AuditLogTransportWorkerData {
   successFullBodyLimitBytes: number
   problemFullBodyLimitBytes: number
@@ -113,6 +114,11 @@ function prepareAuditLogForTransport(input: AuditLogInput): AuditLogInput {
     }
   }
 
+  prepared = shrinkAuditPayloadSummariesToTransportBudget(prepared, bodyMaxBytes)
+  if (auditLogTransportEncodedBytes(prepared) <= auditTransportMaxBytes) {
+    return prepared
+  }
+
   const headerIndexes = prepared.payloads
     .map((payload, index) => ({ index, bytes: estimateHeadersBytes(payload.headers) }))
     .filter((item) => item.bytes > 0)
@@ -137,8 +143,43 @@ function prepareAuditLogForTransport(input: AuditLogInput): AuditLogInput {
     }
     structureDropped = true
   }
+  if (auditLogTransportEncodedBytes(prepared) > auditTransportMaxBytes) {
+    for (const payload of prepared.payloads) {
+      if (auditLogTransportEncodedBytes(prepared) <= auditTransportMaxBytes) break
+      summarizeAuditPayloadForLimit(payload, 0, {
+        force: true,
+        includeGatewayMetadata: true,
+        reason: 'transport_message_budget'
+      })
+      structureDropped = true
+    }
+  }
   if (structureDropped) {
     prepared = markAuditLogStructureDropped(prepared)
+  }
+  if (auditLogTransportEncodedBytes(prepared) > auditTransportMaxBytes) {
+    prepared = markAuditLogStructureDropped({
+      ...prepared,
+      attempts: [],
+      payloads: []
+    })
+  }
+  return prepared
+}
+
+function shrinkAuditPayloadSummariesToTransportBudget(input: AuditLogInput, initialLimitBytes: number): AuditLogInput {
+  const prepared = input
+  let summaryLimitBytes = Math.max(auditTransportMinimumSummaryWindowBytes, Math.trunc(initialLimitBytes))
+  while (auditLogTransportEncodedBytes(prepared) > auditTransportMaxBytes && summaryLimitBytes > auditTransportMinimumSummaryWindowBytes) {
+    summaryLimitBytes = Math.max(auditTransportMinimumSummaryWindowBytes, Math.floor(summaryLimitBytes / 2))
+    for (const payload of prepared.payloads) {
+      if (payload.captureStatus !== 'summary_only') continue
+      summarizeAuditPayloadForLimit(payload, summaryLimitBytes, {
+        force: true,
+        includeGatewayMetadata: true,
+        reason: 'transport_message_budget'
+      })
+    }
   }
   return prepared
 }

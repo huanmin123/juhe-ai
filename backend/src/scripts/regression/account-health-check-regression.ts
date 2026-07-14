@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import {
+  ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  GPT_OPENAI_V1_PROFILE_ID
+} from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { accountTestFailureEligibleForAccount } from '../../modules/accounts/account-test-failure-eligibility.js'
 
@@ -33,6 +37,7 @@ const healthSettings = {
 
 try {
   const repositorySource = readFileSync(resolve('src/storage/account-health-check.repository.ts'), 'utf8')
+  const usageRepositorySource = readFileSync(resolve('src/storage/usage-records.repository.ts'), 'utf8')
   const serviceSource = readFileSync(resolve('src/modules/background/account-health-check.service.ts'), 'utf8')
   const postgresSuccessSource = sourceBetween(
     repositorySource,
@@ -60,6 +65,9 @@ try {
   assert.match(repositorySource, /pendingHealthCheckRetryIntervalMs = 60 \* 60_000/, '待检查账户失败后必须固定每 1 小时复检')
   assert.match(repositorySource, /pendingHealthCheckFailureTimeoutMs = 24 \* 60 \* 60_000/, '待检查账户必须从首次失败起 24 小时收敛为异常')
   assert.match(repositorySource, /account_activation_check_timeout/, '待检查超时必须写入明确异常码')
+  assert.match(usageRepositorySource, /accountHealthSuccessSignalSchedule\(accountId, successAt, healthCheckSettings \?\? \{\}\)/, 'PostgreSQL 真实成功请求必须复用健康检测间隔与 jitter 计划')
+  assert.match(usageRepositorySource, /SET last_health_success_at = \?,[\s\S]+next_health_check_at = \?/, 'PostgreSQL 真实成功请求必须同时顺延下次健康复核')
+  assert.match(usageRepositorySource, /next_health_check_at < \?[\s\S]+next_health_check_at > \?/, 'PostgreSQL 真实成功请求应与 SQLite 一致节流，避免每请求重写账户行')
 
   const database = databaseModule.getBusinessDatabase()
   const accountColumns = database.prepare('PRAGMA table_info(accounts)').all() as unknown as Array<{ name: string }>
@@ -94,6 +102,16 @@ try {
   const group = repositories.createGroup({
     name: '账号健康检测回归分组',
     providerCode: 'gpt',
+    enabled: true
+  }, access)
+  const anthropicGroup = repositories.createGroup({
+    name: 'Anthropic 健康检测回归分组',
+    providerCode: 'anthropic',
+    enabled: true
+  }, access)
+  const geminiGroup = repositories.createGroup({
+    name: 'Gemini 健康检测回归分组',
+    providerCode: 'gemini',
     enabled: true
   }, access)
   const dueAccount = createActiveAccount(repositories, group.id, '健康检测到期账号', 'sk-health-due')
@@ -171,12 +189,43 @@ try {
     pendingFirstCheckAccount.id
   )
 
+  const anthropicPendingAccount = repositories.createAccount({
+    providerCode: 'anthropic',
+    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+    name: 'Anthropic 待检查候选账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-health-anthropic-pending',
+      base_url: 'https://api.anthropic.com/v1'
+    },
+    groupId: anthropicGroup.id,
+    supportedModels: ['claude-sonnet-4-5'],
+    healthCheckModel: 'claude-sonnet-4-5',
+    healthCheckEndpointMode: 'messages_sse'
+  }, access)
+  const geminiPendingAccount = repositories.createAccount({
+    providerCode: 'gemini',
+    providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+    name: 'Gemini 待检查候选账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-health-gemini-pending',
+      base_url: 'https://generativelanguage.googleapis.com/v1beta'
+    },
+    groupId: geminiGroup.id,
+    supportedModels: ['gemini-2.5-flash'],
+    healthCheckModel: 'gemini-2.5-flash',
+    healthCheckEndpointMode: 'generate_content_sse'
+  }, access)
+
   const due = repositories.listAccountsDueForHealthCheck({ limit: 10, ...healthSettings })
-  assert.deepEqual(
-    due.map((account) => account.id),
-    [pendingFirstCheckAccount.id, dueAccount.id],
-    '从未完成后台检查的待检查账户必须忽略遗留的未来复检时间并优先入队'
-  )
+  const dueIds = due.map((account) => account.id)
+  for (const pendingId of [pendingFirstCheckAccount.id, anthropicPendingAccount.id, geminiPendingAccount.id]) {
+    assert.ok(dueIds.includes(pendingId), '八种生成协议的待检查账户都必须进入常规健康检查候选')
+    assert.ok(dueIds.indexOf(pendingId) < dueIds.indexOf(dueAccount.id), '待检查账户必须优先于到期 active 账户')
+  }
+  assert.equal(repositories.findAccountForHealthCheck(anthropicPendingAccount.id)?.id, anthropicPendingAccount.id, 'Anthropic Messages 待检查账户不得被 OpenAI profile 限制')
+  assert.equal(repositories.findAccountForHealthCheck(geminiPendingAccount.id)?.id, geminiPendingAccount.id, 'Gemini GenerateContent 待检查账户不得被 OpenAI profile 限制')
 
   const recentAfterSkip = repositories.findAccountSummary(recentAccount.id, access)
   assert.equal(recentAfterSkip?.healthCheckFailureCount, 0, '近期成功信号应清理健康检测失败计数')

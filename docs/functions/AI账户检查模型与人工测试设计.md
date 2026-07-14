@@ -18,7 +18,7 @@
 - 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE。
 - 新账户默认：GPT 官方 API Key / OAuth 使用 `responses_sse`；通用 OpenAI-compatible、DeepSeek、GLM 和 Gemini OpenAI profile 使用 `chat_json`；Anthropic profile 使用 `messages_json`；Gemini Native 使用 `generate_content_json`。
 - 首选 mode 未启用时，优先取 `supported_endpoint_modes` 中第一个已启用 JSON mode，再取第一个可检查 mode；没有任何可检查 mode 时拒绝保存，不做旧字段兼容或运行时协议猜测。
-- 历史库必须停服离线把字段从 `health_check_endpoint_family` 直接改为 `health_check_endpoint_mode`。GPT 全量写为 `responses_sse`，其他旧族映射到对应 JSON mode；加密凭据中的 `supported_endpoint_modes` 必须先通过应用层 codec 解密改写，不能用普通 SQL 修改密文。
+- 历史库必须停服离线把字段从 `health_check_endpoint_family` 直接改为 `health_check_endpoint_mode`。GPT 全量写为 `responses_sse`；其他账户优先保留旧检查族对应的、已启用且可检查的 JSON / SSE mode，同族不可用时才回退到首个已启用可检查 mode。加密凭据中的 `supported_endpoint_modes` 必须先通过应用层 codec 解密改写，不能用普通 SQL 修改密文。
 
 历史库迁移使用同一套生产环境变量和加密密钥，并按以下顺序执行：
 
@@ -176,7 +176,9 @@ GET /__aisys__/api/my-accounts/:id/test-options
 
 接口不得返回凭据。测试执行仍由后端按账户 ID 读取受控凭据。
 
-`testEndpointModes` 必须由后端基于完整账户的上游接口能力返回。前端不能从列表裁剪账户重新推导，也不能与模型目录的协议标签取交集后隐藏用户显式启用的请求形态；模型目录协议标签只用于候选模型和风险提示。
+`testEndpointModes` 必须由后端基于完整账户的上游接口能力返回；每个模型选项还必须返回该模型经过有效模型映射后可用的 `testEndpointModes`。前端不能从列表裁剪账户重新推导，切换模型时只展示后端计算出的“模型协议、模型映射和账户上游能力”交集。合法跨协议映射按来源协议选择检查形态、按映射目标协议校验上游模型，不能用目标协议直接裁掉来源检查形态。
+
+后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件；空正文、仅 `[DONE]`、HTML、畸形 JSON 或只有未完成数据片段都属于检查失败，不能把 `pending_test` 账户激活进号池。
 
 新增和编辑表单直接使用当前表单中的 `supportedModels`、`healthCheckModel`、endpoint modes 和未保存配置，不额外读取已保存详情。表单测试不再请求自由模型选项。
 

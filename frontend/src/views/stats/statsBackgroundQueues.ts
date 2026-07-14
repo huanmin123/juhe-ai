@@ -47,6 +47,10 @@ export function backgroundQueueBacklog(row: BackgroundQueueRow): number {
 }
 
 export function backgroundQueueProblemCount(row: BackgroundQueueRow): number {
+  return backgroundQueueHistoricalProblemCount(row) + (row.lastError ? 1 : 0)
+}
+
+export function backgroundQueueHistoricalProblemCount(row: BackgroundQueueRow): number {
   return numberValue(row.flushFailureCount)
     + numberValue(row.droppedCount)
     + numberValue(row.rejectedCount)
@@ -54,13 +58,31 @@ export function backgroundQueueProblemCount(row: BackgroundQueueRow): number {
     + (isDiagnosticRequestQueue(row) ? 0 : numberValue(row.timedOutCount) + numberValue(row.failedCount))
     + numberValue(row.writerPoolFailedJobs)
     + numberValue(row.writerPoolRejectedJobs)
-    + (row.lastError ? 1 : 0)
 }
 
 export function backgroundQueueDiagnosticCount(row: BackgroundQueueRow): number {
   return isDiagnosticRequestQueue(row)
     ? numberValue(row.timedOutCount) + numberValue(row.failedCount)
     : 0
+}
+
+export function backgroundQueueStatusText(row: BackgroundQueueRow): string {
+  if (row.lastError) return '异常'
+  if (backgroundQueueRunningCount(row) > 0) return '运行中'
+  if (backgroundQueueBacklog(row) > 0) return row.queueType === 'retry' ? '待执行' : '积压'
+  if (backgroundQueueHistoricalProblemCount(row) > 0 || backgroundQueueDiagnosticCount(row) > 0) return '曾失败'
+  return '空闲'
+}
+
+export function backgroundQueueStatusColor(row: BackgroundQueueRow): string {
+  if (row.lastError) return 'error'
+  if (backgroundQueueRunningCount(row) > 0) return 'processing'
+  if (backgroundQueueBacklog(row) > 0 || backgroundQueueHistoricalProblemCount(row) > 0 || backgroundQueueDiagnosticCount(row) > 0) return 'warning'
+  return 'success'
+}
+
+function backgroundQueueRunningCount(row: BackgroundQueueRow): number {
+  return numberValue(row.runningCount) + numberValue(row.writerPoolActiveJobs)
 }
 
 function backgroundQueueRowsFromRuntimeRow(row: BackgroundRuntimeRow): BackgroundQueueRow[] {

@@ -70,9 +70,11 @@ export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
     throw new Error('GPT 请求覆盖要求账户至少配置一个支持模型')
   }
   const catalogByModel = new Map(input.catalog.map((item) => [item.model.trim(), item]))
-  const modelItems = supportedModels
-    .map((model) => catalogByModel.get(model))
-    .filter((item): item is ProviderModelCatalogItem => Boolean(item))
+  const missingModels = supportedModels.filter((model) => !catalogByModel.has(model))
+  if (missingModels.length > 0) {
+    throw new Error(`模型目录缺少账户支持模型：${missingModels.join('、')}`)
+  }
+  const modelItems = supportedModels.map((model) => catalogByModel.get(model) as ProviderModelCatalogItem)
 
   if (input.overrides.serviceTier) {
     if (input.accountType === 'oauth' && input.overrides.serviceTier === 'flex') {
@@ -81,19 +83,19 @@ export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
     const requiredTier = input.overrides.serviceTier === 'default'
       ? undefined
       : input.overrides.serviceTier
-    const supported = modelItems.some((item) => requiredTier
+    const supported = modelItems.every((item) => requiredTier
       ? item.supportedServiceTiers.includes(requiredTier)
       : item.supportedServiceTiers.length > 0)
     if (!supported) {
       const label = requiredTier ? `服务等级 ${requiredTier}` : '服务等级覆盖'
-      throw new Error(`账户支持模型中没有模型支持${label}`)
+      throw new Error(`账户全部支持模型必须共同支持${label}`)
     }
   }
 
   if (input.overrides.reasoningEffort) {
-    const supported = modelItems.some((item) => item.supportedReasoningEfforts.includes(input.overrides.reasoningEffort!))
+    const supported = modelItems.every((item) => item.supportedReasoningEfforts.includes(input.overrides.reasoningEffort!))
     if (!supported) {
-      throw new Error(`账户支持模型中没有模型支持思考级别 ${input.overrides.reasoningEffort}`)
+      throw new Error(`账户全部支持模型必须共同支持思考级别 ${input.overrides.reasoningEffort}`)
     }
   }
 }

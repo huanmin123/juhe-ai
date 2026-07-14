@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { parseAuditLogRuntimeConfig, runtimeConfig } from '../../config/runtime.js'
+import { auditSuccessRetentionCutoffIso } from '../../modules/audit-logs/audit-log-retention-policy.js'
 import { summarizeAuditPayloadForLimit } from '../../modules/audit-logs/audit-payload-summary.js'
 import type { AuditLogPayloadInput } from '../../storage/audit-log-types.js'
 import { fixedAuditLogSettings, readAuditLogSettings } from '../../modules/audit-logs/audit-log-settings.js'
@@ -49,8 +50,34 @@ assert.equal(customized.successSampleRate, 0.0125)
 assert.equal(customized.problemRetentionDays, 14)
 assert.equal(customized.successFullBodyLimitBytes, 0)
 assert.equal(customized.problemFullBodyLimitBytes, 0)
-assert.throws(() => parseAuditLogRuntimeConfig({ JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS: '0' }), /必须是 1 到 168 之间的整数/)
-assert.throws(() => parseAuditLogRuntimeConfig({ JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE: '0' }), /0.0001 到 1/)
+const successAuditDisabled = parseAuditLogRuntimeConfig({
+  JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS: '0',
+  JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE: '0',
+  JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS: '0'
+})
+assert.equal(successAuditDisabled.successHotRetentionHours, 0)
+assert.equal(successAuditDisabled.successSampleRate, 0)
+assert.equal(successAuditDisabled.successRetentionDays, 0)
+assert.equal(successAuditDisabled.problemRetentionDays, 7, '关闭成功审计不能影响问题链路保留')
+const hotOnlySuccessAudit = parseAuditLogRuntimeConfig({
+  JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS: '6',
+  JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE: '0',
+  JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS: '0'
+})
+assert.equal(hotOnlySuccessAudit.successHotRetentionHours, 6, '关闭长期采样时仍应允许保留成功热窗口')
+assert.equal(
+  auditSuccessRetentionCutoffIso(Date.parse('2026-07-14T12:00:00.000Z'), 6, 0),
+  '2026-07-14T06:00:00.000Z',
+  '长期采样关闭时统一保留清理不得越过成功热窗口'
+)
+assert.throws(() => parseAuditLogRuntimeConfig({
+  JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE: '0',
+  JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS: '3'
+}), /必须同时为 0 或同时大于 0/)
+assert.throws(() => parseAuditLogRuntimeConfig({
+  JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE: '0.1',
+  JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS: '0'
+}), /必须同时为 0 或同时大于 0/)
 assert.throws(() => parseAuditLogRuntimeConfig({ JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE: '0.00001' }), /最多 4 位小数/)
 assert.throws(() => parseAuditLogRuntimeConfig({
   JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS: '49',
@@ -113,4 +140,4 @@ const backgroundIpcSource = readFileSync(new URL('../../modules/background/backg
 assert(backgroundIpcSource.includes('function coalesceAuditLogMessage'), 'server 到 ingest-worker 的 audit IPC 消息必须支持合并，避免 50 并发下大量单条 IPC 消息排队')
 assert(backgroundIpcSource.includes("message.type === 'background_worker_audit_logs'"), 'background IPC 必须识别审计日志消息并走合并路径')
 
-console.log('审计日志设置契约回归通过：固定审计配置保留 1 小时最近内容，不再暴露临时全量捕获开关')
+console.log('审计日志设置契约回归通过：默认保留 1 小时最近内容，允许显式关闭成功审计且不影响问题链路')

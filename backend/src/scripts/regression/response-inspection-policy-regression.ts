@@ -476,6 +476,8 @@ assert.equal(validateAccountResponseInspectionRules([
     frames,
     policies: [
       responsePolicy({
+        scopeType: 'protocol',
+        providerCode: undefined,
         match: {
           errorCodes: ['unscoped_upstream_error_code']
         }
@@ -488,7 +490,58 @@ assert.equal(validateAccountResponseInspectionRules([
       accountClientCompatibility: 'openai_standard'
     }
   })
-  assert.equal(result.decision, undefined, '未绑定客户端画像的响应检查策略不能只靠上游 errorCode 命中')
+  assert.equal(result.decision, undefined, '未绑定客户端画像的协议级响应检查策略不能只靠上游 errorCode 命中')
+}
+
+{
+  const frames = extractOpenAIJsonSemanticFrames({
+    error: {
+      code: 'cyber_policy',
+      message: 'GPT provider policy applies to every downstream client'
+    }
+  }, 'responses')
+  const defaultRules = listResponseInspectionPolicyDefaultRules()
+  const gptPolicies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_gpt_generic_client',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: GPT_VENDOR_CODE,
+      credentials: {}
+    } as never,
+    managementPolicies: defaultRules
+  })
+  const genericResult = inspectResponseSemanticFrames({
+    frames,
+    policies: gptPolicies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'generic_openai',
+      accountClientCompatibility: 'openai_standard'
+    }
+  })
+  assert.equal(genericResult.decision?.policyId, 'default_gpt_cyber_policy', 'GPT cyber_policy 必须覆盖普通 OpenAI 下游客户端')
+
+  const compatiblePolicies = resolveRuntimeResponseInspectionPolicies({
+    account: {
+      id: 'acct_openai_compatible_generic_client',
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+      credentials: {}
+    } as never,
+    managementPolicies: defaultRules
+  })
+  const compatibleResult = inspectResponseSemanticFrames({
+    frames,
+    policies: compatiblePolicies,
+    downstreamWritten: false,
+    transport: 'json',
+    context: {
+      clientProfile: 'generic_openai',
+      accountClientCompatibility: 'openai_standard'
+    }
+  })
+  assert.notEqual(compatibleResult.decision?.policyId, 'default_gpt_cyber_policy', 'GPT cyber_policy 供应商规则不得扩散到普通 OpenAI-compatible 供应商')
 }
 
 {
@@ -606,7 +659,7 @@ assert.equal(validateAccountResponseInspectionRules([
   assert(defaultRules.some((rule) => rule.id === 'default_gemini_cli_retryable_error' && rule.match.clientProfiles?.includes('gemini_cli') && rule.match.errorTypes?.includes('UNAVAILABLE')), '默认规则必须覆盖 Gemini CLI 专属可重试错误')
   assert(defaultRules.some((rule) => rule.match.clientProfiles?.includes('codex') && rule.match.finishReasons?.includes('incomplete')), '默认规则必须覆盖 Codex response.incomplete')
   assert(defaultRules.some((rule) => rule.id === 'default_codex_compaction_contract' && rule.match.errorCodes?.includes('codex_compaction_contract_mismatch')), '默认规则必须覆盖 Codex compact 输出契约错误')
-  assert(defaultRules.some((rule) => rule.providerCode === GPT_VENDOR_CODE && rule.match.errorCodes?.includes('cyber_policy')), 'GPT cyber_policy 只能作为 GPT provider 规则存在')
+  assert(defaultRules.some((rule) => rule.providerCode === GPT_VENDOR_CODE && !rule.match.clientProfiles?.length && rule.match.errorCodes?.includes('cyber_policy')), 'GPT cyber_policy 必须作为不限制下游客户端的 GPT provider 规则存在')
   const gptPolicies = resolveRuntimeResponseInspectionPolicies({
     account: {
       id: 'acct_gpt',

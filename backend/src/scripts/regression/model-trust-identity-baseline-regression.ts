@@ -103,6 +103,12 @@ assert(downgrade)
 assert.equal(downgrade.identityStatus, 'suspected_downgrade')
 assert(downgrade.reasonCodes.includes('closer_to_lower_model_baseline'))
 
+const nearNormal = await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_source_2', 'gpt-5.6-sol')
+assert(nearNormal)
+assert.notEqual(nearNormal.identityStatus, 'suspected_same_source', '相近正常群体成员不得因单题或局部特征相似误报为同源')
+assert.notEqual(nearNormal.identityStatus, 'suspected_downgrade', '相近正常群体成员不得误报为模型降级')
+assert.notEqual(nearNormal.identityStatus, 'population_outlier', '相近正常群体成员不得误报为群体离群')
+
 const undeclared = await repository.findModelAccountTrustResultAsync('sys_identity', 'acct_undeclared', 'gpt-5.6-sol')
 assert(undeclared)
 assert.equal(undeclared.mappingStatus, 'undeclared_mismatch')
