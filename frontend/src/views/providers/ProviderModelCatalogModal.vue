@@ -100,12 +100,9 @@
           </template>
           <template v-else-if="column.key === 'prices'">
             <div class="price-cell">
-              <span v-if="record.pricingModel">计价 {{ record.pricingModel }}</span>
-              <template v-else>
-                <span>输入 {{ formatPrice(record.inputUsdPer1M) }}</span>
-                <span>输出 {{ formatPrice(record.outputUsdPer1M) }}</span>
-                <span>缓存读 {{ formatPrice(record.cachedInputUsdPer1M) }}</span>
-              </template>
+              <span>输入 {{ formatPrice(record.inputUsdPer1M) }}</span>
+              <span>输出 {{ formatPrice(record.outputUsdPer1M) }}</span>
+              <span>缓存读 {{ formatPrice(record.cachedInputUsdPer1M) }}</span>
             </div>
           </template>
           <template v-else-if="column.key === 'cacheWrite'">

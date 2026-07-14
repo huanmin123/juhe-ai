@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -62,6 +63,25 @@ func (s *Store) DeleteManagementCustomProviderModel(ctx context.Context, id stri
 
 func (s *Store) GetManagementCustomProviderModelBindingSummary(ctx context.Context, input port.ManagementCustomProviderModelBindingInput) (port.ManagementCustomProviderModelBindingSummary, error) {
 	return getManagementCustomProviderModelBindingSummary(ctx, s.queries(), input)
+}
+
+func (s *Store) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput) (bool, error) {
+	pricesJSON, err := json.Marshal(input.ServiceTierPrices)
+	if err != nil {
+		return false, fmt.Errorf("marshal built-in provider model service tier prices: %w", err)
+	}
+	rows, err := s.queries().UpdateManagementBuiltInProviderModelPrices(ctx, postgresqueries.UpdateManagementBuiltInProviderModelPricesParams{
+		InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M),
+		CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M),
+		CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), ServiceTierPricesJson: string(pricesJSON),
+		ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M),
+		AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M),
+		OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), ID: input.ID, ProviderCode: input.ProviderCode,
+	})
+	if err != nil {
+		return false, fmt.Errorf("update built-in provider model prices: %w", err)
+	}
+	return rows > 0, nil
 }
 
 func findManagementProviderModelProvider(
@@ -260,6 +280,10 @@ func saveManagementCustomProviderModel(
 	if err != nil {
 		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("marshal management custom provider model reasoning efforts: %w", err)
 	}
+	serviceTierPricesJSON, err := json.Marshal(input.ServiceTierPrices)
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("marshal management custom provider model service tier prices: %w", err)
+	}
 	row, err := q.UpsertManagementCustomProviderModel(ctx, postgresqueries.UpsertManagementCustomProviderModelParams{
 		ID:                            input.ID,
 		ProviderCode:                  input.ProviderCode,
@@ -272,7 +296,6 @@ func saveManagementCustomProviderModel(
 		SupportedServiceTiersJson:     string(serviceTiersJSON),
 		SupportedReasoningEffortsJson: string(reasoningEffortsJSON),
 		DefaultReasoningEffort:        pgTextFromString(input.DefaultReasoningEffort),
-		PricingModel:                  pgTextFromString(input.PricingModel),
 		ReleaseDate:                   pgTextFromString(input.ReleaseDate),
 		ShutdownDate:                  pgTextFromString(input.ShutdownDate),
 		ContextWindowTokens:           pgInt4Ptr(input.ContextWindowTokens),
@@ -281,6 +304,8 @@ func saveManagementCustomProviderModel(
 		OutputUsdPer1m:                pgFloat8Ptr(input.OutputUSDPer1M),
 		CachedInputUsdPer1m:           pgFloat8Ptr(input.CachedInputUSDPer1M),
 		CacheWriteUsdPer1m:            pgFloat8Ptr(input.CacheWriteUSDPer1M),
+		CacheWrite1hUsdPer1m:          pgFloat8Ptr(input.CacheWrite1hUSDPer1M),
+		ServiceTierPricesJson:         string(serviceTierPricesJSON),
 		ImageInputUsdPer1m:            pgFloat8Ptr(input.ImageInputUSDPer1M),
 		ImageOutputUsdPer1m:           pgFloat8Ptr(input.ImageOutputUSDPer1M),
 		AudioInputUsdPer1m:            pgFloat8Ptr(input.AudioInputUSDPer1M),
@@ -344,6 +369,10 @@ func managementProviderModelCatalogItemFromRow(row postgresqueries.ListManagemen
 	if err != nil {
 		return port.ManagementProviderModelCatalogItem{}, err
 	}
+	serviceTierPrices, err := decodeProviderModelPriceMap(row.ServiceTierPricesJson, "provider model service_tier_prices_json")
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
 	return port.ManagementProviderModelCatalogItem{
 		ID:                              row.ID,
 		ProviderCode:                    row.ProviderCode,
@@ -362,7 +391,6 @@ func managementProviderModelCatalogItemFromRow(row postgresqueries.ListManagemen
 		CodexSupportedReasoningLevels:   codexReasoningLevels,
 		CodexDefaultReasoningLevel:      textValue(row.CodexDefaultReasoningLevel),
 		CodexMultiAgentVersion:          textValue(row.CodexMultiAgentVersion),
-		PricingModel:                    textValue(row.PricingModel),
 		ContextWindowTokens:             int4Ptr(row.ContextWindowTokens),
 		MaxInputTokens:                  int4Ptr(row.MaxInputTokens),
 		MaxOutputTokens:                 int4Ptr(row.MaxOutputTokens),
@@ -372,16 +400,7 @@ func managementProviderModelCatalogItemFromRow(row postgresqueries.ListManagemen
 		CachedInputUSDPer1M:             float8Ptr(row.CachedInputUsdPer1m),
 		CacheWriteUSDPer1M:              float8Ptr(row.CacheWriteUsdPer1m),
 		CacheWrite1hUSDPer1M:            float8Ptr(row.CacheWrite1hUsdPer1m),
-		PriorityInputUSDPer1M:           float8Ptr(row.PriorityInputUsdPer1m),
-		PriorityOutputUSDPer1M:          float8Ptr(row.PriorityOutputUsdPer1m),
-		PriorityCachedInputUSDPer1M:     float8Ptr(row.PriorityCachedInputUsdPer1m),
-		PriorityCacheWriteUSDPer1M:      float8Ptr(row.PriorityCacheWriteUsdPer1m),
-		PriorityCacheWrite1hUSDPer1M:    float8Ptr(row.PriorityCacheWrite1hUsdPer1m),
-		FlexInputUSDPer1M:               float8Ptr(row.FlexInputUsdPer1m),
-		FlexOutputUSDPer1M:              float8Ptr(row.FlexOutputUsdPer1m),
-		FlexCachedInputUSDPer1M:         float8Ptr(row.FlexCachedInputUsdPer1m),
-		FlexCacheWriteUSDPer1M:          float8Ptr(row.FlexCacheWriteUsdPer1m),
-		FlexCacheWrite1hUSDPer1M:        float8Ptr(row.FlexCacheWrite1hUsdPer1m),
+		ServiceTierPrices:               serviceTierPrices,
 		LongContextInputTokenThreshold:  int4Ptr(row.LongContextInputTokenThreshold),
 		LongContextInputCostMultiplier:  float8Ptr(row.LongContextInputCostMultiplier),
 		LongContextOutputCostMultiplier: float8Ptr(row.LongContextOutputCostMultiplier),
@@ -416,7 +435,6 @@ type managementCustomProviderModelData struct {
 	SupportedServiceTiersJson     string
 	SupportedReasoningEffortsJson string
 	DefaultReasoningEffort        pgtype.Text
-	PricingModel                  pgtype.Text
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
@@ -425,6 +443,8 @@ type managementCustomProviderModelData struct {
 	OutputUsdPer1m                pgtype.Float8
 	CachedInputUsdPer1m           pgtype.Float8
 	CacheWriteUsdPer1m            pgtype.Float8
+	CacheWrite1hUsdPer1m          pgtype.Float8
+	ServiceTierPricesJson         string
 	ImageInputUsdPer1m            pgtype.Float8
 	ImageOutputUsdPer1m           pgtype.Float8
 	AudioInputUsdPer1m            pgtype.Float8
@@ -452,6 +472,10 @@ func managementCustomProviderModelFromData(row managementCustomProviderModelData
 	if err != nil {
 		return port.ManagementProviderModelCatalogItem{}, err
 	}
+	serviceTierPrices, err := decodeProviderModelPriceMap(row.ServiceTierPricesJson, "custom provider model service_tier_prices_json")
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
 	return port.ManagementProviderModelCatalogItem{
 		ID:                        row.ID,
 		ProviderCode:              row.ProviderCode,
@@ -466,13 +490,14 @@ func managementCustomProviderModelFromData(row managementCustomProviderModelData
 		SupportedServiceTiers:     serviceTiers,
 		SupportedReasoningEfforts: reasoningEfforts,
 		DefaultReasoningEffort:    textValue(row.DefaultReasoningEffort),
-		PricingModel:              textValue(row.PricingModel),
 		ContextWindowTokens:       int4Ptr(row.ContextWindowTokens),
 		MaxOutputTokens:           int4Ptr(row.MaxOutputTokens),
 		InputUSDPer1M:             float8Ptr(row.InputUsdPer1m),
 		OutputUSDPer1M:            float8Ptr(row.OutputUsdPer1m),
 		CachedInputUSDPer1M:       float8Ptr(row.CachedInputUsdPer1m),
 		CacheWriteUSDPer1M:        float8Ptr(row.CacheWriteUsdPer1m),
+		CacheWrite1hUSDPer1M:      float8Ptr(row.CacheWrite1hUsdPer1m),
+		ServiceTierPrices:         serviceTierPrices,
 		ImageInputUSDPer1M:        float8Ptr(row.ImageInputUsdPer1m),
 		ImageOutputUSDPer1M:       float8Ptr(row.ImageOutputUsdPer1m),
 		AudioInputUSDPer1M:        float8Ptr(row.AudioInputUsdPer1m),
@@ -505,7 +530,6 @@ func customProviderModelDataFromFindRow(row postgresqueries.FindManagementCustom
 		SupportedServiceTiersJson:     row.SupportedServiceTiersJson,
 		SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson,
 		DefaultReasoningEffort:        row.DefaultReasoningEffort,
-		PricingModel:                  row.PricingModel,
 		ReleaseDate:                   row.ReleaseDate,
 		ShutdownDate:                  row.ShutdownDate,
 		ContextWindowTokens:           row.ContextWindowTokens,
@@ -514,6 +538,8 @@ func customProviderModelDataFromFindRow(row postgresqueries.FindManagementCustom
 		OutputUsdPer1m:                row.OutputUsdPer1m,
 		CachedInputUsdPer1m:           row.CachedInputUsdPer1m,
 		CacheWriteUsdPer1m:            row.CacheWriteUsdPer1m,
+		CacheWrite1hUsdPer1m:          row.CacheWrite1hUsdPer1m,
+		ServiceTierPricesJson:         row.ServiceTierPricesJson,
 		ImageInputUsdPer1m:            row.ImageInputUsdPer1m,
 		ImageOutputUsdPer1m:           row.ImageOutputUsdPer1m,
 		AudioInputUsdPer1m:            row.AudioInputUsdPer1m,
@@ -542,7 +568,6 @@ func customProviderModelDataFromScopeRow(row postgresqueries.FindManagementCusto
 		SupportedServiceTiersJson:     row.SupportedServiceTiersJson,
 		SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson,
 		DefaultReasoningEffort:        row.DefaultReasoningEffort,
-		PricingModel:                  row.PricingModel,
 		ReleaseDate:                   row.ReleaseDate,
 		ShutdownDate:                  row.ShutdownDate,
 		ContextWindowTokens:           row.ContextWindowTokens,
@@ -551,6 +576,8 @@ func customProviderModelDataFromScopeRow(row postgresqueries.FindManagementCusto
 		OutputUsdPer1m:                row.OutputUsdPer1m,
 		CachedInputUsdPer1m:           row.CachedInputUsdPer1m,
 		CacheWriteUsdPer1m:            row.CacheWriteUsdPer1m,
+		CacheWrite1hUsdPer1m:          row.CacheWrite1hUsdPer1m,
+		ServiceTierPricesJson:         row.ServiceTierPricesJson,
 		ImageInputUsdPer1m:            row.ImageInputUsdPer1m,
 		ImageOutputUsdPer1m:           row.ImageOutputUsdPer1m,
 		AudioInputUsdPer1m:            row.AudioInputUsdPer1m,
@@ -579,7 +606,6 @@ func customProviderModelDataFromUpsertRow(row postgresqueries.UpsertManagementCu
 		SupportedServiceTiersJson:     row.SupportedServiceTiersJson,
 		SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson,
 		DefaultReasoningEffort:        row.DefaultReasoningEffort,
-		PricingModel:                  row.PricingModel,
 		ReleaseDate:                   row.ReleaseDate,
 		ShutdownDate:                  row.ShutdownDate,
 		ContextWindowTokens:           row.ContextWindowTokens,
@@ -588,6 +614,8 @@ func customProviderModelDataFromUpsertRow(row postgresqueries.UpsertManagementCu
 		OutputUsdPer1m:                row.OutputUsdPer1m,
 		CachedInputUsdPer1m:           row.CachedInputUsdPer1m,
 		CacheWriteUsdPer1m:            row.CacheWriteUsdPer1m,
+		CacheWrite1hUsdPer1m:          row.CacheWrite1hUsdPer1m,
+		ServiceTierPricesJson:         row.ServiceTierPricesJson,
 		ImageInputUsdPer1m:            row.ImageInputUsdPer1m,
 		ImageOutputUsdPer1m:           row.ImageOutputUsdPer1m,
 		AudioInputUsdPer1m:            row.AudioInputUsdPer1m,
@@ -601,6 +629,17 @@ func customProviderModelDataFromUpsertRow(row postgresqueries.UpsertManagementCu
 		CreatedAt:                     row.CreatedAt,
 		UpdatedAt:                     row.UpdatedAt,
 	}
+}
+
+func decodeProviderModelPriceMap(raw string, label string) (map[string]port.ManagementProviderModelPriceSet, error) {
+	value := map[string]port.ManagementProviderModelPriceSet{}
+	if strings.TrimSpace(raw) == "" {
+		return value, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", label, err)
+	}
+	return value, nil
 }
 
 func customProviderModelSource(scope string) string {

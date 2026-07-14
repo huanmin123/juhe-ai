@@ -35,6 +35,11 @@ import type {
   GptWireReasoningEffort,
   ProviderModelApiProtocol
 } from '../model-pricing/provider-driver.types.js'
+import {
+  findBuiltInProviderModelByIdAsync,
+  updateBuiltInProviderModelPricesAsync
+} from '../../storage/provider-model-catalog.repository.js'
+import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 
 export const providersRouter = Router()
 
@@ -190,6 +195,19 @@ const nullableTrimmedStringSchema = z.string().trim().nullable().optional()
 const nullableDateSchema = z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional()
 const nullableIntegerSchema = z.number().int().min(0).nullable().optional()
 const nullableNumberSchema = z.number().min(0).nullable().optional()
+const modelPriceSetSchema = z.object({
+  inputUsdPer1M: nullableNumberSchema,
+  outputUsdPer1M: nullableNumberSchema,
+  cachedInputUsdPer1M: nullableNumberSchema,
+  cacheWriteUsdPer1M: nullableNumberSchema,
+  cacheWrite1hUsdPer1M: nullableNumberSchema,
+  imageInputUsdPer1M: nullableNumberSchema,
+  imageOutputUsdPer1M: nullableNumberSchema,
+  audioInputUsdPer1M: nullableNumberSchema,
+  audioOutputUsdPer1M: nullableNumberSchema,
+  outputUsdPerImage: nullableNumberSchema
+}).strict()
+const serviceTierPricesSchema = z.record(z.string().trim().min(1).max(64), modelPriceSetSchema).nullable().optional()
 const nullableModelModeSchema = z.enum(['text', 'image', 'audio']).nullable().optional()
 const customModelServiceTierSchema = z.enum(['priority', 'flex'])
 const customModelReasoningEffortSchema = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
@@ -216,7 +234,6 @@ const customModelSchema = z.object({
   supportedServiceTiers: z.array(customModelServiceTierSchema).max(2).optional(),
   supportedReasoningEfforts: z.array(customModelReasoningEffortSchema).max(7).optional(),
   defaultReasoningEffort: customModelReasoningEffortSchema.nullable().optional(),
-  pricingModel: nullableTrimmedStringSchema,
   releaseDate: nullableDateSchema,
   shutdownDate: nullableDateSchema,
   contextWindowTokens: nullableIntegerSchema,
@@ -225,6 +242,8 @@ const customModelSchema = z.object({
   outputUsdPer1M: nullableNumberSchema,
   cachedInputUsdPer1M: nullableNumberSchema,
   cacheWriteUsdPer1M: nullableNumberSchema,
+  cacheWrite1hUsdPer1M: nullableNumberSchema,
+  serviceTierPrices: serviceTierPricesSchema,
   imageInputUsdPer1M: nullableNumberSchema,
   imageOutputUsdPer1M: nullableNumberSchema,
   audioInputUsdPer1M: nullableNumberSchema,
@@ -256,6 +275,10 @@ providersRouter.post('/:code/models', async (req, res, next) => {
       return
     }
     const scope = parsed.data.scope ?? 'personal'
+    if (!isAdminRole(context.role) && customInputHasAnyPriceField(req.body)) {
+      res.status(403).json({ message: '只有管理员可以维护模型价格' })
+      return
+    }
     if (scope === 'global' && !isAdminRole(context.role)) {
       res.status(403).json({ message: '只有管理员可以创建全局模型' })
       return
@@ -301,6 +324,37 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
       res.status(401).json({ message: '请先登录' })
       return
     }
+    const builtIn = await findBuiltInProviderModelByIdAsync(req.params.id)
+    if (builtIn) {
+      if (builtIn.providerCode !== req.params.code) {
+        sendNotFound(res, '模型不存在')
+        return
+      }
+      if (!isAdminRole(context.role)) {
+        res.status(403).json({ message: '只有管理员可以维护内置模型价格' })
+        return
+      }
+      const parsedPrice = modelPriceSetSchema.extend({ serviceTierPrices: serviceTierPricesSchema }).partial()
+        .refine((value) => Object.keys(value).length > 0, { message: '请提供要修改的价格' })
+        .safeParse(req.body)
+      if (!parsedPrice.success) {
+        res.status(400).json(badRequest('内置模型只允许修改价格字段'))
+        return
+      }
+      const saved = await updateBuiltInProviderModelPricesAsync(builtIn.id, parsedPrice.data)
+      if (!saved) {
+        sendNotFound(res, '模型不存在')
+        return
+      }
+      await recordOperationLogAsync({
+        module: 'providers', action: 'update_model_price', operationKey: 'providers.update_model_price',
+        resourceType: 'provider_model', resourceId: saved.id, resourceName: saved.model,
+        summary: `更新模型价格：${saved.model}`, detailLevel: 'full', visibilityScope: 'admin_only',
+        changes: [safeChange('prices', '模型价格', providerModelPriceSnapshot(builtIn), providerModelPriceSnapshot(saved))]
+      }, req)
+      res.json(ok(saved))
+      return
+    }
     const existing = await findCustomProviderModelAsync(req.params.id)
     if (!existing || existing.providerCode !== req.params.code) {
       sendNotFound(res, '自定义模型不存在')
@@ -308,6 +362,10 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
     }
     if (!canMutateCustomModel(existing.scope, existing.systemAccountId, context)) {
       res.status(403).json({ message: '无权修改该自定义模型' })
+      return
+    }
+    if (!isAdminRole(context.role) && customInputHasAnyPriceField(req.body)) {
+      res.status(403).json({ message: '只有管理员可以维护模型价格' })
       return
     }
     const parsed = customModelPatchSchema.safeParse(req.body)
@@ -685,38 +743,12 @@ async function validateCustomModelPricing(input: {
   input: CustomModelPricingInput
 }): Promise<{ success: true } | { success: false; message: string }> {
   const status = input.input.status ?? 'active'
-  const model = input.input.model?.trim()
-  const pricingModel = typeof input.input.pricingModel === 'string' ? input.input.pricingModel.trim() : undefined
   const hasDirectPrice = customInputHasDirectPrice(input.input)
   const capabilityValidationMessage = validateCustomModelCapabilities(input.providerCode, input.input)
   if (capabilityValidationMessage) {
     return { success: false, message: capabilityValidationMessage }
   }
-  if (hasDirectPrice && pricingModel) {
-    return { success: false, message: '自定义模型不能同时配置直接价格和 pricingModel' }
-  }
-  if (status === 'active' && !hasDirectPrice && !pricingModel) {
-    return { success: false, message: '启用的自定义模型必须配置价格或 pricingModel' }
-  }
-  if (!pricingModel) {
-    return { success: true }
-  }
-  if (model && model === pricingModel) {
-    return { success: false, message: 'pricingModel 不能指向当前模型自身' }
-  }
-  const pricingTarget = (await listProviderModelCatalogAsync({
-    providerCode: input.providerCode,
-    systemAccountId: input.ownerSystemAccountId
-  })).find((item) => item.model === pricingModel)
-  if (!pricingTarget) {
-    return { success: false, message: `pricingModel 不存在：${pricingModel}` }
-  }
-  if (pricingTarget.pricingModel) {
-    return { success: false, message: 'pricingModel 只能指向有直接价格的模型，不能递归指向另一个 pricingModel' }
-  }
-  if (!customInputHasDirectPrice(pricingTarget)) {
-    return { success: false, message: `pricingModel 缺少直接价格：${pricingModel}` }
-  }
+  if (status === 'active' && !hasDirectPrice) return { success: false, message: '启用的自定义模型必须配置完整当前价格' }
   return { success: true }
 }
 
@@ -724,12 +756,12 @@ type CustomModelStatus = 'draft' | 'active' | 'disabled'
 type CustomModelPricingInput = CustomModelPriceFields & {
   model?: string
   mode?: string | null
-  pricingModel?: string | null
   supportedApiProtocols?: ProviderModelCatalogItem['supportedApiProtocols']
   supportedServiceTiers?: ProviderModelCatalogItem['supportedServiceTiers']
   supportedReasoningEfforts?: ProviderModelCatalogItem['supportedReasoningEfforts']
   defaultReasoningEffort?: ProviderModelCatalogItem['defaultReasoningEffort'] | null
   status?: CustomModelStatus
+  serviceTierPrices?: unknown
 }
 
 function validateCustomModelCapabilities(providerCode: string, input: CustomModelPricingInput): string | undefined {
@@ -752,6 +784,8 @@ function customInputHasDirectPrice(input: CustomModelPriceFields): boolean {
     || typeof input.outputUsdPer1M === 'number'
     || typeof input.cachedInputUsdPer1M === 'number'
     || typeof input.cacheWriteUsdPer1M === 'number'
+    || typeof input.cacheWrite1hUsdPer1M === 'number'
+    || (input.serviceTierPrices !== null && typeof input.serviceTierPrices === 'object' && Object.keys(input.serviceTierPrices ?? {}).length > 0)
     || typeof input.imageInputUsdPer1M === 'number'
     || typeof input.imageOutputUsdPer1M === 'number'
     || typeof input.audioInputUsdPer1M === 'number'
@@ -764,10 +798,29 @@ type CustomModelPriceFields = Partial<Record<
   | 'outputUsdPer1M'
   | 'cachedInputUsdPer1M'
   | 'cacheWriteUsdPer1M'
+  | 'cacheWrite1hUsdPer1M'
   | 'imageInputUsdPer1M'
   | 'imageOutputUsdPer1M'
   | 'audioInputUsdPer1M'
   | 'audioOutputUsdPer1M'
   | 'outputUsdPerImage',
   number | null
->>
+>> & { serviceTierPrices?: unknown }
+
+function customInputHasAnyPriceField(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  return ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M',
+    'serviceTierPrices', 'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M',
+    'outputUsdPerImage'].some((key) => Object.prototype.hasOwnProperty.call(value, key))
+}
+
+function providerModelPriceSnapshot(value: Pick<ProviderModelCatalogItem, keyof CustomModelPriceFields | 'serviceTierPrices'>): Record<string, unknown> {
+  return {
+    inputUsdPer1M: value.inputUsdPer1M, outputUsdPer1M: value.outputUsdPer1M,
+    cachedInputUsdPer1M: value.cachedInputUsdPer1M, cacheWriteUsdPer1M: value.cacheWriteUsdPer1M,
+    cacheWrite1hUsdPer1M: value.cacheWrite1hUsdPer1M, serviceTierPrices: value.serviceTierPrices,
+    imageInputUsdPer1M: value.imageInputUsdPer1M, imageOutputUsdPer1M: value.imageOutputUsdPer1M,
+    audioInputUsdPer1M: value.audioInputUsdPer1M, audioOutputUsdPer1M: value.audioOutputUsdPer1M,
+    outputUsdPerImage: value.outputUsdPerImage
+  }
+}

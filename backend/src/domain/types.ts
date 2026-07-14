@@ -199,7 +199,6 @@ export interface ProviderModelPricing {
   scope?: 'built_in' | 'global' | 'personal'
   status?: 'draft' | 'active' | 'disabled'
   systemAccountId?: string
-  pricingModel?: string
   mode?: string
   catalogOrder?: number
   releaseDate?: string
@@ -211,6 +210,7 @@ export interface ProviderModelPricing {
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
+  serviceTierPrices?: Record<string, ProviderModelPriceSet>
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
@@ -230,6 +230,19 @@ export interface ProviderModelPricing {
   createdAt?: string
   updatedAt?: string
   source: string
+}
+
+export interface ProviderModelPriceSet {
+  inputUsdPer1M?: number
+  outputUsdPer1M?: number
+  cachedInputUsdPer1M?: number
+  cacheWriteUsdPer1M?: number
+  cacheWrite1hUsdPer1M?: number
+  imageInputUsdPer1M?: number
+  imageOutputUsdPer1M?: number
+  audioInputUsdPer1M?: number
+  audioOutputUsdPer1M?: number
+  outputUsdPerImage?: number
 }
 
 export interface AccountCredentials {

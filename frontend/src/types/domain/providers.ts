@@ -4,7 +4,7 @@ export type ProviderModelScope = 'built_in' | 'global' | 'personal'
 export type CustomProviderModelScope = Exclude<ProviderModelScope, 'built_in'>
 export type ProviderModelStatus = 'draft' | 'active' | 'disabled'
 export type ProviderModelMode = 'text' | 'image' | 'audio'
-export type ProviderModelServiceTier = 'priority' | 'flex'
+export type ProviderModelServiceTier = string
 export type ProviderModelReasoningEffort =
   | 'none'
   | 'minimal'
@@ -14,6 +14,18 @@ export type ProviderModelReasoningEffort =
   | 'xhigh'
   | 'max'
 export type ProviderModelCodexReasoningLevel = ProviderModelReasoningEffort | 'ultra'
+export interface ProviderModelPriceSet {
+  inputUsdPer1M?: number
+  outputUsdPer1M?: number
+  cachedInputUsdPer1M?: number
+  cacheWriteUsdPer1M?: number
+  cacheWrite1hUsdPer1M?: number
+  imageInputUsdPer1M?: number
+  imageOutputUsdPer1M?: number
+  audioInputUsdPer1M?: number
+  audioOutputUsdPer1M?: number
+  outputUsdPerImage?: number
+}
 export type ProviderModelApiProtocol =
   | 'chat_completions'
   | 'responses'
@@ -75,7 +87,6 @@ export interface ProviderModelPricing {
   scope?: ProviderModelScope
   status?: ProviderModelStatus
   systemAccountId?: string
-  pricingModel?: string
   mode?: string
   catalogOrder?: number
   releaseDate?: string
@@ -87,6 +98,7 @@ export interface ProviderModelPricing {
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
+  serviceTierPrices?: Record<string, ProviderModelPriceSet>
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
@@ -140,7 +152,6 @@ export interface ProviderModelUpsertPayload {
   supportedServiceTiers?: ProviderModelServiceTier[]
   supportedReasoningEfforts?: ProviderModelReasoningEffort[]
   defaultReasoningEffort?: ProviderModelReasoningEffort | null
-  pricingModel?: null
   releaseDate?: string | null
   shutdownDate?: string | null
   contextWindowTokens?: number | null
@@ -149,6 +160,8 @@ export interface ProviderModelUpsertPayload {
   outputUsdPer1M?: number | null
   cachedInputUsdPer1M?: number | null
   cacheWriteUsdPer1M?: number | null
+  cacheWrite1hUsdPer1M?: number | null
+  serviceTierPrices?: Record<string, ProviderModelPriceSet> | null
   imageInputUsdPer1M?: number | null
   imageOutputUsdPer1M?: number | null
   audioInputUsdPer1M?: number | null

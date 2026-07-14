@@ -93,7 +93,7 @@ export function buildPricingTemplateOptions(
     .filter((item) => item.model.trim() !== normalizedCurrentModel)
     .filter((item) => getModelCategory(item) === category)
     .filter((item) => (item.status ?? 'active') === 'active')
-    .filter((item) => !item.pricingModel && hasDirectModelPrice(item))
+    .filter((item) => hasDirectModelPrice(item))
     .map((item) => ({
       value: item.model,
       label: `${item.model}（${formatModelScope(item.scope)}）`

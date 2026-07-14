@@ -87,7 +87,7 @@ export function availableAccountGptServiceTierOptions(
     allowed.add('default')
   }
   for (const tier of capabilities.serviceTiers) {
-    allowed.add(tier)
+    if (tier === 'priority' || tier === 'flex') allowed.add(tier)
   }
   return accountGptServiceTierOptions.filter((option) => allowed.has(option.value))
 }

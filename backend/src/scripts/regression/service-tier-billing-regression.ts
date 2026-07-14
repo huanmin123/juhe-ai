@@ -24,6 +24,9 @@ for (const model of [
 assert.equal(gptPricing.find((item) => item.model === 'gpt-5.2')?.supportedServiceTiers.includes('flex'), false, '未声明 Flex 的旧模型不能误开放')
 
 assert.equal(cost('gpt-5.6-sol', 'default', 100_000, 100_000), 3.5)
+assert.equal(estimateCatalogCostUsd({
+  providerCode: 'gpt', model: 'gpt-5.6-sol', serviceTier: 'standard', inputTokens: 100_000, outputTokens: 100_000
+}), 3.5, 'standard 实际计费档位必须使用标准扁平价格')
 assert.equal(cost('gpt-5.6-sol', 'priority', 100_000, 100_000), 7)
 assert.equal(cost('gpt-5.6-sol', 'flex', 100_000, 100_000), 1.75)
 assert.equal(cost('gpt-5.6-terra', 'priority', 100_000, 100_000), 3.5)
@@ -34,7 +37,6 @@ assert.equal(estimateProviderCostUsd({
   providerCode: 'gpt',
   model: 'gpt-5.4-nano',
   serviceTier: 'priority',
-  priorityPriceMultiplier: 3,
   inputTokens: 100_000,
   outputTokens: 100_000
 }), undefined, '缺少档位专用价时必须标记未定价，不能套用 Priority 通用倍率')
@@ -42,7 +44,6 @@ assert.equal(estimateProviderCostUsd({
   providerCode: 'gpt',
   model: 'gpt-5.4',
   serviceTier: 'flex',
-  flexPriceMultiplier: 0.4,
   inputTokens: 100_000,
   outputTokens: 100_000
 }), undefined, '缺少档位专用价时必须标记未定价，不能套用 Flex 通用倍率')
@@ -50,7 +51,6 @@ assert.equal(estimateProviderCostUsd({
   providerCode: 'gpt',
   model: 'gpt-5.6-sol',
   serviceTier: 'priority',
-  priorityPriceMultiplier: 3,
   inputTokens: 100_000,
   outputTokens: 100_000
 }), 7, '模型精确档位价格必须优先于通用倍率')
@@ -72,7 +72,6 @@ const multiplierBreakdown = buildProviderCostBreakdown({
   providerCode: 'gpt',
   model: 'gpt-5.4-nano',
   serviceTier: 'priority',
-  priorityPriceMultiplier: 3,
   inputTokens: 100_000,
   outputTokens: 100_000
 })

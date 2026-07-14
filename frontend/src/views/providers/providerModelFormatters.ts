@@ -20,6 +20,7 @@ export type DirectPriceFieldKey =
   | 'outputUsdPer1M'
   | 'cachedInputUsdPer1M'
   | 'cacheWriteUsdPer1M'
+  | 'cacheWrite1hUsdPer1M'
   | 'imageInputUsdPer1M'
   | 'imageOutputUsdPer1M'
   | 'audioInputUsdPer1M'
@@ -65,6 +66,7 @@ export const directPriceFieldKeys: DirectPriceFieldKey[] = [
   'outputUsdPer1M',
   'cachedInputUsdPer1M',
   'cacheWriteUsdPer1M',
+  'cacheWrite1hUsdPer1M',
   'imageInputUsdPer1M',
   'imageOutputUsdPer1M',
   'audioInputUsdPer1M',
@@ -73,7 +75,7 @@ export const directPriceFieldKeys: DirectPriceFieldKey[] = [
 ]
 
 export const directPriceFieldsByCategory: Record<ModelCategoryKey, DirectPriceFieldKey[]> = {
-  text: ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M'],
+  text: ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M'],
   image: ['imageInputUsdPer1M', 'imageOutputUsdPer1M', 'outputUsdPerImage'],
   audio: ['audioInputUsdPer1M', 'audioOutputUsdPer1M']
 }
@@ -100,6 +102,7 @@ export function hasDirectModelPrice(item: ProviderModelPricing): boolean {
     item.outputUsdPer1M,
     item.cachedInputUsdPer1M,
     item.cacheWriteUsdPer1M,
+    item.cacheWrite1hUsdPer1M,
     item.imageInputUsdPer1M,
     item.imageOutputUsdPer1M,
     item.audioInputUsdPer1M,
@@ -303,7 +306,6 @@ export function formatUnitPrice(value?: number): string {
 }
 
 export function formatModelPriceSummary(item: ProviderModelPricing): string {
-  if (item.pricingModel) return `计价 ${item.pricingModel}`
   const category = getModelCategory(item)
   if (category === 'image') {
     return [

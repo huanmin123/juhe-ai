@@ -28,17 +28,8 @@ export interface ProviderModelPricing {
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
-  priorityInputUsdPer1M?: number
-  priorityOutputUsdPer1M?: number
-  priorityCachedInputUsdPer1M?: number
-  priorityCacheWriteUsdPer1M?: number
-  flexInputUsdPer1M?: number
-  flexOutputUsdPer1M?: number
-  flexCachedInputUsdPer1M?: number
-  flexCacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
-  priorityCacheWrite1hUsdPer1M?: number
-  flexCacheWrite1hUsdPer1M?: number
+  serviceTierPrices?: ServiceTierPrices
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
@@ -63,12 +54,25 @@ export interface ProviderModelPricing {
   source: string
 }
 
+export interface ModelPriceSet {
+  inputUsdPer1M?: number
+  outputUsdPer1M?: number
+  cachedInputUsdPer1M?: number
+  cacheWriteUsdPer1M?: number
+  cacheWrite1hUsdPer1M?: number
+  imageInputUsdPer1M?: number
+  imageOutputUsdPer1M?: number
+  audioInputUsdPer1M?: number
+  audioOutputUsdPer1M?: number
+  outputUsdPerImage?: number
+}
+
+export type ServiceTierPrices = Record<string, ModelPriceSet>
+
 export interface CostInput {
   providerCode: string
   model?: string
-  serviceTier?: 'default' | GptServiceTier
-  priorityPriceMultiplier?: number
-  flexPriceMultiplier?: number
+  serviceTier?: string
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
@@ -473,17 +477,8 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     outputUsdPer1M: perMillion(item.output_cost_per_token),
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost),
     cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost),
-    priorityInputUsdPer1M: perMillion(item.input_cost_per_token_priority),
-    priorityOutputUsdPer1M: perMillion(item.output_cost_per_token_priority),
-    priorityCachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_priority),
-    priorityCacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_priority),
-    flexInputUsdPer1M: perMillion(item.input_cost_per_token_flex),
-    flexOutputUsdPer1M: perMillion(item.output_cost_per_token_flex),
-    flexCachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_flex),
-    flexCacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_flex),
     cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr),
-    priorityCacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_priority),
-    flexCacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_flex),
+    serviceTierPrices: rawServiceTierPrices(item),
     imageInputUsdPer1M: perMillion(item.input_cost_per_image_token),
     imageOutputUsdPer1M: perMillion(item.output_cost_per_image_token),
     audioInputUsdPer1M: perMillion(item.input_cost_per_audio_token),
@@ -509,6 +504,28 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     catalogVisible: item.catalog_visible !== false,
     source
   }
+}
+
+function rawServiceTierPrices(item: RawModelPricing): ServiceTierPrices | undefined {
+  const tiers: ServiceTierPrices = {}
+  const add = (tier: string, prices: ModelPriceSet): void => {
+    if (Object.values(prices).some((value) => value !== undefined)) tiers[tier] = prices
+  }
+  add('priority', {
+    inputUsdPer1M: perMillion(item.input_cost_per_token_priority),
+    outputUsdPer1M: perMillion(item.output_cost_per_token_priority),
+    cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_priority),
+    cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_priority),
+    cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_priority)
+  })
+  add('flex', {
+    inputUsdPer1M: perMillion(item.input_cost_per_token_flex),
+    outputUsdPer1M: perMillion(item.output_cost_per_token_flex),
+    cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_flex),
+    cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_flex),
+    cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_flex)
+  })
+  return Object.keys(tiers).length ? tiers : undefined
 }
 
 function canonicalOpenAIModelAlias(model: string): string {
