@@ -302,6 +302,14 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 		strings.Contains(created.CredentialsEncrypted, "api.openai.com") {
 		t.Fatalf("credentials_encrypted is not encrypted enough for public account test: %q", created.CredentialsEncrypted)
 	}
+	credentials, err := service.codec.DecryptJSON(created.CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt created credentials: %v", err)
+	}
+	wantEndpointModes := []any{"chat_json", "chat_sse", "responses_json", "responses_sse"}
+	if got := credentials["supported_endpoint_modes"]; !reflect.DeepEqual(got, wantEndpointModes) {
+		t.Fatalf("created supported_endpoint_modes = %#v, want %#v", got, wantEndpointModes)
+	}
 
 	data, err := json.Marshal(response)
 	if err != nil {
@@ -330,11 +338,11 @@ func TestServiceAddRejectsUnsupportedHealthCheckEndpointFamily(t *testing.T) {
 	}
 }
 
-func TestServiceAddFallsBackToFirstEnabledJSONFamily(t *testing.T) {
+func TestServiceAddUsesCredentialDefaultsInsteadOfProfileCapabilities(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	profileKey := "gpt|profile_gpt_openai_v1"
 	profile := store.profiles[profileKey]
-	profile.EnabledEndpointModes = []string{"generate_content_json", "chat_json"}
+	profile.EnabledEndpointModes = []string{"generate_content_json"}
 	store.profiles[profileKey] = profile
 	service := newPublicAccountServiceForTest(store, nil)
 
@@ -345,12 +353,12 @@ func TestServiceAddFallsBackToFirstEnabledJSONFamily(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add public account: %v", err)
 	}
-	if response.Account == nil || response.Account.HealthCheckEndpointFamily != "generate_content" {
-		t.Fatalf("response account = %+v, want generate_content family", response.Account)
+	if response.Account == nil || response.Account.HealthCheckEndpointFamily != "responses" {
+		t.Fatalf("response account = %+v, want responses family from GPT credential defaults", response.Account)
 	}
 }
 
-func TestServiceAddRejectsProfileWithoutJSONFamily(t *testing.T) {
+func TestServiceAddDoesNotRequireProfileEndpointCapabilities(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	profileKey := "gpt|profile_gpt_openai_v1"
 	profile := store.profiles[profileKey]
@@ -358,15 +366,15 @@ func TestServiceAddRejectsProfileWithoutJSONFamily(t *testing.T) {
 	store.profiles[profileKey] = profile
 	service := newPublicAccountServiceForTest(store, nil)
 
-	_, err := service.Add(context.Background(), validPublicAccountAddInput(
+	response, err := service.Add(context.Background(), validPublicAccountAddInput(
 		"无 JSON 能力账号",
 		"gpt-5.4-mini",
 	))
-	if !errors.Is(err, ErrInvalidHealthCheckEndpointFamily) || !strings.Contains(err.Error(), "至少需要启用一个") {
-		t.Fatalf("add error = %v, want no JSON family error", err)
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
 	}
-	if store.createCalls != 0 {
-		t.Fatalf("create calls = %d, want 0", store.createCalls)
+	if response.Account == nil || response.Account.HealthCheckEndpointFamily != "responses" {
+		t.Fatalf("response account = %+v, want responses family from credentials", response.Account)
 	}
 }
 
@@ -397,6 +405,29 @@ func TestServiceHybridAnthropicMessagesProfileCanAddAndUpdate(t *testing.T) {
 	if created.Account == nil || created.Account.HealthCheckEndpointFamily != "messages" {
 		t.Fatalf("created account = %+v, want messages family", created.Account)
 	}
+	account := store.accounts[created.Account.ID]
+	credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt hybrid credentials: %v", err)
+	}
+	wantEndpointModes := []any{
+		"chat_json",
+		"chat_sse",
+		"responses_json",
+		"responses_sse",
+		"messages_json",
+		"messages_sse",
+		"message_token_counting",
+		"generate_content_json",
+		"generate_content_sse",
+		"count_tokens",
+		"embed_content",
+	}
+	if got := credentials["supported_endpoint_modes"]; !reflect.DeepEqual(got, wantEndpointModes) {
+		t.Fatalf("hybrid supported_endpoint_modes = %#v, want %#v", got, wantEndpointModes)
+	}
+	account.HealthCheckEndpointFamily = "responses"
+	store.accounts[account.ID] = account
 
 	name := "混合 Anthropic 更新账号"
 	updated, err := service.Update(context.Background(), UpdateInput{
@@ -406,12 +437,12 @@ func TestServiceHybridAnthropicMessagesProfileCanAddAndUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update hybrid Anthropic account: %v", err)
 	}
-	if updated.Account == nil || updated.Account.Name != name || updated.Account.HealthCheckEndpointFamily != "messages" {
-		t.Fatalf("updated account = %+v, want updated messages account", updated.Account)
+	if updated.Account == nil || updated.Account.Name != name || updated.Account.HealthCheckEndpointFamily != "responses" {
+		t.Fatalf("updated account = %+v, want responses allowed by account credentials", updated.Account)
 	}
 }
 
-func TestServiceUpdateRejectsCurrentFamilyWithoutEnabledJSONMode(t *testing.T) {
+func TestServiceUpdateRejectsCurrentFamilyWithoutCredentialJSONMode(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	service := newPublicAccountServiceForTest(store, nil)
 	created, err := service.Add(context.Background(), validPublicAccountAddInput(
@@ -422,7 +453,16 @@ func TestServiceUpdateRejectsCurrentFamilyWithoutEnabledJSONMode(t *testing.T) {
 		t.Fatalf("add public account: %v", err)
 	}
 	account := store.accounts[created.Account.ID]
-	account.HealthCheckEndpointFamily = "messages"
+	credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt current credentials: %v", err)
+	}
+	credentials["supported_endpoint_modes"] = []any{"chat_json", "chat_sse"}
+	account.CredentialsEncrypted, err = service.codec.EncryptJSON(credentials)
+	if err != nil {
+		t.Fatalf("encrypt current credentials: %v", err)
+	}
+	account.HealthCheckEndpointFamily = "responses"
 	store.accounts[account.ID] = account
 	name := "不应写入的新名称"
 
@@ -435,6 +475,98 @@ func TestServiceUpdateRejectsCurrentFamilyWithoutEnabledJSONMode(t *testing.T) {
 	}
 	if store.updateCalls != 0 {
 		t.Fatalf("update calls = %d, want 0", store.updateCalls)
+	}
+}
+
+func TestServiceUpdateBackfillsMissingCredentialEndpointModes(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"缺失能力回退账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	account := store.accounts[created.Account.ID]
+	credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt current credentials: %v", err)
+	}
+	delete(credentials, "supported_endpoint_modes")
+	account.CredentialsEncrypted, err = service.codec.EncryptJSON(credentials)
+	if err != nil {
+		t.Fatalf("encrypt current credentials: %v", err)
+	}
+	store.accounts[account.ID] = account
+	name := "缺失能力已回退账号"
+
+	updated, err := service.Update(context.Background(), UpdateInput{
+		AccountID: account.ID,
+		Name:      &name,
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if updated.Account == nil || updated.Account.HealthCheckEndpointFamily != "responses" {
+		t.Fatalf("updated account = %+v, want responses family", updated.Account)
+	}
+	storedCredentials, err := service.codec.DecryptJSON(store.accounts[account.ID].CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt updated credentials: %v", err)
+	}
+	wantEndpointModes := []any{"chat_json", "chat_sse", "responses_json", "responses_sse"}
+	if got := storedCredentials["supported_endpoint_modes"]; !reflect.DeepEqual(got, wantEndpointModes) {
+		t.Fatalf("backfilled supported_endpoint_modes = %#v, want %#v", got, wantEndpointModes)
+	}
+}
+
+func TestServiceUpdateRejectsMalformedCredentialEndpointModes(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "null", value: nil},
+		{name: "scalar", value: "chat_json"},
+		{name: "empty", value: []any{}},
+		{name: "unknown", value: []any{"unknown_json"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newPublicAccountStoreFake()
+			service := newPublicAccountServiceForTest(store, nil)
+			created, err := service.Add(context.Background(), validPublicAccountAddInput(
+				"非法能力账号",
+				"gpt-5.4-mini",
+			))
+			if err != nil {
+				t.Fatalf("add public account: %v", err)
+			}
+			account := store.accounts[created.Account.ID]
+			credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+			if err != nil {
+				t.Fatalf("decrypt current credentials: %v", err)
+			}
+			credentials["supported_endpoint_modes"] = tt.value
+			account.CredentialsEncrypted, err = service.codec.EncryptJSON(credentials)
+			if err != nil {
+				t.Fatalf("encrypt current credentials: %v", err)
+			}
+			store.accounts[account.ID] = account
+			name := "不应写入的非法能力账号"
+
+			_, err = service.Update(context.Background(), UpdateInput{
+				AccountID: account.ID,
+				Name:      &name,
+			})
+			if !errors.Is(err, ErrInvalidCredentials) {
+				t.Fatalf("update error = %v, want ErrInvalidCredentials", err)
+			}
+			if store.updateCalls != 0 {
+				t.Fatalf("update calls = %d, want 0", store.updateCalls)
+			}
+		})
 	}
 }
 
@@ -977,7 +1109,7 @@ func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 			extensions := map[string]any{
 				"service_tier_override":     "priority",
 				"reasoning_effort_override": "high",
-				"supported_endpoint_modes":  []any{"chat_json", "responses_sse"},
+				"supported_endpoint_modes":  []any{"chat_json", "responses_json", "responses_sse"},
 				"endpoint": map[string]any{
 					"chat": "/v1/chat/completions",
 				},

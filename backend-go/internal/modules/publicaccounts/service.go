@@ -47,6 +47,58 @@ const (
 	accountHealthCheckReasonConfiguration     = "configuration"
 	accountHealthCheckDispatchFailedEvent     = "public_account_health_check_dispatch_failed"
 	accountHealthCheckDispatchTimeout         = 2 * time.Second
+	deepSeekOpenAIProfileID                   = "profile_deepseek_openai_v1"
+	deepSeekAnthropicProfileID                = "profile_deepseek_anthropic_v1"
+	glmGeneralOpenAIProfileID                 = "profile_glm_general_openai_v1"
+	glmCodingOpenAIProfileID                  = "profile_glm_coding_openai_v1"
+	glmCodingAnthropicProfileID               = "profile_glm_coding_anthropic_v1"
+	geminiOpenAIChatProfileID                 = "profile_gemini_openai_chat_v1beta"
+)
+
+var (
+	openAIEndpointModes = []string{
+		"chat_json",
+		"chat_sse",
+		"responses_json",
+		"responses_sse",
+	}
+	openAIChatEndpointModes = []string{
+		"chat_json",
+		"chat_sse",
+	}
+	anthropicEndpointModes = []string{
+		"messages_json",
+		"messages_sse",
+		"message_token_counting",
+	}
+	anthropicMessagesEndpointModes = []string{
+		"messages_json",
+		"messages_sse",
+	}
+	geminiEndpointModes = []string{
+		"generate_content_json",
+		"generate_content_sse",
+		"count_tokens",
+		"embed_content",
+	}
+	geminiDefaultEndpointModes = []string{
+		"generate_content_json",
+		"generate_content_sse",
+		"count_tokens",
+	}
+	hybridEndpointModes = []string{
+		"chat_json",
+		"chat_sse",
+		"responses_json",
+		"responses_sse",
+		"messages_json",
+		"messages_sse",
+		"message_token_counting",
+		"generate_content_json",
+		"generate_content_sse",
+		"count_tokens",
+		"embed_content",
+	}
 )
 
 var (
@@ -428,7 +480,14 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 			return fmt.Errorf("%w: %s", ErrDuplicateAccountName, existing.Name)
 		}
 
-		credential, err := s.encryptedCredentials(input.APIKey, input.BaseURL)
+		credential, endpointModes, err := s.encryptedCredentials(
+			input.APIKey,
+			input.BaseURL,
+			input.ProviderCode,
+			profile.ID,
+			profile.ProtocolCode,
+			profile.ProtocolVersion,
+		)
 		if err != nil {
 			return err
 		}
@@ -455,7 +514,7 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 			requestedHealthCheckEndpointFamily,
 			input.ProviderCode,
 			profile.ID,
-			profile.EnabledEndpointModes,
+			endpointModes,
 		)
 		if err != nil {
 			return err
@@ -559,29 +618,36 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			}
 			next.AvailabilityScheduleJSON = scheduleJSON
 		}
-		connectionConfigurationChanged := false
-		if input.APIKey != nil || input.BaseURL != nil {
-			credentials, currentAPIKey, currentBaseURL, err := s.currentCredentials(current.CredentialsEncrypted)
-			if err != nil {
-				return err
-			}
-			if input.APIKey != nil {
-				credentials["api_key"] = *input.APIKey
-			}
-			if input.BaseURL != nil {
-				credentials["base_url"] = *input.BaseURL
-			}
-			credential, err := s.encryptedCredentialMap(credentials)
-			if err != nil {
-				return err
-			}
-			next.CredentialsEncrypted = credential.Encrypted
-			next.CredentialFingerprint = credential.Fingerprint
-			next.CredentialMask = credential.Mask
-			nextAPIKey, _ := credentials["api_key"].(string)
-			nextBaseURL, _ := credentials["base_url"].(string)
-			connectionConfigurationChanged = nextAPIKey != currentAPIKey || nextBaseURL != currentBaseURL
+		credentials, currentAPIKey, currentBaseURL, err := s.currentCredentials(current.CredentialsEncrypted)
+		if err != nil {
+			return err
 		}
+		endpointModes, err := normalizeCredentialSupportedEndpointModes(
+			credentials,
+			current.ProviderCode,
+			current.ProviderProtocolProfileID,
+			current.ProtocolCode,
+			current.ProtocolVersion,
+		)
+		if err != nil {
+			return err
+		}
+		if input.APIKey != nil {
+			credentials["api_key"] = *input.APIKey
+		}
+		if input.BaseURL != nil {
+			credentials["base_url"] = *input.BaseURL
+		}
+		credential, err := s.encryptedCredentialMap(credentials)
+		if err != nil {
+			return err
+		}
+		next.CredentialsEncrypted = credential.Encrypted
+		next.CredentialFingerprint = credential.Fingerprint
+		next.CredentialMask = credential.Mask
+		nextAPIKey, _ := credentials["api_key"].(string)
+		nextBaseURL, _ := credentials["base_url"].(string)
+		connectionConfigurationChanged := nextAPIKey != currentAPIKey || nextBaseURL != currentBaseURL
 		if input.SupportedModels.Set() {
 			next.SupportedModels = input.SupportedModels.Value()
 		}
@@ -609,7 +675,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			healthCheckEndpointFamily,
 			current.ProviderCode,
 			current.ProviderProtocolProfileID,
-			profile.EnabledEndpointModes,
+			endpointModes,
 		)
 		if err != nil {
 			return err
@@ -873,11 +939,33 @@ func (s *Service) assertAccountFilters(
 	return nil
 }
 
-func (s *Service) encryptedCredentials(apiKey string, baseURL string) (encryptedCredential, error) {
-	return s.encryptedCredentialMap(map[string]any{
+func (s *Service) encryptedCredentials(
+	apiKey string,
+	baseURL string,
+	providerCode string,
+	profileID string,
+	protocolCode string,
+	protocolVersion string,
+) (encryptedCredential, []string, error) {
+	credentials := map[string]any{
 		"api_key":  apiKey,
 		"base_url": baseURL,
-	})
+	}
+	endpointModes, err := normalizeCredentialSupportedEndpointModes(
+		credentials,
+		providerCode,
+		profileID,
+		protocolCode,
+		protocolVersion,
+	)
+	if err != nil {
+		return encryptedCredential{}, nil, err
+	}
+	credential, err := s.encryptedCredentialMap(credentials)
+	if err != nil {
+		return encryptedCredential{}, nil, err
+	}
+	return credential, endpointModes, nil
 }
 
 func (s *Service) encryptedCredentialMap(credentials map[string]any) (encryptedCredential, error) {
@@ -921,6 +1009,113 @@ func (s *Service) currentCredentials(encrypted string) (map[string]any, string, 
 		return nil, "", "", err
 	}
 	return credentials, apiKey, baseURL, nil
+}
+
+func normalizeCredentialSupportedEndpointModes(
+	credentials map[string]any,
+	providerCode string,
+	profileID string,
+	protocolCode string,
+	protocolVersion string,
+) ([]string, error) {
+	allowed, defaults, err := credentialEndpointModePolicy(providerCode, profileID, protocolCode, protocolVersion)
+	if err != nil {
+		return nil, err
+	}
+	raw, exists := credentials["supported_endpoint_modes"]
+	if !exists {
+		modes := append([]string(nil), defaults...)
+		credentials["supported_endpoint_modes"] = modes
+		return modes, nil
+	}
+
+	var values []any
+	switch typed := raw.(type) {
+	case []any:
+		values = typed
+	case []string:
+		values = make([]any, len(typed))
+		for index, value := range typed {
+			values[index] = value
+		}
+	default:
+		return nil, fmt.Errorf("%w: 上游接口能力必须是数组", ErrInvalidCredentials)
+	}
+
+	modes := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		mode, ok := value.(string)
+		if !ok || !stringListContains(allowed, mode) {
+			return nil, fmt.Errorf("%w: 上游接口能力包含不支持的能力：%v", ErrInvalidCredentials, value)
+		}
+		if _, duplicate := seen[mode]; duplicate {
+			continue
+		}
+		seen[mode] = struct{}{}
+		modes = append(modes, mode)
+	}
+	if len(modes) == 0 {
+		return nil, fmt.Errorf("%w: 上游接口能力至少选择一项", ErrInvalidCredentials)
+	}
+	credentials["supported_endpoint_modes"] = modes
+	return modes, nil
+}
+
+func credentialEndpointModePolicy(
+	providerCode string,
+	profileID string,
+	protocolCode string,
+	protocolVersion string,
+) ([]string, []string, error) {
+	providerCode = strings.ToLower(strings.TrimSpace(providerCode))
+	profileID = strings.TrimSpace(profileID)
+	protocolCode = strings.ToLower(strings.TrimSpace(protocolCode))
+	protocolVersion = strings.ToLower(strings.TrimSpace(protocolVersion))
+
+	switch providerCode {
+	case hybridProviderCode:
+		return hybridEndpointModes, hybridEndpointModes, nil
+	case "openai":
+		if protocolCode == "openai" && protocolVersion == "v1" {
+			return openAIEndpointModes, openAIChatEndpointModes, nil
+		}
+	case "gpt":
+		if protocolCode == "openai" && protocolVersion == "v1" {
+			return openAIEndpointModes, openAIEndpointModes, nil
+		}
+	case "deepseek":
+		if profileID == deepSeekOpenAIProfileID && protocolCode == "openai" && protocolVersion == "v1" {
+			return openAIChatEndpointModes, openAIChatEndpointModes, nil
+		}
+		if profileID == deepSeekAnthropicProfileID && protocolCode == "anthropic" && protocolVersion == "v1" {
+			return anthropicMessagesEndpointModes, anthropicMessagesEndpointModes, nil
+		}
+	case "glm":
+		if (profileID == glmGeneralOpenAIProfileID || profileID == glmCodingOpenAIProfileID) && protocolCode == "openai" && protocolVersion == "v1" {
+			return openAIChatEndpointModes, openAIChatEndpointModes, nil
+		}
+		if profileID == glmCodingAnthropicProfileID && protocolCode == "anthropic" && protocolVersion == "v1" {
+			return anthropicMessagesEndpointModes, anthropicMessagesEndpointModes, nil
+		}
+	case "anthropic":
+		if protocolCode == "anthropic" && protocolVersion == "v1" {
+			return anthropicEndpointModes, anthropicEndpointModes, nil
+		}
+	case "gemini":
+		if profileID == geminiOpenAIChatProfileID && protocolCode == "openai" && protocolVersion == "v1" {
+			return openAIEndpointModes, openAIChatEndpointModes, nil
+		}
+		if protocolCode == "gemini" && protocolVersion == "v1beta" {
+			return geminiEndpointModes, geminiDefaultEndpointModes, nil
+		}
+	}
+
+	return nil, nil, fmt.Errorf(
+		"%w: 供应商协议档案未注册接口能力归一化：%s",
+		ErrInvalidCredentials,
+		providerCode,
+	)
 }
 
 func (s *Service) inTx(ctx context.Context, fn func(context.Context, port.PublicAccountStore) error) error {
