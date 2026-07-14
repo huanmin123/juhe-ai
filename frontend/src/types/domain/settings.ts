@@ -36,7 +36,6 @@ export interface SystemSettings {
   cooldownAccountRetestIntervalSeconds: number
   cooldownAccountRetestBatchSize: number
   cooldownAccountRetestMaxBackoffHours: number
-  cooldownAccountRetestLongTermIntervalHours: number
   oauthAccessTokenRefreshIntervalSeconds: number
   oauthAccessTokenRefreshLeadSeconds: number
   oauthAccessTokenRefreshBatchSize: number

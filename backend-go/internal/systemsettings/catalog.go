@@ -57,7 +57,6 @@ var definitions = []Definition{
 	{Key: "cooldownAccountRetestIntervalSeconds", Kind: ValueKindInteger, Minimum: 1, Maximum: 3600},
 	{Key: "cooldownAccountRetestBatchSize", Kind: ValueKindInteger, Minimum: 1, Maximum: 100},
 	{Key: "cooldownAccountRetestMaxBackoffHours", Kind: ValueKindInteger, Minimum: 1, Maximum: 720},
-	{Key: "cooldownAccountRetestLongTermIntervalHours", Kind: ValueKindInteger, Minimum: 1, Maximum: 720},
 	{Key: "oauthAccessTokenRefreshIntervalSeconds", Kind: ValueKindInteger, Minimum: 10, Maximum: 3600},
 	{Key: "oauthAccessTokenRefreshLeadSeconds", Kind: ValueKindInteger, Minimum: 60, Maximum: 86400},
 	{Key: "oauthAccessTokenRefreshBatchSize", Kind: ValueKindInteger, Minimum: 1, Maximum: 200},

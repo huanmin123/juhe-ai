@@ -58,6 +58,7 @@ export interface AccountRow {
   next_health_check_at: string | null
   last_health_success_at: string | null
   health_check_failure_count: number
+  health_check_failure_started_at: string | null
   last_health_check_status_code: number | null
   last_health_check_error_code: string | null
   last_health_check_error_message: string | null

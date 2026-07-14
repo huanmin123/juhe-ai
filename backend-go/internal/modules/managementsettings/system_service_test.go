@@ -302,8 +302,8 @@ func TestSystemServiceUpdateIgnoresEachInvalidationErrorAndStillCallsBoth(t *tes
 	if err != nil {
 		t.Fatalf("Update() error = %v, want nil despite invalidation errors", err)
 	}
-	if result.Settings.Len() != 53 {
-		t.Fatalf("result settings length = %d, want 53", result.Settings.Len())
+	if result.Settings.Len() != 52 {
+		t.Fatalf("result settings length = %d, want 52", result.Settings.Len())
 	}
 	if invalidator.systemCacheCalls != 1 || invalidator.runtimeCalls != 1 {
 		t.Fatalf("invalidation calls = %d/%d, want 1/1", invalidator.systemCacheCalls, invalidator.runtimeCalls)

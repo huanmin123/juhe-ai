@@ -309,7 +309,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     return
   }
   if (isBlockedOpenAIOAuthErrorAccount(account)) {
-    res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
+    res.status(400).json(badRequest('异常账户请先执行异常恢复后再操作'))
     return
   }
 
@@ -357,7 +357,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
     return
   }
   if (isBlockedOpenAIOAuthErrorAccount(account)) {
-    res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
+    res.status(400).json(badRequest('异常账户请先执行异常恢复后再操作'))
     return
   }
 
@@ -400,7 +400,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
     return
   }
   if (isBlockedOpenAIOAuthErrorAccount(account)) {
-    res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
+    res.status(400).json(badRequest('异常账户请先执行异常恢复后再操作'))
     return
   }
 

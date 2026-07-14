@@ -2158,14 +2158,14 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 
   const hasStatusInput = hasOwnInput(input, 'status')
   const requestedStatus = hasStatusInput ? normalizedAccountStatusInput(input.status, current.status) : current.status
-  if (hasStatusInput && current.status === 'error' && requestedStatus !== 'error') {
-    throw new Error('异常账户不能通过编辑切换状态，请使用恢复异常')
+  if (hasStatusInput && current.status === 'error' && requestedStatus !== 'error' && requestedStatus !== 'disabled') {
+    throw new Error('异常账户只能停用或使用异常恢复')
   }
   if (hasStatusInput && current.status === 'pending_test' && requestedStatus !== 'pending_test' && requestedStatus !== 'disabled') {
     throw new Error('待检查账户只能由后台激活检查恢复')
   }
   if (hasStatusInput && requestedStatus === 'active' && (current.status === 'pending_test' || isCoolingAccountStatus(current.status) || current.status === 'error')) {
-    throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用恢复异常')
+    throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用异常恢复')
   }
   const updateNowMs = Date.now()
   const balanceUpdate = accountBalanceUpdateValues(input, new Date(updateNowMs).toISOString(), {
@@ -2368,12 +2368,14 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         UPDATE accounts
         SET next_health_check_at = NULL,
             health_check_failure_count = CASE WHEN ? = 1 THEN 0 ELSE health_check_failure_count END,
+            health_check_failure_started_at = CASE WHEN ? = 1 THEN NULL ELSE health_check_failure_started_at END,
             last_health_check_status_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_status_code END,
             last_health_check_error_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_code END,
             last_health_check_error_message = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_message END
         WHERE id = ?
           AND system_account_id = ?
       `).run(
+        requiresBackgroundRecheck ? 1 : 0,
         requiresBackgroundRecheck ? 1 : 0,
         requiresBackgroundRecheck ? 1 : 0,
         requiresBackgroundRecheck ? 1 : 0,
@@ -2551,14 +2553,14 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
 
   const hasStatusInput = hasOwnInput(input, 'status')
   const requestedStatus = hasStatusInput ? normalizedAccountStatusInput(input.status, current.status) : current.status
-  if (hasStatusInput && current.status === 'error' && requestedStatus !== 'error') {
-    throw new Error('异常账户不能通过编辑切换状态，请使用恢复异常')
+  if (hasStatusInput && current.status === 'error' && requestedStatus !== 'error' && requestedStatus !== 'disabled') {
+    throw new Error('异常账户只能停用或使用异常恢复')
   }
   if (hasStatusInput && current.status === 'pending_test' && requestedStatus !== 'pending_test' && requestedStatus !== 'disabled') {
     throw new Error('待检查账户只能由后台激活检查恢复')
   }
   if (hasStatusInput && requestedStatus === 'active' && (current.status === 'pending_test' || isCoolingAccountStatus(current.status) || current.status === 'error')) {
-    throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用恢复异常')
+    throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用异常恢复')
   }
   const updateNowMs = Date.now()
   const balanceUpdate = accountBalanceUpdateValues(input, new Date(updateNowMs).toISOString(), {
@@ -2765,12 +2767,14 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
           UPDATE ${accountWriteTable(tx, 'accounts')}
           SET next_health_check_at = NULL,
               health_check_failure_count = CASE WHEN ? = 1 THEN 0 ELSE health_check_failure_count END,
+              health_check_failure_started_at = CASE WHEN ? = 1 THEN NULL ELSE health_check_failure_started_at END,
               last_health_check_status_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_status_code END,
               last_health_check_error_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_code END,
               last_health_check_error_message = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_message END
           WHERE id = ?
             AND system_account_id = ?
         `, [
+          requiresBackgroundRecheck ? 1 : 0,
           requiresBackgroundRecheck ? 1 : 0,
           requiresBackgroundRecheck ? 1 : 0,
           requiresBackgroundRecheck ? 1 : 0,

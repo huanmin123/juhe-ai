@@ -1314,7 +1314,7 @@ assert.match(accountProbeJobsSource, /getCooldownAccountRetestQueueSnapshot/)
 assert.match(accountProbeJobsSource, /settingsNumber\('cooldownAccountRetestBatchSize', 1, 100\)/)
 assert.match(accountProbeJobsSource, /settingsNumber\('defaultTemporaryUnschedulableMinutes', 1, 1440\)/)
 assert.match(accountProbeJobsSource, /settingsNumber\('cooldownAccountRetestMaxBackoffHours', 1, 24 \* 30\)/)
-assert.match(accountProbeJobsSource, /settingsNumber\('cooldownAccountRetestLongTermIntervalHours', 1, 24 \* 30\)/)
+assert.doesNotMatch(accountProbeJobsSource, /cooldownAccountRetestLongTermIntervalHours/)
 
 const cooldownAccountRetestSource = readSource('modules/background/cooldown-account-retest.service.ts')
 assert.match(cooldownAccountRetestSource, /sequenceRetryPolicy\('cooldown_account_retest_revival', \[\], 0\)/)

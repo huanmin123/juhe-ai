@@ -822,8 +822,8 @@ func managementSystemSettingsSnapshot(
 	if err != nil {
 		t.Fatalf("NewSnapshot() error = %v", err)
 	}
-	if settings.Len() != 53 {
-		t.Fatalf("settings length = %d, want 53", settings.Len())
+	if settings.Len() != 52 {
+		t.Fatalf("settings length = %d, want 52", settings.Len())
 	}
 	return settings
 }
@@ -849,8 +849,8 @@ func assertManagementSystemSettingsResponse(
 	if err := json.Unmarshal(rawData, &data); err != nil {
 		t.Fatalf("decode data: %v", err)
 	}
-	if len(data) != 53 {
-		t.Fatalf("data field count = %d, want 53", len(data))
+	if len(data) != 52 {
+		t.Fatalf("data field count = %d, want 52", len(data))
 	}
 	for key, wantValue := range want.Values() {
 		gotValue, exists := data[key]

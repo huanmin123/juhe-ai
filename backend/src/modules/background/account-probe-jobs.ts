@@ -104,7 +104,6 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
   if (availableQueueSlots <= 0) return
   const maxPauseMinutes = deps.settingsNumber('defaultTemporaryUnschedulableMinutes', 1, 1440)
   const maxRecoveryHours = deps.settingsNumber('cooldownAccountRetestMaxBackoffHours', 1, 24 * 30)
-  const longTermIntervalHours = deps.settingsNumber('cooldownAccountRetestLongTermIntervalHours', 1, 24 * 30)
   const page = await requestBackgroundWorkerDbService({
     type: 'list_accounts_due_for_cooldown_retest',
     limit: availableQueueSlots,
@@ -119,7 +118,7 @@ export async function runCooldownAccountRetest(deps: AccountRetestDeps): Promise
   let enqueuedCount = 0
   let skippedQueuedCount = 0
   for (const account of candidates) {
-    if (enqueueCooldownAccountRetest(account, { maxPauseMinutes, maxRecoveryHours, longTermIntervalHours })) {
+    if (enqueueCooldownAccountRetest(account, { maxPauseMinutes, maxRecoveryHours })) {
       enqueuedCount += 1
     } else {
       skippedQueuedCount += 1

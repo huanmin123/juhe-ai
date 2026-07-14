@@ -579,7 +579,6 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['cooldownAccountRetestIntervalSeconds', 3],
   ['cooldownAccountRetestBatchSize', 10],
   ['cooldownAccountRetestMaxBackoffHours', 12],
-  ['cooldownAccountRetestLongTermIntervalHours', 1],
   ['oauthAccessTokenRefreshIntervalSeconds', 60],
   ['oauthAccessTokenRefreshLeadSeconds', 300],
   ['oauthAccessTokenRefreshBatchSize', 20],

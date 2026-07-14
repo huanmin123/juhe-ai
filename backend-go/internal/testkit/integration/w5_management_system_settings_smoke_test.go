@@ -328,8 +328,8 @@ func decodeW5SystemSettingsResponse(
 
 func assertW5SystemSettingsComplete(t *testing.T, settings map[string]json.RawMessage) {
 	t.Helper()
-	if len(settings) != 53 {
-		t.Fatalf("system settings field count = %d, want 53", len(settings))
+	if len(settings) != 52 {
+		t.Fatalf("system settings field count = %d, want 52", len(settings))
 	}
 	for _, definition := range systemsettings.Definitions() {
 		if _, ok := settings[definition.Key]; !ok {

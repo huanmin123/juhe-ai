@@ -56,8 +56,8 @@ func TestW5SystemSettingsMigrationSeedsNodeDefaults(t *testing.T) {
 	}
 	sql := string(source)
 	defaults := nodeSystemSettingDefaultJSON()
-	if len(defaults) != 53 {
-		t.Fatalf("initial migration default count = %d, want 53", len(defaults))
+	if len(defaults) != 52 {
+		t.Fatalf("initial migration default count = %d, want 52", len(defaults))
 	}
 	if count := strings.Count(sql, "'sys_admin'"); count != len(defaults) {
 		t.Fatalf("migration sys_admin row count = %d, want %d", count, len(defaults))
@@ -586,7 +586,6 @@ func nodeSystemSettingDefaultJSON() map[string]string {
 		"cooldownAccountRetestIntervalSeconds":       "3",
 		"cooldownAccountRetestBatchSize":             "10",
 		"cooldownAccountRetestMaxBackoffHours":       "12",
-		"cooldownAccountRetestLongTermIntervalHours": "1",
 		"oauthAccessTokenRefreshIntervalSeconds":     "60",
 		"oauthAccessTokenRefreshLeadSeconds":         "300",
 		"oauthAccessTokenRefreshBatchSize":           "20",

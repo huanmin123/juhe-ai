@@ -199,6 +199,8 @@ async function runAccountHealthCheckQueueItem(
     durationMs: result.durationMs,
     failureCount: failure?.failureCount ?? 0,
     reachedThreshold: failure?.reachedThreshold ?? false,
+    failureStartedAt: failure?.failureStartedAt,
+    transitionedToError: failure?.transitionedToError ?? false,
     accountFailureEligible: result.accountFailureEligible,
     nextHealthCheckAt: failure?.nextHealthCheckAt,
     markedTemporaryUnavailable,
@@ -206,7 +208,9 @@ async function runAccountHealthCheckQueueItem(
     retryNumber: context.retryNumber,
     message: result.message
   }
-  if (account.status !== 'pending_test' && failure?.reachedThreshold && result.accountFailureEligible !== false) {
+  if (failure?.transitionedToError) {
+    logger.error(logFields, '账号激活检查从首次失败起已持续 24 小时，账户已转为异常')
+  } else if (account.status !== 'pending_test' && failure?.reachedThreshold && result.accountFailureEligible !== false) {
     logger.warn(logFields, '账号健康检测连续失败，已尝试标记为临时不可调用')
   } else {
     logger.warn(logFields, '账号健康检测失败，已记录失败并安排短间隔复检')

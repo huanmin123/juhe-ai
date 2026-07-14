@@ -534,6 +534,7 @@ export interface AccountSummary {
   nextHealthCheckAt?: string
   lastHealthSuccessAt?: string
   healthCheckFailureCount?: number
+  healthCheckFailureStartedAt?: string
   lastHealthCheckStatusCode?: number
   lastHealthCheckErrorCode?: string
   lastHealthCheckErrorMessage?: string

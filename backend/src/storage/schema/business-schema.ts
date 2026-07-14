@@ -289,6 +289,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       next_health_check_at TEXT,
       last_health_success_at TEXT,
       health_check_failure_count INTEGER NOT NULL DEFAULT 0,
+      health_check_failure_started_at TEXT,
       last_health_check_status_code INTEGER,
       last_health_check_error_code TEXT,
       last_health_check_error_message TEXT,

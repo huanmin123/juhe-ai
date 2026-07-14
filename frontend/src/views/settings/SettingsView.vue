@@ -247,11 +247,6 @@
                 <a-input-number v-model:value="systemForm.cooldownAccountRetestMaxBackoffHours" :min="1" :max="720" style="width: 100%" />
               </a-form-item>
             </div>
-            <div class="setting-item">
-              <a-form-item label="长期不可用复测间隔（小时）" tooltip="默认 1 小时；账号进入长期不可用后按该间隔继续自动复测，复测成功会恢复正常。">
-                <a-input-number v-model:value="systemForm.cooldownAccountRetestLongTermIntervalHours" :min="1" :max="720" style="width: 100%" />
-              </a-form-item>
-            </div>
           </div>
         </section>
 

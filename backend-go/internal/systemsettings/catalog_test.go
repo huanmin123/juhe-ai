@@ -52,7 +52,6 @@ var expectedDefinitions = []expectedDefinition{
 	{Key: "cooldownAccountRetestIntervalSeconds", Kind: ValueKindInteger, Minimum: 1, Maximum: 3600},
 	{Key: "cooldownAccountRetestBatchSize", Kind: ValueKindInteger, Minimum: 1, Maximum: 100},
 	{Key: "cooldownAccountRetestMaxBackoffHours", Kind: ValueKindInteger, Minimum: 1, Maximum: 720},
-	{Key: "cooldownAccountRetestLongTermIntervalHours", Kind: ValueKindInteger, Minimum: 1, Maximum: 720},
 	{Key: "oauthAccessTokenRefreshIntervalSeconds", Kind: ValueKindInteger, Minimum: 10, Maximum: 3600},
 	{Key: "oauthAccessTokenRefreshLeadSeconds", Kind: ValueKindInteger, Minimum: 60, Maximum: 86400},
 	{Key: "oauthAccessTokenRefreshBatchSize", Kind: ValueKindInteger, Minimum: 1, Maximum: 200},
@@ -73,8 +72,8 @@ var expectedDefinitions = []expectedDefinition{
 }
 
 func TestCatalogMatchesNodeSystemSettingKeysAndRanges(t *testing.T) {
-	if len(expectedDefinitions) != 53 {
-		t.Fatalf("expected definition fixture count = %d, want 53", len(expectedDefinitions))
+	if len(expectedDefinitions) != 52 {
+		t.Fatalf("expected definition fixture count = %d, want 52", len(expectedDefinitions))
 	}
 
 	keys := make([]string, 0, len(expectedDefinitions))
@@ -95,8 +94,8 @@ func TestCatalogMatchesNodeSystemSettingKeysAndRanges(t *testing.T) {
 			t.Fatalf("Definitions()[%d] = %+v, want %+v", index, got, want)
 		}
 	}
-	if integerCount != 52 {
-		t.Fatalf("integer definition count = %d, want 52", integerCount)
+	if integerCount != 51 {
+		t.Fatalf("integer definition count = %d, want 51", integerCount)
 	}
 	if got := Keys(); !reflect.DeepEqual(got, keys) {
 		t.Fatalf("Keys() = %#v, want %#v", got, keys)
@@ -151,15 +150,15 @@ func TestIntegerDefinitionsAcceptBothBoundsAndRejectOutsideBounds(t *testing.T) 
 
 func TestCurrentNodeDefaultsFormValidCompleteSnapshot(t *testing.T) {
 	defaults := currentNodeDefaultValues()
-	if len(defaults) != 53 {
-		t.Fatalf("default count = %d, want 53", len(defaults))
+	if len(defaults) != 52 {
+		t.Fatalf("default count = %d, want 52", len(defaults))
 	}
 	snapshot, err := NewSnapshot(defaults)
 	if err != nil {
 		t.Fatalf("NewSnapshot(current defaults) error = %v", err)
 	}
-	if snapshot.Len() != 53 {
-		t.Fatalf("snapshot length = %d, want 53", snapshot.Len())
+	if snapshot.Len() != 52 {
+		t.Fatalf("snapshot length = %d, want 52", snapshot.Len())
 	}
 	value, ok := snapshot.Value("usageHotWindowRefreshIntervalSeconds")
 	if !ok || string(value) != "600" {
@@ -406,7 +405,6 @@ func currentNodeDefaultValues() map[string]json.RawMessage {
 		"cooldownAccountRetestIntervalSeconds":       json.RawMessage(`3`),
 		"cooldownAccountRetestBatchSize":             json.RawMessage(`10`),
 		"cooldownAccountRetestMaxBackoffHours":       json.RawMessage(`12`),
-		"cooldownAccountRetestLongTermIntervalHours": json.RawMessage(`1`),
 		"oauthAccessTokenRefreshIntervalSeconds":     json.RawMessage(`60`),
 		"oauthAccessTokenRefreshLeadSeconds":         json.RawMessage(`300`),
 		"oauthAccessTokenRefreshBatchSize":           json.RawMessage(`20`),

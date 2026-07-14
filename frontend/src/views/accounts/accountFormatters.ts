@@ -78,7 +78,9 @@ export function accountErrorCodeText(code?: string): string {
   if (code === 'upstream_failure') return '上游调用失败'
   if (code === 'account_expired') return '账户过期'
   if (code === 'cooldown_retest_failed') return '后台复测失败'
-  if (code === 'cooldown_retest_long_term_unavailable') return '长期不可用低频复测'
+  if (code === 'cooldown_retest_long_term_unavailable') return '长期不可用每小时复测'
+  if (code === 'cooldown_retest_observation_timeout') return '长期不可用超过 7 天'
+  if (code === 'account_activation_check_timeout') return '激活检查超过 24 小时'
   if (code === 'account_health_check_failed') return '后台健康检测失败'
   return code || '未分类异常'
 }
@@ -269,14 +271,14 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
         lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
       }
       lines.push(account.lastErrorCode === 'oauth_token_refresh_failed'
-        ? 'OAuth 刷新失败异常会在后台刷新成功后自动恢复，也可手动测试诊断或手动恢复异常'
-        : '异常账户不会参与调度；可手动测试诊断，恢复状态请手动恢复异常')
+        ? 'OAuth 刷新失败异常会在后台刷新成功后自动恢复，也可手动测试诊断或手动异常恢复'
+        : '异常账户不会参与调度；可手动测试诊断，恢复状态请手动异常恢复')
     }
     if (account.cooldownRetestObservationStartedAt && isTemporaryAccountStatus(account)) {
       lines.push(`自动恢复观察开始：${formatDateTime(account.cooldownRetestObservationStartedAt)}`)
     }
     if (isLongTermUnavailableAccount(account)) {
-      lines.push('已进入长期不可用低频复测；后台仍会自动探活，成功后恢复正常')
+      lines.push('已进入长期不可用每 1 小时复测；从观察开始满 7 天仍失败时转为异常')
     }
     lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, { reasonLabel: '原因' }))
   }
@@ -302,7 +304,7 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
     const retestText = accountCooldownRetestText(account)
     if (retestText) lines.push(retestText)
     if (isLongTermUnavailableAccount(account)) {
-      lines.push('已进入长期不可用低频复测；后台仍会自动探活，成功后恢复正常')
+      lines.push('已进入长期不可用每 1 小时复测；从观察开始满 7 天仍失败时转为异常')
     }
   } else if (account.effectiveAvailability?.status === 'instance_cooldown') {
     const cooldownText = accountCooldownText(account)
@@ -577,12 +579,12 @@ function directAccountStatusText(account: AccountSummary): string {
 
 function pendingHealthCheckStatusText(account: AccountSummary): string {
   if (isPendingHealthCheckFailed(account)) {
-    return '后台健康检查未通过，系统将自动重试；人工测试仅用于诊断，不改变账户状态'
+    return '后台健康检查未通过，系统每 1 小时自动重试；首次失败持续 24 小时仍未通过时转为异常；人工测试仅用于诊断，不改变账户状态'
   }
   return '等待后台健康检查，通过后自动参与调度；人工测试仅用于诊断，不改变账户状态'
 }
 
-function isPendingHealthCheckFailed(account: AccountSummary): boolean {
+export function isPendingHealthCheckFailed(account: AccountSummary): boolean {
   return account.status === 'pending_test'
     && Boolean(account.lastHealthCheckAt)
     && Boolean(account.lastHealthCheckErrorCode || account.lastHealthCheckErrorMessage)
