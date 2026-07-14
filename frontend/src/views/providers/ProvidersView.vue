@@ -129,7 +129,7 @@
             <a-input v-model:value="customModelForm.model" :disabled="customModelEditing" placeholder="例如 gpt-5.5-pro" />
           </a-form-item>
           <a-form-item label="状态">
-            <a-select v-model:value="customModelForm.status" :disabled="editingBuiltInModel" :options="modelStatusOptions" />
+            <a-select v-model:value="customModelForm.status" :disabled="editingBuiltInModel" :options="customModelStatusOptions" />
           </a-form-item>
           <a-form-item label="用途">
             <a-select v-model:value="customModelForm.mode" :disabled="editingBuiltInModel" :options="modelModeOptions" @change="handleCustomModelModeChange" />
@@ -150,6 +150,7 @@
                 mode="tags"
                 :disabled="editingBuiltInModel"
                 placeholder="未选择时表示不支持账户级服务等级覆盖"
+                @change="handleCustomModelServiceTiersChange"
               />
             </a-form-item>
             <a-form-item label="思考级别" class="custom-model-grid-wide">
@@ -165,13 +166,13 @@
               <a-select
                 v-model:value="customModelForm.defaultReasoningEffort"
                 allow-clear
-                :disabled="!customModelDefaultReasoningOptions.length"
+                :disabled="editingBuiltInModel || !customModelDefaultReasoningOptions.length"
                 :options="customModelDefaultReasoningOptions"
                 placeholder="从已支持的思考级别中选择"
               />
             </a-form-item>
           </template>
-          <a-form-item v-if="!editingBuiltInModel" label="价格模板" class="custom-model-grid-wide">
+          <a-form-item v-if="canManageModelPrices && !editingBuiltInModel" label="价格模板" class="custom-model-grid-wide">
             <a-select
               v-model:value="customModelForm.pricingTemplateModel"
               allow-clear
@@ -194,6 +195,7 @@
           <a-form-item label="最大输出 token">
             <a-input-number v-model:value="customModelForm.maxOutputTokens" :disabled="editingBuiltInModel" :min="0" style="width: 100%" />
           </a-form-item>
+          <template v-if="canManageModelPrices">
           <template v-if="customModelPricingCategory === 'text'">
             <a-form-item label="输入价格">
               <a-input-number v-model:value="customModelForm.inputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
@@ -244,6 +246,7 @@
             <a-form-item label="音频输出价格">
               <a-input-number v-model:value="customModelForm.audioOutputUsdPer1M" :min="0" :precision="8" style="width: 100%" />
             </a-form-item>
+          </template>
           </template>
         </div>
       </a-form>
@@ -324,6 +327,7 @@ const editingCustomModelProviderCode = ref<string>()
 const editingModelScope = ref<ProviderModelPricing['scope']>()
 
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
+const canManageModelPrices = authState.isAdmin
 const customModelEditing = computed(() => Boolean(editingCustomModelId.value))
 const editingBuiltInModel = computed(() => editingModelScope.value === 'built_in')
 
@@ -363,6 +367,9 @@ const activeProviderDefaultHealthCheckModel = computed(() => activeProvider.valu
 const customModelModalTitle = computed(() => editingBuiltInModel.value ? '编辑模型价格' : customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
 const showCustomModelRequestCapabilities = computed(() => customModelPricingCategory.value === 'text')
+const customModelStatusOptions = computed(() => canManageModelPrices.value || (customModelEditing.value && customModelForm.status === 'active')
+  ? modelStatusOptions
+  : modelStatusOptions.filter((option) => option.value !== 'active'))
 const customModelDefaultReasoningOptions = computed(() => customModelForm.supportedReasoningEfforts.map((value) => ({
   value,
   label: formatModelReasoningEffort(value)
@@ -447,6 +454,7 @@ function openCreateCustomModel() {
   ensureModelSystemAccountFilter()
   resetCustomModelForm()
   customModelForm.scope = 'personal'
+  customModelForm.status = canManageModelPrices.value ? 'active' : 'draft'
   customModelForm.mode = selectedModelCategory.value
   customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProvider.value, selectedModelCategory.value)
   customModelModalOpen.value = true
@@ -558,7 +566,8 @@ function currentUserSystemAccountId(): string {
 
 function buildCurrentCustomModelPayload(): ProviderModelUpsertPayload | undefined {
   const payload = buildCustomModelUpsertPayload(customModelForm, customModelPricingCategory.value, {
-    includeRequestCapabilities: true
+    includeRequestCapabilities: true,
+    includePrices: canManageModelPrices.value
   })
   if (!payload) {
     message.warning('请填写模型 ID')
@@ -591,6 +600,14 @@ function ensureServiceTierPriceRows(): void {
   for (const tier of customModelForm.supportedServiceTiers) {
     customModelForm.serviceTierPrices[tier] ??= {}
   }
+}
+
+function handleCustomModelServiceTiersChange(): void {
+  const supported = new Set(customModelForm.supportedServiceTiers)
+  for (const tier of Object.keys(customModelForm.serviceTierPrices)) {
+    if (!supported.has(tier)) delete customModelForm.serviceTierPrices[tier]
+  }
+  ensureServiceTierPriceRows()
 }
 
 function handleCustomModelModeChange() {

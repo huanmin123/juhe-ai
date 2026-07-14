@@ -454,6 +454,9 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	if scope == "global" && !isAdminRole(input.ActorRole) {
 		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以创建全局模型"}
 	}
+	if !isAdminRole(input.ActorRole) && customModelMutationHasPriceField(input.Fields) {
+		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护模型价格"}
+	}
 	ownerSystemAccountID := ""
 	if scope == "personal" {
 		if isAdminRole(input.ActorRole) {
@@ -514,6 +517,9 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	}
 	if !canMutateCustomProviderModel(existing.Scope, existing.SystemAccountID, input.ActorSystemAccountID, input.ActorRole) {
 		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "无权修改该自定义模型"}
+	}
+	if !isAdminRole(input.ActorRole) && customModelMutationHasPriceField(input.Fields) {
+		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护模型价格"}
 	}
 	if input.Fields.Invalid || !customModelMutationHasAnyField(input.Fields) {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
@@ -1010,6 +1016,20 @@ func customModelMutationHasAnyField(fields CustomModelMutation) bool {
 		fields.PricingNotes.Set ||
 		fields.CapabilityNotes.Set ||
 		fields.Notes.Set
+}
+
+func customModelMutationHasPriceField(fields CustomModelMutation) bool {
+	return fields.InputUSDPer1M.Set ||
+		fields.OutputUSDPer1M.Set ||
+		fields.CachedInputUSDPer1M.Set ||
+		fields.CacheWriteUSDPer1M.Set ||
+		fields.CacheWrite1hUSDPer1M.Set ||
+		fields.ServiceTierPrices.Set ||
+		fields.ImageInputUSDPer1M.Set ||
+		fields.ImageOutputUSDPer1M.Set ||
+		fields.AudioInputUSDPer1M.Set ||
+		fields.AudioOutputUSDPer1M.Set ||
+		fields.OutputUSDPerImage.Set
 }
 
 func validCustomModelStatus(status string) bool {

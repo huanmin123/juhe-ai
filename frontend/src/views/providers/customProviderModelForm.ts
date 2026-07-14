@@ -100,7 +100,7 @@ export function createCustomModelFormFromPricing(
 export function buildCustomModelPayload(
   form: CustomModelForm,
   category: ModelCategoryKey,
-  options: { includeRequestCapabilities?: boolean } = {}
+  options: { includeRequestCapabilities?: boolean; includePrices?: boolean } = {}
 ): ProviderModelUpsertPayload | undefined {
   const model = form.model.trim()
   if (!model) return undefined
@@ -113,9 +113,11 @@ export function buildCustomModelPayload(
     releaseDate: trimToNull(form.releaseDate),
     shutdownDate: trimToNull(form.shutdownDate),
     contextWindowTokens: numberToNull(form.contextWindowTokens),
-    maxOutputTokens: numberToNull(form.maxOutputTokens),
-    serviceTierPrices: cloneServiceTierPrices(form.serviceTierPrices),
-    ...buildCustomModelDirectPricePayload(form, category)
+    maxOutputTokens: numberToNull(form.maxOutputTokens)
+  }
+  if (options.includePrices !== false) {
+    payload.serviceTierPrices = cloneServiceTierPrices(form.serviceTierPrices)
+    Object.assign(payload, buildCustomModelDirectPricePayload(form, category))
   }
   if (options.includeRequestCapabilities) {
     const supportedReasoningEfforts = category === 'text'

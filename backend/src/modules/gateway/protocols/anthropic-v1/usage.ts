@@ -2,6 +2,7 @@ import {
   emptyUsage,
   type ParsedUsage
 } from '../../usage/types.js'
+import { normalizeOptionalUsageServiceTier } from '../../usage/service-tier.js'
 
 export function parseAnthropicUsageFromJsonBuffer(responseBody: Buffer): ParsedUsage {
   if (responseBody.length === 0) return emptyUsage()
@@ -29,6 +30,7 @@ export function extractAnthropicUsage(value: unknown): ParsedUsage {
   const cacheWriteTokens = numberValue(usage.cache_creation_input_tokens) ?? cacheWriteDetailTokens
   const outputTokenDetails = objectValue(usage.output_tokens_details)
   return {
+    serviceTier: normalizeOptionalUsageServiceTier(usage.speed),
     inputTokens: numberValue(usage.input_tokens),
     outputTokens: numberValue(usage.output_tokens),
     cacheReadTokens: numberValue(usage.cache_read_input_tokens),

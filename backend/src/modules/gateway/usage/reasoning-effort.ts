@@ -1,24 +1,7 @@
-export type UsageReasoningEffort =
-  | 'none'
-  | 'minimal'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'max'
+import { normalizeUsageCapabilityToken } from './service-tier.js'
 
-const usageReasoningEfforts = new Set<UsageReasoningEffort>([
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-])
+export type UsageReasoningEffort = string
 
 export function normalizeUsageReasoningEffort(value: unknown): UsageReasoningEffort | undefined {
-  return typeof value === 'string' && usageReasoningEfforts.has(value as UsageReasoningEffort)
-    ? value as UsageReasoningEffort
-    : undefined
+  return normalizeUsageCapabilityToken(value)
 }

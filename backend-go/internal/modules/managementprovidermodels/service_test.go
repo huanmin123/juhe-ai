@@ -623,9 +623,10 @@ func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
 				},
 			}
 			_, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
-				ProviderCode:         tt.providerCode,
-				ActorSystemAccountID: "sys_user",
-				ActorRole:            "user",
+				ProviderCode:          tt.providerCode,
+				ActorSystemAccountID:  "sys_admin",
+				ActorRole:             "admin",
+				TargetSystemAccountID: "sys_user",
 				Fields: CustomModelMutation{
 					Model:                     OptionalString{Set: true, Value: "custom-chat"},
 					Mode:                      tt.mode,
@@ -661,9 +662,10 @@ func TestServiceCreateCustomModelAllowsExplicitCapabilityClearsOutsideGPTText(t 
 				},
 			}
 			result, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
-				ProviderCode:         input.providerCode,
-				ActorSystemAccountID: "sys_user",
-				ActorRole:            "user",
+				ProviderCode:          input.providerCode,
+				ActorSystemAccountID:  "sys_admin",
+				ActorRole:             "admin",
+				TargetSystemAccountID: "sys_user",
 				Fields: CustomModelMutation{
 					Model:                     OptionalString{Set: true, Value: "custom-model"},
 					Mode:                      OptionalString{Set: input.mode != "", Value: input.mode},
@@ -805,6 +807,35 @@ func TestServiceCreateCustomModelPrioritizesGlobalForbiddenBeforeCapabilityValid
 	}
 	if store.saveInput.Model != "" {
 		t.Fatalf("save should not be called, got %+v", store.saveInput)
+	}
+}
+
+func TestServiceRejectsOrdinaryUserPriceMutations(t *testing.T) {
+	price := 1.25
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+		customByID: map[string]port.ManagementProviderModelCatalogItem{
+			"custom_model_1": {ID: "custom_model_1", ProviderCode: "gpt", Model: "custom-chat", Scope: "personal", SystemAccountID: "sys_user", Status: "draft"},
+		},
+	}
+	service := NewService(store)
+
+	_, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "custom-chat"}, Status: OptionalString{Set: true, Value: "draft"}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price}},
+	})
+	message, ok := CustomModelForbiddenMessage(err)
+	if !ok || message != "只有管理员可以维护模型价格" {
+		t.Fatalf("create price forbidden message = %q, %v; err = %v", message, ok, err)
+	}
+
+	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "custom_model_1", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{ServiceTierPrices: OptionalProviderModelPriceMap{Set: true, Value: map[string]port.ManagementProviderModelPriceSet{}}},
+	})
+	message, ok = CustomModelForbiddenMessage(err)
+	if !ok || message != "只有管理员可以维护模型价格" {
+		t.Fatalf("update price forbidden message = %q, %v; err = %v", message, ok, err)
 	}
 }
 

@@ -1,7 +1,10 @@
+import { normalizeUsageReasoningEffort, type UsageReasoningEffort } from '../usage/reasoning-effort.js'
+import { normalizeOptionalUsageServiceTier, type UsageServiceTier } from '../usage/service-tier.js'
+
 export interface GatewayJsonBodyMetadata {
   model?: string
   stream?: boolean
-  serviceTier?: 'default' | 'priority' | 'flex'
+  serviceTier?: UsageServiceTier
   reasoningEffort?: UsageReasoningEffort
   maxOutputTokens?: number
   imageGeneration?: boolean
@@ -78,7 +81,7 @@ export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBody
     } else if (key.value === 'service_tier') {
       const value = readJsonStringToken(rawBody, index)
       if (value) {
-        metadata.serviceTier = value.value === 'priority' || value.value === 'flex' ? value.value : 'default'
+        metadata.serviceTier = normalizeOptionalUsageServiceTier(value.value)
         index = value.nextIndex
       } else {
         const skipped = skipJsonValue(rawBody, index)
@@ -185,24 +188,6 @@ export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBody
   metadata.imageGeneration = inspection.imageToolCount > 0 || inspection.forcedImageGeneration
   metadata.imageGenerationForced = inspection.forcedImageGeneration
   return metadata
-}
-
-type UsageReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-
-const usageReasoningEfforts = new Set<UsageReasoningEffort>([
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-])
-
-function normalizeUsageReasoningEffort(value: unknown): UsageReasoningEffort | undefined {
-  return typeof value === 'string' && usageReasoningEfforts.has(value as UsageReasoningEffort)
-    ? value as UsageReasoningEffort
-    : undefined
 }
 
 function readJsonObjectStringProperty(

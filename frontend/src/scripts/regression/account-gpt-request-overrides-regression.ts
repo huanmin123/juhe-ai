@@ -205,6 +205,17 @@ const customPayload = buildCustomModelPayload(customModelForm, 'text', { include
 assert.deepEqual(customPayload?.supportedServiceTiers, ['priority', 'flex'], '自定义模型服务等级应去重并限制 wire 枚举')
 assert.deepEqual(customPayload?.supportedReasoningEfforts, ['high', 'ultra', 'max'], '通用模型能力表单应保留供应商原生字符串，具体值域由后端按供应商校验')
 assert.equal(customPayload?.defaultReasoningEffort, 'ultra', '默认思考级别属于已支持集合时应保留')
+const ordinaryUserPayload = buildCustomModelPayload(customModelForm, 'text', {
+  includeRequestCapabilities: true,
+  includePrices: false
+})
+for (const priceField of [
+  'inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M',
+  'serviceTierPrices', 'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M',
+  'outputUsdPerImage'
+]) {
+  assert.equal(Object.prototype.hasOwnProperty.call(ordinaryUserPayload, priceField), false, `普通用户 payload 必须省略价格字段 ${priceField}`)
+}
 const imageCustomPayload = buildCustomModelPayload(customModelForm, 'image', { includeRequestCapabilities: true })
 assert.deepEqual(imageCustomPayload?.supportedServiceTiers, [], 'GPT 非文本自定义模型保存时必须清空服务等级能力')
 assert.deepEqual(imageCustomPayload?.supportedReasoningEfforts, [], 'GPT 非文本自定义模型保存时必须清空思考能力')

@@ -517,6 +517,7 @@ function hasDirectPrice(item: ProviderModelPricing): boolean {
     || item.audioInputUsdPer1M !== undefined
     || item.audioOutputUsdPer1M !== undefined
     || item.outputUsdPerImage !== undefined
+    || Object.keys(item.serviceTierPrices ?? {}).length > 0
 }
 
 function findCatalogItem(items: ProviderModelCatalogItem[], model: string): ProviderModelCatalogItem | undefined {
@@ -796,8 +797,8 @@ function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: C
 } {
   const tier = input.serviceTier
   const tierKey = typeof tier === 'string' && tier !== 'default' && tier !== 'standard' ? tier : undefined
-  const tierPrices = tierKey ? pricing.serviceTierPrices?.[tierKey] : undefined
   const tierSupported = tierKey !== undefined && pricing.supportedServiceTiers.some((supported) => supported === tierKey)
+  const tierPrices = tierSupported ? pricing.serviceTierPrices?.[tierKey] : undefined
   const selectPrice = (standard: number | undefined, specific: number | undefined): number | undefined =>
     tierKey ? specific : standard
   const longContext = pricing.longContextInputTokenThreshold !== undefined
