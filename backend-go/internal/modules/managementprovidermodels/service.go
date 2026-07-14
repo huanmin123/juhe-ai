@@ -312,7 +312,11 @@ func (s *Service) ModelOptions(ctx context.Context, input ModelOptionListInput) 
 	if err != nil {
 		return nil, err
 	}
-	builtInCodes, customCodes := optionSourceProviderCodes(providerCodes)
+	catalogSources, err := s.modelOptionCatalogSources(ctx, providerCodes)
+	if err != nil {
+		return nil, err
+	}
+	builtInCodes, customCodes := modelOptionCatalogQueryProviderCodes(catalogSources)
 	rows, err := s.store.ListManagementProviderModelCatalog(ctx, port.ManagementProviderModelCatalogListInput{
 		BuiltInProviderCodes: builtInCodes,
 		CustomProviderCodes:  customCodes,
@@ -322,7 +326,11 @@ func (s *Service) ModelOptions(ctx context.Context, input ModelOptionListInput) 
 	if err != nil {
 		return nil, err
 	}
-	items := sortCatalogItems(mergeCatalogItems(rows, mergeKeyProviderModel))
+	items := make([]port.ManagementProviderModelCatalogItem, 0, len(rows))
+	for _, source := range catalogSources {
+		catalogRows := modelOptionCatalogItems(rows, source)
+		items = append(items, sortCatalogItems(mergeCatalogItems(catalogRows, mergeKeyModel))...)
+	}
 	return dedupeModelOptions(items), nil
 }
 
@@ -587,19 +595,102 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 }
 
 func (s *Service) optionProviderCodes(ctx context.Context, protocol string) ([]string, error) {
-	protocolCode, protocolVersion, ok := protocolFilter(strings.TrimSpace(protocol))
-	if ok {
-		codes, err := s.store.ListManagementProviderCodesByProtocol(ctx, protocolCode, protocolVersion)
-		if err != nil {
-			return nil, err
-		}
-		return dedupeStrings(codes), nil
-	}
-	codes, err := s.store.ListManagementEnabledModelProviderCodes(ctx)
+	enabledCodes, err := s.store.ListManagementEnabledModelProviderCodes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return dedupeStrings(codes), nil
+	enabledCodes = dedupeStrings(enabledCodes)
+	protocolCode, protocolVersion, ok := protocolFilter(strings.TrimSpace(protocol))
+	if !ok {
+		return enabledCodes, nil
+	}
+	protocolCodes, err := s.store.ListManagementProviderCodesByProtocol(ctx, protocolCode, protocolVersion)
+	if err != nil {
+		return nil, err
+	}
+	allowed := stringSet(dedupeStrings(protocolCodes))
+	output := make([]string, 0, len(enabledCodes))
+	for _, code := range enabledCodes {
+		if _, ok := allowed[code]; ok {
+			output = append(output, code)
+		}
+	}
+	return output, nil
+}
+
+type modelOptionCatalogSource struct {
+	builtInProviderCodes []string
+	customProviderCodes  []string
+}
+
+func (s *Service) modelOptionCatalogSources(ctx context.Context, providerCodes []string) ([]modelOptionCatalogSource, error) {
+	sources := make([]modelOptionCatalogSource, 0, len(providerCodes))
+	for _, providerCode := range providerCodes {
+		code := strings.TrimSpace(providerCode)
+		switch code {
+		case "", hybridProviderCode:
+			continue
+		case openAIProviderCode:
+			openAIProtocolCodes, err := s.store.ListManagementProviderCodesByProtocol(ctx, protocolOpenAI, "v1")
+			if err != nil {
+				return nil, err
+			}
+			builtInCodes, customCodes := openAIModelOptionSourceProviderCodes(openAIProtocolCodes)
+			sources = append(sources, modelOptionCatalogSource{
+				builtInProviderCodes: builtInCodes,
+				customProviderCodes:  customCodes,
+			})
+		default:
+			sources = append(sources, modelOptionCatalogSource{
+				builtInProviderCodes: []string{code},
+				customProviderCodes:  []string{code},
+			})
+		}
+	}
+	return sources, nil
+}
+
+func openAIModelOptionSourceProviderCodes(providerCodes []string) ([]string, []string) {
+	childCodes := make([]string, 0, len(providerCodes))
+	for _, providerCode := range dedupeStrings(providerCodes) {
+		if providerCode == openAIProviderCode {
+			continue
+		}
+		childCodes = append(childCodes, providerCode)
+	}
+	builtInCodes := append([]string(nil), childCodes...)
+	customCodes := append(append([]string(nil), childCodes...), openAIProviderCode)
+	return builtInCodes, customCodes
+}
+
+func modelOptionCatalogQueryProviderCodes(sources []modelOptionCatalogSource) ([]string, []string) {
+	builtInCodes := []string{}
+	customCodes := []string{}
+	for _, source := range sources {
+		builtInCodes = append(builtInCodes, source.builtInProviderCodes...)
+		customCodes = append(customCodes, source.customProviderCodes...)
+	}
+	return dedupeStrings(builtInCodes), dedupeStrings(customCodes)
+}
+
+func modelOptionCatalogItems(rows []port.ManagementProviderModelCatalogItem, source modelOptionCatalogSource) []port.ManagementProviderModelCatalogItem {
+	items := make([]port.ManagementProviderModelCatalogItem, 0, len(rows))
+	appendMatching := func(providerCodes []string, builtIn bool) {
+		for _, providerCode := range providerCodes {
+			for _, item := range rows {
+				if !strings.EqualFold(strings.TrimSpace(item.ProviderCode), providerCode) {
+					continue
+				}
+				if (strings.TrimSpace(item.Scope) == "built_in") != builtIn {
+					continue
+				}
+				items = append(items, item)
+			}
+		}
+	}
+	appendMatching(source.builtInProviderCodes, true)
+	appendMatching(source.customProviderCodes, false)
+	return items
 }
 
 func optionSourceProviderCodes(providerCodes []string) ([]string, []string) {
