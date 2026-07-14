@@ -31,6 +31,7 @@ func TestUnifiedProviderModelPricingMigrationUsesJSONAndDropsLegacyFields(t *tes
 		"WITH candidates AS", "SELECT DISTINCT ON (alias_id)",
 		"RAISE EXCEPTION 'provider_model_catalog contains unresolved pricing_model aliases'",
 		"RAISE EXCEPTION 'custom_provider_models contains unresolved pricing_model aliases'",
+		"-- +goose StatementBegin", "-- +goose StatementEnd",
 		"DROP COLUMN IF EXISTS pricing_model",
 	} {
 		if !strings.Contains(materializeSQL, required) {

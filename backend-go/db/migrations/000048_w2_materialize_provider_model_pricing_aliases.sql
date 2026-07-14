@@ -63,6 +63,7 @@ SET input_usd_per_1m = COALESCE(alias.input_usd_per_1m, chosen.input_usd_per_1m)
 FROM chosen
 WHERE alias.id = chosen.alias_id;
 
+-- +goose StatementBegin
 DO $$
 BEGIN
   IF EXISTS (
@@ -88,6 +89,7 @@ BEGIN
     RAISE EXCEPTION 'custom_provider_models contains unresolved pricing_model aliases';
   END IF;
 END $$;
+-- +goose StatementEnd
 
 ALTER TABLE juhe_business.provider_model_catalog
   DROP COLUMN IF EXISTS priority_input_usd_per_1m,
