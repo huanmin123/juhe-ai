@@ -253,6 +253,26 @@ assert.equal(resolveLegacyHealthCheckEndpointMode({
   }
 }), 'chat_json', '同族 JSON 与 Streaming 都启用时迁移应优先 JSON')
 
+assert.equal(resolveLegacyHealthCheckEndpointMode({
+  accountId: 'account_legacy_chat_actual_messages_streaming',
+  accountType: 'api_key',
+  providerCode: 'hybrid',
+  legacyFamily: 'chat_completions',
+  credentials: {
+    supported_endpoint_modes: ['messages_sse']
+  }
+}), 'messages_sse', '历史 family 与能力错配时应回退到真实启用的跨 family Streaming 生成 mode')
+
+assert.equal(resolveLegacyHealthCheckEndpointMode({
+  accountId: 'account_legacy_chat_actual_cross_family_json_and_streaming',
+  accountType: 'api_key',
+  providerCode: 'hybrid',
+  legacyFamily: 'chat_completions',
+  credentials: {
+    supported_endpoint_modes: ['generate_content_sse', 'responses_json', 'messages_json']
+  }
+}), 'responses_json', '跨 family 回退必须先按稳定顺序选择 JSON，再选择 Streaming')
+
 assert.throws(() => resolveLegacyHealthCheckEndpointMode({
   accountId: 'account_tool_only',
   accountType: 'api_key',

@@ -16,6 +16,17 @@ const legacyFamilyGenerationModes = {
   generate_content: ['generate_content_json', 'generate_content_sse']
 } as const
 
+const migrationGenerationModeFallbackOrder = [
+  'chat_json',
+  'responses_json',
+  'messages_json',
+  'generate_content_json',
+  'chat_sse',
+  'responses_sse',
+  'messages_sse',
+  'generate_content_sse'
+] as const
+
 const exactModeSet = new Set<string>(ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES)
 
 export interface AccountHealthCheckEndpointModeMigrationOptions {
@@ -316,8 +327,9 @@ export function resolveLegacyHealthCheckEndpointMode(input: {
     [...candidates]
   )
   const selected = candidates.find((mode) => supportedModes.includes(mode))
+    ?? migrationGenerationModeFallbackOrder.find((mode) => supportedModes.includes(mode))
   if (selected) return selected
-  throw new Error(`账户 ${input.accountId} 的历史检查协议族 ${input.legacyFamily} 没有已启用的 JSON 或 Streaming 生成能力`)
+  throw new Error(`账户 ${input.accountId} 没有已启用的 JSON 或 Streaming 生成能力，历史检查协议族为 ${input.legacyFamily}`)
 }
 
 function supportedGenerationModesForExactVerification(
