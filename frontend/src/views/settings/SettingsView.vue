@@ -74,32 +74,6 @@
           <div class="section-heading">
             <div>
               <h3 class="section-title">
-                <span>GPT 服务档位计价</span>
-                <a-tooltip title="模型目录存在档位专用价格时优先使用专用价格；这里只配置缺少专用价格时的通用兜底倍率。修改后随运行时设置缓存刷新生效。">
-                  <QuestionCircleOutlined class="help-icon" />
-                </a-tooltip>
-              </h3>
-            </div>
-          </div>
-
-          <div class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="Priority 通用倍率" tooltip="默认 2；只用于明确支持 Priority 但模型目录没有 Priority 专用价格的模型。">
-                <a-input-number v-model:value="systemForm.gptPriorityPriceMultiplier" :min="0.01" :max="100" :step="0.1" :precision="2" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="Flex 通用倍率" tooltip="默认 0.5；只用于明确支持 Flex 但模型目录没有 Flex 专用价格的模型。配置倍率不会自动为模型开放 Flex。">
-                <a-input-number v-model:value="systemForm.gptFlexPriceMultiplier" :min="0.01" :max="100" :step="0.1" :precision="2" style="width: 100%" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section">
-          <div class="section-heading">
-            <div>
-              <h3 class="section-title">
                 <span>正常账号健康检测</span>
                 <a-tooltip title="只检测长期没有真实成功请求的正常账号；真实请求成功会顺延下次检测，后台分批探测到期账号。">
                   <QuestionCircleOutlined class="help-icon" />

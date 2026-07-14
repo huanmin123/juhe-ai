@@ -940,9 +940,10 @@ assert.deepEqual(openAIModelPricingById.get('gpt-4o-mini-tts')?.supportedApiProt
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.releaseDate, '2026-06-26')
 assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.releaseDate, '2026-06-26')
 assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.releaseDate, '2026-06-26')
-assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.maxInputTokens, 372000)
-assert.equal(openAIModelPricingById.get('gpt-5.6-terra')?.maxInputTokens, 372000)
-assert.equal(openAIModelPricingById.get('gpt-5.6-luna')?.maxInputTokens, 372000)
+for (const id of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+  assert.equal(openAIModelPricingById.get(id)?.maxInputTokens, 922000)
+  assert.equal(openAIModelPricingById.get(id)?.maxOutputTokens, 128000)
+}
 assert.equal(openAIModelPricingById.get('gpt-5.5')?.releaseDate, '2026-04-23')
 assert.equal(openAIModelPricingById.get('gpt-5.4-mini')?.releaseDate, '2026-03-17')
 assert.equal(openAIModelPricingById.get('gpt-5.3-codex')?.releaseDate, '2026-02-01')

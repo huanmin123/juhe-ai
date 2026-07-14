@@ -1,7 +1,5 @@
 export interface SystemSettings {
   gatewayTextRawBodyLimitMegabytes: number
-  gptPriorityPriceMultiplier: number
-  gptFlexPriceMultiplier: number
   systemApiRateLimitIpReadPerMinute: number
   systemApiRateLimitIpReadBurstPer10Seconds: number
   systemApiRateLimitIpWritePerMinute: number
