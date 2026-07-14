@@ -1,10 +1,13 @@
 package postgres
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"juhe-ai/backend-go/internal/store/port"
@@ -326,6 +329,109 @@ func TestManagementProviderModelCatalogItemFromRowDecodesOptionalFields(t *testi
 	}
 }
 
+func TestManagementProviderModelCatalogSQLReturnsBuiltInIDAndUsesAtomicPricePresence(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_provider_models.sql")
+	if err != nil {
+		t.Fatalf("read provider model query: %v", err)
+	}
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
+	listStart := strings.Index(sql, "-- name: ListManagementProviderModelCatalog :many")
+	updateStart := strings.Index(sql, "-- name: UpdateManagementBuiltInProviderModelPrices :one")
+	findStart := strings.Index(sql, "-- name: FindManagementCustomProviderModel :one")
+	if listStart < 0 || updateStart <= listStart || findStart <= updateStart {
+		t.Fatalf("provider model SQL query boundaries missing")
+	}
+	listSQL := sql[listStart:updateStart]
+	if !strings.Contains(listSQL, "SELECT\n  id,\n  provider_code") || strings.Contains(listSQL, "''::text AS id") {
+		t.Fatalf("catalog list must return provider_model_catalog.id:\n%s", listSQL)
+	}
+
+	updateSQL := sql[updateStart:findStart]
+	columns := []string{
+		"input_usd_per_1m", "output_usd_per_1m", "cached_input_usd_per_1m", "cache_write_usd_per_1m",
+		"cache_write_1h_usd_per_1m", "image_input_usd_per_1m", "image_output_usd_per_1m",
+		"audio_input_usd_per_1m", "audio_output_usd_per_1m", "output_usd_per_image",
+	}
+	for _, column := range columns {
+		want := column + " = CASE WHEN sqlc.arg(" + column + "_present)::boolean THEN sqlc.narg(" + column + ")::double precision ELSE " + column + " END"
+		if !strings.Contains(updateSQL, want) {
+			t.Fatalf("built-in price update missing atomic presence assignment %q:\n%s", want, updateSQL)
+		}
+	}
+	if !strings.Contains(updateSQL, "service_tier_prices_json = CASE WHEN sqlc.arg(service_tier_prices_present)::boolean THEN sqlc.arg(service_tier_prices_json)::text ELSE service_tier_prices_json END") {
+		t.Fatalf("built-in price update missing service tier presence assignment:\n%s", updateSQL)
+	}
+	returningStart := strings.Index(updateSQL, "RETURNING\n")
+	if returningStart < 0 {
+		t.Fatalf("built-in price update missing RETURNING clause:\n%s", updateSQL)
+	}
+	returningSQL := updateSQL[returningStart:]
+	for _, column := range append([]string{"id", "provider_code"}, append(columns, "service_tier_prices_json", "updated_at")...) {
+		if !strings.Contains(returningSQL, "\n  "+column) {
+			t.Fatalf("built-in price update RETURNING missing %q:\n%s", column, returningSQL)
+		}
+	}
+}
+
+func TestUpdateManagementBuiltInProviderModelPricesMapsSparsePresenceToSQLC(t *testing.T) {
+	outputPrice := 9.5
+	persistedOutputPrice := 17.5
+	tierInputPrice := 3.0
+	updatedAt := time.Date(2026, 7, 15, 8, 9, 10, 0, time.UTC)
+	q := &managementBuiltInProviderModelPriceUpdateQueriesStub{row: postgresqueries.UpdateManagementBuiltInProviderModelPricesRow{
+		ID:                    "provider_model_gpt_real",
+		ProviderCode:          "gpt",
+		OutputUsdPer1m:        pgtype.Float8{Float64: persistedOutputPrice, Valid: true},
+		ServiceTierPricesJson: `{"priority":{"inputUsdPer1M":3}}`,
+		UpdatedAt:             pgtype.Timestamptz{Time: updatedAt, Valid: true},
+	}}
+
+	result, found, err := updateManagementBuiltInProviderModelPrices(context.Background(), q, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID:           "provider_model_gpt_real",
+		ProviderCode: "gpt",
+		InputUSDPer1M: port.ManagementProviderModelOptionalFloat{
+			Present: true,
+		},
+		OutputUSDPer1M: port.ManagementProviderModelOptionalFloat{
+			Present: true,
+			Value:   &outputPrice,
+		},
+		ServiceTierPrices: port.ManagementProviderModelOptionalPriceMap{
+			Present: true,
+			Value: map[string]port.ManagementProviderModelPriceSet{
+				"priority": {InputUSDPer1M: &tierInputPrice},
+			},
+		},
+	})
+	if err != nil || !found {
+		t.Fatalf("updateManagementBuiltInProviderModelPrices() found=%v error=%v", found, err)
+	}
+	input := q.input
+	if input.ID != "provider_model_gpt_real" || input.ProviderCode != "gpt" ||
+		!input.InputUsdPer1mPresent || input.InputUsdPer1m.Valid ||
+		!input.OutputUsdPer1mPresent || !input.OutputUsdPer1m.Valid || input.OutputUsdPer1m.Float64 != outputPrice ||
+		input.CachedInputUsdPer1mPresent || input.CachedInputUsdPer1m.Valid ||
+		!input.ServiceTierPricesPresent || input.ServiceTierPricesJson != `{"priority":{"inputUsdPer1M":3}}` {
+		t.Fatalf("sqlc input = %+v", input)
+	}
+	priority := result.ServiceTierPrices["priority"]
+	if result.ID != "provider_model_gpt_real" || result.ProviderCode != "gpt" || result.InputUSDPer1M != nil ||
+		result.OutputUSDPer1M == nil || *result.OutputUSDPer1M != persistedOutputPrice ||
+		priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != tierInputPrice || !result.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("persisted result = %+v", result)
+	}
+}
+
+func TestUpdateManagementBuiltInProviderModelPricesMapsNoRowsToNotFound(t *testing.T) {
+	q := &managementBuiltInProviderModelPriceUpdateQueriesStub{err: pgx.ErrNoRows}
+	result, found, err := updateManagementBuiltInProviderModelPrices(context.Background(), q, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: "missing", ProviderCode: "gpt",
+	})
+	if err != nil || found || result.ID != "" {
+		t.Fatalf("result=%+v found=%v err=%v, want not found", result, found, err)
+	}
+}
+
 func TestManagementCustomProviderModelBindingSummaryScopesMappingsByProvider(t *testing.T) {
 	source, err := os.ReadFile("queries/w2_management_provider_models.sql")
 	if err != nil {
@@ -347,4 +453,18 @@ func TestManagementCustomProviderModelBindingSummaryScopesMappingsByProvider(t *
 			t.Fatalf("binding summary SQL missing provider-scoped filter %q in:\n%s", want, bindingSQL)
 		}
 	}
+}
+
+type managementBuiltInProviderModelPriceUpdateQueriesStub struct {
+	input postgresqueries.UpdateManagementBuiltInProviderModelPricesParams
+	row   postgresqueries.UpdateManagementBuiltInProviderModelPricesRow
+	err   error
+}
+
+func (s *managementBuiltInProviderModelPriceUpdateQueriesStub) UpdateManagementBuiltInProviderModelPrices(
+	_ context.Context,
+	input postgresqueries.UpdateManagementBuiltInProviderModelPricesParams,
+) (postgresqueries.UpdateManagementBuiltInProviderModelPricesRow, error) {
+	s.input = input
+	return s.row, s.err
 }

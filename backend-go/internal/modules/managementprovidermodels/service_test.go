@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -1111,6 +1112,151 @@ func TestServiceCreateCustomModelRejectsInt4Overflow(t *testing.T) {
 	}
 }
 
+func TestServiceModelsReturnsBuiltInCatalogID(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"gpt": {Code: "gpt", Enabled: true},
+		},
+		catalog: []port.ManagementProviderModelCatalogItem{{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
+		}},
+	}
+
+	models, err := NewService(store).Models(context.Background(), ModelListInput{
+		ProviderCode:    "gpt",
+		IncludeUnpriced: true,
+	})
+	if err != nil {
+		t.Fatalf("Models() error = %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "provider_model_gpt_real" {
+		t.Fatalf("models = %+v, want real built-in catalog ID", models)
+	}
+}
+
+func TestServiceUpdateBuiltInModelPricesPreservesFieldPresenceAndOrder(t *testing.T) {
+	inputPrice := 1.0
+	outputPrice := 2.0
+	cachedInputPrice := 0.5
+	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
+		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
+		InputUSDPer1M: &inputPrice, OutputUSDPer1M: &outputPrice, CachedInputUSDPer1M: &cachedInputPrice,
+	}}}
+	service := NewService(store)
+
+	nextInputPrice := 11.0
+	first, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{InputUSDPer1M: OptionalFloat{Set: true, Value: &nextInputPrice}},
+	})
+	if err != nil {
+		t.Fatalf("first UpdateCustomModel() error = %v", err)
+	}
+	nextOutputPrice := 22.0
+	second, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{OutputUSDPer1M: OptionalFloat{Set: true, Value: &nextOutputPrice}},
+	})
+	if err != nil {
+		t.Fatalf("second UpdateCustomModel() error = %v", err)
+	}
+	third, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{InputUSDPer1M: OptionalFloat{Set: true}},
+	})
+	if err != nil {
+		t.Fatalf("third UpdateCustomModel() error = %v", err)
+	}
+
+	if first.InputUSDPer1M == nil || *first.InputUSDPer1M != nextInputPrice || first.OutputUSDPer1M == nil || *first.OutputUSDPer1M != outputPrice {
+		t.Fatalf("first result = %+v", first)
+	}
+	if second.InputUSDPer1M == nil || *second.InputUSDPer1M != nextInputPrice || second.OutputUSDPer1M == nil || *second.OutputUSDPer1M != nextOutputPrice {
+		t.Fatalf("second result = %+v", second)
+	}
+	if third.InputUSDPer1M != nil || third.OutputUSDPer1M == nil || *third.OutputUSDPer1M != nextOutputPrice ||
+		third.CachedInputUSDPer1M == nil || *third.CachedInputUSDPer1M != cachedInputPrice {
+		t.Fatalf("third result = %+v", third)
+	}
+	if len(store.builtInUpdateInputs) != 3 {
+		t.Fatalf("built-in update calls = %d, want 3", len(store.builtInUpdateInputs))
+	}
+	firstInput := store.builtInUpdateInputs[0]
+	secondInput := store.builtInUpdateInputs[1]
+	thirdInput := store.builtInUpdateInputs[2]
+	if !firstInput.InputUSDPer1M.Present || firstInput.OutputUSDPer1M.Present || firstInput.CachedInputUSDPer1M.Present {
+		t.Fatalf("first store input = %+v", firstInput)
+	}
+	if secondInput.InputUSDPer1M.Present || !secondInput.OutputUSDPer1M.Present || secondInput.CachedInputUSDPer1M.Present {
+		t.Fatalf("second store input = %+v", secondInput)
+	}
+	if !thirdInput.InputUSDPer1M.Present || thirdInput.InputUSDPer1M.Value != nil || thirdInput.OutputUSDPer1M.Present {
+		t.Fatalf("third store input = %+v", thirdInput)
+	}
+}
+
+func TestServiceUpdateBuiltInModelPricesReturnsPersistedSnapshot(t *testing.T) {
+	inputPrice := 1.0
+	staleOutputPrice := 2.0
+	persistedInputPrice := 11.0
+	persistedOutputPrice := 77.0
+	persistedCachedInputPrice := 0.75
+	persistedTierInputPrice := 8.0
+	updatedAt := time.Date(2026, 7, 15, 8, 9, 10, 0, time.UTC)
+	store := &providerModelStoreStub{
+		catalog: []port.ManagementProviderModelCatalogItem{{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
+			InputUSDPer1M: &inputPrice, OutputUSDPer1M: &staleOutputPrice,
+		}},
+		builtInUpdateResult: port.ManagementBuiltInProviderModelPriceUpdateResult{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt",
+			InputUSDPer1M: &persistedInputPrice, OutputUSDPer1M: &persistedOutputPrice, CachedInputUSDPer1M: &persistedCachedInputPrice,
+			ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+				"priority": {InputUSDPer1M: &persistedTierInputPrice},
+			},
+			UpdatedAt: updatedAt,
+		},
+	}
+
+	result, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{InputUSDPer1M: OptionalFloat{Set: true, Value: &persistedInputPrice}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModel() error = %v", err)
+	}
+	priority := result.ServiceTierPrices["priority"]
+	if result.ID != "provider_model_gpt_real" || result.ProviderCode != "gpt" || result.Model != "gpt-real" ||
+		result.InputUSDPer1M == nil || *result.InputUSDPer1M != persistedInputPrice ||
+		result.OutputUSDPer1M == nil || *result.OutputUSDPer1M != persistedOutputPrice ||
+		result.CachedInputUSDPer1M == nil || *result.CachedInputUSDPer1M != persistedCachedInputPrice ||
+		priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != persistedTierInputPrice ||
+		result.UpdatedAt != updatedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("result = %+v, want persisted price snapshot", result)
+	}
+}
+
+func TestServiceUpdateBuiltInModelPricesPropagatesInvalidationFailure(t *testing.T) {
+	price := 4.0
+	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
+		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
+	}}}
+	invalidationErr := errors.New("invalidation failed")
+	invalidator := &customProviderModelInvalidatorStub{err: invalidationErr}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+
+	_, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{InputUSDPer1M: OptionalFloat{Set: true, Value: &price}},
+	})
+	if !errors.Is(err, invalidationErr) {
+		t.Fatalf("UpdateCustomModel() error = %v, want %v", err, invalidationErr)
+	}
+	if len(store.builtInUpdateInputs) != 1 || invalidator.calls != 1 || invalidator.reason != CustomProviderModelSavedReason {
+		t.Fatalf("updates=%d invalidation calls=%d reason=%q", len(store.builtInUpdateInputs), invalidator.calls, invalidator.reason)
+	}
+}
+
 func TestServiceUpdateCustomModelPrioritizesLookupAndPermissionBeforeBodyValidation(t *testing.T) {
 	store := &providerModelStoreStub{customByID: map[string]port.ManagementProviderModelCatalogItem{
 		"custom_model_1": {
@@ -1414,6 +1560,8 @@ type providerModelStoreStub struct {
 	protocolCodes          map[string][]string
 	catalog                []port.ManagementProviderModelCatalogItem
 	catalogInput           port.ManagementProviderModelCatalogListInput
+	builtInUpdateInputs    []port.ManagementBuiltInProviderModelPriceUpdateInput
+	builtInUpdateResult    port.ManagementBuiltInProviderModelPriceUpdateResult
 	setDefaultInput        port.ManagementProviderDefaultHealthCheckModelInput
 	setDefaultResult       port.ManagementProviderDefaultHealthCheckModelPreference
 	setDefaultErr          error
@@ -1434,19 +1582,55 @@ type providerModelStoreStub struct {
 	clearSystemErr         error
 }
 
-func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput) (bool, error) {
+func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
+	s.builtInUpdateInputs = append(s.builtInUpdateInputs, input)
 	for index := range s.catalog {
 		if s.catalog[index].ID == input.ID && s.catalog[index].ProviderCode == input.ProviderCode {
-			s.catalog[index].InputUSDPer1M = cloneFloatPtr(input.InputUSDPer1M)
-			s.catalog[index].OutputUSDPer1M = cloneFloatPtr(input.OutputUSDPer1M)
-			s.catalog[index].CachedInputUSDPer1M = cloneFloatPtr(input.CachedInputUSDPer1M)
-			s.catalog[index].CacheWriteUSDPer1M = cloneFloatPtr(input.CacheWriteUSDPer1M)
-			s.catalog[index].CacheWrite1hUSDPer1M = cloneFloatPtr(input.CacheWrite1hUSDPer1M)
-			s.catalog[index].ServiceTierPrices = cloneProviderModelPriceMap(input.ServiceTierPrices)
-			return true, nil
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].InputUSDPer1M, input.InputUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].OutputUSDPer1M, input.OutputUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].CachedInputUSDPer1M, input.CachedInputUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].CacheWriteUSDPer1M, input.CacheWriteUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].CacheWrite1hUSDPer1M, input.CacheWrite1hUSDPer1M)
+			if input.ServiceTierPrices.Present {
+				s.catalog[index].ServiceTierPrices = cloneProviderModelPriceMap(input.ServiceTierPrices.Value)
+			}
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].ImageInputUSDPer1M, input.ImageInputUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].ImageOutputUSDPer1M, input.ImageOutputUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].AudioInputUSDPer1M, input.AudioInputUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].AudioOutputUSDPer1M, input.AudioOutputUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].OutputUSDPerImage, input.OutputUSDPerImage)
+			if s.builtInUpdateResult.ID != "" {
+				return s.builtInUpdateResult, true, nil
+			}
+			return builtInProviderModelPriceUpdateResultFromCatalog(s.catalog[index]), true, nil
 		}
 	}
-	return false, nil
+	return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, nil
+}
+
+func builtInProviderModelPriceUpdateResultFromCatalog(item port.ManagementProviderModelCatalogItem) port.ManagementBuiltInProviderModelPriceUpdateResult {
+	return port.ManagementBuiltInProviderModelPriceUpdateResult{
+		ID:                   item.ID,
+		ProviderCode:         item.ProviderCode,
+		InputUSDPer1M:        cloneFloatPtr(item.InputUSDPer1M),
+		OutputUSDPer1M:       cloneFloatPtr(item.OutputUSDPer1M),
+		CachedInputUSDPer1M:  cloneFloatPtr(item.CachedInputUSDPer1M),
+		CacheWriteUSDPer1M:   cloneFloatPtr(item.CacheWriteUSDPer1M),
+		CacheWrite1hUSDPer1M: cloneFloatPtr(item.CacheWrite1hUSDPer1M),
+		ServiceTierPrices:    cloneProviderModelPriceMap(item.ServiceTierPrices),
+		ImageInputUSDPer1M:   cloneFloatPtr(item.ImageInputUSDPer1M),
+		ImageOutputUSDPer1M:  cloneFloatPtr(item.ImageOutputUSDPer1M),
+		AudioInputUSDPer1M:   cloneFloatPtr(item.AudioInputUSDPer1M),
+		AudioOutputUSDPer1M:  cloneFloatPtr(item.AudioOutputUSDPer1M),
+		OutputUSDPerImage:    cloneFloatPtr(item.OutputUSDPerImage),
+		UpdatedAt:            item.UpdatedAt,
+	}
+}
+
+func applyBuiltInProviderModelOptionalFloat(target **float64, input port.ManagementProviderModelOptionalFloat) {
+	if input.Present {
+		*target = cloneFloatPtr(input.Value)
+	}
 }
 
 func (s *providerModelStoreStub) FindManagementProviderModelProvider(_ context.Context, code string) (port.ManagementProviderModelProvider, bool, error) {

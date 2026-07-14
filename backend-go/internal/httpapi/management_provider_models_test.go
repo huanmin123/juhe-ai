@@ -420,6 +420,32 @@ func TestManagementProviderCustomModelUpdateHandlerParsesCapabilityClears(t *tes
 	}
 }
 
+func TestManagementProviderBuiltInModelPriceUpdatePreservesPresenceAndExplicitNull(t *testing.T) {
+	service := &managementProviderModelServiceStub{customModelResult: managementprovidermodels.ModelCatalogItem{
+		ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "active",
+	}}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementProviderCustomModelUpdateHandler(service))
+
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/provider_model_gpt_test", strings.NewReader(`{
+		"inputUsdPer1M":null,
+		"outputUsdPer1M":4
+	}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	fields := service.updateInput.Fields
+	if !fields.InputUSDPer1M.Set || fields.InputUSDPer1M.Value != nil ||
+		!fields.OutputUSDPer1M.Set || fields.OutputUSDPer1M.Value == nil || *fields.OutputUSDPer1M.Value != 4 ||
+		fields.CachedInputUSDPer1M.Set {
+		t.Fatalf("price fields = %+v", fields)
+	}
+}
+
 func TestManagementProviderBuiltInModelPriceUpdateEnqueuesOperationLog(t *testing.T) {
 	inputPrice := 4.0
 	queueStub := &operationLogQueueStub{}

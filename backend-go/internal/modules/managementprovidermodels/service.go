@@ -596,22 +596,64 @@ func (s *Service) updateBuiltInModelPrices(ctx context.Context, existing port.Ma
 	if err := validateServiceTierPriceKeys(updated.Mode, updated.SupportedServiceTiers, updated.ServiceTierPrices); err != nil {
 		return ModelCatalogItem{}, err
 	}
-	ok, err := s.store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
-		ID: updated.ID, ProviderCode: updated.ProviderCode, InputUSDPer1M: updated.InputUSDPer1M, OutputUSDPer1M: updated.OutputUSDPer1M,
-		CachedInputUSDPer1M: updated.CachedInputUSDPer1M, CacheWriteUSDPer1M: updated.CacheWriteUSDPer1M,
-		CacheWrite1hUSDPer1M: updated.CacheWrite1hUSDPer1M, ServiceTierPrices: updated.ServiceTierPrices,
-		ImageInputUSDPer1M: updated.ImageInputUSDPer1M, ImageOutputUSDPer1M: updated.ImageOutputUSDPer1M,
-		AudioInputUSDPer1M: updated.AudioInputUSDPer1M, AudioOutputUSDPer1M: updated.AudioOutputUSDPer1M,
-		OutputUSDPerImage: updated.OutputUSDPerImage,
+	persisted, found, err := s.store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID:                   updated.ID,
+		ProviderCode:         updated.ProviderCode,
+		InputUSDPer1M:        builtInProviderModelOptionalFloat(input.Fields.InputUSDPer1M),
+		OutputUSDPer1M:       builtInProviderModelOptionalFloat(input.Fields.OutputUSDPer1M),
+		CachedInputUSDPer1M:  builtInProviderModelOptionalFloat(input.Fields.CachedInputUSDPer1M),
+		CacheWriteUSDPer1M:   builtInProviderModelOptionalFloat(input.Fields.CacheWriteUSDPer1M),
+		CacheWrite1hUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.CacheWrite1hUSDPer1M),
+		ServiceTierPrices: port.ManagementProviderModelOptionalPriceMap{
+			Present: input.Fields.ServiceTierPrices.Set,
+			Value:   cloneProviderModelPriceMap(input.Fields.ServiceTierPrices.Value),
+		},
+		ImageInputUSDPer1M:  builtInProviderModelOptionalFloat(input.Fields.ImageInputUSDPer1M),
+		ImageOutputUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.ImageOutputUSDPer1M),
+		AudioInputUSDPer1M:  builtInProviderModelOptionalFloat(input.Fields.AudioInputUSDPer1M),
+		AudioOutputUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.AudioOutputUSDPer1M),
+		OutputUSDPerImage:   builtInProviderModelOptionalFloat(input.Fields.OutputUSDPerImage),
 	})
 	if err != nil {
 		return ModelCatalogItem{}, err
 	}
-	if !ok {
+	if !found {
 		return ModelCatalogItem{}, ErrCustomProviderModelNotFound
 	}
-	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason)
-	return catalogItemFromPort(updated), nil
+	updated = builtInProviderModelCatalogItemFromPriceUpdate(updated, persisted)
+	if s.invalidator != nil {
+		if err := s.invalidator.InvalidateCustomProviderModelChanged(ctx, CustomProviderModelSavedReason); err != nil {
+			return ModelCatalogItem{}, fmt.Errorf("invalidate built-in provider model prices: %w", err)
+		}
+	}
+	result := catalogItemFromPort(updated)
+	result.UpdatedAt = formatOptionalTime(persisted.UpdatedAt)
+	return result, nil
+}
+
+func builtInProviderModelCatalogItemFromPriceUpdate(
+	existing port.ManagementProviderModelCatalogItem,
+	persisted port.ManagementBuiltInProviderModelPriceUpdateResult,
+) port.ManagementProviderModelCatalogItem {
+	existing.ID = persisted.ID
+	existing.ProviderCode = persisted.ProviderCode
+	existing.InputUSDPer1M = cloneFloatPtr(persisted.InputUSDPer1M)
+	existing.OutputUSDPer1M = cloneFloatPtr(persisted.OutputUSDPer1M)
+	existing.CachedInputUSDPer1M = cloneFloatPtr(persisted.CachedInputUSDPer1M)
+	existing.CacheWriteUSDPer1M = cloneFloatPtr(persisted.CacheWriteUSDPer1M)
+	existing.CacheWrite1hUSDPer1M = cloneFloatPtr(persisted.CacheWrite1hUSDPer1M)
+	existing.ServiceTierPrices = cloneProviderModelPriceMap(persisted.ServiceTierPrices)
+	existing.ImageInputUSDPer1M = cloneFloatPtr(persisted.ImageInputUSDPer1M)
+	existing.ImageOutputUSDPer1M = cloneFloatPtr(persisted.ImageOutputUSDPer1M)
+	existing.AudioInputUSDPer1M = cloneFloatPtr(persisted.AudioInputUSDPer1M)
+	existing.AudioOutputUSDPer1M = cloneFloatPtr(persisted.AudioOutputUSDPer1M)
+	existing.OutputUSDPerImage = cloneFloatPtr(persisted.OutputUSDPerImage)
+	existing.UpdatedAt = persisted.UpdatedAt
+	return existing
+}
+
+func builtInProviderModelOptionalFloat(value OptionalFloat) port.ManagementProviderModelOptionalFloat {
+	return port.ManagementProviderModelOptionalFloat{Present: value.Set, Value: value.Value}
 }
 
 func builtInModelPriceMutationOnly(fields CustomModelMutation) bool {

@@ -21,6 +21,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/managementproviders"
+	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -83,6 +84,80 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	}
 	if findW2ProviderModel(models, "gpt-5.6-sol") == nil {
 		t.Fatalf("seeded gpt-5.6-sol model missing: %+v", models)
+	}
+	builtInModel := findW2ProviderModel(models, "gpt-5.6-sol")
+	if builtInModel.ID == "" || builtInModel.InputUSDPer1M == nil || builtInModel.OutputUSDPer1M == nil {
+		t.Fatalf("seeded gpt-5.6-sol model missing provider_model_catalog ID: %+v", builtInModel)
+	}
+	originalInputPrice := *builtInModel.InputUSDPer1M
+	originalOutputPrice := *builtInModel.OutputUSDPer1M
+	inputPrice := 41.0
+	_, found, err := store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
+		InputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true, Value: &inputPrice},
+	})
+	if err != nil || !found {
+		t.Fatalf("update built-in input price: found=%v err=%v", found, err)
+	}
+	outputPrice := 42.0
+	_, found, err = store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
+		OutputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true, Value: &outputPrice},
+	})
+	if err != nil || !found {
+		t.Fatalf("update built-in output price: found=%v err=%v", found, err)
+	}
+	var actualInputPrice sql.NullFloat64
+	var actualOutputPrice sql.NullFloat64
+	if err := db.QueryRowContext(ctx, `
+		SELECT input_usd_per_1m, output_usd_per_1m
+		FROM juhe_business.provider_model_catalog
+		WHERE id = $1
+	`, builtInModel.ID).Scan(&actualInputPrice, &actualOutputPrice); err != nil {
+		t.Fatalf("query sequential built-in prices: %v", err)
+	}
+	if !actualInputPrice.Valid || actualInputPrice.Float64 != inputPrice || !actualOutputPrice.Valid || actualOutputPrice.Float64 != outputPrice {
+		t.Fatalf("sequential built-in prices = input:%+v output:%+v", actualInputPrice, actualOutputPrice)
+	}
+	_, found, err = store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
+		InputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true},
+	})
+	if err != nil || !found {
+		t.Fatalf("clear built-in input price: found=%v err=%v", found, err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT input_usd_per_1m, output_usd_per_1m
+		FROM juhe_business.provider_model_catalog
+		WHERE id = $1
+	`, builtInModel.ID).Scan(&actualInputPrice, &actualOutputPrice); err != nil {
+		t.Fatalf("query cleared built-in price: %v", err)
+	}
+	if actualInputPrice.Valid || !actualOutputPrice.Valid || actualOutputPrice.Float64 != outputPrice {
+		t.Fatalf("cleared built-in prices = input:%+v output:%+v", actualInputPrice, actualOutputPrice)
+	}
+	restored, found, err := store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
+		InputUSDPer1M:  port.ManagementProviderModelOptionalFloat{Present: true, Value: &originalInputPrice},
+		OutputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true, Value: &originalOutputPrice},
+	})
+	if err != nil || !found {
+		t.Fatalf("restore built-in prices: found=%v err=%v", found, err)
+	}
+	if restored.InputUSDPer1M == nil || *restored.InputUSDPer1M != originalInputPrice ||
+		restored.OutputUSDPer1M == nil || *restored.OutputUSDPer1M != originalOutputPrice {
+		t.Fatalf("restored RETURNING prices = %+v", restored)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT input_usd_per_1m, output_usd_per_1m
+		FROM juhe_business.provider_model_catalog
+		WHERE id = $1
+	`, builtInModel.ID).Scan(&actualInputPrice, &actualOutputPrice); err != nil {
+		t.Fatalf("query restored built-in prices: %v", err)
+	}
+	if !actualInputPrice.Valid || actualInputPrice.Float64 != originalInputPrice ||
+		!actualOutputPrice.Valid || actualOutputPrice.Float64 != originalOutputPrice {
+		t.Fatalf("restored built-in prices = input:%+v output:%+v", actualInputPrice, actualOutputPrice)
 	}
 	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-sol"), "2026-06-26", 372000, 0.5, 6.25)
 	assertW2ProviderModelTierPricing(t, findW2ProviderModel(models, "gpt-5.6-sol"))
@@ -331,16 +406,18 @@ func assertW2ProviderModelTierPricing(t *testing.T, item *managementprovidermode
 	if item == nil {
 		t.Fatalf("provider model missing")
 	}
-	if item.PriorityInputUSDPer1M == nil || *item.PriorityInputUSDPer1M != 10 ||
-		item.PriorityOutputUSDPer1M == nil || *item.PriorityOutputUSDPer1M != 60 ||
-		item.PriorityCachedInputUSDPer1M == nil || *item.PriorityCachedInputUSDPer1M != 1 ||
-		item.PriorityCacheWriteUSDPer1M == nil || *item.PriorityCacheWriteUSDPer1M != 12.5 ||
-		item.PriorityCacheWrite1hUSDPer1M != nil ||
-		item.FlexInputUSDPer1M == nil || *item.FlexInputUSDPer1M != 2.5 ||
-		item.FlexOutputUSDPer1M == nil || *item.FlexOutputUSDPer1M != 15 ||
-		item.FlexCachedInputUSDPer1M == nil || *item.FlexCachedInputUSDPer1M != 0.25 ||
-		item.FlexCacheWriteUSDPer1M == nil || *item.FlexCacheWriteUSDPer1M != 3.125 ||
-		item.FlexCacheWrite1hUSDPer1M != nil {
+	priority := item.ServiceTierPrices["priority"]
+	flex := item.ServiceTierPrices["flex"]
+	if priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != 10 ||
+		priority.OutputUSDPer1M == nil || *priority.OutputUSDPer1M != 60 ||
+		priority.CachedInputUSDPer1M == nil || *priority.CachedInputUSDPer1M != 1 ||
+		priority.CacheWriteUSDPer1M == nil || *priority.CacheWriteUSDPer1M != 12.5 ||
+		priority.CacheWrite1hUSDPer1M != nil ||
+		flex.InputUSDPer1M == nil || *flex.InputUSDPer1M != 2.5 ||
+		flex.OutputUSDPer1M == nil || *flex.OutputUSDPer1M != 15 ||
+		flex.CachedInputUSDPer1M == nil || *flex.CachedInputUSDPer1M != 0.25 ||
+		flex.CacheWriteUSDPer1M == nil || *flex.CacheWriteUSDPer1M != 3.125 ||
+		flex.CacheWrite1hUSDPer1M != nil {
 		t.Fatalf("%s tier pricing metadata = %+v", item.Model, item)
 	}
 	if item.LongContextInputTokenThreshold == nil || *item.LongContextInputTokenThreshold != 272000 ||
@@ -363,15 +440,25 @@ func assertW2ProviderModelWireTierPricing(t *testing.T, body []byte, model strin
 		if err := json.Unmarshal(item["model"], &actualModel); err != nil || actualModel != model {
 			continue
 		}
+		var prices map[string]port.ManagementProviderModelPriceSet
+		if err := json.Unmarshal(item["serviceTierPrices"], &prices); err != nil {
+			t.Fatalf("decode %s wire tier prices: %v", model, err)
+		}
+		priority := prices["priority"]
+		flex := prices["flex"]
+		if priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != 10 ||
+			priority.OutputUSDPer1M == nil || *priority.OutputUSDPer1M != 60 ||
+			priority.CachedInputUSDPer1M == nil || *priority.CachedInputUSDPer1M != 1 ||
+			priority.CacheWriteUSDPer1M == nil || *priority.CacheWriteUSDPer1M != 12.5 ||
+			priority.CacheWrite1hUSDPer1M != nil ||
+			flex.InputUSDPer1M == nil || *flex.InputUSDPer1M != 2.5 ||
+			flex.OutputUSDPer1M == nil || *flex.OutputUSDPer1M != 15 ||
+			flex.CachedInputUSDPer1M == nil || *flex.CachedInputUSDPer1M != 0.25 ||
+			flex.CacheWriteUSDPer1M == nil || *flex.CacheWriteUSDPer1M != 3.125 ||
+			flex.CacheWrite1hUSDPer1M != nil {
+			t.Fatalf("%s wire tier pricing = %+v", model, prices)
+		}
 		for field, want := range map[string]string{
-			"priorityInputUsdPer1M":           "10",
-			"priorityOutputUsdPer1M":          "60",
-			"priorityCachedInputUsdPer1M":     "1",
-			"priorityCacheWriteUsdPer1M":      "12.5",
-			"flexInputUsdPer1M":               "2.5",
-			"flexOutputUsdPer1M":              "15",
-			"flexCachedInputUsdPer1M":         "0.25",
-			"flexCacheWriteUsdPer1M":          "3.125",
 			"longContextInputTokenThreshold":  "272000",
 			"longContextInputCostMultiplier":  "2",
 			"longContextOutputCostMultiplier": "1.5",
@@ -380,9 +467,9 @@ func assertW2ProviderModelWireTierPricing(t *testing.T, body []byte, model strin
 				t.Fatalf("%s wire field %s = %s, want %s", model, field, item[field], want)
 			}
 		}
-		for _, field := range []string{"priorityCacheWrite1hUsdPer1M", "flexCacheWrite1hUsdPer1M"} {
+		for _, field := range []string{"priorityInputUsdPer1M", "priorityCacheWrite1hUsdPer1M", "flexInputUsdPer1M", "flexCacheWrite1hUsdPer1M"} {
 			if _, ok := item[field]; ok {
-				t.Fatalf("%s wire field %s must be omitted for undefined Node metadata", model, field)
+				t.Fatalf("%s wire field %s must be omitted from unified pricing payload", model, field)
 			}
 		}
 		return

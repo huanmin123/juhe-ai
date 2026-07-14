@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -12,6 +13,13 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
 )
+
+type managementBuiltInProviderModelPriceUpdateQueries interface {
+	UpdateManagementBuiltInProviderModelPrices(
+		ctx context.Context,
+		input postgresqueries.UpdateManagementBuiltInProviderModelPricesParams,
+	) (postgresqueries.UpdateManagementBuiltInProviderModelPricesRow, error)
+}
 
 func (s *Store) FindManagementProviderModelProvider(ctx context.Context, code string) (port.ManagementProviderModelProvider, bool, error) {
 	return findManagementProviderModelProvider(ctx, s.queries(), code)
@@ -65,23 +73,75 @@ func (s *Store) GetManagementCustomProviderModelBindingSummary(ctx context.Conte
 	return getManagementCustomProviderModelBindingSummary(ctx, s.queries(), input)
 }
 
-func (s *Store) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput) (bool, error) {
-	pricesJSON, err := json.Marshal(input.ServiceTierPrices)
-	if err != nil {
-		return false, fmt.Errorf("marshal built-in provider model service tier prices: %w", err)
+func (s *Store) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
+	return updateManagementBuiltInProviderModelPrices(ctx, s.queries(), input)
+}
+
+func updateManagementBuiltInProviderModelPrices(
+	ctx context.Context,
+	q managementBuiltInProviderModelPriceUpdateQueries,
+	input port.ManagementBuiltInProviderModelPriceUpdateInput,
+) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
+	pricesJSON := []byte("{}")
+	if input.ServiceTierPrices.Present {
+		var err error
+		pricesJSON, err = json.Marshal(input.ServiceTierPrices.Value)
+		if err != nil {
+			return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model service tier prices: %w", err)
+		}
 	}
-	rows, err := s.queries().UpdateManagementBuiltInProviderModelPrices(ctx, postgresqueries.UpdateManagementBuiltInProviderModelPricesParams{
-		InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M),
-		CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M),
-		CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), ServiceTierPricesJson: string(pricesJSON),
-		ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M),
-		AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M),
-		OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), ID: input.ID, ProviderCode: input.ProviderCode,
+	row, err := q.UpdateManagementBuiltInProviderModelPrices(ctx, postgresqueries.UpdateManagementBuiltInProviderModelPricesParams{
+		InputUsdPer1mPresent:        input.InputUSDPer1M.Present,
+		InputUsdPer1m:               pgFloat8Ptr(input.InputUSDPer1M.Value),
+		OutputUsdPer1mPresent:       input.OutputUSDPer1M.Present,
+		OutputUsdPer1m:              pgFloat8Ptr(input.OutputUSDPer1M.Value),
+		CachedInputUsdPer1mPresent:  input.CachedInputUSDPer1M.Present,
+		CachedInputUsdPer1m:         pgFloat8Ptr(input.CachedInputUSDPer1M.Value),
+		CacheWriteUsdPer1mPresent:   input.CacheWriteUSDPer1M.Present,
+		CacheWriteUsdPer1m:          pgFloat8Ptr(input.CacheWriteUSDPer1M.Value),
+		CacheWrite1hUsdPer1mPresent: input.CacheWrite1hUSDPer1M.Present,
+		CacheWrite1hUsdPer1m:        pgFloat8Ptr(input.CacheWrite1hUSDPer1M.Value),
+		ServiceTierPricesPresent:    input.ServiceTierPrices.Present,
+		ServiceTierPricesJson:       string(pricesJSON),
+		ImageInputUsdPer1mPresent:   input.ImageInputUSDPer1M.Present,
+		ImageInputUsdPer1m:          pgFloat8Ptr(input.ImageInputUSDPer1M.Value),
+		ImageOutputUsdPer1mPresent:  input.ImageOutputUSDPer1M.Present,
+		ImageOutputUsdPer1m:         pgFloat8Ptr(input.ImageOutputUSDPer1M.Value),
+		AudioInputUsdPer1mPresent:   input.AudioInputUSDPer1M.Present,
+		AudioInputUsdPer1m:          pgFloat8Ptr(input.AudioInputUSDPer1M.Value),
+		AudioOutputUsdPer1mPresent:  input.AudioOutputUSDPer1M.Present,
+		AudioOutputUsdPer1m:         pgFloat8Ptr(input.AudioOutputUSDPer1M.Value),
+		OutputUsdPerImagePresent:    input.OutputUSDPerImage.Present,
+		OutputUsdPerImage:           pgFloat8Ptr(input.OutputUSDPerImage.Value),
+		ID:                          input.ID,
+		ProviderCode:                input.ProviderCode,
 	})
-	if err != nil {
-		return false, fmt.Errorf("update built-in provider model prices: %w", err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, nil
 	}
-	return rows > 0, nil
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("update built-in provider model prices: %w", err)
+	}
+	serviceTierPrices, err := decodeProviderModelPriceMap(row.ServiceTierPricesJson, "built-in provider model service_tier_prices_json")
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+	}
+	return port.ManagementBuiltInProviderModelPriceUpdateResult{
+		ID:                   row.ID,
+		ProviderCode:         row.ProviderCode,
+		InputUSDPer1M:        float8Ptr(row.InputUsdPer1m),
+		OutputUSDPer1M:       float8Ptr(row.OutputUsdPer1m),
+		CachedInputUSDPer1M:  float8Ptr(row.CachedInputUsdPer1m),
+		CacheWriteUSDPer1M:   float8Ptr(row.CacheWriteUsdPer1m),
+		CacheWrite1hUSDPer1M: float8Ptr(row.CacheWrite1hUsdPer1m),
+		ServiceTierPrices:    serviceTierPrices,
+		ImageInputUSDPer1M:   float8Ptr(row.ImageInputUsdPer1m),
+		ImageOutputUSDPer1M:  float8Ptr(row.ImageOutputUsdPer1m),
+		AudioInputUSDPer1M:   float8Ptr(row.AudioInputUsdPer1m),
+		AudioOutputUSDPer1M:  float8Ptr(row.AudioOutputUsdPer1m),
+		OutputUSDPerImage:    float8Ptr(row.OutputUsdPerImage),
+		UpdatedAt:            timestamptzValue(row.UpdatedAt),
+	}, true, nil
 }
 
 func findManagementProviderModelProvider(
