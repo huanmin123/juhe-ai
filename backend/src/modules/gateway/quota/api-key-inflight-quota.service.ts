@@ -35,7 +35,7 @@ export async function reserveGatewayApiKeyInflightCost(input: {
 }): Promise<ApiKeyInflightQuotaDecision> {
   const limits = parseRequestQuotaLimitsJson(input.apiKey.quota_limits_json)
   if (!hasEnabledRequestQuotaLimit(limits)) return { allowed: true }
-  const estimatedCostUsd = await estimateGatewayRequestCostUsd(input.req, input.providerCode)
+  const estimatedCostUsd = await estimateGatewayRequestCostUsd(input.req, input.providerCode, input.apiKey.system_account_id)
   if (estimatedCostUsd === undefined || estimatedCostUsd <= 0) return { allowed: true }
   let currentCosts = await readGatewayApiKeyQuotaCostsSnapshotAsync(input.apiKey)
   if (!currentCosts) {
@@ -95,11 +95,16 @@ function isProjectedRequestQuotaExceeded(limits: RequestQuotaLimits, costs: Requ
   )
 }
 
-export async function estimateGatewayRequestCostUsd(req: Request, providerCode: string): Promise<number | undefined> {
+export async function estimateGatewayRequestCostUsd(
+  req: Request,
+  providerCode: string,
+  systemAccountId?: string
+): Promise<number | undefined> {
   const bodyState = getGatewayRequestBodyState(req)
   const rawBodyBytes = bodyState?.rawBodyBytes ?? Buffer.byteLength(JSON.stringify(req.body ?? {}))
   return await estimateCatalogCostUsdAsync({
     providerCode,
+    systemAccountId,
     model: requestModel(req),
     serviceTier: bodyState?.serviceTier ?? 'default',
     inputTokens: Math.max(1, Math.ceil(rawBodyBytes / 4)),

@@ -36,7 +36,7 @@ import {
   normalizeProviderToken
 } from '../../domain/provider-protocol.js'
 import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from '../../storage/provider.repository.js'
-import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../../shared/cache.js'
+import { createAppCache, createSharedJsonCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 import { runtimeConfig } from '../../config/runtime.js'
@@ -382,7 +382,7 @@ export async function buildCatalogCostBreakdownAsync(input: CostInput & { system
   return buildCatalogCostBreakdownFromPricing(pricing, input)
 }
 
-function buildCatalogCostBreakdownFromPricing(
+export function buildCatalogCostBreakdownFromPricing(
   pricing: ProviderModelCatalogItem,
   input: CostInput & { systemAccountId?: string; costUsd?: number }
 ): ProviderCostBreakdown | undefined {
@@ -520,7 +520,7 @@ function hasDirectPrice(item: ProviderModelPricing): boolean {
     || Object.keys(item.serviceTierPrices ?? {}).length > 0
 }
 
-function findCatalogItem(items: ProviderModelCatalogItem[], model: string): ProviderModelCatalogItem | undefined {
+export function findCatalogItem(items: ProviderModelCatalogItem[], model: string): ProviderModelCatalogItem | undefined {
   const normalized = model.trim()
   return items.find((item) => item.model.trim() === normalized)
 }
@@ -900,18 +900,22 @@ async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: 
   await providerModelCatalogSharedCache.set(cacheKey, cloneProviderModelCatalogItems(value), { ttlMs: modelCatalogCacheTtlMs })
 }
 
-function clearProviderModelCatalogSharedCache(): void {
+async function clearProviderModelCatalogSharedCacheAsync(): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  clearSharedJsonCacheInBackground(
-    providerModelCatalogSharedCache,
-    'provider_model_catalog_shared_cache_clear_failed',
-    '供应商模型目录 Redis shared cache 清理失败'
-  )
+  await providerModelCatalogSharedCache.clear()
 }
 
-function clearProviderModelCatalogCaches(): void {
+async function clearProviderModelCatalogCaches(): Promise<void> {
   providerModelCatalogCache.clear()
-  clearProviderModelCatalogSharedCache()
+  try {
+    await clearProviderModelCatalogSharedCacheAsync()
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'provider_model_catalog_shared_cache_clear_failed',
+      cacheName: providerModelCatalogSharedCache.name
+    }), '供应商模型目录 Redis shared cache 清理失败')
+    throw error
+  }
 }
 
 registerGatewayRuntimeCacheInvalidator(clearProviderModelCatalogCaches)

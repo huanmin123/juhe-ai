@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   clearApiKeyInflightQuotaReservationsForTest,
@@ -78,6 +79,13 @@ try {
     }
   } as unknown as Request
   assert.equal(await estimateGatewayRequestCostUsd(unpricedRequest, 'gpt'), undefined, '无定价模型不能伪造在途成本')
+
+  const serviceSource = readFileSync(new URL('../../modules/gateway/quota/api-key-inflight-quota.service.ts', import.meta.url), 'utf8')
+  assert.match(
+    serviceSource,
+    /estimateGatewayRequestCostUsd\(input\.req, input\.providerCode, input\.apiKey\.system_account_id\)/,
+    '在途额度估算必须携带 API Key 所属系统账户，以命中个人模型价格'
+  )
 
   console.log('API Key 在途额度回归通过：并发原子预留、快照合并与延迟释放符合预期')
 } finally {

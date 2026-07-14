@@ -5,7 +5,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
-import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { notifyGatewayRuntimeCacheInvalidationAsync } from '../shared/gateway-cache-invalidation.js'
 
 interface ProviderModelCatalogRow {
   id: string
@@ -111,31 +111,44 @@ export async function findBuiltInProviderModelByIdAsync(id: string): Promise<Bui
 }
 
 export async function updateBuiltInProviderModelPricesAsync(id: string, patch: ProviderModelPricePatch): Promise<BuiltInProviderModelRecord | undefined> {
-  const params = priceParams(patch)
-  const sql = `UPDATE provider_model_catalog SET
-    input_usd_per_1m = ?, output_usd_per_1m = ?, cached_input_usd_per_1m = ?, cache_write_usd_per_1m = ?,
-    cache_write_1h_usd_per_1m = ?, service_tier_prices_json = ?, image_input_usd_per_1m = ?,
-    image_output_usd_per_1m = ?, audio_input_usd_per_1m = ?, audio_output_usd_per_1m = ?,
-    output_usd_per_image = ?, updated_at = ? WHERE id = ?`
+  const { assignments, params } = pricePatchAssignments(patch)
+  if (!assignments.length) return findBuiltInProviderModelByIdAsync(id)
+  const sql = `UPDATE provider_model_catalog SET ${assignments.join(', ')}, updated_at = ? WHERE id = ?`
+  const writeParams = [...params, nowIso(), id]
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    getBusinessDatabase().prepare(sql).run(...params as SQLInputValue[], id)
+    getBusinessDatabase().prepare(sql).run(...writeParams as SQLInputValue[])
   } else {
     const client = createPostgresDatabaseClient(await getPostgresPool())
-    await client.execute(sql.replace('provider_model_catalog', 'juhe_business.provider_model_catalog'), [...params, id])
+    await client.execute(sql.replace('provider_model_catalog', 'juhe_business.provider_model_catalog'), writeParams)
   }
   const saved = await findBuiltInProviderModelByIdAsync(id)
-  if (saved) notifyGatewayRuntimeCacheInvalidation('provider_model_price_updated')
+  if (saved) await notifyGatewayRuntimeCacheInvalidationAsync('provider_model_price_updated')
   return saved
 }
 
-function priceParams(patch: ProviderModelPricePatch): unknown[] {
-  return [
-    nullablePrice(patch.inputUsdPer1M), nullablePrice(patch.outputUsdPer1M), nullablePrice(patch.cachedInputUsdPer1M),
-    nullablePrice(patch.cacheWriteUsdPer1M), nullablePrice(patch.cacheWrite1hUsdPer1M),
-    JSON.stringify(normalizeServiceTierPrices(patch.serviceTierPrices)), nullablePrice(patch.imageInputUsdPer1M),
-    nullablePrice(patch.imageOutputUsdPer1M), nullablePrice(patch.audioInputUsdPer1M),
-    nullablePrice(patch.audioOutputUsdPer1M), nullablePrice(patch.outputUsdPerImage), nowIso()
-  ]
+function pricePatchAssignments(patch: ProviderModelPricePatch): { assignments: string[]; params: unknown[] } {
+  const assignments: string[] = []
+  const params: unknown[] = []
+  const addPrice = (field: keyof ProviderModelPricePatch, column: string) => {
+    if (!Object.prototype.hasOwnProperty.call(patch, field)) return
+    assignments.push(`${column} = ?`)
+    params.push(nullablePrice(patch[field]))
+  }
+  addPrice('inputUsdPer1M', 'input_usd_per_1m')
+  addPrice('outputUsdPer1M', 'output_usd_per_1m')
+  addPrice('cachedInputUsdPer1M', 'cached_input_usd_per_1m')
+  addPrice('cacheWriteUsdPer1M', 'cache_write_usd_per_1m')
+  addPrice('cacheWrite1hUsdPer1M', 'cache_write_1h_usd_per_1m')
+  if (Object.prototype.hasOwnProperty.call(patch, 'serviceTierPrices')) {
+    assignments.push('service_tier_prices_json = ?')
+    params.push(JSON.stringify(normalizeServiceTierPrices(patch.serviceTierPrices)))
+  }
+  addPrice('imageInputUsdPer1M', 'image_input_usd_per_1m')
+  addPrice('imageOutputUsdPer1M', 'image_output_usd_per_1m')
+  addPrice('audioInputUsdPer1M', 'audio_input_usd_per_1m')
+  addPrice('audioOutputUsdPer1M', 'audio_output_usd_per_1m')
+  addPrice('outputUsdPerImage', 'output_usd_per_image')
+  return { assignments, params }
 }
 
 function nullablePrice(value: unknown): number | null {
