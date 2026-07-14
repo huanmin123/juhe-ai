@@ -63,6 +63,7 @@ import {
 } from './account-concurrency-identity.js'
 import type { GatewayAccountModelPriority } from './model-filter.js'
 import type { SpeedFirstCutoverReservation } from '../runtime/speed-first-cutover-reservation.service.js'
+import type { UsageServiceTier } from '../usage/service-tier.js'
 
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
@@ -70,7 +71,7 @@ export interface OpenAIUpstreamDispatchResult {
   upstreamUrl: string
   auditAttemptId: string
   attemptStartedAt: number
-  effectiveServiceTier: 'default' | 'priority' | 'flex'
+  effectiveServiceTier: UsageServiceTier
   releaseConcurrency: () => void
   markFirstOutput: () => void
   confirmSameAccountApiKeyFailures: () => Promise<void>

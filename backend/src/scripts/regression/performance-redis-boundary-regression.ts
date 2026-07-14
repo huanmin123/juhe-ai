@@ -452,8 +452,11 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.doesNotMatch(functionBody(usageRecordQueueSource, 'enqueueUsageRecord'), /buildCatalogCostBreakdown\(/, '高性能使用记录请求路径不得同步扫描目录生成计价快照')
 
   const usageRecordsRepositorySource = source('storage/usage-records.repository.ts')
-  assert.match(usageRecordsRepositorySource, /estimateCatalogCostUsdAsync/, 'PostgreSQL 使用记录写入必须使用异步模型目录补算成本')
+  assert.match(usageRecordsRepositorySource, /listProviderModelCatalogAsync/, 'PostgreSQL 使用记录写入必须使用异步模型目录快照补算成本')
   assert.match(functionBody(usageRecordsRepositorySource, 'createUsageRecordsBatchPostgres'), /await enrichUsageRecordPricingAsync\(inputs\)[\s\S]*buildUsageRecordBatchWritePlan\(enrichedInputs/, 'PostgreSQL 使用记录写入必须先异步补齐 pricingModel/costUsd，再生成写入计划')
+  const pricingEnrichmentBody = functionBody(usageRecordsRepositorySource, 'enrichUsageRecordPricingAsync')
+  assert.match(pricingEnrichmentBody, /catalogCache = new Map<[\s\S]*listProviderModelCatalogAsync\(input\)/, '批量计价应按供应商和账户作用域共享一次模型目录快照')
+  assert.doesNotMatch(usageRecordsRepositorySource, /estimateCatalog(?:CacheRead|CacheWrite|Cost)UsdAsync/, '使用记录补算不得为每个成本字段重复读取模型目录')
   assert.match(functionBody(usageRecordsRepositorySource, 'enrichSingleUsageRecordPricingAsync'), /input\.pricingSnapshot !== undefined\) return input/, 'Redis consumer 不得用未来目录覆盖已固化计价快照')
 
   const auditCaptureSource = source('modules/gateway/audit/capture.service.ts')

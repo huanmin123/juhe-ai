@@ -132,7 +132,6 @@
             </div>
             <div v-else-if="shouldRenderAdvancedSections" class="advanced-section-stack">
               <AccountGptRequestOverridesSection
-                v-if="form.providerCode === 'gpt'"
                 :form="form"
                 :model-options="modelOptions"
                 :models-loading="modelsLoading"

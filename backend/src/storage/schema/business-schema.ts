@@ -112,6 +112,54 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (profile_id) REFERENCES provider_protocol_profiles(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS provider_model_catalog (
+      id TEXT PRIMARY KEY,
+      provider_code TEXT NOT NULL,
+      model TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      mode TEXT,
+      catalog_order INTEGER,
+      release_date TEXT,
+      shutdown_date TEXT,
+      supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
+      supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
+      supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+      default_reasoning_effort TEXT,
+      codex_supported_reasoning_levels_json TEXT NOT NULL DEFAULT '[]',
+      codex_default_reasoning_level TEXT,
+      codex_multi_agent_version TEXT,
+      context_window_tokens INTEGER,
+      max_input_tokens INTEGER,
+      max_output_tokens INTEGER,
+      max_tokens INTEGER,
+      input_usd_per_1m REAL,
+      output_usd_per_1m REAL,
+      cached_input_usd_per_1m REAL,
+      cache_write_usd_per_1m REAL,
+      cache_write_1h_usd_per_1m REAL,
+      service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
+      long_context_input_token_threshold INTEGER,
+      long_context_input_cost_multiplier REAL,
+      long_context_output_cost_multiplier REAL,
+      image_input_usd_per_1m REAL,
+      image_output_usd_per_1m REAL,
+      audio_input_usd_per_1m REAL,
+      audio_output_usd_per_1m REAL,
+      output_usd_per_image REAL,
+      supports_prompt_caching INTEGER NOT NULL DEFAULT 0,
+      catalog_visible INTEGER NOT NULL DEFAULT 1,
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (provider_code, model),
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      CHECK (status IN ('active', 'disabled')),
+      CHECK (json_valid(service_tier_prices_json) AND json_type(service_tier_prices_json) = 'object')
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_provider_model_catalog_lookup
+      ON provider_model_catalog(provider_code, status, catalog_visible, catalog_order, model);
+
     CREATE TABLE IF NOT EXISTS custom_provider_models (
       id TEXT PRIMARY KEY,
       provider_code TEXT NOT NULL,
@@ -124,7 +172,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
       supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
       default_reasoning_effort TEXT,
-      pricing_model TEXT,
       release_date TEXT,
       shutdown_date TEXT,
       context_window_tokens INTEGER,
@@ -133,6 +180,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       output_usd_per_1m REAL,
       cached_input_usd_per_1m REAL,
       cache_write_usd_per_1m REAL,
+      cache_write_1h_usd_per_1m REAL,
+      service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
       image_input_usd_per_1m REAL,
       image_output_usd_per_1m REAL,
       audio_input_usd_per_1m REAL,
@@ -150,6 +199,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       CHECK (scope IN ('personal', 'global')),
       CHECK (status IN ('draft', 'active', 'disabled')),
+      CHECK (json_valid(service_tier_prices_json) AND json_type(service_tier_prices_json) = 'object'),
       CHECK (
         (scope = 'personal' AND system_account_id IS NOT NULL)
         OR (scope = 'global' AND system_account_id IS NULL)

@@ -1196,7 +1196,6 @@ type ManagementProviderModelCatalogItem struct {
 	CodexSupportedReasoningLevels   []string
 	CodexDefaultReasoningLevel      string
 	CodexMultiAgentVersion          string
-	PricingModel                    string
 	ContextWindowTokens             *int
 	MaxInputTokens                  *int
 	MaxOutputTokens                 *int
@@ -1206,16 +1205,7 @@ type ManagementProviderModelCatalogItem struct {
 	CachedInputUSDPer1M             *float64
 	CacheWriteUSDPer1M              *float64
 	CacheWrite1hUSDPer1M            *float64
-	PriorityInputUSDPer1M           *float64
-	PriorityOutputUSDPer1M          *float64
-	PriorityCachedInputUSDPer1M     *float64
-	PriorityCacheWriteUSDPer1M      *float64
-	PriorityCacheWrite1hUSDPer1M    *float64
-	FlexInputUSDPer1M               *float64
-	FlexOutputUSDPer1M              *float64
-	FlexCachedInputUSDPer1M         *float64
-	FlexCacheWriteUSDPer1M          *float64
-	FlexCacheWrite1hUSDPer1M        *float64
+	ServiceTierPrices               map[string]ManagementProviderModelPriceSet
 	LongContextInputTokenThreshold  *int
 	LongContextInputCostMultiplier  *float64
 	LongContextOutputCostMultiplier *float64
@@ -1235,6 +1225,19 @@ type ManagementProviderModelCatalogItem struct {
 	Source                          string
 	CreatedAt                       time.Time
 	UpdatedAt                       time.Time
+}
+
+type ManagementProviderModelPriceSet struct {
+	InputUSDPer1M        *float64 `json:"inputUsdPer1M,omitempty"`
+	OutputUSDPer1M       *float64 `json:"outputUsdPer1M,omitempty"`
+	CachedInputUSDPer1M  *float64 `json:"cachedInputUsdPer1M,omitempty"`
+	CacheWriteUSDPer1M   *float64 `json:"cacheWriteUsdPer1M,omitempty"`
+	CacheWrite1hUSDPer1M *float64 `json:"cacheWrite1hUsdPer1M,omitempty"`
+	ImageInputUSDPer1M   *float64 `json:"imageInputUsdPer1M,omitempty"`
+	ImageOutputUSDPer1M  *float64 `json:"imageOutputUsdPer1M,omitempty"`
+	AudioInputUSDPer1M   *float64 `json:"audioInputUsdPer1M,omitempty"`
+	AudioOutputUSDPer1M  *float64 `json:"audioOutputUsdPer1M,omitempty"`
+	OutputUSDPerImage    *float64 `json:"outputUsdPerImage,omitempty"`
 }
 
 type ManagementProviderModelCatalogListInput struct {
@@ -1283,7 +1286,6 @@ type ManagementCustomProviderModelSaveInput struct {
 	SupportedServiceTiers     []string
 	SupportedReasoningEfforts []string
 	DefaultReasoningEffort    string
-	PricingModel              string
 	ReleaseDate               string
 	ShutdownDate              string
 	ContextWindowTokens       *int
@@ -1292,6 +1294,8 @@ type ManagementCustomProviderModelSaveInput struct {
 	OutputUSDPer1M            *float64
 	CachedInputUSDPer1M       *float64
 	CacheWriteUSDPer1M        *float64
+	CacheWrite1hUSDPer1M      *float64
+	ServiceTierPrices         map[string]ManagementProviderModelPriceSet
 	ImageInputUSDPer1M        *float64
 	ImageOutputUSDPer1M       *float64
 	AudioInputUSDPer1M        *float64
@@ -1324,6 +1328,22 @@ type ManagementCustomProviderModelBindingSummary struct {
 	TotalAccountCount           int
 }
 
+type ManagementBuiltInProviderModelPriceUpdateInput struct {
+	ID                   string
+	ProviderCode         string
+	InputUSDPer1M        *float64
+	OutputUSDPer1M       *float64
+	CachedInputUSDPer1M  *float64
+	CacheWriteUSDPer1M   *float64
+	CacheWrite1hUSDPer1M *float64
+	ServiceTierPrices    map[string]ManagementProviderModelPriceSet
+	ImageInputUSDPer1M   *float64
+	ImageOutputUSDPer1M  *float64
+	AudioInputUSDPer1M   *float64
+	AudioOutputUSDPer1M  *float64
+	OutputUSDPerImage    *float64
+}
+
 type ManagementProviderModelCatalogReader interface {
 	FindManagementProviderModelProvider(ctx context.Context, code string) (ManagementProviderModelProvider, bool, error)
 	ListManagementEnabledModelProviderCodes(ctx context.Context) ([]string, error)
@@ -1344,6 +1364,7 @@ type ManagementCustomProviderModelWriter interface {
 	SaveManagementCustomProviderModel(ctx context.Context, input ManagementCustomProviderModelSaveInput) (ManagementProviderModelCatalogItem, error)
 	DeleteManagementCustomProviderModel(ctx context.Context, id string) (bool, error)
 	GetManagementCustomProviderModelBindingSummary(ctx context.Context, input ManagementCustomProviderModelBindingInput) (ManagementCustomProviderModelBindingSummary, error)
+	UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input ManagementBuiltInProviderModelPriceUpdateInput) (bool, error)
 }
 
 type ManagementRouteStrategyOption struct {

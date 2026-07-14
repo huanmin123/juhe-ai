@@ -334,8 +334,8 @@ function validateAccountGptRequestOverrides(
   supportedModels: string[],
   modelOptions: ModelMappingProtocolOption[]
 ): string | undefined {
-  if (form.providerCode !== 'gpt') return undefined
   const capabilities = accountGptRequestOverrideCapabilities({
+    providerCode: form.providerCode,
     accountType: form.type,
     modelOptions,
     supportedModels

@@ -50,6 +50,7 @@
         <a-descriptions-item label="模型配对距离">{{ pairedDistanceText(trustReport) }}</a-descriptions-item>
         <a-descriptions-item label="群体基线">{{ baselineVersionText(trustReport) }}</a-descriptions-item>
         <a-descriptions-item label="Token 差分">{{ tokenDifferentialText(trustReport) }}</a-descriptions-item>
+        <a-descriptions-item label="固定开销基线">{{ interceptBaselineText(trustReport) }}</a-descriptions-item>
         <a-descriptions-item label="Tokenizer">{{ trustReport.tokenizerVersion || '尚无可用结果' }}</a-descriptions-item>
         <a-descriptions-item label="诊断依据">{{ reasonCodesText(trustReport.reasonCodes) }}</a-descriptions-item>
         <a-descriptions-item label="请求 / 上游 / 响应模型">
@@ -134,6 +135,9 @@ const evidenceStatusText = (value: ModelCheckTrustReport['evidenceStatus']) => (
 const tokenDifferentialText = (report: ModelCheckTrustReport) => report.slope === undefined
   ? '尚无预聚合结果'
   : `斜率 ${report.slope.toFixed(4)}，截距 ${(report.intercept ?? 0).toFixed(2)}`
+const interceptBaselineText = (report: ModelCheckTrustReport) => report.interceptBaselineVersion === undefined
+  ? '尚未形成预聚合基线'
+  : `v${report.interceptBaselineVersion} / ${{ unavailable: '不可用', calibration_pending: '待真实样本校准', active: '已校准生效' }[report.interceptBaselineStatus ?? 'unavailable']} / 中位数 ${(report.interceptBaselineMedian ?? 0).toFixed(2)} / MAD ${(report.interceptBaselineMad ?? 0).toFixed(2)} / 强判门${report.interceptStrongGateEnabled ? '已开启' : '已关闭'}`
 const identityDistanceText = (report: ModelCheckTrustReport) => report.identityDistance === undefined
   ? '尚无 leave-one-upstream-out 结果'
   : `稳健偏离 ${report.identityDistance.toFixed(3)}`
@@ -148,6 +152,8 @@ const reasonCodesText = (codes: string[]) => codes.length
       proportional_padding: '差分斜率疑似比例灌水',
       slope_warning: '差分斜率偏离待复核',
       bucket_rounding: '上游用量疑似分桶取整',
+      fixed_intercept_padding: '固定输入 Token 开销超过已校准强判阈值',
+      fixed_intercept_calibration_pending: '固定输入 Token 开销基线等待真实样本校准',
       reported_usage_missing: '上游未返回完整输入 Token',
       reported_usage_incompatible: '上游 usage 口径与总输入不兼容',
       configured_model_mapping: '已配置模型映射',

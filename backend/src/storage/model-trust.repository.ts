@@ -2,16 +2,30 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getDatasetDatabase, getStatsDatabase, newId, nowIso } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import { acquireBackgroundJobLeaseAsync, releaseBackgroundJobLeaseAsync, renewBackgroundJobLeaseAsync } from './background-task-runs.repository.js'
 import {
   evaluateIdentityTrust,
   hasHardTrustConflict,
   isIdentityObservation,
-  listIdentityAccountModelsForScopes,
   refreshIdentityBaselines,
+  type IdentityPopulationScope,
   upsertIdentitySourceFeature
 } from './model-trust-identity.repository.js'
+import {
+  activateTokenInterceptBaselineVersion,
+  evaluateTokenInterceptBaseline,
+  refreshTokenInterceptBaselines,
+  tokenInterceptScopeKey,
+  type TokenInterceptBaselineEvaluation,
+  type TokenInterceptEvaluationContext,
+  type TokenInterceptScope
+} from './model-trust-token-baseline.repository.js'
 
 const aggregationJobName = 'model-trust-observation-aggregation'
+const aggregationLeaseKey = 'scheduled:model-trust-observation-aggregation:global'
+const aggregationLeaseDurationMs = 5 * 60_000
+const aggregationLeaseRenewIntervalMs = 60_000
+const maximumDirtyAccountsPerBatch = 500
 
 export interface ModelCheckObservationInput {
   id?: string
@@ -64,6 +78,11 @@ export interface ModelAccountTrustResult {
   pairedProbeCount: number
   slope?: number
   intercept?: number
+  interceptBaselineMedian?: number
+  interceptBaselineMad?: number
+  interceptBaselineVersion?: number
+  interceptBaselineStatus?: string
+  interceptStrongGateEnabled: boolean
   identityDistance?: number
   pairedDistance?: number
   pairedBaselineMedian?: number
@@ -158,6 +177,35 @@ export async function createModelCheckObservationsAsync(inputs: ModelCheckObserv
 }
 
 export async function aggregateModelTrustObservationsAsync(limit = 500): Promise<number> {
+  const ownerId = `${runtimeConfig.processRole}:${process.pid}:${newId('model_trust_lease')}`
+  const acquired = await acquireBackgroundJobLeaseAsync({
+    leaseKey: aggregationLeaseKey,
+    jobName: aggregationJobName,
+    shardKey: 'global',
+    ownerId,
+    leaseUntil: new Date(Date.now() + aggregationLeaseDurationMs).toISOString()
+  })
+  if (!acquired) return 0
+  let renewalRunning = false
+  const renewalTimer = setInterval(() => {
+    if (renewalRunning) return
+    renewalRunning = true
+    void renewBackgroundJobLeaseAsync(
+      aggregationLeaseKey,
+      ownerId,
+      new Date(Date.now() + aggregationLeaseDurationMs).toISOString()
+    ).catch(() => false).finally(() => { renewalRunning = false })
+  }, aggregationLeaseRenewIntervalMs)
+  renewalTimer.unref()
+  try {
+    return await aggregateModelTrustObservationsWithLeaseAsync(limit, ownerId)
+  } finally {
+    clearInterval(renewalTimer)
+    await releaseBackgroundJobLeaseAsync(aggregationLeaseKey, ownerId)
+  }
+}
+
+async function aggregateModelTrustObservationsWithLeaseAsync(limit: number, ownerId: string): Promise<number> {
   const dataset = await datasetClient()
   const stats = await statsClient()
   const observationsTable = dataset.dialect.qualifyTable('juhe_dataset', 'model_check_observations')
@@ -168,7 +216,6 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
     ORDER BY created_at, id
     LIMIT ?
   `, [state.createdAt, state.createdAt, state.id, boundedLimit(limit)])
-  if (!rows.length) return 0
   await stats.transaction(async (tx) => {
     for (const row of rows) {
       await upsertSource(tx, row)
@@ -177,17 +224,39 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
       await upsertIdentitySourceFeature(tx, row)
     }
     const touchedIdentityScopes = await refreshIdentityBaselines(tx, rows)
-    const affected = mergeAccountModelKeys(
-      uniqueAccountModels(rows.filter(isDiagnosticTrustObservation)),
-      await listIdentityAccountModelsForScopes(tx, touchedIdentityScopes)
-    )
+    await enqueueIdentityLatestDirtyAccounts(tx, touchedIdentityScopes)
+    const dirtyAccounts = await listModelTrustLatestDirtyAccounts(tx, maximumDirtyAccountsPerBatch)
+    const affected = mergeAccountModelKeys(uniqueAccountModels(rows.filter(isDiagnosticTrustObservation)), dirtyAccounts)
     for (const key of affected) {
       await refreshLatestResult(tx, key, rows)
     }
-    const last = rows[rows.length - 1] as ObservationRow
-    await writeAggregationState(tx, last.created_at, last.id)
+    const tokenRows = rows.filter(isValidTokenObservation)
+    const tokenContexts = await refreshTokenInterceptBaselines(tx, tokenRows.map((row) => ({
+      cohortKeyHmac: row.cohort_key_hmac,
+      requestedModel: row.requested_model,
+      tokenizerVersion: row.tokenizer_version,
+      probeSetVersion: row.probe_set_version
+    })))
+    const tokenAffected = mergeAccountModelKeys(
+      uniqueAccountModels(tokenRows)
+    )
+    for (const key of tokenAffected) {
+      await refreshLatestResult(tx, key, rows, tokenContexts)
+    }
+    await deleteModelTrustLatestDirtyAccounts(tx, dirtyAccounts)
+    await assertAggregationLeaseOwner(tx, ownerId)
+    const last = rows.at(-1)
+    if (last) await writeAggregationState(tx, last.created_at, last.id)
   })
   return rows.length
+}
+
+export async function activateModelTokenInterceptBaselineAsync(input: TokenInterceptScope & {
+  baselineVersion: number
+  strongThresholdIntercept: number
+  calibrationNote: string
+}): Promise<void> {
+  await activateTokenInterceptBaselineVersion(await statsClient(), input)
 }
 
 export async function findModelAccountTrustResultAsync(systemAccountId: string, accountId: string, requestedModel: string): Promise<ModelAccountTrustResult | undefined> {
@@ -213,6 +282,11 @@ export async function findModelAccountTrustResultAsync(systemAccountId: string, 
     pairedProbeCount: Number(row.paired_probe_count ?? 0),
     slope: optionalNumber(row.slope),
     intercept: optionalNumber(row.intercept),
+    interceptBaselineMedian: optionalNumber(row.intercept_baseline_median),
+    interceptBaselineMad: optionalNumber(row.intercept_baseline_mad),
+    interceptBaselineVersion: optionalNumber(row.intercept_baseline_version),
+    interceptBaselineStatus: optionalText(row.intercept_baseline_status),
+    interceptStrongGateEnabled: Number(row.intercept_strong_gate_enabled ?? 0) === 1,
     identityDistance: optionalNumber(row.identity_distance),
     pairedDistance: optionalNumber(row.paired_distance),
     pairedBaselineMedian: optionalNumber(row.paired_baseline_median),
@@ -299,7 +373,12 @@ async function upsertTokenRound(client: DatabaseClient, row: ObservationRow): Pr
   ])
 }
 
-async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey, batchRows: ObservationRow[]): Promise<void> {
+async function refreshLatestResult(
+  client: DatabaseClient,
+  key: AccountModelKey,
+  batchRows: ObservationRow[],
+  tokenContexts?: Map<string, TokenInterceptEvaluationContext>
+): Promise<void> {
   const windows = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_windows')
   const rounds = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_rounds')
   const sources = client.dialect.qualifyTable('juhe_stats', 'model_trust_window_sources')
@@ -347,9 +426,36 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       : sourceCount >= 3 && validSampleCount >= 30 && roundCount >= 10 && durationDays >= 3
         ? 'bootstrap'
         : 'insufficient'
-  const usage = window && regression
+  const interceptScope = window ? {
+        cohortKeyHmac: window.cohort_key_hmac,
+        requestedModel: key.requestedModel,
+        tokenizerVersion: window.tokenizer_version,
+        probeSetVersion: window.probe_set_version
+      } : undefined
+  const interceptContext = interceptScope ? tokenContexts?.get(tokenInterceptScopeKey(interceptScope)) : undefined
+  const interceptBaseline: TokenInterceptBaselineEvaluation = window && regression && interceptContext
+    ? evaluateTokenInterceptBaseline(interceptContext, key, regression.intercept)
+    : {
+        baselineVersion: optionalNumber(currentLatest?.intercept_baseline_version),
+        baselineStatus: (optionalText(currentLatest?.intercept_baseline_status) as TokenInterceptBaselineEvaluation['baselineStatus'] | undefined) ?? 'unavailable',
+        evidenceStatus: 'insufficient',
+        looMedian: optionalNumber(currentLatest?.intercept_baseline_median),
+        looMad: optionalNumber(currentLatest?.intercept_baseline_mad),
+        strongGateEnabled: Number(currentLatest?.intercept_strong_gate_enabled ?? 0) === 1,
+        suspectedFixedPadding: false
+      }
+  const slopeUsage = window && regression
     ? tokenStatusFromWindow(window, regression.slope, regression.confidenceLow, regression.confidenceHigh, roundCount)
     : { status: 'insufficient_evidence', reasonCodes: [] }
+  const currentReasonCodes = parseReasonCodes(currentLatest?.reason_codes_json)
+  const preservedFixedReasons = interceptContext
+    ? []
+    : currentReasonCodes.filter((code) => code === 'fixed_intercept_padding' || code === 'fixed_intercept_calibration_pending')
+  const usage = interceptBaseline.suspectedFixedPadding
+    ? { status: 'suspected_padding', reasonCodes: [...slopeUsage.reasonCodes, 'fixed_intercept_padding'] }
+    : !interceptContext && currentLatest
+      ? { status: optionalText(currentLatest.usage_integrity_status) ?? slopeUsage.status, reasonCodes: [...slopeUsage.reasonCodes, ...preservedFixedReasons] }
+      : slopeUsage
   if (window && regression) {
     await client.execute(`
       UPDATE ${windows}
@@ -357,7 +463,7 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
         AND cohort_key_hmac = ? AND tokenizer_version = ? AND probe_set_version = ?
     `, [
-      roundCount, regression.slope, regression.intercept, usage.status, nowIso(),
+      roundCount, regression.slope, regression.intercept, slopeUsage.status, nowIso(),
       key.systemAccountId, key.accountId, key.requestedModel, window.cohort_key_hmac,
       window.tokenizer_version, window.probe_set_version
     ])
@@ -366,11 +472,15 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
   const protocolStatus = representative?.protocol_status ?? optionalText(currentLatest?.protocol_status) ?? 'insufficient_evidence'
   const reasonCodes = [
     ...usage.reasonCodes,
+    ...(interceptBaseline.baselineStatus === 'calibration_pending' ? ['fixed_intercept_calibration_pending'] : []),
     ...(identity?.reasonCodes ?? []),
     ...(mappingStatus === 'configured_mapping' ? ['configured_model_mapping'] : []),
     ...(mappingStatus === 'undeclared_mismatch' ? ['undeclared_response_model_mismatch'] : []),
     ...(protocolStatus === 'failed' ? ['protocol_check_failed'] : [])
   ]
+  const identityObservationCount = identity?.identityObservationCount ?? Number(currentLatest?.identity_observation_count ?? 0)
+  const identitySourceCount = identity?.independentSourceCount ?? Number(currentLatest?.independent_source_count ?? 0)
+  const pairedProbeCount = identity?.pairedProbeCount ?? Number(currentLatest?.paired_probe_count ?? 0)
   const identityCoverage = identity ? (Math.min(identity.identityObservationCount, 9) / 9) * 25 + (Math.min(identity.independentSourceCount, 3) / 3) * 25 : 0
   const tokenCoverage = window ? (Math.min(roundCount, 3) / 3) * 25 + (Math.min(sourceCount, 3) / 3) * 25 : 0
   const evidenceCoverage = Math.min(100, Math.round(identityCoverage + tokenCoverage))
@@ -383,10 +493,12 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       system_account_id, account_id, requested_model, identity_status, mapping_status,
       usage_integrity_status, protocol_status, evidence_status, evidence_coverage,
       observation_count, round_count, independent_source_count, identity_observation_count, paired_probe_count,
-      slope, intercept, identity_distance, paired_distance, paired_baseline_median, paired_baseline_mad,
+      slope, intercept, intercept_baseline_median, intercept_baseline_mad, intercept_baseline_version,
+      intercept_baseline_status, intercept_strong_gate_enabled,
+      identity_distance, paired_distance, paired_baseline_median, paired_baseline_mad,
       baseline_version, baseline_version_status, feature_version,
       tokenizer_version, probe_set_version, reason_codes_json, last_observed_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (system_account_id, account_id, requested_model) DO UPDATE SET
       identity_status = excluded.identity_status,
       mapping_status = excluded.mapping_status,
@@ -401,6 +513,11 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       paired_probe_count = excluded.paired_probe_count,
       slope = excluded.slope,
       intercept = excluded.intercept,
+      intercept_baseline_median = excluded.intercept_baseline_median,
+      intercept_baseline_mad = excluded.intercept_baseline_mad,
+      intercept_baseline_version = excluded.intercept_baseline_version,
+      intercept_baseline_status = excluded.intercept_baseline_status,
+      intercept_strong_gate_enabled = excluded.intercept_strong_gate_enabled,
       identity_distance = excluded.identity_distance,
       paired_distance = excluded.paired_distance,
       paired_baseline_median = excluded.paired_baseline_median,
@@ -417,11 +534,18 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
     key.systemAccountId, key.accountId, key.requestedModel,
     identity?.identityStatus ?? representative?.identity_status ?? optionalText(currentLatest?.identity_status) ?? 'insufficient_evidence',
     mappingStatus, usage.status, protocolStatus, evidenceStatus, evidenceCoverage,
-    validSampleCount + Number(identity?.identityObservationCount ?? 0), roundCount,
-    Math.max(sourceCount, identity?.independentSourceCount ?? 0), identity?.identityObservationCount ?? 0, identity?.pairedProbeCount ?? 0,
-    regression?.slope ?? null, regression?.intercept ?? null, identity?.identityDistance ?? null,
-    identity?.pairedDistance ?? null, identity?.pairedBaselineMedian ?? null, identity?.pairedBaselineMad ?? null,
-    identity?.baselineVersion ?? null, identity?.baselineVersionStatus ?? null, identity?.featureVersion ?? null,
+    validSampleCount + identityObservationCount, roundCount,
+    Math.max(sourceCount, identitySourceCount), identityObservationCount, pairedProbeCount,
+    regression?.slope ?? null, regression?.intercept ?? null,
+    interceptBaseline.looMedian ?? null, interceptBaseline.looMad ?? null,
+    interceptBaseline.baselineVersion ?? null, interceptBaseline.baselineStatus,
+    interceptBaseline.strongGateEnabled ? 1 : 0, identity?.identityDistance ?? optionalNumber(currentLatest?.identity_distance) ?? null,
+    identity?.pairedDistance ?? optionalNumber(currentLatest?.paired_distance) ?? null,
+    identity?.pairedBaselineMedian ?? optionalNumber(currentLatest?.paired_baseline_median) ?? null,
+    identity?.pairedBaselineMad ?? optionalNumber(currentLatest?.paired_baseline_mad) ?? null,
+    identity?.baselineVersion ?? optionalNumber(currentLatest?.baseline_version) ?? null,
+    identity?.baselineVersionStatus ?? optionalText(currentLatest?.baseline_version_status) ?? null,
+    identity?.featureVersion ?? optionalText(currentLatest?.feature_version) ?? null,
     window?.tokenizer_version ?? null, window?.probe_set_version ?? representative?.probe_set_version ?? null,
     JSON.stringify([...new Set(reasonCodes)]), lastObservedAt ?? null, nowIso()
   ])
@@ -493,6 +617,59 @@ async function readAggregationState(client: DatabaseClient): Promise<{ createdAt
     WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
   `, [aggregationJobName])
   return { createdAt: row?.cursor_created_at ?? '', id: row?.cursor_id ?? '' }
+}
+
+async function enqueueIdentityLatestDirtyAccounts(client: DatabaseClient, scopes: IdentityPopulationScope[]): Promise<void> {
+  if (!scopes.length) return
+  const sources = client.dialect.qualifyTable('juhe_stats', 'model_identity_source_features')
+  const dirty = client.dialect.qualifyTable('juhe_stats', 'model_trust_latest_dirty_accounts')
+  const updatedAt = nowIso()
+  for (const scope of scopes) {
+    await client.execute(`
+      INSERT INTO ${dirty} (system_account_id, account_id, requested_model, dirty_reason, updated_at)
+      SELECT DISTINCT system_account_id, account_id, requested_model, 'identity_baseline_changed', ?
+      FROM ${sources}
+      WHERE population_key_hmac = ? AND requested_model = ? AND feature_version = ?
+      ON CONFLICT (system_account_id, account_id, requested_model) DO NOTHING
+    `, [updatedAt, scope.populationKey, scope.requestedModel, scope.featureVersion])
+  }
+}
+
+async function listModelTrustLatestDirtyAccounts(client: DatabaseClient, limit: number): Promise<AccountModelKey[]> {
+  const table = client.dialect.qualifyTable('juhe_stats', 'model_trust_latest_dirty_accounts')
+  const rows = await client.query<{ system_account_id: string; account_id: string; requested_model: string }>(`
+    SELECT system_account_id, account_id, requested_model FROM ${table}
+    ORDER BY updated_at, system_account_id, account_id, requested_model
+    LIMIT ?
+  `, [limit])
+  return rows.map((row) => ({
+    systemAccountId: row.system_account_id,
+    accountId: row.account_id,
+    requestedModel: row.requested_model
+  }))
+}
+
+async function deleteModelTrustLatestDirtyAccounts(client: DatabaseClient, keys: AccountModelKey[]): Promise<void> {
+  if (!keys.length) return
+  const table = client.dialect.qualifyTable('juhe_stats', 'model_trust_latest_dirty_accounts')
+  for (let index = 0; index < keys.length; index += 100) {
+    const batch = keys.slice(index, index + 100)
+    const tuples = batch.map(() => '(?, ?, ?)').join(', ')
+    await client.execute(`
+      DELETE FROM ${table}
+      WHERE (system_account_id, account_id, requested_model) IN (${tuples})
+    `, batch.flatMap((key) => [key.systemAccountId, key.accountId, key.requestedModel]))
+  }
+}
+
+async function assertAggregationLeaseOwner(client: DatabaseClient, ownerId: string): Promise<void> {
+  const table = client.dialect.qualifyTable('juhe_stats', 'background_job_leases')
+  const lease = await client.one<{ owner_id: string }>(`
+    SELECT owner_id FROM ${table}
+    WHERE lease_key = ? AND owner_id = ? AND lease_until > ?
+    LIMIT 1
+  `, [aggregationLeaseKey, ownerId, nowIso()])
+  if (!lease) throw new Error('模型可信聚合租约已失效，当前事务已回滚并等待新 owner 重试')
 }
 
 async function writeAggregationState(client: DatabaseClient, createdAt: string, id: string): Promise<void> {

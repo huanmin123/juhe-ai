@@ -2,6 +2,11 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
+import { runtimeConfig } from '../../config/runtime.js'
+import { mainDatabaseRuntimeInfo } from '../../storage/database.js'
+import { activateModelTokenInterceptBaselineAsync } from '../../storage/model-trust.repository.js'
+import { requestStatsWriter } from '../background/background-stats-writer.js'
+import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { diagnosticTaskBusyMessage, diagnosticTaskRetryAfterSeconds, tryAcquireDiagnosticTaskSlot } from '../diagnostics/diagnostic-task-limiter.js'
@@ -34,9 +39,43 @@ const modelCheckRunSchema = z.object({
   targetId: z.string().trim().min(1, '检测目标不能为空'),
   model: z.string({ invalid_type_error: '模型必须使用完整模型 ID' }).trim().min(1, '模型必须使用完整模型 ID'),
   profile: z.enum(['full']).optional(),
+  includeExtremeContext: z.boolean().optional(),
   trustedComparison: z.boolean().optional(),
   trustedComparisonAccountId: z.string().trim().optional()
 }).strict()
+
+const tokenInterceptBaselineActivationSchema = z.object({
+  cohortKeyHmac: z.string().trim().regex(/^hmac-sha256-v1:[a-f0-9]{64}$/i, 'cohort key 格式无效'),
+  requestedModel: z.string().trim().min(1).max(200),
+  tokenizerVersion: z.string().trim().min(1).max(200),
+  probeSetVersion: z.string().trim().min(1).max(200),
+  baselineVersion: z.number().int().positive(),
+  strongThresholdIntercept: z.number().finite().nonnegative(),
+  calibrationNote: z.string().trim().min(1).max(500)
+}).strict()
+
+modelChecksRouter.post('/token-intercept-baselines/activate', requireAdmin, async (req, res, next) => {
+  const parsed = tokenInterceptBaselineActivationSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '固定截距基线激活参数无效'))
+    return
+  }
+  try {
+    if (runtimeConfig.databaseDriver === 'postgres' || !mainDatabaseRuntimeInfo('stats').queryOnly) {
+      await activateModelTokenInterceptBaselineAsync(parsed.data)
+    } else {
+      await requestStatsWriter({ type: 'activate_model_token_intercept_baseline', input: parsed.data }, 120_000)
+    }
+    res.json(ok({ activated: true, baselineVersion: parsed.data.baselineVersion }))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '固定截距基线激活失败'
+    if (message.startsWith('固定截距')) {
+      res.status(409).json({ message })
+      return
+    }
+    next(error)
+  }
+})
 
 modelChecksRouter.get('/options', (req, res, next) => {
   try {

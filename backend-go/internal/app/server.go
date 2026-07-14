@@ -668,7 +668,7 @@ func newManagementAPIHandler(
 		ProviderModelsHandler:                   httpapi.NewManagementProviderModelsHandler(providerModelService),
 		ProviderDefaultHealthCheckModelHandler:  httpapi.NewManagementProviderDefaultHealthCheckModelHandler(providerModelService),
 		ProviderCustomModelCreateHandler:        httpapi.NewManagementProviderCustomModelCreateHandler(providerModelService),
-		ProviderCustomModelUpdateHandler:        httpapi.NewManagementProviderCustomModelUpdateHandler(providerModelService),
+		ProviderCustomModelUpdateHandler:        httpapi.NewManagementProviderCustomModelUpdateHandlerWithOperationLog(providerModelService, operationLogOptions),
 		ProviderCustomModelDeleteHandler:        httpapi.NewManagementProviderCustomModelDeleteHandler(providerModelService),
 		RouteStrategyListHandler:                httpapi.NewManagementRouteStrategyListHandler(routeStrategyService),
 		MyRouteStrategyListHandler:              httpapi.NewManagementMyRouteStrategyListHandler(routeStrategyService),

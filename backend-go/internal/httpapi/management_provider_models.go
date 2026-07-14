@@ -7,10 +7,13 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 type managementProviderModelService interface {
@@ -68,6 +71,13 @@ func NewManagementProviderCustomModelCreateHandler(service *managementprovidermo
 
 func NewManagementProviderCustomModelUpdateHandler(service *managementprovidermodels.Service) http.Handler {
 	return newManagementProviderCustomModelUpdateHandler(managementProviderModelServiceAdapter{service: service})
+}
+
+func NewManagementProviderCustomModelUpdateHandlerWithOperationLog(service *managementprovidermodels.Service, opts ManagementOperationLogOptions) http.Handler {
+	return newManagementProviderCustomModelUpdateHandler(
+		managementProviderModelServiceAdapter{service: service},
+		newManagementOperationLogOptions(opts),
+	)
 }
 
 func NewManagementProviderCustomModelDeleteHandler(service *managementprovidermodels.Service) http.Handler {
@@ -188,7 +198,8 @@ func newManagementProviderCustomModelCreateHandler(service managementProviderMod
 	})
 }
 
-func newManagementProviderCustomModelUpdateHandler(service managementProviderModelService) http.Handler {
+func newManagementProviderCustomModelUpdateHandler(service managementProviderModelService, logOptions ...managementOperationLogOptions) http.Handler {
+	operationLogs := effectiveManagementOperationLogOptions(logOptions)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authContext, ok := ManagementAuthContextFromRequest(r)
 		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
@@ -210,8 +221,72 @@ func newManagementProviderCustomModelUpdateHandler(service managementProviderMod
 			writeManagementProviderCustomModelError(w, err)
 			return
 		}
+		if result.Scope == "built_in" {
+			recordManagementProviderModelPriceUpdateOperationLog(r, authContext, result, operationLogs)
+		}
 		writeData(w, http.StatusOK, result)
 	})
+}
+
+func recordManagementProviderModelPriceUpdateOperationLog(
+	r *http.Request,
+	authContext managementauth.Context,
+	result managementprovidermodels.ModelCatalogItem,
+	opts managementOperationLogOptions,
+) {
+	if opts.client == nil {
+		return
+	}
+	now := opts.now
+	if now == nil {
+		now = time.Now
+	}
+	newLogID := opts.newLogID
+	if newLogID == nil {
+		newLogID = defaultManagementOperationLogID
+	}
+	statusCode := http.StatusOK
+	enqueueManagementOperationLog(r.Context(), opts, port.OperationLogInput{
+		ID:                            newLogID(),
+		TraceID:                       requestIDFromContext(r.Context()),
+		ActorSystemAccountID:          authContext.SystemAccountID,
+		ActorUsername:                 authContext.Username,
+		ActorDisplayName:              authContext.DisplayName,
+		ActorRole:                     authContext.Role,
+		OperationScopeSystemAccountID: authContext.SystemAccountID,
+		Mode:                          "admin",
+		Module:                        "providers",
+		Action:                        "update_model_prices",
+		OperationKey:                  "providers.models.update_prices",
+		ResourceType:                  "provider_model",
+		ResourceID:                    result.ID,
+		ResourceName:                  result.Model,
+		Summary:                       "更新模型价格：" + result.Model,
+		DetailLevel:                   "full",
+		VisibilityScope:               "admin_only",
+		Changes: []port.OperationLogChange{{
+			Field: "prices",
+			Label: "模型价格",
+			After: managementProviderModelPriceSnapshot(result),
+		}},
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		StatusCode: &statusCode,
+		ClientIP:   opts.clientIP.FromRequest(r),
+		UserAgent:  r.UserAgent(),
+		CreatedAt:  now().UTC(),
+	})
+}
+
+func managementProviderModelPriceSnapshot(item managementprovidermodels.ModelCatalogItem) map[string]any {
+	return map[string]any{
+		"inputUsdPer1M": item.InputUSDPer1M, "outputUsdPer1M": item.OutputUSDPer1M,
+		"cachedInputUsdPer1M": item.CachedInputUSDPer1M, "cacheWriteUsdPer1M": item.CacheWriteUSDPer1M,
+		"cacheWrite1hUsdPer1M": item.CacheWrite1hUSDPer1M, "serviceTierPrices": item.ServiceTierPrices,
+		"imageInputUsdPer1M": item.ImageInputUSDPer1M, "imageOutputUsdPer1M": item.ImageOutputUSDPer1M,
+		"audioInputUsdPer1M": item.AudioInputUSDPer1M, "audioOutputUsdPer1M": item.AudioOutputUSDPer1M,
+		"outputUsdPerImage": item.OutputUSDPerImage,
+	}
 }
 
 func newManagementProviderCustomModelDeleteHandler(service managementProviderModelService) http.Handler {
@@ -335,13 +410,15 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 				continue
 			}
 			fields.DefaultReasoningEffort = managementprovidermodels.OptionalString{Set: true, Value: value}
-		case "pricingModel":
-			value, ok := decodeManagementProviderCustomModelNullableString(raw, true)
-			if !ok {
+		case "serviceTierPrices":
+			var value map[string]managementprovidermodels.ModelPriceSet
+			if string(raw) == "null" {
+				value = map[string]managementprovidermodels.ModelPriceSet{}
+			} else if err := json.Unmarshal(raw, &value); err != nil || !validManagementProviderModelPriceMap(value) {
 				fields.Invalid = true
 				continue
 			}
-			fields.PricingModel = managementprovidermodels.OptionalString{Set: true, Value: value}
+			fields.ServiceTierPrices = managementprovidermodels.OptionalProviderModelPriceMap{Set: true, Value: value}
 		case "releaseDate":
 			value, ok := decodeManagementProviderCustomModelNullableString(raw, false)
 			if !ok {
@@ -398,6 +475,13 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 				continue
 			}
 			fields.CacheWriteUSDPer1M = value
+		case "cacheWrite1hUsdPer1M":
+			value, ok := decodeManagementProviderCustomModelOptionalFloat(raw)
+			if !ok {
+				fields.Invalid = true
+				continue
+			}
+			fields.CacheWrite1hUSDPer1M = value
 		case "imageInputUsdPer1M":
 			value, ok := decodeManagementProviderCustomModelOptionalFloat(raw)
 			if !ok {
@@ -459,6 +543,23 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	return fields, true
+}
+
+func validManagementProviderModelPriceMap(value map[string]managementprovidermodels.ModelPriceSet) bool {
+	for tier, prices := range value {
+		name := strings.TrimSpace(tier)
+		if name == "" || name == "default" || name == "standard" || len(name) > 64 {
+			return false
+		}
+		for _, price := range []*float64{prices.InputUSDPer1M, prices.OutputUSDPer1M, prices.CachedInputUSDPer1M,
+			prices.CacheWriteUSDPer1M, prices.CacheWrite1hUSDPer1M, prices.ImageInputUSDPer1M, prices.ImageOutputUSDPer1M,
+			prices.AudioInputUSDPer1M, prices.AudioOutputUSDPer1M, prices.OutputUSDPerImage} {
+			if price != nil && (*price < 0 || math.IsNaN(*price) || math.IsInf(*price, 0)) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func decodeManagementProviderCustomModelRequiredString(raw json.RawMessage) (string, bool) {

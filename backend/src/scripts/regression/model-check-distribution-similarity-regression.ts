@@ -179,7 +179,7 @@ function outputForProbe(mode: 'trusted' | 'divergent', body: Record<string, unkn
   if (text.includes('第一行 ALPHA')) return 'ALPHA\nBETA\nGAMMA'
   if (text.includes('VECTOR')) return 'VECTOR'
   if (text.includes('CROSS-MODEL-OK')) return 'CROSS-MODEL-OK'
-  const needle = text.match(/NEEDLE-\d+-[A-Z]+/)
+  const needle = text.match(/NEEDLE-(?:LOW|MEDIUM|HIGH|EXTREME)-\d+/)
   if (needle) return needle[0]
   if (text.includes('向量数据库')) return mode === 'trusted' ? '召回衡量相关内容被找回的程度' : 'OMEGA'
   if (text.includes('SIGMA')) return mode === 'trusted' ? '{"result":83,"tag":"SIGMA"}' : '{"result":13,"tag":"OMEGA"}'

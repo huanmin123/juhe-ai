@@ -30,6 +30,11 @@ export interface ModelCheckTrustReport {
   pairedProbeCount?: number
   slope?: number
   intercept?: number
+  interceptBaselineMedian?: number
+  interceptBaselineMad?: number
+  interceptBaselineVersion?: number
+  interceptBaselineStatus?: 'unavailable' | 'calibration_pending' | 'active'
+  interceptStrongGateEnabled?: boolean
   identityDistance?: number
   pairedDistance?: number
   pairedBaselineMedian?: number
@@ -67,6 +72,7 @@ export interface ModelCheckRunPayload {
   targetId: string
   model: ModelCheckModel
   profile?: ModelCheckProfile
+  includeExtremeContext?: boolean
   trustedComparison?: boolean
   trustedComparisonAccountId?: string
 }

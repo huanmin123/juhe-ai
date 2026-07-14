@@ -3,7 +3,7 @@
 ## 基本信息
 
 - 编号：PLAN-0095
-- 状态：进行中（Phase 0、输入 Token 差分、增量结果和身份群体基线闭环已完成；固定 intercept cohort、全类别结构化特征、profile 驱动长上下文和真实样本校准待完成）
+- 状态：进行中（代码侧闭环已完成；真实样本阈值校准、生产观察和发布验收待完成）
 - 创建时间：2026-07-13
 - 需求来源：当前 Codex 会话；用户要求重点提高 GPT-5.6 真伪检测准确率，并确认 Token 灌水检测现状
 - 执行者：Codex；方案与阈值由用户复核后进入实现
@@ -102,15 +102,15 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - [x] 实现 P0 / P1 / P2 精确填充块和实际 outbound 受控请求 Token 复核。
 - [x] 精确填充限制为 2048 Token，使用线性构造并投递到有界单 worker 任务池，避免阻塞服务事件循环。
 - [x] 实现三轮交错顺序、reported / local 差分、slope / intercept 和 95% 置信区间。
-- [ ] 比例和分桶异常原因码已实现；固定 intercept 已保存，但固定灌水强判等待 cohort 固定开销基线。
+- [x] 固定 intercept 按 cohort / model / tokenizer / probe set 预聚合版本化 median / MAD / 分位基线，并在 stats-worker 内执行 leave-one-upstream-out；强判门默认关闭，只有稳定来源门槛满足且显式记录真实校准阈值后才能激活。
 - [x] usage 缺失或总输入口径不兼容返回 `unsupported`；当前不做 output 灌水结论，因此不会把隐藏 reasoning 误判为灌水。
 - [x] 保持 usage 事实和计费逻辑不变，只保存诊断 observation 和窗口结果。
 
 ### Task 4：GPT-5.6 指纹 observation
 
 - [x] 保留公开行为类别，并把版本化运行时生成式 canary 独立到身份 observation 模块；题面和回答正文均不落库。
-- [ ] 为约束、代码、推理、错误恢复、多语言、工具 schema 和知识时间窗输出结构化 feature。
-- [ ] 把长上下文从固定三档改为 profile 驱动的低 / 中 / 高 / 可选极限阶梯。
+- [x] 为约束、代码、推理、错误恢复、多语言、工具 schema 和知识时间窗输出版本化、有界、确定性结构化 feature。
+- [x] 把长上下文改为模型目录 max input 驱动的低 / 中 / 高阶梯；约 85% 的极限档仅在用户显式打开开关时执行。
 - [x] 随机交错执行 Sol / Terra / Luna 和 5.5 / 5.4 paired probes。
 - [x] 采集 HMAC 后的 `system_fingerprint` 辅助信号，但不把它作为硬身份凭据。
 - [x] 所有当前 Token observation 通过 dataset-writer / ingest-worker 写入，检测 API 不同步聚合。
@@ -154,14 +154,16 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 | 模型指纹 | 相近但正常分布 | `pnpm test:model-trust-identity-baseline` | 不因单题或局部特征相似误报 | 已通过 | 2026-07-14 增加正常 cohort 成员不得进入同源、降级或群体离群状态的明确断言 |
 | Token | 诚实 usage | `pnpm test:model-check-token-integrity` | slope 置信区间包含 1 | 已通过 | slope=1，固定正常开销保留为 intercept |
 | Token | 5% / 10% 比例灌水 | `pnpm test:model-check-token-integrity` | 5% 进入校准边界，10% 稳定异常 | 已通过 | 5% warning，10% suspected_padding |
-| Token | 固定与分桶灌水 | `pnpm test:model-check-token-integrity` | 固定值不脱离 cohort 强判，分桶输出原因码 | 已通过 | intercept 可复算，64-token 取整 warning |
+| Token | 固定与分桶灌水 | `pnpm test:model-check-token-integrity`、`pnpm test:model-trust-token-intercept-baseline` | 固定值使用版本化 cohort LOO；未校准不强判；分桶输出原因码 | 已通过 | 待校准版本默认关闭强判，显式校准版本回归才可命中 fixed intercept；64-token 取整 warning |
+| 模型指纹 | 七类结构化 feature | `pnpm test:model-check-structured-features` | 七类独立确定性维度且数值有界 | 已通过 | `identity-features-v2-seven-categories` 覆盖七类和有界输出规模 |
+| 长上下文 | profile 动态阶梯 | `pnpm test:model-check-protocol-profiles` | 低 / 中 / 高来自 max input；极限档默认关闭 | 已通过 | GPT 目录得到 8k / 60k / 25% max input，显式开关追加约 85% 档 |
 | Token | reasoning 无 breakdown | 输入差分边界 | 不形成 output 灌水误报 | 已通过 | 当前仅判 input；usage 缺失 / 不兼容为 unsupported |
 | 基线 | 单上游大量账号投毒 | `pnpm test:model-trust-identity-baseline` | 同一上游桶权重受限 | 已通过 | 先按 upstream HMAC 桶塌缩再进入 LOO |
 | 基线 | 群体模型升级漂移 | `pnpm test:model-trust-identity-baseline` | 创建新版本并暂停强结论；恢复、失稳或超期后不再永久优先候选 | 已通过 | `drift_protected` 期间身份降为证据不足；固定 observation 时间覆盖 `recovered` / `rejected` / `expired` |
 | 基线 | 累计来源向量与硬冲突门禁 | `pnpm test:model-trust-identity-baseline` | 使用累计均值和约束通过率；模型 / 协议硬冲突不进入来源或基线 | 已通过 | latest feature 与累计均值相反的 paired 样本距离为 0；冲突只保留 dataset / latest 诊断 |
 | 存储 | observation 脱敏与大小上限 | `pnpm test:model-trust-observation-aggregation` | 无题面、凭据、明文 origin 或无界 payload | 已通过 | SQLite 事实与 PG schema 转译已覆盖 |
 | 统计 | 增量游标与 latest | `pnpm test:model-trust-observation-aggregation` | 游标仅在完整处理后推进，API 只读 latest | 已通过 | 4+5 分批后不重复，结果 slope=1 / intercept=10 |
-| 前端 | 中文状态与证据详情 | 前端专项回归和浏览器验证 | 中文、无敏感字段、状态不混淆 | 部分完成 | 五维中文详情代码已实现；专门自动化契约和登录态浏览器验收尚未完成，不能由构建通过替代 |
+| 前端 | 中文状态与证据详情 | `pnpm test:model-check-trust-contract` 和登录态浏览器验证 | 中文、无敏感字段、状态不混淆 | 部分完成 | 专项自动化契约已覆盖极限开关、重置、截距校准状态和强判门展示；登录态浏览器验收仍属发布阶段 |
 | 全量 | 类型、构建、关联回归 | `pnpm typecheck`、`pnpm build`、定向回归 | 全部通过 | 已通过 | 2026-07-14 类型、构建和定向回归通过；浏览器插件当前无可用实例 |
 
 ## 进度记录
@@ -177,6 +179,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 2026-07-14：修正可信度证据资格：精确 Token 填充移入有界 worker 并改为线性构造；无 response model 的当前报告保持不可用；失败、usage 缺失和模型字段缺失 observation 不再放大样本、轮次、来源、覆盖率或证据阶段。
 - 2026-07-14：复查修正身份来源累计语义：特征使用 `sum/sample_count`，约束使用通过率；`undeclared_mismatch` / `protocol failed` observation 只保留事实和 latest 诊断，不进入 Token / 身份来源及基线。漂移候选按 observation 时间补齐恢复、拒绝、7 天过期和 3 天稳定晋升，历史候选不再永久优先 active。
 - 2026-07-14：为 cohort 独立来源 `COUNT(DISTINCT upstream_bucket_hmac)` 增加 `idx_model_trust_window_sources_cohort(cohort_key_hmac, upstream_bucket_hmac)`，SQLite 查询计划和生成 PostgreSQL DDL 同步。生产本批首次创建可信度 8 表 / 11 索引，不执行旧表清空；曾试跑旧聚合的非生产环境需停 worker 后离线重建派生结果。
+- 2026-07-15：新增 `model_token_intercept_baseline_versions`，stats-worker 按上游桶塌缩并预聚合固定开销分布，候选账号使用 LOO 结果；待校准版本强判门固定关闭，激活函数要求稳定门槛、有限阈值和校准记录。新增七类 feature v2、模型 max input 动态长上下文阶梯、显式极限开关和前端专项契约。真实阈值、误报、成本与限流观察仍未执行，不能用回归数据标记完成。
 
 ## 验收标准
 
@@ -198,6 +201,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 2026-07-14：`pnpm test:model-trust-identity-baseline`、Token / observation 聚合、完整 profile、严格模型匹配、paired mismatch、存储脱敏、SQLite writer、后台 registry、账户删除清理、`pnpm typecheck` 和 `pnpm build` 通过。Browser 运行时无可用实例，中文详情的 DOM / 交互 / 截图验证仍保留为部署验收项。
 - 2026-07-14：可信度证据资格加固后，完整非 PG 模型检测套件、`test:deleted-account-related-cleanup`、`test:postgres-schema-sql`、`test:server-audit-shutdown`、全工作区 `pnpm typecheck` / `pnpm build` 通过；源码 `tsx` 和构建产物 `.js` 两种 Token worker 入口均验证可启动且退出后无残留。另在 `192.168.1.203` 创建一次性隔离数据库执行 `postgres:init-schema-only`、`test:model-checks-postgres-smoke` 和实际 Token source / window / round 聚合，确认 `padding_mask = 7`、完整轮次与 latest 结果；通过后已终止连接并删除临时数据库，未修改共享测试库 schema。
 - 2026-07-14：基线复查修复后，累计均值 / 约束通过率、映射与协议硬冲突门禁、`recovered` / `rejected` / `expired` 固定时间状态和 SQLite cohort COUNT 查询计划均通过；完整非 PG 模型检测套件、账户删除清理、`test:postgres-schema-sql`、全工作区 `pnpm typecheck` / `pnpm build` 再次通过。新索引的真实 PostgreSQL 建表与 explain 随本批 8 表 / 11 索引迁移演练执行，本提交不连接或修改生产库。
+- 2026-07-15：固定 intercept、七类 feature、动态长上下文和前端契约专项回归，以及完整非 PG 模型检测定向矩阵、`test:postgres-schema-sql`、后台 job registry、账户删除清理、全工作区 `pnpm typecheck` / `pnpm build` 通过。真实 PostgreSQL 网关 smoke、真实阈值校准、生产观察和浏览器验收保留到发布阶段，本轮未连接测试或生产服务。
 
 ## 风险与注意事项
 
@@ -213,4 +217,4 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 
 ## 完成总结
 
-当前完成 Phase 0、五维报告、输入 Token 差分、生成式身份 observation 和增量群体基线闭环：五模型 paired 探针、脱敏有界特征、独立上游桶限权、leave-one-upstream-out 稳健分布、同源 / 降级诊断、群体漂移保护、账号 latest 及中文证据已经落地。尚未完成全类别结构化特征、profile 驱动动态长上下文、测试环境离线重建对照和生产真实样本阈值校准；当前机制始终仅诊断，不会自动停号、改账或改写 usage。
+当前代码侧已完成五维报告、输入 Token 差分、固定 intercept 版本化 cohort 预聚合、七类结构化身份 feature、动态长上下文阶梯、增量群体基线、账号 latest 和中文证据。尚未完成真实测试环境完整窗口对照、生产小流量观察、阈值校准版本激活和登录态浏览器发布验收；当前机制始终仅诊断，不会自动停号、改账或改写 usage。

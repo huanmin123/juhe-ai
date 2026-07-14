@@ -132,7 +132,6 @@ type JuheBusinessCustomProviderModel struct {
 	Status                        string
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
-	PricingModel                  pgtype.Text
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
@@ -157,6 +156,8 @@ type JuheBusinessCustomProviderModel struct {
 	SupportedServiceTiersJson     string
 	SupportedReasoningEffortsJson string
 	DefaultReasoningEffort        pgtype.Text
+	CacheWrite1hUsdPer1m          pgtype.Float8
+	ServiceTierPricesJson         string
 }
 
 type JuheBusinessExternalIntegrationSource struct {
@@ -292,7 +293,6 @@ type JuheBusinessProviderModelCatalog struct {
 	ReleaseDate                       pgtype.Text
 	ShutdownDate                      pgtype.Text
 	SupportedApiProtocolsJson         string
-	PricingModel                      pgtype.Text
 	ContextWindowTokens               pgtype.Int4
 	InputUsdPer1m                     pgtype.Float8
 	OutputUsdPer1m                    pgtype.Float8
@@ -318,19 +318,10 @@ type JuheBusinessProviderModelCatalog struct {
 	CodexSupportedReasoningLevelsJson string
 	CodexDefaultReasoningLevel        pgtype.Text
 	CodexMultiAgentVersion            pgtype.Text
-	PriorityInputUsdPer1m             pgtype.Float8
-	PriorityOutputUsdPer1m            pgtype.Float8
-	PriorityCachedInputUsdPer1m       pgtype.Float8
-	PriorityCacheWriteUsdPer1m        pgtype.Float8
-	PriorityCacheWrite1hUsdPer1m      pgtype.Float8
-	FlexInputUsdPer1m                 pgtype.Float8
-	FlexOutputUsdPer1m                pgtype.Float8
-	FlexCachedInputUsdPer1m           pgtype.Float8
-	FlexCacheWriteUsdPer1m            pgtype.Float8
-	FlexCacheWrite1hUsdPer1m          pgtype.Float8
 	LongContextInputTokenThreshold    pgtype.Int4
 	LongContextInputCostMultiplier    pgtype.Float8
 	LongContextOutputCostMultiplier   pgtype.Float8
+	ServiceTierPricesJson             string
 }
 
 type JuheBusinessProviderProtocolProfile struct {

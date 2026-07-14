@@ -53,10 +53,10 @@ export interface UsageRecordSummary {
   model?: string
   upstreamModel?: string
   pricingModel?: string
-  requestedServiceTier?: 'default' | 'priority' | 'flex'
-  effectiveServiceTier?: 'default' | 'priority' | 'flex'
-  reportedServiceTier?: 'default' | 'priority' | 'flex'
-  billedServiceTier?: 'default' | 'priority' | 'flex'
+  requestedServiceTier?: string
+  effectiveServiceTier?: string
+  reportedServiceTier?: string
+  billedServiceTier?: string
   requestedReasoningEffort?: UsageRecordReasoningEffort
   effectiveReasoningEffort?: UsageRecordReasoningEffort
   modelMappingApplied?: boolean
@@ -91,7 +91,7 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
-export type UsageRecordReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type UsageRecordReasoningEffort = string
 
 export interface UsageRecordListResult {
   items: UsageRecordSummary[]

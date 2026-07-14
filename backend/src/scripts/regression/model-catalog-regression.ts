@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -8,6 +9,13 @@ import express from 'express'
 import { runtimeConfig } from '../../config/runtime.js'
 import { OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+
+let modelCatalogPriceAdminCookie = ''
+const customModelPriceFields = new Set([
+  'inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M',
+  'serviceTierPrices', 'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M',
+  'outputUsdPerImage'
+])
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-catalog-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -28,7 +36,10 @@ const [
   { requireAuth },
   { requestContextMiddleware },
   repositories,
-  customProviderModelsRepository
+  customProviderModelsRepository,
+  providerModelCatalogRepository,
+  gatewayCacheInvalidation,
+  inflightQuotaService
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/model-pricing/model-catalog.service.js'),
@@ -37,7 +48,10 @@ const [
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/custom-provider-models.repository.js')
+  import('../../storage/custom-provider-models.repository.js'),
+  import('../../storage/provider-model-catalog.repository.js'),
+  import('../../shared/gateway-cache-invalidation.js'),
+  import('../../modules/gateway/quota/api-key-inflight-quota.service.js')
 ])
 
 try {
@@ -67,6 +81,18 @@ try {
   })
   catalogService.saveCustomProviderModel({
     providerCode: 'gpt',
+    model: 'gpt-regression-tier-only',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    supportedApiProtocols: ['responses'],
+    supportedServiceTiers: ['priority'],
+    serviceTierPrices: {
+      priority: { inputUsdPer1M: 4, outputUsdPer1M: 16 }
+    },
+    actorSystemAccountId: 'sys_admin'
+  })
+  catalogService.saveCustomProviderModel({
+    providerCode: 'gpt',
     model: 'gpt-regression-global',
     scope: 'global',
     supportedApiProtocols: ['responses'],
@@ -90,7 +116,8 @@ try {
     scope: 'personal',
     systemAccountId: 'sys_admin',
     supportedApiProtocols: ['responses'],
-    pricingModel: 'gpt-regression-upstream-target',
+    inputUsdPer1M: 3,
+    outputUsdPer1M: 9,
     actorSystemAccountId: 'sys_admin'
   })
   catalogService.saveCustomProviderModel({
@@ -116,7 +143,6 @@ try {
     scope: 'personal',
     systemAccountId: 'sys_admin',
     supportedApiProtocols: ['responses'],
-    pricingModel: 'gpt-5.5',
     actorSystemAccountId: 'sys_admin'
   })
   catalogService.saveCustomProviderModel({
@@ -195,14 +221,15 @@ try {
   assert.deepEqual(personalCapabilityModel?.supportedReasoningEfforts, ['low', 'medium', 'high'], '自定义模型思考能力必须完成 SQLite 往返')
   assert.equal(personalCapabilityModel?.defaultReasoningEffort, 'medium', '自定义模型默认思考级别必须完成 SQLite 往返')
   assert.equal(personalCapabilityModel?.supportsServiceTier, true, '自定义模型 supportsServiceTier 必须由精确能力数组派生')
-  assert(publicModels.has('gpt-regression-alias'), '带 pricingModel 的个人模型应进入个人公开模型目录')
+  assert(publicModels.has('gpt-regression-alias'), '带直接价格的个人模型应进入个人公开模型目录')
   assert(publicModels.has('gpt-regression-upstream-target'), '自定义上游目标模型应直接进入公开模型目录')
+  assert(publicModels.has('gpt-regression-tier-only'), '只有精确档位价格的模型也应进入公开模型目录')
   assert(publicModels.has('gpt-regression-case-model'), '仅大小写不同的小写自定义模型应进入模型目录')
   assert(publicModels.has('GPT-regression-case-model'), '仅大小写不同的大写自定义模型应进入模型目录')
   assert(publicModels.has('gpt-regression-audio'), '只有音频价格的自定义模型应进入公开模型目录')
   assert(publicModels.has('gpt-regression-image-unit'), '只有按张图片价格的自定义模型应进入公开模型目录')
   assert.equal(publicModels.has('gpt-regression-draft'), false, '草稿模型不应进入公开模型目录')
-  assert.equal(publicModels.has('gpt-regression-overridden-pricing-alias'), false, 'pricingModel 目标被无价自定义模型覆盖时别名不应进入公开模型目录')
+  assert.equal(publicModels.has('gpt-regression-overridden-pricing-alias'), false, '无价自定义模型不应进入公开模型目录')
   assert.equal(publicModels.has('openai-regression-personal'), false, 'GPT 模型目录不应反向包含 OpenAI 兼容自定义模型')
 
   const gpt56WireReasoning = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -253,7 +280,15 @@ try {
     supportedServiceTiers: ['priority'],
     outputUsdPerImage: 0.02,
     actorSystemAccountId: 'sys_admin'
-  }), /只有 GPT 文本自定义模型支持服务等级和思考能力配置/)
+  }), /只有文本自定义模型支持服务等级和思考能力配置/)
+  assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
+    providerCode: 'gpt', model: 'gpt-regression-image-orphan-tier-price', scope: 'personal', systemAccountId: 'sys_admin',
+    mode: 'image', serviceTierPrices: { priority: { inputUsdPer1M: 1 } }, actorSystemAccountId: 'sys_admin'
+  }), /只有文本自定义模型支持服务档位价格/)
+  assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
+    providerCode: 'anthropic', model: 'anthropic-regression-orphan-tier-price', scope: 'personal', systemAccountId: 'sys_admin',
+    mode: 'text', supportedServiceTiers: ['fast'], serviceTierPrices: { priority: { inputUsdPer1M: 1 } }, actorSystemAccountId: 'sys_admin'
+  }), /服务档位价格必须属于模型支持的服务等级/)
   assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
     providerCode: 'gpt',
     model: 'gpt-regression-audio-invalid-capabilities',
@@ -265,8 +300,8 @@ try {
     audioInputUsdPer1M: 1,
     audioOutputUsdPer1M: 2,
     actorSystemAccountId: 'sys_admin'
-  }), /只有 GPT 文本自定义模型支持服务等级和思考能力配置/)
-  assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
+  }), /只有文本自定义模型支持服务等级和思考能力配置/)
+  const openAIProviderCapabilities = customProviderModelsRepository.upsertCustomProviderModel({
     providerCode: 'openai',
     model: 'openai-regression-invalid-capabilities',
     scope: 'personal',
@@ -275,7 +310,8 @@ try {
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
     actorSystemAccountId: 'sys_admin'
-  }), /只有 GPT 文本自定义模型支持服务等级和思考能力配置/)
+  })
+  assert.deepEqual(openAIProviderCapabilities.supportedReasoningEfforts, ['high'], '非 GPT 文本模型应保存供应商原生思考能力字符串')
 
   const repositoryClearableModel = customProviderModelsRepository.upsertCustomProviderModel({
     providerCode: 'gpt',
@@ -654,7 +690,7 @@ try {
     inputTokens: 1_000_000,
     outputTokens: 1_000_000
   })
-  assert.equal(aliasCost, 12, 'pricingModel 应按目标模型直接价格计费')
+  assert.equal(aliasCost, 12, '模型应按自身目录行直接价格计费')
   const aliasCostAsync = await catalogService.estimateCatalogCostUsdAsync({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',
@@ -662,13 +698,22 @@ try {
     inputTokens: 1_000_000,
     outputTokens: 1_000_000
   })
-  assert.equal(aliasCostAsync, aliasCost, '异步 pricingModel 成本估算应与同步目录一致')
+  assert.equal(aliasCostAsync, aliasCost, '异步目录成本估算应与同步目录一致')
   const aliasPricingModelAsync = await catalogService.resolveCatalogPricingModelAsync({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',
     model: 'gpt-regression-alias'
   })
-  assert.equal(aliasPricingModelAsync, 'gpt-regression-upstream-target', '异步 pricingModel 解析应指向目标计价模型')
+  assert.equal(aliasPricingModelAsync, 'gpt-regression-alias', '异步计价模型应保持最终上游模型自身')
+  const tierOnlyCost = catalogService.estimateCatalogCostUsd({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_admin',
+    model: 'gpt-regression-tier-only',
+    serviceTier: 'priority',
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000
+  })
+  assert.equal(tierOnlyCost, 20, '只有精确档位价格的模型必须按 serviceTierPrices 计价')
   const lowerCaseModelCost = catalogService.estimateCatalogCostUsd({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',
@@ -692,7 +737,7 @@ try {
     inputTokens: 1_000_000,
     outputTokens: 1_000_000
   })
-  assert.equal(overriddenAliasCost, undefined, 'pricingModel 目标被无价自定义模型覆盖时不应回退到被覆盖的内置模型价格')
+  assert.equal(overriddenAliasCost, undefined, '无价模型不应按其他目录行回落计价')
   const audioCost = catalogService.estimateCatalogCostUsd({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',
@@ -735,6 +780,17 @@ try {
   })
   assert.equal(imageUnitBreakdown?.outputImageUnitCostUsd, 0.08, '按张图片成本应进入成本拆解')
   assert.equal(imageUnitBreakdown?.outputUsdPerImage, 0.04, '每张图片单价应进入成本拆解')
+  const scopedInflightEstimate = await inflightQuotaService.estimateGatewayRequestCostUsd({
+    originalUrl: '/v1/responses',
+    path: '/v1/responses',
+    body: { model: 'gpt-regression-personal' },
+    gatewayRequestBody: {
+      rawBodyBytes: 4,
+      model: 'gpt-regression-personal',
+      maxOutputTokens: 1
+    }
+  } as never, 'gpt', 'sys_admin')
+  assert.notEqual(scopedInflightEstimate, undefined, 'API Key 在途额度估算应命中所属账户的个人模型价格')
 
   catalogService.saveCustomProviderModel({
     id: pricedModel.id,
@@ -745,7 +801,6 @@ try {
     supportedApiProtocols: ['responses'],
     inputUsdPer1M: null,
     outputUsdPer1M: null,
-    pricingModel: 'gpt-regression-upstream-target',
     actorSystemAccountId: 'sys_admin'
   })
   const remappedCost = catalogService.estimateCatalogCostUsd({
@@ -755,9 +810,29 @@ try {
     inputTokens: 1_000_000,
     outputTokens: 1_000_000
   })
-  assert.equal(remappedCost, 12, '清空直接价格后应能切换为 pricingModel 计费')
+  assert.equal(remappedCost, undefined, '清空直接价格后不得回落其他模型价格')
 
   await assertProviderModelHttpContracts()
+
+  const partialPatchTarget = providerModelCatalogRepository.listBuiltInProviderModels(['gpt'])
+    .find((item) => item.inputUsdPer1M !== undefined && item.outputUsdPer1M !== undefined)
+  assert(partialPatchTarget, '缺少可验证部分价格 PATCH 的内置模型')
+  const partialPatchSaved = await providerModelCatalogRepository.updateBuiltInProviderModelPricesAsync(partialPatchTarget.id, {
+    inputUsdPer1M: (partialPatchTarget.inputUsdPer1M ?? 0) + 0.125
+  })
+  assert(partialPatchSaved, '内置模型部分价格 PATCH 后应返回模型')
+  assert.equal(partialPatchSaved.outputUsdPer1M, partialPatchTarget.outputUsdPer1M, '部分价格 PATCH 不得清空未提交的输出价格')
+  assert.deepEqual(partialPatchSaved.serviceTierPrices, partialPatchTarget.serviceTierPrices, '部分价格 PATCH 不得清空未提交的档位价格')
+
+  const unregisterFailingInvalidator = gatewayCacheInvalidation.registerGatewayRuntimeCacheInvalidator(async () => {
+    throw new Error('model catalog invalidation regression sentinel')
+  })
+  await assert.rejects(
+    gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('provider_model_price_updated'),
+    /gateway_runtime_cache 缓存失效存在 1 个 handler 失败/,
+    '可等待的网关缓存失效必须向调用方传播 Redis/handler 失败'
+  )
+  unregisterFailingInvalidator()
 
   console.log('model catalog regression passed')
 } finally {
@@ -806,6 +881,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     mustChangePassword: false
   })
   const adminCookie = sessionCookie(admin.id)
+  modelCatalogPriceAdminCookie = adminCookie
   const userACookie = sessionCookie(userA.id)
   const userBCookie = sessionCookie(userB.id)
 
@@ -916,7 +992,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(userAGptModel.defaultReasoningEffort, 'high', 'GPT 自定义模型 API 应返回默认思考级别')
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/gpt/models`,
-      userACookie,
+      adminCookie,
       'POST',
       {
         model: 'gpt-http-image-invalid-capabilities',
@@ -930,7 +1006,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/gpt/models`,
-      userACookie,
+      adminCookie,
       'POST',
       {
         model: 'gpt-http-audio-invalid-capabilities',
@@ -946,7 +1022,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models`,
-      userACookie,
+      adminCookie,
       'POST',
       {
         model: 'openai-http-invalid-capabilities',
@@ -955,12 +1031,12 @@ async function assertProviderModelHttpContracts(): Promise<void> {
         inputUsdPer1M: 1,
         outputUsdPer1M: 2
       },
-      400,
-      '非 GPT 自定义模型 API 必须拒绝非空服务等级或思考能力'
+      201,
+      '非 GPT 文本自定义模型 API 必须接受供应商原生思考能力'
     )
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/gpt/models`,
-      userACookie,
+      adminCookie,
       'POST',
       {
         model: 'gpt-http-invalid-reasoning-default',
@@ -1006,6 +1082,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       `/__aisys__/api/providers/gpt/models/${userAGptClearableModel.id}`,
       userACookie,
       {
+        status: 'draft',
         mode: 'image',
         supportedApiProtocols: ['images'],
         supportedServiceTiers: [],
@@ -1198,7 +1275,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(userAUpdatedModel.maxOutputTokens, 2048, '普通用户应能编辑自己的个人模型')
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models/${userAModel.id}`,
-      userACookie,
+      adminCookie,
       'PATCH',
       { model: 'gpt-http-user-a-renamed' },
       400,
@@ -1282,11 +1359,11 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models/${userAModel.id}`,
-      userACookie,
+      adminCookie,
       'PATCH',
       { inputUsdPer1M: null, outputUsdPer1M: null },
       400,
-      '启用模型清空价格且没有 pricingModel 时应拒绝保存'
+      '启用模型清空价格时应拒绝保存'
     )
 
     const userAVisible = await getEnvelope<Array<{ model: string; scope: string; status: string; providerCode: string }>>(
@@ -1405,12 +1482,29 @@ async function getEnvelope<T>(baseUrl: string, path: string, cookie: string): Pr
 }
 
 async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, {
+  let response = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
     body: JSON.stringify(body)
   })
+  if (response.status === 403 && modelCatalogPriceAdminCookie && customModelBodyHasPrice(body)) {
+    const source = body as Record<string, unknown>
+    const draftBody = Object.fromEntries(Object.entries(source).filter(([key]) => !customModelPriceFields.has(key)))
+    draftBody.status = 'draft'
+    response = await fetch(`${baseUrl}${path}`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(draftBody)
+    })
+    const created = await unwrapEnvelope<{ id: string }>(response, path)
+    return await patchEnvelope<T>(baseUrl, `${path}/${encodeURIComponent(created.id)}`, modelCatalogPriceAdminCookie, {
+      ...source,
+      status: source.status ?? 'active'
+    })
+  }
   return await unwrapEnvelope<T>(response, path)
+}
+
+function customModelBodyHasPrice(value: unknown): boolean {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).some((key) => customModelPriceFields.has(key)))
 }
 
 async function putEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {

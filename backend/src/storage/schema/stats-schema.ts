@@ -1042,6 +1042,30 @@ export function applyStatsSchema(database: DatabaseSync): void {
           )
         );
 
+    CREATE TABLE IF NOT EXISTS model_token_intercept_baseline_versions (
+          cohort_key_hmac TEXT NOT NULL,
+          requested_model TEXT NOT NULL,
+          tokenizer_version TEXT NOT NULL,
+          probe_set_version TEXT NOT NULL,
+          baseline_version INTEGER NOT NULL,
+          version_status TEXT NOT NULL DEFAULT 'calibration_pending',
+          evidence_status TEXT NOT NULL DEFAULT 'insufficient',
+          independent_source_count INTEGER NOT NULL DEFAULT 0,
+          retained_source_count INTEGER NOT NULL DEFAULT 0,
+          excluded_source_count INTEGER NOT NULL DEFAULT 0,
+          median_intercept REAL,
+          mad_intercept REAL,
+          q10_intercept REAL,
+          q90_intercept REAL,
+          strong_threshold_intercept REAL,
+          strong_gate_enabled INTEGER NOT NULL DEFAULT 0,
+          calibration_note TEXT,
+          first_observed_at TEXT NOT NULL,
+          last_observed_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (cohort_key_hmac, requested_model, tokenizer_version, probe_set_version, baseline_version)
+        );
+
     CREATE TABLE IF NOT EXISTS model_trust_window_sources (
           system_account_id TEXT NOT NULL,
           account_id TEXT NOT NULL,
@@ -1144,6 +1168,11 @@ export function applyStatsSchema(database: DatabaseSync): void {
           paired_probe_count INTEGER NOT NULL DEFAULT 0,
           slope REAL,
           intercept REAL,
+          intercept_baseline_median REAL,
+          intercept_baseline_mad REAL,
+          intercept_baseline_version INTEGER,
+          intercept_baseline_status TEXT,
+          intercept_strong_gate_enabled INTEGER NOT NULL DEFAULT 0,
           identity_distance REAL,
           paired_distance REAL,
           paired_baseline_median REAL,
@@ -1159,11 +1188,26 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (system_account_id, account_id, requested_model)
         );
 
+    CREATE TABLE IF NOT EXISTS model_trust_latest_dirty_accounts (
+          system_account_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          requested_model TEXT NOT NULL,
+          dirty_reason TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (system_account_id, account_id, requested_model)
+        );
+
     CREATE INDEX IF NOT EXISTS idx_model_account_trust_results_updated ON model_account_trust_results(updated_at, account_id, requested_model);
+
+    CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated ON model_trust_latest_dirty_accounts(updated_at, system_account_id, account_id, requested_model);
 
     CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_cohort ON model_token_integrity_windows(cohort_key_hmac, requested_model, updated_at);
 
+    CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_activation ON model_token_integrity_windows(cohort_key_hmac, requested_model, tokenizer_version, probe_set_version, account_id);
+
     CREATE INDEX IF NOT EXISTS idx_model_token_integrity_rounds_account ON model_token_integrity_rounds(account_id, requested_model, updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_model_token_intercept_baseline_active ON model_token_intercept_baseline_versions(cohort_key_hmac, requested_model, tokenizer_version, probe_set_version, version_status, baseline_version);
 
     CREATE INDEX IF NOT EXISTS idx_model_trust_window_sources_cohort ON model_trust_window_sources(cohort_key_hmac, upstream_bucket_hmac);
 

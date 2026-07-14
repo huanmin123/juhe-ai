@@ -282,7 +282,7 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 		catalog: []port.ManagementProviderModelCatalogItem{
 			{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &basePrice},
 			{ProviderCode: "gpt", Model: "gpt-5.5", Scope: "global", Status: "active", Source: "custom-global", InputUSDPer1M: &basePrice},
-			{ProviderCode: "gpt", Model: "gpt-alias", Scope: "personal", SystemAccountID: "sys_user", Status: "active", Source: "custom-personal", PricingModel: "gpt-5.5"},
+			{ProviderCode: "gpt", Model: "gpt-alias", Scope: "personal", SystemAccountID: "sys_user", Status: "active", Source: "custom-personal", InputUSDPer1M: &basePrice},
 			{ProviderCode: "gpt", Model: "draft-model", Scope: "personal", Status: "draft", Source: "custom-personal"},
 			{ProviderCode: "gpt", Model: "unpriced-model", Scope: "global", Status: "active", Source: "custom-global"},
 		},
@@ -303,7 +303,7 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 		t.Fatalf("models = %+v, want priced base and alias", models)
 	}
 	alias := findModelCatalogItem(models, "gpt-alias")
-	if alias == nil || alias.Scope != "personal" || alias.Source != "custom-personal" || alias.PricingModel != "gpt-5.5" {
+	if alias == nil || alias.Scope != "personal" || alias.Source != "custom-personal" || alias.InputUSDPer1M == nil {
 		t.Fatalf("alias model = %+v", alias)
 	}
 	if !store.catalogInput.IncludeInactive || store.catalogInput.SystemAccountID != "sys_user" {
@@ -314,35 +314,27 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 	priorityInput := 10.0
 	priorityOutput := 60.0
-	priorityCachedInput := 1.0
-	priorityCacheWrite := 12.5
 	flexInput := 2.5
 	flexOutput := 15.0
-	flexCachedInput := 0.25
-	flexCacheWrite := 3.125
 	longContextThreshold := 272000
 	longContextInputMultiplier := 2.0
 	longContextOutputMultiplier := 1.5
 	builtIn := catalogItemFromPort(port.ManagementProviderModelCatalogItem{
-		ProviderCode:                    "gpt",
-		Model:                           "gpt-5.6-sol",
-		Scope:                           "built_in",
-		Status:                          "active",
-		SupportedServiceTiers:           []string{"priority", "priority"},
-		SupportedReasoningEfforts:       []string{"low", "high", "high", "max"},
-		DefaultReasoningEffort:          " high ",
-		CodexSupportedReasoningLevels:   []string{"low", "high", "ultra", "ultra"},
-		CodexDefaultReasoningLevel:      " low ",
-		CodexMultiAgentVersion:          " v2 ",
-		SupportsServiceTier:             false,
-		PriorityInputUSDPer1M:           &priorityInput,
-		PriorityOutputUSDPer1M:          &priorityOutput,
-		PriorityCachedInputUSDPer1M:     &priorityCachedInput,
-		PriorityCacheWriteUSDPer1M:      &priorityCacheWrite,
-		FlexInputUSDPer1M:               &flexInput,
-		FlexOutputUSDPer1M:              &flexOutput,
-		FlexCachedInputUSDPer1M:         &flexCachedInput,
-		FlexCacheWriteUSDPer1M:          &flexCacheWrite,
+		ProviderCode:                  "gpt",
+		Model:                         "gpt-5.6-sol",
+		Scope:                         "built_in",
+		Status:                        "active",
+		SupportedServiceTiers:         []string{"priority", "priority"},
+		SupportedReasoningEfforts:     []string{"low", "high", "high", "max"},
+		DefaultReasoningEffort:        " high ",
+		CodexSupportedReasoningLevels: []string{"low", "high", "ultra", "ultra"},
+		CodexDefaultReasoningLevel:    " low ",
+		CodexMultiAgentVersion:        " v2 ",
+		SupportsServiceTier:           false,
+		ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+			"priority": {InputUSDPer1M: &priorityInput, OutputUSDPer1M: &priorityOutput},
+			"flex":     {InputUSDPer1M: &flexInput, OutputUSDPer1M: &flexOutput},
+		},
 		LongContextInputTokenThreshold:  &longContextThreshold,
 		LongContextInputCostMultiplier:  &longContextInputMultiplier,
 		LongContextOutputCostMultiplier: &longContextOutputMultiplier,
@@ -358,16 +350,10 @@ func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 		builtIn.CodexMultiAgentVersion != "v2" {
 		t.Fatalf("built-in Codex capabilities = %+v", builtIn)
 	}
-	if builtIn.PriorityInputUSDPer1M == nil || *builtIn.PriorityInputUSDPer1M != 10 ||
-		builtIn.PriorityOutputUSDPer1M == nil || *builtIn.PriorityOutputUSDPer1M != 60 ||
-		builtIn.PriorityCachedInputUSDPer1M == nil || *builtIn.PriorityCachedInputUSDPer1M != 1 ||
-		builtIn.PriorityCacheWriteUSDPer1M == nil || *builtIn.PriorityCacheWriteUSDPer1M != 12.5 ||
-		builtIn.PriorityCacheWrite1hUSDPer1M != nil ||
-		builtIn.FlexInputUSDPer1M == nil || *builtIn.FlexInputUSDPer1M != 2.5 ||
-		builtIn.FlexOutputUSDPer1M == nil || *builtIn.FlexOutputUSDPer1M != 15 ||
-		builtIn.FlexCachedInputUSDPer1M == nil || *builtIn.FlexCachedInputUSDPer1M != 0.25 ||
-		builtIn.FlexCacheWriteUSDPer1M == nil || *builtIn.FlexCacheWriteUSDPer1M != 3.125 ||
-		builtIn.FlexCacheWrite1hUSDPer1M != nil {
+	if builtIn.ServiceTierPrices["priority"].InputUSDPer1M == nil || *builtIn.ServiceTierPrices["priority"].InputUSDPer1M != 10 ||
+		builtIn.ServiceTierPrices["priority"].OutputUSDPer1M == nil || *builtIn.ServiceTierPrices["priority"].OutputUSDPer1M != 60 ||
+		builtIn.ServiceTierPrices["flex"].InputUSDPer1M == nil || *builtIn.ServiceTierPrices["flex"].InputUSDPer1M != 2.5 ||
+		builtIn.ServiceTierPrices["flex"].OutputUSDPer1M == nil || *builtIn.ServiceTierPrices["flex"].OutputUSDPer1M != 15 {
 		t.Fatalf("built-in tier pricing metadata = %+v", builtIn)
 	}
 	if builtIn.LongContextInputTokenThreshold == nil || *builtIn.LongContextInputTokenThreshold != 272000 ||
@@ -789,17 +775,17 @@ func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
 			wantMessage:   "默认思考级别必须属于支持的思考级别",
 		},
 		{
-			name:         "reject non gpt capabilities",
+			name:         "reject invalid generic capability token",
 			providerCode: "anthropic",
-			serviceTiers: []string{"priority"},
-			wantMessage:  "只有 GPT 文本自定义模型支持服务等级和思考能力配置",
+			serviceTiers: []string{" priority "},
+			wantMessage:  "自定义模型参数无效",
 		},
 		{
 			name:         "reject image capabilities",
 			providerCode: "gpt",
 			mode:         OptionalString{Set: true, Value: "image"},
 			efforts:      []string{"high"},
-			wantMessage:  "只有 GPT 文本自定义模型支持服务等级和思考能力配置",
+			wantMessage:  "只有文本自定义模型支持服务等级和思考能力配置",
 		},
 	}
 
@@ -811,9 +797,10 @@ func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
 				},
 			}
 			_, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
-				ProviderCode:         tt.providerCode,
-				ActorSystemAccountID: "sys_user",
-				ActorRole:            "user",
+				ProviderCode:          tt.providerCode,
+				ActorSystemAccountID:  "sys_admin",
+				ActorRole:             "admin",
+				TargetSystemAccountID: "sys_user",
 				Fields: CustomModelMutation{
 					Model:                     OptionalString{Set: true, Value: "custom-chat"},
 					Mode:                      tt.mode,
@@ -849,11 +836,13 @@ func TestServiceCreateCustomModelAllowsExplicitCapabilityClearsOutsideGPTText(t 
 				},
 			}
 			result, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
-				ProviderCode:         input.providerCode,
-				ActorSystemAccountID: "sys_user",
-				ActorRole:            "user",
+				ProviderCode:          input.providerCode,
+				ActorSystemAccountID:  "sys_admin",
+				ActorRole:             "admin",
+				TargetSystemAccountID: "sys_user",
 				Fields: CustomModelMutation{
 					Model:                     OptionalString{Set: true, Value: "custom-model"},
+					Status:                    OptionalString{Set: true, Value: "draft"},
 					Mode:                      OptionalString{Set: input.mode != "", Value: input.mode},
 					SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{}},
 					SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{}},
@@ -930,6 +919,7 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 		ActorSystemAccountID: "sys_user",
 		ActorRole:            "user",
 		Fields: CustomModelMutation{
+			Status:                    OptionalString{Set: true, Value: "draft"},
 			Mode:                      OptionalString{Set: true, Value: "image"},
 			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{}},
 			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{}},
@@ -996,16 +986,41 @@ func TestServiceCreateCustomModelPrioritizesGlobalForbiddenBeforeCapabilityValid
 	}
 }
 
-func TestServiceCreateCustomModelValidatesPricingModel(t *testing.T) {
+func TestServiceRejectsOrdinaryUserPriceMutations(t *testing.T) {
+	price := 1.25
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+		customByID: map[string]port.ManagementProviderModelCatalogItem{
+			"custom_model_1": {ID: "custom_model_1", ProviderCode: "gpt", Model: "custom-chat", Scope: "personal", SystemAccountID: "sys_user", Status: "draft"},
+		},
+	}
+	service := NewService(store)
+
+	_, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "custom-chat"}, Status: OptionalString{Set: true, Value: "draft"}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price}},
+	})
+	message, ok := CustomModelForbiddenMessage(err)
+	if !ok || message != "只有管理员可以维护模型价格" {
+		t.Fatalf("create price forbidden message = %q, %v; err = %v", message, ok, err)
+	}
+
+	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "custom_model_1", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{ServiceTierPrices: OptionalProviderModelPriceMap{Set: true, Value: map[string]port.ManagementProviderModelPriceSet{}}},
+	})
+	message, ok = CustomModelForbiddenMessage(err)
+	if !ok || message != "只有管理员可以维护模型价格" {
+		t.Fatalf("update price forbidden message = %q, %v; err = %v", message, ok, err)
+	}
+}
+
+func TestServiceCreateCustomModelRequiresOwnPriceWhenActive(t *testing.T) {
 	price := 2.0
 	store := &providerModelStoreStub{
 		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
-		catalog: []port.ManagementProviderModelCatalogItem{
-			{ProviderCode: "gpt", Model: "base-model", Scope: "built_in", Status: "active", InputUSDPer1M: &price},
-			{ProviderCode: "gpt", Model: "alias-model", Scope: "global", Status: "active", PricingModel: "base-model"},
-		},
 	}
-	service := NewServiceWithOptions(ServiceOptions{Store: store, NewID: func(prefix string) string { return prefix + "_pricing" }})
+	service := NewServiceWithOptions(ServiceOptions{Store: store, NewID: func(prefix string) string { return prefix + "_price" }})
 
 	_, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
 		ProviderCode:          "gpt",
@@ -1013,13 +1028,13 @@ func TestServiceCreateCustomModelValidatesPricingModel(t *testing.T) {
 		ActorRole:             "admin",
 		TargetSystemAccountID: "sys_user",
 		Fields: CustomModelMutation{
-			Model:        OptionalString{Set: true, Value: "custom-alias"},
-			PricingModel: OptionalString{Set: true, Value: "alias-model"},
+			Model:  OptionalString{Set: true, Value: "custom-unpriced"},
+			Status: OptionalString{Set: true, Value: "active"},
 		},
 	})
 	message, ok := CustomModelValidationMessage(err)
-	if !ok || message != "pricingModel 只能指向有直接价格的模型，不能递归指向另一个 pricingModel" {
-		t.Fatalf("recursive pricing message = %q, %v; err = %v", message, ok, err)
+	if !ok || message != "启用的自定义模型必须配置价格" {
+		t.Fatalf("missing pricing message = %q, %v; err = %v", message, ok, err)
 	}
 
 	result, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
@@ -1028,15 +1043,45 @@ func TestServiceCreateCustomModelValidatesPricingModel(t *testing.T) {
 		ActorRole:             "admin",
 		TargetSystemAccountID: "sys_user",
 		Fields: CustomModelMutation{
-			Model:        OptionalString{Set: true, Value: "custom-alias"},
-			PricingModel: OptionalString{Set: true, Value: "base-model"},
+			Model:                 OptionalString{Set: true, Value: "custom-tier-priced"},
+			Status:                OptionalString{Set: true, Value: "active"},
+			ServiceTierPrices:     OptionalProviderModelPriceMap{Set: true, Value: map[string]port.ManagementProviderModelPriceSet{"priority": {InputUSDPer1M: &price}}},
+			SupportedServiceTiers: OptionalStringList{Set: true, Value: []string{"priority"}},
 		},
 	})
 	if err != nil {
-		t.Fatalf("CreateCustomModel() with pricing model error = %v", err)
+		t.Fatalf("CreateCustomModel() with tier price error = %v", err)
 	}
-	if result.PricingModel != "base-model" || store.saveInput.PricingModel != "base-model" {
-		t.Fatalf("pricing model result=%+v save=%+v", result, store.saveInput)
+	if result.ServiceTierPrices["priority"].InputUSDPer1M == nil || *result.ServiceTierPrices["priority"].InputUSDPer1M != price {
+		t.Fatalf("tier pricing result=%+v save=%+v", result, store.saveInput)
+	}
+}
+
+func TestServiceCreateCustomModelRejectsOrphanTierPrices(t *testing.T) {
+	price := 1.0
+	store := &providerModelStoreStub{providers: map[string]port.ManagementProviderModelProvider{
+		"anthropic": {Code: "anthropic", Enabled: true},
+	}}
+	service := NewService(store)
+
+	_, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "anthropic", ActorSystemAccountID: "sys_admin", ActorRole: "admin", TargetSystemAccountID: "sys_user",
+		Fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "image-orphan"}, Mode: OptionalString{Set: true, Value: "image"},
+			ServiceTierPrices: OptionalProviderModelPriceMap{Set: true, Value: map[string]port.ManagementProviderModelPriceSet{"fast": {InputUSDPer1M: &price}}}},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "只有文本自定义模型支持服务档位价格" {
+		t.Fatalf("non-text tier price message = %q, %v; err = %v", message, ok, err)
+	}
+
+	_, err = service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "anthropic", ActorSystemAccountID: "sys_admin", ActorRole: "admin", TargetSystemAccountID: "sys_user",
+		Fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "text-orphan"}, SupportedServiceTiers: OptionalStringList{Set: true, Value: []string{"fast"}},
+			ServiceTierPrices: OptionalProviderModelPriceMap{Set: true, Value: map[string]port.ManagementProviderModelPriceSet{"priority": {InputUSDPer1M: &price}}}},
+	})
+	message, ok = CustomModelValidationMessage(err)
+	if !ok || message != "服务档位价格必须属于模型支持的服务等级" {
+		t.Fatalf("orphan tier price message = %q, %v; err = %v", message, ok, err)
 	}
 }
 
@@ -1389,6 +1434,21 @@ type providerModelStoreStub struct {
 	clearSystemErr         error
 }
 
+func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput) (bool, error) {
+	for index := range s.catalog {
+		if s.catalog[index].ID == input.ID && s.catalog[index].ProviderCode == input.ProviderCode {
+			s.catalog[index].InputUSDPer1M = cloneFloatPtr(input.InputUSDPer1M)
+			s.catalog[index].OutputUSDPer1M = cloneFloatPtr(input.OutputUSDPer1M)
+			s.catalog[index].CachedInputUSDPer1M = cloneFloatPtr(input.CachedInputUSDPer1M)
+			s.catalog[index].CacheWriteUSDPer1M = cloneFloatPtr(input.CacheWriteUSDPer1M)
+			s.catalog[index].CacheWrite1hUSDPer1M = cloneFloatPtr(input.CacheWrite1hUSDPer1M)
+			s.catalog[index].ServiceTierPrices = cloneProviderModelPriceMap(input.ServiceTierPrices)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *providerModelStoreStub) FindManagementProviderModelProvider(_ context.Context, code string) (port.ManagementProviderModelProvider, bool, error) {
 	provider, ok := s.providers[code]
 	return provider, ok, nil
@@ -1491,13 +1551,14 @@ func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Con
 		SupportedServiceTiers:     append([]string(nil), input.SupportedServiceTiers...),
 		SupportedReasoningEfforts: append([]string(nil), input.SupportedReasoningEfforts...),
 		DefaultReasoningEffort:    input.DefaultReasoningEffort,
-		PricingModel:              input.PricingModel,
 		ContextWindowTokens:       input.ContextWindowTokens,
 		MaxOutputTokens:           input.MaxOutputTokens,
 		InputUSDPer1M:             input.InputUSDPer1M,
 		OutputUSDPer1M:            input.OutputUSDPer1M,
 		CachedInputUSDPer1M:       input.CachedInputUSDPer1M,
 		CacheWriteUSDPer1M:        input.CacheWriteUSDPer1M,
+		CacheWrite1hUSDPer1M:      input.CacheWrite1hUSDPer1M,
+		ServiceTierPrices:         cloneProviderModelPriceMap(input.ServiceTierPrices),
 		ImageInputUSDPer1M:        input.ImageInputUSDPer1M,
 		ImageOutputUSDPer1M:       input.ImageOutputUSDPer1M,
 		AudioInputUSDPer1M:        input.AudioInputUSDPer1M,

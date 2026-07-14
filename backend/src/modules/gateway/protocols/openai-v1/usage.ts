@@ -2,6 +2,7 @@ import {
   emptyUsage,
   type ParsedUsage
 } from '../../usage/types.js'
+import { normalizeOptionalUsageServiceTier } from '../../usage/service-tier.js'
 
 export function parseOpenAIUsageFromJsonBuffer(responseBody: Buffer): ParsedUsage {
   if (responseBody.length === 0) return emptyUsage()
@@ -115,9 +116,7 @@ function extractJsonStringPropertyFromTextFragment(text: string, propertyName: s
 }
 
 function normalizeServiceTier(value: unknown): ParsedUsage['serviceTier'] {
-  if (value === 'priority' || value === 'flex') return value
-  if (value === 'default' || value === 'auto') return 'default'
-  return undefined
+  return normalizeOptionalUsageServiceTier(value)
 }
 
 function extractJsonObjectPropertyFromTextFragment(text: string, propertyName: string): string | undefined {

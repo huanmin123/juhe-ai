@@ -90,7 +90,11 @@ for (let roundIndex = 0; roundIndex < 3; roundIndex += 1) {
   }
 }
 assert.equal(await trustRepository.createModelCheckObservationsAsync(observations), 9)
-assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(4), 4)
+const concurrentAggregation = await Promise.all([
+  trustRepository.aggregateModelTrustObservationsAsync(4),
+  trustRepository.aggregateModelTrustObservationsAsync(4)
+])
+assert.deepEqual([...concurrentAggregation].sort((left, right) => left - right), [0, 4], '并发聚合只能由一个数据库租约 owner 推进游标')
 assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 5)
 assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0, '游标不能重复聚合已完成 observation')
 
@@ -102,6 +106,9 @@ assert.equal(latest.independentSourceCount, 1)
 assert.equal(latest.usageIntegrityStatus, 'consistent')
 assert(Math.abs((latest.slope ?? 0) - 1) < 0.001)
 assert(Math.abs((latest.intercept ?? 0) - 10) < 0.001)
+assert.equal(latest.interceptBaselineStatus, 'calibration_pending')
+assert.equal(latest.interceptStrongGateEnabled, false, '单来源待校准基线不能开启固定灌水强判')
+assert(latest.reasonCodes.includes('fixed_intercept_calibration_pending'))
 assert.equal(latest.evidenceStatus, 'insufficient', '单一上游桶不能形成群体稳定证据')
 const window = database.getStatsDatabase().prepare('SELECT round_count, slope, intercept, usage_integrity_status FROM model_token_integrity_windows LIMIT 1').get() as Record<string, unknown>
 assert.equal(window.round_count, 3, '窗口本身必须保存已完成轮次')
@@ -258,12 +265,44 @@ assert(!serialized.includes(origin), 'observation 不得保存明文上游 origi
 assert(!serialized.includes('Controlled token integrity probe'), 'observation 不得保存受控题面')
 assert(!('prompt' in stored) && !('request_body' in stored) && !('response_body' in stored), 'observation schema 不得包含正文列')
 
+const dirtyInsert = database.getStatsDatabase().prepare(`
+  INSERT INTO model_trust_latest_dirty_accounts (
+    system_account_id, account_id, requested_model, dirty_reason, updated_at
+  ) VALUES (?, ?, 'gpt-5.6-sol', 'regression', ?)
+`)
+database.getStatsDatabase().exec('BEGIN')
+try {
+  for (let index = 0; index < 501; index += 1) {
+    dirtyInsert.run('sys_model_trust', `acct_dirty_${String(index).padStart(4, '0')}`, '2026-07-20T00:00:00.000Z')
+  }
+  database.getStatsDatabase().exec('COMMIT')
+} catch (error) {
+  database.getStatsDatabase().exec('ROLLBACK')
+  throw error
+}
+assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0)
+assert.equal(
+  (database.getStatsDatabase().prepare('SELECT COUNT(*) AS count FROM model_trust_latest_dirty_accounts').get() as { count: number }).count,
+  1,
+  '无新 observation 时也必须有界续跑 dirty queue，不能永久只处理前 500 个账号'
+)
+assert.equal(await trustRepository.aggregateModelTrustObservationsAsync(500), 0)
+assert.equal(
+  (database.getStatsDatabase().prepare('SELECT COUNT(*) AS count FROM model_trust_latest_dirty_accounts').get() as { count: number }).count,
+  0,
+  'dirty queue continuation 必须最终清空剩余账号'
+)
+
 const pgSql = postgresSchema.buildPostgresSchemaSql()
 assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_check_observations'))
 assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_token_integrity_windows'))
 assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_token_integrity_rounds'))
+assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_token_intercept_baseline_versions'))
 assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_account_trust_results'))
+assert(pgSql.includes('CREATE TABLE IF NOT EXISTS model_trust_latest_dirty_accounts'))
+assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_token_intercept_baseline_active'))
 assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_trust_window_sources_cohort ON model_trust_window_sources(cohort_key_hmac, upstream_bucket_hmac)'))
+assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated'))
 
 console.log('模型可信 observation 聚合回归通过：脱敏事实、游标增量、窗口结果和 PostgreSQL schema 同步符合预期')
 

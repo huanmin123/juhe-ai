@@ -36,11 +36,10 @@ import {
 } from './postgres-usage-record-partitions.js'
 import {
   buildCatalogCostBreakdown,
-  buildCatalogCostBreakdownAsync,
-  estimateCatalogCacheReadCostUsdAsync,
-  estimateCatalogCacheWriteCostUsdAsync,
-  estimateCatalogCostUsdAsync,
-  resolveCatalogPricingModelAsync
+  buildCatalogCostBreakdownFromPricing,
+  findCatalogItem,
+  listProviderModelCatalogAsync,
+  type ProviderModelCatalogItem
 } from '../modules/model-pricing/model-catalog.service.js'
 import type { ProviderCostBreakdown } from '../modules/model-pricing/model-pricing.service.js'
 import type { UsageReasoningEffort } from '../modules/gateway/usage/reasoning-effort.js'
@@ -71,10 +70,10 @@ export interface UsageRecordSummary {
   model?: string
   upstreamModel?: string
   pricingModel?: string
-  requestedServiceTier?: 'default' | 'priority' | 'flex'
-  effectiveServiceTier?: 'default' | 'priority' | 'flex'
-  reportedServiceTier?: 'default' | 'priority' | 'flex'
-  billedServiceTier?: 'default' | 'priority' | 'flex'
+  requestedServiceTier?: string
+  effectiveServiceTier?: string
+  reportedServiceTier?: string
+  billedServiceTier?: string
   requestedReasoningEffort?: UsageReasoningEffort
   effectiveReasoningEffort?: UsageReasoningEffort
   pricingSnapshot?: ProviderCostBreakdown
@@ -165,15 +164,13 @@ export interface UsageRecordInput {
   model?: string
   upstreamModel?: string
   pricingModel?: string
-  requestedServiceTier?: 'default' | 'priority' | 'flex'
-  effectiveServiceTier?: 'default' | 'priority' | 'flex'
-  reportedServiceTier?: 'default' | 'priority' | 'flex'
-  billedServiceTier?: 'default' | 'priority' | 'flex'
+  requestedServiceTier?: string
+  effectiveServiceTier?: string
+  reportedServiceTier?: string
+  billedServiceTier?: string
   requestedReasoningEffort?: UsageReasoningEffort
   effectiveReasoningEffort?: UsageReasoningEffort
   pricingSnapshot?: ProviderCostBreakdown
-  priorityPriceMultiplier?: number
-  flexPriceMultiplier?: number
   modelMappingApplied?: boolean
   modelMappingSource?: string
   sourceEndpointFamily?: string
@@ -461,26 +458,26 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Prom
 }
 
 async function enrichUsageRecordPricingAsync(inputs: UsageRecordInput[]): Promise<UsageRecordInput[]> {
-  const pricingModelCache = new Map<string, Promise<string | undefined>>()
-  const resolvePricingModel = async (input: { providerCode: string; model?: string; systemAccountId?: string }): Promise<string | undefined> => {
-    const key = [input.providerCode, input.systemAccountId ?? '', input.model ?? ''].join('\u0000')
-    let pending = pricingModelCache.get(key)
+  const catalogCache = new Map<string, Promise<ProviderModelCatalogItem[]>>()
+  const loadCatalog = async (input: { providerCode: string; systemAccountId?: string }): Promise<ProviderModelCatalogItem[]> => {
+    const key = [input.providerCode, input.systemAccountId ?? ''].join('\u0000')
+    let pending = catalogCache.get(key)
     if (!pending) {
-      pending = resolveCatalogPricingModelAsync(input)
-      pricingModelCache.set(key, pending)
+      pending = listProviderModelCatalogAsync(input)
+      catalogCache.set(key, pending)
     }
     return await pending
   }
   const enriched: UsageRecordInput[] = []
   for (const input of inputs) {
-    enriched.push(await enrichSingleUsageRecordPricingAsync(input, resolvePricingModel))
+    enriched.push(await enrichSingleUsageRecordPricingAsync(input, loadCatalog))
   }
   return enriched
 }
 
 async function enrichSingleUsageRecordPricingAsync(
   input: UsageRecordInput,
-  resolvePricingModel: (input: { providerCode: string; model?: string; systemAccountId?: string }) => Promise<string | undefined>
+  loadCatalog: (input: { providerCode: string; systemAccountId?: string }) => Promise<ProviderModelCatalogItem[]>
 ): Promise<UsageRecordInput> {
   if (input.pricingSnapshot !== undefined) return input
   if (!hasUsageRecordPricingSnapshotFact(input)) return input
@@ -492,14 +489,9 @@ async function enrichSingleUsageRecordPricingAsync(
   const existingPricingModel = normalizeUsageRecordPricingModel(input.pricingModel)
 
   try {
+    const catalog = await loadCatalog({ providerCode, systemAccountId: catalogSystemAccountId })
     const pricingModel = existingPricingModel
-      ?? await resolveUsageRecordPricingModelAsync({
-        providerCode,
-        systemAccountId: catalogSystemAccountId,
-        upstreamModel,
-        requestedModel,
-        resolvePricingModel
-      })
+      ?? resolveUsageRecordPricingModel(catalog, upstreamModel, requestedModel)
     const costModel = pricingModel ?? upstreamModel ?? requestedModel
     if (!costModel) {
       return pricingModel && pricingModel !== input.pricingModel
@@ -510,79 +502,37 @@ async function enrichSingleUsageRecordPricingAsync(
     const enriched: UsageRecordInput = pricingModel && pricingModel !== input.pricingModel
       ? { ...input, pricingModel }
       : { ...input }
-
+    if (!hasUsageRecordCostDimension(enriched)) return enriched
+    const pricing = findCatalogItem(catalog, costModel)
+    if (!pricing) return enriched
+    const pricingSnapshot = buildCatalogCostBreakdownFromPricing(pricing, {
+      providerCode,
+      systemAccountId: catalogSystemAccountId,
+      model: costModel,
+      serviceTier: enriched.billedServiceTier,
+      inputTokens: enriched.inputTokens,
+      outputTokens: enriched.outputTokens,
+      cacheReadTokens: enriched.cacheReadTokens,
+      cacheWriteTokens: enriched.cacheWriteTokens,
+      cacheWrite1hTokens: enriched.cacheWrite1hTokens,
+      thinkingTokens: enriched.thinkingTokens,
+      inputImageTokens: enriched.inputImageTokens,
+      outputImageTokens: enriched.outputImageTokens,
+      inputAudioTokens: enriched.inputAudioTokens,
+      outputAudioTokens: enriched.outputAudioTokens,
+      outputImageCount: enriched.outputImageCount,
+      costUsd: enriched.costUsd
+    })
+    if (!pricingSnapshot) return enriched
     if (enriched.cacheReadCostUsd === undefined && enriched.cacheReadTokens !== undefined) {
-      enriched.cacheReadCostUsd = await estimateCatalogCacheReadCostUsdAsync({
-        providerCode,
-        systemAccountId: catalogSystemAccountId,
-        model: costModel,
-        serviceTier: enriched.billedServiceTier,
-        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
-        flexPriceMultiplier: enriched.flexPriceMultiplier,
-        cacheReadTokens: enriched.cacheReadTokens
-      })
+      enriched.cacheReadCostUsd = pricingSnapshot.cacheReadCostUsd
     }
-
-    if (
-      enriched.cacheWriteCostUsd === undefined
-      && (enriched.cacheWriteTokens !== undefined || enriched.cacheWrite1hTokens !== undefined)
-    ) {
-      enriched.cacheWriteCostUsd = await estimateCatalogCacheWriteCostUsdAsync({
-        providerCode,
-        systemAccountId: catalogSystemAccountId,
-        model: costModel,
-        serviceTier: enriched.billedServiceTier,
-        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
-        flexPriceMultiplier: enriched.flexPriceMultiplier,
-        cacheWriteTokens: enriched.cacheWriteTokens,
-        cacheWrite1hTokens: enriched.cacheWrite1hTokens
-      })
+    if (enriched.cacheWriteCostUsd === undefined && (enriched.cacheWriteTokens !== undefined || enriched.cacheWrite1hTokens !== undefined)) {
+      enriched.cacheWriteCostUsd = sumOptionalCosts(pricingSnapshot.cacheWriteCostUsd, pricingSnapshot.cacheWrite1hCostUsd)
+        ?? (pricingSnapshot.cacheWriteUsdPer1M !== undefined || pricingSnapshot.cacheWrite1hUsdPer1M !== undefined ? 0 : undefined)
     }
-
-    if (enriched.costUsd === undefined && hasUsageRecordCostDimension(enriched)) {
-      enriched.costUsd = await estimateCatalogCostUsdAsync({
-        providerCode,
-        systemAccountId: catalogSystemAccountId,
-        model: costModel,
-        serviceTier: enriched.billedServiceTier,
-        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
-        flexPriceMultiplier: enriched.flexPriceMultiplier,
-        inputTokens: enriched.inputTokens,
-        outputTokens: enriched.outputTokens,
-        cacheReadTokens: enriched.cacheReadTokens,
-        cacheWriteTokens: enriched.cacheWriteTokens,
-        cacheWrite1hTokens: enriched.cacheWrite1hTokens,
-        thinkingTokens: enriched.thinkingTokens,
-        inputImageTokens: enriched.inputImageTokens,
-        outputImageTokens: enriched.outputImageTokens,
-        inputAudioTokens: enriched.inputAudioTokens,
-        outputAudioTokens: enriched.outputAudioTokens,
-        outputImageCount: enriched.outputImageCount
-      })
-    }
-
-    if (enriched.pricingSnapshot === undefined && hasUsageRecordCostDimension(enriched)) {
-      enriched.pricingSnapshot = await buildCatalogCostBreakdownAsync({
-        providerCode,
-        systemAccountId: catalogSystemAccountId,
-        model: costModel,
-        serviceTier: enriched.billedServiceTier,
-        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
-        flexPriceMultiplier: enriched.flexPriceMultiplier,
-        inputTokens: enriched.inputTokens,
-        outputTokens: enriched.outputTokens,
-        cacheReadTokens: enriched.cacheReadTokens,
-        cacheWriteTokens: enriched.cacheWriteTokens,
-        cacheWrite1hTokens: enriched.cacheWrite1hTokens,
-        thinkingTokens: enriched.thinkingTokens,
-        inputImageTokens: enriched.inputImageTokens,
-        outputImageTokens: enriched.outputImageTokens,
-        inputAudioTokens: enriched.inputAudioTokens,
-        outputAudioTokens: enriched.outputAudioTokens,
-        outputImageCount: enriched.outputImageCount,
-        costUsd: enriched.costUsd
-      })
-    }
+    if (enriched.costUsd === undefined) enriched.costUsd = pricingSnapshot.accountChargeUsd
+    if (enriched.pricingSnapshot === undefined) enriched.pricingSnapshot = pricingSnapshot
 
     return enriched
   } catch (error) {
@@ -598,26 +548,19 @@ async function enrichSingleUsageRecordPricingAsync(
   }
 }
 
-async function resolveUsageRecordPricingModelAsync(input: {
-  providerCode: string
-  systemAccountId?: string
-  upstreamModel?: string
+function resolveUsageRecordPricingModel(
+  catalog: ProviderModelCatalogItem[],
+  upstreamModel?: string,
   requestedModel?: string
-  resolvePricingModel: (input: { providerCode: string; model?: string; systemAccountId?: string }) => Promise<string | undefined>
-}): Promise<string | undefined> {
-  const upstreamPricingModel = await input.resolvePricingModel({
-    providerCode: input.providerCode,
-    systemAccountId: input.systemAccountId,
-    model: input.upstreamModel
-  })
-  if (upstreamPricingModel) return upstreamPricingModel
+): string | undefined {
+  const actualModel = upstreamModel ?? requestedModel
+  if (!actualModel) return undefined
+  return findCatalogItem(catalog, actualModel)?.model
+}
 
-  if (!input.requestedModel || input.requestedModel === input.upstreamModel) return undefined
-  return await input.resolvePricingModel({
-    providerCode: input.providerCode,
-    systemAccountId: input.systemAccountId,
-    model: input.requestedModel
-  })
+function sumOptionalCosts(...values: Array<number | undefined>): number | undefined {
+  const present = values.filter((value): value is number => value !== undefined)
+  return present.length ? Number(present.reduce((sum, value) => sum + value, 0).toFixed(10)) : undefined
 }
 
 function normalizeUsageRecordPricingModel(value: string | undefined): string | undefined {
@@ -653,8 +596,6 @@ function usageRecordPricingSnapshotForWrite(input: UsageRecordInput): ProviderCo
           systemAccountId: input.accountOwnerSystemAccountId || input.systemAccountId,
           model,
           serviceTier: input.billedServiceTier ?? input.reportedServiceTier ?? input.effectiveServiceTier ?? input.requestedServiceTier,
-          priorityPriceMultiplier: input.priorityPriceMultiplier,
-          flexPriceMultiplier: input.flexPriceMultiplier,
           inputTokens: input.inputTokens,
           outputTokens: input.outputTokens,
           cacheReadTokens: input.cacheReadTokens,

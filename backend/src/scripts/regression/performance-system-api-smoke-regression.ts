@@ -288,13 +288,15 @@ async function runHttpSmoke(): Promise<void> {
     createdCustomModelIds.push(customModelTarget.id)
     assert.equal(customModelTarget.providerCode, 'gpt', 'performance smoke 自定义模型应归属目标供应商')
     assert.equal(customModelTarget.scope, 'personal', 'performance smoke 自定义模型应固定为个人模型')
-    const customModelAlias = await postEnvelope<{ id: string; model: string; pricingModel?: string }>(baseUrl, '/__aisys__/api/providers/gpt/models', {
+    const customModelAlias = await postEnvelope<{ id: string; model: string; inputUsdPer1M?: number; outputUsdPer1M?: number }>(baseUrl, '/__aisys__/api/providers/gpt/models', {
       model: `smoke-custom-alias-${suffix}`,
       supportedApiProtocols: ['responses'],
-      pricingModel: customModelTarget.model
+      inputUsdPer1M: 1,
+      outputUsdPer1M: 2
     }, cookie)
     createdCustomModelIds.push(customModelAlias.id)
-    assert.equal(customModelAlias.pricingModel, customModelTarget.model, 'performance smoke pricingModel 应能引用刚创建的个人模型')
+    assert.equal(customModelAlias.inputUsdPer1M, 1, 'performance smoke 别名模型应保存自身输入价格')
+    assert.equal(customModelAlias.outputUsdPer1M, 2, 'performance smoke 别名模型应保存自身输出价格')
     const customModels = await getEnvelope<Array<{ id?: string; model: string; scope: string }>>(baseUrl, '/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true', cookie)
     assert.ok(customModels.some((item) => item.id === customModelTarget.id && item.model === customModelTarget.model), 'performance smoke 应能在模型目录列表查回自定义目标模型')
     assert.ok(customModels.some((item) => item.id === customModelAlias.id && item.model === customModelAlias.model), 'performance smoke 应能在模型目录列表查回自定义别名模型')

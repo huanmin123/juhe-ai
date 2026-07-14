@@ -1,4 +1,5 @@
 import { numberValue, parseFirstJsonObject } from './model-checks-parsing.js'
+import { getProviderModelPricing } from '../model-pricing/model-pricing.service.js'
 
 export const behaviorProbeDefinitions = [
   {
@@ -76,36 +77,58 @@ export const distributionProbeDefinitions = [
   }
 ] as const
 
-export const longContextProbeDefinitions = [
-  {
-    key: 'context_8k',
-    marker: 'NEEDLE-8000-ORCHID',
-    targetInputTokens: 8_000,
-    markerTokenRatio: 0.62,
-    maxOutputTokens: 40
-  },
-  {
-    key: 'context_20k',
-    marker: 'NEEDLE-20000-LANTERN',
-    targetInputTokens: 20_000,
-    markerTokenRatio: 0.67,
-    maxOutputTokens: 48
-  },
-  {
-    key: 'context_60k',
-    marker: 'NEEDLE-60000-HARBOR',
-    targetInputTokens: 60_000,
-    markerTokenRatio: 0.71,
-    maxOutputTokens: 48
-  }
-] as const
+export interface LongContextProbeDefinition {
+  key: 'context_low' | 'context_medium' | 'context_high' | 'context_extreme'
+  marker: string
+  targetInputTokens: number
+  markerTokenRatio: number
+  maxOutputTokens: number
+  level: 'low' | 'medium' | 'high' | 'extreme'
+}
+
+export function longContextProbeDefinitionsForModel(
+  providerCode: string,
+  model: string,
+  includeExtreme = false
+): LongContextProbeDefinition[] {
+  const pricing = getProviderModelPricing(providerCode, model)
+  const modelLimit = Math.max(8_000, pricing?.maxInputTokens ?? pricing?.contextWindowTokens ?? 64_000)
+  const safeLimit = Math.max(4_000, modelLimit - Math.min(2_048, Math.floor(modelLimit * 0.02)))
+  const high = Math.min(safeLimit, Math.max(4_000, Math.floor(modelLimit * 0.25)))
+  const medium = Math.min(high - 1, Math.max(2_000, Math.min(60_000, Math.floor(high * 0.6))))
+  const low = Math.min(medium - 1, Math.max(1_000, Math.min(8_000, Math.floor(medium * 0.5))))
+  const definitions: LongContextProbeDefinition[] = [
+    definition('low', low, 0.58, 40),
+    definition('medium', medium, 0.67, 48),
+    definition('high', high, 0.74, 48)
+  ]
+  const extreme = Math.min(safeLimit, Math.max(high + 1, Math.floor(modelLimit * 0.85)))
+  if (includeExtreme && extreme > high) definitions.push(definition('extreme', extreme, 0.82, 48))
+  return definitions
+}
+
+export const longContextProbeDefinitions = longContextProbeDefinitionsForModel('gpt', 'gpt-5.6-sol')
 
 export type BehaviorProbeDefinition = typeof behaviorProbeDefinitions[number]
 export type DistributionProbeDefinition = typeof distributionProbeDefinitions[number]
-export type LongContextProbeDefinition = typeof longContextProbeDefinitions[number]
-
 export function longContextConstraintPassed(definition: LongContextProbeDefinition, text: string): boolean {
   return text.trim().toUpperCase().includes(definition.marker)
+}
+
+function definition(
+  level: LongContextProbeDefinition['level'],
+  targetInputTokens: number,
+  markerTokenRatio: number,
+  maxOutputTokens: number
+): LongContextProbeDefinition {
+  return {
+    key: `context_${level}` as LongContextProbeDefinition['key'],
+    marker: `NEEDLE-${level.toUpperCase()}-${targetInputTokens}`,
+    targetInputTokens,
+    markerTokenRatio,
+    maxOutputTokens,
+    level
+  }
 }
 
 export function distributionConstraintPassed(definition: DistributionProbeDefinition, text: string): boolean {

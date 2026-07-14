@@ -2,6 +2,7 @@ import type { Request, Response } from 'express'
 
 import type { DbServiceGatewayRuntime } from '../../db-service/db-service-types.js'
 import { normalizeUsageReasoningEffort, type UsageReasoningEffort } from '../usage/reasoning-effort.js'
+import { normalizeUsageServiceTier, type UsageServiceTier } from '../usage/service-tier.js'
 import {
   downgradeAutoImageGenerationToolsInBody,
   inspectImageGenerationTools,
@@ -45,7 +46,7 @@ export interface GatewayRequestBodyState {
   jsonParseWarningBytes: number
   model?: string
   stream?: boolean
-  serviceTier?: 'default' | 'priority' | 'flex'
+  serviceTier?: UsageServiceTier
   reasoningEffort?: UsageReasoningEffort
   maxOutputTokens?: number
   imageGeneration?: boolean
@@ -93,7 +94,7 @@ export function createGatewayRequestBodyState(input: {
   parsedBody?: unknown
   model?: string
   stream?: boolean
-  serviceTier?: 'default' | 'priority' | 'flex'
+  serviceTier?: UsageServiceTier
   reasoningEffort?: UsageReasoningEffort
   maxOutputTokens?: number
   imageGeneration?: boolean
@@ -112,11 +113,7 @@ export function createGatewayRequestBodyState(input: {
     jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes,
     model: input.model ?? (typeof parsedBody?.model === 'string' ? parsedBody.model : undefined),
     stream: input.stream ?? (typeof parsedBody?.stream === 'boolean' ? parsedBody.stream : undefined),
-    serviceTier: input.serviceTier ?? (
-      parsedBody?.service_tier === 'priority' || parsedBody?.service_tier === 'flex'
-        ? parsedBody.service_tier
-        : 'default'
-    ),
+    serviceTier: input.serviceTier ?? normalizeUsageServiceTier(parsedBody?.service_tier),
     reasoningEffort: input.reasoningEffort ?? parsedReasoningEffort(parsedBody),
     maxOutputTokens: input.maxOutputTokens ?? parsedMaxOutputTokens(parsedBody),
     imageGeneration: input.imageGeneration ?? (
