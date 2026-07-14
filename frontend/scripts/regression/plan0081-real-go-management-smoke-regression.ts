@@ -36,6 +36,13 @@ type MockScenario =
   | 'account_test_options_default_endpoint_mode_mismatch'
   | 'external_integration_source_scopes_missing_item'
   | 'external_integration_source_scopes_invalid_field'
+  | 'external_integration_source_api_docs_base_path_invalid'
+  | 'external_integration_source_api_docs_auth_type_invalid'
+  | 'external_integration_source_api_docs_missing_item'
+  | 'external_integration_source_api_docs_get_contract_invalid'
+  | 'external_integration_source_api_docs_get_fields_empty'
+  | 'external_integration_source_api_docs_post_body_missing'
+  | 'external_integration_source_api_docs_last_item_fields_empty'
   | 'ip_stats_not_ready'
   | 'ip_stats_empty'
   | 'ip_stats_detail_not_ready'
@@ -111,7 +118,7 @@ try {
   const baseUrl = serverBaseUrl(server)
 
   await assertPublicAPILogReadScenarios(baseUrl)
-  await assertExternalIntegrationSourceScopesReadScenarios(baseUrl)
+  await assertExternalIntegrationSourceCatalogReadScenarios(baseUrl)
   await assertLogBoundaryRedaction(baseUrl)
   await assertRouteStrategyReadScenarios(baseUrl)
   await assertReadOnlySmoke(baseUrl)
@@ -225,22 +232,21 @@ async function assertPublicAPILogReadScenarios(baseUrl: string): Promise<void> {
   )
 }
 
-async function assertExternalIntegrationSourceScopesReadScenarios(baseUrl: string): Promise<void> {
+async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: string): Promise<void> {
   resetMock('normal')
   await runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
 
-  const scopeRequests = requestRecords.filter((record) =>
+  const catalogRequests = requestRecords.filter((record) =>
     record.url?.startsWith('/__aisys__/api/external-integration-sources')
   )
   assert.deepEqual(
-    scopeRequests.map((record) => `${record.method} ${record.url}`),
-    [externalIntegrationSourceScopesPath()]
+    catalogRequests.map((record) => `${record.method} ${record.url}`),
+    [externalIntegrationSourceScopesPath(), externalIntegrationSourceApiDocsPath()]
   )
-  assert.equal(scopeRequests[0]?.method, 'GET')
-  assert.equal(scopeRequests[0]?.body, undefined)
+  assert.equal(catalogRequests.every((record) => record.method === 'GET' && record.body === undefined), true)
   assertRequestHeaders()
 
-  const cases = [
+  const scopeCases = [
     [
       'external_integration_source_scopes_missing_item',
       /external integration source scopes data must contain exactly 16 items/
@@ -250,7 +256,7 @@ async function assertExternalIntegrationSourceScopesReadScenarios(baseUrl: strin
       /external integration source scopes data item 0\.label must be a string/
     ]
   ] as const
-  for (const [requestScenario, expectedMessage] of cases) {
+  for (const [requestScenario, expectedMessage] of scopeCases) {
     resetMock(requestScenario)
     const output: string[] = []
     const failureMessage = await captureFailureMessage(
@@ -263,6 +269,57 @@ async function assertExternalIntegrationSourceScopesReadScenarios(baseUrl: strin
     assert.match(failureMessage, expectedMessage)
     assert.deepEqual(output, [])
     assert.deepEqual(requestPaths(), [publicAPILogsListPath(), externalIntegrationSourceScopesPath()])
+    assert.equal(requestRecords.every((record) => record.method === 'GET' && record.body === undefined), true)
+    assertRequestHeaders()
+  }
+
+  const apiDocsCases = [
+    [
+      'external_integration_source_api_docs_base_path_invalid',
+      /external integration source api docs data\.basePath must equal \/__aipublic__/
+    ],
+    [
+      'external_integration_source_api_docs_auth_type_invalid',
+      /external integration source api docs data\.authType must equal Bearer/
+    ],
+    [
+      'external_integration_source_api_docs_missing_item',
+      /external integration source api docs data\.items must contain exactly 16 items/
+    ],
+    [
+      'external_integration_source_api_docs_get_contract_invalid',
+      /api-key-list\.scope must equal juhe_ai_public:api_key_list:read/
+    ],
+    [
+      'external_integration_source_api_docs_get_fields_empty',
+      /api-key-list\.responseFields must be a non-empty array/
+    ],
+    [
+      'external_integration_source_api_docs_post_body_missing',
+      /api-key-add\.requestBody must be an object/
+    ],
+    [
+      'external_integration_source_api_docs_last_item_fields_empty',
+      /account-delete\.responseFields must be a non-empty array/
+    ]
+  ] as const
+  for (const [requestScenario, expectedMessage] of apiDocsCases) {
+    resetMock(requestScenario)
+    const output: string[] = []
+    const failureMessage = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(
+        smokeEnvironment(baseUrl),
+        (message) => output.push(message)
+      )
+    )
+
+    assert.match(failureMessage, expectedMessage)
+    assert.deepEqual(output, [])
+    assert.deepEqual(requestPaths(), [
+      publicAPILogsListPath(),
+      externalIntegrationSourceScopesPath(),
+      externalIntegrationSourceApiDocsPath()
+    ])
     assert.equal(requestRecords.every((record) => record.method === 'GET' && record.body === undefined), true)
     assertRequestHeaders()
   }
@@ -340,6 +397,7 @@ async function assertRouteStrategyReadScenarios(baseUrl: string): Promise<void> 
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
+    externalIntegrationSourceApiDocsPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -355,7 +413,7 @@ async function assertRouteStrategyReadScenarios(baseUrl: string): Promise<void> 
   )
   assert.equal(missingMessage, 'Configured route strategy was not returned by route strategies list')
   assert.deepEqual(requestPaths(), [
-    publicAPILogsListPath(), externalIntegrationSourceScopesPath(),
+    publicAPILogsListPath(), externalIntegrationSourceScopesPath(), externalIntegrationSourceApiDocsPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath()
   ])
 
@@ -403,6 +461,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
+    externalIntegrationSourceApiDocsPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -427,6 +486,7 @@ async function assertAccountTestOptionsReadSmoke(baseUrl: string): Promise<void>
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
+    externalIntegrationSourceApiDocsPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), accountTestOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -480,6 +540,7 @@ async function assertAccountTestOptionsResponseRequirements(baseUrl: string): Pr
     assert.deepEqual(requestPaths(), [
       publicAPILogsListPath(),
       externalIntegrationSourceScopesPath(),
+      externalIntegrationSourceApiDocsPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), accountTestOptionsPath()
     ])
@@ -507,6 +568,7 @@ async function assertStrictClientIPDetailRequiresTarget(baseUrl: string): Promis
     assert.deepEqual(requestPaths(), [
       publicAPILogsListPath(),
       externalIntegrationSourceScopesPath(),
+      externalIntegrationSourceApiDocsPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath()
     ])
@@ -541,6 +603,7 @@ async function assertStrictClientIPDetailResponseRequirements(baseUrl: string): 
     assert.deepEqual(requestPaths(), [
       publicAPILogsListPath(),
       externalIntegrationSourceScopesPath(),
+      externalIntegrationSourceApiDocsPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
     ])
@@ -572,6 +635,7 @@ async function assertExplicitClientIPHashSmoke(baseUrl: string): Promise<void> {
     assert.deepEqual(requestPaths(), [
       publicAPILogsListPath(),
       externalIntegrationSourceScopesPath(),
+      externalIntegrationSourceApiDocsPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(explicitClientIPHash)
     ])
@@ -597,6 +661,7 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
+    externalIntegrationSourceApiDocsPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath()
   ])
@@ -622,6 +687,7 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
+    externalIntegrationSourceApiDocsPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath()
   ])
@@ -646,6 +712,7 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
+    externalIntegrationSourceApiDocsPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(),
     groupsCreatePath(),
@@ -890,6 +957,46 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       scopes[0].label = 42
     }
     sendEnvelope(res, scopes)
+    return
+  }
+  if (req.method === 'GET' && url.pathname === '/__aisys__/api/external-integration-sources/api-docs') {
+    const apiDocs = externalIntegrationSourceApiDocsFixture()
+    switch (scenario) {
+      case 'external_integration_source_api_docs_base_path_invalid':
+        apiDocs.basePath = '/invalid-public-base-path'
+        break
+      case 'external_integration_source_api_docs_auth_type_invalid':
+        apiDocs.authType = 'Cookie'
+        break
+      case 'external_integration_source_api_docs_missing_item':
+        apiDocs.items.pop()
+        break
+      case 'external_integration_source_api_docs_get_contract_invalid': {
+        const item = apiDocs.items.find((candidate) => candidate.id === 'api-key-list')
+        assert(item)
+        item.scope = 'juhe_ai_public:api_key_list:write'
+        break
+      }
+      case 'external_integration_source_api_docs_get_fields_empty': {
+        const item = apiDocs.items.find((candidate) => candidate.id === 'api-key-list')
+        assert(item)
+        item.responseFields = []
+        break
+      }
+      case 'external_integration_source_api_docs_post_body_missing': {
+        const item = apiDocs.items.find((candidate) => candidate.id === 'api-key-add')
+        assert(item)
+        delete item.requestBody
+        break
+      }
+      case 'external_integration_source_api_docs_last_item_fields_empty': {
+        const item = apiDocs.items.find((candidate) => candidate.id === 'account-delete')
+        assert(item)
+        item.responseFields = []
+        break
+      }
+    }
+    sendEnvelope(res, apiDocs)
     return
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/groups') {
@@ -1505,6 +1612,68 @@ function externalIntegrationSourceScopesFixture(): Array<Record<string, unknown>
   ]
 }
 
+function externalIntegrationSourceApiDocsFixture(): {
+  basePath: string
+  authType: string
+  items: Array<Record<string, unknown>>
+} {
+  const items = externalIntegrationSourceScopesFixture().map((option): Record<string, unknown> => {
+    const scope = String(option.value)
+    const match = /^juhe_ai_public:(api_key|route_strategy|group|account)_(list|add|update|delete):(read|write)$/.exec(scope)
+    assert(match)
+    const resource = String(match[1]).replace('_', '-')
+    const action = String(match[2])
+    const method = action === 'list' ? 'GET' : 'POST'
+    const publicAction = action === 'delete' ? 'del' : action
+    const documentedField = {
+      name: 'targetUsername',
+      type: 'string',
+      required: true,
+      description: '目标系统用户账号。',
+      example: 'plan0081-user'
+    }
+
+    return {
+      id: `${resource}-${action}`,
+      name: String(option.label).replace(/^(GET|POST)\s+/, ''),
+      summary: `${String(option.label)} regression fixture`,
+      status: 'available',
+      method,
+      path: `/__aipublic__/${resource}/${publicAction}`,
+      scope,
+      headers: [{
+        name: 'Authorization',
+        required: true,
+        description: '来源授权 Bearer token。',
+        example: 'Bearer <source_token>'
+      }],
+      query: method === 'GET' ? [documentedField] : [],
+      ...(method === 'POST'
+        ? {
+            requestBody: {
+              contentType: 'application/json',
+              fields: [documentedField],
+              example: { targetUsername: 'plan0081-user' }
+            }
+          }
+        : {}),
+      responseFields: [{
+        name: 'data',
+        type: 'object',
+        required: true,
+        description: '接口响应数据。'
+      }],
+      responseExample: { data: { source: 'stats' } }
+    }
+  })
+
+  return {
+    basePath: '/__aipublic__',
+    authType: 'Bearer',
+    items
+  }
+}
+
 function requestPaths(): string[] {
   return requestRecords.map((record) => `${record.method} ${record.url}`)
 }
@@ -1519,6 +1688,10 @@ function publicAPILogDetailPath(publicApiLogId = configuredPublicApiLogId): stri
 
 function externalIntegrationSourceScopesPath(): string {
   return 'GET /__aisys__/api/external-integration-sources/scopes'
+}
+
+function externalIntegrationSourceApiDocsPath(): string {
+  return 'GET /__aisys__/api/external-integration-sources/api-docs'
 }
 
 function groupsListPath(): string {

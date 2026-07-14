@@ -41,6 +41,9 @@ const externalIntegrationSourceScopeOptions = [
   { value: 'juhe_ai_public:account_update:write', label: 'POST 账号修改' },
   { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' }
 ] as const
+const externalIntegrationSourceApiDocContracts = externalIntegrationSourceScopeOptions.map((option) =>
+  externalIntegrationSourceApiDocContract(option.value)
+)
 const accountTestEndpointModeValues = [
   'chat_json',
   'chat_sse',
@@ -391,6 +394,13 @@ async function runReadOnlySmoke(
     'external integration source scopes'
   )
   assertExternalIntegrationSourceScopes(externalIntegrationSourceScopesData)
+
+  const externalIntegrationSourceApiDocsData = await getEnvelopeData(
+    endpointUrl(config.baseUrl, '/external-integration-sources/api-docs', {}),
+    config,
+    'external integration source api docs'
+  )
+  assertExternalIntegrationSourceApiDocs(externalIntegrationSourceApiDocsData)
 
   const listData = await getEnvelopeData(groupsListUrl(config), config, 'groups list')
   const groupList = assertGroupList(listData)
@@ -988,6 +998,146 @@ function assertExternalIntegrationSourceScopes(value: unknown): void {
     expect(item.value === expectedOption.value, `${itemLabel}.value must equal ${expectedOption.value}`)
     expect(item.label === expectedOption.label, `${itemLabel}.label must equal ${expectedOption.label}`)
   })
+}
+
+function assertExternalIntegrationSourceApiDocs(value: unknown): void {
+  const label = 'external integration source api docs data'
+  expect(isRecord(value), `${label} must be an object`)
+  expect(value.basePath === '/__aipublic__', `${label}.basePath must equal /__aipublic__`)
+  expect(value.authType === 'Bearer', `${label}.authType must equal Bearer`)
+  expect(Array.isArray(value.items), `${label}.items must be an array`)
+  expect(
+    value.items.length === externalIntegrationSourceScopeOptions.length,
+    `${label}.items must contain exactly ${externalIntegrationSourceScopeOptions.length} items`
+  )
+
+  const itemsById = new Map<string, Record<string, unknown>>()
+  const seenMethodPaths = new Set<string>()
+  const seenScopes = new Set<string>()
+  value.items.forEach((item, index) => {
+    const itemLabel = `${label}.items item ${index}`
+    expect(isRecord(item), `${itemLabel} must be an object`)
+    expect(isNonEmptyString(item.id), `${itemLabel}.id must be a non-empty string`)
+    expect(!itemsById.has(item.id), `${label}.items must not contain duplicate ids`)
+    itemsById.set(item.id, item)
+
+    expect(isNonEmptyString(item.method), `${itemLabel}.method must be a non-empty string`)
+    expect(isNonEmptyString(item.path), `${itemLabel}.path must be a non-empty string`)
+    expect(isNonEmptyString(item.scope), `${itemLabel}.scope must be a non-empty string`)
+    const methodPath = `${item.method} ${item.path}`
+    expect(!seenMethodPaths.has(methodPath), `${label}.items must not contain duplicate method/path pairs`)
+    expect(!seenScopes.has(item.scope), `${label}.items must not contain duplicate scopes`)
+    seenMethodPaths.add(methodPath)
+    seenScopes.add(item.scope)
+  })
+
+  for (const expectedItem of externalIntegrationSourceApiDocContracts) {
+    const item = itemsById.get(expectedItem.id)
+    const itemLabel = `${label}.items item ${expectedItem.id}`
+    expect(isRecord(item), `${itemLabel} must exist`)
+    expect(item.id === expectedItem.id, `${itemLabel}.id must equal ${expectedItem.id}`)
+    expect(item.method === expectedItem.method, `${itemLabel}.method must equal ${expectedItem.method}`)
+    expect(item.path === expectedItem.path, `${itemLabel}.path must equal ${expectedItem.path}`)
+    expect(item.scope === expectedItem.scope, `${itemLabel}.scope must equal ${expectedItem.scope}`)
+    assertExternalIntegrationSourceApiDocRichFields(item, itemLabel, expectedItem.method)
+  }
+}
+
+function assertExternalIntegrationSourceApiDocRichFields(
+  item: Record<string, unknown>,
+  label: string,
+  method: 'GET' | 'POST'
+): void {
+  expect(isNonEmptyString(item.name), `${label}.name must be a non-empty string`)
+  expect(isNonEmptyString(item.summary), `${label}.summary must be a non-empty string`)
+  expect(item.status === 'available', `${label}.status must equal available`)
+  expect(Array.isArray(item.headers) && item.headers.length > 0, `${label}.headers must be a non-empty array`)
+
+  item.headers.forEach((header, index) => {
+    const headerLabel = `${label}.headers item ${index}`
+    expect(isRecord(header), `${headerLabel} must be an object`)
+    expect(isNonEmptyString(header.name), `${headerLabel}.name must be a non-empty string`)
+    expect(typeof header.required === 'boolean', `${headerLabel}.required must be boolean`)
+    expect(isNonEmptyString(header.description), `${headerLabel}.description must be a non-empty string`)
+    expect(isNonEmptyString(header.example), `${headerLabel}.example must be a non-empty string`)
+  })
+
+  const authorizationHeader = item.headers.find((header) =>
+    isRecord(header) && header.name === 'Authorization'
+  )
+  expect(isRecord(authorizationHeader), `${label}.headers must document Authorization`)
+  expect(authorizationHeader.required === true, `${label} Authorization header must be required`)
+  expect(
+    isNonEmptyString(authorizationHeader.description),
+    `${label} Authorization header description must be a non-empty string`
+  )
+  expect(
+    isNonEmptyString(authorizationHeader.example),
+    `${label} Authorization header example must be a non-empty string`
+  )
+
+  expect(Array.isArray(item.query), `${label}.query must be an array`)
+  if (method === 'GET') {
+    expect(item.query.length > 0, `${label}.query must document at least one field`)
+    item.query.forEach((field, index) => {
+      assertExternalIntegrationSourceApiDocField(field, `${label}.query item ${index}`)
+    })
+    expect(!Object.hasOwn(item, 'requestBody'), `${label}.requestBody must be absent for GET`)
+  } else {
+    expect(item.query.length === 0, `${label}.query must be empty for POST`)
+    expect(isRecord(item.requestBody), `${label}.requestBody must be an object`)
+    expect(
+      item.requestBody.contentType === 'application/json',
+      `${label}.requestBody.contentType must equal application/json`
+    )
+    expect(
+      Array.isArray(item.requestBody.fields) && item.requestBody.fields.length > 0,
+      `${label}.requestBody.fields must be a non-empty array`
+    )
+    item.requestBody.fields.forEach((field, index) => {
+      assertExternalIntegrationSourceApiDocField(field, `${label}.requestBody.fields item ${index}`)
+    })
+    expect(isRecord(item.requestBody.example), `${label}.requestBody.example must be an object`)
+  }
+
+  expect(
+    Array.isArray(item.responseFields) && item.responseFields.length > 0,
+    `${label}.responseFields must be a non-empty array`
+  )
+  item.responseFields.forEach((field, index) => {
+    assertExternalIntegrationSourceApiDocField(field, `${label}.responseFields item ${index}`)
+  })
+  expect(isRecord(item.responseExample), `${label}.responseExample must be an object`)
+}
+
+function externalIntegrationSourceApiDocContract(scope: string): {
+  id: string
+  method: 'GET' | 'POST'
+  path: string
+  scope: string
+} {
+  const match = /^juhe_ai_public:(api_key|route_strategy|group|account)_(list|add|update|delete):(read|write)$/.exec(scope)
+  const resource = match?.[1]?.replaceAll('_', '-')
+  const action = match?.[2]
+  if (!resource || !action) {
+    throw new Error(`Unsupported external integration source scope: ${scope}`)
+  }
+  const method = action === 'list' ? 'GET' : 'POST'
+  const publicAction = action === 'delete' ? 'del' : action
+  return {
+    id: `${resource}-${action}`,
+    method,
+    path: `/__aipublic__/${resource}/${publicAction}`,
+    scope
+  }
+}
+
+function assertExternalIntegrationSourceApiDocField(value: unknown, label: string): void {
+  expect(isRecord(value), `${label} must be an object`)
+  expect(isNonEmptyString(value.name), `${label}.name must be a non-empty string`)
+  expect(isNonEmptyString(value.type), `${label}.type must be a non-empty string`)
+  expect(typeof value.required === 'boolean', `${label}.required must be boolean`)
+  expect(isNonEmptyString(value.description), `${label}.description must be a non-empty string`)
 }
 
 function assertPublicAPILogDetail(value: unknown, expectedId: string): void {

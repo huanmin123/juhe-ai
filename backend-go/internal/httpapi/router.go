@@ -152,6 +152,7 @@ type RouterOptions struct {
 	ManagementMyOperationLogsHandler                  http.Handler
 	ManagementRuntimeLogsHandler                      http.Handler
 	ManagementExternalIntegrationSourceScopesHandler  http.Handler
+	ManagementExternalIntegrationSourceAPIDocsHandler http.Handler
 	ManagementPublicAPILogsHandler                    http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
 	ManagementMyStatsUsageWindowHandler               http.Handler
@@ -370,6 +371,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyOperationLogsHandler == nil &&
 				opts.ManagementRuntimeLogsHandler == nil &&
 				opts.ManagementExternalIntegrationSourceScopesHandler == nil &&
+				opts.ManagementExternalIntegrationSourceAPIDocsHandler == nil &&
 				opts.ManagementPublicAPILogsHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
 				opts.ManagementMyStatsUsageWindowHandler == nil {
@@ -857,6 +859,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 					opts.ManagementExternalIntegrationSourceScopesHandler.ServeHTTP,
 				)
 			}
+			if opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get(
+					"/external-integration-sources/api-docs",
+					opts.ManagementExternalIntegrationSourceAPIDocsHandler.ServeHTTP,
+				)
+			}
 			if opts.ManagementPublicAPILogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/public-api-logs", opts.ManagementPublicAPILogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/public-api-logs/{id}", opts.ManagementPublicAPILogsHandler.ServeHTTP)
@@ -1024,6 +1032,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyOperationLogsHandler != nil ||
 		opts.ManagementRuntimeLogsHandler != nil ||
 		opts.ManagementExternalIntegrationSourceScopesHandler != nil ||
+		opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil ||
 		opts.ManagementPublicAPILogsHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
 		opts.ManagementMyStatsUsageWindowHandler != nil

@@ -11,6 +11,10 @@ func NewManagementExternalIntegrationSourceScopesHandler() http.Handler {
 	return newManagementExternalIntegrationSourceScopesHandler()
 }
 
+func NewManagementExternalIntegrationSourceAPIDocsHandler() http.Handler {
+	return newManagementExternalIntegrationSourceAPIDocsHandler()
+}
+
 func newManagementExternalIntegrationSourceScopesHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authContext, ok := ManagementAuthContextFromRequest(r)
@@ -24,5 +28,21 @@ func newManagementExternalIntegrationSourceScopesHandler() http.Handler {
 		}
 
 		writeData(w, http.StatusOK, publicapi.ScopeOptions())
+	})
+}
+
+func newManagementExternalIntegrationSourceAPIDocsHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+
+		writeData(w, http.StatusOK, publicapi.APIDocsCatalog())
 	})
 }
