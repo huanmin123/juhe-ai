@@ -15,7 +15,7 @@ export const auditLogColumns = [
   { title: '状态码', key: 'status', width: 90 },
   { title: '来源', key: 'trafficSource', width: 100 },
   { title: '接口', key: 'endpoint', width: 190 },
-  { title: '模型', key: 'model', width: 150 },
+  { title: '模型', key: 'model', width: 240 },
   { title: '类型', key: 'stream', width: 90 },
   { title: 'AI账户', key: 'account', width: 160 },
   { title: 'API Key', key: 'apiKey', width: 150 },

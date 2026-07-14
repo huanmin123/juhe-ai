@@ -45,15 +45,6 @@ import type { UsageReasoningEffort } from './reasoning-effort.js'
 
 type UpstreamAccount = OpenAIAccountSecret
 
-export function gatewayPricingSettingsFromRequest(req: Request): {
-  gptPriorityPriceMultiplier?: number
-  gptFlexPriceMultiplier?: number
-} | undefined {
-  return (req as Request & {
-    gatewayRuntime?: { settings?: { gptPriorityPriceMultiplier?: number; gptFlexPriceMultiplier?: number } }
-  }).gatewayRuntime?.settings
-}
-
 interface AccountUsageModelAccounting {
   upstreamModel?: string
   pricingModel?: string
@@ -246,7 +237,6 @@ export async function recordCompletedUpstreamAttempt(
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
   const modelAccounting = accountUsageModelAccounting(input.account, model, catalogSystemAccountId, gatewayRequestEndpointFamily(req))
   const costModel = usageCostCatalogModel(modelAccounting, model)
-  const pricingMultipliers = gatewayPricingMultipliers(gatewayPricingSettingsFromRequest(req))
   const serviceTiers = resolveUsageServiceTiers({
     requestedServiceTier: input.requestedServiceTier,
     effectiveServiceTier: input.effectiveServiceTier,
@@ -287,7 +277,6 @@ export async function recordCompletedUpstreamAttempt(
     ...serviceTiers,
     requestedReasoningEffort: input.requestedReasoningEffort,
     effectiveReasoningEffort: input.effectiveReasoningEffort,
-    ...pricingMultipliers,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
     inputAudioTokens: input.usage.inputAudioTokens,
@@ -298,7 +287,6 @@ export async function recordCompletedUpstreamAttempt(
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
     cacheWriteCostUsd: estimateGatewayCatalogCacheWriteCostUsd({
@@ -306,7 +294,6 @@ export async function recordCompletedUpstreamAttempt(
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       cacheWriteTokens: input.usage.cacheWriteTokens,
       cacheWrite1hTokens: input.usage.cacheWrite1hTokens
     }),
@@ -315,7 +302,6 @@ export async function recordCompletedUpstreamAttempt(
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       inputTokens: input.usage.inputTokens,
       outputTokens: input.usage.outputTokens,
       cacheReadTokens: input.usage.cacheReadTokens,
@@ -354,12 +340,10 @@ export async function recordHybridScoringAttempt(input: {
   requestSnapshot?: unknown
   responseSnapshot?: unknown
   trafficSource?: Extract<OpenAIGatewayTrafficSource, 'hybrid_scoring' | 'hybrid_quality_scoring'>
-  settings?: { gptPriorityPriceMultiplier?: number; gptFlexPriceMultiplier?: number }
 }): Promise<void> {
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
   const modelAccounting = accountUsageModelAccounting(input.account, input.scoringModel, catalogSystemAccountId, 'chat_completions')
   const costModel = usageCostCatalogModel(modelAccounting, input.scoringModel)
-  const pricingMultipliers = gatewayPricingMultipliers(input.settings)
   const serviceTiers = resolveUsageServiceTiers({ reportedServiceTier: input.usage.serviceTier })
   await enqueueUsageRecord({
     traceId: input.traceId,
@@ -393,7 +377,6 @@ export async function recordHybridScoringAttempt(input: {
     cacheWrite1hTokens: input.usage.cacheWrite1hTokens,
     thinkingTokens: input.usage.thinkingTokens,
     ...serviceTiers,
-    ...pricingMultipliers,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
     inputAudioTokens: input.usage.inputAudioTokens,
@@ -404,7 +387,6 @@ export async function recordHybridScoringAttempt(input: {
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
     cacheWriteCostUsd: estimateGatewayCatalogCacheWriteCostUsd({
@@ -412,7 +394,6 @@ export async function recordHybridScoringAttempt(input: {
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       cacheWriteTokens: input.usage.cacheWriteTokens,
       cacheWrite1hTokens: input.usage.cacheWrite1hTokens
     }),
@@ -421,7 +402,6 @@ export async function recordHybridScoringAttempt(input: {
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       inputTokens: input.usage.inputTokens,
       outputTokens: input.usage.outputTokens,
       cacheReadTokens: input.usage.cacheReadTokens,
@@ -653,16 +633,6 @@ function resolveGatewayCatalogPricingModel(input: Parameters<typeof resolveCatal
 
 function canUseSynchronousCatalogPricingInGatewayRequest(): boolean {
   return runtimeConfig.cacheDriver !== 'redis'
-}
-
-function gatewayPricingMultipliers(settings: {
-  gptPriorityPriceMultiplier?: number
-  gptFlexPriceMultiplier?: number
-} | undefined): { priorityPriceMultiplier: number; flexPriceMultiplier: number } {
-  return {
-    priorityPriceMultiplier: settings?.gptPriorityPriceMultiplier ?? 2,
-    flexPriceMultiplier: settings?.gptFlexPriceMultiplier ?? 0.5
-  }
 }
 
 function logGatewayAttemptFailure(

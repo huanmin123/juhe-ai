@@ -40,7 +40,7 @@
           </span>
         </template>
         <template v-else-if="column.key === 'running'">
-          <a-tag :color="record.running ? 'processing' : record.failureCount > 0 ? 'warning' : 'success'">
+          <a-tag :color="record.running ? 'processing' : record.lastError ? 'warning' : 'success'">
             {{ record.running ? '运行中' : '空闲' }}
           </a-tag>
         </template>
@@ -83,7 +83,7 @@
                 </a-tooltip>
               </span>
             </strong>
-            <a-tag :color="record.running ? 'processing' : record.failureCount > 0 ? 'warning' : 'success'">
+            <a-tag :color="record.running ? 'processing' : record.lastError ? 'warning' : 'success'">
               {{ record.running ? '运行中' : '空闲' }}
             </a-tag>
           </div>

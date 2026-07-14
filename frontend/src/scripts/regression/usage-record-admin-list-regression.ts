@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 
 import { defaultUsageRecordsPageState } from '../../views/usage-records/usageRecordPageState'
 import { usageRecordListParams } from '../../views/usage-records/usageRecordFilters'
+import { usageRecordTableColumns } from '../../views/usage-records/usageRecordTableConfig'
 
 const defaultState = defaultUsageRecordsPageState('all') as ReturnType<typeof defaultUsageRecordsPageState> & { dateMode?: string }
 assert.equal(defaultState.dateMode, 'auto', '管理端使用记录默认日期模式应为 auto today')
@@ -40,4 +41,17 @@ assert.match(tableChangeSource, /businessFiltersDisabled\.value[\s\S]*field: 'cr
 assert.match(toolbarSource, /businessFiltersDisabled/, '全用户模式应统一禁用业务筛选')
 assert.match(toolbarSource, /:disabled="businessFiltersDisabled"/, '全用户模式的业务筛选控件应处于禁用态')
 
-console.log('管理员使用记录前端回归通过：全用户当天列表、auto/manual 日期模式、跨日刷新与筛选锁定均已接入')
+const columns = usageRecordTableColumns({ isManagementView: false, columnSortOrder: () => null })
+const columnKeys = columns.map((column) => column.key)
+assert.deepEqual(
+  columnKeys.slice(columnKeys.indexOf('createdAt'), columnKeys.indexOf('trafficSource') + 1),
+  ['createdAt', 'endpoint', 'trafficSource'],
+  '时间后必须依次展示接口和请求来源'
+)
+assert.equal(columnKeys.includes('success'), false, '结果状态不应继续占用独立列')
+assert.equal(columnKeys.includes('statusCode'), false, 'HTTP 状态码不应继续占用独立列')
+assert.equal(columnKeys.includes('status'), true, '结果状态和 HTTP 状态码应合并为状态列')
+const tableSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordsTable.vue'), 'utf8')
+assert.match(tableSource, /column\.key === 'status'[\s\S]*UsageRecordResultCell[\s\S]*statusCodeText\(record\)/, '状态列必须显示结果和 HTTP 状态码两个标签，并保留失败原因提示')
+
+console.log('管理员使用记录前端回归通过：列表状态合并、列顺序、auto/manual 日期模式、跨日刷新与筛选锁定均已接入')

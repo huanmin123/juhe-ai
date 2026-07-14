@@ -7,7 +7,9 @@ import { buildProviderCostBreakdown, estimateProviderCostUsd, listProviderModelP
 import { resolveUsageServiceTiers } from '../../modules/gateway/usage/service-tier.js'
 import { extractGatewayJsonBodyMetadata } from '../../modules/gateway/request/json-metadata-scanner.js'
 import { readFileSync } from 'node:fs'
+import type { Request } from 'express'
 import { usageRecordSummaryFromRow } from '../../storage/usage-record-mappers.js'
+import { buildCodexResponsesChatBridgeBody } from '../../modules/providers/drivers/_shared/codex-responses-chat-bridge.js'
 
 const gptPricing = listProviderModelPricing('gpt')
 for (const model of [
@@ -35,7 +37,7 @@ assert.equal(estimateProviderCostUsd({
   priorityPriceMultiplier: 3,
   inputTokens: 100_000,
   outputTokens: 100_000
-}), 0.435, '缺少档位专用价时必须使用可配置 Priority 通用倍率')
+}), undefined, '缺少档位专用价时必须标记未定价，不能套用 Priority 通用倍率')
 assert.equal(estimateProviderCostUsd({
   providerCode: 'gpt',
   model: 'gpt-5.4',
@@ -43,7 +45,7 @@ assert.equal(estimateProviderCostUsd({
   flexPriceMultiplier: 0.4,
   inputTokens: 100_000,
   outputTokens: 100_000
-}), 0.7, '缺少档位专用价时必须使用可配置 Flex 通用倍率')
+}), undefined, '缺少档位专用价时必须标记未定价，不能套用 Flex 通用倍率')
 assert.equal(estimateProviderCostUsd({
   providerCode: 'gpt',
   model: 'gpt-5.6-sol',
@@ -74,8 +76,7 @@ const multiplierBreakdown = buildProviderCostBreakdown({
   inputTokens: 100_000,
   outputTokens: 100_000
 })
-assert.equal(multiplierBreakdown?.serviceTierPricingSource, 'multiplier', '缺少档位专用价时必须锁定为 multiplier 计价来源')
-assert.equal(multiplierBreakdown?.serviceTierMultiplier, 3, '计价快照必须保留请求时实际倍率')
+assert.equal(multiplierBreakdown, undefined, '缺少档位专用价时不得生成倍率计价快照')
 
 const openAIUsage = parseOpenAIUsageFromJsonBuffer(Buffer.from(JSON.stringify({
   service_tier: 'priority',
@@ -114,6 +115,17 @@ assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
   reasoning: { effort: 'high' },
   reasoning_effort: 'low'
 }))).reasoningEffort, 'high', '两种字段并存时大 JSON scanner 结果不能受字段顺序影响')
+
+const bridgedChatBody = JSON.parse((await buildCodexResponsesChatBridgeBody({
+  body: {
+    model: 'gpt-5.6-sol',
+    input: 'test',
+    service_tier: 'flex',
+    reasoning: { effort: 'high' }
+  }
+} as Request, { defaultModel: 'gpt-5.6-sol' })).toString('utf8')) as Record<string, unknown>
+assert.equal(bridgedChatBody.service_tier, 'flex', 'Responses 到 Chat 桥接必须保留服务档位')
+assert.equal(bridgedChatBody.reasoning_effort, 'high', 'Responses 到 Chat 桥接必须转换 reasoning.effort')
 
 const geminiUsage = parseGeminiUsageFromJsonBuffer(Buffer.from(JSON.stringify({
   usageMetadata: {
@@ -165,9 +177,9 @@ assert.equal(mappedServiceTiers.reportedServiceTier, 'priority')
 assert.equal(mappedServiceTiers.billedServiceTier, 'priority')
 assert.equal(mappedServiceTiers.requestedReasoningEffort, 'low')
 assert.equal(mappedServiceTiers.effectiveReasoningEffort, 'high')
-assert.equal(mappedServiceTiers.pricingSnapshot?.serviceTierMultiplier, 3)
+assert.equal(mappedServiceTiers.pricingSnapshot, undefined, '未生成档位专用价时不得持久化倍率计价快照')
 
-console.log('服务档位计费回归通过：GPT-5.6 三档、长上下文和思考 Token 口径正确')
+console.log('服务档位计费回归通过：GPT-5.6 精确三档、缺价未定价、长上下文和思考 Token 口径正确')
 
 function cost(model: string, serviceTier: 'default' | 'priority' | 'flex', inputTokens: number, outputTokens: number): number | undefined {
   return estimateProviderCostUsd({
