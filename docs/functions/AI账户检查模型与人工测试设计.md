@@ -12,12 +12,24 @@
 - 列表保持轻量，测试所需交互数据在用户打开测试功能时按需获取。
 - 删除账户批量测试，避免用户一次性制造大量不稳定上游请求和复杂任务状态。
 
-## 健康检查协议族
+## 健康检查请求形态
 
-- 当前账户必须保存不可空 `healthCheckEndpointFamily`，数据库字段为 `health_check_endpoint_family`，仅允许 `chat_completions`、`responses`、`messages`、`generate_content`。
-- 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试固定映射为 `chat_json`、`responses_json`、`messages_json`、`generate_content_json`，系统探针始终非流式；人工测试仍可显式选择账户已启用的 SSE 请求形态。
-- 新账户默认：GPT 官方 API Key / OAuth 优先 Responses；通用 OpenAI-compatible、DeepSeek、GLM 和 Gemini OpenAI profile 优先 Chat Completions；Anthropic profile 优先 Messages；Gemini Native 优先 GenerateContent。
-- 首选族未启用时，取账户 `supported_endpoint_modes` 中第一个已启用的 JSON 族；没有任何可用 JSON 族时拒绝保存，不做旧字段兼容或运行时协议猜测。
+- 当前账户必须保存不可空 `healthCheckEndpointMode`，数据库字段为 `health_check_endpoint_mode`。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`。
+- 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE。
+- 新账户默认：GPT 官方 API Key / OAuth 使用 `responses_sse`；通用 OpenAI-compatible、DeepSeek、GLM 和 Gemini OpenAI profile 使用 `chat_json`；Anthropic profile 使用 `messages_json`；Gemini Native 使用 `generate_content_json`。
+- 首选 mode 未启用时，优先取 `supported_endpoint_modes` 中第一个已启用 JSON mode，再取第一个可检查 mode；没有任何可检查 mode 时拒绝保存，不做旧字段兼容或运行时协议猜测。
+- 历史库必须停服离线把字段从 `health_check_endpoint_family` 直接改为 `health_check_endpoint_mode`。GPT 全量写为 `responses_sse`，其他旧族映射到对应 JSON mode；加密凭据中的 `supported_endpoint_modes` 必须先通过应用层 codec 解密改写，不能用普通 SQL 修改密文。
+
+历史库迁移使用同一套生产环境变量和加密密钥，并按以下顺序执行：
+
+```powershell
+pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-mode
+$env:JUHE_AI_OFFLINE_MAINTENANCE_CONFIRMED = '1'
+pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-mode -- --execute
+pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-mode -- --verify
+```
+
+第一条命令只做 dry-run；正式执行前必须停止主服务和 worker。正式迁移在同一数据库事务内锁定账户表、分批解密并重写 GPT 凭据、替换字段、更新约束和校验全部账户，任一步失败都会回滚；提交后再独立执行 verify。迁移完成后移除本次 PowerShell 会话中的确认环境变量。
 
 ## 2. 名称与字段
 
@@ -56,7 +68,9 @@
 - 删除支持模型时如果命中当前检查模型，必须先重新选择，不能静默切换到其他模型。
 - 后台任务发现检查模型缺失、不可见或不属于支持模型时，记录“检查模型配置异常”并停止本轮探针，不能猜测其他模型，也不能因此把账户标记为上游不可用。
 
-账户只向用户暴露必填的“健康检查协议族”，用于在已启用 JSON 能力中明确选择 Chat Completions、Responses、Messages 或 GenerateContent。系统不会暴露 stream / raw mode 等底层检查请求形态；协议族固定映射到对应非流式 JSON mode，人工测试才允许显式选择已启用的 SSE mode。
+账户向用户暴露必填的“健康检查请求形态”，只能选择账户已经启用的 JSON / Streaming mode。保存值就是后台探针最终使用值；人工测试仍可为单次诊断临时选择其他已启用 mode。
+
+混合供应商账户可以从自身上游接口能力中选择 Chat Completions、Responses、Messages 或 GenerateContent 的 JSON / Streaming 生成形态，不受账户初始协议档案裁剪。人工测试和后台检查必须按本次选中的精确 mode 构造下游诊断请求，再由混合账户模型映射决定实际上游协议和模型；`message_token_counting`、`count_tokens`、`embed_content` 等工具接口不进入检查协议选项。
 
 ## 4. 默认检查模型
 
@@ -172,11 +186,11 @@ GET /__aisys__/api/my-accounts/:id/test-options
 
 | 场景 | 模型来源 | 允许的状态副作用 |
 | --- | --- | --- |
-| 新账户激活检查 | 账户检查模型 | 成功后按账户时间计划将 `pending_test` 转为 `active` 或 `disabled`；失败保持待检查状态并退避 |
+| 新账户激活检查 | 账户检查模型 | 成功后按账户时间计划将 `pending_test` 转为 `active` 或 `disabled`；失败固定每 1 小时复检，从首次失败起满 24 小时仍失败则原子转为 `error` |
 | 关键配置变更复检 | 账户检查模型 | 按配置变更类型进入待检查或正常健康阈值流程 |
 | 正常账户周期健康检查 | 账户检查模型 | 写健康事实；达到阈值且确认账户级故障后进入保护状态 |
 | 运行态恢复探针 | 账户检查模型 | 只推进对应运行态状态机 |
-| 账号级冷却复测 | 账户检查模型 | 成功恢复账号持久状态；失败继续退避 |
+| 账号级冷却复测 | 账户检查模型 | 成功恢复账号持久状态；进入长期不可用后固定每 1 小时复测，从观察起点满 7 天仍失败则原子转为 `error` |
 | API Key 恢复探针 | 账户检查模型 | 只更新目标 Key 运行态 |
 
 底层请求执行器只返回诊断结果，不自行决定状态。上层策略服务根据 `purpose` 应用允许的副作用，不再依赖通用 `disableAccountStateMutation` 布尔参数控制所有场景。
@@ -200,7 +214,8 @@ runApiKeyRecoveryProbe()
 - 新增账户默认保存为 `pending_test` 且不可调度。
 - 导入请求中的 `active` 同样先落为 `pending_test`。
 - 保存事务完成后立即投递后台激活检查，不等待人工测试任务，也不接受人工测试任务 ID 作为激活凭证。
-- 后台激活检查成功后按账户当前时间计划写入 `active` 或 `disabled`；健康成功不能绕过时间计划。失败保持 `pending_test`，保存检查失败摘要并按受控退避继续检查；账户列表从首次失败起派生显示红色“检查失败”，tooltip 展示失败详情和自动重试提示，但不新增持久状态枚举。
+- 后台激活检查成功后按账户当前时间计划写入 `active` 或 `disabled`；健康成功不能绕过时间计划。失败保持 `pending_test`，保存首次失败时间和检查失败摘要，固定每 1 小时复检；从首次失败起满 24 小时仍失败时原子写为 `error`，错误码固定为 `account_activation_check_timeout`。账户列表从首次失败起派生显示红色“检查失败”，tooltip 展示失败详情和自动重试提示，但不新增中间持久状态枚举。
+- 检查失败的 `pending_test` 提供“重新检查”：同一事务把失败计数、首次失败时间、错误摘要和检查计划重置到新账户待检查基线，随后立即投递后台激活检查。尚无失败事实的普通待检查账户不提供该操作。
 - 用户可以在保存前人工测试草稿，但该结果只用于判断是否愿意保存，不参与账户激活。
 - 明确创建为 `disabled` 的账户尊重人工停用，不投递激活检查。
 
@@ -252,13 +267,15 @@ runApiKeyRecoveryProbe()
 | 账户状态 | 系统行为 |
 | --- | --- |
 | `active` | 周期健康检查和必要运行态恢复 |
-| `pending_test` | 激活检查 |
+| `pending_test` | 激活检查；失败后每 1 小时重试，首次失败满 24 小时仍失败则进入 `error` |
 | `temporary_unavailable` | 账号级冷却恢复 |
 | `rate_limited` | 限流恢复 |
-| `error` | 仅对明确可自动恢复的错误执行对应恢复任务 |
+| `error` | 人工“异常恢复”只原子重置为 `pending_test` 并立即投递激活检查，不能直接恢复为 `active` |
 | `disabled` | 不主动探测，尊重人工停用 |
 
 人工测试在所有状态下都只诊断，不能成为任何状态的恢复入口。
+
+自有账户在所有非 `disabled` 状态都允许人工停用，包括 `pending_test` 和 `error`；授权实例继续遵守授权侧状态管理边界。
 
 ## 14. 接口与存储契约
 

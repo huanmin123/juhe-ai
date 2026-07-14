@@ -2748,14 +2748,14 @@ SET provider_code = $1,
     last_error_code = NULL,
     last_error_message = NULL,
     health_check_model = $7,
-    health_check_endpoint_family = $8,
+    health_check_endpoint_mode = $8,
     authorization_instance_source_account_id = $9,
     authorization_instance_owner_system_account_id = $10,
     deleted_at = NULL,
     deleted_by = NULL,
     updated_at = $11
 WHERE id = $12
-`, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, source.HealthCheckModel, source.HealthCheckEndpointFamily, authorization.ResourceID, authorization.ResourceOwnerSystemAccountID, now.UTC(), deleted.ID); err != nil {
+`, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, source.HealthCheckModel, source.HealthCheckEndpointMode, authorization.ResourceID, authorization.ResourceOwnerSystemAccountID, now.UTC(), deleted.ID); err != nil {
 			if isPGUniqueViolation(err) {
 				return activeManagementAuthorizationAccountInstanceTx(ctx, tx, authorization.ID)
 			}
@@ -2776,7 +2776,7 @@ INSERT INTO juhe_business.accounts (
   id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
   name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
   concurrency_limit, priority, super_priority_enabled, fallback_enabled, schedulable,
-  health_check_model, health_check_endpoint_family,
+  health_check_model, health_check_endpoint_mode,
   authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
   created_at, updated_at
 ) VALUES (
@@ -2787,7 +2787,7 @@ INSERT INTO juhe_business.accounts (
   $13, $14, $15,
   $16, $16
 )
-`, id, authorization.GranteeSystemAccountID, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, credentialEncrypted, source.ConcurrencyLimit, source.HealthCheckModel, source.HealthCheckEndpointFamily, authorization.ResourceID, authorization.ID, authorization.ResourceOwnerSystemAccountID, now.UTC()); err != nil {
+`, id, authorization.GranteeSystemAccountID, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, credentialEncrypted, source.ConcurrencyLimit, source.HealthCheckModel, source.HealthCheckEndpointMode, authorization.ResourceID, authorization.ID, authorization.ResourceOwnerSystemAccountID, now.UTC()); err != nil {
 		if isPGUniqueViolation(err) {
 			return activeManagementAuthorizationAccountInstanceTx(ctx, tx, authorization.ID)
 		}
@@ -2810,19 +2810,19 @@ type managementAuthorizationAccountRow struct {
 	Type                      string
 	ConcurrencyLimit          int32
 	HealthCheckModel          string
-	HealthCheckEndpointFamily string
+	HealthCheckEndpointMode   string
 }
 
 func managementAuthorizationSourceAccountTx(ctx context.Context, tx pgx.Tx, accountID string) (managementAuthorizationAccountRow, bool, error) {
 	var row managementAuthorizationAccountRow
 	err := tx.QueryRow(ctx, `
 SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code,
-  protocol_version, name, type, concurrency_limit, health_check_model, health_check_endpoint_family
+  protocol_version, name, type, concurrency_limit, health_check_model, health_check_endpoint_mode
 FROM juhe_business.accounts
 WHERE id = $1
   AND deleted_at IS NULL
 LIMIT 1
-`, accountID).Scan(&row.ID, &row.SystemAccountID, &row.ProviderCode, &row.ProviderProtocolProfileID, &row.ProtocolCode, &row.ProtocolVersion, &row.Name, &row.Type, &row.ConcurrencyLimit, &row.HealthCheckModel, &row.HealthCheckEndpointFamily)
+`, accountID).Scan(&row.ID, &row.SystemAccountID, &row.ProviderCode, &row.ProviderProtocolProfileID, &row.ProtocolCode, &row.ProtocolVersion, &row.Name, &row.Type, &row.ConcurrencyLimit, &row.HealthCheckModel, &row.HealthCheckEndpointMode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return managementAuthorizationAccountRow{}, false, nil
 	}

@@ -184,6 +184,18 @@ assertIncludes(accountStrategySectionSource, 'upstreamEndpointFamilyDisabled(map
 assertIncludes(accountStrategySectionSource, 'shouldResetAccountModelMappingUpstreamEndpointFamily', '前端 watcher 必须仅按转换结构决定是否重写目标族')
 assertIncludes(accountStrategySectionSource, 'defaultAccountModelMappingSourceEndpointFamily', '主编辑器新增映射和结构 fallback 必须使用共享默认来源族')
 assertNotIncludes(accountStrategySectionSource, "sourceEndpointFamily: OPENAI_CHAT_COMPLETIONS_FAMILY", '主编辑器新增映射不得硬编码 Chat 来源族')
+assertIncludes(accountStrategySectionSource, 'sourceEndpointFamilyBaseOptions.filter', '来源协议下拉必须直接过滤当前账号不支持的协议')
+assertIncludes(accountStrategySectionSource, 'upstreamEndpointFamilyBaseOptions.filter', '目标协议下拉必须直接过滤当前账号不支持的协议')
+assertNotIncludes(accountStrategySectionSource, 'disabled: !isAccountModelMappingSourceEndpointFamilyAllowed', '来源协议下拉不应保留不可选择项')
+assertNotIncludes(accountStrategySectionSource, 'disabled: upstreamEndpointFamilyDisabled', '目标协议下拉不应保留不可选择项')
+assertNotIncludes(accountStrategySectionSource, "mapping.sourceModel = ''", '模型目录异步刷新不得静默清空来源模型')
+assertNotIncludes(accountStrategySectionSource, "mapping.upstreamModel = ''", '模型目录异步刷新不得静默清空上游模型')
+assertNotIncludes(accountStrategySectionSource, 'sourceModelOptionsFingerprint', '协议结构 watcher 不应订阅异步模型目录指纹')
+assertEqual(
+  accountStrategySectionSource.indexOf('label="上游接口能力"') < accountStrategySectionSource.indexOf('label="账号模型别名"'),
+  true,
+  '上游接口能力必须展示在账号模型别名之前'
+)
 
 console.log('账号模型别名协议模型选项回归通过')
 

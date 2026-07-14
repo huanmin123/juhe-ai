@@ -36,7 +36,7 @@ import {
   isAccountGptServiceTierOverrideAvailable
 } from './accountGptRequestOverrides'
 import { buildAccountBalancePayload, validateAccountBalanceForm } from './accountBalanceQuery'
-import { accountHealthCheckEndpointFamilyOptions } from './accountHealthCheckEndpointFamily'
+import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
 
@@ -50,7 +50,7 @@ export type AccountSavePayload = {
   priority: number
   supportedModels: string[]
   healthCheckModel: string
-  healthCheckEndpointFamily: AccountFormModel['healthCheckEndpointFamily']
+  healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string | null
@@ -72,7 +72,7 @@ export type AccountOAuthCreateCommonPayload = {
   priority: number
   supportedModels: string[]
   healthCheckModel: string
-  healthCheckEndpointFamily: AccountFormModel['healthCheckEndpointFamily']
+  healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string
@@ -124,8 +124,8 @@ export function validateAccountSaveForm(input: {
   const healthCheckModel = form.healthCheckModel.trim()
   if (!healthCheckModel) return '请选择检查模型'
   if (!supportedModels.includes(healthCheckModel)) return '检查模型必须从账户支持模型中选择'
-  if (!accountHealthCheckEndpointFamilyOptions(form.supportedEndpointModes).some((option) => option.value === form.healthCheckEndpointFamily)) {
-    return '检查协议必须选择已启用的非流式 JSON 上游能力'
+  if (!accountHealthCheckEndpointModeOptions(form.supportedEndpointModes).some((option) => option.value === form.healthCheckEndpointMode)) {
+    return '检查请求形态必须选择已启用的 JSON 或流式上游能力'
   }
   const requestOverrideValidation = validateAccountGptRequestOverrides(
     form,
@@ -203,7 +203,7 @@ export function buildAccountSavePayload(input: {
     priority: input.form.priority,
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
     healthCheckModel: input.form.healthCheckModel.trim(),
-    healthCheckEndpointFamily: input.form.healthCheckEndpointFamily,
+    healthCheckEndpointMode: input.form.healthCheckEndpointMode,
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
@@ -223,7 +223,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountU
     priority: payload.priority,
     supportedModels: payload.supportedModels,
     healthCheckModel: payload.healthCheckModel,
-    healthCheckEndpointFamily: payload.healthCheckEndpointFamily,
+    healthCheckEndpointMode: payload.healthCheckEndpointMode,
     modelMappings: payload.modelMappings,
     tags: payload.tags,
     proxyProfileId: payload.proxyProfileId,
@@ -252,7 +252,7 @@ export function buildOAuthCreateCommonPayload(input: {
     priority: input.form.priority,
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
     healthCheckModel: input.form.healthCheckModel.trim(),
-    healthCheckEndpointFamily: input.form.healthCheckEndpointFamily,
+    healthCheckEndpointMode: input.form.healthCheckEndpointMode,
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: input.form.proxyProfileId,

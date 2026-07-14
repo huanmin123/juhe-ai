@@ -16,12 +16,23 @@ import { chunks, idPrefix, type CreatedMockdata } from './mockdata/shared.js'
 
 type BusinessDatabase = ReturnType<typeof getBusinessDatabase>
 
+const allowedEmptyTables = new Set([
+  'stats.usage_range_window_requests'
+])
+
 export function assertMockdataCoverage(created: CreatedMockdata): void {
   const database = getBusinessDatabase()
   assertBusinessCoverage(database, created)
   assertUsageCoverage()
   assertCreatedShape(created)
+  assertModelTrustCoverage()
   assertApplicationTablesHaveRows()
+}
+
+function assertModelTrustCoverage(): void {
+  assertMinimum('模型可信 observation 样本缺失', scalar(getDatasetDatabase(), 'SELECT COUNT(*) AS value FROM model_check_observations'), 1)
+  assertMinimum('模型可信身份基线样本缺失', scalar(getStatsDatabase(), 'SELECT COUNT(*) AS value FROM model_identity_baseline_versions'), 1)
+  assertMinimum('模型可信最新结果样本缺失', scalar(getStatsDatabase(), 'SELECT COUNT(*) AS value FROM model_account_trust_results'), 1)
 }
 
 function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMockdata): void {
@@ -226,7 +237,7 @@ function collectEmptyTables(emptyTables: string[], databaseRole: string, databas
     const tableName = table.name
     if (!tableName) continue
     const row = database.prepare(`SELECT COUNT(*) AS value FROM ${quoteIdentifier(tableName)}`).get() as { value?: number } | undefined
-    if (Number(row?.value ?? 0) === 0) {
+    if (Number(row?.value ?? 0) === 0 && !allowedEmptyTables.has(`${databaseRole}.${tableName}`)) {
       emptyTables.push(`${databaseRole}.${tableName}`)
     }
   }

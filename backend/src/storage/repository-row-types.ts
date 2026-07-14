@@ -53,11 +53,12 @@ export interface AccountRow {
   cooldown_retest_last_at: string | null
   cooldown_retest_last_status_code: number | null
   health_check_model: string
-  health_check_endpoint_family: import('../domain/types.js').AccountHealthCheckEndpointFamily
+  health_check_endpoint_mode: import('../domain/types.js').AccountHealthCheckEndpointMode
   last_health_check_at: string | null
   next_health_check_at: string | null
   last_health_success_at: string | null
   health_check_failure_count: number
+  health_check_failure_started_at: string | null
   last_health_check_status_code: number | null
   last_health_check_error_code: string | null
   last_health_check_error_message: string | null
@@ -211,7 +212,7 @@ export type AccountListRow = AccountRow & {
   source_last_error_code?: string | null
   source_last_error_message?: string | null
   source_health_check_model?: string | null
-  source_health_check_endpoint_family?: import('../domain/types.js').AccountHealthCheckEndpointFamily | null
+  source_health_check_endpoint_mode?: import('../domain/types.js').AccountHealthCheckEndpointMode | null
   source_credential_mask?: string | null
   source_credentials_encrypted?: string | null
   source_proxy_profile_id?: string | null

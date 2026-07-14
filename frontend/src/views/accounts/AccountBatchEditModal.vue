@@ -49,17 +49,17 @@
               </AccountBatchEditField>
 
               <AccountBatchEditField
-                v-model:checked="form.enabled.healthCheckEndpointFamily"
+                v-model:checked="form.enabled.healthCheckEndpointMode"
                 :disabled="!homogeneousModelConfiguration"
-                label="检查协议"
-                description="后台检查固定使用所选协议族的非流式 JSON 请求。"
+                label="检查请求形态"
+                description="后台检查直接使用所选请求形态；GPT 建议使用 Responses API（Streaming）。"
               >
                 <template #default="{ disabled }">
                   <a-select
-                    v-model:value="form.healthCheckEndpointFamily"
-                    :disabled="disabled || !healthCheckEndpointFamilyOptions.length"
-                    :options="healthCheckEndpointFamilyOptions"
-                    placeholder="选择检查协议"
+                    v-model:value="form.healthCheckEndpointMode"
+                    :disabled="disabled || !healthCheckEndpointModeOptions.length"
+                    :options="healthCheckEndpointModeOptions"
+                    placeholder="选择检查请求形态"
                   />
                 </template>
               </AccountBatchEditField>
@@ -431,7 +431,7 @@ import {
   type AccountBatchEditForm
 } from './accountBatchEditForm'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
-import { accountHealthCheckEndpointFamilyOptions } from './accountHealthCheckEndpointFamily'
+import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import {
   accountGptRequestOverrideCapabilities,
@@ -510,7 +510,7 @@ const effectiveBatchEndpointModes = computed(() => (
     ? form.supportedEndpointModes
     : intersectAccountSupportedEndpointModes(accountDetails.value)
 ))
-const healthCheckEndpointFamilyOptions = computed(() => accountHealthCheckEndpointFamilyOptions(effectiveBatchEndpointModes.value))
+const healthCheckEndpointModeOptions = computed(() => accountHealthCheckEndpointModeOptions(effectiveBatchEndpointModes.value))
 const mappingUpstreamModelOptions = computed(() => {
   const labels = new Map(modelOptions.value.map((option) => [option.value, option.label]))
   return effectiveBatchModels.value.map((model) => ({ label: labels.get(model) ?? model, value: model }))

@@ -54,7 +54,7 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
 
   function openTrafficMigration(account: AccountSummary) {
     if (account.status === 'error') {
-      message.warning('异常账户除编辑、删除外，只支持测试和恢复异常')
+      message.warning('异常账户除编辑、删除外，只支持测试、异常恢复和停用')
       return
     }
     if (account.status === 'pending_test') {

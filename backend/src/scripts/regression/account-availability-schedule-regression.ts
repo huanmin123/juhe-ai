@@ -84,6 +84,13 @@ try {
 
   const groupId = allowed.boundGroupId
   assert.equal(groupId, group.id, '测试账户应加入指定分组')
+  assert.equal(repositories.recordAccountHealthCheckSuccess(allowed.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, '计划允许的新账户必须先由后台健康检查激活')
+  activateAccountForSchedule(denied.id, new Date().toISOString())
   const runtimeAccounts = repositories.listOpenAIAccountsForGroup(groupId, access.systemAccountId)
   assert.equal(runtimeAccounts.some((account) => account.id === allowed.id), true, '计划允许时账户应进入网关候选')
   assert.equal(runtimeAccounts.some((account) => account.id === denied.id), false, '时段外时账户不应进入网关候选')
@@ -113,7 +120,8 @@ try {
     availabilitySchedule: rangedCrossDaySchedule,
     groupId: group.id
   }, access))
-  assert.equal(rangedCrossDayAccount.status, 'disabled', '跨天日期范围窗口开始前应初始化为停用状态')
+  activateAccountForSchedule(rangedCrossDayAccount.id, '2026-06-01T21:59:00.000Z')
+  assert.equal(repositories.findAccountSummary(rangedCrossDayAccount.id, access)?.status, 'disabled', '跨天日期范围窗口开始前后台激活检查应按计划停用')
   assert.equal(repositories.listOpenAIAccountsForGroup(groupId, access.systemAccountId).some((account) => account.id === rangedCrossDayAccount.id), false, '跨天日期范围开始前账户不应进入候选')
 
   const rangedCrossDayStartResult = repositories.syncAccountAvailabilityScheduleStatuses(new Date('2026-06-01T22:00:00.000Z'))
@@ -136,7 +144,8 @@ try {
     availabilitySchedule: windowSchedule,
     groupId: group.id
   }, access))
-  assert.equal(boundaryAccount.status, 'disabled', '保存计划时应按当前时间初始化账户状态')
+  activateAccountForSchedule(boundaryAccount.id, '2026-05-31T21:59:00.000Z')
+  assert.equal(repositories.findAccountSummary(boundaryAccount.id, access)?.status, 'disabled', '后台激活检查应按当前时间计划初始化账户状态')
   assert.equal(
     accountNextCheckAt(databaseModule.getBusinessDatabase(), boundaryAccount.id),
     '2026-05-31T22:00:00.000Z',
@@ -213,6 +222,16 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function activateAccountForSchedule(accountId: string, checkedAt: string): void {
+  assert.equal(repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200,
+    checkedAt
+  }), true, `账户 ${accountId} 后台激活检查应成功写入计划状态`)
 }
 
 function accountNextCheckAt(database: ReturnType<typeof import('../../storage/database.js').getBusinessDatabase>, id: string): string | null {

@@ -799,21 +799,15 @@ function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: C
 } {
   const tier = input.serviceTier
   const tierSupported = (tier === 'priority' || tier === 'flex') && pricing.supportedServiceTiers.includes(tier)
-  const fallbackMultiplier = tier === 'priority'
-    ? normalizeCatalogMultiplier(input.priorityPriceMultiplier, 2)
-    : tier === 'flex'
-      ? normalizeCatalogMultiplier(input.flexPriceMultiplier, 0.5)
-      : 1
   const selectPrice = (standard: number | undefined, priority: number | undefined, flex: number | undefined): number | undefined => {
     if (!tierSupported) return standard
-    const specific = tier === 'priority' ? priority : flex
-    return specific ?? multiplyCatalogPrice(standard, fallbackMultiplier)
+    return tier === 'priority' ? priority : flex
   }
   const longContext = pricing.longContextInputTokenThreshold !== undefined
     && Math.max(input.inputTokens ?? 0, 0) > pricing.longContextInputTokenThreshold
   const inputMultiplier = longContext ? normalizeCatalogMultiplier(pricing.longContextInputCostMultiplier) : 1
   const outputMultiplier = longContext ? normalizeCatalogMultiplier(pricing.longContextOutputCostMultiplier) : 1
-  const serviceTierPricing = catalogServiceTierPricingMetadata(pricing, input, tierSupported, fallbackMultiplier)
+  const serviceTierPricing = catalogServiceTierPricingMetadata(pricing, input, tierSupported)
   return {
     inputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.inputUsdPer1M, pricing.priorityInputUsdPer1M, pricing.flexInputUsdPer1M), inputMultiplier)),
     outputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.outputUsdPer1M, pricing.priorityOutputUsdPer1M, pricing.flexOutputUsdPer1M), outputMultiplier)),
@@ -827,8 +821,7 @@ function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: C
 function catalogServiceTierPricingMetadata(
   pricing: ProviderModelCatalogItem,
   input: CostInput,
-  tierSupported: boolean,
-  fallbackMultiplier: number
+  tierSupported: boolean
 ): Pick<ProviderCostBreakdown, 'serviceTierPricingSource' | 'serviceTierMultiplier'> {
   const tier = input.serviceTier
   if (!tierSupported || (tier !== 'priority' && tier !== 'flex')) {
@@ -842,21 +835,18 @@ function catalogServiceTierPricingMetadata(
     [pricing.cacheWrite1hUsdPer1M, tier === 'priority' ? pricing.priorityCacheWrite1hUsdPer1M : pricing.flexCacheWrite1hUsdPer1M]
   ] as const
   let specificCount = 0
-  let fallbackCount = 0
+  let missingSpecificCount = 0
   for (const [standard, specific] of pairs) {
     if (specific !== undefined) {
       specificCount += 1
     } else if (standard !== undefined) {
-      fallbackCount += 1
+      missingSpecificCount += 1
     }
   }
-  if (specificCount > 0 && fallbackCount > 0) {
-    return { serviceTierPricingSource: 'mixed', serviceTierMultiplier: fallbackMultiplier }
-  }
-  if (specificCount > 0) {
+  if (specificCount > 0 && missingSpecificCount === 0) {
     return { serviceTierPricingSource: 'tier_specific' }
   }
-  return { serviceTierPricingSource: 'multiplier', serviceTierMultiplier: fallbackMultiplier }
+  return { serviceTierPricingSource: 'unknown' }
 }
 
 function multiplyCatalogPrice(value: number | undefined, multiplier: number): number | undefined {

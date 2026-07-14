@@ -1,4 +1,4 @@
-import type { AccountAvailabilitySchedule, AccountHealthCheckEndpointFamily, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
+import type { AccountAvailabilitySchedule, AccountHealthCheckEndpointMode, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   findAccountSummaryAsync,
@@ -49,7 +49,7 @@ export interface AccountExportAccount {
   fallbackEnabled?: boolean
   supportedModels?: string[]
   healthCheckModel?: string
-  healthCheckEndpointFamily: AccountHealthCheckEndpointFamily
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   modelMappings?: AccountModelMapping[]
   tags?: string[]
   accountExpiresAt?: string
@@ -209,7 +209,7 @@ function buildExportAccount(account: AccountSummary, proxyRef: string | undefine
     providerProtocolProfileId: account.providerProtocolProfileId,
     type: account.type,
     status,
-    healthCheckEndpointFamily: account.healthCheckEndpointFamily,
+    healthCheckEndpointMode: account.healthCheckEndpointMode,
     credentials: exportCredentials(account.type, account.credentials)
   }
   if (account.boundGroupName) {

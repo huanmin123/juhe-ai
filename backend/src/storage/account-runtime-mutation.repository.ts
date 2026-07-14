@@ -170,6 +170,44 @@ export function clearAccountFailureStateResult(
     return { account: findAccountSummary(id, accountAccess), changed }
   }
 
+  if (current.status === 'pending_test' || current.status === 'error') {
+    const result = getBusinessDatabase()
+      .prepare(`
+        UPDATE accounts
+        SET status = 'pending_test',
+            schedulable = 0,
+            cooldown_until = NULL,
+            last_error_code = NULL,
+            last_error_message = '账户已重置，等待后台健康检查',
+            cooldown_retest_failure_count = 0,
+            cooldown_retest_observation_started_at = NULL,
+            cooldown_retest_last_at = NULL,
+            cooldown_retest_last_status_code = NULL,
+            last_health_check_at = NULL,
+            next_health_check_at = NULL,
+            last_health_success_at = NULL,
+            health_check_failure_count = 0,
+            health_check_failure_started_at = NULL,
+            last_health_check_status_code = NULL,
+            last_health_check_error_code = NULL,
+            last_health_check_error_message = NULL,
+            stream_failure_count = 0,
+            stream_failure_window_started_at = NULL,
+            updated_at = ?
+        WHERE id = ?
+          AND deleted_at IS NULL
+          AND status = ?
+      `)
+      .run(nowIso(), id, current.status)
+    const changed = Number(result.changes ?? 0) > 0
+    if (changed) {
+      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_health_check_restarted' })
+      invalidateAccountLookupCache(id)
+      invalidateGatewayRuntimeAfterBusinessWrite('account_health_check_restarted')
+    }
+    return { account: findAccountSummary(id, accountAccess), changed }
+  }
+
   const result = getBusinessDatabase()
     .prepare(`
       UPDATE accounts
@@ -279,6 +317,43 @@ export async function clearAccountFailureStateResultAsync(
       await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_expired' }, client)
       invalidateAccountLookupCache(id)
       invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
+    }
+    return { account: await findAccountSummaryAsync(id, accountAccess), changed }
+  }
+
+  if (current.status === 'pending_test' || current.status === 'error') {
+    const result = await client.execute(`
+      UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
+      SET status = 'pending_test',
+          schedulable = 0,
+          cooldown_until = NULL,
+          last_error_code = NULL,
+          last_error_message = '账户已重置，等待后台健康检查',
+          cooldown_retest_failure_count = 0,
+          cooldown_retest_observation_started_at = NULL,
+          cooldown_retest_last_at = NULL,
+          cooldown_retest_last_status_code = NULL,
+          last_health_check_at = NULL,
+          next_health_check_at = NULL,
+          last_health_success_at = NULL,
+          health_check_failure_count = 0,
+          health_check_failure_started_at = NULL,
+          last_health_check_status_code = NULL,
+          last_health_check_error_code = NULL,
+          last_health_check_error_message = NULL,
+          stream_failure_count = 0,
+          stream_failure_window_started_at = NULL,
+          updated_at = ?
+      WHERE id = ?
+        AND system_account_id = ?
+        AND deleted_at IS NULL
+        AND status = ?
+    `, [nowIso(), id, ownerSystemAccountId, current.status])
+    const changed = Number(result.changes ?? 0) > 0
+    if (changed) {
+      await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_health_check_restarted' }, client)
+      invalidateAccountLookupCache(id)
+      invalidateGatewayRuntimeAfterBusinessWrite('account_health_check_restarted')
     }
     return { account: await findAccountSummaryAsync(id, accountAccess), changed }
   }

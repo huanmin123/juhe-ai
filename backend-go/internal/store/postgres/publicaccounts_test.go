@@ -214,7 +214,12 @@ func TestPublicAccountProviderProfileFromRowDecodesDefaultSupportedModels(t *tes
 	if profile.DefaultHealthCheckModel != "gpt-5.6-sol" {
 		t.Fatalf("default health check model = %q, want gpt-5.6-sol", profile.DefaultHealthCheckModel)
 	}
-	wantModes := []string{"responses_json", "chat_json", "messages_json", "generate_content_json"}
+	wantModes := []string{
+		"responses_json", "responses_sse",
+		"chat_json", "chat_sse",
+		"messages_json", "messages_sse",
+		"generate_content_json", "generate_content_sse",
+	}
 	if !slices.Equal(profile.EnabledEndpointModes, wantModes) {
 		t.Fatalf("enabled endpoint modes = %#v, want %#v", profile.EnabledEndpointModes, wantModes)
 	}

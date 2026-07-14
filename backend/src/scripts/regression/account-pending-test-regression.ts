@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import http from 'node:http'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -48,6 +48,12 @@ const healthSettings = {
 let mockOpenAIServer: http.Server | undefined
 
 try {
+  const accountsRouteSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
+  assert.match(
+    accountsRouteSource,
+    /requestedClearFailureState === true && account\.status === 'pending_test'[\s\S]+dispatchAccountHealthCheck\(account\.id, 'activation'\)/,
+    '重新检查和异常恢复进入 pending_test 后必须立即投递后台激活检查'
+  )
   setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   mockOpenAIServer = createMockOpenAIServer()
   mockOpenAIServer.listen(0, '127.0.0.1')
@@ -111,18 +117,62 @@ try {
   assert.equal(afterManualSuccess?.schedulable, false, '人工测试成功不能恢复账户调度')
   assert.equal(afterManualSuccess?.healthCheckModel, 'gpt-5.5', '人工测试成功不能改写检查模型')
 
-  assert.equal(repositories.recordAccountHealthCheckFailure(pending.id, {
+  const firstPendingFailure = repositories.recordAccountHealthCheckFailure(pending.id, {
     ...healthSettings,
     statusCode: 401,
     errorCode: 'invalid_api_key',
     errorMessage: 'Invalid API key'
-  }).changed, true, '后台健康检查失败应记录待检查账户的失败详情')
+  })
+  assert.equal(firstPendingFailure.changed, true, '后台健康检查失败应记录待检查账户的失败详情')
+  assert.equal(firstPendingFailure.transitionedToError, false, '首次失败不应立即把待检查账户转为异常')
+  assert.equal(
+    Date.parse(firstPendingFailure.nextHealthCheckAt ?? '') - Date.parse(firstPendingFailure.checkedAt),
+    60 * 60_000,
+    '待检查账户失败后必须固定 1 小时复检'
+  )
   const failedPending = repositories.findAccountSummary(pending.id, access)
   assert.equal(failedPending?.status, 'pending_test', '后台健康检查失败后仍应由系统自动重试')
   assert.equal(failedPending?.schedulable, false, '后台健康检查失败后不得参与调度')
   assert.equal(failedPending?.effectiveAvailability?.label, '账户检查失败', '待检查失败应显示明确状态')
   assert.equal(failedPending?.effectiveAvailability?.color, 'red', '待检查失败应使用红色状态')
   assert.match(failedPending?.effectiveAvailability?.reason ?? '', /自动重试/, '待检查失败应说明系统会自动重试')
+
+  const restartedPending = repositories.clearAccountFailureState(pending.id, access, { allowPendingTestRestore: true })
+  assert.equal(restartedPending?.status, 'pending_test', '重新检查必须保持待检查状态')
+  assert.equal(restartedPending?.schedulable, false, '重新检查后必须保持不可调度')
+  assert.equal(restartedPending?.lastHealthCheckAt, undefined, '重新检查必须清空上次健康检查时间')
+  assert.equal(restartedPending?.healthCheckFailureCount, 0, '重新检查必须清空健康检查失败计数')
+  assert.equal(restartedPending?.healthCheckFailureStartedAt, undefined, '重新检查必须清空首次失败窗口')
+  assert.equal(restartedPending?.lastHealthCheckErrorCode, undefined, '重新检查必须清空健康检查错误码')
+
+  repositories.recordAccountHealthCheckFailure(pending.id, {
+    ...healthSettings,
+    statusCode: 401,
+    errorCode: 'invalid_api_key',
+    errorMessage: 'Invalid API key after restart'
+  })
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET health_check_failure_started_at = ? WHERE id = ?')
+    .run(new Date(Date.now() - 25 * 60 * 60_000).toISOString(), pending.id)
+  const timedOutPending = repositories.recordAccountHealthCheckFailure(pending.id, {
+    ...healthSettings,
+    statusCode: 401,
+    errorCode: 'invalid_api_key',
+    errorMessage: 'Invalid API key after 24 hours'
+  })
+  assert.equal(timedOutPending.transitionedToError, true, '从首次失败起满 24 小时仍失败必须转为异常')
+  assert.equal(timedOutPending.nextHealthCheckAt, undefined, '转为异常后不应继续安排 pending_test 复检')
+  const timedOutAccount = repositories.findAccountSummary(pending.id, access)
+  assert.equal(timedOutAccount?.status, 'error', '激活检查超时必须写入 error 状态')
+  assert.equal(timedOutAccount?.schedulable, false, '激活检查超时后必须不可调度')
+  assert.equal(timedOutAccount?.lastErrorCode, 'account_activation_check_timeout', '激活检查超时必须写入明确错误码')
+  assert.match(timedOutAccount?.lastErrorMessage ?? '', /持续 24 小时仍未通过/, '激活检查超时必须写入明确错误原因')
+
+  const recoveredError = repositories.clearAccountFailureState(pending.id, access)
+  assert.equal(recoveredError?.status, 'pending_test', '异常恢复只能进入待检查，不能直接恢复正常')
+  assert.equal(recoveredError?.schedulable, false, '异常恢复后后台检查通过前不得调度')
+  assert.equal(recoveredError?.lastErrorCode, undefined, '异常恢复应清空终态错误码')
+  assert.equal(recoveredError?.healthCheckFailureStartedAt, undefined, '异常恢复应重置首次失败窗口')
 
   assert.equal(repositories.recordAccountHealthCheckSuccess(pending.id, {
     ...healthSettings,

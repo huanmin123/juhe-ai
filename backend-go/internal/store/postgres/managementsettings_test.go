@@ -56,10 +56,8 @@ func TestW5SystemSettingsMigrationSeedsNodeDefaults(t *testing.T) {
 	}
 	sql := string(source)
 	defaults := nodeSystemSettingDefaultJSON()
-	delete(defaults, "gptPriorityPriceMultiplier")
-	delete(defaults, "gptFlexPriceMultiplier")
-	if len(defaults) != 53 {
-		t.Fatalf("initial migration default count = %d, want 53", len(defaults))
+	if len(defaults) != 52 {
+		t.Fatalf("initial migration default count = %d, want 52", len(defaults))
 	}
 	if count := strings.Count(sql, "'sys_admin'"); count != len(defaults) {
 		t.Fatalf("migration sys_admin row count = %d, want %d", count, len(defaults))
@@ -94,25 +92,23 @@ func TestW5SystemSettingsMigrationSeedsNodeDefaults(t *testing.T) {
 	}
 }
 
-func TestW5GPTServiceTierSettingsMigrationSeedsDefaults(t *testing.T) {
-	source, err := os.ReadFile("../../../db/migrations/000034_w5_gpt_service_tier_settings.sql")
+func TestW5RemoveGPTServiceTierMultipliersMigration(t *testing.T) {
+	source, err := os.ReadFile("../../../db/migrations/000043_w5_remove_gpt_service_tier_multipliers.sql")
 	if err != nil {
-		t.Fatalf("read GPT service tier settings migration: %v", err)
+		t.Fatalf("read remove GPT service tier multiplier settings migration: %v", err)
 	}
 	sql := string(source)
 	for _, want := range []string{
+		"DELETE FROM juhe_business.system_settings",
+		"WHERE key IN ('gptPriorityPriceMultiplier', 'gptFlexPriceMultiplier')",
 		"('sys_admin', 'gptPriorityPriceMultiplier', '2', now())",
 		"('sys_admin', 'gptFlexPriceMultiplier', '0.5', now())",
 		"ON CONFLICT (system_account_id, key) DO NOTHING",
 		"-- +goose Down",
-		"-- no-op:",
 	} {
 		if !strings.Contains(sql, want) {
-			t.Fatalf("GPT service tier settings migration missing %q", want)
+			t.Fatalf("remove GPT service tier multiplier settings migration missing %q", want)
 		}
-	}
-	if count := strings.Count(sql, "'sys_admin'"); count != 2 {
-		t.Fatalf("GPT service tier settings migration row count = %d, want 2", count)
 	}
 }
 
@@ -186,14 +182,6 @@ func TestManagementSystemSettingsSnapshotReadsAllSettings(t *testing.T) {
 	value, ok := settings.Value("usageHotWindowRefreshIntervalSeconds")
 	if !ok || string(value) != "600" {
 		t.Fatalf("usageHotWindowRefreshIntervalSeconds = %q, %v; want 600", value, ok)
-	}
-	priority, ok := settings.Value("gptPriorityPriceMultiplier")
-	if !ok || string(priority) != "2" {
-		t.Fatalf("gptPriorityPriceMultiplier = %q, %v; want 2", priority, ok)
-	}
-	flex, ok := settings.Value("gptFlexPriceMultiplier")
-	if !ok || string(flex) != "0.5" {
-		t.Fatalf("gptFlexPriceMultiplier = %q, %v; want 0.5", flex, ok)
 	}
 	timezone, ok := settings.Value(systemsettings.UsageStatsTimezoneKey)
 	if !ok || string(timezone) != `"UTC"` {
@@ -271,7 +259,7 @@ func TestUpdateManagementSystemSettingsUsesStablePatchOrder(t *testing.T) {
 		"usageHotWindowRefreshIntervalSeconds": json.RawMessage(`900`),
 		"gatewayTextRawBodyLimitMegabytes":     json.RawMessage(`32`),
 		"accountHealthCheckBatchSize":          json.RawMessage(`40`),
-		"gptFlexPriceMultiplier":               json.RawMessage(`0.75`),
+		"systemMetricsHourlyRetentionDays":     json.RawMessage(`20`),
 	})
 	q := &managementSystemSettingsQueriesStub{
 		lockedRows: validManagementSystemSettingsRows(),
@@ -287,7 +275,7 @@ func TestUpdateManagementSystemSettingsUsesStablePatchOrder(t *testing.T) {
 	wantKeys := []string{
 		"accountHealthCheckBatchSize",
 		"gatewayTextRawBodyLimitMegabytes",
-		"gptFlexPriceMultiplier",
+		"systemMetricsHourlyRetentionDays",
 		"usageHotWindowRefreshIntervalSeconds",
 	}
 	if len(q.updateCalls) != len(wantKeys) {
@@ -307,9 +295,9 @@ func TestUpdateManagementSystemSettingsUsesStablePatchOrder(t *testing.T) {
 	if string(beforeValue) != "600" || string(updatedValue) != "900" {
 		t.Fatalf("usage hot window before/after = %s/%s, want 600/900", beforeValue, updatedValue)
 	}
-	decimalValue, _ := result.Settings.Value("gptFlexPriceMultiplier")
-	if string(decimalValue) != "0.75" {
-		t.Fatalf("gpt flex multiplier = %s, want 0.75", decimalValue)
+	hourlyRetention, _ := result.Settings.Value("systemMetricsHourlyRetentionDays")
+	if string(hourlyRetention) != "20" {
+		t.Fatalf("system metrics hourly retention = %s, want 20", hourlyRetention)
 	}
 	if result.Settings.Len() != len(systemsettings.Definitions()) {
 		t.Fatalf("updated settings length = %d, want %d", result.Settings.Len(), len(systemsettings.Definitions()))
@@ -564,8 +552,6 @@ func mustSystemSettingsPatch(t *testing.T, values map[string]json.RawMessage) sy
 func nodeSystemSettingDefaultJSON() map[string]string {
 	return map[string]string{
 		"gatewayTextRawBodyLimitMegabytes":           "16",
-		"gptPriorityPriceMultiplier":                 "2",
-		"gptFlexPriceMultiplier":                     "0.5",
 		"systemApiRateLimitIpReadPerMinute":          "600",
 		"systemApiRateLimitIpReadBurstPer10Seconds":  "120",
 		"systemApiRateLimitIpWritePerMinute":         "180",
@@ -600,7 +586,6 @@ func nodeSystemSettingDefaultJSON() map[string]string {
 		"cooldownAccountRetestIntervalSeconds":       "3",
 		"cooldownAccountRetestBatchSize":             "10",
 		"cooldownAccountRetestMaxBackoffHours":       "12",
-		"cooldownAccountRetestLongTermIntervalHours": "1",
 		"oauthAccessTokenRefreshIntervalSeconds":     "60",
 		"oauthAccessTokenRefreshLeadSeconds":         "300",
 		"oauthAccessTokenRefreshBatchSize":           "20",

@@ -434,8 +434,8 @@ async function runHttpSmoke(): Promise<void> {
     const restoredAiAccount = await patchEnvelope<{ id: string; status: string; schedulable: boolean }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
       clearFailureState: true
     }, cookie)
-    assert.equal(restoredAiAccount.status, 'active', 'performance smoke 应能恢复 AI 账户异常状态')
-    assert.equal(restoredAiAccount.schedulable, true, 'performance smoke 恢复异常状态后账户应参与调度')
+    assert.equal(restoredAiAccount.status, 'active', 'performance smoke 应能恢复 AI 账户临时不可调用状态')
+    assert.equal(restoredAiAccount.schedulable, true, 'performance smoke 恢复临时不可调用状态后账户应参与调度')
     const updatedAiAccountName = `${createdAiAccount.name}改`
     const updatedAiAccount = await patchEnvelope<{
       id: string

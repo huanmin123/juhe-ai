@@ -36,7 +36,7 @@ func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
 				ClientCompatibility:       publicaccounts.DefaultClientCompat,
 				Status:                    publicaccounts.StatusPendingTest,
 				SupportedModels:           []string{"gpt-5.5"},
-				HealthCheckEndpointFamily: "responses",
+				HealthCheckEndpointMode:   "responses_sse",
 				BoundGroupID:              "grp_1",
 				BoundGroupName:            "公开分组",
 				Schedulable:               false,
@@ -80,8 +80,8 @@ func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
 	if _, ok := account["healthCheckModel"]; ok {
 		t.Fatalf("response exposed internal healthCheckModel: %#v", account)
 	}
-	if _, ok := account["healthCheckEndpointFamily"]; ok {
-		t.Fatalf("response exposed internal healthCheckEndpointFamily: %#v", account)
+	if _, ok := account["healthCheckEndpointMode"]; ok {
+		t.Fatalf("response exposed internal healthCheckEndpointMode: %#v", account)
 	}
 
 	log := singlePublicAPILog(t, logQueue)
@@ -283,22 +283,22 @@ func TestParsePublicAccountBodiesRejectInternalHealthCheckFields(t *testing.T) {
 			fieldName: "healthCheckModel",
 		},
 		{
-			name: "add health check endpoint family",
+			name: "add health check endpoint mode",
 			parse: func(req *http.Request) error {
 				_, err := parsePublicAccountAddBody(req)
 				return err
 			},
-			body:      `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","healthCheckEndpointFamily":"responses"}`,
-			fieldName: "healthCheckEndpointFamily",
+			body:      `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","healthCheckEndpointMode":"responses_sse"}`,
+			fieldName: "healthCheckEndpointMode",
 		},
 		{
-			name: "update health check endpoint family",
+			name: "update health check endpoint mode",
 			parse: func(req *http.Request) error {
 				_, err := parsePublicAccountUpdateBody(req)
 				return err
 			},
-			body:      `{"accountId":"acct_1","healthCheckEndpointFamily":"responses"}`,
-			fieldName: "healthCheckEndpointFamily",
+			body:      `{"accountId":"acct_1","healthCheckEndpointMode":"responses_sse"}`,
+			fieldName: "healthCheckEndpointMode",
 		},
 	}
 
@@ -604,11 +604,11 @@ func TestPublicAccountHandlersRejectStrictAndNonCoercedFields(t *testing.T) {
 		body string
 	}{
 		{name: "add unknown credentials field", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","credentials":{"apiKey":"sk-test"}}`},
-		{name: "add health check endpoint family", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","healthCheckEndpointFamily":"responses"}`},
+		{name: "add health check endpoint mode", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","healthCheckEndpointMode":"responses_sse"}`},
 		{name: "add unsupported type", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"oauth","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test"}`},
 		{name: "add string concurrency", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","concurrencyLimit":"20"}`},
 		{name: "update empty mutable", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1"}`},
-		{name: "update health check endpoint family", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","healthCheckEndpointFamily":"responses"}`},
+		{name: "update health check endpoint mode", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","healthCheckEndpointMode":"responses_sse"}`},
 		{name: "delete unknown field", path: "/__aipublic__/account/del", body: `{"accountId":"acct_1","extra":1}`},
 	}
 

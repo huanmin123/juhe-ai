@@ -741,7 +741,6 @@ export type DbServiceOperation =
       errorMessage?: string
       maxPauseMinutes?: number
       maxRecoveryHours?: number
-      longTermIntervalHours?: number
     }
   }
   | {
@@ -939,10 +938,10 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'record_account_health_check_success' } ? { changed: boolean } :
   T extends { type: 'commit_account_balance_refresh' } ? { changed: boolean } :
   T extends { type: 'enable_detected_account_balance_query' } ? { changed: boolean } :
-  T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt: string; errorCode: string; errorMessage: string } :
+  T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt?: string; failureStartedAt?: string; transitionedToError: boolean; accountStatus?: string; errorCode: string; errorMessage: string } :
   T extends { type: 'list_accounts_due_for_cooldown_retest' } ? import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestPage :
   T extends { type: 'find_account_for_cooldown_retest' } ? AccountSummary | undefined :
-  T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; errorCode: string; errorMessage: string } :
+  T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; observationTimeoutSeconds?: number; transitionedToError?: boolean; errorCode: string; errorMessage: string } :
   T extends { type: 'mark_account_exception' } ? { updated: boolean; accountStatus?: string } :
   T extends { type: 'update_proxy_test_state' } ? { updated: boolean; proxyStatus?: string } :
   T extends { type: 'mark_all_group_account_stats_dirty' } ? { marked: true } :

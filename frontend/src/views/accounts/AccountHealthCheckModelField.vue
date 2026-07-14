@@ -16,15 +16,15 @@
       />
     </a-form-item>
     <a-form-item
-      label="检查协议"
+      label="检查请求形态"
       required
-      tooltip="系统检查固定使用所选协议族的非流式 JSON 请求。"
+      tooltip="系统检查直接使用所选请求形态；GPT 建议使用 Responses API（Streaming）。"
     >
       <a-select
-        v-model:value="form.healthCheckEndpointFamily"
-        :disabled="!endpointFamilyOptions.length"
-        :options="endpointFamilyOptions"
-        placeholder="选择后台检查协议"
+        v-model:value="form.healthCheckEndpointMode"
+        :disabled="!endpointModeOptions.length"
+        :options="endpointModeOptions"
+        placeholder="选择后台检查请求形态"
       />
     </a-form-item>
   </div>
@@ -34,7 +34,7 @@
 import { computed } from 'vue'
 
 import type { AccountFormModel } from './accountFormTypes'
-import { accountHealthCheckEndpointFamilyOptions } from './accountHealthCheckEndpointFamily'
+import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 
 const props = defineProps<{
   form: AccountFormModel
@@ -51,7 +51,7 @@ const options = computed(() => {
     }))
 })
 
-const endpointFamilyOptions = computed(() => accountHealthCheckEndpointFamilyOptions(props.form.supportedEndpointModes))
+const endpointModeOptions = computed(() => accountHealthCheckEndpointModeOptions(props.form.supportedEndpointModes))
 </script>
 
 <style scoped>

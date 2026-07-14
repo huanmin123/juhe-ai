@@ -75,7 +75,7 @@ try {
     fallbackEnabled: false,
     clientCompatibility: account.clientCompatibility,
     supportedModels: ['gpt-5-mini'],
-    healthCheckEndpointFamily: 'responses',
+    healthCheckEndpointMode: 'responses_sse',
     baseUrl: 'https://example.invalid/v1',
     apiKey: selected.key,
     apiKeys,

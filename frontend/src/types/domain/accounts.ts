@@ -26,7 +26,17 @@ export type AccountSupportedEndpointMode =
   | 'generate_content_sse'
   | 'count_tokens'
   | 'embed_content'
-export type AccountHealthCheckEndpointFamily = 'chat_completions' | 'responses' | 'messages' | 'generate_content'
+export type AccountHealthCheckEndpointMode = Extract<
+  AccountSupportedEndpointMode,
+  | 'chat_json'
+  | 'chat_sse'
+  | 'responses_json'
+  | 'responses_sse'
+  | 'messages_json'
+  | 'messages_sse'
+  | 'generate_content_json'
+  | 'generate_content_sse'
+>
 export type AccountApiKeyRuntimeStatus = 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 
 export interface AccountCredentials {
@@ -271,7 +281,7 @@ export interface AccountSummary {
   modelMappings?: AccountModelMapping[]
   tags?: AccountTagSummary[]
   healthCheckModel: string
-  healthCheckEndpointFamily: AccountHealthCheckEndpointFamily
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -299,6 +309,7 @@ export interface AccountSummary {
   nextHealthCheckAt?: string
   lastHealthSuccessAt?: string
   healthCheckFailureCount?: number
+  healthCheckFailureStartedAt?: string
   lastHealthCheckStatusCode?: number
   lastHealthCheckErrorCode?: string
   lastHealthCheckErrorMessage?: string
@@ -366,7 +377,7 @@ export interface AccountBatchEditUpdates {
   responseInspectionRules?: AccountBatchEditField<unknown[]>
   supportedModels?: AccountBatchEditField<string[]>
   healthCheckModel?: AccountBatchEditField<string>
-  healthCheckEndpointFamily?: AccountBatchEditField<AccountHealthCheckEndpointFamily>
+  healthCheckEndpointMode?: AccountBatchEditField<AccountHealthCheckEndpointMode>
   modelMappings?: AccountBatchEditField<AccountModelMapping[]>
   supportedEndpointModes?: AccountBatchEditField<AccountSupportedEndpointMode[]>
   serviceTierOverride?: AccountBatchEditField<AccountGptServiceTierOverride | null>

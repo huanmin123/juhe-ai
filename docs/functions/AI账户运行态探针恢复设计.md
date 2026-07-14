@@ -286,7 +286,7 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 | `precheck_pending` | 后台探针成功 | 手动恢复正常 |
 | `temporary_unavailable` | 后台冷却复测成功 | 手动恢复正常 |
 | `rate_limited` | 后台慢速复测成功 | 手动恢复正常 |
-| `error` | 对应后台任务成功，例如 OAuth 刷新恢复 | 修复配置后由后台复检；恢复异常 |
+| `error` | 对应后台任务成功，例如 OAuth 刷新恢复 | 人工“异常恢复”只进入 `pending_test` 并立即投递后台复检 |
 
 ## 日志和排障
 

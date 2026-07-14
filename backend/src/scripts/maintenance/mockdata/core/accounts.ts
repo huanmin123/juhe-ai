@@ -38,26 +38,54 @@ function createMockGptAccount(input: Record<string, unknown>, access: AccessScop
   const supportedModels = Array.isArray(input.supportedModels)
     ? input.supportedModels.filter((model): model is string => typeof model === 'string' && model.trim().length > 0)
     : []
-  return repositories.createAccount({
+  const account = repositories.createAccount({
     providerCode,
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     ...(supportedModels[0] ? { healthCheckModel: supportedModels[0] } : {}),
-    healthCheckEndpointFamily: 'responses',
+    healthCheckEndpointMode: 'responses_sse',
     ...input
   }, access)
+  return activateMockAccountIfRequested(account, input, access)
 }
 
 function createMockOpenAICompatibleAccount(input: Record<string, unknown>, access: AccessScope): AccountSummary {
   const supportedModels = Array.isArray(input.supportedModels)
     ? input.supportedModels.filter((model): model is string => typeof model === 'string' && model.trim().length > 0)
     : []
-  return repositories.createAccount({
+  const account = repositories.createAccount({
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     ...(supportedModels[0] ? { healthCheckModel: supportedModels[0] } : {}),
-    healthCheckEndpointFamily: 'chat_completions',
+    healthCheckEndpointMode: 'chat_json',
     ...input
   }, access)
+  return activateMockAccountIfRequested(account, input, access)
+}
+
+function activateMockAccountIfRequested(
+  account: AccountSummary,
+  input: Record<string, unknown>,
+  access: AccessScope
+): AccountSummary {
+  if (input.status !== 'active') return account
+  const expiresAtMs = typeof input.accountExpiresAt === 'string' ? Date.parse(input.accountExpiresAt) : NaN
+  if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+    return repositories.findAccountSummary(account.id, access) ?? account
+  }
+  if (!repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })) {
+    throw new Error(`Mockdata 账户激活失败：${account.id}`)
+  }
+  if (input.schedulable === false) {
+    repositories.updateAccount(account.id, { schedulable: false }, access)
+  }
+  const activated = repositories.findAccountSummary(account.id, access)
+  if (!activated) throw new Error(`Mockdata 账户激活后不存在：${account.id}`)
+  return activated
 }
 
 export function createGroups(

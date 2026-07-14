@@ -1,4 +1,4 @@
-import { type AccountAvailabilitySchedule, type AccountClientCompatibility, type AccountHealthCheckEndpointFamily, type AccountModelMapping, type AccountType } from '../../domain/types.js'
+import { type AccountAvailabilitySchedule, type AccountClientCompatibility, type AccountHealthCheckEndpointMode, type AccountModelMapping, type AccountType } from '../../domain/types.js'
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
@@ -17,7 +17,7 @@ import {
   normalizeStatus,
   optionalAccountTagsField,
   optionalBooleanField,
-  optionalHealthCheckEndpointFamilyField,
+  optionalHealthCheckEndpointModeField,
   optionalDateTimeField,
   optionalModelMappingsField,
   optionalNonNegativeIntegerField,
@@ -68,7 +68,7 @@ export interface NormalizedImportAccount {
   fallbackEnabled?: boolean
   supportedModels?: string[]
   healthCheckModel?: string
-  healthCheckEndpointFamily?: AccountHealthCheckEndpointFamily
+  healthCheckEndpointMode?: AccountHealthCheckEndpointMode
   modelMappings?: AccountModelMapping[]
   tags?: string[]
   accountExpiresAt?: string
@@ -231,7 +231,7 @@ function prepareImportAccountPlan(
   source.fallbackEnabled = optionalBooleanField(value, 'fallbackEnabled', '账户 fallbackEnabled', item.messages)
   source.supportedModels = optionalStringArrayField(value, 'supportedModels', '账户 supportedModels', item.messages)
   source.healthCheckModel = optionalTextField(value, 'healthCheckModel', '账户 healthCheckModel', item.messages)
-  source.healthCheckEndpointFamily = optionalHealthCheckEndpointFamilyField(value, 'healthCheckEndpointFamily', '账户 healthCheckEndpointFamily', item.messages)
+  source.healthCheckEndpointMode = optionalHealthCheckEndpointModeField(value, 'healthCheckEndpointMode', '账户 healthCheckEndpointMode', item.messages)
   source.modelMappings = optionalModelMappingsField(value, 'modelMappings', '账户 modelMappings', item.messages)
   source.tags = optionalAccountTagsField(value, 'tags', '账户 tags', item.messages)
   source.accountExpiresAt = optionalDateTimeField(value, 'accountExpiresAt', '账户 accountExpiresAt', item.messages)

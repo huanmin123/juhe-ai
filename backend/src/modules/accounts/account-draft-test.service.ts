@@ -1,10 +1,10 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
-import { resolveHealthCheckEndpointFamily } from '../../domain/account-health-check-endpoint-family.js'
+import { resolveHealthCheckEndpointMode } from '../../domain/account-health-check-endpoint-mode.js'
 import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoint-modes.js'
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
 import { assertGeminiEndpointModesCompatible } from '../../domain/gemini-endpoint-modes.js'
 import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isGeminiProtocolProfile, isHybridProviderCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import type { AccountClientCompatibility, AccountHealthCheckEndpointFamily, AccountModelMapping, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
+import type { AccountClientCompatibility, AccountHealthCheckEndpointMode, AccountModelMapping, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
   accountAvailabilityScheduleFromRequest,
   accountAvailabilityScheduleJson
@@ -36,7 +36,7 @@ export interface AccountDraftTestAccountRequest {
   credentials?: Record<string, unknown>
   supportedModels?: string[]
   healthCheckModel: string
-  healthCheckEndpointFamily: AccountHealthCheckEndpointFamily
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   modelMappings?: unknown
   concurrencyLimit?: number
   priority?: number
@@ -226,7 +226,7 @@ function prepareAccountDraftTestSnapshotResolved(
       clientCompatibility,
       supportedModels: account.supportedModels,
       healthCheckModel: account.healthCheckModel,
-      healthCheckEndpointFamily: account.healthCheckEndpointFamily,
+      healthCheckEndpointMode: account.healthCheckEndpointMode,
       modelMappings: account.modelMappings,
       proxyProfileId: account.proxyProfileId,
       accountExpiresAt: account.accountExpiresAt,
@@ -338,7 +338,7 @@ async function prepareAccountDraftTestSnapshotResolvedAsync(
       clientCompatibility,
       supportedModels: account.supportedModels,
       healthCheckModel: account.healthCheckModel,
-      healthCheckEndpointFamily: account.healthCheckEndpointFamily,
+      healthCheckEndpointMode: account.healthCheckEndpointMode,
       modelMappings: account.modelMappings,
       proxyProfileId: account.proxyProfileId,
       accountExpiresAt: account.accountExpiresAt,
@@ -421,8 +421,8 @@ function draftTestAccountSummary(input: {
   const supportedModels = draftSupportedModels(input.account.providerCode, input.account.supportedModels, input.defaultSupportedModels)
   const healthCheckModel = requiredDraftHealthCheckModel(input.account.healthCheckModel, supportedModels)
   const enabledEndpointModes = input.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
-  const healthCheckEndpointFamily = resolveHealthCheckEndpointFamily({
-    value: input.account.healthCheckEndpointFamily,
+  const healthCheckEndpointMode = resolveHealthCheckEndpointMode({
+    value: input.account.healthCheckEndpointMode,
     providerCode: input.account.providerCode,
     providerProtocolProfileId: input.providerProtocolProfileId,
     enabledEndpointModes
@@ -455,7 +455,7 @@ function draftTestAccountSummary(input: {
     clientCompatibility: input.clientCompatibility,
     supportedModels,
     healthCheckModel,
-    healthCheckEndpointFamily,
+    healthCheckEndpointMode,
     modelMappings,
     proxyProfileId: optionalText(input.account.proxyProfileId),
     schedulable: true,
@@ -502,8 +502,8 @@ async function draftTestAccountSummaryAsync(input: {
   const supportedModels = draftSupportedModels(input.account.providerCode, input.account.supportedModels, input.defaultSupportedModels)
   const healthCheckModel = requiredDraftHealthCheckModel(input.account.healthCheckModel, supportedModels)
   const enabledEndpointModes = input.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
-  const healthCheckEndpointFamily = resolveHealthCheckEndpointFamily({
-    value: input.account.healthCheckEndpointFamily,
+  const healthCheckEndpointMode = resolveHealthCheckEndpointMode({
+    value: input.account.healthCheckEndpointMode,
     providerCode: input.account.providerCode,
     providerProtocolProfileId: input.providerProtocolProfileId,
     enabledEndpointModes
@@ -536,7 +536,7 @@ async function draftTestAccountSummaryAsync(input: {
     clientCompatibility: input.clientCompatibility,
     supportedModels,
     healthCheckModel,
-    healthCheckEndpointFamily,
+    healthCheckEndpointMode,
     modelMappings,
     proxyProfileId: optionalText(input.account.proxyProfileId),
     schedulable: true,

@@ -23,8 +23,6 @@ type Definition struct {
 
 var definitions = []Definition{
 	{Key: "gatewayTextRawBodyLimitMegabytes", Kind: ValueKindInteger, Minimum: 1, Maximum: 64},
-	{Key: "gptPriorityPriceMultiplier", Kind: ValueKindDecimal, DecimalMinimum: 0.01, DecimalMaximum: 100},
-	{Key: "gptFlexPriceMultiplier", Kind: ValueKindDecimal, DecimalMinimum: 0.01, DecimalMaximum: 100},
 	{Key: "systemApiRateLimitIpReadPerMinute", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},
 	{Key: "systemApiRateLimitIpReadBurstPer10Seconds", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},
 	{Key: "systemApiRateLimitIpWritePerMinute", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},
@@ -59,7 +57,6 @@ var definitions = []Definition{
 	{Key: "cooldownAccountRetestIntervalSeconds", Kind: ValueKindInteger, Minimum: 1, Maximum: 3600},
 	{Key: "cooldownAccountRetestBatchSize", Kind: ValueKindInteger, Minimum: 1, Maximum: 100},
 	{Key: "cooldownAccountRetestMaxBackoffHours", Kind: ValueKindInteger, Minimum: 1, Maximum: 720},
-	{Key: "cooldownAccountRetestLongTermIntervalHours", Kind: ValueKindInteger, Minimum: 1, Maximum: 720},
 	{Key: "oauthAccessTokenRefreshIntervalSeconds", Kind: ValueKindInteger, Minimum: 10, Maximum: 3600},
 	{Key: "oauthAccessTokenRefreshLeadSeconds", Kind: ValueKindInteger, Minimum: 60, Maximum: 86400},
 	{Key: "oauthAccessTokenRefreshBatchSize", Kind: ValueKindInteger, Minimum: 1, Maximum: 200},

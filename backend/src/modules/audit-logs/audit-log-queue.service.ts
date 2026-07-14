@@ -10,6 +10,7 @@ import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendAuditLogsToWorker } from '../background/background-ipc.js'
+import { buildAuditLogTransportCapacityFallback } from './audit-log-capacity-fallback.js'
 import { readAuditLogSettings } from './audit-log-settings.js'
 import { decodeAuditLogStreamPayload, encodeAuditLogStreamPayload } from './audit-log-stream-codec.js'
 import {
@@ -53,6 +54,9 @@ let auditLogRedisConsumerStarted = false
 let auditLogRedisConsumerStopping = false
 let auditLogRedisConsumerPromises: Array<Promise<void>> = []
 const pendingAuditLogServerDispatches = new Set<Promise<void>>()
+
+class AuditLogCapacityFallbackDispatchError extends AuditLogTransportError {
+}
 
 interface QueuedAuditLog {
   input: AuditLogInput
@@ -163,7 +167,7 @@ export function enqueueAuditLog(input: AuditLogInput): void {
   const queuedInput = normalizeAuditLogInput(input)
   if (runtimeConfig.processRole === 'server' && estimateAuditLogBytes(queuedInput) > auditLogInlineTransportMaxBytes) {
     trackAuditLogServerDispatch(
-      dispatchAuditLogFromServer(queuedInput),
+      dispatchAuditLogFromServerWithCapacityFallback(queuedInput),
       (error) => handleAuditLogServerDispatchError(queuedInput, error)
     )
     return
@@ -224,6 +228,16 @@ export async function waitForAuditLogServerDispatchIdle(timeoutMs = 10_000): Pro
 }
 
 function handleAuditLogServerDispatchError(input: AuditLogInput, error: unknown): void {
+  if (error instanceof AuditLogCapacityFallbackDispatchError) {
+    logger.error(errorLogFields(error, {
+      event: 'audit_log_transport_capacity_fallback_failed',
+      auditLogId: input.id,
+      traceId: input.traceId,
+      auditOutcome: input.auditOutcome
+    }), '审计传输容量降级记录仍无法投递，已明确记录整条审计丢弃')
+    recordAuditLogDispatchFailure(input)
+    return
+  }
   if (error instanceof AuditLogTransportQueueFullError) {
     logger.error(errorLogFields(error, {
       event: 'audit_log_transport_capacity_rejected',
@@ -245,6 +259,51 @@ function handleAuditLogServerDispatchError(input: AuditLogInput, error: unknown)
     return
   }
   scheduleProcessFatalError(error)
+}
+
+async function dispatchAuditLogFromServerWithCapacityFallback(input: AuditLogInput): Promise<void> {
+  try {
+    await dispatchAuditLogFromServer(input)
+    return
+  } catch (error) {
+    if (!(error instanceof AuditLogTransportQueueFullError)) {
+      throw error
+    }
+    const fallback = buildAuditLogTransportCapacityFallback(input)
+    logger.warn(errorLogFields(error, {
+      event: 'audit_log_transport_capacity_rejected',
+      auditLogId: input.id,
+      traceId: input.traceId,
+      auditOutcome: input.auditOutcome,
+      originalBytes: estimateAuditLogBytes(input),
+      fallbackBytes: estimateAuditLogBytes(fallback),
+      fallbackPayloadCount: fallback.payloads.length,
+      fallbackAttemptCount: fallback.attempts.length
+    }), '审计传输 worker 容量不足，已移除正文并按有界元数据降级重试')
+    await dispatchAuditLogCapacityFallbackFromServer(fallback)
+    logger.warn({
+      event: 'audit_log_transport_capacity_fallback_enqueued',
+      auditLogId: fallback.id,
+      traceId: fallback.traceId,
+      auditOutcome: fallback.auditOutcome,
+      fallbackBytes: estimateAuditLogBytes(fallback)
+    }, '审计传输容量降级记录已成功投递')
+  }
+}
+
+async function dispatchAuditLogCapacityFallbackFromServer(input: AuditLogInput): Promise<void> {
+  if (shouldEnqueueAuditLogToRedisStream()) {
+    await enqueueAuditLogToRedisStream(input)
+    return
+  }
+  if (shouldDispatchAuditLogToIngestWorker()) {
+    const dispatched = sendAuditLogsToWorker([input])
+    if (!dispatched) {
+      throw new AuditLogCapacityFallbackDispatchError('审计传输容量降级记录投递 ingest-worker 失败')
+    }
+    return
+  }
+  enqueueAuditLogLocal(input)
 }
 
 async function dispatchAuditLogFromServer(input: AuditLogInput): Promise<void> {

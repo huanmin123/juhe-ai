@@ -121,7 +121,7 @@ async function testOAuthCompactRequestOverrides(): Promise<void> {
   const body = parseBody(parts.body)
 
   assert.equal(body.service_tier, 'priority')
-  assert.equal(body.reasoning, undefined, 'OAuth compact 按既有契约删除 reasoning，不能伪装为已应用覆盖')
+  assert.deepEqual(body.reasoning, { effort: 'low', summary: 'auto' }, 'OAuth compact 必须保留客户端 reasoning，不能静默过滤')
 }
 
 async function testOAuthFlexRequestOverrideRejection(): Promise<void> {
@@ -192,7 +192,7 @@ async function testResponsesBodyNormalization(): Promise<void> {
   assert.equal(body.prompt_cache_retention, undefined)
   assert.equal(body.safety_identifier, undefined)
   assert.equal(body.stream_options, undefined)
-  assert.equal(body.service_tier, undefined)
+  assert.equal(body.service_tier, 'auto', 'OAuth 请求必须保留客户端 service_tier，不能只允许 priority')
   assert.equal(body.session_id, undefined)
   assert.equal(body.conversation_id, undefined)
   assert.equal(typeof body.prompt_cache_key, 'string')

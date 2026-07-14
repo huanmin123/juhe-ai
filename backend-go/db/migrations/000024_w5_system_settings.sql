@@ -37,7 +37,6 @@ VALUES
   ('sys_admin', 'cooldownAccountRetestIntervalSeconds', '3', now()),
   ('sys_admin', 'cooldownAccountRetestBatchSize', '10', now()),
   ('sys_admin', 'cooldownAccountRetestMaxBackoffHours', '12', now()),
-  ('sys_admin', 'cooldownAccountRetestLongTermIntervalHours', '1', now()),
   ('sys_admin', 'oauthAccessTokenRefreshIntervalSeconds', '60', now()),
   ('sys_admin', 'oauthAccessTokenRefreshLeadSeconds', '300', now()),
   ('sys_admin', 'oauthAccessTokenRefreshBatchSize', '20', now()),
