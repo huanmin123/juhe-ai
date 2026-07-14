@@ -11,68 +11,242 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-func TestServiceModelOptionsUsesProtocolScopeAndDedupe(t *testing.T) {
-	store := &providerModelStoreStub{
-		protocolCodes: map[string][]string{
-			"openai:v1": {"gpt"},
+func TestServiceModelOptionsSelectsHighestPriorityCatalogScope(t *testing.T) {
+	builtIn := port.ManagementProviderModelCatalogItem{
+		ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active",
+		SupportedAPIProtocols:     []string{"chat_completions"},
+		SupportedServiceTiers:     []string{"priority"},
+		SupportedReasoningEfforts: []string{"low"},
+		DefaultReasoningEffort:    "low",
+	}
+	global := port.ManagementProviderModelCatalogItem{
+		ProviderCode: "gpt", Model: "gpt-5.5", Scope: "global", Status: "active",
+		SupportedAPIProtocols:     []string{"responses"},
+		SupportedServiceTiers:     []string{"flex"},
+		SupportedReasoningEfforts: []string{"high"},
+		DefaultReasoningEffort:    "high",
+	}
+	personal := port.ManagementProviderModelCatalogItem{
+		ProviderCode: "gpt", Model: "gpt-5.5", Scope: "personal", Status: "active",
+		SupportedAPIProtocols:     []string{"messages"},
+		SupportedReasoningEfforts: []string{"max"},
+		DefaultReasoningEffort:    "max",
+	}
+	personalWithUnsupportedDefault := personal
+	personalWithUnsupportedDefault.DefaultReasoningEffort = "low"
+	tests := []struct {
+		name                 string
+		catalog              []port.ManagementProviderModelCatalogItem
+		wantProtocols        []string
+		wantServiceTiers     []string
+		wantReasoningEfforts []string
+		wantDefaultReasoning string
+	}{
+		{
+			name:                 "personal overrides global and built-in",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn, global, personal},
+			wantProtocols:        []string{"messages"},
+			wantReasoningEfforts: []string{"max"},
+			wantDefaultReasoning: "max",
 		},
+		{
+			name:                 "global replaces missing personal",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn, global},
+			wantProtocols:        []string{"responses"},
+			wantServiceTiers:     []string{"flex"},
+			wantReasoningEfforts: []string{"high"},
+			wantDefaultReasoning: "high",
+		},
+		{
+			name:                 "built-in replaces missing custom scopes",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn},
+			wantProtocols:        []string{"chat_completions"},
+			wantServiceTiers:     []string{"priority"},
+			wantReasoningEfforts: []string{"low"},
+			wantDefaultReasoning: "low",
+		},
+		{
+			name:                 "invalid personal default does not fall back to lower scope",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn, global, personalWithUnsupportedDefault},
+			wantProtocols:        []string{"messages"},
+			wantReasoningEfforts: []string{"max"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &providerModelStoreStub{
+				enabledCodes:  []string{"gpt"},
+				protocolCodes: map[string][]string{"openai:v1": {"gpt"}},
+				catalog:       tt.catalog,
+			}
+			service := NewService(store)
+
+			options, err := service.ModelOptions(context.Background(), ModelOptionListInput{
+				SystemAccountID: " sys_user ",
+				Protocol:        "openai",
+			})
+			if err != nil {
+				t.Fatalf("ModelOptions() error = %v", err)
+			}
+			if len(options) != 1 {
+				t.Fatalf("options = %+v, want 1 effective item", options)
+			}
+
+			option := options[0]
+			if option.ProviderCode != "gpt" || option.Model != "gpt-5.5" {
+				t.Fatalf("option = %+v", option)
+			}
+			if !slices.Equal(option.SupportedAPIProtocols, tt.wantProtocols) {
+				t.Fatalf("protocols = %+v, want %+v", option.SupportedAPIProtocols, tt.wantProtocols)
+			}
+			if !slices.Equal(option.SupportedServiceTiers, tt.wantServiceTiers) {
+				t.Fatalf("service tiers = %+v, want %+v", option.SupportedServiceTiers, tt.wantServiceTiers)
+			}
+			if !slices.Equal(option.SupportedReasoningEfforts, tt.wantReasoningEfforts) {
+				t.Fatalf("reasoning efforts = %+v, want %+v", option.SupportedReasoningEfforts, tt.wantReasoningEfforts)
+			}
+			if option.DefaultReasoningEffort != tt.wantDefaultReasoning {
+				t.Fatalf("default reasoning effort = %q, want %q", option.DefaultReasoningEffort, tt.wantDefaultReasoning)
+			}
+			if store.catalogInput.SystemAccountID != "sys_user" || store.catalogInput.IncludeInactive {
+				t.Fatalf("catalog input = %+v", store.catalogInput)
+			}
+		})
+	}
+}
+
+func TestServiceModelOptionsAppliesOpenAIAggregateScopeAcrossSourceProviders(t *testing.T) {
+	store := &providerModelStoreStub{
+		enabledCodes:  []string{"gpt", "openai"},
+		protocolCodes: map[string][]string{"openai:v1": {"gpt", "openai"}},
 		catalog: []port.ManagementProviderModelCatalogItem{
 			{
-				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active",
-				SupportedAPIProtocols:     []string{"chat_completions"},
-				SupportedServiceTiers:     []string{"priority", "priority"},
-				SupportedReasoningEfforts: []string{"low"},
-				DefaultReasoningEffort:    "ultra",
-			},
-			{
-				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "global", Status: "active",
+				ProviderCode: "gpt", Model: "shared-model", Scope: "personal", Status: "active",
 				SupportedAPIProtocols:     []string{"responses"},
-				SupportedServiceTiers:     []string{"flex", "priority"},
-				SupportedReasoningEfforts: []string{"high"},
-				DefaultReasoningEffort:    " max ",
+				SupportedReasoningEfforts: []string{"max"},
+				DefaultReasoningEffort:    "max",
 			},
 			{
-				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "personal", Status: "active",
-				SupportedReasoningEfforts: []string{"max", "high"},
+				ProviderCode: "openai", Model: "shared-model", Scope: "global", Status: "active",
+				SupportedAPIProtocols:     []string{"chat_completions"},
+				SupportedReasoningEfforts: []string{"low"},
+				DefaultReasoningEffort:    "low",
+			},
+			{
+				ProviderCode: "openai", Model: "openai-only", Scope: "global", Status: "active",
+				SupportedAPIProtocols: []string{"chat_completions"},
+			},
+		},
+	}
+
+	options, err := NewService(store).ModelOptions(context.Background(), ModelOptionListInput{SystemAccountID: "sys_user"})
+	if err != nil {
+		t.Fatalf("ModelOptions() error = %v", err)
+	}
+	if len(options) != 2 {
+		t.Fatalf("options = %+v, want effective gpt shared model and openai-only model", options)
+	}
+	if options[0].ProviderCode != "gpt" || options[0].Model != "shared-model" {
+		t.Fatalf("first option = %+v, want gpt personal winner", options[0])
+	}
+	if !slices.Equal(options[0].SupportedAPIProtocols, []string{"responses"}) ||
+		!slices.Equal(options[0].SupportedReasoningEfforts, []string{"max"}) ||
+		options[0].DefaultReasoningEffort != "max" {
+		t.Fatalf("gpt personal winner capabilities = %+v", options[0])
+	}
+	if options[1].ProviderCode != "openai" || options[1].Model != "openai-only" {
+		t.Fatalf("second option = %+v, want openai-only model", options[1])
+	}
+	for _, option := range options {
+		if option.ProviderCode == "openai" && option.Model == "shared-model" {
+			t.Fatalf("lower-priority openai global option leaked through aggregate catalog: %+v", options)
+		}
+	}
+}
+
+func TestServiceModelOptionsUsesOpenAISourceOrderForEqualScope(t *testing.T) {
+	store := &providerModelStoreStub{
+		enabledCodes:  []string{"openai"},
+		protocolCodes: map[string][]string{"openai:v1": {"gpt", "openai"}},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{
+				ProviderCode: "gpt", Model: "shared-model", Scope: "global", Status: "active",
+				SupportedReasoningEfforts: []string{"high"},
+				DefaultReasoningEffort:    "high",
+			},
+			{
+				ProviderCode: "openai", Model: "shared-model", Scope: "global", Status: "active",
+				SupportedReasoningEfforts: []string{"low"},
 				DefaultReasoningEffort:    "low",
 			},
 		},
 	}
-	service := NewService(store)
 
-	options, err := service.ModelOptions(context.Background(), ModelOptionListInput{
-		SystemAccountID: " sys_user ",
-		Protocol:        "openai",
-	})
+	options, err := NewService(store).ModelOptions(context.Background(), ModelOptionListInput{})
 	if err != nil {
 		t.Fatalf("ModelOptions() error = %v", err)
 	}
+	if len(options) != 1 || options[0].ProviderCode != "openai" || options[0].Model != "shared-model" {
+		t.Fatalf("options = %+v, want later openai source to win equal global scope", options)
+	}
+	if options[0].DefaultReasoningEffort != "low" || !slices.Equal(options[0].SupportedReasoningEfforts, []string{"low"}) {
+		t.Fatalf("equal-scope source winner capabilities = %+v", options[0])
+	}
+}
 
-	if len(options) != 1 {
-		t.Fatalf("options = %+v, want 1 deduped item", options)
+func TestServiceModelOptionsPreservesProviderCatalogOrderForHybridFirstWin(t *testing.T) {
+	store := &providerModelStoreStub{
+		enabledCodes:  []string{"z-provider", "a-provider"},
+		protocolCodes: map[string][]string{"openai:v1": {"a-provider", "z-provider"}},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{
+				ProviderCode: "a-provider", Model: "shared-model", Scope: "global", Status: "active",
+				ReleaseDate:               "2026-07-01",
+				SupportedReasoningEfforts: []string{"low"},
+				DefaultReasoningEffort:    "low",
+			},
+			{
+				ProviderCode: "z-provider", Model: "older-model", Scope: "global", Status: "active",
+				ReleaseDate:               "2026-05-01",
+				SupportedReasoningEfforts: []string{"medium"},
+				DefaultReasoningEffort:    "medium",
+			},
+			{
+				ProviderCode: "z-provider", Model: "shared-model", Scope: "global", Status: "active",
+				ReleaseDate:               "2026-06-01",
+				SupportedReasoningEfforts: []string{"high"},
+				DefaultReasoningEffort:    "high",
+			},
+		},
 	}
-	if options[0].ProviderCode != "gpt" || options[0].Model != "gpt-5.5" {
-		t.Fatalf("option = %+v", options[0])
+
+	options, err := NewService(store).ModelOptions(context.Background(), ModelOptionListInput{Protocol: "openai"})
+	if err != nil {
+		t.Fatalf("ModelOptions() error = %v", err)
 	}
-	if len(options[0].SupportedAPIProtocols) != 2 || options[0].SupportedAPIProtocols[0] != "chat_completions" || options[0].SupportedAPIProtocols[1] != "responses" {
-		t.Fatalf("protocols = %+v", options[0].SupportedAPIProtocols)
+	if len(options) != 3 {
+		t.Fatalf("options = %+v, want 3 provider-scoped options", options)
 	}
-	if !slices.Equal(options[0].SupportedServiceTiers, []string{"priority", "flex"}) {
-		t.Fatalf("service tiers = %+v", options[0].SupportedServiceTiers)
+	wantProviderModels := [][2]string{
+		{"z-provider", "shared-model"},
+		{"z-provider", "older-model"},
+		{"a-provider", "shared-model"},
 	}
-	if !slices.Equal(options[0].SupportedReasoningEfforts, []string{"low", "high", "max"}) {
-		t.Fatalf("reasoning efforts = %+v", options[0].SupportedReasoningEfforts)
+	for index, want := range wantProviderModels {
+		if options[index].ProviderCode != want[0] || options[index].Model != want[1] {
+			t.Fatalf("options[%d] = %+v, want provider=%q model=%q", index, options[index], want[0], want[1])
+		}
 	}
-	if options[0].DefaultReasoningEffort != "max" {
-		t.Fatalf("default reasoning effort = %q, want first valid candidate max", options[0].DefaultReasoningEffort)
-	}
-	if store.catalogInput.SystemAccountID != "sys_user" || store.catalogInput.IncludeInactive {
-		t.Fatalf("catalog input = %+v", store.catalogInput)
+	firstShared := options[0]
+	if firstShared.DefaultReasoningEffort != "high" || !slices.Equal(firstShared.SupportedReasoningEfforts, []string{"high"}) {
+		t.Fatalf("hybrid first-win shared option = %+v, want z-provider high", firstShared)
 	}
 }
 
 func TestServiceModelOptionsExcludesHybridProvider(t *testing.T) {
 	store := &providerModelStoreStub{
+		enabledCodes: []string{"hybrid"},
 		protocolCodes: map[string][]string{
 			"openai:v1": {"hybrid"},
 		},

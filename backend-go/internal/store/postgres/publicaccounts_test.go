@@ -89,6 +89,24 @@ func TestUpdatePublicAccountQueryIncrementsConfigRevisionInMainUpdate(t *testing
 	}
 }
 
+func TestPublicAccountStoreOnlyUpdatesGroupDispatchWhenExplicitlyChanged(t *testing.T) {
+	source, err := os.ReadFile("publicaccounts.go")
+	if err != nil {
+		t.Fatalf("read public account store: %v", err)
+	}
+	store := string(source)
+	guard := "if input.GroupDispatchChanged {"
+	guardIndex := strings.Index(store, guard)
+	dispatchIndex := strings.Index(store, "q.UpdatePublicAccountGroupBindingDispatch")
+	if guardIndex < 0 || dispatchIndex <= guardIndex {
+		t.Fatalf("public account group dispatch update must be guarded by %q", guard)
+	}
+	blockEnd := strings.Index(store[guardIndex:], "\n\t}")
+	if blockEnd < 0 || dispatchIndex >= guardIndex+blockEnd {
+		t.Fatalf("public account group dispatch call must remain inside %q", guard)
+	}
+}
+
 func TestUpdatePublicAccountQuerySeparatesFailureResetAndHealthCheckScheduling(t *testing.T) {
 	source, err := os.ReadFile("queries/w1b_public_accounts.sql")
 	if err != nil {

@@ -274,7 +274,7 @@ func parsePublicAccountAddBody(r *http.Request) (publicaccounts.AddInput, error)
 	if err != nil {
 		return publicaccounts.AddInput{}, err
 	}
-	targetDisplayName, err := optionalBodyString(body, "targetDisplayName", 1, 80)
+	targetDisplayName, err := optionalBodyStringPtr(body, "targetDisplayName", 1, 80)
 	if err != nil {
 		return publicaccounts.AddInput{}, err
 	}
@@ -310,7 +310,7 @@ func parsePublicAccountAddBody(r *http.Request) (publicaccounts.AddInput, error)
 	if err != nil {
 		return publicaccounts.AddInput{}, err
 	}
-	status, err := optionalBodyEnum(body, "status", []string{publicaccounts.StatusActive, publicaccounts.StatusDisabled})
+	status, err := optionalBodyEnumPtr(body, "status", []string{publicaccounts.StatusActive, publicaccounts.StatusDisabled})
 	if err != nil {
 		return publicaccounts.AddInput{}, err
 	}
@@ -326,13 +326,13 @@ func parsePublicAccountAddBody(r *http.Request) (publicaccounts.AddInput, error)
 	if err != nil {
 		return publicaccounts.AddInput{}, err
 	}
-	notes, err := optionalBodyStringPtr(body, "notes", 0, 1000)
+	notes, _, err := optionalPublicAccountNotes(body)
 	if err != nil {
 		return publicaccounts.AddInput{}, err
 	}
 	return publicaccounts.AddInput{
 		TargetUsername:            targetUsername,
-		TargetDisplayName:         targetDisplayName,
+		TargetDisplayName:         publicAccountStringValue(targetDisplayName),
 		TargetGroupName:           targetGroupName,
 		ProviderCode:              providerCode,
 		ProviderProtocolProfileID: profileID,
@@ -341,7 +341,7 @@ func parsePublicAccountAddBody(r *http.Request) (publicaccounts.AddInput, error)
 		BaseURL:                   baseURL,
 		APIKey:                    apiKey,
 		SupportedModels:           supportedModels,
-		Status:                    status,
+		Status:                    publicAccountStringValue(status),
 		ConcurrencyLimit:          concurrencyLimit,
 		Priority:                  priority,
 		AvailabilitySchedule:      availabilitySchedule,
@@ -426,12 +426,12 @@ func parsePublicAccountUpdateBody(r *http.Request) (publicaccounts.UpdateInput, 
 	if err != nil {
 		return publicaccounts.UpdateInput{}, err
 	}
-	notesState, err := optionalBodyNullableStringState(body, "notes", 1000)
+	notes, notesSet, err := optionalPublicAccountNotes(body)
 	if err != nil {
 		return publicaccounts.UpdateInput{}, err
 	}
-	if name == nil && accountType == nil && baseURL == nil && apiKey == nil && !supportedModels.Set() &&
-		status == nil && concurrencyLimit == nil && priority == nil && !availabilitySchedule.Set() && !notesState.Set() {
+	if name == nil && baseURL == nil && apiKey == nil && !supportedModels.Set() &&
+		status == nil && concurrencyLimit == nil && priority == nil && !availabilitySchedule.Set() && !notesSet {
 		return publicaccounts.UpdateInput{}, fmt.Errorf("账号修改至少提供一个要修改的字段")
 	}
 	return publicaccounts.UpdateInput{
@@ -449,7 +449,7 @@ func parsePublicAccountUpdateBody(r *http.Request) (publicaccounts.UpdateInput, 
 		ConcurrencyLimit:          concurrencyLimit,
 		Priority:                  priority,
 		AvailabilitySchedule:      availabilitySchedule,
-		Notes:                     publicaccounts.NewOptionalString(notesState.Value(), notesState.Set()),
+		Notes:                     publicaccounts.NewOptionalString(notes, notesSet),
 	}, nil
 }
 
@@ -506,6 +506,22 @@ func optionalPublicAccountJSONValue(body map[string]any, key string) (publicacco
 		return publicaccounts.NewJSONValue(nil, false), fmt.Errorf("%s 必须是对象", key)
 	}
 	return publicaccounts.NewJSONValue(record, true), nil
+}
+
+func optionalPublicAccountNotes(body map[string]any) (*string, bool, error) {
+	value, ok := body["notes"]
+	if !ok {
+		return nil, false, nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return nil, false, fmt.Errorf("notes 必须是字符串")
+	}
+	text = strings.TrimSpace(text)
+	if len([]rune(text)) > 1000 {
+		return nil, false, fmt.Errorf("notes 长度无效")
+	}
+	return &text, true, nil
 }
 
 func optionalBodyStringList(body map[string]any, key string, minLen int, maxLen int, maxItems int) ([]string, error) {

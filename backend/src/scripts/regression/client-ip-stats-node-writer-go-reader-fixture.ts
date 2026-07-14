@@ -8,7 +8,8 @@ import { refreshClientIpUsageRangeWindowsAsync } from '../../storage/client-ip-u
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import type { DatabaseClient } from '../../storage/database-client.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
-import { applyPostgresSchema } from '../../storage/postgres-schema.js'
+import { applyPostgresSchema, collectPostgresSchemaStatements } from '../../storage/postgres-schema.js'
+import { seedPostgresDefaults } from '../../storage/postgres-seed-defaults.js'
 import {
   clearUsageStatsTimezoneCache,
   dateKey,
@@ -18,8 +19,23 @@ import {
 import type { UsageStatsRecordRow } from '../../storage/usage-stats-types.js'
 
 const fixtureEnabledEnv = 'JUHE_AI_NODE_GO_IP_STATS_FIXTURE'
+const fixtureSchemaModeEnv = 'JUHE_AI_NODE_GO_IP_STATS_SCHEMA_MODE'
+const fullSchemaMode = 'node-full'
+const gooseDetailSchemaMode = 'goose-000041'
 const outputPrefix = 'JUHE_AI_NODE_GO_IP_STATS '
 const clientIp = '198.18.250.42'
+const primaryAccount = {
+  id: 'acct_node_go_ip_stats_primary',
+  name: 'Node Go IP Stats Primary',
+  ownerSystemAccountId: 'sys_node_go_ip_stats_primary',
+  ownerSystemAccountName: 'Node Go IP Stats Primary Owner'
+} as const
+const secondaryAccount = {
+  id: 'acct_node_go_ip_stats_secondary',
+  name: 'Node Go IP Stats Secondary',
+  ownerSystemAccountId: 'sys_node_go_ip_stats_secondary',
+  ownerSystemAccountName: 'Node Go IP Stats Secondary Owner'
+} as const
 const fixtureTimezones = ['Asia/Shanghai', 'America/New_York'] as const
 const minimumMidnightDistanceMinutes = 5 * 60
 const minuteMs = 60 * 1000
@@ -36,14 +52,27 @@ async function main(): Promise<void> {
   assert.equal(runtimeConfig.databaseDriver, 'postgres', 'fixture requires PostgreSQL')
   assert.equal(runtimeConfig.processRole, 'worker', 'fixture requires worker process role')
   assert.equal(runtimeConfig.workerRole, 'stats-worker', 'fixture requires stats-worker role')
+  const schemaMode = process.env[fixtureSchemaModeEnv] ?? fullSchemaMode
+  assert(
+    schemaMode === fullSchemaMode || schemaMode === gooseDetailSchemaMode,
+    `${fixtureSchemaModeEnv} must be ${fullSchemaMode} or ${gooseDetailSchemaMode}`
+  )
 
   const pool = await getPostgresPool()
   try {
     const client = createPostgresDatabaseClient(pool)
-    await applyPostgresSchema(client)
+    if (schemaMode === gooseDetailSchemaMode) {
+      await assertGooseDetailMigrationReady(client)
+      await applyGooseDetailWriterSupportSchema(client)
+      await assertGooseDetailMigrationReady(client)
+    } else {
+      await applyPostgresSchema(client)
+      await seedPostgresDefaults(client)
+    }
 
     const timezoneSelection = selectFixtureTimezone(new Date())
     await configureFixtureTimezone(client, timezoneSelection.timezone)
+    await seedFixtureAccounts(client)
     clearUsageStatsTimezoneCache()
     const timezone = await usageStatsTimezoneAsync()
     assert.equal(timezone, timezoneSelection.timezone, 'production usage statistics timezone should read the fixture setting')
@@ -79,6 +108,7 @@ async function main(): Promise<void> {
         inputImageTokens: 29,
         outputImageTokens: 31,
         costUsd: 0.0101,
+        accountId: primaryAccount.id,
         createdAt: firstCreatedAt
       }),
       usageRow({
@@ -99,6 +129,7 @@ async function main(): Promise<void> {
         inputImageTokens: 58,
         outputImageTokens: 62,
         costUsd: 0.0202,
+        accountId: primaryAccount.id,
         createdAt: errorCreatedAt
       }),
       usageRow({
@@ -119,6 +150,7 @@ async function main(): Promise<void> {
         inputImageTokens: 87,
         outputImageTokens: 93,
         costUsd: 0.0303,
+        accountId: secondaryAccount.id,
         createdAt: lastSuccessCreatedAt
       }),
       usageRow({
@@ -139,6 +171,7 @@ async function main(): Promise<void> {
         inputImageTokens: 9007,
         outputImageTokens: 9008,
         costUsd: 9.009,
+        accountId: null,
         createdAt: nextDateCreatedAt
       })
     ]
@@ -204,6 +237,52 @@ async function main(): Promise<void> {
   }
 }
 
+async function assertGooseDetailMigrationReady(client: DatabaseClient): Promise<void> {
+  const state = await client.one<{
+    version_id?: string
+    is_applied?: boolean
+    detail_table_exists?: boolean
+    detail_index_exists?: boolean
+  }>(`
+    SELECT
+      latest.version_id::text AS version_id,
+      latest.is_applied,
+      to_regclass('juhe_stats.client_ip_account_usage_range_windows') IS NOT NULL AS detail_table_exists,
+      to_regclass('juhe_stats.idx_client_ip_account_range_requests') IS NOT NULL AS detail_index_exists
+    FROM (
+      SELECT version_id, is_applied
+      FROM goose_db_version
+      ORDER BY id DESC
+      LIMIT 1
+    ) latest
+  `)
+  assert(state, 'Goose migration state should exist before the detail writer fixture runs')
+  assert.equal(state.version_id, '41', 'detail writer fixture requires Goose version exactly 41')
+  assert.equal(state.is_applied, true, 'Goose version 41 should be applied')
+  assert.equal(state.detail_table_exists, true, 'Goose 000041 should create the detail range table')
+  assert.equal(state.detail_index_exists, true, 'Goose 000041 should create the detail range index')
+}
+
+async function applyGooseDetailWriterSupportSchema(client: DatabaseClient): Promise<void> {
+  const supportStatementPrefixes = [
+    'CREATE TABLE IF NOT EXISTS client_ip_stats_daily (',
+    'CREATE TABLE IF NOT EXISTS client_ip_account_stats_daily (',
+    'CREATE INDEX IF NOT EXISTS idx_client_ip_stats_daily_date ',
+    'CREATE INDEX IF NOT EXISTS idx_client_ip_account_daily_date ',
+    'CREATE INDEX IF NOT EXISTS idx_client_ip_account_daily_ip_date '
+  ] as const
+  const statsStatements = collectPostgresSchemaStatements()
+    .filter((statement) => statement.schemaName === 'juhe_stats')
+
+  for (const prefix of supportStatementPrefixes) {
+    const matches = statsStatements.filter((statement) => statement.sql.startsWith(prefix))
+    assert.equal(matches.length, 1, `production stats schema should contain exactly one ${prefix.trim()} statement`)
+    const statement = matches[0]
+    assert(statement, `production stats schema statement ${prefix.trim()} should exist`)
+    await client.execute(`SET search_path TO "juhe_stats", public;\n${statement.sql}`)
+  }
+}
+
 interface UsageRowInput {
   id: string
   traceId: string
@@ -222,6 +301,7 @@ interface UsageRowInput {
   inputImageTokens: number
   outputImageTokens: number
   costUsd: number
+  accountId: string | null
   createdAt: string
 }
 
@@ -283,6 +363,55 @@ async function configureFixtureTimezone(client: DatabaseClient, timezone: string
         value_json = EXCLUDED.value_json,
         updated_at = EXCLUDED.updated_at
     `, [JSON.stringify(timezone), updatedAt])
+  })
+}
+
+async function seedFixtureAccounts(client: DatabaseClient): Promise<void> {
+  const updatedAt = new Date().toISOString()
+  await client.transaction(async (transaction) => {
+    for (const account of [primaryAccount, secondaryAccount]) {
+      await transaction.execute(`
+        INSERT INTO "juhe_business"."system_accounts" (
+          id, username, display_name, description, role, status, password_hash,
+          must_change_password, image_generation_enabled, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          display_name = EXCLUDED.display_name,
+          updated_at = EXCLUDED.updated_at
+      `, [
+        account.ownerSystemAccountId,
+        account.ownerSystemAccountId,
+        account.ownerSystemAccountName,
+        'Node writer to Go detail reader integration fixture',
+        'user',
+        'active',
+        'node-go-ip-stats-owner-password-hash',
+        false,
+        false,
+        updatedAt,
+        updatedAt
+      ])
+      await transaction.execute(`
+        INSERT INTO "juhe_business"."accounts" (
+          id, system_account_id, provider_code, provider_protocol_profile_id,
+          protocol_code, protocol_version, name, type, status,
+          credentials_encrypted, credential_mask, health_check_model,
+          health_check_endpoint_family, created_at, updated_at
+        ) VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?,
+          'api_key', 'active', '{}', '', 'gpt-5.5', 'responses', ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          system_account_id = EXCLUDED.system_account_id,
+          name = EXCLUDED.name,
+          deleted_at = NULL,
+          updated_at = EXCLUDED.updated_at
+      `, [
+        account.id,
+        account.ownerSystemAccountId,
+        account.name,
+        updatedAt,
+        updatedAt
+      ])
+    }
   })
 }
 
@@ -362,7 +491,7 @@ function usageRow(input: UsageRowInput): UsageStatsRecordRow {
     client_ip: clientIp,
     api_key_id: null,
     group_id: null,
-    account_id: null,
+    account_id: input.accountId,
     endpoint: '/v1/responses',
     provider_code: 'openai',
     model: 'gpt-5.1',

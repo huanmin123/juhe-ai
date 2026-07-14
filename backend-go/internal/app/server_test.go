@@ -640,6 +640,7 @@ func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
 		"managementHandlers.ClientIPStatsDetailHandler",
 		"managementclientipstats.NewServiceWithOptions(",
 		"ListReader:               store",
+		"RegistryReader:           store",
 		"DetailReader:             store",
 		"UsageStatsTimezoneReader: store",
 		"httpapi.NewManagementClientIPStatsHandler(clientIPStatsService)",

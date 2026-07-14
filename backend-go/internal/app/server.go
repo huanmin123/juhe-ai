@@ -571,6 +571,7 @@ func newManagementAPIHandler(
 	clientIPStatsService := managementclientipstats.NewServiceWithOptions(
 		managementclientipstats.ServiceOptions{
 			ListReader:               store,
+			RegistryReader:           store,
 			DetailReader:             store,
 			UsageStatsTimezoneReader: store,
 		},

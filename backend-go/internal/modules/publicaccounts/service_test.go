@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,27 +17,69 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-func TestServiceAddDispatchesActivationAfterCommit(t *testing.T) {
+func TestServiceAddDispatchesActivationAsynchronouslyAfterCommit(t *testing.T) {
 	store := newPublicAccountStoreFake()
-	events := []string{}
-	transactor := &publicAccountTransactorFake{store: store, events: &events}
-	dispatcher := &publicAccountHealthCheckDispatcherFake{events: &events}
+	events := &publicAccountEventRecorder{}
+	transactor := &publicAccountTransactorFake{store: store, events: events}
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseDispatch := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	defer releaseDispatch()
+	finished := make(chan struct{}, 1)
+	dispatcher := &publicAccountHealthCheckDispatcherFake{
+		events:   events,
+		started:  started,
+		release:  release,
+		finished: finished,
+	}
 	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, transactor, dispatcher, nil)
 
-	response, err := service.Add(context.Background(), validPublicAccountAddInput(
-		"提交后激活检查账号",
-		"gpt-5.4-mini",
-	))
-	if err != nil {
-		t.Fatalf("add public account: %v", err)
+	type addResult struct {
+		response AccountResponse
+		err      error
 	}
+	resultCh := make(chan addResult, 1)
+	go func() {
+		response, err := service.Add(context.Background(), validPublicAccountAddInput(
+			"提交后激活检查账号",
+			"gpt-5.4-mini",
+		))
+		resultCh <- addResult{response: response, err: err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("activation dispatch did not start")
+	}
+	var result addResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(250 * time.Millisecond):
+		releaseDispatch()
+		<-resultCh
+		t.Fatal("Add waited for the blocking activation dispatcher")
+	}
+	if result.err != nil {
+		t.Fatalf("add public account: %v", result.err)
+	}
+	response := result.response
 	if response.Account == nil || response.Account.Status != StatusPendingTest {
 		t.Fatalf("response account = %+v, want pending_test", response.Account)
 	}
-	if got, want := events, []string{"transaction_committed", "dispatch"}; !slices.Equal(got, want) {
+	if got, want := events.snapshot(), []string{"transaction_committed", "dispatch"}; !slices.Equal(got, want) {
 		t.Fatalf("events = %#v, want %#v", got, want)
 	}
-	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
+	releaseDispatch()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("activation dispatch did not finish after release")
+	}
+	assertPublicAccountHealthDispatchCalls(t, dispatcher,
 		publicAccountHealthCheckDispatchCall{
 			accountID: response.Account.ID,
 			reason:    "activation",
@@ -63,7 +106,7 @@ func TestServiceAddDispatchesActivationOnceAfterRetry(t *testing.T) {
 	if transactor.calls != 2 {
 		t.Fatalf("transaction calls = %d, want 2", transactor.calls)
 	}
-	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
+	assertPublicAccountHealthDispatchCalls(t, dispatcher,
 		publicAccountHealthCheckDispatchCall{
 			accountID: response.Account.ID,
 			reason:    "activation",
@@ -86,8 +129,8 @@ func TestServiceAddSkipsActivationDispatchWhenDisabledOrTransactionFails(t *test
 		if response.Account == nil || response.Account.Status != StatusDisabled {
 			t.Fatalf("response account = %+v, want disabled", response.Account)
 		}
-		if len(dispatcher.calls) != 0 {
-			t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
+		if calls := dispatcher.callsSnapshot(); len(calls) != 0 {
+			t.Fatalf("dispatch calls = %#v, want none", calls)
 		}
 	})
 
@@ -105,8 +148,8 @@ func TestServiceAddSkipsActivationDispatchWhenDisabledOrTransactionFails(t *test
 		if !errors.Is(err, commitErr) {
 			t.Fatalf("add error = %v, want commit failure", err)
 		}
-		if len(dispatcher.calls) != 0 {
-			t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
+		if calls := dispatcher.callsSnapshot(); len(calls) != 0 {
+			t.Fatalf("dispatch calls = %#v, want none", calls)
 		}
 	})
 
@@ -133,8 +176,8 @@ func TestServiceAddSkipsActivationDispatchWhenDisabledOrTransactionFails(t *test
 		if transactor.calls != 3 {
 			t.Fatalf("transaction calls = %d, want 3", transactor.calls)
 		}
-		if len(dispatcher.calls) != 0 {
-			t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
+		if calls := dispatcher.callsSnapshot(); len(calls) != 0 {
+			t.Fatalf("dispatch calls = %#v, want none", calls)
 		}
 	})
 }
@@ -145,7 +188,7 @@ func TestServiceAddDispatchFailureIsBestEffortAndLoggerIsOptional(t *testing.T) 
 	t.Run("warns when logger configured", func(t *testing.T) {
 		store := newPublicAccountStoreFake()
 		dispatcher := &publicAccountHealthCheckDispatcherFake{err: dispatchErr}
-		var logs bytes.Buffer
+		var logs synchronizedBuffer
 		logger := slog.New(slog.NewJSONHandler(&logs, nil))
 		service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, nil, dispatcher, logger)
 
@@ -159,18 +202,28 @@ func TestServiceAddDispatchFailureIsBestEffortAndLoggerIsOptional(t *testing.T) 
 		if response.Action != "created" || response.Account == nil {
 			t.Fatalf("response = %+v, want committed create", response)
 		}
-		logText := logs.String()
-		for _, want := range []string{
+		assertPublicAccountHealthDispatchCalls(t, dispatcher,
+			publicAccountHealthCheckDispatchCall{
+				accountID: response.Account.ID,
+				reason:    "activation",
+			},
+		)
+		wants := []string{
 			`"level":"WARN"`,
 			`"event":"public_account_health_check_dispatch_failed"`,
 			`"account_id":"` + response.Account.ID + `"`,
 			`"reason":"activation"`,
 			dispatchErr.Error(),
-		} {
-			if !strings.Contains(logText, want) {
-				t.Fatalf("logs = %q, want substring %q", logText, want)
-			}
 		}
+		waitForPublicAccountCondition(t, time.Second, "dispatch failure warning", func() bool {
+			logText := logs.String()
+			for _, want := range wants {
+				if !strings.Contains(logText, want) {
+					return false
+				}
+			}
+			return true
+		})
 	})
 
 	t.Run("does not require logger", func(t *testing.T) {
@@ -188,6 +241,12 @@ func TestServiceAddDispatchFailureIsBestEffortAndLoggerIsOptional(t *testing.T) 
 		if response.Action != "created" || response.Account == nil {
 			t.Fatalf("response = %+v, want committed create", response)
 		}
+		assertPublicAccountHealthDispatchCalls(t, dispatcher,
+			publicAccountHealthCheckDispatchCall{
+				accountID: response.Account.ID,
+				reason:    "activation",
+			},
+		)
 	})
 }
 
@@ -197,8 +256,6 @@ func TestServiceHealthDispatchDetachesCallerCancellationAndSetsDeadline(t *testi
 	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, nil, dispatcher, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	startedAt := time.Now()
-
 	_, err := service.Add(ctx, validPublicAccountAddInput(
 		"取消上下文激活检查账号",
 		"gpt-5.4-mini",
@@ -206,17 +263,15 @@ func TestServiceHealthDispatchDetachesCallerCancellationAndSetsDeadline(t *testi
 	if err != nil {
 		t.Fatalf("add public account: %v", err)
 	}
-	if len(dispatcher.calls) != 1 {
-		t.Fatalf("dispatch calls = %#v, want one", dispatcher.calls)
-	}
-	call := dispatcher.calls[0]
+	calls := waitForPublicAccountHealthDispatchCalls(t, dispatcher, 1)
+	call := calls[0]
 	if call.contextErr != nil {
 		t.Fatalf("dispatch context error = %v, want nil", call.contextErr)
 	}
 	if !call.hasDeadline {
 		t.Fatal("dispatch context has no deadline")
 	}
-	timeout := call.deadline.Sub(startedAt)
+	timeout := call.deadline.Sub(call.observedAt)
 	if timeout < 1500*time.Millisecond || timeout > 2*time.Second+250*time.Millisecond {
 		t.Fatalf("dispatch deadline timeout = %v, want near 2s", timeout)
 	}
@@ -233,8 +288,6 @@ func TestServiceHealthDispatchUsesConfiguredTimeout(t *testing.T) {
 		nil,
 		5*time.Second,
 	)
-	startedAt := time.Now()
-
 	_, err := service.Add(context.Background(), validPublicAccountAddInput(
 		"自定义超时激活检查账号",
 		"gpt-5.4-mini",
@@ -242,17 +295,51 @@ func TestServiceHealthDispatchUsesConfiguredTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add public account: %v", err)
 	}
-	if len(dispatcher.calls) != 1 {
-		t.Fatalf("dispatch calls = %#v, want one", dispatcher.calls)
-	}
-	call := dispatcher.calls[0]
+	calls := waitForPublicAccountHealthDispatchCalls(t, dispatcher, 1)
+	call := calls[0]
 	if !call.hasDeadline {
 		t.Fatal("dispatch context has no deadline")
 	}
-	timeout := call.deadline.Sub(startedAt)
+	timeout := call.deadline.Sub(call.observedAt)
 	if timeout < 4500*time.Millisecond || timeout > 5*time.Second+250*time.Millisecond {
 		t.Fatalf("dispatch deadline timeout = %v, want near 5s", timeout)
 	}
+}
+
+func TestServiceHealthDispatchTimeoutStopsBlockingDispatcher(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	finished := make(chan struct{}, 1)
+	dispatcher := &publicAccountHealthCheckDispatcherFake{
+		blockUntilContextDone: true,
+		finished:              finished,
+	}
+	service := newPublicAccountServiceWithHealthDispatchTimeoutForTest(
+		store,
+		nil,
+		nil,
+		dispatcher,
+		nil,
+		40*time.Millisecond,
+	)
+
+	response, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"超时退出激活检查账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("blocking activation dispatcher did not stop at its context deadline")
+	}
+	assertPublicAccountHealthDispatchCalls(t, dispatcher,
+		publicAccountHealthCheckDispatchCall{
+			accountID: response.Account.ID,
+			reason:    "activation",
+		},
+	)
 }
 
 func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *testing.T) {
@@ -302,6 +389,14 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 		strings.Contains(created.CredentialsEncrypted, "api.openai.com") {
 		t.Fatalf("credentials_encrypted is not encrypted enough for public account test: %q", created.CredentialsEncrypted)
 	}
+	credentials, err := service.codec.DecryptJSON(created.CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt created credentials: %v", err)
+	}
+	wantEndpointModes := []any{"chat_json", "chat_sse", "responses_json", "responses_sse"}
+	if got := credentials["supported_endpoint_modes"]; !reflect.DeepEqual(got, wantEndpointModes) {
+		t.Fatalf("created supported_endpoint_modes = %#v, want %#v", got, wantEndpointModes)
+	}
 
 	data, err := json.Marshal(response)
 	if err != nil {
@@ -330,11 +425,11 @@ func TestServiceAddRejectsUnsupportedHealthCheckEndpointMode(t *testing.T) {
 	}
 }
 
-func TestServiceAddFallsBackToFirstEnabledJSONMode(t *testing.T) {
+func TestServiceAddUsesCredentialDefaultsInsteadOfProfileCapabilities(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	profileKey := "gpt|profile_gpt_openai_v1"
 	profile := store.profiles[profileKey]
-	profile.EnabledEndpointModes = []string{"generate_content_json", "chat_json"}
+	profile.EnabledEndpointModes = []string{"generate_content_json"}
 	store.profiles[profileKey] = profile
 	service := newPublicAccountServiceForTest(store, nil)
 
@@ -345,12 +440,12 @@ func TestServiceAddFallsBackToFirstEnabledJSONMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add public account: %v", err)
 	}
-	if response.Account == nil || response.Account.HealthCheckEndpointMode != "generate_content_json" {
-		t.Fatalf("response account = %+v, want generate_content_json mode", response.Account)
+	if response.Account == nil || response.Account.HealthCheckEndpointMode != "responses_sse" {
+		t.Fatalf("response account = %+v, want responses_sse mode from GPT credential defaults", response.Account)
 	}
 }
 
-func TestServiceAddRejectsProfileWithoutHealthCheckMode(t *testing.T) {
+func TestServiceAddDoesNotRequireProfileEndpointCapabilities(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	profileKey := "gpt|profile_gpt_openai_v1"
 	profile := store.profiles[profileKey]
@@ -358,15 +453,15 @@ func TestServiceAddRejectsProfileWithoutHealthCheckMode(t *testing.T) {
 	store.profiles[profileKey] = profile
 	service := newPublicAccountServiceForTest(store, nil)
 
-	_, err := service.Add(context.Background(), validPublicAccountAddInput(
+	response, err := service.Add(context.Background(), validPublicAccountAddInput(
 		"无 JSON 能力账号",
 		"gpt-5.4-mini",
 	))
-	if !errors.Is(err, ErrInvalidHealthCheckEndpointMode) || !strings.Contains(err.Error(), "至少需要启用一个") {
-		t.Fatalf("add error = %v, want no health check mode error", err)
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
 	}
-	if store.createCalls != 0 {
-		t.Fatalf("create calls = %d, want 0", store.createCalls)
+	if response.Account == nil || response.Account.HealthCheckEndpointMode != "responses_sse" {
+		t.Fatalf("response account = %+v, want responses_sse mode from credentials", response.Account)
 	}
 }
 
@@ -420,6 +515,29 @@ func TestServiceHybridAnthropicMessagesProfileCanAddAndUpdate(t *testing.T) {
 	if created.Account == nil || created.Account.HealthCheckEndpointMode != "messages_json" {
 		t.Fatalf("created account = %+v, want messages_json mode", created.Account)
 	}
+	account := store.accounts[created.Account.ID]
+	credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt hybrid credentials: %v", err)
+	}
+	wantEndpointModes := []any{
+		"chat_json",
+		"chat_sse",
+		"responses_json",
+		"responses_sse",
+		"messages_json",
+		"messages_sse",
+		"message_token_counting",
+		"generate_content_json",
+		"generate_content_sse",
+		"count_tokens",
+		"embed_content",
+	}
+	if got := credentials["supported_endpoint_modes"]; !reflect.DeepEqual(got, wantEndpointModes) {
+		t.Fatalf("hybrid supported_endpoint_modes = %#v, want %#v", got, wantEndpointModes)
+	}
+	account.HealthCheckEndpointMode = "responses_sse"
+	store.accounts[account.ID] = account
 
 	name := "混合 Anthropic 更新账号"
 	updated, err := service.Update(context.Background(), UpdateInput{
@@ -429,8 +547,8 @@ func TestServiceHybridAnthropicMessagesProfileCanAddAndUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update hybrid Anthropic account: %v", err)
 	}
-	if updated.Account == nil || updated.Account.Name != name || updated.Account.HealthCheckEndpointMode != "messages_json" {
-		t.Fatalf("updated account = %+v, want updated messages account", updated.Account)
+	if updated.Account == nil || updated.Account.Name != name || updated.Account.HealthCheckEndpointMode != "responses_sse" {
+		t.Fatalf("updated account = %+v, want exact mode allowed by account credentials", updated.Account)
 	}
 }
 
@@ -445,7 +563,16 @@ func TestServiceUpdateRejectsCurrentModeWhenItIsNoLongerEnabled(t *testing.T) {
 		t.Fatalf("add public account: %v", err)
 	}
 	account := store.accounts[created.Account.ID]
-	account.HealthCheckEndpointMode = "messages_json"
+	credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt current credentials: %v", err)
+	}
+	credentials["supported_endpoint_modes"] = []any{"chat_json", "chat_sse"}
+	account.CredentialsEncrypted, err = service.codec.EncryptJSON(credentials)
+	if err != nil {
+		t.Fatalf("encrypt current credentials: %v", err)
+	}
+	account.HealthCheckEndpointMode = "responses_sse"
 	store.accounts[account.ID] = account
 	name := "不应写入的新名称"
 
@@ -458,6 +585,98 @@ func TestServiceUpdateRejectsCurrentModeWhenItIsNoLongerEnabled(t *testing.T) {
 	}
 	if store.updateCalls != 0 {
 		t.Fatalf("update calls = %d, want 0", store.updateCalls)
+	}
+}
+
+func TestServiceUpdateBackfillsMissingCredentialEndpointModes(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"缺失能力回退账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	account := store.accounts[created.Account.ID]
+	credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt current credentials: %v", err)
+	}
+	delete(credentials, "supported_endpoint_modes")
+	account.CredentialsEncrypted, err = service.codec.EncryptJSON(credentials)
+	if err != nil {
+		t.Fatalf("encrypt current credentials: %v", err)
+	}
+	store.accounts[account.ID] = account
+	name := "缺失能力已回退账号"
+
+	updated, err := service.Update(context.Background(), UpdateInput{
+		AccountID: account.ID,
+		Name:      &name,
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if updated.Account == nil || updated.Account.HealthCheckEndpointMode != "responses_sse" {
+		t.Fatalf("updated account = %+v, want responses_sse mode", updated.Account)
+	}
+	storedCredentials, err := service.codec.DecryptJSON(store.accounts[account.ID].CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt updated credentials: %v", err)
+	}
+	wantEndpointModes := []any{"chat_json", "chat_sse", "responses_json", "responses_sse"}
+	if got := storedCredentials["supported_endpoint_modes"]; !reflect.DeepEqual(got, wantEndpointModes) {
+		t.Fatalf("backfilled supported_endpoint_modes = %#v, want %#v", got, wantEndpointModes)
+	}
+}
+
+func TestServiceUpdateRejectsMalformedCredentialEndpointModes(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "null", value: nil},
+		{name: "scalar", value: "chat_json"},
+		{name: "empty", value: []any{}},
+		{name: "unknown", value: []any{"unknown_json"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newPublicAccountStoreFake()
+			service := newPublicAccountServiceForTest(store, nil)
+			created, err := service.Add(context.Background(), validPublicAccountAddInput(
+				"非法能力账号",
+				"gpt-5.4-mini",
+			))
+			if err != nil {
+				t.Fatalf("add public account: %v", err)
+			}
+			account := store.accounts[created.Account.ID]
+			credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+			if err != nil {
+				t.Fatalf("decrypt current credentials: %v", err)
+			}
+			credentials["supported_endpoint_modes"] = tt.value
+			account.CredentialsEncrypted, err = service.codec.EncryptJSON(credentials)
+			if err != nil {
+				t.Fatalf("encrypt current credentials: %v", err)
+			}
+			store.accounts[account.ID] = account
+			name := "不应写入的非法能力账号"
+
+			_, err = service.Update(context.Background(), UpdateInput{
+				AccountID: account.ID,
+				Name:      &name,
+			})
+			if !errors.Is(err, ErrInvalidCredentials) {
+				t.Fatalf("update error = %v, want ErrInvalidCredentials", err)
+			}
+			if store.updateCalls != 0 {
+				t.Fatalf("update calls = %d, want 0", store.updateCalls)
+			}
+		})
 	}
 }
 
@@ -1000,7 +1219,7 @@ func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 			extensions := map[string]any{
 				"service_tier_override":     "priority",
 				"reasoning_effort_override": "high",
-				"supported_endpoint_modes":  []any{"chat_json", "responses_sse"},
+				"supported_endpoint_modes":  []any{"chat_json", "responses_json", "responses_sse"},
 				"endpoint": map[string]any{
 					"chat": "/v1/chat/completions",
 				},
@@ -1064,7 +1283,109 @@ func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 	}
 }
 
-func TestServiceUpdateDispatchesConfigurationAfterCommit(t *testing.T) {
+func TestServiceUpdatePreservesEffectiveMultiAPIKeyPool(t *testing.T) {
+	const (
+		primaryAPIKey   = "sk-public-account-secret-0123456789abcdef"
+		secondaryAPIKey = "sk-public-account-secondary-abcdef0123456789"
+		requestedAPIKey = "sk-public-account-requested-abcdef0123456789"
+	)
+	tests := []struct {
+		name   string
+		update func() UpdateInput
+	}{
+		{
+			name: "single api key input leaves existing pool authoritative",
+			update: func() UpdateInput {
+				apiKey := requestedAPIKey
+				return UpdateInput{APIKey: &apiKey}
+			},
+		},
+		{
+			name: "non credential update preserves existing pool",
+			update: func() UpdateInput {
+				name := "多 Key 账号改名"
+				return UpdateInput{Name: &name}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newPublicAccountStoreFake()
+			service := newPublicAccountServiceForTest(store, nil)
+			created, err := service.Add(context.Background(), validPublicAccountAddInput(
+				"多 Key 公开账号",
+				"gpt-5.4-mini",
+			))
+			if err != nil {
+				t.Fatalf("add public account: %v", err)
+			}
+
+			account := store.accounts[created.Account.ID]
+			credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+			if err != nil {
+				t.Fatalf("decrypt current credentials: %v", err)
+			}
+			credentials["api_key"] = primaryAPIKey
+			credentials["api_keys"] = []any{primaryAPIKey, secondaryAPIKey}
+			credentials["api_key_strategy"] = "weighted_round_robin"
+			credentials["api_key_weights"] = []any{float64(2), float64(3)}
+			account.CredentialsEncrypted, err = service.codec.EncryptJSON(credentials)
+			if err != nil {
+				t.Fatalf("encrypt multi-key credentials: %v", err)
+			}
+			fingerprint := hashSecret(primaryAPIKey)
+			account.CredentialFingerprint = &fingerprint
+			account.CredentialMask = maskSecret(primaryAPIKey)
+			account.Status = port.PublicAccountStatusActive
+			account.Schedulable = true
+			store.accounts[account.ID] = account
+
+			input := tt.update()
+			input.AccountID = account.ID
+			response, err := service.Update(context.Background(), input)
+			if err != nil {
+				t.Fatalf("update public account: %v", err)
+			}
+
+			stored := store.accounts[account.ID]
+			updatedCredentials, err := service.codec.DecryptJSON(stored.CredentialsEncrypted)
+			if err != nil {
+				t.Fatalf("decrypt updated credentials: %v", err)
+			}
+			if got := updatedCredentials["api_key"]; got != primaryAPIKey {
+				t.Fatalf("canonical api_key = %#v, want pool primary %q", got, primaryAPIKey)
+			}
+			wantAPIKeys := []any{primaryAPIKey, secondaryAPIKey}
+			if got := updatedCredentials["api_keys"]; !reflect.DeepEqual(got, wantAPIKeys) {
+				t.Fatalf("api_keys = %#v, want %#v", got, wantAPIKeys)
+			}
+			if got := updatedCredentials["api_key_strategy"]; got != "weighted_round_robin" {
+				t.Fatalf("api_key_strategy = %#v, want weighted_round_robin", got)
+			}
+			wantWeights := []any{float64(2), float64(3)}
+			if got := updatedCredentials["api_key_weights"]; !reflect.DeepEqual(got, wantWeights) {
+				t.Fatalf("api_key_weights = %#v, want %#v", got, wantWeights)
+			}
+			if stored.CredentialFingerprint == nil || *stored.CredentialFingerprint != hashSecret(primaryAPIKey) {
+				t.Fatalf("credential fingerprint = %v, want effective pool primary", stored.CredentialFingerprint)
+			}
+			if stored.CredentialMask != maskSecret(primaryAPIKey) {
+				t.Fatalf("credential mask = %q, want effective pool primary mask", stored.CredentialMask)
+			}
+			if response.Account == nil || response.Account.Status != StatusActive || !response.Account.Schedulable {
+				t.Fatalf("response account = %+v, want active and schedulable", response.Account)
+			}
+			if store.lastUpdateInput.ResetFailureState ||
+				store.lastUpdateInput.ScheduleHealthCheck ||
+				store.lastUpdateInput.ResetHealthDiagnostics {
+				t.Fatalf("unchanged effective key pool produced update flags %+v", store.lastUpdateInput)
+			}
+		})
+	}
+}
+
+func TestServiceUpdateSchedulesHealthCheckWithoutImmediateDispatch(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	created, err := newPublicAccountServiceForTest(store, nil).Add(
 		context.Background(),
@@ -1078,9 +1399,10 @@ func TestServiceUpdateDispatchesConfigurationAfterCommit(t *testing.T) {
 	account.Schedulable = true
 	store.accounts[account.ID] = account
 
-	events := []string{}
-	transactor := &publicAccountTransactorFake{store: store, events: &events}
-	dispatcher := &publicAccountHealthCheckDispatcherFake{events: &events}
+	events := &publicAccountEventRecorder{}
+	transactor := &publicAccountTransactorFake{store: store, events: events}
+	dispatchStarted := make(chan struct{}, 1)
+	dispatcher := &publicAccountHealthCheckDispatcherFake{started: dispatchStarted}
 	service := newPublicAccountServiceWithHealthDispatchForTest(store, nil, transactor, dispatcher, nil)
 	apiKey := "sk-updated-public-account-secret-abcdef0123456789"
 
@@ -1094,15 +1416,17 @@ func TestServiceUpdateDispatchesConfigurationAfterCommit(t *testing.T) {
 	if response.Account == nil || response.Account.Status != StatusPendingTest {
 		t.Fatalf("response account = %+v, want pending_test", response.Account)
 	}
-	if got, want := events, []string{"transaction_committed", "dispatch"}; !slices.Equal(got, want) {
+	if got, want := events.snapshot(), []string{"transaction_committed"}; !slices.Equal(got, want) {
 		t.Fatalf("events = %#v, want %#v", got, want)
 	}
-	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
-		publicAccountHealthCheckDispatchCall{
-			accountID: account.ID,
-			reason:    "configuration",
-		},
-	)
+	if !store.lastUpdateInput.ScheduleHealthCheck {
+		t.Fatal("configuration update must persist health check scheduling")
+	}
+	select {
+	case <-dispatchStarted:
+		t.Fatalf("Update dispatched an immediate health check: %#v", dispatcher.callsSnapshot())
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
 func TestServiceUpdateEquivalentCredentialsPreservesActiveScheduling(t *testing.T) {
@@ -1139,8 +1463,8 @@ func TestServiceUpdateEquivalentCredentialsPreservesActiveScheduling(t *testing.
 		store.lastUpdateInput.ResetHealthDiagnostics {
 		t.Fatalf("equivalent credentials produced update flags %+v", store.lastUpdateInput)
 	}
-	if len(dispatcher.calls) != 0 {
-		t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
+	if calls := dispatcher.callsSnapshot(); len(calls) != 0 {
+		t.Fatalf("dispatch calls = %#v, want none", calls)
 	}
 }
 
@@ -1179,12 +1503,9 @@ func TestServiceUpdateConfigurationChangeKeepsExplicitDisabled(t *testing.T) {
 	if !store.lastUpdateInput.ScheduleHealthCheck || !store.lastUpdateInput.ResetHealthDiagnostics {
 		t.Fatal("changed disabled credentials must schedule a health check and reset health diagnostics")
 	}
-	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
-		publicAccountHealthCheckDispatchCall{
-			accountID: account.ID,
-			reason:    "configuration",
-		},
-	)
+	if calls := dispatcher.callsSnapshot(); len(calls) != 0 {
+		t.Fatalf("dispatch calls = %#v, want none", calls)
+	}
 }
 
 func TestServiceUpdateNonConfigurationFieldsDoNotForcePendingTest(t *testing.T) {
@@ -1227,8 +1548,34 @@ func TestServiceUpdateNonConfigurationFieldsDoNotForcePendingTest(t *testing.T) 
 	if store.lastUpdateInput.ScheduleHealthCheck || store.lastUpdateInput.ResetHealthDiagnostics {
 		t.Fatal("non-configuration fields must not alter health check scheduling")
 	}
-	if len(dispatcher.calls) != 0 {
-		t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
+	if !store.lastUpdateInput.GroupDispatchChanged {
+		t.Fatal("explicit priority must update the group binding dispatch")
+	}
+	if calls := dispatcher.callsSnapshot(); len(calls) != 0 {
+		t.Fatalf("dispatch calls = %#v, want none", calls)
+	}
+}
+
+func TestServiceUpdateWithoutPriorityLeavesGroupBindingDispatchUntouched(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	created, err := newPublicAccountServiceForTest(store, nil).Add(context.Background(), validPublicAccountAddInput(
+		"不修改分组优先级账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+
+	name := "仅修改账号名称"
+	_, err = newPublicAccountServiceForTest(store, nil).Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		Name:      &name,
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if store.lastUpdateInput.GroupDispatchChanged {
+		t.Fatal("omitted priority must not update the group binding dispatch")
 	}
 }
 
@@ -1367,12 +1714,9 @@ func TestServiceUpdateUnorderedEquivalentSupportedModelsSkipsCatalog(t *testing.
 		!slices.Equal(response.Account.SupportedModels, wantModels) {
 		t.Fatalf("response account = %+v, want supported models %#v", response.Account, wantModels)
 	}
-	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
-		publicAccountHealthCheckDispatchCall{
-			accountID: account.ID,
-			reason:    "configuration",
-		},
-	)
+	if calls := dispatcher.callsSnapshot(); len(calls) != 0 {
+		t.Fatalf("dispatch calls = %#v, want none", calls)
+	}
 }
 
 func TestServiceUpdateTransactionFailureSkipsConfigurationDispatch(t *testing.T) {
@@ -1397,12 +1741,12 @@ func TestServiceUpdateTransactionFailureSkipsConfigurationDispatch(t *testing.T)
 	if !errors.Is(err, commitErr) {
 		t.Fatalf("update error = %v, want commit failure", err)
 	}
-	if len(dispatcher.calls) != 0 {
-		t.Fatalf("dispatch calls = %#v, want none", dispatcher.calls)
+	if calls := dispatcher.callsSnapshot(); len(calls) != 0 {
+		t.Fatalf("dispatch calls = %#v, want none", calls)
 	}
 }
 
-func TestServiceUpdateDispatchFailureIsBestEffort(t *testing.T) {
+func TestServiceUpdateDoesNotUseImmediateDispatcher(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	created, err := newPublicAccountServiceForTest(store, nil).Add(
 		context.Background(),
@@ -1425,12 +1769,12 @@ func TestServiceUpdateDispatchFailureIsBestEffort(t *testing.T) {
 	if response.Action != "updated" || response.Account == nil {
 		t.Fatalf("response = %+v, want committed update", response)
 	}
-	assertPublicAccountHealthDispatchCalls(t, dispatcher.calls,
-		publicAccountHealthCheckDispatchCall{
-			accountID: created.Account.ID,
-			reason:    "configuration",
-		},
-	)
+	if !store.lastUpdateInput.ScheduleHealthCheck {
+		t.Fatal("configuration update must persist health check scheduling")
+	}
+	if calls := dispatcher.callsSnapshot(); len(calls) != 0 {
+		t.Fatalf("dispatch calls = %#v, want none", calls)
+	}
 }
 
 func TestServiceUpdateChangedSupportedModelsMarksStoreUpdate(t *testing.T) {
@@ -1792,37 +2136,83 @@ type publicAccountHealthCheckDispatchCall struct {
 	accountID   string
 	reason      string
 	contextErr  error
+	observedAt  time.Time
 	deadline    time.Time
 	hasDeadline bool
 }
 
 type publicAccountHealthCheckDispatcherFake struct {
-	calls  []publicAccountHealthCheckDispatchCall
-	err    error
-	events *[]string
+	mu                    sync.Mutex
+	calls                 []publicAccountHealthCheckDispatchCall
+	err                   error
+	events                *publicAccountEventRecorder
+	started               chan struct{}
+	release               <-chan struct{}
+	finished              chan struct{}
+	blockUntilContextDone bool
 }
 
 func (d *publicAccountHealthCheckDispatcherFake) Dispatch(ctx context.Context, accountID string, reason string) error {
 	if d.events != nil {
-		*d.events = append(*d.events, "dispatch")
+		d.events.record("dispatch")
 	}
 	deadline, hasDeadline := ctx.Deadline()
+	d.mu.Lock()
 	d.calls = append(d.calls, publicAccountHealthCheckDispatchCall{
 		accountID:   accountID,
 		reason:      reason,
 		contextErr:  ctx.Err(),
+		observedAt:  time.Now(),
 		deadline:    deadline,
 		hasDeadline: hasDeadline,
 	})
+	d.mu.Unlock()
+	if d.started != nil {
+		select {
+		case d.started <- struct{}{}:
+		default:
+		}
+	}
+	if d.finished != nil {
+		defer func() {
+			select {
+			case d.finished <- struct{}{}:
+			default:
+			}
+		}()
+	}
+	if d.release != nil {
+		select {
+		case <-d.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if d.blockUntilContextDone {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	return d.err
+}
+
+func (d *publicAccountHealthCheckDispatcherFake) callsSnapshot() []publicAccountHealthCheckDispatchCall {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]publicAccountHealthCheckDispatchCall(nil), d.calls...)
 }
 
 func assertPublicAccountHealthDispatchCalls(
 	t *testing.T,
-	got []publicAccountHealthCheckDispatchCall,
+	dispatcher *publicAccountHealthCheckDispatcherFake,
 	want ...publicAccountHealthCheckDispatchCall,
 ) {
 	t.Helper()
+	got := dispatcher.callsSnapshot()
+	if len(want) > 0 {
+		got = waitForPublicAccountHealthDispatchCalls(t, dispatcher, len(want))
+		time.Sleep(20 * time.Millisecond)
+		got = dispatcher.callsSnapshot()
+	}
 	if len(got) != len(want) {
 		t.Fatalf("dispatch calls = %#v, want %#v", got, want)
 	}
@@ -1833,11 +2223,68 @@ func assertPublicAccountHealthDispatchCalls(
 	}
 }
 
+func waitForPublicAccountHealthDispatchCalls(
+	t *testing.T,
+	dispatcher *publicAccountHealthCheckDispatcherFake,
+	count int,
+) []publicAccountHealthCheckDispatchCall {
+	t.Helper()
+	waitForPublicAccountCondition(t, time.Second, "health check dispatch", func() bool {
+		return len(dispatcher.callsSnapshot()) >= count
+	})
+	return dispatcher.callsSnapshot()
+}
+
+func waitForPublicAccountCondition(t *testing.T, timeout time.Duration, description string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", description)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(value []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(value)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
+type publicAccountEventRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *publicAccountEventRecorder) record(event string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *publicAccountEventRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
+}
+
 type publicAccountTransactorFake struct {
 	store        *publicAccountStoreFake
 	beforeErrors []error
 	commitError  error
-	events       *[]string
+	events       *publicAccountEventRecorder
 	calls        int
 }
 
@@ -1856,7 +2303,7 @@ func (t *publicAccountTransactorFake) PublicAccountInTx(
 		return t.commitError
 	}
 	if t.events != nil {
-		*t.events = append(*t.events, "transaction_committed")
+		t.events.record("transaction_committed")
 	}
 	return nil
 }
