@@ -8,10 +8,12 @@ import {
   usageRecordCostTokenRows
 } from '../../views/usage-records/usageRecordCostDetails'
 import {
+  formatCost,
   formatRecordTokens,
   usageRecordLatencyParts,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,
+  usageRecordDisplayCostUsd,
   usageRecordTokenParts
 } from '../../views/usage-records/usageRecordFormatters'
 
@@ -238,6 +240,24 @@ const displayFactsRecord = usageRecordFixture({
 assertEqual(usageRecordServiceTierText(displayFactsRecord) ?? '', 'Flex', '模型列应展示实际计费档位')
 assertEqual(usageRecordReasoningEffortText(displayFactsRecord) ?? '', '超高', '模型列应展示有效思考级别')
 assertArrayEqual(usageRecordLatencyParts(displayFactsRecord), ['首 token 0.32s', '总耗时 1.3s'], '延迟列必须合并首 token 与总耗时')
+
+const breakdownCostOnlyRecord = usageRecordFixture({
+  costBreakdown: {
+    accountChargeUsd: 0.25,
+    multiplier: 1,
+    serviceTierPricingSource: 'default'
+  }
+})
+assertEqual(
+  formatCost(usageRecordDisplayCostUsd(breakdownCostOnlyRecord)),
+  '$0.250000',
+  '列表成本缺少 costUsd 时必须回退到账户锁定成本'
+)
+assertEqual(
+  formatCost(usageRecordDisplayCostUsd({ ...breakdownCostOnlyRecord, costUsd: 0 })),
+  '$0.000000',
+  '显式零成本必须优先于 costBreakdown，不能被兜底值覆盖'
+)
 
 console.log('使用记录 Token 与成本明细 formatter 回归通过：列表三项展示和供应商成本明细均符合预期')
 
