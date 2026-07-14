@@ -15,7 +15,7 @@ import {
 import {
   assertOpenAIEndpointModesCompatible
 } from '../../domain/openai-endpoint-modes.js'
-import { resolveHealthCheckEndpointFamily } from '../../domain/account-health-check-endpoint-family.js'
+import { resolveHealthCheckEndpointMode } from '../../domain/account-health-check-endpoint-mode.js'
 import {
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
@@ -57,7 +57,7 @@ import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapsh
 const modelConfigurationFields = new Set([
   'supportedModels',
   'healthCheckModel',
-  'healthCheckEndpointFamily',
+  'healthCheckEndpointMode',
   'modelMappings',
   'supportedEndpointModes',
   'serviceTierOverride',
@@ -218,10 +218,10 @@ async function prepareAccountUpdateAsync(
   if (!nextSupportedModels.includes(nextHealthCheckModel)) {
     throw new Error(`账户 ${account.id} 的检查模型必须属于最终支持模型`)
   }
-  const nextHealthCheckEndpointFamily = resolveHealthCheckEndpointFamily({
-    value: Object.prototype.hasOwnProperty.call(updates, 'healthCheckEndpointFamily')
-      ? updates.healthCheckEndpointFamily
-      : account.healthCheckEndpointFamily,
+  const nextHealthCheckEndpointMode = resolveHealthCheckEndpointMode({
+    value: Object.prototype.hasOwnProperty.call(updates, 'healthCheckEndpointMode')
+      ? updates.healthCheckEndpointMode
+      : account.healthCheckEndpointMode,
     providerCode: account.providerCode,
     providerProtocolProfileId: account.providerProtocolProfileId,
     enabledEndpointModes: nextCredentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
@@ -287,11 +287,11 @@ async function prepareAccountUpdateAsync(
   )
   const proxyChanged = account.proxyProfileId !== nextProxyProfileId
   const healthCheckModelChanged = account.healthCheckModel !== nextHealthCheckModel
-  const healthCheckEndpointFamilyChanged = account.healthCheckEndpointFamily !== nextHealthCheckEndpointFamily
+  const healthCheckEndpointModeChanged = account.healthCheckEndpointMode !== nextHealthCheckEndpointMode
   const shouldScheduleHealthCheck = proxyChanged
     || supportedModelsChanged
     || healthCheckModelChanged
-    || healthCheckEndpointFamilyChanged
+    || healthCheckEndpointModeChanged
     || modelMappingsChanged
     || endpointModesChanged
   const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
@@ -337,7 +337,7 @@ async function prepareAccountUpdateAsync(
       ? undefined
       : account.cooldownRetestLastStatusCode,
     healthCheckModel: nextHealthCheckModel,
-    healthCheckEndpointFamily: nextHealthCheckEndpointFamily,
+    healthCheckEndpointMode: nextHealthCheckEndpointMode,
     supportedModels: nextSupportedModels,
     modelMappings: nextModelMappings,
     tags: nextTags,

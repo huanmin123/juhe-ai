@@ -61,7 +61,7 @@ try {
     },
     supportedModels: [model],
     healthCheckModel: model,
-    healthCheckEndpointFamily: 'responses' as const,
+    healthCheckEndpointMode: 'responses_sse' as const,
     modelMappings: [enabledMapping],
     groupId: group.id
   }, access)
@@ -104,7 +104,7 @@ try {
     },
     supportedModels: [model],
     healthCheckModel: model,
-    healthCheckEndpointFamily: 'responses' as const,
+    healthCheckEndpointMode: 'responses_sse' as const,
     modelMappings: [mapping]
   })
   const rejectedImport = await previewAccountImportAsync({
@@ -129,22 +129,22 @@ try {
       accountInput: {
         providerCode: GPT_VENDOR_CODE,
         providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-        name: `健康检查协议族PG异步草稿-${marker}`,
+        name: `健康检查请求形态PG异步草稿-${marker}`,
         type: 'api_key',
         credentials: {
-          api_key: `sk-draft-family-${marker}`,
+          api_key: `sk-draft-mode-${marker}`,
           base_url: 'https://api.openai.com/v1',
-          supported_endpoint_modes: ['chat_json', 'responses_sse']
+          supported_endpoint_modes: ['chat_json', 'responses_json']
         },
         supportedModels: [model],
         healthCheckModel: model,
-        healthCheckEndpointFamily: 'responses',
+        healthCheckEndpointMode: 'responses_sse',
         groupId: group.id
       },
       requestAccess: access
     }),
-    /账户健康检查协议族 responses 未启用对应 JSON 能力/,
-    'PG 异步草稿必须按最终 endpoint modes 拒绝缺少 responses_json 的 Responses 健康检查协议族'
+    /账户健康检查请求形态 responses_sse 未启用/,
+    'PG 异步草稿必须按最终 endpoint modes 拒绝缺少 responses_sse 的健康检查请求形态'
   )
 
   const draftInput = (mapping: AccountModelMapping) => ({
@@ -159,7 +159,7 @@ try {
     },
     supportedModels: [model],
     healthCheckModel: model,
-    healthCheckEndpointFamily: 'responses' as const,
+    healthCheckEndpointMode: 'responses_sse' as const,
     modelMappings: [mapping],
     groupId: group.id
   })

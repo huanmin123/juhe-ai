@@ -1,4 +1,4 @@
-import type { AccountClientCompatibility, AccountHealthCheckEndpointFamily, AccountSupportedEndpointMode, AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountClientCompatibility, AccountHealthCheckEndpointMode, AccountSupportedEndpointMode, AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
@@ -19,12 +19,11 @@ import {
   responsesEndpointModes
 } from './accountProviderCapabilities'
 import { FALLBACK_PROVIDERS } from './accountOptions'
-import { accountHealthCheckEndpointMode } from './accountHealthCheckEndpointFamily'
 
 export type AccountEndpointModeLabelContext = AccountProviderProfileLike | ProviderProtocolProfileDefinition | ProviderDefinition | undefined
 export type AccountTestEndpointModeSource = AccountProviderProfileLike & {
   credentials?: Record<string, unknown>
-  healthCheckEndpointFamily?: AccountHealthCheckEndpointFamily
+  healthCheckEndpointMode?: AccountHealthCheckEndpointMode
 }
 export type AccountTestEndpointModeDraftSource = {
   providerCode?: string
@@ -34,7 +33,7 @@ export type AccountTestEndpointModeDraftSource = {
   type?: unknown
   credentials?: Record<string, unknown>
   clientCompatibility?: AccountClientCompatibility
-  healthCheckEndpointFamily?: AccountHealthCheckEndpointFamily
+  healthCheckEndpointMode?: AccountHealthCheckEndpointMode
 }
 
 export const accountEndpointModeOptions: Array<{ label: string; value: AccountSupportedEndpointMode }> = [
@@ -196,19 +195,18 @@ export function accountTestEndpointModesForAccount(
   const supportedSet = new Set(supportedModes)
   return prioritizeAccountTestEndpointModes(
     accountTestEndpointModeOrder(source).filter((mode) => supportedSet.has(mode)),
-    source.healthCheckEndpointFamily
+    source.healthCheckEndpointMode
   )
 }
 
 export function prioritizeAccountTestEndpointModes(
   modes: readonly AccountSupportedEndpointMode[],
-  family?: AccountHealthCheckEndpointFamily
+  healthCheckMode?: AccountHealthCheckEndpointMode
 ): AccountSupportedEndpointMode[] {
   const normalized = [...new Set(modes)]
-  if (!family) return normalized
-  const preferred = accountHealthCheckEndpointMode(family)
-  return normalized.includes(preferred)
-    ? [preferred, ...normalized.filter((mode) => mode !== preferred)]
+  if (!healthCheckMode) return normalized
+  return normalized.includes(healthCheckMode)
+    ? [healthCheckMode, ...normalized.filter((mode) => mode !== healthCheckMode)]
     : normalized
 }
 

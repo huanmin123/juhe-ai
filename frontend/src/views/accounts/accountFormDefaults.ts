@@ -2,7 +2,7 @@ import type { AccountType, ProviderDefinition } from '@/types/domain'
 import { defaultProviderProtocolProfileId, isHybridProviderCode, preferredDefaultProviderCode } from '@/shared/providerProtocol'
 import { createAccountAvailabilityScheduleForm } from './accountAvailabilitySchedule'
 import { defaultAccountEndpointModes } from './accountEndpointModes'
-import { defaultAccountHealthCheckEndpointFamily } from './accountHealthCheckEndpointFamily'
+import { defaultAccountHealthCheckEndpointMode } from './accountHealthCheckEndpointMode'
 import { defaultAccountClientCompatibilityForProvider } from './accountProviderCapabilities'
 import type { AccountFormModel } from './accountFormTypes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS } from './accountOptions'
@@ -60,7 +60,7 @@ export function defaultAccountForm(
     supportedEndpointModes,
     supportedModels,
     healthCheckModel: defaultHealthCheckModelForProvider(provider, profile, supportedModels),
-    healthCheckEndpointFamily: defaultAccountHealthCheckEndpointFamily(resolvedProviderCode, profile?.id ?? '', supportedEndpointModes),
+    healthCheckEndpointMode: defaultAccountHealthCheckEndpointMode(resolvedProviderCode, profile?.id ?? '', supportedEndpointModes),
     serviceTierOverride: '',
     reasoningEffortOverride: '',
     modelMappings: [],

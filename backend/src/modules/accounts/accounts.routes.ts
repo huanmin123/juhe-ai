@@ -307,8 +307,12 @@ accountsRouter.patch('/:id', async (req, res) => {
     res.status(404).json({ message: '账户不存在' })
     return
   }
-  if (requestedClearFailureState === true && existingAccount.status === 'pending_test') {
-    res.status(400).json(badRequest('待检查账户需等待后台健康检查通过后才能参与调度'))
+  if (
+    requestedClearFailureState === true
+    && existingAccount.status === 'pending_test'
+    && !isPendingHealthCheckFailure(existingAccount)
+  ) {
+    res.status(400).json(badRequest('账户正在等待首次后台健康检查，无需重新检查'))
     return
   }
   if (isAuthorizedAccountUpdateTarget(existingAccount) && Object.prototype.hasOwnProperty.call(body, 'concurrencyLimit')) {
@@ -378,7 +382,9 @@ accountsRouter.patch('/:id', async (req, res) => {
     const account = await runLoggedOperationAsync(async () => {
       let account: AccountSummary | undefined
       if (requestedClearFailureState === true) {
-        const restoredAccount = await clearAccountFailureStateAsync(req.params.id, requestAccess)
+        const restoredAccount = await clearAccountFailureStateAsync(req.params.id, requestAccess, {
+          allowPendingTestRestore: existingAccount.status === 'pending_test'
+        })
         if (!restoredAccount) {
           throw new Error('账户不存在')
         }
@@ -430,11 +436,15 @@ accountsRouter.patch('/:id', async (req, res) => {
           mode: operationMode(requestAccess),
           module: 'accounts',
           action: requestedClearFailureState === true ? 'restore' : 'update',
-          operationKey: requestedClearFailureState === true ? 'accounts.restore' : 'accounts.update',
+          operationKey: requestedClearFailureState === true
+            ? existingAccount.status === 'pending_test' ? 'accounts.recheck' : 'accounts.restore'
+            : 'accounts.update',
           resourceType: 'account',
           resourceId: account.id,
           resourceName: account.name,
-          summary: requestedClearFailureState === true ? `恢复 AI 账户：${account.name}` : `更新 AI 账户：${account.name}`,
+          summary: requestedClearFailureState === true
+            ? existingAccount.status === 'pending_test' ? `重新检查 AI 账户：${account.name}` : `异常恢复 AI 账户：${account.name}`
+            : `更新 AI 账户：${account.name}`,
           changes: [
             ...diffSafeFields(existingAccount as unknown as Record<string, unknown>, account as unknown as Record<string, unknown>, {
               name: '名称',
@@ -448,7 +458,7 @@ accountsRouter.patch('/:id', async (req, res) => {
               clientCompatibility: '客户端兼容',
               supportedModels: '支持模型',
               healthCheckModel: '检查模型',
-              healthCheckEndpointFamily: '检查协议',
+              healthCheckEndpointMode: '检查协议',
               modelMappings: '模型映射',
               tags: '标签',
               proxyProfileId: '代理',
@@ -472,7 +482,12 @@ accountsRouter.patch('/:id', async (req, res) => {
               existingAccount.credentials.reasoning_effort_override,
               account.credentials.reasoning_effort_override
             ),
-            ...(requestedClearFailureState === true ? [safeChange('clearFailureState', '恢复异常状态', false, true)] : [])
+            ...(requestedClearFailureState === true ? [safeChange(
+              'clearFailureState',
+              existingAccount.status === 'pending_test' ? '重新检查' : '异常恢复',
+              false,
+              true
+            )] : [])
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }
@@ -481,7 +496,9 @@ accountsRouter.patch('/:id', async (req, res) => {
     if (requestedClearFailureState === true || body.status === 'active') {
       await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
     }
-    if (accountUpdateNeedsImmediateHealthCheck(accountUpdateInput)) {
+    if (requestedClearFailureState === true && account.status === 'pending_test') {
+      dispatchAccountHealthCheck(account.id, 'activation')
+    } else if (accountUpdateNeedsImmediateHealthCheck(accountUpdateInput)) {
       dispatchAccountHealthCheck(account.id, 'configuration')
     }
     res.json(ok(sanitizeAccountResponse(await applyServerAccountRuntimeToAccount(account))))
@@ -502,6 +519,12 @@ accountsRouter.patch('/:id', async (req, res) => {
     res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
   }
 })
+
+function isPendingHealthCheckFailure(account: Pick<AccountSummary, 'status' | 'lastHealthCheckAt' | 'lastHealthCheckErrorCode' | 'lastHealthCheckErrorMessage'>): boolean {
+  return account.status === 'pending_test'
+    && Boolean(account.lastHealthCheckAt)
+    && Boolean(account.lastHealthCheckErrorCode || account.lastHealthCheckErrorMessage)
+}
 
 registerAccountTestDispatchRoutes(accountsRouter)
 

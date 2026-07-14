@@ -109,7 +109,7 @@ function apiKeyActivationRequest(input: {
     clientCompatibility: 'codex_responses' as const,
     supportedModels: [draftChatUpstreamModel],
     healthCheckModel: draftChatUpstreamModel,
-    healthCheckEndpointFamily: 'responses' as const,
+    healthCheckEndpointMode: 'responses_sse' as const,
     modelMappings: [draftChatAliasMapping(), draftChatCaseAliasMapping()],
     notes: 'API Key 草稿测试成功后保存应直接启用'
   }
@@ -216,7 +216,7 @@ function apiKeyDraftActivationSnapshot(input: ReturnType<typeof apiKeyActivation
     clientCompatibility,
     supportedModels: input.supportedModels,
     healthCheckModel: input.healthCheckModel,
-    healthCheckEndpointFamily: input.healthCheckEndpointFamily,
+    healthCheckEndpointMode: input.healthCheckEndpointMode,
     modelMappings: repositories.normalizeAccountModelMappingsForProvider(input.modelMappings, input.providerCode, input.ownerSystemAccountId, {
       providerCode: input.providerCode,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -277,7 +277,7 @@ function draftAccountSummary(draft: AccountTestDraftSnapshot): AccountSummary {
     clientCompatibility: draft.clientCompatibility,
     supportedModels: draft.supportedModels,
     healthCheckModel: draft.healthCheckModel,
-    healthCheckEndpointFamily: draft.healthCheckEndpointFamily,
+    healthCheckEndpointMode: draft.healthCheckEndpointMode,
     modelMappings: draft.modelMappings,
     schedulable: true,
     todayUsage: usage,

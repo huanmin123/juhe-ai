@@ -247,7 +247,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       notes: options.form.notes,
       supportedModels,
       healthCheckModel,
-      healthCheckEndpointFamily: options.form.healthCheckEndpointFamily,
+      healthCheckEndpointMode: options.form.healthCheckEndpointMode,
       credentials: buildBasicEditCredentialsPatch(options.form),
       ...buildAccountBalancePayload(options.form)
     }
@@ -335,7 +335,7 @@ type AccountBasicEditPayload = {
   notes: string
   supportedModels: string[]
   healthCheckModel: string
-  healthCheckEndpointFamily: AccountFormModel['healthCheckEndpointFamily']
+  healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
   credentials: Record<string, unknown>
   balanceQueryEnabled?: boolean
   balanceQueryConfig?: Record<string, unknown>

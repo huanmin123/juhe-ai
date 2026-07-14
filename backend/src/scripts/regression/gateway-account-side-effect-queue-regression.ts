@@ -101,7 +101,7 @@ function accountErrorHandlingOperation(accountId: string): AccountErrorHandlingO
       superPriorityEnabled: false,
       fallbackEnabled: false,
       clientCompatibility: 'openai_standard',
-      healthCheckEndpointFamily: 'chat_completions',
+      healthCheckEndpointMode: 'chat_json',
       baseUrl: 'https://api.openai.com/v1',
       apiKey: 'sk-side-effect-queue',
       streamFailureCount: 0,

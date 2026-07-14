@@ -6,7 +6,6 @@ import {
 import { normalizeAnthropicEndpointModesForRuntime } from '../../domain/anthropic-endpoint-modes.js'
 import { normalizeGeminiEndpointModesForRuntime } from '../../domain/gemini-endpoint-modes.js'
 import { normalizeOpenAIEndpointModesForRuntime } from '../../domain/openai-endpoint-modes.js'
-import { healthCheckEndpointMode } from '../../domain/account-health-check-endpoint-family.js'
 import type { AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
   listProviderModelCatalogAsync,
@@ -124,7 +123,7 @@ function normalizedAccountEndpointModes(account: AccountSummary): AccountSupport
 }
 
 function accountTestEndpointModeOrder(account: AccountSummary): AccountSupportedEndpointMode[] {
-  const defaultMode = healthCheckEndpointMode(account.healthCheckEndpointFamily)
+  const defaultMode = account.healthCheckEndpointMode
   if (isAnthropicProtocolProfile(account)) {
     return uniqueEndpointModes(defaultMode, 'messages_sse')
   }

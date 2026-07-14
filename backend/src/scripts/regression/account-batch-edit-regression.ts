@@ -526,7 +526,7 @@ async function assertBatchModelMappingTargetCapabilities(groupId: string): Promi
     targets: targets(requiredAccount(accountC.id), requiredAccount(accountD.id)),
     updates: {
       supportedEndpointModes: { enabled: true, value: ['responses_json', 'responses_sse'] },
-      healthCheckEndpointFamily: { enabled: true, value: 'responses' },
+      healthCheckEndpointMode: { enabled: true, value: 'responses_sse' },
       modelMappings: { enabled: true, value: [enabledMapping] }
     }
   }, access), /Chat Completions.*上游接口能力/, '批量后端必须拒绝目标族能力缺失的启用映射')
@@ -538,7 +538,7 @@ async function assertBatchModelMappingTargetCapabilities(groupId: string): Promi
     targets: targets(requiredAccount(accountC.id), requiredAccount(accountD.id)),
     updates: {
       supportedEndpointModes: { enabled: true, value: ['responses_json', 'responses_sse'] },
-      healthCheckEndpointFamily: { enabled: true, value: 'responses' },
+      healthCheckEndpointMode: { enabled: true, value: 'responses_sse' },
       modelMappings: { enabled: true, value: [disabledMapping] }
     }
   }, access)

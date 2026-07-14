@@ -1,5 +1,4 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
-import { healthCheckEndpointMode } from '../../domain/account-health-check-endpoint-family.js'
 import { normalizeOpenAIEndpointModesForRuntime } from '../../domain/openai-endpoint-modes.js'
 import { normalizeAnthropicEndpointModesForRuntime } from '../../domain/anthropic-endpoint-modes.js'
 import { normalizeGeminiEndpointModesForRuntime } from '../../domain/gemini-endpoint-modes.js'
@@ -468,7 +467,7 @@ function resolveAccountTestEndpointMode(
 }
 
 function accountTestEndpointModeOrder(account: AccountSummary): AccountSupportedEndpointMode[] {
-  const defaultMode = healthCheckEndpointMode(account.healthCheckEndpointFamily)
+  const defaultMode = account.healthCheckEndpointMode
   if (isAnthropicProtocolProfile(account)) {
     return uniqueEndpointModes(defaultMode, 'messages_sse')
   }

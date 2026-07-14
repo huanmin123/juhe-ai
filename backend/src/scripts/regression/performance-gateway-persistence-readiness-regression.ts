@@ -676,11 +676,11 @@ async function seedReadinessQuotaData(client: DatabaseClient): Promise<void> {
     INSERT INTO juhe_business.accounts (
       id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
       name, type, status, credentials_encrypted, credential_mask, concurrency_limit, schedulable,
-      health_check_model, health_check_endpoint_family,
+      health_check_model, health_check_endpoint_mode,
       created_at, updated_at
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, 'api_key', 'active', '{}', 'sk-***readiness-source', 20, 1,
-      'gpt-5.4-mini', 'responses', ?, ?)
+        'gpt-5.4-mini', 'responses_sse', ?, ?)
   `, [
     readinessTeamSourceAccountId,
     readinessOwnerSystemAccountId,
@@ -773,10 +773,10 @@ async function seedReadinessQuotaData(client: DatabaseClient): Promise<void> {
       id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
       name, type, status, credentials_encrypted, credential_mask, concurrency_limit, schedulable,
       authorization_instance_source_account_id, authorization_instance_authorization_id,
-      authorization_instance_owner_system_account_id, health_check_model, health_check_endpoint_family, created_at, updated_at
+      authorization_instance_owner_system_account_id, health_check_model, health_check_endpoint_mode, created_at, updated_at
     )
     VALUES (?, 'sys_admin', ?, ?, ?, ?, ?, 'api_key', 'active', '{}', 'sk-***readiness-instance', 20, 1,
-      ?, ?, ?, 'gpt-5.4-mini', 'responses', ?, ?)
+        ?, ?, ?, 'gpt-5.4-mini', 'responses_sse', ?, ?)
   `, [
     readinessTeamInstanceAccountId,
     GPT_VENDOR_CODE,

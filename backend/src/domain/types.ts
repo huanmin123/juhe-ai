@@ -19,7 +19,17 @@ export type AccountSupportedEndpointMode =
   | 'generate_content_sse'
   | 'count_tokens'
   | 'embed_content'
-export type AccountHealthCheckEndpointFamily = 'chat_completions' | 'responses' | 'messages' | 'generate_content'
+export type AccountHealthCheckEndpointMode = Extract<
+  AccountSupportedEndpointMode,
+  | 'chat_json'
+  | 'chat_sse'
+  | 'responses_json'
+  | 'responses_sse'
+  | 'messages_json'
+  | 'messages_sse'
+  | 'generate_content_json'
+  | 'generate_content_sse'
+>
 export const SYSTEM_ACCOUNT_ROLES = ['super_admin', 'admin', 'user'] as const
 export type SystemAccountRole = typeof SYSTEM_ACCOUNT_ROLES[number]
 export type ManagementSystemAccountRole = Extract<SystemAccountRole, 'super_admin' | 'admin'>
@@ -496,7 +506,7 @@ export interface AccountSummary {
   modelMappings?: AccountModelMapping[]
   tags?: AccountTagSummary[]
   healthCheckModel: string
-  healthCheckEndpointFamily: AccountHealthCheckEndpointFamily
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number

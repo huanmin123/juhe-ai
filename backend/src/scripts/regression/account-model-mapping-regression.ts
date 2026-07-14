@@ -95,7 +95,7 @@ function createRegressionAccount(
     ? {
         ...input,
         healthCheckModel: input.healthCheckModel ?? supportedModels[0],
-        healthCheckEndpointFamily: input.healthCheckEndpointFamily ?? 'chat_completions' as const
+        healthCheckEndpointMode: input.healthCheckEndpointMode ?? 'chat_json' as const
       }
     : input
   const created = repositories.createAccount(
@@ -685,7 +685,7 @@ async function assertEndpointModeUpdateValidatesEnabledMappings(groupId: string)
       supported_endpoint_modes: ['chat_json', 'responses_json', 'responses_sse']
     },
     supportedModels: [chatCompletionsUpstreamModel],
-    healthCheckEndpointFamily: 'responses',
+    healthCheckEndpointMode: 'responses_sse',
     modelMappings: [
       responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)
     ],
@@ -725,7 +725,7 @@ async function assertEndpointModeUpdateValidatesEnabledMappings(groupId: string)
       supported_endpoint_modes: ['chat_json', 'responses_json', 'responses_sse']
     },
     supportedModels: [chatCompletionsUpstreamModel],
-    healthCheckEndpointFamily: 'responses',
+    healthCheckEndpointMode: 'responses_sse',
     modelMappings: [responsesToChatMapping(sourceModel, chatCompletionsUpstreamModel)],
     groupId
   }, ownerAccess)
@@ -1264,7 +1264,7 @@ function assertImportAndDraftValidateTargetCapabilities(groupId: string): void {
     },
     supportedModels: [chatCompletionsUpstreamModel],
     healthCheckModel: chatCompletionsUpstreamModel,
-    healthCheckEndpointFamily: 'responses' as const,
+    healthCheckEndpointMode: 'responses_sse' as const,
     modelMappings: [mapping]
   })
   const rejectedImport = previewAccountImport({
@@ -1285,20 +1285,20 @@ function assertImportAndDraftValidateTargetCapabilities(groupId: string): void {
     accountInput: {
       providerCode: GPT_VENDOR_CODE,
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '草稿健康协议族最终能力校验',
+      name: '草稿健康请求形态最终能力校验',
       type: 'api_key',
       credentials: {
-        api_key: 'sk-draft-health-family-capability',
+        api_key: 'sk-draft-health-mode-capability',
         base_url: 'https://api.openai.com/v1',
-        supported_endpoint_modes: ['chat_json', 'responses_sse']
+        supported_endpoint_modes: ['chat_json', 'responses_json']
       },
       supportedModels: [chatCompletionsUpstreamModel],
       healthCheckModel: chatCompletionsUpstreamModel,
-      healthCheckEndpointFamily: 'responses',
+      healthCheckEndpointMode: 'responses_sse',
       groupId
     },
     requestAccess: ownerAccess
-  }), /账户健康检查协议族 responses 未启用对应 JSON 能力/, '草稿测试必须按最终 endpoint modes 拒绝不可用健康检查协议族')
+  }), /账户健康检查请求形态 responses_sse 未启用/, '草稿测试必须按最终 endpoint modes 拒绝不可用健康检查请求形态')
 
   const draftInput = (mapping: AccountModelMapping) => ({
     providerCode: GPT_VENDOR_CODE,
@@ -1312,7 +1312,7 @@ function assertImportAndDraftValidateTargetCapabilities(groupId: string): void {
     },
     supportedModels: [chatCompletionsUpstreamModel],
     healthCheckModel: chatCompletionsUpstreamModel,
-    healthCheckEndpointFamily: 'responses' as const,
+    healthCheckEndpointMode: 'responses_sse' as const,
     modelMappings: [mapping],
     groupId
   })

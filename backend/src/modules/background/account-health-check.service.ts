@@ -1,5 +1,4 @@
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
-import { healthCheckEndpointMode } from '../../domain/account-health-check-endpoint-family.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
@@ -119,7 +118,7 @@ async function runAccountHealthCheckQueueItem(
     diagnostics: 'limited',
     groupId,
     trafficSource: 'account_health_check',
-    testEndpointMode: healthCheckEndpointMode(account.healthCheckEndpointFamily),
+    testEndpointMode: account.healthCheckEndpointMode,
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,

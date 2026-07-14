@@ -1,5 +1,4 @@
 import { logger } from '../../shared/logger.js'
-import { healthCheckEndpointMode } from '../../domain/account-health-check-endpoint-family.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -84,7 +83,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
   }
   const result = await testOpenAIAccount(account, {
     diagnostics: 'limited',
-    testEndpointMode: healthCheckEndpointMode(account.healthCheckEndpointFamily),
+    testEndpointMode: account.healthCheckEndpointMode,
     groupId: account.boundGroupId,
     systemAccountId,
     trafficSource: 'cooldown_retest',

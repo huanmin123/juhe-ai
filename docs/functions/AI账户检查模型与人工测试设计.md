@@ -12,12 +12,24 @@
 - 列表保持轻量，测试所需交互数据在用户打开测试功能时按需获取。
 - 删除账户批量测试，避免用户一次性制造大量不稳定上游请求和复杂任务状态。
 
-## 健康检查协议族
+## 健康检查请求形态
 
-- 当前账户必须保存不可空 `healthCheckEndpointFamily`，数据库字段为 `health_check_endpoint_family`，仅允许 `chat_completions`、`responses`、`messages`、`generate_content`。
-- 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试固定映射为 `chat_json`、`responses_json`、`messages_json`、`generate_content_json`，系统探针始终非流式；人工测试仍可显式选择账户已启用的 SSE 请求形态。
-- 新账户默认：GPT 官方 API Key / OAuth 优先 Responses；通用 OpenAI-compatible、DeepSeek、GLM 和 Gemini OpenAI profile 优先 Chat Completions；Anthropic profile 优先 Messages；Gemini Native 优先 GenerateContent。
-- 首选族未启用时，取账户 `supported_endpoint_modes` 中第一个已启用的 JSON 族；没有任何可用 JSON 族时拒绝保存，不做旧字段兼容或运行时协议猜测。
+- 当前账户必须保存不可空 `healthCheckEndpointMode`，数据库字段为 `health_check_endpoint_mode`。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`。
+- 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE。
+- 新账户默认：GPT 官方 API Key / OAuth 使用 `responses_sse`；通用 OpenAI-compatible、DeepSeek、GLM 和 Gemini OpenAI profile 使用 `chat_json`；Anthropic profile 使用 `messages_json`；Gemini Native 使用 `generate_content_json`。
+- 首选 mode 未启用时，优先取 `supported_endpoint_modes` 中第一个已启用 JSON mode，再取第一个可检查 mode；没有任何可检查 mode 时拒绝保存，不做旧字段兼容或运行时协议猜测。
+- 历史库必须停服离线把字段从 `health_check_endpoint_family` 直接改为 `health_check_endpoint_mode`。GPT 全量写为 `responses_sse`，其他旧族映射到对应 JSON mode；加密凭据中的 `supported_endpoint_modes` 必须先通过应用层 codec 解密改写，不能用普通 SQL 修改密文。
+
+历史库迁移使用同一套生产环境变量和加密密钥，并按以下顺序执行：
+
+```powershell
+pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-mode
+$env:JUHE_AI_OFFLINE_MAINTENANCE_CONFIRMED = '1'
+pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-mode -- --execute
+pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-mode -- --verify
+```
+
+第一条命令只做 dry-run；正式执行前必须停止主服务和 worker。正式迁移在同一数据库事务内锁定账户表、分批解密并重写 GPT 凭据、替换字段、更新约束和校验全部账户，任一步失败都会回滚；提交后再独立执行 verify。迁移完成后移除本次 PowerShell 会话中的确认环境变量。
 
 ## 2. 名称与字段
 
@@ -56,7 +68,7 @@
 - 删除支持模型时如果命中当前检查模型，必须先重新选择，不能静默切换到其他模型。
 - 后台任务发现检查模型缺失、不可见或不属于支持模型时，记录“检查模型配置异常”并停止本轮探针，不能猜测其他模型，也不能因此把账户标记为上游不可用。
 
-账户只向用户暴露必填的“健康检查协议族”，用于在已启用 JSON 能力中明确选择 Chat Completions、Responses、Messages 或 GenerateContent。系统不会暴露 stream / raw mode 等底层检查请求形态；协议族固定映射到对应非流式 JSON mode，人工测试才允许显式选择已启用的 SSE mode。
+账户向用户暴露必填的“健康检查请求形态”，只能选择账户已经启用的 JSON / Streaming mode。保存值就是后台探针最终使用值；人工测试仍可为单次诊断临时选择其他已启用 mode。
 
 ## 4. 默认检查模型
 

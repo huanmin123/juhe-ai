@@ -134,7 +134,7 @@ function draftAccount(groupId: string, credentials: Record<string, unknown>): Re
     credentials,
     supportedModels: ['gpt-5.5'],
     healthCheckModel: 'gpt-5.5',
-    healthCheckEndpointFamily: 'chat_completions',
+    healthCheckEndpointMode: 'chat_json',
     groupId
   }
 }

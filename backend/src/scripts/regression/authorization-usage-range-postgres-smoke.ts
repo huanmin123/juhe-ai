@@ -62,11 +62,11 @@ try {
       INSERT INTO juhe_business.accounts (
         id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
         name, type, status, credentials_encrypted, credential_mask, concurrency_limit, schedulable,
-        health_check_model, health_check_endpoint_family,
+        health_check_model, health_check_endpoint_mode,
         created_at, updated_at
       )
       VALUES (?, ?, ?, ?, ?, ?, '授权范围窗口账号', 'api_key', 'active', '{}', 'sk-***auth-range-smoke', 20, 1,
-        'gpt-5.4-mini', 'responses', ?, ?)
+      'gpt-5.4-mini', 'responses_sse', ?, ?)
     `, [
       accountId,
       ownerSystemAccountId,
