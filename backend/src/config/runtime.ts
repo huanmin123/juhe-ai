@@ -85,6 +85,14 @@ export interface RuntimeConfig {
   modelCheck: {
     probeRetryDelayMs: number
   }
+  auditLog: {
+    successHotRetentionHours: number
+    successSampleRate: number
+    successRetentionDays: number
+    problemRetentionDays: number
+    successFullBodyLimitBytes: number
+    problemFullBodyLimitBytes: number
+  }
   codexWebSearch: {
     endpoint?: string
     apiKey?: string
@@ -299,6 +307,7 @@ export const runtimeConfig: RuntimeConfig = {
   modelCheck: {
     probeRetryDelayMs: numberConfig('JUHE_AI_MODEL_CHECK_PROBE_RETRY_DELAY_MS', defaultModelCheckProbeRetryDelayMs, 0, 300000)
   },
+  auditLog: auditLogRuntimeConfig(),
   codexWebSearch: {
     endpoint: optionalStringConfig('JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT'),
     apiKey: optionalStringConfig('JUHE_AI_CODEX_WEB_SEARCH_API_KEY'),
@@ -588,6 +597,69 @@ function numberConfig(name: string, fallback: number, min: number, max: number):
     throw new Error(`${name} 必须在 ${min}-${max} 范围内`)
   }
   return integerValue
+}
+
+export function parseAuditLogRuntimeConfig(values: Record<string, string | undefined>): RuntimeConfig['auditLog'] {
+  const read = (name: string): string | undefined => values[name]?.trim()
+  const successHotRetentionHours = strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS', 1, 1, 168)
+  const successRetentionDays = strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS', 3, 1, 3650)
+  if (successRetentionDays * 24 < successHotRetentionHours) {
+    throw new Error('JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS 必须覆盖 JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS')
+  }
+  return {
+    successHotRetentionHours,
+    successSampleRate: strictDecimalValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE', 0.1, 0.0001, 1, 4),
+    successRetentionDays,
+    problemRetentionDays: strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS', 7, 1, 3650),
+    successFullBodyLimitBytes: strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_FULL_BODY_LIMIT_KB', 512, 0, 512) * 1024,
+    problemFullBodyLimitBytes: strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_PROBLEM_FULL_BODY_LIMIT_KB', 2048, 0, 2048) * 1024
+  }
+}
+
+function auditLogRuntimeConfig(): RuntimeConfig['auditLog'] {
+  const names = [
+    'JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS',
+    'JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE',
+    'JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS',
+    'JUHE_AI_AUDIT_LOG_PROBLEM_RETENTION_DAYS',
+    'JUHE_AI_AUDIT_LOG_SUCCESS_FULL_BODY_LIMIT_KB',
+    'JUHE_AI_AUDIT_LOG_PROBLEM_FULL_BODY_LIMIT_KB'
+  ]
+  return parseAuditLogRuntimeConfig(Object.fromEntries(names.map((name) => [name, rawStringConfig(name)])))
+}
+
+function strictIntegerValue(
+  read: (name: string) => string | undefined,
+  name: string,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const raw = read(name)
+  if (!raw) return fallback
+  if (!/^\d+$/.test(raw)) throw new Error(`${name} 必须是 ${min} 到 ${max} 之间的整数`)
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new Error(`${name} 必须是 ${min} 到 ${max} 之间的整数`)
+  }
+  return value
+}
+
+function strictDecimalValue(
+  read: (name: string) => string | undefined,
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+  maxDecimals: number
+): number {
+  const raw = read(name)
+  if (!raw) return fallback
+  const message = `${name} 必须是 ${min} 到 ${max} 之间且最多 ${maxDecimals} 位小数的数字`
+  if (!/^(?:\d+|\d*\.\d+)$/.test(raw) || (raw.split('.')[1]?.length ?? 0) > maxDecimals) throw new Error(message)
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value < min || value > max) throw new Error(message)
+  return value
 }
 
 function pathConfig(name: string, fallback: string): string {

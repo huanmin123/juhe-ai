@@ -11,6 +11,12 @@ const options: Array<{ label: string; value: AccountHealthCheckEndpointMode }> =
   { label: 'GenerateContent（Streaming）', value: 'generate_content_sse' }
 ]
 
+const endpointModeSet = new Set<AccountHealthCheckEndpointMode>(options.map((option) => option.value))
+
+export function isAccountHealthCheckEndpointMode(value: unknown): value is AccountHealthCheckEndpointMode {
+  return endpointModeSet.has(value as AccountHealthCheckEndpointMode)
+}
+
 export function accountHealthCheckEndpointModeOptions(endpointModes: readonly AccountSupportedEndpointMode[]) {
   return options
     .filter((option) => endpointModes.includes(option.value))

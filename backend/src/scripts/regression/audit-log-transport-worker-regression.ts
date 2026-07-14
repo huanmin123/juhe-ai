@@ -72,10 +72,15 @@ try {
   assert.match(successPayload?.bodySha256 ?? '', /^[a-f0-9]{64}$/, '成功审计摘要应保留 SHA-256')
   assert(Buffer.byteLength(successEncoded, 'utf8') <= transportMaxBytes, '成功审计最终编码也必须遵守 4MiB 硬预算')
 
+  const retryInput = auditInput('trace-audit-transport-success-after-retry', [Buffer.alloc(600 * 1024, 0x65)], true)
+  retryInput.auditOutcome = 'success_after_retry'
+  const retryPayload = decodeAuditLogStreamPayload(await encodeAuditLogForRedisStreamInWorker(retryInput)).payloads[0]
+  assert.equal(retryPayload?.captureStatus, 'complete', '重试后成功属于问题链路，必须使用 2MB 问题正文上限')
+
   const runtime = getAuditLogTransportRuntime()
   assert.equal(runtime.queuedJobs, 0, '审计编码完成后队列应清空')
   assert.equal(runtime.activeJobs, 0, '审计编码完成后不应残留活跃任务')
-  assert.equal(runtime.completedCount, 3, '三条审计编码任务应全部完成')
+  assert.equal(runtime.completedCount, 4, '四条审计编码任务应全部完成')
   assert.equal(runtime.failedCount, 0, '审计编码任务不应失败')
 
   console.log('审计传输 worker 回归通过：最终 codec 输出严格受 4MiB 约束，大正文保留 256KB 头尾窗口和 JSON 结构摘要')

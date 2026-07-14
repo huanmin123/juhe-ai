@@ -163,8 +163,9 @@ export interface AuditLogRuntime {
     activeCaptureMaxBytes: number
     successHotRetentionHours: number
     successRetentionDays: number
-    failureRetentionDays: number
-    errorGroupRetentionDays: number
+    problemRetentionDays: number
+    successFullBodyLimitBytes: number
+    problemFullBodyLimitBytes: number
   }
 }
 

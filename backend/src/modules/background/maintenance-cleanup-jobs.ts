@@ -133,8 +133,8 @@ async function enqueuePostgresDataRetentionMaintenanceJobs(): Promise<void> {
       nowAt,
       successHotRetentionHours: auditSettings.successHotRetentionHours,
       successRetentionDays: auditSettings.successRetentionDays,
-      failureRetentionDays: auditSettings.failureRetentionDays,
-      errorGroupRetentionDays: auditSettings.errorGroupRetentionDays,
+      failureRetentionDays: auditSettings.problemRetentionDays,
+      errorGroupRetentionDays: auditSettings.problemRetentionDays,
       successSampleBucketThreshold: Math.round(auditSettings.successSampleRate * 10000),
       batchSize,
       maxBatches
