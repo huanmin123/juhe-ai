@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,11 +16,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
@@ -37,7 +40,27 @@ const (
 	w6ManagementClientIPStatsNodeWriterTimeout      = 90 * time.Second
 	w6ManagementClientIPStatsNodeWriterProbeTimeout = 10 * time.Second
 	w6ManagementClientIPStatsNodeWriterPassword     = "node_go_ip_stats_password"
+	w6ManagementClientIPStatsGooseBaselineVersion   = int64(39)
+	w6ManagementClientIPStatsGooseTargetVersion     = int64(40)
 )
+
+var w6ManagementClientIPStatsInheritedEnvironmentAllowlist = map[string]struct{}{
+	"APPDATA":      {},
+	"COMSPEC":      {},
+	"HOME":         {},
+	"LANG":         {},
+	"LC_ALL":       {},
+	"LC_CTYPE":     {},
+	"LOCALAPPDATA": {},
+	"PATH":         {},
+	"PATHEXT":      {},
+	"SYSTEMROOT":   {},
+	"TEMP":         {},
+	"TMP":          {},
+	"TMPDIR":       {},
+	"USERPROFILE":  {},
+	"WINDIR":       {},
+}
 
 func TestW6ManagementClientIPStatsNodeWriterGoReaderSmoke(t *testing.T) {
 	nodePath, backendDir, helperPath := w6ManagementClientIPStatsNodeWriterPrerequisites(t)
@@ -46,7 +69,6 @@ func TestW6ManagementClientIPStatsNodeWriterGoReaderSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 
-	t.Setenv("JUHE_AI_USAGE_STATS_TIMEZONE", "UTC")
 	postgresContainer, err := tcpostgres.Run(ctx, postgresImage,
 		tcpostgres.WithDatabase("juhe_ai"),
 		tcpostgres.WithUsername("juhe_ai"),
@@ -68,7 +90,6 @@ func TestW6ManagementClientIPStatsNodeWriterGoReaderSmoke(t *testing.T) {
 	}
 	db := openSQLDB(t, postgresURL)
 	defer closeSQLDB(t, db)
-	runGooseMigrations(t, db)
 
 	fixture := w6ManagementClientIPStatsRunNodeWriterFixture(
 		t,
@@ -79,15 +100,31 @@ func TestW6ManagementClientIPStatsNodeWriterGoReaderSmoke(t *testing.T) {
 		postgresURL,
 	)
 	w6ManagementClientIPStatsAssertFixtureContract(t, fixture)
+	t.Setenv("JUHE_AI_USAGE_STATS_TIMEZONE", fixture.Timezone)
+	w6ManagementClientIPStatsBaselineGooseHistory(t, db)
+	runGooseMigrations(t, db)
+	w6ManagementClientIPStatsAssertGooseUpgrade(t, db)
 
 	store, err := postgresstore.Open(ctx, postgresURL)
 	if err != nil {
 		t.Fatalf(
 			"open production PostgreSQL store: %s",
-			w6ManagementClientIPStatsRedactNodeOutput(err.Error(), postgresURL),
+			w6ManagementClientIPStatsRedactSensitiveText(err.Error(), postgresURL),
 		)
 	}
 	defer store.Close()
+	storedTimezone, found, err := store.GetManagementUsageStatsTimezone(ctx)
+	if err != nil {
+		t.Fatalf("read production Go usage statistics timezone: %v", err)
+	}
+	if !found || storedTimezone != fixture.Timezone {
+		t.Fatalf(
+			"production Go usage statistics timezone = %q, found %v; want %q",
+			storedTimezone,
+			found,
+			fixture.Timezone,
+		)
+	}
 
 	service := managementclientipstats.NewServiceWithOptions(
 		managementclientipstats.ServiceOptions{
@@ -146,11 +183,13 @@ type w6ManagementClientIPStatsNodeWriterExpected struct {
 }
 
 type w6ManagementClientIPStatsNodeWriterFixture struct {
-	IPHash         string                                      `json:"ipHash"`
-	AggregateIPKey string                                      `json:"aggregateIpKey"`
-	StartDate      string                                      `json:"startDate"`
-	EndDate        string                                      `json:"endDate"`
-	Expected       w6ManagementClientIPStatsNodeWriterExpected `json:"expected"`
+	IPHash                  string                                      `json:"ipHash"`
+	AggregateIPKey          string                                      `json:"aggregateIpKey"`
+	Timezone                string                                      `json:"timezone"`
+	MidnightDistanceMinutes int                                         `json:"midnightDistanceMinutes"`
+	StartDate               string                                      `json:"startDate"`
+	EndDate                 string                                      `json:"endDate"`
+	Expected                w6ManagementClientIPStatsNodeWriterExpected `json:"expected"`
 }
 
 type w6ManagementClientIPStatsNodeWriterEnvelope struct {
@@ -211,9 +250,11 @@ func w6ManagementClientIPStatsNodeWriterPrerequisites(
 	defer cancel()
 	stdout := newW6ManagementClientIPStatsBoundedOutput(w6ManagementClientIPStatsNodeWriterOutputLimit)
 	stderr := newW6ManagementClientIPStatsBoundedOutput(w6ManagementClientIPStatsNodeWriterOutputLimit)
+	baseEnvironment := w6ManagementClientIPStatsNodeWriterBaseEnvironment()
+	w6ManagementClientIPStatsAssertIsolatedBaseEnvironment(t, baseEnvironment)
 	probe := exec.CommandContext(probeCtx, nodePath, "--import", "tsx", "--eval", "")
 	probe.Dir = backendDir
-	probe.Env = w6ManagementClientIPStatsNodeWriterBaseEnvironment()
+	probe.Env = baseEnvironment
 	probe.Stdout = stdout
 	probe.Stderr = stderr
 	probe.WaitDelay = 3 * time.Second
@@ -222,8 +263,17 @@ func w6ManagementClientIPStatsNodeWriterPrerequisites(
 			t,
 			"tsx loader probe failed: %v; stdout=%q stderr=%q",
 			err,
-			stdout.String(),
-			stderr.String(),
+			w6ManagementClientIPStatsBoundedRedactedOutput(stdout, ""),
+			w6ManagementClientIPStatsBoundedRedactedOutput(stderr, ""),
+		)
+		return "", "", ""
+	}
+	if stdout.Truncated() || stderr.Truncated() {
+		w6ManagementClientIPStatsNodeWriterDependencyUnavailable(
+			t,
+			"tsx loader probe output exceeded bounded capture; stdout=%q stderr=%q",
+			w6ManagementClientIPStatsBoundedRedactedOutput(stdout, ""),
+			w6ManagementClientIPStatsBoundedRedactedOutput(stderr, ""),
 		)
 		return "", "", ""
 	}
@@ -293,24 +343,26 @@ func w6ManagementClientIPStatsRunNodeWriterFixture(
 		t.Fatalf(
 			"Node writer fixture timed out: %v; stdout=%q stderr=%q",
 			nodeCtx.Err(),
-			w6ManagementClientIPStatsRedactNodeOutput(stdout.String(), postgresURL),
-			w6ManagementClientIPStatsRedactNodeOutput(stderr.String(), postgresURL),
+			w6ManagementClientIPStatsBoundedRedactedOutput(stdout, postgresURL),
+			w6ManagementClientIPStatsBoundedRedactedOutput(stderr, postgresURL),
 		)
 	}
 	if waitErr != nil {
 		t.Fatalf(
 			"Node writer fixture failed: %v; stdout=%q stderr=%q",
 			waitErr,
-			w6ManagementClientIPStatsRedactNodeOutput(stdout.String(), postgresURL),
-			w6ManagementClientIPStatsRedactNodeOutput(stderr.String(), postgresURL),
+			w6ManagementClientIPStatsBoundedRedactedOutput(stdout, postgresURL),
+			w6ManagementClientIPStatsBoundedRedactedOutput(stderr, postgresURL),
 		)
 	}
 	if stdout.Truncated() || stderr.Truncated() {
 		t.Fatalf("Node writer fixture output exceeded bounded capture")
 	}
+	redactedStdout := w6ManagementClientIPStatsBoundedRedactedOutput(stdout, postgresURL)
+	redactedStderr := w6ManagementClientIPStatsBoundedRedactedOutput(stderr, postgresURL)
 
 	var payloadLine string
-	for _, line := range strings.Split(stdout.String(), "\n") {
+	for _, line := range strings.Split(redactedStdout, "\n") {
 		line = strings.TrimSuffix(line, "\r")
 		if !strings.HasPrefix(line, w6ManagementClientIPStatsNodeWriterOutputPrefix) {
 			continue
@@ -323,8 +375,8 @@ func w6ManagementClientIPStatsRunNodeWriterFixture(
 	if payloadLine == "" {
 		t.Fatalf(
 			"Node writer fixture protocol record is missing; stdout=%q stderr=%q",
-			w6ManagementClientIPStatsRedactNodeOutput(stdout.String(), postgresURL),
-			w6ManagementClientIPStatsRedactNodeOutput(stderr.String(), postgresURL),
+			redactedStdout,
+			redactedStderr,
 		)
 	}
 
@@ -336,16 +388,41 @@ func w6ManagementClientIPStatsRunNodeWriterFixture(
 }
 
 func w6ManagementClientIPStatsNodeWriterBaseEnvironment() []string {
-	environment := make([]string, 0, len(os.Environ()))
+	environment := make([]string, 0, len(w6ManagementClientIPStatsInheritedEnvironmentAllowlist))
 	for _, item := range os.Environ() {
 		name, _, found := strings.Cut(item, "=")
-		normalizedName := strings.ToUpper(name)
-		if found && (strings.HasPrefix(normalizedName, "JUHE_AI_") || normalizedName == "NODE_ENV") {
+		if !found {
+			continue
+		}
+		if _, allowed := w6ManagementClientIPStatsInheritedEnvironmentAllowlist[strings.ToUpper(name)]; !allowed {
 			continue
 		}
 		environment = append(environment, item)
 	}
+	sort.Strings(environment)
 	return environment
+}
+
+func w6ManagementClientIPStatsAssertIsolatedBaseEnvironment(t *testing.T, environment []string) {
+	t.Helper()
+
+	for _, item := range environment {
+		name, _, found := strings.Cut(item, "=")
+		if !found {
+			t.Fatalf("Node writer inherited environment entry is malformed: %q", item)
+		}
+		normalizedName := strings.ToUpper(name)
+		_, allowed := w6ManagementClientIPStatsInheritedEnvironmentAllowlist[normalizedName]
+		forbidden := normalizedName == "NODE_ENV" ||
+			normalizedName == "NODE_OPTIONS" ||
+			normalizedName == "NODE_PATH" ||
+			strings.HasPrefix(normalizedName, "TSX_") ||
+			strings.HasPrefix(normalizedName, "PG") ||
+			strings.HasPrefix(normalizedName, "JUHE_AI_")
+		if !allowed || forbidden {
+			t.Fatalf("Node writer must not inherit environment variable %q", name)
+		}
+	}
 }
 
 func w6ManagementClientIPStatsNodeWriterEnvironment(postgresURL string) []string {
@@ -362,7 +439,6 @@ func w6ManagementClientIPStatsNodeWriterEnvironment(postgresURL string) []string
 		"JUHE_AI_REDIS_QUEUE_URL=redis://127.0.0.1:1/2",
 		"JUHE_AI_PROCESS_ROLE=worker",
 		"JUHE_AI_WORKER_ROLE=stats-worker",
-		"JUHE_AI_USAGE_STATS_TIMEZONE=UTC",
 		"JUHE_AI_LOG_FILE_ENABLED=false",
 		"JUHE_AI_LOG_CONSOLE_ENABLED=false",
 		"JUHE_AI_NODE_GO_IP_STATS_FIXTURE=1",
@@ -433,34 +509,90 @@ func w6ManagementClientIPStatsAssertFixtureContract(
 	if fixture.StartDate == "" || fixture.StartDate != fixture.EndDate {
 		t.Fatalf("Node writer date range = %q..%q", fixture.StartDate, fixture.EndDate)
 	}
+	if fixture.Timezone == "" || fixture.Timezone == "UTC" {
+		t.Fatalf("Node writer timezone = %q, want a non-UTC fixture timezone", fixture.Timezone)
+	}
+	if fixture.Timezone != "Asia/Shanghai" && fixture.Timezone != "America/New_York" {
+		t.Fatalf("Node writer timezone = %q, want a supported fixture timezone", fixture.Timezone)
+	}
+	if fixture.MidnightDistanceMinutes < 5*60 {
+		t.Fatalf(
+			"Node writer timezone %q is only %d minutes from local midnight",
+			fixture.Timezone,
+			fixture.MidnightDistanceMinutes,
+		)
+	}
 	want := w6ManagementClientIPStatsNodeWriterExpected{
-		RequestCount:        2,
-		SuccessCount:        1,
+		RequestCount:        3,
+		SuccessCount:        2,
 		ErrorCount:          1,
-		ErrorRate:           0.5,
-		InputTokens:         140,
-		OutputTokens:        25,
-		CacheReadTokens:     12,
-		CacheReadCost:       0.00013,
-		CacheWriteTokens:    9,
-		CacheWrite1hTokens:  5,
-		CacheWriteCost:      0.00027,
-		ThinkingTokens:      18,
-		InputImageTokens:    3,
-		OutputImageTokens:   7,
-		TotalTokens:         165,
-		TotalCost:           0.002,
+		ErrorRate:           1.0 / 3.0,
+		InputTokens:         606,
+		OutputTokens:        66,
+		CacheReadTokens:     78,
+		CacheReadCost:       0.0078,
+		CacheWriteTokens:    102,
+		CacheWrite1hTokens:  114,
+		CacheWriteCost:      0.0102,
+		ThinkingTokens:      138,
+		InputImageTokens:    174,
+		OutputImageTokens:   186,
+		TotalTokens:         672,
+		TotalCost:           0.0606,
 		ActiveDays:          1,
-		AverageDurationMs:   180,
-		AverageFirstTokenMs: 40,
-		MaxDurationMs:       240,
+		AverageDurationMs:   238,
+		AverageFirstTokenMs: 89.0 / 3.0,
+		MaxDurationMs:       357,
 		LastSeenAt:          fixture.Expected.LastSeenAt,
-		LastUsedAt:          fixture.Expected.LastSeenAt,
-		LastErrorAt:         fixture.Expected.LastSeenAt,
+		LastUsedAt:          fixture.Expected.LastUsedAt,
+		LastErrorAt:         fixture.Expected.LastErrorAt,
 	}
 	if fixture.Expected != want || fixture.Expected.LastSeenAt == "" {
 		t.Fatalf("Node writer expected contract = %+v, want %+v", fixture.Expected, want)
 	}
+	lastSeenAt := w6ManagementClientIPStatsParseFixtureTime(t, "lastSeenAt", fixture.Expected.LastSeenAt)
+	lastUsedAt := w6ManagementClientIPStatsParseFixtureTime(t, "lastUsedAt", fixture.Expected.LastUsedAt)
+	lastErrorAt := w6ManagementClientIPStatsParseFixtureTime(t, "lastErrorAt", fixture.Expected.LastErrorAt)
+	if lastSeenAt.Equal(lastUsedAt) || lastSeenAt.Equal(lastErrorAt) || lastUsedAt.Equal(lastErrorAt) {
+		t.Fatalf(
+			"Node writer lastSeenAt, lastUsedAt, and lastErrorAt must be mutually distinct: %+v",
+			fixture.Expected,
+		)
+	}
+	if !lastErrorAt.Before(lastUsedAt) || !lastUsedAt.Before(lastSeenAt) {
+		t.Fatalf(
+			"Node writer timestamps are not asymmetric: error=%s used=%s seen=%s",
+			fixture.Expected.LastErrorAt,
+			fixture.Expected.LastUsedAt,
+			fixture.Expected.LastSeenAt,
+		)
+	}
+	location, err := time.LoadLocation(fixture.Timezone)
+	if err != nil {
+		t.Fatalf("load Node writer fixture timezone %q: %v", fixture.Timezone, err)
+	}
+	if lastErrorAt.In(location).Format("2006-01-02") != fixture.StartDate ||
+		lastUsedAt.In(location).Format("2006-01-02") != fixture.StartDate {
+		t.Fatalf("Node writer target timestamps are outside %s in %s", fixture.StartDate, fixture.Timezone)
+	}
+	targetDate, err := time.ParseInLocation("2006-01-02", fixture.StartDate, location)
+	if err != nil {
+		t.Fatalf("parse Node writer target date %q: %v", fixture.StartDate, err)
+	}
+	wantNextDate := targetDate.AddDate(0, 0, 1).Format("2006-01-02")
+	if lastSeenAt.In(location).Format("2006-01-02") != wantNextDate {
+		t.Fatalf("Node writer registry lastSeenAt is not on next local date %s", wantNextDate)
+	}
+}
+
+func w6ManagementClientIPStatsParseFixtureTime(t *testing.T, name string, value string) time.Time {
+	t.Helper()
+
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		t.Fatalf("parse Node writer %s %q: %v", name, value, err)
+	}
+	return parsed
 }
 
 func w6ManagementClientIPStatsAssertNodeWriterResult(
@@ -566,10 +698,126 @@ func w6ManagementClientIPStatsAssertStringPointer(
 	}
 }
 
-func w6ManagementClientIPStatsRedactNodeOutput(output string, postgresURL string) string {
-	redacted := strings.ReplaceAll(output, postgresURL, "[redacted-postgres-url]")
-	redacted = strings.ReplaceAll(redacted, w6ManagementClientIPStatsNodeWriterPassword, "[redacted-password]")
+func w6ManagementClientIPStatsBaselineGooseHistory(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	if err := goose.SetDialect("postgres"); err != nil {
+		t.Fatalf("set goose dialect for Node schema baseline: %v", err)
+	}
+	version, err := goose.EnsureDBVersion(db)
+	if err != nil {
+		t.Fatalf("create goose history after Node schema and data: %v", err)
+	}
+	if version != 0 {
+		t.Fatalf("initial goose version after Node schema and data = %d, want 0", version)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin goose history baseline: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for migrationVersion := int64(1); migrationVersion <= w6ManagementClientIPStatsGooseBaselineVersion; migrationVersion++ {
+		if _, err := tx.Exec(
+			"INSERT INTO goose_db_version (version_id, is_applied) VALUES ($1, TRUE)",
+			migrationVersion,
+		); err != nil {
+			t.Fatalf("baseline goose migration %06d over Node schema: %v", migrationVersion, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit goose history baseline: %v", err)
+	}
+}
+
+func w6ManagementClientIPStatsAssertGooseUpgrade(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	var applied bool
+	if err := db.QueryRow(`
+SELECT is_applied
+FROM goose_db_version
+WHERE version_id = $1
+ORDER BY id DESC
+LIMIT 1
+`, w6ManagementClientIPStatsGooseTargetVersion).Scan(&applied); err != nil {
+		t.Fatalf("inspect goose migration %06d after Node writer: %v", w6ManagementClientIPStatsGooseTargetVersion, err)
+	}
+	if !applied {
+		t.Fatalf("goose migration %06d is not applied after Node writer", w6ManagementClientIPStatsGooseTargetVersion)
+	}
+}
+
+func w6ManagementClientIPStatsBoundedRedactedOutput(
+	output *w6ManagementClientIPStatsBoundedOutput,
+	postgresURL string,
+) string {
+	return w6ManagementClientIPStatsRedactSensitiveText(output.String(), postgresURL)
+}
+
+func w6ManagementClientIPStatsRedactSensitiveText(output string, postgresURL string) string {
+	secrets := make(map[string]struct{})
+	w6ManagementClientIPStatsAddSecretVariants(secrets, postgresURL)
+	w6ManagementClientIPStatsAddSecretVariants(secrets, w6ManagementClientIPStatsNodeWriterPassword)
+	if parsed, err := url.Parse(postgresURL); err == nil && parsed != nil {
+		w6ManagementClientIPStatsAddSecretVariants(secrets, parsed.String())
+		if parsed.User != nil {
+			w6ManagementClientIPStatsAddSecretVariants(secrets, parsed.User.String())
+			w6ManagementClientIPStatsAddSecretVariants(secrets, parsed.User.Username())
+			if password, ok := parsed.User.Password(); ok {
+				w6ManagementClientIPStatsAddSecretVariants(secrets, password)
+			}
+		}
+	}
+	ordered := make([]string, 0, len(secrets))
+	for secret := range secrets {
+		ordered = append(ordered, secret)
+	}
+	sort.Slice(ordered, func(left, right int) bool {
+		return len(ordered[left]) > len(ordered[right])
+	})
+	redacted := output
+	for _, secret := range ordered {
+		redacted = strings.ReplaceAll(redacted, secret, "[redacted]")
+	}
 	return redacted
+}
+
+func w6ManagementClientIPStatsAddSecretVariants(secrets map[string]struct{}, value string) {
+	if value == "" {
+		return
+	}
+	for _, variant := range []string{
+		value,
+		url.PathEscape(value),
+		url.QueryEscape(value),
+	} {
+		if variant == "" {
+			continue
+		}
+		secrets[variant] = struct{}{}
+		secrets[w6ManagementClientIPStatsNormalizePercentHexCase(variant, true)] = struct{}{}
+		secrets[w6ManagementClientIPStatsNormalizePercentHexCase(variant, false)] = struct{}{}
+	}
+}
+
+func w6ManagementClientIPStatsNormalizePercentHexCase(value string, upper bool) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for index := 0; index < len(value); index++ {
+		if value[index] != '%' || index+2 >= len(value) {
+			builder.WriteByte(value[index])
+			continue
+		}
+		builder.WriteByte('%')
+		hex := value[index+1 : index+3]
+		if upper {
+			builder.WriteString(strings.ToUpper(hex))
+		} else {
+			builder.WriteString(strings.ToLower(hex))
+		}
+		index += 2
+	}
+	return builder.String()
 }
 
 type w6ManagementClientIPStatsBoundedOutput struct {
