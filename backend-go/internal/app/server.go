@@ -14,6 +14,7 @@ import (
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
+	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
 	"juhe-ai/backend-go/internal/modules/managementapikeys"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
@@ -41,6 +42,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicsettings"
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/secretcrypto"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -268,6 +270,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyGroupAccountOptionsHandler:            managementHandlers.MyGroupAccountOptionsHandler,
 		ManagementAccountOptionsHandler:                   managementHandlers.AccountOptionsHandler,
 		ManagementMyAccountOptionsHandler:                 managementHandlers.MyAccountOptionsHandler,
+		ManagementAccountTestOptionsHandler:               managementHandlers.AccountTestOptionsHandler,
+		ManagementMyAccountTestOptionsHandler:             managementHandlers.MyAccountTestOptionsHandler,
 		ManagementAccountTagsHandler:                      managementHandlers.AccountTagsHandler,
 		ManagementMyAccountTagsHandler:                    managementHandlers.MyAccountTagsHandler,
 		ManagementAccountTagDeleteHandler:                 managementHandlers.AccountTagDeleteHandler,
@@ -425,6 +429,8 @@ type managementAPIHandlers struct {
 	MyGroupAccountOptionsHandler            http.Handler
 	AccountOptionsHandler                   http.Handler
 	MyAccountOptionsHandler                 http.Handler
+	AccountTestOptionsHandler               http.Handler
+	MyAccountTestOptionsHandler             http.Handler
 	AccountTagsHandler                      http.Handler
 	MyAccountTagsHandler                    http.Handler
 	AccountTagDeleteHandler                 http.Handler
@@ -536,6 +542,11 @@ func newManagementAPIHandler(
 		Logger:                  logger,
 	})
 	accountService := managementaccounts.NewService(store)
+	accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
+		Reader:          store,
+		ModelCatalog:    providerModelService,
+		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
+	})
 	systemAccountService := managementsystemaccounts.NewServiceWithOptions(managementsystemaccounts.ServiceOptions{
 		Store:                    store,
 		Secret:                   cfg.Secret,
@@ -691,6 +702,8 @@ func newManagementAPIHandler(
 		MyGroupAccountOptionsHandler:            httpapi.NewManagementMyGroupAccountOptionsHandler(groupService),
 		AccountOptionsHandler:                   httpapi.NewManagementAccountOptionsHandler(accountService),
 		MyAccountOptionsHandler:                 httpapi.NewManagementMyAccountOptionsHandler(accountService),
+		AccountTestOptionsHandler:               httpapi.NewManagementAccountTestOptionsHandler(accountTestOptionsService),
+		MyAccountTestOptionsHandler:             httpapi.NewManagementMyAccountTestOptionsHandler(accountTestOptionsService),
 		AccountTagsHandler:                      httpapi.NewManagementAccountTagsHandler(accountService),
 		MyAccountTagsHandler:                    httpapi.NewManagementMyAccountTagsHandler(accountService),
 		AccountTagDeleteHandler:                 httpapi.NewManagementAccountTagDeleteHandler(accountService),

@@ -130,6 +130,8 @@ type RouterOptions struct {
 	ManagementMyGroupAccountOptionsHandler            http.Handler
 	ManagementAccountOptionsHandler                   http.Handler
 	ManagementMyAccountOptionsHandler                 http.Handler
+	ManagementAccountTestOptionsHandler               http.Handler
+	ManagementMyAccountTestOptionsHandler             http.Handler
 	ManagementAccountTagsHandler                      http.Handler
 	ManagementMyAccountTagsHandler                    http.Handler
 	ManagementAccountTagDeleteHandler                 http.Handler
@@ -344,6 +346,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyGroupAccountOptionsHandler == nil &&
 				opts.ManagementAccountOptionsHandler == nil &&
 				opts.ManagementMyAccountOptionsHandler == nil &&
+				opts.ManagementAccountTestOptionsHandler == nil &&
+				opts.ManagementMyAccountTestOptionsHandler == nil &&
 				opts.ManagementAccountTagsHandler == nil &&
 				opts.ManagementMyAccountTagsHandler == nil &&
 				opts.ManagementAccountTagDeleteHandler == nil &&
@@ -755,6 +759,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/options", opts.ManagementMyAccountOptionsHandler.ServeHTTP)
 			}
+			if opts.ManagementAccountTestOptionsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/test-options", opts.ManagementAccountTestOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestOptionsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/test-options", opts.ManagementMyAccountTestOptionsHandler.ServeHTTP)
+			}
 			if opts.ManagementAccountTagsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/tags", opts.ManagementAccountTagsHandler.ServeHTTP)
 			}
@@ -978,6 +988,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyGroupAccountOptionsHandler != nil ||
 		opts.ManagementAccountOptionsHandler != nil ||
 		opts.ManagementMyAccountOptionsHandler != nil ||
+		opts.ManagementAccountTestOptionsHandler != nil ||
+		opts.ManagementMyAccountTestOptionsHandler != nil ||
 		opts.ManagementAccountTagsHandler != nil ||
 		opts.ManagementMyAccountTagsHandler != nil ||
 		opts.ManagementAccountTagDeleteHandler != nil ||
