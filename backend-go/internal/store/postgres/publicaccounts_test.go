@@ -130,6 +130,7 @@ func TestUpdatePublicAccountQuerySeparatesFailureResetAndHealthCheckScheduling(t
 		"账户配置已保存，等待后台检查",
 		"next_health_check_at = CASE",
 		"health_check_failure_count = CASE",
+		"health_check_failure_started_at = CASE",
 		"last_health_check_status_code = CASE",
 		"last_health_check_error_code = CASE",
 		"last_health_check_error_message = CASE",

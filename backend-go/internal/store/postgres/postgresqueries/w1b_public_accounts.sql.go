@@ -1159,6 +1159,11 @@ SET name = $1,
       THEN 0
       ELSE health_check_failure_count
     END,
+    health_check_failure_started_at = CASE
+      WHEN $15::boolean
+      THEN NULL
+      ELSE health_check_failure_started_at
+    END,
     last_health_check_status_code = CASE
       WHEN $15::boolean
       THEN NULL
