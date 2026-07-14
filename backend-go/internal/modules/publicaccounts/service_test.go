@@ -308,7 +308,7 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 		t.Fatalf("marshal response: %v", err)
 	}
 	lower := strings.ToLower(string(data))
-	for _, forbidden := range []string{"sk-public-account-secret", "api.openai.com", "credentials", "baseurl", "apikey", "healthcheckmodel"} {
+	for _, forbidden := range []string{"sk-public-account-secret", "api.openai.com", "credentials", "baseurl", "apikey", "healthcheckmodel", "healthcheckendpointfamily"} {
 		if strings.Contains(lower, strings.ToLower(forbidden)) {
 			t.Fatalf("response leaked %q in %s", forbidden, string(data))
 		}
@@ -449,7 +449,7 @@ func TestPublicAccountSummaryDoesNotExposeHealthCheckModel(t *testing.T) {
 	}
 }
 
-func TestPublicAccountSummaryExposesHealthCheckEndpointFamily(t *testing.T) {
+func TestPublicAccountSummaryKeepsHealthCheckEndpointFamilyInternal(t *testing.T) {
 	account := port.PublicAccountSummary{
 		ID:                        "acct_public_summary_family",
 		Name:                      "公开协议族账号",
@@ -468,8 +468,8 @@ func TestPublicAccountSummaryExposesHealthCheckEndpointFamily(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal summary listShape=%t: %v", listShape, err)
 		}
-		if !strings.Contains(string(data), `"healthCheckEndpointFamily":"responses"`) {
-			t.Fatalf("summary listShape=%t JSON missing healthCheckEndpointFamily: %s", listShape, data)
+		if strings.Contains(string(data), "healthCheckEndpointFamily") {
+			t.Fatalf("summary listShape=%t JSON exposed healthCheckEndpointFamily: %s", listShape, data)
 		}
 	}
 }

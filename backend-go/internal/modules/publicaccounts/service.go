@@ -132,7 +132,7 @@ type AccountSummary struct {
 	ClientCompatibility       string   `json:"clientCompatibility,omitempty"`
 	Status                    string   `json:"status"`
 	SupportedModels           []string `json:"supportedModels,omitempty"`
-	HealthCheckEndpointFamily string   `json:"healthCheckEndpointFamily"`
+	HealthCheckEndpointFamily string   `json:"-"`
 	BoundGroupID              string   `json:"boundGroupId,omitempty"`
 	BoundGroupName            string   `json:"boundGroupName,omitempty"`
 	Schedulable               bool     `json:"schedulable"`

@@ -80,8 +80,8 @@ func TestPublicAccountHandlersAddThroughShellRedactsLogSecrets(t *testing.T) {
 	if _, ok := account["healthCheckModel"]; ok {
 		t.Fatalf("response exposed internal healthCheckModel: %#v", account)
 	}
-	if account["healthCheckEndpointFamily"] != "responses" {
-		t.Fatalf("response healthCheckEndpointFamily = %#v, want responses", account["healthCheckEndpointFamily"])
+	if _, ok := account["healthCheckEndpointFamily"]; ok {
+		t.Fatalf("response exposed internal healthCheckEndpointFamily: %#v", account)
 	}
 
 	log := singlePublicAPILog(t, logQueue)
@@ -178,35 +178,56 @@ func TestParsePublicAccountUpdateBodyPreservesSupportedModelsPresence(t *testing
 	}
 }
 
-func TestParsePublicAccountBodiesRejectInternalHealthCheckModel(t *testing.T) {
+func TestParsePublicAccountBodiesRejectInternalHealthCheckFields(t *testing.T) {
 	tests := []struct {
-		name  string
-		parse func(*http.Request) error
-		body  string
+		name      string
+		parse     func(*http.Request) error
+		body      string
+		fieldName string
 	}{
 		{
-			name: "add",
+			name: "add health check model",
 			parse: func(req *http.Request) error {
 				_, err := parsePublicAccountAddBody(req)
 				return err
 			},
-			body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","healthCheckModel":"gpt-5.5"}`,
+			body:      `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","healthCheckModel":"gpt-5.5"}`,
+			fieldName: "healthCheckModel",
 		},
 		{
-			name: "update",
+			name: "update health check model",
 			parse: func(req *http.Request) error {
 				_, err := parsePublicAccountUpdateBody(req)
 				return err
 			},
-			body: `{"accountId":"acct_1","healthCheckModel":"gpt-5.5"}`,
+			body:      `{"accountId":"acct_1","healthCheckModel":"gpt-5.5"}`,
+			fieldName: "healthCheckModel",
+		},
+		{
+			name: "add health check endpoint family",
+			parse: func(req *http.Request) error {
+				_, err := parsePublicAccountAddBody(req)
+				return err
+			},
+			body:      `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","healthCheckEndpointFamily":"responses"}`,
+			fieldName: "healthCheckEndpointFamily",
+		},
+		{
+			name: "update health check endpoint family",
+			parse: func(req *http.Request) error {
+				_, err := parsePublicAccountUpdateBody(req)
+				return err
+			},
+			body:      `{"accountId":"acct_1","healthCheckEndpointFamily":"responses"}`,
+			fieldName: "healthCheckEndpointFamily",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.parse(newPublicAccountParserRequest(t, tt.body))
-			if err == nil || !strings.Contains(err.Error(), "请求体包含未知字段：healthCheckModel") {
-				t.Fatalf("parse error = %v, want unknown healthCheckModel field", err)
+			if err == nil || !strings.Contains(err.Error(), "请求体包含未知字段："+tt.fieldName) {
+				t.Fatalf("parse error = %v, want unknown %s field", err, tt.fieldName)
 			}
 		})
 	}
@@ -408,9 +429,11 @@ func TestPublicAccountHandlersRejectStrictAndNonCoercedFields(t *testing.T) {
 		body string
 	}{
 		{name: "add unknown credentials field", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","credentials":{"apiKey":"sk-test"}}`},
+		{name: "add health check endpoint family", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","healthCheckEndpointFamily":"responses"}`},
 		{name: "add unsupported type", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"oauth","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test"}`},
 		{name: "add string concurrency", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","concurrencyLimit":"20"}`},
 		{name: "update empty mutable", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1"}`},
+		{name: "update health check endpoint family", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","healthCheckEndpointFamily":"responses"}`},
 		{name: "delete unknown field", path: "/__aipublic__/account/del", body: `{"accountId":"acct_1","extra":1}`},
 	}
 
