@@ -23,8 +23,6 @@ type Definition struct {
 
 var definitions = []Definition{
 	{Key: "gatewayTextRawBodyLimitMegabytes", Kind: ValueKindInteger, Minimum: 1, Maximum: 64},
-	{Key: "gptPriorityPriceMultiplier", Kind: ValueKindDecimal, DecimalMinimum: 0.01, DecimalMaximum: 100},
-	{Key: "gptFlexPriceMultiplier", Kind: ValueKindDecimal, DecimalMinimum: 0.01, DecimalMaximum: 100},
 	{Key: "systemApiRateLimitIpReadPerMinute", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},
 	{Key: "systemApiRateLimitIpReadBurstPer10Seconds", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},
 	{Key: "systemApiRateLimitIpWritePerMinute", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},

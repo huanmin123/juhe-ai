@@ -19,8 +19,6 @@ FROM juhe_business.system_settings
 WHERE system_account_id = 'sys_admin'
   AND key IN (
     'gatewayTextRawBodyLimitMegabytes',
-    'gptPriorityPriceMultiplier',
-    'gptFlexPriceMultiplier',
     'systemApiRateLimitIpReadPerMinute',
     'systemApiRateLimitIpReadBurstPer10Seconds',
     'systemApiRateLimitIpWritePerMinute',
@@ -82,8 +80,6 @@ FROM juhe_business.system_settings
 WHERE system_account_id = 'sys_admin'
   AND key IN (
     'gatewayTextRawBodyLimitMegabytes',
-    'gptPriorityPriceMultiplier',
-    'gptFlexPriceMultiplier',
     'systemApiRateLimitIpReadPerMinute',
     'systemApiRateLimitIpReadBurstPer10Seconds',
     'systemApiRateLimitIpWritePerMinute',

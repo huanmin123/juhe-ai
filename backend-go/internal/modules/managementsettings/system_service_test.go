@@ -32,14 +32,6 @@ func TestSystemServiceGetReturnsValidatedIndependentSnapshot(t *testing.T) {
 	if !ok || string(value) != "60" {
 		t.Fatalf("usageHotWindowRefreshIntervalSeconds = %q, %v; want 60", value, ok)
 	}
-	priority, ok := settings.Value("gptPriorityPriceMultiplier")
-	if !ok || string(priority) != "2" {
-		t.Fatalf("gptPriorityPriceMultiplier = %q, %v; want 2", priority, ok)
-	}
-	flex, ok := settings.Value("gptFlexPriceMultiplier")
-	if !ok || string(flex) != "0.5" {
-		t.Fatalf("gptFlexPriceMultiplier = %q, %v; want 0.5", flex, ok)
-	}
 	returnedValues := settings.Values()
 	returnedValues["gatewayTextRawBodyLimitMegabytes"][0] = '9'
 	storedValue, _ := stored.Value("gatewayTextRawBodyLimitMegabytes")
@@ -64,7 +56,6 @@ func TestSystemServiceUpdateValidatesRawPatchUsesUTCAndInvalidatesSeparately(t *
 	patch, err := systemsettings.NewPatch(map[string]json.RawMessage{
 		"gatewayTextRawBodyLimitMegabytes":     json.RawMessage(`32`),
 		"usageHotWindowRefreshIntervalSeconds": json.RawMessage(`600`),
-		"gptPriorityPriceMultiplier":           json.RawMessage(`2.5`),
 	})
 	if err != nil {
 		t.Fatalf("NewPatch() error = %v", err)
@@ -94,7 +85,6 @@ func TestSystemServiceUpdateValidatesRawPatchUsesUTCAndInvalidatesSeparately(t *
 		Values: map[string]json.RawMessage{
 			"usageHotWindowRefreshIntervalSeconds": json.RawMessage(` 600 `),
 			"gatewayTextRawBodyLimitMegabytes":     json.RawMessage(`32`),
-			"gptPriorityPriceMultiplier":           json.RawMessage(`2.5`),
 		},
 	})
 
@@ -108,22 +98,16 @@ func TestSystemServiceUpdateValidatesRawPatchUsesUTCAndInvalidatesSeparately(t *
 		t.Fatalf("UpdatedAt = %v, want %v", store.updateInput.UpdatedAt, now.UTC())
 	}
 	entries := store.updateInput.Patch.Entries()
-	if len(entries) != 3 ||
+	if len(entries) != 2 ||
 		entries[0].Key != "gatewayTextRawBodyLimitMegabytes" ||
 		string(entries[0].Value) != "32" ||
-		entries[1].Key != "gptPriorityPriceMultiplier" ||
-		string(entries[1].Value) != "2.5" ||
-		entries[2].Key != "usageHotWindowRefreshIntervalSeconds" ||
-		string(entries[2].Value) != "600" {
+		entries[1].Key != "usageHotWindowRefreshIntervalSeconds" ||
+		string(entries[1].Value) != "600" {
 		t.Fatalf("store patch entries = %+v", entries)
 	}
 	resultValue, _ := result.Settings.Value("gatewayTextRawBodyLimitMegabytes")
 	if string(resultValue) != "32" {
 		t.Fatalf("updated value = %s, want 32", resultValue)
-	}
-	decimalValue, _ := result.Settings.Value("gptPriorityPriceMultiplier")
-	if string(decimalValue) != "2.5" {
-		t.Fatalf("updated decimal value = %s, want 2.5", decimalValue)
 	}
 	if invalidator.systemCacheCalls != 1 {
 		t.Fatalf("InvalidateSystemSettingsCache() calls = %d, want 1", invalidator.systemCacheCalls)
@@ -188,9 +172,6 @@ func TestSystemServiceUpdateRejectsEmptyUnknownNullAndNonIntegerInput(t *testing
 		{name: "float", values: map[string]json.RawMessage{"accountTestTaskConcurrency": json.RawMessage(`1.0`)}},
 		{name: "numeric string", values: map[string]json.RawMessage{"accountTestTaskConcurrency": json.RawMessage(`"1"`)}},
 		{name: "trailing json", values: map[string]json.RawMessage{"accountTestTaskConcurrency": json.RawMessage(`1 true`)}},
-		{name: "decimal string", values: map[string]json.RawMessage{"gptPriorityPriceMultiplier": json.RawMessage(`"2"`)}},
-		{name: "decimal null", values: map[string]json.RawMessage{"gptFlexPriceMultiplier": json.RawMessage(`null`)}},
-		{name: "decimal out of range", values: map[string]json.RawMessage{"gptFlexPriceMultiplier": json.RawMessage(`100.0001`)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -225,8 +206,8 @@ func TestSystemServiceUpdateStoreErrorSkipsInvalidation(t *testing.T) {
 
 	_, err := service.Update(context.Background(), SystemUpdateInput{
 		Values: map[string]json.RawMessage{
-			"accountTestTaskConcurrency": json.RawMessage(`10`),
-			"gptFlexPriceMultiplier":     json.RawMessage(`0.75`),
+			"accountTestTaskConcurrency":       json.RawMessage(`10`),
+			"gatewayTextRawBodyLimitMegabytes": json.RawMessage(`32`),
 		},
 	})
 
@@ -274,8 +255,8 @@ func TestSystemServiceUpdateRejectsInvalidReturnedSnapshotBeforeInvalidation(t *
 
 			_, err := service.Update(context.Background(), SystemUpdateInput{
 				Values: map[string]json.RawMessage{
-					"accountTestTaskConcurrency": json.RawMessage(`10`),
-					"gptFlexPriceMultiplier":     json.RawMessage(`0.75`),
+					"accountTestTaskConcurrency":       json.RawMessage(`10`),
+					"gatewayTextRawBodyLimitMegabytes": json.RawMessage(`32`),
 				},
 			})
 
@@ -321,8 +302,8 @@ func TestSystemServiceUpdateIgnoresEachInvalidationErrorAndStillCallsBoth(t *tes
 	if err != nil {
 		t.Fatalf("Update() error = %v, want nil despite invalidation errors", err)
 	}
-	if result.Settings.Len() != 55 {
-		t.Fatalf("result settings length = %d, want 55", result.Settings.Len())
+	if result.Settings.Len() != 53 {
+		t.Fatalf("result settings length = %d, want 53", result.Settings.Len())
 	}
 	if invalidator.systemCacheCalls != 1 || invalidator.runtimeCalls != 1 {
 		t.Fatalf("invalidation calls = %d/%d, want 1/1", invalidator.systemCacheCalls, invalidator.runtimeCalls)
@@ -367,17 +348,6 @@ func validSystemSettingsSnapshot(t *testing.T) systemsettings.Snapshot {
 	for _, definition := range systemsettings.Definitions() {
 		if definition.Kind == systemsettings.ValueKindTimezone {
 			values[definition.Key] = json.RawMessage(`"UTC"`)
-			continue
-		}
-		if definition.Kind == systemsettings.ValueKindDecimal {
-			switch definition.Key {
-			case "gptPriorityPriceMultiplier":
-				values[definition.Key] = json.RawMessage(`2`)
-			case "gptFlexPriceMultiplier":
-				values[definition.Key] = json.RawMessage(`0.5`)
-			default:
-				t.Fatalf("unexpected decimal system setting %q", definition.Key)
-			}
 			continue
 		}
 		values[definition.Key] = json.RawMessage(strconv.Itoa(definition.Minimum))

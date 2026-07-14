@@ -43,7 +43,7 @@ const (
 var w5SystemSettingsUpdatedValues = map[string]string{
 	"accountTestTaskConcurrency":       "8",
 	"gatewayTextRawBodyLimitMegabytes": "32",
-	"gptFlexPriceMultiplier":           "0.75",
+	"systemMetricsHourlyRetentionDays": "20",
 }
 
 func TestW5ManagementSystemSettingsPostgresRedisAsynqSmoke(t *testing.T) {
@@ -226,8 +226,6 @@ func TestW5ManagementSystemSettingsPostgresRedisAsynqSmoke(t *testing.T) {
 	assertW5SystemSettingsComplete(t, initialSettings)
 	assertW5SystemSettingJSONNumber(t, initialSettings, "accountTestTaskConcurrency", "100")
 	assertW5SystemSettingJSONNumber(t, initialSettings, "gatewayTextRawBodyLimitMegabytes", "16")
-	assertW5SystemSettingJSONNumber(t, initialSettings, "gptPriorityPriceMultiplier", "2")
-	assertW5SystemSettingJSONNumber(t, initialSettings, "gptFlexPriceMultiplier", "0.5")
 	initialTimezone := append(json.RawMessage(nil), initialSettings[systemsettings.UsageStatsTimezoneKey]...)
 	if string(initialTimezone) != `"Asia/Shanghai"` {
 		t.Fatalf("usageStatsTimezone seed = %s, want %q", initialTimezone, "Asia/Shanghai")
@@ -237,7 +235,7 @@ func TestW5ManagementSystemSettingsPostgresRedisAsynqSmoke(t *testing.T) {
 	patchRec := serveW5SystemSettingsRequest(
 		router,
 		http.MethodPatch,
-		`{"gatewayTextRawBodyLimitMegabytes":32,"accountTestTaskConcurrency":8,"gptFlexPriceMultiplier":0.75}`,
+		`{"gatewayTextRawBodyLimitMegabytes":32,"accountTestTaskConcurrency":8,"systemMetricsHourlyRetentionDays":20}`,
 		"req_w5_management_system_settings_patch",
 	)
 	if patchRec.Code != http.StatusOK {
@@ -249,7 +247,7 @@ func TestW5ManagementSystemSettingsPostgresRedisAsynqSmoke(t *testing.T) {
 		expectedSettings[key] = json.RawMessage(value)
 	}
 	assertW5SystemSettingsEqual(t, updatedSettings, expectedSettings)
-	assertW5SystemSettingJSONNumber(t, updatedSettings, "gptFlexPriceMultiplier", "0.75")
+	assertW5SystemSettingJSONNumber(t, updatedSettings, "systemMetricsHourlyRetentionDays", "20")
 	if got := updatedSettings[systemsettings.UsageStatsTimezoneKey]; string(got) != string(initialTimezone) {
 		t.Fatalf("usageStatsTimezone changed online from %s to %s", initialTimezone, got)
 	}
@@ -330,8 +328,8 @@ func decodeW5SystemSettingsResponse(
 
 func assertW5SystemSettingsComplete(t *testing.T, settings map[string]json.RawMessage) {
 	t.Helper()
-	if len(settings) != 55 {
-		t.Fatalf("system settings field count = %d, want 55", len(settings))
+	if len(settings) != 53 {
+		t.Fatalf("system settings field count = %d, want 53", len(settings))
 	}
 	for _, definition := range systemsettings.Definitions() {
 		if _, ok := settings[definition.Key]; !ok {
@@ -461,7 +459,7 @@ func restoreW5SystemSettingRows(
 	for _, key := range []string{
 		"accountTestTaskConcurrency",
 		"gatewayTextRawBodyLimitMegabytes",
-		"gptFlexPriceMultiplier",
+		"systemMetricsHourlyRetentionDays",
 	} {
 		row, ok := original[key]
 		if !ok {
@@ -692,7 +690,7 @@ func assertW5SystemSettingsOperationLog(
 		!row.CreatedAt.UTC().Equal(wantCreatedAt.UTC()) {
 		t.Fatalf("system settings operation log = %+v", row)
 	}
-	const wantChanges = `[{"field":"accountTestTaskConcurrency","label":"accountTestTaskConcurrency","before":100,"after":8},{"field":"gatewayTextRawBodyLimitMegabytes","label":"gatewayTextRawBodyLimitMegabytes","before":16,"after":32},{"field":"gptFlexPriceMultiplier","label":"gptFlexPriceMultiplier","before":0.5,"after":0.75}]`
+	const wantChanges = `[{"field":"accountTestTaskConcurrency","label":"accountTestTaskConcurrency","before":100,"after":8},{"field":"gatewayTextRawBodyLimitMegabytes","label":"gatewayTextRawBodyLimitMegabytes","before":16,"after":32},{"field":"systemMetricsHourlyRetentionDays","label":"systemMetricsHourlyRetentionDays","before":1,"after":20}]`
 	if row.ChangesJSON != wantChanges {
 		t.Fatalf("system settings operation log changes = %s, want %s", row.ChangesJSON, wantChanges)
 	}
