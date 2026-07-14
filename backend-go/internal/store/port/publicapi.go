@@ -560,6 +560,7 @@ type PublicAccountUpdateInput struct {
 	AvailabilityScheduleJSON  *string
 	ConcurrencyLimit          int
 	Priority                  int
+	GroupDispatchChanged      bool
 	Notes                     *string
 	Now                       time.Time
 }

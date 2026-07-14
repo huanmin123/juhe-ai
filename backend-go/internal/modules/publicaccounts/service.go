@@ -710,6 +710,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			AvailabilityScheduleJSON:  next.AvailabilityScheduleJSON,
 			ConcurrencyLimit:          next.ConcurrencyLimit,
 			Priority:                  next.Priority,
+			GroupDispatchChanged:      input.Priority != nil,
 			Notes:                     next.Notes,
 			Now:                       s.now().UTC(),
 		})

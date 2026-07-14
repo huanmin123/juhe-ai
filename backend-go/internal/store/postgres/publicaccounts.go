@@ -525,13 +525,15 @@ func publicAccountUpdate(ctx context.Context, q *postgresqueries.Queries, input 
 			return port.PublicAccountSummary{}, false, err
 		}
 	}
-	if err := q.UpdatePublicAccountGroupBindingDispatch(ctx, postgresqueries.UpdatePublicAccountGroupBindingDispatchParams{
-		LocalPriority:   int32(input.Priority),
-		UpdatedAt:       pgTimestamptz(input.Now),
-		AccountID:       input.ID,
-		SystemAccountID: input.SystemAccountID,
-	}); err != nil {
-		return port.PublicAccountSummary{}, false, fmt.Errorf("update public account group binding dispatch: %w", err)
+	if input.GroupDispatchChanged {
+		if err := q.UpdatePublicAccountGroupBindingDispatch(ctx, postgresqueries.UpdatePublicAccountGroupBindingDispatchParams{
+			LocalPriority:   int32(input.Priority),
+			UpdatedAt:       pgTimestamptz(input.Now),
+			AccountID:       input.ID,
+			SystemAccountID: input.SystemAccountID,
+		}); err != nil {
+			return port.PublicAccountSummary{}, false, fmt.Errorf("update public account group binding dispatch: %w", err)
+		}
 	}
 	updated, ok, err := publicAccountFindByID(ctx, q, input.ID, false)
 	if err != nil {

@@ -1525,8 +1525,34 @@ func TestServiceUpdateNonConfigurationFieldsDoNotForcePendingTest(t *testing.T) 
 	if store.lastUpdateInput.ScheduleHealthCheck || store.lastUpdateInput.ResetHealthDiagnostics {
 		t.Fatal("non-configuration fields must not alter health check scheduling")
 	}
+	if !store.lastUpdateInput.GroupDispatchChanged {
+		t.Fatal("explicit priority must update the group binding dispatch")
+	}
 	if calls := dispatcher.callsSnapshot(); len(calls) != 0 {
 		t.Fatalf("dispatch calls = %#v, want none", calls)
+	}
+}
+
+func TestServiceUpdateWithoutPriorityLeavesGroupBindingDispatchUntouched(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	created, err := newPublicAccountServiceForTest(store, nil).Add(context.Background(), validPublicAccountAddInput(
+		"不修改分组优先级账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+
+	name := "仅修改账号名称"
+	_, err = newPublicAccountServiceForTest(store, nil).Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		Name:      &name,
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if store.lastUpdateInput.GroupDispatchChanged {
+		t.Fatal("omitted priority must not update the group binding dispatch")
 	}
 }
 
