@@ -401,6 +401,11 @@ SET name = sqlc.arg(name),
       THEN 0
       ELSE health_check_failure_count
     END,
+    health_check_failure_started_at = CASE
+      WHEN sqlc.arg(reset_health_diagnostics)::boolean
+      THEN NULL
+      ELSE health_check_failure_started_at
+    END,
     last_health_check_status_code = CASE
       WHEN sqlc.arg(reset_health_diagnostics)::boolean
       THEN NULL
