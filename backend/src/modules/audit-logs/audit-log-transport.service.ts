@@ -6,6 +6,7 @@ import { Worker } from 'node:worker_threads'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
 import { HeadIndexedQueue } from '../background/ipc-head-queue.js'
+import { readAuditLogSettings } from './audit-log-settings.js'
 
 type AuditLogTransportMode = 'ipc' | 'redis_stream'
 
@@ -172,10 +173,15 @@ function ensureAuditLogTransportWorkerPool(): void {
 }
 
 function createAuditLogTransportWorkerSlot(): AuditLogTransportWorkerSlot {
+  const settings = readAuditLogSettings()
   const slot: AuditLogTransportWorkerSlot = {
     id: nextWorkerSlotId++,
     worker: new Worker(resolveAuditLogTransportWorkerPath(), {
-      execArgv: auditLogTransportWorkerExecArgv()
+      execArgv: auditLogTransportWorkerExecArgv(),
+      workerData: {
+        successFullBodyLimitBytes: settings.successFullBodyLimitBytes,
+        problemFullBodyLimitBytes: settings.problemFullBodyLimitBytes
+      }
     }),
     closing: false
   }

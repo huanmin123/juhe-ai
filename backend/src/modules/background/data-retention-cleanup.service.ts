@@ -154,8 +154,8 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
     const retention: DataRetentionPolicy = {
       auditLogSuccessHotHours: auditSettings.successHotRetentionHours,
       auditLogSuccessDays: auditSettings.successRetentionDays,
-      auditLogFailureDays: auditSettings.failureRetentionDays,
-      auditErrorGroupDays: auditSettings.errorGroupRetentionDays,
+      auditLogFailureDays: auditSettings.problemRetentionDays,
+      auditErrorGroupDays: auditSettings.problemRetentionDays,
       operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 1, operationLogRetentionMaxDays),
       publicApiLogDays: settingNumber(settings, 'publicApiLogRetentionDays', 1, publicApiLogRetentionMaxDays),
       runtimeLogDays: runtimeLogIndexRetentionDaysFromSettings(settings),

@@ -4,16 +4,13 @@ import {
   isHybridProviderCode,
   isOpenAIProtocolProfile
 } from '../../domain/provider-protocol.js'
-import { normalizeAnthropicEndpointModesForRuntime } from '../../domain/anthropic-endpoint-modes.js'
-import { normalizeGeminiEndpointModesForRuntime } from '../../domain/gemini-endpoint-modes.js'
-import { normalizeOpenAIEndpointModesForRuntime } from '../../domain/openai-endpoint-modes.js'
 import type { AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
   listProviderModelCatalogAsync,
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
 import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
-import { normalizeHybridEndpointModesForRuntime } from '../providers/drivers/hybrid/account-credentials.js'
+import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
 
 export interface AccountManualTestOption {
   model: string
@@ -96,73 +93,4 @@ function isAccountManualTestModel(item: ProviderModelCatalogItem, account: Accou
     return protocols.some((protocol) => protocol === 'generate_content' || protocol === 'stream_generate_content')
   }
   return false
-}
-
-function accountManualTestEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
-  const modes = normalizedAccountEndpointModes(account)
-  return accountTestEndpointModeOrder(account).filter((mode) => modes.includes(mode))
-}
-
-function normalizedAccountEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
-  if (isHybridProviderCode(account.providerCode)) {
-    return normalizeHybridEndpointModesForRuntime(account.credentials.supported_endpoint_modes)
-  }
-  if (isAnthropicProtocolProfile(account)) {
-    return normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-      providerCode: account.providerCode,
-      accountType: account.type,
-      protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion,
-      providerProtocolProfileId: account.providerProtocolProfileId
-    })
-  }
-  if (isGeminiProtocolProfile(account)) {
-    return normalizeGeminiEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-      providerCode: account.providerCode,
-      accountType: account.type,
-      protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion,
-      providerProtocolProfileId: account.providerProtocolProfileId
-    })
-  }
-  if (isOpenAIProtocolProfile(account)) {
-    return normalizeOpenAIEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-      providerCode: account.providerCode,
-      providerProtocolProfileId: account.providerProtocolProfileId,
-      accountType: account.type,
-      clientCompatibility: account.clientCompatibility
-    })
-  }
-  return []
-}
-
-function accountTestEndpointModeOrder(account: AccountSummary): AccountSupportedEndpointMode[] {
-  const defaultMode = account.healthCheckEndpointMode
-  if (isHybridProviderCode(account.providerCode)) {
-    return uniqueEndpointModes(
-      defaultMode,
-      'chat_json',
-      'chat_sse',
-      'responses_json',
-      'responses_sse',
-      'messages_json',
-      'messages_sse',
-      'generate_content_json',
-      'generate_content_sse'
-    )
-  }
-  if (isAnthropicProtocolProfile(account)) {
-    return uniqueEndpointModes(defaultMode, 'messages_sse')
-  }
-  if (isGeminiProtocolProfile(account)) {
-    return uniqueEndpointModes(defaultMode, 'generate_content_sse')
-  }
-  if (account.type === 'oauth') {
-    return uniqueEndpointModes(defaultMode, 'responses_sse')
-  }
-  return uniqueEndpointModes(defaultMode, 'chat_sse', 'responses_sse', 'chat_json', 'responses_json')
-}
-
-function uniqueEndpointModes(...modes: AccountSupportedEndpointMode[]): AccountSupportedEndpointMode[] {
-  return [...new Set(modes)]
 }

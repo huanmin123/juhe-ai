@@ -60,6 +60,18 @@ const [
   import('../../storage/repositories.js')
 ])
 
+assert.equal(recordMaintenanceQueue.isRecordMaintenanceJob({
+  type: 'audit_retained_data_cleanup',
+  nowAt: '2026-07-14T00:00:00.000Z',
+  successHotRetentionHours: 1,
+  successRetentionDays: 3,
+  failureRetentionDays: 7,
+  errorGroupRetentionDays: 7,
+  successSampleBucketThreshold: 1000,
+  batchSize: 100,
+  maxBatches: 3
+}), true, '审计保留任务必须继续接受既有 Redis wire 字段，避免升级时在途任务变成 poison message')
+
 try {
   seedUsageRecord('temporary_usage_cleanup_regression', '2000-01-01T00:00:00.000Z')
   seedUsageStatsCleanupCursors('2000-01-01T00:00:01.000Z', 'temporary_usage_cleanup_regression')

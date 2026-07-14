@@ -25,6 +25,14 @@ export function summarizeAuditPayloadForLimit(
   }
   const bodyBuffer = bodyToBuffer(payload.body)
   const originalBodySizeBytes = payload.rawBodySizeBytes ?? bodyBuffer.byteLength
+  if (fullBodyLimitBytes === 0) {
+    payload.bodySha256 = payload.bodySha256 ?? sha256Buffer(bodyBuffer)
+    payload.rawBodySizeBytes = originalBodySizeBytes
+    payload.captureStatus = 'hash_only'
+    payload.body = undefined
+    payload.contentEncoding = undefined
+    return true
+  }
   if (!options.force && originalBodySizeBytes <= fullBodyLimitBytes) {
     return false
   }
@@ -52,6 +60,12 @@ function updateExistingPayloadSummaryLimit(
   payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>,
   fullBodyLimitBytes: number
 ): void {
+  if (fullBodyLimitBytes === 0 && payload.captureStatus === 'summary_only') {
+    payload.captureStatus = 'hash_only'
+    payload.body = undefined
+    payload.contentEncoding = undefined
+    return
+  }
   if (payload.captureStatus !== 'summary_only' || typeof payload.body !== 'string') {
     return
   }
@@ -76,15 +90,15 @@ function buildAuditPayloadSummary(input: {
   fullBodyLimitBytes: number
   reason: AuditPayloadSummaryReason
 }): Record<string, unknown> {
-  const head = input.body.subarray(0, Math.min(auditBodySummaryEdgeBytes, input.body.byteLength))
-  const tailStart = Math.max(0, input.body.byteLength - auditBodySummaryEdgeBytes)
-  const tail = input.body.subarray(tailStart)
-  const hasSeparatedTail = tailStart >= head.byteLength
-  const retainedBodyBytes = head.byteLength + (
-    hasSeparatedTail
-      ? tail.byteLength
-      : Math.max(0, input.body.byteLength - head.byteLength)
+  const retainedBodyBytes = Math.min(
+    input.body.byteLength,
+    auditBodySummaryEdgeBytes * 2,
+    Math.max(0, Math.trunc(input.fullBodyLimitBytes))
   )
+  const headBytes = Math.ceil(retainedBodyBytes / 2)
+  const tailBytes = Math.min(Math.floor(retainedBodyBytes / 2), input.body.byteLength - headBytes)
+  const head = input.body.subarray(0, headBytes)
+  const tail = input.body.subarray(input.body.byteLength - tailBytes)
   const summary: Record<string, unknown> = {
     type: 'audit_payload_summary',
     captureStatus: 'summary_only',
@@ -106,7 +120,12 @@ function buildAuditPayloadSummary(input: {
       tail: textPreview(tail)
     }
   }
-  const json = summarizeJsonPayload(input.body, input.originalContentType, input.originalContentEncoding)
+  const json = summarizeJsonPayload(
+    input.body,
+    input.originalContentType,
+    input.originalContentEncoding,
+    input.fullBodyLimitBytes
+  )
   if (json) {
     summary.json = json
   }
@@ -116,13 +135,19 @@ function buildAuditPayloadSummary(input: {
 function summarizeJsonPayload(
   body: Buffer,
   contentType?: string,
-  contentEncoding?: string
+  contentEncoding?: string,
+  fullBodyLimitBytes = auditJsonSummaryParseMaxBytes
 ): Record<string, unknown> | undefined {
   if (!isJsonLikePayload(body, contentType, contentEncoding)) {
     return undefined
   }
-  const headText = body.subarray(0, Math.min(body.byteLength, auditBodySummaryEdgeBytes)).toString('utf8')
-  if (body.byteLength > auditJsonSummaryParseMaxBytes) {
+  const structureWindowBytes = Math.min(
+    body.byteLength,
+    auditJsonSummaryParseMaxBytes,
+    Math.max(0, Math.trunc(fullBodyLimitBytes))
+  )
+  const headText = body.subarray(0, structureWindowBytes).toString('utf8')
+  if (body.byteLength > structureWindowBytes) {
     return {
       parseable: false,
       reason: 'body_too_large_for_inline_parse',

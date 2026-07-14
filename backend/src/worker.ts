@@ -263,8 +263,9 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
       droppedOversizeCount: auditRuntime.droppedOversizeCount,
       successHotRetentionHours: auditRuntime.successHotRetentionHours,
       successRetentionDays: auditRuntime.successRetentionDays,
-      failureRetentionDays: auditRuntime.failureRetentionDays,
-      errorGroupRetentionDays: auditRuntime.errorGroupRetentionDays
+      problemRetentionDays: auditRuntime.problemRetentionDays,
+      successFullBodyLimitBytes: auditRuntime.successFullBodyLimitBytes,
+      problemFullBodyLimitBytes: auditRuntime.problemFullBodyLimitBytes
     }),
     runtimeLogIndexQueue: runtimeLogQueueRuntime(runtimeLogRuntime),
     accountHealthCheckQueue: getAccountHealthCheckQueueSnapshot(),
@@ -354,8 +355,9 @@ function queueRuntime(input: BackgroundWorkerQueueRuntime): BackgroundWorkerQueu
     writerPoolMaxRunMs: typeof input.writerPoolMaxRunMs === 'number' ? input.writerPoolMaxRunMs : undefined,
     successHotRetentionHours: typeof input.successHotRetentionHours === 'number' ? input.successHotRetentionHours : undefined,
     successRetentionDays: typeof input.successRetentionDays === 'number' ? input.successRetentionDays : undefined,
-    failureRetentionDays: typeof input.failureRetentionDays === 'number' ? input.failureRetentionDays : undefined,
-    errorGroupRetentionDays: typeof input.errorGroupRetentionDays === 'number' ? input.errorGroupRetentionDays : undefined
+    problemRetentionDays: typeof input.problemRetentionDays === 'number' ? input.problemRetentionDays : undefined,
+    successFullBodyLimitBytes: typeof input.successFullBodyLimitBytes === 'number' ? input.successFullBodyLimitBytes : undefined,
+    problemFullBodyLimitBytes: typeof input.problemFullBodyLimitBytes === 'number' ? input.problemFullBodyLimitBytes : undefined
   }
 }
 

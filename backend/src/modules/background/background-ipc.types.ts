@@ -54,8 +54,9 @@ export interface BackgroundWorkerQueueRuntime {
   writerPoolMaxRunMs?: number
   successHotRetentionHours?: number
   successRetentionDays?: number
-  failureRetentionDays?: number
-  errorGroupRetentionDays?: number
+  problemRetentionDays?: number
+  successFullBodyLimitBytes?: number
+  problemFullBodyLimitBytes?: number
 }
 
 export interface BackgroundWorkerRuntimeLogQueueRuntime extends BackgroundWorkerQueueRuntime {
