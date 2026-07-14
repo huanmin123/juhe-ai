@@ -1214,7 +1214,12 @@ func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newPublicAccountStoreFake()
-			service := newPublicAccountServiceForTest(store, nil)
+			reader := providerModelReaderWithItems(gptProviderModelCatalogItemForTest(
+				"gpt-5.4-mini",
+				[]string{"priority"},
+				[]string{"high"},
+			))
+			service := newPublicAccountServiceForTest(store, reader)
 			created, err := service.Add(context.Background(), validPublicAccountAddInput(
 				"扩展凭据保留账号",
 				"gpt-5.4-mini",
@@ -1293,6 +1298,654 @@ func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestServiceUpdateWithoutGPTRequestOverridesDoesNotAddCatalogQuery(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"无覆盖账号",
+		defaultGPTHealthCheckModel,
+		"gpt-5.5",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+
+	reader.resetCalls()
+	name := "无覆盖账号改名"
+	if _, err := service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		Name:      &name,
+	}); err != nil {
+		t.Fatalf("update public account name: %v", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("provider model reader calls = %d, want 0 without overrides or model changes", reader.calls)
+	}
+
+	reader.resetCalls()
+	if _, err := service.Update(context.Background(), UpdateInput{
+		AccountID:       created.Account.ID,
+		SupportedModels: NewStringListValue([]string{defaultGPTHealthCheckModel}, true),
+	}); err != nil {
+		t.Fatalf("update public account models: %v", err)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("provider model reader calls = %d, want only the membership query", reader.calls)
+	}
+	input := reader.inputs[0]
+	if input.IncludeInactive || input.IncludeUnpriced {
+		t.Fatalf("membership query = %+v, want active priced models only", input)
+	}
+}
+
+func TestServiceUpdatePreservesCompatibleGPTRequestOverrides(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := providerModelReaderWithItems(
+		gptProviderModelCatalogItemForTest(
+			defaultGPTHealthCheckModel,
+			[]string{"priority", "flex"},
+			[]string{"low", "high"},
+		),
+		gptProviderModelCatalogItemForTest(
+			"gpt-5.5",
+			[]string{"priority"},
+			[]string{"high", "max"},
+		),
+	)
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"兼容覆盖账号",
+		defaultGPTHealthCheckModel,
+		"gpt-5.5",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, map[string]any{
+		"service_tier_override":     "priority",
+		"reasoning_effort_override": "high",
+	})
+
+	reader.resetCalls()
+	store.updateCalls = 0
+	name := "兼容覆盖账号改名"
+	if _, err := service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		Name:      &name,
+	}); err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("provider model reader calls = %d, want 1", reader.calls)
+	}
+	input := reader.inputs[0]
+	account := store.accounts[created.Account.ID]
+	if input.ProviderCode != "gpt" ||
+		input.SystemAccountID != account.SystemAccountID ||
+		input.IncludeInactive ||
+		!input.IncludeUnpriced {
+		t.Fatalf("override capability query = %+v", input)
+	}
+	if store.updateCalls != 1 {
+		t.Fatalf("store update calls = %d, want 1", store.updateCalls)
+	}
+	credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt updated credentials: %v", err)
+	}
+	if credentials["service_tier_override"] != "priority" ||
+		credentials["reasoning_effort_override"] != "high" {
+		t.Fatalf("updated credentials = %#v, want preserved GPT overrides", credentials)
+	}
+}
+
+func TestServiceUpdateCompatibleGPTOverrideModelChangeQueriesCapabilitiesThenMembership(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := providerModelReaderWithItems(
+		gptProviderModelCatalogItemForTest(
+			defaultGPTHealthCheckModel,
+			[]string{"priority"},
+			[]string{"high"},
+		),
+		gptProviderModelCatalogItemForTest(
+			"gpt-5.5",
+			[]string{"priority"},
+			[]string{"high"},
+		),
+	)
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"覆盖模型变更账号",
+		defaultGPTHealthCheckModel,
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, map[string]any{
+		"service_tier_override":     "priority",
+		"reasoning_effort_override": "high",
+	})
+	account := store.accounts[created.Account.ID]
+	reader.resetCalls()
+	store.updateCalls = 0
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		SupportedModels: NewStringListValue([]string{
+			defaultGPTHealthCheckModel,
+			"gpt-5.5",
+		}, true),
+	})
+	if err != nil {
+		t.Fatalf("update public account models: %v", err)
+	}
+	if reader.calls != 2 {
+		t.Fatalf("provider model reader calls = %d, want exactly 2", reader.calls)
+	}
+	for index, input := range reader.inputs {
+		if input.ProviderCode != "gpt" ||
+			input.SystemAccountID != account.SystemAccountID ||
+			input.IncludeInactive {
+			t.Fatalf("provider model reader input %d = %+v", index, input)
+		}
+	}
+	if !reader.inputs[0].IncludeUnpriced {
+		t.Fatalf("first query = %+v, want override capability catalog", reader.inputs[0])
+	}
+	if reader.inputs[1].IncludeUnpriced {
+		t.Fatalf("second query = %+v, want priced membership catalog", reader.inputs[1])
+	}
+	if store.updateCalls != 1 {
+		t.Fatalf("store update calls = %d, want 1", store.updateCalls)
+	}
+	if !store.lastUpdateInput.SupportedModelsChanged {
+		t.Fatal("compatible model change must remain a real supportedModels update")
+	}
+}
+
+func TestServiceUpdateValidGPTOverrideUnknownModelUsesCapabilityCatalogError(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := providerModelReaderWithItems(gptProviderModelCatalogItemForTest(
+		defaultGPTHealthCheckModel,
+		[]string{"priority"},
+		nil,
+	))
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"覆盖未知模型账号",
+		defaultGPTHealthCheckModel,
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, map[string]any{
+		"service_tier_override": "priority",
+	})
+	reader.resetCalls()
+	store.updateCalls = 0
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID:       created.Account.ID,
+		SupportedModels: NewStringListValue([]string{"unknown-update-model"}, true),
+	})
+	if !errors.Is(err, ErrInvalidSupportedModels) {
+		t.Fatalf("update error = %v, want ErrInvalidSupportedModels", err)
+	}
+	want := ErrInvalidSupportedModels.Error() + ": 模型目录缺少账户支持模型：unknown-update-model"
+	if err.Error() != want {
+		t.Fatalf("update error = %q, want %q", err.Error(), want)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("provider model reader calls = %d, want only the capability query", reader.calls)
+	}
+	if input := reader.inputs[0]; input.IncludeInactive || !input.IncludeUnpriced {
+		t.Fatalf("provider model reader input = %+v, want active unpriced-inclusive capabilities", input)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+	}
+}
+
+func TestServiceUpdateEmptyModelsPreservesGPTCatalogOrdering(t *testing.T) {
+	tests := []struct {
+		name             string
+		overrides        map[string]any
+		wantMessage      string
+		wantCatalogCalls int
+	}{
+		{
+			name: "valid override",
+			overrides: map[string]any{
+				"service_tier_override": "priority",
+			},
+			wantMessage:      gptRequestOverridesModelsRequiredMessage,
+			wantCatalogCalls: 1,
+		},
+		{
+			name:        "no override",
+			wantMessage: invalidSupportedModelsRequiredMessage,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newPublicAccountStoreFake()
+			reader := defaultProviderModelReaderStub()
+			service := newPublicAccountServiceForTest(store, reader)
+			created, err := service.Add(context.Background(), validPublicAccountAddInput(
+				"空模型 preflight 账号",
+				defaultGPTHealthCheckModel,
+			))
+			if err != nil {
+				t.Fatalf("add public account: %v", err)
+			}
+			if len(tt.overrides) > 0 {
+				setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, tt.overrides)
+			}
+			reader.resetCalls()
+			store.updateCalls = 0
+
+			_, err = service.Update(context.Background(), UpdateInput{
+				AccountID:       created.Account.ID,
+				SupportedModels: NewStringListValue([]string{}, true),
+			})
+			if !errors.Is(err, ErrInvalidSupportedModels) {
+				t.Fatalf("update error = %v, want ErrInvalidSupportedModels", err)
+			}
+			want := ErrInvalidSupportedModels.Error() + ": " + tt.wantMessage
+			if err.Error() != want {
+				t.Fatalf("update error = %q, want %q", err.Error(), want)
+			}
+			if reader.calls != tt.wantCatalogCalls {
+				t.Fatalf("provider model reader calls = %d, want %d", reader.calls, tt.wantCatalogCalls)
+			}
+			if reader.calls == 1 {
+				input := reader.inputs[0]
+				if input.IncludeInactive || !input.IncludeUnpriced {
+					t.Fatalf("provider model reader input = %+v, want active unpriced-inclusive capabilities", input)
+				}
+			}
+			if store.updateCalls != 0 {
+				t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+			}
+		})
+	}
+}
+
+func TestServiceUpdateGPTOverrideEmptyModelsPreservesCatalogError(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"空模型目录错误账号",
+		defaultGPTHealthCheckModel,
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, map[string]any{
+		"service_tier_override": "priority",
+	})
+	before := store.accounts[created.Account.ID]
+	catalogErr := errors.New("provider model catalog unavailable for empty models")
+	reader.err = catalogErr
+	reader.resetCalls()
+	store.updateCalls = 0
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID:       created.Account.ID,
+		SupportedModels: NewStringListValue([]string{}, true),
+	})
+	if !errors.Is(err, catalogErr) {
+		t.Fatalf("update error = %v, want catalog error", err)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("provider model reader calls = %d, want 1", reader.calls)
+	}
+	if input := reader.inputs[0]; input.IncludeInactive || !input.IncludeUnpriced {
+		t.Fatalf("provider model reader input = %+v, want active unpriced-inclusive capabilities", input)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+	}
+	if after := store.accounts[created.Account.ID]; !reflect.DeepEqual(after, before) {
+		t.Fatalf("stored account changed after catalog failure:\nbefore = %+v\nafter  = %+v", before, after)
+	}
+}
+
+func TestServiceUpdateRejectsUnsupportedGPTRequestOverridesWithoutWriting(t *testing.T) {
+	tests := []struct {
+		name        string
+		overrides   map[string]any
+		catalog     []managementprovidermodels.ModelCatalogItem
+		wantMessage string
+	}{
+		{
+			name: "catalog missing one account model",
+			overrides: map[string]any{
+				"service_tier_override": "priority",
+			},
+			catalog: []managementprovidermodels.ModelCatalogItem{
+				gptProviderModelCatalogItemForTest(defaultGPTHealthCheckModel, []string{"priority"}, []string{"high"}),
+			},
+			wantMessage: "模型目录缺少账户支持模型",
+		},
+		{
+			name: "default requires every model to expose service tiers",
+			overrides: map[string]any{
+				"service_tier_override": "default",
+			},
+			catalog: []managementprovidermodels.ModelCatalogItem{
+				gptProviderModelCatalogItemForTest(defaultGPTHealthCheckModel, []string{"priority"}, nil),
+				gptProviderModelCatalogItemForTest("gpt-5.5", nil, nil),
+			},
+			wantMessage: "账户全部支持模型必须共同支持服务等级覆盖",
+		},
+		{
+			name: "specified tier must be common to every model",
+			overrides: map[string]any{
+				"service_tier_override": "priority",
+			},
+			catalog: []managementprovidermodels.ModelCatalogItem{
+				gptProviderModelCatalogItemForTest(defaultGPTHealthCheckModel, []string{"priority"}, nil),
+				gptProviderModelCatalogItemForTest("gpt-5.5", []string{"flex"}, nil),
+			},
+			wantMessage: "账户全部支持模型必须共同支持服务等级 priority",
+		},
+		{
+			name: "specified effort must be common to every model",
+			overrides: map[string]any{
+				"reasoning_effort_override": "high",
+			},
+			catalog: []managementprovidermodels.ModelCatalogItem{
+				gptProviderModelCatalogItemForTest(defaultGPTHealthCheckModel, nil, []string{"high"}),
+				gptProviderModelCatalogItemForTest("gpt-5.5", nil, []string{"low"}),
+			},
+			wantMessage: "账户全部支持模型必须共同支持思考级别 high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newPublicAccountStoreFake()
+			reader := providerModelReaderWithItems(
+				gptProviderModelCatalogItemForTest(defaultGPTHealthCheckModel, []string{"priority"}, []string{"high"}),
+				gptProviderModelCatalogItemForTest("gpt-5.5", []string{"priority"}, []string{"high"}),
+			)
+			service := newPublicAccountServiceForTest(store, reader)
+			created, err := service.Add(context.Background(), validPublicAccountAddInput(
+				"不兼容覆盖账号",
+				defaultGPTHealthCheckModel,
+				"gpt-5.5",
+			))
+			if err != nil {
+				t.Fatalf("add public account: %v", err)
+			}
+			setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, tt.overrides)
+			before := store.accounts[created.Account.ID]
+			reader.items = append([]managementprovidermodels.ModelCatalogItem(nil), tt.catalog...)
+			reader.resetCalls()
+			store.updateCalls = 0
+			name := "不应保存的名称"
+
+			_, err = service.Update(context.Background(), UpdateInput{
+				AccountID: created.Account.ID,
+				Name:      &name,
+			})
+			if !errors.Is(err, ErrInvalidSupportedModels) {
+				t.Fatalf("update error = %v, want ErrInvalidSupportedModels", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantMessage) {
+				t.Fatalf("update error = %q, want message containing %q", err.Error(), tt.wantMessage)
+			}
+			if reader.calls != 1 {
+				t.Fatalf("provider model reader calls = %d, want 1", reader.calls)
+			}
+			if input := reader.inputs[0]; input.ProviderCode != "gpt" ||
+				input.SystemAccountID != before.SystemAccountID ||
+				input.IncludeInactive ||
+				!input.IncludeUnpriced {
+				t.Fatalf("override capability query = %+v", input)
+			}
+			if store.updateCalls != 0 {
+				t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+			}
+			if after := store.accounts[created.Account.ID]; !reflect.DeepEqual(after, before) {
+				t.Fatalf("stored account changed after rejected override:\nbefore = %+v\nafter  = %+v", before, after)
+			}
+		})
+	}
+}
+
+func TestServiceUpdateRejectsInvalidGPTRequestOverrideEnumsWithoutWriting(t *testing.T) {
+	tests := []struct {
+		name      string
+		overrides map[string]any
+	}{
+		{
+			name: "service tier",
+			overrides: map[string]any{
+				"service_tier_override": "fast",
+			},
+		},
+		{
+			name: "reasoning effort",
+			overrides: map[string]any{
+				"reasoning_effort_override": "ultra",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newPublicAccountStoreFake()
+			reader := defaultProviderModelReaderStub()
+			service := newPublicAccountServiceForTest(store, reader)
+			created, err := service.Add(context.Background(), validPublicAccountAddInput(
+				"非法覆盖枚举账号",
+				defaultGPTHealthCheckModel,
+			))
+			if err != nil {
+				t.Fatalf("add public account: %v", err)
+			}
+			setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, tt.overrides)
+			reader.resetCalls()
+			store.updateCalls = 0
+			name := "不应保存的名称"
+
+			_, err = service.Update(context.Background(), UpdateInput{
+				AccountID: created.Account.ID,
+				Name:      &name,
+			})
+			if !errors.Is(err, ErrInvalidCredentials) {
+				t.Fatalf("update error = %v, want ErrInvalidCredentials", err)
+			}
+			if reader.calls != 0 {
+				t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
+			}
+			if store.updateCalls != 0 {
+				t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+			}
+		})
+	}
+}
+
+func TestServiceUpdateInvalidGPTOverridePrecedesExplicitEmptySupportedModels(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"非法覆盖空模型账号",
+		defaultGPTHealthCheckModel,
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, map[string]any{
+		"service_tier_override": "fast",
+	})
+	before := store.accounts[created.Account.ID]
+	reader.resetCalls()
+	store.updateCalls = 0
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID:       created.Account.ID,
+		SupportedModels: NewStringListValue([]string{}, true),
+	})
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("update error = %v, want ErrInvalidCredentials", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+	}
+	if after := store.accounts[created.Account.ID]; !reflect.DeepEqual(after, before) {
+		t.Fatalf("stored account changed after rejected update:\nbefore = %+v\nafter  = %+v", before, after)
+	}
+}
+
+func TestServiceUpdateInvalidGPTOverrideUnknownModelFailsBeforeCatalog(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"非法覆盖未知模型账号",
+		defaultGPTHealthCheckModel,
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, map[string]any{
+		"service_tier_override": "fast",
+	})
+	reader.resetCalls()
+	store.updateCalls = 0
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID:       created.Account.ID,
+		SupportedModels: NewStringListValue([]string{"unknown-update-model"}, true),
+	})
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("update error = %v, want ErrInvalidCredentials", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+	}
+}
+
+func TestServiceUpdateRejectsGPTRequestOverridesForNonGPTProviderWithoutWriting(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := defaultProviderModelReaderStub()
+	service := newPublicAccountServiceForTest(store, reader)
+	input := validPublicAccountAddInput("非 GPT 覆盖账号", "hybrid-direct-model")
+	input.ProviderCode = hybridProviderCode
+	input.ProviderProtocolProfileID = "profile_hybrid_openai_v1"
+	created, err := service.Add(context.Background(), input)
+	if err != nil {
+		t.Fatalf("add hybrid public account: %v", err)
+	}
+	setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, map[string]any{
+		"service_tier_override": "priority",
+	})
+	reader.resetCalls()
+	store.updateCalls = 0
+	name := "不应保存的名称"
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		Name:      &name,
+	})
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("update error = %v, want ErrInvalidCredentials", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("provider model reader calls = %d, want 0", reader.calls)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+	}
+}
+
+func TestServiceUpdatePreservesGPTRequestOverrideCatalogInfrastructureErrors(t *testing.T) {
+	t.Run("missing reader", func(t *testing.T) {
+		store := newPublicAccountStoreFake()
+		setupService := newPublicAccountServiceForTest(store, defaultProviderModelReaderStub())
+		created, err := setupService.Add(context.Background(), validPublicAccountAddInput(
+			"目录 reader 缺失账号",
+			defaultGPTHealthCheckModel,
+		))
+		if err != nil {
+			t.Fatalf("add public account: %v", err)
+		}
+		setPublicAccountCredentialFieldsForTest(t, setupService, store, created.Account.ID, map[string]any{
+			"service_tier_override": "priority",
+		})
+		service := NewService(Options{
+			Store:  store,
+			Now:    fixedPublicAccountNow,
+			NewID:  sequentialPublicAccountID(),
+			Secret: "public-account-test-secret",
+		})
+		name := "不应保存的名称"
+
+		_, err = service.Update(context.Background(), UpdateInput{
+			AccountID: created.Account.ID,
+			Name:      &name,
+		})
+		if err == nil || err.Error() != providerModelsRequiredMessage {
+			t.Fatalf("update error = %v, want %q", err, providerModelsRequiredMessage)
+		}
+		if store.updateCalls != 0 {
+			t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+		}
+	})
+
+	t.Run("reader error", func(t *testing.T) {
+		store := newPublicAccountStoreFake()
+		reader := providerModelReaderWithItems(gptProviderModelCatalogItemForTest(
+			defaultGPTHealthCheckModel,
+			[]string{"priority"},
+			nil,
+		))
+		service := newPublicAccountServiceForTest(store, reader)
+		created, err := service.Add(context.Background(), validPublicAccountAddInput(
+			"目录 reader 错误账号",
+			defaultGPTHealthCheckModel,
+		))
+		if err != nil {
+			t.Fatalf("add public account: %v", err)
+		}
+		setPublicAccountCredentialFieldsForTest(t, service, store, created.Account.ID, map[string]any{
+			"service_tier_override": "priority",
+		})
+		catalogErr := errors.New("provider model catalog unavailable")
+		reader.err = catalogErr
+		reader.resetCalls()
+		store.updateCalls = 0
+		name := "不应保存的名称"
+
+		_, err = service.Update(context.Background(), UpdateInput{
+			AccountID: created.Account.ID,
+			Name:      &name,
+		})
+		if !errors.Is(err, catalogErr) {
+			t.Fatalf("update error = %v, want catalog error", err)
+		}
+		if reader.calls != 1 {
+			t.Fatalf("provider model reader calls = %d, want 1", reader.calls)
+		}
+		if store.updateCalls != 0 {
+			t.Fatalf("store update calls = %d, want 0", store.updateCalls)
+		}
+	})
 }
 
 func TestServiceUpdatePreservesEffectiveMultiAPIKeyPool(t *testing.T) {
@@ -2080,6 +2733,29 @@ func validPublicAccountAddInput(name string, models ...string) AddInput {
 	}
 }
 
+func setPublicAccountCredentialFieldsForTest(
+	t *testing.T,
+	service *Service,
+	store *publicAccountStoreFake,
+	accountID string,
+	fields map[string]any,
+) {
+	t.Helper()
+	account := store.accounts[accountID]
+	credentials, err := service.codec.DecryptJSON(account.CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt public account credentials: %v", err)
+	}
+	for key, value := range fields {
+		credentials[key] = value
+	}
+	account.CredentialsEncrypted, err = service.codec.EncryptJSON(credentials)
+	if err != nil {
+		t.Fatalf("encrypt public account credentials: %v", err)
+	}
+	store.accounts[accountID] = account
+}
+
 func fixedPublicAccountNow() time.Time {
 	return time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
 }
@@ -2127,6 +2803,21 @@ func defaultProviderModelReaderStub() *providerModelReaderStub {
 func providerModelReaderWithItems(items ...managementprovidermodels.ModelCatalogItem) *providerModelReaderStub {
 	return &providerModelReaderStub{
 		items: append([]managementprovidermodels.ModelCatalogItem(nil), items...),
+	}
+}
+
+func gptProviderModelCatalogItemForTest(
+	model string,
+	supportedServiceTiers []string,
+	supportedReasoningEfforts []string,
+) managementprovidermodels.ModelCatalogItem {
+	return managementprovidermodels.ModelCatalogItem{
+		ProviderCode:              "gpt",
+		Model:                     model,
+		Scope:                     "built_in",
+		Status:                    "active",
+		SupportedServiceTiers:     append([]string(nil), supportedServiceTiers...),
+		SupportedReasoningEfforts: append([]string(nil), supportedReasoningEfforts...),
 	}
 }
 

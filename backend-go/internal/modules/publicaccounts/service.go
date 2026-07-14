@@ -655,6 +655,22 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		if input.SupportedModels.Set() {
 			next.SupportedModels = input.SupportedModels.Value()
 		}
+		gptRequestOverrides, err := preflightGPTRequestOverrides(
+			current.ProviderCode,
+			credentials,
+		)
+		if err != nil {
+			return err
+		}
+		if err := s.validateGPTRequestOverridesInProviderCatalog(
+			ctx,
+			target.ID,
+			current.ProviderCode,
+			gptRequestOverrides,
+			next.SupportedModels,
+		); err != nil {
+			return err
+		}
 		models, err := normalizeSupportedModels(next.SupportedModels)
 		if err != nil {
 			return err

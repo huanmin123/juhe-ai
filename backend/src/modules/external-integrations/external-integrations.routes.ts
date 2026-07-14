@@ -37,6 +37,7 @@ import {
   listPublicApiKeysAsync,
   listPublicGroupsAsync,
   listPublicWelfareAccountsAsync,
+  PublicAccountUpdateConflictError,
   updatePublicWelfareAccountAsync,
   updatePublicApiKeyAsync,
   updatePublicGroupAsync,
@@ -638,6 +639,10 @@ externalIntegrationsRouter.post(
       await recordPublicWelfareAccountWriteOperation(context, result, req, 200)
       res.json(ok(result))
     } catch (error) {
+      if (error instanceof PublicAccountUpdateConflictError) {
+        res.status(409).json(badRequest(error.message))
+        return
+      }
       const message = error instanceof Error ? error.message : '账号修改失败'
       res.status(message.includes('不存在') ? 404 : message.includes('已存在') || message.includes('重复') ? 409 : 400).json(badRequest(message))
     }

@@ -4,6 +4,7 @@ import type { AccountSummary, GroupSummary, ProviderDefinition, ProviderProtocol
 import { runtimeConfig } from '../../config/runtime.js'
 import { hashPasswordAsync } from '../../storage/crypto.js'
 import {
+  AccountConfigRevisionConflictError,
   createAccount,
   createAccountInClientAsync,
   createApiKeyRecord,
@@ -42,6 +43,10 @@ import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { getPostgresPool } from '../../storage/postgres-client.js'
 import { submitApiKeyRelatedCleanup, submitApiKeyRelatedCleanupAsync } from '../api-keys/api-key-cleanup.service.js'
 import { dispatchPendingAccountHealthCheck } from '../accounts/account-health-check-dispatch.service.js'
+import {
+  assertAccountGptRequestOverridesSupported,
+  assertAccountGptRequestOverridesSupportedAsync
+} from '../accounts/account-gpt-request-overrides.validation.js'
 import {
   accountCreateInputForPush,
   accountPartialUpdateInputForPush,
@@ -134,6 +139,15 @@ export type {
 const publicResourceOwnerLookupAccess = {
   systemAccountId: '__public_resource_owner_lookup__',
   role: 'super_admin' as const
+}
+const publicAccountUpdateMaxAttempts = 3
+const publicAccountConcurrentChangeMessage = '账号配置已发生并发变更，请重试'
+
+export class PublicAccountUpdateConflictError extends Error {
+  constructor(readonly revisionConflict?: AccountConfigRevisionConflictError) {
+    super(publicAccountConcurrentChangeMessage)
+    this.name = 'PublicAccountUpdateConflictError'
+  }
 }
 
 export async function addPublicWelfareAccountAsync(input: PublicAccountPushInput): Promise<PublicAccountPushResponse> {
@@ -282,6 +296,9 @@ function updatePublicWelfareAccountById(input: PublicAccountUpdateInput): Public
     }
     const targetGroup = resolvePublicAccountGroupFilter(input, existing, access)
     const payload = accountPartialUpdateInputForPush(input, existing)
+    assertAccountGptRequestOverridesSupported(
+      finalPublicAccountGptOverrideValidationInput(existing, payload, target.account.id)
+    )
     const updated = updateAccount(existing.id, payload, access)
     if (!updated) {
       throw new Error('账号不存在')
@@ -322,39 +339,131 @@ async function updatePublicWelfareAccountByIdAsync(input: PublicAccountUpdateInp
   assertTargetActive(target.account)
 
   const access = targetAccess(target.account.id)
-  const existing = await findAccountSummaryAsync(accountId, access)
-  if (!existing) {
-    throw new Error('账号不存在')
-  }
-  if (existing.type !== 'api_key') {
-    throw new Error('公开账号修改仅支持 API Key 账户')
-  }
+  return await retryPublicAccountUpdateAfterConfigConflict(async () => {
+    const existing = await findAccountSummaryAsync(accountId, access)
+    if (!existing) {
+      throw new Error('账号不存在')
+    }
+    if (existing.type !== 'api_key') {
+      throw new Error('公开账号修改仅支持 API Key 账户')
+    }
+    const { expectedConfigRevision, payload, targetGroup } = await preparePublicAccountUpdateAttemptAsync(
+      input,
+      existing,
+      access,
+      target.account.id
+    )
+    const updated = await updateAccountAsync(existing.id, payload, access, {
+      expectedConfigRevision
+    })
+    if (!updated) {
+      throw new Error('账号不存在')
+    }
 
-  const providerProfile = await assertProviderEnabledAsync(existing.providerCode, existing.providerProtocolProfileId)
-  if (hasPublicInput(input, 'type')) {
-    assertSupportedPushAccountType(input.type, providerProfile.accountTypes)
-  }
-  const targetGroup = await resolvePublicAccountGroupFilterAsync(input, existing, access)
-  const payload = accountPartialUpdateInputForPush(input, existing)
-  const updated = await updateAccountAsync(existing.id, payload, access)
-  if (!updated) {
-    throw new Error('账号不存在')
-  }
+    return {
+      source: 'stats',
+      generatedAt: new Date().toISOString(),
+      action: 'updated',
+      target: {
+        username: target.account.username,
+        displayName: target.account.displayName,
+        systemAccountId: target.account.id,
+        created: false,
+        groupId: targetGroup?.id ?? updated.boundGroupId ?? '',
+        groupName: targetGroup?.name ?? updated.boundGroupName ?? '',
+        groupCreated: false
+      },
+      account: sanitizeAccount(updated)
+    }
+  })
+}
 
+async function preparePublicAccountUpdateAttemptAsync(
+  input: PublicAccountUpdateInput,
+  existing: AccountSummary,
+  access: ReturnType<typeof targetAccess>,
+  systemAccountId: string
+): Promise<{
+  expectedConfigRevision: number
+  payload: Record<string, unknown>
+  targetGroup: GroupSummary | undefined
+}> {
+  const expectedConfigRevision = existing.configRevision
+  try {
+    if (typeof expectedConfigRevision !== 'number' || !Number.isInteger(expectedConfigRevision) || expectedConfigRevision < 1) {
+      throw new Error('账号配置版本无效')
+    }
+    const providerProfile = await assertProviderEnabledAsync(existing.providerCode, existing.providerProtocolProfileId)
+    if (hasPublicInput(input, 'type')) {
+      assertSupportedPushAccountType(input.type, providerProfile.accountTypes)
+    }
+    const targetGroup = await resolvePublicAccountGroupFilterAsync(input, existing, access)
+    const payload = accountPartialUpdateInputForPush(input, existing)
+    await assertAccountGptRequestOverridesSupportedAsync(
+      finalPublicAccountGptOverrideValidationInput(existing, payload, systemAccountId)
+    )
+    return { expectedConfigRevision, payload, targetGroup }
+  } catch (error) {
+    return await rethrowStalePublicAccountUpdateValidationError(error, {
+      accountId: existing.id,
+      expectedConfigRevision: existing.configRevision ?? 1,
+      readCurrentConfigRevision: async () => (await findAccountSummaryAsync(existing.id, access))?.configRevision
+    })
+  }
+}
+
+export async function rethrowStalePublicAccountUpdateValidationError(
+  error: unknown,
+  input: {
+    accountId: string
+    expectedConfigRevision: number
+    readCurrentConfigRevision: () => Promise<number | undefined>
+  }
+): Promise<never> {
+  if (error instanceof AccountConfigRevisionConflictError) {
+    throw error
+  }
+  const actualConfigRevision = await input.readCurrentConfigRevision()
+  if (actualConfigRevision !== input.expectedConfigRevision) {
+    throw new AccountConfigRevisionConflictError(
+      input.accountId,
+      input.expectedConfigRevision,
+      actualConfigRevision
+    )
+  }
+  throw error
+}
+
+export async function retryPublicAccountUpdateAfterConfigConflict<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; attempt <= publicAccountUpdateMaxAttempts; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      if (!(error instanceof AccountConfigRevisionConflictError)) {
+        throw error
+      }
+      if (attempt === publicAccountUpdateMaxAttempts) {
+        throw new PublicAccountUpdateConflictError(error)
+      }
+    }
+  }
+  throw new PublicAccountUpdateConflictError()
+}
+
+function finalPublicAccountGptOverrideValidationInput(
+  existing: AccountSummary,
+  payload: Record<string, unknown>,
+  systemAccountId: string
+): Parameters<typeof assertAccountGptRequestOverridesSupported>[0] {
+  const finalAccount: Record<string, unknown> = { ...existing, ...payload }
   return {
-    source: 'stats',
-    generatedAt: new Date().toISOString(),
-    action: 'updated',
-    target: {
-      username: target.account.username,
-      displayName: target.account.displayName,
-      systemAccountId: target.account.id,
-      created: false,
-      groupId: targetGroup?.id ?? updated.boundGroupId ?? '',
-      groupName: targetGroup?.name ?? updated.boundGroupName ?? '',
-      groupCreated: false
-    },
-    account: sanitizeAccount(updated)
+    providerCode: existing.providerCode,
+    accountType: existing.type,
+    credentials: finalAccount.credentials as Record<string, unknown> | undefined,
+    supportedModels: Array.isArray(finalAccount.supportedModels)
+      ? finalAccount.supportedModels as string[]
+      : [],
+    systemAccountId
   }
 }
 
