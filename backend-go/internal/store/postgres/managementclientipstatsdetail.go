@@ -17,10 +17,6 @@ const (
 )
 
 type managementClientIPStatsDetailQueries interface {
-	GetManagementClientIPStatsRegistry(
-		ctx context.Context,
-		ipHash string,
-	) (postgresqueries.GetManagementClientIPStatsRegistryRow, error)
 	ManagementClientIPStatsRangeReady(
 		ctx context.Context,
 		arg postgresqueries.ManagementClientIPStatsRangeReadyParams,
@@ -35,35 +31,56 @@ type managementClientIPStatsDetailQueries interface {
 	) ([]postgresqueries.ListManagementClientIPAccountUsageRequestCountDescRow, error)
 }
 
-func (s *Store) GetManagementClientIPStatsDetail(
-	ctx context.Context,
-	input port.ManagementClientIPStatsDetailInput,
-) (port.ManagementClientIPStatsDetailPage, error) {
-	return getManagementClientIPStatsDetail(ctx, s.queries(), input)
+type managementClientIPStatsRegistryQueries interface {
+	GetManagementClientIPStatsRegistry(
+		ctx context.Context,
+		ipHash string,
+	) (postgresqueries.GetManagementClientIPStatsRegistryRow, error)
 }
 
-func getManagementClientIPStatsDetail(
+func (s *Store) FindManagementClientIPStatsRegistry(
 	ctx context.Context,
-	q managementClientIPStatsDetailQueries,
-	input port.ManagementClientIPStatsDetailInput,
-) (port.ManagementClientIPStatsDetailPage, error) {
-	registry, err := q.GetManagementClientIPStatsRegistry(ctx, input.IPHash)
+	ipHash string,
+) (port.ManagementClientIPStatsRegistry, bool, error) {
+	return findManagementClientIPStatsRegistry(ctx, s.queries(), ipHash)
+}
+
+func findManagementClientIPStatsRegistry(
+	ctx context.Context,
+	q managementClientIPStatsRegistryQueries,
+	ipHash string,
+) (port.ManagementClientIPStatsRegistry, bool, error) {
+	registry, err := q.GetManagementClientIPStatsRegistry(ctx, ipHash)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return port.ManagementClientIPStatsDetailPage{}, nil
+		return port.ManagementClientIPStatsRegistry{}, false, nil
 	}
 	if err != nil {
-		return port.ManagementClientIPStatsDetailPage{}, fmt.Errorf(
+		return port.ManagementClientIPStatsRegistry{}, false, fmt.Errorf(
 			"get management client IP stats registry: %w",
 			err,
 		)
 	}
-
-	result := port.ManagementClientIPStatsDetailPage{
-		Found:          true,
+	return port.ManagementClientIPStatsRegistry{
 		IPHash:         registry.IpHash,
 		AggregateIPKey: registry.AggregateIpKey,
 		LastSeenAt:     registry.LastSeenAt,
-		Rows:           []port.ManagementClientIPAccountUsageRow{},
+	}, true, nil
+}
+
+func (s *Store) ListManagementClientIPStatsDetail(
+	ctx context.Context,
+	input port.ManagementClientIPStatsDetailInput,
+) (port.ManagementClientIPStatsDetailPage, error) {
+	return listManagementClientIPStatsDetail(ctx, s.queries(), input)
+}
+
+func listManagementClientIPStatsDetail(
+	ctx context.Context,
+	q managementClientIPStatsDetailQueries,
+	input port.ManagementClientIPStatsDetailInput,
+) (port.ManagementClientIPStatsDetailPage, error) {
+	result := port.ManagementClientIPStatsDetailPage{
+		Rows: []port.ManagementClientIPAccountUsageRow{},
 	}
 	ready, err := q.ManagementClientIPStatsRangeReady(
 		ctx,
@@ -93,7 +110,7 @@ func getManagementClientIPStatsDetail(
 		requestCountRows, listErr := q.ListManagementClientIPAccountUsageRequestCountDesc(
 			ctx,
 			postgresqueries.ListManagementClientIPAccountUsageRequestCountDescParams{
-				IpHash:    registry.IpHash,
+				IpHash:    input.IPHash,
 				StartDate: input.StartDate,
 				EndDate:   input.EndDate,
 				RowLimit:  rowLimit,
@@ -111,7 +128,7 @@ func getManagementClientIPStatsDetail(
 		rows, err = q.ListManagementClientIPAccountUsage(
 			ctx,
 			postgresqueries.ListManagementClientIPAccountUsageParams{
-				IpHash:    registry.IpHash,
+				IpHash:    input.IPHash,
 				StartDate: input.StartDate,
 				EndDate:   input.EndDate,
 				SortField: string(sortField),
@@ -180,3 +197,4 @@ func managementClientIPAccountUsageRow(
 }
 
 var _ port.ManagementClientIPStatsDetailReader = (*Store)(nil)
+var _ port.ManagementClientIPStatsRegistryReader = (*Store)(nil)

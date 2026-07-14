@@ -43,11 +43,21 @@ type DetailResult struct {
 }
 
 func (s *Service) Detail(ctx context.Context, input DetailInput) (DetailResult, error) {
+	if s.registryReader == nil {
+		return DetailResult{}, fmt.Errorf("management client IP stats registry reader is required")
+	}
 	if s.detailReader == nil {
 		return DetailResult{}, fmt.Errorf("management client IP stats detail reader is required")
 	}
 	ipHash, valid := normalizeIPHash(input.IPHash)
 	if !valid {
+		return DetailResult{}, ErrIPNotFound
+	}
+	registry, found, err := s.registryReader.FindManagementClientIPStatsRegistry(ctx, ipHash)
+	if err != nil {
+		return DetailResult{}, err
+	}
+	if !found {
 		return DetailResult{}, ErrIPNotFound
 	}
 	location, err := s.usageStatsLocation(ctx)
@@ -60,7 +70,7 @@ func (s *Service) Detail(ctx context.Context, input DetailInput) (DetailResult, 
 	page := normalizePage(input.Page, pageSize)
 	sortField, sortOrder := normalizeDetailSort(input.SortField, input.SortOrder)
 
-	pageValue, err := s.detailReader.GetManagementClientIPStatsDetail(
+	pageValue, err := s.detailReader.ListManagementClientIPStatsDetail(
 		ctx,
 		port.ManagementClientIPStatsDetailInput{
 			IPHash:    ipHash,
@@ -75,14 +85,10 @@ func (s *Service) Detail(ctx context.Context, input DetailInput) (DetailResult, 
 	if err != nil {
 		return DetailResult{}, err
 	}
-	if !pageValue.Found {
-		return DetailResult{}, ErrIPNotFound
-	}
-
 	result := DetailResult{
-		IPHash:         pageValue.IPHash,
-		AggregateIPKey: pageValue.AggregateIPKey,
-		LastSeenAt:     stringPointer(pageValue.LastSeenAt),
+		IPHash:         registry.IPHash,
+		AggregateIPKey: registry.AggregateIPKey,
+		LastSeenAt:     stringPointer(registry.LastSeenAt),
 		Items:          []AccountUsageItem{},
 		Page:           page,
 		PageSize:       pageSize,

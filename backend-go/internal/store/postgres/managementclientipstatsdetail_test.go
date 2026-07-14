@@ -16,21 +16,20 @@ import (
 func TestGetManagementClientIPStatsDetailStopsWhenRegistryIsMissing(t *testing.T) {
 	queries := &managementClientIPStatsDetailQueriesStub{registryErr: pgx.ErrNoRows}
 
-	result, err := getManagementClientIPStatsDetail(context.Background(), queries, port.ManagementClientIPStatsDetailInput{
-		IPHash:    strings.Repeat("a", 64),
-		StartDate: "2026-07-14",
-		EndDate:   "2026-07-14",
-		Limit:     21,
-	})
+	result, found, err := findManagementClientIPStatsRegistry(
+		context.Background(),
+		queries,
+		strings.Repeat("a", 64),
+	)
 	if err != nil {
-		t.Fatalf("get detail: %v", err)
+		t.Fatalf("find registry: %v", err)
 	}
-	if result.Found || len(queries.readyCalls) != 0 || len(queries.listCalls) != 0 || len(queries.requestCountDescCalls) != 0 {
+	if found || result != (port.ManagementClientIPStatsRegistry{}) || len(queries.registryCalls) != 1 || len(queries.readyCalls) != 0 || len(queries.listCalls) != 0 || len(queries.requestCountDescCalls) != 0 {
 		t.Fatalf("missing registry result = %+v, queries = %+v", result, queries)
 	}
 }
 
-func TestGetManagementClientIPStatsDetailReturnsMetadataWhenRangeIsNotReady(t *testing.T) {
+func TestFindManagementClientIPStatsRegistryMapsMetadata(t *testing.T) {
 	queries := &managementClientIPStatsDetailQueriesStub{
 		registry: postgresqueries.GetManagementClientIPStatsRegistryRow{
 			IpHash:         strings.Repeat("b", 64),
@@ -39,7 +38,23 @@ func TestGetManagementClientIPStatsDetailReturnsMetadataWhenRangeIsNotReady(t *t
 		},
 	}
 
-	result, err := getManagementClientIPStatsDetail(context.Background(), queries, port.ManagementClientIPStatsDetailInput{
+	result, found, err := findManagementClientIPStatsRegistry(
+		context.Background(),
+		queries,
+		strings.Repeat("b", 64),
+	)
+	if err != nil {
+		t.Fatalf("find registry: %v", err)
+	}
+	if !found || result.IPHash != strings.Repeat("b", 64) || result.AggregateIPKey != "198.18.20" || result.LastSeenAt != "2026-07-14T03:04:05.000Z" {
+		t.Fatalf("registry result = %+v, found = %v", result, found)
+	}
+}
+
+func TestListManagementClientIPStatsDetailShortCircuitsWhenRangeIsNotReady(t *testing.T) {
+	queries := &managementClientIPStatsDetailQueriesStub{}
+
+	result, err := listManagementClientIPStatsDetail(context.Background(), queries, port.ManagementClientIPStatsDetailInput{
 		IPHash:    strings.Repeat("B", 64),
 		StartDate: "2026-07-13",
 		EndDate:   "2026-07-14",
@@ -48,21 +63,16 @@ func TestGetManagementClientIPStatsDetailReturnsMetadataWhenRangeIsNotReady(t *t
 	if err != nil {
 		t.Fatalf("get detail: %v", err)
 	}
-	if !result.Found || result.RangeReady || result.IPHash != strings.Repeat("b", 64) || result.AggregateIPKey != "198.18.20" || result.LastSeenAt != "2026-07-14T03:04:05.000Z" {
+	if result.RangeReady {
 		t.Fatalf("not-ready result = %+v", result)
 	}
-	if result.Rows == nil || len(result.Rows) != 0 || len(queries.readyCalls) != 1 || len(queries.listCalls) != 0 || len(queries.requestCountDescCalls) != 0 {
+	if result.Rows == nil || len(result.Rows) != 0 || len(queries.registryCalls) != 0 || len(queries.readyCalls) != 1 || len(queries.listCalls) != 0 || len(queries.requestCountDescCalls) != 0 {
 		t.Fatalf("not-ready rows/calls = %+v / %+v", result.Rows, queries)
 	}
 }
 
 func TestGetManagementClientIPStatsDetailUsesStaticDefaultQueryAndMapsProbeRows(t *testing.T) {
 	queries := &managementClientIPStatsDetailQueriesStub{
-		registry: postgresqueries.GetManagementClientIPStatsRegistryRow{
-			IpHash:         strings.Repeat("c", 64),
-			AggregateIpKey: "203.0.113",
-			LastSeenAt:     "2026-07-14T04:05:06.000Z",
-		},
 		ready: true,
 		requestCountDescRows: []postgresqueries.ListManagementClientIPAccountUsageRequestCountDescRow{
 			managementClientIPAccountUsageRequestCountDescFixture("account_1", 9),
@@ -71,7 +81,7 @@ func TestGetManagementClientIPStatsDetailUsesStaticDefaultQueryAndMapsProbeRows(
 		},
 	}
 
-	result, err := getManagementClientIPStatsDetail(context.Background(), queries, port.ManagementClientIPStatsDetailInput{
+	result, err := listManagementClientIPStatsDetail(context.Background(), queries, port.ManagementClientIPStatsDetailInput{
 		IPHash:    strings.Repeat("c", 64),
 		StartDate: "2026-07-01",
 		EndDate:   "2026-07-14",
@@ -81,7 +91,7 @@ func TestGetManagementClientIPStatsDetailUsesStaticDefaultQueryAndMapsProbeRows(
 	if err != nil {
 		t.Fatalf("get detail: %v", err)
 	}
-	if !result.Found || !result.RangeReady || !result.HasMore || len(result.Rows) != 2 {
+	if !result.RangeReady || !result.HasMore || len(result.Rows) != 2 {
 		t.Fatalf("detail result = %+v", result)
 	}
 	if len(queries.listCalls) != 0 || len(queries.requestCountDescCalls) != 1 {
@@ -102,16 +112,11 @@ func TestGetManagementClientIPStatsDetailUsesStaticDefaultQueryAndMapsProbeRows(
 
 func TestGetManagementClientIPStatsDetailUsesGenericAscendingSortAndClampsAdapterInputs(t *testing.T) {
 	queries := &managementClientIPStatsDetailQueriesStub{
-		registry: postgresqueries.GetManagementClientIPStatsRegistryRow{
-			IpHash:         strings.Repeat("d", 64),
-			AggregateIpKey: "192.0.2",
-			LastSeenAt:     "2026-07-14T05:06:07.000Z",
-		},
 		ready: true,
 		rows:  []postgresqueries.ListManagementClientIPAccountUsageRow{{AccountID: "deleted_account"}},
 	}
 
-	result, err := getManagementClientIPStatsDetail(context.Background(), queries, port.ManagementClientIPStatsDetailInput{
+	result, err := listManagementClientIPStatsDetail(context.Background(), queries, port.ManagementClientIPStatsDetailInput{
 		IPHash:    strings.Repeat("d", 64),
 		StartDate: "2026-07-14",
 		EndDate:   "2026-07-14",
@@ -230,3 +235,4 @@ func (s *managementClientIPStatsDetailQueriesStub) ListManagementClientIPAccount
 }
 
 var _ managementClientIPStatsDetailQueries = (*managementClientIPStatsDetailQueriesStub)(nil)
+var _ managementClientIPStatsRegistryQueries = (*managementClientIPStatsDetailQueriesStub)(nil)
