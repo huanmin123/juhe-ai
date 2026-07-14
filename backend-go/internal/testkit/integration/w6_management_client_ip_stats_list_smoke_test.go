@@ -215,6 +215,13 @@ func TestW6ManagementClientIPStatsListPostgresRedisSmoke(t *testing.T) {
 		t.Fatalf("default first page = %+v", pageOne.Result)
 	}
 	assertW6ManagementClientIPStatsStoredMetrics(t, pageOne.Result.Items[0])
+	explicitRequestCountDesc := request(
+		"page=1&pageSize=2&sortField=requestCount&sortOrder=desc",
+	)
+	assertW6ManagementClientIPStatsIDs(t, explicitRequestCountDesc.Result.Items, []string{
+		w6ManagementClientIPStatsNormalHash,
+		w6ManagementClientIPStatsBlacklistHash,
+	})
 	pageTwo := request("page=2&pageSize=2")
 	assertW6ManagementClientIPStatsIDs(t, pageTwo.Result.Items, []string{
 		w6ManagementClientIPStatsAllowlistHash,
@@ -1020,10 +1027,8 @@ func assertW6ManagementClientIPStatsProductionPlans(
 	defer pool.Close()
 	capture := &w6ManagementClientIPStatsCaptureDB{delegate: pool}
 	queries := postgresqueries.New(capture)
-	defaultParams := postgresqueries.ListManagementClientIPStatsParams{
+	requestCountDescParams := postgresqueries.ListManagementClientIPStatsRequestCountDescParams{
 		StatusFilter:     "all",
-		SortField:        "requestCount",
-		SortOrder:        "desc",
 		RowOffset:        0,
 		RowLimit:         21,
 		PolicyNow:        formatW6ManagementClientIPStatsTime(now),
@@ -1033,45 +1038,53 @@ func assertW6ManagementClientIPStatsProductionPlans(
 		Keyword:          "",
 		KeywordUpper:     "",
 	}
-	if _, err := queries.ListManagementClientIPStats(ctx, defaultParams); err != nil {
-		t.Fatalf("execute production sqlc default query: %v", err)
+	var productionQuery string
+	for _, scenario := range []string{"default", "explicit requestCount desc"} {
+		if _, err := queries.ListManagementClientIPStatsRequestCountDesc(
+			ctx,
+			requestCountDescParams,
+		); err != nil {
+			t.Fatalf("execute production sqlc %s query: %v", scenario, err)
+		}
+		query, args := capture.snapshot()
+		assertW6ManagementClientIPStatsStaticRequestCountQuery(t, query)
+		if productionQuery == "" {
+			productionQuery = query
+		} else if query != productionQuery {
+			t.Fatalf("%s query did not use the production static SQL", scenario)
+		}
+		for _, planCacheMode := range []string{"force_custom_plan", "force_generic_plan"} {
+			plan := explainW6ManagementClientIPStatsPreparedPlan(
+				t,
+				ctx,
+				db,
+				query,
+				args,
+				planCacheMode,
+			)
+			if !strings.Contains(plan, "idx_client_ip_range_requests") {
+				t.Fatalf(
+					"production %s query cannot use idx_client_ip_range_requests under %s: %s",
+					scenario,
+					planCacheMode,
+					plan,
+				)
+			}
+			if strings.Contains(plan, `"Node Type": "Sort"`) {
+				t.Fatalf(
+					"production %s query adds Sort under %s: %s",
+					scenario,
+					planCacheMode,
+					plan,
+				)
+			}
+		}
 	}
-	productionQuery, productionArgs := capture.snapshot()
-	assertW6ManagementClientIPStatsPreaggregatedQuery(t, productionQuery)
 
-	defaultPlan := explainW6ManagementClientIPStatsQuery(
-		t,
-		ctx,
-		db,
-		productionQuery,
-		productionArgs,
-		false,
-	)
-	forcedDefaultPlan := explainW6ManagementClientIPStatsQuery(
-		t,
-		ctx,
-		db,
-		productionQuery,
-		productionArgs,
-		true,
-	)
-	if !strings.Contains(forcedDefaultPlan, "idx_client_ip_range_requests") {
-		t.Fatalf("production default query cannot use idx_client_ip_range_requests: %s", forcedDefaultPlan)
-	}
-	if strings.Contains(forcedDefaultPlan, `"Node Type": "Sort"`) {
-		t.Fatalf("production custom default plan still sorts despite the request-count index: %s", forcedDefaultPlan)
-	}
-	if strings.Contains(defaultPlan, "idx_client_ip_range_requests") &&
-		!strings.Contains(defaultPlan, `"Node Type": "Sort"`) {
-		t.Log("production custom plan uses idx_client_ip_range_requests without an explicit Sort")
-	} else {
-		t.Logf("production custom plan did not stably avoid a Sort with the default index: %s", defaultPlan)
-	}
-
-	keywordParams := defaultParams
+	keywordParams := requestCountDescParams
 	keywordParams.Keyword = "203.0.113.1"
 	keywordParams.KeywordUpper = "203.0.113.2"
-	if _, err := queries.ListManagementClientIPStats(ctx, keywordParams); err != nil {
+	if _, err := queries.ListManagementClientIPStatsRequestCountDesc(ctx, keywordParams); err != nil {
 		t.Fatalf("execute production sqlc keyword query: %v", err)
 	}
 	keywordQuery, keywordArgs := capture.snapshot()
@@ -1094,26 +1107,23 @@ func assertW6ManagementClientIPStatsProductionPlans(
 			t.Fatalf("production keyword query cannot use %s: %s", index, keywordPlan)
 		}
 	}
+}
 
-	genericPlan := explainW6ManagementClientIPStatsGenericPlan(
-		t,
-		ctx,
-		db,
-		productionQuery,
-		productionArgs,
-	)
-	if strings.Contains(genericPlan, `"Node Type": "Sort"`) {
-		t.Logf(
-			"RISK: force_generic_plan cannot preserve the parameterized default ORDER BY; plan retains Sort: %s",
-			genericPlan,
-		)
-	} else if !strings.Contains(genericPlan, "idx_client_ip_range_requests") {
-		t.Logf(
-			"RISK: force_generic_plan neither sorts nor uses idx_client_ip_range_requests: %s",
-			genericPlan,
-		)
-	} else {
-		t.Log("force_generic_plan preserves the default request-count index order")
+func assertW6ManagementClientIPStatsStaticRequestCountQuery(t *testing.T, query string) {
+	t.Helper()
+	assertW6ManagementClientIPStatsPreaggregatedQuery(t, query)
+	for _, required := range []string{
+		"-- name: ListManagementClientIPStatsRequestCountDesc :many",
+		"ORDER BY request_count DESC, ip_hash ASC",
+		"LIMIT $3::int",
+		"OFFSET $2::int",
+	} {
+		if !strings.Contains(query, required) {
+			t.Fatalf("production static request-count query is missing %q: %s", required, query)
+		}
+	}
+	if strings.Contains(query, "CASE WHEN $") {
+		t.Fatalf("production request-count query still has parameterized CASE ordering: %s", query)
 	}
 }
 
@@ -1134,8 +1144,6 @@ func assertW6ManagementClientIPStatsPreaggregatedQuery(t *testing.T, query strin
 	for _, required := range []string{
 		"juhe_stats.client_ip_usage_range_windows",
 		"juhe_stats.client_ip_registry",
-		"limit $5::int",
-		"offset $4::int",
 	} {
 		if !strings.Contains(lower, strings.ToLower(required)) {
 			t.Fatalf("production list query is missing %q: %s", required, query)
@@ -1173,32 +1181,39 @@ func explainW6ManagementClientIPStatsQuery(
 	return plan
 }
 
-func explainW6ManagementClientIPStatsGenericPlan(
+func explainW6ManagementClientIPStatsPreparedPlan(
 	t *testing.T,
 	ctx context.Context,
 	db *sql.DB,
 	query string,
 	args []any,
+	planCacheMode string,
 ) string {
 	t.Helper()
-	if len(args) != 13 {
-		t.Fatalf("production client IP stats args = %d, want 13", len(args))
+	if len(args) != 11 {
+		t.Fatalf("production static client IP stats args = %d, want 11", len(args))
+	}
+	if planCacheMode != "force_custom_plan" && planCacheMode != "force_generic_plan" {
+		t.Fatalf("unsupported client IP stats plan cache mode %q", planCacheMode)
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		t.Fatalf("begin generic plan transaction: %v", err)
+		t.Fatalf("begin %s transaction: %v", planCacheMode, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `SET LOCAL plan_cache_mode = force_generic_plan`); err != nil {
-		t.Fatalf("force generic client IP stats plan: %v", err)
+	if _, err := tx.ExecContext(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("disable sequential scan for %s: %v", planCacheMode, err)
+	}
+	if _, err := tx.ExecContext(ctx, "SET LOCAL plan_cache_mode = "+planCacheMode); err != nil {
+		t.Fatalf("set client IP stats plan cache mode %s: %v", planCacheMode, err)
 	}
 	prepare := `PREPARE w6_client_ip_stats_plan (
-		text, text, text, integer, integer, text, text,
-		text, boolean, text, text, text, text
+		text, integer, integer, text, text, text,
+		boolean, text, text, text, text
 	) AS
 ` + query
 	if _, err := tx.ExecContext(ctx, prepare); err != nil {
-		t.Fatalf("prepare production client IP stats query: %v", err)
+		t.Fatalf("prepare production client IP stats query under %s: %v", planCacheMode, err)
 	}
 	literals := make([]string, 0, len(args))
 	for _, arg := range args {
@@ -1208,7 +1223,7 @@ func explainW6ManagementClientIPStatsGenericPlan(
 	explain := "EXPLAIN (FORMAT JSON, COSTS false) EXECUTE w6_client_ip_stats_plan(" +
 		strings.Join(literals, ", ") + ")"
 	if err := tx.QueryRowContext(ctx, explain).Scan(&plan); err != nil {
-		t.Fatalf("explain generic production client IP stats query: %v", err)
+		t.Fatalf("explain production client IP stats query under %s: %v", planCacheMode, err)
 	}
 	return plan
 }

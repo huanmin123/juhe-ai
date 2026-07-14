@@ -279,6 +279,252 @@ func (q *Queries) ListManagementClientIPStats(ctx context.Context, arg ListManag
 	return items, nil
 }
 
+const listManagementClientIPStatsRequestCountDesc = `-- name: ListManagementClientIPStatsRequestCountDesc :many
+WITH client_ip_rows AS (
+  SELECT
+    registry.ip_hash,
+    registry.aggregate_ip_key,
+    registry.last_seen_at AS registry_last_seen_at,
+    range_stats.request_count,
+    range_stats.success_count,
+    range_stats.error_count,
+    CASE
+      WHEN range_stats.request_count > 0
+        THEN range_stats.error_count::double precision / range_stats.request_count
+      ELSE 0::double precision
+    END AS error_rate,
+    range_stats.input_tokens,
+    range_stats.output_tokens,
+    (range_stats.input_tokens + range_stats.output_tokens)::bigint AS total_tokens,
+    range_stats.cache_read_tokens,
+    range_stats.cache_read_cost_usd,
+    range_stats.cache_write_tokens,
+    range_stats.cache_write_1h_tokens,
+    range_stats.cache_write_cost_usd,
+    range_stats.thinking_tokens,
+    range_stats.input_image_tokens,
+    range_stats.output_image_tokens,
+    range_stats.total_cost_usd,
+    range_stats.duration_ms_sum,
+    range_stats.duration_ms_count,
+    range_stats.duration_ms_max,
+    range_stats.average_duration_ms,
+    range_stats.first_token_ms_sum,
+    range_stats.first_token_ms_count,
+    range_stats.average_first_token_ms,
+    range_stats.active_days,
+    range_stats.last_used_at,
+    range_stats.last_error_at,
+    EXISTS (
+      SELECT 1
+      FROM juhe_stats.client_ip_policies AS active_policies
+      WHERE active_policies.status = 'active'
+        AND active_policies.policy_type = 'blacklist'
+        AND active_policies.ip_hash = registry.ip_hash
+        AND (
+          active_policies.expires_at IS NULL
+          OR active_policies.expires_at > $4::text
+        )
+      LIMIT 1
+    ) AS blacklisted,
+    EXISTS (
+      SELECT 1
+      FROM juhe_stats.client_ip_policies AS active_policies
+      WHERE active_policies.status = 'active'
+        AND active_policies.policy_type = 'allowlist'
+        AND active_policies.ip_hash = registry.ip_hash
+        AND (
+          active_policies.expires_at IS NULL
+          OR active_policies.expires_at > $4::text
+        )
+      LIMIT 1
+    ) AS allowlisted
+  FROM juhe_stats.client_ip_usage_range_windows AS range_stats
+  INNER JOIN juhe_stats.client_ip_registry AS registry
+    ON registry.ip_hash = range_stats.ip_hash
+  WHERE range_stats.start_date = $5::text
+    AND range_stats.end_date = $6::text
+    AND (
+      NOT $7::boolean
+      OR (
+        registry.last_seen_at >= $8::text
+        AND registry.last_seen_at < $9::text
+      )
+    )
+    AND (
+      $10::text = ''
+      OR (
+        (
+          registry.aggregate_ip_key COLLATE "C" >= $10::text
+          AND registry.aggregate_ip_key COLLATE "C" < $11::text
+          AND starts_with(registry.aggregate_ip_key, $10::text)
+        )
+        OR (
+          registry.client_ip COLLATE "C" >= $10::text
+          AND registry.client_ip COLLATE "C" < $11::text
+          AND starts_with(registry.client_ip, $10::text)
+        )
+      )
+    )
+)
+SELECT
+  ip_hash,
+  aggregate_ip_key,
+  registry_last_seen_at,
+  request_count,
+  success_count,
+  error_count,
+  error_rate,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  cache_read_tokens,
+  cache_read_cost_usd,
+  cache_write_tokens,
+  cache_write_1h_tokens,
+  cache_write_cost_usd,
+  thinking_tokens,
+  input_image_tokens,
+  output_image_tokens,
+  total_cost_usd,
+  duration_ms_sum,
+  duration_ms_count,
+  duration_ms_max,
+  average_duration_ms,
+  first_token_ms_sum,
+  first_token_ms_count,
+  average_first_token_ms,
+  active_days,
+  last_used_at,
+  last_error_at,
+  blacklisted,
+  allowlisted
+FROM client_ip_rows
+WHERE $1::text = 'all'
+  OR ($1::text = 'blacklisted' AND blacklisted)
+  OR ($1::text = 'allowlisted' AND allowlisted)
+  OR (
+    $1::text = 'normal'
+    AND NOT blacklisted
+    AND NOT allowlisted
+  )
+ORDER BY request_count DESC, ip_hash ASC
+LIMIT $3::int
+OFFSET $2::int
+`
+
+type ListManagementClientIPStatsRequestCountDescParams struct {
+	StatusFilter           string
+	RowOffset              int32
+	RowLimit               int32
+	PolicyNow              string
+	StartDate              string
+	EndDate                string
+	HasLastUsedRange       bool
+	LastUsedStartAt        string
+	LastUsedEndExclusiveAt string
+	Keyword                string
+	KeywordUpper           string
+}
+
+type ListManagementClientIPStatsRequestCountDescRow struct {
+	IpHash              string
+	AggregateIpKey      string
+	RegistryLastSeenAt  string
+	RequestCount        int64
+	SuccessCount        int64
+	ErrorCount          int64
+	ErrorRate           float64
+	InputTokens         int64
+	OutputTokens        int64
+	TotalTokens         int64
+	CacheReadTokens     int64
+	CacheReadCostUsd    float64
+	CacheWriteTokens    int64
+	CacheWrite1hTokens  int64
+	CacheWriteCostUsd   float64
+	ThinkingTokens      int64
+	InputImageTokens    int64
+	OutputImageTokens   int64
+	TotalCostUsd        float64
+	DurationMsSum       int64
+	DurationMsCount     int64
+	DurationMsMax       int64
+	AverageDurationMs   pgtype.Float8
+	FirstTokenMsSum     int64
+	FirstTokenMsCount   int64
+	AverageFirstTokenMs pgtype.Float8
+	ActiveDays          int32
+	LastUsedAt          pgtype.Text
+	LastErrorAt         pgtype.Text
+	Blacklisted         bool
+	Allowlisted         bool
+}
+
+func (q *Queries) ListManagementClientIPStatsRequestCountDesc(ctx context.Context, arg ListManagementClientIPStatsRequestCountDescParams) ([]ListManagementClientIPStatsRequestCountDescRow, error) {
+	rows, err := q.db.Query(ctx, listManagementClientIPStatsRequestCountDesc,
+		arg.StatusFilter,
+		arg.RowOffset,
+		arg.RowLimit,
+		arg.PolicyNow,
+		arg.StartDate,
+		arg.EndDate,
+		arg.HasLastUsedRange,
+		arg.LastUsedStartAt,
+		arg.LastUsedEndExclusiveAt,
+		arg.Keyword,
+		arg.KeywordUpper,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementClientIPStatsRequestCountDescRow
+	for rows.Next() {
+		var i ListManagementClientIPStatsRequestCountDescRow
+		if err := rows.Scan(
+			&i.IpHash,
+			&i.AggregateIpKey,
+			&i.RegistryLastSeenAt,
+			&i.RequestCount,
+			&i.SuccessCount,
+			&i.ErrorCount,
+			&i.ErrorRate,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.TotalTokens,
+			&i.CacheReadTokens,
+			&i.CacheReadCostUsd,
+			&i.CacheWriteTokens,
+			&i.CacheWrite1hTokens,
+			&i.CacheWriteCostUsd,
+			&i.ThinkingTokens,
+			&i.InputImageTokens,
+			&i.OutputImageTokens,
+			&i.TotalCostUsd,
+			&i.DurationMsSum,
+			&i.DurationMsCount,
+			&i.DurationMsMax,
+			&i.AverageDurationMs,
+			&i.FirstTokenMsSum,
+			&i.FirstTokenMsCount,
+			&i.AverageFirstTokenMs,
+			&i.ActiveDays,
+			&i.LastUsedAt,
+			&i.LastErrorAt,
+			&i.Blacklisted,
+			&i.Allowlisted,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const managementClientIPStatsRangeReady = `-- name: ManagementClientIPStatsRangeReady :one
 WITH range_state AS (
   SELECT last_success_at

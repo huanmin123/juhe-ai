@@ -113,6 +113,40 @@ func TestW6ManagementClientIPStatsSQLIsPreaggregatedBoundedAndStatic(t *testing.
 			t.Fatalf("client IP stats list SQL lacks static sort branch for %q", field)
 		}
 	}
+	requestCountDescSQL := managementClientIPStatsNamedSQLSection(
+		t,
+		sql,
+		"ListManagementClientIPStatsRequestCountDesc",
+	)
+	if got, want := managementClientIPStatsSQLBeforeOrderBy(t, requestCountDescSQL),
+		managementClientIPStatsSQLBeforeOrderBy(t, listSQL); got != want {
+		t.Fatal("static request-count list SQL fields or filters differ from the parameterized query")
+	}
+	for _, required := range []string{
+		"FROM juhe_stats.client_ip_usage_range_windows AS range_stats",
+		"INNER JOIN juhe_stats.client_ip_registry AS registry",
+		"active_policies.status = 'active'",
+		"active_policies.expires_at > sqlc.arg(policy_now)::text",
+		"starts_with(registry.aggregate_ip_key, sqlc.arg(keyword)::text)",
+		"starts_with(registry.client_ip, sqlc.arg(keyword)::text)",
+		"COLLATE \"C\"",
+		"sqlc.arg(status_filter)::text = 'normal'",
+		"ORDER BY request_count DESC, ip_hash ASC",
+		"LIMIT sqlc.arg(row_limit)::int",
+		"OFFSET sqlc.arg(row_offset)::int",
+	} {
+		if !strings.Contains(requestCountDescSQL, required) {
+			t.Fatalf("static request-count list SQL missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"sqlc.arg(sort_field)",
+		"sqlc.arg(sort_order)",
+	} {
+		if strings.Contains(requestCountDescSQL, forbidden) {
+			t.Fatalf("static request-count list SQL must not contain %q", forbidden)
+		}
+	}
 	lowerSQL := strings.ToLower(sql)
 	for _, forbidden := range []string{
 		"client_ip_stats_daily",
@@ -145,8 +179,13 @@ func TestListManagementClientIPStatsShortCircuitsWhenRangeIsNotReady(t *testing.
 	if page.RangeReady || page.HasMore || len(page.Rows) != 0 {
 		t.Fatalf("not-ready page = %+v", page)
 	}
-	if len(q.readyCalls) != 1 || len(q.listCalls) != 0 {
-		t.Fatalf("ready/list calls = %d/%d", len(q.readyCalls), len(q.listCalls))
+	if len(q.readyCalls) != 1 || len(q.listCalls) != 0 || len(q.requestCountDescCalls) != 0 {
+		t.Fatalf(
+			"ready/list/static calls = %d/%d/%d",
+			len(q.readyCalls),
+			len(q.listCalls),
+			len(q.requestCountDescCalls),
+		)
 	}
 	if q.readyCalls[0].StartDate != "2026-07-01" || q.readyCalls[0].EndDate != "2026-07-07" {
 		t.Fatalf("ready params = %+v", q.readyCalls[0])
@@ -229,6 +268,9 @@ func TestListManagementClientIPStatsMapsRowsAndUsesProbeLimit(t *testing.T) {
 	if len(q.listCalls) != 1 {
 		t.Fatalf("list calls = %d", len(q.listCalls))
 	}
+	if len(q.requestCountDescCalls) != 0 {
+		t.Fatalf("static request-count list calls = %d, want 0", len(q.requestCountDescCalls))
+	}
 	call := q.listCalls[0]
 	if call.PolicyNow != "2026-07-07T08:30:00.123Z" ||
 		call.StartDate != "2026-07-01" ||
@@ -266,6 +308,61 @@ func TestListManagementClientIPStatsMapsRowsAndUsesProbeLimit(t *testing.T) {
 	}
 }
 
+func TestListManagementClientIPStatsUsesStaticRequestCountDescendingQuery(t *testing.T) {
+	tests := []struct {
+		name      string
+		sortField port.ManagementClientIPStatsSortField
+		sortOrder port.ManagementClientIPStatsSortOrder
+	}{
+		{name: "adapter defaults"},
+		{
+			name:      "service normalized defaults",
+			sortField: port.ManagementClientIPStatsSortRequestCount,
+			sortOrder: port.ManagementClientIPStatsSortDescending,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			q := &managementClientIPStatsQueriesStub{
+				ready: true,
+				requestCountDescRows: []postgresqueries.ListManagementClientIPStatsRequestCountDescRow{
+					{IpHash: "hash_1", RequestCount: 2},
+					{IpHash: "probe_row", RequestCount: 1},
+				},
+			}
+			page, err := listManagementClientIPStats(
+				context.Background(),
+				q,
+				port.ManagementClientIPStatsListInput{
+					StartDate: "2026-07-01",
+					EndDate:   "2026-07-07",
+					SortField: test.sortField,
+					SortOrder: test.sortOrder,
+					Limit:     2,
+				},
+			)
+			if err != nil {
+				t.Fatalf("listManagementClientIPStats() error = %v", err)
+			}
+			if !page.RangeReady || !page.HasMore || len(page.Rows) != 1 ||
+				page.Rows[0].IPHash != "hash_1" || page.Rows[0].RangeUsage.RequestCount != 2 {
+				t.Fatalf("page = %+v", page)
+			}
+			if len(q.listCalls) != 0 || len(q.requestCountDescCalls) != 1 {
+				t.Fatalf(
+					"list/static calls = %d/%d",
+					len(q.listCalls),
+					len(q.requestCountDescCalls),
+				)
+			}
+			call := q.requestCountDescCalls[0]
+			if call.StatusFilter != "all" || call.RowLimit != 2 || call.RowOffset != 0 {
+				t.Fatalf("static request-count params = %+v", call)
+			}
+		})
+	}
+}
+
 func TestListManagementClientIPStatsClampsAdapterInputs(t *testing.T) {
 	q := &managementClientIPStatsQueriesStub{ready: true}
 	page, err := listManagementClientIPStats(
@@ -287,10 +384,15 @@ func TestListManagementClientIPStatsClampsAdapterInputs(t *testing.T) {
 	if !page.RangeReady || page.HasMore || len(page.Rows) != 0 {
 		t.Fatalf("page = %+v", page)
 	}
-	call := q.listCalls[0]
+	if len(q.listCalls) != 0 || len(q.requestCountDescCalls) != 1 {
+		t.Fatalf(
+			"list/static calls = %d/%d",
+			len(q.listCalls),
+			len(q.requestCountDescCalls),
+		)
+	}
+	call := q.requestCountDescCalls[0]
 	if call.StatusFilter != "all" ||
-		call.SortField != "requestCount" ||
-		call.SortOrder != "desc" ||
 		call.RowLimit != 101 ||
 		call.RowOffset != 0 {
 		t.Fatalf("clamped list params = %+v", call)
@@ -313,10 +415,17 @@ func TestListManagementClientIPStatsPreservesNonECMAScriptWhitespaceKeyword(t *t
 	if err != nil {
 		t.Fatalf("listManagementClientIPStats() error = %v", err)
 	}
-	if got := q.listCalls[0].Keyword; got != keyword {
+	if len(q.listCalls) != 0 || len(q.requestCountDescCalls) != 1 {
+		t.Fatalf(
+			"list/static calls = %d/%d",
+			len(q.listCalls),
+			len(q.requestCountDescCalls),
+		)
+	}
+	if got := q.requestCountDescCalls[0].Keyword; got != keyword {
 		t.Fatalf("keyword = %q, want preserved %q", got, keyword)
 	}
-	if got := q.listCalls[0].KeywordUpper; got != "\u0086" {
+	if got := q.requestCountDescCalls[0].KeywordUpper; got != "\u0086" {
 		t.Fatalf("keyword upper = %q, want U+0086", got)
 	}
 }
@@ -337,8 +446,12 @@ func TestListManagementClientIPStatsRejectsPartialLastUsedRange(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "requires both boundaries") {
 		t.Fatalf("partial last-used range error = %v", err)
 	}
-	if len(q.listCalls) != 0 {
-		t.Fatalf("list calls = %d, want 0", len(q.listCalls))
+	if len(q.listCalls) != 0 || len(q.requestCountDescCalls) != 0 {
+		t.Fatalf(
+			"list/static calls = %d/%d, want 0/0",
+			len(q.listCalls),
+			len(q.requestCountDescCalls),
+		)
 	}
 }
 
@@ -382,13 +495,26 @@ func managementClientIPStatsNamedSQLSection(t *testing.T, sql string, name strin
 	return sql[start:]
 }
 
+func managementClientIPStatsSQLBeforeOrderBy(t *testing.T, sql string) string {
+	t.Helper()
+	start := strings.Index(sql, "WITH ")
+	end := strings.Index(sql, "\nORDER BY")
+	if start < 0 || end <= start {
+		t.Fatalf("client IP stats SQL lacks WITH/ORDER BY boundaries:\n%s", sql)
+	}
+	return sql[start:end]
+}
+
 type managementClientIPStatsQueriesStub struct {
-	ready      bool
-	readyErr   error
-	rows       []postgresqueries.ListManagementClientIPStatsRow
-	listErr    error
-	readyCalls []postgresqueries.ManagementClientIPStatsRangeReadyParams
-	listCalls  []postgresqueries.ListManagementClientIPStatsParams
+	ready                 bool
+	readyErr              error
+	rows                  []postgresqueries.ListManagementClientIPStatsRow
+	listErr               error
+	requestCountDescRows  []postgresqueries.ListManagementClientIPStatsRequestCountDescRow
+	requestCountDescErr   error
+	readyCalls            []postgresqueries.ManagementClientIPStatsRangeReadyParams
+	listCalls             []postgresqueries.ListManagementClientIPStatsParams
+	requestCountDescCalls []postgresqueries.ListManagementClientIPStatsRequestCountDescParams
 }
 
 func (s *managementClientIPStatsQueriesStub) ManagementClientIPStatsRangeReady(
@@ -405,6 +531,14 @@ func (s *managementClientIPStatsQueriesStub) ListManagementClientIPStats(
 ) ([]postgresqueries.ListManagementClientIPStatsRow, error) {
 	s.listCalls = append(s.listCalls, arg)
 	return s.rows, s.listErr
+}
+
+func (s *managementClientIPStatsQueriesStub) ListManagementClientIPStatsRequestCountDesc(
+	_ context.Context,
+	arg postgresqueries.ListManagementClientIPStatsRequestCountDescParams,
+) ([]postgresqueries.ListManagementClientIPStatsRequestCountDescRow, error) {
+	s.requestCountDescCalls = append(s.requestCountDescCalls, arg)
+	return s.requestCountDescRows, s.requestCountDescErr
 }
 
 var _ managementClientIPStatsQueries = (*managementClientIPStatsQueriesStub)(nil)

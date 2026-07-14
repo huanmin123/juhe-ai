@@ -27,6 +27,10 @@ type managementClientIPStatsQueries interface {
 		ctx context.Context,
 		arg postgresqueries.ListManagementClientIPStatsParams,
 	) ([]postgresqueries.ListManagementClientIPStatsRow, error)
+	ListManagementClientIPStatsRequestCountDesc(
+		ctx context.Context,
+		arg postgresqueries.ListManagementClientIPStatsRequestCountDescParams,
+	) ([]postgresqueries.ListManagementClientIPStatsRequestCountDescRow, error)
 }
 
 func (s *Store) ListManagementClientIPStats(
@@ -78,24 +82,59 @@ func listManagementClientIPStats(
 		keywordUpper = textPrefixUpperBound(keyword)
 	}
 	limit := min(input.Limit, maxManagementClientIPStatsListRowLimit)
-	rows, err := q.ListManagementClientIPStats(
-		ctx,
-		postgresqueries.ListManagementClientIPStatsParams{
-			PolicyNow:              managementClientIPStatsTimeText(input.Now),
-			StartDate:              input.StartDate,
-			EndDate:                input.EndDate,
-			HasLastUsedRange:       hasLastUsedRange,
-			LastUsedStartAt:        lastUsedStartAt,
-			LastUsedEndExclusiveAt: lastUsedEndExclusiveAt,
-			Keyword:                keyword,
-			KeywordUpper:           keywordUpper,
-			StatusFilter:           string(managementClientIPStatsStatus(input.Status)),
-			SortField:              string(managementClientIPStatsSortField(input.SortField)),
-			SortOrder:              string(managementClientIPStatsSortOrder(input.SortOrder)),
-			RowLimit:               int32(limit),
-			RowOffset:              int32(min(max(0, input.Offset), maxManagementClientIPStatsListOffset)),
-		},
-	)
+	statusFilter := string(managementClientIPStatsStatus(input.Status))
+	sortField := managementClientIPStatsSortField(input.SortField)
+	sortOrder := managementClientIPStatsSortOrder(input.SortOrder)
+	rowLimit := int32(limit)
+	rowOffset := int32(min(max(0, input.Offset), maxManagementClientIPStatsListOffset))
+	policyNow := managementClientIPStatsTimeText(input.Now)
+
+	var rows []postgresqueries.ListManagementClientIPStatsRow
+	if sortField == port.ManagementClientIPStatsSortRequestCount &&
+		sortOrder == port.ManagementClientIPStatsSortDescending {
+		requestCountRows, listErr := q.ListManagementClientIPStatsRequestCountDesc(
+			ctx,
+			postgresqueries.ListManagementClientIPStatsRequestCountDescParams{
+				PolicyNow:              policyNow,
+				StartDate:              input.StartDate,
+				EndDate:                input.EndDate,
+				HasLastUsedRange:       hasLastUsedRange,
+				LastUsedStartAt:        lastUsedStartAt,
+				LastUsedEndExclusiveAt: lastUsedEndExclusiveAt,
+				Keyword:                keyword,
+				KeywordUpper:           keywordUpper,
+				StatusFilter:           statusFilter,
+				RowLimit:               rowLimit,
+				RowOffset:              rowOffset,
+			},
+		)
+		err = listErr
+		if err == nil {
+			rows = make([]postgresqueries.ListManagementClientIPStatsRow, len(requestCountRows))
+			for index, row := range requestCountRows {
+				rows[index] = postgresqueries.ListManagementClientIPStatsRow(row)
+			}
+		}
+	} else {
+		rows, err = q.ListManagementClientIPStats(
+			ctx,
+			postgresqueries.ListManagementClientIPStatsParams{
+				PolicyNow:              policyNow,
+				StartDate:              input.StartDate,
+				EndDate:                input.EndDate,
+				HasLastUsedRange:       hasLastUsedRange,
+				LastUsedStartAt:        lastUsedStartAt,
+				LastUsedEndExclusiveAt: lastUsedEndExclusiveAt,
+				Keyword:                keyword,
+				KeywordUpper:           keywordUpper,
+				StatusFilter:           statusFilter,
+				SortField:              string(sortField),
+				SortOrder:              string(sortOrder),
+				RowLimit:               rowLimit,
+				RowOffset:              rowOffset,
+			},
+		)
+	}
 	if err != nil {
 		return port.ManagementClientIPStatsListPage{}, fmt.Errorf(
 			"list management client IP stats: %w",
