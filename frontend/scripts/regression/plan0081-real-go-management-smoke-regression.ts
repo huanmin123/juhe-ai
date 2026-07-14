@@ -21,6 +21,7 @@ interface RequestRecord {
 type MockScenario =
   | 'normal'
   | 'ip_stats_not_ready'
+  | 'ip_stats_empty'
   | 'ip_stats_failure'
   | 'ip_stats_timeout'
   | 'patch_failure'
@@ -47,7 +48,7 @@ const selectedGroupId = 'grp_plan0081_owner_secondary'
 const temporaryGroupId = 'grp_plan0081_temporary'
 const missingGroupId = 'grp_plan0081_missing_sensitive'
 const missingProviderCode = 'missing-provider-sensitive'
-const sensitiveClientIPHash = 'client_ip_plan0081_sensitive_hash'
+const sensitiveClientIPHash = 'a'.repeat(64)
 const requestRecords: RequestRecord[] = []
 const groups = new Map<string, MockGroup>()
 let scenario: MockScenario = 'normal'
@@ -71,6 +72,7 @@ try {
   await assertLogBoundaryRedaction(baseUrl)
   await assertReadOnlySmoke(baseUrl)
   await assertClientIPRangeNotReadySmoke(baseUrl)
+  await assertClientIPRangeEmptySmoke(baseUrl)
   await assertSuccessfulMutationSmoke(baseUrl)
   await assertPatchFailureStillCleansUp(baseUrl)
   await assertCleanup404IsIdempotent(baseUrl)
@@ -155,14 +157,15 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=3 clientIpRangeReady=true'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true'
   )
   assert.deepEqual(requestPaths(), [
     groupsListPath(),
     groupDetailPath(selectedGroupId),
     providersPath(),
     modelOptionsPath(),
-    clientIPStatsPath()
+    clientIPStatsPath(),
+    clientIPStatsDetailPath()
   ])
   assert.equal(requestRecords.some((record) => ['POST', 'PATCH', 'DELETE'].includes(record.method ?? '')), false)
   assertNoCookieLeak(output)
@@ -182,7 +185,33 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false'
+  )
+  assert.deepEqual(requestPaths(), [
+    groupsListPath(),
+    groupDetailPath(selectedGroupId),
+    providersPath(),
+    modelOptionsPath(),
+    clientIPStatsPath()
+  ])
+  assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
+  assertNoEnvironmentIdentifierLeak(output, baseUrl)
+  assertRequestHeaders()
+}
+
+async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
+  resetMock('ip_stats_empty')
+  const output: string[] = []
+  const summary = await runRealGoManagementSmokeFromEnvironment(
+    smokeEnvironment(baseUrl),
+    (message) => output.push(message)
+  )
+
+  assert.deepEqual(summary, expectedSummary(true, 0))
+  assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
+  assert.equal(
+    output[0],
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     groupsListPath(),
@@ -215,6 +244,7 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
     providersPath(),
     modelOptionsPath(),
     clientIPStatsPath(),
+    clientIPStatsDetailPath(),
     groupsCreatePath(),
     groupsListPath(),
     groupDetailPath(temporaryGroupId),
@@ -459,6 +489,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     await handleClientIPStatsRequest(res, scenario)
     return
   }
+  const clientIPHash = clientIPHashFromDetailPath(url.pathname)
+  if (req.method === 'GET' && clientIPHash) {
+    sendEnvelope(res, clientIPStatsDetailFixture(clientIPHash))
+    return
+  }
 
   const groupId = groupIdFromPath(url.pathname)
   if (groupId) {
@@ -484,7 +519,8 @@ async function handleClientIPStatsRequest(res: ServerResponse, requestScenario: 
     }))
     return
   }
-  sendEnvelope(res, clientIPStatsListFixture(requestScenario !== 'ip_stats_not_ready'))
+  const rangeReady = requestScenario !== 'ip_stats_not_ready'
+  sendEnvelope(res, clientIPStatsListFixture(rangeReady, rangeReady && requestScenario !== 'ip_stats_empty'))
 }
 
 async function handleGroupDetailRequest(
@@ -699,14 +735,18 @@ function omitDynamicName(value: unknown): Record<string, unknown> {
   return rest
 }
 
-function expectedSummary(clientIpRangeReady = true): Record<string, unknown> {
+function expectedSummary(
+  clientIpRangeReady = true,
+  clientIpItemCount = clientIpRangeReady ? 3 : 0
+): Record<string, unknown> {
   return {
     groupCount: 3,
     selectedGroupId,
     providerCount: 2,
     modelOptionCount: 2,
-    clientIpItemCount: clientIpRangeReady ? 3 : 0,
-    clientIpRangeReady
+    clientIpItemCount,
+    clientIpRangeReady,
+    clientIpDetailChecked: clientIpRangeReady && clientIpItemCount > 0
   }
 }
 
@@ -744,6 +784,10 @@ function modelOptionsPath(): string {
 
 function clientIPStatsPath(): string {
   return 'GET /__aisys__/api/ip-stats?page=1&pageSize=20&sortField=requestCount&sortOrder=desc'
+}
+
+function clientIPStatsDetailPath(): string {
+  return `GET /__aisys__/api/ip-stats/${encodeURIComponent(sensitiveClientIPHash)}/detail?startDate=2026-07-14&endDate=2026-07-14&page=1&pageSize=20&sortOrder=asc`
 }
 
 function assertRequestHeaders(): void {
@@ -787,8 +831,8 @@ function assertNoEnvironmentIdentifierLeak(
   }
 }
 
-function clientIPStatsListFixture(rangeReady: boolean): Record<string, unknown> {
-  const items = rangeReady ? clientIPStatsItemsFixture() : []
+function clientIPStatsListFixture(rangeReady: boolean, includeItems = rangeReady): Record<string, unknown> {
+  const items = includeItems ? clientIPStatsItemsFixture() : []
   return {
     items,
     pageUpperBound: items.length,
@@ -802,6 +846,57 @@ function clientIPStatsListFixture(rangeReady: boolean): Record<string, unknown> 
       maxDays: 31
     },
     rangeReady
+  }
+}
+
+function clientIPStatsDetailFixture(ipHash: string): Record<string, unknown> {
+  return {
+    ipHash,
+    aggregateIpKey: '203.0.113.0/24',
+    lastSeenAt: '2026-07-14T08:30:00.000Z',
+    items: [
+      {
+        accountId: 'acct_plan0081_low_usage',
+        accountName: '低用量账号',
+        accountOwnerSystemAccountId: systemAccountId,
+        accountOwnerSystemAccountName: 'PLAN-0081 系统账号',
+        rangeUsage: clientIPUsageFixture({
+          requestCount: 2,
+          successCount: 2,
+          errorCount: 0,
+          inputTokens: 200,
+          outputTokens: 50,
+          activeDays: 1,
+          averageDurationMs: 180.5,
+          averageFirstTokenMs: 35.25,
+          maxDurationMs: 260,
+          lastUsedAt: '2026-07-14T07:30:00.000Z',
+          lastErrorAt: '2026-07-14T06:30:00.000Z'
+        })
+      },
+      {
+        accountId: 'acct_plan0081_high_usage',
+        rangeUsage: clientIPUsageFixture({
+          requestCount: 8,
+          successCount: 6,
+          errorCount: 2,
+          inputTokens: 1_000,
+          outputTokens: 250,
+          activeDays: 1
+        })
+      }
+    ],
+    pageUpperBound: 2,
+    hasMore: false,
+    page: 1,
+    pageSize: 20,
+    range: {
+      startDate: '2026-07-14',
+      endDate: '2026-07-14',
+      days: 1,
+      maxDays: 31
+    },
+    rangeReady: true
   }
 }
 
@@ -827,7 +922,7 @@ function clientIPStatsItemsFixture(): Record<string, unknown>[] {
       })
     },
     {
-      ipHash: 'client_ip_plan0081_allowlisted',
+      ipHash: 'b'.repeat(64),
       aggregateIpKey: '198.51.100.0/24',
       status: 'allowlisted',
       rangeUsage: clientIPUsageFixture({
@@ -840,7 +935,7 @@ function clientIPStatsItemsFixture(): Record<string, unknown>[] {
       })
     },
     {
-      ipHash: 'client_ip_plan0081_normal',
+      ipHash: 'c'.repeat(64),
       aggregateIpKey: '192.0.2.0/24',
       lastSeenAt: '',
       status: 'normal',
@@ -854,6 +949,11 @@ function clientIPStatsItemsFixture(): Record<string, unknown>[] {
       })
     }
   ]
+}
+
+function clientIPHashFromDetailPath(pathname: string): string | undefined {
+  const match = /^\/__aisys__\/api\/ip-stats\/([^/]+)\/detail$/.exec(pathname)
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined
 }
 
 function clientIPUsageFixture(overrides: Record<string, unknown>): Record<string, unknown> {
