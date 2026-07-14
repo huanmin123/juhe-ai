@@ -4,9 +4,11 @@ import { pathToFileURL } from 'node:url'
 export const realGoManagementSmokeEnv = {
   allowGroupMutations: 'JUHE_REAL_GO_MANAGEMENT_ALLOW_GROUP_MUTATIONS',
   baseUrl: 'JUHE_REAL_GO_MANAGEMENT_BASE_URL',
+  clientIpHash: 'JUHE_REAL_GO_MANAGEMENT_CLIENT_IP_HASH',
   cookie: 'JUHE_REAL_GO_MANAGEMENT_COOKIE',
   groupId: 'JUHE_REAL_GO_MANAGEMENT_GROUP_ID',
   providerCode: 'JUHE_REAL_GO_MANAGEMENT_GROUP_PROVIDER_CODE',
+  requireClientIpDetail: 'JUHE_REAL_GO_MANAGEMENT_REQUIRE_CLIENT_IP_DETAIL',
   systemAccountId: 'JUHE_REAL_GO_MANAGEMENT_SYSTEM_ACCOUNT_ID',
   timeoutMs: 'JUHE_REAL_GO_MANAGEMENT_TIMEOUT_MS'
 } as const
@@ -31,9 +33,11 @@ export type SmokeEnvironment = Readonly<Record<string, string | undefined>>
 export interface RealGoManagementSmokeConfig {
   allowGroupMutations?: boolean
   baseUrl: string
+  clientIpHash?: string
   cookie: string
   groupId?: string
   providerCode?: string
+  requireClientIpDetail?: boolean
   systemAccountId?: string
   timeoutMs?: number
 }
@@ -50,6 +54,7 @@ export interface RealGoManagementSmokeSummary {
 
 interface NormalizedRealGoManagementSmokeConfig extends RealGoManagementSmokeConfig {
   allowGroupMutations: boolean
+  requireClientIpDetail: boolean
   timeoutMs: number
 }
 
@@ -150,6 +155,11 @@ interface ClientIPStatsDetailResult {
   rangeReady: boolean
 }
 
+interface ClientIPStatsDetailTarget {
+  ipHash: string
+  listItem: ClientIPStatsItem | undefined
+}
+
 interface TemporaryGroupIdentity {
   id: string
   name: string
@@ -174,9 +184,11 @@ export function loadRealGoManagementSmokeConfig(
   return {
     allowGroupMutations: optionalBinaryFlag(env, realGoManagementSmokeEnv.allowGroupMutations),
     baseUrl: normalizeManagementApiBaseUrl(baseUrl),
+    clientIpHash: optionalClientIPHashEnvironmentValue(env, realGoManagementSmokeEnv.clientIpHash),
     cookie,
     groupId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.groupId),
     providerCode: optionalEnvironmentValue(env, realGoManagementSmokeEnv.providerCode),
+    requireClientIpDetail: optionalBinaryFlag(env, realGoManagementSmokeEnv.requireClientIpDetail),
     systemAccountId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.systemAccountId),
     timeoutMs: optionalPositiveIntegerEnvironmentValue(env, realGoManagementSmokeEnv.timeoutMs)
   }
@@ -270,18 +282,27 @@ async function runReadOnlySmoke(
     'client IP stats list'
   )
   const clientIPStats = assertClientIPStatsList(clientIPStatsData)
+  const clientIPDetailRequired = config.requireClientIpDetail || config.clientIpHash !== undefined
+  const clientIPDetailTarget = selectClientIPStatsDetailTarget(config, clientIPStats)
   let clientIpDetailChecked = false
-  if (clientIPStats.rangeReady && clientIPStats.items.length > 0) {
-    const selectedClientIP = clientIPStats.items.find((item) => isClientIPHash(item.ipHash))
-    expect(selectedClientIP, 'client IP stats list has no valid 64-character hexadecimal ipHash')
+  if (clientIPDetailTarget) {
     const clientIPDetailData = await getEnvelopeData(
-      clientIPStatsDetailUrl(config, selectedClientIP.ipHash, clientIPStats.range),
+      clientIPStatsDetailUrl(config, clientIPDetailTarget.ipHash, clientIPStats.range),
       config,
       'client IP stats detail'
     )
-    assertClientIPStatsDetail(clientIPDetailData, selectedClientIP, clientIPStats.range)
+    assertClientIPStatsDetail(
+      clientIPDetailData,
+      clientIPDetailTarget.ipHash,
+      clientIPDetailTarget.listItem,
+      clientIPStats.range
+    )
     clientIpDetailChecked = true
   }
+  expect(
+    !clientIPDetailRequired || clientIpDetailChecked,
+    `client IP detail is required but no verifiable target is available; set ${realGoManagementSmokeEnv.clientIpHash} to a known 64-character hexadecimal hash`
+  )
 
   return {
     selectedGroup,
@@ -424,6 +445,10 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
     config.allowGroupMutations === undefined || typeof config.allowGroupMutations === 'boolean',
     'Smoke mutation flag must be boolean'
   )
+  expect(
+    config.requireClientIpDetail === undefined || typeof config.requireClientIpDetail === 'boolean',
+    'Smoke client IP detail requirement flag must be boolean'
+  )
   const timeoutMs = config.timeoutMs ?? defaultTimeoutMs
   expect(
     Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= maximumTimeoutMs,
@@ -432,15 +457,46 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
   if (config.providerCode !== undefined) {
     expect(isNonEmptyString(config.providerCode), 'Smoke provider code must not be empty')
   }
+  if (config.clientIpHash !== undefined) {
+    expect(
+      typeof config.clientIpHash === 'string' && isClientIPHash(config.clientIpHash.trim()),
+      'Smoke client IP hash must be a 64-character hexadecimal hash'
+    )
+  }
 
   return {
     ...config,
     allowGroupMutations: config.allowGroupMutations ?? false,
     baseUrl: normalizeManagementApiBaseUrl(config.baseUrl),
+    clientIpHash: config.clientIpHash?.trim().toLowerCase() || undefined,
     groupId: config.groupId?.trim() || undefined,
     providerCode: config.providerCode?.trim() || undefined,
+    requireClientIpDetail: config.requireClientIpDetail ?? false,
     systemAccountId: config.systemAccountId?.trim() || undefined,
     timeoutMs
+  }
+}
+
+function selectClientIPStatsDetailTarget(
+  config: NormalizedRealGoManagementSmokeConfig,
+  clientIPStats: ClientIPStatsListResult
+): ClientIPStatsDetailTarget | undefined {
+  const configuredIpHash = config.clientIpHash
+  if (configuredIpHash) {
+    return {
+      ipHash: configuredIpHash,
+      listItem: clientIPStats.items.find((item) => item.ipHash.toLowerCase() === configuredIpHash)
+    }
+  }
+  if (!clientIPStats.rangeReady || clientIPStats.items.length === 0) {
+    return undefined
+  }
+
+  const listItem = clientIPStats.items.find((item) => isClientIPHash(item.ipHash))
+  expect(listItem, 'client IP stats list has no valid 64-character hexadecimal ipHash')
+  return {
+    ipHash: listItem.ipHash,
+    listItem
   }
 }
 
@@ -727,20 +783,24 @@ function assertClientIPStatsList(value: unknown): ClientIPStatsListResult {
 
 function assertClientIPStatsDetail(
   value: unknown,
-  expectedIdentity: ClientIPStatsItem,
+  expectedIpHash: string,
+  expectedListItem: ClientIPStatsItem | undefined,
   expectedRange: ClientIPStatsRange
 ): ClientIPStatsDetailResult {
   expect(isRecord(value), 'client IP stats detail data must be an object')
-  expect(value.ipHash === expectedIdentity.ipHash, 'client IP stats detail ipHash must match the list item')
-  expect(
-    value.aggregateIpKey === expectedIdentity.aggregateIpKey,
-    'client IP stats detail aggregateIpKey must match the list item'
-  )
+  expect(value.ipHash === expectedIpHash, 'client IP stats detail ipHash must match the requested hash')
+  expect(isNonEmptyString(value.aggregateIpKey), 'client IP stats detail aggregateIpKey must be a non-empty string')
   assertOptionalString(value, 'lastSeenAt', 'client IP stats detail')
-  expect(
-    value.lastSeenAt === expectedIdentity.lastSeenAt,
-    'client IP stats detail lastSeenAt must match the list item'
-  )
+  if (expectedListItem) {
+    expect(
+      value.aggregateIpKey === expectedListItem.aggregateIpKey,
+      'client IP stats detail aggregateIpKey must match the list item'
+    )
+    expect(
+      value.lastSeenAt === expectedListItem.lastSeenAt,
+      'client IP stats detail lastSeenAt must match the list item'
+    )
+  }
   expect(Array.isArray(value.items), 'client IP stats detail items must be an array')
   expect(isNonNegativeInteger(value.pageUpperBound), 'client IP stats detail pageUpperBound must be a non-negative integer')
   expect(typeof value.hasMore === 'boolean', 'client IP stats detail hasMore must be boolean')
@@ -1007,6 +1067,15 @@ function optionalBinaryFlag(env: SmokeEnvironment, name: string): boolean {
     return true
   }
   throw new Error(`${name} must be 0 or 1`)
+}
+
+function optionalClientIPHashEnvironmentValue(env: SmokeEnvironment, name: string): string | undefined {
+  const value = optionalEnvironmentValue(env, name)
+  if (value === undefined) {
+    return undefined
+  }
+  expect(isClientIPHash(value), `${name} must be a 64-character hexadecimal hash`)
+  return value.toLowerCase()
 }
 
 function optionalPositiveIntegerEnvironmentValue(env: SmokeEnvironment, name: string): number | undefined {

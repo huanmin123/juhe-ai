@@ -49,6 +49,7 @@ const temporaryGroupId = 'grp_plan0081_temporary'
 const missingGroupId = 'grp_plan0081_missing_sensitive'
 const missingProviderCode = 'missing-provider-sensitive'
 const sensitiveClientIPHash = 'a'.repeat(64)
+const explicitClientIPHash = 'd'.repeat(64)
 const requestRecords: RequestRecord[] = []
 const groups = new Map<string, MockGroup>()
 let scenario: MockScenario = 'normal'
@@ -73,6 +74,8 @@ try {
   await assertReadOnlySmoke(baseUrl)
   await assertClientIPRangeNotReadySmoke(baseUrl)
   await assertClientIPRangeEmptySmoke(baseUrl)
+  await assertStrictClientIPDetailRequiresTarget(baseUrl)
+  await assertExplicitClientIPHashSmoke(baseUrl)
   await assertSuccessfulMutationSmoke(baseUrl)
   await assertPatchFailureStillCleansUp(baseUrl)
   await assertCleanup404IsIdempotent(baseUrl)
@@ -149,8 +152,12 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   resetMock('normal')
   const output: string[] = []
   const env = smokeEnvironment(baseUrl, {
-    [realGoManagementSmokeEnv.allowGroupMutations]: '0'
+    [realGoManagementSmokeEnv.allowGroupMutations]: '0',
+    [realGoManagementSmokeEnv.requireClientIpDetail]: '1'
   })
+  const loadedConfig = loadRealGoManagementSmokeConfig(env)
+  assert.equal(loadedConfig.requireClientIpDetail, true)
+  assert.equal(loadedConfig.clientIpHash, undefined)
   const summary = await runRealGoManagementSmokeFromEnvironment(env, (message) => output.push(message))
 
   assert.deepEqual(summary, expectedSummary())
@@ -169,6 +176,58 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   ])
   assert.equal(requestRecords.some((record) => ['POST', 'PATCH', 'DELETE'].includes(record.method ?? '')), false)
   assertNoCookieLeak(output)
+  assertNoEnvironmentIdentifierLeak(output, baseUrl)
+  assertRequestHeaders()
+}
+
+async function assertStrictClientIPDetailRequiresTarget(baseUrl: string): Promise<void> {
+  for (const requestScenario of ['ip_stats_not_ready', 'ip_stats_empty'] as const) {
+    resetMock(requestScenario)
+    const output: string[] = []
+    const failureMessage = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl, {
+        [realGoManagementSmokeEnv.requireClientIpDetail]: '1'
+      }), (message) => output.push(message))
+    )
+
+    assert.equal(
+      failureMessage,
+      `client IP detail is required but no verifiable target is available; set ${realGoManagementSmokeEnv.clientIpHash} to a known 64-character hexadecimal hash`
+    )
+    assert.deepEqual(output, [])
+    assert.deepEqual(requestPaths(), [
+      groupsListPath(),
+      groupDetailPath(selectedGroupId),
+      providersPath(),
+      modelOptionsPath(),
+      clientIPStatsPath()
+    ])
+    assertNoEnvironmentIdentifierLeak([failureMessage], baseUrl)
+    assertRequestHeaders()
+  }
+}
+
+async function assertExplicitClientIPHashSmoke(baseUrl: string): Promise<void> {
+  resetMock('ip_stats_empty')
+  const output: string[] = []
+  const env = smokeEnvironment(baseUrl, {
+    [realGoManagementSmokeEnv.clientIpHash]: explicitClientIPHash.toUpperCase()
+  })
+  const loadedConfig = loadRealGoManagementSmokeConfig(env)
+  assert.equal(loadedConfig.clientIpHash, explicitClientIPHash)
+  assert.equal(loadedConfig.requireClientIpDetail, false)
+
+  const summary = await runRealGoManagementSmokeFromEnvironment(env, (message) => output.push(message))
+  assert.deepEqual(summary, expectedSummary(true, 0, true))
+  assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
+  assert.deepEqual(requestPaths(), [
+    groupsListPath(),
+    groupDetailPath(selectedGroupId),
+    providersPath(),
+    modelOptionsPath(),
+    clientIPStatsPath(),
+    clientIPStatsDetailPath(explicitClientIPHash)
+  ])
   assertNoEnvironmentIdentifierLeak(output, baseUrl)
   assertRequestHeaders()
 }
@@ -381,6 +440,20 @@ async function assertInvalidConfiguration(baseUrl: string): Promise<void> {
   )
   await assert.rejects(
     runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl, {
+      [realGoManagementSmokeEnv.requireClientIpDetail]: 'true'
+    }), () => undefined),
+    new RegExp(`${realGoManagementSmokeEnv.requireClientIpDetail} must be 0 or 1`)
+  )
+  resetMock('normal')
+  await assert.rejects(
+    runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl, {
+      [realGoManagementSmokeEnv.clientIpHash]: 'not-a-64-character-hexadecimal-hash'
+    }), () => undefined),
+    new RegExp(`${realGoManagementSmokeEnv.clientIpHash} must be a 64-character hexadecimal hash`)
+  )
+  assert.deepEqual(requestRecords, [])
+  await assert.rejects(
+    runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl, {
       [realGoManagementSmokeEnv.timeoutMs]: '0'
     }), () => undefined),
     new RegExp(`${realGoManagementSmokeEnv.timeoutMs} must be a positive integer`)
@@ -392,6 +465,14 @@ async function assertInvalidConfiguration(baseUrl: string): Promise<void> {
       timeoutMs: 0
     }),
     /Smoke timeout must be a positive integer/
+  )
+  await assert.rejects(
+    runRealGoManagementSmoke({
+      baseUrl,
+      clientIpHash: 'g'.repeat(64),
+      cookie
+    }),
+    /Smoke client IP hash must be a 64-character hexadecimal hash/
   )
 
   resetMock('normal')
@@ -737,7 +818,8 @@ function omitDynamicName(value: unknown): Record<string, unknown> {
 
 function expectedSummary(
   clientIpRangeReady = true,
-  clientIpItemCount = clientIpRangeReady ? 3 : 0
+  clientIpItemCount = clientIpRangeReady ? 3 : 0,
+  clientIpDetailChecked = clientIpRangeReady && clientIpItemCount > 0
 ): Record<string, unknown> {
   return {
     groupCount: 3,
@@ -746,7 +828,7 @@ function expectedSummary(
     modelOptionCount: 2,
     clientIpItemCount,
     clientIpRangeReady,
-    clientIpDetailChecked: clientIpRangeReady && clientIpItemCount > 0
+    clientIpDetailChecked
   }
 }
 
@@ -786,8 +868,8 @@ function clientIPStatsPath(): string {
   return 'GET /__aisys__/api/ip-stats?page=1&pageSize=20&sortField=requestCount&sortOrder=desc'
 }
 
-function clientIPStatsDetailPath(): string {
-  return `GET /__aisys__/api/ip-stats/${encodeURIComponent(sensitiveClientIPHash)}/detail?startDate=2026-07-14&endDate=2026-07-14&page=1&pageSize=20&sortOrder=asc`
+function clientIPStatsDetailPath(ipHash = sensitiveClientIPHash): string {
+  return `GET /__aisys__/api/ip-stats/${encodeURIComponent(ipHash)}/detail?startDate=2026-07-14&endDate=2026-07-14&page=1&pageSize=20&sortOrder=asc`
 }
 
 function assertRequestHeaders(): void {
@@ -818,6 +900,7 @@ function assertNoEnvironmentIdentifierLeak(
     selectedGroupId,
     temporaryGroupId,
     sensitiveClientIPHash,
+    explicitClientIPHash,
     'gpt',
     'openai',
     ...additionalIdentifiers
