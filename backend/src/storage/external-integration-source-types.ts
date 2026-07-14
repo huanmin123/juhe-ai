@@ -174,3 +174,8 @@ export interface ExternalIntegrationSourceTokenListRow {
   updated_at: string
   revoked_at: string | null
 }
+
+export interface ExternalIntegrationSourceTokenStats {
+  tokenCount: number
+  activeTokenCount: number
+}

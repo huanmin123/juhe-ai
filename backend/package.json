@@ -54,6 +54,7 @@
     "test:db-service-postgres-openai-compatible-dispatch": "tsx src/scripts/regression/db-service-postgres-openai-compatible-dispatch-regression.ts",
     "test:external-source-auth": "tsx src/scripts/regression/external-source-auth-regression.ts",
     "test:external-integration-source-expires-at": "tsx src/scripts/regression/external-integration-source-expires-at-regression.ts",
+    "test:external-integration-source-list": "tsx src/scripts/regression/external-integration-source-list-regression.ts",
     "test:external-integration-source-async-boundary": "tsx src/scripts/regression/external-integration-source-async-boundary-regression.ts",
     "test:external-public-account-push-async-boundary": "tsx src/scripts/regression/external-public-account-push-async-boundary-regression.ts",
     "test:external-integration-source-postgres-smoke": "tsx src/scripts/regression/external-integration-source-postgres-smoke.ts",

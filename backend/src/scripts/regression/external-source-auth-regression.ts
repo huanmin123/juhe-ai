@@ -300,6 +300,14 @@ async function assertBuiltInSourceManagement(baseUrl: string, adminCookie: strin
   const builtInSource = builtInList.body.data.items.find((item: any) => item.id === builtInSourceId)
   assert(builtInSource, '外部来源授权列表应默认包含内置测试来源')
   assert.equal(builtInSource.isBuiltIn, true, '内置测试来源应带只读标识')
+  assert.equal(builtInSource.tokenCount, 1, '外部来源列表应只对当前页批量回填 tokenCount')
+  assert.equal(builtInSource.activeTokenCount, 1, '外部来源列表应只对当前页批量回填 activeTokenCount')
+  assert.equal(builtInSource.primaryToken?.isBuiltIn, true, '外部来源列表应返回内置主 Token 摘要')
+  assert.equal(builtInSource.primaryToken?.tokenPrefix, builtInTestToken.slice(0, 8), '主 Token 摘要应保留前缀')
+  assert.equal(builtInSource.primaryToken?.tokenSuffix, builtInTestToken.slice(-8), '主 Token 摘要应保留后缀')
+  for (const sensitiveField of ['token', 'tokenHash', 'tokenSecretEncrypted']) {
+    assert.equal(Object.hasOwn(builtInSource.primaryToken ?? {}, sensitiveField), false, `主 Token 摘要不应返回 ${sensitiveField}`)
+  }
   assert.deepEqual(builtInSource.scopes, expectedScopes, '内置测试来源应授权当前全部公开资源维护接口')
   assert.equal(builtInSource.scopes.some((scope: string) => scope.includes('usage') || scope.includes('ranking') || scope.includes('access_info') || scope.includes('source_auth_demo')), false, '内置测试来源不应再授权旧公开统计或 demo scope')
 

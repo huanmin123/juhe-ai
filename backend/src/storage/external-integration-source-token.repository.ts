@@ -26,6 +26,7 @@ import type {
   ExternalIntegrationSourceTokenInput,
   ExternalIntegrationSourceTokenListRow,
   ExternalIntegrationSourceTokenSecret,
+  ExternalIntegrationSourceTokenStats,
   ExternalIntegrationSourceTokenSummary,
   ExternalIntegrationSourceTokenUpdateInput
 } from './external-integration-source-types.js'
@@ -457,9 +458,33 @@ export function loadExternalIntegrationSourcePrimaryTokensBySourceIds(sourceIds:
   }
   const placeholders = ids.map(() => '?').join(',')
   const rows = getBusinessDatabase().prepare(`
-    SELECT *
+    SELECT
+      id,
+      source_ref_id,
+      name,
+      token_prefix,
+      token_suffix,
+      status,
+      scopes_json,
+      expires_at,
+      last_used_at,
+      created_at,
+      updated_at,
+      revoked_at
     FROM (
-      SELECT tokens.*,
+      SELECT
+        tokens.id,
+        tokens.source_ref_id,
+        tokens.name,
+        tokens.token_prefix,
+        tokens.token_suffix,
+        tokens.status,
+        tokens.scopes_json,
+        tokens.expires_at,
+        tokens.last_used_at,
+        tokens.created_at,
+        tokens.updated_at,
+        tokens.revoked_at,
         ROW_NUMBER() OVER (
           PARTITION BY tokens.source_ref_id
           ORDER BY CASE WHEN tokens.status = 'active' THEN 0 ELSE 1 END ASC, tokens.created_at DESC, tokens.id DESC
@@ -471,6 +496,35 @@ export function loadExternalIntegrationSourcePrimaryTokensBySourceIds(sourceIds:
   `).all(...ids) as unknown as ExternalIntegrationSourceTokenListRow[]
   for (const row of rows) {
     result.set(row.source_ref_id, mapTokenSummary(row))
+  }
+  return result
+}
+
+export function loadExternalIntegrationSourceTokenStatsBySourceIds(sourceIds: string[]): Map<string, ExternalIntegrationSourceTokenStats> {
+  const result = new Map<string, ExternalIntegrationSourceTokenStats>()
+  const ids = [...new Set(sourceIds.filter(Boolean))]
+  if (!ids.length) {
+    return result
+  }
+  const placeholders = ids.map(() => '?').join(',')
+  const rows = getBusinessDatabase().prepare(`
+    SELECT
+      source_ref_id,
+      COUNT(*) AS token_count,
+      SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_token_count
+    FROM external_integration_source_tokens
+    WHERE source_ref_id IN (${placeholders})
+    GROUP BY source_ref_id
+  `).all(...ids) as unknown as Array<{
+    source_ref_id: string
+    token_count: number
+    active_token_count: number
+  }>
+  for (const row of rows) {
+    result.set(row.source_ref_id, {
+      tokenCount: Number(row.token_count),
+      activeTokenCount: Number(row.active_token_count)
+    })
   }
   return result
 }
@@ -513,9 +567,33 @@ export async function loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync
   }
   const client = clientInput ?? createPostgresDatabaseClient(await getPostgresPool())
   const rows = await client.query<ExternalIntegrationSourceTokenListRow>(`
-    SELECT *
+    SELECT
+      id,
+      source_ref_id,
+      name,
+      token_prefix,
+      token_suffix,
+      status,
+      scopes_json,
+      expires_at,
+      last_used_at,
+      created_at,
+      updated_at,
+      revoked_at
     FROM (
-      SELECT tokens.*,
+      SELECT
+        tokens.id,
+        tokens.source_ref_id,
+        tokens.name,
+        tokens.token_prefix,
+        tokens.token_suffix,
+        tokens.status,
+        tokens.scopes_json,
+        tokens.expires_at,
+        tokens.last_used_at,
+        tokens.created_at,
+        tokens.updated_at,
+        tokens.revoked_at,
         ROW_NUMBER() OVER (
           PARTITION BY tokens.source_ref_id
           ORDER BY CASE WHEN tokens.status = 'active' THEN 0 ELSE 1 END ASC, tokens.created_at DESC, tokens.id DESC
@@ -527,6 +605,41 @@ export async function loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync
   `, ids)
   for (const row of rows) {
     result.set(row.source_ref_id, mapTokenSummary(row))
+  }
+  return result
+}
+
+export async function loadExternalIntegrationSourceTokenStatsBySourceIdsAsync(
+  sourceIds: string[],
+  clientInput?: DatabaseClient
+): Promise<Map<string, ExternalIntegrationSourceTokenStats>> {
+  if (runtimeConfig.databaseDriver !== 'postgres' && !clientInput) {
+    return loadExternalIntegrationSourceTokenStatsBySourceIds(sourceIds)
+  }
+  const result = new Map<string, ExternalIntegrationSourceTokenStats>()
+  const ids = [...new Set(sourceIds.filter(Boolean))]
+  if (!ids.length) {
+    return result
+  }
+  const client = clientInput ?? createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<{
+    source_ref_id: string
+    token_count: number | string
+    active_token_count: number | string
+  }>(`
+    SELECT
+      source_ref_id,
+      COUNT(*) AS token_count,
+      SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_token_count
+    FROM ${externalIntegrationTokenBusinessTable(client, 'external_integration_source_tokens')}
+    WHERE source_ref_id IN (${client.dialect.bindPlaceholders(ids.length)})
+    GROUP BY source_ref_id
+  `, ids)
+  for (const row of rows) {
+    result.set(row.source_ref_id, {
+      tokenCount: Number(row.token_count),
+      activeTokenCount: Number(row.active_token_count)
+    })
   }
   return result
 }
