@@ -9,6 +9,7 @@ export const realGoManagementSmokeEnv = {
   groupId: 'JUHE_REAL_GO_MANAGEMENT_GROUP_ID',
   providerCode: 'JUHE_REAL_GO_MANAGEMENT_GROUP_PROVIDER_CODE',
   requireClientIpDetail: 'JUHE_REAL_GO_MANAGEMENT_REQUIRE_CLIENT_IP_DETAIL',
+  routeStrategyId: 'JUHE_REAL_GO_MANAGEMENT_ROUTE_STRATEGY_ID',
   systemAccountId: 'JUHE_REAL_GO_MANAGEMENT_SYSTEM_ACCOUNT_ID',
   timeoutMs: 'JUHE_REAL_GO_MANAGEMENT_TIMEOUT_MS'
 } as const
@@ -38,6 +39,7 @@ export interface RealGoManagementSmokeConfig {
   groupId?: string
   providerCode?: string
   requireClientIpDetail?: boolean
+  routeStrategyId?: string
   systemAccountId?: string
   timeoutMs?: number
 }
@@ -50,6 +52,8 @@ export interface RealGoManagementSmokeSummary {
   clientIpItemCount: number
   clientIpRangeReady: boolean
   clientIpDetailChecked: boolean
+  routeStrategyCount: number
+  routeStrategyDetailChecked: boolean
 }
 
 interface NormalizedRealGoManagementSmokeConfig extends RealGoManagementSmokeConfig {
@@ -86,6 +90,20 @@ interface GroupRecord {
 
 interface GroupDetailRecord extends GroupRecord {
   accountIds: string[]
+}
+
+type RouteStrategyMode = 'normal' | 'hybrid_smart' | 'weighted' | 'failover' | 'round_robin'
+
+interface RouteStrategyListItem {
+  id: string
+  systemAccountId: string
+  systemAccountName: string
+  mode: RouteStrategyMode
+  status: 'active' | 'disabled'
+  normalRoutingConfig?: unknown
+  groupBindingPreview: unknown[]
+  bindingCount: number
+  apiKeyCount: number
 }
 
 interface ProviderRecord {
@@ -189,6 +207,7 @@ export function loadRealGoManagementSmokeConfig(
     groupId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.groupId),
     providerCode: optionalEnvironmentValue(env, realGoManagementSmokeEnv.providerCode),
     requireClientIpDetail: optionalBinaryFlag(env, realGoManagementSmokeEnv.requireClientIpDetail),
+    routeStrategyId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.routeStrategyId),
     systemAccountId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.systemAccountId),
     timeoutMs: optionalPositiveIntegerEnvironmentValue(env, realGoManagementSmokeEnv.timeoutMs)
   }
@@ -245,7 +264,9 @@ export function formatRealGoManagementSmokeSummary(summary: RealGoManagementSmok
     `modelOptions=${summary.modelOptionCount}`,
     `clientIpItems=${summary.clientIpItemCount}`,
     `clientIpRangeReady=${summary.clientIpRangeReady}`,
-    `clientIpDetailChecked=${summary.clientIpDetailChecked}`
+    `clientIpDetailChecked=${summary.clientIpDetailChecked}`,
+    `routeStrategies=${summary.routeStrategyCount}`,
+    `routeStrategyDetailChecked=${summary.routeStrategyDetailChecked}`
   ].join(' ')
 }
 
@@ -259,6 +280,28 @@ async function runReadOnlySmoke(
   const detailData = await getEnvelopeData(groupDetailUrl(config, selectedGroup.id), config, 'group detail')
   const detail = assertGroupDetail(detailData)
   assertTemporaryGroupIdentity(detail, selectedGroup, 'group detail')
+
+  const routeStrategyListData = await getEnvelopeData(
+    endpointUrl(config.baseUrl, '/route-strategies', {
+      page: '1', pageSize: '200', systemAccountId: config.systemAccountId
+    }),
+    config,
+    'route strategies list'
+  )
+  const routeStrategies = assertRouteStrategyList(routeStrategyListData)
+  const selectedRouteStrategy = selectRouteStrategy(routeStrategies, config.routeStrategyId)
+  let routeStrategyDetailChecked = false
+  if (selectedRouteStrategy) {
+    const routeStrategyDetailData = await getEnvelopeData(
+      endpointUrl(config.baseUrl, `/route-strategies/${encodeURIComponent(selectedRouteStrategy.id)}`, {
+        systemAccountId: config.systemAccountId
+      }),
+      config,
+      'route strategy detail'
+    )
+    assertRouteStrategyDetail(routeStrategyDetailData, selectedRouteStrategy)
+    routeStrategyDetailChecked = true
+  }
 
   const providersUrl = endpointUrl(config.baseUrl, '/providers/options', {
     systemAccountId: config.systemAccountId
@@ -318,7 +361,9 @@ async function runReadOnlySmoke(
       modelOptionCount: modelOptions.length,
       clientIpItemCount: clientIPStats.items.length,
       clientIpRangeReady: clientIPStats.rangeReady,
-      clientIpDetailChecked
+      clientIpDetailChecked,
+      routeStrategyCount: routeStrategies.length,
+      routeStrategyDetailChecked
     }
   }
 }
@@ -467,7 +512,6 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
       'Smoke client IP hash must be a 64-character hexadecimal hash'
     )
   }
-
   return {
     ...config,
     allowGroupMutations: config.allowGroupMutations ?? false,
@@ -476,6 +520,7 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
     groupId: config.groupId?.trim() || undefined,
     providerCode: config.providerCode?.trim() || undefined,
     requireClientIpDetail: config.requireClientIpDetail ?? false,
+    routeStrategyId: config.routeStrategyId?.trim() || undefined,
     systemAccountId: config.systemAccountId?.trim() || undefined,
     timeoutMs
   }
@@ -754,6 +799,92 @@ function assertGroupList(value: unknown): GroupListResult {
   )
   expect(value.total >= value.items.length, 'groups list total must cover returned items')
   return value as unknown as GroupListResult
+}
+
+function assertRouteStrategyList(value: unknown): RouteStrategyListItem[] {
+  expect(isRecord(value), 'route strategies list data must be an object')
+  expect(Array.isArray(value.items), 'route strategies list items must be an array')
+  expect(isNonNegativeInteger(value.total), 'route strategies list total must be a non-negative integer')
+  expect(typeof value.hasMore === 'boolean', 'route strategies list hasMore must be boolean')
+  expect(value.page === 1, 'route strategies list page must be 1')
+  expect(value.pageSize === 200, 'route strategies list pageSize must be 200')
+  expect(value.total >= value.items.length, 'route strategies list total must cover returned items')
+  return value.items.map((item, index) => assertRouteStrategyListItem(item, index))
+}
+
+function assertRouteStrategyListItem(value: unknown, index: number): RouteStrategyListItem {
+  const label = `route strategies list item ${index}`
+  expect(isRecord(value), `${label} must be an object`)
+  assertRouteStrategyIdentity(value, label)
+  expect(Array.isArray(value.groupBindingPreview), `${label}.groupBindingPreview must be an array`)
+  expect(value.groupBindingPreview.length <= 3, `${label}.groupBindingPreview must contain at most 3 items`)
+  expect(isNonNegativeInteger(value.bindingCount), `${label}.bindingCount must be a non-negative integer`)
+  expect(isNonNegativeInteger(value.apiKeyCount), `${label}.apiKeyCount must be a non-negative integer`)
+  expect(!Object.hasOwn(value, 'groupBindings'), `${label} must not expose groupBindings`)
+  expect(!Object.hasOwn(value, 'hybridRoutingConfig'), `${label} must not expose hybridRoutingConfig`)
+  assertRouteStrategyConfigForMode(value, label, false)
+  return value as unknown as RouteStrategyListItem
+}
+
+function selectRouteStrategy(
+  items: RouteStrategyListItem[],
+  requestedRouteStrategyId?: string
+): RouteStrategyListItem | undefined {
+  if (requestedRouteStrategyId) {
+    const requested = items.find((item) => item.id === requestedRouteStrategyId)
+    expect(requested, 'Configured route strategy was not returned by route strategies list')
+    return requested
+  }
+  return items[0]
+}
+
+function assertRouteStrategyDetail(value: unknown, listItem: RouteStrategyListItem): void {
+  const label = 'route strategy detail'
+  expect(isRecord(value), `${label} data must be an object`)
+  assertRouteStrategyIdentity(value, label)
+  expect(Array.isArray(value.groupBindings), `${label}.groupBindings must be an array`)
+  expect(value.groupBindings.every(isRecord), `${label}.groupBindings must contain only objects`)
+  expect(value.groupBindings.length === listItem.bindingCount, `${label}.groupBindings must be complete`)
+  expect(isNonNegativeInteger(value.apiKeyCount), `${label}.apiKeyCount must be a non-negative integer`)
+  assertRouteStrategyConfigForMode(value, label, true)
+  for (const field of ['id', 'systemAccountId', 'systemAccountName', 'mode', 'status'] as const) {
+    expect(value[field] === listItem[field], `${label}.${field} must match the list item`)
+  }
+  expect(value.apiKeyCount === listItem.apiKeyCount, `${label}.apiKeyCount must match the list item`)
+}
+
+function assertRouteStrategyIdentity(value: Record<string, unknown>, label: string): void {
+  expect(isNonEmptyString(value.id), `${label}.id must be a non-empty string`)
+  expect(isNonEmptyString(value.systemAccountId), `${label}.systemAccountId must be a non-empty string`)
+  expect(typeof value.systemAccountName === 'string', `${label}.systemAccountName must be a string`)
+  expect(isRouteStrategyMode(value.mode), `${label}.mode is invalid`)
+  expect(value.status === 'active' || value.status === 'disabled', `${label}.status is invalid`)
+}
+
+function assertRouteStrategyConfigForMode(
+  value: Record<string, unknown>,
+  label: string,
+  detail: boolean
+): void {
+  if (value.mode === 'normal') {
+    expect(isRecord(value.normalRoutingConfig), `${label}.normalRoutingConfig must be an object for normal mode`)
+    expect(!Object.hasOwn(value, 'hybridRoutingConfig'), `${label} must not expose hybridRoutingConfig for normal mode`)
+    return
+  }
+  expect(!Object.hasOwn(value, 'normalRoutingConfig'), `${label} must not expose normalRoutingConfig outside normal mode`)
+  if (detail && value.mode === 'hybrid_smart') {
+    expect(isRecord(value.hybridRoutingConfig), `${label}.hybridRoutingConfig must be an object for hybrid_smart mode`)
+    return
+  }
+  expect(!Object.hasOwn(value, 'hybridRoutingConfig'), `${label} must not expose hybridRoutingConfig for this mode`)
+}
+
+function isRouteStrategyMode(value: unknown): value is RouteStrategyMode {
+  return value === 'normal'
+    || value === 'hybrid_smart'
+    || value === 'weighted'
+    || value === 'failover'
+    || value === 'round_robin'
 }
 
 function assertClientIPStatsList(value: unknown): ClientIPStatsListResult {

@@ -26,6 +26,11 @@ type MockScenario =
   | 'ip_stats_detail_empty'
   | 'ip_stats_failure'
   | 'ip_stats_timeout'
+  | 'route_strategies_empty'
+  | 'route_strategies_invalid'
+  | 'route_strategy_detail_invalid'
+  | 'route_strategies_failure'
+  | 'route_strategies_timeout'
   | 'patch_failure'
   | 'cleanup_404'
   | 'patch_and_cleanup_failure'
@@ -52,6 +57,8 @@ const missingGroupId = 'grp_plan0081_missing_sensitive'
 const missingProviderCode = 'missing-provider-sensitive'
 const sensitiveClientIPHash = 'a'.repeat(64)
 const explicitClientIPHash = 'd'.repeat(64)
+const selectedRouteStrategyId = 'route_plan0081_normal_sensitive'
+const missingRouteStrategyId = 'route_plan0081_missing_sensitive'
 const requestRecords: RequestRecord[] = []
 const groups = new Map<string, MockGroup>()
 let scenario: MockScenario = 'normal'
@@ -73,6 +80,7 @@ try {
   const baseUrl = serverBaseUrl(server)
 
   await assertLogBoundaryRedaction(baseUrl)
+  await assertRouteStrategyReadScenarios(baseUrl)
   await assertReadOnlySmoke(baseUrl)
   await assertClientIPRangeNotReadySmoke(baseUrl)
   await assertClientIPRangeEmptySmoke(baseUrl)
@@ -151,6 +159,52 @@ async function assertLogBoundaryRedaction(baseUrl: string): Promise<void> {
   ])
 }
 
+async function assertRouteStrategyReadScenarios(baseUrl: string): Promise<void> {
+  resetMock('route_strategies_empty')
+  const emptyOutput: string[] = []
+  const emptySummary = await runRealGoManagementSmokeFromEnvironment(
+    smokeEnvironment(baseUrl),
+    (message) => emptyOutput.push(message)
+  )
+  assert.deepEqual(emptySummary, expectedSummary(true, 3, true, 0, false))
+  assert.deepEqual(requestPaths(), [
+    groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(),
+    providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
+  ])
+  assertNoEnvironmentIdentifierLeak(emptyOutput, baseUrl)
+
+  resetMock('route_strategies_empty')
+  const explicitEnv = smokeEnvironment(baseUrl, {
+    [realGoManagementSmokeEnv.routeStrategyId]: missingRouteStrategyId
+  })
+  assert.equal(loadRealGoManagementSmokeConfig(explicitEnv).routeStrategyId, missingRouteStrategyId)
+  const missingMessage = await captureFailureMessage(
+    runRealGoManagementSmokeFromEnvironment(explicitEnv, () => undefined)
+  )
+  assert.equal(missingMessage, 'Configured route strategy was not returned by route strategies list')
+  assert.deepEqual(requestPaths(), [groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath()])
+
+  const safeFailures = [missingMessage]
+  const cases = [
+    ['route_strategies_invalid', /route strategies list item 0 must not expose groupBindings/],
+    ['route_strategy_detail_invalid', /route strategy detail\.apiKeyCount must match the list item/],
+    ['route_strategies_failure', /^route strategies list failed with HTTP 503$/],
+    ['route_strategies_timeout', /^route strategies list request failed: (TimeoutError|AbortError)$/, '250']
+  ] as const
+  for (const [requestScenario, expected, timeoutMs] of cases) {
+    resetMock(requestScenario)
+    const message = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl, timeoutMs
+        ? { [realGoManagementSmokeEnv.timeoutMs]: timeoutMs }
+        : {}), () => undefined)
+    )
+    assert.match(message, expected)
+    safeFailures.push(message)
+  }
+
+  assertNoEnvironmentIdentifierLeak(safeFailures, baseUrl)
+}
+
 async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   resetMock('normal')
   const output: string[] = []
@@ -167,17 +221,13 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true'
   )
   assert.deepEqual(requestPaths(), [
-    groupsListPath(),
-    groupDetailPath(selectedGroupId),
-    providersPath(),
-    modelOptionsPath(),
-    clientIPStatsPath(),
-    clientIPStatsDetailPath()
+    groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
+    providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
-  assert.equal(requestRecords.some((record) => ['POST', 'PATCH', 'DELETE'].includes(record.method ?? '')), false)
+  assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
   assertNoCookieLeak(output)
   assertNoEnvironmentIdentifierLeak(output, baseUrl)
   assertRequestHeaders()
@@ -199,11 +249,8 @@ async function assertStrictClientIPDetailRequiresTarget(baseUrl: string): Promis
     )
     assert.deepEqual(output, [])
     assert.deepEqual(requestPaths(), [
-      groupsListPath(),
-      groupDetailPath(selectedGroupId),
-      providersPath(),
-      modelOptionsPath(),
-      clientIPStatsPath()
+      groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
+      providersPath(), modelOptionsPath(), clientIPStatsPath()
     ])
     assertNoEnvironmentIdentifierLeak([failureMessage], baseUrl)
     assertRequestHeaders()
@@ -234,12 +281,8 @@ async function assertStrictClientIPDetailResponseRequirements(baseUrl: string): 
     assert.equal(failureMessage, testCase.expectedMessage)
     assert.deepEqual(output, [])
     assert.deepEqual(requestPaths(), [
-      groupsListPath(),
-      groupDetailPath(selectedGroupId),
-      providersPath(),
-      modelOptionsPath(),
-      clientIPStatsPath(),
-      clientIPStatsDetailPath()
+      groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
+      providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
     ])
     assertNoEnvironmentIdentifierLeak([failureMessage], baseUrl)
     assertRequestHeaders()
@@ -267,12 +310,8 @@ async function assertExplicitClientIPHashSmoke(baseUrl: string): Promise<void> {
     assert.deepEqual(summary, expectedSummary(true, testCase.expectedItemCount, true))
     assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
     assert.deepEqual(requestPaths(), [
-      groupsListPath(),
-      groupDetailPath(selectedGroupId),
-      providersPath(),
-      modelOptionsPath(),
-      clientIPStatsPath(),
-      clientIPStatsDetailPath(explicitClientIPHash)
+      groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
+      providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(explicitClientIPHash)
     ])
     assertNoEnvironmentIdentifierLeak(output, baseUrl)
     assertRequestHeaders()
@@ -291,14 +330,11 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true'
   )
   assert.deepEqual(requestPaths(), [
-    groupsListPath(),
-    groupDetailPath(selectedGroupId),
-    providersPath(),
-    modelOptionsPath(),
-    clientIPStatsPath()
+    groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
+    providersPath(), modelOptionsPath(), clientIPStatsPath()
   ])
   assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
   assertNoEnvironmentIdentifierLeak(output, baseUrl)
@@ -317,14 +353,11 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true'
   )
   assert.deepEqual(requestPaths(), [
-    groupsListPath(),
-    groupDetailPath(selectedGroupId),
-    providersPath(),
-    modelOptionsPath(),
-    clientIPStatsPath()
+    groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
+    providersPath(), modelOptionsPath(), clientIPStatsPath()
   ])
   assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
   assertNoEnvironmentIdentifierLeak(output, baseUrl)
@@ -345,12 +378,8 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(groups.has(temporaryGroupId), false)
   assert.deepEqual(requestPaths(), [
-    groupsListPath(),
-    groupDetailPath(selectedGroupId),
-    providersPath(),
-    modelOptionsPath(),
-    clientIPStatsPath(),
-    clientIPStatsDetailPath(),
+    groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
+    providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(),
     groupsCreatePath(),
     groupsListPath(),
     groupDetailPath(temporaryGroupId),
@@ -579,6 +608,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     sendEnvelope(res, groupListFixture())
     return
   }
+  if (req.method === 'GET' && url.pathname === '/__aisys__/api/route-strategies') {
+    await handleRouteStrategiesListRequest(res, scenario)
+    return
+  }
+  const routeStrategyId = routeStrategyIdFromPath(url.pathname)
+  if (req.method === 'GET' && routeStrategyId) {
+    const detail = routeStrategyFixture(true)
+    if (scenario === 'route_strategy_detail_invalid') {
+      detail.apiKeyCount = 3
+    }
+    sendEnvelope(res, detail)
+    return
+  }
   if (req.method === 'POST' && url.pathname === '/__aisys__/api/groups') {
     const input = recordBody({ body })
     const name = String(input.name ?? '')
@@ -649,6 +691,32 @@ async function handleClientIPStatsRequest(res: ServerResponse, requestScenario: 
   }
   const rangeReady = requestScenario !== 'ip_stats_not_ready'
   sendEnvelope(res, clientIPStatsListFixture(rangeReady, rangeReady && requestScenario !== 'ip_stats_empty'))
+}
+
+async function handleRouteStrategiesListRequest(
+  res: ServerResponse,
+  requestScenario: MockScenario
+): Promise<void> {
+  if (requestScenario === 'route_strategies_timeout') {
+    await delay(1_000)
+    if (res.destroyed) {
+      return
+    }
+  }
+  if (requestScenario === 'route_strategies_failure') {
+    res.statusCode = 503
+    res.end(JSON.stringify({
+      message: `route strategy unavailable: ${selectedRouteStrategyId}; cookie=${cookie}; config=route-config-sensitive-model`
+    }))
+    return
+  }
+  const items = requestScenario === 'route_strategies_empty' ? [] : [routeStrategyFixture(false)]
+  const result = { items, total: items.length, hasMore: false, page: 1, pageSize: 200 }
+  if (requestScenario === 'route_strategies_invalid' && result.items[0]) {
+    result.items[0].groupBindings = routeStrategyBindings()
+    result.items[0].hybridRoutingConfig = { scoringModel: 'route-config-sensitive-model' }
+  }
+  sendEnvelope(res, result)
 }
 
 async function handleGroupDetailRequest(
@@ -839,6 +907,11 @@ function groupIdFromPath(pathname: string): string | undefined {
   return match?.[1] ? decodeURIComponent(match[1]) : undefined
 }
 
+function routeStrategyIdFromPath(pathname: string): string | undefined {
+  const match = /^\/__aisys__\/api\/route-strategies\/([^/]+)$/.exec(pathname)
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined
+}
+
 async function readRequestBody(req: IncomingMessage): Promise<unknown> {
   if (req.method === 'GET' || req.method === 'DELETE') {
     return undefined
@@ -866,7 +939,9 @@ function omitDynamicName(value: unknown): Record<string, unknown> {
 function expectedSummary(
   clientIpRangeReady = true,
   clientIpItemCount = clientIpRangeReady ? 3 : 0,
-  clientIpDetailChecked = clientIpRangeReady && clientIpItemCount > 0
+  clientIpDetailChecked = clientIpRangeReady && clientIpItemCount > 0,
+  routeStrategyCount = 1,
+  routeStrategyDetailChecked = routeStrategyCount > 0
 ): Record<string, unknown> {
   return {
     groupCount: 3,
@@ -875,8 +950,40 @@ function expectedSummary(
     modelOptionCount: 2,
     clientIpItemCount,
     clientIpRangeReady,
-    clientIpDetailChecked
+    clientIpDetailChecked,
+    routeStrategyCount,
+    routeStrategyDetailChecked
   }
+}
+
+function routeStrategyBindings(): Array<Record<string, unknown>> {
+  return Array.from({ length: 4 }, (_, index) => ({
+    id: `${selectedRouteStrategyId}_binding_${index + 1}`,
+    groupId: `route_group_sensitive_${index + 1}`,
+    priority: index + 1,
+    weight: 25,
+    status: 'active',
+    groupEnabled: true
+  }))
+}
+
+function routeStrategyFixture(detail: boolean): Record<string, unknown> {
+  const bindings = routeStrategyBindings()
+  const shared = {
+    id: selectedRouteStrategyId,
+    systemAccountId,
+    systemAccountName: 'PLAN-0081 sensitive route owner',
+    name: 'PLAN-0081 normal route sensitive name',
+    mode: 'normal',
+    status: 'active',
+    isDefault: true,
+    normalRoutingConfig: { schedulingPreference: 'cost_first' },
+    createdAt: '2026-07-14T01:00:00Z',
+    updatedAt: '2026-07-14T02:00:00Z'
+  }
+  return detail
+    ? { ...shared, groupBindings: bindings, apiKeyCount: 2 }
+    : { ...shared, groupBindingPreview: bindings.slice(0, 3), bindingCount: 4, apiKeyCount: 2 }
 }
 
 function requestPaths(): string[] {
@@ -893,6 +1000,14 @@ function groupsCreatePath(): string {
 
 function groupDetailPath(groupId: string): string {
   return `GET /__aisys__/api/groups/${groupId}?systemAccountId=${systemAccountId}`
+}
+
+function routeStrategiesListPath(): string {
+  return `GET /__aisys__/api/route-strategies?page=1&pageSize=200&systemAccountId=${systemAccountId}`
+}
+
+function routeStrategyDetailPath(routeStrategyId = selectedRouteStrategyId): string {
+  return `GET /__aisys__/api/route-strategies/${routeStrategyId}?systemAccountId=${systemAccountId}`
 }
 
 function groupPatchPath(groupId: string): string {
@@ -948,6 +1063,11 @@ function assertNoEnvironmentIdentifierLeak(
     temporaryGroupId,
     sensitiveClientIPHash,
     explicitClientIPHash,
+    selectedRouteStrategyId,
+    missingRouteStrategyId,
+    'PLAN-0081 normal route sensitive name',
+    'PLAN-0081 sensitive route owner',
+    'route-config-sensitive-model',
     'gpt',
     'openai',
     ...additionalIdentifiers
