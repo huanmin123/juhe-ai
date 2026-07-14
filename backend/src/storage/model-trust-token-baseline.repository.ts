@@ -101,39 +101,43 @@ export async function activateTokenInterceptBaselineVersion(client: DatabaseClie
   }
   const note = input.calibrationNote.trim()
   if (!note || note.length > 500) throw new Error('固定截距校准记录必须为 1 到 500 个字符')
-  const table = client.dialect.qualifyTable('juhe_stats', 'model_token_intercept_baseline_versions')
-  const candidate = await client.one<BaselineRow>(`
-    SELECT baseline_version, version_status, evidence_status, independent_source_count, q90_intercept,
-      strong_threshold_intercept, strong_gate_enabled
-    FROM ${table}
-    WHERE cohort_key_hmac = ? AND requested_model = ? AND tokenizer_version = ?
-      AND probe_set_version = ? AND baseline_version = ?
-    LIMIT 1
-  `, [input.cohortKeyHmac, input.requestedModel, input.tokenizerVersion, input.probeSetVersion, input.baselineVersion])
-  if (!candidate || candidate.version_status !== 'calibration_pending') throw new Error('固定截距待校准基线版本不存在')
-  if (candidate.evidence_status !== 'stable' || Number(candidate.independent_source_count) < 10) {
-    throw new Error('固定截距基线尚未达到稳定独立来源门槛')
-  }
-  const q90 = optionalNumber(candidate.q90_intercept)
-  if (q90 === undefined || input.strongThresholdIntercept < q90) {
-    throw new Error('固定截距校准阈值不能低于当前 cohort 的 q90')
-  }
-  await client.execute(`
-    UPDATE ${table}
-    SET version_status = 'retired', strong_gate_enabled = 0, updated_at = ?
-    WHERE cohort_key_hmac = ? AND requested_model = ? AND tokenizer_version = ?
-      AND probe_set_version = ? AND version_status = 'active'
-  `, [new Date().toISOString(), input.cohortKeyHmac, input.requestedModel, input.tokenizerVersion, input.probeSetVersion])
-  await client.execute(`
-    UPDATE ${table}
-    SET version_status = 'active', strong_threshold_intercept = ?, strong_gate_enabled = 1,
-      calibration_note = ?, updated_at = ?
-    WHERE cohort_key_hmac = ? AND requested_model = ? AND tokenizer_version = ?
-      AND probe_set_version = ? AND baseline_version = ? AND version_status = 'calibration_pending'
-  `, [
-    input.strongThresholdIntercept, note, new Date().toISOString(), input.cohortKeyHmac,
-    input.requestedModel, input.tokenizerVersion, input.probeSetVersion, input.baselineVersion
-  ])
+  await client.transaction(async (tx) => {
+    const table = tx.dialect.qualifyTable('juhe_stats', 'model_token_intercept_baseline_versions')
+    const candidate = await tx.one<BaselineRow>(`
+      SELECT baseline_version, version_status, evidence_status, independent_source_count, q90_intercept,
+        strong_threshold_intercept, strong_gate_enabled
+      FROM ${table}
+      WHERE cohort_key_hmac = ? AND requested_model = ? AND tokenizer_version = ?
+        AND probe_set_version = ? AND baseline_version = ?
+      LIMIT 1${tx.driver === 'postgres' ? ' FOR UPDATE' : ''}
+    `, [input.cohortKeyHmac, input.requestedModel, input.tokenizerVersion, input.probeSetVersion, input.baselineVersion])
+    if (!candidate || candidate.version_status !== 'calibration_pending') throw new Error('固定截距待校准基线版本不存在')
+    if (candidate.evidence_status !== 'stable' || Number(candidate.independent_source_count) < 10) {
+      throw new Error('固定截距基线尚未达到稳定独立来源门槛')
+    }
+    const q90 = optionalNumber(candidate.q90_intercept)
+    if (q90 === undefined || input.strongThresholdIntercept < q90) {
+      throw new Error('固定截距校准阈值不能低于当前 cohort 的 q90')
+    }
+    const updatedAt = new Date().toISOString()
+    await tx.execute(`
+      UPDATE ${table}
+      SET version_status = 'retired', strong_gate_enabled = 0, updated_at = ?
+      WHERE cohort_key_hmac = ? AND requested_model = ? AND tokenizer_version = ?
+        AND probe_set_version = ? AND version_status = 'active'
+    `, [updatedAt, input.cohortKeyHmac, input.requestedModel, input.tokenizerVersion, input.probeSetVersion])
+    const activated = await tx.execute(`
+      UPDATE ${table}
+      SET version_status = 'active', strong_threshold_intercept = ?, strong_gate_enabled = 1,
+        calibration_note = ?, updated_at = ?
+      WHERE cohort_key_hmac = ? AND requested_model = ? AND tokenizer_version = ?
+        AND probe_set_version = ? AND baseline_version = ? AND version_status = 'calibration_pending'
+    `, [
+      input.strongThresholdIntercept, note, updatedAt, input.cohortKeyHmac,
+      input.requestedModel, input.tokenizerVersion, input.probeSetVersion, input.baselineVersion
+    ])
+    if (activated.changes !== 1) throw new Error('固定截距基线激活冲突，请刷新后重试')
+  })
 }
 
 export async function evaluateTokenInterceptBaseline(
