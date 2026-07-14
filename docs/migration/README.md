@@ -39,7 +39,7 @@
 24. [W5 管理端 API Key 删除迁移记录](W5-管理端APIKey删除迁移记录.md)：`DELETE /api-keys/{id}` 与 `DELETE /my-api-keys/{id}` 的作用域、204 空响应、原子硬删除、cleanup target、提交后失效、操作日志、残余安全风险和真实依赖门禁。
 25. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前仅覆盖管理侧 / 个人侧 `usage-window` 固定 31 天窗口 Go opt-in。
 26. [W6 System API 限流对齐记录](W6-System-API限流对齐记录.md)：system API IP read / write、已认证用户 read / write、client IP allowlist bypass、缓存失效、验证和剩余 Node 差异。
-27. [W6 管理端客户端 IP 策略迁移记录](W6-管理端客户端IP策略迁移记录.md)：`allowlist`、`unallowlist`、`blacklist`、`unblock` 四条管理写接口的权限、严格请求体、事务锁、缓存失效、操作日志、前端契约和删除门禁。
+27. [W6 管理端客户端 IP 统计与策略迁移记录](W6-管理端客户端IP策略迁移记录.md)：`GET /ip-stats` 只读列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条管理写接口的 Go opt-in 契约、Node writer 边界、预聚合读取、查询计划、前端证据和删除门禁。
 28. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
 29. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
 30. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
@@ -75,7 +75,7 @@
 | `W5-管理端APIKey删除迁移记录.md` | W5 `DELETE /api-keys/{id}` 与 `DELETE /my-api-keys/{id}` 已进入 Go opt-in；固定 admin global / owner narrowing、self actor scope、写鉴权与限流、204 空 body / no-store、默认 Key 保护、PostgreSQL 原子硬删除与 cleanup-target upsert、validation 必需失效、`api_keys.delete` 操作日志、残余失效重试风险和真实依赖门禁 |
 | `W6-记录与统计读接口迁移记录.md` | W6 记录、日志和统计只读接口迁移记录；当前固定管理侧 / 个人侧 `usage-window` 权限、时区、31 天窗口、无明细扫描和删除门禁 |
 | `W6-System-API限流对齐记录.md` | system API 两层 read / write 限流记录；固定六项设置默认值、鉴权前 IP 层、鉴权后已注册业务路由用户层、Redis / 内存实现、client IP allowlist 两层 bypass、30 秒缓存 / shared version 失效、429 语义，以及已认证未知路径 / 错误 method 尚未对齐的删除门禁 |
-| `W6-管理端客户端IP策略迁移记录.md` | W6 四条 `POST /ip-stats/{ipHash}/{action}` Go opt-in 记录；固定 admin-only、`256 KiB` strict JSON、blacklist duration / Node 数值语义、进程内 mutation guard、PostgreSQL 行锁事务、shared cache version、operation log、前端 request-capture 和真实依赖门禁 |
+| `W6-管理端客户端IP策略迁移记录.md` | W6 `GET /ip-stats` 与四条 `POST /ip-stats/{ipHash}/{action}` Go opt-in 记录；列表固定只读 Node 预聚合结果、query/date/status/sort/progressive pagination、默认静态请求数排序和 Node writer / detail 边界，写接口固定 strict JSON、事务、shared cache version、operation log、前端证据和真实依赖门禁 |
 | `测试与验收策略.md` | 单模块、系统、网关、性能、安全和发布验收 |
 | `开发构建部署调整.md` | 开发环境、命令、包结构、部署脚本和平台差异 |
 | `迁移文档示例.md` | 后续新增单模块迁移记录时的参考格式 |
