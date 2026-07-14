@@ -178,6 +178,85 @@ func TestParsePublicAccountUpdateBodyPreservesSupportedModelsPresence(t *testing
 	}
 }
 
+func TestPublicAccountHandlersUpdateTypeIsValidationOnly(t *testing.T) {
+	t.Run("type without mutable field", func(t *testing.T) {
+		service := &publicAccountServiceStub{}
+		router := newTestPublicAPIShell(
+			newPublicGroupAPIAuthStub(),
+			&publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}},
+			&publicAPIShellLogQueueStub{},
+			newPublicAccountHandlers(service),
+			time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
+		)
+
+		req := httptest.NewRequest(http.MethodPost, "/__aipublic__/account/update", strings.NewReader(`{"accountId":"acct_1","type":"api_key"}`))
+		req.Header.Set("Authorization", "Bearer juis_plain")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		assertPublicGroupMessageError(t, rec, http.StatusBadRequest, "账号修改至少提供一个要修改的字段")
+		if service.updateCalls != 0 {
+			t.Fatalf("update calls = %d, want 0", service.updateCalls)
+		}
+	})
+
+	t.Run("type with mutable field", func(t *testing.T) {
+		service := &publicAccountServiceStub{}
+		router := newTestPublicAPIShell(
+			newPublicGroupAPIAuthStub(),
+			&publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}},
+			&publicAPIShellLogQueueStub{},
+			newPublicAccountHandlers(service),
+			time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
+		)
+
+		req := httptest.NewRequest(http.MethodPost, "/__aipublic__/account/update", strings.NewReader(`{"accountId":"acct_1","type":"api_key","name":"公开账号更新"}`))
+		req.Header.Set("Authorization", "Bearer juis_plain")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		if service.updateCalls != 1 {
+			t.Fatalf("update calls = %d, want 1", service.updateCalls)
+		}
+		if service.updateInput.AccountID != "acct_1" || service.updateInput.Type == nil || *service.updateInput.Type != publicaccounts.AccountTypeAPIKey ||
+			service.updateInput.Name == nil || *service.updateInput.Name != "公开账号更新" {
+			t.Fatalf("update input = %+v", service.updateInput)
+		}
+	})
+
+	t.Run("unsupported type with mutable field", func(t *testing.T) {
+		service := &publicAccountServiceStub{}
+		router := newTestPublicAPIShell(
+			newPublicGroupAPIAuthStub(),
+			&publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}},
+			&publicAPIShellLogQueueStub{},
+			newPublicAccountHandlers(service),
+			time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
+		)
+
+		req := httptest.NewRequest(http.MethodPost, "/__aipublic__/account/update", strings.NewReader(`{"accountId":"acct_1","type":"oauth","name":"公开账号更新"}`))
+		req.Header.Set("Authorization", "Bearer juis_plain")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+		}
+		if service.updateCalls != 0 {
+			t.Fatalf("update calls = %d, want 0", service.updateCalls)
+		}
+	})
+}
+
 func TestParsePublicAccountBodiesRejectInternalHealthCheckFields(t *testing.T) {
 	tests := []struct {
 		name      string

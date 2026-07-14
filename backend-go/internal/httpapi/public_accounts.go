@@ -430,7 +430,7 @@ func parsePublicAccountUpdateBody(r *http.Request) (publicaccounts.UpdateInput, 
 	if err != nil {
 		return publicaccounts.UpdateInput{}, err
 	}
-	if name == nil && accountType == nil && baseURL == nil && apiKey == nil && !supportedModels.Set() &&
+	if name == nil && baseURL == nil && apiKey == nil && !supportedModels.Set() &&
 		status == nil && concurrencyLimit == nil && priority == nil && !availabilitySchedule.Set() && !notesState.Set() {
 		return publicaccounts.UpdateInput{}, fmt.Errorf("账号修改至少提供一个要修改的字段")
 	}
