@@ -48,6 +48,11 @@ import { WorkerScheduler } from './worker-scheduler.js'
 import { getUsageRecordRedisStreamOldestCreatedAt } from '../gateway/usage/record-queue.service.js'
 import { DATA_RETENTION_CLEANUP_INTERVAL_MINUTES } from './data-retention-cleanup.constants.js'
 import { runAccountBalanceRefresh } from './account-balance-refresh.job.js'
+import {
+  backgroundTaskRunReconcileInitialDelayMs,
+  backgroundTaskRunReconcileIntervalMs,
+  runBackgroundTaskRunReconcile
+} from './background-task-run-reconcile.job.js'
 
 let started = false
 let usageStatsAggregationRunning = false
@@ -126,6 +131,12 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
       return
     case 'stats-worker':
+      scheduler.schedule({
+        name: backgroundScheduledJobName('background-task-run-reconcile'),
+        intervalMs: backgroundTaskRunReconcileIntervalMs,
+        initialDelayMs: backgroundTaskRunReconcileInitialDelayMs,
+        task: runBackgroundTaskRunReconcile
+      })
       scheduler.schedule({ name: backgroundScheduledJobName('model-trust-observation-aggregation'), intervalMs: 30 * secondMs, initialDelayMs: 12 * secondMs, task: runModelTrustAggregation })
       if (isPostgresHighPerformanceMode()) {
         scheduler.schedule({ name: backgroundScheduledJobName('system-metrics-sample'), intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 5, 3600) * secondMs, initialDelayMs: 5 * secondMs, task: runSystemMetricsSample })
