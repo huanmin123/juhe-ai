@@ -36,6 +36,17 @@ type MockScenario =
   | 'ip_stats_detail_empty'
   | 'ip_stats_failure'
   | 'ip_stats_timeout'
+  | 'public_api_logs_non_empty'
+  | 'public_api_logs_envelope_invalid'
+  | 'public_api_logs_items_invalid'
+  | 'public_api_logs_pagination_invalid'
+  | 'public_api_logs_required_field_invalid'
+  | 'public_api_logs_optional_field_invalid'
+  | 'public_api_logs_capture_status_invalid'
+  | 'public_api_logs_no_store'
+  | 'public_api_log_detail_request_data_invalid'
+  | 'public_api_log_detail_response_data_invalid'
+  | 'public_api_log_detail_no_store'
   | 'route_strategies_empty'
   | 'route_strategies_invalid'
   | 'route_strategy_detail_invalid'
@@ -71,6 +82,8 @@ const selectedRouteStrategyId = 'route_plan0081_normal_sensitive'
 const missingRouteStrategyId = 'route_plan0081_missing_sensitive'
 const configuredAccountId = 'acct_plan0081/encoded target?read-only'
 const mismatchedAccountId = 'acct_plan0081_mismatched_sensitive'
+const listedPublicApiLogId = 'publog_plan0081_list_sensitive'
+const configuredPublicApiLogId = 'publog_plan0081/encoded target?read-only'
 const requestRecords: RequestRecord[] = []
 const groups = new Map<string, MockGroup>()
 let scenario: MockScenario = 'normal'
@@ -91,6 +104,7 @@ await listen(server)
 try {
   const baseUrl = serverBaseUrl(server)
 
+  await assertPublicAPILogReadScenarios(baseUrl)
   await assertLogBoundaryRedaction(baseUrl)
   await assertRouteStrategyReadScenarios(baseUrl)
   await assertReadOnlySmoke(baseUrl)
@@ -111,6 +125,98 @@ try {
 }
 
 console.log('PLAN-0081 real Go management smoke regression passed')
+
+async function assertPublicAPILogReadScenarios(baseUrl: string): Promise<void> {
+  resetMock('normal')
+  const emptyOutput: string[] = []
+  const emptySummary = await runRealGoManagementSmokeFromEnvironment(
+    smokeEnvironment(baseUrl),
+    (message) => emptyOutput.push(message)
+  )
+  assert.deepEqual(emptySummary, expectedSummary())
+  assert.deepEqual(emptyOutput, [formatRealGoManagementSmokeSummary(emptySummary)])
+  assert.equal(emptySummary.publicApiLogCount, 0)
+  assert.equal(emptySummary.publicApiLogDetailChecked, false)
+  assert.equal(requestPaths()[0], publicAPILogsListPath())
+  assert.equal(requestPaths().some((path) => path.startsWith('GET /__aisys__/api/public-api-logs/')), false)
+  assertRequestHeaders()
+
+  resetMock('public_api_logs_non_empty')
+  const listOnlySummary = await runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
+  assert.deepEqual(listOnlySummary, {
+    ...expectedSummary(),
+    publicApiLogCount: 1,
+    publicApiLogDetailChecked: false
+  })
+  assert.equal(requestPaths()[0], publicAPILogsListPath())
+  assert.equal(requestPaths().some((path) => path.startsWith('GET /__aisys__/api/public-api-logs/')), false)
+  assertRequestHeaders()
+
+  resetMock('public_api_logs_non_empty')
+  const detailOutput: string[] = []
+  const detailEnv = smokeEnvironment(baseUrl, {
+    [realGoManagementSmokeEnv.publicApiLogId]: `  ${configuredPublicApiLogId}  `
+  })
+  const loadedConfig = loadRealGoManagementSmokeConfig(detailEnv)
+  assert.equal(loadedConfig.publicApiLogId, configuredPublicApiLogId)
+  const detailSummary = await runRealGoManagementSmokeFromEnvironment(
+    detailEnv,
+    (message) => detailOutput.push(message)
+  )
+  assert.deepEqual(detailSummary, {
+    ...expectedSummary(),
+    publicApiLogCount: 1,
+    publicApiLogDetailChecked: true
+  })
+  assert.deepEqual(detailOutput, [formatRealGoManagementSmokeSummary(detailSummary)])
+  assert.match(detailOutput[0] ?? '', /publicApiLogCount=1 publicApiLogDetailChecked=true$/)
+  assert.equal(requestPaths()[0], publicAPILogsListPath())
+  assert.equal(requestPaths()[1], publicAPILogDetailPath(configuredPublicApiLogId))
+  assert.notEqual(listedPublicApiLogId, configuredPublicApiLogId)
+  assertRequestHeaders()
+
+  const listFailureCases = [
+    ['public_api_logs_envelope_invalid', /public API logs list envelope must contain only the data field/],
+    ['public_api_logs_items_invalid', /public API logs list items must be an array/],
+    ['public_api_logs_pagination_invalid', /public API logs list total must be the progressive first-page upper bound/],
+    ['public_api_logs_required_field_invalid', /public API logs list item 0\.method must be a non-empty string/],
+    ['public_api_logs_optional_field_invalid', /public API logs list item 0\.traceId must be a string when present/],
+    ['public_api_logs_capture_status_invalid', /public API logs list item 0\.requestCaptureStatus must be a valid capture status/],
+    ['public_api_logs_no_store', /public API logs list must return Cache-Control: no-store/]
+  ] as const
+  for (const [requestScenario, expectedMessage] of listFailureCases) {
+    resetMock(requestScenario)
+    const failureMessage = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
+    )
+    assert.match(failureMessage, expectedMessage)
+    assert.deepEqual(requestPaths(), [publicAPILogsListPath()])
+    assertRequestHeaders()
+  }
+
+  const detailFailureCases = [
+    ['public_api_log_detail_request_data_invalid', /public API log detail\.requestData must be a non-array object/],
+    ['public_api_log_detail_response_data_invalid', /public API log detail\.responseData must be a non-array object/],
+    ['public_api_log_detail_no_store', /public API log detail must return Cache-Control: no-store/]
+  ] as const
+  for (const [requestScenario, expectedMessage] of detailFailureCases) {
+    resetMock(requestScenario)
+    const failureMessage = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl, {
+        [realGoManagementSmokeEnv.publicApiLogId]: configuredPublicApiLogId
+      }), () => undefined)
+    )
+    assert.match(failureMessage, expectedMessage)
+    assert.deepEqual(requestPaths(), [publicAPILogsListPath(), publicAPILogDetailPath(configuredPublicApiLogId)])
+    assertRequestHeaders()
+  }
+
+  assertNoEnvironmentIdentifierLeak(
+    [...emptyOutput, ...detailOutput],
+    baseUrl,
+    [listedPublicApiLogId, configuredPublicApiLogId]
+  )
+}
 
 async function assertLogBoundaryRedaction(baseUrl: string): Promise<void> {
   const messages: string[] = []
@@ -182,6 +288,7 @@ async function assertRouteStrategyReadScenarios(baseUrl: string): Promise<void> 
   )
   assert.deepEqual(emptySummary, expectedSummary(true, 3, true, 0, false))
   assert.deepEqual(requestPaths(), [
+    publicAPILogsListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -196,7 +303,9 @@ async function assertRouteStrategyReadScenarios(baseUrl: string): Promise<void> 
     runRealGoManagementSmokeFromEnvironment(explicitEnv, () => undefined)
   )
   assert.equal(missingMessage, 'Configured route strategy was not returned by route strategies list')
-  assert.deepEqual(requestPaths(), [groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath()])
+  assert.deepEqual(requestPaths(), [
+    publicAPILogsListPath(), groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath()
+  ])
 
   const safeFailures = [missingMessage]
   const cases = [
@@ -237,9 +346,10 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
+    publicAPILogsListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -262,6 +372,7 @@ async function assertAccountTestOptionsReadSmoke(baseUrl: string): Promise<void>
   assert.deepEqual(summary, expectedSummary(true, 3, true, 1, true, true))
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.deepEqual(requestPaths(), [
+    publicAPILogsListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), accountTestOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -309,6 +420,7 @@ async function assertAccountTestOptionsResponseRequirements(baseUrl: string): Pr
     assert.match(failureMessage, expectedMessage)
     assert.deepEqual(output, [])
     assert.deepEqual(requestPaths(), [
+      publicAPILogsListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), accountTestOptionsPath()
     ])
@@ -334,6 +446,7 @@ async function assertStrictClientIPDetailRequiresTarget(baseUrl: string): Promis
     )
     assert.deepEqual(output, [])
     assert.deepEqual(requestPaths(), [
+      publicAPILogsListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath()
     ])
@@ -366,6 +479,7 @@ async function assertStrictClientIPDetailResponseRequirements(baseUrl: string): 
     assert.equal(failureMessage, testCase.expectedMessage)
     assert.deepEqual(output, [])
     assert.deepEqual(requestPaths(), [
+      publicAPILogsListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
     ])
@@ -395,6 +509,7 @@ async function assertExplicitClientIPHashSmoke(baseUrl: string): Promise<void> {
     assert.deepEqual(summary, expectedSummary(true, testCase.expectedItemCount, true))
     assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
     assert.deepEqual(requestPaths(), [
+      publicAPILogsListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(explicitClientIPHash)
     ])
@@ -415,9 +530,10 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
+    publicAPILogsListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath()
   ])
@@ -438,9 +554,10 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
+    publicAPILogsListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath()
   ])
@@ -463,6 +580,7 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(groups.has(temporaryGroupId), false)
   assert.deepEqual(requestPaths(), [
+    publicAPILogsListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(),
     groupsCreatePath(),
@@ -689,6 +807,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   res.setHeader('Cache-Control', 'no-store')
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
 
+  if (req.method === 'GET' && url.pathname === '/__aisys__/api/public-api-logs') {
+    handlePublicAPILogsListRequest(res, scenario)
+    return
+  }
+  const publicApiLogId = publicAPILogIdFromPath(url.pathname)
+  if (req.method === 'GET' && publicApiLogId !== undefined) {
+    handlePublicAPILogDetailRequest(res, publicApiLogId, scenario)
+    return
+  }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/groups') {
     sendEnvelope(res, groupListFixture())
     return
@@ -763,6 +890,63 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   res.statusCode = 404
   res.end(JSON.stringify({ message: 'not found' }))
+}
+
+function handlePublicAPILogsListRequest(res: ServerResponse, requestScenario: MockScenario): void {
+  const includesSummary = requestScenario === 'public_api_logs_non_empty'
+    || requestScenario === 'public_api_logs_required_field_invalid'
+    || requestScenario === 'public_api_logs_optional_field_invalid'
+    || requestScenario === 'public_api_logs_capture_status_invalid'
+  const summary = publicAPILogSummaryFixture(listedPublicApiLogId)
+  if (requestScenario === 'public_api_logs_required_field_invalid') {
+    summary.method = 42
+  }
+  if (requestScenario === 'public_api_logs_optional_field_invalid') {
+    summary.traceId = 42
+  }
+  if (requestScenario === 'public_api_logs_capture_status_invalid') {
+    summary.requestCaptureStatus = 'partial'
+  }
+
+  const data: Record<string, unknown> = {
+    items: includesSummary ? [summary] : [],
+    total: includesSummary ? 1 : 0,
+    hasMore: false,
+    page: 1,
+    pageSize: 20
+  }
+  if (requestScenario === 'public_api_logs_items_invalid') {
+    data.items = { id: listedPublicApiLogId }
+  }
+  if (requestScenario === 'public_api_logs_pagination_invalid') {
+    data.total = 1
+  }
+  if (requestScenario === 'public_api_logs_no_store') {
+    res.setHeader('Cache-Control', 'private, max-age=60')
+  }
+  if (requestScenario === 'public_api_logs_envelope_invalid') {
+    res.end(JSON.stringify({ data, meta: { source: 'invalid-envelope' } }))
+    return
+  }
+  sendEnvelope(res, data)
+}
+
+function handlePublicAPILogDetailRequest(
+  res: ServerResponse,
+  publicApiLogId: string,
+  requestScenario: MockScenario
+): void {
+  const detail = publicAPILogDetailFixture(publicApiLogId)
+  if (requestScenario === 'public_api_log_detail_request_data_invalid') {
+    detail.requestData = []
+  }
+  if (requestScenario === 'public_api_log_detail_response_data_invalid') {
+    detail.responseData = []
+  }
+  if (requestScenario === 'public_api_log_detail_no_store') {
+    res.setHeader('Cache-Control', 'private, max-age=60')
+  }
+  sendEnvelope(res, detail)
 }
 
 async function handleClientIPStatsRequest(res: ServerResponse, requestScenario: MockScenario): Promise<void> {
@@ -1042,6 +1226,53 @@ function accountTestOptionsFixture(accountId: string, requestScenario: MockScena
   return result
 }
 
+function publicAPILogSummaryFixture(id: string): Record<string, unknown> {
+  return {
+    id,
+    traceId: 'trace_plan0081_public_log_sensitive',
+    sourceRefId: 'source_plan0081_public_log_sensitive',
+    sourceName: 'PLAN-0081 public log source',
+    tokenId: 'token_plan0081_public_log_sensitive',
+    tokenName: 'PLAN-0081 public log token',
+    tokenPrefix: 'juis_plan0081',
+    isTestToken: true,
+    method: 'POST',
+    path: '/__aipublic__/account/add',
+    queryString: 'targetUsername=plan0081-sensitive',
+    clientIp: '192.0.2.81',
+    userAgent: 'plan0081-public-api-client/1.0',
+    statusCode: 201,
+    success: true,
+    durationMs: 81,
+    requestSizeBytes: 128,
+    responseSizeBytes: 256,
+    requestCaptureStatus: 'truncated',
+    responseCaptureStatus: 'dropped',
+    errorCode: '',
+    errorMessage: '',
+    startedAt: '2026-07-14T01:02:03.000Z',
+    endedAt: '2026-07-14T01:02:03.081Z',
+    createdAt: '2026-07-14T01:02:03.081Z'
+  }
+}
+
+function publicAPILogDetailFixture(id: string): Record<string, unknown> {
+  return {
+    ...publicAPILogSummaryFixture(id),
+    requestCaptureStatus: 'complete',
+    responseCaptureStatus: 'empty',
+    requestData: {
+      method: 'POST',
+      path: '/__aipublic__/account/add',
+      body: { apiKey: '[redacted]' }
+    },
+    responseData: {
+      statusCode: 201,
+      body: {}
+    }
+  }
+}
+
 function sendEnvelope(res: ServerResponse, data: unknown): void {
   res.end(JSON.stringify({ data }))
 }
@@ -1058,6 +1289,11 @@ function routeStrategyIdFromPath(pathname: string): string | undefined {
 
 function accountTestOptionsAccountIdFromPath(pathname: string): string | undefined {
   const match = /^\/__aisys__\/api\/accounts\/([^/]+)\/test-options$/.exec(pathname)
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined
+}
+
+function publicAPILogIdFromPath(pathname: string): string | undefined {
+  const match = /^\/__aisys__\/api\/public-api-logs\/([^/]+)$/.exec(pathname)
   return match?.[1] ? decodeURIComponent(match[1]) : undefined
 }
 
@@ -1099,6 +1335,8 @@ function expectedSummary(
     selectedGroupId,
     providerCount: 2,
     modelOptionCount: 2,
+    publicApiLogCount: 0,
+    publicApiLogDetailChecked: false,
     clientIpItemCount,
     clientIpRangeReady,
     clientIpDetailChecked,
@@ -1139,6 +1377,14 @@ function routeStrategyFixture(detail: boolean): Record<string, unknown> {
 
 function requestPaths(): string[] {
   return requestRecords.map((record) => `${record.method} ${record.url}`)
+}
+
+function publicAPILogsListPath(): string {
+  return 'GET /__aisys__/api/public-api-logs?page=1&pageSize=20'
+}
+
+function publicAPILogDetailPath(publicApiLogId = configuredPublicApiLogId): string {
+  return `GET /__aisys__/api/public-api-logs/${encodeURIComponent(publicApiLogId)}`
 }
 
 function groupsListPath(): string {
@@ -1218,6 +1464,8 @@ function assertNoEnvironmentIdentifierLeak(
     temporaryGroupId,
     sensitiveClientIPHash,
     explicitClientIPHash,
+    listedPublicApiLogId,
+    configuredPublicApiLogId,
     selectedRouteStrategyId,
     missingRouteStrategyId,
     configuredAccountId,

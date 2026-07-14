@@ -9,6 +9,7 @@ export const realGoManagementSmokeEnv = {
   cookie: 'JUHE_REAL_GO_MANAGEMENT_COOKIE',
   groupId: 'JUHE_REAL_GO_MANAGEMENT_GROUP_ID',
   providerCode: 'JUHE_REAL_GO_MANAGEMENT_GROUP_PROVIDER_CODE',
+  publicApiLogId: 'JUHE_REAL_GO_MANAGEMENT_PUBLIC_API_LOG_ID',
   requireClientIpDetail: 'JUHE_REAL_GO_MANAGEMENT_REQUIRE_CLIENT_IP_DETAIL',
   routeStrategyId: 'JUHE_REAL_GO_MANAGEMENT_ROUTE_STRATEGY_ID',
   systemAccountId: 'JUHE_REAL_GO_MANAGEMENT_SYSTEM_ACCOUNT_ID',
@@ -40,6 +41,7 @@ export interface RealGoManagementSmokeConfig {
   cookie: string
   groupId?: string
   providerCode?: string
+  publicApiLogId?: string
   requireClientIpDetail?: boolean
   routeStrategyId?: string
   systemAccountId?: string
@@ -52,6 +54,8 @@ export interface RealGoManagementSmokeSummary {
   selectedGroupId: string
   providerCount: number
   modelOptionCount: number
+  publicApiLogCount: number
+  publicApiLogDetailChecked: boolean
   clientIpItemCount: number
   clientIpRangeReady: boolean
   clientIpDetailChecked: boolean
@@ -135,6 +139,44 @@ interface AccountTestOptionModel {
   supportedApiProtocols: string[]
 }
 
+type PublicApiLogCaptureStatus = 'complete' | 'truncated' | 'empty' | 'dropped'
+
+interface PublicApiLogSummary {
+  id: string
+  traceId?: string
+  sourceRefId?: string
+  sourceName?: string
+  tokenId?: string
+  tokenName?: string
+  tokenPrefix?: string
+  isTestToken: boolean
+  method: string
+  path: string
+  queryString?: string
+  clientIp?: string
+  userAgent?: string
+  statusCode?: number
+  success: boolean
+  durationMs?: number
+  requestSizeBytes: number
+  responseSizeBytes: number
+  requestCaptureStatus: PublicApiLogCaptureStatus
+  responseCaptureStatus: PublicApiLogCaptureStatus
+  errorCode?: string
+  errorMessage?: string
+  startedAt: string
+  endedAt: string
+  createdAt: string
+}
+
+interface PublicApiLogListResult {
+  items: PublicApiLogSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 interface ClientIPStatsRange {
   startDate: string
   endDate: string
@@ -215,6 +257,7 @@ export function loadRealGoManagementSmokeConfig(
     cookie,
     groupId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.groupId),
     providerCode: optionalEnvironmentValue(env, realGoManagementSmokeEnv.providerCode),
+    publicApiLogId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.publicApiLogId),
     requireClientIpDetail: optionalBinaryFlag(env, realGoManagementSmokeEnv.requireClientIpDetail),
     routeStrategyId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.routeStrategyId),
     systemAccountId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.systemAccountId),
@@ -276,13 +319,32 @@ export function formatRealGoManagementSmokeSummary(summary: RealGoManagementSmok
     `clientIpDetailChecked=${summary.clientIpDetailChecked}`,
     `routeStrategies=${summary.routeStrategyCount}`,
     `routeStrategyDetailChecked=${summary.routeStrategyDetailChecked}`,
-    `accountTestOptionsChecked=${summary.accountTestOptionsChecked}`
+    `accountTestOptionsChecked=${summary.accountTestOptionsChecked}`,
+    `publicApiLogCount=${summary.publicApiLogCount}`,
+    `publicApiLogDetailChecked=${summary.publicApiLogDetailChecked}`
   ].join(' ')
 }
 
 async function runReadOnlySmoke(
   config: NormalizedRealGoManagementSmokeConfig
 ): Promise<ReadOnlySmokeResult> {
+  const publicAPILogListData = await getEnvelopeData(
+    publicAPILogsListUrl(config),
+    config,
+    'public API logs list'
+  )
+  const publicAPILogs = assertPublicAPILogList(publicAPILogListData)
+  let publicApiLogDetailChecked = false
+  if (config.publicApiLogId) {
+    const publicAPILogDetailData = await getEnvelopeData(
+      publicAPILogDetailUrl(config, config.publicApiLogId),
+      config,
+      'public API log detail'
+    )
+    assertPublicAPILogDetail(publicAPILogDetailData, config.publicApiLogId)
+    publicApiLogDetailChecked = true
+  }
+
   const listData = await getEnvelopeData(groupsListUrl(config), config, 'groups list')
   const groupList = assertGroupList(listData)
   const selectedGroup = selectOwnerNonDefaultGroup(groupList.items, config.groupId)
@@ -383,6 +445,8 @@ async function runReadOnlySmoke(
       selectedGroupId: detail.id,
       providerCount: providers.length,
       modelOptionCount: modelOptions.length,
+      publicApiLogCount: publicAPILogs.items.length,
+      publicApiLogDetailChecked,
       clientIpItemCount: clientIPStats.items.length,
       clientIpRangeReady: clientIPStats.rangeReady,
       clientIpDetailChecked,
@@ -544,6 +608,7 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
     clientIpHash: config.clientIpHash?.trim().toLowerCase() || undefined,
     groupId: config.groupId?.trim() || undefined,
     providerCode: config.providerCode?.trim() || undefined,
+    publicApiLogId: config.publicApiLogId?.trim() || undefined,
     requireClientIpDetail: config.requireClientIpDetail ?? false,
     routeStrategyId: config.routeStrategyId?.trim() || undefined,
     systemAccountId: config.systemAccountId?.trim() || undefined,
@@ -656,6 +721,17 @@ function groupDetailUrl(config: NormalizedRealGoManagementSmokeConfig, groupId: 
   return endpointUrl(config.baseUrl, `/groups/${encodeURIComponent(groupId)}`, {
     systemAccountId: config.systemAccountId
   })
+}
+
+function publicAPILogsListUrl(config: NormalizedRealGoManagementSmokeConfig): URL {
+  return endpointUrl(config.baseUrl, '/public-api-logs', {
+    page: '1',
+    pageSize: '20'
+  })
+}
+
+function publicAPILogDetailUrl(config: NormalizedRealGoManagementSmokeConfig, publicApiLogId: string): URL {
+  return endpointUrl(config.baseUrl, `/public-api-logs/${encodeURIComponent(publicApiLogId)}`, {})
 }
 
 function clientIPStatsListUrl(config: NormalizedRealGoManagementSmokeConfig): URL {
@@ -808,6 +884,82 @@ async function parseEnvelopeData(response: Response, label: string): Promise<unk
 
 function assertNoStore(response: Response, label: string): void {
   expect(response.headers.get('cache-control') === 'no-store', `${label} must return Cache-Control: no-store`)
+}
+
+function assertPublicAPILogList(value: unknown): PublicApiLogListResult {
+  expect(isRecord(value), 'public API logs list data must be an object')
+  expect(Array.isArray(value.items), 'public API logs list items must be an array')
+  expect(isNonNegativeInteger(value.total), 'public API logs list total must be a non-negative integer')
+  expect(typeof value.hasMore === 'boolean', 'public API logs list hasMore must be boolean')
+  expect(value.page === 1, 'public API logs list page must be 1')
+  expect(value.pageSize === 20, 'public API logs list pageSize must be 20')
+
+  const items = value.items.map((item, index) => assertPublicAPILogSummary(item, `public API logs list item ${index}`))
+  expect(
+    value.total === items.length + (value.hasMore ? 1 : 0),
+    'public API logs list total must be the progressive first-page upper bound'
+  )
+  if (value.hasMore) {
+    expect(items.length === value.pageSize, 'public API logs list hasMore requires a full page')
+  }
+
+  return {
+    items,
+    total: value.total,
+    hasMore: value.hasMore,
+    page: value.page,
+    pageSize: value.pageSize
+  }
+}
+
+function assertPublicAPILogDetail(value: unknown, expectedId: string): void {
+  const detail = assertPublicAPILogSummary(value, 'public API log detail')
+  expect(detail.id === expectedId, 'public API log detail id must match the configured id')
+  expect(isRecord(value), 'public API log detail data must be an object')
+  expect(isRecord(value.requestData), 'public API log detail.requestData must be a non-array object')
+  expect(isRecord(value.responseData), 'public API log detail.responseData must be a non-array object')
+}
+
+function assertPublicAPILogSummary(value: unknown, label: string): PublicApiLogSummary {
+  expect(isRecord(value), `${label} must be an object`)
+  expect(isNonEmptyString(value.id), `${label}.id must be a non-empty string`)
+  for (const field of [
+    'traceId',
+    'sourceRefId',
+    'sourceName',
+    'tokenId',
+    'tokenName',
+    'tokenPrefix',
+    'queryString',
+    'clientIp',
+    'userAgent',
+    'errorCode',
+    'errorMessage'
+  ]) {
+    assertOptionalString(value, field, label)
+  }
+  expect(typeof value.isTestToken === 'boolean', `${label}.isTestToken must be boolean`)
+  expect(isNonEmptyString(value.method), `${label}.method must be a non-empty string`)
+  expect(isNonEmptyString(value.path), `${label}.path must be a non-empty string`)
+  if (Object.hasOwn(value, 'statusCode')) {
+    expect(isNonNegativeInteger(value.statusCode), `${label}.statusCode must be a non-negative integer when present`)
+  }
+  expect(typeof value.success === 'boolean', `${label}.success must be boolean`)
+  if (Object.hasOwn(value, 'durationMs')) {
+    expect(isNonNegativeInteger(value.durationMs), `${label}.durationMs must be a non-negative integer when present`)
+  }
+  expect(isNonNegativeInteger(value.requestSizeBytes), `${label}.requestSizeBytes must be a non-negative integer`)
+  expect(isNonNegativeInteger(value.responseSizeBytes), `${label}.responseSizeBytes must be a non-negative integer`)
+  expect(isPublicAPILogCaptureStatus(value.requestCaptureStatus), `${label}.requestCaptureStatus must be a valid capture status`)
+  expect(isPublicAPILogCaptureStatus(value.responseCaptureStatus), `${label}.responseCaptureStatus must be a valid capture status`)
+  expect(isNonEmptyString(value.startedAt), `${label}.startedAt must be a non-empty string`)
+  expect(isNonEmptyString(value.endedAt), `${label}.endedAt must be a non-empty string`)
+  expect(isNonEmptyString(value.createdAt), `${label}.createdAt must be a non-empty string`)
+  return value as unknown as PublicApiLogSummary
+}
+
+function isPublicAPILogCaptureStatus(value: unknown): value is PublicApiLogCaptureStatus {
+  return value === 'complete' || value === 'truncated' || value === 'empty' || value === 'dropped'
 }
 
 function assertGroupList(value: unknown): GroupListResult {
