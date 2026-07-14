@@ -359,6 +359,8 @@
     "test:model-check-token-integrity": "tsx src/scripts/regression/model-check-token-integrity-regression.ts",
     "test:model-trust-observation-aggregation": "tsx src/scripts/regression/model-trust-observation-aggregation-regression.ts",
     "test:model-trust-identity-baseline": "tsx src/scripts/regression/model-trust-identity-baseline-regression.ts",
+    "test:model-trust-token-intercept-baseline": "tsx src/scripts/regression/model-trust-token-intercept-baseline-regression.ts",
+    "test:model-check-structured-features": "tsx src/scripts/regression/model-check-structured-features-regression.ts",
     "test:model-check-strict-model-match": "tsx src/scripts/regression/model-check-strict-model-match-regression.ts",
     "test:model-check-cross-model-paired-mismatch": "tsx src/scripts/regression/model-check-cross-model-paired-mismatch-regression.ts",
     "test:model-check-distribution-similarity": "tsx src/scripts/regression/model-check-distribution-similarity-regression.ts",

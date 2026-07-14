@@ -19,7 +19,7 @@ import {
   createModelCheckStructuredOutputRequest,
   createModelCheckToolCallingRequest
 } from '../../modules/model-checks/model-checks.payloads.js'
-import { longContextProbeDefinitions } from '../../modules/model-checks/model-checks.probes.js'
+import { longContextProbeDefinitions, longContextProbeDefinitionsForModel } from '../../modules/model-checks/model-checks.probes.js'
 import { parseModelCheckProbeResponse } from '../../modules/model-checks/model-checks-response-parsing.js'
 import {
   findModelCheckProfileForAccountModel,
@@ -153,9 +153,13 @@ const longContextTargets = new Map(longContextProbeDefinitions.map((definition) 
   definition.key,
   estimateTokenCountFromText(buildLongContextPrompt(definition))
 ]))
-assert.equal(longContextTargets.get('context_8k'), 8_000, '8k 长上下文窗口应按统一估算器生成到 8000 输入 token')
-assert.equal(longContextTargets.get('context_20k'), 20_000, '20k 长上下文窗口应按统一估算器生成到 20000 输入 token')
-assert.equal(longContextTargets.get('context_60k'), 60_000, '60k 长上下文窗口应按统一估算器生成到 60000 输入 token')
+assert.equal(longContextTargets.get('context_low'), 8_000, 'GPT 目录 profile 的低档应保持 8k')
+assert.equal(longContextTargets.get('context_medium'), 60_000, 'GPT 目录 profile 的中档应保持 60k')
+assert((longContextTargets.get('context_high') ?? 0) > 60_000, '高档必须由模型 max input profile 动态计算')
+const extremeDefinitions = longContextProbeDefinitionsForModel('gpt', 'gpt-5.6-sol', true)
+assert.equal(extremeDefinitions.length, 4)
+assert.equal(extremeDefinitions.at(-1)?.level, 'extreme')
+assert((extremeDefinitions.at(-1)?.targetInputTokens ?? 0) > (longContextProbeDefinitions.at(-1)?.targetInputTokens ?? 0))
 
 const openAiLongContextRequest = createModelCheckLongContextRequest('openai_responses', 'gpt-5.6-sol', longContextProbeDefinitions[2])
 assert.equal(openAiLongContextRequest.path, '/v1/responses')

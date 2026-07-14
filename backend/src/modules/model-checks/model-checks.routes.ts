@@ -34,6 +34,7 @@ const modelCheckRunSchema = z.object({
   targetId: z.string().trim().min(1, '检测目标不能为空'),
   model: z.string({ invalid_type_error: '模型必须使用完整模型 ID' }).trim().min(1, '模型必须使用完整模型 ID'),
   profile: z.enum(['full']).optional(),
+  includeExtremeContext: z.boolean().optional(),
   trustedComparison: z.boolean().optional(),
   trustedComparisonAccountId: z.string().trim().optional()
 }).strict()

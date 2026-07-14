@@ -812,6 +812,7 @@ export interface ModelCheckRunRequest {
   targetId: string
   model: string
   profile?: ModelCheckProfile
+  includeExtremeContext?: boolean
   trustedComparison?: boolean
   trustedComparisonAccountId?: string
 }

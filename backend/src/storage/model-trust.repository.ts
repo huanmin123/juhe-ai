@@ -10,6 +10,11 @@ import {
   refreshIdentityBaselines,
   upsertIdentitySourceFeature
 } from './model-trust-identity.repository.js'
+import {
+  evaluateTokenInterceptBaseline,
+  refreshTokenInterceptBaselines,
+  type TokenInterceptBaselineEvaluation
+} from './model-trust-token-baseline.repository.js'
 
 const aggregationJobName = 'model-trust-observation-aggregation'
 
@@ -64,6 +69,11 @@ export interface ModelAccountTrustResult {
   pairedProbeCount: number
   slope?: number
   intercept?: number
+  interceptBaselineMedian?: number
+  interceptBaselineMad?: number
+  interceptBaselineVersion?: number
+  interceptBaselineStatus?: string
+  interceptStrongGateEnabled: boolean
   identityDistance?: number
   pairedDistance?: number
   pairedBaselineMedian?: number
@@ -184,6 +194,16 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
     for (const key of affected) {
       await refreshLatestResult(tx, key, rows)
     }
+    const tokenRows = rows.filter(isValidTokenObservation)
+    await refreshTokenInterceptBaselines(tx, tokenRows.map((row) => ({
+      cohortKeyHmac: row.cohort_key_hmac,
+      requestedModel: row.requested_model,
+      tokenizerVersion: row.tokenizer_version,
+      probeSetVersion: row.probe_set_version
+    })))
+    for (const key of uniqueAccountModels(tokenRows)) {
+      await refreshLatestResult(tx, key, rows)
+    }
     const last = rows[rows.length - 1] as ObservationRow
     await writeAggregationState(tx, last.created_at, last.id)
   })
@@ -213,6 +233,11 @@ export async function findModelAccountTrustResultAsync(systemAccountId: string, 
     pairedProbeCount: Number(row.paired_probe_count ?? 0),
     slope: optionalNumber(row.slope),
     intercept: optionalNumber(row.intercept),
+    interceptBaselineMedian: optionalNumber(row.intercept_baseline_median),
+    interceptBaselineMad: optionalNumber(row.intercept_baseline_mad),
+    interceptBaselineVersion: optionalNumber(row.intercept_baseline_version),
+    interceptBaselineStatus: optionalText(row.intercept_baseline_status),
+    interceptStrongGateEnabled: Number(row.intercept_strong_gate_enabled ?? 0) === 1,
     identityDistance: optionalNumber(row.identity_distance),
     pairedDistance: optionalNumber(row.paired_distance),
     pairedBaselineMedian: optionalNumber(row.paired_baseline_median),
@@ -347,9 +372,25 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       : sourceCount >= 3 && validSampleCount >= 30 && roundCount >= 10 && durationDays >= 3
         ? 'bootstrap'
         : 'insufficient'
-  const usage = window && regression
+  const interceptBaseline: TokenInterceptBaselineEvaluation = window && regression
+    ? await evaluateTokenInterceptBaseline(client, key, {
+        cohortKeyHmac: window.cohort_key_hmac,
+        requestedModel: key.requestedModel,
+        tokenizerVersion: window.tokenizer_version,
+        probeSetVersion: window.probe_set_version
+      }, regression.intercept)
+    : {
+        baselineStatus: 'unavailable',
+        evidenceStatus: 'insufficient',
+        strongGateEnabled: false,
+        suspectedFixedPadding: false
+      }
+  const slopeUsage = window && regression
     ? tokenStatusFromWindow(window, regression.slope, regression.confidenceLow, regression.confidenceHigh, roundCount)
     : { status: 'insufficient_evidence', reasonCodes: [] }
+  const usage = interceptBaseline.suspectedFixedPadding
+    ? { status: 'suspected_padding', reasonCodes: [...slopeUsage.reasonCodes, 'fixed_intercept_padding'] }
+    : slopeUsage
   if (window && regression) {
     await client.execute(`
       UPDATE ${windows}
@@ -366,6 +407,7 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
   const protocolStatus = representative?.protocol_status ?? optionalText(currentLatest?.protocol_status) ?? 'insufficient_evidence'
   const reasonCodes = [
     ...usage.reasonCodes,
+    ...(interceptBaseline.baselineStatus === 'calibration_pending' ? ['fixed_intercept_calibration_pending'] : []),
     ...(identity?.reasonCodes ?? []),
     ...(mappingStatus === 'configured_mapping' ? ['configured_model_mapping'] : []),
     ...(mappingStatus === 'undeclared_mismatch' ? ['undeclared_response_model_mismatch'] : []),
@@ -383,10 +425,12 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       system_account_id, account_id, requested_model, identity_status, mapping_status,
       usage_integrity_status, protocol_status, evidence_status, evidence_coverage,
       observation_count, round_count, independent_source_count, identity_observation_count, paired_probe_count,
-      slope, intercept, identity_distance, paired_distance, paired_baseline_median, paired_baseline_mad,
+      slope, intercept, intercept_baseline_median, intercept_baseline_mad, intercept_baseline_version,
+      intercept_baseline_status, intercept_strong_gate_enabled,
+      identity_distance, paired_distance, paired_baseline_median, paired_baseline_mad,
       baseline_version, baseline_version_status, feature_version,
       tokenizer_version, probe_set_version, reason_codes_json, last_observed_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (system_account_id, account_id, requested_model) DO UPDATE SET
       identity_status = excluded.identity_status,
       mapping_status = excluded.mapping_status,
@@ -401,6 +445,11 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       paired_probe_count = excluded.paired_probe_count,
       slope = excluded.slope,
       intercept = excluded.intercept,
+      intercept_baseline_median = excluded.intercept_baseline_median,
+      intercept_baseline_mad = excluded.intercept_baseline_mad,
+      intercept_baseline_version = excluded.intercept_baseline_version,
+      intercept_baseline_status = excluded.intercept_baseline_status,
+      intercept_strong_gate_enabled = excluded.intercept_strong_gate_enabled,
       identity_distance = excluded.identity_distance,
       paired_distance = excluded.paired_distance,
       paired_baseline_median = excluded.paired_baseline_median,
@@ -419,7 +468,10 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
     mappingStatus, usage.status, protocolStatus, evidenceStatus, evidenceCoverage,
     validSampleCount + Number(identity?.identityObservationCount ?? 0), roundCount,
     Math.max(sourceCount, identity?.independentSourceCount ?? 0), identity?.identityObservationCount ?? 0, identity?.pairedProbeCount ?? 0,
-    regression?.slope ?? null, regression?.intercept ?? null, identity?.identityDistance ?? null,
+    regression?.slope ?? null, regression?.intercept ?? null,
+    interceptBaseline.looMedian ?? null, interceptBaseline.looMad ?? null,
+    interceptBaseline.baselineVersion ?? null, interceptBaseline.baselineStatus,
+    interceptBaseline.strongGateEnabled ? 1 : 0, identity?.identityDistance ?? null,
     identity?.pairedDistance ?? null, identity?.pairedBaselineMedian ?? null, identity?.pairedBaselineMad ?? null,
     identity?.baselineVersion ?? null, identity?.baselineVersionStatus ?? null, identity?.featureVersion ?? null,
     window?.tokenizer_version ?? null, window?.probe_set_version ?? representative?.probe_set_version ?? null,

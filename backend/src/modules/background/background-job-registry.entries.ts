@@ -55,7 +55,7 @@ export const backgroundScheduledJobs = [
     shardable: false,
     leaseRequired: false,
     blocksUserVisibleFreshness: true,
-    writes: ['stats:model_token_integrity_windows', 'stats:model_trust_window_sources', 'stats:model_account_trust_results', 'stats:stats_job_state'],
+    writes: ['stats:model_token_integrity_windows', 'stats:model_token_integrity_rounds', 'stats:model_token_intercept_baseline_versions', 'stats:model_trust_window_sources', 'stats:model_identity_*', 'stats:model_paired_similarity_windows', 'stats:model_account_trust_results', 'stats:stats_job_state'],
     notes: '按 dataset observation 游标增量构建模型可信窗口和账号最新结果，API 只读结果表'
   }),
   scheduled({
