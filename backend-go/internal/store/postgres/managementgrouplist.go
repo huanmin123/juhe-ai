@@ -19,7 +19,6 @@ const (
 
 type managementGroupListQueries interface {
 	ListManagementGroups(ctx context.Context, arg postgresqueries.ListManagementGroupsParams) ([]postgresqueries.ListManagementGroupsRow, error)
-	ListManagementGroupAccountIDs(ctx context.Context, groupIDs []string) ([]postgresqueries.ListManagementGroupAccountIDsRow, error)
 	ListManagementGroupAccountStats(ctx context.Context, groupIDs []string) ([]postgresqueries.ListManagementGroupAccountStatsRow, error)
 	ListManagementGroupUsageTotals(ctx context.Context, arg postgresqueries.ListManagementGroupUsageTotalsParams) ([]postgresqueries.ListManagementGroupUsageTotalsRow, error)
 	ListManagementGroupUsageDaily(ctx context.Context, arg postgresqueries.ListManagementGroupUsageDailyParams) ([]postgresqueries.ListManagementGroupUsageDailyRow, error)
@@ -32,10 +31,6 @@ func (s *Store) ListManagementGroups(ctx context.Context, input port.ManagementG
 
 func (s *Store) ListManagementGroupAccountStats(ctx context.Context, groupIDs []string) ([]port.ManagementGroupAccountStatsRow, error) {
 	return listManagementGroupAccountStats(ctx, s.queries(), groupIDs)
-}
-
-func (s *Store) ListManagementGroupAccountIDs(ctx context.Context, groupIDs []string) ([]port.ManagementGroupAccountIDRow, error) {
-	return listManagementGroupAccountIDs(ctx, s.queries(), groupIDs)
 }
 
 func (s *Store) ListManagementGroupUsageTotals(ctx context.Context, inputs []port.ManagementGroupUsageLookupInput) ([]port.ManagementGroupUsageRow, error) {
@@ -98,29 +93,6 @@ func listManagementGroups(
 		})
 	}
 	return port.ManagementGroupListPage{Rows: items, HasMore: hasMore}, nil
-}
-
-func listManagementGroupAccountIDs(
-	ctx context.Context,
-	q managementGroupListQueries,
-	groupIDs []string,
-) ([]port.ManagementGroupAccountIDRow, error) {
-	ids := uniqueStrings(groupIDs, maxManagementGroupListBatch)
-	if len(ids) == 0 {
-		return []port.ManagementGroupAccountIDRow{}, nil
-	}
-	rows, err := q.ListManagementGroupAccountIDs(ctx, ids)
-	if err != nil {
-		return nil, fmt.Errorf("list management group account ids: %w", err)
-	}
-	items := make([]port.ManagementGroupAccountIDRow, 0, len(rows))
-	for _, row := range rows {
-		items = append(items, port.ManagementGroupAccountIDRow{
-			GroupID:   row.GroupID,
-			AccountID: row.AccountID,
-		})
-	}
-	return items, nil
 }
 
 func listManagementGroupAccountStats(

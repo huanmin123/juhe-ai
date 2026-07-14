@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
@@ -104,23 +102,9 @@ func TestW5ManagementGroupListPostgresSmoke(t *testing.T) {
 		t.Fatalf("open state redis: %v", err)
 	}
 	defer closeRedisClient(t, stateRedis)
-	accountConcurrency, err := redisplatform.NewAccountConcurrencyReader(
-		stateRedis,
-		w5ManagementGroupListNamespace,
-	)
-	if err != nil {
-		t.Fatalf("create account concurrency reader: %v", err)
-	}
-	redisOptions, err := redis.ParseURL(redisStateURL)
-	if err != nil {
-		t.Fatalf("parse redis state URL: %v", err)
-	}
-	rawRedis := redis.NewClient(redisOptions)
-	defer func() { _ = rawRedis.Close() }()
 
 	now := time.Date(2026, 7, 10, 18, 0, 0, 0, time.UTC)
 	fixtureTimes := insertW5ManagementGroupListFixtures(t, ctx, db, now)
-	seedW5ManagementGroupListConcurrency(t, ctx, rawRedis, now)
 	sessionLastSeenAt := now.Add(-20 * time.Minute)
 	insertW2ManagementSessionForAccountFixture(
 		t,
@@ -152,9 +136,8 @@ func TestW5ManagementGroupListPostgresSmoke(t *testing.T) {
 		Now:   func() time.Time { return now },
 	})
 	service := managementgroups.NewServiceWithOptions(managementgroups.ServiceOptions{
-		Store:              store,
-		AccountConcurrency: accountConcurrency,
-		Now:                func() time.Time { return now },
+		Store: store,
+		Now:   func() time.Time { return now },
 	})
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config: config.Config{
@@ -163,10 +146,13 @@ func TestW5ManagementGroupListPostgresSmoke(t *testing.T) {
 			ManagementAPIEnabled: true,
 			TrustProxy:           "false",
 		},
-		Logger:                       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		ManagementAPIAuthMiddleware:  httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		ManagementGroupListHandler:   httpapi.NewManagementGroupListHandler(service),
-		ManagementMyGroupListHandler: httpapi.NewManagementMyGroupListHandler(service),
+		Logger:                            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		SystemAPIRateLimitReader:          store,
+		SystemAPIIPRateLimiter:            httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, w5ManagementGroupListNamespace),
+		SystemAPIAuthenticatedRateLimiter: httpapi.NewRedisSystemAPIAuthenticatedRateLimiter(stateRedis, w5ManagementGroupListNamespace),
+		ManagementAPIAuthMiddleware:       httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementGroupListHandler:        httpapi.NewManagementGroupListHandler(service),
+		ManagementMyGroupListHandler:      httpapi.NewManagementMyGroupListHandler(service),
 	})
 
 	global := requestW5ManagementGroupList(
@@ -347,9 +333,9 @@ func TestW5ManagementGroupListPostgresSmoke(t *testing.T) {
 		owned.OwnerSystemAccountID != w5ManagementGroupListUserID ||
 		owned.AccountCount != 4 ||
 		owned.AccountStats.Total != 4 ||
-		owned.AccountStats.CurrentConcurrency != 3 ||
+		owned.AccountStats.CurrentConcurrency != 31 ||
 		owned.AccountStats.CurrentConcurrencyAvailable == nil ||
-		!*owned.AccountStats.CurrentConcurrencyAvailable ||
+		*owned.AccountStats.CurrentConcurrencyAvailable ||
 		owned.AccountStats.Usage.RequestCount != 10 ||
 		owned.AccountStats.Usage.TotalTokens != 150 ||
 		owned.AccountStats.TodayUsage.RequestCount != 2 ||
@@ -390,55 +376,6 @@ func TestW5ManagementGroupListPostgresSmoke(t *testing.T) {
 		len(expired.AuthorizationSourceSummary.TeamNames) != 0 {
 		t.Fatalf("expired authorized row = %+v", expired)
 	}
-
-	failureService := managementgroups.NewServiceWithOptions(managementgroups.ServiceOptions{
-		Store: store,
-		AccountConcurrency: w5ManagementGroupListConcurrencyReaderStub{
-			err: errors.New("redis unavailable"),
-		},
-		Now: func() time.Time { return now },
-	})
-	failureRouter := httpapi.NewRouter(httpapi.RouterOptions{
-		Config: config.Config{
-			Host:                 "127.0.0.1",
-			Port:                 3000,
-			ManagementAPIEnabled: true,
-			TrustProxy:           "false",
-		},
-		Logger:                       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		ManagementAPIAuthMiddleware:  httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		ManagementGroupListHandler:   httpapi.NewManagementGroupListHandler(failureService),
-		ManagementMyGroupListHandler: httpapi.NewManagementMyGroupListHandler(failureService),
-	})
-	failure := requestW5ManagementGroupList(
-		t,
-		failureRouter,
-		"/__aisys__/api/groups?systemAccountId="+w5ManagementGroupListUserID+"&page=1&pageSize=2",
-		w5ManagementGroupListAdminToken,
-	)
-	if failure.Result.RuntimeSnapshot.AccountConcurrencyAvailable {
-		t.Fatalf("failure runtime snapshot = %+v", failure.Result.RuntimeSnapshot)
-	}
-	failureOwned := requireW5ManagementGroupListItem(
-		t,
-		failure.Result.Items,
-		w5ManagementGroupListOwnedZID,
-	)
-	if failureOwned.AccountStats.CurrentConcurrency != 31 ||
-		failureOwned.AccountStats.CurrentConcurrencyAvailable == nil ||
-		*failureOwned.AccountStats.CurrentConcurrencyAvailable {
-		t.Fatalf("failure owner stats = %+v", failureOwned.AccountStats)
-	}
-	failureAuthorized := requireW5ManagementGroupListItem(
-		t,
-		failure.Result.Items,
-		w5ManagementGroupListActiveID,
-	)
-	if failureAuthorized.AccountStats.CurrentConcurrency != 4 ||
-		failureAuthorized.AccountStats.CurrentConcurrencyAvailable != nil {
-		t.Fatalf("failure authorized stats = %+v", failureAuthorized.AccountStats)
-	}
-	assertW5ManagementGroupListRawItemsDoNotExposeDetails(t, failure.RawItems)
 
 	self := requestW5ManagementGroupList(
 		t,
@@ -569,8 +506,20 @@ func assertW5ManagementGroupListRuntimeAndShape(
 	response w5ManagementGroupListResponse,
 ) {
 	t.Helper()
-	if !response.Result.RuntimeSnapshot.AccountConcurrencyAvailable {
-		t.Fatalf("runtime snapshot = %+v", response.Result.RuntimeSnapshot)
+	wantAccountConcurrencyAvailable := true
+	for _, item := range response.Result.Items {
+		if item.AccessType == "owner" && item.AccountStats.Total > 0 {
+			wantAccountConcurrencyAvailable = false
+			break
+		}
+	}
+	if response.Result.RuntimeSnapshot.AccountConcurrencyAvailable != wantAccountConcurrencyAvailable {
+		t.Fatalf(
+			"runtime snapshot = %+v, want accountConcurrencyAvailable=%t for items %+v",
+			response.Result.RuntimeSnapshot,
+			wantAccountConcurrencyAvailable,
+			response.Result.Items,
+		)
 	}
 	assertW5ManagementGroupListRawItemsDoNotExposeDetails(t, response.RawItems)
 	assertW5ManagementGroupListAuthorizationLimitsShape(t, response.Result.Items, response.RawItems)
@@ -583,6 +532,9 @@ func assertW5ManagementGroupListConcurrencyShape(
 	rawItems []map[string]json.RawMessage,
 ) {
 	t.Helper()
+	if len(items) != len(rawItems) {
+		t.Fatalf("typed items=%d raw items=%d", len(items), len(rawItems))
+	}
 	for index, item := range items {
 		rawStats, exists := rawItems[index]["accountStats"]
 		if !exists {
@@ -593,16 +545,17 @@ func assertW5ManagementGroupListConcurrencyShape(
 			t.Fatalf("decode management group %s accountStats: %v", item.ID, err)
 		}
 		rawAvailability, exposed := stats["currentConcurrencyAvailable"]
-		if item.AccessType == "authorized" {
+		shouldExpose := item.AccessType == "owner" && item.AccountStats.Total > 0
+		if !shouldExpose {
 			if item.AccountStats.CurrentConcurrencyAvailable != nil || exposed {
-				t.Fatalf("authorized group %s exposed concurrency availability: %s", item.ID, rawStats)
+				t.Fatalf("management group %s exposed concurrency availability: %s", item.ID, rawStats)
 			}
 			continue
 		}
 		if item.AccountStats.CurrentConcurrencyAvailable == nil ||
-			!*item.AccountStats.CurrentConcurrencyAvailable ||
+			*item.AccountStats.CurrentConcurrencyAvailable ||
 			!exposed ||
-			string(rawAvailability) != "true" {
+			string(rawAvailability) != "false" {
 			t.Fatalf("owner group %s concurrency availability = %s / %+v", item.ID, rawAvailability, item.AccountStats)
 		}
 	}
@@ -1047,50 +1000,6 @@ func insertW5ManagementGroupListFixtures(
 	insertW5ManagementGroupListUsageTotals(t, ctx, db, now, times)
 	insertW5ManagementGroupListUsageDaily(t, ctx, db, now, times)
 	return times
-}
-
-func seedW5ManagementGroupListConcurrency(
-	t *testing.T,
-	ctx context.Context,
-	client *redis.Client,
-	now time.Time,
-) {
-	t.Helper()
-	addSlots := func(accountID string, members ...string) {
-		t.Helper()
-		values := make([]redis.Z, 0, len(members))
-		for _, member := range members {
-			values = append(values, redis.Z{
-				Score:  float64(now.Add(time.Minute).UnixMilli()),
-				Member: member,
-			})
-		}
-		if err := client.ZAdd(
-			ctx,
-			w5ManagementGroupListConcurrencyPrefix(accountID)+"total",
-			values...,
-		).Err(); err != nil {
-			t.Fatalf("seed account %s concurrency: %v", accountID, err)
-		}
-	}
-	addSlots(w5ManagementGroupListOwnedAccount1, "owned-live-1", "owned-live-2")
-	addSlots(w5ManagementGroupListOwnedAccount2, "owned-live-3")
-}
-
-func w5ManagementGroupListConcurrencyPrefix(accountID string) string {
-	return "juhe-ai:" + w5ManagementGroupListNamespace + ":account-concurrency-v2:" + accountID + ":"
-}
-
-type w5ManagementGroupListConcurrencyReaderStub struct {
-	err error
-}
-
-func (s w5ManagementGroupListConcurrencyReaderStub) LoadAccountCurrentConcurrencyByIDs(
-	context.Context,
-	[]string,
-	time.Time,
-) (map[string]int, error) {
-	return nil, s.err
 }
 
 func insertW5ManagementGroupListUsageTotals(

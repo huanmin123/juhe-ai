@@ -129,7 +129,7 @@ func TestW5ManagementGroupListSQLUsesUnionOverridesAndStablePaging(t *testing.T)
 		t.Fatalf("read W5 management group list query: %v", err)
 	}
 	sql := string(source)
-	listSQL := querySection(t, sql, "-- name: ListManagementGroups :many", "-- name: ListManagementGroupAccountIDs :many")
+	listSQL := querySection(t, sql, "-- name: ListManagementGroups :many", "-- name: ListManagementGroupAccountStats :many")
 	assertSQLContainsAll(t, listSQL, []string{
 		"WITH group_rows AS",
 		"sqlc.arg(system_account_id)::text = ''",
@@ -159,46 +159,35 @@ func TestW5ManagementGroupListSQLUsesUnionOverridesAndStablePaging(t *testing.T)
 	})
 }
 
-func TestW5ManagementGroupListSQLReadsCurrentPageSummariesInBatches(t *testing.T) {
+func TestW5ManagementGroupListSQLReadsOnlyPreaggregatedCurrentPageSummariesInBatches(t *testing.T) {
 	source, err := os.ReadFile("queries/w5_management_group_list.sql")
 	if err != nil {
 		t.Fatalf("read W5 management group list query: %v", err)
 	}
 	sql := string(source)
-	accountIDsSQL := querySection(t, sql, "-- name: ListManagementGroupAccountIDs :many", "-- name: ListManagementGroupAccountStats :many")
-	assertSQLContainsAll(t, accountIDsSQL, []string{
-		"FROM juhe_business.group_accounts AS group_accounts",
-		"groups.system_account_id = group_accounts.system_account_id",
-		"accounts.system_account_id = group_accounts.system_account_id",
-		"group_accounts.group_id = ANY(sqlc.arg(group_ids)::text[])",
-		"group_accounts.enabled = true",
-		"accounts.deleted_at IS NULL",
-		"group_accounts.account_authorization_id IS NULL",
-		"accounts.authorization_instance_authorization_id IS NULL",
-		"account_authorizations.id = group_accounts.account_authorization_id",
-		"account_authorizations.id = accounts.authorization_instance_authorization_id",
-		"account_authorizations.resource_type = 'account'",
-		"account_authorizations.status IN ('active', 'paused', 'expired')",
-		"ORDER BY",
-		"group_accounts.group_id ASC",
-		"group_accounts.created_at ASC",
-		"group_accounts.account_id ASC",
+	assertSQLExcludesAll(t, sql, []string{
+		"-- name: ListManagementGroupAccountIDs :many",
+		"group_accounts",
 	})
-	assertSQLExcludesAll(t, accountIDsSQL, []string{
-		"usage_records",
-		"COUNT(",
-		"SUM(",
-		"GROUP BY",
-		"LIMIT",
-		"OFFSET",
-	})
+	for _, table := range []string{
+		"juhe_stats.group_account_stats",
+		"juhe_stats.usage_stats_totals",
+		"juhe_stats.usage_stats_daily",
+	} {
+		if count := strings.Count(sql, table); count != 1 {
+			t.Fatalf("W5 management group list summary table %q reference count = %d, want 1", table, count)
+		}
+	}
+	if count := strings.Count(sql, "juhe_stats."); count != 3 {
+		t.Fatalf("W5 management group list stats source count = %d, want 3", count)
+	}
 
 	statsSQL := querySection(t, sql, "-- name: ListManagementGroupAccountStats :many", "-- name: ListManagementGroupUsageTotals :many")
 	assertSQLContainsAll(t, statsSQL, []string{
 		"FROM juhe_stats.group_account_stats",
 		"WHERE group_id = ANY(sqlc.arg(group_ids)::text[])",
 	})
-	assertSQLExcludesAll(t, statsSQL, []string{"group_accounts", "usage_records", "COUNT(", "SUM(", "GROUP BY"})
+	assertSQLExcludesAll(t, statsSQL, []string{"juhe_business.", "juhe_usage.", "group_accounts", "usage_records", "COUNT(", "SUM(", "GROUP BY"})
 
 	totalsSQL := querySection(t, sql, "-- name: ListManagementGroupUsageTotals :many", "-- name: ListManagementGroupUsageDaily :many")
 	dailySQL := querySection(t, sql, "-- name: ListManagementGroupUsageDaily :many", "-- name: ListManagementGroupAuthorizationSources :many")
@@ -214,7 +203,7 @@ func TestW5ManagementGroupListSQLReadsCurrentPageSummariesInBatches(t *testing.T
 			"usage_stats.scope_id = requested_scopes.scope_id",
 			"ORDER BY requested_scopes.ordinality ASC",
 		})
-		assertSQLExcludesAll(t, usageSQL, []string{"usage_records", "COUNT(", "SUM(", "GROUP BY"})
+		assertSQLExcludesAll(t, usageSQL, []string{"juhe_business.", "juhe_usage.", "group_accounts", "usage_records", "COUNT(", "SUM(", "GROUP BY"})
 		if name == "totals" && !strings.Contains(usageSQL, "juhe_stats.usage_stats_totals") {
 			t.Fatal("totals query must read juhe_stats.usage_stats_totals")
 		}

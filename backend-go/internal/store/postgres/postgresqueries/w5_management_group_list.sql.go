@@ -11,66 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const listManagementGroupAccountIDs = `-- name: ListManagementGroupAccountIDs :many
-SELECT
-  group_accounts.group_id,
-  group_accounts.account_id
-FROM juhe_business.group_accounts AS group_accounts
-INNER JOIN juhe_business.groups AS groups
-  ON groups.id = group_accounts.group_id
-  AND groups.system_account_id = group_accounts.system_account_id
-INNER JOIN juhe_business.accounts AS accounts
-  ON accounts.id = group_accounts.account_id
-  AND accounts.system_account_id = group_accounts.system_account_id
-LEFT JOIN juhe_business.resource_authorizations AS account_authorizations
-  ON account_authorizations.id = group_accounts.account_authorization_id
-  AND account_authorizations.id = accounts.authorization_instance_authorization_id
-  AND account_authorizations.resource_type = 'account'
-  AND account_authorizations.resource_id = accounts.authorization_instance_source_account_id
-  AND account_authorizations.resource_owner_system_account_id = accounts.authorization_instance_owner_system_account_id
-  AND account_authorizations.grantee_system_account_id = accounts.system_account_id
-  AND account_authorizations.status IN ('active', 'paused', 'expired')
-WHERE group_accounts.group_id = ANY($1::text[])
-  AND group_accounts.enabled = true
-  AND accounts.deleted_at IS NULL
-  AND (
-    (
-      group_accounts.account_authorization_id IS NULL
-      AND accounts.authorization_instance_authorization_id IS NULL
-    )
-    OR account_authorizations.id IS NOT NULL
-  )
-ORDER BY
-  group_accounts.group_id ASC,
-  group_accounts.created_at ASC,
-  group_accounts.account_id ASC
-`
-
-type ListManagementGroupAccountIDsRow struct {
-	GroupID   string
-	AccountID string
-}
-
-func (q *Queries) ListManagementGroupAccountIDs(ctx context.Context, groupIds []string) ([]ListManagementGroupAccountIDsRow, error) {
-	rows, err := q.db.Query(ctx, listManagementGroupAccountIDs, groupIds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListManagementGroupAccountIDsRow
-	for rows.Next() {
-		var i ListManagementGroupAccountIDsRow
-		if err := rows.Scan(&i.GroupID, &i.AccountID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listManagementGroupAccountStats = `-- name: ListManagementGroupAccountStats :many
 SELECT
   system_account_id,
