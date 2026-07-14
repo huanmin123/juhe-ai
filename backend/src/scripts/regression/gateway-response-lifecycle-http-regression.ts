@@ -73,7 +73,6 @@ try {
   agent.destroy()
   await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()))
 }
-
 console.log('网关真实 HTTP 生命周期回归通过：keep-alive finish 立即释放并发槽，后台收尾不阻塞下一请求')
 
 async function acquireSlot(): Promise<void> {
@@ -101,4 +100,3 @@ async function requestJson(url: string): Promise<Record<string, unknown>> {
     request.on('error', rejectPromise)
   })
 }
-
