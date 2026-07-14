@@ -615,17 +615,17 @@ func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
 			wantMessage:   "默认思考级别必须属于支持的思考级别",
 		},
 		{
-			name:         "reject non gpt capabilities",
+			name:         "reject invalid generic capability token",
 			providerCode: "anthropic",
-			serviceTiers: []string{"priority"},
-			wantMessage:  "只有 GPT 文本自定义模型支持服务等级和思考能力配置",
+			serviceTiers: []string{" priority "},
+			wantMessage:  "自定义模型参数无效",
 		},
 		{
 			name:         "reject image capabilities",
 			providerCode: "gpt",
 			mode:         OptionalString{Set: true, Value: "image"},
 			efforts:      []string{"high"},
-			wantMessage:  "只有 GPT 文本自定义模型支持服务等级和思考能力配置",
+			wantMessage:  "只有文本自定义模型支持服务等级和思考能力配置",
 		},
 	}
 

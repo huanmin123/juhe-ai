@@ -253,7 +253,7 @@ try {
     supportedServiceTiers: ['priority'],
     outputUsdPerImage: 0.02,
     actorSystemAccountId: 'sys_admin'
-  }), /只有 GPT 文本自定义模型支持服务等级和思考能力配置/)
+  }), /只有文本自定义模型支持服务等级和思考能力配置/)
   assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
     providerCode: 'gpt',
     model: 'gpt-regression-audio-invalid-capabilities',
@@ -265,8 +265,8 @@ try {
     audioInputUsdPer1M: 1,
     audioOutputUsdPer1M: 2,
     actorSystemAccountId: 'sys_admin'
-  }), /只有 GPT 文本自定义模型支持服务等级和思考能力配置/)
-  assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
+  }), /只有文本自定义模型支持服务等级和思考能力配置/)
+  const openAIProviderCapabilities = customProviderModelsRepository.upsertCustomProviderModel({
     providerCode: 'openai',
     model: 'openai-regression-invalid-capabilities',
     scope: 'personal',
@@ -275,7 +275,8 @@ try {
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
     actorSystemAccountId: 'sys_admin'
-  }), /只有 GPT 文本自定义模型支持服务等级和思考能力配置/)
+  })
+  assert.deepEqual(openAIProviderCapabilities.supportedReasoningEfforts, ['high'], '非 GPT 文本模型应保存供应商原生思考能力字符串')
 
   const repositoryClearableModel = customProviderModelsRepository.upsertCustomProviderModel({
     providerCode: 'gpt',
@@ -955,8 +956,8 @@ async function assertProviderModelHttpContracts(): Promise<void> {
         inputUsdPer1M: 1,
         outputUsdPer1M: 2
       },
-      400,
-      '非 GPT 自定义模型 API 必须拒绝非空服务等级或思考能力'
+      201,
+      '非 GPT 文本自定义模型 API 必须接受供应商原生思考能力'
     )
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/gpt/models`,

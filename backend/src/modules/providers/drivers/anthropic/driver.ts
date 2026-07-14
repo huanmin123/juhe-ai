@@ -44,6 +44,7 @@ import {
   isEffectiveOpenAIStreamRequest
 } from '../../../gateway/upstream/request.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
+import { applyProviderAccountRequestOverridesToBody } from '../_shared/provider-request-overrides.js'
 import {
   buildOpenAIToAnthropicBridgeBody,
   isOpenAIToAnthropicBridgeCandidateRequest,
@@ -152,11 +153,11 @@ export const anthropicProviderDriver: ProviderDriver = {
       prepareGeminiGenerateContentAnthropicMessagesBridgeHeaders(headers, req)
       return {
         headers,
-        body: await buildGeminiGenerateContentAnthropicMessagesBridgeBody(req, {
+        body: await applyAnthropicOverrides(account, await buildGeminiGenerateContentAnthropicMessagesBridgeBody(req, {
           defaultModel: modelMapping.upstreamModel,
           guidanceProviderName: guidanceProviderNameForAccount(account),
           modelOverride: modelMapping.upstreamModel
-        }, signal)
+        }, signal), modelMapping.upstreamModel)
       }
     }
     if (shouldUseOpenAIToAnthropicBridge(req, account)) {
@@ -168,7 +169,7 @@ export const anthropicProviderDriver: ProviderDriver = {
       })
       return {
         headers,
-        body: await buildOpenAIToAnthropicBridgeBody(req, {
+        body: await applyAnthropicOverrides(account, await buildOpenAIToAnthropicBridgeBody(req, {
           guidanceProviderName: guidanceProviderNameForAccount(account),
           modelOverride: openAIToAnthropicBridgeUpstreamModel(req, account),
           requestClientCompatibility: context?.requestClientCompatibility,
@@ -178,14 +179,14 @@ export const anthropicProviderDriver: ProviderDriver = {
           codeInterpreterExecutor: openAICompatibleCodeInterpreterExecutorForGatewayRequest(req),
           computerExecutor: openAICompatibleComputerExecutorForGatewayRequest(req),
           imageGenerationExecutor: openAICompatibleImageGenerationExecutorForGatewayRequest()
-        }, signal)
+        }, signal), openAIToAnthropicBridgeUpstreamModel(req, account))
       }
     }
     return {
       headers,
-      body: modelMapping
+      body: await applyAnthropicOverrides(account, modelMapping
         ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal)
-        : buildAnthropicNativePassthroughBody(req)
+        : buildAnthropicNativePassthroughBody(req), modelMapping?.upstreamModel ?? requestModel(req))
     }
   },
   transformUpstreamResponse(req, account, response, context) {
@@ -252,6 +253,19 @@ export const anthropicProviderDriver: ProviderDriver = {
       providerProtocolProfileId: account.providerProtocolProfileId
     })
   }
+}
+
+async function applyAnthropicOverrides(
+  account: DispatchAccountSecret,
+  body: Buffer | string | undefined,
+  upstreamModel: string | undefined
+): Promise<Buffer | string | undefined> {
+  if (account.providerCode !== ANTHROPIC_PROVIDER_CODE) return body
+  return await applyProviderAccountRequestOverridesToBody(body, {
+    account,
+    upstreamModel,
+    wireFormat: 'anthropic_messages'
+  })
 }
 
 function guidanceProviderNameForAccount(account: DispatchAccountSecret): string {

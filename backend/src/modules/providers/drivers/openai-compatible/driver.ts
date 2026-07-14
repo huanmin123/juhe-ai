@@ -27,6 +27,7 @@ import {
   isGeminiGenerateContentToChatCompletionsModelMapping,
   isAnthropicMessagesToChatCompletionsModelMapping,
   isOpenAIResponsesToChatCompletionsModelMapping,
+  openAIRequestEndpointFamily,
   openAIModelMappedUpstreamPathAndQuery,
   resolveOpenAIAccountModelMapping,
   resolveOpenAIRequestModelMapping
@@ -57,6 +58,7 @@ import {
   transformCodexResponsesChatBridgeUpstreamResponse
 } from '../_shared/codex-responses-chat-bridge.js'
 import type { ProviderDriver, ProviderDriverAccount, ProviderGatewayRequestContext } from '../_shared/types.js'
+import { applyProviderAccountRequestOverridesToBody } from '../_shared/provider-request-overrides.js'
 
 function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount, context?: ProviderGatewayRequestContext) {
   return openAIEndpointModeForRequestShape({
@@ -146,10 +148,10 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       prepareAnthropicMessagesChatBridgeHeaders(headers, req)
       return {
         headers,
-        body: await buildAnthropicMessagesChatBridgeBody(req, {
+        body: await applyOpenAICompatibleOverrides(account, await buildAnthropicMessagesChatBridgeBody(req, {
           defaultModel: modelMapping.upstreamModel,
           modelOverride: modelMapping.upstreamModel
-        }, signal)
+        }, signal), 'chat_completions', modelMapping.upstreamModel)
       }
     }
     if (modelMapping && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping)) {
@@ -157,10 +159,10 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       prepareGeminiGenerateContentChatBridgeHeaders(headers, req)
       return {
         headers,
-        body: await buildGeminiGenerateContentChatBridgeBody(req, {
+        body: await applyOpenAICompatibleOverrides(account, await buildGeminiGenerateContentChatBridgeBody(req, {
           defaultModel: modelMapping.upstreamModel,
           modelOverride: modelMapping.upstreamModel
-        }, signal)
+        }, signal), 'chat_completions', modelMapping.upstreamModel)
       }
     }
     if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
@@ -168,10 +170,10 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       prepareCodexResponsesChatBridgeHeaders(headers)
       return {
         headers,
-        body: await buildCodexResponsesChatBridgeBody(req, {
+        body: await applyOpenAICompatibleOverrides(account, await buildCodexResponsesChatBridgeBody(req, {
           defaultModel: modelMapping.upstreamModel,
           modelOverride: modelMapping.upstreamModel
-        }, signal)
+        }, signal), 'chat_completions', modelMapping.upstreamModel)
       }
     }
     const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, signal, {
@@ -184,7 +186,12 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
     })
     return {
       headers,
-      body: compatibilityBody ?? (modelMapping ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal) : buildUpstreamRequestBody(req))
+      body: await applyOpenAICompatibleOverrides(
+        account,
+        compatibilityBody ?? (modelMapping ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal) : buildUpstreamRequestBody(req)),
+        modelMapping?.upstreamEndpointFamily ?? openAIRequestEndpointFamily(req),
+        modelMapping?.upstreamModel ?? requestModel(req)
+      )
     }
   },
   transformUpstreamResponse(req, account, response, context) {
@@ -257,4 +264,19 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       clientCompatibility: account.clientCompatibility
     })
   }
+}
+
+async function applyOpenAICompatibleOverrides(
+  account: DispatchAccountSecret,
+  body: Buffer | string | undefined,
+  endpointFamily: string | undefined,
+  upstreamModel: string | undefined
+): Promise<Buffer | string | undefined> {
+  if (account.providerCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return body
+  if (endpointFamily !== 'chat_completions' && endpointFamily !== 'responses') return body
+  return await applyProviderAccountRequestOverridesToBody(body, {
+    account,
+    upstreamModel,
+    wireFormat: endpointFamily === 'responses' ? 'openai_responses' : 'openai_chat'
+  })
 }

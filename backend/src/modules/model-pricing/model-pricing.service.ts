@@ -52,9 +52,9 @@ export interface ProviderModelPricing {
   longContextInputCostMultiplier?: number
   longContextOutputCostMultiplier?: number
   supportsPromptCaching: boolean
-  supportedServiceTiers: GptServiceTier[]
-  supportedReasoningEfforts: GptWireReasoningEffort[]
-  defaultReasoningEffort?: GptWireReasoningEffort
+  supportedServiceTiers: string[]
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort?: string
   codexSupportedReasoningLevels: CodexReasoningLevel[]
   codexDefaultReasoningLevel?: CodexReasoningLevel
   codexMultiAgentVersion?: 'v2'

@@ -1,4 +1,3 @@
-import { GPT_VENDOR_CODE } from '../../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import { listCachedProviderModelCatalogAsync } from '../../../gateway/runtime/runtime-cache.service.js'
 import { getProviderModelPricing } from '../../../model-pricing/model-pricing.service.js'
@@ -17,7 +16,9 @@ export async function resolveGptRequestOverrideModelCapabilities(
   const overrides = readGptAccountRequestOverrides(account.credentials)
   if (!overrides.serviceTier && !overrides.reasoningEffort) return undefined
 
-  const builtIn = getProviderModelPricing(GPT_VENDOR_CODE, model)
+  const providerCode = account.providerCode?.trim()
+  if (!providerCode) return undefined
+  const builtIn = getProviderModelPricing(providerCode, model)
   if (builtIn) {
     return {
       supportedServiceTiers: builtIn.supportedServiceTiers,
@@ -26,11 +27,11 @@ export async function resolveGptRequestOverrideModelCapabilities(
   }
 
   const catalog = await listCachedProviderModelCatalogAsync({
-    providerCode: GPT_VENDOR_CODE,
+    providerCode,
     systemAccountId: account.accountOwnerSystemAccountId,
     includeUnpriced: true
   })
-  const driver = modelPricingProviderDriverForProvider(GPT_VENDOR_CODE)
+  const driver = modelPricingProviderDriverForProvider(providerCode)
   const candidates = [model, ...(driver?.buildModelCandidates(model) ?? [])]
   const item = candidates
     .map((candidate) => catalog.find((entry) => entry.model.trim() === candidate))

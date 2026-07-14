@@ -104,8 +104,8 @@ const oauthFlexOnlyCapabilities = accountGptRequestOverrideCapabilities({
 assert.deepEqual(oauthFlexOnlyCapabilities.serviceTiers, [], 'OAuth 必须从可用服务等级中移除 Flex')
 assert.deepEqual(
   availableAccountGptServiceTierOptions(oauthFlexOnlyCapabilities).map((option) => option.value),
-  [''],
-  'OAuth 过滤 Flex 后没有共同非标准等级时也不能展示 default'
+  [],
+  'OAuth 过滤 Flex 后没有共同非标准等级时应隐藏服务等级控件'
 )
 
 const apiKeyForm = gptForm('api_key')
@@ -170,11 +170,11 @@ const customModelForm = {
   supportedReasoningEfforts: ['high', 'ultra', 'max'] as unknown as ProviderModelReasoningEffort[],
   defaultReasoningEffort: 'ultra' as ProviderModelReasoningEffort
 }
-const customPayload = buildCustomModelPayload(customModelForm, 'text', { includeGptCapabilities: true })
+const customPayload = buildCustomModelPayload(customModelForm, 'text', { includeRequestCapabilities: true })
 assert.deepEqual(customPayload?.supportedServiceTiers, ['priority', 'flex'], '自定义模型服务等级应去重并限制 wire 枚举')
-assert.deepEqual(customPayload?.supportedReasoningEfforts, ['high', 'max'], '自定义模型 wire 思考级别必须过滤 Ultra')
-assert.equal(customPayload?.defaultReasoningEffort, null, '默认思考级别不在已支持 wire 级别中时必须清空')
-const imageCustomPayload = buildCustomModelPayload(customModelForm, 'image', { includeGptCapabilities: true })
+assert.deepEqual(customPayload?.supportedReasoningEfforts, ['high', 'ultra', 'max'], '通用模型能力表单应保留供应商原生字符串，具体值域由后端按供应商校验')
+assert.equal(customPayload?.defaultReasoningEffort, 'ultra', '默认思考级别属于已支持集合时应保留')
+const imageCustomPayload = buildCustomModelPayload(customModelForm, 'image', { includeRequestCapabilities: true })
 assert.deepEqual(imageCustomPayload?.supportedServiceTiers, [], 'GPT 非文本自定义模型保存时必须清空服务等级能力')
 assert.deepEqual(imageCustomPayload?.supportedReasoningEfforts, [], 'GPT 非文本自定义模型保存时必须清空思考能力')
 assert.equal(imageCustomPayload?.defaultReasoningEffort, null, 'GPT 非文本自定义模型保存时必须清空默认思考级别')

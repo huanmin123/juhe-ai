@@ -30,11 +30,7 @@ import {
   saveCustomProviderModelAsync,
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
-import type {
-  GptServiceTier,
-  GptWireReasoningEffort,
-  ProviderModelApiProtocol
-} from '../model-pricing/provider-driver.types.js'
+import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
 
 export const providersRouter = Router()
 
@@ -42,9 +38,9 @@ interface ProviderModelOption {
   providerCode: string
   model: string
   supportedApiProtocols?: ProviderModelApiProtocol[]
-  supportedServiceTiers?: GptServiceTier[]
-  supportedReasoningEfforts?: GptWireReasoningEffort[]
-  defaultReasoningEffort?: GptWireReasoningEffort
+  supportedServiceTiers?: string[]
+  supportedReasoningEfforts?: string[]
+  defaultReasoningEffort?: string
 }
 
 providersRouter.get('/', requireAdmin, async (req, res, next) => {
@@ -191,8 +187,7 @@ const nullableDateSchema = z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).nullab
 const nullableIntegerSchema = z.number().int().min(0).nullable().optional()
 const nullableNumberSchema = z.number().min(0).nullable().optional()
 const nullableModelModeSchema = z.enum(['text', 'image', 'audio']).nullable().optional()
-const customModelServiceTierSchema = z.enum(['priority', 'flex'])
-const customModelReasoningEffortSchema = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+const customModelCapabilityTokenSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/i)
 
 const customModelSchema = z.object({
   scope: z.enum(['personal', 'global']).optional(),
@@ -213,9 +208,9 @@ const customModelSchema = z.object({
     'audio',
     'realtime'
   ])).optional(),
-  supportedServiceTiers: z.array(customModelServiceTierSchema).max(2).optional(),
-  supportedReasoningEfforts: z.array(customModelReasoningEffortSchema).max(7).optional(),
-  defaultReasoningEffort: customModelReasoningEffortSchema.nullable().optional(),
+  supportedServiceTiers: z.array(customModelCapabilityTokenSchema).max(16).optional(),
+  supportedReasoningEfforts: z.array(customModelCapabilityTokenSchema).max(16).optional(),
+  defaultReasoningEffort: customModelCapabilityTokenSchema.nullable().optional(),
   pricingModel: nullableTrimmedStringSchema,
   releaseDate: nullableDateSchema,
   shutdownDate: nullableDateSchema,
@@ -445,7 +440,7 @@ function providerWithDefaultHealthCheckModelPreference(
 export function dedupeProviderModelOptions(options: ProviderModelOption[]): ProviderModelOption[] {
   const seenProviderModels = new Map<string, number>()
   const result: ProviderModelOption[] = []
-  const defaultReasoningEffortCandidates: GptWireReasoningEffort[][] = []
+  const defaultReasoningEffortCandidates: string[][] = []
   for (const option of options) {
     const providerCode = option.providerCode.trim()
     const model = option.model.trim()
@@ -455,15 +450,15 @@ export function dedupeProviderModelOptions(options: ProviderModelOption[]): Prov
     const supportedApiProtocols = normalizedProviderModelApiProtocols(option.supportedApiProtocols ?? [])
     const supportedServiceTiers = normalizedProviderModelCapabilities(
       option.supportedServiceTiers ?? [],
-      providerModelServiceTiers
+      providerModelCapabilityToken
     )
     const supportedReasoningEfforts = normalizedProviderModelCapabilities(
       option.supportedReasoningEfforts ?? [],
-      providerModelReasoningEfforts
+      providerModelCapabilityToken
     )
     const defaultReasoningEffort = normalizedProviderModelCapability(
       option.defaultReasoningEffort,
-      providerModelReasoningEfforts
+      providerModelCapabilityToken
     )
     const existingIndex = seenProviderModels.get(providerModelKey)
     if (existingIndex !== undefined) {
@@ -476,11 +471,11 @@ export function dedupeProviderModelOptions(options: ProviderModelOption[]): Prov
         supportedServiceTiers: normalizedProviderModelCapabilities([
           ...(existing.supportedServiceTiers ?? []),
           ...supportedServiceTiers
-        ], providerModelServiceTiers),
+        ], providerModelCapabilityToken),
         supportedReasoningEfforts: normalizedProviderModelCapabilities([
           ...(existing.supportedReasoningEfforts ?? []),
           ...supportedReasoningEfforts
-        ], providerModelReasoningEfforts)
+        ], providerModelCapabilityToken)
       })
       if (defaultReasoningEffort) {
         defaultReasoningEffortCandidates[existingIndex].push(defaultReasoningEffort)
@@ -520,16 +515,11 @@ function normalizedProviderModelApiProtocols(value: readonly ProviderModelApiPro
   return output
 }
 
-const providerModelServiceTiers = new Set<GptServiceTier>(['priority', 'flex'])
-const providerModelReasoningEfforts = new Set<GptWireReasoningEffort>([
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-])
+const providerModelCapabilityToken = {
+  has(value: string): boolean {
+    return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value)
+  }
+} as ReadonlySet<string>
 
 function normalizedProviderModelCapabilities<TValue extends string>(
   value: readonly TValue[],
@@ -736,10 +726,18 @@ function validateCustomModelCapabilities(providerCode: string, input: CustomMode
   const serviceTiers = input.supportedServiceTiers ?? []
   const reasoningEfforts = input.supportedReasoningEfforts ?? []
   const defaultReasoningEffort = input.defaultReasoningEffort ?? undefined
-  const isGptTextModel = providerCode === 'gpt'
-    && (input.mode === undefined || input.mode === null || input.mode === 'text')
-  if (!isGptTextModel && (serviceTiers.length || reasoningEfforts.length || defaultReasoningEffort)) {
-    return '只有 GPT 文本自定义模型支持服务等级和思考能力配置'
+  const isTextModel = input.mode === undefined || input.mode === null || input.mode === 'text'
+  if (!isTextModel && (serviceTiers.length || reasoningEfforts.length || defaultReasoningEffort)) {
+    return '只有文本自定义模型支持服务等级和思考能力配置'
+  }
+  if (providerCode === 'gpt') {
+    const gptServiceTiers = new Set(['priority', 'flex'])
+    const gptReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    if (serviceTiers.length > 2 || reasoningEfforts.length > 7
+      || serviceTiers.some((value) => !gptServiceTiers.has(value))
+      || reasoningEfforts.some((value) => !gptReasoningEfforts.has(value))) {
+      return '自定义模型参数无效'
+    }
   }
   if (defaultReasoningEffort && !reasoningEfforts.includes(defaultReasoningEffort)) {
     return '默认思考级别必须属于支持的思考级别'

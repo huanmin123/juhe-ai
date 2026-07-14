@@ -4,15 +4,8 @@ export type ProviderModelScope = 'built_in' | 'global' | 'personal'
 export type CustomProviderModelScope = Exclude<ProviderModelScope, 'built_in'>
 export type ProviderModelStatus = 'draft' | 'active' | 'disabled'
 export type ProviderModelMode = 'text' | 'image' | 'audio'
-export type ProviderModelServiceTier = 'priority' | 'flex'
-export type ProviderModelReasoningEffort =
-  | 'none'
-  | 'minimal'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'max'
+export type ProviderModelServiceTier = string
+export type ProviderModelReasoningEffort = string
 export type ProviderModelCodexReasoningLevel = ProviderModelReasoningEffort | 'ultra'
 export type ProviderModelApiProtocol =
   | 'chat_completions'

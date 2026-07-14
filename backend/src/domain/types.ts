@@ -221,9 +221,9 @@ export interface ProviderModelPricing {
   maxTokens?: number
   supportsPromptCaching: boolean
   supportsServiceTier: boolean
-  supportedServiceTiers?: Array<'priority' | 'flex'>
-  supportedReasoningEfforts?: Array<'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>
-  defaultReasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  supportedServiceTiers?: string[]
+  supportedReasoningEfforts?: string[]
+  defaultReasoningEffort?: string
   pricingNotes?: string
   capabilityNotes?: string
   notes?: string
@@ -245,8 +245,8 @@ export interface AccountCredentials {
   account_id?: string
   chatgpt_user_id?: string
   plan_type?: string
-  service_tier_override?: 'default' | 'priority' | 'flex'
-  reasoning_effort_override?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  service_tier_override?: string
+  reasoning_effort_override?: string
   response_inspection_rules?: unknown[]
   [key: string]: unknown
 }

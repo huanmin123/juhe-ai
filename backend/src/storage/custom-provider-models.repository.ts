@@ -9,8 +9,8 @@ import { getPostgresPool } from './postgres-client.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 
 type CustomProviderModelApiProtocol = ProviderModelPricing['supportedApiProtocols'][number]
-type CustomProviderModelServiceTier = 'priority' | 'flex'
-type CustomProviderModelReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+type CustomProviderModelServiceTier = string
+type CustomProviderModelReasoningEffort = string
 export type CustomProviderModelScope = 'global' | 'personal'
 export type CustomProviderModelStatus = 'draft' | 'active' | 'disabled'
 
@@ -28,16 +28,11 @@ const customProviderModelApiProtocols = new Set<CustomProviderModelApiProtocol>(
   'audio',
   'realtime'
 ])
-const customProviderModelServiceTiers = new Set<CustomProviderModelServiceTier>(['priority', 'flex'])
-const customProviderModelReasoningEfforts = new Set<CustomProviderModelReasoningEffort>([
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-])
+const customProviderModelCapabilityTokens = {
+  has(value: string): boolean {
+    return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value)
+  }
+} as ReadonlySet<string>
 
 export interface CustomProviderModelRecord {
   id: string
@@ -702,9 +697,9 @@ function customProviderModelFromRow(row: CustomProviderModelRow): CustomProvider
     status: row.status,
     mode: optionalText(row.mode),
     supportedApiProtocols: parseStringArray(row.supported_api_protocols_json),
-    supportedServiceTiers: parseEnumArray(row.supported_service_tiers_json, customProviderModelServiceTiers),
-    supportedReasoningEfforts: parseEnumArray(row.supported_reasoning_efforts_json, customProviderModelReasoningEfforts),
-    defaultReasoningEffort: optionalEnum(row.default_reasoning_effort, customProviderModelReasoningEfforts),
+    supportedServiceTiers: parseEnumArray(row.supported_service_tiers_json, customProviderModelCapabilityTokens),
+    supportedReasoningEfforts: parseEnumArray(row.supported_reasoning_efforts_json, customProviderModelCapabilityTokens),
+    defaultReasoningEffort: optionalEnum(row.default_reasoning_effort, customProviderModelCapabilityTokens),
     pricingModel: optionalText(row.pricing_model),
     releaseDate: optionalText(row.release_date),
     shutdownDate: optionalText(row.shutdown_date),
@@ -756,22 +751,32 @@ function normalizeCustomProviderModelCapabilities(
 } {
   const supportedServiceTiers = normalizeEnumArray(
     input.supportedServiceTiers,
-    customProviderModelServiceTiers,
+    customProviderModelCapabilityTokens,
     '服务等级'
   )
   const supportedReasoningEfforts = normalizeEnumArray(
     input.supportedReasoningEfforts,
-    customProviderModelReasoningEfforts,
+    customProviderModelCapabilityTokens,
     '思考级别'
   )
   const defaultReasoningEffort = optionalEnumInput(
     input.defaultReasoningEffort,
-    customProviderModelReasoningEfforts,
+    customProviderModelCapabilityTokens,
     '默认思考级别'
   )
-  const isGptTextModel = providerCode === 'gpt' && (optionalText(input.mode) ?? 'text') === 'text'
-  if (!isGptTextModel && (supportedServiceTiers.length || supportedReasoningEfforts.length || defaultReasoningEffort)) {
-    throw new Error('只有 GPT 文本自定义模型支持服务等级和思考能力配置')
+  if (providerCode === 'gpt') {
+    const gptServiceTiers = new Set(['priority', 'flex'])
+    const gptReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    if ((input.supportedServiceTiers?.length ?? 0) > 2
+      || (input.supportedReasoningEfforts?.length ?? 0) > 7
+      || supportedServiceTiers.some((value) => !gptServiceTiers.has(value))
+      || supportedReasoningEfforts.some((value) => !gptReasoningEfforts.has(value))) {
+      throw new Error('自定义模型参数无效')
+    }
+  }
+  const isTextModel = (optionalText(input.mode) ?? 'text') === 'text'
+  if (!isTextModel && (supportedServiceTiers.length || supportedReasoningEfforts.length || defaultReasoningEffort)) {
+    throw new Error('只有文本自定义模型支持服务等级和思考能力配置')
   }
   if (defaultReasoningEffort && !supportedReasoningEfforts.includes(defaultReasoningEffort)) {
     throw new Error('默认思考级别必须属于支持的思考级别')

@@ -350,9 +350,10 @@
                 </template>
               </AccountBatchEditField>
 
-              <template v-if="homogeneousAccount?.providerCode === 'gpt'">
+              <template v-if="serviceTierOptions.length || reasoningEffortOptions.length">
                 <div class="batch-edit-two-columns">
                   <AccountBatchEditField
+                    v-if="serviceTierOptions.length"
                     v-model:checked="form.enabled.serviceTierOverride"
                     label="服务等级"
                     description="不覆盖客户端设置表示清除账户覆盖。"
@@ -366,6 +367,7 @@
                     </template>
                   </AccountBatchEditField>
                   <AccountBatchEditField
+                    v-if="reasoningEffortOptions.length"
                     v-model:checked="form.enabled.reasoningEffortOverride"
                     label="思考级别"
                     description="不覆盖客户端设置表示清除账户覆盖。"
@@ -523,6 +525,7 @@ const endpointModeOptions = computed(() => {
   return accountEndpointModeOptionsForProfile(profile).filter((option) => allowed.has(option.value))
 })
 const gptCapabilities = computed(() => accountGptRequestOverrideCapabilities({
+  providerCode: homogeneousAccount.value?.providerCode,
   accountType: homogeneousAccount.value?.type ?? 'api_key',
   modelOptions: modelOptions.value,
   supportedModels: effectiveBatchModels.value

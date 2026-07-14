@@ -142,20 +142,18 @@
               placeholder="不确定时可留空"
             />
           </a-form-item>
-          <template v-if="showCustomModelGptCapabilities">
+          <template v-if="showCustomModelRequestCapabilities">
             <a-form-item label="服务等级" class="custom-model-grid-wide">
               <a-select
                 v-model:value="customModelForm.supportedServiceTiers"
-                mode="multiple"
-                :options="customModelServiceTierOptions"
+                mode="tags"
                 placeholder="未选择时表示不支持账户级服务等级覆盖"
               />
             </a-form-item>
             <a-form-item label="思考级别" class="custom-model-grid-wide">
               <a-select
                 v-model:value="customModelForm.supportedReasoningEfforts"
-                mode="multiple"
-                :options="customModelReasoningEffortOptions"
+                mode="tags"
                 placeholder="仅配置上游 wire 支持的思考级别"
                 @change="handleCustomModelReasoningEffortsChange"
               />
@@ -254,8 +252,6 @@ import {
   clearCustomModelGptCapabilities,
   clearCustomModelPricesOutsideCategory,
   createCustomModelFormFromPricing,
-  customModelReasoningEffortOptions,
-  customModelServiceTierOptions,
   emptyCustomModelForm,
   normalizeCustomModelDefaultReasoningEffort,
   type CustomModelForm
@@ -342,9 +338,7 @@ const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.
 const activeProviderDefaultHealthCheckModel = computed(() => activeProvider.value?.defaultHealthCheckModel ?? '')
 const customModelModalTitle = computed(() => customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
-const showCustomModelGptCapabilities = computed(() => (
-  activeProvider.value?.code === 'gpt' && customModelPricingCategory.value === 'text'
-))
+const showCustomModelRequestCapabilities = computed(() => customModelPricingCategory.value === 'text')
 const customModelDefaultReasoningOptions = computed(() => customModelForm.supportedReasoningEfforts.map((value) => ({
   value,
   label: formatModelReasoningEffort(value)
@@ -534,7 +528,7 @@ function currentUserSystemAccountId(): string {
 
 function buildCurrentCustomModelPayload(): ProviderModelUpsertPayload | undefined {
   const payload = buildCustomModelUpsertPayload(customModelForm, customModelPricingCategory.value, {
-    includeGptCapabilities: activeProvider.value?.code === 'gpt'
+    includeRequestCapabilities: true
   })
   if (!payload) {
     message.warning('请填写模型 ID')
@@ -552,7 +546,7 @@ function handleCustomModelModeChange() {
   customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProvider.value ?? undefined, category)
   customModelForm.pricingTemplateModel = undefined
   clearCustomModelPricesOutsideCategory(customModelForm, category)
-  if (!showCustomModelGptCapabilities.value) {
+  if (!showCustomModelRequestCapabilities.value) {
     clearCustomModelGptCapabilities(customModelForm)
   }
 }

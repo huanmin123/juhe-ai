@@ -54,21 +54,6 @@ export const emptyCustomModelForm: CustomModelForm = {
   supportedReasoningEfforts: []
 }
 
-export const customModelServiceTierOptions: Array<{ label: string; value: ProviderModelServiceTier }> = [
-  { label: '优先（Priority）', value: 'priority' },
-  { label: '弹性（Flex）', value: 'flex' }
-]
-
-export const customModelReasoningEffortOptions: Array<{ label: string; value: ProviderModelReasoningEffort }> = [
-  { label: '不思考（None）', value: 'none' },
-  { label: '最少（Minimal）', value: 'minimal' },
-  { label: '低（Low）', value: 'low' },
-  { label: '中（Medium）', value: 'medium' },
-  { label: '高（High）', value: 'high' },
-  { label: '更高（XHigh）', value: 'xhigh' },
-  { label: '最大（Max）', value: 'max' }
-]
-
 export function createCustomModelFormFromPricing(
   record: ProviderModelPricing,
   providerModels: ProviderModelPricing[]
@@ -112,7 +97,7 @@ export function createCustomModelFormFromPricing(
 export function buildCustomModelPayload(
   form: CustomModelForm,
   category: ModelCategoryKey,
-  options: { includeGptCapabilities?: boolean } = {}
+  options: { includeRequestCapabilities?: boolean } = {}
 ): ProviderModelUpsertPayload | undefined {
   const model = form.model.trim()
   if (!model) return undefined
@@ -129,7 +114,7 @@ export function buildCustomModelPayload(
     maxOutputTokens: numberToNull(form.maxOutputTokens),
     ...buildCustomModelDirectPricePayload(form, category)
   }
-  if (options.includeGptCapabilities) {
+  if (options.includeRequestCapabilities) {
     const supportedReasoningEfforts = category === 'text'
       ? normalizeReasoningEfforts(form.supportedReasoningEfforts)
       : []
@@ -216,20 +201,12 @@ function numberToNull(value: unknown): number | null {
 
 function normalizeServiceTiers(value: unknown): ProviderModelServiceTier[] {
   if (!Array.isArray(value)) return []
-  return uniqueAllowedValues(value, new Set<ProviderModelServiceTier>(['priority', 'flex']))
+  return uniqueCapabilityTokens(value)
 }
 
 function normalizeReasoningEfforts(value: unknown): ProviderModelReasoningEffort[] {
   if (!Array.isArray(value)) return []
-  return uniqueAllowedValues(value, new Set<ProviderModelReasoningEffort>([
-    'none',
-    'minimal',
-    'low',
-    'medium',
-    'high',
-    'xhigh',
-    'max'
-  ]))
+  return uniqueCapabilityTokens(value)
 }
 
 function normalizedDefaultReasoningEffort(
@@ -242,17 +219,15 @@ function normalizedDefaultReasoningEffort(
     : undefined
 }
 
-function uniqueAllowedValues<TValue extends string>(
-  values: unknown[],
-  allowed: ReadonlySet<TValue>
-): TValue[] {
+function uniqueCapabilityTokens<TValue extends string>(values: unknown[]): TValue[] {
   const output: TValue[] = []
-  const seen = new Set<TValue>()
+  const seen = new Set<string>()
   for (const value of values) {
-    if (typeof value !== 'string' || !allowed.has(value as TValue) || seen.has(value as TValue)) continue
-    const normalized = value as TValue
+    if (typeof value !== 'string') continue
+    const normalized = value.trim()
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(normalized) || seen.has(normalized)) continue
     seen.add(normalized)
-    output.push(normalized)
+    output.push(normalized as TValue)
   }
   return output
 }

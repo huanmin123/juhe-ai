@@ -29,6 +29,11 @@ const (
 var ErrProviderNotFound = errors.New("provider not found")
 var ErrCustomProviderModelNotFound = errors.New("custom provider model not found")
 
+var gptProviderModelServiceTiers = map[string]struct{}{"priority": {}, "flex": {}}
+var gptProviderModelReasoningEfforts = map[string]struct{}{
+	"none": {}, "minimal": {}, "low": {}, "medium": {}, "high": {}, "xhigh": {}, "max": {},
+}
+
 type Store interface {
 	port.ManagementProviderModelCatalogReader
 	port.ManagementProviderDefaultHealthCheckModelWriter
@@ -671,21 +676,6 @@ var customProviderModelAPIProtocols = map[string]struct{}{
 	"realtime":                {},
 }
 
-var customProviderModelServiceTiers = map[string]struct{}{
-	"priority": {},
-	"flex":     {},
-}
-
-var customProviderModelReasoningEfforts = map[string]struct{}{
-	"none":    {},
-	"minimal": {},
-	"low":     {},
-	"medium":  {},
-	"high":    {},
-	"xhigh":   {},
-	"max":     {},
-}
-
 func createCustomModelScope(scope OptionalString) (string, error) {
 	if !scope.Set {
 		return "personal", nil
@@ -809,10 +799,14 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 		input.SupportedAPIProtocols = []string{}
 	}
 	if fields.SupportedServiceTiers.Set {
-		if len(fields.SupportedServiceTiers.Value) > 2 {
+		limit := 16
+		if input.ProviderCode == "gpt" {
+			limit = 2
+		}
+		if len(fields.SupportedServiceTiers.Value) > limit {
 			return &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
-		serviceTiers, err := normalizeCustomModelCapabilityList(fields.SupportedServiceTiers.Value, customProviderModelServiceTiers)
+		serviceTiers, err := normalizeCustomModelCapabilityList(fields.SupportedServiceTiers.Value)
 		if err != nil {
 			return err
 		}
@@ -821,10 +815,14 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 		input.SupportedServiceTiers = []string{}
 	}
 	if fields.SupportedReasoningEfforts.Set {
-		if len(fields.SupportedReasoningEfforts.Value) > 7 {
+		limit := 16
+		if input.ProviderCode == "gpt" {
+			limit = 7
+		}
+		if len(fields.SupportedReasoningEfforts.Value) > limit {
 			return &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
-		reasoningEfforts, err := normalizeCustomModelCapabilityList(fields.SupportedReasoningEfforts.Value, customProviderModelReasoningEfforts)
+		reasoningEfforts, err := normalizeCustomModelCapabilityList(fields.SupportedReasoningEfforts.Value)
 		if err != nil {
 			return err
 		}
@@ -835,7 +833,7 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 	if fields.DefaultReasoningEffort.Set {
 		defaultReasoningEffort := fields.DefaultReasoningEffort.Value
 		if defaultReasoningEffort != "" {
-			if _, ok := customProviderModelReasoningEfforts[defaultReasoningEffort]; !ok {
+			if !validCustomModelCapabilityToken(defaultReasoningEffort) {
 				return &CustomModelValidationError{Message: "自定义模型参数无效"}
 			}
 		}
@@ -956,11 +954,11 @@ func normalizeCustomModelProtocols(values []string) ([]string, error) {
 	return output, nil
 }
 
-func normalizeCustomModelCapabilityList(values []string, allowed map[string]struct{}) ([]string, error) {
+func normalizeCustomModelCapabilityList(values []string) ([]string, error) {
 	output := make([]string, 0, len(values))
 	seen := map[string]struct{}{}
 	for _, value := range values {
-		if _, ok := allowed[value]; !ok {
+		if value != strings.TrimSpace(value) || !validCustomModelCapabilityToken(value) {
 			return nil, &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
 		if _, exists := seen[value]; exists {
@@ -977,12 +975,24 @@ func validateCustomModelRequestCapabilities(input port.ManagementCustomProviderM
 		len(input.SupportedReasoningEfforts) > 0 ||
 		input.DefaultReasoningEffort != ""
 	mode := strings.TrimSpace(input.Mode)
-	isGPTTextModel := strings.TrimSpace(input.ProviderCode) == "gpt" && (mode == "" || mode == "text")
-	if !isGPTTextModel {
+	isTextModel := mode == "" || mode == "text"
+	if !isTextModel {
 		if hasCapabilities {
-			return &CustomModelValidationError{Message: "只有 GPT 文本自定义模型支持服务等级和思考能力配置"}
+			return &CustomModelValidationError{Message: "只有文本自定义模型支持服务等级和思考能力配置"}
 		}
 		return nil
+	}
+	if strings.TrimSpace(input.ProviderCode) == "gpt" {
+		for _, value := range input.SupportedServiceTiers {
+			if _, ok := gptProviderModelServiceTiers[value]; !ok {
+				return &CustomModelValidationError{Message: "自定义模型参数无效"}
+			}
+		}
+		for _, value := range input.SupportedReasoningEfforts {
+			if _, ok := gptProviderModelReasoningEfforts[value]; !ok {
+				return &CustomModelValidationError{Message: "自定义模型参数无效"}
+			}
+		}
 	}
 	defaultReasoningEffort := input.DefaultReasoningEffort
 	if defaultReasoningEffort == "" {
@@ -1312,10 +1322,10 @@ func dedupeModelOptions(items []port.ManagementProviderModelCatalogItem) []Model
 		}
 		key := strings.ToLower(providerCode) + "\n" + model
 		protocols := dedupeStrings(item.SupportedAPIProtocols)
-		serviceTiers := normalizeCatalogCapabilityList(item.SupportedServiceTiers, customProviderModelServiceTiers)
-		reasoningEfforts := normalizeCatalogCapabilityList(item.SupportedReasoningEfforts, customProviderModelReasoningEfforts)
+		serviceTiers := normalizeCatalogCapabilityList(item.SupportedServiceTiers)
+		reasoningEfforts := normalizeCatalogCapabilityList(item.SupportedReasoningEfforts)
 		defaultReasoningEffort := strings.TrimSpace(item.DefaultReasoningEffort)
-		if _, ok := customProviderModelReasoningEfforts[defaultReasoningEffort]; !ok {
+		if !validCustomModelCapabilityToken(defaultReasoningEffort) {
 			defaultReasoningEffort = ""
 		}
 		if index, exists := seen[key]; exists {
@@ -1352,12 +1362,12 @@ func dedupeModelOptions(items []port.ManagementProviderModelCatalogItem) []Model
 	return result
 }
 
-func normalizeCatalogCapabilityList(values []string, allowed map[string]struct{}) []string {
+func normalizeCatalogCapabilityList(values []string) []string {
 	output := make([]string, 0, len(values))
 	seen := map[string]struct{}{}
 	for _, value := range values {
 		normalized := strings.TrimSpace(value)
-		if _, ok := allowed[normalized]; !ok {
+		if !validCustomModelCapabilityToken(normalized) {
 			continue
 		}
 		if _, exists := seen[normalized]; exists {
@@ -1369,9 +1379,25 @@ func normalizeCatalogCapabilityList(values []string, allowed map[string]struct{}
 	return output
 }
 
+func validCustomModelCapabilityToken(value string) bool {
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	for index, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') {
+			continue
+		}
+		if index > 0 && (char == '.' || char == '_' || char == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCatalogItem {
-	supportedServiceTiers := normalizeCatalogCapabilityList(item.SupportedServiceTiers, customProviderModelServiceTiers)
-	supportedReasoningEfforts := normalizeCatalogCapabilityList(item.SupportedReasoningEfforts, customProviderModelReasoningEfforts)
+	supportedServiceTiers := normalizeCatalogCapabilityList(item.SupportedServiceTiers)
+	supportedReasoningEfforts := normalizeCatalogCapabilityList(item.SupportedReasoningEfforts)
 	defaultReasoningEffort := strings.TrimSpace(item.DefaultReasoningEffort)
 	if !stringListContains(supportedReasoningEfforts, defaultReasoningEffort) {
 		defaultReasoningEffort = ""

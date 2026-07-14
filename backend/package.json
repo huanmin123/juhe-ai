@@ -211,6 +211,7 @@
     "test:model-catalog": "tsx ../backend-go/scripts/provider-model-catalog-snapshot-regression.ts && tsx src/scripts/regression/model-catalog-regression.ts",
     "test:gpt-model-capabilities": "tsx src/scripts/regression/gpt-model-capabilities-regression.ts",
     "test:account-gpt-request-overrides": "tsx src/scripts/regression/account-gpt-request-overrides-regression.ts",
+    "test:provider-request-overrides": "tsx src/scripts/regression/provider-request-overrides-regression.ts",
     "test:account-model-mapping": "tsx src/scripts/regression/account-model-mapping-regression.ts",
     "test:account-model-mapping-postgres-smoke": "tsx src/scripts/regression/account-model-mapping-postgres-smoke.ts",
     "test:cooldown-retest-recovery": "tsx src/scripts/regression/cooldown-retest-recovery-regression.ts",
