@@ -91,6 +91,37 @@ assert.deepEqual(
   '能力未知模型必须阻断覆盖选项，不能由其他已知模型掩盖'
 )
 
+const geminiCapabilities = accountGptRequestOverrideCapabilities({
+  providerCode: 'gemini',
+  accountType: 'api_key',
+  modelOptions: [{
+    label: 'gemini-test',
+    value: 'gemini-test',
+    supportedServiceTiers: ['priority'],
+    supportedReasoningEfforts: ['low', 'high']
+  }],
+  supportedModels: ['gemini-test']
+})
+assert.deepEqual(geminiCapabilities.serviceTiers, [], 'Gemini 没有可确认的服务等级 wire 字段时必须隐藏服务等级控件')
+assert.deepEqual(geminiCapabilities.reasoningEfforts, ['low', 'high'], 'Gemini thinking level 有明确映射时应显示思考级别控件')
+
+const deepSeekCapabilities = accountGptRequestOverrideCapabilities({
+  providerCode: 'deepseek',
+  accountType: 'api_key',
+  modelOptions: [{
+    label: 'deepseek-test',
+    value: 'deepseek-test',
+    supportedServiceTiers: ['priority'],
+    supportedReasoningEfforts: ['high']
+  }],
+  supportedModels: ['deepseek-test']
+})
+assert.deepEqual(
+  deepSeekCapabilities,
+  { serviceTiers: [], reasoningEfforts: [] },
+  'DeepSeek 没有账户覆盖 driver 时不能因手工目录声明而显示无效控件'
+)
+
 const oauthFlexOnlyCapabilities = accountGptRequestOverrideCapabilities({
   accountType: 'oauth',
   modelOptions: [{

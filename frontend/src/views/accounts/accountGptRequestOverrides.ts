@@ -41,10 +41,15 @@ export function accountGptRequestOverrideCapabilities(input: {
   modelOptions: AccountGptModelCapabilityOption[]
   supportedModels: string[]
 }): AccountGptRequestOverrideCapabilities {
+  const providerCode = input.providerCode ?? 'gpt'
   const supportedModels = uniqueTextList(input.supportedModels)
-  const serviceTiers = intersectModelCapability(supportedModels, input.modelOptions, (option) => option.supportedServiceTiers)
-    .filter((tier) => (input.providerCode ?? 'gpt') !== 'gpt' || input.accountType !== 'oauth' || tier !== 'flex')
-  const reasoningEfforts = intersectModelCapability(supportedModels, input.modelOptions, (option) => option.supportedReasoningEfforts)
+  const serviceTiers = ['gpt', 'openai', 'anthropic'].includes(providerCode)
+    ? intersectModelCapability(supportedModels, input.modelOptions, (option) => option.supportedServiceTiers)
+      .filter((tier) => providerCode !== 'gpt' || input.accountType !== 'oauth' || tier !== 'flex')
+    : []
+  const reasoningEfforts = ['gpt', 'openai', 'anthropic', 'gemini'].includes(providerCode)
+    ? intersectModelCapability(supportedModels, input.modelOptions, (option) => option.supportedReasoningEfforts)
+    : []
   return { serviceTiers, reasoningEfforts }
 }
 
