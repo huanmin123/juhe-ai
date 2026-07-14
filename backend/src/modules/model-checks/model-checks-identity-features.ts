@@ -15,15 +15,28 @@ import {
   normalizedUpstreamOrigin
 } from './model-checks-observation-security.js'
 
-export const modelIdentityFeatureVersion = 'identity-features-v1'
-export const modelIdentityProbeVersion = 'generated-canary-v1'
+export const modelIdentityFeatureVersion = 'identity-features-v2-seven-categories'
+export const modelIdentityProbeVersion = 'generated-canary-v2-seven-categories'
 export const modelIdentityFeatureCount = 8
+
+export const modelIdentityFeatureCategories = [
+  'constraint',
+  'code',
+  'reasoning',
+  'error_recovery',
+  'multilingual',
+  'tool_schema',
+  'knowledge_window'
+] as const
+
+export type ModelIdentityFeatureCategory = typeof modelIdentityFeatureCategories[number]
 
 const gpt56Models = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'] as const
 const gpt55Models = ['gpt-5.5', 'gpt-5.4'] as const
 
 type GeneratedCanary = {
   key: string
+  category: ModelIdentityFeatureCategory
   prompt: string
   maxOutputTokens: number
   passed: (output: string) => boolean
@@ -91,7 +104,12 @@ export function createControlledBehaviorObservations(input: {
       reportedInputTokens: usageValue(result.usage, ['input_tokens', 'prompt_tokens']),
       observationStatus: identityObservationStatus(result),
       constraintPassed,
-      featureVector: extractIdentityFeatureVector(result.outputText ?? '', result.usage, constraintPassed),
+      featureVector: extractStructuredIdentityFeatureVector(
+        controlledBehaviorCategory(definition.key),
+        result.outputText ?? '',
+        result.usage,
+        constraintPassed
+      ),
       traceId: result.traceId
     }
   })
@@ -169,7 +187,7 @@ export async function executeModelIdentityObservationProbes(input: {
       cachedInputTokens: undefined,
       observationStatus: identityObservationStatus(result),
       constraintPassed,
-      featureVector: extractIdentityFeatureVector(output, result.usage, constraintPassed),
+      featureVector: extractStructuredIdentityFeatureVector(job.definition.category, output, result.usage, constraintPassed),
       traceId: result.traceId
     })
   }
@@ -202,25 +220,22 @@ function identityObservationStatus(result: GatewayProbeResult): string {
 }
 
 export function extractIdentityFeatureVector(output: string, usage: Record<string, unknown> | undefined, constraintPassed: boolean): number[] {
+  return extractStructuredIdentityFeatureVector('constraint', output, usage, constraintPassed)
+}
+
+export function extractStructuredIdentityFeatureVector(
+  category: ModelIdentityFeatureCategory,
+  output: string,
+  usage: Record<string, unknown> | undefined,
+  constraintPassed: boolean
+): number[] {
   const text = output.trim().slice(0, 4096)
-  const chars = [...text]
-  const length = Math.max(1, chars.length)
-  const lines = text ? text.split(/\r?\n/).filter(Boolean).length : 0
-  const digits = chars.filter((char) => /[0-9]/.test(char)).length
-  const uppercase = chars.filter((char) => /[A-Z]/.test(char)).length
-  const punctuation = chars.filter((char) => /[.,!?;:，。！？；：{}[\]"'`|\-]/.test(char)).length
-  const unique = new Set(chars.map((char) => char.toLowerCase())).size
   const outputTokens = usageValue(usage, ['output_tokens', 'completion_tokens']) ?? countModelCheckInputTokens(text)
-  return [
-    constraintPassed ? 1 : 0,
-    boundedRatio(chars.length, 512),
-    boundedRatio(lines, 8),
-    digits / length,
-    uppercase / length,
-    punctuation / length,
-    unique / length,
-    boundedRatio(outputTokens, 256)
-  ].map(roundFeature)
+  const vector = Array.from({ length: modelIdentityFeatureCount }, () => 0)
+  const categoryIndex = modelIdentityFeatureCategories.indexOf(category)
+  vector[categoryIndex] = constraintPassed ? 1 : 0
+  vector[7] = boundedRatio(outputTokens, 256)
+  return vector.map(roundFeature)
 }
 
 function generatedCanaries(nonce: string): GeneratedCanary[] {
@@ -230,7 +245,8 @@ function generatedCanaries(nonce: string): GeneratedCanary[] {
   const tag = `CANARY-${nonce.slice(0, 6).toUpperCase()}`
   return [
     {
-      key: 'generated_json',
+      key: 'constraint_json',
+      category: 'constraint',
       maxOutputTokens: 80,
       prompt: `只输出严格 JSON：{"result":数字,"tag":"${tag}"}。result 等于 ${left} + ${right}。`,
       passed: (output) => {
@@ -239,18 +255,76 @@ function generatedCanaries(nonce: string): GeneratedCanary[] {
       }
     },
     {
-      key: 'generated_sequence',
-      maxOutputTokens: 48,
-      prompt: `只输出 ${tag} 后跟数字从小到大排序并用竖线连接：${[...values].reverse().join('、')}。`,
-      passed: (output) => output.toUpperCase().includes(tag) && output.includes([...values].sort((a, b) => a - b).join('|'))
+      key: 'code_patch',
+      category: 'code',
+      maxOutputTokens: 80,
+      prompt: `只输出一行 TypeScript 表达式，把 [${values.join(',')}] 过滤为大于 ${values[0]} 的值并升序，不要解释；行尾注释必须是 ${tag}。`,
+      passed: (output) => output.includes('.filter(') && output.includes('.sort(') && output.toUpperCase().includes(tag)
     },
     {
-      key: 'generated_zh_constraint',
+      key: 'reasoning_order',
+      category: 'reasoning',
+      maxOutputTokens: 64,
+      prompt: `只输出严格 JSON：{"largest":数字,"tag":"${tag}"}。largest 是 ${values.join('、')} 中第二大值加 ${left - right}。`,
+      passed: (output) => {
+        const json = parseFirstJsonObject(output)
+        const sorted = [...values].sort((a, b) => b - a)
+        return json?.tag === tag && numberValue(json.largest) === (sorted[1] as number) + left - right
+      }
+    },
+    {
+      key: 'error_recovery',
+      category: 'error_recovery',
+      maxOutputTokens: 64,
+      prompt: `中间结论错误地声称 ${left}+${right}=${left + right + 1}。请纠正，只输出严格 JSON：{"correct":数字,"tag":"${tag}"}。`,
+      passed: (output) => {
+        const json = parseFirstJsonObject(output)
+        return json?.tag === tag && numberValue(json.correct) === left + right
+      }
+    },
+    {
+      key: 'multilingual_consistency',
+      category: 'multilingual',
+      maxOutputTokens: 80,
+      prompt: `“队列超时”和 "queue timeout" 表达同一概念。只输出严格 JSON：{"zh":"队列超时","en":"queue timeout","tag":"${tag}"}。`,
+      passed: (output) => {
+        const json = parseFirstJsonObject(output)
+        return json?.zh === '队列超时' && json?.en === 'queue timeout' && json?.tag === tag
+      }
+    },
+    {
+      key: 'tool_schema',
+      category: 'tool_schema',
       maxOutputTokens: 96,
-      prompt: `用 24 到 48 个中文字符解释请求排队，必须包含“队列”和“超时”，末尾添加 ${tag}，不要分点。`,
-      passed: (output) => output.includes('队列') && output.includes('超时') && output.toUpperCase().includes(tag)
+      prompt: `按工具参数 schema 生成且只输出 JSON：必填 action 枚举只能是 "inspect"，payload 必须含 ids 数组 [${values.join(',')}] 和布尔值 dryRun=true，tag="${tag}"。`,
+      passed: (output) => {
+        const json = parseFirstJsonObject(output)
+        const payload = json?.payload as Record<string, unknown> | undefined
+        return json?.action === 'inspect' && json?.tag === tag && payload?.dryRun === true
+          && Array.isArray(payload.ids) && payload.ids.map(Number).join(',') === values.join(',')
+      }
+    },
+    {
+      key: 'knowledge_window',
+      category: 'knowledge_window',
+      maxOutputTokens: 64,
+      prompt: `封闭时间线：2024-01 版本=A，2024-06 版本=B，2025-01 版本=C。知识截止 2024-10，不得使用截止后信息。只输出严格 JSON：{"version":"B","tag":"${tag}"}。`,
+      passed: (output) => {
+        const json = parseFirstJsonObject(output)
+        return json?.version === 'B' && json?.tag === tag
+      }
     }
   ]
+}
+
+function controlledBehaviorCategory(key: string): ModelIdentityFeatureCategory {
+  if (key.includes('code')) return 'code'
+  if (key.includes('logic') || key.includes('arithmetic') || key.includes('ordering')) return 'reasoning'
+  if (key.includes('refusal') || key.includes('priority')) return 'error_recovery'
+  if (key.includes('zh')) return 'multilingual'
+  if (key.includes('tool') || key.includes('schema')) return 'tool_schema'
+  if (key.includes('knowledge') || key.includes('window')) return 'knowledge_window'
+  return 'constraint'
 }
 
 function shuffled<T>(values: T[]): T[] {

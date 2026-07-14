@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 
 import { parseGeminiUsageFromJsonBuffer } from '../../modules/gateway/protocols/gemini-v1beta/usage.js'
+import { parseAnthropicUsageFromJsonBuffer } from '../../modules/gateway/protocols/anthropic-v1/usage.js'
 import { parseOpenAIUsageFromJsonBuffer } from '../../modules/gateway/protocols/openai-v1/usage.js'
 import { estimateCatalogCostUsd } from '../../modules/model-pricing/model-catalog.service.js'
 import { buildProviderCostBreakdown, estimateProviderCostUsd, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
@@ -10,6 +11,29 @@ import { readFileSync } from 'node:fs'
 import type { Request } from 'express'
 import { usageRecordSummaryFromRow } from '../../storage/usage-record-mappers.js'
 import { buildCodexResponsesChatBridgeBody } from '../../modules/providers/drivers/_shared/codex-responses-chat-bridge.js'
+import { saveCustomProviderModel } from '../../modules/model-pricing/model-catalog.service.js'
+import { createSystemAccount } from '../../storage/repositories.js'
+
+const catalogOwner = createSystemAccount({
+  username: 'service_tier_billing_owner',
+  displayName: 'ServiceTierBillingOwner',
+  password: 'password',
+  role: 'user',
+  status: 'active',
+  mustChangePassword: false
+})
+saveCustomProviderModel({
+  providerCode: 'anthropic',
+  model: 'claude-fast-billing-regression',
+  scope: 'personal',
+  systemAccountId: catalogOwner.id,
+  supportedApiProtocols: ['messages'],
+  supportedServiceTiers: ['fast'],
+  inputUsdPer1M: 1,
+  outputUsdPer1M: 2,
+  serviceTierPrices: { fast: { inputUsdPer1M: 2, outputUsdPer1M: 4 } },
+  actorSystemAccountId: catalogOwner.id
+})
 
 const gptPricing = listProviderModelPricing('gpt')
 for (const model of [
@@ -24,6 +48,9 @@ for (const model of [
 assert.equal(gptPricing.find((item) => item.model === 'gpt-5.2')?.supportedServiceTiers.includes('flex'), false, '未声明 Flex 的旧模型不能误开放')
 
 assert.equal(cost('gpt-5.6-sol', 'default', 100_000, 100_000), 3.5)
+assert.equal(estimateCatalogCostUsd({
+  providerCode: 'gpt', model: 'gpt-5.6-sol', serviceTier: 'standard', inputTokens: 100_000, outputTokens: 100_000
+}), 3.5, 'standard 实际计费档位必须使用标准扁平价格')
 assert.equal(cost('gpt-5.6-sol', 'priority', 100_000, 100_000), 7)
 assert.equal(cost('gpt-5.6-sol', 'flex', 100_000, 100_000), 1.75)
 assert.equal(cost('gpt-5.6-terra', 'priority', 100_000, 100_000), 3.5)
@@ -34,7 +61,6 @@ assert.equal(estimateProviderCostUsd({
   providerCode: 'gpt',
   model: 'gpt-5.4-nano',
   serviceTier: 'priority',
-  priorityPriceMultiplier: 3,
   inputTokens: 100_000,
   outputTokens: 100_000
 }), undefined, '缺少档位专用价时必须标记未定价，不能套用 Priority 通用倍率')
@@ -42,7 +68,6 @@ assert.equal(estimateProviderCostUsd({
   providerCode: 'gpt',
   model: 'gpt-5.4',
   serviceTier: 'flex',
-  flexPriceMultiplier: 0.4,
   inputTokens: 100_000,
   outputTokens: 100_000
 }), undefined, '缺少档位专用价时必须标记未定价，不能套用 Flex 通用倍率')
@@ -50,7 +75,6 @@ assert.equal(estimateProviderCostUsd({
   providerCode: 'gpt',
   model: 'gpt-5.6-sol',
   serviceTier: 'priority',
-  priorityPriceMultiplier: 3,
   inputTokens: 100_000,
   outputTokens: 100_000
 }), 7, '模型精确档位价格必须优先于通用倍率')
@@ -72,7 +96,6 @@ const multiplierBreakdown = buildProviderCostBreakdown({
   providerCode: 'gpt',
   model: 'gpt-5.4-nano',
   serviceTier: 'priority',
-  priorityPriceMultiplier: 3,
   inputTokens: 100_000,
   outputTokens: 100_000
 })
@@ -137,6 +160,25 @@ const geminiUsage = parseGeminiUsageFromJsonBuffer(Buffer.from(JSON.stringify({
 assert.equal(geminiUsage.outputTokens, 100, 'Gemini candidates 不含 thoughts，必须归一为完整可计费输出')
 assert.equal(geminiUsage.thinkingTokens, 40)
 
+const anthropicFastUsage = parseAnthropicUsageFromJsonBuffer(Buffer.from(JSON.stringify({
+  usage: { input_tokens: 100_000, output_tokens: 100_000, speed: 'fast' }
+})))
+assert.equal(anthropicFastUsage.serviceTier, 'fast', 'Anthropic usage.speed 必须保留供应商原生档位')
+const anthropicFastTiers = resolveUsageServiceTiers({
+  requestedServiceTier: 'auto',
+  effectiveServiceTier: 'auto',
+  reportedServiceTier: anthropicFastUsage.serviceTier
+})
+assert.equal(anthropicFastTiers.billedServiceTier, 'fast')
+assert.equal(estimateCatalogCostUsd({
+  providerCode: 'anthropic',
+  model: 'claude-fast-billing-regression',
+  systemAccountId: catalogOwner.id,
+  serviceTier: anthropicFastTiers.billedServiceTier,
+  inputTokens: anthropicFastUsage.inputTokens,
+  outputTokens: anthropicFastUsage.outputTokens
+}), 0.6, 'Anthropic fast 必须按模型目录精确档位价格计费')
+
 assert.deepEqual(resolveUsageServiceTiers({
   requestedServiceTier: 'flex',
   effectiveServiceTier: 'flex'
@@ -178,6 +220,15 @@ assert.equal(mappedServiceTiers.billedServiceTier, 'priority')
 assert.equal(mappedServiceTiers.requestedReasoningEffort, 'low')
 assert.equal(mappedServiceTiers.effectiveReasoningEffort, 'high')
 assert.equal(mappedServiceTiers.pricingSnapshot, undefined, '未生成档位专用价时不得持久化倍率计价快照')
+
+const mappedProviderCapabilities = usageRecordSummaryFromRow({
+  id: 'usage_provider_capability_mapping', trace_id: 'trace_provider_capability_mapping', traffic_source: 'gateway',
+  stream: 0, success: 1, requested_service_tier: 'auto', effective_service_tier: 'auto',
+  reported_service_tier: 'fast', billed_service_tier: 'fast', requested_reasoning_effort: 'adaptive',
+  effective_reasoning_effort: 'adaptive', created_at: '2026-07-15T00:00:00.000Z'
+}, false, new Map())
+assert.equal(mappedProviderCapabilities.billedServiceTier, 'fast', 'usage 读回不能过滤非 GPT 档位')
+assert.equal(mappedProviderCapabilities.effectiveReasoningEffort, 'adaptive', 'usage 读回不能过滤供应商原生思考值')
 
 console.log('服务档位计费回归通过：GPT-5.6 精确三档、缺价未定价、长上下文和思考 Token 口径正确')
 

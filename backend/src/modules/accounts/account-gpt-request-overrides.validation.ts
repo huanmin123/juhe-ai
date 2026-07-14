@@ -18,15 +18,13 @@ export function assertAccountGptRequestOverridesSupported(input: {
 }): void {
   const overrides = readGptAccountRequestOverrides(input.credentials)
   if (!overrides.serviceTier && !overrides.reasoningEffort) return
-  if (input.providerCode !== 'gpt') {
-    throw new Error('只有 GPT 账户支持服务等级和思考级别覆盖')
-  }
   const catalog = listProviderModelCatalog({
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId,
     includeUnpriced: true
   })
   assertAccountGptRequestOverridesSupportedByCatalog({
+    providerCode: input.providerCode,
     accountType: input.accountType,
     overrides,
     supportedModels: input.supportedModels,
@@ -43,15 +41,13 @@ export async function assertAccountGptRequestOverridesSupportedAsync(input: {
 }): Promise<void> {
   const overrides = readGptAccountRequestOverrides(input.credentials)
   if (!overrides.serviceTier && !overrides.reasoningEffort) return
-  if (input.providerCode !== 'gpt') {
-    throw new Error('只有 GPT 账户支持服务等级和思考级别覆盖')
-  }
   const catalog = await listProviderModelCatalogAsync({
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId,
     includeUnpriced: true
   })
   assertAccountGptRequestOverridesSupportedByCatalog({
+    providerCode: input.providerCode,
     accountType: input.accountType,
     overrides,
     supportedModels: input.supportedModels,
@@ -60,14 +56,16 @@ export async function assertAccountGptRequestOverridesSupportedAsync(input: {
 }
 
 export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
+  providerCode?: string
   accountType: AccountType
   overrides: GptAccountRequestOverrides
   supportedModels: readonly string[]
   catalog: readonly ProviderModelCatalogItem[]
 }): void {
+  assertProviderSupportsAccountRequestOverrides(input.providerCode ?? 'gpt', input.overrides)
   const supportedModels = uniqueTextList(input.supportedModels)
   if (!supportedModels.length) {
-    throw new Error('GPT 请求覆盖要求账户至少配置一个支持模型')
+    throw new Error('请求覆盖要求账户至少配置一个支持模型')
   }
   const catalogByModel = new Map(input.catalog.map((item) => [item.model.trim(), item]))
   const missingModels = supportedModels.filter((model) => !catalogByModel.has(model))
@@ -77,7 +75,7 @@ export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
   const modelItems = supportedModels.map((model) => catalogByModel.get(model) as ProviderModelCatalogItem)
 
   if (input.overrides.serviceTier) {
-    if (input.accountType === 'oauth' && input.overrides.serviceTier === 'flex') {
+    if ((input.providerCode ?? 'gpt') === 'gpt' && input.accountType === 'oauth' && input.overrides.serviceTier === 'flex') {
       throw new Error('OpenAI OAuth 账户不支持 Flex 服务等级覆盖')
     }
     const requiredTier = input.overrides.serviceTier === 'default'
@@ -110,4 +108,16 @@ function uniqueTextList(values: readonly string[]): string[] {
     output.push(normalized)
   }
   return output
+}
+
+function assertProviderSupportsAccountRequestOverrides(
+  providerCode: string,
+  overrides: GptAccountRequestOverrides
+): void {
+  if (!new Set(['gpt', 'openai', 'anthropic', 'gemini']).has(providerCode)) {
+    throw new Error(`供应商 ${providerCode} 没有可确认的账户请求覆盖 wire 映射`)
+  }
+  if (providerCode === 'gemini' && overrides.serviceTier) {
+    throw new Error('Gemini 原生请求没有可确认的服务等级 wire 字段，不能保存账户服务等级覆盖')
+  }
 }

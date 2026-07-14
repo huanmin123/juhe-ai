@@ -2,6 +2,7 @@ import type { Request } from 'express'
 
 import {
   accountSupportsGeminiEndpointMode,
+  geminiEndpointFamilyFromPath,
   geminiEndpointModeForRequestShape
 } from '../../../../domain/gemini-endpoint-modes.js'
 import {
@@ -26,7 +27,7 @@ import {
   resolveOpenAIAccountModelMapping,
   resolveOpenAIRequestModelMapping
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'
-import { requestStream } from '../../../gateway/request/metadata.js'
+import { requestModel, requestStream } from '../../../gateway/request/metadata.js'
 import {
   buildUpstreamRequestBody,
   copySafeUpstreamRequestHeaders,
@@ -39,6 +40,7 @@ import {
   transformGeminiNativeTargetBridgeUpstreamResponse
 } from '../_shared/openai-anthropic-gemini-native-bridge.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
+import { applyProviderAccountRequestOverridesToBody } from '../_shared/provider-request-overrides.js'
 
 function geminiEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
   const mapping = resolveOpenAIRequestModelMapping(req, account)
@@ -109,10 +111,15 @@ export const geminiProviderDriver: ProviderDriver = {
       prepareOpenAIOrAnthropicToGeminiNativeHeaders(headers, req)
       return {
         headers,
-        body: await buildOpenAIOrAnthropicToGeminiNativeBody(req, {
+        body: await applyProviderAccountRequestOverridesToBody(await buildOpenAIOrAnthropicToGeminiNativeBody(req, {
           mapping,
           providerName: account.name
-        }, signal)
+        }, signal), {
+          account,
+          upstreamModel: mapping?.upstreamModel,
+          wireFormat: 'gemini_generate_content',
+          signal
+        })
       }
     }
     if (!headers.get('content-type') && req.method !== 'GET' && req.method !== 'HEAD') {
@@ -121,9 +128,18 @@ export const geminiProviderDriver: ProviderDriver = {
     if (!headers.get('accept')) {
       headers.set('accept', requestStream(req) || req.originalUrl.includes(':streamGenerateContent') ? 'text/event-stream' : 'application/json')
     }
+    const nativeBody = buildUpstreamRequestBody(req)
+    const endpointFamily = geminiEndpointFamilyFromPath(req.path || req.originalUrl.split('?', 1)[0])
     return {
       headers,
-      body: buildUpstreamRequestBody(req)
+      body: endpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || endpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+        ? await applyProviderAccountRequestOverridesToBody(nativeBody, {
+            account,
+            upstreamModel: requestModel(req),
+            wireFormat: 'gemini_generate_content',
+            signal
+          })
+        : nativeBody
     }
   },
   transformUpstreamResponse(req, account, response) {

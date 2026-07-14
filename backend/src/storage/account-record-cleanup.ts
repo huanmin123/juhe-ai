@@ -1340,6 +1340,7 @@ function deleteAccountScopeStatsRows(
     database.prepare('DELETE FROM model_identity_source_features WHERE account_id = ?').run(accountId)
     database.prepare('DELETE FROM model_paired_similarity_windows WHERE account_id = ?').run(accountId)
     database.prepare('DELETE FROM model_account_trust_results WHERE account_id = ?').run(accountId)
+    database.prepare('DELETE FROM model_trust_latest_dirty_accounts WHERE account_id = ?').run(accountId)
     deleteAccountAuthorizationReportRows(database, accountId)
   }
 }
@@ -1389,6 +1390,7 @@ async function deletePostgresAccountScopeStatsRows(
     await client.execute('DELETE FROM juhe_stats.model_identity_source_features WHERE account_id = ANY(?::text[])', [accountIds])
     await client.execute('DELETE FROM juhe_stats.model_paired_similarity_windows WHERE account_id = ANY(?::text[])', [accountIds])
     await client.execute('DELETE FROM juhe_stats.model_account_trust_results WHERE account_id = ANY(?::text[])', [accountIds])
+    await client.execute('DELETE FROM juhe_stats.model_trust_latest_dirty_accounts WHERE account_id = ANY(?::text[])', [accountIds])
     await deletePostgresAccountAuthorizationReportRows(client, accountIds)
   }
   for (const chunk of chunkValues(normalizedAuthorizationIds, 900)) {
@@ -1440,7 +1442,7 @@ async function hasPostgresDeletedAccountStatsRows(client: DatabaseClient, input:
   `, [accountIds])) {
     return true
   }
-  for (const tableName of ['model_token_integrity_windows', 'model_token_integrity_rounds', 'model_trust_window_sources', 'model_identity_source_features', 'model_paired_similarity_windows', 'model_account_trust_results']) {
+  for (const tableName of ['model_token_integrity_windows', 'model_token_integrity_rounds', 'model_trust_window_sources', 'model_identity_source_features', 'model_paired_similarity_windows', 'model_account_trust_results', 'model_trust_latest_dirty_accounts']) {
     if (accountIds.length > 0 && await postgresRowsExist(client, `SELECT 1 FROM juhe_stats.${tableName} WHERE account_id = ANY(?::text[]) LIMIT 1`, [accountIds])) {
       return true
     }
@@ -1473,6 +1475,7 @@ function hasDeletedAccountStatsRows(database: DatabaseSync, input: DeletedAccoun
       || singleStatsRowExists(database, 'model_identity_source_features', 'account_id = ?', [accountId])
       || singleStatsRowExists(database, 'model_paired_similarity_windows', 'account_id = ?', [accountId])
       || singleStatsRowExists(database, 'model_account_trust_results', 'account_id = ?', [accountId])
+      || singleStatsRowExists(database, 'model_trust_latest_dirty_accounts', 'account_id = ?', [accountId])
       || hasAccountAuthorizationReportRows(database, accountId)) {
       return true
     }

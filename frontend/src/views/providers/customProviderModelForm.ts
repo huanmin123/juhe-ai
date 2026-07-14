@@ -2,6 +2,7 @@ import type {
   ProviderModelApiProtocol,
   ProviderModelMode,
   ProviderModelPricing,
+  ProviderModelPriceSet,
   ProviderModelReasoningEffort,
   ProviderModelServiceTier,
   CustomProviderModelScope,
@@ -14,6 +15,7 @@ import {
   directPriceFieldKeys,
   directPriceFieldsByCategory,
   getModelCategory,
+  modelStatusOptions,
   type DirectPriceFieldKey,
   type ModelCategoryKey
 } from './providerModelFormatters'
@@ -37,6 +39,8 @@ export interface CustomModelForm {
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
+  cacheWrite1hUsdPer1M?: number
+  serviceTierPrices: Record<string, ProviderModelPriceSet>
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
@@ -51,23 +55,9 @@ export const emptyCustomModelForm: CustomModelForm = {
   mode: 'text',
   supportedApiProtocols: ['responses', 'chat_completions'],
   supportedServiceTiers: [],
-  supportedReasoningEfforts: []
+  supportedReasoningEfforts: [],
+  serviceTierPrices: {}
 }
-
-export const customModelServiceTierOptions: Array<{ label: string; value: ProviderModelServiceTier }> = [
-  { label: '优先（Priority）', value: 'priority' },
-  { label: '弹性（Flex）', value: 'flex' }
-]
-
-export const customModelReasoningEffortOptions: Array<{ label: string; value: ProviderModelReasoningEffort }> = [
-  { label: '不思考（None）', value: 'none' },
-  { label: '最少（Minimal）', value: 'minimal' },
-  { label: '低（Low）', value: 'low' },
-  { label: '中（Medium）', value: 'medium' },
-  { label: '高（High）', value: 'high' },
-  { label: '更高（XHigh）', value: 'xhigh' },
-  { label: '最大（Max）', value: 'max' }
-]
 
 export function createCustomModelFormFromPricing(
   record: ProviderModelPricing,
@@ -94,6 +84,8 @@ export function createCustomModelFormFromPricing(
     outputUsdPer1M: record.outputUsdPer1M,
     cachedInputUsdPer1M: record.cachedInputUsdPer1M,
     cacheWriteUsdPer1M: record.cacheWriteUsdPer1M,
+    cacheWrite1hUsdPer1M: record.cacheWrite1hUsdPer1M,
+    serviceTierPrices: cloneServiceTierPrices(record.serviceTierPrices),
     imageInputUsdPer1M: record.imageInputUsdPer1M,
     imageOutputUsdPer1M: record.imageOutputUsdPer1M,
     audioInputUsdPer1M: record.audioInputUsdPer1M,
@@ -103,16 +95,13 @@ export function createCustomModelFormFromPricing(
 
   const category = categoryFromModeOrModel(form.mode, form.model)
   clearCustomModelPricesOutsideCategory(form, category)
-  if (record.pricingModel) {
-    applyPricingTemplateToCustomModelForm(form, providerModels, record.pricingModel)
-  }
   return form
 }
 
 export function buildCustomModelPayload(
   form: CustomModelForm,
   category: ModelCategoryKey,
-  options: { includeGptCapabilities?: boolean } = {}
+  options: { includeRequestCapabilities?: boolean; includePrices?: boolean } = {}
 ): ProviderModelUpsertPayload | undefined {
   const model = form.model.trim()
   if (!model) return undefined
@@ -122,14 +111,16 @@ export function buildCustomModelPayload(
     status: form.status,
     mode: form.mode,
     supportedApiProtocols: [...form.supportedApiProtocols],
-    pricingModel: null,
     releaseDate: trimToNull(form.releaseDate),
     shutdownDate: trimToNull(form.shutdownDate),
     contextWindowTokens: numberToNull(form.contextWindowTokens),
-    maxOutputTokens: numberToNull(form.maxOutputTokens),
-    ...buildCustomModelDirectPricePayload(form, category)
+    maxOutputTokens: numberToNull(form.maxOutputTokens)
   }
-  if (options.includeGptCapabilities) {
+  if (options.includePrices !== false) {
+    payload.serviceTierPrices = cloneServiceTierPrices(form.serviceTierPrices)
+    Object.assign(payload, buildCustomModelDirectPricePayload(form, category))
+  }
+  if (options.includeRequestCapabilities) {
     const supportedReasoningEfforts = category === 'text'
       ? normalizeReasoningEfforts(form.supportedReasoningEfforts)
       : []
@@ -175,6 +166,25 @@ export function applyPricingTemplateToCustomModelForm(
   for (const field of directPriceFieldKeys) {
     form[field] = visibleFields.has(field) ? template[field] : undefined
   }
+  form.serviceTierPrices = cloneServiceTierPrices(template.serviceTierPrices)
+  reconcileCustomModelServiceTierPrices(form)
+}
+
+export function reconcileCustomModelServiceTierPrices(form: CustomModelForm): void {
+  const tiers = normalizeServiceTiers(form.supportedServiceTiers)
+  const current = form.serviceTierPrices
+  form.supportedServiceTiers = tiers
+  form.serviceTierPrices = Object.fromEntries(tiers.map((tier) => [tier, { ...(current[tier] ?? {}) }]))
+}
+
+export function availableCustomModelStatusOptions(canManagePrices: boolean, originalStatus?: ProviderModelStatus) {
+  return canManagePrices || originalStatus === 'active'
+    ? modelStatusOptions
+    : modelStatusOptions.filter((option) => option.value !== 'active')
+}
+
+function cloneServiceTierPrices(value?: Record<string, ProviderModelPriceSet>): Record<string, ProviderModelPriceSet> {
+  return Object.fromEntries(Object.entries(value ?? {}).map(([tier, prices]) => [tier, { ...prices }]))
 }
 
 export function clearCustomModelPricesOutsideCategory(form: CustomModelForm, category: ModelCategoryKey): void {
@@ -184,6 +194,7 @@ export function clearCustomModelPricesOutsideCategory(form: CustomModelForm, cat
       form[field] = undefined
     }
   }
+  if (category !== 'text') form.serviceTierPrices = {}
 }
 
 function buildCustomModelDirectPricePayload(form: CustomModelForm, category: ModelCategoryKey) {
@@ -216,20 +227,12 @@ function numberToNull(value: unknown): number | null {
 
 function normalizeServiceTiers(value: unknown): ProviderModelServiceTier[] {
   if (!Array.isArray(value)) return []
-  return uniqueAllowedValues(value, new Set<ProviderModelServiceTier>(['priority', 'flex']))
+  return uniqueCapabilityTokens(value)
 }
 
 function normalizeReasoningEfforts(value: unknown): ProviderModelReasoningEffort[] {
   if (!Array.isArray(value)) return []
-  return uniqueAllowedValues(value, new Set<ProviderModelReasoningEffort>([
-    'none',
-    'minimal',
-    'low',
-    'medium',
-    'high',
-    'xhigh',
-    'max'
-  ]))
+  return uniqueCapabilityTokens(value)
 }
 
 function normalizedDefaultReasoningEffort(
@@ -242,17 +245,15 @@ function normalizedDefaultReasoningEffort(
     : undefined
 }
 
-function uniqueAllowedValues<TValue extends string>(
-  values: unknown[],
-  allowed: ReadonlySet<TValue>
-): TValue[] {
+function uniqueCapabilityTokens<TValue extends string>(values: unknown[]): TValue[] {
   const output: TValue[] = []
-  const seen = new Set<TValue>()
+  const seen = new Set<string>()
   for (const value of values) {
-    if (typeof value !== 'string' || !allowed.has(value as TValue) || seen.has(value as TValue)) continue
-    const normalized = value as TValue
+    if (typeof value !== 'string') continue
+    const normalized = value.trim()
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(normalized) || seen.has(normalized)) continue
     seen.add(normalized)
-    output.push(normalized)
+    output.push(normalized as TValue)
   }
   return output
 }

@@ -364,7 +364,7 @@ OAuth 账户：
 - `providerCode = openai` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = api_key` 时必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = oauth` 时必须有 `credentials.refresh_token` 或 `credentials.access_token`。
-- `providerCode = gpt` 的 API Key 和 OAuth 凭据可选包含 `service_tier_override=default|priority|flex` 与 `reasoning_effort_override=none|minimal|low|medium|high|xhigh|max`；空值表示不覆盖客户端请求。后端按最终支持模型的精确能力数组和适配器能力校验，拒绝 `fast`、`auto`、`ultra`，非 GPT 账户不得提交这两个字段。
+- 文本模型账户凭据可选包含字符串 `service_tier_override` 与 `reasoning_effort_override`；空值表示不覆盖客户端请求。值必须属于账户全部支持模型在当前供应商目录中声明的共同交集。GPT 仍只接受既有 OpenAI 值并保持 OAuth 禁止 Flex；Anthropic 按原生 `service_tier` / effort 映射；Gemini 只支持 thinking level，服务档位覆盖明确拒绝；DeepSeek / GLM 未声明能力时不得提交。`speed`、thinking budget 等原生字段只做同协议保护，不属于这两个账户控件。
 - `service_tier_override` 与 `reasoning_effort_override` 会在模型映射和协议桥接确定实际上游模型后覆盖最终上游请求；OpenAI Responses Multi-agent Beta 不属于本期导入字段。
 - `providerCode = anthropic` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。当前导入协议不接受 Anthropic OAuth、Setup Token、Claude Code token、`refresh_token` 或 `access_token`。
 - `providerCode = anthropic` 不接受 `credentials.anthropic_version` 或 `credentials.anthropic_beta`。`anthropic-version` 是客户端请求头，缺省时由网关按协议默认 `2023-06-01` 补齐；`anthropic-beta` 只透传客户端显式 header。

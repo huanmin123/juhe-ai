@@ -83,6 +83,8 @@ const apiKeyExportCredentialKeys = [
   'api_key_weights',
   'base_url',
   'supported_endpoint_modes',
+  'service_tier_override',
+  'reasoning_effort_override',
   'error_handling_rules',
   'response_inspection_rules'
 ]
@@ -95,6 +97,8 @@ const oauthExportCredentialKeys = [
   'id_token',
   'base_url',
   'supported_endpoint_modes',
+  'service_tier_override',
+  'reasoning_effort_override',
   'account_id',
   'email',
   'chatgpt_user_id',

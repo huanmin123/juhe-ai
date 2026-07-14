@@ -1,15 +1,15 @@
 <template>
-  <section class="form-section gpt-request-overrides-section">
-    <h4>GPT 请求覆盖</h4>
+  <section v-if="serviceTierOptions.length || reasoningEffortOptions.length" class="form-section gpt-request-overrides-section">
+    <h4>上游请求覆盖</h4>
     <div class="gpt-request-overrides-grid">
-      <a-form-item label="服务等级">
+      <a-form-item v-if="serviceTierOptions.length" label="服务等级">
         <a-select
           v-model:value="serviceTierValue"
           :disabled="readonly || serviceTierOptions.length <= 1"
           :options="serviceTierOptions"
         />
       </a-form-item>
-      <a-form-item label="思考级别">
+      <a-form-item v-if="reasoningEffortOptions.length" label="思考级别">
         <a-select
           v-model:value="reasoningEffortValue"
           :disabled="readonly || reasoningEffortOptions.length <= 1"
@@ -49,6 +49,7 @@ const props = withDefaults(defineProps<{
 })
 
 const capabilities = computed(() => accountGptRequestOverrideCapabilities({
+  providerCode: props.form.providerCode,
   accountType: props.form.type,
   modelOptions: props.modelOptions,
   supportedModels: props.form.supportedModels
@@ -84,7 +85,7 @@ watch(
     () => capabilities.value.reasoningEfforts.join('\n')
   ],
   () => {
-    if (props.readonly || props.modelsLoading || props.form.providerCode !== 'gpt') return
+    if (props.readonly || props.modelsLoading) return
     const cleared: string[] = []
     if (!isAccountGptServiceTierOverrideAvailable(props.form.serviceTierOverride, capabilities.value)) {
       props.form.serviceTierOverride = ''

@@ -573,7 +573,7 @@ function accountUsageModelAccounting(
   const upstreamModel = resolved.upstreamModel ?? requestedModel
   return {
     upstreamModel,
-    pricingModel: resolveUsagePricingModel(account, catalogSystemAccountId, upstreamModel, requestedModel),
+    pricingModel: resolveUsagePricingModel(account, catalogSystemAccountId, upstreamModel),
     modelMappingApplied: resolved.modelMappingApplied,
     modelMappingSource: resolved.modelMappingSource,
     sourceEndpointFamily: resolved.sourceEndpointFamily,
@@ -584,22 +584,12 @@ function accountUsageModelAccounting(
 function resolveUsagePricingModel(
   account: UpstreamAccount,
   catalogSystemAccountId: string,
-  upstreamModel: string | undefined,
-  requestedModel: string | undefined
+  upstreamModel: string | undefined
 ): string | undefined {
-  const upstreamPricingModel = resolveGatewayCatalogPricingModel({
-    providerCode: account.providerCode,
-    systemAccountId: catalogSystemAccountId,
-    model: upstreamModel
-  })
-  if (upstreamPricingModel) return upstreamPricingModel
-
-  const sourceModel = requestedModel?.trim()
-  if (!sourceModel || sourceModel === upstreamModel) return undefined
   return resolveGatewayCatalogPricingModel({
     providerCode: account.providerCode,
     systemAccountId: catalogSystemAccountId,
-    model: sourceModel
+    model: upstreamModel
   })
 }
 

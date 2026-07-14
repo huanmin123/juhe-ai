@@ -260,8 +260,6 @@ func TestDecodeProviderStringArrayTrimsDedupes(t *testing.T) {
 
 func TestManagementProviderModelCatalogItemFromRowDecodesOptionalFields(t *testing.T) {
 	inputPrice := pgtype.Float8{Float64: 1.25, Valid: true}
-	priorityInputPrice := pgtype.Float8{Float64: 2.5, Valid: true}
-	flexInputPrice := pgtype.Float8{Float64: 0.625, Valid: true}
 	longContextThreshold := pgtype.Int4{Int32: 272000, Valid: true}
 	longContextInputMultiplier := pgtype.Float8{Float64: 2, Valid: true}
 	longContextOutputMultiplier := pgtype.Float8{Float64: 1.5, Valid: true}
@@ -282,8 +280,7 @@ func TestManagementProviderModelCatalogItemFromRowDecodesOptionalFields(t *testi
 		ContextWindowTokens:             maxInput,
 		MaxInputTokens:                  maxInput,
 		InputUsdPer1m:                   inputPrice,
-		PriorityInputUsdPer1m:           priorityInputPrice,
-		FlexInputUsdPer1m:               flexInputPrice,
+		ServiceTierPricesJson:           `{"priority":{"inputUsdPer1M":2.5},"flex":{"inputUsdPer1M":0.625}}`,
 		LongContextInputTokenThreshold:  longContextThreshold,
 		LongContextInputCostMultiplier:  longContextInputMultiplier,
 		LongContextOutputCostMultiplier: longContextOutputMultiplier,
@@ -302,9 +299,9 @@ func TestManagementProviderModelCatalogItemFromRowDecodesOptionalFields(t *testi
 	if item.ContextWindowTokens == nil || *item.ContextWindowTokens != 128000 {
 		t.Fatalf("context window = %#v", item.ContextWindowTokens)
 	}
-	if item.PriorityInputUSDPer1M == nil || *item.PriorityInputUSDPer1M != 2.5 ||
-		item.FlexInputUSDPer1M == nil || *item.FlexInputUSDPer1M != 0.625 {
-		t.Fatalf("tier prices = priority:%v flex:%v", item.PriorityInputUSDPer1M, item.FlexInputUSDPer1M)
+	if item.ServiceTierPrices["priority"].InputUSDPer1M == nil || *item.ServiceTierPrices["priority"].InputUSDPer1M != 2.5 ||
+		item.ServiceTierPrices["flex"].InputUSDPer1M == nil || *item.ServiceTierPrices["flex"].InputUSDPer1M != 0.625 {
+		t.Fatalf("tier prices = %+v", item.ServiceTierPrices)
 	}
 	if item.LongContextInputTokenThreshold == nil || *item.LongContextInputTokenThreshold != 272000 ||
 		item.LongContextInputCostMultiplier == nil || *item.LongContextInputCostMultiplier != 2 ||

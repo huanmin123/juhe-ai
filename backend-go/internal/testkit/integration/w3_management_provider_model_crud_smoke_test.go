@@ -227,9 +227,9 @@ func assertW3ProviderModelCRUDCapabilityValidation(t *testing.T, router http.Han
 			body:   `{"model":"w3-invalid-default","mode":"text","supportedReasoningEfforts":["low"],"defaultReasoningEffort":"high","inputUsdPer1M":1}`,
 		},
 		{
-			name:   "reject non GPT capabilities",
+			name:   "reject malformed non GPT capability token",
 			target: "/__aisys__/api/providers/anthropic/models?systemAccountId=sys_w2_proxy_options",
-			body:   `{"model":"w3-invalid-provider-capability","mode":"text","supportedServiceTiers":["priority"],"inputUsdPer1M":1}`,
+			body:   `{"model":"w3-invalid-provider-capability","mode":"text","supportedServiceTiers":["fast mode"],"inputUsdPer1M":1}`,
 		},
 		{
 			name:   "reject non text capabilities",

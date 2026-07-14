@@ -8,6 +8,7 @@ import type { DispatchAccountSecret } from '../../../../storage/openai-account-s
 import { resolveGptRequestOverrideModelCapabilities } from './request-override-capabilities.js'
 import {
   applyGptAccountRequestOverrides,
+  assertGptAccountRequestOverrideValues,
   effectiveGptAccountRequestOverrides,
   GptAccountRequestOverrideError,
   hasApplicableGptAccountRequestOverrides,
@@ -29,7 +30,7 @@ export async function applyGptAccountRequestOverridesToBody(
   if (!hasApplicableGptAccountRequestOverrides(overrides, input.endpointFamily, input.compact === true)) {
     return body
   }
-  const parsed = await parseGptRequestOverrideBody(body, input.signal)
+  const parsed = await parseAccountRequestOverrideBody(body, input.signal)
   const { modelCapabilities, effectiveOverrides } = await normalizeGptRequestOverrideCapabilitiesForGateway({
     ...input,
     overrides,
@@ -79,7 +80,9 @@ export async function normalizeGptRequestOverrideCapabilitiesForGateway(
 
 function readGptAccountRequestOverridesForGateway(credentials: Record<string, unknown> | undefined) {
   try {
-    return readGptAccountRequestOverrides(credentials)
+    const overrides = readGptAccountRequestOverrides(credentials)
+    assertGptAccountRequestOverrideValues(overrides)
+    return overrides
   } catch (error) {
     throw normalizeGptAccountRequestOverrideError(error)
   }
@@ -96,12 +99,12 @@ function normalizeGptAccountRequestOverrideError(error: unknown): unknown {
   )
 }
 
-async function parseGptRequestOverrideBody(
+export async function parseAccountRequestOverrideBody(
   body: Buffer | string | undefined,
   signal?: AbortSignal
 ): Promise<Record<string, unknown>> {
   if (body === undefined) {
-    throw invalidGptRequestOverrideBodyError()
+    throw invalidAccountRequestOverrideBodyError()
   }
   let parsed: unknown
   try {
@@ -120,18 +123,18 @@ async function parseGptRequestOverrideBody(
         { statusCode: 503, type: 'server_overloaded' }
       )
     }
-    throw invalidGptRequestOverrideBodyError()
+    throw invalidAccountRequestOverrideBodyError()
   }
   if (!isPlainObject(parsed)) {
-    throw invalidGptRequestOverrideBodyError()
+    throw invalidAccountRequestOverrideBodyError()
   }
   return parsed
 }
 
-function invalidGptRequestOverrideBodyError(): GatewayRequestValidationError {
+function invalidAccountRequestOverrideBodyError(): GatewayRequestValidationError {
   return new GatewayRequestValidationError(
-    'GPT 账户请求覆盖要求请求体是有效的 JSON 对象',
-    'invalid_gpt_request_override_body'
+    '账户请求覆盖要求请求体是有效的 JSON 对象',
+    'invalid_account_request_override_body'
   )
 }
 

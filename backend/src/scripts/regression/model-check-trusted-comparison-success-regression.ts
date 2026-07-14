@@ -180,7 +180,7 @@ function outputForProbe(body: Record<string, unknown>): string {
   if (text.includes('第一行 ALPHA')) return 'ALPHA\nBETA\nGAMMA'
   if (text.includes('VECTOR')) return 'VECTOR'
   if (text.includes('CROSS-MODEL-OK')) return 'CROSS-MODEL-OK'
-  const needle = text.match(/NEEDLE-\d+-[A-Z]+/)
+  const needle = text.match(/NEEDLE-(?:LOW|MEDIUM|HIGH|EXTREME)-\d+/)
   if (needle) return needle[0]
   if (text.includes('向量数据库')) return '召回衡量相关内容被找回的程度'
   if (text.includes('SIGMA')) return '{"result":83,"tag":"SIGMA"}'

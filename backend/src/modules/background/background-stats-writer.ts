@@ -72,7 +72,7 @@ import { buildGatewayQuotaSnapshot, buildGatewayQuotaSnapshotAsync } from '../..
 import { checkpointSqliteWal } from '../../storage/sqlite-maintenance.js'
 import { getStatsDatabase } from '../../storage/database.js'
 import type { AccountBalanceQueryConfig, AccountBalanceSnapshot } from '../accounts/account-balance.types.js'
-import { aggregateModelTrustObservationsAsync } from '../../storage/model-trust.repository.js'
+import { activateModelTokenInterceptBaselineAsync, aggregateModelTrustObservationsAsync } from '../../storage/model-trust.repository.js'
 import {
   deleteAccountBalanceSnapshotAsync,
   replaceAccountBalanceSnapshotIfCurrentAsync
@@ -182,6 +182,10 @@ export type BackgroundStatsWriteOperation =
     type: 'release_account_balance_lease'
     leaseKey: string
     ownerId: string
+  }
+  | {
+    type: 'activate_model_token_intercept_baseline'
+    input: Parameters<typeof activateModelTokenInterceptBaselineAsync>[0]
   }
   | {
     type: 'cleanup_usage_stats_retention'
@@ -331,6 +335,9 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return { acquired: await acquireBackgroundJobLeaseAsync(operation.input) }
     case 'release_account_balance_lease':
       return { released: await releaseBackgroundJobLeaseAsync(operation.leaseKey, operation.ownerId) }
+    case 'activate_model_token_intercept_baseline':
+      await activateModelTokenInterceptBaselineAsync(operation.input)
+      return { activated: true }
     case 'cleanup_usage_stats_retention':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await cleanupUsageStatsBucketsBeforeAsync(operation.input)

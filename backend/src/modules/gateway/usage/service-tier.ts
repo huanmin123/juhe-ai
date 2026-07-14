@@ -1,4 +1,4 @@
-export type UsageServiceTier = 'default' | 'priority' | 'flex'
+export type UsageServiceTier = string
 
 export interface UsageServiceTierFacts {
   requestedServiceTier: UsageServiceTier
@@ -8,8 +8,11 @@ export interface UsageServiceTierFacts {
 }
 
 export function normalizeUsageServiceTier(value: unknown): UsageServiceTier {
-  if (value === 'priority' || value === 'flex') return value
-  return 'default'
+  return normalizeOptionalUsageServiceTier(value) ?? 'default'
+}
+
+export function normalizeOptionalUsageServiceTier(value: unknown): UsageServiceTier | undefined {
+  return normalizeUsageCapabilityToken(value)
 }
 
 export function resolveUsageServiceTiers(input: {
@@ -26,4 +29,9 @@ export function resolveUsageServiceTiers(input: {
     reportedServiceTier,
     billedServiceTier: reportedServiceTier ?? effectiveServiceTier
   }
+}
+
+export function normalizeUsageCapabilityToken(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value !== value.trim()) return undefined
+  return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value) ? value : undefined
 }

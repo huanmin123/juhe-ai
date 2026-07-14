@@ -209,10 +209,10 @@ export const accountBatchEditSchema = z.object({
     modelMappings: batchUpdateFieldSchema(z.array(accountModelMappingSchema).max(500)).optional(),
     supportedEndpointModes: batchUpdateFieldSchema(z.array(accountSupportedEndpointModeSchema).min(1).max(11)).optional(),
     serviceTierOverride: batchUpdateFieldSchema(
-      z.union([z.enum(['default', 'priority', 'flex']), z.literal('')]).nullable()
+      z.union([z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/i), z.literal('')]).nullable()
     ).optional(),
     reasoningEffortOverride: batchUpdateFieldSchema(
-      z.union([z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']), z.literal('')]).nullable()
+      z.union([z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/i), z.literal('')]).nullable()
     ).optional()
   }).strict()
 }).strict().superRefine((value, context) => {

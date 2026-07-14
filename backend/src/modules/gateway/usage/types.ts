@@ -1,5 +1,7 @@
+import type { UsageServiceTier } from './service-tier.js'
+
 export interface ParsedUsage {
-  serviceTier?: 'default' | 'priority' | 'flex'
+  serviceTier?: UsageServiceTier
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number

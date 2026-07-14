@@ -77,6 +77,19 @@ export function notifyGatewayRuntimeCacheInvalidation(reason: string): void {
   })
 }
 
+export async function notifyGatewayRuntimeCacheInvalidationAsync(reason: string): Promise<void> {
+  if (shouldInvalidateApiKeyLookupCache(reason)) {
+    clearLocalApiKeyLookupCache()
+  }
+  await runCacheInvalidatorsAsync(
+    'gateway_runtime_cache',
+    reason,
+    gatewayRuntimeCacheInvalidators,
+    (handler) => handler(reason, { source: 'local' })
+  )
+  await publishGatewayCacheInvalidationToRuntimeStateAsync('gateway_runtime_cache', reason)
+}
+
 export function notifyAuthorizationQuotaCacheInvalidation(reason: string): void {
   runGatewayCacheInvalidatorsAfterCommit(() => {
     const publishedAt = new Date().toISOString()
@@ -187,6 +200,24 @@ function publishGatewayCacheInvalidationToRuntimeState(
   reason: string,
   fields: { apiKeyId?: string; publishedAt?: string } = {}
 ): void {
+  void publishGatewayCacheInvalidationToRuntimeStateAsync(topic, reason, fields).catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_cache_invalidation_runtime_state_publish_failed',
+      cacheName: topic,
+      reason,
+      apiKeyId: fields.apiKeyId
+    }), '发布 Redis runtime state 网关缓存失效版本失败')
+    if (runtimeConfig.runtimeMode === 'performance') {
+      scheduleProcessFatalError(error)
+    }
+  })
+}
+
+async function publishGatewayCacheInvalidationToRuntimeStateAsync(
+  topic: GatewayCacheInvalidationTopic,
+  reason: string,
+  fields: { apiKeyId?: string; publishedAt?: string } = {}
+): Promise<void> {
   if (runtimeConfig.runtimeStateDriver !== 'redis') return
   const state: GatewayCacheInvalidationState = {
     version: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -197,19 +228,7 @@ function publishGatewayCacheInvalidationToRuntimeState(
   if (!deferredGatewayCacheInvalidationTopics.has(topic)) {
     lastSeenGatewayCacheInvalidationVersions.set(topic, state.version)
   }
-  void gatewayCacheInvalidationState
-    .setJson(gatewayCacheInvalidationStateKey(topic), state, gatewayCacheInvalidationStateTtlMs)
-    .catch((error) => {
-      logger.warn(errorLogFields(error, {
-        event: 'gateway_cache_invalidation_runtime_state_publish_failed',
-        cacheName: topic,
-        reason,
-        apiKeyId: fields.apiKeyId
-      }), '发布 Redis runtime state 网关缓存失效版本失败')
-      if (runtimeConfig.runtimeMode === 'performance') {
-        scheduleProcessFatalError(error)
-      }
-    })
+  await gatewayCacheInvalidationState.setJson(gatewayCacheInvalidationStateKey(topic), state, gatewayCacheInvalidationStateTtlMs)
 }
 
 async function syncGatewayCacheInvalidationsFromRuntimeStateUnsafe(): Promise<void> {
@@ -267,7 +286,7 @@ function runGatewayRuntimeCacheInvalidators(reason: string): void {
 
 async function runGatewayRuntimeCacheInvalidatorsAsync(
   reason: string,
-  metadata: Extract<GatewayRuntimeCacheInvalidationMetadata, { source: 'runtime_state' }>
+  metadata: GatewayRuntimeCacheInvalidationMetadata
 ): Promise<boolean> {
   if (shouldInvalidateApiKeyLookupCache(reason)) {
     clearLocalApiKeyLookupCache()

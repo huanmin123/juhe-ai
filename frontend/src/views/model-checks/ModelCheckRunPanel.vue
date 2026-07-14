@@ -67,6 +67,15 @@
               @update:value="handleComparisonValueUpdate"
             />
           </a-form-item>
+          <a-form-item class="model-checks-extreme-field" label="极限长上下文">
+            <a-tooltip title="将额外执行接近模型输入上限的高成本诊断探针">
+              <a-switch
+                :checked="includeExtremeContext"
+                :disabled="submitting"
+                @update:checked="emit('update:includeExtremeContext', $event)"
+              />
+            </a-tooltip>
+          </a-form-item>
           <a-button :loading="optionsLoading" @click="emit('refresh')">
             <template #icon>
               <ReloadOutlined />
@@ -118,6 +127,7 @@ defineProps<{
   comparisonOptionsLoading: boolean
   comparisonSelectPlaceholder: string
   isManagementView: boolean
+  includeExtremeContext: boolean
   model: ModelCheckModel
   modelOptions: Array<{ label: string; value: string }>
   optionsLoading: boolean
@@ -154,6 +164,7 @@ const emit = defineEmits<{
   (event: 'target-search', value: string): void
   (event: 'target-value-update', value: SelectValue): void
   (event: 'update:model', value: ModelCheckModel): void
+  (event: 'update:includeExtremeContext', value: boolean): void
   (event: 'update:selectedComparisonAccount', value?: AccountSelection): void
   (event: 'update:selectedTargetAccount', value?: AccountSelection): void
   (event: 'update:systemAccountFilter', value?: string): void
@@ -231,6 +242,11 @@ function selectStringValue(value: SelectValue): string | undefined {
   min-width: 240px;
 }
 
+.model-checks-extreme-field {
+  flex: 0 0 112px;
+  width: 112px;
+}
+
 .model-checks-toolbar {
   display: flex;
   flex: 0 0 auto;
@@ -255,7 +271,8 @@ function selectStringValue(value: SelectValue): string | undefined {
   .model-checks-system-account-field,
   .model-checks-account-field,
   .model-checks-model-field,
-  .model-checks-comparison-field {
+  .model-checks-comparison-field,
+  .model-checks-extreme-field {
     width: 100%;
     flex: none;
     min-width: 0;

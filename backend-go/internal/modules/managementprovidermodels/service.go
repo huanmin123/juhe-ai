@@ -29,6 +29,11 @@ const (
 var ErrProviderNotFound = errors.New("provider not found")
 var ErrCustomProviderModelNotFound = errors.New("custom provider model not found")
 
+var gptProviderModelServiceTiers = map[string]struct{}{"priority": {}, "flex": {}}
+var gptProviderModelReasoningEfforts = map[string]struct{}{
+	"none": {}, "minimal": {}, "low": {}, "medium": {}, "high": {}, "xhigh": {}, "max": {},
+}
+
 type Store interface {
 	port.ManagementProviderModelCatalogReader
 	port.ManagementProviderDefaultHealthCheckModelWriter
@@ -80,7 +85,6 @@ type CustomModelMutation struct {
 	SupportedServiceTiers     OptionalStringList
 	SupportedReasoningEfforts OptionalStringList
 	DefaultReasoningEffort    OptionalString
-	PricingModel              OptionalString
 	ReleaseDate               OptionalString
 	ShutdownDate              OptionalString
 	ContextWindowTokens       OptionalInt
@@ -89,6 +93,8 @@ type CustomModelMutation struct {
 	OutputUSDPer1M            OptionalFloat
 	CachedInputUSDPer1M       OptionalFloat
 	CacheWriteUSDPer1M        OptionalFloat
+	CacheWrite1hUSDPer1M      OptionalFloat
+	ServiceTierPrices         OptionalProviderModelPriceMap
 	ImageInputUSDPer1M        OptionalFloat
 	ImageOutputUSDPer1M       OptionalFloat
 	AudioInputUSDPer1M        OptionalFloat
@@ -118,6 +124,13 @@ type OptionalFloat struct {
 	Set   bool
 	Value *float64
 }
+
+type OptionalProviderModelPriceMap struct {
+	Set   bool
+	Value map[string]ModelPriceSet
+}
+
+type ModelPriceSet = port.ManagementProviderModelPriceSet
 
 type CustomModelCreateInput struct {
 	ProviderCode          string
@@ -234,60 +247,50 @@ func CustomModelBoundMessage(err error) (string, bool) {
 }
 
 type ModelCatalogItem struct {
-	ID                              string   `json:"id,omitempty"`
-	ProviderCode                    string   `json:"providerCode"`
-	Model                           string   `json:"model"`
-	Scope                           string   `json:"scope"`
-	Status                          string   `json:"status"`
-	SystemAccountID                 string   `json:"systemAccountId,omitempty"`
-	PricingModel                    string   `json:"pricingModel,omitempty"`
-	Mode                            string   `json:"mode,omitempty"`
-	CatalogOrder                    *int     `json:"catalogOrder,omitempty"`
-	ReleaseDate                     string   `json:"releaseDate,omitempty"`
-	ShutdownDate                    string   `json:"shutdownDate,omitempty"`
-	ContextWindowTokens             *int     `json:"contextWindowTokens,omitempty"`
-	SupportedAPIProtocols           []string `json:"supportedApiProtocols"`
-	SupportedServiceTiers           []string `json:"supportedServiceTiers"`
-	SupportedReasoningEfforts       []string `json:"supportedReasoningEfforts"`
-	DefaultReasoningEffort          string   `json:"defaultReasoningEffort,omitempty"`
-	CodexSupportedReasoningLevels   []string `json:"codexSupportedReasoningLevels"`
-	CodexDefaultReasoningLevel      string   `json:"codexDefaultReasoningLevel,omitempty"`
-	CodexMultiAgentVersion          string   `json:"codexMultiAgentVersion,omitempty"`
-	InputUSDPer1M                   *float64 `json:"inputUsdPer1M,omitempty"`
-	OutputUSDPer1M                  *float64 `json:"outputUsdPer1M,omitempty"`
-	CachedInputUSDPer1M             *float64 `json:"cachedInputUsdPer1M,omitempty"`
-	CacheWriteUSDPer1M              *float64 `json:"cacheWriteUsdPer1M,omitempty"`
-	CacheWrite1hUSDPer1M            *float64 `json:"cacheWrite1hUsdPer1M,omitempty"`
-	PriorityInputUSDPer1M           *float64 `json:"priorityInputUsdPer1M,omitempty"`
-	PriorityOutputUSDPer1M          *float64 `json:"priorityOutputUsdPer1M,omitempty"`
-	PriorityCachedInputUSDPer1M     *float64 `json:"priorityCachedInputUsdPer1M,omitempty"`
-	PriorityCacheWriteUSDPer1M      *float64 `json:"priorityCacheWriteUsdPer1M,omitempty"`
-	PriorityCacheWrite1hUSDPer1M    *float64 `json:"priorityCacheWrite1hUsdPer1M,omitempty"`
-	FlexInputUSDPer1M               *float64 `json:"flexInputUsdPer1M,omitempty"`
-	FlexOutputUSDPer1M              *float64 `json:"flexOutputUsdPer1M,omitempty"`
-	FlexCachedInputUSDPer1M         *float64 `json:"flexCachedInputUsdPer1M,omitempty"`
-	FlexCacheWriteUSDPer1M          *float64 `json:"flexCacheWriteUsdPer1M,omitempty"`
-	FlexCacheWrite1hUSDPer1M        *float64 `json:"flexCacheWrite1hUsdPer1M,omitempty"`
-	LongContextInputTokenThreshold  *int     `json:"longContextInputTokenThreshold,omitempty"`
-	LongContextInputCostMultiplier  *float64 `json:"longContextInputCostMultiplier,omitempty"`
-	LongContextOutputCostMultiplier *float64 `json:"longContextOutputCostMultiplier,omitempty"`
-	ImageInputUSDPer1M              *float64 `json:"imageInputUsdPer1M,omitempty"`
-	ImageOutputUSDPer1M             *float64 `json:"imageOutputUsdPer1M,omitempty"`
-	AudioInputUSDPer1M              *float64 `json:"audioInputUsdPer1M,omitempty"`
-	AudioOutputUSDPer1M             *float64 `json:"audioOutputUsdPer1M,omitempty"`
-	OutputUSDPerImage               *float64 `json:"outputUsdPerImage,omitempty"`
-	MaxInputTokens                  *int     `json:"maxInputTokens,omitempty"`
-	MaxOutputTokens                 *int     `json:"maxOutputTokens,omitempty"`
-	MaxTokens                       *int     `json:"maxTokens,omitempty"`
-	SupportsPromptCaching           bool     `json:"supportsPromptCaching"`
-	SupportsServiceTier             bool     `json:"supportsServiceTier"`
-	CatalogVisible                  bool     `json:"catalogVisible"`
-	PricingNotes                    string   `json:"pricingNotes,omitempty"`
-	CapabilityNotes                 string   `json:"capabilityNotes,omitempty"`
-	Notes                           string   `json:"notes,omitempty"`
-	CreatedAt                       string   `json:"createdAt,omitempty"`
-	UpdatedAt                       string   `json:"updatedAt,omitempty"`
-	Source                          string   `json:"source"`
+	ID                              string                                          `json:"id,omitempty"`
+	ProviderCode                    string                                          `json:"providerCode"`
+	Model                           string                                          `json:"model"`
+	Scope                           string                                          `json:"scope"`
+	Status                          string                                          `json:"status"`
+	SystemAccountID                 string                                          `json:"systemAccountId,omitempty"`
+	Mode                            string                                          `json:"mode,omitempty"`
+	CatalogOrder                    *int                                            `json:"catalogOrder,omitempty"`
+	ReleaseDate                     string                                          `json:"releaseDate,omitempty"`
+	ShutdownDate                    string                                          `json:"shutdownDate,omitempty"`
+	ContextWindowTokens             *int                                            `json:"contextWindowTokens,omitempty"`
+	SupportedAPIProtocols           []string                                        `json:"supportedApiProtocols"`
+	SupportedServiceTiers           []string                                        `json:"supportedServiceTiers"`
+	SupportedReasoningEfforts       []string                                        `json:"supportedReasoningEfforts"`
+	DefaultReasoningEffort          string                                          `json:"defaultReasoningEffort,omitempty"`
+	CodexSupportedReasoningLevels   []string                                        `json:"codexSupportedReasoningLevels"`
+	CodexDefaultReasoningLevel      string                                          `json:"codexDefaultReasoningLevel,omitempty"`
+	CodexMultiAgentVersion          string                                          `json:"codexMultiAgentVersion,omitempty"`
+	InputUSDPer1M                   *float64                                        `json:"inputUsdPer1M,omitempty"`
+	OutputUSDPer1M                  *float64                                        `json:"outputUsdPer1M,omitempty"`
+	CachedInputUSDPer1M             *float64                                        `json:"cachedInputUsdPer1M,omitempty"`
+	CacheWriteUSDPer1M              *float64                                        `json:"cacheWriteUsdPer1M,omitempty"`
+	CacheWrite1hUSDPer1M            *float64                                        `json:"cacheWrite1hUsdPer1M,omitempty"`
+	ServiceTierPrices               map[string]port.ManagementProviderModelPriceSet `json:"serviceTierPrices,omitempty"`
+	LongContextInputTokenThreshold  *int                                            `json:"longContextInputTokenThreshold,omitempty"`
+	LongContextInputCostMultiplier  *float64                                        `json:"longContextInputCostMultiplier,omitempty"`
+	LongContextOutputCostMultiplier *float64                                        `json:"longContextOutputCostMultiplier,omitempty"`
+	ImageInputUSDPer1M              *float64                                        `json:"imageInputUsdPer1M,omitempty"`
+	ImageOutputUSDPer1M             *float64                                        `json:"imageOutputUsdPer1M,omitempty"`
+	AudioInputUSDPer1M              *float64                                        `json:"audioInputUsdPer1M,omitempty"`
+	AudioOutputUSDPer1M             *float64                                        `json:"audioOutputUsdPer1M,omitempty"`
+	OutputUSDPerImage               *float64                                        `json:"outputUsdPerImage,omitempty"`
+	MaxInputTokens                  *int                                            `json:"maxInputTokens,omitempty"`
+	MaxOutputTokens                 *int                                            `json:"maxOutputTokens,omitempty"`
+	MaxTokens                       *int                                            `json:"maxTokens,omitempty"`
+	SupportsPromptCaching           bool                                            `json:"supportsPromptCaching"`
+	SupportsServiceTier             bool                                            `json:"supportsServiceTier"`
+	CatalogVisible                  bool                                            `json:"catalogVisible"`
+	PricingNotes                    string                                          `json:"pricingNotes,omitempty"`
+	CapabilityNotes                 string                                          `json:"capabilityNotes,omitempty"`
+	Notes                           string                                          `json:"notes,omitempty"`
+	CreatedAt                       string                                          `json:"createdAt,omitempty"`
+	UpdatedAt                       string                                          `json:"updatedAt,omitempty"`
+	Source                          string                                          `json:"source"`
 }
 
 func NewService(store Store) *Service {
@@ -451,6 +454,9 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	if scope == "global" && !isAdminRole(input.ActorRole) {
 		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以创建全局模型"}
 	}
+	if !isAdminRole(input.ActorRole) && customModelMutationHasPriceField(input.Fields) {
+		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护模型价格"}
+	}
 	ownerSystemAccountID := ""
 	if scope == "personal" {
 		if isAdminRole(input.ActorRole) {
@@ -495,6 +501,13 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	if s.store == nil {
 		return ModelCatalogItem{}, fmt.Errorf("management provider model store is required")
 	}
+	builtIn, foundBuiltIn, err := s.findBuiltInModelByID(ctx, strings.TrimSpace(input.ProviderCode), strings.TrimSpace(input.ID))
+	if err != nil {
+		return ModelCatalogItem{}, err
+	}
+	if foundBuiltIn {
+		return s.updateBuiltInModelPrices(ctx, builtIn, input)
+	}
 	existing, found, err := s.store.FindManagementCustomProviderModel(ctx, strings.TrimSpace(input.ID))
 	if err != nil {
 		return ModelCatalogItem{}, err
@@ -504,6 +517,9 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	}
 	if !canMutateCustomProviderModel(existing.Scope, existing.SystemAccountID, input.ActorSystemAccountID, input.ActorRole) {
 		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "无权修改该自定义模型"}
+	}
+	if !isAdminRole(input.ActorRole) && customModelMutationHasPriceField(input.Fields) {
+		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护模型价格"}
 	}
 	if input.Fields.Invalid || !customModelMutationHasAnyField(input.Fields) {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
@@ -526,6 +542,78 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 		}
 	}
 	return catalogItemFromPort(saved), nil
+}
+
+func (s *Service) findBuiltInModelByID(ctx context.Context, providerCode string, id string) (port.ManagementProviderModelCatalogItem, bool, error) {
+	builtInCodes, _, err := s.sourceProviderCodes(ctx, providerCode)
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, false, err
+	}
+	rows, err := s.store.ListManagementProviderModelCatalog(ctx, port.ManagementProviderModelCatalogListInput{
+		BuiltInProviderCodes: builtInCodes, CustomProviderCodes: []string{}, IncludeInactive: true,
+	})
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, false, err
+	}
+	for _, row := range rows {
+		if row.Scope == "built_in" && row.ID == id && row.ProviderCode == providerCode {
+			return row, true, nil
+		}
+	}
+	return port.ManagementProviderModelCatalogItem{}, false, nil
+}
+
+func (s *Service) updateBuiltInModelPrices(ctx context.Context, existing port.ManagementProviderModelCatalogItem, input CustomModelUpdateInput) (ModelCatalogItem, error) {
+	if !isAdminRole(input.ActorRole) {
+		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护内置模型价格"}
+	}
+	if input.Fields.Invalid || !builtInModelPriceMutationOnly(input.Fields) {
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "内置模型只允许修改价格字段"}
+	}
+	updated := existing
+	for target, value := range map[**float64]OptionalFloat{
+		&updated.InputUSDPer1M: input.Fields.InputUSDPer1M, &updated.OutputUSDPer1M: input.Fields.OutputUSDPer1M,
+		&updated.CachedInputUSDPer1M: input.Fields.CachedInputUSDPer1M, &updated.CacheWriteUSDPer1M: input.Fields.CacheWriteUSDPer1M,
+		&updated.CacheWrite1hUSDPer1M: input.Fields.CacheWrite1hUSDPer1M, &updated.ImageInputUSDPer1M: input.Fields.ImageInputUSDPer1M,
+		&updated.ImageOutputUSDPer1M: input.Fields.ImageOutputUSDPer1M, &updated.AudioInputUSDPer1M: input.Fields.AudioInputUSDPer1M,
+		&updated.AudioOutputUSDPer1M: input.Fields.AudioOutputUSDPer1M, &updated.OutputUSDPerImage: input.Fields.OutputUSDPerImage,
+	} {
+		if err := applyOptionalCustomModelFloat(target, value); err != nil {
+			return ModelCatalogItem{}, err
+		}
+	}
+	if input.Fields.ServiceTierPrices.Set {
+		updated.ServiceTierPrices = cloneProviderModelPriceMap(input.Fields.ServiceTierPrices.Value)
+	}
+	if err := validateServiceTierPriceKeys(updated.Mode, updated.SupportedServiceTiers, updated.ServiceTierPrices); err != nil {
+		return ModelCatalogItem{}, err
+	}
+	ok, err := s.store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: updated.ID, ProviderCode: updated.ProviderCode, InputUSDPer1M: updated.InputUSDPer1M, OutputUSDPer1M: updated.OutputUSDPer1M,
+		CachedInputUSDPer1M: updated.CachedInputUSDPer1M, CacheWriteUSDPer1M: updated.CacheWriteUSDPer1M,
+		CacheWrite1hUSDPer1M: updated.CacheWrite1hUSDPer1M, ServiceTierPrices: updated.ServiceTierPrices,
+		ImageInputUSDPer1M: updated.ImageInputUSDPer1M, ImageOutputUSDPer1M: updated.ImageOutputUSDPer1M,
+		AudioInputUSDPer1M: updated.AudioInputUSDPer1M, AudioOutputUSDPer1M: updated.AudioOutputUSDPer1M,
+		OutputUSDPerImage: updated.OutputUSDPerImage,
+	})
+	if err != nil {
+		return ModelCatalogItem{}, err
+	}
+	if !ok {
+		return ModelCatalogItem{}, ErrCustomProviderModelNotFound
+	}
+	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason)
+	return catalogItemFromPort(updated), nil
+}
+
+func builtInModelPriceMutationOnly(fields CustomModelMutation) bool {
+	hasPrice := fields.InputUSDPer1M.Set || fields.OutputUSDPer1M.Set || fields.CachedInputUSDPer1M.Set || fields.CacheWriteUSDPer1M.Set ||
+		fields.CacheWrite1hUSDPer1M.Set || fields.ServiceTierPrices.Set || fields.ImageInputUSDPer1M.Set || fields.ImageOutputUSDPer1M.Set ||
+		fields.AudioInputUSDPer1M.Set || fields.AudioOutputUSDPer1M.Set || fields.OutputUSDPerImage.Set
+	return hasPrice && !(fields.Scope.Set || fields.Model.Set || fields.Status.Set || fields.Mode.Set || fields.SupportedAPIProtocols.Set ||
+		fields.SupportedServiceTiers.Set || fields.SupportedReasoningEfforts.Set || fields.DefaultReasoningEffort.Set ||
+		fields.ReleaseDate.Set || fields.ShutdownDate.Set || fields.ContextWindowTokens.Set || fields.MaxOutputTokens.Set || fields.PricingNotes.Set ||
+		fields.CapabilityNotes.Set || fields.Notes.Set)
 }
 
 func (s *Service) clearDefaultHealthCheckModelReferences(ctx context.Context, model port.ManagementProviderModelCatalogItem) error {
@@ -671,21 +759,6 @@ var customProviderModelAPIProtocols = map[string]struct{}{
 	"realtime":                {},
 }
 
-var customProviderModelServiceTiers = map[string]struct{}{
-	"priority": {},
-	"flex":     {},
-}
-
-var customProviderModelReasoningEfforts = map[string]struct{}{
-	"none":    {},
-	"minimal": {},
-	"low":     {},
-	"medium":  {},
-	"high":    {},
-	"xhigh":   {},
-	"max":     {},
-}
-
 func createCustomModelScope(scope OptionalString) (string, error) {
 	if !scope.Set {
 		return "personal", nil
@@ -742,7 +815,6 @@ func customModelSaveInputFromExisting(item port.ManagementProviderModelCatalogIt
 		SupportedServiceTiers:     append([]string(nil), item.SupportedServiceTiers...),
 		SupportedReasoningEfforts: append([]string(nil), item.SupportedReasoningEfforts...),
 		DefaultReasoningEffort:    item.DefaultReasoningEffort,
-		PricingModel:              item.PricingModel,
 		ReleaseDate:               item.ReleaseDate,
 		ShutdownDate:              item.ShutdownDate,
 		ContextWindowTokens:       cloneIntPtr(item.ContextWindowTokens),
@@ -751,6 +823,8 @@ func customModelSaveInputFromExisting(item port.ManagementProviderModelCatalogIt
 		OutputUSDPer1M:            cloneFloatPtr(item.OutputUSDPer1M),
 		CachedInputUSDPer1M:       cloneFloatPtr(item.CachedInputUSDPer1M),
 		CacheWriteUSDPer1M:        cloneFloatPtr(item.CacheWriteUSDPer1M),
+		CacheWrite1hUSDPer1M:      cloneFloatPtr(item.CacheWrite1hUSDPer1M),
+		ServiceTierPrices:         cloneProviderModelPriceMap(item.ServiceTierPrices),
 		ImageInputUSDPer1M:        cloneFloatPtr(item.ImageInputUSDPer1M),
 		ImageOutputUSDPer1M:       cloneFloatPtr(item.ImageOutputUSDPer1M),
 		AudioInputUSDPer1M:        cloneFloatPtr(item.AudioInputUSDPer1M),
@@ -809,10 +883,14 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 		input.SupportedAPIProtocols = []string{}
 	}
 	if fields.SupportedServiceTiers.Set {
-		if len(fields.SupportedServiceTiers.Value) > 2 {
+		limit := 16
+		if input.ProviderCode == "gpt" {
+			limit = 2
+		}
+		if len(fields.SupportedServiceTiers.Value) > limit {
 			return &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
-		serviceTiers, err := normalizeCustomModelCapabilityList(fields.SupportedServiceTiers.Value, customProviderModelServiceTiers)
+		serviceTiers, err := normalizeCustomModelCapabilityList(fields.SupportedServiceTiers.Value)
 		if err != nil {
 			return err
 		}
@@ -821,10 +899,14 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 		input.SupportedServiceTiers = []string{}
 	}
 	if fields.SupportedReasoningEfforts.Set {
-		if len(fields.SupportedReasoningEfforts.Value) > 7 {
+		limit := 16
+		if input.ProviderCode == "gpt" {
+			limit = 7
+		}
+		if len(fields.SupportedReasoningEfforts.Value) > limit {
 			return &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
-		reasoningEfforts, err := normalizeCustomModelCapabilityList(fields.SupportedReasoningEfforts.Value, customProviderModelReasoningEfforts)
+		reasoningEfforts, err := normalizeCustomModelCapabilityList(fields.SupportedReasoningEfforts.Value)
 		if err != nil {
 			return err
 		}
@@ -835,14 +917,11 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 	if fields.DefaultReasoningEffort.Set {
 		defaultReasoningEffort := fields.DefaultReasoningEffort.Value
 		if defaultReasoningEffort != "" {
-			if _, ok := customProviderModelReasoningEfforts[defaultReasoningEffort]; !ok {
+			if !validCustomModelCapabilityToken(defaultReasoningEffort) {
 				return &CustomModelValidationError{Message: "自定义模型参数无效"}
 			}
 		}
 		input.DefaultReasoningEffort = defaultReasoningEffort
-	}
-	if fields.PricingModel.Set {
-		input.PricingModel = strings.TrimSpace(fields.PricingModel.Value)
 	}
 	if fields.ReleaseDate.Set {
 		input.ReleaseDate = strings.TrimSpace(fields.ReleaseDate.Value)
@@ -880,6 +959,12 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 	if err := applyOptionalCustomModelFloat(&input.CacheWriteUSDPer1M, fields.CacheWriteUSDPer1M); err != nil {
 		return err
 	}
+	if err := applyOptionalCustomModelFloat(&input.CacheWrite1hUSDPer1M, fields.CacheWrite1hUSDPer1M); err != nil {
+		return err
+	}
+	if fields.ServiceTierPrices.Set {
+		input.ServiceTierPrices = cloneProviderModelPriceMap(fields.ServiceTierPrices.Value)
+	}
 	if err := applyOptionalCustomModelFloat(&input.ImageInputUSDPer1M, fields.ImageInputUSDPer1M); err != nil {
 		return err
 	}
@@ -916,7 +1001,6 @@ func customModelMutationHasAnyField(fields CustomModelMutation) bool {
 		fields.SupportedServiceTiers.Set ||
 		fields.SupportedReasoningEfforts.Set ||
 		fields.DefaultReasoningEffort.Set ||
-		fields.PricingModel.Set ||
 		fields.ReleaseDate.Set ||
 		fields.ShutdownDate.Set ||
 		fields.ContextWindowTokens.Set ||
@@ -925,6 +1009,8 @@ func customModelMutationHasAnyField(fields CustomModelMutation) bool {
 		fields.OutputUSDPer1M.Set ||
 		fields.CachedInputUSDPer1M.Set ||
 		fields.CacheWriteUSDPer1M.Set ||
+		fields.CacheWrite1hUSDPer1M.Set ||
+		fields.ServiceTierPrices.Set ||
 		fields.ImageInputUSDPer1M.Set ||
 		fields.ImageOutputUSDPer1M.Set ||
 		fields.AudioInputUSDPer1M.Set ||
@@ -933,6 +1019,20 @@ func customModelMutationHasAnyField(fields CustomModelMutation) bool {
 		fields.PricingNotes.Set ||
 		fields.CapabilityNotes.Set ||
 		fields.Notes.Set
+}
+
+func customModelMutationHasPriceField(fields CustomModelMutation) bool {
+	return fields.InputUSDPer1M.Set ||
+		fields.OutputUSDPer1M.Set ||
+		fields.CachedInputUSDPer1M.Set ||
+		fields.CacheWriteUSDPer1M.Set ||
+		fields.CacheWrite1hUSDPer1M.Set ||
+		fields.ServiceTierPrices.Set ||
+		fields.ImageInputUSDPer1M.Set ||
+		fields.ImageOutputUSDPer1M.Set ||
+		fields.AudioInputUSDPer1M.Set ||
+		fields.AudioOutputUSDPer1M.Set ||
+		fields.OutputUSDPerImage.Set
 }
 
 func validCustomModelStatus(status string) bool {
@@ -956,11 +1056,11 @@ func normalizeCustomModelProtocols(values []string) ([]string, error) {
 	return output, nil
 }
 
-func normalizeCustomModelCapabilityList(values []string, allowed map[string]struct{}) ([]string, error) {
+func normalizeCustomModelCapabilityList(values []string) ([]string, error) {
 	output := make([]string, 0, len(values))
 	seen := map[string]struct{}{}
 	for _, value := range values {
-		if _, ok := allowed[value]; !ok {
+		if value != strings.TrimSpace(value) || !validCustomModelCapabilityToken(value) {
 			return nil, &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
 		if _, exists := seen[value]; exists {
@@ -977,12 +1077,27 @@ func validateCustomModelRequestCapabilities(input port.ManagementCustomProviderM
 		len(input.SupportedReasoningEfforts) > 0 ||
 		input.DefaultReasoningEffort != ""
 	mode := strings.TrimSpace(input.Mode)
-	isGPTTextModel := strings.TrimSpace(input.ProviderCode) == "gpt" && (mode == "" || mode == "text")
-	if !isGPTTextModel {
+	isTextModel := mode == "" || mode == "text"
+	if err := validateServiceTierPriceKeys(mode, input.SupportedServiceTiers, input.ServiceTierPrices); err != nil {
+		return err
+	}
+	if !isTextModel {
 		if hasCapabilities {
-			return &CustomModelValidationError{Message: "只有 GPT 文本自定义模型支持服务等级和思考能力配置"}
+			return &CustomModelValidationError{Message: "只有文本自定义模型支持服务等级和思考能力配置"}
 		}
 		return nil
+	}
+	if strings.TrimSpace(input.ProviderCode) == "gpt" {
+		for _, value := range input.SupportedServiceTiers {
+			if _, ok := gptProviderModelServiceTiers[value]; !ok {
+				return &CustomModelValidationError{Message: "自定义模型参数无效"}
+			}
+		}
+		for _, value := range input.SupportedReasoningEfforts {
+			if _, ok := gptProviderModelReasoningEfforts[value]; !ok {
+				return &CustomModelValidationError{Message: "自定义模型参数无效"}
+			}
+		}
 	}
 	defaultReasoningEffort := input.DefaultReasoningEffort
 	if defaultReasoningEffort == "" {
@@ -1039,62 +1154,52 @@ func applyOptionalCustomModelFloat(target **float64, value OptionalFloat) error 
 }
 
 func (s *Service) validateCustomModelPricing(ctx context.Context, input port.ManagementCustomProviderModelSaveInput, ownerSystemAccountID string) error {
+	_ = ctx
+	_ = ownerSystemAccountID
 	hasDirectPriceConfigured := customModelSaveInputHasDirectPrice(input)
-	pricingModel := strings.TrimSpace(input.PricingModel)
-	if hasDirectPriceConfigured && pricingModel != "" {
-		return &CustomModelValidationError{Message: "自定义模型不能同时配置直接价格和 pricingModel"}
-	}
-	if input.Status == "active" && !hasDirectPriceConfigured && pricingModel == "" {
-		return &CustomModelValidationError{Message: "启用的自定义模型必须配置价格或 pricingModel"}
-	}
-	if pricingModel == "" {
-		return nil
-	}
-	if strings.TrimSpace(input.Model) == pricingModel {
-		return &CustomModelValidationError{Message: "pricingModel 不能指向当前模型自身"}
-	}
-	builtInCodes, customCodes, err := s.sourceProviderCodes(ctx, input.ProviderCode)
-	if err != nil {
-		return err
-	}
-	catalog, err := s.store.ListManagementProviderModelCatalog(ctx, port.ManagementProviderModelCatalogListInput{
-		BuiltInProviderCodes: builtInCodes,
-		CustomProviderCodes:  customCodes,
-		SystemAccountID:      strings.TrimSpace(ownerSystemAccountID),
-		IncludeInactive:      true,
-	})
-	if err != nil {
-		return err
-	}
-	var target *port.ManagementProviderModelCatalogItem
-	for index := range catalog {
-		if strings.TrimSpace(catalog[index].Model) == pricingModel {
-			target = &catalog[index]
-			break
-		}
-	}
-	if target == nil {
-		return &CustomModelValidationError{Message: "pricingModel 不存在：" + pricingModel}
-	}
-	if strings.TrimSpace(target.PricingModel) != "" {
-		return &CustomModelValidationError{Message: "pricingModel 只能指向有直接价格的模型，不能递归指向另一个 pricingModel"}
-	}
-	if !hasDirectPrice(*target) {
-		return &CustomModelValidationError{Message: "pricingModel 缺少直接价格：" + pricingModel}
+	if input.Status == "active" && !hasDirectPriceConfigured {
+		return &CustomModelValidationError{Message: "启用的自定义模型必须配置价格"}
 	}
 	return nil
 }
 
 func customModelSaveInputHasDirectPrice(input port.ManagementCustomProviderModelSaveInput) bool {
-	return input.InputUSDPer1M != nil ||
-		input.OutputUSDPer1M != nil ||
-		input.CachedInputUSDPer1M != nil ||
-		input.CacheWriteUSDPer1M != nil ||
-		input.ImageInputUSDPer1M != nil ||
-		input.ImageOutputUSDPer1M != nil ||
-		input.AudioInputUSDPer1M != nil ||
-		input.AudioOutputUSDPer1M != nil ||
-		input.OutputUSDPerImage != nil
+	switch strings.TrimSpace(input.Mode) {
+	case "image":
+		return input.ImageInputUSDPer1M != nil || input.ImageOutputUSDPer1M != nil || input.OutputUSDPerImage != nil
+	case "audio":
+		return input.AudioInputUSDPer1M != nil || input.AudioOutputUSDPer1M != nil
+	default:
+		return input.InputUSDPer1M != nil || input.OutputUSDPer1M != nil || input.CachedInputUSDPer1M != nil ||
+			input.CacheWriteUSDPer1M != nil || input.CacheWrite1hUSDPer1M != nil || providerModelPriceMapHasAnyPrice(input.ServiceTierPrices)
+	}
+}
+
+func validateServiceTierPriceKeys(mode string, supported []string, prices map[string]port.ManagementProviderModelPriceSet) error {
+	if len(prices) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(mode) == "image" || strings.TrimSpace(mode) == "audio" {
+		return &CustomModelValidationError{Message: "只有文本自定义模型支持服务档位价格"}
+	}
+	supportedSet := stringSet(supported)
+	for tier := range prices {
+		if _, ok := supportedSet[strings.TrimSpace(tier)]; !ok {
+			return &CustomModelValidationError{Message: "服务档位价格必须属于模型支持的服务等级"}
+		}
+	}
+	return nil
+}
+
+func providerModelPriceMapHasAnyPrice(prices map[string]port.ManagementProviderModelPriceSet) bool {
+	for _, price := range prices {
+		if price.InputUSDPer1M != nil || price.OutputUSDPer1M != nil || price.CachedInputUSDPer1M != nil ||
+			price.CacheWriteUSDPer1M != nil || price.CacheWrite1hUSDPer1M != nil || price.ImageInputUSDPer1M != nil ||
+			price.ImageOutputUSDPer1M != nil || price.AudioInputUSDPer1M != nil || price.AudioOutputUSDPer1M != nil || price.OutputUSDPerImage != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func canMutateCustomProviderModel(scope string, ownerSystemAccountID string, actorSystemAccountID string, actorRole string) bool {
@@ -1272,19 +1377,8 @@ func filterPricedCatalogItems(items []port.ManagementProviderModelCatalogItem) [
 }
 
 func hasResolvablePrice(item port.ManagementProviderModelCatalogItem, all []port.ManagementProviderModelCatalogItem) bool {
-	if hasDirectPrice(item) {
-		return true
-	}
-	pricingModel := strings.TrimSpace(item.PricingModel)
-	if pricingModel == "" {
-		return false
-	}
-	for _, target := range all {
-		if strings.TrimSpace(target.Model) == pricingModel && target.PricingModel == "" && hasDirectPrice(target) {
-			return true
-		}
-	}
-	return false
+	_ = all
+	return hasDirectPrice(item)
 }
 
 func hasDirectPrice(item port.ManagementProviderModelCatalogItem) bool {
@@ -1312,10 +1406,10 @@ func dedupeModelOptions(items []port.ManagementProviderModelCatalogItem) []Model
 		}
 		key := strings.ToLower(providerCode) + "\n" + model
 		protocols := dedupeStrings(item.SupportedAPIProtocols)
-		serviceTiers := normalizeCatalogCapabilityList(item.SupportedServiceTiers, customProviderModelServiceTiers)
-		reasoningEfforts := normalizeCatalogCapabilityList(item.SupportedReasoningEfforts, customProviderModelReasoningEfforts)
+		serviceTiers := normalizeCatalogCapabilityList(item.SupportedServiceTiers)
+		reasoningEfforts := normalizeCatalogCapabilityList(item.SupportedReasoningEfforts)
 		defaultReasoningEffort := strings.TrimSpace(item.DefaultReasoningEffort)
-		if _, ok := customProviderModelReasoningEfforts[defaultReasoningEffort]; !ok {
+		if !validCustomModelCapabilityToken(defaultReasoningEffort) {
 			defaultReasoningEffort = ""
 		}
 		if index, exists := seen[key]; exists {
@@ -1352,12 +1446,12 @@ func dedupeModelOptions(items []port.ManagementProviderModelCatalogItem) []Model
 	return result
 }
 
-func normalizeCatalogCapabilityList(values []string, allowed map[string]struct{}) []string {
+func normalizeCatalogCapabilityList(values []string) []string {
 	output := make([]string, 0, len(values))
 	seen := map[string]struct{}{}
 	for _, value := range values {
 		normalized := strings.TrimSpace(value)
-		if _, ok := allowed[normalized]; !ok {
+		if !validCustomModelCapabilityToken(normalized) {
 			continue
 		}
 		if _, exists := seen[normalized]; exists {
@@ -1369,9 +1463,25 @@ func normalizeCatalogCapabilityList(values []string, allowed map[string]struct{}
 	return output
 }
 
+func validCustomModelCapabilityToken(value string) bool {
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	for index, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') {
+			continue
+		}
+		if index > 0 && (char == '.' || char == '_' || char == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCatalogItem {
-	supportedServiceTiers := normalizeCatalogCapabilityList(item.SupportedServiceTiers, customProviderModelServiceTiers)
-	supportedReasoningEfforts := normalizeCatalogCapabilityList(item.SupportedReasoningEfforts, customProviderModelReasoningEfforts)
+	supportedServiceTiers := normalizeCatalogCapabilityList(item.SupportedServiceTiers)
+	supportedReasoningEfforts := normalizeCatalogCapabilityList(item.SupportedReasoningEfforts)
 	defaultReasoningEffort := strings.TrimSpace(item.DefaultReasoningEffort)
 	if !stringListContains(supportedReasoningEfforts, defaultReasoningEffort) {
 		defaultReasoningEffort = ""
@@ -1383,7 +1493,6 @@ func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCata
 		Scope:                           item.Scope,
 		Status:                          item.Status,
 		SystemAccountID:                 item.SystemAccountID,
-		PricingModel:                    item.PricingModel,
 		Mode:                            item.Mode,
 		CatalogOrder:                    cloneIntPtr(item.CatalogOrder),
 		ReleaseDate:                     item.ReleaseDate,
@@ -1398,16 +1507,7 @@ func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCata
 		CachedInputUSDPer1M:             cloneFloatPtr(item.CachedInputUSDPer1M),
 		CacheWriteUSDPer1M:              cloneFloatPtr(item.CacheWriteUSDPer1M),
 		CacheWrite1hUSDPer1M:            cloneFloatPtr(item.CacheWrite1hUSDPer1M),
-		PriorityInputUSDPer1M:           cloneFloatPtr(item.PriorityInputUSDPer1M),
-		PriorityOutputUSDPer1M:          cloneFloatPtr(item.PriorityOutputUSDPer1M),
-		PriorityCachedInputUSDPer1M:     cloneFloatPtr(item.PriorityCachedInputUSDPer1M),
-		PriorityCacheWriteUSDPer1M:      cloneFloatPtr(item.PriorityCacheWriteUSDPer1M),
-		PriorityCacheWrite1hUSDPer1M:    cloneFloatPtr(item.PriorityCacheWrite1hUSDPer1M),
-		FlexInputUSDPer1M:               cloneFloatPtr(item.FlexInputUSDPer1M),
-		FlexOutputUSDPer1M:              cloneFloatPtr(item.FlexOutputUSDPer1M),
-		FlexCachedInputUSDPer1M:         cloneFloatPtr(item.FlexCachedInputUSDPer1M),
-		FlexCacheWriteUSDPer1M:          cloneFloatPtr(item.FlexCacheWriteUSDPer1M),
-		FlexCacheWrite1hUSDPer1M:        cloneFloatPtr(item.FlexCacheWrite1hUSDPer1M),
+		ServiceTierPrices:               cloneProviderModelPriceMap(item.ServiceTierPrices),
 		LongContextInputTokenThreshold:  cloneIntPtr(item.LongContextInputTokenThreshold),
 		LongContextInputCostMultiplier:  cloneFloatPtr(item.LongContextInputCostMultiplier),
 		LongContextOutputCostMultiplier: cloneFloatPtr(item.LongContextOutputCostMultiplier),
@@ -1462,6 +1562,23 @@ func cloneFloatPtr(value *float64) *float64 {
 	}
 	output := *value
 	return &output
+}
+
+func cloneProviderModelPriceMap(value map[string]port.ManagementProviderModelPriceSet) map[string]port.ManagementProviderModelPriceSet {
+	if len(value) == 0 {
+		return map[string]port.ManagementProviderModelPriceSet{}
+	}
+	output := make(map[string]port.ManagementProviderModelPriceSet, len(value))
+	for tier, prices := range value {
+		output[tier] = port.ManagementProviderModelPriceSet{
+			InputUSDPer1M: cloneFloatPtr(prices.InputUSDPer1M), OutputUSDPer1M: cloneFloatPtr(prices.OutputUSDPer1M),
+			CachedInputUSDPer1M: cloneFloatPtr(prices.CachedInputUSDPer1M), CacheWriteUSDPer1M: cloneFloatPtr(prices.CacheWriteUSDPer1M),
+			CacheWrite1hUSDPer1M: cloneFloatPtr(prices.CacheWrite1hUSDPer1M), ImageInputUSDPer1M: cloneFloatPtr(prices.ImageInputUSDPer1M),
+			ImageOutputUSDPer1M: cloneFloatPtr(prices.ImageOutputUSDPer1M), AudioInputUSDPer1M: cloneFloatPtr(prices.AudioInputUSDPer1M),
+			AudioOutputUSDPer1M: cloneFloatPtr(prices.AudioOutputUSDPer1M), OutputUSDPerImage: cloneFloatPtr(prices.OutputUSDPerImage),
+		}
+	}
+	return output
 }
 
 func dedupeStrings(values []string) []string {

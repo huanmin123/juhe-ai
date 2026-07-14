@@ -4,16 +4,8 @@ import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
 export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
-export type AccountGptServiceTierOverride = '' | 'default' | 'priority' | 'flex'
-export type AccountGptReasoningEffortOverride =
-  | ''
-  | 'none'
-  | 'minimal'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'max'
+export type AccountGptServiceTierOverride = string
+export type AccountGptReasoningEffortOverride = string
 export type AccountSupportedEndpointMode =
   | 'chat_json'
   | 'chat_sse'

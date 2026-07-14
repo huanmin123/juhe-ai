@@ -16,9 +16,13 @@ import {
   validateAccountSaveForm
 } from '../../views/accounts/accountSavePayload'
 import {
+  applyPricingTemplateToCustomModelForm,
+  availableCustomModelStatusOptions,
   buildCustomModelPayload,
+  clearCustomModelPricesOutsideCategory,
   createCustomModelFormFromPricing,
-  emptyCustomModelForm
+  emptyCustomModelForm,
+  reconcileCustomModelServiceTierPrices
 } from '../../views/providers/customProviderModelForm'
 import {
   formatModelReasoningCapabilities,
@@ -91,6 +95,37 @@ assert.deepEqual(
   '能力未知模型必须阻断覆盖选项，不能由其他已知模型掩盖'
 )
 
+const geminiCapabilities = accountGptRequestOverrideCapabilities({
+  providerCode: 'gemini',
+  accountType: 'api_key',
+  modelOptions: [{
+    label: 'gemini-test',
+    value: 'gemini-test',
+    supportedServiceTiers: ['priority'],
+    supportedReasoningEfforts: ['low', 'high']
+  }],
+  supportedModels: ['gemini-test']
+})
+assert.deepEqual(geminiCapabilities.serviceTiers, [], 'Gemini 没有可确认的服务等级 wire 字段时必须隐藏服务等级控件')
+assert.deepEqual(geminiCapabilities.reasoningEfforts, ['low', 'high'], 'Gemini thinking level 有明确映射时应显示思考级别控件')
+
+const deepSeekCapabilities = accountGptRequestOverrideCapabilities({
+  providerCode: 'deepseek',
+  accountType: 'api_key',
+  modelOptions: [{
+    label: 'deepseek-test',
+    value: 'deepseek-test',
+    supportedServiceTiers: ['priority'],
+    supportedReasoningEfforts: ['high']
+  }],
+  supportedModels: ['deepseek-test']
+})
+assert.deepEqual(
+  deepSeekCapabilities,
+  { serviceTiers: [], reasoningEfforts: [] },
+  'DeepSeek 没有账户覆盖 driver 时不能因手工目录声明而显示无效控件'
+)
+
 const oauthFlexOnlyCapabilities = accountGptRequestOverrideCapabilities({
   accountType: 'oauth',
   modelOptions: [{
@@ -104,8 +139,8 @@ const oauthFlexOnlyCapabilities = accountGptRequestOverrideCapabilities({
 assert.deepEqual(oauthFlexOnlyCapabilities.serviceTiers, [], 'OAuth 必须从可用服务等级中移除 Flex')
 assert.deepEqual(
   availableAccountGptServiceTierOptions(oauthFlexOnlyCapabilities).map((option) => option.value),
-  [''],
-  'OAuth 过滤 Flex 后没有共同非标准等级时也不能展示 default'
+  [],
+  'OAuth 过滤 Flex 后没有共同非标准等级时应隐藏服务等级控件'
 )
 
 const apiKeyForm = gptForm('api_key')
@@ -170,11 +205,35 @@ const customModelForm = {
   supportedReasoningEfforts: ['high', 'ultra', 'max'] as unknown as ProviderModelReasoningEffort[],
   defaultReasoningEffort: 'ultra' as ProviderModelReasoningEffort
 }
-const customPayload = buildCustomModelPayload(customModelForm, 'text', { includeGptCapabilities: true })
+const customPayload = buildCustomModelPayload(customModelForm, 'text', { includeRequestCapabilities: true })
 assert.deepEqual(customPayload?.supportedServiceTiers, ['priority', 'flex'], '自定义模型服务等级应去重并限制 wire 枚举')
-assert.deepEqual(customPayload?.supportedReasoningEfforts, ['high', 'max'], '自定义模型 wire 思考级别必须过滤 Ultra')
-assert.equal(customPayload?.defaultReasoningEffort, null, '默认思考级别不在已支持 wire 级别中时必须清空')
-const imageCustomPayload = buildCustomModelPayload(customModelForm, 'image', { includeGptCapabilities: true })
+assert.deepEqual(customPayload?.supportedReasoningEfforts, ['high', 'ultra', 'max'], '通用模型能力表单应保留供应商原生字符串，具体值域由后端按供应商校验')
+assert.equal(customPayload?.defaultReasoningEffort, 'ultra', '默认思考级别属于已支持集合时应保留')
+const ordinaryUserPayload = buildCustomModelPayload(customModelForm, 'text', {
+  includeRequestCapabilities: true,
+  includePrices: false
+})
+for (const priceField of [
+  'inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M',
+  'serviceTierPrices', 'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M',
+  'outputUsdPerImage'
+]) {
+  assert.equal(Object.prototype.hasOwnProperty.call(ordinaryUserPayload, priceField), false, `普通用户 payload 必须省略价格字段 ${priceField}`)
+}
+customModelForm.serviceTierPrices = { priority: { inputUsdPer1M: 2 }, orphan: { inputUsdPer1M: 9 } }
+reconcileCustomModelServiceTierPrices(customModelForm)
+assert.deepEqual(Object.keys(customModelForm.serviceTierPrices), ['priority', 'flex'], '动态档位价格行必须只保留当前支持档位并补齐缺失行')
+applyPricingTemplateToCustomModelForm(customModelForm, [providerModel({
+  model: 'template-pricing',
+  serviceTierPrices: { priority: { inputUsdPer1M: 3 } }
+})], 'template-pricing')
+assert.deepEqual(Object.keys(customModelForm.serviceTierPrices), ['priority', 'flex'], '价格模板应用后必须按当前档位重建价格行')
+assert.deepEqual(customModelForm.serviceTierPrices.flex, {}, '模板缺少的当前档位必须补空行，避免渲染访问 undefined')
+clearCustomModelPricesOutsideCategory(customModelForm, 'image')
+assert.deepEqual(customModelForm.serviceTierPrices, {}, '切换到非文本模型必须清空服务档位价格')
+assert(availableCustomModelStatusOptions(false, 'active').some((option) => option.value === 'active'), '普通用户编辑原 active 模型时必须稳定保留 active 选项')
+assert.equal(availableCustomModelStatusOptions(false, 'draft').some((option) => option.value === 'active'), false, '普通用户不能把 draft 模型主动激活')
+const imageCustomPayload = buildCustomModelPayload(customModelForm, 'image', { includeRequestCapabilities: true })
 assert.deepEqual(imageCustomPayload?.supportedServiceTiers, [], 'GPT 非文本自定义模型保存时必须清空服务等级能力')
 assert.deepEqual(imageCustomPayload?.supportedReasoningEfforts, [], 'GPT 非文本自定义模型保存时必须清空思考能力')
 assert.equal(imageCustomPayload?.defaultReasoningEffort, null, 'GPT 非文本自定义模型保存时必须清空默认思考级别')
