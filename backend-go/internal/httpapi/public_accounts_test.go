@@ -359,21 +359,117 @@ func TestPublicAccountHandlersAddPreservesSupportedModelsPresence(t *testing.T) 
 	}
 }
 
-func TestPublicAccountHandlersRejectNullSupportedModels(t *testing.T) {
+func TestPublicAccountHandlersRejectNullNonNullableOptionalFields(t *testing.T) {
 	tests := []struct {
 		name string
 		path string
 		body string
 	}{
+		{name: "add target display name", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetDisplayName":null,"targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test"}`},
+		{name: "add supported models", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","supportedModels":null}`},
+		{name: "add status", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","status":null}`},
+		{name: "add concurrency limit", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","concurrencyLimit":null}`},
+		{name: "add priority", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","priority":null}`},
+		{name: "add notes", path: "/__aipublic__/account/add", body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","notes":null}`},
+		{name: "update target username", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","targetUsername":null,"name":"公开账号"}`},
+		{name: "update target group name", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","targetGroupName":null,"name":"公开账号"}`},
+		{name: "update provider code", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","providerCode":null,"name":"公开账号"}`},
+		{name: "update provider profile", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","providerProtocolProfileId":null,"name":"公开账号"}`},
+		{name: "update name", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","name":null}`},
+		{name: "update type", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","type":null,"name":"公开账号"}`},
+		{name: "update base url", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","baseUrl":null}`},
+		{name: "update api key", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","apiKey":null}`},
+		{name: "update supported models", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","supportedModels":null}`},
+		{name: "update status", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","status":null}`},
+		{name: "update concurrency limit", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","concurrencyLimit":null}`},
+		{name: "update priority", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","priority":null}`},
+		{name: "update notes", path: "/__aipublic__/account/update", body: `{"accountId":"acct_1","notes":null}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &publicAccountServiceStub{}
+			router := newTestPublicAPIShell(
+				newPublicGroupAPIAuthStub(),
+				&publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}},
+				&publicAPIShellLogQueueStub{},
+				newPublicAccountHandlers(service),
+				time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
+			)
+
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Authorization", "Bearer juis_plain")
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+			}
+			if service.addCalls != 0 || service.updateCalls != 0 {
+				t.Fatalf("service calls = add %d update %d, want 0", service.addCalls, service.updateCalls)
+			}
+		})
+	}
+}
+
+func TestPublicAccountHandlersAcceptNullableScheduleAndEmptyNotes(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		wantStatus int
+		assert     func(*testing.T, *publicAccountServiceStub)
+	}{
 		{
-			name: "add",
-			path: "/__aipublic__/account/add",
-			body: `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","supportedModels":null}`,
+			name:       "add empty notes",
+			path:       "/__aipublic__/account/add",
+			body:       `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","notes":"   "}`,
+			wantStatus: http.StatusCreated,
+			assert: func(t *testing.T, service *publicAccountServiceStub) {
+				t.Helper()
+				if service.addCalls != 1 || service.updateCalls != 0 || service.addInput.Notes == nil || *service.addInput.Notes != "" {
+					t.Fatalf("service calls/input = add %d update %d notes %#v", service.addCalls, service.updateCalls, service.addInput.Notes)
+				}
+			},
 		},
 		{
-			name: "update",
-			path: "/__aipublic__/account/update",
-			body: `{"accountId":"acct_1","supportedModels":null}`,
+			name:       "add null availability schedule",
+			path:       "/__aipublic__/account/add",
+			body:       `{"targetUsername":"admin","targetGroupName":"公开分组","providerCode":"gpt","providerProtocolProfileId":"profile_gpt_openai_v1","name":"公开账号","type":"api_key","baseUrl":"https://api.openai.com/v1","apiKey":"sk-test","availabilitySchedule":null}`,
+			wantStatus: http.StatusCreated,
+			assert: func(t *testing.T, service *publicAccountServiceStub) {
+				t.Helper()
+				if service.addCalls != 1 || service.updateCalls != 0 || !service.addInput.AvailabilitySchedule.Set() || service.addInput.AvailabilitySchedule.Value() != nil {
+					t.Fatalf("service calls/schedule = add %d update %d set %v value %#v", service.addCalls, service.updateCalls, service.addInput.AvailabilitySchedule.Set(), service.addInput.AvailabilitySchedule.Value())
+				}
+			},
+		},
+		{
+			name:       "update empty notes",
+			path:       "/__aipublic__/account/update",
+			body:       `{"accountId":"acct_1","notes":"   "}`,
+			wantStatus: http.StatusOK,
+			assert: func(t *testing.T, service *publicAccountServiceStub) {
+				t.Helper()
+				notes := service.updateInput.Notes.Value()
+				if service.addCalls != 0 || service.updateCalls != 1 || !service.updateInput.Notes.Set() || notes == nil || *notes != "" {
+					t.Fatalf("service calls/notes = add %d update %d set %v value %#v", service.addCalls, service.updateCalls, service.updateInput.Notes.Set(), notes)
+				}
+			},
+		},
+		{
+			name:       "update null availability schedule",
+			path:       "/__aipublic__/account/update",
+			body:       `{"accountId":"acct_1","availabilitySchedule":null}`,
+			wantStatus: http.StatusOK,
+			assert: func(t *testing.T, service *publicAccountServiceStub) {
+				t.Helper()
+				if service.addCalls != 0 || service.updateCalls != 1 || !service.updateInput.AvailabilitySchedule.Set() || service.updateInput.AvailabilitySchedule.Value() != nil {
+					t.Fatalf("service calls/schedule = add %d update %d set %v value %#v", service.addCalls, service.updateCalls, service.updateInput.AvailabilitySchedule.Set(), service.updateInput.AvailabilitySchedule.Value())
+				}
+			},
 		},
 	}
 
@@ -395,10 +491,10 @@ func TestPublicAccountHandlersRejectNullSupportedModels(t *testing.T) {
 
 			router.ServeHTTP(rec, req)
 
-			assertPublicGroupMessageError(t, rec, http.StatusBadRequest, "supportedModels 必须是数组")
-			if service.addCalls != 0 || service.updateCalls != 0 {
-				t.Fatalf("service calls = add %d update %d, want 0", service.addCalls, service.updateCalls)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
 			}
+			tt.assert(t, service)
 		})
 	}
 }
