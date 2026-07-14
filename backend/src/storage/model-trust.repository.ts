@@ -13,7 +13,9 @@ import {
 import {
   evaluateTokenInterceptBaseline,
   refreshTokenInterceptBaselines,
-  type TokenInterceptBaselineEvaluation
+  tokenInterceptScopeKey,
+  type TokenInterceptBaselineEvaluation,
+  type TokenInterceptEvaluationContext
 } from './model-trust-token-baseline.repository.js'
 
 const aggregationJobName = 'model-trust-observation-aggregation'
@@ -195,14 +197,18 @@ export async function aggregateModelTrustObservationsAsync(limit = 500): Promise
       await refreshLatestResult(tx, key, rows)
     }
     const tokenRows = rows.filter(isValidTokenObservation)
-    await refreshTokenInterceptBaselines(tx, tokenRows.map((row) => ({
+    const tokenContexts = await refreshTokenInterceptBaselines(tx, tokenRows.map((row) => ({
       cohortKeyHmac: row.cohort_key_hmac,
       requestedModel: row.requested_model,
       tokenizerVersion: row.tokenizer_version,
       probeSetVersion: row.probe_set_version
     })))
-    for (const key of uniqueAccountModels(tokenRows)) {
-      await refreshLatestResult(tx, key, rows)
+    const tokenAffected = mergeAccountModelKeys(
+      uniqueAccountModels(tokenRows),
+      [...tokenContexts.values()].flatMap((context) => context.accountKeys)
+    )
+    for (const key of tokenAffected) {
+      await refreshLatestResult(tx, key, rows, tokenContexts)
     }
     const last = rows[rows.length - 1] as ObservationRow
     await writeAggregationState(tx, last.created_at, last.id)
@@ -324,7 +330,12 @@ async function upsertTokenRound(client: DatabaseClient, row: ObservationRow): Pr
   ])
 }
 
-async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey, batchRows: ObservationRow[]): Promise<void> {
+async function refreshLatestResult(
+  client: DatabaseClient,
+  key: AccountModelKey,
+  batchRows: ObservationRow[],
+  tokenContexts?: Map<string, TokenInterceptEvaluationContext>
+): Promise<void> {
   const windows = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_windows')
   const rounds = client.dialect.qualifyTable('juhe_stats', 'model_token_integrity_rounds')
   const sources = client.dialect.qualifyTable('juhe_stats', 'model_trust_window_sources')
@@ -372,25 +383,36 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       : sourceCount >= 3 && validSampleCount >= 30 && roundCount >= 10 && durationDays >= 3
         ? 'bootstrap'
         : 'insufficient'
-  const interceptBaseline: TokenInterceptBaselineEvaluation = window && regression
-    ? await evaluateTokenInterceptBaseline(client, key, {
+  const interceptScope = window ? {
         cohortKeyHmac: window.cohort_key_hmac,
         requestedModel: key.requestedModel,
         tokenizerVersion: window.tokenizer_version,
         probeSetVersion: window.probe_set_version
-      }, regression.intercept)
+      } : undefined
+  const interceptContext = interceptScope ? tokenContexts?.get(tokenInterceptScopeKey(interceptScope)) : undefined
+  const interceptBaseline: TokenInterceptBaselineEvaluation = window && regression && interceptContext
+    ? evaluateTokenInterceptBaseline(interceptContext, key, regression.intercept)
     : {
-        baselineStatus: 'unavailable',
+        baselineVersion: optionalNumber(currentLatest?.intercept_baseline_version),
+        baselineStatus: (optionalText(currentLatest?.intercept_baseline_status) as TokenInterceptBaselineEvaluation['baselineStatus'] | undefined) ?? 'unavailable',
         evidenceStatus: 'insufficient',
-        strongGateEnabled: false,
+        looMedian: optionalNumber(currentLatest?.intercept_baseline_median),
+        looMad: optionalNumber(currentLatest?.intercept_baseline_mad),
+        strongGateEnabled: Number(currentLatest?.intercept_strong_gate_enabled ?? 0) === 1,
         suspectedFixedPadding: false
       }
   const slopeUsage = window && regression
     ? tokenStatusFromWindow(window, regression.slope, regression.confidenceLow, regression.confidenceHigh, roundCount)
     : { status: 'insufficient_evidence', reasonCodes: [] }
+  const currentReasonCodes = parseReasonCodes(currentLatest?.reason_codes_json)
+  const preservedFixedReasons = interceptContext
+    ? []
+    : currentReasonCodes.filter((code) => code === 'fixed_intercept_padding' || code === 'fixed_intercept_calibration_pending')
   const usage = interceptBaseline.suspectedFixedPadding
     ? { status: 'suspected_padding', reasonCodes: [...slopeUsage.reasonCodes, 'fixed_intercept_padding'] }
-    : slopeUsage
+    : !interceptContext && currentLatest
+      ? { status: optionalText(currentLatest.usage_integrity_status) ?? slopeUsage.status, reasonCodes: [...slopeUsage.reasonCodes, ...preservedFixedReasons] }
+      : slopeUsage
   if (window && regression) {
     await client.execute(`
       UPDATE ${windows}
@@ -398,7 +420,7 @@ async function refreshLatestResult(client: DatabaseClient, key: AccountModelKey,
       WHERE system_account_id = ? AND account_id = ? AND requested_model = ?
         AND cohort_key_hmac = ? AND tokenizer_version = ? AND probe_set_version = ?
     `, [
-      roundCount, regression.slope, regression.intercept, usage.status, nowIso(),
+      roundCount, regression.slope, regression.intercept, slopeUsage.status, nowIso(),
       key.systemAccountId, key.accountId, key.requestedModel, window.cohort_key_hmac,
       window.tokenizer_version, window.probe_set_version
     ])
