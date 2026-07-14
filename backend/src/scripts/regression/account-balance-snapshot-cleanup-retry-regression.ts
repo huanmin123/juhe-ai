@@ -63,6 +63,15 @@ assert.equal(exhaustedCoordinator.isSuppressed('account-exhausted', {
   configuration: currentGeneration,
   snapshotRecord: staleCurrentGenerationSnapshot
 }), true, '清理截止点之前的同代次旧快照仍必须被屏蔽')
+const cutoffCurrentGenerationSnapshot: AccountBalanceSnapshotRecord = {
+  snapshot: { status: 'fresh', remainingUsd: '66.50' },
+  nextRefreshAfter: currentGeneration.nextRefreshAt,
+  updatedAt: '2026-07-14T02:00:00.000Z'
+}
+assert.equal(exhaustedCoordinator.isSuppressed('account-exhausted', {
+  configuration: currentGeneration,
+  snapshotRecord: cutoffCurrentGenerationSnapshot
+}), true, '与清理截止点同一毫秒的快照仍在删除谓词内，不能提前解除屏蔽')
 const freshCurrentGenerationSnapshot: AccountBalanceSnapshotRecord = {
   snapshot: { status: 'fresh', remainingUsd: '77.00' },
   nextRefreshAfter: currentGeneration.nextRefreshAt,
@@ -105,6 +114,106 @@ await waitFor(() => nonBlockingCoordinator.snapshot().runningCount === 1)
 assert.equal(nonBlockingCoordinator.snapshot().completedCount, 0)
 releaseSlowDelete?.()
 await waitFor(() => nonBlockingCoordinator.snapshot().completedCount === 1)
+
+let cutoffSnapshot: AccountBalanceSnapshotRecord | undefined = {
+  snapshot: { status: 'fresh', remainingUsd: '55.00' },
+  nextRefreshAfter: '2026-07-14T04:00:00.000Z',
+  updatedAt: '2026-07-14T02:00:00.000Z'
+}
+let releaseCutoffDelete: (() => void) | undefined
+const cutoffDeleteGate = new Promise<void>((resolve) => {
+  releaseCutoffDelete = resolve
+})
+const cutoffCoordinator = createAccountBalanceSnapshotCleanupCoordinator({
+  now: () => '2026-07-14T02:00:00.000Z',
+  deleteSnapshot: async (item) => {
+    await cutoffDeleteGate
+    if (cutoffSnapshot && Date.parse(cutoffSnapshot.updatedAt) <= Date.parse(item.updatedBefore)) {
+      cutoffSnapshot = undefined
+    }
+  }
+})
+cutoffCoordinator.cleanupAfterSave({
+  accountId: 'account-cutoff-delete',
+  configRevision: 12,
+  reason: 'balance_configuration_changed'
+})
+await waitFor(() => cutoffCoordinator.snapshot().runningCount === 1)
+assert.equal(cutoffCoordinator.isSuppressed('account-cutoff-delete', {
+  configuration: { nextRefreshAt: '2026-07-14T04:00:00.000Z' },
+  snapshotRecord: cutoffSnapshot
+}), true, '等于 cutoff 的快照不能在运行中删除完成前解除屏蔽')
+releaseCutoffDelete?.()
+await waitFor(() => cutoffCoordinator.snapshot().completedCount === 1)
+assert.equal(cutoffSnapshot, undefined, '等于 cutoff 的快照必须仍由 updated_at <= cutoff 删除')
+assert.equal(cutoffCoordinator.isSuppressed('account-cutoff-delete'), false)
+
+let postCutoffSnapshot: AccountBalanceSnapshotRecord | undefined = {
+  snapshot: { status: 'fresh', remainingUsd: '99.00' },
+  nextRefreshAfter: '2026-07-14T05:00:00.000Z',
+  updatedAt: '2026-07-14T02:00:00.001Z'
+}
+let postCutoffDeleteFinished = false
+let releasePostCutoffDelete: (() => void) | undefined
+const postCutoffDeleteGate = new Promise<void>((resolve) => {
+  releasePostCutoffDelete = resolve
+})
+const postCutoffCoordinator = createAccountBalanceSnapshotCleanupCoordinator({
+  now: () => '2026-07-14T02:00:00.000Z',
+  deleteSnapshot: async (item) => {
+    await postCutoffDeleteGate
+    if (postCutoffSnapshot && Date.parse(postCutoffSnapshot.updatedAt) <= Date.parse(item.updatedBefore)) {
+      postCutoffSnapshot = undefined
+    }
+    postCutoffDeleteFinished = true
+  }
+})
+postCutoffCoordinator.cleanupAfterSave({
+  accountId: 'account-post-cutoff-delete',
+  configRevision: 13,
+  reason: 'balance_configuration_changed'
+})
+await waitFor(() => postCutoffCoordinator.snapshot().runningCount === 1)
+assert.equal(postCutoffCoordinator.isSuppressed('account-post-cutoff-delete', {
+  configuration: { nextRefreshAt: '2026-07-14T05:00:00.000Z' },
+  snapshotRecord: postCutoffSnapshot
+}), false, 'cutoff 后写入且匹配当前代次的新快照必须在读侧解除屏蔽')
+assert.equal(postCutoffCoordinator.snapshot().suppressedAccountCount, 0)
+releasePostCutoffDelete?.()
+await waitFor(() => postCutoffDeleteFinished)
+assert(postCutoffSnapshot, '运行中的旧删除只能删除 cutoff 及以前的快照，不能误删 cutoff 后的新快照')
+
+let releaseFirstReplacementDelete: (() => void) | undefined
+const firstReplacementDeleteGate = new Promise<void>((resolve) => {
+  releaseFirstReplacementDelete = resolve
+})
+const replacementRevisions: number[] = []
+const replacementCoordinator = createAccountBalanceSnapshotCleanupCoordinator({
+  deleteSnapshot: async (item) => {
+    replacementRevisions.push(item.configRevision)
+    if (item.configRevision === 20) await firstReplacementDeleteGate
+  }
+})
+replacementCoordinator.cleanupAfterSave({
+  accountId: 'account-replacement',
+  configRevision: 20,
+  reason: 'balance_configuration_changed'
+})
+await waitFor(() => replacementCoordinator.snapshot().runningCount === 1)
+replacementCoordinator.cleanupAfterSave({
+  accountId: 'account-replacement',
+  configRevision: 21,
+  reason: 'balance_configuration_changed'
+})
+replacementCoordinator.cleanupAfterSave({
+  accountId: 'account-replacement',
+  configRevision: 22,
+  reason: 'balance_configuration_changed'
+})
+releaseFirstReplacementDelete?.()
+await waitFor(() => replacementCoordinator.snapshot().completedCount === 1)
+assert.deepEqual(replacementRevisions, [20, 22], '同账户连续保存必须保留运行中首项并只执行最新替换项')
+assert.equal(replacementCoordinator.snapshot().suppressedAccountCount, 0)
 
 let activeDeletes = 0
 let maxActiveDeletes = 0
@@ -152,7 +261,7 @@ assert.match(accountListSource, /accountBalanceSnapshotMatchesConfiguration\(con
 assert.match(balanceRepositorySource, /SELECT account_id, snapshot_json, next_refresh_after, updated_at/, '快照读取必须携带持久化刷新代次和更新时间')
 assert.match(balanceRepositorySource, /AND updated_at <= \?/, '延迟清理只能删除保存时点前的旧快照，不能误删后续新快照')
 
-console.log('AI 账户余额快照清理回归通过：首次删除有界且不阻塞保存，新代次快照可解除抑制，旧快照持久化边界稳定')
+console.log('AI 账户余额快照清理回归通过：首次删除有界且不阻塞保存，cutoff 边界不重叠，同账户替换与持久化代次稳定')
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs

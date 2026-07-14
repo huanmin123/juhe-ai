@@ -265,5 +265,5 @@ function snapshotSupersedesCleanup(
   const cleanupCutoffMs = Date.parse(item.updatedBefore)
   return Number.isFinite(snapshotUpdatedAtMs)
     && Number.isFinite(cleanupCutoffMs)
-    && snapshotUpdatedAtMs >= cleanupCutoffMs
+    && snapshotUpdatedAtMs > cleanupCutoffMs
 }
