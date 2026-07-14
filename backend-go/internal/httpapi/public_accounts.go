@@ -92,7 +92,7 @@ func (h publicAccountHandler) add(w http.ResponseWriter, r *http.Request) {
 			ClientCompatibility:       publicaccounts.DefaultClientCompat,
 			Status:                    mockPublicAccountAddStatus(input.Status),
 			SupportedModels:           input.SupportedModels.Value(),
-			HealthCheckEndpointFamily: publicAccountDefaultString(input.HealthCheckEndpointFamily, "responses"),
+			HealthCheckEndpointMode:   publicAccountDefaultString(input.HealthCheckEndpointMode, "responses_sse"),
 			BoundGroupID:              "mock_group_public",
 			BoundGroupName:            input.TargetGroupName,
 			Schedulable:               false,
@@ -126,7 +126,7 @@ func (h publicAccountHandler) update(w http.ResponseWriter, r *http.Request) {
 			ClientCompatibility:       publicaccounts.DefaultClientCompat,
 			Status:                    publicAccountStringPtrValue(input.Status, publicaccounts.StatusActive),
 			SupportedModels:           input.SupportedModels.Value(),
-			HealthCheckEndpointFamily: publicAccountStringPtrValue(input.HealthCheckEndpointFamily, "responses"),
+			HealthCheckEndpointMode:   publicAccountStringPtrValue(input.HealthCheckEndpointMode, "responses_sse"),
 			BoundGroupID:              "mock_group_public",
 			BoundGroupName:            publicAccountStringPtrValue(input.TargetGroupName, "公开分组"),
 			Schedulable:               publicAccountStringPtrValue(input.Status, publicaccounts.StatusActive) == publicaccounts.StatusActive,
@@ -159,7 +159,7 @@ func (h publicAccountHandler) delete(w http.ResponseWriter, r *http.Request) {
 			Type:                      publicaccounts.AccountTypeAPIKey,
 			ClientCompatibility:       publicaccounts.DefaultClientCompat,
 			Status:                    publicaccounts.StatusDisabled,
-			HealthCheckEndpointFamily: "responses",
+			HealthCheckEndpointMode:   "responses_sse",
 			BoundGroupID:              "mock_group_public",
 			BoundGroupName:            publicAccountStringPtrValue(input.TargetGroupName, "公开分组"),
 			Schedulable:               false,
@@ -261,7 +261,6 @@ func parsePublicAccountAddBody(r *http.Request) (publicaccounts.AddInput, error)
 		"baseUrl":                   true,
 		"apiKey":                    true,
 		"supportedModels":           true,
-		"healthCheckEndpointFamily": true,
 		"status":                    true,
 		"concurrencyLimit":          true,
 		"priority":                  true,
@@ -311,10 +310,6 @@ func parsePublicAccountAddBody(r *http.Request) (publicaccounts.AddInput, error)
 	if err != nil {
 		return publicaccounts.AddInput{}, err
 	}
-	healthCheckEndpointFamily, err := optionalBodyEnum(body, "healthCheckEndpointFamily", []string{"chat_completions", "responses", "messages", "generate_content"})
-	if err != nil {
-		return publicaccounts.AddInput{}, err
-	}
 	status, err := optionalBodyEnum(body, "status", []string{publicaccounts.StatusActive, publicaccounts.StatusDisabled})
 	if err != nil {
 		return publicaccounts.AddInput{}, err
@@ -346,7 +341,6 @@ func parsePublicAccountAddBody(r *http.Request) (publicaccounts.AddInput, error)
 		BaseURL:                   baseURL,
 		APIKey:                    apiKey,
 		SupportedModels:           supportedModels,
-		HealthCheckEndpointFamily: healthCheckEndpointFamily,
 		Status:                    status,
 		ConcurrencyLimit:          concurrencyLimit,
 		Priority:                  priority,
@@ -367,7 +361,6 @@ func parsePublicAccountUpdateBody(r *http.Request) (publicaccounts.UpdateInput, 
 		"baseUrl":                   true,
 		"apiKey":                    true,
 		"supportedModels":           true,
-		"healthCheckEndpointFamily": true,
 		"status":                    true,
 		"concurrencyLimit":          true,
 		"priority":                  true,
@@ -417,10 +410,6 @@ func parsePublicAccountUpdateBody(r *http.Request) (publicaccounts.UpdateInput, 
 	if err != nil {
 		return publicaccounts.UpdateInput{}, err
 	}
-	healthCheckEndpointFamily, err := optionalBodyEnumPtr(body, "healthCheckEndpointFamily", []string{"chat_completions", "responses", "messages", "generate_content"})
-	if err != nil {
-		return publicaccounts.UpdateInput{}, err
-	}
 	status, err := optionalBodyEnumPtr(body, "status", []string{publicaccounts.StatusActive, publicaccounts.StatusDisabled})
 	if err != nil {
 		return publicaccounts.UpdateInput{}, err
@@ -441,7 +430,7 @@ func parsePublicAccountUpdateBody(r *http.Request) (publicaccounts.UpdateInput, 
 	if err != nil {
 		return publicaccounts.UpdateInput{}, err
 	}
-	if name == nil && accountType == nil && baseURL == nil && apiKey == nil && !supportedModels.Set() && healthCheckEndpointFamily == nil &&
+	if name == nil && accountType == nil && baseURL == nil && apiKey == nil && !supportedModels.Set() &&
 		status == nil && concurrencyLimit == nil && priority == nil && !availabilitySchedule.Set() && !notesState.Set() {
 		return publicaccounts.UpdateInput{}, fmt.Errorf("账号修改至少提供一个要修改的字段")
 	}
@@ -456,7 +445,6 @@ func parsePublicAccountUpdateBody(r *http.Request) (publicaccounts.UpdateInput, 
 		BaseURL:                   baseURL,
 		APIKey:                    apiKey,
 		SupportedModels:           supportedModels,
-		HealthCheckEndpointFamily: healthCheckEndpointFamily,
 		Status:                    status,
 		ConcurrencyLimit:          concurrencyLimit,
 		Priority:                  priority,
@@ -619,7 +607,7 @@ func writePublicAccountServiceError(w http.ResponseWriter, err error, fallback s
 		errors.Is(err, publicaccounts.ErrInvalidAPIKey),
 		errors.Is(err, publicaccounts.ErrInvalidSupportedModels),
 		errors.Is(err, publicaccounts.ErrInvalidHealthCheckModel),
-		errors.Is(err, publicaccounts.ErrInvalidHealthCheckEndpointFamily),
+		errors.Is(err, publicaccounts.ErrInvalidHealthCheckEndpointMode),
 		errors.Is(err, publicaccounts.ErrInvalidAvailability),
 		errors.Is(err, publicaccounts.ErrInvalidDispatchField),
 		errors.Is(err, publicaccounts.ErrInvalidStatusTransition),
@@ -671,7 +659,7 @@ func mockPublicAccountList(input publicaccounts.ListInput) publicaccounts.Accoun
 			ClientCompatibility:       publicaccounts.DefaultClientCompat,
 			Status:                    status,
 			SupportedModels:           []string{"gpt-5.5"},
-			HealthCheckEndpointFamily: "responses",
+			HealthCheckEndpointMode:   "responses_sse",
 			BoundGroupID:              publicAccountDefaultString(input.GroupID, "mock_group_public"),
 			BoundGroupName:            publicAccountDefaultString(input.TargetGroupName, "公开分组"),
 			Schedulable:               status == publicaccounts.StatusActive,

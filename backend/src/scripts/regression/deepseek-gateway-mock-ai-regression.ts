@@ -124,7 +124,7 @@ try {
       schedulable: true,
       supportedModels: ['deepseek-ai-v4-flash', 'deepseek-ai-v4-pro'],
       healthCheckModel: 'deepseek-ai-v4-flash',
-      healthCheckEndpointFamily: 'chat_completions',
+      healthCheckEndpointMode: 'chat_json',
       modelMappings: [
         {
           sourceModel: 'deepseek-ai-v4-flash',
@@ -159,7 +159,7 @@ try {
       schedulable: true,
       supportedModels: ['deepseek-ai-v4-flash'],
       healthCheckModel: 'deepseek-ai-v4-flash',
-      healthCheckEndpointFamily: 'chat_completions'
+      healthCheckEndpointMode: 'chat_json'
     }, access)
     repositories.createAccount({
       providerCode: DEEPSEEK_PROVIDER_CODE,
@@ -176,7 +176,7 @@ try {
       priority: 10,
       supportedModels: ['deepseek-ai-v4-flash'],
       healthCheckModel: 'deepseek-ai-v4-flash',
-      healthCheckEndpointFamily: 'chat_completions'
+      healthCheckEndpointMode: 'chat_json'
     }, access)
 
     const retryGroup = repositories.createGroup({
@@ -198,7 +198,7 @@ try {
       schedulable: true,
       supportedModels: ['deepseek-ai-v4-flash', 'deepseek-ai-v4-pro'],
       healthCheckModel: 'deepseek-ai-v4-flash',
-      healthCheckEndpointFamily: 'chat_completions',
+      healthCheckEndpointMode: 'chat_json',
       modelMappings: [
         {
           sourceModel: 'deepseek-ai-v4-flash',
@@ -224,7 +224,7 @@ try {
       priority: 10,
       supportedModels: ['deepseek-ai-v4-flash', 'deepseek-ai-v4-pro'],
       healthCheckModel: 'deepseek-ai-v4-flash',
-      healthCheckEndpointFamily: 'chat_completions',
+      healthCheckEndpointMode: 'chat_json',
       modelMappings: [
         {
           sourceModel: 'deepseek-ai-v4-flash',
@@ -260,7 +260,7 @@ try {
         priority: item.priority,
         supportedModels: ['deepseek-ai-v4-flash'],
         healthCheckModel: 'deepseek-ai-v4-flash',
-        healthCheckEndpointFamily: 'chat_completions'
+        healthCheckEndpointMode: 'chat_json'
       }, access)
     }
 
@@ -283,7 +283,7 @@ try {
       schedulable: true,
       supportedModels: ['deepseek-ai-v4-flash'],
       healthCheckModel: 'deepseek-ai-v4-flash',
-      healthCheckEndpointFamily: 'chat_completions',
+      healthCheckEndpointMode: 'chat_json',
       modelMappings: [{
         sourceModel: 'deepseek-v4-flash',
         sourceEndpointFamily: 'responses',

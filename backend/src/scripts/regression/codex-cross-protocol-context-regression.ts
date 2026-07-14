@@ -289,7 +289,7 @@ function account(id: string, modelMappings: AccountModelMapping[] = []): Upstrea
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'codex_responses',
-    healthCheckEndpointFamily: 'chat_completions',
+    healthCheckEndpointMode: 'chat_json',
     supportedEndpointModes: [...modes],
     supportedModels: [model, 'gpt-5.5-chat'],
     modelMappings,

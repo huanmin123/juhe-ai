@@ -217,8 +217,7 @@ try {
       initialBackoffSeconds: 1,
       fastThresholdSeconds: 60,
       maxPauseMinutes: 1,
-      maxRecoveryHours: 12,
-      longTermIntervalHours: 24
+      maxRecoveryHours: 12
     }
   })
   assert.equal(cooldownFailure.changed, true, 'PG cooldown failure 应写回退避状态')

@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -51,27 +50,27 @@ const (
 )
 
 var (
-	ErrTargetNotFound                   = errors.New("public account target not found")
-	ErrTargetDisabled                   = errors.New("public account target disabled")
-	ErrProviderProfileNotFound          = errors.New("public account provider profile not found")
-	ErrProviderDisabled                 = errors.New("public account provider disabled")
-	ErrProviderProfileDisabled          = errors.New("public account provider profile disabled")
-	ErrUnsupportedAccountType           = errors.New("public account unsupported type")
-	ErrTargetGroupRequired              = errors.New("public account target group required")
-	ErrGroupNotFound                    = errors.New("public account group not found")
-	ErrGroupProviderMismatch            = errors.New("public account group provider mismatch")
-	ErrAccountNotFound                  = errors.New("public account not found")
-	ErrDuplicateAccountName             = errors.New("public account duplicate name")
-	ErrInvalidCredentials               = errors.New("public account invalid credentials")
-	ErrInvalidBaseURL                   = errors.New("public account invalid base url")
-	ErrInvalidAPIKey                    = errors.New("public account invalid api key")
-	ErrInvalidSupportedModels           = errors.New("public account invalid supported models")
-	ErrInvalidHealthCheckModel          = errors.New("public account invalid health check model")
-	ErrInvalidHealthCheckEndpointFamily = errors.New("public account invalid health check endpoint family")
-	ErrInvalidAvailability              = errors.New("public account invalid availability schedule")
-	ErrInvalidDispatchField             = errors.New("public account invalid dispatch field")
-	ErrInvalidStatusTransition          = errors.New("public account invalid status transition")
-	ErrCredentialCodecUnusable          = errors.New("public account credential codec unusable")
+	ErrTargetNotFound                 = errors.New("public account target not found")
+	ErrTargetDisabled                 = errors.New("public account target disabled")
+	ErrProviderProfileNotFound        = errors.New("public account provider profile not found")
+	ErrProviderDisabled               = errors.New("public account provider disabled")
+	ErrProviderProfileDisabled        = errors.New("public account provider profile disabled")
+	ErrUnsupportedAccountType         = errors.New("public account unsupported type")
+	ErrTargetGroupRequired            = errors.New("public account target group required")
+	ErrGroupNotFound                  = errors.New("public account group not found")
+	ErrGroupProviderMismatch          = errors.New("public account group provider mismatch")
+	ErrAccountNotFound                = errors.New("public account not found")
+	ErrDuplicateAccountName           = errors.New("public account duplicate name")
+	ErrInvalidCredentials             = errors.New("public account invalid credentials")
+	ErrInvalidBaseURL                 = errors.New("public account invalid base url")
+	ErrInvalidAPIKey                  = errors.New("public account invalid api key")
+	ErrInvalidSupportedModels         = errors.New("public account invalid supported models")
+	ErrInvalidHealthCheckModel        = errors.New("public account invalid health check model")
+	ErrInvalidHealthCheckEndpointMode = errors.New("public account invalid health check endpoint mode")
+	ErrInvalidAvailability            = errors.New("public account invalid availability schedule")
+	ErrInvalidDispatchField           = errors.New("public account invalid dispatch field")
+	ErrInvalidStatusTransition        = errors.New("public account invalid status transition")
+	ErrCredentialCodecUnusable        = errors.New("public account credential codec unusable")
 )
 
 type Service struct {
@@ -133,7 +132,7 @@ type AccountSummary struct {
 	ClientCompatibility       string   `json:"clientCompatibility,omitempty"`
 	Status                    string   `json:"status"`
 	SupportedModels           []string `json:"supportedModels,omitempty"`
-	HealthCheckEndpointFamily string   `json:"healthCheckEndpointFamily"`
+	HealthCheckEndpointMode   string   `json:"-"`
 	BoundGroupID              string   `json:"boundGroupId,omitempty"`
 	BoundGroupName            string   `json:"boundGroupName,omitempty"`
 	Schedulable               bool     `json:"schedulable"`
@@ -186,7 +185,7 @@ type AddInput struct {
 	BaseURL                   string
 	APIKey                    string
 	SupportedModels           StringListValue
-	HealthCheckEndpointFamily string
+	HealthCheckEndpointMode   string
 	Status                    string
 	ConcurrencyLimit          *int
 	Priority                  *int
@@ -205,7 +204,7 @@ type UpdateInput struct {
 	BaseURL                   *string
 	APIKey                    *string
 	SupportedModels           StringListValue
-	HealthCheckEndpointFamily *string
+	HealthCheckEndpointMode   *string
 	Status                    *string
 	ConcurrencyLimit          *int
 	Priority                  *int
@@ -448,7 +447,16 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 		if err != nil {
 			return err
 		}
-		healthCheckEndpointFamily, err := normalizeHealthCheckEndpointFamily(input.HealthCheckEndpointFamily, input.ProviderCode, profile.ID)
+		var requestedHealthCheckEndpointMode *string
+		if input.HealthCheckEndpointMode != "" {
+			requestedHealthCheckEndpointMode = &input.HealthCheckEndpointMode
+		}
+		healthCheckEndpointMode, err := resolveHealthCheckEndpointMode(
+			requestedHealthCheckEndpointMode,
+			input.ProviderCode,
+			profile.ID,
+			profile.EnabledEndpointModes,
+		)
 		if err != nil {
 			return err
 		}
@@ -475,7 +483,7 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 			ClientCompatibility:       DefaultClientCompat,
 			SupportedModels:           models,
 			HealthCheckModel:          healthCheckModel,
-			HealthCheckEndpointFamily: healthCheckEndpointFamily,
+			HealthCheckEndpointMode:   healthCheckEndpointMode,
 			Schedulable:               false,
 			AvailabilityScheduleJSON:  scheduleJSON,
 			ConcurrencyLimit:          intPtrValue(input.ConcurrencyLimit, DefaultConcurrencyLimit),
@@ -509,7 +517,17 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		if input.Type != nil && strings.TrimSpace(*input.Type) != AccountTypeAPIKey {
 			return fmt.Errorf("%w: 公开账号接口仅支持 API Key 账户", ErrUnsupportedAccountType)
 		}
-		if err := s.assertAccountFilters(ctx, store, current, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
+		profile, err := s.requireProviderProfile(
+			ctx,
+			store,
+			current.SystemAccountID,
+			current.ProviderCode,
+			current.ProviderProtocolProfileID,
+		)
+		if err != nil {
+			return err
+		}
+		if err := s.assertAccountFilters(ctx, store, current, &profile, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
 			return err
 		}
 
@@ -583,11 +601,16 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		}
 		next.SupportedModels = models
 		next.HealthCheckModel = healthCheckModel
-		if input.HealthCheckEndpointFamily != nil {
-			next.HealthCheckEndpointFamily, err = normalizeHealthCheckEndpointFamily(*input.HealthCheckEndpointFamily, current.ProviderCode, current.ProviderProtocolProfileID)
-		} else {
-			next.HealthCheckEndpointFamily, err = normalizeHealthCheckEndpointFamily(current.HealthCheckEndpointFamily, current.ProviderCode, current.ProviderProtocolProfileID)
+		healthCheckEndpointMode := &current.HealthCheckEndpointMode
+		if input.HealthCheckEndpointMode != nil {
+			healthCheckEndpointMode = input.HealthCheckEndpointMode
 		}
+		next.HealthCheckEndpointMode, err = resolveHealthCheckEndpointMode(
+			healthCheckEndpointMode,
+			current.ProviderCode,
+			current.ProviderProtocolProfileID,
+			profile.EnabledEndpointModes,
+		)
 		if err != nil {
 			return err
 		}
@@ -596,29 +619,29 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			next.Schedulable = false
 		}
 		resetFailureState := input.Status != nil || connectionConfigurationChanged
-		scheduleHealthCheck := connectionConfigurationChanged || input.SupportedModels.Set() || input.HealthCheckEndpointFamily != nil
+		scheduleHealthCheck := connectionConfigurationChanged || input.SupportedModels.Set() || input.HealthCheckEndpointMode != nil
 		updated, ok, err := store.UpdatePublicAccount(ctx, port.PublicAccountUpdateInput{
-			ID:                        current.ID,
-			SystemAccountID:           current.SystemAccountID,
-			ProviderCode:              current.ProviderCode,
-			Name:                      next.Name,
-			Status:                    next.Status,
-			CredentialsEncrypted:      next.CredentialsEncrypted,
-			CredentialFingerprint:     next.CredentialFingerprint,
-			CredentialMask:            next.CredentialMask,
-			SupportedModels:           next.SupportedModels,
-			SupportedModelsChanged:    supportedModelsChanged,
-			HealthCheckModel:          next.HealthCheckModel,
-			HealthCheckEndpointFamily: next.HealthCheckEndpointFamily,
-			ResetFailureState:         resetFailureState,
-			ScheduleHealthCheck:       scheduleHealthCheck,
-			ResetHealthDiagnostics:    connectionConfigurationChanged,
-			Schedulable:               next.Schedulable,
-			AvailabilityScheduleJSON:  next.AvailabilityScheduleJSON,
-			ConcurrencyLimit:          next.ConcurrencyLimit,
-			Priority:                  next.Priority,
-			Notes:                     next.Notes,
-			Now:                       s.now().UTC(),
+			ID:                       current.ID,
+			SystemAccountID:          current.SystemAccountID,
+			ProviderCode:             current.ProviderCode,
+			Name:                     next.Name,
+			Status:                   next.Status,
+			CredentialsEncrypted:     next.CredentialsEncrypted,
+			CredentialFingerprint:    next.CredentialFingerprint,
+			CredentialMask:           next.CredentialMask,
+			SupportedModels:          next.SupportedModels,
+			SupportedModelsChanged:   supportedModelsChanged,
+			HealthCheckModel:         next.HealthCheckModel,
+			HealthCheckEndpointMode:  next.HealthCheckEndpointMode,
+			ResetFailureState:        resetFailureState,
+			ScheduleHealthCheck:      scheduleHealthCheck,
+			ResetHealthDiagnostics:   connectionConfigurationChanged,
+			Schedulable:              next.Schedulable,
+			AvailabilityScheduleJSON: next.AvailabilityScheduleJSON,
+			ConcurrencyLimit:         next.ConcurrencyLimit,
+			Priority:                 next.Priority,
+			Notes:                    next.Notes,
+			Now:                      s.now().UTC(),
 		})
 		if errors.Is(err, port.ErrPublicAccountDuplicateName) {
 			return fmt.Errorf("%w: %s", ErrDuplicateAccountName, next.Name)
@@ -663,7 +686,7 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (AccountRespons
 		if err := assertTargetActive(target); err != nil {
 			return err
 		}
-		if err := s.assertAccountFilters(ctx, store, current, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
+		if err := s.assertAccountFilters(ctx, store, current, nil, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
 			return err
 		}
 		deleted, err := store.DeletePublicAccount(ctx, current.ID, current.SystemAccountID, target.ID, s.now().UTC())
@@ -814,6 +837,7 @@ func (s *Service) assertAccountFilters(
 	ctx context.Context,
 	store port.PublicAccountStore,
 	account port.PublicAccountSummary,
+	currentProfile *port.PublicAccountProviderProfile,
 	providerCode *string,
 	profileID *string,
 	groupName *string,
@@ -822,16 +846,19 @@ func (s *Service) assertAccountFilters(
 		return ErrAccountNotFound
 	}
 	if profileID != nil {
-		provider := account.ProviderCode
-		if providerCode != nil && strings.TrimSpace(*providerCode) != "" {
-			provider = strings.TrimSpace(*providerCode)
-		}
-		profile, err := s.requireProviderProfile(ctx, store, account.SystemAccountID, provider, *profileID)
-		if err != nil {
-			return err
-		}
-		if profile.ID != account.ProviderProtocolProfileID {
-			return ErrAccountNotFound
+		requestedProfileID := strings.TrimSpace(*profileID)
+		if currentProfile == nil || requestedProfileID != currentProfile.ID {
+			provider := account.ProviderCode
+			if providerCode != nil && strings.TrimSpace(*providerCode) != "" {
+				provider = strings.TrimSpace(*providerCode)
+			}
+			profile, err := s.requireProviderProfile(ctx, store, account.SystemAccountID, provider, requestedProfileID)
+			if err != nil {
+				return err
+			}
+			if profile.ID != account.ProviderProtocolProfileID {
+				return ErrAccountNotFound
+			}
 		}
 	}
 	if groupName != nil {
@@ -1017,40 +1044,81 @@ func normalizeAccountHealthCheckModel(value string, supportedModels []string) (s
 	return "", fmt.Errorf("%w: %s", ErrInvalidHealthCheckModel, invalidHealthCheckModelUnsupportedMessage)
 }
 
-func normalizeHealthCheckEndpointFamily(value string, providerCode string, profileID string) (string, error) {
-	allowed := healthCheckEndpointFamiliesForProfile(providerCode, profileID)
-	family := strings.TrimSpace(value)
-	if family == "" {
-		if strings.TrimSpace(providerCode) == "gpt" && slices.Contains(allowed, "responses") {
-			return "responses", nil
-		}
-		if slices.Contains(allowed, "chat_completions") {
-			return "chat_completions", nil
-		}
-		if len(allowed) > 0 {
-			return allowed[0], nil
-		}
+func resolveHealthCheckEndpointMode(value *string, providerCode string, profileID string, enabledEndpointModes []string) (string, error) {
+	if value == nil {
+		return defaultHealthCheckEndpointMode(providerCode, profileID, enabledEndpointModes)
 	}
-	if slices.Contains(allowed, family) {
-		return family, nil
+	mode := strings.TrimSpace(*value)
+	if !isHealthCheckEndpointMode(mode) {
+		return "", fmt.Errorf("%w: 账户健康检查请求形态无效", ErrInvalidHealthCheckEndpointMode)
 	}
-	return "", fmt.Errorf("%w: 当前协议档案未启用健康检查协议族 %s", ErrInvalidHealthCheckEndpointFamily, family)
+	if !stringListContains(enabledEndpointModes, mode) {
+		return "", fmt.Errorf(
+			"%w: 账户健康检查请求形态 %s 未启用",
+			ErrInvalidHealthCheckEndpointMode,
+			mode,
+		)
+	}
+	return mode, nil
 }
 
-func healthCheckEndpointFamiliesForProfile(providerCode string, profileID string) []string {
-	switch strings.TrimSpace(profileID) {
-	case "profile_gemini_native_v1beta":
-		return []string{"generate_content"}
-	case "profile_anthropic_anthropic_v1", "profile_deepseek_anthropic_v1", "profile_glm_coding_anthropic_v1":
-		return []string{"messages"}
-	case "profile_gpt_openai_v1":
-		return []string{"chat_completions", "responses"}
-	default:
-		if strings.TrimSpace(providerCode) == "anthropic" {
-			return []string{"messages"}
+func defaultHealthCheckEndpointMode(providerCode string, profileID string, enabledEndpointModes []string) (string, error) {
+	enabledModes := make([]string, 0, len(enabledEndpointModes))
+	for _, mode := range enabledEndpointModes {
+		mode = strings.TrimSpace(mode)
+		if isHealthCheckEndpointMode(mode) {
+			enabledModes = append(enabledModes, mode)
 		}
-		return []string{"chat_completions"}
 	}
+	preferred := preferredHealthCheckEndpointMode(providerCode, profileID)
+	if stringListContains(enabledModes, preferred) {
+		return preferred, nil
+	}
+	for _, mode := range enabledModes {
+		if strings.HasSuffix(mode, "_json") {
+			return mode, nil
+		}
+	}
+	if len(enabledModes) > 0 {
+		return enabledModes[0], nil
+	}
+	return "", fmt.Errorf(
+		"%w: 账户至少需要启用一个可用于健康检查的请求形态",
+		ErrInvalidHealthCheckEndpointMode,
+	)
+}
+
+func preferredHealthCheckEndpointMode(providerCode string, profileID string) string {
+	providerCode = strings.TrimSpace(providerCode)
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "profile_gemini_native_v1beta" {
+		return "generate_content_json"
+	}
+	if strings.Contains(profileID, "anthropic") || providerCode == "anthropic" {
+		return "messages_json"
+	}
+	if providerCode == "gpt" {
+		return "responses_sse"
+	}
+	return "chat_json"
+}
+
+func isHealthCheckEndpointMode(mode string) bool {
+	switch strings.TrimSpace(mode) {
+	case "chat_json", "chat_sse", "responses_json", "responses_sse", "messages_json", "messages_sse", "generate_content_json", "generate_content_sse":
+		return true
+	default:
+		return false
+	}
+}
+
+func stringListContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, systemAccountID string, providerCode string, models []string) error {
@@ -1249,7 +1317,7 @@ func publicAccountSummary(account port.PublicAccountSummary, listShape bool) Acc
 		ClientCompatibility:       account.ClientCompatibility,
 		Status:                    string(account.Status),
 		SupportedModels:           append([]string(nil), account.SupportedModels...),
-		HealthCheckEndpointFamily: account.HealthCheckEndpointFamily,
+		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
 		Schedulable:               account.Schedulable,
 		AvailabilitySchedule:      jsonValue(account.AvailabilityScheduleJSON),
 	}

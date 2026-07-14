@@ -51,6 +51,10 @@ export function formatCost(value?: unknown): string {
   return `$${numericValue.toFixed(6)}`
 }
 
+export function usageRecordDisplayCostUsd(record: UsageRecordSummary): number | undefined {
+  return record.costUsd ?? record.costBreakdown?.accountChargeUsd
+}
+
 export function formatUnitPrice(value?: unknown): string {
   const numericValue = numberValue(value)
   return numericValue === undefined ? '-' : `$${numericValue.toFixed(4)} / 1M Token`

@@ -150,6 +150,20 @@ export const backgroundScheduledJobs = [
     writes: []
   }),
   scheduled({
+    jobName: 'background-task-run-reconcile',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'stats-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: ['stats:background_task_runs', 'stats:background_job_leases'],
+    notes: '启动后及低频周期回收无有效租约的临时维护任务陈旧状态；近期心跳和有效租约均阻止回收'
+  }),
+  scheduled({
     jobName: 'api-key-record-cleanup-retry',
     category: 'scheduled',
     kind: 'maintenance',

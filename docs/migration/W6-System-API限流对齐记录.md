@@ -104,7 +104,7 @@ go test -v -tags=integration ./internal/testkit/integration -run TestW0PostgresM
 当前实现不能标记为完整 Node 等价，至少还存在以下差异：
 
 - Node 在全局 `requireAuth` 后、业务 router 前挂载 authenticated user limiter，因此已认证未知路径和错误 method 都会按实际 method 消耗用户 bucket；Go 当前按精确路由和 method 挂载，未知路径和 method mismatch 不进入用户层。
-- Go 只迁移了 system API limiter 所需的 allowlist 消费能力；`/ip-stats` 列表、详情以及 `blacklist`、`allowlist`、`unblock`、`unallowlist` 管理路由尚未迁移。
+- Go 已迁移 system API limiter 所需的 allowlist 消费能力，以及 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条管理写路由；`/ip-stats` 列表和详情仍未迁移。写接口边界见 [W6 管理端客户端 IP 策略迁移记录](W6-管理端客户端IP策略迁移记录.md)。
 - 本轮只对齐已迁移、已注册的管理业务路由；未迁移或未注册的 system API 不属于本轮用户 limiter 覆盖证据。
 
 满足以下条件前，不得删除 Node system API limiter：
@@ -112,7 +112,7 @@ go test -v -tags=integration ./internal/testkit/integration -run TestW0PostgresM
 - 保持 allowlist 命中 / 未命中、两层 bypass、鉴权不绕过、读取失败继续限流、policy expiry 和 shared cache version 失效回归通过。
 - 明确并对齐已认证未知路径和错误 method 的用户 limiter 归属，或先更新正式契约和测试预期。
 - 所有计划接管的 system API 已迁移、已注册并通过 read / write 分类与鉴权顺序测试。
-- IP policy 管理 API 完成迁移，或明确生产共存期由 Node 单 owner 写 policy、Go 只消费。
+- IP policy 剩余列表和详情完成迁移；在四条写路径正式切流前仍必须按路径保持单 owner，不能让 Node 与 Go 同时处理同一条 policy 写路由。
 - 真实 PostgreSQL policy 查询、Redis limiter bucket、Redis cache version、Node 写 policy 后 Go 缓存失效、policy expiry、可信反向代理客户端 IP 和 `429 Retry-After` smoke 通过。
 - 真实 Redis 中 Node `SharedJsonCache.clear()` 写入 `settings:system` version 后，另一个 Go runtime 的下一请求立即读取新限流设置。
 - 反向代理完成单 owner 切流，并取得 Node limiter 入口删除和静态搜索证据。

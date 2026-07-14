@@ -315,12 +315,12 @@ func insertW5ManagementGroupDetailFixtures(
 		INSERT INTO juhe_business.accounts (
 			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, credentials_encrypted, credential_mask, concurrency_limit, priority,
-			client_compatibility, schedulable, health_check_model, health_check_endpoint_family, created_at, updated_at
+			client_compatibility, schedulable, health_check_model, health_check_endpoint_mode, created_at, updated_at
 		) VALUES
-			($1, $5, 'openai', 'profile_openai_openai_v1', 'openai', 'v1', $1, 'api_key', 'active', 'v1:test:test:1', 'sk***1', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', 'chat_completions', $6, $6),
-			($2, $5, 'openai', 'profile_openai_openai_v1', 'openai', 'v1', $2, 'api_key', 'active', 'v1:test:test:2', 'sk***2', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', 'chat_completions', $7, $7),
-			($3, $5, 'openai', 'profile_openai_openai_v1', 'openai', 'v1', $3, 'api_key', 'active', 'v1:test:test:3', 'sk***3', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', 'chat_completions', $8, $8),
-			($4, $5, 'openai', 'profile_openai_openai_v1', 'openai', 'v1', $4, 'api_key', 'active', 'v1:test:test:4', 'sk***4', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', 'chat_completions', $9, $9)
+			($1, $5, 'openai', 'profile_openai_openai_v1', 'openai', 'v1', $1, 'api_key', 'active', 'v1:test:test:1', 'sk***1', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', 'chat_json', $6, $6),
+			($2, $5, 'openai', 'profile_openai_openai_v1', 'openai', 'v1', $2, 'api_key', 'active', 'v1:test:test:2', 'sk***2', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', 'chat_json', $7, $7),
+			($3, $5, 'openai', 'profile_openai_openai_v1', 'openai', 'v1', $3, 'api_key', 'active', 'v1:test:test:3', 'sk***3', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', 'chat_json', $8, $8),
+			($4, $5, 'openai', 'profile_openai_openai_v1', 'openai', 'v1', $4, 'api_key', 'active', 'v1:test:test:4', 'sk***4', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', 'chat_json', $9, $9)
 	`,
 		w5ManagementGroupDetailOwnedAccount1,
 		w5ManagementGroupDetailOwnedAccount2,

@@ -111,7 +111,7 @@ function accountFixture(id: string, name: string): AccountSummary {
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
     healthCheckModel: 'gpt-5.5',
-    healthCheckEndpointFamily: 'responses',
+    healthCheckEndpointMode: 'responses_sse',
     modelMappings: [{
       sourceModel: 'gpt-5.5',
       sourceEndpointFamily: 'responses',

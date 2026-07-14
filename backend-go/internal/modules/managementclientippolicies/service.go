@@ -15,8 +15,13 @@ import (
 const (
 	clientIPPolicyInvalidationTimeout = 5 * time.Second
 	maxPolicyReasonRunes              = 500
+	minBlacklistDurationMinutes       = 1
+	maxBlacklistDurationMinutes       = 525600
+	minBlacklistDurationDays          = 1
+	maxBlacklistDurationDays          = 3650
 
 	allowlistReplacementReason = "被新的白名单策略替换"
+	blacklistReplacementReason = "被新的封禁策略替换"
 	defaultUnallowlistReason   = "管理员解除策略"
 )
 
@@ -52,6 +57,20 @@ type UnallowlistInput struct {
 	Reason               *string
 }
 
+type BlacklistInput struct {
+	IPHash               string
+	ActorSystemAccountID string
+	Reason               *string
+	DurationMinutes      *int
+	DurationDays         *int
+}
+
+type UnblockInput struct {
+	IPHash               string
+	ActorSystemAccountID string
+	Reason               *string
+}
+
 type PolicySummary struct {
 	ID                        string  `json:"id"`
 	IPHash                    string  `json:"ipHash"`
@@ -68,6 +87,10 @@ type PolicySummary struct {
 }
 
 type UnallowlistResult struct {
+	DisabledCount int64 `json:"disabledCount"`
+}
+
+type UnblockResult struct {
 	DisabledCount int64 `json:"disabledCount"`
 }
 
@@ -120,7 +143,7 @@ func (s *Service) Allowlist(ctx context.Context, input AllowlistInput) (PolicySu
 		return PolicySummary{}, fmt.Errorf("management client IP policy transactor is required")
 	}
 
-	now := s.now().UTC()
+	now := normalizePolicyTime(s.now())
 	id := s.newID("ip_policy")
 	var created port.ManagementClientIPPolicySummary
 	err = s.transactor.ManagementClientIPPolicyInTx(
@@ -165,6 +188,122 @@ func (s *Service) Allowlist(ctx context.Context, input AllowlistInput) (PolicySu
 	return policySummary(created), nil
 }
 
+func (s *Service) Blacklist(ctx context.Context, input BlacklistInput) (PolicySummary, error) {
+	normalized, err := normalizeMutationInput(
+		input.IPHash,
+		input.ActorSystemAccountID,
+		input.Reason,
+	)
+	if err != nil {
+		return PolicySummary{}, err
+	}
+	duration, err := blacklistDuration(input.DurationMinutes, input.DurationDays)
+	if err != nil {
+		return PolicySummary{}, err
+	}
+	if s.transactor == nil {
+		return PolicySummary{}, fmt.Errorf("management client IP policy transactor is required")
+	}
+
+	now := normalizePolicyTime(s.now())
+	var expiresAt *time.Time
+	if duration != nil {
+		value := now.Add(*duration).Truncate(time.Millisecond)
+		expiresAt = &value
+	}
+	id := s.newID("ip_policy")
+	var created port.ManagementClientIPPolicySummary
+	err = s.transactor.ManagementClientIPPolicyInTx(
+		ctx,
+		func(txCtx context.Context, store port.ManagementClientIPPolicyStore) error {
+			_, found, err := store.LockManagementClientIPRegistry(txCtx, normalized.ipHash)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return &ValidationError{Message: "IP 不存在"}
+			}
+			if _, err := store.DisableActiveManagementClientIPPolicies(
+				txCtx,
+				port.ManagementClientIPPolicyDisableInput{
+					IPHash:               normalized.ipHash,
+					ActorSystemAccountID: normalized.actorSystemAccountID,
+					Reason:               blacklistReplacementReason,
+					Now:                  now,
+				},
+			); err != nil {
+				return err
+			}
+			created, err = store.InsertManagementClientIPBlacklistPolicy(
+				txCtx,
+				port.ManagementClientIPBlacklistCreateInput{
+					ID:                   id,
+					IPHash:               normalized.ipHash,
+					Reason:               normalized.reason,
+					ExpiresAt:            expiresAt,
+					ActorSystemAccountID: normalized.actorSystemAccountID,
+					Now:                  now,
+				},
+			)
+			return err
+		},
+	)
+	if err != nil {
+		return PolicySummary{}, err
+	}
+
+	s.invalidateCache(ctx)
+	return policySummary(created), nil
+}
+
+func (s *Service) Unblock(ctx context.Context, input UnblockInput) (UnblockResult, error) {
+	normalized, err := normalizeMutationInput(
+		input.IPHash,
+		input.ActorSystemAccountID,
+		input.Reason,
+	)
+	if err != nil {
+		return UnblockResult{}, err
+	}
+	if s.transactor == nil {
+		return UnblockResult{}, fmt.Errorf("management client IP policy transactor is required")
+	}
+
+	reason := defaultUnallowlistReason
+	if normalized.reason != nil {
+		reason = *normalized.reason
+	}
+	now := normalizePolicyTime(s.now())
+	var disabledCount int64
+	err = s.transactor.ManagementClientIPPolicyInTx(
+		ctx,
+		func(txCtx context.Context, store port.ManagementClientIPPolicyStore) error {
+			if _, _, err := store.LockManagementClientIPRegistry(
+				txCtx,
+				normalized.ipHash,
+			); err != nil {
+				return err
+			}
+			disabledCount, err = store.DisableActiveManagementClientIPBlacklistPolicies(
+				txCtx,
+				port.ManagementClientIPPolicyDisableInput{
+					IPHash:               normalized.ipHash,
+					ActorSystemAccountID: normalized.actorSystemAccountID,
+					Reason:               reason,
+					Now:                  now,
+				},
+			)
+			return err
+		},
+	)
+	if err != nil {
+		return UnblockResult{}, err
+	}
+
+	s.invalidateCache(ctx)
+	return UnblockResult{DisabledCount: disabledCount}, nil
+}
+
 func (s *Service) Unallowlist(
 	ctx context.Context,
 	input UnallowlistInput,
@@ -185,7 +324,7 @@ func (s *Service) Unallowlist(
 	if normalized.reason != nil {
 		reason = *normalized.reason
 	}
-	now := s.now().UTC()
+	now := normalizePolicyTime(s.now())
 	var disabledCount int64
 	err = s.transactor.ManagementClientIPPolicyInTx(
 		ctx,
@@ -293,6 +432,37 @@ func normalizeReason(value *string) (*string, error) {
 	return &normalized, nil
 }
 
+func blacklistDuration(durationMinutes *int, durationDays *int) (*time.Duration, error) {
+	if durationMinutes != nil {
+		if *durationMinutes < minBlacklistDurationMinutes {
+			return nil, &ValidationError{Message: "封禁分钟数不能小于 1"}
+		}
+		if *durationMinutes > maxBlacklistDurationMinutes {
+			return nil, &ValidationError{Message: "封禁分钟数不能超过 525600"}
+		}
+	}
+	if durationDays != nil {
+		if *durationDays < minBlacklistDurationDays {
+			return nil, &ValidationError{Message: "封禁天数不能小于 1"}
+		}
+		if *durationDays > maxBlacklistDurationDays {
+			return nil, &ValidationError{Message: "封禁天数不能超过 3650"}
+		}
+	}
+	if durationMinutes != nil && durationDays != nil {
+		return nil, &ValidationError{Message: "封禁时长只能选择一种"}
+	}
+	if durationMinutes != nil {
+		duration := time.Duration(*durationMinutes) * time.Minute
+		return &duration, nil
+	}
+	if durationDays != nil {
+		duration := time.Duration(*durationDays) * 24 * time.Hour
+		return &duration, nil
+	}
+	return nil, nil
+}
+
 func policySummary(value port.ManagementClientIPPolicySummary) PolicySummary {
 	return PolicySummary{
 		ID:                        value.ID,
@@ -300,7 +470,7 @@ func policySummary(value port.ManagementClientIPPolicySummary) PolicySummary {
 		PolicyType:                string(value.PolicyType),
 		Status:                    string(value.Status),
 		Reason:                    copyString(value.Reason),
-		ExpiresAt:                 formatOptionalTime(value.ExpiresAt),
+		ExpiresAt:                 formatOptionalExpiryTime(value.ExpiresAt),
 		CreatedBySystemAccountID:  value.CreatedBySystemAccountID,
 		CreatedAt:                 formatTime(value.CreatedAt),
 		UpdatedAt:                 formatTime(value.UpdatedAt),
@@ -311,7 +481,7 @@ func policySummary(value port.ManagementClientIPPolicySummary) PolicySummary {
 }
 
 func formatTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	return normalizePolicyTime(value).Format("2006-01-02T15:04:05.000Z")
 }
 
 func formatOptionalTime(value *time.Time) *string {
@@ -320,6 +490,18 @@ func formatOptionalTime(value *time.Time) *string {
 	}
 	formatted := formatTime(*value)
 	return &formatted
+}
+
+func formatOptionalExpiryTime(value *time.Time) *string {
+	if value == nil {
+		return nil
+	}
+	formatted := formatTime(*value)
+	return &formatted
+}
+
+func normalizePolicyTime(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Millisecond)
 }
 
 func copyString(value *string) *string {

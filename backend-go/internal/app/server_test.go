@@ -303,6 +303,12 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.SystemSettingsUpdateHandler != nil ||
 		handlers.GlobalSettingsHandler != nil ||
 		handlers.GlobalSettingsUpdateHandler != nil ||
+		handlers.ClientIPStatsHandler != nil ||
+		handlers.ClientIPStatsDetailHandler != nil ||
+		handlers.ClientIPAllowlistHandler != nil ||
+		handlers.ClientIPUnallowlistHandler != nil ||
+		handlers.ClientIPBlacklistHandler != nil ||
+		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.MyOperationLogsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
@@ -384,6 +390,12 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.SystemSettingsUpdateHandler != nil ||
 		handlers.GlobalSettingsHandler != nil ||
 		handlers.GlobalSettingsUpdateHandler != nil ||
+		handlers.ClientIPStatsHandler != nil ||
+		handlers.ClientIPStatsDetailHandler != nil ||
+		handlers.ClientIPAllowlistHandler != nil ||
+		handlers.ClientIPUnallowlistHandler != nil ||
+		handlers.ClientIPBlacklistHandler != nil ||
+		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
 		handlers.MyStatsUsageWindowHandler != nil {
@@ -488,6 +500,12 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.SystemSettingsUpdateHandler == nil ||
 		handlers.GlobalSettingsHandler == nil ||
 		handlers.GlobalSettingsUpdateHandler == nil ||
+		handlers.ClientIPStatsHandler == nil ||
+		handlers.ClientIPStatsDetailHandler == nil ||
+		handlers.ClientIPAllowlistHandler == nil ||
+		handlers.ClientIPUnallowlistHandler == nil ||
+		handlers.ClientIPBlacklistHandler == nil ||
+		handlers.ClientIPUnblockHandler == nil ||
 		handlers.OperationLogsHandler == nil ||
 		handlers.MyOperationLogsHandler == nil ||
 		handlers.StatsUsageWindowHandler == nil ||
@@ -519,6 +537,116 @@ func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyMutationDependencies(t *t
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("server.go missing explicit API Key mutation wiring %q", required)
+		}
+	}
+}
+
+func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *testing.T) {
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	if disabled.ClientIPAllowlistHandler != nil ||
+		disabled.ClientIPUnallowlistHandler != nil ||
+		disabled.ClientIPBlacklistHandler != nil ||
+		disabled.ClientIPUnblockHandler != nil {
+		t.Fatal("client IP policy handlers were created while management API disabled")
+	}
+
+	enabled := newManagementAPIHandler(
+		config.Config{ManagementAPIEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if enabled.ClientIPAllowlistHandler == nil ||
+		enabled.ClientIPUnallowlistHandler == nil ||
+		enabled.ClientIPBlacklistHandler == nil ||
+		enabled.ClientIPUnblockHandler == nil {
+		t.Fatal("client IP policy handlers were not created while management API enabled")
+	}
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"ManagementClientIPAllowlistHandler:",
+		"managementHandlers.ClientIPAllowlistHandler",
+		"ManagementClientIPUnallowlistHandler:",
+		"managementHandlers.ClientIPUnallowlistHandler",
+		"ManagementClientIPBlacklistHandler:",
+		"managementHandlers.ClientIPBlacklistHandler",
+		"ManagementClientIPUnblockHandler:",
+		"managementHandlers.ClientIPUnblockHandler",
+		"Transactor:  store",
+		"Invalidator: systemAccountInvalidator",
+		"httpapi.NewManagementClientIPAllowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
+		"httpapi.NewManagementClientIPUnallowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
+		"httpapi.NewManagementClientIPBlacklistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
+		"httpapi.NewManagementClientIPUnblockHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server.go missing client IP policy wiring %q", required)
+		}
+	}
+}
+
+func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	if disabled.ClientIPStatsHandler != nil || disabled.ClientIPStatsDetailHandler != nil {
+		t.Fatal("client IP stats read handler was created while management API disabled")
+	}
+
+	sessionOnly := newManagementAPIHandler(
+		config.Config{ManagementAuthSessionsEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if sessionOnly.ClientIPStatsHandler != nil || sessionOnly.ClientIPStatsDetailHandler != nil {
+		t.Fatal("client IP stats read handler was created while only session switch enabled")
+	}
+
+	enabled := newManagementAPIHandler(
+		config.Config{ManagementAPIEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if enabled.ClientIPStatsHandler == nil || enabled.ClientIPStatsDetailHandler == nil {
+		t.Fatal("client IP stats read handler was not created while management API enabled")
+	}
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"ManagementClientIPStatsHandler:",
+		"ManagementClientIPStatsDetailHandler:",
+		"managementHandlers.ClientIPStatsHandler",
+		"managementHandlers.ClientIPStatsDetailHandler",
+		"managementclientipstats.NewServiceWithOptions(",
+		"ListReader:               store",
+		"DetailReader:             store",
+		"UsageStatsTimezoneReader: store",
+		"httpapi.NewManagementClientIPStatsHandler(clientIPStatsService)",
+		"httpapi.NewManagementClientIPStatsDetailHandler(clientIPStatsService)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server.go missing client IP stats read wiring %q", required)
 		}
 	}
 }

@@ -18,8 +18,6 @@ type expectedDefinition struct {
 
 var expectedDefinitions = []expectedDefinition{
 	{Key: "gatewayTextRawBodyLimitMegabytes", Kind: ValueKindInteger, Minimum: 1, Maximum: 64},
-	{Key: "gptPriorityPriceMultiplier", Kind: ValueKindDecimal},
-	{Key: "gptFlexPriceMultiplier", Kind: ValueKindDecimal},
 	{Key: "systemApiRateLimitIpReadPerMinute", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},
 	{Key: "systemApiRateLimitIpReadBurstPer10Seconds", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},
 	{Key: "systemApiRateLimitIpWritePerMinute", Kind: ValueKindInteger, Minimum: 0, Maximum: 1_000_000},
@@ -54,7 +52,6 @@ var expectedDefinitions = []expectedDefinition{
 	{Key: "cooldownAccountRetestIntervalSeconds", Kind: ValueKindInteger, Minimum: 1, Maximum: 3600},
 	{Key: "cooldownAccountRetestBatchSize", Kind: ValueKindInteger, Minimum: 1, Maximum: 100},
 	{Key: "cooldownAccountRetestMaxBackoffHours", Kind: ValueKindInteger, Minimum: 1, Maximum: 720},
-	{Key: "cooldownAccountRetestLongTermIntervalHours", Kind: ValueKindInteger, Minimum: 1, Maximum: 720},
 	{Key: "oauthAccessTokenRefreshIntervalSeconds", Kind: ValueKindInteger, Minimum: 10, Maximum: 3600},
 	{Key: "oauthAccessTokenRefreshLeadSeconds", Kind: ValueKindInteger, Minimum: 60, Maximum: 86400},
 	{Key: "oauthAccessTokenRefreshBatchSize", Kind: ValueKindInteger, Minimum: 1, Maximum: 200},
@@ -75,20 +72,16 @@ var expectedDefinitions = []expectedDefinition{
 }
 
 func TestCatalogMatchesNodeSystemSettingKeysAndRanges(t *testing.T) {
-	if len(expectedDefinitions) != 55 {
-		t.Fatalf("expected definition fixture count = %d, want 55", len(expectedDefinitions))
+	if len(expectedDefinitions) != 52 {
+		t.Fatalf("expected definition fixture count = %d, want 52", len(expectedDefinitions))
 	}
 
 	keys := make([]string, 0, len(expectedDefinitions))
 	integerCount := 0
-	decimalCount := 0
 	for _, definition := range expectedDefinitions {
 		keys = append(keys, definition.Key)
 		if definition.Kind == ValueKindInteger {
 			integerCount++
-		}
-		if definition.Kind == ValueKindDecimal {
-			decimalCount++
 		}
 	}
 	gotDefinitions := Definitions()
@@ -101,11 +94,8 @@ func TestCatalogMatchesNodeSystemSettingKeysAndRanges(t *testing.T) {
 			t.Fatalf("Definitions()[%d] = %+v, want %+v", index, got, want)
 		}
 	}
-	if integerCount != 52 {
-		t.Fatalf("integer definition count = %d, want 52", integerCount)
-	}
-	if decimalCount != 2 {
-		t.Fatalf("decimal definition count = %d, want 2", decimalCount)
+	if integerCount != 51 {
+		t.Fatalf("integer definition count = %d, want 51", integerCount)
 	}
 	if got := Keys(); !reflect.DeepEqual(got, keys) {
 		t.Fatalf("Keys() = %#v, want %#v", got, keys)
@@ -113,14 +103,8 @@ func TestCatalogMatchesNodeSystemSettingKeysAndRanges(t *testing.T) {
 	if !IsKey("usageHotWindowRefreshIntervalSeconds") {
 		t.Fatal("catalog is missing usageHotWindowRefreshIntervalSeconds")
 	}
-	if !IsKey("gptPriorityPriceMultiplier") || !IsKey("gptFlexPriceMultiplier") {
-		t.Fatal("catalog is missing GPT service tier price multiplier settings")
-	}
-	for _, key := range []string{"gptPriorityPriceMultiplier", "gptFlexPriceMultiplier"} {
-		definition, ok := DefinitionFor(key)
-		if !ok || definition.DecimalMinimum != 0.01 || definition.DecimalMaximum != 100 {
-			t.Fatalf("decimal definition %s = %+v, %v; want range 0.01..100", key, definition, ok)
-		}
+	if IsKey("gptPriorityPriceMultiplier") || IsKey("gptFlexPriceMultiplier") {
+		t.Fatal("catalog must not expose removed GPT service tier price multiplier settings")
 	}
 
 	definitionsCopy := Definitions()
@@ -166,27 +150,19 @@ func TestIntegerDefinitionsAcceptBothBoundsAndRejectOutsideBounds(t *testing.T) 
 
 func TestCurrentNodeDefaultsFormValidCompleteSnapshot(t *testing.T) {
 	defaults := currentNodeDefaultValues()
-	if len(defaults) != 55 {
-		t.Fatalf("default count = %d, want 55", len(defaults))
+	if len(defaults) != 52 {
+		t.Fatalf("default count = %d, want 52", len(defaults))
 	}
 	snapshot, err := NewSnapshot(defaults)
 	if err != nil {
 		t.Fatalf("NewSnapshot(current defaults) error = %v", err)
 	}
-	if snapshot.Len() != 55 {
-		t.Fatalf("snapshot length = %d, want 55", snapshot.Len())
+	if snapshot.Len() != 52 {
+		t.Fatalf("snapshot length = %d, want 52", snapshot.Len())
 	}
 	value, ok := snapshot.Value("usageHotWindowRefreshIntervalSeconds")
 	if !ok || string(value) != "600" {
 		t.Fatalf("usage hot window default = %q, %v; want 600", value, ok)
-	}
-	priority, ok := snapshot.Value("gptPriorityPriceMultiplier")
-	if !ok || string(priority) != "2" {
-		t.Fatalf("gpt priority multiplier default = %q, %v; want 2", priority, ok)
-	}
-	flex, ok := snapshot.Value("gptFlexPriceMultiplier")
-	if !ok || string(flex) != "0.5" {
-		t.Fatalf("gpt flex multiplier default = %q, %v; want 0.5", flex, ok)
 	}
 }
 
@@ -208,61 +184,6 @@ func TestPatchRejectsNonIntegerJSONWithoutCoercion(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatalf("NewPatch(%q) error = nil, want strict integer error", raw)
-		}
-	}
-}
-
-func TestDecimalDefinitionsAcceptJSONNumbersAndNormalize(t *testing.T) {
-	tests := []struct {
-		key  string
-		raw  json.RawMessage
-		want string
-	}{
-		{key: "gptPriorityPriceMultiplier", raw: json.RawMessage(`2`), want: "2"},
-		{key: "gptPriorityPriceMultiplier", raw: json.RawMessage(`2.50`), want: "2.5"},
-		{key: "gptPriorityPriceMultiplier", raw: json.RawMessage(`1.0`), want: "1"},
-		{key: "gptPriorityPriceMultiplier", raw: json.RawMessage(`1e1`), want: "10"},
-		{key: "gptFlexPriceMultiplier", raw: json.RawMessage(`5E-1`), want: "0.5"},
-		{key: "gptFlexPriceMultiplier", raw: json.RawMessage(`1e-2`), want: "0.01"},
-		{key: "gptFlexPriceMultiplier", raw: json.RawMessage(`100.0`), want: "100"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.key+"/"+string(tt.raw), func(t *testing.T) {
-			patch, err := NewPatch(map[string]json.RawMessage{tt.key: tt.raw})
-			if err != nil {
-				t.Fatalf("NewPatch(%s=%s) error = %v", tt.key, tt.raw, err)
-			}
-			got, ok := patch.Value(tt.key)
-			if !ok || string(got) != tt.want {
-				t.Fatalf("normalized decimal = %q, %v; want %s", got, ok, tt.want)
-			}
-		})
-	}
-}
-
-func TestDecimalDefinitionsRejectNonNumbersNonFiniteAndOutsideBounds(t *testing.T) {
-	for _, raw := range []json.RawMessage{
-		nil,
-		json.RawMessage(``),
-		json.RawMessage(`null`),
-		json.RawMessage(`true`),
-		json.RawMessage(`"1"`),
-		json.RawMessage(`[]`),
-		json.RawMessage(`{}`),
-		json.RawMessage(`NaN`),
-		json.RawMessage(`Infinity`),
-		json.RawMessage(`1e309`),
-		json.RawMessage(`-1e309`),
-		json.RawMessage(`0`),
-		json.RawMessage(`0.009`),
-		json.RawMessage(`100.0001`),
-		json.RawMessage(`1 2`),
-	} {
-		_, err := NewPatch(map[string]json.RawMessage{
-			"gptFlexPriceMultiplier": raw,
-		})
-		if err == nil {
-			t.Fatalf("NewPatch(%q) error = nil, want strict decimal error", raw)
 		}
 	}
 }
@@ -370,17 +291,15 @@ func TestSnapshotAndPatchCloneRawMessagesAndUseStableJSONKeyOrder(t *testing.T) 
 	patch, err := NewPatch(map[string]json.RawMessage{
 		"systemMetricsHourlyRetentionDays":     json.RawMessage(`20`),
 		"gatewayTextRawBodyLimitMegabytes":     json.RawMessage(`32`),
-		"gptFlexPriceMultiplier":               json.RawMessage(`0.75`),
 		"usageHotWindowRefreshIntervalSeconds": json.RawMessage(`600`),
 	})
 	if err != nil {
 		t.Fatalf("NewPatch() error = %v", err)
 	}
 	entries := patch.Entries()
-	gotKeys := []string{entries[0].Key, entries[1].Key, entries[2].Key, entries[3].Key}
+	gotKeys := []string{entries[0].Key, entries[1].Key, entries[2].Key}
 	wantKeys := []string{
 		"gatewayTextRawBodyLimitMegabytes",
-		"gptFlexPriceMultiplier",
 		"systemMetricsHourlyRetentionDays",
 		"usageHotWindowRefreshIntervalSeconds",
 	}
@@ -391,7 +310,7 @@ func TestSnapshotAndPatchCloneRawMessagesAndUseStableJSONKeyOrder(t *testing.T) 
 	if err != nil {
 		t.Fatalf("json.Marshal(patch) error = %v", err)
 	}
-	const wantJSON = `{"gatewayTextRawBodyLimitMegabytes":32,"gptFlexPriceMultiplier":0.75,"systemMetricsHourlyRetentionDays":20,"usageHotWindowRefreshIntervalSeconds":600}`
+	const wantJSON = `{"gatewayTextRawBodyLimitMegabytes":32,"systemMetricsHourlyRetentionDays":20,"usageHotWindowRefreshIntervalSeconds":600}`
 	if string(encoded) != wantJSON {
 		t.Fatalf("patch JSON = %s, want %s", encoded, wantJSON)
 	}
@@ -405,9 +324,9 @@ func TestSnapshotAndPatchCloneRawMessagesAndUseStableJSONKeyOrder(t *testing.T) 
 	if !strings.HasPrefix(string(snapshotJSON), "{"+firstKey+":") {
 		t.Fatalf("snapshot JSON does not start with stable first key: %s", snapshotJSON)
 	}
-	const decimalSequence = `"gatewayTextRawBodyLimitMegabytes":16,"gptFlexPriceMultiplier":0.5,"gptPriorityPriceMultiplier":2,"groupAccountStatsRefreshIntervalSeconds":60`
-	if !strings.Contains(string(snapshotJSON), decimalSequence) {
-		t.Fatalf("snapshot JSON decimal key order is unstable: %s", snapshotJSON)
+	const stableSequence = `"gatewayTextRawBodyLimitMegabytes":16,"groupAccountStatsRefreshIntervalSeconds":60`
+	if !strings.Contains(string(snapshotJSON), stableSequence) {
+		t.Fatalf("snapshot JSON key order is unstable: %s", snapshotJSON)
 	}
 	if !strings.Contains(string(snapshotJSON), ","+lastKey+":104}") {
 		t.Fatalf("snapshot JSON does not end with stable last key: %s", snapshotJSON)
@@ -452,8 +371,6 @@ func TestPatchRejectsEmptyAndUnknownFieldsDeterministically(t *testing.T) {
 func currentNodeDefaultValues() map[string]json.RawMessage {
 	return map[string]json.RawMessage{
 		"gatewayTextRawBodyLimitMegabytes":           json.RawMessage(`16`),
-		"gptPriorityPriceMultiplier":                 json.RawMessage(`2`),
-		"gptFlexPriceMultiplier":                     json.RawMessage(`0.5`),
 		"systemApiRateLimitIpReadPerMinute":          json.RawMessage(`600`),
 		"systemApiRateLimitIpReadBurstPer10Seconds":  json.RawMessage(`120`),
 		"systemApiRateLimitIpWritePerMinute":         json.RawMessage(`180`),
@@ -488,7 +405,6 @@ func currentNodeDefaultValues() map[string]json.RawMessage {
 		"cooldownAccountRetestIntervalSeconds":       json.RawMessage(`3`),
 		"cooldownAccountRetestBatchSize":             json.RawMessage(`10`),
 		"cooldownAccountRetestMaxBackoffHours":       json.RawMessage(`12`),
-		"cooldownAccountRetestLongTermIntervalHours": json.RawMessage(`1`),
 		"oauthAccessTokenRefreshIntervalSeconds":     json.RawMessage(`60`),
 		"oauthAccessTokenRefreshLeadSeconds":         json.RawMessage(`300`),
 		"oauthAccessTokenRefreshBatchSize":           json.RawMessage(`20`),

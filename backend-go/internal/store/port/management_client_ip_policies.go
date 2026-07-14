@@ -8,6 +8,7 @@ import (
 type ManagementClientIPPolicyType string
 
 const (
+	ManagementClientIPPolicyTypeBlacklist ManagementClientIPPolicyType = "blacklist"
 	ManagementClientIPPolicyTypeAllowlist ManagementClientIPPolicyType = "allowlist"
 )
 
@@ -53,6 +54,15 @@ type ManagementClientIPAllowlistCreateInput struct {
 	Now                  time.Time
 }
 
+type ManagementClientIPBlacklistCreateInput struct {
+	ID                   string
+	IPHash               string
+	Reason               *string
+	ExpiresAt            *time.Time
+	ActorSystemAccountID string
+	Now                  time.Time
+}
+
 type ManagementClientIPPolicyStore interface {
 	LockManagementClientIPRegistry(
 		ctx context.Context,
@@ -66,7 +76,15 @@ type ManagementClientIPPolicyStore interface {
 		ctx context.Context,
 		input ManagementClientIPAllowlistCreateInput,
 	) (ManagementClientIPPolicySummary, error)
+	InsertManagementClientIPBlacklistPolicy(
+		ctx context.Context,
+		input ManagementClientIPBlacklistCreateInput,
+	) (ManagementClientIPPolicySummary, error)
 	DisableActiveManagementClientIPAllowlistPolicies(
+		ctx context.Context,
+		input ManagementClientIPPolicyDisableInput,
+	) (int64, error)
+	DisableActiveManagementClientIPBlacklistPolicies(
 		ctx context.Context,
 		input ManagementClientIPPolicyDisableInput,
 	) (int64, error)

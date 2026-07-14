@@ -1,7 +1,5 @@
 export interface SystemSettings {
   gatewayTextRawBodyLimitMegabytes: number
-  gptPriorityPriceMultiplier: number
-  gptFlexPriceMultiplier: number
   systemApiRateLimitIpReadPerMinute: number
   systemApiRateLimitIpReadBurstPer10Seconds: number
   systemApiRateLimitIpWritePerMinute: number
@@ -36,7 +34,6 @@ export interface SystemSettings {
   cooldownAccountRetestIntervalSeconds: number
   cooldownAccountRetestBatchSize: number
   cooldownAccountRetestMaxBackoffHours: number
-  cooldownAccountRetestLongTermIntervalHours: number
   oauthAccessTokenRefreshIntervalSeconds: number
   oauthAccessTokenRefreshLeadSeconds: number
   oauthAccessTokenRefreshBatchSize: number

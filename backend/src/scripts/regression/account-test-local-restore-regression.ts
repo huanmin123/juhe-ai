@@ -131,7 +131,7 @@ try {
     appBaseUrl,
     mockBaseUrl,
     groupId: group.id,
-    accountName: '手动测试恢复异常',
+    accountName: '手动测试异常恢复',
     apiKey: 'sk-manual-restore-error',
     makeUnavailable: (accountId) => {
       const updated = repositories.markAccountException(accountId, 'upstream_failure', '模拟异常')
@@ -198,6 +198,12 @@ async function assertManualTestRestoresAccount(input: {
     groupId: input.groupId
   }, adminAccess)
   assert.equal(account.boundGroupId, input.groupId, `${input.accountName} 应绑定分组`)
+  assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, `${input.accountName} 应先由后台健康检查激活`)
 
   input.makeUnavailable(account.id)
   const unavailable = repositories.findAccountSummary(account.id, adminAccess)

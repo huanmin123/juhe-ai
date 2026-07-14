@@ -1,10 +1,11 @@
 import type {
   AccountAvailabilitySchedule,
-  AccountHealthCheckEndpointFamily,
+  AccountHealthCheckEndpointMode,
   AccountModelMapping,
   AccountModelMappingSourceEndpointFamily,
   AccountModelMappingUpstreamEndpointFamily
 } from '../../domain/types.js'
+import { ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES } from '../../domain/account-health-check-endpoint-mode.js'
 import { accountAvailabilityScheduleFromRequest } from '../../storage/account-availability-schedule.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 
@@ -41,7 +42,7 @@ export const importAccountKeys: ReadonlySet<string> = new Set([
   'fallbackEnabled',
   'supportedModels',
   'healthCheckModel',
-  'healthCheckEndpointFamily',
+  'healthCheckEndpointMode',
   'modelMappings',
   'tags',
   'accountExpiresAt',
@@ -181,18 +182,18 @@ export function optionalStringArrayField(record: Record<string, unknown>, key: s
   return items
 }
 
-export function optionalHealthCheckEndpointFamilyField(
+export function optionalHealthCheckEndpointModeField(
   record: Record<string, unknown>,
   key: string,
   label: string,
   messages: string[]
-): AccountHealthCheckEndpointFamily | undefined {
+): AccountHealthCheckEndpointMode | undefined {
   if (!hasOwnField(record, key)) return undefined
   const value = record[key]
-  if (value === 'chat_completions' || value === 'responses' || value === 'messages' || value === 'generate_content') {
-    return value
+  if (ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES.includes(value as AccountHealthCheckEndpointMode)) {
+    return value as AccountHealthCheckEndpointMode
   }
-  messages.push(`${label}仅支持 chat_completions、responses、messages 或 generate_content`)
+  messages.push(`${label}必须是支持的 JSON 或 Streaming 请求形态`)
   return undefined
 }
 

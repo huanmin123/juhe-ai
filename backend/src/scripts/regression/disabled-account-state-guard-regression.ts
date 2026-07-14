@@ -37,7 +37,8 @@ const [
   repositories,
   { testOpenAIAccount },
   { applyAccountErrorHandling },
-  { handleDbServiceOperation }
+  { handleDbServiceOperation },
+  { closeSqliteReadWorkerPool }
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/auth/auth.routes.js'),
@@ -48,7 +49,8 @@ const [
   import('../../storage/repositories.js'),
   import('../../modules/accounts/account-test.service.js'),
   import('../../modules/gateway/policy/account-error-policy.service.js'),
-  import('../../modules/db-service/db-service-handlers.js')
+  import('../../modules/db-service/db-service-handlers.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const app = express()
@@ -115,6 +117,7 @@ async function main(): Promise<void> {
       groupId: group.id
     }, access)
     assert(account.boundGroupId === group.id, '测试账户未绑定分组')
+    activateAccount(account.id)
 
     const staleGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, account.id, 'sys_admin', { ignoreAvailability: true })
     assert(staleGatewayAccount?.status === 'active', '停用前应能读取到完整网关账号对象')
@@ -236,6 +239,7 @@ async function main(): Promise<void> {
       groupId: group.id
     }, access)
     assert(errorAccount.boundGroupId === group.id, '异常测试账户未绑定分组')
+    activateAccount(errorAccount.id)
     const staleActiveErrorGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, errorAccount.id, 'sys_admin', { ignoreAvailability: true })
     assert(staleActiveErrorGatewayAccount?.status === 'active', '异常前应能读取到完整网关账号对象')
     const markedError = repositories.markAccountException(errorAccount.id, 'oauth_token_refresh_failed', '模拟异常')
@@ -252,7 +256,7 @@ async function main(): Promise<void> {
         bodyText: ''
       }
     })
-    assert(successOnErrorResult.changed === false, '异常账户测试成功不应自动恢复，请使用恢复异常')
+    assert(successOnErrorResult.changed === false, '异常账户测试成功不应自动恢复，请使用异常恢复')
     assertAccountStatus(errorAccount.id, 'error', false, '成功回写不应自动恢复异常账户')
     assertAccountDispatchFlags(errorAccount.id, false, true, '成功回写不应清理异常账户调度标记')
     assertAccountErrorCode(errorAccount.id, 'oauth_token_refresh_failed', '成功回写不应清理异常类型')
@@ -271,6 +275,7 @@ async function main(): Promise<void> {
       groupId: group.id
     }, access)
     assert(errorRaceAccount.boundGroupId === group.id, '异常竞态测试账户未绑定分组')
+    activateAccount(errorRaceAccount.id)
     repositories.markAccountTemporaryUnavailable(errorRaceAccount.id, '模拟冷却状态')
     const staleCooldownGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, errorRaceAccount.id, 'sys_admin', { ignoreAvailability: true })
     assert(staleCooldownGatewayAccount?.status === 'temporary_unavailable', '异常竞态前应能读取到过期冷却网关账号对象')
@@ -330,9 +335,13 @@ async function main(): Promise<void> {
     try {
       repositories.updateAccount(errorAccount.id, { status: 'temporary_unavailable' }, access)
     } catch (error) {
-      statusChangeBlocked = error instanceof Error && error.message.includes('异常账户不能通过编辑切换状态')
+      statusChangeBlocked = error instanceof Error && error.message.includes('异常账户只能停用或使用异常恢复')
     }
-    assert(statusChangeBlocked, '编辑异常账户不应绕过恢复异常切换到其他状态')
+    assert(statusChangeBlocked, '编辑异常账户不应绕过异常恢复切换到其他软状态')
+
+    const recoveredError = repositories.clearAccountFailureState(errorAccount.id, access)
+    assert(recoveredError?.status === 'pending_test', '异常恢复只能进入待检查状态')
+    assert(recoveredError?.schedulable === false, '异常恢复后后台检查通过前不得参与调度')
 
     const createdError = repositories.createAccount({
       providerCode: 'gpt',
@@ -343,15 +352,33 @@ async function main(): Promise<void> {
         api_key: 'sk-created-error-account-guard',
         base_url: 'http://127.0.0.1:9/v1'
       },
-      status: 'error',
-      schedulable: true,
       groupId: group.id
     }, access)
-    assert(createdError.status === 'error' && createdError.schedulable === false, '创建异常账户时应强制不可调度')
+    activateAccount(createdError.id)
+    const markedCreatedError = repositories.markAccountException(createdError.id, 'manual_account_error', '模拟异常账户停用')
+    assert(markedCreatedError?.status === 'error' && markedCreatedError.schedulable === false, '异常账户应强制不可调度')
+    const disabledError = repositories.updateAccount(createdError.id, { status: 'disabled' }, access)
+    assert(disabledError?.status === 'disabled', '自有异常账户必须允许人工停用')
+
+    const pendingDisable = repositories.createAccount({
+      providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name: '待检查账户允许人工停用',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-pending-disable-account-guard',
+        base_url: 'http://127.0.0.1:9/v1'
+      },
+      groupId: group.id
+    }, access)
+    assert(pendingDisable.status === 'pending_test', '待检查停用回归账户初始状态应为 pending_test')
+    const disabledPending = repositories.updateAccount(pendingDisable.id, { status: 'disabled' }, access)
+    assert(disabledPending?.status === 'disabled', '自有待检查账户必须允许人工停用')
 
     console.log('停用/异常账户状态保护回归通过：测试、恢复、错误处理和熔断写回均不会改变硬状态')
   } finally {
     await closeServer(appServer)
+    await closeSqliteReadWorkerPool().catch(() => undefined)
     try {
       databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
@@ -367,6 +394,16 @@ function assertAccountStatus(accountId: string, status: string, schedulable: boo
   assert(account, `${message}：账户不存在`)
   assert(account.status === status, `${message}：实际状态 ${account.status}`)
   assert(account.schedulable === schedulable, `${message}：实际调度标记 ${account.schedulable}`)
+}
+
+function activateAccount(accountId: string): void {
+  const activated = repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
+  assert(activated, `测试账户 ${accountId} 激活失败`)
 }
 
 function assertAccountDispatchFlags(accountId: string, superPriorityEnabled: boolean, fallbackEnabled: boolean, message: string): void {

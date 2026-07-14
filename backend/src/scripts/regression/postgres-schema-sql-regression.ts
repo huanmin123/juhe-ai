@@ -6,6 +6,10 @@ import { buildPostgresSchemaSql, collectPostgresSchemaStatements } from '../../s
 const statements = collectPostgresSchemaStatements()
 const sql = buildPostgresSchemaSql()
 const goPublicAccountsMigration = readFileSync('../backend-go/db/migrations/000005_w1b_public_accounts.sql', 'utf8')
+const healthCheckEndpointModeOfflineMigration = readFileSync(
+  'src/scripts/maintenance/account-health-check-endpoint-mode-migration.ts',
+  'utf8'
+)
 const customProviderModelRepositorySource = readFileSync('src/storage/custom-provider-models.repository.ts', 'utf8')
 const dataRetentionSource = readFileSync('src/storage/data-retention.repository.ts', 'utf8')
 const usagePartitionSource = readFileSync('src/storage/postgres-usage-record-partitions.ts', 'utf8')
@@ -83,14 +87,20 @@ assert.match(sql, /codex_context_sessions[\s\S]+storage_offset_bytes bigint NOT 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策略路由表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategy_groups/, '应包含策略路由分组绑定表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_model text NOT NULL/, 'AI 账户新建 schema 应直接包含账户检查模型字段')
-assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_endpoint_family text NOT NULL[\s\S]+CHECK \(health_check_endpoint_family IN \('chat_completions', 'responses', 'messages', 'generate_content'\)\)/, 'AI 账户新建 schema 应直接包含受约束的健康检查协议族')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_endpoint_mode text NOT NULL[\s\S]+CHECK \(health_check_endpoint_mode IN \('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse'\)\)/, 'AI 账户新建 schema 应直接包含受约束的健康检查请求形态')
 assert.doesNotMatch(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+last_successful_test_model text/, 'AI 账户新建 schema 不应继续包含旧的最后成功测试模型字段')
 assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+health_check_model text NOT NULL/, 'Go 公开账户 baseline 应包含账户检查模型字段')
-assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+health_check_endpoint_family text NOT NULL[\s\S]+CHECK \(health_check_endpoint_family IN \('chat_completions', 'responses', 'messages', 'generate_content'\)\)/, 'Go 公开账户 baseline 应包含受约束的健康检查协议族')
+assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+health_check_endpoint_mode text NOT NULL[\s\S]+CHECK \(health_check_endpoint_mode IN \('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse'\)\)/, 'Go 公开账户 baseline 应包含受约束的健康检查请求形态')
+assert.match(healthCheckEndpointModeOfflineMigration, /LOCK TABLE juhe_business\.accounts IN ACCESS EXCLUSIVE MODE/, '历史字段切换必须通过停服离线事务锁定账户表')
+assert.match(healthCheckEndpointModeOfflineMigration, /RENAME COLUMN health_check_endpoint_family TO health_check_endpoint_mode/, '离线迁移必须直接替换旧列，不能双字段兼容')
+assert.match(healthCheckEndpointModeOfflineMigration, /WHEN provider_code = 'gpt' THEN 'responses_sse'/, '离线迁移必须把全部 GPT 账户切到 Responses Streaming')
+assert.match(healthCheckEndpointModeOfflineMigration, /WHEN health_check_endpoint_mode = 'chat_completions' THEN 'chat_json'[\s\S]+WHEN health_check_endpoint_mode = 'responses' THEN 'responses_json'[\s\S]+WHEN health_check_endpoint_mode = 'messages' THEN 'messages_json'[\s\S]+WHEN health_check_endpoint_mode = 'generate_content' THEN 'generate_content_json'/, '离线迁移必须把其他历史协议族映射为精确 JSON mode')
+assert.match(healthCheckEndpointModeOfflineMigration, /decryptJson\(encrypted\)/, '离线迁移必须通过应用层 codec 解密 GPT supported endpoint modes')
+assert.match(healthCheckEndpointModeOfflineMigration, /encryptJson\(normalized\.credentials\)/, '离线迁移必须通过应用层 codec 重新加密 GPT supported endpoint modes')
 for (const fixture of postgresAccountFixtureSources) {
   for (const match of fixture.source.matchAll(/INSERT INTO juhe_business\.accounts\s*\(([\s\S]*?)\)\s*(?:VALUES|SELECT)/gi)) {
     assert.match(match[1], /\bhealth_check_model\b/, `${fixture.path} 的账户 fixture 必须写入 health_check_model`)
-    assert.match(match[1], /\bhealth_check_endpoint_family\b/, `${fixture.path} 的账户 fixture 必须写入 health_check_endpoint_family`)
+    assert.match(match[1], /\bhealth_check_endpoint_mode\b/, `${fixture.path} 的账户 fixture 必须写入 health_check_endpoint_mode`)
   }
 }
 assert.doesNotMatch(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+last_successful_test_model text/, 'Go 公开账户 baseline 不应包含旧的最后成功测试模型字段')

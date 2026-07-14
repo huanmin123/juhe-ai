@@ -1181,6 +1181,7 @@ async function flushPostgresUsageRecordBusinessSideEffects(
       UPDATE juhe_business.accounts
       SET last_health_success_at = ?,
           health_check_failure_count = 0,
+          health_check_failure_started_at = NULL,
           last_health_check_error_code = NULL,
           last_health_check_error_message = NULL,
           updated_at = ?

@@ -98,7 +98,7 @@ export function findOpenAIAccountForGroup(
     .prepare(`
       SELECT accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-        accounts.account_expires_at, accounts.health_check_model, accounts.health_check_endpoint_family, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+        accounts.account_expires_at, accounts.health_check_model, accounts.health_check_endpoint_mode, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
         source_accounts.id AS resource_account_id,
         source_accounts.provider_code AS resource_provider_code,
         source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
@@ -186,7 +186,7 @@ export async function findOpenAIAccountForGroupAsync(
   const row = await client.one<OpenAIAccountRow>(`
     SELECT accounts.id, accounts.system_account_id, accounts.provider_code, accounts.provider_protocol_profile_id, accounts.protocol_code, accounts.protocol_version, accounts.name, accounts.type, accounts.status, accounts.schedulable, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled, accounts.client_compatibility,
       accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-      accounts.account_expires_at, accounts.health_check_model, accounts.health_check_endpoint_family, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
+      accounts.account_expires_at, accounts.health_check_model, accounts.health_check_endpoint_mode, accounts.authorization_instance_source_account_id, accounts.authorization_instance_authorization_id, accounts.authorization_instance_owner_system_account_id,
       source_accounts.id AS resource_account_id,
       source_accounts.provider_code AS resource_provider_code,
       source_accounts.provider_protocol_profile_id AS resource_provider_protocol_profile_id,
@@ -721,7 +721,7 @@ function openAIAccountSecretFromRow(
     supportedModels: [...(options.supportedModelsByAccountId?.get(resourceAccountId) ?? [])],
     modelMappings: [...(options.modelMappingsByAccountId?.get(resourceAccountId) ?? [])],
     healthCheckModel: row.health_check_model.trim(),
-    healthCheckEndpointFamily: row.health_check_endpoint_family,
+    healthCheckEndpointMode: row.health_check_endpoint_mode,
     qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
     qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
     qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,

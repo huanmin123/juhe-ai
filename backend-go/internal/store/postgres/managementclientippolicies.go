@@ -26,9 +26,17 @@ type managementClientIPPolicyQueries interface {
 		ctx context.Context,
 		arg postgresqueries.InsertManagementClientIPAllowlistPolicyParams,
 	) (postgresqueries.JuheStatsClientIpPolicy, error)
+	InsertManagementClientIPBlacklistPolicy(
+		ctx context.Context,
+		arg postgresqueries.InsertManagementClientIPBlacklistPolicyParams,
+	) (postgresqueries.JuheStatsClientIpPolicy, error)
 	DisableActiveManagementClientIPAllowlistPolicies(
 		ctx context.Context,
 		arg postgresqueries.DisableActiveManagementClientIPAllowlistPoliciesParams,
+	) (int64, error)
+	DisableActiveManagementClientIPBlacklistPolicies(
+		ctx context.Context,
+		arg postgresqueries.DisableActiveManagementClientIPBlacklistPoliciesParams,
 	) (int64, error)
 }
 
@@ -108,11 +116,25 @@ func (s managementClientIPPolicyTxStore) InsertManagementClientIPAllowlistPolicy
 	return insertManagementClientIPAllowlistPolicy(ctx, s.queries, input)
 }
 
+func (s managementClientIPPolicyTxStore) InsertManagementClientIPBlacklistPolicy(
+	ctx context.Context,
+	input port.ManagementClientIPBlacklistCreateInput,
+) (port.ManagementClientIPPolicySummary, error) {
+	return insertManagementClientIPBlacklistPolicy(ctx, s.queries, input)
+}
+
 func (s managementClientIPPolicyTxStore) DisableActiveManagementClientIPAllowlistPolicies(
 	ctx context.Context,
 	input port.ManagementClientIPPolicyDisableInput,
 ) (int64, error) {
 	return disableActiveManagementClientIPAllowlistPolicies(ctx, s.queries, input)
+}
+
+func (s managementClientIPPolicyTxStore) DisableActiveManagementClientIPBlacklistPolicies(
+	ctx context.Context,
+	input port.ManagementClientIPPolicyDisableInput,
+) (int64, error) {
+	return disableActiveManagementClientIPBlacklistPolicies(ctx, s.queries, input)
 }
 
 func lockManagementClientIPRegistry(
@@ -184,6 +206,33 @@ func insertManagementClientIPAllowlistPolicy(
 	return managementClientIPPolicySummary(row)
 }
 
+func insertManagementClientIPBlacklistPolicy(
+	ctx context.Context,
+	q managementClientIPPolicyQueries,
+	input port.ManagementClientIPBlacklistCreateInput,
+) (port.ManagementClientIPPolicySummary, error) {
+	now := managementClientIPPolicyTimeText(input.Now)
+	row, err := q.InsertManagementClientIPBlacklistPolicy(
+		ctx,
+		postgresqueries.InsertManagementClientIPBlacklistPolicyParams{
+			ID:                       input.ID,
+			IpHash:                   input.IPHash,
+			Reason:                   pgTextPtr(input.Reason),
+			ExpiresAt:                managementClientIPPolicyExpiryText(input.ExpiresAt),
+			CreatedBySystemAccountID: input.ActorSystemAccountID,
+			CreatedAt:                now,
+			UpdatedAt:                now,
+		},
+	)
+	if err != nil {
+		return port.ManagementClientIPPolicySummary{}, fmt.Errorf(
+			"insert management client IP blacklist policy: %w",
+			err,
+		)
+	}
+	return managementClientIPPolicySummary(row)
+}
+
 func disableActiveManagementClientIPAllowlistPolicies(
 	ctx context.Context,
 	q managementClientIPPolicyQueries,
@@ -203,6 +252,31 @@ func disableActiveManagementClientIPAllowlistPolicies(
 	if err != nil {
 		return 0, fmt.Errorf(
 			"disable active management client IP allowlist policies: %w",
+			err,
+		)
+	}
+	return count, nil
+}
+
+func disableActiveManagementClientIPBlacklistPolicies(
+	ctx context.Context,
+	q managementClientIPPolicyQueries,
+	input port.ManagementClientIPPolicyDisableInput,
+) (int64, error) {
+	now := managementClientIPPolicyTimeText(input.Now)
+	count, err := q.DisableActiveManagementClientIPBlacklistPolicies(
+		ctx,
+		postgresqueries.DisableActiveManagementClientIPBlacklistPoliciesParams{
+			DisabledAt:                now,
+			DisabledBySystemAccountID: input.ActorSystemAccountID,
+			DisabledReason:            input.Reason,
+			UpdatedAt:                 now,
+			IpHash:                    input.IPHash,
+		},
+	)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"disable active management client IP blacklist policies: %w",
 			err,
 		)
 	}
@@ -257,7 +331,17 @@ func managementClientIPPolicySummary(
 }
 
 func managementClientIPPolicyTimeText(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	return value.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
+}
+
+func managementClientIPPolicyExpiryText(value *time.Time) pgtype.Text {
+	if value == nil {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{
+		String: managementClientIPPolicyTimeText(*value),
+		Valid:  true,
+	}
 }
 
 func managementClientIPPolicyParseTime(value string) (time.Time, error) {

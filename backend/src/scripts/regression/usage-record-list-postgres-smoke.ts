@@ -470,8 +470,8 @@ async function seedSmokeAccount(): Promise<void> {
   await pool.query(`
     INSERT INTO juhe_business.accounts (
       id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-      name, type, status, credentials_encrypted, credential_mask, health_check_model, health_check_endpoint_family, created_at, updated_at
-    ) VALUES ($1, 'sys_admin', 'gpt', $2, $3, $4, $5, 'api_key', 'active', '{}', '', 'gpt-5.4-mini', 'responses', $6, $6)
+      name, type, status, credentials_encrypted, credential_mask, health_check_model, health_check_endpoint_mode, created_at, updated_at
+    ) VALUES ($1, 'sys_admin', 'gpt', $2, $3, $4, $5, 'api_key', 'active', '{}', '', 'gpt-5.4-mini', 'responses_sse', $6, $6)
     ON CONFLICT (id) DO UPDATE SET
       name = EXCLUDED.name,
       status = EXCLUDED.status,

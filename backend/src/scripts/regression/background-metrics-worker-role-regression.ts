@@ -43,10 +43,12 @@ assertRoleBlockContainsOnly('ingest-worker', [
   'runtime-log-index-maintenance'
 ])
 assertRoleBlockContainsOnly('stats-worker', [
+  'background-task-run-reconcile',
   'system-metrics-sample',
   'usage-stats-aggregation',
   'client-ip-stats-aggregation',
   'group-account-stats-refresh',
+  'model-trust-observation-aggregation',
   'usage-rank-snapshots-refresh',
   'system-metrics-trend-windows-refresh',
   'usage-overview-windows-refresh',
@@ -65,6 +67,7 @@ assert.match(backgroundJobsSource, /function refreshBackgroundJobSettingsSnapsho
 assert(backgroundJobsSource.includes("reason: 'stats_worker_startup_refresh'"), 'PG stats-worker 首次分组统计刷新必须写全量脏标记，修复已有统计缓存缺失或旧 0 值')
 assertRoleBlockContainsOnly('ops-worker', [
   'proxy-latency-refresh',
+  'account-balance-refresh',
   'account-health-check',
   'cooldown-account-retest',
   'account-api-key-cooldown-retest',

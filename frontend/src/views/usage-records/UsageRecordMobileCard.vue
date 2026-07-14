@@ -28,7 +28,7 @@
       </div>
       <div class="mobile-list-meta-item">
         <span>成本</span>
-        <strong>{{ formatCost(record.costUsd) }}</strong>
+        <strong>{{ formatCost(usageRecordDisplayCostUsd(record)) }}</strong>
       </div>
       <div class="mobile-list-meta-item">
         <span>Tokens</span>
@@ -86,6 +86,7 @@ import {
   trafficSourceColor,
   trafficSourceText,
   usageRecordLatencyParts,
+  usageRecordDisplayCostUsd,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,
   usageRecordSystemAccountText

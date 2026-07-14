@@ -45,7 +45,7 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
       testModelOptions.value = normalizeModelOptions(response.models)
       testEndpointModes.value = prioritizeAccountTestEndpointModes(
         normalizeEndpointModes(response.testEndpointModes),
-        account.healthCheckEndpointFamily
+        account.healthCheckEndpointMode
       )
       const defaultModel = response.defaultModel.trim()
       input.testForm.model = testModelOptions.value.some((option) => option.value === defaultModel)

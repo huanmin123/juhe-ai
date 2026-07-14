@@ -38,7 +38,7 @@ assert.match(routesSource, /findGroupSummaryAsync/, 'OAuth 管理端分组校验
 assert.match(routesSource, /listProvidersAsync/, 'OAuth 管理端供应商读取必须走 async repository')
 assert.match(routesSource, /resolveProxyUrlForProfileAsync/, 'OAuth 管理端代理解析必须走 async repository')
 assert.match(routesSource, /updateAccountAsync/, 'OAuth 管理端更新账户凭据必须走 async repository')
-assert.match(routesSource, /clearAccountFailureStateAsync/, 'OAuth 管理端恢复异常状态必须走 async repository')
+assert.match(routesSource, /clearAccountFailureStateAsync/, 'OAuth 管理端异常恢复必须走 async repository')
 assert.match(routesSource, /runLoggedOperationAsync/, 'OAuth 管理端操作日志包裹必须使用 async 版本')
 assert.match(routesSource, /recordOperationLogAsync/, 'OAuth 手动刷新 token 后的操作日志必须使用 async 版本')
 assert.match(routesSource, /createAccountAsync\(\{[\s\S]*?status:\s*'pending_test'/, 'OAuth 新建账户必须直接进入待后台检查状态')

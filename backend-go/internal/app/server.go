@@ -18,6 +18,8 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
 	"juhe-ai/backend-go/internal/modules/managementauthorizations"
+	"juhe-ai/backend-go/internal/modules/managementclientippolicies"
+	"juhe-ai/backend-go/internal/modules/managementclientipstats"
 	"juhe-ai/backend-go/internal/modules/managementgroups"
 	"juhe-ai/backend-go/internal/modules/managementoperationlogs"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
@@ -275,6 +277,12 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
 		ManagementGlobalSettingsUpdateHandler:             managementHandlers.GlobalSettingsUpdateHandler,
+		ManagementClientIPStatsHandler:                    managementHandlers.ClientIPStatsHandler,
+		ManagementClientIPStatsDetailHandler:              managementHandlers.ClientIPStatsDetailHandler,
+		ManagementClientIPAllowlistHandler:                managementHandlers.ClientIPAllowlistHandler,
+		ManagementClientIPUnallowlistHandler:              managementHandlers.ClientIPUnallowlistHandler,
+		ManagementClientIPBlacklistHandler:                managementHandlers.ClientIPBlacklistHandler,
+		ManagementClientIPUnblockHandler:                  managementHandlers.ClientIPUnblockHandler,
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
@@ -425,6 +433,12 @@ type managementAPIHandlers struct {
 	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
 	GlobalSettingsUpdateHandler             http.Handler
+	ClientIPStatsHandler                    http.Handler
+	ClientIPStatsDetailHandler              http.Handler
+	ClientIPAllowlistHandler                http.Handler
+	ClientIPUnallowlistHandler              http.Handler
+	ClientIPBlacklistHandler                http.Handler
+	ClientIPUnblockHandler                  http.Handler
 	OperationLogsHandler                    http.Handler
 	MyOperationLogsHandler                  http.Handler
 	StatsUsageWindowHandler                 http.Handler
@@ -440,6 +454,7 @@ type managementAPIInvalidator interface {
 	managementapikeys.APIKeyGatewayCacheInvalidator
 	managementsettings.GlobalSettingsCacheInvalidator
 	managementsettings.SystemSettingsInvalidator
+	managementclientippolicies.ClientIPPolicyCacheInvalidator
 }
 
 type gatewayCacheInvalidator interface {
@@ -546,6 +561,20 @@ func newManagementAPIHandler(
 		RateLimitSettingsCacheInvalidator: systemAPIRateLimitSettingsCache,
 		Logger:                            logger,
 	})
+	clientIPPolicyService := managementclientippolicies.NewServiceWithOptions(
+		managementclientippolicies.ServiceOptions{
+			Transactor:  store,
+			Invalidator: systemAccountInvalidator,
+			Logger:      logger,
+		},
+	)
+	clientIPStatsService := managementclientipstats.NewServiceWithOptions(
+		managementclientipstats.ServiceOptions{
+			ListReader:               store,
+			DetailReader:             store,
+			UsageStatsTimezoneReader: store,
+		},
+	)
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
 		Config:         cfg,
 		Logger:         logger,
@@ -667,6 +696,12 @@ func newManagementAPIHandler(
 		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),
 		GlobalSettingsUpdateHandler:             httpapi.NewManagementGlobalSettingsUpdateHandlerWithOperationLog(globalSettingsUpdateService, operationLogOptions),
+		ClientIPStatsHandler:                    httpapi.NewManagementClientIPStatsHandler(clientIPStatsService),
+		ClientIPStatsDetailHandler:              httpapi.NewManagementClientIPStatsDetailHandler(clientIPStatsService),
+		ClientIPAllowlistHandler:                httpapi.NewManagementClientIPAllowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
+		ClientIPUnallowlistHandler:              httpapi.NewManagementClientIPUnallowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
+		ClientIPBlacklistHandler:                httpapi.NewManagementClientIPBlacklistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
+		ClientIPUnblockHandler:                  httpapi.NewManagementClientIPUnblockHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),

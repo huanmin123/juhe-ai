@@ -57,7 +57,7 @@ try {
     tags: [tagName],
     supportedModels: ['gpt-4o-mini'],
     healthCheckModel: 'gpt-4o-mini',
-    healthCheckEndpointFamily: 'responses',
+    healthCheckEndpointMode: 'responses_sse',
     status: 'disabled'
   }, access)
   createdAccountIds.push(account.id)

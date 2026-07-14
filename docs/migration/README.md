@@ -25,7 +25,7 @@
 10. [W3 登录与系统账户迁移记录](W3-登录与系统账户迁移记录.md)：登录、当前用户、会话、登出、改密、验证码和系统账户写接口的分块迁移记录；当前覆盖 `GET /auth/captcha` 验证码发放 / 校验基础、`POST /auth/login` 登录 / session 创建小切片、`GET /auth/me` 读切片、`PATCH /auth/me` 当前用户资料更新切片、`POST /auth/change-password` 当前用户改密切片、`POST /auth/logout` 当前会话撤销切片、`GET /auth/sessions` 当前用户会话列表、`DELETE /auth/sessions/{id}` 当前用户单条会话撤销、`POST /system-accounts` 创建切片，以及 `PATCH /system-accounts/{id}` 完整 mixed partial update。全部仍为 Go opt-in 灰度路径，不代表 W3、Node `/auth` 或 Node `/system-accounts` 已接管。
 11. [W4 团队与统一授权迁移记录](W4-团队与统一授权迁移记录.md)：系统团队、成员、授权 grant、授权来源展开和最终用户授权的分块迁移记录；当前覆盖 `GET /system-teams` / `GET /my-teams` 团队列表 / 详情读接口、`POST /system-teams` 团队创建、`PATCH /system-teams/{id}` 团队更新、`POST /system-teams/{id}/members` 成员新增、`DELETE /system-teams/{id}/members/{memberId}` 成员移除、`GET /authorizations` 和 `GET /my-authorizations` 授权列表、`GET /authorizations/{id}` 和 `GET /my-authorizations/{id}` 授权详情、`POST /authorizations` 和 `POST /my-authorizations` 授权创建、`PATCH /authorizations/{id}` 和 `PATCH /my-authorizations/{id}` 授权更新、`PATCH /authorizations/{id}/expire` 和 `PATCH /my-authorizations/{id}/expire` 授权有效期更新、`DELETE /authorizations/{id}/return` 和 `DELETE /my-authorizations/{id}/return` 授权归还、`DELETE /authorizations/{id}` 和 `DELETE /my-authorizations/{id}` 授权回收 Go opt-in 灰度能力、授权来源 / grant / 额度窗口 / 统计脏标记 PostgreSQL schema 基线和授权缓存失效，不代表 W4、Node `/system-teams` 或 Node `/authorizations` 已接管。
 12. [W5 管理端全局品牌设置读取记录](W5-管理端全局品牌设置读取记录.md)：`GET/PATCH /__aisys__/api/settings/global` 的 Go opt-in 契约、`publicsettings` / store 复用、管理员权限、读写 session、两层限流、精确品牌 DTO、验证记录和删除门禁。
-13. [W5 管理端系统运行设置迁移记录](W5-管理端系统运行设置迁移记录.md)：已进入 Go opt-in 的 `GET/PATCH /__aisys__/api/settings`，固定 55 key，新增 `gptPriorityPriceMultiplier=2` 与 `gptFlexPriceMultiplier=0.5`（范围均为 `0.01..100`），并覆盖 `256 KiB` / `413`、parser 与鉴权 / 限流顺序、PostgreSQL 有界事务、`000024` 初始设置 seed、`000034` 增量 GPT 倍率 seed、双缓存失效、操作日志和删除门禁；真实依赖因 Docker 不可用输出 `SKIP` 时不计通过。
+13. [W5 管理端系统运行设置迁移记录](W5-管理端系统运行设置迁移记录.md)：已进入 Go opt-in 的 `GET/PATCH /__aisys__/api/settings`，固定 53 key，GPT Priority / Flex 使用模型目录精确档位价格且不提供通用倍率，并覆盖 `256 KiB` / `413`、parser 与鉴权 / 限流顺序、PostgreSQL 有界事务、`000024` 初始设置 seed、`000043` 删除历史倍率设置、双缓存失效、操作日志和删除门禁；真实依赖因 Docker 不可用输出 `SKIP` 时不计通过。
 14. [W5 管理端分组创建迁移记录](W5-管理端分组创建迁移记录.md)：已进入 Go opt-in 的 `POST /groups` 与 `POST /my-groups` 创建契约、作用域、完整高并发策略、唯一约束、写后副作用、验证记录和删除门禁。
 15. [W5 管理端分组列表迁移记录](W5-管理端分组列表迁移记录.md)：`GET /groups` 与 `GET /my-groups` 的权限、分页、progressive DTO、预聚合读取、共存期 Node 单 writer 和最终 Go stats worker 门禁。
 16. [W5 管理端分组详情迁移记录](W5-管理端分组详情迁移记录.md)：`GET /groups/{id}` 与 `GET /my-groups/{id}` 的 owner / authorized 详情 DTO、实时账户并发、授权来源、权限和真实依赖门禁。
@@ -39,9 +39,10 @@
 24. [W5 管理端 API Key 删除迁移记录](W5-管理端APIKey删除迁移记录.md)：`DELETE /api-keys/{id}` 与 `DELETE /my-api-keys/{id}` 的作用域、204 空响应、原子硬删除、cleanup target、提交后失效、操作日志、残余安全风险和真实依赖门禁。
 25. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前仅覆盖管理侧 / 个人侧 `usage-window` 固定 31 天窗口 Go opt-in。
 26. [W6 System API 限流对齐记录](W6-System-API限流对齐记录.md)：system API IP read / write、已认证用户 read / write、client IP allowlist bypass、缓存失效、验证和剩余 Node 差异。
-27. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
-28. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
-28. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
+27. [W6 管理端客户端 IP 统计与策略迁移记录](W6-管理端客户端IP策略迁移记录.md)：`GET /ip-stats` 只读列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条管理写接口的 Go opt-in 契约、Node writer 边界、预聚合读取、查询计划、前端证据和删除门禁。
+28. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
+29. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
+30. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
 
 ## 3. 目录职责
 
@@ -60,7 +61,7 @@
 | `W3-登录与系统账户迁移记录.md` | 登录、当前用户、会话、登出、改密、验证码和系统账户写接口迁移记录；当前固定 `GET /auth/captcha` 验证码发放 / 校验基础、`POST /auth/login` 登录 / session 创建小切片、`GET /auth/me` 只读切片、`PATCH /auth/me` 当前用户资料更新切片、`POST /auth/change-password` 当前用户改密切片、`POST /auth/logout` 当前会话撤销切片、`GET /auth/sessions` 当前用户会话列表、`DELETE /auth/sessions/{id}` 当前用户单条会话撤销、`POST /system-accounts` 创建切片、`PATCH /system-accounts/{id}` 完整 mixed partial update 和后续拆分门禁 |
 | `W4-团队与统一授权迁移记录.md` | 团队与统一授权迁移记录；当前固定团队列表 / 详情读接口、`POST /system-teams` 团队创建、`PATCH /system-teams/{id}` 团队更新、`POST /system-teams/{id}/members` 成员新增、`DELETE /system-teams/{id}/members/{memberId}` 成员移除、`GET /authorizations` 和 `GET /my-authorizations` 授权列表、`GET /authorizations/{id}` 和 `GET /my-authorizations/{id}` 授权详情、`GET /authorizations/usage/team-details` / `user-details` 与 `my-authorizations` 对应 usage overview、`POST /authorizations` 和 `POST /my-authorizations` 授权创建、`PATCH /authorizations/{id}` 和 `PATCH /my-authorizations/{id}` 授权更新、`PATCH /authorizations/{id}/expire` 和 `PATCH /my-authorizations/{id}/expire` 授权有效期更新、`DELETE /authorizations/{id}/return` 和 `DELETE /my-authorizations/{id}/return` 授权归还、`DELETE /authorizations/{id}` 和 `DELETE /my-authorizations/{id}` 授权回收 Go opt-in 灰度能力、授权来源 / grant / 额度窗口 / 统计脏标记 / usage window PostgreSQL schema 基线和授权缓存失效，后续继续拆 `:id/usage` 明细、usage window 刷新 worker、批量到期扫描 worker 和删除门禁 |
 | `W5-管理端全局品牌设置读取记录.md` | W5 `GET/PATCH /settings/global` 管理端品牌设置读写切片；固定管理 API 默认关闭、管理员权限、读写 session、两层 read/write 限流、精确品牌 DTO、PostgreSQL 事务、`settings:global` shared cache version 和 `settings.update_global` operation log；与系统运行设置纵切面分开登记，明确排除生产切流和 Node 删除 |
-| `W5-管理端系统运行设置迁移记录.md` | W5 `GET/PATCH /settings` 已进入 Go opt-in 的系统运行设置纵切面；固定 55 key，新增 `gptPriorityPriceMultiplier=2` 与 `gptFlexPriceMultiplier=0.5`（范围均为 `0.01..100`），并覆盖 `256 KiB` / `413`、IP limiter 后且 auth / touch / user limiter 前的 PATCH parser、GET read auth 不 touch、PATCH touch、PostgreSQL 固定有界读取 / `FOR UPDATE` / 稳定 key / 完整 snapshot、migration `000024` 的初始设置与统计时区 seed、migration `000034` 的增量 GPT 倍率 seed、PostgreSQL 在线禁改时区、`settings:system` / `settings_updated` 双失效和 `settings.update` operation log；真实依赖 smoke 因本机无 Docker 输出 `SKIP` 时不计通过，不代表生产接管 |
+| `W5-管理端系统运行设置迁移记录.md` | W5 `GET/PATCH /settings` 已进入 Go opt-in 的系统运行设置纵切面；固定 53 key，GPT Priority / Flex 只使用模型目录精确档位价格，并覆盖 `256 KiB` / `413`、IP limiter 后且 auth / touch / user limiter 前的 PATCH parser、GET read auth 不 touch、PATCH touch、PostgreSQL 固定有界读取 / `FOR UPDATE` / 稳定 key / 完整 snapshot、migration `000024` 的初始设置与统计时区 seed、migration `000043` 删除历史倍率设置、PostgreSQL 在线禁改时区、`settings:system` / `settings_updated` 双失效和 `settings.update` operation log；真实依赖 smoke 因本机无 Docker 输出 `SKIP` 时不计通过，不代表生产接管 |
 | `W5-管理端分组创建迁移记录.md` | W5 `POST /groups` 与 `POST /my-groups` 已进入 Go opt-in；固定 admin / self owner 作用域、strict body、`256 KiB`、个人 / 高并发默认值、完整 16 字段策略 JSON、数据库唯一约束、`201` 基础摘要、gateway runtime 失效与 `groups.create` operation log best-effort；integration 代码已补，真实依赖仍待健康 Docker 环境复跑；明确排除列表、详情、更新、删除和生产接管 |
 | `W5-管理端分组列表迁移记录.md` | W5 `GET /groups` 与 `GET /my-groups` 设计；固定 admin / self 作用域、1000 行 progressive pagination、owner / authorized union、稳定排序、轻量 DTO、预聚合 stats / usage 批量读取、共存期 Node 单 writer 和最终 Go stats worker 删除门禁 |
 | `W5-管理端分组详情迁移记录.md` | W5 `GET /groups/{id}` 与 `GET /my-groups/{id}` 已进入 Go opt-in；固定 admin / self 作用域、owner / authorized 可见性、owner `accountIds` 与 Redis v2 实时并发、authorized 账户 ID 隐藏与预聚合统计、完整授权来源、两层 read limiter、真实 PostgreSQL / Redis smoke 和删除门禁 |
@@ -74,6 +75,7 @@
 | `W5-管理端APIKey删除迁移记录.md` | W5 `DELETE /api-keys/{id}` 与 `DELETE /my-api-keys/{id}` 已进入 Go opt-in；固定 admin global / owner narrowing、self actor scope、写鉴权与限流、204 空 body / no-store、默认 Key 保护、PostgreSQL 原子硬删除与 cleanup-target upsert、validation 必需失效、`api_keys.delete` 操作日志、残余失效重试风险和真实依赖门禁 |
 | `W6-记录与统计读接口迁移记录.md` | W6 记录、日志和统计只读接口迁移记录；当前固定管理侧 / 个人侧 `usage-window` 权限、时区、31 天窗口、无明细扫描和删除门禁 |
 | `W6-System-API限流对齐记录.md` | system API 两层 read / write 限流记录；固定六项设置默认值、鉴权前 IP 层、鉴权后已注册业务路由用户层、Redis / 内存实现、client IP allowlist 两层 bypass、30 秒缓存 / shared version 失效、429 语义，以及已认证未知路径 / 错误 method 尚未对齐的删除门禁 |
+| `W6-管理端客户端IP策略迁移记录.md` | W6 `GET /ip-stats` 与四条 `POST /ip-stats/{ipHash}/{action}` Go opt-in 记录；列表固定只读 Node 预聚合结果、query/date/status/sort/progressive pagination、默认静态请求数排序和 Node writer / detail 边界，写接口固定 strict JSON、事务、shared cache version、operation log、前端证据和真实依赖门禁 |
 | `测试与验收策略.md` | 单模块、系统、网关、性能、安全和发布验收 |
 | `开发构建部署调整.md` | 开发环境、命令、包结构、部署脚本和平台差异 |
 | `迁移文档示例.md` | 后续新增单模块迁移记录时的参考格式 |

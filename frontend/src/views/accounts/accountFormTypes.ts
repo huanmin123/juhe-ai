@@ -2,7 +2,7 @@ import type { Dayjs } from 'dayjs'
 
 import type {
   AccountClientCompatibility,
-  AccountHealthCheckEndpointFamily,
+  AccountHealthCheckEndpointMode,
   AccountGptReasoningEffortOverride,
   AccountGptServiceTierOverride,
   AccountModelMapping,
@@ -37,7 +37,7 @@ export interface AccountFormModel {
   supportedEndpointModes: AccountSupportedEndpointMode[]
   supportedModels: string[]
   healthCheckModel: string
-  healthCheckEndpointFamily: AccountHealthCheckEndpointFamily
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   serviceTierOverride: AccountGptServiceTierOverride
   reasoningEffortOverride: AccountGptReasoningEffortOverride
   modelMappings: AccountModelMapping[]

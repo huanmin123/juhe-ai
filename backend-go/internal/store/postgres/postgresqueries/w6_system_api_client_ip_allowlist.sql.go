@@ -45,6 +45,40 @@ func (q *Queries) DisableActiveManagementClientIPAllowlistPolicies(ctx context.C
 	return result.RowsAffected(), nil
 }
 
+const disableActiveManagementClientIPBlacklistPolicies = `-- name: DisableActiveManagementClientIPBlacklistPolicies :execrows
+UPDATE juhe_stats.client_ip_policies
+SET status = 'disabled',
+  disabled_at = $1::text,
+  disabled_by_system_account_id = $2::text,
+  disabled_reason = $3::text,
+  updated_at = $4::text
+WHERE ip_hash = $5::text
+  AND policy_type = 'blacklist'
+  AND status = 'active'
+`
+
+type DisableActiveManagementClientIPBlacklistPoliciesParams struct {
+	DisabledAt                string
+	DisabledBySystemAccountID string
+	DisabledReason            string
+	UpdatedAt                 string
+	IpHash                    string
+}
+
+func (q *Queries) DisableActiveManagementClientIPBlacklistPolicies(ctx context.Context, arg DisableActiveManagementClientIPBlacklistPoliciesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, disableActiveManagementClientIPBlacklistPolicies,
+		arg.DisabledAt,
+		arg.DisabledBySystemAccountID,
+		arg.DisabledReason,
+		arg.UpdatedAt,
+		arg.IpHash,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const disableActiveManagementClientIPPolicies = `-- name: DisableActiveManagementClientIPPolicies :execrows
 UPDATE juhe_stats.client_ip_policies
 SET status = 'disabled',
@@ -162,6 +196,81 @@ func (q *Queries) InsertManagementClientIPAllowlistPolicy(ctx context.Context, a
 		arg.ID,
 		arg.IpHash,
 		arg.Reason,
+		arg.CreatedBySystemAccountID,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i JuheStatsClientIpPolicy
+	err := row.Scan(
+		&i.ID,
+		&i.IpHash,
+		&i.PolicyType,
+		&i.Status,
+		&i.Reason,
+		&i.ExpiresAt,
+		&i.CreatedBySystemAccountID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DisabledAt,
+		&i.DisabledBySystemAccountID,
+		&i.DisabledReason,
+	)
+	return i, err
+}
+
+const insertManagementClientIPBlacklistPolicy = `-- name: InsertManagementClientIPBlacklistPolicy :one
+INSERT INTO juhe_stats.client_ip_policies (
+  id,
+  ip_hash,
+  policy_type,
+  status,
+  reason,
+  expires_at,
+  created_by_system_account_id,
+  created_at,
+  updated_at
+) VALUES (
+  $1::text,
+  $2::text,
+  'blacklist',
+  'active',
+  $3::text,
+  $4::text,
+  $5::text,
+  $6::text,
+  $7::text
+)
+RETURNING
+  id,
+  ip_hash,
+  policy_type,
+  status,
+  reason,
+  expires_at,
+  created_by_system_account_id,
+  created_at,
+  updated_at,
+  disabled_at,
+  disabled_by_system_account_id,
+  disabled_reason
+`
+
+type InsertManagementClientIPBlacklistPolicyParams struct {
+	ID                       string
+	IpHash                   string
+	Reason                   pgtype.Text
+	ExpiresAt                pgtype.Text
+	CreatedBySystemAccountID string
+	CreatedAt                string
+	UpdatedAt                string
+}
+
+func (q *Queries) InsertManagementClientIPBlacklistPolicy(ctx context.Context, arg InsertManagementClientIPBlacklistPolicyParams) (JuheStatsClientIpPolicy, error) {
+	row := q.db.QueryRow(ctx, insertManagementClientIPBlacklistPolicy,
+		arg.ID,
+		arg.IpHash,
+		arg.Reason,
+		arg.ExpiresAt,
 		arg.CreatedBySystemAccountID,
 		arg.CreatedAt,
 		arg.UpdatedAt,

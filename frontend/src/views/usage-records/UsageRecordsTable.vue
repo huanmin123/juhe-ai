@@ -78,8 +78,11 @@
       <template v-else-if="column.key === 'stream'">
         <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
       </template>
-      <template v-else-if="column.key === 'statusCode'">
-        <a-tag :color="statusCodeColor(record)">{{ statusCodeText(record) }}</a-tag>
+      <template v-else-if="column.key === 'status'">
+        <span class="status-cell">
+          <UsageRecordResultCell :record="record" />
+          <a-tag :color="statusCodeColor(record)">{{ statusCodeText(record) }}</a-tag>
+        </span>
       </template>
       <template v-else-if="column.key === 'success'">
         <UsageRecordResultCell :record="record" />
@@ -194,6 +197,12 @@ function handleTableChange(...args: unknown[]): void {
   gap: 4px;
   max-width: 260px;
   vertical-align: bottom;
+}
+
+.status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .latency-cell {

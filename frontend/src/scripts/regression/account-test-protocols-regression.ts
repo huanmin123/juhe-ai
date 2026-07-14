@@ -136,7 +136,7 @@ assertFalse(isGatewaySupportedTestSelection([anthropicAccount, geminiAccount]), 
 assertFalse(isGatewaySupportedTestSelection([geminiAccount, geminiOpenAIChatAccount]), 'Gemini 原生与 Gemini OpenAI Chat 混合选择不应被视为同一协议档案')
 
 assertIncludes(accountTestModelsSource, 'normalizeEndpointModes(response.testEndpointModes)', '保存账户测试应保留后端返回的完整请求形态')
-assertIncludes(accountTestModelsSource, 'account.healthCheckEndpointFamily', '保存账户测试应按健康检查协议族将对应 JSON mode 排到首位')
+assertIncludes(accountTestModelsSource, 'account.healthCheckEndpointMode', '保存账户测试应把账户保存的精确健康检查请求形态排到首位')
 assertNotIncludes(updateSelectableTestModelSource, 'testEndpointModes', '切换模型不能改写账户显式启用的请求形态')
 assertNotIncludes(updateSelectableTestModelSource, 'supportedApiProtocols', '切换模型不能按模型协议标签隐藏 Responses')
 

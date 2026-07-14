@@ -43,14 +43,13 @@ import {
   usageRecordCostMetadataRows,
   usageRecordCostPriceRows
 } from './usageRecordCostDetails'
-import { formatCost } from './usageRecordFormatters'
+import { formatCost, usageRecordDisplayCostUsd } from './usageRecordFormatters'
 
 const props = defineProps<{
   record: UsageRecordSummary
 }>()
 
-const costBreakdown = computed(() => props.record.costBreakdown)
-const displayCostUsd = computed(() => props.record.costUsd ?? costBreakdown.value?.accountChargeUsd)
+const displayCostUsd = computed(() => usageRecordDisplayCostUsd(props.record))
 const detailTitle = computed(() => usageRecordCostDetailTitle(props.record))
 const metadataRows = computed(() => usageRecordCostMetadataRows(props.record))
 const costAmountRows = computed(() => usageRecordCostAmountRows(props.record))

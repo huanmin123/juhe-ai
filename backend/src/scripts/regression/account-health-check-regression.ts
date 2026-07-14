@@ -44,7 +44,7 @@ try {
     'export async function recordAccountHealthCheckFailureAsync',
     'export function recordAccountHealthSuccessSignals'
   )
-  assert.match(repositorySource, /SELECT config_revision, health_check_failure_count, last_health_success_at[\s\S]+FOR UPDATE/, 'PostgreSQL 健康失败计数必须锁定账户行后递增')
+  assert.match(repositorySource, /SELECT status, config_revision, health_check_failure_count, health_check_failure_started_at, last_health_success_at[\s\S]+FOR UPDATE/, 'PostgreSQL 健康失败计数和首次失败窗口必须锁定账户行后更新')
   assert.match(repositorySource, /expectedConfigRevision[\s\S]+config_revision = \?/, '健康检查结果写入必须绑定账户配置版本')
   assert.doesNotMatch(postgresSuccessSource, /\(\? IS NULL OR/, 'PostgreSQL 健康成功写回不能使用无法推断参数类型的 NULL 守卫')
   assert.doesNotMatch(postgresFailureSource, /\(\? IS NULL OR/, 'PostgreSQL 健康失败写回不能使用无法推断参数类型的 NULL 守卫')
@@ -57,6 +57,9 @@ try {
   assert.match(serviceSource, /queuedConfigRevision[\s\S]+currentConfigRevision/, '健康检查队列执行前必须丢弃旧配置版本任务')
   assert.match(serviceSource, /healthCheckGuard/, '达到阈值后的保护状态写入必须携带健康失败快照')
   assert.match(serviceSource, /errorLogFields\(event\.error/, '健康检查队列耗尽日志必须保留真实异常')
+  assert.match(repositorySource, /pendingHealthCheckRetryIntervalMs = 60 \* 60_000/, '待检查账户失败后必须固定每 1 小时复检')
+  assert.match(repositorySource, /pendingHealthCheckFailureTimeoutMs = 24 \* 60 \* 60_000/, '待检查账户必须从首次失败起 24 小时收敛为异常')
+  assert.match(repositorySource, /account_activation_check_timeout/, '待检查超时必须写入明确异常码')
 
   const database = databaseModule.getBusinessDatabase()
   const accountColumns = database.prepare('PRAGMA table_info(accounts)').all() as unknown as Array<{ name: string }>
@@ -65,6 +68,7 @@ try {
     'next_health_check_at',
     'last_health_success_at',
     'health_check_failure_count',
+    'health_check_failure_started_at',
     'last_health_check_status_code',
     'last_health_check_error_code',
     'last_health_check_error_message'

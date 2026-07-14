@@ -25,6 +25,7 @@ func TestFindPublicAccountProviderProfileQuerySelectsEffectiveHealthCheckModel(t
 	query := sql[start:end]
 	for _, want := range []string{
 		"providers.default_supported_models_json",
+		"profiles.capabilities_json",
 		"JOIN juhe_business.providers AS providers",
 		"ON providers.code = profiles.provider_code",
 		"LEFT JOIN juhe_business.system_accounts AS target_system_account",
@@ -180,6 +181,7 @@ func TestPublicAccountProviderProfileFromRowDecodesDefaultSupportedModels(t *tes
 		ProtocolCode:               "openai",
 		ProtocolVersion:            "v1",
 		AccountTypesJson:           `["oauth","api_key"]`,
+		CapabilitiesJson:           `["responses","stream_responses","chat","models","messages","generate_content","passthrough","bridge"]`,
 	})
 	if err != nil {
 		t.Fatalf("publicAccountProviderProfileFromRow() error = %v", err)
@@ -194,6 +196,15 @@ func TestPublicAccountProviderProfileFromRowDecodesDefaultSupportedModels(t *tes
 	if profile.DefaultHealthCheckModel != "gpt-5.6-sol" {
 		t.Fatalf("default health check model = %q, want gpt-5.6-sol", profile.DefaultHealthCheckModel)
 	}
+	wantModes := []string{
+		"responses_json", "responses_sse",
+		"chat_json", "chat_sse",
+		"messages_json", "messages_sse",
+		"generate_content_json", "generate_content_sse",
+	}
+	if !slices.Equal(profile.EnabledEndpointModes, wantModes) {
+		t.Fatalf("enabled endpoint modes = %#v, want %#v", profile.EnabledEndpointModes, wantModes)
+	}
 }
 
 func TestPublicAccountProviderProfileFromRowRejectsMalformedDefaultSupportedModels(t *testing.T) {
@@ -202,6 +213,16 @@ func TestPublicAccountProviderProfileFromRowRejectsMalformedDefaultSupportedMode
 	})
 	if err == nil || !strings.Contains(err.Error(), "provider default_supported_models_json") {
 		t.Fatalf("publicAccountProviderProfileFromRow() error = %v, want default model decode error", err)
+	}
+}
+
+func TestPublicAccountProviderProfileFromRowRejectsMalformedCapabilities(t *testing.T) {
+	_, err := publicAccountProviderProfileFromRow(postgresqueries.FindPublicAccountProviderProfileRow{
+		DefaultSupportedModelsJson: `[]`,
+		CapabilitiesJson:           `{"chat":true}`,
+	})
+	if err == nil || !strings.Contains(err.Error(), "provider profile capabilities_json") {
+		t.Fatalf("publicAccountProviderProfileFromRow() error = %v, want capabilities decode error", err)
 	}
 }
 

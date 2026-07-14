@@ -281,8 +281,8 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 	if response.Account == nil || response.Account.Status != StatusPendingTest || response.Account.Schedulable {
 		t.Fatalf("response account = %+v, want pending_test and unschedulable", response.Account)
 	}
-	if response.Account.HealthCheckEndpointFamily != "responses" {
-		t.Fatalf("response health check endpoint family = %q, want responses", response.Account.HealthCheckEndpointFamily)
+	if response.Account.HealthCheckEndpointMode != "responses_sse" {
+		t.Fatalf("response health check endpoint mode = %q, want responses_sse", response.Account.HealthCheckEndpointMode)
 	}
 	if got := response.Account.SupportedModels; len(got) != 2 || got[0] != "gpt-5.5" || got[1] != "gpt-5.4-mini" {
 		t.Fatalf("supported models = %#v", got)
@@ -294,8 +294,8 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 	if created.HealthCheckModel != defaultGPTHealthCheckModel {
 		t.Fatalf("stored health check model = %q, want %q", created.HealthCheckModel, defaultGPTHealthCheckModel)
 	}
-	if created.HealthCheckEndpointFamily != "responses" {
-		t.Fatalf("stored health check endpoint family = %q, want responses", created.HealthCheckEndpointFamily)
+	if created.HealthCheckEndpointMode != "responses_sse" {
+		t.Fatalf("stored health check endpoint mode = %q, want responses_sse", created.HealthCheckEndpointMode)
 	}
 	if created.CredentialsEncrypted == "" ||
 		strings.Contains(created.CredentialsEncrypted, "sk-public-account-secret") ||
@@ -308,25 +308,156 @@ func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *t
 		t.Fatalf("marshal response: %v", err)
 	}
 	lower := strings.ToLower(string(data))
-	for _, forbidden := range []string{"sk-public-account-secret", "api.openai.com", "credentials", "baseurl", "apikey", "healthcheckmodel"} {
+	for _, forbidden := range []string{"sk-public-account-secret", "api.openai.com", "credentials", "baseurl", "apikey", "healthcheckmodel", "healthcheckendpointmode"} {
 		if strings.Contains(lower, strings.ToLower(forbidden)) {
 			t.Fatalf("response leaked %q in %s", forbidden, string(data))
 		}
 	}
 }
 
-func TestServiceAddRejectsUnsupportedHealthCheckEndpointFamily(t *testing.T) {
+func TestServiceAddRejectsUnsupportedHealthCheckEndpointMode(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	service := newPublicAccountServiceForTest(store, nil)
 	input := validPublicAccountAddInput("非法健康检查协议", "gpt-5.4-mini")
-	input.HealthCheckEndpointFamily = "messages"
+	input.HealthCheckEndpointMode = "messages_json"
 
 	_, err := service.Add(context.Background(), input)
-	if !errors.Is(err, ErrInvalidHealthCheckEndpointFamily) {
-		t.Fatalf("add error = %v, want ErrInvalidHealthCheckEndpointFamily", err)
+	if !errors.Is(err, ErrInvalidHealthCheckEndpointMode) {
+		t.Fatalf("add error = %v, want ErrInvalidHealthCheckEndpointMode", err)
 	}
 	if len(store.accounts) != 0 {
-		t.Fatalf("invalid health check endpoint family wrote accounts: %#v", store.accounts)
+		t.Fatalf("invalid health check endpoint mode wrote accounts: %#v", store.accounts)
+	}
+}
+
+func TestServiceAddFallsBackToFirstEnabledJSONMode(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	profileKey := "gpt|profile_gpt_openai_v1"
+	profile := store.profiles[profileKey]
+	profile.EnabledEndpointModes = []string{"generate_content_json", "chat_json"}
+	store.profiles[profileKey] = profile
+	service := newPublicAccountServiceForTest(store, nil)
+
+	response, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"首个 JSON 能力回退账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	if response.Account == nil || response.Account.HealthCheckEndpointMode != "generate_content_json" {
+		t.Fatalf("response account = %+v, want generate_content_json mode", response.Account)
+	}
+}
+
+func TestServiceAddRejectsProfileWithoutHealthCheckMode(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	profileKey := "gpt|profile_gpt_openai_v1"
+	profile := store.profiles[profileKey]
+	profile.EnabledEndpointModes = nil
+	store.profiles[profileKey] = profile
+	service := newPublicAccountServiceForTest(store, nil)
+
+	_, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"无 JSON 能力账号",
+		"gpt-5.4-mini",
+	))
+	if !errors.Is(err, ErrInvalidHealthCheckEndpointMode) || !strings.Contains(err.Error(), "至少需要启用一个") {
+		t.Fatalf("add error = %v, want no health check mode error", err)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("create calls = %d, want 0", store.createCalls)
+	}
+}
+
+func TestResolveHealthCheckEndpointModeAllowsNonGPTStreamingAndRejectsToolModes(t *testing.T) {
+	value := "messages_sse"
+	mode, err := resolveHealthCheckEndpointMode(
+		&value,
+		"anthropic",
+		"profile_anthropic_anthropic_v1",
+		[]string{"messages_json", "messages_sse", "message_token_counting"},
+	)
+	if err != nil || mode != "messages_sse" {
+		t.Fatalf("resolve Anthropic streaming mode = %q, %v; want messages_sse", mode, err)
+	}
+
+	toolMode := "message_token_counting"
+	if _, err := resolveHealthCheckEndpointMode(
+		&toolMode,
+		"anthropic",
+		"profile_anthropic_anthropic_v1",
+		[]string{"message_token_counting"},
+	); !errors.Is(err, ErrInvalidHealthCheckEndpointMode) {
+		t.Fatalf("resolve tool mode error = %v, want ErrInvalidHealthCheckEndpointMode", err)
+	}
+}
+
+func TestServiceHybridAnthropicMessagesProfileCanAddAndUpdate(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	store.profiles["hybrid|profile_hybrid_anthropic_messages_v1"] = port.PublicAccountProviderProfile{
+		ID:                      "profile_hybrid_anthropic_messages_v1",
+		ProviderCode:            hybridProviderCode,
+		Name:                    "Hybrid / Anthropic Messages",
+		Enabled:                 true,
+		ProviderEnabled:         true,
+		ProtocolCode:            "anthropic",
+		ProtocolVersion:         "v1",
+		AccountTypesJSON:        `["api_key"]`,
+		EnabledEndpointModes:    []string{"messages_json"},
+		DefaultSupportedModels:  []string{"hybrid-direct-model"},
+		DefaultHealthCheckModel: "hybrid-direct-model",
+	}
+	service := newPublicAccountServiceForTest(store, nil)
+	input := validPublicAccountAddInput("混合 Anthropic 账号", "hybrid-direct-model")
+	input.ProviderCode = hybridProviderCode
+	input.ProviderProtocolProfileID = "profile_hybrid_anthropic_messages_v1"
+
+	created, err := service.Add(context.Background(), input)
+	if err != nil {
+		t.Fatalf("add hybrid Anthropic account: %v", err)
+	}
+	if created.Account == nil || created.Account.HealthCheckEndpointMode != "messages_json" {
+		t.Fatalf("created account = %+v, want messages_json mode", created.Account)
+	}
+
+	name := "混合 Anthropic 更新账号"
+	updated, err := service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		Name:      &name,
+	})
+	if err != nil {
+		t.Fatalf("update hybrid Anthropic account: %v", err)
+	}
+	if updated.Account == nil || updated.Account.Name != name || updated.Account.HealthCheckEndpointMode != "messages_json" {
+		t.Fatalf("updated account = %+v, want updated messages account", updated.Account)
+	}
+}
+
+func TestServiceUpdateRejectsCurrentModeWhenItIsNoLongerEnabled(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"当前请求形态无效账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	account := store.accounts[created.Account.ID]
+	account.HealthCheckEndpointMode = "messages_json"
+	store.accounts[account.ID] = account
+	name := "不应写入的新名称"
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID: account.ID,
+		Name:      &name,
+	})
+	if !errors.Is(err, ErrInvalidHealthCheckEndpointMode) || !strings.Contains(err.Error(), "未启用") {
+		t.Fatalf("update error = %v, want disabled current mode error", err)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("update calls = %d, want 0", store.updateCalls)
 	}
 }
 
@@ -341,27 +472,27 @@ func TestPublicAccountSummaryDoesNotExposeHealthCheckModel(t *testing.T) {
 	}
 }
 
-func TestPublicAccountSummaryExposesHealthCheckEndpointFamily(t *testing.T) {
+func TestPublicAccountSummaryKeepsHealthCheckEndpointModeInternal(t *testing.T) {
 	account := port.PublicAccountSummary{
-		ID:                        "acct_public_summary_family",
-		Name:                      "公开协议族账号",
+		ID:                        "acct_public_summary_mode",
+		Name:                      "公开请求形态账号",
 		ProviderCode:              "gpt",
 		ProviderProtocolProfileID: "profile_gpt_openai_v1",
 		Type:                      AccountTypeAPIKey,
 		Status:                    port.PublicAccountStatusActive,
-		HealthCheckEndpointFamily: "responses",
+		HealthCheckEndpointMode:   "responses_sse",
 	}
 	for _, listShape := range []bool{false, true} {
 		summary := publicAccountSummary(account, listShape)
-		if summary.HealthCheckEndpointFamily != "responses" {
-			t.Fatalf("summary listShape=%t health check endpoint family = %q, want responses", listShape, summary.HealthCheckEndpointFamily)
+		if summary.HealthCheckEndpointMode != "responses_sse" {
+			t.Fatalf("summary listShape=%t health check endpoint mode = %q, want responses_sse", listShape, summary.HealthCheckEndpointMode)
 		}
 		data, err := json.Marshal(summary)
 		if err != nil {
 			t.Fatalf("marshal summary listShape=%t: %v", listShape, err)
 		}
-		if !strings.Contains(string(data), `"healthCheckEndpointFamily":"responses"`) {
-			t.Fatalf("summary listShape=%t JSON missing healthCheckEndpointFamily: %s", listShape, data)
+		if strings.Contains(string(data), "healthCheckEndpointMode") {
+			t.Fatalf("summary listShape=%t JSON exposed healthCheckEndpointMode: %s", listShape, data)
 		}
 	}
 }
@@ -752,6 +883,70 @@ func TestServiceUpdateRejectsPendingTestToActive(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateValidatesCurrentProfileBeforeFilters(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"停用协议档案账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	profileKey := "gpt|profile_gpt_openai_v1"
+	profile := store.profiles[profileKey]
+	profile.Enabled = false
+	store.profiles[profileKey] = profile
+	store.profileLookupSystemAccountIDs = nil
+	wrongProvider := "openai"
+	name := "不应写入的新名称"
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID:    created.Account.ID,
+		ProviderCode: &wrongProvider,
+		Name:         &name,
+	})
+	if !errors.Is(err, ErrProviderProfileDisabled) {
+		t.Fatalf("update error = %v, want ErrProviderProfileDisabled", err)
+	}
+	if len(store.profileLookupSystemAccountIDs) != 1 {
+		t.Fatalf("profile lookups = %d, want current profile lookup only", len(store.profileLookupSystemAccountIDs))
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("update calls = %d, want 0", store.updateCalls)
+	}
+}
+
+func TestServiceUpdateReusesValidatedCurrentProfileForMatchingFilter(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"匹配协议档案账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	store.profileLookupSystemAccountIDs = nil
+	profileID := "profile_gpt_openai_v1"
+	name := "匹配协议档案更新账号"
+
+	updated, err := service.Update(context.Background(), UpdateInput{
+		AccountID:                 created.Account.ID,
+		ProviderProtocolProfileID: &profileID,
+		Name:                      &name,
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if updated.Account == nil || updated.Account.Name != name {
+		t.Fatalf("updated account = %+v", updated.Account)
+	}
+	if len(store.profileLookupSystemAccountIDs) != 1 {
+		t.Fatalf("profile lookups = %d, want 1", len(store.profileLookupSystemAccountIDs))
+	}
+}
+
 func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -856,8 +1051,8 @@ func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 			if response.Account == nil || response.Account.Status != StatusPendingTest || response.Account.Schedulable {
 				t.Fatalf("response account = %+v, want pending_test and unschedulable", response.Account)
 			}
-			if response.Account.HealthCheckEndpointFamily != "responses" {
-				t.Fatalf("updated response health check endpoint family = %q, want responses", response.Account.HealthCheckEndpointFamily)
+			if response.Account.HealthCheckEndpointMode != "responses_sse" {
+				t.Fatalf("updated response health check endpoint mode = %q, want responses_sse", response.Account.HealthCheckEndpointMode)
 			}
 			if !store.lastUpdateInput.ResetFailureState {
 				t.Fatal("credential submission must reset failure state")
@@ -1693,6 +1888,7 @@ func newPublicAccountStoreFake() *publicAccountStoreFake {
 				ProtocolCode:            "openai",
 				ProtocolVersion:         "v1",
 				AccountTypesJSON:        `["oauth","api_key"]`,
+				EnabledEndpointModes:    []string{"responses_json", "responses_sse", "chat_json", "chat_sse"},
 				DefaultSupportedModels:  append([]string(nil), defaultGPTSupportedModels...),
 				DefaultHealthCheckModel: defaultGPTHealthCheckModel,
 			},
@@ -1705,6 +1901,7 @@ func newPublicAccountStoreFake() *publicAccountStoreFake {
 				ProtocolCode:            "openai",
 				ProtocolVersion:         "v1",
 				AccountTypesJSON:        `["api_key"]`,
+				EnabledEndpointModes:    []string{"chat_json", "chat_sse", "responses_json", "responses_sse", "messages_json", "messages_sse", "generate_content_json", "generate_content_sse"},
 				DefaultSupportedModels:  []string{"hybrid-direct-model"},
 				DefaultHealthCheckModel: "hybrid-direct-model",
 			},
@@ -1827,7 +2024,7 @@ func (s *publicAccountStoreFake) CreatePublicAccount(_ context.Context, input po
 		ClientCompatibility:       input.ClientCompatibility,
 		SupportedModels:           input.SupportedModels,
 		HealthCheckModel:          input.HealthCheckModel,
-		HealthCheckEndpointFamily: input.HealthCheckEndpointFamily,
+		HealthCheckEndpointMode:   input.HealthCheckEndpointMode,
 		BoundGroupID:              &group.ID,
 		BoundGroupName:            &group.Name,
 		Schedulable:               input.Schedulable,
@@ -1858,7 +2055,7 @@ func (s *publicAccountStoreFake) UpdatePublicAccount(_ context.Context, input po
 		account.SupportedModels = input.SupportedModels
 	}
 	account.HealthCheckModel = input.HealthCheckModel
-	account.HealthCheckEndpointFamily = input.HealthCheckEndpointFamily
+	account.HealthCheckEndpointMode = input.HealthCheckEndpointMode
 	account.Schedulable = input.Schedulable
 	account.AvailabilityScheduleJSON = input.AvailabilityScheduleJSON
 	account.ConcurrencyLimit = input.ConcurrencyLimit

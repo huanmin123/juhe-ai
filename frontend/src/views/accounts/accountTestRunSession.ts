@@ -62,7 +62,7 @@ interface StoredAccountSummary {
   fallbackEnabled: boolean
   clientCompatibility: AccountSummary['clientCompatibility']
   healthCheckModel: string
-  healthCheckEndpointFamily: AccountSummary['healthCheckEndpointFamily']
+  healthCheckEndpointMode: AccountSummary['healthCheckEndpointMode']
   modelMappings?: AccountModelMapping[]
   proxyProfileId?: string
   proxyProfileUnavailable?: boolean
@@ -225,7 +225,7 @@ function storeAccountSummary(account: AccountSummary): StoredAccountSummary {
     fallbackEnabled: account.fallbackEnabled,
     clientCompatibility: account.clientCompatibility,
     healthCheckModel: account.healthCheckModel,
-    healthCheckEndpointFamily: account.healthCheckEndpointFamily,
+    healthCheckEndpointMode: account.healthCheckEndpointMode,
     modelMappings: account.modelMappings,
     proxyProfileId: account.proxyProfileId,
     proxyProfileUnavailable: account.proxyProfileUnavailable,
@@ -241,7 +241,7 @@ function restoreAccountSummary(value: StoredAccountSummary): AccountSummary | un
   if (!value || typeof value !== 'object') return undefined
   if (typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.providerCode !== 'string') return undefined
   if (value.type !== 'api_key' && value.type !== 'oauth') return undefined
-  if (!['chat_completions', 'responses', 'messages', 'generate_content'].includes(value.healthCheckEndpointFamily)) return undefined
+  if (!['chat_completions', 'responses', 'messages', 'generate_content'].includes(value.healthCheckEndpointMode)) return undefined
   return {
     id: value.id,
     systemAccountId: optionalString(value.systemAccountId),
@@ -260,7 +260,7 @@ function restoreAccountSummary(value: StoredAccountSummary): AccountSummary | un
     fallbackEnabled: value.fallbackEnabled === true,
     clientCompatibility: value.clientCompatibility,
     healthCheckModel: typeof value.healthCheckModel === 'string' ? value.healthCheckModel : '',
-    healthCheckEndpointFamily: value.healthCheckEndpointFamily,
+    healthCheckEndpointMode: value.healthCheckEndpointMode,
     modelMappings: Array.isArray(value.modelMappings) ? value.modelMappings : undefined,
     proxyProfileId: optionalString(value.proxyProfileId),
     proxyProfileUnavailable: value.proxyProfileUnavailable === true,

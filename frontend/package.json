@@ -24,7 +24,7 @@
     "test:account-balance-query": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-balance-query-regression.ts",
     "test:table-monitor-display": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/table-monitor-display-regression.ts",
     "test:account-batch-edit": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-batch-edit-regression.ts",
-    "test:account-health-check-endpoint-family": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-health-check-endpoint-family-regression.ts",
+    "test:account-health-check-endpoint-mode": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-health-check-endpoint-mode-regression.ts",
     "test:route-load-recovery": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/route-load-recovery-regression.ts",
     "test:account-model-mapping-model-options": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-model-mapping-model-options-regression.ts",
     "test:account-test-protocols": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-test-protocols-regression.ts",
@@ -49,7 +49,10 @@
     "test:w3-auth-system-account-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/w3-auth-system-account-smoke-regression.ts",
     "test:w4-team-authorization-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/w4-team-authorization-smoke-regression.ts",
     "test:plan0081-real-go-management-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/plan0081-real-go-management-smoke-regression.ts",
-    "smoke:plan0081-real-go-management": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-management-smoke.ts"
+    "smoke:plan0081-real-go-management": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-management-smoke.ts",
+    "test:plan0081-real-go-client-ip-allowlist-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/plan0081-real-go-client-ip-allowlist-smoke-regression.ts",
+    "smoke:plan0081-real-go-client-ip-allowlist": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-client-ip-allowlist-smoke.ts",
+    "smoke:plan0081-real-go-client-ip-allowlist-cleanup-only": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-client-ip-allowlist-smoke.ts --cleanup-only"
   },
   "dependencies": {
     "@ant-design/icons-vue": "^7.0.1",

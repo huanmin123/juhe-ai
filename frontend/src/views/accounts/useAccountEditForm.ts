@@ -27,7 +27,7 @@ import {
   loadAccountResponseInspectionRules
 } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
-import { accountHealthCheckEndpointFamilyOptions, defaultAccountHealthCheckEndpointFamily } from './accountHealthCheckEndpointFamily'
+import { accountHealthCheckEndpointModeOptions, defaultAccountHealthCheckEndpointMode } from './accountHealthCheckEndpointMode'
 import {
   accountEditAccountTypeTitle,
   accountEditModalTitle,
@@ -340,9 +340,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       () => form.providerProtocolProfileId
     ],
     () => {
-      const available = accountHealthCheckEndpointFamilyOptions(form.supportedEndpointModes)
-      if (available.some((option) => option.value === form.healthCheckEndpointFamily)) return
-      form.healthCheckEndpointFamily = defaultAccountHealthCheckEndpointFamily(
+      const available = accountHealthCheckEndpointModeOptions(form.supportedEndpointModes)
+      if (available.some((option) => option.value === form.healthCheckEndpointMode)) return
+      form.healthCheckEndpointMode = defaultAccountHealthCheckEndpointMode(
         form.providerCode,
         form.providerProtocolProfileId,
         form.supportedEndpointModes

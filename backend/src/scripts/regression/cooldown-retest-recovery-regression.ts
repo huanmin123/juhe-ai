@@ -97,8 +97,7 @@ try {
     statusCode: 401,
     errorMessage: '仍然不可用',
     maxRecoveryHours: 1,
-    maxPauseMinutes: 1440,
-    longTermIntervalHours: 24
+    maxPauseMinutes: 1440
   })
   assert.equal(longRecovering.action, 'long_term_cooldown', '超过观察窗口后应进入长期不可用低频恢复')
   assert.equal(longRecovering.recoveryStage, 'long_term', '超过观察窗口后应标记长期恢复阶段')
@@ -106,15 +105,40 @@ try {
   assert.equal(longRecovering.account?.schedulable, true, '长期不可用账号应保留后台可恢复调度标记')
   assert.ok(longRecovering.account?.cooldownUntil, '长期不可用账号应写入下一次低频复测时间')
   assert.equal(longRecovering.account?.lastErrorCode, 'cooldown_retest_long_term_unavailable', '超过观察窗口后应写入长期不可用原因码')
-  assert.match(longRecovering.errorMessage, /进入长期不可用低频复测/, '失败摘要应说明仍会低频自动复测')
+  assert.equal(longRecovering.longTermIntervalSeconds, 60 * 60, '长期不可用必须固定每 1 小时复测，不受旧设置值放大')
+  assert.match(longRecovering.errorMessage, /进入长期不可用每 1 小时复测/, '失败摘要应说明每 1 小时自动复测')
   assert(!repositories.listAccountsDueForCooldownRetest(20).some((item) => item.id === account.id), '长期不可用账号在下次复测时间前不应进入候选')
   databaseModule.getBusinessDatabase()
     .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
     .run(new Date(Date.now() - 1000).toISOString(), account.id)
   assert(repositories.listAccountsDueForCooldownRetest(20).some((item) => item.id === account.id), '长期不可用账号到达下次复测时间后仍应进入后台复测候选')
   databaseModule.getBusinessDatabase()
-    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
-    .run(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), account.id)
+    .prepare('UPDATE accounts SET cooldown_retest_observation_started_at = ?, cooldown_until = ? WHERE id = ?')
+    .run(
+      new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString(),
+      new Date(Date.now() - 1000).toISOString(),
+      account.id
+    )
+  const terminalFailure = repositories.recordCooldownAccountRetestFailure(account.id, {
+    statusCode: 401,
+    errorCode: 'invalid_api_key',
+    errorMessage: '持续不可用超过七天',
+    maxRecoveryHours: 1,
+    maxPauseMinutes: 1440
+  })
+  assert.equal(terminalFailure.action, 'error', '观察起点满 7 天仍失败必须终止自动冷却恢复')
+  assert.equal(terminalFailure.recoveryStage, 'terminal', '满 7 天失败必须进入终止阶段')
+  assert.equal(terminalFailure.transitionedToError, true, '满 7 天失败必须原子转为异常')
+  assert.equal(terminalFailure.account?.status, 'error', '满 7 天失败后账户状态必须为 error')
+  assert.equal(terminalFailure.account?.schedulable, false, '满 7 天失败后账户必须不可调度')
+  assert.equal(terminalFailure.account?.cooldownUntil, undefined, '转为异常后必须清空冷却时间')
+  assert.equal(terminalFailure.errorCode, 'cooldown_retest_observation_timeout', '满 7 天失败必须写入明确错误码')
+  assert.match(terminalFailure.errorMessage, /已持续 7 天仍未恢复/, '满 7 天失败必须写入明确错误原因')
+  assert(!repositories.listAccountsDueForCooldownRetest(20).some((item) => item.id === account.id), '异常账户不得继续进入冷却复测候选')
+  const terminalRecovered = repositories.clearAccountFailureState(account.id, access)
+  assert.equal(terminalRecovered?.status, 'pending_test', '长期不可用终态的异常恢复只能进入待检查')
+  assert.equal(terminalRecovered?.schedulable, false, '长期不可用终态恢复后后台检查通过前不得调度')
+  assert.equal(terminalRecovered?.cooldownRetestObservationStartedAt, undefined, '异常恢复必须清空长期观察起点')
 
   const freshAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -233,8 +257,7 @@ try {
   assert(dueIneligibleFailure, '后台探针配置失败账号应可读取')
   assert(cooldownRetestService.enqueueCooldownAccountRetest(dueIneligibleFailure, {
     maxPauseMinutes: 10,
-    maxRecoveryHours: 1,
-    longTermIntervalHours: 24
+    maxRecoveryHours: 1
   }), '后台探针配置失败账号应能入队')
   const recordedIneligibleFailure = await waitForAccountRetestFailure(ineligibleFailureAccount.id)
   assert.equal(recordedIneligibleFailure.cooldownRetestFailureCount, 1, '后台探针只要未完整成功就必须累计失败次数')
@@ -262,8 +285,7 @@ try {
   assert(dueProbeAccount?.cooldownUntil, '后台探针恢复前应有冷却时间')
   assert(cooldownRetestService.enqueueCooldownAccountRetest(dueProbeAccount, {
     maxPauseMinutes: 10,
-    maxRecoveryHours: 1,
-    longTermIntervalHours: 24
+    maxRecoveryHours: 1
   }), '后台探针恢复账号应能入队')
   const restoredByProbe = await waitForAccountStatus(probeAccount.id, 'active')
   assert(restoredByProbe, '后台探针测试通过后应能读取恢复后的账号')
@@ -352,8 +374,7 @@ try {
   const authorizedProbeHitBefore = mockOpenAIResponseHitCount
   assert(cooldownRetestService.enqueueCooldownAccountRetest(authorizedCandidate, {
     maxPauseMinutes: 10,
-    maxRecoveryHours: 1,
-    longTermIntervalHours: 24
+    maxRecoveryHours: 1
   }), '授权实例冷却复测候选应能入队')
   const restoredAuthorized = await waitForAccountStatus(authorizedInstance.id, 'active', granteeAccess)
   assert.equal(restoredAuthorized.status, 'active', '后台探针测试通过后授权实例应恢复为正常')

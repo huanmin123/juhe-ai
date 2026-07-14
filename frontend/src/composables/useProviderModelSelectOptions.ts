@@ -21,6 +21,8 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
   const loading = ref(false)
   const loadFailed = ref(false)
   let loadedScopeKey: string | undefined
+  let latestRequestId = 0
+  let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
 
   const selectOptions = computed<ProviderModelSelectOption[]>(() => {
@@ -58,38 +60,63 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
   async function loadModelOptions(force = false): Promise<void> {
     const scopeKey = modelOptionsScopeKey()
     if (!force && loadedScopeKey === scopeKey) return
-    if (!force && loadingPromise) return loadingPromise
+    if (!force && loadingKey === scopeKey && loadingPromise) return loadingPromise
+
+    const requestId = latestRequestId + 1
+    latestRequestId = requestId
+    if (loadedScopeKey !== scopeKey) {
+      providerModelOptions.value = []
+    }
+    loadedScopeKey = undefined
     loading.value = true
     loadFailed.value = false
-    loadingPromise = (async () => {
+    const scopeParams = options.scopeParams?.value
+      ? { ...options.scopeParams.value }
+      : undefined
+    const promise = (async () => {
       try {
-        providerModelOptions.value = await api.providers.modelOptions({
-          ...options.scopeParams?.value,
+        const nextOptions = await api.providers.modelOptions({
+          ...scopeParams,
           protocol: options.protocol
         })
-        loadedScopeKey = scopeKey
+        if (isCurrentRequest(requestId, scopeKey)) {
+          providerModelOptions.value = nextOptions
+          loadedScopeKey = scopeKey
+        }
       } catch (error) {
+        if (!isCurrentRequest(requestId, scopeKey)) return
         console.error(error)
         loadFailed.value = true
         options.onLoadError?.(error)
       } finally {
-        loading.value = false
-        loadingPromise = undefined
+        if (requestId === latestRequestId) {
+          loading.value = false
+          loadingKey = undefined
+          loadingPromise = undefined
+        }
       }
     })()
-    return loadingPromise
+    loadingKey = scopeKey
+    loadingPromise = promise
+    return promise
   }
 
   function resetModelOptions(): void {
+    latestRequestId += 1
     providerModelOptions.value = []
     loading.value = false
     loadFailed.value = false
     loadedScopeKey = undefined
+    loadingKey = undefined
     loadingPromise = undefined
   }
 
   function modelOptionsScopeKey(): string {
     return `${options.scopeParams?.value?.systemAccountId ?? ''}:${options.protocol ?? 'all'}`
+  }
+
+  function isCurrentRequest(requestId: number, scopeKey: string): boolean {
+    return requestId === latestRequestId && modelOptionsScopeKey() === scopeKey
   }
 
   return {

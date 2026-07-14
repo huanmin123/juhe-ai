@@ -11,6 +11,7 @@ import type {
   AccountTestTaskStatus,
   SystemAccountRole
 } from '../domain/types.js'
+import { ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES } from '../domain/account-health-check-endpoint-mode.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
@@ -51,7 +52,7 @@ export interface AccountTestDraftSnapshot {
   clientCompatibility: AccountClientCompatibility
   supportedModels?: string[]
   healthCheckModel: string
-  healthCheckEndpointFamily: import('../domain/types.js').AccountHealthCheckEndpointFamily
+  healthCheckEndpointMode: import('../domain/types.js').AccountHealthCheckEndpointMode
   modelMappings?: AccountSummary['modelMappings']
   proxyProfileId?: string
   accountExpiresAt?: string
@@ -1632,8 +1633,8 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
   const credentials = record.credentials
   const clientCompatibility = accountClientCompatibility(normalizedOptionalText(record.clientCompatibility) ?? null)
   const healthCheckModel = normalizedOptionalText(record.healthCheckModel)
-  const healthCheckEndpointFamily = accountHealthCheckEndpointFamilyValue(record.healthCheckEndpointFamily)
-  if (!id || !ownerSystemAccountId || !groupId || !providerCode || !name || !type || !clientCompatibility || !healthCheckModel || !healthCheckEndpointFamily) {
+  const healthCheckEndpointMode = accountHealthCheckEndpointModeValue(record.healthCheckEndpointMode)
+  if (!id || !ownerSystemAccountId || !groupId || !providerCode || !name || !type || !clientCompatibility || !healthCheckModel || !healthCheckEndpointMode) {
     return undefined
   }
   if (typeof credentials !== 'object' || credentials === null || Array.isArray(credentials)) {
@@ -1659,7 +1660,7 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
     clientCompatibility,
     supportedModels: stringListValue(record.supportedModels),
     healthCheckModel,
-    healthCheckEndpointFamily,
+    healthCheckEndpointMode,
     modelMappings: accountModelMappingsValue(record.modelMappings),
     proxyProfileId: normalizedOptionalText(record.proxyProfileId),
     accountExpiresAt: normalizedOptionalText(record.accountExpiresAt),
@@ -1669,9 +1670,9 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
   }
 }
 
-function accountHealthCheckEndpointFamilyValue(value: unknown): AccountSummary['healthCheckEndpointFamily'] | undefined {
-  if (value === 'chat_completions' || value === 'responses' || value === 'messages' || value === 'generate_content') {
-    return value
+function accountHealthCheckEndpointModeValue(value: unknown): AccountSummary['healthCheckEndpointMode'] | undefined {
+  if (ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES.includes(value as AccountSummary['healthCheckEndpointMode'])) {
+    return value as AccountSummary['healthCheckEndpointMode']
   }
   return undefined
 }

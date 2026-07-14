@@ -1139,8 +1139,6 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
   if (!override) return base
   return {
     gatewayTextRawBodyLimitMegabytes: override.gatewayTextRawBodyLimitMegabytes ?? base.gatewayTextRawBodyLimitMegabytes,
-    gptPriorityPriceMultiplier: override.gptPriorityPriceMultiplier ?? base.gptPriorityPriceMultiplier,
-    gptFlexPriceMultiplier: override.gptFlexPriceMultiplier ?? base.gptFlexPriceMultiplier,
     defaultTemporaryUnschedulableMinutes: override.defaultTemporaryUnschedulableMinutes ?? base.defaultTemporaryUnschedulableMinutes,
     temporaryUnschedulableRetryIntervalSeconds: override.temporaryUnschedulableRetryIntervalSeconds ?? base.temporaryUnschedulableRetryIntervalSeconds,
     temporaryUnschedulableRetryAttempts: override.temporaryUnschedulableRetryAttempts ?? base.temporaryUnschedulableRetryAttempts,

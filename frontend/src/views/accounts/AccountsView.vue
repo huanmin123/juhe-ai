@@ -287,7 +287,7 @@ import {
 import {
   accountMenuItems,
   canBatchEditAccount,
-  canBatchManageAccount,
+  canToggleAccountStatus,
   canCloneAccount,
   canDeleteAccount,
   canEditAccount,
@@ -520,7 +520,7 @@ const {
 })
 const batchEditableAccounts = computed(() => selectedAccounts.value.filter(canBatchEditAccount))
 const batchDisableTargets = computed(() => selectedAccounts.value
-  .filter(canBatchManageAccount)
+  .filter(canToggleAccountStatus)
   .filter((account) => account.status !== 'disabled'))
 const batchEditDisabled = computed(() => (
   selectedAccounts.value.length < 2

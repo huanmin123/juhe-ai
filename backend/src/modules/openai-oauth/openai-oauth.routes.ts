@@ -56,7 +56,7 @@ const createFromCodeSchema = z.object({
   fallbackEnabled: z.boolean().optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
   healthCheckModel: z.string().trim().min(1).optional(),
-  healthCheckEndpointFamily: z.enum(['chat_completions', 'responses', 'messages', 'generate_content']).optional(),
+  healthCheckEndpointMode: z.enum(['chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse']).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   tags: z.array(z.string().trim()).max(24).optional(),
   proxyProfileId: z.string().optional(),
@@ -76,7 +76,7 @@ const createFromRefreshTokenSchema = z.object({
   fallbackEnabled: z.boolean().optional(),
   supportedModels: z.array(z.string().trim().min(1)).min(1).max(500).optional(),
   healthCheckModel: z.string().trim().min(1).optional(),
-  healthCheckEndpointFamily: z.enum(['chat_completions', 'responses', 'messages', 'generate_content']).optional(),
+  healthCheckEndpointMode: z.enum(['chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse']).optional(),
   modelMappings: z.array(accountModelMappingSchema).max(500).optional(),
   tags: z.array(z.string().trim()).max(24).optional(),
   proxyProfileId: z.string().optional(),
@@ -174,7 +174,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
         fallbackEnabled: parsed.data.fallbackEnabled,
         supportedModels: parsed.data.supportedModels,
         healthCheckModel: parsed.data.healthCheckModel,
-        healthCheckEndpointFamily: parsed.data.healthCheckEndpointFamily,
+        healthCheckEndpointMode: parsed.data.healthCheckEndpointMode,
         modelMappings: parsed.data.modelMappings,
         tags: parsed.data.tags,
         proxyProfileId: parsed.data.proxyProfileId,
@@ -266,7 +266,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
         fallbackEnabled: parsed.data.fallbackEnabled,
         supportedModels: parsed.data.supportedModels,
         healthCheckModel: parsed.data.healthCheckModel,
-        healthCheckEndpointFamily: parsed.data.healthCheckEndpointFamily,
+        healthCheckEndpointMode: parsed.data.healthCheckEndpointMode,
         modelMappings: parsed.data.modelMappings,
         tags: parsed.data.tags,
         proxyProfileId: parsed.data.proxyProfileId,
@@ -309,7 +309,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     return
   }
   if (isBlockedOpenAIOAuthErrorAccount(account)) {
-    res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
+    res.status(400).json(badRequest('异常账户请先执行异常恢复后再操作'))
     return
   }
 
@@ -357,7 +357,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
     return
   }
   if (isBlockedOpenAIOAuthErrorAccount(account)) {
-    res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
+    res.status(400).json(badRequest('异常账户请先执行异常恢复后再操作'))
     return
   }
 
@@ -400,7 +400,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
     return
   }
   if (isBlockedOpenAIOAuthErrorAccount(account)) {
-    res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
+    res.status(400).json(badRequest('异常账户请先执行异常恢复后再操作'))
     return
   }
 

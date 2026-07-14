@@ -36,7 +36,7 @@ type JuheBusinessAccount struct {
 	LastErrorCode                             pgtype.Text
 	LastErrorMessage                          pgtype.Text
 	HealthCheckModel                          string
-	HealthCheckEndpointFamily                 string
+	HealthCheckEndpointMode                   string
 	DeletedAt                                 pgtype.Timestamptz
 	DeletedBy                                 pgtype.Text
 	CreatedAt                                 pgtype.Timestamptz
@@ -736,6 +736,43 @@ type JuheStatsAuthorizationUserUsageSummaryDaily struct {
 	UpdatedAt                    pgtype.Timestamptz
 }
 
+type JuheStatsClientIpAccountRangeWindowDirtyIp struct {
+	IpHash    string
+	UpdatedAt string
+}
+
+type JuheStatsClientIpAccountUsageRangeWindow struct {
+	IpHash              string
+	AccountID           string
+	StartDate           string
+	EndDate             string
+	RequestCount        int64
+	SuccessCount        int64
+	ErrorCount          int64
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheReadCostUsd    float64
+	CacheWriteTokens    int64
+	CacheWrite1hTokens  int64
+	CacheWriteCostUsd   float64
+	ThinkingTokens      int64
+	InputImageTokens    int64
+	OutputImageTokens   int64
+	TotalCostUsd        float64
+	DurationMsSum       int64
+	DurationMsCount     int64
+	DurationMsMax       int64
+	AverageDurationMs   pgtype.Float8
+	FirstTokenMsSum     int64
+	FirstTokenMsCount   int64
+	AverageFirstTokenMs pgtype.Float8
+	ActiveDays          int32
+	LastUsedAt          pgtype.Text
+	LastErrorAt         pgtype.Text
+	UpdatedAt           string
+}
+
 type JuheStatsClientIpPolicy struct {
 	ID                        string
 	IpHash                    string
@@ -751,6 +788,11 @@ type JuheStatsClientIpPolicy struct {
 	DisabledReason            pgtype.Text
 }
 
+type JuheStatsClientIpRangeWindowDirtyIp struct {
+	IpHash    string
+	UpdatedAt string
+}
+
 type JuheStatsClientIpRegistry struct {
 	IpHash         string
 	BucketNo       int32
@@ -761,6 +803,37 @@ type JuheStatsClientIpRegistry struct {
 	LastSeenAt     string
 	CreatedAt      string
 	UpdatedAt      string
+}
+
+type JuheStatsClientIpUsageRangeWindow struct {
+	IpHash              string
+	StartDate           string
+	EndDate             string
+	RequestCount        int64
+	SuccessCount        int64
+	ErrorCount          int64
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheReadCostUsd    float64
+	CacheWriteTokens    int64
+	CacheWrite1hTokens  int64
+	CacheWriteCostUsd   float64
+	ThinkingTokens      int64
+	InputImageTokens    int64
+	OutputImageTokens   int64
+	TotalCostUsd        float64
+	DurationMsSum       int64
+	DurationMsCount     int64
+	DurationMsMax       int64
+	AverageDurationMs   pgtype.Float8
+	FirstTokenMsSum     int64
+	FirstTokenMsCount   int64
+	AverageFirstTokenMs pgtype.Float8
+	ActiveDays          int32
+	LastUsedAt          pgtype.Text
+	LastErrorAt         pgtype.Text
+	UpdatedAt           string
 }
 
 type JuheStatsGroupAccountStat struct {
