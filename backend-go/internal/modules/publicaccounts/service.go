@@ -517,9 +517,6 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		if input.Type != nil && strings.TrimSpace(*input.Type) != AccountTypeAPIKey {
 			return fmt.Errorf("%w: 公开账号接口仅支持 API Key 账户", ErrUnsupportedAccountType)
 		}
-		if err := s.assertAccountFilters(ctx, store, current, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
-			return err
-		}
 		profile, err := s.requireProviderProfile(
 			ctx,
 			store,
@@ -528,6 +525,9 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			current.ProviderProtocolProfileID,
 		)
 		if err != nil {
+			return err
+		}
+		if err := s.assertAccountFilters(ctx, store, current, &profile, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
 			return err
 		}
 
@@ -686,7 +686,7 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (AccountRespons
 		if err := assertTargetActive(target); err != nil {
 			return err
 		}
-		if err := s.assertAccountFilters(ctx, store, current, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
+		if err := s.assertAccountFilters(ctx, store, current, nil, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
 			return err
 		}
 		deleted, err := store.DeletePublicAccount(ctx, current.ID, current.SystemAccountID, target.ID, s.now().UTC())
@@ -837,6 +837,7 @@ func (s *Service) assertAccountFilters(
 	ctx context.Context,
 	store port.PublicAccountStore,
 	account port.PublicAccountSummary,
+	currentProfile *port.PublicAccountProviderProfile,
 	providerCode *string,
 	profileID *string,
 	groupName *string,
@@ -845,16 +846,19 @@ func (s *Service) assertAccountFilters(
 		return ErrAccountNotFound
 	}
 	if profileID != nil {
-		provider := account.ProviderCode
-		if providerCode != nil && strings.TrimSpace(*providerCode) != "" {
-			provider = strings.TrimSpace(*providerCode)
-		}
-		profile, err := s.requireProviderProfile(ctx, store, account.SystemAccountID, provider, *profileID)
-		if err != nil {
-			return err
-		}
-		if profile.ID != account.ProviderProtocolProfileID {
-			return ErrAccountNotFound
+		requestedProfileID := strings.TrimSpace(*profileID)
+		if currentProfile == nil || requestedProfileID != currentProfile.ID {
+			provider := account.ProviderCode
+			if providerCode != nil && strings.TrimSpace(*providerCode) != "" {
+				provider = strings.TrimSpace(*providerCode)
+			}
+			profile, err := s.requireProviderProfile(ctx, store, account.SystemAccountID, provider, requestedProfileID)
+			if err != nil {
+				return err
+			}
+			if profile.ID != account.ProviderProtocolProfileID {
+				return ErrAccountNotFound
+			}
 		}
 	}
 	if groupName != nil {

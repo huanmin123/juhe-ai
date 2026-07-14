@@ -860,6 +860,70 @@ func TestServiceUpdateRejectsPendingTestToActive(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateValidatesCurrentProfileBeforeFilters(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"停用协议档案账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	profileKey := "gpt|profile_gpt_openai_v1"
+	profile := store.profiles[profileKey]
+	profile.Enabled = false
+	store.profiles[profileKey] = profile
+	store.profileLookupSystemAccountIDs = nil
+	wrongProvider := "openai"
+	name := "不应写入的新名称"
+
+	_, err = service.Update(context.Background(), UpdateInput{
+		AccountID:    created.Account.ID,
+		ProviderCode: &wrongProvider,
+		Name:         &name,
+	})
+	if !errors.Is(err, ErrProviderProfileDisabled) {
+		t.Fatalf("update error = %v, want ErrProviderProfileDisabled", err)
+	}
+	if len(store.profileLookupSystemAccountIDs) != 1 {
+		t.Fatalf("profile lookups = %d, want current profile lookup only", len(store.profileLookupSystemAccountIDs))
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("update calls = %d, want 0", store.updateCalls)
+	}
+}
+
+func TestServiceUpdateReusesValidatedCurrentProfileForMatchingFilter(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := newPublicAccountServiceForTest(store, nil)
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"匹配协议档案账号",
+		"gpt-5.4-mini",
+	))
+	if err != nil {
+		t.Fatalf("add public account: %v", err)
+	}
+	store.profileLookupSystemAccountIDs = nil
+	profileID := "profile_gpt_openai_v1"
+	name := "匹配协议档案更新账号"
+
+	updated, err := service.Update(context.Background(), UpdateInput{
+		AccountID:                 created.Account.ID,
+		ProviderProtocolProfileID: &profileID,
+		Name:                      &name,
+	})
+	if err != nil {
+		t.Fatalf("update public account: %v", err)
+	}
+	if updated.Account == nil || updated.Account.Name != name {
+		t.Fatalf("updated account = %+v", updated.Account)
+	}
+	if len(store.profileLookupSystemAccountIDs) != 1 {
+		t.Fatalf("profile lookups = %d, want 1", len(store.profileLookupSystemAccountIDs))
+	}
+}
+
 func TestServiceUpdateCredentialPartialPreservesExtensionFields(t *testing.T) {
 	tests := []struct {
 		name            string
