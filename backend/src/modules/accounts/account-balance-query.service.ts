@@ -4,8 +4,9 @@ import { runtimeConfig } from '../../config/runtime.js'
 import type { AccountBalanceBuiltinAdapter, AccountBalanceQueryConfig, AccountBalanceSnapshot } from './account-balance.types.js'
 import type { AccountBalanceRefreshCandidate } from '../../storage/account-balance.repository.js'
 import {
+  accountBalanceSnapshotMatchesConfiguration,
   commitAccountBalanceRefreshAsync,
-  loadAccountBalanceSnapshotsByAccountIdsAsync,
+  loadAccountBalanceSnapshotRecordsByAccountIdsAsync,
   replaceAccountBalanceSnapshotIfCurrentAsync
 } from '../../storage/account-balance.repository.js'
 import {
@@ -75,7 +76,7 @@ export async function refreshAccountBalanceCandidate(
   }
   const acquired = await acquireBalanceLease(leaseInput)
   if (!acquired) {
-    return (await loadAccountBalanceSnapshotsByAccountIdsAsync([candidate.id])).get(candidate.id)
+    return await loadCurrentGenerationBalanceSnapshot(candidate)
       ?? { status: 'refreshing', lastAttemptAt: startedAt }
   }
 
@@ -128,7 +129,7 @@ export async function refreshAccountBalanceCandidate(
       return unsupportedSnapshot
     }
 
-    const previousSnapshot = (await loadAccountBalanceSnapshotsByAccountIdsAsync([candidate.id])).get(candidate.id)
+    const previousSnapshot = await loadCurrentGenerationBalanceSnapshot(candidate)
     const snapshot = nextTransientFailureSnapshot(previousSnapshot, errorMessage, completedAt)
     const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
     const nextConfig = candidate.config
@@ -312,6 +313,17 @@ async function persistBalanceRefreshIfCurrent(
   }
   const result = await requestStatsWriter({ type: 'replace_account_balance_snapshot_if_current', input })
   return result.written
+}
+
+async function loadCurrentGenerationBalanceSnapshot(
+  candidate: Pick<AccountBalanceRefreshCandidate, 'id' | 'nextRefreshAt'>
+): Promise<AccountBalanceSnapshot | undefined> {
+  const record = (await loadAccountBalanceSnapshotRecordsByAccountIdsAsync([candidate.id])).get(candidate.id)
+  return accountBalanceSnapshotMatchesConfiguration({
+    nextRefreshAt: candidate.nextRefreshAt ?? undefined
+  }, record)
+    ? record.snapshot
+    : undefined
 }
 
 async function commitBalanceRefresh(input: Parameters<typeof commitAccountBalanceRefreshAsync>[0]): Promise<boolean> {
