@@ -96,6 +96,25 @@ const externalIntegrationSourcePrimaryTokenFieldSet = new Set([
   'isBuiltIn'
 ])
 const externalIntegrationSourceTokenSecretFieldSet = new Set(['token'])
+const apiKeyListItemFieldSet = new Set([
+  'id',
+  'systemAccountId',
+  'systemAccountName',
+  'name',
+  'description',
+  'keyPrefix',
+  'keySuffix',
+  'status',
+  'isDefault',
+  'routeStrategyId',
+  'routeStrategyName',
+  'routeStrategyMode',
+  'routeStrategyStatus',
+  'expiresAt',
+  'quotaLimits',
+  'availabilitySchedule',
+  'usage'
+])
 const externalIntegrationSourceApiDocContracts = externalIntegrationSourceScopeOptions.map((option) =>
   externalIntegrationSourceApiDocContract(option.value)
 )
@@ -139,6 +158,7 @@ export interface RealGoManagementSmokeConfig {
 
 export interface RealGoManagementSmokeSummary {
   accountTestOptionsChecked: boolean
+  adminApiKeyCount: number
   groupCount: number
   selectedGroupId: string
   providerCount: number
@@ -150,6 +170,7 @@ export interface RealGoManagementSmokeSummary {
   clientIpDetailChecked: boolean
   routeStrategyCount: number
   routeStrategyDetailChecked: boolean
+  selfApiKeyCount: number
   externalIntegrationSourceTokenSecretChecked: boolean
 }
 
@@ -473,6 +494,8 @@ export function formatRealGoManagementSmokeSummary(summary: RealGoManagementSmok
     `groups=${summary.groupCount}`,
     `providers=${summary.providerCount}`,
     `modelOptions=${summary.modelOptionCount}`,
+    `adminApiKeyCount=${summary.adminApiKeyCount}`,
+    `selfApiKeyCount=${summary.selfApiKeyCount}`,
     `externalIntegrationSourceTokenSecretChecked=${summary.externalIntegrationSourceTokenSecretChecked}`,
     `clientIpItems=${summary.clientIpItemCount}`,
     `clientIpRangeReady=${summary.clientIpRangeReady}`,
@@ -629,6 +652,21 @@ async function runReadOnlySmoke(
     expect(providerCodes.has(option.providerCode), 'Model option references an unknown provider')
   }
 
+  const adminApiKeyListData = await getEnvelopeData(
+    endpointUrl(config.baseUrl, '/api-keys', {
+      page: '1', pageSize: '20', status: 'all', systemAccountId: config.systemAccountId
+    }),
+    config,
+    'admin API keys list'
+  )
+  const adminApiKeys = assertApiKeyList(adminApiKeyListData, 'admin')
+  const selfApiKeyListData = await getEnvelopeData(
+    endpointUrl(config.baseUrl, '/my-api-keys', { page: '1', pageSize: '20', status: 'all' }),
+    config,
+    'self API keys list'
+  )
+  const selfApiKeys = assertApiKeyList(selfApiKeyListData, 'self')
+
   let accountTestOptionsChecked = false
   if (config.accountId) {
     const accountTestOptionsData = await getEnvelopeData(
@@ -679,6 +717,7 @@ async function runReadOnlySmoke(
     providers,
     summary: {
       accountTestOptionsChecked,
+      adminApiKeyCount: adminApiKeys.items.length,
       groupCount: groupList.items.length,
       selectedGroupId: detail.id,
       providerCount: providers.length,
@@ -690,6 +729,7 @@ async function runReadOnlySmoke(
       clientIpDetailChecked,
       routeStrategyCount: routeStrategies.length,
       routeStrategyDetailChecked,
+      selfApiKeyCount: selfApiKeys.items.length,
       externalIntegrationSourceTokenSecretChecked
     }
   }
@@ -1731,6 +1771,100 @@ function assertPublicAPILogSummary(value: unknown, label: string): PublicApiLogS
 
 function isPublicAPILogCaptureStatus(value: unknown): value is PublicApiLogCaptureStatus {
   return value === 'complete' || value === 'truncated' || value === 'empty' || value === 'dropped'
+}
+
+function assertApiKeyList(value: unknown, scope: 'admin' | 'self'): { items: unknown[] } {
+  const label = `${scope} API keys list`
+  expect(isRecord(value), `${label} data must be an object`)
+  const fields = Object.keys(value)
+  expect(
+    fields.length === 5
+      && ['items', 'total', 'hasMore', 'page', 'pageSize'].every((field) => fields.includes(field)),
+    `${label} data must contain only items, total, hasMore, page, and pageSize`
+  )
+  expect(Array.isArray(value.items), `${label} items must be an array`)
+  expect(isNonNegativeInteger(value.total), `${label} total must be a non-negative integer`)
+  expect(typeof value.hasMore === 'boolean', `${label} hasMore must be boolean`)
+  expect(value.page === 1, `${label} page must be 1`)
+  expect(value.pageSize === 20, `${label} pageSize must be 20`)
+  expect(
+    value.total === value.items.length + (value.hasMore ? 1 : 0),
+    `${label} total must be the progressive first-page upper bound`
+  )
+  if (value.hasMore) {
+    expect(value.items.length === 20, `${label} items must contain 20 entries when hasMore is true`)
+  }
+  value.items.forEach((item, index) => assertApiKeyListItem(item, scope, `${label} item ${index}`))
+  return { items: value.items }
+}
+
+function assertApiKeyListItem(value: unknown, scope: 'admin' | 'self', label: string): void {
+  expect(isRecord(value), `${label} must be an object`)
+  assertNoApiKeySensitiveFields(value, label, true)
+  for (const field of Object.keys(value)) {
+    expect(apiKeyListItemFieldSet.has(field), `${label} must not contain undocumented field ${field}`)
+  }
+  for (const field of ['id', 'name', 'keyPrefix', 'keySuffix', 'routeStrategyId'] as const) {
+    expect(isNonEmptyString(value[field]), `${label}.${field} must be a non-empty string`)
+  }
+  expect(value.status === 'active' || value.status === 'disabled', `${label}.status must be active or disabled`)
+  expect(typeof value.isDefault === 'boolean', `${label}.isDefault must be boolean`)
+  expect(isRecord(value.quotaLimits), `${label}.quotaLimits must be an object`)
+  expect(isRecord(value.usage), `${label}.usage must be an object`)
+  assertOptionalString(value, 'description', label)
+  for (const field of ['routeStrategyName', 'expiresAt'] as const) {
+    if (Object.hasOwn(value, field)) {
+      expect(isNonEmptyString(value[field]), `${label}.${field} must be a non-empty string when present`)
+    }
+  }
+  if (Object.hasOwn(value, 'routeStrategyMode')) {
+    expect(
+      ['normal', 'hybrid_smart', 'weighted', 'failover', 'round_robin'].includes(String(value.routeStrategyMode)),
+      `${label}.routeStrategyMode must be a valid route strategy mode`
+    )
+  }
+  if (Object.hasOwn(value, 'routeStrategyStatus')) {
+    expect(
+      value.routeStrategyStatus === 'active' || value.routeStrategyStatus === 'disabled',
+      `${label}.routeStrategyStatus must be active or disabled`
+    )
+  }
+  if (Object.hasOwn(value, 'availabilitySchedule')) {
+    expect(isRecord(value.availabilitySchedule), `${label}.availabilitySchedule must be an object when present`)
+  }
+  if (scope === 'admin') {
+    expect(isNonEmptyString(value.systemAccountId), `${label}.systemAccountId must be a non-empty string`)
+    expect(isNonEmptyString(value.systemAccountName), `${label}.systemAccountName must be a non-empty string`)
+  } else {
+    expect(
+      !Object.hasOwn(value, 'systemAccountId') && !Object.hasOwn(value, 'systemAccountName'),
+      `${label} must not contain systemAccountId or systemAccountName`
+    )
+  }
+}
+
+function assertNoApiKeySensitiveFields(value: unknown, label: string, allowPreview: boolean): void {
+  if (Array.isArray(value)) {
+    value.forEach((item) => assertNoApiKeySensitiveFields(item, label, false))
+    return
+  }
+  if (!isRecord(value)) {
+    return
+  }
+  for (const [field, child] of Object.entries(value)) {
+    const normalizedField = field.toLowerCase()
+    const allowedPreviewField = allowPreview
+      && (normalizedField === 'keyprefix' || normalizedField === 'keysuffix')
+    expect(
+      allowedPreviewField
+        || (!normalizedField.includes('key')
+          && !normalizedField.includes('secret')
+          && !normalizedField.includes('hash')
+          && !normalizedField.includes('ciphertext')),
+      `${label} must not contain sensitive field ${field}`
+    )
+    assertNoApiKeySensitiveFields(child, label, false)
+  }
 }
 
 function assertGroupList(value: unknown): GroupListResult {

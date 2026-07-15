@@ -25,6 +25,12 @@ interface RequestRecord {
 
 type MockScenario =
   | 'normal'
+  | 'api_keys_empty'
+  | 'api_keys_admin_owner_missing'
+  | 'api_keys_self_owner_leak'
+  | 'api_keys_sensitive_field'
+  | 'api_keys_nested_preview_field'
+  | 'api_keys_pagination_invalid'
   | 'account_test_options_not_object'
   | 'account_test_options_account_mismatch'
   | 'account_test_options_default_model_empty'
@@ -162,6 +168,7 @@ try {
   await assertExternalIntegrationSourceApiEncoding()
   await assertLogBoundaryRedaction(baseUrl)
   await assertRouteStrategyReadScenarios(baseUrl)
+  await assertApiKeyListReadScenarios(baseUrl)
   await assertReadOnlySmoke(baseUrl)
   await assertAccountTestOptionsReadSmoke(baseUrl)
   await assertAccountTestOptionsResponseRequirements(baseUrl)
@@ -180,6 +187,59 @@ try {
 }
 
 console.log('PLAN-0081 real Go management smoke regression passed')
+
+async function assertApiKeyListReadScenarios(baseUrl: string): Promise<void> {
+  resetMock('normal')
+  const output: string[] = []
+  const summary = await runRealGoManagementSmokeFromEnvironment(
+    smokeEnvironment(baseUrl),
+    (message) => output.push(message)
+  )
+  assert.equal(summary.adminApiKeyCount, 2)
+  assert.equal(summary.selfApiKeyCount, 1)
+  assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
+  assert.match(output[0] ?? '', /adminApiKeyCount=2 selfApiKeyCount=1/)
+  assert.equal(requestPaths().includes(adminApiKeysListPath()), true)
+  assert.equal(requestPaths().includes(selfApiKeysListPath()), true)
+  assert.equal(
+    requestPaths().some((path) => path.startsWith('GET /__aisys__/api/my-api-keys?') && path.includes('systemAccountId=')),
+    false
+  )
+  assert.equal(
+    requestPaths().some((path) => /\/api-keys\/[^?]+/.test(path) || path.includes('/secret')),
+    false
+  )
+  assertRequestHeaders()
+
+  resetMock('api_keys_empty')
+  const emptySummary = await runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
+  assert.deepEqual(emptySummary, {
+    ...expectedSummary(),
+    adminApiKeyCount: 0,
+    selfApiKeyCount: 0
+  })
+  assert.equal(requestPaths().includes(adminApiKeysListPath()), true)
+  assert.equal(requestPaths().includes(selfApiKeysListPath()), true)
+  assertRequestHeaders()
+
+  const failureCases = [
+    ['api_keys_admin_owner_missing', /admin API keys list item 0\.systemAccountId must be a non-empty string/, [adminApiKeysListPath()]],
+    ['api_keys_self_owner_leak', /self API keys list item 0 must not contain systemAccountId or systemAccountName/, [adminApiKeysListPath(), selfApiKeysListPath()]],
+    ['api_keys_sensitive_field', /admin API keys list item 0 must not contain sensitive field keyHash/, [adminApiKeysListPath()]],
+    ['api_keys_nested_preview_field', /admin API keys list item 0 must not contain sensitive field keyPrefix/, [adminApiKeysListPath()]],
+    ['api_keys_pagination_invalid', /admin API keys list total must be the progressive first-page upper bound/, [adminApiKeysListPath()]]
+  ] as const
+  for (const [requestScenario, expectedMessage, apiKeyPaths] of failureCases) {
+    resetMock(requestScenario)
+    const failureMessage = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
+    )
+    assert.match(failureMessage, expectedMessage)
+    const paths = requestPaths()
+    assert.deepEqual(paths.slice(paths.indexOf(adminApiKeysListPath())), apiKeyPaths)
+    assertRequestHeaders()
+  }
+}
 
 async function assertExternalIntegrationSourceTokenSecretScenarios(baseUrl: string): Promise<void> {
   resetMock('external_integration_source_secret_success')
@@ -750,7 +810,7 @@ async function assertRouteStrategyReadScenarios(baseUrl: string): Promise<void> 
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(),
-    providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
+    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
   assertNoEnvironmentIdentifierLeak(emptyOutput, baseUrl)
 
@@ -808,7 +868,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 externalIntegrationSourceTokenSecretChecked=false clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -816,7 +876,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-    providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
+    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
   assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
   assertNoCookieLeak(output)
@@ -842,7 +902,7 @@ async function assertAccountTestOptionsReadSmoke(baseUrl: string): Promise<void>
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-    providersPath(), modelOptionsPath(), accountTestOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
+    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), accountTestOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
 
   const accountTestOptionsRequests = requestRecords.filter((record) =>
@@ -897,7 +957,7 @@ async function assertAccountTestOptionsResponseRequirements(baseUrl: string): Pr
       externalIntegrationSourceApiDocsPath(),
       externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-      providersPath(), modelOptionsPath(), accountTestOptionsPath()
+      providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), accountTestOptionsPath()
     ])
     assert.equal(requestRecords.every((record) => record.method === 'GET' && record.body === undefined), true)
     assertNoEnvironmentIdentifierLeak([failureMessage], baseUrl)
@@ -926,7 +986,7 @@ async function assertStrictClientIPDetailRequiresTarget(baseUrl: string): Promis
       externalIntegrationSourceApiDocsPath(),
       externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-      providersPath(), modelOptionsPath(), clientIPStatsPath()
+      providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath()
     ])
     assertNoEnvironmentIdentifierLeak([failureMessage], baseUrl)
     assertRequestHeaders()
@@ -962,7 +1022,7 @@ async function assertStrictClientIPDetailResponseRequirements(baseUrl: string): 
       externalIntegrationSourceApiDocsPath(),
       externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-      providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
+      providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath()
     ])
     assertNoEnvironmentIdentifierLeak([failureMessage], baseUrl)
     assertRequestHeaders()
@@ -995,7 +1055,7 @@ async function assertExplicitClientIPHashSmoke(baseUrl: string): Promise<void> {
       externalIntegrationSourceApiDocsPath(),
       externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-      providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(explicitClientIPHash)
+      providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath(explicitClientIPHash)
     ])
     assertNoEnvironmentIdentifierLeak(output, baseUrl)
     assertRequestHeaders()
@@ -1014,7 +1074,7 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 externalIntegrationSourceTokenSecretChecked=false clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1022,7 +1082,7 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-    providersPath(), modelOptionsPath(), clientIPStatsPath()
+    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath()
   ])
   assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
   assertNoEnvironmentIdentifierLeak(output, baseUrl)
@@ -1041,7 +1101,7 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 externalIntegrationSourceTokenSecretChecked=false clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1049,7 +1109,7 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-    providersPath(), modelOptionsPath(), clientIPStatsPath()
+    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath()
   ])
   assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
   assertNoEnvironmentIdentifierLeak(output, baseUrl)
@@ -1075,7 +1135,7 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
-    providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(),
+    providersPath(), modelOptionsPath(), adminApiKeysListPath(), selfApiKeysListPath(), clientIPStatsPath(), clientIPStatsDetailPath(),
     groupsCreatePath(),
     groupsListPath(),
     groupDetailPath(temporaryGroupId),
@@ -1553,6 +1613,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         supportedApiProtocols: ['chat_completions']
       }
     ])
+    return
+  }
+  if (req.method === 'GET' && url.pathname === '/__aisys__/api/api-keys') {
+    sendEnvelope(res, apiKeyListFixture('admin', scenario))
+    return
+  }
+  if (req.method === 'GET' && url.pathname === '/__aisys__/api/my-api-keys') {
+    sendEnvelope(res, apiKeyListFixture('self', scenario))
     return
   }
   const accountTestOptionsAccountId = accountTestOptionsAccountIdFromPath(url.pathname)
@@ -2066,6 +2134,7 @@ function expectedSummary(
 ): Record<string, unknown> {
   return {
     accountTestOptionsChecked,
+    adminApiKeyCount: 2,
     groupCount: 3,
     selectedGroupId,
     providerCount: 2,
@@ -2077,7 +2146,61 @@ function expectedSummary(
     clientIpDetailChecked,
     routeStrategyCount,
     routeStrategyDetailChecked,
+    selfApiKeyCount: 1,
     externalIntegrationSourceTokenSecretChecked: false
+  }
+}
+
+function apiKeyListFixture(scope: 'admin' | 'self', requestScenario: MockScenario): Record<string, unknown> {
+  const empty = requestScenario === 'api_keys_empty'
+  const items = empty
+    ? []
+    : scope === 'admin'
+      ? [apiKeyFixture('admin-primary', true), apiKeyFixture('admin-secondary', true)]
+      : [apiKeyFixture('self-primary', false)]
+  if (scope === 'admin' && requestScenario === 'api_keys_admin_owner_missing') {
+    delete fixtureRecord(items[0]).systemAccountId
+  }
+  if (scope === 'self' && requestScenario === 'api_keys_self_owner_leak') {
+    fixtureRecord(items[0]).systemAccountId = systemAccountId
+    fixtureRecord(items[0]).systemAccountName = 'PLAN-0081 leaked owner'
+  }
+  if (scope === 'admin' && requestScenario === 'api_keys_sensitive_field') {
+    fixtureRecord(items[0]).keyHash = 'plan0081-derived-secret'
+  }
+  if (scope === 'admin' && requestScenario === 'api_keys_nested_preview_field') {
+    fixtureRecord(fixtureRecord(items[0]).usage).keyPrefix = 'plan0081-nested-sensitive-value'
+  }
+  return {
+    items,
+    total: scope === 'admin' && requestScenario === 'api_keys_pagination_invalid' ? items.length + 1 : items.length,
+    hasMore: false,
+    page: 1,
+    pageSize: 20
+  }
+}
+
+function apiKeyFixture(idSuffix: string, includeOwner: boolean): Record<string, unknown> {
+  return {
+    id: `key_plan0081_${idSuffix}`,
+    ...(includeOwner ? {
+      systemAccountId,
+      systemAccountName: 'PLAN-0081 API Key owner'
+    } : {}),
+    name: `PLAN-0081 API Key ${idSuffix}`,
+    description: 'regression fixture',
+    keyPrefix: 'sk-plan0081',
+    keySuffix: '0081',
+    status: idSuffix.endsWith('secondary') ? 'disabled' : 'active',
+    isDefault: idSuffix.endsWith('primary'),
+    routeStrategyId: selectedRouteStrategyId,
+    routeStrategyName: 'PLAN-0081 route',
+    routeStrategyMode: 'normal',
+    routeStrategyStatus: 'active',
+    expiresAt: '2026-08-01T00:00:00.000Z',
+    quotaLimits: { dailyUsd: 10 },
+    availabilitySchedule: { enabled: false, timezone: 'Asia/Shanghai', mode: 'allow', windows: [] },
+    usage: { requestCount: 3, totalTokens: 120 }
   }
 }
 
@@ -2422,6 +2545,14 @@ function requestPaths(): string[] {
 
 function publicAPILogsListPath(): string {
   return 'GET /__aisys__/api/public-api-logs?page=1&pageSize=20'
+}
+
+function adminApiKeysListPath(): string {
+  return `GET /__aisys__/api/api-keys?page=1&pageSize=20&status=all&systemAccountId=${systemAccountId}`
+}
+
+function selfApiKeysListPath(): string {
+  return 'GET /__aisys__/api/my-api-keys?page=1&pageSize=20&status=all'
 }
 
 function publicAPILogDetailPath(publicApiLogId = configuredPublicApiLogId): string {
