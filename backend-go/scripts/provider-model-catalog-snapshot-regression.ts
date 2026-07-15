@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
 
 import {
   listProviderModelPricingAsOf
@@ -84,6 +86,21 @@ assert.equal(
   normalizeSnapshotLineEndings(providerModelCatalogSnapshotSQL),
   'unified provider catalog seed migration must match the generated current-schema snapshot'
 )
+
+const generatorCheckDir = mkdtempSync(join(tmpdir(), 'provider-model-catalog-check-'))
+try {
+  const crlfSnapshotPath = join(generatorCheckDir, 'snapshot.sql')
+  writeFileSync(crlfSnapshotPath, providerModelCatalogSnapshotSQL.replace(/\n/g, '\r\n'), 'utf8')
+  const check = spawnSync(process.execPath, [
+    '--import', 'tsx',
+    resolve(process.cwd(), '../backend-go/scripts/generate-provider-model-catalog.ts'),
+    '--check',
+    '--output', crlfSnapshotPath
+  ], { cwd: process.cwd(), encoding: 'utf8' })
+  assert.equal(check.status, 0, `generator --check must accept CRLF snapshots: ${check.stderr || check.stdout}`)
+} finally {
+  rmSync(generatorCheckDir, { recursive: true, force: true })
+}
 
 console.log('provider model catalog snapshot regression passed')
 

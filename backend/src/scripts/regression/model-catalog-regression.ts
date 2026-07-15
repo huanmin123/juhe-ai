@@ -55,6 +55,35 @@ const [
 ])
 
 try {
+  const builtInVisibilityFixture = databaseModule.getBusinessDatabase().prepare(`
+    SELECT status, shutdown_date
+    FROM provider_model_catalog
+    WHERE provider_code = 'gpt' AND model = 'gpt-5.6-sol'
+  `).get() as { status: string; shutdown_date?: string | null }
+  assert(builtInVisibilityFixture, 'GPT-5.6 Sol seed fixture must exist')
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE provider_model_catalog SET status = 'disabled'
+    WHERE provider_code = 'gpt' AND model = 'gpt-5.6-sol'
+  `).run()
+  assert.equal(
+    providerModelCatalogRepository.listBuiltInProviderModels(['gpt']).some((item) => item.model === 'gpt-5.6-sol'),
+    false,
+    'Node built-in catalog repository must exclude disabled rows'
+  )
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE provider_model_catalog SET status = ?, shutdown_date = '2026-07-15'
+    WHERE provider_code = 'gpt' AND model = 'gpt-5.6-sol'
+  `).run(builtInVisibilityFixture.status)
+  assert.equal(
+    providerModelCatalogRepository.listBuiltInProviderModels(['gpt']).some((item) => item.model === 'gpt-5.6-sol'),
+    false,
+    'Node built-in catalog repository must exclude rows on and after the shutdown date'
+  )
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE provider_model_catalog SET status = ?, shutdown_date = ?
+    WHERE provider_code = 'gpt' AND model = 'gpt-5.6-sol'
+  `).run(builtInVisibilityFixture.status, builtInVisibilityFixture.shutdown_date ?? null)
+
   const pricedModel = catalogService.saveCustomProviderModel({
     providerCode: 'gpt',
     model: 'gpt-regression-personal',

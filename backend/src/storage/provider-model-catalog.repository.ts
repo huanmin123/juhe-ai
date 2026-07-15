@@ -81,7 +81,10 @@ export function listBuiltInProviderModels(providerCodes: string[]): BuiltInProvi
   const placeholders = providerCodes.map(() => '?').join(', ')
   const rows = getBusinessDatabase().prepare(`
     SELECT ${columns()} FROM provider_model_catalog
-    WHERE provider_code IN (${placeholders}) AND catalog_visible = 1
+    WHERE provider_code IN (${placeholders})
+      AND status = 'active'
+      AND catalog_visible = 1
+      AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))
     ORDER BY provider_code, catalog_order, model, id
   `).all(...providerCodes as SQLInputValue[]) as unknown as ProviderModelCatalogRow[]
   return rows.map(fromRow)
@@ -93,7 +96,10 @@ export async function listBuiltInProviderModelsAsync(providerCodes: string[]): P
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await client.query<ProviderModelCatalogRow>(`
     SELECT ${columns()} FROM juhe_business.provider_model_catalog
-    WHERE provider_code = ANY(?::text[]) AND catalog_visible = true
+    WHERE provider_code = ANY(?::text[])
+      AND status = 'active'
+      AND catalog_visible = true
+      AND (shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)
     ORDER BY provider_code, catalog_order, model, id
   `, [providerCodes])
   return rows.map(fromRow)
