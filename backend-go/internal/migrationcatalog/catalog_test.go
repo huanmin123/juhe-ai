@@ -1,6 +1,7 @@
 package migrationcatalog
 
 import (
+	"bytes"
 	"io/fs"
 	"reflect"
 	"testing"
@@ -42,12 +43,94 @@ func TestInspectAcceptsEmptyDirectory(t *testing.T) {
 	}
 }
 
+func TestInspectAcceptsMigrationLinesAboveOneMiB(t *testing.T) {
+	line := append([]byte("-- +goose Up\nSELECT '"), bytes.Repeat([]byte("x"), 2*1024*1024)...)
+	line = append(line, []byte("';\n-- +goose Down\n")...)
+	if _, err := Inspect(fstest.MapFS{"000001_large.sql": {Data: line}}); err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+}
+
+func TestInspectAcceptsMarkedProceduralBlocks(t *testing.T) {
+	fsys := fstest.MapFS{
+		"000001_blocks.sql": {Data: []byte("-- +goose Up   \n" +
+			"-- +goose StatementBegin   \n" +
+			"DO $$\nBEGIN\n  PERFORM 1;\nEND $$;\n" +
+			"-- +goose StatementEnd\n" +
+			"--   +goose statementbegin\n" +
+			"DO LANGUAGE plpgsql $body$\nBEGIN\n  PERFORM 2;\nEND $body$;\n" +
+			"-- +goose statementend\n")},
+		"000002_literals.sql": {Data: []byte("-- +goose Up\n-- DO $$ in a comment\nSELECT 1; /* comment starts\n/* nested */\nDO $$ in a block comment\n*/\nSELECT 'first line\nDO $$ in a string';\nSELECT E'first \\'\nDO $$ in an escape string';\nSELECT $text$first line\nDO $$ in a dollar string$text$;\n-- +goose Down\n")},
+	}
+
+	if _, err := Inspect(fsys); err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+}
+
 func TestInspectRejectsInvalidCatalogEntries(t *testing.T) {
 	tests := []struct {
 		name    string
 		fsys    fstest.MapFS
 		wantErr string
 	}{
+		{
+			name: "procedural block after standard string ending in backslash",
+			fsys: fstest.MapFS{
+				"000005_block.sql": {Data: []byte("-- +goose Up\nSELECT '\\'; DO $$ BEGIN PERFORM 1; END $$;\n")},
+			},
+			wantErr: `migration "000005_block.sql" contains procedural DO outside goose StatementBegin at line 2`,
+		},
+		{
+			name: "comment-separated procedural block",
+			fsys: fstest.MapFS{
+				"000005_block.sql": {Data: []byte("-- +goose Up\nDO/* comment */ LANGUAGE plpgsql $body$\nBEGIN\nEND $body$;\n")},
+			},
+			wantErr: `migration "000005_block.sql" contains procedural DO outside goose StatementBegin at line 2`,
+		},
+		{
+			name: "same-line procedural block",
+			fsys: fstest.MapFS{
+				"000005_block.sql": {Data: []byte("-- +goose Up\nSELECT 1; DO $$ BEGIN PERFORM 1; END $$;\n")},
+			},
+			wantErr: `migration "000005_block.sql" contains procedural DO outside goose StatementBegin at line 2`,
+		},
+		{
+			name: "catalog structure before SQL content",
+			fsys: fstest.MapFS{
+				"000001_block.sql": {Data: []byte("-- +goose Up\nDO $$\nBEGIN\nEND $$;\n")},
+				"notes.go":         {Data: []byte("package notes")},
+			},
+			wantErr: `invalid migration filename "notes.go"`,
+		},
+		{
+			name: "unmarked procedural block",
+			fsys: fstest.MapFS{
+				"000005_block.sql": {Data: []byte("-- +goose Up\nDO $$\nBEGIN\n  PERFORM 1;\nEND $$;\n")},
+			},
+			wantErr: `migration "000005_block.sql" contains procedural DO outside goose StatementBegin at line 2`,
+		},
+		{
+			name: "unmarked language procedural block",
+			fsys: fstest.MapFS{
+				"000005_block.sql": {Data: []byte("-- +goose Up\nDO LANGUAGE plpgsql $body$\nBEGIN\n  PERFORM 1;\nEND $body$;\n")},
+			},
+			wantErr: `migration "000005_block.sql" contains procedural DO outside goose StatementBegin at line 2`,
+		},
+		{
+			name: "unmarked multiline procedural block",
+			fsys: fstest.MapFS{
+				"000005_block.sql": {Data: []byte("-- +goose Up\nDO\n$body$\nBEGIN\n  PERFORM 1;\nEND\n$body$;\n")},
+			},
+			wantErr: `migration "000005_block.sql" contains procedural DO outside goose StatementBegin at line 2`,
+		},
+		{
+			name: "indented goose annotation",
+			fsys: fstest.MapFS{
+				"000005_block.sql": {Data: []byte("-- +goose Up\n  -- +goose StatementBegin\nDO $$\nBEGIN\nEND $$;\n-- +goose StatementEnd\n")},
+			},
+			wantErr: `migration "000005_block.sql" has invalid goose annotation at line 2`,
+		},
 		{
 			name: "duplicate numeric version",
 			fsys: fstest.MapFS{
