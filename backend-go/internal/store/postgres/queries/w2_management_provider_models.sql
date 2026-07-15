@@ -26,7 +26,7 @@ LIMIT 50;
 
 -- name: ListManagementProviderModelCatalog :many
 SELECT
-  ''::text AS id,
+  id,
   provider_code,
   model,
   'built_in'::text AS scope,
@@ -142,22 +142,26 @@ WHERE provider_code = ANY(sqlc.arg(custom_provider_codes)::text[])
   )
 ORDER BY provider_code ASC, scope ASC, model ASC, id ASC;
 
--- name: UpdateManagementBuiltInProviderModelPrices :execrows
+-- name: UpdateManagementBuiltInProviderModelPrices :one
 UPDATE juhe_business.provider_model_catalog
-SET input_usd_per_1m = sqlc.narg(input_usd_per_1m),
-    output_usd_per_1m = sqlc.narg(output_usd_per_1m),
-    cached_input_usd_per_1m = sqlc.narg(cached_input_usd_per_1m),
-    cache_write_usd_per_1m = sqlc.narg(cache_write_usd_per_1m),
-    cache_write_1h_usd_per_1m = sqlc.narg(cache_write_1h_usd_per_1m),
-    service_tier_prices_json = sqlc.arg(service_tier_prices_json),
-    image_input_usd_per_1m = sqlc.narg(image_input_usd_per_1m),
-    image_output_usd_per_1m = sqlc.narg(image_output_usd_per_1m),
-    audio_input_usd_per_1m = sqlc.narg(audio_input_usd_per_1m),
-    audio_output_usd_per_1m = sqlc.narg(audio_output_usd_per_1m),
-    output_usd_per_image = sqlc.narg(output_usd_per_image),
+SET input_usd_per_1m = CASE WHEN sqlc.arg(input_usd_per_1m_present)::boolean THEN sqlc.narg(input_usd_per_1m)::double precision ELSE input_usd_per_1m END,
+    output_usd_per_1m = CASE WHEN sqlc.arg(output_usd_per_1m_present)::boolean THEN sqlc.narg(output_usd_per_1m)::double precision ELSE output_usd_per_1m END,
+    cached_input_usd_per_1m = CASE WHEN sqlc.arg(cached_input_usd_per_1m_present)::boolean THEN sqlc.narg(cached_input_usd_per_1m)::double precision ELSE cached_input_usd_per_1m END,
+    cache_write_usd_per_1m = CASE WHEN sqlc.arg(cache_write_usd_per_1m_present)::boolean THEN sqlc.narg(cache_write_usd_per_1m)::double precision ELSE cache_write_usd_per_1m END,
+    cache_write_1h_usd_per_1m = CASE WHEN sqlc.arg(cache_write_1h_usd_per_1m_present)::boolean THEN sqlc.narg(cache_write_1h_usd_per_1m)::double precision ELSE cache_write_1h_usd_per_1m END,
+    service_tier_prices_json = CASE WHEN sqlc.arg(service_tier_prices_present)::boolean THEN sqlc.arg(service_tier_prices_json)::text ELSE service_tier_prices_json END,
+    image_input_usd_per_1m = CASE WHEN sqlc.arg(image_input_usd_per_1m_present)::boolean THEN sqlc.narg(image_input_usd_per_1m)::double precision ELSE image_input_usd_per_1m END,
+    image_output_usd_per_1m = CASE WHEN sqlc.arg(image_output_usd_per_1m_present)::boolean THEN sqlc.narg(image_output_usd_per_1m)::double precision ELSE image_output_usd_per_1m END,
+    audio_input_usd_per_1m = CASE WHEN sqlc.arg(audio_input_usd_per_1m_present)::boolean THEN sqlc.narg(audio_input_usd_per_1m)::double precision ELSE audio_input_usd_per_1m END,
+    audio_output_usd_per_1m = CASE WHEN sqlc.arg(audio_output_usd_per_1m_present)::boolean THEN sqlc.narg(audio_output_usd_per_1m)::double precision ELSE audio_output_usd_per_1m END,
+    output_usd_per_image = CASE WHEN sqlc.arg(output_usd_per_image_present)::boolean THEN sqlc.narg(output_usd_per_image)::double precision ELSE output_usd_per_image END,
     updated_at = now()
 WHERE id = sqlc.arg(id)
-  AND provider_code = sqlc.arg(provider_code);
+  AND provider_code = sqlc.arg(provider_code)
+RETURNING id, provider_code, input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
+  cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+  image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m,
+  audio_output_usd_per_1m, output_usd_per_image, updated_at;
 
 -- name: FindManagementCustomProviderModel :one
 SELECT

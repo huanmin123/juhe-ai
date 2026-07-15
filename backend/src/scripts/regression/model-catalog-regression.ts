@@ -868,11 +868,20 @@ try {
   const unregisterFailingInvalidator = gatewayCacheInvalidation.registerGatewayRuntimeCacheInvalidator(async () => {
     throw new Error('model catalog invalidation regression sentinel')
   })
-  await assert.rejects(
-    gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('provider_model_price_updated'),
-    /gateway_runtime_cache 缓存失效存在 1 个 handler 失败/,
-    '可等待的网关缓存失效必须向调用方传播 Redis/handler 失败'
-  )
+  const cacheWarningBuiltIn = await providerModelCatalogRepository.updateBuiltInProviderModelPricesAsync(partialPatchTarget.id, {
+	  inputUsdPer1M: (partialPatchSaved.inputUsdPer1M ?? 0) + 0.125
+	})
+	assert(cacheWarningBuiltIn, '缓存同步失败不得误报内置价格主写失败')
+	const committedBuiltIn = await providerModelCatalogRepository.findBuiltInProviderModelByIdAsync(partialPatchTarget.id)
+	assert.equal(committedBuiltIn?.inputUsdPer1M, (partialPatchSaved.inputUsdPer1M ?? 0) + 0.125, '缓存同步失败不得回滚已提交内置价格')
+	const cacheWarningCustom = await customProviderModelsRepository.upsertCustomProviderModelAsync({
+		providerCode: 'gpt', model: 'gpt-cache-sync-committed', scope: 'personal', systemAccountId: 'sys_admin',
+		status: 'draft', supportedReasoningEfforts: ['high'], defaultReasoningEffort: 'high', actorSystemAccountId: 'sys_admin'
+	})
+	assert.equal(cacheWarningCustom.model, 'gpt-cache-sync-committed', '缓存同步失败不得误报自定义模型主写失败')
+	assert((await customProviderModelsRepository.listCustomProviderModelsForCatalogAsync({
+	  providerCode: 'gpt', systemAccountId: 'sys_admin', includeInactive: true
+	})).some((item) => item.model === 'gpt-cache-sync-committed'), '缓存同步失败不得回滚已提交自定义模型')
   unregisterFailingInvalidator()
 
   console.log('model catalog regression passed')
@@ -963,6 +972,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       contextWindowTokens?: number
       maxInputTokens?: number
       maxOutputTokens?: number
+	  defaultReasoningEffort?: string
     }>>(
       baseUrl,
       '/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true',
@@ -979,6 +989,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       maxOutputTokens?: number
       inputUsdPer1M?: number
       supportedServiceTiers?: string[]
+	  defaultReasoningEffort?: string
     }>(
       baseUrl,
       '/__aisys__/api/providers/gpt/models',
@@ -996,6 +1007,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(copiedUserModel.maxOutputTokens, userATemplate.maxOutputTokens, '配置复制应继承最大输出')
     assert.equal(typeof copiedUserModel.inputUsdPer1M, 'number', '普通用户未提交价格时应由服务端可信继承价格')
     assert.deepEqual(copiedUserModel.supportedServiceTiers, ['priority', 'flex'], '配置复制应继承服务等级')
+    assert.equal(copiedUserModel.defaultReasoningEffort, userATemplate.defaultReasoningEffort, '配置复制应继承默认思考级别')
 
     const userAModel = await postEnvelope<{ id: string; model: string; scope: string }>(
       baseUrl,
@@ -1063,6 +1075,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
         supportedApiProtocols: ['responses'],
         supportedServiceTiers: ['priority'],
         supportedReasoningEfforts: ['low', 'high'],
+		defaultReasoningEffort: 'high',
         inputUsdPer1M: 1,
         outputUsdPer1M: 2
       }
@@ -1070,7 +1083,28 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(userAGptModel.providerCode, 'gpt', 'GPT 目录新建的个人模型应归属 GPT 供应商')
     assert.deepEqual(userAGptModel.supportedServiceTiers, ['priority'], 'GPT 自定义模型 API 应返回服务等级能力')
     assert.deepEqual(userAGptModel.supportedReasoningEfforts, ['low', 'high'], 'GPT 自定义模型 API 应返回思考能力')
-    assert.equal(userAGptModel.defaultReasoningEffort, undefined, 'GPT 自定义模型创建契约不得保存默认思考级别')
+    assert.equal(userAGptModel.defaultReasoningEffort, 'high', 'GPT 自定义模型创建契约必须保存默认思考级别')
+    const userAGptUnrelatedPatch = await patchEnvelope<{ defaultReasoningEffort?: string }>(
+	  baseUrl,
+	  `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
+	  userACookie,
+	  { notes: 'round-trip' }
+	)
+	assert.equal(userAGptUnrelatedPatch.defaultReasoningEffort, 'high', '无关 PATCH 必须保留默认思考级别')
+	const userAGptClearedDefault = await patchEnvelope<{ defaultReasoningEffort?: string }>(
+	  baseUrl,
+	  `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
+	  userACookie,
+	  { defaultReasoningEffort: null }
+	)
+	assert.equal(userAGptClearedDefault.defaultReasoningEffort, undefined, 'null PATCH 必须显式清空默认思考级别')
+	const userAGptRestoredDefault = await patchEnvelope<{ defaultReasoningEffort?: string }>(
+	  baseUrl,
+	  `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
+	  userACookie,
+	  { defaultReasoningEffort: 'high' }
+	)
+	assert.equal(userAGptRestoredDefault.defaultReasoningEffort, 'high', 'string PATCH 必须恢复默认思考级别')
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/gpt/models`,
       adminCookie,
@@ -1128,7 +1162,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
         outputUsdPer1M: 2
       },
       400,
-      'GPT 自定义模型 API 必须拒绝已删除的默认思考级别字段'
+	  'GPT 自定义模型 API 必须拒绝不在支持列表中的默认思考级别'
     )
     const userAGptClearableModel = await postEnvelope<{ id: string; model: string }>(
       baseUrl,
@@ -1478,7 +1512,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert(userAGptGlobalOption?.supportedApiProtocols?.includes('responses'), '全局模型选项必须返回模型协议能力，供账号模型别名按协议过滤')
     assert.deepEqual(userAGptGlobalOption?.supportedServiceTiers, ['priority'], '全局模型选项必须返回服务等级能力')
     assert.deepEqual(userAGptGlobalOption?.supportedReasoningEfforts, ['low', 'high'], '全局模型选项必须返回思考能力')
-    assert.equal(userAGptGlobalOption?.defaultReasoningEffort, undefined, '自定义模型选项不得重新引入默认思考级别')
+	assert.equal(userAGptGlobalOption?.defaultReasoningEffort, 'high', '自定义模型选项必须返回默认思考级别')
     assert.equal(userAGlobalModelOptions.some((item) => item.providerCode === 'hybrid'), false, '全局模型选项不应把 hybrid 当作真实供应商目录')
     assert.equal(userAGlobalModelOptions.some((item) => item.model === 'hybrid-regression-should-not-list'), false, '全局模型选项不应返回 hybrid 自身模型')
 

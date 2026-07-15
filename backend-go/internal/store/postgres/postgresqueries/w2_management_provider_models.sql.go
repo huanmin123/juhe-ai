@@ -508,7 +508,7 @@ func (q *Queries) ListManagementProviderCodesByProtocol(ctx context.Context, arg
 
 const listManagementProviderModelCatalog = `-- name: ListManagementProviderModelCatalog :many
 SELECT
-  ''::text AS id,
+  id,
   provider_code,
   model,
   'built_in'::text AS scope,
@@ -753,25 +753,58 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 	return items, nil
 }
 
-const updateManagementBuiltInProviderModelPrices = `-- name: UpdateManagementBuiltInProviderModelPrices :execrows
+const updateManagementBuiltInProviderModelPrices = `-- name: UpdateManagementBuiltInProviderModelPrices :one
 UPDATE juhe_business.provider_model_catalog
-SET input_usd_per_1m = $1,
-    output_usd_per_1m = $2,
-    cached_input_usd_per_1m = $3,
-    cache_write_usd_per_1m = $4,
-    cache_write_1h_usd_per_1m = $5,
-    service_tier_prices_json = $6,
-    image_input_usd_per_1m = $7,
-    image_output_usd_per_1m = $8,
-    audio_input_usd_per_1m = $9,
-    audio_output_usd_per_1m = $10,
-    output_usd_per_image = $11,
+SET input_usd_per_1m = CASE WHEN $1::boolean THEN $2::double precision ELSE input_usd_per_1m END,
+    output_usd_per_1m = CASE WHEN $3::boolean THEN $4::double precision ELSE output_usd_per_1m END,
+    cached_input_usd_per_1m = CASE WHEN $5::boolean THEN $6::double precision ELSE cached_input_usd_per_1m END,
+    cache_write_usd_per_1m = CASE WHEN $7::boolean THEN $8::double precision ELSE cache_write_usd_per_1m END,
+    cache_write_1h_usd_per_1m = CASE WHEN $9::boolean THEN $10::double precision ELSE cache_write_1h_usd_per_1m END,
+    service_tier_prices_json = CASE WHEN $11::boolean THEN $12::text ELSE service_tier_prices_json END,
+    image_input_usd_per_1m = CASE WHEN $13::boolean THEN $14::double precision ELSE image_input_usd_per_1m END,
+    image_output_usd_per_1m = CASE WHEN $15::boolean THEN $16::double precision ELSE image_output_usd_per_1m END,
+    audio_input_usd_per_1m = CASE WHEN $17::boolean THEN $18::double precision ELSE audio_input_usd_per_1m END,
+    audio_output_usd_per_1m = CASE WHEN $19::boolean THEN $20::double precision ELSE audio_output_usd_per_1m END,
+    output_usd_per_image = CASE WHEN $21::boolean THEN $22::double precision ELSE output_usd_per_image END,
     updated_at = now()
-WHERE id = $12
-  AND provider_code = $13
+WHERE id = $23
+  AND provider_code = $24
+RETURNING id, provider_code, input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
+  cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+  image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m,
+  audio_output_usd_per_1m, output_usd_per_image, updated_at
 `
 
 type UpdateManagementBuiltInProviderModelPricesParams struct {
+	InputUsdPer1mPresent        bool
+	InputUsdPer1m               pgtype.Float8
+	OutputUsdPer1mPresent       bool
+	OutputUsdPer1m              pgtype.Float8
+	CachedInputUsdPer1mPresent  bool
+	CachedInputUsdPer1m         pgtype.Float8
+	CacheWriteUsdPer1mPresent   bool
+	CacheWriteUsdPer1m          pgtype.Float8
+	CacheWrite1hUsdPer1mPresent bool
+	CacheWrite1hUsdPer1m        pgtype.Float8
+	ServiceTierPricesPresent    bool
+	ServiceTierPricesJson       string
+	ImageInputUsdPer1mPresent   bool
+	ImageInputUsdPer1m          pgtype.Float8
+	ImageOutputUsdPer1mPresent  bool
+	ImageOutputUsdPer1m         pgtype.Float8
+	AudioInputUsdPer1mPresent   bool
+	AudioInputUsdPer1m          pgtype.Float8
+	AudioOutputUsdPer1mPresent  bool
+	AudioOutputUsdPer1m         pgtype.Float8
+	OutputUsdPerImagePresent    bool
+	OutputUsdPerImage           pgtype.Float8
+	ID                          string
+	ProviderCode                string
+}
+
+type UpdateManagementBuiltInProviderModelPricesRow struct {
+	ID                    string
+	ProviderCode          string
 	InputUsdPer1m         pgtype.Float8
 	OutputUsdPer1m        pgtype.Float8
 	CachedInputUsdPer1m   pgtype.Float8
@@ -783,30 +816,54 @@ type UpdateManagementBuiltInProviderModelPricesParams struct {
 	AudioInputUsdPer1m    pgtype.Float8
 	AudioOutputUsdPer1m   pgtype.Float8
 	OutputUsdPerImage     pgtype.Float8
-	ID                    string
-	ProviderCode          string
+	UpdatedAt             pgtype.Timestamptz
 }
 
-func (q *Queries) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, arg UpdateManagementBuiltInProviderModelPricesParams) (int64, error) {
-	result, err := q.db.Exec(ctx, updateManagementBuiltInProviderModelPrices,
+func (q *Queries) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, arg UpdateManagementBuiltInProviderModelPricesParams) (UpdateManagementBuiltInProviderModelPricesRow, error) {
+	row := q.db.QueryRow(ctx, updateManagementBuiltInProviderModelPrices,
+		arg.InputUsdPer1mPresent,
 		arg.InputUsdPer1m,
+		arg.OutputUsdPer1mPresent,
 		arg.OutputUsdPer1m,
+		arg.CachedInputUsdPer1mPresent,
 		arg.CachedInputUsdPer1m,
+		arg.CacheWriteUsdPer1mPresent,
 		arg.CacheWriteUsdPer1m,
+		arg.CacheWrite1hUsdPer1mPresent,
 		arg.CacheWrite1hUsdPer1m,
+		arg.ServiceTierPricesPresent,
 		arg.ServiceTierPricesJson,
+		arg.ImageInputUsdPer1mPresent,
 		arg.ImageInputUsdPer1m,
+		arg.ImageOutputUsdPer1mPresent,
 		arg.ImageOutputUsdPer1m,
+		arg.AudioInputUsdPer1mPresent,
 		arg.AudioInputUsdPer1m,
+		arg.AudioOutputUsdPer1mPresent,
 		arg.AudioOutputUsdPer1m,
+		arg.OutputUsdPerImagePresent,
 		arg.OutputUsdPerImage,
 		arg.ID,
 		arg.ProviderCode,
 	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	var i UpdateManagementBuiltInProviderModelPricesRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderCode,
+		&i.InputUsdPer1m,
+		&i.OutputUsdPer1m,
+		&i.CachedInputUsdPer1m,
+		&i.CacheWriteUsdPer1m,
+		&i.CacheWrite1hUsdPer1m,
+		&i.ServiceTierPricesJson,
+		&i.ImageInputUsdPer1m,
+		&i.ImageOutputUsdPer1m,
+		&i.AudioInputUsdPer1m,
+		&i.AudioOutputUsdPer1m,
+		&i.OutputUsdPerImage,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const upsertManagementCustomProviderModel = `-- name: UpsertManagementCustomProviderModel :one

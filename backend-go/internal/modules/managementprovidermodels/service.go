@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -140,6 +141,7 @@ type CustomModelCreateInput struct {
 	ActorRole             string
 	TargetSystemAccountID string
 	Fields                CustomModelMutation
+	TraceID               string
 }
 
 type CustomModelUpdateInput struct {
@@ -148,6 +150,7 @@ type CustomModelUpdateInput struct {
 	ActorSystemAccountID string
 	ActorRole            string
 	Fields               CustomModelMutation
+	TraceID              string
 }
 
 type CustomModelDeleteInput struct {
@@ -155,6 +158,7 @@ type CustomModelDeleteInput struct {
 	ID                   string
 	ActorSystemAccountID string
 	ActorRole            string
+	TraceID              string
 }
 
 type CustomModelDeleteResult struct {
@@ -445,7 +449,7 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	if !found {
 		return ModelCatalogItem{}, ErrProviderNotFound
 	}
-	if input.Fields.Invalid || input.Fields.DefaultReasoningEffort.Set {
+	if input.Fields.Invalid {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
 	}
 	actorSystemAccountID := strings.TrimSpace(input.ActorSystemAccountID)
@@ -467,6 +471,9 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 			ownerSystemAccountID = actorSystemAccountID
 		}
 	}
+	if scope == "personal" && ownerSystemAccountID == "" {
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "请选择模型归属的系统账户"}
+	}
 	var template *port.ManagementProviderModelCatalogItem
 	if input.Fields.ConfigurationTemplateID.Set {
 		resolved, err := s.resolveConfigurationTemplate(ctx, provider.Code, ownerSystemAccountID, input.Fields.ConfigurationTemplateID.Value)
@@ -478,9 +485,6 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	saveInput, err := customModelSaveInputFromCreate(provider.Code, scope, ownerSystemAccountID, actorSystemAccountID, input.Fields, template)
 	if err != nil {
 		return ModelCatalogItem{}, err
-	}
-	if scope == "personal" && ownerSystemAccountID == "" {
-		return ModelCatalogItem{}, &CustomModelValidationError{Message: "请选择模型归属的系统账户"}
 	}
 	if err := s.validateCustomModelPricing(ctx, saveInput, ownerSystemAccountID); err != nil {
 		return ModelCatalogItem{}, err
@@ -503,7 +507,7 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	if err != nil {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
 	}
-	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason)
+	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	return catalogItemFromPort(saved), nil
 }
 
@@ -531,7 +535,7 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	if !isAdminRole(input.ActorRole) && customModelMutationHasPriceField(input.Fields) {
 		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护模型价格"}
 	}
-	if input.Fields.Invalid || input.Fields.DefaultReasoningEffort.Set || !customModelMutationHasAnyField(input.Fields) {
+	if input.Fields.Invalid || !customModelMutationHasAnyField(input.Fields) {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
 	}
 	if input.Fields.ConfigurationTemplateID.Set {
@@ -548,7 +552,7 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	if err != nil {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
 	}
-	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason)
+	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	if saved.Status != "active" {
 		if err := s.clearDefaultHealthCheckModelReferences(ctx, saved); err != nil {
 			return ModelCatalogItem{}, err
@@ -601,13 +605,15 @@ func (s *Service) updateBuiltInModelPrices(ctx context.Context, existing port.Ma
 	if err := validateServiceTierPriceKeys(updated.Mode, updated.SupportedServiceTiers, updated.ServiceTierPrices); err != nil {
 		return ModelCatalogItem{}, err
 	}
-	ok, err := s.store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
-		ID: updated.ID, ProviderCode: updated.ProviderCode, InputUSDPer1M: updated.InputUSDPer1M, OutputUSDPer1M: updated.OutputUSDPer1M,
-		CachedInputUSDPer1M: updated.CachedInputUSDPer1M, CacheWriteUSDPer1M: updated.CacheWriteUSDPer1M,
-		CacheWrite1hUSDPer1M: updated.CacheWrite1hUSDPer1M, ServiceTierPrices: updated.ServiceTierPrices,
-		ImageInputUSDPer1M: updated.ImageInputUSDPer1M, ImageOutputUSDPer1M: updated.ImageOutputUSDPer1M,
-		AudioInputUSDPer1M: updated.AudioInputUSDPer1M, AudioOutputUSDPer1M: updated.AudioOutputUSDPer1M,
-		OutputUSDPerImage: updated.OutputUSDPerImage,
+	persisted, ok, err := s.store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: updated.ID, ProviderCode: updated.ProviderCode,
+		InputUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.InputUSDPer1M), OutputUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.OutputUSDPer1M),
+		CachedInputUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.CachedInputUSDPer1M), CacheWriteUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.CacheWriteUSDPer1M),
+		CacheWrite1hUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.CacheWrite1hUSDPer1M),
+		ServiceTierPrices:    port.ManagementProviderModelOptionalPriceMap{Present: input.Fields.ServiceTierPrices.Set, Value: cloneProviderModelPriceMap(input.Fields.ServiceTierPrices.Value)},
+		ImageInputUSDPer1M:   builtInProviderModelOptionalFloat(input.Fields.ImageInputUSDPer1M), ImageOutputUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.ImageOutputUSDPer1M),
+		AudioInputUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.AudioInputUSDPer1M), AudioOutputUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.AudioOutputUSDPer1M),
+		OutputUSDPerImage: builtInProviderModelOptionalFloat(input.Fields.OutputUSDPerImage),
 	})
 	if err != nil {
 		return ModelCatalogItem{}, err
@@ -615,8 +621,24 @@ func (s *Service) updateBuiltInModelPrices(ctx context.Context, existing port.Ma
 	if !ok {
 		return ModelCatalogItem{}, ErrCustomProviderModelNotFound
 	}
-	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason)
+	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
+	updated.InputUSDPer1M = cloneFloatPtr(persisted.InputUSDPer1M)
+	updated.OutputUSDPer1M = cloneFloatPtr(persisted.OutputUSDPer1M)
+	updated.CachedInputUSDPer1M = cloneFloatPtr(persisted.CachedInputUSDPer1M)
+	updated.CacheWriteUSDPer1M = cloneFloatPtr(persisted.CacheWriteUSDPer1M)
+	updated.CacheWrite1hUSDPer1M = cloneFloatPtr(persisted.CacheWrite1hUSDPer1M)
+	updated.ServiceTierPrices = cloneProviderModelPriceMap(persisted.ServiceTierPrices)
+	updated.ImageInputUSDPer1M = cloneFloatPtr(persisted.ImageInputUSDPer1M)
+	updated.ImageOutputUSDPer1M = cloneFloatPtr(persisted.ImageOutputUSDPer1M)
+	updated.AudioInputUSDPer1M = cloneFloatPtr(persisted.AudioInputUSDPer1M)
+	updated.AudioOutputUSDPer1M = cloneFloatPtr(persisted.AudioOutputUSDPer1M)
+	updated.OutputUSDPerImage = cloneFloatPtr(persisted.OutputUSDPerImage)
+	updated.UpdatedAt = persisted.UpdatedAt
 	return catalogItemFromPort(updated), nil
+}
+
+func builtInProviderModelOptionalFloat(value OptionalFloat) port.ManagementProviderModelOptionalFloat {
+	return port.ManagementProviderModelOptionalFloat{Present: value.Set, Value: value.Value}
 }
 
 func builtInModelPriceMutationOnly(fields CustomModelMutation) bool {
@@ -679,7 +701,7 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 		return CustomModelDeleteResult{}, err
 	}
 	if deleted {
-		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason)
+		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason, input.TraceID)
 		if err := s.clearDefaultHealthCheckModelReferences(ctx, existing); err != nil {
 			return CustomModelDeleteResult{}, err
 		}
@@ -726,12 +748,26 @@ func (s *Service) sourceProviderCodes(ctx context.Context, providerCode string) 
 	code := strings.TrimSpace(providerCode)
 	switch code {
 	case hybridProviderCode:
-		codes, err := s.store.ListManagementEnabledModelProviderCodes(ctx)
-		if err != nil {
-			return nil, nil, err
+		codes := []string{}
+		for _, protocol := range [][2]string{
+			{protocolOpenAI, "v1"},
+			{protocolAnthropic, "v1"},
+			{protocolGemini, "v1beta"},
+		} {
+			protocolCodes, err := s.store.ListManagementProviderCodesByProtocol(ctx, protocol[0], protocol[1])
+			if err != nil {
+				return nil, nil, err
+			}
+			codes = append(codes, protocolCodes...)
 		}
-		builtInCodes, customCodes := optionSourceProviderCodes(codes)
-		return builtInCodes, customCodes, nil
+		codes = dedupeStrings(codes)
+		sourceCodes := make([]string, 0, len(codes))
+		for _, sourceCode := range codes {
+			if sourceCode != hybridProviderCode {
+				sourceCodes = append(sourceCodes, sourceCode)
+			}
+		}
+		return append([]string(nil), sourceCodes...), append([]string(nil), sourceCodes...), nil
 	case openAIProviderCode:
 		codes, err := s.store.ListManagementProviderCodesByProtocol(ctx, protocolOpenAI, "v1")
 		if err != nil {
@@ -837,7 +873,11 @@ func (s *Service) resolveConfigurationTemplate(ctx context.Context, providerCode
 	if err != nil {
 		return port.ManagementProviderModelCatalogItem{}, err
 	}
-	for _, item := range items {
+	mergeKey := mergeKeyModel
+	if strings.TrimSpace(providerCode) == hybridProviderCode {
+		mergeKey = mergeKeyProviderModel
+	}
+	for _, item := range mergeCatalogItems(items, mergeKey) {
 		if item.ID == templateID && item.Status == "active" {
 			return item, nil
 		}
@@ -850,7 +890,7 @@ func applyConfigurationTemplate(input *port.ManagementCustomProviderModelSaveInp
 	input.SupportedAPIProtocols = append([]string(nil), template.SupportedAPIProtocols...)
 	input.SupportedServiceTiers = append([]string(nil), template.SupportedServiceTiers...)
 	input.SupportedReasoningEfforts = append([]string(nil), template.SupportedReasoningEfforts...)
-	input.DefaultReasoningEffort = ""
+	input.DefaultReasoningEffort = template.DefaultReasoningEffort
 	input.ContextWindowTokens = cloneIntPtr(template.ContextWindowTokens)
 	input.MaxInputTokens = cloneIntPtr(template.MaxInputTokens)
 	input.MaxOutputTokens = cloneIntPtr(template.MaxOutputTokens)
@@ -938,7 +978,6 @@ func applyCustomModelPatch(input *port.ManagementCustomProviderModelSaveInput, f
 }
 
 func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSaveInput, fields CustomModelMutation, create bool) error {
-	input.DefaultReasoningEffort = ""
 	if fields.Status.Set {
 		status := strings.TrimSpace(fields.Status.Value)
 		if !validCustomModelStatus(status) {
@@ -996,6 +1035,13 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 		input.SupportedReasoningEfforts = reasoningEfforts
 	} else if create {
 		input.SupportedReasoningEfforts = []string{}
+	}
+	if fields.DefaultReasoningEffort.Set {
+		defaultReasoningEffort := strings.TrimSpace(fields.DefaultReasoningEffort.Value)
+		if defaultReasoningEffort != "" && !validCustomModelCapabilityToken(defaultReasoningEffort) {
+			return &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
+		input.DefaultReasoningEffort = defaultReasoningEffort
 	}
 	if fields.ReleaseDate.Set {
 		input.ReleaseDate = strings.TrimSpace(fields.ReleaseDate.Value)
@@ -1313,11 +1359,18 @@ func customProviderModelBoundMessage(bindings port.ManagementCustomProviderModel
 	return "模型已绑定 AI 账户，不能删除；请先从" + strings.Join(parts, "、") + "中移除后再删除"
 }
 
-func (s *Service) invalidateCustomProviderModel(ctx context.Context, reason string) {
+func (s *Service) invalidateCustomProviderModel(ctx context.Context, reason string, traceID string) {
 	if s.invalidator == nil {
 		return
 	}
-	_ = s.invalidator.InvalidateCustomProviderModelChanged(ctx, reason)
+	if err := s.invalidator.InvalidateCustomProviderModelChanged(ctx, reason); err != nil {
+		slog.WarnContext(ctx, "模型已保存，但缓存同步失败",
+			slog.String("event", "model_cache_sync_failed_after_commit"),
+			slog.String("reason", reason),
+			slog.String("trace_id", strings.TrimSpace(traceID)),
+			slog.Any("error", err),
+		)
+	}
 }
 
 type mergeKeyFunc func(port.ManagementProviderModelCatalogItem) string

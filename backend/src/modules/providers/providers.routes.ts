@@ -229,6 +229,7 @@ const customModelSchema = z.object({
   ])).optional(),
   supportedServiceTiers: z.array(customModelCapabilityTokenSchema).max(16).optional(),
   supportedReasoningEfforts: z.array(customModelCapabilityTokenSchema).max(16).optional(),
+  defaultReasoningEffort: nullableTrimmedStringSchema,
   releaseDate: nullableDateSchema,
   shutdownDate: nullableDateSchema,
   contextWindowTokens: nullableIntegerSchema,
@@ -397,8 +398,7 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
     const next = {
       ...existing,
       ...parsed.data,
-      scope: existing.scope,
-      defaultReasoningEffort: undefined
+      scope: existing.scope
     }
     const validation = await validateCustomModelPricing({
       providerCode: existing.providerCode,
@@ -756,6 +756,7 @@ function customModelInputFromConfigurationTemplate(template: ProviderModelCatalo
     supportedApiProtocols: [...(template.supportedApiProtocols ?? [])],
     supportedServiceTiers: [...(template.supportedServiceTiers ?? [])],
     supportedReasoningEfforts: [...(template.supportedReasoningEfforts ?? [])],
+    defaultReasoningEffort: template.defaultReasoningEffort ?? null,
     contextWindowTokens: template.contextWindowTokens ?? null,
     maxInputTokens: template.maxInputTokens ?? null,
     maxOutputTokens: template.maxOutputTokens ?? null,

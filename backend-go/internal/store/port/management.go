@@ -1329,7 +1329,33 @@ type ManagementCustomProviderModelBindingSummary struct {
 	TotalAccountCount           int
 }
 
+type ManagementProviderModelOptionalFloat struct {
+	Present bool
+	Value   *float64
+}
+
+type ManagementProviderModelOptionalPriceMap struct {
+	Present bool
+	Value   map[string]ManagementProviderModelPriceSet
+}
+
 type ManagementBuiltInProviderModelPriceUpdateInput struct {
+	ID                   string
+	ProviderCode         string
+	InputUSDPer1M        ManagementProviderModelOptionalFloat
+	OutputUSDPer1M       ManagementProviderModelOptionalFloat
+	CachedInputUSDPer1M  ManagementProviderModelOptionalFloat
+	CacheWriteUSDPer1M   ManagementProviderModelOptionalFloat
+	CacheWrite1hUSDPer1M ManagementProviderModelOptionalFloat
+	ServiceTierPrices    ManagementProviderModelOptionalPriceMap
+	ImageInputUSDPer1M   ManagementProviderModelOptionalFloat
+	ImageOutputUSDPer1M  ManagementProviderModelOptionalFloat
+	AudioInputUSDPer1M   ManagementProviderModelOptionalFloat
+	AudioOutputUSDPer1M  ManagementProviderModelOptionalFloat
+	OutputUSDPerImage    ManagementProviderModelOptionalFloat
+}
+
+type ManagementBuiltInProviderModelPriceUpdateResult struct {
 	ID                   string
 	ProviderCode         string
 	InputUSDPer1M        *float64
@@ -1343,6 +1369,7 @@ type ManagementBuiltInProviderModelPriceUpdateInput struct {
 	AudioInputUSDPer1M   *float64
 	AudioOutputUSDPer1M  *float64
 	OutputUSDPerImage    *float64
+	UpdatedAt            time.Time
 }
 
 type ManagementProviderModelCatalogReader interface {
@@ -1365,7 +1392,7 @@ type ManagementCustomProviderModelWriter interface {
 	SaveManagementCustomProviderModel(ctx context.Context, input ManagementCustomProviderModelSaveInput) (ManagementProviderModelCatalogItem, error)
 	DeleteManagementCustomProviderModel(ctx context.Context, id string) (bool, error)
 	GetManagementCustomProviderModelBindingSummary(ctx context.Context, input ManagementCustomProviderModelBindingInput) (ManagementCustomProviderModelBindingSummary, error)
-	UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input ManagementBuiltInProviderModelPriceUpdateInput) (bool, error)
+	UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input ManagementBuiltInProviderModelPriceUpdateInput) (ManagementBuiltInProviderModelPriceUpdateResult, bool, error)
 }
 
 type ManagementRouteStrategyOption struct {

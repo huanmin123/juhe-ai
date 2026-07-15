@@ -5,7 +5,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
-import { notifyGatewayRuntimeCacheInvalidationAsync } from '../shared/gateway-cache-invalidation.js'
+import { notifyCommittedModelCacheInvalidationAsync } from './model-cache-sync-warning.js'
 
 interface ProviderModelCatalogRow {
   id: string
@@ -128,7 +128,7 @@ export async function updateBuiltInProviderModelPricesAsync(id: string, patch: P
     await client.execute(sql.replace('provider_model_catalog', 'juhe_business.provider_model_catalog'), writeParams)
   }
   const saved = await findBuiltInProviderModelByIdAsync(id)
-  if (saved) await notifyGatewayRuntimeCacheInvalidationAsync('provider_model_price_updated')
+  if (saved) await notifyCommittedModelCacheInvalidationAsync('provider_model_price_updated')
   return saved
 }
 
