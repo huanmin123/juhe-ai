@@ -152,6 +152,7 @@ type RouterOptions struct {
 	ManagementMyOperationLogsHandler                  http.Handler
 	ManagementRuntimeLogsHandler                      http.Handler
 	ManagementExternalIntegrationSourceListHandler    http.Handler
+	ManagementExternalIntegrationSourceDetailHandler  http.Handler
 	ManagementExternalIntegrationSourceScopesHandler  http.Handler
 	ManagementExternalIntegrationSourceAPIDocsHandler http.Handler
 	ManagementPublicAPILogsHandler                    http.Handler
@@ -372,6 +373,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyOperationLogsHandler == nil &&
 				opts.ManagementRuntimeLogsHandler == nil &&
 				opts.ManagementExternalIntegrationSourceListHandler == nil &&
+				opts.ManagementExternalIntegrationSourceDetailHandler == nil &&
 				opts.ManagementExternalIntegrationSourceScopesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceAPIDocsHandler == nil &&
 				opts.ManagementPublicAPILogsHandler == nil &&
@@ -876,6 +878,26 @@ func NewRouter(opts RouterOptions) http.Handler {
 					opts.ManagementExternalIntegrationSourceAPIDocsHandler.ServeHTTP,
 				)
 			}
+			if opts.ManagementExternalIntegrationSourceDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get(
+					"/external-integration-sources/{id}",
+					opts.ManagementExternalIntegrationSourceDetailHandler.ServeHTTP,
+				)
+				unavailableWriteHandler := func(w http.ResponseWriter, r *http.Request) {
+					sourceID := chi.URLParam(r, "id")
+					if (sourceID == "scopes" && opts.ManagementExternalIntegrationSourceScopesHandler != nil) ||
+						(sourceID == "api-docs" && opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil) {
+						w.Header().Set("Allow", http.MethodGet)
+						w.WriteHeader(http.StatusMethodNotAllowed)
+						return
+					}
+					writeError(w, http.StatusNotFound, "接口不存在")
+				}
+				system.Post("/external-integration-sources/{id}", unavailableWriteHandler)
+				system.Put("/external-integration-sources/{id}", unavailableWriteHandler)
+				system.Patch("/external-integration-sources/{id}", unavailableWriteHandler)
+				system.Delete("/external-integration-sources/{id}", unavailableWriteHandler)
+			}
 			if opts.ManagementPublicAPILogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/public-api-logs", opts.ManagementPublicAPILogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/public-api-logs/{id}", opts.ManagementPublicAPILogsHandler.ServeHTTP)
@@ -1043,6 +1065,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyOperationLogsHandler != nil ||
 		opts.ManagementRuntimeLogsHandler != nil ||
 		opts.ManagementExternalIntegrationSourceListHandler != nil ||
+		opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
 		opts.ManagementExternalIntegrationSourceScopesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil ||
 		opts.ManagementPublicAPILogsHandler != nil ||

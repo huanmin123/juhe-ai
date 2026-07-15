@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -59,6 +60,7 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 	defer closeSQLDB(t, db)
 	runGooseMigrations(t, db)
 	assertW2ExternalSourceListPrefixIndex(t, ctx, db)
+	assertW2ExternalSourceDetailTokenOrderIndex(t, ctx, db)
 
 	defer cleanupW2ExternalSourceListFixtures(t, ctx, db)
 	fixture := insertW2ExternalSourceListFixtures(t, ctx, db)
@@ -160,6 +162,12 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 	}
 	assertW2ExternalSourceListSafeDTO(t, all)
 
+	detail, err := service.Get(ctx, w2ExternalSourceListActiveID)
+	if err != nil {
+		t.Fatalf("get external integration source detail: %v", err)
+	}
+	assertW2ExternalSourceDetail(t, detail, item, fixture)
+
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
 		Store: store,
 		Now:   func() time.Time { return authNow },
@@ -170,8 +178,9 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 			Port:                 3000,
 			ManagementAPIEnabled: true,
 		},
-		ManagementAPIAuthMiddleware:                    httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		ManagementExternalIntegrationSourceListHandler: httpapi.NewManagementExternalIntegrationSourceListHandler(service),
+		ManagementAPIAuthMiddleware:                      httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementExternalIntegrationSourceListHandler:   httpapi.NewManagementExternalIntegrationSourceListHandler(service),
+		ManagementExternalIntegrationSourceDetailHandler: httpapi.NewManagementExternalIntegrationSourceDetailHandler(service),
 	})
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -203,6 +212,34 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 		t.Fatalf("HTTP list pagination = %+v", response.Data)
 	}
 	assertW2ExternalSourceListSafeJSON(t, rawBody)
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_external_source_list", sessionCreatedAt)
+
+	detailReq := httptest.NewRequest(
+		http.MethodGet,
+		"/__aisys__/api/external-integration-sources/"+url.PathEscape(w2ExternalSourceListActiveID),
+		nil,
+	)
+	detailReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	detailRec := httptest.NewRecorder()
+	router.ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("HTTP detail status = %d, want 200; body = %s", detailRec.Code, detailRec.Body.String())
+	}
+	if got := detailRec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("HTTP detail Cache-Control = %q, want no-store", got)
+	}
+	if got := detailRec.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("HTTP detail Content-Type = %q", got)
+	}
+	var detailResponse struct {
+		Data managementexternalintegrationsources.Detail `json:"data"`
+	}
+	detailBody := detailRec.Body.String()
+	if err := json.Unmarshal([]byte(detailBody), &detailResponse); err != nil {
+		t.Fatalf("decode HTTP detail response: %v", err)
+	}
+	assertW2ExternalSourceDetail(t, &detailResponse.Data, item, fixture)
+	assertW2ExternalSourceDetailSafeJSON(t, detailBody)
 	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_external_source_list", sessionCreatedAt)
 }
 
@@ -393,6 +430,24 @@ func assertW2ExternalSourceListPrefixIndex(t *testing.T, ctx context.Context, db
 	}
 }
 
+func assertW2ExternalSourceDetailTokenOrderIndex(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	var definition string
+	if err := db.QueryRowContext(ctx, `
+		SELECT indexdef
+		FROM pg_indexes
+		WHERE schemaname = 'juhe_business'
+		  AND tablename = 'external_integration_source_tokens'
+		  AND indexname = 'idx_external_integration_source_tokens_source_created'
+	`).Scan(&definition); err != nil {
+		t.Fatalf("query migration 000050 token order index: %v", err)
+	}
+	normalized := strings.Join(strings.Fields(definition), " ")
+	if !strings.Contains(normalized, "(source_ref_id, created_at DESC, id DESC)") {
+		t.Fatalf("migration 000050 token order index definition = %q", definition)
+	}
+}
+
 func cleanupW2ExternalSourceListFixtures(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
 	if _, err := db.ExecContext(ctx, `
@@ -446,6 +501,53 @@ func assertW2ExternalSourceListSafeDTO(
 	assertW2ExternalSourceListSafeJSON(t, string(encoded))
 }
 
+func assertW2ExternalSourceDetail(
+	t *testing.T,
+	detail *managementexternalintegrationsources.Detail,
+	listItem *managementexternalintegrationsources.Source,
+	fixture w2ExternalSourceListFixtureTimes,
+) {
+	t.Helper()
+	if detail == nil {
+		t.Fatal("external integration source detail is nil")
+	}
+	if detail.ID != w2ExternalSourceListActiveID || detail.Name != listItem.Name || detail.Status != listItem.Status {
+		t.Fatalf("external integration source detail identity = %+v, list = %+v", detail.Source, listItem)
+	}
+	if detail.TokenCount != 3 || detail.ActiveTokenCount != 1 || detail.PrimaryToken != nil {
+		t.Fatalf("external integration source detail token summary = %+v", detail.Source)
+	}
+	if !reflect.DeepEqual(detail.Scopes, listItem.Scopes) || !reflect.DeepEqual(detail.RateLimits, listItem.RateLimits) {
+		t.Fatalf("external integration source detail fields differ from list: detail=%+v list=%+v", detail.Source, listItem)
+	}
+	wantTokenIDs := []string{
+		w2ExternalSourceListRevokedTokenID,
+		w2ExternalSourceListDisabledTokenID,
+		w2ExternalSourceListActiveTokenID,
+	}
+	gotTokenIDs := make([]string, 0, len(detail.Tokens))
+	for _, token := range detail.Tokens {
+		gotTokenIDs = append(gotTokenIDs, token.ID)
+	}
+	if !reflect.DeepEqual(gotTokenIDs, wantTokenIDs) {
+		t.Fatalf("external integration source detail token order = %#v, want %#v", gotTokenIDs, wantTokenIDs)
+	}
+	if detail.Tokens[0].Status != publicapi.TokenStatusRevoked || detail.Tokens[0].RevokedAt == nil ||
+		detail.Tokens[1].Status != publicapi.TokenStatusDisabled ||
+		detail.Tokens[2].Status != publicapi.TokenStatusActive {
+		t.Fatalf("external integration source detail token statuses = %+v", detail.Tokens)
+	}
+	if detail.Tokens[2].ExpiresAt == nil ||
+		*detail.Tokens[2].ExpiresAt != fixture.activeTokenExpiresAt.UTC().Format("2006-01-02T15:04:05.000Z") {
+		t.Fatalf("external integration source detail active token expiry = %#v", detail.Tokens[2].ExpiresAt)
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal external integration source detail DTO: %v", err)
+	}
+	assertW2ExternalSourceDetailSafeJSON(t, string(encoded))
+}
+
 func assertW2ExternalSourceListSafeJSON(t *testing.T, body string) {
 	t.Helper()
 	for _, forbidden := range []string{
@@ -459,6 +561,51 @@ func assertW2ExternalSourceListSafeJSON(t *testing.T, body string) {
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("external integration source list DTO leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+func assertW2ExternalSourceDetailSafeJSON(t *testing.T, body string) {
+	t.Helper()
+	assertW2ExternalSourceListSafeJSON(t, body)
+	if strings.Contains(body, `"primaryToken"`) {
+		t.Fatalf("external integration source detail DTO must not contain primaryToken: %s", body)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+		t.Fatalf("decode external integration source detail safety envelope: %v", err)
+	}
+	rawDetail := json.RawMessage(body)
+	if data, ok := envelope["data"]; ok {
+		rawDetail = data
+	}
+	var source map[string]json.RawMessage
+	if err := json.Unmarshal(rawDetail, &source); err != nil {
+		t.Fatalf("decode external integration source detail safety object: %v", err)
+	}
+	allowedSourceFields := map[string]struct{}{
+		"id": {}, "name": {}, "status": {}, "scopes": {}, "rateLimits": {},
+		"expiresAt": {}, "notes": {}, "lastUsedAt": {}, "createdAt": {}, "updatedAt": {},
+		"tokenCount": {}, "activeTokenCount": {}, "tokens": {}, "isBuiltIn": {},
+	}
+	for field := range source {
+		if _, allowed := allowedSourceFields[field]; !allowed {
+			t.Fatalf("external integration source detail contains unexpected field %q: %s", field, body)
+		}
+	}
+	var tokens []map[string]json.RawMessage
+	if err := json.Unmarshal(source["tokens"], &tokens); err != nil {
+		t.Fatalf("decode external integration source detail token safety objects: %v", err)
+	}
+	allowedTokenFields := map[string]struct{}{
+		"id": {}, "name": {}, "tokenPrefix": {}, "tokenSuffix": {}, "status": {}, "scopes": {},
+		"expiresAt": {}, "lastUsedAt": {}, "createdAt": {}, "updatedAt": {}, "revokedAt": {}, "isBuiltIn": {},
+	}
+	for _, token := range tokens {
+		for field := range token {
+			if _, allowed := allowedTokenFields[field]; !allowed {
+				t.Fatalf("external integration source detail token contains unexpected field %q: %s", field, body)
+			}
 		}
 	}
 }

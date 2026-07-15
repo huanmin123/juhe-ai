@@ -312,6 +312,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.OperationLogsHandler != nil ||
 		handlers.MyOperationLogsHandler != nil ||
 		handlers.ExternalIntegrationSourceListHandler != nil ||
+		handlers.ExternalIntegrationSourceDetailHandler != nil ||
 		handlers.ExternalIntegrationSourceScopesHandler != nil ||
 		handlers.ExternalIntegrationSourceAPIDocsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
@@ -401,6 +402,7 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.ExternalIntegrationSourceListHandler != nil ||
+		handlers.ExternalIntegrationSourceDetailHandler != nil ||
 		handlers.ExternalIntegrationSourceScopesHandler != nil ||
 		handlers.ExternalIntegrationSourceAPIDocsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
@@ -515,6 +517,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.OperationLogsHandler == nil ||
 		handlers.MyOperationLogsHandler == nil ||
 		handlers.ExternalIntegrationSourceListHandler == nil ||
+		handlers.ExternalIntegrationSourceDetailHandler == nil ||
 		handlers.ExternalIntegrationSourceScopesHandler == nil ||
 		handlers.ExternalIntegrationSourceAPIDocsHandler == nil ||
 		handlers.StatsUsageWindowHandler == nil ||
@@ -526,6 +529,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testing.T) {
 	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ExternalIntegrationSourceListHandler != nil ||
+		disabled.ExternalIntegrationSourceDetailHandler != nil ||
 		disabled.ExternalIntegrationSourceScopesHandler != nil ||
 		disabled.ExternalIntegrationSourceAPIDocsHandler != nil {
 		t.Fatal("external integration source handler was created while management API disabled")
@@ -542,6 +546,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		nil,
 	)
 	if sessionOnly.ExternalIntegrationSourceListHandler != nil ||
+		sessionOnly.ExternalIntegrationSourceDetailHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceScopesHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceAPIDocsHandler != nil {
 		t.Fatal("external integration source handler was created while only session switch enabled")
@@ -558,6 +563,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		nil,
 	)
 	if enabled.ExternalIntegrationSourceListHandler == nil ||
+		enabled.ExternalIntegrationSourceDetailHandler == nil ||
 		enabled.ExternalIntegrationSourceScopesHandler == nil ||
 		enabled.ExternalIntegrationSourceAPIDocsHandler == nil {
 		t.Fatal("external integration source handler was not created while management API enabled")
@@ -573,6 +579,9 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		"ManagementExternalIntegrationSourceListHandler:",
 		"managementHandlers.ExternalIntegrationSourceListHandler",
 		"httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService)",
+		"ManagementExternalIntegrationSourceDetailHandler:",
+		"managementHandlers.ExternalIntegrationSourceDetailHandler",
+		"httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService)",
 		"ManagementExternalIntegrationSourceScopesHandler:",
 		"managementHandlers.ExternalIntegrationSourceScopesHandler",
 		"httpapi.NewManagementExternalIntegrationSourceScopesHandler()",

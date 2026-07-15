@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
+
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementexternalintegrationsources"
 	"juhe-ai/backend-go/internal/modules/publicapi"
@@ -18,6 +20,10 @@ type managementExternalIntegrationSourceListService interface {
 	List(context.Context, managementexternalintegrationsources.ListInput) (managementexternalintegrationsources.ListResult, error)
 }
 
+type managementExternalIntegrationSourceDetailService interface {
+	Get(context.Context, string) (*managementexternalintegrationsources.Detail, error)
+}
+
 func NewManagementExternalIntegrationSourceListHandler(
 	service *managementexternalintegrationsources.Service,
 ) http.Handler {
@@ -25,6 +31,15 @@ func NewManagementExternalIntegrationSourceListHandler(
 		return newManagementExternalIntegrationSourceListHandler(nil)
 	}
 	return newManagementExternalIntegrationSourceListHandler(service)
+}
+
+func NewManagementExternalIntegrationSourceDetailHandler(
+	service *managementexternalintegrationsources.Service,
+) http.Handler {
+	if service == nil {
+		return newManagementExternalIntegrationSourceDetailHandler(nil)
+	}
+	return newManagementExternalIntegrationSourceDetailHandler(service)
 }
 
 func NewManagementExternalIntegrationSourceScopesHandler() http.Handler {
@@ -64,6 +79,41 @@ func newManagementExternalIntegrationSourceListHandler(
 			return
 		}
 		writeData(w, http.StatusOK, result)
+	})
+}
+
+func newManagementExternalIntegrationSourceDetailHandler(
+	service managementExternalIntegrationSourceDetailService,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+
+		sourceID := strings.TrimFunc(chi.URLParam(r, "id"), managementGroupListECMAScriptWhitespace)
+		if sourceID == "" {
+			writeMessageError(w, http.StatusBadRequest, "来源系统不存在")
+			return
+		}
+		detail, err := service.Get(r.Context(), sourceID)
+		switch {
+		case err != nil:
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+		case detail == nil:
+			writeMessageError(w, http.StatusNotFound, "来源系统不存在")
+		default:
+			writeData(w, http.StatusOK, detail)
+		}
 	})
 }
 

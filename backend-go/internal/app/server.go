@@ -294,6 +294,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementRuntimeLogsHandler:                      managementHandlers.RuntimeLogsHandler,
 		ManagementExternalIntegrationSourceListHandler:    managementHandlers.ExternalIntegrationSourceListHandler,
+		ManagementExternalIntegrationSourceDetailHandler:  managementHandlers.ExternalIntegrationSourceDetailHandler,
 		ManagementExternalIntegrationSourceScopesHandler:  managementHandlers.ExternalIntegrationSourceScopesHandler,
 		ManagementExternalIntegrationSourceAPIDocsHandler: managementHandlers.ExternalIntegrationSourceAPIDocsHandler,
 		ManagementPublicAPILogsHandler:                    managementHandlers.PublicAPILogsHandler,
@@ -457,6 +458,7 @@ type managementAPIHandlers struct {
 	MyOperationLogsHandler                  http.Handler
 	RuntimeLogsHandler                      http.Handler
 	ExternalIntegrationSourceListHandler    http.Handler
+	ExternalIntegrationSourceDetailHandler  http.Handler
 	ExternalIntegrationSourceScopesHandler  http.Handler
 	ExternalIntegrationSourceAPIDocsHandler http.Handler
 	PublicAPILogsHandler                    http.Handler
@@ -736,6 +738,7 @@ func newManagementAPIHandler(
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService),
 		ExternalIntegrationSourceListHandler:    httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService),
+		ExternalIntegrationSourceDetailHandler:  httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceScopesHandler:  httpapi.NewManagementExternalIntegrationSourceScopesHandler(),
 		ExternalIntegrationSourceAPIDocsHandler: httpapi.NewManagementExternalIntegrationSourceAPIDocsHandler(),
 		PublicAPILogsHandler:                    httpapi.NewManagementPublicAPILogsHandler(publicAPILogService),
