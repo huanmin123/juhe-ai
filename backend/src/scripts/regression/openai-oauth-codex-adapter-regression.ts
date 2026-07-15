@@ -48,6 +48,7 @@ async function main(): Promise<void> {
   await testOAuthCompactRequestOverrides()
   await testOAuthFlexRequestOverrideRejection()
   await testHeaderAllowlistAndDefaults()
+  await testOldCodexHeadersAreRaisedToCompatibilityFloor()
   await testInvalidAttestationRejection()
   await testSessionIsolation()
   await testInvalidBodyRejection()
@@ -77,7 +78,7 @@ async function testOAuthAccountRequestOverrides(): Promise<void> {
     credentials: {
       ...account.credentials,
       service_tier_override: 'priority',
-      reasoning_effort_override: 'max'
+      reasoning_effort_override: 'high'
     }
   }, identity, undefined, {
     requestOverrideModelCapabilities: {
@@ -201,7 +202,13 @@ async function testResponsesBodyNormalization(): Promise<void> {
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
   assert.equal(parts.headers.get('cookie'), null)
   assert.equal(parts.headers.get('x-forwarded-for'), null)
-  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.125.0')
+  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.144.4')
+  assert.equal(parts.headers.get('version'), null)
+  assert.equal(parts.headers.get('openai-beta'), null)
+  assert.equal(typeof parts.headers.get('session-id'), 'string')
+  assert.equal(typeof parts.headers.get('thread-id'), 'string')
+  assert.equal(parts.headers.get('session_id'), null)
+  assert.equal(parts.headers.get('conversation_id'), null)
 }
 
 async function testCompactBodyNormalization(): Promise<void> {
@@ -258,15 +265,33 @@ async function testHeaderAllowlistAndDefaults(): Promise<void> {
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
   assert.equal(parts.headers.get('accept-language'), 'zh-CN,zh;q=0.9')
   assert.equal(parts.headers.get('originator'), 'codex_vscode')
-  assert.equal(parts.headers.get('user-agent'), 'codex_vscode/1.2.3')
-  assert.equal(parts.headers.get('version'), '1.2.3')
-  assert.equal(parts.headers.get('openai-beta'), 'responses=experimental')
+  assert.equal(parts.headers.get('user-agent'), 'codex_vscode/0.144.4')
+  assert.equal(parts.headers.get('version'), null)
+  assert.equal(parts.headers.get('openai-beta'), null)
   assert.equal(parts.headers.get('x-client-request-id'), 'client-request')
   assert.equal(parts.headers.get('x-codex-turn-state'), 'turn-state')
   assert.equal(parts.headers.get('x-codex-turn-metadata'), 'turn-metadata')
   assert.equal(parts.headers.get('x-oai-attestation'), 'device-proof')
   assert.equal(parts.headers.get('cookie'), null)
   assert.equal(parts.headers.get('x-real-ip'), null)
+}
+
+async function testOldCodexHeadersAreRaisedToCompatibilityFloor(): Promise<void> {
+  const req = createRequest('/v1/responses', {
+    model: 'gpt-5.6-sol',
+    input: []
+  }, {
+    originator: 'codex_cli_rs',
+    'user-agent': 'codex_cli_rs/0.125.0',
+    version: '0.125.0'
+  })
+  const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+
+  assert.equal(parts.headers.get('originator'), 'codex_cli_rs')
+  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.144.4')
+  assert.equal(parts.headers.get('version'), null)
+  assert.equal(parts.headers.get('openai-beta'), null)
+  assert.equal(parts.headers.get('x-openai-internal-codex-responses-lite'), 'true')
 }
 
 async function testInvalidAttestationRejection(): Promise<void> {
@@ -311,7 +336,8 @@ async function testSessionIsolation(): Promise<void> {
   assert.notEqual(bodyA.prompt_cache_key, bodyB.prompt_cache_key)
   assert.equal(bodyA.prompt_cache_key, sameKeyOtherGroupBody.prompt_cache_key)
   assert.equal(bodyA.prompt_cache_key, switchedAccountBody.prompt_cache_key)
-  assert.notEqual(partsA.headers.get('session_id'), partsB.headers.get('session_id'))
+  assert.notEqual(partsA.headers.get('session-id'), partsB.headers.get('session-id'))
+  assert.equal(partsA.headers.get('session_id'), null)
   assert.equal(
     bodyA.prompt_cache_key,
     isolateOpenAIOAuthCodexSessionId('same-cache', account, identity)

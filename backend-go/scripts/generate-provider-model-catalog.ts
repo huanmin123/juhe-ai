@@ -94,7 +94,7 @@ function run(args: string[]): void {
     process.stdout.write(providerModelCatalogSnapshotSQL)
   } else if (options.check) {
     const current = readFileSync(options.outputPath, 'utf8')
-    if (current !== providerModelCatalogSnapshotSQL) {
+    if (normalizeLineEndings(current) !== normalizeLineEndings(providerModelCatalogSnapshotSQL)) {
       console.error(`provider model catalog snapshot drifted: ${options.outputPath}`)
       process.exitCode = 1
     } else {
@@ -108,6 +108,10 @@ function run(args: string[]): void {
     writeFileSync(options.outputPath, providerModelCatalogSnapshotSQL, 'utf8')
     console.log(`wrote ${rows.length} provider model rows to ${options.outputPath}`)
   }
+}
+
+function normalizeLineEndings(value: string): string {
+  return value.replace(/\r\n/g, '\n')
 }
 
 function isDirectExecution(): boolean {

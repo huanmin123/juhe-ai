@@ -13,7 +13,7 @@ export const deepSeekModelPricingData = [
     context_window_tokens: 1_000_000,
     max_output_tokens: 384_000,
     supports_prompt_caching: true,
-    supported_api_protocols: ['chat_completions']
+    supported_api_protocols: ['chat_completions', 'messages']
   },
   {
     model: 'deepseek-v4-pro',
@@ -26,7 +26,7 @@ export const deepSeekModelPricingData = [
     context_window_tokens: 1_000_000,
     max_output_tokens: 384_000,
     supports_prompt_caching: true,
-    supported_api_protocols: ['chat_completions']
+    supported_api_protocols: ['chat_completions', 'messages']
   },
   {
     model: 'deepseek-chat',
@@ -40,7 +40,7 @@ export const deepSeekModelPricingData = [
     max_output_tokens: 8_000,
     shutdown_date: '2026-07-24',
     supports_prompt_caching: true,
-    supported_api_protocols: ['chat_completions']
+    supported_api_protocols: ['chat_completions', 'messages']
   },
   {
     model: 'deepseek-reasoner',
@@ -54,6 +54,6 @@ export const deepSeekModelPricingData = [
     max_output_tokens: 8_000,
     shutdown_date: '2026-07-24',
     supports_prompt_caching: true,
-    supported_api_protocols: ['chat_completions']
+    supported_api_protocols: ['chat_completions', 'messages']
   }
 ] as const

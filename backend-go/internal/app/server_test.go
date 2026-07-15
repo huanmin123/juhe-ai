@@ -632,6 +632,24 @@ func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyMutationDependencies(t *t
 	}
 }
 
+func TestNewManagementAPIHandlerInjectsProviderModelLogger(t *testing.T) {
+	t.Parallel()
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := string(source)
+	wiring := `providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
+		Store:       store,
+		Invalidator: systemAccountInvalidator,
+		Logger:      logger,
+	})`
+	if !strings.Contains(text, wiring) {
+		t.Fatalf("server.go missing provider model logger wiring %q", wiring)
+	}
+}
+
 func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *testing.T) {
 	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ClientIPAllowlistHandler != nil ||

@@ -27,6 +27,7 @@ import { captureGatewayRawBody } from '../../modules/gateway/request/body-middle
 import { stopGatewayJsonParseWorker } from '../../modules/gateway/request/json-parser.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import { sanitizeRequestHeaders } from '../../modules/gateway/usage/snapshots.js'
+import { applyOpenAIClientCompatibilityHeaders } from '../../modules/gateway/protocols/openai-v1/api-key-client-compatibility.js'
 
 type TestRequest = GatewayRawBodyRequest
 type MockResponse = EventEmitter & {
@@ -398,7 +399,12 @@ async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
     truncation: 'disabled',
     user: 'local-user'
   }))
-  const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
+  const req = createRequest(undefined, {
+    'content-type': 'application/json',
+    originator: 'codex_cli_rs',
+    'user-agent': 'codex_cli_rs/0.125.0',
+    version: '0.125.0'
+  }, rawBody, '/v1/responses')
   const parts = await buildGatewayUpstreamRequestParts(req, {
     ...apiKeyAccount,
     providerCode: 'openai',
@@ -430,9 +436,16 @@ async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
   assert.equal(parts.headers.get('content-type'), 'application/json')
   assert.equal(parts.headers.get('originator'), 'codex_cli_rs')
-  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.125.0')
-  assert.equal(parts.headers.get('version'), '0.125.0')
-  assert.equal(parts.headers.get('openai-beta'), 'responses=experimental')
+  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.144.4')
+  assert.equal(parts.headers.get('version'), null)
+  assert.equal(parts.headers.get('openai-beta'), null)
+  assert.equal(parts.headers.get('x-openai-internal-codex-responses-lite'), null)
+  const solHeaders = new Headers(parts.headers)
+  applyOpenAIClientCompatibilityHeaders(req, solHeaders, {
+    requestClientCompatibility: 'codex_responses',
+    modelOverride: 'gpt-5.6-sol'
+  })
+  assert.equal(solHeaders.get('x-openai-internal-codex-responses-lite'), 'true')
 
   const input = body.input
   assert.ok(Array.isArray(input))
@@ -644,9 +657,16 @@ function testOpenAIClientPathNormalization(): void {
   assert.equal(isCodexModelsRequest(createRequest(undefined, {}, undefined, '/v1/models', 'GET')), false)
   const openAIModels = buildOpenAIModelsResponse([modelCatalogItem('gpt-standard')])
   assert.equal('data' in openAIModels, true, '普通 /models 响应应保持 OpenAI 标准 data 字段')
-  const codexModels = buildOpenAIModelsResponse([modelCatalogItem('gpt-codex')], createRequest(undefined, {}, undefined, '/v1/models?client_version=0.99.0', 'GET'))
+  const oldCodexModels = buildOpenAIModelsResponse([
+    modelCatalogItem('gpt-5.6-sol'),
+    modelCatalogItem('gpt-5.5')
+  ], createRequest(undefined, {}, undefined, '/v1/models?client_version=0.125.0', 'GET'))
+  const codexModels = oldCodexModels
   assert.equal('models' in codexModels, true, 'Codex /models 响应应使用 models 字段')
   assert.equal('data' in codexModels, false, 'Codex /models 响应不应返回 OpenAI 标准 data 字段')
+  if ('models' in oldCodexModels && 'models' in codexModels) {
+    assert.deepEqual(oldCodexModels.models.map((item) => item.slug), ['gpt-5.6-sol', 'gpt-5.5'])
+  }
   assert.equal(buildUpstreamUrl('https://api.openai.com', '/models'), 'https://api.openai.com/v1/models')
   assert.equal(buildUpstreamUrl('https://api.openai.com/v1', '/models?limit=20'), 'https://api.openai.com/v1/models?limit=20')
   assert.equal(buildUpstreamUrl('https://api.openai.com', '/chat/completions'), 'https://api.openai.com/v1/chat/completions')
@@ -674,6 +694,7 @@ function modelCatalogItem(model: string): Parameters<typeof buildOpenAIModelsRes
     supportsPromptCaching: false,
     supportedServiceTiers: [],
     supportedReasoningEfforts: [],
+    defaultReasoningEffort: null,
     codexSupportedReasoningLevels: [],
     supportsServiceTier: false,
     source: 'regression',

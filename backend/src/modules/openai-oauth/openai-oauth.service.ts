@@ -8,13 +8,16 @@ import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
+import {
+  openAICodexOriginator,
+  openAICodexUserAgent
+} from '../gateway/adapters/gpt-codex/client-headers.js'
 
 export const OPENAI_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 export const OPENAI_OAUTH_AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize'
 export const OPENAI_OAUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token'
 export const OPENAI_OAUTH_DEFAULT_REDIRECT_URI = 'http://localhost:1455/auth/callback'
-export const OPENAI_OAUTH_DEFAULT_SCOPES = 'openid profile email offline_access'
-export const OPENAI_OAUTH_REFRESH_SCOPES = 'openid profile email'
+export const OPENAI_OAUTH_DEFAULT_SCOPES = 'openid profile email offline_access api.connectors.read api.connectors.invoke'
 export const openAIOAuthTokenResponseMaxBytes = 256 * 1024
 export const openAIOAuthTokenRequestTimeoutMs = 25_000
 
@@ -62,21 +65,31 @@ export async function generateOpenAIAuthURL(): Promise<OpenAIAuthURLResult> {
     createdAt: Date.now()
   }, sessionTtlMs)
 
-  const params = new URLSearchParams({
-    response_type: 'code',
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    scope: OPENAI_OAUTH_DEFAULT_SCOPES,
-    state,
-    code_challenge: codeChallenge,
-    code_challenge_method: 'S256',
-    codex_cli_simplified_flow: 'true'
-  })
-
   return {
-    authUrl: `${OPENAI_OAUTH_AUTHORIZE_URL}?${params.toString()}`,
+    authUrl: buildOpenAIOAuthAuthorizeUrl({ clientId, redirectUri, state, codeChallenge }),
     sessionId
   }
+}
+
+export function buildOpenAIOAuthAuthorizeUrl(input: {
+  clientId: string
+  redirectUri: string
+  state: string
+  codeChallenge: string
+}): string {
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: input.clientId,
+    redirect_uri: input.redirectUri,
+    scope: OPENAI_OAUTH_DEFAULT_SCOPES,
+    state: input.state,
+    code_challenge: input.codeChallenge,
+    code_challenge_method: 'S256',
+    id_token_add_organizations: 'true',
+    codex_cli_simplified_flow: 'true',
+    originator: 'codex_cli_rs'
+  })
+  return `${OPENAI_OAUTH_AUTHORIZE_URL}?${params.toString()}`
 }
 
 export async function exchangeOpenAIAuthCode(input: {
@@ -112,8 +125,7 @@ export async function refreshOpenAIOAuthToken(input: { refreshToken: string; cli
   return requestOpenAIToken({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
-    client_id: clientId,
-    scope: OPENAI_OAUTH_REFRESH_SCOPES
+    client_id: clientId
   }, input.proxyUrl, input.signal)
 }
 
@@ -163,8 +175,8 @@ export function sanitizeOpenAIOAuthErrorMessage(message: string): string {
 }
 
 async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: string, signal?: AbortSignal): Promise<OpenAITokenInfo> {
-  const bodyText = new URLSearchParams(form).toString()
-  const response = await performTokenRequest(bodyText, proxyUrl, signal)
+  const tokenRequest = buildOpenAIOAuthTokenHttpRequest(form)
+  const response = await performTokenRequest(tokenRequest, proxyUrl, signal)
 
   const text = response.body
   let payload: Record<string, unknown> = {}
@@ -206,7 +218,32 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
   }
 }
 
-async function performTokenRequest(bodyText: string, proxyUrl?: string, signal?: AbortSignal): Promise<{ statusCode: number; body: string }> {
+export function buildOpenAIOAuthTokenHttpRequest(form: Record<string, string>): {
+  body: string
+  headers: Record<string, string | number>
+} {
+  const body = form.grant_type === 'refresh_token'
+    ? JSON.stringify(form)
+    : new URLSearchParams(form).toString()
+  const headers: Record<string, string | number> = {
+    'content-type': form.grant_type === 'refresh_token' ? 'application/json' : 'application/x-www-form-urlencoded',
+    'content-length': Buffer.byteLength(body)
+  }
+  if (form.grant_type === 'refresh_token') {
+    headers.originator = openAICodexOriginator
+    headers['user-agent'] = openAICodexUserAgent
+  }
+  return {
+    body,
+    headers
+  }
+}
+
+async function performTokenRequest(
+  tokenRequest: ReturnType<typeof buildOpenAIOAuthTokenHttpRequest>,
+  proxyUrl?: string,
+  signal?: AbortSignal
+): Promise<{ statusCode: number; body: string }> {
   const resolvedProxyUrl = normalizeString(proxyUrl) || runtimeConfig.oauthProxyUrl
   const agent = resolvedProxyUrl ? createProxyAgent(resolvedProxyUrl) : undefined
   const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
@@ -216,11 +253,7 @@ async function performTokenRequest(bodyText: string, proxyUrl?: string, signal?:
     }
     const request = httpsRequest(OPENAI_OAUTH_TOKEN_URL, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        'content-length': Buffer.byteLength(bodyText),
-        'user-agent': 'codex-cli/0.91.0'
-      },
+      headers: tokenRequest.headers,
       agent,
       timeout: openAIOAuthTokenRequestTimeoutMs
     }, (response) => {
@@ -246,7 +279,7 @@ async function performTokenRequest(bodyText: string, proxyUrl?: string, signal?:
     request.on('response', cleanupAbortSignal)
     request.on('close', cleanupAbortSignal)
     request.on('timeout', () => request.destroy(new Error('OpenAI OAuth 令牌请求超时')))
-    request.end(bodyText)
+    request.end(tokenRequest.body)
   })
   return response
 }

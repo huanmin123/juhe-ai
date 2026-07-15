@@ -10,7 +10,7 @@ export interface AccountGptModelCapabilityOption {
   value: string
   supportedServiceTiers?: ProviderModelServiceTier[]
   supportedReasoningEfforts?: ProviderModelReasoningEffort[]
-  defaultReasoningEffort?: ProviderModelReasoningEffort
+  defaultReasoningEffort?: ProviderModelReasoningEffort | null
 }
 
 export interface AccountGptRequestOverrideCapabilities {

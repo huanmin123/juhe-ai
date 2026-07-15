@@ -522,6 +522,7 @@ func newManagementAPIHandler(
 	providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
 		Store:       store,
 		Invalidator: systemAccountInvalidator,
+		Logger:      logger,
 	})
 	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
 		managementroutestrategies.ServiceOptions{

@@ -2,8 +2,10 @@ package managementprovidermodels
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -48,12 +50,14 @@ type ServiceOptions struct {
 	Store       Store
 	Invalidator CustomProviderModelInvalidator
 	NewID       func(prefix string) string
+	Logger      *slog.Logger
 }
 
 type Service struct {
 	store       Store
 	invalidator CustomProviderModelInvalidator
 	newID       func(prefix string) string
+	logger      *slog.Logger
 }
 
 type ModelOptionListInput struct {
@@ -140,6 +144,7 @@ type CustomModelCreateInput struct {
 	ActorRole             string
 	TargetSystemAccountID string
 	Fields                CustomModelMutation
+	TraceID               string
 }
 
 type CustomModelUpdateInput struct {
@@ -148,6 +153,7 @@ type CustomModelUpdateInput struct {
 	ActorSystemAccountID string
 	ActorRole            string
 	Fields               CustomModelMutation
+	TraceID              string
 }
 
 type CustomModelDeleteInput struct {
@@ -155,6 +161,7 @@ type CustomModelDeleteInput struct {
 	ID                   string
 	ActorSystemAccountID string
 	ActorRole            string
+	TraceID              string
 }
 
 type CustomModelDeleteResult struct {
@@ -168,6 +175,17 @@ type ModelOption struct {
 	SupportedServiceTiers     []string `json:"supportedServiceTiers,omitempty"`
 	SupportedReasoningEfforts []string `json:"supportedReasoningEfforts,omitempty"`
 	DefaultReasoningEffort    string   `json:"defaultReasoningEffort,omitempty"`
+}
+
+func (item ModelOption) MarshalJSON() ([]byte, error) {
+	type modelOptionAlias ModelOption
+	return json.Marshal(struct {
+		modelOptionAlias
+		DefaultReasoningEffort *string `json:"defaultReasoningEffort"`
+	}{
+		modelOptionAlias:       modelOptionAlias(item),
+		DefaultReasoningEffort: nullableReasoningEffort(item.DefaultReasoningEffort),
+	})
 }
 
 type DefaultHealthCheckModelResult struct {
@@ -295,6 +313,25 @@ type ModelCatalogItem struct {
 	Source                          string                                          `json:"source"`
 }
 
+func (item ModelCatalogItem) MarshalJSON() ([]byte, error) {
+	type modelCatalogItemAlias ModelCatalogItem
+	return json.Marshal(struct {
+		modelCatalogItemAlias
+		DefaultReasoningEffort *string `json:"defaultReasoningEffort"`
+	}{
+		modelCatalogItemAlias:  modelCatalogItemAlias(item),
+		DefaultReasoningEffort: nullableReasoningEffort(item.DefaultReasoningEffort),
+	})
+}
+
+func nullableReasoningEffort(value string) *string {
+	normalized := strings.TrimSpace(value)
+	if normalized == "" {
+		return nil
+	}
+	return &normalized
+}
+
 func NewService(store Store) *Service {
 	return NewServiceWithOptions(ServiceOptions{Store: store})
 }
@@ -306,7 +343,11 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			return prefix + "_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		}
 	}
-	return &Service{store: opts.Store, invalidator: opts.Invalidator, newID: newID}
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{store: opts.Store, invalidator: opts.Invalidator, newID: newID, logger: logger}
 }
 
 func (s *Service) ModelOptions(ctx context.Context, input ModelOptionListInput) ([]ModelOption, error) {
@@ -453,7 +494,7 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	if !found {
 		return ModelCatalogItem{}, ErrProviderNotFound
 	}
-	if input.Fields.Invalid || input.Fields.DefaultReasoningEffort.Set {
+	if input.Fields.Invalid {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
 	}
 	actorSystemAccountID := strings.TrimSpace(input.ActorSystemAccountID)
@@ -511,7 +552,7 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	if err != nil {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
 	}
-	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason)
+	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	return catalogItemFromPort(saved), nil
 }
 
@@ -539,11 +580,11 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	if !isAdminRole(input.ActorRole) && customModelMutationHasPriceField(input.Fields) {
 		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护模型价格"}
 	}
-	if input.Fields.Invalid || input.Fields.DefaultReasoningEffort.Set || !customModelMutationHasAnyField(input.Fields) {
+	if input.Fields.Invalid || !customModelMutationHasAnyField(input.Fields) {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
 	}
 	if input.Fields.ConfigurationTemplateID.Set {
-		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "配置模板只能在新建模型时使用"}
 	}
 	saveInput := customModelSaveInputFromExisting(existing, strings.TrimSpace(input.ActorSystemAccountID))
 	if err := applyCustomModelPatch(&saveInput, input.Fields); err != nil {
@@ -556,7 +597,7 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	if err != nil {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
 	}
-	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason)
+	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	if saved.Status != "active" {
 		if err := s.clearDefaultHealthCheckModelReferences(ctx, saved); err != nil {
 			return ModelCatalogItem{}, err
@@ -633,12 +674,8 @@ func (s *Service) updateBuiltInModelPrices(ctx context.Context, existing port.Ma
 	if !found {
 		return ModelCatalogItem{}, ErrCustomProviderModelNotFound
 	}
+	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	updated = builtInProviderModelCatalogItemFromPriceUpdate(updated, persisted)
-	if s.invalidator != nil {
-		if err := s.invalidator.InvalidateCustomProviderModelChanged(ctx, CustomProviderModelSavedReason); err != nil {
-			return ModelCatalogItem{}, fmt.Errorf("invalidate built-in provider model prices: %w", err)
-		}
-	}
 	result := catalogItemFromPort(updated)
 	result.UpdatedAt = formatOptionalTime(persisted.UpdatedAt)
 	return result, nil
@@ -729,7 +766,7 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 		return CustomModelDeleteResult{}, err
 	}
 	if deleted {
-		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason)
+		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason, input.TraceID)
 		if err := s.clearDefaultHealthCheckModelReferences(ctx, existing); err != nil {
 			return CustomModelDeleteResult{}, err
 		}
@@ -1001,7 +1038,9 @@ func applyConfigurationTemplate(input *port.ManagementCustomProviderModelSaveInp
 	input.SupportedAPIProtocols = append([]string(nil), template.SupportedAPIProtocols...)
 	input.SupportedServiceTiers = append([]string(nil), template.SupportedServiceTiers...)
 	input.SupportedReasoningEfforts = append([]string(nil), template.SupportedReasoningEfforts...)
-	input.DefaultReasoningEffort = ""
+	input.DefaultReasoningEffort = template.DefaultReasoningEffort
+	input.ReleaseDate = template.ReleaseDate
+	input.ShutdownDate = template.ShutdownDate
 	input.ContextWindowTokens = cloneIntPtr(template.ContextWindowTokens)
 	input.MaxInputTokens = cloneIntPtr(template.MaxInputTokens)
 	input.MaxOutputTokens = cloneIntPtr(template.MaxOutputTokens)
@@ -1016,6 +1055,9 @@ func applyConfigurationTemplate(input *port.ManagementCustomProviderModelSaveInp
 	input.AudioInputUSDPer1M = cloneFloatPtr(template.AudioInputUSDPer1M)
 	input.AudioOutputUSDPer1M = cloneFloatPtr(template.AudioOutputUSDPer1M)
 	input.OutputUSDPerImage = cloneFloatPtr(template.OutputUSDPerImage)
+	input.PricingNotes = template.PricingNotes
+	input.CapabilityNotes = template.CapabilityNotes
+	input.Notes = template.Notes
 }
 
 func customModelModeFromCatalog(item port.ManagementProviderModelCatalogItem) string {
@@ -1089,7 +1131,6 @@ func applyCustomModelPatch(input *port.ManagementCustomProviderModelSaveInput, f
 }
 
 func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSaveInput, fields CustomModelMutation, create bool) error {
-	input.DefaultReasoningEffort = ""
 	if fields.Status.Set {
 		status := strings.TrimSpace(fields.Status.Value)
 		if !validCustomModelStatus(status) {
@@ -1147,6 +1188,13 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 		input.SupportedReasoningEfforts = reasoningEfforts
 	} else if create {
 		input.SupportedReasoningEfforts = []string{}
+	}
+	if fields.DefaultReasoningEffort.Set {
+		defaultReasoningEffort := strings.TrimSpace(fields.DefaultReasoningEffort.Value)
+		if defaultReasoningEffort != "" && !validCustomModelCapabilityToken(defaultReasoningEffort) {
+			return &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
+		input.DefaultReasoningEffort = defaultReasoningEffort
 	}
 	if fields.ReleaseDate.Set {
 		input.ReleaseDate = strings.TrimSpace(fields.ReleaseDate.Value)
@@ -1464,11 +1512,18 @@ func customProviderModelBoundMessage(bindings port.ManagementCustomProviderModel
 	return "模型已绑定 AI 账户，不能删除；请先从" + strings.Join(parts, "、") + "中移除后再删除"
 }
 
-func (s *Service) invalidateCustomProviderModel(ctx context.Context, reason string) {
+func (s *Service) invalidateCustomProviderModel(ctx context.Context, reason string, traceID string) {
 	if s.invalidator == nil {
 		return
 	}
-	_ = s.invalidator.InvalidateCustomProviderModelChanged(ctx, reason)
+	if err := s.invalidator.InvalidateCustomProviderModelChanged(ctx, reason); err != nil {
+		s.logger.WarnContext(ctx, "模型已保存，但缓存同步失败",
+			slog.String("event", "model_cache_sync_failed_after_commit"),
+			slog.String("reason", reason),
+			slog.String("trace_id", strings.TrimSpace(traceID)),
+			slog.Any("error", err),
+		)
+	}
 }
 
 type mergeKeyFunc func(port.ManagementProviderModelCatalogItem) string

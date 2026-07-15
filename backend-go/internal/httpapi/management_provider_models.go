@@ -189,6 +189,7 @@ func newManagementProviderCustomModelCreateHandler(service managementProviderMod
 			ActorRole:             authContext.Role,
 			TargetSystemAccountID: managementScopedSystemAccountID(authContext, r.URL.Query()),
 			Fields:                fields,
+			TraceID:               requestIDFromContext(r.Context()),
 		})
 		if err != nil {
 			writeManagementProviderCustomModelError(w, err)
@@ -216,6 +217,7 @@ func newManagementProviderCustomModelUpdateHandler(service managementProviderMod
 			ActorSystemAccountID: authContext.SystemAccountID,
 			ActorRole:            authContext.Role,
 			Fields:               fields,
+			TraceID:              requestIDFromContext(r.Context()),
 		})
 		if err != nil {
 			writeManagementProviderCustomModelError(w, err)
@@ -301,6 +303,7 @@ func newManagementProviderCustomModelDeleteHandler(service managementProviderMod
 			ID:                   chi.URLParam(r, "id"),
 			ActorSystemAccountID: authContext.SystemAccountID,
 			ActorRole:            authContext.Role,
+			TraceID:              requestIDFromContext(r.Context()),
 		})
 		if err != nil {
 			writeManagementProviderCustomModelError(w, err)
@@ -412,7 +415,12 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 			}
 			fields.SupportedReasoningEfforts = managementprovidermodels.OptionalStringList{Set: true, Value: value}
 		case "defaultReasoningEffort":
-			fields.Invalid = true
+			value, ok := decodeManagementProviderCustomModelNullableString(raw, false)
+			if !ok {
+				fields.Invalid = true
+				continue
+			}
+			fields.DefaultReasoningEffort = managementprovidermodels.OptionalString{Set: true, Value: value}
 		case "serviceTierPrices":
 			var value map[string]managementprovidermodels.ModelPriceSet
 			if string(raw) == "null" {

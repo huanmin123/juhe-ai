@@ -204,11 +204,16 @@ function createOAuthAccount(
     schedulable,
     groupId: oauthGroupId
   }, access)
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = ?, schedulable = ?
+    WHERE id = ?
+  `).run(status, schedulable ? 1 : 0, account.id)
   return {
     id: account.id,
     name,
-    status: account.status,
-    schedulable: account.schedulable,
+    status,
+    schedulable,
     originalRefreshToken: refreshToken
   }
 }

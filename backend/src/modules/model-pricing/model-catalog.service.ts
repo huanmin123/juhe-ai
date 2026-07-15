@@ -36,6 +36,7 @@ import {
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   normalizeProviderToken
 } from '../../domain/provider-protocol.js'
+import { usesOpenAICodexResponsesLite } from '../gateway/adapters/gpt-codex/client-headers.js'
 import {
   listAnthropicProtocolProviderCodes,
   listAnthropicProtocolProviderCodesAsync,
@@ -53,10 +54,11 @@ import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from '../../stor
 
 export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
 
-export interface ProviderModelCatalogItem extends ProviderModelPricing {
+export interface ProviderModelCatalogItem extends Omit<ProviderModelPricing, 'defaultReasoningEffort'> {
   id?: string
   scope: ModelCatalogScope
   status: 'draft' | 'active' | 'disabled'
+  defaultReasoningEffort: string | null
   systemAccountId?: string
   contextWindowTokens?: number
   pricingNotes?: string
@@ -489,6 +491,7 @@ function modelCatalogCacheKey(options: ModelCatalogListOptions): string {
 function cloneProviderModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
   return items.map((item) => ({
     ...item,
+    defaultReasoningEffort: item.defaultReasoningEffort ?? null,
     supportedApiProtocols: [...item.supportedApiProtocols],
     serviceTierPrices: cloneServiceTierPrices(item.serviceTierPrices),
     supportedServiceTiers: [...item.supportedServiceTiers],
@@ -517,7 +520,7 @@ function hasResolvablePrice(item: ProviderModelCatalogItem, _allItems: ProviderM
   return hasDirectPrice(item)
 }
 
-function hasDirectPrice(item: ProviderModelPricing): boolean {
+function hasDirectPrice(item: Omit<ProviderModelPricing, 'defaultReasoningEffort'>): boolean {
   return item.inputUsdPer1M !== undefined
     || item.outputUsdPer1M !== undefined
     || item.cachedInputUsdPer1M !== undefined
@@ -539,6 +542,7 @@ export function findCatalogItem(items: ProviderModelCatalogItem[], model: string
 function toBuiltInCatalogItem(item: BuiltInProviderModelRecord): ProviderModelCatalogItem {
   return {
     ...item,
+    defaultReasoningEffort: item.defaultReasoningEffort ?? null,
     scope: 'built_in',
     status: item.status,
     supportedServiceTiers: [...(item.supportedServiceTiers ?? [])],
@@ -573,7 +577,7 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     supportsPromptCaching: item.cachedInputUsdPer1M !== undefined,
     supportedServiceTiers: [...item.supportedServiceTiers],
     supportedReasoningEfforts: [...item.supportedReasoningEfforts],
-    defaultReasoningEffort: item.defaultReasoningEffort,
+    defaultReasoningEffort: item.defaultReasoningEffort ?? null,
     codexSupportedReasoningLevels: [],
     supportsServiceTier: item.supportedServiceTiers.length > 0,
     catalogVisible: true,
@@ -637,7 +641,7 @@ function buildCodexModelInfo(item: ProviderModelCatalogItem, index: number): Cod
     experimental_supported_tools: [],
     input_modalities: ['text', 'image'],
     supports_search_tool: false,
-    use_responses_lite: false,
+    use_responses_lite: usesOpenAICodexResponsesLite(item.model),
     auto_review_model_override: null,
     tool_mode: null,
     multi_agent_version: item.codexMultiAgentVersion ?? null
@@ -774,7 +778,10 @@ function modelCreatedUnixSeconds(item: ProviderModelCatalogItem): number {
   return Number.isFinite(time) ? Math.trunc(time / 1000) : 0
 }
 
-function defaultImageOutputTokens(input: CostInput, pricing: ProviderModelPricing): number {
+function defaultImageOutputTokens(
+  input: CostInput,
+  pricing: Pick<ProviderModelPricing, 'mode' | 'imageOutputUsdPer1M'>
+): number {
   if (input.outputImageTokens !== undefined || pricing.mode !== 'image_generation' || pricing.imageOutputUsdPer1M === undefined) {
     return 0
   }

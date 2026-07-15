@@ -1605,12 +1605,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         model: 'gpt-5.6-sol',
         supportedApiProtocols: ['responses'],
         supportedServiceTiers: ['priority'],
-        supportedReasoningEfforts: ['low', 'high']
+        supportedReasoningEfforts: ['low', 'high'],
+        defaultReasoningEffort: 'high'
       },
       {
         providerCode: 'openai',
         model: 'gpt-4.1',
-        supportedApiProtocols: ['chat_completions']
+        supportedApiProtocols: ['chat_completions'],
+        defaultReasoningEffort: null
       }
     ])
     return

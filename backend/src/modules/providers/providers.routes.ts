@@ -45,7 +45,11 @@ interface ProviderModelOption {
   supportedApiProtocols?: ProviderModelApiProtocol[]
   supportedServiceTiers?: string[]
   supportedReasoningEfforts?: string[]
-  defaultReasoningEffort?: string
+  defaultReasoningEffort: string | null
+}
+
+type ProviderModelOptionInput = Omit<ProviderModelOption, 'defaultReasoningEffort'> & {
+  defaultReasoningEffort?: string | null
 }
 
 providersRouter.get('/', requireAdmin, async (req, res, next) => {
@@ -229,6 +233,7 @@ const customModelSchema = z.object({
   ])).optional(),
   supportedServiceTiers: z.array(customModelCapabilityTokenSchema).max(16).optional(),
   supportedReasoningEfforts: z.array(customModelCapabilityTokenSchema).max(16).optional(),
+  defaultReasoningEffort: nullableTrimmedStringSchema,
   releaseDate: nullableDateSchema,
   shutdownDate: nullableDateSchema,
   contextWindowTokens: nullableIntegerSchema,
@@ -397,8 +402,7 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
     const next = {
       ...existing,
       ...parsed.data,
-      scope: existing.scope,
-      defaultReasoningEffort: undefined
+      scope: existing.scope
     }
     const validation = await validateCustomModelPricing({
       providerCode: existing.providerCode,
@@ -518,7 +522,7 @@ function providerWithDefaultHealthCheckModelPreference(
   }
 }
 
-export function dedupeProviderModelOptions(options: ProviderModelOption[]): ProviderModelOption[] {
+export function dedupeProviderModelOptions(options: ProviderModelOptionInput[]): ProviderModelOption[] {
   const seenProviderModels = new Map<string, number>()
   const result: ProviderModelOption[] = []
   const defaultReasoningEffortCandidates: string[][] = []
@@ -563,7 +567,7 @@ export function dedupeProviderModelOptions(options: ProviderModelOption[]): Prov
       }
       continue
     }
-    const item: ProviderModelOption = { providerCode, model }
+    const item: ProviderModelOption = { providerCode, model, defaultReasoningEffort: null }
     assignProviderModelOptionCapabilities(item, {
       supportedApiProtocols,
       supportedServiceTiers,
@@ -618,7 +622,7 @@ function normalizedProviderModelCapabilities<TValue extends string>(
 }
 
 function normalizedProviderModelCapability<TValue extends string>(
-  value: TValue | undefined,
+  value: TValue | null | undefined,
   allowedValues: ReadonlySet<TValue>
 ): TValue | undefined {
   const normalized = value?.trim() as TValue | undefined
@@ -756,6 +760,9 @@ function customModelInputFromConfigurationTemplate(template: ProviderModelCatalo
     supportedApiProtocols: [...(template.supportedApiProtocols ?? [])],
     supportedServiceTiers: [...(template.supportedServiceTiers ?? [])],
     supportedReasoningEfforts: [...(template.supportedReasoningEfforts ?? [])],
+    defaultReasoningEffort: template.defaultReasoningEffort ?? null,
+    releaseDate: template.releaseDate ?? null,
+    shutdownDate: template.shutdownDate ?? null,
     contextWindowTokens: template.contextWindowTokens ?? null,
     maxInputTokens: template.maxInputTokens ?? null,
     maxOutputTokens: template.maxOutputTokens ?? null,
@@ -769,7 +776,10 @@ function customModelInputFromConfigurationTemplate(template: ProviderModelCatalo
     imageOutputUsdPer1M: template.imageOutputUsdPer1M ?? null,
     audioInputUsdPer1M: template.audioInputUsdPer1M ?? null,
     audioOutputUsdPer1M: template.audioOutputUsdPer1M ?? null,
-    outputUsdPerImage: template.outputUsdPerImage ?? null
+    outputUsdPerImage: template.outputUsdPerImage ?? null,
+    pricingNotes: template.pricingNotes ?? null,
+    capabilityNotes: template.capabilityNotes ?? null,
+    notes: template.notes ?? null
   }
 }
 

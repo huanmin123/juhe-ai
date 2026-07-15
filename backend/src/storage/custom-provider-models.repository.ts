@@ -8,6 +8,7 @@ import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { normalizeServiceTierPrices } from './provider-model-catalog.repository.js'
+import { notifyCommittedModelCacheInvalidationAsync } from './model-cache-sync-warning.js'
 
 type CustomProviderModelApiProtocol = ProviderModelPricing['supportedApiProtocols'][number]
 type CustomProviderModelServiceTier = string
@@ -231,7 +232,10 @@ export async function findCustomProviderModelByIdAsync(id: string): Promise<Cust
   return row ? customProviderModelFromRow(row) : undefined
 }
 
-export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput): CustomProviderModelRecord {
+export function upsertCustomProviderModel(
+  input: UpsertCustomProviderModelInput,
+  options: { notifyCache?: boolean } = {}
+): CustomProviderModelRecord {
   const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
   const model = requiredText(input.model, '模型 ID 不能为空')
   const scope: CustomProviderModelScope = input.scope === 'global' ? 'global' : 'personal'
@@ -336,13 +340,17 @@ export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput)
   if (!saved) {
     throw new Error('自定义模型保存失败')
   }
-  notifyGatewayRuntimeCacheInvalidation('custom_provider_model_saved')
+  if (options.notifyCache !== false) {
+    notifyGatewayRuntimeCacheInvalidation('custom_provider_model_saved')
+  }
   return saved
 }
 
 export async function upsertCustomProviderModelAsync(input: UpsertCustomProviderModelInput): Promise<CustomProviderModelRecord> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return upsertCustomProviderModel(input)
+    const saved = upsertCustomProviderModel(input, { notifyCache: false })
+    await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_saved')
+    return saved
   }
   const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
   const model = requiredText(input.model, '模型 ID 不能为空')
@@ -447,28 +455,35 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
   if (!saved) {
     throw new Error('自定义模型保存失败')
   }
-  notifyGatewayRuntimeCacheInvalidation('custom_provider_model_saved')
+  await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_saved')
   return saved
 }
 
-export function deleteCustomProviderModel(id: string): boolean {
+export function deleteCustomProviderModel(
+  id: string,
+  options: { notifyCache?: boolean } = {}
+): boolean {
   const result = getBusinessDatabase()
     .prepare('DELETE FROM custom_provider_models WHERE id = ?')
     .run(id)
-  if (result.changes > 0) {
-    notifyGatewayRuntimeCacheInvalidation('custom_provider_model_deleted')
+  if (result.changes > 0 && options.notifyCache !== false) {
+    void notifyCommittedModelCacheInvalidationAsync('custom_provider_model_deleted')
   }
   return result.changes > 0
 }
 
 export async function deleteCustomProviderModelAsync(id: string): Promise<boolean> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return deleteCustomProviderModel(id)
+    const deleted = deleteCustomProviderModel(id, { notifyCache: false })
+    if (deleted) {
+      await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_deleted')
+    }
+    return deleted
   }
   const client = await getCustomProviderModelsDatabaseClient()
   const result = await client.execute(`DELETE FROM ${customProviderModelsTable(client)} WHERE id = ?`, [id])
   if (result.changes > 0) {
-    notifyGatewayRuntimeCacheInvalidation('custom_provider_model_deleted')
+    await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_deleted')
   }
   return result.changes > 0
 }

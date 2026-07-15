@@ -8,6 +8,9 @@ import {
   defaultProtocolsForModelCategory,
   defaultProtocolsForProviderModelCategory,
   formatModelCategory,
+  formatModelReasoningCapabilities,
+  formatModelServiceTierCapabilities,
+  formatPrice,
   getModelCategory
 } from '../../src/views/providers/providerModelFormatters'
 import type { ProviderDefinition, ProviderModelPricing } from '../../src/types/domain'
@@ -34,6 +37,19 @@ assert.equal(categoryFromModeOrModel(undefined, 'o3-pro'), 'text', 'o 系列模�
 
 assert.equal(getModelCategory(providerModel({ model: 'gpt-image-2' })), 'image', 'getModelCategory 应继续使用拆分后的分类规则')
 assert.equal(formatModelCategory(providerModel({ model: 'claude-haiku-4-5' })), '对话 / 编码', 'formatModelCategory 文案不应变化')
+assert.equal(formatModelServiceTierCapabilities(providerModel()), '仅标准', '未声明额外服务等级时应明确表示仅标准档')
+assert.equal(formatModelReasoningCapabilities(providerModel()), '不支持', '未声明思考能力时应明确表示不支持')
+assert.equal(
+  formatModelReasoningCapabilities(providerModel({ supportedReasoningEfforts: ['low', 'high'] })),
+  'Low / High；默认：上游决定',
+  '支持思考但没有正式默认值时必须明确由上游决定，不能看起来像漏字段'
+)
+assert.equal(
+  formatModelReasoningCapabilities(providerModel({ supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high' })),
+  'Low / High（默认）',
+  '思考级别必须标明默认值'
+)
+assert.equal(formatPrice(undefined), '官方未公布', '缺失价格不能显示成含义不明的短横线')
 assert.deepEqual(defaultProtocolsForModelCategory('image'), ['images'], '图片模型默认协议不应变化')
 assert.deepEqual(defaultProtocolsForModelCategory('audio'), ['audio'], '音频模型默认协议不应变化')
 assert.deepEqual(defaultProtocolsForModelCategory('text'), ['responses', 'chat_completions'], '文本模型默认协议不应变化')
@@ -75,6 +91,16 @@ assert.doesNotMatch(catalogModalSource, /我的默认检查模型|column\.key ==
 assert.match(providersViewSource, /: await api\.providers\.options\(\)/, '普通用户每次打开模型目录时应重新读取个人 provider 默认值')
 assert.match(providerTableConfigSource, /const selfProviderColumns = \[[\s\S]*默认检查模型[\s\S]*defaultHealthCheckModel/, '普通用户模型目录列表应展示个人默认检查模型列')
 assert.match(providersViewSource, /<div class="mobile-list-meta-item mobile-list-meta-wide">\s*<span>默认检查模型<\/span>/, '普通用户移动端模型目录列表应展示个人默认检查模型')
+assert.match(providersViewSource, /const canManageModelPrices = computed\(\(\) => canManageModelPricesForView\(isManagementView\.value, authState\.isAdmin\.value\)\)/, '价格维护权限必须同时受管理视图和管理员身份约束')
+assert.match(providersViewSource, /availableCustomModelModeOptions/, '新增模型用途必须按当前供应商能力生成')
+assert.match(providersViewSource, /label="服务等级"[\s\S]*mode="multiple"/, '服务等级必须限制为当前供应商已知选项')
+assert.match(providersViewSource, /label="思考级别"[\s\S]*mode="multiple"/, '思考级别必须限制为当前供应商已知选项')
+assert.match(providersViewSource, /v-if="isManagementView && !editingBuiltInModel" label="作用域"/, '内置模型价格编辑不能伪装成个人模型作用域')
+assert.match(catalogModalSource, /serviceTierPrices/, '模型目录必须展示服务等级价格明细')
+assert.match(catalogModalSource, /serviceTierPrices\?\.\[tier\]\?\.cacheWriteUsdPer1M/, '桌面档位价格必须展示缓存写入')
+assert.match(catalogModalSource, /serviceTierPrices\?\.\[tier\]\?\.cacheWrite1hUsdPer1M/, '桌面档位价格必须展示 1h 缓存写入')
+assert.match(catalogModalSource, /缓存写入/, '移动端模型目录必须展示缓存写入价格')
+assert.match(catalogModalSource, /:row-key="modelRowKey"/, '聚合模型目录必须使用稳定复合键，不能只用可能跨供应商重复的模型名')
 
 console.log('供应商模型 formatter 回归通过：模型类别规则已拆分，现有分类和默认协议行为保持不变')
 

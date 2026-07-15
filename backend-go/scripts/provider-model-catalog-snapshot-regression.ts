@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
 
 import {
   listProviderModelPricingAsOf
@@ -51,6 +53,9 @@ const deepSeekV4 = modelAtSnapshot('deepseek', 'deepseek-v4-flash')
 assert.equal(deepSeekV4.contextWindowTokens, 1_000_000, 'DeepSeek V4 1M is total context')
 assert.equal(deepSeekV4.maxInputTokens, undefined, 'DeepSeek V4 max input must remain unknown when the vendor does not publish it')
 assert.equal(deepSeekV4.maxOutputTokens, 384_000)
+for (const item of listProviderModelPricingAsOf('deepseek', PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE)) {
+  assert(item.supportedApiProtocols.includes('messages'), `${item.model} must declare the archived DeepSeek Anthropic Messages surface`)
+}
 
 const geminiModels = new Set(listProviderModelPricingAsOf('gemini', PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE).map((item) => item.model))
 assert.equal(geminiModels.has('gemini-embedding-001'), false, 'Gemini embedding 001 shut down on 2026-07-14')
@@ -69,7 +74,24 @@ for (const [model, context, output] of [
   assert.equal(item.maxOutputTokens, output, `${model} max output must match the official GLM overview`)
 }
 
+for (const [model, context] of [
+  ['glm-4.7', 200_000],
+  ['glm-4.7-flashx', 200_000],
+  ['glm-4.7-flash', 200_000],
+  ['glm-4.6', 200_000],
+  ['glm-4.5', 128_000],
+  ['glm-4.5-x', 128_000],
+  ['glm-4.5-air', 128_000],
+  ['glm-4.5-airx', 128_000],
+  ['glm-4.5-flash', 128_000]
+] as const) {
+  const item = modelAtSnapshot('glm', model)
+  assert.equal(item.contextWindowTokens, context, `${model} published window is total context`)
+  assert.equal(item.maxInputTokens, undefined, `${model} max input must remain unknown without a published input-only limit`)
+}
+
 const anthropicModels = listProviderModelPricingAsOf('anthropic', PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE)
+assert(anthropicModels.every((item) => item.supportedServiceTiers.length === 0), 'Anthropic supports_service_tier boolean must not invent an OpenAI service tier token')
 assert(anthropicModels.some((item) => item.model === 'claude-sonnet-5' && item.catalogVisible !== false), 'Claude Sonnet 5 must be public')
 for (const alias of ['best', 'fable', 'opus', 'opus[1m]', 'opusplan', 'sonnet', 'sonnet[1m]', 'haiku']) {
   assert.equal(anthropicModels.find((item) => item.model === alias)?.catalogVisible, false, `Claude Code alias ${alias} must remain hidden pricing metadata`)
@@ -102,11 +124,26 @@ assert.doesNotMatch(providerModelCatalogSnapshotSQL, /\n[ \t]+\n/, 'generated ca
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /,\n\s*\n\s*\)/, 'generated catalog SQL must not leave a trailing comma before a tuple closes')
 assert.equal(
   normalizeSnapshotLineEndings(
-    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000052_w2_sync_provider_model_catalog_20260715.sql'), 'utf8')
+    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000054_w2_sync_provider_model_catalog_20260716.sql'), 'utf8')
   ),
   normalizeSnapshotLineEndings(providerModelCatalogSnapshotSQL),
   'unified provider catalog seed migration must match the generated current-schema snapshot'
 )
+
+const generatorCheckDir = mkdtempSync(join(tmpdir(), 'provider-model-catalog-check-'))
+try {
+  const crlfSnapshotPath = join(generatorCheckDir, 'snapshot.sql')
+  writeFileSync(crlfSnapshotPath, providerModelCatalogSnapshotSQL.replace(/\n/g, '\r\n'), 'utf8')
+  const check = spawnSync(process.execPath, [
+    '--import', 'tsx',
+    resolve(process.cwd(), '../backend-go/scripts/generate-provider-model-catalog.ts'),
+    '--check',
+    '--output', crlfSnapshotPath
+  ], { cwd: process.cwd(), encoding: 'utf8' })
+  assert.equal(check.status, 0, `generator --check must accept CRLF snapshots: ${check.stderr || check.stdout}`)
+} finally {
+  rmSync(generatorCheckDir, { recursive: true, force: true })
+}
 
 console.log('provider model catalog snapshot regression passed')
 

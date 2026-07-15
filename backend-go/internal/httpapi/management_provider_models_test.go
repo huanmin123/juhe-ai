@@ -330,6 +330,7 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 		"supportedApiProtocols":["responses"],
 		"supportedServiceTiers":["priority","flex"],
 		"supportedReasoningEfforts":["low","high"],
+		"defaultReasoningEffort":"high",
 		"maxInputTokens":922000,
 		"inputUsdPer1M":1.25,
 		"pricingNotes":" 说明 "
@@ -354,6 +355,8 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 		len(service.createInput.Fields.SupportedServiceTiers.Value) != 2 ||
 		!service.createInput.Fields.SupportedReasoningEfforts.Set ||
 		len(service.createInput.Fields.SupportedReasoningEfforts.Value) != 2 ||
+		!service.createInput.Fields.DefaultReasoningEffort.Set ||
+		service.createInput.Fields.DefaultReasoningEffort.Value != "high" ||
 		!service.createInput.Fields.MaxInputTokens.Set ||
 		service.createInput.Fields.MaxInputTokens.Value == nil ||
 		*service.createInput.Fields.MaxInputTokens.Value != 922000 {
@@ -597,14 +600,6 @@ func TestManagementProviderCustomModelHandlersMapErrors(t *testing.T) {
 			method:     http.MethodPost,
 			target:     "/__aisys__/api/providers/gpt/models",
 			body:       `{"model":"custom-chat","maxOutputTokens":2147483648}`,
-			wantStatus: http.StatusBadRequest,
-			wantMsg:    "自定义模型参数无效",
-		},
-		{
-			name:       "create rejects empty default reasoning effort",
-			method:     http.MethodPost,
-			target:     "/__aisys__/api/providers/gpt/models",
-			body:       `{"model":"custom-chat","defaultReasoningEffort":""}`,
 			wantStatus: http.StatusBadRequest,
 			wantMsg:    "自定义模型参数无效",
 		},

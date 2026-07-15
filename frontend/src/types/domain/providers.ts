@@ -104,7 +104,7 @@ export interface ProviderModelPricing {
   supportsServiceTier: boolean
   supportedServiceTiers?: ProviderModelServiceTier[]
   supportedReasoningEfforts?: ProviderModelReasoningEffort[]
-  defaultReasoningEffort?: ProviderModelReasoningEffort
+  defaultReasoningEffort: ProviderModelReasoningEffort | null
   codexSupportedReasoningLevels?: ProviderModelCodexReasoningLevel[]
   codexDefaultReasoningLevel?: ProviderModelCodexReasoningLevel
   codexMultiAgentVersion?: 'v2'
@@ -122,7 +122,7 @@ export interface ProviderModelOption {
   supportedApiProtocols?: ProviderModelApiProtocol[]
   supportedServiceTiers?: ProviderModelServiceTier[]
   supportedReasoningEfforts?: ProviderModelReasoningEffort[]
-  defaultReasoningEffort?: ProviderModelReasoningEffort
+  defaultReasoningEffort: ProviderModelReasoningEffort | null
 }
 
 export interface ProviderDefaultHealthCheckModelResult {
@@ -145,6 +145,7 @@ export interface ProviderModelUpsertPayload {
   supportedApiProtocols?: ProviderModelApiProtocol[]
   supportedServiceTiers?: ProviderModelServiceTier[]
   supportedReasoningEfforts?: ProviderModelReasoningEffort[]
+  defaultReasoningEffort?: ProviderModelReasoningEffort | null
   releaseDate?: string | null
   shutdownDate?: string | null
   contextWindowTokens?: number | null

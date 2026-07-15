@@ -5,7 +5,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, nowIso } from './database.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
-import { notifyGatewayRuntimeCacheInvalidationAsync } from '../shared/gateway-cache-invalidation.js'
+import { notifyCommittedModelCacheInvalidationAsync } from './model-cache-sync-warning.js'
 
 interface ProviderModelCatalogRow {
   id: string
@@ -81,7 +81,10 @@ export function listBuiltInProviderModels(providerCodes: string[]): BuiltInProvi
   const placeholders = providerCodes.map(() => '?').join(', ')
   const rows = getBusinessDatabase().prepare(`
     SELECT ${columns()} FROM provider_model_catalog
-    WHERE provider_code IN (${placeholders}) AND catalog_visible = 1
+    WHERE provider_code IN (${placeholders})
+      AND status = 'active'
+      AND catalog_visible = 1
+      AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))
     ORDER BY provider_code, catalog_order, model, id
   `).all(...providerCodes as SQLInputValue[]) as unknown as ProviderModelCatalogRow[]
   return rows.map(fromRow)
@@ -93,7 +96,10 @@ export async function listBuiltInProviderModelsAsync(providerCodes: string[]): P
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await client.query<ProviderModelCatalogRow>(`
     SELECT ${columns()} FROM juhe_business.provider_model_catalog
-    WHERE provider_code = ANY(?::text[]) AND catalog_visible = true
+    WHERE provider_code = ANY(?::text[])
+      AND status = 'active'
+      AND catalog_visible = true
+      AND (shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)
     ORDER BY provider_code, catalog_order, model, id
   `, [providerCodes])
   return rows.map(fromRow)
@@ -122,7 +128,7 @@ export async function updateBuiltInProviderModelPricesAsync(id: string, patch: P
     await client.execute(sql.replace('provider_model_catalog', 'juhe_business.provider_model_catalog'), writeParams)
   }
   const saved = await findBuiltInProviderModelByIdAsync(id)
-  if (saved) await notifyGatewayRuntimeCacheInvalidationAsync('provider_model_price_updated')
+  if (saved) await notifyCommittedModelCacheInvalidationAsync('provider_model_price_updated')
   return saved
 }
 

@@ -16,6 +16,7 @@ export interface PenaltyWindowRateLimitStore {
   cleanupIntervalMs: number
   maxIdleMs: number
   maxPenaltyMs: number
+  penaltyMode: 'exponential' | 'fixed_window'
   nextCleanupAtMs: number
 }
 
@@ -53,6 +54,7 @@ export function createPenaltyWindowRateLimitStore(input: {
   cleanupIntervalMs?: number
   maxIdleMs?: number
   maxPenaltyMs?: number
+  penaltyMode?: 'exponential' | 'fixed_window'
 }): PenaltyWindowRateLimitStore {
   return {
     name: input.name,
@@ -61,6 +63,7 @@ export function createPenaltyWindowRateLimitStore(input: {
     cleanupIntervalMs: positiveInteger(input.cleanupIntervalMs, defaultCleanupIntervalMs),
     maxIdleMs: positiveInteger(input.maxIdleMs, defaultMaxIdleMs),
     maxPenaltyMs: positiveInteger(input.maxPenaltyMs, defaultMaxPenaltyMs),
+    penaltyMode: input.penaltyMode ?? 'exponential',
     nextCleanupAtMs: 0
   }
 }
@@ -135,14 +138,21 @@ function inspectPenaltyWindowRateLimitBucket(
   entry.lastSeenAtMs = nowMs
 
   if (entry.blockedUntilMs && entry.blockedUntilMs > nowMs) {
-    openPenaltyBlock(store, entry, windowMs, nowMs)
+    if (store.penaltyMode === 'exponential') {
+      openPenaltyBlock(store, entry, windowMs, nowMs)
+    }
     store.entries.set(key, entry)
     return blockedBucket(rule, entry.blockedUntilMs - nowMs)
   }
 
   entry.blockedUntilMs = undefined
   if (entry.count >= rule.maxRequests) {
-    openPenaltyBlock(store, entry, windowMs, nowMs)
+    if (store.penaltyMode === 'fixed_window') {
+      entry.penaltyMs = 0
+      entry.blockedUntilMs = windowStartedAt + windowMs
+    } else {
+      openPenaltyBlock(store, entry, windowMs, nowMs)
+    }
     store.entries.set(key, entry)
     return blockedBucket(rule, (entry.blockedUntilMs ?? nowMs) - nowMs)
   }
@@ -174,6 +184,7 @@ async function consumeRedisPenaltyWindowRateLimit(
     arguments: [
       String(Math.trunc(nowMs)),
       String(rules.length),
+      store.penaltyMode === 'fixed_window' ? '1' : '0',
       ...rules.flatMap((rule) => {
         const windowMs = rule.windowSeconds * 1000
         const maxPenaltyMs = Math.max(windowMs, store.maxPenaltyMs)
@@ -309,6 +320,7 @@ function numericRedisResult(value: unknown): number {
 const redisPenaltyWindowRateLimitScript = `
 local now_ms = tonumber(ARGV[1])
 local rule_count = tonumber(ARGV[2])
+local fixed_window_mode = tonumber(ARGV[3]) == 1
 local counts = {}
 local penalty_values = {}
 local window_started_values = {}
@@ -317,7 +329,7 @@ local blocked_index = 0
 local blocked_retry_ms = 0
 
 for index = 1, rule_count do
-  local offset = 3 + (index - 1) * 5
+  local offset = 4 + (index - 1) * 5
   local window_ms = tonumber(ARGV[offset])
   local window_started_at = tonumber(ARGV[offset + 1])
   local max_requests = tonumber(ARGV[offset + 2])
@@ -337,11 +349,17 @@ for index = 1, rule_count do
   ttl_values[index] = ttl_ms
 
   if blocked_until_ms > now_ms or count >= max_requests then
-    local next_penalty_ms = penalty_ms > 0 and penalty_ms * 2 or window_ms
-    if next_penalty_ms > max_penalty_ms then
-      next_penalty_ms = max_penalty_ms
+    local next_penalty_ms = penalty_ms
+    if fixed_window_mode then
+      next_penalty_ms = 0
+      blocked_until_ms = window_started_at + window_ms
+    else
+      next_penalty_ms = penalty_ms > 0 and penalty_ms * 2 or window_ms
+      if next_penalty_ms > max_penalty_ms then
+        next_penalty_ms = max_penalty_ms
+      end
+      blocked_until_ms = now_ms + next_penalty_ms
     end
-    blocked_until_ms = now_ms + next_penalty_ms
     redis.call(
       'HSET',
       KEYS[index],
