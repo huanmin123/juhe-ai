@@ -303,21 +303,36 @@ func w6ManagementPublicAPILogsInsertSessions(
 ) {
 	t.Helper()
 
-	_, err := db.ExecContext(ctx, `
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin public API logs session fixture transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO juhe_business.system_accounts (
   id, username, display_name, description, role, status, password_hash,
   must_change_password, image_generation_enabled, created_at, updated_at
 ) VALUES
   ('sys_w6_public_api_logs_admin', 'w6-public-api-logs-admin', 'W6 Public API Logs Admin', NULL, 'admin', 'active', 'hash', false, false, $1, $1),
-  ('sys_w6_public_api_logs_user', 'w6-public-api-logs-user', 'W6 Public API Logs User', NULL, 'user', 'active', 'hash', false, false, $1, $1);
+  ('sys_w6_public_api_logs_user', 'w6-public-api-logs-user', 'W6 Public API Logs User', NULL, 'user', 'active', 'hash', false, false, $1, $1)
+`, now)
+	if err != nil {
+		t.Fatalf("insert public API logs accounts: %v", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO juhe_business.system_sessions (
   id, system_account_id, token_hash, expires_at, created_at, last_seen_at
 ) VALUES
-  ('sess_w6_public_api_logs_admin', 'sys_w6_public_api_logs_admin', $2, $3, $1, $4),
-  ('sess_w6_public_api_logs_user', 'sys_w6_public_api_logs_user', $5, $3, $1, $4);
-`, now, managementauth.HashSessionToken(w6ManagementPublicAPILogsAdminToken), now.Add(24*time.Hour), lastSeenAt, managementauth.HashSessionToken(w6ManagementPublicAPILogsUserToken))
+  ('sess_w6_public_api_logs_admin', 'sys_w6_public_api_logs_admin', $1, $2, $3, $4),
+  ('sess_w6_public_api_logs_user', 'sys_w6_public_api_logs_user', $5, $2, $3, $4)
+`, managementauth.HashSessionToken(w6ManagementPublicAPILogsAdminToken), now.Add(24*time.Hour), now, lastSeenAt, managementauth.HashSessionToken(w6ManagementPublicAPILogsUserToken))
 	if err != nil {
-		t.Fatalf("insert public API logs accounts and sessions: %v", err)
+		t.Fatalf("insert public API logs sessions: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit public API logs session fixtures: %v", err)
 	}
 }
 

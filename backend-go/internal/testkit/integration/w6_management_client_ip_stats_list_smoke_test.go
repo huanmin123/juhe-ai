@@ -1215,6 +1215,7 @@ func explainW6ManagementClientIPStatsPreparedPlan(
 	if _, err := tx.ExecContext(ctx, prepare); err != nil {
 		t.Fatalf("prepare production client IP stats query under %s: %v", planCacheMode, err)
 	}
+	defer func() { _, _ = tx.ExecContext(ctx, `DEALLOCATE w6_client_ip_stats_plan`) }()
 	literals := make([]string, 0, len(args))
 	for _, arg := range args {
 		literals = append(literals, w6ManagementClientIPStatsSQLLiteral(t, arg))
