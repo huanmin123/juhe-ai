@@ -61,6 +61,7 @@ export interface AccountHealthCheckFailureInput extends AccountHealthCheckSettin
   countTowardsThreshold?: boolean
   expectedConfigRevision?: number
   observedAt?: string
+  traceId?: string
 }
 
 export interface AccountHealthCheckFailureResult {
@@ -115,11 +116,13 @@ export function recordAccountHealthCheckSuccess(accountId: string, input: Accoun
   checkedAt?: string
   statusCode?: number
   expectedConfigRevision?: number
+  traceId?: string
 }): boolean {
   const checkedAt = normalizedIso(input.checkedAt) ?? nowIso()
   const nextHealthCheckAt = nextHealthCheckAtForAccount(accountId, checkedAt, input)
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
+  const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   let changed = false
@@ -142,6 +145,7 @@ export function recordAccountHealthCheckSuccess(accountId: string, input: Accoun
               cooldown_until = CASE WHEN status = 'pending_test' THEN NULL ELSE cooldown_until END,
               last_error_code = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_code END,
               last_error_message = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_message END,
+              last_error_trace_id = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_trace_id END,
               last_health_check_at = ?,
               last_health_success_at = ?,
               next_health_check_at = ?,
@@ -150,6 +154,7 @@ export function recordAccountHealthCheckSuccess(accountId: string, input: Accoun
               last_health_check_status_code = ?,
               last_health_check_error_code = NULL,
               last_health_check_error_message = NULL,
+              last_health_check_trace_id = ?,
               updated_at = ?
           WHERE id = ?
             AND deleted_at IS NULL
@@ -162,6 +167,7 @@ export function recordAccountHealthCheckSuccess(accountId: string, input: Accoun
           checkedAt,
           nextHealthCheckAt,
           statusCode,
+          traceId,
           checkedAt,
           accountId,
           expectedConfigRevision ?? null,
@@ -187,6 +193,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
   checkedAt?: string
   statusCode?: number
   expectedConfigRevision?: number
+  traceId?: string
 }): Promise<boolean> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return recordAccountHealthCheckSuccess(accountId, input)
@@ -196,6 +203,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
   const nextHealthCheckAt = nextHealthCheckAtForAccount(accountId, checkedAt, input)
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
+  const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const mutationGuard = postgresHealthCheckMutationGuard({
     expectedConfigRevision
   })
@@ -220,6 +228,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
           cooldown_until = CASE WHEN status = 'pending_test' THEN NULL ELSE cooldown_until END,
           last_error_code = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_code END,
           last_error_message = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_message END,
+          last_error_trace_id = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_trace_id END,
           last_health_check_at = ?,
           last_health_success_at = ?,
           next_health_check_at = ?,
@@ -228,6 +237,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
           last_health_check_status_code = ?,
           last_health_check_error_code = NULL,
           last_health_check_error_message = NULL,
+          last_health_check_trace_id = ?,
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
@@ -239,6 +249,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
       checkedAt,
       nextHealthCheckAt,
       statusCode,
+      traceId,
       checkedAt,
       accountId,
       ...mutationGuard.params
@@ -267,7 +278,7 @@ function healthCheckSuccessChangesGroupStats(
   activationStatus: 'active' | 'disabled'
 ): boolean {
   const nextStatus = row.status === 'pending_test' ? activationStatus : row.status
-  const nextSchedulable = row.status === 'pending_test' ? 1 : Number(row.schedulable)
+  const nextSchedulable = row.status === 'pending_test' && activationStatus === 'active' ? 1 : row.status === 'pending_test' ? 0 : Number(row.schedulable)
   return nextStatus !== row.status || nextSchedulable !== Number(row.schedulable)
 }
 
@@ -358,6 +369,7 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
   const observedAt = normalizedIso(input.observedAt)
+  const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const transactionStarted = beginDatabaseTransaction(database)
   let changed = false
   let failureCount = 0
@@ -403,6 +415,7 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
               cooldown_until = CASE WHEN ? = 1 THEN NULL ELSE cooldown_until END,
               last_error_code = CASE WHEN ? = 1 THEN ? ELSE last_error_code END,
               last_error_message = CASE WHEN ? = 1 THEN ? ELSE last_error_message END,
+              last_error_trace_id = CASE WHEN ? = 1 THEN ? ELSE last_error_trace_id END,
               last_health_check_at = ?,
               next_health_check_at = ?,
               health_check_failure_count = ?,
@@ -410,6 +423,7 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
               last_health_check_status_code = ?,
               last_health_check_error_code = ?,
               last_health_check_error_message = ?,
+              last_health_check_trace_id = ?,
               updated_at = ?
           WHERE id = ?
             AND deleted_at IS NULL
@@ -425,6 +439,8 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
           pendingHealthCheckFailureTimeoutCode,
           transitionedToError ? 1 : 0,
           decision.terminalErrorMessage ?? null,
+          transitionedToError ? 1 : 0,
+          traceId,
           checkedAt,
           nextHealthCheckAt ?? null,
           failureCount,
@@ -432,6 +448,7 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
           statusCode,
           errorCode,
           errorMessage,
+          traceId,
           checkedAt,
           accountId,
           row.status,
@@ -487,6 +504,7 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
   const observedAt = normalizedIso(input.observedAt)
+  const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const mutationGuard = postgresHealthCheckMutationGuard({
     expectedConfigRevision,
     observedAt
@@ -527,6 +545,7 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
           cooldown_until = CASE WHEN ? = 1 THEN NULL ELSE cooldown_until END,
           last_error_code = CASE WHEN ? = 1 THEN ? ELSE last_error_code END,
           last_error_message = CASE WHEN ? = 1 THEN ? ELSE last_error_message END,
+          last_error_trace_id = CASE WHEN ? = 1 THEN ? ELSE last_error_trace_id END,
           last_health_check_at = ?,
           next_health_check_at = ?,
           health_check_failure_count = ?,
@@ -534,6 +553,7 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
           last_health_check_status_code = ?,
           last_health_check_error_code = ?,
           last_health_check_error_message = ?,
+          last_health_check_trace_id = ?,
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
@@ -547,6 +567,8 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
       pendingHealthCheckFailureTimeoutCode,
       decision.transitionedToError ? 1 : 0,
       decision.terminalErrorMessage ?? null,
+      decision.transitionedToError ? 1 : 0,
+      traceId,
       checkedAt,
       decision.nextHealthCheckAt ?? null,
       failureCount,
@@ -554,6 +576,7 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
       statusCode,
       errorCode,
       errorMessage,
+      traceId,
       checkedAt,
       accountId,
       row.status,
@@ -612,6 +635,7 @@ export function recordAccountHealthSuccessSignals(
         updated_at = ?
     WHERE id = ?
       AND deleted_at IS NULL
+      AND status = 'active'
       AND (
         last_health_success_at IS NULL
         OR last_health_success_at <= ?
@@ -681,6 +705,7 @@ async function recordAccountHealthSuccessSignalsAsync(
             updated_at = ?
         WHERE id = ?
           AND deleted_at IS NULL
+          AND status = 'active'
           AND (
             last_health_success_at IS NULL
             OR last_health_success_at <= ?
@@ -718,10 +743,9 @@ function dueHealthCheckRows(rows: AccountListRow[], options: AccountHealthCheckS
   const dueRows: AccountListRow[] = []
   const recentSuccessSignals = new Map<string, string>()
   for (const row of rows) {
-    const requiresFirstPendingCheck = row.status === 'pending_test' && !normalizedIso(row.last_health_check_at)
     const recentSuccessAt = normalizedIso(row.last_health_success_at)
     const recentSuccessMs = recentSuccessAt ? Date.parse(recentSuccessAt) : NaN
-    if (!requiresFirstPendingCheck && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
+    if (row.status !== 'pending_test' && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
       recentSuccessSignals.set(row.id, recentSuccessAt)
       continue
     }
@@ -737,10 +761,9 @@ async function dueHealthCheckRowsAsync(client: DatabaseClient, rows: AccountList
   const dueRows: AccountListRow[] = []
   const recentSuccessSignals = new Map<string, string>()
   for (const row of rows) {
-    const requiresFirstPendingCheck = row.status === 'pending_test' && !normalizedIso(row.last_health_check_at)
     const recentSuccessAt = normalizedIso(row.last_health_success_at)
     const recentSuccessMs = recentSuccessAt ? Date.parse(recentSuccessAt) : NaN
-    if (!requiresFirstPendingCheck && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
+    if (row.status !== 'pending_test' && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
       recentSuccessSignals.set(row.id, recentSuccessAt)
       continue
     }
@@ -1024,6 +1047,8 @@ function healthCheckAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
       lastHealthCheckStatusCode: optionalNumber(row.last_health_check_status_code),
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
       lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
+      lastHealthCheckTraceId: row.last_health_check_trace_id ?? undefined,
+      lastErrorTraceId: row.last_error_trace_id ?? undefined,
       lastUsedAt: row.last_used_at ?? undefined,
       todayUsage: emptyAccountUsageSummary(),
       usage: emptyAccountUsageSummary(),
@@ -1131,6 +1156,8 @@ async function healthCheckAccountSummariesAsync(client: DatabaseClient, rows: Ac
       lastHealthCheckStatusCode: optionalNumber(row.last_health_check_status_code),
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
       lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
+      lastHealthCheckTraceId: row.last_health_check_trace_id ?? undefined,
+      lastErrorTraceId: row.last_error_trace_id ?? undefined,
       lastUsedAt: row.last_used_at ?? undefined,
       todayUsage: emptyAccountUsageSummary(),
       usage: emptyAccountUsageSummary(),

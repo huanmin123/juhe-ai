@@ -207,7 +207,6 @@ try {
     outputUsdPer1M: 3,
     actorSystemAccountId: 'sys_admin'
   })
-
   const publicCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin'
@@ -415,8 +414,8 @@ try {
   const deepSeekModels = new Set(deepSeekCatalog.map((item) => item.model))
   assert(deepSeekModels.has('deepseek-v4-flash'), 'DeepSeek 模型目录应包含官方 V4 Flash')
   assert(deepSeekModels.has('deepseek-v4-pro'), 'DeepSeek 模型目录应包含官方 V4 Pro')
-  assert(deepSeekModels.has('deepseek-ai-v4-flash'), 'DeepSeek 模型目录应包含上游 deepseek-ai V4 Flash 别名')
-  assert(deepSeekModels.has('deepseek-ai-v4-pro'), 'DeepSeek 模型目录应包含上游 deepseek-ai V4 Pro 别名')
+  assert.equal(deepSeekModels.has('deepseek-ai-v4-flash'), false, 'DeepSeek 模型目录不得暴露官方列表不存在的 deepseek-ai V4 Flash 别名')
+  assert.equal(deepSeekModels.has('deepseek-ai-v4-pro'), false, 'DeepSeek 模型目录不得暴露官方列表不存在的 deepseek-ai V4 Pro 别名')
   if (new Date().toISOString().slice(0, 10) < '2026-07-24') {
     assert(deepSeekModels.has('deepseek-chat'), 'DeepSeek 模型目录在 deepseek-chat 退役前应包含官方历史兼容名')
     assert(deepSeekModels.has('deepseek-reasoner'), 'DeepSeek 模型目录在 deepseek-reasoner 退役前应包含官方历史兼容名')
@@ -426,11 +425,31 @@ try {
     [
       'deepseek-v4-flash',
       'deepseek-v4-pro',
-      'deepseek-ai-v4-flash',
-      'deepseek-ai-v4-pro',
       ...(new Date().toISOString().slice(0, 10) < '2026-07-24' ? ['deepseek-chat', 'deepseek-reasoner'] : [])
     ],
     'DeepSeek 模型目录应按当前官方优先模型到历史兼容名排序'
+  )
+
+  for (const providerCode of ['gpt', 'deepseek']) {
+    catalogService.saveCustomProviderModel({
+      providerCode,
+      model: 'shared-hybrid-template-name',
+      scope: 'personal',
+      systemAccountId: 'sys_admin',
+      supportedApiProtocols: ['chat_completions'],
+      inputUsdPer1M: providerCode === 'gpt' ? 1 : 2,
+      outputUsdPer1M: providerCode === 'gpt' ? 3 : 4,
+      actorSystemAccountId: 'sys_admin'
+    })
+  }
+  const hybridSameNameCatalog = catalogService.listProviderModelCatalog({
+    providerCode: 'hybrid',
+    systemAccountId: 'sys_admin'
+  }).filter((item) => item.model === 'shared-hybrid-template-name')
+  assert.deepEqual(
+    new Set(hybridSameNameCatalog.map((item) => item.providerCode)),
+    new Set(['gpt', 'deepseek']),
+    'Hybrid 配置模板目录必须保留不同供应商的同名模型'
   )
 
   const glmCatalog = catalogService.listProviderModelCatalog({
@@ -498,11 +517,11 @@ try {
     'gemini-2.5-pro',
     'gemini-2.5-flash',
     'gemini-2.5-flash-lite',
-    'gemini-embedding-2',
-    'gemini-embedding-001'
+    'gemini-embedding-2'
   ]) {
     assert(geminiModels.has(id), `Gemini 模型目录应包含 Google 官方模型 ${id}`)
   }
+  assert.equal(geminiModels.has('gemini-embedding-001'), false, '已于 2026-07-14 关闭的 Gemini Embedding 001 不得进入当前可用目录')
   for (const id of [
     'gemini-3.5-flash-antigravity',
     'gemini-3.5-flash-antigravity-ultra'
@@ -520,8 +539,7 @@ try {
       'gemini-2.5-pro',
       'gemini-2.5-flash',
       'gemini-2.5-flash-lite',
-      'gemini-embedding-2',
-      'gemini-embedding-001'
+      'gemini-embedding-2'
     ],
     'Gemini 模型目录应只包含当前收录的 Google 官方模型，并按官网当前主序排序'
   )
@@ -549,11 +567,12 @@ try {
     'sonnet[1m]',
     'haiku'
   ]) {
-    assert(anthropicModels.has(id), `Anthropic 模型目录应包含 Claude Code 模型别名 ${id}`)
+    assert.equal(anthropicModels.has(id), false, `Claude Code 本地别名 ${id} 不得作为 Anthropic 公开模型目录项`)
   }
   for (const id of [
     'claude-fable-5',
     'claude-mythos-5',
+    'claude-sonnet-5',
     'claude-opus-4-8',
     'claude-opus-4-7',
     'claude-opus-4-6',
@@ -611,6 +630,7 @@ try {
     [
       'claude-fable-5',
       'claude-mythos-5',
+      'claude-sonnet-5',
       ...(new Date().toISOString().slice(0, 10) < '2026-06-30' ? ['claude-mythos-preview'] : []),
       'claude-opus-4-8',
       'claude-opus-4-7',
@@ -624,17 +644,9 @@ try {
       'claude-sonnet-4-5',
       'claude-sonnet-4-5-20250929',
       'claude-haiku-4-5',
-      'claude-haiku-4-5-20251001',
-      'best',
-      'fable',
-      'opus',
-      'opus[1m]',
-      'opusplan',
-      'sonnet',
-      'sonnet[1m]',
-      'haiku'
+      'claude-haiku-4-5-20251001'
     ],
-    'Anthropic 模型目录应按官方当前模型从新到旧排序，Claude Code 别名排在官方模型后'
+    'Anthropic 模型目录应按官方当前模型从新到旧排序，并隐藏 Claude Code 本地别名'
   )
 
   const response = catalogService.buildOpenAIModelsResponseFromCatalog(publicCatalog)
@@ -915,6 +927,47 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       '普通用户不应创建全局模型'
     )
 
+    const userATemplateCatalog = await getEnvelope<Array<{
+      id?: string
+      model: string
+      status: string
+      contextWindowTokens?: number
+      maxInputTokens?: number
+      maxOutputTokens?: number
+    }>>(
+      baseUrl,
+      '/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true',
+      userACookie
+    )
+    const userATemplate = userATemplateCatalog.find((item) => item.model === 'gpt-5.6-sol' && item.status === 'active')
+    assert(userATemplate?.id, '普通用户配置复制回归需要可见的 GPT 内置模型')
+    const copiedUserModel = await postEnvelope<{
+      model: string
+      status: string
+      scope: string
+      contextWindowTokens?: number
+      maxInputTokens?: number
+      maxOutputTokens?: number
+      inputUsdPer1M?: number
+      supportedServiceTiers?: string[]
+    }>(
+      baseUrl,
+      '/__aisys__/api/providers/gpt/models',
+      userACookie,
+      {
+        configurationTemplateId: userATemplate.id,
+        model: 'gpt-http-user-a-copied',
+        status: 'active'
+      }
+    )
+    assert.equal(copiedUserModel.scope, 'personal', '普通用户配置复制模型应固定为个人范围')
+    assert.equal(copiedUserModel.status, 'active', '普通用户应能通过可信配置复制创建启用模型')
+    assert.equal(copiedUserModel.contextWindowTokens, userATemplate.contextWindowTokens, '配置复制应继承总上下文')
+    assert.equal(copiedUserModel.maxInputTokens, userATemplate.maxInputTokens, '配置复制应继承最大输入')
+    assert.equal(copiedUserModel.maxOutputTokens, userATemplate.maxOutputTokens, '配置复制应继承最大输出')
+    assert.equal(typeof copiedUserModel.inputUsdPer1M, 'number', '普通用户未提交价格时应由服务端可信继承价格')
+    assert.deepEqual(copiedUserModel.supportedServiceTiers, ['priority', 'flex'], '配置复制应继承服务等级')
+
     const userAModel = await postEnvelope<{ id: string; model: string; scope: string }>(
       baseUrl,
       '/__aisys__/api/providers/openai/models',
@@ -981,7 +1034,6 @@ async function assertProviderModelHttpContracts(): Promise<void> {
         supportedApiProtocols: ['responses'],
         supportedServiceTiers: ['priority'],
         supportedReasoningEfforts: ['low', 'high'],
-        defaultReasoningEffort: 'high',
         inputUsdPer1M: 1,
         outputUsdPer1M: 2
       }
@@ -989,7 +1041,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(userAGptModel.providerCode, 'gpt', 'GPT 目录新建的个人模型应归属 GPT 供应商')
     assert.deepEqual(userAGptModel.supportedServiceTiers, ['priority'], 'GPT 自定义模型 API 应返回服务等级能力')
     assert.deepEqual(userAGptModel.supportedReasoningEfforts, ['low', 'high'], 'GPT 自定义模型 API 应返回思考能力')
-    assert.equal(userAGptModel.defaultReasoningEffort, 'high', 'GPT 自定义模型 API 应返回默认思考级别')
+    assert.equal(userAGptModel.defaultReasoningEffort, undefined, 'GPT 自定义模型创建契约不得保存默认思考级别')
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/gpt/models`,
       adminCookie,
@@ -1047,7 +1099,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
         outputUsdPer1M: 2
       },
       400,
-      'GPT 自定义模型 API 必须拒绝不属于支持集合的默认思考级别'
+      'GPT 自定义模型 API 必须拒绝已删除的默认思考级别字段'
     )
     const userAGptClearableModel = await postEnvelope<{ id: string; model: string }>(
       baseUrl,
@@ -1059,7 +1111,6 @@ async function assertProviderModelHttpContracts(): Promise<void> {
         supportedApiProtocols: ['responses'],
         supportedServiceTiers: ['priority'],
         supportedReasoningEfforts: ['low', 'high'],
-        defaultReasoningEffort: 'high',
         inputUsdPer1M: 1,
         outputUsdPer1M: 2
       }
@@ -1086,14 +1137,13 @@ async function assertProviderModelHttpContracts(): Promise<void> {
         mode: 'image',
         supportedApiProtocols: ['images'],
         supportedServiceTiers: [],
-        supportedReasoningEfforts: [],
-        defaultReasoningEffort: null
+        supportedReasoningEfforts: []
       }
     )
     assert.equal(userAGptClearedModel.mode, 'image', 'API 显式清空文本能力后应允许切换为 GPT 图片模型')
     assert.deepEqual(userAGptClearedModel.supportedServiceTiers, [], 'API 应接受空数组清理服务等级能力')
     assert.deepEqual(userAGptClearedModel.supportedReasoningEfforts, [], 'API 应接受空数组清理思考能力')
-    assert.equal(userAGptClearedModel.defaultReasoningEffort, undefined, 'API 应接受 null 清理默认思考级别')
+    assert.equal(userAGptClearedModel.defaultReasoningEffort, undefined, 'API 更新后不得保留默认思考级别')
 
     const userADraft = await postEnvelope<{ id: string; model: string; status: string }>(
       baseUrl,
@@ -1399,7 +1449,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert(userAGptGlobalOption?.supportedApiProtocols?.includes('responses'), '全局模型选项必须返回模型协议能力，供账号模型别名按协议过滤')
     assert.deepEqual(userAGptGlobalOption?.supportedServiceTiers, ['priority'], '全局模型选项必须返回服务等级能力')
     assert.deepEqual(userAGptGlobalOption?.supportedReasoningEfforts, ['low', 'high'], '全局模型选项必须返回思考能力')
-    assert.equal(userAGptGlobalOption?.defaultReasoningEffort, 'high', '全局模型选项必须返回有效默认思考级别')
+    assert.equal(userAGptGlobalOption?.defaultReasoningEffort, undefined, '自定义模型选项不得重新引入默认思考级别')
     assert.equal(userAGlobalModelOptions.some((item) => item.providerCode === 'hybrid'), false, '全局模型选项不应把 hybrid 当作真实供应商目录')
     assert.equal(userAGlobalModelOptions.some((item) => item.model === 'hybrid-regression-should-not-list'), false, '全局模型选项不应返回 hybrid 自身模型')
 

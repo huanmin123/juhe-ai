@@ -1,5 +1,5 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { getRequestLogger } from '../../../shared/request-context.js'
+import { getRequestLogger, getTraceId } from '../../../shared/request-context.js'
 import { type GatewaySettings } from '../policy/account-error-policy.service.js'
 import {
   clearGatewayAccountRuntimeAvailability,
@@ -32,6 +32,7 @@ export async function applyAccountErrorHandlingWithCacheInvalidation(
 ): Promise<void> {
   const normalizedInput = {
     ...input,
+    traceId: getTraceId(),
     headers: input.headers instanceof Headers ? headersToObject(input.headers) : input.headers
   }
   await enqueueGatewayAccountErrorHandlingSideEffect({
@@ -49,7 +50,8 @@ export function markGatewayAccountTemporaryUnavailableWithCacheInvalidation(
   return requestGatewayDbService({
     type: 'mark_account_temporary_unavailable',
     account,
-    reason: reason.slice(0, 1000)
+    reason: reason.slice(0, 1000),
+    traceId: getTraceId()
   }, {
     priority: 'low'
   }).then((result) => {

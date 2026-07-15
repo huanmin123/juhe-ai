@@ -2,6 +2,7 @@ import type { AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus
 import { runtimeConfig } from '../config/runtime.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountEnabledGroupId } from './account-group-binding-write.repository.js'
+import { isAccountAvailabilityScheduleAllowed } from './account-availability-schedule.js'
 import { findAccountSummary, findAccountSummaryAsync } from './account-summary.repository.js'
 import { isCoolingAccountStatus, isHardUnavailableAccountStatus, normalizeAccountStatus } from './account-status.js'
 import { normalizedDispatchPriority } from './account-write-input.js'
@@ -102,6 +103,129 @@ export interface AccountFailureStateClearResult {
   changed: boolean
 }
 
+function normalizedLastErrorTraceId(value?: string): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 200) : null
+}
+
+export interface AccountForceActivateResult {
+  account?: AccountSummary
+  changed: boolean
+}
+
+export function forceActivatePendingAccount(id: string, access?: AccessScope): AccountForceActivateResult {
+  const accountAccess = access ?? internalAccountReadAccess
+  const current = accountRowForManage(id, accountAccess)
+  if (!current || current.authorization_instance_authorization_id || current.status !== 'pending_test' || isAccountExpired(current.account_expires_at ?? undefined)) {
+    return { account: findAccountSummary(id, accountAccess), changed: false }
+  }
+  const checkedAt = nowIso()
+  const nextStatus = isAccountAvailabilityScheduleAllowed(current.availability_schedule_json, new Date(checkedAt))
+    ? 'active'
+    : 'disabled'
+  const database = getBusinessDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  let changed = false
+  try {
+    const result = database.prepare(`
+    UPDATE accounts
+    SET status = ?,
+        schedulable = ?,
+        cooldown_until = NULL,
+        last_error_code = NULL,
+        last_error_message = NULL,
+        last_error_trace_id = NULL,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = NULL,
+        cooldown_retest_last_at = NULL,
+        cooldown_retest_last_status_code = NULL,
+        next_health_check_at = NULL,
+        health_check_failure_count = 0,
+        health_check_failure_started_at = NULL,
+        last_health_check_error_code = NULL,
+        last_health_check_error_message = NULL,
+        stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND system_account_id = ?
+      AND authorization_instance_authorization_id IS NULL
+      AND deleted_at IS NULL
+      AND status = 'pending_test'
+      AND config_revision = ?
+      AND (account_expires_at IS NULL OR account_expires_at > ?)
+  `).run(nextStatus, 1, checkedAt, id, current.system_account_id, current.config_revision, checkedAt)
+    changed = Number(result.changes ?? 0) > 0
+    if (changed) {
+      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_pending_force_activated' })
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+  if (changed) {
+    invalidateAccountLookupCache(id)
+    invalidateGatewayRuntimeAfterBusinessWrite('account_pending_force_activated')
+  }
+  return { account: findAccountSummary(id, accountAccess), changed }
+}
+
+export async function forceActivatePendingAccountAsync(id: string, access?: AccessScope): Promise<AccountForceActivateResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return forceActivatePendingAccount(id, access)
+  }
+  const accountAccess = access ?? internalAccountReadAccess
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const current = await accountRowForManageAsync(client, id, accountAccess)
+  if (!current || current.authorization_instance_authorization_id || current.status !== 'pending_test' || isAccountExpired(current.account_expires_at ?? undefined)) {
+    return { account: await findAccountSummaryAsync(id, accountAccess), changed: false }
+  }
+  const checkedAt = nowIso()
+  const nextStatus = isAccountAvailabilityScheduleAllowed(current.availability_schedule_json, new Date(checkedAt))
+    ? 'active'
+    : 'disabled'
+  const changed = await client.transaction(async (tx) => {
+    const result = await tx.execute(`
+      UPDATE ${accountRuntimeMutationTable(tx, 'accounts')}
+      SET status = ?,
+        schedulable = 1,
+        cooldown_until = NULL,
+        last_error_code = NULL,
+        last_error_message = NULL,
+        last_error_trace_id = NULL,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = NULL,
+        cooldown_retest_last_at = NULL,
+        cooldown_retest_last_status_code = NULL,
+        next_health_check_at = NULL,
+        health_check_failure_count = 0,
+        health_check_failure_started_at = NULL,
+        last_health_check_error_code = NULL,
+        last_health_check_error_message = NULL,
+        stream_failure_count = 0,
+        stream_failure_window_started_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND system_account_id = ?
+      AND authorization_instance_authorization_id IS NULL
+      AND deleted_at IS NULL
+      AND status = 'pending_test'
+      AND config_revision = ?
+      AND (account_expires_at IS NULL OR account_expires_at > ?)
+    `, [nextStatus, checkedAt, id, current.system_account_id, current.config_revision, checkedAt])
+    const updated = Number(result.changes ?? 0) > 0
+    if (updated) {
+      await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_pending_force_activated' }, tx)
+    }
+    return updated
+  })
+  if (changed) {
+    invalidateAccountLookupCache(id)
+    invalidateGatewayRuntimeAfterBusinessWrite('account_pending_force_activated')
+  }
+  return { account: await findAccountSummaryAsync(id, accountAccess), changed }
+}
+
 export function clearAccountFailureState(
   id: string,
   access?: AccessScope,
@@ -151,6 +275,7 @@ export function clearAccountFailureStateResult(
             cooldown_until = NULL,
             last_error_code = 'account_expired',
             last_error_message = ?,
+            last_error_trace_id = NULL,
             cooldown_retest_failure_count = 0,
             cooldown_retest_observation_started_at = NULL,
             cooldown_retest_last_at = NULL,
@@ -216,6 +341,7 @@ export function clearAccountFailureStateResult(
           cooldown_until = NULL,
           last_error_code = NULL,
           last_error_message = NULL,
+          last_error_trace_id = NULL,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = NULL,
           cooldown_retest_last_at = NULL,
@@ -234,6 +360,7 @@ export function clearAccountFailureStateResult(
           OR cooldown_until IS NOT NULL
           OR last_error_code IS NOT NULL
           OR last_error_message IS NOT NULL
+          OR last_error_trace_id IS NOT NULL
           OR cooldown_retest_failure_count > 0
           OR cooldown_retest_observation_started_at IS NOT NULL
           OR cooldown_retest_last_at IS NOT NULL
@@ -301,6 +428,7 @@ export async function clearAccountFailureStateResultAsync(
           cooldown_until = NULL,
           last_error_code = 'account_expired',
           last_error_message = ?,
+          last_error_trace_id = NULL,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = NULL,
           cooldown_retest_last_at = NULL,
@@ -365,6 +493,7 @@ export async function clearAccountFailureStateResultAsync(
         cooldown_until = NULL,
         last_error_code = NULL,
         last_error_message = NULL,
+        last_error_trace_id = NULL,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = NULL,
         cooldown_retest_last_at = NULL,
@@ -384,6 +513,7 @@ export async function clearAccountFailureStateResultAsync(
         OR cooldown_until IS NOT NULL
         OR last_error_code IS NOT NULL
         OR last_error_message IS NOT NULL
+        OR last_error_trace_id IS NOT NULL
         OR cooldown_retest_failure_count > 0
         OR cooldown_retest_observation_started_at IS NOT NULL
         OR cooldown_retest_last_at IS NOT NULL
@@ -441,6 +571,7 @@ export async function clearAuthorizedAccountBindingFailureStateByContextAsync(
         cooldown_until = NULL,
         last_error_code = NULL,
         last_error_message = NULL,
+        last_error_trace_id = NULL,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = NULL,
         cooldown_retest_last_at = NULL,
@@ -461,6 +592,7 @@ export async function clearAuthorizedAccountBindingFailureStateByContextAsync(
         OR cooldown_until IS NOT NULL
         OR last_error_code IS NOT NULL
         OR last_error_message IS NOT NULL
+        OR last_error_trace_id IS NOT NULL
         OR cooldown_retest_failure_count > 0
         OR cooldown_retest_observation_started_at IS NOT NULL
         OR cooldown_retest_last_at IS NOT NULL
@@ -736,6 +868,7 @@ export function clearAuthorizedAccountBindingFailureStateByContext(
           cooldown_until = NULL,
           last_error_code = NULL,
           last_error_message = NULL,
+          last_error_trace_id = NULL,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = NULL,
           cooldown_retest_last_at = NULL,
@@ -756,6 +889,7 @@ export function clearAuthorizedAccountBindingFailureStateByContext(
           OR cooldown_until IS NOT NULL
           OR last_error_code IS NOT NULL
           OR last_error_message IS NOT NULL
+          OR last_error_trace_id IS NOT NULL
           OR cooldown_retest_failure_count > 0
           OR cooldown_retest_observation_started_at IS NOT NULL
           OR cooldown_retest_last_at IS NOT NULL
@@ -789,6 +923,7 @@ export function clearAuthorizedAccountBindingFailureStateByContext(
 export function markAuthorizedAccountBindingTemporaryUnavailableByContext(
   input: AuthorizedAccountBindingRuntimeTarget & {
     reason: string
+    traceId?: string
     healthCheckGuard?: AccountHealthCheckMutationGuard
   }
 ): AccountSummary | undefined {
@@ -801,6 +936,7 @@ export function markAuthorizedAccountBindingTemporaryUnavailableByContext(
 export async function markAuthorizedAccountBindingTemporaryUnavailableByContextAsync(
   input: AuthorizedAccountBindingRuntimeTarget & {
     reason: string
+    traceId?: string
     healthCheckGuard?: AccountHealthCheckMutationGuard
   }
 ): Promise<AccountSummary | undefined> {
@@ -814,6 +950,7 @@ export function markAuthorizedAccountBindingCooldownByContext(
   input: AuthorizedAccountBindingRuntimeTarget & {
     cooldownUntil?: string
     reason: string
+    traceId?: string
     status?: AccountStatus
     healthCheckGuard?: AccountHealthCheckMutationGuard
   }
@@ -841,6 +978,7 @@ export function markAuthorizedAccountBindingCooldownByContext(
           cooldown_until = ?,
           last_error_code = NULL,
           last_error_message = ?,
+          last_error_trace_id = ?,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = ?,
           cooldown_retest_last_at = NULL,
@@ -868,6 +1006,7 @@ export function markAuthorizedAccountBindingCooldownByContext(
       cooldownStatus,
       cooldownUntil,
       input.reason || null,
+      normalizedLastErrorTraceId(input.traceId),
       observationStartedAt ?? null,
       now,
       target.accountId,
@@ -891,6 +1030,7 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
   input: AuthorizedAccountBindingRuntimeTarget & {
     cooldownUntil?: string
     reason: string
+    traceId?: string
     status?: AccountStatus
     healthCheckGuard?: AccountHealthCheckMutationGuard
   }
@@ -923,6 +1063,7 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
         cooldown_until = ?,
         last_error_code = NULL,
         last_error_message = ?,
+        last_error_trace_id = ?,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = ?,
         cooldown_retest_last_at = NULL,
@@ -949,6 +1090,7 @@ export async function markAuthorizedAccountBindingCooldownByContextAsync(
     cooldownStatus,
     cooldownUntil,
     input.reason || null,
+    normalizedLastErrorTraceId(input.traceId),
     observationStartedAt ?? null,
     now,
     target.accountId,
@@ -984,6 +1126,7 @@ export function markAuthorizedAccountBindingDisabledByFailure(
           cooldown_until = NULL,
           last_error_code = 'upstream_failure',
           last_error_message = ?,
+          last_error_trace_id = NULL,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = NULL,
           cooldown_retest_last_at = NULL,
@@ -1035,6 +1178,7 @@ export async function markAuthorizedAccountBindingDisabledByFailureAsync(
         cooldown_until = NULL,
         last_error_code = 'upstream_failure',
         last_error_message = ?,
+        last_error_trace_id = NULL,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = NULL,
         cooldown_retest_last_at = NULL,
@@ -1084,6 +1228,10 @@ export function clearAuthorizedAccountBindingStreamFailureState(input: Authorize
             WHEN status = 'active' THEN NULL
             ELSE last_error_message
           END,
+          last_error_trace_id = CASE
+            WHEN status = 'active' THEN NULL
+            ELSE last_error_trace_id
+          END,
           updated_at = ?
       WHERE id = ?
         AND system_account_id = ?
@@ -1095,6 +1243,7 @@ export function clearAuthorizedAccountBindingStreamFailureState(input: Authorize
           OR stream_failure_window_started_at IS NOT NULL
           OR (status = 'active' AND last_error_code IS NOT NULL)
           OR (status = 'active' AND last_error_message IS NOT NULL)
+          OR (status = 'active' AND last_error_trace_id IS NOT NULL)
         )
         AND EXISTS (
           SELECT 1
@@ -1136,6 +1285,10 @@ export async function clearAuthorizedAccountBindingStreamFailureStateAsync(input
           WHEN status = 'active' THEN NULL
           ELSE last_error_message
         END,
+        last_error_trace_id = CASE
+          WHEN status = 'active' THEN NULL
+          ELSE last_error_trace_id
+        END,
         updated_at = ?
     WHERE id = ?
       AND system_account_id = ?
@@ -1147,6 +1300,7 @@ export async function clearAuthorizedAccountBindingStreamFailureStateAsync(input
         OR stream_failure_window_started_at IS NOT NULL
         OR (status = 'active' AND last_error_code IS NOT NULL)
         OR (status = 'active' AND last_error_message IS NOT NULL)
+        OR (status = 'active' AND last_error_trace_id IS NOT NULL)
       )
       AND EXISTS (
         SELECT 1
@@ -1180,6 +1334,10 @@ export function clearAccountStreamFailureState(id: string): boolean {
             WHEN status = 'active' THEN NULL
             ELSE last_error_message
           END,
+          last_error_trace_id = CASE
+            WHEN status = 'active' THEN NULL
+            ELSE last_error_trace_id
+          END,
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
@@ -1189,6 +1347,7 @@ export function clearAccountStreamFailureState(id: string): boolean {
           OR stream_failure_window_started_at IS NOT NULL
           OR (status = 'active' AND last_error_code IS NOT NULL)
           OR (status = 'active' AND last_error_message IS NOT NULL)
+          OR (status = 'active' AND last_error_trace_id IS NOT NULL)
         )
     `)
     .run(nowIso(), id)
@@ -1216,6 +1375,10 @@ export async function clearAccountStreamFailureStateAsync(id: string): Promise<b
           WHEN status = 'active' THEN NULL
           ELSE last_error_message
         END,
+        last_error_trace_id = CASE
+          WHEN status = 'active' THEN NULL
+          ELSE last_error_trace_id
+        END,
         updated_at = ?
     WHERE id = ?
       AND deleted_at IS NULL
@@ -1225,6 +1388,7 @@ export async function clearAccountStreamFailureStateAsync(id: string): Promise<b
         OR stream_failure_window_started_at IS NOT NULL
         OR (status = 'active' AND last_error_code IS NOT NULL)
         OR (status = 'active' AND last_error_message IS NOT NULL)
+        OR (status = 'active' AND last_error_trace_id IS NOT NULL)
       )
   `, [nowIso(), id])
   const changed = Number(result.changes ?? 0) > 0
@@ -1238,7 +1402,8 @@ export function markAccountTestTemporaryUnavailable(
   account: AccountSummary,
   reason: string,
   access?: AccessScope,
-  healthCheckGuard?: AccountHealthCheckMutationGuard
+  healthCheckGuard?: AccountHealthCheckMutationGuard,
+  traceId?: string
 ): AccountSummary | undefined {
   const current = findAccountSummary(account.id, access)
   if (!current || (current.status !== 'active' && !isCoolingAccountStatus(current.status))) {
@@ -1249,9 +1414,9 @@ export function markAccountTestTemporaryUnavailable(
   }
   const message = reason.slice(0, 1000)
   if (current.accessType === 'authorized') {
-    return markAuthorizedAccountBindingTemporaryUnavailable(current, message, access, healthCheckGuard)
+    return markAuthorizedAccountBindingTemporaryUnavailable(current, message, access, healthCheckGuard, traceId)
   }
-  return markAccountTemporaryUnavailable(current.id, message, healthCheckGuard)
+  return markAccountTemporaryUnavailable(current.id, message, healthCheckGuard, traceId)
 }
 
 interface AccountHealthCheckMutationGuard {
@@ -1265,10 +1430,11 @@ export async function markAccountTestTemporaryUnavailableAsync(
   account: AccountSummary,
   reason: string,
   access?: AccessScope,
-  healthCheckGuard?: AccountHealthCheckMutationGuard
+  healthCheckGuard?: AccountHealthCheckMutationGuard,
+  traceId?: string
 ): Promise<AccountSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return markAccountTestTemporaryUnavailable(account, reason, access, healthCheckGuard)
+    return markAccountTestTemporaryUnavailable(account, reason, access, healthCheckGuard, traceId)
   }
   const current = await findAccountSummaryAsync(account.id, access)
   if (!current || (current.status !== 'active' && !isCoolingAccountStatus(current.status))) {
@@ -1288,17 +1454,19 @@ export async function markAccountTestTemporaryUnavailableAsync(
       groupId: current.boundGroupId,
       accountAuthorizationId: current.accountAuthorizationId,
       reason: message,
+      traceId,
       healthCheckGuard
     })
   }
-  return markAccountTemporaryUnavailableAsync(current.id, message, healthCheckGuard)
+  return markAccountTemporaryUnavailableAsync(current.id, message, healthCheckGuard, traceId)
 }
 
 function markAuthorizedAccountBindingTemporaryUnavailable(
   account: AccountSummary,
   reason: string,
   access?: AccessScope,
-  healthCheckGuard?: AccountHealthCheckMutationGuard
+  healthCheckGuard?: AccountHealthCheckMutationGuard,
+  traceId?: string
 ): AccountSummary | undefined {
   if (!account.boundGroupId || !account.accountAuthorizationId) {
     return undefined
@@ -1310,6 +1478,7 @@ function markAuthorizedAccountBindingTemporaryUnavailable(
     groupId: account.boundGroupId,
     accountAuthorizationId: account.accountAuthorizationId,
     reason,
+    traceId,
     healthCheckGuard
   })
 }
@@ -1337,17 +1506,19 @@ function accountHealthCheckGuardParams(guard: AccountHealthCheckMutationGuard | 
 export function markAccountTemporaryUnavailable(
   id: string,
   reason: string,
-  healthCheckGuard?: AccountHealthCheckMutationGuard
+  healthCheckGuard?: AccountHealthCheckMutationGuard,
+  traceId?: string
 ): AccountSummary | undefined {
-  return markAccountCooldown(id, undefined, reason, 'temporary_unavailable', healthCheckGuard)
+  return markAccountCooldown(id, undefined, reason, 'temporary_unavailable', healthCheckGuard, traceId)
 }
 
 export async function markAccountTemporaryUnavailableAsync(
   id: string,
   reason: string,
-  healthCheckGuard?: AccountHealthCheckMutationGuard
+  healthCheckGuard?: AccountHealthCheckMutationGuard,
+  traceId?: string
 ): Promise<AccountSummary | undefined> {
-  return markAccountCooldownAsync(id, undefined, reason, 'temporary_unavailable', healthCheckGuard)
+  return markAccountCooldownAsync(id, undefined, reason, 'temporary_unavailable', healthCheckGuard, traceId)
 }
 
 export function markAccountCooldown(
@@ -1355,7 +1526,8 @@ export function markAccountCooldown(
   until: string | undefined,
   reason: string,
   status: AccountStatus = 'temporary_unavailable',
-  healthCheckGuard?: AccountHealthCheckMutationGuard
+  healthCheckGuard?: AccountHealthCheckMutationGuard,
+  traceId?: string
 ): AccountSummary | undefined {
   const current = findInternalAccountSummary(id)
   if (!current) {
@@ -1375,6 +1547,7 @@ export function markAccountCooldown(
             cooldown_until = NULL,
             last_error_code = 'account_expired',
             last_error_message = ?,
+            last_error_trace_id = NULL,
             cooldown_retest_failure_count = 0,
             cooldown_retest_observation_started_at = NULL,
             cooldown_retest_last_at = NULL,
@@ -1417,6 +1590,7 @@ export function markAccountCooldown(
           cooldown_until = ?,
           last_error_code = NULL,
           last_error_message = ?,
+          last_error_trace_id = ?,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = ?,
           cooldown_retest_last_at = NULL,
@@ -1432,6 +1606,7 @@ export function markAccountCooldown(
       cooldownStatus,
       cooldownUntil,
       reason || null,
+      normalizedLastErrorTraceId(traceId),
       cooldownObservationStartedAt ?? null,
       cooldownNow,
       id,
@@ -1453,7 +1628,8 @@ export async function markAccountCooldownAsync(
   until: string | undefined,
   reason: string,
   status: AccountStatus = 'temporary_unavailable',
-  healthCheckGuard?: AccountHealthCheckMutationGuard
+  healthCheckGuard?: AccountHealthCheckMutationGuard,
+  traceId?: string
 ): Promise<AccountSummary | undefined> {
   const current = await findAccountSummaryAsync(id, internalAccountReadAccess)
   if (!current) {
@@ -1473,6 +1649,7 @@ export async function markAccountCooldownAsync(
           cooldown_until = NULL,
           last_error_code = 'account_expired',
           last_error_message = ?,
+          last_error_trace_id = NULL,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = NULL,
           cooldown_retest_last_at = NULL,
@@ -1518,6 +1695,7 @@ export async function markAccountCooldownAsync(
         cooldown_until = ?,
         last_error_code = NULL,
         last_error_message = ?,
+        last_error_trace_id = ?,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = ?,
         cooldown_retest_last_at = NULL,
@@ -1532,6 +1710,7 @@ export async function markAccountCooldownAsync(
     cooldownStatus,
     cooldownUntil,
     reason || null,
+    normalizedLastErrorTraceId(traceId),
     cooldownObservationStartedAt ?? null,
     cooldownNow,
     id,
@@ -1614,6 +1793,7 @@ export function migrateAccountTraffic(input: {
               cooldown_until = NULL,
               last_error_code = NULL,
               last_error_message = ?,
+              last_error_trace_id = NULL,
               cooldown_retest_failure_count = 0,
               cooldown_retest_observation_started_at = NULL,
               cooldown_retest_last_at = NULL,
@@ -1631,6 +1811,7 @@ export function migrateAccountTraffic(input: {
               cooldown_until = ?,
               last_error_code = NULL,
               last_error_message = ?,
+              last_error_trace_id = NULL,
               cooldown_retest_failure_count = 0,
               cooldown_retest_observation_started_at = ?,
               cooldown_retest_last_at = NULL,
@@ -1729,6 +1910,7 @@ export async function migrateAccountTrafficAsync(input: {
               cooldown_until = NULL,
               last_error_code = NULL,
               last_error_message = ?,
+              last_error_trace_id = NULL,
               cooldown_retest_failure_count = 0,
               cooldown_retest_observation_started_at = NULL,
               cooldown_retest_last_at = NULL,
@@ -1745,6 +1927,7 @@ export async function migrateAccountTrafficAsync(input: {
               cooldown_until = ?,
               last_error_code = NULL,
               last_error_message = ?,
+              last_error_trace_id = NULL,
               cooldown_retest_failure_count = 0,
               cooldown_retest_observation_started_at = ?,
               cooldown_retest_last_at = NULL,
@@ -1825,6 +2008,7 @@ export function updateAuthorizedAccountBindingDispatch(
             cooldown_until = NULL,
             last_error_code = NULL,
             last_error_message = NULL,
+            last_error_trace_id = NULL,
             cooldown_retest_failure_count = 0,
             cooldown_retest_observation_started_at = NULL,
             cooldown_retest_last_at = NULL,
@@ -1938,6 +2122,7 @@ export async function updateAuthorizedAccountBindingDispatchAsync(
             cooldown_until = NULL,
             last_error_code = NULL,
             last_error_message = NULL,
+            last_error_trace_id = NULL,
             cooldown_retest_failure_count = 0,
             cooldown_retest_observation_started_at = NULL,
             cooldown_retest_last_at = NULL,
@@ -2051,6 +2236,7 @@ function migrateAuthorizedAccountBindingTraffic(input: {
           cooldown_until = ?,
           last_error_code = NULL,
           last_error_message = ?,
+          last_error_trace_id = NULL,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = ?,
           cooldown_retest_last_at = NULL,
@@ -2144,6 +2330,7 @@ async function migrateAuthorizedAccountBindingTrafficAsync(input: {
         cooldown_until = ?,
         last_error_code = NULL,
         last_error_message = ?,
+        last_error_trace_id = NULL,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = ?,
         cooldown_retest_last_at = NULL,
@@ -2195,7 +2382,7 @@ export function markAccountException(
   id: string,
   errorCode: string,
   reason: string,
-  options: { preserveDisabled?: boolean } = {}
+  options: { preserveDisabled?: boolean; traceId?: string } = {}
 ): AccountSummary | undefined {
   const current = findInternalAccountSummary(id)
   if (!current) {
@@ -2213,6 +2400,7 @@ export function markAccountException(
           cooldown_until = NULL,
           last_error_code = ?,
           last_error_message = ?,
+          last_error_trace_id = ?,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = NULL,
           cooldown_retest_last_at = NULL,
@@ -2223,7 +2411,7 @@ export function markAccountException(
       WHERE id = ?
         AND deleted_at IS NULL
     `)
-    .run(errorCode || null, reason || null, nowIso(), id)
+    .run(errorCode || null, reason || null, normalizedLastErrorTraceId(options.traceId), nowIso(), id)
   if (Number(result.changes ?? 0) > 0) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_exception' })
     invalidateAccountLookupCache(id)
@@ -2237,7 +2425,7 @@ export async function markAccountExceptionAsync(
   id: string,
   errorCode: string,
   reason: string,
-  options: { preserveDisabled?: boolean } = {}
+  options: { preserveDisabled?: boolean; traceId?: string } = {}
 ): Promise<AccountSummary | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return markAccountException(id, errorCode, reason, options)
@@ -2258,6 +2446,7 @@ export async function markAccountExceptionAsync(
         cooldown_until = NULL,
         last_error_code = ?,
         last_error_message = ?,
+        last_error_trace_id = ?,
         cooldown_retest_failure_count = 0,
         cooldown_retest_observation_started_at = NULL,
         cooldown_retest_last_at = NULL,
@@ -2267,7 +2456,7 @@ export async function markAccountExceptionAsync(
         updated_at = ?
     WHERE id = ?
       AND deleted_at IS NULL
-  `, [errorCode || null, reason || null, nowIso(), id])
+  `, [errorCode || null, reason || null, normalizedLastErrorTraceId(options.traceId), nowIso(), id])
   if (Number(result.changes ?? 0) > 0) {
     await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_exception' }, client)
     invalidateAccountLookupCache(id)
@@ -2302,6 +2491,7 @@ export function recordAccountStreamFailure(input: {
   thresholdWindowMinutes: number
   action: 'cooldown' | 'disable' | 'none'
   reason: string
+  traceId?: string
 }): { count: number; triggered: boolean; account?: AccountSummary } {
   const row = getBusinessDatabase().prepare('SELECT id, status, stream_failure_count, stream_failure_window_started_at FROM accounts WHERE id = ? AND deleted_at IS NULL').get(input.accountId) as unknown as AccountFailureRow | undefined
   if (!row) {
@@ -2325,11 +2515,12 @@ export function recordAccountStreamFailure(input: {
       SET stream_failure_count = ?,
           stream_failure_window_started_at = ?,
           last_error_message = ?,
+          last_error_trace_id = ?,
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
     `)
-    .run(count, windowStartedAt, input.reason || null, nowIsoValue, input.accountId)
+    .run(count, windowStartedAt, input.reason || null, normalizedLastErrorTraceId(input.traceId), nowIsoValue, input.accountId)
 
   return { count, triggered: false, account: findInternalAccountSummary(input.accountId) }
 }
@@ -2340,6 +2531,7 @@ export async function recordAccountStreamFailureAsync(input: {
   thresholdWindowMinutes: number
   action: 'cooldown' | 'disable' | 'none'
   reason: string
+  traceId?: string
 }): Promise<{ count: number; triggered: boolean; account?: AccountSummary }> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return recordAccountStreamFailure(input)
@@ -2372,10 +2564,11 @@ export async function recordAccountStreamFailureAsync(input: {
     SET stream_failure_count = ?,
         stream_failure_window_started_at = ?,
         last_error_message = ?,
+        last_error_trace_id = ?,
         updated_at = ?
     WHERE id = ?
       AND deleted_at IS NULL
-  `, [count, windowStartedAt, input.reason || null, nowIsoValue, input.accountId])
+  `, [count, windowStartedAt, input.reason || null, normalizedLastErrorTraceId(input.traceId), nowIsoValue, input.accountId])
 
   return { count, triggered: false, account: await findInternalAccountSummaryAsync(input.accountId) }
 }
@@ -2385,6 +2578,7 @@ export function recordAuthorizedAccountBindingStreamFailure(input: AuthorizedAcc
   thresholdWindowMinutes: number
   action: 'cooldown' | 'disable' | 'none'
   reason: string
+  traceId?: string
 }): { count: number; triggered: boolean; account?: AccountSummary } {
   const target = normalizedAuthorizedAccountBindingRuntimeTarget(input)
   if (!target || !authorizedAccountRuntimeBindingExists(target)) {
@@ -2395,7 +2589,8 @@ export function recordAuthorizedAccountBindingStreamFailure(input: AuthorizedAcc
     thresholdCount: input.thresholdCount,
     thresholdWindowMinutes: input.thresholdWindowMinutes,
     action: input.action,
-    reason: input.reason
+    reason: input.reason,
+    traceId: input.traceId
   })
   return {
     count: result.count,
@@ -2409,6 +2604,7 @@ export async function recordAuthorizedAccountBindingStreamFailureAsync(input: Au
   thresholdWindowMinutes: number
   action: 'cooldown' | 'disable' | 'none'
   reason: string
+  traceId?: string
 }): Promise<{ count: number; triggered: boolean; account?: AccountSummary }> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return recordAuthorizedAccountBindingStreamFailure(input)
@@ -2422,7 +2618,8 @@ export async function recordAuthorizedAccountBindingStreamFailureAsync(input: Au
     thresholdCount: input.thresholdCount,
     thresholdWindowMinutes: input.thresholdWindowMinutes,
     action: input.action,
-    reason: input.reason
+    reason: input.reason,
+    traceId: input.traceId
   })
   return {
     count: result.count,

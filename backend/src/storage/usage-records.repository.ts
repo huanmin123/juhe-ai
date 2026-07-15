@@ -1141,6 +1141,7 @@ async function flushPostgresUsageRecordBusinessSideEffects(
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
+        AND status = 'active'
         AND (last_health_success_at IS NULL OR last_health_success_at <= ?)
         AND (
           next_health_check_at IS NULL

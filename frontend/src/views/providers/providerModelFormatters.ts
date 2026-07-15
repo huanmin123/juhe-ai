@@ -40,6 +40,10 @@ export const apiProtocolLabels: Record<string, string> = {
   responses: 'Responses',
   messages: 'Messages',
   message_token_counting: 'Message Token Counting',
+  generate_content: 'Generate Content',
+  stream_generate_content: 'Stream Generate Content',
+  count_tokens: 'Count Tokens',
+  embed_content: 'Embed Content',
   completions: 'Completions',
   images: 'Images API',
   audio: 'Audio API',
@@ -175,7 +179,9 @@ export function formatApiProtocol(protocol?: string): string {
 }
 
 export function formatModelServiceTier(value: ProviderModelServiceTier): string {
-  return value === 'priority' ? 'Priority' : 'Flex'
+  if (value === 'priority') return 'Priority'
+  if (value === 'flex') return 'Flex'
+  return value
 }
 
 export function formatModelReasoningEffort(value: ProviderModelReasoningEffort | 'ultra'): string {
@@ -186,7 +192,8 @@ export function formatModelReasoningEffort(value: ProviderModelReasoningEffort |
   if (value === 'high') return 'High'
   if (value === 'xhigh') return 'XHigh'
   if (value === 'max') return 'Max'
-  return 'Ultra'
+  if (value === 'ultra') return 'Ultra'
+  return value
 }
 
 export function formatModelReasoningCapabilities(item: ProviderModelPricing): string {
@@ -290,6 +297,10 @@ function apiProtocolMatchesModelCategory(protocol: ProviderModelApiProtocol, cat
     || protocol === 'chat_completions'
     || protocol === 'messages'
     || protocol === 'message_token_counting'
+    || protocol === 'generate_content'
+    || protocol === 'stream_generate_content'
+    || protocol === 'count_tokens'
+    || protocol === 'embed_content'
     || protocol === 'completions'
 }
 
@@ -335,7 +346,11 @@ export function formatTokens(value?: number): string {
 }
 
 export function formatModelInputTokens(item: ProviderModelPricing): string {
-  return formatTokens(item.maxInputTokens ?? item.contextWindowTokens)
+  return formatTokens(item.maxInputTokens)
+}
+
+export function formatModelContextTokens(item: ProviderModelPricing): string {
+  return formatTokens(item.contextWindowTokens)
 }
 
 export function trimNumber(value: number): string {

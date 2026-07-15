@@ -150,6 +150,7 @@ function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input
   const current = findAccountCooldownRetestState(id)
   const errorCode = normalizedCooldownRetestErrorCode(input)
   const testErrorMessage = normalizedCooldownRetestErrorMessage(input, errorCode)
+  const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   if (!current || !isCoolingAccountStatus(current.status)) {
     return {
       action: 'discard',
@@ -184,6 +185,7 @@ function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input
           cooldown_until = ?,
           last_error_code = ?,
           last_error_message = ?,
+          last_error_trace_id = ?,
           cooldown_retest_failure_count = ?,
           cooldown_retest_observation_started_at = COALESCE(cooldown_retest_observation_started_at, ?),
           cooldown_retest_last_at = ?,
@@ -201,6 +203,7 @@ function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input
       cooldownUntil ?? null,
       persistedErrorCode,
       cooldownMessage,
+      traceId,
       failureCount,
       observationStartedAt,
       now,
@@ -248,6 +251,7 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
   }
   const errorCode = normalizedCooldownRetestErrorCode(input)
   const testErrorMessage = normalizedCooldownRetestErrorMessage(input, errorCode)
+  const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const maxPauseMinutes = input.maxPauseMinutes ?? await defaultTemporaryUnschedulableMinutesAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const transactionResult = await client.transaction(async (tx) => {
@@ -291,6 +295,7 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
           cooldown_until = ?,
           last_error_code = ?,
           last_error_message = ?,
+          last_error_trace_id = ?,
           cooldown_retest_failure_count = ?,
           cooldown_retest_observation_started_at = COALESCE(cooldown_retest_observation_started_at, ?),
           cooldown_retest_last_at = ?,
@@ -307,6 +312,7 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
       cooldownUntil ?? null,
       persistedErrorCode,
       cooldownMessage,
+      traceId,
       failureCount,
       observationStartedAt,
       now,
@@ -701,6 +707,7 @@ function cooldownRetestAccountSummaries(rows: AccountListRow[]): AccountSummary[
       cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorCode: row.last_error_code ?? undefined,
       lastErrorMessage: row.last_error_message ?? undefined,
+      lastErrorTraceId: row.last_error_trace_id ?? undefined,
       cooldownRetestFailureCount: Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
       cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
       cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,

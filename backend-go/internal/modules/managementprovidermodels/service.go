@@ -77,6 +77,7 @@ type DefaultHealthCheckModelInput struct {
 
 type CustomModelMutation struct {
 	Invalid                   bool
+	ConfigurationTemplateID   OptionalString
 	Scope                     OptionalString
 	Model                     OptionalString
 	Status                    OptionalString
@@ -88,6 +89,7 @@ type CustomModelMutation struct {
 	ReleaseDate               OptionalString
 	ShutdownDate              OptionalString
 	ContextWindowTokens       OptionalInt
+	MaxInputTokens            OptionalInt
 	MaxOutputTokens           OptionalInt
 	InputUSDPer1M             OptionalFloat
 	OutputUSDPer1M            OptionalFloat
@@ -451,7 +453,7 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	if !found {
 		return ModelCatalogItem{}, ErrProviderNotFound
 	}
-	if input.Fields.Invalid {
+	if input.Fields.Invalid || input.Fields.DefaultReasoningEffort.Set {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
 	}
 	actorSystemAccountID := strings.TrimSpace(input.ActorSystemAccountID)
@@ -473,7 +475,15 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 			ownerSystemAccountID = actorSystemAccountID
 		}
 	}
-	saveInput, err := customModelSaveInputFromCreate(provider.Code, scope, ownerSystemAccountID, actorSystemAccountID, input.Fields)
+	var template *port.ManagementProviderModelCatalogItem
+	if input.Fields.ConfigurationTemplateID.Set {
+		resolved, err := s.resolveConfigurationTemplate(ctx, provider.Code, ownerSystemAccountID, input.Fields.ConfigurationTemplateID.Value)
+		if err != nil {
+			return ModelCatalogItem{}, err
+		}
+		template = &resolved
+	}
+	saveInput, err := customModelSaveInputFromCreate(provider.Code, scope, ownerSystemAccountID, actorSystemAccountID, input.Fields, template)
 	if err != nil {
 		return ModelCatalogItem{}, err
 	}
@@ -529,8 +539,11 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	if !isAdminRole(input.ActorRole) && customModelMutationHasPriceField(input.Fields) {
 		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护模型价格"}
 	}
-	if input.Fields.Invalid || !customModelMutationHasAnyField(input.Fields) {
+	if input.Fields.Invalid || input.Fields.DefaultReasoningEffort.Set || !customModelMutationHasAnyField(input.Fields) {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
+	}
+	if input.Fields.ConfigurationTemplateID.Set {
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "配置模板只能在新建模型时使用"}
 	}
 	saveInput := customModelSaveInputFromExisting(existing, strings.TrimSpace(input.ActorSystemAccountID))
 	if err := applyCustomModelPatch(&saveInput, input.Fields); err != nil {
@@ -662,7 +675,7 @@ func builtInModelPriceMutationOnly(fields CustomModelMutation) bool {
 		fields.AudioInputUSDPer1M.Set || fields.AudioOutputUSDPer1M.Set || fields.OutputUSDPerImage.Set
 	return hasPrice && !(fields.Scope.Set || fields.Model.Set || fields.Status.Set || fields.Mode.Set || fields.SupportedAPIProtocols.Set ||
 		fields.SupportedServiceTiers.Set || fields.SupportedReasoningEfforts.Set || fields.DefaultReasoningEffort.Set ||
-		fields.ReleaseDate.Set || fields.ShutdownDate.Set || fields.ContextWindowTokens.Set || fields.MaxOutputTokens.Set || fields.PricingNotes.Set ||
+		fields.ConfigurationTemplateID.Set || fields.ReleaseDate.Set || fields.ShutdownDate.Set || fields.ContextWindowTokens.Set || fields.MaxInputTokens.Set || fields.MaxOutputTokens.Set || fields.PricingNotes.Set ||
 		fields.CapabilityNotes.Set || fields.Notes.Set)
 }
 
@@ -909,6 +922,7 @@ func customModelSaveInputFromCreate(
 	systemAccountID string,
 	actorSystemAccountID string,
 	fields CustomModelMutation,
+	template *port.ManagementProviderModelCatalogItem,
 ) (port.ManagementCustomProviderModelSaveInput, error) {
 	model := strings.TrimSpace(fields.Model.Value)
 	if !fields.Model.Set || model == "" {
@@ -929,10 +943,77 @@ func customModelSaveInputFromCreate(
 		Status:               status,
 		ActorSystemAccountID: strings.TrimSpace(actorSystemAccountID),
 	}
-	if err := applyCustomModelMutableFields(&saveInput, fields, true); err != nil {
+	if template != nil {
+		applyConfigurationTemplate(&saveInput, *template)
+	}
+	if err := applyCustomModelMutableFields(&saveInput, fields, template == nil); err != nil {
 		return port.ManagementCustomProviderModelSaveInput{}, err
 	}
 	return saveInput, nil
+}
+
+func (s *Service) resolveConfigurationTemplate(ctx context.Context, providerCode string, systemAccountID string, id string) (port.ManagementProviderModelCatalogItem, error) {
+	templateID := strings.TrimSpace(id)
+	if templateID == "" {
+		return port.ManagementProviderModelCatalogItem{}, &CustomModelValidationError{Message: "配置模板不可用"}
+	}
+	builtInProviderCodes, customProviderCodes, err := s.sourceProviderCodes(ctx, providerCode)
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
+	items, err := s.store.ListManagementProviderModelCatalog(ctx, port.ManagementProviderModelCatalogListInput{
+		BuiltInProviderCodes: builtInProviderCodes,
+		CustomProviderCodes:  customProviderCodes,
+		SystemAccountID:      strings.TrimSpace(systemAccountID),
+		IncludeInactive:      true,
+	})
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
+	for _, item := range items {
+		if item.ID == templateID && item.Status == "active" {
+			return item, nil
+		}
+	}
+	return port.ManagementProviderModelCatalogItem{}, &CustomModelValidationError{Message: "配置模板不可用"}
+}
+
+func applyConfigurationTemplate(input *port.ManagementCustomProviderModelSaveInput, template port.ManagementProviderModelCatalogItem) {
+	input.Mode = customModelModeFromCatalog(template)
+	input.SupportedAPIProtocols = append([]string(nil), template.SupportedAPIProtocols...)
+	input.SupportedServiceTiers = append([]string(nil), template.SupportedServiceTiers...)
+	input.SupportedReasoningEfforts = append([]string(nil), template.SupportedReasoningEfforts...)
+	input.DefaultReasoningEffort = ""
+	input.ContextWindowTokens = cloneIntPtr(template.ContextWindowTokens)
+	input.MaxInputTokens = cloneIntPtr(template.MaxInputTokens)
+	input.MaxOutputTokens = cloneIntPtr(template.MaxOutputTokens)
+	input.InputUSDPer1M = cloneFloatPtr(template.InputUSDPer1M)
+	input.OutputUSDPer1M = cloneFloatPtr(template.OutputUSDPer1M)
+	input.CachedInputUSDPer1M = cloneFloatPtr(template.CachedInputUSDPer1M)
+	input.CacheWriteUSDPer1M = cloneFloatPtr(template.CacheWriteUSDPer1M)
+	input.CacheWrite1hUSDPer1M = cloneFloatPtr(template.CacheWrite1hUSDPer1M)
+	input.ServiceTierPrices = cloneProviderModelPriceMap(template.ServiceTierPrices)
+	input.ImageInputUSDPer1M = cloneFloatPtr(template.ImageInputUSDPer1M)
+	input.ImageOutputUSDPer1M = cloneFloatPtr(template.ImageOutputUSDPer1M)
+	input.AudioInputUSDPer1M = cloneFloatPtr(template.AudioInputUSDPer1M)
+	input.AudioOutputUSDPer1M = cloneFloatPtr(template.AudioOutputUSDPer1M)
+	input.OutputUSDPerImage = cloneFloatPtr(template.OutputUSDPerImage)
+}
+
+func customModelModeFromCatalog(item port.ManagementProviderModelCatalogItem) string {
+	mode := strings.TrimSpace(item.Mode)
+	if mode == "image" || mode == "audio" {
+		return mode
+	}
+	for _, protocol := range item.SupportedAPIProtocols {
+		switch protocol {
+		case "images":
+			return "image"
+		case "audio":
+			return "audio"
+		}
+	}
+	return "text"
 }
 
 func customModelSaveInputFromExisting(item port.ManagementProviderModelCatalogItem, actorSystemAccountID string) port.ManagementCustomProviderModelSaveInput {
@@ -951,6 +1032,7 @@ func customModelSaveInputFromExisting(item port.ManagementProviderModelCatalogIt
 		ReleaseDate:               item.ReleaseDate,
 		ShutdownDate:              item.ShutdownDate,
 		ContextWindowTokens:       cloneIntPtr(item.ContextWindowTokens),
+		MaxInputTokens:            cloneIntPtr(item.MaxInputTokens),
 		MaxOutputTokens:           cloneIntPtr(item.MaxOutputTokens),
 		InputUSDPer1M:             cloneFloatPtr(item.InputUSDPer1M),
 		OutputUSDPer1M:            cloneFloatPtr(item.OutputUSDPer1M),
@@ -989,6 +1071,7 @@ func applyCustomModelPatch(input *port.ManagementCustomProviderModelSaveInput, f
 }
 
 func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSaveInput, fields CustomModelMutation, create bool) error {
+	input.DefaultReasoningEffort = ""
 	if fields.Status.Set {
 		status := strings.TrimSpace(fields.Status.Value)
 		if !validCustomModelStatus(status) {
@@ -1047,15 +1130,6 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 	} else if create {
 		input.SupportedReasoningEfforts = []string{}
 	}
-	if fields.DefaultReasoningEffort.Set {
-		defaultReasoningEffort := fields.DefaultReasoningEffort.Value
-		if defaultReasoningEffort != "" {
-			if !validCustomModelCapabilityToken(defaultReasoningEffort) {
-				return &CustomModelValidationError{Message: "自定义模型参数无效"}
-			}
-		}
-		input.DefaultReasoningEffort = defaultReasoningEffort
-	}
 	if fields.ReleaseDate.Set {
 		input.ReleaseDate = strings.TrimSpace(fields.ReleaseDate.Value)
 	}
@@ -1073,6 +1147,12 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 			return err
 		}
 		input.ContextWindowTokens = cloneIntPtr(fields.ContextWindowTokens.Value)
+	}
+	if fields.MaxInputTokens.Set {
+		if err := validateOptionalNonnegativeInt(fields.MaxInputTokens.Value); err != nil {
+			return err
+		}
+		input.MaxInputTokens = cloneIntPtr(fields.MaxInputTokens.Value)
 	}
 	if fields.MaxOutputTokens.Set {
 		if err := validateOptionalNonnegativeInt(fields.MaxOutputTokens.Value); err != nil {
@@ -1126,7 +1206,8 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 }
 
 func customModelMutationHasAnyField(fields CustomModelMutation) bool {
-	return fields.Scope.Set ||
+	return fields.ConfigurationTemplateID.Set ||
+		fields.Scope.Set ||
 		fields.Model.Set ||
 		fields.Status.Set ||
 		fields.Mode.Set ||
@@ -1137,6 +1218,7 @@ func customModelMutationHasAnyField(fields CustomModelMutation) bool {
 		fields.ReleaseDate.Set ||
 		fields.ShutdownDate.Set ||
 		fields.ContextWindowTokens.Set ||
+		fields.MaxInputTokens.Set ||
 		fields.MaxOutputTokens.Set ||
 		fields.InputUSDPer1M.Set ||
 		fields.OutputUSDPer1M.Set ||

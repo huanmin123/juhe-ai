@@ -103,7 +103,7 @@ try {
   }, access)
   activateTestAccount(account.id)
   assert(repositories.setAccountGroup(account.id, group.id, access), '冷却复测观察窗口账号应能绑定分组')
-  const cooled = repositories.markAccountTemporaryUnavailable(account.id, '模拟临时不可调用')
+  const cooled = repositories.markAccountTemporaryUnavailable(account.id, '模拟临时不可调用', undefined, 'trace-cooldown-initial')
   assert.equal(cooled?.status, 'temporary_unavailable', '临时不可调用应进入恢复通道')
   assert.ok(cooled?.cooldownRetestObservationStartedAt, '进入临时不可调用时应记录自动恢复观察起点')
   assert.ok(Date.parse(cooled.cooldownUntil ?? '') - Date.now() <= 10_000, '临时不可调用首次暂停应走秒级快速恢复')
@@ -148,6 +148,7 @@ try {
     .run(expiredObservationStartedAt, new Date(Date.now() - 1000).toISOString(), account.id)
 
   const longRecovering = repositories.recordCooldownAccountRetestFailure(account.id, {
+    traceId: 'trace-cooldown-retest-latest',
     statusCode: 401,
     errorMessage: '仍然不可用',
     maxRecoveryHours: 1,
@@ -159,6 +160,7 @@ try {
   assert.equal(longRecovering.account?.schedulable, true, '长期不可用账号应保留后台可恢复调度标记')
   assert.ok(longRecovering.account?.cooldownUntil, '长期不可用账号应写入下一次低频复测时间')
   assert.equal(longRecovering.account?.lastErrorCode, 'cooldown_retest_long_term_unavailable', '超过观察窗口后应写入长期不可用原因码')
+  assert.equal(longRecovering.account?.lastErrorTraceId, 'trace-cooldown-retest-latest', '冷却复测的新错误摘要必须覆盖为本次探针 traceId')
   assert.equal(longRecovering.longTermIntervalSeconds, 60 * 60, '长期不可用必须固定每 1 小时复测，不受旧设置值放大')
   assert.match(longRecovering.errorMessage, /进入长期不可用每 1 小时复测/, '失败摘要应说明每 1 小时自动复测')
   assert(!repositories.listAccountsDueForCooldownRetest(20).some((item) => item.id === account.id), '长期不可用账号在下次复测时间前不应进入候选')

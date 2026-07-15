@@ -128,8 +128,9 @@
           </template>
           <template v-else-if="column.key === 'context'">
             <div class="price-cell">
-              <span>输入 {{ formatModelInputTokens(record) }}</span>
-              <span>输出 {{ formatTokens(record.maxOutputTokens) }}</span>
+              <span>总上下文 {{ formatModelContextTokens(record) }}</span>
+              <span>最大输入 {{ formatModelInputTokens(record) }}</span>
+              <span>最大输出 {{ formatTokens(record.maxOutputTokens) }}</span>
             </div>
           </template>
           <template v-else-if="column.key === 'actions'">
@@ -162,8 +163,12 @@
               <strong>{{ formatModelReasoningCapabilities(record) }}</strong>
               <span>价格</span>
               <strong>{{ formatModelPriceSummary(record) }}</strong>
-              <span>上下文</span>
-              <strong>{{ formatModelInputTokens(record) }} / {{ formatTokens(record.maxOutputTokens) }}</strong>
+              <span>总上下文</span>
+              <strong>{{ formatModelContextTokens(record) }}</strong>
+              <span>最大输入</span>
+              <strong>{{ formatModelInputTokens(record) }}</strong>
+              <span>最大输出</span>
+              <strong>{{ formatTokens(record.maxOutputTokens) }}</strong>
             </div>
             <RowActions v-if="rowActions(record).length" variant="button" :actions="rowActions(record)" @action-click="emit('model-action', $event, record)" />
           </article>
@@ -184,6 +189,7 @@ import type { ProviderModelPricing, SystemAccountPrincipalSummary } from '@/type
 import {
   formatApiProtocol,
   formatModelCategory,
+  formatModelContextTokens,
   formatModelInputTokens,
   formatModelPriceSummary,
   formatModelReasoningCapabilities,

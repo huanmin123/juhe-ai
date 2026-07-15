@@ -293,6 +293,7 @@ export interface AccountSummary {
   cooldownUntil?: string
   lastErrorCode?: string
   lastErrorMessage?: string
+  lastErrorTraceId?: string
   cooldownRetestFailureCount?: number
   cooldownRetestObservationStartedAt?: string
   cooldownRetestLastAt?: string
@@ -305,6 +306,7 @@ export interface AccountSummary {
   lastHealthCheckStatusCode?: number
   lastHealthCheckErrorCode?: string
   lastHealthCheckErrorMessage?: string
+  lastHealthCheckTraceId?: string
   apiKeyRuntime?: AccountApiKeyRuntimeSummary
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   streamFailureCount?: number

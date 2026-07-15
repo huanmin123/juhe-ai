@@ -320,6 +320,9 @@ function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
     statusCode: account.cooldownRetestLastStatusCode,
     concise: true
   }))
+  if (account.lastErrorTraceId) {
+    lines.push(`最后错误 traceId：${account.lastErrorTraceId}`)
+  }
   return lines
 }
 
@@ -327,6 +330,9 @@ function accountHealthCheckTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
   if (account.lastHealthCheckAt) {
     lines.push(`最近主动健康检查：${formatDateTime(account.lastHealthCheckAt)}`)
+  }
+  if (account.lastHealthCheckTraceId) {
+    lines.push(`健康检查 traceId：${account.lastHealthCheckTraceId}`)
   }
   if (account.lastHealthSuccessAt) {
     lines.push(`最近健康成功信号：${formatDateTime(account.lastHealthSuccessAt)}`)

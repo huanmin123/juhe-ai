@@ -90,7 +90,8 @@ async function runCooldownAccountRetestQueueItem(
     accountStatus: account.status,
     accountFailureEligible: false,
     statusCode: undefined,
-    errorCode: undefined
+    errorCode: undefined,
+    traceId: undefined
   }))
   if (result.success) {
     const restored = await requestBackgroundWorkerDbService({
@@ -118,6 +119,7 @@ async function runCooldownAccountRetestQueueItem(
       statusCode: result.statusCode,
       errorCode: result.errorCode,
       errorMessage: result.message,
+      traceId: result.traceId,
       maxPauseMinutes: item.maxPauseMinutes,
       maxRecoveryHours: item.maxRecoveryHours
     }

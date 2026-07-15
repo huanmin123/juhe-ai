@@ -49,6 +49,8 @@ let mockOpenAIServer: http.Server | undefined
 
 try {
   const accountsRouteSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
+  const forceActivateRouteSource = readFileSync(resolve('src/modules/accounts/account-force-activate.routes.ts'), 'utf8')
+  const accountRuntimeMutationSource = readFileSync(resolve('src/storage/account-runtime-mutation.repository.ts'), 'utf8')
   assert.match(
     accountsRouteSource,
     /requestedClearFailureState === true && account\.status === 'pending_test'[\s\S]+dispatchAccountHealthCheck\(account\.id, 'activation'\)/,
@@ -96,6 +98,44 @@ try {
     'pending_test',
     '普通恢复入口不应激活待检查账户'
   )
+  assert.match(forceActivateRouteSource, /acknowledgedAccountAvailable !== true/, '人工恢复必须要求用户明确确认账户当前可用')
+  assert.match(forceActivateRouteSource, /accounts\.force_activate_pending/, '人工恢复必须写入独立操作审计键')
+  assert.match(accountRuntimeMutationSource, /forceActivatePendingAccountAsync[\s\S]+client\.transaction[\s\S]+config_revision = \?/, 'PostgreSQL 人工放行必须在事务内按配置版本 CAS')
+  assert.match(accountRuntimeMutationSource, /forceActivatePendingAccount[\s\S]+account_expires_at IS NULL OR account_expires_at > \?/, '人工放行写入时必须再次校验套餐未过期')
+
+  const forcePending = repositories.createAccount(accountPayload({
+    name: '用户确认后人工放行账户',
+    apiKey: 'sk-pending-force-activate',
+    groupId: group.id,
+    baseUrl: mockBaseUrl
+  }), access)
+  const forceActivated = repositories.forceActivatePendingAccount(forcePending.id, access)
+  assert.equal(forceActivated.changed, true, '账户所有者应能人工放行自有待检查账户')
+  assert.equal(forceActivated.account?.status, 'active', '人工放行后应立即恢复正常状态')
+  assert.equal(forceActivated.account?.schedulable, true, '人工放行后应立即参与调度')
+  assert.equal(
+    repositories.forceActivatePendingAccount(forcePending.id, access).changed,
+    false,
+    '人工放行必须使用 pending_test 精确状态守卫，不能重复执行'
+  )
+  const scheduledPending = repositories.createAccount({
+    ...accountPayload({
+      name: '时间计划外人工放行账户',
+      apiKey: 'sk-pending-force-scheduled',
+      groupId: group.id,
+      baseUrl: mockBaseUrl
+    }),
+    availabilitySchedule: {
+      enabled: true,
+      timezone: 'UTC',
+      mode: 'allow_windows' as const,
+      dateRange: { startDate: '2999-01-01' },
+      windows: [{ daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '23:59' }]
+    }
+  }, access)
+  const scheduledForceResult = repositories.forceActivatePendingAccount(scheduledPending.id, access)
+  assert.equal(scheduledForceResult.account?.status, 'disabled', '人工放行不得绕过账户时间计划')
+  assert.equal(scheduledForceResult.account?.schedulable, true, '时间计划只控制当前状态，不应覆盖用户允许参与调度的持久开关')
 
   const pendingCandidate = repositories.findOpenAIAccountForGroup(
     group.id,
@@ -258,7 +298,7 @@ try {
   assert.equal(exportResult.document.accounts[0]?.status, 'pending_test', '导出应保留待检查状态')
   assert.equal(exportResult.document.accounts[0]?.healthCheckModel, 'gpt-5.5', '导出应保留账户检查模型')
 
-  console.log('账户待检查回归通过：新建和关键配置变更进入 pending_test，人工测试不改状态或检查模型，只有后台健康检查成功激活')
+  console.log('账户待检查回归通过：新建和关键配置变更进入 pending_test，人工测试保持诊断语义，后台检查或用户确认人工放行可激活')
 } finally {
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)
@@ -312,13 +352,22 @@ function createMockOpenAIServer(): http.Server {
         }))
         return
       }
+      if (String(req.headers.accept ?? '').includes('text/event-stream')) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.end('event: response.completed\ndata: {"type":"response.completed","response":{"object":"response","status":"completed","output":[]}}\n\n')
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({
         id: 'resp_pending_test_mock',
         object: 'response',
         status: 'completed',
         model: 'gpt-5.5',
-        output: [],
+        output: [{
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'ok' }]
+        }],
         usage: {
           input_tokens: 1,
           output_tokens: 1,

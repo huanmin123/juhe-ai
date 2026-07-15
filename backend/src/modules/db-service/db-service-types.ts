@@ -580,6 +580,7 @@ export type DbServiceOperation =
       headers?: Record<string, string | string[]>
       bodyText?: string
       errorMessage?: string
+      traceId?: string
       settings?: GatewaySettings
       trafficSource?: OpenAIGatewayTrafficSource
     }
@@ -610,6 +611,7 @@ export type DbServiceOperation =
       thresholdWindowMinutes: number
       action: 'cooldown' | 'disable' | 'none'
       reason: string
+      traceId?: string
     }
   }
   | {
@@ -627,6 +629,7 @@ export type DbServiceOperation =
     type: 'mark_account_temporary_unavailable'
     account: OpenAIAccountSecret
     reason: string
+    traceId?: string
   }
   | {
     type: 'clear_account_failure_state'
@@ -643,6 +646,7 @@ export type DbServiceOperation =
     type: 'mark_account_test_temporary_unavailable'
     accountId: string
     reason: string
+    traceId?: string
     healthCheckGuard?: {
       configRevision: number
       checkedAt: string
@@ -686,6 +690,7 @@ export type DbServiceOperation =
       failureThreshold: number
       statusCode?: number
       expectedConfigRevision?: number
+      traceId?: string
     }
   }
   | {
@@ -720,6 +725,7 @@ export type DbServiceOperation =
       countTowardsThreshold?: boolean
       expectedConfigRevision?: number
       observedAt?: string
+      traceId?: string
     }
   }
   | {
@@ -749,6 +755,7 @@ export type DbServiceOperation =
     errorCode: string
     reason: string
     preserveDisabled?: boolean
+    traceId?: string
   }
   | {
     type: 'update_proxy_test_state'
