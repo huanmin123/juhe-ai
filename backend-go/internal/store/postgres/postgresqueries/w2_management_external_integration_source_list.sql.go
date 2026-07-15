@@ -11,6 +11,40 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const findManagementExternalIntegrationSource = `-- name: FindManagementExternalIntegrationSource :one
+SELECT
+  sources.id,
+  sources.name,
+  sources.status,
+  sources.scopes_json,
+  sources.rate_limits_json,
+  sources.expires_at,
+  sources.notes,
+  sources.last_used_at,
+  sources.created_at,
+  sources.updated_at
+FROM juhe_business.external_integration_sources AS sources
+WHERE sources.id = $1::text
+`
+
+func (q *Queries) FindManagementExternalIntegrationSource(ctx context.Context, sourceID string) (JuheBusinessExternalIntegrationSource, error) {
+	row := q.db.QueryRow(ctx, findManagementExternalIntegrationSource, sourceID)
+	var i JuheBusinessExternalIntegrationSource
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Status,
+		&i.ScopesJson,
+		&i.RateLimitsJson,
+		&i.ExpiresAt,
+		&i.Notes,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listManagementExternalIntegrationSourcePrimaryTokens = `-- name: ListManagementExternalIntegrationSourcePrimaryTokens :many
 SELECT DISTINCT ON (tokens.source_ref_id)
   tokens.source_ref_id,
@@ -108,6 +142,73 @@ func (q *Queries) ListManagementExternalIntegrationSourceTokenStats(ctx context.
 	for rows.Next() {
 		var i ListManagementExternalIntegrationSourceTokenStatsRow
 		if err := rows.Scan(&i.SourceRefID, &i.TokenCount, &i.ActiveTokenCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listManagementExternalIntegrationSourceTokens = `-- name: ListManagementExternalIntegrationSourceTokens :many
+SELECT
+  tokens.source_ref_id,
+  tokens.id,
+  tokens.name,
+  tokens.token_prefix,
+  tokens.token_suffix,
+  tokens.status,
+  tokens.scopes_json,
+  tokens.expires_at,
+  tokens.last_used_at,
+  tokens.created_at,
+  tokens.updated_at,
+  tokens.revoked_at
+FROM juhe_business.external_integration_source_tokens AS tokens
+WHERE tokens.source_ref_id = $1::text
+ORDER BY tokens.created_at DESC, tokens.id DESC
+`
+
+type ListManagementExternalIntegrationSourceTokensRow struct {
+	SourceRefID string
+	ID          string
+	Name        string
+	TokenPrefix string
+	TokenSuffix string
+	Status      string
+	ScopesJson  string
+	ExpiresAt   pgtype.Timestamptz
+	LastUsedAt  pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	RevokedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) ListManagementExternalIntegrationSourceTokens(ctx context.Context, sourceID string) ([]ListManagementExternalIntegrationSourceTokensRow, error) {
+	rows, err := q.db.Query(ctx, listManagementExternalIntegrationSourceTokens, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementExternalIntegrationSourceTokensRow
+	for rows.Next() {
+		var i ListManagementExternalIntegrationSourceTokensRow
+		if err := rows.Scan(
+			&i.SourceRefID,
+			&i.ID,
+			&i.Name,
+			&i.TokenPrefix,
+			&i.TokenSuffix,
+			&i.Status,
+			&i.ScopesJson,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RevokedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -14,6 +14,293 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
+func TestServiceGetReturnsDecodedDetail(t *testing.T) {
+	now := time.Date(2026, 7, 15, 8, 9, 10, 345678901, time.FixedZone("UTC+8", 8*60*60))
+	expiredAt := now.Add(-time.Hour)
+	activeNewest := validPrimaryTokenRow("source_1", "token_newest", now)
+	activeNewest.ExpiresAt = &expiredAt
+	disabled := validPrimaryTokenRow("source_1", "token_disabled", now.Add(-time.Minute))
+	disabled.Status = publicapi.TokenStatusDisabled
+	activeOldest := validPrimaryTokenRow("source_1", "token_oldest", now.Add(-2*time.Minute))
+	revoked := validPrimaryTokenRow("source_1", "token_revoked", now.Add(-3*time.Minute))
+	revoked.Status = publicapi.TokenStatusRevoked
+	revokedAt := now.Add(-time.Minute)
+	revoked.RevokedAt = &revokedAt
+
+	tests := []struct {
+		name            string
+		inputID         string
+		sourceRow       port.ManagementExternalIntegrationSourceListRow
+		tokenRows       []port.ManagementExternalIntegrationSourcePrimaryTokenRow
+		wantSourceID    string
+		wantTokenIDs    []string
+		wantActiveCount int64
+		wantTokensJSON  string
+	}{
+		{
+			name:            "trim id preserve token order and count active statuses",
+			inputID:         " \t source_1 \r\n",
+			sourceRow:       validSourceRow("source_1", now),
+			tokenRows:       []port.ManagementExternalIntegrationSourcePrimaryTokenRow{activeNewest, disabled, activeOldest, revoked},
+			wantSourceID:    "source_1",
+			wantTokenIDs:    []string{"token_newest", "token_disabled", "token_oldest", "token_revoked"},
+			wantActiveCount: 2,
+		},
+		{
+			name:           "empty tokens encode as array",
+			inputID:        "source_empty",
+			sourceRow:      validSourceRow("source_empty", now),
+			wantSourceID:   "source_empty",
+			wantTokenIDs:   []string{},
+			wantTokensJSON: "[]",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			detailStore := &externalIntegrationSourceDetailStoreStub{
+				sourceRow:   test.sourceRow,
+				sourceFound: true,
+				tokenRows:   test.tokenRows,
+			}
+			service := NewServiceWithOptions(ServiceOptions{
+				ListReader:   &externalIntegrationSourceStoreStub{},
+				DetailReader: detailStore,
+			})
+
+			detail, err := service.Get(context.Background(), test.inputID)
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if detail == nil {
+				t.Fatal("Get() detail is nil")
+			}
+			if !reflect.DeepEqual(detailStore.sourceCalls, []string{test.wantSourceID}) ||
+				!reflect.DeepEqual(detailStore.tokenCalls, []string{test.wantSourceID}) {
+				t.Fatalf("detail calls = find:%#v tokens:%#v, want source ID %q", detailStore.sourceCalls, detailStore.tokenCalls, test.wantSourceID)
+			}
+			if detail.ID != test.wantSourceID || detail.TokenCount != int64(len(test.wantTokenIDs)) || detail.ActiveTokenCount != test.wantActiveCount {
+				t.Fatalf("detail summary = %#v", detail.Source)
+			}
+			if detail.PrimaryToken != nil {
+				t.Fatalf("detail primary token = %#v, want nil", detail.PrimaryToken)
+			}
+			gotTokenIDs := make([]string, 0, len(detail.Tokens))
+			for _, token := range detail.Tokens {
+				gotTokenIDs = append(gotTokenIDs, token.ID)
+			}
+			if !reflect.DeepEqual(gotTokenIDs, test.wantTokenIDs) {
+				t.Fatalf("token order = %#v, want %#v", gotTokenIDs, test.wantTokenIDs)
+			}
+			if test.wantTokensJSON != "" {
+				encoded, err := json.Marshal(detail)
+				if err != nil {
+					t.Fatalf("marshal detail: %v", err)
+				}
+				var payload map[string]json.RawMessage
+				if err := json.Unmarshal(encoded, &payload); err != nil {
+					t.Fatalf("unmarshal detail JSON: %v", err)
+				}
+				if got := string(payload["tokens"]); got != test.wantTokensJSON {
+					t.Fatalf("tokens JSON = %s, want %s; payload = %s", got, test.wantTokensJSON, encoded)
+				}
+				if _, exists := payload["primaryToken"]; exists {
+					t.Fatalf("nil primaryToken must be omitted: %s", encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestServiceGetReturnsNilWithoutTokenLookup(t *testing.T) {
+	now := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		inputID         string
+		sourceFound     bool
+		wantSourceCalls []string
+	}{
+		{name: "blank trimmed id", inputID: " \t\r\n"},
+		{name: "source not found", inputID: "  missing_source  ", wantSourceCalls: []string{"missing_source"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			detailStore := &externalIntegrationSourceDetailStoreStub{
+				sourceRow:   validSourceRow("unused", now),
+				sourceFound: test.sourceFound,
+			}
+			service := NewServiceWithOptions(ServiceOptions{
+				ListReader:   &externalIntegrationSourceStoreStub{},
+				DetailReader: detailStore,
+			})
+
+			detail, err := service.Get(context.Background(), test.inputID)
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if detail != nil {
+				t.Fatalf("Get() detail = %#v, want nil", detail)
+			}
+			if !reflect.DeepEqual(detailStore.sourceCalls, test.wantSourceCalls) {
+				t.Fatalf("source calls = %#v, want %#v", detailStore.sourceCalls, test.wantSourceCalls)
+			}
+			if len(detailStore.tokenCalls) != 0 {
+				t.Fatalf("tokens calls = %#v, want none", detailStore.tokenCalls)
+			}
+		})
+	}
+}
+
+func TestServiceGetPropagatesStorageErrors(t *testing.T) {
+	now := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	wantErr := errors.New("postgres unavailable")
+	tests := []struct {
+		name           string
+		detailStore    *externalIntegrationSourceDetailStoreStub
+		wantTokenCalls int
+	}{
+		{
+			name:        "find source",
+			detailStore: &externalIntegrationSourceDetailStoreStub{sourceErr: wantErr},
+		},
+		{
+			name: "list tokens",
+			detailStore: &externalIntegrationSourceDetailStoreStub{
+				sourceRow:   validSourceRow("source_1", now),
+				sourceFound: true,
+				tokenErr:    wantErr,
+			},
+			wantTokenCalls: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := NewServiceWithOptions(ServiceOptions{
+				ListReader:   &externalIntegrationSourceStoreStub{},
+				DetailReader: test.detailStore,
+			})
+
+			detail, err := service.Get(context.Background(), "source_1")
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("Get() error = %v, want storage error", err)
+			}
+			if detail != nil {
+				t.Fatalf("Get() detail = %#v, want nil", detail)
+			}
+			if len(test.detailStore.sourceCalls) != 1 || len(test.detailStore.tokenCalls) != test.wantTokenCalls {
+				t.Fatalf("detail calls = find:%d tokens:%d", len(test.detailStore.sourceCalls), len(test.detailStore.tokenCalls))
+			}
+		})
+	}
+}
+
+func TestServiceGetReturnsSourceAndTokenDecodeErrors(t *testing.T) {
+	now := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		mutateSource   func(*port.ManagementExternalIntegrationSourceListRow)
+		mutateToken    func(*port.ManagementExternalIntegrationSourcePrimaryTokenRow)
+		wantError      string
+		wantTokenCalls int
+	}{
+		{
+			name:         "source decode",
+			mutateSource: func(row *port.ManagementExternalIntegrationSourceListRow) { row.ScopesJSON = `[` },
+			wantError:    `decode management external integration source "source_1" scopes`,
+		},
+		{
+			name:           "token decode",
+			mutateToken:    func(row *port.ManagementExternalIntegrationSourcePrimaryTokenRow) { row.ScopesJSON = `[` },
+			wantError:      `decode management external integration source token "token_1" scopes`,
+			wantTokenCalls: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sourceRow := validSourceRow("source_1", now)
+			tokenRow := validPrimaryTokenRow("source_1", "token_1", now)
+			if test.mutateSource != nil {
+				test.mutateSource(&sourceRow)
+			}
+			if test.mutateToken != nil {
+				test.mutateToken(&tokenRow)
+			}
+			detailStore := &externalIntegrationSourceDetailStoreStub{
+				sourceRow:   sourceRow,
+				sourceFound: true,
+				tokenRows:   []port.ManagementExternalIntegrationSourcePrimaryTokenRow{tokenRow},
+			}
+			service := NewServiceWithOptions(ServiceOptions{
+				ListReader:   &externalIntegrationSourceStoreStub{},
+				DetailReader: detailStore,
+			})
+
+			detail, err := service.Get(context.Background(), "source_1")
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("Get() error = %v, want %q", err, test.wantError)
+			}
+			if detail != nil {
+				t.Fatalf("Get() detail = %#v, want nil", detail)
+			}
+			if len(detailStore.tokenCalls) != test.wantTokenCalls {
+				t.Fatalf("token calls = %d, want %d", len(detailStore.tokenCalls), test.wantTokenCalls)
+			}
+		})
+	}
+}
+
+func TestServiceGetRequiresDetailReader(t *testing.T) {
+	tests := []struct {
+		name    string
+		service *Service
+	}{
+		{
+			name: "options without detail reader",
+			service: NewServiceWithOptions(ServiceOptions{
+				ListReader: &externalIntegrationSourceStoreStub{},
+			}),
+		},
+		{
+			name:    "list-only compatibility constructor",
+			service: NewService(&externalIntegrationSourceStoreStub{}),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			detail, err := test.service.Get(context.Background(), "source_1")
+			if err == nil || !strings.Contains(err.Error(), "detail reader is required") {
+				t.Fatalf("Get() error = %v, want missing detail reader", err)
+			}
+			if detail != nil {
+				t.Fatalf("Get() detail = %#v, want nil", detail)
+			}
+		})
+	}
+}
+
+func TestNewServiceDetectsDetailReader(t *testing.T) {
+	now := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	detailStore := &externalIntegrationSourceDetailStoreStub{
+		sourceRow:   validSourceRow("source_1", now),
+		sourceFound: true,
+	}
+	store := &externalIntegrationSourceCombinedStoreStub{
+		externalIntegrationSourceStoreStub:       &externalIntegrationSourceStoreStub{},
+		externalIntegrationSourceDetailStoreStub: detailStore,
+	}
+
+	detail, err := NewService(store).Get(context.Background(), "source_1")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if detail == nil || detail.ID != "source_1" {
+		t.Fatalf("Get() detail = %#v", detail)
+	}
+	if !reflect.DeepEqual(detailStore.sourceCalls, []string{"source_1"}) ||
+		!reflect.DeepEqual(detailStore.tokenCalls, []string{"source_1"}) {
+		t.Fatalf("detail calls = find:%#v tokens:%#v", detailStore.sourceCalls, detailStore.tokenCalls)
+	}
+}
+
 func TestServiceListTruncatesSentinelBeforeTokenEnrichment(t *testing.T) {
 	baseTime := time.Date(2026, 7, 15, 8, 9, 10, 345678901, time.FixedZone("UTC+8", 8*60*60))
 	rows := make([]port.ManagementExternalIntegrationSourceListRow, 0, defaultPageSize+1)
@@ -416,6 +703,21 @@ type externalIntegrationSourceStoreStub struct {
 	primaryCalls [][]string
 }
 
+type externalIntegrationSourceDetailStoreStub struct {
+	sourceRow   port.ManagementExternalIntegrationSourceListRow
+	sourceFound bool
+	sourceErr   error
+	sourceCalls []string
+	tokenRows   []port.ManagementExternalIntegrationSourcePrimaryTokenRow
+	tokenErr    error
+	tokenCalls  []string
+}
+
+type externalIntegrationSourceCombinedStoreStub struct {
+	*externalIntegrationSourceStoreStub
+	*externalIntegrationSourceDetailStoreStub
+}
+
 func (s *externalIntegrationSourceStoreStub) ListManagementExternalIntegrationSources(
 	_ context.Context,
 	input port.ManagementExternalIntegrationSourceListInput,
@@ -440,4 +742,23 @@ func (s *externalIntegrationSourceStoreStub) ListManagementExternalIntegrationSo
 	return s.primaryRows, s.primaryErr
 }
 
+func (s *externalIntegrationSourceDetailStoreStub) FindManagementExternalIntegrationSource(
+	_ context.Context,
+	sourceID string,
+) (port.ManagementExternalIntegrationSourceListRow, bool, error) {
+	s.sourceCalls = append(s.sourceCalls, sourceID)
+	return s.sourceRow, s.sourceFound, s.sourceErr
+}
+
+func (s *externalIntegrationSourceDetailStoreStub) ListManagementExternalIntegrationSourceTokens(
+	_ context.Context,
+	sourceID string,
+) ([]port.ManagementExternalIntegrationSourcePrimaryTokenRow, error) {
+	s.tokenCalls = append(s.tokenCalls, sourceID)
+	return s.tokenRows, s.tokenErr
+}
+
 var _ port.ManagementExternalIntegrationSourceListReader = (*externalIntegrationSourceStoreStub)(nil)
+var _ port.ManagementExternalIntegrationSourceDetailReader = (*externalIntegrationSourceDetailStoreStub)(nil)
+var _ port.ManagementExternalIntegrationSourceListReader = (*externalIntegrationSourceCombinedStoreStub)(nil)
+var _ port.ManagementExternalIntegrationSourceDetailReader = (*externalIntegrationSourceCombinedStoreStub)(nil)

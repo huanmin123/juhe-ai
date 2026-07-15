@@ -26,7 +26,13 @@ const (
 var ErrInvalidListStatus = errors.New("management external integration source list status invalid")
 
 type Service struct {
-	store port.ManagementExternalIntegrationSourceListReader
+	store       port.ManagementExternalIntegrationSourceListReader
+	detailStore port.ManagementExternalIntegrationSourceDetailReader
+}
+
+type ServiceOptions struct {
+	ListReader   port.ManagementExternalIntegrationSourceListReader
+	DetailReader port.ManagementExternalIntegrationSourceDetailReader
 }
 
 type ListInput struct {
@@ -82,8 +88,65 @@ type ListResult struct {
 	HasMore        bool     `json:"hasMore"`
 }
 
+type Detail struct {
+	Source
+	Tokens []Token `json:"tokens"`
+}
+
 func NewService(store port.ManagementExternalIntegrationSourceListReader) *Service {
-	return &Service{store: store}
+	options := ServiceOptions{ListReader: store}
+	if detailStore, ok := store.(port.ManagementExternalIntegrationSourceDetailReader); ok {
+		options.DetailReader = detailStore
+	}
+	return NewServiceWithOptions(options)
+}
+
+func NewServiceWithOptions(options ServiceOptions) *Service {
+	return &Service{
+		store:       options.ListReader,
+		detailStore: options.DetailReader,
+	}
+}
+
+func (s *Service) Get(ctx context.Context, id string) (*Detail, error) {
+	sourceID := strings.TrimSpace(id)
+	if sourceID == "" {
+		return nil, nil
+	}
+	if s.detailStore == nil {
+		return nil, fmt.Errorf("management external integration source detail reader is required")
+	}
+	row, found, err := s.detailStore.FindManagementExternalIntegrationSource(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	source, err := sourceFromStore(row)
+	if err != nil {
+		return nil, err
+	}
+	tokenRows, err := s.detailStore.ListManagementExternalIntegrationSourceTokens(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	tokens := make([]Token, 0, len(tokenRows))
+	var activeTokenCount int64
+	for _, tokenRow := range tokenRows {
+		token, err := tokenFromStore(tokenRow)
+		if err != nil {
+			return nil, err
+		}
+		if token.Status == publicapi.TokenStatusActive {
+			activeTokenCount++
+		}
+		tokens = append(tokens, token)
+	}
+	source.TokenCount = int64(len(tokens))
+	source.ActiveTokenCount = activeTokenCount
+	source.PrimaryToken = nil
+	return &Detail{Source: source, Tokens: tokens}, nil
 }
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {

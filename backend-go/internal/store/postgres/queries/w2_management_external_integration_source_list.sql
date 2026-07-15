@@ -57,3 +57,36 @@ ORDER BY
   CASE WHEN tokens.status = 'active' THEN 0 ELSE 1 END ASC,
   tokens.created_at DESC,
   tokens.id DESC;
+
+-- name: FindManagementExternalIntegrationSource :one
+SELECT
+  sources.id,
+  sources.name,
+  sources.status,
+  sources.scopes_json,
+  sources.rate_limits_json,
+  sources.expires_at,
+  sources.notes,
+  sources.last_used_at,
+  sources.created_at,
+  sources.updated_at
+FROM juhe_business.external_integration_sources AS sources
+WHERE sources.id = sqlc.arg(source_id)::text;
+
+-- name: ListManagementExternalIntegrationSourceTokens :many
+SELECT
+  tokens.source_ref_id,
+  tokens.id,
+  tokens.name,
+  tokens.token_prefix,
+  tokens.token_suffix,
+  tokens.status,
+  tokens.scopes_json,
+  tokens.expires_at,
+  tokens.last_used_at,
+  tokens.created_at,
+  tokens.updated_at,
+  tokens.revoked_at
+FROM juhe_business.external_integration_source_tokens AS tokens
+WHERE tokens.source_ref_id = sqlc.arg(source_id)::text
+ORDER BY tokens.created_at DESC, tokens.id DESC;

@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"juhe-ai/backend-go/internal/store/port"
@@ -32,6 +34,17 @@ type managementExternalIntegrationSourceListQueries interface {
 	) ([]postgresqueries.ListManagementExternalIntegrationSourcePrimaryTokensRow, error)
 }
 
+type managementExternalIntegrationSourceDetailQueries interface {
+	FindManagementExternalIntegrationSource(
+		ctx context.Context,
+		sourceID string,
+	) (postgresqueries.JuheBusinessExternalIntegrationSource, error)
+	ListManagementExternalIntegrationSourceTokens(
+		ctx context.Context,
+		sourceID string,
+	) ([]postgresqueries.ListManagementExternalIntegrationSourceTokensRow, error)
+}
+
 func (s *Store) ListManagementExternalIntegrationSources(
 	ctx context.Context,
 	input port.ManagementExternalIntegrationSourceListInput,
@@ -51,6 +64,20 @@ func (s *Store) ListManagementExternalIntegrationSourcePrimaryTokens(
 	sourceIDs []string,
 ) ([]port.ManagementExternalIntegrationSourcePrimaryTokenRow, error) {
 	return listManagementExternalIntegrationSourcePrimaryTokens(ctx, s.queries(), sourceIDs)
+}
+
+func (s *Store) FindManagementExternalIntegrationSource(
+	ctx context.Context,
+	sourceID string,
+) (port.ManagementExternalIntegrationSourceListRow, bool, error) {
+	return findManagementExternalIntegrationSource(ctx, s.queries(), sourceID)
+}
+
+func (s *Store) ListManagementExternalIntegrationSourceTokens(
+	ctx context.Context,
+	sourceID string,
+) ([]port.ManagementExternalIntegrationSourcePrimaryTokenRow, error) {
+	return listManagementExternalIntegrationSourceTokens(ctx, s.queries(), sourceID)
 }
 
 func listManagementExternalIntegrationSources(
@@ -79,6 +106,53 @@ func listManagementExternalIntegrationSources(
 
 	items := make([]port.ManagementExternalIntegrationSourceListRow, 0, len(rows))
 	for _, row := range rows {
+		item, err := managementExternalIntegrationSourceRow(row)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func findManagementExternalIntegrationSource(
+	ctx context.Context,
+	q managementExternalIntegrationSourceDetailQueries,
+	sourceID string,
+) (port.ManagementExternalIntegrationSourceListRow, bool, error) {
+	id := strings.TrimSpace(sourceID)
+	if id == "" {
+		return port.ManagementExternalIntegrationSourceListRow{}, false, nil
+	}
+	row, err := q.FindManagementExternalIntegrationSource(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementExternalIntegrationSourceListRow{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementExternalIntegrationSourceListRow{}, false, fmt.Errorf("find management external integration source: %w", err)
+	}
+	item, err := managementExternalIntegrationSourceRow(row)
+	if err != nil {
+		return port.ManagementExternalIntegrationSourceListRow{}, false, err
+	}
+	return item, true, nil
+}
+
+func listManagementExternalIntegrationSourceTokens(
+	ctx context.Context,
+	q managementExternalIntegrationSourceDetailQueries,
+	sourceID string,
+) ([]port.ManagementExternalIntegrationSourcePrimaryTokenRow, error) {
+	id := strings.TrimSpace(sourceID)
+	if id == "" {
+		return []port.ManagementExternalIntegrationSourcePrimaryTokenRow{}, nil
+	}
+	rows, err := q.ListManagementExternalIntegrationSourceTokens(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("list management external integration source tokens: %w", err)
+	}
+	items := make([]port.ManagementExternalIntegrationSourcePrimaryTokenRow, 0, len(rows))
+	for _, row := range rows {
 		createdAt, err := managementExternalIntegrationSourceRequiredTime(row.CreatedAt, row.ID, "created_at")
 		if err != nil {
 			return nil, err
@@ -87,20 +161,47 @@ func listManagementExternalIntegrationSources(
 		if err != nil {
 			return nil, err
 		}
-		items = append(items, port.ManagementExternalIntegrationSourceListRow{
-			ID:             row.ID,
-			Name:           row.Name,
-			Status:         row.Status,
-			ScopesJSON:     row.ScopesJson,
-			RateLimitsJSON: row.RateLimitsJson,
-			ExpiresAt:      timestamptzPtr(row.ExpiresAt),
-			Notes:          textPtr(row.Notes),
-			LastUsedAt:     timestamptzPtr(row.LastUsedAt),
-			CreatedAt:      createdAt,
-			UpdatedAt:      updatedAt,
+		items = append(items, port.ManagementExternalIntegrationSourcePrimaryTokenRow{
+			SourceRefID: row.SourceRefID,
+			ID:          row.ID,
+			Name:        row.Name,
+			TokenPrefix: row.TokenPrefix,
+			TokenSuffix: row.TokenSuffix,
+			Status:      row.Status,
+			ScopesJSON:  row.ScopesJson,
+			ExpiresAt:   timestamptzPtr(row.ExpiresAt),
+			LastUsedAt:  timestamptzPtr(row.LastUsedAt),
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
+			RevokedAt:   timestamptzPtr(row.RevokedAt),
 		})
 	}
 	return items, nil
+}
+
+func managementExternalIntegrationSourceRow(
+	row postgresqueries.JuheBusinessExternalIntegrationSource,
+) (port.ManagementExternalIntegrationSourceListRow, error) {
+	createdAt, err := managementExternalIntegrationSourceRequiredTime(row.CreatedAt, row.ID, "created_at")
+	if err != nil {
+		return port.ManagementExternalIntegrationSourceListRow{}, err
+	}
+	updatedAt, err := managementExternalIntegrationSourceRequiredTime(row.UpdatedAt, row.ID, "updated_at")
+	if err != nil {
+		return port.ManagementExternalIntegrationSourceListRow{}, err
+	}
+	return port.ManagementExternalIntegrationSourceListRow{
+		ID:             row.ID,
+		Name:           row.Name,
+		Status:         row.Status,
+		ScopesJSON:     row.ScopesJson,
+		RateLimitsJSON: row.RateLimitsJson,
+		ExpiresAt:      timestamptzPtr(row.ExpiresAt),
+		Notes:          textPtr(row.Notes),
+		LastUsedAt:     timestamptzPtr(row.LastUsedAt),
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
+	}, nil
 }
 
 func listManagementExternalIntegrationSourceTokenStats(
@@ -200,3 +301,4 @@ func managementExternalIntegrationSourceRequiredTime(
 }
 
 var _ port.ManagementExternalIntegrationSourceListReader = (*Store)(nil)
+var _ port.ManagementExternalIntegrationSourceDetailReader = (*Store)(nil)

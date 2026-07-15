@@ -60,3 +60,14 @@ type ManagementExternalIntegrationSourceListReader interface {
 		sourceIDs []string,
 	) ([]ManagementExternalIntegrationSourcePrimaryTokenRow, error)
 }
+
+type ManagementExternalIntegrationSourceDetailReader interface {
+	FindManagementExternalIntegrationSource(
+		ctx context.Context,
+		sourceID string,
+	) (ManagementExternalIntegrationSourceListRow, bool, error)
+	ListManagementExternalIntegrationSourceTokens(
+		ctx context.Context,
+		sourceID string,
+	) ([]ManagementExternalIntegrationSourcePrimaryTokenRow, error)
+}
