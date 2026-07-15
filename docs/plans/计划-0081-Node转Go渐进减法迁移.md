@@ -5,11 +5,12 @@
 - 编号：PLAN-0081
 - 状态：进行中
 - 创建时间：2026-07-06
-- 更新时间：2026-07-15
+- 更新时间：2026-07-16
 - 需求来源：用户对话
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证
 
+- 2026-07-16 真实依赖与主线对齐：`feature/20260706-go` 已通过合并提交 `9c2087f94` 纳入 `origin/master=5a4ae80a5`，并完成从用户指定基线 `ddbb3d3d` 到当前最新 Node 代码的已迁移 owner 漂移复核；命中 W2/W3 管理模型目录、W4 团队 operation log、W4 授权健康字段、W5 API Key 删除 viewer 和 W1b/W6 PostgreSQL fixture 的确定差异均已同步，未迁移的网关、OAuth、健康 worker、余额和明细 writer 继续由 Node 单 owner，不提前复制。通过 SSH Docker tunnel 使用隔离 Testcontainers 实例实际执行 PostgreSQL、Redis 与 Asynq 验证，Go fresh schema 已迁移到 migration `54`；W3 provider model CRUD、W4 system teams 以及覆盖 W1b/W3/W4/W5/W6 的 10 项目标 integration 测试均真实通过，因此本文针对这些相同测试的早期“本机 Docker 不可用 / `SKIP` / 待复跑”记录已被本条后续证据覆盖，但不外推为尚未执行的跨运行时 writer、浏览器真实 listener 或生产切流证据。合并后再次通过 W3 provider model PostgreSQL smoke、`go test ./... -count=1`、`go vet ./...`、migration preflight（共 54 个连续版本）、Node backend typecheck / model catalog regression、frontend typecheck / PLAN-0081 real-Go-management regression；隔离容器和本地 tunnel 均已清理。生产单 owner 切流、回滚演练与 Node 删除仍未完成。
 - 本轮口径更新：W1b public account 仅在新增结果为 `pending_test` 后投递 `activation`，或更新的 API Key / Base URL 实际变化、显式提交 `supportedModels` 后投递 `configuration`；普通字段更新、删除和非 `pending_test` 新增不投递。投递通过 loopback Node internal bridge best-effort 触发现有健康任务。`JUHE_AI_NODE_INTERNAL_BASE_URL` 无默认、public API 开启时必填，仅允许 `http` loopback IP literal + 显式端口；`JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT` 默认 `2s`、范围 `100ms..10s`；双方共享 trim 后一致的 `JUHE_AI_SECRET`。Node Web 与 `ops-worker` 仍需运行，Node 先就绪但 Go 不做存活探测。协议固定 `POST /__aiinternal__/v1/account-health-check/dispatch`、`1024 bytes`、HMAC-SHA256、`activation/configuration`、仅 `202` 成功。失败不回滚提交，也不构成可靠交付；当前只支持同主机、同网络命名空间，internal path 不得反代公网。W7 接管健康任务并删除临时 adapter、Node route 和 env；计划状态保持进行中。
 - 本轮口径更新：Go 已补 `juhe-ai-worker operation-log-retention-cleanup`，W2 的 operation log 保留清理不再是“代码未迁移”；仍未完成的是生产 supervisor 接管、真实 PostgreSQL run-once / 长跑 smoke、完整 data-retention 迁移、生产切流和 Node 删除。
 - 本轮口径更新：Go system API 已补鉴权前 IP read / write 60 秒 + 10 秒 burst limiter，以及已注册管理业务路由鉴权后的系统账户 read / write 60 秒 limiter；六项默认值为 `600/120/180/40/300/120`，生产 server 同时注入两层 Redis limiter。设置快照保留 60 秒 TTL 兜底，但不再只依赖 TTL：同进程系统设置 PATCH 成功后直接清理共享快照，Redis 模式每次请求检查 Node 兼容 `settings:system` version，跨 runtime 版本变化后立即重载；IP / user read / write 在同一请求内复用同一份快照。`609a131c8`、`a2ac2ba42` 和 `e584b7b3c` 已补 active / 未过期 client IP allowlist 查询、两层 bypass、30 秒有界缓存、policy expiry 上界和 shared cache version 失效。该范围只对齐已迁移、已注册业务路由，不是 100% Node 等价：Node 已认证未知路径 / 错误 method 会经过用户 limiter，而 Go 仍是精确业务路由级挂载；客户端 IP 列表和四条 policy 写接口已进入 Go opt-in，详情与统计生产 writer / worker 仍由 Node 提供。真实 Redis 跨 runtime 互操作、真实 PG/Redis/可信反向代理 smoke、生产切流和 Node 删除仍未完成。
