@@ -341,6 +341,25 @@ func managementClientIPPolicyMutationGuardConfig(action string) mutationGuardCon
 	}
 }
 
+func managementExternalIntegrationSourceUpdateMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "external_integration_sources.update",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := mutationJSONFields(w, r)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"id":         strings.TrimSpace(chi.URLParam(r, "id")),
+				"name":       mutationAnyField(fields, "name"),
+				"status":     mutationAnyField(fields, "status"),
+				"expiresAt":  mutationAnyField(fields, "expiresAt"),
+				"rateLimits": mutationNodeJSONValue(mutationAnyField(fields, "rateLimits")),
+			}, nil
+		},
+	}
+}
+
 func managementGroupCreateMutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
@@ -407,11 +426,31 @@ func mutationAnyField(fields map[string]json.RawMessage, name string) any {
 }
 
 func mutationNodeJSONNumberField(fields map[string]json.RawMessage, name string) any {
-	value := mutationAnyField(fields, name)
-	number, ok := value.(json.Number)
-	if !ok {
-		return value
+	return mutationNodeJSONValue(mutationAnyField(fields, name))
+}
+
+func mutationNodeJSONValue(value any) any {
+	switch typed := value.(type) {
+	case json.Number:
+		return mutationNodeJSONNumber(typed)
+	case map[string]any:
+		normalized := make(map[string]any, len(typed))
+		for key, item := range typed {
+			normalized[key] = mutationNodeJSONValue(item)
+		}
+		return normalized
+	case []any:
+		normalized := make([]any, 0, len(typed))
+		for _, item := range typed {
+			normalized = append(normalized, mutationNodeJSONValue(item))
+		}
+		return normalized
+	default:
+		return typed
 	}
+}
+
+func mutationNodeJSONNumber(number json.Number) any {
 	normalized, err := strconv.ParseFloat(number.String(), 64)
 	if math.IsInf(normalized, 0) {
 		return nil

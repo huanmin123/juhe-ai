@@ -153,6 +153,7 @@ type RouterOptions struct {
 	ManagementRuntimeLogsHandler                      http.Handler
 	ManagementExternalIntegrationSourceListHandler    http.Handler
 	ManagementExternalIntegrationSourceDetailHandler  http.Handler
+	ManagementExternalIntegrationSourceUpdateHandler  http.Handler
 	ManagementExternalSourceTokenSecretHandler        http.Handler
 	ManagementExternalIntegrationSourceScopesHandler  http.Handler
 	ManagementExternalIntegrationSourceAPIDocsHandler http.Handler
@@ -375,6 +376,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementRuntimeLogsHandler == nil &&
 				opts.ManagementExternalIntegrationSourceListHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDetailHandler == nil &&
+				opts.ManagementExternalIntegrationSourceUpdateHandler == nil &&
 				opts.ManagementExternalSourceTokenSecretHandler == nil &&
 				opts.ManagementExternalIntegrationSourceScopesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceAPIDocsHandler == nil &&
@@ -885,6 +887,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 					"/external-integration-sources/{id}",
 					opts.ManagementExternalIntegrationSourceDetailHandler.ServeHTTP,
 				)
+			}
+			if opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
+				opts.ManagementExternalIntegrationSourceUpdateHandler != nil {
 				unavailableWriteHandler := func(w http.ResponseWriter, r *http.Request) {
 					sourceID := chi.URLParam(r, "id")
 					if (sourceID == "scopes" && opts.ManagementExternalIntegrationSourceScopesHandler != nil) ||
@@ -897,7 +902,28 @@ func NewRouter(opts RouterOptions) http.Handler {
 				}
 				system.Post("/external-integration-sources/{id}", unavailableWriteHandler)
 				system.Put("/external-integration-sources/{id}", unavailableWriteHandler)
-				system.Patch("/external-integration-sources/{id}", unavailableWriteHandler)
+				if opts.ManagementExternalIntegrationSourceUpdateHandler != nil {
+					updateHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						sourceID := chi.URLParam(r, "id")
+						if (sourceID == "scopes" && opts.ManagementExternalIntegrationSourceScopesHandler != nil) ||
+							(sourceID == "api-docs" && opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil) {
+							w.Header().Set("Allow", http.MethodGet)
+							w.WriteHeader(http.StatusMethodNotAllowed)
+							return
+						}
+						opts.ManagementExternalIntegrationSourceUpdateHandler.ServeHTTP(w, r)
+					})
+					system.With(
+						managementAPIWriteRateLimitMiddleware,
+						managementGroupAdminRoleMiddleware,
+						mutationGuards.Middleware(managementExternalIntegrationSourceUpdateMutationGuardConfig()),
+					).Patch(
+						"/external-integration-sources/{id}",
+						updateHandler.ServeHTTP,
+					)
+				} else {
+					system.Patch("/external-integration-sources/{id}", unavailableWriteHandler)
+				}
 				system.Delete("/external-integration-sources/{id}", unavailableWriteHandler)
 			}
 			if opts.ManagementExternalSourceTokenSecretHandler != nil {
@@ -1081,6 +1107,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementRuntimeLogsHandler != nil ||
 		opts.ManagementExternalIntegrationSourceListHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
+		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalSourceTokenSecretHandler != nil ||
 		opts.ManagementExternalIntegrationSourceScopesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil ||
@@ -1149,5 +1176,6 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementClientIPAllowlistHandler != nil ||
 		opts.ManagementClientIPUnallowlistHandler != nil ||
 		opts.ManagementClientIPBlacklistHandler != nil ||
-		opts.ManagementClientIPUnblockHandler != nil
+		opts.ManagementClientIPUnblockHandler != nil ||
+		opts.ManagementExternalIntegrationSourceUpdateHandler != nil
 }
