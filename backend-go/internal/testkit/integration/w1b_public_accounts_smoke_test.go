@@ -1130,8 +1130,10 @@ func assertW1bPublicAccountModels(t *testing.T, ctx context.Context, db *sql.DB,
 func assertW1bPublicAccountModelList(t *testing.T, got []string, want []string) {
 	t.Helper()
 
-	if !slices.Equal(got, want) {
-		t.Fatalf("supported models = %v, want %v", got, want)
+	sortedWant := slices.Clone(want)
+	slices.Sort(sortedWant)
+	if !slices.Equal(got, sortedWant) {
+		t.Fatalf("supported models = %v, want %v", got, sortedWant)
 	}
 }
 

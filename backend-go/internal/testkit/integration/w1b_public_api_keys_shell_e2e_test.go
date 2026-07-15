@@ -289,8 +289,9 @@ func assertW1bAPIKeyShellPublicAPILogsPreserveRawValues(t *testing.T, ctx contex
 	t.Helper()
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, trace_id, source_ref_id, token_id, token_prefix, method, path, status_code, success,
-		       query_string, request_capture_status, response_capture_status, request_data_json, response_data_json,
+		SELECT id, COALESCE(trace_id, ''), COALESCE(source_ref_id, ''), COALESCE(token_id, ''),
+		       COALESCE(token_prefix, ''), method, path, COALESCE(status_code, 0), success,
+		       COALESCE(query_string, ''), request_capture_status, response_capture_status, request_data_json, response_data_json,
 		       COALESCE(error_code, ''), COALESCE(error_message, '')
 		FROM juhe_dataset.public_api_logs
 		WHERE id LIKE 'publog_w1b_api_key_shell_%'
