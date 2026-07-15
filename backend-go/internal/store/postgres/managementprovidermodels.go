@@ -340,7 +340,7 @@ func saveManagementCustomProviderModel(
 	if err != nil {
 		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("marshal management custom provider model reasoning efforts: %w", err)
 	}
-	serviceTierPricesJSON, err := json.Marshal(input.ServiceTierPrices)
+	serviceTierPricesJSON, err := marshalManagementProviderModelPriceMap(input.ServiceTierPrices)
 	if err != nil {
 		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("marshal management custom provider model service tier prices: %w", err)
 	}
@@ -381,6 +381,13 @@ func saveManagementCustomProviderModel(
 		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("save management custom provider model: %w", err)
 	}
 	return managementCustomProviderModelFromData(customProviderModelDataFromUpsertRow(row))
+}
+
+func marshalManagementProviderModelPriceMap(prices map[string]port.ManagementProviderModelPriceSet) ([]byte, error) {
+	if prices == nil {
+		prices = map[string]port.ManagementProviderModelPriceSet{}
+	}
+	return json.Marshal(prices)
 }
 
 func deleteManagementCustomProviderModel(ctx context.Context, q *postgresqueries.Queries, id string) (bool, error) {

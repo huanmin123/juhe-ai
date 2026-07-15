@@ -89,7 +89,6 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 		"supportedApiProtocols":["responses","chat_completions"],
 		"supportedServiceTiers":["priority","flex"],
 		"supportedReasoningEfforts":["low","high"],
-		"defaultReasoningEffort":"high",
 		"inputUsdPer1M":1.25,
 		"outputUsdPer1M":2.5,
 		"pricingNotes":"W3 CRUD 价格说明",
@@ -107,7 +106,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if createBody.Data.ID == "" || createBody.Data.Model != "w3-crud-model" || createBody.Data.Scope != "global" || createBody.Data.SystemAccountID != "" || createBody.Data.PricingNotes != "W3 CRUD 价格说明" {
 		t.Fatalf("create response = %+v", createBody.Data)
 	}
-	assertW2ProviderModelRequestCapabilities(t, &createBody.Data, []string{"priority", "flex"}, []string{"low", "high"}, "high", []string{}, "", "")
+	assertW2ProviderModelRequestCapabilities(t, &createBody.Data, []string{"priority", "flex"}, []string{"low", "high"}, "", []string{}, "", "")
 
 	listRec := serveW3ProviderModelCRUDRequest(router, http.MethodGet, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options&includeInactive=true&includeUnpriced=true", sessionToken, "")
 	if listRec.Code != http.StatusOK {
@@ -122,7 +121,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if item := findW2ProviderModel(listBody.Data, "w3-crud-model"); item == nil || item.Notes != "W3 CRUD 备注" {
 		t.Fatalf("list response missing created custom model with notes: %+v", listBody.Data)
 	} else {
-		assertW2ProviderModelRequestCapabilities(t, item, []string{"priority", "flex"}, []string{"low", "high"}, "high", []string{}, "", "")
+		assertW2ProviderModelRequestCapabilities(t, item, []string{"priority", "flex"}, []string{"low", "high"}, "", []string{}, "", "")
 	}
 	assertW3ProviderModelCRUDCapabilityValidation(t, router, sessionToken)
 
@@ -135,7 +134,6 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 		"status":"disabled",
 		"supportedServiceTiers":["flex"],
 		"supportedReasoningEfforts":["minimal","medium","xhigh"],
-		"defaultReasoningEffort":"medium",
 		"notes":null
 	}`)
 	if patchRec.Code != http.StatusOK {
@@ -150,9 +148,9 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if patchBody.Data.Status != "disabled" || patchBody.Data.Notes != "" {
 		t.Fatalf("patch response = %+v", patchBody.Data)
 	}
-	assertW2ProviderModelRequestCapabilities(t, &patchBody.Data, []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "medium", []string{}, "", "")
+	assertW2ProviderModelRequestCapabilities(t, &patchBody.Data, []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "", []string{}, "", "")
 	assertW3ProviderModelCRUDDefaultPreferenceCleared(t, ctx, db, "w3-crud-model")
-	assertW3ProviderModelCRUDCapabilitiesPersisted(t, ctx, db, createBody.Data.ID, "disabled", []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "medium")
+	assertW3ProviderModelCRUDCapabilitiesPersisted(t, ctx, db, createBody.Data.ID, "disabled", []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "")
 
 	updatedListRec := serveW3ProviderModelCRUDRequest(router, http.MethodGet, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options&includeInactive=true&includeUnpriced=true", sessionToken, "")
 	if updatedListRec.Code != http.StatusOK {
@@ -168,7 +166,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if updatedItem == nil || updatedItem.Status != "disabled" || updatedItem.Notes != "" {
 		t.Fatalf("updated list response missing patched custom model: %+v", updatedListBody.Data)
 	}
-	assertW2ProviderModelRequestCapabilities(t, updatedItem, []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "medium", []string{}, "", "")
+	assertW2ProviderModelRequestCapabilities(t, updatedItem, []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "", []string{}, "", "")
 
 	deleteRec := serveW3ProviderModelCRUDRequest(router, http.MethodDelete, "/__aisys__/api/providers/gpt/models/"+createBody.Data.ID, sessionToken, "")
 	if deleteRec.Code != http.StatusOK {
@@ -204,7 +202,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if boundDeleteRec.Code != http.StatusConflict {
 		t.Fatalf("bound delete status = %d, body = %s", boundDeleteRec.Code, boundDeleteRec.Body.String())
 	}
-	if !strings.Contains(boundDeleteRec.Body.String(), "账户支持模型") || !strings.Contains(boundDeleteRec.Body.String(), "模型映射下游") || !strings.Contains(boundDeleteRec.Body.String(), "模型映射上游") {
+	if !strings.Contains(boundDeleteRec.Body.String(), "1 个账户支持模型") || !strings.Contains(boundDeleteRec.Body.String(), "1 个账户映射下游模型") || !strings.Contains(boundDeleteRec.Body.String(), "1 个账户映射上游模型") {
 		t.Fatalf("bound delete body = %s", boundDeleteRec.Body.String())
 	}
 }
