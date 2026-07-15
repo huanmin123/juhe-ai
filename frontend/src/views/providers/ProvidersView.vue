@@ -129,7 +129,7 @@
               @change="handleConfigurationTemplateChange"
             />
           </a-form-item>
-          <a-form-item v-if="isManagementView" label="作用域" class="custom-model-grid-wide">
+          <a-form-item v-if="isManagementView && !editingBuiltInModel" label="作用域" class="custom-model-grid-wide">
             <a-radio-group v-model:value="customModelForm.scope" :disabled="customModelEditing" button-style="solid" @change="handleCustomModelScopeChange">
               <a-radio-button value="personal">{{ selectedModelOwnerLabel }}个人模型</a-radio-button>
               <a-radio-button value="global">全局模型</a-radio-button>
@@ -172,6 +172,15 @@
                 :disabled="editingBuiltInModel"
                 placeholder="仅配置上游 wire 支持的思考级别"
                 @change="normalizeCustomModelRequestCapabilities(customModelForm)"
+              />
+            </a-form-item>
+            <a-form-item label="默认思考级别" class="custom-model-grid-wide">
+              <a-select
+                v-model:value="customModelForm.defaultReasoningEffort"
+                allow-clear
+                :options="customModelDefaultReasoningEffortOptions"
+                :disabled="editingBuiltInModel || !customModelForm.supportedReasoningEfforts.length"
+                placeholder="从已支持的思考级别中选择"
               />
             </a-form-item>
           </template>
@@ -221,6 +230,9 @@
               <a-form-item :label="`${formatModelServiceTier(tier)} 缓存写入价格`">
                 <a-input-number v-model:value="customModelForm.serviceTierPrices[tier].cacheWriteUsdPer1M" :min="0" :precision="8" style="width: 100%" />
               </a-form-item>
+              <a-form-item :label="`${formatModelServiceTier(tier)} 1h 缓存写入价格`">
+                <a-input-number v-model:value="customModelForm.serviceTierPrices[tier].cacheWrite1hUsdPer1M" :min="0" :precision="8" style="width: 100%" />
+              </a-form-item>
             </template>
           </template>
           <template v-else-if="customModelPricingCategory === 'image'">
@@ -268,7 +280,9 @@ import ProviderModelCatalogModal from './ProviderModelCatalogModal.vue'
 import {
   applyConfigurationTemplateToCustomModelForm,
   availableCustomModelStatusOptions,
+  buildCustomModelCapabilityOptions,
   buildCustomModelPayload as buildCustomModelUpsertPayload,
+  canManageModelPricesForView,
   clearCustomModelGptCapabilities,
   clearCustomModelPricesOutsideCategory,
   createCustomModelFormFromPricing,
@@ -283,7 +297,6 @@ import {
   defaultProtocolsForProviderModelCategory,
   findFirstModelCategory,
   formatCapabilitiesSummary,
-  formatModelReasoningEffort,
   formatModelServiceTier,
   formatProviderCapability,
   getModelCategory,
@@ -324,7 +337,7 @@ const editingModelScope = ref<ProviderModelPricing['scope']>()
 const editingOriginalStatus = ref<ProviderModelPricing['status']>()
 
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
-const canManageModelPrices = authState.isAdmin
+const canManageModelPrices = computed(() => canManageModelPricesForView(isManagementView.value, authState.isAdmin.value))
 const customModelEditing = computed(() => Boolean(editingCustomModelId.value))
 const editingBuiltInModel = computed(() => editingModelScope.value === 'built_in')
 
@@ -364,27 +377,23 @@ const activeProviderDefaultHealthCheckModel = computed(() => activeProvider.valu
 const customModelModalTitle = computed(() => editingBuiltInModel.value ? '编辑模型价格' : customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
 const customModelCategoryRecords = computed(() => providerModels.value.filter((item) => getModelCategory(item) === customModelPricingCategory.value))
-const customModelServiceTierOptions = computed(() => uniqueModelCapabilityOptions(
+const customModelCapabilityOptions = computed(() => buildCustomModelCapabilityOptions(
   customModelCategoryRecords.value.flatMap((item) => item.supportedServiceTiers ?? []),
-  formatModelServiceTier
+  customModelCategoryRecords.value.flatMap((item) => item.supportedReasoningEfforts ?? [])
 ))
-const customModelReasoningEffortOptions = computed(() => uniqueModelCapabilityOptions(
-  customModelCategoryRecords.value.flatMap((item) => item.supportedReasoningEfforts ?? []),
-  formatModelReasoningEffort
-))
-const showCustomModelRequestCapabilities = computed(() => customModelPricingCategory.value === 'text' && (
-  customModelServiceTierOptions.value.length > 0 || customModelReasoningEffortOptions.value.length > 0 ||
-  customModelForm.supportedServiceTiers.length > 0 || customModelForm.supportedReasoningEfforts.length > 0
-))
+const customModelServiceTierOptions = computed(() => customModelCapabilityOptions.value.serviceTiers)
+const customModelReasoningEffortOptions = computed(() => customModelCapabilityOptions.value.reasoningEfforts)
+const customModelDefaultReasoningEffortOptions = computed(() => customModelReasoningEffortOptions.value.filter((option) => (
+  customModelForm.supportedReasoningEfforts.includes(option.value)
+)))
+const showCustomModelRequestCapabilities = computed(() => customModelPricingCategory.value === 'text')
 const customModelStatusOptions = computed(() => availableCustomModelStatusOptions(canManageModelPrices.value, editingOriginalStatus.value))
 const customModelApiProtocolOptions = computed(() => {
   const supported = new Set(customModelCategoryRecords.value.flatMap((item) => item.supportedApiProtocols ?? []))
   for (const protocol of defaultProtocolsForProviderModelCategory(activeProvider.value ?? undefined, customModelPricingCategory.value)) supported.add(protocol)
   return apiProtocolOptions.filter((option) => supported.has(option.value))
 })
-const customModelModeOptions = computed(() => modelModeOptions.filter((option) => (
-  providerModels.value.some((item) => getModelCategory(item) === option.value) || option.value === selectedModelCategory.value
-)))
+const customModelModeOptions = modelModeOptions
 const selectedModelOwnerLabel = computed(() => {
   if (!isManagementView.value) return ''
   const systemAccountId = modelSystemAccountFilter.value.trim()
@@ -647,10 +656,6 @@ function handleConfigurationTemplateChange(id?: string) {
 function applyDefaultConfigurationTemplate(): void {
   const id = configurationTemplateOptions.value[0]?.value
   if (id) handleConfigurationTemplateChange(id)
-}
-
-function uniqueModelCapabilityOptions<T extends string>(values: T[], label: (value: T) => string) {
-  return [...new Set(values)].map((value) => ({ value, label: label(value) }))
 }
 
 async function setDefaultHealthCheckModel(record: ProviderModelPricing) {

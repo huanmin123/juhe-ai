@@ -80,12 +80,14 @@
             </a-space>
           </template>
           <template v-else-if="column.key === 'serviceTiers'">
-            <a-space wrap size="small">
-              <a-tag v-for="tier in record.supportedServiceTiers" :key="tier" :color="tier === 'priority' ? 'blue' : 'cyan'">
-                {{ formatModelServiceTier(tier) }}
-              </a-tag>
-              <span v-if="!record.supportedServiceTiers?.length" class="muted-text">-</span>
-            </a-space>
+            <div v-if="record.supportedServiceTiers?.length" class="tier-price-list">
+              <div v-for="tier in record.supportedServiceTiers" :key="tier" class="tier-price-row">
+                <a-tag :color="tier === 'priority' ? 'blue' : 'cyan'">{{ formatModelServiceTier(tier) }}</a-tag>
+                <span>输入 {{ formatPrice(record.serviceTierPrices?.[tier]?.inputUsdPer1M) }}</span>
+                <span>输出 {{ formatPrice(record.serviceTierPrices?.[tier]?.outputUsdPer1M) }}</span>
+              </div>
+            </div>
+            <span v-else class="muted-text">仅标准</span>
           </template>
           <template v-else-if="column.key === 'reasoningEfforts'">
             <div class="capability-tag-list">
@@ -93,9 +95,9 @@
                 v-for="effort in record.supportedReasoningEfforts"
                 :key="effort"
               >
-                {{ formatModelReasoningEffort(effort) }}
+                {{ formatModelReasoningEffort(effort) }}{{ effort === record.defaultReasoningEffort ? '（默认）' : '' }}
               </a-tag>
-              <span v-if="!record.supportedReasoningEfforts?.length" class="muted-text">-</span>
+              <span v-if="!record.supportedReasoningEfforts?.length" class="muted-text">不支持</span>
             </div>
           </template>
           <template v-else-if="column.key === 'prices'">
@@ -158,11 +160,15 @@
               <span>接口协议</span>
               <strong>{{ (record.supportedApiProtocols ?? []).map(formatApiProtocol).join(' / ') || '-' }}</strong>
               <span>服务等级</span>
-              <strong>{{ (record.supportedServiceTiers ?? []).map(formatModelServiceTier).join(' / ') || '-' }}</strong>
+              <strong>{{ formatModelServiceTierCapabilities(record) }}</strong>
               <span>思考级别</span>
               <strong>{{ formatModelReasoningCapabilities(record) }}</strong>
               <span>价格</span>
               <strong>{{ formatModelPriceSummary(record) }}</strong>
+              <span>缓存写入</span>
+              <strong>标准 {{ formatPrice(record.cacheWriteUsdPer1M) }} / 1h {{ formatPrice(record.cacheWrite1hUsdPer1M) }}</strong>
+              <span>服务等级价格</span>
+              <strong>{{ formatServiceTierPriceSummary(record) }}</strong>
               <span>总上下文</span>
               <strong>{{ formatModelContextTokens(record) }}</strong>
               <span>最大输入</span>
@@ -195,6 +201,7 @@ import {
   formatModelReasoningCapabilities,
   formatModelReasoningEffort,
   formatModelServiceTier,
+  formatModelServiceTierCapabilities,
   formatModelScope,
   formatModelStatus,
   formatPrice,
@@ -252,6 +259,14 @@ function isDefaultHealthCheckModel(record: ProviderModelPricing): boolean {
 
 function handleSystemAccountUpdate(value: string | string[] | undefined): void {
   emit('update:systemAccountFilter', typeof value === 'string' ? value : '')
+}
+
+function formatServiceTierPriceSummary(record: ProviderModelPricing): string {
+  if (!record.supportedServiceTiers?.length) return '仅标准'
+  return record.supportedServiceTiers.map((tier) => {
+    const prices = record.serviceTierPrices?.[tier]
+    return `${formatModelServiceTier(tier)}：输入 ${formatPrice(prices?.inputUsdPer1M)} / 输出 ${formatPrice(prices?.outputUsdPer1M)} / 缓存读 ${formatPrice(prices?.cachedInputUsdPer1M)}`
+  }).join('；')
 }
 </script>
 
@@ -341,6 +356,17 @@ function handleSystemAccountUpdate(value: string | string[] | undefined): void {
 .capability-tag-list :deep(.ant-tag) {
   margin-inline-end: 0;
   white-space: nowrap;
+}
+
+.tier-price-list {
+  display: grid;
+  gap: 4px;
+}
+
+.tier-price-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .model-mobile-card {

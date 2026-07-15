@@ -18,7 +18,7 @@ export const baseModelColumns = [
   { title: '发布时间', key: 'releaseDate', width: 120 },
   { title: '用途', key: 'category', width: 120 },
   { title: '接口协议', key: 'protocols', width: 230 },
-  { title: '服务等级', key: 'serviceTiers', width: 150 },
+  { title: '服务等级', key: 'serviceTiers', width: 280 },
   { title: '思考级别', key: 'reasoningEfforts', width: 360 },
   { title: '计费', key: 'prices', width: 230 },
   { title: '缓存写入', key: 'cacheWrite', width: 180 },

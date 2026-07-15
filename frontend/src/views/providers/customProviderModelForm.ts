@@ -29,6 +29,7 @@ export interface CustomModelForm {
   supportedApiProtocols: ProviderModelApiProtocol[]
   supportedServiceTiers: ProviderModelServiceTier[]
   supportedReasoningEfforts: ProviderModelReasoningEffort[]
+  defaultReasoningEffort?: ProviderModelReasoningEffort
   configurationTemplateId?: string
   releaseDate?: string
   shutdownDate?: string
@@ -72,6 +73,7 @@ export function createCustomModelFormFromPricing(
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
     supportedServiceTiers: normalizeServiceTiers(record.supportedServiceTiers),
     supportedReasoningEfforts: normalizeReasoningEfforts(record.supportedReasoningEfforts),
+    defaultReasoningEffort: record.defaultReasoningEffort,
     releaseDate: record.releaseDate,
     shutdownDate: record.shutdownDate,
     contextWindowTokens: record.contextWindowTokens,
@@ -129,6 +131,9 @@ export function buildCustomModelPayload(
       ? normalizeServiceTiers(form.supportedServiceTiers)
       : []
     payload.supportedReasoningEfforts = supportedReasoningEfforts
+    payload.defaultReasoningEffort = supportedReasoningEfforts.includes(form.defaultReasoningEffort ?? '')
+      ? form.defaultReasoningEffort
+      : null
   }
   return payload
 }
@@ -136,11 +141,15 @@ export function buildCustomModelPayload(
 export function clearCustomModelGptCapabilities(form: CustomModelForm): void {
   form.supportedServiceTiers = []
   form.supportedReasoningEfforts = []
+  form.defaultReasoningEffort = undefined
 }
 
 export function normalizeCustomModelRequestCapabilities(form: CustomModelForm): void {
   form.supportedServiceTiers = normalizeServiceTiers(form.supportedServiceTiers)
   form.supportedReasoningEfforts = normalizeReasoningEfforts(form.supportedReasoningEfforts)
+  if (!form.supportedReasoningEfforts.includes(form.defaultReasoningEffort ?? '')) {
+    form.defaultReasoningEffort = undefined
+  }
 }
 
 export function applyConfigurationTemplateToCustomModelForm(
@@ -158,6 +167,9 @@ export function applyConfigurationTemplateToCustomModelForm(
   form.supportedApiProtocols = [...(template.supportedApiProtocols ?? [])]
   form.supportedServiceTiers = normalizeServiceTiers(template.supportedServiceTiers)
   form.supportedReasoningEfforts = normalizeReasoningEfforts(template.supportedReasoningEfforts)
+  form.defaultReasoningEffort = form.supportedReasoningEfforts.includes(template.defaultReasoningEffort ?? '')
+    ? template.defaultReasoningEffort
+    : undefined
   form.contextWindowTokens = template.contextWindowTokens
   form.maxInputTokens = template.maxInputTokens
   form.maxOutputTokens = template.maxOutputTokens
@@ -178,6 +190,23 @@ export function reconcileCustomModelServiceTierPrices(form: CustomModelForm): vo
 
 export function availableCustomModelStatusOptions(_canManagePrices: boolean, _originalStatus?: ProviderModelStatus) {
   return modelStatusOptions
+}
+
+const standardServiceTierValues: ProviderModelServiceTier[] = ['priority', 'flex']
+const standardReasoningEffortValues: ProviderModelReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
+export function buildCustomModelCapabilityOptions(
+  serviceTiers: ProviderModelServiceTier[],
+  reasoningEfforts: ProviderModelReasoningEffort[]
+) {
+  return {
+    serviceTiers: capabilityOptions([...standardServiceTierValues, ...serviceTiers], formatServiceTier),
+    reasoningEfforts: capabilityOptions([...standardReasoningEffortValues, ...reasoningEfforts], formatReasoningEffort)
+  }
+}
+
+export function canManageModelPricesForView(isManagementView: boolean, isAdmin: boolean): boolean {
+  return isManagementView && isAdmin
 }
 
 function cloneServiceTierPrices(value?: Record<string, ProviderModelPriceSet>): Record<string, ProviderModelPriceSet> {
@@ -238,4 +267,25 @@ function uniqueCapabilityTokens<TValue extends string>(values: unknown[]): TValu
     output.push(normalized as TValue)
   }
   return output
+}
+
+function capabilityOptions<TValue extends string>(values: TValue[], label: (value: TValue) => string) {
+  return uniqueCapabilityTokens<TValue>(values).map((value) => ({ value, label: label(value) }))
+}
+
+function formatServiceTier(value: ProviderModelServiceTier): string {
+  if (value === 'priority') return 'Priority'
+  if (value === 'flex') return 'Flex'
+  return value
+}
+
+function formatReasoningEffort(value: ProviderModelReasoningEffort): string {
+  if (value === 'none') return '关闭'
+  if (value === 'minimal') return 'Minimal'
+  if (value === 'low') return 'Low'
+  if (value === 'medium') return 'Medium'
+  if (value === 'high') return 'High'
+  if (value === 'xhigh') return 'XHigh'
+  if (value === 'max') return 'Max'
+  return value
 }

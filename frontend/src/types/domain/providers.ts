@@ -145,6 +145,7 @@ export interface ProviderModelUpsertPayload {
   supportedApiProtocols?: ProviderModelApiProtocol[]
   supportedServiceTiers?: ProviderModelServiceTier[]
   supportedReasoningEfforts?: ProviderModelReasoningEffort[]
+  defaultReasoningEffort?: ProviderModelReasoningEffort | null
   releaseDate?: string | null
   shutdownDate?: string | null
   contextWindowTokens?: number | null

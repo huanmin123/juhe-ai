@@ -197,9 +197,17 @@ export function formatModelReasoningEffort(value: ProviderModelReasoningEffort |
 }
 
 export function formatModelReasoningCapabilities(item: ProviderModelPricing): string {
-  return item.supportedReasoningEfforts?.length
-    ? item.supportedReasoningEfforts.map(formatModelReasoningEffort).join(' / ')
-    : '-'
+  if (!item.supportedReasoningEfforts?.length) return '不支持'
+  return item.supportedReasoningEfforts.map((effort) => {
+    const label = formatModelReasoningEffort(effort)
+    return effort === item.defaultReasoningEffort ? `${label}（默认）` : label
+  }).join(' / ')
+}
+
+export function formatModelServiceTierCapabilities(item: ProviderModelPricing): string {
+  return item.supportedServiceTiers?.length
+    ? item.supportedServiceTiers.map(formatModelServiceTier).join(' / ')
+    : '仅标准'
 }
 
 export function formatModelRequestCapabilities(item: ProviderModelPricing): string {
@@ -208,7 +216,7 @@ export function formatModelRequestCapabilities(item: ProviderModelPricing): stri
     parts.push(`服务等级 ${item.supportedServiceTiers.map(formatModelServiceTier).join(' / ')}`)
   }
   const reasoningCapabilities = formatModelReasoningCapabilities(item)
-  if (reasoningCapabilities !== '-') parts.push(reasoningCapabilities)
+  if (reasoningCapabilities !== '不支持') parts.push(reasoningCapabilities)
   return parts.join('；') || '-'
 }
 
@@ -309,11 +317,11 @@ function isProviderModelApiProtocol(value: string): value is ProviderModelApiPro
 }
 
 export function formatPrice(value?: number): string {
-  return typeof value === 'number' ? `$${trimNumber(value)}` : '-'
+  return typeof value === 'number' ? `$${trimNumber(value)}` : '官方未公布'
 }
 
 export function formatUnitPrice(value?: number): string {
-  return typeof value === 'number' ? `$${trimNumber(value)}` : '-'
+  return typeof value === 'number' ? `$${trimNumber(value)}` : '官方未公布'
 }
 
 export function formatModelPriceSummary(item: ProviderModelPricing): string {
