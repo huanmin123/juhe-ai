@@ -93,6 +93,7 @@ assert.match(providersViewSource, /label="思考级别"[\s\S]*mode="tags"/, '思
 assert.match(providersViewSource, /v-if="isManagementView && !editingBuiltInModel" label="作用域"/, '内置模型价格编辑不能伪装成个人模型作用域')
 assert.match(catalogModalSource, /serviceTierPrices/, '模型目录必须展示服务等级价格明细')
 assert.match(catalogModalSource, /缓存写入/, '移动端模型目录必须展示缓存写入价格')
+assert.match(catalogModalSource, /:row-key="modelRowKey"/, '聚合模型目录必须使用稳定复合键，不能只用可能跨供应商重复的模型名')
 
 console.log('供应商模型 formatter 回归通过：模型类别规则已拆分，现有分类和默认协议行为保持不变')
 

@@ -43,7 +43,7 @@
         size="small"
         :columns="columns"
         :data-source="models"
-        row-key="model"
+        :row-key="modelRowKey"
         :loading="loading"
         :pagination="{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }"
         :scroll-x="1500"
@@ -259,6 +259,10 @@ function isDefaultHealthCheckModel(record: ProviderModelPricing): boolean {
 
 function handleSystemAccountUpdate(value: string | string[] | undefined): void {
   emit('update:systemAccountFilter', typeof value === 'string' ? value : '')
+}
+
+function modelRowKey(record: ProviderModelPricing): string {
+  return record.id || [record.providerCode, record.scope, record.systemAccountId ?? '', record.model].join(':')
 }
 
 function formatServiceTierPriceSummary(record: ProviderModelPricing): string {
