@@ -1,6 +1,6 @@
 # BUG-0087 watchdog 局部故障扩大为整组重启
 
-- 状态：已修复（待生产验证）
+- 状态：已修复并完成生产验证
 - 严重程度：P0
 - 模块：部署 / watchdog / DB service / supervisor / 生产稳定性
 - 发现日期：2026-07-15
@@ -29,6 +29,7 @@
 - Node：DB service 恢复策略、timer 清理、同 child KILL 竞态回归。
 - macOS 脚本：`bash -n`、watchdog regression、`plutil -lint` 和生产 60 秒固定 PID 验收。
 - 生产发布后必须确认 API-only 降级只出现 `action=observe-only`，主 PID 不变化。
+- 2026-07-16 生产 launchd 配置与单实例状态核对通过；最终 60 秒验收期间主 PID、watchdog PID 未变化，watchdog 无失败、采样或重启动作。
 
 ## 防复发
 

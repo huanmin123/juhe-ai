@@ -1,6 +1,6 @@
 # BUG-0089 Codex 兼容头版本落后
 
-- 状态：已修复（待生产验证）
+- 状态：已修复并完成生产验证
 - 严重程度：P1
 - 模块：网关 / Codex Responses / OpenAI OAuth
 - 发现日期：2026-07-15
@@ -26,6 +26,7 @@ Codex 兼容头在多个适配器中重复硬编码，版本升级时没有统�
 - `pnpm --dir backend run test:openai-oauth-protocol-contract`
 - 后端 typecheck 与 build。
 - 生产发布后用测试 OAuth 账户执行 Sol SSE 首事件验证。
+- 2026-07-16 修正 release 上线后，生产最近 5 分钟有 131 条 `gpt-5.6-sol` 流式请求成功，HTTP 200，131 条均记录首包时间，证明真实 Sol SSE 链路已工作。
 
 ## 防复发
 
