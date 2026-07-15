@@ -390,6 +390,7 @@ func TestServiceModelsOpenAICompatibleExcludesHybridSource(t *testing.T) {
 		},
 		catalog: []port.ManagementProviderModelCatalogItem{
 			{ProviderCode: "gpt", Model: "gpt-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
+			{ProviderCode: "openai", Model: "openai-built-in", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
 			{ProviderCode: "openai", Model: "openai-custom", Scope: "personal", Status: "active", Source: "custom-personal", InputUSDPer1M: &price},
 			{ProviderCode: "hybrid", Model: "hybrid-direct", Scope: "personal", Status: "active", Source: "custom-personal", InputUSDPer1M: &price},
 		},
@@ -410,6 +411,12 @@ func TestServiceModelsOpenAICompatibleExcludesHybridSource(t *testing.T) {
 	if findModelCatalogItem(models, "hybrid-direct") != nil {
 		t.Fatalf("models = %+v, want no hybrid source entries", models)
 	}
+	if !slices.Equal(store.catalogInput.BuiltInProviderCodes, []string{"gpt"}) {
+		t.Fatalf("built-in provider codes = %+v, want [gpt]", store.catalogInput.BuiltInProviderCodes)
+	}
+	if !slices.Equal(store.catalogInput.CustomProviderCodes, []string{"gpt", "openai"}) {
+		t.Fatalf("custom provider codes = %+v, want [gpt openai]", store.catalogInput.CustomProviderCodes)
+	}
 }
 
 func findModelCatalogItem(items []ModelCatalogItem, model string) *ModelCatalogItem {
@@ -421,16 +428,26 @@ func findModelCatalogItem(items []ModelCatalogItem, model string) *ModelCatalogI
 	return nil
 }
 
-func TestServiceModelsHybridKeepsProviderModelsDistinct(t *testing.T) {
+func TestServiceModelsHybridUsesDistinctProtocolProviderUnion(t *testing.T) {
 	price := 1.0
 	store := &providerModelStoreStub{
 		providers: map[string]port.ManagementProviderModelProvider{
 			"hybrid": {Code: "hybrid", Enabled: true},
 		},
-		enabledCodes: []string{"gpt", "deepseek"},
+		enabledCodes: []string{"legacy-without-protocol"},
+		protocolCodes: map[string][]string{
+			"openai:v1":     {" gpt ", "openai", "shared", "", "hybrid"},
+			"anthropic:v1":  {" anthropic ", "shared", "hybrid"},
+			"gemini:v1beta": {"gemini", " openai ", "hybrid", " "},
+		},
 		catalog: []port.ManagementProviderModelCatalogItem{
-			{ProviderCode: "gpt", Model: "shared-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
-			{ProviderCode: "deepseek", Model: "shared-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
+			{ProviderCode: "gpt", Model: "gpt-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
+			{ProviderCode: "openai", Model: "openai-built-in", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
+			{ProviderCode: "openai", Model: "openai-custom", Scope: "personal", Status: "active", Source: "custom-personal", InputUSDPer1M: &price},
+			{ProviderCode: "shared", Model: "shared-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
+			{ProviderCode: "anthropic", Model: "anthropic-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
+			{ProviderCode: "gemini", Model: "gemini-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
+			{ProviderCode: "legacy-without-protocol", Model: "legacy-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
 			{ProviderCode: "hybrid", Model: "hybrid-direct", Scope: "personal", Status: "active", Source: "custom-personal", InputUSDPer1M: &price},
 		},
 	}
@@ -440,11 +457,24 @@ func TestServiceModelsHybridKeepsProviderModelsDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Models() error = %v", err)
 	}
-	if len(models) != 2 {
-		t.Fatalf("hybrid models = %+v, want both provider entries", models)
+	wantProviderCodes := []string{"gpt", "openai", "shared", "anthropic", "gemini"}
+	if !slices.Equal(store.catalogInput.BuiltInProviderCodes, wantProviderCodes) {
+		t.Fatalf("built-in provider codes = %+v, want %+v", store.catalogInput.BuiltInProviderCodes, wantProviderCodes)
+	}
+	if !slices.Equal(store.catalogInput.CustomProviderCodes, wantProviderCodes) {
+		t.Fatalf("custom provider codes = %+v, want %+v", store.catalogInput.CustomProviderCodes, wantProviderCodes)
+	}
+	if len(models) != 6 {
+		t.Fatalf("hybrid models = %+v, want protocol-source built-in/custom entries", models)
 	}
 	if findModelCatalogItem(models, "hybrid-direct") != nil {
 		t.Fatalf("hybrid models = %+v, want no hybrid source entries", models)
+	}
+	if findModelCatalogItem(models, "legacy-model") != nil {
+		t.Fatalf("hybrid models = %+v, want no enabled-only legacy provider entries", models)
+	}
+	if findModelCatalogItem(models, "openai-built-in") == nil || findModelCatalogItem(models, "openai-custom") == nil {
+		t.Fatalf("hybrid models = %+v, want openai built-in and custom entries", models)
 	}
 }
 

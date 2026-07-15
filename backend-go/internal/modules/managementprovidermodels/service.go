@@ -859,12 +859,26 @@ func (s *Service) sourceProviderCodes(ctx context.Context, providerCode string) 
 	code := strings.TrimSpace(providerCode)
 	switch code {
 	case hybridProviderCode:
-		codes, err := s.store.ListManagementEnabledModelProviderCodes(ctx)
-		if err != nil {
-			return nil, nil, err
+		codes := []string{}
+		for _, protocol := range [][2]string{
+			{protocolOpenAI, "v1"},
+			{protocolAnthropic, "v1"},
+			{protocolGemini, "v1beta"},
+		} {
+			protocolCodes, err := s.store.ListManagementProviderCodesByProtocol(ctx, protocol[0], protocol[1])
+			if err != nil {
+				return nil, nil, err
+			}
+			codes = append(codes, protocolCodes...)
 		}
-		builtInCodes, customCodes := optionSourceProviderCodes(codes)
-		return builtInCodes, customCodes, nil
+		codes = dedupeStrings(codes)
+		sourceCodes := make([]string, 0, len(codes))
+		for _, sourceCode := range codes {
+			if sourceCode != hybridProviderCode {
+				sourceCodes = append(sourceCodes, sourceCode)
+			}
+		}
+		return append([]string(nil), sourceCodes...), append([]string(nil), sourceCodes...), nil
 	case openAIProviderCode:
 		codes, err := s.store.ListManagementProviderCodesByProtocol(ctx, protocolOpenAI, "v1")
 		if err != nil {
