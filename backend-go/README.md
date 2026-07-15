@@ -209,6 +209,12 @@ Invoke-RestMethod http://127.0.0.1:3000/__aisys__/health
 Invoke-RestMethod http://127.0.0.1:3000/__aisys__/api/health
 ```
 
+执行数据库 migration 前先检查目录文件名和版本唯一性；该命令只读取本地文件系统，不连接 PostgreSQL 或 Redis：
+
+```powershell
+go run ./cmd/juhe-ai-maintenance migration-catalog-preflight --dir db/migrations
+```
+
 真实 PG/Redis/Asynq smoke：
 
 ```powershell

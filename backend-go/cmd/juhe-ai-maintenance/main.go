@@ -28,6 +28,7 @@ func main() {
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), version.Version)
 		},
 	})
+	root.AddCommand(newMigrationCatalogPreflightCommand())
 	root.AddCommand(&cobra.Command{
 		Use:   "w0-smoke",
 		Short: "Run W0 PostgreSQL, Redis and Asynq smoke checks",
@@ -92,4 +93,22 @@ func main() {
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+func newMigrationCatalogPreflightCommand() *cobra.Command {
+	var directory string
+	cmd := &cobra.Command{
+		Use:   "migration-catalog-preflight",
+		Short: "Validate the migration catalog without connecting to a database",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			return maintenance.RunMigrationCatalogPreflight(ctx, directory, cmd.OutOrStdout())
+		},
+	}
+	cmd.Flags().StringVar(&directory, "dir", "db/migrations", "migration catalog directory")
+	return cmd
 }
