@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,6 +24,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementexternalintegrationsources"
 	"juhe-ai/backend-go/internal/modules/publicapi"
 	"juhe-ai/backend-go/internal/secretcrypto"
+	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -288,6 +290,109 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 	router.ServeHTTP(mismatchRec, mismatchReq)
 	assertW2ExternalSourceTokenSecretNotFound(t, mismatchRec)
 	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_external_source_list", sessionCreatedAt)
+
+	assertW2ExternalSourceUpdateStore(t, ctx, db, store)
+}
+
+func assertW2ExternalSourceUpdateStore(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	store *postgresstore.Store,
+) {
+	t.Helper()
+	updateService := managementexternalintegrationsources.NewUpdateService(store)
+	result, err := updateService.Update(ctx, managementexternalintegrationsources.UpdateInput{
+		SourceID:      w2ExternalSourceListActiveID,
+		HasName:       true,
+		Name:          " W2 PATCH Updated ",
+		HasStatus:     true,
+		Status:        publicapi.SourceStatusDisabled,
+		HasScopes:     true,
+		Scopes:        []any{publicapi.ScopeAPIKeyListRead},
+		HasRateLimits: true,
+		RateLimits: []any{
+			map[string]any{"windowSeconds": 30, "maxRequests": 7},
+		},
+		HasExpiresAt: true,
+		ExpiresAt:    nil,
+		HasNotes:     true,
+		Notes:        nil,
+	})
+	if err != nil {
+		t.Fatalf("update external integration source: %v", err)
+	}
+	if !result.Committed || result.Before.Name != "MiXeD%_Prefix Active" ||
+		result.After.Name != "W2 PATCH Updated" || result.After.Status != publicapi.SourceStatusDisabled ||
+		result.After.ExpiresAt != nil || result.After.Notes != nil ||
+		!reflect.DeepEqual(result.After.Scopes, []string{publicapi.ScopeAPIKeyListRead}) ||
+		len(result.After.RateLimits) != 1 || result.After.RateLimits[0].WindowSeconds != 30 ||
+		len(result.After.Tokens) != 3 {
+		t.Fatalf("external integration source update result = %#v", result)
+	}
+	for _, token := range result.After.Tokens {
+		wantStatus := publicapi.TokenStatusDisabled
+		if token.ID == w2ExternalSourceListRevokedTokenID {
+			wantStatus = publicapi.TokenStatusRevoked
+		}
+		if token.Name != "W2 PATCH Updated 生产 Token" || token.Status != wantStatus ||
+			!reflect.DeepEqual(token.Scopes, []string{publicapi.ScopeAPIKeyListRead}) || token.ExpiresAt != nil {
+			t.Fatalf("synchronized external integration source token = %#v", token)
+		}
+	}
+
+	validationFailure := errors.New("forced transaction validation failure")
+	_, err = store.UpdateManagementExternalIntegrationSource(
+		ctx,
+		port.ManagementExternalIntegrationSourceUpdateInput{
+			SourceID:  w2ExternalSourceListActiveID,
+			HasName:   true,
+			Name:      "W2 PATCH Must Roll Back",
+			UpdatedAt: time.Now().UTC(),
+		},
+		func(port.ManagementExternalIntegrationSourceUpdateResult) error {
+			return validationFailure
+		},
+	)
+	if !errors.Is(err, validationFailure) {
+		t.Fatalf("transaction validation error = %v", err)
+	}
+	var sourceName string
+	if err := db.QueryRowContext(ctx, `
+		SELECT name
+		FROM juhe_business.external_integration_sources
+		WHERE id = $1
+	`, w2ExternalSourceListActiveID).Scan(&sourceName); err != nil {
+		t.Fatalf("read source after forced rollback: %v", err)
+	}
+	if sourceName != "W2 PATCH Updated" {
+		t.Fatalf("source name after forced rollback = %q", sourceName)
+	}
+	var mismatchedTokens int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM juhe_business.external_integration_source_tokens
+		WHERE source_ref_id = $1
+		  AND name <> $2
+	`, w2ExternalSourceListActiveID, "W2 PATCH Updated 生产 Token").Scan(&mismatchedTokens); err != nil {
+		t.Fatalf("read tokens after forced rollback: %v", err)
+	}
+	if mismatchedTokens != 0 {
+		t.Fatalf("tokens changed despite forced rollback: %d", mismatchedTokens)
+	}
+
+	_, err = updateService.Update(ctx, managementexternalintegrationsources.UpdateInput{
+		SourceID: w2ExternalSourceListDisabledID,
+		HasName:  true,
+		Name:     "w2 patch updated",
+	})
+	if !errors.Is(err, managementexternalintegrationsources.ErrNameExists) {
+		t.Fatalf("duplicate external integration source name error = %v", err)
+	}
+	_, err = updateService.Update(ctx, managementexternalintegrationsources.UpdateInput{SourceID: "missing_source"})
+	if !errors.Is(err, managementexternalintegrationsources.ErrNotFound) {
+		t.Fatalf("missing external integration source error = %v", err)
+	}
 }
 
 type w2ExternalSourceListFixtureTimes struct {

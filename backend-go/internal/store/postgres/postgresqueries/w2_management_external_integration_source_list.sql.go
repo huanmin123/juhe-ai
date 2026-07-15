@@ -45,6 +45,41 @@ func (q *Queries) FindManagementExternalIntegrationSource(ctx context.Context, s
 	return i, err
 }
 
+const findManagementExternalIntegrationSourceForUpdate = `-- name: FindManagementExternalIntegrationSourceForUpdate :one
+SELECT
+  sources.id,
+  sources.name,
+  sources.status,
+  sources.scopes_json,
+  sources.rate_limits_json,
+  sources.expires_at,
+  sources.notes,
+  sources.last_used_at,
+  sources.created_at,
+  sources.updated_at
+FROM juhe_business.external_integration_sources AS sources
+WHERE sources.id = $1::text
+FOR UPDATE
+`
+
+func (q *Queries) FindManagementExternalIntegrationSourceForUpdate(ctx context.Context, sourceID string) (JuheBusinessExternalIntegrationSource, error) {
+	row := q.db.QueryRow(ctx, findManagementExternalIntegrationSourceForUpdate, sourceID)
+	var i JuheBusinessExternalIntegrationSource
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Status,
+		&i.ScopesJson,
+		&i.RateLimitsJson,
+		&i.ExpiresAt,
+		&i.Notes,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const findManagementExternalIntegrationSourceTokenSecret = `-- name: FindManagementExternalIntegrationSourceTokenSecret :one
 SELECT tokens.token_secret_encrypted
 FROM juhe_business.external_integration_source_tokens AS tokens
@@ -313,4 +348,101 @@ func (q *Queries) ListManagementExternalIntegrationSources(ctx context.Context, 
 		return nil, err
 	}
 	return items, nil
+}
+
+const syncManagementExternalIntegrationSourceTokens = `-- name: SyncManagementExternalIntegrationSourceTokens :execrows
+UPDATE juhe_business.external_integration_source_tokens
+SET
+  name = $1::text,
+  status = CASE WHEN status = 'revoked' THEN status ELSE $2::text END,
+  scopes_json = $3::text,
+  expires_at = $4::timestamptz,
+  updated_at = $5::timestamptz
+WHERE source_ref_id = $6::text
+`
+
+type SyncManagementExternalIntegrationSourceTokensParams struct {
+	TokenName    string
+	SourceStatus string
+	ScopesJson   string
+	ExpiresAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+	SourceID     string
+}
+
+func (q *Queries) SyncManagementExternalIntegrationSourceTokens(ctx context.Context, arg SyncManagementExternalIntegrationSourceTokensParams) (int64, error) {
+	result, err := q.db.Exec(ctx, syncManagementExternalIntegrationSourceTokens,
+		arg.TokenName,
+		arg.SourceStatus,
+		arg.ScopesJson,
+		arg.ExpiresAt,
+		arg.UpdatedAt,
+		arg.SourceID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateManagementExternalIntegrationSource = `-- name: UpdateManagementExternalIntegrationSource :one
+UPDATE juhe_business.external_integration_sources
+SET
+  name = $1::text,
+  status = $2::text,
+  scopes_json = $3::text,
+  rate_limits_json = $4::text,
+  expires_at = $5::timestamptz,
+  notes = $6::text,
+  updated_at = $7::timestamptz
+WHERE id = $8::text
+RETURNING
+  id,
+  name,
+  status,
+  scopes_json,
+  rate_limits_json,
+  expires_at,
+  notes,
+  last_used_at,
+  created_at,
+  updated_at
+`
+
+type UpdateManagementExternalIntegrationSourceParams struct {
+	Name           string
+	Status         string
+	ScopesJson     string
+	RateLimitsJson string
+	ExpiresAt      pgtype.Timestamptz
+	Notes          pgtype.Text
+	UpdatedAt      pgtype.Timestamptz
+	SourceID       string
+}
+
+func (q *Queries) UpdateManagementExternalIntegrationSource(ctx context.Context, arg UpdateManagementExternalIntegrationSourceParams) (JuheBusinessExternalIntegrationSource, error) {
+	row := q.db.QueryRow(ctx, updateManagementExternalIntegrationSource,
+		arg.Name,
+		arg.Status,
+		arg.ScopesJson,
+		arg.RateLimitsJson,
+		arg.ExpiresAt,
+		arg.Notes,
+		arg.UpdatedAt,
+		arg.SourceID,
+	)
+	var i JuheBusinessExternalIntegrationSource
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Status,
+		&i.ScopesJson,
+		&i.RateLimitsJson,
+		&i.ExpiresAt,
+		&i.Notes,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

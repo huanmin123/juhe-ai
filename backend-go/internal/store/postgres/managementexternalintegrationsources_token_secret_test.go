@@ -116,7 +116,7 @@ func TestManagementExternalIntegrationSourceTokenSecretSQLIsNarrowPointLookup(t 
 		t,
 		sql,
 		"-- name: FindManagementExternalIntegrationSourceTokenSecret :one",
-		"",
+		"-- name: FindManagementExternalIntegrationSourceForUpdate :one",
 	)
 	for _, required := range []string{
 		"SELECT tokens.token_secret_encrypted",
