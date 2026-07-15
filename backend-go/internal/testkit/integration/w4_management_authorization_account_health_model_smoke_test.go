@@ -74,7 +74,7 @@ func TestW4ManagementAuthorizationAccountHealthCheckModelPostgresSmoke(t *testin
 		initial,
 		"",
 		"w4-source-health-model-v1",
-		"chat_completions",
+		"chat_json",
 		false,
 	)
 
@@ -108,7 +108,7 @@ func TestW4ManagementAuthorizationAccountHealthCheckModelPostgresSmoke(t *testin
 		deletedInstance,
 		initial.ID,
 		"w4-source-health-model-v1",
-		"chat_completions",
+		"chat_json",
 		true,
 	)
 
@@ -136,7 +136,7 @@ func TestW4ManagementAuthorizationAccountHealthCheckModelPostgresSmoke(t *testin
 		restoredInstance,
 		initial.ID,
 		"w4-source-health-model-v2",
-		"chat_completions",
+		"chat_json",
 		false,
 	)
 	if restoredInstance.AuthorizationID != initial.AuthorizationID {
@@ -301,7 +301,7 @@ func assertW4AuthorizationAccountHealthModelInstance(
 		row.OwnerSystemAccountID != "sys_w4_auth_health_owner" ||
 		row.DeletedAt.Valid != wantDeleted {
 		t.Fatalf(
-			"W4 authorization account instance = %+v, want health_check_model %q, endpoint family %q and deleted %t",
+			"W4 authorization account instance = %+v, want health_check_model %q, endpoint mode %q and deleted %t",
 			row,
 			wantHealthCheckModel,
 			wantHealthCheckEndpointMode,

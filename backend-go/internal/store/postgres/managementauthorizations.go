@@ -2610,7 +2610,7 @@ INSERT INTO juhe_business.resource_authorization_sources (
   revoked_by, revoked_at, updated_at
 ) VALUES (
   $1, $2, 'manual', NULL, $3,
-  $4, CASE WHEN $3 = 'active' THEN NULL ELSE $4 END,
+  $4, CASE WHEN $3 = 'active' THEN NULL ELSE $4::timestamptz END,
   CASE WHEN $3 = 'superseded' THEN 'covered_by_team' ELSE NULL END,
   $5, $4, NULL, NULL, $4
 )
