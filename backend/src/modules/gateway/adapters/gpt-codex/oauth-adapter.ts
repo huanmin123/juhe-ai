@@ -19,6 +19,7 @@ import {
   type OpenAIOAuthCodexSessionResolution
 } from './oauth-normalizer.js'
 import { OpenAIOAuthCodexAdapterError } from './oauth-errors.js'
+import { normalizeOpenAICodexClientHeaders } from './client-headers.js'
 import { getRequestLogger, sanitizeUrlForLog } from '../../../../shared/request-context.js'
 import type { GptRequestOverrideModelCapabilities } from '../../../providers/drivers/gpt/request-overrides.js'
 
@@ -57,7 +58,8 @@ export async function buildOpenAIOAuthCodexRequestParts(
     headers: buildOpenAIOAuthCodexHeaders(inputHeaders, account, {
       compact,
       stream: normalizedBody.stream,
-      session: normalizedBody.session
+      session: normalizedBody.session,
+      model: normalizedBody.model
     }),
     body: normalizedBody.body
   }
@@ -184,6 +186,7 @@ function buildOpenAIOAuthCodexHeaders(
     compact: boolean
     stream: boolean
     session: OpenAIOAuthCodexSessionResolution
+    model?: string
   }
 ): Headers {
   const headers = new Headers()
@@ -196,19 +199,12 @@ function buildOpenAIOAuthCodexHeaders(
   copyOpenAIOAuthCodexAttestationHeader(headers, inputHeaders)
 
   const incomingOriginator = headerValue(inputHeaders, 'originator')
-  const originator = isCodexOriginator(incomingOriginator) ? incomingOriginator : 'codex_cli_rs'
-  headers.set('originator', originator)
-
+  if (incomingOriginator) headers.set('originator', incomingOriginator)
   const incomingUserAgent = headerValue(inputHeaders, 'user-agent')
-  const keepIncomingUserAgent = isCodexUserAgent(incomingUserAgent)
-    || (isCodexOriginator(incomingOriginator) && Boolean(incomingUserAgent))
-  headers.set('user-agent', keepIncomingUserAgent ? incomingUserAgent ?? openAICodexUserAgent : openAICodexUserAgent)
-
+  if (incomingUserAgent) headers.set('user-agent', incomingUserAgent)
   const incomingVersion = headerValue(inputHeaders, 'version')
-  headers.set('version', isVersionLike(incomingVersion) && isCodexOriginator(incomingOriginator) ? incomingVersion : openAICodexVersion)
-
-  const openAIBeta = headerValue(inputHeaders, 'openai-beta')
-  headers.set('openai-beta', openAIBeta && openAIBeta.toLowerCase().includes('responses') ? openAIBeta : 'responses=experimental')
+  if (incomingVersion) headers.set('version', incomingVersion)
+  normalizeOpenAICodexClientHeaders(headers, input.model)
   headers.set('authorization', `Bearer ${account.apiKey}`)
   headers.set('content-type', 'application/json')
   headers.set('accept', input.compact || !input.stream ? 'application/json' : 'text/event-stream')
@@ -218,10 +214,13 @@ function buildOpenAIOAuthCodexHeaders(
     headers.set('chatgpt-account-id', accountId)
   }
   if (input.session.sessionId) {
-    headers.set('session_id', input.session.sessionId)
+    headers.set('session-id', input.session.sessionId)
   }
   if (input.session.conversationId) {
-    headers.set('conversation_id', input.session.conversationId)
+    headers.set('thread-id', input.session.conversationId)
+    if (!headers.get('x-client-request-id')) {
+      headers.set('x-client-request-id', input.session.conversationId)
+    }
   }
 
   return headers
@@ -282,18 +281,3 @@ function stringCredential(credentials: Record<string, unknown> | undefined, key:
   const value = credentials?.[key]
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
-
-function isCodexOriginator(value: string | undefined): value is string {
-  return typeof value === 'string' && /^codex(?:_|$)/i.test(value.trim())
-}
-
-function isCodexUserAgent(value: string | undefined): value is string {
-  return typeof value === 'string' && value.toLowerCase().includes('codex')
-}
-
-function isVersionLike(value: string | undefined): value is string {
-  return typeof value === 'string' && /^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][0-9a-z.-]+)?$/i.test(value.trim())
-}
-
-const openAICodexVersion = '0.125.0'
-const openAICodexUserAgent = `codex_cli_rs/${openAICodexVersion}`

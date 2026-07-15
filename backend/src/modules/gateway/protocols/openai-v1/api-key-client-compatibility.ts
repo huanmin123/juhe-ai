@@ -11,13 +11,9 @@ import {
   parseGatewayJsonBodyInWorker
 } from '../../request/json-parser.js'
 import { splitPathAndQuery } from './route-helpers.js'
-import {
-  openAICodexOriginator,
-  openAICodexResponsesBetaHeader,
-  openAICodexUserAgent,
-  openAICodexVersion
-} from '../../adapters/gpt-codex/client-headers.js'
+import { normalizeOpenAICodexClientHeaders } from '../../adapters/gpt-codex/client-headers.js'
 import { normalizeOpenAICodexBuiltinTools } from '../../adapters/gpt-codex/builtin-tools.js'
+import { requestModel } from '../../request/metadata.js'
 
 export interface OpenAIClientCompatibilityOptions {
   modelOverride?: string
@@ -43,19 +39,17 @@ export async function buildOpenAIClientCompatibilityBody(
 export function applyOpenAIClientCompatibilityHeaders(
   req: Request,
   headers: Headers,
-  options: Pick<OpenAIClientCompatibilityOptions, 'requestClientCompatibility'> = {}
+  options: OpenAIClientCompatibilityOptions = {}
 ): void {
   if (!shouldForceOpenAICodexResponsesSse(req, options.requestClientCompatibility)) {
     return
   }
   headers.set('accept', 'text/event-stream')
   headers.set('content-type', 'application/json')
-  setHeaderIfMissing(headers, 'originator', openAICodexOriginator)
-  setHeaderIfMissing(headers, 'user-agent', openAICodexUserAgent)
-  setHeaderIfMissing(headers, 'version', openAICodexVersion)
-  if (!headers.get('openai-beta')?.toLowerCase().includes('responses')) {
-    headers.set('openai-beta', openAICodexResponsesBetaHeader)
-  }
+  normalizeOpenAICodexClientHeaders(
+    headers,
+    options.modelOverride ?? requestModel(req)
+  )
 }
 
 export function shouldForceOpenAICodexResponsesSse(
@@ -171,12 +165,6 @@ function normalizeCodexResponsesInputItems(input: unknown[]): unknown[] {
       role: 'developer'
     }
   })
-}
-
-function setHeaderIfMissing(headers: Headers, name: string, value: string): void {
-  if (!headers.get(name)) {
-    headers.set(name, value)
-  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
