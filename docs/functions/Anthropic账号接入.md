@@ -390,21 +390,14 @@ Anthropic 模型目录必须单独维护在 `anthropic` 供应商下。
 - `claude-sonnet-4-5-20250929`
 - `claude-haiku-4-5`
 - `claude-haiku-4-5-20251001`
-- `best`
-- `fable`
-- `opus`
-- `opus[1m]`
-- `opusplan`
-- `sonnet`
-- `sonnet[1m]`
-- `haiku`
+- `claude-sonnet-5`
 
 模型目录字段要求：
 
 - `providerCode = anthropic`
-- `model` 优先使用 Anthropic 官方模型 ID，保留官方大小写和连字符写法；Claude Code 官方模型配置别名可以进入模型发现目录，兼容网关 / 代理专用别名只能作为隐藏计价别名或后续独立供应商模型处理，不能混入官方 Anthropic 模型发现目录。
+- `model` 优先使用 Anthropic 官方模型 ID，保留官方大小写和连字符写法；Claude Code 客户端配置别名与兼容网关 / 代理专用别名只能作为隐藏计价别名或客户端解析规则，不能混入官方 Anthropic 模型发现目录。
 - 当前内置目录补充保留官方 current / dated ID：`claude-mythos-preview`、`claude-haiku-4-5-20251001`、`claude-sonnet-4-5-20250929`、`claude-opus-4-5-20251101`、`claude-opus-4-1`、`claude-opus-4-1-20250805`。其中 `claude-opus-4-1*` 已有 `shutdown_date = 2026-08-05`，到期后自动不再展示和计价。
-- Claude Code 模型配置别名进入目录：`best`、`fable`、`opus`、`opus[1m]`、`opusplan`、`sonnet`、`sonnet[1m]`、`haiku`。`default` 只是 Claude Code 用来清除模型覆盖并回到推荐模型的控制值，不是模型别名，不进入目录。
+- Claude Code 模型配置别名 `best`、`fable`、`opus`、`opus[1m]`、`opusplan`、`sonnet`、`sonnet[1m]`、`haiku` 只保留隐藏解析 / 计价能力，不进入模型发现目录。`default` 是清除模型覆盖并回到推荐模型的控制值，也不进入目录。
 - `claude-opus-4-6-thinking`、`claude-sonnet-4-6-thinking` 按同族模型价格口径计价并可进入模型发现目录；Antigravity 前缀 / 后缀 / `google-antigravity` 等兼容代理写法只保留隐藏计价能力，不进入官方 Anthropic 模型发现目录。
 - Antigravity 的 `-low`、`-medium`、`-high`、`-max` 等 effort 后缀不作为单独模型展示，但计价解析会回落到基础 thinking 模型；旧的 `claude-opus-4-5-thinking` / `google/antigravity-claude-opus-4-5-thinking` 不收录。以上 Antigravity 名称不代表 Anthropic 官方直连模型 ID。
 - `claude-fake-5` 是本项目真实 Anthropic-compatible 代理联调用过的模型 ID，仅保留隐藏计价能力，不进入官方 Anthropic 模型发现目录；后续如果该代理拆成独立供应商，应迁移到对应供应商目录。

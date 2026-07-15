@@ -1,10 +1,11 @@
-// Curated from official Anthropic model, pricing, and deprecation docs on 2026-06-22.
+// Curated from official Anthropic model, pricing, and deprecation docs on 2026-07-15.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
 
 export const anthropicModelPricingData = [
   {
     model: 'best',
     catalog_order: 210,
+    catalog_visible: false,
     input_cost_per_token: 10 / 1_000_000,
     output_cost_per_token: 50 / 1_000_000,
     cache_creation_input_token_cost: 12.5 / 1_000_000,
@@ -19,6 +20,7 @@ export const anthropicModelPricingData = [
   {
     model: 'fable',
     catalog_order: 220,
+    catalog_visible: false,
     input_cost_per_token: 10 / 1_000_000,
     output_cost_per_token: 50 / 1_000_000,
     cache_creation_input_token_cost: 12.5 / 1_000_000,
@@ -33,6 +35,7 @@ export const anthropicModelPricingData = [
   {
     model: 'opus',
     catalog_order: 230,
+    catalog_visible: false,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
     cache_creation_input_token_cost: 6.25 / 1_000_000,
@@ -47,6 +50,7 @@ export const anthropicModelPricingData = [
   {
     model: 'opus[1m]',
     catalog_order: 240,
+    catalog_visible: false,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
     cache_creation_input_token_cost: 6.25 / 1_000_000,
@@ -61,6 +65,7 @@ export const anthropicModelPricingData = [
   {
     model: 'opusplan',
     catalog_order: 250,
+    catalog_visible: false,
     input_cost_per_token: 5 / 1_000_000,
     output_cost_per_token: 25 / 1_000_000,
     cache_creation_input_token_cost: 6.25 / 1_000_000,
@@ -75,6 +80,7 @@ export const anthropicModelPricingData = [
   {
     model: 'sonnet',
     catalog_order: 260,
+    catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
     cache_creation_input_token_cost: 3.75 / 1_000_000,
@@ -88,6 +94,7 @@ export const anthropicModelPricingData = [
   {
     model: 'sonnet[1m]',
     catalog_order: 270,
+    catalog_visible: false,
     input_cost_per_token: 3 / 1_000_000,
     output_cost_per_token: 15 / 1_000_000,
     cache_creation_input_token_cost: 3.75 / 1_000_000,
@@ -101,6 +108,7 @@ export const anthropicModelPricingData = [
   {
     model: 'haiku',
     catalog_order: 280,
+    catalog_visible: false,
     input_cost_per_token: 1 / 1_000_000,
     output_cost_per_token: 5 / 1_000_000,
     cache_creation_input_token_cost: 1.25 / 1_000_000,
@@ -133,6 +141,20 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost_above_1hr: 20 / 1_000_000,
     cache_read_input_token_cost: 1 / 1_000_000,
     max_input_tokens: 1_000_000,
+    max_output_tokens: 128_000,
+    supported_api_protocols: ['messages', 'message_token_counting'],
+    supports_prompt_caching: true,
+    supports_service_tier: true
+  },
+  {
+    model: 'claude-sonnet-5',
+    catalog_order: 25,
+    input_cost_per_token: 2 / 1_000_000,
+    output_cost_per_token: 10 / 1_000_000,
+    cache_creation_input_token_cost: 2.5 / 1_000_000,
+    cache_creation_input_token_cost_above_1hr: 4 / 1_000_000,
+    cache_read_input_token_cost: 0.2 / 1_000_000,
+    context_window_tokens: 200_000,
     max_output_tokens: 128_000,
     supported_api_protocols: ['messages', 'message_token_counting'],
     supports_prompt_caching: true,

@@ -535,7 +535,8 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
               account,
               operation.reason,
               operation.access ?? internalDbServiceAccountAccess,
-              operation.healthCheckGuard
+              operation.healthCheckGuard,
+              operation.traceId
             )
           : undefined
         if (updated) {
@@ -751,9 +752,10 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         const updated = authorizedTarget
           ? await markAuthorizedAccountBindingTemporaryUnavailableByContextAsync({
               ...authorizedTarget,
-              reason: operation.reason
+              reason: operation.reason,
+              traceId: operation.traceId
             })
-          : await markAccountTemporaryUnavailableAsync(operation.account.id, operation.reason)
+          : await markAccountTemporaryUnavailableAsync(operation.account.id, operation.reason, undefined, operation.traceId)
         if (updated) {
           clearGatewayRuntimeCacheLocal()
         }
@@ -889,7 +891,8 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
     case 'mark_account_exception': {
       if (runtimeConfig.databaseDriver === 'postgres') {
         const updated = await markAccountExceptionAsync(operation.accountId, operation.errorCode, operation.reason, {
-          preserveDisabled: operation.preserveDisabled
+          preserveDisabled: operation.preserveDisabled,
+          traceId: operation.traceId
         })
         if (updated) {
           clearGatewayRuntimeCacheLocal()
@@ -1294,9 +1297,10 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       const updated = authorizedTarget
         ? markAuthorizedAccountBindingTemporaryUnavailableByContext({
             ...authorizedTarget,
-            reason: operation.reason
+            reason: operation.reason,
+            traceId: operation.traceId
           })
-        : markAccountTemporaryUnavailable(operation.account.id, operation.reason)
+        : markAccountTemporaryUnavailable(operation.account.id, operation.reason, undefined, operation.traceId)
       if (updated) {
         clearGatewayRuntimeCacheLocal()
       }
@@ -1327,7 +1331,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
             account,
             operation.reason,
             operation.access ?? internalDbServiceAccountAccess,
-            operation.healthCheckGuard
+            operation.healthCheckGuard,
+            operation.traceId
           )
         : undefined
       if (updated) {
@@ -1393,7 +1398,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     }
     case 'mark_account_exception': {
       const updated = markAccountException(operation.accountId, operation.errorCode, operation.reason, {
-        preserveDisabled: operation.preserveDisabled
+        preserveDisabled: operation.preserveDisabled,
+        traceId: operation.traceId
       })
       if (updated) {
         clearGatewayRuntimeCacheLocal()

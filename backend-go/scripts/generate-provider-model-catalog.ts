@@ -8,7 +8,7 @@ import {
   type ProviderModelPricing
 } from '../../backend/src/modules/model-pricing/model-pricing.service.js'
 
-export const PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE = '2026-07-12'
+export const PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE = '2026-07-15'
 
 const providerCodes = ['gpt', 'anthropic', 'gemini', 'deepseek', 'glm'] as const
 

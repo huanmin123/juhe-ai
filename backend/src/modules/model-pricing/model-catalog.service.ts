@@ -32,10 +32,18 @@ import {
   GEMINI_PROVIDER_CODE,
   GLM_PROVIDER_CODE,
   GPT_VENDOR_CODE,
+  HYBRID_PROVIDER_CODE,
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   normalizeProviderToken
 } from '../../domain/provider-protocol.js'
-import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from '../../storage/provider.repository.js'
+import {
+  listAnthropicProtocolProviderCodes,
+  listAnthropicProtocolProviderCodesAsync,
+  listGeminiProtocolProviderCodes,
+  listGeminiProtocolProviderCodesAsync,
+  listOpenAIProtocolProviderCodes,
+  listOpenAIProtocolProviderCodesAsync
+} from '../../storage/provider.repository.js'
 import { createAppCache, createSharedJsonCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
@@ -204,7 +212,7 @@ function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderMo
       systemAccountId: options.systemAccountId,
       includeInactive: options.includeInactive
     }).map(toCustomCatalogItem))
-  const merged = mergeModelCatalogItems([...builtIn, ...custom])
+  const merged = mergeModelCatalogItems([...builtIn, ...custom], normalizeProviderToken(options.providerCode) === HYBRID_PROVIDER_CODE)
 
   return merged
     .filter((item) => options.includeInactive || item.status === 'active')
@@ -222,7 +230,7 @@ async function buildProviderModelCatalogAsync(options: ModelCatalogListOptions):
     includeInactive: options.includeInactive
   })))
   const custom = customCatalogs.flatMap((items) => items.map(toCustomCatalogItem))
-  const merged = mergeModelCatalogItems([...builtIn, ...custom])
+  const merged = mergeModelCatalogItems([...builtIn, ...custom], normalizeProviderToken(options.providerCode) === HYBRID_PROVIDER_CODE)
 
   return merged
     .filter((item) => options.includeInactive || item.status === 'active')
@@ -489,11 +497,14 @@ function cloneProviderModelCatalogItems(items: ProviderModelCatalogItem[]): Prov
   }))
 }
 
-function mergeModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
+function mergeModelCatalogItems(items: ProviderModelCatalogItem[], preserveProviderIdentity = false): ProviderModelCatalogItem[] {
   const merged = new Map<string, ProviderModelCatalogItem>()
   for (const item of items) {
-    const key = item.model.trim()
-    if (!key) continue
+    const model = item.model.trim()
+    if (!model) continue
+    const key = preserveProviderIdentity
+      ? `${normalizeProviderToken(item.providerCode) ?? ''}\n${model}`
+      : model
     const previous = merged.get(key)
     if (!previous || catalogPriority(item) >= catalogPriority(previous)) {
       merged.set(key, item)
@@ -557,6 +568,7 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     audioInputUsdPer1M: item.audioInputUsdPer1M,
     audioOutputUsdPer1M: item.audioOutputUsdPer1M,
     outputUsdPerImage: item.outputUsdPerImage,
+    maxInputTokens: item.maxInputTokens,
     maxOutputTokens: item.maxOutputTokens,
     supportsPromptCaching: item.cachedInputUsdPer1M !== undefined,
     supportedServiceTiers: [...item.supportedServiceTiers],
@@ -704,6 +716,13 @@ function compareSharedCatalogOrder(left?: number, right?: number): number {
 function modelCatalogSourceProviderCodes(providerCode: string): string[] {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return []
+  if (normalizedProviderCode === HYBRID_PROVIDER_CODE) {
+    return [...new Set([
+      ...listOpenAIProtocolProviderCodes(),
+      ...listAnthropicProtocolProviderCodes(),
+      ...listGeminiProtocolProviderCodes()
+    ].map(normalizeProviderToken).filter((code): code is string => Boolean(code) && code !== HYBRID_PROVIDER_CODE))]
+  }
   if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return [normalizedProviderCode]
   if (runtimeConfig.databaseDriver === 'postgres') return [...postgresSyncOpenAIProtocolProviderCodes]
 
@@ -717,6 +736,14 @@ function modelCatalogSourceProviderCodes(providerCode: string): string[] {
 async function modelCatalogSourceProviderCodesAsync(providerCode: string): Promise<string[]> {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return []
+  if (normalizedProviderCode === HYBRID_PROVIDER_CODE) {
+    const providerCodes = await Promise.all([
+      listOpenAIProtocolProviderCodesAsync(),
+      listAnthropicProtocolProviderCodesAsync(),
+      listGeminiProtocolProviderCodesAsync()
+    ])
+    return [...new Set(providerCodes.flat().map(normalizeProviderToken).filter((code): code is string => Boolean(code) && code !== HYBRID_PROVIDER_CODE))]
+  }
   if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return [normalizedProviderCode]
 
   const openAIProtocolProviderCodes = (await listOpenAIProtocolProviderCodesAsync())

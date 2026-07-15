@@ -136,6 +136,7 @@ export function applyAccountErrorHandling(
     headers?: Headers | Record<string, string | string[]>
     bodyText?: string
     errorMessage?: string
+    traceId?: string
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
   }
@@ -171,7 +172,7 @@ export function applyAccountErrorHandling(
 
   if (statusCode !== undefined) {
     const reason = genericUpstreamResponseFailureReason(statusCode, upstreamSummary)
-    const updated = applyAccountTemporaryUnavailableSideEffect(account, reason)
+    const updated = applyAccountTemporaryUnavailableSideEffect(account, reason, input.traceId)
     return {
       action: 'cooldown',
       changed: Boolean(updated),
@@ -181,7 +182,7 @@ export function applyAccountErrorHandling(
   }
 
   const reason = genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
-  const updated = applyAccountTemporaryUnavailableSideEffect(account, reason)
+  const updated = applyAccountTemporaryUnavailableSideEffect(account, reason, input.traceId)
   return {
     action: 'cooldown',
     changed: Boolean(updated),
@@ -198,6 +199,7 @@ export async function applyAccountErrorHandlingAsync(
     headers?: Headers | Record<string, string | string[]>
     bodyText?: string
     errorMessage?: string
+    traceId?: string
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
   }
@@ -235,7 +237,7 @@ export async function applyAccountErrorHandlingAsync(
 
   if (statusCode !== undefined) {
     const reason = genericUpstreamResponseFailureReason(statusCode, upstreamSummary)
-    const updated = await applyAccountTemporaryUnavailableSideEffectAsync(account, reason)
+    const updated = await applyAccountTemporaryUnavailableSideEffectAsync(account, reason, input.traceId)
     return {
       action: 'cooldown',
       changed: Boolean(updated),
@@ -245,7 +247,7 @@ export async function applyAccountErrorHandlingAsync(
   }
 
   const reason = genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
-  const updated = await applyAccountTemporaryUnavailableSideEffectAsync(account, reason)
+  const updated = await applyAccountTemporaryUnavailableSideEffectAsync(account, reason, input.traceId)
   return {
     action: 'cooldown',
     changed: Boolean(updated),
@@ -320,22 +322,24 @@ function stringValue(value: unknown): string {
 
 function applyAccountTemporaryUnavailableSideEffect(
   account: AccountErrorPolicyAccount,
-  reason: string
+  reason: string,
+  traceId?: string
 ): { status: AccountStatus } | undefined {
   const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
   return authorizedTarget
-    ? markAuthorizedAccountBindingTemporaryUnavailableByContext({ ...authorizedTarget, reason })
-    : markAccountTemporaryUnavailable(account.id, reason)
+    ? markAuthorizedAccountBindingTemporaryUnavailableByContext({ ...authorizedTarget, reason, traceId })
+    : markAccountTemporaryUnavailable(account.id, reason, undefined, traceId)
 }
 
 async function applyAccountTemporaryUnavailableSideEffectAsync(
   account: AccountErrorPolicyAccount,
-  reason: string
+  reason: string,
+  traceId?: string
 ): Promise<{ status: AccountStatus } | undefined> {
   const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
   return authorizedTarget
-    ? await markAuthorizedAccountBindingTemporaryUnavailableByContextAsync({ ...authorizedTarget, reason })
-    : await markAccountTemporaryUnavailableAsync(account.id, reason)
+    ? await markAuthorizedAccountBindingTemporaryUnavailableByContextAsync({ ...authorizedTarget, reason, traceId })
+    : await markAccountTemporaryUnavailableAsync(account.id, reason, undefined, traceId)
 }
 
 function genericUpstreamResponseFailureReason(statusCode: number, upstreamSummary?: string): string {

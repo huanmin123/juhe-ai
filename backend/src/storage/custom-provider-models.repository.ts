@@ -50,6 +50,7 @@ export interface CustomProviderModelRecord {
   releaseDate?: string
   shutdownDate?: string
   contextWindowTokens?: number
+  maxInputTokens?: number
   maxOutputTokens?: number
   inputUsdPer1M?: number
   outputUsdPer1M?: number
@@ -94,6 +95,7 @@ export interface UpsertCustomProviderModelInput {
   releaseDate?: string | null
   shutdownDate?: string | null
   contextWindowTokens?: number | null
+  maxInputTokens?: number | null
   maxOutputTokens?: number | null
   inputUsdPer1M?: number | null
   outputUsdPer1M?: number | null
@@ -127,6 +129,7 @@ interface CustomProviderModelRow {
   release_date?: string | null
   shutdown_date?: string | null
   context_window_tokens?: number | null
+  max_input_tokens?: number | null
   max_output_tokens?: number | null
   input_usd_per_1m?: number | null
   output_usd_per_1m?: number | null
@@ -252,13 +255,13 @@ export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput)
         id, provider_code, model, scope, system_account_id, status,
         mode, supported_api_protocols_json, supported_service_tiers_json,
         supported_reasoning_efforts_json, default_reasoning_effort,
-        release_date, shutdown_date, context_window_tokens, max_output_tokens,
+        release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
         input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
         image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
         output_usd_per_image, currency, pricing_notes, capability_notes, notes,
         created_by, updated_by, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         provider_code = excluded.provider_code,
         model = excluded.model,
@@ -273,6 +276,7 @@ export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput)
         release_date = excluded.release_date,
         shutdown_date = excluded.shutdown_date,
         context_window_tokens = excluded.context_window_tokens,
+        max_input_tokens = excluded.max_input_tokens,
         max_output_tokens = excluded.max_output_tokens,
         input_usd_per_1m = excluded.input_usd_per_1m,
         output_usd_per_1m = excluded.output_usd_per_1m,
@@ -306,6 +310,7 @@ export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput)
       optionalDate(input.releaseDate) ?? null,
       optionalDate(input.shutdownDate) ?? null,
       optionalInteger(input.contextWindowTokens) ?? null,
+      optionalInteger(input.maxInputTokens) ?? null,
       optionalInteger(input.maxOutputTokens) ?? null,
       optionalNumber(input.inputUsdPer1M) ?? null,
       optionalNumber(input.outputUsdPer1M) ?? null,
@@ -362,13 +367,13 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
       id, provider_code, model, scope, system_account_id, status,
       mode, supported_api_protocols_json, supported_service_tiers_json,
       supported_reasoning_efforts_json, default_reasoning_effort,
-      release_date, shutdown_date, context_window_tokens, max_output_tokens,
+      release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
       input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
       image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
       output_usd_per_image, currency, pricing_notes, capability_notes, notes,
       created_by, updated_by, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       provider_code = excluded.provider_code,
       model = excluded.model,
@@ -383,6 +388,7 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
       release_date = excluded.release_date,
       shutdown_date = excluded.shutdown_date,
       context_window_tokens = excluded.context_window_tokens,
+      max_input_tokens = excluded.max_input_tokens,
       max_output_tokens = excluded.max_output_tokens,
       input_usd_per_1m = excluded.input_usd_per_1m,
       output_usd_per_1m = excluded.output_usd_per_1m,
@@ -415,6 +421,7 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
     optionalDate(input.releaseDate) ?? null,
     optionalDate(input.shutdownDate) ?? null,
     optionalInteger(input.contextWindowTokens) ?? null,
+    optionalInteger(input.maxInputTokens) ?? null,
     optionalInteger(input.maxOutputTokens) ?? null,
     optionalNumber(input.inputUsdPer1M) ?? null,
     optionalNumber(input.outputUsdPer1M) ?? null,
@@ -670,7 +677,7 @@ function customProviderModelColumns(): string {
     id, provider_code, model, scope, system_account_id, status,
     mode, supported_api_protocols_json, supported_service_tiers_json,
     supported_reasoning_efforts_json, default_reasoning_effort,
-    release_date, shutdown_date, context_window_tokens, max_output_tokens,
+    release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
     input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
     image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
     output_usd_per_image, currency, pricing_notes, capability_notes, notes,
@@ -711,6 +718,7 @@ function customProviderModelFromRow(row: CustomProviderModelRow): CustomProvider
     releaseDate: optionalText(row.release_date),
     shutdownDate: optionalText(row.shutdown_date),
     contextWindowTokens: optionalInteger(row.context_window_tokens),
+    maxInputTokens: optionalInteger(row.max_input_tokens),
     maxOutputTokens: optionalInteger(row.max_output_tokens),
     inputUsdPer1M: optionalNumber(row.input_usd_per_1m),
     outputUsdPer1M: optionalNumber(row.output_usd_per_1m),

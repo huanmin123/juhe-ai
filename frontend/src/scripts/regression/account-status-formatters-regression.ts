@@ -54,6 +54,18 @@ assertTrue(
   '检查失败的自有待检查账户应显示重新检查'
 )
 assertTrue(
+  accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'force-activate' && item.label === '人工恢复正常'),
+  '自有待检查账户应允许用户确认后人工恢复正常'
+)
+assertTrue(
+  accountStatusTooltipLines(accountFixture({
+    status: 'pending_test',
+    lastHealthCheckAt: '2026-07-15T01:00:00.000Z',
+    lastHealthCheckTraceId: 'trace-health-check-regression'
+  })).some((line) => line.includes('健康检查 traceId：trace-health-check-regression')),
+  '账户状态提示应直接展示结构化健康检查 traceId'
+)
+assertTrue(
   accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'toggle-status' && item.label === '停用账户'),
   '检查失败的自有待检查账户应允许停用'
 )

@@ -2954,6 +2954,8 @@ export {
   markAuthorizedAccountBindingTemporaryUnavailableByContextAsync,
   migrateAccountTraffic,
   migrateAccountTrafficAsync,
+  forceActivatePendingAccount,
+  forceActivatePendingAccountAsync,
   recordAccountStreamFailure,
   recordAccountStreamFailureAsync,
   recordAuthorizedAccountBindingStreamFailure,
@@ -2961,6 +2963,7 @@ export {
   updateAuthorizedAccountBindingDispatch,
   updateAuthorizedAccountBindingDispatchAsync,
   type AccountFailureStateClearResult,
+  type AccountForceActivateResult,
   type AccountPrecheckMutationState,
   type AuthorizedAccountBindingRuntimeTarget
 } from './account-runtime-mutation.repository.js'

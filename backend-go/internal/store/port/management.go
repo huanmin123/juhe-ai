@@ -1289,6 +1289,7 @@ type ManagementCustomProviderModelSaveInput struct {
 	ReleaseDate               string
 	ShutdownDate              string
 	ContextWindowTokens       *int
+	MaxInputTokens            *int
 	MaxOutputTokens           *int
 	InputUSDPer1M             *float64
 	OutputUSDPer1M            *float64

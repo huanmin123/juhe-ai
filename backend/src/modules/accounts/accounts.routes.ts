@@ -50,6 +50,7 @@ import {
   dispatchPendingAccountHealthCheck
 } from './account-health-check-dispatch.service.js'
 import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapshot-cleanup.service.js'
+import { registerAccountForceActivateRoutes } from './account-force-activate.routes.js'
 
 export const accountsRouter = Router()
 
@@ -107,6 +108,7 @@ registerAccountTrafficMigrationRoutes(accountsRouter)
 registerAccountGroupBindingRoutes(accountsRouter)
 registerAccountBatchEditRoutes(accountsRouter)
 registerAccountBalanceRoutes(accountsRouter)
+registerAccountForceActivateRoutes(accountsRouter)
 
 registerAccountDetailRoutes(accountsRouter)
 

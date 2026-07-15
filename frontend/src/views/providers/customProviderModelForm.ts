@@ -29,11 +29,11 @@ export interface CustomModelForm {
   supportedApiProtocols: ProviderModelApiProtocol[]
   supportedServiceTiers: ProviderModelServiceTier[]
   supportedReasoningEfforts: ProviderModelReasoningEffort[]
-  defaultReasoningEffort?: ProviderModelReasoningEffort
-  pricingTemplateModel?: string
+  configurationTemplateId?: string
   releaseDate?: string
   shutdownDate?: string
   contextWindowTokens?: number
+  maxInputTokens?: number
   maxOutputTokens?: number
   inputUsdPer1M?: number
   outputUsdPer1M?: number
@@ -72,13 +72,10 @@ export function createCustomModelFormFromPricing(
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
     supportedServiceTiers: normalizeServiceTiers(record.supportedServiceTiers),
     supportedReasoningEfforts: normalizeReasoningEfforts(record.supportedReasoningEfforts),
-    defaultReasoningEffort: normalizedDefaultReasoningEffort(
-      record.defaultReasoningEffort,
-      record.supportedReasoningEfforts
-    ),
     releaseDate: record.releaseDate,
     shutdownDate: record.shutdownDate,
     contextWindowTokens: record.contextWindowTokens,
+    maxInputTokens: record.maxInputTokens,
     maxOutputTokens: record.maxOutputTokens,
     inputUsdPer1M: record.inputUsdPer1M,
     outputUsdPer1M: record.outputUsdPer1M,
@@ -114,7 +111,11 @@ export function buildCustomModelPayload(
     releaseDate: trimToNull(form.releaseDate),
     shutdownDate: trimToNull(form.shutdownDate),
     contextWindowTokens: numberToNull(form.contextWindowTokens),
+    maxInputTokens: numberToNull(form.maxInputTokens),
     maxOutputTokens: numberToNull(form.maxOutputTokens)
+  }
+  if (form.configurationTemplateId) {
+    payload.configurationTemplateId = form.configurationTemplateId
   }
   if (options.includePrices !== false) {
     payload.serviceTierPrices = cloneServiceTierPrices(form.serviceTierPrices)
@@ -128,10 +129,6 @@ export function buildCustomModelPayload(
       ? normalizeServiceTiers(form.supportedServiceTiers)
       : []
     payload.supportedReasoningEfforts = supportedReasoningEfforts
-    payload.defaultReasoningEffort = normalizedDefaultReasoningEffort(
-      form.defaultReasoningEffort,
-      supportedReasoningEfforts
-    ) ?? null
   }
   return payload
 }
@@ -139,29 +136,31 @@ export function buildCustomModelPayload(
 export function clearCustomModelGptCapabilities(form: CustomModelForm): void {
   form.supportedServiceTiers = []
   form.supportedReasoningEfforts = []
-  form.defaultReasoningEffort = undefined
 }
 
-export function normalizeCustomModelDefaultReasoningEffort(form: CustomModelForm): void {
+export function normalizeCustomModelRequestCapabilities(form: CustomModelForm): void {
   form.supportedServiceTiers = normalizeServiceTiers(form.supportedServiceTiers)
   form.supportedReasoningEfforts = normalizeReasoningEfforts(form.supportedReasoningEfforts)
-  form.defaultReasoningEffort = normalizedDefaultReasoningEffort(
-    form.defaultReasoningEffort,
-    form.supportedReasoningEfforts
-  )
 }
 
-export function applyPricingTemplateToCustomModelForm(
+export function applyConfigurationTemplateToCustomModelForm(
   form: CustomModelForm,
   providerModels: ProviderModelPricing[],
-  model?: string
+  id?: string
 ): void {
-  const templateModel = trimToUndefined(model)
-  if (!templateModel) return
-  const template = findProviderModelByName(providerModels, templateModel)
+  const templateID = trimToUndefined(id)
+  if (!templateID) return
+  const template = providerModels.find((item) => item.id === templateID)
   if (!template) return
-  const category = categoryFromModeOrModel(form.mode, form.model)
-  if (getModelCategory(template) !== category) return
+  const category = getModelCategory(template)
+  form.configurationTemplateId = templateID
+  form.mode = category
+  form.supportedApiProtocols = [...(template.supportedApiProtocols ?? [])]
+  form.supportedServiceTiers = normalizeServiceTiers(template.supportedServiceTiers)
+  form.supportedReasoningEfforts = normalizeReasoningEfforts(template.supportedReasoningEfforts)
+  form.contextWindowTokens = template.contextWindowTokens
+  form.maxInputTokens = template.maxInputTokens
+  form.maxOutputTokens = template.maxOutputTokens
   const visibleFields = new Set(directPriceFieldsByCategory[category])
   for (const field of directPriceFieldKeys) {
     form[field] = visibleFields.has(field) ? template[field] : undefined
@@ -177,10 +176,8 @@ export function reconcileCustomModelServiceTierPrices(form: CustomModelForm): vo
   form.serviceTierPrices = Object.fromEntries(tiers.map((tier) => [tier, { ...(current[tier] ?? {}) }]))
 }
 
-export function availableCustomModelStatusOptions(canManagePrices: boolean, originalStatus?: ProviderModelStatus) {
-  return canManagePrices || originalStatus === 'active'
-    ? modelStatusOptions
-    : modelStatusOptions.filter((option) => option.value !== 'active')
+export function availableCustomModelStatusOptions(_canManagePrices: boolean, _originalStatus?: ProviderModelStatus) {
+  return modelStatusOptions
 }
 
 function cloneServiceTierPrices(value?: Record<string, ProviderModelPriceSet>): Record<string, ProviderModelPriceSet> {
@@ -208,11 +205,6 @@ function buildCustomModelDirectPricePayload(form: CustomModelForm, category: Mod
   return payload
 }
 
-function findProviderModelByName(models: ProviderModelPricing[], model: string): ProviderModelPricing | undefined {
-  const normalized = model.trim()
-  return models.find((item) => item.model.trim() === normalized)
-}
-
 function trimToUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
@@ -233,16 +225,6 @@ function normalizeServiceTiers(value: unknown): ProviderModelServiceTier[] {
 function normalizeReasoningEfforts(value: unknown): ProviderModelReasoningEffort[] {
   if (!Array.isArray(value)) return []
   return uniqueCapabilityTokens(value)
-}
-
-function normalizedDefaultReasoningEffort(
-  value: unknown,
-  supportedReasoningEfforts: unknown
-): ProviderModelReasoningEffort | undefined {
-  const supported = normalizeReasoningEfforts(supportedReasoningEfforts)
-  return typeof value === 'string' && supported.includes(value as ProviderModelReasoningEffort)
-    ? value as ProviderModelReasoningEffort
-    : undefined
 }
 
 function uniqueCapabilityTokens<TValue extends string>(values: unknown[]): TValue[] {

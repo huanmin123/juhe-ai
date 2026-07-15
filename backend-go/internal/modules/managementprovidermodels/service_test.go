@@ -474,7 +474,6 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 			SupportedAPIProtocols:     OptionalStringList{Set: true, Value: []string{"responses", "responses"}},
 			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{"priority", "flex"}},
 			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{"low", "high", "high"}},
-			DefaultReasoningEffort:    OptionalString{Set: true, Value: "high"},
 			InputUSDPer1M:             OptionalFloat{Set: true, Value: &price},
 			PricingNotes:              OptionalString{Set: true, Value: " 计费说明 "},
 		},
@@ -498,7 +497,7 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 		len(store.saveInput.SupportedReasoningEfforts) != 2 ||
 		store.saveInput.SupportedReasoningEfforts[0] != "low" ||
 		store.saveInput.SupportedReasoningEfforts[1] != "high" ||
-		store.saveInput.DefaultReasoningEffort != "high" {
+		store.saveInput.DefaultReasoningEffort != "" {
 		t.Fatalf("save input = %+v", store.saveInput)
 	}
 	if invalidator.reason != CustomProviderModelSavedReason {
@@ -598,7 +597,7 @@ func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
 			providerCode:  "gpt",
 			efforts:       []string{"low"},
 			defaultEffort: OptionalString{Set: true, Value: "high"},
-			wantMessage:   "默认思考级别必须属于支持的思考级别",
+			wantMessage:   "自定义模型参数无效",
 		},
 		{
 			name:         "reject invalid generic capability token",
@@ -672,7 +671,6 @@ func TestServiceCreateCustomModelAllowsExplicitCapabilityClearsOutsideGPTText(t 
 					Mode:                      OptionalString{Set: input.mode != "", Value: input.mode},
 					SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{}},
 					SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{}},
-					DefaultReasoningEffort:    OptionalString{Set: true},
 					InputUSDPer1M:             OptionalFloat{Set: true, Value: &price},
 				},
 			})
@@ -721,7 +719,7 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 	}
 	if !slices.Equal(store.saveInput.SupportedServiceTiers, []string{"priority"}) ||
 		!slices.Equal(store.saveInput.SupportedReasoningEfforts, []string{"low", "high"}) ||
-		store.saveInput.DefaultReasoningEffort != "high" {
+		store.saveInput.DefaultReasoningEffort != "" {
 		t.Fatalf("cloned save input = %+v", store.saveInput)
 	}
 
@@ -734,9 +732,8 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{"low"}},
 		},
 	})
-	message, ok := CustomModelValidationMessage(err)
-	if !ok || message != "默认思考级别必须属于支持的思考级别" {
-		t.Fatalf("default membership message = %q, %v; err = %v", message, ok, err)
+	if err != nil {
+		t.Fatalf("reducing supported reasoning efforts should clear legacy default, err = %v", err)
 	}
 
 	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
@@ -749,7 +746,6 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 			Mode:                      OptionalString{Set: true, Value: "image"},
 			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{}},
 			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{}},
-			DefaultReasoningEffort:    OptionalString{Set: true},
 		},
 	})
 	if err != nil {
@@ -880,6 +876,70 @@ func TestServiceCreateCustomModelRequiresOwnPriceWhenActive(t *testing.T) {
 	}
 	if result.ServiceTierPrices["priority"].InputUSDPer1M == nil || *result.ServiceTierPrices["priority"].InputUSDPer1M != price {
 		t.Fatalf("tier pricing result=%+v save=%+v", result, store.saveInput)
+	}
+}
+
+func TestServiceCreateCustomModelCopiesVisibleConfigurationTemplateForOrdinaryUser(t *testing.T) {
+	inputPrice := 5.0
+	outputPrice := 30.0
+	contextWindow := 1_050_000
+	maxInput := 922_000
+	maxOutput := 128_000
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+		catalog: []port.ManagementProviderModelCatalogItem{{
+			ID: "provider_model_gpt_5_6_sol", ProviderCode: "gpt", Model: "gpt-5.6-sol", Scope: "built_in", Status: "active", Mode: "chat",
+			SupportedAPIProtocols: []string{"responses", "chat_completions"}, SupportedServiceTiers: []string{"priority", "flex"},
+			SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"},
+			ContextWindowTokens:       &contextWindow, MaxInputTokens: &maxInput, MaxOutputTokens: &maxOutput,
+			InputUSDPer1M: &inputPrice, OutputUSDPer1M: &outputPrice,
+		}},
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, NewID: func(prefix string) string { return prefix + "_copied" }})
+
+	result, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "provider_model_gpt_5_6_sol"},
+			Model:                   OptionalString{Set: true, Value: "my-gpt-model"}, Status: OptionalString{Set: true, Value: "active"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateCustomModel() error = %v", err)
+	}
+	if result.Status != "active" || result.Model != "my-gpt-model" || result.InputUSDPer1M == nil || *result.InputUSDPer1M != inputPrice {
+		t.Fatalf("result = %+v", result)
+	}
+	if store.saveInput.ContextWindowTokens == nil || *store.saveInput.ContextWindowTokens != contextWindow ||
+		store.saveInput.MaxInputTokens == nil || *store.saveInput.MaxInputTokens != maxInput ||
+		store.saveInput.MaxOutputTokens == nil || *store.saveInput.MaxOutputTokens != maxOutput ||
+		!slices.Equal(store.saveInput.SupportedServiceTiers, []string{"priority", "flex"}) ||
+		!slices.Equal(store.saveInput.SupportedReasoningEfforts, []string{"none", "low", "medium", "high", "xhigh", "max"}) {
+		t.Fatalf("save input did not copy template configuration: %+v", store.saveInput)
+	}
+	if store.catalogInput.SystemAccountID != "sys_user" || !store.catalogInput.IncludeInactive {
+		t.Fatalf("template catalog input = %+v", store.catalogInput)
+	}
+}
+
+func TestServiceCreateCustomModelRejectsUnavailableConfigurationTemplate(t *testing.T) {
+	price := 1.0
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+		catalog: []port.ManagementProviderModelCatalogItem{{
+			ID: "disabled_template", ProviderCode: "gpt", Model: "disabled-model", Scope: "built_in", Status: "disabled", InputUSDPer1M: &price,
+		}},
+	}
+	_, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "disabled_template"},
+			Model:                   OptionalString{Set: true, Value: "invalid-copy"}, Status: OptionalString{Set: true, Value: "active"},
+		},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "配置模板不可用" {
+		t.Fatalf("message = %q, ok = %v, err = %v", message, ok, err)
 	}
 }
 

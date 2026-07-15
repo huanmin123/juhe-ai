@@ -354,6 +354,13 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 	}
 	for field, raw := range payload {
 		switch field {
+		case "configurationTemplateId":
+			value, ok := decodeManagementProviderCustomModelRequiredString(raw)
+			if !ok {
+				fields.Invalid = true
+				continue
+			}
+			fields.ConfigurationTemplateID = managementprovidermodels.OptionalString{Set: true, Value: value}
 		case "scope":
 			value, ok := decodeManagementProviderCustomModelRequiredString(raw)
 			if !ok {
@@ -404,12 +411,7 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 			}
 			fields.SupportedReasoningEfforts = managementprovidermodels.OptionalStringList{Set: true, Value: value}
 		case "defaultReasoningEffort":
-			value, ok := decodeManagementProviderCustomModelNullableString(raw, false)
-			if !ok {
-				fields.Invalid = true
-				continue
-			}
-			fields.DefaultReasoningEffort = managementprovidermodels.OptionalString{Set: true, Value: value}
+			fields.Invalid = true
 		case "serviceTierPrices":
 			var value map[string]managementprovidermodels.ModelPriceSet
 			if string(raw) == "null" {
@@ -440,6 +442,13 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 				continue
 			}
 			fields.ContextWindowTokens = managementprovidermodels.OptionalInt{Set: true, Value: value}
+		case "maxInputTokens":
+			value, ok := decodeManagementProviderCustomModelNullableInt(raw)
+			if !ok {
+				fields.Invalid = true
+				continue
+			}
+			fields.MaxInputTokens = managementprovidermodels.OptionalInt{Set: true, Value: value}
 		case "maxOutputTokens":
 			value, ok := decodeManagementProviderCustomModelNullableInt(raw)
 			if !ok {

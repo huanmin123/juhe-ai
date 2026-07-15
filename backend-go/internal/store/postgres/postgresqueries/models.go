@@ -52,6 +52,8 @@ type JuheBusinessAccount struct {
 	LastHealthCheckErrorMessage               pgtype.Text
 	ConfigRevision                            int32
 	HealthCheckFailureStartedAt               pgtype.Timestamptz
+	LastErrorTraceID                          pgtype.Text
+	LastHealthCheckTraceID                    pgtype.Text
 }
 
 type JuheBusinessAccountModelMapping struct {
@@ -158,6 +160,7 @@ type JuheBusinessCustomProviderModel struct {
 	DefaultReasoningEffort        pgtype.Text
 	CacheWrite1hUsdPer1m          pgtype.Float8
 	ServiceTierPricesJson         string
+	MaxInputTokens                pgtype.Int4
 }
 
 type JuheBusinessExternalIntegrationSource struct {

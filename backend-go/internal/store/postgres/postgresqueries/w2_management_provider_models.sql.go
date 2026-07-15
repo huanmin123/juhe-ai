@@ -83,6 +83,7 @@ SELECT
   release_date,
   shutdown_date,
   context_window_tokens,
+  max_input_tokens,
   max_output_tokens,
   input_usd_per_1m,
   output_usd_per_1m,
@@ -122,6 +123,7 @@ type FindManagementCustomProviderModelRow struct {
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
 	MaxOutputTokens               pgtype.Int4
 	InputUsdPer1m                 pgtype.Float8
 	OutputUsdPer1m                pgtype.Float8
@@ -161,6 +163,7 @@ func (q *Queries) FindManagementCustomProviderModel(ctx context.Context, id stri
 		&i.ReleaseDate,
 		&i.ShutdownDate,
 		&i.ContextWindowTokens,
+		&i.MaxInputTokens,
 		&i.MaxOutputTokens,
 		&i.InputUsdPer1m,
 		&i.OutputUsdPer1m,
@@ -200,6 +203,7 @@ SELECT
   release_date,
   shutdown_date,
   context_window_tokens,
+  max_input_tokens,
   max_output_tokens,
   input_usd_per_1m,
   output_usd_per_1m,
@@ -255,6 +259,7 @@ type FindManagementCustomProviderModelByScopeRow struct {
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
 	MaxOutputTokens               pgtype.Int4
 	InputUsdPer1m                 pgtype.Float8
 	OutputUsdPer1m                pgtype.Float8
@@ -299,6 +304,7 @@ func (q *Queries) FindManagementCustomProviderModelByScope(ctx context.Context, 
 		&i.ReleaseDate,
 		&i.ShutdownDate,
 		&i.ContextWindowTokens,
+		&i.MaxInputTokens,
 		&i.MaxOutputTokens,
 		&i.InputUsdPer1m,
 		&i.OutputUsdPer1m,
@@ -577,7 +583,7 @@ SELECT
   NULL::text AS codex_default_reasoning_level,
   NULL::text AS codex_multi_agent_version,
   context_window_tokens,
-  NULL::integer AS max_input_tokens,
+  max_input_tokens,
   max_output_tokens,
   NULL::integer AS max_tokens,
   input_usd_per_1m,
@@ -808,7 +814,7 @@ INSERT INTO juhe_business.custom_provider_models (
   id, provider_code, model, scope, system_account_id, status,
   mode, supported_api_protocols_json, supported_service_tiers_json,
   supported_reasoning_efforts_json, default_reasoning_effort,
-  release_date, shutdown_date, context_window_tokens, max_output_tokens,
+  release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
   input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
   image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
   output_usd_per_image, currency, pricing_notes, capability_notes, notes,
@@ -817,11 +823,11 @@ INSERT INTO juhe_business.custom_provider_models (
   $1, $2, $3, $4, $5, $6,
   $7, $8, $9,
   $10, $11,
-  $12, $13, $14, $15,
-  $16, $17, $18, $19, $20, $21,
-  $22, $23, $24, $25,
-  $26, 'USD', $27, $28, $29,
-  $30, $30, now(), now()
+  $12, $13, $14, $15, $16,
+  $17, $18, $19, $20, $21, $22,
+  $23, $24, $25, $26,
+  $27, 'USD', $28, $29, $30,
+  $31, $31, now(), now()
 )
 ON CONFLICT (id) DO UPDATE SET
   provider_code = EXCLUDED.provider_code,
@@ -837,6 +843,7 @@ ON CONFLICT (id) DO UPDATE SET
   release_date = EXCLUDED.release_date,
   shutdown_date = EXCLUDED.shutdown_date,
   context_window_tokens = EXCLUDED.context_window_tokens,
+  max_input_tokens = EXCLUDED.max_input_tokens,
   max_output_tokens = EXCLUDED.max_output_tokens,
   input_usd_per_1m = EXCLUDED.input_usd_per_1m,
   output_usd_per_1m = EXCLUDED.output_usd_per_1m,
@@ -869,6 +876,7 @@ RETURNING
   release_date,
   shutdown_date,
   context_window_tokens,
+  max_input_tokens,
   max_output_tokens,
   input_usd_per_1m,
   output_usd_per_1m,
@@ -905,6 +913,7 @@ type UpsertManagementCustomProviderModelParams struct {
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
 	MaxOutputTokens               pgtype.Int4
 	InputUsdPer1m                 pgtype.Float8
 	OutputUsdPer1m                pgtype.Float8
@@ -938,6 +947,7 @@ type UpsertManagementCustomProviderModelRow struct {
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
 	MaxOutputTokens               pgtype.Int4
 	InputUsdPer1m                 pgtype.Float8
 	OutputUsdPer1m                pgtype.Float8
@@ -975,6 +985,7 @@ func (q *Queries) UpsertManagementCustomProviderModel(ctx context.Context, arg U
 		arg.ReleaseDate,
 		arg.ShutdownDate,
 		arg.ContextWindowTokens,
+		arg.MaxInputTokens,
 		arg.MaxOutputTokens,
 		arg.InputUsdPer1m,
 		arg.OutputUsdPer1m,
@@ -1008,6 +1019,7 @@ func (q *Queries) UpsertManagementCustomProviderModel(ctx context.Context, arg U
 		&i.ReleaseDate,
 		&i.ShutdownDate,
 		&i.ContextWindowTokens,
+		&i.MaxInputTokens,
 		&i.MaxOutputTokens,
 		&i.InputUsdPer1m,
 		&i.OutputUsdPer1m,

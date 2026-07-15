@@ -18,14 +18,20 @@ export const geminiModelPricingData: RawModelPricing[] = [
     catalogOrder: 20,
     inputUsdPer1M: 2,
     outputUsdPer1M: 12,
-    cachedInputUsdPer1M: 0.2
+    cachedInputUsdPer1M: 0.2,
+    longContextInputTokenThreshold: 200_000,
+    longContextInputCostMultiplier: 2,
+    longContextOutputCostMultiplier: 1.5
   }),
   textModel({
     model: 'gemini-3.1-pro-preview-customtools',
     catalogOrder: 30,
     inputUsdPer1M: 2,
     outputUsdPer1M: 12,
-    cachedInputUsdPer1M: 0.2
+    cachedInputUsdPer1M: 0.2,
+    longContextInputTokenThreshold: 200_000,
+    longContextInputCostMultiplier: 2,
+    longContextOutputCostMultiplier: 1.5
   }),
   textModel({
     model: 'gemini-3-flash-preview',
@@ -48,7 +54,10 @@ export const geminiModelPricingData: RawModelPricing[] = [
     catalogOrder: 60,
     inputUsdPer1M: 1.25,
     outputUsdPer1M: 10,
-    cachedInputUsdPer1M: 0.125
+    cachedInputUsdPer1M: 0.125,
+    longContextInputTokenThreshold: 200_000,
+    longContextInputCostMultiplier: 2,
+    longContextOutputCostMultiplier: 1.5
   }),
   textModel({
     model: 'gemini-2.5-flash',
@@ -69,12 +78,13 @@ export const geminiModelPricingData: RawModelPricing[] = [
   embeddingModel({
     model: 'gemini-embedding-2',
     catalogOrder: 100,
-    inputUsdPer1M: 0.15
+    inputUsdPer1M: 0.2
   }),
   embeddingModel({
     model: 'gemini-embedding-001',
     catalogOrder: 110,
-    inputUsdPer1M: 0.15
+    inputUsdPer1M: 0.15,
+    shutdownDate: '2026-07-14'
   })
 ]
 
@@ -85,6 +95,9 @@ function textModel(input: {
   outputUsdPer1M: number
   cachedInputUsdPer1M?: number
   audioInputUsdPer1M?: number
+  longContextInputTokenThreshold?: number
+  longContextInputCostMultiplier?: number
+  longContextOutputCostMultiplier?: number
 }): RawModelPricing {
   return {
     model: input.model,
@@ -94,6 +107,9 @@ function textModel(input: {
     output_cost_per_token: usdPerToken(input.outputUsdPer1M),
     cache_read_input_token_cost: input.cachedInputUsdPer1M === undefined ? undefined : usdPerToken(input.cachedInputUsdPer1M),
     input_cost_per_audio_token: input.audioInputUsdPer1M === undefined ? undefined : usdPerToken(input.audioInputUsdPer1M),
+    long_context_input_token_threshold: input.longContextInputTokenThreshold,
+    long_context_input_cost_multiplier: input.longContextInputCostMultiplier,
+    long_context_output_cost_multiplier: input.longContextOutputCostMultiplier,
     max_input_tokens: 1_048_576,
     max_output_tokens: 65_536,
     supported_api_protocols: textGenerationProtocols,
@@ -106,12 +122,14 @@ function embeddingModel(input: {
   model: string
   catalogOrder: number
   inputUsdPer1M: number
+  shutdownDate?: string
 }): RawModelPricing {
   return {
     model: input.model,
     mode: 'embedding',
     catalog_order: input.catalogOrder,
     input_cost_per_token: usdPerToken(input.inputUsdPer1M),
+    shutdown_date: input.shutdownDate,
     supported_api_protocols: embeddingProtocols,
     supports_prompt_caching: false,
     catalog_visible: true

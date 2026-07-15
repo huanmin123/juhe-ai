@@ -41,11 +41,11 @@ x-juhe-client-profile: claude_code
 
 ## 模型发现与别名
 
-Claude Code 的模型配置支持官方模型 ID，也支持客户端别名。当前本地 Anthropic 模型发现目录只补充官方 Claude Code 配置别名：
+Claude Code 的模型配置支持官方模型 ID，也支持客户端别名。当前本地 Anthropic 模型发现目录只公开官方 Anthropic 模型 ID；以下 Claude Code 配置别名仅用于客户端解析和隐藏计价：
 
 - `best`、`fable`、`opus`、`opus[1m]`、`opusplan`、`sonnet`、`sonnet[1m]`、`haiku`
 
-`default` 不进入模型目录，因为它在 Claude Code 中表示清除模型覆盖并回到账号推荐模型，不是可直接调度的模型别名。Antigravity 相关名称是兼容网关 / 客户端侧别名，不代表 Anthropic 官方直连模型 ID；当前仅保留隐藏计价能力，不进入官方 Anthropic 模型发现目录。如需对某个兼容代理正式暴露这些名称，应通过自定义模型或后续独立供应商目录承接。
+上述别名和 `default` 都不进入模型目录；`default` 在 Claude Code 中表示清除模型覆盖并回到账号推荐模型，不是可直接调度的模型。Antigravity 相关名称是兼容网关 / 客户端侧别名，不代表 Anthropic 官方直连模型 ID；当前仅保留隐藏计价能力，不进入官方 Anthropic 模型发现目录。如需对某个兼容代理正式暴露这些名称，应通过自定义模型或后续独立供应商目录承接。
 
 `-low`、`-medium`、`-high`、`-max` 等 effort 变体后缀不单独列入模型发现目录，但成本解析会按基础 thinking 模型回落，例如 `google/antigravity-claude-opus-4-6-thinking-high` 计入 `google/antigravity-claude-opus-4-6-thinking`。旧的 `claude-opus-4-5-thinking` / `google/antigravity-claude-opus-4-5-thinking` 不收录。
 

@@ -137,6 +137,7 @@ export interface ProviderModelsParams {
 }
 
 export interface ProviderModelUpsertPayload {
+  configurationTemplateId?: string
   scope?: CustomProviderModelScope
   model: string
   status?: ProviderModelStatus
@@ -144,10 +145,10 @@ export interface ProviderModelUpsertPayload {
   supportedApiProtocols?: ProviderModelApiProtocol[]
   supportedServiceTiers?: ProviderModelServiceTier[]
   supportedReasoningEfforts?: ProviderModelReasoningEffort[]
-  defaultReasoningEffort?: ProviderModelReasoningEffort | null
   releaseDate?: string | null
   shutdownDate?: string | null
   contextWindowTokens?: number | null
+  maxInputTokens?: number | null
   maxOutputTokens?: number | null
   inputUsdPer1M?: number | null
   outputUsdPer1M?: number | null
