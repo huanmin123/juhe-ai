@@ -192,16 +192,18 @@ export function availableCustomModelStatusOptions(_canManagePrices: boolean, _or
   return modelStatusOptions
 }
 
-const standardServiceTierValues: ProviderModelServiceTier[] = ['priority', 'flex']
-const standardReasoningEffortValues: ProviderModelReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+const gptServiceTierValues: ProviderModelServiceTier[] = ['priority', 'flex']
+const gptReasoningEffortValues: ProviderModelReasoningEffort[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
 export function buildCustomModelCapabilityOptions(
+  providerCode: string,
   serviceTiers: ProviderModelServiceTier[],
   reasoningEfforts: ProviderModelReasoningEffort[]
 ) {
+  const isGpt = providerCode.trim().toLowerCase() === 'gpt'
   return {
-    serviceTiers: capabilityOptions([...standardServiceTierValues, ...serviceTiers], formatServiceTier),
-    reasoningEfforts: capabilityOptions([...standardReasoningEffortValues, ...reasoningEfforts], formatReasoningEffort)
+    serviceTiers: capabilityOptions([...(isGpt ? gptServiceTierValues : []), ...serviceTiers], formatServiceTier),
+    reasoningEfforts: capabilityOptions([...(isGpt ? gptReasoningEffortValues : []), ...reasoningEfforts], formatReasoningEffort)
   }
 }
 

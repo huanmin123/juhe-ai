@@ -157,7 +157,7 @@
             <a-form-item label="服务等级" class="custom-model-grid-wide">
               <a-select
                 v-model:value="customModelForm.supportedServiceTiers"
-                mode="multiple"
+                mode="tags"
                 :options="customModelServiceTierOptions"
                 :disabled="editingBuiltInModel"
                 placeholder="未选择时表示不支持账户级服务等级覆盖"
@@ -167,7 +167,7 @@
             <a-form-item label="思考级别" class="custom-model-grid-wide">
               <a-select
                 v-model:value="customModelForm.supportedReasoningEfforts"
-                mode="multiple"
+                mode="tags"
                 :options="customModelReasoningEffortOptions"
                 :disabled="editingBuiltInModel"
                 placeholder="仅配置上游 wire 支持的思考级别"
@@ -378,6 +378,7 @@ const customModelModalTitle = computed(() => editingBuiltInModel.value ? '编辑
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
 const customModelCategoryRecords = computed(() => providerModels.value.filter((item) => getModelCategory(item) === customModelPricingCategory.value))
 const customModelCapabilityOptions = computed(() => buildCustomModelCapabilityOptions(
+  activeProvider.value?.code ?? '',
   customModelCategoryRecords.value.flatMap((item) => item.supportedServiceTiers ?? []),
   customModelCategoryRecords.value.flatMap((item) => item.supportedReasoningEfforts ?? [])
 ))

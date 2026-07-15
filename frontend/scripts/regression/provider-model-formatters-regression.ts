@@ -88,6 +88,8 @@ assert.match(providerTableConfigSource, /const selfProviderColumns = \[[\s\S]*�
 assert.match(providersViewSource, /<div class="mobile-list-meta-item mobile-list-meta-wide">\s*<span>默认检查模型<\/span>/, '普通用户移动端模型目录列表应展示个人默认检查模型')
 assert.match(providersViewSource, /const canManageModelPrices = computed\(\(\) => canManageModelPricesForView\(isManagementView\.value, authState\.isAdmin\.value\)\)/, '价格维护权限必须同时受管理视图和管理员身份约束')
 assert.match(providersViewSource, /customModelModeOptions = modelModeOptions/, '新增模型用途不能依赖已有目录记录')
+assert.match(providersViewSource, /label="服务等级"[\s\S]*mode="tags"/, '服务等级必须允许录入首个供应商原生值')
+assert.match(providersViewSource, /label="思考级别"[\s\S]*mode="tags"/, '思考级别必须允许录入首个供应商原生值')
 assert.match(providersViewSource, /v-if="isManagementView && !editingBuiltInModel" label="作用域"/, '内置模型价格编辑不能伪装成个人模型作用域')
 assert.match(catalogModalSource, /serviceTierPrices/, '模型目录必须展示服务等级价格明细')
 assert.match(catalogModalSource, /缓存写入/, '移动端模型目录必须展示缓存写入价格')
