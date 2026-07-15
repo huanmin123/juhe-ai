@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
 import {
   clearAuthenticatedModelsRateLimitForTest,
   consumeAuthenticatedModelsRateLimit
@@ -26,6 +27,14 @@ assert.equal(decision.allowed, false)
 assert.equal(decision.scope, 'api_key_ip')
 assert.equal(decision.limit, 20)
 assert.equal(decision.retryAfterSeconds, 10)
+decision = await consumeAuthenticatedModelsRateLimit({ apiKeyId: 'key-a', clientIp: '203.0.113.1', nowMs: nowMs + 1000 })
+assert.equal(decision.allowed, false)
+assert.equal(decision.retryAfterSeconds, 9, '固定窗口内重试不得把 10 秒窗口指数延长')
+assert.equal(
+  (await consumeAuthenticatedModelsRateLimit({ apiKeyId: 'key-a', clientIp: '203.0.113.1', nowMs: nowMs + 10_000 })).allowed,
+  true,
+  '10 秒窗口结束后应恢复，不得延长为 15 分钟惩罚'
+)
 assert.equal((await consumeAuthenticatedModelsRateLimit({ apiKeyId: 'key-b', clientIp: '203.0.113.1', nowMs })).allowed, true, '不同 API Key 必须隔离')
 
 clearAuthenticatedModelsRateLimitForTest()
@@ -74,11 +83,16 @@ assert.equal(decision.limit, 300, 'API Key 全局每分钟第 301 次必须被�
 
 runtimeConfig.runtimeStateDriver = 'redis'
 runtimeConfig.redis.stateUrl = undefined
-await assert.rejects(
-  () => consumeAuthenticatedModelsRateLimit({ apiKeyId: 'key-redis', clientIp: '203.0.113.3', nowMs }),
-  /JUHE_AI_REDIS_STATE_URL/,
-  'Redis 运行态必须走 shared Redis limiter，不能回退进程内计数'
-)
+const previousLogLevel = logger.level
+logger.level = 'silent'
+try {
+  decision = await consumeAuthenticatedModelsRateLimit({ apiKeyId: 'key-redis', clientIp: '203.0.113.3', nowMs })
+} finally {
+  logger.level = previousLogLevel
+}
+assert.equal(decision.allowed, false, 'Redis limiter 异常必须 fail-closed')
+assert.equal(decision.unavailable, true, 'Redis limiter 异常必须返回可区分的不可用决策')
+assert.equal(decision.retryAfterSeconds, 5, 'Redis limiter 不可用应提供有界 Retry-After')
 runtimeConfig.runtimeStateDriver = 'memory'
 
 await clearAuthenticatedModelsResponseCache()
@@ -117,15 +131,40 @@ assert.match(cacheSource, /ttlMs:\s*30_000/, '最终响应缓存 TTL 必须固�
 assert.match(cacheSource, /registerGatewayRuntimeCacheInvalidator/, '最终响应缓存必须注册现有 runtime invalidator')
 assert.match(cacheSource, /authenticated_models_response_cache_read_failed/, '最终响应缓存读取失败必须回源，不能阻断模型列表')
 assert.match(cacheSource, /authenticated_models_response_cache_write_failed/, '最终响应缓存写入失败不得阻断模型列表响应')
+assert.match(cacheSource, /authenticated_models_response_cache_clear_failed/, '最终响应缓存清理失败必须结构化记录')
+assert.match(cacheSource, /clearAuthenticatedModelsResponseCache[\s\S]*try[\s\S]*catch/, '最终响应缓存清理异常不得向 runtime invalidator 传播')
 
 const preflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
 assert.match(preflightSource, /consumeAuthenticatedModelsRateLimit/, '认证成功后的 models 路径必须执行双层 limiter')
 assert.match(preflightSource, /Retry-After/, '认证 models 429 必须返回 Retry-After')
 assert.match(preflightSource, /authenticated_models_rate_limited/, '认证 models 429 必须有独立审计错误码')
+assert.match(preflightSource, /authenticated_models_rate_limit_unavailable/, 'Redis limiter 异常必须返回独立 audited 503')
+assert.match(preflightSource, /statusCode = limiterUnavailable \? 503 : 429/, 'Redis limiter 异常必须明确返回 503，普通超限保持 429')
+assert.match(preflightSource, /usageContext: baseUsageContext/, '早期 limiter 拒绝必须写失败 usage，不能落入成功 usage')
 assert.match(preflightSource, /sendGatewayFailureResponse/, '认证 models 429 必须进入失败审计和失败 usage，不得写成功 usage')
+const earlyLimiterIndex = preflightSource.indexOf('const authenticatedModelsRateLimitDecision')
+assert(earlyLimiterIndex > 0, '认证 models limiter 应有明确的早期决策点')
+assert(earlyLimiterIndex < preflightSource.indexOf('const activeGatewaySettings'), '认证 models limiter 必须早于系统设置读取')
+assert(earlyLimiterIndex < preflightSource.indexOf('const clientIpErrorCircuit ='), '认证 models limiter 必须早于客户端错误熔断读取')
+assert(earlyLimiterIndex < preflightSource.indexOf('const groupAccess ='), '认证 models limiter 必须早于分组访问读取')
 
 const fixedResponseSource = readFileSync(new URL('../../modules/gateway/response/fixed-responses.ts', import.meta.url), 'utf8')
-assert.match(fixedResponseSource, /private, max-age=30/, '认证 models 成功响应必须声明客户端私有缓存')
+assert.match(fixedResponseSource, /private, no-cache/, '认证 models 成功响应不得允许客户端 30 秒内直接复用跨凭据响应')
+for (const varyHeader of [
+  'Authorization',
+  'X-API-Key',
+  'X-Goog-API-Key',
+  'X-Juhe-Client-Profile',
+  'Anthropic-Version',
+  'Anthropic-Beta',
+  'X-Claude-Code-Session-Id',
+  'X-Claude-Code-Agent-Id',
+  'Originator',
+  'User-Agent',
+  'X-Codex-Client'
+]) {
+  assert(fixedResponseSource.includes(varyHeader), `认证 models Vary 缺少实际判别头：${varyHeader}`)
+}
 assert.match(fixedResponseSource, /getAuthenticatedModelsResponseCache/, '最终 payload 必须在目录构建前读取缓存')
 assert.match(fixedResponseSource, /setAuthenticatedModelsResponseCache/, '目录构建后必须写入最终 payload 缓存')
 

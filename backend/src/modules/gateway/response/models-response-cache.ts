@@ -43,7 +43,13 @@ export async function setAuthenticatedModelsResponseCache(
 }
 
 export async function clearAuthenticatedModelsResponseCache(): Promise<void> {
-  await authenticatedModelsResponseCache.clear()
+  try {
+    await authenticatedModelsResponseCache.clear()
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'authenticated_models_response_cache_clear_failed'
+    }), '清理认证模型列表最终响应缓存失败，等待 30 秒 TTL 自然失效')
+  }
 }
 
 function modelsResponseCacheKey(input: ModelsResponseCacheKeyInput): string {

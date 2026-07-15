@@ -185,7 +185,7 @@ async function sendModelsGatewayResponsePayload(input: {
     }
   }
   if (cacheKey) {
-    res.setHeader('Cache-Control', 'private, max-age=30')
+    setAuthenticatedModelsClientCacheHeaders(res)
   }
   res.status(200).json(responsePayload)
   auditCapture.finalize({
@@ -198,6 +198,32 @@ async function sendModelsGatewayResponsePayload(input: {
     firstTokenMs: Date.now() - startedAt
   })
   return responsePayload
+}
+
+export function setAuthenticatedModelsClientCacheHeaders(res: Response): void {
+  res.setHeader('Cache-Control', 'private, no-cache')
+  const varyHeaders = [
+    'Authorization',
+    'X-API-Key',
+    'X-Goog-API-Key',
+    'X-Juhe-Client-Profile',
+    'Anthropic-Version',
+    'Anthropic-Beta',
+    'X-Claude-Code-Session-Id',
+    'X-Claude-Code-Agent-Id',
+    'Originator',
+    'User-Agent',
+    'X-Codex-Client'
+  ]
+  const existing = String(res.getHeader('Vary') ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  const merged = new Map(existing.map((item) => [item.toLowerCase(), item]))
+  for (const header of varyHeaders) {
+    merged.set(header.toLowerCase(), header)
+  }
+  res.setHeader('Vary', [...merged.values()].join(', '))
 }
 
 async function listProviderScopedModelCatalog(input: {

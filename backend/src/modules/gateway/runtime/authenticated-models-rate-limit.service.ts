@@ -5,12 +5,14 @@ import {
   type PenaltyWindowRateLimitDecision,
   type PenaltyWindowRateLimitRule
 } from '../../rate-limit/penalty-window-rate-limit.js'
+import { errorLogFields, logger } from '../../../shared/logger.js'
 
 export interface AuthenticatedModelsRateLimitDecision {
   allowed: boolean
   scope?: 'api_key_ip' | 'api_key'
   limit?: number
   retryAfterSeconds?: number
+  unavailable?: boolean
 }
 
 const apiKeyIpRules = [
@@ -26,12 +28,12 @@ const apiKeyRules = [
 const apiKeyIpStore = createPenaltyWindowRateLimitStore({
   name: 'gateway_authenticated_models_api_key_ip',
   maxEntries: 100_000,
-  maxPenaltyMs: 15 * 60_000
+  penaltyMode: 'fixed_window'
 })
 const apiKeyStore = createPenaltyWindowRateLimitStore({
   name: 'gateway_authenticated_models_api_key',
   maxEntries: 20_000,
-  maxPenaltyMs: 15 * 60_000
+  penaltyMode: 'fixed_window'
 })
 
 export async function consumeAuthenticatedModelsRateLimit(input: {
@@ -41,25 +43,37 @@ export async function consumeAuthenticatedModelsRateLimit(input: {
 }): Promise<AuthenticatedModelsRateLimitDecision> {
   const apiKeyId = input.apiKeyId.trim()
   if (!apiKeyId) return { allowed: true }
-  const apiKeyIpDecision = await consumePenaltyWindowRateLimitAsync({
-    store: apiKeyIpStore,
-    scopeKey: `${apiKeyId}:ip:${normalizedClientIp(input.clientIp)}`,
-    rules: apiKeyIpRules,
-    nowMs: input.nowMs
-  })
-  if (!apiKeyIpDecision.allowed) {
-    return blockedDecision('api_key_ip', apiKeyIpDecision)
-  }
+  try {
+    const apiKeyIpDecision = await consumePenaltyWindowRateLimitAsync({
+      store: apiKeyIpStore,
+      scopeKey: `${apiKeyId}:ip:${normalizedClientIp(input.clientIp)}`,
+      rules: apiKeyIpRules,
+      nowMs: input.nowMs
+    })
+    if (!apiKeyIpDecision.allowed) {
+      return blockedDecision('api_key_ip', apiKeyIpDecision)
+    }
 
-  const apiKeyDecision = await consumePenaltyWindowRateLimitAsync({
-    store: apiKeyStore,
-    scopeKey: apiKeyId,
-    rules: apiKeyRules,
-    nowMs: input.nowMs
-  })
-  return apiKeyDecision.allowed
-    ? { allowed: true }
-    : blockedDecision('api_key', apiKeyDecision)
+    const apiKeyDecision = await consumePenaltyWindowRateLimitAsync({
+      store: apiKeyStore,
+      scopeKey: apiKeyId,
+      rules: apiKeyRules,
+      nowMs: input.nowMs
+    })
+    return apiKeyDecision.allowed
+      ? { allowed: true }
+      : blockedDecision('api_key', apiKeyDecision)
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'authenticated_models_rate_limit_unavailable',
+      apiKeyId
+    }), '认证模型列表 Redis 限流不可用，本次请求按 fail-closed 拒绝')
+    return {
+      allowed: false,
+      unavailable: true,
+      retryAfterSeconds: 5
+    }
+  }
 }
 
 export function clearAuthenticatedModelsRateLimitForTest(): void {
