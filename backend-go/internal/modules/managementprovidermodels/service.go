@@ -2,6 +2,7 @@ package managementprovidermodels
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -174,6 +175,17 @@ type ModelOption struct {
 	DefaultReasoningEffort    string   `json:"defaultReasoningEffort,omitempty"`
 }
 
+func (item ModelOption) MarshalJSON() ([]byte, error) {
+	type modelOptionAlias ModelOption
+	return json.Marshal(struct {
+		modelOptionAlias
+		DefaultReasoningEffort *string `json:"defaultReasoningEffort"`
+	}{
+		modelOptionAlias:       modelOptionAlias(item),
+		DefaultReasoningEffort: nullableReasoningEffort(item.DefaultReasoningEffort),
+	})
+}
+
 type DefaultHealthCheckModelResult struct {
 	ProviderCode            string `json:"providerCode"`
 	DefaultHealthCheckModel string `json:"defaultHealthCheckModel"`
@@ -297,6 +309,25 @@ type ModelCatalogItem struct {
 	CreatedAt                       string                                          `json:"createdAt,omitempty"`
 	UpdatedAt                       string                                          `json:"updatedAt,omitempty"`
 	Source                          string                                          `json:"source"`
+}
+
+func (item ModelCatalogItem) MarshalJSON() ([]byte, error) {
+	type modelCatalogItemAlias ModelCatalogItem
+	return json.Marshal(struct {
+		modelCatalogItemAlias
+		DefaultReasoningEffort *string `json:"defaultReasoningEffort"`
+	}{
+		modelCatalogItemAlias:  modelCatalogItemAlias(item),
+		DefaultReasoningEffort: nullableReasoningEffort(item.DefaultReasoningEffort),
+	})
+}
+
+func nullableReasoningEffort(value string) *string {
+	normalized := strings.TrimSpace(value)
+	if normalized == "" {
+		return nil
+	}
+	return &normalized
 }
 
 func NewService(store Store) *Service {
@@ -891,6 +922,8 @@ func applyConfigurationTemplate(input *port.ManagementCustomProviderModelSaveInp
 	input.SupportedServiceTiers = append([]string(nil), template.SupportedServiceTiers...)
 	input.SupportedReasoningEfforts = append([]string(nil), template.SupportedReasoningEfforts...)
 	input.DefaultReasoningEffort = template.DefaultReasoningEffort
+	input.ReleaseDate = template.ReleaseDate
+	input.ShutdownDate = template.ShutdownDate
 	input.ContextWindowTokens = cloneIntPtr(template.ContextWindowTokens)
 	input.MaxInputTokens = cloneIntPtr(template.MaxInputTokens)
 	input.MaxOutputTokens = cloneIntPtr(template.MaxOutputTokens)
@@ -905,6 +938,9 @@ func applyConfigurationTemplate(input *port.ManagementCustomProviderModelSaveInp
 	input.AudioInputUSDPer1M = cloneFloatPtr(template.AudioInputUSDPer1M)
 	input.AudioOutputUSDPer1M = cloneFloatPtr(template.AudioOutputUSDPer1M)
 	input.OutputUSDPerImage = cloneFloatPtr(template.OutputUSDPerImage)
+	input.PricingNotes = template.PricingNotes
+	input.CapabilityNotes = template.CapabilityNotes
+	input.Notes = template.Notes
 }
 
 func customModelModeFromCatalog(item port.ManagementProviderModelCatalogItem) string {

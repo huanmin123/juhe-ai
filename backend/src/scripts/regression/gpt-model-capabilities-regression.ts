@@ -75,6 +75,7 @@ for (const model of pricing) {
 
 const catalog = pricing.map((model): ProviderModelCatalogItem => ({
   ...model,
+  defaultReasoningEffort: model.defaultReasoningEffort ?? null,
   scope: 'built_in',
   status: 'active'
 }))

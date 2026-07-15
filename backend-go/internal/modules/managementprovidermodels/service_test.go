@@ -3,6 +3,7 @@ package managementprovidermodels
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"math"
@@ -203,6 +204,35 @@ func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 	if custom.SupportsServiceTier || len(custom.CodexSupportedReasoningLevels) != 0 ||
 		custom.CodexDefaultReasoningLevel != "" || custom.CodexMultiAgentVersion != "" {
 		t.Fatalf("custom capabilities = %+v, want derived false and empty Codex fields", custom)
+	}
+}
+
+func TestModelCatalogWireDefaultReasoningEffortIsExplicitlyNullable(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  any
+	}{
+		{name: "catalog null", value: ModelCatalogItem{ProviderCode: "gpt", Model: "without-default"}, want: nil},
+		{name: "catalog string", value: ModelCatalogItem{ProviderCode: "gpt", Model: "with-default", DefaultReasoningEffort: "high"}, want: "high"},
+		{name: "option null", value: ModelOption{ProviderCode: "gpt", Model: "without-default"}, want: nil},
+		{name: "option string", value: ModelOption{ProviderCode: "gpt", Model: "with-default", DefaultReasoningEffort: "high"}, want: "high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload, err := json.Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			var wire map[string]any
+			if err := json.Unmarshal(payload, &wire); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			actual, exists := wire["defaultReasoningEffort"]
+			if !exists || actual != tt.want {
+				t.Fatalf("defaultReasoningEffort = %#v, exists = %v, want %#v; payload=%s", actual, exists, tt.want, payload)
+			}
+		})
 	}
 }
 
@@ -920,11 +950,13 @@ func TestServiceCreateCustomModelCopiesVisibleConfigurationTemplateForOrdinaryUs
 		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
 		catalog: []port.ManagementProviderModelCatalogItem{{
 			ID: "provider_model_gpt_5_6_sol", ProviderCode: "gpt", Model: "gpt-5.6-sol", Scope: "built_in", Status: "active", Mode: "chat",
+			ReleaseDate: "2026-06-26", ShutdownDate: "2027-06-26",
 			SupportedAPIProtocols: []string{"responses", "chat_completions"}, SupportedServiceTiers: []string{"priority", "flex"},
 			SupportedReasoningEfforts: []string{"none", "low", "medium", "high", "xhigh", "max"},
 			DefaultReasoningEffort:    "high",
 			ContextWindowTokens:       &contextWindow, MaxInputTokens: &maxInput, MaxOutputTokens: &maxOutput,
 			InputUSDPer1M: &inputPrice, OutputUSDPer1M: &outputPrice,
+			PricingNotes: "trusted pricing", CapabilityNotes: "trusted capability", Notes: "trusted internal",
 		}},
 	}
 	service := NewServiceWithOptions(ServiceOptions{Store: store, NewID: func(prefix string) string { return prefix + "_copied" }})
@@ -947,7 +979,9 @@ func TestServiceCreateCustomModelCopiesVisibleConfigurationTemplateForOrdinaryUs
 		store.saveInput.MaxOutputTokens == nil || *store.saveInput.MaxOutputTokens != maxOutput ||
 		!slices.Equal(store.saveInput.SupportedServiceTiers, []string{"priority", "flex"}) ||
 		!slices.Equal(store.saveInput.SupportedReasoningEfforts, []string{"none", "low", "medium", "high", "xhigh", "max"}) ||
-		store.saveInput.DefaultReasoningEffort != "high" {
+		store.saveInput.DefaultReasoningEffort != "high" ||
+		store.saveInput.ReleaseDate != "2026-06-26" || store.saveInput.ShutdownDate != "2027-06-26" ||
+		store.saveInput.PricingNotes != "trusted pricing" || store.saveInput.CapabilityNotes != "trusted capability" || store.saveInput.Notes != "trusted internal" {
 		t.Fatalf("save input did not copy template configuration: %+v", store.saveInput)
 	}
 	if store.catalogInput.SystemAccountID != "sys_user" || !store.catalogInput.IncludeInactive {
@@ -1531,7 +1565,10 @@ func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Con
 		SupportedServiceTiers:     append([]string(nil), input.SupportedServiceTiers...),
 		SupportedReasoningEfforts: append([]string(nil), input.SupportedReasoningEfforts...),
 		DefaultReasoningEffort:    input.DefaultReasoningEffort,
+		ReleaseDate:               input.ReleaseDate,
+		ShutdownDate:              input.ShutdownDate,
 		ContextWindowTokens:       input.ContextWindowTokens,
+		MaxInputTokens:            input.MaxInputTokens,
 		MaxOutputTokens:           input.MaxOutputTokens,
 		InputUSDPer1M:             input.InputUSDPer1M,
 		OutputUSDPer1M:            input.OutputUSDPer1M,

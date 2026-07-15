@@ -694,6 +694,7 @@ function modelCatalogItem(model: string): Parameters<typeof buildOpenAIModelsRes
     supportsPromptCaching: false,
     supportedServiceTiers: [],
     supportedReasoningEfforts: [],
+    defaultReasoningEffort: null,
     codexSupportedReasoningLevels: [],
     supportsServiceTier: false,
     source: 'regression',

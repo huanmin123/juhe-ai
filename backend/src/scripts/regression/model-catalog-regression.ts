@@ -371,6 +371,13 @@ try {
   assert.deepEqual(repositoryClearedModel.supportedServiceTiers, [], 'repository 应接受空数组清理服务等级能力')
   assert.deepEqual(repositoryClearedModel.supportedReasoningEfforts, [], 'repository 应接受空数组清理思考能力')
   assert.equal(repositoryClearedModel.defaultReasoningEffort, undefined, 'repository 应接受 null 清理默认思考级别')
+  const repositoryClearedCatalogModel = catalogService.listProviderModelCatalog({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_admin',
+    includeInactive: true,
+    includeUnpriced: true
+  }).find((item) => item.id === repositoryClearedModel.id)
+  assert.equal(repositoryClearedCatalogModel?.defaultReasoningEffort, null, '模型目录响应必须把已清空默认思考级别显式返回为 null')
 
   const gpt56Alias = modelPricingService.getProviderModelPricing('gpt', 'gpt-5.6')
   assert.equal(gpt56Alias?.model, 'gpt-5.6-sol', 'gpt-5.6 稳定别名必须继承 Sol 能力')
@@ -432,8 +439,8 @@ try {
       supportedReasoningEfforts: ['low', 'high', 'max'],
       defaultReasoningEffort: 'max'
     },
-    { providerCode: 'gpt', model: 'Shared-Model', supportedApiProtocols: ['responses'] },
-    { providerCode: 'deepseek', model: 'shared-model', supportedApiProtocols: ['chat_completions'] }
+    { providerCode: 'gpt', model: 'Shared-Model', supportedApiProtocols: ['responses'], defaultReasoningEffort: null },
+    { providerCode: 'deepseek', model: 'shared-model', supportedApiProtocols: ['chat_completions'], defaultReasoningEffort: null }
   ], '供应商模型选项必须稳定地按 providerCode + 大小写敏感 model 去重，并合并能力和选择合并后有效的默认思考级别')
 
   const deepSeekCatalog = catalogService.listProviderModelCatalog({
@@ -965,6 +972,60 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       '普通用户不应创建全局模型'
     )
 
+    const trustedConfigurationTemplate = await postEnvelope<{
+      id: string
+      releaseDate?: string
+      shutdownDate?: string
+      pricingNotes?: string
+      capabilityNotes?: string
+      notes?: string
+    }>(
+      baseUrl,
+      '/__aisys__/api/providers/gpt/models',
+      adminCookie,
+      {
+        scope: 'global',
+        model: 'gpt-http-trusted-template',
+        status: 'active',
+        mode: 'text',
+        supportedApiProtocols: ['responses'],
+        supportedReasoningEfforts: ['low', 'high'],
+        defaultReasoningEffort: 'high',
+        releaseDate: '2026-06-01',
+        shutdownDate: '2027-06-01',
+        inputUsdPer1M: 5,
+        outputUsdPer1M: 30,
+        pricingNotes: '可信模板计费说明',
+        capabilityNotes: '可信模板能力说明',
+        notes: '可信模板内部备注'
+      }
+    )
+    const trustedTemplateCopy = await postEnvelope<{
+      model: string
+      scope: string
+      inputUsdPer1M?: number
+      releaseDate?: string
+      shutdownDate?: string
+      pricingNotes?: string
+      capabilityNotes?: string
+      notes?: string
+    }>(
+      baseUrl,
+      '/__aisys__/api/providers/gpt/models',
+      userACookie,
+      {
+        configurationTemplateId: trustedConfigurationTemplate.id,
+        model: 'gpt-http-trusted-template-copy'
+      }
+    )
+    assert.equal(trustedTemplateCopy.scope, 'personal', '普通用户应能从可信模板创建个人模型')
+    assert.equal(trustedTemplateCopy.inputUsdPer1M, 5, '普通用户只提交模板和模型 ID 时应继承可信价格')
+    assert.equal(trustedTemplateCopy.releaseDate, '2026-06-01', '配置模板必须复制发布时间')
+    assert.equal(trustedTemplateCopy.shutdownDate, '2027-06-01', '配置模板必须复制停用时间')
+    assert.equal(trustedTemplateCopy.pricingNotes, '可信模板计费说明', '配置模板必须在服务端复制计费备注')
+    assert.equal(trustedTemplateCopy.capabilityNotes, '可信模板能力说明', '配置模板必须在服务端复制能力备注')
+    assert.equal(trustedTemplateCopy.notes, '可信模板内部备注', '配置模板必须在服务端复制内部备注')
+
     const userATemplateCatalog = await getEnvelope<Array<{
       id?: string
       model: string
@@ -1091,13 +1152,13 @@ async function assertProviderModelHttpContracts(): Promise<void> {
 	  { notes: 'round-trip' }
 	)
 	assert.equal(userAGptUnrelatedPatch.defaultReasoningEffort, 'high', '无关 PATCH 必须保留默认思考级别')
-	const userAGptClearedDefault = await patchEnvelope<{ defaultReasoningEffort?: string }>(
+	const userAGptClearedDefault = await patchEnvelope<{ defaultReasoningEffort: string | null }>(
 	  baseUrl,
 	  `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
 	  userACookie,
 	  { defaultReasoningEffort: null }
 	)
-	assert.equal(userAGptClearedDefault.defaultReasoningEffort, undefined, 'null PATCH 必须显式清空默认思考级别')
+	assert.equal(userAGptClearedDefault.defaultReasoningEffort, null, 'null PATCH 必须在响应中显式清空默认思考级别')
 	const userAGptRestoredDefault = await patchEnvelope<{ defaultReasoningEffort?: string }>(
 	  baseUrl,
 	  `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
@@ -1190,7 +1251,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       mode?: string
       supportedServiceTiers: string[]
       supportedReasoningEfforts: string[]
-      defaultReasoningEffort?: string
+      defaultReasoningEffort: string | null
     }>(
       baseUrl,
       `/__aisys__/api/providers/gpt/models/${userAGptClearableModel.id}`,
@@ -1206,7 +1267,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(userAGptClearedModel.mode, 'image', 'API 显式清空文本能力后应允许切换为 GPT 图片模型')
     assert.deepEqual(userAGptClearedModel.supportedServiceTiers, [], 'API 应接受空数组清理服务等级能力')
     assert.deepEqual(userAGptClearedModel.supportedReasoningEfforts, [], 'API 应接受空数组清理思考能力')
-    assert.equal(userAGptClearedModel.defaultReasoningEffort, undefined, 'API 更新后不得保留默认思考级别')
+    assert.equal(userAGptClearedModel.defaultReasoningEffort, null, 'API 更新后必须显式返回空默认思考级别')
 
     const userADraft = await postEnvelope<{ id: string; model: string; status: string }>(
       baseUrl,

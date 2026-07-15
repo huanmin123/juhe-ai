@@ -169,7 +169,7 @@ type ModelMappingProtocolOption = {
   supportedApiProtocols?: ProviderModelApiProtocol[]
   supportedServiceTiers?: ProviderModelServiceTier[]
   supportedReasoningEfforts?: ProviderModelReasoningEffort[]
-  defaultReasoningEffort?: ProviderModelReasoningEffort
+  defaultReasoningEffort?: ProviderModelReasoningEffort | null
 }
 
 function resolveFormProviderProfile(form: AccountFormModel, providers: ProviderDefinition[] = FALLBACK_PROVIDERS): {

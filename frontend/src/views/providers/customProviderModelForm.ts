@@ -74,7 +74,7 @@ export function createCustomModelFormFromPricing(
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
     supportedServiceTiers: normalizeServiceTiers(record.supportedServiceTiers),
     supportedReasoningEfforts: normalizeReasoningEfforts(record.supportedReasoningEfforts),
-    defaultReasoningEffort: record.defaultReasoningEffort,
+    defaultReasoningEffort: record.defaultReasoningEffort ?? undefined,
     releaseDate: record.releaseDate,
     shutdownDate: record.shutdownDate,
     contextWindowTokens: record.contextWindowTokens,
@@ -169,7 +169,7 @@ export function applyConfigurationTemplateToCustomModelForm(
   form.supportedServiceTiers = normalizeServiceTiers(template.supportedServiceTiers)
   form.supportedReasoningEfforts = normalizeReasoningEfforts(template.supportedReasoningEfforts)
   form.defaultReasoningEffort = form.supportedReasoningEfforts.includes(template.defaultReasoningEffort ?? '')
-    ? template.defaultReasoningEffort
+    ? template.defaultReasoningEffort ?? undefined
     : undefined
   form.contextWindowTokens = template.contextWindowTokens
   form.maxInputTokens = template.maxInputTokens

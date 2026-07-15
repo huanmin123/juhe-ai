@@ -834,9 +834,11 @@ function assertModelOptions(value: unknown): ModelOptionRecord[] {
         assertStringArray(item[field], `${label}.${field}`)
       }
     }
-    if (Object.hasOwn(item, 'defaultReasoningEffort')) {
-      expect(isNonEmptyString(item.defaultReasoningEffort), `${label}.defaultReasoningEffort must be a non-empty string`)
-    }
+    expect(Object.hasOwn(item, 'defaultReasoningEffort'), `${label}.defaultReasoningEffort must be explicit`)
+    expect(
+      item.defaultReasoningEffort === null || isNonEmptyString(item.defaultReasoningEffort),
+      `${label}.defaultReasoningEffort must be a non-empty string or null`
+    )
     return item as unknown as ModelOptionRecord
   })
 }
