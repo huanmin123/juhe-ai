@@ -710,6 +710,28 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 	}
 }
 
+func TestServiceCreateCustomModelChecksProviderBeforeInvalidFields(t *testing.T) {
+	_, err := NewService(&providerModelStoreStub{}).CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "missing",
+		Fields:       CustomModelMutation{Invalid: true},
+	})
+	if !errors.Is(err, ErrProviderNotFound) {
+		t.Fatalf("missing provider error = %v, want ErrProviderNotFound", err)
+	}
+
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+	}
+	_, err = NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "gpt",
+		Fields:       CustomModelMutation{Invalid: true},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "自定义模型参数无效" {
+		t.Fatalf("invalid fields message = %q, ok = %v, err = %v", message, ok, err)
+	}
+}
+
 func TestServiceCreateCustomModelIgnoresInvalidationFailure(t *testing.T) {
 	price := 1.25
 	store := &providerModelStoreStub{
@@ -1144,6 +1166,141 @@ func TestServiceCreateCustomModelRejectsUnavailableConfigurationTemplate(t *test
 	})
 	message, ok := CustomModelValidationMessage(err)
 	if !ok || message != "配置模板不可用" {
+		t.Fatalf("message = %q, ok = %v, err = %v", message, ok, err)
+	}
+}
+
+func TestServiceCreateCustomModelResolvesConfigurationTemplateFromMergedOrdinaryCatalog(t *testing.T) {
+	price := 1.0
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{ID: "built_in_shared", ProviderCode: "gpt", Model: "shared-model", Scope: "built_in", Status: "active", InputUSDPer1M: &price},
+			{ID: "personal_shared", ProviderCode: "gpt", Model: "shared-model", Scope: "personal", SystemAccountID: "sys_user", Status: "active", InputUSDPer1M: &price},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, NewID: func(prefix string) string { return prefix + "_merged" }})
+
+	_, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "built_in_shared"},
+			Model:                   OptionalString{Set: true, Value: "copy-built-in"},
+		},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "配置模板不可用" {
+		t.Fatalf("built-in template message = %q, ok = %v, err = %v", message, ok, err)
+	}
+
+	result, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "personal_shared"},
+			Model:                   OptionalString{Set: true, Value: "copy-personal"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("personal template CreateCustomModel() error = %v", err)
+	}
+	if result.Model != "copy-personal" || result.InputUSDPer1M == nil || *result.InputUSDPer1M != price {
+		t.Fatalf("personal template result = %+v", result)
+	}
+}
+
+func TestServiceCreateCustomModelMergesHybridConfigurationTemplatesByProviderAndModel(t *testing.T) {
+	price := 1.0
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"hybrid": {Code: "hybrid", Enabled: true}},
+		protocolCodes: map[string][]string{
+			"openai:v1":    {"gpt"},
+			"anthropic:v1": {"anthropic"},
+		},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{ID: "gpt_built_in_shared", ProviderCode: "gpt", Model: "shared-model", Scope: "built_in", Status: "active", InputUSDPer1M: &price},
+			{ID: "gpt_personal_shared", ProviderCode: "gpt", Model: "shared-model", Scope: "personal", SystemAccountID: "sys_user", Status: "active", InputUSDPer1M: &price},
+			{ID: "anthropic_built_in_shared", ProviderCode: "anthropic", Model: "shared-model", Scope: "built_in", Status: "active", InputUSDPer1M: &price},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, NewID: func(prefix string) string { return prefix + "_hybrid" }})
+
+	_, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "hybrid", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "gpt_built_in_shared"},
+			Model:                   OptionalString{Set: true, Value: "copy-covered-gpt"},
+		},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "配置模板不可用" {
+		t.Fatalf("covered hybrid template message = %q, ok = %v, err = %v", message, ok, err)
+	}
+
+	result, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "hybrid", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "anthropic_built_in_shared"},
+			Model:                   OptionalString{Set: true, Value: "copy-anthropic"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("cross-provider hybrid template CreateCustomModel() error = %v", err)
+	}
+	if result.Model != "copy-anthropic" {
+		t.Fatalf("cross-provider hybrid template result = %+v", result)
+	}
+}
+
+func TestServiceCreateCustomModelRequiresPersonalOwnerBeforeResolvingTemplate(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+	}
+	_, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "gpt", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "missing_template"},
+			Model:                   OptionalString{Set: true, Value: "copy-without-owner"},
+		},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "请选择模型归属的系统账户" {
+		t.Fatalf("owner message = %q, ok = %v, err = %v", message, ok, err)
+	}
+	if store.catalogCalls != 0 {
+		t.Fatalf("catalog calls = %d, want 0", store.catalogCalls)
+	}
+}
+
+func TestServiceUpdateCustomModelRejectsConfigurationTemplateWithGenericValidationMessage(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+		customByID: map[string]port.ManagementProviderModelCatalogItem{
+			"custom_model_1": {ID: "custom_model_1", ProviderCode: "gpt", Model: "custom", Scope: "personal", SystemAccountID: "sys_user", Status: "active"},
+		},
+	}
+	_, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "custom_model_1", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{ConfigurationTemplateID: OptionalString{Set: true, Value: "template"}},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "自定义模型参数无效" {
+		t.Fatalf("message = %q, ok = %v, err = %v", message, ok, err)
+	}
+}
+
+func TestServiceUpdateBuiltInModelRejectsConfigurationTemplateWithBuiltInValidationMessage(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "active"},
+		},
+	}
+	_, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_test", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{ConfigurationTemplateID: OptionalString{Set: true, Value: "template"}},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "内置模型只允许修改价格字段" {
 		t.Fatalf("message = %q, ok = %v, err = %v", message, ok, err)
 	}
 }
@@ -1650,6 +1807,7 @@ type providerModelStoreStub struct {
 	protocolCodes          map[string][]string
 	catalog                []port.ManagementProviderModelCatalogItem
 	catalogInput           port.ManagementProviderModelCatalogListInput
+	catalogCalls           int
 	builtInUpdateInputs    []port.ManagementBuiltInProviderModelPriceUpdateInput
 	builtInUpdateResult    port.ManagementBuiltInProviderModelPriceUpdateResult
 	setDefaultInput        port.ManagementProviderDefaultHealthCheckModelInput
@@ -1737,6 +1895,7 @@ func (s *providerModelStoreStub) ListManagementProviderCodesByProtocol(_ context
 }
 
 func (s *providerModelStoreStub) ListManagementProviderModelCatalog(_ context.Context, input port.ManagementProviderModelCatalogListInput) ([]port.ManagementProviderModelCatalogItem, error) {
+	s.catalogCalls++
 	s.catalogInput = input
 	allowed := map[string]struct{}{}
 	for _, code := range append(append([]string{}, input.BuiltInProviderCodes...), input.CustomProviderCodes...) {

@@ -475,6 +475,9 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 			ownerSystemAccountID = actorSystemAccountID
 		}
 	}
+	if scope == "personal" && ownerSystemAccountID == "" {
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "请选择模型归属的系统账户"}
+	}
 	var template *port.ManagementProviderModelCatalogItem
 	if input.Fields.ConfigurationTemplateID.Set {
 		resolved, err := s.resolveConfigurationTemplate(ctx, provider.Code, ownerSystemAccountID, input.Fields.ConfigurationTemplateID.Value)
@@ -486,9 +489,6 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	saveInput, err := customModelSaveInputFromCreate(provider.Code, scope, ownerSystemAccountID, actorSystemAccountID, input.Fields, template)
 	if err != nil {
 		return ModelCatalogItem{}, err
-	}
-	if scope == "personal" && ownerSystemAccountID == "" {
-		return ModelCatalogItem{}, &CustomModelValidationError{Message: "请选择模型归属的系统账户"}
 	}
 	if err := s.validateCustomModelPricing(ctx, saveInput, ownerSystemAccountID); err != nil {
 		return ModelCatalogItem{}, err
@@ -543,7 +543,7 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
 	}
 	if input.Fields.ConfigurationTemplateID.Set {
-		return ModelCatalogItem{}, &CustomModelValidationError{Message: "配置模板只能在新建模型时使用"}
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
 	}
 	saveInput := customModelSaveInputFromExisting(existing, strings.TrimSpace(input.ActorSystemAccountID))
 	if err := applyCustomModelPatch(&saveInput, input.Fields); err != nil {
@@ -984,7 +984,11 @@ func (s *Service) resolveConfigurationTemplate(ctx context.Context, providerCode
 	if err != nil {
 		return port.ManagementProviderModelCatalogItem{}, err
 	}
-	for _, item := range items {
+	mergeKey := mergeKeyModel
+	if strings.TrimSpace(providerCode) == hybridProviderCode {
+		mergeKey = mergeKeyProviderModel
+	}
+	for _, item := range mergeCatalogItems(items, mergeKey) {
 		if item.ID == templateID && item.Status == "active" {
 			return item, nil
 		}

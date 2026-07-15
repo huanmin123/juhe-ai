@@ -341,6 +341,7 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if service.createInput.ProviderCode != "gpt" ||
+		service.createCalls != 1 ||
 		service.createInput.ActorSystemAccountID != "sys_admin" ||
 		service.createInput.TargetSystemAccountID != "sys_user" ||
 		!service.createInput.Fields.ConfigurationTemplateID.Set ||
@@ -366,6 +367,73 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 	}
 	if body.Data.ID != "custom_model_1" {
 		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementProviderCustomModelCreateHandlerRejectsBlankConfigurationTemplateID(t *testing.T) {
+	service := &managementProviderModelServiceStub{
+		err: &managementprovidermodels.CustomModelValidationError{Message: "自定义模型参数无效"},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementProviderCustomModelCreateHandler(service))
+
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/providers/gpt/models", strings.NewReader(`{
+		"configurationTemplateId":"   ",
+		"model":"custom-chat"
+	}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "自定义模型参数无效" {
+		t.Fatalf("message = %q", body["message"])
+	}
+	if service.createCalls != 1 {
+		t.Fatalf("CreateCustomModel() calls = %d, want 1", service.createCalls)
+	}
+	if !service.createInput.Fields.Invalid {
+		t.Fatalf("create fields = %+v, want Invalid", service.createInput.Fields)
+	}
+}
+
+func TestManagementProviderCustomModelUpdateHandlerRejectsConfigurationTemplateID(t *testing.T) {
+	service := &managementProviderModelServiceStub{
+		err: &managementprovidermodels.CustomModelValidationError{Message: "自定义模型参数无效"},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementProviderCustomModelUpdateHandler(service))
+
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/custom_model_1", strings.NewReader(`{
+		"configurationTemplateId":"template",
+		"status":"active"
+	}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["message"] != "自定义模型参数无效" {
+		t.Fatalf("message = %q", body["message"])
+	}
+	if service.updateCalls != 1 {
+		t.Fatalf("UpdateCustomModel() calls = %d, want 1", service.updateCalls)
+	}
+	if !service.updateInput.Fields.ConfigurationTemplateID.Set ||
+		service.updateInput.Fields.ConfigurationTemplateID.Value != "template" {
+		t.Fatalf("update fields = %+v", service.updateInput.Fields)
 	}
 }
 
@@ -791,7 +859,9 @@ type managementProviderModelServiceStub struct {
 	modelsInput                   managementprovidermodels.ModelListInput
 	defaultHealthCheckModelInput  managementprovidermodels.DefaultHealthCheckModelInput
 	createInput                   managementprovidermodels.CustomModelCreateInput
+	createCalls                   int
 	updateInput                   managementprovidermodels.CustomModelUpdateInput
+	updateCalls                   int
 	deleteInput                   managementprovidermodels.CustomModelDeleteInput
 	modelOptions                  []managementprovidermodels.ModelOption
 	models                        []managementprovidermodels.ModelCatalogItem
@@ -817,6 +887,7 @@ func (s *managementProviderModelServiceStub) SetDefaultHealthCheckModel(_ *http.
 }
 
 func (s *managementProviderModelServiceStub) CreateCustomModel(_ *http.Request, input managementprovidermodels.CustomModelCreateInput) (managementprovidermodels.ModelCatalogItem, error) {
+	s.createCalls++
 	s.createInput = input
 	if s.err != nil {
 		return s.customModelResult, s.err
@@ -828,6 +899,7 @@ func (s *managementProviderModelServiceStub) CreateCustomModel(_ *http.Request, 
 }
 
 func (s *managementProviderModelServiceStub) UpdateCustomModel(_ *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.ModelCatalogItem, error) {
+	s.updateCalls++
 	s.updateInput = input
 	if s.err != nil {
 		return s.customModelResult, s.err

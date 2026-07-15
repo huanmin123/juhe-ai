@@ -356,7 +356,8 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 		switch field {
 		case "configurationTemplateId":
 			value, ok := decodeManagementProviderCustomModelRequiredString(raw)
-			if !ok {
+			value = strings.TrimSpace(value)
+			if !ok || value == "" {
 				fields.Invalid = true
 				continue
 			}
