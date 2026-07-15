@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -399,6 +400,7 @@ func TestW4ManagementSystemTeamsPostgresRedisAsynqSmoke(t *testing.T) {
 		t.Fatalf("operation log queue info = %+v, want at least 4 completed and 0 archived", queueInfo)
 	}
 	assertW4SystemTeamOperationLogs(t, ctx, db, team.ID, member.ID)
+	assertW4SystemTeamOperationLogAssociations(t, ctx, db, team.ID, member.SystemAccountID)
 }
 
 func serveW4SystemTeamRequest(
@@ -794,6 +796,158 @@ func assertW4SystemTeamOperationLogs(
 	}
 }
 
+type w4SystemTeamOperationLogViewerAssociation struct {
+	SystemAccountID string
+	Reason          string
+}
+
+type w4SystemTeamOperationLogTargetAssociation struct {
+	Type                 string
+	ID                   string
+	OwnerSystemAccountID string
+	Relation             string
+}
+
+func assertW4SystemTeamOperationLogAssociations(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	teamID string,
+	memberSystemAccountID string,
+) {
+	t.Helper()
+
+	actorViewer := w4SystemTeamOperationLogViewerAssociation{
+		SystemAccountID: "sys_w4_team_admin",
+		Reason:          "actor_self",
+	}
+	memberViewer := w4SystemTeamOperationLogViewerAssociation{
+		SystemAccountID: memberSystemAccountID,
+		Reason:          "team_member",
+	}
+	primaryTarget := w4SystemTeamOperationLogTargetAssociation{
+		Type:     "system_team",
+		ID:       teamID,
+		Relation: "primary",
+	}
+	memberTarget := w4SystemTeamOperationLogTargetAssociation{
+		Type:                 "system_account",
+		ID:                   memberSystemAccountID,
+		OwnerSystemAccountID: memberSystemAccountID,
+		Relation:             "team_member",
+	}
+	tests := []struct {
+		logID   string
+		viewers []w4SystemTeamOperationLogViewerAssociation
+		targets []w4SystemTeamOperationLogTargetAssociation
+	}{
+		{
+			logID:   "oplog_w4_system_teams_1",
+			viewers: []w4SystemTeamOperationLogViewerAssociation{actorViewer},
+			targets: []w4SystemTeamOperationLogTargetAssociation{primaryTarget},
+		},
+		{
+			logID:   "oplog_w4_system_teams_2",
+			viewers: []w4SystemTeamOperationLogViewerAssociation{actorViewer, memberViewer},
+			targets: []w4SystemTeamOperationLogTargetAssociation{memberTarget, memberTarget, primaryTarget},
+		},
+		{
+			logID:   "oplog_w4_system_teams_3",
+			viewers: []w4SystemTeamOperationLogViewerAssociation{actorViewer, memberViewer},
+			targets: []w4SystemTeamOperationLogTargetAssociation{memberTarget, primaryTarget},
+		},
+		{
+			logID:   "oplog_w4_system_teams_4",
+			viewers: []w4SystemTeamOperationLogViewerAssociation{actorViewer, memberViewer},
+			targets: []w4SystemTeamOperationLogTargetAssociation{memberTarget, primaryTarget},
+		},
+	}
+
+	for _, test := range tests {
+		viewers := readW4SystemTeamOperationLogViewerAssociations(t, ctx, db, test.logID)
+		if !slices.Equal(viewers, test.viewers) {
+			t.Fatalf("W4 system team operation log %s viewers = %+v, want %+v", test.logID, viewers, test.viewers)
+		}
+		targets := readW4SystemTeamOperationLogTargetAssociations(t, ctx, db, test.logID)
+		if !slices.Equal(targets, test.targets) {
+			t.Fatalf("W4 system team operation log %s targets = %+v, want %+v", test.logID, targets, test.targets)
+		}
+	}
+}
+
+func readW4SystemTeamOperationLogViewerAssociations(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	logID string,
+) []w4SystemTeamOperationLogViewerAssociation {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		SELECT system_account_id, visibility_reason
+		FROM juhe_dataset.operation_log_viewers
+		WHERE operation_log_id = $1
+		ORDER BY system_account_id, visibility_reason
+	`, logID)
+	if err != nil {
+		t.Fatalf("read W4 system team operation log %s viewers: %v", logID, err)
+	}
+	defer rows.Close()
+
+	associations := make([]w4SystemTeamOperationLogViewerAssociation, 0, 2)
+	for rows.Next() {
+		var association w4SystemTeamOperationLogViewerAssociation
+		if err := rows.Scan(&association.SystemAccountID, &association.Reason); err != nil {
+			t.Fatalf("scan W4 system team operation log %s viewer: %v", logID, err)
+		}
+		associations = append(associations, association)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate W4 system team operation log %s viewers: %v", logID, err)
+	}
+	return associations
+}
+
+func readW4SystemTeamOperationLogTargetAssociations(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	logID string,
+) []w4SystemTeamOperationLogTargetAssociation {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		SELECT
+			target_type,
+			COALESCE(target_id, ''),
+			COALESCE(target_owner_system_account_id, ''),
+			relation
+		FROM juhe_dataset.operation_log_targets
+		WHERE operation_log_id = $1
+		ORDER BY target_type, target_id, relation
+	`, logID)
+	if err != nil {
+		t.Fatalf("read W4 system team operation log %s targets: %v", logID, err)
+	}
+	defer rows.Close()
+
+	associations := make([]w4SystemTeamOperationLogTargetAssociation, 0, 2)
+	for rows.Next() {
+		var association w4SystemTeamOperationLogTargetAssociation
+		if err := rows.Scan(
+			&association.Type,
+			&association.ID,
+			&association.OwnerSystemAccountID,
+			&association.Relation,
+		); err != nil {
+			t.Fatalf("scan W4 system team operation log %s target: %v", logID, err)
+		}
+		associations = append(associations, association)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate W4 system team operation log %s targets: %v", logID, err)
+	}
+	return associations
+}
+
 func readW4SystemTeamOperationLog(
 	t *testing.T,
 	ctx context.Context,
@@ -807,7 +961,7 @@ func readW4SystemTeamOperationLog(
 			id,
 			trace_id,
 			actor_system_account_id,
-			operation_scope_system_account_id,
+			COALESCE(operation_scope_system_account_id, ''),
 			module,
 			action,
 			operation_key,
@@ -857,7 +1011,7 @@ func assertW4SystemTeamOperationLogIdentity(
 	t.Helper()
 	if row.TraceID != wantTraceID ||
 		row.ActorSystemAccountID != "sys_w4_team_admin" ||
-		row.OperationScopeSystemAccountID != "sys_w4_team_admin" ||
+		row.OperationScopeSystemAccountID != "" ||
 		row.Module != "system_teams" ||
 		row.Action != wantAction ||
 		row.OperationKey != wantOperationKey ||

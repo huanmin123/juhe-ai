@@ -561,23 +561,22 @@ func recordSystemTeamCreateOperationLog(
 	}
 	statusCode := http.StatusCreated
 	input := port.OperationLogInput{
-		ID:                            newLogID(),
-		TraceID:                       requestIDFromContext(r.Context()),
-		ActorSystemAccountID:          authContext.SystemAccountID,
-		ActorUsername:                 authContext.Username,
-		ActorDisplayName:              authContext.DisplayName,
-		ActorRole:                     authContext.Role,
-		OperationScopeSystemAccountID: authContext.SystemAccountID,
-		Mode:                          "admin",
-		Module:                        "system_teams",
-		Action:                        "create",
-		OperationKey:                  "system_teams.create",
-		ResourceType:                  "system_team",
-		ResourceID:                    result.ID,
-		ResourceName:                  result.Name,
-		Summary:                       "创建系统团队：" + result.Name,
-		DetailLevel:                   "full",
-		VisibilityScope:               "targeted",
+		ID:                   newLogID(),
+		TraceID:              requestIDFromContext(r.Context()),
+		ActorSystemAccountID: authContext.SystemAccountID,
+		ActorUsername:        authContext.Username,
+		ActorDisplayName:     authContext.DisplayName,
+		ActorRole:            authContext.Role,
+		Mode:                 "admin",
+		Module:               "system_teams",
+		Action:               "create",
+		OperationKey:         "system_teams.create",
+		ResourceType:         "system_team",
+		ResourceID:           result.ID,
+		ResourceName:         result.Name,
+		Summary:              "创建系统团队：" + result.Name,
+		DetailLevel:          "full",
+		VisibilityScope:      "targeted",
 		Changes: []port.OperationLogChange{
 			{Field: "name", Label: "团队名称", Before: nil, After: result.Name},
 			{Field: "description", Label: "说明", Before: nil, After: result.Description},
@@ -590,7 +589,7 @@ func recordSystemTeamCreateOperationLog(
 		UserAgent:  r.UserAgent(),
 		Viewers: []port.OperationLogViewerInput{{
 			SystemAccountID:  authContext.SystemAccountID,
-			VisibilityReason: "team_creator",
+			VisibilityReason: "actor_self",
 			DetailLevel:      "full",
 		}},
 		CreatedAt: now().UTC(),
@@ -619,24 +618,23 @@ func recordSystemTeamUpdateOperationLog(
 	}
 	statusCode := http.StatusOK
 	input := port.OperationLogInput{
-		ID:                            newLogID(),
-		TraceID:                       requestIDFromContext(r.Context()),
-		ActorSystemAccountID:          authContext.SystemAccountID,
-		ActorUsername:                 authContext.Username,
-		ActorDisplayName:              authContext.DisplayName,
-		ActorRole:                     authContext.Role,
-		OperationScopeSystemAccountID: authContext.SystemAccountID,
-		Mode:                          "admin",
-		Module:                        "system_teams",
-		Action:                        "update",
-		OperationKey:                  "system_teams.update",
-		ResourceType:                  "system_team",
-		ResourceID:                    result.Team.ID,
-		ResourceName:                  result.Team.Name,
-		Summary:                       "更新系统团队：" + result.Team.Name,
-		DetailLevel:                   "full",
-		VisibilityScope:               "targeted",
-		Changes:                       systemTeamUpdateOperationChanges(result.Before, result.Team.Summary),
+		ID:                   newLogID(),
+		TraceID:              requestIDFromContext(r.Context()),
+		ActorSystemAccountID: authContext.SystemAccountID,
+		ActorUsername:        authContext.Username,
+		ActorDisplayName:     authContext.DisplayName,
+		ActorRole:            authContext.Role,
+		Mode:                 "admin",
+		Module:               "system_teams",
+		Action:               "update",
+		OperationKey:         "system_teams.update",
+		ResourceType:         "system_team",
+		ResourceID:           result.Team.ID,
+		ResourceName:         result.Team.Name,
+		Summary:              "更新系统团队：" + result.Team.Name,
+		DetailLevel:          "full",
+		VisibilityScope:      "targeted",
+		Changes:              systemTeamUpdateOperationChanges(result.Before, result.Team.Summary),
 		Metadata: map[string]any{
 			"authorizationChanged": result.AuthorizationChanged,
 		},
@@ -645,6 +643,7 @@ func recordSystemTeamUpdateOperationLog(
 		StatusCode: &statusCode,
 		ClientIP:   opts.clientIP.FromRequest(r),
 		UserAgent:  r.UserAgent(),
+		Targets:    systemTeamMemberOperationTargets(result.Team.Members, nil),
 		Viewers:    systemTeamUpdateOperationViewers(authContext.SystemAccountID, result.Team.Members),
 		CreatedAt:  now().UTC(),
 	}
@@ -673,23 +672,22 @@ func recordSystemTeamMembersAddOperationLog(
 	addedMembers := systemTeamAddedMembers(result.Before.Members, result.Team.Members)
 	statusCode := http.StatusOK
 	input := port.OperationLogInput{
-		ID:                            newLogID(),
-		TraceID:                       requestIDFromContext(r.Context()),
-		ActorSystemAccountID:          authContext.SystemAccountID,
-		ActorUsername:                 authContext.Username,
-		ActorDisplayName:              authContext.DisplayName,
-		ActorRole:                     authContext.Role,
-		OperationScopeSystemAccountID: authContext.SystemAccountID,
-		Mode:                          "admin",
-		Module:                        "system_teams",
-		Action:                        "add_members",
-		OperationKey:                  "system_teams.add_members",
-		ResourceType:                  "system_team",
-		ResourceID:                    result.Team.ID,
-		ResourceName:                  result.Team.Name,
-		Summary:                       "添加团队成员：" + result.Team.Name,
-		DetailLevel:                   "full",
-		VisibilityScope:               "targeted",
+		ID:                   newLogID(),
+		TraceID:              requestIDFromContext(r.Context()),
+		ActorSystemAccountID: authContext.SystemAccountID,
+		ActorUsername:        authContext.Username,
+		ActorDisplayName:     authContext.DisplayName,
+		ActorRole:            authContext.Role,
+		Mode:                 "admin",
+		Module:               "system_teams",
+		Action:               "add_members",
+		OperationKey:         "system_teams.add_members",
+		ResourceType:         "system_team",
+		ResourceID:           result.Team.ID,
+		ResourceName:         result.Team.Name,
+		Summary:              "添加团队成员：" + result.Team.Name,
+		DetailLevel:          "full",
+		VisibilityScope:      "targeted",
 		Changes: []port.OperationLogChange{{
 			Field:  "members",
 			Label:  "新增成员",
@@ -702,7 +700,7 @@ func recordSystemTeamMembersAddOperationLog(
 		ClientIP:   opts.clientIP.FromRequest(r),
 		UserAgent:  r.UserAgent(),
 		Targets:    systemTeamMemberOperationTargets(result.Team.Members, addedMembers),
-		Viewers:    systemTeamMemberOperationViewers(authContext.SystemAccountID, "team_member_adder", result.Team.Members, addedMembers),
+		Viewers:    systemTeamMemberOperationViewers(authContext.SystemAccountID, result.Team.Members, addedMembers),
 		CreatedAt:  now().UTC(),
 	}
 	enqueueManagementOperationLog(r.Context(), opts, input)
@@ -729,23 +727,22 @@ func recordSystemTeamMemberRemoveOperationLog(
 	}
 	statusCode := http.StatusOK
 	input := port.OperationLogInput{
-		ID:                            newLogID(),
-		TraceID:                       requestIDFromContext(r.Context()),
-		ActorSystemAccountID:          authContext.SystemAccountID,
-		ActorUsername:                 authContext.Username,
-		ActorDisplayName:              authContext.DisplayName,
-		ActorRole:                     authContext.Role,
-		OperationScopeSystemAccountID: authContext.SystemAccountID,
-		Mode:                          "admin",
-		Module:                        "system_teams",
-		Action:                        "remove_member",
-		OperationKey:                  "system_teams.remove_member",
-		ResourceType:                  "system_team",
-		ResourceID:                    result.Team.ID,
-		ResourceName:                  result.Team.Name,
-		Summary:                       "移除团队成员：" + result.Team.Name,
-		DetailLevel:                   "full",
-		VisibilityScope:               "targeted",
+		ID:                   newLogID(),
+		TraceID:              requestIDFromContext(r.Context()),
+		ActorSystemAccountID: authContext.SystemAccountID,
+		ActorUsername:        authContext.Username,
+		ActorDisplayName:     authContext.DisplayName,
+		ActorRole:            authContext.Role,
+		Mode:                 "admin",
+		Module:               "system_teams",
+		Action:               "remove_member",
+		OperationKey:         "system_teams.remove_member",
+		ResourceType:         "system_team",
+		ResourceID:           result.Team.ID,
+		ResourceName:         result.Team.Name,
+		Summary:              "移除团队成员：" + result.Team.Name,
+		DetailLevel:          "full",
+		VisibilityScope:      "targeted",
 		Changes: []port.OperationLogChange{{
 			Field:  "member",
 			Label:  "移除成员",
@@ -758,7 +755,7 @@ func recordSystemTeamMemberRemoveOperationLog(
 		ClientIP:   opts.clientIP.FromRequest(r),
 		UserAgent:  r.UserAgent(),
 		Targets:    systemTeamMemberOperationTargets(result.Team.Members, []managementsystemteams.MemberSummary{result.RemovedMember}),
-		Viewers:    systemTeamMemberOperationViewers(authContext.SystemAccountID, "team_member_remover", result.Team.Members, []managementsystemteams.MemberSummary{result.RemovedMember}),
+		Viewers:    systemTeamMemberOperationViewers(authContext.SystemAccountID, result.Team.Members, []managementsystemteams.MemberSummary{result.RemovedMember}),
 		CreatedAt:  now().UTC(),
 	}
 	enqueueManagementOperationLog(r.Context(), opts, input)
@@ -786,17 +783,19 @@ func systemTeamUpdateOperationViewers(actorSystemAccountID string, members []man
 		if systemAccountID == "" {
 			return
 		}
-		if _, ok := seen[systemAccountID]; ok {
+		detailLevel := "full"
+		key := systemAccountID + "\x00" + reason + "\x00" + detailLevel
+		if _, ok := seen[key]; ok {
 			return
 		}
-		seen[systemAccountID] = struct{}{}
+		seen[key] = struct{}{}
 		viewers = append(viewers, port.OperationLogViewerInput{
 			SystemAccountID:  systemAccountID,
 			VisibilityReason: reason,
-			DetailLevel:      "full",
+			DetailLevel:      detailLevel,
 		})
 	}
-	addViewer(actorSystemAccountID, "team_updater")
+	addViewer(actorSystemAccountID, "actor_self")
 	for _, member := range members {
 		addViewer(member.SystemAccountID, "team_member")
 	}
@@ -847,35 +846,30 @@ func systemTeamMemberDisplayName(member managementsystemteams.MemberSummary) str
 
 func systemTeamMemberOperationTargets(primary []managementsystemteams.MemberSummary, extra []managementsystemteams.MemberSummary) []port.OperationLogTargetInput {
 	targets := make([]port.OperationLogTargetInput, 0, len(primary)+len(extra))
-	seen := map[string]struct{}{}
 	addTarget := func(member managementsystemteams.MemberSummary, relation string) {
 		systemAccountID := strings.TrimSpace(member.SystemAccountID)
 		if systemAccountID == "" {
 			return
 		}
-		if _, ok := seen[systemAccountID]; ok {
-			return
-		}
-		seen[systemAccountID] = struct{}{}
 		targets = append(targets, port.OperationLogTargetInput{
-			TargetType: "system_account",
-			TargetID:   systemAccountID,
-			TargetName: systemTeamMemberDisplayName(member),
-			Relation:   relation,
+			TargetType:                 "system_account",
+			TargetID:                   systemAccountID,
+			TargetName:                 systemTeamMemberDisplayName(member),
+			TargetOwnerSystemAccountID: systemAccountID,
+			Relation:                   relation,
 		})
 	}
 	for _, member := range primary {
 		addTarget(member, "team_member")
 	}
 	for _, member := range extra {
-		addTarget(member, "affected_member")
+		addTarget(member, "team_member")
 	}
 	return targets
 }
 
 func systemTeamMemberOperationViewers(
 	actorSystemAccountID string,
-	actorReason string,
 	primary []managementsystemteams.MemberSummary,
 	extra []managementsystemteams.MemberSummary,
 ) []port.OperationLogViewerInput {
@@ -886,22 +880,24 @@ func systemTeamMemberOperationViewers(
 		if systemAccountID == "" {
 			return
 		}
-		if _, ok := seen[systemAccountID]; ok {
+		detailLevel := "full"
+		key := systemAccountID + "\x00" + reason + "\x00" + detailLevel
+		if _, ok := seen[key]; ok {
 			return
 		}
-		seen[systemAccountID] = struct{}{}
+		seen[key] = struct{}{}
 		viewers = append(viewers, port.OperationLogViewerInput{
 			SystemAccountID:  systemAccountID,
 			VisibilityReason: reason,
-			DetailLevel:      "full",
+			DetailLevel:      detailLevel,
 		})
 	}
-	addViewer(actorSystemAccountID, actorReason)
+	addViewer(actorSystemAccountID, "actor_self")
 	for _, member := range primary {
 		addViewer(member.SystemAccountID, "team_member")
 	}
 	for _, member := range extra {
-		addViewer(member.SystemAccountID, "affected_member")
+		addViewer(member.SystemAccountID, "team_member")
 	}
 	return viewers
 }
