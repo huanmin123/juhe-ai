@@ -153,6 +153,18 @@
 
 ### 后续迁移阶段
 
+#### W2 外部来源更新切片（2026-07-16）
+
+- 目标：只迁移管理员 `PATCH /__aisys__/api/external-integration-sources/{id}`，继续由 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；集合 `POST`、详情 `POST/PUT/DELETE`、内置 reset、Token `POST/PATCH` 和其他未定义方法仍保持 Go `404`，生产切流前 Node 继续作为唯一写 owner。
+- API 契约：写鉴权 touch 与 IP/user write limiter 先于 handler，管理员权限先于业务解析；请求体限制 `256 KiB`、只接受单个严格 JSON object。partial 字段为 `name/status/scopes/rateLimits/expiresAt/notes`；字段存在性必须保留，`expiresAt` 与 `notes` 可显式 `null` 清空，其他字段不接受 `null`。`name` 按 ECMAScript trim 后为 `1..80` 个 UTF-16 code units，`notes` trim 后最多 `500` 个 UTF-16 code units，`status` 只允许 `active/disabled`；scope 使用当前 16 项白名单并去重排序；限频规则最多 8 条、窗口唯一并按窗口排序；时间只接受当前严格服务端 ISO 语义。空 object 按 Node 当前 partial schema 作为成功 no-op，不额外发明“至少一个字段”限制。
+- 存储契约：PostgreSQL 事务先按 ID 锁定来源行，基于锁定快照合并 partial 值，并依赖 `idx_external_integration_sources_name_unique_lower` 保证大小写不敏感名称唯一；内置来源 `extsrc_builtin_test` 只允许提交 `status`。更新普通来源后，同事务把全部关联 Token 名称改为“`{来源名} 生产 Token`”，非 `revoked` Token 状态同步来源状态，scope 与过期时间同步来源，`revoked` 状态保持不变；随后从同一事务回读安全详情。任何来源更新、Token 同步或回读失败都必须整体回滚。
+- 副作用契约：成功提交后 best-effort 入队 Node 等价 `external_integration_sources.update` operation log，固定 `module=external_integration_sources`、`resourceType=external_integration_source`、`admin_only/full`，changes 只包含 name/status/expiresAt/rateLimits 四项并使用更新前后快照；不新增 Node 当前不存在的 Redis cache invalidation。响应为 `200 { data: source }` 和 `no-store`，不存在为 `404`，业务校验 / 内置保护 / 重名为 Node 等价 `400`，内部存储错误不泄漏细节。
+- [~] TDD：先补 service presence / 校验 / built-in / no-op / store error 映射失败测试，再实现 service 与 port。
+- [ ] TDD：补 PostgreSQL 行锁、唯一冲突、来源与 Token 同事务同步、revoked 保留和失败回滚测试，再实现 store / sqlc 查询。
+- [ ] TDD：补 HTTP strict JSON、权限、错误优先级、operation log、router/app 三态与 mutation fingerprint 测试，再接线 handler。
+- [ ] 扩展 `TestW2ManagementExternalIntegrationSourceListPostgresSmoke`，真实执行 PATCH、数据库回读、Token 同步、operation log ingest 和清理；再补前端真实 Go management mutation opt-in，仅写本次临时 fixture。
+- [ ] 运行 targeted/race、`sqlc generate`/`vet`、全量 Go test/vet/tidy、Node 对照、前端 regression/typecheck；独立规格审查和代码质量审查通过后按小块提交、推送并更新本计划证据。
+
 - [~] 建立 Go 后端最小工程和 PostgreSQL / Redis / Asynq 基线。
 - [~] 固定公开接口契约并迁移公开接口：W1a 公开设置读接口已进入 Go 实现中；W1b `/__aipublic__` 外部维护接口已补 Go catalog/auth、PostgreSQL auth/log adapter、Redis penalty-window helper、公开接口日志 snapshot/log builder、Asynq payload/enqueue/handler、`juhe-ai-worker ingest` 日志消费 runtime、HTTP shell / capture / 499 / ResponseWriter 透传契约、PG foundation smoke 用例、public API log Asynq smoke 用例、public group CRUD、public route strategy CRUD、public API Key CRUD、public account CRUD 四条真实资源纵切面、默认关闭的 opt-in 生产 router guard，以及 `w1b-public-api-smoke` 独立 maintenance smoke；public account 已补 `supportedModels` presence / null 类型边界、provider 默认模型继承、新增与更新最终非空、owner 可见 active / 可计价目录校验、update 未变化短路、hybrid 特例、重复名称组合优先级、默认 JSON 联表和 GPT-5.6 seed guard，非 Docker 验证已通过；public group / route strategy / API Key / account 四类完整 Redis limiter + public API log worker shell E2E 测试代码已补；未正式生产接管；真实 PG/Redis/Asynq integration、`w1b-public-api-smoke` 真实依赖执行与四类 shell E2E 待复跑。
 - [~] 迁移后台管理辅助接口：W2 已补管理端 options / catalog、系统账户列表读 / options、授权候选、providers / models、route strategies、groups、accounts options / tags、标签删除 / 独立 PATCH、operation log 读接口、operation log 保留清理 worker，以及个人 / 管理员两层默认检查模型写入，并保持 `JUHE_AI_MANAGEMENT_API_ENABLED=false` 默认不接管。当前 Provider 契约使用 `defaultHealthCheckModel` / `systemDefaultHealthCheckModel` / `/default-health-check-model`，优先级为“个人 > 管理员系统默认 > 协议档案”。W2 仍不覆盖完整 auth 与会话管理生产接管（不含 W3 auth 小切片）、授权来源 / grant / 授权写接口、主账户写入 `tags`、OAuth / 导入标签写路径、完整账号 summary 响应、operation log 保留清理生产接管 / 完整 data-retention 或其他写接口 operation log、前端 smoke、生产切流和 Node 删除；W3 已覆盖系统账户 create / 完整 mixed PATCH，自定义模型 CRUD 已作为后台写接口补充切片进入 Go opt-in，但仍未生产接管。
