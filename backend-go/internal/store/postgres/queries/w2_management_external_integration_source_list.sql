@@ -90,3 +90,11 @@ SELECT
 FROM juhe_business.external_integration_source_tokens AS tokens
 WHERE tokens.source_ref_id = sqlc.arg(source_id)::text
 ORDER BY tokens.created_at DESC, tokens.id DESC;
+
+-- name: FindManagementExternalIntegrationSourceTokenSecret :one
+SELECT tokens.token_secret_encrypted
+FROM juhe_business.external_integration_source_tokens AS tokens
+JOIN juhe_business.external_integration_sources AS sources
+  ON sources.id = tokens.source_ref_id
+WHERE sources.id = sqlc.arg(source_id)::text
+  AND tokens.id = sqlc.arg(token_id)::text;

@@ -575,7 +575,11 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 	}
 	text := string(source)
 	for _, required := range []string{
-		"managementexternalintegrationsources.NewService(store)",
+		"managementexternalintegrationsources.NewServiceWithOptions(",
+		"ListReader:   store",
+		"DetailReader: store",
+		"SecretReader: store",
+		"Secret:       cfg.Secret",
 		"ManagementExternalIntegrationSourceListHandler:",
 		"managementHandlers.ExternalIntegrationSourceListHandler",
 		"httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService)",

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"juhe-ai/backend-go/internal/modules/publicapi"
+	"juhe-ai/backend-go/internal/secretcrypto"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -26,13 +27,21 @@ const (
 var ErrInvalidListStatus = errors.New("management external integration source list status invalid")
 
 type Service struct {
-	store       port.ManagementExternalIntegrationSourceListReader
-	detailStore port.ManagementExternalIntegrationSourceDetailReader
+	store        port.ManagementExternalIntegrationSourceListReader
+	detailStore  port.ManagementExternalIntegrationSourceDetailReader
+	secretReader port.ManagementExternalIntegrationSourceTokenSecretReader
+	secretCodec  tokenSecretJSONCodec
 }
 
 type ServiceOptions struct {
 	ListReader   port.ManagementExternalIntegrationSourceListReader
 	DetailReader port.ManagementExternalIntegrationSourceDetailReader
+	SecretReader port.ManagementExternalIntegrationSourceTokenSecretReader
+	Secret       string
+}
+
+type tokenSecretJSONCodec interface {
+	DecryptJSON(value string) (map[string]any, error)
 }
 
 type ListInput struct {
@@ -93,6 +102,10 @@ type Detail struct {
 	Tokens []Token `json:"tokens"`
 }
 
+type TokenSecret struct {
+	Token string `json:"token"`
+}
+
 func NewService(store port.ManagementExternalIntegrationSourceListReader) *Service {
 	options := ServiceOptions{ListReader: store}
 	if detailStore, ok := store.(port.ManagementExternalIntegrationSourceDetailReader); ok {
@@ -102,10 +115,49 @@ func NewService(store port.ManagementExternalIntegrationSourceListReader) *Servi
 }
 
 func NewServiceWithOptions(options ServiceOptions) *Service {
-	return &Service{
-		store:       options.ListReader,
-		detailStore: options.DetailReader,
+	secretReader := options.SecretReader
+	var secretCodec tokenSecretJSONCodec
+	if secretReader != nil && strings.TrimSpace(options.Secret) != "" {
+		secretCodec = secretcrypto.NewJSONCodec(options.Secret)
+	} else {
+		secretReader = nil
 	}
+	return &Service{
+		store:        options.ListReader,
+		detailStore:  options.DetailReader,
+		secretReader: secretReader,
+		secretCodec:  secretCodec,
+	}
+}
+
+func (s *Service) RevealTokenSecret(ctx context.Context, sourceID string, tokenID string) (*TokenSecret, error) {
+	sourceID = trimECMAScriptWhitespace(sourceID)
+	tokenID = trimECMAScriptWhitespace(tokenID)
+	if sourceID == "" || tokenID == "" {
+		return nil, nil
+	}
+	if s.secretReader == nil {
+		return nil, fmt.Errorf("management external integration source token secret reader is required")
+	}
+	encrypted, found, err := s.secretReader.FindManagementExternalIntegrationSourceTokenSecret(ctx, sourceID, tokenID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	if encrypted == "" {
+		return nil, fmt.Errorf("external integration source token ciphertext is missing")
+	}
+	payload, err := s.secretCodec.DecryptJSON(encrypted)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt external integration source token secret: %w", err)
+	}
+	token, ok := payload["token"].(string)
+	if !ok || token == "" {
+		return nil, fmt.Errorf("external integration source token ciphertext is missing complete token")
+	}
+	return &TokenSecret{Token: token}, nil
 }
 
 func (s *Service) Get(ctx context.Context, id string) (*Detail, error) {

@@ -232,7 +232,7 @@ func TestManagementExternalIntegrationSourceListSQLIsSafeAndKeepsExpiredActiveSe
 		t,
 		sql,
 		"-- name: ListManagementExternalIntegrationSourcePrimaryTokens :many",
-		"",
+		"-- name: FindManagementExternalIntegrationSource :one",
 	)
 	primaryOrder := strings.Join(strings.Fields(`
       CASE WHEN tokens.status = 'active' THEN 0 ELSE 1 END ASC,

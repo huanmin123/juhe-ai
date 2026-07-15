@@ -45,6 +45,13 @@ type managementExternalIntegrationSourceDetailQueries interface {
 	) ([]postgresqueries.ListManagementExternalIntegrationSourceTokensRow, error)
 }
 
+type managementExternalIntegrationSourceTokenSecretQueries interface {
+	FindManagementExternalIntegrationSourceTokenSecret(
+		ctx context.Context,
+		arg postgresqueries.FindManagementExternalIntegrationSourceTokenSecretParams,
+	) (string, error)
+}
+
 func (s *Store) ListManagementExternalIntegrationSources(
 	ctx context.Context,
 	input port.ManagementExternalIntegrationSourceListInput,
@@ -78,6 +85,41 @@ func (s *Store) ListManagementExternalIntegrationSourceTokens(
 	sourceID string,
 ) ([]port.ManagementExternalIntegrationSourcePrimaryTokenRow, error) {
 	return listManagementExternalIntegrationSourceTokens(ctx, s.queries(), sourceID)
+}
+
+func (s *Store) FindManagementExternalIntegrationSourceTokenSecret(
+	ctx context.Context,
+	sourceID string,
+	tokenID string,
+) (string, bool, error) {
+	return findManagementExternalIntegrationSourceTokenSecret(ctx, s.queries(), sourceID, tokenID)
+}
+
+func findManagementExternalIntegrationSourceTokenSecret(
+	ctx context.Context,
+	q managementExternalIntegrationSourceTokenSecretQueries,
+	sourceID string,
+	tokenID string,
+) (string, bool, error) {
+	sourceID = managementExternalIntegrationSourceTrimECMAScriptWhitespace(sourceID)
+	tokenID = managementExternalIntegrationSourceTrimECMAScriptWhitespace(tokenID)
+	if sourceID == "" || tokenID == "" {
+		return "", false, nil
+	}
+	encrypted, err := q.FindManagementExternalIntegrationSourceTokenSecret(
+		ctx,
+		postgresqueries.FindManagementExternalIntegrationSourceTokenSecretParams{
+			SourceID: sourceID,
+			TokenID:  tokenID,
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("find management external integration source token secret: %w", err)
+	}
+	return encrypted, true, nil
 }
 
 func listManagementExternalIntegrationSources(

@@ -265,7 +265,7 @@ func TestManagementExternalIntegrationSourceDetailSQLUsesSafePointQueries(t *tes
 		t,
 		sql,
 		"-- name: ListManagementExternalIntegrationSourceTokens :many",
-		"",
+		"-- name: FindManagementExternalIntegrationSourceTokenSecret :one",
 	)
 	for _, required := range []string{
 		"tokens.source_ref_id,",

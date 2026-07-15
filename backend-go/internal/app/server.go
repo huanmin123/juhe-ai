@@ -576,7 +576,14 @@ func newManagementAPIHandler(
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
 	runtimeLogService := managementruntimelogs.NewService(store)
-	externalIntegrationSourceService := managementexternalintegrationsources.NewService(store)
+	externalIntegrationSourceService := managementexternalintegrationsources.NewServiceWithOptions(
+		managementexternalintegrationsources.ServiceOptions{
+			ListReader:   store,
+			DetailReader: store,
+			SecretReader: store,
+			Secret:       cfg.Secret,
+		},
+	)
 	publicAPILogService := managementpublicapilogs.NewService(store)
 	statsService := managementstats.NewService(store)
 	globalSettingsService := publicsettings.NewService(store)

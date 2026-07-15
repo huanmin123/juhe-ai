@@ -71,3 +71,11 @@ type ManagementExternalIntegrationSourceDetailReader interface {
 		sourceID string,
 	) ([]ManagementExternalIntegrationSourcePrimaryTokenRow, error)
 }
+
+type ManagementExternalIntegrationSourceTokenSecretReader interface {
+	FindManagementExternalIntegrationSourceTokenSecret(
+		ctx context.Context,
+		sourceID string,
+		tokenID string,
+	) (encrypted string, found bool, err error)
+}

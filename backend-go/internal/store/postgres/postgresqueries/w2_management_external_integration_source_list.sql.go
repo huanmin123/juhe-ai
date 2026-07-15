@@ -45,6 +45,27 @@ func (q *Queries) FindManagementExternalIntegrationSource(ctx context.Context, s
 	return i, err
 }
 
+const findManagementExternalIntegrationSourceTokenSecret = `-- name: FindManagementExternalIntegrationSourceTokenSecret :one
+SELECT tokens.token_secret_encrypted
+FROM juhe_business.external_integration_source_tokens AS tokens
+JOIN juhe_business.external_integration_sources AS sources
+  ON sources.id = tokens.source_ref_id
+WHERE sources.id = $1::text
+  AND tokens.id = $2::text
+`
+
+type FindManagementExternalIntegrationSourceTokenSecretParams struct {
+	SourceID string
+	TokenID  string
+}
+
+func (q *Queries) FindManagementExternalIntegrationSourceTokenSecret(ctx context.Context, arg FindManagementExternalIntegrationSourceTokenSecretParams) (string, error) {
+	row := q.db.QueryRow(ctx, findManagementExternalIntegrationSourceTokenSecret, arg.SourceID, arg.TokenID)
+	var token_secret_encrypted string
+	err := row.Scan(&token_secret_encrypted)
+	return token_secret_encrypted, err
+}
+
 const listManagementExternalIntegrationSourcePrimaryTokens = `-- name: ListManagementExternalIntegrationSourcePrimaryTokens :many
 SELECT DISTINCT ON (tokens.source_ref_id)
   tokens.source_ref_id,
