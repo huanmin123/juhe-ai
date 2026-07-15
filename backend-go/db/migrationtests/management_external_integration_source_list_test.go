@@ -1,4 +1,4 @@
-package migrations
+package migrationtests
 
 import (
 	"os"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestManagementExternalIntegrationSourceListMigrationAddsReversiblePrefixIndex(t *testing.T) {
-	source, err := os.ReadFile("000049_w2_management_external_integration_source_list.sql")
+	source, err := os.ReadFile(migrationPath("000049_w2_management_external_integration_source_list.sql"))
 	if err != nil {
 		t.Fatalf("read management external integration source list migration: %v", err)
 	}

@@ -1,4 +1,4 @@
-package migrations
+package migrationtests
 
 import (
 	"os"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestRuntimeLogsMigrationMatchesNodeReadContract(t *testing.T) {
-	source, err := os.ReadFile("000045_w6_runtime_logs.sql")
+	source, err := os.ReadFile(migrationPath("000045_w6_runtime_logs.sql"))
 	if err != nil {
 		t.Fatalf("read runtime logs migration: %v", err)
 	}

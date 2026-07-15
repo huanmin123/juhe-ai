@@ -1,4 +1,4 @@
-package migrations
+package migrationtests
 
 import (
 	"os"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestRemoveCooldownLongTermIntervalSettingMigration(t *testing.T) {
-	source, err := os.ReadFile("000044_w5_remove_cooldown_long_term_interval_setting.sql")
+	source, err := os.ReadFile(migrationPath("000044_w5_remove_cooldown_long_term_interval_setting.sql"))
 	if err != nil {
 		t.Fatalf("read cooldown long-term interval setting migration: %v", err)
 	}

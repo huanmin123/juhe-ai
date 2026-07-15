@@ -102,7 +102,7 @@ assert.doesNotMatch(providerModelCatalogSnapshotSQL, /\n[ \t]+\n/, 'generated ca
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /,\n\s*\n\s*\)/, 'generated catalog SQL must not leave a trailing comma before a tuple closes')
 assert.equal(
   normalizeSnapshotLineEndings(
-    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000050_w2_sync_provider_model_catalog_20260715.sql'), 'utf8')
+    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000052_w2_sync_provider_model_catalog_20260715.sql'), 'utf8')
   ),
   normalizeSnapshotLineEndings(providerModelCatalogSnapshotSQL),
   'unified provider catalog seed migration must match the generated current-schema snapshot'

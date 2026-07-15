@@ -1,4 +1,4 @@
-package migrations
+package migrationtests
 
 import (
 	"os"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestW5AuthorizedGroupRouteBindingsMigrationMatchesCurrentSchema(t *testing.T) {
-	source, err := os.ReadFile("000032_w5_authorized_group_route_bindings.sql")
+	source, err := os.ReadFile(migrationPath("000032_w5_authorized_group_route_bindings.sql"))
 	if err != nil {
 		t.Fatalf("read W5 authorized group route bindings migration: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestW5AuthorizedGroupRouteBindingsMigrationMatchesCurrentSchema(t *testing.
 }
 
 func TestW5AuthorizedGroupRouteBindingsKeepsRouteStrategyOwnerForeignKey(t *testing.T) {
-	source, err := os.ReadFile("000004_w1b_public_groups.sql")
+	source, err := os.ReadFile(migrationPath("000004_w1b_public_groups.sql"))
 	if err != nil {
 		t.Fatalf("read W1b public groups migration: %v", err)
 	}

@@ -1,4 +1,4 @@
-package migrations
+package migrationtests
 
 import (
 	"os"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestAccountHealthFailureWindowMigrationMatchesNodeStateMachine(t *testing.T) {
-	source, err := os.ReadFile("000042_w1b_account_health_failure_window.sql")
+	source, err := os.ReadFile(migrationPath("000042_w1b_account_health_failure_window.sql"))
 	if err != nil {
 		t.Fatalf("read account health failure window migration: %v", err)
 	}

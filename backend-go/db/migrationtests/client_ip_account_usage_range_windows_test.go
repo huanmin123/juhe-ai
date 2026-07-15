@@ -1,4 +1,4 @@
-package migrations
+package migrationtests
 
 import (
 	"os"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestClientIPAccountUsageRangeWindowsMigrationMatchesNodeWorkerContract(t *testing.T) {
-	source, err := os.ReadFile("000041_w6_management_client_ip_stats_detail.sql")
+	source, err := os.ReadFile(migrationPath("000041_w6_management_client_ip_stats_detail.sql"))
 	if err != nil {
 		t.Fatalf("read client IP account range migration: %v", err)
 	}

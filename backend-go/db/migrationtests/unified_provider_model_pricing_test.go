@@ -1,4 +1,4 @@
-package migrations_test
+package migrationtests
 
 import (
 	"os"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestUnifiedProviderModelPricingMigrationUsesJSONAndDropsLegacyFields(t *testing.T) {
-	bootstrapSource, err := os.ReadFile("000046_w2_unify_provider_model_pricing.sql")
+	bootstrapSource, err := os.ReadFile(migrationPath("000046_w2_unify_provider_model_pricing.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestUnifiedProviderModelPricingMigrationUsesJSONAndDropsLegacyFields(t *tes
 		}
 	}
 
-	materializeSource, err := os.ReadFile("000048_w2_materialize_provider_model_pricing_aliases.sql")
+	materializeSource, err := os.ReadFile(migrationPath("000048_w2_materialize_provider_model_pricing_aliases.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestUnifiedProviderModelPricingMigrationUsesJSONAndDropsLegacyFields(t *tes
 }
 
 func TestUnifiedProviderModelCatalogSeedMatchesCurrentSchema(t *testing.T) {
-	source, err := os.ReadFile("000047_w2_sync_provider_model_catalog_unified_pricing.sql")
+	source, err := os.ReadFile(migrationPath("000047_w2_sync_provider_model_catalog_unified_pricing.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
