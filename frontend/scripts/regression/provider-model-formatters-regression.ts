@@ -40,6 +40,11 @@ assert.equal(formatModelCategory(providerModel({ model: 'claude-haiku-4-5' })), 
 assert.equal(formatModelServiceTierCapabilities(providerModel()), '仅标准', '未声明额外服务等级时应明确表示仅标准档')
 assert.equal(formatModelReasoningCapabilities(providerModel()), '不支持', '未声明思考能力时应明确表示不支持')
 assert.equal(
+  formatModelReasoningCapabilities(providerModel({ supportedReasoningEfforts: ['low', 'high'] })),
+  'Low / High；默认：上游决定',
+  '支持思考但没有正式默认值时必须明确由上游决定，不能看起来像漏字段'
+)
+assert.equal(
   formatModelReasoningCapabilities(providerModel({ supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high' })),
   'Low / High（默认）',
   '思考级别必须标明默认值'

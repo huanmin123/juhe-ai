@@ -198,10 +198,11 @@ export function formatModelReasoningEffort(value: ProviderModelReasoningEffort |
 
 export function formatModelReasoningCapabilities(item: ProviderModelPricing): string {
   if (!item.supportedReasoningEfforts?.length) return '不支持'
-  return item.supportedReasoningEfforts.map((effort) => {
+  const capabilities = item.supportedReasoningEfforts.map((effort) => {
     const label = formatModelReasoningEffort(effort)
     return effort === item.defaultReasoningEffort ? `${label}（默认）` : label
   }).join(' / ')
+  return item.defaultReasoningEffort ? capabilities : `${capabilities}；默认：上游决定`
 }
 
 export function formatModelServiceTierCapabilities(item: ProviderModelPricing): string {
