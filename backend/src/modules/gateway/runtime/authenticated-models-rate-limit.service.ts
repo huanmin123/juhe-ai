@@ -44,25 +44,25 @@ export async function consumeAuthenticatedModelsRateLimit(input: {
   const apiKeyId = input.apiKeyId.trim()
   if (!apiKeyId) return { allowed: true }
   try {
-    const apiKeyIpDecision = await consumePenaltyWindowRateLimitAsync({
-      store: apiKeyIpStore,
-      scopeKey: `${apiKeyId}:ip:${normalizedClientIp(input.clientIp)}`,
-      rules: apiKeyIpRules,
-      nowMs: input.nowMs
-    })
-    if (!apiKeyIpDecision.allowed) {
-      return blockedDecision('api_key_ip', apiKeyIpDecision)
-    }
-
     const apiKeyDecision = await consumePenaltyWindowRateLimitAsync({
       store: apiKeyStore,
       scopeKey: apiKeyId,
       rules: apiKeyRules,
       nowMs: input.nowMs
     })
-    return apiKeyDecision.allowed
+    if (!apiKeyDecision.allowed) {
+      return blockedDecision('api_key', apiKeyDecision)
+    }
+
+    const apiKeyIpDecision = await consumePenaltyWindowRateLimitAsync({
+      store: apiKeyIpStore,
+      scopeKey: `${apiKeyId}:ip:${normalizedClientIp(input.clientIp)}`,
+      rules: apiKeyIpRules,
+      nowMs: input.nowMs
+    })
+    return apiKeyIpDecision.allowed
       ? { allowed: true }
-      : blockedDecision('api_key', apiKeyDecision)
+      : blockedDecision('api_key_ip', apiKeyIpDecision)
   } catch (error) {
     logger.error(errorLogFields(error, {
       event: 'authenticated_models_rate_limit_unavailable',

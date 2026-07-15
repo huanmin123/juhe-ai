@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import type { Request } from 'express'
 
 import { normalizeOpenAICodexClientHeaders } from '../../modules/gateway/adapters/gpt-codex/client-headers.js'
-import { buildOpenAIOAuthCodexRequestParts } from '../../modules/gateway/adapters/gpt-codex/oauth-adapter.js'
+import {
+  buildOpenAIOAuthCodexRequestParts,
+  isolateOpenAIOAuthCodexSessionId
+} from '../../modules/gateway/adapters/gpt-codex/oauth-adapter.js'
 import { buildOpenAIModelsResponse } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 
 const solHeaders = new Headers({
@@ -43,15 +46,72 @@ assert.equal(oauthParts.headers.get('x-openai-internal-codex-responses-lite'), '
 
 const modelsResponse = buildOpenAIModelsResponse([
   modelCatalogItem('gpt-5.6-sol'),
+  modelCatalogItem('gpt-5.6-terra'),
+  modelCatalogItem('gpt-5.6-luna'),
   modelCatalogItem('gpt-5.5')
 ], createRequest('/v1/models?client_version=0.125.0', undefined, 'GET'))
 assert('models' in modelsResponse)
-assert.deepEqual(modelsResponse.models.map((item) => item.slug), ['gpt-5.6-sol', 'gpt-5.5'])
+assert.deepEqual(
+  modelsResponse.models.map((item) => item.slug),
+  ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5'],
+  'client_version 只能判别 Codex 响应形态，不能过滤模型'
+)
+for (const model of modelsResponse.models) {
+  assert.equal(
+    model.use_responses_lite,
+    model.slug.startsWith('gpt-5.6-'),
+    `${model.slug} 的目录 Lite 能力必须与上游请求头一致`
+  )
+}
+
+const projectedHeaderRequest = createRequest('/v1/responses', {
+  model: 'gpt-5.6-sol',
+  input: []
+}, 'POST', {
+  'x-codex-installation-id': 'installation-a',
+  'x-codex-window-id': 'window-a',
+  'x-codex-parent-thread-id': 'parent-thread-a',
+  'x-openai-subagent': 'true'
+})
+const projectedHeaderParts = await buildOpenAIOAuthCodexRequestParts(
+  projectedHeaderRequest,
+  projectedHeaderRequest.headers,
+  { apiKey: 'oauth-access-token' },
+  { systemAccountId: 'system-a', apiKeyId: 'key-a', groupId: 'group-a' }
+)
+assert.equal(projectedHeaderParts.headers.get('x-codex-installation-id'), 'installation-a')
+assert.equal(projectedHeaderParts.headers.get('x-codex-window-id'), 'window-a')
+assert.equal(projectedHeaderParts.headers.get('x-codex-parent-thread-id'), 'parent-thread-a')
+assert.equal(projectedHeaderParts.headers.get('x-openai-subagent'), 'true')
+
+const currentThreadRequest = createRequest('/v1/responses', {
+  model: 'gpt-5.6-sol',
+  input: []
+}, 'POST', {
+  'thread-id': 'current-thread-a'
+})
+const currentThreadAccount = { id: 'account-a', apiKey: 'oauth-access-token' }
+const currentThreadIdentity = { systemAccountId: 'system-a', apiKeyId: 'key-a', groupId: 'group-a' }
+const currentThreadParts = await buildOpenAIOAuthCodexRequestParts(
+  currentThreadRequest,
+  currentThreadRequest.headers,
+  currentThreadAccount,
+  currentThreadIdentity
+)
+assert.equal(
+  currentThreadParts.headers.get('thread-id'),
+  isolateOpenAIOAuthCodexSessionId('current-thread-a', currentThreadAccount, currentThreadIdentity),
+  '当前 Codex thread-id 输入必须参与隔离并继续投影到上游'
+)
 
 console.log('Codex 最新兼容契约回归通过')
 
-function createRequest(path: string, body?: unknown, method = 'POST'): Request {
-  const headers: Record<string, string> = {}
+function createRequest(
+  path: string,
+  body?: unknown,
+  method = 'POST',
+  headers: Record<string, string> = {}
+): Request {
   return {
     method,
     path: path.split('?', 1)[0],

@@ -36,6 +36,7 @@ import {
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   normalizeProviderToken
 } from '../../domain/provider-protocol.js'
+import { usesOpenAICodexResponsesLite } from '../gateway/adapters/gpt-codex/client-headers.js'
 import {
   listAnthropicProtocolProviderCodes,
   listAnthropicProtocolProviderCodesAsync,
@@ -640,7 +641,7 @@ function buildCodexModelInfo(item: ProviderModelCatalogItem, index: number): Cod
     experimental_supported_tools: [],
     input_modalities: ['text', 'image'],
     supports_search_tool: false,
-    use_responses_lite: false,
+    use_responses_lite: usesOpenAICodexResponsesLite(item.model),
     auto_review_model_override: null,
     tool_mode: null,
     multi_agent_version: item.codexMultiAgentVersion ?? null

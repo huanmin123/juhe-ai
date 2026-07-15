@@ -66,6 +66,13 @@ decision = await consumeAuthenticatedModelsRateLimit({ apiKeyId: 'key-global', c
 assert.equal(decision.allowed, false)
 assert.equal(decision.scope, 'api_key')
 assert.equal(decision.limit, 100)
+for (let index = 0; index < 20; index += 1) {
+  assert.equal((await consumeAuthenticatedModelsRateLimit({
+    apiKeyId: 'key-global',
+    clientIp: '203.0.113.99',
+    nowMs: nowMs + 10_000
+  })).allowed, true, '全局桶拒绝时不得提前创建或消耗 API Key + IP 桶')
+}
 
 clearAuthenticatedModelsRateLimitForTest()
 for (let windowIndex = 0; windowIndex < 3; windowIndex += 1) {
@@ -157,6 +164,12 @@ assert(earlyLimiterIndex > preflightSource.indexOf('await rejectGatewayApiKeyQuo
 assert(earlyLimiterIndex > preflightSource.indexOf('await rejectGatewayAuthorizationQuotaIfExceeded'), '授权额度错误必须优先于认证 models limiter')
 assert(earlyLimiterIndex < preflightSource.indexOf('await recordClientIpErrorCircuitSuccessAsync'), 'limiter 必须在模型目录成功路径前执行')
 
+const authenticatedModelsLimiterSource = readFileSync(new URL('../../modules/gateway/runtime/authenticated-models-rate-limit.service.ts', import.meta.url), 'utf8')
+assert(
+  authenticatedModelsLimiterSource.indexOf('const apiKeyDecision') < authenticatedModelsLimiterSource.indexOf('const apiKeyIpDecision'),
+  '认证模型列表必须先检查 API Key 全局桶，通过后才能创建或消耗 API Key + IP 桶'
+)
+
 const fixedResponseSource = readFileSync(new URL('../../modules/gateway/response/fixed-responses.ts', import.meta.url), 'utf8')
 assert.match(fixedResponseSource, /private, no-cache/, '认证 models 成功响应不得允许客户端 30 秒内直接复用跨凭据响应')
 for (const varyHeader of [
@@ -176,5 +189,10 @@ for (const varyHeader of [
 }
 assert.match(fixedResponseSource, /getAuthenticatedModelsResponseCache/, '最终 payload 必须在目录构建前读取缓存')
 assert.match(fixedResponseSource, /setAuthenticatedModelsResponseCache/, '目录构建后必须写入最终 payload 缓存')
+assert.match(
+  fixedResponseSource,
+  /function listProviderScopedModelCatalog[\s\S]*normalizedProviderCodeList\(input\.providerCodes\)\.sort\(\)/,
+  '目录构建必须使用与缓存键一致的 provider codes 确定性排序'
+)
 
 console.log('认证模型列表双层限流与最终响应缓存回归通过')

@@ -234,6 +234,7 @@ function resolveOpenAIOAuthCodexSession(
     rawPromptCacheKey
   )
   const rawConversationId = firstNonEmptyString(
+    headerValue(inputHeaders, 'thread-id'),
     headerValue(inputHeaders, 'conversation_id'),
     headerValue(inputHeaders, 'conversation-id'),
     headerValue(inputHeaders, 'x-conversation-id'),

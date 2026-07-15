@@ -194,8 +194,12 @@ function buildOpenAIOAuthCodexHeaders(
   copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'accept-language')
   copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-client-request-id')
   copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-beta-features')
+  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-installation-id')
+  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-window-id')
+  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-parent-thread-id')
   copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-turn-state')
   copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-turn-metadata')
+  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-openai-subagent')
   copyOpenAIOAuthCodexAttestationHeader(headers, inputHeaders)
 
   const incomingOriginator = headerValue(inputHeaders, 'originator')

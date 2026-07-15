@@ -8,6 +8,10 @@ import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
+import {
+  openAICodexOriginator,
+  openAICodexUserAgent
+} from '../gateway/adapters/gpt-codex/client-headers.js'
 
 export const OPENAI_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 export const OPENAI_OAUTH_AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize'
@@ -221,12 +225,17 @@ export function buildOpenAIOAuthTokenHttpRequest(form: Record<string, string>): 
   const body = form.grant_type === 'refresh_token'
     ? JSON.stringify(form)
     : new URLSearchParams(form).toString()
+  const headers: Record<string, string | number> = {
+    'content-type': form.grant_type === 'refresh_token' ? 'application/json' : 'application/x-www-form-urlencoded',
+    'content-length': Buffer.byteLength(body)
+  }
+  if (form.grant_type === 'refresh_token') {
+    headers.originator = openAICodexOriginator
+    headers['user-agent'] = openAICodexUserAgent
+  }
   return {
     body,
-    headers: {
-      'content-type': form.grant_type === 'refresh_token' ? 'application/json' : 'application/x-www-form-urlencoded',
-      'content-length': Buffer.byteLength(body)
-    }
+    headers
   }
 }
 

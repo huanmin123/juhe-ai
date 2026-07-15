@@ -233,7 +233,7 @@ async function listProviderScopedModelCatalog(input: {
   providerCodes: string[]
   systemAccountId?: string
 }): Promise<ProviderModelCatalogItem[]> {
-  const providerCodes = normalizedProviderCodeList(input.providerCodes)
+  const providerCodes = normalizedProviderCodeList(input.providerCodes).sort()
   if (!providerCodes.length) {
     return []
   }
