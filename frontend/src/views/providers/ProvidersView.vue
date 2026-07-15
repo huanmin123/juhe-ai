@@ -119,8 +119,18 @@
     >
       <a-form layout="vertical" class="custom-model-form">
         <div class="custom-model-grid">
+          <a-form-item v-if="!customModelEditing" label="配置模板" class="custom-model-grid-wide">
+            <a-select
+              v-model:value="customModelForm.configurationTemplateId"
+              show-search
+              option-filter-prop="label"
+              :options="configurationTemplateOptions"
+              placeholder="选择当前供应商的已有模型"
+              @change="handleConfigurationTemplateChange"
+            />
+          </a-form-item>
           <a-form-item v-if="isManagementView" label="作用域" class="custom-model-grid-wide">
-            <a-radio-group v-model:value="customModelForm.scope" :disabled="customModelEditing" button-style="solid">
+            <a-radio-group v-model:value="customModelForm.scope" :disabled="customModelEditing" button-style="solid" @change="handleCustomModelScopeChange">
               <a-radio-button value="personal">{{ selectedModelOwnerLabel }}个人模型</a-radio-button>
               <a-radio-button value="global">全局模型</a-radio-button>
             </a-radio-group>
@@ -132,13 +142,13 @@
             <a-select v-model:value="customModelForm.status" :disabled="editingBuiltInModel" :options="customModelStatusOptions" />
           </a-form-item>
           <a-form-item label="用途">
-            <a-select v-model:value="customModelForm.mode" :disabled="editingBuiltInModel" :options="modelModeOptions" @change="handleCustomModelModeChange" />
+            <a-select v-model:value="customModelForm.mode" :disabled="editingBuiltInModel" :options="customModelModeOptions" @change="handleCustomModelModeChange" />
           </a-form-item>
           <a-form-item label="接口协议" class="custom-model-grid-wide">
             <a-select
               v-model:value="customModelForm.supportedApiProtocols"
               mode="multiple"
-              :options="apiProtocolOptions"
+              :options="customModelApiProtocolOptions"
               :disabled="editingBuiltInModel"
               placeholder="不确定时可留空"
             />
@@ -147,7 +157,8 @@
             <a-form-item label="服务等级" class="custom-model-grid-wide">
               <a-select
                 v-model:value="customModelForm.supportedServiceTiers"
-                mode="tags"
+                mode="multiple"
+                :options="customModelServiceTierOptions"
                 :disabled="editingBuiltInModel"
                 placeholder="未选择时表示不支持账户级服务等级覆盖"
                 @change="handleCustomModelServiceTiersChange"
@@ -156,33 +167,14 @@
             <a-form-item label="思考级别" class="custom-model-grid-wide">
               <a-select
                 v-model:value="customModelForm.supportedReasoningEfforts"
-                mode="tags"
+                mode="multiple"
+                :options="customModelReasoningEffortOptions"
                 :disabled="editingBuiltInModel"
                 placeholder="仅配置上游 wire 支持的思考级别"
-                @change="handleCustomModelReasoningEffortsChange"
-              />
-            </a-form-item>
-            <a-form-item label="默认思考级别" class="custom-model-grid-wide">
-              <a-select
-                v-model:value="customModelForm.defaultReasoningEffort"
-                allow-clear
-                :disabled="editingBuiltInModel || !customModelDefaultReasoningOptions.length"
-                :options="customModelDefaultReasoningOptions"
-                placeholder="从已支持的思考级别中选择"
+                @change="normalizeCustomModelRequestCapabilities(customModelForm)"
               />
             </a-form-item>
           </template>
-          <a-form-item v-if="canManageModelPrices && !editingBuiltInModel" label="价格模板" class="custom-model-grid-wide">
-            <a-select
-              v-model:value="customModelForm.pricingTemplateModel"
-              allow-clear
-              show-search
-              option-filter-prop="label"
-              :options="pricingTemplateOptions"
-              placeholder="选择后仅回填价格，不保存为计价引用"
-              @change="handlePricingTemplateChange"
-            />
-          </a-form-item>
           <a-form-item label="发布时间">
             <a-input v-model:value="customModelForm.releaseDate" :disabled="editingBuiltInModel" placeholder="YYYY-MM-DD" />
           </a-form-item>
@@ -191,6 +183,9 @@
           </a-form-item>
           <a-form-item label="上下文 token">
             <a-input-number v-model:value="customModelForm.contextWindowTokens" :disabled="editingBuiltInModel" :min="0" style="width: 100%" />
+          </a-form-item>
+          <a-form-item label="最大输入 token">
+            <a-input-number v-model:value="customModelForm.maxInputTokens" :disabled="editingBuiltInModel" :min="0" style="width: 100%" />
           </a-form-item>
           <a-form-item label="最大输出 token">
             <a-input-number v-model:value="customModelForm.maxOutputTokens" :disabled="editingBuiltInModel" :min="0" style="width: 100%" />
@@ -271,14 +266,14 @@ import type { ProviderDefinition, ProviderModelPricing, ProviderModelsParams, Pr
 import { invalidateAccountProviderModelOptionsCache } from '@/views/accounts/useAccountProviderModelOptions'
 import ProviderModelCatalogModal from './ProviderModelCatalogModal.vue'
 import {
-  applyPricingTemplateToCustomModelForm,
+  applyConfigurationTemplateToCustomModelForm,
   availableCustomModelStatusOptions,
   buildCustomModelPayload as buildCustomModelUpsertPayload,
   clearCustomModelGptCapabilities,
   clearCustomModelPricesOutsideCategory,
   createCustomModelFormFromPricing,
   emptyCustomModelForm,
-  normalizeCustomModelDefaultReasoningEffort,
+  normalizeCustomModelRequestCapabilities,
   reconcileCustomModelServiceTierPrices,
   type CustomModelForm
 } from './customProviderModelForm'
@@ -298,7 +293,7 @@ import {
 } from './providerModelFormatters'
 import {
   buildModelCategoryTabs,
-  buildPricingTemplateOptions,
+  buildConfigurationTemplateOptions,
   buildProviderModelColumns,
   filterProviderModelsByKeyword
 } from './providerModelTableState'
@@ -368,12 +363,28 @@ const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.
 const activeProviderDefaultHealthCheckModel = computed(() => activeProvider.value?.defaultHealthCheckModel ?? '')
 const customModelModalTitle = computed(() => editingBuiltInModel.value ? '编辑模型价格' : customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
-const showCustomModelRequestCapabilities = computed(() => customModelPricingCategory.value === 'text')
+const customModelCategoryRecords = computed(() => providerModels.value.filter((item) => getModelCategory(item) === customModelPricingCategory.value))
+const customModelServiceTierOptions = computed(() => uniqueModelCapabilityOptions(
+  customModelCategoryRecords.value.flatMap((item) => item.supportedServiceTiers ?? []),
+  formatModelServiceTier
+))
+const customModelReasoningEffortOptions = computed(() => uniqueModelCapabilityOptions(
+  customModelCategoryRecords.value.flatMap((item) => item.supportedReasoningEfforts ?? []),
+  formatModelReasoningEffort
+))
+const showCustomModelRequestCapabilities = computed(() => customModelPricingCategory.value === 'text' && (
+  customModelServiceTierOptions.value.length > 0 || customModelReasoningEffortOptions.value.length > 0 ||
+  customModelForm.supportedServiceTiers.length > 0 || customModelForm.supportedReasoningEfforts.length > 0
+))
 const customModelStatusOptions = computed(() => availableCustomModelStatusOptions(canManageModelPrices.value, editingOriginalStatus.value))
-const customModelDefaultReasoningOptions = computed(() => customModelForm.supportedReasoningEfforts.map((value) => ({
-  value,
-  label: formatModelReasoningEffort(value)
-})))
+const customModelApiProtocolOptions = computed(() => {
+  const supported = new Set(customModelCategoryRecords.value.flatMap((item) => item.supportedApiProtocols ?? []))
+  for (const protocol of defaultProtocolsForProviderModelCategory(activeProvider.value ?? undefined, customModelPricingCategory.value)) supported.add(protocol)
+  return apiProtocolOptions.filter((option) => supported.has(option.value))
+})
+const customModelModeOptions = computed(() => modelModeOptions.filter((option) => (
+  providerModels.value.some((item) => getModelCategory(item) === option.value) || option.value === selectedModelCategory.value
+)))
 const selectedModelOwnerLabel = computed(() => {
   if (!isManagementView.value) return ''
   const systemAccountId = modelSystemAccountFilter.value.trim()
@@ -385,10 +396,11 @@ const selectedModelOwnerLabel = computed(() => {
   return account?.displayName || principalLabelForId('system_account', systemAccountId) || '所选用户'
 })
 
-const pricingTemplateOptions = computed(() => buildPricingTemplateOptions(
+const configurationTemplateOptions = computed(() => buildConfigurationTemplateOptions(
   providerModels.value,
   customModelForm.model,
-  customModelPricingCategory.value
+  customModelPricingCategory.value,
+  customModelForm.scope
 ))
 
 const modelCategoryTabs = computed(() => buildModelCategoryTabs(providerModels.value))
@@ -454,9 +466,10 @@ function openCreateCustomModel() {
   ensureModelSystemAccountFilter()
   resetCustomModelForm()
   customModelForm.scope = 'personal'
-  customModelForm.status = canManageModelPrices.value ? 'active' : 'draft'
+  customModelForm.status = 'active'
   customModelForm.mode = selectedModelCategory.value
   customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProvider.value, selectedModelCategory.value)
+  applyDefaultConfigurationTemplate()
   customModelModalOpen.value = true
 }
 
@@ -611,15 +624,33 @@ function handleCustomModelServiceTiersChange(): void {
 function handleCustomModelModeChange() {
   const category = customModelPricingCategory.value
   customModelForm.supportedApiProtocols = defaultProtocolsForProviderModelCategory(activeProvider.value ?? undefined, category)
-  customModelForm.pricingTemplateModel = undefined
+  customModelForm.configurationTemplateId = undefined
   clearCustomModelPricesOutsideCategory(customModelForm, category)
   if (!showCustomModelRequestCapabilities.value) {
     clearCustomModelGptCapabilities(customModelForm)
   }
+  applyDefaultConfigurationTemplate()
 }
 
-function handleCustomModelReasoningEffortsChange() {
-  normalizeCustomModelDefaultReasoningEffort(customModelForm)
+function handleCustomModelScopeChange(): void {
+  const selected = customModelForm.configurationTemplateId
+  if (selected && configurationTemplateOptions.value.some((item) => item.value === selected)) return
+  customModelForm.configurationTemplateId = undefined
+  applyDefaultConfigurationTemplate()
+}
+
+function handleConfigurationTemplateChange(id?: string) {
+  applyConfigurationTemplateToCustomModelForm(customModelForm, providerModels.value, id)
+  ensureServiceTierPriceRows()
+}
+
+function applyDefaultConfigurationTemplate(): void {
+  const id = configurationTemplateOptions.value[0]?.value
+  if (id) handleConfigurationTemplateChange(id)
+}
+
+function uniqueModelCapabilityOptions<T extends string>(values: T[], label: (value: T) => string) {
+  return [...new Set(values)].map((value) => ({ value, label: label(value) }))
 }
 
 async function setDefaultHealthCheckModel(record: ProviderModelPricing) {
@@ -637,10 +668,6 @@ async function setDefaultHealthCheckModel(record: ProviderModelPricing) {
   } finally {
     modelLoading.value = false
   }
-}
-
-function handlePricingTemplateChange(value?: string) {
-  applyPricingTemplateToCustomModelForm(customModelForm, providerModels.value, value)
 }
 
 function modelCatalogQueryParams(): ProviderModelsParams {

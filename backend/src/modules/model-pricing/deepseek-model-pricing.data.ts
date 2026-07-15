@@ -10,20 +10,7 @@ export const deepSeekModelPricingData = [
     input_cost_per_token: 0.14 / 1_000_000,
     cache_read_input_token_cost: 0.0028 / 1_000_000,
     output_cost_per_token: 0.28 / 1_000_000,
-    max_input_tokens: 1_000_000,
-    max_output_tokens: 384_000,
-    supports_prompt_caching: true,
-    supported_api_protocols: ['chat_completions']
-  },
-  {
-    model: 'deepseek-ai-v4-flash',
-    mode: 'chat',
-    catalog_order: 30,
-    release_date: '2026-06-20',
-    input_cost_per_token: 0.14 / 1_000_000,
-    cache_read_input_token_cost: 0.0028 / 1_000_000,
-    output_cost_per_token: 0.28 / 1_000_000,
-    max_input_tokens: 1_000_000,
+    context_window_tokens: 1_000_000,
     max_output_tokens: 384_000,
     supports_prompt_caching: true,
     supported_api_protocols: ['chat_completions']
@@ -36,20 +23,7 @@ export const deepSeekModelPricingData = [
     input_cost_per_token: 0.435 / 1_000_000,
     cache_read_input_token_cost: 0.003625 / 1_000_000,
     output_cost_per_token: 0.87 / 1_000_000,
-    max_input_tokens: 1_000_000,
-    max_output_tokens: 384_000,
-    supports_prompt_caching: true,
-    supported_api_protocols: ['chat_completions']
-  },
-  {
-    model: 'deepseek-ai-v4-pro',
-    mode: 'chat',
-    catalog_order: 40,
-    release_date: '2026-06-20',
-    input_cost_per_token: 0.435 / 1_000_000,
-    cache_read_input_token_cost: 0.003625 / 1_000_000,
-    output_cost_per_token: 0.87 / 1_000_000,
-    max_input_tokens: 1_000_000,
+    context_window_tokens: 1_000_000,
     max_output_tokens: 384_000,
     supports_prompt_caching: true,
     supported_api_protocols: ['chat_completions']

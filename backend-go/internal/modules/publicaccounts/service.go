@@ -46,6 +46,7 @@ const (
 	providerModelsRequiredMessage             = "public account provider models reader is required"
 	hybridProviderCode                        = "hybrid"
 	accountHealthCheckReasonActivation        = "activation"
+	accountHealthCheckReasonConfiguration     = "configuration"
 	accountHealthCheckDispatchFailedEvent     = "public_account_health_check_dispatch_failed"
 	accountHealthCheckDispatchTimeout         = 2 * time.Second
 	deepSeekOpenAIProfileID                   = "profile_deepseek_openai_v1"
@@ -565,6 +566,7 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 
 func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountResponse, error) {
 	var response AccountResponse
+	shouldDispatchHealthCheck := false
 	err := s.inTx(ctx, func(ctx context.Context, store port.PublicAccountStore) error {
 		current, target, err := s.accountAndTargetForWrite(ctx, store, input.AccountID, input.TargetUsername)
 		if err != nil {
@@ -700,12 +702,14 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		if err != nil {
 			return err
 		}
+		healthCheckEndpointModeChanged := input.HealthCheckEndpointMode != nil && next.HealthCheckEndpointMode != current.HealthCheckEndpointMode
 		if connectionConfigurationChanged && next.Status != port.PublicAccountStatusDisabled {
 			next.Status = port.PublicAccountStatusPendingTest
 			next.Schedulable = false
 		}
 		resetFailureState := input.Status != nil || connectionConfigurationChanged
 		scheduleHealthCheck := connectionConfigurationChanged || input.SupportedModels.Set() || input.HealthCheckEndpointMode != nil
+		shouldDispatchHealthCheck = (connectionConfigurationChanged || supportedModelsChanged || healthCheckEndpointModeChanged) && next.Status != port.PublicAccountStatusDisabled
 		updated, ok, err := store.UpdatePublicAccount(ctx, port.PublicAccountUpdateInput{
 			ID:                       current.ID,
 			SystemAccountID:          current.SystemAccountID,
@@ -742,6 +746,9 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		response = accountResponse("updated", target, nil, updated, false, s.generatedAt())
 		return nil
 	})
+	if err == nil && shouldDispatchHealthCheck && response.Account != nil {
+		s.dispatchAccountHealthCheckAsync(ctx, response.Account.ID, accountHealthCheckReasonConfiguration)
+	}
 	return response, err
 }
 

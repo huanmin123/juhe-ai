@@ -2000,7 +2000,7 @@ func TestServiceUpdatePreservesEffectiveMultiAPIKeyPool(t *testing.T) {
 	}
 }
 
-func TestServiceUpdateSchedulesHealthCheckWithoutImmediateDispatch(t *testing.T) {
+func TestServiceUpdateSchedulesAndImmediatelyDispatchesConfigurationHealthCheck(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	created, err := newPublicAccountServiceForTest(store, nil).Add(
 		context.Background(),
@@ -2039,8 +2039,12 @@ func TestServiceUpdateSchedulesHealthCheckWithoutImmediateDispatch(t *testing.T)
 	}
 	select {
 	case <-dispatchStarted:
-		t.Fatalf("Update dispatched an immediate health check: %#v", dispatcher.callsSnapshot())
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("Update did not dispatch the configuration health check")
+	}
+	calls := dispatcher.callsSnapshot()
+	if len(calls) != 1 || calls[0].accountID != account.ID || calls[0].reason != "configuration" {
+		t.Fatalf("dispatch calls = %#v", calls)
 	}
 }
 

@@ -1,0 +1,105 @@
+import { strict as assert } from 'node:assert'
+
+import {
+  applyConfigurationTemplateToCustomModelForm,
+  availableCustomModelStatusOptions,
+  buildCustomModelPayload,
+  emptyCustomModelForm
+} from '../../src/views/providers/customProviderModelForm'
+import {
+  apiProtocolOptions,
+  defaultProtocolsForProviderModelCategory,
+  formatModelContextTokens,
+  formatModelInputTokens,
+  formatTokens
+} from '../../src/views/providers/providerModelFormatters'
+import { buildConfigurationTemplateOptions } from '../../src/views/providers/providerModelTableState'
+import type { ProviderDefinition, ProviderModelPricing } from '../../src/types/domain'
+
+const template = providerModel({
+  id: 'provider_model_gpt_5_6_sol',
+  model: 'gpt-5.6-sol',
+  mode: 'text',
+  supportedApiProtocols: ['responses', 'chat_completions'],
+  supportedServiceTiers: ['priority', 'flex'],
+  supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+  contextWindowTokens: 1_050_000,
+  maxInputTokens: 922_000,
+  maxOutputTokens: 128_000,
+  inputUsdPer1M: 5,
+  outputUsdPer1M: 30,
+  cachedInputUsdPer1M: 0.5,
+  cacheWriteUsdPer1M: 6.25,
+  serviceTierPrices: {
+    priority: { inputUsdPer1M: 10, outputUsdPer1M: 60 },
+    flex: { inputUsdPer1M: 2.5, outputUsdPer1M: 15 }
+  }
+})
+
+const options = buildConfigurationTemplateOptions([template], '', 'text')
+assert.deepEqual(options, [{ value: template.id, label: 'gpt-5.6-sol（内置）' }], '配置模板应直接使用已有模型 ID')
+const personalTemplate = providerModel({ id: 'personal-template', model: 'personal-template', scope: 'personal' })
+assert.equal(
+  buildConfigurationTemplateOptions([template, personalTemplate], '', 'text', 'global').some((item) => item.value === personalTemplate.id),
+  false,
+  '管理员创建全局模型时不得保留个人配置模板'
+)
+for (const protocol of ['generate_content', 'stream_generate_content', 'count_tokens', 'embed_content']) {
+  assert(apiProtocolOptions.some((item) => item.value === protocol), `Gemini 原生协议 ${protocol} 必须出现在接口协议选项`)
+}
+const geminiProvider = {
+  id: 'provider_gemini', code: 'gemini', name: 'Gemini', enabled: true,
+  defaultProtocolProfileId: 'profile_gemini_native_v1beta', protocolCode: 'gemini_native', protocolVersion: 'v1beta',
+  baseUrl: 'https://generativelanguage.googleapis.com/v1beta', defaultHealthCheckModel: 'gemini-3.5-flash',
+  defaultSupportedModels: ['gemini-3.5-flash'], accountTypes: ['api_key'], capabilities: [],
+  protocolProfiles: [{
+    id: 'profile_gemini_native_v1beta', providerCode: 'gemini', name: 'Gemini Native', enabled: true,
+    protocolCode: 'gemini_native', protocolVersion: 'v1beta', baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    defaultHealthCheckModel: 'gemini-3.5-flash', accountTypes: ['api_key'], capabilities: [],
+    endpointFamilies: ['generate_content', 'stream_generate_content', 'count_tokens', 'embed_content'].map((code) => ({ code, name: code }))
+  }]
+} as ProviderDefinition
+assert.deepEqual(
+  defaultProtocolsForProviderModelCategory(geminiProvider, 'text'),
+  ['generate_content', 'stream_generate_content', 'count_tokens', 'embed_content'],
+  'Gemini 文本模型必须从原生协议档案生成默认协议，不能回退到 OpenAI Chat/Responses'
+)
+
+const form = { ...emptyCustomModelForm, model: 'my-gpt-model', serviceTierPrices: {} }
+applyConfigurationTemplateToCustomModelForm(form, [template], template.id)
+assert.equal(form.configurationTemplateId, template.id, '表单应记录本次复制来源供服务端可信继承价格')
+assert.equal(form.mode, 'text')
+assert.deepEqual(form.supportedApiProtocols, ['responses', 'chat_completions'])
+assert.deepEqual(form.supportedServiceTiers, ['priority', 'flex'])
+assert.deepEqual(form.supportedReasoningEfforts, ['none', 'low', 'medium', 'high', 'xhigh', 'max'])
+assert.equal(form.contextWindowTokens, 1_050_000)
+assert.equal(form.maxInputTokens, 922_000)
+assert.equal(form.maxOutputTokens, 128_000)
+assert.equal(form.inputUsdPer1M, 5)
+assert.deepEqual(form.serviceTierPrices, template.serviceTierPrices)
+
+const userPayload = buildCustomModelPayload(form, 'text', { includeRequestCapabilities: true, includePrices: false })
+assert.equal(userPayload?.configurationTemplateId, template.id, '普通用户请求应提交配置模板 ID')
+assert.equal('inputUsdPer1M' in (userPayload ?? {}), false, '普通用户请求仍不得提交价格')
+assert.equal('defaultReasoningEffort' in (userPayload ?? {}), false, '创建契约不再提交默认思考级别')
+assert(availableCustomModelStatusOptions(false).some((option) => option.value === 'active'), '普通用户新增模型必须可以选择启用')
+
+assert.equal(formatModelContextTokens(template), '1.05M', '总上下文应读取 contextWindowTokens')
+assert.equal(formatModelInputTokens(template), '922K', '最大输入应只读取 maxInputTokens')
+assert.equal(formatTokens(template.maxOutputTokens), '128K', '最大输出应独立展示')
+assert.equal(formatModelInputTokens(providerModel({ contextWindowTokens: 200_000 })), '-', '未公布最大输入时不得拿总上下文回退')
+
+console.log('自定义模型配置复制回归通过')
+
+function providerModel(overrides: Partial<ProviderModelPricing> = {}): ProviderModelPricing {
+  return {
+    providerCode: 'gpt',
+    model: 'gpt-5.6-sol',
+    source: 'built-in',
+    scope: 'built_in',
+    status: 'active',
+    supportsPromptCaching: true,
+    supportsServiceTier: true,
+    ...overrides
+  }
+}

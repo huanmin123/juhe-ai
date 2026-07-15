@@ -359,6 +359,7 @@ func saveManagementCustomProviderModel(
 		ReleaseDate:                   pgTextFromString(input.ReleaseDate),
 		ShutdownDate:                  pgTextFromString(input.ShutdownDate),
 		ContextWindowTokens:           pgInt4Ptr(input.ContextWindowTokens),
+		MaxInputTokens:                pgInt4Ptr(input.MaxInputTokens),
 		MaxOutputTokens:               pgInt4Ptr(input.MaxOutputTokens),
 		InputUsdPer1m:                 pgFloat8Ptr(input.InputUSDPer1M),
 		OutputUsdPer1m:                pgFloat8Ptr(input.OutputUSDPer1M),
@@ -498,6 +499,7 @@ type managementCustomProviderModelData struct {
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
 	MaxOutputTokens               pgtype.Int4
 	InputUsdPer1m                 pgtype.Float8
 	OutputUsdPer1m                pgtype.Float8
@@ -551,6 +553,7 @@ func managementCustomProviderModelFromData(row managementCustomProviderModelData
 		SupportedReasoningEfforts: reasoningEfforts,
 		DefaultReasoningEffort:    textValue(row.DefaultReasoningEffort),
 		ContextWindowTokens:       int4Ptr(row.ContextWindowTokens),
+		MaxInputTokens:            int4Ptr(row.MaxInputTokens),
 		MaxOutputTokens:           int4Ptr(row.MaxOutputTokens),
 		InputUSDPer1M:             float8Ptr(row.InputUsdPer1m),
 		OutputUSDPer1M:            float8Ptr(row.OutputUsdPer1m),
@@ -593,6 +596,7 @@ func customProviderModelDataFromFindRow(row postgresqueries.FindManagementCustom
 		ReleaseDate:                   row.ReleaseDate,
 		ShutdownDate:                  row.ShutdownDate,
 		ContextWindowTokens:           row.ContextWindowTokens,
+		MaxInputTokens:                row.MaxInputTokens,
 		MaxOutputTokens:               row.MaxOutputTokens,
 		InputUsdPer1m:                 row.InputUsdPer1m,
 		OutputUsdPer1m:                row.OutputUsdPer1m,
@@ -631,6 +635,7 @@ func customProviderModelDataFromScopeRow(row postgresqueries.FindManagementCusto
 		ReleaseDate:                   row.ReleaseDate,
 		ShutdownDate:                  row.ShutdownDate,
 		ContextWindowTokens:           row.ContextWindowTokens,
+		MaxInputTokens:                row.MaxInputTokens,
 		MaxOutputTokens:               row.MaxOutputTokens,
 		InputUsdPer1m:                 row.InputUsdPer1m,
 		OutputUsdPer1m:                row.OutputUsdPer1m,
@@ -669,6 +674,7 @@ func customProviderModelDataFromUpsertRow(row postgresqueries.UpsertManagementCu
 		ReleaseDate:                   row.ReleaseDate,
 		ShutdownDate:                  row.ShutdownDate,
 		ContextWindowTokens:           row.ContextWindowTokens,
+		MaxInputTokens:                row.MaxInputTokens,
 		MaxOutputTokens:               row.MaxOutputTokens,
 		InputUsdPer1m:                 row.InputUsdPer1m,
 		OutputUsdPer1m:                row.OutputUsdPer1m,

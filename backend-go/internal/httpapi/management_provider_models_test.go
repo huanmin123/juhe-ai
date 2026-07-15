@@ -325,11 +325,12 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 	})).Post("/__aisys__/api/providers/{code}/models", newManagementProviderCustomModelCreateHandler(service).ServeHTTP)
 
 	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_user", strings.NewReader(`{
+		"configurationTemplateId":"provider_model_gpt_5_6_sol",
 		"model":" custom-chat ",
 		"supportedApiProtocols":["responses"],
 		"supportedServiceTiers":["priority","flex"],
 		"supportedReasoningEfforts":["low","high"],
-		"defaultReasoningEffort":"high",
+		"maxInputTokens":922000,
 		"inputUsdPer1M":1.25,
 		"pricingNotes":" 说明 "
 	}`))
@@ -342,6 +343,8 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 	if service.createInput.ProviderCode != "gpt" ||
 		service.createInput.ActorSystemAccountID != "sys_admin" ||
 		service.createInput.TargetSystemAccountID != "sys_user" ||
+		!service.createInput.Fields.ConfigurationTemplateID.Set ||
+		service.createInput.Fields.ConfigurationTemplateID.Value != "provider_model_gpt_5_6_sol" ||
 		!service.createInput.Fields.Model.Set ||
 		service.createInput.Fields.Model.Value != " custom-chat " ||
 		service.createInput.Fields.InputUSDPer1M.Value == nil ||
@@ -350,8 +353,9 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 		len(service.createInput.Fields.SupportedServiceTiers.Value) != 2 ||
 		!service.createInput.Fields.SupportedReasoningEfforts.Set ||
 		len(service.createInput.Fields.SupportedReasoningEfforts.Value) != 2 ||
-		!service.createInput.Fields.DefaultReasoningEffort.Set ||
-		service.createInput.Fields.DefaultReasoningEffort.Value != "high" {
+		!service.createInput.Fields.MaxInputTokens.Set ||
+		service.createInput.Fields.MaxInputTokens.Value == nil ||
+		*service.createInput.Fields.MaxInputTokens.Value != 922000 {
 		t.Fatalf("create input = %+v", service.createInput)
 	}
 	var body struct {
@@ -386,8 +390,7 @@ func TestManagementProviderCustomModelUpdateHandlerParsesCapabilityClears(t *tes
 	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/custom_model_1", strings.NewReader(`{
 		"mode":"image",
 		"supportedServiceTiers":[],
-		"supportedReasoningEfforts":[],
-		"defaultReasoningEffort":null
+		"supportedReasoningEfforts":[]
 	}`))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -397,8 +400,7 @@ func TestManagementProviderCustomModelUpdateHandlerParsesCapabilityClears(t *tes
 	}
 	fields := service.updateInput.Fields
 	if !fields.SupportedServiceTiers.Set || len(fields.SupportedServiceTiers.Value) != 0 ||
-		!fields.SupportedReasoningEfforts.Set || len(fields.SupportedReasoningEfforts.Value) != 0 ||
-		!fields.DefaultReasoningEffort.Set || fields.DefaultReasoningEffort.Value != "" {
+		!fields.SupportedReasoningEfforts.Set || len(fields.SupportedReasoningEfforts.Value) != 0 {
 		t.Fatalf("update fields = %+v", fields)
 	}
 	var body map[string]any

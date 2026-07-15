@@ -14,7 +14,7 @@
 - `last_health_check_*` 保存最近一次失败事实，`next_health_check_at` 固定为本次失败后的 1 小时。
 - 后续失败保留最早的 `health_check_failure_started_at`，不能用最近失败时间重置 24 小时窗口。
 - 从首次失败起满 24 小时的下一次失败，repository 原子写入 `status = error`、`schedulable = false`、`last_error_code = account_activation_check_timeout` 和明确的 `last_error_message`，同时停止继续安排 `pending_test` 复检。
-- 检查成功时清空失败计数和首次失败时间，并按账户时间计划激活或停用账户。
+- 检查成功时清空失败计数和首次失败时间，将持久 `schedulable` 开关恢复为允许调度，并按账户时间计划把当前 `status` 激活或停用；时间计划不得反向关闭持久调度开关。
 
 页面只对同时满足 `status = pending_test` 和存在 `last_health_check_at + last_health_check_error_*` 的自有账户显示“重新检查”。该操作原子重置为新账户式待检查状态，清空健康检查、冷却和运行失败标记，并立即投递后台激活检查。
 

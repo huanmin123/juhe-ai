@@ -137,7 +137,8 @@ async function runAccountHealthCheckQueueItem(
       jitterMinutes: item.jitterMinutes,
       failureThreshold: item.failureThreshold,
       statusCode: result.statusCode,
-      expectedConfigRevision: item.configRevision
+      expectedConfigRevision: item.configRevision,
+      traceId: result.traceId
       }
     }, backgroundProbeDbServiceTimeoutMs)
     const changed = healthCheckResult?.changed ?? false
@@ -169,7 +170,8 @@ async function runAccountHealthCheckQueueItem(
       errorMessage: result.message,
       countTowardsThreshold: result.accountFailureEligible !== false,
       expectedConfigRevision: item.configRevision,
-      observedAt
+      observedAt,
+      traceId: result.traceId
     }
   }, backgroundProbeDbServiceTimeoutMs)
 
@@ -179,6 +181,7 @@ async function runAccountHealthCheckQueueItem(
       type: 'mark_account_test_temporary_unavailable',
       accountId: account.id,
       reason: accountHealthCheckTemporaryUnavailableReason(failure.failureCount, result),
+      traceId: result.traceId,
       access: { systemAccountId: account.systemAccountId ?? '', role: 'user' },
       healthCheckGuard: {
         configRevision: item.configRevision,
@@ -206,7 +209,8 @@ async function runAccountHealthCheckQueueItem(
     markedTemporaryUnavailable,
     attemptIndex: context.attemptIndex,
     retryNumber: context.retryNumber,
-    message: result.message
+    message: result.message,
+    traceId: result.traceId
   }
   if (failure?.transitionedToError) {
     logger.error(logFields, '账号激活检查从首次失败起已持续 24 小时，账户已转为异常')

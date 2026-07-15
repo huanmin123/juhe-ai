@@ -41,6 +41,7 @@
     "test:model-check-provider-capabilities": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/model-check-provider-capabilities-regression.ts",
     "test:model-check-trust-contract": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/model-check-trust-contract-regression.ts",
     "test:provider-model-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/provider-model-formatters-regression.ts",
+    "test:custom-provider-model-form": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/custom-provider-model-form-regression.ts",
     "test:provider-model-source-operation": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/provider-model-source-operation-regression.ts",
     "test:gateway-traffic-source-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/gateway-traffic-source-formatters-regression.ts",
     "test:usage-stats-provider-display": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/usage-stats-provider-display-regression.ts",

@@ -208,6 +208,7 @@ const nullableModelModeSchema = z.enum(['text', 'image', 'audio']).nullable().op
 const customModelCapabilityTokenSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/i)
 
 const customModelSchema = z.object({
+  configurationTemplateId: z.string().trim().min(1).optional(),
   scope: z.enum(['personal', 'global']).optional(),
   model: z.string().trim().min(1),
   status: z.enum(['draft', 'active', 'disabled']).optional(),
@@ -228,10 +229,10 @@ const customModelSchema = z.object({
   ])).optional(),
   supportedServiceTiers: z.array(customModelCapabilityTokenSchema).max(16).optional(),
   supportedReasoningEfforts: z.array(customModelCapabilityTokenSchema).max(16).optional(),
-  defaultReasoningEffort: customModelCapabilityTokenSchema.nullable().optional(),
   releaseDate: nullableDateSchema,
   shutdownDate: nullableDateSchema,
   contextWindowTokens: nullableIntegerSchema,
+  maxInputTokens: nullableIntegerSchema,
   maxOutputTokens: nullableIntegerSchema,
   inputUsdPer1M: nullableNumberSchema,
   outputUsdPer1M: nullableNumberSchema,
@@ -248,7 +249,7 @@ const customModelSchema = z.object({
   capabilityNotes: nullableTrimmedStringSchema,
   notes: nullableTrimmedStringSchema
 }).strict()
-const customModelPatchSchema = customModelSchema.partial().refine((value) => Object.keys(value).length > 0, {
+const customModelPatchSchema = customModelSchema.omit({ configurationTemplateId: true }).partial().refine((value) => Object.keys(value).length > 0, {
   message: '请提供要修改的模型内容'
 })
 
@@ -286,10 +287,26 @@ providersRouter.post('/:code/models', async (req, res, next) => {
       res.status(400).json(badRequest('请选择模型归属的系统账户'))
       return
     }
+    const { configurationTemplateId, ...submitted } = parsed.data
+    let inherited: Partial<typeof submitted> = {}
+    if (configurationTemplateId) {
+      const template = (await listProviderModelCatalogAsync({
+        providerCode: provider.code,
+        systemAccountId: ownerSystemAccountId,
+        includeInactive: true,
+        includeUnpriced: true
+      })).find((item) => item.id === configurationTemplateId && item.status === 'active')
+      if (!template) {
+        res.status(400).json(badRequest('配置模板不可用'))
+        return
+      }
+      inherited = customModelInputFromConfigurationTemplate(template)
+    }
+    const effectiveInput = { ...inherited, ...submitted }
     const validation = await validateCustomModelPricing({
       providerCode: provider.code,
       ownerSystemAccountId,
-      input: parsed.data
+      input: effectiveInput
     })
     if (!validation.success) {
       res.status(400).json(badRequest(validation.message))
@@ -297,7 +314,7 @@ providersRouter.post('/:code/models', async (req, res, next) => {
     }
     try {
       const saved = await saveCustomProviderModelAsync({
-        ...parsed.data,
+        ...effectiveInput,
         scope,
         providerCode: provider.code,
         systemAccountId: ownerSystemAccountId,
@@ -380,7 +397,8 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
     const next = {
       ...existing,
       ...parsed.data,
-      scope: existing.scope
+      scope: existing.scope,
+      defaultReasoningEffort: undefined
     }
     const validation = await validateCustomModelPricing({
       providerCode: existing.providerCode,
@@ -730,6 +748,36 @@ function customModelBoundToAccountMessage(input: {
   return details.length
     ? `模型已绑定 AI 账户，不能删除；请先从${details.join('、')}中移除后再删除`
     : '模型已绑定 AI 账户，不能删除；请先解除账户绑定后再删除'
+}
+
+function customModelInputFromConfigurationTemplate(template: ProviderModelCatalogItem) {
+  return {
+    mode: customModelModeFromCatalog(template),
+    supportedApiProtocols: [...(template.supportedApiProtocols ?? [])],
+    supportedServiceTiers: [...(template.supportedServiceTiers ?? [])],
+    supportedReasoningEfforts: [...(template.supportedReasoningEfforts ?? [])],
+    contextWindowTokens: template.contextWindowTokens ?? null,
+    maxInputTokens: template.maxInputTokens ?? null,
+    maxOutputTokens: template.maxOutputTokens ?? null,
+    inputUsdPer1M: template.inputUsdPer1M ?? null,
+    outputUsdPer1M: template.outputUsdPer1M ?? null,
+    cachedInputUsdPer1M: template.cachedInputUsdPer1M ?? null,
+    cacheWriteUsdPer1M: template.cacheWriteUsdPer1M ?? null,
+    cacheWrite1hUsdPer1M: template.cacheWrite1hUsdPer1M ?? null,
+    serviceTierPrices: structuredClone(template.serviceTierPrices ?? {}),
+    imageInputUsdPer1M: template.imageInputUsdPer1M ?? null,
+    imageOutputUsdPer1M: template.imageOutputUsdPer1M ?? null,
+    audioInputUsdPer1M: template.audioInputUsdPer1M ?? null,
+    audioOutputUsdPer1M: template.audioOutputUsdPer1M ?? null,
+    outputUsdPerImage: template.outputUsdPerImage ?? null
+  }
+}
+
+function customModelModeFromCatalog(template: ProviderModelCatalogItem): 'text' | 'image' | 'audio' {
+  if (template.mode === 'image' || template.mode === 'audio') return template.mode
+  if (template.supportedApiProtocols.includes('images')) return 'image'
+  if (template.supportedApiProtocols.includes('audio')) return 'audio'
+  return 'text'
 }
 
 async function validateCustomModelPricing(input: {

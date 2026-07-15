@@ -16,7 +16,7 @@ import {
   validateAccountSaveForm
 } from '../../views/accounts/accountSavePayload'
 import {
-  applyPricingTemplateToCustomModelForm,
+  applyConfigurationTemplateToCustomModelForm,
   availableCustomModelStatusOptions,
   buildCustomModelPayload,
   clearCustomModelPricesOutsideCategory,
@@ -202,13 +202,12 @@ const customModelForm = {
   ...emptyCustomModelForm,
   model: 'gpt-custom-capabilities',
   supportedServiceTiers: ['priority', 'priority', 'flex'],
-  supportedReasoningEfforts: ['high', 'ultra', 'max'] as unknown as ProviderModelReasoningEffort[],
-  defaultReasoningEffort: 'ultra' as ProviderModelReasoningEffort
+  supportedReasoningEfforts: ['high', 'ultra', 'max'] as unknown as ProviderModelReasoningEffort[]
 }
 const customPayload = buildCustomModelPayload(customModelForm, 'text', { includeRequestCapabilities: true })
 assert.deepEqual(customPayload?.supportedServiceTiers, ['priority', 'flex'], '自定义模型服务等级应去重并限制 wire 枚举')
 assert.deepEqual(customPayload?.supportedReasoningEfforts, ['high', 'ultra', 'max'], '通用模型能力表单应保留供应商原生字符串，具体值域由后端按供应商校验')
-assert.equal(customPayload?.defaultReasoningEffort, 'ultra', '默认思考级别属于已支持集合时应保留')
+assert.equal(Object.prototype.hasOwnProperty.call(customPayload ?? {}, 'defaultReasoningEffort'), false, '自定义模型写入契约不应再发送默认思考级别')
 const ordinaryUserPayload = buildCustomModelPayload(customModelForm, 'text', {
   includeRequestCapabilities: true,
   includePrices: false
@@ -223,8 +222,10 @@ for (const priceField of [
 customModelForm.serviceTierPrices = { priority: { inputUsdPer1M: 2 }, orphan: { inputUsdPer1M: 9 } }
 reconcileCustomModelServiceTierPrices(customModelForm)
 assert.deepEqual(Object.keys(customModelForm.serviceTierPrices), ['priority', 'flex'], '动态档位价格行必须只保留当前支持档位并补齐缺失行')
-applyPricingTemplateToCustomModelForm(customModelForm, [providerModel({
+applyConfigurationTemplateToCustomModelForm(customModelForm, [providerModel({
+  id: 'template-pricing',
   model: 'template-pricing',
+  supportedServiceTiers: ['priority', 'flex'],
   serviceTierPrices: { priority: { inputUsdPer1M: 3 } }
 })], 'template-pricing')
 assert.deepEqual(Object.keys(customModelForm.serviceTierPrices), ['priority', 'flex'], '价格模板应用后必须按当前档位重建价格行')
@@ -232,11 +233,11 @@ assert.deepEqual(customModelForm.serviceTierPrices.flex, {}, '模板缺少的当
 clearCustomModelPricesOutsideCategory(customModelForm, 'image')
 assert.deepEqual(customModelForm.serviceTierPrices, {}, '切换到非文本模型必须清空服务档位价格')
 assert(availableCustomModelStatusOptions(false, 'active').some((option) => option.value === 'active'), '普通用户编辑原 active 模型时必须稳定保留 active 选项')
-assert.equal(availableCustomModelStatusOptions(false, 'draft').some((option) => option.value === 'active'), false, '普通用户不能把 draft 模型主动激活')
+assert.equal(availableCustomModelStatusOptions(false, 'draft').some((option) => option.value === 'active'), true, '普通用户创建或编辑自有模型时可以启用')
 const imageCustomPayload = buildCustomModelPayload(customModelForm, 'image', { includeRequestCapabilities: true })
 assert.deepEqual(imageCustomPayload?.supportedServiceTiers, [], 'GPT 非文本自定义模型保存时必须清空服务等级能力')
 assert.deepEqual(imageCustomPayload?.supportedReasoningEfforts, [], 'GPT 非文本自定义模型保存时必须清空思考能力')
-assert.equal(imageCustomPayload?.defaultReasoningEffort, null, 'GPT 非文本自定义模型保存时必须清空默认思考级别')
+assert.equal(Object.prototype.hasOwnProperty.call(imageCustomPayload ?? {}, 'defaultReasoningEffort'), false, '非文本模型也不应发送默认思考级别')
 
 const catalogRecord = providerModel({
   supportedServiceTiers: ['priority'],
@@ -249,7 +250,7 @@ const catalogRecord = providerModel({
 const loadedCustomForm = createCustomModelFormFromPricing(catalogRecord, [])
 assert.deepEqual(loadedCustomForm.supportedServiceTiers, ['priority'], '自定义模型编辑必须恢复 wire 服务等级能力')
 assert.deepEqual(loadedCustomForm.supportedReasoningEfforts, ['high', 'max'], '自定义模型编辑必须恢复 wire 思考能力')
-assert.equal(loadedCustomForm.defaultReasoningEffort, 'high', '自定义模型编辑必须恢复 wire 默认思考级别')
+assert.equal(Object.prototype.hasOwnProperty.call(loadedCustomForm, 'defaultReasoningEffort'), false, '自定义模型编辑表单不应恢复默认思考级别')
 assert.doesNotMatch(formatModelRequestCapabilities(catalogRecord), /Codex|Ultra|多代理/, '通用模型目录格式化只展示 API 请求能力')
 assert.doesNotMatch(
   formatModelReasoningCapabilities(catalogRecord),
