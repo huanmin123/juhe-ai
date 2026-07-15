@@ -74,7 +74,6 @@ export function useExternalSourceTokenActions(options: UseExternalSourceTokenAct
       const result = await api.externalIntegrationSources.tokenSecret(record.id, token.id)
       await copyTextToClipboard(result.token, '完整 Token 已复制')
     } catch (error) {
-      console.error(error)
       message.error(extractApiErrorMessage(error, '复制完整 Token 失败'))
     } finally {
       if (tokenCopyingKey.value === copyingKey) {

@@ -7,6 +7,8 @@ export const realGoManagementSmokeEnv = {
   baseUrl: 'JUHE_REAL_GO_MANAGEMENT_BASE_URL',
   clientIpHash: 'JUHE_REAL_GO_MANAGEMENT_CLIENT_IP_HASH',
   cookie: 'JUHE_REAL_GO_MANAGEMENT_COOKIE',
+  externalIntegrationSourceId: 'JUHE_REAL_GO_MANAGEMENT_EXTERNAL_INTEGRATION_SOURCE_ID',
+  externalIntegrationSourceTokenId: 'JUHE_REAL_GO_MANAGEMENT_EXTERNAL_INTEGRATION_SOURCE_TOKEN_ID',
   groupId: 'JUHE_REAL_GO_MANAGEMENT_GROUP_ID',
   providerCode: 'JUHE_REAL_GO_MANAGEMENT_GROUP_PROVIDER_CODE',
   publicApiLogId: 'JUHE_REAL_GO_MANAGEMENT_PUBLIC_API_LOG_ID',
@@ -93,6 +95,7 @@ const externalIntegrationSourcePrimaryTokenFieldSet = new Set([
   'revokedAt',
   'isBuiltIn'
 ])
+const externalIntegrationSourceTokenSecretFieldSet = new Set(['token'])
 const externalIntegrationSourceApiDocContracts = externalIntegrationSourceScopeOptions.map((option) =>
   externalIntegrationSourceApiDocContract(option.value)
 )
@@ -123,6 +126,8 @@ export interface RealGoManagementSmokeConfig {
   baseUrl: string
   clientIpHash?: string
   cookie: string
+  externalIntegrationSourceId?: string
+  externalIntegrationSourceTokenId?: string
   groupId?: string
   providerCode?: string
   publicApiLogId?: string
@@ -145,6 +150,7 @@ export interface RealGoManagementSmokeSummary {
   clientIpDetailChecked: boolean
   routeStrategyCount: number
   routeStrategyDetailChecked: boolean
+  externalIntegrationSourceTokenSecretChecked: boolean
 }
 
 interface NormalizedRealGoManagementSmokeConfig extends RealGoManagementSmokeConfig {
@@ -393,6 +399,12 @@ export function loadRealGoManagementSmokeConfig(
   const baseUrl = requiredEnvironmentValue(env, realGoManagementSmokeEnv.baseUrl)
   const cookie = requiredEnvironmentValue(env, realGoManagementSmokeEnv.cookie)
   expect(!/[\r\n]/.test(cookie), `${realGoManagementSmokeEnv.cookie} must be a single Cookie header line`)
+  const externalIntegrationSourceId = optionalEnvironmentValue(env, realGoManagementSmokeEnv.externalIntegrationSourceId)
+  const externalIntegrationSourceTokenId = optionalEnvironmentValue(env, realGoManagementSmokeEnv.externalIntegrationSourceTokenId)
+  expect(
+    Boolean(externalIntegrationSourceId) === Boolean(externalIntegrationSourceTokenId),
+    `${realGoManagementSmokeEnv.externalIntegrationSourceId} and ${realGoManagementSmokeEnv.externalIntegrationSourceTokenId} must be configured together`
+  )
 
   return {
     accountId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.accountId),
@@ -400,6 +412,8 @@ export function loadRealGoManagementSmokeConfig(
     baseUrl: normalizeManagementApiBaseUrl(baseUrl),
     clientIpHash: optionalClientIPHashEnvironmentValue(env, realGoManagementSmokeEnv.clientIpHash),
     cookie,
+    externalIntegrationSourceId,
+    externalIntegrationSourceTokenId,
     groupId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.groupId),
     providerCode: optionalEnvironmentValue(env, realGoManagementSmokeEnv.providerCode),
     publicApiLogId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.publicApiLogId),
@@ -459,6 +473,7 @@ export function formatRealGoManagementSmokeSummary(summary: RealGoManagementSmok
     `groups=${summary.groupCount}`,
     `providers=${summary.providerCount}`,
     `modelOptions=${summary.modelOptionCount}`,
+    `externalIntegrationSourceTokenSecretChecked=${summary.externalIntegrationSourceTokenSecretChecked}`,
     `clientIpItems=${summary.clientIpItemCount}`,
     `clientIpRangeReady=${summary.clientIpRangeReady}`,
     `clientIpDetailChecked=${summary.clientIpDetailChecked}`,
@@ -514,19 +529,35 @@ async function runReadOnlySmoke(
     1,
     20
   )
-  const externalIntegrationSourceDetailTarget = externalIntegrationSourceFirstPage.items.find(
-    (source) => !source.isBuiltIn
-  )
-  if (externalIntegrationSourceDetailTarget) {
+  const externalIntegrationSourceDetailTarget = config.externalIntegrationSourceId
+    ? undefined
+    : externalIntegrationSourceFirstPage.items.find((source) => !source.isBuiltIn)
+  const externalIntegrationSourceDetailId = config.externalIntegrationSourceId
+    ?? externalIntegrationSourceDetailTarget?.id
+  let externalIntegrationSourceTokenSecretChecked = false
+  if (externalIntegrationSourceDetailId) {
     const externalIntegrationSourceDetailData = await getEnvelopeData(
-      externalIntegrationSourceDetailUrl(config, externalIntegrationSourceDetailTarget.id),
+      externalIntegrationSourceDetailUrl(config, externalIntegrationSourceDetailId),
       config,
       'external integration source detail'
     )
-    assertExternalIntegrationSourceDetail(
+    const detail = assertExternalIntegrationSourceDetail(
       externalIntegrationSourceDetailData,
       externalIntegrationSourceDetailTarget
     )
+    expect(detail.id === externalIntegrationSourceDetailId, 'external integration source detail.id must match the requested source')
+    if (config.externalIntegrationSourceTokenId) {
+      const tokenSummary = detail.tokens.find((token) => token.id === config.externalIntegrationSourceTokenId)
+      expect(tokenSummary, 'Configured external integration source token was not returned by source detail')
+      const secretData = await getEnvelopeData(
+        externalIntegrationSourceTokenSecretUrl(config, detail.id, tokenSummary.id),
+        config,
+        'external integration source token secret',
+        true
+      )
+      assertExternalIntegrationSourceTokenSecret(secretData, tokenSummary)
+      externalIntegrationSourceTokenSecretChecked = true
+    }
   }
   if (externalIntegrationSourceFirstPage.hasMore) {
     const externalIntegrationSourceSecondPageData = await getEnvelopeData(
@@ -658,7 +689,8 @@ async function runReadOnlySmoke(
       clientIpRangeReady: clientIPStats.rangeReady,
       clientIpDetailChecked,
       routeStrategyCount: routeStrategies.length,
-      routeStrategyDetailChecked
+      routeStrategyDetailChecked,
+      externalIntegrationSourceTokenSecretChecked
     }
   }
 }
@@ -807,12 +839,20 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
       'Smoke client IP hash must be a 64-character hexadecimal hash'
     )
   }
+  const externalIntegrationSourceId = config.externalIntegrationSourceId?.trim() || undefined
+  const externalIntegrationSourceTokenId = config.externalIntegrationSourceTokenId?.trim() || undefined
+  expect(
+    Boolean(externalIntegrationSourceId) === Boolean(externalIntegrationSourceTokenId),
+    'Smoke external integration source ID and token ID must be configured together'
+  )
   return {
     ...config,
     accountId: config.accountId?.trim() || undefined,
     allowGroupMutations: config.allowGroupMutations ?? false,
     baseUrl: normalizeManagementApiBaseUrl(config.baseUrl),
     clientIpHash: config.clientIpHash?.trim().toLowerCase() || undefined,
+    externalIntegrationSourceId,
+    externalIntegrationSourceTokenId,
     groupId: config.groupId?.trim() || undefined,
     providerCode: config.providerCode?.trim() || undefined,
     publicApiLogId: config.publicApiLogId?.trim() || undefined,
@@ -958,6 +998,14 @@ function externalIntegrationSourceDetailUrl(
   return endpointUrl(config.baseUrl, `/external-integration-sources/${encodeURIComponent(sourceId)}`, {})
 }
 
+function externalIntegrationSourceTokenSecretUrl(
+  config: NormalizedRealGoManagementSmokeConfig,
+  sourceId: string,
+  tokenId: string
+): URL {
+  return endpointUrl(config.baseUrl, `/external-integration-sources/${encodeURIComponent(sourceId)}/tokens/${encodeURIComponent(tokenId)}/secret`, {})
+}
+
 function clientIPStatsListUrl(config: NormalizedRealGoManagementSmokeConfig): URL {
   return endpointUrl(config.baseUrl, '/ip-stats', {
     page: '1',
@@ -1016,9 +1064,14 @@ function endpointUrl(
 async function getEnvelopeData(
   url: URL,
   config: NormalizedRealGoManagementSmokeConfig,
-  label: string
+  label: string,
+  requirePragmaNoCache = false
 ): Promise<unknown> {
-  return requestEnvelopeData(url, config, label, { method: 'GET', expectedStatus: 200 })
+  return requestEnvelopeData(url, config, label, {
+    method: 'GET',
+    expectedStatus: 200,
+    requirePragmaNoCache
+  })
 }
 
 async function requestEnvelopeData(
@@ -1029,12 +1082,16 @@ async function requestEnvelopeData(
     method: 'GET' | 'POST' | 'PATCH'
     body?: Record<string, unknown>
     expectedStatus: number
+    requirePragmaNoCache?: boolean
   }
 ): Promise<unknown> {
   const response = await sendRequest(url, config, label, options)
   if (response.status !== options.expectedStatus) {
     await response.body?.cancel()
     throw new Error(`${label} failed with HTTP ${response.status}`)
+  }
+  if (options.requirePragmaNoCache) {
+    expect(response.headers.get('pragma') === 'no-cache', `${label} must return Pragma: no-cache`)
   }
   return parseEnvelopeData(response, label)
 }
@@ -1239,7 +1296,7 @@ function assertExternalIntegrationSourceListItem(
 
 function assertExternalIntegrationSourceDetail(
   value: unknown,
-  listItem: ExternalIntegrationSourceListItem
+  listItem?: ExternalIntegrationSourceListItem
 ): ExternalIntegrationSourceDetail {
   const label = 'external integration source detail'
   expect(isRecord(value), `${label} must be an object`)
@@ -1293,6 +1350,7 @@ function assertExternalIntegrationSourceDetail(
     )
   }
 
+  if (!listItem) return value as unknown as ExternalIntegrationSourceDetail
   expect(value.id === listItem.id, `${label}.id must match the list item`)
   expect(value.createdAt === listItem.createdAt, `${label}.createdAt must match the list item`)
   expect(value.isBuiltIn === listItem.isBuiltIn, `${label}.isBuiltIn must match the list item`)
@@ -1327,6 +1385,18 @@ function assertExternalIntegrationSourceDetail(
     )
   }
   return value as unknown as ExternalIntegrationSourceDetail
+}
+
+function assertExternalIntegrationSourceTokenSecret(
+  value: unknown,
+  tokenSummary: ExternalIntegrationSourcePrimaryToken
+): void {
+  const label = 'external integration source token secret data'
+  expect(isRecord(value), `${label} must be an object`)
+  assertExternalIntegrationSourceFields(value, externalIntegrationSourceTokenSecretFieldSet, label)
+  expect(isNonEmptyString(value.token), `${label}.token must be a non-empty string`)
+  expect(value.token.startsWith(tokenSummary.tokenPrefix), `${label}.token must match the summary prefix`)
+  expect(value.token.endsWith(tokenSummary.tokenSuffix), `${label}.token must match the summary suffix`)
 }
 
 function assertExternalIntegrationSourcePrimaryToken(

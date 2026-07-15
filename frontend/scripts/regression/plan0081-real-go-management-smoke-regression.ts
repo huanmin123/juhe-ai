@@ -2,6 +2,11 @@ import { strict as assert } from 'node:assert'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
+import type { AxiosAdapter, AxiosRequestConfig } from 'axios'
+
+import { externalIntegrationSourcesApi } from '../../src/api/domains/externalIntegrationSources'
+import { http } from '../../src/api/http'
+
 import {
   formatRealGoManagementSmokeSummary,
   loadRealGoManagementSmokeConfig,
@@ -68,6 +73,11 @@ type MockScenario =
   | 'external_integration_source_detail_sensitive_ciphertext'
   | 'external_integration_source_detail_sensitive_preview_value'
   | 'external_integration_source_detail_sensitive_primary_token'
+  | 'external_integration_source_secret_success'
+  | 'external_integration_source_secret_malformed'
+  | 'external_integration_source_secret_empty'
+  | 'external_integration_source_secret_preview_mismatch'
+  | 'external_integration_source_secret_pragma_invalid'
   | 'ip_stats_not_ready'
   | 'ip_stats_empty'
   | 'ip_stats_detail_not_ready'
@@ -123,6 +133,9 @@ const mismatchedAccountId = 'acct_plan0081_mismatched_sensitive'
 const listedPublicApiLogId = 'publog_plan0081_list_sensitive'
 const configuredPublicApiLogId = 'publog_plan0081/encoded target?read-only'
 const selectedExternalIntegrationSourceId = 'extsrc_plan0081/encoded target?read-only'
+const configuredExternalIntegrationSourceId = 'extsrc/plan0081?opt-in#%'
+const configuredExternalIntegrationSourceTokenId = 'exttok/plan0081?revoked#%'
+const externalIntegrationSourceTokenSecret = 'juis_Op1_plan0081_secret_value_revoked1'
 const requestRecords: RequestRecord[] = []
 const groups = new Map<string, MockGroup>()
 let scenario: MockScenario = 'normal'
@@ -145,6 +158,8 @@ try {
 
   await assertPublicAPILogReadScenarios(baseUrl)
   await assertExternalIntegrationSourceCatalogReadScenarios(baseUrl)
+  await assertExternalIntegrationSourceTokenSecretScenarios(baseUrl)
+  await assertExternalIntegrationSourceApiEncoding()
   await assertLogBoundaryRedaction(baseUrl)
   await assertRouteStrategyReadScenarios(baseUrl)
   await assertReadOnlySmoke(baseUrl)
@@ -165,6 +180,114 @@ try {
 }
 
 console.log('PLAN-0081 real Go management smoke regression passed')
+
+async function assertExternalIntegrationSourceTokenSecretScenarios(baseUrl: string): Promise<void> {
+  resetMock('external_integration_source_secret_success')
+  const output: string[] = []
+  const env = smokeEnvironment(baseUrl, {
+    [realGoManagementSmokeEnv.externalIntegrationSourceId]: configuredExternalIntegrationSourceId,
+    [realGoManagementSmokeEnv.externalIntegrationSourceTokenId]: configuredExternalIntegrationSourceTokenId
+  })
+  const loaded = loadRealGoManagementSmokeConfig(env)
+  assert.equal(loaded.externalIntegrationSourceId, configuredExternalIntegrationSourceId)
+  assert.equal(loaded.externalIntegrationSourceTokenId, configuredExternalIntegrationSourceTokenId)
+  const summary = await runRealGoManagementSmokeFromEnvironment(env, (message) => output.push(message))
+  assert.equal(summary.externalIntegrationSourceTokenSecretChecked, true)
+  assert.equal(output.length, 1)
+  assert.match(output[0] ?? '', /externalIntegrationSourceTokenSecretChecked=true/)
+  assert.equal(output.some((line) => line.includes(externalIntegrationSourceTokenSecret)), false)
+  const secretRequests = requestRecords.filter(
+    (record) => `${record.method} ${record.url}` === externalIntegrationSourceTokenSecretPath()
+  )
+  assert.equal(secretRequests.length, 1)
+  assert.equal(secretRequests[0]?.method, 'GET')
+  assert.equal(secretRequests[0]?.body, undefined)
+  assert.equal(requestPaths().includes(externalIntegrationSourceDetailPath(configuredExternalIntegrationSourceId)), true)
+  assertRequestHeaders()
+
+  for (const requestScenario of [
+    'external_integration_source_secret_malformed',
+    'external_integration_source_secret_empty',
+    'external_integration_source_secret_preview_mismatch',
+    'external_integration_source_secret_pragma_invalid'
+  ] as const) {
+    resetMock(requestScenario)
+    const failureOutput: string[] = []
+    const failureMessage = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(env, (message) => failureOutput.push(message))
+    )
+    assert.equal(failureMessage.includes(externalIntegrationSourceTokenSecret), false)
+    assert.equal(failureOutput.some((line) => line.includes(externalIntegrationSourceTokenSecret)), false)
+    assert.deepEqual(failureOutput, [])
+    if (requestScenario === 'external_integration_source_secret_pragma_invalid') {
+      assert.equal(failureMessage, 'external integration source token secret must return Pragma: no-cache')
+    }
+    assert.equal(
+      requestRecords.filter((record) => `${record.method} ${record.url}` === externalIntegrationSourceTokenSecretPath()).length,
+      1
+    )
+    assertRequestHeaders()
+  }
+
+  for (const [key, value] of [
+    [realGoManagementSmokeEnv.externalIntegrationSourceId, configuredExternalIntegrationSourceId],
+    [realGoManagementSmokeEnv.externalIntegrationSourceTokenId, configuredExternalIntegrationSourceTokenId]
+  ] as const) {
+    resetMock('normal')
+    await assert.rejects(
+      runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl, { [key]: value }), () => undefined),
+      /must be configured together/
+    )
+    assert.deepEqual(requestRecords, [])
+  }
+}
+
+async function assertExternalIntegrationSourceApiEncoding(): Promise<void> {
+  const capturedRequests: Array<{ method: string; url: string; body: unknown }> = []
+  const originalAdapter = http.defaults.adapter
+  const captureAdapter: AxiosAdapter = async (config) => {
+    capturedRequests.push({
+      method: String(config.method ?? '').toUpperCase(),
+      url: String(config.url ?? ''),
+      body: parseAxiosRequestBody(config.data)
+    })
+    return {
+      data: { data: capturedRequests.length === 1 ? {} : { token: 'local-capture-token' } },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config
+    }
+  }
+
+  try {
+    http.defaults.adapter = captureAdapter
+    await externalIntegrationSourcesApi.detail(configuredExternalIntegrationSourceId)
+    await externalIntegrationSourcesApi.tokenSecret(
+      configuredExternalIntegrationSourceId,
+      configuredExternalIntegrationSourceTokenId
+    )
+  } finally {
+    http.defaults.adapter = originalAdapter
+  }
+
+  assert.deepEqual(capturedRequests, [
+    {
+      method: 'GET',
+      url: `/external-integration-sources/${encodeURIComponent(configuredExternalIntegrationSourceId)}`,
+      body: undefined
+    },
+    {
+      method: 'GET',
+      url: `/external-integration-sources/${encodeURIComponent(configuredExternalIntegrationSourceId)}/tokens/${encodeURIComponent(configuredExternalIntegrationSourceTokenId)}/secret`,
+      body: undefined
+    }
+  ])
+}
+
+function parseAxiosRequestBody(data: AxiosRequestConfig['data']): unknown {
+  return typeof data === 'string' ? JSON.parse(data) as unknown : data
+}
 
 async function assertPublicAPILogReadScenarios(baseUrl: string): Promise<void> {
   resetMock('normal')
@@ -685,7 +808,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 externalIntegrationSourceTokenSecretChecked=false clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -891,7 +1014,7 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 externalIntegrationSourceTokenSecretChecked=false clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -918,7 +1041,7 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 externalIntegrationSourceTokenSecretChecked=false clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1274,6 +1397,27 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         break
     }
     sendEnvelope(res, list)
+    return
+  }
+  const externalIntegrationSourceSecretTarget = externalIntegrationSourceSecretTargetFromPath(url.pathname)
+  if (req.method === 'GET' && externalIntegrationSourceSecretTarget) {
+    assert.deepEqual(externalIntegrationSourceSecretTarget, {
+      sourceId: configuredExternalIntegrationSourceId,
+      tokenId: configuredExternalIntegrationSourceTokenId
+    })
+    res.setHeader(
+      'Pragma',
+      scenario === 'external_integration_source_secret_pragma_invalid' ? 'cache' : 'no-cache'
+    )
+    if (scenario === 'external_integration_source_secret_malformed') {
+      sendEnvelope(res, { token: 42 })
+    } else if (scenario === 'external_integration_source_secret_empty') {
+      sendEnvelope(res, { token: '' })
+    } else if (scenario === 'external_integration_source_secret_preview_mismatch') {
+      sendEnvelope(res, { token: 'juis_Bad_plan0081_secret_value_mismatch' })
+    } else {
+      sendEnvelope(res, { token: externalIntegrationSourceTokenSecret })
+    }
     return
   }
   const externalIntegrationSourceId = externalIntegrationSourceIdFromPath(url.pathname)
@@ -1879,6 +2023,15 @@ function externalIntegrationSourceIdFromPath(pathname: string): string | undefin
   return match?.[1] ? decodeURIComponent(match[1]) : undefined
 }
 
+function externalIntegrationSourceSecretTargetFromPath(
+  pathname: string
+): { sourceId: string; tokenId: string } | undefined {
+  const match = /^\/__aisys__\/api\/external-integration-sources\/([^/]+)\/tokens\/([^/]+)\/secret$/.exec(pathname)
+  return match?.[1] && match[2]
+    ? { sourceId: decodeURIComponent(match[1]), tokenId: decodeURIComponent(match[2]) }
+    : undefined
+}
+
 async function readRequestBody(req: IncomingMessage): Promise<unknown> {
   if (req.method === 'GET' || req.method === 'DELETE') {
     return undefined
@@ -1923,7 +2076,8 @@ function expectedSummary(
     clientIpRangeReady,
     clientIpDetailChecked,
     routeStrategyCount,
-    routeStrategyDetailChecked
+    routeStrategyDetailChecked,
+    externalIntegrationSourceTokenSecretChecked: false
   }
 }
 
@@ -2135,6 +2289,23 @@ function externalIntegrationSourceListFixture(includeNonBuiltInDetailTarget = fa
 }
 
 function externalIntegrationSourceDetailFixture(sourceId: string): Record<string, unknown> {
+  if (sourceId === configuredExternalIntegrationSourceId) {
+    const { primaryToken: _primaryToken, ...source } = externalIntegrationSourceListFixture(true).items[1] ?? {}
+    return {
+      ...source,
+      id: sourceId,
+      status: 'disabled',
+      tokenCount: 1,
+      activeTokenCount: 0,
+      tokens: [{
+        ...externalIntegrationSourceDetailTokensFixture()[2],
+        id: configuredExternalIntegrationSourceTokenId,
+        tokenPrefix: 'juis_Op1',
+        tokenSuffix: 'revoked1'
+      }],
+      isBuiltIn: false
+    }
+  }
   assert.equal(sourceId, selectedExternalIntegrationSourceId, '详情只应读取第一页第一个非内置来源')
   const list = externalIntegrationSourceListFixture(true)
   const source = list.items.find((item) => item.id === sourceId)
@@ -2271,6 +2442,10 @@ function externalIntegrationSourcesListPath(page = 1): string {
 
 function externalIntegrationSourceDetailPath(sourceId = selectedExternalIntegrationSourceId): string {
   return `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`
+}
+
+function externalIntegrationSourceTokenSecretPath(): string {
+  return `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(configuredExternalIntegrationSourceId)}/tokens/${encodeURIComponent(configuredExternalIntegrationSourceTokenId)}/secret`
 }
 
 function groupsListPath(): string {
