@@ -157,7 +157,7 @@
             <a-form-item label="服务等级" class="custom-model-grid-wide">
               <a-select
                 v-model:value="customModelForm.supportedServiceTiers"
-                mode="tags"
+                mode="multiple"
                 :options="customModelServiceTierOptions"
                 :disabled="editingBuiltInModel"
                 placeholder="未选择时表示不支持账户级服务等级覆盖"
@@ -167,7 +167,7 @@
             <a-form-item label="思考级别" class="custom-model-grid-wide">
               <a-select
                 v-model:value="customModelForm.supportedReasoningEfforts"
-                mode="tags"
+                mode="multiple"
                 :options="customModelReasoningEffortOptions"
                 :disabled="editingBuiltInModel"
                 placeholder="仅配置上游 wire 支持的思考级别"
@@ -279,6 +279,7 @@ import { invalidateAccountProviderModelOptionsCache } from '@/views/accounts/use
 import ProviderModelCatalogModal from './ProviderModelCatalogModal.vue'
 import {
   applyConfigurationTemplateToCustomModelForm,
+  availableCustomModelModeOptions,
   availableCustomModelStatusOptions,
   buildCustomModelCapabilityOptions,
   buildCustomModelPayload as buildCustomModelUpsertPayload,
@@ -394,7 +395,10 @@ const customModelApiProtocolOptions = computed(() => {
   for (const protocol of defaultProtocolsForProviderModelCategory(activeProvider.value ?? undefined, customModelPricingCategory.value)) supported.add(protocol)
   return apiProtocolOptions.filter((option) => supported.has(option.value))
 })
-const customModelModeOptions = modelModeOptions
+const customModelModeOptions = computed(() => availableCustomModelModeOptions(
+  activeProvider.value?.code ?? '',
+  providerModels.value
+))
 const selectedModelOwnerLabel = computed(() => {
   if (!isManagementView.value) return ''
   const systemAccountId = modelSystemAccountFilter.value.trim()

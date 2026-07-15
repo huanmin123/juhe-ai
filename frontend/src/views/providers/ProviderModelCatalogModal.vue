@@ -85,6 +85,9 @@
                 <a-tag :color="tier === 'priority' ? 'blue' : 'cyan'">{{ formatModelServiceTier(tier) }}</a-tag>
                 <span>输入 {{ formatPrice(record.serviceTierPrices?.[tier]?.inputUsdPer1M) }}</span>
                 <span>输出 {{ formatPrice(record.serviceTierPrices?.[tier]?.outputUsdPer1M) }}</span>
+                <span>缓存读 {{ formatPrice(record.serviceTierPrices?.[tier]?.cachedInputUsdPer1M) }}</span>
+                <span>缓存写 {{ formatPrice(record.serviceTierPrices?.[tier]?.cacheWriteUsdPer1M) }}</span>
+                <span>1h 写入 {{ formatPrice(record.serviceTierPrices?.[tier]?.cacheWrite1hUsdPer1M) }}</span>
               </div>
             </div>
             <span v-else class="muted-text">仅标准</span>
@@ -270,7 +273,7 @@ function formatServiceTierPriceSummary(record: ProviderModelPricing): string {
   if (!record.supportedServiceTiers?.length) return '仅标准'
   return record.supportedServiceTiers.map((tier) => {
     const prices = record.serviceTierPrices?.[tier]
-    return `${formatModelServiceTier(tier)}：输入 ${formatPrice(prices?.inputUsdPer1M)} / 输出 ${formatPrice(prices?.outputUsdPer1M)} / 缓存读 ${formatPrice(prices?.cachedInputUsdPer1M)}`
+    return `${formatModelServiceTier(tier)}：输入 ${formatPrice(prices?.inputUsdPer1M)} / 输出 ${formatPrice(prices?.outputUsdPer1M)} / 缓存读 ${formatPrice(prices?.cachedInputUsdPer1M)} / 缓存写 ${formatPrice(prices?.cacheWriteUsdPer1M)} / 1h 写入 ${formatPrice(prices?.cacheWrite1hUsdPer1M)}`
   }).join('；')
 }
 </script>

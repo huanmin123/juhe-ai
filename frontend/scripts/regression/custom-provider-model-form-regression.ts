@@ -6,7 +6,8 @@ import {
   buildCustomModelCapabilityOptions,
   buildCustomModelPayload,
   canManageModelPricesForView,
-  emptyCustomModelForm
+  emptyCustomModelForm,
+  availableCustomModelModeOptions
 } from '../../src/views/providers/customProviderModelForm'
 import {
   apiProtocolOptions,
@@ -26,6 +27,8 @@ const template = providerModel({
   supportedServiceTiers: ['priority', 'flex'],
   supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
   defaultReasoningEffort: 'high',
+  releaseDate: '2026-06-26',
+  shutdownDate: '2027-06-26',
   contextWindowTokens: 1_050_000,
   maxInputTokens: 922_000,
   maxOutputTokens: 128_000,
@@ -76,6 +79,8 @@ assert.deepEqual(form.supportedApiProtocols, ['responses', 'chat_completions'])
 assert.deepEqual(form.supportedServiceTiers, ['priority', 'flex'])
 assert.deepEqual(form.supportedReasoningEfforts, ['none', 'low', 'medium', 'high', 'xhigh', 'max'])
 assert.equal(form.defaultReasoningEffort, 'high', '配置模板必须复制默认思考级别')
+assert.equal(form.releaseDate, '2026-06-26', '配置模板必须复制发布时间')
+assert.equal(form.shutdownDate, '2027-06-26', '配置模板必须复制停用时间')
 assert.equal(form.contextWindowTokens, 1_050_000)
 assert.equal(form.maxInputTokens, 922_000)
 assert.equal(form.maxOutputTokens, 128_000)
@@ -96,6 +101,13 @@ assert(capabilityOptions.reasoningEfforts.some((option) => option.value === 'max
 const deepSeekCapabilityOptions = buildCustomModelCapabilityOptions('deepseek', [], [])
 assert.deepEqual(deepSeekCapabilityOptions.serviceTiers, [], '不能把 GPT Priority/Flex 候选注入 DeepSeek')
 assert.deepEqual(deepSeekCapabilityOptions.reasoningEfforts, [], '不能把 GPT reasoning effort 候选注入 DeepSeek')
+assert.deepEqual(availableCustomModelModeOptions('gpt', []).map((option) => option.value), ['text', 'image', 'audio'], 'GPT 新目录必须可创建三类已支持模型')
+assert.deepEqual(availableCustomModelModeOptions('deepseek', []).map((option) => option.value), ['text'], 'DeepSeek 不能显示未支持的图像或音频用途')
+assert.deepEqual(
+  availableCustomModelModeOptions('gemini', [providerModel({ providerCode: 'gemini', model: 'gemini-image', mode: 'image' })]).map((option) => option.value),
+  ['text', 'image'],
+  '其他供应商用途必须来自自身目录事实'
+)
 assert.equal(canManageModelPricesForView(true, true), true, '管理员管理视图可以维护价格')
 assert.equal(canManageModelPricesForView(false, true), false, '管理员进入我的模型时必须与普通用户保持一致，不能显示价格维护')
 assert.equal(canManageModelPricesForView(true, false), false, '普通用户不能维护价格')

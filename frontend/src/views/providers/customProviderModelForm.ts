@@ -15,6 +15,7 @@ import {
   directPriceFieldKeys,
   directPriceFieldsByCategory,
   getModelCategory,
+  modelModeOptions,
   modelStatusOptions,
   type DirectPriceFieldKey,
   type ModelCategoryKey
@@ -173,6 +174,8 @@ export function applyConfigurationTemplateToCustomModelForm(
   form.contextWindowTokens = template.contextWindowTokens
   form.maxInputTokens = template.maxInputTokens
   form.maxOutputTokens = template.maxOutputTokens
+  form.releaseDate = template.releaseDate
+  form.shutdownDate = template.shutdownDate
   const visibleFields = new Set(directPriceFieldsByCategory[category])
   for (const field of directPriceFieldKeys) {
     form[field] = visibleFields.has(field) ? template[field] : undefined
@@ -209,6 +212,17 @@ export function buildCustomModelCapabilityOptions(
 
 export function canManageModelPricesForView(isManagementView: boolean, isAdmin: boolean): boolean {
   return isManagementView && isAdmin
+}
+
+export function availableCustomModelModeOptions(providerCode: string, providerModels: ProviderModelPricing[]) {
+  const code = providerCode.trim().toLowerCase()
+  const categories = new Set<ModelCategoryKey>(['text'])
+  for (const item of providerModels) categories.add(getModelCategory(item))
+  if (code === 'gpt' || code === 'openai' || code === 'hybrid') {
+    categories.add('image')
+    categories.add('audio')
+  }
+  return modelModeOptions.filter((option) => categories.has(option.value))
 }
 
 function cloneServiceTierPrices(value?: Record<string, ProviderModelPriceSet>): Record<string, ProviderModelPriceSet> {
