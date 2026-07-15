@@ -66,9 +66,11 @@ const supervisorSource = readFileSync(
 
 assert.match(supervisorSource, /getDbServiceState\(\)/, 'supervisor 必须读取 DB service ready 消息中的 health host/port')
 assert.match(supervisorSource, /AbortSignal\.timeout\(dbServiceHealthProbeTimeoutMs\)/, 'health 探测必须有 5 秒超时')
+assert.match(supervisorSource, /await response\.arrayBuffer\(\)/, 'health 响应体必须消费，避免长期探测占用连接资源')
 assert.match(supervisorSource, /child\.kill\('SIGTERM'\)/, '定向恢复必须先 TERM 当前 child')
 assert.match(supervisorSource, /child\.kill\('SIGKILL'\)/, '10 秒未退出必须能 KILL 同一 child')
 assert.match(supervisorSource, /dbServiceProcess === child[\s\S]*child\.pid === childPid/, 'KILL 前必须再次核对 child 对象和 PID')
+assert.match(supervisorSource, /child\.signalCode === null/, 'KILL 前必须确认 child 尚未以信号退出')
 assert.match(supervisorSource, /clearDbServiceHealthMonitor\(\)/, 'shutdown 必须停止 health 与 kill timer')
 
 console.log('DB service health 定向恢复回归通过')

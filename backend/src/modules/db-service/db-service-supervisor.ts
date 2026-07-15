@@ -148,6 +148,7 @@ async function probeDbServiceHealth(child: ChildProcess): Promise<void> {
       const response = await fetch(`http://${state.httpHost}:${state.httpPort}/__aisys__/api/health`, {
         signal: AbortSignal.timeout(dbServiceHealthProbeTimeoutMs)
       })
+      await response.arrayBuffer()
       healthy = response.ok
     }
   } catch (error) {
@@ -197,7 +198,10 @@ function terminateUnhealthyDbServiceChild(child: ChildProcess): void {
 }
 
 function isSameRunningDbServiceChild(child: ChildProcess, childPid: number): boolean {
-  return dbServiceProcess === child && child.pid === childPid && child.exitCode === null
+  return dbServiceProcess === child
+    && child.pid === childPid
+    && child.exitCode === null
+    && child.signalCode === null
 }
 
 function clearDbServiceHealthProbeTimer(): void {
