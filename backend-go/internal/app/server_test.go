@@ -530,6 +530,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ExternalIntegrationSourceListHandler != nil ||
 		disabled.ExternalIntegrationSourceDetailHandler != nil ||
+		disabled.ExternalSourceTokenSecretHandler != nil ||
 		disabled.ExternalIntegrationSourceScopesHandler != nil ||
 		disabled.ExternalIntegrationSourceAPIDocsHandler != nil {
 		t.Fatal("external integration source handler was created while management API disabled")
@@ -547,6 +548,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 	)
 	if sessionOnly.ExternalIntegrationSourceListHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceDetailHandler != nil ||
+		sessionOnly.ExternalSourceTokenSecretHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceScopesHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceAPIDocsHandler != nil {
 		t.Fatal("external integration source handler was created while only session switch enabled")
@@ -564,6 +566,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 	)
 	if enabled.ExternalIntegrationSourceListHandler == nil ||
 		enabled.ExternalIntegrationSourceDetailHandler == nil ||
+		enabled.ExternalSourceTokenSecretHandler == nil ||
 		enabled.ExternalIntegrationSourceScopesHandler == nil ||
 		enabled.ExternalIntegrationSourceAPIDocsHandler == nil {
 		t.Fatal("external integration source handler was not created while management API enabled")
@@ -586,6 +589,9 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		"ManagementExternalIntegrationSourceDetailHandler:",
 		"managementHandlers.ExternalIntegrationSourceDetailHandler",
 		"httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService)",
+		"ManagementExternalSourceTokenSecretHandler:",
+		"managementHandlers.ExternalSourceTokenSecretHandler",
+		"httpapi.NewManagementExternalIntegrationSourceTokenSecretHandler(externalIntegrationSourceService)",
 		"ManagementExternalIntegrationSourceScopesHandler:",
 		"managementHandlers.ExternalIntegrationSourceScopesHandler",
 		"httpapi.NewManagementExternalIntegrationSourceScopesHandler()",

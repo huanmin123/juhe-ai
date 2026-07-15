@@ -22,6 +22,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementexternalintegrationsources"
 	"juhe-ai/backend-go/internal/modules/publicapi"
+	"juhe-ai/backend-go/internal/secretcrypto"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -33,6 +34,9 @@ const (
 	w2ExternalSourceListActiveTokenID   = "exttok_w2_list_active_expired"
 	w2ExternalSourceListDisabledTokenID = "exttok_w2_list_disabled_newer"
 	w2ExternalSourceListRevokedTokenID  = "exttok_w2_list_revoked_newest"
+
+	w2ExternalSourceListFixtureSecret        = "w2-external-source-list-fixture-secret-key"
+	w2ExternalSourceListActiveTokenPlaintext = "w2-expired-active-token-plaintext-fixture"
 )
 
 func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
@@ -83,7 +87,14 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 		t.Fatalf("open postgres store: %v", err)
 	}
 	defer store.Close()
-	service := managementexternalintegrationsources.NewService(store)
+	service := managementexternalintegrationsources.NewServiceWithOptions(
+		managementexternalintegrationsources.ServiceOptions{
+			ListReader:   store,
+			DetailReader: store,
+			SecretReader: store,
+			Secret:       w2ExternalSourceListFixtureSecret,
+		},
+	)
 
 	all, err := service.List(ctx, managementexternalintegrationsources.ListInput{
 		Keyword: "  mIxEd%_PrEfIx  ",
@@ -160,7 +171,7 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 	if item.IsBuiltIn || primary.IsBuiltIn {
 		t.Fatalf("fixture must not be marked built-in: source=%t token=%t", item.IsBuiltIn, primary.IsBuiltIn)
 	}
-	assertW2ExternalSourceListSafeDTO(t, all)
+	assertW2ExternalSourceListSafeDTO(t, all, fixture.activeTokenCiphertext)
 
 	detail, err := service.Get(ctx, w2ExternalSourceListActiveID)
 	if err != nil {
@@ -181,6 +192,7 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 		ManagementAPIAuthMiddleware:                      httpapi.NewManagementAPIAuthMiddleware(authenticator),
 		ManagementExternalIntegrationSourceListHandler:   httpapi.NewManagementExternalIntegrationSourceListHandler(service),
 		ManagementExternalIntegrationSourceDetailHandler: httpapi.NewManagementExternalIntegrationSourceDetailHandler(service),
+		ManagementExternalSourceTokenSecretHandler:       httpapi.NewManagementExternalIntegrationSourceTokenSecretHandler(service),
 	})
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -192,7 +204,7 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("HTTP list status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("HTTP list status = %d, want 200", rec.Code)
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("HTTP list Cache-Control = %q, want no-store", got)
@@ -211,6 +223,7 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 	if response.Data.Page != 1 || response.Data.PageSize != 10 || response.Data.PageUpperBound != 1 || response.Data.HasMore {
 		t.Fatalf("HTTP list pagination = %+v", response.Data)
 	}
+	assertW2ExternalSourceTokenSecretAbsent(t, rawBody, fixture.activeTokenCiphertext)
 	assertW2ExternalSourceListSafeJSON(t, rawBody)
 	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_external_source_list", sessionCreatedAt)
 
@@ -223,7 +236,7 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 	detailRec := httptest.NewRecorder()
 	router.ServeHTTP(detailRec, detailReq)
 	if detailRec.Code != http.StatusOK {
-		t.Fatalf("HTTP detail status = %d, want 200; body = %s", detailRec.Code, detailRec.Body.String())
+		t.Fatalf("HTTP detail status = %d, want 200", detailRec.Code)
 	}
 	if got := detailRec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("HTTP detail Cache-Control = %q, want no-store", got)
@@ -239,7 +252,41 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 		t.Fatalf("decode HTTP detail response: %v", err)
 	}
 	assertW2ExternalSourceDetail(t, &detailResponse.Data, item, fixture)
+	assertW2ExternalSourceTokenSecretAbsent(t, detailBody, fixture.activeTokenCiphertext)
 	assertW2ExternalSourceDetailSafeJSON(t, detailBody)
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_external_source_list", sessionCreatedAt)
+
+	secretReq := httptest.NewRequest(
+		http.MethodGet,
+		"/__aisys__/api/external-integration-sources/"+url.PathEscape(w2ExternalSourceListActiveID)+
+			"/tokens/"+url.PathEscape(w2ExternalSourceListActiveTokenID)+"/secret",
+		nil,
+	)
+	secretReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	secretRec := httptest.NewRecorder()
+	router.ServeHTTP(secretRec, secretReq)
+	if secretRec.Code != http.StatusOK {
+		t.Fatalf("HTTP token secret status = %d, want 200", secretRec.Code)
+	}
+	if got := secretRec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("HTTP token secret Cache-Control = %q, want no-store", got)
+	}
+	if got := secretRec.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("HTTP token secret Pragma = %q, want no-cache", got)
+	}
+	assertW2ExternalSourceTokenSecretResponse(t, secretRec.Body.Bytes())
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_external_source_list", sessionCreatedAt)
+
+	mismatchReq := httptest.NewRequest(
+		http.MethodGet,
+		"/__aisys__/api/external-integration-sources/"+url.PathEscape(w2ExternalSourceListDisabledID)+
+			"/tokens/"+url.PathEscape(w2ExternalSourceListActiveTokenID)+"/secret",
+		nil,
+	)
+	mismatchReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	mismatchRec := httptest.NewRecorder()
+	router.ServeHTTP(mismatchRec, mismatchReq)
+	assertW2ExternalSourceTokenSecretNotFound(t, mismatchRec)
 	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_external_source_list", sessionCreatedAt)
 }
 
@@ -249,6 +296,7 @@ type w2ExternalSourceListFixtureTimes struct {
 	activeTokenExpiresAt  time.Time
 	activeTokenCreatedAt  time.Time
 	activeTokenUpdatedAt  time.Time
+	activeTokenCiphertext string
 }
 
 func insertW2ExternalSourceListFixtures(
@@ -336,9 +384,16 @@ func insertW2ExternalSourceListFixtures(
 	activeTokenExpiresAt := activeSourceCreatedAt.Add(-3 * time.Hour)
 	activeTokenLastUsedAt := activeSourceCreatedAt.Add(-30 * time.Minute)
 	revokedAt := activeSourceCreatedAt.Add(3 * time.Hour)
+	activeTokenCiphertext, err := secretcrypto.NewJSONCodec(w2ExternalSourceListFixtureSecret).EncryptJSON(
+		map[string]any{"token": w2ExternalSourceListActiveTokenPlaintext},
+	)
+	if err != nil {
+		t.Fatal("encrypt external integration source token fixture")
+	}
 	tokens := []struct {
 		id         string
 		name       string
+		encrypted  string
 		status     string
 		expiresAt  *time.Time
 		lastUsedAt *time.Time
@@ -349,6 +404,7 @@ func insertW2ExternalSourceListFixtures(
 		{
 			id:         w2ExternalSourceListActiveTokenID,
 			name:       "Expired Active",
+			encrypted:  activeTokenCiphertext,
 			status:     publicapi.TokenStatusActive,
 			expiresAt:  &activeTokenExpiresAt,
 			lastUsedAt: &activeTokenLastUsedAt,
@@ -358,6 +414,7 @@ func insertW2ExternalSourceListFixtures(
 		{
 			id:        w2ExternalSourceListDisabledTokenID,
 			name:      "Newer Disabled",
+			encrypted: "w2-list-encrypted-" + w2ExternalSourceListDisabledTokenID,
 			status:    publicapi.TokenStatusDisabled,
 			createdAt: activeTokenCreatedAt.Add(time.Hour),
 			updatedAt: activeTokenUpdatedAt.Add(time.Hour),
@@ -365,6 +422,7 @@ func insertW2ExternalSourceListFixtures(
 		{
 			id:        w2ExternalSourceListRevokedTokenID,
 			name:      "Newest Revoked",
+			encrypted: "w2-list-encrypted-" + w2ExternalSourceListRevokedTokenID,
 			status:    publicapi.TokenStatusRevoked,
 			createdAt: activeTokenCreatedAt.Add(2 * time.Hour),
 			updatedAt: activeTokenUpdatedAt.Add(2 * time.Hour),
@@ -387,7 +445,7 @@ func insertW2ExternalSourceListFixtures(
 			w2ExternalSourceListActiveID,
 			token.name,
 			"w2-list-hash-"+token.id,
-			"w2-list-encrypted-"+token.id,
+			token.encrypted,
 			"juis_w2_"+string(rune('a'+index)),
 			"suffix0"+string(rune('1'+index)),
 			token.status,
@@ -408,6 +466,7 @@ func insertW2ExternalSourceListFixtures(
 		activeTokenExpiresAt:  activeTokenExpiresAt,
 		activeTokenCreatedAt:  activeTokenCreatedAt,
 		activeTokenUpdatedAt:  activeTokenUpdatedAt,
+		activeTokenCiphertext: activeTokenCiphertext,
 	}
 }
 
@@ -492,12 +551,14 @@ func findW2ExternalSourceListItem(
 func assertW2ExternalSourceListSafeDTO(
 	t *testing.T,
 	result managementexternalintegrationsources.ListResult,
+	activeTokenCiphertext string,
 ) {
 	t.Helper()
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		t.Fatalf("marshal external integration source list DTO: %v", err)
 	}
+	assertW2ExternalSourceTokenSecretAbsent(t, string(encoded), activeTokenCiphertext)
 	assertW2ExternalSourceListSafeJSON(t, string(encoded))
 }
 
@@ -545,7 +606,54 @@ func assertW2ExternalSourceDetail(
 	if err != nil {
 		t.Fatalf("marshal external integration source detail DTO: %v", err)
 	}
+	assertW2ExternalSourceTokenSecretAbsent(t, string(encoded), fixture.activeTokenCiphertext)
 	assertW2ExternalSourceDetailSafeJSON(t, string(encoded))
+}
+
+func assertW2ExternalSourceTokenSecretResponse(t *testing.T, body []byte) {
+	t.Helper()
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("decode external integration source token secret response: %v", err)
+	}
+	if len(envelope) != 1 {
+		t.Fatal("external integration source token secret response must contain only data")
+	}
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(envelope["data"], &data); err != nil {
+		t.Fatalf("decode external integration source token secret data: %v", err)
+	}
+	if len(data) != 1 {
+		t.Fatal("external integration source token secret data must contain only token")
+	}
+	var token string
+	if err := json.Unmarshal(data["token"], &token); err != nil {
+		t.Fatalf("decode external integration source token secret token: %v", err)
+	}
+	if token != w2ExternalSourceListActiveTokenPlaintext {
+		t.Fatal("external integration source token secret plaintext differs from fixture")
+	}
+}
+
+func assertW2ExternalSourceTokenSecretNotFound(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("HTTP mismatched token secret status = %d, want 404", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode mismatched token secret response: %v", err)
+	}
+	if len(body) != 1 || body["message"] != "Token 不存在" {
+		t.Fatal("mismatched token secret response must be exact Token 不存在 error")
+	}
+}
+
+func assertW2ExternalSourceTokenSecretAbsent(t *testing.T, body string, ciphertext string) {
+	t.Helper()
+	if strings.Contains(body, w2ExternalSourceListActiveTokenPlaintext) || strings.Contains(body, ciphertext) {
+		t.Fatal("external integration source list/detail leaked token secret material")
+	}
 }
 
 func assertW2ExternalSourceListSafeJSON(t *testing.T, body string) {
@@ -560,7 +668,7 @@ func assertW2ExternalSourceListSafeJSON(t *testing.T, body string) {
 		`"token":`,
 	} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("external integration source list DTO leaked %q: %s", forbidden, body)
+			t.Fatalf("external integration source list DTO leaked forbidden field or fixture marker %q", forbidden)
 		}
 	}
 }
@@ -569,7 +677,7 @@ func assertW2ExternalSourceDetailSafeJSON(t *testing.T, body string) {
 	t.Helper()
 	assertW2ExternalSourceListSafeJSON(t, body)
 	if strings.Contains(body, `"primaryToken"`) {
-		t.Fatalf("external integration source detail DTO must not contain primaryToken: %s", body)
+		t.Fatal("external integration source detail DTO must not contain primaryToken")
 	}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
@@ -590,7 +698,7 @@ func assertW2ExternalSourceDetailSafeJSON(t *testing.T, body string) {
 	}
 	for field := range source {
 		if _, allowed := allowedSourceFields[field]; !allowed {
-			t.Fatalf("external integration source detail contains unexpected field %q: %s", field, body)
+			t.Fatalf("external integration source detail contains unexpected field %q", field)
 		}
 	}
 	var tokens []map[string]json.RawMessage
@@ -604,7 +712,7 @@ func assertW2ExternalSourceDetailSafeJSON(t *testing.T, body string) {
 	for _, token := range tokens {
 		for field := range token {
 			if _, allowed := allowedTokenFields[field]; !allowed {
-				t.Fatalf("external integration source detail token contains unexpected field %q: %s", field, body)
+				t.Fatalf("external integration source detail token contains unexpected field %q", field)
 			}
 		}
 	}

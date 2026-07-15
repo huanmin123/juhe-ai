@@ -24,6 +24,10 @@ type managementExternalIntegrationSourceDetailService interface {
 	Get(context.Context, string) (*managementexternalintegrationsources.Detail, error)
 }
 
+type managementExternalIntegrationSourceTokenSecretService interface {
+	RevealTokenSecret(context.Context, string, string) (*managementexternalintegrationsources.TokenSecret, error)
+}
+
 func NewManagementExternalIntegrationSourceListHandler(
 	service *managementexternalintegrationsources.Service,
 ) http.Handler {
@@ -40,6 +44,15 @@ func NewManagementExternalIntegrationSourceDetailHandler(
 		return newManagementExternalIntegrationSourceDetailHandler(nil)
 	}
 	return newManagementExternalIntegrationSourceDetailHandler(service)
+}
+
+func NewManagementExternalIntegrationSourceTokenSecretHandler(
+	service *managementexternalintegrationsources.Service,
+) http.Handler {
+	if service == nil {
+		return newManagementExternalIntegrationSourceTokenSecretHandler(nil)
+	}
+	return newManagementExternalIntegrationSourceTokenSecretHandler(service)
 }
 
 func NewManagementExternalIntegrationSourceScopesHandler() http.Handler {
@@ -113,6 +126,48 @@ func newManagementExternalIntegrationSourceDetailHandler(
 			writeMessageError(w, http.StatusNotFound, "来源系统不存在")
 		default:
 			writeData(w, http.StatusOK, detail)
+		}
+	})
+}
+
+func newManagementExternalIntegrationSourceTokenSecretHandler(
+	service managementExternalIntegrationSourceTokenSecretService,
+) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !managementauth.IsAdminRole(authContext.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+
+		sourceID := strings.TrimFunc(chi.URLParam(r, "id"), managementGroupListECMAScriptWhitespace)
+		if sourceID == "" {
+			writeMessageError(w, http.StatusBadRequest, "来源系统不存在")
+			return
+		}
+		tokenID := strings.TrimFunc(chi.URLParam(r, "tokenId"), managementGroupListECMAScriptWhitespace)
+		if tokenID == "" {
+			writeMessageError(w, http.StatusBadRequest, "Token 不存在")
+			return
+		}
+		secret, err := service.RevealTokenSecret(r.Context(), sourceID, tokenID)
+		switch {
+		case err != nil:
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+		case secret == nil:
+			writeMessageError(w, http.StatusNotFound, "Token 不存在")
+		default:
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Pragma", "no-cache")
+			writeData(w, http.StatusOK, secret)
 		}
 	})
 }

@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	managementExternalIntegrationSourceListPath    = "/__aisys__/api/external-integration-sources"
-	managementExternalIntegrationSourceDetailPath  = managementExternalIntegrationSourceListPath + "/extsrc_1"
-	managementExternalIntegrationSourceScopesPath  = "/__aisys__/api/external-integration-sources/scopes"
-	managementExternalIntegrationSourceAPIDocsPath = "/__aisys__/api/external-integration-sources/api-docs"
+	managementExternalIntegrationSourceListPath        = "/__aisys__/api/external-integration-sources"
+	managementExternalIntegrationSourceDetailPath      = managementExternalIntegrationSourceListPath + "/extsrc_1"
+	managementExternalIntegrationSourceTokenSecretPath = managementExternalIntegrationSourceDetailPath + "/tokens/exttok_1/secret"
+	managementExternalIntegrationSourceScopesPath      = "/__aisys__/api/external-integration-sources/scopes"
+	managementExternalIntegrationSourceAPIDocsPath     = "/__aisys__/api/external-integration-sources/api-docs"
 )
 
 type managementExternalIntegrationSourceCatalogRoute struct {
@@ -241,6 +242,87 @@ func TestRouterExternalIntegrationSourceDetailRouteRequiresFullManagementOptIn(t
 	}
 }
 
+func TestRouterExternalIntegrationSourceTokenSecretRouteRequiresFullManagementOptIn(t *testing.T) {
+	readAuth := func(next http.Handler) http.Handler { return next }
+	tests := []struct {
+		name           string
+		opts           RouterOptions
+		includeHandler bool
+		wantStatus     int
+	}{
+		{
+			name:           "management disabled",
+			opts:           RouterOptions{Config: config.Config{Host: "127.0.0.1", Port: 3000}},
+			includeHandler: true,
+			wantStatus:     http.StatusNotFound,
+		},
+		{
+			name: "session only",
+			opts: RouterOptions{
+				Config: config.Config{
+					Host:                          "127.0.0.1",
+					Port:                          3000,
+					ManagementAuthSessionsEnabled: true,
+				},
+				ManagementAPIAuthMiddleware:  readAuth,
+				ManagementSessionListHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+			},
+			includeHandler: true,
+			wantStatus:     http.StatusNotFound,
+		},
+		{
+			name: "handler not opted in",
+			opts: RouterOptions{
+				Config:                       config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+				ManagementAPIAuthMiddleware:  readAuth,
+				ManagementCurrentUserHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+			},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "management and handler enabled",
+			opts: RouterOptions{
+				Config:                      config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+				ManagementAPIAuthMiddleware: readAuth,
+			},
+			includeHandler: true,
+			wantStatus:     http.StatusNoContent,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handlerCalls := 0
+			opts := test.opts
+			if test.includeHandler {
+				opts.ManagementExternalSourceTokenSecretHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					handlerCalls++
+					if got := chi.URLParam(r, "id"); got != "extsrc_1" {
+						t.Fatalf("source id = %q, want extsrc_1", got)
+					}
+					if got := chi.URLParam(r, "tokenId"); got != "exttok_1" {
+						t.Fatalf("token id = %q, want exttok_1", got)
+					}
+					w.WriteHeader(http.StatusNoContent)
+				})
+			}
+			rec := httptest.NewRecorder()
+			NewRouter(opts).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, managementExternalIntegrationSourceTokenSecretPath, nil))
+
+			if rec.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, test.wantStatus, rec.Body.String())
+			}
+			wantCalls := 0
+			if test.wantStatus == http.StatusNoContent {
+				wantCalls = 1
+			}
+			if handlerCalls != wantCalls {
+				t.Fatalf("handler calls = %d, want %d", handlerCalls, wantCalls)
+			}
+		})
+	}
+}
+
 func TestRouterExternalIntegrationSourceListRouteKeepsUnmigratedRoutesUnavailable(t *testing.T) {
 	readAuthCalls := 0
 	listHandlerCalls := 0
@@ -274,7 +356,7 @@ func TestRouterExternalIntegrationSourceListRouteKeepsUnmigratedRoutesUnavailabl
 		{name: "detail DELETE", method: http.MethodDelete, path: managementExternalIntegrationSourceListPath + "/extsrc_1", wantStatus: http.StatusNotFound},
 		{name: "built-in reset", method: http.MethodPost, path: managementExternalIntegrationSourceListPath + "/built-in-test-token/reset", wantStatus: http.StatusNotFound},
 		{name: "token create", method: http.MethodPost, path: managementExternalIntegrationSourceListPath + "/extsrc_1/tokens", wantStatus: http.StatusNotFound},
-		{name: "token secret", method: http.MethodGet, path: managementExternalIntegrationSourceListPath + "/extsrc_1/tokens/exttok_1/secret", wantStatus: http.StatusNotFound},
+		{name: "token secret stays independent", method: http.MethodGet, path: managementExternalIntegrationSourceTokenSecretPath, wantStatus: http.StatusNotFound},
 		{name: "token update", method: http.MethodPatch, path: managementExternalIntegrationSourceListPath + "/extsrc_1/tokens/exttok_1", wantStatus: http.StatusNotFound},
 		{name: "scopes stays independent", method: http.MethodGet, path: managementExternalIntegrationSourceScopesPath, wantStatus: http.StatusNotFound},
 		{name: "api docs stays independent", method: http.MethodGet, path: managementExternalIntegrationSourceAPIDocsPath, wantStatus: http.StatusNotFound},
@@ -355,7 +437,7 @@ func TestRouterExternalIntegrationSourceDetailRoutePreservesUnmigratedContracts(
 		{name: "built-in reset remains unavailable", method: http.MethodPost, path: managementExternalIntegrationSourceListPath + "/built-in-test-token/reset", wantStatus: http.StatusNotFound, assertJSONNotFound: true},
 		{name: "token collection read remains unavailable", method: http.MethodGet, path: managementExternalIntegrationSourceDetailPath + "/tokens", wantStatus: http.StatusNotFound, assertJSONNotFound: true},
 		{name: "token create remains unavailable", method: http.MethodPost, path: managementExternalIntegrationSourceDetailPath + "/tokens", wantStatus: http.StatusNotFound, assertJSONNotFound: true},
-		{name: "token secret remains unavailable", method: http.MethodGet, path: managementExternalIntegrationSourceDetailPath + "/tokens/exttok_1/secret", wantStatus: http.StatusNotFound, assertJSONNotFound: true},
+		{name: "token secret stays unavailable without opt in", method: http.MethodGet, path: managementExternalIntegrationSourceTokenSecretPath, wantStatus: http.StatusNotFound, assertJSONNotFound: true},
 		{name: "token update remains unavailable", method: http.MethodPatch, path: managementExternalIntegrationSourceDetailPath + "/tokens/exttok_1", wantStatus: http.StatusNotFound, assertJSONNotFound: true},
 		{name: "token delete remains unavailable", method: http.MethodDelete, path: managementExternalIntegrationSourceDetailPath + "/tokens/exttok_1", wantStatus: http.StatusNotFound, assertJSONNotFound: true},
 	}
@@ -831,6 +913,118 @@ func TestRouterExternalIntegrationSourceDetailUsesReadPipelineAndKeepsWritesUnau
 					authenticator.touchCalls,
 					userLimiter.calls,
 					detailHandlerCalls,
+				)
+			}
+		})
+	}
+	if want := []string{"ip-limit", "ip-limit", "ip-limit", "ip-limit"}; !slices.Equal(events, want) {
+		t.Fatalf("unavailable write events = %v, want %v", events, want)
+	}
+}
+
+func TestRouterExternalIntegrationSourceTokenSecretUsesReadPipelineAndKeepsWritesUnauthenticated(t *testing.T) {
+	events := []string{}
+	authenticator := &managementExternalIntegrationSourceCatalogAuthenticator{
+		events: &events,
+		authContext: managementauth.Context{
+			SystemAccountID: "sys_admin",
+			Username:        "admin",
+			Role:            "admin",
+			SessionID:       "sess_admin",
+		},
+	}
+	ipLimiter := &managementExternalIntegrationSourceCatalogIPLimiter{events: &events}
+	userLimiter := &managementExternalIntegrationSourceCatalogUserLimiter{events: &events}
+	tokenSecretHandlerCalls := 0
+	opts := RouterOptions{
+		Config: config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		SystemAPIRateLimitReader: managementExternalIntegrationSourceCatalogRateLimitReader{
+			settings: port.SystemAPIRateLimitSettings{
+				IPReadPerMinute:          600,
+				IPReadBurstPer10Seconds:  120,
+				IPWritePerMinute:         180,
+				IPWriteBurstPer10Seconds: 40,
+				UserReadPerMinute:        300,
+				UserWritePerMinute:       120,
+			},
+		},
+		SystemAPIIPRateLimiter:            ipLimiter,
+		SystemAPIAuthenticatedRateLimiter: userLimiter,
+		ManagementAPIAuthMiddleware:       NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware:  NewManagementAPIAuthTouchMiddleware(authenticator),
+		ManagementExternalSourceTokenSecretHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			events = append(events, "handler")
+			tokenSecretHandlerCalls++
+			if got := chi.URLParam(r, "id"); got != "extsrc_1" {
+				t.Fatalf("source id = %q, want extsrc_1", got)
+			}
+			if got := chi.URLParam(r, "tokenId"); got != "exttok_1" {
+				t.Fatalf("token id = %q, want exttok_1", got)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	}
+	router := NewRouter(opts)
+
+	req := httptest.NewRequest(http.MethodGet, managementExternalIntegrationSourceTokenSecretPath, nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if authenticator.readCalls != 1 || authenticator.touchCalls != 0 {
+		t.Fatalf("read auth calls = %d, touch auth calls = %d", authenticator.readCalls, authenticator.touchCalls)
+	}
+	if ipLimiter.calls != 1 || ipLimiter.settings.PerMinute != 600 || ipLimiter.settings.BurstPer10Seconds != 120 {
+		t.Fatalf("IP limiter calls = %d, settings = %+v", ipLimiter.calls, ipLimiter.settings)
+	}
+	if userLimiter.calls != 1 || userLimiter.limit != 300 {
+		t.Fatalf("authenticated limiter calls = %d, limit = %d", userLimiter.calls, userLimiter.limit)
+	}
+	if tokenSecretHandlerCalls != 1 {
+		t.Fatalf("token secret handler calls = %d, want 1", tokenSecretHandlerCalls)
+	}
+	if want := []string{"ip-limit", "read-auth", "user-limit", "handler"}; !slices.Equal(events, want) {
+		t.Fatalf("pipeline events = %v, want %v", events, want)
+	}
+	if !managementBusinessRoutesConfigured(opts) {
+		t.Fatal("token secret route was not classified as a management business route")
+	}
+	if managementWriteRoutesConfigured(opts) {
+		t.Fatal("token secret route was incorrectly classified as a management write route")
+	}
+
+	events = events[:0]
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			beforeIPCalls := ipLimiter.calls
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(method, managementExternalIntegrationSourceTokenSecretPath, nil)
+			req.Header.Set("Cookie", "juhe_ai_session=session-token")
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404; body = %s", rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			assertManagementExternalIntegrationSourceNotFound(t, rec)
+			if ipLimiter.calls != beforeIPCalls+1 || ipLimiter.settings.PerMinute != 180 || ipLimiter.settings.BurstPer10Seconds != 40 {
+				t.Fatalf("IP limiter calls = %d, settings = %+v", ipLimiter.calls, ipLimiter.settings)
+			}
+			if authenticator.readCalls != 1 || authenticator.touchCalls != 0 || userLimiter.calls != 1 || tokenSecretHandlerCalls != 1 {
+				t.Fatalf(
+					"management pipeline calls = read auth %d, touch auth %d, authenticated limiter %d, token secret %d",
+					authenticator.readCalls,
+					authenticator.touchCalls,
+					userLimiter.calls,
+					tokenSecretHandlerCalls,
 				)
 			}
 		})
