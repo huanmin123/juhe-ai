@@ -96,6 +96,7 @@ import {
 import { requestModel } from './metadata.js'
 import { gatewayRequestEndpointFamily, openAIRequestEndpointFamily, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 import { consumePublicModelsRateLimit } from '../runtime/public-models-rate-limit.service.js'
+import { consumeAuthenticatedModelsRateLimit } from '../runtime/authenticated-models-rate-limit.service.js'
 import {
   createSameAccountRetryBudget,
   type SameAccountRetryBudget
@@ -552,6 +553,48 @@ export async function prepareOpenAIGatewayDispatchContext(
     requestSnapshot
   })
 
+  const modelsResponseProtocol = resolveGatewayModelsResponseProtocol(req)
+  if (modelsResponseProtocol && trafficSource === 'gateway' && apiKeyId) {
+    const rateLimit = await consumeAuthenticatedModelsRateLimit({
+      apiKeyId,
+      clientIp: gatewayClientIp
+    })
+    if (!rateLimit.allowed) {
+      if (!res.headersSent) {
+        res.setHeader('Retry-After', String(rateLimit.retryAfterSeconds ?? 1))
+      }
+      auditCapture.addGatewayMetadata({
+        label: 'authenticated_models_rate_limit',
+        metadata: {
+          scope: rateLimit.scope,
+          limit: rateLimit.limit,
+          retryAfterSeconds: rateLimit.retryAfterSeconds
+        }
+      })
+      const responsePayload = gatewayErrorPayload(
+        '模型列表请求过于频繁，请稍后重试',
+        'rate_limit_exceeded',
+        'authenticated_models_rate_limited'
+      )
+      await sendGatewayFailureResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext,
+        startedAt,
+        statusCode: 429,
+        responsePayload,
+        audit: {
+          outcome: 'gateway_failed',
+          errorPhase: 'request_validation',
+          errorCode: 'authenticated_models_rate_limited',
+          errorMessage: responsePayload.error.message
+        }
+      })
+      return undefined
+    }
+  }
+
   const bodyState = getGatewayRequestBodyState(req)
   if (bodyState?.jsonParseStatus === 'invalid_json') {
     await sendInvalidJsonGatewayResponse({
@@ -591,7 +634,6 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
-  const modelsResponseProtocol = resolveGatewayModelsResponseProtocol(req)
   if (modelsResponseProtocol) {
     await recordClientIpErrorCircuitSuccessAsync({
       systemAccountId,

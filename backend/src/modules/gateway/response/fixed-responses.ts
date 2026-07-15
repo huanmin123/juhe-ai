@@ -3,7 +3,7 @@ import type { Request, Response } from 'express'
 import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
 import { gatewayErrorPayload } from './responses.js'
-import { buildOpenAIModelsResponse } from '../protocols/openai-v1/route-helpers.js'
+import { buildOpenAIModelsResponse, isCodexModelsRequest } from '../protocols/openai-v1/route-helpers.js'
 import { buildAnthropicModelsResponse } from '../protocols/anthropic-v1/route-helpers.js'
 import { buildGeminiModelsResponse } from '../protocols/gemini-v1beta/route-helpers.js'
 import { listCachedProviderModelCatalogAsync } from '../runtime/runtime-cache.service.js'
@@ -25,6 +25,10 @@ import {
   compareProviderModelCatalogItems,
   type ProviderModelCatalogItem
 } from '../../model-pricing/model-catalog.service.js'
+import {
+  getAuthenticatedModelsResponseCache,
+  setAuthenticatedModelsResponseCache
+} from './models-response-cache.js'
 
 interface OpenAIModelsResponseUsageContext {
   traceId: string
@@ -150,20 +154,39 @@ async function sendModelsGatewayResponsePayload(input: {
   startedAt: number
 }): Promise<unknown> {
   const { req, res, auditCapture, protocol, providerCode, systemAccountId, providerCodes, startedAt } = input
-  const catalog = providerCodes?.length
-    ? await listProviderScopedModelCatalog({
-        providerCodes,
-        systemAccountId
-      })
-    : await listCachedProviderModelCatalogAsync({
-        providerCode,
-        systemAccountId
-      })
-  const responsePayload = protocol === 'anthropic'
-    ? buildAnthropicModelsResponse(catalog)
-    : protocol === 'gemini'
-      ? buildGeminiModelsResponse(catalog)
-      : buildOpenAIModelsResponse(catalog, req)
+  const cacheKey = systemAccountId
+    ? {
+        systemAccountId,
+        providerCodes: providerCodes?.length ? providerCodes : [providerCode],
+        protocol,
+        variant: protocol === 'openai' ? (isCodexModelsRequest(req) ? 'codex' as const : 'openai' as const) : 'default' as const
+      }
+    : undefined
+  let responsePayload = cacheKey
+    ? await getAuthenticatedModelsResponseCache(cacheKey)
+    : undefined
+  if (!responsePayload) {
+    const catalog = providerCodes?.length
+      ? await listProviderScopedModelCatalog({
+          providerCodes,
+          systemAccountId
+        })
+      : await listCachedProviderModelCatalogAsync({
+          providerCode,
+          systemAccountId
+        })
+    responsePayload = protocol === 'anthropic'
+      ? buildAnthropicModelsResponse(catalog)
+      : protocol === 'gemini'
+        ? buildGeminiModelsResponse(catalog)
+        : buildOpenAIModelsResponse(catalog, req)
+    if (cacheKey) {
+      await setAuthenticatedModelsResponseCache(cacheKey, responsePayload)
+    }
+  }
+  if (cacheKey) {
+    res.setHeader('Cache-Control', 'private, max-age=30')
+  }
   res.status(200).json(responsePayload)
   auditCapture.finalize({
     outcome: 'success',
