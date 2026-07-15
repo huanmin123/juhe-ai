@@ -166,6 +166,7 @@ async function sendModelsGatewayResponsePayload(input: {
     ? await getAuthenticatedModelsResponseCache(cacheKey)
     : undefined
   if (!responsePayload) {
+    const cacheBuildStartedAtMs = Date.now()
     const catalog = providerCodes?.length
       ? await listProviderScopedModelCatalog({
           providerCodes,
@@ -181,7 +182,9 @@ async function sendModelsGatewayResponsePayload(input: {
         ? buildGeminiModelsResponse(catalog)
         : buildOpenAIModelsResponse(catalog, req)
     if (cacheKey) {
-      await setAuthenticatedModelsResponseCache(cacheKey, responsePayload)
+      await setAuthenticatedModelsResponseCache(cacheKey, responsePayload, {
+        buildStartedAtMs: cacheBuildStartedAtMs
+      })
     }
   }
   if (cacheKey) {

@@ -31,15 +31,24 @@ export async function getAuthenticatedModelsResponseCache(input: ModelsResponseC
 
 export async function setAuthenticatedModelsResponseCache(
   input: ModelsResponseCacheKeyInput,
-  responsePayload: object
+  responsePayload: object,
+  options: { buildStartedAtMs?: number; nowMs?: number } = {}
 ): Promise<void> {
+  const nowMs = options.nowMs ?? Date.now()
+  const ttlMs = modelsResponseCacheRemainingTtlMs(options.buildStartedAtMs ?? nowMs, nowMs)
+  if (ttlMs <= 0) return
   try {
-    await authenticatedModelsResponseCache.set(modelsResponseCacheKey(input), responsePayload, { ttlMs: 30_000 })
+    await authenticatedModelsResponseCache.set(modelsResponseCacheKey(input), responsePayload, { ttlMs })
   } catch (error) {
     logger.warn(errorLogFields(error, {
       event: 'authenticated_models_response_cache_write_failed'
     }), '写入认证模型列表最终响应缓存失败，本次响应继续返回')
   }
+}
+
+export function modelsResponseCacheRemainingTtlMs(buildStartedAtMs: number, nowMs = Date.now()): number {
+  const elapsedMs = Math.max(0, nowMs - buildStartedAtMs)
+  return Math.max(0, 30_000 - elapsedMs)
 }
 
 export async function clearAuthenticatedModelsResponseCache(): Promise<void> {

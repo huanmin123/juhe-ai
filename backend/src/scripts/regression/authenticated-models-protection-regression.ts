@@ -10,6 +10,7 @@ import {
 import {
   clearAuthenticatedModelsResponseCache,
   getAuthenticatedModelsResponseCache,
+  modelsResponseCacheRemainingTtlMs,
   setAuthenticatedModelsResponseCache
 } from '../../modules/gateway/response/models-response-cache.js'
 
@@ -125,6 +126,14 @@ assert.equal(
 )
 await clearAuthenticatedModelsResponseCache()
 assert.equal(await getAuthenticatedModelsResponseCache(cacheInput), undefined, 'runtime invalidator 必须能清空最终响应缓存')
+assert.equal(modelsResponseCacheRemainingTtlMs(10_000, 10_000), 30_000)
+assert.equal(modelsResponseCacheRemainingTtlMs(10_000, 35_000), 5_000, '缓存 TTL 必须从构建开始计时')
+assert.equal(modelsResponseCacheRemainingTtlMs(10_000, 40_000), 0, '构建达到 30 秒后不得重新写入 stale payload')
+await setAuthenticatedModelsResponseCache(cacheInput, { object: 'list', data: [{ id: 'stale-model' }] }, {
+  buildStartedAtMs: 10_000,
+  nowMs: 40_000
+})
+assert.equal(await getAuthenticatedModelsResponseCache(cacheInput), undefined, '慢构建完成后不得重新获得 30 秒缓存期限')
 
 const cacheSource = readFileSync(new URL('../../modules/gateway/response/models-response-cache.ts', import.meta.url), 'utf8')
 assert.match(cacheSource, /ttlMs:\s*30_000/, '最终响应缓存 TTL 必须固定为 30 秒')
@@ -140,13 +149,13 @@ assert.match(preflightSource, /Retry-After/, '认证 models 429 必须返回 Ret
 assert.match(preflightSource, /authenticated_models_rate_limited/, '认证 models 429 必须有独立审计错误码')
 assert.match(preflightSource, /authenticated_models_rate_limit_unavailable/, 'Redis limiter 异常必须返回独立 audited 503')
 assert.match(preflightSource, /statusCode = limiterUnavailable \? 503 : 429/, 'Redis limiter 异常必须明确返回 503，普通超限保持 429')
-assert.match(preflightSource, /usageContext: baseUsageContext/, '早期 limiter 拒绝必须写失败 usage，不能落入成功 usage')
+assert.match(preflightSource, /sendGatewayFailureResponse/, 'limiter 拒绝必须写失败 usage，不能落入成功 usage')
 assert.match(preflightSource, /sendGatewayFailureResponse/, '认证 models 429 必须进入失败审计和失败 usage，不得写成功 usage')
 const earlyLimiterIndex = preflightSource.indexOf('const authenticatedModelsRateLimitDecision')
-assert(earlyLimiterIndex > 0, '认证 models limiter 应有明确的早期决策点')
-assert(earlyLimiterIndex < preflightSource.indexOf('const activeGatewaySettings'), '认证 models limiter 必须早于系统设置读取')
-assert(earlyLimiterIndex < preflightSource.indexOf('const clientIpErrorCircuit ='), '认证 models limiter 必须早于客户端错误熔断读取')
-assert(earlyLimiterIndex < preflightSource.indexOf('const groupAccess ='), '认证 models limiter 必须早于分组访问读取')
+assert(earlyLimiterIndex > preflightSource.indexOf('await rejectMissingGatewayGroupAccess'), '分组缺失 403 必须优先于认证 models limiter')
+assert(earlyLimiterIndex > preflightSource.indexOf('await rejectGatewayApiKeyQuotaIfExceeded'), 'API Key 额度错误必须优先于认证 models limiter')
+assert(earlyLimiterIndex > preflightSource.indexOf('await rejectGatewayAuthorizationQuotaIfExceeded'), '授权额度错误必须优先于认证 models limiter')
+assert(earlyLimiterIndex < preflightSource.indexOf('await recordClientIpErrorCircuitSuccessAsync'), 'limiter 必须在模型目录成功路径前执行')
 
 const fixedResponseSource = readFileSync(new URL('../../modules/gateway/response/fixed-responses.ts', import.meta.url), 'utf8')
 assert.match(fixedResponseSource, /private, no-cache/, '认证 models 成功响应不得允许客户端 30 秒内直接复用跨凭据响应')
