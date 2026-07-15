@@ -41,6 +41,42 @@ const externalIntegrationSourceScopeOptions = [
   { value: 'juhe_ai_public:account_update:write', label: 'POST 账号修改' },
   { value: 'juhe_ai_public:account_delete:write', label: 'POST 账号删除' }
 ] as const
+const externalIntegrationSourceScopeSet = new Set<string>(
+  externalIntegrationSourceScopeOptions.map((option) => option.value)
+)
+const externalIntegrationSourceRateLimitMaximumRules = 8
+const externalIntegrationSourceRateLimitMaximumWindowSeconds = 86_400
+const externalIntegrationSourceRateLimitMaximumRequests = 100_000
+const externalIntegrationSourceListItemFieldSet = new Set([
+  'id',
+  'name',
+  'status',
+  'scopes',
+  'rateLimits',
+  'expiresAt',
+  'notes',
+  'lastUsedAt',
+  'createdAt',
+  'updatedAt',
+  'tokenCount',
+  'activeTokenCount',
+  'primaryToken',
+  'isBuiltIn'
+])
+const externalIntegrationSourcePrimaryTokenFieldSet = new Set([
+  'id',
+  'name',
+  'tokenPrefix',
+  'tokenSuffix',
+  'status',
+  'scopes',
+  'expiresAt',
+  'lastUsedAt',
+  'createdAt',
+  'updatedAt',
+  'revokedAt',
+  'isBuiltIn'
+])
 const externalIntegrationSourceApiDocContracts = externalIntegrationSourceScopeOptions.map((option) =>
   externalIntegrationSourceApiDocContract(option.value)
 )
@@ -180,6 +216,52 @@ interface AccountTestOptionsRecord {
   models: AccountTestOptionModel[]
   testEndpointModes: AccountTestEndpointMode[]
   defaultTestEndpointMode: AccountTestEndpointMode
+}
+
+type ExternalIntegrationSourceStatus = 'active' | 'disabled'
+type ExternalIntegrationSourceTokenStatus = 'active' | 'disabled' | 'revoked'
+
+interface ExternalIntegrationSourcePrimaryToken {
+  id: string
+  name: string
+  tokenPrefix: string
+  tokenSuffix: string
+  status: ExternalIntegrationSourceTokenStatus
+  scopes: string[]
+  expiresAt?: string
+  lastUsedAt?: string
+  createdAt: string
+  updatedAt: string
+  revokedAt?: string
+  isBuiltIn: boolean
+}
+
+interface ExternalIntegrationSourceListItem {
+  id: string
+  name: string
+  status: ExternalIntegrationSourceStatus
+  scopes: string[]
+  rateLimits: Array<{
+    windowSeconds: number
+    maxRequests: number
+  }>
+  expiresAt?: string
+  notes?: string
+  lastUsedAt?: string
+  createdAt: string
+  updatedAt: string
+  tokenCount: number
+  activeTokenCount: number
+  primaryToken?: ExternalIntegrationSourcePrimaryToken
+  isBuiltIn: boolean
+}
+
+interface ExternalIntegrationSourceListResult {
+  items: ExternalIntegrationSourceListItem[]
+  page: number
+  pageSize: number
+  pageUpperBound: number
+  hasMore: boolean
 }
 
 type PublicApiLogCaptureStatus = 'complete' | 'truncated' | 'empty' | 'dropped'
@@ -401,6 +483,40 @@ async function runReadOnlySmoke(
     'external integration source api docs'
   )
   assertExternalIntegrationSourceApiDocs(externalIntegrationSourceApiDocsData)
+
+  const externalIntegrationSourceListData = await getEnvelopeData(
+    externalIntegrationSourcesListUrl(config, 1),
+    config,
+    'external integration source list'
+  )
+  const externalIntegrationSourceFirstPage = assertExternalIntegrationSourceList(
+    externalIntegrationSourceListData,
+    1,
+    20
+  )
+  if (externalIntegrationSourceFirstPage.hasMore) {
+    const externalIntegrationSourceSecondPageData = await getEnvelopeData(
+      externalIntegrationSourcesListUrl(config, 2),
+      config,
+      'external integration source list page 2'
+    )
+    const externalIntegrationSourceSecondPage = assertExternalIntegrationSourceList(
+      externalIntegrationSourceSecondPageData,
+      2,
+      20
+    )
+    const firstPageIds = new Set(externalIntegrationSourceFirstPage.items.map((item) => item.id))
+    for (const source of externalIntegrationSourceSecondPage.items) {
+      expect(
+        !firstPageIds.has(source.id),
+        `external integration source list pages must not contain duplicate id ${source.id}`
+      )
+    }
+    expect(
+      externalIntegrationSourceSecondPage.pageUpperBound >= externalIntegrationSourceFirstPage.pageUpperBound,
+      'external integration source list pageUpperBound must not decrease across pages'
+    )
+  }
 
   const listData = await getEnvelopeData(groupsListUrl(config), config, 'groups list')
   const groupList = assertGroupList(listData)
@@ -791,6 +907,16 @@ function publicAPILogDetailUrl(config: NormalizedRealGoManagementSmokeConfig, pu
   return endpointUrl(config.baseUrl, `/public-api-logs/${encodeURIComponent(publicApiLogId)}`, {})
 }
 
+function externalIntegrationSourcesListUrl(
+  config: NormalizedRealGoManagementSmokeConfig,
+  page: number
+): URL {
+  return endpointUrl(config.baseUrl, '/external-integration-sources', {
+    page: String(page),
+    pageSize: '20'
+  })
+}
+
 function clientIPStatsListUrl(config: NormalizedRealGoManagementSmokeConfig): URL {
   return endpointUrl(config.baseUrl, '/ip-stats', {
     page: '1',
@@ -967,6 +1093,214 @@ function assertPublicAPILogList(value: unknown): PublicApiLogListResult {
     page: value.page,
     pageSize: value.pageSize
   }
+}
+
+function assertExternalIntegrationSourceList(
+  value: unknown,
+  expectedPage: number,
+  expectedPageSize: number
+): ExternalIntegrationSourceListResult {
+  const label = 'external integration source list data'
+  expect(isRecord(value), `${label} must be an object`)
+  expect(Array.isArray(value.items), `${label}.items must be an array`)
+  expect(value.page === expectedPage, `${label}.page must be ${expectedPage}`)
+  expect(value.pageSize === expectedPageSize, `${label}.pageSize must be ${expectedPageSize}`)
+  expect(
+    isNonNegativeSafeInteger(value.pageUpperBound),
+    `${label}.pageUpperBound must be a non-negative safe integer`
+  )
+  expect(typeof value.hasMore === 'boolean', `${label}.hasMore must be boolean`)
+  expect(value.items.length <= value.pageSize, `${label}.items must not exceed pageSize`)
+
+  const seenIds = new Set<string>()
+  const items = value.items.map((item, index) => {
+    const source = assertExternalIntegrationSourceListItem(item, index)
+    expect(!seenIds.has(source.id), `${label}.items must not contain duplicate ids`)
+    seenIds.add(source.id)
+    return source
+  })
+  const offset = (expectedPage - 1) * expectedPageSize
+  expect(
+    value.pageUpperBound === offset + items.length + (value.hasMore ? 1 : 0),
+    `${label}.pageUpperBound must be the progressive page upper bound`
+  )
+  if (value.hasMore) {
+    expect(items.length === value.pageSize, `${label}.hasMore requires a full page`)
+  }
+
+  return {
+    items,
+    page: value.page,
+    pageSize: value.pageSize,
+    pageUpperBound: value.pageUpperBound,
+    hasMore: value.hasMore
+  }
+}
+
+function assertExternalIntegrationSourceListItem(
+  value: unknown,
+  index: number
+): ExternalIntegrationSourceListItem {
+  const label = `external integration source list item ${index}`
+  expect(isRecord(value), `${label} must be an object`)
+  assertExternalIntegrationSourceFields(value, externalIntegrationSourceListItemFieldSet, label)
+  expect(isNonEmptyString(value.id), `${label}.id must be a non-empty string`)
+  expect(isNonEmptyString(value.name), `${label}.name must be a non-empty string`)
+  expect(
+    value.status === 'active' || value.status === 'disabled',
+    `${label}.status must be active or disabled`
+  )
+  assertExternalIntegrationSourceScopesSubset(value.scopes, `${label}.scopes`)
+  assertExternalIntegrationSourceRateLimits(value.rateLimits, `${label}.rateLimits`)
+  assertOptionalISOString(value, 'expiresAt', label)
+  if (Object.hasOwn(value, 'notes')) {
+    expect(typeof value.notes === 'string', `${label}.notes must be a string when present`)
+  }
+  assertOptionalISOString(value, 'lastUsedAt', label)
+  assertRequiredISOString(value.createdAt, `${label}.createdAt`)
+  assertRequiredISOString(value.updatedAt, `${label}.updatedAt`)
+  expect(
+    isNonNegativeSafeInteger(value.tokenCount),
+    `${label}.tokenCount must be a non-negative safe integer`
+  )
+  expect(
+    isNonNegativeSafeInteger(value.activeTokenCount),
+    `${label}.activeTokenCount must be a non-negative safe integer`
+  )
+  expect(
+    value.activeTokenCount <= value.tokenCount,
+    `${label}.activeTokenCount must not exceed tokenCount`
+  )
+  expect(typeof value.isBuiltIn === 'boolean', `${label}.isBuiltIn must be boolean`)
+
+  const hasPrimaryToken = Object.hasOwn(value, 'primaryToken')
+  if (value.tokenCount > 0) {
+    expect(hasPrimaryToken, `${label}.primaryToken must be present when tokenCount is positive`)
+  } else {
+    expect(!hasPrimaryToken, `${label}.primaryToken must be absent when tokenCount is zero`)
+  }
+  if (hasPrimaryToken) {
+    const primaryToken = assertExternalIntegrationSourcePrimaryToken(value.primaryToken, `${label}.primaryToken`)
+    if (Number(value.activeTokenCount) > 0) {
+      expect(
+        primaryToken.status === 'active',
+        `${label}.primaryToken.status must be active when activeTokenCount is positive`
+      )
+    } else {
+      expect(
+        primaryToken.status !== 'active',
+        `${label}.primaryToken.status must not be active when activeTokenCount is zero`
+      )
+    }
+  }
+  return value as unknown as ExternalIntegrationSourceListItem
+}
+
+function assertExternalIntegrationSourcePrimaryToken(
+  value: unknown,
+  label: string
+): ExternalIntegrationSourcePrimaryToken {
+  expect(isRecord(value), `${label} must be an object`)
+  assertExternalIntegrationSourceFields(value, externalIntegrationSourcePrimaryTokenFieldSet, label)
+  expect(isNonEmptyString(value.id), `${label}.id must be a non-empty string`)
+  expect(isNonEmptyString(value.name), `${label}.name must be a non-empty string`)
+  expect(isNonEmptyString(value.tokenPrefix), `${label}.tokenPrefix must be a non-empty string`)
+  expect(isNonEmptyString(value.tokenSuffix), `${label}.tokenSuffix must be a non-empty string`)
+  expect(
+    value.status === 'active' || value.status === 'disabled' || value.status === 'revoked',
+    `${label}.status must be active, disabled, or revoked`
+  )
+  assertExternalIntegrationSourceScopesSubset(value.scopes, `${label}.scopes`)
+  assertOptionalISOString(value, 'expiresAt', label)
+  assertOptionalISOString(value, 'lastUsedAt', label)
+  assertRequiredISOString(value.createdAt, `${label}.createdAt`)
+  assertRequiredISOString(value.updatedAt, `${label}.updatedAt`)
+  assertOptionalISOString(value, 'revokedAt', label)
+  expect(typeof value.isBuiltIn === 'boolean', `${label}.isBuiltIn must be boolean`)
+  return value as unknown as ExternalIntegrationSourcePrimaryToken
+}
+
+function assertExternalIntegrationSourceScopesSubset(value: unknown, label: string): string[] {
+  expect(Array.isArray(value), `${label} must be an array`)
+  const seenScopes = new Set<string>()
+  value.forEach((scope, index) => {
+    expect(typeof scope === 'string', `${label} item ${index} must be a string`)
+    expect(
+      externalIntegrationSourceScopeSet.has(scope),
+      `${label} item ${index} must be one of the 16 supported scopes`
+    )
+    expect(!seenScopes.has(scope), `${label} must not contain duplicate scopes`)
+    seenScopes.add(scope)
+  })
+  return value
+}
+
+function assertExternalIntegrationSourceRateLimits(value: unknown, label: string): void {
+  expect(Array.isArray(value), `${label} must be an array`)
+  expect(
+    value.length <= externalIntegrationSourceRateLimitMaximumRules,
+    `${label} must contain at most ${externalIntegrationSourceRateLimitMaximumRules} rules`
+  )
+
+  const seenWindows = new Set<number>()
+  let previousWindowSeconds = 0
+  value.forEach((rule, index) => {
+    const ruleLabel = `${label} item ${index}`
+    expect(isRecord(rule), `${ruleLabel} must be an object`)
+    const keys = Object.keys(rule)
+    expect(
+      keys.length === 2 && keys.includes('windowSeconds') && keys.includes('maxRequests'),
+      `${ruleLabel} must contain only windowSeconds and maxRequests`
+    )
+    expect(
+      Number.isSafeInteger(rule.windowSeconds)
+        && Number(rule.windowSeconds) >= 1
+        && Number(rule.windowSeconds) <= externalIntegrationSourceRateLimitMaximumWindowSeconds,
+      `${ruleLabel}.windowSeconds must be an integer from 1 to ${externalIntegrationSourceRateLimitMaximumWindowSeconds}`
+    )
+    expect(
+      Number.isSafeInteger(rule.maxRequests)
+        && Number(rule.maxRequests) >= 1
+        && Number(rule.maxRequests) <= externalIntegrationSourceRateLimitMaximumRequests,
+      `${ruleLabel}.maxRequests must be an integer from 1 to ${externalIntegrationSourceRateLimitMaximumRequests}`
+    )
+    const windowSeconds = Number(rule.windowSeconds)
+    expect(!seenWindows.has(windowSeconds), `${label} must not contain duplicate windows`)
+    expect(
+      index === 0 || windowSeconds > previousWindowSeconds,
+      `${label} must be sorted by windowSeconds ascending`
+    )
+    seenWindows.add(windowSeconds)
+    previousWindowSeconds = windowSeconds
+  })
+}
+
+function assertExternalIntegrationSourceFields(
+  value: Record<string, unknown>,
+  allowedFields: ReadonlySet<string>,
+  label: string
+): void {
+  for (const field of Object.keys(value)) {
+    expect(allowedFields.has(field), `${label} must not contain undocumented field ${field}`)
+  }
+}
+
+function assertRequiredISOString(value: unknown, label: string): asserts value is string {
+  expect(isCanonicalISOString(value), `${label} must be a canonical UTC ISO timestamp`)
+}
+
+function assertOptionalISOString(value: Record<string, unknown>, field: string, label: string): void {
+  if (Object.hasOwn(value, field)) {
+    assertRequiredISOString(value[field], `${label}.${field}`)
+  }
+}
+
+function isCanonicalISOString(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false
+  }
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value
 }
 
 function assertExternalIntegrationSourceScopes(value: unknown): void {
@@ -1730,6 +2064,10 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 0
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0
 }
 
 function expect(condition: unknown, message: string): asserts condition {

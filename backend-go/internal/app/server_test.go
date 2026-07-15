@@ -311,6 +311,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.MyOperationLogsHandler != nil ||
+		handlers.ExternalIntegrationSourceListHandler != nil ||
 		handlers.ExternalIntegrationSourceScopesHandler != nil ||
 		handlers.ExternalIntegrationSourceAPIDocsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
@@ -399,6 +400,7 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.ClientIPBlacklistHandler != nil ||
 		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
+		handlers.ExternalIntegrationSourceListHandler != nil ||
 		handlers.ExternalIntegrationSourceScopesHandler != nil ||
 		handlers.ExternalIntegrationSourceAPIDocsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
@@ -512,6 +514,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.ClientIPUnblockHandler == nil ||
 		handlers.OperationLogsHandler == nil ||
 		handlers.MyOperationLogsHandler == nil ||
+		handlers.ExternalIntegrationSourceListHandler == nil ||
 		handlers.ExternalIntegrationSourceScopesHandler == nil ||
 		handlers.ExternalIntegrationSourceAPIDocsHandler == nil ||
 		handlers.StatsUsageWindowHandler == nil ||
@@ -520,11 +523,12 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 	}
 }
 
-func TestNewManagementAPIHandlerExternalIntegrationSourceCatalogsOptIn(t *testing.T) {
+func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testing.T) {
 	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
-	if disabled.ExternalIntegrationSourceScopesHandler != nil ||
+	if disabled.ExternalIntegrationSourceListHandler != nil ||
+		disabled.ExternalIntegrationSourceScopesHandler != nil ||
 		disabled.ExternalIntegrationSourceAPIDocsHandler != nil {
-		t.Fatal("external integration source catalog handler was created while management API disabled")
+		t.Fatal("external integration source handler was created while management API disabled")
 	}
 
 	sessionOnly := newManagementAPIHandler(
@@ -537,9 +541,10 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceCatalogsOptIn(t *testin
 		nil,
 		nil,
 	)
-	if sessionOnly.ExternalIntegrationSourceScopesHandler != nil ||
+	if sessionOnly.ExternalIntegrationSourceListHandler != nil ||
+		sessionOnly.ExternalIntegrationSourceScopesHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceAPIDocsHandler != nil {
-		t.Fatal("external integration source catalog handler was created while only session switch enabled")
+		t.Fatal("external integration source handler was created while only session switch enabled")
 	}
 
 	enabled := newManagementAPIHandler(
@@ -552,9 +557,10 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceCatalogsOptIn(t *testin
 		nil,
 		nil,
 	)
-	if enabled.ExternalIntegrationSourceScopesHandler == nil ||
+	if enabled.ExternalIntegrationSourceListHandler == nil ||
+		enabled.ExternalIntegrationSourceScopesHandler == nil ||
 		enabled.ExternalIntegrationSourceAPIDocsHandler == nil {
-		t.Fatal("external integration source catalog handler was not created while management API enabled")
+		t.Fatal("external integration source handler was not created while management API enabled")
 	}
 
 	source, err := os.ReadFile("server.go")
@@ -563,6 +569,10 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceCatalogsOptIn(t *testin
 	}
 	text := string(source)
 	for _, required := range []string{
+		"managementexternalintegrationsources.NewService(store)",
+		"ManagementExternalIntegrationSourceListHandler:",
+		"managementHandlers.ExternalIntegrationSourceListHandler",
+		"httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService)",
 		"ManagementExternalIntegrationSourceScopesHandler:",
 		"managementHandlers.ExternalIntegrationSourceScopesHandler",
 		"httpapi.NewManagementExternalIntegrationSourceScopesHandler()",
@@ -571,7 +581,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceCatalogsOptIn(t *testin
 		"httpapi.NewManagementExternalIntegrationSourceAPIDocsHandler()",
 	} {
 		if !strings.Contains(text, required) {
-			t.Fatalf("server.go missing external integration source catalog wiring %q", required)
+			t.Fatalf("server.go missing external integration source wiring %q", required)
 		}
 	}
 }

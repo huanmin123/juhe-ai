@@ -6,6 +6,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,6 +16,9 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/httpapi"
+	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementexternalintegrationsources"
 	"juhe-ai/backend-go/internal/modules/publicapi"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
@@ -57,6 +62,19 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 
 	defer cleanupW2ExternalSourceListFixtures(t, ctx, db)
 	fixture := insertW2ExternalSourceListFixtures(t, ctx, db)
+	authNow := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	insertW2ProxyOptionsFixture(t, ctx, db, authNow)
+	sessionCreatedAt := authNow.Add(-5 * time.Minute)
+	sessionToken := "w2-external-source-list-session-token"
+	insertW2ManagementSessionForAccountFixture(
+		t,
+		ctx,
+		db,
+		"sess_w2_external_source_list",
+		"sys_w2_proxy_options",
+		sessionToken,
+		sessionCreatedAt,
+	)
 
 	store, err := postgresstore.Open(ctx, postgresURL)
 	if err != nil {
@@ -141,6 +159,51 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 		t.Fatalf("fixture must not be marked built-in: source=%t token=%t", item.IsBuiltIn, primary.IsBuiltIn)
 	}
 	assertW2ExternalSourceListSafeDTO(t, all)
+
+	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
+		Store: store,
+		Now:   func() time.Time { return authNow },
+	})
+	router := httpapi.NewRouter(httpapi.RouterOptions{
+		Config: config.Config{
+			Host:                 "127.0.0.1",
+			Port:                 3000,
+			ManagementAPIEnabled: true,
+		},
+		ManagementAPIAuthMiddleware:                    httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementExternalIntegrationSourceListHandler: httpapi.NewManagementExternalIntegrationSourceListHandler(service),
+	})
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/__aisys__/api/external-integration-sources?page=1.0&pageSize=1e1&keyword=%20mIxEd%25_PrEfIx%20&status=active",
+		nil,
+	)
+	req.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP list status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("HTTP list Cache-Control = %q, want no-store", got)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("HTTP list Content-Type = %q", got)
+	}
+	rawBody := rec.Body.String()
+	var response struct {
+		Data managementexternalintegrationsources.ListResult `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(rawBody), &response); err != nil {
+		t.Fatalf("decode HTTP list response: %v", err)
+	}
+	assertW2ExternalSourceListIDs(t, response.Data.Items, []string{w2ExternalSourceListActiveID})
+	if response.Data.Page != 1 || response.Data.PageSize != 10 || response.Data.PageUpperBound != 1 || response.Data.HasMore {
+		t.Fatalf("HTTP list pagination = %+v", response.Data)
+	}
+	assertW2ExternalSourceListSafeJSON(t, rawBody)
+	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_external_source_list", sessionCreatedAt)
 }
 
 type w2ExternalSourceListFixtureTimes struct {
@@ -380,7 +443,11 @@ func assertW2ExternalSourceListSafeDTO(
 	if err != nil {
 		t.Fatalf("marshal external integration source list DTO: %v", err)
 	}
-	body := string(encoded)
+	assertW2ExternalSourceListSafeJSON(t, string(encoded))
+}
+
+func assertW2ExternalSourceListSafeJSON(t *testing.T, body string) {
+	t.Helper()
 	for _, forbidden := range []string{
 		"token_hash",
 		"tokenHash",

@@ -151,6 +151,7 @@ type RouterOptions struct {
 	ManagementOperationLogsHandler                    http.Handler
 	ManagementMyOperationLogsHandler                  http.Handler
 	ManagementRuntimeLogsHandler                      http.Handler
+	ManagementExternalIntegrationSourceListHandler    http.Handler
 	ManagementExternalIntegrationSourceScopesHandler  http.Handler
 	ManagementExternalIntegrationSourceAPIDocsHandler http.Handler
 	ManagementPublicAPILogsHandler                    http.Handler
@@ -370,6 +371,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementOperationLogsHandler == nil &&
 				opts.ManagementMyOperationLogsHandler == nil &&
 				opts.ManagementRuntimeLogsHandler == nil &&
+				opts.ManagementExternalIntegrationSourceListHandler == nil &&
 				opts.ManagementExternalIntegrationSourceScopesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceAPIDocsHandler == nil &&
 				opts.ManagementPublicAPILogsHandler == nil &&
@@ -853,6 +855,15 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/{id}", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 			}
+			if opts.ManagementExternalIntegrationSourceListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get(
+					"/external-integration-sources",
+					opts.ManagementExternalIntegrationSourceListHandler.ServeHTTP,
+				)
+				system.Post("/external-integration-sources", func(w http.ResponseWriter, _ *http.Request) {
+					writeError(w, http.StatusNotFound, "接口不存在")
+				})
+			}
 			if opts.ManagementExternalIntegrationSourceScopesHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get(
 					"/external-integration-sources/scopes",
@@ -1031,6 +1042,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementOperationLogsHandler != nil ||
 		opts.ManagementMyOperationLogsHandler != nil ||
 		opts.ManagementRuntimeLogsHandler != nil ||
+		opts.ManagementExternalIntegrationSourceListHandler != nil ||
 		opts.ManagementExternalIntegrationSourceScopesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil ||
 		opts.ManagementPublicAPILogsHandler != nil ||

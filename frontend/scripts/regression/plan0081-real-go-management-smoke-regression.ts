@@ -43,6 +43,14 @@ type MockScenario =
   | 'external_integration_source_api_docs_get_fields_empty'
   | 'external_integration_source_api_docs_post_body_missing'
   | 'external_integration_source_api_docs_last_item_fields_empty'
+  | 'external_integration_source_list_missing_field'
+  | 'external_integration_source_list_rate_limits_unsorted'
+  | 'external_integration_source_list_sensitive_field'
+  | 'external_integration_source_list_primary_status_invalid'
+  | 'external_integration_source_list_primary_not_active'
+  | 'external_integration_source_list_primary_time_invalid'
+  | 'external_integration_source_list_pagination'
+  | 'external_integration_source_list_pagination_duplicate'
   | 'ip_stats_not_ready'
   | 'ip_stats_empty'
   | 'ip_stats_detail_not_ready'
@@ -241,7 +249,11 @@ async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: stri
   )
   assert.deepEqual(
     catalogRequests.map((record) => `${record.method} ${record.url}`),
-    [externalIntegrationSourceScopesPath(), externalIntegrationSourceApiDocsPath()]
+    [
+      externalIntegrationSourceScopesPath(),
+      externalIntegrationSourceApiDocsPath(),
+      externalIntegrationSourcesListPath()
+    ]
   )
   assert.equal(catalogRequests.every((record) => record.method === 'GET' && record.body === undefined), true)
   assertRequestHeaders()
@@ -323,6 +335,84 @@ async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: stri
     assert.equal(requestRecords.every((record) => record.method === 'GET' && record.body === undefined), true)
     assertRequestHeaders()
   }
+
+  const listCases = [
+    [
+      'external_integration_source_list_missing_field',
+      /external integration source list item 0\.primaryToken must be present when tokenCount is positive/
+    ],
+    [
+      'external_integration_source_list_rate_limits_unsorted',
+      /external integration source list item 0\.rateLimits must be sorted by windowSeconds ascending/
+    ],
+    [
+      'external_integration_source_list_sensitive_field',
+      /external integration source list item 0\.primaryToken must not contain undocumented field TokenHash/
+    ],
+    [
+      'external_integration_source_list_primary_status_invalid',
+      /external integration source list item 0\.primaryToken\.status must be active, disabled, or revoked/
+    ],
+    [
+      'external_integration_source_list_primary_not_active',
+      /external integration source list item 0\.primaryToken\.status must be active when activeTokenCount is positive/
+    ],
+    [
+      'external_integration_source_list_primary_time_invalid',
+      /external integration source list item 0\.primaryToken\.createdAt must be a canonical UTC ISO timestamp/
+    ]
+  ] as const
+  for (const [requestScenario, expectedMessage] of listCases) {
+    resetMock(requestScenario)
+    const output: string[] = []
+    const failureMessage = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(
+        smokeEnvironment(baseUrl),
+        (message) => output.push(message)
+      )
+    )
+
+    assert.match(failureMessage, expectedMessage)
+    assert.deepEqual(output, [])
+    assert.deepEqual(requestPaths(), [
+      publicAPILogsListPath(),
+      externalIntegrationSourceScopesPath(),
+      externalIntegrationSourceApiDocsPath(),
+      externalIntegrationSourcesListPath()
+    ])
+    assert.equal(requestRecords.every((record) => record.method === 'GET' && record.body === undefined), true)
+    assertRequestHeaders()
+  }
+
+  resetMock('external_integration_source_list_pagination')
+  await runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
+  assert.deepEqual(
+    requestPaths().filter((path) => path.startsWith('GET /__aisys__/api/external-integration-sources')),
+    [
+      externalIntegrationSourceScopesPath(),
+      externalIntegrationSourceApiDocsPath(),
+      externalIntegrationSourcesListPath(1),
+      externalIntegrationSourcesListPath(2)
+    ]
+  )
+  assertRequestHeaders()
+
+  resetMock('external_integration_source_list_pagination_duplicate')
+  const paginationFailureMessage = await captureFailureMessage(
+    runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
+  )
+  assert.match(
+    paginationFailureMessage,
+    /external integration source list pages must not contain duplicate id extsrc_plan0081_page_01/
+  )
+  assert.deepEqual(requestPaths(), [
+    publicAPILogsListPath(),
+    externalIntegrationSourceScopesPath(),
+    externalIntegrationSourceApiDocsPath(),
+    externalIntegrationSourcesListPath(1),
+    externalIntegrationSourcesListPath(2)
+  ])
+  assertRequestHeaders()
 }
 
 async function assertLogBoundaryRedaction(baseUrl: string): Promise<void> {
@@ -398,6 +488,7 @@ async function assertRouteStrategyReadScenarios(baseUrl: string): Promise<void> 
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
     externalIntegrationSourceApiDocsPath(),
+    externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -414,6 +505,7 @@ async function assertRouteStrategyReadScenarios(baseUrl: string): Promise<void> 
   assert.equal(missingMessage, 'Configured route strategy was not returned by route strategies list')
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(), externalIntegrationSourceScopesPath(), externalIntegrationSourceApiDocsPath(),
+    externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath()
   ])
 
@@ -462,6 +554,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
     externalIntegrationSourceApiDocsPath(),
+    externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -487,6 +580,7 @@ async function assertAccountTestOptionsReadSmoke(baseUrl: string): Promise<void>
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
     externalIntegrationSourceApiDocsPath(),
+    externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), accountTestOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
   ])
@@ -541,6 +635,7 @@ async function assertAccountTestOptionsResponseRequirements(baseUrl: string): Pr
       publicAPILogsListPath(),
       externalIntegrationSourceScopesPath(),
       externalIntegrationSourceApiDocsPath(),
+      externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), accountTestOptionsPath()
     ])
@@ -569,6 +664,7 @@ async function assertStrictClientIPDetailRequiresTarget(baseUrl: string): Promis
       publicAPILogsListPath(),
       externalIntegrationSourceScopesPath(),
       externalIntegrationSourceApiDocsPath(),
+      externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath()
     ])
@@ -604,6 +700,7 @@ async function assertStrictClientIPDetailResponseRequirements(baseUrl: string): 
       publicAPILogsListPath(),
       externalIntegrationSourceScopesPath(),
       externalIntegrationSourceApiDocsPath(),
+      externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath()
     ])
@@ -636,6 +733,7 @@ async function assertExplicitClientIPHashSmoke(baseUrl: string): Promise<void> {
       publicAPILogsListPath(),
       externalIntegrationSourceScopesPath(),
       externalIntegrationSourceApiDocsPath(),
+      externalIntegrationSourcesListPath(),
       groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
       providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(explicitClientIPHash)
     ])
@@ -662,6 +760,7 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
     externalIntegrationSourceApiDocsPath(),
+    externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath()
   ])
@@ -688,6 +787,7 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
     externalIntegrationSourceApiDocsPath(),
+    externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath()
   ])
@@ -713,6 +813,7 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
     publicAPILogsListPath(),
     externalIntegrationSourceScopesPath(),
     externalIntegrationSourceApiDocsPath(),
+    externalIntegrationSourcesListPath(),
     groupsListPath(), groupDetailPath(selectedGroupId), routeStrategiesListPath(), routeStrategyDetailPath(),
     providersPath(), modelOptionsPath(), clientIPStatsPath(), clientIPStatsDetailPath(),
     groupsCreatePath(),
@@ -997,6 +1098,43 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       }
     }
     sendEnvelope(res, apiDocs)
+    return
+  }
+  if (req.method === 'GET' && url.pathname === '/__aisys__/api/external-integration-sources') {
+    const requestedPage = Number(url.searchParams.get('page') ?? '1')
+    const paginationScenario = scenario === 'external_integration_source_list_pagination'
+      || scenario === 'external_integration_source_list_pagination_duplicate'
+    const list = paginationScenario
+      ? externalIntegrationSourcePaginationFixture(
+          requestedPage,
+          scenario === 'external_integration_source_list_pagination_duplicate'
+        )
+      : externalIntegrationSourceListFixture()
+    const firstSource = fixtureRecord(list.items[0])
+    switch (scenario) {
+      case 'external_integration_source_list_missing_field':
+        delete firstSource.primaryToken
+        break
+      case 'external_integration_source_list_rate_limits_unsorted':
+        firstSource.rateLimits = [
+          { windowSeconds: 60, maxRequests: 100 },
+          { windowSeconds: 1, maxRequests: 2 }
+        ]
+        break
+      case 'external_integration_source_list_sensitive_field':
+        fixtureRecord(firstSource.primaryToken).TokenHash = 'plan0081-token-hash'
+        break
+      case 'external_integration_source_list_primary_status_invalid':
+        fixtureRecord(firstSource.primaryToken).status = 'pending'
+        break
+      case 'external_integration_source_list_primary_not_active':
+        fixtureRecord(firstSource.primaryToken).status = 'disabled'
+        break
+      case 'external_integration_source_list_primary_time_invalid':
+        fixtureRecord(firstSource.primaryToken).createdAt = 'not-an-iso-timestamp'
+        break
+    }
+    sendEnvelope(res, list)
     return
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/groups') {
@@ -1674,6 +1812,127 @@ function externalIntegrationSourceApiDocsFixture(): {
   }
 }
 
+function externalIntegrationSourceListFixture(): {
+  items: Array<Record<string, unknown>>
+  page: number
+  pageSize: number
+  pageUpperBound: number
+  hasMore: boolean
+} {
+  const items: Array<Record<string, unknown>> = [
+    {
+      id: 'extsrc_builtin_test',
+      name: 'PLAN-0081 内建来源',
+      status: 'active',
+      scopes: [
+        'juhe_ai_public:account_list:read',
+        'juhe_ai_public:group_list:read'
+      ],
+      rateLimits: [
+        { windowSeconds: 1, maxRequests: 1 },
+        { windowSeconds: 86_400, maxRequests: 100_000 }
+      ],
+      expiresAt: '2026-08-15T00:00:00.000Z',
+      notes: 'PLAN-0081 external integration source list fixture',
+      lastUsedAt: '2026-07-15T08:00:00.000Z',
+      createdAt: '2026-07-14T01:00:00.000Z',
+      updatedAt: '2026-07-15T08:00:00.000Z',
+      tokenCount: 3,
+      activeTokenCount: 1,
+      primaryToken: {
+        id: 'exttok_builtin_test',
+        name: 'PLAN-0081 primary token',
+        tokenPrefix: 'juis_plan0081',
+        tokenSuffix: 'active01',
+        status: 'active',
+        scopes: ['juhe_ai_public:group_list:read'],
+        expiresAt: '2026-07-31T00:00:00.000Z',
+        lastUsedAt: '2026-07-15T08:00:00.000Z',
+        createdAt: '2026-07-14T01:05:00.000Z',
+        updatedAt: '2026-07-15T08:00:00.000Z',
+        isBuiltIn: true
+      },
+      isBuiltIn: true
+    },
+    {
+      id: 'extsrc_plan0081_disabled',
+      name: 'PLAN-0081 停用来源',
+      status: 'disabled',
+      scopes: ['juhe_ai_public:api_key_list:read'],
+      rateLimits: [],
+      createdAt: '2026-07-13T02:00:00.000Z',
+      updatedAt: '2026-07-15T07:00:00.000Z',
+      tokenCount: 0,
+      activeTokenCount: 0,
+      isBuiltIn: false
+    }
+  ]
+  return {
+    items,
+    page: 1,
+    pageSize: 20,
+    pageUpperBound: items.length,
+    hasMore: false
+  }
+}
+
+function externalIntegrationSourcePaginationFixture(
+  page: number,
+  duplicateSecondPage: boolean
+): {
+  items: Array<Record<string, unknown>>
+  page: number
+  pageSize: number
+  pageUpperBound: number
+  hasMore: boolean
+} {
+  const firstPageItems = Array.from(
+    { length: 20 },
+    (_, index) => externalIntegrationSourcePaginationItem(index + 1)
+  )
+  if (page === 1) {
+    return {
+      items: firstPageItems,
+      page: 1,
+      pageSize: 20,
+      pageUpperBound: 21,
+      hasMore: true
+    }
+  }
+  assert.equal(page, 2, '分页场景只应读取前两页')
+  return {
+    items: [
+      duplicateSecondPage
+        ? externalIntegrationSourcePaginationItem(1)
+        : externalIntegrationSourcePaginationItem(21)
+    ],
+    page: 2,
+    pageSize: 20,
+    pageUpperBound: 21,
+    hasMore: false
+  }
+}
+
+function externalIntegrationSourcePaginationItem(index: number): Record<string, unknown> {
+  return {
+    id: `extsrc_plan0081_page_${String(index).padStart(2, '0')}`,
+    name: `PLAN-0081 分页来源 ${index}`,
+    status: index % 2 === 0 ? 'disabled' : 'active',
+    scopes: [],
+    rateLimits: [],
+    createdAt: '2026-07-14T01:00:00.000Z',
+    updatedAt: '2026-07-15T08:00:00.000Z',
+    tokenCount: 0,
+    activeTokenCount: 0,
+    isBuiltIn: false
+  }
+}
+
+function fixtureRecord(value: unknown): Record<string, unknown> {
+  assert(value && typeof value === 'object' && !Array.isArray(value))
+  return value as Record<string, unknown>
+}
+
 function requestPaths(): string[] {
   return requestRecords.map((record) => `${record.method} ${record.url}`)
 }
@@ -1692,6 +1951,10 @@ function externalIntegrationSourceScopesPath(): string {
 
 function externalIntegrationSourceApiDocsPath(): string {
   return 'GET /__aisys__/api/external-integration-sources/api-docs'
+}
+
+function externalIntegrationSourcesListPath(page = 1): string {
+  return `GET /__aisys__/api/external-integration-sources?page=${page}&pageSize=20`
 }
 
 function groupsListPath(): string {
