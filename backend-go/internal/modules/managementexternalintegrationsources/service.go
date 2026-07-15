@@ -109,7 +109,7 @@ func NewServiceWithOptions(options ServiceOptions) *Service {
 }
 
 func (s *Service) Get(ctx context.Context, id string) (*Detail, error) {
-	sourceID := strings.TrimSpace(id)
+	sourceID := trimECMAScriptWhitespace(id)
 	if sourceID == "" {
 		return nil, nil
 	}
@@ -162,7 +162,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	offset := (page - 1) * pageSize
 	rows, err := s.store.ListManagementExternalIntegrationSources(ctx, port.ManagementExternalIntegrationSourceListInput{
 		Status:  status,
-		Keyword: strings.ToLower(strings.TrimSpace(input.Keyword)),
+		Keyword: strings.ToLower(trimECMAScriptWhitespace(input.Keyword)),
 		Limit:   pageSize + 1,
 		Offset:  offset,
 	})
@@ -528,4 +528,21 @@ func cloneString(value *string) *string {
 	}
 	copy := *value
 	return &copy
+}
+
+func trimECMAScriptWhitespace(value string) string {
+	return strings.TrimFunc(value, isECMAScriptWhitespace)
+}
+
+func isECMAScriptWhitespace(character rune) bool {
+	switch character {
+	case '\u0009', '\u000B', '\u000C', '\u0020', '\u00A0', '\u1680',
+		'\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
+		'\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F',
+		'\u205F', '\u3000', '\uFEFF', '\u000A', '\u000D', '\u2028',
+		'\u2029':
+		return true
+	default:
+		return false
+	}
 }

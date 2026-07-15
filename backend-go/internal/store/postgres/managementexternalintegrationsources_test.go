@@ -42,6 +42,7 @@ func TestListManagementExternalIntegrationSourcesUsesBoundedLiteralPrefixParams(
 		wantUpper   string
 	}{
 		{status: "all", keyword: "  NaMe%_  ", wantKeyword: "name%_", wantUpper: "name%`"},
+		{status: "all", keyword: "\u0085NaMe\u0085", wantKeyword: "\u0085name\u0085", wantUpper: "\u0085name\u0086"},
 		{status: "active"},
 		{status: "disabled"},
 	}
@@ -82,6 +83,17 @@ func TestListManagementExternalIntegrationSourcesUsesBoundedLiteralPrefixParams(
 	}
 	if row.ExpiresAt == nil || !row.ExpiresAt.Equal(expiresAt.UTC()) || row.LastUsedAt == nil || !row.LastUsedAt.Equal(lastUsedAt.UTC()) {
 		t.Fatalf("mapped optional times = %#v / %#v", row.ExpiresAt, row.LastUsedAt)
+	}
+}
+
+func TestManagementExternalIntegrationSourceIDsPreserveNonECMAScriptWhitespace(t *testing.T) {
+	got := managementExternalIntegrationSourceIDs([]string{
+		"\u0085source_1\u0085",
+		" \uFEFFsource_2\u3000 ",
+	})
+	want := []string{"\u0085source_1\u0085", "source_2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("management external integration source IDs = %#v, want %#v", got, want)
 	}
 }
 

@@ -88,7 +88,7 @@ func listManagementExternalIntegrationSources(
 	if input.Limit <= 0 {
 		return []port.ManagementExternalIntegrationSourceListRow{}, nil
 	}
-	keyword := strings.ToLower(strings.TrimSpace(input.Keyword))
+	keyword := strings.ToLower(managementExternalIntegrationSourceTrimECMAScriptWhitespace(input.Keyword))
 	keywordUpper := ""
 	if keyword != "" {
 		keywordUpper = textPrefixUpperBound(keyword)
@@ -120,7 +120,7 @@ func findManagementExternalIntegrationSource(
 	q managementExternalIntegrationSourceDetailQueries,
 	sourceID string,
 ) (port.ManagementExternalIntegrationSourceListRow, bool, error) {
-	id := strings.TrimSpace(sourceID)
+	id := managementExternalIntegrationSourceTrimECMAScriptWhitespace(sourceID)
 	if id == "" {
 		return port.ManagementExternalIntegrationSourceListRow{}, false, nil
 	}
@@ -143,7 +143,7 @@ func listManagementExternalIntegrationSourceTokens(
 	q managementExternalIntegrationSourceDetailQueries,
 	sourceID string,
 ) ([]port.ManagementExternalIntegrationSourcePrimaryTokenRow, error) {
-	id := strings.TrimSpace(sourceID)
+	id := managementExternalIntegrationSourceTrimECMAScriptWhitespace(sourceID)
 	if id == "" {
 		return []port.ManagementExternalIntegrationSourcePrimaryTokenRow{}, nil
 	}
@@ -273,7 +273,7 @@ func managementExternalIntegrationSourceIDs(values []string) []string {
 	ids := make([]string, 0, min(len(values), maxManagementExternalIntegrationSourceIDs))
 	seen := make(map[string]struct{}, min(len(values), maxManagementExternalIntegrationSourceIDs))
 	for _, value := range values {
-		id := strings.TrimSpace(value)
+		id := managementExternalIntegrationSourceTrimECMAScriptWhitespace(value)
 		if id == "" {
 			continue
 		}
@@ -298,6 +298,21 @@ func managementExternalIntegrationSourceRequiredTime(
 		return time.Time{}, fmt.Errorf("management external integration source row %q has invalid %s", id, field)
 	}
 	return value.Time.UTC(), nil
+}
+
+func managementExternalIntegrationSourceTrimECMAScriptWhitespace(value string) string {
+	return strings.TrimFunc(value, func(character rune) bool {
+		switch character {
+		case '\u0009', '\u000B', '\u000C', '\u0020', '\u00A0', '\u1680',
+			'\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
+			'\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F',
+			'\u205F', '\u3000', '\uFEFF', '\u000A', '\u000D', '\u2028',
+			'\u2029':
+			return true
+		default:
+			return false
+		}
+	})
 }
 
 var _ port.ManagementExternalIntegrationSourceListReader = (*Store)(nil)

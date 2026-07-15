@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,26 @@ func TestManagementExternalIntegrationSourceDetailReadersSkipEmptyID(t *testing.
 				t.Fatalf("empty ID query calls = source:%#v tokens:%#v", q.sourceCalls, q.tokenCalls)
 			}
 		})
+	}
+}
+
+func TestManagementExternalIntegrationSourceDetailReadersPreserveNonECMAScriptWhitespaceID(t *testing.T) {
+	const sourceID = "\u0085source_1\u0085"
+	q := &managementExternalIntegrationSourceDetailQueriesStub{sourceErr: pgx.ErrNoRows}
+
+	_, found, err := findManagementExternalIntegrationSource(context.Background(), q, sourceID)
+	if err != nil || found {
+		t.Fatalf("find source with non ECMAScript whitespace found = %v, err = %v", found, err)
+	}
+	tokens, err := listManagementExternalIntegrationSourceTokens(context.Background(), q, sourceID)
+	if err != nil {
+		t.Fatalf("list source tokens with non ECMAScript whitespace: %v", err)
+	}
+	if tokens == nil || len(tokens) != 0 {
+		t.Fatalf("source tokens = %#v, want non-nil empty slice", tokens)
+	}
+	if !reflect.DeepEqual(q.sourceCalls, []string{sourceID}) || !reflect.DeepEqual(q.tokenCalls, []string{sourceID}) {
+		t.Fatalf("detail query calls = source:%#v tokens:%#v", q.sourceCalls, q.tokenCalls)
 	}
 }
 

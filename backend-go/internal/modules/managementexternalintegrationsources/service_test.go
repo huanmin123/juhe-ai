@@ -121,6 +121,11 @@ func TestServiceGetReturnsNilWithoutTokenLookup(t *testing.T) {
 	}{
 		{name: "blank trimmed id", inputID: " \t\r\n"},
 		{name: "source not found", inputID: "  missing_source  ", wantSourceCalls: []string{"missing_source"}},
+		{
+			name:            "non ECMAScript whitespace is preserved",
+			inputID:         "\u0085missing_source\u0085",
+			wantSourceCalls: []string{"\u0085missing_source\u0085"},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -477,6 +482,16 @@ func TestServiceListNormalizesThreeStatusesAndPaginationWindow(t *testing.T) {
 			wantOffset:     999,
 			wantLimit:      2,
 			wantUpperBound: 999,
+		},
+		{
+			name:           "non ECMAScript keyword whitespace is preserved",
+			input:          ListInput{Status: "all", Keyword: "\u0085MiXeD\u0085"},
+			wantStatus:     "all",
+			wantKeyword:    "\u0085mixed\u0085",
+			wantPage:       1,
+			wantPageSize:   20,
+			wantLimit:      21,
+			wantUpperBound: 0,
 		},
 	}
 	for _, test := range tests {
