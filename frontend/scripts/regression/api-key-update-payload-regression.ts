@@ -9,12 +9,12 @@ assert(
   'API Key 更新 payload 必须允许 quotaLimits: null 清空额度限制'
 )
 assert(
-  source.includes("http.patch(`/api-keys/${id}`, payload, { params })"),
-  '管理员 API Key 更新必须继续使用 /api-keys/{id} PATCH'
+  source.includes("http.patch(`/api-keys/${encodeURIComponent(id)}`, payload, { params })"),
+  '管理员 API Key 更新必须使用 encodeURIComponent(id) 编码动态路径段'
 )
 assert(
-  source.includes("http.patch(`/my-api-keys/${id}`, payload)"),
-  '个人 API Key 更新必须继续使用 /my-api-keys/{id} PATCH'
+  source.includes("http.patch(`/my-api-keys/${encodeURIComponent(id)}`, payload)"),
+  '个人 API Key 更新必须使用 encodeURIComponent(id) 编码动态路径段'
 )
 
 console.log('API Key 更新 payload 回归测试通过')

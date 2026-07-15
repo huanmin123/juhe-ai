@@ -4,11 +4,9 @@ export function refreshedApiKeyListItem(
   current: ApiKeySummary,
   refreshed: CreatedApiKey
 ): ApiKeySummary {
-  const item: ApiKeySummary & { usageAvailable?: boolean } = {
-    ...refreshed,
-    usage: refreshed.usageAvailable === false ? current.usage : refreshed.usage
+  const { key: _key, usageAvailable, ...summary } = refreshed
+  return {
+    ...summary,
+    usage: usageAvailable === false ? current.usage : summary.usage
   }
-  delete item.key
-  delete item.usageAvailable
-  return item
 }
