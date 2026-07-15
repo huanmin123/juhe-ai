@@ -183,12 +183,23 @@ func (s *Service) Get(ctx context.Context, id string) (*Detail, error) {
 	if err != nil {
 		return nil, err
 	}
+	detail, err := detailFromSourceAndTokenRows(source, tokenRows)
+	if err != nil {
+		return nil, err
+	}
+	return &detail, nil
+}
+
+func detailFromSourceAndTokenRows(
+	source Source,
+	tokenRows []port.ManagementExternalIntegrationSourcePrimaryTokenRow,
+) (Detail, error) {
 	tokens := make([]Token, 0, len(tokenRows))
 	var activeTokenCount int64
 	for _, tokenRow := range tokenRows {
 		token, err := tokenFromStore(tokenRow)
 		if err != nil {
-			return nil, err
+			return Detail{}, err
 		}
 		if token.Status == publicapi.TokenStatusActive {
 			activeTokenCount++
@@ -198,7 +209,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Detail, error) {
 	source.TokenCount = int64(len(tokens))
 	source.ActiveTokenCount = activeTokenCount
 	source.PrimaryToken = nil
-	return &Detail{Source: source, Tokens: tokens}, nil
+	return Detail{Source: source, Tokens: tokens}, nil
 }
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
