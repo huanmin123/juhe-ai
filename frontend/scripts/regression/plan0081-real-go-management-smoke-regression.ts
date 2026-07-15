@@ -51,6 +51,23 @@ type MockScenario =
   | 'external_integration_source_list_primary_time_invalid'
   | 'external_integration_source_list_pagination'
   | 'external_integration_source_list_pagination_duplicate'
+  | 'external_integration_source_detail_success'
+  | 'external_integration_source_detail_no_non_built_in'
+  | 'external_integration_source_detail_newer_snapshot'
+  | 'external_integration_source_detail_id_mismatch'
+  | 'external_integration_source_detail_edit_field_mismatch'
+  | 'external_integration_source_detail_unknown_field'
+  | 'external_integration_source_detail_tokens_not_array'
+  | 'external_integration_source_detail_token_count_mismatch'
+  | 'external_integration_source_detail_active_token_count_mismatch'
+  | 'external_integration_source_detail_created_at_unsorted'
+  | 'external_integration_source_detail_id_unsorted'
+  | 'external_integration_source_detail_token_unknown_field'
+  | 'external_integration_source_detail_sensitive_token'
+  | 'external_integration_source_detail_sensitive_hash'
+  | 'external_integration_source_detail_sensitive_ciphertext'
+  | 'external_integration_source_detail_sensitive_preview_value'
+  | 'external_integration_source_detail_sensitive_primary_token'
   | 'ip_stats_not_ready'
   | 'ip_stats_empty'
   | 'ip_stats_detail_not_ready'
@@ -105,6 +122,7 @@ const configuredAccountId = 'acct_plan0081/encoded target?read-only'
 const mismatchedAccountId = 'acct_plan0081_mismatched_sensitive'
 const listedPublicApiLogId = 'publog_plan0081_list_sensitive'
 const configuredPublicApiLogId = 'publog_plan0081/encoded target?read-only'
+const selectedExternalIntegrationSourceId = 'extsrc_plan0081/encoded target?read-only'
 const requestRecords: RequestRecord[] = []
 const groups = new Map<string, MockGroup>()
 let scenario: MockScenario = 'normal'
@@ -241,7 +259,7 @@ async function assertPublicAPILogReadScenarios(baseUrl: string): Promise<void> {
 }
 
 async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: string): Promise<void> {
-  resetMock('normal')
+  resetMock('external_integration_source_detail_success')
   await runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
 
   const catalogRequests = requestRecords.filter((record) =>
@@ -252,11 +270,124 @@ async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: stri
     [
       externalIntegrationSourceScopesPath(),
       externalIntegrationSourceApiDocsPath(),
-      externalIntegrationSourcesListPath()
+      externalIntegrationSourcesListPath(),
+      externalIntegrationSourceDetailPath()
     ]
   )
   assert.equal(catalogRequests.every((record) => record.method === 'GET' && record.body === undefined), true)
+  assertExternalIntegrationSourceDetailRequest()
+  assertNoExternalIntegrationSourceSecretRequest()
   assertRequestHeaders()
+
+  resetMock('external_integration_source_detail_no_non_built_in')
+  await runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
+  assert.deepEqual(
+    requestPaths().filter((path) => path.startsWith('GET /__aisys__/api/external-integration-sources')),
+    [
+      externalIntegrationSourceScopesPath(),
+      externalIntegrationSourceApiDocsPath(),
+      externalIntegrationSourcesListPath()
+    ]
+  )
+  assertNoExternalIntegrationSourceSecretRequest()
+  assertRequestHeaders()
+
+  resetMock('external_integration_source_detail_newer_snapshot')
+  await runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
+  assert.deepEqual(
+    requestPaths().filter((path) => path.startsWith('GET /__aisys__/api/external-integration-sources')),
+    [
+      externalIntegrationSourceScopesPath(),
+      externalIntegrationSourceApiDocsPath(),
+      externalIntegrationSourcesListPath(),
+      externalIntegrationSourceDetailPath()
+    ]
+  )
+  assertExternalIntegrationSourceDetailRequest()
+  assertNoExternalIntegrationSourceSecretRequest()
+  assertRequestHeaders()
+
+  const detailCases = [
+    [
+      'external_integration_source_detail_id_mismatch',
+      /external integration source detail.*id.*list/i
+    ],
+    [
+      'external_integration_source_detail_edit_field_mismatch',
+      /external integration source detail.*notes.*list/i
+    ],
+    [
+      'external_integration_source_detail_unknown_field',
+      /external integration source detail.*undocumented field debugMetadata/i
+    ],
+    [
+      'external_integration_source_detail_tokens_not_array',
+      /external integration source detail.*tokens must be an array/i
+    ],
+    [
+      'external_integration_source_detail_token_count_mismatch',
+      /external integration source detail.*tokenCount.*tokens/i
+    ],
+    [
+      'external_integration_source_detail_active_token_count_mismatch',
+      /external integration source detail.*activeTokenCount.*active/i
+    ],
+    [
+      'external_integration_source_detail_created_at_unsorted',
+      /external integration source detail.*tokens.*createdAt.*id.*descending/i
+    ],
+    [
+      'external_integration_source_detail_id_unsorted',
+      /external integration source detail.*tokens.*createdAt.*id.*descending/i
+    ],
+    [
+      'external_integration_source_detail_token_unknown_field',
+      /external integration source detail.*token.*undocumented field debugMetadata/i
+    ],
+    [
+      'external_integration_source_detail_sensitive_token',
+      /external integration source detail.*token.*undocumented field token/i
+    ],
+    [
+      'external_integration_source_detail_sensitive_hash',
+      /external integration source detail.*token.*undocumented field tokenHash/i
+    ],
+    [
+      'external_integration_source_detail_sensitive_ciphertext',
+      /external integration source detail.*token.*undocumented field tokenSecretEncrypted/i
+    ],
+    [
+      'external_integration_source_detail_sensitive_preview_value',
+      /external integration source detail.*tokenPrefix must be an 8-character juis_ preview/i
+    ],
+    [
+      'external_integration_source_detail_sensitive_primary_token',
+      /external integration source detail.*undocumented field primaryToken/i
+    ]
+  ] as const
+  for (const [requestScenario, expectedMessage] of detailCases) {
+    resetMock(requestScenario)
+    const output: string[] = []
+    const failureMessage = await captureFailureMessage(
+      runRealGoManagementSmokeFromEnvironment(
+        smokeEnvironment(baseUrl),
+        (message) => output.push(message)
+      )
+    )
+
+    assert.match(failureMessage, expectedMessage)
+    assert.deepEqual(output, [])
+    assert.deepEqual(requestPaths(), [
+      publicAPILogsListPath(),
+      externalIntegrationSourceScopesPath(),
+      externalIntegrationSourceApiDocsPath(),
+      externalIntegrationSourcesListPath(),
+      externalIntegrationSourceDetailPath()
+    ])
+    assertExternalIntegrationSourceDetailRequest()
+    assertNoExternalIntegrationSourceSecretRequest()
+    assertRequestHeaders()
+  }
 
   const scopeCases = [
     [
@@ -392,9 +523,12 @@ async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: stri
       externalIntegrationSourceScopesPath(),
       externalIntegrationSourceApiDocsPath(),
       externalIntegrationSourcesListPath(1),
+      externalIntegrationSourceDetailPath('extsrc_plan0081_page_01'),
       externalIntegrationSourcesListPath(2)
     ]
   )
+  assertExternalIntegrationSourceDetailRequest('extsrc_plan0081_page_01')
+  assertNoExternalIntegrationSourceSecretRequest()
   assertRequestHeaders()
 
   resetMock('external_integration_source_list_pagination_duplicate')
@@ -410,8 +544,11 @@ async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: stri
     externalIntegrationSourceScopesPath(),
     externalIntegrationSourceApiDocsPath(),
     externalIntegrationSourcesListPath(1),
+    externalIntegrationSourceDetailPath('extsrc_plan0081_page_01'),
     externalIntegrationSourcesListPath(2)
   ])
+  assertExternalIntegrationSourceDetailRequest('extsrc_plan0081_page_01')
+  assertNoExternalIntegrationSourceSecretRequest()
   assertRequestHeaders()
 }
 
@@ -1104,12 +1241,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const requestedPage = Number(url.searchParams.get('page') ?? '1')
     const paginationScenario = scenario === 'external_integration_source_list_pagination'
       || scenario === 'external_integration_source_list_pagination_duplicate'
+    const includeNonBuiltInDetailTarget = scenario.startsWith('external_integration_source_detail_')
+      && scenario !== 'external_integration_source_detail_no_non_built_in'
     const list = paginationScenario
       ? externalIntegrationSourcePaginationFixture(
           requestedPage,
           scenario === 'external_integration_source_list_pagination_duplicate'
         )
-      : externalIntegrationSourceListFixture()
+      : externalIntegrationSourceListFixture(includeNonBuiltInDetailTarget)
     const firstSource = fixtureRecord(list.items[0])
     switch (scenario) {
       case 'external_integration_source_list_missing_field':
@@ -1135,6 +1274,90 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         break
     }
     sendEnvelope(res, list)
+    return
+  }
+  const externalIntegrationSourceId = externalIntegrationSourceIdFromPath(url.pathname)
+  if (req.method === 'GET' && externalIntegrationSourceId !== undefined) {
+    const paginationScenario = scenario === 'external_integration_source_list_pagination'
+      || scenario === 'external_integration_source_list_pagination_duplicate'
+    if (paginationScenario) {
+      assert.equal(
+        externalIntegrationSourceId,
+        'extsrc_plan0081_page_01',
+        '分页场景应读取第一页第一个非内置来源详情'
+      )
+    }
+    const detail = paginationScenario
+      ? {
+          ...externalIntegrationSourcePaginationItem(1),
+          tokens: []
+        }
+      : externalIntegrationSourceDetailFixture(externalIntegrationSourceId)
+    const tokens = detail.tokens
+    assert(Array.isArray(tokens))
+    const firstToken = (): Record<string, unknown> => {
+      const token = tokens[0]
+      assert(token)
+      return fixtureRecord(token)
+    }
+    switch (scenario) {
+      case 'external_integration_source_detail_newer_snapshot':
+        detail.name = 'PLAN-0081 并发更新后的编码来源'
+        detail.status = 'disabled'
+        detail.scopes = []
+        detail.rateLimits = []
+        delete detail.expiresAt
+        detail.notes = 'PLAN-0081 newer detail snapshot'
+        detail.lastUsedAt = '2026-07-15T11:00:00.000Z'
+        detail.updatedAt = '2026-07-15T11:00:00.000Z'
+        detail.tokens = tokens.slice(1)
+        detail.tokenCount = 2
+        detail.activeTokenCount = 0
+        break
+      case 'external_integration_source_detail_id_mismatch':
+        detail.id = `${selectedExternalIntegrationSourceId}_mismatch`
+        break
+      case 'external_integration_source_detail_edit_field_mismatch':
+        detail.notes = 'PLAN-0081 mismatched edit field'
+        break
+      case 'external_integration_source_detail_unknown_field':
+        detail.debugMetadata = { unsafe: true }
+        break
+      case 'external_integration_source_detail_tokens_not_array':
+        detail.tokens = { unsafe: true }
+        break
+      case 'external_integration_source_detail_token_count_mismatch':
+        detail.tokenCount = tokens.length - 1
+        break
+      case 'external_integration_source_detail_active_token_count_mismatch':
+        detail.activeTokenCount = 0
+        break
+      case 'external_integration_source_detail_created_at_unsorted':
+        detail.tokens = [tokens[2], tokens[0], tokens[1]]
+        break
+      case 'external_integration_source_detail_id_unsorted':
+        detail.tokens = [tokens[1], tokens[0], tokens[2]]
+        break
+      case 'external_integration_source_detail_token_unknown_field':
+        firstToken().debugMetadata = { unsafe: true }
+        break
+      case 'external_integration_source_detail_sensitive_token':
+        firstToken().token = 'juis_plan0081_plaintext_secret'
+        break
+      case 'external_integration_source_detail_sensitive_hash':
+        firstToken().tokenHash = 'plan0081-token-hash'
+        break
+      case 'external_integration_source_detail_sensitive_ciphertext':
+        firstToken().tokenSecretEncrypted = 'plan0081-token-ciphertext'
+        break
+      case 'external_integration_source_detail_sensitive_preview_value':
+        firstToken().tokenPrefix = 'juis_plan0081_plaintext_secret'
+        break
+      case 'external_integration_source_detail_sensitive_primary_token':
+        detail.primaryToken = { ...firstToken() }
+        break
+    }
+    sendEnvelope(res, detail)
     return
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/groups') {
@@ -1651,6 +1874,11 @@ function publicAPILogIdFromPath(pathname: string): string | undefined {
   return match?.[1] ? decodeURIComponent(match[1]) : undefined
 }
 
+function externalIntegrationSourceIdFromPath(pathname: string): string | undefined {
+  const match = /^\/__aisys__\/api\/external-integration-sources\/([^/]+)$/.exec(pathname)
+  return match?.[1] ? decodeURIComponent(match[1]) : undefined
+}
+
 async function readRequestBody(req: IncomingMessage): Promise<unknown> {
   if (req.method === 'GET' || req.method === 'DELETE') {
     return undefined
@@ -1812,13 +2040,16 @@ function externalIntegrationSourceApiDocsFixture(): {
   }
 }
 
-function externalIntegrationSourceListFixture(): {
+function externalIntegrationSourceListFixture(includeNonBuiltInDetailTarget = false): {
   items: Array<Record<string, unknown>>
   page: number
   pageSize: number
   pageUpperBound: number
   hasMore: boolean
 } {
+  const detailPrimaryToken = externalIntegrationSourceDetailTokensFixture()[0]
+  assert(detailPrimaryToken)
+  const selectedSourceIsBuiltIn = !includeNonBuiltInDetailTarget
   const items: Array<Record<string, unknown>> = [
     {
       id: 'extsrc_builtin_test',
@@ -1842,7 +2073,7 @@ function externalIntegrationSourceListFixture(): {
       primaryToken: {
         id: 'exttok_builtin_test',
         name: 'PLAN-0081 primary token',
-        tokenPrefix: 'juis_plan0081',
+        tokenPrefix: 'juis_Bi1',
         tokenSuffix: 'active01',
         status: 'active',
         scopes: ['juhe_ai_public:group_list:read'],
@@ -1855,18 +2086,45 @@ function externalIntegrationSourceListFixture(): {
       isBuiltIn: true
     },
     {
-      id: 'extsrc_plan0081_disabled',
-      name: 'PLAN-0081 停用来源',
-      status: 'disabled',
-      scopes: ['juhe_ai_public:api_key_list:read'],
-      rateLimits: [],
+      id: selectedExternalIntegrationSourceId,
+      name: 'PLAN-0081 编码来源',
+      status: 'active',
+      scopes: [
+        'juhe_ai_public:api_key_list:read',
+        'juhe_ai_public:group_list:read'
+      ],
+      rateLimits: [
+        { windowSeconds: 1, maxRequests: 2 },
+        { windowSeconds: 60, maxRequests: 120 }
+      ],
+      expiresAt: '2026-09-01T00:00:00.000Z',
+      notes: 'PLAN-0081 external integration source detail fixture',
+      lastUsedAt: '2026-07-15T10:30:00.000Z',
       createdAt: '2026-07-13T02:00:00.000Z',
       updatedAt: '2026-07-15T07:00:00.000Z',
+      tokenCount: 3,
+      activeTokenCount: 1,
+      primaryToken: {
+        ...detailPrimaryToken,
+        isBuiltIn: selectedSourceIsBuiltIn
+      },
+      isBuiltIn: selectedSourceIsBuiltIn
+    }
+  ]
+  if (includeNonBuiltInDetailTarget) {
+    items.push({
+      id: 'extsrc_plan0081_later_non_builtin',
+      name: 'PLAN-0081 后续非内置来源',
+      status: 'disabled',
+      scopes: [],
+      rateLimits: [],
+      createdAt: '2026-07-12T02:00:00.000Z',
+      updatedAt: '2026-07-15T06:00:00.000Z',
       tokenCount: 0,
       activeTokenCount: 0,
       isBuiltIn: false
-    }
-  ]
+    })
+  }
   return {
     items,
     page: 1,
@@ -1874,6 +2132,60 @@ function externalIntegrationSourceListFixture(): {
     pageUpperBound: items.length,
     hasMore: false
   }
+}
+
+function externalIntegrationSourceDetailFixture(sourceId: string): Record<string, unknown> {
+  assert.equal(sourceId, selectedExternalIntegrationSourceId, '详情只应读取第一页第一个非内置来源')
+  const list = externalIntegrationSourceListFixture(true)
+  const source = list.items.find((item) => item.id === sourceId)
+  assert(source)
+  const detail = {
+    ...source,
+    tokens: externalIntegrationSourceDetailTokensFixture()
+  }
+  delete detail.primaryToken
+  return detail
+}
+
+function externalIntegrationSourceDetailTokensFixture(): Array<Record<string, unknown>> {
+  return [
+    {
+      id: 'exttok_plan0081_z',
+      name: 'PLAN-0081 active token',
+      tokenPrefix: 'juis_Ac1',
+      tokenSuffix: 'active01',
+      status: 'active',
+      scopes: ['juhe_ai_public:group_list:read'],
+      expiresAt: '2026-08-31T00:00:00.000Z',
+      lastUsedAt: '2026-07-15T10:30:00.000Z',
+      createdAt: '2026-07-15T10:00:00.000Z',
+      updatedAt: '2026-07-15T10:30:00.000Z',
+      isBuiltIn: false
+    },
+    {
+      id: 'exttok_plan0081_a',
+      name: 'PLAN-0081 disabled token',
+      tokenPrefix: 'juis_Di1',
+      tokenSuffix: 'disable1',
+      status: 'disabled',
+      scopes: ['juhe_ai_public:api_key_list:read'],
+      createdAt: '2026-07-15T10:00:00.000Z',
+      updatedAt: '2026-07-15T10:20:00.000Z',
+      isBuiltIn: false
+    },
+    {
+      id: 'exttok_plan0081_old',
+      name: 'PLAN-0081 revoked token',
+      tokenPrefix: 'juis_Rv1',
+      tokenSuffix: 'revoked1',
+      status: 'revoked',
+      scopes: [],
+      createdAt: '2026-07-14T09:00:00.000Z',
+      updatedAt: '2026-07-15T09:00:00.000Z',
+      revokedAt: '2026-07-15T09:00:00.000Z',
+      isBuiltIn: false
+    }
+  ]
 }
 
 function externalIntegrationSourcePaginationFixture(
@@ -1957,6 +2269,10 @@ function externalIntegrationSourcesListPath(page = 1): string {
   return `GET /__aisys__/api/external-integration-sources?page=${page}&pageSize=20`
 }
 
+function externalIntegrationSourceDetailPath(sourceId = selectedExternalIntegrationSourceId): string {
+  return `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`
+}
+
 function groupsListPath(): string {
   return `GET /__aisys__/api/groups?page=1&pageSize=500&systemAccountId=${systemAccountId}`
 }
@@ -2017,6 +2333,32 @@ function assertRequestHeaders(): void {
   }
 }
 
+function assertExternalIntegrationSourceDetailRequest(
+  sourceId = selectedExternalIntegrationSourceId
+): void {
+  const expectedUrl = externalIntegrationSourceDetailPath(sourceId).replace(/^GET /, '')
+  const detailRequests = requestRecords.filter((record) => record.url === expectedUrl)
+  assert.equal(detailRequests.length, 1, '详情应只读取第一页第一个非内置来源一次')
+  const detailRequest = detailRequests[0]
+  assert(detailRequest)
+  assert.equal(detailRequest.method, 'GET')
+  assert.equal(detailRequest.body, undefined)
+  assert.equal(new URL(detailRequest.url ?? '/', 'http://127.0.0.1').search, '')
+}
+
+function assertNoExternalIntegrationSourceSecretRequest(): void {
+  assert.equal(
+    requestRecords.some((record) => {
+      const pathname = new URL(record.url ?? '/', 'http://127.0.0.1').pathname
+      return pathname.startsWith('/__aisys__/api/external-integration-sources/')
+        && pathname.includes('/tokens/')
+        && pathname.endsWith('/secret')
+    }),
+    false,
+    '外部来源详情 smoke 不得调用 Token secret endpoint'
+  )
+}
+
 function assertNoCookieLeak(messages: string[]): void {
   assert.equal(messages.some((line) => line.includes(cookie)), false, 'output must not expose the Cookie header')
 }
@@ -2036,6 +2378,7 @@ function assertNoEnvironmentIdentifierLeak(
     explicitClientIPHash,
     listedPublicApiLogId,
     configuredPublicApiLogId,
+    selectedExternalIntegrationSourceId,
     selectedRouteStrategyId,
     missingRouteStrategyId,
     configuredAccountId,

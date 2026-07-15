@@ -63,6 +63,22 @@ const externalIntegrationSourceListItemFieldSet = new Set([
   'primaryToken',
   'isBuiltIn'
 ])
+const externalIntegrationSourceDetailFieldSet = new Set([
+  'id',
+  'name',
+  'status',
+  'scopes',
+  'rateLimits',
+  'expiresAt',
+  'notes',
+  'lastUsedAt',
+  'createdAt',
+  'updatedAt',
+  'tokenCount',
+  'activeTokenCount',
+  'tokens',
+  'isBuiltIn'
+])
 const externalIntegrationSourcePrimaryTokenFieldSet = new Set([
   'id',
   'name',
@@ -262,6 +278,10 @@ interface ExternalIntegrationSourceListResult {
   pageSize: number
   pageUpperBound: number
   hasMore: boolean
+}
+
+type ExternalIntegrationSourceDetail = Omit<ExternalIntegrationSourceListItem, 'primaryToken'> & {
+  tokens: ExternalIntegrationSourcePrimaryToken[]
 }
 
 type PublicApiLogCaptureStatus = 'complete' | 'truncated' | 'empty' | 'dropped'
@@ -494,6 +514,20 @@ async function runReadOnlySmoke(
     1,
     20
   )
+  const externalIntegrationSourceDetailTarget = externalIntegrationSourceFirstPage.items.find(
+    (source) => !source.isBuiltIn
+  )
+  if (externalIntegrationSourceDetailTarget) {
+    const externalIntegrationSourceDetailData = await getEnvelopeData(
+      externalIntegrationSourceDetailUrl(config, externalIntegrationSourceDetailTarget.id),
+      config,
+      'external integration source detail'
+    )
+    assertExternalIntegrationSourceDetail(
+      externalIntegrationSourceDetailData,
+      externalIntegrationSourceDetailTarget
+    )
+  }
   if (externalIntegrationSourceFirstPage.hasMore) {
     const externalIntegrationSourceSecondPageData = await getEnvelopeData(
       externalIntegrationSourcesListUrl(config, 2),
@@ -917,6 +951,13 @@ function externalIntegrationSourcesListUrl(
   })
 }
 
+function externalIntegrationSourceDetailUrl(
+  config: NormalizedRealGoManagementSmokeConfig,
+  sourceId: string
+): URL {
+  return endpointUrl(config.baseUrl, `/external-integration-sources/${encodeURIComponent(sourceId)}`, {})
+}
+
 function clientIPStatsListUrl(config: NormalizedRealGoManagementSmokeConfig): URL {
   return endpointUrl(config.baseUrl, '/ip-stats', {
     page: '1',
@@ -1196,6 +1237,98 @@ function assertExternalIntegrationSourceListItem(
   return value as unknown as ExternalIntegrationSourceListItem
 }
 
+function assertExternalIntegrationSourceDetail(
+  value: unknown,
+  listItem: ExternalIntegrationSourceListItem
+): ExternalIntegrationSourceDetail {
+  const label = 'external integration source detail'
+  expect(isRecord(value), `${label} must be an object`)
+  assertExternalIntegrationSourceFields(value, externalIntegrationSourceDetailFieldSet, label)
+  expect(isNonEmptyString(value.id), `${label}.id must be a non-empty string`)
+  expect(isNonEmptyString(value.name), `${label}.name must be a non-empty string`)
+  expect(
+    value.status === 'active' || value.status === 'disabled',
+    `${label}.status must be active or disabled`
+  )
+  const scopes = assertExternalIntegrationSourceScopesSubset(value.scopes, `${label}.scopes`)
+  assertExternalIntegrationSourceRateLimits(value.rateLimits, `${label}.rateLimits`)
+  const rateLimits = value.rateLimits as Array<{ windowSeconds: number; maxRequests: number }>
+  assertOptionalISOString(value, 'expiresAt', label)
+  if (Object.hasOwn(value, 'notes')) {
+    expect(typeof value.notes === 'string', `${label}.notes must be a string when present`)
+  }
+  assertOptionalISOString(value, 'lastUsedAt', label)
+  assertRequiredISOString(value.createdAt, `${label}.createdAt`)
+  assertRequiredISOString(value.updatedAt, `${label}.updatedAt`)
+  expect(
+    isNonNegativeSafeInteger(value.tokenCount),
+    `${label}.tokenCount must be a non-negative safe integer`
+  )
+  expect(
+    isNonNegativeSafeInteger(value.activeTokenCount),
+    `${label}.activeTokenCount must be a non-negative safe integer`
+  )
+  expect(typeof value.isBuiltIn === 'boolean', `${label}.isBuiltIn must be boolean`)
+  expect(Array.isArray(value.tokens), `${label}.tokens must be an array`)
+
+  const tokens = value.tokens.map((token, index) =>
+    assertExternalIntegrationSourcePrimaryToken(token, `${label}.tokens item ${index}`)
+  )
+  const activeTokenCount = tokens.filter((token) => token.status === 'active').length
+  expect(value.tokenCount === tokens.length, `${label}.tokenCount must equal tokens.length`)
+  expect(
+    value.activeTokenCount === activeTokenCount,
+    `${label}.activeTokenCount must equal the number of active tokens`
+  )
+
+  for (let index = 1; index < tokens.length; index += 1) {
+    const previousToken = tokens[index - 1]
+    const token = tokens[index]
+    expect(previousToken && token, `${label}.tokens must contain valid items`)
+    const previousCreatedAt = Date.parse(previousToken.createdAt)
+    const createdAt = Date.parse(token.createdAt)
+    expect(
+      previousCreatedAt > createdAt || (previousCreatedAt === createdAt && previousToken.id > token.id),
+      `${label}.tokens must be sorted by createdAt descending, then id descending`
+    )
+  }
+
+  expect(value.id === listItem.id, `${label}.id must match the list item`)
+  expect(value.createdAt === listItem.createdAt, `${label}.createdAt must match the list item`)
+  expect(value.isBuiltIn === listItem.isBuiltIn, `${label}.isBuiltIn must match the list item`)
+  const detailUpdatedAt = Date.parse(value.updatedAt)
+  const listUpdatedAt = Date.parse(listItem.updatedAt)
+  expect(detailUpdatedAt >= listUpdatedAt, `${label}.updatedAt must not precede the list item`)
+  if (listItem.lastUsedAt !== undefined) {
+    expect(value.lastUsedAt !== undefined, `${label}.lastUsedAt must not disappear after the list request`)
+    expect(
+      Date.parse(value.lastUsedAt) >= Date.parse(listItem.lastUsedAt),
+      `${label}.lastUsedAt must not precede the list item`
+    )
+  }
+  if (value.updatedAt === listItem.updatedAt) {
+    for (const field of ['name', 'status', 'expiresAt', 'notes'] as const) {
+      expect(value[field] === listItem[field], `${label}.${field} must match the same list snapshot`)
+    }
+    expect(
+      scopes.length === listItem.scopes.length
+        && scopes.every((scope, index) => scope === listItem.scopes[index]),
+      `${label}.scopes must match the same list snapshot`
+    )
+    expect(
+      rateLimits.length === listItem.rateLimits.length
+        && rateLimits.every((rule, index) => {
+          const listRule = listItem.rateLimits[index]
+          return listRule
+            && rule.windowSeconds === listRule.windowSeconds
+            && rule.maxRequests === listRule.maxRequests
+        }),
+      `${label}.rateLimits must match the same list snapshot`
+    )
+  }
+  return value as unknown as ExternalIntegrationSourceDetail
+}
+
 function assertExternalIntegrationSourcePrimaryToken(
   value: unknown,
   label: string
@@ -1204,8 +1337,14 @@ function assertExternalIntegrationSourcePrimaryToken(
   assertExternalIntegrationSourceFields(value, externalIntegrationSourcePrimaryTokenFieldSet, label)
   expect(isNonEmptyString(value.id), `${label}.id must be a non-empty string`)
   expect(isNonEmptyString(value.name), `${label}.name must be a non-empty string`)
-  expect(isNonEmptyString(value.tokenPrefix), `${label}.tokenPrefix must be a non-empty string`)
-  expect(isNonEmptyString(value.tokenSuffix), `${label}.tokenSuffix must be a non-empty string`)
+  expect(
+    typeof value.tokenPrefix === 'string' && /^juis_[A-Za-z0-9_-]{3}$/.test(value.tokenPrefix),
+    `${label}.tokenPrefix must be an 8-character juis_ preview`
+  )
+  expect(
+    typeof value.tokenSuffix === 'string' && /^[A-Za-z0-9_-]{8}$/.test(value.tokenSuffix),
+    `${label}.tokenSuffix must be an 8-character base64url preview`
+  )
   expect(
     value.status === 'active' || value.status === 'disabled' || value.status === 'revoked',
     `${label}.status must be active, disabled, or revoked`
