@@ -132,7 +132,7 @@ func TestUpdateManagementExternalIntegrationSourceTokenLocksMergesUpdatesMapsAnd
 	wantArgs := []any{
 		"New Token",
 		"disabled",
-		`{"mode":"strict","scopes":["new:write"]}`,
+		`["api_keys:write"]`,
 		pgTimestamptz(newExpiresAt),
 		pgTimestamptz(now),
 		pgtype.Timestamptz{},
