@@ -250,7 +250,8 @@ async function requestUpstreamWithFetch(url: URL, options: UpstreamRequestOption
       method: options.method,
       headers,
       body: fetchBody,
-      signal: controller.signal
+      signal: controller.signal,
+      redirect: 'manual'
     })
     if (requestTimeout) {
       clearTimeout(requestTimeout)

@@ -596,6 +596,42 @@ export interface AccountSummary {
   authorizationTeamCount?: number
 }
 
+export interface AccountStatusSnapshotItem extends Pick<AccountSummary,
+  | 'id'
+  | 'status'
+  | 'schedulable'
+  | 'currentConcurrency'
+  | 'cooldownUntil'
+  | 'lastErrorCode'
+  | 'lastErrorMessage'
+  | 'lastHealthCheckAt'
+  | 'lastHealthCheckErrorCode'
+  | 'lastHealthCheckErrorMessage'
+  | 'authorizationStatus'
+  | 'authorizationExpiresAt'
+  | 'authorizationQuotaExceeded'
+  | 'authorizationInstanceSourceAccountStatus'
+  | 'authorizationInstanceSourceAccountSchedulable'
+  | 'authorizationInstanceSourceAccountExpiresAt'
+  | 'authorizationInstanceSourceAccountCooldownUntil'
+  | 'authorizationInstanceSourceAccountLastErrorCode'
+  | 'authorizationInstanceSourceAccountLastErrorMessage'
+  | 'apiKeyRuntime'
+  | 'runtimeAvailability'
+  | 'effectiveAvailability'
+  | 'lastUsedAt'
+  | 'todayUsage'
+> {}
+
+export interface AccountStatusSnapshotResult {
+  generatedAt: string
+  runtimeSnapshot: {
+    accountConcurrencyAvailable: boolean
+    accountRuntimeAvailabilityAvailable: boolean
+  }
+  items: AccountStatusSnapshotItem[]
+}
+
 export interface AccountBatchEditTarget {
   accountId: string
   configRevision: number

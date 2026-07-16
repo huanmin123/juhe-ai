@@ -155,6 +155,7 @@ interface RecoveryProbeState {
 
 interface DistributedRecoveryProbeState {
   runtimeKey: string
+  phase: 'recovery_wait' | 'precheck_pending'
   generation: number
   accountId: string
   accountName?: string
@@ -173,6 +174,26 @@ interface DistributedRecoveryProbeState {
   clientIpMarkers?: string[]
   apiKeyMarkers?: string[]
   precheckRequested: boolean
+}
+
+export async function loadDistributedGatewayAccountRuntimeAvailability(
+  runtimeKeys: string[]
+): Promise<Record<string, AccountRuntimeAvailability>> {
+  const states = await distributedRecoveryProbeStore.getMany(runtimeKeys)
+  const result: Record<string, AccountRuntimeAvailability> = {}
+  for (const [runtimeKey, state] of states) {
+    result[runtimeKey] = {
+      status: state.phase === 'precheck_pending' ? 'precheck_pending' : 'local_suppressed',
+      reason: state.reason,
+      since: new Date(state.startedAtMs).toISOString(),
+      until: new Date(state.nextProbeAtMs).toISOString(),
+      failureCount: state.failureCount,
+      distinctClientIpCount: state.distinctClientIpCount,
+      distinctApiKeyCount: state.distinctApiKeyCount,
+      precheckAttemptCount: state.attemptCount
+    }
+  }
+  return result
 }
 
 export interface GatewayAccountSideEffectState {
@@ -571,6 +592,7 @@ async function recordDistributedGatewayAccountFailureForPrecheck(
   const apiKeyMarker = runtimeProbeObservationMarker(input.apiKeyId)
   const state: DistributedRecoveryProbeState = {
     runtimeKey,
+    phase: 'recovery_wait',
     generation,
     accountId: account.id,
     accountName: account.name,
@@ -905,6 +927,7 @@ async function promoteDistributedRecoveryProbeToPrecheck(state: DistributedRecov
   const generation = await distributedRecoveryProbeStore.nextGeneration(state.runtimeKey, distributedRecoveryProbeStateTtlMs)
   const precheckState: DistributedRecoveryProbeState = {
     ...state,
+    phase: 'precheck_pending',
     generation,
     attemptCount: 0,
     precheckRequested: true,

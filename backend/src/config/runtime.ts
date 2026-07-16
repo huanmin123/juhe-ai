@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
+import { isIP } from 'node:net'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -850,17 +852,38 @@ function isLoopbackHost(hostname: string): boolean {
 
 function upstreamUrlSecurityConfig(): RuntimeConfig['upstreamUrlSecurity'] {
   const allowPrivateBaseUrls = strictBooleanConfig('JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS', false)
-  const privateBaseUrlAllowlist = listConfig('JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST')
+  const privateBaseUrlAllowlist = privateUpstreamOriginAllowlistConfig('JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST')
   if (isProductionRuntime() && allowPrivateBaseUrls) {
     throw new Error('JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS 只能用于本地开发或回归测试，生产环境不能启用')
-  }
-  if (isProductionRuntime() && privateBaseUrlAllowlist.length > 0) {
-    throw new Error('JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST 只能用于本地开发或回归测试，生产环境不能配置')
   }
   return {
     allowPrivateBaseUrls,
     privateBaseUrlAllowlist
   }
+}
+
+function privateUpstreamOriginAllowlistConfig(name: string): string[] {
+  return Array.from(new Set(listConfig(name).map((value) => normalizePrivateUpstreamOrigin(name, value))))
+}
+
+function normalizePrivateUpstreamOrigin(name: string, value: string): string {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(`${name} 只能逐项填写完整的 http/https 私网 IP Origin：${value}`)
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`${name} 只允许 http 或 https Origin：${value}`)
+  }
+  if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+    throw new Error(`${name} 只能填写 Origin，不要包含路径、查询、片段或用户名密码：${value}`)
+  }
+  const hostname = url.hostname.replace(/^\[/, '').replace(/\]$/, '')
+  if (!isIP(hostname)) {
+    throw new Error(`${name} 只允许 IP Origin，不接受域名：${value}`)
+  }
+  return `${url.protocol}//${url.hostname.toLowerCase()}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`
 }
 
 function listConfig(name: string): string[] {

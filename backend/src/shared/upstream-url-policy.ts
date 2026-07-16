@@ -83,13 +83,13 @@ export async function prepareSafeUpstreamRequestUrl(
   const url = parseUpstreamUrl(value, config, upstreamRequestUrlPolicy)
   assertSafeUpstreamUrl(url, config)
   const hostname = normalizeHostToken(url.hostname)
-  const allowlistedHost = isAllowedPrivateHostToken(hostname, config)
+  const allowlistedOrigin = isAllowedPrivateOrigin(url, config)
   if (config.allowPrivateBaseUrls || isIP(hostname)) {
     return { url }
   }
   const addresses = await lookup(url.hostname, { all: true, verbatim: true }) as ResolvedAddress[]
   for (const address of addresses) {
-    if (!allowlistedHost && !isAllowedPrivateHostToken(address.address, config) && isPrivateOrReservedIp(address.address)) {
+    if (!allowlistedOrigin && isPrivateOrReservedIp(address.address)) {
       throw new UnsafeUpstreamUrlError()
     }
   }
@@ -125,13 +125,14 @@ function canUseHttpUpstreamUrlForConfiguredPrivateHost(value: string, config: Up
   }
   if (url.protocol !== 'http:') return false
   const hostname = normalizeHostToken(url.hostname)
-  return isAllowedPrivateHostToken(hostname, config) || isLocalhostName(hostname) || isPrivateOrReservedIp(hostname)
+  return isAllowedPrivateOrigin(url, config)
+    || (config.allowPrivateBaseUrls && (isLocalhostName(hostname) || isPrivateOrReservedIp(hostname)))
 }
 
 function assertSafeUpstreamUrl(url: URL, config: UpstreamUrlSecurityConfig): void {
   if (config.allowPrivateBaseUrls) return
   const hostname = normalizeHostToken(url.hostname)
-  if (isAllowedPrivateHostToken(hostname, config)) return
+  if (isAllowedPrivateOrigin(url, config)) return
   if (isLocalhostName(hostname) || isPrivateOrReservedIp(hostname)) {
     throw new UnsafeUpstreamUrlError()
   }
@@ -141,9 +142,12 @@ function isLocalhostName(hostname: string): boolean {
   return hostname === 'localhost' || hostname.endsWith('.localhost')
 }
 
-function isAllowedPrivateHostToken(hostname: string, config: UpstreamUrlSecurityConfig): boolean {
-  const normalized = normalizeHostToken(hostname)
-  return config.privateBaseUrlAllowlist.some((entry) => normalizeHostToken(entry) === normalized)
+function isAllowedPrivateOrigin(url: URL, config: UpstreamUrlSecurityConfig): boolean {
+  return config.privateBaseUrlAllowlist.includes(upstreamOriginKey(url))
+}
+
+function upstreamOriginKey(url: URL): string {
+  return `${url.protocol}//${url.hostname.toLowerCase()}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`
 }
 
 function normalizeHostToken(value: string): string {

@@ -80,7 +80,7 @@ export function accountEffectiveAvailability(
   return {
     available: true,
     status: 'available',
-    label: '正常',
+    label: '可调度',
     color: 'green'
   }
 }

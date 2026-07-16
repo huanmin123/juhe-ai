@@ -1,4 +1,4 @@
-import type { AccountBalanceSnapshot, AccountSummary } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountStatusSnapshotResult, AccountSummary } from '@/types/domain'
 
 export function replaceAccountBalanceSnapshot(
   accounts: AccountSummary[],
@@ -14,4 +14,46 @@ export function replaceAccountBalanceSnapshot(
     balanceSnapshot: snapshot
   }
   return nextAccounts
+}
+
+export function mergeAccountStatusSnapshot(
+  accounts: AccountSummary[],
+  snapshot: AccountStatusSnapshotResult
+): AccountSummary[] {
+  const itemsById = new Map(snapshot.items.map((item) => [item.id, item]))
+  let changed = false
+  const next = accounts.map((account) => {
+    const item = itemsById.get(account.id)
+    if (!item) return account
+    changed = true
+    return {
+      ...account,
+      status: item.status,
+      schedulable: item.schedulable,
+      currentConcurrency: item.currentConcurrency,
+      currentConcurrencyAvailable: snapshot.runtimeSnapshot.accountConcurrencyAvailable === true,
+      cooldownUntil: item.cooldownUntil,
+      lastErrorCode: item.lastErrorCode,
+      lastErrorMessage: item.lastErrorMessage,
+      lastHealthCheckAt: item.lastHealthCheckAt,
+      lastHealthCheckErrorCode: item.lastHealthCheckErrorCode,
+      lastHealthCheckErrorMessage: item.lastHealthCheckErrorMessage,
+      authorizationStatus: item.authorizationStatus,
+      authorizationExpiresAt: item.authorizationExpiresAt,
+      authorizationQuotaExceeded: item.authorizationQuotaExceeded,
+      authorizationInstanceSourceAccountStatus: item.authorizationInstanceSourceAccountStatus,
+      authorizationInstanceSourceAccountSchedulable: item.authorizationInstanceSourceAccountSchedulable,
+      authorizationInstanceSourceAccountExpiresAt: item.authorizationInstanceSourceAccountExpiresAt,
+      authorizationInstanceSourceAccountCooldownUntil: item.authorizationInstanceSourceAccountCooldownUntil,
+      authorizationInstanceSourceAccountLastErrorCode: item.authorizationInstanceSourceAccountLastErrorCode,
+      authorizationInstanceSourceAccountLastErrorMessage: item.authorizationInstanceSourceAccountLastErrorMessage,
+      apiKeyRuntime: item.apiKeyRuntime,
+      runtimeAvailability: item.runtimeAvailability,
+      effectiveAvailability: item.effectiveAvailability,
+      lastUsedAt: item.lastUsedAt,
+      todayUsage: item.todayUsage,
+      accountRuntimeAvailabilityAvailable: snapshot.runtimeSnapshot.accountRuntimeAvailabilityAvailable === true
+    }
+  })
+  return changed ? next : accounts
 }

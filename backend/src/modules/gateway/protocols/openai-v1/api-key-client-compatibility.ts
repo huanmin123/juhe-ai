@@ -11,7 +11,10 @@ import {
   parseGatewayJsonBodyInWorker
 } from '../../request/json-parser.js'
 import { splitPathAndQuery } from './route-helpers.js'
-import { normalizeOpenAICodexClientHeaders } from '../../adapters/gpt-codex/client-headers.js'
+import {
+  normalizeOpenAICodexClientHeaders,
+  normalizeOpenAICodexResponsesLiteBody
+} from '../../adapters/gpt-codex/client-headers.js'
 import { normalizeOpenAICodexBuiltinTools } from '../../adapters/gpt-codex/builtin-tools.js'
 import { requestModel } from '../../request/metadata.js'
 
@@ -29,10 +32,11 @@ export async function buildOpenAIClientCompatibilityBody(
     return undefined
   }
   const body = await parseOpenAIClientCompatibilityJsonBody(req, signal)
-  applyCodexResponsesCompatibility(body)
   if (options.modelOverride) {
     body.model = options.modelOverride
   }
+  applyCodexResponsesCompatibility(body)
+  normalizeOpenAICodexResponsesLiteBody(body, stringValue(body.model))
   return Buffer.from(JSON.stringify(body), 'utf8')
 }
 
@@ -169,4 +173,8 @@ function normalizeCodexResponsesInputItems(input: unknown[]): unknown[] {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }

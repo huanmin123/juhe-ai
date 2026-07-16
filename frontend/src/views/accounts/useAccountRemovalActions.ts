@@ -6,6 +6,7 @@ import type { AccountSummary } from '@/types/domain'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 import { accountBatchConcurrency, runWithConcurrency } from './accountBatchExecution'
 import { canBatchDeleteAccount } from './accountRules'
+import { invalidateAccountTestOptionsCache } from './accountTestOptionsCache'
 
 interface UseAccountRemovalActionsOptions {
   accountById: ComputedRef<Map<string, AccountSummary>>
@@ -21,6 +22,7 @@ interface UseAccountRemovalActionsOptions {
 
 export function useAccountRemovalActions(options: UseAccountRemovalActionsOptions) {
   async function removeLoadedRemovedAccount(id: string): Promise<void> {
+    invalidateAccountTestOptionsCache()
     options.removeLoadedAccount(id)
     options.pruneSelection(new Set(options.accounts.value.map((account) => account.id)))
     void options.loadData({ quiet: true })
@@ -83,6 +85,9 @@ export function useAccountRemovalActions(options: UseAccountRemovalActionsOption
           : api.myAccounts.delete(account.id)
       ))
       const failedCount = results.filter((result) => result.status === 'rejected').length
+      if (failedCount < selected.length) {
+        invalidateAccountTestOptionsCache()
+      }
       if (failedCount === 0) {
         message.success('账户已批量删除，关联记录将在一个月后由后台物理清理')
         options.clearSelection()

@@ -83,6 +83,7 @@ type Service struct {
 	now                        func() time.Time
 	newID                      func(prefix string) string
 	codec                      CredentialCodec
+	privateBaseURLOrigins      map[string]struct{}
 }
 
 type Options struct {
@@ -96,6 +97,7 @@ type Options struct {
 	NewID                      func(prefix string) string
 	Codec                      CredentialCodec
 	Secret                     string
+	PrivateBaseURLAllowlist    []string
 }
 
 type CredentialCodec interface {
@@ -268,6 +270,7 @@ func NewService(opts Options) *Service {
 		now:                        now,
 		newID:                      newID,
 		codec:                      codec,
+		privateBaseURLOrigins:      privateBaseURLOriginSet(opts.PrivateBaseURLAllowlist),
 	}
 }
 
@@ -887,7 +890,7 @@ func (s *Service) encryptedCredentialMap(credentials map[string]any) (encryptedC
 		return encryptedCredential{}, ErrInvalidAPIKey
 	}
 	baseURL, _ := credentials["base_url"].(string)
-	baseURL, err := normalizeBaseURL(baseURL)
+	baseURL, err := normalizeBaseURL(baseURL, s.privateBaseURLOrigins)
 	if err != nil {
 		return encryptedCredential{}, err
 	}
@@ -916,7 +919,7 @@ func (s *Service) currentCredentials(encrypted string) (map[string]any, string, 
 		return nil, "", "", fmt.Errorf("%w: 当前账号凭据不完整", ErrInvalidCredentials)
 	}
 	apiKey = strings.TrimSpace(apiKey)
-	baseURL, err = normalizeBaseURL(baseURL)
+	baseURL, err = normalizeBaseURL(baseURL, s.privateBaseURLOrigins)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -973,7 +976,7 @@ func providerAccountTypesContain(raw string, want string) bool {
 	return false
 }
 
-func normalizeBaseURL(raw string) (string, error) {
+func normalizeBaseURL(raw string, privateOrigins map[string]struct{}) (string, error) {
 	text := strings.TrimSpace(raw)
 	if text == "" {
 		return "", ErrInvalidBaseURL
@@ -992,11 +995,40 @@ func normalizeBaseURL(raw string) (string, error) {
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return "", fmt.Errorf("%w: baseUrl 不能指向本机地址", ErrInvalidBaseURL)
 	}
-	if ip := net.ParseIP(host); ip != nil && !publicIP(ip) {
+	if ip := net.ParseIP(host); ip != nil && !publicIP(ip) && !privateBaseURLOriginAllowed(parsed, privateOrigins) {
 		return "", fmt.Errorf("%w: baseUrl 不能指向内网或保留地址", ErrInvalidBaseURL)
 	}
 	parsed.Fragment = ""
 	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func privateBaseURLOriginSet(values []string) map[string]struct{} {
+	origins := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		if err != nil || parsed.Scheme == "" || net.ParseIP(parsed.Hostname()) == nil {
+			continue
+		}
+		origins[baseURLOriginKey(parsed)] = struct{}{}
+	}
+	return origins
+}
+
+func privateBaseURLOriginAllowed(parsed *url.URL, origins map[string]struct{}) bool {
+	_, ok := origins[baseURLOriginKey(parsed)]
+	return ok
+}
+
+func baseURLOriginKey(parsed *url.URL) string {
+	port := parsed.Port()
+	if port == "" {
+		if parsed.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + net.JoinHostPort(strings.ToLower(parsed.Hostname()), port)
 }
 
 func publicIP(ip net.IP) bool {

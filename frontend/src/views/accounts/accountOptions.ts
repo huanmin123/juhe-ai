@@ -347,7 +347,7 @@ export const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 export const ACCOUNT_PAGE_SIZE = 20
 
 export const statusOptions: Array<{ label: string; value: AccountStatus }> = [
-  { label: '正常', value: 'active' },
+  { label: '可调度', value: 'active' },
   { label: '待检查', value: 'pending_test' },
   { label: '停用', value: 'disabled' },
   { label: '异常', value: 'error' },

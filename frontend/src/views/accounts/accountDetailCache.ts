@@ -2,6 +2,7 @@ import { api } from '@/api/client'
 import { createShortLivedRequestCache } from '@/shared/shortLivedRequestCache'
 import type { AccountSummary } from '@/types/domain'
 import type { AccountScopeParams } from './accountOperationScope'
+import { invalidateAccountTestOptionsCache } from './accountTestOptionsCache'
 
 export type AccountDetailLevel = 'edit-basic' | 'advanced'
 
@@ -41,6 +42,7 @@ export function invalidateAccountDetailForAccount(input: {
   scopeParams?: AccountScopeParams
 }): void {
   if (!input.accountId) return
+  invalidateAccountTestOptionsCache()
   for (const level of accountDetailLevels) {
     invalidateAccountDetailCache(resolveAccountDetailCacheKey(input.isManagementView, input.accountId, input.scopeParams, level))
   }

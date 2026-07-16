@@ -134,7 +134,7 @@ type GptAccountType = 'api_key' | 'oauth'
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址
 - 高级配置中的“接口能力限制”用于声明该上游支持的 Chat / Responses 与 JSON / SSE 组合；网关调度会按该配置筛选，不做未声明的 Chat 与 Responses 自动互转。测试弹窗中的“测试请求形态”从接口能力限制中选择，本次提交后只按所选 `testEndpointMode` 测试，不回写账户，也不从最近真实请求或客户端画像推导。需要让 Chat-only OpenAI v1 上游承接 Responses 入站时，必须在账号模型别名中显式配置 `responses -> chat_completions`，且账号真实能力仍只保存 `chat_json/chat_sse`。
-- `base_url` 保存时按 OpenAI-compatible 上游根地址校验：必须是完整绝对地址，协议允许 `http` 和 `https`，主机允许域名和公网 IP；默认仍通过 SSRF 防护拒绝本机、内网、链路本地和保留地址，这类地址只有本地 mock / 回归测试才可通过私网上游放行配置使用。禁止用户名密码、查询参数、片段、反斜杠、协议后多余斜杠、路径连续斜杠、`.` / `..` 路径段和编码后的斜杠。可填写服务根地址或 `/v1` 版本根地址，例如 `https://api.openai.com`、`https://api.openai.com/v1`、`http://103.236.84.213:48222/v1`、`https://example.com/openai`、`https://example.com/openai/v1`；不能填写 `/responses`、`/chat/completions` 等具体接口路径。
+- `base_url` 保存时按 OpenAI-compatible 上游根地址校验：必须是完整绝对地址，协议允许 `http` 和 `https`，主机允许域名和公网 IP；默认仍通过 SSRF 防护拒绝本机、内网、链路本地和保留地址。私网 IP 只有在部署者显式配置匹配 `scheme + IP + effective port` 的 `JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST` 时放行；生产默认不配置，路径不参与白名单匹配。禁止用户名密码、查询参数、片段、反斜杠、协议后多余斜杠、路径连续斜杠、`.` / `..` 路径段和编码后的斜杠。可填写服务根地址或 `/v1` 版本根地址，例如 `https://api.openai.com`、`https://api.openai.com/v1`、`http://103.236.84.213:48222/v1`、`https://example.com/openai`、`https://example.com/openai/v1`；不能填写 `/responses`、`/chat/completions` 等具体接口路径。
 - 不提供 `OpenAI-Organization`、`OpenAI-Project` 和 `OpenAI-Beta` 的账号表单配置；组织 / 项目属于 OpenAI 账号上下文，服务端不凭空生成，Beta 由客户端按公开 API 需求显式传入
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
 - 时间计划和人工启停共用账户 `status`。后台只在计划开始 / 结束边界自动写入 `active` 或 `disabled`；时段外手动启用、计划内手动停用也只提交 `status`，后续到下一次计划边界再由计划接管。计划不会把 `pending_test`、`error`、`rate_limited`、`temporary_unavailable` 自动恢复为正常。时区跟随系统默认值，用户表单不提供时区配置。
@@ -239,7 +239,7 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 - 网关发现 OAuth Access Token 距离过期小于 60 秒但仍超过 5 秒时，不阻塞当前请求；当前请求继续使用现有 Access Token，同时按账号触发一次后台预热刷新。预热刷新按账号去重，同一账号已有预热任务时不会重复排队；预热成功只写回新凭据并清理运行缓存，预热失败只写运行日志，不把当前请求卡在 token endpoint 上。
 - OAuth Access Token 刷新按账户串行执行；刷新前会在锁内重读账户，避免使用缓存里的旧 `refresh_token`。刷新成功后 server 进程会短 TTL 记住最近新凭据，同一波临期请求复用该结果，不再逐个重复读写 DB service。如果 OpenAI 返回 `refresh_token_reused` / `invalid_grant` 且重读后发现账户凭据已经被其他请求或后台任务更新，会采用最新凭据恢复，不把竞争误判为账户失效。
 - 后台 worker 另有 `openai-oauth-access-token-refresh` 专职任务，默认每 60 秒扫描所有仍存在、未删除、有 `refresh_token` 且 Access Token 距离过期小于 5 分钟的 GPT OAuth 账户，提前刷新并写回凭据；扫描不受 `active`、`pending_test`、`disabled`、`error`、`rate_limited`、`temporary_unavailable` 或 `schedulable` 状态影响。后台预刷新只做 token 保活，成功时不恢复普通冷却状态、不清理无关错误；失败时按退避等待并累计连续失败次数，连续 3 次失败后把非停用、非待检查账户写入 `status = error`，`last_error_code = oauth_token_refresh_failed`，`last_error_message` 记录最近失败摘要，后续后台刷新成功会自动恢复该异常。手动停用账户不会被后台刷新失败覆盖成异常。
-- 待检查账户不属于冷却恢复状态；OAuth 后台刷新、后台冷却复测、“恢复正常”、手动启用和人工账户测试都不能隐式把 `pending_test` 改成 `active`。新建或导入账户由后台激活检查成功后转为正常；关键连接配置编辑同样交由后台复检。
+- 待检查账户不属于冷却恢复状态；OAuth 后台刷新、后台冷却复测、手动启用和人工账户测试都不能隐式把 `pending_test` 改成 `active`。新建或导入账户由后台激活检查成功后转为正常；关键连接配置编辑同样交由后台复检。只有账户所有者在统一“恢复正常”入口明确确认风险时，服务端才允许精确的待检查账户直接放行；“重新检查”不会直接放行。
 - 后台不再为了 OAuth 额度快照发起模型请求；额度快照只从真实网关请求返回的 Codex rate-limit 响应头被动更新。账户人工测试不更新生产额度快照。测试和模型检测展示用上游响应体只保留 `256KB` 有界预览，避免 DB service 在诊断请求内同步解析大文本。OpenAI OAuth token endpoint 的响应体同样只允许收集 `256KB`，异常大响应会主动中断并返回错误，避免刷新 token 时无界占用内存。access token 临近过期时，真实网关请求会按 5 秒硬阻塞阈值和 60 秒后台预热阈值处理。
 - OAuth token 响应里的 `expires_in` 只用于计算 `credentials.expires_at`，表示 access token 过期时间；账户购买/套餐到期时间使用单独的 `account_expires_at`。
 - 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号；OAuth 额度快照只会在真实请求命中该账号时被动更新。
