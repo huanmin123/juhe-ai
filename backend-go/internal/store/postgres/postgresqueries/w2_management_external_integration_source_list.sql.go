@@ -11,6 +11,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countManagementExternalIntegrationSourceTokensForDelete = `-- name: CountManagementExternalIntegrationSourceTokensForDelete :one
+SELECT COUNT(*)::bigint
+FROM juhe_business.external_integration_source_tokens AS tokens
+WHERE tokens.source_ref_id = $1::text
+`
+
+func (q *Queries) CountManagementExternalIntegrationSourceTokensForDelete(ctx context.Context, sourceID string) (int64, error) {
+	row := q.db.QueryRow(ctx, countManagementExternalIntegrationSourceTokensForDelete, sourceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const deleteManagementExternalIntegrationSource = `-- name: DeleteManagementExternalIntegrationSource :one
+DELETE FROM juhe_business.external_integration_sources
+WHERE id = $1::text
+RETURNING id
+`
+
+func (q *Queries) DeleteManagementExternalIntegrationSource(ctx context.Context, sourceID string) (string, error) {
+	row := q.db.QueryRow(ctx, deleteManagementExternalIntegrationSource, sourceID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
 const findManagementExternalIntegrationSource = `-- name: FindManagementExternalIntegrationSource :one
 SELECT
   sources.id,

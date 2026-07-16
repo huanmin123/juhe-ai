@@ -115,6 +115,16 @@ FROM juhe_business.external_integration_sources AS sources
 WHERE sources.id = sqlc.arg(source_id)::text
 FOR UPDATE;
 
+-- name: CountManagementExternalIntegrationSourceTokensForDelete :one
+SELECT COUNT(*)::bigint
+FROM juhe_business.external_integration_source_tokens AS tokens
+WHERE tokens.source_ref_id = sqlc.arg(source_id)::text;
+
+-- name: DeleteManagementExternalIntegrationSource :one
+DELETE FROM juhe_business.external_integration_sources
+WHERE id = sqlc.arg(source_id)::text
+RETURNING id;
+
 -- name: UpdateManagementExternalIntegrationSource :one
 UPDATE juhe_business.external_integration_sources
 SET
