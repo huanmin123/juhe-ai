@@ -174,10 +174,22 @@
 - API 契约：写鉴权 touch、IP/user write limiter、管理员权限和 `external_integration_sources.delete` mutation guard 先于 handler；fingerprint 只含 ECMAScript trim 后的 `id`。空 ID 为 `400 来源系统不存在`，缺失为 `404`，内置 `extsrc_builtin_test` 为 `400 内置测试 Token 不支持删除`，内部错误统一 `500` 且不泄漏数据库细节；成功为 `204` 空 body、`no-store`。DELETE 不消费业务 body，也不新增 query 语义。
 - 存储契约：PostgreSQL 单事务 `FOR UPDATE` 锁定来源，锁后读取来源名称并以有界 `COUNT(*)` 统计关联 Token；删除来源主表并依赖当前 `ON DELETE CASCADE` 原子删除 Token。并发 Token 创建由父行锁 / 外键检查串行化；不读取或加载完整 Token 列表。`juhe_dataset.public_api_logs` 无外键且必须保留历史来源 / Token 快照，不随来源删除。
 - 副作用契约：提交成功后 best-effort 入队 Node 等价 `external_integration_sources.delete` operation log，固定 `admin_only/full`，changes 只有 `deleted false -> true` 与 `tokenCount before -> 0`；不新增 Redis cache invalidation。已建立鉴权上下文的并发在途请求不属于硬删除可撤回范围，后续新鉴权因数据库记录消失立即失败。
-- [ ] TDD：补 service ID / built-in / not-found / store error 与返回快照测试，再实现 delete port/service。
-- [ ] TDD：补 SQL `FOR UPDATE`、有界 Token count、FK cascade、并发创建串行化、历史日志保留和回滚测试，再实现 store/sqlc。
-- [ ] TDD：补 admin / 400 / 404 / 500 / 204、operation log、mutation guard、静态目录 405、router/app 三态测试，再接线 HTTP。
-- [ ] 扩展真实 PostgreSQL smoke 与前端专属无 Token fixture mutation smoke，验证 DELETE 后来源 / Token 不存在、旧 Token 鉴权失败、历史日志保留和 operation log ingest；生产切流前不删除 Node 路由。
+- [x] TDD：service ID / built-in / not-found / store error 与返回快照测试，以及 delete port/service 已完成。
+- [x] TDD：SQL `FOR UPDATE`、有界 Token count、FK cascade、历史日志保留、built-in / repeat delete 和事务错误测试，以及 store/sqlc 已完成；真实 PostgreSQL smoke 已证明行锁等待和级联。
+- [x] TDD：admin / 400 / 404 / 500 / 204、operation log、mutation guard、静态目录稳定 405、router/app 三态测试与 HTTP 接线已完成。
+- [~] 真实 PostgreSQL smoke 与前端专属 tokenless fixture DELETE 门禁已完成；真实 URL / Cookie listener 和 operation log ingest 仍待执行，生产切流前不删除 Node 路由。
+
+#### W2 外部来源创建切片（2026-07-16）
+
+- 目标：迁移管理员 `POST /__aisys__/api/external-integration-sources`，继续由 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；内置 reset 与 Token `POST/PATCH/DELETE` 继续由 Node owner。
+- API 契约：写鉴权 touch、IP/user write limiter、管理员权限和 `external_integration_sources.create` mutation guard 先于 handler；fingerprint 只含严格 JSON 解析后、业务 trim 前的原始 `name`，其他字段不参与。body 上限 `256 KiB`，顶层和限频子对象均 strict；`name` 必填，`status` 默认 `active`，`scopes/rateLimits` 默认空数组，`expiresAt/notes` 默认 `null`。名称、scope、限频、到期时间和备注复用当前 PATCH 的 ECMAScript trim / UTF-16 / 白名单 / 排序 / 严格时间语义。
+- 凭据契约：source / token ID 使用 `extsrc_` / `exttok_` 前缀和加密随机标识；Token 明文保持 Node 当前公开格式 `juis_` + 32 字节 base64url。只在成功响应中返回一次完整明文；数据库只保存带 domain separator 的 SHA-256 hash、Node 兼容 AES-256-GCM `{"token": ...}` 密文和前后 8 字符预览。首个 Token 名称为“`{来源名} 生产 Token`”，status/scopes/expiresAt 继承 source。
+- 存储契约：PostgreSQL 单事务插入 source 与首个 Token，任一步失败整体回滚；名称大小写不敏感唯一和 token hash 全局唯一均依赖数据库约束作为并发兜底。名称冲突返回 `400 来源系统名称已存在`；token hash 冲突最多重新生成凭据 3 次，耗尽后返回 Node 等价 `400 来源系统 token 已存在，请重新生成`。请求路径不扫描来源或 Token 明细。
+- 响应与副作用：成功返回 `201 { data: { source, token } }`、`Cache-Control: no-store`、`Pragma: no-cache`。created token 只暴露安全元数据和一次性 `token`，不暴露 hash / 密文。提交后 best-effort 写 `external_integration_sources.create`、`admin_only/full` operation log，changes 只含 name/status/expiresAt/rateLimits，不记录明文、hash 或密文；不新增 Node 当前不存在的 Redis cache invalidation。业务 / repository 错误按当前 Node 路由统一为 400，内部非业务错误在 Go 使用通用 500，不泄漏实现细节。
+- [ ] TDD：先补默认值、完整输入、校验、确定性 ID/Token/hash/密文/preview、名称冲突、hash 冲突三次重试和明文边界测试，再实现 create service/port。
+- [ ] TDD：补 source + initial token SQL、事务 commit/rollback、唯一冲突映射和创建后详情回读测试，再实现 PostgreSQL/sqlc。
+- [ ] TDD：补 strict body、201/400/500、Pragma/no-store、operation log 脱敏、raw-name fingerprint、router/app 三态测试，再接线 HTTP。
+- [ ] 补前端 create 路径契约、真实 PostgreSQL POST -> detail/secret -> DELETE 回归和专属真实 listener fixture smoke；生产切流前 Node 继续作为唯一 create owner。
 
 - [~] 建立 Go 后端最小工程和 PostgreSQL / Redis / Asynq 基线。
 - [~] 固定公开接口契约并迁移公开接口：W1a 公开设置读接口已进入 Go 实现中；W1b `/__aipublic__` 外部维护接口已补 Go catalog/auth、PostgreSQL auth/log adapter、Redis penalty-window helper、公开接口日志 snapshot/log builder、Asynq payload/enqueue/handler、`juhe-ai-worker ingest` 日志消费 runtime、HTTP shell / capture / 499 / ResponseWriter 透传契约、PG foundation smoke 用例、public API log Asynq smoke 用例、public group CRUD、public route strategy CRUD、public API Key CRUD、public account CRUD 四条真实资源纵切面、默认关闭的 opt-in 生产 router guard，以及 `w1b-public-api-smoke` 独立 maintenance smoke；public account 已补 `supportedModels` presence / null 类型边界、provider 默认模型继承、新增与更新最终非空、owner 可见 active / 可计价目录校验、update 未变化短路、hybrid 特例、重复名称组合优先级、默认 JSON 联表和 GPT-5.6 seed guard，非 Docker 验证已通过；public group / route strategy / API Key / account 四类完整 Redis limiter + public API log worker shell E2E 测试代码已补；未正式生产接管；真实 PG/Redis/Asynq integration、`w1b-public-api-smoke` 真实依赖执行与四类 shell E2E 待复跑。
