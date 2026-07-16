@@ -156,6 +156,7 @@ type RouterOptions struct {
 	ManagementExternalIntegrationSourceCreateHandler  http.Handler
 	ManagementExternalIntegrationSourceUpdateHandler  http.Handler
 	ManagementExternalIntegrationSourceDeleteHandler  http.Handler
+	ManagementExternalSourceTokenCreateHandler        http.Handler
 	ManagementExternalSourceTokenSecretHandler        http.Handler
 	ManagementExternalIntegrationSourceScopesHandler  http.Handler
 	ManagementExternalIntegrationSourceAPIDocsHandler http.Handler
@@ -381,6 +382,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementExternalIntegrationSourceCreateHandler == nil &&
 				opts.ManagementExternalIntegrationSourceUpdateHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDeleteHandler == nil &&
+				opts.ManagementExternalSourceTokenCreateHandler == nil &&
 				opts.ManagementExternalSourceTokenSecretHandler == nil &&
 				opts.ManagementExternalIntegrationSourceScopesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceAPIDocsHandler == nil &&
@@ -870,7 +872,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 					"/external-integration-sources",
 					opts.ManagementExternalIntegrationSourceListHandler.ServeHTTP,
 				)
-			} else if opts.ManagementExternalIntegrationSourceCreateHandler != nil {
+			} else if opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
+				opts.ManagementExternalSourceTokenCreateHandler != nil {
 				system.Get("/external-integration-sources", func(w http.ResponseWriter, _ *http.Request) {
 					writeError(w, http.StatusNotFound, "接口不存在")
 				})
@@ -971,6 +974,17 @@ func NewRouter(opts RouterOptions) http.Handler {
 				} else {
 					system.Delete("/external-integration-sources/{id}", unavailableWriteHandler)
 				}
+			}
+			if opts.ManagementExternalSourceTokenCreateHandler != nil {
+				system.With(
+					managementGroupCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementExternalIntegrationSourceTokenCreateMutationGuardConfig()),
+				).Post(
+					"/external-integration-sources/{id}/tokens",
+					opts.ManagementExternalSourceTokenCreateHandler.ServeHTTP,
+				)
 			}
 			if opts.ManagementExternalSourceTokenSecretHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get(
@@ -1156,6 +1170,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||
+		opts.ManagementExternalSourceTokenCreateHandler != nil ||
 		opts.ManagementExternalSourceTokenSecretHandler != nil ||
 		opts.ManagementExternalIntegrationSourceScopesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil ||
@@ -1227,5 +1242,6 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementClientIPUnblockHandler != nil ||
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
-		opts.ManagementExternalIntegrationSourceDeleteHandler != nil
+		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||
+		opts.ManagementExternalSourceTokenCreateHandler != nil
 }

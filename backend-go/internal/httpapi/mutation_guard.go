@@ -375,6 +375,23 @@ func managementExternalIntegrationSourceCreateMutationGuardConfig() mutationGuar
 	}
 }
 
+func managementExternalIntegrationSourceTokenCreateMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "external_integration_sources.create_token",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := mutationJSONFields(w, r)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"id":        chi.URLParam(r, "id"),
+				"name":      mutationAnyField(fields, "name"),
+				"expiresAt": mutationAnyField(fields, "expiresAt"),
+			}, nil
+		},
+	}
+}
+
 func managementExternalIntegrationSourceDeleteMutationGuardConfig() mutationGuardConfig {
 	return mutationGuardConfig{
 		operationKey: "external_integration_sources.delete",

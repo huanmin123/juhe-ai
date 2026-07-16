@@ -319,6 +319,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.MyOperationLogsHandler != nil ||
 		handlers.ExternalIntegrationSourceListHandler != nil ||
 		handlers.ExternalIntegrationSourceDetailHandler != nil ||
+		handlers.ExternalSourceTokenCreateHandler != nil ||
 		handlers.ExternalIntegrationSourceScopesHandler != nil ||
 		handlers.ExternalIntegrationSourceAPIDocsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
@@ -409,6 +410,7 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.OperationLogsHandler != nil ||
 		handlers.ExternalIntegrationSourceListHandler != nil ||
 		handlers.ExternalIntegrationSourceDetailHandler != nil ||
+		handlers.ExternalSourceTokenCreateHandler != nil ||
 		handlers.ExternalIntegrationSourceScopesHandler != nil ||
 		handlers.ExternalIntegrationSourceAPIDocsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
@@ -527,6 +529,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.ExternalIntegrationSourceCreateHandler == nil ||
 		handlers.ExternalIntegrationSourceUpdateHandler == nil ||
 		handlers.ExternalIntegrationSourceDeleteHandler == nil ||
+		handlers.ExternalSourceTokenCreateHandler == nil ||
 		handlers.ExternalIntegrationSourceScopesHandler == nil ||
 		handlers.ExternalIntegrationSourceAPIDocsHandler == nil ||
 		handlers.StatsUsageWindowHandler == nil ||
@@ -542,6 +545,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		disabled.ExternalIntegrationSourceCreateHandler != nil ||
 		disabled.ExternalIntegrationSourceUpdateHandler != nil ||
 		disabled.ExternalIntegrationSourceDeleteHandler != nil ||
+		disabled.ExternalSourceTokenCreateHandler != nil ||
 		disabled.ExternalSourceTokenSecretHandler != nil ||
 		disabled.ExternalIntegrationSourceScopesHandler != nil ||
 		disabled.ExternalIntegrationSourceAPIDocsHandler != nil {
@@ -563,6 +567,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		sessionOnly.ExternalIntegrationSourceCreateHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceUpdateHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceDeleteHandler != nil ||
+		sessionOnly.ExternalSourceTokenCreateHandler != nil ||
 		sessionOnly.ExternalSourceTokenSecretHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceScopesHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceAPIDocsHandler != nil {
@@ -584,6 +589,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		enabled.ExternalIntegrationSourceCreateHandler == nil ||
 		enabled.ExternalIntegrationSourceUpdateHandler == nil ||
 		enabled.ExternalIntegrationSourceDeleteHandler == nil ||
+		enabled.ExternalSourceTokenCreateHandler == nil ||
 		enabled.ExternalSourceTokenSecretHandler == nil ||
 		enabled.ExternalIntegrationSourceScopesHandler == nil ||
 		enabled.ExternalIntegrationSourceAPIDocsHandler == nil {
@@ -619,6 +625,10 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		"ManagementExternalIntegrationSourceDeleteHandler:",
 		"managementHandlers.ExternalIntegrationSourceDeleteHandler",
 		"httpapi.NewManagementExternalIntegrationSourceDeleteHandlerWithOperationLog(externalIntegrationSourceDeleteService, operationLogOptions)",
+		"managementexternalintegrationsources.NewTokenCreateService(store, cfg.Secret)",
+		"ManagementExternalSourceTokenCreateHandler:",
+		"managementHandlers.ExternalSourceTokenCreateHandler",
+		"httpapi.NewManagementExternalIntegrationSourceTokenCreateHandlerWithOperationLog(externalIntegrationSourceTokenCreateService, operationLogOptions)",
 		"ManagementExternalSourceTokenSecretHandler:",
 		"managementHandlers.ExternalSourceTokenSecretHandler",
 		"httpapi.NewManagementExternalIntegrationSourceTokenSecretHandler(externalIntegrationSourceService)",
