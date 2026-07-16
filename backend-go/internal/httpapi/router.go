@@ -976,6 +976,13 @@ func NewRouter(opts RouterOptions) http.Handler {
 				}
 			}
 			if opts.ManagementExternalSourceTokenCreateHandler != nil {
+				unavailableTokenCollectionHandler := func(w http.ResponseWriter, _ *http.Request) {
+					writeError(w, http.StatusNotFound, "接口不存在")
+				}
+				system.Get("/external-integration-sources/{id}/tokens", unavailableTokenCollectionHandler)
+				system.Put("/external-integration-sources/{id}/tokens", unavailableTokenCollectionHandler)
+				system.Patch("/external-integration-sources/{id}/tokens", unavailableTokenCollectionHandler)
+				system.Delete("/external-integration-sources/{id}/tokens", unavailableTokenCollectionHandler)
 				system.With(
 					managementGroupCreateJSONBodyMiddleware,
 					managementAPIWriteRateLimitMiddleware,

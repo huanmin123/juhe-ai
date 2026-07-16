@@ -277,6 +277,7 @@ func TestRouterExternalIntegrationSourceTokenCreateOnlyKeepsAdjacentRoutesUnavai
 		method     string
 		path       string
 		wantStatus int
+		wantBody   string
 	}{
 		{method: http.MethodGet, path: managementExternalIntegrationSourceListPath, wantStatus: http.StatusNotFound},
 		{method: http.MethodPost, path: managementExternalIntegrationSourceListPath, wantStatus: http.StatusMethodNotAllowed},
@@ -284,17 +285,21 @@ func TestRouterExternalIntegrationSourceTokenCreateOnlyKeepsAdjacentRoutesUnavai
 		{method: http.MethodPatch, path: managementExternalIntegrationSourceDetailPath, wantStatus: http.StatusNotFound},
 		{method: http.MethodPost, path: managementExternalIntegrationSourceListPath + "/built-in-test-token/reset", wantStatus: http.StatusNotFound},
 		{method: http.MethodGet, path: managementExternalIntegrationSourceTokenSecretPath, wantStatus: http.StatusNotFound},
-		{method: http.MethodPatch, path: managementExternalIntegrationSourceTokenCreatePath, wantStatus: http.StatusMethodNotAllowed},
-		{method: http.MethodDelete, path: managementExternalIntegrationSourceTokenCreatePath, wantStatus: http.StatusMethodNotAllowed},
+		{method: http.MethodGet, path: managementExternalIntegrationSourceTokenCreatePath, wantStatus: http.StatusNotFound, wantBody: `{"success":false,"error":"接口不存在"}`},
+		{method: http.MethodPut, path: managementExternalIntegrationSourceTokenCreatePath, wantStatus: http.StatusNotFound, wantBody: `{"success":false,"error":"接口不存在"}`},
+		{method: http.MethodPatch, path: managementExternalIntegrationSourceTokenCreatePath, wantStatus: http.StatusNotFound, wantBody: `{"success":false,"error":"接口不存在"}`},
+		{method: http.MethodDelete, path: managementExternalIntegrationSourceTokenCreatePath, wantStatus: http.StatusNotFound, wantBody: `{"success":false,"error":"接口不存在"}`},
 		{method: http.MethodPatch, path: managementExternalIntegrationSourceDetailPath + "/tokens/exttok_1", wantStatus: http.StatusNotFound},
 		{method: http.MethodDelete, path: managementExternalIntegrationSourceDetailPath + "/tokens/exttok_1", wantStatus: http.StatusNotFound},
-		{method: http.MethodGet, path: managementExternalIntegrationSourceTokenCreatePath, wantStatus: http.StatusMethodNotAllowed},
 	}
 	for _, test := range tests {
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, httptest.NewRequest(test.method, test.path, nil))
 		if rec.Code != test.wantStatus {
 			t.Fatalf("%s %s status=%d want=%d body=%s", test.method, test.path, rec.Code, test.wantStatus, rec.Body.String())
+		}
+		if test.wantBody != "" && strings.TrimSpace(rec.Body.String()) != test.wantBody {
+			t.Fatalf("%s %s body=%q want=%q", test.method, test.path, rec.Body.String(), test.wantBody)
 		}
 	}
 }
