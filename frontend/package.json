@@ -37,6 +37,7 @@
     "test:api-key-hybrid-config": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/api-key-hybrid-config-regression.ts",
     "test:api-key-update-payload": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/api-key-update-payload-regression.ts",
     "test:api-key-api-path": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/api-key-api-path-regression.ts",
+    "test:external-integration-source-api-path": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/external-integration-source-api-path-regression.ts",
     "test:api-key-refresh-row": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/api-key-refresh-row-regression.ts",
     "test:account-test-display-formatters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-test-display-formatters-regression.ts",
     "test:model-check-provider-capabilities": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/model-check-provider-capabilities-regression.ts",
