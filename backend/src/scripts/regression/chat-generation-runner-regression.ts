@@ -62,15 +62,27 @@ async function subscriberFailuresAreIsolated(): Promise<void> {
   const runner = new ChatGenerationRunner({ identity: identity('turn_subscribers'), execute: () => execution.promise })
   const registry = new ChatGenerationRegistry()
   registry.start(runner)
+  let throwingDeliveries = 0
+  let backpressuredDeliveries = 0
+  const throwing: ChatGenerationSubscriber = { trySend: () => {
+    throwingDeliveries += 1
+    if (throwingDeliveries > 1) throw new Error('closed')
+    return true
+  } }
+  const backpressured: ChatGenerationSubscriber = { trySend: () => {
+    backpressuredDeliveries += 1
+    return backpressuredDeliveries === 1
+  } }
   const healthy = eventCollector()
-  assert.equal(registry.subscribe(runner.identity, { trySend: () => { throw new Error('closed') } }), false)
-  assert.equal(registry.subscribe(runner.identity, { trySend: () => false }), false)
+  assert.equal(registry.subscribe(runner.identity, throwing), true, 'throw subscriber 必须先成功收到 snapshot')
+  assert.equal(registry.subscribe(runner.identity, backpressured), true, '背压 subscriber 必须先成功收到 snapshot')
   assert.equal(registry.subscribe(runner.identity, healthy.subscriber), true)
+  runner.publish('message.delta', { delta: 'still-delivered' }, { contentTextDelta: 'still-delivered' })
+  assert.equal(throwingDeliveries, 2, 'live publish 抛错后只移除故障 subscriber')
+  assert.equal(backpressuredDeliveries, 2, 'live publish 返回 false 后只移除背压 subscriber')
+  assert.equal(healthy.events.at(-1)?.type, 'message.delta', '故障 subscriber 不得影响健康 subscriber')
   assert.equal(registry.unsubscribe(runner.identity, healthy.subscriber), true)
   assert.equal(runner.signal.aborted, false, 'unsubscribe 不得中断生成')
-  const replacement = eventCollector()
-  registry.subscribe(runner.identity, replacement.subscriber)
-  registry.unsubscribe(runner.identity, replacement.subscriber)
   await tick()
   execution.resolve({ status: 'completed', data: {} })
   await runner.completion
@@ -165,6 +177,43 @@ async function shutdownRejectsAndDrains(): Promise<void> {
   assert.equal(registry.start(rejected), false, 'shutdown 后必须拒绝新 start')
 }
 
+async function shutdownTimeoutBoundsNonCooperativeExecution(): Promise<void> {
+  let executeStarted = false
+  const runner = new ChatGenerationRunner({
+    identity: identity('turn_shutdown_timeout', 'conv_shutdown_timeout'),
+    execute: async () => {
+      executeStarted = true
+      return new Promise(() => {})
+    }
+  })
+  const registry = new ChatGenerationRegistry()
+  assert.equal(registry.start(runner), true)
+  await tick()
+  assert.equal(executeStarted, true)
+  let completionSettled = false
+  void runner.completion.then(() => { completionSettled = true })
+  let outerTimeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      registry.shutdown({ timeoutMs: 10 }),
+      new Promise<never>((_resolve, reject) => {
+        outerTimeout = setTimeout(() => reject(new Error('shutdown 超出 500ms 外层上限')), 500)
+      })
+    ])
+  } finally {
+    if (outerTimeout) clearTimeout(outerTimeout)
+  }
+  assert.equal(runner.signal.aborted, true, 'shutdown 必须 abort 不合作 runner')
+  await tick()
+  assert.equal(completionSettled, false, '超时返回不要求不合作 execute 的 completion 伪造 settle')
+  assert.equal(registry.subscribe(runner.identity, eventCollector().subscriber), false, '超时返回后仍必须拒绝订阅')
+  const rejected = new ChatGenerationRunner({
+    identity: identity('turn_after_timeout', 'conv_after_timeout'),
+    execute: async () => ({ status: 'completed', data: {} })
+  })
+  assert.equal(registry.start(rejected), false, '超时返回后仍必须拒绝新 start')
+}
+
 await twoSubscribersShareOneExecution()
 await subscriberFailuresAreIsolated()
 await stopRequiresExactTurn()
@@ -172,5 +221,6 @@ await staleFinallyCannotDeleteReplacement()
 await terminalFollowsFinalize()
 await snapshotIsBounded()
 await shutdownRejectsAndDrains()
+await shutdownTimeoutBoundsNonCooperativeExecution()
 
 console.log('AI 问答服务端生成 runner 回归通过')
