@@ -34,7 +34,7 @@ export function createChatSseSubscriber(input: {
         return false
       }
       try {
-        const writable = writeChatSseEvent(input.response, event.type, event.data)
+        const writable = writeChatSseEvent(input.response, event.type, { ...event.data, eventVersion: event.eventVersion })
         if (!writable) {
           detach()
           return false

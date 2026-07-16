@@ -10,7 +10,11 @@ export function parseChatSseBlock(block: string): ChatStreamEvent | undefined {
   if (!eventType || !dataLines.length) return undefined
   try {
     const data = JSON.parse(dataLines.join('\n')) as unknown
-    if (eventType === 'message.started' || eventType === 'message.delta' || eventType === 'message.completed' || eventType === 'message.failed' || eventType === 'reasoning.delta' || eventType === 'tool.started' || eventType === 'tool.updated' || eventType === 'tool.completed') {
+    if (eventType === 'message.started') {
+      return { type: eventType, data } as ChatStreamEvent
+    }
+    if ((eventType === 'message.snapshot' || eventType === 'message.delta' || eventType === 'message.completed' || eventType === 'message.failed' || eventType === 'message.canceled' || eventType === 'reasoning.delta' || eventType === 'tool.started' || eventType === 'tool.updated' || eventType === 'tool.completed')
+      && hasSafeEventVersion(data)) {
       return { type: eventType, data } as ChatStreamEvent
     }
   } catch {
@@ -28,6 +32,16 @@ export function applyChatStreamEvent(messages: ChatMessage[], event: ChatStreamE
     const known = new Set(messages.map((message) => message.id))
     if (!known.has(event.data.userMessage.id)) messages.push(event.data.userMessage)
     if (!known.has(event.data.assistantMessage.id)) messages.push(event.data.assistantMessage)
+    return
+  }
+  if (event.type === 'message.snapshot') {
+    const message = messages.find((item) => item.id === event.data.assistant.id)
+    if (!message) return
+    message.status = event.data.assistant.status
+    message.contentText = event.data.assistant.contentText
+    message.reasoningText = event.data.assistant.reasoningText
+    message.toolEvents = cloneJsonSafe(event.data.assistant.toolEvents)
+    message.contentBlocks = cloneJsonSafe(event.data.assistant.contentBlocks)
     return
   }
   const message = messages.find((item) => item.id === event.data.messageId)
@@ -52,7 +66,22 @@ export function applyChatStreamEvent(messages: ChatMessage[], event: ChatStreamE
     message.traceId = event.data.traceId
     return
   }
+  if (event.type === 'message.canceled') {
+    message.status = 'canceled'
+    message.traceId = event.data.traceId
+    return
+  }
   if (event.type !== 'message.failed') return
   message.status = 'failed'
   message.errorCode = event.data.code
+}
+
+function hasSafeEventVersion(data: unknown): data is { eventVersion: number } {
+  return typeof data === 'object' && data !== null
+    && Number.isSafeInteger((data as { eventVersion?: unknown }).eventVersion)
+    && Number((data as { eventVersion: number }).eventVersion) >= 0
+}
+
+function cloneJsonSafe<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
 }

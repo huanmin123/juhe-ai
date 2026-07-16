@@ -10,6 +10,7 @@
     "lint": "vue-tsc --noEmit",
     "test:short-lived-request-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/short-lived-request-cache-regression.ts",
     "test:chat-stream": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-stream-regression.ts",
+    "test:chat-generation-runtime": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-generation-runtime-regression.ts",
     "test:chat-stream-http": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-stream-http-regression.ts",
     "test:chat-turn-editing": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-turn-editing-regression.ts",
     "test:chat-turn-editing-view": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-turn-editing-view-regression.ts",

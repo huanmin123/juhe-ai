@@ -11,6 +11,7 @@ export interface ChatConversation {
   lastModel?: string
   activeTurnId?: string
   userTurnCount: number
+  messageRevision: number
   userTurnLimit: number
   lastMessageAt: string
   createdAt: string
@@ -68,6 +69,32 @@ export interface ChatContextStatus {
   revision: number
 }
 
+export interface ChatMessageTail {
+  id: string
+  turnId: string
+  sequenceNo: number
+  role: ChatMessageRole
+  status: ChatMessageStatus
+  completedAt?: string
+  expiresAt: string
+}
+
+export interface ChatConversationActiveTurn {
+  turnId: string
+  assistantMessageId: string
+  startedAt: string
+}
+
+export interface ChatConversationSyncHead {
+  serverTime: string
+  unchanged: boolean
+  conversationId: string
+  messageRevision: number
+  lastSequenceNo: number
+  activeTurn?: ChatConversationActiveTurn
+  tail: ChatMessageTail[]
+}
+
 export type ChatSubmissionStatus =
   | { state: 'preparing' }
   | { state: 'not_found' }
@@ -92,8 +119,19 @@ export interface ChatModelOption {
 
 export type ChatStreamEvent =
   | { type: 'message.started'; data: { turnId: string; userMessage: ChatMessage; assistantMessage: ChatMessage } }
-  | { type: 'message.delta'; data: { messageId: string; delta: string } }
-  | { type: 'reasoning.delta'; data: { messageId: string; delta: string } }
-  | { type: 'tool.started' | 'tool.updated' | 'tool.completed'; data: { messageId: string; item: Record<string, unknown> } }
-  | { type: 'message.completed'; data: { messageId: string; finishReason?: string; traceId?: string } }
-  | { type: 'message.failed'; data: { messageId: string; code: string; message: string } }
+  | { type: 'message.snapshot'; data: { turnId: string; assistant: ChatStreamAssistantSnapshot; eventVersion: number } }
+  | { type: 'message.delta'; data: { messageId: string; delta: string; eventVersion: number } }
+  | { type: 'reasoning.delta'; data: { messageId: string; delta: string; eventVersion: number } }
+  | { type: 'tool.started' | 'tool.updated' | 'tool.completed'; data: { messageId: string; item: Record<string, unknown>; eventVersion: number } }
+  | { type: 'message.completed'; data: { messageId: string; finishReason?: string; traceId?: string; eventVersion: number } }
+  | { type: 'message.failed'; data: { messageId: string; code: string; message: string; eventVersion: number } }
+  | { type: 'message.canceled'; data: { messageId: string; traceId?: string; eventVersion: number } }
+
+export interface ChatStreamAssistantSnapshot {
+  id: string
+  status: ChatMessageStatus
+  contentText: string
+  reasoningText: string
+  toolEvents: ChatToolEvent[]
+  contentBlocks: ChatMessageContentBlock[]
+}

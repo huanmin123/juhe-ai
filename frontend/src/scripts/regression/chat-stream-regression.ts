@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { applyChatStreamEvent, parseChatSseBlock } from '../../views/chat/chatStream'
 import type { ChatMessage } from '../../types/domain/chat'
 
-const event = parseChatSseBlock('event: message.delta\ndata: {"messageId":"msg_2","delta":"你好"}')
-assert.deepEqual(event, { type: 'message.delta', data: { messageId: 'msg_2', delta: '你好' } })
+const event = parseChatSseBlock('event: message.delta\ndata: {"messageId":"msg_2","delta":"你好","eventVersion":1}')
+assert.deepEqual(event, { type: 'message.delta', data: { messageId: 'msg_2', delta: '你好', eventVersion: 1 } })
 
 const messages: ChatMessage[] = [{
   id: 'msg_2', conversationId: 'conv_1', turnId: 'turn_1', sequenceNo: 2,
@@ -13,15 +13,23 @@ const messages: ChatMessage[] = [{
 }]
 applyChatStreamEvent(messages, event!)
 assert.equal(messages[0].contentText, '你好')
-const reasoning = parseChatSseBlock('event: reasoning.delta\ndata: {"messageId":"msg_2","delta":"先分析"}')
-const tool = parseChatSseBlock('event: tool.started\ndata: {"messageId":"msg_2","item":{"id":"tool_1","type":"web_search_call"}}')
+const reasoning = parseChatSseBlock('event: reasoning.delta\ndata: {"messageId":"msg_2","delta":"先分析","eventVersion":2}')
+const tool = parseChatSseBlock('event: tool.started\ndata: {"messageId":"msg_2","item":{"id":"tool_1","type":"web_search_call"},"eventVersion":3}')
 assert.ok(reasoning && tool)
 applyChatStreamEvent(messages, reasoning)
 applyChatStreamEvent(messages, tool)
 assert.equal(messages[0].reasoningText, '先分析')
 assert.equal(messages[0].toolEvents?.[0]?.type, 'web_search_call')
 
-applyChatStreamEvent(messages, { type: 'message.completed', data: { messageId: 'msg_2', finishReason: 'stop' } })
+const snapshot = parseChatSseBlock('event: message.snapshot\ndata: {"turnId":"turn_1","assistant":{"id":"msg_2","status":"streaming","contentText":"权威快照","reasoningText":"完整推理","toolEvents":[],"contentBlocks":[]},"eventVersion":4}')
+assert.ok(snapshot)
+applyChatStreamEvent(messages, snapshot)
+assert.equal(messages[0].contentText, '权威快照', 'snapshot 必须替换而非追加当前 assistant 投影')
+assert.equal(messages[0].reasoningText, '完整推理')
+
+applyChatStreamEvent(messages, { type: 'message.canceled', data: { messageId: 'msg_2', eventVersion: 5 } })
+assert.equal(messages[0].status, 'canceled')
+applyChatStreamEvent(messages, { type: 'message.completed', data: { messageId: 'msg_2', finishReason: 'stop', eventVersion: 6 } })
 assert.equal(messages[0].status, 'completed')
 assert.equal(messages[0].finishReason, 'stop')
 

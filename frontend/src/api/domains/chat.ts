@@ -1,5 +1,5 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
-import type { ChatApiKeyOption, ChatAsset, ChatContextStatus, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
+import type { ChatApiKeyOption, ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 export const chatApi = {
@@ -7,7 +7,8 @@ export const chatApi = {
   listConversations: (params?: { beforeIsPinned?: boolean; beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
   createConversation: (apiKeyId: string) => unwrap<ChatConversation>(http.post('/my-chat/conversations', { apiKeyId })),
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${conversationId}`)),
-  listMessages: (conversationId: string, params?: { beforeSequenceNo?: number; limit?: number }) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${conversationId}/messages`, { params })),
+  listMessages: (conversationId: string, params?: ChatMessageListParams) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${conversationId}/messages`, { params })),
+  getConversationSync: (conversationId: string, knownRevision?: number) => unwrap<ChatConversationSyncHead>(http.get(`/my-chat/conversations/${conversationId}/sync`, { params: { knownRevision: knownRevision ?? 0 } })),
   getSubmissionStatus: (conversationId: string, clientMessageId: string) => unwrap<ChatSubmissionStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/submissions/${encodeURIComponent(clientMessageId)}`)),
   listModels: (conversationId: string) => unwrap<ChatModelOption[]>(http.get(`/my-chat/conversations/${conversationId}/models`)),
   getContextStatus: (conversationId: string) => unwrap<ChatContextStatus>(http.get(`/my-chat/conversations/${conversationId}/context-status`)),
@@ -33,6 +34,14 @@ export const chatApi = {
   deleteConversation: (conversationId: string) => http.delete(`/my-chat/conversations/${conversationId}`)
 }
 
+type ChatMessageCursor =
+  | { beforeSequenceNo: number; afterSequenceNo?: never; fromSequenceNo?: never }
+  | { beforeSequenceNo?: never; afterSequenceNo: number; fromSequenceNo?: never }
+  | { beforeSequenceNo?: never; afterSequenceNo?: never; fromSequenceNo: number }
+  | { beforeSequenceNo?: never; afterSequenceNo?: never; fromSequenceNo?: never }
+
+export type ChatMessageListParams = ChatMessageCursor & { limit?: number }
+
 export function chatAssetContentUrl(conversationId: string, assetId: string): string {
   return apiUrl(`/my-chat/conversations/${encodeURIComponent(conversationId)}/assets/${encodeURIComponent(assetId)}/content`)
 }
@@ -57,7 +66,7 @@ export async function streamChatMessage(input: {
   model: string
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier
-  signal: AbortSignal
+  signal?: AbortSignal
   onEvent: (event: ChatStreamEvent) => void
 }): Promise<void> {
   const path = `/my-chat/conversations/${input.conversationId}/stream`
@@ -68,6 +77,26 @@ export async function streamChatMessage(input: {
     body: JSON.stringify({ clientMessageId: input.clientMessageId, replaceTurnId: input.replaceTurnId, content: input.content, contentBlocks: input.contentBlocks, model: input.model, reasoningEffort: input.reasoningEffort, serviceTier: input.serviceTier }),
     signal: input.signal
   })
+  await consumeChatSseResponse(response, path, input.onEvent)
+}
+
+export async function attachChatStream(input: {
+  conversationId: string
+  turnId: string
+  signal?: AbortSignal
+  onEvent: (event: ChatStreamEvent) => void
+}): Promise<void> {
+  const path = `/my-chat/conversations/${encodeURIComponent(input.conversationId)}/streams/${encodeURIComponent(input.turnId)}`
+  const response = await fetch(apiUrl(path), {
+    method: 'GET',
+    credentials: 'include',
+    headers: { accept: 'text/event-stream' },
+    signal: input.signal
+  })
+  await consumeChatSseResponse(response, path, input.onEvent)
+}
+
+async function consumeChatSseResponse(response: Response, path: string, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
   if (!response.ok || !response.body) {
     const message = await readFetchErrorMessage(response.clone(), path)
     const code = await readChatErrorCode(response)
@@ -85,13 +114,13 @@ export async function streamChatMessage(input: {
       while (boundary) {
         const event = parseChatSseBlock(buffer.slice(0, boundary.index))
         buffer = buffer.slice(boundary.index + boundary.length)
-        if (event) input.onEvent(event)
+        if (event) onEvent(event)
         boundary = findBoundary(buffer)
       }
     }
     buffer += decoder.decode()
     const event = parseChatSseBlock(buffer)
-    if (event) input.onEvent(event)
+    if (event) onEvent(event)
   } finally {
     reader.releaseLock()
   }

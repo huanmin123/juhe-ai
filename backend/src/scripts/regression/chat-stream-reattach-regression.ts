@@ -116,6 +116,27 @@ const throwingEndSubscriber = createChatSseSubscriber({
 assert.doesNotThrow(() => assert.equal(throwingEndSubscriber.trySend({ type: 'message.delta', eventVersion: 1, data: {} }), false), '连接 cleanup 失败不能向 runner 传播')
 assert.equal(throwingEndDetached, 1)
 
+const versionedWrites: string[] = []
+const versionedSubscriber = createChatSseSubscriber({
+  response: {
+    destroyed: false,
+    writableEnded: false,
+    write: (chunk) => { versionedWrites.push(chunk); return true },
+    end: () => {}
+  },
+  detach: () => {}
+})
+assert.equal(versionedSubscriber.trySend({
+  type: 'message.delta',
+  eventVersion: 7,
+  data: { messageId: 'assistant', delta: 'versioned', eventVersion: 999 }
+}), true)
+assert.deepEqual(JSON.parse(versionedWrites[0]!.split('\ndata: ')[1]!.trim()), {
+  messageId: 'assistant',
+  delta: 'versioned',
+  eventVersion: 7
+}, 'SSE data 必须携带 runner eventVersion，且 runner 值覆盖 data 同名字段')
+
 const initialBackpressureWrites: string[] = []
 let initialBackpressureDetached = 0
 let initialBackpressureEnded = 0
