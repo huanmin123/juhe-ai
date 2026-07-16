@@ -7,7 +7,7 @@ const EVICTION_BATCH = 16
 const MAX_EVICTION_SCAN = 64
 const MAX_PERSISTED_STRING_BYTES = 2 * 1024 ** 2
 const DB_NAME = 'juhe-ai-chat-cache'
-const DB_VERSION = 1
+const DB_VERSION = 2
 const TOTAL_METADATA_ID = 'total'
 
 export interface ChatCacheConversationHead {
@@ -233,6 +233,7 @@ export class NativeIndexedDbChatCacheAdapter implements ChatLocalCacheStorageAda
       const request = indexedDB.open(DB_NAME, DB_VERSION)
       request.onupgradeneeded = () => {
         const db = request.result
+        for (const storeName of Array.from(db.objectStoreNames)) db.deleteObjectStore(storeName)
         const heads = db.createObjectStore('conversation_heads', { keyPath: ['systemAccountId', 'conversationId'] }); heads.createIndex('by_last_access', ['lastAccessAt', 'systemAccountId', 'conversationId']); heads.createIndex('by_account', 'systemAccountId')
         const messages = db.createObjectStore('messages', { keyPath: ['systemAccountId', 'conversationId', 'sequenceNo'] }); messages.createIndex('by_conversation', ['systemAccountId', 'conversationId']); messages.createIndex('by_conversation_sequence', ['systemAccountId', 'conversationId', 'sequenceNo']); messages.createIndex('by_expires_at', ['expiresAt', 'systemAccountId', 'conversationId', 'sequenceNo']); messages.createIndex('by_account', 'systemAccountId')
         const running = db.createObjectStore('running_turns', { keyPath: ['systemAccountId', 'conversationId'] }); running.createIndex('by_account', 'systemAccountId')
@@ -259,23 +260,23 @@ export class NativeIndexedDbChatCacheAdapter implements ChatLocalCacheStorageAda
     const heads = tx.objectStore('conversation_heads'); const messageStore = tx.objectStore('messages'); const current = await requestValue<HeadRecord | undefined>(heads.get([account, conversation])); let bytes = current?.byteSize ?? 0
     for (const message of messages) { const old = await requestValue<MessageRecord | undefined>(messageStore.get([account, conversation, message.sequenceNo])); if (old) bytes -= old.byteSize; const record: MessageRecord = { ...message, systemAccountId: account, byteSize: approximateBytes(message) }; bytes += record.byteSize; messageStore.put(record) }
     const head: HeadRecord = { systemAccountId: account, conversationId: conversation, messageRevision: current?.messageRevision ?? 0, lastAccessAt: context.now, byteSize: Math.max(0, bytes), ...current }; head.lastAccessAt = context.now; head.byteSize = Math.max(0, bytes); heads.put(head)
-    const totalBytes = await adjustTotal(tx, head.byteSize - (current?.byteSize ?? 0)); return { head, totalBytes }
+    const totalBytes = await adjustBytes(tx, account, head.byteSize - (current?.byteSize ?? 0)); return { head, totalBytes }
   }) }
 
   async deleteFromSequence(account: string, conversation: string, sequenceNo: number): Promise<void> { await this.run(['conversation_heads', 'messages', 'cache_metadata'], 'readwrite', async (tx) => {
     const messages = tx.objectStore('messages'); const range = IDBKeyRange.bound([account, conversation, sequenceNo], [account, conversation, Number.MAX_SAFE_INTEGER]); let removed = 0
     await collectCursor(messages.openCursor(range), Number.MAX_SAFE_INTEGER, (cursor) => { removed += (cursor.value as MessageRecord).byteSize; cursor.delete() })
-    const heads = tx.objectStore('conversation_heads'); const head = await requestValue<HeadRecord | undefined>(heads.get([account, conversation])); if (head) heads.put({ ...head, byteSize: Math.max(0, head.byteSize - removed) }); await adjustTotal(tx, -removed)
+    const heads = tx.objectStore('conversation_heads'); const head = await requestValue<HeadRecord | undefined>(heads.get([account, conversation])); if (head) heads.put({ ...head, byteSize: Math.max(0, head.byteSize - removed) }); await adjustBytes(tx, account, -removed)
   }) }
 
-  async deleteConversation(account: string, conversation: string): Promise<void> { await this.run(['conversation_heads', 'messages', 'running_turns', 'cache_metadata'], 'readwrite', async (tx) => { const heads = tx.objectStore('conversation_heads'); const head = await requestValue<HeadRecord | undefined>(heads.get([account, conversation])); tx.objectStore('messages').delete(messageRange(account, conversation)); heads.delete([account, conversation]); tx.objectStore('running_turns').delete([account, conversation]); await adjustTotal(tx, -(head?.byteSize ?? 0)) }) }
+  async deleteConversation(account: string, conversation: string): Promise<void> { await this.run(['conversation_heads', 'messages', 'running_turns', 'cache_metadata'], 'readwrite', async (tx) => { const heads = tx.objectStore('conversation_heads'); const head = await requestValue<HeadRecord | undefined>(heads.get([account, conversation])); tx.objectStore('messages').delete(messageRange(account, conversation)); heads.delete([account, conversation]); tx.objectStore('running_turns').delete([account, conversation]); await adjustBytes(tx, account, -(head?.byteSize ?? 0)) }) }
   async putRunningTurn(turn: ChatRunningTurn): Promise<void> { await this.run(['running_turns'], 'readwrite', async (tx) => { tx.objectStore('running_turns').put(turn) }) }
   async removeRunningTurn(account: string, conversation: string): Promise<void> { await this.run(['running_turns'], 'readwrite', async (tx) => { tx.objectStore('running_turns').delete([account, conversation]) }) }
   async touch(account: string, conversation: string, now: number): Promise<void> { await this.run(['conversation_heads'], 'readwrite', async (tx) => { const store = tx.objectStore('conversation_heads'); const head = await requestValue<HeadRecord | undefined>(store.get([account, conversation])); if (head) store.put({ ...head, lastAccessAt: now }) }) }
 
   async clearAccount(account: string): Promise<void> { await this.run(['conversation_heads', 'messages', 'running_turns', 'cache_metadata'], 'readwrite', async (tx) => {
-    let removed = 0; await collectCursor(tx.objectStore('conversation_heads').index('by_account').openCursor(IDBKeyRange.only(account)), 64, (cursor) => { removed += (cursor.value as HeadRecord).byteSize })
-    tx.objectStore('conversation_heads').delete(pairRange(account)); tx.objectStore('messages').delete(accountMessageRange(account)); tx.objectStore('running_turns').delete(pairRange(account)); await adjustTotal(tx, -removed)
+    const metadata = tx.objectStore('cache_metadata'); const accountId = accountMetadataId(account); const accountBytes = (await requestValue<CacheMetadataRecord | undefined>(metadata.get(accountId)))?.byteSize ?? 0
+    tx.objectStore('conversation_heads').delete(pairRange(account)); tx.objectStore('messages').delete(accountMessageRange(account)); tx.objectStore('running_turns').delete(pairRange(account)); await adjustTotal(tx, -accountBytes); metadata.delete(accountId)
   }) }
   async getTotalBytes(): Promise<number> { return this.run(['cache_metadata'], 'readonly', async (tx) => (await requestValue<CacheMetadataRecord | undefined>(tx.objectStore('cache_metadata').get(TOTAL_METADATA_ID)))?.byteSize ?? 0) }
   async listEvictionCandidates(limit: number, after?: ChatCacheEvictionCursor): Promise<HeadRecord[]> { return this.run(['conversation_heads'], 'readonly', async (tx) => requestValue<HeadRecord[]>(tx.objectStore('conversation_heads').index('by_last_access').getAll(after ? IDBKeyRange.lowerBound([after.lastAccessAt, after.systemAccountId, after.conversationId], true) : undefined, limit))) }
@@ -284,9 +285,10 @@ export class NativeIndexedDbChatCacheAdapter implements ChatLocalCacheStorageAda
     const removed = new Map<string, { account: string; conversation: string; bytes: number }>(); const expires = tx.objectStore('messages').index('by_expires_at'); const upper = IDBKeyRange.upperBound([serverTime, '\uffff', '\uffff', Number.MAX_SAFE_INTEGER]); let messageCount = 0
     await collectCursor(expires.openCursor(upper), messageLimit, (cursor) => { const record = cursor.value as MessageRecord; const key = `${record.systemAccountId}\u0000${record.conversationId}`; if (!removed.has(key) && removed.size >= conversationLimit) return false; const item = removed.get(key) ?? { account: record.systemAccountId, conversation: record.conversationId, bytes: 0 }; item.bytes += record.byteSize; removed.set(key, item); cursor.delete(); messageCount += 1 })
     const heads = tx.objectStore('conversation_heads'); const messages = tx.objectStore('messages').index('by_conversation'); const running = tx.objectStore('running_turns')
-    let removedTotal = 0
-    for (const item of removed.values()) { removedTotal += item.bytes; const head = await requestValue<HeadRecord | undefined>(heads.get([item.account, item.conversation])); if (!head) continue; const [remaining, active] = await Promise.all([requestValue<number>(messages.count(IDBKeyRange.only([item.account, item.conversation]))), requestValue<ChatRunningTurn | undefined>(running.get([item.account, item.conversation]))]); if (remaining === 0 && !active) heads.delete([item.account, item.conversation]); else heads.put({ ...head, byteSize: Math.max(0, head.byteSize - item.bytes) }) }
-    await adjustTotal(tx, -removedTotal); return { conversations: removed.size, messages: messageCount }
+    const removedByAccount = new Map<string, number>()
+    for (const item of removed.values()) { removedByAccount.set(item.account, (removedByAccount.get(item.account) ?? 0) + item.bytes); const head = await requestValue<HeadRecord | undefined>(heads.get([item.account, item.conversation])); if (!head) continue; const [remaining, active] = await Promise.all([requestValue<number>(messages.count(IDBKeyRange.only([item.account, item.conversation]))), requestValue<ChatRunningTurn | undefined>(running.get([item.account, item.conversation]))]); if (remaining === 0 && !active) heads.delete([item.account, item.conversation]); else heads.put({ ...head, byteSize: Math.max(0, head.byteSize - item.bytes) }) }
+    for (const [account, bytes] of removedByAccount) await adjustBytes(tx, account, -bytes)
+    return { conversations: removed.size, messages: messageCount }
   }) }
 
   close(): void { if (this.database) void this.database.then((db) => db.close()).catch(() => undefined); this.database = undefined }
@@ -298,6 +300,8 @@ function messageRange(account: string, conversation: string): IDBKeyRange { retu
 function accountMessageRange(account: string): IDBKeyRange { return IDBKeyRange.bound([account, '', 0], [account, '\uffff', Number.MAX_SAFE_INTEGER]) }
 function stripMessageRecord(record: MessageRecord): ChatMessage { const { systemAccountId: _account, byteSize: _bytes, ...message } = record; return message }
 async function adjustTotal(tx: IDBTransaction, delta: number): Promise<number> { const store = tx.objectStore('cache_metadata'); const current = await requestValue<CacheMetadataRecord | undefined>(store.get(TOTAL_METADATA_ID)); const byteSize = Math.max(0, (current?.byteSize ?? 0) + delta); store.put({ id: TOTAL_METADATA_ID, byteSize }); return byteSize }
+function accountMetadataId(account: string): string { return `account:${account}` }
+async function adjustBytes(tx: IDBTransaction, account: string, delta: number): Promise<number> { const store = tx.objectStore('cache_metadata'); const accountId = accountMetadataId(account); const current = await requestValue<CacheMetadataRecord | undefined>(store.get(accountId)); store.put({ id: accountId, byteSize: Math.max(0, (current?.byteSize ?? 0) + delta) }); return adjustTotal(tx, delta) }
 function requestValue<T>(request: IDBRequest<T> & { transaction?: IDBTransaction | null }): Promise<T> { return new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => { const error = request.error ?? new Error('IndexedDB request failed'); try { request.transaction?.abort() } catch { /* transaction already aborting */ } reject(error) } }) }
 function transactionDone(transaction: IDBTransaction): Promise<void> { return new Promise((resolve, reject) => { transaction.oncomplete = () => resolve(); transaction.onabort = () => reject(transaction.error ?? new DOMException('IndexedDB transaction aborted', 'AbortError')) }) }
 function collectCursor(request: IDBRequest<IDBCursorWithValue | null> & { transaction?: IDBTransaction | null }, limit: number, visit: (cursor: IDBCursorWithValue) => void | false): Promise<void> { return new Promise((resolve, reject) => { let count = 0; request.onerror = () => { const error = request.error ?? new Error('IndexedDB cursor failed'); try { request.transaction?.abort() } catch { /* no-op */ } reject(error) }; request.onsuccess = () => { const cursor = request.result; if (!cursor || count >= limit) { resolve(); return } count += 1; if (visit(cursor) === false) { resolve(); return } cursor.continue() } }) }

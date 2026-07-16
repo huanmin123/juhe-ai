@@ -11,6 +11,7 @@
     "test:short-lived-request-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/short-lived-request-cache-regression.ts",
     "test:chat-stream": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-stream-regression.ts",
     "test:chat-local-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-local-cache-regression.ts",
+    "test:chat-local-cache-indexeddb-browser": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-local-cache-indexeddb-browser-runner.ts",
     "test:chat-cache-broadcast": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-cache-broadcast-regression.ts",
     "test:chat-cache-sync": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-cache-sync-regression.ts",
     "test:chat-menu-resume": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-menu-resume-regression.ts",
