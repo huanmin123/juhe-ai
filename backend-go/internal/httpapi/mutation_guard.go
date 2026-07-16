@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -63,6 +64,11 @@ func (s *mutationGuardStore) Middleware(config mutationGuardConfig) func(http.Ha
 			}
 			fingerprint, err := config.fingerprint(w, r)
 			if err != nil {
+				var maxBytesErr *http.MaxBytesError
+				if errors.As(err, &maxBytesErr) {
+					writeMessageError(w, http.StatusRequestEntityTooLarge, "请求体过大")
+					return
+				}
 				writeMessageError(w, http.StatusBadRequest, "请求参数无效")
 				return
 			}
@@ -396,7 +402,7 @@ func managementExternalIntegrationSourceTokenUpdateMutationGuardConfig() mutatio
 	return mutationGuardConfig{
 		operationKey: "external_integration_sources.update_token",
 		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
-			fields, err := mutationJSONFields(w, r)
+			fields, err := mutationJSONFieldsWithLimit(w, r, managementExternalIntegrationSourceTokenUpdateMaxBodyBytes)
 			if err != nil {
 				return nil, err
 			}
@@ -439,7 +445,11 @@ func managementGroupCreateMutationJSONFields(w http.ResponseWriter, r *http.Requ
 }
 
 func mutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	return mutationJSONFieldsWithLimit(w, r, 1<<20)
+}
+
+func mutationJSONFieldsWithLimit(w http.ResponseWriter, r *http.Request, maxBytes int64) (map[string]json.RawMessage, error) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBytes))
 	if err != nil {
 		return nil, err
 	}
