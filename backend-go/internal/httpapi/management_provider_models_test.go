@@ -642,6 +642,79 @@ func TestManagementProviderBuiltInModelConfigurationUpdateDoesNotBlockOnAuditPre
 	}
 }
 
+func TestManagementProviderBuiltInModelConfigurationUpdateLogsWhenCustomCatalogShadowsBuiltInModel(t *testing.T) {
+	before := managementprovidermodels.ModelCatalogItem{
+		ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "disabled",
+	}
+	after := before
+	after.Status = "active"
+	queueStub := &operationLogQueueStub{}
+	service := &managementProviderModelServiceStub{
+		models: []managementprovidermodels.ModelCatalogItem{{
+			ID: "custom_model_shadow", ProviderCode: "gpt", Model: "gpt-test", Scope: "global", Status: "active",
+		}},
+		customModelBefore: before,
+		customModelResult: after,
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", DisplayName: "管理员", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementProviderCustomModelUpdateHandler(service, newManagementOperationLogOptions(ManagementOperationLogOptions{
+		Client: queueStub,
+	})))
+	router := chi.NewRouter()
+	router.Patch("/__aisys__/api/providers/{code}/models/{id}", handler.ServeHTTP)
+
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/provider_model_gpt_test", strings.NewReader(`{"status":"active"}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if service.modelsCalls != 0 || service.updateCalls != 1 || queueStub.calls != 1 {
+		t.Fatalf("Models() calls = %d, UpdateCustomModel() calls = %d, operation log calls = %d", service.modelsCalls, service.updateCalls, queueStub.calls)
+	}
+	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
+	if err != nil {
+		t.Fatalf("decode operation log: %v", err)
+	}
+	if logInput.OperationKey != "providers.update_model_configuration" || logInput.ResourceID != before.ID {
+		t.Fatalf("operation log = %+v", logInput)
+	}
+}
+
+func TestManagementProviderCustomModelUpdateDoesNotEnqueueBuiltInConfigurationOperationLog(t *testing.T) {
+	for _, scope := range []string{"personal", "global"} {
+		t.Run(scope, func(t *testing.T) {
+			before := managementprovidermodels.ModelCatalogItem{
+				ID: "custom_model_test", ProviderCode: "gpt", Model: "custom-test", Scope: scope, Status: "disabled",
+			}
+			after := before
+			after.Status = "active"
+			queueStub := &operationLogQueueStub{}
+			service := &managementProviderModelServiceStub{customModelBefore: before, customModelResult: after}
+			handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+				context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", DisplayName: "管理员", Role: "admin", SessionID: "sess_admin"},
+			})(newManagementProviderCustomModelUpdateHandler(service, newManagementOperationLogOptions(ManagementOperationLogOptions{
+				Client: queueStub,
+			})))
+			router := chi.NewRouter()
+			router.Patch("/__aisys__/api/providers/{code}/models/{id}", handler.ServeHTTP)
+
+			req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/custom_model_test", strings.NewReader(`{"status":"active"}`))
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			if service.modelsCalls != 0 || service.updateCalls != 1 || queueStub.calls != 0 {
+				t.Fatalf("Models() calls = %d, UpdateCustomModel() calls = %d, operation log calls = %d", service.modelsCalls, service.updateCalls, queueStub.calls)
+			}
+		})
+	}
+}
+
 func TestManagementProviderBuiltInModelConfigurationUpdateIgnoresOperationLogEnqueueFailure(t *testing.T) {
 	inputPrice := 4.0
 	service := &managementProviderModelServiceStub{
