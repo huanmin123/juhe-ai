@@ -360,6 +360,20 @@ func managementExternalIntegrationSourceUpdateMutationGuardConfig() mutationGuar
 	}
 }
 
+func managementExternalIntegrationSourceDeleteMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "external_integration_sources.delete",
+		fingerprint: func(_ http.ResponseWriter, r *http.Request) (any, error) {
+			return map[string]any{
+				"id": strings.TrimFunc(
+					chi.URLParam(r, "id"),
+					managementGroupListECMAScriptWhitespace,
+				),
+			}, nil
+		},
+	}
+}
+
 func managementGroupCreateMutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {

@@ -154,6 +154,7 @@ type RouterOptions struct {
 	ManagementExternalIntegrationSourceListHandler    http.Handler
 	ManagementExternalIntegrationSourceDetailHandler  http.Handler
 	ManagementExternalIntegrationSourceUpdateHandler  http.Handler
+	ManagementExternalIntegrationSourceDeleteHandler  http.Handler
 	ManagementExternalSourceTokenSecretHandler        http.Handler
 	ManagementExternalIntegrationSourceScopesHandler  http.Handler
 	ManagementExternalIntegrationSourceAPIDocsHandler http.Handler
@@ -377,6 +378,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementExternalIntegrationSourceListHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDetailHandler == nil &&
 				opts.ManagementExternalIntegrationSourceUpdateHandler == nil &&
+				opts.ManagementExternalIntegrationSourceDeleteHandler == nil &&
 				opts.ManagementExternalSourceTokenSecretHandler == nil &&
 				opts.ManagementExternalIntegrationSourceScopesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceAPIDocsHandler == nil &&
@@ -889,7 +891,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				)
 			}
 			if opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
-				opts.ManagementExternalIntegrationSourceUpdateHandler != nil {
+				opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
+				opts.ManagementExternalIntegrationSourceDeleteHandler != nil {
 				unavailableWriteHandler := func(w http.ResponseWriter, r *http.Request) {
 					sourceID := chi.URLParam(r, "id")
 					if (sourceID == "scopes" && opts.ManagementExternalIntegrationSourceScopesHandler != nil) ||
@@ -924,7 +927,32 @@ func NewRouter(opts RouterOptions) http.Handler {
 				} else {
 					system.Patch("/external-integration-sources/{id}", unavailableWriteHandler)
 				}
-				system.Delete("/external-integration-sources/{id}", unavailableWriteHandler)
+				if opts.ManagementExternalIntegrationSourceDeleteHandler != nil {
+					deleteHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						opts.ManagementExternalIntegrationSourceDeleteHandler.ServeHTTP(w, r)
+					})
+					guardedDeleteHandler := mutationGuards.Middleware(
+						managementExternalIntegrationSourceDeleteMutationGuardConfig(),
+					)(deleteHandler)
+					system.With(
+						managementAPIWriteRateLimitMiddleware,
+						managementGroupAdminRoleMiddleware,
+					).Delete(
+						"/external-integration-sources/{id}",
+						func(w http.ResponseWriter, r *http.Request) {
+							sourceID := chi.URLParam(r, "id")
+							if (sourceID == "scopes" && opts.ManagementExternalIntegrationSourceScopesHandler != nil) ||
+								(sourceID == "api-docs" && opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil) {
+								w.Header().Set("Allow", http.MethodGet)
+								w.WriteHeader(http.StatusMethodNotAllowed)
+								return
+							}
+							guardedDeleteHandler.ServeHTTP(w, r)
+						},
+					)
+				} else {
+					system.Delete("/external-integration-sources/{id}", unavailableWriteHandler)
+				}
 			}
 			if opts.ManagementExternalSourceTokenSecretHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get(
@@ -1108,6 +1136,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementExternalIntegrationSourceListHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
+		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||
 		opts.ManagementExternalSourceTokenSecretHandler != nil ||
 		opts.ManagementExternalIntegrationSourceScopesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil ||
@@ -1177,5 +1206,6 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementClientIPUnallowlistHandler != nil ||
 		opts.ManagementClientIPBlacklistHandler != nil ||
 		opts.ManagementClientIPUnblockHandler != nil ||
-		opts.ManagementExternalIntegrationSourceUpdateHandler != nil
+		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
+		opts.ManagementExternalIntegrationSourceDeleteHandler != nil
 }
