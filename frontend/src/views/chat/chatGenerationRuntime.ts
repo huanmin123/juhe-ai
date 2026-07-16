@@ -190,9 +190,16 @@ export class ChatGenerationRuntime {
     this.assertAvailable(input.systemAccountId, input.conversationId)
     const key = runtimeKey(input.systemAccountId, input.conversationId)
     const existing = this.turns.get(key)
+    if (existing && isTerminal(existing.status) && existing.turnId === input.turnId) return snapshotTurn(existing)!
     if (existing && existing.status === 'running' && existing.turnId === input.turnId) {
       existing.lastAccessAt = this.now()
-      if (existing.reconciliationReason === 'reconnect_exhausted' && !hasServerProgress(existing, input)) return snapshotTurn(existing)!
+      if (existing.reconciliationReason === 'reconnect_exhausted' && !hasAuthoritativeServerProgress(existing, input)) return snapshotTurn(existing)!
+      this.applyAttachProgress(existing, input)
+      if (isTerminal(existing.status)) {
+        this.markTerminal(existing, existing.status)
+        this.notify(key)
+        return snapshotTurn(existing)!
+      }
       if (!existing.connectionActive && existing.reconnectTimer === undefined) {
         existing.reconciliationReason = undefined
         existing.error = undefined
@@ -203,6 +210,8 @@ export class ChatGenerationRuntime {
     }
     if (existing) this.releaseConnection(existing)
 
+    const projectedStatus = input.projection?.status
+    const initialStatus: ChatGenerationRuntimeStatus = projectedStatus === 'completed' || projectedStatus === 'failed' || projectedStatus === 'canceled' ? projectedStatus : 'running'
     const turn: InternalTurn = {
       systemAccountId: input.systemAccountId,
       conversationId: input.conversationId,
@@ -210,7 +219,7 @@ export class ChatGenerationRuntime {
       turnId: input.turnId,
       assistantMessageId: input.assistantMessageId,
       eventVersion: input.eventVersion ?? -1,
-      status: 'running',
+      status: initialStatus,
       controller: new AbortController(),
       reconnectAttempt: 0,
       projection: input.projection ? cloneJsonSafe(input.projection) : emptyAssistantProjection(input.conversationId, '', input.turnId, input.assistantMessageId),
@@ -220,8 +229,9 @@ export class ChatGenerationRuntime {
       lastAccessAt: this.now()
     }
     this.turns.set(key, turn)
+    if (isTerminal(initialStatus)) this.markTerminal(turn, initialStatus)
     this.notify(key)
-    void this.runAttach(key, turn)
+    if (!isTerminal(initialStatus)) void this.runAttach(key, turn)
     return snapshotTurn(turn)!
   }
 
@@ -248,8 +258,7 @@ export class ChatGenerationRuntime {
       throw error
     }
     if (this.turns.get(key) === turn && (turn.status === 'preparing' || turn.status === 'running')) {
-      turn.status = 'canceled'
-      turn.projection.status = 'canceled'
+      this.markTerminal(turn, 'canceled')
       this.notify(key)
     }
     return true
@@ -410,8 +419,7 @@ export class ChatGenerationRuntime {
     const stableFailure = classifyStableFailure(failure)
     if (stableFailure) {
       if (!turn.accepted) {
-        turn.status = 'failed'
-        turn.projection.status = 'failed'
+        this.markTerminal(turn, 'failed')
         turn.error = stableFailure.error
         this.notify(key)
         return
@@ -432,8 +440,7 @@ export class ChatGenerationRuntime {
   private handleDisconnect(key: string, turn: InternalTurn, controller: AbortController): void {
     if (this.turns.get(key) !== turn || turn.controller !== controller || controller.signal.aborted || isTerminal(turn.status)) return
     if (!turn.turnId) {
-      turn.status = 'failed'
-      turn.projection.status = 'failed'
+      this.markTerminal(turn, 'failed')
       this.notify(key)
       return
     }
@@ -461,6 +468,25 @@ export class ChatGenerationRuntime {
       const key = runtimeKey(turn.systemAccountId, turn.conversationId)
       if (this.turns.get(key) === turn && isTerminal(turn.status) && !this.subscribers.get(key)?.size) this.scheduleTerminalEviction(turn)
     }, delay)
+  }
+
+  private markTerminal(turn: InternalTurn, status: Extract<ChatGenerationRuntimeStatus, 'completed' | 'failed' | 'canceled'>): void {
+    turn.status = status
+    turn.projection.status = status
+    turn.terminalAt ??= this.now()
+    this.releaseConnection(turn)
+    this.scheduleTerminalEviction(turn)
+    this.pruneTerminalProjections()
+  }
+
+  private applyAttachProgress(turn: InternalTurn, input: ChatGenerationRuntimeAttachInput): void {
+    if (input.eventVersion !== undefined && input.eventVersion > turn.eventVersion) turn.eventVersion = input.eventVersion
+    if (input.projection) {
+      turn.projection = cloneJsonSafe(input.projection)
+      turn.assistantMessageId = input.assistantMessageId
+    }
+    const status = input.projection?.status
+    if (status === 'completed' || status === 'failed' || status === 'canceled') turn.status = status
   }
 
   private pruneTerminalProjections(): void {
@@ -552,7 +578,7 @@ function runtimeKeyBelongsTo(key: string, systemAccountId: string): boolean {
   }
 }
 
-function isTerminal(status: ChatGenerationRuntimeStatus): boolean {
+function isTerminal(status: ChatGenerationRuntimeStatus): status is Extract<ChatGenerationRuntimeStatus, 'completed' | 'failed' | 'canceled'> {
   return status === 'completed' || status === 'failed' || status === 'canceled'
 }
 
@@ -593,24 +619,9 @@ function snapshotTurn(turn?: InternalTurn): RunningTurn | undefined {
   }
 }
 
-function hasServerProgress(turn: InternalTurn, input: ChatGenerationRuntimeAttachInput): boolean {
+function hasAuthoritativeServerProgress(turn: InternalTurn, input: ChatGenerationRuntimeAttachInput): boolean {
   if (input.eventVersion !== undefined && input.eventVersion > turn.eventVersion) return true
-  if (!input.projection) return false
-  return JSON.stringify(progressProjection(input.projection)) !== JSON.stringify(progressProjection(turn.projection))
-}
-
-function progressProjection(value: unknown): unknown {
-  const candidate = value as Partial<ChatMessage> | undefined
-  if (!candidate) return undefined
-  return {
-    id: candidate.id,
-    sequenceNo: candidate.sequenceNo,
-    status: candidate.status,
-    contentText: candidate.contentText,
-    reasoningText: candidate.reasoningText,
-    contentBlocks: candidate.contentBlocks,
-    toolEvents: candidate.toolEvents
-  }
+  return input.projection?.status === 'completed' || input.projection?.status === 'failed' || input.projection?.status === 'canceled'
 }
 
 function classifyStableFailure(failure: unknown): { reason: ChatGenerationReconciliationReason; error: ChatGenerationRuntimeError } | undefined {

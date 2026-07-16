@@ -24,6 +24,10 @@ export interface ChatCacheConversationHead {
   lastMessageAt?: string
   createdAt?: string
   updatedAt?: string
+  projectionEventVersion?: number
+  projectionStatus?: ChatMessage['status']
+  projectionTurnId?: string
+  projectionAssistantMessageId?: string
 }
 
 export interface ChatRunningTurn {
@@ -32,6 +36,15 @@ export interface ChatRunningTurn {
   turnId: string
   assistantMessageId?: string
   startedAt: string
+  eventVersion?: number
+  status?: ChatMessage['status']
+}
+
+export interface ChatCacheProjectionWatermark {
+  eventVersion?: number
+  status: ChatMessage['status']
+  turnId: string
+  assistantMessageId: string
 }
 
 export interface ChatCachePutContext { now: number }
@@ -44,6 +57,7 @@ export interface ChatCacheSyncSnapshot {
   messageRevision: number
   messages: ChatMessage[]
   runningTurn?: ChatRunningTurn
+  projection?: ChatCacheProjectionWatermark
   now: number
 }
 
@@ -65,7 +79,7 @@ export interface ChatLocalCacheStorageAdapter {
 }
 
 export interface ChatCacheResult<T = void> { enabled: boolean; ok: boolean; value?: T }
-export interface ChatCacheWriteOptions { currentConversationId?: string; pendingConfirmationConversationIds?: ReadonlySet<string> }
+export interface ChatCacheWriteOptions { currentConversationId?: string; pendingConfirmationConversationIds?: ReadonlySet<string>; projection?: ChatCacheProjectionWatermark }
 
 export function calculateChatCacheBudget(estimate?: { quota?: number }): number {
   const quota = estimate?.quota
@@ -196,12 +210,15 @@ export class ChatLocalCache {
     if (!this.enabledState) return { enabled: false, ok: false }
     const messages = values.slice(-MAX_MESSAGE_PAGE).map(cloneVisibleChatMessage)
     if (messages.some((item) => !item || item.conversationId !== head.conversationId)) return { enabled: true, ok: false }
-    const runningTurn: ChatRunningTurn | undefined = head.activeTurn ? {
+    const projection = options.projection
+    const runningTurn: ChatRunningTurn | undefined = head.activeTurn && !isTerminalProjection(projection) ? {
       systemAccountId: account,
       conversationId: head.conversationId,
       turnId: head.activeTurn.turnId,
       startedAt: head.activeTurn.startedAt,
-      ...(head.activeTurn.assistantMessageId ? { assistantMessageId: head.activeTurn.assistantMessageId } : {})
+      ...(head.activeTurn.assistantMessageId ? { assistantMessageId: head.activeTurn.assistantMessageId } : {}),
+      ...(projection?.eventVersion !== undefined ? { eventVersion: projection.eventVersion } : {}),
+      ...(projection?.status ? { status: projection.status } : {})
     } : undefined
     const snapshot: ChatCacheSyncSnapshot = {
       systemAccountId: account,
@@ -209,6 +226,7 @@ export class ChatLocalCache {
       messageRevision: head.messageRevision,
       messages: messages as ChatMessage[],
       runningTurn,
+      projection,
       now: this.clock()
     }
     if (!validatePersistentPayload(snapshot)) return { enabled: true, ok: false }
@@ -233,7 +251,15 @@ export class ChatLocalCache {
   async deleteFromSequence(account: string, conversation: string, sequenceNo: number) { return this.call('delete_from', () => this.adapter.deleteFromSequence(account, conversation, sequenceNo)) }
   async deleteConversation(account: string, conversation: string) { return this.call('delete_conversation', () => this.adapter.deleteConversation(account, conversation)) }
   async putRunningTurn(account: string, conversation: string, turn: Omit<ChatRunningTurn, 'systemAccountId' | 'conversationId'>): Promise<ChatCacheResult> {
-    const safeTurn: ChatRunningTurn = { systemAccountId: account, conversationId: conversation, turnId: turn.turnId, startedAt: turn.startedAt, ...(turn.assistantMessageId ? { assistantMessageId: turn.assistantMessageId } : {}) }
+    const safeTurn: ChatRunningTurn = {
+      systemAccountId: account,
+      conversationId: conversation,
+      turnId: turn.turnId,
+      startedAt: turn.startedAt,
+      ...(turn.assistantMessageId ? { assistantMessageId: turn.assistantMessageId } : {}),
+      ...(turn.eventVersion !== undefined ? { eventVersion: turn.eventVersion } : {}),
+      ...(turn.status ? { status: turn.status } : {})
+    }
     if (!validatePersistentPayload(safeTurn)) return { enabled: this.enabledState, ok: false }
     return this.call('put_running', () => this.adapter.putRunningTurn(safeTurn))
   }
@@ -329,7 +355,7 @@ export class NativeIndexedDbChatCacheAdapter implements ChatLocalCacheStorageAda
     const messageStore = tx.objectStore('messages')
     const runningStore = tx.objectStore('running_turns')
     const current = await requestValue<HeadRecord | undefined>(heads.get([account, conversation]))
-    if ((current?.messageRevision ?? -1) > snapshot.messageRevision) {
+    if (shouldRejectSyncSnapshot(current, snapshot)) {
       return { committed: false, head: current!, totalBytes: await currentTotalBytes(tx) }
     }
     messageStore.delete(messageRange(account, conversation))
@@ -348,6 +374,7 @@ export class NativeIndexedDbChatCacheAdapter implements ChatLocalCacheStorageAda
       byteSize: bytes,
       activeTurnId: snapshot.runningTurn?.turnId
     }
+    applyProjectionWatermark(head, snapshot.projection)
     heads.put(head)
     if (snapshot.runningTurn) runningStore.put(snapshot.runningTurn)
     else runningStore.delete([account, conversation])
@@ -391,6 +418,32 @@ function pairRange(account: string): IDBKeyRange { return IDBKeyRange.bound([acc
 function messageRange(account: string, conversation: string): IDBKeyRange { return IDBKeyRange.bound([account, conversation, 0], [account, conversation, Number.MAX_SAFE_INTEGER]) }
 function accountMessageRange(account: string): IDBKeyRange { return IDBKeyRange.bound([account, '', 0], [account, '\uffff', Number.MAX_SAFE_INTEGER]) }
 function stripMessageRecord(record: MessageRecord): ChatMessage { const { systemAccountId: _account, byteSize: _bytes, ...message } = record; return message }
+function isTerminalProjection(projection?: ChatCacheProjectionWatermark): boolean { return projection?.status === 'completed' || projection?.status === 'failed' || projection?.status === 'canceled' }
+function projectionStatusPriority(status?: ChatMessage['status']): number { return status === 'completed' || status === 'failed' || status === 'canceled' ? 2 : status === 'streaming' ? 1 : 0 }
+function shouldRejectSyncSnapshot(current: HeadRecord | undefined, snapshot: ChatCacheSyncSnapshot): boolean {
+  if (!current) return false
+  if (current.messageRevision !== snapshot.messageRevision) return current.messageRevision > snapshot.messageRevision
+  const currentHasProjection = current.projectionStatus !== undefined || current.projectionEventVersion !== undefined
+  if (!currentHasProjection) return false
+  const incoming = snapshot.projection
+  if (!incoming) return true
+  if (current.projectionTurnId && (current.projectionTurnId !== incoming.turnId || current.projectionAssistantMessageId !== incoming.assistantMessageId)) return true
+  const statusDelta = projectionStatusPriority(incoming.status) - projectionStatusPriority(current.projectionStatus)
+  if (statusDelta !== 0) return statusDelta < 0
+  if (current.projectionEventVersion !== undefined && incoming.eventVersion === undefined) return true
+  return current.projectionEventVersion !== undefined && incoming.eventVersion !== undefined && incoming.eventVersion < current.projectionEventVersion
+}
+function applyProjectionWatermark(head: HeadRecord, projection?: ChatCacheProjectionWatermark): void {
+  delete head.projectionEventVersion
+  delete head.projectionStatus
+  delete head.projectionTurnId
+  delete head.projectionAssistantMessageId
+  if (!projection) return
+  if (projection.eventVersion !== undefined) head.projectionEventVersion = projection.eventVersion
+  head.projectionStatus = projection.status
+  head.projectionTurnId = projection.turnId
+  head.projectionAssistantMessageId = projection.assistantMessageId
+}
 async function adjustTotal(tx: IDBTransaction, delta: number): Promise<number> { const store = tx.objectStore('cache_metadata'); const current = await requestValue<CacheMetadataRecord | undefined>(store.get(TOTAL_METADATA_ID)); const byteSize = Math.max(0, (current?.byteSize ?? 0) + delta); store.put({ id: TOTAL_METADATA_ID, byteSize }); return byteSize }
 async function currentTotalBytes(tx: IDBTransaction): Promise<number> { return (await requestValue<CacheMetadataRecord | undefined>(tx.objectStore('cache_metadata').get(TOTAL_METADATA_ID)))?.byteSize ?? 0 }
 function accountMetadataId(account: string): string { return `account:${account}` }

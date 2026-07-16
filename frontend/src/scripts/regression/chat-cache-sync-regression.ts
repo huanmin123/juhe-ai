@@ -68,6 +68,21 @@ const projected = projectChatMessagesWithRuntime({
 })
 assert.equal(projected[1]?.contentText, 'runtime-new', 'DB 旧 streaming 正文不得覆盖更高 eventVersion runtime 投影')
 
+const terminalRuntimeProjection = { ...runtimeProjection, status: 'completed' as const, contentText: 'runtime-terminal' }
+const terminalProjected = projectChatMessagesWithRuntime({
+  messages: [message(1, 'user_1'), { ...message(2, 'assistant_1', 'streaming'), contentText: 'db-stale-active' }],
+  activeTurn: { turnId: 'turn_1', assistantMessageId: 'assistant_1' },
+  runtimeTurn: { turnId: 'turn_1', assistantMessageId: 'assistant_1', eventVersion: 13, status: 'completed', projection: terminalRuntimeProjection }
+})
+assert.equal(terminalProjected[1]?.status, 'completed', '旧 active sync head 不得覆盖同 turn 的 terminal runtime 投影')
+assert.equal(terminalProjected[1]?.contentText, 'runtime-terminal')
+const terminalDatabaseWins = projectChatMessagesWithRuntime({
+  messages: [message(1, 'user_1'), { ...message(2, 'assistant_1', 'completed'), contentText: 'db-terminal' }],
+  activeTurn: { turnId: 'turn_1', assistantMessageId: 'assistant_1' },
+  runtimeTurn: { turnId: 'turn_1', assistantMessageId: 'assistant_1', eventVersion: 12, status: 'running', projection: runtimeProjection }
+})
+assert.equal(terminalDatabaseWins[1]?.contentText, 'db-terminal', '明确 terminal DB 投影不得被旧 running runtime 降级')
+
 const projectionCommitGate = deferred<void>()
 let projectionVersion = 1
 let committedProjection = ''

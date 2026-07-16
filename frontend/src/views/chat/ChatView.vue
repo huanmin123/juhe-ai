@@ -224,6 +224,7 @@ let broadcastUnsubscribe: (() => void) | undefined
 let subscribedRuntimeConversationId: string | undefined
 let lastRuntimeAcceptedKey: string | undefined
 let lastRuntimeTerminalKey: string | undefined
+const attemptedRuntimeReconciliationSyncs = new Set<string>()
 let conversationMenuTrigger: HTMLElement | undefined
 
 const localCache = getDefaultChatLocalCache()
@@ -393,21 +394,13 @@ async function selectConversation(id: string, options: {
         cacheBroadcast.publish({ systemAccountId: conversation.systemAccountId, conversationId: id, messageRevision: synchronized.messageRevision })
         if (synchronized.syncHead.activeTurn) {
           const active = synchronized.syncHead.activeTurn
-          const assistant = synchronized.messages.find((item) => item.id === active.assistantMessageId)
           const user = synchronized.messages.find((item) => item.turnId === active.turnId && item.role === 'user')
           const pending = pendingConfirmation.value
           if (pending?.request.conversationId === id && (!user?.clientMessageId || pending.request.clientMessageId === user.clientMessageId)) {
             activeStopTarget = { request: pending.request, turnId: active.turnId }
           }
           if (!isCurrentConversationAccount(conversation.systemAccountId, id, loadEpoch)) return synchronized.messages
-          chatGenerationRuntime.attach({
-            systemAccountId: conversation.systemAccountId,
-            conversationId: id,
-            clientMessageId: user?.clientMessageId,
-            turnId: active.turnId,
-            assistantMessageId: active.assistantMessageId,
-            projection: assistant
-          })
+          attachActiveTurnFromSync(conversation, synchronized.syncHead, synchronized.messages, user?.clientMessageId)
         }
         return synchronized.messages
       },
@@ -689,7 +682,7 @@ function applyRuntimeTurn(turn: RunningTurn | undefined): void {
     const terminalKey = `${turn.conversationId}:${turn.turnId ?? turn.clientMessageId}:${turn.status}:${turn.reconciliationReason ?? ''}`
     if (lastRuntimeTerminalKey !== terminalKey) {
       lastRuntimeTerminalKey = terminalKey
-      void refreshConversationFromSync(turn.conversationId)
+      if (!turn.reconciliationReason || shouldAttemptRuntimeReconciliationSync(turn)) void refreshConversationFromSync(turn.conversationId)
       void refreshContextStatus(turn.conversationId)
       if (turn.status === 'failed') message.error(turn.error?.message || '模型生成失败')
       if (turn.status !== 'running' && turn.status !== 'preparing') activeStopTarget = undefined
@@ -699,13 +692,26 @@ function applyRuntimeTurn(turn: RunningTurn | undefined): void {
     if (turn.error?.status === 403) {
       chatGenerationRuntime.blockConversation(turn.systemAccountId, turn.conversationId)
       conversationAccessEpoch.value += 1
+      messages.value = []
       models.value = []
       selectedModel.value = undefined
     }
     const failure = turn.error?.status
       ? new ChatStreamHttpError(turn.error.status, turn.error.code, turn.error.message || '发送失败')
       : new Error(turn.error?.message || '发送失败')
-    void handleSubmitFailure(failure, active.request, false, undefined, false)
+    const failedRequest = active.request
+    void (async () => {
+      try {
+        await handleSubmitFailure(failure, failedRequest, false, undefined, false)
+      } finally {
+        generating.value = false
+        activeStopTarget = undefined
+        clearPendingConfirmation(failedRequest.systemAccountId)
+        const currentEdit = editingTurn.value
+        if (currentEdit && currentEdit.turnId === failedRequest.replaceTurnId) currentEdit.phase = 'editing'
+        composer.value?.restore(failedRequest.snapshot)
+      }
+    })()
   }
 }
 async function refreshConversationFromSync(conversationId: string): Promise<void> {
@@ -744,16 +750,8 @@ async function refreshConversationFromSync(conversationId: string): Promise<void
     }
     if (result.syncHead.activeTurn) {
       const active = result.syncHead.activeTurn
-      const assistant = result.messages.find((item) => item.id === active.assistantMessageId)
       const user = result.messages.find((item) => item.turnId === active.turnId && item.role === 'user')
-      chatGenerationRuntime.attach({
-        systemAccountId: conversation.systemAccountId,
-        conversationId,
-        clientMessageId: user?.clientMessageId,
-        turnId: active.turnId,
-        assistantMessageId: active.assistantMessageId,
-        projection: assistant
-      })
+      attachActiveTurnFromSync(conversation, result.syncHead, result.messages, user?.clientMessageId)
     } else {
       const running = chatGenerationRuntime.get(conversation.systemAccountId, conversationId)
       if (running?.turnId) chatGenerationRuntime.forget(conversation.systemAccountId, conversationId, running.turnId)
@@ -767,6 +765,14 @@ async function refreshConversationFromSync(conversationId: string): Promise<void
 function cloneMessage(value: ChatMessage): ChatMessage {
   return JSON.parse(JSON.stringify(value)) as ChatMessage
 }
+function shouldAttemptRuntimeReconciliationSync(turn: RunningTurn): boolean {
+  if (!turn.reconciliationReason) return false
+  const key = `${turn.systemAccountId}:${turn.conversationId}:${turn.turnId ?? turn.clientMessageId}:${turn.reconciliationReason}:${turn.eventVersion}`
+  if (attemptedRuntimeReconciliationSyncs.has(key)) return false
+  attemptedRuntimeReconciliationSyncs.add(key)
+  if (attemptedRuntimeReconciliationSyncs.size > 128) attemptedRuntimeReconciliationSyncs.delete(attemptedRuntimeReconciliationSyncs.values().next().value!)
+  return true
+}
 function isCurrentConversationAccount(systemAccountId: string, conversationId: string, epoch: number): boolean {
   return authState.currentUser.value?.id === systemAccountId
     && isCurrentChatConversationLoad({ conversationId, selectedConversationId: selectedConversationId.value, epoch, currentEpoch: conversationLoadEpoch, disposed })
@@ -776,12 +782,35 @@ function projectRuntimeMessages(
   conversationId: string,
   values: readonly ChatMessage[],
   syncHead: { activeTurn?: { turnId: string; assistantMessageId: string } }
-): { messages: ChatMessage[]; eventVersion?: number } {
+): { messages: ChatMessage[]; eventVersion?: number; status?: ChatMessage['status']; turnId?: string; assistantMessageId?: string } {
   const running = chatGenerationRuntime.get(systemAccountId, conversationId)
   return {
     messages: projectChatMessagesWithRuntime({ messages: values, activeTurn: syncHead.activeTurn, runtimeTurn: running }),
-    eventVersion: running?.eventVersion
+    eventVersion: running?.eventVersion,
+    status: running?.projection.status,
+    turnId: running?.turnId,
+    assistantMessageId: running?.assistantMessageId
   }
+}
+function attachActiveTurnFromSync(
+  conversation: ChatConversation,
+  syncHead: { activeTurn?: { turnId: string; assistantMessageId: string } },
+  synchronizedMessages: readonly ChatMessage[],
+  clientMessageId?: string
+): void {
+  const active = syncHead.activeTurn
+  if (!active) return
+  const runtimeBeforeAttach = chatGenerationRuntime.get(conversation.systemAccountId, conversation.id)
+  if (runtimeBeforeAttach?.turnId === active.turnId && (runtimeBeforeAttach.status === 'completed' || runtimeBeforeAttach.status === 'failed' || runtimeBeforeAttach.status === 'canceled')) return
+  const assistant = synchronizedMessages.find((item) => item.id === active.assistantMessageId)
+  chatGenerationRuntime.attach({
+    systemAccountId: conversation.systemAccountId,
+    conversationId: conversation.id,
+    clientMessageId,
+    turnId: active.turnId,
+    assistantMessageId: active.assistantMessageId,
+    projection: assistant
+  })
 }
 async function removeConversation(id: string): Promise<void> { try { const conversation = conversations.value.find((item) => item.id === id); await chatApi.deleteConversation(id); if (conversation) await localCache.deleteConversation(conversation.systemAccountId, id); conversations.value = conversations.value.filter((item) => item.id !== id); if (selectedConversationId.value === id) { selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {
@@ -1106,7 +1135,8 @@ function activateChatPage(): void {
   contextStatusTimer = window.setInterval(() => {
     void refreshContextStatus()
     const conversation = selectedConversation.value
-    if (conversation && chatGenerationRuntime.get(conversation.systemAccountId, conversation.id)?.reconciliationReason) void refreshConversationFromSync(conversation.id)
+    const runtime = conversation && chatGenerationRuntime.get(conversation.systemAccountId, conversation.id)
+    if (conversation && runtime?.reconciliationReason && shouldAttemptRuntimeReconciliationSync(runtime)) void refreshConversationFromSync(conversation.id)
   }, 5_000)
   subscribeSelectedRuntime()
   broadcastUnsubscribe = cacheBroadcast.subscribe((payload) => {

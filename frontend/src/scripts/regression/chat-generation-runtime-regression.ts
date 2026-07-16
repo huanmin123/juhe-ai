@@ -125,9 +125,9 @@ assert.equal(timers.length, 0, '重附着次数必须有界')
 assert.equal(runtime.get('account', 'conversation')?.status, 'running', '耗尽重连后保留 running 供外部 sync')
 assert.equal(runtime.get('account', 'conversation')?.reconciliationReason, 'reconnect_exhausted', '重连预算耗尽必须进入显式权威同步状态')
 assert.deepEqual(runtimeReconciliations, ['reconnect_exhausted'], '重连预算耗尽必须主动触发一次权威 sync 回调')
-runtime.attach({ systemAccountId: 'account', conversationId: 'conversation', clientMessageId: 'client', turnId: 'turn', assistantMessageId: 'assistant', eventVersion: 3, projection: runtime.get('account', 'conversation')?.projection as ChatMessage })
+runtime.attach({ systemAccountId: 'account', conversationId: 'conversation', clientMessageId: 'client', turnId: 'turn', assistantMessageId: 'assistant', eventVersion: 3, projection: { ...(runtime.get('account', 'conversation')?.projection as ChatMessage), contentText: 'DB body changed without event progress' } })
 await Promise.resolve(); await Promise.resolve()
-assert.equal(attaches.length, 3, '同一 active turn 的普通 sync/attach 不得重置已耗尽的重连预算')
+assert.equal(attaches.length, 3, '同 revision 的 DB/runtime 正文差异不得伪装成服务端进展并重置已耗尽预算')
 const unsubscribeRecovery = runtime.subscribe('account', 'conversation', () => undefined)
 await Promise.resolve()
 assert.equal(attaches.length, 3, '重连预算耗尽后 UI 重订阅不得静默重启 attach，必须等待权威 sync')
@@ -216,6 +216,7 @@ classificationRuntime.close()
 
 let failedStartPosts = 0
 const failedStartNotifications: string[] = []
+const failedStartTimers: Array<() => void> = []
 const failedStartRuntime = new ChatGenerationRuntime({
   streamMessage: async (input) => {
     failedStartPosts += 1
@@ -225,8 +226,8 @@ const failedStartRuntime = new ChatGenerationRuntime({
   },
   attachStream: async () => undefined,
   stop: async () => ({ stopped: true }),
-  schedule: () => undefined,
-  cancelSchedule: () => undefined
+  schedule: (callback) => { failedStartTimers.push(callback); return callback },
+  cancelSchedule: (handle) => { const index = failedStartTimers.indexOf(handle as () => void); if (index >= 0) failedStartTimers.splice(index, 1) }
 })
 failedStartRuntime.activateAccount('account')
 failedStartRuntime.subscribe('account', 'failed-start', (turn) => { if (turn) failedStartNotifications.push(turn.status) })
@@ -235,6 +236,8 @@ await Promise.resolve(); await Promise.resolve()
 assert.equal(failedStartRuntime.get('account', 'failed-start')?.status, 'failed', 'started 前稳定 4xx 必须结束 preparing')
 assert.equal(failedStartRuntime.get('account', 'failed-start')?.error?.status, 422)
 assert(failedStartNotifications.includes('failed'), 'started 前稳定 4xx 必须通知订阅者失败状态')
+assert.equal(failedStartRuntime.get('account', 'failed-start')?.status, 'failed')
+assert.equal(failedStartTimers.length, 1, 'accepted 前稳定失败必须进入 TTL/LRU 终态回收')
 failedStartRuntime.start({ ...startInput, conversationId: 'failed-start', clientMessageId: 'client-retry' })
 await Promise.resolve()
 assert.equal(failedStartPosts, 2, '失败的初次 POST 必须允许同会话重新 start 发起新 POST')
@@ -302,5 +305,37 @@ assert.equal(ttlCallbacks.length, 1, '终态会话解除订阅后必须重新安
 ttlCallbacks.shift()?.()
 assert.equal(ttlRuntime.get('account', 'ttl-selected'), undefined, '过期终态会话解除订阅后必须回收')
 ttlRuntime.close()
+
+const directTerminalTimers: Array<() => void> = []
+let directAttachCalls = 0
+const directTerminalRuntime = new ChatGenerationRuntime({
+  streamMessage: async () => undefined,
+  attachStream: async () => { directAttachCalls += 1; await deferred().promise },
+  stop: async () => ({ stopped: true }),
+  schedule: (callback) => { directTerminalTimers.push(callback); return callback },
+  cancelSchedule: (handle) => { const index = directTerminalTimers.indexOf(handle as () => void); if (index >= 0) directTerminalTimers.splice(index, 1) }
+})
+directTerminalRuntime.activateAccount('account')
+directTerminalRuntime.attach({ systemAccountId: 'account', conversationId: 'sync-terminal', turnId: 'turn-sync-terminal', assistantMessageId: 'assistant-sync-terminal' })
+await Promise.resolve()
+assert.equal(directAttachCalls, 1)
+directTerminalRuntime.attach({
+  systemAccountId: 'account',
+  conversationId: 'sync-terminal',
+  turnId: 'turn-sync-terminal',
+  assistantMessageId: 'assistant-sync-terminal',
+  eventVersion: -1,
+  projection: { ...assistant('assistant-sync-terminal'), turnId: 'turn-sync-terminal', status: 'completed', contentText: 'terminal from sync' }
+})
+assert.equal(directTerminalRuntime.get('account', 'sync-terminal')?.status, 'completed', '明确 terminal sync 投影必须推进 running runtime 到终态')
+assert.equal(directAttachCalls, 1, '明确 terminal sync 后不得再次 attach 旧 active head')
+assert.equal(directTerminalTimers.length, 1, 'sync 推进的终态必须进入 TTL 回收')
+
+directTerminalRuntime.attach({ systemAccountId: 'account', conversationId: 'stopped-terminal', clientMessageId: 'client-stop', turnId: 'turn-stop', assistantMessageId: 'assistant-stop' })
+await Promise.resolve()
+await directTerminalRuntime.stop('account', 'stopped-terminal', { clientMessageId: 'client-stop', turnId: 'turn-stop' })
+assert.equal(directTerminalRuntime.get('account', 'stopped-terminal')?.status, 'canceled')
+assert.equal(directTerminalTimers.length, 2, 'stop 成功本地 canceled 必须进入 TTL/LRU 终态回收')
+directTerminalRuntime.close()
 
 console.log('AI 问答应用级 generation runtime 回归通过')

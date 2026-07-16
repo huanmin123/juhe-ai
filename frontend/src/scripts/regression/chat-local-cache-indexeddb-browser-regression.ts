@@ -68,6 +68,59 @@ try {
   assert(raceCache.head?.messageRevision === 6 && raceCache.messages[0]?.contentText === 'high', '跨标签页交错写不得回退 head/messages')
   await adapter.deleteConversation('C', 'race')
 
+  const lowProjectionStarted = deferred<void>()
+  const releaseLowProjection = deferred<void>()
+  const projectionDependencies = (eventVersion: number, text: string, waitForRelease = false): ChatConversationSyncDependencies => ({
+    readCache: async (account, conversation) => adapter.readConversation(account, conversation),
+    getSyncHead: async () => ({ ...syncHead(7), activeTurn: { turnId: 'turn-projection', assistantMessageId: 'm_2', startedAt: '2026-07-16T00:00:00.000Z' } }),
+    listMessages: async () => {
+      if (waitForRelease) { lowProjectionStarted.resolve(); await releaseLowProjection.promise }
+      return [{ ...message(1, 'race'), turnId: 'turn-projection', contentText: 'user' }, { ...message(2, 'race'), turnId: 'turn-projection', status: 'streaming', contentText: 'db' }]
+    },
+    deleteConversation: (account, conversation) => adapter.deleteConversation(account, conversation),
+    commitSnapshot: async (account, head, messages, projection) => (await adapter.commitSyncSnapshot({
+      systemAccountId: account,
+      conversationId: head.conversationId,
+      messageRevision: head.messageRevision,
+      messages: [...messages],
+      runningTurn: { systemAccountId: account, conversationId: head.conversationId, turnId: 'turn-projection', assistantMessageId: 'm_2', startedAt: '2026-07-16T00:00:00.000Z' },
+      projection,
+      now: eventVersion
+    })).committed
+  })
+  const lowProjection = lowCoordinator.synchronize({
+    systemAccountId: 'C', conversationId: 'race', dependencies: projectionDependencies(4, 'old-runtime', true),
+    projectMessages: (items) => ({ messages: items.map((item) => item.role === 'assistant' ? { ...item, contentText: 'old-runtime' } : item), eventVersion: 4 })
+  })
+  await lowProjectionStarted.promise
+  const highProjection = await highCoordinator.synchronize({
+    systemAccountId: 'C', conversationId: 'race', dependencies: projectionDependencies(8, 'new-runtime'),
+    projectMessages: (items) => ({ messages: items.map((item) => item.role === 'assistant' ? { ...item, contentText: 'new-runtime' } : item), eventVersion: 8 })
+  })
+  assert(highProjection.state === 'ready')
+  releaseLowProjection.resolve()
+  assert((await lowProjection).state === 'superseded', '同 revision 低 eventVersion 的第二 coordinator 必须被 IndexedDB CAS 拒绝')
+  const projectionCache = await adapter.readConversation('C', 'race')
+  assert(projectionCache.messages[1]?.contentText === 'new-runtime', '旧标签页低 eventVersion 不得覆盖新正文')
+  assert(projectionCache.head?.projectionEventVersion === 8, '投影 eventVersion 必须与消息同事务持久化')
+  assert(projectionCache.runningTurn?.turnId === 'turn-projection', '旧标签页不得清除或回退 running turn')
+  const terminalCommit = await adapter.commitSyncSnapshot({
+    systemAccountId: 'C', conversationId: 'race', messageRevision: 7,
+    messages: [{ ...message(1, 'race'), turnId: 'turn-projection', contentText: 'user' }, { ...message(2, 'race'), turnId: 'turn-projection', status: 'completed', contentText: 'terminal' }],
+    projection: { eventVersion: 8, status: 'completed', turnId: 'turn-projection', assistantMessageId: 'm_2' }, now: 9
+  })
+  assert(terminalCommit.committed, '同 revision 明确终态必须推进 running 投影')
+  const staleRunningCommit = await adapter.commitSyncSnapshot({
+    systemAccountId: 'C', conversationId: 'race', messageRevision: 7,
+    messages: [{ ...message(1, 'race'), turnId: 'turn-projection', contentText: 'user' }, { ...message(2, 'race'), turnId: 'turn-projection', status: 'streaming', contentText: 'late-running' }],
+    runningTurn: { systemAccountId: 'C', conversationId: 'race', turnId: 'turn-projection', assistantMessageId: 'm_2', startedAt: '2026-07-16T00:00:00.000Z', eventVersion: 9, status: 'streaming' },
+    projection: { eventVersion: 9, status: 'streaming', turnId: 'turn-projection', assistantMessageId: 'm_2' }, now: 10
+  })
+  assert(!staleRunningCommit.committed, '即使 eventVersion 更高，旧 running 状态也不得覆盖已确认终态')
+  const terminalCache = await adapter.readConversation('C', 'race')
+  assert(terminalCache.messages[1]?.status === 'completed' && !terminalCache.runningTurn, '终态 CAS 必须原子清除 running turn 并保留终态正文')
+  await adapter.deleteConversation('C', 'race')
+
   const database = await new Promise<IDBDatabase>((resolve, reject) => { const opening = indexedDB.open('juhe-ai-chat-cache', 2); opening.onsuccess = () => resolve(opening.result); opening.onerror = () => reject(opening.error) })
   assert(database.version === 2 && database.objectStoreNames.contains('cache_metadata'), '真实 v1 schema 必须升级并安全重建为 v2')
   assert((await adapter.readConversation('legacy', 'discarded')).messages.length === 0, 'v1 展示缓存数据必须在升级时丢弃')

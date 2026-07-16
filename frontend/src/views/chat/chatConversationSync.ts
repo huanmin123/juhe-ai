@@ -1,6 +1,6 @@
 import { chatApi, type ChatMessageListParams } from '@/api/domains/chat'
-import type { ChatConversationSyncHead, ChatMessage } from '@/types/domain/chat'
-import { getDefaultChatLocalCache } from './chatLocalCache'
+import type { ChatConversationSyncHead, ChatMessage, ChatMessageStatus } from '@/types/domain/chat'
+import { getDefaultChatLocalCache, type ChatCacheProjectionWatermark } from './chatLocalCache'
 
 export type ChatConversationSyncDecision =
   | { type: 'unchanged' }
@@ -14,7 +14,7 @@ export interface ChatConversationSyncDependencies {
   getSyncHead(conversationId: string, knownRevision: number): Promise<ChatConversationSyncHead>
   listMessages(conversationId: string, cursor: ChatMessageListParams): Promise<ChatMessage[]>
   deleteConversation(systemAccountId: string, conversationId: string): Promise<unknown>
-  commitSnapshot(systemAccountId: string, head: ChatConversationSyncHead, messages: readonly ChatMessage[]): Promise<boolean | undefined>
+  commitSnapshot(systemAccountId: string, head: ChatConversationSyncHead, messages: readonly ChatMessage[], projection?: ChatCacheProjectionWatermark): Promise<boolean | undefined>
 }
 
 export interface ChatConversationSynchronizationResult {
@@ -35,7 +35,15 @@ interface ChatConversationSyncInput {
   systemAccountId: string
   conversationId: string
   dependencies: ChatConversationSyncDependencies
-  projectMessages?(messages: readonly ChatMessage[], head: ChatConversationSyncHead): ChatMessage[] | { messages: ChatMessage[]; eventVersion?: number }
+  projectMessages?(messages: readonly ChatMessage[], head: ChatConversationSyncHead): ChatMessage[] | ChatProjectedMessages
+}
+
+export interface ChatProjectedMessages {
+  messages: ChatMessage[]
+  eventVersion?: number
+  status?: ChatMessageStatus
+  turnId?: string
+  assistantMessageId?: string
 }
 
 interface SyncFlight {
@@ -166,9 +174,13 @@ export function projectChatMessagesWithRuntime(input: {
 }): ChatMessage[] {
   const { activeTurn, runtimeTurn } = input
   const projectionCandidate = runtimeTurn?.projection as Partial<ChatMessage> | undefined
-  if (!activeTurn || !runtimeTurn || runtimeTurn.status !== 'running' || runtimeTurn.eventVersion < 0
-    || runtimeTurn.turnId !== activeTurn.turnId || runtimeTurn.assistantMessageId !== activeTurn.assistantMessageId
+  const terminalRuntime = runtimeTurn && isTerminalMessageStatus(runtimeTurn.status)
+  const matchesActive = Boolean(activeTurn && runtimeTurn?.turnId === activeTurn.turnId && runtimeTurn.assistantMessageId === activeTurn.assistantMessageId)
+  const matchesExistingMessage = Boolean(terminalRuntime && runtimeTurn?.assistantMessageId && input.messages.some((message) => message.id === runtimeTurn.assistantMessageId && message.turnId === runtimeTurn.turnId))
+  if (!runtimeTurn || runtimeTurn.eventVersion < 0 || (!matchesActive && !matchesExistingMessage)
     || !projectionCandidate?.id || !projectionCandidate.sequenceNo || projectionCandidate.sequenceNo <= 0) return input.messages as ChatMessage[]
+  const databaseProjection = input.messages.find((message) => message.id === projectionCandidate.id && message.turnId === projectionCandidate.turnId)
+  if (databaseProjection && isTerminalMessageStatus(databaseProjection.status) && !terminalRuntime) return input.messages as ChatMessage[]
   const projection = JSON.parse(JSON.stringify(projectionCandidate)) as ChatMessage
   const projected = input.messages.map((item) => item.id === projection.id ? projection : item)
   if (!projected.some((item) => item.id === projection.id)) projected.push(projection)
@@ -247,10 +259,11 @@ export function createDefaultChatConversationSyncDependencies(options: { pending
     getSyncHead: chatApi.getConversationSync,
     listMessages: chatApi.listMessages,
     deleteConversation: (systemAccountId, conversationId) => cache.deleteConversation(systemAccountId, conversationId),
-    commitSnapshot: async (systemAccountId, head, values) => {
+    commitSnapshot: async (systemAccountId, head, values, projection) => {
       const result = await cache.commitSyncSnapshot(systemAccountId, head, values, {
         currentConversationId: head.conversationId,
-        pendingConfirmationConversationIds: options.pendingConversationIds?.()
+        pendingConfirmationConversationIds: options.pendingConversationIds?.(),
+        projection
       })
       await cache.cleanupExpired(head.serverTime)
       return result.ok ? result.value?.committed : undefined
@@ -273,7 +286,7 @@ async function commitProjectedSnapshot(
   let projection = readProjection(input, authoritativeMessages, head)
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (!isCurrent()) return { current: false, messages: [] }
-    const committed = await input.dependencies.commitSnapshot(input.systemAccountId, head, projection.messages)
+    const committed = await input.dependencies.commitSnapshot(input.systemAccountId, head, projection.messages, projectionWatermark(projection))
     if (!isCurrent() || committed === false) return { current: false, messages: [] }
     if (!input.projectMessages) break
     const latest = readProjection(input, authoritativeMessages, head)
@@ -287,10 +300,28 @@ function readProjection(
   input: ChatConversationSyncInput,
   messages: readonly ChatMessage[],
   head: ChatConversationSyncHead
-): { messages: ChatMessage[]; eventVersion?: number } {
+): ChatProjectedMessages {
   const projected = input.projectMessages?.(messages, head)
   if (!projected) return { messages: messages as ChatMessage[] }
   return Array.isArray(projected) ? { messages: projected } : projected
+}
+
+function projectionWatermark(projection: ChatProjectedMessages): ChatCacheProjectionWatermark | undefined {
+  const assistant = projection.assistantMessageId
+    ? projection.messages.find((message) => message.id === projection.assistantMessageId)
+    : [...projection.messages].reverse().find((message) => message.role === 'assistant')
+  const eventVersion = Number.isSafeInteger(projection.eventVersion) && (projection.eventVersion ?? -1) >= 0 ? projection.eventVersion : undefined
+  if (!assistant || (eventVersion === undefined && !isTerminalMessageStatus(assistant.status))) return undefined
+  return {
+    eventVersion,
+    status: assistant.status,
+    turnId: assistant.turnId,
+    assistantMessageId: assistant.id
+  }
+}
+
+function isTerminalMessageStatus(status: string): status is Extract<ChatMessageStatus, 'completed' | 'failed' | 'canceled'> {
+  return status === 'completed' || status === 'failed' || status === 'canceled'
 }
 
 function supersededOutcome(passes = 0): ChatConversationSyncOutcome {
