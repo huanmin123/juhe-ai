@@ -66,6 +66,7 @@ type LoginService struct {
 	newSessionToken func() (string, error)
 	newSessionID    func(time.Time) (string, error)
 	verifyPassword  func(string, string) bool
+	captchaDisabled bool
 }
 
 type LoginServiceOptions struct {
@@ -76,6 +77,7 @@ type LoginServiceOptions struct {
 	NewSessionToken func() (string, error)
 	NewSessionID    func(time.Time) (string, error)
 	VerifyPassword  func(string, string) bool
+	CaptchaDisabled bool
 }
 
 func NewLoginService(store port.ManagementLoginStore, captcha LoginCaptchaVerifier, guard LoginGuard) *LoginService {
@@ -107,6 +109,7 @@ func NewLoginServiceWithOptions(opts LoginServiceOptions) *LoginService {
 		newSessionToken: newSessionToken,
 		newSessionID:    newSessionID,
 		verifyPassword:  verifyPassword,
+		captchaDisabled: opts.CaptchaDisabled,
 	}
 }
 
@@ -114,22 +117,24 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 	if s == nil || s.store == nil {
 		return LoginResult{}, errors.New("management login store is required")
 	}
-	if s.captcha == nil {
+	if !s.captchaDisabled && s.captcha == nil {
 		return LoginResult{}, errors.New("management login captcha verifier is required")
 	}
 	if s.guard == nil {
 		return LoginResult{}, errors.New("management login guard is required")
 	}
-	if err := validateLoginInput(input); err != nil {
+	if err := validateLoginInput(input, s.captchaDisabled); err != nil {
 		return LoginResult{}, err
 	}
 
-	captchaOK, err := s.captcha.VerifyChallenge(ctx, strings.TrimSpace(input.CaptchaID), input.CaptchaCode)
-	if err != nil {
-		return LoginResult{}, err
-	}
-	if !captchaOK {
-		return LoginResult{}, ErrLoginCaptchaInvalid
+	if !s.captchaDisabled {
+		captchaOK, err := s.captcha.VerifyChallenge(ctx, strings.TrimSpace(input.CaptchaID), input.CaptchaCode)
+		if err != nil {
+			return LoginResult{}, err
+		}
+		if !captchaOK {
+			return LoginResult{}, ErrLoginCaptchaInvalid
+		}
 	}
 
 	if decision, err := s.guard.CheckAllowed(ctx, input.ClientIP, input.Username); err != nil {
@@ -191,10 +196,11 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 	}, nil
 }
 
-func validateLoginInput(input LoginInput) error {
-	if input.Username == "" || input.Password == "" ||
-		strings.TrimSpace(input.CaptchaID) == "" ||
-		strings.TrimSpace(input.CaptchaCode) == "" {
+func validateLoginInput(input LoginInput, captchaDisabled bool) error {
+	if input.Username == "" || input.Password == "" {
+		return ErrLoginInvalidInput
+	}
+	if !captchaDisabled && (strings.TrimSpace(input.CaptchaID) == "" || strings.TrimSpace(input.CaptchaCode) == "") {
 		return ErrLoginInvalidInput
 	}
 	if containsLoginWhitespace(input.Username) || containsLoginWhitespace(input.Password) {

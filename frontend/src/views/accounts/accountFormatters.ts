@@ -98,7 +98,7 @@ export function accountStatusColor(account: AccountSummary) {
   if (runtimeStatus === 'half_open') return 'blue'
   if (runtimeStatus === 'precheck_failed') return 'gold'
   if (account.effectiveAvailability?.available) {
-    return account.accountRuntimeAvailabilityAvailable === false ? 'default' : account.effectiveAvailability.color
+    return account.effectiveAvailability.color
   }
   return statusColor(account.status)
 }
@@ -120,7 +120,7 @@ export function accountStatusText(account: AccountSummary) {
   if (runtimeStatus === 'half_open') return '半开探测'
   if (runtimeStatus === 'precheck_failed') return '探针确认失败'
   if (account.effectiveAvailability?.available) {
-    return account.accountRuntimeAvailabilityAvailable === false ? '运行态未知' : account.effectiveAvailability.label
+    return account.effectiveAvailability.label
   }
   return statusText(account.status)
 }
@@ -214,9 +214,7 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   if (conciseOwnStatus) {
     return conciseAccountStatusTooltipLines(account)
   }
-  if (effectiveAvailability?.available && account.accountRuntimeAvailabilityAvailable === false) {
-    lines.push('运行态快照暂不可用，页面不会把未知状态显示为可调度')
-  } else if (effectiveAvailability?.available) {
+  if (effectiveAvailability?.available) {
     lines.push('账户当前没有已知的账户级阻断，可以进入调度候选；是否承接具体请求仍取决于模型、协议、额度和并发条件。')
   }
   if (effectiveAvailability && shouldShowEffectiveAvailabilitySummary(account)) {

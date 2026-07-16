@@ -67,15 +67,37 @@ func (s *Store) GetManagementCustomProviderModelBindingSummary(ctx context.Conte
 }
 
 func (s *Store) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
+	protocolsJSON, err := json.Marshal(input.SupportedAPIProtocols.Value)
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model protocols: %w", err)
+	}
+	serviceTiersJSON, err := json.Marshal(input.SupportedServiceTiers.Value)
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model service tiers: %w", err)
+	}
+	reasoningEffortsJSON, err := json.Marshal(input.SupportedReasoningEfforts.Value)
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model reasoning efforts: %w", err)
+	}
 	pricesJSON := []byte("{}")
 	if input.ServiceTierPrices.Present {
-		var err error
 		pricesJSON, err = json.Marshal(input.ServiceTierPrices.Value)
 		if err != nil {
 			return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model service tier prices: %w", err)
 		}
 	}
 	row, err := s.queries().UpdateManagementBuiltInProviderModelPrices(ctx, postgresqueries.UpdateManagementBuiltInProviderModelPricesParams{
+		StatusPresent: input.Status.Present, Status: input.Status.Value,
+		ModePresent: input.Mode.Present, Mode: input.Mode.Value,
+		SupportedApiProtocolsPresent: input.SupportedAPIProtocols.Present, SupportedApiProtocolsJson: string(protocolsJSON),
+		SupportedServiceTiersPresent: input.SupportedServiceTiers.Present, SupportedServiceTiersJson: string(serviceTiersJSON),
+		SupportedReasoningEffortsPresent: input.SupportedReasoningEfforts.Present, SupportedReasoningEffortsJson: string(reasoningEffortsJSON),
+		DefaultReasoningEffortPresent: input.DefaultReasoningEffort.Present, DefaultReasoningEffort: input.DefaultReasoningEffort.Value,
+		ReleaseDatePresent: input.ReleaseDate.Present, ReleaseDate: input.ReleaseDate.Value,
+		ShutdownDatePresent: input.ShutdownDate.Present, ShutdownDate: input.ShutdownDate.Value,
+		ContextWindowTokensPresent: input.ContextWindowTokens.Present, ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens.Value),
+		MaxInputTokensPresent: input.MaxInputTokens.Present, MaxInputTokens: pgInt4Ptr(input.MaxInputTokens.Value),
+		MaxOutputTokensPresent: input.MaxOutputTokens.Present, MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens.Value),
 		InputUsdPer1mPresent: input.InputUSDPer1M.Present, InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M.Value),
 		OutputUsdPer1mPresent: input.OutputUSDPer1M.Present, OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M.Value),
 		CachedInputUsdPer1mPresent: input.CachedInputUSDPer1M.Present, CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M.Value),
@@ -99,8 +121,24 @@ func (s *Store) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, 
 	if err != nil {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
 	}
+	protocols, err := decodeProviderStringArray(row.SupportedApiProtocolsJson, "built-in provider model supported_api_protocols_json")
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+	}
+	serviceTiers, err := decodeProviderStringArray(row.SupportedServiceTiersJson, "built-in provider model supported_service_tiers_json")
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+	}
+	reasoningEfforts, err := decodeProviderStringArray(row.SupportedReasoningEffortsJson, "built-in provider model supported_reasoning_efforts_json")
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+	}
 	return port.ManagementBuiltInProviderModelPriceUpdateResult{
 		ID: row.ID, ProviderCode: row.ProviderCode,
+		Status: row.Status, Mode: textValue(row.Mode), SupportedAPIProtocols: protocols,
+		SupportedServiceTiers: serviceTiers, SupportedReasoningEfforts: reasoningEfforts,
+		DefaultReasoningEffort: textValue(row.DefaultReasoningEffort), ReleaseDate: textValue(row.ReleaseDate), ShutdownDate: textValue(row.ShutdownDate),
+		ContextWindowTokens: int4Ptr(row.ContextWindowTokens), MaxInputTokens: int4Ptr(row.MaxInputTokens), MaxOutputTokens: int4Ptr(row.MaxOutputTokens),
 		InputUSDPer1M: float8Ptr(row.InputUsdPer1m), OutputUSDPer1M: float8Ptr(row.OutputUsdPer1m),
 		CachedInputUSDPer1M: float8Ptr(row.CachedInputUsdPer1m), CacheWriteUSDPer1M: float8Ptr(row.CacheWriteUsdPer1m),
 		CacheWrite1hUSDPer1M: float8Ptr(row.CacheWrite1hUsdPer1m), ServiceTierPrices: serviceTierPrices,

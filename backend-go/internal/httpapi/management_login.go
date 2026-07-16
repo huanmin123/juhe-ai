@@ -48,7 +48,7 @@ func newManagementLoginHandler(service ManagementLoginService, cfg config.Config
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
-		body, ok := decodeManagementLoginBody(w, r)
+		body, ok := decodeManagementLoginBody(w, r, cfg.AuthCaptchaDisabled)
 		if !ok {
 			return
 		}
@@ -99,7 +99,7 @@ func newManagementLoginHandler(service ManagementLoginService, cfg config.Config
 	})
 }
 
-func decodeManagementLoginBody(w http.ResponseWriter, r *http.Request) (managementLoginBody, bool) {
+func decodeManagementLoginBody(w http.ResponseWriter, r *http.Request, captchaDisabled bool) (managementLoginBody, bool) {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, managementLoginMaxBodyBytes))
 	decoder.DisallowUnknownFields()
 	var payload map[string]json.RawMessage
@@ -128,15 +128,18 @@ func decodeManagementLoginBody(w http.ResponseWriter, r *http.Request) (manageme
 		writeMessageError(w, http.StatusBadRequest, "登录参数无效")
 		return managementLoginBody{}, false
 	}
-	captchaID, ok := decodeRequiredManagementLoginString(payload, "captchaId")
-	if !ok || strings.TrimSpace(captchaID) == "" {
-		writeMessageError(w, http.StatusBadRequest, "登录参数无效")
-		return managementLoginBody{}, false
-	}
-	captchaCode, ok := decodeRequiredManagementLoginString(payload, "captchaCode")
-	if !ok || strings.TrimSpace(captchaCode) == "" {
-		writeMessageError(w, http.StatusBadRequest, "登录参数无效")
-		return managementLoginBody{}, false
+	var captchaID, captchaCode string
+	if !captchaDisabled {
+		captchaID, ok = decodeRequiredManagementLoginString(payload, "captchaId")
+		if !ok || strings.TrimSpace(captchaID) == "" {
+			writeMessageError(w, http.StatusBadRequest, "登录参数无效")
+			return managementLoginBody{}, false
+		}
+		captchaCode, ok = decodeRequiredManagementLoginString(payload, "captchaCode")
+		if !ok || strings.TrimSpace(captchaCode) == "" {
+			writeMessageError(w, http.StatusBadRequest, "登录参数无效")
+			return managementLoginBody{}, false
+		}
 	}
 	return managementLoginBody{
 		username:    username,

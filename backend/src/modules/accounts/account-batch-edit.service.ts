@@ -114,7 +114,7 @@ export async function batchEditAccountsAsync(
     access,
     prepare: async ({ client, accounts }) => prepareBatchUpdatesAsync(client, accounts, updates)
   })
-  cleanupDisabledBalanceSnapshots(
+  cleanupChangedBalanceSnapshots(
     repositoryResult.balanceSnapshotCleanupAccountIds,
     repositoryResult.configRevisions,
     repositoryResult.batchId
@@ -348,11 +348,12 @@ async function prepareAccountUpdateAsync(
       || account.superPriorityEnabled !== nextSuperPriorityEnabled
       || account.fallbackEnabled !== nextFallbackEnabled,
     resetHealthCheckState: shouldScheduleHealthCheck && nextStatus !== 'disabled',
-    disableBalanceQuery: account.type === 'api_key' && effectiveAccountApiKeyCount(nextCredentials) > 1
+    disableBalanceQuery: account.type === 'api_key' && effectiveAccountApiKeyCount(nextCredentials) > 1,
+    resetBalanceQuery: proxyChanged && account.balanceQueryEnabled
   }
 }
 
-function cleanupDisabledBalanceSnapshots(
+function cleanupChangedBalanceSnapshots(
   accountIds: string[],
   configRevisions: Record<string, number>,
   batchId: string
@@ -362,7 +363,7 @@ function cleanupDisabledBalanceSnapshots(
     cleanupAccountBalanceSnapshotAfterSave({
       accountId,
       configRevision: configRevisions[accountId] ?? 1,
-      reason: 'batch_multiple_api_keys',
+      reason: 'batch_balance_identity_changed',
       batchId
     })
   }

@@ -22,7 +22,7 @@ export function isAccountStatusSnapshotCurrent(
 }
 
 export function accountStatusSnapshotPollingDelayMs(random: () => number = Math.random): number {
-  return 10_000 + Math.round((random() * 2 - 1) * 1_000)
+  return 30_000 + Math.round((random() * 2 - 1) * 1_000)
 }
 
 interface AccountStatusSnapshotPollingOptions {

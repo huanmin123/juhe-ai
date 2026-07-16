@@ -10,7 +10,7 @@ import {
 import { mainDatabaseRuntimeInfo } from '../../storage/database.js'
 import { requestStatsWriter } from '../background/background-stats-writer.js'
 
-export type AccountBalanceSnapshotCleanupReason = 'balance_configuration_changed' | 'multiple_api_keys' | 'batch_multiple_api_keys'
+export type AccountBalanceSnapshotCleanupReason = 'balance_configuration_changed' | 'multiple_api_keys' | 'batch_multiple_api_keys' | 'batch_balance_identity_changed'
 
 export interface AccountBalanceSnapshotCleanupRequest {
   accountId: string

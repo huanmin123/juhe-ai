@@ -31,6 +31,9 @@ export interface RuntimeConfig {
     }
     trustProxy: boolean | number
   }
+  auth: {
+    captchaDisabled: boolean
+  }
   upstreamUrlSecurity: {
     allowPrivateBaseUrls: boolean
     privateBaseUrlAllowlist: string[]
@@ -330,6 +333,7 @@ export const runtimeConfig: RuntimeConfig = {
   usageShardCount: numberConfig('JUHE_AI_USAGE_SHARD_COUNT', 16, 1, 256),
   secret: configuredSecret,
   httpSecurity: httpSecurityConfig(),
+  auth: authRuntimeConfig(),
   upstreamUrlSecurity: upstreamUrlSecurityConfig(),
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
   gateway: {
@@ -424,6 +428,12 @@ function assertProductionSecret(name: string, value: string): void {
   if (!isProductionRuntime()) return
   if (value === defaultRuntimeSecret || value.length < minimumProductionSecretLength) {
     throw new Error(`${name} 在生产环境必须配置为至少 ${minimumProductionSecretLength} 位的稳定随机密钥，不能使用默认开发密钥或过短密钥`)
+  }
+}
+
+function authRuntimeConfig(): RuntimeConfig['auth'] {
+  return {
+    captchaDisabled: booleanConfig('JUHE_AI_AUTH_CAPTCHA_DISABLED', false)
   }
 }
 

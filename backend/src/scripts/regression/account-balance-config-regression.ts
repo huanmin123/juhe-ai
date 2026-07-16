@@ -4,6 +4,7 @@ import { buildPostgresSchemaSql } from '../../storage/postgres-schema.js'
 import {
   effectiveAccountApiKeys,
   effectiveAccountApiKeyCount,
+  accountBalanceQueryIdentity,
   MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE,
   normalizeAccountBalanceConfig,
   validateAccountBalanceCapability
@@ -88,6 +89,31 @@ assert.equal(effectiveAccountApiKeyCount({ api_keys: ['sk-one', ' sk-one ', 'sk-
 assert.deepEqual(effectiveAccountApiKeys({ api_keys: ['sk-one', ' sk-one ', 'sk-two'] }), ['sk-one', 'sk-two'], '余额查询必须复用最终有效 Key 归一化结果')
 assert.equal(effectiveAccountApiKeyCount({ api_keys: [], api_key: 'sk-one' }), 1, '空 Key 池应回退单 Key 字段')
 assert.equal(MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE, '多 Key 账户不支持余额查询，保存后将自动关闭余额查询')
+const identityBase = accountBalanceQueryIdentity({
+  enabled: true,
+  config: { adapter: 'builtin', intervalMinutes: 5 },
+  providerCode: 'gpt',
+  accountType: 'api_key',
+  credentials: { api_key: 'sk-secret', base_url: 'https://relay.example/v1/?ignored=1' },
+  proxyProfileId: 'proxy-a'
+})
+assert.deepEqual(identityBase, accountBalanceQueryIdentity({
+  enabled: true,
+  config: { intervalMinutes: 5, adapter: 'builtin' },
+  providerCode: 'gpt',
+  accountType: 'api_key',
+  credentials: { api_key: 'sk-secret', base_url: 'https://relay.example/v1/' },
+  proxyProfileId: 'proxy-a'
+}), '余额身份必须按规范化配置和 Base URL 路径比较，并忽略 query、hash 和尾斜杠差异')
+assert.notDeepEqual(identityBase, accountBalanceQueryIdentity({
+  enabled: true,
+  config: { adapter: 'builtin', intervalMinutes: 5 },
+  providerCode: 'gpt',
+  accountType: 'api_key',
+  credentials: { api_key: 'sk-secret', base_url: 'https://relay.example/other' },
+  proxyProfileId: 'proxy-a'
+}), 'Base URL 路径变化必须使旧余额快照失效')
+assert.doesNotMatch(JSON.stringify(identityBase), /sk-secret/, '余额身份不得保留明文 API Key')
 assert.throws(() => validateAccountBalanceCapability({
   ...physicalApiKeyAccount,
   authorizationInstanceAuthorizationId: 'authorization-test'

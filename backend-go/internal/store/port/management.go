@@ -1334,42 +1334,79 @@ type ManagementProviderModelOptionalFloat struct {
 	Value   *float64
 }
 
+type ManagementProviderModelOptionalString struct {
+	Present bool
+	Value   string
+}
+
+type ManagementProviderModelOptionalStringList struct {
+	Present bool
+	Value   []string
+}
+
+type ManagementProviderModelOptionalInt struct {
+	Present bool
+	Value   *int
+}
+
 type ManagementProviderModelOptionalPriceMap struct {
 	Present bool
 	Value   map[string]ManagementProviderModelPriceSet
 }
 
 type ManagementBuiltInProviderModelPriceUpdateInput struct {
-	ID                   string
-	ProviderCode         string
-	InputUSDPer1M        ManagementProviderModelOptionalFloat
-	OutputUSDPer1M       ManagementProviderModelOptionalFloat
-	CachedInputUSDPer1M  ManagementProviderModelOptionalFloat
-	CacheWriteUSDPer1M   ManagementProviderModelOptionalFloat
-	CacheWrite1hUSDPer1M ManagementProviderModelOptionalFloat
-	ServiceTierPrices    ManagementProviderModelOptionalPriceMap
-	ImageInputUSDPer1M   ManagementProviderModelOptionalFloat
-	ImageOutputUSDPer1M  ManagementProviderModelOptionalFloat
-	AudioInputUSDPer1M   ManagementProviderModelOptionalFloat
-	AudioOutputUSDPer1M  ManagementProviderModelOptionalFloat
-	OutputUSDPerImage    ManagementProviderModelOptionalFloat
+	ID                        string
+	ProviderCode              string
+	Status                    ManagementProviderModelOptionalString
+	Mode                      ManagementProviderModelOptionalString
+	SupportedAPIProtocols     ManagementProviderModelOptionalStringList
+	SupportedServiceTiers     ManagementProviderModelOptionalStringList
+	SupportedReasoningEfforts ManagementProviderModelOptionalStringList
+	DefaultReasoningEffort    ManagementProviderModelOptionalString
+	ReleaseDate               ManagementProviderModelOptionalString
+	ShutdownDate              ManagementProviderModelOptionalString
+	ContextWindowTokens       ManagementProviderModelOptionalInt
+	MaxInputTokens            ManagementProviderModelOptionalInt
+	MaxOutputTokens           ManagementProviderModelOptionalInt
+	InputUSDPer1M             ManagementProviderModelOptionalFloat
+	OutputUSDPer1M            ManagementProviderModelOptionalFloat
+	CachedInputUSDPer1M       ManagementProviderModelOptionalFloat
+	CacheWriteUSDPer1M        ManagementProviderModelOptionalFloat
+	CacheWrite1hUSDPer1M      ManagementProviderModelOptionalFloat
+	ServiceTierPrices         ManagementProviderModelOptionalPriceMap
+	ImageInputUSDPer1M        ManagementProviderModelOptionalFloat
+	ImageOutputUSDPer1M       ManagementProviderModelOptionalFloat
+	AudioInputUSDPer1M        ManagementProviderModelOptionalFloat
+	AudioOutputUSDPer1M       ManagementProviderModelOptionalFloat
+	OutputUSDPerImage         ManagementProviderModelOptionalFloat
 }
 
 type ManagementBuiltInProviderModelPriceUpdateResult struct {
-	ID                   string
-	ProviderCode         string
-	InputUSDPer1M        *float64
-	OutputUSDPer1M       *float64
-	CachedInputUSDPer1M  *float64
-	CacheWriteUSDPer1M   *float64
-	CacheWrite1hUSDPer1M *float64
-	ServiceTierPrices    map[string]ManagementProviderModelPriceSet
-	ImageInputUSDPer1M   *float64
-	ImageOutputUSDPer1M  *float64
-	AudioInputUSDPer1M   *float64
-	AudioOutputUSDPer1M  *float64
-	OutputUSDPerImage    *float64
-	UpdatedAt            time.Time
+	ID                        string
+	ProviderCode              string
+	Status                    string
+	Mode                      string
+	SupportedAPIProtocols     []string
+	SupportedServiceTiers     []string
+	SupportedReasoningEfforts []string
+	DefaultReasoningEffort    string
+	ReleaseDate               string
+	ShutdownDate              string
+	ContextWindowTokens       *int
+	MaxInputTokens            *int
+	MaxOutputTokens           *int
+	InputUSDPer1M             *float64
+	OutputUSDPer1M            *float64
+	CachedInputUSDPer1M       *float64
+	CacheWriteUSDPer1M        *float64
+	CacheWrite1hUSDPer1M      *float64
+	ServiceTierPrices         map[string]ManagementProviderModelPriceSet
+	ImageInputUSDPer1M        *float64
+	ImageOutputUSDPer1M       *float64
+	AudioInputUSDPer1M        *float64
+	AudioOutputUSDPer1M       *float64
+	OutputUSDPerImage         *float64
+	UpdatedAt                 time.Time
 }
 
 type ManagementProviderModelCatalogReader interface {

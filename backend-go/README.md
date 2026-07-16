@@ -95,10 +95,13 @@ $env:JUHE_AI_TRUST_PROXY = 'false'
 $env:JUHE_AI_PUBLIC_API_ENABLED = 'false'
 $env:JUHE_AI_MANAGEMENT_API_ENABLED = 'false'
 $env:JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED = 'false'
+$env:JUHE_AI_AUTH_CAPTCHA_DISABLED = 'false'
 $env:JUHE_AI_USAGE_STATS_TIMEZONE = 'Asia/Shanghai'
 goose -dir db/migrations postgres $env:JUHE_AI_POSTGRES_URL up
 go run ./cmd/juhe-ai server
 ```
+
+开发、测试自动化或生产临时排障可把 `JUHE_AI_AUTH_CAPTCHA_DISABLED` 设为 `true`。Node 与 Go 会统一让 `GET /auth/captcha` 返回 `required=false`，登录只省略验证码校验，账号密码、登录限频、正式 session Cookie 和权限边界保持不变；服务启动时会输出 `auth_captcha_disabled` warn，排障结束后必须恢复 `false` 并重启。
 
 `JUHE_AI_USAGE_STATS_TIMEZONE` 应替换为实际部署使用的 IANA 时区。migration `000024` 初始化 53 项设置并优先使用该值 seed 时区；未设置时回退 PostgreSQL `TimeZone`，再回退 `UTC`。migration `000043` 删除历史 `gptPriorityPriceMultiplier` 与 `gptFlexPriceMultiplier` 设置行；回滚仅按旧默认值补种且使用 `ON CONFLICT DO NOTHING`。Node / Go 共存期必须让时区 seed 与 Node `Intl` 实际部署时区一致；PostgreSQL 在线禁止通过 settings PATCH 修改统计时区。
 

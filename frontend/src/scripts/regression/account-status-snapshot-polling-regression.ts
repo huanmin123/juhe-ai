@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 
 import type { AccountStatusSnapshotResult, AccountSummary } from '../../types/domain/accounts.js'
-import { mergeAccountStatusSnapshot } from '../../views/accounts/accountListMutations.js'
+import { mergeAccountStatusSnapshot, replaceAccountListRow } from '../../views/accounts/accountListMutations.js'
 import { accountStatusSnapshotPollingDelayMs, createAccountStatusSnapshotPolling, isAccountStatusSnapshotCurrent } from '../../views/accounts/accountStatusSnapshotPolling.js'
 
 const usage = (requestCount: number) => ({
@@ -58,6 +58,20 @@ assert.equal(merged[0]?.notes, '不可被快照覆盖')
 assert.equal(merged[0]?.cooldownUntil, undefined, '快照缺失 optional 状态字段时应清除旧值')
 assert.notEqual(merged, originalAccounts)
 
+const rowUpdated = replaceAccountListRow(originalAccounts, {
+  ...account,
+  superPriorityEnabled: true,
+  currentConcurrency: 0,
+  currentConcurrencyAvailable: false,
+  lastUsedAt: undefined,
+  todayUsage: usage(0)
+} as AccountSummary)
+assert.equal(rowUpdated[0]?.superPriorityEnabled, true)
+assert.equal(rowUpdated[0]?.currentConcurrency, 1, '行级操作回写不应清掉已有并发快照')
+assert.equal(rowUpdated[0]?.todayUsage.requestCount, 1, '行级操作回写不应清掉已有日用量快照')
+assert.equal(rowUpdated[0]?.lastUsedAt, '2026-07-16T00:00:00.000Z', '行级操作回写不应清掉最近使用时间')
+assert.equal(replaceAccountListRow(originalAccounts, { ...account, id: 'missing' }), originalAccounts)
+
 const acceptedIdentity = { sequence: 3, revision: 7, idSignature: 'a\u0000b', scopeSignature: 'self:' }
 assert.equal(isAccountStatusSnapshotCurrent(acceptedIdentity, acceptedIdentity), true)
 for (const changed of [
@@ -68,8 +82,8 @@ for (const changed of [
 ]) {
   assert.equal(isAccountStatusSnapshotCurrent(acceptedIdentity, changed), false, '任一列表身份变化都必须拒绝迟到快照')
 }
-assert.equal(accountStatusSnapshotPollingDelayMs(() => 0), 9_000)
-assert.equal(accountStatusSnapshotPollingDelayMs(() => 1), 11_000)
+assert.equal(accountStatusSnapshotPollingDelayMs(() => 0), 29_000)
+assert.equal(accountStatusSnapshotPollingDelayMs(() => 1), 31_000)
 
 let visible = true
 let pending: (() => void) | undefined
@@ -118,7 +132,7 @@ pending?.()
 await Promise.resolve()
 await Promise.resolve()
 assert.equal(maxConcurrent, 1)
-assert.equal(delays[0], 10_000)
+assert.equal(delays[0], 30_000)
 polling.stop()
 
 console.log('账户状态快照前端回归通过：局部合并、100 ID、递归周期、hidden 与非重叠约束生效')

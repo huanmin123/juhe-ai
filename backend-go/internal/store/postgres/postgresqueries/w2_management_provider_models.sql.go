@@ -755,72 +755,140 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 
 const updateManagementBuiltInProviderModelPrices = `-- name: UpdateManagementBuiltInProviderModelPrices :one
 UPDATE juhe_business.provider_model_catalog
-SET input_usd_per_1m = CASE WHEN $1::boolean THEN $2::double precision ELSE input_usd_per_1m END,
-    output_usd_per_1m = CASE WHEN $3::boolean THEN $4::double precision ELSE output_usd_per_1m END,
-    cached_input_usd_per_1m = CASE WHEN $5::boolean THEN $6::double precision ELSE cached_input_usd_per_1m END,
-    cache_write_usd_per_1m = CASE WHEN $7::boolean THEN $8::double precision ELSE cache_write_usd_per_1m END,
-    cache_write_1h_usd_per_1m = CASE WHEN $9::boolean THEN $10::double precision ELSE cache_write_1h_usd_per_1m END,
-    service_tier_prices_json = CASE WHEN $11::boolean THEN $12::text ELSE service_tier_prices_json END,
-    image_input_usd_per_1m = CASE WHEN $13::boolean THEN $14::double precision ELSE image_input_usd_per_1m END,
-    image_output_usd_per_1m = CASE WHEN $15::boolean THEN $16::double precision ELSE image_output_usd_per_1m END,
-    audio_input_usd_per_1m = CASE WHEN $17::boolean THEN $18::double precision ELSE audio_input_usd_per_1m END,
-    audio_output_usd_per_1m = CASE WHEN $19::boolean THEN $20::double precision ELSE audio_output_usd_per_1m END,
-    output_usd_per_image = CASE WHEN $21::boolean THEN $22::double precision ELSE output_usd_per_image END,
+SET status = CASE WHEN $1::boolean THEN $2::text ELSE status END,
+    mode = CASE WHEN $3::boolean THEN NULLIF($4::text, '') ELSE mode END,
+    supported_api_protocols_json = CASE WHEN $5::boolean THEN $6::text ELSE supported_api_protocols_json END,
+    supported_service_tiers_json = CASE WHEN $7::boolean THEN $8::text ELSE supported_service_tiers_json END,
+    supported_reasoning_efforts_json = CASE WHEN $9::boolean THEN $10::text ELSE supported_reasoning_efforts_json END,
+    default_reasoning_effort = CASE WHEN $11::boolean THEN NULLIF($12::text, '') ELSE default_reasoning_effort END,
+    release_date = CASE WHEN $13::boolean THEN NULLIF($14::text, '') ELSE release_date END,
+    shutdown_date = CASE WHEN $15::boolean THEN NULLIF($16::text, '') ELSE shutdown_date END,
+    context_window_tokens = CASE WHEN $17::boolean THEN $18::integer ELSE context_window_tokens END,
+    max_input_tokens = CASE WHEN $19::boolean THEN $20::integer ELSE max_input_tokens END,
+    max_output_tokens = CASE WHEN $21::boolean THEN $22::integer ELSE max_output_tokens END,
+    input_usd_per_1m = CASE WHEN $23::boolean THEN $24::double precision ELSE input_usd_per_1m END,
+    output_usd_per_1m = CASE WHEN $25::boolean THEN $26::double precision ELSE output_usd_per_1m END,
+    cached_input_usd_per_1m = CASE WHEN $27::boolean THEN $28::double precision ELSE cached_input_usd_per_1m END,
+    cache_write_usd_per_1m = CASE WHEN $29::boolean THEN $30::double precision ELSE cache_write_usd_per_1m END,
+    cache_write_1h_usd_per_1m = CASE WHEN $31::boolean THEN $32::double precision ELSE cache_write_1h_usd_per_1m END,
+    service_tier_prices_json = CASE WHEN $33::boolean THEN $34::text ELSE service_tier_prices_json END,
+    image_input_usd_per_1m = CASE WHEN $35::boolean THEN $36::double precision ELSE image_input_usd_per_1m END,
+    image_output_usd_per_1m = CASE WHEN $37::boolean THEN $38::double precision ELSE image_output_usd_per_1m END,
+    audio_input_usd_per_1m = CASE WHEN $39::boolean THEN $40::double precision ELSE audio_input_usd_per_1m END,
+    audio_output_usd_per_1m = CASE WHEN $41::boolean THEN $42::double precision ELSE audio_output_usd_per_1m END,
+    output_usd_per_image = CASE WHEN $43::boolean THEN $44::double precision ELSE output_usd_per_image END,
     updated_at = now()
-WHERE id = $23
-  AND provider_code = $24
-RETURNING id, provider_code, input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
+WHERE id = $45
+  AND provider_code = $46
+RETURNING id, provider_code, status, mode, supported_api_protocols_json, supported_service_tiers_json,
+  supported_reasoning_efforts_json, default_reasoning_effort, release_date, shutdown_date,
+  context_window_tokens, max_input_tokens, max_output_tokens, input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
   cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
   image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m,
   audio_output_usd_per_1m, output_usd_per_image, updated_at
 `
 
 type UpdateManagementBuiltInProviderModelPricesParams struct {
-	InputUsdPer1mPresent        bool
-	InputUsdPer1m               pgtype.Float8
-	OutputUsdPer1mPresent       bool
-	OutputUsdPer1m              pgtype.Float8
-	CachedInputUsdPer1mPresent  bool
-	CachedInputUsdPer1m         pgtype.Float8
-	CacheWriteUsdPer1mPresent   bool
-	CacheWriteUsdPer1m          pgtype.Float8
-	CacheWrite1hUsdPer1mPresent bool
-	CacheWrite1hUsdPer1m        pgtype.Float8
-	ServiceTierPricesPresent    bool
-	ServiceTierPricesJson       string
-	ImageInputUsdPer1mPresent   bool
-	ImageInputUsdPer1m          pgtype.Float8
-	ImageOutputUsdPer1mPresent  bool
-	ImageOutputUsdPer1m         pgtype.Float8
-	AudioInputUsdPer1mPresent   bool
-	AudioInputUsdPer1m          pgtype.Float8
-	AudioOutputUsdPer1mPresent  bool
-	AudioOutputUsdPer1m         pgtype.Float8
-	OutputUsdPerImagePresent    bool
-	OutputUsdPerImage           pgtype.Float8
-	ID                          string
-	ProviderCode                string
+	StatusPresent                    bool
+	Status                           string
+	ModePresent                      bool
+	Mode                             string
+	SupportedApiProtocolsPresent     bool
+	SupportedApiProtocolsJson        string
+	SupportedServiceTiersPresent     bool
+	SupportedServiceTiersJson        string
+	SupportedReasoningEffortsPresent bool
+	SupportedReasoningEffortsJson    string
+	DefaultReasoningEffortPresent    bool
+	DefaultReasoningEffort           string
+	ReleaseDatePresent               bool
+	ReleaseDate                      string
+	ShutdownDatePresent              bool
+	ShutdownDate                     string
+	ContextWindowTokensPresent       bool
+	ContextWindowTokens              pgtype.Int4
+	MaxInputTokensPresent            bool
+	MaxInputTokens                   pgtype.Int4
+	MaxOutputTokensPresent           bool
+	MaxOutputTokens                  pgtype.Int4
+	InputUsdPer1mPresent             bool
+	InputUsdPer1m                    pgtype.Float8
+	OutputUsdPer1mPresent            bool
+	OutputUsdPer1m                   pgtype.Float8
+	CachedInputUsdPer1mPresent       bool
+	CachedInputUsdPer1m              pgtype.Float8
+	CacheWriteUsdPer1mPresent        bool
+	CacheWriteUsdPer1m               pgtype.Float8
+	CacheWrite1hUsdPer1mPresent      bool
+	CacheWrite1hUsdPer1m             pgtype.Float8
+	ServiceTierPricesPresent         bool
+	ServiceTierPricesJson            string
+	ImageInputUsdPer1mPresent        bool
+	ImageInputUsdPer1m               pgtype.Float8
+	ImageOutputUsdPer1mPresent       bool
+	ImageOutputUsdPer1m              pgtype.Float8
+	AudioInputUsdPer1mPresent        bool
+	AudioInputUsdPer1m               pgtype.Float8
+	AudioOutputUsdPer1mPresent       bool
+	AudioOutputUsdPer1m              pgtype.Float8
+	OutputUsdPerImagePresent         bool
+	OutputUsdPerImage                pgtype.Float8
+	ID                               string
+	ProviderCode                     string
 }
 
 type UpdateManagementBuiltInProviderModelPricesRow struct {
-	ID                    string
-	ProviderCode          string
-	InputUsdPer1m         pgtype.Float8
-	OutputUsdPer1m        pgtype.Float8
-	CachedInputUsdPer1m   pgtype.Float8
-	CacheWriteUsdPer1m    pgtype.Float8
-	CacheWrite1hUsdPer1m  pgtype.Float8
-	ServiceTierPricesJson string
-	ImageInputUsdPer1m    pgtype.Float8
-	ImageOutputUsdPer1m   pgtype.Float8
-	AudioInputUsdPer1m    pgtype.Float8
-	AudioOutputUsdPer1m   pgtype.Float8
-	OutputUsdPerImage     pgtype.Float8
-	UpdatedAt             pgtype.Timestamptz
+	ID                            string
+	ProviderCode                  string
+	Status                        string
+	Mode                          pgtype.Text
+	SupportedApiProtocolsJson     string
+	SupportedServiceTiersJson     string
+	SupportedReasoningEffortsJson string
+	DefaultReasoningEffort        pgtype.Text
+	ReleaseDate                   pgtype.Text
+	ShutdownDate                  pgtype.Text
+	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
+	MaxOutputTokens               pgtype.Int4
+	InputUsdPer1m                 pgtype.Float8
+	OutputUsdPer1m                pgtype.Float8
+	CachedInputUsdPer1m           pgtype.Float8
+	CacheWriteUsdPer1m            pgtype.Float8
+	CacheWrite1hUsdPer1m          pgtype.Float8
+	ServiceTierPricesJson         string
+	ImageInputUsdPer1m            pgtype.Float8
+	ImageOutputUsdPer1m           pgtype.Float8
+	AudioInputUsdPer1m            pgtype.Float8
+	AudioOutputUsdPer1m           pgtype.Float8
+	OutputUsdPerImage             pgtype.Float8
+	UpdatedAt                     pgtype.Timestamptz
 }
 
 func (q *Queries) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, arg UpdateManagementBuiltInProviderModelPricesParams) (UpdateManagementBuiltInProviderModelPricesRow, error) {
 	row := q.db.QueryRow(ctx, updateManagementBuiltInProviderModelPrices,
+		arg.StatusPresent,
+		arg.Status,
+		arg.ModePresent,
+		arg.Mode,
+		arg.SupportedApiProtocolsPresent,
+		arg.SupportedApiProtocolsJson,
+		arg.SupportedServiceTiersPresent,
+		arg.SupportedServiceTiersJson,
+		arg.SupportedReasoningEffortsPresent,
+		arg.SupportedReasoningEffortsJson,
+		arg.DefaultReasoningEffortPresent,
+		arg.DefaultReasoningEffort,
+		arg.ReleaseDatePresent,
+		arg.ReleaseDate,
+		arg.ShutdownDatePresent,
+		arg.ShutdownDate,
+		arg.ContextWindowTokensPresent,
+		arg.ContextWindowTokens,
+		arg.MaxInputTokensPresent,
+		arg.MaxInputTokens,
+		arg.MaxOutputTokensPresent,
+		arg.MaxOutputTokens,
 		arg.InputUsdPer1mPresent,
 		arg.InputUsdPer1m,
 		arg.OutputUsdPer1mPresent,
@@ -850,6 +918,17 @@ func (q *Queries) UpdateManagementBuiltInProviderModelPrices(ctx context.Context
 	err := row.Scan(
 		&i.ID,
 		&i.ProviderCode,
+		&i.Status,
+		&i.Mode,
+		&i.SupportedApiProtocolsJson,
+		&i.SupportedServiceTiersJson,
+		&i.SupportedReasoningEffortsJson,
+		&i.DefaultReasoningEffort,
+		&i.ReleaseDate,
+		&i.ShutdownDate,
+		&i.ContextWindowTokens,
+		&i.MaxInputTokens,
+		&i.MaxOutputTokens,
 		&i.InputUsdPer1m,
 		&i.OutputUsdPer1m,
 		&i.CachedInputUsdPer1m,

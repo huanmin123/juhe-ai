@@ -9,9 +9,10 @@ export interface CurrentUserSummary {
 }
 
 export interface CaptchaChallengeSummary {
-  captchaId: string
-  image: string
-  expiresAt: string
+  required: boolean
+  captchaId?: string
+  image?: string
+  expiresAt?: string
 }
 
 export interface AuthSessionSummary {

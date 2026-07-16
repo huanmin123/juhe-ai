@@ -24,6 +24,7 @@ interface UseAccountMenuActionsOptions {
   openReauthorizeModal: (account: AccountSummary) => void
   openTestModal: (account: AccountSummary) => Promise<void>
   openTrafficMigration: (account: AccountSummary) => void
+  updateLoadedAccount: (account: AccountSummary) => boolean
 }
 
 export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
@@ -59,14 +60,12 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     if (isAuthorizedAccount(account)) {
       try {
-        if (options.isManagementView.value) {
-          await api.accounts.updateAuthorizedDispatch(account.id, payload, scopeParams)
-        } else {
-          await api.myAccounts.updateAuthorizedDispatch(account.id, payload)
-        }
+        const updated = options.isManagementView.value
+          ? await api.accounts.updateAuthorizedDispatch(account.id, payload, scopeParams)
+          : await api.myAccounts.updateAuthorizedDispatch(account.id, payload)
         invalidateAccountDetail(account, scopeParams)
+        options.updateLoadedAccount(updated)
         message.success(successText)
-        await options.loadData()
       } catch (error) {
         console.error(error)
         message.error(options.extractApiErrorMessage(error, '授权账户调度设置更新失败'))
@@ -78,14 +77,12 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       return
     }
     try {
-      if (options.isManagementView.value) {
-        await api.accounts.update(account.id, payload, scopeParams)
-      } else {
-        await api.myAccounts.update(account.id, payload)
-      }
+      const updated = options.isManagementView.value
+        ? await api.accounts.update(account.id, payload, scopeParams)
+        : await api.myAccounts.update(account.id, payload)
       invalidateAccountDetail(account, scopeParams)
+      options.updateLoadedAccount(updated)
       message.success(successText)
-      await options.loadData()
     } catch (error) {
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '账户状态更新失败'))
@@ -109,10 +106,10 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
             ? await api.accounts.forceActivate(account.id, scopeParams)
             : await api.myAccounts.forceActivate(account.id)
           invalidateAccountDetail(account, scopeParams)
+          options.updateLoadedAccount(updated)
           message.success(updated.status === 'active'
             ? '账户已恢复正常并参与调度'
             : '账户已恢复，当前按时间计划保持停用')
-          await options.loadData()
         } catch (error) {
           console.error(error)
           message.error(options.extractApiErrorMessage(error, '恢复账户失败'))
