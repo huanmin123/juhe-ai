@@ -70,6 +70,10 @@ func (s *Store) SaveManagementCustomProviderModel(ctx context.Context, input por
 	return saveManagementCustomProviderModel(ctx, s.queries(), input)
 }
 
+func (s *Store) UpdateManagementCustomProviderModel(ctx context.Context, input port.ManagementCustomProviderModelUpdateInput, validate port.ManagementCustomProviderModelUpdateValidate) (port.ManagementCustomProviderModelUpdateResult, bool, error) {
+	return updateManagementCustomProviderModelInTx(ctx, s.pool.BeginTx, input, validate)
+}
+
 func (s *Store) DeleteManagementCustomProviderModel(ctx context.Context, id string) (bool, error) {
 	return deleteManagementCustomProviderModel(ctx, s.queries(), id)
 }
@@ -105,6 +109,217 @@ func updateManagementBuiltInProviderModelPricesInTx(ctx context.Context, beginTx
 	}
 	committed = true
 	return result, true, nil
+}
+
+type managementCustomProviderModelUpdateQueries interface {
+	LockManagementCustomProviderModel(context.Context, postgresqueries.LockManagementCustomProviderModelParams) (postgresqueries.LockManagementCustomProviderModelRow, error)
+	UpdateManagementCustomProviderModel(context.Context, postgresqueries.UpdateManagementCustomProviderModelParams) (postgresqueries.UpdateManagementCustomProviderModelRow, error)
+}
+
+func updateManagementCustomProviderModelInTx(ctx context.Context, beginTx func(context.Context, pgx.TxOptions) (pgx.Tx, error), input port.ManagementCustomProviderModelUpdateInput, validate port.ManagementCustomProviderModelUpdateValidate) (port.ManagementCustomProviderModelUpdateResult, bool, error) {
+	tx, err := beginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, fmt.Errorf("begin custom provider model update: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
+	}()
+	result, found, err := updateManagementCustomProviderModelTx(ctx, postgresqueries.New(tx), input, validate)
+	if err != nil || !found {
+		return result, found, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, fmt.Errorf("commit custom provider model update: %w", err)
+	}
+	committed = true
+	return result, true, nil
+}
+
+func updateManagementCustomProviderModelTx(ctx context.Context, q managementCustomProviderModelUpdateQueries, input port.ManagementCustomProviderModelUpdateInput, validate port.ManagementCustomProviderModelUpdateValidate) (port.ManagementCustomProviderModelUpdateResult, bool, error) {
+	locked, err := q.LockManagementCustomProviderModel(ctx, postgresqueries.LockManagementCustomProviderModelParams{ID: input.ID, ProviderCode: input.ProviderCode})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, fmt.Errorf("lock custom provider model: %w", err)
+	}
+	before, err := managementCustomProviderModelFromData(customProviderModelDataFromLockRow(locked))
+	if err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, fmt.Errorf("decode locked custom provider model: %w", err)
+	}
+	candidateInput := customModelSaveInputFromCatalogItem(before, input.ActorSystemAccountID)
+	mergeCustomProviderModelUpdate(&candidateInput, input)
+	candidate := customProviderModelCatalogItemFromSaveInput(candidateInput, before)
+	if validate == nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, errors.New("validate custom provider model update is required")
+	}
+	if err := validate(port.ManagementCustomProviderModelUpdateResult{Before: before, After: candidate}); err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, err
+	}
+	params, err := customProviderModelUpdateParams(candidate, input.ActorSystemAccountID)
+	if err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, err
+	}
+	updated, err := q.UpdateManagementCustomProviderModel(ctx, params)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, fmt.Errorf("update custom provider model: %w", err)
+	}
+	after, err := managementCustomProviderModelFromData(customProviderModelDataFromUpdateRow(updated))
+	if err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, fmt.Errorf("decode updated custom provider model: %w", err)
+	}
+	if before.ID != input.ID || before.ProviderCode != input.ProviderCode || after.ID != before.ID || after.ProviderCode != before.ProviderCode {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, errors.New("custom provider model update identity mismatch")
+	}
+	return port.ManagementCustomProviderModelUpdateResult{Before: before, After: after}, true, nil
+}
+
+func customModelSaveInputFromCatalogItem(item port.ManagementProviderModelCatalogItem, actor string) port.ManagementCustomProviderModelSaveInput {
+	return port.ManagementCustomProviderModelSaveInput{
+		ID: item.ID, ProviderCode: item.ProviderCode, Model: item.Model, Scope: item.Scope, SystemAccountID: item.SystemAccountID,
+		Status: item.Status, Mode: item.Mode, SupportedAPIProtocols: append([]string{}, item.SupportedAPIProtocols...), SupportedServiceTiers: append([]string{}, item.SupportedServiceTiers...), SupportedReasoningEfforts: append([]string{}, item.SupportedReasoningEfforts...), DefaultReasoningEffort: item.DefaultReasoningEffort, ReleaseDate: item.ReleaseDate, ShutdownDate: item.ShutdownDate,
+		ContextWindowTokens: cloneManagementProviderModelInt(item.ContextWindowTokens), MaxInputTokens: cloneManagementProviderModelInt(item.MaxInputTokens), MaxOutputTokens: cloneManagementProviderModelInt(item.MaxOutputTokens), InputUSDPer1M: cloneManagementProviderModelFloat(item.InputUSDPer1M), OutputUSDPer1M: cloneManagementProviderModelFloat(item.OutputUSDPer1M), CachedInputUSDPer1M: cloneManagementProviderModelFloat(item.CachedInputUSDPer1M), CacheWriteUSDPer1M: cloneManagementProviderModelFloat(item.CacheWriteUSDPer1M), CacheWrite1hUSDPer1M: cloneManagementProviderModelFloat(item.CacheWrite1hUSDPer1M), ServiceTierPrices: cloneManagementProviderModelPriceMap(item.ServiceTierPrices), ImageInputUSDPer1M: cloneManagementProviderModelFloat(item.ImageInputUSDPer1M), ImageOutputUSDPer1M: cloneManagementProviderModelFloat(item.ImageOutputUSDPer1M), AudioInputUSDPer1M: cloneManagementProviderModelFloat(item.AudioInputUSDPer1M), AudioOutputUSDPer1M: cloneManagementProviderModelFloat(item.AudioOutputUSDPer1M), OutputUSDPerImage: cloneManagementProviderModelFloat(item.OutputUSDPerImage), PricingNotes: item.PricingNotes, CapabilityNotes: item.CapabilityNotes, Notes: item.Notes, ActorSystemAccountID: strings.TrimSpace(actor),
+	}
+}
+
+func customProviderModelCatalogItemFromSaveInput(input port.ManagementCustomProviderModelSaveInput, metadata port.ManagementProviderModelCatalogItem) port.ManagementProviderModelCatalogItem {
+	result := metadata
+	result.Status = input.Status
+	result.Mode = input.Mode
+	result.SupportedAPIProtocols = append([]string{}, input.SupportedAPIProtocols...)
+	result.SupportedServiceTiers = append([]string{}, input.SupportedServiceTiers...)
+	result.SupportedReasoningEfforts = append([]string{}, input.SupportedReasoningEfforts...)
+	result.DefaultReasoningEffort = input.DefaultReasoningEffort
+	result.ReleaseDate = input.ReleaseDate
+	result.ShutdownDate = input.ShutdownDate
+	result.ContextWindowTokens = cloneManagementProviderModelInt(input.ContextWindowTokens)
+	result.MaxInputTokens = cloneManagementProviderModelInt(input.MaxInputTokens)
+	result.MaxOutputTokens = cloneManagementProviderModelInt(input.MaxOutputTokens)
+	result.InputUSDPer1M = cloneManagementProviderModelFloat(input.InputUSDPer1M)
+	result.OutputUSDPer1M = cloneManagementProviderModelFloat(input.OutputUSDPer1M)
+	result.CachedInputUSDPer1M = cloneManagementProviderModelFloat(input.CachedInputUSDPer1M)
+	result.CacheWriteUSDPer1M = cloneManagementProviderModelFloat(input.CacheWriteUSDPer1M)
+	result.CacheWrite1hUSDPer1M = cloneManagementProviderModelFloat(input.CacheWrite1hUSDPer1M)
+	result.ServiceTierPrices = cloneManagementProviderModelPriceMap(input.ServiceTierPrices)
+	result.ImageInputUSDPer1M = cloneManagementProviderModelFloat(input.ImageInputUSDPer1M)
+	result.ImageOutputUSDPer1M = cloneManagementProviderModelFloat(input.ImageOutputUSDPer1M)
+	result.AudioInputUSDPer1M = cloneManagementProviderModelFloat(input.AudioInputUSDPer1M)
+	result.AudioOutputUSDPer1M = cloneManagementProviderModelFloat(input.AudioOutputUSDPer1M)
+	result.OutputUSDPerImage = cloneManagementProviderModelFloat(input.OutputUSDPerImage)
+	result.PricingNotes = input.PricingNotes
+	result.CapabilityNotes = input.CapabilityNotes
+	result.Notes = input.Notes
+	result.UpdatedBy = input.ActorSystemAccountID
+	result.SupportsPromptCaching = result.CachedInputUSDPer1M != nil
+	result.SupportsServiceTier = len(result.SupportedServiceTiers) > 0
+	return result
+}
+
+func mergeCustomProviderModelUpdate(candidate *port.ManagementCustomProviderModelSaveInput, input port.ManagementCustomProviderModelUpdateInput) {
+	if input.Status.Present {
+		candidate.Status = input.Status.Value
+	}
+	if input.Mode.Present {
+		candidate.Mode = input.Mode.Value
+	}
+	if input.SupportedAPIProtocols.Present {
+		candidate.SupportedAPIProtocols = append([]string{}, input.SupportedAPIProtocols.Value...)
+	}
+	if input.SupportedServiceTiers.Present {
+		candidate.SupportedServiceTiers = append([]string{}, input.SupportedServiceTiers.Value...)
+	}
+	if input.SupportedReasoningEfforts.Present {
+		candidate.SupportedReasoningEfforts = append([]string{}, input.SupportedReasoningEfforts.Value...)
+	}
+	if input.DefaultReasoningEffort.Present {
+		candidate.DefaultReasoningEffort = input.DefaultReasoningEffort.Value
+	}
+	if input.ReleaseDate.Present {
+		candidate.ReleaseDate = input.ReleaseDate.Value
+	}
+	if input.ShutdownDate.Present {
+		candidate.ShutdownDate = input.ShutdownDate.Value
+	}
+	if input.ContextWindowTokens.Present {
+		candidate.ContextWindowTokens = cloneManagementProviderModelInt(input.ContextWindowTokens.Value)
+	}
+	if input.MaxInputTokens.Present {
+		candidate.MaxInputTokens = cloneManagementProviderModelInt(input.MaxInputTokens.Value)
+	}
+	if input.MaxOutputTokens.Present {
+		candidate.MaxOutputTokens = cloneManagementProviderModelInt(input.MaxOutputTokens.Value)
+	}
+	if input.InputUSDPer1M.Present {
+		candidate.InputUSDPer1M = cloneManagementProviderModelFloat(input.InputUSDPer1M.Value)
+	}
+	if input.OutputUSDPer1M.Present {
+		candidate.OutputUSDPer1M = cloneManagementProviderModelFloat(input.OutputUSDPer1M.Value)
+	}
+	if input.CachedInputUSDPer1M.Present {
+		candidate.CachedInputUSDPer1M = cloneManagementProviderModelFloat(input.CachedInputUSDPer1M.Value)
+	}
+	if input.CacheWriteUSDPer1M.Present {
+		candidate.CacheWriteUSDPer1M = cloneManagementProviderModelFloat(input.CacheWriteUSDPer1M.Value)
+	}
+	if input.CacheWrite1hUSDPer1M.Present {
+		candidate.CacheWrite1hUSDPer1M = cloneManagementProviderModelFloat(input.CacheWrite1hUSDPer1M.Value)
+	}
+	if input.ServiceTierPrices.Present {
+		candidate.ServiceTierPrices = cloneManagementProviderModelPriceMap(input.ServiceTierPrices.Value)
+	}
+	if input.ImageInputUSDPer1M.Present {
+		candidate.ImageInputUSDPer1M = cloneManagementProviderModelFloat(input.ImageInputUSDPer1M.Value)
+	}
+	if input.ImageOutputUSDPer1M.Present {
+		candidate.ImageOutputUSDPer1M = cloneManagementProviderModelFloat(input.ImageOutputUSDPer1M.Value)
+	}
+	if input.AudioInputUSDPer1M.Present {
+		candidate.AudioInputUSDPer1M = cloneManagementProviderModelFloat(input.AudioInputUSDPer1M.Value)
+	}
+	if input.AudioOutputUSDPer1M.Present {
+		candidate.AudioOutputUSDPer1M = cloneManagementProviderModelFloat(input.AudioOutputUSDPer1M.Value)
+	}
+	if input.OutputUSDPerImage.Present {
+		candidate.OutputUSDPerImage = cloneManagementProviderModelFloat(input.OutputUSDPerImage.Value)
+	}
+	if input.PricingNotes.Present {
+		candidate.PricingNotes = input.PricingNotes.Value
+	}
+	if input.CapabilityNotes.Present {
+		candidate.CapabilityNotes = input.CapabilityNotes.Value
+	}
+	if input.Notes.Present {
+		candidate.Notes = input.Notes.Value
+	}
+}
+
+func customProviderModelUpdateParams(input port.ManagementProviderModelCatalogItem, actor string) (postgresqueries.UpdateManagementCustomProviderModelParams, error) {
+	protocols, err := json.Marshal(input.SupportedAPIProtocols)
+	if err != nil {
+		return postgresqueries.UpdateManagementCustomProviderModelParams{}, fmt.Errorf("marshal custom provider model protocols: %w", err)
+	}
+	tiers, err := json.Marshal(input.SupportedServiceTiers)
+	if err != nil {
+		return postgresqueries.UpdateManagementCustomProviderModelParams{}, fmt.Errorf("marshal custom provider model service tiers: %w", err)
+	}
+	reasoning, err := json.Marshal(input.SupportedReasoningEfforts)
+	if err != nil {
+		return postgresqueries.UpdateManagementCustomProviderModelParams{}, fmt.Errorf("marshal custom provider model reasoning efforts: %w", err)
+	}
+	prices, err := marshalManagementProviderModelPriceMap(input.ServiceTierPrices)
+	if err != nil {
+		return postgresqueries.UpdateManagementCustomProviderModelParams{}, fmt.Errorf("marshal custom provider model prices: %w", err)
+	}
+	return postgresqueries.UpdateManagementCustomProviderModelParams{Status: input.Status, Mode: pgTextFromString(input.Mode), SupportedApiProtocolsJson: string(protocols), SupportedServiceTiersJson: string(tiers), SupportedReasoningEffortsJson: string(reasoning), DefaultReasoningEffort: pgTextFromString(input.DefaultReasoningEffort), ReleaseDate: pgTextFromString(input.ReleaseDate), ShutdownDate: pgTextFromString(input.ShutdownDate), ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens), MaxInputTokens: pgInt4Ptr(input.MaxInputTokens), MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens), InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M), CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M), CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), ServiceTierPricesJson: string(prices), ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M), AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M), OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), PricingNotes: pgTextFromString(input.PricingNotes), CapabilityNotes: pgTextFromString(input.CapabilityNotes), Notes: pgTextFromString(input.Notes), ActorSystemAccountID: pgTextFromString(actor), UpdatedAt: pgTimestamptz(time.Now().UTC()), ID: input.ID, ProviderCode: input.ProviderCode}, nil
 }
 
 func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managementBuiltInProviderModelPriceUpdateQueries, input port.ManagementBuiltInProviderModelPriceUpdateInput, validate port.ManagementBuiltInProviderModelUpdateValidate) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
@@ -823,6 +1038,14 @@ func customProviderModelDataFromFindRow(row postgresqueries.FindManagementCustom
 		CreatedAt:                     row.CreatedAt,
 		UpdatedAt:                     row.UpdatedAt,
 	}
+}
+
+func customProviderModelDataFromLockRow(row postgresqueries.LockManagementCustomProviderModelRow) managementCustomProviderModelData {
+	return managementCustomProviderModelData{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+}
+
+func customProviderModelDataFromUpdateRow(row postgresqueries.UpdateManagementCustomProviderModelRow) managementCustomProviderModelData {
+	return managementCustomProviderModelData{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
 func customProviderModelDataFromScopeRow(row postgresqueries.FindManagementCustomProviderModelByScopeRow) managementCustomProviderModelData {

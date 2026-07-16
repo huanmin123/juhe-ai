@@ -1308,6 +1308,45 @@ type ManagementCustomProviderModelSaveInput struct {
 	ActorSystemAccountID      string
 }
 
+type ManagementCustomProviderModelUpdateInput struct {
+	ID                        string
+	ProviderCode              string
+	ActorSystemAccountID      string
+	ActorRole                 string
+	Status                    ManagementProviderModelOptionalString
+	Mode                      ManagementProviderModelOptionalString
+	SupportedAPIProtocols     ManagementProviderModelOptionalStringList
+	SupportedServiceTiers     ManagementProviderModelOptionalStringList
+	SupportedReasoningEfforts ManagementProviderModelOptionalStringList
+	DefaultReasoningEffort    ManagementProviderModelOptionalString
+	ReleaseDate               ManagementProviderModelOptionalString
+	ShutdownDate              ManagementProviderModelOptionalString
+	ContextWindowTokens       ManagementProviderModelOptionalInt
+	MaxInputTokens            ManagementProviderModelOptionalInt
+	MaxOutputTokens           ManagementProviderModelOptionalInt
+	InputUSDPer1M             ManagementProviderModelOptionalFloat
+	OutputUSDPer1M            ManagementProviderModelOptionalFloat
+	CachedInputUSDPer1M       ManagementProviderModelOptionalFloat
+	CacheWriteUSDPer1M        ManagementProviderModelOptionalFloat
+	CacheWrite1hUSDPer1M      ManagementProviderModelOptionalFloat
+	ServiceTierPrices         ManagementProviderModelOptionalPriceMap
+	ImageInputUSDPer1M        ManagementProviderModelOptionalFloat
+	ImageOutputUSDPer1M       ManagementProviderModelOptionalFloat
+	AudioInputUSDPer1M        ManagementProviderModelOptionalFloat
+	AudioOutputUSDPer1M       ManagementProviderModelOptionalFloat
+	OutputUSDPerImage         ManagementProviderModelOptionalFloat
+	PricingNotes              ManagementProviderModelOptionalString
+	CapabilityNotes           ManagementProviderModelOptionalString
+	Notes                     ManagementProviderModelOptionalString
+}
+
+type ManagementCustomProviderModelUpdateResult struct {
+	Before ManagementProviderModelCatalogItem
+	After  ManagementProviderModelCatalogItem
+}
+
+type ManagementCustomProviderModelUpdateValidate func(ManagementCustomProviderModelUpdateResult) error
+
 type ManagementCustomProviderModelScopeInput struct {
 	ProviderCode    string
 	Scope           string
@@ -1434,6 +1473,7 @@ type ManagementCustomProviderModelWriter interface {
 	FindManagementCustomProviderModel(ctx context.Context, id string) (ManagementProviderModelCatalogItem, bool, error)
 	FindManagementCustomProviderModelByScope(ctx context.Context, input ManagementCustomProviderModelScopeInput) (ManagementProviderModelCatalogItem, bool, error)
 	SaveManagementCustomProviderModel(ctx context.Context, input ManagementCustomProviderModelSaveInput) (ManagementProviderModelCatalogItem, error)
+	UpdateManagementCustomProviderModel(ctx context.Context, input ManagementCustomProviderModelUpdateInput, validate ManagementCustomProviderModelUpdateValidate) (ManagementCustomProviderModelUpdateResult, bool, error)
 	DeleteManagementCustomProviderModel(ctx context.Context, id string) (bool, error)
 	GetManagementCustomProviderModelBindingSummary(ctx context.Context, input ManagementCustomProviderModelBindingInput) (ManagementCustomProviderModelBindingSummary, error)
 	UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input ManagementBuiltInProviderModelPriceUpdateInput, validate ManagementBuiltInProviderModelUpdateValidate) (ManagementBuiltInProviderModelPriceUpdateResult, bool, error)

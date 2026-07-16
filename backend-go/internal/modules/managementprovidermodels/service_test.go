@@ -1004,10 +1004,9 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 	if err != nil {
 		t.Fatalf("UpdateCustomModel() clone error = %v", err)
 	}
-	if !slices.Equal(store.saveInput.SupportedServiceTiers, []string{"priority"}) ||
-		!slices.Equal(store.saveInput.SupportedReasoningEfforts, []string{"low", "high"}) ||
-		store.saveInput.DefaultReasoningEffort != "high" {
-		t.Fatalf("cloned save input = %+v", store.saveInput)
+	if store.customUpdateCalls != 1 || store.saveCalls != 0 || store.customUpdateInput.Notes.Value != "updated" ||
+		store.customUpdateInput.SupportedServiceTiers.Present || store.customUpdateInput.SupportedReasoningEfforts.Present {
+		t.Fatalf("atomic update input = %+v", store.customUpdateInput)
 	}
 
 	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
@@ -1032,8 +1031,8 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 			DefaultReasoningEffort: OptionalString{Set: true, Value: ""},
 		},
 	})
-	if err != nil || store.saveInput.DefaultReasoningEffort != "" {
-		t.Fatalf("explicit default reasoning clear err = %v, save = %+v", err, store.saveInput)
+	if err != nil || !store.customUpdateInput.DefaultReasoningEffort.Present || store.customUpdateInput.DefaultReasoningEffort.Value != "" {
+		t.Fatalf("explicit default reasoning clear err = %v, update = %+v", err, store.customUpdateInput)
 	}
 
 	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
@@ -1052,11 +1051,51 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 	if err != nil {
 		t.Fatalf("UpdateCustomModel() clear error = %v", err)
 	}
-	if store.saveInput.Mode != "image" ||
-		len(store.saveInput.SupportedServiceTiers) != 0 ||
-		len(store.saveInput.SupportedReasoningEfforts) != 0 ||
-		store.saveInput.DefaultReasoningEffort != "" {
-		t.Fatalf("cleared save input = %+v", store.saveInput)
+	if store.customUpdateInput.Mode.Value != "image" ||
+		len(store.customUpdateInput.SupportedServiceTiers.Value) != 0 ||
+		len(store.customUpdateInput.SupportedReasoningEfforts.Value) != 0 ||
+		store.customUpdateInput.DefaultReasoningEffort.Value != "" {
+		t.Fatalf("cleared update input = %+v", store.customUpdateInput)
+	}
+}
+
+func TestServiceUpdateCustomModelPassesSparsePresenceToAtomicStoreWithoutFindOrSave(t *testing.T) {
+	price := 1.25
+	updatedPrice := 2.5
+	existing := port.ManagementProviderModelCatalogItem{
+		ID: "custom_model_1", ProviderCode: "gpt", Model: "custom-chat", Scope: "personal",
+		SystemAccountID: "sys_user", Status: "active", SupportedAPIProtocols: []string{"responses"}, InputUSDPer1M: &price,
+	}
+	after := existing
+	after.SupportedAPIProtocols = []string{}
+	after.InputUSDPer1M = &updatedPrice
+	store := &providerModelStoreStub{
+		customByID:         map[string]port.ManagementProviderModelCatalogItem{"custom_model_1": existing},
+		customUpdateResult: port.ManagementCustomProviderModelUpdateResult{Before: existing, After: after},
+	}
+
+	result, err := NewService(store).UpdateCustomModelWithSnapshots(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "custom_model_1", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{
+			SupportedAPIProtocols: OptionalStringList{Set: true, Value: []string{}},
+			InputUSDPer1M:         OptionalFloat{Set: true, Value: &updatedPrice},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModelWithSnapshots() error = %v", err)
+	}
+	if store.customFindCalls != 0 || store.saveCalls != 0 || store.customUpdateCalls != 1 {
+		t.Fatalf("find/save/update calls = %d/%d/%d, want 0/0/1", store.customFindCalls, store.saveCalls, store.customUpdateCalls)
+	}
+	input := store.customUpdateInput
+	if input.ID != "custom_model_1" || input.ProviderCode != "gpt" || input.ActorSystemAccountID != "sys_user" || input.ActorRole != "user" ||
+		!input.SupportedAPIProtocols.Present || input.SupportedAPIProtocols.Value == nil || len(input.SupportedAPIProtocols.Value) != 0 ||
+		!input.InputUSDPer1M.Present || input.InputUSDPer1M.Value == nil || *input.InputUSDPer1M.Value != updatedPrice || input.Status.Present {
+		t.Fatalf("atomic update input = %+v", input)
+	}
+	if result.Before.InputUSDPer1M == nil || *result.Before.InputUSDPer1M != price ||
+		result.After.InputUSDPer1M == nil || *result.After.InputUSDPer1M != updatedPrice {
+		t.Fatalf("snapshots = %+v", result)
 	}
 }
 
@@ -1079,8 +1118,8 @@ func TestServiceCreateCustomModelRejectsGlobalForOrdinaryUser(t *testing.T) {
 	if !ok || message != "只有管理员可以创建全局模型" {
 		t.Fatalf("forbidden message = %q, %v; err = %v", message, ok, err)
 	}
-	if store.saveInput.Model != "" {
-		t.Fatalf("save should not be called, got %+v", store.saveInput)
+	if store.saveCalls != 0 {
+		t.Fatalf("save should not be called, calls=%d", store.saveCalls)
 	}
 }
 
@@ -1915,8 +1954,8 @@ func TestServiceUpdateCustomModelLogsCommittedCacheInvalidationFailureWithoutFai
 	if err != nil || result.Notes != "updated" {
 		t.Fatalf("result = %+v, err = %v", result, err)
 	}
-	if store.saveInput.Notes != "updated" {
-		t.Fatalf("save=%+v", store.saveInput)
+	if !store.customUpdateInput.Notes.Present || store.customUpdateInput.Notes.Value != "updated" || store.saveCalls != 0 {
+		t.Fatalf("update=%+v save calls=%d", store.customUpdateInput, store.saveCalls)
 	}
 	if invalidator.calls != 1 || invalidator.reason != CustomProviderModelSavedReason {
 		t.Fatalf("invalidation calls=%d reason=%q", invalidator.calls, invalidator.reason)
@@ -2041,7 +2080,12 @@ type providerModelStoreStub struct {
 	setSystemDefaultErr    error
 	customByID             map[string]port.ManagementProviderModelCatalogItem
 	customByScope          map[string]port.ManagementProviderModelCatalogItem
+	customFindCalls        int
+	customUpdateInput      port.ManagementCustomProviderModelUpdateInput
+	customUpdateResult     port.ManagementCustomProviderModelUpdateResult
+	customUpdateCalls      int
 	saveInput              port.ManagementCustomProviderModelSaveInput
+	saveCalls              int
 	saveResult             port.ManagementProviderModelCatalogItem
 	deleteID               string
 	deleteResult           bool
@@ -2235,6 +2279,7 @@ func (s *providerModelStoreStub) ClearManagementProviderSystemDefaultHealthCheck
 }
 
 func (s *providerModelStoreStub) FindManagementCustomProviderModel(_ context.Context, id string) (port.ManagementProviderModelCatalogItem, bool, error) {
+	s.customFindCalls++
 	item, ok := s.customByID[id]
 	return item, ok, nil
 }
@@ -2245,6 +2290,7 @@ func (s *providerModelStoreStub) FindManagementCustomProviderModelByScope(_ cont
 }
 
 func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Context, input port.ManagementCustomProviderModelSaveInput) (port.ManagementProviderModelCatalogItem, error) {
+	s.saveCalls++
 	s.saveInput = input
 	if s.saveResult.ID != "" {
 		return s.saveResult, nil
@@ -2284,6 +2330,55 @@ func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Con
 		Notes:                     input.Notes,
 		Source:                    "custom-" + input.Scope,
 	}, nil
+}
+
+func (s *providerModelStoreStub) UpdateManagementCustomProviderModel(_ context.Context, input port.ManagementCustomProviderModelUpdateInput, validate port.ManagementCustomProviderModelUpdateValidate) (port.ManagementCustomProviderModelUpdateResult, bool, error) {
+	s.customUpdateCalls++
+	s.customUpdateInput = input
+	result := s.customUpdateResult
+	if result.Before.ID == "" {
+		before, found := s.customByID[input.ID]
+		if !found || before.ProviderCode != input.ProviderCode {
+			return port.ManagementCustomProviderModelUpdateResult{}, false, nil
+		}
+		result.Before = before
+		result.After = before
+		applyCustomProviderModelUpdateStub(&result.After, input)
+	}
+	if err := validate(result); err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, err
+	}
+	return result, true, nil
+}
+
+func applyCustomProviderModelUpdateStub(item *port.ManagementProviderModelCatalogItem, input port.ManagementCustomProviderModelUpdateInput) {
+	applyBuiltInProviderModelOptionalString(&item.Status, input.Status)
+	applyBuiltInProviderModelOptionalString(&item.Mode, input.Mode)
+	applyBuiltInProviderModelOptionalStringList(&item.SupportedAPIProtocols, input.SupportedAPIProtocols)
+	applyBuiltInProviderModelOptionalStringList(&item.SupportedServiceTiers, input.SupportedServiceTiers)
+	applyBuiltInProviderModelOptionalStringList(&item.SupportedReasoningEfforts, input.SupportedReasoningEfforts)
+	applyBuiltInProviderModelOptionalString(&item.DefaultReasoningEffort, input.DefaultReasoningEffort)
+	applyBuiltInProviderModelOptionalString(&item.ReleaseDate, input.ReleaseDate)
+	applyBuiltInProviderModelOptionalString(&item.ShutdownDate, input.ShutdownDate)
+	applyBuiltInProviderModelOptionalInt(&item.ContextWindowTokens, input.ContextWindowTokens)
+	applyBuiltInProviderModelOptionalInt(&item.MaxInputTokens, input.MaxInputTokens)
+	applyBuiltInProviderModelOptionalInt(&item.MaxOutputTokens, input.MaxOutputTokens)
+	applyBuiltInProviderModelOptionalFloat(&item.InputUSDPer1M, input.InputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.OutputUSDPer1M, input.OutputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.CachedInputUSDPer1M, input.CachedInputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.CacheWriteUSDPer1M, input.CacheWriteUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.CacheWrite1hUSDPer1M, input.CacheWrite1hUSDPer1M)
+	if input.ServiceTierPrices.Present {
+		item.ServiceTierPrices = cloneProviderModelPriceMap(input.ServiceTierPrices.Value)
+	}
+	applyBuiltInProviderModelOptionalFloat(&item.ImageInputUSDPer1M, input.ImageInputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.ImageOutputUSDPer1M, input.ImageOutputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.AudioInputUSDPer1M, input.AudioInputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.AudioOutputUSDPer1M, input.AudioOutputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.OutputUSDPerImage, input.OutputUSDPerImage)
+	applyBuiltInProviderModelOptionalString(&item.PricingNotes, input.PricingNotes)
+	applyBuiltInProviderModelOptionalString(&item.CapabilityNotes, input.CapabilityNotes)
+	applyBuiltInProviderModelOptionalString(&item.Notes, input.Notes)
 }
 
 func (s *providerModelStoreStub) DeleteManagementCustomProviderModel(_ context.Context, id string) (bool, error) {

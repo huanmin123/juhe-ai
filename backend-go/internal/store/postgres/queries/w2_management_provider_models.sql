@@ -266,6 +266,50 @@ WHERE provider_code = sqlc.arg(provider_code)
   )
 LIMIT 1;
 
+-- name: LockManagementCustomProviderModel :one
+SELECT
+  id, provider_code, model, scope, system_account_id, status, mode,
+  supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+  default_reasoning_effort, release_date, shutdown_date,
+  context_window_tokens, max_input_tokens, max_output_tokens,
+  input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
+  cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+  image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+  output_usd_per_image, pricing_notes, capability_notes, notes,
+  created_by, updated_by, created_at, updated_at
+FROM juhe_business.custom_provider_models
+WHERE id = sqlc.arg(id) AND provider_code = sqlc.arg(provider_code)
+FOR UPDATE;
+
+-- name: UpdateManagementCustomProviderModel :one
+UPDATE juhe_business.custom_provider_models
+SET status = sqlc.arg(status), mode = sqlc.narg(mode),
+    supported_api_protocols_json = sqlc.arg(supported_api_protocols_json),
+    supported_service_tiers_json = sqlc.arg(supported_service_tiers_json),
+    supported_reasoning_efforts_json = sqlc.arg(supported_reasoning_efforts_json),
+    default_reasoning_effort = sqlc.narg(default_reasoning_effort),
+    release_date = sqlc.narg(release_date), shutdown_date = sqlc.narg(shutdown_date),
+    context_window_tokens = sqlc.narg(context_window_tokens), max_input_tokens = sqlc.narg(max_input_tokens),
+    max_output_tokens = sqlc.narg(max_output_tokens), input_usd_per_1m = sqlc.narg(input_usd_per_1m),
+    output_usd_per_1m = sqlc.narg(output_usd_per_1m), cached_input_usd_per_1m = sqlc.narg(cached_input_usd_per_1m),
+    cache_write_usd_per_1m = sqlc.narg(cache_write_usd_per_1m), cache_write_1h_usd_per_1m = sqlc.narg(cache_write_1h_usd_per_1m),
+    service_tier_prices_json = sqlc.arg(service_tier_prices_json), image_input_usd_per_1m = sqlc.narg(image_input_usd_per_1m),
+    image_output_usd_per_1m = sqlc.narg(image_output_usd_per_1m), audio_input_usd_per_1m = sqlc.narg(audio_input_usd_per_1m),
+    audio_output_usd_per_1m = sqlc.narg(audio_output_usd_per_1m), output_usd_per_image = sqlc.narg(output_usd_per_image),
+    pricing_notes = sqlc.narg(pricing_notes), capability_notes = sqlc.narg(capability_notes), notes = sqlc.narg(notes),
+    updated_by = sqlc.arg(actor_system_account_id), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND provider_code = sqlc.arg(provider_code)
+RETURNING
+  id, provider_code, model, scope, system_account_id, status, mode,
+  supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+  default_reasoning_effort, release_date, shutdown_date,
+  context_window_tokens, max_input_tokens, max_output_tokens,
+  input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
+  cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+  image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+  output_usd_per_image, pricing_notes, capability_notes, notes,
+  created_by, updated_by, created_at, updated_at;
+
 -- name: UpsertManagementCustomProviderModel :one
 INSERT INTO juhe_business.custom_provider_models (
   id, provider_code, model, scope, system_account_id, status,

@@ -47,3 +47,30 @@ func TestManagementProviderModelQueryLocksFullConfigurationBeforeFullUpdate(t *t
 		t.Fatal("built-in provider model update must return the stored after snapshot")
 	}
 }
+
+func TestManagementCustomProviderModelQueryLocksFullRowBeforeExactUpdate(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_provider_models.sql")
+	if err != nil {
+		t.Fatalf("read provider model query: %v", err)
+	}
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
+	lockStart := strings.Index(sql, "-- name: LockManagementCustomProviderModel :one")
+	updateStart := strings.Index(sql, "-- name: UpdateManagementCustomProviderModel :one")
+	upsertStart := strings.Index(sql, "-- name: UpsertManagementCustomProviderModel :one")
+	if lockStart < 0 || updateStart <= lockStart || upsertStart <= updateStart {
+		t.Fatalf("custom provider model lock/update query boundaries missing")
+	}
+	lockSQL := sql[lockStart:updateStart]
+	updateSQL := sql[updateStart:upsertStart]
+	if !strings.Contains(lockSQL, "WHERE id = sqlc.arg(id) AND provider_code = sqlc.arg(provider_code)") || !strings.Contains(lockSQL, "FOR UPDATE") {
+		t.Fatalf("custom provider model lock must scope id+provider and use FOR UPDATE:\n%s", lockSQL)
+	}
+	if strings.Contains(updateSQL, "ON CONFLICT") || !strings.Contains(updateSQL, "UPDATE juhe_business.custom_provider_models") || !strings.Contains(updateSQL, "RETURNING") {
+		t.Fatalf("custom provider model PATCH must use an exact UPDATE/RETURNING:\n%s", updateSQL)
+	}
+	for _, column := range []string{"status", "mode", "supported_api_protocols_json", "service_tier_prices_json", "pricing_notes", "capability_notes", "notes", "updated_by", "updated_at"} {
+		if !regexp.MustCompile(regexp.QuoteMeta(column) + `\s*=\s*sqlc\.(?:n?arg)\(`).MatchString(updateSQL) {
+			t.Fatalf("custom provider model update must fully assign %s", column)
+		}
+	}
+}

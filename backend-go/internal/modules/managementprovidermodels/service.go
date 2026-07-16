@@ -582,40 +582,87 @@ func (s *Service) UpdateCustomModelWithSnapshots(ctx context.Context, input Cust
 		}
 		return result, nil
 	}
-	existing, found, err := s.store.FindManagementCustomProviderModel(ctx, strings.TrimSpace(input.ID))
+	persisted, found, err := s.store.UpdateManagementCustomProviderModel(ctx, customProviderModelUpdateInput(input), func(result port.ManagementCustomProviderModelUpdateResult) error {
+		existing := result.Before
+		if !canMutateCustomProviderModel(existing.Scope, existing.SystemAccountID, input.ActorSystemAccountID, input.ActorRole) {
+			return &CustomModelForbiddenError{Message: "无权修改该自定义模型"}
+		}
+		if input.Fields.Invalid || !customModelMutationHasAnyField(input.Fields) {
+			return &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
+		if input.Fields.ConfigurationTemplateID.Set {
+			return &CustomModelValidationError{Message: "配置模板只能在新建模型时使用"}
+		}
+		candidate := customModelSaveInputFromExisting(result.After, strings.TrimSpace(input.ActorSystemAccountID))
+		if err := applyCustomModelPatch(&candidate, input.Fields); err != nil {
+			return err
+		}
+		return s.validateCustomModelPricing(ctx, candidate, candidate.SystemAccountID)
+	})
 	if err != nil {
 		return CustomModelUpdateResult{}, err
 	}
-	if !found || strings.TrimSpace(existing.ProviderCode) != strings.TrimSpace(input.ProviderCode) {
+	if !found {
 		return CustomModelUpdateResult{}, ErrCustomProviderModelNotFound
 	}
-	if !canMutateCustomProviderModel(existing.Scope, existing.SystemAccountID, input.ActorSystemAccountID, input.ActorRole) {
-		return CustomModelUpdateResult{}, &CustomModelForbiddenError{Message: "无权修改该自定义模型"}
-	}
-	if input.Fields.Invalid || !customModelMutationHasAnyField(input.Fields) {
-		return CustomModelUpdateResult{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
-	}
-	if input.Fields.ConfigurationTemplateID.Set {
-		return CustomModelUpdateResult{}, &CustomModelValidationError{Message: "配置模板只能在新建模型时使用"}
-	}
-	saveInput := customModelSaveInputFromExisting(existing, strings.TrimSpace(input.ActorSystemAccountID))
-	if err := applyCustomModelPatch(&saveInput, input.Fields); err != nil {
-		return CustomModelUpdateResult{}, err
-	}
-	if err := s.validateCustomModelPricing(ctx, saveInput, saveInput.SystemAccountID); err != nil {
-		return CustomModelUpdateResult{}, err
-	}
-	saved, err := s.store.SaveManagementCustomProviderModel(ctx, saveInput)
-	if err != nil {
-		return CustomModelUpdateResult{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
-	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
-	if saved.Status != "active" {
-		if err := s.clearDefaultHealthCheckModelReferences(ctx, saved); err != nil {
+	if persisted.After.Status != "active" {
+		if err := s.clearDefaultHealthCheckModelReferences(ctx, persisted.After); err != nil {
 			return CustomModelUpdateResult{}, err
 		}
 	}
-	return CustomModelUpdateResult{Before: catalogItemFromPort(existing), After: catalogItemFromPort(saved)}, nil
+	return CustomModelUpdateResult{Before: catalogItemFromPort(persisted.Before), After: catalogItemFromPort(persisted.After)}, nil
+}
+
+func customProviderModelUpdateInput(input CustomModelUpdateInput) port.ManagementCustomProviderModelUpdateInput {
+	fields := input.Fields
+	return port.ManagementCustomProviderModelUpdateInput{
+		ID: strings.TrimSpace(input.ID), ProviderCode: strings.TrimSpace(input.ProviderCode),
+		ActorSystemAccountID: strings.TrimSpace(input.ActorSystemAccountID), ActorRole: input.ActorRole,
+		Status: optionalProviderModelString(fields.Status), Mode: optionalProviderModelString(fields.Mode),
+		SupportedAPIProtocols:     optionalProviderModelStringList(fields.SupportedAPIProtocols, false),
+		SupportedServiceTiers:     optionalProviderModelStringList(fields.SupportedServiceTiers, true),
+		SupportedReasoningEfforts: optionalProviderModelStringList(fields.SupportedReasoningEfforts, true),
+		DefaultReasoningEffort:    optionalProviderModelString(fields.DefaultReasoningEffort),
+		ReleaseDate:               optionalProviderModelString(fields.ReleaseDate), ShutdownDate: optionalProviderModelString(fields.ShutdownDate),
+		ContextWindowTokens: optionalProviderModelInt(fields.ContextWindowTokens), MaxInputTokens: optionalProviderModelInt(fields.MaxInputTokens), MaxOutputTokens: optionalProviderModelInt(fields.MaxOutputTokens),
+		InputUSDPer1M: optionalProviderModelFloat(fields.InputUSDPer1M), OutputUSDPer1M: optionalProviderModelFloat(fields.OutputUSDPer1M), CachedInputUSDPer1M: optionalProviderModelFloat(fields.CachedInputUSDPer1M),
+		CacheWriteUSDPer1M: optionalProviderModelFloat(fields.CacheWriteUSDPer1M), CacheWrite1hUSDPer1M: optionalProviderModelFloat(fields.CacheWrite1hUSDPer1M),
+		ServiceTierPrices:  port.ManagementProviderModelOptionalPriceMap{Present: fields.ServiceTierPrices.Set, Value: cloneProviderModelPriceMap(fields.ServiceTierPrices.Value)},
+		ImageInputUSDPer1M: optionalProviderModelFloat(fields.ImageInputUSDPer1M), ImageOutputUSDPer1M: optionalProviderModelFloat(fields.ImageOutputUSDPer1M),
+		AudioInputUSDPer1M: optionalProviderModelFloat(fields.AudioInputUSDPer1M), AudioOutputUSDPer1M: optionalProviderModelFloat(fields.AudioOutputUSDPer1M), OutputUSDPerImage: optionalProviderModelFloat(fields.OutputUSDPerImage),
+		PricingNotes: optionalProviderModelString(fields.PricingNotes), CapabilityNotes: optionalProviderModelString(fields.CapabilityNotes), Notes: optionalProviderModelString(fields.Notes),
+	}
+}
+
+func optionalProviderModelString(value OptionalString) port.ManagementProviderModelOptionalString {
+	return port.ManagementProviderModelOptionalString{Present: value.Set, Value: strings.TrimSpace(value.Value)}
+}
+
+func optionalProviderModelStringList(value OptionalStringList, strict bool) port.ManagementProviderModelOptionalStringList {
+	cloned := make([]string, 0, len(value.Value))
+	seen := make(map[string]struct{}, len(value.Value))
+	for _, item := range value.Value {
+		trimmed := strings.TrimSpace(item)
+		if strict && item != trimmed {
+			cloned = append(cloned, item)
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		cloned = append(cloned, trimmed)
+	}
+	return port.ManagementProviderModelOptionalStringList{Present: value.Set, Value: cloned}
+}
+
+func optionalProviderModelInt(value OptionalInt) port.ManagementProviderModelOptionalInt {
+	return port.ManagementProviderModelOptionalInt{Present: value.Set, Value: cloneIntPtr(value.Value)}
+}
+
+func optionalProviderModelFloat(value OptionalFloat) port.ManagementProviderModelOptionalFloat {
+	return port.ManagementProviderModelOptionalFloat{Present: value.Set, Value: cloneFloatPtr(value.Value)}
 }
 
 func (s *Service) findBuiltInModelByID(ctx context.Context, providerCode string, id string) (port.ManagementProviderModelCatalogItem, bool, error) {

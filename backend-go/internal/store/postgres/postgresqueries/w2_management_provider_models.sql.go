@@ -831,6 +831,106 @@ func (q *Queries) LockManagementBuiltInProviderModelConfiguration(ctx context.Co
 	return i, err
 }
 
+const lockManagementCustomProviderModel = `-- name: LockManagementCustomProviderModel :one
+SELECT
+  id, provider_code, model, scope, system_account_id, status, mode,
+  supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+  default_reasoning_effort, release_date, shutdown_date,
+  context_window_tokens, max_input_tokens, max_output_tokens,
+  input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
+  cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+  image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+  output_usd_per_image, pricing_notes, capability_notes, notes,
+  created_by, updated_by, created_at, updated_at
+FROM juhe_business.custom_provider_models
+WHERE id = $1 AND provider_code = $2
+FOR UPDATE
+`
+
+type LockManagementCustomProviderModelParams struct {
+	ID           string
+	ProviderCode string
+}
+
+type LockManagementCustomProviderModelRow struct {
+	ID                            string
+	ProviderCode                  string
+	Model                         string
+	Scope                         string
+	SystemAccountID               pgtype.Text
+	Status                        string
+	Mode                          pgtype.Text
+	SupportedApiProtocolsJson     string
+	SupportedServiceTiersJson     string
+	SupportedReasoningEffortsJson string
+	DefaultReasoningEffort        pgtype.Text
+	ReleaseDate                   pgtype.Text
+	ShutdownDate                  pgtype.Text
+	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
+	MaxOutputTokens               pgtype.Int4
+	InputUsdPer1m                 pgtype.Float8
+	OutputUsdPer1m                pgtype.Float8
+	CachedInputUsdPer1m           pgtype.Float8
+	CacheWriteUsdPer1m            pgtype.Float8
+	CacheWrite1hUsdPer1m          pgtype.Float8
+	ServiceTierPricesJson         string
+	ImageInputUsdPer1m            pgtype.Float8
+	ImageOutputUsdPer1m           pgtype.Float8
+	AudioInputUsdPer1m            pgtype.Float8
+	AudioOutputUsdPer1m           pgtype.Float8
+	OutputUsdPerImage             pgtype.Float8
+	PricingNotes                  pgtype.Text
+	CapabilityNotes               pgtype.Text
+	Notes                         pgtype.Text
+	CreatedBy                     string
+	UpdatedBy                     pgtype.Text
+	CreatedAt                     pgtype.Timestamptz
+	UpdatedAt                     pgtype.Timestamptz
+}
+
+func (q *Queries) LockManagementCustomProviderModel(ctx context.Context, arg LockManagementCustomProviderModelParams) (LockManagementCustomProviderModelRow, error) {
+	row := q.db.QueryRow(ctx, lockManagementCustomProviderModel, arg.ID, arg.ProviderCode)
+	var i LockManagementCustomProviderModelRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderCode,
+		&i.Model,
+		&i.Scope,
+		&i.SystemAccountID,
+		&i.Status,
+		&i.Mode,
+		&i.SupportedApiProtocolsJson,
+		&i.SupportedServiceTiersJson,
+		&i.SupportedReasoningEffortsJson,
+		&i.DefaultReasoningEffort,
+		&i.ReleaseDate,
+		&i.ShutdownDate,
+		&i.ContextWindowTokens,
+		&i.MaxInputTokens,
+		&i.MaxOutputTokens,
+		&i.InputUsdPer1m,
+		&i.OutputUsdPer1m,
+		&i.CachedInputUsdPer1m,
+		&i.CacheWriteUsdPer1m,
+		&i.CacheWrite1hUsdPer1m,
+		&i.ServiceTierPricesJson,
+		&i.ImageInputUsdPer1m,
+		&i.ImageOutputUsdPer1m,
+		&i.AudioInputUsdPer1m,
+		&i.AudioOutputUsdPer1m,
+		&i.OutputUsdPerImage,
+		&i.PricingNotes,
+		&i.CapabilityNotes,
+		&i.Notes,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateManagementBuiltInProviderModelConfiguration = `-- name: UpdateManagementBuiltInProviderModelConfiguration :one
 UPDATE juhe_business.provider_model_catalog
 SET status = $1, mode = $2,
@@ -966,6 +1066,177 @@ func (q *Queries) UpdateManagementBuiltInProviderModelConfiguration(ctx context.
 		&i.AudioInputUsdPer1m,
 		&i.AudioOutputUsdPer1m,
 		&i.OutputUsdPerImage,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateManagementCustomProviderModel = `-- name: UpdateManagementCustomProviderModel :one
+UPDATE juhe_business.custom_provider_models
+SET status = $1, mode = $2,
+    supported_api_protocols_json = $3,
+    supported_service_tiers_json = $4,
+    supported_reasoning_efforts_json = $5,
+    default_reasoning_effort = $6,
+    release_date = $7, shutdown_date = $8,
+    context_window_tokens = $9, max_input_tokens = $10,
+    max_output_tokens = $11, input_usd_per_1m = $12,
+    output_usd_per_1m = $13, cached_input_usd_per_1m = $14,
+    cache_write_usd_per_1m = $15, cache_write_1h_usd_per_1m = $16,
+    service_tier_prices_json = $17, image_input_usd_per_1m = $18,
+    image_output_usd_per_1m = $19, audio_input_usd_per_1m = $20,
+    audio_output_usd_per_1m = $21, output_usd_per_image = $22,
+    pricing_notes = $23, capability_notes = $24, notes = $25,
+    updated_by = $26, updated_at = $27
+WHERE id = $28 AND provider_code = $29
+RETURNING
+  id, provider_code, model, scope, system_account_id, status, mode,
+  supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+  default_reasoning_effort, release_date, shutdown_date,
+  context_window_tokens, max_input_tokens, max_output_tokens,
+  input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
+  cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+  image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+  output_usd_per_image, pricing_notes, capability_notes, notes,
+  created_by, updated_by, created_at, updated_at
+`
+
+type UpdateManagementCustomProviderModelParams struct {
+	Status                        string
+	Mode                          pgtype.Text
+	SupportedApiProtocolsJson     string
+	SupportedServiceTiersJson     string
+	SupportedReasoningEffortsJson string
+	DefaultReasoningEffort        pgtype.Text
+	ReleaseDate                   pgtype.Text
+	ShutdownDate                  pgtype.Text
+	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
+	MaxOutputTokens               pgtype.Int4
+	InputUsdPer1m                 pgtype.Float8
+	OutputUsdPer1m                pgtype.Float8
+	CachedInputUsdPer1m           pgtype.Float8
+	CacheWriteUsdPer1m            pgtype.Float8
+	CacheWrite1hUsdPer1m          pgtype.Float8
+	ServiceTierPricesJson         string
+	ImageInputUsdPer1m            pgtype.Float8
+	ImageOutputUsdPer1m           pgtype.Float8
+	AudioInputUsdPer1m            pgtype.Float8
+	AudioOutputUsdPer1m           pgtype.Float8
+	OutputUsdPerImage             pgtype.Float8
+	PricingNotes                  pgtype.Text
+	CapabilityNotes               pgtype.Text
+	Notes                         pgtype.Text
+	ActorSystemAccountID          pgtype.Text
+	UpdatedAt                     pgtype.Timestamptz
+	ID                            string
+	ProviderCode                  string
+}
+
+type UpdateManagementCustomProviderModelRow struct {
+	ID                            string
+	ProviderCode                  string
+	Model                         string
+	Scope                         string
+	SystemAccountID               pgtype.Text
+	Status                        string
+	Mode                          pgtype.Text
+	SupportedApiProtocolsJson     string
+	SupportedServiceTiersJson     string
+	SupportedReasoningEffortsJson string
+	DefaultReasoningEffort        pgtype.Text
+	ReleaseDate                   pgtype.Text
+	ShutdownDate                  pgtype.Text
+	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
+	MaxOutputTokens               pgtype.Int4
+	InputUsdPer1m                 pgtype.Float8
+	OutputUsdPer1m                pgtype.Float8
+	CachedInputUsdPer1m           pgtype.Float8
+	CacheWriteUsdPer1m            pgtype.Float8
+	CacheWrite1hUsdPer1m          pgtype.Float8
+	ServiceTierPricesJson         string
+	ImageInputUsdPer1m            pgtype.Float8
+	ImageOutputUsdPer1m           pgtype.Float8
+	AudioInputUsdPer1m            pgtype.Float8
+	AudioOutputUsdPer1m           pgtype.Float8
+	OutputUsdPerImage             pgtype.Float8
+	PricingNotes                  pgtype.Text
+	CapabilityNotes               pgtype.Text
+	Notes                         pgtype.Text
+	CreatedBy                     string
+	UpdatedBy                     pgtype.Text
+	CreatedAt                     pgtype.Timestamptz
+	UpdatedAt                     pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateManagementCustomProviderModel(ctx context.Context, arg UpdateManagementCustomProviderModelParams) (UpdateManagementCustomProviderModelRow, error) {
+	row := q.db.QueryRow(ctx, updateManagementCustomProviderModel,
+		arg.Status,
+		arg.Mode,
+		arg.SupportedApiProtocolsJson,
+		arg.SupportedServiceTiersJson,
+		arg.SupportedReasoningEffortsJson,
+		arg.DefaultReasoningEffort,
+		arg.ReleaseDate,
+		arg.ShutdownDate,
+		arg.ContextWindowTokens,
+		arg.MaxInputTokens,
+		arg.MaxOutputTokens,
+		arg.InputUsdPer1m,
+		arg.OutputUsdPer1m,
+		arg.CachedInputUsdPer1m,
+		arg.CacheWriteUsdPer1m,
+		arg.CacheWrite1hUsdPer1m,
+		arg.ServiceTierPricesJson,
+		arg.ImageInputUsdPer1m,
+		arg.ImageOutputUsdPer1m,
+		arg.AudioInputUsdPer1m,
+		arg.AudioOutputUsdPer1m,
+		arg.OutputUsdPerImage,
+		arg.PricingNotes,
+		arg.CapabilityNotes,
+		arg.Notes,
+		arg.ActorSystemAccountID,
+		arg.UpdatedAt,
+		arg.ID,
+		arg.ProviderCode,
+	)
+	var i UpdateManagementCustomProviderModelRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderCode,
+		&i.Model,
+		&i.Scope,
+		&i.SystemAccountID,
+		&i.Status,
+		&i.Mode,
+		&i.SupportedApiProtocolsJson,
+		&i.SupportedServiceTiersJson,
+		&i.SupportedReasoningEffortsJson,
+		&i.DefaultReasoningEffort,
+		&i.ReleaseDate,
+		&i.ShutdownDate,
+		&i.ContextWindowTokens,
+		&i.MaxInputTokens,
+		&i.MaxOutputTokens,
+		&i.InputUsdPer1m,
+		&i.OutputUsdPer1m,
+		&i.CachedInputUsdPer1m,
+		&i.CacheWriteUsdPer1m,
+		&i.CacheWrite1hUsdPer1m,
+		&i.ServiceTierPricesJson,
+		&i.ImageInputUsdPer1m,
+		&i.ImageOutputUsdPer1m,
+		&i.AudioInputUsdPer1m,
+		&i.AudioOutputUsdPer1m,
+		&i.OutputUsdPerImage,
+		&i.PricingNotes,
+		&i.CapabilityNotes,
+		&i.Notes,
+		&i.CreatedBy,
+		&i.UpdatedBy,
+		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
