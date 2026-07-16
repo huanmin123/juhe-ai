@@ -22,7 +22,8 @@ for (const value of [
 ]) assert.equal(isChatCacheBroadcastPayload(value), false)
 
 const received: unknown[] = []
-const broadcast = new ChatCacheBroadcast({ channelFactory: (name) => new FakeChannel(name) })
+const diagnostics: string[] = []
+const broadcast = new ChatCacheBroadcast({ channelFactory: (name) => new FakeChannel(name), diagnostic: (code) => diagnostics.push(code) })
 broadcast.subscribe((payload) => { received.push(payload); throw new Error('listener isolation') })
 broadcast.subscribe((payload) => received.push(payload))
 broadcast.publish({ systemAccountId: 'account_1', conversationId: 'conv_1', messageRevision: 2, content: 'must drop' } as never)
@@ -40,5 +41,11 @@ unsupported.publish({ systemAccountId: 'a', conversationId: 'c', messageRevision
 unsupported.close()
 const failed = new ChatCacheBroadcast({ channelFactory: () => { throw Object.assign(new Error('denied'), { name: 'SecurityError' }) } })
 assert.equal(failed.enabled, false)
+const publishFailure = new ChatCacheBroadcast({ channelFactory: () => ({ onmessage: null, close: () => undefined, postMessage: () => { throw new Error('正文不得进入诊断') } }), diagnostic: (code) => diagnostics.push(code) })
+publishFailure.publish({ systemAccountId: 'a', conversationId: 'c', messageRevision: 1 })
+assert.ok(diagnostics.includes('broadcast_publish_failed'))
+const constructDiagnostics: string[] = []
+new ChatCacheBroadcast({ channelFactory: () => { throw new Error('secret body') }, diagnostic: (code) => constructDiagnostics.push(code) })
+assert.deepEqual(constructDiagnostics, ['broadcast_construct_failed'])
 
 console.log('AI 问答缓存广播回归通过')

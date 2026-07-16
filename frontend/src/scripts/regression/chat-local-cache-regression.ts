@@ -20,6 +20,7 @@ class MemoryAdapter implements ChatLocalCacheStorageAdapter {
   failWith?: Error
   putFailures: Error[] = []
   putMessagesCalls = 0
+  putHeadCalls = 0
 
   private key(account: string, conversation: string): string { return `${account}\u0000${conversation}` }
   private messageKey(account: string, conversation: string, sequenceNo: number): string { return `${this.key(account, conversation)}\u0000${sequenceNo}` }
@@ -35,8 +36,8 @@ class MemoryAdapter implements ChatLocalCacheStorageAdapter {
     }
   }
 
-  async putHead(head: ChatCacheConversationHead): Promise<void> { this.fail(); this.heads.set(this.key(head.systemAccountId, head.conversationId), structuredClone(head)) }
-  async putMessages(account: string, conversation: string, messages: ChatMessage[], context: ChatCachePutContext): Promise<ChatCacheConversationHead> {
+  async putHead(head: ChatCacheConversationHead): Promise<void> { this.putHeadCalls += 1; this.fail(); const key = this.key(head.systemAccountId, head.conversationId); const current = this.heads.get(key); this.heads.set(key, structuredClone({ ...head, byteSize: current?.byteSize ?? head.byteSize })) }
+  async putMessages(account: string, conversation: string, messages: ChatMessage[], context: ChatCachePutContext) {
     this.putMessagesCalls += 1
     const putFailure = this.putFailures.shift()
     if (putFailure) throw putFailure
@@ -53,7 +54,7 @@ class MemoryAdapter implements ChatLocalCacheStorageAdapter {
     }
     const next = { ...head, byteSize: bytes, lastAccessAt: context.now }
     this.heads.set(key, next)
-    return structuredClone(next)
+    return { head: structuredClone(next), totalBytes: await this.getTotalBytes() }
   }
   async deleteFromSequence(account: string, conversation: string, sequenceNo: number): Promise<void> {
     this.fail(); const prefix = `${this.key(account, conversation)}\u0000`
@@ -68,6 +69,7 @@ class MemoryAdapter implements ChatLocalCacheStorageAdapter {
   async removeRunningTurn(account: string, conversation: string): Promise<void> { this.fail(); this.running.delete(this.key(account, conversation)) }
   async touch(account: string, conversation: string, now: number): Promise<void> { this.fail(); const key = this.key(account, conversation); const head = this.heads.get(key); if (head) this.heads.set(key, { ...head, lastAccessAt: now }) }
   async clearAccount(account: string): Promise<void> { this.fail(); for (const head of [...this.heads.values()]) if (head.systemAccountId === account) await this.deleteConversation(account, head.conversationId) }
+  async getTotalBytes(): Promise<number> { return [...this.heads.values()].reduce((total, head) => total + head.byteSize, 0) }
   async listEvictionCandidates(limit: number, after?: ChatCacheEvictionCursor): Promise<ChatCacheConversationHead[]> {
     this.fail()
     const ordered = [...this.heads.values()].sort((a, b) => a.lastAccessAt - b.lastAccessAt || a.systemAccountId.localeCompare(b.systemAccountId) || a.conversationId.localeCompare(b.conversationId))
@@ -124,6 +126,7 @@ assert.equal(JSON.stringify(deepToolPayload).includes('base64'), false)
 assert.equal(JSON.stringify(deepToolPayload).includes('raw-upstream-body'), false)
 assert.equal(deepToolPayload!.toolEvents?.[0]?.item, undefined)
 assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), contentText: 'data:image/png;base64,AAAA' }), undefined)
+assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), model: 'data:application/octet-stream;base64,AAAA' }), undefined)
 assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), blob: new Blob(['x']) } as unknown as ChatMessage), undefined)
 const cyclic = message(1, 'x') as ChatMessage & { metadata?: unknown }; cyclic.metadata = cyclic
 assert.equal(cloneVisibleChatMessage(cyclic), undefined)
@@ -149,6 +152,12 @@ assert.equal((await cache.readConversation('A', 'c1')).value?.runningTurn, undef
 await cache.clearAccount('A')
 assert.equal((await cache.readConversation('A', 'c1')).value?.head, undefined)
 assert.ok((await cache.readConversation('B', 'c1')).value?.head)
+const payloadAdapter = new MemoryAdapter()
+const payloadCache = new ChatLocalCache({ adapter: payloadAdapter })
+assert.equal((await payloadCache.putHead('A', { conversationId: 'bad', messageRevision: 1, title: 'data:text/plain;base64,c2VjcmV0' })).ok, false)
+assert.equal(payloadAdapter.putHeadCalls, 0)
+assert.equal((await payloadCache.putRunningTurn('A', 'bad', { turnId: 'data:text/plain;base64,dA==', startedAt: '2026-07-16T00:00:00.000Z' })).ok, false)
+assert.equal(payloadAdapter.running.size, 0)
 
 const lruAdapter = new MemoryAdapter()
 const lru = new ChatLocalCache({ adapter: lruAdapter, clock: () => 100, estimate: async () => ({ quota: 500 }) })
@@ -161,6 +170,14 @@ assert.equal(lruAdapter.heads.has('A\u0000old'), false)
 assert.equal(lruAdapter.heads.has('A\u0000current'), true)
 assert.equal(lruAdapter.heads.has('A\u0000running'), true)
 assert.equal(lruAdapter.heads.has('A\u0000pending'), true)
+
+const differenceAdapter = new MemoryAdapter()
+await differenceAdapter.putHead({ systemAccountId: 'A', conversationId: 'old', messageRevision: 1, lastAccessAt: 1, byteSize: 60 })
+await differenceAdapter.putHead({ systemAccountId: 'A', conversationId: 'keep', messageRevision: 1, lastAccessAt: 2, byteSize: 60 })
+const differenceCache = new ChatLocalCache({ adapter: differenceAdapter, estimate: async () => ({ quota: 500 }) })
+await differenceCache.putMessages('A', 'written', [{ ...message(1, ''), conversationId: 'written' }])
+assert.equal(differenceAdapter.heads.has('A\u0000old'), false)
+assert.equal(differenceAdapter.heads.has('A\u0000keep'), true, 'LRU 只释放超过预算的差值，不得按整个预算过度淘汰')
 
 const pagedAdapter = new MemoryAdapter()
 for (let index = 1; index <= 16; index += 1) await pagedAdapter.putHead({ systemAccountId: 'A', conversationId: `active_${index}`, messageRevision: 1, lastAccessAt: index, byteSize: 10, activeTurnId: `turn_${index}` })
@@ -207,3 +224,6 @@ assert.match(source, /keyPath: \['systemAccountId', 'conversationId', 'sequenceN
 assert.match(source, /createIndex\('by_conversation', \['systemAccountId', 'conversationId'\]\)/)
 assert.match(source, /db\.transaction\(\['conversation_heads', 'messages'\], 'readwrite'\)/, '消息与字节元数据必须在同一事务更新')
 assert.doesNotMatch(source, /getAll\(\s*\)/, '生产 IndexedDB 读取必须带 key range 或 limit，不能无界全库读取')
+assert.doesNotMatch(source, /transaction\.onerror\s*=/, '事务只能由 complete/abort 终结，request error 应 abort 后等待事务终态')
+assert.match(source, /request\.transaction\?\.abort\(\)/, 'request error 必须主动 abort 事务')
+assert.match(source, /openCursor\([\s\S]{0,160}'prev'/, '会话消息必须从尾部使用 prev cursor 有界读取')
