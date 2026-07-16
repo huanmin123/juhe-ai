@@ -520,22 +520,35 @@ func TestManagementProviderBuiltInModelPriceUpdatePreservesPresenceAndExplicitNu
 }
 
 func TestManagementProviderBuiltInModelConfigurationUpdateEnqueuesOperationLog(t *testing.T) {
+	previousInputPrice := 2.0
 	inputPrice := 4.0
 	queueStub := &operationLogQueueStub{}
-	service := &managementProviderModelServiceStub{customModelResult: managementprovidermodels.ModelCatalogItem{
-		ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "active",
-		InputUSDPer1M: &inputPrice,
-	}}
+	before := managementprovidermodels.ModelCatalogItem{
+		ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "disabled",
+		SystemAccountID: "internal-account", CodexMultiAgentVersion: "internal-codex-version", Source: "internal-source",
+		PricingNotes: "sensitive-pricing-note", CapabilityNotes: "sensitive-capability-note", Notes: "sensitive-note",
+		SupportedAPIProtocols: []string{"openai"}, SupportedServiceTiers: []string{"priority"},
+		SupportedReasoningEfforts: []string{"low"}, DefaultReasoningEffort: "low", InputUSDPer1M: &previousInputPrice,
+	}
+	after := before
+	after.Status = "active"
+	after.InputUSDPer1M = &inputPrice
+	service := &managementProviderModelServiceStub{
+		models:            []managementprovidermodels.ModelCatalogItem{before},
+		customModelResult: after,
+	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", DisplayName: "管理员", Role: "admin", SessionID: "sess_admin"},
 	})(newManagementProviderCustomModelUpdateHandler(service, newManagementOperationLogOptions(ManagementOperationLogOptions{
 		Client:   queueStub,
 		NewLogID: func() string { return "oplog_provider_model_price" },
 	})))
+	router := chi.NewRouter()
+	router.Patch("/__aisys__/api/providers/{code}/models/{id}", handler.ServeHTTP)
 
 	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/provider_model_gpt_test", strings.NewReader(`{"inputUsdPer1M":4}`))
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -546,16 +559,51 @@ func TestManagementProviderBuiltInModelConfigurationUpdateEnqueuesOperationLog(t
 	if err != nil {
 		t.Fatalf("decode operation log: %v", err)
 	}
-	if logInput.OperationKey != "providers.models.update_configuration" || logInput.ResourceID != "provider_model_gpt_test" || len(logInput.Changes) != 1 {
+	if logInput.OperationKey != "providers.update_model_configuration" || logInput.ResourceID != "provider_model_gpt_test" || len(logInput.Changes) != 1 {
 		t.Fatalf("operation log = %+v", logInput)
 	}
-	encodedPrices, ok := logInput.Changes[0].After.(string)
+	if service.modelsInput.ProviderCode != "gpt" || !service.modelsInput.IncludeInactive || !service.modelsInput.IncludeUnpriced {
+		t.Fatalf("Models() input = %+v", service.modelsInput)
+	}
+	change := logInput.Changes[0]
+	beforeSnapshot := decodeOperationLogSnapshot(t, change.Before)
+	afterSnapshot := decodeOperationLogSnapshot(t, change.After)
+	wantSnapshotKeys := []string{
+		"status", "mode", "supportedApiProtocols", "supportedServiceTiers", "supportedReasoningEfforts",
+		"defaultReasoningEffort", "releaseDate", "shutdownDate", "contextWindowTokens", "maxInputTokens", "maxOutputTokens",
+		"inputUsdPer1M", "outputUsdPer1M", "cachedInputUsdPer1M", "cacheWriteUsdPer1M", "cacheWrite1hUsdPer1M",
+		"serviceTierPrices", "imageInputUsdPer1M", "imageOutputUsdPer1M", "audioInputUsdPer1M", "audioOutputUsdPer1M",
+		"outputUsdPerImage",
+	}
+	for _, snapshot := range []map[string]any{beforeSnapshot, afterSnapshot} {
+		if len(snapshot) != len(wantSnapshotKeys) {
+			t.Fatalf("snapshot keys = %v, want %v", snapshot, wantSnapshotKeys)
+		}
+		for _, key := range wantSnapshotKeys {
+			if _, ok := snapshot[key]; !ok {
+				t.Fatalf("snapshot missing %q: %v", key, snapshot)
+			}
+		}
+	}
+	if beforeSnapshot["status"] != "disabled" || beforeSnapshot["inputUsdPer1M"] != 2.0 ||
+		afterSnapshot["status"] != "active" || afterSnapshot["inputUsdPer1M"] != 4.0 {
+		t.Fatalf("configuration change before=%v after=%v", beforeSnapshot, afterSnapshot)
+	}
+	payload := string(queueStub.payload)
+	for _, forbidden := range []string{"internal-account", "internal-codex-version", "internal-source", "sensitive-pricing-note", "sensitive-capability-note", "sensitive-note"} {
+		if strings.Contains(payload, forbidden) {
+			t.Fatalf("operation log payload leaked %q: %s", forbidden, payload)
+		}
+	}
+}
+
+func decodeOperationLogSnapshot(t *testing.T, value any) map[string]any {
+	t.Helper()
+	snapshot, ok := value.(map[string]any)
 	if !ok {
-		t.Fatalf("price change = %#v", logInput.Changes[0].After)
+		t.Fatalf("snapshot = %#v, want structured safe snapshot", value)
 	}
-	if !strings.Contains(encodedPrices, `"inputUsdPer1M":4`) || !strings.Contains(encodedPrices, `"status":"active"`) {
-		t.Fatalf("configuration change = %#v", logInput.Changes[0].After)
-	}
+	return snapshot
 }
 
 func TestManagementProviderCustomModelHandlersMapErrors(t *testing.T) {

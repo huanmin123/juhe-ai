@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/store/port"
@@ -211,6 +214,25 @@ func newManagementProviderCustomModelUpdateHandler(service managementProviderMod
 		if !ok {
 			return
 		}
+		var before *managementprovidermodels.ModelCatalogItem
+		if operationLogs.client != nil {
+			models, err := service.Models(r, managementprovidermodels.ModelListInput{
+				ProviderCode:    chi.URLParam(r, "code"),
+				IncludeInactive: true,
+				IncludeUnpriced: true,
+			})
+			if err != nil {
+				writeManagementProviderCustomModelError(w, err)
+				return
+			}
+			for _, model := range models {
+				if model.ID == chi.URLParam(r, "id") && model.Scope == "built_in" {
+					modelSnapshot := model
+					before = &modelSnapshot
+					break
+				}
+			}
+		}
 		result, err := service.UpdateCustomModel(r, managementprovidermodels.CustomModelUpdateInput{
 			ProviderCode:         chi.URLParam(r, "code"),
 			ID:                   chi.URLParam(r, "id"),
@@ -224,7 +246,7 @@ func newManagementProviderCustomModelUpdateHandler(service managementProviderMod
 			return
 		}
 		if result.Scope == "built_in" {
-			recordManagementProviderModelConfigurationUpdateOperationLog(r, authContext, result, operationLogs)
+			recordManagementProviderModelConfigurationUpdateOperationLog(r, authContext, before, result, operationLogs)
 		}
 		writeData(w, http.StatusOK, result)
 	})
@@ -233,10 +255,11 @@ func newManagementProviderCustomModelUpdateHandler(service managementProviderMod
 func recordManagementProviderModelConfigurationUpdateOperationLog(
 	r *http.Request,
 	authContext managementauth.Context,
+	before *managementprovidermodels.ModelCatalogItem,
 	result managementprovidermodels.ModelCatalogItem,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.client == nil || before == nil {
 		return
 	}
 	now := opts.now
@@ -248,7 +271,7 @@ func recordManagementProviderModelConfigurationUpdateOperationLog(
 		newLogID = defaultManagementOperationLogID
 	}
 	statusCode := http.StatusOK
-	enqueueManagementOperationLog(r.Context(), opts, port.OperationLogInput{
+	enqueueManagementProviderModelConfigurationOperationLog(r.Context(), opts, port.OperationLogInput{
 		ID:                            newLogID(),
 		TraceID:                       requestIDFromContext(r.Context()),
 		ActorSystemAccountID:          authContext.SystemAccountID,
@@ -259,7 +282,7 @@ func recordManagementProviderModelConfigurationUpdateOperationLog(
 		Mode:                          "admin",
 		Module:                        "providers",
 		Action:                        "update_model_configuration",
-		OperationKey:                  "providers.models.update_configuration",
+		OperationKey:                  "providers.update_model_configuration",
 		ResourceType:                  "provider_model",
 		ResourceID:                    result.ID,
 		ResourceName:                  result.Model,
@@ -267,9 +290,10 @@ func recordManagementProviderModelConfigurationUpdateOperationLog(
 		DetailLevel:                   "full",
 		VisibilityScope:               "admin_only",
 		Changes: []port.OperationLogChange{{
-			Field: "configuration",
-			Label: "模型配置",
-			After: managementProviderModelConfigurationSnapshot(result),
+			Field:  "configuration",
+			Label:  "模型配置",
+			Before: managementProviderModelConfigurationSnapshot(*before),
+			After:  managementProviderModelConfigurationSnapshot(result),
 		}},
 		Method:     r.Method,
 		Path:       r.URL.Path,
@@ -278,6 +302,30 @@ func recordManagementProviderModelConfigurationUpdateOperationLog(
 		UserAgent:  r.UserAgent(),
 		CreatedAt:  now().UTC(),
 	})
+}
+
+func enqueueManagementProviderModelConfigurationOperationLog(
+	ctx context.Context,
+	opts managementOperationLogOptions,
+	input port.OperationLogInput,
+) {
+	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	_, err := operationLogMaxChangesPerRecord(operationCtx, opts)
+	if err == nil {
+		// The snapshot is a fixed safe-field whitelist and must remain complete for Node parity.
+		_, err = operationlogjob.EnqueueWrite(operationCtx, opts.client, input)
+	}
+	if err != nil && opts.logger != nil {
+		opts.logger.Warn("管理端操作日志入队失败",
+			slog.String("event", "operation_log_enqueue_failed"),
+			slog.String("operation_key", input.OperationKey),
+			slog.String("resource_id", input.ResourceID),
+			slog.String("request_id", input.TraceID),
+			slog.Any("error", err),
+		)
+	}
 }
 
 func managementProviderModelConfigurationSnapshot(item managementprovidermodels.ModelCatalogItem) map[string]any {
