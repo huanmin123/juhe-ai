@@ -116,6 +116,41 @@ func TestManagementLoginHandlerAllowsCaptchaFieldsToBeOmittedWhenDisabled(t *tes
 	}
 }
 
+func TestManagementLoginHandlerValidatesPresentCaptchaFieldsWhenDisabled(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "captchaId number", body: `{"username":"admin","password":"secret","captchaId":123}`},
+		{name: "captchaId null", body: `{"username":"admin","password":"secret","captchaId":null}`},
+		{name: "captchaId empty", body: `{"username":"admin","password":"secret","captchaId":""}`},
+		{name: "captchaId whitespace", body: `{"username":"admin","password":"secret","captchaId":"   "}`},
+		{name: "captchaCode number", body: `{"username":"admin","password":"secret","captchaCode":123}`},
+		{name: "captchaCode null", body: `{"username":"admin","password":"secret","captchaCode":null}`},
+		{name: "captchaCode empty", body: `{"username":"admin","password":"secret","captchaCode":""}`},
+		{name: "captchaCode whitespace", body: `{"username":"admin","password":"secret","captchaCode":"   "}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := newManagementLoginHandler(&managementLoginServiceStub{}, config.Config{AuthCaptchaDisabled: true})
+			req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/login", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s, want 400", rec.Code, rec.Body.String())
+			}
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body["message"] != "登录参数无效" {
+				t.Fatalf("body = %+v, want message %q", body, "登录参数无效")
+			}
+		})
+	}
+}
+
 func TestManagementLoginHandlerValidatesBody(t *testing.T) {
 	for _, tc := range []struct {
 		name string
