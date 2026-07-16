@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -392,6 +393,186 @@ func assertW2ExternalSourceUpdateStore(
 	_, err = updateService.Update(ctx, managementexternalintegrationsources.UpdateInput{SourceID: "missing_source"})
 	if !errors.Is(err, managementexternalintegrationsources.ErrNotFound) {
 		t.Fatalf("missing external integration source error = %v", err)
+	}
+
+	assertW2ExternalSourceUpdateRowLock(t, ctx, db, store)
+}
+
+func assertW2ExternalSourceUpdateRowLock(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	store *postgresstore.Store,
+) {
+	t.Helper()
+	testCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type updateOutcome struct {
+		result port.ManagementExternalIntegrationSourceUpdateResult
+		err    error
+	}
+
+	firstValidated := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseFirstOnce sync.Once
+	release := func() { releaseFirstOnce.Do(func() { close(releaseFirst) }) }
+	var updates sync.WaitGroup
+	defer func() {
+		release()
+		cancel()
+		done := make(chan struct{})
+		go func() {
+			updates.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("external source row lock update goroutines did not stop")
+		}
+	}()
+	firstDone := make(chan updateOutcome, 1)
+	updates.Add(1)
+	go func() {
+		defer updates.Done()
+		result, err := store.UpdateManagementExternalIntegrationSource(
+			testCtx,
+			port.ManagementExternalIntegrationSourceUpdateInput{
+				SourceID:  w2ExternalSourceListActiveID,
+				HasName:   true,
+				Name:      "W2 PATCH Lock First",
+				UpdatedAt: time.Date(2026, 7, 16, 5, 0, 0, 0, time.UTC),
+			},
+			func(port.ManagementExternalIntegrationSourceUpdateResult) error {
+				close(firstValidated)
+				select {
+				case <-releaseFirst:
+					return nil
+				case <-testCtx.Done():
+					return testCtx.Err()
+				}
+			},
+		)
+		firstDone <- updateOutcome{result: result, err: err}
+	}()
+
+	select {
+	case <-firstValidated:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first external source update did not reach the transaction validation barrier")
+	}
+
+	secondNotes := "row lock merged notes"
+	secondDone := make(chan updateOutcome, 1)
+	updates.Add(1)
+	go func() {
+		defer updates.Done()
+		result, err := store.UpdateManagementExternalIntegrationSource(
+			testCtx,
+			port.ManagementExternalIntegrationSourceUpdateInput{
+				SourceID:  w2ExternalSourceListActiveID,
+				HasNotes:  true,
+				Notes:     &secondNotes,
+				UpdatedAt: time.Date(2026, 7, 16, 5, 0, 1, 0, time.UTC),
+			},
+			nil,
+		)
+		secondDone <- updateOutcome{result: result, err: err}
+	}()
+
+	assertW2ExternalSourceUpdateWaitingOnRowLock(t, testCtx, db)
+	select {
+	case outcome := <-secondDone:
+		t.Fatalf("second external source update completed before the row lock was released: result=%#v err=%v", outcome.result, outcome.err)
+	default:
+	}
+	release()
+
+	var first updateOutcome
+	select {
+	case first = <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first external source update did not commit after releasing validation barrier")
+	}
+	if first.err != nil {
+		t.Fatalf("first external source row lock update: %v", first.err)
+	}
+
+	var second updateOutcome
+	select {
+	case second = <-secondDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second external source update did not resume after the first commit")
+	}
+	if second.err != nil {
+		t.Fatalf("second external source row lock update: %v", second.err)
+	}
+	if second.result.BeforeSource.Name != "W2 PATCH Lock First" ||
+		second.result.AfterSource.Name != "W2 PATCH Lock First" ||
+		second.result.AfterSource.Notes == nil || *second.result.AfterSource.Notes != secondNotes {
+		t.Fatalf("second update did not merge from the latest committed source snapshot: %#v", second.result)
+	}
+
+	var persistedName string
+	var persistedNotes sql.NullString
+	if err := db.QueryRowContext(testCtx, `
+		SELECT name, notes
+		FROM juhe_business.external_integration_sources
+		WHERE id = $1
+	`, w2ExternalSourceListActiveID).Scan(&persistedName, &persistedNotes); err != nil {
+		t.Fatalf("read persisted external source row lock result: %v", err)
+	}
+	if persistedName != "W2 PATCH Lock First" || !persistedNotes.Valid || persistedNotes.String != secondNotes {
+		t.Fatalf("persisted external source row lock result = name %q notes %#v", persistedName, persistedNotes)
+	}
+	var mismatchedTokenNames int
+	if err := db.QueryRowContext(testCtx, `
+		SELECT COUNT(*)
+		FROM juhe_business.external_integration_source_tokens
+		WHERE source_ref_id = $1
+		  AND name <> $2
+	`, w2ExternalSourceListActiveID, "W2 PATCH Lock First 生产 Token").Scan(&mismatchedTokenNames); err != nil {
+		t.Fatalf("read persisted external source token names after row lock updates: %v", err)
+	}
+	if mismatchedTokenNames != 0 {
+		t.Fatalf("external source row lock updates lost synchronized token name: mismatches=%d", mismatchedTokenNames)
+	}
+}
+
+func assertW2ExternalSourceUpdateWaitingOnRowLock(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var waiting bool
+		err := db.QueryRowContext(waitCtx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND pid <> pg_backend_pid()
+				  AND state = 'active'
+				  AND wait_event_type = 'Lock'
+				  AND cardinality(pg_blocking_pids(pid)) > 0
+				  AND query LIKE '-- name: FindManagementExternalIntegrationSourceForUpdate :one%'
+			)
+		`).Scan(&waiting)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+				t.Fatal("second external source update never entered a PostgreSQL row lock wait")
+			}
+			t.Fatalf("inspect external source row lock wait: %v", err)
+		}
+		if waiting {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-waitCtx.Done():
+			t.Fatal("second external source update never entered a PostgreSQL row lock wait")
+		}
 	}
 }
 
