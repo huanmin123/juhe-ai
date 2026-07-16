@@ -129,11 +129,10 @@ async function testPostgresDatabaseClient(): Promise<void> {
       await tx.execute('INSERT INTO demo (id, name) VALUES (?, ?)', ['id_1', 'name_1'])
     })
   const committedConnection = assertConnection(pool.connection)
-  assert.deepEqual(committedConnection.queries.map((query: LoggedQuery) => query.sql), [
-    'BEGIN',
-    'INSERT INTO demo (id, name) VALUES ($1, $2)',
-    'COMMIT'
-  ])
+  assert.equal(committedConnection.queries[0]?.sql, 'BEGIN')
+  assert.match(committedConnection.queries[1]?.sql ?? '', /^SET LOCAL statement_timeout/)
+  assert.equal(committedConnection.queries[2]?.sql, 'INSERT INTO demo (id, name) VALUES ($1, $2)')
+  assert.equal(committedConnection.queries[3]?.sql, 'COMMIT')
   assert.equal(committedConnection.releaseCount, 1)
 
   pool.connection = undefined
@@ -145,11 +144,10 @@ async function testPostgresDatabaseClient(): Promise<void> {
     /tx failed/
   )
   const rolledBackConnection = assertConnection(pool.connection)
-  assert.deepEqual(rolledBackConnection.queries.map((query: LoggedQuery) => query.sql), [
-    'BEGIN',
-    'INSERT INTO demo (id, name) VALUES ($1, $2)',
-    'ROLLBACK'
-  ])
+  assert.equal(rolledBackConnection.queries[0]?.sql, 'BEGIN')
+  assert.match(rolledBackConnection.queries[1]?.sql ?? '', /^SET LOCAL statement_timeout/)
+  assert.equal(rolledBackConnection.queries[2]?.sql, 'INSERT INTO demo (id, name) VALUES ($1, $2)')
+  assert.equal(rolledBackConnection.queries[3]?.sql, 'ROLLBACK')
   assert.equal(rolledBackConnection.releaseCount, 1)
 }
 
