@@ -56,6 +56,8 @@
     "test:w4-team-authorization-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/w4-team-authorization-smoke-regression.ts",
     "test:plan0081-real-go-management-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/plan0081-real-go-management-smoke-regression.ts",
     "smoke:plan0081-real-go-management": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-management-smoke.ts",
+    "test:plan0081-real-go-external-source-create-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/plan0081-real-go-external-source-create-smoke-regression.ts",
+    "smoke:plan0081-real-go-external-source-create": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-external-source-create-smoke.ts",
     "test:plan0081-real-go-client-ip-allowlist-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/plan0081-real-go-client-ip-allowlist-smoke-regression.ts",
     "smoke:plan0081-real-go-client-ip-allowlist": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-client-ip-allowlist-smoke.ts",
     "smoke:plan0081-real-go-client-ip-allowlist-cleanup-only": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-client-ip-allowlist-smoke.ts --cleanup-only"
