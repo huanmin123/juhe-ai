@@ -723,52 +723,42 @@ func assertW2ProviderModelRequestCapabilitiesRow(
 
 func assertW2ProviderModelTierPricingRow(t *testing.T, ctx context.Context, db *sql.DB, model string) {
 	t.Helper()
-	var priorityInput, priorityOutput, priorityCachedInput, priorityCacheWrite sql.NullFloat64
-	var priorityCacheWrite1h sql.NullFloat64
-	var flexInput, flexOutput, flexCachedInput, flexCacheWrite sql.NullFloat64
-	var flexCacheWrite1h sql.NullFloat64
+	var serviceTierPricesJSON string
 	var longContextThreshold sql.NullInt64
 	var longContextInputMultiplier, longContextOutputMultiplier sql.NullFloat64
 	if err := db.QueryRowContext(ctx, `
 		SELECT
-			priority_input_usd_per_1m,
-			priority_output_usd_per_1m,
-			priority_cached_input_usd_per_1m,
-			priority_cache_write_usd_per_1m,
-			priority_cache_write_1h_usd_per_1m,
-			flex_input_usd_per_1m,
-			flex_output_usd_per_1m,
-			flex_cached_input_usd_per_1m,
-			flex_cache_write_usd_per_1m,
-			flex_cache_write_1h_usd_per_1m,
+			service_tier_prices_json,
 			long_context_input_token_threshold,
 			long_context_input_cost_multiplier,
 			long_context_output_cost_multiplier
 		FROM juhe_business.provider_model_catalog
 		WHERE provider_code = 'gpt' AND model = $1
 	`, model).Scan(
-		&priorityInput,
-		&priorityOutput,
-		&priorityCachedInput,
-		&priorityCacheWrite,
-		&priorityCacheWrite1h,
-		&flexInput,
-		&flexOutput,
-		&flexCachedInput,
-		&flexCacheWrite,
-		&flexCacheWrite1h,
+		&serviceTierPricesJSON,
 		&longContextThreshold,
 		&longContextInputMultiplier,
 		&longContextOutputMultiplier,
 	); err != nil {
 		t.Fatalf("query %s tier pricing metadata: %v", model, err)
 	}
-	if priorityInput.Float64 != 10 || priorityOutput.Float64 != 60 ||
-		priorityCachedInput.Float64 != 1 || priorityCacheWrite.Float64 != 12.5 ||
-		priorityCacheWrite1h.Valid ||
-		flexInput.Float64 != 2.5 || flexOutput.Float64 != 15 ||
-		flexCachedInput.Float64 != 0.25 || flexCacheWrite.Float64 != 3.125 ||
-		flexCacheWrite1h.Valid ||
+	var serviceTierPrices map[string]port.ManagementProviderModelPriceSet
+	if err := json.Unmarshal([]byte(serviceTierPricesJSON), &serviceTierPrices); err != nil {
+		t.Fatalf("decode %s tier pricing metadata: %v", model, err)
+	}
+	priority, priorityOK := serviceTierPrices["priority"]
+	flex, flexOK := serviceTierPrices["flex"]
+	if !priorityOK || !flexOK ||
+		priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != 10 ||
+		priority.OutputUSDPer1M == nil || *priority.OutputUSDPer1M != 60 ||
+		priority.CachedInputUSDPer1M == nil || *priority.CachedInputUSDPer1M != 1 ||
+		priority.CacheWriteUSDPer1M == nil || *priority.CacheWriteUSDPer1M != 12.5 ||
+		priority.CacheWrite1hUSDPer1M != nil ||
+		flex.InputUSDPer1M == nil || *flex.InputUSDPer1M != 2.5 ||
+		flex.OutputUSDPer1M == nil || *flex.OutputUSDPer1M != 15 ||
+		flex.CachedInputUSDPer1M == nil || *flex.CachedInputUSDPer1M != 0.25 ||
+		flex.CacheWriteUSDPer1M == nil || *flex.CacheWriteUSDPer1M != 3.125 ||
+		flex.CacheWrite1hUSDPer1M != nil ||
 		longContextThreshold.Int64 != 272000 ||
 		longContextInputMultiplier.Float64 != 2 ||
 		longContextOutputMultiplier.Float64 != 1.5 {
