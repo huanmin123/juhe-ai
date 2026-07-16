@@ -34,6 +34,8 @@ type ManagementExternalIntegrationSourceTokenUpdateResult struct {
 	AfterToken  ManagementExternalIntegrationSourcePrimaryTokenRow
 }
 
+// ManagementExternalIntegrationSourceTokenUpdater must update and reread in one transaction,
+// then call validate exactly once before commit; a validation error must roll back the transaction.
 type ManagementExternalIntegrationSourceTokenUpdater interface {
 	UpdateManagementExternalIntegrationSourceToken(
 		ctx context.Context,

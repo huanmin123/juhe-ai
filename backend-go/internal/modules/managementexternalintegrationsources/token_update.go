@@ -11,8 +11,11 @@ import (
 )
 
 var (
-	ErrTokenNotFound                = errors.New("Token 不存在")
-	ErrBuiltInTokenUpdateRestricted = errors.New("内置测试 Token 不支持编辑")
+	ErrTokenNotFound                       = errors.New("Token 不存在")
+	ErrBuiltInTokenUpdateRestricted        = errors.New("内置测试 Token 不支持编辑")
+	errTokenUpdateSnapshotIdentityMismatch = errors.New(
+		"management external integration source token update snapshot identity mismatched",
+	)
 )
 
 type tokenUpdateValidationError struct {
@@ -80,6 +83,9 @@ func (s *TokenUpdateService) Update(ctx context.Context, input TokenUpdateInput)
 
 	var result TokenUpdateResult
 	_, err = s.store.UpdateManagementExternalIntegrationSourceToken(ctx, normalized, func(stored port.ManagementExternalIntegrationSourceTokenUpdateResult) error {
+		if err := validateTokenUpdateSnapshotIdentity(stored, normalized.SourceID, normalized.TokenID); err != nil {
+			return err
+		}
 		var mapErr error
 		result.Before, mapErr = tokenFromStore(stored.BeforeToken)
 		if mapErr != nil {
@@ -102,6 +108,22 @@ func (s *TokenUpdateService) Update(ctx context.Context, input TokenUpdateInput)
 
 	result.Committed = true
 	return result, nil
+}
+
+func validateTokenUpdateSnapshotIdentity(
+	stored port.ManagementExternalIntegrationSourceTokenUpdateResult,
+	sourceID string,
+	tokenID string,
+) error {
+	if stored.BeforeToken.SourceRefID != sourceID ||
+		stored.AfterToken.SourceRefID != sourceID ||
+		stored.BeforeToken.ID != tokenID ||
+		stored.AfterToken.ID != tokenID ||
+		stored.BeforeToken.SourceRefID != stored.AfterToken.SourceRefID ||
+		stored.BeforeToken.ID != stored.AfterToken.ID {
+		return errTokenUpdateSnapshotIdentityMismatch
+	}
+	return nil
 }
 
 func normalizeTokenUpdateInput(input TokenUpdateInput) (port.ManagementExternalIntegrationSourceTokenUpdateInput, error) {

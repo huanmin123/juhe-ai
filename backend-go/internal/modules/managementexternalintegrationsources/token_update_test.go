@@ -273,6 +273,58 @@ func TestTokenUpdateServiceReturnsMappingErrorsBeforeCommit(t *testing.T) {
 	}
 }
 
+func TestTokenUpdateServiceRejectsSnapshotIdentityMismatchBeforeCommit(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*port.ManagementExternalIntegrationSourceTokenUpdateResult)
+		want      string
+	}{
+		{
+			name: "before source",
+			configure: func(result *port.ManagementExternalIntegrationSourceTokenUpdateResult) {
+				result.BeforeToken.SourceRefID = "source_other"
+			},
+			want: "management external integration source token update snapshot identity mismatched",
+		},
+		{
+			name: "before token id",
+			configure: func(result *port.ManagementExternalIntegrationSourceTokenUpdateResult) {
+				result.BeforeToken.ID = "token_other"
+			},
+			want: "management external integration source token update snapshot identity mismatched",
+		},
+		{
+			name: "after source",
+			configure: func(result *port.ManagementExternalIntegrationSourceTokenUpdateResult) {
+				result.AfterToken.SourceRefID = "source_other"
+			},
+			want: "management external integration source token update snapshot identity mismatched",
+		},
+		{
+			name: "after token id",
+			configure: func(result *port.ManagementExternalIntegrationSourceTokenUpdateResult) {
+				result.AfterToken.ID = "token_other"
+			},
+			want: "management external integration source token update snapshot identity mismatched",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stored := validTokenUpdateStoreResult(time.Date(2026, 7, 17, 11, 30, 0, 0, time.UTC))
+			test.configure(&stored)
+			store := &externalIntegrationSourceTokenUpdateStoreStub{result: stored}
+
+			result, err := NewTokenUpdateService(store).Update(context.Background(), TokenUpdateInput{
+				SourceID: "source_1",
+				TokenID:  "token_1",
+			})
+			if err == nil || err.Error() != test.want || store.calls != 1 || store.validateCalls != 1 || result.Committed {
+				t.Fatalf("identity error=%v calls=%d validate=%d result=%#v", err, store.calls, store.validateCalls, result)
+			}
+		})
+	}
+}
+
 func TestTokenUpdateServiceRequiresStore(t *testing.T) {
 	_, err := NewTokenUpdateService(nil).Update(context.Background(), TokenUpdateInput{SourceID: "source_1", TokenID: "token_1"})
 	if err == nil {
