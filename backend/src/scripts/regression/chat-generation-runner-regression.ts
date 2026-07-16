@@ -206,12 +206,35 @@ async function shutdownTimeoutBoundsNonCooperativeExecution(): Promise<void> {
   assert.equal(runner.signal.aborted, true, 'shutdown 必须 abort 不合作 runner')
   await tick()
   assert.equal(completionSettled, false, '超时返回不要求不合作 execute 的 completion 伪造 settle')
+  assert.equal(registry.get(runner.identity), undefined, '超时返回必须释放 registry 对不合作 runner 的强引用')
   assert.equal(registry.subscribe(runner.identity, eventCollector().subscriber), false, '超时返回后仍必须拒绝订阅')
   const rejected = new ChatGenerationRunner({
     identity: identity('turn_after_timeout', 'conv_after_timeout'),
     execute: async () => ({ status: 'completed', data: {} })
   })
   assert.equal(registry.start(rejected), false, '超时返回后仍必须拒绝新 start')
+}
+
+async function cleanupFailureDoesNotRejectDetachedRun(): Promise<void> {
+  const unhandled: unknown[] = []
+  const reported: unknown[] = []
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const runner = new ChatGenerationRunner({
+      identity: identity('turn_cleanup_failure', 'conv_cleanup_failure'),
+      execute: async () => ({ status: 'completed', data: {} }),
+      reportCleanupError: (error) => { reported.push(error) }
+    })
+    assert.equal(runner.start(() => { throw new Error('cleanup failed') }), true)
+    await runner.completion
+    await tick()
+    assert.equal(runner.state, 'completed', 'cleanup 失败不得改变 runner 终态')
+    assert.equal((reported[0] as Error)?.message, 'cleanup failed', 'cleanup 异常应交给可选 reporter 有界处理')
+    assert.deepEqual(unhandled, [], 'detached run 不得因 cleanup 失败产生 unhandled rejection')
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
 }
 
 await twoSubscribersShareOneExecution()
@@ -221,6 +244,7 @@ await staleFinallyCannotDeleteReplacement()
 await terminalFollowsFinalize()
 await snapshotIsBounded()
 await shutdownRejectsAndDrains()
+await cleanupFailureDoesNotRejectDetachedRun()
 await shutdownTimeoutBoundsNonCooperativeExecution()
 
 console.log('AI 问答服务端生成 runner 回归通过')

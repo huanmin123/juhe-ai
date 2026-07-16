@@ -58,6 +58,7 @@ export interface ChatGenerationExecutionContext {
 export interface ChatGenerationRunnerOptions {
   identity: ChatGenerationIdentity
   execute(context: ChatGenerationExecutionContext): Promise<ChatGenerationTerminalResult>
+  reportCleanupError?(error: unknown): void
 }
 
 interface RegisteredSubscriber {
@@ -71,6 +72,7 @@ export class ChatGenerationRunner {
   readonly completion: Promise<void>
 
   private readonly execute: ChatGenerationRunnerOptions['execute']
+  private readonly reportCleanupError?: ChatGenerationRunnerOptions['reportCleanupError']
   private readonly subscribers = new Map<ChatGenerationSubscriber, RegisteredSubscriber>()
   private resolveCompletion!: () => void
   private eventVersion = 0
@@ -83,6 +85,7 @@ export class ChatGenerationRunner {
   constructor(options: ChatGenerationRunnerOptions) {
     this.identity = Object.freeze({ ...options.identity })
     this.execute = options.execute
+    this.reportCleanupError = options.reportCleanupError
     this.completion = new Promise<void>((resolve) => { this.resolveCompletion = resolve })
   }
 
@@ -140,7 +143,13 @@ export class ChatGenerationRunner {
       // cannot safely invent a client terminal event, but the runner must still settle.
       if (!this.terminal) this.currentState = 'failed'
     } finally {
-      try { onSettled?.() } finally { this.resolveCompletion() }
+      try {
+        onSettled?.()
+      } catch (error) {
+        try { this.reportCleanupError?.(error) } catch {}
+      } finally {
+        this.resolveCompletion()
+      }
     }
   }
 

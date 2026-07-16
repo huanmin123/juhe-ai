@@ -54,6 +54,7 @@ export class ChatGenerationRegistry {
       ])
     } finally {
       if (timeout) clearTimeout(timeout)
+      for (const runner of runners) this.deleteIfMatches(runner)
     }
   }
 
