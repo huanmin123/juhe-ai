@@ -6,6 +6,7 @@ import {
   calculateChatCacheBudget,
   cloneVisibleChatMessage,
   type ChatCacheConversationHead,
+  type ChatCacheEvictionCursor,
   type ChatCachePutContext,
   type ChatLocalCacheStorageAdapter,
   type ChatRunningTurn
@@ -17,6 +18,8 @@ class MemoryAdapter implements ChatLocalCacheStorageAdapter {
   readonly messages = new Map<string, ChatMessage>()
   readonly running = new Map<string, ChatRunningTurn>()
   failWith?: Error
+  putFailures: Error[] = []
+  putMessagesCalls = 0
 
   private key(account: string, conversation: string): string { return `${account}\u0000${conversation}` }
   private messageKey(account: string, conversation: string, sequenceNo: number): string { return `${this.key(account, conversation)}\u0000${sequenceNo}` }
@@ -34,6 +37,9 @@ class MemoryAdapter implements ChatLocalCacheStorageAdapter {
 
   async putHead(head: ChatCacheConversationHead): Promise<void> { this.fail(); this.heads.set(this.key(head.systemAccountId, head.conversationId), structuredClone(head)) }
   async putMessages(account: string, conversation: string, messages: ChatMessage[], context: ChatCachePutContext): Promise<ChatCacheConversationHead> {
+    this.putMessagesCalls += 1
+    const putFailure = this.putFailures.shift()
+    if (putFailure) throw putFailure
     this.fail()
     const key = this.key(account, conversation)
     const head = this.heads.get(key) ?? { systemAccountId: account, conversationId: conversation, messageRevision: 0, lastAccessAt: context.now, byteSize: 0 }
@@ -62,7 +68,12 @@ class MemoryAdapter implements ChatLocalCacheStorageAdapter {
   async removeRunningTurn(account: string, conversation: string): Promise<void> { this.fail(); this.running.delete(this.key(account, conversation)) }
   async touch(account: string, conversation: string, now: number): Promise<void> { this.fail(); const key = this.key(account, conversation); const head = this.heads.get(key); if (head) this.heads.set(key, { ...head, lastAccessAt: now }) }
   async clearAccount(account: string): Promise<void> { this.fail(); for (const head of [...this.heads.values()]) if (head.systemAccountId === account) await this.deleteConversation(account, head.conversationId) }
-  async listEvictionCandidates(limit: number): Promise<ChatCacheConversationHead[]> { this.fail(); return [...this.heads.values()].sort((a, b) => a.lastAccessAt - b.lastAccessAt).slice(0, limit) }
+  async listEvictionCandidates(limit: number, after?: ChatCacheEvictionCursor): Promise<ChatCacheConversationHead[]> {
+    this.fail()
+    const ordered = [...this.heads.values()].sort((a, b) => a.lastAccessAt - b.lastAccessAt || a.systemAccountId.localeCompare(b.systemAccountId) || a.conversationId.localeCompare(b.conversationId))
+    const start = after ? ordered.findIndex((head) => head.lastAccessAt === after.lastAccessAt && head.systemAccountId === after.systemAccountId && head.conversationId === after.conversationId) + 1 : 0
+    return ordered.slice(start, start + limit)
+  }
   async cleanupExpired(serverTime: string, conversationLimit: number, messageLimit: number): Promise<{ conversations: number; messages: number }> {
     this.fail(); let conversations = 0; let messages = 0
     for (const head of [...this.heads.values()].sort((a, b) => a.lastAccessAt - b.lastAccessAt)) {
@@ -101,6 +112,17 @@ assert.ok(sanitized)
 assert.equal(JSON.stringify(sanitized).includes('secret'), false)
 assert.equal(JSON.stringify(sanitized).includes('base64'), false)
 assert.equal((sanitized!.contentBlocks?.[1] as { assetId?: string }).assetId, 'asset_1')
+assert.equal('item' in (sanitized!.contentBlocks?.[3] ?? {}), false, 'tool_call 原始 item 不得进入展示缓存')
+const deepToolPayload = cloneVisibleChatMessage({
+  ...message(2, 'safe'),
+  contentBlocks: [{ type: 'tool_call', id: 'tool_deep', toolType: 'search', status: 'completed', item: { query: 'safe', nested: { a: { b: { c: { d: { e: { password: 'deep-secret', raw: 'data:image/png;base64,AAAA' } } } } } } } }],
+  toolEvents: [{ id: 'tool_deep', type: 'search', status: 'completed', item: { authorization: 'Bearer secret', response: { token: 'secret', payload: 'raw-upstream-body' } } }]
+})
+assert.ok(deepToolPayload)
+assert.equal(JSON.stringify(deepToolPayload).includes('deep-secret'), false)
+assert.equal(JSON.stringify(deepToolPayload).includes('base64'), false)
+assert.equal(JSON.stringify(deepToolPayload).includes('raw-upstream-body'), false)
+assert.equal(deepToolPayload!.toolEvents?.[0]?.item, undefined)
 assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), contentText: 'data:image/png;base64,AAAA' }), undefined)
 assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), blob: new Blob(['x']) } as unknown as ChatMessage), undefined)
 const cyclic = message(1, 'x') as ChatMessage & { metadata?: unknown }; cyclic.metadata = cyclic
@@ -139,6 +161,26 @@ assert.equal(lruAdapter.heads.has('A\u0000old'), false)
 assert.equal(lruAdapter.heads.has('A\u0000current'), true)
 assert.equal(lruAdapter.heads.has('A\u0000running'), true)
 assert.equal(lruAdapter.heads.has('A\u0000pending'), true)
+
+const pagedAdapter = new MemoryAdapter()
+for (let index = 1; index <= 16; index += 1) await pagedAdapter.putHead({ systemAccountId: 'A', conversationId: `active_${index}`, messageRevision: 1, lastAccessAt: index, byteSize: 10, activeTurnId: `turn_${index}` })
+await pagedAdapter.putHead({ systemAccountId: 'A', conversationId: 'victim', messageRevision: 1, lastAccessAt: 17, byteSize: 10 })
+pagedAdapter.putFailures.push(Object.assign(new Error('quota'), { name: 'QuotaExceededError' }))
+const pagedCache = new ChatLocalCache({ adapter: pagedAdapter })
+const pagedResult = await pagedCache.putMessages('A', 'written', [{ ...message(1, 'safe'), conversationId: 'written' }])
+assert.equal(pagedResult.ok, true, '首次 quota 淘汰后应重试成功')
+assert.equal(pagedAdapter.heads.has('A\u0000victim'), false, '前一页全是 active turn 时必须继续有界翻页淘汰后页')
+assert.equal([...pagedAdapter.heads.values()].filter((head) => head.activeTurnId).length, 16, 'activeTurnId head 不得淘汰')
+
+const disabledAdapter = new MemoryAdapter()
+disabledAdapter.putFailures.push(Object.assign(new Error('quota-1'), { name: 'QuotaExceededError' }), Object.assign(new Error('quota-2'), { name: 'QuotaExceededError' }))
+const disabledCache = new ChatLocalCache({ adapter: disabledAdapter })
+const disabledResult = await disabledCache.putMessages('A', 'c1', [message(1, 'safe')])
+assert.deepEqual({ ok: disabledResult.ok, enabled: disabledResult.enabled }, { ok: false, enabled: false })
+const callsAfterDisable = disabledAdapter.putMessagesCalls
+const disabledNoop = await disabledCache.putMessages('A', 'c1', [message(2, 'no-op')])
+assert.equal(disabledNoop.enabled, false)
+assert.equal(disabledAdapter.putMessagesCalls, callsAfterDisable, '禁用后写入不得再访问 storage')
 
 const expiryAdapter = new MemoryAdapter()
 const expiry = new ChatLocalCache({ adapter: expiryAdapter })

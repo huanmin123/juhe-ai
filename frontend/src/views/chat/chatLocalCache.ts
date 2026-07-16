@@ -35,6 +35,12 @@ export interface ChatCachePutContext {
   now: number
 }
 
+export interface ChatCacheEvictionCursor {
+  lastAccessAt: number
+  systemAccountId: string
+  conversationId: string
+}
+
 export interface ChatLocalCacheStorageAdapter {
   readConversation(systemAccountId: string, conversationId: string): Promise<{ head?: ChatCacheConversationHead; messages: ChatMessage[]; runningTurn?: ChatRunningTurn }>
   putHead(head: ChatCacheConversationHead): Promise<void>
@@ -45,7 +51,7 @@ export interface ChatLocalCacheStorageAdapter {
   removeRunningTurn(systemAccountId: string, conversationId: string): Promise<void>
   touch(systemAccountId: string, conversationId: string, now: number): Promise<void>
   clearAccount(systemAccountId: string): Promise<void>
-  listEvictionCandidates(limit: number): Promise<ChatCacheConversationHead[]>
+  listEvictionCandidates(limit: number, after?: ChatCacheEvictionCursor): Promise<ChatCacheConversationHead[]>
   cleanupExpired(serverTime: string, conversationLimit: number, messageLimit: number): Promise<{ conversations: number; messages: number }>
   close(): void
 }
@@ -68,7 +74,6 @@ export function calculateChatCacheBudget(estimate?: { quota?: number }): number 
     : DEFAULT_BUDGET
 }
 
-const SECRET_KEY = /(api.?key|token|password|proxy|upstream|checkpoint|hidden.?image|authorization|credential|secret)/i
 const DATA_URL = /^data:/i
 const BASE64_PAYLOAD = /(?:^|[,;])base64(?:,|$)/i
 
@@ -93,21 +98,6 @@ function validateCloneInput(value: unknown, seen = new Set<object>()): boolean {
   return valid
 }
 
-function cleanMetadata(value: unknown, depth = 0): unknown {
-  if (depth > 6 || value === null || typeof value === 'boolean') return value
-  if (typeof value === 'string') return DATA_URL.test(value) || BASE64_PAYLOAD.test(value) ? undefined : value
-  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined
-  if (Array.isArray(value)) return value.map((item) => cleanMetadata(item, depth + 1)).filter((item) => item !== undefined)
-  if (!isPlainRecord(value)) return undefined
-  const output: Record<string, unknown> = {}
-  for (const [key, item] of Object.entries(value)) {
-    if (SECRET_KEY.test(key)) continue
-    const cleaned = cleanMetadata(item, depth + 1)
-    if (cleaned !== undefined) output[key] = cleaned
-  }
-  return output
-}
-
 function stringValue(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined }
 function numberValue(value: unknown): number | undefined { return typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined }
 
@@ -117,8 +107,7 @@ function cloneContentBlock(value: unknown): ChatMessageContentBlock | undefined 
   if (value.type === 'input_text' && typeof value.text === 'string' && numberValue(value.order) !== undefined) return { type: 'input_text', text: value.text, order: value.order as number }
   if (value.type === 'input_image' && typeof value.assetId === 'string' && numberValue(value.order) !== undefined) return { type: 'input_image', assetId: value.assetId, order: value.order as number }
   if (value.type === 'tool_call' && typeof value.id === 'string' && typeof value.toolType === 'string' && ['started', 'updated', 'completed', 'failed'].includes(String(value.status))) {
-    const item = cleanMetadata(value.item ?? value.metadata)
-    return { type: 'tool_call', id: value.id, toolType: value.toolType, status: value.status as 'started' | 'updated' | 'completed' | 'failed', ...(isPlainRecord(item) ? { item } : {}) }
+    return { type: 'tool_call', id: value.id, toolType: value.toolType, status: value.status as 'started' | 'updated' | 'completed' | 'failed' }
   }
   return undefined
 }
@@ -138,8 +127,7 @@ export function cloneVisibleChatMessage(value: unknown): ChatMessage | undefined
     if (Array.isArray(value.toolEvents)) {
       result.toolEvents = value.toolEvents.flatMap((event) => {
         if (!isPlainRecord(event) || typeof event.id !== 'string' || typeof event.type !== 'string' || !['started', 'updated', 'completed', 'failed'].includes(String(event.status))) return []
-        const item = cleanMetadata(event.item)
-        return [{ id: event.id, type: event.type, status: event.status as 'started' | 'updated' | 'completed' | 'failed', ...(isPlainRecord(item) ? { item } : {}) }]
+        return [{ id: event.id, type: event.type, status: event.status as 'started' | 'updated' | 'completed' | 'failed' }]
       })
     }
     return JSON.parse(JSON.stringify(result)) as ChatMessage
@@ -207,7 +195,7 @@ export class ChatLocalCache {
         try {
           await this.adapter.putMessages(systemAccountId, conversationId, messages as ChatMessage[], { now: this.clock() })
           return { enabled: true, ok: true }
-        } catch (retryError) { return this.fail('put_messages', retryError, false) }
+        } catch (retryError) { return this.fail('put_messages', retryError) }
       }
       return this.fail('put_messages', error)
     }
@@ -235,22 +223,29 @@ export class ChatLocalCache {
 
   private fail(operation: string, error: unknown, disable = true): ChatCacheResult<never> {
     try { this.diagnostic?.(errorCode(operation, error)) } catch { /* diagnostics are isolated */ }
-    if (disable && !isQuotaError(error)) this.enabledState = false
+    if (disable) this.enabledState = false
     return { enabled: this.enabledState, ok: false }
   }
 
   private async safeEstimate(): Promise<{ quota?: number; usage?: number } | undefined> { try { return await this.estimate() } catch { return undefined } }
 
   private async evict(budget: number, account: string, writtenConversation: string, options: ChatCacheWriteOptions): Promise<void> {
-    let released = 0
-    const candidates = await this.adapter.listEvictionCandidates(EVICTION_BATCH)
-    for (const candidate of candidates) {
-      if (candidate.systemAccountId === account && (candidate.conversationId === writtenConversation || candidate.conversationId === options.currentConversationId || options.pendingConfirmationConversationIds?.has(candidate.conversationId))) continue
-      const detail = await this.adapter.readConversation(candidate.systemAccountId, candidate.conversationId)
-      if (detail.runningTurn) continue
-      await this.adapter.deleteConversation(candidate.systemAccountId, candidate.conversationId)
-      released += candidate.byteSize
-      if (released >= budget) break
+    let released = 0; let scanned = 0; let cursor: ChatCacheEvictionCursor | undefined
+    while (scanned < 64) {
+      const candidates = await this.adapter.listEvictionCandidates(Math.min(EVICTION_BATCH, 64 - scanned), cursor)
+      if (candidates.length === 0) return
+      scanned += candidates.length
+      for (const candidate of candidates) {
+        cursor = { lastAccessAt: candidate.lastAccessAt, systemAccountId: candidate.systemAccountId, conversationId: candidate.conversationId }
+        if (candidate.activeTurnId) continue
+        if (candidate.systemAccountId === account && (candidate.conversationId === writtenConversation || candidate.conversationId === options.currentConversationId || options.pendingConfirmationConversationIds?.has(candidate.conversationId))) continue
+        const detail = await this.adapter.readConversation(candidate.systemAccountId, candidate.conversationId)
+        if (detail.runningTurn) continue
+        await this.adapter.deleteConversation(candidate.systemAccountId, candidate.conversationId)
+        released += candidate.byteSize
+        if (released >= budget) return
+      }
+      if (candidates.length < EVICTION_BATCH) return
     }
   }
 }
@@ -277,7 +272,7 @@ export class NativeIndexedDbChatCacheAdapter implements ChatLocalCacheStorageAda
       request.onupgradeneeded = () => {
         const db = request.result
         const heads = db.createObjectStore('conversation_heads', { keyPath: ['systemAccountId', 'conversationId'] })
-        heads.createIndex('by_last_access', 'lastAccessAt')
+        heads.createIndex('by_last_access', ['lastAccessAt', 'systemAccountId', 'conversationId'])
         heads.createIndex('by_account', 'systemAccountId')
         const messages = db.createObjectStore('messages', { keyPath: ['systemAccountId', 'conversationId', 'sequenceNo'] })
         messages.createIndex('by_conversation', ['systemAccountId', 'conversationId'])
@@ -331,7 +326,7 @@ export class NativeIndexedDbChatCacheAdapter implements ChatLocalCacheStorageAda
       for (const head of heads) await this.deleteConversation(account, head.conversationId)
     }
   }
-  async listEvictionCandidates(limit: number): Promise<HeadRecord[]> { const db = await this.open(); const tx = db.transaction('conversation_heads', 'readonly'); const done = transactionDone(tx); const values = await requestValue<HeadRecord[]>(tx.objectStore('conversation_heads').index('by_last_access').getAll(undefined, limit)); await done; return values }
+  async listEvictionCandidates(limit: number, after?: ChatCacheEvictionCursor): Promise<HeadRecord[]> { const db = await this.open(); const tx = db.transaction('conversation_heads', 'readonly'); const done = transactionDone(tx); const range = after ? IDBKeyRange.lowerBound([after.lastAccessAt, after.systemAccountId, after.conversationId], true) : undefined; const values = await requestValue<HeadRecord[]>(tx.objectStore('conversation_heads').index('by_last_access').getAll(range, limit)); await done; return values }
 
   async cleanupExpired(serverTime: string, conversationLimit: number, messageLimit: number): Promise<{ conversations: number; messages: number }> {
     const db = await this.open(); const tx = db.transaction('conversation_heads', 'readonly'); const done = transactionDone(tx); const heads = await requestValue<HeadRecord[]>(tx.objectStore('conversation_heads').index('by_last_access').getAll(undefined, conversationLimit)); await done
