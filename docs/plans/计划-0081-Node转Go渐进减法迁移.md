@@ -157,7 +157,7 @@
 
 #### W2 外部来源更新切片（2026-07-16）
 
-- 目标：只迁移管理员 `PATCH /__aisys__/api/external-integration-sources/{id}`，继续由 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；集合 `POST`、详情 `POST/PUT/DELETE`、内置 reset、Token `POST/PATCH` 和其他未定义方法仍保持 Go `404`，生产切流前 Node 继续作为唯一写 owner。
+- 目标：本切片只迁移管理员 `PATCH /__aisys__/api/external-integration-sources/{id}`，继续由 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；该切片落地时集合 `POST`、详情 `POST/PUT/DELETE`、内置 reset、Token `POST/PATCH` 和其他未定义方法仍保持 Go `404`。当前集合 POST 与详情 DELETE 已由后续独立切片进入 Go opt-in，内置 reset 和 Token writes 仍由 Node owner；生产切流前保留 Node 路由。
 - API 契约：写鉴权 touch 与 IP/user write limiter 先于 handler，管理员权限先于业务解析；请求体限制 `256 KiB`、只接受单个严格 JSON object。partial 字段为 `name/status/scopes/rateLimits/expiresAt/notes`；字段存在性必须保留，`expiresAt` 与 `notes` 可显式 `null` 清空，其他字段不接受 `null`。`name` 按 ECMAScript trim 后为 `1..80` 个 UTF-16 code units，`notes` trim 后最多 `500` 个 UTF-16 code units，`status` 只允许 `active/disabled`；scope 使用当前 16 项白名单并去重排序；限频规则最多 8 条、窗口唯一并按窗口排序；时间只接受当前严格服务端 ISO 语义。空 object 按 Node 当前 partial schema 作为成功 no-op，不额外发明“至少一个字段”限制。
 - 存储契约：PostgreSQL 事务先按 ID 锁定来源行，基于锁定快照合并 partial 值，并依赖 `idx_external_integration_sources_name_unique_lower` 保证大小写不敏感名称唯一；内置来源 `extsrc_builtin_test` 只允许提交 `status`。更新普通来源后，同事务把全部关联 Token 名称改为“`{来源名} 生产 Token`”，非 `revoked` Token 状态同步来源状态，scope 与过期时间同步来源，`revoked` 状态保持不变；随后从同一事务回读安全详情。任何来源更新、Token 同步或回读失败都必须整体回滚。
 - 副作用契约：成功提交后 best-effort 入队 Node 等价 `external_integration_sources.update` operation log，固定 `module=external_integration_sources`、`resourceType=external_integration_source`、`admin_only/full`，changes 只包含 name/status/expiresAt/rateLimits 四项并使用更新前后快照；不新增 Node 当前不存在的 Redis cache invalidation。响应为 `200 { data: source }` 和 `no-store`，不存在为 `404`，业务校验 / 内置保护 / 重名为 Node 等价 `400`，内部存储错误不泄漏细节。
@@ -171,7 +171,7 @@
 
 #### W2 外部来源删除切片（2026-07-16）
 
-- 目标：只迁移管理员 `DELETE /__aisys__/api/external-integration-sources/{id}`，继续由 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；集合 `POST`、详情 `POST/PUT`、内置 reset 和 Token writes 继续由 Node owner。
+- 目标：本切片只迁移管理员 `DELETE /__aisys__/api/external-integration-sources/{id}`，继续由 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；该切片落地时集合 `POST`、详情 `POST/PUT`、内置 reset 和 Token writes 继续由 Node owner。当前集合 POST 已由后续创建切片进入 Go opt-in，详情 `POST/PUT`、内置 reset 和 Token writes 仍由 Node owner；生产切流前保留 Node 路由。
 - API 契约：写鉴权 touch、IP/user write limiter、管理员权限和 `external_integration_sources.delete` mutation guard 先于 handler；fingerprint 只含 ECMAScript trim 后的 `id`。空 ID 为 `400 来源系统不存在`，缺失为 `404`，内置 `extsrc_builtin_test` 为 `400 内置测试 Token 不支持删除`，内部错误统一 `500` 且不泄漏数据库细节；成功为 `204` 空 body、`no-store`。DELETE 不消费业务 body，也不新增 query 语义。
 - 存储契约：PostgreSQL 单事务 `FOR UPDATE` 锁定来源，锁后读取来源名称并以有界 `COUNT(*)` 统计关联 Token；删除来源主表并依赖当前 `ON DELETE CASCADE` 原子删除 Token。并发 Token 创建由父行锁 / 外键检查串行化；不读取或加载完整 Token 列表。`juhe_dataset.public_api_logs` 无外键且必须保留历史来源 / Token 快照，不随来源删除。
 - 副作用契约：提交成功后 best-effort 入队 Node 等价 `external_integration_sources.delete` operation log，固定 `admin_only/full`，changes 只有 `deleted false -> true` 与 `tokenCount before -> 0`；不新增 Redis cache invalidation。已建立鉴权上下文的并发在途请求不属于硬删除可撤回范围，后续新鉴权因数据库记录消失立即失败。
