@@ -95,7 +95,7 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	_, found, err := store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
 		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
 		InputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true, Value: &inputPrice},
-	})
+	}, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error { return nil })
 	if err != nil || !found {
 		t.Fatalf("update built-in input price: found=%v err=%v", found, err)
 	}
@@ -103,7 +103,7 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	_, found, err = store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
 		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
 		OutputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true, Value: &outputPrice},
-	})
+	}, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error { return nil })
 	if err != nil || !found {
 		t.Fatalf("update built-in output price: found=%v err=%v", found, err)
 	}
@@ -122,7 +122,7 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	_, found, err = store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
 		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
 		InputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true},
-	})
+	}, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error { return nil })
 	if err != nil || !found {
 		t.Fatalf("clear built-in input price: found=%v err=%v", found, err)
 	}
@@ -140,7 +140,7 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
 		InputUSDPer1M:  port.ManagementProviderModelOptionalFloat{Present: true, Value: &originalInputPrice},
 		OutputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true, Value: &originalOutputPrice},
-	})
+	}, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error { return nil })
 	if err != nil || !found {
 		t.Fatalf("restore built-in prices: found=%v err=%v", found, err)
 	}

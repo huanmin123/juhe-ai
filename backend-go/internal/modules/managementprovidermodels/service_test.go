@@ -1582,6 +1582,75 @@ func TestServiceUpdateBuiltInModelPricesPreservesFieldPresenceAndOrder(t *testin
 	}
 }
 
+func TestServiceUpdateBuiltInModelRejectsInvalidFinalConfigurationFromLockedSnapshot(t *testing.T) {
+	store := &providerModelStoreStub{
+		catalog: []port.ManagementProviderModelCatalogItem{{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active", Mode: "text",
+		}},
+		builtInUpdateResult: port.ManagementBuiltInProviderModelPriceUpdateResult{
+			After: port.ManagementProviderModelConfigurationSnapshot{
+				ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", Mode: "image",
+				SupportedReasoningEfforts: []string{"low"}, DefaultReasoningEffort: "low",
+			},
+		},
+	}
+
+	_, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{Mode: OptionalString{Set: true, Value: "image"}},
+	})
+	if message, ok := CustomModelValidationMessage(err); !ok || message != "只有文本自定义模型支持服务等级和思考能力配置" {
+		t.Fatalf("validation = %q/%t, err = %v", message, ok, err)
+	}
+	if store.catalog[0].Mode != "text" {
+		t.Fatalf("invalid final state was persisted: %+v", store.catalog[0])
+	}
+}
+
+func TestServiceUpdateBuiltInModelRevalidatesDefaultReasoningEffortAgainstLockedSupportedEfforts(t *testing.T) {
+	store := &providerModelStoreStub{
+		catalog: []port.ManagementProviderModelCatalogItem{{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active", Mode: "text",
+			SupportedReasoningEfforts: []string{"low"}, DefaultReasoningEffort: "low",
+		}},
+		builtInUpdateResult: port.ManagementBuiltInProviderModelPriceUpdateResult{
+			Before: port.ManagementProviderModelConfigurationSnapshot{
+				ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", Mode: "text",
+				SupportedReasoningEfforts: []string{"high"}, DefaultReasoningEffort: "high",
+			},
+			After: port.ManagementProviderModelConfigurationSnapshot{
+				ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", Mode: "text",
+				SupportedReasoningEfforts: []string{"high"}, DefaultReasoningEffort: "low",
+			},
+		},
+	}
+
+	_, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{DefaultReasoningEffort: OptionalString{Set: true, Value: "low"}},
+	})
+	if message, ok := CustomModelValidationMessage(err); !ok || message != "默认思考级别必须属于支持的思考级别" {
+		t.Fatalf("validation = %q/%t, err = %v", message, ok, err)
+	}
+}
+
+func TestServiceUpdateBuiltInModelPersistsNormalizedStringLists(t *testing.T) {
+	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
+		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active", Mode: "text",
+	}}}
+	_, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{SupportedAPIProtocols: OptionalStringList{Set: true, Value: []string{" responses ", "responses", "chat_completions"}}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModel() error = %v", err)
+	}
+	got := store.builtInUpdateInputs[0].SupportedAPIProtocols.Value
+	if !slices.Equal(got, []string{"responses", "chat_completions"}) {
+		t.Fatalf("stored protocols = %#v", got)
+	}
+}
+
 func TestServiceUpdateBuiltInModelPricesReturnsPersistedSnapshot(t *testing.T) {
 	inputPrice := 1.0
 	staleOutputPrice := 2.0
@@ -1596,9 +1665,9 @@ func TestServiceUpdateBuiltInModelPricesReturnsPersistedSnapshot(t *testing.T) {
 			InputUSDPer1M: &inputPrice, OutputUSDPer1M: &staleOutputPrice,
 		}},
 		builtInUpdateResult: port.ManagementBuiltInProviderModelPriceUpdateResult{
-			Before: port.ManagementProviderModelConfigurationSnapshot{ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active"},
+			Before: port.ManagementProviderModelConfigurationSnapshot{ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", Mode: "text", SupportedServiceTiers: []string{"priority"}},
 			After: port.ManagementProviderModelConfigurationSnapshot{
-				ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active",
+				ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", Mode: "text", SupportedServiceTiers: []string{"priority"},
 				InputUSDPer1M: &persistedInputPrice, OutputUSDPer1M: &persistedOutputPrice, CachedInputUSDPer1M: &persistedCachedInputPrice,
 				ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{
 					"priority": {InputUSDPer1M: &persistedTierInputPrice},
@@ -1984,10 +2053,11 @@ type providerModelStoreStub struct {
 	clearSystemErr         error
 }
 
-func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
+func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput, validate port.ManagementBuiltInProviderModelUpdateValidate) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
 	s.builtInUpdateInputs = append(s.builtInUpdateInputs, input)
 	for index := range s.catalog {
 		if s.catalog[index].ID == input.ID && s.catalog[index].ProviderCode == input.ProviderCode {
+			original := s.catalog[index]
 			before := builtInProviderModelConfigurationSnapshotFromCatalog(s.catalog[index])
 			applyBuiltInProviderModelOptionalString(&s.catalog[index].Status, input.Status)
 			applyBuiltInProviderModelOptionalString(&s.catalog[index].Mode, input.Mode)
@@ -2014,12 +2084,21 @@ func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ co
 			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].AudioOutputUSDPer1M, input.AudioOutputUSDPer1M)
 			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].OutputUSDPerImage, input.OutputUSDPerImage)
 			if s.builtInUpdateResult.After.ID != "" {
+				if err := validate(s.builtInUpdateResult); err != nil {
+					s.catalog[index] = original
+					return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+				}
 				return s.builtInUpdateResult, true, nil
 			}
-			return port.ManagementBuiltInProviderModelPriceUpdateResult{
+			result := port.ManagementBuiltInProviderModelPriceUpdateResult{
 				Before: before,
 				After:  builtInProviderModelConfigurationSnapshotFromCatalog(s.catalog[index]),
-			}, true, nil
+			}
+			if err := validate(result); err != nil {
+				s.catalog[index] = original
+				return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+			}
+			return result, true, nil
 		}
 	}
 	return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, nil

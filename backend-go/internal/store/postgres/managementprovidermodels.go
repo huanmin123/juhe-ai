@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -15,10 +16,14 @@ import (
 )
 
 type managementBuiltInProviderModelPriceUpdateQueries interface {
-	UpdateManagementBuiltInProviderModelPrices(
+	LockManagementBuiltInProviderModelConfiguration(
 		ctx context.Context,
-		input postgresqueries.UpdateManagementBuiltInProviderModelPricesParams,
-	) (postgresqueries.UpdateManagementBuiltInProviderModelPricesRow, error)
+		input postgresqueries.LockManagementBuiltInProviderModelConfigurationParams,
+	) (postgresqueries.LockManagementBuiltInProviderModelConfigurationRow, error)
+	UpdateManagementBuiltInProviderModelConfiguration(
+		ctx context.Context,
+		input postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams,
+	) (postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow, error)
 }
 
 func (s *Store) FindManagementProviderModelProvider(ctx context.Context, code string) (port.ManagementProviderModelProvider, bool, error) {
@@ -73,96 +78,224 @@ func (s *Store) GetManagementCustomProviderModelBindingSummary(ctx context.Conte
 	return getManagementCustomProviderModelBindingSummary(ctx, s.queries(), input)
 }
 
-func (s *Store) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
-	return updateManagementBuiltInProviderModelPrices(ctx, s.queries(), input)
+func (s *Store) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput, validate port.ManagementBuiltInProviderModelUpdateValidate) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
+	return updateManagementBuiltInProviderModelPricesInTx(ctx, s.pool.BeginTx, input, validate)
 }
 
-func updateManagementBuiltInProviderModelPrices(
-	ctx context.Context,
-	q managementBuiltInProviderModelPriceUpdateQueries,
-	input port.ManagementBuiltInProviderModelPriceUpdateInput,
-) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
-	protocolsJSON, err := json.Marshal(input.SupportedAPIProtocols.Value)
+func updateManagementBuiltInProviderModelPricesInTx(ctx context.Context, beginTx func(context.Context, pgx.TxOptions) (pgx.Tx, error), input port.ManagementBuiltInProviderModelPriceUpdateInput, validate port.ManagementBuiltInProviderModelUpdateValidate) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
+	tx, err := beginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model protocols: %w", err)
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("begin built-in provider model update: %w", err)
 	}
-	serviceTiersJSON, err := json.Marshal(input.SupportedServiceTiers.Value)
-	if err != nil {
-		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model service tiers: %w", err)
-	}
-	reasoningEffortsJSON, err := json.Marshal(input.SupportedReasoningEfforts.Value)
-	if err != nil {
-		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model reasoning efforts: %w", err)
-	}
-	pricesJSON := []byte("{}")
-	if input.ServiceTierPrices.Present {
-		pricesJSON, err = json.Marshal(input.ServiceTierPrices.Value)
-		if err != nil {
-			return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model service tier prices: %w", err)
+	committed := false
+	defer func() {
+		if committed {
+			return
 		}
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
+	}()
+	result, found, err := updateManagementBuiltInProviderModelPricesTx(ctx, postgresqueries.New(tx), input, validate)
+	if err != nil || !found {
+		return result, found, err
 	}
-	row, err := q.UpdateManagementBuiltInProviderModelPrices(ctx, postgresqueries.UpdateManagementBuiltInProviderModelPricesParams{
-		StatusPresent: input.Status.Present, Status: input.Status.Value,
-		ModePresent: input.Mode.Present, Mode: input.Mode.Value,
-		SupportedApiProtocolsPresent: input.SupportedAPIProtocols.Present, SupportedApiProtocolsJson: string(protocolsJSON),
-		SupportedServiceTiersPresent: input.SupportedServiceTiers.Present, SupportedServiceTiersJson: string(serviceTiersJSON),
-		SupportedReasoningEffortsPresent: input.SupportedReasoningEfforts.Present, SupportedReasoningEffortsJson: string(reasoningEffortsJSON),
-		DefaultReasoningEffortPresent: input.DefaultReasoningEffort.Present, DefaultReasoningEffort: input.DefaultReasoningEffort.Value,
-		ReleaseDatePresent: input.ReleaseDate.Present, ReleaseDate: input.ReleaseDate.Value,
-		ShutdownDatePresent: input.ShutdownDate.Present, ShutdownDate: input.ShutdownDate.Value,
-		ContextWindowTokensPresent: input.ContextWindowTokens.Present, ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens.Value),
-		MaxInputTokensPresent: input.MaxInputTokens.Present, MaxInputTokens: pgInt4Ptr(input.MaxInputTokens.Value),
-		MaxOutputTokensPresent: input.MaxOutputTokens.Present, MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens.Value),
-		InputUsdPer1mPresent: input.InputUSDPer1M.Present, InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M.Value),
-		OutputUsdPer1mPresent: input.OutputUSDPer1M.Present, OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M.Value),
-		CachedInputUsdPer1mPresent: input.CachedInputUSDPer1M.Present, CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M.Value),
-		CacheWriteUsdPer1mPresent: input.CacheWriteUSDPer1M.Present, CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M.Value),
-		CacheWrite1hUsdPer1mPresent: input.CacheWrite1hUSDPer1M.Present, CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M.Value),
-		ServiceTierPricesPresent: input.ServiceTierPrices.Present, ServiceTierPricesJson: string(pricesJSON),
-		ImageInputUsdPer1mPresent: input.ImageInputUSDPer1M.Present, ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M.Value),
-		ImageOutputUsdPer1mPresent: input.ImageOutputUSDPer1M.Present, ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M.Value),
-		AudioInputUsdPer1mPresent: input.AudioInputUSDPer1M.Present, AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M.Value),
-		AudioOutputUsdPer1mPresent: input.AudioOutputUSDPer1M.Present, AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M.Value),
-		OutputUsdPerImagePresent: input.OutputUSDPerImage.Present, OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage.Value),
-		ID: input.ID, ProviderCode: input.ProviderCode,
-	})
+	if err := tx.Commit(ctx); err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("commit built-in provider model update: %w", err)
+	}
+	committed = true
+	return result, true, nil
+}
+
+func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managementBuiltInProviderModelPriceUpdateQueries, input port.ManagementBuiltInProviderModelPriceUpdateInput, validate port.ManagementBuiltInProviderModelUpdateValidate) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
+	locked, err := q.LockManagementBuiltInProviderModelConfiguration(ctx, postgresqueries.LockManagementBuiltInProviderModelConfigurationParams{ID: input.ID, ProviderCode: input.ProviderCode})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, nil
 	}
 	if err != nil {
-		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("update built-in provider model prices: %w", err)
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("lock built-in provider model configuration: %w", err)
 	}
 	before, err := decodeManagementProviderModelConfigurationSnapshot(managementProviderModelConfigurationRow{
-		id: row.BeforeID, providerCode: row.BeforeProviderCode, status: row.BeforeStatus, mode: row.BeforeMode,
-		supportedAPIProtocolsJSON: row.BeforeSupportedApiProtocolsJson, supportedServiceTiersJSON: row.BeforeSupportedServiceTiersJson,
-		supportedReasoningEffortsJSON: row.BeforeSupportedReasoningEffortsJson, defaultReasoningEffort: row.BeforeDefaultReasoningEffort,
-		releaseDate: row.BeforeReleaseDate, shutdownDate: row.BeforeShutdownDate, contextWindowTokens: row.BeforeContextWindowTokens,
-		maxInputTokens: row.BeforeMaxInputTokens, maxOutputTokens: row.BeforeMaxOutputTokens, inputUSDPer1M: row.BeforeInputUsdPer1m,
-		outputUSDPer1M: row.BeforeOutputUsdPer1m, cachedInputUSDPer1M: row.BeforeCachedInputUsdPer1m,
-		cacheWriteUSDPer1M: row.BeforeCacheWriteUsdPer1m, cacheWrite1hUSDPer1M: row.BeforeCacheWrite1hUsdPer1m,
-		serviceTierPricesJSON: row.BeforeServiceTierPricesJson, imageInputUSDPer1M: row.BeforeImageInputUsdPer1m,
-		imageOutputUSDPer1M: row.BeforeImageOutputUsdPer1m, audioInputUSDPer1M: row.BeforeAudioInputUsdPer1m,
-		audioOutputUSDPer1M: row.BeforeAudioOutputUsdPer1m, outputUSDPerImage: row.BeforeOutputUsdPerImage, updatedAt: row.BeforeUpdatedAt,
+		id: locked.ID, providerCode: locked.ProviderCode, status: locked.Status, mode: locked.Mode,
+		supportedAPIProtocolsJSON: locked.SupportedApiProtocolsJson, supportedServiceTiersJSON: locked.SupportedServiceTiersJson,
+		supportedReasoningEffortsJSON: locked.SupportedReasoningEffortsJson, defaultReasoningEffort: locked.DefaultReasoningEffort,
+		releaseDate: locked.ReleaseDate, shutdownDate: locked.ShutdownDate, contextWindowTokens: locked.ContextWindowTokens,
+		maxInputTokens: locked.MaxInputTokens, maxOutputTokens: locked.MaxOutputTokens, inputUSDPer1M: locked.InputUsdPer1m,
+		outputUSDPer1M: locked.OutputUsdPer1m, cachedInputUSDPer1M: locked.CachedInputUsdPer1m, cacheWriteUSDPer1M: locked.CacheWriteUsdPer1m,
+		cacheWrite1hUSDPer1M: locked.CacheWrite1hUsdPer1m, serviceTierPricesJSON: locked.ServiceTierPricesJson,
+		imageInputUSDPer1M: locked.ImageInputUsdPer1m, imageOutputUSDPer1M: locked.ImageOutputUsdPer1m,
+		audioInputUSDPer1M: locked.AudioInputUsdPer1m, audioOutputUSDPer1M: locked.AudioOutputUsdPer1m,
+		outputUSDPerImage: locked.OutputUsdPerImage, updatedAt: locked.UpdatedAt,
 	}, "before")
 	if err != nil {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
 	}
+	candidate := mergeManagementProviderModelConfigurationSnapshot(before, input)
+	params, err := managementProviderModelConfigurationUpdateParams(candidate, time.Now().UTC())
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+	}
+	updated, err := q.UpdateManagementBuiltInProviderModelConfiguration(ctx, params)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("update built-in provider model configuration: %w", err)
+	}
 	after, err := decodeManagementProviderModelConfigurationSnapshot(managementProviderModelConfigurationRow{
-		id: row.AfterID, providerCode: row.AfterProviderCode, status: row.AfterStatus, mode: row.AfterMode,
-		supportedAPIProtocolsJSON: row.AfterSupportedApiProtocolsJson, supportedServiceTiersJSON: row.AfterSupportedServiceTiersJson,
-		supportedReasoningEffortsJSON: row.AfterSupportedReasoningEffortsJson, defaultReasoningEffort: row.AfterDefaultReasoningEffort,
-		releaseDate: row.AfterReleaseDate, shutdownDate: row.AfterShutdownDate, contextWindowTokens: row.AfterContextWindowTokens,
-		maxInputTokens: row.AfterMaxInputTokens, maxOutputTokens: row.AfterMaxOutputTokens, inputUSDPer1M: row.AfterInputUsdPer1m,
-		outputUSDPer1M: row.AfterOutputUsdPer1m, cachedInputUSDPer1M: row.AfterCachedInputUsdPer1m,
-		cacheWriteUSDPer1M: row.AfterCacheWriteUsdPer1m, cacheWrite1hUSDPer1M: row.AfterCacheWrite1hUsdPer1m,
-		serviceTierPricesJSON: row.AfterServiceTierPricesJson, imageInputUSDPer1M: row.AfterImageInputUsdPer1m,
-		imageOutputUSDPer1M: row.AfterImageOutputUsdPer1m, audioInputUSDPer1M: row.AfterAudioInputUsdPer1m,
-		audioOutputUSDPer1M: row.AfterAudioOutputUsdPer1m, outputUSDPerImage: row.AfterOutputUsdPerImage, updatedAt: row.AfterUpdatedAt,
+		id: updated.ID, providerCode: updated.ProviderCode, status: updated.Status, mode: updated.Mode,
+		supportedAPIProtocolsJSON: updated.SupportedApiProtocolsJson, supportedServiceTiersJSON: updated.SupportedServiceTiersJson,
+		supportedReasoningEffortsJSON: updated.SupportedReasoningEffortsJson, defaultReasoningEffort: updated.DefaultReasoningEffort,
+		releaseDate: updated.ReleaseDate, shutdownDate: updated.ShutdownDate, contextWindowTokens: updated.ContextWindowTokens,
+		maxInputTokens: updated.MaxInputTokens, maxOutputTokens: updated.MaxOutputTokens, inputUSDPer1M: updated.InputUsdPer1m,
+		outputUSDPer1M: updated.OutputUsdPer1m, cachedInputUSDPer1M: updated.CachedInputUsdPer1m, cacheWriteUSDPer1M: updated.CacheWriteUsdPer1m,
+		cacheWrite1hUSDPer1M: updated.CacheWrite1hUsdPer1m, serviceTierPricesJSON: updated.ServiceTierPricesJson,
+		imageInputUSDPer1M: updated.ImageInputUsdPer1m, imageOutputUSDPer1M: updated.ImageOutputUsdPer1m,
+		audioInputUSDPer1M: updated.AudioInputUsdPer1m, audioOutputUSDPer1M: updated.AudioOutputUsdPer1m,
+		outputUSDPerImage: updated.OutputUsdPerImage, updatedAt: updated.UpdatedAt,
 	}, "after")
 	if err != nil {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
 	}
-	return port.ManagementBuiltInProviderModelPriceUpdateResult{Before: before, After: after}, true, nil
+	result := port.ManagementBuiltInProviderModelPriceUpdateResult{Before: before, After: after}
+	if validate == nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, errors.New("validate built-in provider model update is required")
+	}
+	if err := validate(result); err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+	}
+	return result, true, nil
+}
+
+func mergeManagementProviderModelConfigurationSnapshot(before port.ManagementProviderModelConfigurationSnapshot, input port.ManagementBuiltInProviderModelPriceUpdateInput) port.ManagementProviderModelConfigurationSnapshot {
+	result := before
+	if input.Status.Present {
+		result.Status = input.Status.Value
+	}
+	if input.Mode.Present {
+		result.Mode = input.Mode.Value
+	}
+	if input.SupportedAPIProtocols.Present {
+		result.SupportedAPIProtocols = append([]string(nil), input.SupportedAPIProtocols.Value...)
+	}
+	if input.SupportedServiceTiers.Present {
+		result.SupportedServiceTiers = append([]string(nil), input.SupportedServiceTiers.Value...)
+	}
+	if input.SupportedReasoningEfforts.Present {
+		result.SupportedReasoningEfforts = append([]string(nil), input.SupportedReasoningEfforts.Value...)
+	}
+	if input.DefaultReasoningEffort.Present {
+		result.DefaultReasoningEffort = input.DefaultReasoningEffort.Value
+	}
+	if input.ReleaseDate.Present {
+		result.ReleaseDate = input.ReleaseDate.Value
+	}
+	if input.ShutdownDate.Present {
+		result.ShutdownDate = input.ShutdownDate.Value
+	}
+	if input.ContextWindowTokens.Present {
+		result.ContextWindowTokens = cloneManagementProviderModelInt(input.ContextWindowTokens.Value)
+	}
+	if input.MaxInputTokens.Present {
+		result.MaxInputTokens = cloneManagementProviderModelInt(input.MaxInputTokens.Value)
+	}
+	if input.MaxOutputTokens.Present {
+		result.MaxOutputTokens = cloneManagementProviderModelInt(input.MaxOutputTokens.Value)
+	}
+	if input.InputUSDPer1M.Present {
+		result.InputUSDPer1M = cloneManagementProviderModelFloat(input.InputUSDPer1M.Value)
+	}
+	if input.OutputUSDPer1M.Present {
+		result.OutputUSDPer1M = cloneManagementProviderModelFloat(input.OutputUSDPer1M.Value)
+	}
+	if input.CachedInputUSDPer1M.Present {
+		result.CachedInputUSDPer1M = cloneManagementProviderModelFloat(input.CachedInputUSDPer1M.Value)
+	}
+	if input.CacheWriteUSDPer1M.Present {
+		result.CacheWriteUSDPer1M = cloneManagementProviderModelFloat(input.CacheWriteUSDPer1M.Value)
+	}
+	if input.CacheWrite1hUSDPer1M.Present {
+		result.CacheWrite1hUSDPer1M = cloneManagementProviderModelFloat(input.CacheWrite1hUSDPer1M.Value)
+	}
+	if input.ServiceTierPrices.Present {
+		result.ServiceTierPrices = cloneManagementProviderModelPriceMap(input.ServiceTierPrices.Value)
+	}
+	if input.ImageInputUSDPer1M.Present {
+		result.ImageInputUSDPer1M = cloneManagementProviderModelFloat(input.ImageInputUSDPer1M.Value)
+	}
+	if input.ImageOutputUSDPer1M.Present {
+		result.ImageOutputUSDPer1M = cloneManagementProviderModelFloat(input.ImageOutputUSDPer1M.Value)
+	}
+	if input.AudioInputUSDPer1M.Present {
+		result.AudioInputUSDPer1M = cloneManagementProviderModelFloat(input.AudioInputUSDPer1M.Value)
+	}
+	if input.AudioOutputUSDPer1M.Present {
+		result.AudioOutputUSDPer1M = cloneManagementProviderModelFloat(input.AudioOutputUSDPer1M.Value)
+	}
+	if input.OutputUSDPerImage.Present {
+		result.OutputUSDPerImage = cloneManagementProviderModelFloat(input.OutputUSDPerImage.Value)
+	}
+	return result
+}
+
+func managementProviderModelConfigurationUpdateParams(input port.ManagementProviderModelConfigurationSnapshot, updatedAt time.Time) (postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams, error) {
+	protocolsJSON, err := json.Marshal(input.SupportedAPIProtocols)
+	if err != nil {
+		return postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams{}, fmt.Errorf("marshal built-in provider model protocols: %w", err)
+	}
+	serviceTiersJSON, err := json.Marshal(input.SupportedServiceTiers)
+	if err != nil {
+		return postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams{}, fmt.Errorf("marshal built-in provider model service tiers: %w", err)
+	}
+	reasoningJSON, err := json.Marshal(input.SupportedReasoningEfforts)
+	if err != nil {
+		return postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams{}, fmt.Errorf("marshal built-in provider model reasoning efforts: %w", err)
+	}
+	pricesJSON, err := marshalManagementProviderModelPriceMap(input.ServiceTierPrices)
+	if err != nil {
+		return postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams{}, fmt.Errorf("marshal built-in provider model service tier prices: %w", err)
+	}
+	return postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams{
+		Status: input.Status, Mode: managementProviderModelNullableText(input.Mode), SupportedApiProtocolsJson: string(protocolsJSON), SupportedServiceTiersJson: string(serviceTiersJSON), SupportedReasoningEffortsJson: string(reasoningJSON), DefaultReasoningEffort: managementProviderModelNullableText(input.DefaultReasoningEffort), ReleaseDate: managementProviderModelNullableText(input.ReleaseDate), ShutdownDate: managementProviderModelNullableText(input.ShutdownDate), ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens), MaxInputTokens: pgInt4Ptr(input.MaxInputTokens), MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens), InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M), CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M), CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), ServiceTierPricesJson: string(pricesJSON), ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M), AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M), OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), UpdatedAt: pgTimestamptz(updatedAt), ID: input.ID, ProviderCode: input.ProviderCode,
+	}, nil
+}
+
+func managementProviderModelNullableText(value string) pgtype.Text {
+	return pgtype.Text{String: value, Valid: value != ""}
+}
+func cloneManagementProviderModelInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+func cloneManagementProviderModelFloat(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+func cloneManagementProviderModelPriceMap(value map[string]port.ManagementProviderModelPriceSet) map[string]port.ManagementProviderModelPriceSet {
+	if value == nil {
+		return nil
+	}
+	cloned := make(map[string]port.ManagementProviderModelPriceSet, len(value))
+	for key, price := range value {
+		price.InputUSDPer1M = cloneManagementProviderModelFloat(price.InputUSDPer1M)
+		price.OutputUSDPer1M = cloneManagementProviderModelFloat(price.OutputUSDPer1M)
+		price.CachedInputUSDPer1M = cloneManagementProviderModelFloat(price.CachedInputUSDPer1M)
+		price.CacheWriteUSDPer1M = cloneManagementProviderModelFloat(price.CacheWriteUSDPer1M)
+		price.CacheWrite1hUSDPer1M = cloneManagementProviderModelFloat(price.CacheWrite1hUSDPer1M)
+		price.ImageInputUSDPer1M = cloneManagementProviderModelFloat(price.ImageInputUSDPer1M)
+		price.ImageOutputUSDPer1M = cloneManagementProviderModelFloat(price.ImageOutputUSDPer1M)
+		price.AudioInputUSDPer1M = cloneManagementProviderModelFloat(price.AudioInputUSDPer1M)
+		price.AudioOutputUSDPer1M = cloneManagementProviderModelFloat(price.AudioOutputUSDPer1M)
+		price.OutputUSDPerImage = cloneManagementProviderModelFloat(price.OutputUSDPerImage)
+		cloned[key] = price
+	}
+	return cloned
 }
 
 type managementProviderModelConfigurationRow struct {

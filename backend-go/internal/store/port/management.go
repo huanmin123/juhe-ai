@@ -1414,6 +1414,8 @@ type ManagementBuiltInProviderModelPriceUpdateResult struct {
 	After  ManagementProviderModelConfigurationSnapshot
 }
 
+type ManagementBuiltInProviderModelUpdateValidate func(ManagementBuiltInProviderModelPriceUpdateResult) error
+
 type ManagementProviderModelCatalogReader interface {
 	FindManagementProviderModelProvider(ctx context.Context, code string) (ManagementProviderModelProvider, bool, error)
 	ListManagementEnabledModelProviderCodes(ctx context.Context) ([]string, error)
@@ -1434,7 +1436,7 @@ type ManagementCustomProviderModelWriter interface {
 	SaveManagementCustomProviderModel(ctx context.Context, input ManagementCustomProviderModelSaveInput) (ManagementProviderModelCatalogItem, error)
 	DeleteManagementCustomProviderModel(ctx context.Context, id string) (bool, error)
 	GetManagementCustomProviderModelBindingSummary(ctx context.Context, input ManagementCustomProviderModelBindingInput) (ManagementCustomProviderModelBindingSummary, error)
-	UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input ManagementBuiltInProviderModelPriceUpdateInput) (ManagementBuiltInProviderModelPriceUpdateResult, bool, error)
+	UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input ManagementBuiltInProviderModelPriceUpdateInput, validate ManagementBuiltInProviderModelUpdateValidate) (ManagementBuiltInProviderModelPriceUpdateResult, bool, error)
 }
 
 type ManagementRouteStrategyOption struct {

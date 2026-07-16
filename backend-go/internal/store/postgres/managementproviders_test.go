@@ -2,7 +2,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -330,71 +333,56 @@ func TestManagementProviderModelCatalogItemFromRowDecodesOptionalFields(t *testi
 	}
 }
 
-func TestManagementProviderModelCatalogSQLReturnsBuiltInIDAndUsesAtomicPricePresence(t *testing.T) {
+func TestManagementProviderModelCatalogSQLLocksThenFullyUpdatesBuiltInConfiguration(t *testing.T) {
 	source, err := os.ReadFile("queries/w2_management_provider_models.sql")
 	if err != nil {
 		t.Fatalf("read provider model query: %v", err)
 	}
 	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
 	listStart := strings.Index(sql, "-- name: ListManagementProviderModelCatalog :many")
-	updateStart := strings.Index(sql, "-- name: UpdateManagementBuiltInProviderModelPrices :one")
+	lockStart := strings.Index(sql, "-- name: LockManagementBuiltInProviderModelConfiguration :one")
+	updateStart := strings.Index(sql, "-- name: UpdateManagementBuiltInProviderModelConfiguration :one")
 	findStart := strings.Index(sql, "-- name: FindManagementCustomProviderModel :one")
-	if listStart < 0 || updateStart <= listStart || findStart <= updateStart {
+	if listStart < 0 || lockStart <= listStart || updateStart <= lockStart || findStart <= updateStart {
 		t.Fatalf("provider model SQL query boundaries missing")
 	}
-	listSQL := sql[listStart:updateStart]
+	listSQL := sql[listStart:lockStart]
 	if !strings.Contains(listSQL, "SELECT\n  id,\n  provider_code") || strings.Contains(listSQL, "''::text AS id") {
 		t.Fatalf("catalog list must return provider_model_catalog.id:\n%s", listSQL)
 	}
 
+	lockSQL := sql[lockStart:updateStart]
 	updateSQL := sql[updateStart:findStart]
-	columns := []string{
-		"input_usd_per_1m", "output_usd_per_1m", "cached_input_usd_per_1m", "cache_write_usd_per_1m",
-		"cache_write_1h_usd_per_1m", "image_input_usd_per_1m", "image_output_usd_per_1m",
-		"audio_input_usd_per_1m", "audio_output_usd_per_1m", "output_usd_per_image",
+	if !strings.Contains(lockSQL, "FOR UPDATE") || strings.Contains(updateSQL, "CASE WHEN") || strings.Contains(updateSQL, "WITH locked") {
+		t.Fatalf("built-in update must use a separate row lock and full update:\nlock=%s\nupdate=%s", lockSQL, updateSQL)
 	}
-	for _, column := range columns {
-		assignment := regexp.MustCompile(
-			regexp.QuoteMeta(column) + `\s*=\s*CASE\s+WHEN\s+sqlc\.arg\(` + regexp.QuoteMeta(column+"_present") +
-				`\)::boolean\s+THEN\s+sqlc\.narg\(` + regexp.QuoteMeta(column) +
-				`\)::double\s+precision\s+ELSE\s+target\.` + regexp.QuoteMeta(column) + `\s+END`,
-		)
-		if !assignment.MatchString(updateSQL) {
-			t.Fatalf("built-in price update missing target-qualified atomic presence assignment for %q:\n%s", column, updateSQL)
+	for _, column := range []string{"status", "mode", "supported_reasoning_efforts_json", "default_reasoning_effort", "service_tier_prices_json", "updated_at"} {
+		if !regexp.MustCompile(regexp.QuoteMeta(column) + `\s*=\s*sqlc\.(?:n?arg)\(`).MatchString(updateSQL) {
+			t.Fatalf("full built-in update missing %q assignment:\n%s", column, updateSQL)
 		}
-	}
-	if !regexp.MustCompile(`service_tier_prices_json\s*=\s*CASE\s+WHEN\s+sqlc\.arg\(service_tier_prices_present\)::boolean\s+THEN\s+sqlc\.arg\(service_tier_prices_json\)::text\s+ELSE\s+target\.service_tier_prices_json\s+END`).MatchString(updateSQL) {
-		t.Fatalf("built-in price update missing service tier presence assignment:\n%s", updateSQL)
 	}
 }
 
 func TestUpdateManagementBuiltInProviderModelPricesMapsSparsePresenceToSQLC(t *testing.T) {
 	outputPrice := 9.5
-	persistedOutputPrice := 17.5
 	tierInputPrice := 3.0
 	updatedAt := time.Date(2026, 7, 15, 8, 9, 10, 0, time.UTC)
-	q := &managementBuiltInProviderModelPriceUpdateQueriesStub{row: postgresqueries.UpdateManagementBuiltInProviderModelPricesRow{
-		BeforeID:                            "provider_model_gpt_real",
-		BeforeProviderCode:                  "gpt",
-		BeforeStatus:                        "disabled",
-		BeforeMode:                          pgtype.Text{String: "text", Valid: true},
-		BeforeSupportedApiProtocolsJson:     "[\"chat_completions\"]",
-		BeforeSupportedServiceTiersJson:     "[]",
-		BeforeSupportedReasoningEffortsJson: "[]",
-		BeforeServiceTierPricesJson:         "{}",
-		BeforeInputUsdPer1m:                 pgtype.Float8{Float64: 2.5, Valid: true},
-		AfterID:                             "provider_model_gpt_real",
-		AfterProviderCode:                   "gpt",
-		AfterStatus:                         "active",
-		AfterSupportedApiProtocolsJson:      "[]",
-		AfterSupportedServiceTiersJson:      "[]",
-		AfterSupportedReasoningEffortsJson:  "[]",
-		AfterOutputUsdPer1m:                 pgtype.Float8{Float64: persistedOutputPrice, Valid: true},
-		AfterServiceTierPricesJson:          `{"priority":{"inputUsdPer1M":3}}`,
-		AfterUpdatedAt:                      pgtype.Timestamptz{Time: updatedAt, Valid: true},
-	}}
+	q := &managementBuiltInProviderModelPriceUpdateQueriesStub{
+		locked: postgresqueries.LockManagementBuiltInProviderModelConfigurationRow{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "disabled", Mode: pgtype.Text{String: "text", Valid: true},
+			SupportedApiProtocolsJson: `["chat_completions"]`, SupportedServiceTiersJson: `[]`, SupportedReasoningEffortsJson: `[]`, ServiceTierPricesJson: `{}`,
+			InputUsdPer1m: pgtype.Float8{Float64: 2.5, Valid: true}, UpdatedAt: pgtype.Timestamptz{Time: updatedAt.Add(-time.Hour), Valid: true},
+		},
+		updated: postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "disabled", Mode: pgtype.Text{String: "text", Valid: true},
+			SupportedApiProtocolsJson: `["chat_completions"]`, SupportedServiceTiersJson: `[]`, SupportedReasoningEffortsJson: `[]`,
+			ServiceTierPricesJson: `{"priority":{"inputUsdPer1M":3}}`, OutputUsdPer1m: pgtype.Float8{Float64: outputPrice, Valid: true},
+			UpdatedAt: pgtype.Timestamptz{Time: updatedAt, Valid: true},
+		},
+	}
 
-	result, found, err := updateManagementBuiltInProviderModelPrices(context.Background(), q, port.ManagementBuiltInProviderModelPriceUpdateInput{
+	validateCalls := 0
+	result, found, err := updateManagementBuiltInProviderModelPricesTx(context.Background(), q, port.ManagementBuiltInProviderModelPriceUpdateInput{
 		ID:           "provider_model_gpt_real",
 		ProviderCode: "gpt",
 		InputUSDPer1M: port.ManagementProviderModelOptionalFloat{
@@ -410,39 +398,105 @@ func TestUpdateManagementBuiltInProviderModelPricesMapsSparsePresenceToSQLC(t *t
 				"priority": {InputUSDPer1M: &tierInputPrice},
 			},
 		},
+	}, func(got port.ManagementBuiltInProviderModelPriceUpdateResult) error {
+		validateCalls++
+		if got.Before.InputUSDPer1M == nil || *got.Before.InputUSDPer1M != 2.5 || got.After.InputUSDPer1M != nil {
+			t.Fatalf("validate snapshots = %+v", got)
+		}
+		return nil
 	})
 	if err != nil || !found {
 		t.Fatalf("updateManagementBuiltInProviderModelPrices() found=%v error=%v", found, err)
 	}
-	input := q.input
+	input := q.updateInput
 	if input.ID != "provider_model_gpt_real" || input.ProviderCode != "gpt" ||
-		!input.InputUsdPer1mPresent || input.InputUsdPer1m.Valid ||
-		!input.OutputUsdPer1mPresent || !input.OutputUsdPer1m.Valid || input.OutputUsdPer1m.Float64 != outputPrice ||
-		input.CachedInputUsdPer1mPresent || input.CachedInputUsdPer1m.Valid ||
-		!input.ServiceTierPricesPresent || input.ServiceTierPricesJson != `{"priority":{"inputUsdPer1M":3}}` {
+		input.InputUsdPer1m.Valid || !input.OutputUsdPer1m.Valid || input.OutputUsdPer1m.Float64 != outputPrice ||
+		input.CachedInputUsdPer1m.Valid || input.ServiceTierPricesJson != `{"priority":{"inputUsdPer1M":3}}` {
 		t.Fatalf("sqlc input = %+v", input)
 	}
 	priority := result.After.ServiceTierPrices["priority"]
 	if result.After.ID != "provider_model_gpt_real" || result.After.ProviderCode != "gpt" || result.After.InputUSDPer1M != nil ||
-		result.After.OutputUSDPer1M == nil || *result.After.OutputUSDPer1M != persistedOutputPrice ||
+		result.After.OutputUSDPer1M == nil || *result.After.OutputUSDPer1M != outputPrice ||
 		priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != tierInputPrice || !result.After.UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("persisted result = %+v", result)
 	}
 	if result.Before.Status != "disabled" || result.Before.InputUSDPer1M == nil || *result.Before.InputUSDPer1M != 2.5 ||
 		result.Before.Mode != "text" || len(result.Before.SupportedAPIProtocols) != 1 || result.Before.SupportedAPIProtocols[0] != "chat_completions" ||
-		result.Before.ContextWindowTokens != nil || result.After.Status != "active" {
+		result.Before.ContextWindowTokens != nil || result.After.Status != "disabled" || validateCalls != 1 {
 		t.Fatalf("atomic snapshots = before=%+v after=%+v", result.Before, result.After)
 	}
 }
 
 func TestUpdateManagementBuiltInProviderModelPricesMapsNoRowsToNotFound(t *testing.T) {
-	q := &managementBuiltInProviderModelPriceUpdateQueriesStub{err: pgx.ErrNoRows}
-	result, found, err := updateManagementBuiltInProviderModelPrices(context.Background(), q, port.ManagementBuiltInProviderModelPriceUpdateInput{
+	q := &managementBuiltInProviderModelPriceUpdateQueriesStub{lockErr: pgx.ErrNoRows}
+	result, found, err := updateManagementBuiltInProviderModelPricesTx(context.Background(), q, port.ManagementBuiltInProviderModelPriceUpdateInput{
 		ID: "missing", ProviderCode: "gpt",
-	})
+	}, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error { return nil })
 	if err != nil || found || result.Before.ID != "" || result.After.ID != "" {
 		t.Fatalf("result=%+v found=%v err=%v, want not found", result, found, err)
 	}
+}
+
+func TestUpdateManagementBuiltInProviderModelPricesTransactionValidationAndCommit(t *testing.T) {
+	locked := postgresqueries.LockManagementBuiltInProviderModelConfigurationRow{
+		ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", Mode: pgtype.Text{String: "text", Valid: true},
+		SupportedApiProtocolsJson: `[]`, SupportedServiceTiersJson: `[]`, SupportedReasoningEffortsJson: `["low"]`,
+		DefaultReasoningEffort: pgtype.Text{String: "low", Valid: true}, ServiceTierPricesJson: `{}`,
+		UpdatedAt: pgtype.Timestamptz{Time: time.Now().Add(-time.Hour), Valid: true},
+	}
+	updated := postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow{
+		ID: locked.ID, ProviderCode: locked.ProviderCode, Status: locked.Status, Mode: locked.Mode,
+		SupportedApiProtocolsJson: `[]`, SupportedServiceTiersJson: `[]`, SupportedReasoningEffortsJson: `["high"]`,
+		DefaultReasoningEffort: pgtype.Text{String: "high", Valid: true}, ServiceTierPricesJson: `{}`,
+		UpdatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+	}
+	input := port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: locked.ID, ProviderCode: locked.ProviderCode,
+		SupportedReasoningEfforts: port.ManagementProviderModelOptionalStringList{Present: true, Value: []string{"high"}},
+		DefaultReasoningEffort:    port.ManagementProviderModelOptionalString{Present: true, Value: "high"},
+	}
+
+	t.Run("validation failure rolls back with independent context", func(t *testing.T) {
+		tx := &managementBuiltInProviderModelUpdateTxStub{rows: []pgx.Row{managementProviderModelLockRow(locked), managementProviderModelUpdateRow(updated)}}
+		ctx, cancel := context.WithCancel(context.WithValue(context.Background(), managementProviderModelRollbackContextKey{}, "rollback-value"))
+		validateErr := errors.New("invalid final configuration")
+		validateCalls := 0
+		_, found, err := updateManagementBuiltInProviderModelPricesInTx(ctx, func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return tx, nil }, input, func(result port.ManagementBuiltInProviderModelPriceUpdateResult) error {
+			validateCalls++
+			cancel()
+			if result.Before.DefaultReasoningEffort != "low" || result.After.DefaultReasoningEffort != "high" {
+				t.Fatalf("snapshots = %+v", result)
+			}
+			return validateErr
+		})
+		if !errors.Is(err, validateErr) || found || validateCalls != 1 || tx.commitCalls != 0 || tx.rollbackCalls != 1 {
+			t.Fatalf("err/found/validate/commit/rollback = %v/%t/%d/%d/%d", err, found, validateCalls, tx.commitCalls, tx.rollbackCalls)
+		}
+		if tx.rollbackContextErr != nil || tx.rollbackContextValue != "rollback-value" || !tx.rollbackHasDeadline {
+			t.Fatalf("rollback context = err:%v value:%v deadline:%t", tx.rollbackContextErr, tx.rollbackContextValue, tx.rollbackHasDeadline)
+		}
+		if remaining := time.Until(tx.rollbackDeadline); remaining <= 0 || remaining > 5*time.Second {
+			t.Fatalf("rollback deadline remaining = %s", remaining)
+		}
+	})
+
+	t.Run("valid result commits after one validation", func(t *testing.T) {
+		tx := &managementBuiltInProviderModelUpdateTxStub{rows: []pgx.Row{managementProviderModelLockRow(locked), managementProviderModelUpdateRow(updated)}}
+		validateCalls := 0
+		result, found, err := updateManagementBuiltInProviderModelPricesInTx(context.Background(), func(context.Context, pgx.TxOptions) (pgx.Tx, error) { return tx, nil }, input, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error {
+			validateCalls++
+			if tx.commitCalls != 0 {
+				t.Fatal("validation ran after commit")
+			}
+			return nil
+		})
+		if err != nil || !found || validateCalls != 1 || tx.commitCalls != 1 || tx.rollbackCalls != 0 {
+			t.Fatalf("result/err/found/validate/commit/rollback = %+v/%v/%t/%d/%d/%d", result, err, found, validateCalls, tx.commitCalls, tx.rollbackCalls)
+		}
+		if !reflect.DeepEqual(tx.calls, []string{"lock", "update", "commit"}) {
+			t.Fatalf("transaction order = %v", tx.calls)
+		}
+	})
 }
 
 func TestManagementCustomProviderModelBindingSummaryScopesMappingsByProvider(t *testing.T) {
@@ -469,15 +523,102 @@ func TestManagementCustomProviderModelBindingSummaryScopesMappingsByProvider(t *
 }
 
 type managementBuiltInProviderModelPriceUpdateQueriesStub struct {
-	input postgresqueries.UpdateManagementBuiltInProviderModelPricesParams
-	row   postgresqueries.UpdateManagementBuiltInProviderModelPricesRow
-	err   error
+	lockInput   postgresqueries.LockManagementBuiltInProviderModelConfigurationParams
+	locked      postgresqueries.LockManagementBuiltInProviderModelConfigurationRow
+	lockErr     error
+	updateInput postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams
+	updated     postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow
+	updateErr   error
 }
 
-func (s *managementBuiltInProviderModelPriceUpdateQueriesStub) UpdateManagementBuiltInProviderModelPrices(
+func (s *managementBuiltInProviderModelPriceUpdateQueriesStub) LockManagementBuiltInProviderModelConfiguration(
 	_ context.Context,
-	input postgresqueries.UpdateManagementBuiltInProviderModelPricesParams,
-) (postgresqueries.UpdateManagementBuiltInProviderModelPricesRow, error) {
-	s.input = input
-	return s.row, s.err
+	input postgresqueries.LockManagementBuiltInProviderModelConfigurationParams,
+) (postgresqueries.LockManagementBuiltInProviderModelConfigurationRow, error) {
+	s.lockInput = input
+	return s.locked, s.lockErr
 }
+
+func (s *managementBuiltInProviderModelPriceUpdateQueriesStub) UpdateManagementBuiltInProviderModelConfiguration(
+	_ context.Context,
+	input postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams,
+) (postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow, error) {
+	s.updateInput = input
+	return s.updated, s.updateErr
+}
+
+type managementProviderModelRollbackContextKey struct{}
+
+type managementBuiltInProviderModelUpdateTxStub struct {
+	pgx.Tx
+	rows                 []pgx.Row
+	calls                []string
+	commitCalls          int
+	rollbackCalls        int
+	rollbackContextErr   error
+	rollbackContextValue any
+	rollbackHasDeadline  bool
+	rollbackDeadline     time.Time
+}
+
+func (s *managementBuiltInProviderModelUpdateTxStub) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
+	switch {
+	case strings.Contains(sql, "FOR UPDATE"):
+		s.calls = append(s.calls, "lock")
+	case strings.Contains(sql, "UPDATE juhe_business.provider_model_catalog"):
+		s.calls = append(s.calls, "update")
+	default:
+		return managementProviderModelStaticRow{err: fmt.Errorf("unexpected SQL: %s", sql)}
+	}
+	if len(s.rows) == 0 {
+		return managementProviderModelStaticRow{err: errors.New("missing stub row")}
+	}
+	row := s.rows[0]
+	s.rows = s.rows[1:]
+	return row
+}
+
+func (s *managementBuiltInProviderModelUpdateTxStub) Commit(context.Context) error {
+	s.calls = append(s.calls, "commit")
+	s.commitCalls++
+	return nil
+}
+
+func (s *managementBuiltInProviderModelUpdateTxStub) Rollback(ctx context.Context) error {
+	s.rollbackCalls++
+	s.rollbackContextErr = ctx.Err()
+	s.rollbackContextValue = ctx.Value(managementProviderModelRollbackContextKey{})
+	s.rollbackDeadline, s.rollbackHasDeadline = ctx.Deadline()
+	return nil
+}
+
+type managementProviderModelStaticRow struct {
+	values []any
+	err    error
+}
+
+func (r managementProviderModelStaticRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(dest) != len(r.values) {
+		return fmt.Errorf("scan destinations = %d, values = %d", len(dest), len(r.values))
+	}
+	for index := range dest {
+		reflect.ValueOf(dest[index]).Elem().Set(reflect.ValueOf(r.values[index]))
+	}
+	return nil
+}
+
+func managementProviderModelLockRow(row postgresqueries.LockManagementBuiltInProviderModelConfigurationRow) pgx.Row {
+	return managementProviderModelStaticRow{values: managementProviderModelConfigurationValues(row.ID, row.ProviderCode, row.Status, row.Mode, row.SupportedApiProtocolsJson, row.SupportedServiceTiersJson, row.SupportedReasoningEffortsJson, row.DefaultReasoningEffort, row.ReleaseDate, row.ShutdownDate, row.ContextWindowTokens, row.MaxInputTokens, row.MaxOutputTokens, row.InputUsdPer1m, row.OutputUsdPer1m, row.CachedInputUsdPer1m, row.CacheWriteUsdPer1m, row.CacheWrite1hUsdPer1m, row.ServiceTierPricesJson, row.ImageInputUsdPer1m, row.ImageOutputUsdPer1m, row.AudioInputUsdPer1m, row.AudioOutputUsdPer1m, row.OutputUsdPerImage, row.UpdatedAt)}
+}
+
+func managementProviderModelUpdateRow(row postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow) pgx.Row {
+	return managementProviderModelStaticRow{values: managementProviderModelConfigurationValues(row.ID, row.ProviderCode, row.Status, row.Mode, row.SupportedApiProtocolsJson, row.SupportedServiceTiersJson, row.SupportedReasoningEffortsJson, row.DefaultReasoningEffort, row.ReleaseDate, row.ShutdownDate, row.ContextWindowTokens, row.MaxInputTokens, row.MaxOutputTokens, row.InputUsdPer1m, row.OutputUsdPer1m, row.CachedInputUsdPer1m, row.CacheWriteUsdPer1m, row.CacheWrite1hUsdPer1m, row.ServiceTierPricesJson, row.ImageInputUsdPer1m, row.ImageOutputUsdPer1m, row.AudioInputUsdPer1m, row.AudioOutputUsdPer1m, row.OutputUsdPerImage, row.UpdatedAt)}
+}
+
+func managementProviderModelConfigurationValues(values ...any) []any { return values }
+
+var _ pgx.Tx = (*managementBuiltInProviderModelUpdateTxStub)(nil)
+var _ pgx.Row = managementProviderModelStaticRow{}

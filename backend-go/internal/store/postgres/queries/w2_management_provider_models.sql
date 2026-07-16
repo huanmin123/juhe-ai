@@ -142,96 +142,40 @@ WHERE provider_code = ANY(sqlc.arg(custom_provider_codes)::text[])
   )
 ORDER BY provider_code ASC, scope ASC, model ASC, id ASC;
 
--- name: UpdateManagementBuiltInProviderModelPrices :one
-WITH locked AS MATERIALIZED (
-  SELECT catalog.*
-  FROM juhe_business.provider_model_catalog AS catalog
-  WHERE catalog.id = sqlc.arg(id)
-    AND catalog.provider_code = sqlc.arg(provider_code)
-  FOR UPDATE
-), updated AS (
-  UPDATE juhe_business.provider_model_catalog AS target
-SET status = CASE WHEN sqlc.arg(status_present)::boolean THEN sqlc.arg(status)::text ELSE target.status END,
-    mode = CASE WHEN sqlc.arg(mode_present)::boolean THEN NULLIF(sqlc.arg(mode)::text, '') ELSE target.mode END,
-    supported_api_protocols_json = CASE WHEN sqlc.arg(supported_api_protocols_present)::boolean THEN sqlc.arg(supported_api_protocols_json)::text ELSE target.supported_api_protocols_json END,
-    supported_service_tiers_json = CASE WHEN sqlc.arg(supported_service_tiers_present)::boolean THEN sqlc.arg(supported_service_tiers_json)::text ELSE target.supported_service_tiers_json END,
-    supported_reasoning_efforts_json = CASE WHEN sqlc.arg(supported_reasoning_efforts_present)::boolean THEN sqlc.arg(supported_reasoning_efforts_json)::text ELSE target.supported_reasoning_efforts_json END,
-    default_reasoning_effort = CASE WHEN sqlc.arg(default_reasoning_effort_present)::boolean THEN NULLIF(sqlc.arg(default_reasoning_effort)::text, '') ELSE target.default_reasoning_effort END,
-    release_date = CASE WHEN sqlc.arg(release_date_present)::boolean THEN NULLIF(sqlc.arg(release_date)::text, '') ELSE target.release_date END,
-    shutdown_date = CASE WHEN sqlc.arg(shutdown_date_present)::boolean THEN NULLIF(sqlc.arg(shutdown_date)::text, '') ELSE target.shutdown_date END,
-    context_window_tokens = CASE WHEN sqlc.arg(context_window_tokens_present)::boolean THEN sqlc.narg(context_window_tokens)::integer ELSE target.context_window_tokens END,
-    max_input_tokens = CASE WHEN sqlc.arg(max_input_tokens_present)::boolean THEN sqlc.narg(max_input_tokens)::integer ELSE target.max_input_tokens END,
-    max_output_tokens = CASE WHEN sqlc.arg(max_output_tokens_present)::boolean THEN sqlc.narg(max_output_tokens)::integer ELSE target.max_output_tokens END,
-    input_usd_per_1m = CASE WHEN sqlc.arg(input_usd_per_1m_present)::boolean THEN sqlc.narg(input_usd_per_1m)::double precision ELSE target.input_usd_per_1m END,
-    output_usd_per_1m = CASE WHEN sqlc.arg(output_usd_per_1m_present)::boolean THEN sqlc.narg(output_usd_per_1m)::double precision ELSE target.output_usd_per_1m END,
-    cached_input_usd_per_1m = CASE WHEN sqlc.arg(cached_input_usd_per_1m_present)::boolean THEN sqlc.narg(cached_input_usd_per_1m)::double precision ELSE target.cached_input_usd_per_1m END,
-    cache_write_usd_per_1m = CASE WHEN sqlc.arg(cache_write_usd_per_1m_present)::boolean THEN sqlc.narg(cache_write_usd_per_1m)::double precision ELSE target.cache_write_usd_per_1m END,
-    cache_write_1h_usd_per_1m = CASE WHEN sqlc.arg(cache_write_1h_usd_per_1m_present)::boolean THEN sqlc.narg(cache_write_1h_usd_per_1m)::double precision ELSE target.cache_write_1h_usd_per_1m END,
-    service_tier_prices_json = CASE WHEN sqlc.arg(service_tier_prices_present)::boolean THEN sqlc.arg(service_tier_prices_json)::text ELSE target.service_tier_prices_json END,
-    image_input_usd_per_1m = CASE WHEN sqlc.arg(image_input_usd_per_1m_present)::boolean THEN sqlc.narg(image_input_usd_per_1m)::double precision ELSE target.image_input_usd_per_1m END,
-    image_output_usd_per_1m = CASE WHEN sqlc.arg(image_output_usd_per_1m_present)::boolean THEN sqlc.narg(image_output_usd_per_1m)::double precision ELSE target.image_output_usd_per_1m END,
-    audio_input_usd_per_1m = CASE WHEN sqlc.arg(audio_input_usd_per_1m_present)::boolean THEN sqlc.narg(audio_input_usd_per_1m)::double precision ELSE target.audio_input_usd_per_1m END,
-    audio_output_usd_per_1m = CASE WHEN sqlc.arg(audio_output_usd_per_1m_present)::boolean THEN sqlc.narg(audio_output_usd_per_1m)::double precision ELSE target.audio_output_usd_per_1m END,
-    output_usd_per_image = CASE WHEN sqlc.arg(output_usd_per_image_present)::boolean THEN sqlc.narg(output_usd_per_image)::double precision ELSE target.output_usd_per_image END,
-    updated_at = now()
-  FROM locked
-  WHERE target.id = locked.id
-    AND target.provider_code = locked.provider_code
-  RETURNING target.*
-)
-SELECT
-  locked.id AS before_id,
-  locked.provider_code AS before_provider_code,
-  locked.status AS before_status,
-  locked.mode AS before_mode,
-  locked.supported_api_protocols_json AS before_supported_api_protocols_json,
-  locked.supported_service_tiers_json AS before_supported_service_tiers_json,
-  locked.supported_reasoning_efforts_json AS before_supported_reasoning_efforts_json,
-  locked.default_reasoning_effort AS before_default_reasoning_effort,
-  locked.release_date AS before_release_date,
-  locked.shutdown_date AS before_shutdown_date,
-  locked.context_window_tokens AS before_context_window_tokens,
-  locked.max_input_tokens AS before_max_input_tokens,
-  locked.max_output_tokens AS before_max_output_tokens,
-  locked.input_usd_per_1m AS before_input_usd_per_1m,
-  locked.output_usd_per_1m AS before_output_usd_per_1m,
-  locked.cached_input_usd_per_1m AS before_cached_input_usd_per_1m,
-  locked.cache_write_usd_per_1m AS before_cache_write_usd_per_1m,
-  locked.cache_write_1h_usd_per_1m AS before_cache_write_1h_usd_per_1m,
-  locked.service_tier_prices_json AS before_service_tier_prices_json,
-  locked.image_input_usd_per_1m AS before_image_input_usd_per_1m,
-  locked.image_output_usd_per_1m AS before_image_output_usd_per_1m,
-  locked.audio_input_usd_per_1m AS before_audio_input_usd_per_1m,
-  locked.audio_output_usd_per_1m AS before_audio_output_usd_per_1m,
-  locked.output_usd_per_image AS before_output_usd_per_image,
-  locked.updated_at AS before_updated_at,
-  updated.id AS after_id,
-  updated.provider_code AS after_provider_code,
-  updated.status AS after_status,
-  updated.mode AS after_mode,
-  updated.supported_api_protocols_json AS after_supported_api_protocols_json,
-  updated.supported_service_tiers_json AS after_supported_service_tiers_json,
-  updated.supported_reasoning_efforts_json AS after_supported_reasoning_efforts_json,
-  updated.default_reasoning_effort AS after_default_reasoning_effort,
-  updated.release_date AS after_release_date,
-  updated.shutdown_date AS after_shutdown_date,
-  updated.context_window_tokens AS after_context_window_tokens,
-  updated.max_input_tokens AS after_max_input_tokens,
-  updated.max_output_tokens AS after_max_output_tokens,
-  updated.input_usd_per_1m AS after_input_usd_per_1m,
-  updated.output_usd_per_1m AS after_output_usd_per_1m,
-  updated.cached_input_usd_per_1m AS after_cached_input_usd_per_1m,
-  updated.cache_write_usd_per_1m AS after_cache_write_usd_per_1m,
-  updated.cache_write_1h_usd_per_1m AS after_cache_write_1h_usd_per_1m,
-  updated.service_tier_prices_json AS after_service_tier_prices_json,
-  updated.image_input_usd_per_1m AS after_image_input_usd_per_1m,
-  updated.image_output_usd_per_1m AS after_image_output_usd_per_1m,
-  updated.audio_input_usd_per_1m AS after_audio_input_usd_per_1m,
-  updated.audio_output_usd_per_1m AS after_audio_output_usd_per_1m,
-  updated.output_usd_per_image AS after_output_usd_per_image,
-  updated.updated_at AS after_updated_at
-FROM locked
-INNER JOIN updated ON true;
+-- name: LockManagementBuiltInProviderModelConfiguration :one
+SELECT id, provider_code, status, mode, supported_api_protocols_json, supported_service_tiers_json,
+       supported_reasoning_efforts_json, default_reasoning_effort, release_date, shutdown_date,
+       context_window_tokens, max_input_tokens, max_output_tokens, input_usd_per_1m, output_usd_per_1m,
+       cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+       image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+       output_usd_per_image, updated_at
+FROM juhe_business.provider_model_catalog
+WHERE id = sqlc.arg(id) AND provider_code = sqlc.arg(provider_code)
+FOR UPDATE;
+
+-- name: UpdateManagementBuiltInProviderModelConfiguration :one
+UPDATE juhe_business.provider_model_catalog
+SET status = sqlc.arg(status), mode = sqlc.narg(mode),
+    supported_api_protocols_json = sqlc.arg(supported_api_protocols_json),
+    supported_service_tiers_json = sqlc.arg(supported_service_tiers_json),
+    supported_reasoning_efforts_json = sqlc.arg(supported_reasoning_efforts_json),
+    default_reasoning_effort = sqlc.narg(default_reasoning_effort),
+    release_date = sqlc.narg(release_date), shutdown_date = sqlc.narg(shutdown_date),
+    context_window_tokens = sqlc.narg(context_window_tokens), max_input_tokens = sqlc.narg(max_input_tokens),
+    max_output_tokens = sqlc.narg(max_output_tokens), input_usd_per_1m = sqlc.narg(input_usd_per_1m),
+    output_usd_per_1m = sqlc.narg(output_usd_per_1m), cached_input_usd_per_1m = sqlc.narg(cached_input_usd_per_1m),
+    cache_write_usd_per_1m = sqlc.narg(cache_write_usd_per_1m), cache_write_1h_usd_per_1m = sqlc.narg(cache_write_1h_usd_per_1m),
+    service_tier_prices_json = sqlc.arg(service_tier_prices_json), image_input_usd_per_1m = sqlc.narg(image_input_usd_per_1m),
+    image_output_usd_per_1m = sqlc.narg(image_output_usd_per_1m), audio_input_usd_per_1m = sqlc.narg(audio_input_usd_per_1m),
+    audio_output_usd_per_1m = sqlc.narg(audio_output_usd_per_1m), output_usd_per_image = sqlc.narg(output_usd_per_image),
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND provider_code = sqlc.arg(provider_code)
+RETURNING id, provider_code, status, mode, supported_api_protocols_json, supported_service_tiers_json,
+          supported_reasoning_efforts_json, default_reasoning_effort, release_date, shutdown_date,
+          context_window_tokens, max_input_tokens, max_output_tokens, input_usd_per_1m, output_usd_per_1m,
+          cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+          image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+          output_usd_per_image, updated_at;
 
 -- name: FindManagementCustomProviderModel :one
 SELECT
