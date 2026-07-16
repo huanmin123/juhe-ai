@@ -333,15 +333,16 @@ func TestW2ManagementExternalIntegrationSourceTokenUpdatePostgresSmoke(t *testin
 
 		patch := receiveW2TokenUpdateOutcome(t, patchDone, "lock-order patch")
 		deleted := receiveW2TokenUpdateOutcome(t, deleteDone, "lock-order delete")
-		if patch.err != nil || (patch.status != http.StatusOK && patch.status != http.StatusNotFound) {
+		if patch.err != nil || patch.status != http.StatusOK {
 			t.Fatalf("lock-order patch status=%d err=%v", patch.status, patch.err)
 		}
-		if deleted.err != nil || (deleted.status != http.StatusNoContent && deleted.status != http.StatusNotFound) {
+		if deleted.err != nil || deleted.status != http.StatusNoContent {
 			t.Fatalf("lock-order delete status=%d err=%v", deleted.status, deleted.err)
 		}
 		if bytes.Contains(patch.body, []byte("40P01")) || bytes.Contains(deleted.body, []byte("40P01")) {
 			t.Fatal("patch/delete lock ordering exposed a PostgreSQL deadlock")
 		}
+		assertW2TokenUpdateLockSourceDeleted(t, ctx, db)
 	})
 }
 
@@ -661,6 +662,21 @@ func waitForW2TokenUpdateBlockedQueries(t *testing.T, ctx context.Context, db *s
 		case <-waitCtx.Done():
 			t.Fatalf("timed out waiting for %d blocked queries containing %q", want, queryFragment)
 		}
+	}
+}
+
+func assertW2TokenUpdateLockSourceDeleted(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	var sourceCount, tokenCount int
+	if err := db.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM juhe_business.external_integration_sources WHERE id = $1),
+			(SELECT COUNT(*) FROM juhe_business.external_integration_source_tokens WHERE source_ref_id = $1)
+	`, w2TokenUpdateLockSourceID).Scan(&sourceCount, &tokenCount); err != nil {
+		t.Fatalf("count lock-order source and tokens after delete: %v", err)
+	}
+	if sourceCount != 0 || tokenCount != 0 {
+		t.Fatalf("lock-order delete left sourceCount=%d tokenCount=%d", sourceCount, tokenCount)
 	}
 }
 
