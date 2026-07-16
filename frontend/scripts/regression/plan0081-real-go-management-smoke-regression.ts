@@ -84,6 +84,7 @@ type MockScenario =
   | 'external_integration_source_secret_empty'
   | 'external_integration_source_secret_preview_mismatch'
   | 'external_integration_source_secret_pragma_invalid'
+  | 'external_integration_source_mutation_patch_failure'
   | 'ip_stats_not_ready'
   | 'ip_stats_empty'
   | 'ip_stats_detail_not_ready'
@@ -142,10 +143,15 @@ const selectedExternalIntegrationSourceId = 'extsrc_plan0081/encoded target?read
 const configuredExternalIntegrationSourceId = 'extsrc/plan0081?opt-in#%'
 const configuredExternalIntegrationSourceTokenId = 'exttok/plan0081?revoked#%'
 const externalIntegrationSourceTokenSecret = 'juis_Op1_plan0081_secret_value_revoked1'
+const temporaryExternalIntegrationSourceId = 'extsrc/plan0081?temporary#fixture'
+const temporaryExternalIntegrationSourceName = 'PLAN-0081 external source smoke fixture regression'
+const temporaryExternalIntegrationSourceNotes = 'PLAN-0081 external source smoke fixture'
 const requestRecords: RequestRecord[] = []
 const groups = new Map<string, MockGroup>()
 let scenario: MockScenario = 'normal'
 let patchFailureDelivered = false
+let externalIntegrationSourcePatchFailureDelivered = false
+let temporaryExternalIntegrationSourceDetail = temporaryExternalIntegrationSourceFixture()
 
 const server = createServer((req, res) => {
   void handleRequest(req, res).catch(() => {
@@ -165,6 +171,7 @@ try {
   await assertPublicAPILogReadScenarios(baseUrl)
   await assertExternalIntegrationSourceCatalogReadScenarios(baseUrl)
   await assertExternalIntegrationSourceTokenSecretScenarios(baseUrl)
+  await assertExternalIntegrationSourceMutationScenarios(baseUrl)
   await assertExternalIntegrationSourceApiEncoding()
   await assertLogBoundaryRedaction(baseUrl)
   await assertRouteStrategyReadScenarios(baseUrl)
@@ -300,6 +307,94 @@ async function assertExternalIntegrationSourceTokenSecretScenarios(baseUrl: stri
     )
     assert.deepEqual(requestRecords, [])
   }
+}
+
+async function assertExternalIntegrationSourceMutationScenarios(baseUrl: string): Promise<void> {
+  resetMock('normal')
+  const readOnlySummary = await runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
+  assert.equal(readOnlySummary.externalIntegrationSourcePatchChecked, false)
+  assert.equal(
+    requestRecords.some((record) =>
+      record.method === 'PATCH' && record.url === externalIntegrationSourceMutationPath()
+    ),
+    false
+  )
+
+  resetMock('normal')
+  const output: string[] = []
+  const summary = await runRealGoManagementSmokeFromEnvironment(
+    externalIntegrationSourceMutationEnvironment(baseUrl),
+    (message) => output.push(message)
+  )
+  assert.equal(summary.externalIntegrationSourcePatchChecked, true)
+  assert.equal(output.length, 1)
+  assert.match(output[0] ?? '', /externalIntegrationSourcePatchChecked=true/)
+  const mutationRequests = requestRecords.filter(
+    (record) => record.url === externalIntegrationSourceMutationPath()
+  )
+  assert.deepEqual(mutationRequests.map((record) => record.method), ['GET', 'PATCH', 'GET', 'PATCH', 'GET'])
+  const patchBodies = mutationRequests.filter((record) => record.method === 'PATCH').map((record) => record.body)
+  assert.match(String(fixtureRecord(patchBodies[0]).name), /^PLAN-0081 external source smoke [0-9a-f-]+$/)
+  const restoreBody = { ...fixtureRecord(patchBodies[1]) }
+  assert.notEqual(restoreBody.name, temporaryExternalIntegrationSourceName)
+  assert.equal(String(restoreBody.name).trim(), temporaryExternalIntegrationSourceName)
+  restoreBody.name = temporaryExternalIntegrationSourceName
+  assert.deepEqual(restoreBody, externalIntegrationSourceMutationRestorePayload())
+  assert.equal(temporaryExternalIntegrationSourceDetail.name, temporaryExternalIntegrationSourceName)
+  assert.equal(temporaryExternalIntegrationSourceDetail.notes, temporaryExternalIntegrationSourceNotes)
+  assertRequestHeaders()
+
+  resetMock('normal')
+  temporaryExternalIntegrationSourceDetail.notes = 'not a smoke fixture'
+  const markerFailure = await captureFailureMessage(
+    runRealGoManagementSmokeFromEnvironment(externalIntegrationSourceMutationEnvironment(baseUrl), () => undefined)
+  )
+  assert.match(markerFailure, /fixture notes marker does not match/)
+  assert.equal(
+    requestRecords.filter((record) => record.method === 'PATCH' && record.url === externalIntegrationSourceMutationPath()).length,
+    0
+  )
+
+  resetMock('normal')
+  temporaryExternalIntegrationSourceDetail.tokenCount = 1
+  temporaryExternalIntegrationSourceDetail.activeTokenCount = 1
+  temporaryExternalIntegrationSourceDetail.tokens = [externalIntegrationSourceDetailTokensFixture()[0]]
+  const tokenFixtureFailure = await captureFailureMessage(
+    runRealGoManagementSmokeFromEnvironment(externalIntegrationSourceMutationEnvironment(baseUrl), () => undefined)
+  )
+  assert.match(tokenFixtureFailure, /fixture must not contain any Token/)
+  assert.equal(
+    requestRecords.filter((record) => record.method === 'PATCH' && record.url === externalIntegrationSourceMutationPath()).length,
+    0
+  )
+
+  resetMock('external_integration_source_mutation_patch_failure')
+  const patchFailure = await captureFailureMessage(
+    runRealGoManagementSmokeFromEnvironment(externalIntegrationSourceMutationEnvironment(baseUrl), () => undefined)
+  )
+  assert.match(patchFailure, /temporary external integration source PATCH failed with HTTP 500/)
+  assert.deepEqual(
+    requestRecords
+      .filter((record) => record.url === externalIntegrationSourceMutationPath())
+      .map((record) => record.method),
+    ['GET', 'PATCH', 'PATCH', 'GET']
+  )
+  assert.equal(temporaryExternalIntegrationSourceDetail.name, temporaryExternalIntegrationSourceName)
+  assert.equal(temporaryExternalIntegrationSourceDetail.notes, temporaryExternalIntegrationSourceNotes)
+
+  resetMock('normal')
+  await assert.rejects(
+    runRealGoManagementSmokeFromEnvironment(
+      smokeEnvironment(baseUrl, {
+        [realGoManagementSmokeEnv.allowExternalIntegrationSourceMutations]: '1',
+        [realGoManagementSmokeEnv.temporaryExternalIntegrationSourceId]: temporaryExternalIntegrationSourceId,
+        [realGoManagementSmokeEnv.externalIntegrationSourceMutationFixtureConfirmation]: 'wrong-confirmation'
+      }),
+      () => undefined
+    ),
+    /fixture confirmation does not match/
+  )
+  assert.deepEqual(requestRecords, [])
 }
 
 async function assertExternalIntegrationSourceApiEncoding(): Promise<void> {
@@ -878,7 +973,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1084,7 +1179,7 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1111,7 +1206,7 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1332,7 +1427,9 @@ async function assertInvalidConfiguration(baseUrl: string): Promise<void> {
 function resetMock(nextScenario: MockScenario): void {
   scenario = nextScenario
   patchFailureDelivered = false
+  externalIntegrationSourcePatchFailureDelivered = false
   requestRecords.length = 0
+  temporaryExternalIntegrationSourceDetail = temporaryExternalIntegrationSourceFixture()
   groups.clear()
   groups.set('grp_plan0081_default', groupFixture('grp_plan0081_default', '默认分组', true, 'owner'))
   groups.set('grp_plan0081_authorized', groupFixture('grp_plan0081_authorized', '授权分组', false, 'authorized'))
@@ -1491,6 +1588,33 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return
   }
   const externalIntegrationSourceId = externalIntegrationSourceIdFromPath(url.pathname)
+  if (
+    req.method === 'PATCH' &&
+    externalIntegrationSourceId === temporaryExternalIntegrationSourceId
+  ) {
+    const payload = fixtureRecord(body)
+    temporaryExternalIntegrationSourceDetail = {
+      ...temporaryExternalIntegrationSourceDetail,
+      name: String(payload.name).trim(),
+      status: payload.status as 'active' | 'disabled',
+      scopes: [...payload.scopes as string[]],
+      rateLimits: (payload.rateLimits as Array<{ windowSeconds: number; maxRequests: number }>).map((rule) => ({ ...rule })),
+      notes: typeof payload.notes === 'string' ? payload.notes : undefined,
+      expiresAt: typeof payload.expiresAt === 'string' ? payload.expiresAt : undefined,
+      updatedAt: '2026-07-16T08:00:00.000Z'
+    }
+    if (
+      scenario === 'external_integration_source_mutation_patch_failure' &&
+      !externalIntegrationSourcePatchFailureDelivered
+    ) {
+      externalIntegrationSourcePatchFailureDelivered = true
+      res.statusCode = 500
+      res.end(JSON.stringify({ message: 'forced external source patch failure' }))
+      return
+    }
+    sendEnvelope(res, temporaryExternalIntegrationSourceDetail)
+    return
+  }
   if (req.method === 'GET' && externalIntegrationSourceId !== undefined) {
     const paginationScenario = scenario === 'external_integration_source_list_pagination'
       || scenario === 'external_integration_source_list_pagination_duplicate'
@@ -1501,7 +1625,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         '分页场景应读取第一页第一个非内置来源详情'
       )
     }
-    const detail = paginationScenario
+    const detail = externalIntegrationSourceId === temporaryExternalIntegrationSourceId
+      ? { ...temporaryExternalIntegrationSourceDetail }
+      : paginationScenario
       ? {
           ...externalIntegrationSourcePaginationItem(1),
           tokens: []
@@ -2159,8 +2285,18 @@ function expectedSummary(
     routeStrategyCount,
     routeStrategyDetailChecked,
     selfApiKeyCount: 1,
-    externalIntegrationSourceTokenSecretChecked: false
+    externalIntegrationSourceTokenSecretChecked: false,
+    externalIntegrationSourcePatchChecked: false
   }
+}
+
+function externalIntegrationSourceMutationEnvironment(baseUrl: string): SmokeEnvironment {
+  return smokeEnvironment(baseUrl, {
+    [realGoManagementSmokeEnv.allowExternalIntegrationSourceMutations]: '1',
+    [realGoManagementSmokeEnv.temporaryExternalIntegrationSourceId]: temporaryExternalIntegrationSourceId,
+    [realGoManagementSmokeEnv.externalIntegrationSourceMutationFixtureConfirmation]:
+      `plan0081-external-source-fixture-v1:${temporaryExternalIntegrationSourceId}`
+  })
 }
 
 function apiKeyListFixture(scope: 'admin' | 'self', requestScenario: MockScenario): Record<string, unknown> {
@@ -2453,6 +2589,35 @@ function externalIntegrationSourceDetailFixture(sourceId: string): Record<string
   return detail
 }
 
+function temporaryExternalIntegrationSourceFixture(): Record<string, unknown> {
+  return {
+    id: temporaryExternalIntegrationSourceId,
+    name: temporaryExternalIntegrationSourceName,
+    status: 'active',
+    scopes: ['juhe_ai_public:api_key_list:read'],
+    rateLimits: [{ windowSeconds: 60, maxRequests: 10 }],
+    expiresAt: '2026-12-31T00:00:00.000Z',
+    notes: temporaryExternalIntegrationSourceNotes,
+    createdAt: '2026-07-16T07:00:00.000Z',
+    updatedAt: '2026-07-16T07:00:00.000Z',
+    tokenCount: 0,
+    activeTokenCount: 0,
+    tokens: [],
+    isBuiltIn: false
+  }
+}
+
+function externalIntegrationSourceMutationRestorePayload(): Record<string, unknown> {
+  return {
+    name: temporaryExternalIntegrationSourceName,
+    status: 'active',
+    scopes: ['juhe_ai_public:api_key_list:read'],
+    rateLimits: [{ windowSeconds: 60, maxRequests: 10 }],
+    expiresAt: '2026-12-31T00:00:00.000Z',
+    notes: temporaryExternalIntegrationSourceNotes
+  }
+}
+
 function externalIntegrationSourceDetailTokensFixture(): Array<Record<string, unknown>> {
   return [
     {
@@ -2585,6 +2750,10 @@ function externalIntegrationSourcesListPath(page = 1): string {
 
 function externalIntegrationSourceDetailPath(sourceId = selectedExternalIntegrationSourceId): string {
   return `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`
+}
+
+function externalIntegrationSourceMutationPath(): string {
+  return `/__aisys__/api/external-integration-sources/${encodeURIComponent(temporaryExternalIntegrationSourceId)}`
 }
 
 function externalIntegrationSourceTokenSecretPath(): string {

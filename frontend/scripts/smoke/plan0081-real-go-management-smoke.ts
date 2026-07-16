@@ -3,18 +3,21 @@ import { pathToFileURL } from 'node:url'
 
 export const realGoManagementSmokeEnv = {
   accountId: 'JUHE_REAL_GO_MANAGEMENT_ACCOUNT_ID',
+  allowExternalIntegrationSourceMutations: 'JUHE_REAL_GO_MANAGEMENT_ALLOW_EXTERNAL_INTEGRATION_SOURCE_MUTATIONS',
   allowGroupMutations: 'JUHE_REAL_GO_MANAGEMENT_ALLOW_GROUP_MUTATIONS',
   baseUrl: 'JUHE_REAL_GO_MANAGEMENT_BASE_URL',
   clientIpHash: 'JUHE_REAL_GO_MANAGEMENT_CLIENT_IP_HASH',
   cookie: 'JUHE_REAL_GO_MANAGEMENT_COOKIE',
   externalIntegrationSourceId: 'JUHE_REAL_GO_MANAGEMENT_EXTERNAL_INTEGRATION_SOURCE_ID',
   externalIntegrationSourceTokenId: 'JUHE_REAL_GO_MANAGEMENT_EXTERNAL_INTEGRATION_SOURCE_TOKEN_ID',
+  externalIntegrationSourceMutationFixtureConfirmation: 'JUHE_REAL_GO_MANAGEMENT_EXTERNAL_INTEGRATION_SOURCE_MUTATION_FIXTURE_CONFIRMATION',
   groupId: 'JUHE_REAL_GO_MANAGEMENT_GROUP_ID',
   providerCode: 'JUHE_REAL_GO_MANAGEMENT_GROUP_PROVIDER_CODE',
   publicApiLogId: 'JUHE_REAL_GO_MANAGEMENT_PUBLIC_API_LOG_ID',
   requireClientIpDetail: 'JUHE_REAL_GO_MANAGEMENT_REQUIRE_CLIENT_IP_DETAIL',
   routeStrategyId: 'JUHE_REAL_GO_MANAGEMENT_ROUTE_STRATEGY_ID',
   systemAccountId: 'JUHE_REAL_GO_MANAGEMENT_SYSTEM_ACCOUNT_ID',
+  temporaryExternalIntegrationSourceId: 'JUHE_REAL_GO_MANAGEMENT_TEMP_EXTERNAL_INTEGRATION_SOURCE_ID',
   timeoutMs: 'JUHE_REAL_GO_MANAGEMENT_TIMEOUT_MS'
 } as const
 
@@ -23,6 +26,9 @@ const smokeUserAgent = 'juhe-ai-plan0081-real-go-management-smoke/1.0'
 const smokeHeaderValue = 'plan0081-real-go-management'
 const temporaryGroupNamePrefix = 'PLAN-0081 real Go management smoke '
 const temporaryGroupDescription = 'PLAN-0081 W5 group CRUD real Go smoke'
+const externalIntegrationSourceMutationFixtureNamePrefix = 'PLAN-0081 external source smoke fixture '
+const externalIntegrationSourceMutationFixtureNotes = 'PLAN-0081 external source smoke fixture'
+const externalIntegrationSourceMutationFixtureConfirmationPrefix = 'plan0081-external-source-fixture-v1:'
 const defaultTimeoutMs = 15_000
 const maximumTimeoutMs = 2_147_483_647
 const externalIntegrationSourceScopeOptions = [
@@ -141,18 +147,21 @@ export type SmokeEnvironment = Readonly<Record<string, string | undefined>>
 
 export interface RealGoManagementSmokeConfig {
   accountId?: string
+  allowExternalIntegrationSourceMutations?: boolean
   allowGroupMutations?: boolean
   baseUrl: string
   clientIpHash?: string
   cookie: string
   externalIntegrationSourceId?: string
   externalIntegrationSourceTokenId?: string
+  externalIntegrationSourceMutationFixtureConfirmation?: string
   groupId?: string
   providerCode?: string
   publicApiLogId?: string
   requireClientIpDetail?: boolean
   routeStrategyId?: string
   systemAccountId?: string
+  temporaryExternalIntegrationSourceId?: string
   timeoutMs?: number
 }
 
@@ -172,9 +181,11 @@ export interface RealGoManagementSmokeSummary {
   routeStrategyDetailChecked: boolean
   selfApiKeyCount: number
   externalIntegrationSourceTokenSecretChecked: boolean
+  externalIntegrationSourcePatchChecked: boolean
 }
 
 interface NormalizedRealGoManagementSmokeConfig extends RealGoManagementSmokeConfig {
+  allowExternalIntegrationSourceMutations: boolean
   allowGroupMutations: boolean
   requireClientIpDetail: boolean
   timeoutMs: number
@@ -422,6 +433,14 @@ export function loadRealGoManagementSmokeConfig(
   expect(!/[\r\n]/.test(cookie), `${realGoManagementSmokeEnv.cookie} must be a single Cookie header line`)
   const externalIntegrationSourceId = optionalEnvironmentValue(env, realGoManagementSmokeEnv.externalIntegrationSourceId)
   const externalIntegrationSourceTokenId = optionalEnvironmentValue(env, realGoManagementSmokeEnv.externalIntegrationSourceTokenId)
+  const temporaryExternalIntegrationSourceId = optionalEnvironmentValue(
+    env,
+    realGoManagementSmokeEnv.temporaryExternalIntegrationSourceId
+  )
+  const externalIntegrationSourceMutationFixtureConfirmation = optionalEnvironmentValue(
+    env,
+    realGoManagementSmokeEnv.externalIntegrationSourceMutationFixtureConfirmation
+  )
   expect(
     Boolean(externalIntegrationSourceId) === Boolean(externalIntegrationSourceTokenId),
     `${realGoManagementSmokeEnv.externalIntegrationSourceId} and ${realGoManagementSmokeEnv.externalIntegrationSourceTokenId} must be configured together`
@@ -429,18 +448,24 @@ export function loadRealGoManagementSmokeConfig(
 
   return {
     accountId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.accountId),
+    allowExternalIntegrationSourceMutations: optionalBinaryFlag(
+      env,
+      realGoManagementSmokeEnv.allowExternalIntegrationSourceMutations
+    ),
     allowGroupMutations: optionalBinaryFlag(env, realGoManagementSmokeEnv.allowGroupMutations),
     baseUrl: normalizeManagementApiBaseUrl(baseUrl),
     clientIpHash: optionalClientIPHashEnvironmentValue(env, realGoManagementSmokeEnv.clientIpHash),
     cookie,
     externalIntegrationSourceId,
     externalIntegrationSourceTokenId,
+    externalIntegrationSourceMutationFixtureConfirmation,
     groupId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.groupId),
     providerCode: optionalEnvironmentValue(env, realGoManagementSmokeEnv.providerCode),
     publicApiLogId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.publicApiLogId),
     requireClientIpDetail: optionalBinaryFlag(env, realGoManagementSmokeEnv.requireClientIpDetail),
     routeStrategyId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.routeStrategyId),
     systemAccountId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.systemAccountId),
+    temporaryExternalIntegrationSourceId,
     timeoutMs: optionalPositiveIntegerEnvironmentValue(env, realGoManagementSmokeEnv.timeoutMs)
   }
 }
@@ -456,6 +481,10 @@ export async function runRealGoManagementSmoke(
   try {
     const readOnlyResult = await runReadOnlySmoke(normalizedConfig)
     summary = readOnlyResult.summary
+    if (normalizedConfig.allowExternalIntegrationSourceMutations) {
+      await runExternalIntegrationSourceMutationSmoke(normalizedConfig)
+      summary.externalIntegrationSourcePatchChecked = true
+    }
     if (normalizedConfig.allowGroupMutations) {
       await runGroupMutationSmoke(normalizedConfig, readOnlyResult, (identity) => {
         createdGroup = identity
@@ -497,6 +526,7 @@ export function formatRealGoManagementSmokeSummary(summary: RealGoManagementSmok
     `adminApiKeyCount=${summary.adminApiKeyCount}`,
     `selfApiKeyCount=${summary.selfApiKeyCount}`,
     `externalIntegrationSourceTokenSecretChecked=${summary.externalIntegrationSourceTokenSecretChecked}`,
+    `externalIntegrationSourcePatchChecked=${summary.externalIntegrationSourcePatchChecked}`,
     `clientIpItems=${summary.clientIpItemCount}`,
     `clientIpRangeReady=${summary.clientIpRangeReady}`,
     `clientIpDetailChecked=${summary.clientIpDetailChecked}`,
@@ -730,9 +760,165 @@ async function runReadOnlySmoke(
       routeStrategyCount: routeStrategies.length,
       routeStrategyDetailChecked,
       selfApiKeyCount: selfApiKeys.items.length,
-      externalIntegrationSourceTokenSecretChecked
+      externalIntegrationSourceTokenSecretChecked,
+      externalIntegrationSourcePatchChecked: false
     }
   }
+}
+
+type ExternalIntegrationSourceMutableSnapshot = Pick<
+  ExternalIntegrationSourceListItem,
+  'name' | 'status' | 'scopes' | 'rateLimits'
+> & {
+  expiresAt: string | null
+  notes: string | null
+}
+
+async function runExternalIntegrationSourceMutationSmoke(
+  config: NormalizedRealGoManagementSmokeConfig
+): Promise<void> {
+  const sourceId = config.temporaryExternalIntegrationSourceId
+  expect(sourceId, 'Temporary external integration source fixture ID is required')
+  const detailUrl = externalIntegrationSourceDetailUrl(config, sourceId)
+  const original = assertExternalIntegrationSourceDetail(
+    await getEnvelopeData(detailUrl, config, 'temporary external integration source fixture detail')
+  )
+  expect(original.id === sourceId, 'Temporary external integration source fixture ID does not match its detail')
+  expect(!original.isBuiltIn, 'Temporary external integration source fixture must not be built-in')
+  expect(
+    original.tokenCount === 0 && original.activeTokenCount === 0 && original.tokens.length === 0,
+    'Temporary external integration source fixture must not contain any Token'
+  )
+  expect(
+    original.name.startsWith(externalIntegrationSourceMutationFixtureNamePrefix),
+    'Temporary external integration source fixture name marker does not match'
+  )
+  expect(
+    original.notes === externalIntegrationSourceMutationFixtureNotes,
+    'Temporary external integration source fixture notes marker does not match'
+  )
+  const originalSnapshot = externalIntegrationSourceMutableSnapshot(original)
+  const runId = randomUUID()
+  const patchedSnapshot: ExternalIntegrationSourceMutableSnapshot = {
+    ...originalSnapshot,
+    name: `PLAN-0081 external source smoke ${runId}`,
+    notes: `PLAN-0081 external source smoke active ${runId}`
+  }
+
+  let mutationAttempted = false
+  let primaryError: unknown
+  try {
+    mutationAttempted = true
+    const patched = assertExternalIntegrationSourceDetail(
+      await requestEnvelopeData(detailUrl, config, 'temporary external integration source PATCH', {
+        method: 'PATCH',
+        body: externalIntegrationSourceMutationPayload(patchedSnapshot),
+        expectedStatus: 200
+      })
+    )
+    expect(patched.id === sourceId, 'Temporary external integration source PATCH response ID does not match')
+    assertExternalIntegrationSourceMutableSnapshot(
+      patched,
+      patchedSnapshot,
+      'temporary external integration source PATCH response'
+    )
+    const readBack = assertExternalIntegrationSourceDetail(
+      await getEnvelopeData(detailUrl, config, 'temporary external integration source detail after PATCH')
+    )
+    expect(readBack.id === sourceId, 'Temporary external integration source PATCH readback ID does not match')
+    assertExternalIntegrationSourceMutableSnapshot(
+      readBack,
+      patchedSnapshot,
+      'temporary external integration source detail after PATCH'
+    )
+  } catch (error) {
+    primaryError = error
+  }
+
+  let cleanupError: unknown
+  if (mutationAttempted) {
+    try {
+      const restoreFingerprintName = `${originalSnapshot.name}${externalIntegrationSourceRestoreFingerprintWhitespace()}`
+      const restored = assertExternalIntegrationSourceDetail(
+        await requestEnvelopeData(detailUrl, config, 'temporary external integration source restore PATCH', {
+          method: 'PATCH',
+          body: externalIntegrationSourceMutationPayload(originalSnapshot, restoreFingerprintName),
+          expectedStatus: 200
+        })
+      )
+      expect(restored.id === sourceId, 'Temporary external integration source restore response ID does not match')
+      assertExternalIntegrationSourceMutableSnapshot(
+        restored,
+        originalSnapshot,
+        'temporary external integration source restore response'
+      )
+      const restoredReadBack = assertExternalIntegrationSourceDetail(
+        await getEnvelopeData(detailUrl, config, 'temporary external integration source detail after restore')
+      )
+      expect(restoredReadBack.id === sourceId, 'Temporary external integration source restore readback ID does not match')
+      assertExternalIntegrationSourceMutableSnapshot(
+        restoredReadBack,
+        originalSnapshot,
+        'temporary external integration source detail after restore'
+      )
+    } catch (error) {
+      cleanupError = error
+    }
+  }
+
+  if (primaryError && cleanupError) {
+    const primary = safeError(primaryError, 'Temporary external integration source PATCH failed')
+    const cleanup = safeError(cleanupError, 'Temporary external integration source restore failed')
+    throw new AggregateError([primary, cleanup], `${primary.message}; restore failed: ${cleanup.message}`)
+  }
+  if (primaryError) throw safeError(primaryError, 'Temporary external integration source PATCH failed')
+  if (cleanupError) throw safeError(cleanupError, 'Temporary external integration source restore failed')
+}
+
+function externalIntegrationSourceMutableSnapshot(
+  detail: ExternalIntegrationSourceDetail
+): ExternalIntegrationSourceMutableSnapshot {
+  return {
+    name: detail.name,
+    status: detail.status,
+    scopes: [...detail.scopes],
+    rateLimits: detail.rateLimits.map((rule) => ({ ...rule })),
+    expiresAt: detail.expiresAt ?? null,
+    notes: detail.notes ?? null
+  }
+}
+
+function externalIntegrationSourceMutationPayload(
+  snapshot: ExternalIntegrationSourceMutableSnapshot,
+  fingerprintName = snapshot.name
+): Record<string, unknown> {
+  return {
+    name: fingerprintName,
+    status: snapshot.status,
+    scopes: snapshot.scopes,
+    rateLimits: snapshot.rateLimits,
+    expiresAt: snapshot.expiresAt,
+    notes: snapshot.notes
+  }
+}
+
+function externalIntegrationSourceRestoreFingerprintWhitespace(): string {
+  return [...randomUUID().replaceAll('-', '')]
+    .map((character) => Number.parseInt(character, 16) % 2 === 0 ? ' ' : '\t')
+    .join('')
+}
+
+function assertExternalIntegrationSourceMutableSnapshot(
+  detail: ExternalIntegrationSourceDetail,
+  expected: ExternalIntegrationSourceMutableSnapshot,
+  label: string
+): void {
+  expect(detail.name === expected.name, `${label}.name does not match`)
+  expect(detail.status === expected.status, `${label}.status does not match`)
+  expect(JSON.stringify(detail.scopes) === JSON.stringify(expected.scopes), `${label}.scopes do not match`)
+  expect(JSON.stringify(detail.rateLimits) === JSON.stringify(expected.rateLimits), `${label}.rateLimits do not match`)
+  expect((detail.expiresAt ?? null) === expected.expiresAt, `${label}.expiresAt does not match`)
+  expect((detail.notes ?? null) === expected.notes, `${label}.notes do not match`)
 }
 
 async function runGroupMutationSmoke(
@@ -858,6 +1044,11 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
   expect(typeof config.cookie === 'string' && config.cookie.trim().length > 0, 'Cookie header must not be empty')
   expect(!/[\r\n]/.test(config.cookie), 'Cookie header must be a single line')
   expect(
+    config.allowExternalIntegrationSourceMutations === undefined ||
+      typeof config.allowExternalIntegrationSourceMutations === 'boolean',
+    'Smoke external integration source mutation flag must be boolean'
+  )
+  expect(
     config.allowGroupMutations === undefined || typeof config.allowGroupMutations === 'boolean',
     'Smoke mutation flag must be boolean'
   )
@@ -881,24 +1072,48 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
   }
   const externalIntegrationSourceId = config.externalIntegrationSourceId?.trim() || undefined
   const externalIntegrationSourceTokenId = config.externalIntegrationSourceTokenId?.trim() || undefined
+  const temporaryExternalIntegrationSourceId = config.temporaryExternalIntegrationSourceId?.trim() || undefined
+  const externalIntegrationSourceMutationFixtureConfirmation =
+    config.externalIntegrationSourceMutationFixtureConfirmation?.trim() || undefined
   expect(
     Boolean(externalIntegrationSourceId) === Boolean(externalIntegrationSourceTokenId),
     'Smoke external integration source ID and token ID must be configured together'
   )
+  const allowExternalIntegrationSourceMutations = config.allowExternalIntegrationSourceMutations ?? false
+  if (allowExternalIntegrationSourceMutations) {
+    expect(
+      temporaryExternalIntegrationSourceId !== undefined,
+      'Smoke external integration source mutations require an explicit temporary fixture ID'
+    )
+    expect(
+      externalIntegrationSourceMutationFixtureConfirmation ===
+        `${externalIntegrationSourceMutationFixtureConfirmationPrefix}${temporaryExternalIntegrationSourceId}`,
+      'Smoke external integration source mutation fixture confirmation does not match the temporary fixture ID'
+    )
+  } else {
+    expect(
+      temporaryExternalIntegrationSourceId === undefined &&
+        externalIntegrationSourceMutationFixtureConfirmation === undefined,
+      'Smoke external integration source mutation fixture settings require the explicit mutation flag'
+    )
+  }
   return {
     ...config,
     accountId: config.accountId?.trim() || undefined,
+    allowExternalIntegrationSourceMutations,
     allowGroupMutations: config.allowGroupMutations ?? false,
     baseUrl: normalizeManagementApiBaseUrl(config.baseUrl),
     clientIpHash: config.clientIpHash?.trim().toLowerCase() || undefined,
     externalIntegrationSourceId,
     externalIntegrationSourceTokenId,
+    externalIntegrationSourceMutationFixtureConfirmation,
     groupId: config.groupId?.trim() || undefined,
     providerCode: config.providerCode?.trim() || undefined,
     publicApiLogId: config.publicApiLogId?.trim() || undefined,
     requireClientIpDetail: config.requireClientIpDetail ?? false,
     routeStrategyId: config.routeStrategyId?.trim() || undefined,
     systemAccountId: config.systemAccountId?.trim() || undefined,
+    temporaryExternalIntegrationSourceId,
     timeoutMs
   }
 }
