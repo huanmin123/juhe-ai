@@ -23,6 +23,7 @@ export interface ChatConversation {
   lastModel?: string
   activeTurnId?: string
   userTurnCount: number
+  messageRevision: number
   lastMessageAt: string
   createdAt: string
   updatedAt: string
@@ -344,6 +345,7 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
         UPDATE ${chatTable(tx, 'chat_conversations')}
         SET title = CASE WHEN title_source_message_id = ? THEN ? ELSE title END,
             title_source_message_id = CASE WHEN title_source_message_id = ? THEN ? ELSE title_source_message_id END,
+            message_revision = message_revision + 1,
             context_revision = context_revision + 1,
             context_state = CASE WHEN context_state = 'compacting' THEN 'compact_pending' ELSE context_state END,
             context_claim_id = NULL, context_claim_revision = NULL,
@@ -359,6 +361,7 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
         UPDATE ${chatTable(tx, 'chat_conversations')}
         SET title = CASE WHEN next_sequence_no = 1 THEN ? ELSE title END,
             title_source_message_id = CASE WHEN next_sequence_no = 1 THEN ? ELSE title_source_message_id END,
+            message_revision = message_revision + 1,
             context_revision = context_revision + 1,
             context_state = CASE WHEN context_state = 'compacting' THEN 'compact_pending' ELSE context_state END,
             context_claim_id = NULL, context_claim_revision = NULL,
@@ -479,7 +482,9 @@ export async function cancelActiveChatTurnIfMatches(client: DatabaseClient, inpu
 
     const conversationResult = await tx.execute(`
       UPDATE ${chatTable(tx, 'chat_conversations')}
-      SET active_turn_id = NULL, active_started_at = NULL, last_message_at = ?, updated_at = ?
+      SET active_turn_id = NULL, active_started_at = NULL,
+          message_revision = message_revision + 1,
+          last_message_at = ?, updated_at = ?
       WHERE id = ? AND system_account_id = ? AND active_turn_id = ?
     `, [input.now, input.now, input.conversationId, input.systemAccountId, input.expectedTurnId])
     if (conversationResult.changes !== 1) {
@@ -542,7 +547,9 @@ async function finalizeChatTurn(client: DatabaseClient, input: {
     await settleStorageWindowReservationStrict(tx, input.systemAccountId, String(current.created_at), reservationBytes, bytes, input.now)
     const conversationResult = await tx.execute(`
       UPDATE ${chatTable(tx, 'chat_conversations')}
-      SET active_turn_id = NULL, active_started_at = NULL, last_message_at = ?, updated_at = ?
+      SET active_turn_id = NULL, active_started_at = NULL,
+          message_revision = message_revision + 1,
+          last_message_at = ?, updated_at = ?
       WHERE id = ? AND system_account_id = ? AND active_turn_id = ?
     `, [input.now, input.now, input.conversationId, input.systemAccountId, input.turnId])
     if (conversationResult.changes !== 1) throw new Error('活动轮次状态更新失败')
@@ -694,9 +701,10 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
       }
       await tx.execute(`
         UPDATE ${chatTable(tx, 'chat_conversations')}
-        SET active_turn_id = NULL, active_started_at = NULL, updated_at = ?
+        SET active_turn_id = NULL, active_started_at = NULL,
+            message_revision = message_revision + ?, updated_at = ?
         WHERE id = ? AND system_account_id = ? AND active_turn_id = ?
-      `, [now, String(stale.id), String(stale.system_account_id), String(stale.active_turn_id)])
+      `, [updated.changes, now, String(stale.id), String(stale.system_account_id), String(stale.active_turn_id)])
       recoveredTurns += updated.changes
     }
 
@@ -1083,6 +1091,15 @@ function normalizedChatUserTurnCount(value: unknown): number {
   return count
 }
 
+function normalizedChatMessageRevision(value: unknown): number {
+  if (value === null || value === undefined) throw new Error('聊天会话消息 revision 无效')
+  if (typeof value !== 'number' && typeof value !== 'string') throw new Error('聊天会话消息 revision 无效')
+  if (typeof value === 'string' && !value.trim()) throw new Error('聊天会话消息 revision 无效')
+  const revision = Number(value)
+  if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('聊天会话消息 revision 无效')
+  return revision
+}
+
 function titleFromContent(content: string): string {
   const firstLine = content.replace(/[\u0000-\u001f\u007f]/g, ' ').split(/\r?\n/, 1)[0].replace(/\s+/g, ' ').trim()
   return firstLine.slice(0, 60) || '新对话'
@@ -1109,6 +1126,7 @@ function mapConversation(row: ConversationRow): ChatConversation {
     apiKeyId: nullable(row.api_key_id), apiKeyNameSnapshot: String(row.api_key_name_snapshot),
     title: String(row.title), isPinned: Number(row.is_pinned ?? 0) === 1, lastModel: nullable(row.last_model), activeTurnId: nullable(row.active_turn_id),
     userTurnCount: normalizedChatUserTurnCount(row.user_turn_count),
+    messageRevision: normalizedChatMessageRevision(row.message_revision),
     lastMessageAt: String(row.last_message_at), createdAt: String(row.created_at), updatedAt: String(row.updated_at)
   }
 }

@@ -51,8 +51,10 @@ assert.equal(String(storageWindowColumns.find((column) => column.name === 'reser
 
 const conversationColumns = database.prepare('PRAGMA table_info(chat_conversations)').all() as Array<{ name?: string; dflt_value?: unknown }>
 assert.equal(String(conversationColumns.find((column) => column.name === 'user_turn_count')?.dflt_value), '0', '会话必须持久化非负用户轮次计数')
+assert.equal(String(conversationColumns.find((column) => column.name === 'message_revision')?.dflt_value), '0', '会话必须持久化可见消息 revision')
 database.prepare(`INSERT INTO chat_conversations (id, system_account_id, api_key_name_snapshot, last_message_at, created_at, updated_at) VALUES ('schema_turn_count', 'owner', 'Key', '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z')`).run()
 assert.throws(() => database.prepare(`UPDATE chat_conversations SET user_turn_count = -1 WHERE id = 'schema_turn_count'`).run(), /CHECK constraint failed/, '用户轮次计数不得写入负数')
+assert.throws(() => database.prepare(`UPDATE chat_conversations SET message_revision = -1 WHERE id = 'schema_turn_count'`).run(), /CHECK constraint failed/, '可见消息 revision 不得写入负数')
 assert.ok(conversationColumns.some((column) => column.name === 'active_checkpoint_id'))
 assert.equal(String(conversationColumns.find((column) => column.name === 'context_usage_estimated')?.dflt_value), '1')
 const assetColumns = database.prepare('PRAGMA table_info(chat_assets)').all() as Array<{ name?: string; dflt_value?: unknown }>

@@ -42,7 +42,7 @@ function chatConversationRowClient(userTurnCount: unknown): DatabaseClient {
     ...client,
     one: async () => ({
       id: 'turn_count', system_account_id: 'turn_owner', api_key_id: 'key', api_key_name_snapshot: 'Key',
-      title: '计数测试', is_pinned: 0, last_model: null, active_turn_id: null, user_turn_count: userTurnCount,
+      title: '计数测试', is_pinned: 0, last_model: null, active_turn_id: null, user_turn_count: userTurnCount, message_revision: 0,
       last_message_at: '2026-07-10T00:00:00.000Z', created_at: '2026-07-10T00:00:00.000Z', updated_at: '2026-07-10T00:00:00.000Z'
     })
   } as unknown as DatabaseClient
@@ -390,6 +390,7 @@ const conversation = await createChatConversation(client, {
   now: '2026-07-12T00:00:00.000Z'
 })
 assert.equal(conversation.title, '新对话')
+assert.equal(conversation.messageRevision, 0, '新会话的可见消息 revision 必须从 0 开始')
 assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 20 })).length, 1)
 assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_2', limit: 20 })).length, 0)
 
@@ -409,6 +410,7 @@ const renamedPinned = await updateChatConversation(client, {
 })
 assert.equal(renamedPinned?.title, '置顶会话')
 assert.equal(renamedPinned?.isPinned, true)
+assert.equal(renamedPinned?.messageRevision, 0, '重命名和置顶不得推进可见消息 revision')
 assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 20 }))[0]?.id, pinnedConversation.id)
 const pinnedPage = await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 1 })
 const unpinnedPage = await listChatConversations(client, {
@@ -438,6 +440,7 @@ const accepted = await acceptChatTurn(client, {
 assert.equal(accepted.userMessage.sequenceNo, 1)
 assert.equal(accepted.assistantMessage.sequenceNo, 2)
 assert.equal(accepted.duplicate, false)
+assert.equal((await getChatConversation(client, conversation.id, 'sys_user_1'))?.messageRevision, 1, '接受新轮次必须推进一次可见消息 revision')
 assert.deepEqual(await findChatTurnByClientMessageId(client, {
   conversationId: conversation.id,
   systemAccountId: 'sys_user_1',
@@ -460,6 +463,7 @@ const duplicate = await acceptChatTurn(client, {
 })
 assert.equal(duplicate.duplicate, true)
 assert.equal(duplicate.turnId, accepted.turnId)
+assert.equal((await getChatConversation(client, conversation.id, 'sys_user_1'))?.messageRevision, 1, '幂等 accept 重放不得推进可见消息 revision')
 
 await assert.rejects(
   acceptChatTurn(client, {
@@ -473,6 +477,7 @@ await assert.rejects(
   }),
   (error) => error instanceof ChatConflictError && error.code === 'chat_message_in_progress'
 )
+assert.equal((await getChatConversation(client, conversation.id, 'sys_user_1'))?.messageRevision, 1, '活动轮次冲突不得推进可见消息 revision')
 
 const disposable = await createChatConversation(client, {
   id: 'chat_conv_delete',
@@ -497,6 +502,7 @@ await completeChatTurn(client, {
   ],
   now: '2026-07-12T00:02:00.000Z'
 })
+assert.equal((await getChatConversation(client, conversation.id, 'sys_user_1'))?.messageRevision, 2, '完成回答必须推进一次可见消息 revision')
 assert.deepEqual(await findChatTurnByClientMessageId(client, {
   conversationId: conversation.id,
   systemAccountId: 'sys_user_1',
@@ -547,6 +553,7 @@ const replaceOriginal = await acceptChatTurn(client, {
   now: '2026-07-13T00:01:00.000Z',
   storageQuotaBytes: testStorageQuotaBytes, retentionDays: 7, maxTurnsPerConversation: 1000
 })
+assert.equal((await getChatConversation(client, replaceConversation.id, replaceAccountId))?.messageRevision, 1)
 await completeChatTurn(client, {
   conversationId: replaceConversation.id,
   systemAccountId: replaceAccountId,
@@ -556,6 +563,7 @@ await completeChatTurn(client, {
   traceId: 'trace_replace_original',
   now: '2026-07-13T00:02:00.000Z'
 })
+assert.equal((await getChatConversation(client, replaceConversation.id, replaceAccountId))?.messageRevision, 2)
 const oldStorageBytes = Number((database.prepare(`
   SELECT content_bytes FROM chat_user_storage_windows
   WHERE system_account_id = ? AND bucket_date = ?
@@ -579,6 +587,7 @@ const duplicateWithOldClientId = await acceptChatTurn(client, {
 })
 assert.equal(duplicateWithOldClientId.duplicate, true)
 assert.equal(duplicateWithOldClientId.turnId, replaceOriginal.turnId)
+assert.equal((await getChatConversation(client, replaceConversation.id, replaceAccountId))?.messageRevision, 2, '旧 clientMessageId 幂等重放不得推进 revision')
 const replacement = await acceptChatTurn(client, {
   conversationId: replaceConversation.id,
   systemAccountId: replaceAccountId,
@@ -592,6 +601,7 @@ const replacement = await acceptChatTurn(client, {
 })
 assert.equal(replacement.userMessage.sequenceNo, replaceOriginal.userMessage.sequenceNo)
 assert.equal(replacement.assistantMessage.sequenceNo, replaceOriginal.assistantMessage.sequenceNo)
+assert.equal((await getChatConversation(client, replaceConversation.id, replaceAccountId))?.messageRevision, 3, '替换最近轮次的删旧写新事务只能推进一次 revision')
 assert.deepEqual(replacement.userMessage.contentBlocks, [
   { type: 'input_text', text: replacementContent, order: 0 }
 ])
@@ -608,6 +618,7 @@ const replacementReplay = await acceptChatTurn(client, {
 })
 assert.equal(replacementReplay.duplicate, true)
 assert.equal(replacementReplay.turnId, replacement.turnId)
+assert.equal((await getChatConversation(client, replaceConversation.id, replaceAccountId))?.messageRevision, 3, '替换请求幂等重放不得推进 revision')
 assert.equal((await listChatMessages(client, {
   conversationId: replaceConversation.id,
   systemAccountId: replaceAccountId,
@@ -963,6 +974,7 @@ const failedTurn = await acceptChatTurn(client, {
   now: '2026-07-12T00:04:00.000Z',
   storageQuotaBytes: testStorageQuotaBytes, retentionDays: 7, maxTurnsPerConversation: 1000
 })
+const revisionBeforeFailure = (await getChatConversation(client, conversation.id, 'sys_user_1'))?.messageRevision
 await failChatTurn(client, {
   conversationId: conversation.id,
   systemAccountId: 'sys_user_1',
@@ -972,6 +984,7 @@ await failChatTurn(client, {
   traceId: 'trace_chat_failed',
   now: '2026-07-12T00:05:00.000Z'
 })
+assert.equal((await getChatConversation(client, conversation.id, 'sys_user_1'))?.messageRevision, Number(revisionBeforeFailure) + 1, '失败终结实际改变可见消息时必须推进一次 revision')
 assertStorageLedgerInvariant(database, 'sys_user_1', 'failed 轮次结算')
 const contextAfterFailure = await listChatContextMessages(client, {
   conversationId: conversation.id,
@@ -984,9 +997,11 @@ assert.equal(contextAfterFailure.length, 2, '失败轮次的一问一答都不�
 const canceledTurn = await acceptChatTurn(client, {
   conversationId: conversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'client_canceled', userContent: '这轮会取消', model: 'mock-model', now: '2026-07-12T00:06:10.000Z', storageQuotaBytes: testStorageQuotaBytes, retentionDays: 7, maxTurnsPerConversation: 1000
 })
+const revisionBeforeCancel = (await getChatConversation(client, conversation.id, 'sys_user_1'))?.messageRevision
 await cancelChatTurn(client, {
   conversationId: conversation.id, systemAccountId: 'sys_user_1', turnId: canceledTurn.turnId, assistantContent: '已生成的部分', traceId: 'trace_chat_canceled', now: '2026-07-12T00:06:20.000Z'
 })
+assert.equal((await getChatConversation(client, conversation.id, 'sys_user_1'))?.messageRevision, Number(revisionBeforeCancel) + 1, '取消终结实际改变可见消息时必须推进一次 revision')
 assertStorageLedgerInvariant(database, 'sys_user_1', 'canceled 轮次结算')
 const contextAfterCancel = await listChatContextMessages(client, {
   conversationId: conversation.id, systemAccountId: 'sys_user_1', limitTurns: 64, now: '2026-07-12T00:06:30.000Z'
@@ -1003,11 +1018,13 @@ const firstConditionalStop = await cancelActiveChatTurnIfMatches(client, {
   conversationId: conditionalStopConversation.id, systemAccountId: 'sys_user_1', expectedTurnId: conditionalTurnA.turnId, now: '2026-07-12T00:07:02.000Z'
 })
 assert.deepEqual(firstConditionalStop, { state: 'canceled', assistantStatus: 'canceled' }, '匹配活动轮次的条件 stop 必须原子取消')
+assert.equal((await getChatConversation(client, conditionalStopConversation.id, 'sys_user_1'))?.messageRevision, 2, '条件 stop 实际取消消息时必须推进一次 revision')
 assertStorageLedgerInvariant(database, 'sys_user_1', 'conditional stop')
 const repeatedConditionalStop = await cancelActiveChatTurnIfMatches(client, {
   conversationId: conditionalStopConversation.id, systemAccountId: 'sys_user_1', expectedTurnId: conditionalTurnA.turnId, now: '2026-07-12T00:07:03.000Z'
 })
 assert.deepEqual(repeatedConditionalStop, { state: 'already_terminal', assistantStatus: 'canceled' }, '并发或重复 stop 必须幂等返回终态，不能 500')
+assert.equal((await getChatConversation(client, conditionalStopConversation.id, 'sys_user_1'))?.messageRevision, 2, '重复条件 stop 不得推进 revision')
 const conditionalRaceConversation = await createChatConversation(client, {
   id: 'chat_conv_conditional_race', systemAccountId: 'sys_conditional_race', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', maxConversationsPerUser: 1000, now: '2026-07-12T00:07:03.100Z'
 })
@@ -1020,19 +1037,23 @@ const conditionalRaceStop = await cancelActiveChatTurnIfMatches(
 )
 assert.deepEqual(conditionalRaceStop, { state: 'already_terminal', assistantStatus: 'canceled' }, '条件更新落空时必须重读并返回数据库权威终态，不能抛出 500')
 assert.equal((await getChatConversation(client, conditionalRaceConversation.id, 'sys_conditional_race'))?.activeTurnId, undefined, '并发赢家已取消轮次时会话活动标记必须保持已清除')
+assert.equal((await getChatConversation(client, conditionalRaceConversation.id, 'sys_conditional_race'))?.messageRevision, 2, '并发 stop 赢家实际取消消息时必须且只能推进一次 revision')
 assertStorageLedgerInvariant(database, 'sys_conditional_race', '并发 conditional stop')
 const conditionalTurnB = await acceptChatTurn(client, {
   conversationId: conditionalStopConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'client_conditional_b', userContent: '条件停止 B', model: 'mock-model', now: '2026-07-12T00:07:04.000Z', storageQuotaBytes: testStorageQuotaBytes, retentionDays: 7, maxTurnsPerConversation: 1000
 })
+assert.equal((await getChatConversation(client, conditionalStopConversation.id, 'sys_user_1'))?.messageRevision, 3)
 const staleConditionalStop = await cancelActiveChatTurnIfMatches(client, {
   conversationId: conditionalStopConversation.id, systemAccountId: 'sys_user_1', expectedTurnId: conditionalTurnA.turnId, now: '2026-07-12T00:07:05.000Z'
 })
 assert.deepEqual(staleConditionalStop, { state: 'already_terminal', assistantStatus: 'canceled' }, '旧轮次 stop 不得误杀新轮次')
 assert.equal((await getChatConversation(client, conditionalStopConversation.id, 'sys_user_1'))?.activeTurnId, conditionalTurnB.turnId, '旧轮次 stop 后新轮次必须仍活动')
+assert.equal((await getChatConversation(client, conditionalStopConversation.id, 'sys_user_1'))?.messageRevision, 3, '旧终态轮次 stop 不得推进 revision')
 const mismatchedConditionalStop = await cancelActiveChatTurnIfMatches(client, {
   conversationId: conditionalStopConversation.id, systemAccountId: 'sys_user_1', expectedTurnId: 'turn_unknown', now: '2026-07-12T00:07:06.000Z'
 })
 assert.deepEqual(mismatchedConditionalStop, { state: 'turn_mismatch' }, '未知期望轮次不得取消当前活动轮次')
+assert.equal((await getChatConversation(client, conditionalStopConversation.id, 'sys_user_1'))?.messageRevision, 3, '轮次不匹配不得推进 revision')
 await cancelChatTurn(client, {
   conversationId: conditionalStopConversation.id, systemAccountId: 'sys_user_1', turnId: conditionalTurnB.turnId, assistantContent: '', now: '2026-07-12T00:07:07.000Z'
 })
@@ -1200,7 +1221,9 @@ function simulateLostConditionalStopUpdate(base: DatabaseClient): DatabaseClient
           assert.equal(winnerReservation.changes, 1, '测试夹具必须模拟并发 stop 赢家释放容量预留')
           const winnerConversation = await tx.execute(`
             UPDATE ${tx.dialect.qualifyTable('juhe_chat', 'chat_conversations')}
-            SET active_turn_id = NULL, active_started_at = NULL, last_message_at = ?, updated_at = ?
+            SET active_turn_id = NULL, active_started_at = NULL,
+                message_revision = message_revision + 1,
+                last_message_at = ?, updated_at = ?
             WHERE id = ? AND system_account_id = ? AND active_turn_id = ?
           `, [now, now, conversationId, systemAccountId, turnId])
           assert.equal(winnerConversation.changes, 1, '测试夹具必须模拟并发 stop 完整清除活动轮次')

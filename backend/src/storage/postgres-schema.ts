@@ -166,6 +166,7 @@ const postgresBigintColumnNames = new Set([
   'growth_rows_24h',
   'next_sequence_no',
   'user_turn_count',
+  'message_revision',
   'sequence_no',
   'context_revision',
   'compacted_through_sequence',
