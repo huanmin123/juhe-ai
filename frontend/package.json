@@ -12,6 +12,8 @@
     "test:chat-stream": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-stream-regression.ts",
     "test:chat-local-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-local-cache-regression.ts",
     "test:chat-cache-broadcast": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-cache-broadcast-regression.ts",
+    "test:chat-cache-sync": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-cache-sync-regression.ts",
+    "test:chat-menu-resume": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-menu-resume-regression.ts",
     "test:chat-generation-runtime": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-generation-runtime-regression.ts",
     "test:chat-stream-http": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-stream-http-regression.ts",
     "test:chat-turn-editing": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-turn-editing-regression.ts",
