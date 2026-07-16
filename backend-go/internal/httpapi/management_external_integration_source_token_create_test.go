@@ -188,7 +188,7 @@ func TestManagementExternalIntegrationSourceTokenCreateHandlerMapsErrors(t *test
 		wantText   string
 		forbidText string
 	}{
-		{name: "validation", err: managementExternalIntegrationSourceTokenCreateValidationError(), wantStatus: http.StatusBadRequest, wantText: "来源系统名称不能为空"},
+		{name: "validation", err: managementExternalIntegrationSourceTokenCreateValidationError(), wantStatus: http.StatusBadRequest, wantText: "Token 名称不能为空"},
 		{name: "not found", err: managementexternalintegrationsources.ErrNotFound, wantStatus: http.StatusBadRequest, wantText: "来源系统不存在"},
 		{name: "built in restricted", err: managementexternalintegrationsources.ErrBuiltInTokenCreateRestricted, wantStatus: http.StatusBadRequest, wantText: "内置测试 Token 不支持新增 Token"},
 		{name: "token exists", err: managementexternalintegrationsources.ErrTokenExists, wantStatus: http.StatusBadRequest, wantText: "来源系统 token 已存在，请重新生成"},
