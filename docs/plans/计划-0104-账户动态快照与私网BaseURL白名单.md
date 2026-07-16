@@ -2,7 +2,7 @@
 
 ## 基本信息
 
-- 状态：已实现，待上线
+- 状态：已上线，生产验证通过
 - 创建时间：2026-07-16
 - 需求来源：Codex 会话 `019f6661-acbe-70c0-8aa2-f7b704ed4dd9`、`019f6903-b240-7ce2-8c95-936478622b16` 及用户后续确认
 - 关联模块：AI 账户、运行态快照、统计预聚合、上游 URL 安全、前端账户列表、部署
@@ -43,4 +43,9 @@
 
 ## 上线记录
 
-- 待实现和验证完成后补充提交、候选目录、生产切换、60 秒验收及回滚点。
+- master 业务提交：`18eb1497b3f5a6ba340f78d6e8367729e246af25`。
+- 正式 release：`/Users/huanmin/juhe-ai-lite/releases/20260716-151521-account-live-private-origin-18eb1497b/juhe-ai-release`。
+- 本次无 schema 变化，`rebuildNonBusiness=0`、`resetRedis=0`；生产私网 Origin 白名单保持为空。
+- 临时服务 45 秒预检通过，真实流量切换后完成主服务升级、成对备份和临时资源清理。
+- 最终固定主 PID `44063` 连续观察 60 秒，原始验收脚本退出码为 0 并输出 `VERIFY_SUCCESS`。
+- 发布期间发现的公网回环与 Redis runtime-log 写入抖动作为独立生产问题记录，未通过放宽门禁规避。
