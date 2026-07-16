@@ -132,35 +132,80 @@ func updateManagementBuiltInProviderModelPrices(
 	if err != nil {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("update built-in provider model prices: %w", err)
 	}
-	serviceTierPrices, err := decodeProviderModelPriceMap(row.ServiceTierPricesJson, "built-in provider model service_tier_prices_json")
+	before, err := decodeManagementProviderModelConfigurationSnapshot(managementProviderModelConfigurationRow{
+		id: row.BeforeID, providerCode: row.BeforeProviderCode, status: row.BeforeStatus, mode: row.BeforeMode,
+		supportedAPIProtocolsJSON: row.BeforeSupportedApiProtocolsJson, supportedServiceTiersJSON: row.BeforeSupportedServiceTiersJson,
+		supportedReasoningEffortsJSON: row.BeforeSupportedReasoningEffortsJson, defaultReasoningEffort: row.BeforeDefaultReasoningEffort,
+		releaseDate: row.BeforeReleaseDate, shutdownDate: row.BeforeShutdownDate, contextWindowTokens: row.BeforeContextWindowTokens,
+		maxInputTokens: row.BeforeMaxInputTokens, maxOutputTokens: row.BeforeMaxOutputTokens, inputUSDPer1M: row.BeforeInputUsdPer1m,
+		outputUSDPer1M: row.BeforeOutputUsdPer1m, cachedInputUSDPer1M: row.BeforeCachedInputUsdPer1m,
+		cacheWriteUSDPer1M: row.BeforeCacheWriteUsdPer1m, cacheWrite1hUSDPer1M: row.BeforeCacheWrite1hUsdPer1m,
+		serviceTierPricesJSON: row.BeforeServiceTierPricesJson, imageInputUSDPer1M: row.BeforeImageInputUsdPer1m,
+		imageOutputUSDPer1M: row.BeforeImageOutputUsdPer1m, audioInputUSDPer1M: row.BeforeAudioInputUsdPer1m,
+		audioOutputUSDPer1M: row.BeforeAudioOutputUsdPer1m, outputUSDPerImage: row.BeforeOutputUsdPerImage, updatedAt: row.BeforeUpdatedAt,
+	}, "before")
 	if err != nil {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
 	}
-	protocols, err := decodeProviderStringArray(row.SupportedApiProtocolsJson, "built-in provider model supported_api_protocols_json")
+	after, err := decodeManagementProviderModelConfigurationSnapshot(managementProviderModelConfigurationRow{
+		id: row.AfterID, providerCode: row.AfterProviderCode, status: row.AfterStatus, mode: row.AfterMode,
+		supportedAPIProtocolsJSON: row.AfterSupportedApiProtocolsJson, supportedServiceTiersJSON: row.AfterSupportedServiceTiersJson,
+		supportedReasoningEffortsJSON: row.AfterSupportedReasoningEffortsJson, defaultReasoningEffort: row.AfterDefaultReasoningEffort,
+		releaseDate: row.AfterReleaseDate, shutdownDate: row.AfterShutdownDate, contextWindowTokens: row.AfterContextWindowTokens,
+		maxInputTokens: row.AfterMaxInputTokens, maxOutputTokens: row.AfterMaxOutputTokens, inputUSDPer1M: row.AfterInputUsdPer1m,
+		outputUSDPer1M: row.AfterOutputUsdPer1m, cachedInputUSDPer1M: row.AfterCachedInputUsdPer1m,
+		cacheWriteUSDPer1M: row.AfterCacheWriteUsdPer1m, cacheWrite1hUSDPer1M: row.AfterCacheWrite1hUsdPer1m,
+		serviceTierPricesJSON: row.AfterServiceTierPricesJson, imageInputUSDPer1M: row.AfterImageInputUsdPer1m,
+		imageOutputUSDPer1M: row.AfterImageOutputUsdPer1m, audioInputUSDPer1M: row.AfterAudioInputUsdPer1m,
+		audioOutputUSDPer1M: row.AfterAudioOutputUsdPer1m, outputUSDPerImage: row.AfterOutputUsdPerImage, updatedAt: row.AfterUpdatedAt,
+	}, "after")
 	if err != nil {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
 	}
-	serviceTiers, err := decodeProviderStringArray(row.SupportedServiceTiersJson, "built-in provider model supported_service_tiers_json")
+	return port.ManagementBuiltInProviderModelPriceUpdateResult{Before: before, After: after}, true, nil
+}
+
+type managementProviderModelConfigurationRow struct {
+	id, providerCode, status                                    string
+	mode, defaultReasoningEffort, releaseDate, shutdownDate     pgtype.Text
+	supportedAPIProtocolsJSON, supportedServiceTiersJSON        string
+	supportedReasoningEffortsJSON, serviceTierPricesJSON        string
+	contextWindowTokens, maxInputTokens, maxOutputTokens        pgtype.Int4
+	inputUSDPer1M, outputUSDPer1M, cachedInputUSDPer1M          pgtype.Float8
+	cacheWriteUSDPer1M, cacheWrite1hUSDPer1M                    pgtype.Float8
+	imageInputUSDPer1M, imageOutputUSDPer1M, audioInputUSDPer1M pgtype.Float8
+	audioOutputUSDPer1M, outputUSDPerImage                      pgtype.Float8
+	updatedAt                                                   pgtype.Timestamptz
+}
+
+func decodeManagementProviderModelConfigurationSnapshot(row managementProviderModelConfigurationRow, label string) (port.ManagementProviderModelConfigurationSnapshot, error) {
+	protocols, err := decodeProviderStringArray(row.supportedAPIProtocolsJSON, "built-in provider model "+label+" supported_api_protocols_json")
 	if err != nil {
-		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+		return port.ManagementProviderModelConfigurationSnapshot{}, err
 	}
-	reasoningEfforts, err := decodeProviderStringArray(row.SupportedReasoningEffortsJson, "built-in provider model supported_reasoning_efforts_json")
+	serviceTiers, err := decodeProviderStringArray(row.supportedServiceTiersJSON, "built-in provider model "+label+" supported_service_tiers_json")
 	if err != nil {
-		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+		return port.ManagementProviderModelConfigurationSnapshot{}, err
 	}
-	return port.ManagementBuiltInProviderModelPriceUpdateResult{
-		ID: row.ID, ProviderCode: row.ProviderCode,
-		Status: row.Status, Mode: textValue(row.Mode), SupportedAPIProtocols: protocols,
-		SupportedServiceTiers: serviceTiers, SupportedReasoningEfforts: reasoningEfforts,
-		DefaultReasoningEffort: textValue(row.DefaultReasoningEffort), ReleaseDate: textValue(row.ReleaseDate), ShutdownDate: textValue(row.ShutdownDate),
-		ContextWindowTokens: int4Ptr(row.ContextWindowTokens), MaxInputTokens: int4Ptr(row.MaxInputTokens), MaxOutputTokens: int4Ptr(row.MaxOutputTokens),
-		InputUSDPer1M: float8Ptr(row.InputUsdPer1m), OutputUSDPer1M: float8Ptr(row.OutputUsdPer1m),
-		CachedInputUSDPer1M: float8Ptr(row.CachedInputUsdPer1m), CacheWriteUSDPer1M: float8Ptr(row.CacheWriteUsdPer1m),
-		CacheWrite1hUSDPer1M: float8Ptr(row.CacheWrite1hUsdPer1m), ServiceTierPrices: serviceTierPrices,
-		ImageInputUSDPer1M: float8Ptr(row.ImageInputUsdPer1m), ImageOutputUSDPer1M: float8Ptr(row.ImageOutputUsdPer1m),
-		AudioInputUSDPer1M: float8Ptr(row.AudioInputUsdPer1m), AudioOutputUSDPer1M: float8Ptr(row.AudioOutputUsdPer1m),
-		OutputUSDPerImage: float8Ptr(row.OutputUsdPerImage), UpdatedAt: timestamptzValue(row.UpdatedAt),
-	}, true, nil
+	reasoningEfforts, err := decodeProviderStringArray(row.supportedReasoningEffortsJSON, "built-in provider model "+label+" supported_reasoning_efforts_json")
+	if err != nil {
+		return port.ManagementProviderModelConfigurationSnapshot{}, err
+	}
+	serviceTierPrices, err := decodeProviderModelPriceMap(row.serviceTierPricesJSON, "built-in provider model "+label+" service_tier_prices_json")
+	if err != nil {
+		return port.ManagementProviderModelConfigurationSnapshot{}, err
+	}
+	return port.ManagementProviderModelConfigurationSnapshot{
+		ID: row.id, ProviderCode: row.providerCode, Status: row.status, Mode: textValue(row.mode),
+		SupportedAPIProtocols: protocols, SupportedServiceTiers: serviceTiers, SupportedReasoningEfforts: reasoningEfforts,
+		DefaultReasoningEffort: textValue(row.defaultReasoningEffort), ReleaseDate: textValue(row.releaseDate), ShutdownDate: textValue(row.shutdownDate),
+		ContextWindowTokens: int4Ptr(row.contextWindowTokens), MaxInputTokens: int4Ptr(row.maxInputTokens), MaxOutputTokens: int4Ptr(row.maxOutputTokens),
+		InputUSDPer1M: float8Ptr(row.inputUSDPer1M), OutputUSDPer1M: float8Ptr(row.outputUSDPer1M), CachedInputUSDPer1M: float8Ptr(row.cachedInputUSDPer1M),
+		CacheWriteUSDPer1M: float8Ptr(row.cacheWriteUSDPer1M), CacheWrite1hUSDPer1M: float8Ptr(row.cacheWrite1hUSDPer1M), ServiceTierPrices: serviceTierPrices,
+		ImageInputUSDPer1M: float8Ptr(row.imageInputUSDPer1M), ImageOutputUSDPer1M: float8Ptr(row.imageOutputUSDPer1M),
+		AudioInputUSDPer1M: float8Ptr(row.audioInputUSDPer1M), AudioOutputUSDPer1M: float8Ptr(row.audioOutputUSDPer1M),
+		OutputUSDPerImage: float8Ptr(row.outputUSDPerImage), UpdatedAt: timestamptzValue(row.updatedAt),
+	}, nil
 }
 
 func findManagementProviderModelProvider(

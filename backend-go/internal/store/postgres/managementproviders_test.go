@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -353,23 +354,17 @@ func TestManagementProviderModelCatalogSQLReturnsBuiltInIDAndUsesAtomicPricePres
 		"audio_input_usd_per_1m", "audio_output_usd_per_1m", "output_usd_per_image",
 	}
 	for _, column := range columns {
-		want := column + " = CASE WHEN sqlc.arg(" + column + "_present)::boolean THEN sqlc.narg(" + column + ")::double precision ELSE " + column + " END"
-		if !strings.Contains(updateSQL, want) {
-			t.Fatalf("built-in price update missing atomic presence assignment %q:\n%s", want, updateSQL)
+		assignment := regexp.MustCompile(
+			regexp.QuoteMeta(column) + `\s*=\s*CASE\s+WHEN\s+sqlc\.arg\(` + regexp.QuoteMeta(column+"_present") +
+				`\)::boolean\s+THEN\s+sqlc\.narg\(` + regexp.QuoteMeta(column) +
+				`\)::double\s+precision\s+ELSE\s+target\.` + regexp.QuoteMeta(column) + `\s+END`,
+		)
+		if !assignment.MatchString(updateSQL) {
+			t.Fatalf("built-in price update missing target-qualified atomic presence assignment for %q:\n%s", column, updateSQL)
 		}
 	}
-	if !strings.Contains(updateSQL, "service_tier_prices_json = CASE WHEN sqlc.arg(service_tier_prices_present)::boolean THEN sqlc.arg(service_tier_prices_json)::text ELSE service_tier_prices_json END") {
+	if !regexp.MustCompile(`service_tier_prices_json\s*=\s*CASE\s+WHEN\s+sqlc\.arg\(service_tier_prices_present\)::boolean\s+THEN\s+sqlc\.arg\(service_tier_prices_json\)::text\s+ELSE\s+target\.service_tier_prices_json\s+END`).MatchString(updateSQL) {
 		t.Fatalf("built-in price update missing service tier presence assignment:\n%s", updateSQL)
-	}
-	returningStart := strings.Index(updateSQL, "RETURNING\n")
-	if returningStart < 0 {
-		t.Fatalf("built-in price update missing RETURNING clause:\n%s", updateSQL)
-	}
-	returningSQL := updateSQL[returningStart:]
-	for _, column := range append([]string{"id", "provider_code"}, append(columns, "service_tier_prices_json", "updated_at")...) {
-		if !strings.Contains(returningSQL, "\n  "+column) {
-			t.Fatalf("built-in price update RETURNING missing %q:\n%s", column, returningSQL)
-		}
 	}
 }
 
@@ -379,11 +374,24 @@ func TestUpdateManagementBuiltInProviderModelPricesMapsSparsePresenceToSQLC(t *t
 	tierInputPrice := 3.0
 	updatedAt := time.Date(2026, 7, 15, 8, 9, 10, 0, time.UTC)
 	q := &managementBuiltInProviderModelPriceUpdateQueriesStub{row: postgresqueries.UpdateManagementBuiltInProviderModelPricesRow{
-		ID:                    "provider_model_gpt_real",
-		ProviderCode:          "gpt",
-		OutputUsdPer1m:        pgtype.Float8{Float64: persistedOutputPrice, Valid: true},
-		ServiceTierPricesJson: `{"priority":{"inputUsdPer1M":3}}`,
-		UpdatedAt:             pgtype.Timestamptz{Time: updatedAt, Valid: true},
+		BeforeID:                            "provider_model_gpt_real",
+		BeforeProviderCode:                  "gpt",
+		BeforeStatus:                        "disabled",
+		BeforeMode:                          pgtype.Text{String: "text", Valid: true},
+		BeforeSupportedApiProtocolsJson:     "[\"chat_completions\"]",
+		BeforeSupportedServiceTiersJson:     "[]",
+		BeforeSupportedReasoningEffortsJson: "[]",
+		BeforeServiceTierPricesJson:         "{}",
+		BeforeInputUsdPer1m:                 pgtype.Float8{Float64: 2.5, Valid: true},
+		AfterID:                             "provider_model_gpt_real",
+		AfterProviderCode:                   "gpt",
+		AfterStatus:                         "active",
+		AfterSupportedApiProtocolsJson:      "[]",
+		AfterSupportedServiceTiersJson:      "[]",
+		AfterSupportedReasoningEffortsJson:  "[]",
+		AfterOutputUsdPer1m:                 pgtype.Float8{Float64: persistedOutputPrice, Valid: true},
+		AfterServiceTierPricesJson:          `{"priority":{"inputUsdPer1M":3}}`,
+		AfterUpdatedAt:                      pgtype.Timestamptz{Time: updatedAt, Valid: true},
 	}}
 
 	result, found, err := updateManagementBuiltInProviderModelPrices(context.Background(), q, port.ManagementBuiltInProviderModelPriceUpdateInput{
@@ -414,11 +422,16 @@ func TestUpdateManagementBuiltInProviderModelPricesMapsSparsePresenceToSQLC(t *t
 		!input.ServiceTierPricesPresent || input.ServiceTierPricesJson != `{"priority":{"inputUsdPer1M":3}}` {
 		t.Fatalf("sqlc input = %+v", input)
 	}
-	priority := result.ServiceTierPrices["priority"]
-	if result.ID != "provider_model_gpt_real" || result.ProviderCode != "gpt" || result.InputUSDPer1M != nil ||
-		result.OutputUSDPer1M == nil || *result.OutputUSDPer1M != persistedOutputPrice ||
-		priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != tierInputPrice || !result.UpdatedAt.Equal(updatedAt) {
+	priority := result.After.ServiceTierPrices["priority"]
+	if result.After.ID != "provider_model_gpt_real" || result.After.ProviderCode != "gpt" || result.After.InputUSDPer1M != nil ||
+		result.After.OutputUSDPer1M == nil || *result.After.OutputUSDPer1M != persistedOutputPrice ||
+		priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != tierInputPrice || !result.After.UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("persisted result = %+v", result)
+	}
+	if result.Before.Status != "disabled" || result.Before.InputUSDPer1M == nil || *result.Before.InputUSDPer1M != 2.5 ||
+		result.Before.Mode != "text" || len(result.Before.SupportedAPIProtocols) != 1 || result.Before.SupportedAPIProtocols[0] != "chat_completions" ||
+		result.Before.ContextWindowTokens != nil || result.After.Status != "active" {
+		t.Fatalf("atomic snapshots = before=%+v after=%+v", result.Before, result.After)
 	}
 }
 
@@ -427,7 +440,7 @@ func TestUpdateManagementBuiltInProviderModelPricesMapsNoRowsToNotFound(t *testi
 	result, found, err := updateManagementBuiltInProviderModelPrices(context.Background(), q, port.ManagementBuiltInProviderModelPriceUpdateInput{
 		ID: "missing", ProviderCode: "gpt",
 	})
-	if err != nil || found || result.ID != "" {
+	if err != nil || found || result.Before.ID != "" || result.After.ID != "" {
 		t.Fatalf("result=%+v found=%v err=%v, want not found", result, found, err)
 	}
 }

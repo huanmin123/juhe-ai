@@ -1381,7 +1381,7 @@ type ManagementBuiltInProviderModelPriceUpdateInput struct {
 	OutputUSDPerImage         ManagementProviderModelOptionalFloat
 }
 
-type ManagementBuiltInProviderModelPriceUpdateResult struct {
+type ManagementProviderModelConfigurationSnapshot struct {
 	ID                        string
 	ProviderCode              string
 	Status                    string
@@ -1407,6 +1407,11 @@ type ManagementBuiltInProviderModelPriceUpdateResult struct {
 	AudioOutputUSDPer1M       *float64
 	OutputUSDPerImage         *float64
 	UpdatedAt                 time.Time
+}
+
+type ManagementBuiltInProviderModelPriceUpdateResult struct {
+	Before ManagementProviderModelConfigurationSnapshot
+	After  ManagementProviderModelConfigurationSnapshot
 }
 
 type ManagementProviderModelCatalogReader interface {

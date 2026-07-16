@@ -754,61 +754,100 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 }
 
 const updateManagementBuiltInProviderModelPrices = `-- name: UpdateManagementBuiltInProviderModelPrices :one
-UPDATE juhe_business.provider_model_catalog
-SET status = CASE WHEN $1::boolean THEN $2::text ELSE status END,
-    mode = CASE WHEN $3::boolean THEN NULLIF($4::text, '') ELSE mode END,
-    supported_api_protocols_json = CASE WHEN $5::boolean THEN $6::text ELSE supported_api_protocols_json END,
-    supported_service_tiers_json = CASE WHEN $7::boolean THEN $8::text ELSE supported_service_tiers_json END,
-    supported_reasoning_efforts_json = CASE WHEN $9::boolean THEN $10::text ELSE supported_reasoning_efforts_json END,
-    default_reasoning_effort = CASE WHEN $11::boolean THEN NULLIF($12::text, '') ELSE default_reasoning_effort END,
-    release_date = CASE WHEN $13::boolean THEN NULLIF($14::text, '') ELSE release_date END,
-    shutdown_date = CASE WHEN $15::boolean THEN NULLIF($16::text, '') ELSE shutdown_date END,
-    context_window_tokens = CASE WHEN $17::boolean THEN $18::integer ELSE context_window_tokens END,
-    max_input_tokens = CASE WHEN $19::boolean THEN $20::integer ELSE max_input_tokens END,
-    max_output_tokens = CASE WHEN $21::boolean THEN $22::integer ELSE max_output_tokens END,
-    input_usd_per_1m = CASE WHEN $23::boolean THEN $24::double precision ELSE input_usd_per_1m END,
-    output_usd_per_1m = CASE WHEN $25::boolean THEN $26::double precision ELSE output_usd_per_1m END,
-    cached_input_usd_per_1m = CASE WHEN $27::boolean THEN $28::double precision ELSE cached_input_usd_per_1m END,
-    cache_write_usd_per_1m = CASE WHEN $29::boolean THEN $30::double precision ELSE cache_write_usd_per_1m END,
-    cache_write_1h_usd_per_1m = CASE WHEN $31::boolean THEN $32::double precision ELSE cache_write_1h_usd_per_1m END,
-    service_tier_prices_json = CASE WHEN $33::boolean THEN $34::text ELSE service_tier_prices_json END,
-    image_input_usd_per_1m = CASE WHEN $35::boolean THEN $36::double precision ELSE image_input_usd_per_1m END,
-    image_output_usd_per_1m = CASE WHEN $37::boolean THEN $38::double precision ELSE image_output_usd_per_1m END,
-    audio_input_usd_per_1m = CASE WHEN $39::boolean THEN $40::double precision ELSE audio_input_usd_per_1m END,
-    audio_output_usd_per_1m = CASE WHEN $41::boolean THEN $42::double precision ELSE audio_output_usd_per_1m END,
-    output_usd_per_image = CASE WHEN $43::boolean THEN $44::double precision ELSE output_usd_per_image END,
+WITH locked AS MATERIALIZED (
+  SELECT catalog.id, catalog.provider_code, catalog.model, catalog.status, catalog.mode, catalog.catalog_order, catalog.release_date, catalog.shutdown_date, catalog.supported_api_protocols_json, catalog.context_window_tokens, catalog.input_usd_per_1m, catalog.output_usd_per_1m, catalog.cached_input_usd_per_1m, catalog.cache_write_usd_per_1m, catalog.cache_write_1h_usd_per_1m, catalog.image_input_usd_per_1m, catalog.image_output_usd_per_1m, catalog.audio_input_usd_per_1m, catalog.audio_output_usd_per_1m, catalog.output_usd_per_image, catalog.max_input_tokens, catalog.max_output_tokens, catalog.max_tokens, catalog.supports_prompt_caching, catalog.catalog_visible, catalog.source, catalog.created_at, catalog.updated_at, catalog.supported_service_tiers_json, catalog.supported_reasoning_efforts_json, catalog.default_reasoning_effort, catalog.codex_supported_reasoning_levels_json, catalog.codex_default_reasoning_level, catalog.codex_multi_agent_version, catalog.long_context_input_token_threshold, catalog.long_context_input_cost_multiplier, catalog.long_context_output_cost_multiplier, catalog.service_tier_prices_json
+  FROM juhe_business.provider_model_catalog AS catalog
+  WHERE catalog.id = $1
+    AND catalog.provider_code = $2
+  FOR UPDATE
+), updated AS (
+  UPDATE juhe_business.provider_model_catalog AS target
+SET status = CASE WHEN $3::boolean THEN $4::text ELSE target.status END,
+    mode = CASE WHEN $5::boolean THEN NULLIF($6::text, '') ELSE target.mode END,
+    supported_api_protocols_json = CASE WHEN $7::boolean THEN $8::text ELSE target.supported_api_protocols_json END,
+    supported_service_tiers_json = CASE WHEN $9::boolean THEN $10::text ELSE target.supported_service_tiers_json END,
+    supported_reasoning_efforts_json = CASE WHEN $11::boolean THEN $12::text ELSE target.supported_reasoning_efforts_json END,
+    default_reasoning_effort = CASE WHEN $13::boolean THEN NULLIF($14::text, '') ELSE target.default_reasoning_effort END,
+    release_date = CASE WHEN $15::boolean THEN NULLIF($16::text, '') ELSE target.release_date END,
+    shutdown_date = CASE WHEN $17::boolean THEN NULLIF($18::text, '') ELSE target.shutdown_date END,
+    context_window_tokens = CASE WHEN $19::boolean THEN $20::integer ELSE target.context_window_tokens END,
+    max_input_tokens = CASE WHEN $21::boolean THEN $22::integer ELSE target.max_input_tokens END,
+    max_output_tokens = CASE WHEN $23::boolean THEN $24::integer ELSE target.max_output_tokens END,
+    input_usd_per_1m = CASE WHEN $25::boolean THEN $26::double precision ELSE target.input_usd_per_1m END,
+    output_usd_per_1m = CASE WHEN $27::boolean THEN $28::double precision ELSE target.output_usd_per_1m END,
+    cached_input_usd_per_1m = CASE WHEN $29::boolean THEN $30::double precision ELSE target.cached_input_usd_per_1m END,
+    cache_write_usd_per_1m = CASE WHEN $31::boolean THEN $32::double precision ELSE target.cache_write_usd_per_1m END,
+    cache_write_1h_usd_per_1m = CASE WHEN $33::boolean THEN $34::double precision ELSE target.cache_write_1h_usd_per_1m END,
+    service_tier_prices_json = CASE WHEN $35::boolean THEN $36::text ELSE target.service_tier_prices_json END,
+    image_input_usd_per_1m = CASE WHEN $37::boolean THEN $38::double precision ELSE target.image_input_usd_per_1m END,
+    image_output_usd_per_1m = CASE WHEN $39::boolean THEN $40::double precision ELSE target.image_output_usd_per_1m END,
+    audio_input_usd_per_1m = CASE WHEN $41::boolean THEN $42::double precision ELSE target.audio_input_usd_per_1m END,
+    audio_output_usd_per_1m = CASE WHEN $43::boolean THEN $44::double precision ELSE target.audio_output_usd_per_1m END,
+    output_usd_per_image = CASE WHEN $45::boolean THEN $46::double precision ELSE target.output_usd_per_image END,
     updated_at = now()
-WHERE id = $45
-  AND provider_code = $46
-RETURNING
-  id,
-  provider_code,
-  status,
-  mode,
-  supported_api_protocols_json,
-  supported_service_tiers_json,
-  supported_reasoning_efforts_json,
-  default_reasoning_effort,
-  release_date,
-  shutdown_date,
-  context_window_tokens,
-  max_input_tokens,
-  max_output_tokens,
-  input_usd_per_1m,
-  output_usd_per_1m,
-  cached_input_usd_per_1m,
-  cache_write_usd_per_1m,
-  cache_write_1h_usd_per_1m,
-  service_tier_prices_json,
-  image_input_usd_per_1m,
-  image_output_usd_per_1m,
-  audio_input_usd_per_1m,
-  audio_output_usd_per_1m,
-  output_usd_per_image,
-  updated_at
+  FROM locked
+  WHERE target.id = locked.id
+    AND target.provider_code = locked.provider_code
+  RETURNING target.id, target.provider_code, target.model, target.status, target.mode, target.catalog_order, target.release_date, target.shutdown_date, target.supported_api_protocols_json, target.context_window_tokens, target.input_usd_per_1m, target.output_usd_per_1m, target.cached_input_usd_per_1m, target.cache_write_usd_per_1m, target.cache_write_1h_usd_per_1m, target.image_input_usd_per_1m, target.image_output_usd_per_1m, target.audio_input_usd_per_1m, target.audio_output_usd_per_1m, target.output_usd_per_image, target.max_input_tokens, target.max_output_tokens, target.max_tokens, target.supports_prompt_caching, target.catalog_visible, target.source, target.created_at, target.updated_at, target.supported_service_tiers_json, target.supported_reasoning_efforts_json, target.default_reasoning_effort, target.codex_supported_reasoning_levels_json, target.codex_default_reasoning_level, target.codex_multi_agent_version, target.long_context_input_token_threshold, target.long_context_input_cost_multiplier, target.long_context_output_cost_multiplier, target.service_tier_prices_json
+)
+SELECT
+  locked.id AS before_id,
+  locked.provider_code AS before_provider_code,
+  locked.status AS before_status,
+  locked.mode AS before_mode,
+  locked.supported_api_protocols_json AS before_supported_api_protocols_json,
+  locked.supported_service_tiers_json AS before_supported_service_tiers_json,
+  locked.supported_reasoning_efforts_json AS before_supported_reasoning_efforts_json,
+  locked.default_reasoning_effort AS before_default_reasoning_effort,
+  locked.release_date AS before_release_date,
+  locked.shutdown_date AS before_shutdown_date,
+  locked.context_window_tokens AS before_context_window_tokens,
+  locked.max_input_tokens AS before_max_input_tokens,
+  locked.max_output_tokens AS before_max_output_tokens,
+  locked.input_usd_per_1m AS before_input_usd_per_1m,
+  locked.output_usd_per_1m AS before_output_usd_per_1m,
+  locked.cached_input_usd_per_1m AS before_cached_input_usd_per_1m,
+  locked.cache_write_usd_per_1m AS before_cache_write_usd_per_1m,
+  locked.cache_write_1h_usd_per_1m AS before_cache_write_1h_usd_per_1m,
+  locked.service_tier_prices_json AS before_service_tier_prices_json,
+  locked.image_input_usd_per_1m AS before_image_input_usd_per_1m,
+  locked.image_output_usd_per_1m AS before_image_output_usd_per_1m,
+  locked.audio_input_usd_per_1m AS before_audio_input_usd_per_1m,
+  locked.audio_output_usd_per_1m AS before_audio_output_usd_per_1m,
+  locked.output_usd_per_image AS before_output_usd_per_image,
+  locked.updated_at AS before_updated_at,
+  updated.id AS after_id,
+  updated.provider_code AS after_provider_code,
+  updated.status AS after_status,
+  updated.mode AS after_mode,
+  updated.supported_api_protocols_json AS after_supported_api_protocols_json,
+  updated.supported_service_tiers_json AS after_supported_service_tiers_json,
+  updated.supported_reasoning_efforts_json AS after_supported_reasoning_efforts_json,
+  updated.default_reasoning_effort AS after_default_reasoning_effort,
+  updated.release_date AS after_release_date,
+  updated.shutdown_date AS after_shutdown_date,
+  updated.context_window_tokens AS after_context_window_tokens,
+  updated.max_input_tokens AS after_max_input_tokens,
+  updated.max_output_tokens AS after_max_output_tokens,
+  updated.input_usd_per_1m AS after_input_usd_per_1m,
+  updated.output_usd_per_1m AS after_output_usd_per_1m,
+  updated.cached_input_usd_per_1m AS after_cached_input_usd_per_1m,
+  updated.cache_write_usd_per_1m AS after_cache_write_usd_per_1m,
+  updated.cache_write_1h_usd_per_1m AS after_cache_write_1h_usd_per_1m,
+  updated.service_tier_prices_json AS after_service_tier_prices_json,
+  updated.image_input_usd_per_1m AS after_image_input_usd_per_1m,
+  updated.image_output_usd_per_1m AS after_image_output_usd_per_1m,
+  updated.audio_input_usd_per_1m AS after_audio_input_usd_per_1m,
+  updated.audio_output_usd_per_1m AS after_audio_output_usd_per_1m,
+  updated.output_usd_per_image AS after_output_usd_per_image,
+  updated.updated_at AS after_updated_at
+FROM locked
+INNER JOIN updated ON true
 `
 
 type UpdateManagementBuiltInProviderModelPricesParams struct {
+	ID                               string
+	ProviderCode                     string
 	StatusPresent                    bool
 	Status                           string
 	ModePresent                      bool
@@ -853,40 +892,65 @@ type UpdateManagementBuiltInProviderModelPricesParams struct {
 	AudioOutputUsdPer1m              pgtype.Float8
 	OutputUsdPerImagePresent         bool
 	OutputUsdPerImage                pgtype.Float8
-	ID                               string
-	ProviderCode                     string
 }
 
 type UpdateManagementBuiltInProviderModelPricesRow struct {
-	ID                            string
-	ProviderCode                  string
-	Status                        string
-	Mode                          pgtype.Text
-	SupportedApiProtocolsJson     string
-	SupportedServiceTiersJson     string
-	SupportedReasoningEffortsJson string
-	DefaultReasoningEffort        pgtype.Text
-	ReleaseDate                   pgtype.Text
-	ShutdownDate                  pgtype.Text
-	ContextWindowTokens           pgtype.Int4
-	MaxInputTokens                pgtype.Int4
-	MaxOutputTokens               pgtype.Int4
-	InputUsdPer1m                 pgtype.Float8
-	OutputUsdPer1m                pgtype.Float8
-	CachedInputUsdPer1m           pgtype.Float8
-	CacheWriteUsdPer1m            pgtype.Float8
-	CacheWrite1hUsdPer1m          pgtype.Float8
-	ServiceTierPricesJson         string
-	ImageInputUsdPer1m            pgtype.Float8
-	ImageOutputUsdPer1m           pgtype.Float8
-	AudioInputUsdPer1m            pgtype.Float8
-	AudioOutputUsdPer1m           pgtype.Float8
-	OutputUsdPerImage             pgtype.Float8
-	UpdatedAt                     pgtype.Timestamptz
+	BeforeID                            string
+	BeforeProviderCode                  string
+	BeforeStatus                        string
+	BeforeMode                          pgtype.Text
+	BeforeSupportedApiProtocolsJson     string
+	BeforeSupportedServiceTiersJson     string
+	BeforeSupportedReasoningEffortsJson string
+	BeforeDefaultReasoningEffort        pgtype.Text
+	BeforeReleaseDate                   pgtype.Text
+	BeforeShutdownDate                  pgtype.Text
+	BeforeContextWindowTokens           pgtype.Int4
+	BeforeMaxInputTokens                pgtype.Int4
+	BeforeMaxOutputTokens               pgtype.Int4
+	BeforeInputUsdPer1m                 pgtype.Float8
+	BeforeOutputUsdPer1m                pgtype.Float8
+	BeforeCachedInputUsdPer1m           pgtype.Float8
+	BeforeCacheWriteUsdPer1m            pgtype.Float8
+	BeforeCacheWrite1hUsdPer1m          pgtype.Float8
+	BeforeServiceTierPricesJson         string
+	BeforeImageInputUsdPer1m            pgtype.Float8
+	BeforeImageOutputUsdPer1m           pgtype.Float8
+	BeforeAudioInputUsdPer1m            pgtype.Float8
+	BeforeAudioOutputUsdPer1m           pgtype.Float8
+	BeforeOutputUsdPerImage             pgtype.Float8
+	BeforeUpdatedAt                     pgtype.Timestamptz
+	AfterID                             string
+	AfterProviderCode                   string
+	AfterStatus                         string
+	AfterMode                           pgtype.Text
+	AfterSupportedApiProtocolsJson      string
+	AfterSupportedServiceTiersJson      string
+	AfterSupportedReasoningEffortsJson  string
+	AfterDefaultReasoningEffort         pgtype.Text
+	AfterReleaseDate                    pgtype.Text
+	AfterShutdownDate                   pgtype.Text
+	AfterContextWindowTokens            pgtype.Int4
+	AfterMaxInputTokens                 pgtype.Int4
+	AfterMaxOutputTokens                pgtype.Int4
+	AfterInputUsdPer1m                  pgtype.Float8
+	AfterOutputUsdPer1m                 pgtype.Float8
+	AfterCachedInputUsdPer1m            pgtype.Float8
+	AfterCacheWriteUsdPer1m             pgtype.Float8
+	AfterCacheWrite1hUsdPer1m           pgtype.Float8
+	AfterServiceTierPricesJson          string
+	AfterImageInputUsdPer1m             pgtype.Float8
+	AfterImageOutputUsdPer1m            pgtype.Float8
+	AfterAudioInputUsdPer1m             pgtype.Float8
+	AfterAudioOutputUsdPer1m            pgtype.Float8
+	AfterOutputUsdPerImage              pgtype.Float8
+	AfterUpdatedAt                      pgtype.Timestamptz
 }
 
 func (q *Queries) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, arg UpdateManagementBuiltInProviderModelPricesParams) (UpdateManagementBuiltInProviderModelPricesRow, error) {
 	row := q.db.QueryRow(ctx, updateManagementBuiltInProviderModelPrices,
+		arg.ID,
+		arg.ProviderCode,
 		arg.StatusPresent,
 		arg.Status,
 		arg.ModePresent,
@@ -931,36 +995,59 @@ func (q *Queries) UpdateManagementBuiltInProviderModelPrices(ctx context.Context
 		arg.AudioOutputUsdPer1m,
 		arg.OutputUsdPerImagePresent,
 		arg.OutputUsdPerImage,
-		arg.ID,
-		arg.ProviderCode,
 	)
 	var i UpdateManagementBuiltInProviderModelPricesRow
 	err := row.Scan(
-		&i.ID,
-		&i.ProviderCode,
-		&i.Status,
-		&i.Mode,
-		&i.SupportedApiProtocolsJson,
-		&i.SupportedServiceTiersJson,
-		&i.SupportedReasoningEffortsJson,
-		&i.DefaultReasoningEffort,
-		&i.ReleaseDate,
-		&i.ShutdownDate,
-		&i.ContextWindowTokens,
-		&i.MaxInputTokens,
-		&i.MaxOutputTokens,
-		&i.InputUsdPer1m,
-		&i.OutputUsdPer1m,
-		&i.CachedInputUsdPer1m,
-		&i.CacheWriteUsdPer1m,
-		&i.CacheWrite1hUsdPer1m,
-		&i.ServiceTierPricesJson,
-		&i.ImageInputUsdPer1m,
-		&i.ImageOutputUsdPer1m,
-		&i.AudioInputUsdPer1m,
-		&i.AudioOutputUsdPer1m,
-		&i.OutputUsdPerImage,
-		&i.UpdatedAt,
+		&i.BeforeID,
+		&i.BeforeProviderCode,
+		&i.BeforeStatus,
+		&i.BeforeMode,
+		&i.BeforeSupportedApiProtocolsJson,
+		&i.BeforeSupportedServiceTiersJson,
+		&i.BeforeSupportedReasoningEffortsJson,
+		&i.BeforeDefaultReasoningEffort,
+		&i.BeforeReleaseDate,
+		&i.BeforeShutdownDate,
+		&i.BeforeContextWindowTokens,
+		&i.BeforeMaxInputTokens,
+		&i.BeforeMaxOutputTokens,
+		&i.BeforeInputUsdPer1m,
+		&i.BeforeOutputUsdPer1m,
+		&i.BeforeCachedInputUsdPer1m,
+		&i.BeforeCacheWriteUsdPer1m,
+		&i.BeforeCacheWrite1hUsdPer1m,
+		&i.BeforeServiceTierPricesJson,
+		&i.BeforeImageInputUsdPer1m,
+		&i.BeforeImageOutputUsdPer1m,
+		&i.BeforeAudioInputUsdPer1m,
+		&i.BeforeAudioOutputUsdPer1m,
+		&i.BeforeOutputUsdPerImage,
+		&i.BeforeUpdatedAt,
+		&i.AfterID,
+		&i.AfterProviderCode,
+		&i.AfterStatus,
+		&i.AfterMode,
+		&i.AfterSupportedApiProtocolsJson,
+		&i.AfterSupportedServiceTiersJson,
+		&i.AfterSupportedReasoningEffortsJson,
+		&i.AfterDefaultReasoningEffort,
+		&i.AfterReleaseDate,
+		&i.AfterShutdownDate,
+		&i.AfterContextWindowTokens,
+		&i.AfterMaxInputTokens,
+		&i.AfterMaxOutputTokens,
+		&i.AfterInputUsdPer1m,
+		&i.AfterOutputUsdPer1m,
+		&i.AfterCachedInputUsdPer1m,
+		&i.AfterCacheWriteUsdPer1m,
+		&i.AfterCacheWrite1hUsdPer1m,
+		&i.AfterServiceTierPricesJson,
+		&i.AfterImageInputUsdPer1m,
+		&i.AfterImageOutputUsdPer1m,
+		&i.AfterAudioInputUsdPer1m,
+		&i.AfterAudioOutputUsdPer1m,
+		&i.AfterOutputUsdPerImage,
+		&i.AfterUpdatedAt,
 	)
 	return i, err
 }
