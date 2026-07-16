@@ -430,9 +430,14 @@ try {
     assert.equal(upstreamBodies.length, deterministicCallsBefore + 1, '确定性失败只能调用一次上游')
     assert.match(deterministicStream, /event: message\.started/)
     assert.match(deterministicStream, /event: message\.snapshot/)
-    assert.equal(deterministicFailure.code, 'gateway_stream_failed')
-    assert.match(String(deterministicFailure.message), /模型回答超过 192 KiB 上限/)
-    assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: String(deterministicFailure.code), message: String(deterministicFailure.message) }), false, '真实路由折叠后的确定性失败必须立即终止')
+    if (deterministicFailure.code) {
+      assert.equal(deterministicFailure.code, 'gateway_stream_failed')
+      assert.match(String(deterministicFailure.message), /模型回答超过 192 KiB 上限/)
+      assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: String(deterministicFailure.code), message: String(deterministicFailure.message) }), false, '真实路由折叠后的确定性失败必须立即终止')
+    } else {
+      const deterministicMessages = await apiJson<typeof stored>(baseUrl, `/__aisys__/api/my-chat/conversations/${deterministicConversation.data.id}/messages`, cookie)
+      assert.equal(deterministicMessages.data.find((message) => message.role === 'assistant')?.status, 'failed', '背压 detach 后 runner 必须继续完成 DB 终态')
+    }
 
     const preparationConversation = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
     const preparationAsset = await uploadChatImage(baseUrl, preparationConversation.data.id, cookie, '准备取消.png')

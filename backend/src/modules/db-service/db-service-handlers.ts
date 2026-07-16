@@ -4,7 +4,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
 import { cleanupChatRetention } from '../../storage/chat.repository.js'
 import { cleanupExpiredChatAssets } from '../chat/chat-asset-cleanup.js'
-import { isActiveChatGeneration } from '../chat/chat.routes.js'
+import { isActiveChatGeneration } from '../chat/chat-generation-runtime.js'
 import {
   chatContextMaintenanceMaxBatchSize,
   cleanupExpiredChatContextCheckpoints,

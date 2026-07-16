@@ -2,14 +2,25 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { ChatGenerationRunner, type ChatGenerationEvent } from '../../modules/chat/chat-generation-runner.js'
 import { ChatGenerationRegistry } from '../../modules/chat/chat-generation-registry.js'
+import { createChatSseSubscriber } from '../../modules/chat/chat-sse-subscriber.js'
 
 const source = readFileSync('src/modules/chat/chat.routes.ts', 'utf8')
-assert.match(source, /ChatGenerationRegistry/, 'chat 路由必须使用服务端 generation registry')
+const dbServiceSource = readFileSync('src/db-service.ts', 'utf8')
+assert.match(source, /chatGenerationRegistry/, 'chat 路由必须使用服务端 generation registry')
 assert.match(source, /streams\/:turnId/, '必须提供活动轮次重附着 SSE 路由')
 assert.match(source, /registry\.start\(/, 'accept 成功后必须同步登记 runner')
 assert.doesNotMatch(source, /res\.once\('close'[\s\S]{0,180}controller\.abort\(\)/, 'accept 后 response close 不得 abort 服务端 runner')
-assert.match(source, /res\.write\(`event:[\s\S]{0,160}return !res\.destroyed/, 'res.write(false) 只表示背压，不得解除 subscriber')
+assert.match(source, /return res\.write\(`event:/, 'POST 首个 SSE 写入必须透传 res.write(false)，避免背压后继续发送 snapshot')
 assert.match(source, /registry\.start\(runner\)[\s\S]{0,1000}preparationClaim\.controller\.signal\.aborted[\s\S]{0,120}runner\.abort\(\)/, 'accept 窗口取消后必须立即 abort 已登记 runner')
+assert.match(source, /runner\.completion\.finally\(cleanup\)/, 'attach 必须在 runner completion 时兜底清理连接')
+const shutdownSource = dbServiceSource.slice(dbServiceSource.indexOf('async function shutdownDbService'))
+const stopListenIndex = shutdownSource.indexOf('httpEndpoint.server.close(')
+const queueDrainIndex = shutdownSource.indexOf('rejectQueuedDbServiceRequestsForShutdown()')
+const activeDrainIndex = shutdownSource.indexOf('waitForActiveDbServiceRequests(')
+const runnerShutdownIndex = shutdownSource.indexOf('shutdownChatGenerationRegistry(')
+const databaseCloseIndex = shutdownSource.indexOf('closeStorageDatabases()')
+assert(stopListenIndex >= 0 && stopListenIndex < queueDrainIndex && queueDrainIndex < activeDrainIndex && activeDrainIndex < runnerShutdownIndex && runnerShutdownIndex < databaseCloseIndex, 'DB service shutdown 顺序必须为 stop listen -> queue/active drain -> runner -> DB close')
+assert.match(shutdownSource, /while \(\(activeConcurrentRequestCount > 0 \|\| dbServiceRequestQueueDraining\)/, 'DB service shutdown 必须有界等待并发请求和已启动的串行 queue drain')
 
 let releaseExecution!: () => void
 const executionGate = new Promise<void>((resolve) => { releaseExecution = resolve })
@@ -54,4 +65,54 @@ assert.equal(canceledRegistry.stop(canceledRunner.identity), true)
 await canceledRunner.completion
 assert.equal(canceledRunner.state, 'canceled')
 assert.equal(canceledUpstreamCalls, 0, 'accept 窗口取消后不得继续调用上游')
+
+const backpressureWrites: string[] = []
+let backpressureDetached = 0
+let backpressureEnded = 0
+const backpressureSubscriber = createChatSseSubscriber({
+  response: {
+    destroyed: false,
+    writableEnded: false,
+    write: (chunk) => { backpressureWrites.push(chunk); return false },
+    end: () => { backpressureEnded += 1 }
+  },
+  detach: () => { backpressureDetached += 1 }
+})
+let resolveBackpressureGate!: () => void
+const backpressureGate = new Promise<void>((resolve) => { resolveBackpressureGate = resolve })
+const backpressureRunner = new ChatGenerationRunner({
+  identity: { ownerId: 'owner', conversationId: 'backpressure', turnId: 'turn', assistantMessageId: 'assistant' },
+  execute: async ({ publish }) => {
+    publish('message.delta', { delta: 'before' }, { contentTextDelta: 'before' })
+    await backpressureGate
+    publish('message.delta', { delta: 'after' }, { contentTextDelta: 'after' })
+    return { status: 'completed', data: {} }
+  }
+})
+const backpressureRegistry = new ChatGenerationRegistry()
+assert.equal(backpressureRegistry.start(backpressureRunner), true)
+await new Promise<void>((resolve) => setImmediate(resolve))
+assert.equal(backpressureRegistry.subscribe(backpressureRunner.identity, backpressureSubscriber), false)
+assert.equal(backpressureWrites.length, 1, 'write(false) 后同一 subscriber 写入次数必须有界')
+assert.equal(backpressureDetached, 1)
+assert.equal(backpressureEnded, 1)
+const reattachedAfterBackpressure: ChatGenerationEvent[] = []
+assert.equal(backpressureRegistry.subscribe(backpressureRunner.identity, { trySend: (event) => { reattachedAfterBackpressure.push(event) } }), true)
+assert.equal(reattachedAfterBackpressure[0]?.data.assistant.contentText, 'before')
+resolveBackpressureGate()
+await backpressureRunner.completion
+assert.equal(backpressureWrites.length, 1)
+
+let throwingEndDetached = 0
+const throwingEndSubscriber = createChatSseSubscriber({
+  response: {
+    destroyed: true,
+    writableEnded: false,
+    write: () => { throw new Error('destroyed response must not be written') },
+    end: () => { throw new Error('socket already closed') }
+  },
+  detach: () => { throwingEndDetached += 1 }
+})
+assert.doesNotThrow(() => assert.equal(throwingEndSubscriber.trySend({ type: 'message.delta', eventVersion: 1, data: {} }), false), '连接 cleanup 失败不能向 runner 传播')
+assert.equal(throwingEndDetached, 1)
 console.log('chat stream reattach regression contract passed')

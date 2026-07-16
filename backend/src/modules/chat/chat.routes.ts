@@ -21,7 +21,8 @@ import {
   listChatConversations,
   listChatMessages,
   updateChatConversation,
-  type ChatMessageContentBlock
+  type ChatMessageContentBlock,
+  type ChatMessageStatus
 } from '../../storage/chat.repository.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
 import { findApiKeySecretAsync, listApiKeysAsync } from '../../storage/repositories.js'
@@ -57,11 +58,11 @@ import { scheduleChatImageObservations, waitForChatImageObservations } from './c
 import { countChatTextTokens } from './chat-token-count.js'
 import { buildChatPromptCacheKey } from './chat-prompt-cache.js'
 import { ChatGenerationRunner, type ChatGenerationSubscriber } from './chat-generation-runner.js'
-import { ChatGenerationRegistry } from './chat-generation-registry.js'
+import { createChatSseSubscriber } from './chat-sse-subscriber.js'
+import { chatGenerationRegistry, isActiveChatGeneration, shutdownChatGenerationRegistry } from './chat-generation-runtime.js'
 
 export const chatRouter = Router()
-export const shutdownChatGenerationRegistry = (options: { timeoutMs: number }): Promise<void> => registry.shutdown(options)
-export const isActiveChatGeneration = (ownerId: string, conversationId: string, turnId: string): boolean => Boolean(registry.get({ ownerId, conversationId, turnId }))
+export { isActiveChatGeneration, shutdownChatGenerationRegistry }
 
 const messageContentBlocksSchema = z.array(z.discriminatedUnion('type', [
   z.object({ type: z.literal('input_text'), text: z.string().max(196_608, '文本块内容过长') }).strict(),
@@ -109,7 +110,7 @@ const updateConversationSchema = z.object({
   isPinned: z.boolean().optional()
 }).strict().refine((value) => value.title !== undefined || value.isPinned !== undefined, '没有可更新的会话字段')
 const activePreparations = new Map<string, ActiveChatPreparation>()
-const registry = new ChatGenerationRegistry()
+const registry = chatGenerationRegistry
 const maxMessageBytes = 192 * 1024
 const maxInternalChatRequestBytes = 15 * 1024 * 1024
 const storageQuotaBytes = 2 * 1024 * 1024 * 1024
@@ -757,6 +758,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         } catch (error) {
           const canceled = signal.aborted || error instanceof ChatPreparationCanceledError
           const persistedContentBlocks = sanitizeChatContentBlocksForPersistence(contentBlocks)
+          let finalizedStatus: 'completed' | 'failed' | 'canceled' = canceled ? 'canceled' : 'failed'
           try {
             if (canceled) {
               await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, traceId, now: new Date().toISOString() })
@@ -764,14 +766,20 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
               await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, errorCode: 'gateway_stream_failed', traceId, now: new Date().toISOString() })
             }
           } catch (finalizeError) {
-            const authoritative = await findChatTurnByClientMessageId(client, {
-              conversationId: conversation.id, systemAccountId: ownerId, clientMessageId: body.clientMessageId
-            }).catch(() => undefined)
-            if (!authoritative || authoritative.turnId !== accepted!.turnId || authoritative.assistantStatus === 'streaming') throw finalizeError
+            finalizedStatus = await recoverChatTurnFinalization({
+              client,
+              conversationId: conversation.id,
+              ownerId,
+              turnId: accepted!.turnId,
+              clientMessageId: body.clientMessageId,
+              initialError: finalizeError
+            })
           }
-          return canceled
+          return finalizedStatus === 'canceled'
             ? { status: 'canceled', data: { messageId: accepted!.assistantMessage.id } }
-            : { status: 'failed', data: { messageId: accepted!.assistantMessage.id, code: 'gateway_stream_failed', message: error instanceof Error ? error.message : '模型请求失败' } }
+            : finalizedStatus === 'completed'
+              ? { status: 'completed', data: { messageId: accepted!.assistantMessage.id } }
+              : { status: 'failed', data: { messageId: accepted!.assistantMessage.id, code: 'gateway_stream_failed', message: error instanceof Error ? error.message : '模型请求失败' } }
         }
       }
     })
@@ -788,8 +796,10 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       if (!responseClosed && !req.aborted && !res.destroyed) {
         prepareSseResponse(res)
         if (writeSse(res, 'message.started', { turnId: accepted.turnId, userMessage: accepted.userMessage, assistantMessage: accepted.assistantMessage })) {
-          subscriber = responseSubscriber(res)
+          subscriber = responseSubscriber(res, identity)
           if (registry.subscribe(identity, subscriber)) heartbeat = startSubscriberHeartbeat(res, identity, subscriber)
+        } else if (!res.writableEnded) {
+          res.end()
         }
       }
       await runner.completion
@@ -931,16 +941,23 @@ chatRouter.get('/conversations/:conversationId/streams/:turnId', async (req, res
       return
     }
     prepareSseResponse(res)
-    const subscriber = responseSubscriber(res)
+    const identity = { ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId }
+    const subscriber = responseSubscriber(res, identity)
     if (!registry.subscribe({ ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId }, subscriber)) {
       if (!res.writableEnded) res.end()
       return
     }
     const heartbeat = startSubscriberHeartbeat(res, { ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId }, subscriber)
-    res.once('close', () => {
+    let cleanedUp = false
+    const cleanup = (): void => {
+      if (cleanedUp) return
+      cleanedUp = true
       clearInterval(heartbeat)
-      registry.unsubscribe({ ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId }, subscriber)
-    })
+      registry.unsubscribe(identity, subscriber)
+      if (!res.writableEnded) res.end()
+    }
+    res.once('close', cleanup)
+    void runner.completion.finally(cleanup)
   } catch (error) { handleChatRouteError(error, res, next) }
 })
 
@@ -977,6 +994,38 @@ async function requireOwnedApiKey(apiKeyId: string | undefined, ownerId: string)
   const key = await findApiKeySecretAsync(apiKeyId, { systemAccountId: ownerId, role: 'user' })
   if (!key?.key || key.status !== 'active') throw new Error('API Key 不存在或不可用')
   return key
+}
+
+async function recoverChatTurnFinalization(input: {
+  client: Awaited<ReturnType<typeof getChatDatabaseClient>>
+  conversationId: string
+  ownerId: string
+  turnId: string
+  clientMessageId: string
+  initialError: unknown
+}): Promise<Exclude<ChatMessageStatus, 'streaming'>> {
+  let lastError = input.initialError
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const authoritative = await findChatTurnByClientMessageId(input.client, {
+        conversationId: input.conversationId,
+        systemAccountId: input.ownerId,
+        clientMessageId: input.clientMessageId
+      })
+      if (authoritative?.turnId === input.turnId && authoritative.assistantStatus !== 'streaming') return authoritative.assistantStatus
+      const interrupted = await failInterruptedChatTurnIfMatches(input.client, {
+        conversationId: input.conversationId,
+        systemAccountId: input.ownerId,
+        expectedTurnId: input.turnId,
+        now: new Date().toISOString()
+      })
+      if (interrupted.state === 'already_terminal') return interrupted.assistantStatus
+    } catch (error) {
+      lastError = error
+    }
+    if (attempt < 2) await new Promise<void>((resolve) => setTimeout(resolve, 20 * (attempt + 1)))
+  }
+  throw lastError
 }
 
 function requireChatAuth() {
@@ -1078,30 +1127,27 @@ function prepareSseResponse(res: import('express').Response): void {
 function writeSse(res: import('express').Response, event: string, data: unknown): boolean {
   if (res.writableEnded || res.destroyed) return false
   try {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-    return !res.destroyed
+    return res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
   }
   catch { return false }
 }
-function responseSubscriber(res: import('express').Response): ChatGenerationSubscriber {
-  return {
-    trySend: (event) => {
-      const sent = writeSse(res, event.type, event.data)
-      if (sent && (event.type === 'message.completed' || event.type === 'message.failed' || event.type === 'message.canceled')) {
-        queueMicrotask(() => { if (!res.writableEnded) res.end() })
-      }
-      return sent
-    }
-  }
+function responseSubscriber(res: import('express').Response, identity: { ownerId: string; conversationId: string; turnId: string }): ChatGenerationSubscriber {
+  let subscriber!: ChatGenerationSubscriber
+  subscriber = createChatSseSubscriber({
+    response: res,
+    detach: () => { registry.unsubscribe(identity, subscriber) }
+  })
+  return subscriber
 }
 function startSubscriberHeartbeat(res: import('express').Response, identity: { ownerId: string; conversationId: string; turnId: string }, subscriber: ChatGenerationSubscriber): ReturnType<typeof setInterval> {
   const heartbeat = setInterval(() => {
     let writable = !res.writableEnded && !res.destroyed
-    try { if (writable) res.write(': heartbeat\n\n') }
+    try { if (writable) writable = res.write(': heartbeat\n\n') }
     catch { writable = false }
     if (!writable) {
       clearInterval(heartbeat)
       registry.unsubscribe(identity, subscriber)
+      if (!res.writableEnded) res.end()
     }
   }, 15_000)
   heartbeat.unref()

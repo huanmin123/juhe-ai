@@ -66,7 +66,7 @@ assert.match(routesSource, /validateFixedChatInputBudget/, '固定输入预算�
 assert(contextReadIndex >= 0 && contextReadIndex < acceptTurnIndex, '检查点上下文和硬水位必须在接受轮次前完成，避免超限消息半成功')
 assert(contextReadIndex < transportBuildIndex && transportBuildIndex < acceptTurnIndex, '最终 transport 与请求体字节预检必须在消息落库前完成')
 assert(acceptTurnIndex < registryStartIndex, 'accept 完成后必须同步登记 runner')
-assert.match(routesSource, /ChatGenerationRegistry/, 'chat 路由必须复用服务端 generation registry')
+assert.match(routesSource, /chatGenerationRegistry/, 'chat 路由必须复用服务端 generation registry')
 assert.match(routesSource, /failInterruptedChatTurnIfMatches/, 'DB active 但 runner 缺失时必须原子收口为中断失败')
 assert.match(routesSource, /res\.once\('close'[\s\S]{0,100}if \(!accepted\) controller\?\.abort\(\)/, 'response close 只能在 accept 前取消 preparation controller')
 assert.match(routesSource, /compactChatContextOnce/, '硬水位必须在发送前执行有界压缩')

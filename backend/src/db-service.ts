@@ -14,7 +14,7 @@ import type { DbServiceParentMessage } from './modules/db-service/db-service-typ
 import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { createSystemApiApp } from './modules/system-api/system-api-app.js'
-import { shutdownChatGenerationRegistry } from './modules/chat/chat.routes.js'
+import { shutdownChatGenerationRegistry } from './modules/chat/chat-generation-runtime.js'
 import { isCodexContextStateWriterPoolOperation } from './storage/codex-context-state-writer-pool.js'
 import { closeStorageDatabases, datasetDatabasePath, getBusinessDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
@@ -61,6 +61,7 @@ let activeConcurrentRequestCount = 0
 let maxActiveConcurrentRequestCount = 0
 let highDispatchStreak = 0
 let dbServiceStopping = false
+let dbServiceShutdownPromise: Promise<void> | undefined
 
 async function startDbService(): Promise<void> {
   installProcessLogHandlers()
@@ -80,8 +81,8 @@ async function startDbService(): Promise<void> {
   process.on('message', (message: unknown) => {
     void handleParentMessage(message)
   })
-  process.once('SIGINT', () => void shutdownDbService(httpEndpoint, 0))
-  process.once('SIGTERM', () => void shutdownDbService(httpEndpoint, 0))
+  process.on('SIGINT', () => void requestDbServiceShutdown(httpEndpoint, 0))
+  process.on('SIGTERM', () => void requestDbServiceShutdown(httpEndpoint, 0))
 
   sendDbServiceMessage({
     type: 'db_service_ready',
@@ -103,28 +104,58 @@ async function startDbService(): Promise<void> {
   }, `数据库服务已启动，内部系统 API 监听 http://${httpEndpoint.host}:${httpEndpoint.port}`)
 }
 
-async function shutdownDbService(httpEndpoint: DbServiceHttpEndpoint, exitCode: number): Promise<void> {
-  if (dbServiceStopping) return
+function requestDbServiceShutdown(httpEndpoint: DbServiceHttpEndpoint, exitCode: number): Promise<void> {
+  if (dbServiceShutdownPromise) {
+    logger.info({ event: 'db_service_shutdown_already_running' }, 'DB service 已在退出，复用现有退出流程')
+    return dbServiceShutdownPromise
+  }
   dbServiceStopping = true
+  dbServiceShutdownPromise = shutdownDbService(httpEndpoint, exitCode)
+  return dbServiceShutdownPromise
+}
+
+async function shutdownDbService(httpEndpoint: DbServiceHttpEndpoint, exitCode: number): Promise<void> {
+  const httpClosed = new Promise<void>((resolve, reject) => {
+    httpEndpoint.server.close((error) => error ? reject(error) : resolve())
+    httpEndpoint.server.closeIdleConnections?.()
+  }).catch((error) => {
+    logger.error(errorLogFields(error, { event: 'db_service_http_shutdown_failed' }), 'DB service 退出时关闭内部 HTTP 服务失败')
+  })
+  rejectQueuedDbServiceRequestsForShutdown()
+  const requestsDrained = await waitForActiveDbServiceRequests(3_000)
+  if (!requestsDrained) {
+    logger.warn({ event: 'db_service_request_drain_timeout', activeConcurrentRequestCount, dbServiceRequestQueueDraining }, 'DB service 退出时等待在途请求超时')
+  }
   try {
     await shutdownChatGenerationRegistry({ timeoutMs: 7_000 })
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'db_service_chat_generation_shutdown_failed' }), 'DB service 退出时排空 AI 问答生成任务失败')
   }
-  try {
-    await new Promise<void>((resolve, reject) => {
-      httpEndpoint.server.close((error) => error ? reject(error) : resolve())
-      httpEndpoint.server.closeIdleConnections?.()
-    })
-  } catch (error) {
-    logger.error(errorLogFields(error, { event: 'db_service_http_shutdown_failed' }), 'DB service 退出时关闭内部 HTTP 服务失败')
-  }
+  await Promise.race([httpClosed, new Promise<void>((resolve) => setTimeout(resolve, 2_000))])
   try {
     closeStorageDatabases()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'db_service_storage_shutdown_failed' }), 'DB service 退出时关闭数据库连接失败')
   }
   process.exit(exitCode)
+}
+
+function rejectQueuedDbServiceRequestsForShutdown(): void {
+  clearDbServiceRequestQueueExpiryTimer()
+  for (const priority of Object.keys(queuedDbServiceRequests) as DbServiceOperationPriority[]) {
+    for (const request of queuedDbServiceRequests[priority].splice(0)) {
+      rejectDbServiceRequest(request.message, '本地数据库服务正在退出')
+    }
+  }
+  queuedDbServiceRequestBytes = 0
+}
+
+async function waitForActiveDbServiceRequests(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, timeoutMs)
+  while ((activeConcurrentRequestCount > 0 || dbServiceRequestQueueDraining) && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  }
+  return activeConcurrentRequestCount === 0 && !dbServiceRequestQueueDraining
 }
 
 async function handleParentMessage(message: unknown): Promise<void> {
