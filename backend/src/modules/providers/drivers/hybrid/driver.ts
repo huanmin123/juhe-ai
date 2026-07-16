@@ -266,6 +266,7 @@ async function buildHybridOpenAIRequestParts(req: Request, account: DispatchAcco
   })
   const headers = buildUpstreamHeaders(req.headers, account)
   applyOpenAIClientCompatibilityHeaders(req, headers, {
+    modelOverride: mapping?.upstreamModel,
     requestClientCompatibility
   })
   return {

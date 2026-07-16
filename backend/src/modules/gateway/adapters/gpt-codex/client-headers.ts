@@ -24,8 +24,27 @@ export function usesOpenAICodexResponsesLite(model: string | undefined): boolean
   return model !== undefined && openAICodexResponsesLiteModels.has(model.trim().toLowerCase())
 }
 
+export function normalizeOpenAICodexResponsesLiteBody(
+  body: Record<string, unknown>,
+  model: string | undefined
+): void {
+  if (!usesOpenAICodexResponsesLite(model)) {
+    return
+  }
+  const reasoning = isPlainObject(body.reasoning) ? body.reasoning : {}
+  body.reasoning = {
+    ...reasoning,
+    context: 'all_turns'
+  }
+  body.parallel_tool_calls = false
+}
+
 function isCodexOriginator(value: string | undefined): value is string {
   return typeof value === 'string' && /^codex(?:_|$)/i.test(value)
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 const openAICodexResponsesLiteModels = new Set([

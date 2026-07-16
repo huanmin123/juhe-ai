@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { AccountClientCompatibility } from '../../domain/types.js'
 import type { AccountSupportedEndpointMode } from '../../domain/types.js'
+import { normalizeOpenAICodexResponsesLiteBody } from '../gateway/adapters/gpt-codex/client-headers.js'
 import {
   defaultAnthropicEndpointModes,
   isAnthropicEndpointMode
@@ -135,6 +136,7 @@ export function createOpenAIResponsesTestPayload(model: string, prompt: string, 
     payload.stream = true
     payload.store = false
     payload.include = ['reasoning.encrypted_content']
+    normalizeOpenAICodexResponsesLiteBody(payload, model)
   }
   return payload
 }

@@ -23,6 +23,10 @@ import {
   parseGatewayJsonBodyInWorker,
   stopGatewayJsonParseWorker
 } from '../../modules/gateway/request/json-parser.js'
+import {
+  applyOpenAIClientCompatibilityHeaders,
+  buildOpenAIClientCompatibilityBody
+} from '../../modules/gateway/protocols/openai-v1/api-key-client-compatibility.js'
 
 type TestRequest = GatewayRawBodyRequest
 
@@ -53,6 +57,7 @@ async function main(): Promise<void> {
   await testSessionIsolation()
   await testInvalidBodyRejection()
   await testLargeBodyWorkerNormalization()
+  await testLargeApiKeyLiteBodyWorkerNormalization()
   await testMediumBodyDeferredMiddlewareToOAuthWorker()
   await testLargeBodyDeferredMiddlewareToOAuthWorker()
   await testGatewayJsonWorkerConcurrentParsing()
@@ -91,9 +96,11 @@ async function testOAuthAccountRequestOverrides(): Promise<void> {
   assert.equal(body.service_tier, 'priority')
   assert.deepEqual(body.reasoning, {
     effort: 'high',
-    summary: 'detailed'
+    summary: 'detailed',
+    context: 'all_turns'
   })
   assert.equal(body.reasoning_effort, undefined)
+  assert.equal(body.parallel_tool_calls, false)
 }
 
 async function testOAuthCompactRequestOverrides(): Promise<void> {
@@ -122,7 +129,12 @@ async function testOAuthCompactRequestOverrides(): Promise<void> {
   const body = parseBody(parts.body)
 
   assert.equal(body.service_tier, 'priority')
-  assert.deepEqual(body.reasoning, { effort: 'low', summary: 'auto' }, 'OAuth compact 必须保留客户端 reasoning，不能静默过滤')
+  assert.deepEqual(body.reasoning, {
+    effort: 'low',
+    summary: 'auto',
+    context: 'all_turns'
+  }, 'OAuth Lite compact 必须保留客户端 reasoning 并声明全部轮次 context')
+  assert.equal(body.parallel_tool_calls, false, 'OAuth Lite compact 必须关闭并行工具调用')
 }
 
 async function testOAuthFlexRequestOverrideRejection(): Promise<void> {
@@ -376,7 +388,7 @@ async function testInvalidBodyRejection(): Promise<void> {
 
 async function testLargeBodyWorkerNormalization(): Promise<void> {
   const requestBody = {
-    model: 'gpt-5.3-codex',
+    model: 'gpt-5.6-sol',
     input: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 1024),
     store: true,
     stream: false,
@@ -409,8 +421,36 @@ async function testLargeBodyWorkerNormalization(): Promise<void> {
   assert.equal((body.tools as Array<Record<string, unknown>>)[0].type, 'web_search')
   assert.equal(((body.tool_choice as { tools?: Array<Record<string, unknown>> }).tools ?? [])[0]?.type, 'web_search')
   assert.equal(body.service_tier, 'priority')
+  assert.deepEqual(body.reasoning, { context: 'all_turns' })
+  assert.equal(body.parallel_tool_calls, false)
   assert.equal(input[0]?.content?.[0]?.text, requestBody.input)
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
+  assert.equal(parts.headers.get('x-openai-internal-codex-responses-lite'), 'true')
+}
+
+async function testLargeApiKeyLiteBodyWorkerNormalization(): Promise<void> {
+  const rawBodyText = JSON.stringify({
+    model: 'gpt-5.6-sol',
+    input: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 1024),
+    reasoning: { effort: 'high' },
+    parallel_tool_calls: true
+  })
+  const req = createRequest('/v1/responses', undefined, { 'content-type': 'application/json' }, rawBodyText)
+  const bodyBuffer = await buildOpenAIClientCompatibilityBody(req, undefined, {
+    modelOverride: 'gpt-5.6-sol',
+    requestClientCompatibility: 'codex_responses'
+  })
+  assert.ok(bodyBuffer)
+  const body = JSON.parse(bodyBuffer.toString('utf8')) as Record<string, unknown>
+  const headers = new Headers()
+  applyOpenAIClientCompatibilityHeaders(req, headers, {
+    modelOverride: 'gpt-5.6-sol',
+    requestClientCompatibility: 'codex_responses'
+  })
+
+  assert.deepEqual(body.reasoning, { effort: 'high', context: 'all_turns' })
+  assert.equal(body.parallel_tool_calls, false)
+  assert.equal(headers.get('x-openai-internal-codex-responses-lite'), 'true')
 }
 
 async function testMediumBodyDeferredMiddlewareToOAuthWorker(): Promise<void> {

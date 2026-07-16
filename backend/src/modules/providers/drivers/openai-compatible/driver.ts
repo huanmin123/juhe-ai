@@ -182,6 +182,7 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
     })
     const headers = buildUpstreamHeaders(req.headers, account)
     applyOpenAIClientCompatibilityHeaders(req, headers, {
+      modelOverride: modelMapping?.upstreamModel,
       requestClientCompatibility: context?.requestClientCompatibility
     })
     return {

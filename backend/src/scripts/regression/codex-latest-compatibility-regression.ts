@@ -6,7 +6,9 @@ import {
   buildOpenAIOAuthCodexRequestParts,
   isolateOpenAIOAuthCodexSessionId
 } from '../../modules/gateway/adapters/gpt-codex/oauth-adapter.js'
+import { buildOpenAIClientCompatibilityBody } from '../../modules/gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import { buildOpenAIModelsResponse } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
+import { gptProviderDriver } from '../../modules/providers/drivers/gpt/driver.js'
 
 const solHeaders = new Headers({
   originator: 'codex_cli_rs',
@@ -43,6 +45,64 @@ assert.equal(typeof oauthParts.headers.get('thread-id'), 'string')
 assert.equal(oauthParts.headers.get('session_id'), null)
 assert.equal(oauthParts.headers.get('conversation_id'), null)
 assert.equal(oauthParts.headers.get('x-openai-internal-codex-responses-lite'), 'true')
+const oauthBody = JSON.parse(oauthParts.body ?? '{}') as Record<string, unknown>
+assert.deepEqual(oauthBody.reasoning, { context: 'all_turns' }, 'OAuth Lite 请求必须声明全部轮次 reasoning context')
+assert.equal(oauthBody.parallel_tool_calls, false, 'OAuth Lite 请求必须关闭并行工具调用')
+
+const apiKeyLiteRequest = createRequest('/v1/responses', {
+  model: 'gpt-5.6-sol',
+  input: '只输出 OK',
+  reasoning: { effort: 'high', summary: 'auto' },
+  parallel_tool_calls: true
+})
+const apiKeyLiteBodyBuffer = await buildOpenAIClientCompatibilityBody(apiKeyLiteRequest, undefined, {
+  requestClientCompatibility: 'codex_responses'
+})
+assert.ok(apiKeyLiteBodyBuffer, 'API Key Codex Responses 请求必须生成兼容请求体')
+const apiKeyLiteBody = JSON.parse(apiKeyLiteBodyBuffer.toString('utf8')) as Record<string, unknown>
+assert.deepEqual(apiKeyLiteBody.reasoning, {
+  effort: 'high',
+  summary: 'auto',
+  context: 'all_turns'
+}, 'API Key Lite 请求必须保留 reasoning 字段并收口全部轮次 context')
+assert.equal(apiKeyLiteBody.parallel_tool_calls, false, 'API Key Lite 请求必须覆盖客户端的并行工具设置')
+
+const standardBodyBuffer = await buildOpenAIClientCompatibilityBody(createRequest('/v1/responses', {
+  model: 'gpt-5.5',
+  input: '只输出 OK'
+}), undefined, {
+  requestClientCompatibility: 'codex_responses'
+})
+assert.ok(standardBodyBuffer, '非 Lite Codex Responses 请求仍必须生成兼容请求体')
+const standardBody = JSON.parse(standardBodyBuffer.toString('utf8')) as Record<string, unknown>
+assert.equal(standardBody.reasoning, undefined, '非 Lite 模型不能被注入 reasoning context')
+assert.equal(standardBody.parallel_tool_calls, true, '非 Lite 模型保持现有并行工具默认值')
+
+const liteToStandardParts = await gptProviderDriver.buildUpstreamRequestParts(
+  createRequest('/v1/responses', { model: 'gpt-5.6-sol', input: '只输出 OK' }),
+  apiKeyMappingAccount('gpt-5.6-sol', 'gpt-5.5'),
+  { systemAccountId: 'system-a', apiKeyId: 'key-a', groupId: 'group-a' },
+  undefined,
+  { requestClientCompatibility: 'codex_responses' }
+)
+const liteToStandardBody = parseRequestBody(liteToStandardParts.body)
+assert.equal(liteToStandardParts.headers.get('x-openai-internal-codex-responses-lite'), null, 'Lite 源模型映射到非 Lite 最终模型后必须删除 Lite header')
+assert.equal(liteToStandardBody.model, 'gpt-5.5')
+assert.equal(liteToStandardBody.reasoning, undefined)
+assert.equal(liteToStandardBody.parallel_tool_calls, true)
+
+const standardToLiteParts = await gptProviderDriver.buildUpstreamRequestParts(
+  createRequest('/v1/responses', { model: 'gpt-5.5', input: '只输出 OK' }),
+  apiKeyMappingAccount('gpt-5.5', 'gpt-5.6-sol'),
+  { systemAccountId: 'system-a', apiKeyId: 'key-a', groupId: 'group-a' },
+  undefined,
+  { requestClientCompatibility: 'codex_responses' }
+)
+const standardToLiteBody = parseRequestBody(standardToLiteParts.body)
+assert.equal(standardToLiteParts.headers.get('x-openai-internal-codex-responses-lite'), 'true', '非 Lite 源模型映射到 Lite 最终模型后必须添加 Lite header')
+assert.equal(standardToLiteBody.model, 'gpt-5.6-sol')
+assert.deepEqual(standardToLiteBody.reasoning, { context: 'all_turns' })
+assert.equal(standardToLiteBody.parallel_tool_calls, false)
 
 const modelsResponse = buildOpenAIModelsResponse([
   modelCatalogItem('gpt-5.6-sol'),
@@ -144,4 +204,30 @@ function modelCatalogItem(model: string): Parameters<typeof buildOpenAIModelsRes
     scope: 'built_in',
     status: 'active'
   }
+}
+
+function apiKeyMappingAccount(sourceModel: string, upstreamModel: string): Parameters<typeof gptProviderDriver.buildUpstreamRequestParts>[1] {
+  return {
+    id: 'account-a',
+    type: 'api_key',
+    apiKey: 'sk-upstream',
+    baseUrl: 'https://example.com/v1',
+    providerCode: 'gpt',
+    providerProtocolProfileId: 'profile_gpt_openai_v1',
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    credentials: {},
+    modelMappings: [{
+      sourceModel,
+      sourceEndpointFamily: 'responses',
+      upstreamModel,
+      upstreamEndpointFamily: 'responses',
+      enabled: true
+    }]
+  } as Parameters<typeof gptProviderDriver.buildUpstreamRequestParts>[1]
+}
+
+function parseRequestBody(body: Buffer | string | undefined): Record<string, unknown> {
+  assert.ok(body, 'driver 必须生成上游请求体')
+  return JSON.parse(Buffer.isBuffer(body) ? body.toString('utf8') : body) as Record<string, unknown>
 }
