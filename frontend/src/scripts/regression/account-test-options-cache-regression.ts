@@ -101,19 +101,22 @@ async function verifyConcurrentLoadsAndCacheIsolation(): Promise<void> {
   await testModels(true, 'owner-a').loadSavedAccountTestOptions(accountFixture(2))
   assert.equal(managementCalls, 2, '账户配置版本变化后应重新加载')
 
+  await testModels(true, 'owner-a').loadSavedAccountTestOptions(accountFixture(2, 'account-cache-test-2'))
+  assert.equal(managementCalls, 3, '不同账户不能复用测试选项')
+
   await testModels(true, 'owner-b').loadSavedAccountTestOptions(accountFixture(2))
-  assert.equal(managementCalls, 3, '不同管理范围不能复用测试选项')
+  assert.equal(managementCalls, 4, '不同管理范围不能复用测试选项')
 
   await testModels(false).loadSavedAccountTestOptions(accountFixture(2))
   assert.equal(selfCalls, 1, '个人视图不能复用管理视图测试选项')
 
   authState.currentUser.value = currentUser('user-b')
   await testModels(true, 'owner-a').loadSavedAccountTestOptions(accountFixture(2))
-  assert.equal(managementCalls, 4, '不同登录用户不能复用测试选项')
+  assert.equal(managementCalls, 5, '不同登录用户不能复用测试选项')
 
   invalidateAccountProviderModelOptionsCache()
   await testModels(true, 'owner-a').loadSavedAccountTestOptions(accountFixture(2))
-  assert.equal(managementCalls, 5, '模型目录缓存失效时应同步清理测试选项')
+  assert.equal(managementCalls, 6, '模型目录缓存失效时应同步清理测试选项')
 }
 
 async function verifyRejectedLoadsAreRetried(): Promise<void> {
@@ -146,9 +149,9 @@ function testModels(isManagementView: boolean, systemAccountId?: string) {
   })
 }
 
-function accountFixture(configRevision: number | undefined): AccountSummary {
+function accountFixture(configRevision: number | undefined, id = 'account-cache-test'): AccountSummary {
   return {
-    id: 'account-cache-test',
+    id,
     configRevision,
     name: '缓存测试账户',
     healthCheckEndpointMode: 'responses_sse'
