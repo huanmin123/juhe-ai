@@ -106,6 +106,46 @@ try {
   assert(projectionCache.head?.projectionEventVersion === 8, '投影 eventVersion 必须与消息同事务持久化')
   assert(projectionCache.runningTurn?.turnId === 'turn-projection', '旧标签页不得清除或回退 running turn')
 
+  const convergingLowCoordinator = new ChatConversationSyncCoordinator()
+  const convergingHighCoordinator = new ChatConversationSyncCoordinator()
+  convergingLowCoordinator.activateAccount('D'); convergingHighCoordinator.activateAccount('D')
+  const convergingLowStarted = deferred<void>()
+  const releaseConvergingLow = deferred<void>()
+  const convergingDependencies = (eventVersion: number, waitForRelease = false): ChatConversationSyncDependencies => ({
+    readCache: async (account, conversation) => adapter.readConversation(account, conversation),
+    getSyncHead: async () => ({ ...syncHead(9), conversationId: 'converge', activeTurn: { turnId: 'turn-converge', assistantMessageId: 'm_2', startedAt: '2026-07-16T00:00:00.000Z' } }),
+    listMessages: async () => {
+      if (waitForRelease) { convergingLowStarted.resolve(); await releaseConvergingLow.promise }
+      return [{ ...message(1, 'converge'), turnId: 'turn-converge', contentText: 'user' }, { ...message(2, 'converge'), turnId: 'turn-converge', status: 'streaming', contentText: 'db' }]
+    },
+    deleteConversation: (account, conversation) => adapter.deleteConversation(account, conversation),
+    commitSnapshot: async (account, head, messages, projection) => (await adapter.commitSyncSnapshot({
+      systemAccountId: account,
+      conversationId: head.conversationId,
+      messageRevision: head.messageRevision,
+      messages: [...messages],
+      runningTurn: { systemAccountId: account, conversationId: head.conversationId, turnId: 'turn-converge', assistantMessageId: 'm_2', startedAt: '2026-07-16T00:00:00.000Z', eventVersion, status: 'streaming' },
+      projection,
+      now: eventVersion
+    })).committed
+  })
+  const convergingLow = convergingLowCoordinator.synchronize({
+    systemAccountId: 'D', conversationId: 'converge', dependencies: convergingDependencies(4, true),
+    projectMessages: (items) => ({ messages: items.map((item) => item.role === 'assistant' ? { ...item, contentText: 'old-version-4' } : item), eventVersion: 4, status: 'streaming', turnId: 'turn-converge', assistantMessageId: 'm_2' })
+  })
+  await convergingLowStarted.promise
+  const convergingHigh = await convergingHighCoordinator.synchronize({
+    systemAccountId: 'D', conversationId: 'converge', dependencies: convergingDependencies(8),
+    projectMessages: (items) => ({ messages: items.map((item) => item.role === 'assistant' ? { ...item, contentText: 'winner-version-8' } : item), eventVersion: 8, status: 'streaming', turnId: 'turn-converge', assistantMessageId: 'm_2' })
+  })
+  assert(convergingHigh.state === 'ready')
+  releaseConvergingLow.resolve()
+  const convergedLow = await convergingLow
+  assert(convergedLow.state === 'ready', '原生 IndexedDB 双协调器同 revision CAS 失败后旧标签页必须收敛为 ready')
+  if (convergedLow.state !== 'ready') throw new Error('旧协调器必须读取赢家')
+  assert(convergedLow.projectionEventVersion === 8 && convergedLow.messages[1]?.contentText === 'winner-version-8', '旧标签页必须采用 IndexedDB 中较新 eventVersion 投影')
+  await adapter.deleteConversation('D', 'converge')
+
   const reloadCoordinator = new ChatConversationSyncCoordinator()
   reloadCoordinator.activateAccount('C')
   const reloadResult = await reloadCoordinator.synchronize({

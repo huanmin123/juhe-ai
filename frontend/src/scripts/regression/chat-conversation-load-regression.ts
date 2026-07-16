@@ -98,5 +98,6 @@ const modelIndex = chatViewSource.indexOf('loadModels: () => chatApi.listModels(
 assert.ok(loadStartIndex >= 0 && syncIndex > loadStartIndex && modelIndex > syncIndex, '页面必须在同一独立加载通道中启动 cache-first 消息同步与模型旁路')
 assert.match(chatViewSource, /readConversation[\s\S]{0,900}messages\.value = cached\.value\.messages[\s\S]{0,1200}synchronizeChatConversation/, '页面必须先渲染 IndexedDB 可见历史，再请求轻量 sync head')
 assert.match(chatViewSource, /await conversationLoad\.messages[\s\S]{0,500}messages\.value = messageItems[\s\S]{0,900}conversationLoad\.models\.then/, '页面必须先选择并渲染消息，再异步应用模型列表结果')
+assert.match(chatViewSource, /hasOlderChatMessages\(messages\.value,\s*older\.length\)/, '向前分页必须把服务端空页结果写入可继续加载状态，避免保留断档无限请求')
 
 console.log('AI 问答会话与历史加载 epoch 回归通过')

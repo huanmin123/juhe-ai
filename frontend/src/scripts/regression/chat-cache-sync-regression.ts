@@ -49,6 +49,7 @@ const local = [message(1, 'user_1'), message(2, 'assistant_1')]
 activateChatConversationSyncAccount('sys_1')
 assert.equal(hasOlderChatMessages(Array.from({ length: 200 }, (_, index) => message(index + 51, `cached_${index}`))), true, 'IndexedDB 最新 200 条从 51 开始时仍必须允许向前分页')
 assert.equal(hasOlderChatMessages(Array.from({ length: 100 }, (_, index) => message(index + 1, `complete_${index}`))), false, '已从 sequence 1 开始时不得仅凭页长误报更早消息')
+assert.equal(hasOlderChatMessages(Array.from({ length: 100 }, (_, index) => message(index + 51, `retained_${index}`)), 0), false, '服务端向前分页返回空时必须记住保留边界并停止继续加载')
 assert.deepEqual(decideChatConversationSync({ localRevision: 4, localMessages: local, server: { ...head(4, []), unchanged: true } }), { type: 'unchanged' })
 assert.deepEqual(decideChatConversationSync({ localRevision: 4, localMessages: local, server: head(5, [
   { id: 'user_2', turnId: 'turn_2', sequenceNo: 3, role: 'user', status: 'completed', expiresAt: '2026-07-19T00:00:00.000Z' },
@@ -121,6 +122,61 @@ if (projectionRaceResult.state !== 'ready') throw new Error('投影竞态同步�
 assert.equal(projectionRaceResult.projectionEventVersion, 2, 'sync 返回前必须重新读取最新 runtime eventVersion')
 assert.equal(projectionRaceResult.messages.find((item) => item.role === 'assistant')?.contentText, 'runtime-2', '最终 UI 结果不得被旧投影覆盖倒退')
 assert.equal(committedProjection, 'runtime-2', 'IDB 提交期间投影推进时必须有界重投影并再次提交')
+
+let casReadCount = 0
+let casCommitCount = 0
+const casWinnerCoordinator = new ChatConversationSyncCoordinator()
+casWinnerCoordinator.activateAccount('sys_cas_winner')
+const casWinner = await casWinnerCoordinator.synchronize({
+  systemAccountId: 'sys_cas_winner',
+  conversationId: 'conv_1',
+  projectMessages: (items) => ({
+    messages: items.map((item) => item.role === 'assistant' ? { ...item, contentText: 'local-version-4' } : item),
+    eventVersion: 4,
+    status: 'streaming',
+    turnId: 'turn_1',
+    assistantMessageId: 'assistant_1'
+  }),
+  dependencies: {
+    readCache: async () => {
+      casReadCount += 1
+      if (casReadCount === 1) return { head: { messageRevision: 7 }, messages: local }
+      return {
+        head: {
+          messageRevision: 7,
+          projectionEventVersion: 8,
+          projectionStatus: 'streaming',
+          projectionTurnId: 'turn_1',
+          projectionAssistantMessageId: 'assistant_1'
+        },
+        messages: [message(1, 'user_1'), { ...message(2, 'assistant_1', 'streaming'), contentText: 'winner-version-8' }],
+        runningTurn: {
+          systemAccountId: 'sys_cas_winner',
+          conversationId: 'conv_1',
+          turnId: 'turn_1',
+          assistantMessageId: 'assistant_1',
+          startedAt: '2026-07-16T00:00:00.000Z',
+          eventVersion: 8,
+          status: 'streaming' as const
+        }
+      }
+    },
+    getSyncHead: async () => ({
+      ...head(7, []),
+      unchanged: true,
+      activeTurn: { turnId: 'turn_1', assistantMessageId: 'assistant_1', startedAt: '2026-07-16T00:00:00.000Z' }
+    }),
+    listMessages: async () => { throw new Error('same revision CAS 收敛不应重新拉正文') },
+    deleteConversation: async () => undefined,
+    commitSnapshot: async () => { casCommitCount += 1; return false }
+  }
+})
+assert.equal(casWinner.state, 'ready', '同 revision CAS 失败后必须有界重读赢家投影并向 UI 返回 ready')
+if (casWinner.state !== 'ready') throw new Error('CAS 赢家同步应 ready')
+assert.equal(casWinner.projectionEventVersion, 8)
+assert.equal(casWinner.messages[1]?.contentText, 'winner-version-8')
+assert.equal(casReadCount, 2, 'CAS 失败只能额外重读一次缓存')
+assert.equal(casCommitCount, 1, '发现更高 eventVersion 赢家后不得再用旧投影争抢写入')
 
 let restoredProjectionVersion: number | undefined
 const restoredCoordinator = new ChatConversationSyncCoordinator()

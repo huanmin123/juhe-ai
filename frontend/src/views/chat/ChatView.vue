@@ -482,7 +482,7 @@ async function loadOlderMessages(): Promise<void> {
     const older = await chatApi.listMessages(id, { beforeSequenceNo: first.sequenceNo, limit: 100 })
     if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return
     messages.value = [...older, ...messages.value]
-    hasOlderMessages.value = hasOlderChatMessages(messages.value)
+    hasOlderMessages.value = hasOlderChatMessages(messages.value, older.length)
     if (anchor) await messageList.value?.restoreScrollAnchor(anchor)
   } catch (error) {
     if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {

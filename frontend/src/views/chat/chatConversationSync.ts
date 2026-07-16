@@ -181,7 +181,8 @@ export function decideChatConversationSync(input: {
   return { type: 'rebuild' }
 }
 
-export function hasOlderChatMessages(values: readonly ChatMessage[]): boolean {
+export function hasOlderChatMessages(values: readonly ChatMessage[], lastFetchedOlderCount?: number): boolean {
+  if (lastFetchedOlderCount === 0) return false
   return (values[0]?.sequenceNo ?? 1) > 1
 }
 
@@ -335,13 +336,28 @@ async function commitProjectedSnapshot(
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (!isCurrent()) return { current: false, messages: [] }
     const committed = await input.dependencies.commitSnapshot(input.systemAccountId, head, projection.messages, projectionWatermark(projection))
-    if (!isCurrent() || committed === false) return { current: false, messages: [] }
+    if (!isCurrent()) return { current: false, messages: [] }
+    if (committed === false) {
+      const winner = await input.dependencies.readCache(input.systemAccountId, head.conversationId)
+      if (!isCurrent()) return { current: false, messages: [] }
+      const winnerProjection = projectionFromCache(winner, head, head.messageRevision)
+      if (!winnerProjection || !isProjectionAtLeastAsNew(winnerProjection, projection)) return { current: false, messages: [] }
+      return { current: true, messages: winnerProjection.messages, eventVersion: winnerProjection.eventVersion }
+    }
     if (!input.projectMessages) break
     const latest = chooseProjection(readProjection(input, authoritativeMessages, head), cachedProjection)
     if (latest.eventVersion === undefined || projection.eventVersion === undefined || latest.eventVersion <= projection.eventVersion) break
     projection = latest
   }
   return { current: isCurrent(), messages: projection.messages, eventVersion: projection.eventVersion }
+}
+
+function isProjectionAtLeastAsNew(candidate: ChatProjectedMessages, current: ChatProjectedMessages): boolean {
+  if (candidate.turnId !== current.turnId || candidate.assistantMessageId !== current.assistantMessageId) return false
+  const statusDelta = projectionStatusPriority(candidate.status) - projectionStatusPriority(current.status)
+  if (statusDelta !== 0) return statusDelta > 0
+  if (candidate.eventVersion === undefined) return current.eventVersion === undefined
+  return current.eventVersion === undefined || candidate.eventVersion >= current.eventVersion
 }
 
 function projectionFromCache(
