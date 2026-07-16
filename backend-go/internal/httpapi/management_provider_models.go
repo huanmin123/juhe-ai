@@ -1,11 +1,9 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -13,7 +11,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/store/port"
@@ -24,7 +21,7 @@ type managementProviderModelService interface {
 	Models(r *http.Request, input managementprovidermodels.ModelListInput) ([]managementprovidermodels.ModelCatalogItem, error)
 	SetDefaultHealthCheckModel(r *http.Request, input managementprovidermodels.DefaultHealthCheckModelInput) (managementprovidermodels.DefaultHealthCheckModelResult, error)
 	CreateCustomModel(r *http.Request, input managementprovidermodels.CustomModelCreateInput) (managementprovidermodels.ModelCatalogItem, error)
-	UpdateCustomModel(r *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.ModelCatalogItem, error)
+	UpdateCustomModelWithSnapshots(r *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.CustomModelUpdateResult, error)
 	DeleteCustomModel(r *http.Request, input managementprovidermodels.CustomModelDeleteInput) (managementprovidermodels.CustomModelDeleteResult, error)
 }
 
@@ -48,8 +45,8 @@ func (s managementProviderModelServiceAdapter) CreateCustomModel(r *http.Request
 	return s.service.CreateCustomModel(r.Context(), input)
 }
 
-func (s managementProviderModelServiceAdapter) UpdateCustomModel(r *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.ModelCatalogItem, error) {
-	return s.service.UpdateCustomModel(r.Context(), input)
+func (s managementProviderModelServiceAdapter) UpdateCustomModelWithSnapshots(r *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.CustomModelUpdateResult, error) {
+	return s.service.UpdateCustomModelWithSnapshots(r.Context(), input)
 }
 
 func (s managementProviderModelServiceAdapter) DeleteCustomModel(r *http.Request, input managementprovidermodels.CustomModelDeleteInput) (managementprovidermodels.CustomModelDeleteResult, error) {
@@ -214,26 +211,7 @@ func newManagementProviderCustomModelUpdateHandler(service managementProviderMod
 		if !ok {
 			return
 		}
-		var before *managementprovidermodels.ModelCatalogItem
-		if operationLogs.client != nil {
-			models, err := service.Models(r, managementprovidermodels.ModelListInput{
-				ProviderCode:    chi.URLParam(r, "code"),
-				IncludeInactive: true,
-				IncludeUnpriced: true,
-			})
-			if err != nil {
-				writeManagementProviderCustomModelError(w, err)
-				return
-			}
-			for _, model := range models {
-				if model.ID == chi.URLParam(r, "id") && model.Scope == "built_in" {
-					modelSnapshot := model
-					before = &modelSnapshot
-					break
-				}
-			}
-		}
-		result, err := service.UpdateCustomModel(r, managementprovidermodels.CustomModelUpdateInput{
+		result, err := service.UpdateCustomModelWithSnapshots(r, managementprovidermodels.CustomModelUpdateInput{
 			ProviderCode:         chi.URLParam(r, "code"),
 			ID:                   chi.URLParam(r, "id"),
 			ActorSystemAccountID: authContext.SystemAccountID,
@@ -245,21 +223,21 @@ func newManagementProviderCustomModelUpdateHandler(service managementProviderMod
 			writeManagementProviderCustomModelError(w, err)
 			return
 		}
-		if result.Scope == "built_in" {
-			recordManagementProviderModelConfigurationUpdateOperationLog(r, authContext, before, result, operationLogs)
+		if result.After.Scope == "built_in" {
+			recordManagementProviderModelConfigurationUpdateOperationLog(r, authContext, result.Before, result.After, operationLogs)
 		}
-		writeData(w, http.StatusOK, result)
+		writeData(w, http.StatusOK, result.After)
 	})
 }
 
 func recordManagementProviderModelConfigurationUpdateOperationLog(
 	r *http.Request,
 	authContext managementauth.Context,
-	before *managementprovidermodels.ModelCatalogItem,
+	before managementprovidermodels.ModelCatalogItem,
 	result managementprovidermodels.ModelCatalogItem,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil || before == nil {
+	if opts.client == nil {
 		return
 	}
 	now := opts.now
@@ -271,7 +249,7 @@ func recordManagementProviderModelConfigurationUpdateOperationLog(
 		newLogID = defaultManagementOperationLogID
 	}
 	statusCode := http.StatusOK
-	enqueueManagementProviderModelConfigurationOperationLog(r.Context(), opts, port.OperationLogInput{
+	enqueueManagementOperationLog(r.Context(), opts, port.OperationLogInput{
 		ID:                            newLogID(),
 		TraceID:                       requestIDFromContext(r.Context()),
 		ActorSystemAccountID:          authContext.SystemAccountID,
@@ -292,7 +270,7 @@ func recordManagementProviderModelConfigurationUpdateOperationLog(
 		Changes: []port.OperationLogChange{{
 			Field:  "configuration",
 			Label:  "模型配置",
-			Before: managementProviderModelConfigurationSnapshot(*before),
+			Before: managementProviderModelConfigurationSnapshot(before),
 			After:  managementProviderModelConfigurationSnapshot(result),
 		}},
 		Method:     r.Method,
@@ -302,30 +280,6 @@ func recordManagementProviderModelConfigurationUpdateOperationLog(
 		UserAgent:  r.UserAgent(),
 		CreatedAt:  now().UTC(),
 	})
-}
-
-func enqueueManagementProviderModelConfigurationOperationLog(
-	ctx context.Context,
-	opts managementOperationLogOptions,
-	input port.OperationLogInput,
-) {
-	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-
-	_, err := operationLogMaxChangesPerRecord(operationCtx, opts)
-	if err == nil {
-		// The snapshot is a fixed safe-field whitelist and must remain complete for Node parity.
-		_, err = operationlogjob.EnqueueWrite(operationCtx, opts.client, input)
-	}
-	if err != nil && opts.logger != nil {
-		opts.logger.Warn("管理端操作日志入队失败",
-			slog.String("event", "operation_log_enqueue_failed"),
-			slog.String("operation_key", input.OperationKey),
-			slog.String("resource_id", input.ResourceID),
-			slog.String("request_id", input.TraceID),
-			slog.Any("error", err),
-		)
-	}
 }
 
 func managementProviderModelConfigurationSnapshot(item managementprovidermodels.ModelCatalogItem) map[string]any {

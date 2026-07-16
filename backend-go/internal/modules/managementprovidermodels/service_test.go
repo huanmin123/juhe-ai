@@ -1414,6 +1414,31 @@ func TestServiceUpdateBuiltInModelAllowsCompleteCatalogConfiguration(t *testing.
 	}
 }
 
+func TestServiceUpdateBuiltInModelReturnsActualBeforeAndAfterSnapshots(t *testing.T) {
+	previousInputPrice := 1.0
+	updatedInputPrice := 4.0
+	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
+		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "disabled",
+		InputUSDPer1M: &previousInputPrice,
+	}}}
+
+	result, err := NewService(store).UpdateCustomModelWithSnapshots(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{
+			Status: OptionalString{Set: true, Value: "active"}, InputUSDPer1M: OptionalFloat{Set: true, Value: &updatedInputPrice},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModel() error = %v", err)
+	}
+	if result.Before.Status != "disabled" || result.Before.InputUSDPer1M == nil || *result.Before.InputUSDPer1M != previousInputPrice {
+		t.Fatalf("before = %+v", result.Before)
+	}
+	if result.After.Status != "active" || result.After.InputUSDPer1M == nil || *result.After.InputUSDPer1M != updatedInputPrice {
+		t.Fatalf("after = %+v", result.After)
+	}
+}
+
 func TestServiceCreateCustomModelRejectsOrphanTierPrices(t *testing.T) {
 	price := 1.0
 	store := &providerModelStoreStub{providers: map[string]port.ManagementProviderModelProvider{

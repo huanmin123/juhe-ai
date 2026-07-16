@@ -156,6 +156,11 @@ type CustomModelUpdateInput struct {
 	TraceID              string
 }
 
+type CustomModelUpdateResult struct {
+	Before ModelCatalogItem
+	After  ModelCatalogItem
+}
+
 type CustomModelDeleteInput struct {
 	ProviderCode         string
 	ID                   string
@@ -554,50 +559,62 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 }
 
 func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdateInput) (ModelCatalogItem, error) {
+	result, err := s.UpdateCustomModelWithSnapshots(ctx, input)
+	if err != nil {
+		return ModelCatalogItem{}, err
+	}
+	return result.After, nil
+}
+
+func (s *Service) UpdateCustomModelWithSnapshots(ctx context.Context, input CustomModelUpdateInput) (CustomModelUpdateResult, error) {
 	if s.store == nil {
-		return ModelCatalogItem{}, fmt.Errorf("management provider model store is required")
+		return CustomModelUpdateResult{}, fmt.Errorf("management provider model store is required")
 	}
 	builtIn, foundBuiltIn, err := s.findBuiltInModelByID(ctx, strings.TrimSpace(input.ProviderCode), strings.TrimSpace(input.ID))
 	if err != nil {
-		return ModelCatalogItem{}, err
+		return CustomModelUpdateResult{}, err
 	}
 	if foundBuiltIn {
-		return s.updateBuiltInModelConfiguration(ctx, builtIn, input)
+		updated, err := s.updateBuiltInModelConfiguration(ctx, builtIn, input)
+		if err != nil {
+			return CustomModelUpdateResult{}, err
+		}
+		return CustomModelUpdateResult{Before: catalogItemFromPort(builtIn), After: updated}, nil
 	}
 	existing, found, err := s.store.FindManagementCustomProviderModel(ctx, strings.TrimSpace(input.ID))
 	if err != nil {
-		return ModelCatalogItem{}, err
+		return CustomModelUpdateResult{}, err
 	}
 	if !found || strings.TrimSpace(existing.ProviderCode) != strings.TrimSpace(input.ProviderCode) {
-		return ModelCatalogItem{}, ErrCustomProviderModelNotFound
+		return CustomModelUpdateResult{}, ErrCustomProviderModelNotFound
 	}
 	if !canMutateCustomProviderModel(existing.Scope, existing.SystemAccountID, input.ActorSystemAccountID, input.ActorRole) {
-		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "无权修改该自定义模型"}
+		return CustomModelUpdateResult{}, &CustomModelForbiddenError{Message: "无权修改该自定义模型"}
 	}
 	if input.Fields.Invalid || !customModelMutationHasAnyField(input.Fields) {
-		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
+		return CustomModelUpdateResult{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
 	}
 	if input.Fields.ConfigurationTemplateID.Set {
-		return ModelCatalogItem{}, &CustomModelValidationError{Message: "配置模板只能在新建模型时使用"}
+		return CustomModelUpdateResult{}, &CustomModelValidationError{Message: "配置模板只能在新建模型时使用"}
 	}
 	saveInput := customModelSaveInputFromExisting(existing, strings.TrimSpace(input.ActorSystemAccountID))
 	if err := applyCustomModelPatch(&saveInput, input.Fields); err != nil {
-		return ModelCatalogItem{}, err
+		return CustomModelUpdateResult{}, err
 	}
 	if err := s.validateCustomModelPricing(ctx, saveInput, saveInput.SystemAccountID); err != nil {
-		return ModelCatalogItem{}, err
+		return CustomModelUpdateResult{}, err
 	}
 	saved, err := s.store.SaveManagementCustomProviderModel(ctx, saveInput)
 	if err != nil {
-		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
+		return CustomModelUpdateResult{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	if saved.Status != "active" {
 		if err := s.clearDefaultHealthCheckModelReferences(ctx, saved); err != nil {
-			return ModelCatalogItem{}, err
+			return CustomModelUpdateResult{}, err
 		}
 	}
-	return catalogItemFromPort(saved), nil
+	return CustomModelUpdateResult{Before: catalogItemFromPort(existing), After: catalogItemFromPort(saved)}, nil
 }
 
 func (s *Service) findBuiltInModelByID(ctx context.Context, providerCode string, id string) (port.ManagementProviderModelCatalogItem, bool, error) {

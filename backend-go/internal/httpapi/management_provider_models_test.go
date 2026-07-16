@@ -523,6 +523,7 @@ func TestManagementProviderBuiltInModelConfigurationUpdateEnqueuesOperationLog(t
 	previousInputPrice := 2.0
 	inputPrice := 4.0
 	queueStub := &operationLogQueueStub{}
+	settingsReader := &managementGlobalSettingsOperationLogSettingsReaderStub{maxChanges: 100}
 	before := managementprovidermodels.ModelCatalogItem{
 		ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "disabled",
 		SystemAccountID: "internal-account", CodexMultiAgentVersion: "internal-codex-version", Source: "internal-source",
@@ -534,14 +535,15 @@ func TestManagementProviderBuiltInModelConfigurationUpdateEnqueuesOperationLog(t
 	after.Status = "active"
 	after.InputUSDPer1M = &inputPrice
 	service := &managementProviderModelServiceStub{
-		models:            []managementprovidermodels.ModelCatalogItem{before},
+		customModelBefore: before,
 		customModelResult: after,
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", DisplayName: "管理员", Role: "admin", SessionID: "sess_admin"},
 	})(newManagementProviderCustomModelUpdateHandler(service, newManagementOperationLogOptions(ManagementOperationLogOptions{
-		Client:   queueStub,
-		NewLogID: func() string { return "oplog_provider_model_price" },
+		Client:         queueStub,
+		SettingsReader: settingsReader,
+		NewLogID:       func() string { return "oplog_provider_model_price" },
 	})))
 	router := chi.NewRouter()
 	router.Patch("/__aisys__/api/providers/{code}/models/{id}", handler.ServeHTTP)
@@ -555,6 +557,9 @@ func TestManagementProviderBuiltInModelConfigurationUpdateEnqueuesOperationLog(t
 	if queueStub.calls != 1 {
 		t.Fatalf("operation log calls = %d, want 1", queueStub.calls)
 	}
+	if settingsReader.calls != 1 {
+		t.Fatalf("operation log settings reads = %d, want 1", settingsReader.calls)
+	}
 	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)
 	if err != nil {
 		t.Fatalf("decode operation log: %v", err)
@@ -562,12 +567,12 @@ func TestManagementProviderBuiltInModelConfigurationUpdateEnqueuesOperationLog(t
 	if logInput.OperationKey != "providers.update_model_configuration" || logInput.ResourceID != "provider_model_gpt_test" || len(logInput.Changes) != 1 {
 		t.Fatalf("operation log = %+v", logInput)
 	}
-	if service.modelsInput.ProviderCode != "gpt" || !service.modelsInput.IncludeInactive || !service.modelsInput.IncludeUnpriced {
-		t.Fatalf("Models() input = %+v", service.modelsInput)
+	if service.modelsCalls != 0 {
+		t.Fatalf("Models() calls = %d, want 0", service.modelsCalls)
 	}
 	change := logInput.Changes[0]
-	beforeSnapshot := decodeOperationLogSnapshot(t, change.Before)
-	afterSnapshot := decodeOperationLogSnapshot(t, change.After)
+	beforeSnapshot := managementProviderModelConfigurationSnapshot(before)
+	afterSnapshot := managementProviderModelConfigurationSnapshot(after)
 	wantSnapshotKeys := []string{
 		"status", "mode", "supportedApiProtocols", "supportedServiceTiers", "supportedReasoningEfforts",
 		"defaultReasoningEffort", "releaseDate", "shutdownDate", "contextWindowTokens", "maxInputTokens", "maxOutputTokens",
@@ -585,9 +590,17 @@ func TestManagementProviderBuiltInModelConfigurationUpdateEnqueuesOperationLog(t
 			}
 		}
 	}
-	if beforeSnapshot["status"] != "disabled" || beforeSnapshot["inputUsdPer1M"] != 2.0 ||
-		afterSnapshot["status"] != "active" || afterSnapshot["inputUsdPer1M"] != 4.0 {
+	beforePrice, beforePriceOK := beforeSnapshot["inputUsdPer1M"].(*float64)
+	afterPrice, afterPriceOK := afterSnapshot["inputUsdPer1M"].(*float64)
+	if beforeSnapshot["status"] != "disabled" || !beforePriceOK || beforePrice == nil || *beforePrice != 2.0 ||
+		afterSnapshot["status"] != "active" || !afterPriceOK || afterPrice == nil || *afterPrice != 4.0 {
 		t.Fatalf("configuration change before=%v after=%v", beforeSnapshot, afterSnapshot)
+	}
+	for _, value := range []any{change.Before, change.After} {
+		encoded, ok := value.(string)
+		if !ok || len([]rune(encoded)) != managementOperationLogSafeSerializedMaxRunes+3 || !strings.HasSuffix(encoded, "...") {
+			t.Fatalf("sanitized snapshot = %#v", value)
+		}
 	}
 	payload := string(queueStub.payload)
 	for _, forbidden := range []string{"internal-account", "internal-codex-version", "internal-source", "sensitive-pricing-note", "sensitive-capability-note", "sensitive-note"} {
@@ -597,13 +610,88 @@ func TestManagementProviderBuiltInModelConfigurationUpdateEnqueuesOperationLog(t
 	}
 }
 
-func decodeOperationLogSnapshot(t *testing.T, value any) map[string]any {
-	t.Helper()
-	snapshot, ok := value.(map[string]any)
-	if !ok {
-		t.Fatalf("snapshot = %#v, want structured safe snapshot", value)
+func TestManagementProviderBuiltInModelConfigurationUpdateDoesNotBlockOnAuditPreReadFailure(t *testing.T) {
+	inputPrice := 4.0
+	service := &managementProviderModelServiceStub{
+		customModelBefore: managementprovidermodels.ModelCatalogItem{
+			ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "disabled",
+		},
+		customModelResult: managementprovidermodels.ModelCatalogItem{
+			ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "active",
+			InputUSDPer1M: &inputPrice,
+		},
+		modelsErr: errors.New("catalog read failed"),
 	}
-	return snapshot
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", DisplayName: "管理员", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementProviderCustomModelUpdateHandler(service, newManagementOperationLogOptions(ManagementOperationLogOptions{
+		Client: &operationLogQueueStub{},
+	})))
+	router := chi.NewRouter()
+	router.Patch("/__aisys__/api/providers/{code}/models/{id}", handler.ServeHTTP)
+
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/provider_model_gpt_test", strings.NewReader(`{"inputUsdPer1M":4}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if service.modelsCalls != 0 || service.updateCalls != 1 {
+		t.Fatalf("Models() calls = %d, UpdateCustomModel() calls = %d", service.modelsCalls, service.updateCalls)
+	}
+}
+
+func TestManagementProviderBuiltInModelConfigurationUpdateIgnoresOperationLogEnqueueFailure(t *testing.T) {
+	inputPrice := 4.0
+	service := &managementProviderModelServiceStub{
+		customModelBefore: managementprovidermodels.ModelCatalogItem{
+			ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "disabled",
+		},
+		customModelResult: managementprovidermodels.ModelCatalogItem{
+			ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "active",
+			InputUSDPer1M: &inputPrice,
+		},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", DisplayName: "管理员", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementProviderCustomModelUpdateHandler(service, newManagementOperationLogOptions(ManagementOperationLogOptions{
+		Client: &operationLogQueueStub{err: errors.New("queue unavailable")},
+	})))
+	router := chi.NewRouter()
+	router.Patch("/__aisys__/api/providers/{code}/models/{id}", handler.ServeHTTP)
+
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/provider_model_gpt_test", strings.NewReader(`{"inputUsdPer1M":4}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || service.updateCalls != 1 {
+		t.Fatalf("status = %d, update calls = %d, body = %s", rec.Code, service.updateCalls, rec.Body.String())
+	}
+}
+
+func TestManagementProviderBuiltInModelConfigurationUpdateWithoutOperationLogAddsNoReadPath(t *testing.T) {
+	inputPrice := 4.0
+	service := &managementProviderModelServiceStub{
+		customModelResult: managementprovidermodels.ModelCatalogItem{
+			ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "active",
+			InputUSDPer1M: &inputPrice,
+		},
+		modelsErr: errors.New("catalog read failed"),
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", DisplayName: "管理员", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementProviderCustomModelUpdateHandler(service))
+	router := chi.NewRouter()
+	router.Patch("/__aisys__/api/providers/{code}/models/{id}", handler.ServeHTTP)
+
+	req := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/providers/gpt/models/provider_model_gpt_test", strings.NewReader(`{"inputUsdPer1M":4}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || service.modelsCalls != 0 || service.updateCalls != 1 {
+		t.Fatalf("status = %d, Models() calls = %d, UpdateCustomModel() calls = %d", rec.Code, service.modelsCalls, service.updateCalls)
+	}
 }
 
 func TestManagementProviderCustomModelHandlersMapErrors(t *testing.T) {
@@ -899,6 +987,8 @@ func TestRouterDoesNotRegisterW2ManagementProviderModelHandlersWhenDisabled(t *t
 type managementProviderModelServiceStub struct {
 	modelOptionsInput             managementprovidermodels.ModelOptionListInput
 	modelsInput                   managementprovidermodels.ModelListInput
+	modelsCalls                   int
+	modelsErr                     error
 	defaultHealthCheckModelInput  managementprovidermodels.DefaultHealthCheckModelInput
 	createInput                   managementprovidermodels.CustomModelCreateInput
 	createCalls                   int
@@ -909,6 +999,7 @@ type managementProviderModelServiceStub struct {
 	models                        []managementprovidermodels.ModelCatalogItem
 	defaultHealthCheckModelResult managementprovidermodels.DefaultHealthCheckModelResult
 	customModelResult             managementprovidermodels.ModelCatalogItem
+	customModelBefore             managementprovidermodels.ModelCatalogItem
 	deleteResult                  managementprovidermodels.CustomModelDeleteResult
 	err                           error
 }
@@ -919,7 +1010,11 @@ func (s *managementProviderModelServiceStub) ModelOptions(_ *http.Request, input
 }
 
 func (s *managementProviderModelServiceStub) Models(_ *http.Request, input managementprovidermodels.ModelListInput) ([]managementprovidermodels.ModelCatalogItem, error) {
+	s.modelsCalls++
 	s.modelsInput = input
+	if s.modelsErr != nil {
+		return nil, s.modelsErr
+	}
 	return s.models, s.err
 }
 
@@ -940,16 +1035,16 @@ func (s *managementProviderModelServiceStub) CreateCustomModel(_ *http.Request, 
 	return s.customModelResult, s.err
 }
 
-func (s *managementProviderModelServiceStub) UpdateCustomModel(_ *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.ModelCatalogItem, error) {
+func (s *managementProviderModelServiceStub) UpdateCustomModelWithSnapshots(_ *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.CustomModelUpdateResult, error) {
 	s.updateCalls++
 	s.updateInput = input
 	if s.err != nil {
-		return s.customModelResult, s.err
+		return managementprovidermodels.CustomModelUpdateResult{}, s.err
 	}
 	if input.Fields.Invalid {
-		return managementprovidermodels.ModelCatalogItem{}, &managementprovidermodels.CustomModelValidationError{Message: "自定义模型参数无效"}
+		return managementprovidermodels.CustomModelUpdateResult{}, &managementprovidermodels.CustomModelValidationError{Message: "自定义模型参数无效"}
 	}
-	return s.customModelResult, s.err
+	return managementprovidermodels.CustomModelUpdateResult{Before: s.customModelBefore, After: s.customModelResult}, nil
 }
 
 func (s *managementProviderModelServiceStub) DeleteCustomModel(_ *http.Request, input managementprovidermodels.CustomModelDeleteInput) (managementprovidermodels.CustomModelDeleteResult, error) {
