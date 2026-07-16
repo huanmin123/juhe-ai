@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
+	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -108,6 +110,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 		t.Fatalf("create response = %+v", createBody.Data)
 	}
 	assertW2ProviderModelRequestCapabilities(t, &createBody.Data, []string{"priority", "flex"}, []string{"low", "high"}, "high", []string{}, "", "")
+	runW3ProviderModelCRUDAtomicInterleavingSmoke(t, ctx, store, createBody.Data.ID)
 
 	listRec := serveW3ProviderModelCRUDRequest(router, http.MethodGet, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options&includeInactive=true&includeUnpriced=true", sessionToken, "")
 	if listRec.Code != http.StatusOK {
@@ -206,6 +209,57 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	}
 	if !strings.Contains(boundDeleteRec.Body.String(), "1 个账户支持模型") || !strings.Contains(boundDeleteRec.Body.String(), "1 个账户映射下游模型") || !strings.Contains(boundDeleteRec.Body.String(), "1 个账户映射上游模型") {
 		t.Fatalf("bound delete body = %s", boundDeleteRec.Body.String())
+	}
+}
+
+func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Context, store *postgresstore.Store, id string) {
+	t.Helper()
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstResult := make(chan error, 1)
+	secondResult := make(chan error, 1)
+	first := port.ManagementCustomProviderModelUpdateInput{ID: id, ProviderCode: "gpt", ActorSystemAccountID: "sys_admin", ActorRole: "admin", Notes: port.ManagementProviderModelOptionalString{Present: true, Value: "first patch"}}
+	second := port.ManagementCustomProviderModelUpdateInput{ID: id, ProviderCode: "gpt", ActorSystemAccountID: "sys_admin", ActorRole: "admin", PricingNotes: port.ManagementProviderModelOptionalString{Present: true, Value: "second patch"}}
+	go func() {
+		_, _, err := store.UpdateManagementCustomProviderModel(ctx, first, func(result port.ManagementCustomProviderModelUpdateResult) error {
+			if result.After.Notes != "first patch" {
+				return fmt.Errorf("first candidate notes = %q", result.After.Notes)
+			}
+			close(firstEntered)
+			<-releaseFirst
+			return nil
+		})
+		firstResult <- err
+	}()
+	select {
+	case <-firstEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first atomic validation did not acquire row lock")
+	}
+	go func() {
+		_, _, err := store.UpdateManagementCustomProviderModel(ctx, second, func(result port.ManagementCustomProviderModelUpdateResult) error {
+			if result.Before.Notes != "first patch" {
+				return fmt.Errorf("second before notes = %q, want first patch", result.Before.Notes)
+			}
+			return nil
+		})
+		secondResult <- err
+	}()
+	select {
+	case err := <-secondResult:
+		t.Fatalf("second patch completed while first validation held lock: %v", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if err := <-firstResult; err != nil {
+		t.Fatalf("first atomic patch: %v", err)
+	}
+	if err := <-secondResult; err != nil {
+		t.Fatalf("second atomic patch: %v", err)
+	}
+	final, found, err := store.FindManagementCustomProviderModel(ctx, id)
+	if err != nil || !found || final.Notes != "first patch" || final.PricingNotes != "second patch" {
+		t.Fatalf("final atomic custom provider model found=%t err=%v item=%+v", found, err, final)
 	}
 }
 
