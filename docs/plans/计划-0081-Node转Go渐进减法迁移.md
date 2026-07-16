@@ -192,6 +192,18 @@
 - [x] TDD：strict body、201/400/500、Pragma/no-store、operation log 脱敏、raw-name fingerprint、router/app 三态测试与 HTTP 接线已完成。
 - [~] 前端独立 create 路径 regression、真实 PostgreSQL HTTP POST -> 持久化 / hash / 密文回解证据和专属真实 listener 安全门禁已完成；真实目标 URL / Cookie listener、operation log ingest、生产单 owner 切流与回滚仍待执行，生产切流前不删除 Node create 路由。
 
+#### W2 外部来源 Token 创建切片（2026-07-16）
+
+- 目标：迁移管理员 `POST /__aisys__/api/external-integration-sources/{id}/tokens`，继续由 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；Token PATCH、内置 reset 继续由 Node owner。Node 当前不存在 Token DELETE，撤销必须通过后续 PATCH `status=revoked`，Go 不新增物理删除语义。
+- API 契约：写鉴权 touch、IP/user write limiter、管理员权限和 `external_integration_sources.create_token` mutation guard 先于 handler；fingerprint 只含业务解析前的 `id/name/expiresAt`。body 上限 `256 KiB` 且顶层 strict；`name` 必填，`status` 默认 `active` 并允许 `active/disabled/revoked`，`scopes` 默认空数组，`expiresAt` 默认 `null`。名称、scope 与到期时间复用当前来源写接口的 ECMAScript trim、UTF-16、白名单、去重排序和严格时间语义。
+- 凭据与响应：服务端生成 `juis_` + 32 字节 base64url 明文，数据库只保存 domain-separated SHA-256 hash、Node 兼容 AES-256-GCM `{"token": ...}` 密文和前后 8 字符预览。成功返回 `201 { data: { token, source } }`、`Cache-Control: no-store`、`Pragma: no-cache`，完整明文只在本次响应出现；token hash 冲突最多重新生成 3 次，耗尽后返回 `400 来源系统 token 已存在，请重新生成`。
+- 存储契约：PostgreSQL 单事务锁定来源并拒绝内置来源，再插入 Token，并从同一事务回读完整安全来源详情；来源缺失返回 `400 来源系统不存在`，内置来源返回 `400 内置测试 Token 不支持新增 Token`。Go 不复制 Node 事务外读来源的删除竞态；数据库 token hash 唯一约束继续作为并发兜底。请求路径不扫描无关来源或 Token。
+- 副作用：提交后 best-effort 写 `external_integration_sources.create_token`、`admin_only/full` operation log，changes 只含 tokenName、tokenPreview、expiresAt，不记录明文、hash、密文或 scopes；不新增 Node 当前不存在的 Redis cache invalidation。业务 / repository 错误按 Node 当前路由返回 400，未知内部错误统一 500 且不泄漏实现细节。
+- [ ] TDD：先补默认值、完整输入、校验、生成 / hash / 密文 / preview、内置 / 缺失来源、hash 冲突三次重试和明文边界，再实现 service/port。
+- [ ] TDD：补事务内来源锁、Token insert、完整来源回读、唯一冲突映射、来源删除竞态与 rollback，再实现 PostgreSQL/sqlc。
+- [ ] TDD：补 strict body、201/400/500、Pragma/no-store、operation log 脱敏、raw fingerprint、router/app 三态测试，再接线 HTTP。
+- [ ] 补真实 PostgreSQL POST Token -> detail/secret 证据和独立真实 listener 安全门禁；生产切流前 Node 继续作为唯一 Token create owner。
+
 - [~] 建立 Go 后端最小工程和 PostgreSQL / Redis / Asynq 基线。
 - [~] 固定公开接口契约并迁移公开接口：W1a 公开设置读接口已进入 Go 实现中；W1b `/__aipublic__` 外部维护接口已补 Go catalog/auth、PostgreSQL auth/log adapter、Redis penalty-window helper、公开接口日志 snapshot/log builder、Asynq payload/enqueue/handler、`juhe-ai-worker ingest` 日志消费 runtime、HTTP shell / capture / 499 / ResponseWriter 透传契约、PG foundation smoke 用例、public API log Asynq smoke 用例、public group CRUD、public route strategy CRUD、public API Key CRUD、public account CRUD 四条真实资源纵切面、默认关闭的 opt-in 生产 router guard，以及 `w1b-public-api-smoke` 独立 maintenance smoke；public account 已补 `supportedModels` presence / null 类型边界、provider 默认模型继承、新增与更新最终非空、owner 可见 active / 可计价目录校验、update 未变化短路、hybrid 特例、重复名称组合优先级、默认 JSON 联表和 GPT-5.6 seed guard，非 Docker 验证已通过；public group / route strategy / API Key / account 四类完整 Redis limiter + public API log worker shell E2E 测试代码已补；未正式生产接管；真实 PG/Redis/Asynq integration、`w1b-public-api-smoke` 真实依赖执行与四类 shell E2E 待复跑。
 - [~] 迁移后台管理辅助接口：W2 已补管理端 options / catalog、系统账户列表读 / options、授权候选、providers / models、route strategies、groups、accounts options / tags、标签删除 / 独立 PATCH、operation log 读接口、operation log 保留清理 worker，以及个人 / 管理员两层默认检查模型写入，并保持 `JUHE_AI_MANAGEMENT_API_ENABLED=false` 默认不接管。当前 Provider 契约使用 `defaultHealthCheckModel` / `systemDefaultHealthCheckModel` / `/default-health-check-model`，优先级为“个人 > 管理员系统默认 > 协议档案”。W2 仍不覆盖完整 auth 与会话管理生产接管（不含 W3 auth 小切片）、授权来源 / grant / 授权写接口、主账户写入 `tags`、OAuth / 导入标签写路径、完整账号 summary 响应、operation log 保留清理生产接管 / 完整 data-retention 或其他写接口 operation log、前端 smoke、生产切流和 Node 删除；W3 已覆盖系统账户 create / 完整 mixed PATCH，自定义模型 CRUD 已作为后台写接口补充切片进入 Go opt-in，但仍未生产接管。
