@@ -1,4 +1,5 @@
 import { runtimeConfig } from '../../../config/runtime.js'
+import { createRuntimeStateStore, type RuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import type { AccountApiKeyRuntimeSelectionState, AccountApiKeyRuntimeStatus } from '../../../storage/account-api-key-rotation.js'
 import type { OpenAIAccountSecret } from '../../../storage/openai-account-selector.types.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
@@ -31,6 +32,14 @@ interface ApiKeySuccessObservation {
   successCount: number
 }
 
+interface DistributedApiKeySuppression {
+  accountId: string
+  keyFingerprint: string
+  keyIndex?: number
+  status: FailureStatus
+  suppressUntil: string
+}
+
 export interface GatewayAccountApiKeyFailureGuardInput {
   status?: FailureStatus
   statusCode?: number
@@ -48,7 +57,7 @@ export interface GatewayAccountApiKeyFailureGuardDecision {
     | 'not_selected_api_key'
     | 'non_gateway_traffic'
     | 'gateway_local_only'
-    | 'redis_runtime_state'
+    | 'redis_transient_only'
   failureCount?: number
   distinctClientIpCount?: number
   distinctApiKeyCount?: number
@@ -75,9 +84,13 @@ export interface GatewayAccountApiKeyFailureGuardSnapshotEntry {
 const localSuppressionDelayMs = [3_000, 5_000, 10_000] as const
 const localSuppressionMaxMs = 10 * 60_000
 const failureStormWindowMs = 10_000
+const distributedFailureCounterTtlMs = localSuppressionMaxMs
+const distributedStateStoreName = 'gateway-account-api-key-transient-avoidance'
 
 const localApiKeySuppressions = new Map<string, LocalApiKeySuppression>()
 const apiKeySuccessObservations = new Map<string, ApiKeySuccessObservation>()
+let distributedStateStoreOverride: RuntimeStateStore | undefined
+let distributedStateStore: RuntimeStateStore | undefined
 
 export function recordGatewayAccountApiKeyFailureGuard(
   account: OpenAIAccountSecret,
@@ -88,7 +101,9 @@ export function recordGatewayAccountApiKeyFailureGuard(
     return { persist: false, reason: 'not_selected_api_key' }
   }
   if (!canUseProcessLocalApiKeyRuntimeState()) {
-    return { persist: true, reason: 'redis_runtime_state' }
+    return input.trafficSource === 'gateway'
+      ? { persist: false, reason: 'redis_transient_only' }
+      : { persist: true, reason: 'non_gateway_traffic' }
   }
 
   const status = normalizeFailureStatus(input.status)
@@ -99,6 +114,82 @@ export function recordGatewayAccountApiKeyFailureGuard(
 
   rememberLocalApiKeySuppression(target, status, input.errorMessage)
   return { persist: false, reason: 'gateway_local_only' }
+}
+
+export async function recordGatewayAccountApiKeyTransientFailure(
+  account: OpenAIAccountSecret,
+  input: Pick<GatewayAccountApiKeyFailureGuardInput, 'status'>
+): Promise<boolean> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return false
+  const target = accountApiKeyRuntimeTarget(account)
+  if (!target) return false
+  const store = gatewayAccountApiKeyTransientStateStore()
+  const counterKey = distributedFailureCounterKey(target)
+  const failureCount = await store.incr(counterKey, {
+    ttlMs: distributedFailureCounterTtlMs,
+    max: localSuppressionDelayMs.length
+  })
+  const delayMs = localSuppressionDelayMs[Math.min(failureCount - 1, localSuppressionDelayMs.length - 1)]
+    ?? localSuppressionDelayMs[localSuppressionDelayMs.length - 1]
+  const suppressUntil = new Date(Date.now() + Math.min(delayMs, localSuppressionMaxMs)).toISOString()
+  await store.setJson<DistributedApiKeySuppression>(distributedSuppressionKey(target), {
+    accountId: target.accountId,
+    keyFingerprint: target.keyFingerprint,
+    keyIndex: target.keyIndex,
+    status: normalizeFailureStatus(input.status),
+    suppressUntil
+  }, delayMs)
+  return true
+}
+
+export async function loadGatewayAccountApiKeyTransientStatesForDispatch(
+  accountId: string,
+  keyFingerprints: Iterable<string>
+): Promise<AccountApiKeyRuntimeSelectionState[]> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return localAccountApiKeyRuntimeStatesForDispatch(accountId)
+  const normalizedAccountId = accountId.trim()
+  if (!normalizedAccountId) return []
+  const fingerprints = [...new Set([...keyFingerprints].map((value) => value.trim()).filter(Boolean))]
+  if (!fingerprints.length) return []
+  const store = gatewayAccountApiKeyTransientStateStore()
+  const now = Date.now()
+  const states = await store.getJsonMany<DistributedApiKeySuppression>(fingerprints.map((keyFingerprint) => (
+    distributedSuppressionKey({
+      accountId: normalizedAccountId,
+      keyFingerprint
+    })
+  )))
+  const output: AccountApiKeyRuntimeSelectionState[] = []
+  for (const [index, state] of states.entries()) {
+    const keyFingerprint = fingerprints[index]
+    if (!state || state.accountId !== normalizedAccountId || state.keyFingerprint !== keyFingerprint) continue
+    const suppressUntilMs = Date.parse(state.suppressUntil)
+    if (!Number.isFinite(suppressUntilMs) || suppressUntilMs <= now) continue
+    output.push({
+      keyFingerprint: state.keyFingerprint,
+      keyIndex: state.keyIndex,
+      status: state.status,
+      nextProbeAt: state.suppressUntil
+    })
+  }
+  return output
+}
+
+export async function clearGatewayAccountApiKeyTransientFailure(account: OpenAIAccountSecret): Promise<boolean> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') return false
+  const target = accountApiKeyRuntimeTarget(account)
+  if (!target) return false
+  const store = gatewayAccountApiKeyTransientStateStore()
+  await Promise.all([
+    store.delete(distributedSuppressionKey(target)),
+    store.delete(distributedFailureCounterKey(target))
+  ])
+  return true
+}
+
+export function setGatewayAccountApiKeyTransientStateStoreForTest(store: RuntimeStateStore | undefined): void {
+  distributedStateStoreOverride = store
+  distributedStateStore = undefined
 }
 
 export function recordGatewayAccountApiKeyLocalFailureGuard(
@@ -260,6 +351,20 @@ function accountApiKeyRuntimeTarget(account: OpenAIAccountSecret): AccountApiKey
 
 function runtimeKey(target: AccountApiKeyRuntimeTarget): string {
   return `${target.accountId}:${target.keyFingerprint}`
+}
+
+function distributedSuppressionKey(target: Pick<AccountApiKeyRuntimeTarget, 'accountId' | 'keyFingerprint'>): string {
+  return `suppression:${target.accountId}:${target.keyFingerprint}`
+}
+
+function distributedFailureCounterKey(target: Pick<AccountApiKeyRuntimeTarget, 'accountId' | 'keyFingerprint'>): string {
+  return `failure-count:${target.accountId}:${target.keyFingerprint}`
+}
+
+function gatewayAccountApiKeyTransientStateStore(): RuntimeStateStore {
+  if (distributedStateStoreOverride) return distributedStateStoreOverride
+  distributedStateStore ??= createRuntimeStateStore(distributedStateStoreName)
+  return distributedStateStore
 }
 
 function canUseProcessLocalApiKeyRuntimeState(): boolean {

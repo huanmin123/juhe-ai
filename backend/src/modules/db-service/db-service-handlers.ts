@@ -33,6 +33,8 @@ import {
 } from '../../storage/account-test-tasks.repository.js'
 import {
   clearGatewayApiKeyValidationCache,
+  deferCooldownAccountRetest,
+  deferCooldownAccountRetestAsync,
   clearAuthorizedAccountBindingFailureStateByContext,
   clearAuthorizedAccountBindingFailureStateByContextAsync,
   clearAccountFailureStateResult,
@@ -888,6 +890,11 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         }
       }
       return handleDbServiceOperationSync(operation)
+    case 'defer_cooldown_account_retest':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        return await deferCooldownAccountRetestAsync(operation.accountId, operation.delaySeconds)
+      }
+      return handleDbServiceOperationSync(operation)
     case 'mark_account_exception': {
       if (runtimeConfig.databaseDriver === 'postgres') {
         const updated = await markAccountExceptionAsync(operation.accountId, operation.errorCode, operation.reason, {
@@ -1396,6 +1403,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         errorMessage: result.errorMessage
       }
     }
+    case 'defer_cooldown_account_retest':
+      return deferCooldownAccountRetest(operation.accountId, operation.delaySeconds)
     case 'mark_account_exception': {
       const updated = markAccountException(operation.accountId, operation.errorCode, operation.reason, {
         preserveDisabled: operation.preserveDisabled,

@@ -29,6 +29,7 @@ import {
   requestStream
 } from '../request/metadata.js'
 import { isAccountProbeTrafficSource } from './traffic-source.js'
+import { classifyGatewayUpstreamFailure } from '../response/upstream-failure-classifier.js'
 import type { GatewayErrorPayload } from '../response/responses.js'
 import { downstreamConnectionClosedMessage } from '../response/client-abort.js'
 import type { OpenAIGatewayTrafficSource } from './traffic-source.js'
@@ -141,9 +142,21 @@ export async function recordFailedUpstreamAttempt(
     ? parseGatewayProtocolErrorPayload(account, input.bodyText, input.headers)
     : {}
   const errorCode = sanitizeOptionalDiagnosticMessage(typeof errorPayload.code === 'string' ? errorPayload.code : undefined)
+  const errorType = sanitizeOptionalDiagnosticMessage(typeof errorPayload.type === 'string' ? errorPayload.type : undefined)
   const errorMessage = input.errorMessage
     ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
     ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
+  const failureObservation = classifyGatewayUpstreamFailure({
+    phase: input.failureAttribution === 'client_lifecycle'
+      ? 'client_lifecycle'
+      : typeof input.statusCode === 'number'
+        ? 'upstream_response'
+        : 'upstream_request',
+    statusCode: input.statusCode,
+    errorCode,
+    errorType,
+    hasAlternativeApiKeys: Boolean(account.selectedApiKeyFingerprint) && (account.apiKeys?.length ?? 0) > 1
+  })
 
   logGatewayAttemptFailure(usageContext, {
     event: 'gateway_upstream_attempt_failed',
@@ -156,7 +169,8 @@ export async function recordFailedUpstreamAttempt(
     errorMessage,
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
-    endpoint: usageContext.endpoint
+    endpoint: usageContext.endpoint,
+    ...failureObservation
   }, '网关上游尝试失败')
 
   await enqueueUsageRecord({

@@ -6,6 +6,7 @@ import {
   type AccountApiKeyRuntimeProbeCandidate
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
+import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
@@ -81,6 +82,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     selectedApiKeyFingerprint: item.keyFingerprint,
     selectedApiKeyIndex: item.keyIndex
   }
+  let upstreamAttemptObserved = false
   const result = await testOpenAIAccount(account, {
     diagnostics: 'limited',
     testEndpointMode: account.healthCheckEndpointMode,
@@ -89,6 +91,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     trafficSource: 'cooldown_retest',
     candidateAccount: fixedKeyCandidate,
     disableAccountStateMutation: true,
+    onUpstreamAttempt: () => { upstreamAttemptObserved = true },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
     gatewaySettingsOverride: {
@@ -97,7 +100,8 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     }
   })
 
-  if (result.success) {
+  const probeOutcome = automaticAccountProbeOutcome(result, upstreamAttemptObserved)
+  if (probeOutcome === 'complete_success') {
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_account_api_key_success',
       account: fixedKeyCandidate
@@ -113,6 +117,22 @@ async function runAccountApiKeyCooldownRetestQueueItem(
       durationMs: result.durationMs,
       restored: restored?.changed ?? false
     }, '账户内 API Key 复测通过，Key 已恢复可调度')
+    return true
+  }
+
+  if (probeOutcome === 'probe_task_failure' || result.accountFailureEligible === false) {
+    logger.warn({
+      event: 'background_account_api_key_cooldown_retest_task_failed',
+      accountId: account.id,
+      accountName: account.name,
+      keyFingerprint: item.keyFingerprint,
+      attemptIndex: context.attemptIndex,
+      retryNumber: context.retryNumber,
+      probeOutcome,
+      upstreamAttemptObserved,
+      durationMs: result.durationMs,
+      message: result.message
+    }, '账户内 API Key 复测未形成可归因的上游失败，已保留 Key 状态')
     return true
   }
 
@@ -135,6 +155,8 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     retryNumber: context.retryNumber,
     statusCode: result.statusCode,
     errorCode: result.errorCode,
+    probeOutcome,
+    upstreamAttemptObserved,
     durationMs: result.durationMs,
     changed: failure?.changed ?? false,
     message: result.message

@@ -4,9 +4,11 @@ import type { AccountApiKeyRuntimeStatus } from '../../../storage/account-api-ke
 import type { OpenAIAccountSecret } from '../../../storage/repositories.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import {
+  clearGatewayAccountApiKeyTransientFailure,
   recordGatewayAccountApiKeySuccessGuard,
   recordGatewayAccountApiKeyFailureGuard,
-  recordGatewayAccountApiKeyLocalFailureGuard
+  recordGatewayAccountApiKeyLocalFailureGuard,
+  recordGatewayAccountApiKeyTransientFailure
 } from './account-api-key-failure-guard.service.js'
 import { clearGatewayRuntimeCache } from './runtime-cache.service.js'
 import { requestGatewayDbService } from './gateway-db-service-request.js'
@@ -47,6 +49,19 @@ export async function recordGatewayAccountApiKeyFailure(
     apiKeyId: input.apiKeyId,
     source: input.source
   })
+  if (guardDecision.reason === 'redis_transient_only') {
+    try {
+      await recordGatewayAccountApiKeyTransientFailure(account, { status: input.status })
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'gateway_account_api_key_transient_avoidance_write_failed',
+        accountId: account.id,
+        selectedApiKeyFingerprint: account.selectedApiKeyFingerprint,
+        source: input.source
+      }), '账户内 API Key Redis 短暂避让写入失败')
+    }
+    return
+  }
   if (!guardDecision.persist) {
     return
   }
@@ -117,6 +132,16 @@ export async function recordGatewayAccountApiKeyLocalFailure(
     return
   }
   if (runtimeConfig.runtimeStateDriver === 'redis' && account.selectedApiKeyFingerprint) {
+    try {
+      await recordGatewayAccountApiKeyTransientFailure(account, { status: input.status })
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'gateway_account_api_key_transient_avoidance_write_failed',
+        accountId: account.id,
+        selectedApiKeyFingerprint: account.selectedApiKeyFingerprint,
+        source: 'local_failure'
+      }), '账户内 API Key Redis 短暂避让写入失败')
+    }
     return
   }
   recordGatewayAccountApiKeyLocalFailureGuard(account, {
@@ -130,6 +155,16 @@ export function recordGatewayAccountApiKeySuccess(account: OpenAIAccountSecret, 
     return
   }
   const clearedLocalFailure = recordGatewayAccountApiKeySuccessGuard(account)
+  if (runtimeConfig.runtimeStateDriver === 'redis' && account.selectedApiKeyFingerprint) {
+    void clearGatewayAccountApiKeyTransientFailure(account).catch((error) => {
+      logger.warn(errorLogFields(error, {
+        event: 'gateway_account_api_key_transient_avoidance_clear_failed',
+        accountId: account.id,
+        selectedApiKeyFingerprint: account.selectedApiKeyFingerprint,
+        source
+      }), '账户内 API Key Redis 短暂避让清理失败')
+    })
+  }
   if (!account.selectedApiKeyFingerprint) {
     return
   }

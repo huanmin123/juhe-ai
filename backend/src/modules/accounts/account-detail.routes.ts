@@ -7,9 +7,41 @@ import { loadAccountBalanceConfigurationsByAccountIdsAsync } from '../../storage
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
-import { sanitizeAccountBasicDetailResponse, sanitizeAccountEditBasicDetailResponse, sanitizeAccountResponse } from './account-response-sanitizer.js'
+import { loadOwnerAccountApiKeyRuntimeResponse } from './account-api-key-pool-runtime.js'
+import { sanitizeAccountApiKeyRuntimeResponse, sanitizeAccountBasicDetailResponse, sanitizeAccountEditBasicDetailResponse, sanitizeAccountResponse } from './account-response-sanitizer.js'
 
 export function registerAccountDetailRoutes(router: Router): void {
+  router.get('/:id/api-key-runtime', async (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store')
+    try {
+      const account = await loadAccountForApiKeyRuntime(req.params.id, req.query)
+      if (!account) {
+        res.status(404).json({ message: '账户不存在' })
+        return
+      }
+      if (account.accessType === 'authorized' || account.accountAuthorizationId || account.authorizationInstanceSourceAccountId) {
+        res.status(403).json({ message: '授权实例不能查看来源账户 API Key 运行明细' })
+        return
+      }
+      if (account.permissions?.canViewCredentials === false || account.permissions?.canEdit === false) {
+        res.status(403).json({ message: '无权查看账户 API Key 运行明细' })
+        return
+      }
+      const runtime = await loadOwnerAccountApiKeyRuntimeResponse(account)
+      if (!runtime) {
+        res.status(403).json({ message: '无权查看账户 API Key 运行明细' })
+        return
+      }
+      res.json(ok(sanitizeAccountApiKeyRuntimeResponse(runtime)))
+    } catch (error) {
+      if (error instanceof AccountDetailBadRequestError) {
+        res.status(400).json(badRequest(error.message))
+        return
+      }
+      next(error)
+    }
+  })
+
   router.get('/:id/advanced', async (req, res, next) => {
     try {
       const account = await loadEditableAccountDetail(req.params.id, req.query)
@@ -72,6 +104,14 @@ export function registerAccountDetailRoutes(router: Router): void {
       next(error)
     }
   })
+}
+
+async function loadAccountForApiKeyRuntime(accountId: string, query: Record<string, unknown>): Promise<AccountSummary | undefined> {
+  const scopeQuery = parseRequestScopeQuery(query)
+  if (!scopeQuery.success) {
+    throw new AccountDetailBadRequestError(scopeQuery.message)
+  }
+  return findAccountSummaryAsync(accountId, getRequestAccessScope(scopeQuery.data.systemAccountId))
 }
 
 async function loadEditableAccountBasicDetail(accountId: string, query: Record<string, unknown>): Promise<AccountSummary | undefined> {
