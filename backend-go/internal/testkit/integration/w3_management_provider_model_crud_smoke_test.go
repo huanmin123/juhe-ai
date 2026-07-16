@@ -126,8 +126,8 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if err := json.NewDecoder(listRec.Body).Decode(&listBody); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	if item := findW2ProviderModel(listBody.Data, "w3-crud-model"); item == nil || item.Notes != "W3 CRUD 备注" {
-		t.Fatalf("list response missing created custom model with notes: %+v", listBody.Data)
+	if item := findW2ProviderModel(listBody.Data, "w3-crud-model"); item == nil || item.Notes != "first patch" || item.PricingNotes != "second patch" {
+		t.Fatalf("list response missing atomically merged custom model fields: %+v", listBody.Data)
 	} else {
 		assertW2ProviderModelRequestCapabilities(t, item, []string{"priority", "flex"}, []string{"low", "high"}, "high", []string{}, "", "")
 	}
