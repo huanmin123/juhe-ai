@@ -2,6 +2,12 @@ import { parentPort } from 'node:worker_threads'
 
 import type { OpenAIOAuthCodexNormalizeInput } from '../adapters/gpt-codex/oauth-normalizer.js'
 
+if (import.meta.url.endsWith('.ts')) {
+  // tsx auto-registers only on the main thread; source workers must register explicitly.
+  const { register } = await import('tsx/esm/api')
+  register()
+}
+
 const {
   extractGatewayJsonBodyMetadata
 } = await import(resolveJsonMetadataScannerModuleUrl()) as typeof import('./json-metadata-scanner.js')
