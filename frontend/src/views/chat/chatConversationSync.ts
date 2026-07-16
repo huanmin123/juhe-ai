@@ -1,6 +1,6 @@
 import { chatApi, type ChatMessageListParams } from '@/api/domains/chat'
 import type { ChatConversationSyncHead, ChatMessage, ChatMessageStatus } from '@/types/domain/chat'
-import { getDefaultChatLocalCache, type ChatCacheProjectionWatermark } from './chatLocalCache'
+import { getDefaultChatLocalCache, type ChatCacheProjectionWatermark, type ChatRunningTurn } from './chatLocalCache'
 
 export type ChatConversationSyncDecision =
   | { type: 'unchanged' }
@@ -10,7 +10,17 @@ export type ChatConversationSyncDecision =
   | { type: 'rebuild' }
 
 export interface ChatConversationSyncDependencies {
-  readCache(systemAccountId: string, conversationId: string): Promise<{ head?: { messageRevision: number }; messages: ChatMessage[] }>
+  readCache(systemAccountId: string, conversationId: string): Promise<{
+    head?: {
+      messageRevision: number
+      projectionEventVersion?: number
+      projectionStatus?: ChatMessageStatus
+      projectionTurnId?: string
+      projectionAssistantMessageId?: string
+    }
+    messages: ChatMessage[]
+    runningTurn?: ChatRunningTurn
+  }>
   getSyncHead(conversationId: string, knownRevision: number): Promise<ChatConversationSyncHead>
   listMessages(conversationId: string, cursor: ChatMessageListParams): Promise<ChatMessage[]>
   deleteConversation(systemAccountId: string, conversationId: string): Promise<unknown>
@@ -44,6 +54,16 @@ export interface ChatProjectedMessages {
   status?: ChatMessageStatus
   turnId?: string
   assistantMessageId?: string
+}
+
+export interface ChatActiveTurnAttachInput {
+  systemAccountId: string
+  conversationId: string
+  clientMessageId?: string
+  turnId: string
+  assistantMessageId: string
+  eventVersion?: number
+  projection?: ChatMessage
 }
 
 interface SyncFlight {
@@ -161,6 +181,32 @@ export function decideChatConversationSync(input: {
   return { type: 'rebuild' }
 }
 
+export function hasOlderChatMessages(values: readonly ChatMessage[]): boolean {
+  return (values[0]?.sequenceNo ?? 1) > 1
+}
+
+export function restoreChatActiveTurnFromSync(input: {
+  systemAccountId: string
+  syncHead: ChatConversationSyncHead
+  messages: readonly ChatMessage[]
+  clientMessageId?: string
+  projectionEventVersion?: number
+  attach(value: ChatActiveTurnAttachInput): unknown
+}): boolean {
+  const active = input.syncHead.activeTurn
+  if (!active) return false
+  input.attach({
+    systemAccountId: input.systemAccountId,
+    conversationId: input.syncHead.conversationId,
+    clientMessageId: input.clientMessageId,
+    turnId: active.turnId,
+    assistantMessageId: active.assistantMessageId,
+    eventVersion: input.projectionEventVersion,
+    projection: input.messages.find((item) => item.id === active.assistantMessageId)
+  })
+  return true
+}
+
 export function projectChatMessagesWithRuntime(input: {
   messages: readonly ChatMessage[]
   activeTurn?: { turnId: string; assistantMessageId: string }
@@ -224,8 +270,9 @@ async function synchronizeChatConversationInternal(
       throw error
     }
     const decision = decideChatConversationSync({ localRevision, localMessages: messages, server: latestHead })
+    const cachedProjection = projectionFromCache(cached, latestHead, localRevision)
     if (decision.type === 'unchanged') {
-      const committed = await commitProjectedSnapshot(input, messages, latestHead, isCurrent)
+      const committed = await commitProjectedSnapshot(input, messages, latestHead, isCurrent, cachedProjection)
       if (!committed.current) return supersededOutcome(passes)
       messages = committed.messages
       projectionEventVersion = committed.eventVersion
@@ -242,7 +289,7 @@ async function synchronizeChatConversationInternal(
       messages = mergeBySequence(messages.filter((message) => message.sequenceNo < decision.fromSequenceNo), refreshed)
     }
     if (!isCurrent()) return supersededOutcome(passes)
-    const committed = await commitProjectedSnapshot(input, messages, latestHead, isCurrent)
+    const committed = await commitProjectedSnapshot(input, messages, latestHead, isCurrent, cachedProjection)
     if (!committed.current) return supersededOutcome(passes)
     messages = committed.messages
     projectionEventVersion = committed.eventVersion
@@ -281,19 +328,57 @@ async function commitProjectedSnapshot(
   input: ChatConversationSyncInput,
   authoritativeMessages: readonly ChatMessage[],
   head: ChatConversationSyncHead,
-  isCurrent: () => boolean
+  isCurrent: () => boolean,
+  cachedProjection?: ChatProjectedMessages
 ): Promise<{ current: boolean; messages: ChatMessage[]; eventVersion?: number }> {
-  let projection = readProjection(input, authoritativeMessages, head)
+  let projection = chooseProjection(readProjection(input, authoritativeMessages, head), cachedProjection)
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (!isCurrent()) return { current: false, messages: [] }
     const committed = await input.dependencies.commitSnapshot(input.systemAccountId, head, projection.messages, projectionWatermark(projection))
     if (!isCurrent() || committed === false) return { current: false, messages: [] }
     if (!input.projectMessages) break
-    const latest = readProjection(input, authoritativeMessages, head)
+    const latest = chooseProjection(readProjection(input, authoritativeMessages, head), cachedProjection)
     if (latest.eventVersion === undefined || projection.eventVersion === undefined || latest.eventVersion <= projection.eventVersion) break
     projection = latest
   }
   return { current: isCurrent(), messages: projection.messages, eventVersion: projection.eventVersion }
+}
+
+function projectionFromCache(
+  cached: Awaited<ReturnType<ChatConversationSyncDependencies['readCache']>>,
+  head: ChatConversationSyncHead,
+  localRevision?: number
+): ChatProjectedMessages | undefined {
+  const active = head.activeTurn
+  const cacheHead = cached.head
+  const running = cached.runningTurn
+  if (!active || localRevision !== head.messageRevision || cacheHead?.messageRevision !== head.messageRevision) return undefined
+  if (cacheHead.projectionTurnId !== active.turnId || cacheHead.projectionAssistantMessageId !== active.assistantMessageId) return undefined
+  if (running?.turnId !== active.turnId || (running.assistantMessageId && running.assistantMessageId !== active.assistantMessageId)) return undefined
+  const assistant = cached.messages.find((item) => item.id === active.assistantMessageId && item.turnId === active.turnId)
+  if (!assistant || !cacheHead.projectionStatus) return undefined
+  return {
+    messages: cached.messages,
+    eventVersion: cacheHead.projectionEventVersion ?? running.eventVersion,
+    status: cacheHead.projectionStatus,
+    turnId: active.turnId,
+    assistantMessageId: active.assistantMessageId
+  }
+}
+
+function chooseProjection(current: ChatProjectedMessages, cached?: ChatProjectedMessages): ChatProjectedMessages {
+  if (!cached) return current
+  if (current.turnId && (current.turnId !== cached.turnId || current.assistantMessageId !== cached.assistantMessageId)) return current
+  const statusDelta = projectionStatusPriority(current.status) - projectionStatusPriority(cached.status)
+  if (statusDelta > 0) return current
+  if (statusDelta < 0) return cached
+  if (current.eventVersion === undefined) return cached
+  if (cached.eventVersion !== undefined && current.eventVersion < cached.eventVersion) return cached
+  return current
+}
+
+function projectionStatusPriority(status?: ChatMessageStatus): number {
+  return isTerminalMessageStatus(status ?? '') ? 2 : status === 'streaming' ? 1 : 0
 }
 
 function readProjection(

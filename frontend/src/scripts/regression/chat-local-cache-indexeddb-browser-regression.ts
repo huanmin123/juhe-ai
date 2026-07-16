@@ -1,5 +1,6 @@
 import { NativeIndexedDbChatCacheAdapter } from '../../views/chat/chatLocalCache'
-import { ChatConversationSyncCoordinator, type ChatConversationSyncDependencies } from '../../views/chat/chatConversationSync'
+import { ChatConversationSyncCoordinator, restoreChatActiveTurnFromSync, type ChatConversationSyncDependencies } from '../../views/chat/chatConversationSync'
+import { ChatGenerationRuntime } from '../../views/chat/chatGenerationRuntime'
 import type { ChatConversationSyncHead, ChatMessage } from '../../types/domain/chat'
 
 const result = document.querySelector('#result')!
@@ -104,6 +105,48 @@ try {
   assert(projectionCache.messages[1]?.contentText === 'new-runtime', '旧标签页低 eventVersion 不得覆盖新正文')
   assert(projectionCache.head?.projectionEventVersion === 8, '投影 eventVersion 必须与消息同事务持久化')
   assert(projectionCache.runningTurn?.turnId === 'turn-projection', '旧标签页不得清除或回退 running turn')
+
+  const reloadCoordinator = new ChatConversationSyncCoordinator()
+  reloadCoordinator.activateAccount('C')
+  const reloadResult = await reloadCoordinator.synchronize({
+    systemAccountId: 'C', conversationId: 'race',
+    dependencies: {
+      readCache: async (account, conversation) => adapter.readConversation(account, conversation),
+      getSyncHead: async () => ({ ...syncHead(7), unchanged: true, activeTurn: { turnId: 'turn-projection', assistantMessageId: 'm_2', startedAt: '2026-07-16T00:00:00.000Z' } }),
+      listMessages: async () => { throw new Error('刷新后 same revision 不应重取正文') },
+      deleteConversation: (account, conversation) => adapter.deleteConversation(account, conversation),
+      commitSnapshot: async (account, head, messages, projection) => (await adapter.commitSyncSnapshot({
+        systemAccountId: account,
+        conversationId: head.conversationId,
+        messageRevision: head.messageRevision,
+        messages: [...messages],
+        runningTurn: { systemAccountId: account, conversationId: head.conversationId, turnId: 'turn-projection', assistantMessageId: 'm_2', startedAt: '2026-07-16T00:00:00.000Z', eventVersion: projection?.eventVersion, status: projection?.status },
+        projection,
+        now: 11
+      })).committed
+    }
+  })
+  assert(reloadResult.state === 'ready', '真实 Chrome 刷新恢复必须以缓存水位通过 CAS，而不是 superseded')
+  if (reloadResult.state !== 'ready') throw new Error('reload sync should be ready')
+  let reloadAttachCalls = 0
+  const reloadRuntime = new ChatGenerationRuntime({
+    streamMessage: async () => undefined,
+    attachStream: async () => { reloadAttachCalls += 1; await new Promise<void>(() => undefined) },
+    stop: async () => ({ stopped: false }),
+    schedule: () => 0,
+    cancelSchedule: () => undefined
+  })
+  reloadRuntime.activateAccount('C')
+  const attached = restoreChatActiveTurnFromSync({
+    systemAccountId: 'C',
+    syncHead: reloadResult.syncHead,
+    messages: reloadResult.messages,
+    projectionEventVersion: reloadResult.projectionEventVersion,
+    attach: (input) => reloadRuntime.attach(input)
+  })
+  assert(attached && reloadRuntime.get('C', 'race')?.eventVersion === 8, '新 runtime 必须携带 IndexedDB eventVersion 恢复 active turn')
+  await Promise.resolve()
+  assert(reloadAttachCalls === 1, '刷新恢复只允许建立一个 attach 流')
   const terminalCommit = await adapter.commitSyncSnapshot({
     systemAccountId: 'C', conversationId: 'race', messageRevision: 7,
     messages: [{ ...message(1, 'race'), turnId: 'turn-projection', contentText: 'user' }, { ...message(2, 'race'), turnId: 'turn-projection', status: 'completed', contentText: 'terminal' }],

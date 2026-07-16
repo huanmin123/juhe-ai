@@ -4,10 +4,13 @@ import {
   ChatConversationSyncCoordinator,
   activateChatConversationSyncAccount,
   decideChatConversationSync,
+  hasOlderChatMessages,
   projectChatMessagesWithRuntime,
+  restoreChatActiveTurnFromSync,
   synchronizeChatConversation,
   type ChatConversationSyncDependencies
 } from '../../views/chat/chatConversationSync'
+import { ChatRuntimeReconciliationScheduler } from '../../views/chat/chatRuntimeReconciliation'
 import type { ChatConversationSyncHead, ChatMessage } from '../../types/domain/chat'
 
 function message(sequenceNo: number, id: string, status: ChatMessage['status'] = 'completed'): ChatMessage {
@@ -44,6 +47,8 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 const local = [message(1, 'user_1'), message(2, 'assistant_1')]
 activateChatConversationSyncAccount('sys_1')
+assert.equal(hasOlderChatMessages(Array.from({ length: 200 }, (_, index) => message(index + 51, `cached_${index}`))), true, 'IndexedDB 最新 200 条从 51 开始时仍必须允许向前分页')
+assert.equal(hasOlderChatMessages(Array.from({ length: 100 }, (_, index) => message(index + 1, `complete_${index}`))), false, '已从 sequence 1 开始时不得仅凭页长误报更早消息')
 assert.deepEqual(decideChatConversationSync({ localRevision: 4, localMessages: local, server: { ...head(4, []), unchanged: true } }), { type: 'unchanged' })
 assert.deepEqual(decideChatConversationSync({ localRevision: 4, localMessages: local, server: head(5, [
   { id: 'user_2', turnId: 'turn_2', sequenceNo: 3, role: 'user', status: 'completed', expiresAt: '2026-07-19T00:00:00.000Z' },
@@ -116,6 +121,80 @@ if (projectionRaceResult.state !== 'ready') throw new Error('投影竞态同步�
 assert.equal(projectionRaceResult.projectionEventVersion, 2, 'sync 返回前必须重新读取最新 runtime eventVersion')
 assert.equal(projectionRaceResult.messages.find((item) => item.role === 'assistant')?.contentText, 'runtime-2', '最终 UI 结果不得被旧投影覆盖倒退')
 assert.equal(committedProjection, 'runtime-2', 'IDB 提交期间投影推进时必须有界重投影并再次提交')
+
+let restoredProjectionVersion: number | undefined
+const restoredCoordinator = new ChatConversationSyncCoordinator()
+restoredCoordinator.activateAccount('sys_restore')
+const restoredResult = await restoredCoordinator.synchronize({
+  systemAccountId: 'sys_restore',
+  conversationId: 'conv_1',
+  dependencies: {
+    readCache: async () => ({
+      head: {
+        messageRevision: 7,
+        projectionEventVersion: 12,
+        projectionStatus: 'streaming',
+        projectionTurnId: 'turn_1',
+        projectionAssistantMessageId: 'assistant_1'
+      },
+      messages: [message(1, 'user_1'), { ...message(2, 'assistant_1', 'streaming'), contentText: 'cached-stream' }],
+      runningTurn: {
+        systemAccountId: 'sys_restore',
+        conversationId: 'conv_1',
+        turnId: 'turn_1',
+        assistantMessageId: 'assistant_1',
+        startedAt: '2026-07-16T00:00:00.000Z',
+        eventVersion: 12,
+        status: 'streaming'
+      }
+    }),
+    getSyncHead: async () => ({
+      ...head(7, []),
+      unchanged: true,
+      activeTurn: { turnId: 'turn_1', assistantMessageId: 'assistant_1', startedAt: '2026-07-16T00:00:00.000Z' }
+    }),
+    listMessages: async () => { throw new Error('same revision 不应读取正文') },
+    deleteConversation: async () => undefined,
+    commitSnapshot: async (_account, _head, _items, projection) => {
+      restoredProjectionVersion = projection?.eventVersion
+      return projection?.eventVersion === 12
+    }
+  }
+})
+assert.equal(restoredResult.state, 'ready', '刷新后 runtime 为空时必须以 IndexedDB 投影水位完成同 revision 权威同步')
+if (restoredResult.state !== 'ready') throw new Error('缓存恢复同步应 ready')
+assert.equal(restoredResult.projectionEventVersion, 12)
+assert.equal(restoredProjectionVersion, 12)
+let restoredAttachVersion: number | undefined
+assert.equal(restoreChatActiveTurnFromSync({
+  systemAccountId: 'sys_restore',
+  syncHead: restoredResult.syncHead,
+  messages: restoredResult.messages,
+  projectionEventVersion: restoredResult.projectionEventVersion,
+  attach: (input) => { restoredAttachVersion = input.eventVersion }
+}), true, 'same revision active turn 必须继续触发 attach')
+assert.equal(restoredAttachVersion, 12, 'attach 必须继承缓存水位，拒绝重放低版本 SSE')
+
+let clock = 0
+const reconciliationScheduler = new ChatRuntimeReconciliationScheduler({ now: () => clock })
+const stalledTurn = {
+  systemAccountId: 'sys_retry', conversationId: 'conv_retry', clientMessageId: 'client_retry', turnId: 'turn_retry', assistantMessageId: 'assistant_retry',
+  eventVersion: 4, status: 'running' as const, reconnectAttempt: 3, projection: message(2, 'assistant_retry', 'streaming'), reconciliationReason: 'reconnect_exhausted' as const
+}
+assert.equal(reconciliationScheduler.begin(stalledTurn), true, '首次 reconnect_exhausted 必须立即权威同步')
+reconciliationScheduler.complete(stalledTurn, stalledTurn)
+assert.equal(reconciliationScheduler.begin(stalledTurn), false, '同一 5 秒窗口不得高频重复同步')
+clock = 4_999
+assert.equal(reconciliationScheduler.begin(stalledTurn), false)
+clock = 5_000
+assert.equal(reconciliationScheduler.begin(stalledTurn), true, '首次临时失败或 active 无进展后 5 秒必须允许重试')
+reconciliationScheduler.complete(stalledTurn, stalledTurn)
+clock = 10_000
+assert.equal(reconciliationScheduler.begin(stalledTurn), false, '第二次无进展后必须退避，避免每 5 秒触发 attach 循环')
+clock = 15_000
+assert.equal(reconciliationScheduler.begin(stalledTurn), true, '有界退避后仍必须继续发现服务端终态')
+reconciliationScheduler.complete(stalledTurn, { ...stalledTurn, eventVersion: 5, reconciliationReason: undefined, status: 'completed' })
+assert.equal(reconciliationScheduler.size, 0, '终态或运行态进展必须清理重试 key')
 
 const calls: string[] = []
 let headCall = 0
