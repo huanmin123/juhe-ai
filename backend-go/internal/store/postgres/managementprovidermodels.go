@@ -131,6 +131,12 @@ func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managem
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
 	}
 	candidate := mergeManagementProviderModelConfigurationSnapshot(before, input)
+	if validate == nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, errors.New("validate built-in provider model update is required")
+	}
+	if err := validate(port.ManagementBuiltInProviderModelPriceUpdateResult{Before: before, After: candidate}); err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+	}
 	params, err := managementProviderModelConfigurationUpdateParams(candidate, time.Now().UTC())
 	if err != nil {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
@@ -157,14 +163,10 @@ func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managem
 	if err != nil {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
 	}
-	result := port.ManagementBuiltInProviderModelPriceUpdateResult{Before: before, After: after}
-	if validate == nil {
-		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, errors.New("validate built-in provider model update is required")
+	if before.ID != input.ID || before.ProviderCode != input.ProviderCode || after.ID != before.ID || after.ProviderCode != before.ProviderCode {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, errors.New("built-in provider model update identity mismatch")
 	}
-	if err := validate(result); err != nil {
-		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
-	}
-	return result, true, nil
+	return port.ManagementBuiltInProviderModelPriceUpdateResult{Before: before, After: after}, true, nil
 }
 
 func mergeManagementProviderModelConfigurationSnapshot(before port.ManagementProviderModelConfigurationSnapshot, input port.ManagementBuiltInProviderModelPriceUpdateInput) port.ManagementProviderModelConfigurationSnapshot {

@@ -365,6 +365,7 @@ func TestManagementProviderModelCatalogSQLLocksThenFullyUpdatesBuiltInConfigurat
 
 func TestUpdateManagementBuiltInProviderModelPricesMapsSparsePresenceToSQLC(t *testing.T) {
 	outputPrice := 9.5
+	persistedOutputPrice := 17.5
 	tierInputPrice := 3.0
 	updatedAt := time.Date(2026, 7, 15, 8, 9, 10, 0, time.UTC)
 	q := &managementBuiltInProviderModelPriceUpdateQueriesStub{
@@ -376,7 +377,7 @@ func TestUpdateManagementBuiltInProviderModelPricesMapsSparsePresenceToSQLC(t *t
 		updated: postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow{
 			ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "disabled", Mode: pgtype.Text{String: "text", Valid: true},
 			SupportedApiProtocolsJson: `["chat_completions"]`, SupportedServiceTiersJson: `[]`, SupportedReasoningEffortsJson: `[]`,
-			ServiceTierPricesJson: `{"priority":{"inputUsdPer1M":3}}`, OutputUsdPer1m: pgtype.Float8{Float64: outputPrice, Valid: true},
+			ServiceTierPricesJson: `{"priority":{"inputUsdPer1M":3}}`, OutputUsdPer1m: pgtype.Float8{Float64: persistedOutputPrice, Valid: true},
 			UpdatedAt: pgtype.Timestamptz{Time: updatedAt, Valid: true},
 		},
 	}
@@ -400,7 +401,8 @@ func TestUpdateManagementBuiltInProviderModelPricesMapsSparsePresenceToSQLC(t *t
 		},
 	}, func(got port.ManagementBuiltInProviderModelPriceUpdateResult) error {
 		validateCalls++
-		if got.Before.InputUSDPer1M == nil || *got.Before.InputUSDPer1M != 2.5 || got.After.InputUSDPer1M != nil {
+		if got.Before.InputUSDPer1M == nil || *got.Before.InputUSDPer1M != 2.5 || got.After.InputUSDPer1M != nil ||
+			got.After.OutputUSDPer1M == nil || *got.After.OutputUSDPer1M != outputPrice {
 			t.Fatalf("validate snapshots = %+v", got)
 		}
 		return nil
@@ -416,7 +418,7 @@ func TestUpdateManagementBuiltInProviderModelPricesMapsSparsePresenceToSQLC(t *t
 	}
 	priority := result.After.ServiceTierPrices["priority"]
 	if result.After.ID != "provider_model_gpt_real" || result.After.ProviderCode != "gpt" || result.After.InputUSDPer1M != nil ||
-		result.After.OutputUSDPer1M == nil || *result.After.OutputUSDPer1M != outputPrice ||
+		result.After.OutputUSDPer1M == nil || *result.After.OutputUSDPer1M != persistedOutputPrice ||
 		priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != tierInputPrice || !result.After.UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("persisted result = %+v", result)
 	}
@@ -434,6 +436,29 @@ func TestUpdateManagementBuiltInProviderModelPricesMapsNoRowsToNotFound(t *testi
 	}, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error { return nil })
 	if err != nil || found || result.Before.ID != "" || result.After.ID != "" {
 		t.Fatalf("result=%+v found=%v err=%v, want not found", result, found, err)
+	}
+}
+
+func TestUpdateManagementBuiltInProviderModelPricesRejectsMismatchedReturningIdentity(t *testing.T) {
+	q := &managementBuiltInProviderModelPriceUpdateQueriesStub{
+		locked: postgresqueries.LockManagementBuiltInProviderModelConfigurationRow{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active",
+			SupportedApiProtocolsJson: `[]`, SupportedServiceTiersJson: `[]`, SupportedReasoningEffortsJson: `[]`, ServiceTierPricesJson: `{}`,
+		},
+		updated: postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow{
+			ID: "provider_model_other", ProviderCode: "gpt", Status: "active",
+			SupportedApiProtocolsJson: `[]`, SupportedServiceTiersJson: `[]`, SupportedReasoningEffortsJson: `[]`, ServiceTierPricesJson: `{}`,
+		},
+	}
+	validateCalls := 0
+	_, found, err := updateManagementBuiltInProviderModelPricesTx(context.Background(), q, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: "provider_model_gpt_real", ProviderCode: "gpt",
+	}, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error {
+		validateCalls++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "identity") || found || validateCalls != 1 {
+		t.Fatalf("err/found/validate = %v/%t/%d, want identity error/false/1", err, found, validateCalls)
 	}
 }
 
@@ -456,7 +481,7 @@ func TestUpdateManagementBuiltInProviderModelPricesTransactionValidationAndCommi
 		DefaultReasoningEffort:    port.ManagementProviderModelOptionalString{Present: true, Value: "high"},
 	}
 
-	t.Run("validation failure rolls back with independent context", func(t *testing.T) {
+	t.Run("validation failure stops before update and rolls back with independent context", func(t *testing.T) {
 		tx := &managementBuiltInProviderModelUpdateTxStub{rows: []pgx.Row{managementProviderModelLockRow(locked), managementProviderModelUpdateRow(updated)}}
 		ctx, cancel := context.WithCancel(context.WithValue(context.Background(), managementProviderModelRollbackContextKey{}, "rollback-value"))
 		validateErr := errors.New("invalid final configuration")
@@ -471,6 +496,9 @@ func TestUpdateManagementBuiltInProviderModelPricesTransactionValidationAndCommi
 		})
 		if !errors.Is(err, validateErr) || found || validateCalls != 1 || tx.commitCalls != 0 || tx.rollbackCalls != 1 {
 			t.Fatalf("err/found/validate/commit/rollback = %v/%t/%d/%d/%d", err, found, validateCalls, tx.commitCalls, tx.rollbackCalls)
+		}
+		if !reflect.DeepEqual(tx.calls, []string{"lock"}) || len(tx.rows) != 1 {
+			t.Fatalf("validation failure transaction calls/remaining rows = %v/%d, want lock/1", tx.calls, len(tx.rows))
 		}
 		if tx.rollbackContextErr != nil || tx.rollbackContextValue != "rollback-value" || !tx.rollbackHasDeadline {
 			t.Fatalf("rollback context = err:%v value:%v deadline:%t", tx.rollbackContextErr, tx.rollbackContextValue, tx.rollbackHasDeadline)
