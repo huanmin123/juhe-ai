@@ -576,11 +576,12 @@ func assertW2ProviderModelCatalogSnapshot(t *testing.T, ctx context.Context, db 
 		total   int64
 		visible int64
 	}
+	// Total includes historical disabled rows retained by sync migrations; visible follows the current snapshot.
 	wantCounts := map[string]counts{
 		"gpt":       {total: 81, visible: 81},
 		"anthropic": {total: 43, visible: 17},
-		"gemini":    {total: 9, visible: 9},
-		"deepseek":  {total: 4, visible: 4},
+		"gemini":    {total: 10, visible: 9},
+		"deepseek":  {total: 6, visible: 4},
 		"glm":       {total: 18, visible: 17},
 	}
 
