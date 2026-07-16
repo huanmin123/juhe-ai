@@ -159,12 +159,7 @@ export class ChatLocalCache {
     if (messages.some((item) => !item || item.conversationId !== conversation)) return { enabled: true, ok: false }
     try {
       const written = await this.adapter.putMessages(account, conversation, messages as ChatMessage[], { now: this.clock() })
-      const budget = calculateChatCacheBudget(await this.safeEstimate())
-      const excess = Math.max(0, written.totalBytes - budget)
-      if (excess > 0) {
-        const released = await this.evict(excess, account, conversation, options)
-        if (released < excess) { this.report('evict_insufficient', new Error('capacity')); return { enabled: true, ok: false } }
-      }
+      if (!await this.enforceBudget(written.totalBytes, account, conversation, options)) return { enabled: true, ok: false }
       return { enabled: true, ok: true }
     } catch (error) {
       if (!isQuotaError(error)) return this.fail('put_messages', error)
@@ -174,7 +169,11 @@ export class ChatLocalCache {
         const total = await this.adapter.getTotalBytes()
         await this.evict(Math.max(1, total - budget), account, conversation, options)
       } catch (evictionError) { this.report('evict', evictionError) }
-      try { await this.adapter.putMessages(account, conversation, messages as ChatMessage[], { now: this.clock() }); return { enabled: true, ok: true } } catch (retryError) { return this.fail('put_messages_retry', retryError) }
+      try {
+        const written = await this.adapter.putMessages(account, conversation, messages as ChatMessage[], { now: this.clock() })
+        if (!await this.enforceBudget(written.totalBytes, account, conversation, options)) return { enabled: true, ok: false }
+        return { enabled: true, ok: true }
+      } catch (retryError) { return this.fail('put_messages_retry', retryError) }
     }
   }
 
@@ -195,6 +194,14 @@ export class ChatLocalCache {
   private fail(operation: string, error: unknown): ChatCacheResult<never> { this.report(operation, error); this.enabledState = false; return { enabled: false, ok: false } }
   private report(operation: string, error: unknown): void { try { this.diagnostic?.(diagnosticCode(operation, error)) } catch { /* diagnostics are isolated */ } }
   private async safeEstimate() { try { return await this.estimate() } catch { return undefined } }
+  private async enforceBudget(totalBytes: number, account: string, writtenConversation: string, options: ChatCacheWriteOptions): Promise<boolean> {
+    const excess = Math.max(0, totalBytes - calculateChatCacheBudget(await this.safeEstimate()))
+    if (excess === 0) return true
+    const released = await this.evict(excess, account, writtenConversation, options)
+    if (released >= excess) return true
+    this.report('evict_insufficient', new Error('capacity'))
+    return false
+  }
   private async evict(targetBytes: number, account: string, writtenConversation: string, options: ChatCacheWriteOptions): Promise<number> {
     let released = 0; let scanned = 0; let cursor: ChatCacheEvictionCursor | undefined
     while (scanned < MAX_EVICTION_SCAN && released < targetBytes) {
