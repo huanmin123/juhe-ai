@@ -1008,6 +1008,26 @@ const contextAfterCancel = await listChatContextMessages(client, {
 })
 assert.equal(contextAfterCancel.length, 2, '取消轮次的用户问题与部分回答都不能进入下一轮上下文')
 
+const revisionsBeforeMissingConditionalStop = database.prepare(`
+  SELECT id, message_revision FROM chat_conversations ORDER BY id ASC
+`).all()
+const messagesBeforeMissingConditionalStop = database.prepare(`
+  SELECT * FROM chat_messages ORDER BY id ASC
+`).all()
+const missingConditionalStop = await cancelActiveChatTurnIfMatches(client, {
+  conversationId: 'chat_conv_missing_conditional_stop',
+  systemAccountId: 'sys_user_1',
+  expectedTurnId: 'turn_missing_conditional_stop',
+  now: '2026-07-12T00:06:40.000Z'
+})
+assert.deepEqual(missingConditionalStop, { state: 'not_found' }, '不存在的会话必须返回 not_found')
+assert.deepEqual(database.prepare(`
+  SELECT id, message_revision FROM chat_conversations ORDER BY id ASC
+`).all(), revisionsBeforeMissingConditionalStop, '不存在的会话 stop 不得推进任何现存会话 revision')
+assert.deepEqual(database.prepare(`
+  SELECT * FROM chat_messages ORDER BY id ASC
+`).all(), messagesBeforeMissingConditionalStop, '不存在的会话 stop 不得产生任何消息副作用')
+
 const conditionalStopConversation = await createChatConversation(client, {
   id: 'chat_conv_conditional_stop', systemAccountId: 'sys_user_1', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', maxConversationsPerUser: 1000, now: '2026-07-12T00:07:00.000Z'
 })
