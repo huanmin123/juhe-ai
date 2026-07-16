@@ -57,6 +57,7 @@ type w2TokenUpdateHTTPResult struct {
 	status       int
 	cacheControl string
 	pragma       string
+	pragmaExists bool
 	body         []byte
 	err          error
 }
@@ -127,6 +128,7 @@ func TestW2ManagementExternalIntegrationSourceTokenUpdatePostgresSmoke(t *testin
 	defer server.Close()
 	client := server.Client()
 	client.Timeout = 15 * time.Second
+	runW2TokenUpdatePresenceContract(t, ctx, db, client, server.URL, baseTime)
 
 	t.Run("HTTP patch persists a narrow token summary", func(t *testing.T) {
 		before := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID)
@@ -202,6 +204,23 @@ func TestW2ManagementExternalIntegrationSourceTokenUpdatePostgresSmoke(t *testin
 	})
 
 	t.Run("not found and built in rejects have no side effects", func(t *testing.T) {
+		mainBefore := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID)
+		missingSource := requestW2TokenUpdate(
+			ctx,
+			client,
+			server.URL,
+			"extsrc_w2_token_update_missing",
+			w2TokenUpdateMainID,
+			[]byte(`{"name":"must not persist"}`),
+		)
+		assertW2TokenUpdateResponseHeaders(t, missingSource)
+		if missingSource.err != nil || missingSource.status != http.StatusNotFound {
+			t.Fatalf("missing source status=%d err=%v", missingSource.status, missingSource.err)
+		}
+		if after := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID); after != mainBefore {
+			t.Fatal("missing source rejection changed the requested token row")
+		}
+
 		protectedBefore := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateOtherID)
 		builtInSourceTokenBefore := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateBuiltInGuardID)
 		builtInTokenBefore := readW2TokenUpdateSnapshot(t, ctx, db, publicapi.BuiltInTestTokenID)
@@ -211,7 +230,6 @@ func TestW2ManagementExternalIntegrationSourceTokenUpdatePostgresSmoke(t *testin
 			tokenID    string
 			wantStatus int
 		}{
-			{"missing source", "extsrc_w2_token_update_missing", w2TokenUpdateMainID, http.StatusNotFound},
 			{"missing token", w2TokenUpdateSourceID, "exttok_w2_token_update_missing", http.StatusNotFound},
 			{"source mismatch", w2TokenUpdateSourceID, w2TokenUpdateOtherID, http.StatusNotFound},
 			{"built in source", publicapi.BuiltInTestSourceID, w2TokenUpdateBuiltInGuardID, http.StatusBadRequest},
@@ -326,6 +344,78 @@ func TestW2ManagementExternalIntegrationSourceTokenUpdatePostgresSmoke(t *testin
 	})
 }
 
+func runW2TokenUpdatePresenceContract(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	client *http.Client,
+	baseURL string,
+	now time.Time,
+) {
+	t.Helper()
+	t.Run("patch field presence preserves omissions and clears explicit empty values", func(t *testing.T) {
+		initial := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID)
+		if initial.scopesJSON != `["juhe_ai_public:api_key_list:read"]` || !initial.expiresAt.Valid {
+			t.Fatal("main token fixture must start with non-empty scopes and expiresAt")
+		}
+
+		emptyPatch := requestW2TokenUpdate(ctx, client, baseURL, w2TokenUpdateSourceID, w2TokenUpdateMainID, []byte(`{}`))
+		assertW2TokenUpdateResponseHeaders(t, emptyPatch)
+		if emptyPatch.err != nil || emptyPatch.status != http.StatusOK {
+			t.Fatalf("empty token patch status=%d err=%v", emptyPatch.status, emptyPatch.err)
+		}
+		afterEmpty := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID)
+		if afterEmpty.scopesJSON != initial.scopesJSON || afterEmpty.expiresAt != initial.expiresAt ||
+			!afterEmpty.updatedAt.UTC().Equal(now) {
+			t.Fatal("empty token patch did not preserve scopes/expiresAt and refresh updatedAt")
+		}
+
+		omittedPatch := requestW2TokenUpdate(
+			ctx,
+			client,
+			baseURL,
+			w2TokenUpdateSourceID,
+			w2TokenUpdateMainID,
+			[]byte(`{"name":"W2 Presence Only Name"}`),
+		)
+		assertW2TokenUpdateResponseHeaders(t, omittedPatch)
+		if omittedPatch.err != nil || omittedPatch.status != http.StatusOK {
+			t.Fatalf("omitted-field token patch status=%d err=%v", omittedPatch.status, omittedPatch.err)
+		}
+		afterOmitted := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID)
+		if afterOmitted.name != "W2 Presence Only Name" || afterOmitted.scopesJSON != initial.scopesJSON ||
+			afterOmitted.expiresAt != initial.expiresAt {
+			t.Fatal("token patch changed omitted scopes or expiresAt")
+		}
+
+		clearPatch := requestW2TokenUpdate(
+			ctx,
+			client,
+			baseURL,
+			w2TokenUpdateSourceID,
+			w2TokenUpdateMainID,
+			[]byte(`{"scopes":[],"expiresAt":null}`),
+		)
+		assertW2TokenUpdateResponseHeaders(t, clearPatch)
+		if clearPatch.err != nil || clearPatch.status != http.StatusOK {
+			t.Fatalf("explicit-clear token patch status=%d err=%v", clearPatch.status, clearPatch.err)
+		}
+		afterClear := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID)
+		if afterClear.scopesJSON != `[]` || afterClear.expiresAt.Valid || afterClear.name != afterOmitted.name {
+			t.Fatal("explicit empty scopes/null expiresAt did not clear only the present fields")
+		}
+		var response struct {
+			Data managementexternalintegrationsources.Token `json:"data"`
+		}
+		if err := json.Unmarshal(clearPatch.body, &response); err != nil {
+			t.Fatalf("decode explicit-clear token patch response: %v", err)
+		}
+		if len(response.Data.Scopes) != 0 || response.Data.ExpiresAt != nil {
+			t.Fatal("explicit-clear response did not expose empty scopes and nil expiresAt")
+		}
+	})
+}
+
 func w2TokenUpdateRouter(
 	authenticator *managementauth.Authenticator,
 	updateService *managementexternalintegrationsources.TokenUpdateService,
@@ -374,16 +464,17 @@ func doW2TokenUpdateRequest(client *http.Client, request *http.Request) w2TokenU
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	_, pragmaExists := response.Header["Pragma"]
 	return w2TokenUpdateHTTPResult{
 		status: response.StatusCode, cacheControl: response.Header.Get("Cache-Control"),
-		pragma: response.Header.Get("Pragma"), body: body, err: err,
+		pragma: response.Header.Get("Pragma"), pragmaExists: pragmaExists, body: body, err: err,
 	}
 }
 
 func assertW2TokenUpdateResponseHeaders(t *testing.T, result w2TokenUpdateHTTPResult) {
 	t.Helper()
-	if result.cacheControl != "no-store" || result.pragma != "" {
-		t.Fatalf("token update response Cache-Control=%q Pragma=%q", result.cacheControl, result.pragma)
+	if result.cacheControl != "no-store" || result.pragma != "" || result.pragmaExists {
+		t.Fatalf("token update response Cache-Control=%q Pragma=%q exists=%t", result.cacheControl, result.pragma, result.pragmaExists)
 	}
 }
 
@@ -411,19 +502,30 @@ func assertW2TokenUpdateNarrowResponse(
 	if err := json.Unmarshal(envelope["data"], &fields); err != nil {
 		t.Fatalf("decode token update data fields: %v", err)
 	}
-	allowed := map[string]bool{
-		"id": true, "name": true, "tokenPrefix": true, "tokenSuffix": true, "status": true,
-		"scopes": true, "expiresAt": true, "lastUsedAt": true, "createdAt": true,
-		"updatedAt": true, "revokedAt": true, "isBuiltIn": true,
+	expectedFields := map[string]struct{}{
+		"id": {}, "name": {}, "tokenPrefix": {}, "tokenSuffix": {}, "status": {},
+		"scopes": {}, "expiresAt": {}, "lastUsedAt": {}, "createdAt": {},
+		"updatedAt": {}, "revokedAt": {},
+	}
+	for _, forbidden := range []string{
+		"token", "hash", "tokenHash", "token_hash", "secret", "tokenSecretEncrypted",
+		"token_secret_encrypted", "source", "sourceId", "sourceRefId",
+	} {
+		if _, exists := fields[forbidden]; exists {
+			t.Fatalf("token update response exposes forbidden field %q", forbidden)
+		}
+	}
+	if len(fields) != len(expectedFields) {
+		t.Fatalf("token update response field count=%d, want %d", len(fields), len(expectedFields))
 	}
 	for field := range fields {
-		if !allowed[field] {
+		if _, allowed := expectedFields[field]; !allowed {
 			t.Fatalf("token update response contains unexpected field %q", field)
 		}
 	}
-	for _, forbidden := range []string{"token", "tokenHash", "token_hash", "tokenSecretEncrypted", "token_secret_encrypted", "source", "sourceId", "sourceRefId"} {
-		if _, exists := fields[forbidden]; exists {
-			t.Fatalf("token update response exposes forbidden field %q", forbidden)
+	for field := range expectedFields {
+		if _, exists := fields[field]; !exists {
+			t.Fatalf("token update response omits required field %q", field)
 		}
 	}
 	mainPlainToken := w2TokenUpdatePlainToken(0)
@@ -459,24 +561,26 @@ func insertW2TokenUpdateFixtures(t *testing.T, ctx context.Context, db *sql.DB, 
 
 	type tokenFixture struct {
 		id, sourceID, name, status, scopes string
+		expiresAt                          *time.Time
 		revokedAt                          *time.Time
 	}
 	preserved := now.Add(-2 * time.Hour)
 	residue := now.Add(-3 * time.Hour)
+	mainExpiry := now.Add(7 * 24 * time.Hour)
 	fixtures := []tokenFixture{
-		{w2TokenUpdateMainID, w2TokenUpdateSourceID, "W2 Main Token", publicapi.TokenStatusActive, `[]`, nil},
-		{w2TokenUpdatePreserveID, w2TokenUpdateSourceID, "W2 Preserve Token", publicapi.TokenStatusRevoked, `[]`, &preserved},
-		{w2TokenUpdateNilRevokedID, w2TokenUpdateSourceID, "W2 Nil Revoked Token", publicapi.TokenStatusRevoked, `[]`, nil},
-		{w2TokenUpdateActiveID, w2TokenUpdateSourceID, "W2 Activate Token", publicapi.TokenStatusRevoked, `[]`, &preserved},
-		{w2TokenUpdateDisabledID, w2TokenUpdateSourceID, "W2 Disable Token", publicapi.TokenStatusRevoked, `[]`, &preserved},
-		{w2TokenUpdateResidueID, w2TokenUpdateSourceID, "W2 Residue Token", publicapi.TokenStatusActive, `[]`, &residue},
-		{w2TokenUpdateEmptyID, w2TokenUpdateSourceID, "W2 Empty Patch Token", publicapi.TokenStatusDisabled, `[]`, nil},
-		{w2TokenUpdateOtherID, w2TokenUpdateOtherSourceID, "W2 Other Source Token", publicapi.TokenStatusActive, `[]`, nil},
-		{w2TokenUpdateRollbackID, w2TokenUpdateSourceID, "W2 Rollback Token", publicapi.TokenStatusActive, `[]`, nil},
-		{w2TokenUpdateConcurrentID, w2TokenUpdateSourceID, "W2 Concurrent Original", publicapi.TokenStatusActive, `[]`, nil},
-		{w2TokenUpdateLockTokenID, w2TokenUpdateLockSourceID, "W2 Lock Order Token", publicapi.TokenStatusActive, `[]`, nil},
-		{w2TokenUpdateBuiltInGuardID, publicapi.BuiltInTestSourceID, "W2 Built-in Guard Token", publicapi.TokenStatusActive, `[]`, nil},
-		{publicapi.BuiltInTestTokenID, w2TokenUpdateSourceID, "W2 Built-in ID Token", publicapi.TokenStatusActive, `[]`, nil},
+		{w2TokenUpdateMainID, w2TokenUpdateSourceID, "W2 Main Token", publicapi.TokenStatusActive, `["juhe_ai_public:api_key_list:read"]`, &mainExpiry, nil},
+		{w2TokenUpdatePreserveID, w2TokenUpdateSourceID, "W2 Preserve Token", publicapi.TokenStatusRevoked, `[]`, nil, &preserved},
+		{w2TokenUpdateNilRevokedID, w2TokenUpdateSourceID, "W2 Nil Revoked Token", publicapi.TokenStatusRevoked, `[]`, nil, nil},
+		{w2TokenUpdateActiveID, w2TokenUpdateSourceID, "W2 Activate Token", publicapi.TokenStatusRevoked, `[]`, nil, &preserved},
+		{w2TokenUpdateDisabledID, w2TokenUpdateSourceID, "W2 Disable Token", publicapi.TokenStatusRevoked, `[]`, nil, &preserved},
+		{w2TokenUpdateResidueID, w2TokenUpdateSourceID, "W2 Residue Token", publicapi.TokenStatusActive, `[]`, nil, &residue},
+		{w2TokenUpdateEmptyID, w2TokenUpdateSourceID, "W2 Empty Patch Token", publicapi.TokenStatusDisabled, `[]`, nil, nil},
+		{w2TokenUpdateOtherID, w2TokenUpdateOtherSourceID, "W2 Other Source Token", publicapi.TokenStatusActive, `[]`, nil, nil},
+		{w2TokenUpdateRollbackID, w2TokenUpdateSourceID, "W2 Rollback Token", publicapi.TokenStatusActive, `[]`, nil, nil},
+		{w2TokenUpdateConcurrentID, w2TokenUpdateSourceID, "W2 Concurrent Original", publicapi.TokenStatusActive, `[]`, nil, nil},
+		{w2TokenUpdateLockTokenID, w2TokenUpdateLockSourceID, "W2 Lock Order Token", publicapi.TokenStatusActive, `[]`, nil, nil},
+		{w2TokenUpdateBuiltInGuardID, publicapi.BuiltInTestSourceID, "W2 Built-in Guard Token", publicapi.TokenStatusActive, `[]`, nil, nil},
+		{publicapi.BuiltInTestTokenID, w2TokenUpdateSourceID, "W2 Built-in ID Token", publicapi.TokenStatusActive, `[]`, nil, nil},
 	}
 	codec := secretcrypto.NewJSONCodec(w2TokenUpdateSecret)
 	for index, fixture := range fixtures {
@@ -490,10 +594,10 @@ func insertW2TokenUpdateFixtures(t *testing.T, ctx context.Context, db *sql.DB, 
 				id, source_ref_id, name, token_hash, token_secret_encrypted,
 				token_prefix, token_suffix, status, scopes_json, expires_at,
 				last_used_at, created_at, updated_at, revoked_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, $10, $11, $12, $13)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		`, fixture.id, fixture.sourceID, fixture.name, publicapiauth.HashExternalSourceToken(plain), ciphertext,
-			plain[:8], plain[len(plain)-8:], fixture.status, fixture.scopes, now.Add(-4*time.Hour),
-			now.Add(-24*time.Hour), now.Add(-6*time.Hour), fixture.revokedAt); err != nil {
+			plain[:8], plain[len(plain)-8:], fixture.status, fixture.scopes, fixture.expiresAt,
+			now.Add(-4*time.Hour), now.Add(-24*time.Hour), now.Add(-6*time.Hour), fixture.revokedAt); err != nil {
 			t.Fatalf("insert token update fixture %s: %v", fixture.id, err)
 		}
 	}
