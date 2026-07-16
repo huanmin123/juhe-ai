@@ -783,6 +783,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       res.status(409).json({ message: '当前会话生成任务冲突', code: 'chat_stream_conflict' })
       return
     }
+    if (preparationClaim.controller.signal.aborted || responseClosed || req.aborted || res.destroyed) runner.abort()
     try {
       if (!responseClosed && !req.aborted && !res.destroyed) {
         prepareSseResponse(res)
@@ -1076,7 +1077,10 @@ function prepareSseResponse(res: import('express').Response): void {
 }
 function writeSse(res: import('express').Response, event: string, data: unknown): boolean {
   if (res.writableEnded || res.destroyed) return false
-  try { return res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    return !res.destroyed
+  }
   catch { return false }
 }
 function responseSubscriber(res: import('express').Response): ChatGenerationSubscriber {
@@ -1092,8 +1096,8 @@ function responseSubscriber(res: import('express').Response): ChatGenerationSubs
 }
 function startSubscriberHeartbeat(res: import('express').Response, identity: { ownerId: string; conversationId: string; turnId: string }, subscriber: ChatGenerationSubscriber): ReturnType<typeof setInterval> {
   const heartbeat = setInterval(() => {
-    let writable = false
-    try { writable = !res.writableEnded && !res.destroyed && res.write(': heartbeat\n\n') }
+    let writable = !res.writableEnded && !res.destroyed
+    try { if (writable) res.write(': heartbeat\n\n') }
     catch { writable = false }
     if (!writable) {
       clearInterval(heartbeat)

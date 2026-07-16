@@ -8,6 +8,8 @@ assert.match(source, /ChatGenerationRegistry/, 'chat 路由必须使用服务端
 assert.match(source, /streams\/:turnId/, '必须提供活动轮次重附着 SSE 路由')
 assert.match(source, /registry\.start\(/, 'accept 成功后必须同步登记 runner')
 assert.doesNotMatch(source, /res\.once\('close'[\s\S]{0,180}controller\.abort\(\)/, 'accept 后 response close 不得 abort 服务端 runner')
+assert.match(source, /res\.write\(`event:[\s\S]{0,160}return !res\.destroyed/, 'res.write(false) 只表示背压，不得解除 subscriber')
+assert.match(source, /registry\.start\(runner\)[\s\S]{0,1000}preparationClaim\.controller\.signal\.aborted[\s\S]{0,120}runner\.abort\(\)/, 'accept 窗口取消后必须立即 abort 已登记 runner')
 
 let releaseExecution!: () => void
 const executionGate = new Promise<void>((resolve) => { releaseExecution = resolve })
@@ -36,4 +38,20 @@ await runner.completion
 assert.equal(upstreamCalls, 1, '重新附着不得重复调用上游')
 assert(attachedEvents.some((event) => event.type === 'message.delta' && event.data.delta === 'second'))
 assert.equal(attachedEvents.at(-1)?.type, 'message.completed')
+
+let canceledUpstreamCalls = 0
+const canceledRegistry = new ChatGenerationRegistry()
+const canceledRunner = new ChatGenerationRunner({
+  identity: { ownerId: 'owner', conversationId: 'accepting', turnId: 'accepted-turn', assistantMessageId: 'accepted-assistant' },
+  execute: async ({ signal }) => {
+    if (signal.aborted) return { status: 'canceled', data: { messageId: 'accepted-assistant' } }
+    canceledUpstreamCalls += 1
+    return { status: 'completed', data: { messageId: 'accepted-assistant' } }
+  }
+})
+assert.equal(canceledRegistry.start(canceledRunner), true)
+assert.equal(canceledRegistry.stop(canceledRunner.identity), true)
+await canceledRunner.completion
+assert.equal(canceledRunner.state, 'canceled')
+assert.equal(canceledUpstreamCalls, 0, 'accept 窗口取消后不得继续调用上游')
 console.log('chat stream reattach regression contract passed')
