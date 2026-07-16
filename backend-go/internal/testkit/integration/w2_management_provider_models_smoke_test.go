@@ -144,8 +144,12 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("restore built-in prices: found=%v err=%v", found, err)
 	}
-	if restored.InputUSDPer1M == nil || *restored.InputUSDPer1M != originalInputPrice ||
-		restored.OutputUSDPer1M == nil || *restored.OutputUSDPer1M != originalOutputPrice {
+	if restored.Before.InputUSDPer1M != nil ||
+		restored.Before.OutputUSDPer1M == nil || *restored.Before.OutputUSDPer1M != outputPrice {
+		t.Fatalf("pre-restore RETURNING prices = %+v", restored.Before)
+	}
+	if restored.After.InputUSDPer1M == nil || *restored.After.InputUSDPer1M != originalInputPrice ||
+		restored.After.OutputUSDPer1M == nil || *restored.After.OutputUSDPer1M != originalOutputPrice {
 		t.Fatalf("restored RETURNING prices = %+v", restored)
 	}
 	if err := db.QueryRowContext(ctx, `
