@@ -40,6 +40,7 @@ const (
 	w2TokenUpdateOtherSourceID  = "extsrc_w2_token_update_other"
 	w2TokenUpdateLockSourceID   = "extsrc_w2_token_update_lock_order"
 	w2TokenUpdateMainID         = "exttok_w2_token_update_main"
+	w2TokenUpdateClearID        = "exttok_w2_token_update_clear"
 	w2TokenUpdatePreserveID     = "exttok_w2_token_update_preserve"
 	w2TokenUpdateNilRevokedID   = "exttok_w2_token_update_nil_revoked"
 	w2TokenUpdateActiveID       = "exttok_w2_token_update_activate"
@@ -388,20 +389,24 @@ func runW2TokenUpdatePresenceContract(
 			t.Fatal("token patch changed omitted scopes or expiresAt")
 		}
 
+		clearInitial := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateClearID)
+		if clearInitial.scopesJSON != `["juhe_ai_public:group_list:read"]` || !clearInitial.expiresAt.Valid {
+			t.Fatal("clear token fixture must start with non-empty scopes and expiresAt")
+		}
 		clearPatch := requestW2TokenUpdate(
 			ctx,
 			client,
 			baseURL,
 			w2TokenUpdateSourceID,
-			w2TokenUpdateMainID,
+			w2TokenUpdateClearID,
 			[]byte(`{"scopes":[],"expiresAt":null}`),
 		)
 		assertW2TokenUpdateResponseHeaders(t, clearPatch)
 		if clearPatch.err != nil || clearPatch.status != http.StatusOK {
 			t.Fatalf("explicit-clear token patch status=%d err=%v", clearPatch.status, clearPatch.err)
 		}
-		afterClear := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID)
-		if afterClear.scopesJSON != `[]` || afterClear.expiresAt.Valid || afterClear.name != afterOmitted.name {
+		afterClear := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateClearID)
+		if afterClear.scopesJSON != `[]` || afterClear.expiresAt.Valid || afterClear.name != clearInitial.name {
 			t.Fatal("explicit empty scopes/null expiresAt did not clear only the present fields")
 		}
 		var response struct {
@@ -567,8 +572,10 @@ func insertW2TokenUpdateFixtures(t *testing.T, ctx context.Context, db *sql.DB, 
 	preserved := now.Add(-2 * time.Hour)
 	residue := now.Add(-3 * time.Hour)
 	mainExpiry := now.Add(7 * 24 * time.Hour)
+	clearExpiry := now.Add(8 * 24 * time.Hour)
 	fixtures := []tokenFixture{
 		{w2TokenUpdateMainID, w2TokenUpdateSourceID, "W2 Main Token", publicapi.TokenStatusActive, `["juhe_ai_public:api_key_list:read"]`, &mainExpiry, nil},
+		{w2TokenUpdateClearID, w2TokenUpdateSourceID, "W2 Clear Token", publicapi.TokenStatusActive, `["juhe_ai_public:group_list:read"]`, &clearExpiry, nil},
 		{w2TokenUpdatePreserveID, w2TokenUpdateSourceID, "W2 Preserve Token", publicapi.TokenStatusRevoked, `[]`, nil, &preserved},
 		{w2TokenUpdateNilRevokedID, w2TokenUpdateSourceID, "W2 Nil Revoked Token", publicapi.TokenStatusRevoked, `[]`, nil, nil},
 		{w2TokenUpdateActiveID, w2TokenUpdateSourceID, "W2 Activate Token", publicapi.TokenStatusRevoked, `[]`, nil, &preserved},
