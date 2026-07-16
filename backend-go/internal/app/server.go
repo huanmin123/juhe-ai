@@ -305,6 +305,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementExternalIntegrationSourceUpdateHandler:  managementHandlers.ExternalIntegrationSourceUpdateHandler,
 		ManagementExternalIntegrationSourceDeleteHandler:  managementHandlers.ExternalIntegrationSourceDeleteHandler,
 		ManagementExternalSourceTokenCreateHandler:        managementHandlers.ExternalSourceTokenCreateHandler,
+		ManagementExternalSourceTokenUpdateHandler:        managementHandlers.ExternalSourceTokenUpdateHandler,
 		ManagementExternalSourceTokenSecretHandler:        managementHandlers.ExternalSourceTokenSecretHandler,
 		ManagementExternalIntegrationSourceScopesHandler:  managementHandlers.ExternalIntegrationSourceScopesHandler,
 		ManagementExternalIntegrationSourceAPIDocsHandler: managementHandlers.ExternalIntegrationSourceAPIDocsHandler,
@@ -474,6 +475,7 @@ type managementAPIHandlers struct {
 	ExternalIntegrationSourceUpdateHandler  http.Handler
 	ExternalIntegrationSourceDeleteHandler  http.Handler
 	ExternalSourceTokenCreateHandler        http.Handler
+	ExternalSourceTokenUpdateHandler        http.Handler
 	ExternalSourceTokenSecretHandler        http.Handler
 	ExternalIntegrationSourceScopesHandler  http.Handler
 	ExternalIntegrationSourceAPIDocsHandler http.Handler
@@ -607,6 +609,7 @@ func newManagementAPIHandler(
 	externalIntegrationSourceDeleteService := managementexternalintegrationsources.NewDeleteService(store)
 	externalIntegrationSourceCreateService := managementexternalintegrationsources.NewCreateService(store, cfg.Secret)
 	externalIntegrationSourceTokenCreateService := managementexternalintegrationsources.NewTokenCreateService(store, cfg.Secret)
+	externalIntegrationSourceTokenUpdateService := managementexternalintegrationsources.NewTokenUpdateService(store)
 	publicAPILogService := managementpublicapilogs.NewService(store)
 	statsService := managementstats.NewService(store)
 	globalSettingsService := publicsettings.NewService(store)
@@ -773,6 +776,7 @@ func newManagementAPIHandler(
 		ExternalIntegrationSourceUpdateHandler:  httpapi.NewManagementExternalIntegrationSourceUpdateHandlerWithOperationLog(externalIntegrationSourceUpdateService, operationLogOptions),
 		ExternalIntegrationSourceDeleteHandler:  httpapi.NewManagementExternalIntegrationSourceDeleteHandlerWithOperationLog(externalIntegrationSourceDeleteService, operationLogOptions),
 		ExternalSourceTokenCreateHandler:        httpapi.NewManagementExternalIntegrationSourceTokenCreateHandlerWithOperationLog(externalIntegrationSourceTokenCreateService, operationLogOptions),
+		ExternalSourceTokenUpdateHandler:        httpapi.NewManagementExternalIntegrationSourceTokenUpdateHandlerWithOperationLog(externalIntegrationSourceTokenUpdateService, operationLogOptions),
 		ExternalSourceTokenSecretHandler:        httpapi.NewManagementExternalIntegrationSourceTokenSecretHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceScopesHandler:  httpapi.NewManagementExternalIntegrationSourceScopesHandler(),
 		ExternalIntegrationSourceAPIDocsHandler: httpapi.NewManagementExternalIntegrationSourceAPIDocsHandler(),

@@ -157,6 +157,7 @@ type RouterOptions struct {
 	ManagementExternalIntegrationSourceUpdateHandler  http.Handler
 	ManagementExternalIntegrationSourceDeleteHandler  http.Handler
 	ManagementExternalSourceTokenCreateHandler        http.Handler
+	ManagementExternalSourceTokenUpdateHandler        http.Handler
 	ManagementExternalSourceTokenSecretHandler        http.Handler
 	ManagementExternalIntegrationSourceScopesHandler  http.Handler
 	ManagementExternalIntegrationSourceAPIDocsHandler http.Handler
@@ -383,6 +384,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementExternalIntegrationSourceUpdateHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDeleteHandler == nil &&
 				opts.ManagementExternalSourceTokenCreateHandler == nil &&
+				opts.ManagementExternalSourceTokenUpdateHandler == nil &&
 				opts.ManagementExternalSourceTokenSecretHandler == nil &&
 				opts.ManagementExternalIntegrationSourceScopesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceAPIDocsHandler == nil &&
@@ -993,6 +995,23 @@ func NewRouter(opts RouterOptions) http.Handler {
 					opts.ManagementExternalSourceTokenCreateHandler.ServeHTTP,
 				)
 			}
+			if opts.ManagementExternalSourceTokenUpdateHandler != nil {
+				unavailableTokenItemHandler := func(w http.ResponseWriter, _ *http.Request) {
+					writeError(w, http.StatusNotFound, "接口不存在")
+				}
+				system.Get("/external-integration-sources/{id}/tokens/{tokenId}", unavailableTokenItemHandler)
+				system.Post("/external-integration-sources/{id}/tokens/{tokenId}", unavailableTokenItemHandler)
+				system.Put("/external-integration-sources/{id}/tokens/{tokenId}", unavailableTokenItemHandler)
+				system.Delete("/external-integration-sources/{id}/tokens/{tokenId}", unavailableTokenItemHandler)
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementExternalIntegrationSourceTokenUpdateMutationGuardConfig()),
+				).Patch(
+					"/external-integration-sources/{id}/tokens/{tokenId}",
+					opts.ManagementExternalSourceTokenUpdateHandler.ServeHTTP,
+				)
+			}
 			if opts.ManagementExternalSourceTokenSecretHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get(
 					"/external-integration-sources/{id}/tokens/{tokenId}/secret",
@@ -1178,6 +1197,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||
 		opts.ManagementExternalSourceTokenCreateHandler != nil ||
+		opts.ManagementExternalSourceTokenUpdateHandler != nil ||
 		opts.ManagementExternalSourceTokenSecretHandler != nil ||
 		opts.ManagementExternalIntegrationSourceScopesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil ||
@@ -1250,5 +1270,6 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||
-		opts.ManagementExternalSourceTokenCreateHandler != nil
+		opts.ManagementExternalSourceTokenCreateHandler != nil ||
+		opts.ManagementExternalSourceTokenUpdateHandler != nil
 }
