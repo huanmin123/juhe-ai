@@ -18,12 +18,19 @@ export interface ChatGenerationToolEvent {
   item?: Record<string, unknown>
 }
 
+export interface ChatGenerationToolEventProjection {
+  id: string
+  type: string
+  status: ChatGenerationToolEvent['status']
+  item?: Record<string, unknown>
+}
+
 export interface ChatGenerationAssistantProjection {
   id: string
   status: ChatMessageStatus
   contentText: string
   reasoningText: string
-  toolEvents: ChatGenerationToolEvent[]
+  toolEvents: ChatGenerationToolEventProjection[]
   contentBlocks: ChatMessageContentBlock[]
 }
 
@@ -196,10 +203,11 @@ export class ChatGenerationRunner {
   }
 
   private snapshotAssistant(): ChatGenerationAssistantProjection {
-    const toolEvents = cloneToolEvents(this.toolEvents)
+    const internalToolEvents = cloneToolEvents(this.toolEvents)
+    const toolEvents = internalToolEvents.map(({ toolType, ...event }) => ({ ...event, type: toolType }))
     const contentBlocks: ChatMessageContentBlock[] = [
       ...(this.reasoningText ? [{ type: 'reasoning' as const, text: this.reasoningText }] : []),
-      ...toolEvents.map((event) => ({ type: 'tool_call' as const, ...event }))
+      ...internalToolEvents.map((event) => ({ type: 'tool_call' as const, ...event }))
     ]
     return {
       id: this.identity.assistantMessageId,

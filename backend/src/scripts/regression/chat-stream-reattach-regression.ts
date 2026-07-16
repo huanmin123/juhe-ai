@@ -31,6 +31,9 @@ const runner = new ChatGenerationRunner({
   execute: async ({ publish }) => {
     upstreamCalls += 1
     publish('message.delta', { messageId: 'assistant', delta: 'first' }, { contentTextDelta: 'first' })
+    publish('tool.started', { messageId: 'assistant', item: { id: 'tool-1', type: 'web_search_call' } }, {
+      toolEvent: { id: 'tool-1', toolType: 'web_search_call', status: 'started', item: { query: 'test' } }
+    })
     await executionGate
     publish('message.delta', { messageId: 'assistant', delta: 'second' }, { contentTextDelta: 'second' })
     return { status: 'completed', data: { messageId: 'assistant' } }
@@ -44,6 +47,10 @@ const attachedEvents: ChatGenerationEvent[] = []
 assert.equal(registry.subscribe(runner.identity, { trySend: (event) => { attachedEvents.push(event) } }), true)
 assert.equal(attachedEvents[0]?.type, 'message.snapshot')
 assert.equal(attachedEvents[0]?.data.assistant.contentText, 'first')
+assert.deepEqual(attachedEvents[0]?.data.assistant.toolEvents[0], {
+  id: 'tool-1', type: 'web_search_call', status: 'started', item: { query: 'test' }
+}, 'snapshot wire toolEvents 必须使用前端统一字段 type')
+assert.equal(attachedEvents[0]?.data.assistant.contentBlocks[0]?.toolType, 'web_search_call', 'contentBlocks 继续使用 toolType 契约')
 releaseExecution()
 await runner.completion
 assert.equal(upstreamCalls, 1, '重新附着不得重复调用上游')

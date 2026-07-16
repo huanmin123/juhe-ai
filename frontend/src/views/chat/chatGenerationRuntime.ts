@@ -94,6 +94,7 @@ interface InternalTurn {
   reconnectTimer?: unknown
   stopRequested: boolean
   connectionActive: boolean
+  accepted: boolean
 }
 
 const defaultDependencies: ChatGenerationRuntimeDependencies = {
@@ -154,7 +155,8 @@ export class ChatGenerationRuntime {
       reconnectAttempt: 0,
       projection: emptyAssistantProjection(input.conversationId, input.model),
       stopRequested: false,
-      connectionActive: false
+      connectionActive: false,
+      accepted: false
     }
     this.turns.set(key, turn)
     this.notify(key)
@@ -188,7 +190,8 @@ export class ChatGenerationRuntime {
       reconnectAttempt: 0,
       projection: input.projection ? cloneJsonSafe(input.projection) : emptyAssistantProjection(input.conversationId, '', input.turnId, input.assistantMessageId),
       stopRequested: false,
-      connectionActive: false
+      connectionActive: false,
+      accepted: true
     }
     this.turns.set(key, turn)
     this.notify(key)
@@ -303,6 +306,7 @@ export class ChatGenerationRuntime {
     if (event.type === 'message.started') {
       if (turn.turnId && turn.turnId !== event.data.turnId) return
       turn.turnId = event.data.turnId
+      turn.accepted = true
       turn.assistantMessageId = event.data.assistantMessage.id
       turn.projection = cloneJsonSafe(event.data.assistantMessage)
       turn.status = 'running'
@@ -316,6 +320,7 @@ export class ChatGenerationRuntime {
       if (turn.turnId && event.data.turnId !== turn.turnId) return
       if (turn.assistantMessageId && event.data.assistant.id !== turn.assistantMessageId) return
       turn.turnId = event.data.turnId
+      turn.accepted = true
       turn.assistantMessageId = event.data.assistant.id
     } else if (turn.assistantMessageId && event.data.messageId !== turn.assistantMessageId) {
       return
@@ -337,6 +342,13 @@ export class ChatGenerationRuntime {
     if (this.turns.get(key) !== turn || turn.controller !== controller || controller.signal.aborted || isTerminal(turn.status)) return
     const stableFailure = classifyStableFailure(failure)
     if (stableFailure) {
+      if (!turn.accepted) {
+        turn.status = 'failed'
+        turn.projection.status = 'failed'
+        turn.error = stableFailure.error
+        this.notify(key)
+        return
+      }
       turn.reconciliationReason = stableFailure.reason
       turn.error = stableFailure.error
       this.notify(key)

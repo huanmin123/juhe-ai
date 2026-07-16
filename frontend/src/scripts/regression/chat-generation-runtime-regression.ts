@@ -190,4 +190,43 @@ assert.equal(classificationTimers.length, 0, '协议错误不得伪装成可重�
 assert.equal(classificationRuntime.get('account', 'protocol')?.reconciliationReason, 'protocol_error')
 classificationRuntime.close()
 
+let failedStartPosts = 0
+const failedStartNotifications: string[] = []
+const failedStartRuntime = new ChatGenerationRuntime({
+  streamMessage: async (input) => {
+    failedStartPosts += 1
+    if (failedStartPosts === 1) throw new ChatStreamHttpError(422, 'chat_message_invalid', 'invalid message')
+    input.onEvent({ type: 'message.started', data: { turnId: 'retry-turn', userMessage: user(), assistantMessage: assistant('retry-assistant') } })
+    await deferred().promise
+  },
+  attachStream: async () => undefined,
+  stop: async () => ({ stopped: true }),
+  schedule: () => undefined,
+  cancelSchedule: () => undefined
+})
+failedStartRuntime.subscribe('account', 'failed-start', (turn) => { if (turn) failedStartNotifications.push(turn.status) })
+failedStartRuntime.start({ ...startInput, conversationId: 'failed-start' })
+await Promise.resolve(); await Promise.resolve()
+assert.equal(failedStartRuntime.get('account', 'failed-start')?.status, 'failed', 'started 前稳定 4xx 必须结束 preparing')
+assert.equal(failedStartRuntime.get('account', 'failed-start')?.error?.status, 422)
+assert(failedStartNotifications.includes('failed'), 'started 前稳定 4xx 必须通知订阅者失败状态')
+failedStartRuntime.start({ ...startInput, conversationId: 'failed-start', clientMessageId: 'client-retry' })
+await Promise.resolve()
+assert.equal(failedStartPosts, 2, '失败的初次 POST 必须允许同会话重新 start 发起新 POST')
+assert.equal(failedStartRuntime.get('account', 'failed-start')?.turnId, 'retry-turn')
+failedStartRuntime.close()
+
+const failedProtocolRuntime = new ChatGenerationRuntime({
+  streamMessage: async () => { throw new ChatStreamProtocolError('malformed initial SSE event') },
+  attachStream: async () => undefined,
+  stop: async () => ({ stopped: true }),
+  schedule: () => undefined,
+  cancelSchedule: () => undefined
+})
+failedProtocolRuntime.start({ ...startInput, conversationId: 'failed-protocol' })
+await Promise.resolve(); await Promise.resolve()
+assert.equal(failedProtocolRuntime.get('account', 'failed-protocol')?.status, 'failed', 'started 前协议错误必须结束 preparing')
+assert.equal(failedProtocolRuntime.get('account', 'failed-protocol')?.reconciliationReason, undefined, '未 accepted 的协议错误不得进入 reconciliation')
+failedProtocolRuntime.close()
+
 console.log('AI 问答应用级 generation runtime 回归通过')
