@@ -578,9 +578,9 @@ func assertW2ProviderModelCatalogSnapshot(t *testing.T, ctx context.Context, db 
 	}
 	wantCounts := map[string]counts{
 		"gpt":       {total: 81, visible: 81},
-		"anthropic": {total: 42, visible: 24},
-		"gemini":    {total: 10, visible: 10},
-		"deepseek":  {total: 6, visible: 6},
+		"anthropic": {total: 43, visible: 17},
+		"gemini":    {total: 9, visible: 9},
+		"deepseek":  {total: 4, visible: 4},
 		"glm":       {total: 18, visible: 17},
 	}
 
