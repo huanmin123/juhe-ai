@@ -230,6 +230,25 @@ try {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
   }
 
+  await client.execute(`UPDATE chat_messages SET expires_at = ? WHERE id = ?`, [
+    '2026-07-16T00:04:30.000Z',
+    replacement.assistantMessage.id
+  ])
+  const incompleteLatestTurnHead = await getChatConversationSyncHead(client, {
+    conversationId: conversation.id,
+    systemAccountId: ownerId,
+    now: '2026-07-16T00:05:01.000Z'
+  })
+  assert.deepEqual(
+    incompleteLatestTurnHead?.tail.map((message) => [message.turnId, message.id]),
+    [
+      [first.turnId, first.userMessage.id],
+      [first.turnId, first.assistantMessage.id]
+    ],
+    '最新轮次只剩一条未过期消息时必须整体回退上一完整轮次，不能跨轮拼接 tail'
+  )
+  assert.equal(incompleteLatestTurnHead?.activeTurn, undefined, 'active assistant 已过期时不能恢复 streaming identity')
+
   console.log('AI 问答 revision 同步回归通过')
 } finally {
   closeStorageDatabases()

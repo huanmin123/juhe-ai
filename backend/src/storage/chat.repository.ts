@@ -177,11 +177,24 @@ export async function getChatConversationSyncHead(client: DatabaseClient, input:
       SELECT id, turn_id, sequence_no, role, status, completed_at, expires_at
       FROM ${chatTable(client, 'chat_messages')}
       WHERE conversation_id = ? AND system_account_id = ? AND expires_at > ?
-    ), tail_messages AS (
-      SELECT id, turn_id, sequence_no, role, status, completed_at, expires_at
+    ), complete_turns AS (
+      SELECT turn_id, MAX(sequence_no) AS latest_sequence_no
       FROM visible_messages
-      ORDER BY sequence_no DESC
-      LIMIT 2
+      GROUP BY turn_id
+      HAVING COUNT(*) = 2
+        AND SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END) = 1
+        AND SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END) = 1
+        AND MAX(sequence_no) = MIN(sequence_no) + 1
+    ), tail_turn AS (
+      SELECT turn_id
+      FROM complete_turns
+      ORDER BY latest_sequence_no DESC
+      LIMIT 1
+    ), tail_messages AS (
+      SELECT message.id, message.turn_id, message.sequence_no, message.role,
+             message.status, message.completed_at, message.expires_at
+      FROM visible_messages AS message
+      JOIN tail_turn ON tail_turn.turn_id = message.turn_id
     ), active_assistant AS (
       SELECT message.id, message.turn_id
       FROM visible_messages AS message
