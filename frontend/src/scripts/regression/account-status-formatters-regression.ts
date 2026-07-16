@@ -1,4 +1,6 @@
 import type { AccountEffectiveAvailabilityStatus, AccountStatus, AccountSummary, ApiKeySummary } from '@/types/domain'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { accountStatusColor, accountStatusText, accountStatusTooltipLines } from '../../views/accounts/accountFormatters'
 import type { AccountFilters } from '../../views/accounts/accountFormTypes'
 import { filterAccounts } from '../../views/accounts/accountListFilters'
@@ -7,7 +9,7 @@ import { apiKeyStatusTagColor, apiKeyStatusTagLabel, apiKeyStatusTooltipLines } 
 
 const accountStatusValues: AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
 
-assertStatus('正常账户', accountFixture(), '正常', 'green')
+assertStatus('可调度账户', accountFixture(), '可调度', 'green')
 assertStatus('待检查账户', accountFixture({
   status: 'pending_test',
   effectiveAvailability: {
@@ -54,8 +56,21 @@ assertTrue(
   '检查失败的自有待检查账户应显示重新检查'
 )
 assertTrue(
-  accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'force-activate' && item.label === '人工恢复正常'),
-  '自有待检查账户应允许用户确认后人工恢复正常'
+  accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'restore-normal' && item.label === '恢复正常'),
+  '自有待检查账户应复用统一的恢复正常操作'
+)
+assertTrue(
+  !accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'force-activate'),
+  '自有待检查账户不应额外暴露独立的人工恢复操作'
+)
+const accountMenuActionsSource = readFileSync(resolve('../frontend/src/views/accounts/useAccountMenuActions.ts'), 'utf8')
+assertTrue(
+  /if \(key === 'restore-normal'\)[\s\S]+account\.status === 'pending_test'[\s\S]+api\.(?:accounts|myAccounts)\.forceActivate/.test(accountMenuActionsSource),
+  '待检查账户应在统一恢复正常处理分支内复用原子放行能力'
+)
+assertTrue(
+  !/if \(key === 'force-activate'\)/.test(accountMenuActionsSource),
+  '账户菜单处理器不应保留独立的人工恢复分支'
 )
 assertTrue(
   accountStatusTooltipLines(accountFixture({
@@ -170,12 +185,12 @@ assertStatus('停调账户', accountFixture({
 assertStatus('近窗口少量失败', accountFixture({
   qualityRecentRequestCount: 3,
   qualityRecentErrorCount: 2
-}), '近期失败', 'gold')
+}), '可调度', 'green')
 assertStatus('近窗口不稳定', accountFixture({
   qualityRecentRequestCount: 4,
   qualityRecentErrorCount: 3,
   qualityRecentSuccessRate: 0.25
-}), '近期不稳', 'orange')
+}), '可调度', 'green')
 assertStatus('近窗口频繁失败', accountFixture({
   qualityRecentRequestCount: 6,
   qualityRecentErrorCount: 5,
@@ -183,7 +198,10 @@ assertStatus('近窗口频繁失败', accountFixture({
   qualityLastErrorAt: '2026-06-13T00:00:00.000Z',
   qualityLastErrorMessage: 'mock upstream 504 failure for formatter regression',
   qualityUpdatedAt: '2026-06-13T00:00:05.000Z'
-}), '频繁失败', 'red')
+}), '可调度', 'green')
+assertStatus('运行态不可观测', accountFixture({
+  accountRuntimeAvailabilityAvailable: false
+}), '运行态未知', 'default')
 assertStatus('运行态短暂避让', accountFixture({
   effectiveAvailability: {
     available: false,
@@ -463,7 +481,7 @@ function accountFixture(overrides: Partial<AccountSummary> = {}): AccountSummary
     effectiveAvailability: {
       available: true,
       status: 'available',
-      label: '正常',
+      label: '可调度',
       color: 'green'
     },
     todayUsage: emptyUsage(),

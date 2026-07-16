@@ -1656,6 +1656,67 @@ func TestServiceDeleteMissingIsNotFoundAction(t *testing.T) {
 	}
 }
 
+func TestNormalizeBaseURLUsesExactPrivateOriginAllowlist(t *testing.T) {
+	allowlist := map[string]struct{}{
+		"http://192.168.40.199:8317": {},
+		"http://127.0.0.1:80":        {},
+	}
+
+	got, err := normalizeBaseURL("http://192.168.40.199:8317/v1", allowlist)
+	if err != nil {
+		t.Fatalf("allowlisted private origin: %v", err)
+	}
+	if got != "http://192.168.40.199:8317/v1" {
+		t.Fatalf("normalized base URL = %q", got)
+	}
+	if _, err := normalizeBaseURL("http://192.168.40.199:8318/v1", allowlist); !errors.Is(err, ErrInvalidBaseURL) {
+		t.Fatalf("different port error = %v, want ErrInvalidBaseURL", err)
+	}
+	if _, err := normalizeBaseURL("https://192.168.40.199:8317/v1", allowlist); !errors.Is(err, ErrInvalidBaseURL) {
+		t.Fatalf("different scheme error = %v, want ErrInvalidBaseURL", err)
+	}
+	if _, err := normalizeBaseURL("http://127.0.0.1/v1", allowlist); err != nil {
+		t.Fatalf("effective default port should match: %v", err)
+	}
+	if _, err := normalizeBaseURL("http://192.168.40.199:8317/v1", nil); !errors.Is(err, ErrInvalidBaseURL) {
+		t.Fatalf("empty allowlist error = %v, want ErrInvalidBaseURL", err)
+	}
+}
+
+func TestServiceAddAndUpdateUseExactPrivateOriginAllowlist(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	service := NewService(Options{
+		Store:                   store,
+		ProviderModels:          defaultProviderModelReaderStub(),
+		Now:                     fixedPublicAccountNow,
+		NewID:                   sequentialPublicAccountID(),
+		Secret:                  "public-account-test-secret",
+		PrivateBaseURLAllowlist: []string{"http://192.168.40.199:8317", "http://192.168.40.200:8318"},
+	})
+	input := validPublicAccountAddInput("私网上游账号", "gpt-5.4-mini")
+	input.BaseURL = "http://192.168.40.199:8317/v1"
+	created, err := service.Add(context.Background(), input)
+	if err != nil {
+		t.Fatalf("add allowlisted private account: %v", err)
+	}
+
+	nextBaseURL := "http://192.168.40.200:8318/v1"
+	if _, err := service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		BaseURL:   &nextBaseURL,
+	}); err != nil {
+		t.Fatalf("update allowlisted private account: %v", err)
+	}
+
+	wrongPort := "http://192.168.40.200:8319/v1"
+	if _, err := service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		BaseURL:   &wrongPort,
+	}); !errors.Is(err, ErrInvalidBaseURL) {
+		t.Fatalf("update different private origin error = %v, want ErrInvalidBaseURL", err)
+	}
+}
+
 func newPublicAccountServiceForTest(store *publicAccountStoreFake, providerModels ProviderModelReader) *Service {
 	if providerModels == nil {
 		providerModels = defaultProviderModelReaderStub()

@@ -21,27 +21,28 @@ const defaultRuntimeSecret = "juhe-ai-dev-secret-change-me"
 var invalidRedisNamespaceChars = regexp.MustCompile(`[^a-zA-Z0-9_.:-]+`)
 
 type Config struct {
-	Host                          string        `env:"JUHE_AI_HOST" envDefault:"127.0.0.1"`
-	Port                          int           `env:"JUHE_AI_PORT" envDefault:"3000"`
-	Env                           string        `env:"JUHE_AI_ENV" envDefault:"development"`
-	LogLevel                      string        `env:"JUHE_AI_LOG_LEVEL" envDefault:"info"`
-	PostgresURL                   string        `env:"JUHE_AI_POSTGRES_URL"`
-	RedisCacheURL                 string        `env:"JUHE_AI_REDIS_CACHE_URL"`
-	RedisStateURL                 string        `env:"JUHE_AI_REDIS_STATE_URL"`
-	RedisQueueURL                 string        `env:"JUHE_AI_REDIS_QUEUE_URL"`
-	RedisNamespace                string        `env:"JUHE_AI_REDIS_NAMESPACE"`
-	Secret                        string        `env:"JUHE_AI_SECRET"`
-	NodeInternalBaseURL           string        `env:"JUHE_AI_NODE_INTERNAL_BASE_URL"`
-	NodeInternalRequestTimeout    time.Duration `env:"JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT" envDefault:"2s"`
-	PublicAPIEnabled              bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
-	ManagementAPIEnabled          bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
-	ManagementAuthSessionsEnabled bool          `env:"JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED" envDefault:"false"`
-	TrustProxy                    string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
-	CookieSecure                  bool          `env:"JUHE_AI_COOKIE_SECURE" envDefault:"false"`
-	CookieSameSite                string        `env:"JUHE_AI_COOKIE_SAME_SITE" envDefault:"lax"`
-	MetricsEnabled                bool          `env:"JUHE_AI_METRICS_ENABLED" envDefault:"false"`
-	PprofEnabled                  bool          `env:"JUHE_AI_PPROF_ENABLED" envDefault:"false"`
-	ShutdownTimeout               time.Duration `env:"JUHE_AI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
+	Host                            string        `env:"JUHE_AI_HOST" envDefault:"127.0.0.1"`
+	Port                            int           `env:"JUHE_AI_PORT" envDefault:"3000"`
+	Env                             string        `env:"JUHE_AI_ENV" envDefault:"development"`
+	LogLevel                        string        `env:"JUHE_AI_LOG_LEVEL" envDefault:"info"`
+	PostgresURL                     string        `env:"JUHE_AI_POSTGRES_URL"`
+	RedisCacheURL                   string        `env:"JUHE_AI_REDIS_CACHE_URL"`
+	RedisStateURL                   string        `env:"JUHE_AI_REDIS_STATE_URL"`
+	RedisQueueURL                   string        `env:"JUHE_AI_REDIS_QUEUE_URL"`
+	RedisNamespace                  string        `env:"JUHE_AI_REDIS_NAMESPACE"`
+	Secret                          string        `env:"JUHE_AI_SECRET"`
+	NodeInternalBaseURL             string        `env:"JUHE_AI_NODE_INTERNAL_BASE_URL"`
+	UpstreamBaseURLPrivateAllowlist []string      `env:"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST" envSeparator:","`
+	NodeInternalRequestTimeout      time.Duration `env:"JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT" envDefault:"2s"`
+	PublicAPIEnabled                bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
+	ManagementAPIEnabled            bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
+	ManagementAuthSessionsEnabled   bool          `env:"JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED" envDefault:"false"`
+	TrustProxy                      string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
+	CookieSecure                    bool          `env:"JUHE_AI_COOKIE_SECURE" envDefault:"false"`
+	CookieSameSite                  string        `env:"JUHE_AI_COOKIE_SAME_SITE" envDefault:"lax"`
+	MetricsEnabled                  bool          `env:"JUHE_AI_METRICS_ENABLED" envDefault:"false"`
+	PprofEnabled                    bool          `env:"JUHE_AI_PPROF_ENABLED" envDefault:"false"`
+	ShutdownTimeout                 time.Duration `env:"JUHE_AI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
 }
 
 type TrustProxyConfig struct {
@@ -136,10 +137,50 @@ func (cfg Config) Validate() error {
 	if err := validateManagementAPIConfig(cfg); err != nil {
 		return err
 	}
+	if err := validateUpstreamBaseURLPrivateAllowlist(cfg); err != nil {
+		return err
+	}
 	if err := validateDistinctRedisURLs(cfg); err != nil {
 		return err
 	}
 	return nil
+}
+
+func validateUpstreamBaseURLPrivateAllowlist(cfg Config) error {
+	for _, value := range cfg.UpstreamBaseURLPrivateAllowlist {
+		if _, err := normalizeUpstreamBaseURLPrivateOrigin(value); err != nil {
+			return fmt.Errorf("JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST 配置无效: %w", err)
+		}
+	}
+	return nil
+}
+
+func normalizeUpstreamBaseURLPrivateOrigin(value string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("只能逐项填写完整的 http/https IP Origin: %s", value)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("只允许 http 或 https Origin: %s", value)
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", fmt.Errorf("只能填写 Origin，不要包含路径、查询、片段或用户名密码: %s", value)
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if net.ParseIP(host) == nil {
+		return "", fmt.Errorf("只允许 IP Origin，不接受域名: %s", value)
+	}
+	port := parsed.Port()
+	if port == "" {
+		if parsed.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	} else if numericPort, err := strconv.Atoi(port); err != nil || numericPort < 1 || numericPort > 65535 {
+		return "", fmt.Errorf("端口必须在 1 到 65535 之间: %s", value)
+	}
+	return parsed.Scheme + "://" + net.JoinHostPort(host, port), nil
 }
 
 func (cfg Config) Address() string {

@@ -4,6 +4,7 @@ import { redisNamespacedKey } from './redis-namespace.js'
 
 export interface RuntimeProbeStateStore<TState extends { runtimeKey: string; generation: number; nextProbeAtMs: number }> {
   get(runtimeKey: string): Promise<TState | undefined>
+  getMany(runtimeKeys: string[]): Promise<Map<string, TState>>
   set(state: TState, ttlMs: number): Promise<boolean>
   merge(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions): Promise<TState | undefined>
   delete(runtimeKey: string): Promise<void>
@@ -51,6 +52,15 @@ implements RuntimeProbeStateStore<TState> {
 
   async get(runtimeKey: string): Promise<TState | undefined> {
     return this.freshEntry(runtimeKey)?.value
+  }
+
+  async getMany(runtimeKeys: string[]): Promise<Map<string, TState>> {
+    const result = new Map<string, TState>()
+    for (const runtimeKey of new Set(runtimeKeys.filter(Boolean))) {
+      const value = this.freshEntry(runtimeKey)?.value
+      if (value) result.set(runtimeKey, value)
+    }
+    return result
   }
 
   async set(state: TState, ttlMs: number): Promise<boolean> {
@@ -137,6 +147,26 @@ implements RuntimeProbeStateStore<TState> {
       await this.delete(runtimeKey)
       return undefined
     }
+  }
+
+  async getMany(runtimeKeys: string[]): Promise<Map<string, TState>> {
+    const keys = [...new Set(runtimeKeys.filter(Boolean))].slice(0, 100)
+    if (keys.length === 0) return new Map<string, TState>()
+    const rawValues = await (await this.client()).sendCommand(['MGET', ...keys.map((runtimeKey) => this.stateKey(runtimeKey))])
+    if (!Array.isArray(rawValues)) throw new Error('Redis probe state MGET 返回值无效')
+    const result = new Map<string, TState>()
+    for (let index = 0; index < keys.length; index += 1) {
+      const raw = rawValues[index]
+      if (raw === null || raw === undefined) continue
+      const encoded = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw)
+      try {
+        result.set(keys[index]!, JSON.parse(encoded) as TState)
+      } catch {
+        await this.delete(keys[index]!)
+        throw new Error(`Redis probe state 内容损坏：${keys[index]}`)
+      }
+    }
+    return result
   }
 
   async set(state: TState, ttlMs: number): Promise<boolean> {

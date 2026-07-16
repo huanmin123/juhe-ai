@@ -99,7 +99,24 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
     if (key === 'restore-normal') {
       if (account.status === 'pending_test') {
-        message.warning('待检查账户需等待后台健康检查通过后才能参与调度')
+        if (isAuthorizedAccount(account) || !canEditAccount(account)) {
+          message.warning('只有可编辑的自有待检查账户可以恢复正常')
+          return
+        }
+        const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
+        try {
+          const updated = options.isManagementView.value
+            ? await api.accounts.forceActivate(account.id, scopeParams)
+            : await api.myAccounts.forceActivate(account.id)
+          invalidateAccountDetail(account, scopeParams)
+          message.success(updated.status === 'active'
+            ? '账户已恢复正常并参与调度'
+            : '账户已恢复，当前按时间计划保持停用')
+          await options.loadData()
+        } catch (error) {
+          console.error(error)
+          message.error(options.extractApiErrorMessage(error, '恢复账户失败'))
+        }
         return
       }
       if (isAuthorizedAccount(account)) {
@@ -129,30 +146,9 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       await updateAccountState(account, { clearFailureState: true }, '已提交重新检查，后台检查通过后恢复')
       return
     }
-    if (key === 'force-activate') {
-      if (isAuthorizedAccount(account) || account.status !== 'pending_test' || !canEditAccount(account)) {
-        message.warning('只有可编辑的自有待检查账户可以人工恢复正常')
-        return
-      }
-      const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
-      try {
-        const updated = options.isManagementView.value
-          ? await api.accounts.forceActivate(account.id, scopeParams)
-          : await api.myAccounts.forceActivate(account.id)
-        invalidateAccountDetail(account, scopeParams)
-        message.success(updated.status === 'active'
-          ? '账户已人工恢复正常并参与调度'
-          : '已确认账户可用，当前按时间计划保持停用')
-        await options.loadData()
-      } catch (error) {
-        console.error(error)
-        message.error(options.extractApiErrorMessage(error, '人工恢复账户失败'))
-      }
-      return
-    }
     if (!canUseAccountActions(account)) {
       if (!isAuthorizedAccount(account)) {
-        if (!['restore-normal', 'recheck-health', 'force-activate', 'toggle-status', 'super-priority-off', 'fallback-off'].includes(key)) {
+        if (!['restore-normal', 'recheck-health', 'toggle-status', 'super-priority-off', 'fallback-off'].includes(key)) {
           message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试、异常恢复、停用和取消调度标记' : '当前账户不能执行管理操作')
           return
         }

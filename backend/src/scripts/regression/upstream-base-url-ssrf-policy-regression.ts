@@ -92,15 +92,25 @@ try {
     '公网 HTTP IP 上游地址应允许保存'
   )
 
-  runtimeConfig.upstreamUrlSecurity.privateBaseUrlAllowlist = ['127.0.0.1']
+  runtimeConfig.upstreamUrlSecurity.privateBaseUrlAllowlist = ['http://127.0.0.1:9']
   assert.doesNotThrow(
     () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: 'http://127.0.0.1:9/v1' }),
-    '显式 allowlist 应允许本地回归 mock 上游地址'
+    '显式 exact-origin allowlist 应允许同协议、同 IP 和同有效端口的私网上游地址'
   )
-  runtimeConfig.upstreamUrlSecurity.privateBaseUrlAllowlist = ['localhost']
-  await assert.doesNotReject(
-    () => prepareSafeUpstreamRequestUrl('http://localhost:9/v1'),
-    '显式 allowlist 应同时允许主机名保存和出站前 DNS 兜底'
+  assert.throws(
+    () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: 'http://127.0.0.1:10/v1' }),
+    /上游 Base URL/,
+    'exact-origin allowlist 不能放行同 IP 的其他端口'
+  )
+  assert.throws(
+    () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: 'https://127.0.0.1:9/v1' }),
+    /上游 Base URL/,
+    'exact-origin allowlist 不能放行同 IP 和端口的其他协议'
+  )
+  runtimeConfig.upstreamUrlSecurity.privateBaseUrlAllowlist = ['http://127.0.0.1:80']
+  assert.doesNotThrow(
+    () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: 'http://127.0.0.1/v1' }),
+    'exact-origin allowlist 应按有效默认端口匹配'
   )
   runtimeConfig.upstreamUrlSecurity.privateBaseUrlAllowlist = []
   runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
@@ -128,6 +138,35 @@ try {
     closeGatewayUpstreamAgentsForTest()
   }
 
+  let redirectTargetHits = 0
+  const redirectTarget = http.createServer((_req, res) => {
+    redirectTargetHits += 1
+    res.end('redirected')
+  })
+  await new Promise<void>((resolve) => redirectTarget.listen(0, '127.0.0.1', resolve))
+  const redirectTargetAddress = redirectTarget.address()
+  assert(redirectTargetAddress && typeof redirectTargetAddress === 'object', '重定向目标 mock server 启动失败')
+  const redirectSource = http.createServer((_req, res) => {
+    res.writeHead(302, { location: `http://127.0.0.1:${redirectTargetAddress.port}/escaped` })
+    res.end()
+  })
+  await new Promise<void>((resolve) => redirectSource.listen(0, '127.0.0.1', resolve))
+  try {
+    const redirectSourceAddress = redirectSource.address()
+    assert(redirectSourceAddress && typeof redirectSourceAddress === 'object', '重定向来源 mock server 启动失败')
+    runtimeConfig.upstreamUrlSecurity.privateBaseUrlAllowlist = [`http://127.0.0.1:${redirectSourceAddress.port}`]
+    const response = await requestUpstream(`http://127.0.0.1:${redirectSourceAddress.port}/v1/responses`, {
+      method: 'GET',
+      headers: new Headers(),
+      transport: 'fetch'
+    })
+    assert.equal(response.status, 302, 'fetch 上游传输必须返回原始重定向响应，不得自动跟随')
+    assert.equal(redirectTargetHits, 0, 'allowlisted origin 的重定向不得逃逸到其他私网服务')
+  } finally {
+    await new Promise<void>((resolve) => redirectSource.close(() => resolve()))
+    await new Promise<void>((resolve) => redirectTarget.close(() => resolve()))
+  }
+
   const productionAllowPrivateResult = spawnRuntimeImport({
     NODE_ENV: 'production',
     JUHE_AI_SECRET: 'upstream-base-url-ssrf-policy-32-chars-minimum',
@@ -145,11 +184,31 @@ try {
     NODE_ENV: 'production',
     JUHE_AI_SECRET: 'upstream-base-url-ssrf-policy-32-chars-minimum',
     JUHE_AI_ALLOWED_ORIGINS: 'https://admin.example.com',
-    JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST: '127.0.0.1'
+    JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST: 'http://192.168.40.199:8317'
   })
-  assert.notEqual(productionAllowlistResult.status, 0, '生产环境不应允许配置私网上游 allowlist')
+  assert.equal(
+    productionAllowlistResult.status,
+    0,
+    `生产环境应允许显式 exact-origin 私网上游 allowlist：${productionAllowlistResult.stderr}`
+  )
 
-  console.log('上游 Base URL SSRF 策略回归通过：保存层、生产配置和网关出站兜底均拒绝私网地址')
+  for (const invalidAllowlist of [
+    '192.168.40.199',
+    'http://private-upstream.example:8317',
+    'http://192.168.40.199:8317/v1',
+    'http://user:pass@192.168.40.199:8317',
+    'ftp://192.168.40.199:8317'
+  ]) {
+    const invalidResult = spawnRuntimeImport({
+      NODE_ENV: 'production',
+      JUHE_AI_SECRET: 'upstream-base-url-ssrf-policy-32-chars-minimum',
+      JUHE_AI_ALLOWED_ORIGINS: 'https://admin.example.com',
+      JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST: invalidAllowlist
+    })
+    assert.notEqual(invalidResult.status, 0, `生产 exact-origin allowlist 应拒绝无效配置：${invalidAllowlist}`)
+  }
+
+  console.log('上游 Base URL SSRF 策略回归通过：私网 exact-origin 放行、生产显式配置和出站重定向边界均已锁定')
 } finally {
   runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = previousPolicy.allowPrivateBaseUrls
   runtimeConfig.upstreamUrlSecurity.privateBaseUrlAllowlist = previousPolicy.privateBaseUrlAllowlist

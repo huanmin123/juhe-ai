@@ -263,6 +263,7 @@ export interface AccountSummary {
   concurrencyLimit: number
   currentConcurrency: number
   currentConcurrencyAvailable?: boolean
+  accountRuntimeAvailabilityAvailable?: boolean
   runtimeAvailability?: AccountRuntimeAvailability
   effectiveAvailability?: AccountEffectiveAvailability
   priority: number
@@ -345,6 +346,42 @@ export interface AccountSummary {
   authorizationUsageAvailable?: boolean
   authorizationCount?: number
   authorizationTeamCount?: number
+}
+
+export interface AccountStatusSnapshotItem {
+  id: string
+  status: AccountStatus
+  schedulable: boolean
+  currentConcurrency: number
+  cooldownUntil?: string
+  lastErrorCode?: string
+  lastErrorMessage?: string
+  lastHealthCheckAt?: string
+  lastHealthCheckErrorCode?: string
+  lastHealthCheckErrorMessage?: string
+  authorizationStatus?: AuthorizationStatus
+  authorizationExpiresAt?: string
+  authorizationQuotaExceeded?: boolean
+  authorizationInstanceSourceAccountStatus?: AccountStatus
+  authorizationInstanceSourceAccountSchedulable?: boolean
+  authorizationInstanceSourceAccountExpiresAt?: string
+  authorizationInstanceSourceAccountCooldownUntil?: string
+  authorizationInstanceSourceAccountLastErrorCode?: string
+  authorizationInstanceSourceAccountLastErrorMessage?: string
+  apiKeyRuntime?: AccountApiKeyRuntimeSummary
+  runtimeAvailability?: AccountRuntimeAvailability
+  effectiveAvailability: AccountEffectiveAvailability
+  lastUsedAt?: string
+  todayUsage: AccountUsageSummary
+}
+
+export interface AccountStatusSnapshotResult {
+  generatedAt: string
+  runtimeSnapshot: {
+    accountConcurrencyAvailable: boolean
+    accountRuntimeAvailabilityAvailable: boolean
+  }
+  items: AccountStatusSnapshotItem[]
 }
 
 export interface AccountBatchEditTarget {

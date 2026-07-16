@@ -61,6 +61,7 @@
     "test:account-health-check-postgres-settings-boundary": "tsx src/scripts/regression/account-health-check-postgres-settings-boundary-regression.ts",
     "test:account-quality-refresh": "tsx src/scripts/regression/account-quality-refresh-regression.ts",
     "test:account-quality-gateway-status": "tsx src/scripts/regression/account-quality-gateway-status-regression.ts",
+    "test:account-status-snapshot": "tsx src/scripts/regression/account-status-snapshot-contract-regression.ts",
     "test:account-list-stable-sort": "tsx src/scripts/regression/account-list-stable-sort-regression.ts",
     "test:account-list-query-guard": "tsx src/scripts/regression/account-list-query-guard-regression.ts",
     "test:account-list-stats-lock": "tsx src/scripts/regression/account-list-stats-lock-regression.ts",

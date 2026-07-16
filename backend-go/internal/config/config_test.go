@@ -6,6 +6,41 @@ import (
 	"time"
 )
 
+func TestUpstreamBaseURLPrivateAllowlistRequiresExactIPOrigins(t *testing.T) {
+	valid := Config{UpstreamBaseURLPrivateAllowlist: []string{
+		"http://192.168.40.199:8317",
+		"https://[fd00::1]",
+	}}
+	if err := validateUpstreamBaseURLPrivateAllowlist(valid); err != nil {
+		t.Fatalf("valid exact IP origins: %v", err)
+	}
+
+	for _, value := range []string{
+		"192.168.40.199",
+		"http://private-upstream.example:8317",
+		"http://192.168.40.199:8317/v1",
+		"http://user:pass@192.168.40.199:8317",
+		"ftp://192.168.40.199:8317",
+		"http://192.168.40.199:70000",
+	} {
+		err := validateUpstreamBaseURLPrivateAllowlist(Config{UpstreamBaseURLPrivateAllowlist: []string{value}})
+		if err == nil {
+			t.Fatalf("invalid allowlist %q accepted", value)
+		}
+	}
+}
+
+func TestLoadReadsUpstreamBaseURLPrivateAllowlistFromEnvironment(t *testing.T) {
+	t.Setenv("JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST", "http://192.168.40.199:8317,https://[fd00::1]")
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if len(cfg.UpstreamBaseURLPrivateAllowlist) != 2 {
+		t.Fatalf("UpstreamBaseURLPrivateAllowlist = %v, want two origins", cfg.UpstreamBaseURLPrivateAllowlist)
+	}
+}
+
 func TestConfigDefaultsValidate(t *testing.T) {
 	cfg := Config{
 		Host:                       "127.0.0.1",

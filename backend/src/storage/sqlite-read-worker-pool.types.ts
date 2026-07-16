@@ -1,5 +1,6 @@
 import type { AccountListOptions, AccountOptionListOptions } from './account-list-options.js'
 import type { AccountListResult } from './account-summary.repository.js'
+import type { AccountStatusProjection } from './account-status-snapshot.repository.js'
 import type { AccountTagSummary } from './account-tags.repository.js'
 import type { AccessScope } from './access-scope.js'
 import type { AnnouncementListOptions, AnnouncementListResult } from './announcements.repository.js'
@@ -147,6 +148,11 @@ export type SqliteReadWorkerOperation =
     type: 'list_accounts_page_read_only'
     access?: AccessScope
     options?: AccountListOptions
+  }
+  | {
+    type: 'list_account_status_snapshots_read_only'
+    accountIds: string[]
+    access?: AccessScope
   }
   | {
     type: 'find_account_summary_read_only'
@@ -698,6 +704,7 @@ export type SqliteReadWorkerOperation =
 
 export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation> =
   T extends { type: 'list_accounts_page_read_only' } ? AccountListResult :
+  T extends { type: 'list_account_status_snapshots_read_only' } ? AccountStatusProjection[] :
   T extends { type: 'find_account_summary_read_only' } ? AccountSummary | undefined :
   T extends { type: 'list_account_options_read_only' } ? AccountOptionSummary[] :
   T extends { type: 'list_account_tags_read_only' } ? AccountTagSummary[] :

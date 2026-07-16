@@ -11,6 +11,7 @@ import { orderGatewayApiKeyGroupBindingsForDispatch } from '../modules/gateway/r
 import { listProviderModelCatalogReadOnly } from '../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../shared/logger.js'
 import { findAccountSummary, listAccountsPageReadOnly } from './account-summary.repository.js'
+import { listAccountStatusProjectionsReadOnly } from './account-status-snapshot.repository.js'
 import { listAccountOptions } from './account-options.repository.js'
 import { listAccountTags } from './account-tags.repository.js'
 import {
@@ -177,6 +178,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
   switch (operation.type) {
     case 'list_accounts_page_read_only':
       return listAccountsPageReadOnly(operation.access, operation.options)
+    case 'list_account_status_snapshots_read_only':
+      return listAccountStatusProjectionsReadOnly(operation.access, operation.accountIds)
     case 'find_account_summary_read_only':
       return findAccountSummary(operation.accountId, operation.access)
     case 'list_account_options_read_only':
