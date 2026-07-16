@@ -65,6 +65,8 @@ try {
   assert.match(repositorySource, /pendingHealthCheckRetryIntervalMs = 60 \* 60_000/, '待检查账户失败后必须固定每 1 小时复检')
   assert.match(repositorySource, /pendingHealthCheckFailureTimeoutMs = 24 \* 60 \* 60_000/, '待检查账户必须从首次失败起 24 小时收敛为异常')
   assert.match(repositorySource, /account_activation_check_timeout/, '待检查超时必须写入明确异常码')
+  assert.match(repositorySource, /function availabilityScheduleJsonValue/, '健康检查必须兼容 PostgreSQL JSONB 返回对象')
+  assert.match(repositorySource, /JSON\.stringify\(value\)/, 'PostgreSQL JSONB 时间计划必须规范化为现有解析器使用的 JSON 文本')
   assert.match(usageRepositorySource, /accountHealthSuccessSignalSchedule\(accountId, successAt, healthCheckSettings \?\? \{\}\)/, 'PostgreSQL 真实成功请求必须复用健康检测间隔与 jitter 计划')
   assert.match(usageRepositorySource, /SET last_health_success_at = \?,[\s\S]+next_health_check_at = \?/, 'PostgreSQL 真实成功请求必须同时顺延下次健康复核')
   assert.match(usageRepositorySource, /next_health_check_at < \?[\s\S]+next_health_check_at > \?/, 'PostgreSQL 真实成功请求应与 SQLite 一致节流，避免每请求重写账户行')

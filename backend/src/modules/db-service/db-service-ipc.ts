@@ -1043,9 +1043,9 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     statsWorkerSnapshot,
     opsWorkerSnapshot
   ] = await Promise.all([
-    backgroundIpc.requestIngestWorkerSnapshot(1000).catch(() => undefined),
-    backgroundIpc.requestStatsWorkerSnapshot(1000).catch(() => undefined),
-    backgroundIpc.requestOpsWorkerSnapshot(1000).catch(() => undefined)
+    backgroundIpc.requestIngestWorkerSnapshot(1500).catch(() => undefined),
+    backgroundIpc.requestStatsWorkerSnapshot(1500).catch(() => undefined),
+    backgroundIpc.requestOpsWorkerSnapshot(1500).catch(() => undefined)
   ])
   const workerState = backgroundIpc.getBackgroundWorkerState()
   const dbServiceState = getDbServiceState()
@@ -1054,6 +1054,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
   const opsWorkerState = workerState.opsWorker
 
   return {
+    observedAt: new Date().toISOString(),
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
     accountBalanceSnapshotCleanup: accountBalanceSnapshotCleanup.getAccountBalanceSnapshotCleanupRuntime(),
     ingestWorker: {
@@ -1130,6 +1131,9 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
             : undefined,
           accountApiKeyCooldownRetestQueue: opsWorkerSnapshot.accountApiKeyCooldownRetestQueue
             ? { ...opsWorkerSnapshot.accountApiKeyCooldownRetestQueue }
+            : undefined,
+          normalRouteSpeedFirstRecoveryProbeQueue: opsWorkerSnapshot.normalRouteSpeedFirstRecoveryProbeQueue
+            ? { ...opsWorkerSnapshot.normalRouteSpeedFirstRecoveryProbeQueue }
             : undefined,
           accountQualityFailurePrecheckQueue: opsWorkerSnapshot.accountQualityFailurePrecheckQueue
             ? { ...opsWorkerSnapshot.accountQualityFailurePrecheckQueue }

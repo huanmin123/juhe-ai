@@ -222,6 +222,10 @@ export interface SystemMetricsOverview {
     processHeapTotalBytesMax?: number
   }>
   runtimeSnapshotAvailable: boolean
+  runtimeSnapshotSource?: 'live'
+  runtimeSnapshotObservedAt?: string
+  runtimeSnapshotAgeMs?: number
+  runtimeSnapshotStale?: boolean
   ingestWorkerSnapshotAvailable?: boolean
   statsWorkerSnapshotAvailable?: boolean
   opsWorkerSnapshotAvailable?: boolean

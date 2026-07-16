@@ -139,6 +139,7 @@ export interface DbServiceRuntimeSnapshot {
 }
 
 export interface DbServiceServerRuntimeSnapshot {
+  observedAt?: string
   accountConcurrency?: Record<string, number>
   accountRuntimeAvailability?: Record<string, AccountRuntimeAvailability>
   accountBalanceSnapshotCleanup?: {
@@ -273,6 +274,12 @@ export interface DbServiceServerRuntimeSnapshot {
         nextRunAt?: string
       }
       accountApiKeyCooldownRetestQueue?: {
+        name: string
+        pendingCount: number
+        runningCount: number
+        nextRunAt?: string
+      }
+      normalRouteSpeedFirstRecoveryProbeQueue?: {
         name: string
         pendingCount: number
         runningCount: number

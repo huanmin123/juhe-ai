@@ -287,11 +287,18 @@ function healthCheckActivationStatus(
   checkedAt: string
 ): 'active' | 'disabled' {
   const availabilityScheduleJson = row && typeof row === 'object'
-    ? optionalString((row as { availability_schedule_json?: unknown }).availability_schedule_json)
+    ? availabilityScheduleJsonValue((row as { availability_schedule_json?: unknown }).availability_schedule_json)
     : undefined
   return isAccountAvailabilityScheduleAllowed(availabilityScheduleJson, new Date(checkedAt))
     ? 'active'
     : 'disabled'
+}
+
+function availabilityScheduleJsonValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'string') return value
+  if (typeof value === 'object' && !Array.isArray(value)) return JSON.stringify(value)
+  throw new Error('账户时间计划字段必须是 JSON 文本或对象')
 }
 
 interface AccountHealthCheckFailureStateRow {

@@ -40,12 +40,18 @@
           </span>
         </template>
         <template v-else-if="column.key === 'running'">
-          <a-tag :color="record.running ? 'processing' : record.lastError ? 'warning' : 'success'">
-            {{ record.running ? '运行中' : record.lastError ? '上次失败' : '空闲' }}
+          <a-tag :color="backgroundJobStatusColor(record)">
+            {{ backgroundJobStatusText(record) }}
           </a-tag>
         </template>
         <template v-else-if="column.key === 'workerRole'">
           <a-tag>{{ processRoleLabel(record.workerRole || 'worker') }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'runCount'">
+          {{ formatInteger(record.runCount) }}
+        </template>
+        <template v-else-if="column.key === 'lastStartedAt'">
+          {{ formatDateTime(record.lastStartedAt) }}
         </template>
         <template v-else-if="column.key === 'lastDurationMs'">
           {{ formatJobDuration(record.lastDurationMs) }}
@@ -65,6 +71,9 @@
         <template v-else-if="column.key === 'lastFinishedAt'">
           {{ formatDateTime(record.lastFinishedAt) }}
         </template>
+        <template v-else-if="column.key === 'lastErrorAt'">
+          {{ formatDateTime(record.lastErrorAt) }}
+        </template>
         <template v-else-if="column.key === 'lastError'">
           <a-tooltip v-if="record.lastError" :title="record.lastError">
             <span class="stats-job-error">{{ record.lastError }}</span>
@@ -83,8 +92,8 @@
                 </a-tooltip>
               </span>
             </strong>
-            <a-tag :color="record.running ? 'processing' : record.lastError ? 'warning' : 'success'">
-              {{ record.running ? '运行中' : record.lastError ? '上次失败' : '空闲' }}
+            <a-tag :color="backgroundJobStatusColor(record)">
+              {{ backgroundJobStatusText(record) }}
             </a-tag>
           </div>
           <div class="mobile-list-meta-grid">
@@ -95,6 +104,14 @@
             <div class="mobile-list-meta-item">
               <span>最近耗时</span>
               <strong>{{ formatJobDuration(record.lastDurationMs) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>本进程运行</span>
+              <strong>{{ formatInteger(record.runCount) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>最近开始</span>
+              <strong>{{ formatDateTime(record.lastStartedAt) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>最长耗时</span>
@@ -115,6 +132,10 @@
             <div class="mobile-list-meta-item">
               <span>最近完成</span>
               <strong>{{ formatDateTime(record.lastFinishedAt) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>最近失败</span>
+              <strong>{{ formatDateTime(record.lastErrorAt) }}</strong>
             </div>
             <div v-if="record.lastError" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>最近错误</span>
@@ -158,12 +179,15 @@ const backgroundJobColumns = [
   { title: '任务', dataIndex: 'name', key: 'name', width: 220 },
   { title: '所属 worker', key: 'workerRole', width: 112 },
   { title: '状态', key: 'running', width: 86 },
+  { title: '本进程运行', key: 'runCount', width: 112, align: 'right', sorter: sortBackgroundJobNumber('runCount') },
+  { title: '最近开始', key: 'lastStartedAt', width: 168 },
   { title: '最近耗时', key: 'lastDurationMs', width: 96 },
   { title: '最长耗时', key: 'maxDurationMs', width: 96 },
   { title: '成功', key: 'successCount', width: 84, align: 'right', sorter: sortBackgroundJobNumber('successCount') },
-  { title: '失败', key: 'failureCount', width: 84, align: 'right', sorter: sortBackgroundJobNumber('failureCount'), defaultSortOrder: 'descend' },
+  { title: '累计失败（本进程）', key: 'failureCount', width: 148, align: 'right', sorter: sortBackgroundJobNumber('failureCount'), defaultSortOrder: 'descend' },
   { title: '跳过', key: 'skippedCount', width: 84, align: 'right', sorter: sortBackgroundJobNumber('skippedCount') },
   { title: '最近完成', key: 'lastFinishedAt', width: 168 },
+  { title: '最近失败', key: 'lastErrorAt', width: 168 },
   { title: '最近错误', key: 'lastError', ellipsis: true }
 ]
 
@@ -175,8 +199,29 @@ function formatJobDuration(value?: number): string {
   return value === undefined ? '-' : formatDuration(value)
 }
 
-function sortBackgroundJobNumber(field: 'successCount' | 'failureCount' | 'skippedCount') {
+function sortBackgroundJobNumber(field: 'runCount' | 'successCount' | 'failureCount' | 'skippedCount') {
   return (left: BackgroundJobRow, right: BackgroundJobRow) => numberValue(left[field]) - numberValue(right[field])
+}
+
+function backgroundJobStatusText(row: BackgroundJobRow): string {
+  if (row.running) return '运行中'
+  if (row.lastError) return '上次失败'
+  if (row.lastErrorAt && isAfter(row.lastSuccessAt, row.lastErrorAt)) return '已恢复'
+  if (row.lastErrorAt) return '曾失败'
+  return '空闲'
+}
+
+function backgroundJobStatusColor(row: BackgroundJobRow): string {
+  if (row.running) return 'processing'
+  if (row.lastError || (row.lastErrorAt && !isAfter(row.lastSuccessAt, row.lastErrorAt))) return 'warning'
+  return 'success'
+}
+
+function isAfter(value: string | undefined, baseline: string): boolean {
+  if (!value) return false
+  const valueMs = Date.parse(value)
+  const baselineMs = Date.parse(baseline)
+  return Number.isFinite(valueMs) && Number.isFinite(baselineMs) && valueMs > baselineMs
 }
 
 function backgroundJobDurationNote(row: BackgroundJobRow): string | undefined {
