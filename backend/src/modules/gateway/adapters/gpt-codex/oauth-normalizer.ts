@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { GptRequestOverrideModelCapabilities } from '../../../providers/drivers/gpt/request-overrides.js'
+import { normalizeOpenAICodexResponsesLiteBody } from './client-headers.js'
 
 const {
   OpenAIOAuthCodexAdapterError
@@ -64,12 +65,14 @@ export function normalizeOpenAIOAuthCodexParsedBody(
 
   if (input.compact) {
     deleteFields(body, openAIOAuthCodexCompactDroppedFields)
+    normalizeOpenAICodexResponsesLiteBody(body, stringValue(body.model))
     return { body: JSON.stringify(body), stream: false, session, model: stringValue(body.model) }
   }
 
   deleteFields(body, openAIOAuthCodexDroppedFields)
   body.store = false
   body.stream = true
+  normalizeOpenAICodexResponsesLiteBody(body, stringValue(body.model))
 
   return { body: JSON.stringify(body), stream: true, session, model: stringValue(body.model) }
 }

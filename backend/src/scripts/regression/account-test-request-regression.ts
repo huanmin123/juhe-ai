@@ -109,6 +109,12 @@ const codexSsePayload = createOpenAIResponsesTestPayload('gpt-5.5-codex', 'ok', 
 assert.equal(codexSsePayload.stream, true, 'Codex Responses SSE 测试必须保持 stream')
 assert.equal(codexSsePayload.store, false, 'Codex Responses SSE 测试不应存储')
 assert.deepEqual(codexSsePayload.include, ['reasoning.encrypted_content'], 'Codex Responses SSE 测试应保留 encrypted reasoning include')
+assert.equal(codexSsePayload.reasoning, undefined, '非 Lite Codex Responses 测试不能注入 reasoning context')
+assert.equal(codexSsePayload.parallel_tool_calls, undefined, '非 Lite Codex Responses 测试保持现有并行工具语义')
+
+const responsesLiteSsePayload = createOpenAIResponsesTestPayload('gpt-5.6-sol', 'ok', false, 'codex_responses', true)
+assert.deepEqual(responsesLiteSsePayload.reasoning, { context: 'all_turns' }, 'Lite 账户测试必须声明全部轮次 reasoning context')
+assert.equal(responsesLiteSsePayload.parallel_tool_calls, false, 'Lite 账户测试必须关闭并行工具调用')
 
 assert.deepEqual(
   createOpenAIChatCompletionsTestPayload('gpt-5.5-chat', 'ok', true),
