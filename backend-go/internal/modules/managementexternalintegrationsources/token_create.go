@@ -154,10 +154,11 @@ func (s *TokenCreateService) createOnce(
 		return TokenCreateResult{}, fmt.Errorf("encrypt external integration source token: %w", err)
 	}
 	tokenPrefix, tokenSuffix := externalIntegrationSourceTokenPreview(token)
+	tokenID := s.newID("exttok")
 	stored, err := s.store.CreateManagementExternalIntegrationSourceToken(
 		ctx,
 		port.ManagementExternalIntegrationSourceTokenCreateInput{
-			TokenID:              s.newID("exttok"),
+			TokenID:              tokenID,
 			SourceID:             input.sourceID,
 			Name:                 input.name,
 			TokenHash:            publicapiauth.HashExternalSourceToken(token),
@@ -174,11 +175,15 @@ func (s *TokenCreateService) createOnce(
 	if err != nil {
 		return TokenCreateResult{}, err
 	}
+	createdTokenRow, err := findCreatedTokenRow(stored.Tokens, tokenID, stored.CreatedTokenID)
+	if err != nil {
+		return TokenCreateResult{}, err
+	}
 	source, err := updateDetailFromStore(stored.Source, stored.Tokens)
 	if err != nil {
 		return TokenCreateResult{}, err
 	}
-	tokenSummary, err := tokenFromStore(stored.CreatedToken)
+	tokenSummary, err := tokenFromStore(createdTokenRow)
 	if err != nil {
 		return TokenCreateResult{}, err
 	}
@@ -196,19 +201,48 @@ func (s *TokenCreateService) createOnce(
 	}, nil
 }
 
+func findCreatedTokenRow(
+	rows []port.ManagementExternalIntegrationSourcePrimaryTokenRow,
+	expectedID string,
+	createdTokenID string,
+) (port.ManagementExternalIntegrationSourcePrimaryTokenRow, error) {
+	if createdTokenID != expectedID {
+		return port.ManagementExternalIntegrationSourcePrimaryTokenRow{}, errors.New(
+			"management external integration source created token id mismatched",
+		)
+	}
+	var found port.ManagementExternalIntegrationSourcePrimaryTokenRow
+	matches := 0
+	for _, row := range rows {
+		if row.ID != createdTokenID {
+			continue
+		}
+		found = row
+		matches++
+	}
+	switch matches {
+	case 0:
+		return port.ManagementExternalIntegrationSourcePrimaryTokenRow{}, errors.New(
+			"management external integration source created token row is missing",
+		)
+	case 1:
+		return found, nil
+	default:
+		return port.ManagementExternalIntegrationSourcePrimaryTokenRow{}, errors.New(
+			"management external integration source created token row is duplicated",
+		)
+	}
+}
+
 func normalizeTokenCreateInput(input TokenCreateInput) (normalizedTokenCreateInput, error) {
 	scopes := input.Scopes
 	if scopes == nil {
 		scopes = []any{}
 	}
 	normalized, err := normalizeUpdateInput(UpdateInput{
-		SourceID:     input.SourceID,
-		HasName:      true,
-		Name:         input.Name,
-		HasScopes:    true,
-		Scopes:       scopes,
-		HasExpiresAt: true,
-		ExpiresAt:    input.ExpiresAt,
+		SourceID: input.SourceID,
+		HasName:  true,
+		Name:     input.Name,
 	})
 	if err != nil {
 		return normalizedTokenCreateInput{}, tokenCreateValidationError{cause: err}
@@ -221,11 +255,19 @@ func normalizeTokenCreateInput(input TokenCreateInput) (normalizedTokenCreateInp
 	if err != nil {
 		return normalizedTokenCreateInput{}, tokenCreateValidationError{cause: err}
 	}
+	scopesJSON, err := normalizeUpdateScopes(scopes)
+	if err != nil {
+		return normalizedTokenCreateInput{}, tokenCreateValidationError{cause: err}
+	}
+	expiresAt, err := normalizeUpdateExpiresAt(input.ExpiresAt)
+	if err != nil {
+		return normalizedTokenCreateInput{}, tokenCreateValidationError{cause: err}
+	}
 	return normalizedTokenCreateInput{
 		sourceID:   normalized.SourceID,
 		name:       normalized.Name,
 		status:     status,
-		scopesJSON: normalized.ScopesJSON,
-		expiresAt:  normalized.ExpiresAt,
+		scopesJSON: scopesJSON,
+		expiresAt:  expiresAt,
 	}, nil
 }

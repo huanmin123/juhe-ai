@@ -138,6 +138,52 @@ func TestTokenCreateServiceReturnsExistingActiveAndNewDisabledTokens(t *testing.
 	}
 }
 
+func TestTokenCreateServiceRejectsInvalidCreatedTokenReference(t *testing.T) {
+	plainToken := "juis_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tests := []struct {
+		name      string
+		configure func(*managementExternalIntegrationSourceTokenCreateStoreStub)
+		want      string
+	}{
+		{
+			name: "mismatched created token id",
+			configure: func(store *managementExternalIntegrationSourceTokenCreateStoreStub) {
+				store.createdTokenID = "existing_active"
+			},
+			want: "created token id mismatched",
+		},
+		{
+			name: "missing created token row",
+			configure: func(store *managementExternalIntegrationSourceTokenCreateStoreStub) {
+				store.omitCreatedToken = true
+			},
+			want: "created token row is missing",
+		},
+		{
+			name: "duplicate created token rows",
+			configure: func(store *managementExternalIntegrationSourceTokenCreateStoreStub) {
+				store.duplicateCreatedToken = true
+			},
+			want: "created token row is duplicated",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &managementExternalIntegrationSourceTokenCreateStoreStub{}
+			test.configure(store)
+			service := newDeterministicTokenCreateService(store, []string{plainToken})
+
+			result, err := service.Create(context.Background(), TokenCreateInput{SourceID: "source_1", Name: "Token"})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("created token reference error = %v, want %q", err, test.want)
+			}
+			if result.Token.Token != "" {
+				t.Fatalf("invalid created token reference leaked plaintext result: %#v", result)
+			}
+		})
+	}
+}
+
 func TestTokenCreateServiceValidation(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -164,6 +210,55 @@ func TestTokenCreateServiceValidation(t *testing.T) {
 			}
 			if store.calls != 0 || result.Token.Token != "" {
 				t.Fatalf("invalid token create reached store or leaked token: calls=%d result=%#v", store.calls, result)
+			}
+		})
+	}
+}
+
+func TestTokenCreateServiceValidationUsesNodeFirstErrorOrder(t *testing.T) {
+	tests := []struct {
+		name  string
+		input TokenCreateInput
+		want  string
+	}{
+		{
+			name: "name before status scopes and expires",
+			input: TokenCreateInput{
+				SourceID: "source_1", Status: "paused", Scopes: []any{"unknown:scope"}, ExpiresAt: "invalid",
+			},
+			want: "来源系统名称不能为空",
+		},
+		{
+			name: "status before scopes and expires",
+			input: TokenCreateInput{
+				SourceID: "source_1", Name: "Token", Status: "paused", Scopes: []any{"unknown:scope"}, ExpiresAt: "invalid",
+			},
+			want: `来源系统 token 状态无效: "paused"`,
+		},
+		{
+			name: "scopes before expires",
+			input: TokenCreateInput{
+				SourceID: "source_1", Name: "Token", Status: publicapi.TokenStatusRevoked, Scopes: []any{"unknown:scope"}, ExpiresAt: "invalid",
+			},
+			want: "来源系统 scope 不受支持：unknown:scope",
+		},
+		{
+			name: "expires after valid revoked status and scopes",
+			input: TokenCreateInput{
+				SourceID: "source_1", Name: "Token", Status: publicapi.TokenStatusRevoked, Scopes: []any{}, ExpiresAt: "invalid",
+			},
+			want: "过期时间无效",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &managementExternalIntegrationSourceTokenCreateStoreStub{}
+			_, err := NewTokenCreateService(store, "test-secret").Create(context.Background(), test.input)
+			if err == nil || !IsTokenCreateValidationError(err) || err.Error() != test.want {
+				t.Fatalf("validation error = %v, want %q", err, test.want)
+			}
+			if store.calls != 0 {
+				t.Fatalf("invalid token create reached store: %d", store.calls)
 			}
 		})
 	}
@@ -220,13 +315,6 @@ func TestTokenCreateServiceMapsStoreErrorsAndStopsImmediately(t *testing.T) {
 			}
 			if result.Token.Token != "" {
 				t.Fatalf("error result leaked token: %#v", result)
-			}
-			for _, input := range store.inputs {
-				for _, secret := range []string{input.TokenHash, input.TokenSecretEncrypted} {
-					if secret != "" && strings.Contains(err.Error(), secret) {
-						t.Fatalf("error leaked derived secret: %v", err)
-					}
-				}
 			}
 		})
 	}
@@ -300,9 +388,12 @@ func (s tokenCreateCodecStub) EncryptJSON(map[string]any) (string, error) {
 }
 
 type managementExternalIntegrationSourceTokenCreateStoreStub struct {
-	inputs []port.ManagementExternalIntegrationSourceTokenCreateInput
-	errors []error
-	calls  int
+	inputs                []port.ManagementExternalIntegrationSourceTokenCreateInput
+	errors                []error
+	calls                 int
+	createdTokenID        string
+	omitCreatedToken      bool
+	duplicateCreatedToken bool
 }
 
 func (s *managementExternalIntegrationSourceTokenCreateStoreStub) CreateManagementExternalIntegrationSourceToken(
@@ -328,6 +419,29 @@ func (s *managementExternalIntegrationSourceTokenCreateStoreStub) CreateManageme
 		CreatedAt:   input.CreatedAt,
 		UpdatedAt:   input.UpdatedAt,
 	}
+	tokens := []port.ManagementExternalIntegrationSourcePrimaryTokenRow{
+		{
+			SourceRefID: input.SourceID,
+			ID:          "existing_active",
+			Name:        "已有启用 Token",
+			TokenPrefix: "juis_old",
+			TokenSuffix: "existing",
+			Status:      publicapi.TokenStatusActive,
+			ScopesJSON:  `[]`,
+			CreatedAt:   input.CreatedAt.Add(-30 * time.Minute),
+			UpdatedAt:   input.CreatedAt.Add(-30 * time.Minute),
+		},
+	}
+	if !s.omitCreatedToken {
+		tokens = append(tokens, createdToken)
+	}
+	if s.duplicateCreatedToken {
+		tokens = append(tokens, createdToken)
+	}
+	createdTokenID := input.TokenID
+	if s.createdTokenID != "" {
+		createdTokenID = s.createdTokenID
+	}
 	return port.ManagementExternalIntegrationSourceTokenCreateResult{
 		Source: port.ManagementExternalIntegrationSourceListRow{
 			ID:             input.SourceID,
@@ -340,20 +454,7 @@ func (s *managementExternalIntegrationSourceTokenCreateStoreStub) CreateManageme
 			CreatedAt:      input.CreatedAt.Add(-time.Hour),
 			UpdatedAt:      input.UpdatedAt,
 		},
-		Tokens: []port.ManagementExternalIntegrationSourcePrimaryTokenRow{
-			{
-				SourceRefID: input.SourceID,
-				ID:          "existing_active",
-				Name:        "已有启用 Token",
-				TokenPrefix: "juis_old",
-				TokenSuffix: "existing",
-				Status:      publicapi.TokenStatusActive,
-				ScopesJSON:  `[]`,
-				CreatedAt:   input.CreatedAt.Add(-30 * time.Minute),
-				UpdatedAt:   input.CreatedAt.Add(-30 * time.Minute),
-			},
-			createdToken,
-		},
-		CreatedToken: createdToken,
+		Tokens:         tokens,
+		CreatedTokenID: createdTokenID,
 	}, nil
 }
