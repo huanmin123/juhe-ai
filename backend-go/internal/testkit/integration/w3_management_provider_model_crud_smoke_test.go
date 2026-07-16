@@ -27,6 +27,8 @@ import (
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
+const w3ProviderModelCRUDActorSystemAccountID = "sys_w2_proxy_options"
+
 func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 
@@ -112,7 +114,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 		t.Fatalf("create response = %+v", createBody.Data)
 	}
 	assertW2ProviderModelRequestCapabilities(t, &createBody.Data, []string{"priority", "flex"}, []string{"low", "high"}, "high", []string{}, "", "")
-	runW3ProviderModelCRUDAtomicInterleavingSmoke(t, ctx, db, store, createBody.Data.ID)
+	runW3ProviderModelCRUDAtomicInterleavingSmoke(t, ctx, db, store, createBody.Data.ID, w3ProviderModelCRUDActorSystemAccountID)
 
 	listRec := serveW3ProviderModelCRUDRequest(router, http.MethodGet, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options&includeInactive=true&includeUnpriced=true", sessionToken, "")
 	if listRec.Code != http.StatusOK {
@@ -214,7 +216,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	}
 }
 
-func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Context, db *sql.DB, store *postgresstore.Store, id string) {
+func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Context, db *sql.DB, store *postgresstore.Store, id string, actorSystemAccountID string) {
 	t.Helper()
 	updateCtx, cancelUpdates := context.WithCancel(ctx)
 	firstEntered := make(chan struct{})
@@ -232,8 +234,8 @@ func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Con
 		releaseFirstLock()
 		workers.Wait()
 	}()
-	first := port.ManagementCustomProviderModelUpdateInput{ID: id, ProviderCode: "gpt", ActorSystemAccountID: "sys_admin", ActorRole: "admin", Notes: port.ManagementProviderModelOptionalString{Present: true, Value: "first patch"}}
-	second := port.ManagementCustomProviderModelUpdateInput{ID: id, ProviderCode: "gpt", ActorSystemAccountID: "sys_admin", ActorRole: "admin", PricingNotes: port.ManagementProviderModelOptionalString{Present: true, Value: "second patch"}}
+	first := port.ManagementCustomProviderModelUpdateInput{ID: id, ProviderCode: "gpt", ActorSystemAccountID: actorSystemAccountID, ActorRole: "admin", Notes: port.ManagementProviderModelOptionalString{Present: true, Value: "first patch"}}
+	second := port.ManagementCustomProviderModelUpdateInput{ID: id, ProviderCode: "gpt", ActorSystemAccountID: actorSystemAccountID, ActorRole: "admin", PricingNotes: port.ManagementProviderModelOptionalString{Present: true, Value: "second patch"}}
 	workers.Add(1)
 	go func() {
 		defer workers.Done()
