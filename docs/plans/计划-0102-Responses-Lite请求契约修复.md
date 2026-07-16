@@ -1,5 +1,15 @@
 # PLAN-0102 Responses Lite 请求契约修复
 
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 保证任一带 Responses Lite header 的上游请求同时满足 `reasoning.context=all_turns` 与 `parallel_tool_calls=false`，修复软件账户测试被严格上游拒绝的问题。
+
+**Architecture:** 现有 Lite 模型集合继续作为唯一能力事实，在 Codex 适配模块新增一个小型 body 归一化函数。API Key 和 OAuth 两条请求构造路径都在确定最终模型后调用它，账户测试继续走真实网关链路，非 Lite 请求保持不变。
+
+**Tech Stack:** Node.js、TypeScript、Express Request 适配、`tsx` 回归脚本、pnpm。
+
+---
+
 ## 基本信息
 
 - 编号：`PLAN-0102`
@@ -48,12 +58,58 @@
 
 ## 执行拆解
 
-- [ ] 先补 API Key Lite body 回归并确认按当前实现失败。
-- [ ] 补 OAuth Lite body 回归并确认按当前实现失败。
-- [ ] 补账户测试 payload / 真实网关边界回归并确认按当前实现失败。
-- [ ] 实现共享 Lite body 契约并接入两条上游路径。
-- [ ] 执行专项回归、后端类型检查和构建。
-- [ ] 复核非 Lite 模型与既有 Codex 请求行为。
+### Task 1：建立失败回归
+
+**Files:**
+
+- Modify: `backend/src/scripts/regression/codex-latest-compatibility-regression.ts`
+- Modify: `backend/src/scripts/regression/account-test-request-regression.ts`
+
+- [ ] 在 Codex 最新兼容回归中断言 API Key Lite 请求体包含 `reasoning.context=all_turns`、保留 `effort/summary`，并强制 `parallel_tool_calls=false`。
+- [ ] 在同一回归中断言 OAuth Lite 请求具备相同 body 契约，`gpt-5.5` 非 Lite 请求不新增 context。
+- [ ] 在账户测试回归中断言 `codex_responses + responses_sse + gpt-5.6-sol` payload 具备 Lite body 契约。
+- [ ] 运行 `pnpm test:codex-latest-compatibility` 和 `pnpm test:account-test-request`，预期因当前缺少字段而断言失败，不允许因导入或语法错误失败。
+
+### Task 2：实现共享 Lite body 契约
+
+**Files:**
+
+- Modify: `backend/src/modules/gateway/adapters/gpt-codex/client-headers.ts`
+- Modify: `backend/src/modules/gateway/protocols/openai-v1/api-key-client-compatibility.ts`
+- Modify: `backend/src/modules/gateway/adapters/gpt-codex/oauth-normalizer.ts`
+- Modify: `backend/src/modules/accounts/account-test-request.ts`
+
+- [ ] 在 Codex 适配模块导出 `normalizeOpenAICodexResponsesLiteBody(body, model)`；非 Lite 直接返回，Lite 时浅复制已有 reasoning 对象并覆盖 `context: 'all_turns'`，同时设置 `parallel_tool_calls=false`。
+- [ ] API Key 兼容层先应用最终模型覆盖，再调用共享归一化，确保 body 与 header 使用同一最终模型事实。
+- [ ] OAuth 归一化在最终模型确定、账户请求覆盖完成后调用共享归一化，compact 和普通 Responses 使用同一 Lite 不变量。
+- [ ] 账户测试 payload 对 Lite 模型直接产生正确字段，使测试请求本身可读且真实网关仍再次保证不变量。
+- [ ] 复跑 Task 1 两个命令，预期全部通过。
+
+### Task 3：关联验证与提交
+
+**Files:**
+
+- Modify: `docs/plans/计划-0102-Responses-Lite请求契约修复.md`
+- Modify when needed: `docs/develop/测试与验证说明.md`
+
+- [ ] 运行 `pnpm test:openai-oauth-codex-adapter`、`pnpm test:openai-api-key-passthrough` 和账户测试相关回归，确认相邻路径无回归。
+- [ ] 运行后端 `pnpm typecheck` 与 `pnpm build`。
+- [ ] 运行 `git diff --check`，检查无冲突标记、临时日志和无关文件。
+- [ ] 更新本计划测试结果、状态和完成总结，提交实现。
+
+### Task 4：集成与生产发布
+
+**Files:**
+
+- Update: `F:/服务部署/juhe-ai/09-上线计划/` 对应上线记录
+- Update only on reusable incident: `F:/服务部署/juhe-ai/07-问题记录/`
+
+- [ ] 在干净 master 工作树合入 hotfix，重复后端专项、类型检查和构建，推送 master。
+- [ ] 使用 `pwsh ./scripts/package-release.ps1` 构建发布包，禁止从 Git Bash 打包；校验包内 API base path。
+- [ ] 按现有 macOS 家庭主机流程准备临时候选、验证、切换和升级，不清 Redis、不改内存上限、不执行无关数据库迁移。
+- [ ] 生产连续验证 60 秒，要求双 health 200、PID/拓扑稳定、无 watchdog 动作、无基础设施错误。
+- [ ] 用软件账户测试复验严格 Lite 上游；若需要用户凭据或验证码，记录未验证边界，不伪造成功。
+- [ ] 记录 release、SHA-256、验证结果和异常；将 master 反向合并到本地及远程 `feature/20260706-go`，恢复原工作区开发现场。
 
 ## 测试项
 
