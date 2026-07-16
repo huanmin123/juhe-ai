@@ -30,6 +30,7 @@ const attaches: Array<{ signal: AbortSignal; onEvent: (event: ChatStreamEvent) =
 const postGates: ReturnType<typeof deferred>[] = []
 const attachGates: ReturnType<typeof deferred>[] = []
 const stopCalls: Array<{ conversationId: string; target: { clientMessageId: string; turnId: string } }> = []
+const runtimeReconciliations: string[] = []
 let failNextStop = false
 const timers: Array<() => void> = []
 const dependencies: ChatGenerationRuntimeDependencies = {
@@ -54,9 +55,11 @@ const dependencies: ChatGenerationRuntimeDependencies = {
   cancelSchedule: (handle) => {
     const index = timers.indexOf(handle as () => void)
     if (index >= 0) timers.splice(index, 1)
-  }
+  },
+  onReconcileRequired: (turn) => { runtimeReconciliations.push(turn.reconciliationReason ?? '') }
 }
 const runtime = new ChatGenerationRuntime(dependencies, { reconnectDelaysMs: [250, 500, 1000] })
+runtime.activateAccount('account')
 const startInput: ChatGenerationRuntimeStartInput = {
   systemAccountId: 'account', conversationId: 'conversation', clientMessageId: 'client', content: 'hello', model: 'model'
 }
@@ -120,9 +123,11 @@ attachGates[2]!.reject(new Error('attach disconnected'))
 await Promise.resolve(); await Promise.resolve()
 assert.equal(timers.length, 0, '重附着次数必须有界')
 assert.equal(runtime.get('account', 'conversation')?.status, 'running', '耗尽重连后保留 running 供外部 sync')
+assert.equal(runtime.get('account', 'conversation')?.reconciliationReason, 'reconnect_exhausted', '重连预算耗尽必须进入显式权威同步状态')
+assert.deepEqual(runtimeReconciliations, ['reconnect_exhausted'], '重连预算耗尽必须主动触发一次权威 sync 回调')
 const unsubscribeRecovery = runtime.subscribe('account', 'conversation', () => undefined)
 await Promise.resolve()
-assert.equal(attaches.length, 4, '重连预算耗尽后重新订阅必须允许恢复 GET attach')
+assert.equal(attaches.length, 3, '重连预算耗尽后 UI 重订阅不得静默重启 attach，必须等待权威 sync')
 assert.equal(posts.length, 1)
 unsubscribeRecovery()
 
@@ -147,10 +152,20 @@ assert.equal(posts[1]!.signal.aborted, true, '账号切换必须 abort 旧账号
 assert.equal(stopCalls.length, 2, '账号切换不得调用服务端 stop')
 assert.equal(runtime.get('account', 'conversation'), undefined)
 
+assert.throws(() => runtime.start({ ...startInput, systemAccountId: 'account', conversationId: 'inactive' }), /inactive/i, 'runtime 必须拒绝非当前账户 start')
+assert.throws(() => runtime.attach({ systemAccountId: 'account', conversationId: 'inactive', turnId: 'turn-inactive', assistantMessageId: 'assistant-inactive' }), /inactive/i, 'runtime 必须拒绝非当前账户 attach')
 runtime.attach({ systemAccountId: 'other-account', conversationId: 'conversation', clientMessageId: 'client-attach', turnId: 'turn-attach', assistantMessageId: 'assistant-attach' })
 assert.equal(posts.length, 2)
-assert.equal(attaches.length, 6, 'stop 失败恢复和主动 attach 都必须使用 GET')
-attaches[5]!.onEvent({ type: 'message.snapshot', data: { turnId: 'turn-attach', assistant: { id: 'assistant-attach', status: 'streaming', contentText: 'attached', reasoningText: '', toolEvents: [], contentBlocks: [] }, eventVersion: 4 } })
+assert.equal(attaches.length, 5, 'stop 失败恢复和主动 attach 都必须使用 GET')
+attaches[4]!.onEvent({ type: 'message.snapshot', data: { turnId: 'turn-attach', assistant: { id: 'assistant-attach', status: 'streaming', contentText: 'attached', reasoningText: '', toolEvents: [], contentBlocks: [] }, eventVersion: 4 } })
+runtime.blockConversation('other-account', 'conversation')
+assert.equal(attaches[4]!.signal.aborted, true, '403 必须解除前端 SSE subscriber')
+assert.equal(runtime.get('other-account', 'conversation'), undefined, '403 后不得继续向 UI 投影该会话')
+assert.equal(stopCalls.length, 2, '403 解除前端投影不得停止后端生成')
+assert.throws(() => runtime.attach({ systemAccountId: 'other-account', conversationId: 'conversation', turnId: 'turn-attach', assistantMessageId: 'assistant-attach' }), /blocked/i, '重新认证前必须阻断 attach')
+runtime.allowConversation('other-account', 'conversation')
+runtime.attach({ systemAccountId: 'other-account', conversationId: 'conversation', clientMessageId: 'client-attach', turnId: 'turn-attach', assistantMessageId: 'assistant-attach' })
+assert.equal(attaches.length, 6, '认证恢复后必须允许重新 attach')
 attaches[5]!.onEvent({ type: 'message.completed', data: { messageId: 'assistant-attach', finishReason: 'stop', eventVersion: 5 } })
 assert.equal(runtime.get('other-account', 'conversation')?.status, 'completed')
 assert.equal(attaches[5]!.signal.aborted, true, 'terminal 必须清理网络连接')
@@ -171,6 +186,7 @@ const classificationRuntime = new ChatGenerationRuntime({
   cancelSchedule: () => undefined,
   onReconcileRequired: (turn) => { reconciliation.push(turn.reconciliationReason ?? '') }
 })
+classificationRuntime.activateAccount('account')
 classificationRuntime.attach({ systemAccountId: 'account', conversationId: 'stable', turnId: 'turn-stable', assistantMessageId: 'assistant-stable' })
 await Promise.resolve(); await Promise.resolve()
 assert.equal(classificationTimers.length, 0, '稳定 runner terminal HTTP 错误不得进入断线重试')
@@ -207,6 +223,7 @@ const failedStartRuntime = new ChatGenerationRuntime({
   schedule: () => undefined,
   cancelSchedule: () => undefined
 })
+failedStartRuntime.activateAccount('account')
 failedStartRuntime.subscribe('account', 'failed-start', (turn) => { if (turn) failedStartNotifications.push(turn.status) })
 failedStartRuntime.start({ ...startInput, conversationId: 'failed-start' })
 await Promise.resolve(); await Promise.resolve()
@@ -226,6 +243,7 @@ const failedProtocolRuntime = new ChatGenerationRuntime({
   schedule: () => undefined,
   cancelSchedule: () => undefined
 })
+failedProtocolRuntime.activateAccount('account')
 failedProtocolRuntime.start({ ...startInput, conversationId: 'failed-protocol' })
 await Promise.resolve(); await Promise.resolve()
 assert.equal(failedProtocolRuntime.get('account', 'failed-protocol')?.status, 'failed', 'started 前协议错误必须结束 preparing')

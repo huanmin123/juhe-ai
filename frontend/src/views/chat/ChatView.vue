@@ -140,7 +140,7 @@ import { planChatCreateDialogFromConversationPane } from './chatConversationDraw
 import { chatGenerationRuntime, type RunningTurn } from './chatGenerationRuntime'
 import { getDefaultChatLocalCache } from './chatLocalCache'
 import { ChatCacheBroadcast } from './chatCacheBroadcast'
-import { createDefaultChatConversationSyncDependencies, synchronizeChatConversation } from './chatConversationSync'
+import { createDefaultChatConversationSyncDependencies, projectChatMessagesWithRuntime, synchronizeChatConversation } from './chatConversationSync'
 
 interface ChatTurnEditingState {
   conversationId: string
@@ -344,11 +344,12 @@ async function selectConversation(id: string, options: {
     subscribeSelectedRuntime()
     const conversation = conversations.value.find((item) => item.id === id)
     if (!conversation) throw new Error('会话不存在')
+    if (authState.currentUser.value?.id !== conversation.systemAccountId) return false
     const conversationLoad = startChatConversationLoad({
       loadMessages: async () => {
         const cached = await localCache.readConversation(conversation.systemAccountId, id)
         if (cached.ok && cached.value?.messages.length) {
-          if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
+          if (isCurrentConversationAccount(conversation.systemAccountId, id, loadEpoch)) {
             messages.value = cached.value.messages
             hasOlderMessages.value = cached.value.messages.length === 100
             messagesLoading.value = false
@@ -359,13 +360,20 @@ async function selectConversation(id: string, options: {
         const synchronized = await synchronizeChatConversation({
           systemAccountId: conversation.systemAccountId,
           conversationId: id,
-          dependencies: syncDependencies
+          dependencies: syncDependencies,
+          projectMessages: (items, syncHead) => projectRuntimeMessages(conversation.systemAccountId, id, items, syncHead)
         })
+        if (!isCurrentConversationAccount(conversation.systemAccountId, id, loadEpoch)) return []
         if (synchronized.state === 'not_found') {
           conversations.value = conversations.value.filter((item) => item.id !== id)
           return []
         }
-        if (synchronized.state === 'forbidden') return []
+        if (synchronized.state === 'forbidden') {
+          chatGenerationRuntime.blockConversation(conversation.systemAccountId, id)
+          return []
+        }
+        if (synchronized.state === 'superseded') return messages.value
+        chatGenerationRuntime.allowConversation(conversation.systemAccountId, id)
         replaceConversation({ ...conversation, messageRevision: synchronized.messageRevision, activeTurnId: synchronized.syncHead.activeTurn?.turnId })
         cacheBroadcast.publish({ systemAccountId: conversation.systemAccountId, conversationId: id, messageRevision: synchronized.messageRevision })
         if (synchronized.syncHead.activeTurn) {
@@ -376,6 +384,7 @@ async function selectConversation(id: string, options: {
           if (pending?.request.conversationId === id && (!user?.clientMessageId || pending.request.clientMessageId === user.clientMessageId)) {
             activeStopTarget = { request: pending.request, turnId: active.turnId }
           }
+          if (!isCurrentConversationAccount(conversation.systemAccountId, id, loadEpoch)) return synchronized.messages
           chatGenerationRuntime.attach({
             systemAccountId: conversation.systemAccountId,
             conversationId: id,
@@ -591,7 +600,7 @@ function subscribeSelectedRuntime(): void {
   subscribedRuntimeConversationId = undefined
   if (!pageActive) return
   const conversation = selectedConversation.value
-  if (!conversation) {
+  if (!conversation || authState.currentUser.value?.id !== conversation.systemAccountId) {
     generating.value = false
     return
   }
@@ -600,7 +609,7 @@ function subscribeSelectedRuntime(): void {
 }
 function applyRuntimeTurn(turn: RunningTurn | undefined): void {
   const conversation = selectedConversation.value
-  if (!conversation || subscribedRuntimeConversationId !== conversation.id) return
+  if (!conversation || authState.currentUser.value?.id !== conversation.systemAccountId || subscribedRuntimeConversationId !== conversation.id) return
   generating.value = turn?.status === 'preparing' || turn?.status === 'running'
   if (!turn) {
     activeStopTarget = undefined
@@ -654,18 +663,27 @@ function applyRuntimeTurn(turn: RunningTurn | undefined): void {
 }
 async function refreshConversationFromSync(conversationId: string): Promise<void> {
   const conversation = conversations.value.find((item) => item.id === conversationId)
-  if (!conversation) return
+  if (!conversation || authState.currentUser.value?.id !== conversation.systemAccountId) return
   try {
-    const result = await synchronizeChatConversation({ systemAccountId: conversation.systemAccountId, conversationId, dependencies: syncDependencies })
+    const result = await synchronizeChatConversation({
+      systemAccountId: conversation.systemAccountId,
+      conversationId,
+      dependencies: syncDependencies,
+      projectMessages: (items, syncHead) => projectRuntimeMessages(conversation.systemAccountId, conversationId, items, syncHead)
+    })
+    if (authState.currentUser.value?.id !== conversation.systemAccountId || !conversations.value.some((item) => item.id === conversationId && item.systemAccountId === conversation.systemAccountId)) return
     if (result.state === 'not_found') {
       conversations.value = conversations.value.filter((item) => item.id !== conversationId)
       if (selectedConversationId.value === conversationId) messages.value = []
       return
     }
     if (result.state === 'forbidden') {
+      chatGenerationRuntime.blockConversation(conversation.systemAccountId, conversationId)
       if (selectedConversationId.value === conversationId) messages.value = []
       return
     }
+    if (result.state === 'superseded' || result.messageRevision < conversation.messageRevision) return
+    chatGenerationRuntime.allowConversation(conversation.systemAccountId, conversationId)
     replaceConversation({ ...conversation, messageRevision: result.messageRevision, activeTurnId: result.syncHead.activeTurn?.turnId })
     if (!disposed && selectedConversationId.value === conversationId) {
       messages.value = result.messages
@@ -695,6 +713,19 @@ async function refreshConversationFromSync(conversationId: string): Promise<void
 }
 function cloneMessage(value: ChatMessage): ChatMessage {
   return JSON.parse(JSON.stringify(value)) as ChatMessage
+}
+function isCurrentConversationAccount(systemAccountId: string, conversationId: string, epoch: number): boolean {
+  return authState.currentUser.value?.id === systemAccountId
+    && isCurrentChatConversationLoad({ conversationId, selectedConversationId: selectedConversationId.value, epoch, currentEpoch: conversationLoadEpoch, disposed })
+}
+function projectRuntimeMessages(
+  systemAccountId: string,
+  conversationId: string,
+  values: readonly ChatMessage[],
+  syncHead: { activeTurn?: { turnId: string; assistantMessageId: string } }
+): ChatMessage[] {
+  const running = chatGenerationRuntime.get(systemAccountId, conversationId)
+  return projectChatMessagesWithRuntime({ messages: values, activeTurn: syncHead.activeTurn, runtimeTurn: running })
 }
 async function removeConversation(id: string): Promise<void> { try { const conversation = conversations.value.find((item) => item.id === id); await chatApi.deleteConversation(id); if (conversation) await localCache.deleteConversation(conversation.systemAccountId, id); conversations.value = conversations.value.filter((item) => item.id !== id); if (selectedConversationId.value === id) { selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {

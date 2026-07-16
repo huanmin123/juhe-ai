@@ -6,6 +6,7 @@ import type { CaptchaChallengeSummary, CurrentUserSummary } from '@/types/domain
 import { chatGenerationRuntime } from '@/views/chat/chatGenerationRuntime'
 import { getDefaultChatLocalCache } from '@/views/chat/chatLocalCache'
 import { clearChatPendingSubmission } from '@/views/chat/chatPendingSubmissionStorage'
+import { drainChatConversationSyncAccount, invalidateChatConversationSyncAccount } from '@/views/chat/chatConversationSync'
 
 const currentUser = ref<CurrentUserSummary>()
 const authChecked = ref(false)
@@ -55,8 +56,10 @@ export async function logout(): Promise<void> {
 
 export async function clearCurrentAccountChatState(systemAccountId = currentUser.value?.id): Promise<void> {
   if (!systemAccountId) return
+  invalidateChatConversationSyncAccount(systemAccountId)
   chatGenerationRuntime.close(systemAccountId)
   if (typeof window !== 'undefined') clearChatPendingSubmission(window.sessionStorage, systemAccountId)
+  await drainChatConversationSyncAccount(systemAccountId)
   await getDefaultChatLocalCache().clearAccount(systemAccountId)
 }
 

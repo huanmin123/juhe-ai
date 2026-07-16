@@ -8,12 +8,16 @@ import { submitLockDirective } from './directives/submitLock'
 import { router } from './router'
 import { authState } from './composables/useAuth'
 import { chatGenerationRuntime } from './views/chat/chatGenerationRuntime'
+import { activateChatConversationSyncAccount } from './views/chat/chatConversationSync'
 
 const app = createApp(App)
 
 watch(
   () => authState.currentUser.value?.id,
-  (systemAccountId) => chatGenerationRuntime.activateAccount(systemAccountId),
+  (systemAccountId) => {
+    activateChatConversationSyncAccount(systemAccountId)
+    chatGenerationRuntime.activateAccount(systemAccountId)
+  },
   { immediate: true }
 )
 

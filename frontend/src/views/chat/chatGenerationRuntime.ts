@@ -4,7 +4,7 @@ import type { ChatMessage, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent
 import { applyChatStreamEvent } from './chatStream'
 
 export type ChatGenerationRuntimeStatus = 'preparing' | 'running' | 'completed' | 'failed' | 'canceled'
-export type ChatGenerationReconciliationReason = 'runner_terminal' | 'runner_missing' | 'http_error' | 'protocol_error'
+export type ChatGenerationReconciliationReason = 'runner_terminal' | 'runner_missing' | 'http_error' | 'protocol_error' | 'reconnect_exhausted'
 
 export interface ChatGenerationRuntimeError {
   name: string
@@ -108,6 +108,7 @@ const defaultDependencies: ChatGenerationRuntimeDependencies = {
 export class ChatGenerationRuntime {
   private readonly turns = new Map<string, InternalTurn>()
   private readonly subscribers = new Map<string, Set<TurnSubscriber>>()
+  private readonly blockedConversations = new Set<string>()
   private readonly reconnectDelaysMs: readonly number[]
   private activeSystemAccountId?: string
 
@@ -140,6 +141,7 @@ export class ChatGenerationRuntime {
   }
 
   start(input: ChatGenerationRuntimeStartInput): RunningTurn {
+    this.assertAvailable(input.systemAccountId, input.conversationId)
     const key = runtimeKey(input.systemAccountId, input.conversationId)
     const existing = this.turns.get(key)
     if (existing && (existing.status === 'preparing' || existing.status === 'running')) return snapshotTurn(existing)!
@@ -165,6 +167,7 @@ export class ChatGenerationRuntime {
   }
 
   attach(input: ChatGenerationRuntimeAttachInput): RunningTurn {
+    this.assertAvailable(input.systemAccountId, input.conversationId)
     const key = runtimeKey(input.systemAccountId, input.conversationId)
     const existing = this.turns.get(key)
     if (existing && existing.status === 'running' && existing.turnId === input.turnId) {
@@ -238,10 +241,26 @@ export class ChatGenerationRuntime {
       this.turns.delete(key)
       this.subscribers.delete(key)
     }
+    for (const key of this.blockedConversations) {
+      if (!systemAccountId || !runtimeKeyBelongsTo(key, systemAccountId)) this.blockedConversations.delete(key)
+    }
   }
 
   switchAccount(systemAccountId?: string): void {
     this.activateAccount(systemAccountId)
+  }
+
+  blockConversation(systemAccountId: string, conversationId: string): void {
+    const key = runtimeKey(systemAccountId, conversationId)
+    this.blockedConversations.add(key)
+    const turn = this.turns.get(key)
+    if (turn) this.releaseConnection(turn)
+    this.turns.delete(key)
+    this.notify(key)
+  }
+
+  allowConversation(systemAccountId: string, conversationId: string): void {
+    this.blockedConversations.delete(runtimeKey(systemAccountId, conversationId))
   }
 
   forget(systemAccountId: string, conversationId: string, expectedTurnId?: string): boolean {
@@ -260,6 +279,12 @@ export class ChatGenerationRuntime {
       this.releaseConnection(turn)
       this.turns.delete(key)
       this.subscribers.delete(key)
+    }
+    if (systemAccountId === undefined) this.blockedConversations.clear()
+    else {
+      for (const key of this.blockedConversations) {
+        if (runtimeKeyBelongsTo(key, systemAccountId)) this.blockedConversations.delete(key)
+      }
     }
     if (systemAccountId === undefined || this.activeSystemAccountId === systemAccountId) this.activeSystemAccountId = undefined
   }
@@ -381,7 +406,14 @@ export class ChatGenerationRuntime {
       return
     }
     const delay = this.reconnectDelaysMs[turn.reconnectAttempt]
-    if (delay === undefined || turn.reconnectTimer !== undefined) return
+    if (delay === undefined) {
+      this.requestReconciliation(key, turn, 'reconnect_exhausted', {
+        name: 'ChatStreamReconnectExhaustedError',
+        message: '生成连接重试已耗尽，正在同步服务端状态'
+      })
+      return
+    }
+    if (turn.reconnectTimer !== undefined) return
     turn.reconnectTimer = this.dependencies.schedule(() => {
       turn.reconnectTimer = undefined
       void this.runAttach(key, turn)
@@ -395,6 +427,28 @@ export class ChatGenerationRuntime {
       this.dependencies.cancelSchedule(turn.reconnectTimer)
       turn.reconnectTimer = undefined
     }
+  }
+
+  private requestReconciliation(
+    key: string,
+    turn: InternalTurn,
+    reason: ChatGenerationReconciliationReason,
+    error: ChatGenerationRuntimeError
+  ): void {
+    if (this.turns.get(key) !== turn || isTerminal(turn.status) || turn.reconciliationReason === reason) return
+    turn.reconciliationReason = reason
+    turn.error = error
+    this.notify(key)
+    try {
+      const snapshot = snapshotTurn(turn)
+      if (snapshot) this.dependencies.onReconcileRequired?.(snapshot)
+    } catch {
+    }
+  }
+
+  private assertAvailable(systemAccountId: string, conversationId: string): void {
+    if (this.activeSystemAccountId !== systemAccountId) throw new Error('chat generation runtime account inactive')
+    if (this.blockedConversations.has(runtimeKey(systemAccountId, conversationId))) throw new Error('chat generation runtime conversation blocked')
   }
 
   private notify(key: string): void {
@@ -420,6 +474,15 @@ export const chatGenerationRuntime = new ChatGenerationRuntime()
 
 function runtimeKey(systemAccountId: string, conversationId: string): string {
   return JSON.stringify([systemAccountId, conversationId])
+}
+
+function runtimeKeyBelongsTo(key: string, systemAccountId: string): boolean {
+  try {
+    const parsed = JSON.parse(key) as unknown
+    return Array.isArray(parsed) && parsed[0] === systemAccountId
+  } catch {
+    return false
+  }
 }
 
 function isTerminal(status: ChatGenerationRuntimeStatus): boolean {
