@@ -49,20 +49,11 @@
         <template v-else-if="column.key === 'runningCount'">
           {{ formatQueueRunningCount(record) }}
         </template>
-        <template v-else-if="column.key === 'queueBytes'">
-          {{ formatQueueBytes(record) }}
+        <template v-else-if="column.key === 'processingMetrics'">
+          {{ formatProcessingMetrics(record) }}
         </template>
-        <template v-else-if="column.key === 'completedCount'">
-          {{ formatOptionalNumber(record.completedCount) }}
-        </template>
-        <template v-else-if="column.key === 'droppedCount'">
-          {{ formatOptionalNumber(record.droppedCount) }}
-        </template>
-        <template v-else-if="column.key === 'flushFailureCount'">
-          {{ formatOptionalNumber(record.flushFailureCount) }}
-        </template>
-        <template v-else-if="column.key === 'rejectedTimedOutCount'">
-          {{ formatRejectedTimedOutFailed(record) }}
+        <template v-else-if="column.key === 'problemMetrics'">
+          {{ formatProblemMetrics(record) }}
         </template>
         <template v-else-if="column.key === 'oldestQueuedMs'">
           {{ formatQueueWait(record) }}
@@ -105,25 +96,13 @@
               <span>活跃</span>
               <strong>{{ formatQueueRunningCount(record) }}</strong>
             </div>
-            <div class="mobile-list-meta-item">
-              <span>队列大小</span>
-              <strong>{{ formatQueueBytes(record) }}</strong>
+            <div v-if="formatProcessingMetrics(record) !== '-'" class="mobile-list-meta-item">
+              <span>容量 / 处理</span>
+              <strong>{{ formatProcessingMetrics(record) }}</strong>
             </div>
-            <div class="mobile-list-meta-item">
-              <span>已完成</span>
-              <strong>{{ formatOptionalNumber(record.completedCount) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>丢弃</span>
-              <strong>{{ formatOptionalNumber(record.droppedCount) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>写入失败</span>
-              <strong>{{ formatOptionalNumber(record.flushFailureCount) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>拒绝/超时/失败</span>
-              <strong>{{ formatRejectedTimedOutFailed(record) }}</strong>
+            <div v-if="formatProblemMetrics(record) !== '-'" class="mobile-list-meta-item">
+              <span>异常累计</span>
+              <strong>{{ formatProblemMetrics(record) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>最老等待</span>
@@ -151,7 +130,7 @@ import { formatDateTime } from '@/shared/formatters'
 import StatsChartCard from './StatsChartCard.vue'
 import { processRoleLabel } from './statsChartOptions'
 import { formatBytesMiB, formatDuration, formatInteger } from './statsFormatters'
-import { backgroundQueueBacklog, backgroundQueueHistoricalProblemCount, backgroundQueueStatusColor, backgroundQueueStatusText, type BackgroundQueueRow } from './statsBackgroundQueues'
+import { backgroundQueueActiveCount, backgroundQueueBacklog, backgroundQueueHistoricalProblemCount, backgroundQueueStatusColor, backgroundQueueStatusText, type BackgroundQueueRow } from './statsBackgroundQueues'
 
 defineProps<{
   emptyDescription: string
@@ -173,12 +152,9 @@ const backgroundQueueColumns = [
   { title: '所属 worker', key: 'workerRole', width: 112 },
   { title: '状态', key: 'status', width: 86 },
   { title: '积压', key: 'backlog', width: 86, align: 'right', sorter: (left: BackgroundQueueRow, right: BackgroundQueueRow) => backgroundQueueBacklog(left) - backgroundQueueBacklog(right), defaultSortOrder: 'descend' },
-  { title: '活跃', key: 'runningCount', width: 86, align: 'right', sorter: (left: BackgroundQueueRow, right: BackgroundQueueRow) => queueRunningDisplayCount(left) - queueRunningDisplayCount(right) },
-  { title: '大小', key: 'queueBytes', width: 96, align: 'right', sorter: sortBackgroundQueueNumber('queueBytes') },
-  { title: '已完成', key: 'completedCount', width: 96, align: 'right', sorter: sortBackgroundQueueNumber('completedCount') },
-  { title: '丢弃', key: 'droppedCount', width: 84, align: 'right', sorter: sortBackgroundQueueNumber('droppedCount') },
-  { title: '写入失败', key: 'flushFailureCount', width: 108, align: 'right', sorter: sortBackgroundQueueProblemCount },
-  { title: '拒绝/超时/失败', key: 'rejectedTimedOutCount', width: 132, align: 'right', sorter: sortBackgroundQueueProblemCount },
+  { title: '活跃', key: 'runningCount', width: 86, align: 'right', sorter: (left: BackgroundQueueRow, right: BackgroundQueueRow) => numberValue(queueRunningDisplayCount(left)) - numberValue(queueRunningDisplayCount(right)) },
+  { title: '容量 / 处理', key: 'processingMetrics', width: 220 },
+  { title: '异常累计', key: 'problemMetrics', width: 260, sorter: sortBackgroundQueueProblemCount },
   { title: '最老等待', key: 'oldestQueuedMs', width: 110, align: 'right', sorter: sortBackgroundQueueWait },
   { title: '调度 / 写入', key: 'nextOrSuccessAt', width: 196 },
   { title: '最近错误', key: 'lastError', ellipsis: true }
@@ -203,23 +179,31 @@ function formatQueueNumber(value: number): string {
   return formatInteger(value)
 }
 
-function formatOptionalNumber(value?: number): string {
-  return value === undefined ? '-' : formatInteger(value)
-}
-
 function formatQueueBytes(row: BackgroundQueueRow): string {
   return row.queueBytes === undefined ? '-' : formatBytesMiB(row.queueBytes)
 }
 
 function formatQueueRunningCount(row: BackgroundQueueRow): string {
-  return formatInteger(queueRunningDisplayCount(row))
+  const count = queueRunningDisplayCount(row)
+  return count === undefined ? '-' : formatInteger(count)
 }
 
-function formatRejectedTimedOutFailed(row: BackgroundQueueRow): string {
-  const rejected = numberValue(row.rejectedCount) + numberValue(row.expiredCount)
-  const timedOut = numberValue(row.timedOutCount)
-  const failed = numberValue(row.failedCount)
-  return `${formatInteger(rejected)} / ${formatInteger(timedOut)} / ${formatInteger(failed)}`
+function formatProcessingMetrics(row: BackgroundQueueRow): string {
+  const parts: string[] = []
+  if (row.queueBytes !== undefined) parts.push(`大小 ${formatQueueBytes(row)}`)
+  if (row.completedCount !== undefined) parts.push(`完成 ${formatInteger(row.completedCount)}`)
+  return parts.join('；') || '-'
+}
+
+function formatProblemMetrics(row: BackgroundQueueRow): string {
+  const parts: string[] = []
+  if (row.droppedCount !== undefined) parts.push(`丢弃 ${formatInteger(row.droppedCount)}`)
+  if (row.expiredCount !== undefined) parts.push(`过期 ${formatInteger(row.expiredCount)}`)
+  if (row.rejectedCount !== undefined) parts.push(`拒绝 ${formatInteger(row.rejectedCount)}`)
+  if (row.timedOutCount !== undefined) parts.push(`超时 ${formatInteger(row.timedOutCount)}`)
+  if (row.failedCount !== undefined) parts.push(`失败 ${formatInteger(row.failedCount)}`)
+  if (row.flushFailureCount !== undefined) parts.push(`写入失败 ${formatInteger(row.flushFailureCount)}`)
+  return parts.join('；') || '-'
 }
 
 function formatQueueWait(row: BackgroundQueueRow): string {
@@ -229,10 +213,6 @@ function formatQueueWait(row: BackgroundQueueRow): string {
     numberValue(row.pendingWriteOldestQueuedMs)
   )
   return value > 0 ? formatDuration(value) : '-'
-}
-
-function sortBackgroundQueueNumber(field: keyof Pick<BackgroundQueueRow, 'runningCount' | 'queueBytes' | 'completedCount' | 'droppedCount'>) {
-  return (left: BackgroundQueueRow, right: BackgroundQueueRow) => numberValue(left[field]) - numberValue(right[field])
 }
 
 function sortBackgroundQueueProblemCount(left: BackgroundQueueRow, right: BackgroundQueueRow): number {
@@ -261,12 +241,8 @@ function queueWaitMs(row: BackgroundQueueRow): number {
   )
 }
 
-function queueRunningCount(row: BackgroundQueueRow): number {
-  return numberValue(row.runningCount) + numberValue(row.writerPoolActiveJobs)
-}
-
-function queueRunningDisplayCount(row: BackgroundQueueRow): number {
-  return row.consumers !== undefined ? numberValue(row.consumers) : queueRunningCount(row)
+function queueRunningDisplayCount(row: BackgroundQueueRow): number | undefined {
+  return backgroundQueueActiveCount(row)
 }
 
 function numberValue(value: unknown): number {

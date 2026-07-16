@@ -68,7 +68,7 @@ export function backgroundQueueDiagnosticCount(row: BackgroundQueueRow): number 
 
 export function backgroundQueueStatusText(row: BackgroundQueueRow): string {
   if (row.lastError) return '异常'
-  if (backgroundQueueRunningCount(row) > 0) return '运行中'
+  if (numberValue(backgroundQueueActiveCount(row)) > 0) return '运行中'
   if (backgroundQueueBacklog(row) > 0) return row.queueType === 'retry' ? '待执行' : '积压'
   if (backgroundQueueHistoricalProblemCount(row) > 0 || backgroundQueueDiagnosticCount(row) > 0) return '曾失败'
   return '空闲'
@@ -76,12 +76,14 @@ export function backgroundQueueStatusText(row: BackgroundQueueRow): string {
 
 export function backgroundQueueStatusColor(row: BackgroundQueueRow): string {
   if (row.lastError) return 'error'
-  if (backgroundQueueRunningCount(row) > 0) return 'processing'
+  if (numberValue(backgroundQueueActiveCount(row)) > 0) return 'processing'
   if (backgroundQueueBacklog(row) > 0 || backgroundQueueHistoricalProblemCount(row) > 0 || backgroundQueueDiagnosticCount(row) > 0) return 'warning'
   return 'success'
 }
 
-function backgroundQueueRunningCount(row: BackgroundQueueRow): number {
+export function backgroundQueueActiveCount(row: BackgroundQueueRow): number | undefined {
+  if (row.consumers !== undefined) return numberValue(row.consumers)
+  if (row.runningCount === undefined && row.writerPoolActiveJobs === undefined) return undefined
   return numberValue(row.runningCount) + numberValue(row.writerPoolActiveJobs)
 }
 
@@ -93,8 +95,8 @@ function backgroundQueueRowsFromRuntimeRow(row: BackgroundRuntimeRow): Backgroun
       name: row.retryQueue.name || row.name,
       queueType: 'retry',
       workerRole: row.workerRole,
-      pendingCount: numberValue(row.retryQueue.pendingCount),
-      runningCount: numberValue(row.retryQueue.runningCount),
+      pendingCount: optionalNumberValue(row.retryQueue.pendingCount),
+      runningCount: optionalNumberValue(row.retryQueue.runningCount),
       nextRunAt: row.retryQueue.nextRunAt
     })
   }
@@ -105,25 +107,25 @@ function backgroundQueueRowsFromRuntimeRow(row: BackgroundRuntimeRow): Backgroun
       name: row.localQueue.name || row.name,
       queueType: localQueueType(localQueue.queueType),
       workerRole: row.workerRole,
-      queueLength: numberValue(row.localQueue.queueLength),
-      queueBytes: numberValue(row.localQueue.queueBytes),
-      completedCount: numberValue(row.localQueue.completedCount),
-      droppedCount: numberValue(row.localQueue.droppedCount),
-      rejectedCount: numberValue(localQueue.rejectedCount),
-      expiredCount: numberValue(localQueue.expiredCount),
-      timedOutCount: numberValue(localQueue.timedOutCount),
-      failedCount: numberValue(localQueue.failedCount),
-      flushFailureCount: numberValue(row.localQueue.flushFailureCount),
-      oldestQueuedMs: numberValue(row.localQueue.oldestQueuedMs),
-      writerPoolQueueLength: numberValue(row.localQueue.writerPoolQueueLength),
-      writerPoolActiveJobs: numberValue(row.localQueue.writerPoolActiveJobs),
-      writerPoolFailedJobs: numberValue(row.localQueue.writerPoolFailedJobs),
-      writerPoolRejectedJobs: numberValue(row.localQueue.writerPoolRejectedJobs),
-      writerPoolOldestQueuedMs: numberValue(row.localQueue.writerPoolOldestQueuedMs),
-      pendingWriteRequestCount: numberValue(localQueue.pendingWriteRequestCount),
-      pendingWriteOldestQueuedMs: numberValue(localQueue.pendingWriteOldestQueuedMs),
-      runningCount: numberValue(localQueue.runningCount),
-      consumers: numberValue(localQueue.consumers),
+      queueLength: optionalNumberValue(row.localQueue.queueLength),
+      queueBytes: optionalNumberValue(row.localQueue.queueBytes),
+      completedCount: optionalNumberValue(row.localQueue.completedCount),
+      droppedCount: optionalNumberValue(row.localQueue.droppedCount),
+      rejectedCount: optionalNumberValue(localQueue.rejectedCount),
+      expiredCount: optionalNumberValue(localQueue.expiredCount),
+      timedOutCount: optionalNumberValue(localQueue.timedOutCount),
+      failedCount: optionalNumberValue(localQueue.failedCount),
+      flushFailureCount: optionalNumberValue(row.localQueue.flushFailureCount),
+      oldestQueuedMs: optionalNumberValue(row.localQueue.oldestQueuedMs),
+      writerPoolQueueLength: optionalNumberValue(row.localQueue.writerPoolQueueLength),
+      writerPoolActiveJobs: optionalNumberValue(row.localQueue.writerPoolActiveJobs),
+      writerPoolFailedJobs: optionalNumberValue(row.localQueue.writerPoolFailedJobs),
+      writerPoolRejectedJobs: optionalNumberValue(row.localQueue.writerPoolRejectedJobs),
+      writerPoolOldestQueuedMs: optionalNumberValue(row.localQueue.writerPoolOldestQueuedMs),
+      pendingWriteRequestCount: optionalNumberValue(localQueue.pendingWriteRequestCount),
+      pendingWriteOldestQueuedMs: optionalNumberValue(localQueue.pendingWriteOldestQueuedMs),
+      runningCount: optionalNumberValue(localQueue.runningCount),
+      consumers: optionalNumberValue(localQueue.consumers),
       nextRunAt: stringValue(localQueue.nextRunAt),
       flushLastSuccessAt: row.localQueue.flushLastSuccessAt,
       lastError: typeof row.localQueue.flushLastError === 'string' ? row.localQueue.flushLastError : undefined
@@ -169,4 +171,9 @@ function stringValue(value: unknown): string | undefined {
 function numberValue(value: unknown): number {
   const numericValue = typeof value === 'string' ? Number(value.trim()) : value
   return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : 0
+}
+
+function optionalNumberValue(value: unknown): number | undefined {
+  const numericValue = typeof value === 'string' && value.trim() ? Number(value.trim()) : value
+  return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : undefined
 }

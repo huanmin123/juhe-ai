@@ -220,6 +220,7 @@ const hasBackgroundQueues = computed(() => backgroundJobsAvailable.value && back
 const backgroundQueueEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台队列' : '暂时无法获取后台 worker 队列状态')
 const systemRuntimeAlertVisible = computed(() => Boolean(systemMetrics.value && (
   !systemMetrics.value.runtimeSnapshotAvailable
+  || systemMetrics.value.runtimeSnapshotStale === true
   || systemMetrics.value.ingestWorkerSnapshotAvailable === false
   || systemMetrics.value.statsWorkerSnapshotAvailable === false
   || systemMetrics.value.opsWorkerSnapshotAvailable === false
@@ -229,6 +230,7 @@ const systemRuntimeAlertDescription = computed(() => {
   const metrics = systemMetrics.value
   if (!metrics) return ''
   const reasons: string[] = []
+  if (metrics.runtimeSnapshotStale) reasons.push('运行态快照已过期')
   if (!metrics.runtimeSnapshotAvailable) {
     reasons.push('服务运行态不可用')
   } else {

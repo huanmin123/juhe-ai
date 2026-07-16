@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import http from 'node:http'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -18,6 +18,20 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const statsRoutesSource = readFileSync(resolve('src/modules/stats/stats.routes.ts'), 'utf8')
+const dbServiceIpcSource = readFileSync(resolve('src/modules/db-service/db-service-ipc.ts'), 'utf8')
+const workerSchedulerSource = readFileSync(resolve('src/modules/background/worker-scheduler.ts'), 'utf8')
+assert.match(statsRoutesSource, /requestServerRuntimeSnapshot\(2500\)/, '外层运行态快照预算必须大于内部 worker 快照预算')
+assert.match(dbServiceIpcSource, /requestIngestWorkerSnapshot\(1500\)/)
+assert.match(dbServiceIpcSource, /requestStatsWorkerSnapshot\(1500\)/)
+assert.match(dbServiceIpcSource, /requestOpsWorkerSnapshot\(1500\)/)
+assert.match(statsRoutesSource, /consumers: optionalNumberValue\(queue\.consumers\)/, '缺失 consumers 不能被伪造成 0')
+assert.match(statsRoutesSource, /expiredCount: numberValue\(state\.expiredCount\)/, '网关过期必须与丢弃分别展示')
+assert.match(dbServiceIpcSource, /observedAt: new Date\(\)\.toISOString\(\)/, '运行态快照必须记录采集时间')
+assert.match(statsRoutesSource, /runtimeSnapshotAgeMs/, '系统指标接口必须返回运行态快照年龄')
+assert.match(statsRoutesSource, /runtimeSnapshotStale/, '系统指标接口必须明确快照过期状态')
+assert.doesNotMatch(workerSchedulerSource, /state\.lastErrorAt = undefined/, '任务成功后必须保留最近失败时间供恢复状态判断')
 
 const [
   { createSystemApiApp },

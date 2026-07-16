@@ -209,6 +209,11 @@ function numberValue(value: unknown): number {
   return typeof number === 'number' && Number.isFinite(number) ? number : 0
 }
 
+function optionalNumberValue(value: unknown): number | undefined {
+  const number = typeof value === 'string' && value.trim() ? Number(value.trim()) : value
+  return typeof number === 'number' && Number.isFinite(number) ? number : undefined
+}
+
 function retryQueueBackgroundJobRow(
   name: string,
   workerRole: string | undefined,
@@ -233,11 +238,11 @@ function localQueueBackgroundJobRow(
   const queueLength = numberValue(queue.queueLength)
   const flushFailureCount = numberValue(queue.flushFailureCount)
   const completedCount = numberValue(queue.completedCount)
-  const runningCount = numberValue(options.runningCount)
+  const runningCount = optionalNumberValue(options.runningCount)
   return emptyBackgroundJobRow({
     name,
     workerRole,
-    running: queueLength > 0 || runningCount > 0,
+    running: queueLength > 0 || numberValue(runningCount) > 0,
     lastSuccessAt: queue.flushLastSuccessAt,
     lastFinishedAt: queue.flushLastSuccessAt,
     lastError: options.lastError ?? (typeof queue.flushLastError === 'string' ? queue.flushLastError : undefined),
@@ -249,7 +254,7 @@ function localQueueBackgroundJobRow(
       name,
       queueType: options.queueType,
       runningCount,
-      consumers: numberValue(queue.consumers),
+      consumers: optionalNumberValue(queue.consumers),
       nextRunAt: options.nextRunAt
     }
   })
@@ -274,14 +279,14 @@ function accountBalanceSnapshotCleanupRuntimeRows(runtime: DbServiceServerRuntim
     localQueueBackgroundJobRow('AI 账户余额旧快照清理', 'server', {
       queueLength: state.pendingCount,
       completedCount: state.completedCount,
-      flushFailureCount: state.failedAttemptCount,
+      failedCount: state.failedAttemptCount,
       flushLastSuccessAt: state.lastSuccessAt,
       flushLastError: state.lastError,
       suppressedAccountCount: state.suppressedAccountCount,
       exhaustedAccountCount: state.exhaustedAccountCount,
       exhaustedCount: state.exhaustedCount
     }, {
-      queueType: 'retry',
+      queueType: 'local',
       runningCount: state.runningCount,
       nextRunAt: state.nextRunAt,
       lastError: state.lastError
@@ -305,7 +310,15 @@ async function redisStreamRuntime(
   name: string,
   loadRuntime: () => Promise<RedisStreamQueueRuntime | undefined>
 ): Promise<BackgroundJobRuntimeRow | undefined> {
-  const runtime = await loadRuntime().catch(() => undefined)
+  let runtime: RedisStreamQueueRuntime | undefined
+  try {
+    runtime = await loadRuntime()
+  } catch (error) {
+    return localQueueBackgroundJobRow(name, 'ingest-worker', {}, {
+      queueType: 'redis',
+      lastError: error instanceof Error ? error.message : String(error)
+    })
+  }
   if (!runtime) return undefined
   const pendingCount = numberValue(runtime.pendingCount)
   const lag = numberValue(runtime.lag)
@@ -439,7 +452,8 @@ function gatewayAccountSideEffectQueueRows(runtime: DbServiceServerRuntimeSnapsh
     localQueueBackgroundJobRow('网关账号副作用队列', 'server', {
       queueLength: numberValue(state.queueLength),
       completedCount: numberValue(state.completedCount),
-      droppedCount: numberValue(state.droppedCount) + numberValue(state.expiredCount),
+      droppedCount: numberValue(state.droppedCount),
+      expiredCount: numberValue(state.expiredCount),
       failedCount: numberValue(state.failedAttemptCount),
       coalescedCount: numberValue(state.coalescedCount),
       canceledBySuccessCount: numberValue(state.canceledBySuccessCount),
@@ -502,7 +516,7 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
   }
   try {
     const overview = await getSystemMetricsOverviewAsync(await normalizeStatsDateRangeAsync(parsed.data))
-    const liveRuntime = await requestServerRuntimeSnapshot(1000).catch(() => undefined)
+    const liveRuntime = await requestServerRuntimeSnapshot(2500).catch(() => undefined)
     const runtime = liveRuntime
     const ingestWorkerSnapshot = runtime?.ingestWorker?.snapshot
     const statsWorkerSnapshot = runtime?.statsWorker?.snapshot
@@ -531,6 +545,9 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
         if (job.name === 'account-api-key-cooldown-retest' && opsWorkerSnapshot.accountApiKeyCooldownRetestQueue) {
           return { ...roleAwareJob, retryQueue: opsWorkerSnapshot.accountApiKeyCooldownRetestQueue }
         }
+        if (job.name === 'normal-route-speed-first-recovery-probe' && opsWorkerSnapshot.normalRouteSpeedFirstRecoveryProbeQueue) {
+          return { ...roleAwareJob, retryQueue: opsWorkerSnapshot.normalRouteSpeedFirstRecoveryProbeQueue }
+        }
         return roleAwareJob
       }),
       await backgroundQueueRuntimeRows(runtime),
@@ -539,9 +556,17 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
     const backgroundJobs = backgroundJobGroups.some(Array.isArray)
       ? backgroundJobGroups.flatMap((items) => items ?? [])
       : undefined
+    const runtimeSnapshotObservedAt = runtime?.observedAt
+    const runtimeSnapshotAgeMs = runtimeSnapshotObservedAt
+      ? Math.max(0, Date.now() - Date.parse(runtimeSnapshotObservedAt))
+      : undefined
     res.json(ok({
       ...overview,
       runtimeSnapshotAvailable: Boolean(runtime),
+      runtimeSnapshotSource: runtime ? 'live' as const : undefined,
+      runtimeSnapshotObservedAt,
+      runtimeSnapshotAgeMs,
+      runtimeSnapshotStale: runtimeSnapshotAgeMs === undefined ? undefined : runtimeSnapshotAgeMs > 10_000,
       ingestWorkerSnapshotAvailable: Boolean(ingestWorkerSnapshot),
       statsWorkerSnapshotAvailable: Boolean(statsWorkerSnapshot),
       opsWorkerSnapshotAvailable: Boolean(opsWorkerSnapshot),

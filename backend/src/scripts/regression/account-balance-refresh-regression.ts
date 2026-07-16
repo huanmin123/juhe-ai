@@ -18,11 +18,12 @@ runtimeConfig.log.fileEnabled = false
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, balanceRepository, balanceQueryService] = await Promise.all([
+const [databaseModule, repositories, balanceRepository, balanceQueryService, balanceRefreshJob] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/account-balance.repository.js'),
-  import('../../modules/accounts/account-balance-query.service.js')
+  import('../../modules/accounts/account-balance-query.service.js'),
+  import('../../modules/background/account-balance-refresh.job.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -46,6 +47,8 @@ assert.match(balanceRoutesSource, /refreshAccountBalanceCandidate\(candidate, \{
 assert.ok(!balanceRoutesSource.includes('saveAccountBalanceConfigurationAsync'), '余额路由不能在查询时保存账户配置')
 assert.ok(!balanceRoutesSource.includes('delete_account_balance_snapshot'), '余额测试不能删除或替换已保存快照')
 assert.match(balanceRepositorySource, /balance_query_config_json::jsonb = \?::jsonb/, 'PostgreSQL 偏好条件更新必须按 JSON 语义比较配置')
+assert.match(balanceRepositorySource, /persistAccountBalanceRefreshWithSnapshotAsync[\s\S]+client\.transaction/, 'PostgreSQL 余额配置与统计快照必须在同一事务原子提交')
+assert.match(balanceServiceSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]+persistAccountBalanceRefreshWithSnapshotAsync/, 'PostgreSQL 余额刷新必须使用跨 schema 原子提交入口')
 assert.ok(!accountRoutesSource.includes('saveAccountBalanceConfigurationAsync'), '账户路由不应在账户保存后进行第二次余额配置写入')
 assert.match(repositoriesSource, /balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at/)
 assert.match(accountRoutesSource, /balanceDecision\.autoDisabledForMultipleApiKeys/, '账户编辑路由必须接受 repository 之前的多 Key 自动关闭决策')
@@ -53,7 +56,11 @@ assert.match(accountRoutesSource, /const balanceIdentityChanged = !isDeepStrictE
 assert.match(accountRoutesSource, /if \(balanceIdentityChanged\) \{[\s\S]*cleanupAccountBalanceSnapshotAfterSave/, '只有真实余额身份变化才允许清理旧快照')
 assert.match(balanceRepositorySource, /listAccountsNeedingBalanceRefreshRecoveryAsync/, '余额 worker 必须能自愈活动账户缺快照且无刷新计划的状态')
 assert.match(balanceRepositorySource, /postgresBalanceRecoveryAfterId/, 'PostgreSQL 自愈候选也必须使用轮转游标，不能固定扫描最小 ID 前缀')
-assert.match(balanceRefreshJobSource, /const recoveryBatchSize = 10/, '每轮余额刷新必须为缺失调度自愈保留固定小配额')
+assert.match(balanceRefreshJobSource, /const refreshBatchSize = 12/, '余额刷新单轮候选必须受最坏耗时约束')
+assert.match(balanceRefreshJobSource, /const recoveryBatchSize = 4/, '每轮余额刷新必须为缺失调度自愈保留固定小配额')
+assert.match(balanceRefreshJobSource, /const refreshRunBudgetMs = 45_000/, '余额刷新领取新候选必须受单轮运行预算约束')
+assert.match(balanceRefreshJobSource, /infrastructureFailureCount/, '候选级基础设施失败必须汇总到任务状态')
+assert.match(balanceRefreshJobSource, /throw new Error\(`AI 账户余额刷新存在/, '存在基础设施失败时任务不能继续显示为纯成功')
 assert.match(balanceServiceSource, /loadCurrentGenerationBalanceSnapshot\(candidate\)/, '租约冲突与瞬时失败只能复用当前刷新代次的余额快照')
 assert.doesNotMatch(balanceServiceSource, /loadAccountBalanceSnapshotsByAccountIdsAsync/, '余额刷新 fallback 不能绕过刷新代次直接读取快照金额')
 
@@ -89,6 +96,26 @@ try {
     groupId: group.id, balanceQueryEnabled: true,
     balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 10, preferredBuiltinAdapter: 'sub2api' }
   }, access)
+  const neverSettles = new Promise<never>(() => undefined)
+  await assert.rejects(
+    balanceRefreshJob.runAccountBalanceRefresh({
+      listRecoveryCandidates: async () => [],
+      listDueCandidates: async () => [{
+        id: dueA.id,
+        systemAccountId: 'sys_admin',
+        configRevision: dueA.configRevision ?? 1,
+        credentials: { api_key: 'sk-due-a', base_url: 'https://relay.example/v1' },
+        config: { adapter: 'builtin', intervalMinutes: 5 },
+        nextRefreshAt: new Date().toISOString(),
+        stateUpdatedAt: new Date().toISOString()
+      }],
+      refreshCandidate: async () => await neverSettles,
+      runBudgetMs: 20,
+      candidateTimeoutMs: 10
+    }),
+    /1 个基础设施失败/,
+    '单候选基础设施调用永不返回时，余额任务也必须在候选截止时间后结束并记失败'
+  )
   assert.equal(configured.balanceQueryEnabled, true)
   assert.deepEqual(configured.balanceQueryConfig, { adapter: 'builtin', intervalMinutes: 10, preferredBuiltinAdapter: 'sub2api' })
   const database = databaseModule.getBusinessDatabase()
@@ -126,6 +153,23 @@ try {
     new Set((await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 100 })).map((item: { id: string }) => item.id)),
     new Set([recoverMissing.id, recoverInactive.id]),
     '非活动缺快照账户恢复活动后应进入自愈候选'
+  )
+  const nullGenerationCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(recoverMissing.id)
+  assert.ok(nullGenerationCandidate)
+  const nullGenerationCommit = {
+    accountId: recoverMissing.id,
+    expectedConfigRevision: nullGenerationCandidate.configRevision,
+    expectedConfig: nullGenerationCandidate.config,
+    expectedNextRefreshAt: null,
+    expectedUpdatedAt: nullGenerationCandidate.stateUpdatedAt,
+    nextConfig: nullGenerationCandidate.config,
+    nextRefreshAt: null
+  }
+  assert.equal(await balanceRepository.commitAccountBalanceRefreshAsync(nullGenerationCommit), true)
+  assert.equal(
+    await balanceRepository.commitAccountBalanceRefreshAsync(nullGenerationCommit),
+    false,
+    'recovery 的 null 到 null 提交也必须推进 updated_at 代次，旧尝试不得二次提交'
   )
   const pausedPrefix = Array.from({ length: 45 }, (_, index) => create(`recover-paused-prefix-${index}`))
   const recoverAfterPausedPrefix = create('recover-after-paused-prefix')
@@ -321,6 +365,36 @@ try {
   configure.run('active', builtinConfig, futureAt, manualRefresh.id)
   database.prepare(`UPDATE accounts SET status = 'active', schedulable = 1 WHERE id = ?`).run(autoDetect.id)
 
+  const invalidDuePrefix = Array.from({ length: 48 }, (_, index) => create(`invalid-due-prefix-${index}`))
+  const validAfterInvalidDuePrefix = create('valid-after-invalid-due-prefix')
+  const starvationDueAt = '2026-07-10T00:00:00.000Z'
+  const configureInvalidDue = database.prepare(`
+    UPDATE accounts
+    SET status = 'active', schedulable = 1, balance_query_enabled = 1,
+        balance_query_config_json = 'not-json', balance_query_next_refresh_at = ?
+    WHERE id = ?
+  `)
+  for (const account of invalidDuePrefix) configureInvalidDue.run(starvationDueAt, account.id)
+  configure.run('active', builtinConfig, starvationDueAt, validAfterInvalidDuePrefix.id)
+  assert.deepEqual(
+    balanceRepository.listAccountsDueForBalanceRefresh({ now: '2026-07-11T12:00:00.000Z', limit: 1 }).map((item: { id: string }) => item.id),
+    [validAfterInvalidDuePrefix.id],
+    '普通 due 游标必须越过无效配置前缀，不能永久饿死后续合法账户'
+  )
+  database.prepare(`UPDATE accounts SET balance_query_enabled = 0, balance_query_next_refresh_at = NULL WHERE id = ?`)
+    .run(validAfterInvalidDuePrefix.id)
+  for (const account of invalidDuePrefix) {
+    database.prepare(`UPDATE accounts SET balance_query_enabled = 0, balance_query_next_refresh_at = NULL WHERE id = ?`).run(account.id)
+  }
+
+  assert.equal(await balanceRepository.commitAccountBalanceRefreshAsync({
+    accountId: dueA.id,
+    expectedConfigRevision: dueA.configRevision ?? 1,
+    expectedConfig: { adapter: 'builtin', intervalMinutes: 5, preferredBuiltinAdapter: 'sub2api' },
+    expectedNextRefreshAt: '2026-07-10T23:59:59.000Z',
+    nextConfig: { adapter: 'builtin', intervalMinutes: 5, preferredBuiltinAdapter: 'user_balance' },
+    nextRefreshAt: dueAt
+  }), false, '旧余额尝试的刷新代次不匹配时不得覆盖新结果')
   assert.equal(await balanceRepository.commitAccountBalanceRefreshAsync({
     accountId: dueA.id,
     expectedConfigRevision: dueA.configRevision ?? 1,
