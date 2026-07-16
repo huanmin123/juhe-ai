@@ -1,6 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod'
 
+import { runtimeConfig } from '../../config/runtime.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { sessionCookieOptions } from '../../shared/http-security.js'
 import { createSessionAsync, findSessionByTokenAsync, findSystemAccountByIdAsync, revokeOtherSessionsForAccountAsync, revokeSessionAsync, touchSessionAsync, updateSystemAccountAsync, updateSystemAccountLastLoginAsync, verifySystemAccountCredentialsAsync } from '../../storage/repositories.js'
@@ -19,8 +20,8 @@ const whitespacePattern = /\s/
 const loginSchema = z.object({
   username: z.string().min(1),
   password: z.string().min(1),
-  captchaId: z.string().trim().min(1),
-  captchaCode: z.string().trim().min(1)
+  captchaId: z.string().trim().min(1).optional(),
+  captchaCode: z.string().trim().min(1).optional()
 }).strict()
 
 const passwordSchema = z.object({
@@ -34,6 +35,10 @@ const profileSchema = z.object({
 
 authRouter.get('/captcha', async (req, res, next) => {
   try {
+    if (runtimeConfig.auth.captchaDisabled) {
+      res.json(ok({ required: false }))
+      return
+    }
     const clientIp = getLoginClientIp(req)
     const issueAllowed = await consumeCaptchaIssueAllowanceAsync(clientIp)
     if (issueAllowed.blocked) {
@@ -43,7 +48,7 @@ authRouter.get('/captcha', async (req, res, next) => {
       res.status(429).json({ message: issueAllowed.message ?? '验证码请求过于频繁，请稍后再试' })
       return
     }
-    res.json(ok(await createCaptchaChallengeAsync()))
+    res.json(ok({ required: true, ...await createCaptchaChallengeAsync() }))
   } catch (error) {
     next(error)
   }
@@ -64,9 +69,15 @@ authRouter.post('/login', async (req, res, next) => {
       return
     }
 
-    if (!await verifyCaptchaChallengeAsync(parsed.data.captchaId, parsed.data.captchaCode)) {
-      res.status(400).json({ message: '验证码错误或已过期' })
-      return
+    if (!runtimeConfig.auth.captchaDisabled) {
+      if (!parsed.data.captchaId || !parsed.data.captchaCode) {
+        res.status(400).json(badRequest('登录参数无效'))
+        return
+      }
+      if (!await verifyCaptchaChallengeAsync(parsed.data.captchaId, parsed.data.captchaCode)) {
+        res.status(400).json({ message: '验证码错误或已过期' })
+        return
+      }
     }
 
     const loginAllowed = await checkLoginAllowedAsync(clientIp, parsed.data.username)

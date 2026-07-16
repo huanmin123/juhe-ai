@@ -248,12 +248,12 @@ assert.match(accountRoutesSource, /cleanupAccountBalanceSnapshotAfterSave/, '单
 assert.doesNotMatch(accountRoutesSource, /await cleanupAccountBalanceSnapshotAfterSave/, '单账户保存不能等待派生快照清理')
 assert.match(
   accountBatchEditSource,
-  /function cleanupDisabledBalanceSnapshots\([\s\S]{0,500}for \(const accountId of accountIds\)/,
+  /function cleanupChangedBalanceSnapshots\([\s\S]{0,500}for \(const accountId of accountIds\)/,
   '批量首次删除必须逐项登记到 coordinator 的有界队列'
 )
 assert.doesNotMatch(
   accountBatchEditSource,
-  /function cleanupDisabledBalanceSnapshots\([\s\S]{0,500}Promise\.all/,
+  /function cleanupChangedBalanceSnapshots\([\s\S]{0,500}Promise\.all/,
   '批量首次删除不能无界并发调用 stats-writer'
 )
 assert.match(accountListSource, /isAccountBalanceSnapshotSuppressed\(account\.id, \{ configuration, snapshotRecord \}\)/, '读取端必须用当前快照事实解析抑制状态')

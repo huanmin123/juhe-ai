@@ -109,8 +109,8 @@ assert.deepEqual(
   '其他供应商用途必须来自自身目录事实'
 )
 assert.equal(canManageModelPricesForView(true, true), true, '管理员管理视图可以维护价格')
-assert.equal(canManageModelPricesForView(false, true), false, '管理员进入我的模型时必须与普通用户保持一致，不能显示价格维护')
-assert.equal(canManageModelPricesForView(true, false), false, '普通用户不能维护价格')
+assert.equal(canManageModelPricesForView(false, true), true, '管理员进入我的模型时应能维护自己个人模型的价格')
+assert.equal(canManageModelPricesForView(false, false), true, '普通用户应能维护自己个人模型的价格')
 
 assert.equal(formatModelContextTokens(template), '1.05M', '总上下文应读取 contextWindowTokens')
 assert.equal(formatModelInputTokens(template), '922K', '最大输入应只读取 maxInputTokens')

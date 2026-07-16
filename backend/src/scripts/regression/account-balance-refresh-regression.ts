@@ -32,6 +32,7 @@ const balanceRoutesSource = readFileSync(resolve('src/modules/accounts/account-b
 const balanceRepositorySource = readFileSync(resolve('src/storage/account-balance.repository.ts'), 'utf8')
 const accountRoutesSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
 const repositoriesSource = readFileSync(resolve('src/storage/repositories.ts'), 'utf8')
+const balanceRefreshJobSource = readFileSync(resolve('src/modules/background/account-balance-refresh.job.ts'), 'utf8')
 assert.match(balanceServiceSource, /const balanceRefreshLeaseMs = 30_000/)
 assert.match(
   balanceServiceSource,
@@ -48,7 +49,11 @@ assert.match(balanceRepositorySource, /balance_query_config_json::jsonb = \?::js
 assert.ok(!accountRoutesSource.includes('saveAccountBalanceConfigurationAsync'), '账户路由不应在账户保存后进行第二次余额配置写入')
 assert.match(repositoriesSource, /balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at/)
 assert.match(accountRoutesSource, /balanceDecision\.autoDisabledForMultipleApiKeys/, '账户编辑路由必须接受 repository 之前的多 Key 自动关闭决策')
-assert.match(accountRoutesSource, /currentBalance\?\.enabled === true && finalBalance\?\.enabled === false/, '后端兜底关闭余额时必须异步清理旧快照')
+assert.match(accountRoutesSource, /const balanceIdentityChanged = !isDeepStrictEqual/, '账户保存必须按余额查询身份变化决定是否清理旧快照')
+assert.match(accountRoutesSource, /if \(balanceIdentityChanged\) \{[\s\S]*cleanupAccountBalanceSnapshotAfterSave/, '只有真实余额身份变化才允许清理旧快照')
+assert.match(balanceRepositorySource, /listAccountsNeedingBalanceRefreshRecoveryAsync/, '余额 worker 必须能自愈活动账户缺快照且无刷新计划的状态')
+assert.match(balanceRepositorySource, /postgresBalanceRecoveryAfterId/, 'PostgreSQL 自愈候选也必须使用轮转游标，不能固定扫描最小 ID 前缀')
+assert.match(balanceRefreshJobSource, /const recoveryBatchSize = 10/, '每轮余额刷新必须为缺失调度自愈保留固定小配额')
 assert.match(balanceServiceSource, /loadCurrentGenerationBalanceSnapshot\(candidate\)/, '租约冲突与瞬时失败只能复用当前刷新代次的余额快照')
 assert.doesNotMatch(balanceServiceSource, /loadAccountBalanceSnapshotsByAccountIdsAsync/, '余额刷新 fallback 不能绕过刷新代次直接读取快照金额')
 
@@ -69,6 +74,15 @@ try {
   const transientFailure = create('transient-failure')
   const deterministicFailure = create('deterministic-failure')
   const manualRefresh = create('manual-refresh')
+  const lifecycle = repositories.createAccount({
+    providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: 'lifecycle', type: 'api_key', credentials: { api_key: 'sk-lifecycle', base_url: 'https://relay.example/v1' },
+    groupId: group.id, balanceQueryEnabled: true,
+    balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
+  }, access)
+  const recoverMissing = create('recover-missing')
+  const recoverPaused = create('recover-paused')
+  const recoverInactive = create('recover-inactive')
   const configured = repositories.createAccount({
     providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'configured', type: 'api_key', credentials: { api_key: 'sk-configured', base_url: 'https://relay.example/v1' },
@@ -78,6 +92,63 @@ try {
   assert.equal(configured.balanceQueryEnabled, true)
   assert.deepEqual(configured.balanceQueryConfig, { adapter: 'builtin', intervalMinutes: 10, preferredBuiltinAdapter: 'sub2api' })
   const database = databaseModule.getBusinessDatabase()
+  const recoveryConfig = JSON.stringify({ adapter: 'builtin', intervalMinutes: 5 })
+  database.prepare(`
+    UPDATE accounts
+    SET status = ?, schedulable = ?, balance_query_enabled = 1,
+        balance_query_config_json = ?, balance_query_next_refresh_at = NULL
+    WHERE id = ?
+  `).run('active', 1, recoveryConfig, recoverMissing.id)
+  database.prepare(`
+    UPDATE accounts
+    SET status = ?, schedulable = ?, balance_query_enabled = 1,
+        balance_query_config_json = ?, balance_query_next_refresh_at = NULL
+    WHERE id = ?
+  `).run('active', 1, recoveryConfig, recoverPaused.id)
+  database.prepare(`
+    UPDATE accounts
+    SET status = ?, schedulable = ?, balance_query_enabled = 1,
+        balance_query_config_json = ?, balance_query_next_refresh_at = NULL
+    WHERE id = ?
+  `).run('disabled', 0, recoveryConfig, recoverInactive.id)
+  balanceRepository.replaceAccountBalanceSnapshot({
+    accountId: recoverPaused.id,
+    systemAccountId: 'sys_admin',
+    snapshot: { status: 'unsupported', errorMessage: '当前配置未找到可用余额接口' }
+  })
+  assert.deepEqual(
+    (await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 100 })).map((item: { id: string }) => item.id),
+    [recoverMissing.id],
+    '自愈只应领取活动且缺少当前快照的账户，unsupported 暂停和非活动账户不得反复查询'
+  )
+  database.prepare(`UPDATE accounts SET status = 'active', schedulable = 1 WHERE id = ?`).run(recoverInactive.id)
+  assert.deepEqual(
+    new Set((await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 100 })).map((item: { id: string }) => item.id)),
+    new Set([recoverMissing.id, recoverInactive.id]),
+    '非活动缺快照账户恢复活动后应进入自愈候选'
+  )
+  const pausedPrefix = Array.from({ length: 45 }, (_, index) => create(`recover-paused-prefix-${index}`))
+  const recoverAfterPausedPrefix = create('recover-after-paused-prefix')
+  const configureRecovery = database.prepare(`
+    UPDATE accounts
+    SET status = 'active', schedulable = 1, balance_query_enabled = 1,
+        balance_query_config_json = ?, balance_query_next_refresh_at = NULL
+    WHERE id = ?
+  `)
+  for (const account of pausedPrefix) {
+    configureRecovery.run(recoveryConfig, account.id)
+    balanceRepository.replaceAccountBalanceSnapshot({
+      accountId: account.id,
+      systemAccountId: 'sys_admin',
+      snapshot: { status: 'unsupported', errorMessage: '暂停回归夹具' }
+    })
+  }
+  configureRecovery.run(recoveryConfig, recoverAfterPausedPrefix.id)
+  assert.ok(
+    (await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 10 }))
+      .some((item: { id: string }) => item.id === recoverAfterPausedPrefix.id),
+    'SQLite 自愈游标必须越过前缀暂停账户，不能固定扫描最前一页'
+  )
   const unconfiguredMultiRow = database.prepare(`SELECT balance_query_enabled, balance_query_config_json FROM accounts WHERE id = ?`).get(multi.id) as Record<string, unknown>
   assert.equal(unconfiguredMultiRow.balance_query_enabled, 0)
   assert.deepEqual(JSON.parse(String(unconfiguredMultiRow.balance_query_config_json)), { adapter: 'builtin', intervalMinutes: 5 }, '多 Key 新建即使未提交余额配置，也必须写入已配置关闭标记')
@@ -85,6 +156,33 @@ try {
   assert.equal(configuredRow.balance_query_enabled, 1)
   assert.deepEqual(JSON.parse(String(configuredRow.balance_query_config_json)), { adapter: 'builtin', intervalMinutes: 10, preferredBuiltinAdapter: 'sub2api' })
   assert.equal(typeof configuredRow.balance_query_next_refresh_at, 'string')
+  const lifecycleGeneration = '2026-07-11T06:00:00.000Z'
+  databaseModule.getBusinessDatabase().prepare(`UPDATE accounts SET balance_query_next_refresh_at = ? WHERE id = ?`).run(lifecycleGeneration, lifecycle.id)
+  balanceRepository.replaceAccountBalanceSnapshot({
+    accountId: lifecycle.id,
+    systemAccountId: 'sys_admin',
+    snapshot: { status: 'fresh', remainingUsd: '12.340000', lastAttemptAt: lifecycleGeneration, lastSuccessAt: lifecycleGeneration },
+    nextRefreshAfter: lifecycleGeneration
+  })
+  const lifecycleSameValue = repositories.updateAccount(lifecycle.id, {
+    name: 'lifecycle-renamed',
+    balanceQueryEnabled: true,
+    balanceQueryConfig: { intervalMinutes: 5, adapter: 'builtin' }
+  }, access)
+  assert.ok(lifecycleSameValue)
+  assert.equal(lifecycleSameValue.balanceQueryNextRefreshAt, lifecycleGeneration, '同值全量表单和无关字段修改必须保留刷新代次')
+  assert.equal(
+    balanceRepository.loadAccountBalanceSnapshotsByAccountIds([lifecycle.id]).get(lifecycle.id)?.remainingUsd,
+    '12.340000',
+    '同值全量表单和无关字段修改必须保留旧快照'
+  )
+  const lifecycleConnectionChanged = repositories.updateAccount(lifecycle.id, {
+    credentials: { api_key: 'sk-lifecycle-next', base_url: 'https://relay.example/v1' },
+    balanceQueryEnabled: true,
+    balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
+  }, access)
+  assert.ok(lifecycleConnectionChanged)
+  assert.notEqual(lifecycleConnectionChanged.balanceQueryNextRefreshAt, lifecycleGeneration, 'Key 变化必须开启新的刷新代次')
   const configuredDisabled = repositories.updateAccount(configured.id, {
     balanceQueryEnabled: false,
     balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 10, preferredBuiltinAdapter: 'sub2api' }
@@ -444,27 +542,24 @@ try {
   assert.equal(manualResult.status, 'failed', '人工刷新失败必须立即返回本次错误')
   const storedAfterManualFailure = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([manualRefresh.id]).get(manualRefresh.id)
   assert.ok(storedAfterManualFailure)
-  assert.equal(storedAfterManualFailure.status, 'fresh', '人工刷新失败不能覆盖已保存状态')
-  assert.equal(storedAfterManualFailure.remainingUsd, '6.660000', '人工刷新失败不能覆盖已保存金额')
-  assert.equal(storedAfterManualFailure.consecutiveTransientFailures, undefined, '人工刷新失败不能累计后台失败次数')
-  assert.equal(
-    database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(manualRefresh.id)?.balance_query_next_refresh_at,
-    futureAt,
-    '人工刷新失败不能推进自动刷新时间'
-  )
+  assert.equal(storedAfterManualFailure.status, 'failed', '人工刷新失败必须立即替换当前行状态')
+  assert.equal(storedAfterManualFailure.remainingUsd, undefined, '人工刷新失败不能继续展示旧金额')
   const manualUnsupported = await balanceQueryService.refreshAccountBalanceCandidate(manualCandidate, {
     mode: 'manual',
     query: async () => ({ status: 'unsupported', basis: 'api_key_quota' })
   })
   assert.equal(manualUnsupported.status, 'unsupported', '人工刷新必须即时返回能力不支持状态')
   const storedAfterManualUnsupported = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([manualRefresh.id]).get(manualRefresh.id)
-  assert.equal(storedAfterManualUnsupported?.remainingUsd, '6.660000', '人工能力探测失败不能覆盖已保存金额')
+  assert.equal(storedAfterManualUnsupported?.status, 'unsupported', '人工能力探测失败必须保存失败语义')
+  assert.equal(storedAfterManualUnsupported?.remainingUsd, undefined, '人工能力探测失败不能继续展示旧金额')
   assert.equal(
     database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(manualRefresh.id)?.balance_query_next_refresh_at,
-    futureAt,
-    '人工能力探测失败不能推进自动刷新时间'
+    null,
+    '人工能力不支持必须暂停自动刷新，避免后台重复查询'
   )
-  await balanceQueryService.refreshAccountBalanceCandidate(manualCandidate, {
+  const manualSuccessCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(manualRefresh.id)
+  assert.ok(manualSuccessCandidate)
+  await balanceQueryService.refreshAccountBalanceCandidate(manualSuccessCandidate, {
     mode: 'manual',
     query: async () => ({ status: 'fresh', remainingUsd: '9.010000', rawRemaining: '9.01', rawUnit: 'usd', basis: 'wallet' })
   })

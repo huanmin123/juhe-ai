@@ -20,7 +20,7 @@
         <a-form-item label="密码">
           <a-input-password v-model:value="form.password" size="large" autocomplete="current-password" placeholder="请输入密码" />
         </a-form-item>
-        <a-form-item label="验证码">
+        <a-form-item v-if="captchaRequired" label="验证码">
           <div class="captcha-row">
             <a-input v-model:value="form.captchaCode" size="large" autocomplete="off" :maxlength="6" placeholder="请输入验证码" />
             <button class="captcha-image-button" type="button" :disabled="captchaLoading" title="点击刷新验证码" @click="refreshCaptcha">
@@ -55,6 +55,7 @@ const loading = ref(false)
 const captchaLoading = ref(false)
 const captcha = ref<CaptchaChallengeSummary>()
 const form = reactive({ username: '', password: '', captchaCode: '' })
+const captchaRequired = computed(() => captcha.value?.required !== false)
 const whitespacePattern = /\s/
 
 const loginTitle = computed(() => `${appBrand.appName} 管理平台`)
@@ -108,25 +109,32 @@ function applyPointerPosition(): void {
 
 async function handleLogin() {
   if (loading.value) return
-  if (!form.username.trim() || !form.password || !form.captchaCode.trim()) {
-    message.warning('请输入账号、密码和验证码')
+  if (!form.username.trim() || !form.password) {
+    message.warning('请输入账号和密码')
     return
   }
   if (hasWhitespace(form.username) || hasWhitespace(form.password)) {
     message.warning('用户名和密码不能包含空格')
     return
   }
-  if (!captcha.value?.captchaId) {
-    message.warning('验证码未加载，请刷新验证码')
-    return
+  if (captchaRequired.value) {
+    if (!form.captchaCode.trim()) {
+      message.warning('请输入验证码')
+      return
+    }
+    if (!captcha.value?.captchaId) {
+      message.warning('验证码未加载，请刷新验证码')
+      return
+    }
   }
   loading.value = true
   try {
     const user = await login({
       username: form.username.trim(),
       password: form.password,
-      captchaId: captcha.value.captchaId,
-      captchaCode: form.captchaCode
+      ...(captchaRequired.value
+        ? { captchaId: captcha.value?.captchaId, captchaCode: form.captchaCode }
+        : {})
     })
     if (user.mustChangePassword) {
       message.warning('当前账户使用初始密码，请先完成修改')
@@ -140,7 +148,9 @@ async function handleLogin() {
   } catch (error) {
     console.error(error)
     message.error(getLoginErrorMessage(error))
-    await refreshCaptcha()
+    if (captchaRequired.value) {
+      await refreshCaptcha()
+    }
   } finally {
     loading.value = false
   }

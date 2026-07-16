@@ -1,10 +1,10 @@
 <template>
   <div class="usage-cell">
     <UsageSummaryTags :usage="account.todayUsage" />
-    <div v-if="account.balanceQueryEnabled" class="balance-row">
+    <div v-if="account.balanceQueryEnabled && balanceDisplay.visible" class="balance-row">
       <a-tooltip :title="balanceDisplay.tooltip">
         <span class="balance-text">
-          <span class="balance-label">剩余：</span>
+          <span v-if="balanceDisplay.tone !== 'failed'" class="balance-label">剩余：</span>
           <span class="balance-value" :class="`balance-${balanceDisplay.tone}`">{{ balanceDisplay.text }}</span>
         </span>
       </a-tooltip>

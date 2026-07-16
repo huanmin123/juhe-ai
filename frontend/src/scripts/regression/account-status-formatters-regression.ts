@@ -73,6 +73,14 @@ assertTrue(
   '账户菜单处理器不应保留独立的人工恢复分支'
 )
 assertTrue(
+  /updateLoadedAccount: \(account: AccountSummary\) => boolean/.test(accountMenuActionsSource),
+  '账户菜单操作应注入当前行更新入口'
+)
+assertTrue(
+  /const updated = options\.isManagementView\.value[\s\S]+options\.updateLoadedAccount\(updated\)/.test(accountMenuActionsSource),
+  '账户状态与调度标记操作应直接回写 API 返回的当前行'
+)
+assertTrue(
   accountStatusTooltipLines(accountFixture({
     status: 'pending_test',
     lastHealthCheckAt: '2026-07-15T01:00:00.000Z',
@@ -199,9 +207,13 @@ assertStatus('近窗口频繁失败', accountFixture({
   qualityLastErrorMessage: 'mock upstream 504 failure for formatter regression',
   qualityUpdatedAt: '2026-06-13T00:00:05.000Z'
 }), '可调度', 'green')
-assertStatus('运行态不可观测', accountFixture({
+assertStatus('运行态快照未到达时保留静态可调度状态', accountFixture({
   accountRuntimeAvailabilityAvailable: false
-}), '运行态未知', 'default')
+}), '可调度', 'green')
+assertTrue(
+  !/运行态未知/.test(readFileSync(resolve('../frontend/src/views/accounts/accountFormatters.ts'), 'utf8')),
+  '前端不应再暴露“运行态未知”这个短暂中间态'
+)
 assertStatus('运行态短暂避让', accountFixture({
   effectiveAvailability: {
     available: false,

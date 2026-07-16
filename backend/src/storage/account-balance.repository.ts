@@ -107,6 +107,88 @@ export async function listAccountsDueForBalanceRefreshAsync(options: { now?: str
   return balanceCandidatesFromRows(rows, limit)
 }
 
+let sqliteBalanceRecoveryAfterId = ''
+let postgresBalanceRecoveryAfterId = ''
+
+export async function listAccountsNeedingBalanceRefreshRecoveryAsync(options: { limit?: number } = {}): Promise<AccountBalanceRefreshCandidate[]> {
+  const limit = normalizedLimit(options.limit)
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    const client = createPostgresDatabaseClient(await getPostgresPool())
+    const queryRows = async (afterId: string) => await client.query<BalanceCandidateRow>(`
+      SELECT a.id, a.system_account_id, a.config_revision, a.credentials_encrypted, a.balance_query_config_json,
+             a.balance_query_next_refresh_at, a.proxy_profile_id
+      FROM juhe_business.accounts a
+      WHERE a.status = 'active'
+        AND a.id > ?
+        AND a.schedulable = 1
+        AND a.type = 'api_key'
+        AND a.balance_query_enabled = 1
+        AND a.balance_query_next_refresh_at IS NULL
+        AND a.deleted_at IS NULL
+        AND a.authorization_instance_authorization_id IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM juhe_stats.account_usage_snapshots s
+          WHERE s.account_id = a.id
+            AND s.kind = 'relay_balance'
+            AND s.next_refresh_after IS NULL
+        )
+      ORDER BY a.id ASC
+      LIMIT ?
+    `, [afterId, limit * 4])
+    let rows = await queryRows(postgresBalanceRecoveryAfterId)
+    if (rows.length === 0 && postgresBalanceRecoveryAfterId) {
+      postgresBalanceRecoveryAfterId = ''
+      rows = await queryRows('')
+    }
+    postgresBalanceRecoveryAfterId = rows.at(-1)?.id ?? ''
+    return balanceCandidatesFromRows(rows, limit)
+  }
+  const scanPageSize = Math.max(40, limit * 4)
+  const maxScanPages = 4
+  const selectedRows: BalanceCandidateRow[] = []
+  const selectedIds = new Set<string>()
+  let wrapped = false
+  for (let page = 0; page < maxScanPages && selectedRows.length < limit; page += 1) {
+    const rows = getBusinessDatabase().prepare(`
+    SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,
+           balance_query_next_refresh_at, proxy_profile_id
+    FROM accounts
+    WHERE id > ?
+      AND status = 'active'
+      AND schedulable = 1
+      AND type = 'api_key'
+      AND balance_query_enabled = 1
+      AND balance_query_next_refresh_at IS NULL
+      AND deleted_at IS NULL
+      AND authorization_instance_authorization_id IS NULL
+    ORDER BY id ASC
+    LIMIT ?
+    `).all(sqliteBalanceRecoveryAfterId, scanPageSize) as unknown as BalanceCandidateRow[]
+    if (rows.length === 0) {
+      sqliteBalanceRecoveryAfterId = ''
+      if (wrapped) break
+      wrapped = true
+      page -= 1
+      continue
+    }
+    sqliteBalanceRecoveryAfterId = rows.at(-1)?.id ?? ''
+    const records = loadAccountBalanceSnapshotRecordsByAccountIds(rows.map((row) => row.id))
+    for (const row of rows) {
+      if (selectedIds.has(row.id) || accountBalanceSnapshotMatchesConfiguration({ nextRefreshAt: undefined }, records.get(row.id))) continue
+      selectedIds.add(row.id)
+      selectedRows.push(row)
+      if (selectedRows.length >= limit) break
+    }
+    if (rows.length < scanPageSize) {
+      sqliteBalanceRecoveryAfterId = ''
+      if (wrapped) break
+      wrapped = true
+    }
+  }
+  return balanceCandidatesFromRows(selectedRows, limit)
+}
+
 export async function findAccountBalanceRefreshCandidateAsync(accountId: string): Promise<AccountBalanceRefreshCandidate | undefined> {
   const sql = `
     SELECT id, system_account_id, config_revision, credentials_encrypted, balance_query_config_json,

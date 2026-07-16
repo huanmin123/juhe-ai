@@ -205,6 +205,19 @@ func TestLoadDefaultsSecureCookieInProduction(t *testing.T) {
 	}
 }
 
+func TestLoadAllowsCaptchaDisableInProduction(t *testing.T) {
+	t.Setenv("JUHE_AI_ENV", "production")
+	t.Setenv("JUHE_AI_AUTH_CAPTCHA_DISABLED", "true")
+
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.AuthCaptchaDisabled {
+		t.Fatal("AuthCaptchaDisabled = false, want true")
+	}
+}
+
 func TestLoadAllowsExplicitCookieSecureOverrideInProduction(t *testing.T) {
 	t.Setenv("JUHE_AI_ENV", "production")
 	t.Setenv("JUHE_AI_COOKIE_SECURE", "false")

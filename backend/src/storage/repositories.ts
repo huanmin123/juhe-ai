@@ -7,7 +7,7 @@ import { assertOpenAIEndpointModesCompatible } from '../domain/openai-endpoint-m
 import { assertAnthropicEndpointModesCompatible } from '../domain/anthropic-endpoint-modes.js'
 import { assertGeminiEndpointModesCompatible } from '../domain/gemini-endpoint-modes.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, isAnthropicProtocolProfile, isGeminiProtocolProfile, isGptVendorCode, isHybridProviderCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
-import { validateAccountBalanceCapability } from '../modules/accounts/account-balance-config.js'
+import { accountBalanceQueryIdentity, normalizeAccountBalanceConfig, validateAccountBalanceCapability } from '../modules/accounts/account-balance-config.js'
 export type { GroupOptionSummary } from '../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { cooldownRetestObservationStartedAtForStatus, initialCooldownUntilForStatus, invalidateGatewayRuntimeAfterBusinessWrite, isAccountExpired } from './account-runtime-mutation-helpers.js'
@@ -1527,6 +1527,31 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
 
 const defaultDisabledMultiKeyBalanceConfig = { adapter: 'builtin', intervalMinutes: 5 } as const
 
+interface AccountBalanceStateRow {
+  balance_query_enabled: number
+  balance_query_config_json: string
+  balance_query_next_refresh_at?: string | null
+}
+
+function accountBalanceStateFromRow(row: AccountBalanceStateRow | undefined): Pick<
+  AccountSummary,
+  'balanceQueryEnabled' | 'balanceQueryConfig' | 'balanceQueryNextRefreshAt'
+> {
+  if (!row) return {}
+  let config: AccountSummary['balanceQueryConfig']
+  try {
+    const parsed = JSON.parse(row.balance_query_config_json)
+    if (parsed && Object.keys(parsed).length > 0) config = normalizeAccountBalanceConfig(parsed)
+  } catch {
+    config = undefined
+  }
+  return {
+    balanceQueryEnabled: row.balance_query_enabled === 1,
+    balanceQueryConfig: config,
+    balanceQueryNextRefreshAt: row.balance_query_next_refresh_at ?? undefined
+  }
+}
+
 function accountBalanceWriteValues(
   input: Record<string, unknown>,
   now: string,
@@ -1549,7 +1574,17 @@ function accountBalanceWriteValues(
 function accountBalanceUpdateValues(
   input: Record<string, unknown>,
   now: string,
-  account: { type: string; credentials: Record<string, unknown> }
+  account: {
+    type: string
+    providerCode: string
+    credentials: Record<string, unknown>
+    proxyProfileId?: string
+    balanceQueryEnabled?: boolean
+    balanceQueryConfig?: AccountSummary['balanceQueryConfig']
+    balanceQueryNextRefreshAt?: string
+  },
+  nextCredentials: Record<string, unknown>,
+  nextProxyProfileId?: string
 ): {
   present: boolean
   enabled?: boolean
@@ -1557,27 +1592,52 @@ function accountBalanceUpdateValues(
   configPresent?: boolean
   seedDefaultConfigWhenEmpty?: boolean
   nextRefreshAt?: string
+  identityChanged?: boolean
 } {
-  const requestedPresent = hasOwnInput(input, 'balanceQueryEnabled') || hasOwnInput(input, 'balanceQueryConfig')
-  const decision = validateAccountBalanceCapability(account, requestedPresent && input.balanceQueryEnabled === true)
-  const present = requestedPresent || decision.autoDisabledForMultipleApiKeys
-  if (!present) return { present: false }
+  const requestedEnabled = hasOwnInput(input, 'balanceQueryEnabled')
+    ? input.balanceQueryEnabled === true
+    : account.balanceQueryEnabled === true
+  const decision = validateAccountBalanceCapability({ ...account, credentials: nextCredentials }, requestedEnabled)
   const configPresent = hasOwnInput(input, 'balanceQueryConfig')
     && input.balanceQueryConfig !== undefined
     && typeof input.balanceQueryConfig === 'object'
     && input.balanceQueryConfig !== null
     && !Array.isArray(input.balanceQueryConfig)
   const config = configPresent
-    ? input.balanceQueryConfig as AccountSummary['balanceQueryConfig']
-    : undefined
+    ? normalizeAccountBalanceConfig(input.balanceQueryConfig)
+    : account.balanceQueryConfig
   if (decision.enabled && !config) throw new Error('开启上游余额查询时必须选择查询类型')
+  const identityChanged = !isDeepStrictEqual(
+    accountBalanceQueryIdentity({
+      enabled: account.balanceQueryEnabled === true,
+      config: account.balanceQueryConfig,
+      providerCode: account.providerCode,
+      accountType: account.type,
+      credentials: account.credentials,
+      proxyProfileId: account.proxyProfileId
+    }),
+    accountBalanceQueryIdentity({
+      enabled: decision.enabled,
+      config,
+      providerCode: account.providerCode,
+      accountType: account.type,
+      credentials: nextCredentials,
+      proxyProfileId: nextProxyProfileId
+    })
+  )
+  const seedDefaultConfigWhenEmpty = decision.autoDisabledForMultipleApiKeys && !configPresent && !account.balanceQueryConfig
+  const present = identityChanged || seedDefaultConfigWhenEmpty
+  if (!present) return { present: false, identityChanged: false }
   return {
     present: true,
     enabled: decision.enabled,
     config,
-    configPresent,
-    seedDefaultConfigWhenEmpty: decision.autoDisabledForMultipleApiKeys && !configPresent,
-    nextRefreshAt: decision.enabled ? now : undefined
+    configPresent: configPresent || identityChanged,
+    seedDefaultConfigWhenEmpty,
+    nextRefreshAt: decision.enabled
+      ? identityChanged ? now : account.balanceQueryNextRefreshAt
+      : undefined,
+    identityChanged
   }
 }
 
@@ -2062,6 +2122,12 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (!canManageResourceOwner(systemAccountId, access)) {
     return undefined
   }
+  const database = getBusinessDatabase()
+  const currentBalanceState = accountBalanceStateFromRow(database.prepare(`
+    SELECT balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
+    FROM accounts WHERE id = ? AND system_account_id = ?
+  `).get(id, systemAccountId) as unknown as AccountBalanceStateRow | undefined)
+  const currentWithBalance = { ...current, ...currentBalanceState }
   const nextClientCompatibility = deriveOpenAIAccountClientCompatibility(current.providerCode, current.type, current)
   const credentials = hasOwnInput(input, 'credentials')
     ? normalizeAccountCredentialsForWrite(current.type, input.credentials, {
@@ -2168,10 +2234,13 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用异常恢复')
   }
   const updateNowMs = Date.now()
-  const balanceUpdate = accountBalanceUpdateValues(input, new Date(updateNowMs).toISOString(), {
-    type: current.type,
-    credentials
-  })
+  const balanceUpdate = accountBalanceUpdateValues(
+    input,
+    new Date(updateNowMs).toISOString(),
+    currentWithBalance,
+    credentials,
+    nextProxyProfileId
+  )
   const scheduledStatus = expiredByPackage
     ? 'disabled'
     : hasAvailabilityScheduleInput
@@ -2256,7 +2325,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 
   const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
   const next: AccountSummary = accountSummaryWithEffectiveAvailability({
-    ...current,
+    ...currentWithBalance,
     name: normalizeOptionalAccountNameInput(input, current.name),
     notes: hasNotesInput ? normalizeNullableTextInput(input.notes, '账户备注') : current.notes,
     credentials,
@@ -2298,7 +2367,6 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
-  const database = getBusinessDatabase()
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   const transactionStarted = beginDatabaseTransaction(database)
@@ -2496,6 +2564,11 @@ export async function updateAccountAsync(
   if (expectedConfigRevision !== undefined && currentConfigRevision !== expectedConfigRevision) {
     throw new AccountConfigRevisionConflictError(id, expectedConfigRevision, currentConfigRevision)
   }
+  const currentBalanceState = accountBalanceStateFromRow(await client.one<AccountBalanceStateRow>(`
+    SELECT balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
+    FROM juhe_business.accounts WHERE id = ? AND system_account_id = ? AND deleted_at IS NULL
+  `, [id, systemAccountId]))
+  const currentWithBalance = { ...current, ...currentBalanceState }
   const nextClientCompatibility = deriveOpenAIAccountClientCompatibility(current.providerCode, current.type, current)
   const credentials = hasOwnInput(input, 'credentials')
     ? normalizeAccountCredentialsForWrite(current.type, input.credentials, {
@@ -2603,10 +2676,13 @@ export async function updateAccountAsync(
     throw new Error('待检查、临时不可调用、限流中或异常账户不能通过启用账户恢复，请等待后台检查或使用异常恢复')
   }
   const updateNowMs = Date.now()
-  const balanceUpdate = accountBalanceUpdateValues(input, new Date(updateNowMs).toISOString(), {
-    type: current.type,
-    credentials
-  })
+  const balanceUpdate = accountBalanceUpdateValues(
+    input,
+    new Date(updateNowMs).toISOString(),
+    currentWithBalance,
+    credentials,
+    proxyProfileId
+  )
   const scheduledStatus = expiredByPackage
     ? 'disabled'
     : hasAvailabilityScheduleInput
@@ -2691,7 +2767,7 @@ export async function updateAccountAsync(
 
   const requestedSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', current.schedulable, '账户是否参与调度')
   const next: AccountSummary = accountSummaryWithEffectiveAvailability({
-    ...current,
+    ...currentWithBalance,
     name: normalizeOptionalAccountNameInput(input, current.name),
     notes: hasNotesInput ? normalizeNullableTextInput(input.notes, '账户备注') : current.notes,
     credentials,

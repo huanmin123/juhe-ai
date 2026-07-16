@@ -122,6 +122,12 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
 }
 
 installProcessLogHandlers()
+if (runtimeConfig.auth.captchaDisabled) {
+  logger.warn({
+    event: 'auth_captcha_disabled',
+    runtimeEnvironment: process.env.NODE_ENV?.trim() || 'development'
+  }, '登录验证码已关闭：仅用于测试或临时排障，账号密码、登录限频、会话和权限校验仍然生效')
+}
 startProcessEventLoopMonitor()
 setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLine(line, options))
 startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })

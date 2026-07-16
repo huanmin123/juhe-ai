@@ -99,7 +99,6 @@ export async function refreshAccountBalanceCandidate(
         status: 'unsupported',
         errorMessage: snapshot.errorMessage ?? '当前配置未找到可用余额接口，后台查询已暂停'
       }
-      if (dependencies.mode === 'manual') return unsupportedSnapshot
       const nextConfig = resolvedBalanceConfig(candidate.config, undefined)
       await persistBalanceRefreshIfCurrent(candidate, nextConfig, unsupportedSnapshot, null)
       return unsupportedSnapshot
@@ -116,7 +115,19 @@ export async function refreshAccountBalanceCandidate(
       errorMessage,
       lastAttemptAt: completedAt
     }
-    if (dependencies.mode === 'manual') return failedSnapshot
+    if (dependencies.mode === 'manual') {
+      if (accountBalanceFailureKind(error) === 'deterministic') {
+        const unsupportedSnapshot: AccountBalanceSnapshot = {
+          ...failedSnapshot,
+          status: 'unsupported'
+        }
+        await persistBalanceRefreshIfCurrent(candidate, resolvedBalanceConfig(candidate.config, undefined), unsupportedSnapshot, null)
+        return unsupportedSnapshot
+      }
+      const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
+      await persistBalanceRefreshIfCurrent(candidate, candidate.config, failedSnapshot, nextRefreshAfter)
+      return failedSnapshot
+    }
 
     if (accountBalanceFailureKind(error) === 'deterministic') {
       const nextConfig = resolvedBalanceConfig(candidate.config, undefined)

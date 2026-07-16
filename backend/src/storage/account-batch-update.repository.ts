@@ -42,6 +42,7 @@ export interface AccountBatchUpdateLockedAccount {
   credentials: Record<string, unknown>
   credentialsEncrypted: string
   proxyProfileId?: string
+  balanceQueryEnabled: boolean
   concurrencyLimit: number
   priority: number
   superPriorityEnabled: boolean
@@ -98,6 +99,7 @@ export interface AccountBatchUpdatePreparedAccount {
   dispatchChanged: boolean
   resetHealthCheckState: boolean
   disableBalanceQuery: boolean
+  resetBalanceQuery: boolean
 }
 
 export interface AccountBatchUpdatePrepareContext {
@@ -183,7 +185,11 @@ export async function updateAccountsBatchAsync(input: {
               WHEN ? = 1 AND balance_query_config_json = '{}' THEN ?
               ELSE balance_query_config_json
             END,
-            balance_query_next_refresh_at = CASE WHEN ? = 1 THEN NULL ELSE balance_query_next_refresh_at END,
+            balance_query_next_refresh_at = CASE
+              WHEN ? = 1 THEN NULL
+              WHEN ? = 1 THEN ?
+              ELSE balance_query_next_refresh_at
+            END,
             config_revision = config_revision + 1,
             updated_at = ?
         WHERE id = ?
@@ -218,6 +224,8 @@ export async function updateAccountsBatchAsync(input: {
         prepared.disableBalanceQuery ? 1 : 0,
         disabledMultiKeyBalanceConfigJson,
         prepared.disableBalanceQuery ? 1 : 0,
+        prepared.resetBalanceQuery ? 1 : 0,
+        updatedAt,
         updatedAt,
         prepared.accountId,
         prepared.expectedConfigRevision
@@ -225,7 +233,7 @@ export async function updateAccountsBatchAsync(input: {
       if (result.changes !== 1) {
         throw new AccountBatchUpdateVersionConflictError(prepared.accountId)
       }
-      if (prepared.disableBalanceQuery) {
+      if (prepared.disableBalanceQuery || prepared.resetBalanceQuery) {
         balanceSnapshotCleanupAccountIds.push(prepared.accountId)
       }
       if (prepared.supportedModelsChanged) {
@@ -334,6 +342,7 @@ async function loadLockedAccountsAsync(
       status,
       credentials_encrypted,
       proxy_profile_id,
+      balance_query_enabled,
       concurrency_limit,
       priority,
       super_priority_enabled,
@@ -375,6 +384,7 @@ async function loadLockedAccountsAsync(
     credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
     credentialsEncrypted: row.credentials_encrypted,
     proxyProfileId: row.proxy_profile_id ?? undefined,
+    balanceQueryEnabled: row.balance_query_enabled === 1,
     concurrencyLimit: Number(row.concurrency_limit),
     priority: Number(row.priority),
     superPriorityEnabled: row.super_priority_enabled === 1,
@@ -535,6 +545,7 @@ interface AccountBatchAccountRow {
   status: AccountStatus
   credentials_encrypted: string
   proxy_profile_id: string | null
+  balance_query_enabled: number
   concurrency_limit: number
   priority: number
   super_priority_enabled: number

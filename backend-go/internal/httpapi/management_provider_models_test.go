@@ -519,7 +519,7 @@ func TestManagementProviderBuiltInModelPriceUpdatePreservesPresenceAndExplicitNu
 	}
 }
 
-func TestManagementProviderBuiltInModelPriceUpdateEnqueuesOperationLog(t *testing.T) {
+func TestManagementProviderBuiltInModelConfigurationUpdateEnqueuesOperationLog(t *testing.T) {
 	inputPrice := 4.0
 	queueStub := &operationLogQueueStub{}
 	service := &managementProviderModelServiceStub{customModelResult: managementprovidermodels.ModelCatalogItem{
@@ -546,16 +546,15 @@ func TestManagementProviderBuiltInModelPriceUpdateEnqueuesOperationLog(t *testin
 	if err != nil {
 		t.Fatalf("decode operation log: %v", err)
 	}
-	if logInput.OperationKey != "providers.models.update_prices" || logInput.ResourceID != "provider_model_gpt_test" || len(logInput.Changes) != 1 {
+	if logInput.OperationKey != "providers.models.update_configuration" || logInput.ResourceID != "provider_model_gpt_test" || len(logInput.Changes) != 1 {
 		t.Fatalf("operation log = %+v", logInput)
 	}
 	encodedPrices, ok := logInput.Changes[0].After.(string)
 	if !ok {
 		t.Fatalf("price change = %#v", logInput.Changes[0].After)
 	}
-	var prices map[string]any
-	if err := json.Unmarshal([]byte(encodedPrices), &prices); err != nil || prices["inputUsdPer1M"] != inputPrice {
-		t.Fatalf("price change = %#v, decode error = %v", logInput.Changes[0].After, err)
+	if !strings.Contains(encodedPrices, `"inputUsdPer1M":4`) || !strings.Contains(encodedPrices, `"status":"active"`) {
+		t.Fatalf("configuration change = %#v", logInput.Changes[0].After)
 	}
 }
 

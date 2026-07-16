@@ -224,13 +224,13 @@ func newManagementProviderCustomModelUpdateHandler(service managementProviderMod
 			return
 		}
 		if result.Scope == "built_in" {
-			recordManagementProviderModelPriceUpdateOperationLog(r, authContext, result, operationLogs)
+			recordManagementProviderModelConfigurationUpdateOperationLog(r, authContext, result, operationLogs)
 		}
 		writeData(w, http.StatusOK, result)
 	})
 }
 
-func recordManagementProviderModelPriceUpdateOperationLog(
+func recordManagementProviderModelConfigurationUpdateOperationLog(
 	r *http.Request,
 	authContext managementauth.Context,
 	result managementprovidermodels.ModelCatalogItem,
@@ -258,18 +258,18 @@ func recordManagementProviderModelPriceUpdateOperationLog(
 		OperationScopeSystemAccountID: authContext.SystemAccountID,
 		Mode:                          "admin",
 		Module:                        "providers",
-		Action:                        "update_model_prices",
-		OperationKey:                  "providers.models.update_prices",
+		Action:                        "update_model_configuration",
+		OperationKey:                  "providers.models.update_configuration",
 		ResourceType:                  "provider_model",
 		ResourceID:                    result.ID,
 		ResourceName:                  result.Model,
-		Summary:                       "更新模型价格：" + result.Model,
+		Summary:                       "更新模型配置：" + result.Model,
 		DetailLevel:                   "full",
 		VisibilityScope:               "admin_only",
 		Changes: []port.OperationLogChange{{
-			Field: "prices",
-			Label: "模型价格",
-			After: managementProviderModelPriceSnapshot(result),
+			Field: "configuration",
+			Label: "模型配置",
+			After: managementProviderModelConfigurationSnapshot(result),
 		}},
 		Method:     r.Method,
 		Path:       r.URL.Path,
@@ -280,8 +280,12 @@ func recordManagementProviderModelPriceUpdateOperationLog(
 	})
 }
 
-func managementProviderModelPriceSnapshot(item managementprovidermodels.ModelCatalogItem) map[string]any {
+func managementProviderModelConfigurationSnapshot(item managementprovidermodels.ModelCatalogItem) map[string]any {
 	return map[string]any{
+		"status": item.Status, "mode": item.Mode, "supportedApiProtocols": item.SupportedAPIProtocols,
+		"supportedServiceTiers": item.SupportedServiceTiers, "supportedReasoningEfforts": item.SupportedReasoningEfforts,
+		"defaultReasoningEffort": item.DefaultReasoningEffort, "releaseDate": item.ReleaseDate, "shutdownDate": item.ShutdownDate,
+		"contextWindowTokens": item.ContextWindowTokens, "maxInputTokens": item.MaxInputTokens, "maxOutputTokens": item.MaxOutputTokens,
 		"inputUsdPer1M": item.InputUSDPer1M, "outputUsdPer1M": item.OutputUSDPer1M,
 		"cachedInputUsdPer1M": item.CachedInputUSDPer1M, "cacheWriteUsdPer1M": item.CacheWriteUSDPer1M,
 		"cacheWrite1hUsdPer1M": item.CacheWrite1hUSDPer1M, "serviceTierPrices": item.ServiceTierPrices,

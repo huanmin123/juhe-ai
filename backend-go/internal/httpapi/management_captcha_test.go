@@ -46,6 +46,33 @@ func TestManagementCaptchaHandlerReturnsChallenge(t *testing.T) {
 	}
 }
 
+func TestManagementCaptchaHandlerReturnsNotRequiredWhenDisabled(t *testing.T) {
+	issuer := &managementCaptchaIssuerStub{}
+	handler := NewManagementCaptchaHandler(issuer, config.Config{AuthCaptchaDisabled: true})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/captcha", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Required bool `json:"required"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Data.Required {
+		t.Fatal("required = true, want false")
+	}
+	if issuer.clientIP != "" {
+		t.Fatalf("disabled captcha should not issue challenge, clientIP = %q", issuer.clientIP)
+	}
+}
+
 func TestManagementCaptchaHandlerUsesTrustProxyClientIP(t *testing.T) {
 	issuer := &managementCaptchaIssuerStub{
 		challenge: managementauth.CaptchaChallenge{CaptchaID: "captcha-id"},

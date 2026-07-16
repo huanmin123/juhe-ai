@@ -94,6 +94,28 @@ func TestManagementLoginHandlerUsesTrustProxyClientIP(t *testing.T) {
 	}
 }
 
+func TestManagementLoginHandlerAllowsCaptchaFieldsToBeOmittedWhenDisabled(t *testing.T) {
+	service := &managementLoginServiceStub{
+		result: managementauth.LoginResult{
+			Account:          managementauth.SystemAccountSummary{ID: "sys_admin", Username: "admin", DisplayName: "管理员", Role: "admin"},
+			SessionToken:     "session-token",
+			SessionExpiresAt: time.Date(2026, 7, 22, 12, 30, 0, 0, time.UTC),
+		},
+	}
+	handler := newManagementLoginHandler(service, config.Config{AuthCaptchaDisabled: true})
+	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/auth/login", strings.NewReader(`{"username":"admin","password":"secret"}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	if service.input.Username != "admin" || service.input.Password != "secret" || service.input.CaptchaID != "" || service.input.CaptchaCode != "" {
+		t.Fatalf("input = %+v", service.input)
+	}
+}
+
 func TestManagementLoginHandlerValidatesBody(t *testing.T) {
 	for _, tc := range []struct {
 		name string

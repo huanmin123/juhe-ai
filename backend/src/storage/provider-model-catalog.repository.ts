@@ -76,6 +76,20 @@ export interface ProviderModelPricePatch {
   outputUsdPerImage?: number | null
 }
 
+export interface ProviderModelConfigurationPatch extends ProviderModelPricePatch {
+  status?: 'active' | 'disabled'
+  mode?: 'text' | 'image' | 'audio' | null
+  supportedApiProtocols?: string[]
+  supportedServiceTiers?: string[]
+  supportedReasoningEfforts?: string[]
+  defaultReasoningEffort?: string | null
+  releaseDate?: string | null
+  shutdownDate?: string | null
+  contextWindowTokens?: number | null
+  maxInputTokens?: number | null
+  maxOutputTokens?: number | null
+}
+
 export function listBuiltInProviderModels(providerCodes: string[]): BuiltInProviderModelRecord[] {
   if (!providerCodes.length) return []
   const placeholders = providerCodes.map(() => '?').join(', ')
@@ -117,7 +131,11 @@ export async function findBuiltInProviderModelByIdAsync(id: string): Promise<Bui
 }
 
 export async function updateBuiltInProviderModelPricesAsync(id: string, patch: ProviderModelPricePatch): Promise<BuiltInProviderModelRecord | undefined> {
-  const { assignments, params } = pricePatchAssignments(patch)
+  return updateBuiltInProviderModelConfigurationAsync(id, patch)
+}
+
+export async function updateBuiltInProviderModelConfigurationAsync(id: string, patch: ProviderModelConfigurationPatch): Promise<BuiltInProviderModelRecord | undefined> {
+  const { assignments, params } = configurationPatchAssignments(patch)
   if (!assignments.length) return findBuiltInProviderModelByIdAsync(id)
   const sql = `UPDATE provider_model_catalog SET ${assignments.join(', ')}, updated_at = ? WHERE id = ?`
   const writeParams = [...params, nowIso(), id]
@@ -128,13 +146,29 @@ export async function updateBuiltInProviderModelPricesAsync(id: string, patch: P
     await client.execute(sql.replace('provider_model_catalog', 'juhe_business.provider_model_catalog'), writeParams)
   }
   const saved = await findBuiltInProviderModelByIdAsync(id)
-  if (saved) await notifyCommittedModelCacheInvalidationAsync('provider_model_price_updated')
+  if (saved) await notifyCommittedModelCacheInvalidationAsync('provider_model_configuration_updated')
   return saved
 }
 
-function pricePatchAssignments(patch: ProviderModelPricePatch): { assignments: string[]; params: unknown[] } {
+function configurationPatchAssignments(patch: ProviderModelConfigurationPatch): { assignments: string[]; params: unknown[] } {
   const assignments: string[] = []
   const params: unknown[] = []
+  const addValue = (field: keyof ProviderModelConfigurationPatch, column: string, normalize: (value: unknown) => unknown = (value) => value) => {
+    if (!Object.prototype.hasOwnProperty.call(patch, field)) return
+    assignments.push(`${column} = ?`)
+    params.push(normalize(patch[field]))
+  }
+  addValue('status', 'status')
+  addValue('mode', 'mode', nullableText)
+  addValue('supportedApiProtocols', 'supported_api_protocols_json', stringListJSON)
+  addValue('supportedServiceTiers', 'supported_service_tiers_json', stringListJSON)
+  addValue('supportedReasoningEfforts', 'supported_reasoning_efforts_json', stringListJSON)
+  addValue('defaultReasoningEffort', 'default_reasoning_effort', nullableText)
+  addValue('releaseDate', 'release_date', nullableText)
+  addValue('shutdownDate', 'shutdown_date', nullableText)
+  addValue('contextWindowTokens', 'context_window_tokens', nullableInteger)
+  addValue('maxInputTokens', 'max_input_tokens', nullableInteger)
+  addValue('maxOutputTokens', 'max_output_tokens', nullableInteger)
   const addPrice = (field: keyof ProviderModelPricePatch, column: string) => {
     if (!Object.prototype.hasOwnProperty.call(patch, field)) return
     assignments.push(`${column} = ?`)
@@ -155,6 +189,18 @@ function pricePatchAssignments(patch: ProviderModelPricePatch): { assignments: s
   addPrice('audioOutputUsdPer1M', 'audio_output_usd_per_1m')
   addPrice('outputUsdPerImage', 'output_usd_per_image')
   return { assignments, params }
+}
+
+function nullableText(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function nullableInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
+}
+
+function stringListJSON(value: unknown): string {
+  return JSON.stringify(Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [])
 }
 
 function nullablePrice(value: unknown): number | null {

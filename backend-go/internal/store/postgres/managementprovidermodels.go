@@ -82,39 +82,49 @@ func updateManagementBuiltInProviderModelPrices(
 	q managementBuiltInProviderModelPriceUpdateQueries,
 	input port.ManagementBuiltInProviderModelPriceUpdateInput,
 ) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
+	protocolsJSON, err := json.Marshal(input.SupportedAPIProtocols.Value)
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model protocols: %w", err)
+	}
+	serviceTiersJSON, err := json.Marshal(input.SupportedServiceTiers.Value)
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model service tiers: %w", err)
+	}
+	reasoningEffortsJSON, err := json.Marshal(input.SupportedReasoningEfforts.Value)
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model reasoning efforts: %w", err)
+	}
 	pricesJSON := []byte("{}")
 	if input.ServiceTierPrices.Present {
-		var err error
 		pricesJSON, err = json.Marshal(input.ServiceTierPrices.Value)
 		if err != nil {
 			return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("marshal built-in provider model service tier prices: %w", err)
 		}
 	}
 	row, err := q.UpdateManagementBuiltInProviderModelPrices(ctx, postgresqueries.UpdateManagementBuiltInProviderModelPricesParams{
-		InputUsdPer1mPresent:        input.InputUSDPer1M.Present,
-		InputUsdPer1m:               pgFloat8Ptr(input.InputUSDPer1M.Value),
-		OutputUsdPer1mPresent:       input.OutputUSDPer1M.Present,
-		OutputUsdPer1m:              pgFloat8Ptr(input.OutputUSDPer1M.Value),
-		CachedInputUsdPer1mPresent:  input.CachedInputUSDPer1M.Present,
-		CachedInputUsdPer1m:         pgFloat8Ptr(input.CachedInputUSDPer1M.Value),
-		CacheWriteUsdPer1mPresent:   input.CacheWriteUSDPer1M.Present,
-		CacheWriteUsdPer1m:          pgFloat8Ptr(input.CacheWriteUSDPer1M.Value),
-		CacheWrite1hUsdPer1mPresent: input.CacheWrite1hUSDPer1M.Present,
-		CacheWrite1hUsdPer1m:        pgFloat8Ptr(input.CacheWrite1hUSDPer1M.Value),
-		ServiceTierPricesPresent:    input.ServiceTierPrices.Present,
-		ServiceTierPricesJson:       string(pricesJSON),
-		ImageInputUsdPer1mPresent:   input.ImageInputUSDPer1M.Present,
-		ImageInputUsdPer1m:          pgFloat8Ptr(input.ImageInputUSDPer1M.Value),
-		ImageOutputUsdPer1mPresent:  input.ImageOutputUSDPer1M.Present,
-		ImageOutputUsdPer1m:         pgFloat8Ptr(input.ImageOutputUSDPer1M.Value),
-		AudioInputUsdPer1mPresent:   input.AudioInputUSDPer1M.Present,
-		AudioInputUsdPer1m:          pgFloat8Ptr(input.AudioInputUSDPer1M.Value),
-		AudioOutputUsdPer1mPresent:  input.AudioOutputUSDPer1M.Present,
-		AudioOutputUsdPer1m:         pgFloat8Ptr(input.AudioOutputUSDPer1M.Value),
-		OutputUsdPerImagePresent:    input.OutputUSDPerImage.Present,
-		OutputUsdPerImage:           pgFloat8Ptr(input.OutputUSDPerImage.Value),
-		ID:                          input.ID,
-		ProviderCode:                input.ProviderCode,
+		StatusPresent: input.Status.Present, Status: input.Status.Value,
+		ModePresent: input.Mode.Present, Mode: input.Mode.Value,
+		SupportedApiProtocolsPresent: input.SupportedAPIProtocols.Present, SupportedApiProtocolsJson: string(protocolsJSON),
+		SupportedServiceTiersPresent: input.SupportedServiceTiers.Present, SupportedServiceTiersJson: string(serviceTiersJSON),
+		SupportedReasoningEffortsPresent: input.SupportedReasoningEfforts.Present, SupportedReasoningEffortsJson: string(reasoningEffortsJSON),
+		DefaultReasoningEffortPresent: input.DefaultReasoningEffort.Present, DefaultReasoningEffort: input.DefaultReasoningEffort.Value,
+		ReleaseDatePresent: input.ReleaseDate.Present, ReleaseDate: input.ReleaseDate.Value,
+		ShutdownDatePresent: input.ShutdownDate.Present, ShutdownDate: input.ShutdownDate.Value,
+		ContextWindowTokensPresent: input.ContextWindowTokens.Present, ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens.Value),
+		MaxInputTokensPresent: input.MaxInputTokens.Present, MaxInputTokens: pgInt4Ptr(input.MaxInputTokens.Value),
+		MaxOutputTokensPresent: input.MaxOutputTokens.Present, MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens.Value),
+		InputUsdPer1mPresent: input.InputUSDPer1M.Present, InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M.Value),
+		OutputUsdPer1mPresent: input.OutputUSDPer1M.Present, OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M.Value),
+		CachedInputUsdPer1mPresent: input.CachedInputUSDPer1M.Present, CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M.Value),
+		CacheWriteUsdPer1mPresent: input.CacheWriteUSDPer1M.Present, CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M.Value),
+		CacheWrite1hUsdPer1mPresent: input.CacheWrite1hUSDPer1M.Present, CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M.Value),
+		ServiceTierPricesPresent: input.ServiceTierPrices.Present, ServiceTierPricesJson: string(pricesJSON),
+		ImageInputUsdPer1mPresent: input.ImageInputUSDPer1M.Present, ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M.Value),
+		ImageOutputUsdPer1mPresent: input.ImageOutputUSDPer1M.Present, ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M.Value),
+		AudioInputUsdPer1mPresent: input.AudioInputUSDPer1M.Present, AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M.Value),
+		AudioOutputUsdPer1mPresent: input.AudioOutputUSDPer1M.Present, AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M.Value),
+		OutputUsdPerImagePresent: input.OutputUSDPerImage.Present, OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage.Value),
+		ID: input.ID, ProviderCode: input.ProviderCode,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, nil
@@ -126,21 +136,30 @@ func updateManagementBuiltInProviderModelPrices(
 	if err != nil {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
 	}
+	protocols, err := decodeProviderStringArray(row.SupportedApiProtocolsJson, "built-in provider model supported_api_protocols_json")
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+	}
+	serviceTiers, err := decodeProviderStringArray(row.SupportedServiceTiersJson, "built-in provider model supported_service_tiers_json")
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+	}
+	reasoningEfforts, err := decodeProviderStringArray(row.SupportedReasoningEffortsJson, "built-in provider model supported_reasoning_efforts_json")
+	if err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+	}
 	return port.ManagementBuiltInProviderModelPriceUpdateResult{
-		ID:                   row.ID,
-		ProviderCode:         row.ProviderCode,
-		InputUSDPer1M:        float8Ptr(row.InputUsdPer1m),
-		OutputUSDPer1M:       float8Ptr(row.OutputUsdPer1m),
-		CachedInputUSDPer1M:  float8Ptr(row.CachedInputUsdPer1m),
-		CacheWriteUSDPer1M:   float8Ptr(row.CacheWriteUsdPer1m),
-		CacheWrite1hUSDPer1M: float8Ptr(row.CacheWrite1hUsdPer1m),
-		ServiceTierPrices:    serviceTierPrices,
-		ImageInputUSDPer1M:   float8Ptr(row.ImageInputUsdPer1m),
-		ImageOutputUSDPer1M:  float8Ptr(row.ImageOutputUsdPer1m),
-		AudioInputUSDPer1M:   float8Ptr(row.AudioInputUsdPer1m),
-		AudioOutputUSDPer1M:  float8Ptr(row.AudioOutputUsdPer1m),
-		OutputUSDPerImage:    float8Ptr(row.OutputUsdPerImage),
-		UpdatedAt:            timestamptzValue(row.UpdatedAt),
+		ID: row.ID, ProviderCode: row.ProviderCode,
+		Status: row.Status, Mode: textValue(row.Mode), SupportedAPIProtocols: protocols,
+		SupportedServiceTiers: serviceTiers, SupportedReasoningEfforts: reasoningEfforts,
+		DefaultReasoningEffort: textValue(row.DefaultReasoningEffort), ReleaseDate: textValue(row.ReleaseDate), ShutdownDate: textValue(row.ShutdownDate),
+		ContextWindowTokens: int4Ptr(row.ContextWindowTokens), MaxInputTokens: int4Ptr(row.MaxInputTokens), MaxOutputTokens: int4Ptr(row.MaxOutputTokens),
+		InputUSDPer1M: float8Ptr(row.InputUsdPer1m), OutputUSDPer1M: float8Ptr(row.OutputUsdPer1m),
+		CachedInputUSDPer1M: float8Ptr(row.CachedInputUsdPer1m), CacheWriteUSDPer1M: float8Ptr(row.CacheWriteUsdPer1m),
+		CacheWrite1hUSDPer1M: float8Ptr(row.CacheWrite1hUsdPer1m), ServiceTierPrices: serviceTierPrices,
+		ImageInputUSDPer1M: float8Ptr(row.ImageInputUsdPer1m), ImageOutputUSDPer1M: float8Ptr(row.ImageOutputUsdPer1m),
+		AudioInputUSDPer1M: float8Ptr(row.AudioInputUsdPer1m), AudioOutputUSDPer1M: float8Ptr(row.AudioOutputUsdPer1m),
+		OutputUSDPerImage: float8Ptr(row.OutputUsdPerImage), UpdatedAt: timestamptzValue(row.UpdatedAt),
 	}, true, nil
 }
 

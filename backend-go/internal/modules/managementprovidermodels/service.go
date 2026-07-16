@@ -505,9 +505,6 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	if scope == "global" && !isAdminRole(input.ActorRole) {
 		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以创建全局模型"}
 	}
-	if !isAdminRole(input.ActorRole) && customModelMutationHasPriceField(input.Fields) {
-		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护模型价格"}
-	}
 	ownerSystemAccountID := ""
 	if scope == "personal" {
 		if isAdminRole(input.ActorRole) {
@@ -565,7 +562,7 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 		return ModelCatalogItem{}, err
 	}
 	if foundBuiltIn {
-		return s.updateBuiltInModelPrices(ctx, builtIn, input)
+		return s.updateBuiltInModelConfiguration(ctx, builtIn, input)
 	}
 	existing, found, err := s.store.FindManagementCustomProviderModel(ctx, strings.TrimSpace(input.ID))
 	if err != nil {
@@ -576,9 +573,6 @@ func (s *Service) UpdateCustomModel(ctx context.Context, input CustomModelUpdate
 	}
 	if !canMutateCustomProviderModel(existing.Scope, existing.SystemAccountID, input.ActorSystemAccountID, input.ActorRole) {
 		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "无权修改该自定义模型"}
-	}
-	if !isAdminRole(input.ActorRole) && customModelMutationHasPriceField(input.Fields) {
-		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护模型价格"}
 	}
 	if input.Fields.Invalid || !customModelMutationHasAnyField(input.Fields) {
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
@@ -625,38 +619,32 @@ func (s *Service) findBuiltInModelByID(ctx context.Context, providerCode string,
 	return port.ManagementProviderModelCatalogItem{}, false, nil
 }
 
-func (s *Service) updateBuiltInModelPrices(ctx context.Context, existing port.ManagementProviderModelCatalogItem, input CustomModelUpdateInput) (ModelCatalogItem, error) {
+func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing port.ManagementProviderModelCatalogItem, input CustomModelUpdateInput) (ModelCatalogItem, error) {
 	if !isAdminRole(input.ActorRole) {
-		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护内置模型价格"}
+		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护内置模型配置"}
 	}
-	if input.Fields.Invalid || !builtInModelPriceMutationOnly(input.Fields) {
-		return ModelCatalogItem{}, &CustomModelValidationError{Message: "内置模型只允许修改价格字段"}
+	if input.Fields.Invalid || !builtInModelConfigurationMutationOnly(input.Fields) {
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "内置模型配置参数无效"}
 	}
-	updated := existing
-	for target, value := range map[**float64]OptionalFloat{
-		&updated.InputUSDPer1M: input.Fields.InputUSDPer1M, &updated.OutputUSDPer1M: input.Fields.OutputUSDPer1M,
-		&updated.CachedInputUSDPer1M: input.Fields.CachedInputUSDPer1M, &updated.CacheWriteUSDPer1M: input.Fields.CacheWriteUSDPer1M,
-		&updated.CacheWrite1hUSDPer1M: input.Fields.CacheWrite1hUSDPer1M, &updated.ImageInputUSDPer1M: input.Fields.ImageInputUSDPer1M,
-		&updated.ImageOutputUSDPer1M: input.Fields.ImageOutputUSDPer1M, &updated.AudioInputUSDPer1M: input.Fields.AudioInputUSDPer1M,
-		&updated.AudioOutputUSDPer1M: input.Fields.AudioOutputUSDPer1M, &updated.OutputUSDPerImage: input.Fields.OutputUSDPerImage,
-	} {
-		if err := applyOptionalCustomModelFloat(target, value); err != nil {
-			return ModelCatalogItem{}, err
-		}
+	if input.Fields.Status.Set && strings.TrimSpace(input.Fields.Status.Value) == "draft" {
+		return ModelCatalogItem{}, &CustomModelValidationError{Message: "内置模型配置参数无效"}
 	}
-	if input.Fields.ServiceTierPrices.Set {
-		updated.ServiceTierPrices = cloneProviderModelPriceMap(input.Fields.ServiceTierPrices.Value)
-	}
-	if err := validateServiceTierPriceKeys(updated.Mode, updated.SupportedServiceTiers, updated.ServiceTierPrices); err != nil {
+	configuration := customModelSaveInputFromExisting(existing, strings.TrimSpace(input.ActorSystemAccountID))
+	configuration.Mode = customModelModeFromCatalog(existing)
+	if err := applyCustomModelMutableFields(&configuration, input.Fields, false); err != nil {
 		return ModelCatalogItem{}, err
 	}
 	persisted, found, err := s.store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
-		ID:                   updated.ID,
-		ProviderCode:         updated.ProviderCode,
-		InputUSDPer1M:        builtInProviderModelOptionalFloat(input.Fields.InputUSDPer1M),
-		OutputUSDPer1M:       builtInProviderModelOptionalFloat(input.Fields.OutputUSDPer1M),
-		CachedInputUSDPer1M:  builtInProviderModelOptionalFloat(input.Fields.CachedInputUSDPer1M),
-		CacheWriteUSDPer1M:   builtInProviderModelOptionalFloat(input.Fields.CacheWriteUSDPer1M),
+		ID: existing.ID, ProviderCode: existing.ProviderCode,
+		Status: builtInProviderModelOptionalString(input.Fields.Status), Mode: builtInProviderModelOptionalString(input.Fields.Mode),
+		SupportedAPIProtocols:     builtInProviderModelOptionalStringList(input.Fields.SupportedAPIProtocols),
+		SupportedServiceTiers:     builtInProviderModelOptionalStringList(input.Fields.SupportedServiceTiers),
+		SupportedReasoningEfforts: builtInProviderModelOptionalStringList(input.Fields.SupportedReasoningEfforts),
+		DefaultReasoningEffort:    builtInProviderModelOptionalString(input.Fields.DefaultReasoningEffort),
+		ReleaseDate:               builtInProviderModelOptionalString(input.Fields.ReleaseDate), ShutdownDate: builtInProviderModelOptionalString(input.Fields.ShutdownDate),
+		ContextWindowTokens: builtInProviderModelOptionalInt(input.Fields.ContextWindowTokens), MaxInputTokens: builtInProviderModelOptionalInt(input.Fields.MaxInputTokens), MaxOutputTokens: builtInProviderModelOptionalInt(input.Fields.MaxOutputTokens),
+		InputUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.InputUSDPer1M), OutputUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.OutputUSDPer1M),
+		CachedInputUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.CachedInputUSDPer1M), CacheWriteUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.CacheWriteUSDPer1M),
 		CacheWrite1hUSDPer1M: builtInProviderModelOptionalFloat(input.Fields.CacheWrite1hUSDPer1M),
 		ServiceTierPrices: port.ManagementProviderModelOptionalPriceMap{
 			Present: input.Fields.ServiceTierPrices.Set,
@@ -675,45 +663,53 @@ func (s *Service) updateBuiltInModelPrices(ctx context.Context, existing port.Ma
 		return ModelCatalogItem{}, ErrCustomProviderModelNotFound
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
-	updated = builtInProviderModelCatalogItemFromPriceUpdate(updated, persisted)
+	updated := existing
+	updated.Status = persisted.Status
+	updated.Mode = persisted.Mode
+	updated.SupportedAPIProtocols = append([]string(nil), persisted.SupportedAPIProtocols...)
+	updated.SupportedServiceTiers = append([]string(nil), persisted.SupportedServiceTiers...)
+	updated.SupportedReasoningEfforts = append([]string(nil), persisted.SupportedReasoningEfforts...)
+	updated.DefaultReasoningEffort = persisted.DefaultReasoningEffort
+	updated.ReleaseDate = persisted.ReleaseDate
+	updated.ShutdownDate = persisted.ShutdownDate
+	updated.ContextWindowTokens = cloneIntPtr(persisted.ContextWindowTokens)
+	updated.MaxInputTokens = cloneIntPtr(persisted.MaxInputTokens)
+	updated.MaxOutputTokens = cloneIntPtr(persisted.MaxOutputTokens)
+	updated.InputUSDPer1M = cloneFloatPtr(persisted.InputUSDPer1M)
+	updated.OutputUSDPer1M = cloneFloatPtr(persisted.OutputUSDPer1M)
+	updated.CachedInputUSDPer1M = cloneFloatPtr(persisted.CachedInputUSDPer1M)
+	updated.CacheWriteUSDPer1M = cloneFloatPtr(persisted.CacheWriteUSDPer1M)
+	updated.CacheWrite1hUSDPer1M = cloneFloatPtr(persisted.CacheWrite1hUSDPer1M)
+	updated.ServiceTierPrices = cloneProviderModelPriceMap(persisted.ServiceTierPrices)
+	updated.ImageInputUSDPer1M = cloneFloatPtr(persisted.ImageInputUSDPer1M)
+	updated.ImageOutputUSDPer1M = cloneFloatPtr(persisted.ImageOutputUSDPer1M)
+	updated.AudioInputUSDPer1M = cloneFloatPtr(persisted.AudioInputUSDPer1M)
+	updated.AudioOutputUSDPer1M = cloneFloatPtr(persisted.AudioOutputUSDPer1M)
+	updated.OutputUSDPerImage = cloneFloatPtr(persisted.OutputUSDPerImage)
+	updated.UpdatedAt = persisted.UpdatedAt
 	result := catalogItemFromPort(updated)
 	result.UpdatedAt = formatOptionalTime(persisted.UpdatedAt)
 	return result, nil
 }
 
-func builtInProviderModelCatalogItemFromPriceUpdate(
-	existing port.ManagementProviderModelCatalogItem,
-	persisted port.ManagementBuiltInProviderModelPriceUpdateResult,
-) port.ManagementProviderModelCatalogItem {
-	existing.ID = persisted.ID
-	existing.ProviderCode = persisted.ProviderCode
-	existing.InputUSDPer1M = cloneFloatPtr(persisted.InputUSDPer1M)
-	existing.OutputUSDPer1M = cloneFloatPtr(persisted.OutputUSDPer1M)
-	existing.CachedInputUSDPer1M = cloneFloatPtr(persisted.CachedInputUSDPer1M)
-	existing.CacheWriteUSDPer1M = cloneFloatPtr(persisted.CacheWriteUSDPer1M)
-	existing.CacheWrite1hUSDPer1M = cloneFloatPtr(persisted.CacheWrite1hUSDPer1M)
-	existing.ServiceTierPrices = cloneProviderModelPriceMap(persisted.ServiceTierPrices)
-	existing.ImageInputUSDPer1M = cloneFloatPtr(persisted.ImageInputUSDPer1M)
-	existing.ImageOutputUSDPer1M = cloneFloatPtr(persisted.ImageOutputUSDPer1M)
-	existing.AudioInputUSDPer1M = cloneFloatPtr(persisted.AudioInputUSDPer1M)
-	existing.AudioOutputUSDPer1M = cloneFloatPtr(persisted.AudioOutputUSDPer1M)
-	existing.OutputUSDPerImage = cloneFloatPtr(persisted.OutputUSDPerImage)
-	existing.UpdatedAt = persisted.UpdatedAt
-	return existing
+func builtInProviderModelOptionalString(value OptionalString) port.ManagementProviderModelOptionalString {
+	return port.ManagementProviderModelOptionalString{Present: value.Set, Value: strings.TrimSpace(value.Value)}
+}
+
+func builtInProviderModelOptionalStringList(value OptionalStringList) port.ManagementProviderModelOptionalStringList {
+	return port.ManagementProviderModelOptionalStringList{Present: value.Set, Value: append([]string(nil), value.Value...)}
+}
+
+func builtInProviderModelOptionalInt(value OptionalInt) port.ManagementProviderModelOptionalInt {
+	return port.ManagementProviderModelOptionalInt{Present: value.Set, Value: cloneIntPtr(value.Value)}
 }
 
 func builtInProviderModelOptionalFloat(value OptionalFloat) port.ManagementProviderModelOptionalFloat {
 	return port.ManagementProviderModelOptionalFloat{Present: value.Set, Value: value.Value}
 }
 
-func builtInModelPriceMutationOnly(fields CustomModelMutation) bool {
-	hasPrice := fields.InputUSDPer1M.Set || fields.OutputUSDPer1M.Set || fields.CachedInputUSDPer1M.Set || fields.CacheWriteUSDPer1M.Set ||
-		fields.CacheWrite1hUSDPer1M.Set || fields.ServiceTierPrices.Set || fields.ImageInputUSDPer1M.Set || fields.ImageOutputUSDPer1M.Set ||
-		fields.AudioInputUSDPer1M.Set || fields.AudioOutputUSDPer1M.Set || fields.OutputUSDPerImage.Set
-	return hasPrice && !(fields.Scope.Set || fields.Model.Set || fields.Status.Set || fields.Mode.Set || fields.SupportedAPIProtocols.Set ||
-		fields.SupportedServiceTiers.Set || fields.SupportedReasoningEfforts.Set || fields.DefaultReasoningEffort.Set ||
-		fields.ConfigurationTemplateID.Set || fields.ReleaseDate.Set || fields.ShutdownDate.Set || fields.ContextWindowTokens.Set || fields.MaxInputTokens.Set || fields.MaxOutputTokens.Set || fields.PricingNotes.Set ||
-		fields.CapabilityNotes.Set || fields.Notes.Set)
+func builtInModelConfigurationMutationOnly(fields CustomModelMutation) bool {
+	return customModelMutationHasAnyField(fields) && !(fields.Scope.Set || fields.Model.Set || fields.ConfigurationTemplateID.Set || fields.PricingNotes.Set || fields.CapabilityNotes.Set || fields.Notes.Set)
 }
 
 func (s *Service) clearDefaultHealthCheckModelReferences(ctx context.Context, model port.ManagementProviderModelCatalogItem) error {
@@ -1300,20 +1296,6 @@ func customModelMutationHasAnyField(fields CustomModelMutation) bool {
 		fields.PricingNotes.Set ||
 		fields.CapabilityNotes.Set ||
 		fields.Notes.Set
-}
-
-func customModelMutationHasPriceField(fields CustomModelMutation) bool {
-	return fields.InputUSDPer1M.Set ||
-		fields.OutputUSDPer1M.Set ||
-		fields.CachedInputUSDPer1M.Set ||
-		fields.CacheWriteUSDPer1M.Set ||
-		fields.CacheWrite1hUSDPer1M.Set ||
-		fields.ServiceTierPrices.Set ||
-		fields.ImageInputUSDPer1M.Set ||
-		fields.ImageOutputUSDPer1M.Set ||
-		fields.AudioInputUSDPer1M.Set ||
-		fields.AudioOutputUSDPer1M.Set ||
-		fields.OutputUSDPerImage.Set
 }
 
 func validCustomModelStatus(status string) bool {
