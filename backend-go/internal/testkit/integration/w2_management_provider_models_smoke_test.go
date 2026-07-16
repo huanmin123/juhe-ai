@@ -626,7 +626,7 @@ func assertW2ProviderModelCatalogSnapshot(t *testing.T, ctx context.Context, db 
 	}{
 		{providerCode: "gpt", model: "gpt-4.1"},
 		{providerCode: "gpt", model: "o3"},
-		{providerCode: "anthropic", model: "claude-3-7-sonnet-latest"},
+		{providerCode: "anthropic", model: "claude-sonnet-4-6"},
 		{providerCode: "gemini", model: "gemini-2.5-flash-lite"},
 		{providerCode: "deepseek", model: "deepseek-chat"},
 		{providerCode: "glm", model: "glm-4.7"},
