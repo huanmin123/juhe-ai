@@ -317,30 +317,72 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 
 func TestServiceModelsIncludesTierOnlyPricedModel(t *testing.T) {
 	price := 1.5
-	store := &providerModelStoreStub{
-		providers: map[string]port.ManagementProviderModelProvider{
-			"gpt": {Code: "gpt", Enabled: true},
+	zeroPrice := 0.0
+	tests := []struct {
+		name              string
+		serviceTierPrices map[string]port.ManagementProviderModelPriceSet
+		wantIncluded      bool
+	}{
+		{
+			name:              "empty tier prices",
+			serviceTierPrices: map[string]port.ManagementProviderModelPriceSet{},
+			wantIncluded:      false,
 		},
-		catalog: []port.ManagementProviderModelCatalogItem{{
-			ProviderCode: "gpt",
-			Model:        "tier-only-model",
-			Scope:        "global",
-			Status:       "active",
-			ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+		{
+			name: "tier price with all fields nil",
+			serviceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+				"priority": {},
+			},
+			wantIncluded: false,
+		},
+		{
+			name: "non-zero tier price",
+			serviceTierPrices: map[string]port.ManagementProviderModelPriceSet{
 				"priority": {InputUSDPer1M: &price},
 			},
-		}},
+			wantIncluded: true,
+		},
+		{
+			name: "zero tier price",
+			serviceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+				"priority": {InputUSDPer1M: &zeroPrice},
+			},
+			wantIncluded: true,
+		},
 	}
 
-	models, err := NewService(store).Models(context.Background(), ModelListInput{
-		ProviderCode:    "gpt",
-		IncludeUnpriced: false,
-	})
-	if err != nil {
-		t.Fatalf("Models() error = %v", err)
-	}
-	if len(models) != 1 || models[0].Model != "tier-only-model" {
-		t.Fatalf("models = %+v, want tier-only priced model", models)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &providerModelStoreStub{
+				providers: map[string]port.ManagementProviderModelProvider{
+					"gpt": {Code: "gpt", Enabled: true},
+				},
+				catalog: []port.ManagementProviderModelCatalogItem{{
+					ProviderCode:      "gpt",
+					Model:             "tier-only-model",
+					Scope:             "global",
+					Status:            "active",
+					ServiceTierPrices: tt.serviceTierPrices,
+				}},
+			}
+
+			models, err := NewService(store).Models(context.Background(), ModelListInput{
+				ProviderCode:    "gpt",
+				IncludeUnpriced: false,
+			})
+			if err != nil {
+				t.Fatalf("Models() error = %v", err)
+			}
+			if tt.wantIncluded {
+				if len(models) != 1 || models[0].Model != "tier-only-model" {
+					t.Fatalf("models = %+v, want tier-only priced model", models)
+				}
+				return
+			}
+			if len(models) != 0 {
+				t.Fatalf("models = %+v, want tier-only unpriced model filtered", models)
+			}
+		})
 	}
 }
 
