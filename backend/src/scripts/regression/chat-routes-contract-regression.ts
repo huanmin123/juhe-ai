@@ -26,6 +26,7 @@ for (const contract of [
   /chatRouter\.get\('\/conversations\/:conversationId\/assets\/:assetId\/content'/,
   /chatRouter\.get\('\/conversations\/:conversationId\/models'/,
   /chatRouter\.post\('\/conversations\/:conversationId\/stream'/,
+  /chatRouter\.get\('\/conversations\/:conversationId\/streams\/:turnId'/,
   /chatRouter\.post\('\/conversations\/:conversationId\/stop'/,
   /chatRouter\.delete\('\/conversations\/:conversationId'/
 ]) {
@@ -46,9 +47,7 @@ const ownershipLookupIndex = routesSource.indexOf('await getChatConversation(cli
 const responseCloseIndex = routesSource.indexOf("res.once('close'", streamRouteIndex)
 const beginAcceptanceIndex = routesSource.indexOf('beginActiveChatAcceptance', streamRouteIndex)
 const transportBuildIndex = routesSource.indexOf('buildChatTransportRequest({', contextReadIndex)
-const activeStreamIndex = routesSource.indexOf('activeStreams.set(conversation.id')
-const acceptedContextHeadIndex = routesSource.indexOf('const acceptedContextHead = await getChatContextHead', acceptTurnIndex)
-const postAcceptTryIndex = routesSource.indexOf('try {', activeStreamIndex)
+const registryStartIndex = routesSource.indexOf('registry.start(runner)', acceptTurnIndex)
 const upstreamFetchIndex = routesSource.indexOf('const upstream = await fetch')
 assert(ownershipLookupIndex >= 0 && ownershipLookupIndex < preparationClaimIndex, '发送必须先验证会话归属再占用准备门禁，其他用户不能阻塞目标会话')
 assert(duplicateLookupIndex >= 0 && duplicateLookupIndex < preparationClaimIndex, '重复 clientMessageId 必须优先于并发准备门禁返回稳定幂等结果')
@@ -60,21 +59,22 @@ assert.match(routesSource, /finally \{[\s\S]{0,180}deleteActiveChatPreparationIf
 assert.match(routesSource, /state: 'accepted'[\s\S]{0,160}assistantStatus/, '提交状态接口必须返回 accepted 的 turnId 和助手状态')
 assert.match(routesSource, /state: preparing \? 'preparing' : 'not_found'/, '提交状态接口必须区分 preparing 与权威 not_found')
 assert.match(routesSource, /const stopBodySchema[\s\S]{0,400}turnId:[\s\S]{0,200}clientMessageId:/, 'stop 必须要求期望 turnId 或 clientMessageId，不能按会话盲停')
-assert.match(routesSource, /active\.turnId === expectedTurnId/, '内存流 stop 必须校验期望轮次，不能误杀后启动的新流')
+assert.match(routesSource, /registry\.get\(\{ ownerId:[\s\S]{0,180}turnId: expectedTurnId/, '内存流 stop 必须以 owner、conversation、turn 精确查找 runner')
 assert.match(routesSource, /cancelActiveChatPreparation\([\s\S]{0,300}clientMessageId: body\.clientMessageId/, 'preparing stop 必须按 clientMessageId 精确取消')
 assert.match(routesSource, /cancelActiveChatTurnIfMatches/, '服务重启后的孤立 streaming 轮次必须通过 repository 原子条件取消')
 assert.match(routesSource, /validateFixedChatInputBudget/, '固定输入预算必须在接受轮次前独立预检')
 assert(contextReadIndex >= 0 && contextReadIndex < acceptTurnIndex, '检查点上下文和硬水位必须在接受轮次前完成，避免超限消息半成功')
 assert(contextReadIndex < transportBuildIndex && transportBuildIndex < acceptTurnIndex, '最终 transport 与请求体字节预检必须在消息落库前完成')
-assert(acceptTurnIndex < activeStreamIndex && activeStreamIndex < upstreamFetchIndex, 'accept 完成后才能登记 activeStreams 和请求上游')
-assert(activeStreamIndex < postAcceptTryIndex && postAcceptTryIndex < acceptedContextHeadIndex, 'accept 后必须先登记可取消句柄，再把所有异步步骤纳入统一终态收口')
-assert.match(routesSource.slice(postAcceptTryIndex, upstreamFetchIndex), /controller\.signal\.aborted|assertChatPreparationActive/, 'accept 后首次异步等待前必须再次检查取消状态')
+assert(acceptTurnIndex < registryStartIndex, 'accept 完成后必须同步登记 runner')
+assert.match(routesSource, /ChatGenerationRegistry/, 'chat 路由必须复用服务端 generation registry')
+assert.match(routesSource, /failInterruptedChatTurnIfMatches/, 'DB active 但 runner 缺失时必须原子收口为中断失败')
+assert.match(routesSource, /res\.once\('close'[\s\S]{0,100}if \(!accepted\) controller\?\.abort\(\)/, 'response close 只能在 accept 前取消 preparation controller')
 assert.match(routesSource, /compactChatContextOnce/, '硬水位必须在发送前执行有界压缩')
 assert.match(routesSource, /error instanceof ChatModelContextError[\s\S]{0,120}error\.reason !== 'load_limit'[\s\S]{0,300}compactChatContextOnce/, '超过本地 512 条装载上限时必须先分页压缩再重试，不能直接卡死会话')
 assert.match(routesSource, /Buffer\.byteLength\(serializedTransportBody[\s\S]{0,300}!contextCompacted[\s\S]{0,300}compactChatContextOnce/, '请求体超过内部字节阈值时必须先尝试压缩历史')
 assert.match(routesSource, /preparedContext\.unresolvedAssetIds\.length[\s\S]{0,700}历史图片语义说明仍在生成/, '历史图片说明未完成时必须短暂等待后拒绝本轮，不能回灌历史 Base64')
 assert.match(routesSource, /targets:\s*preparedContext\.unresolvedAssets/, '历史图片说明调度必须携带上下文读取时捕获的轮次和消息身份')
-assert.match(routesSource, /const observationTurnId = accepted\.turnId[\s\S]{0,100}const observationMessageId = accepted\.userMessage\.id[\s\S]{0,260}expectedTurnId:\s*observationTurnId[\s\S]{0,160}expectedMessageId:\s*observationMessageId/, '当前轮图片说明调度必须绑定已接受的用户轮次和消息')
+assert.match(routesSource, /const observationTurnId = accepted!?\.turnId[\s\S]{0,120}const observationMessageId = accepted!?\.userMessage\.id[\s\S]{0,500}expectedTurnId:\s*observationTurnId[\s\S]{0,240}expectedMessageId:\s*observationMessageId/, '当前轮图片说明调度必须绑定已接受的用户轮次和消息')
 assert.match(modelContextSource, /expectedTurnId:\s*message\.turnId[\s\S]{0,120}expectedMessageId:\s*message\.id/, '历史图片说明目标必须绑定产生该图片块的原用户消息')
 assert.match(imageObservationSource, /claimChatAssetObservation[\s\S]{0,260}expectedTurnId:\s*target\.expectedTurnId[\s\S]{0,120}expectedMessageId:\s*target\.expectedMessageId/, '图片说明 claim 必须原子校验调度时捕获的轮次和消息身份')
 assert.match(routesSource, /scheduleChatContextCompaction/, '软水位必须异步调度压缩')

@@ -14,6 +14,7 @@ import {
   createChatConversation,
   deleteChatConversation,
   failChatTurn,
+  failInterruptedChatTurnIfMatches,
   findChatTurnByClientMessageId,
   getChatConversation,
   getChatConversationSyncHead,
@@ -38,7 +39,6 @@ import {
   cancelActiveChatPreparation,
   claimActiveChatPreparation,
   deleteActiveChatPreparationIfMatches,
-  deleteActiveChatStreamIfMatches,
   hasActiveChatPreparation,
   type ActiveChatPreparation
 } from './chat-active-streams.js'
@@ -56,8 +56,12 @@ import { compactChatContextOnce, scheduleChatContextCompaction } from './chat-co
 import { scheduleChatImageObservations, waitForChatImageObservations } from './chat-image-observation.js'
 import { countChatTextTokens } from './chat-token-count.js'
 import { buildChatPromptCacheKey } from './chat-prompt-cache.js'
+import { ChatGenerationRunner, type ChatGenerationSubscriber } from './chat-generation-runner.js'
+import { ChatGenerationRegistry } from './chat-generation-registry.js'
 
 export const chatRouter = Router()
+export const shutdownChatGenerationRegistry = (options: { timeoutMs: number }): Promise<void> => registry.shutdown(options)
+export const isActiveChatGeneration = (ownerId: string, conversationId: string, turnId: string): boolean => Boolean(registry.get({ ownerId, conversationId, turnId }))
 
 const messageContentBlocksSchema = z.array(z.discriminatedUnion('type', [
   z.object({ type: z.literal('input_text'), text: z.string().max(196_608, '文本块内容过长') }).strict(),
@@ -104,8 +108,8 @@ const updateConversationSchema = z.object({
   title: z.string().trim().min(1, '请输入会话标题').max(60, '会话标题最多 60 个字符').optional(),
   isPinned: z.boolean().optional()
 }).strict().refine((value) => value.title !== undefined || value.isPinned !== undefined, '没有可更新的会话字段')
-const activeStreams = new Map<string, { ownerId: string; turnId: string; controller: AbortController }>()
 const activePreparations = new Map<string, ActiveChatPreparation>()
+const registry = new ChatGenerationRegistry()
 const maxMessageBytes = 192 * 1024
 const maxInternalChatRequestBytes = 15 * 1024 * 1024
 const storageQuotaBytes = 2 * 1024 * 1024 * 1024
@@ -388,6 +392,8 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
   let accepted: Awaited<ReturnType<typeof acceptChatTurn>> | undefined
   let ownerId = ''
   let controller: AbortController | undefined
+  let heartbeat: ReturnType<typeof setInterval> | undefined
+  let subscriber: ChatGenerationSubscriber | undefined
   let responseClosed = false
   let partialContent = ''
   let preparationConversationId = ''
@@ -395,7 +401,11 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
   const contentBlocks: ChatMessageContentBlock[] = []
   res.once('close', () => {
     responseClosed = true
-    controller?.abort()
+    if (!accepted) controller?.abort()
+    if (heartbeat) clearInterval(heartbeat)
+    if (accepted && subscriber) {
+      registry.unsubscribe({ ownerId, conversationId: req.params.conversationId, turnId: accepted.turnId }, subscriber)
+    }
   })
   try {
     const body = messageBodySchema.parse(req.body)
@@ -657,141 +667,134 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       res.status(409).json({ message: '该消息已提交，请刷新会话', code: 'chat_message_already_exists' })
       return
     }
-    activeStreams.set(conversation.id, { ownerId, turnId: accepted.turnId, controller })
-    let heartbeat: ReturnType<typeof setInterval> | undefined
-    try {
-      if (controller.signal.aborted || responseClosed || req.aborted || res.destroyed) throw new ChatPreparationCanceledError()
-      const acceptedContextHead = await getChatContextHead(client, {
-        conversationId: conversation.id,
-        systemAccountId: ownerId
-      })
-      if (!acceptedContextHead) throw new Error('聊天上下文状态不存在')
-      if (controller.signal.aborted || responseClosed || req.aborted || res.destroyed) throw new ChatPreparationCanceledError()
-      res.status(200)
-      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
-      res.setHeader('Cache-Control', 'no-cache, no-transform')
-      res.setHeader('X-Accel-Buffering', 'no')
-      res.flushHeaders()
-      writeSse(res, 'message.started', { turnId: accepted.turnId, userMessage: accepted.userMessage, assistantMessage: accepted.assistantMessage })
-      heartbeat = setInterval(() => { if (!res.writableEnded) res.write(': heartbeat\n\n') }, 15_000)
-      heartbeat.unref()
-      const upstream = await fetch(gatewayUrl(transport.path), {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${apiKeySecret}`,
-          'content-type': 'application/json',
-          accept: 'text/event-stream',
-          ...(traceId ? { 'x-trace-id': traceId } : {})
-        },
-        body: serializedTransportBody,
-        signal: controller.signal
-      })
-      if (!upstream.ok || !upstream.body) {
-        const payload = await readChatJsonResponse(upstream, 64 * 1024)
-        throw new Error(upstreamMessage(payload, `模型请求失败（HTTP ${upstream.status}）`))
-      }
-      const result = protocol === 'responses'
-        ? await collectChatResponsesSse(readableStreamChunks(upstream.body), (event) => {
-            if (event.type === 'text_delta') {
-              partialContent += event.delta
-              if (!res.writableEnded) writeSse(res, 'message.delta', { messageId: accepted?.assistantMessage.id, delta: event.delta })
-            } else if (event.type === 'reasoning_delta') {
-              const existing = contentBlocks.find((block): block is Extract<ChatMessageContentBlock, { type: 'reasoning' }> => block.type === 'reasoning')
-              if (existing) existing.text += event.delta
-              else contentBlocks.push({ type: 'reasoning', text: event.delta })
-              if (!res.writableEnded) writeSse(res, 'reasoning.delta', { messageId: accepted?.assistantMessage.id, delta: event.delta })
-            } else if (event.type === 'tool_started' || event.type === 'tool_updated' || event.type === 'tool_completed') {
-              projectToolEvent(contentBlocks, event.type, event.item)
-              if (!res.writableEnded) writeSse(res, event.type.replace('_', '.'), { messageId: accepted?.assistantMessage.id, item: event.item })
-            } else if (event.type === 'failed') {
-              throw new Error(upstreamMessage(event.error, '模型工具调用失败'))
+    const identity = { ownerId, conversationId: conversation.id, turnId: accepted.turnId, assistantMessageId: accepted.assistantMessage.id }
+    const runner = new ChatGenerationRunner({
+      identity,
+      execute: async ({ signal, publish }) => {
+        try {
+          const acceptedContextHead = await getChatContextHead(client, {
+            conversationId: conversation.id,
+            systemAccountId: ownerId
+          })
+          if (!acceptedContextHead) throw new Error('聊天上下文状态不存在')
+          const upstream = await fetch(gatewayUrl(transport.path), {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${apiKeySecret}`,
+              'content-type': 'application/json',
+              accept: 'text/event-stream',
+              ...(traceId ? { 'x-trace-id': traceId } : {})
+            },
+            body: serializedTransportBody,
+            signal
+          })
+          if (!upstream.ok || !upstream.body) {
+            const payload = await readChatJsonResponse(upstream, 64 * 1024)
+            throw new Error(upstreamMessage(payload, `模型请求失败（HTTP ${upstream.status}）`))
+          }
+          const result = protocol === 'responses'
+            ? await collectChatResponsesSse(readableStreamChunks(upstream.body), (event) => {
+                if (event.type === 'text_delta') {
+                  partialContent += event.delta
+                  publish('message.delta', { messageId: accepted!.assistantMessage.id, delta: event.delta }, { contentTextDelta: event.delta })
+                } else if (event.type === 'reasoning_delta') {
+                  const existing = contentBlocks.find((block): block is Extract<ChatMessageContentBlock, { type: 'reasoning' }> => block.type === 'reasoning')
+                  if (existing) existing.text += event.delta
+                  else contentBlocks.push({ type: 'reasoning', text: event.delta })
+                  publish('reasoning.delta', { messageId: accepted!.assistantMessage.id, delta: event.delta }, { reasoningTextDelta: event.delta })
+                } else if (event.type === 'tool_started' || event.type === 'tool_updated' || event.type === 'tool_completed') {
+                  projectToolEvent(contentBlocks, event.type, event.item)
+                  publish(event.type.replace('_', '.'), { messageId: accepted!.assistantMessage.id, item: event.item }, { toolEvent: chatGenerationToolEvent(event.type, event.item) })
+                } else if (event.type === 'failed') {
+                  throw new Error(upstreamMessage(event.error, '模型工具调用失败'))
+                }
+              }, maxMessageBytes, runtimeConfig.chat.upstreamSseMaxEvents)
+            : await collectOpenAIChatSse(readableStreamChunks(upstream.body), maxMessageBytes, (delta) => {
+                partialContent += delta
+                publish('message.delta', { messageId: accepted!.assistantMessage.id, delta }, { contentTextDelta: delta })
+              }, runtimeConfig.chat.upstreamSseMaxEvents)
+          const finishReason = 'finishReason' in result && typeof result.finishReason === 'string' ? result.finishReason : 'stop'
+          if (signal.aborted) throw new ChatPreparationCanceledError()
+          await completeChatTurn(client, {
+            conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId,
+            assistantContent: result.content, contentBlocks: sanitizeChatContentBlocksForPersistence(contentBlocks), finishReason, traceId: traceId ?? '', now: new Date().toISOString()
+          })
+          const upstreamUsageAvailable = result.inputTokens !== undefined
+          const activeContextTokens = upstreamUsageAvailable
+            ? result.inputTokens! + (result.outputTokens ?? countChatTextTokens(result.content))
+            : estimatedRequestTokens + countChatTextTokens(result.content) + 12
+          await recordChatContextUsage(client, {
+            conversationId: conversation.id,
+            systemAccountId: ownerId,
+            expectedContextRevision: acceptedContextHead.contextRevision,
+            activeContextTokens,
+            effectiveContextLimitTokens,
+            usageEstimated: !upstreamUsageAvailable,
+            now: new Date().toISOString()
+          }).catch(() => false)
+          if (resolvedInput.assetIds.length) {
+            const observationTurnId = accepted!.turnId
+            const observationMessageId = accepted!.userMessage.id
+            scheduleChatImageObservations({
+              client,
+              targets: resolvedInput.assetIds.map((assetId) => ({ assetId, expectedTurnId: observationTurnId, expectedMessageId: observationMessageId })),
+              conversationId: conversation.id,
+              systemAccountId: ownerId,
+              apiKeySecret,
+              gatewayBaseUrl: gatewayUrl(''),
+              model: body.model,
+              userContent: body.content,
+              assistantContent: result.content
+            })
+          }
+          if (effectiveContextLimitTokens && activeContextTokens / effectiveContextLimitTokens >= 0.7) {
+            scheduleChatContextCompaction({
+              client, conversationId: conversation.id, systemAccountId: ownerId, apiKeySecret,
+              gatewayBaseUrl: gatewayUrl(''), model: body.model, protocol, effectiveContextLimitTokens
+            })
+          }
+          return { status: 'completed', data: { messageId: accepted!.assistantMessage.id, finishReason, traceId } }
+        } catch (error) {
+          const canceled = signal.aborted || error instanceof ChatPreparationCanceledError
+          const persistedContentBlocks = sanitizeChatContentBlocksForPersistence(contentBlocks)
+          try {
+            if (canceled) {
+              await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, traceId, now: new Date().toISOString() })
+            } else {
+              await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, errorCode: 'gateway_stream_failed', traceId, now: new Date().toISOString() })
             }
-          }, maxMessageBytes, runtimeConfig.chat.upstreamSseMaxEvents)
-        : await collectOpenAIChatSse(readableStreamChunks(upstream.body), maxMessageBytes, (delta) => {
-            partialContent += delta
-            if (!res.writableEnded) writeSse(res, 'message.delta', { messageId: accepted?.assistantMessage.id, delta })
-          }, runtimeConfig.chat.upstreamSseMaxEvents)
-      const finishReason = 'finishReason' in result && typeof result.finishReason === 'string' ? result.finishReason : 'stop'
-      if (controller.signal.aborted) throw new ChatPreparationCanceledError()
-      await completeChatTurn(client, {
+          } catch (finalizeError) {
+            const authoritative = await findChatTurnByClientMessageId(client, {
+              conversationId: conversation.id, systemAccountId: ownerId, clientMessageId: body.clientMessageId
+            }).catch(() => undefined)
+            if (!authoritative || authoritative.turnId !== accepted!.turnId || authoritative.assistantStatus === 'streaming') throw finalizeError
+          }
+          return canceled
+            ? { status: 'canceled', data: { messageId: accepted!.assistantMessage.id } }
+            : { status: 'failed', data: { messageId: accepted!.assistantMessage.id, code: 'gateway_stream_failed', message: error instanceof Error ? error.message : '模型请求失败' } }
+        }
+      }
+    })
+    if (!registry.start(runner)) {
+      await failChatTurn(client, {
         conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId,
-        assistantContent: result.content, contentBlocks: sanitizeChatContentBlocksForPersistence(contentBlocks), finishReason, traceId: traceId ?? '', now: new Date().toISOString()
+        assistantContent: '', contentBlocks: [], errorCode: 'stream_registry_conflict', traceId, now: new Date().toISOString()
       })
-      deleteActiveChatStreamIfMatches(activeStreams, conversation.id, accepted.turnId)
-      const upstreamUsageAvailable = result.inputTokens !== undefined
-      const activeContextTokens = upstreamUsageAvailable
-        ? result.inputTokens! + (result.outputTokens ?? countChatTextTokens(result.content))
-        : estimatedRequestTokens + countChatTextTokens(result.content) + 12
-      await recordChatContextUsage(client, {
-        conversationId: conversation.id,
-        systemAccountId: ownerId,
-        expectedContextRevision: acceptedContextHead.contextRevision,
-        activeContextTokens,
-        effectiveContextLimitTokens,
-        usageEstimated: !upstreamUsageAvailable,
-        now: new Date().toISOString()
-      }).catch(() => false)
-      if (resolvedInput.assetIds.length) {
-        const observationTurnId = accepted.turnId
-        const observationMessageId = accepted.userMessage.id
-        scheduleChatImageObservations({
-          client,
-          targets: resolvedInput.assetIds.map((assetId) => ({
-            assetId,
-            expectedTurnId: observationTurnId,
-            expectedMessageId: observationMessageId
-          })),
-          conversationId: conversation.id,
-          systemAccountId: ownerId,
-          apiKeySecret,
-          gatewayBaseUrl: gatewayUrl(''),
-          model: body.model,
-          userContent: body.content,
-          assistantContent: result.content
-        })
-      }
-      if (effectiveContextLimitTokens && activeContextTokens / effectiveContextLimitTokens >= 0.7) {
-        scheduleChatContextCompaction({
-          client,
-          conversationId: conversation.id,
-          systemAccountId: ownerId,
-          apiKeySecret,
-          gatewayBaseUrl: gatewayUrl(''),
-          model: body.model,
-          protocol,
-          effectiveContextLimitTokens
-        })
-      }
-      if (!res.writableEnded) writeSse(res, 'message.completed', { messageId: accepted.assistantMessage.id, finishReason, traceId })
-    } catch (error) {
-      const canceled = controller.signal.aborted || error instanceof ChatPreparationCanceledError
-      const persistedContentBlocks = sanitizeChatContentBlocksForPersistence(contentBlocks)
-      try {
-        if (canceled) {
-          await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, traceId, now: new Date().toISOString() })
-        } else {
-          await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, errorCode: 'gateway_stream_failed', traceId, now: new Date().toISOString() })
+      res.status(409).json({ message: '当前会话生成任务冲突', code: 'chat_stream_conflict' })
+      return
+    }
+    try {
+      if (!responseClosed && !req.aborted && !res.destroyed) {
+        prepareSseResponse(res)
+        if (writeSse(res, 'message.started', { turnId: accepted.turnId, userMessage: accepted.userMessage, assistantMessage: accepted.assistantMessage })) {
+          subscriber = responseSubscriber(res)
+          if (registry.subscribe(identity, subscriber)) heartbeat = startSubscriberHeartbeat(res, identity, subscriber)
         }
-      } catch (finalizeError) {
-        const authoritative = await findChatTurnByClientMessageId(client, {
-          conversationId: conversation.id,
-          systemAccountId: ownerId,
-          clientMessageId: body.clientMessageId
-        }).catch(() => undefined)
-        if (!authoritative || authoritative.turnId !== accepted.turnId || authoritative.assistantStatus === 'streaming') throw finalizeError
       }
-      if (!res.headersSent) {
-        if (canceled) {
-          if (!res.writableEnded && !responseClosed) res.status(499).json({ message: '消息准备已取消', code: 'chat_preparation_canceled' })
-        } else {
-          throw error
-        }
-      } else if (!canceled && !res.writableEnded) {
-        writeSse(res, 'message.failed', { messageId: accepted.assistantMessage.id, code: 'gateway_stream_failed', message: error instanceof Error ? error.message : '模型请求失败' })
-      }
+      await runner.completion
     } finally {
       if (heartbeat) clearInterval(heartbeat)
-      deleteActiveChatStreamIfMatches(activeStreams, conversation.id, accepted.turnId)
+      if (subscriber) registry.unsubscribe(identity, subscriber)
       if (!res.writableEnded && !responseClosed) res.end()
     }
   } catch (error) {
@@ -874,9 +877,9 @@ chatRouter.post('/conversations/:conversationId/stop', async (req, res, next) =>
       res.status(404).json({ message: '当前没有匹配的生成任务', code: 'chat_generation_not_found' })
       return
     }
-    const active = activeStreams.get(conversation.id)
-    if (active?.ownerId === auth.systemAccountId && active.turnId === expectedTurnId) {
-      active.controller.abort()
+    const active = registry.get({ ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: expectedTurnId })
+    if (active) {
+      active.abort()
       res.status(202).json(ok({ stopped: true, turnId: expectedTurnId }))
       return
     }
@@ -895,6 +898,48 @@ chatRouter.post('/conversations/:conversationId/stop', async (req, res, next) =>
       return
     }
     res.status(404).json({ message: '当前没有匹配的生成任务', code: 'chat_generation_not_found' })
+  } catch (error) { handleChatRouteError(error, res, next) }
+})
+
+chatRouter.get('/conversations/:conversationId/streams/:turnId', async (req, res, next) => {
+  try {
+    const auth = requireChatAuth()
+    const client = await getChatDatabaseClient()
+    const conversation = await getChatConversation(client, req.params.conversationId, auth.systemAccountId)
+    if (!conversation) {
+      res.status(404).json({ message: '会话不存在', code: 'chat_conversation_not_found' })
+      return
+    }
+    if (conversation.activeTurnId !== req.params.turnId) {
+      res.status(409).json({ message: '要附着的轮次已结束或已变化', code: 'chat_stream_terminal' })
+      return
+    }
+    const runner = registry.get({ ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId })
+    if (!runner) {
+      const interrupted = await failInterruptedChatTurnIfMatches(client, {
+        conversationId: conversation.id,
+        systemAccountId: auth.systemAccountId,
+        expectedTurnId: req.params.turnId,
+        now: new Date().toISOString()
+      })
+      if (interrupted.state === 'already_terminal') {
+        res.status(409).json({ message: '要附着的轮次已结束', code: 'chat_stream_terminal' })
+        return
+      }
+      res.status(409).json({ message: '生成任务已中断，请刷新会话', code: 'chat_stream_runner_missing' })
+      return
+    }
+    prepareSseResponse(res)
+    const subscriber = responseSubscriber(res)
+    if (!registry.subscribe({ ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId }, subscriber)) {
+      if (!res.writableEnded) res.end()
+      return
+    }
+    const heartbeat = startSubscriberHeartbeat(res, { ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId }, subscriber)
+    res.once('close', () => {
+      clearInterval(heartbeat)
+      registry.unsubscribe({ ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId }, subscriber)
+    })
   } catch (error) { handleChatRouteError(error, res, next) }
 })
 
@@ -1022,7 +1067,50 @@ function textQuery(value: unknown): string | undefined { const raw = Array.isArr
 function optionalIntegerQuery(value: unknown): number | undefined { const text = textQuery(value); if (!text) return undefined; const result = Number(text); return Number.isInteger(result) && result > 0 ? result : undefined }
 function optionalBooleanQuery(value: unknown): boolean | undefined { const text = textQuery(value)?.toLowerCase(); if (text === 'true' || text === '1') return true; if (text === 'false' || text === '0') return false; return undefined }
 function integerQuery(value: unknown, fallback: number, min: number, max: number): number { const result = optionalIntegerQuery(value); return result === undefined ? fallback : Math.max(min, Math.min(max, result)) }
-function writeSse(res: import('express').Response, event: string, data: unknown): void { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
+function prepareSseResponse(res: import('express').Response): void {
+  res.status(200)
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders()
+}
+function writeSse(res: import('express').Response, event: string, data: unknown): boolean {
+  if (res.writableEnded || res.destroyed) return false
+  try { return res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
+  catch { return false }
+}
+function responseSubscriber(res: import('express').Response): ChatGenerationSubscriber {
+  return {
+    trySend: (event) => {
+      const sent = writeSse(res, event.type, event.data)
+      if (sent && (event.type === 'message.completed' || event.type === 'message.failed' || event.type === 'message.canceled')) {
+        queueMicrotask(() => { if (!res.writableEnded) res.end() })
+      }
+      return sent
+    }
+  }
+}
+function startSubscriberHeartbeat(res: import('express').Response, identity: { ownerId: string; conversationId: string; turnId: string }, subscriber: ChatGenerationSubscriber): ReturnType<typeof setInterval> {
+  const heartbeat = setInterval(() => {
+    let writable = false
+    try { writable = !res.writableEnded && !res.destroyed && res.write(': heartbeat\n\n') }
+    catch { writable = false }
+    if (!writable) {
+      clearInterval(heartbeat)
+      registry.unsubscribe(identity, subscriber)
+    }
+  }, 15_000)
+  heartbeat.unref()
+  return heartbeat
+}
+function chatGenerationToolEvent(eventType: 'tool_started' | 'tool_updated' | 'tool_completed', item: Record<string, unknown>): { id: string; toolType: string; status: 'started' | 'updated' | 'completed' | 'failed'; item?: Record<string, unknown> } {
+  return {
+    id: String(item.id ?? item.call_id ?? 'tool'),
+    toolType: String(item.type ?? 'tool'),
+    status: eventType === 'tool_started' ? 'started' : eventType === 'tool_updated' ? 'updated' : 'completed',
+    item
+  }
+}
 async function* readableStreamChunks(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> { const reader = stream.getReader(); try { while (true) { const next = await reader.read(); if (next.done) return; yield next.value } } finally { reader.releaseLock() } }
 function upstreamMessage(payload: unknown, fallback: string): string { if (payload && typeof payload === 'object') { const item = payload as { message?: unknown; error?: { message?: unknown } }; if (typeof item.error?.message === 'string') return item.error.message; if (typeof item.message === 'string') return item.message } return fallback }
 

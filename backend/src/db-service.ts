@@ -14,8 +14,9 @@ import type { DbServiceParentMessage } from './modules/db-service/db-service-typ
 import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { createSystemApiApp } from './modules/system-api/system-api-app.js'
+import { shutdownChatGenerationRegistry } from './modules/chat/chat.routes.js'
 import { isCodexContextStateWriterPoolOperation } from './storage/codex-context-state-writer-pool.js'
-import { datasetDatabasePath, getBusinessDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
+import { closeStorageDatabases, datasetDatabasePath, getBusinessDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 
@@ -59,6 +60,7 @@ let queueExpiredCount = 0
 let activeConcurrentRequestCount = 0
 let maxActiveConcurrentRequestCount = 0
 let highDispatchStreak = 0
+let dbServiceStopping = false
 
 async function startDbService(): Promise<void> {
   installProcessLogHandlers()
@@ -78,6 +80,8 @@ async function startDbService(): Promise<void> {
   process.on('message', (message: unknown) => {
     void handleParentMessage(message)
   })
+  process.once('SIGINT', () => void shutdownDbService(httpEndpoint, 0))
+  process.once('SIGTERM', () => void shutdownDbService(httpEndpoint, 0))
 
   sendDbServiceMessage({
     type: 'db_service_ready',
@@ -99,12 +103,41 @@ async function startDbService(): Promise<void> {
   }, `数据库服务已启动，内部系统 API 监听 http://${httpEndpoint.host}:${httpEndpoint.port}`)
 }
 
+async function shutdownDbService(httpEndpoint: DbServiceHttpEndpoint, exitCode: number): Promise<void> {
+  if (dbServiceStopping) return
+  dbServiceStopping = true
+  try {
+    await shutdownChatGenerationRegistry({ timeoutMs: 7_000 })
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'db_service_chat_generation_shutdown_failed' }), 'DB service 退出时排空 AI 问答生成任务失败')
+  }
+  try {
+    await new Promise<void>((resolve, reject) => {
+      httpEndpoint.server.close((error) => error ? reject(error) : resolve())
+      httpEndpoint.server.closeIdleConnections?.()
+    })
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'db_service_http_shutdown_failed' }), 'DB service 退出时关闭内部 HTTP 服务失败')
+  }
+  try {
+    closeStorageDatabases()
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'db_service_storage_shutdown_failed' }), 'DB service 退出时关闭数据库连接失败')
+  }
+  process.exit(exitCode)
+}
+
 async function handleParentMessage(message: unknown): Promise<void> {
   if (handleDbServiceParentRuntimeMessage(message)) {
     return
   }
 
   if (!isDbServiceParentMessage(message)) {
+    return
+  }
+
+  if (dbServiceStopping) {
+    rejectDbServiceRequest(message, '本地数据库服务正在退出')
     return
   }
 

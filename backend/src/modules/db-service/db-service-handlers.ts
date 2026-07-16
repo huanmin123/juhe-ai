@@ -4,6 +4,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
 import { cleanupChatRetention } from '../../storage/chat.repository.js'
 import { cleanupExpiredChatAssets } from '../chat/chat-asset-cleanup.js'
+import { isActiveChatGeneration } from '../chat/chat.routes.js'
 import {
   chatContextMaintenanceMaxBatchSize,
   cleanupExpiredChatContextCheckpoints,
@@ -1029,7 +1030,7 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       }
     case 'cleanup_chat_retention': {
       const client = await getChatDatabaseClient()
-      const retention = await cleanupChatRetention(client, operation)
+      const retention = await cleanupChatRetention(client, { ...operation, isActiveTurn: isActiveChatGeneration })
       const contextMaintenanceLimit = Math.max(1, Math.min(Math.trunc(operation.limit), chatContextMaintenanceMaxBatchSize))
       const recoveredCompactions = await recoverStaleChatContextCompactions(client, {
         now: operation.now,

@@ -416,6 +416,7 @@
     "test:chat-responses-sse": "tsx src/scripts/regression/chat-responses-sse-regression.ts",
     "test:chat-active-stream": "tsx src/scripts/regression/chat-active-stream-regression.ts",
     "test:chat-generation-runner": "tsx src/scripts/regression/chat-generation-runner-regression.ts",
+    "test:chat-stream-reattach": "tsx src/scripts/regression/chat-stream-reattach-regression.ts",
     "test:chat-content-blocks": "tsx src/scripts/regression/chat-content-blocks-regression.ts",
     "test:chat-bounded-json": "tsx src/scripts/regression/chat-bounded-json-regression.ts",
     "test:chat-transport": "tsx src/scripts/regression/chat-transport-regression.ts",

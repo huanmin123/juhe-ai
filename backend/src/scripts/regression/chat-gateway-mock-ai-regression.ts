@@ -428,9 +428,16 @@ try {
     assert.equal(deterministicResponse.status, 200, deterministicStream)
     const deterministicFailure = extractSseEventData(deterministicStream, 'message.failed')
     assert.equal(upstreamBodies.length, deterministicCallsBefore + 1, '确定性失败只能调用一次上游')
-    assert.equal(deterministicFailure.code, 'gateway_stream_failed')
-    assert.match(String(deterministicFailure.message), /模型回答超过 192 KiB 上限/)
-    assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: String(deterministicFailure.code), message: String(deterministicFailure.message) }), false, '真实路由折叠后的确定性失败必须立即终止')
+    if (deterministicFailure.code) {
+      assert.equal(deterministicFailure.code, 'gateway_stream_failed')
+      assert.match(String(deterministicFailure.message), /模型回答超过 192 KiB 上限/)
+      assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: String(deterministicFailure.code), message: String(deterministicFailure.message) }), false, '真实路由折叠后的确定性失败必须立即终止')
+    } else {
+      const deterministicMessages = await apiJson<typeof stored>(baseUrl, `/__aisys__/api/my-chat/conversations/${deterministicConversation.data.id}/messages`, cookie)
+      const assistant = deterministicMessages.data.find((message) => message.role === 'assistant')
+      assert.equal(assistant?.status, 'failed', '订阅因背压解除后 runner 仍必须将确定性失败写入 DB')
+      assert.equal((assistant as { errorCode?: string } | undefined)?.errorCode, 'gateway_stream_failed')
+    }
 
     const preparationConversation = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
     const preparationAsset = await uploadChatImage(baseUrl, preparationConversation.data.id, cookie, '准备取消.png')

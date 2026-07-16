@@ -630,6 +630,47 @@ export async function cancelActiveChatTurnIfMatches(client: DatabaseClient, inpu
   })
 }
 
+export async function failInterruptedChatTurnIfMatches(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  expectedTurnId: string
+  now: string
+}): Promise<CancelActiveChatTurnResult> {
+  return client.transaction(async (tx) => {
+    const lockSuffix = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
+    const conversation = await tx.one<ConversationRow>(`
+      SELECT * FROM ${chatTable(tx, 'chat_conversations')}
+      WHERE id = ? AND system_account_id = ?${lockSuffix}
+    `, [input.conversationId, input.systemAccountId])
+    if (!conversation) return { state: 'not_found' }
+    const assistant = await tx.one<ChatMessageRow>(`
+      SELECT * FROM ${chatTable(tx, 'chat_messages')}
+      WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ? AND role = 'assistant'
+      ${lockSuffix}
+    `, [input.conversationId, input.systemAccountId, input.expectedTurnId])
+    const initialState = classifyConditionalStopState(conversation, assistant, input.expectedTurnId)
+    if (initialState) return initialState
+    const reservationBytes = requiredAssistantStorageReservation(assistant!)
+    const messageResult = await tx.execute(`
+      UPDATE ${chatTable(tx, 'chat_messages')}
+      SET status = 'failed', storage_reserved_bytes = 0,
+          finish_reason = NULL, error_code = 'stream_interrupted', completed_at = ?
+      WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
+        AND role = 'assistant' AND status = 'streaming'
+    `, [input.now, input.conversationId, input.systemAccountId, input.expectedTurnId])
+    if (messageResult.changes !== 1) return (await readConditionalStopState(tx, input)) ?? { state: 'turn_mismatch' }
+    await releaseStorageWindowReservationStrict(tx, input.systemAccountId, String(assistant!.created_at), reservationBytes, input.now)
+    const conversationResult = await tx.execute(`
+      UPDATE ${chatTable(tx, 'chat_conversations')}
+      SET active_turn_id = NULL, active_started_at = NULL,
+          message_revision = message_revision + 1, last_message_at = ?, updated_at = ?
+      WHERE id = ? AND system_account_id = ? AND active_turn_id = ?
+    `, [input.now, input.now, input.conversationId, input.systemAccountId, input.expectedTurnId])
+    if (conversationResult.changes !== 1) throw new Error('活动轮次中断收口失败')
+    return { state: 'already_terminal', assistantStatus: 'failed' }
+  })
+}
+
 async function finalizeChatTurn(client: DatabaseClient, input: {
   conversationId: string
   systemAccountId: string
@@ -812,6 +853,7 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
   interruptedBefore: string
   limit: number
   retentionDays: number
+  isActiveTurn?: (ownerId: string, conversationId: string, turnId: string) => boolean
 }): Promise<ChatRetentionCleanupResult> {
   const limit = Math.max(2, Math.min(Math.trunc(input.limit), 1000))
   const retentionDays = input.retentionDays
@@ -828,6 +870,7 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
     `, [input.interruptedBefore, Math.max(1, Math.floor(limit / 2))])
     let recoveredTurns = 0
     for (const stale of staleTurns) {
+      if (input.isActiveTurn?.(String(stale.system_account_id), String(stale.id), String(stale.active_turn_id))) continue
       const now = input.now
       const staleAssistant = await tx.one<ChatMessageRow>(`
         SELECT * FROM ${chatTable(tx, 'chat_messages')}
