@@ -23,9 +23,10 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories] = await Promise.all([
+const [databaseModule, repositories, healthCheckRepository] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/account-health-check.repository.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -36,6 +37,21 @@ const healthSettings = {
 }
 
 try {
+  const postgresFailureStartedAt = new Date('2026-07-16T20:13:55.032Z')
+  assert.equal(
+    healthCheckRepository.accountHealthCheckDatabaseDateTimeIso(postgresFailureStartedAt),
+    postgresFailureStartedAt.toISOString(),
+    'PostgreSQL timestamptz 返回 Date 时，健康检查首次失败时间必须归一化为 ISO 字符串'
+  )
+  assert.equal(
+    healthCheckRepository.accountHealthCheckHasNewerSuccess(
+      new Date('2026-07-16T20:13:56.000Z'),
+      '2026-07-16T20:13:55.000Z'
+    ),
+    true,
+    'PostgreSQL 健康成功时间返回 Date 时，旧探测保护必须按时间语义生效'
+  )
+
   const repositorySource = readFileSync(resolve('src/storage/account-health-check.repository.ts'), 'utf8')
   const usageRepositorySource = readFileSync(resolve('src/storage/usage-records.repository.ts'), 'utf8')
   const serviceSource = readFileSync(resolve('src/modules/background/account-health-check.service.ts'), 'utf8')

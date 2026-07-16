@@ -268,6 +268,26 @@ try {
   assert.equal(afterHealthFailure.health_check_failure_count, 1, 'PG health failure 应落库失败次数')
   assert.equal(afterHealthFailure.last_health_check_error_code, 'health_probe_smoke', 'PG health failure 应落库错误码')
 
+  const pendingFailureStartedAt = new Date(Date.now() - 60_000).toISOString()
+  await setPendingHealthFailureFixture(account.id, pendingFailureStartedAt)
+  const repeatedPendingFailure = await handleDbServiceOperation({
+    type: 'record_account_health_check_failure',
+    accountId: account.id,
+    input: {
+      intervalHours: 1,
+      jitterMinutes: 0,
+      failureThreshold: 2,
+      statusCode: 401,
+      errorCode: 'pending_health_probe_smoke',
+      errorMessage: 'PG pending health smoke',
+      expectedConfigRevision: account.configRevision,
+      observedAt: new Date().toISOString()
+    }
+  })
+  assert.equal(repeatedPendingFailure.changed, true, 'PG pending 账户第二次失败读取 timestamptz 后应继续写回')
+  assert.equal(repeatedPendingFailure.failureCount, 2, 'PG pending 账户第二次失败应累加既有失败次数')
+  assert.equal(repeatedPendingFailure.failureStartedAt, pendingFailureStartedAt, 'PG pending 账户第二次失败应保留首次失败时间')
+
   await setCooldownDue(account.id, dueAt)
   const cooldownCandidates = await handleDbServiceOperation({
     type: 'list_accounts_due_for_cooldown_retest',
@@ -388,6 +408,21 @@ async function setCooldownDue(accountId: string, dueAt: string): Promise<void> {
         updated_at = $1
     WHERE id = $2
   `, [dueAt, accountId])
+}
+
+async function setPendingHealthFailureFixture(accountId: string, failureStartedAt: string): Promise<void> {
+  const pool = await getPostgresPool()
+  await pool.query(`
+    UPDATE juhe_business.accounts
+    SET status = 'pending_test',
+        schedulable = 0,
+        health_check_failure_count = 1,
+        health_check_failure_started_at = $1::timestamptz,
+        last_health_success_at = NULL,
+        next_health_check_at = $1,
+        updated_at = $1
+    WHERE id = $2
+  `, [failureStartedAt, accountId])
 }
 
 async function setPendingHealthActivationFixture(accountId: string, groupId: string, baselineAt: string): Promise<void> {

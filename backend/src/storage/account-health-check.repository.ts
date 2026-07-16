@@ -305,8 +305,8 @@ interface AccountHealthCheckFailureStateRow {
   status: AccountSummary['status']
   config_revision?: number
   health_check_failure_count?: number
-  health_check_failure_started_at?: string | null
-  last_health_success_at?: string | null
+  health_check_failure_started_at?: string | Date | null
+  last_health_success_at?: string | Date | null
 }
 
 interface AccountHealthCheckFailureDecision {
@@ -396,11 +396,7 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
       .get(accountId) as unknown as AccountHealthCheckFailureStateRow | undefined
     const configMatches = expectedConfigRevision === undefined
       || Number(row?.config_revision) === expectedConfigRevision
-    const newerSuccessExists = Boolean(
-      observedAt
-      && row?.last_health_success_at
-      && row.last_health_success_at > observedAt
-    )
+    const newerSuccessExists = accountHealthCheckHasNewerSuccess(row?.last_health_success_at, observedAt)
     if (row && isHealthCheckFailureStateEligible(row) && configMatches && !newerSuccessExists) {
       const previousFailureCount = Math.max(0, Math.trunc(Number(row.health_check_failure_count ?? 0)))
       failureCount = countTowardsThreshold ? previousFailureCount + 1 : previousFailureCount
@@ -535,7 +531,7 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
     if (expectedConfigRevision !== undefined && Number(row.config_revision) !== expectedConfigRevision) {
       return { changed: false, failureCount: previousFailureCount, transitionedToError: false as const, accountStatus: row.status }
     }
-    if (observedAt && row.last_health_success_at && row.last_health_success_at > observedAt) {
+    if (accountHealthCheckHasNewerSuccess(row.last_health_success_at, observedAt)) {
       return { changed: false, failureCount: previousFailureCount, transitionedToError: false as const, accountStatus: row.status }
     }
     const failureCount = countTowardsThreshold ? previousFailureCount + 1 : previousFailureCount
@@ -1046,11 +1042,11 @@ function healthCheckAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
       cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
       cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
-      lastHealthCheckAt: row.last_health_check_at ?? undefined,
-      nextHealthCheckAt: row.next_health_check_at ?? undefined,
-      lastHealthSuccessAt: row.last_health_success_at ?? undefined,
+      lastHealthCheckAt: accountHealthCheckDatabaseDateTimeIso(row.last_health_check_at),
+      nextHealthCheckAt: accountHealthCheckDatabaseDateTimeIso(row.next_health_check_at),
+      lastHealthSuccessAt: accountHealthCheckDatabaseDateTimeIso(row.last_health_success_at),
       healthCheckFailureCount: Math.max(0, Number(row.health_check_failure_count ?? 0)),
-      healthCheckFailureStartedAt: row.health_check_failure_started_at ?? undefined,
+      healthCheckFailureStartedAt: accountHealthCheckDatabaseDateTimeIso(row.health_check_failure_started_at),
       lastHealthCheckStatusCode: optionalNumber(row.last_health_check_status_code),
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
       lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
@@ -1155,11 +1151,11 @@ async function healthCheckAccountSummariesAsync(client: DatabaseClient, rows: Ac
       cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
       cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
-      lastHealthCheckAt: row.last_health_check_at ?? undefined,
-      nextHealthCheckAt: row.next_health_check_at ?? undefined,
-      lastHealthSuccessAt: row.last_health_success_at ?? undefined,
+      lastHealthCheckAt: accountHealthCheckDatabaseDateTimeIso(row.last_health_check_at),
+      nextHealthCheckAt: accountHealthCheckDatabaseDateTimeIso(row.next_health_check_at),
+      lastHealthSuccessAt: accountHealthCheckDatabaseDateTimeIso(row.last_health_success_at),
       healthCheckFailureCount: Math.max(0, Number(row.health_check_failure_count ?? 0)),
-      healthCheckFailureStartedAt: row.health_check_failure_started_at ?? undefined,
+      healthCheckFailureStartedAt: accountHealthCheckDatabaseDateTimeIso(row.health_check_failure_started_at),
       lastHealthCheckStatusCode: optionalNumber(row.last_health_check_status_code),
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
       lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
@@ -1329,11 +1325,24 @@ function optionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-function normalizedIso(value: unknown): string | undefined {
+export function accountHealthCheckDatabaseDateTimeIso(value: unknown): string | undefined {
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : undefined
+  }
   const text = optionalString(value)
   if (!text) return undefined
   const time = Date.parse(text)
   return Number.isFinite(time) ? new Date(time).toISOString() : undefined
+}
+
+export function accountHealthCheckHasNewerSuccess(value: unknown, observedAt: unknown): boolean {
+  const successIso = accountHealthCheckDatabaseDateTimeIso(value)
+  const observedIso = accountHealthCheckDatabaseDateTimeIso(observedAt)
+  return Boolean(successIso && observedIso && successIso > observedIso)
+}
+
+function normalizedIso(value: unknown): string | undefined {
+  return accountHealthCheckDatabaseDateTimeIso(value)
 }
 
 function accountRuntimeCredentialsFromRow(row: AccountListRow): Record<string, unknown> {
