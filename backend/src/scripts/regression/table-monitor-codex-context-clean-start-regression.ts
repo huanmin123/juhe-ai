@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -43,6 +43,28 @@ try {
   })
   assert.equal(cleanResult.databaseSnapshots, 4, 'Codex context 尚无实际 shard 时应采样其余四库，不应只读打开不存在的 shard')
   assert.equal(existsSync(codexShardRoot), false, '监控只读路径不能在干净启动时越权创建 Codex context shard 目录')
+
+  mkdirSync(codexShardRoot, { recursive: true })
+  const emptyRootResult = tableMonitorRepository.collectTableStorageSnapshot('2026-07-16T00:02:00.000Z', {
+    tableScanMode: 'full'
+  })
+  assert.equal(emptyRootResult.databaseSnapshots, 4, '空 shard 根目录仍应只采样其余四库')
+  assert.deepEqual(readdirSync(codexShardRoot), [], '监控只读路径不能在空 shard 根目录中补建配置 shard')
+  rmSync(codexShardRoot, { recursive: true })
+
+  writeFileSync(codexShardRoot, 'not-a-directory')
+  assert.throws(
+    () => tableMonitorRepository.collectTableStorageSnapshot('2026-07-16T00:05:00.000Z', {
+      tableScanMode: 'full'
+    }),
+    (error: unknown) => (
+      error instanceof Error
+      && 'code' in error
+      && error.code === 'ENOTDIR'
+    ),
+    'Codex context shard root 已存在但不是目录时必须传播路径错误，不能按空 shard 静默跳过'
+  )
+  unlinkSync(codexShardRoot)
 
   databaseModule.closeStorageDatabases()
   process.env.JUHE_AI_SQLITE_WRITER_BOUNDARY_STRICT = '0'
