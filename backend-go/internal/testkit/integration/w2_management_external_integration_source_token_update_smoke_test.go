@@ -161,10 +161,10 @@ func TestW2ManagementExternalIntegrationSourceTokenUpdatePostgresSmoke(t *testin
 		}
 		if after.sourceID != before.sourceID || after.hash != before.hash ||
 			after.secretEncrypted != before.secretEncrypted || after.prefix != before.prefix ||
-			after.suffix != before.suffix || after.lastUsedAt != before.lastUsedAt ||
-			!after.createdAt.Equal(before.createdAt) {
+			after.suffix != before.suffix || !after.createdAt.Equal(before.createdAt) {
 			t.Fatal("token update changed immutable or sensitive columns")
 		}
+		assertW2TokenUpdateNullTimeEqual(t, "lastUsedAt", after.lastUsedAt, before.lastUsedAt)
 	})
 
 	t.Run("revoked_at state machine and empty patch", func(t *testing.T) {
@@ -191,15 +191,14 @@ func TestW2ManagementExternalIntegrationSourceTokenUpdatePostgresSmoke(t *testin
 					t.Fatalf("token update status=%d err=%v", result.status, result.err)
 				}
 				after := readW2TokenUpdateSnapshot(t, ctx, db, test.tokenID)
-				if after.status != test.wantStatus || after.revokedAt != test.wantRevokedAt || !after.updatedAt.UTC().Equal(baseTime) {
-					t.Fatalf("state transition status=%q revokedAt=%v updatedAt=%s", after.status, after.revokedAt.Valid, after.updatedAt.UTC())
+				if after.status != test.wantStatus || !after.updatedAt.UTC().Equal(baseTime) {
+					t.Fatalf("state transition status=%q updatedAt=%s", after.status, after.updatedAt.UTC())
 				}
+				assertW2TokenUpdateNullTimeEqual(t, "revokedAt", after.revokedAt, test.wantRevokedAt)
 				before.updatedAt = after.updatedAt
 				before.status = after.status
 				before.revokedAt = after.revokedAt
-				if after != before {
-					t.Fatal("state transition changed unrelated token columns")
-				}
+				assertW2TokenUpdateSnapshotEqual(t, after, before, "state transition")
 			})
 		}
 	})
@@ -218,9 +217,12 @@ func TestW2ManagementExternalIntegrationSourceTokenUpdatePostgresSmoke(t *testin
 		if missingSource.err != nil || missingSource.status != http.StatusNotFound {
 			t.Fatalf("missing source status=%d err=%v", missingSource.status, missingSource.err)
 		}
-		if after := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID); after != mainBefore {
-			t.Fatal("missing source rejection changed the requested token row")
-		}
+		assertW2TokenUpdateSnapshotEqual(
+			t,
+			readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID),
+			mainBefore,
+			"missing source rejection",
+		)
 
 		protectedBefore := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateOtherID)
 		builtInSourceTokenBefore := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateBuiltInGuardID)
@@ -243,15 +245,9 @@ func TestW2ManagementExternalIntegrationSourceTokenUpdatePostgresSmoke(t *testin
 				t.Fatalf("%s status=%d err=%v", check.name, result.status, result.err)
 			}
 		}
-		if after := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateOtherID); after != protectedBefore {
-			t.Fatal("rejected token updates changed a protected row")
-		}
-		if after := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateBuiltInGuardID); after != builtInSourceTokenBefore {
-			t.Fatal("built-in source rejection changed its token row")
-		}
-		if after := readW2TokenUpdateSnapshot(t, ctx, db, publicapi.BuiltInTestTokenID); after != builtInTokenBefore {
-			t.Fatal("built-in token rejection changed its token row")
-		}
+		assertW2TokenUpdateSnapshotEqual(t, readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateOtherID), protectedBefore, "rejected token updates")
+		assertW2TokenUpdateSnapshotEqual(t, readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateBuiltInGuardID), builtInSourceTokenBefore, "built-in source rejection")
+		assertW2TokenUpdateSnapshotEqual(t, readW2TokenUpdateSnapshot(t, ctx, db, publicapi.BuiltInTestTokenID), builtInTokenBefore, "built-in token rejection")
 	})
 
 	t.Run("store validation callback rolls back", func(t *testing.T) {
@@ -269,9 +265,7 @@ func TestW2ManagementExternalIntegrationSourceTokenUpdatePostgresSmoke(t *testin
 		if !errors.Is(err, validationErr) {
 			t.Fatalf("store validation error=%v", err)
 		}
-		if after := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateRollbackID); after != before {
-			t.Fatal("store validation callback failure did not roll back all columns")
-		}
+		assertW2TokenUpdateSnapshotEqual(t, readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateRollbackID), before, "store validation rollback")
 	})
 
 	t.Run("concurrent patches merge under row locks", func(t *testing.T) {
@@ -367,10 +361,10 @@ func runW2TokenUpdatePresenceContract(
 			t.Fatalf("empty token patch status=%d err=%v", emptyPatch.status, emptyPatch.err)
 		}
 		afterEmpty := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID)
-		if afterEmpty.scopesJSON != initial.scopesJSON || afterEmpty.expiresAt != initial.expiresAt ||
-			!afterEmpty.updatedAt.UTC().Equal(now) {
+		if afterEmpty.scopesJSON != initial.scopesJSON || !afterEmpty.updatedAt.UTC().Equal(now) {
 			t.Fatal("empty token patch did not preserve scopes/expiresAt and refresh updatedAt")
 		}
+		assertW2TokenUpdateNullTimeEqual(t, "expiresAt after empty patch", afterEmpty.expiresAt, initial.expiresAt)
 
 		omittedPatch := requestW2TokenUpdate(
 			ctx,
@@ -385,10 +379,10 @@ func runW2TokenUpdatePresenceContract(
 			t.Fatalf("omitted-field token patch status=%d err=%v", omittedPatch.status, omittedPatch.err)
 		}
 		afterOmitted := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateMainID)
-		if afterOmitted.name != "W2 Presence Only Name" || afterOmitted.scopesJSON != initial.scopesJSON ||
-			afterOmitted.expiresAt != initial.expiresAt {
+		if afterOmitted.name != "W2 Presence Only Name" || afterOmitted.scopesJSON != initial.scopesJSON {
 			t.Fatal("token patch changed omitted scopes or expiresAt")
 		}
+		assertW2TokenUpdateNullTimeEqual(t, "expiresAt after omitted patch", afterOmitted.expiresAt, initial.expiresAt)
 
 		clearInitial := readW2TokenUpdateSnapshot(t, ctx, db, w2TokenUpdateClearID)
 		if clearInitial.scopesJSON != `["juhe_ai_public:group_list:read"]` || !clearInitial.expiresAt.Valid {
@@ -628,6 +622,48 @@ func readW2TokenUpdateSnapshot(t *testing.T, ctx context.Context, db *sql.DB, to
 		t.Fatalf("read token update snapshot %s: %v", tokenID, err)
 	}
 	return row
+}
+
+func assertW2TokenUpdateNullTimeEqual(t *testing.T, field string, actual, want sql.NullTime) {
+	t.Helper()
+	if actual.Valid == want.Valid && (!actual.Valid || actual.Time.UTC().Equal(want.Time.UTC())) {
+		return
+	}
+	t.Fatalf(
+		"%s timestamp actual=%s want=%s",
+		field,
+		w2TokenUpdateNullTimeString(actual),
+		w2TokenUpdateNullTimeString(want),
+	)
+}
+
+func w2TokenUpdateNullTimeString(value sql.NullTime) string {
+	if !value.Valid {
+		return "<invalid>"
+	}
+	return value.Time.UTC().Format(time.RFC3339Nano)
+}
+
+func assertW2TokenUpdateSnapshotEqual(t *testing.T, actual, want w2TokenUpdateSnapshot, operation string) {
+	t.Helper()
+	if actual.sourceID != want.sourceID || actual.name != want.name || actual.hash != want.hash ||
+		actual.secretEncrypted != want.secretEncrypted || actual.prefix != want.prefix ||
+		actual.suffix != want.suffix || actual.status != want.status || actual.scopesJSON != want.scopesJSON {
+		t.Fatalf("%s changed non-time token columns", operation)
+	}
+	assertW2TokenUpdateNullTimeEqual(t, operation+" expiresAt", actual.expiresAt, want.expiresAt)
+	assertW2TokenUpdateNullTimeEqual(t, operation+" lastUsedAt", actual.lastUsedAt, want.lastUsedAt)
+	assertW2TokenUpdateNullTimeEqual(t, operation+" revokedAt", actual.revokedAt, want.revokedAt)
+	if !actual.createdAt.UTC().Equal(want.createdAt.UTC()) || !actual.updatedAt.UTC().Equal(want.updatedAt.UTC()) {
+		t.Fatalf(
+			"%s token timestamps actual createdAt=%s updatedAt=%s want createdAt=%s updatedAt=%s",
+			operation,
+			actual.createdAt.UTC().Format(time.RFC3339Nano),
+			actual.updatedAt.UTC().Format(time.RFC3339Nano),
+			want.createdAt.UTC().Format(time.RFC3339Nano),
+			want.updatedAt.UTC().Format(time.RFC3339Nano),
+		)
+	}
 }
 
 func waitForW2TokenUpdateBlockedQueries(t *testing.T, ctx context.Context, db *sql.DB, want int, queryFragment string) {
