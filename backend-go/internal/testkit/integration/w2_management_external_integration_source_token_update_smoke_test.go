@@ -505,7 +505,7 @@ func assertW2TokenUpdateNarrowResponse(
 	expectedFields := map[string]struct{}{
 		"id": {}, "name": {}, "tokenPrefix": {}, "tokenSuffix": {}, "status": {},
 		"scopes": {}, "expiresAt": {}, "lastUsedAt": {}, "createdAt": {},
-		"updatedAt": {}, "revokedAt": {},
+		"updatedAt": {}, "revokedAt": {}, "isBuiltIn": {},
 	}
 	for _, forbidden := range []string{
 		"token", "hash", "tokenHash", "token_hash", "secret", "tokenSecretEncrypted",
