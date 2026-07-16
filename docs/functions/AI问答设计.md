@@ -431,8 +431,10 @@ Content-Type: application/json
 
 - `clientMessageId` 必填且最长 100 字符；重复 ID 返回 `409 chat_message_already_exists`，不得再次请求上游。
 - `replaceTurnId` 可选，只允许最近完整成功、失败或已停止的成对轮次；生成中或旧轮次冲突返回 `409 chat_replace_conflict`。
-- `content` 最大 `192 KiB`；相邻文本在图片边界之间合并，结构块最多 9 个（4 张图片与 5 段交错文本），当前支持 `input_text` / `input_image`，图片只允许 Responses 路径。
-- `/my-chat` 使用独立 `24 MiB` JSON 上限以容纳 Base64 膨胀，但必须先经过 session 鉴权、登录用户限流和 DB service 准入控制；其他 System API 继续保持 `256 KiB`。
+- `content` 最大 `192 KiB`；相邻文本在图片边界之间合并，结构块最多 11 个（5 张图片与 6 段交错文本），当前支持 `input_text` / `input_image`，图片只允许 Responses 路径。
+- 单条用户消息最多 5 张图片。前端选择、连续粘贴、编辑重发和文档序列化共享同一数量边界；后端 HTTP 契约、资产解析/绑定和未绑定草稿资产创建事务独立复核，第 6 张返回明确 4xx，不能创建或绑定额外资产。
+- 上传图片解码并应用 EXIF 方向后，统一压到最长边不超过 `1024 px`，透明区域铺白底，固定编码为 `image/jpeg`、质量 `85`；不得为了通过字节门禁逐级降到 80 以下，处理后仍超过 `2 MiB` 时明确拒绝。聊天 JSON、本地渲染缓存和模型持久上下文只保存 `assetId`，不保存 base64。
+- 图片使用独立 multipart 资产接口，聊天 JSON 不承载 Data URL；请求仍必须先经过 session 鉴权、登录用户限流和 DB service 准入控制。
 - 同一会话同时只允许一个生成任务。服务端接受后才发送 `message.started`；接受后的初始化失败必须把占位助手消息终结为失败。
 
 ```http

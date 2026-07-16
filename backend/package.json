@@ -415,6 +415,8 @@
     "test:chat-context-compaction": "tsx src/scripts/regression/chat-context-compaction-regression.ts",
     "test:chat-asset-cleanup": "tsx src/scripts/regression/chat-asset-cleanup-regression.ts",
     "test:chat-asset-upload": "tsx src/scripts/regression/chat-asset-upload-regression.ts",
+    "test:chat-image-processing": "tsx src/scripts/regression/chat-image-processing-regression.ts",
+    "test:chat-asset-count-policy": "tsx src/scripts/regression/chat-asset-count-policy-regression.ts",
     "test:chat-system-instructions": "tsx src/scripts/regression/chat-system-instructions-regression.ts",
     "test:chat-responses-sse": "tsx src/scripts/regression/chat-responses-sse-regression.ts",
     "test:chat-active-stream": "tsx src/scripts/regression/chat-active-stream-regression.ts",

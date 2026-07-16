@@ -5,7 +5,7 @@ import { listReadyChatAssetsByIds, type ChatAssetRecord } from '../../storage/ch
 import { openChatAssetObject } from '../../storage/chat-asset-storage.js'
 import { estimateChatImageTokens } from './chat-token-count.js'
 
-const maxChatImagesPerTurn = 4
+const maxChatImagesPerTurn = 5
 const maxChatModelImageBytesPerTurn = 8 * 1024 * 1024
 
 export interface ChatAssetReferenceBlock {

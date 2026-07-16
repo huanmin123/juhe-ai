@@ -481,19 +481,37 @@ try {
     assert.equal(upstreamBodies.filter((body) => body.stream === true).length, streamingCallsBeforePreparationCancel, 'preparing 取消后不得命中收费流式上游')
 
     const imageConversation = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
-    const imageAssets = await Promise.all(Array.from({ length: 4 }, (_, index) => uploadChatImage(
+    const streamCallsBeforeForgedImages = upstreamBodies.filter((body) => body.stream === true).length
+    const forgedImagesResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${imageConversation.data.id}/stream`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({
+        clientMessageId: 'mock-client-forged-six-images',
+        content: '伪造六张图片',
+        contentBlocks: Array.from({ length: 6 }, (_item, index) => ({ type: 'input_image', assetId: `chat_asset_${index.toString(16).padStart(32, '0')}` })),
+        model: testModel
+      })
+    })
+    assert.equal(forgedImagesResponse.status, 400, await forgedImagesResponse.text())
+    assert.equal(upstreamBodies.filter((body) => body.stream === true).length, streamCallsBeforeForgedImages, '伪造第六张图片必须在上游调用前拒绝')
+    const imageAssets = await Promise.all(Array.from({ length: 5 }, (_, index) => uploadChatImage(
       baseUrl,
       imageConversation.data.id,
       cookie,
       `交错图片-${index + 1}.png`
     )))
-    assert.equal(new Set(imageAssets.map((asset) => asset.id)).size, 4, '每次 multipart 上传必须创建独立图片资产')
+    assert.equal(new Set(imageAssets.map((asset) => asset.id)).size, 5, '每次 multipart 上传必须创建独立图片资产')
+    assert(imageAssets.every((asset) => asset.mimeType === 'image/jpeg'), '所有上传图片必须统一存为 JPEG')
+    assert(imageAssets.every((asset) => Math.max(asset.width, asset.height) <= 1_024), '所有上传图片最长边必须不超过 1024')
+    const sixthImageResponse = await postChatImage(baseUrl, imageConversation.data.id, cookie, '第六张.png')
+    const sixthImageText = await sixthImageResponse.text()
+    assert.equal(sixthImageResponse.status, 400, sixthImageText)
+    assert.equal((JSON.parse(sixthImageText) as { code?: string }).code, 'chat_asset_count_exceeded', '第六张草稿图必须在资产创建边界明确拒绝')
     const imageContentResponse = await fetch(
       `${baseUrl}/__aisys__/api/my-chat/conversations/${imageConversation.data.id}/assets/${imageAssets[0]!.id}/content`,
       { headers: { cookie } }
     )
     assert.equal(imageContentResponse.status, 200)
-    assert.match(String(imageContentResponse.headers.get('content-type')), /^image\/(?:png|jpeg|webp)$/)
+    assert.equal(String(imageContentResponse.headers.get('content-type')), 'image/jpeg')
     assert((await imageContentResponse.arrayBuffer()).byteLength > 0, '已上传图片必须可通过私有内容接口读取')
     const imageResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${imageConversation.data.id}/stream`, {
       method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
@@ -509,7 +527,9 @@ try {
           { type: 'input_image', assetId: imageAssets[2]!.id },
           { type: 'input_text', text: '图片 4 前' },
           { type: 'input_image', assetId: imageAssets[3]!.id },
-          { type: 'input_text', text: '图片 4 后' }
+          { type: 'input_text', text: '图片 5 前' },
+          { type: 'input_image', assetId: imageAssets[4]!.id },
+          { type: 'input_text', text: '图片 5 后' }
         ],
         model: testModel
       })
@@ -528,8 +548,10 @@ try {
       { type: 'input_image', assetId: imageAssets[2]!.id, order: 5 },
       { type: 'input_text', text: '图片 4 前', order: 6 },
       { type: 'input_image', assetId: imageAssets[3]!.id, order: 7 },
-      { type: 'input_text', text: '图片 4 后', order: 8 }
-    ], '4 张图片与前后文字交错的 9 个块必须通过 HTTP 契约并保存文本与资产顺序')
+      { type: 'input_text', text: '图片 5 前', order: 8 },
+      { type: 'input_image', assetId: imageAssets[4]!.id, order: 9 },
+      { type: 'input_text', text: '图片 5 后', order: 10 }
+    ], '5 张图片与前后文字交错的 11 个块必须通过 HTTP 契约并保存文本与资产顺序')
     assert.equal(JSON.stringify(imageStored.data[0]?.contentBlocks).includes('data:image/'), false, '图片 Data URL 不得落库')
     const { createSqliteDatabaseClient } = await import('../../storage/database-client.js')
     const { getChatAsset } = await import('../../storage/chat-assets.repository.js')
@@ -730,16 +752,7 @@ async function uploadChatImage(
   filename: string,
   label?: string
 ): Promise<{ id: string; fileName: string; mimeType: string; width: number; height: number; byteSize: number }> {
-  const png = label
-    ? await sharp(Buffer.from(`<svg width="900" height="320" xmlns="http://www.w3.org/2000/svg"><rect width="900" height="320" fill="white"/><text x="450" y="185" font-family="Arial" font-size="92" font-weight="700" text-anchor="middle" fill="black">${label}</text></svg>`)).png().toBuffer()
-    : await sharp({ create: { width: 32, height: 24, channels: 4, background: { r: 38, g: 132, b: 255, alpha: 1 } } }).png().toBuffer()
-  const form = new FormData()
-  form.append('file', new Blob([png], { type: 'image/png' }), filename)
-  const response = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/assets`, {
-    method: 'POST',
-    headers: { cookie },
-    body: form
-  })
+  const response = await postChatImage(baseUrl, conversationId, cookie, filename, label)
   const text = await response.text()
   assert.equal(response.status, 201, `图片上传 HTTP ${response.status}: ${text}`)
   const payload = JSON.parse(text) as { data: { id: string; fileName: string; mimeType: string; width: number; height: number; byteSize: number } }
@@ -747,6 +760,19 @@ async function uploadChatImage(
   assert.equal(payload.data.fileName, filename)
   assert(payload.data.width > 0 && payload.data.height > 0 && payload.data.byteSize > 0)
   return payload.data
+}
+
+async function postChatImage(baseUrl: string, conversationId: string, cookie: string, filename: string, label?: string): Promise<Response> {
+  const png = label
+    ? await sharp(Buffer.from(`<svg width="900" height="320" xmlns="http://www.w3.org/2000/svg"><rect width="900" height="320" fill="white"/><text x="450" y="185" font-family="Arial" font-size="92" font-weight="700" text-anchor="middle" fill="black">${label}</text></svg>`)).png().toBuffer()
+    : await sharp({ create: { width: 32, height: 24, channels: 4, background: { r: 38, g: 132, b: 255, alpha: 1 } } }).png().toBuffer()
+  const form = new FormData()
+  form.append('file', new Blob([png], { type: 'image/png' }), filename)
+  return fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/assets`, {
+    method: 'POST',
+    headers: { cookie },
+    body: form
+  })
 }
 
 async function verifyRealContextCompression(input: {

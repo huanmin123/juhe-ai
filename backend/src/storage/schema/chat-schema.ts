@@ -258,6 +258,7 @@ export function applyChatSchema(database: DatabaseSync): void {
       CHECK (processed_height IS NULL OR processed_height > 0),
       CHECK ((processed_width IS NULL AND processed_height IS NULL) OR (processed_width IS NOT NULL AND processed_height IS NOT NULL)),
       CHECK (processed_bytes IS NULL OR processed_bytes > 0),
+      CHECK (processed_mime_type IS NULL OR processed_mime_type = 'image/jpeg'),
       CHECK (processed_sha256 IS NULL OR length(processed_sha256) = 64),
       CHECK (processing_status IN ('pending', 'ready', 'failed')),
       CHECK (observation_status IN ('not_requested', 'pending', 'ready', 'failed')),
@@ -328,6 +329,10 @@ export function applyChatSchema(database: DatabaseSync): void {
       ON chat_assets(system_account_id, id, conversation_id);
     CREATE INDEX IF NOT EXISTS idx_chat_assets_message
       ON chat_assets(conversation_id, turn_id, message_id, id);
+    CREATE INDEX IF NOT EXISTS idx_chat_assets_uncommitted
+      ON chat_assets(system_account_id, conversation_id, expires_at, id)
+      WHERE turn_id IS NULL AND message_id IS NULL
+        AND processing_status IN ('pending', 'ready') AND cleanup_status = 'active';
     CREATE INDEX IF NOT EXISTS idx_chat_assets_cleanup
       ON chat_assets(cleanup_status, cleanup_retry_at, expires_at, id);
   `)

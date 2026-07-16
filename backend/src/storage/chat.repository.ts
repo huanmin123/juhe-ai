@@ -83,7 +83,7 @@ export interface ChatInputContentBlock {
 }
 
 const maxContentBlocksBytes = 256 * 1024
-const maxInputContentBlocks = 9
+const maxInputContentBlocks = 11
 // 192 KiB visible answer + 192 KiB persisted blocks target + 64 KiB serialization/safety margin.
 export const chatAssistantStorageReservationBytes = (192 + 192 + 64) * 1024
 const postgresIntegerMin = -2_147_483_648

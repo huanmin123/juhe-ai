@@ -74,6 +74,16 @@ assert.deepEqual(imageEdit?.contentBlocks, [
   { type: 'input_text', text: '图片后' }
 ], '最近一轮含图片时也必须恢复原始文字与图片顺序')
 
+const fiveImageBlocks = Array.from({ length: 5 }, (_item, index) => ({ type: 'input_image' as const, assetId: `asset_${index}`, order: index }))
+assert.equal(beginLatestTurnEdit([
+  message({ ...latestUser, contentBlocks: fiveImageBlocks }),
+  latestAssistant
+], latestUser.id)?.contentBlocks.length, 5, '最近一轮 5 张图片必须允许恢复编辑')
+assert.equal(beginLatestTurnEdit([
+  message({ ...latestUser, contentBlocks: [...fiveImageBlocks, { type: 'input_image', assetId: 'asset_5', order: 5 }] }),
+  latestAssistant
+], latestUser.id), undefined, '编辑重发边界不得恢复伪造的第 6 张图片')
+
 for (const invalid of [
   [latestUser],
   [latestAssistant, latestUser],

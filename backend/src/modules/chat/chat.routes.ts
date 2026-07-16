@@ -67,9 +67,9 @@ export { isActiveChatGeneration, shutdownChatGenerationRegistry }
 const messageContentBlocksSchema = z.array(z.discriminatedUnion('type', [
   z.object({ type: z.literal('input_text'), text: z.string().max(196_608, '文本块内容过长') }).strict(),
   z.object({ type: z.literal('input_image'), assetId: z.string().trim().min(1, '图片资产 ID 不能为空').max(120) }).strict()
-])).max(9).refine(
-  (blocks) => blocks.filter((block) => block.type === 'input_image').length <= 4,
-  '最多粘贴 4 张图片'
+])).max(11).refine(
+  (blocks) => blocks.filter((block) => block.type === 'input_image').length <= 5,
+  '最多粘贴 5 张图片'
 ).refine(
   (blocks) => {
     const ids = blocks.flatMap((block) => block.type === 'input_image' ? [block.assetId] : [])

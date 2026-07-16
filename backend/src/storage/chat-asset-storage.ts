@@ -154,8 +154,6 @@ function safeStorageSegment(value: string, maxLength: number): string {
 function extensionForChatAssetMimeType(mimeType: string): string {
   const normalized = mimeType.trim().toLowerCase()
   if (normalized === 'image/jpeg') return '.jpg'
-  if (normalized === 'image/png') return '.png'
-  if (normalized === 'image/webp') return '.webp'
   throw new Error(`不支持的聊天资产 MIME：${mimeType}`)
 }
 

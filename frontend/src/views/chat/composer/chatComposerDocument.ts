@@ -1,4 +1,5 @@
 import type { JSONContent } from '@tiptap/core'
+import { maxChatImageCount } from './chatImageSelection'
 
 export type ChatInputBlock =
   | { type: 'input_text'; text: string }
@@ -23,6 +24,8 @@ export function composerDocumentToBlocks(document: JSONContent): ChatInputBlock[
   serialize(document, text, blocks)
   flushText(text, blocks)
   const normalizedBlocks = mergeAdjacentInputTextBlocks(blocks)
+  const imageCount = normalizedBlocks.filter((item) => item.type === 'input_image').length
+  if (imageCount > maxChatImageCount) throw new Error(`每条消息最多 ${maxChatImageCount} 张图片`)
   const textBytes = normalizedBlocks.filter((item): item is Extract<ChatInputBlock, { type: 'input_text' }> => item.type === 'input_text')
     .reduce((total, item) => total + new TextEncoder().encode(item.text).byteLength, 0)
   if (textBytes > maxInputBytes) throw new Error('消息内容超过 192 KiB 上限')

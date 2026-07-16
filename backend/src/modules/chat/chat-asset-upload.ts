@@ -12,6 +12,7 @@ import type { Request } from 'express'
 import type { DatabaseClient } from '../../storage/database-client.js'
 import {
   ChatAssetQuotaExceededError,
+  ChatAssetCountExceededError,
   claimUncommittedChatAssetForDeletion,
   completeChatAssetDeletion,
   completeChatAssetProcessing,
@@ -31,7 +32,7 @@ import { ChatImageProcessingError, processChatImageFile } from './chat-image-pro
 export class ChatAssetUploadError extends Error {
   constructor(
     public readonly statusCode: 400 | 413 | 415,
-    public readonly code: 'chat_asset_invalid_request' | 'chat_asset_too_large' | 'chat_asset_unsupported_type' | 'chat_asset_quota_exceeded',
+    public readonly code: 'chat_asset_invalid_request' | 'chat_asset_too_large' | 'chat_asset_unsupported_type' | 'chat_asset_quota_exceeded' | 'chat_asset_count_exceeded',
     message: string
   ) {
     super(message)
@@ -129,6 +130,9 @@ export async function uploadChatAsset(input: {
     if (error instanceof ChatAssetQuotaExceededError) {
       throw new ChatAssetUploadError(413, 'chat_asset_quota_exceeded', error.message)
     }
+    if (error instanceof ChatAssetCountExceededError) {
+      throw new ChatAssetUploadError(400, 'chat_asset_count_exceeded', error.message)
+    }
     throw error
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined)
@@ -146,7 +150,7 @@ async function readMultipartImage(req: Request, temporaryDirectory: string): Pro
     busboy = Busboy({
       headers: req.headers,
       defParamCharset: 'utf8',
-      limits: { files: 1, fields: 0, fileSize: chatAssetOriginalMaxBytes, parts: 1 }
+      limits: { files: 1, fields: 0, fileSize: chatAssetOriginalMaxBytes, parts: 2 }
     })
   } catch {
     throw new ChatAssetUploadError(400, 'chat_asset_invalid_request', 'multipart 请求格式无效')
@@ -172,6 +176,12 @@ async function readMultipartImage(req: Request, temporaryDirectory: string): Pro
     }
   })
   busboy.on('filesLimit', () => {
+    parseError = new ChatAssetUploadError(400, 'chat_asset_invalid_request', '每次只能上传一张图片')
+  })
+  busboy.on('fieldsLimit', () => {
+    parseError = new ChatAssetUploadError(400, 'chat_asset_invalid_request', '图片上传不能包含额外表单字段')
+  })
+  busboy.on('partsLimit', () => {
     parseError = new ChatAssetUploadError(400, 'chat_asset_invalid_request', '每次只能上传一张图片')
   })
   try {

@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatMessageContentBlock } from '@/types/domain/chat'
+import { maxChatImageCount } from './composer/chatImageSelection'
 
 export interface ChatTurnEditCandidate {
   conversationId: string
@@ -73,6 +74,7 @@ export function resolveChatReconciliationNotice(input: {
 function strictInputBlocks(blocks: readonly ChatMessageContentBlock[] | undefined): ChatTurnEditCandidate['contentBlocks'] | undefined {
   if (!blocks?.length) return undefined
   const result: ChatTurnEditCandidate['contentBlocks'] = []
+  let imageCount = 0
   for (let order = 0; order < blocks.length; order += 1) {
     const block = blocks[order]
     if (!block || (block.type !== 'input_text' && block.type !== 'input_image') || block.order !== order) return undefined
@@ -81,6 +83,8 @@ function strictInputBlocks(blocks: readonly ChatMessageContentBlock[] | undefine
       continue
     }
     if (block.type === 'input_image' && typeof block.assetId === 'string' && block.assetId && Object.keys(block).sort().join(',') === 'assetId,order,type') {
+      imageCount += 1
+      if (imageCount > maxChatImageCount) return undefined
       result.push({ type: 'input_image', assetId: block.assetId })
       continue
     }

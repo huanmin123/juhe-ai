@@ -1,4 +1,4 @@
-export const maxChatImageCount = 4
+export const maxChatImageCount = 5
 export const maxChatImageBytes = 32 * 1024 * 1024
 
 export function selectChatImageFileSlots(files: readonly File[], existingCount: number): Array<File | undefined> {

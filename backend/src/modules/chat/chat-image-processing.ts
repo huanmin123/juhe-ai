@@ -3,14 +3,18 @@ import { createHash } from 'node:crypto'
 import pLimit from 'p-limit'
 import sharp, { type Metadata } from 'sharp'
 
+// libvips 在 Windows 会缓存最近读取的文件句柄，导致上传临时目录无法及时清理。
+sharp.cache({ files: 0 })
+
 const maxDecodedPixels = 40_000_000
 const maxModelImageBytes = 2 * 1024 * 1024
-const maxModelImageEdge = 2_048
+export const chatImageMaxEdge = 1_024
+export const chatImageJpegQuality = 85
 const maxModelImagePatches = 2_500
 const patchEdge = 32
 const imageProcessingLimit = pLimit(2)
 
-export type ChatProcessedImageMimeType = 'image/jpeg' | 'image/webp'
+export type ChatProcessedImageMimeType = 'image/jpeg'
 
 export interface ChatProcessedImage {
   buffer: Buffer
@@ -51,38 +55,18 @@ export async function processChatImageFile(filePath: string): Promise<ChatProces
     const dimensions = orientedDimensions(metadata)
     if (!dimensions) throw new ChatImageProcessingError('无法读取图片尺寸')
     const target = boundedImageDimensions(dimensions.width, dimensions.height)
-    const outputMimeType: ChatProcessedImageMimeType = metadata.hasAlpha ? 'image/webp' : 'image/jpeg'
-    const attempts = [
-      { quality: 85, scale: 1 },
-      { quality: 75, scale: 1 },
-      { quality: 68, scale: 0.9 },
-      { quality: 60, scale: 0.8 },
-      { quality: 55, scale: 0.7 }
-    ] as const
-    let last: Awaited<ReturnType<typeof encodeModelImage>> | undefined
-    for (const attempt of attempts) {
-      last = await encodeModelImage({
-        filePath,
-        width: Math.max(1, Math.floor(target.width * attempt.scale)),
-        height: Math.max(1, Math.floor(target.height * attempt.scale)),
-        quality: attempt.quality,
-        mimeType: outputMimeType
-      })
-      if (last.buffer.byteLength <= maxModelImageBytes) break
-    }
-    if (!last || last.buffer.byteLength > maxModelImageBytes) {
-      throw new ChatImageProcessingError('图片处理后仍超过 2 MiB，请裁剪图片后重试')
-    }
+    const output = await encodeModelImage({ filePath, width: target.width, height: target.height })
+    if (output.buffer.byteLength > maxModelImageBytes) throw new ChatImageProcessingError('图片按 JPEG 85 处理后仍超过 2 MiB，请裁剪图片后重试')
     return {
-      buffer: last.buffer,
+      buffer: output.buffer,
       originalMimeType: originalMimeType(metadata.format),
       originalWidth: dimensions.width,
       originalHeight: dimensions.height,
-      mimeType: outputMimeType,
-      width: last.width,
-      height: last.height,
-      byteSize: last.buffer.byteLength,
-      sha256: createHash('sha256').update(last.buffer).digest('hex')
+      mimeType: 'image/jpeg',
+      width: output.width,
+      height: output.height,
+      byteSize: output.buffer.byteLength,
+      sha256: createHash('sha256').update(output.buffer).digest('hex')
     }
   })
 }
@@ -91,8 +75,6 @@ async function encodeModelImage(input: {
   filePath: string
   width: number
   height: number
-  quality: number
-  mimeType: ChatProcessedImageMimeType
 }): Promise<{ buffer: Buffer; width: number; height: number }> {
   let pipeline = sharp(input.filePath, {
     failOn: 'error',
@@ -102,16 +84,13 @@ async function encodeModelImage(input: {
     fit: 'inside',
     withoutEnlargement: true,
     fastShrinkOnLoad: true
-  })
-  pipeline = input.mimeType === 'image/webp'
-    ? pipeline.webp({ quality: input.quality, effort: 4 })
-    : pipeline.jpeg({ quality: input.quality, mozjpeg: true, chromaSubsampling: '4:2:0' })
+  }).flatten({ background: '#ffffff' }).jpeg({ quality: chatImageJpegQuality, mozjpeg: true, chromaSubsampling: '4:2:0' })
   const { data, info } = await pipeline.toBuffer({ resolveWithObject: true })
   return { buffer: data, width: info.width, height: info.height }
 }
 
 function boundedImageDimensions(width: number, height: number): { width: number; height: number } {
-  let scale = Math.min(1, maxModelImageEdge / Math.max(width, height))
+  let scale = Math.min(1, chatImageMaxEdge / Math.max(width, height))
   const areaScale = Math.sqrt((maxModelImagePatches * patchEdge * patchEdge) / (width * height))
   scale = Math.min(scale, areaScale)
   let targetWidth = Math.max(1, Math.floor(width * scale))

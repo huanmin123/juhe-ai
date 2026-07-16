@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { PassThrough } from 'node:stream'
 import { DatabaseSync } from 'node:sqlite'
 import type { Request } from 'express'
+import sharp from 'sharp'
 
 import { uploadChatAsset, ChatAssetUploadError } from '../../modules/chat/chat-asset-upload.js'
 import { createSqliteDatabaseClient } from '../../storage/database-client.js'
@@ -55,6 +56,33 @@ const leaked = (await readdir(tmpdir())).filter((name) => name.startsWith('juhe-
 assert.deepEqual(leaked, [], '中断上传必须执行 finally 并清理临时目录')
 const assetCount = database.prepare('SELECT COUNT(*) AS total FROM chat_assets').get() as { total?: unknown } | undefined
 assert.equal(Number(assetCount?.total ?? -1), 0)
+
+const validPng = await sharp({ create: { width: 2, height: 2, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } } }).png().toBuffer()
+const multipleBoundary = '----juhe-ai-upload-multiple-boundary'
+const multipleRequest = new PassThrough() as PassThrough & Partial<Request> & { headers: Record<string, string>; aborted: boolean }
+multipleRequest.headers = { 'content-type': `multipart/form-data; boundary=${multipleBoundary}` }
+multipleRequest.aborted = false
+const multipleUpload = uploadChatAsset({
+  req: multipleRequest as Request,
+  client,
+  systemAccountId,
+  conversationId,
+  now: '2026-07-14T02:02:00.000Z',
+  retentionDays: 7
+})
+for (const filename of ['first.png', 'second.png']) {
+  multipleRequest.write(`--${multipleBoundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`)
+  multipleRequest.write(validPng)
+  multipleRequest.write('\r\n')
+}
+multipleRequest.end(`--${multipleBoundary}--\r\n`)
+await assert.rejects(
+  multipleUpload,
+  (error) => error instanceof ChatAssetUploadError && error.message === '每次只能上传一张图片',
+  'multipart 伪造多个 file 字段必须明确拒绝'
+)
+const multipleAssetCount = database.prepare('SELECT COUNT(*) AS total FROM chat_assets').get() as { total?: unknown } | undefined
+assert.equal(Number(multipleAssetCount?.total ?? -1), 0, 'multipart 多文件超限不得创建或占用任何资产记录')
 
 database.close()
 console.log('AI 问答 multipart 中断上传清理回归通过')

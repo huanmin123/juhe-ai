@@ -4,7 +4,7 @@ import type { DatabaseClient } from './database-client.js'
 import { chatAssetOriginalMaxBytes, chatAssetProcessedMaxBytes } from './chat-asset-storage.js'
 
 export type ChatAssetOriginalMimeType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
-export type ChatAssetProcessedMimeType = 'image/jpeg' | 'image/png' | 'image/webp'
+export type ChatAssetProcessedMimeType = 'image/jpeg'
 export type ChatAssetProcessingStatus = 'pending' | 'ready' | 'failed'
 export type ChatAssetObservationStatus = 'not_requested' | 'pending' | 'ready' | 'failed'
 export type ChatAssetCleanupStatus = 'active' | 'claimed' | 'failed'
@@ -134,7 +134,7 @@ interface ChatAssetRow {
 }
 
 const chatAssetObservationMaxBytes = 128 * 1024
-const maxChatAssetsPerMessage = 4
+const maxChatAssetsPerMessage = 5
 export const chatAssetUserMaxBytes = 2 * 1024 * 1024 * 1024
 export const chatAssetUserMaxCount = 1_024
 
@@ -142,6 +142,13 @@ export class ChatAssetQuotaExceededError extends Error {
   constructor() {
     super('聊天图片存储额度已满，请删除不用的会话或等待过期资产清理后重试')
     this.name = 'ChatAssetQuotaExceededError'
+  }
+}
+
+export class ChatAssetCountExceededError extends Error {
+  constructor() {
+    super(`每条消息最多 ${maxChatAssetsPerMessage} 张图片，请移除图片后重试`)
+    this.name = 'ChatAssetCountExceededError'
   }
 }
 
@@ -158,6 +165,15 @@ export async function createChatAsset(client: DatabaseClient, input: ChatAssetCr
   const expiresAt = addDays(input.now, input.retentionDays)
   return client.transaction(async (tx) => {
     await lockChatAssetUserQuota(tx, input.systemAccountId)
+    const uncommitted = await tx.one<{ total?: unknown }>(`
+      SELECT COUNT(*) AS total
+      FROM ${chatTable(tx, 'chat_assets')}
+      WHERE system_account_id = ? AND conversation_id = ?
+        AND turn_id IS NULL AND message_id IS NULL
+        AND processing_status IN ('pending', 'ready') AND cleanup_status = 'active'
+        AND expires_at > ?
+    `, [input.systemAccountId, input.conversationId, input.now])
+    if (Number(uncommitted?.total ?? 0) >= maxChatAssetsPerMessage) throw new ChatAssetCountExceededError()
     const usage = await getChatAssetUserUsage(tx, input.systemAccountId)
     if (usage.assetBytes + quotaBytes > chatAssetUserMaxBytes || usage.assetCount + 1 > chatAssetUserMaxCount) {
       throw new ChatAssetQuotaExceededError()
@@ -668,7 +684,7 @@ function normalizedOriginalMimeType(value: string): ChatAssetOriginalMimeType {
 
 function normalizedProcessedMimeType(value: string): ChatAssetProcessedMimeType {
   const normalized = value.trim().toLowerCase()
-  if (normalized === 'image/jpeg' || normalized === 'image/png' || normalized === 'image/webp') return normalized
+  if (normalized === 'image/jpeg') return normalized
   throw new Error(`不支持的处理后聊天图片 MIME：${value}`)
 }
 

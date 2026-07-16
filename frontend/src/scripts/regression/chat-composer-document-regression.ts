@@ -25,6 +25,10 @@ assert.match(markdownAfterImage, /- 列表项/)
 assert.match(markdownAfterImage, /```ts\nconst answer = 42\n```/)
 assert.deepEqual(blocks[3], { type: 'input_image', assetId: 'asset-1' })
 assert.throws(() => composerDocumentToBlocks({ type: 'doc', content: [{ type: 'chatImageAttachment', attrs: { assetId: '', uploadStatus: 'uploading' } }] }), /尚未上传完成/, '上传中或失败的图片不得进入聊天 JSON')
+assert.throws(() => composerDocumentToBlocks({
+  type: 'doc',
+  content: Array.from({ length: 6 }, (_item, index) => ({ type: 'chatImageAttachment', attrs: { assetId: `asset-${index}`, uploadStatus: 'uploaded' } }))
+}), /最多 5 张图片/, '文档序列化边界必须拒绝伪造的第 6 张图片')
 
 const literalMarkdown = '**不是粗体节点**\r\n<script>alert("xss")</script>\r\n\r\n- 仍是字面 Markdown'
 const literalDocument = composerTextToDocument(literalMarkdown)
@@ -126,13 +130,14 @@ assert.match(imageAttachmentViewSource, /<img :src="previewUrl"/, '图片附件�
 assert.doesNotMatch(`${composerSource}\n${imageAttachmentSource}\n${chatViewSource}`, /dataUrl/, '图片不得继续进入 Data URL 或聊天 JSON 链路')
 const imageFile = (name: string, size = 1024, type = 'image/png') => ({ name, size, type }) as File
 assert.deepEqual(
-  selectChatImageFiles([imageFile('1'), imageFile('2'), imageFile('3'), imageFile('4'), imageFile('5')], 0).map((file) => file.name),
-  ['1', '2', '3', '4'],
-  '一次选择超过 4 张时只能进入剩余槽位数量'
+  selectChatImageFiles([imageFile('1'), imageFile('2'), imageFile('3'), imageFile('4'), imageFile('5'), imageFile('6')], 0).map((file) => file.name),
+  ['1', '2', '3', '4', '5'],
+  '一次选择超过 5 张时只能进入剩余槽位数量'
 )
-assert.deepEqual(selectChatImageFiles([imageFile('3'), imageFile('4')], 3).map((file) => file.name), ['3'], '已有图片必须占用槽位')
+assert.deepEqual(selectChatImageFiles([imageFile('4'), imageFile('5'), imageFile('6')], 4).map((file) => file.name), ['4'], '已有图片和多次粘贴必须共享 5 张总槽位')
 assert.deepEqual(selectChatImageFiles([imageFile('large', 32 * 1024 * 1024 + 1), imageFile('text', 1, 'text/plain')], 0), [], '非图片和超过 32 MiB 的文件必须在上传前过滤')
 assert.match(composerSource, /for \(const file of selectedFiles\) insertImage\(file\)/, '多图必须同步按选择顺序插入文档，再独立上传')
+assert.match(composerSource, /imageItems\.value\.length >= maxChatImageCount/, '逐张插入也必须在编辑器边界复核图片总数，防止并发粘贴突破 5 张')
 assert.match(composerSource, /URL\.createObjectURL\(file\)/, '图片预览必须使用本地 object URL，不能把 base64 保存进文档')
 assert.match(composerSource, /revokePreviewUrl\(record\.previewUrl\)/, '会话切换或组件卸载必须释放 object URL')
 assert.match(composerSource, /record\.file = undefined[\s\S]{0,120}revokePreviewUrl\(previousPreviewUrl\)/, '上传完成后必须立即释放本地大文件引用并改用私有资产 URL')

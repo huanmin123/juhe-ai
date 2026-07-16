@@ -109,7 +109,7 @@ try {
       assetId: id,
       systemAccountId: ownerId,
       conversationId,
-      processedMimeType: 'image/png',
+      processedMimeType: 'image/jpeg',
       processedWidth: 16,
       processedHeight: 16,
       processedBytes: bytes.length,

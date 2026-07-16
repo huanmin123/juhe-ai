@@ -848,7 +848,7 @@ await completeChatAssetProcessing(client, {
   assetId: imageAssetId,
   systemAccountId: 'sys_user_1',
   conversationId: imageReplaceConversation.id,
-  processedMimeType: 'image/png',
+  processedMimeType: 'image/jpeg',
   processedWidth: 1,
   processedHeight: 1,
   processedBytes: 68,
