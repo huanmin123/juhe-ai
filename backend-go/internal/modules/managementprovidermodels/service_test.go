@@ -1421,6 +1421,12 @@ func TestServiceUpdateBuiltInModelReturnsActualBeforeAndAfterSnapshots(t *testin
 		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "disabled",
 		InputUSDPer1M: &previousInputPrice,
 	}}}
+	atomicBeforePrice := 9.0
+	atomicAfterPrice := 4.0
+	store.builtInUpdateResult = port.ManagementBuiltInProviderModelPriceUpdateResult{
+		Before: port.ManagementProviderModelConfigurationSnapshot{ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "disabled", InputUSDPer1M: &atomicBeforePrice},
+		After:  port.ManagementProviderModelConfigurationSnapshot{ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", InputUSDPer1M: &atomicAfterPrice},
+	}
 
 	result, err := NewService(store).UpdateCustomModelWithSnapshots(context.Background(), CustomModelUpdateInput{
 		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
@@ -1431,10 +1437,10 @@ func TestServiceUpdateBuiltInModelReturnsActualBeforeAndAfterSnapshots(t *testin
 	if err != nil {
 		t.Fatalf("UpdateCustomModel() error = %v", err)
 	}
-	if result.Before.Status != "disabled" || result.Before.InputUSDPer1M == nil || *result.Before.InputUSDPer1M != previousInputPrice {
+	if result.Before.Status != "disabled" || result.Before.InputUSDPer1M == nil || *result.Before.InputUSDPer1M != atomicBeforePrice {
 		t.Fatalf("before = %+v", result.Before)
 	}
-	if result.After.Status != "active" || result.After.InputUSDPer1M == nil || *result.After.InputUSDPer1M != updatedInputPrice {
+	if result.After.Status != "active" || result.After.InputUSDPer1M == nil || *result.After.InputUSDPer1M != atomicAfterPrice {
 		t.Fatalf("after = %+v", result.After)
 	}
 }
@@ -1590,12 +1596,15 @@ func TestServiceUpdateBuiltInModelPricesReturnsPersistedSnapshot(t *testing.T) {
 			InputUSDPer1M: &inputPrice, OutputUSDPer1M: &staleOutputPrice,
 		}},
 		builtInUpdateResult: port.ManagementBuiltInProviderModelPriceUpdateResult{
-			ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active",
-			InputUSDPer1M: &persistedInputPrice, OutputUSDPer1M: &persistedOutputPrice, CachedInputUSDPer1M: &persistedCachedInputPrice,
-			ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{
-				"priority": {InputUSDPer1M: &persistedTierInputPrice},
+			Before: port.ManagementProviderModelConfigurationSnapshot{ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active"},
+			After: port.ManagementProviderModelConfigurationSnapshot{
+				ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active",
+				InputUSDPer1M: &persistedInputPrice, OutputUSDPer1M: &persistedOutputPrice, CachedInputUSDPer1M: &persistedCachedInputPrice,
+				ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+					"priority": {InputUSDPer1M: &persistedTierInputPrice},
+				},
+				UpdatedAt: updatedAt,
 			},
-			UpdatedAt: updatedAt,
 		},
 	}
 
@@ -1979,6 +1988,7 @@ func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ co
 	s.builtInUpdateInputs = append(s.builtInUpdateInputs, input)
 	for index := range s.catalog {
 		if s.catalog[index].ID == input.ID && s.catalog[index].ProviderCode == input.ProviderCode {
+			before := builtInProviderModelConfigurationSnapshotFromCatalog(s.catalog[index])
 			applyBuiltInProviderModelOptionalString(&s.catalog[index].Status, input.Status)
 			applyBuiltInProviderModelOptionalString(&s.catalog[index].Mode, input.Mode)
 			applyBuiltInProviderModelOptionalStringList(&s.catalog[index].SupportedAPIProtocols, input.SupportedAPIProtocols)
@@ -2003,17 +2013,20 @@ func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ co
 			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].AudioInputUSDPer1M, input.AudioInputUSDPer1M)
 			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].AudioOutputUSDPer1M, input.AudioOutputUSDPer1M)
 			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].OutputUSDPerImage, input.OutputUSDPerImage)
-			if s.builtInUpdateResult.ID != "" {
+			if s.builtInUpdateResult.After.ID != "" {
 				return s.builtInUpdateResult, true, nil
 			}
-			return builtInProviderModelPriceUpdateResultFromCatalog(s.catalog[index]), true, nil
+			return port.ManagementBuiltInProviderModelPriceUpdateResult{
+				Before: before,
+				After:  builtInProviderModelConfigurationSnapshotFromCatalog(s.catalog[index]),
+			}, true, nil
 		}
 	}
 	return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, nil
 }
 
-func builtInProviderModelPriceUpdateResultFromCatalog(item port.ManagementProviderModelCatalogItem) port.ManagementBuiltInProviderModelPriceUpdateResult {
-	return port.ManagementBuiltInProviderModelPriceUpdateResult{
+func builtInProviderModelConfigurationSnapshotFromCatalog(item port.ManagementProviderModelCatalogItem) port.ManagementProviderModelConfigurationSnapshot {
+	return port.ManagementProviderModelConfigurationSnapshot{
 		ID:                        item.ID,
 		ProviderCode:              item.ProviderCode,
 		Status:                    item.Status,

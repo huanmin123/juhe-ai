@@ -575,11 +575,11 @@ func (s *Service) UpdateCustomModelWithSnapshots(ctx context.Context, input Cust
 		return CustomModelUpdateResult{}, err
 	}
 	if foundBuiltIn {
-		updated, err := s.updateBuiltInModelConfiguration(ctx, builtIn, input)
+		result, err := s.updateBuiltInModelConfiguration(ctx, builtIn, input)
 		if err != nil {
 			return CustomModelUpdateResult{}, err
 		}
-		return CustomModelUpdateResult{Before: catalogItemFromPort(builtIn), After: updated}, nil
+		return result, nil
 	}
 	existing, found, err := s.store.FindManagementCustomProviderModel(ctx, strings.TrimSpace(input.ID))
 	if err != nil {
@@ -636,20 +636,20 @@ func (s *Service) findBuiltInModelByID(ctx context.Context, providerCode string,
 	return port.ManagementProviderModelCatalogItem{}, false, nil
 }
 
-func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing port.ManagementProviderModelCatalogItem, input CustomModelUpdateInput) (ModelCatalogItem, error) {
+func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing port.ManagementProviderModelCatalogItem, input CustomModelUpdateInput) (CustomModelUpdateResult, error) {
 	if !isAdminRole(input.ActorRole) {
-		return ModelCatalogItem{}, &CustomModelForbiddenError{Message: "只有管理员可以维护内置模型配置"}
+		return CustomModelUpdateResult{}, &CustomModelForbiddenError{Message: "只有管理员可以维护内置模型配置"}
 	}
 	if input.Fields.Invalid || !builtInModelConfigurationMutationOnly(input.Fields) {
-		return ModelCatalogItem{}, &CustomModelValidationError{Message: "内置模型配置参数无效"}
+		return CustomModelUpdateResult{}, &CustomModelValidationError{Message: "内置模型配置参数无效"}
 	}
 	if input.Fields.Status.Set && strings.TrimSpace(input.Fields.Status.Value) == "draft" {
-		return ModelCatalogItem{}, &CustomModelValidationError{Message: "内置模型配置参数无效"}
+		return CustomModelUpdateResult{}, &CustomModelValidationError{Message: "内置模型配置参数无效"}
 	}
 	configuration := customModelSaveInputFromExisting(existing, strings.TrimSpace(input.ActorSystemAccountID))
 	configuration.Mode = customModelModeFromCatalog(existing)
 	if err := applyCustomModelMutableFields(&configuration, input.Fields, false); err != nil {
-		return ModelCatalogItem{}, err
+		return CustomModelUpdateResult{}, err
 	}
 	persisted, found, err := s.store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
 		ID: existing.ID, ProviderCode: existing.ProviderCode,
@@ -674,39 +674,48 @@ func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing 
 		OutputUSDPerImage:   builtInProviderModelOptionalFloat(input.Fields.OutputUSDPerImage),
 	})
 	if err != nil {
-		return ModelCatalogItem{}, err
+		return CustomModelUpdateResult{}, err
 	}
 	if !found {
-		return ModelCatalogItem{}, ErrCustomProviderModelNotFound
+		return CustomModelUpdateResult{}, ErrCustomProviderModelNotFound
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
-	updated := existing
-	updated.Status = persisted.Status
-	updated.Mode = persisted.Mode
-	updated.SupportedAPIProtocols = append([]string(nil), persisted.SupportedAPIProtocols...)
-	updated.SupportedServiceTiers = append([]string(nil), persisted.SupportedServiceTiers...)
-	updated.SupportedReasoningEfforts = append([]string(nil), persisted.SupportedReasoningEfforts...)
-	updated.DefaultReasoningEffort = persisted.DefaultReasoningEffort
-	updated.ReleaseDate = persisted.ReleaseDate
-	updated.ShutdownDate = persisted.ShutdownDate
-	updated.ContextWindowTokens = cloneIntPtr(persisted.ContextWindowTokens)
-	updated.MaxInputTokens = cloneIntPtr(persisted.MaxInputTokens)
-	updated.MaxOutputTokens = cloneIntPtr(persisted.MaxOutputTokens)
-	updated.InputUSDPer1M = cloneFloatPtr(persisted.InputUSDPer1M)
-	updated.OutputUSDPer1M = cloneFloatPtr(persisted.OutputUSDPer1M)
-	updated.CachedInputUSDPer1M = cloneFloatPtr(persisted.CachedInputUSDPer1M)
-	updated.CacheWriteUSDPer1M = cloneFloatPtr(persisted.CacheWriteUSDPer1M)
-	updated.CacheWrite1hUSDPer1M = cloneFloatPtr(persisted.CacheWrite1hUSDPer1M)
-	updated.ServiceTierPrices = cloneProviderModelPriceMap(persisted.ServiceTierPrices)
-	updated.ImageInputUSDPer1M = cloneFloatPtr(persisted.ImageInputUSDPer1M)
-	updated.ImageOutputUSDPer1M = cloneFloatPtr(persisted.ImageOutputUSDPer1M)
-	updated.AudioInputUSDPer1M = cloneFloatPtr(persisted.AudioInputUSDPer1M)
-	updated.AudioOutputUSDPer1M = cloneFloatPtr(persisted.AudioOutputUSDPer1M)
-	updated.OutputUSDPerImage = cloneFloatPtr(persisted.OutputUSDPerImage)
-	updated.UpdatedAt = persisted.UpdatedAt
-	result := catalogItemFromPort(updated)
-	result.UpdatedAt = formatOptionalTime(persisted.UpdatedAt)
-	return result, nil
+	return CustomModelUpdateResult{
+		Before: builtInCatalogItemWithConfigurationSnapshot(existing, persisted.Before),
+		After:  builtInCatalogItemWithConfigurationSnapshot(existing, persisted.After),
+	}, nil
+}
+
+func builtInCatalogItemWithConfigurationSnapshot(existing port.ManagementProviderModelCatalogItem, snapshot port.ManagementProviderModelConfigurationSnapshot) ModelCatalogItem {
+	item := existing
+	item.ID = snapshot.ID
+	item.ProviderCode = snapshot.ProviderCode
+	item.Status = snapshot.Status
+	item.Mode = snapshot.Mode
+	item.SupportedAPIProtocols = append([]string(nil), snapshot.SupportedAPIProtocols...)
+	item.SupportedServiceTiers = append([]string(nil), snapshot.SupportedServiceTiers...)
+	item.SupportedReasoningEfforts = append([]string(nil), snapshot.SupportedReasoningEfforts...)
+	item.DefaultReasoningEffort = snapshot.DefaultReasoningEffort
+	item.ReleaseDate = snapshot.ReleaseDate
+	item.ShutdownDate = snapshot.ShutdownDate
+	item.ContextWindowTokens = cloneIntPtr(snapshot.ContextWindowTokens)
+	item.MaxInputTokens = cloneIntPtr(snapshot.MaxInputTokens)
+	item.MaxOutputTokens = cloneIntPtr(snapshot.MaxOutputTokens)
+	item.InputUSDPer1M = cloneFloatPtr(snapshot.InputUSDPer1M)
+	item.OutputUSDPer1M = cloneFloatPtr(snapshot.OutputUSDPer1M)
+	item.CachedInputUSDPer1M = cloneFloatPtr(snapshot.CachedInputUSDPer1M)
+	item.CacheWriteUSDPer1M = cloneFloatPtr(snapshot.CacheWriteUSDPer1M)
+	item.CacheWrite1hUSDPer1M = cloneFloatPtr(snapshot.CacheWrite1hUSDPer1M)
+	item.ServiceTierPrices = cloneProviderModelPriceMap(snapshot.ServiceTierPrices)
+	item.ImageInputUSDPer1M = cloneFloatPtr(snapshot.ImageInputUSDPer1M)
+	item.ImageOutputUSDPer1M = cloneFloatPtr(snapshot.ImageOutputUSDPer1M)
+	item.AudioInputUSDPer1M = cloneFloatPtr(snapshot.AudioInputUSDPer1M)
+	item.AudioOutputUSDPer1M = cloneFloatPtr(snapshot.AudioOutputUSDPer1M)
+	item.OutputUSDPerImage = cloneFloatPtr(snapshot.OutputUSDPerImage)
+	item.UpdatedAt = snapshot.UpdatedAt
+	result := catalogItemFromPort(item)
+	result.UpdatedAt = formatOptionalTime(snapshot.UpdatedAt)
+	return result
 }
 
 func builtInProviderModelOptionalString(value OptionalString) port.ManagementProviderModelOptionalString {

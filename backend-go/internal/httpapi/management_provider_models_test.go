@@ -610,7 +610,7 @@ func TestManagementProviderBuiltInModelConfigurationUpdateEnqueuesOperationLog(t
 	}
 }
 
-func TestManagementProviderBuiltInModelConfigurationUpdateDoesNotBlockOnAuditPreReadFailure(t *testing.T) {
+func TestManagementProviderBuiltInModelConfigurationUpdateHandlerDoesNotPreReadModelsForAudit(t *testing.T) {
 	inputPrice := 4.0
 	service := &managementProviderModelServiceStub{
 		customModelBefore: managementprovidermodels.ModelCatalogItem{
@@ -743,7 +743,7 @@ func TestManagementProviderBuiltInModelConfigurationUpdateIgnoresOperationLogEnq
 	}
 }
 
-func TestManagementProviderBuiltInModelConfigurationUpdateWithoutOperationLogAddsNoReadPath(t *testing.T) {
+func TestManagementProviderBuiltInModelConfigurationUpdateHandlerWithoutOperationLogDoesNotPreReadModels(t *testing.T) {
 	inputPrice := 4.0
 	service := &managementProviderModelServiceStub{
 		customModelResult: managementprovidermodels.ModelCatalogItem{
