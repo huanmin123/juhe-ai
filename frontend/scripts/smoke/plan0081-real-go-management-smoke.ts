@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 export const realGoManagementSmokeEnv = {
   accountId: 'JUHE_REAL_GO_MANAGEMENT_ACCOUNT_ID',
   allowExternalIntegrationSourceMutations: 'JUHE_REAL_GO_MANAGEMENT_ALLOW_EXTERNAL_INTEGRATION_SOURCE_MUTATIONS',
+  allowExternalIntegrationSourceDeletes: 'JUHE_REAL_GO_MANAGEMENT_ALLOW_EXTERNAL_INTEGRATION_SOURCE_DELETES',
   allowGroupMutations: 'JUHE_REAL_GO_MANAGEMENT_ALLOW_GROUP_MUTATIONS',
   baseUrl: 'JUHE_REAL_GO_MANAGEMENT_BASE_URL',
   clientIpHash: 'JUHE_REAL_GO_MANAGEMENT_CLIENT_IP_HASH',
@@ -11,6 +12,7 @@ export const realGoManagementSmokeEnv = {
   externalIntegrationSourceId: 'JUHE_REAL_GO_MANAGEMENT_EXTERNAL_INTEGRATION_SOURCE_ID',
   externalIntegrationSourceTokenId: 'JUHE_REAL_GO_MANAGEMENT_EXTERNAL_INTEGRATION_SOURCE_TOKEN_ID',
   externalIntegrationSourceMutationFixtureConfirmation: 'JUHE_REAL_GO_MANAGEMENT_EXTERNAL_INTEGRATION_SOURCE_MUTATION_FIXTURE_CONFIRMATION',
+  externalIntegrationSourceDeleteFixtureConfirmation: 'JUHE_REAL_GO_MANAGEMENT_EXTERNAL_INTEGRATION_SOURCE_DELETE_FIXTURE_CONFIRMATION',
   groupId: 'JUHE_REAL_GO_MANAGEMENT_GROUP_ID',
   providerCode: 'JUHE_REAL_GO_MANAGEMENT_GROUP_PROVIDER_CODE',
   publicApiLogId: 'JUHE_REAL_GO_MANAGEMENT_PUBLIC_API_LOG_ID',
@@ -18,6 +20,7 @@ export const realGoManagementSmokeEnv = {
   routeStrategyId: 'JUHE_REAL_GO_MANAGEMENT_ROUTE_STRATEGY_ID',
   systemAccountId: 'JUHE_REAL_GO_MANAGEMENT_SYSTEM_ACCOUNT_ID',
   temporaryExternalIntegrationSourceId: 'JUHE_REAL_GO_MANAGEMENT_TEMP_EXTERNAL_INTEGRATION_SOURCE_ID',
+  temporaryExternalIntegrationSourceDeleteId: 'JUHE_REAL_GO_MANAGEMENT_TEMP_EXTERNAL_INTEGRATION_SOURCE_DELETE_ID',
   timeoutMs: 'JUHE_REAL_GO_MANAGEMENT_TIMEOUT_MS'
 } as const
 
@@ -29,6 +32,9 @@ const temporaryGroupDescription = 'PLAN-0081 W5 group CRUD real Go smoke'
 const externalIntegrationSourceMutationFixtureNamePrefix = 'PLAN-0081 external source smoke fixture '
 const externalIntegrationSourceMutationFixtureNotes = 'PLAN-0081 external source smoke fixture'
 const externalIntegrationSourceMutationFixtureConfirmationPrefix = 'plan0081-external-source-fixture-v1:'
+const externalIntegrationSourceDeleteFixtureNamePrefix = 'PLAN-0081 external source delete fixture '
+const externalIntegrationSourceDeleteFixtureNotes = 'PLAN-0081 external source delete fixture'
+const externalIntegrationSourceDeleteFixtureConfirmationPrefix = 'plan0081-external-source-delete-fixture-v1:'
 const defaultTimeoutMs = 15_000
 const maximumTimeoutMs = 2_147_483_647
 const externalIntegrationSourceScopeOptions = [
@@ -148,6 +154,7 @@ export type SmokeEnvironment = Readonly<Record<string, string | undefined>>
 export interface RealGoManagementSmokeConfig {
   accountId?: string
   allowExternalIntegrationSourceMutations?: boolean
+  allowExternalIntegrationSourceDeletes?: boolean
   allowGroupMutations?: boolean
   baseUrl: string
   clientIpHash?: string
@@ -155,6 +162,7 @@ export interface RealGoManagementSmokeConfig {
   externalIntegrationSourceId?: string
   externalIntegrationSourceTokenId?: string
   externalIntegrationSourceMutationFixtureConfirmation?: string
+  externalIntegrationSourceDeleteFixtureConfirmation?: string
   groupId?: string
   providerCode?: string
   publicApiLogId?: string
@@ -162,6 +170,7 @@ export interface RealGoManagementSmokeConfig {
   routeStrategyId?: string
   systemAccountId?: string
   temporaryExternalIntegrationSourceId?: string
+  temporaryExternalIntegrationSourceDeleteId?: string
   timeoutMs?: number
 }
 
@@ -182,10 +191,12 @@ export interface RealGoManagementSmokeSummary {
   selfApiKeyCount: number
   externalIntegrationSourceTokenSecretChecked: boolean
   externalIntegrationSourcePatchChecked: boolean
+  externalIntegrationSourceDeleteChecked: boolean
 }
 
 interface NormalizedRealGoManagementSmokeConfig extends RealGoManagementSmokeConfig {
   allowExternalIntegrationSourceMutations: boolean
+  allowExternalIntegrationSourceDeletes: boolean
   allowGroupMutations: boolean
   requireClientIpDetail: boolean
   timeoutMs: number
@@ -441,6 +452,14 @@ export function loadRealGoManagementSmokeConfig(
     env,
     realGoManagementSmokeEnv.externalIntegrationSourceMutationFixtureConfirmation
   )
+  const temporaryExternalIntegrationSourceDeleteId = optionalEnvironmentValue(
+    env,
+    realGoManagementSmokeEnv.temporaryExternalIntegrationSourceDeleteId
+  )
+  const externalIntegrationSourceDeleteFixtureConfirmation = optionalEnvironmentValue(
+    env,
+    realGoManagementSmokeEnv.externalIntegrationSourceDeleteFixtureConfirmation
+  )
   expect(
     Boolean(externalIntegrationSourceId) === Boolean(externalIntegrationSourceTokenId),
     `${realGoManagementSmokeEnv.externalIntegrationSourceId} and ${realGoManagementSmokeEnv.externalIntegrationSourceTokenId} must be configured together`
@@ -452,6 +471,10 @@ export function loadRealGoManagementSmokeConfig(
       env,
       realGoManagementSmokeEnv.allowExternalIntegrationSourceMutations
     ),
+    allowExternalIntegrationSourceDeletes: optionalBinaryFlag(
+      env,
+      realGoManagementSmokeEnv.allowExternalIntegrationSourceDeletes
+    ),
     allowGroupMutations: optionalBinaryFlag(env, realGoManagementSmokeEnv.allowGroupMutations),
     baseUrl: normalizeManagementApiBaseUrl(baseUrl),
     clientIpHash: optionalClientIPHashEnvironmentValue(env, realGoManagementSmokeEnv.clientIpHash),
@@ -459,6 +482,7 @@ export function loadRealGoManagementSmokeConfig(
     externalIntegrationSourceId,
     externalIntegrationSourceTokenId,
     externalIntegrationSourceMutationFixtureConfirmation,
+    externalIntegrationSourceDeleteFixtureConfirmation,
     groupId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.groupId),
     providerCode: optionalEnvironmentValue(env, realGoManagementSmokeEnv.providerCode),
     publicApiLogId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.publicApiLogId),
@@ -466,6 +490,7 @@ export function loadRealGoManagementSmokeConfig(
     routeStrategyId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.routeStrategyId),
     systemAccountId: optionalEnvironmentValue(env, realGoManagementSmokeEnv.systemAccountId),
     temporaryExternalIntegrationSourceId,
+    temporaryExternalIntegrationSourceDeleteId,
     timeoutMs: optionalPositiveIntegerEnvironmentValue(env, realGoManagementSmokeEnv.timeoutMs)
   }
 }
@@ -484,6 +509,10 @@ export async function runRealGoManagementSmoke(
     if (normalizedConfig.allowExternalIntegrationSourceMutations) {
       await runExternalIntegrationSourceMutationSmoke(normalizedConfig)
       summary.externalIntegrationSourcePatchChecked = true
+    }
+    if (normalizedConfig.allowExternalIntegrationSourceDeletes) {
+      await runExternalIntegrationSourceDeleteSmoke(normalizedConfig)
+      summary.externalIntegrationSourceDeleteChecked = true
     }
     if (normalizedConfig.allowGroupMutations) {
       await runGroupMutationSmoke(normalizedConfig, readOnlyResult, (identity) => {
@@ -527,6 +556,7 @@ export function formatRealGoManagementSmokeSummary(summary: RealGoManagementSmok
     `selfApiKeyCount=${summary.selfApiKeyCount}`,
     `externalIntegrationSourceTokenSecretChecked=${summary.externalIntegrationSourceTokenSecretChecked}`,
     `externalIntegrationSourcePatchChecked=${summary.externalIntegrationSourcePatchChecked}`,
+    `externalIntegrationSourceDeleteChecked=${summary.externalIntegrationSourceDeleteChecked}`,
     `clientIpItems=${summary.clientIpItemCount}`,
     `clientIpRangeReady=${summary.clientIpRangeReady}`,
     `clientIpDetailChecked=${summary.clientIpDetailChecked}`,
@@ -584,7 +614,10 @@ async function runReadOnlySmoke(
   )
   const externalIntegrationSourceDetailTarget = config.externalIntegrationSourceId
     ? undefined
-    : externalIntegrationSourceFirstPage.items.find((source) => !source.isBuiltIn)
+    : externalIntegrationSourceFirstPage.items.find(
+        (source) =>
+          !source.isBuiltIn && source.id !== config.temporaryExternalIntegrationSourceDeleteId
+      )
   const externalIntegrationSourceDetailId = config.externalIntegrationSourceId
     ?? externalIntegrationSourceDetailTarget?.id
   let externalIntegrationSourceTokenSecretChecked = false
@@ -761,9 +794,62 @@ async function runReadOnlySmoke(
       routeStrategyDetailChecked,
       selfApiKeyCount: selfApiKeys.items.length,
       externalIntegrationSourceTokenSecretChecked,
-      externalIntegrationSourcePatchChecked: false
+      externalIntegrationSourcePatchChecked: false,
+      externalIntegrationSourceDeleteChecked: false
     }
   }
+}
+
+async function runExternalIntegrationSourceDeleteSmoke(
+  config: NormalizedRealGoManagementSmokeConfig
+): Promise<void> {
+  const sourceId = config.temporaryExternalIntegrationSourceDeleteId
+  expect(sourceId, 'Temporary external integration source delete fixture ID is required')
+  const detailUrl = externalIntegrationSourceDetailUrl(config, sourceId)
+  const detail = assertExternalIntegrationSourceDetail(
+    await getEnvelopeData(detailUrl, config, 'temporary external integration source delete fixture detail')
+  )
+  expect(detail.id === sourceId, 'Temporary external integration source delete fixture ID does not match its detail')
+  expect(!detail.isBuiltIn, 'Temporary external integration source delete fixture must not be built-in')
+  expect(
+    detail.tokenCount === 0 && detail.activeTokenCount === 0 && detail.tokens.length === 0,
+    'Temporary external integration source delete fixture must not contain any Token'
+  )
+  expect(
+    detail.name.startsWith(externalIntegrationSourceDeleteFixtureNamePrefix),
+    'Temporary external integration source delete fixture name marker does not match'
+  )
+  expect(
+    detail.notes === externalIntegrationSourceDeleteFixtureNotes,
+    'Temporary external integration source delete fixture notes marker does not match'
+  )
+
+  let primaryError: unknown
+  try {
+    await expectEmptyNoStoreResponse(detailUrl, config, 'temporary external integration source DELETE', 204)
+  } catch (error) {
+    primaryError = error
+  }
+
+  if (primaryError) {
+    let diagnosticError: Error
+    try {
+      const status = await expectResponseStatus(detailUrl, config, 'temporary external integration source delete diagnostic GET', {
+        method: 'GET',
+        expectedStatuses: [200, 404]
+      })
+      diagnosticError = new Error(`temporary external integration source delete diagnostic GET returned HTTP ${status}`)
+    } catch (error) {
+      diagnosticError = safeError(error, 'Temporary external integration source delete diagnostic GET failed')
+    }
+    const primary = safeError(primaryError, 'Temporary external integration source DELETE failed')
+    throw new AggregateError([primary, diagnosticError], `${primary.message}; ${diagnosticError.message}`)
+  }
+
+  await expectResponseStatus(detailUrl, config, 'temporary external integration source detail after DELETE', {
+    method: 'GET',
+    expectedStatuses: [404]
+  })
 }
 
 type ExternalIntegrationSourceMutableSnapshot = Pick<
@@ -1049,6 +1135,11 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
     'Smoke external integration source mutation flag must be boolean'
   )
   expect(
+    config.allowExternalIntegrationSourceDeletes === undefined ||
+      typeof config.allowExternalIntegrationSourceDeletes === 'boolean',
+    'Smoke external integration source delete flag must be boolean'
+  )
+  expect(
     config.allowGroupMutations === undefined || typeof config.allowGroupMutations === 'boolean',
     'Smoke mutation flag must be boolean'
   )
@@ -1075,6 +1166,10 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
   const temporaryExternalIntegrationSourceId = config.temporaryExternalIntegrationSourceId?.trim() || undefined
   const externalIntegrationSourceMutationFixtureConfirmation =
     config.externalIntegrationSourceMutationFixtureConfirmation?.trim() || undefined
+  const temporaryExternalIntegrationSourceDeleteId =
+    config.temporaryExternalIntegrationSourceDeleteId?.trim() || undefined
+  const externalIntegrationSourceDeleteFixtureConfirmation =
+    config.externalIntegrationSourceDeleteFixtureConfirmation?.trim() || undefined
   expect(
     Boolean(externalIntegrationSourceId) === Boolean(externalIntegrationSourceTokenId),
     'Smoke external integration source ID and token ID must be configured together'
@@ -1097,10 +1192,34 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
       'Smoke external integration source mutation fixture settings require the explicit mutation flag'
     )
   }
+  const allowExternalIntegrationSourceDeletes = config.allowExternalIntegrationSourceDeletes ?? false
+  if (allowExternalIntegrationSourceDeletes) {
+    expect(
+      temporaryExternalIntegrationSourceDeleteId !== undefined,
+      'Smoke external integration source delete requires an explicit temporary fixture ID'
+    )
+    expect(
+      externalIntegrationSourceDeleteFixtureConfirmation ===
+        `${externalIntegrationSourceDeleteFixtureConfirmationPrefix}${temporaryExternalIntegrationSourceDeleteId}`,
+      'Smoke external integration source delete fixture confirmation does not match the temporary fixture ID'
+    )
+    expect(
+      temporaryExternalIntegrationSourceDeleteId !== temporaryExternalIntegrationSourceId &&
+        temporaryExternalIntegrationSourceDeleteId !== externalIntegrationSourceId,
+      'Smoke external integration source delete fixture ID must be distinct from mutation and read targets'
+    )
+  } else {
+    expect(
+      temporaryExternalIntegrationSourceDeleteId === undefined &&
+        externalIntegrationSourceDeleteFixtureConfirmation === undefined,
+      'Smoke external integration source delete fixture settings require the explicit delete flag'
+    )
+  }
   return {
     ...config,
     accountId: config.accountId?.trim() || undefined,
     allowExternalIntegrationSourceMutations,
+    allowExternalIntegrationSourceDeletes,
     allowGroupMutations: config.allowGroupMutations ?? false,
     baseUrl: normalizeManagementApiBaseUrl(config.baseUrl),
     clientIpHash: config.clientIpHash?.trim().toLowerCase() || undefined,
@@ -1114,6 +1233,8 @@ function normalizeConfig(config: RealGoManagementSmokeConfig): NormalizedRealGoM
     routeStrategyId: config.routeStrategyId?.trim() || undefined,
     systemAccountId: config.systemAccountId?.trim() || undefined,
     temporaryExternalIntegrationSourceId,
+    temporaryExternalIntegrationSourceDeleteId,
+    externalIntegrationSourceDeleteFixtureConfirmation,
     timeoutMs
   }
 }
@@ -1367,6 +1488,21 @@ async function expectResponseStatus(
   }
   assertNoStore(response, label)
   return response.status
+}
+
+async function expectEmptyNoStoreResponse(
+  url: URL,
+  config: NormalizedRealGoManagementSmokeConfig,
+  label: string,
+  expectedStatus: number
+): Promise<void> {
+  const response = await sendRequest(url, config, label, { method: 'DELETE' })
+  const body = new Uint8Array(await response.arrayBuffer())
+  if (response.status !== expectedStatus) {
+    throw new Error(`${label} failed with HTTP ${response.status}`)
+  }
+  assertNoStore(response, label)
+  expect(body.byteLength === 0, `${label} must return an empty response body`)
 }
 
 async function sendRequest(
