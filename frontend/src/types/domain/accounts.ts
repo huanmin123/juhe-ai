@@ -456,6 +456,12 @@ export interface AccountApiKeyRuntimeDetail {
   lastErrorMessage?: string
 }
 
+export interface AccountApiKeyRuntimeResponse {
+  accountId: string
+  configRevision: number
+  items: AccountApiKeyRuntimeDetail[]
+}
+
 export interface AccountListResult {
   items: AccountSummary[]
   total: number

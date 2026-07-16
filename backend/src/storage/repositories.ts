@@ -209,6 +209,8 @@ export {
   updateSystemTeamAsync
 } from './system-team.repository.js'
 export {
+  deferCooldownAccountRetest,
+  deferCooldownAccountRetestAsync,
   findAccountForCooldownRetest,
   findAccountForCooldownRetestAsync,
   listAccountsDueForCooldownRetest,
@@ -218,6 +220,7 @@ export {
   recordCooldownAccountRetestFailure,
   recordCooldownAccountRetestFailureAsync,
   type CooldownAccountRetestCursor,
+  type CooldownAccountRetestDeferResult,
   type CooldownAccountRetestFailureInput,
   type CooldownAccountRetestFailureResult,
   type CooldownAccountRetestPage

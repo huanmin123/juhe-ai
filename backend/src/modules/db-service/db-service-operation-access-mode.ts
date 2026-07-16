@@ -54,6 +54,7 @@ export const dbServiceOperationAccessModeByType = {
   list_accounts_due_for_cooldown_retest: 'maintenance',
   find_account_for_cooldown_retest: 'maintenance',
   record_cooldown_account_retest_failure: 'write',
+  defer_cooldown_account_retest: 'write',
   mark_account_exception: 'write',
   update_proxy_test_state: 'write',
   mark_all_group_account_stats_dirty: 'maintenance',

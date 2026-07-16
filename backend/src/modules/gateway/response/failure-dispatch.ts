@@ -50,6 +50,7 @@ import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
   parseGatewayProtocolErrorPayload
 } from '../protocols/registry.js'
+import { classifyGatewayUpstreamFailure } from './upstream-failure-classifier.js'
 
 export type AccountFailureInput = {
   success: false
@@ -141,6 +142,19 @@ export async function handleFailedUpstreamResponse(
   const responseBodyText = responseBodyRead.bodyText
   const diagnosticResponseBodyText = responseBodyRead.diagnosticBodyText
   const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
+  let parsedError: Record<string, unknown> = {}
+  if (!responseBodyRead.truncated) {
+    parsedError = parseGatewayProtocolErrorPayload(account, responseBodyText, response.headers)
+  }
+  const parsedErrorCode = stringValue(parsedError.code) || undefined
+  const parsedErrorType = stringValue(parsedError.type) || undefined
+  const failureObservation = classifyGatewayUpstreamFailure({
+    phase: 'upstream_response',
+    statusCode: response.status,
+    errorCode: parsedErrorCode,
+    errorType: parsedErrorType,
+    hasAlternativeApiKeys: hasAlternativeAccountApiKeys(account)
+  })
   if (responseBodyRead.truncated) {
     logGatewayFailureWarning(usageContext, {
       event: 'gateway_upstream_retry_error_body_truncated',
@@ -161,7 +175,8 @@ export async function handleFailedUpstreamResponse(
     contentType: response.headers.get('content-type'),
     elapsedMs: Date.now() - attemptStartedAt,
     responseBodyBytes: responseBody.byteLength,
-    responseBodyTruncated: responseBodyRead.truncated
+    responseBodyTruncated: responseBodyRead.truncated,
+    ...failureObservation
   }, '上游返回非成功状态')
 
   const lastAttempt: UpstreamAttempt = {
@@ -213,10 +228,6 @@ export async function handleFailedUpstreamResponse(
     bodyText: responseBodyText,
     settings,
     trafficSource: usageContext.trafficSource
-  }
-  let parsedError: Record<string, unknown> = {}
-  if (!responseBodyRead.truncated) {
-    parsedError = parseGatewayProtocolErrorPayload(account, responseBodyText, response.headers)
   }
   const parsedErrorMessage = stringValue(parsedError.message)
   const diagnosticErrorMessage = diagnosticResponseBodyText
@@ -367,6 +378,11 @@ export async function handleUpstreamRequestError(
 
   const message = formatUpstreamRequestErrorMessage(error)
   const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
+  const transportErrorCode = sanitizeOptionalDiagnosticPayload(objectStringProperty(error, 'code'))
+  const failureObservation = classifyGatewayUpstreamFailure({
+    phase: 'upstream_request',
+    hasAlternativeApiKeys: hasAlternativeAccountApiKeys(account)
+  })
   logGatewayFailureWarning(usageContext, {
     event: 'gateway_upstream_request_failed',
     accountId: account.id,
@@ -377,8 +393,9 @@ export async function handleUpstreamRequestError(
     elapsedMs: Date.now() - attemptStartedAt,
     stream: isEffectiveOpenAIStreamRequest(req, account),
     errorName: sanitizeOptionalDiagnosticPayload(error instanceof Error ? error.name : objectStringProperty(error, 'name')),
-    errorCode: sanitizeOptionalDiagnosticPayload(objectStringProperty(error, 'code')),
-    errorMessage: message
+    errorCode: transportErrorCode,
+    errorMessage: message,
+    ...failureObservation
   }, '网关请求上游失败')
   const lastAttempt: UpstreamAttempt = {
     accountId: account.id,

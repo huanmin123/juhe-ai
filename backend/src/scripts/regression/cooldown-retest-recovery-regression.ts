@@ -336,9 +336,10 @@ try {
     maxPauseMinutes: 10,
     maxRecoveryHours: 1
   }), '后台探针配置失败账号应能入队')
-  const recordedIneligibleFailure = await waitForAccountRetestFailure(ineligibleFailureAccount.id)
-  assert.equal(recordedIneligibleFailure.cooldownRetestFailureCount, 1, '后台探针只要未完整成功就必须累计失败次数')
-  assert(Date.parse(recordedIneligibleFailure.cooldownUntil ?? '') > Date.now(), '后台探针失败必须推进下一次复测时间')
+  await waitForRetestQueueCompletion()
+  const recordedIneligibleFailure = repositories.findAccountSummary(ineligibleFailureAccount.id, access)
+  assert.equal(recordedIneligibleFailure?.cooldownRetestFailureCount ?? 0, 0, '未形成可归因上游失败的探针不得累计账户失败次数')
+  assert.equal(recordedIneligibleFailure?.status, 'temporary_unavailable', '探针任务失败必须保留原冷却状态')
 
   const probeAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -697,6 +698,16 @@ async function waitForAccountRetestFailure(accountId: string): Promise<NonNullab
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
   }
   throw new Error(`等待账号 ${accountId} 记录后台复测失败超时`)
+}
+
+async function waitForRetestQueueCompletion(): Promise<void> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 5000) {
+    const snapshot = cooldownRetestService.getCooldownAccountRetestQueueSnapshot()
+    if (Date.now() - startedAt >= 100 && snapshot.pendingCount === 0 && snapshot.runningCount === 0) return
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
+  }
+  throw new Error('等待冷却账户复测队列完成超时')
 }
 
 function assertSqliteCooldownCandidatePlan(): void {

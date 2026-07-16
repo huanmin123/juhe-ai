@@ -745,6 +745,11 @@ export type DbServiceOperation =
     accountId: string
   }
   | {
+    type: 'defer_cooldown_account_retest'
+    accountId: string
+    delaySeconds?: number
+  }
+  | {
     type: 'record_cooldown_account_retest_failure'
     accountId: string
     input: {
@@ -955,6 +960,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt?: string; failureStartedAt?: string; transitionedToError: boolean; accountStatus?: string; errorCode: string; errorMessage: string } :
   T extends { type: 'list_accounts_due_for_cooldown_retest' } ? import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestPage :
   T extends { type: 'find_account_for_cooldown_retest' } ? AccountSummary | undefined :
+  T extends { type: 'defer_cooldown_account_retest' } ? { changed: boolean; cooldownUntil?: string } :
   T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; observationTimeoutSeconds?: number; transitionedToError?: boolean; errorCode: string; errorMessage: string } :
   T extends { type: 'mark_account_exception' } ? { updated: boolean; accountStatus?: string } :
   T extends { type: 'update_proxy_test_state' } ? { updated: boolean; proxyStatus?: string } :

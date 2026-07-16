@@ -1,4 +1,5 @@
 import type { AccountSummary } from '../../domain/types.js'
+import type { AccountApiKeyRuntimeResponse } from './account-api-key-pool-runtime.js'
 
 const publicCredentialKeys = new Set([
   'base_url',
@@ -106,6 +107,30 @@ export function sanitizeAccountBasicDetailResponse<T extends AccountSummary>(acc
     ...item
   } = account
   return item as T
+}
+
+export function sanitizeAccountApiKeyRuntimeResponse(value: AccountApiKeyRuntimeResponse): AccountApiKeyRuntimeResponse {
+  return {
+    accountId: value.accountId,
+    configRevision: value.configRevision,
+    items: value.items.map((item) => ({
+      keyIndex: item.keyIndex,
+      keyFingerprintPrefix: item.keyFingerprintPrefix,
+      keySuffix: item.keySuffix,
+      weight: item.weight,
+      status: item.status,
+      failureCount: item.failureCount,
+      consecutiveFailures: item.consecutiveFailures,
+      successCount: item.successCount,
+      cooldownUntil: item.cooldownUntil,
+      nextProbeAt: item.nextProbeAt,
+      lastAttemptAt: item.lastAttemptAt,
+      lastSuccessAt: item.lastSuccessAt,
+      lastFailureAt: item.lastFailureAt,
+      lastErrorCode: item.lastErrorCode,
+      lastErrorMessage: item.lastErrorMessage
+    }))
+  }
 }
 
 function sanitizeAccountCredentialsByKeys(

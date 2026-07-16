@@ -21,6 +21,7 @@ import {
   accountDiagnosticRetryTimeoutMs,
   diagnosticAccountTestGatewaySettingsOverride
 } from '../../accounts/account-diagnostic-retry-policy.js'
+import { automaticAccountProbeOutcome } from '../../accounts/automatic-account-probe-outcome.js'
 import { accountSummaryFromGatewayPrecheckAccount } from './account-precheck-summary.mapper.js'
 import {
   activateLocalAccountRuntimeDegradation,
@@ -717,7 +718,7 @@ async function runGatewayAccountRecoveryProbe(runtimeKey: string): Promise<void>
       rescheduleLatestRecoveryProbeAfterStaleResult(runtimeKey, generation, 'gateway_account_recovery_probe_stale_result_ignored')
       return
     }
-    if (result.success || result.accountFailureEligible === false) {
+    if (result.success) {
       clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
       logger.info({
         event: 'gateway_account_recovery_probe_success',
@@ -851,7 +852,7 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
         logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_recovery_probe_stale_result_ignored')
         return
       }
-      if (result.success || result.accountFailureEligible === false) {
+      if (result.success) {
         const cleared = await clearDistributedRecoveryProbeStateGeneration(runtimeKey, generation)
         if (!cleared) {
           logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_recovery_probe_stale_success_ignored')
@@ -987,7 +988,7 @@ async function runDistributedGatewayAccountPrecheck(
       logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_result_ignored')
       return
     }
-    if (result.success || result.accountFailureEligible === false) {
+    if (result.success) {
       const cleared = await clearDistributedRecoveryProbeStateGeneration(state.runtimeKey, generation)
       if (!cleared) {
         logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_recovery_ignored')
@@ -2041,7 +2042,7 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
         logStalePrecheckResult(runtimeKey, generation, 'gateway_account_precheck_stale_result_ignored')
         return
       }
-      if (result.success || result.accountFailureEligible === false) {
+      if (result.success) {
         clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
         logger.info({
           event: 'gateway_account_precheck_recovered',
@@ -2140,7 +2141,8 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     groupId: state.groupId,
     systemAccountId: state.systemAccountId
   })
-  return await testOpenAIAccount(account, {
+  let upstreamAttemptObserved = false
+  const result = await testOpenAIAccount(account, {
     diagnostics: 'full',
     groupId: state.groupId,
     systemAccountId: state.systemAccountId,
@@ -2148,6 +2150,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     testEndpointMode: account.healthCheckEndpointMode,
     signal,
     disableAccountStateMutation: true,
+    onUpstreamAttempt: () => { upstreamAttemptObserved = true },
     candidateAccount: state.account,
     findAccountForTest: (accountId, access) => requestGatewayDbService({
       type: 'find_account_for_test',
@@ -2164,6 +2167,11 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     }, { timeoutMs: 10_000 }),
     gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(state.settings, timeoutMs)
   })
+  const probeOutcome = automaticAccountProbeOutcome(result, upstreamAttemptObserved)
+  if (probeOutcome === 'probe_task_failure' || result.accountFailureEligible === false) {
+    throw new Error(`自动恢复探针未形成可归因的账户失败: ${probeOutcome}`)
+  }
+  return result
 }
 
 function accountPrecheckFailureReason(result: { statusCode?: number; errorCode?: string; message?: string }): string {

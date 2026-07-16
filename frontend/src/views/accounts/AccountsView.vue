@@ -165,6 +165,7 @@
       v-model:error-policy-rules="accountErrorPolicyRules"
       v-model:response-inspection-rules="accountResponseInspectionRules"
       :account-type-choices="accountTypeChoices"
+      :api-key-runtime-details="accountApiKeyRuntimeDetails"
       :api-key-test-details="apiKeyTestDetails"
       :authorized-editing="editingAuthorizedAccount"
       :auth-loading="authLoading"
@@ -566,6 +567,7 @@ const {
   accountAdvancedDetailLoaded,
   accountAdvancedDetailLoading,
   accountEditDetailLoading,
+  accountApiKeyRuntimeDetails,
   apiKeyTestDetails,
   accountTagOptions,
   accountTagOptionsLoading,

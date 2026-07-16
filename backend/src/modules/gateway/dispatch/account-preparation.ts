@@ -29,7 +29,7 @@ import {
 } from '../usage/records.js'
 import { recordGatewayProxyFailureAsync } from '../runtime/proxy-health.service.js'
 import { requestEndpoint } from '../request/metadata.js'
-import { localAccountApiKeyRuntimeStatesForDispatch } from '../runtime/account-api-key-failure-guard.service.js'
+import { loadGatewayAccountApiKeyTransientStatesForDispatch } from '../runtime/account-api-key-failure-guard.service.js'
 import { extractGatewayJsonBodyMetadata } from '../request/json-metadata-scanner.js'
 import type { UsageServiceTier } from '../usage/service-tier.js'
 import type { UsageReasoningEffort } from '../usage/reasoning-effort.js'
@@ -166,6 +166,7 @@ export async function selectAccountApiKeyForDispatch(
 
   const accountId = account.credentialSourceAccountId ?? account.id
   const credentials = accountApiKeySelectionCredentials(account)
+  const apiKeyEntries = accountApiKeyEntries(credentials)
   const apiKeyPoolIsolationEnabled = isAccountApiKeyPoolIsolationEnabled({
     providerCode: account.providerCode,
     protocolCode: account.protocolCode,
@@ -175,12 +176,17 @@ export async function selectAccountApiKeyForDispatch(
   })
   const fixedFingerprint = account.selectedApiKeyFingerprint?.trim()
   if (fixedFingerprint && apiKeyPoolIsolationEnabled) {
-    const fixed = accountApiKeyEntries(credentials).find((entry) => entry.fingerprint === fixedFingerprint)
+    const fixed = apiKeyEntries.find((entry) => entry.fingerprint === fixedFingerprint)
     if (!fixed) {
       return undefined
     }
     return accountWithSelectedApiKey(account, fixed.key, fixed.fingerprint, fixed.index)
   }
+
+  const transientStates = await loadGatewayAccountApiKeyTransientStatesForDispatch(
+    accountId,
+    apiKeyEntries.map((entry) => entry.fingerprint)
+  )
 
   const selected = await selectAccountRuntimeApiKeyEntryAsync({
     accountId,
@@ -188,7 +194,7 @@ export async function selectAccountApiKeyForDispatch(
     excludeFingerprints: options.excludeFingerprints,
     runtimeStates: [
       ...(account.apiKeyRuntimeStates ?? []),
-      ...localAccountApiKeyRuntimeStatesForDispatch(accountId)
+      ...transientStates
     ]
   })
   if (!selected && apiKeyPoolIsolationEnabled) {

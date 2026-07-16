@@ -10,6 +10,10 @@ import {
   buildAccountSavePayload,
   validateAccountSaveForm
 } from '../../src/views/accounts/accountSavePayload'
+import {
+  createSavedAccountApiKeyRuntimeSnapshot,
+  visibleSavedAccountApiKeyRuntimeDetails
+} from '../../src/views/accounts/accountApiKeyRuntimeDisplay'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
@@ -45,6 +49,33 @@ assert.match(
   /@click="\$emit\('test'\)"/,
   '账户编辑弹窗应保留人工诊断入口'
 )
+
+const savedRuntimeResponse = {
+  accountId: 'account-runtime-display',
+  configRevision: 7,
+  items: [
+    { keyIndex: 0, keyFingerprintPrefix: 'fingerprint-a', keySuffix: 'aaa1', weight: 1, status: 'active' as const, failureCount: 0, consecutiveFailures: 0, successCount: 1 },
+    { keyIndex: 1, keyFingerprintPrefix: 'fingerprint-b', keySuffix: 'bbb2', weight: 1, status: 'temporary_unavailable' as const, failureCount: 2, consecutiveFailures: 2, successCount: 0 }
+  ]
+}
+const savedRuntimeSnapshot = createSavedAccountApiKeyRuntimeSnapshot({
+  accountId: 'account-runtime-display',
+  configRevision: 7,
+  apiKeys: ['sk-saved-a', 'sk-saved-b'],
+  response: savedRuntimeResponse
+})
+assert(savedRuntimeSnapshot, '相同账户和配置版本应接受保存态 Key 运行明细')
+assert.equal(visibleSavedAccountApiKeyRuntimeDetails(savedRuntimeSnapshot, [' sk-saved-a ', 'sk-saved-b'])?.length, 2, '未修改保存 Key 时应展示运行状态')
+assert.equal(visibleSavedAccountApiKeyRuntimeDetails(savedRuntimeSnapshot, ['sk-edited-a', 'sk-saved-b']), undefined, '编辑 Key 后必须隐藏旧运行状态')
+assert.equal(visibleSavedAccountApiKeyRuntimeDetails(savedRuntimeSnapshot, ['sk-saved-a', '', 'sk-saved-b']), undefined, '新增 Key 输入行后必须隐藏旧运行状态')
+assert.equal(visibleSavedAccountApiKeyRuntimeDetails(savedRuntimeSnapshot, ['sk-saved-a']), undefined, '删除 Key 后必须隐藏旧运行状态')
+assert.equal(visibleSavedAccountApiKeyRuntimeDetails(savedRuntimeSnapshot, ['sk-saved-b', 'sk-saved-a']), undefined, '重排 Key 后必须隐藏旧运行状态，避免按 keyIndex 错贴')
+assert.equal(createSavedAccountApiKeyRuntimeSnapshot({
+  accountId: 'account-runtime-display',
+  configRevision: 8,
+  apiKeys: ['sk-saved-a', 'sk-saved-b'],
+  response: savedRuntimeResponse
+}), undefined, '配置版本不一致时不得接受并行返回的旧运行状态')
 
 const form = defaultAccountForm('gpt', 'api_key', FALLBACK_PROVIDERS)
 form.name = '检查模型保存回归账户'
