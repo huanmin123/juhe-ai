@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -215,15 +216,28 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 
 func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Context, db *sql.DB, store *postgresstore.Store, id string) {
 	t.Helper()
+	updateCtx, cancelUpdates := context.WithCancel(ctx)
 	firstEntered := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	firstResult := make(chan error, 1)
 	secondResult := make(chan error, 1)
 	secondValidated := make(chan struct{}, 1)
+	var releaseOnce sync.Once
+	releaseFirstLock := func() {
+		releaseOnce.Do(func() { close(releaseFirst) })
+	}
+	var workers sync.WaitGroup
+	defer func() {
+		cancelUpdates()
+		releaseFirstLock()
+		workers.Wait()
+	}()
 	first := port.ManagementCustomProviderModelUpdateInput{ID: id, ProviderCode: "gpt", ActorSystemAccountID: "sys_admin", ActorRole: "admin", Notes: port.ManagementProviderModelOptionalString{Present: true, Value: "first patch"}}
 	second := port.ManagementCustomProviderModelUpdateInput{ID: id, ProviderCode: "gpt", ActorSystemAccountID: "sys_admin", ActorRole: "admin", PricingNotes: port.ManagementProviderModelOptionalString{Present: true, Value: "second patch"}}
+	workers.Add(1)
 	go func() {
-		_, _, err := store.UpdateManagementCustomProviderModel(ctx, first, func(result port.ManagementCustomProviderModelUpdateResult) error {
+		defer workers.Done()
+		_, _, err := store.UpdateManagementCustomProviderModel(updateCtx, first, func(result port.ManagementCustomProviderModelUpdateResult) error {
 			if result.After.Notes != "first patch" {
 				return fmt.Errorf("first candidate notes = %q", result.After.Notes)
 			}
@@ -238,8 +252,10 @@ func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Con
 	case <-time.After(5 * time.Second):
 		t.Fatal("first atomic validation did not acquire row lock")
 	}
+	workers.Add(1)
 	go func() {
-		_, _, err := store.UpdateManagementCustomProviderModel(ctx, second, func(result port.ManagementCustomProviderModelUpdateResult) error {
+		defer workers.Done()
+		_, _, err := store.UpdateManagementCustomProviderModel(updateCtx, second, func(result port.ManagementCustomProviderModelUpdateResult) error {
 			secondValidated <- struct{}{}
 			if result.Before.Notes != "first patch" {
 				return fmt.Errorf("second before notes = %q, want first patch", result.Before.Notes)
@@ -256,7 +272,7 @@ func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Con
 		t.Fatal("second patch validation ran before the observed PostgreSQL lock wait")
 	default:
 	}
-	close(releaseFirst)
+	releaseFirstLock()
 	if err := <-firstResult; err != nil {
 		t.Fatalf("first atomic patch: %v", err)
 	}
