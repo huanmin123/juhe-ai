@@ -35,9 +35,14 @@ assert.deepEqual([merged.userTurnCount, merged.userTurnLimit], [50, 50], '摘要
 
 const apiSource = readFileSync('../frontend/src/api/domains/chat.ts', 'utf8')
 const viewSource = readFileSync('../frontend/src/views/chat/ChatView.vue', 'utf8')
-assert.match(apiSource, /getConversation: \(conversationId: string\).*\/my-chat\/conversations\/\$\{conversationId\}/, '前端必须读取后端已有的单会话权威摘要')
-assert.match(viewSource, /event\.type === 'message\.started'[\s\S]{0,1200}refreshConversationSummary\(requestContext\.conversationId\)/, 'message.started 后必须非阻塞刷新权威标题')
-assert.match(viewSource, /await refreshConversationSummary\(requestContext\.conversationId\)/, '流完成或接受后对账完成时必须再次确认权威摘要')
+assert.match(apiSource, /getConversation: \(conversationId: string\) => unwrap<ChatConversation>\(http\.get\(`\/my-chat\/conversations\/\$\{encodeURIComponent\(conversationId\)\}`\)\)/, '前端必须通过编码后的会话 ID 读取后端单会话权威摘要')
+assert.match(viewSource, /const refreshConversationSummary = createChatConversationSummaryRefresher\(\{\s*load: chatApi\.getConversation,\s*apply:/, '权威摘要刷新器必须接入单会话摘要 API')
+assert.match(viewSource, /chatGenerationRuntime\.subscribe\(conversation\.systemAccountId, conversation\.id, applyRuntimeTurn\)/, '页面必须订阅应用级 runtime，而不是自行持有 message.started 流生命周期')
+const runtimeApplySource = viewSource.slice(viewSource.indexOf('function applyRuntimeTurn'), viewSource.indexOf('async function refreshConversationFromSync'))
+assert.match(runtimeApplySource, /if \(turn\.turnId && active\?\.request\.clientMessageId === turn\.clientMessageId\)[\s\S]{0,900}refreshConversationFromSync\(turn\.conversationId\)[\s\S]{0,220}refreshConversationSummary\(turn\.conversationId\)/, 'runtime 确认 accepted turn 后必须同步消息并非阻塞刷新权威标题与轮次摘要')
+assert.match(runtimeApplySource, /turn\.status === 'completed'[\s\S]{0,700}refreshConversationFromSync\(turn\.conversationId\)[\s\S]{0,220}refreshContextStatus\(turn\.conversationId\)/, 'runtime 终态必须重新同步会话以清除 activeTurn，并刷新上下文状态')
+const submissionOutcomeSource = viewSource.slice(viewSource.indexOf('async function applySubmissionOutcome'), viewSource.indexOf('function enterPendingConfirmation'))
+assert.match(submissionOutcomeSource, /if \(input\.reconciliation\.accepted\) \{\s*try \{ await refreshConversationSummary\(input\.request\.conversationId\) \} catch \{\}/, '流断开后的 accepted 对账结果也必须再次确认权威摘要')
 assert.doesNotMatch(viewSource, /current\.title === '新对话'[\s\S]{0,200}first\.contentText/, '前端不得继续自行推导标题覆盖后端标题来源规则')
 
 console.log('AI 问答替换标题权威刷新与过期响应隔离回归通过')
