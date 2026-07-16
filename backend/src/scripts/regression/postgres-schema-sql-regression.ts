@@ -28,6 +28,22 @@ const usageRecordsCreateSql = statements.find((statement) => statement.schemaNam
 const providerModelCatalogCreateSql = statements.find(
   (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS provider_model_catalog\b/i.test(statement.sql)
 )?.sql ?? ''
+const listBuiltInProviderModelsAsyncStart = providerModelCatalogRepositorySource.indexOf('export async function listBuiltInProviderModelsAsync')
+const listBuiltInProviderModelsAsyncEnd = providerModelCatalogRepositorySource.indexOf(
+  'export async function findBuiltInProviderModelByIdAsync',
+  listBuiltInProviderModelsAsyncStart
+)
+assert.notEqual(listBuiltInProviderModelsAsyncStart, -1, '必须找到 listBuiltInProviderModelsAsync')
+assert.notEqual(listBuiltInProviderModelsAsyncEnd, -1, '必须找到 listBuiltInProviderModelsAsync 的函数边界')
+const listBuiltInProviderModelsAsyncSource = providerModelCatalogRepositorySource.slice(
+  listBuiltInProviderModelsAsyncStart,
+  listBuiltInProviderModelsAsyncEnd
+)
+const listBuiltInProviderModelsAsyncSqlMatch = listBuiltInProviderModelsAsyncSource.match(
+  /const rows = await client\.query<ProviderModelCatalogRow>\(`([\s\S]*?)`, \[providerCodes\]\)/
+)
+assert.ok(listBuiltInProviderModelsAsyncSqlMatch, '必须精确提取 listBuiltInProviderModelsAsync 的 PostgreSQL SQL 模板')
+const listBuiltInProviderModelsAsyncSql = listBuiltInProviderModelsAsyncSqlMatch[1]
 
 assert.ok(statements.length > 100, 'PostgreSQL schema 应从现有 SQLite DDL 收集到完整建表和索引语句')
 assert.deepEqual(
@@ -57,13 +73,14 @@ for (const schemaName of schemaNames) {
 }
 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS system_accounts/, '应包含业务库 schema')
-assert.match(providerModelCatalogCreateSql, /catalog_visible integer NOT NULL DEFAULT 1/, 'Node PG 模型目录可见性字段必须保持 integer')
+assert.match(providerModelCatalogCreateSql, /catalog_visible integer NOT NULL DEFAULT 1(?=\s|,|\)|;|$)/, 'Node PG 模型目录可见性字段必须保持 integer')
+assert.match(listBuiltInProviderModelsAsyncSql, /FROM juhe_business\.provider_model_catalog\b/, '必须提取 Node PG 模型目录查询的目标 SQL 模板')
 assert.match(
-  providerModelCatalogRepositorySource,
-  /FROM juhe_business\.provider_model_catalog[\s\S]+catalog_visible = 1/,
+  listBuiltInProviderModelsAsyncSql,
+  /catalog_visible = 1(?=\s|,|\)|;|$)/,
   'Node PG 模型目录查询必须对 integer 可见性字段使用整数谓词'
 )
-assert.doesNotMatch(providerModelCatalogRepositorySource, /catalog_visible = true/, 'Node PG 模型目录查询不得对 integer 字段使用 boolean 谓词')
+assert.doesNotMatch(listBuiltInProviderModelsAsyncSql, /catalog_visible = true\b/, 'Node PG 模型目录查询不得对 integer 字段使用 boolean 谓词')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS audit_logs/, '应包含数据集库 schema')
 assert.match(sql, /audit_logs[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 审计日志必须包含模型映射可观测字段')
 assert.match(sql, /audit_log_attempts[\s\S]+attempt_model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+attempt_model_mapping_source text[\s\S]+attempt_source_endpoint_family text[\s\S]+attempt_upstream_endpoint_family text/, 'PG 审计尝试表必须包含每次尝试的模型映射可观测字段')
