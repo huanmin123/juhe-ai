@@ -7,6 +7,7 @@ import {
   accountBalanceSnapshotMatchesConfiguration,
   commitAccountBalanceRefreshAsync,
   loadAccountBalanceSnapshotRecordsByAccountIdsAsync,
+  persistAccountBalanceRefreshWithSnapshotAsync,
   replaceAccountBalanceSnapshotIfCurrentAsync
 } from '../../storage/account-balance.repository.js'
 import {
@@ -100,12 +101,12 @@ export async function refreshAccountBalanceCandidate(
         errorMessage: snapshot.errorMessage ?? '当前配置未找到可用余额接口，后台查询已暂停'
       }
       const nextConfig = resolvedBalanceConfig(candidate.config, undefined)
-      await persistBalanceRefreshIfCurrent(candidate, nextConfig, unsupportedSnapshot, null)
+      await persistBalanceRefreshIfCurrent(candidate, nextConfig, unsupportedSnapshot, null, dependencies.mode)
       return unsupportedSnapshot
     }
     const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
     const nextConfig = resolvedBalanceConfig(candidate.config, resolution.preferredBuiltinAdapter)
-    await persistBalanceRefreshIfCurrent(candidate, nextConfig, snapshot, nextRefreshAfter)
+    await persistBalanceRefreshIfCurrent(candidate, nextConfig, snapshot, nextRefreshAfter, dependencies.mode)
     return snapshot
   } catch (error) {
     const completedAt = new Date().toISOString()
@@ -121,11 +122,11 @@ export async function refreshAccountBalanceCandidate(
           ...failedSnapshot,
           status: 'unsupported'
         }
-        await persistBalanceRefreshIfCurrent(candidate, resolvedBalanceConfig(candidate.config, undefined), unsupportedSnapshot, null)
+        await persistBalanceRefreshIfCurrent(candidate, resolvedBalanceConfig(candidate.config, undefined), unsupportedSnapshot, null, dependencies.mode)
         return unsupportedSnapshot
       }
       const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
-      await persistBalanceRefreshIfCurrent(candidate, candidate.config, failedSnapshot, nextRefreshAfter)
+      await persistBalanceRefreshIfCurrent(candidate, candidate.config, failedSnapshot, nextRefreshAfter, dependencies.mode)
       return failedSnapshot
     }
 
@@ -136,7 +137,7 @@ export async function refreshAccountBalanceCandidate(
         errorMessage,
         lastAttemptAt: completedAt
       }
-      await persistBalanceRefreshIfCurrent(candidate, nextConfig, unsupportedSnapshot, null)
+      await persistBalanceRefreshIfCurrent(candidate, nextConfig, unsupportedSnapshot, null, dependencies.mode)
       return unsupportedSnapshot
     }
 
@@ -144,7 +145,7 @@ export async function refreshAccountBalanceCandidate(
     const snapshot = nextTransientFailureSnapshot(previousSnapshot, errorMessage, completedAt)
     const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
     const nextConfig = candidate.config
-    await persistBalanceRefreshIfCurrent(candidate, nextConfig, snapshot, nextRefreshAfter)
+    await persistBalanceRefreshIfCurrent(candidate, nextConfig, snapshot, nextRefreshAfter, dependencies.mode)
     return snapshot
   } finally {
     await releaseBalanceLease(leaseKey, ownerId)
@@ -301,12 +302,28 @@ async function persistBalanceRefreshIfCurrent(
   candidate: AccountBalanceRefreshCandidate,
   nextConfig: AccountBalanceQueryConfig,
   snapshot: AccountBalanceSnapshot,
-  nextRefreshAfter: string | null
+  nextRefreshAfter: string | null,
+  mode: AccountBalanceRefreshMode | undefined
 ): Promise<boolean> {
+  if (runtimeConfig.databaseDriver === 'postgres') {
+    return await persistAccountBalanceRefreshWithSnapshotAsync({
+      accountId: candidate.id,
+      systemAccountId: candidate.systemAccountId,
+      expectedConfigRevision: candidate.configRevision,
+      expectedConfig: candidate.config,
+      expectedNextRefreshAt: mode === 'manual' ? undefined : candidate.nextRefreshAt,
+      expectedUpdatedAt: mode === 'manual' ? undefined : candidate.stateUpdatedAt,
+      nextConfig,
+      nextRefreshAt: nextRefreshAfter,
+      snapshot
+    })
+  }
   const changed = await commitBalanceRefresh({
     accountId: candidate.id,
     expectedConfigRevision: candidate.configRevision,
     expectedConfig: candidate.config,
+    expectedNextRefreshAt: mode === 'manual' ? undefined : candidate.nextRefreshAt,
+    expectedUpdatedAt: mode === 'manual' ? undefined : candidate.stateUpdatedAt,
     nextConfig,
     nextRefreshAt: nextRefreshAfter
   })
@@ -319,7 +336,7 @@ async function persistBalanceRefreshIfCurrent(
     snapshot,
     ...(nextRefreshAfter ? { nextRefreshAfter } : {})
   }
-  if (runtimeConfig.databaseDriver === 'postgres' || !mainDatabaseRuntimeInfo('stats').queryOnly) {
+  if (!mainDatabaseRuntimeInfo('stats').queryOnly) {
     return await replaceAccountBalanceSnapshotIfCurrentAsync(input)
   }
   const result = await requestStatsWriter({ type: 'replace_account_balance_snapshot_if_current', input })

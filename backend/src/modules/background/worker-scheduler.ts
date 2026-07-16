@@ -148,7 +148,6 @@ export class WorkerScheduler {
       state.successCount += 1
       state.lastSuccessAt = new Date().toISOString()
       state.lastError = undefined
-      state.lastErrorAt = undefined
     } catch (error) {
       state.failureCount += 1
       state.lastErrorAt = new Date().toISOString()

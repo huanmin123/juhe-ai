@@ -96,6 +96,8 @@ assert(statsRoutesSource.includes("retryQueueBackgroundJobRow('manual-account-te
 assert(statsRoutesSource.includes("'account-quality-failure-precheck-queue'") && statsRoutesSource.includes('accountQualityFailurePrecheckSnapshot'), '系统指标接口必须保留账号质量失败预检队列运行态')
 assert(dbServiceIpcSource.includes('requestOpsWorkerSnapshot'), 'DB service runtime snapshot 必须请求 ops-worker 快照')
 assert(dbServiceIpcSource.includes('accountApiKeyCooldownRetestQueue: opsWorkerSnapshot.accountApiKeyCooldownRetestQueue'), 'DB service runtime snapshot 必须转发 ops-worker 的 Key 级冷却复测队列')
+assert(dbServiceIpcSource.includes('normalRouteSpeedFirstRecoveryProbeQueue: opsWorkerSnapshot.normalRouteSpeedFirstRecoveryProbeQueue'), 'DB service runtime snapshot 必须转发普通路由速度优先恢复探针队列')
+assert(statsRoutesSource.includes("job.name === 'normal-route-speed-first-recovery-probe'") && statsRoutesSource.includes('opsWorkerSnapshot.normalRouteSpeedFirstRecoveryProbeQueue'), '系统指标接口必须展示普通路由速度优先恢复探针队列')
 assert(dbServiceIpcSource.includes('recordMaintenanceQueue: { ...ingestWorkerSnapshot.recordMaintenanceQueue }'), 'DB service runtime snapshot 必须转发 ingest-worker 数据维护本地队列')
 assert(dbServiceIpcSource.includes('recordMaintenanceQueue: { ...statsWorkerSnapshot.recordMaintenanceQueue }'), 'DB service runtime snapshot 必须转发 stats-worker 数据维护本地队列')
 assert(dbServiceIpcSource.includes("import('../gateway/runtime/high-concurrency-queue.service.js')") && dbServiceIpcSource.includes('highConcurrencyQueues: highConcurrencyQueue.highConcurrencyGroupQueueSnapshot()'), 'server runtime snapshot 必须暴露高并发短队列')
@@ -110,7 +112,7 @@ assert(frontendSystemMetricsSource.includes('filter(isBackgroundTaskRow)') && fr
 assert(!frontendBackgroundJobsSource.includes('队列：') && !frontendBackgroundJobsSource.includes('队列状态') && !frontendBackgroundJobsSource.includes('backgroundJobQueueSummary'), '前端后台任务表不能展示队列摘要，避免把队列误认为任务')
 assert(frontendSystemMetricsSource.includes('<StatsBackgroundQueuesCard') && frontendSystemMetricsSource.includes('buildBackgroundQueueRows(systemMetrics.value)'), '系统指标页必须把后台队列拆到独立列表')
 assert(frontendBackgroundQueuesHelperSource.includes('.flatMap(backgroundQueueRowsFromRuntimeRow)') && frontendBackgroundQueuesHelperSource.includes('row.retryQueue') && frontendBackgroundQueuesHelperSource.includes('row.localQueue'), '后台队列列表必须从 retryQueue 和 localQueue 独立构建')
-for (const columnTitle of ['积压', '活跃', '大小', '已完成', '丢弃', '写入失败', '拒绝/超时/失败', '最老等待', '时间', 'Redis Stream']) {
+for (const columnTitle of ['积压', '活跃', '容量 / 处理', '异常累计', '最老等待', '调度 / 写入', 'Redis Stream']) {
   assert(frontendBackgroundQueuesSource.includes(columnTitle), `后台队列列表必须包含 ${columnTitle} 列`)
 }
 assert(frontendSystemMetricsSource.includes('<a-col :xs="24">\n        <StatsChartCard\n          :title="`进程事件循环延迟'), '系统指标页进程事件循环延迟必须独占整行展示')
@@ -124,8 +126,10 @@ assert(processEventLoopCardIndex >= 0 && processMemoryCardIndex > processEventLo
 assert(!frontendBackgroundJobsSource.includes('展示各后台 worker 内定时任务的最近耗时、失败、跳过和关键本地队列情况。'), '后台任务运行状态不展示说明文案')
 assert(!frontendBackgroundJobsSource.includes('成功 / 失败 / 跳过'), '后台任务表不能把成功、失败、跳过挤在同一列')
 assert(frontendBackgroundJobsSource.includes("{ title: '成功', key: 'successCount'") && frontendBackgroundJobsSource.includes("sorter: sortBackgroundJobNumber('successCount')"), '后台任务成功次数必须单独成列并支持排序')
-assert(frontendBackgroundJobsSource.includes("{ title: '失败', key: 'failureCount'") && frontendBackgroundJobsSource.includes("sorter: sortBackgroundJobNumber('failureCount'), defaultSortOrder: 'descend'"), '后台任务失败次数必须单独成列、支持排序并默认倒序')
+assert(frontendBackgroundJobsSource.includes("{ title: '累计失败（本进程）', key: 'failureCount'") && frontendBackgroundJobsSource.includes("sorter: sortBackgroundJobNumber('failureCount'), defaultSortOrder: 'descend'"), '后台任务失败次数必须明确进程内累计作用域、支持排序并默认倒序')
 assert(frontendBackgroundJobsSource.includes("{ title: '跳过', key: 'skippedCount'") && frontendBackgroundJobsSource.includes("sorter: sortBackgroundJobNumber('skippedCount')"), '后台任务跳过次数必须单独成列并支持排序')
+assert(frontendBackgroundJobsSource.includes("{ title: '最近开始', key: 'lastStartedAt'"), '后台任务必须展示最近开始时间')
+assert(frontendBackgroundJobsSource.includes("{ title: '本进程运行', key: 'runCount'"), '后台任务必须展示本进程运行次数')
 
 assert(processMonitorSource.includes("'ops-worker'"), '事件循环采样必须识别 ops-worker')
 assert(!processMonitorSource.includes("'probe-worker'"), '事件循环采样不应保留 probe-worker')
