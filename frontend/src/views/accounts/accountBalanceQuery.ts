@@ -6,40 +6,56 @@ export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
   tone: 'pending' | 'refreshing' | 'fresh' | 'unlimited' | 'unsupported' | 'failed'
   tooltip?: string
   refreshing: boolean
+  visible: boolean
 } {
-  if (!snapshot) return { text: '待查询', tone: 'pending', tooltip: undefined, refreshing: false }
+  if (!snapshot) return hiddenBalanceDisplay('pending')
   if (snapshot.status === 'failed') {
-    return { text: '查询失败', tone: 'failed', tooltip: snapshot.errorMessage, refreshing: false }
+    return { text: '余额查询失败', tone: 'failed', tooltip: snapshot.errorMessage, refreshing: false, visible: true }
   }
-  if (snapshot.status === 'refreshing') return { text: '查询中', tone: 'refreshing', tooltip: undefined, refreshing: true }
-  const retryTooltip = transientFailureTooltip(snapshot, true)
-  if (snapshot.status === 'unlimited') return { text: '无限', tone: 'unlimited', tooltip: retryTooltip, refreshing: false }
   if (snapshot.status === 'unsupported') {
     return {
-      text: '已暂停',
-      tone: 'unsupported',
-      tooltip: snapshot.errorMessage ?? retryTooltip ?? '当前配置未找到可用余额接口，后台查询已暂停',
-      refreshing: false
+      text: '余额查询失败',
+      tone: 'failed',
+      tooltip: snapshot.errorMessage ?? '当前配置未找到可用余额接口',
+      refreshing: false,
+      visible: true
     }
   }
+  if (snapshot.status === 'refreshing') {
+    const amount = Number(snapshot.remainingUsd)
+    return snapshot.remainingUsd !== undefined && Number.isFinite(amount)
+      ? { text: `$${amount.toFixed(2)}`, tone: 'fresh', tooltip: undefined, refreshing: true, visible: true }
+      : hiddenBalanceDisplay('refreshing', true)
+  }
+  const retryTooltip = transientFailureTooltip(snapshot, true)
+  if (snapshot.status === 'unlimited') return { text: '不限额', tone: 'unlimited', tooltip: retryTooltip, refreshing: false, visible: true }
   if (snapshot.status === 'fresh' && snapshot.remainingUsd !== undefined) {
     const amount = Number(snapshot.remainingUsd)
     return {
-      text: Number.isFinite(amount) ? `$${amount.toFixed(2)}` : '查询失败',
+      text: Number.isFinite(amount) ? `$${amount.toFixed(2)}` : '余额查询失败',
       tone: Number.isFinite(amount) ? 'fresh' : 'failed',
       tooltip: Number.isFinite(amount) ? retryTooltip : '上游返回的余额金额无效',
-      refreshing: false
+      refreshing: false,
+      visible: true
     }
   }
   if (snapshot.status === 'pending' && snapshot.consecutiveTransientFailures) {
     return {
-      text: `待重试（${snapshot.consecutiveTransientFailures}/3）`,
+      text: '',
       tone: 'pending',
       tooltip: snapshot.lastTransientErrorMessage,
-      refreshing: false
+      refreshing: false,
+      visible: false
     }
   }
-  return { text: '待查询', tone: 'pending', tooltip: undefined, refreshing: false }
+  return hiddenBalanceDisplay('pending')
+}
+
+function hiddenBalanceDisplay(
+  tone: 'pending' | 'refreshing',
+  refreshing = false
+): ReturnType<typeof formatAccountBalance> {
+  return { text: '', tone, tooltip: undefined, refreshing, visible: false }
 }
 
 function transientFailureTooltip(snapshot: AccountBalanceSnapshot, preservesResult: boolean): string | undefined {

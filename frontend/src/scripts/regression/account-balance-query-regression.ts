@@ -11,16 +11,25 @@ import { replaceAccountBalanceSnapshot } from '@/views/accounts/accountListMutat
 import type { AccountSummary } from '@/types/domain'
 
 assert.deepEqual(formatAccountBalance({ status: 'fresh', remainingUsd: '7.310000' }), {
-  text: '$7.31', tone: 'fresh', tooltip: undefined, refreshing: false
+  text: '$7.31', tone: 'fresh', tooltip: undefined, refreshing: false, visible: true
 })
 assert.deepEqual(formatAccountBalance({ status: 'failed', remainingUsd: '7.31', errorMessage: '上游超时' }), {
-  text: '查询失败', tone: 'failed', tooltip: '上游超时', refreshing: false
+  text: '余额查询失败', tone: 'failed', tooltip: '上游超时', refreshing: false, visible: true
 })
-assert.equal(formatAccountBalance({ status: 'unlimited' }).text, '无限')
+assert.deepEqual(formatAccountBalance({ status: 'unlimited' }), {
+  text: '不限额', tone: 'unlimited', tooltip: undefined, refreshing: false, visible: true
+})
 assert.deepEqual(formatAccountBalance({ status: 'unsupported', errorMessage: '当前配置未找到可用余额接口' }), {
-  text: '已暂停', tone: 'unsupported', tooltip: '当前配置未找到可用余额接口', refreshing: false
+  text: '余额查询失败', tone: 'failed', tooltip: '当前配置未找到可用余额接口', refreshing: false, visible: true
 })
-assert.equal(formatAccountBalance({ status: 'refreshing' }).refreshing, true)
+assert.deepEqual(formatAccountBalance(undefined), {
+  text: '', tone: 'pending', tooltip: undefined, refreshing: false, visible: false
+})
+assert.equal(formatAccountBalance({ status: 'pending' }).visible, false)
+assert.equal(formatAccountBalance({ status: 'refreshing' }).visible, false)
+assert.deepEqual(formatAccountBalance({ status: 'refreshing', remainingUsd: '3.210000' } as never), {
+  text: '$3.21', tone: 'fresh', tooltip: undefined, refreshing: true, visible: true
+})
 assert.deepEqual(formatAccountBalance({
   status: 'fresh',
   remainingUsd: '7.310000',
@@ -30,17 +39,19 @@ assert.deepEqual(formatAccountBalance({
   text: '$7.31',
   tone: 'fresh',
   tooltip: '刷新暂时失败（1/3）：上游余额查询超时；当前显示上次成功余额',
-  refreshing: false
+  refreshing: false,
+  visible: true
 })
 assert.deepEqual(formatAccountBalance({
   status: 'pending',
   consecutiveTransientFailures: 2,
   lastTransientErrorMessage: '上游暂时不可用'
 } as never), {
-  text: '待重试（2/3）',
+  text: '',
   tone: 'pending',
   tooltip: '上游暂时不可用',
-  refreshing: false
+  refreshing: false,
+  visible: false
 })
 
 const originalAccounts = [
@@ -104,6 +115,8 @@ const accountsApiSource = readFileSync('../frontend/src/api/domains/accounts.ts'
 assert.match(usageCellSource, /ReloadOutlined/, '余额刷新必须使用裸刷新图标')
 assert.match(balanceHelperSource, /查询失败/, '失败状态必须统一显示查询失败')
 assert.match(usageCellSource, /balanceDisplay\.tooltip/, '失败原因必须通过 tooltip 展示')
+assert.match(usageCellSource, /account\.balanceQueryEnabled && balanceDisplay\.visible/, '非最终余额状态必须隐藏整行')
+assert.match(usageCellSource, /v-if="balanceDisplay\.tone !== 'failed'" class="balance-label"/, '余额查询失败不能带“剩余：”前缀')
 assert.match(editSectionSource, /balance-query-header/, '余额查询开关应放在标题行右侧')
 assert.match(editSectionSource, /QuestionCircleOutlined/, '余额查询应提供帮助说明')
 assert.match(apiKeySectionSource, /多 Key 账户不支持余额查询，保存后将自动关闭余额查询/, 'API Key 区域必须明确提示多 Key 自动关闭余额查询')
@@ -126,8 +139,8 @@ assert.match(accountsApiSource, /refreshBalance:\s*\(id: string,\s*params\?:/, '
 const listRefreshSource = /async function refreshAccountBalance[\s\S]*?\n}/.exec(accountsViewSource)?.[0] ?? ''
 assert.match(listRefreshSource, /updateLoadedAccountBalance\(accountId, snapshot\)/, '列表刷新应通过 shallowRef 列表入口替换当前账户行')
 assert.ok(
-  listRefreshSource.indexOf("snapshot?.status === 'failed' || snapshot?.status === 'unsupported'") < listRefreshSource.indexOf('updateLoadedAccountBalance(accountId, snapshot)'),
-  '人工刷新必须先处理失败或不支持结果，不能覆盖当前单元格'
+  listRefreshSource.indexOf('updateLoadedAccountBalance(accountId, snapshot)') < listRefreshSource.indexOf("snapshot?.status === 'failed' || snapshot?.status === 'unsupported'"),
+  '人工刷新失败或不支持时也必须先更新当前行，不能继续展示旧金额'
 )
 assert.doesNotMatch(listRefreshSource, /account\.balanceSnapshot = snapshot/, '列表刷新不能直接修改 shallowRef 内部对象')
 assert.doesNotMatch(listRefreshSource, /refreshData\(/, '列表余额刷新不能重新请求整张账户列表')

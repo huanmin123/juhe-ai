@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { isDeepStrictEqual } from 'node:util'
 
 import { type AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
@@ -24,7 +25,7 @@ import { accountResponseInspectionPolicyValidationMessage, validateAccountCreden
 import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 import { dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 import { accountCredentialFingerprint, credentialsRecordValue, mergeAccountCredentialsForUpdate } from './account-credential-update.js'
-import { normalizeAccountBalanceConfig, validateAccountBalanceCapability } from './account-balance-config.js'
+import { accountBalanceQueryIdentity, normalizeAccountBalanceConfig, validateAccountBalanceCapability } from './account-balance-config.js'
 import {
   loadAccountBalanceConfigurationsByAccountIdsAsync,
 } from '../../storage/account-balance.repository.js'
@@ -410,12 +411,25 @@ accountsRouter.patch('/:id', async (req, res) => {
         account = nextAccount
       }
       const finalBalance = (await loadAccountBalanceConfigurationsByAccountIdsAsync([account.id])).get(account.id)
-      if (
-        requestedBalanceQueryEnabled !== undefined
-        || requestedBalanceQueryConfig !== undefined
-        || balanceDecision.autoDisabledForMultipleApiKeys
-        || (currentBalance?.enabled === true && finalBalance?.enabled === false)
-      ) {
+      const balanceIdentityChanged = !isDeepStrictEqual(
+        accountBalanceQueryIdentity({
+          enabled: currentBalance?.enabled === true,
+          config: currentBalance?.config,
+          providerCode: existingAccount.providerCode,
+          accountType: existingAccount.type,
+          credentials: existingAccount.credentials,
+          proxyProfileId: existingAccount.proxyProfileId
+        }),
+        accountBalanceQueryIdentity({
+          enabled: finalBalance?.enabled === true,
+          config: finalBalance?.config,
+          providerCode: account.providerCode,
+          accountType: account.type,
+          credentials: account.credentials,
+          proxyProfileId: account.proxyProfileId
+        })
+      )
+      if (balanceIdentityChanged) {
         cleanupAccountBalanceSnapshotAfterSave({
           accountId: account.id,
           configRevision: account.configRevision ?? 1,

@@ -1,5 +1,38 @@
 import type { AccountBalanceSnapshot, AccountStatusSnapshotResult, AccountSummary } from '@/types/domain'
 
+export function replaceAccountListRow(
+  accounts: AccountSummary[],
+  updated: AccountSummary
+): AccountSummary[] {
+  const accountIndex = accounts.findIndex((account) => account.id === updated.id)
+  if (accountIndex < 0) return accounts
+
+  const current = accounts[accountIndex]
+  const nextAccounts = [...accounts]
+  nextAccounts[accountIndex] = {
+    ...updated,
+    currentConcurrency: current.currentConcurrency,
+    currentConcurrencyAvailable: current.currentConcurrencyAvailable,
+    accountRuntimeAvailabilityAvailable: current.accountRuntimeAvailabilityAvailable,
+    qualityScore: current.qualityScore,
+    qualityState: current.qualityState,
+    qualityEwmaFirstTokenMs: current.qualityEwmaFirstTokenMs,
+    qualityRecentAvgFirstTokenMs: current.qualityRecentAvgFirstTokenMs,
+    qualityRecentRequestCount: current.qualityRecentRequestCount,
+    qualityRecentErrorCount: current.qualityRecentErrorCount,
+    qualityRecentSuccessRate: current.qualityRecentSuccessRate,
+    qualityLastErrorAt: current.qualityLastErrorAt,
+    qualityLastErrorMessage: current.qualityLastErrorMessage,
+    qualityUpdatedAt: current.qualityUpdatedAt,
+    balanceSnapshot: current.balanceSnapshot,
+    lastUsedAt: current.lastUsedAt,
+    todayUsage: current.todayUsage,
+    usage: current.usage,
+    oauthUsage: current.oauthUsage
+  }
+  return nextAccounts
+}
+
 export function replaceAccountBalanceSnapshot(
   accounts: AccountSummary[],
   accountId: string,

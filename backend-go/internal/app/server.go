@@ -53,6 +53,12 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if cfg.RedisStateURL == "" {
 		return fmt.Errorf("JUHE_AI_REDIS_STATE_URL 不能为空")
 	}
+	if cfg.AuthCaptchaDisabled {
+		logger.Warn("登录验证码已关闭：仅用于测试或临时排障，账号密码、登录限频、会话和权限校验仍然生效",
+			slog.String("event", "auth_captcha_disabled"),
+			slog.String("runtime_environment", strings.TrimSpace(cfg.Env)),
+		)
+	}
 
 	store, err := postgresstore.Open(ctx, cfg.PostgresURL)
 	if err != nil {
@@ -487,7 +493,9 @@ func newManagementAPIHandler(
 	}
 	captchaService := managementauth.NewCaptchaService(stateRedis)
 	loginGuardService := managementauth.NewLoginGuardService(stateRedis)
-	loginService := managementauth.NewLoginService(store, captchaService, loginGuardService)
+	loginService := managementauth.NewLoginServiceWithOptions(managementauth.LoginServiceOptions{
+		Store: store, Captcha: captchaService, Guard: loginGuardService, CaptchaDisabled: cfg.AuthCaptchaDisabled,
+	})
 	profileService := managementauth.NewProfileService(store)
 	passwordService := managementauth.NewPasswordService(store)
 	proxyService := managementproxies.NewServiceWithOptions(managementproxies.ServiceOptions{

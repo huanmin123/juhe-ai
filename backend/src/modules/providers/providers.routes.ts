@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { listProvidersAsync } from '../../storage/repositories.js'
-import { isAdminRole, type ProviderDefinition } from '../../domain/types.js'
+import { isAdminRole, type ProviderDefinition, type ProviderModelPricing } from '../../domain/types.js'
 import {
   listAnthropicProtocolProviderCodesAsync,
   listGeminiProtocolProviderCodesAsync,
@@ -33,7 +33,7 @@ import {
 import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
 import {
   findBuiltInProviderModelByIdAsync,
-  updateBuiltInProviderModelPricesAsync
+  updateBuiltInProviderModelConfigurationAsync
 } from '../../storage/provider-model-catalog.repository.js'
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 
@@ -257,6 +257,17 @@ const customModelSchema = z.object({
 const customModelPatchSchema = customModelSchema.omit({ configurationTemplateId: true }).partial().refine((value) => Object.keys(value).length > 0, {
   message: '请提供要修改的模型内容'
 })
+const builtInModelPatchSchema = customModelSchema.omit({
+  configurationTemplateId: true,
+  scope: true,
+  model: true,
+  status: true,
+  pricingNotes: true,
+  capabilityNotes: true,
+  notes: true
+}).extend({ status: z.enum(['active', 'disabled']).optional() }).partial().refine((value) => Object.keys(value).length > 0, {
+  message: '请提供有效的内置模型配置'
+})
 
 providersRouter.post('/:code/models', async (req, res, next) => {
   try {
@@ -276,10 +287,6 @@ providersRouter.post('/:code/models', async (req, res, next) => {
       return
     }
     const scope = parsed.data.scope ?? 'personal'
-    if (!isAdminRole(context.role) && customInputHasAnyPriceField(req.body)) {
-      res.status(403).json({ message: '只有管理员可以维护模型价格' })
-      return
-    }
     if (scope === 'global' && !isAdminRole(context.role)) {
       res.status(403).json({ message: '只有管理员可以创建全局模型' })
       return
@@ -348,31 +355,30 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         return
       }
       if (!isAdminRole(context.role)) {
-        res.status(403).json({ message: '只有管理员可以维护内置模型价格' })
+        res.status(403).json({ message: '只有管理员可以维护内置模型配置' })
         return
       }
-      const parsedPrice = modelPriceSetSchema.extend({ serviceTierPrices: serviceTierPricesSchema }).partial()
-        .refine((value) => Object.keys(value).length > 0, { message: '请提供要修改的价格' })
-        .safeParse(req.body)
-      if (!parsedPrice.success) {
-        res.status(400).json(badRequest('内置模型只允许修改价格字段'))
+      const parsedConfiguration = builtInModelPatchSchema.safeParse(req.body)
+      if (!parsedConfiguration.success) {
+        res.status(400).json(badRequest('内置模型配置参数无效'))
         return
       }
-      const tierPriceMessage = validateServiceTierPriceKeys(builtIn.mode, builtIn.supportedServiceTiers ?? [], parsedPrice.data.serviceTierPrices)
-      if (tierPriceMessage) {
-        res.status(400).json(badRequest(tierPriceMessage))
+      const next = { ...builtIn, ...parsedConfiguration.data }
+      const capabilityMessage = validateCustomModelCapabilities(builtIn.providerCode, next)
+      if (capabilityMessage) {
+        res.status(400).json(badRequest(capabilityMessage))
         return
       }
-      const saved = await updateBuiltInProviderModelPricesAsync(builtIn.id, parsedPrice.data)
+      const saved = await updateBuiltInProviderModelConfigurationAsync(builtIn.id, parsedConfiguration.data)
       if (!saved) {
         sendNotFound(res, '模型不存在')
         return
       }
       await recordOperationLogAsync({
-        module: 'providers', action: 'update_model_price', operationKey: 'providers.update_model_price',
+        module: 'providers', action: 'update_model_configuration', operationKey: 'providers.update_model_configuration',
         resourceType: 'provider_model', resourceId: saved.id, resourceName: saved.model,
-        summary: `更新模型价格：${saved.model}`, detailLevel: 'full', visibilityScope: 'admin_only',
-        changes: [safeChange('prices', '模型价格', providerModelPriceSnapshot(builtIn), providerModelPriceSnapshot(saved))]
+        summary: `更新模型配置：${saved.model}`, detailLevel: 'full', visibilityScope: 'admin_only',
+        changes: [safeChange('configuration', '模型配置', providerModelConfigurationSnapshot(builtIn), providerModelConfigurationSnapshot(saved))]
       }, req)
       res.json(ok(saved))
       return
@@ -384,10 +390,6 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
     }
     if (!canMutateCustomModel(existing.scope, existing.systemAccountId, context)) {
       res.status(403).json({ message: '无权修改该自定义模型' })
-      return
-    }
-    if (!isAdminRole(context.role) && customInputHasAnyPriceField(req.body)) {
-      res.status(403).json({ message: '只有管理员可以维护模型价格' })
       return
     }
     const parsed = customModelPatchSchema.safeParse(req.body)
@@ -889,15 +891,12 @@ function serviceTierPriceKeys(value: unknown): string[] {
     .filter(Boolean)
 }
 
-function customInputHasAnyPriceField(value: unknown): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  return ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M',
-    'serviceTierPrices', 'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M',
-    'outputUsdPerImage'].some((key) => Object.prototype.hasOwnProperty.call(value, key))
-}
-
-function providerModelPriceSnapshot(value: Pick<ProviderModelCatalogItem, keyof CustomModelPriceFields | 'serviceTierPrices'>): Record<string, unknown> {
+function providerModelConfigurationSnapshot(value: ProviderModelPricing): Record<string, unknown> {
   return {
+    status: value.status, mode: value.mode, supportedApiProtocols: value.supportedApiProtocols,
+    supportedServiceTiers: value.supportedServiceTiers, supportedReasoningEfforts: value.supportedReasoningEfforts,
+    defaultReasoningEffort: value.defaultReasoningEffort, releaseDate: value.releaseDate, shutdownDate: value.shutdownDate,
+    contextWindowTokens: value.contextWindowTokens, maxInputTokens: value.maxInputTokens, maxOutputTokens: value.maxOutputTokens,
     inputUsdPer1M: value.inputUsdPer1M, outputUsdPer1M: value.outputUsdPer1M,
     cachedInputUsdPer1M: value.cachedInputUsdPer1M, cacheWriteUsdPer1M: value.cacheWriteUsdPer1M,
     cacheWrite1hUsdPer1M: value.cacheWrite1hUsdPer1M, serviceTierPrices: value.serviceTierPrices,

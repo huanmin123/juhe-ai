@@ -52,6 +52,7 @@
     "test:authorization-search-scheduler": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/authorization-search-scheduler-regression.ts",
     "test:authorization-user-usage-route-filters": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/authorization-user-usage-route-filters-regression.ts",
     "test:w3-auth-system-account-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/w3-auth-system-account-smoke-regression.ts",
+    "test:login-captcha-mode": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/login-captcha-mode-regression.ts",
     "test:w4-team-authorization-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/w4-team-authorization-smoke-regression.ts",
     "test:plan0081-real-go-management-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/plan0081-real-go-management-smoke-regression.ts",
     "smoke:plan0081-real-go-management": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-management-smoke.ts",

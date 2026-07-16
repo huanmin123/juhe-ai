@@ -13,9 +13,20 @@ type ManagementCaptchaIssuer interface {
 	IssueChallenge(ctx context.Context, clientIP string) (managementauth.CaptchaChallenge, error)
 }
 
+type managementCaptchaResponse struct {
+	Required  bool   `json:"required"`
+	CaptchaID string `json:"captchaId,omitempty"`
+	Image     string `json:"image,omitempty"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
+}
+
 func NewManagementCaptchaHandler(issuer ManagementCaptchaIssuer, cfg config.Config) http.Handler {
 	clientIPs := newClientIPResolver(cfg)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if cfg.AuthCaptchaDisabled {
+			writeData(w, http.StatusOK, managementCaptchaResponse{Required: false})
+			return
+		}
 		if issuer == nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
@@ -33,6 +44,11 @@ func NewManagementCaptchaHandler(issuer ManagementCaptchaIssuer, cfg config.Conf
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
-		writeData(w, http.StatusOK, challenge)
+		writeData(w, http.StatusOK, managementCaptchaResponse{
+			Required:  true,
+			CaptchaID: challenge.CaptchaID,
+			Image:     challenge.Image,
+			ExpiresAt: challenge.ExpiresAt,
+		})
 	})
 }

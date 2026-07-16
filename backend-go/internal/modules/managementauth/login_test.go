@@ -80,6 +80,43 @@ func TestLoginServiceSuccessCreatesSessionAndClearsGuard(t *testing.T) {
 	}
 }
 
+func TestLoginServiceSkipsOnlyCaptchaWhenDisabled(t *testing.T) {
+	store := &loginStoreStub{
+		credential:      port.ManagementSystemAccountPasswordCredential{ID: "sys_admin", Username: "admin", Status: "active", PasswordHash: "hash"},
+		credentialFound: true,
+		completeResult: port.ManagementLoginSessionResult{
+			Account:   port.ManagementSystemAccountSummary{ID: "sys_admin", Username: "admin", DisplayName: "管理员", Role: "admin", Status: "active"},
+			SessionID: "sess_fixed", SessionExpiresAt: fixedLoginNow.Add(ManagementSessionTTL),
+		},
+		completeFound: true,
+	}
+	captcha := &loginCaptchaVerifierStub{ok: false}
+	guard := &loginGuardStub{}
+	service := NewLoginServiceWithOptions(LoginServiceOptions{
+		Store: store, Captcha: captcha, Guard: guard, CaptchaDisabled: true,
+		Now:             func() time.Time { return fixedLoginNow },
+		NewSessionToken: func() (string, error) { return "session-token", nil },
+		NewSessionID:    func(time.Time) (string, error) { return "sess_fixed", nil },
+		VerifyPassword:  func(password string, hash string) bool { return password == "secret" && hash == "hash" },
+	})
+
+	result, err := service.Login(context.Background(), LoginInput{Username: "admin", Password: "secret", ClientIP: "203.0.113.10"})
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if captcha.called {
+		t.Fatal("captcha verifier should not be called when disabled")
+	}
+	if result.SessionToken != "session-token" || !guard.successCalled {
+		t.Fatalf("result = %+v, guard = %+v", result, guard)
+	}
+
+	_, err = service.Login(context.Background(), LoginInput{Username: "admin", Password: "wrong", ClientIP: "203.0.113.10"})
+	if !errors.Is(err, ErrLoginCredentialsInvalid) {
+		t.Fatalf("wrong password error = %v, want credentials invalid", err)
+	}
+}
+
 func TestLoginServiceDoesNotClearGuardWhenSessionIsNotCompleted(t *testing.T) {
 	store := &loginStoreStub{
 		credential: port.ManagementSystemAccountPasswordCredential{

@@ -10,12 +10,6 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
-let modelCatalogPriceAdminCookie = ''
-const customModelPriceFields = new Set([
-  'inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M',
-  'serviceTierPrices', 'imageInputUsdPer1M', 'imageOutputUsdPer1M', 'audioInputUsdPer1M', 'audioOutputUsdPer1M',
-  'outputUsdPerImage'
-])
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-catalog-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -872,6 +866,37 @@ try {
   assert.equal(partialPatchSaved.outputUsdPer1M, partialPatchTarget.outputUsdPer1M, '部分价格 PATCH 不得清空未提交的输出价格')
   assert.deepEqual(partialPatchSaved.serviceTierPrices, partialPatchTarget.serviceTierPrices, '部分价格 PATCH 不得清空未提交的档位价格')
 
+  const fullConfigurationSaved = await providerModelCatalogRepository.updateBuiltInProviderModelConfigurationAsync(partialPatchTarget.id, {
+    status: 'disabled',
+    mode: 'text',
+    supportedApiProtocols: ['responses', 'chat_completions'],
+    supportedServiceTiers: ['priority'],
+    supportedReasoningEfforts: ['low', 'high'],
+    defaultReasoningEffort: 'high',
+    releaseDate: '2026-07-16',
+    shutdownDate: null,
+    contextWindowTokens: 1_050_000,
+    maxInputTokens: 922_000,
+    maxOutputTokens: 128_000
+  })
+  assert.equal(fullConfigurationSaved?.status, 'disabled', '内置模型应能编辑状态')
+  assert.deepEqual(fullConfigurationSaved?.supportedServiceTiers, ['priority'], '内置模型应能编辑服务等级')
+  assert.deepEqual(fullConfigurationSaved?.supportedReasoningEfforts, ['low', 'high'], '内置模型应能编辑思考级别')
+  assert.equal(fullConfigurationSaved?.cachedInputUsdPer1M, partialPatchSaved.cachedInputUsdPer1M, '完整配置 PATCH 不得清空未提交的缓存读价格')
+  await providerModelCatalogRepository.updateBuiltInProviderModelConfigurationAsync(partialPatchTarget.id, {
+    status: partialPatchTarget.status,
+    mode: partialPatchTarget.mode === 'image' || partialPatchTarget.mode === 'audio' ? partialPatchTarget.mode : 'text',
+    supportedApiProtocols: partialPatchTarget.supportedApiProtocols ?? [],
+    supportedServiceTiers: partialPatchTarget.supportedServiceTiers ?? [],
+    supportedReasoningEfforts: partialPatchTarget.supportedReasoningEfforts ?? [],
+    defaultReasoningEffort: partialPatchTarget.defaultReasoningEffort ?? null,
+    releaseDate: partialPatchTarget.releaseDate ?? null,
+    shutdownDate: partialPatchTarget.shutdownDate ?? null,
+    contextWindowTokens: partialPatchTarget.contextWindowTokens ?? null,
+    maxInputTokens: partialPatchTarget.maxInputTokens ?? null,
+    maxOutputTokens: partialPatchTarget.maxOutputTokens ?? null
+  })
+
   const unregisterFailingInvalidator = gatewayCacheInvalidation.registerGatewayRuntimeCacheInvalidator(async () => {
     throw new Error('model catalog invalidation regression sentinel')
   })
@@ -938,7 +963,6 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     mustChangePassword: false
   })
   const adminCookie = sessionCookie(admin.id)
-  modelCatalogPriceAdminCookie = adminCookie
   const userACookie = sessionCookie(userA.id)
   const userBCookie = sessionCookie(userB.id)
 
@@ -1656,29 +1680,12 @@ async function getEnvelope<T>(baseUrl: string, path: string, cookie: string): Pr
 }
 
 async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {
-  let response = await fetch(`${baseUrl}${path}`, {
+  const response = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
     body: JSON.stringify(body)
   })
-  if (response.status === 403 && modelCatalogPriceAdminCookie && customModelBodyHasPrice(body)) {
-    const source = body as Record<string, unknown>
-    const draftBody = Object.fromEntries(Object.entries(source).filter(([key]) => !customModelPriceFields.has(key)))
-    draftBody.status = 'draft'
-    response = await fetch(`${baseUrl}${path}`, {
-      method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(draftBody)
-    })
-    const created = await unwrapEnvelope<{ id: string }>(response, path)
-    return await patchEnvelope<T>(baseUrl, `${path}/${encodeURIComponent(created.id)}`, modelCatalogPriceAdminCookie, {
-      ...source,
-      status: source.status ?? 'active'
-    })
-  }
   return await unwrapEnvelope<T>(response, path)
-}
-
-function customModelBodyHasPrice(value: unknown): boolean {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).some((key) => customModelPriceFields.has(key)))
 }
 
 async function putEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {

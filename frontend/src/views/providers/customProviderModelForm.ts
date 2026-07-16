@@ -211,7 +211,9 @@ export function buildCustomModelCapabilityOptions(
 }
 
 export function canManageModelPricesForView(isManagementView: boolean, isAdmin: boolean): boolean {
-  return isManagementView && isAdmin
+  void isManagementView
+  void isAdmin
+  return true
 }
 
 export function availableCustomModelModeOptions(providerCode: string, providerModels: ProviderModelPricing[]) {

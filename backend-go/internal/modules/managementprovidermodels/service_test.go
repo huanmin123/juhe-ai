@@ -869,7 +869,7 @@ func TestServiceCreateCustomModelPrioritizesGlobalForbiddenBeforeCapabilityValid
 	}
 }
 
-func TestServiceRejectsOrdinaryUserPriceMutations(t *testing.T) {
+func TestServiceAllowsOrdinaryUserToMaintainOwnPersonalModelPrices(t *testing.T) {
 	price := 1.25
 	store := &providerModelStoreStub{
 		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
@@ -879,22 +879,20 @@ func TestServiceRejectsOrdinaryUserPriceMutations(t *testing.T) {
 	}
 	service := NewService(store)
 
-	_, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+	created, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
 		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user",
 		Fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "custom-chat"}, Status: OptionalString{Set: true, Value: "draft"}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price}},
 	})
-	message, ok := CustomModelForbiddenMessage(err)
-	if !ok || message != "只有管理员可以维护模型价格" {
-		t.Fatalf("create price forbidden message = %q, %v; err = %v", message, ok, err)
+	if err != nil || created.InputUSDPer1M == nil || *created.InputUSDPer1M != price {
+		t.Fatalf("created = %+v, err = %v", created, err)
 	}
 
-	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+	updated, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
 		ProviderCode: "gpt", ID: "custom_model_1", ActorSystemAccountID: "sys_user", ActorRole: "user",
-		Fields: CustomModelMutation{ServiceTierPrices: OptionalProviderModelPriceMap{Set: true, Value: map[string]port.ManagementProviderModelPriceSet{}}},
+		Fields: CustomModelMutation{InputUSDPer1M: OptionalFloat{Set: true, Value: &price}},
 	})
-	message, ok = CustomModelForbiddenMessage(err)
-	if !ok || message != "只有管理员可以维护模型价格" {
-		t.Fatalf("update price forbidden message = %q, %v; err = %v", message, ok, err)
+	if err != nil || updated.InputUSDPer1M == nil || *updated.InputUSDPer1M != price {
+		t.Fatalf("updated = %+v, err = %v", updated, err)
 	}
 }
 
@@ -1057,6 +1055,37 @@ func TestServiceUpdateBuiltInModelPricesPreservesPatchPresence(t *testing.T) {
 		t.Fatalf("built-in store input = %+v", store.builtInUpdateInputs)
 	}
 	if result.ID != "provider_model_gpt_real" || result.InputUSDPer1M == nil || *result.InputUSDPer1M != nextInputPrice || result.OutputUSDPer1M == nil || *result.OutputUSDPer1M != outputPrice {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestServiceUpdateBuiltInModelAllowsCompleteCatalogConfiguration(t *testing.T) {
+	inputPrice := 1.0
+	contextTokens := 1_050_000
+	maxInputTokens := 922_000
+	maxOutputTokens := 128_000
+	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
+		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
+		Mode: "text", SupportedAPIProtocols: []string{"responses"}, InputUSDPer1M: &inputPrice,
+	}}}
+	result, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{
+			Status: OptionalString{Set: true, Value: "disabled"}, Mode: OptionalString{Set: true, Value: "text"},
+			SupportedAPIProtocols:     OptionalStringList{Set: true, Value: []string{"responses", "chat_completions"}},
+			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{"priority"}},
+			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{"low", "high"}},
+			DefaultReasoningEffort:    OptionalString{Set: true, Value: "high"},
+			ReleaseDate:               OptionalString{Set: true, Value: "2026-07-16"}, ShutdownDate: OptionalString{Set: true, Value: ""},
+			ContextWindowTokens: OptionalInt{Set: true, Value: &contextTokens}, MaxInputTokens: OptionalInt{Set: true, Value: &maxInputTokens}, MaxOutputTokens: OptionalInt{Set: true, Value: &maxOutputTokens},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModel() error = %v", err)
+	}
+	if result.Status != "disabled" || !slices.Equal(result.SupportedAPIProtocols, []string{"responses", "chat_completions"}) ||
+		!slices.Equal(result.SupportedServiceTiers, []string{"priority"}) || result.DefaultReasoningEffort != "high" ||
+		result.ContextWindowTokens == nil || *result.ContextWindowTokens != contextTokens || result.MaxInputTokens == nil || *result.MaxInputTokens != maxInputTokens {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -1443,18 +1472,51 @@ func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ co
 	s.builtInUpdateInputs = append(s.builtInUpdateInputs, input)
 	for index := range s.catalog {
 		if s.catalog[index].ID == input.ID && s.catalog[index].ProviderCode == input.ProviderCode {
+			applyBuiltInProviderModelOptionalString(&s.catalog[index].Status, input.Status)
+			applyBuiltInProviderModelOptionalString(&s.catalog[index].Mode, input.Mode)
+			applyBuiltInProviderModelOptionalStringList(&s.catalog[index].SupportedAPIProtocols, input.SupportedAPIProtocols)
+			applyBuiltInProviderModelOptionalStringList(&s.catalog[index].SupportedServiceTiers, input.SupportedServiceTiers)
+			applyBuiltInProviderModelOptionalStringList(&s.catalog[index].SupportedReasoningEfforts, input.SupportedReasoningEfforts)
+			applyBuiltInProviderModelOptionalString(&s.catalog[index].DefaultReasoningEffort, input.DefaultReasoningEffort)
+			applyBuiltInProviderModelOptionalString(&s.catalog[index].ReleaseDate, input.ReleaseDate)
+			applyBuiltInProviderModelOptionalString(&s.catalog[index].ShutdownDate, input.ShutdownDate)
+			applyBuiltInProviderModelOptionalInt(&s.catalog[index].ContextWindowTokens, input.ContextWindowTokens)
+			applyBuiltInProviderModelOptionalInt(&s.catalog[index].MaxInputTokens, input.MaxInputTokens)
+			applyBuiltInProviderModelOptionalInt(&s.catalog[index].MaxOutputTokens, input.MaxOutputTokens)
 			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].InputUSDPer1M, input.InputUSDPer1M)
 			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].OutputUSDPer1M, input.OutputUSDPer1M)
 			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].CachedInputUSDPer1M, input.CachedInputUSDPer1M)
 			item := s.catalog[index]
 			return port.ManagementBuiltInProviderModelPriceUpdateResult{
 				ID: item.ID, ProviderCode: item.ProviderCode, InputUSDPer1M: item.InputUSDPer1M,
+				Status: item.Status, Mode: item.Mode, SupportedAPIProtocols: append([]string(nil), item.SupportedAPIProtocols...),
+				SupportedServiceTiers: append([]string(nil), item.SupportedServiceTiers...), SupportedReasoningEfforts: append([]string(nil), item.SupportedReasoningEfforts...),
+				DefaultReasoningEffort: item.DefaultReasoningEffort, ReleaseDate: item.ReleaseDate, ShutdownDate: item.ShutdownDate,
+				ContextWindowTokens: cloneIntPtr(item.ContextWindowTokens), MaxInputTokens: cloneIntPtr(item.MaxInputTokens), MaxOutputTokens: cloneIntPtr(item.MaxOutputTokens),
 				OutputUSDPer1M: item.OutputUSDPer1M, CachedInputUSDPer1M: item.CachedInputUSDPer1M,
 				ServiceTierPrices: cloneProviderModelPriceMap(item.ServiceTierPrices),
 			}, true, nil
 		}
 	}
 	return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, nil
+}
+
+func applyBuiltInProviderModelOptionalString(target *string, input port.ManagementProviderModelOptionalString) {
+	if input.Present {
+		*target = input.Value
+	}
+}
+
+func applyBuiltInProviderModelOptionalStringList(target *[]string, input port.ManagementProviderModelOptionalStringList) {
+	if input.Present {
+		*target = append([]string(nil), input.Value...)
+	}
+}
+
+func applyBuiltInProviderModelOptionalInt(target **int, input port.ManagementProviderModelOptionalInt) {
+	if input.Present {
+		*target = cloneIntPtr(input.Value)
+	}
 }
 
 func applyBuiltInProviderModelOptionalFloat(target **float64, input port.ManagementProviderModelOptionalFloat) {

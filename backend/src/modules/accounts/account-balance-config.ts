@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { createHash } from 'node:crypto'
 
 import type {
   AccountBalanceCustomConfig,
@@ -133,4 +134,40 @@ export function effectiveAccountApiKeys(credentials: Record<string, unknown> | u
   if (keys.size > 0) return [...keys]
   const legacyKey = typeof credentials?.api_key === 'string' ? credentials.api_key.trim() : ''
   return legacyKey ? [legacyKey] : []
+}
+
+export function accountBalanceQueryIdentity(input: {
+  enabled: boolean
+  config?: AccountBalanceQueryConfig
+  providerCode: string
+  accountType: string
+  credentials?: Record<string, unknown>
+  proxyProfileId?: string
+}): Record<string, unknown> {
+  return {
+    enabled: input.enabled,
+    normalizedConfig: input.config ? normalizeAccountBalanceConfig(input.config) : undefined,
+    providerCode: input.providerCode,
+    accountType: input.accountType,
+    effectiveApiKeyFingerprints: effectiveAccountApiKeys(input.credentials).map(balanceApiKeyFingerprint),
+    normalizedBaseUrl: normalizedBalanceBaseUrl(input.credentials?.base_url),
+    proxyProfileId: input.proxyProfileId?.trim() || undefined
+  }
+}
+
+function normalizedBalanceBaseUrl(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text) return ''
+  try {
+    const url = new URL(text)
+    url.hash = ''
+    url.search = ''
+    return url.toString().replace(/\/+$/, '')
+  } catch {
+    return text.replace(/\/+$/, '')
+  }
+}
+
+function balanceApiKeyFingerprint(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
 }

@@ -34,7 +34,7 @@ export async function loadCaptcha(): Promise<CaptchaChallengeSummary> {
   return api.auth.captcha()
 }
 
-export async function login(payload: { username: string; password: string; captchaId: string; captchaCode: string }): Promise<CurrentUserSummary> {
+export async function login(payload: { username: string; password: string; captchaId?: string; captchaCode?: string }): Promise<CurrentUserSummary> {
   currentUser.value = await api.auth.login(payload)
   authChecked.value = true
   return currentUser.value

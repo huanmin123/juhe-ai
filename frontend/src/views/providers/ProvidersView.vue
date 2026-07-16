@@ -139,17 +139,16 @@
             <a-input v-model:value="customModelForm.model" :disabled="customModelEditing" placeholder="例如 gpt-5.5-pro" />
           </a-form-item>
           <a-form-item label="状态">
-            <a-select v-model:value="customModelForm.status" :disabled="editingBuiltInModel" :options="customModelStatusOptions" />
+            <a-select v-model:value="customModelForm.status" :options="customModelStatusOptions" />
           </a-form-item>
           <a-form-item label="用途">
-            <a-select v-model:value="customModelForm.mode" :disabled="editingBuiltInModel" :options="customModelModeOptions" @change="handleCustomModelModeChange" />
+            <a-select v-model:value="customModelForm.mode" :options="customModelModeOptions" @change="handleCustomModelModeChange" />
           </a-form-item>
           <a-form-item label="接口协议" class="custom-model-grid-wide">
             <a-select
               v-model:value="customModelForm.supportedApiProtocols"
               mode="multiple"
               :options="customModelApiProtocolOptions"
-              :disabled="editingBuiltInModel"
               placeholder="不确定时可留空"
             />
           </a-form-item>
@@ -159,7 +158,6 @@
                 v-model:value="customModelForm.supportedServiceTiers"
                 mode="multiple"
                 :options="customModelServiceTierOptions"
-                :disabled="editingBuiltInModel"
                 placeholder="未选择时表示不支持账户级服务等级覆盖"
                 @change="handleCustomModelServiceTiersChange"
               />
@@ -169,7 +167,6 @@
                 v-model:value="customModelForm.supportedReasoningEfforts"
                 mode="multiple"
                 :options="customModelReasoningEffortOptions"
-                :disabled="editingBuiltInModel"
                 placeholder="仅配置上游 wire 支持的思考级别"
                 @change="normalizeCustomModelRequestCapabilities(customModelForm)"
               />
@@ -179,25 +176,25 @@
                 v-model:value="customModelForm.defaultReasoningEffort"
                 allow-clear
                 :options="customModelDefaultReasoningEffortOptions"
-                :disabled="editingBuiltInModel || !customModelForm.supportedReasoningEfforts.length"
+                :disabled="!customModelForm.supportedReasoningEfforts.length"
                 placeholder="从已支持的思考级别中选择"
               />
             </a-form-item>
           </template>
           <a-form-item label="发布时间">
-            <a-input v-model:value="customModelForm.releaseDate" :disabled="editingBuiltInModel" placeholder="YYYY-MM-DD" />
+            <a-input v-model:value="customModelForm.releaseDate" placeholder="YYYY-MM-DD" />
           </a-form-item>
           <a-form-item label="停用时间">
-            <a-input v-model:value="customModelForm.shutdownDate" :disabled="editingBuiltInModel" placeholder="YYYY-MM-DD" />
+            <a-input v-model:value="customModelForm.shutdownDate" placeholder="YYYY-MM-DD" />
           </a-form-item>
           <a-form-item label="上下文 token">
-            <a-input-number v-model:value="customModelForm.contextWindowTokens" :disabled="editingBuiltInModel" :min="0" style="width: 100%" />
+            <a-input-number v-model:value="customModelForm.contextWindowTokens" :min="0" style="width: 100%" />
           </a-form-item>
           <a-form-item label="最大输入 token">
-            <a-input-number v-model:value="customModelForm.maxInputTokens" :disabled="editingBuiltInModel" :min="0" style="width: 100%" />
+            <a-input-number v-model:value="customModelForm.maxInputTokens" :min="0" style="width: 100%" />
           </a-form-item>
           <a-form-item label="最大输出 token">
-            <a-input-number v-model:value="customModelForm.maxOutputTokens" :disabled="editingBuiltInModel" :min="0" style="width: 100%" />
+            <a-input-number v-model:value="customModelForm.maxOutputTokens" :min="0" style="width: 100%" />
           </a-form-item>
           <template v-if="canManageModelPrices">
           <template v-if="customModelPricingCategory === 'text'">
@@ -375,7 +372,7 @@ const modelColumns = computed(() => buildProviderModelColumns(selectedModelCateg
 
 const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.value.name} 模型目录` : '模型目录')
 const activeProviderDefaultHealthCheckModel = computed(() => activeProvider.value?.defaultHealthCheckModel ?? '')
-const customModelModalTitle = computed(() => editingBuiltInModel.value ? '编辑模型价格' : customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
+const customModelModalTitle = computed(() => editingBuiltInModel.value ? '编辑内置模型' : customModelEditing.value ? '编辑自定义模型' : '新增自定义模型')
 const customModelPricingCategory = computed<ModelCategoryKey>(() => categoryFromModeOrModel(customModelForm.mode, customModelForm.model))
 const customModelCategoryRecords = computed(() => providerModels.value.filter((item) => getModelCategory(item) === customModelPricingCategory.value))
 const customModelCapabilityOptions = computed(() => buildCustomModelCapabilityOptions(
@@ -389,7 +386,10 @@ const customModelDefaultReasoningEffortOptions = computed(() => customModelReaso
   customModelForm.supportedReasoningEfforts.includes(option.value)
 )))
 const showCustomModelRequestCapabilities = computed(() => customModelPricingCategory.value === 'text')
-const customModelStatusOptions = computed(() => availableCustomModelStatusOptions(canManageModelPrices.value, editingOriginalStatus.value))
+const customModelStatusOptions = computed(() => {
+  const options = availableCustomModelStatusOptions(canManageModelPrices.value, editingOriginalStatus.value)
+  return editingBuiltInModel.value ? options.filter((option) => option.value !== 'draft') : options
+})
 const customModelApiProtocolOptions = computed(() => {
   const supported = new Set(customModelCategoryRecords.value.flatMap((item) => item.supportedApiProtocols ?? []))
   for (const protocol of defaultProtocolsForProviderModelCategory(activeProvider.value ?? undefined, customModelPricingCategory.value)) supported.add(protocol)
@@ -507,10 +507,10 @@ async function saveCustomModel() {
   customModelSaving.value = true
   try {
     if (editingCustomModelId.value) {
-      const payload = editingBuiltInModel.value ? buildBuiltInModelPricePayload() : buildCurrentCustomModelPayload()
+      const payload = editingBuiltInModel.value ? buildBuiltInModelPayload() : buildCurrentCustomModelPayload()
       if (!payload) return
       await api.providers.updateModel(targetProviderCode, editingCustomModelId.value, payload)
-      message.success(editingBuiltInModel.value ? '模型价格已更新' : '自定义模型已更新')
+      message.success(editingBuiltInModel.value ? '内置模型已更新' : '自定义模型已更新')
     } else {
       const payload = buildCurrentCustomModelPayload()
       if (!payload) return
@@ -609,20 +609,14 @@ function buildCurrentCustomModelPayload(): ProviderModelUpsertPayload | undefine
   return payload
 }
 
-function buildBuiltInModelPricePayload(): Partial<ProviderModelUpsertPayload> {
-  return {
-    inputUsdPer1M: customModelForm.inputUsdPer1M ?? null,
-    outputUsdPer1M: customModelForm.outputUsdPer1M ?? null,
-    cachedInputUsdPer1M: customModelForm.cachedInputUsdPer1M ?? null,
-    cacheWriteUsdPer1M: customModelForm.cacheWriteUsdPer1M ?? null,
-    cacheWrite1hUsdPer1M: customModelForm.cacheWrite1hUsdPer1M ?? null,
-    serviceTierPrices: structuredClone(customModelForm.serviceTierPrices),
-    imageInputUsdPer1M: customModelForm.imageInputUsdPer1M ?? null,
-    imageOutputUsdPer1M: customModelForm.imageOutputUsdPer1M ?? null,
-    audioInputUsdPer1M: customModelForm.audioInputUsdPer1M ?? null,
-    audioOutputUsdPer1M: customModelForm.audioOutputUsdPer1M ?? null,
-    outputUsdPerImage: customModelForm.outputUsdPerImage ?? null
-  }
+function buildBuiltInModelPayload(): Partial<ProviderModelUpsertPayload> | undefined {
+  const payload = buildCustomModelUpsertPayload(customModelForm, customModelPricingCategory.value, {
+    includeRequestCapabilities: true,
+    includePrices: true
+  })
+  if (!payload) return undefined
+  const { model: _model, scope: _scope, configurationTemplateId: _configurationTemplateId, ...configuration } = payload
+  return configuration
 }
 
 function ensureServiceTierPriceRows(): void {
@@ -713,7 +707,7 @@ function modelRowActions(record: ProviderModelPricing): RowActionItem[] {
     })
   }
   if (!canMutateModel(record)) return actions
-  actions.push({ key: 'edit', label: record.scope === 'built_in' ? '编辑价格' : '编辑', icon: 'edit', tone: 'info' })
+  actions.push({ key: 'edit', label: record.scope === 'built_in' ? '编辑配置' : '编辑', icon: 'edit', tone: 'info' })
   if (record.scope !== 'built_in') {
     actions.push({ key: 'delete', label: '删除', icon: 'delete', danger: true, confirmTitle: `确认删除模型 ${record.model}？已绑定 AI 账户时需要先从账户支持模型或模型映射中移除。`, confirmOkText: '删除' })
   }

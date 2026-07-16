@@ -37,6 +37,7 @@ type Config struct {
 	PublicAPIEnabled                bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled            bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
 	ManagementAuthSessionsEnabled   bool          `env:"JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED" envDefault:"false"`
+	AuthCaptchaDisabled             bool          `env:"JUHE_AI_AUTH_CAPTCHA_DISABLED" envDefault:"false"`
 	TrustProxy                      string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
 	CookieSecure                    bool          `env:"JUHE_AI_COOKIE_SECURE" envDefault:"false"`
 	CookieSameSite                  string        `env:"JUHE_AI_COOKIE_SAME_SITE" envDefault:"lax"`

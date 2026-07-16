@@ -16,7 +16,7 @@ import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { mergeAccountStatusSnapshot, replaceAccountBalanceSnapshot } from './accountListMutations'
+import { mergeAccountStatusSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
 import { createAccountStatusSnapshotPolling, isAccountStatusSnapshotCurrent } from './accountStatusSnapshotPolling'
 
 interface AccountsPageState {
@@ -240,6 +240,13 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return true
   }
 
+  function updateLoadedAccount(account: AccountSummary): boolean {
+    const nextAccounts = replaceAccountListRow(accounts.value, account)
+    if (nextAccounts === accounts.value) return false
+    accounts.value = nextAccounts
+    return true
+  }
+
   function snapshotPageState(): AccountsPageState {
     return {
       filters: { ...filters, tagIds: [...filters.tagIds], status: [...filters.status] },
@@ -337,6 +344,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     handleSystemAccountFilterChange,
     focusCreatedAccount,
     removeLoadedAccount,
+    updateLoadedAccount,
     updateLoadedAccountBalance,
     resetAccountPagination,
     resetFilters
