@@ -173,13 +173,17 @@ export async function getChatConversationSyncHead(client: DatabaseClient, input:
       SELECT id, message_revision, active_turn_id, active_started_at
       FROM ${chatTable(client, 'chat_conversations')}
       WHERE id = ? AND system_account_id = ?
-    ), visible_messages AS (
-      SELECT id, turn_id, sequence_no, role, status, completed_at, expires_at
-      FROM ${chatTable(client, 'chat_messages')}
-      WHERE conversation_id = ? AND system_account_id = ? AND expires_at > ?
+    ), candidate_messages AS (
+      SELECT message.id, message.turn_id, message.sequence_no, message.role,
+             message.status, message.completed_at, message.expires_at
+      FROM ${chatTable(client, 'chat_messages')} AS message
+      JOIN owned_conversation AS conversation ON conversation.id = message.conversation_id
+      WHERE message.system_account_id = ? AND message.expires_at > ?
+      ORDER BY message.sequence_no DESC
+      LIMIT 16
     ), complete_turns AS (
       SELECT turn_id, MAX(sequence_no) AS latest_sequence_no
-      FROM visible_messages
+      FROM candidate_messages
       GROUP BY turn_id
       HAVING COUNT(*) = 2
         AND SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END) = 1
@@ -193,18 +197,28 @@ export async function getChatConversationSyncHead(client: DatabaseClient, input:
     ), tail_messages AS (
       SELECT message.id, message.turn_id, message.sequence_no, message.role,
              message.status, message.completed_at, message.expires_at
-      FROM visible_messages AS message
+      FROM candidate_messages AS message
       JOIN tail_turn ON tail_turn.turn_id = message.turn_id
     ), active_assistant AS (
       SELECT message.id, message.turn_id
-      FROM visible_messages AS message
-      JOIN owned_conversation AS conversation ON conversation.active_turn_id = message.turn_id
-      WHERE message.role = 'assistant' AND message.status = 'streaming'
+      FROM ${chatTable(client, 'chat_messages')} AS message
+      JOIN owned_conversation AS conversation
+        ON conversation.id = message.conversation_id
+        AND conversation.active_turn_id = message.turn_id
+      WHERE message.system_account_id = ? AND message.expires_at > ?
+        AND message.role = 'assistant' AND message.status = 'streaming'
       LIMIT 1
     )
     SELECT conversation.id AS conversation_id,
            conversation.message_revision,
-           COALESCE((SELECT MAX(sequence_no) FROM visible_messages), 0) AS last_sequence_no,
+           COALESCE((
+             SELECT message.sequence_no
+             FROM ${chatTable(client, 'chat_messages')} AS message
+             WHERE message.conversation_id = conversation.id
+               AND message.system_account_id = ? AND message.expires_at > ?
+             ORDER BY message.sequence_no DESC
+             LIMIT 1
+           ), 0) AS last_sequence_no,
            active.id AS active_assistant_message_id,
            active.turn_id AS active_turn_id,
            conversation.active_started_at,
@@ -219,7 +233,16 @@ export async function getChatConversationSyncHead(client: DatabaseClient, input:
     LEFT JOIN active_assistant AS active ON 1 = 1
     LEFT JOIN tail_messages AS tail ON 1 = 1
     ORDER BY tail.sequence_no ASC
-  `, [input.conversationId, input.systemAccountId, input.conversationId, input.systemAccountId, input.now])
+  `, [
+    input.conversationId,
+    input.systemAccountId,
+    input.systemAccountId,
+    input.now,
+    input.systemAccountId,
+    input.now,
+    input.systemAccountId,
+    input.now
+  ])
   const first = rows[0]
   if (!first) return undefined
   const activeTurnId = nullable(first.active_turn_id)

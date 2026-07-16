@@ -58,10 +58,12 @@ try {
     tail: []
   })
   let syncQueryCount = 0
+  let syncQuerySql = ''
   await getChatConversationSyncHead({
     ...client,
     query: async <T extends object>(sql: string, params?: readonly unknown[]) => {
       syncQueryCount += 1
+      syncQuerySql = sql
       return client.query<T>(sql, params)
     },
     one: async () => { throw new Error('同步 head 不得退化为第二次裸查询') }
@@ -71,6 +73,9 @@ try {
     now: '2026-07-16T00:00:01.000Z'
   })
   assert.equal(syncQueryCount, 1, 'revision、active 和 tail 必须由单条 SQL 的一致快照返回')
+  assert.match(syncQuerySql, /candidate_messages[\s\S]*ORDER BY (?:message\.)?sequence_no DESC[\s\S]*LIMIT 16/i, '同步 tail 候选必须固定为索引尾部 16 条')
+  assert.match(syncQuerySql, /ORDER BY (?:message\.)?sequence_no DESC\s+LIMIT 1\s+\), 0\) AS last_sequence_no/i, 'lastSequenceNo 必须使用索引尾部 DESC LIMIT 1')
+  assert.doesNotMatch(syncQuerySql, /MAX\(sequence_no\)\s+FROM\s+visible_messages|visible_messages[\s\S]*GROUP BY/i, '同步短轮询不得全会话扫描后 GROUP BY/MAX')
 
   const first = await acceptTurn('sync_client_1', '第一问', '2026-07-16T00:01:00.000Z')
   const acceptedHead = await getChatConversationSyncHead(client, {
@@ -222,6 +227,26 @@ try {
     assert.deepEqual(equalKnown.payload.data.activeTurn, replacementHead?.activeTurn, 'knownRevision 相等时仍必须返回 active identity')
     assert.equal(typeof equalKnown.payload.data.serverTime, 'string')
     assertNoMessageBodies(equalKnown.payload.data)
+    const afterResponse = await getJson(`${baseUrl}/conversations/${conversation.id}/messages?afterSequenceNo=${first.assistantMessage.sequenceNo}`, ownerId)
+    assert.equal(afterResponse.response.status, 200)
+    assert.deepEqual(afterResponse.payload.data.map((message: { id: string }) => message.id), [replacement.userMessage.id, replacement.assistantMessage.id])
+    const streamingFromResponse = await getJson(`${baseUrl}/conversations/${conversation.id}/messages?fromSequenceNo=${replacement.assistantMessage.sequenceNo}`, ownerId)
+    assert.deepEqual(streamingFromResponse.payload.data.map((message: { id: string; status: string; contentText: string }) => [message.id, message.status, message.contentText]), [
+      [replacement.assistantMessage.id, 'streaming', '']
+    ])
+    await completeChatTurn(client, {
+      conversationId: conversation.id,
+      systemAccountId: ownerId,
+      turnId: replacement.turnId,
+      assistantContent: '第二答修正正文',
+      finishReason: 'stop',
+      traceId: 'trace_sync_2_replace',
+      now: '2026-07-16T00:05:30.000Z'
+    })
+    const completedFromResponse = await getJson(`${baseUrl}/conversations/${conversation.id}/messages?fromSequenceNo=${replacement.assistantMessage.sequenceNo}`, ownerId)
+    assert.deepEqual(completedFromResponse.payload.data.map((message: { id: string; status: string; contentText: string }) => [message.id, message.status, message.contentText]), [
+      [replacement.assistantMessage.id, 'completed', '第二答修正正文']
+    ], 'HTTP fromSequenceNo 必须用同一消息 ID 刷新 streaming 正文')
     const higherKnown = await getJson(`${baseUrl}/conversations/${conversation.id}/sync?knownRevision=999`, ownerId)
     assert.equal(higherKnown.payload.data.unchanged, false)
     const forbidden = await getJson(`${baseUrl}/conversations/${conversation.id}/sync?knownRevision=0`, otherOwnerId)
@@ -248,6 +273,47 @@ try {
     '最新轮次只剩一条未过期消息时必须整体回退上一完整轮次，不能跨轮拼接 tail'
   )
   assert.equal(incompleteLatestTurnHead?.activeTurn, undefined, 'active assistant 已过期时不能恢复 streaming identity')
+
+  const longConversation = await createChatConversation(client, {
+    id: 'chat_sync_long_conversation',
+    systemAccountId: ownerId,
+    apiKeyId: 'key_sync',
+    apiKeyNameSnapshot: '同步 Key',
+    now: '2026-07-17T00:00:00.000Z',
+    maxConversationsPerUser: 50
+  })
+  let latestLongTurn: Awaited<ReturnType<typeof acceptChatTurn>> | undefined
+  for (let index = 1; index <= 50; index += 1) {
+    const minute = String(index).padStart(2, '0')
+    latestLongTurn = await acceptChatTurn(client, {
+      conversationId: longConversation.id,
+      systemAccountId: ownerId,
+      clientMessageId: `sync_long_client_${index}`,
+      userContent: `长会话第 ${index} 问`,
+      model: 'mock-model',
+      now: `2026-07-17T00:${minute}:00.000Z`,
+      storageQuotaBytes: 64 * 1024 * 1024,
+      retentionDays: 7,
+      maxTurnsPerConversation: 50
+    })
+    await completeChatTurn(client, {
+      conversationId: longConversation.id,
+      systemAccountId: ownerId,
+      turnId: latestLongTurn.turnId,
+      assistantContent: `长会话第 ${index} 答`,
+      finishReason: 'stop',
+      traceId: `trace_sync_long_${index}`,
+      now: `2026-07-17T01:${minute}:00.000Z`
+    })
+  }
+  assert(latestLongTurn)
+  const longHead = await getChatConversationSyncHead(client, {
+    conversationId: longConversation.id,
+    systemAccountId: ownerId,
+    now: '2026-07-17T02:00:00.000Z'
+  })
+  assert.deepEqual(longHead?.tail.map((message) => message.id), [latestLongTurn.userMessage.id, latestLongTurn.assistantMessage.id], '50 轮会话同步仍只能返回索引尾部最新完整轮次')
+  assert.equal(longHead?.lastSequenceNo, 100)
 
   console.log('AI 问答 revision 同步回归通过')
 } finally {
