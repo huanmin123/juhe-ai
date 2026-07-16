@@ -7,6 +7,15 @@ export interface ChatSseResponse {
   end(): void
 }
 
+export function writeChatSseEvent(response: ChatSseResponse, event: string, data: unknown): boolean {
+  if (response.destroyed || response.writableEnded) return false
+  try {
+    return response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+  } catch {
+    return false
+  }
+}
+
 export function createChatSseSubscriber(input: {
   response: ChatSseResponse
   detach(): void
@@ -25,7 +34,7 @@ export function createChatSseSubscriber(input: {
         return false
       }
       try {
-        const writable = input.response.write(`event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`)
+        const writable = writeChatSseEvent(input.response, event.type, event.data)
         if (!writable) {
           detach()
           return false

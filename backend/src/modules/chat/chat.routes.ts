@@ -58,7 +58,7 @@ import { scheduleChatImageObservations, waitForChatImageObservations } from './c
 import { countChatTextTokens } from './chat-token-count.js'
 import { buildChatPromptCacheKey } from './chat-prompt-cache.js'
 import { ChatGenerationRunner, type ChatGenerationSubscriber } from './chat-generation-runner.js'
-import { createChatSseSubscriber } from './chat-sse-subscriber.js'
+import { createChatSseSubscriber, writeChatSseEvent } from './chat-sse-subscriber.js'
 import { chatGenerationRegistry, isActiveChatGeneration, shutdownChatGenerationRegistry } from './chat-generation-runtime.js'
 
 export const chatRouter = Router()
@@ -795,12 +795,9 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     try {
       if (!responseClosed && !req.aborted && !res.destroyed) {
         prepareSseResponse(res)
-        if (writeSse(res, 'message.started', { turnId: accepted.turnId, userMessage: accepted.userMessage, assistantMessage: accepted.assistantMessage })) {
-          subscriber = responseSubscriber(res, identity)
-          if (registry.subscribe(identity, subscriber)) heartbeat = startSubscriberHeartbeat(res, identity, subscriber)
-        } else if (!res.writableEnded) {
-          res.end()
-        }
+        writeChatSseEvent(res, 'message.started', { turnId: accepted.turnId, userMessage: accepted.userMessage, assistantMessage: accepted.assistantMessage })
+        subscriber = responseSubscriber(res, identity)
+        if (registry.subscribe(identity, subscriber)) heartbeat = startSubscriberHeartbeat(res, identity, subscriber)
       }
       await runner.completion
     } finally {
@@ -1123,13 +1120,6 @@ function prepareSseResponse(res: import('express').Response): void {
   res.setHeader('Cache-Control', 'no-cache, no-transform')
   res.setHeader('X-Accel-Buffering', 'no')
   res.flushHeaders()
-}
-function writeSse(res: import('express').Response, event: string, data: unknown): boolean {
-  if (res.writableEnded || res.destroyed) return false
-  try {
-    return res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-  }
-  catch { return false }
 }
 function responseSubscriber(res: import('express').Response, identity: { ownerId: string; conversationId: string; turnId: string }): ChatGenerationSubscriber {
   let subscriber!: ChatGenerationSubscriber

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { ChatGenerationRunner, type ChatGenerationEvent } from '../../modules/chat/chat-generation-runner.js'
 import { ChatGenerationRegistry } from '../../modules/chat/chat-generation-registry.js'
-import { createChatSseSubscriber } from '../../modules/chat/chat-sse-subscriber.js'
+import { createChatSseSubscriber, writeChatSseEvent } from '../../modules/chat/chat-sse-subscriber.js'
 
 const source = readFileSync('src/modules/chat/chat.routes.ts', 'utf8')
 const dbServiceSource = readFileSync('src/db-service.ts', 'utf8')
@@ -10,7 +10,7 @@ assert.match(source, /chatGenerationRegistry/, 'chat 路由必须使用服务端
 assert.match(source, /streams\/:turnId/, '必须提供活动轮次重附着 SSE 路由')
 assert.match(source, /registry\.start\(/, 'accept 成功后必须同步登记 runner')
 assert.doesNotMatch(source, /res\.once\('close'[\s\S]{0,180}controller\.abort\(\)/, 'accept 后 response close 不得 abort 服务端 runner')
-assert.match(source, /return res\.write\(`event:/, 'POST 首个 SSE 写入必须透传 res.write(false)，避免背压后继续发送 snapshot')
+assert.match(source, /writeChatSseEvent\(res, 'message\.started'[\s\S]{0,300}registry\.subscribe\(identity, subscriber\)/, 'POST 必须在 started 背压后仍尝试订阅并发送初始 snapshot')
 assert.match(source, /registry\.start\(runner\)[\s\S]{0,1000}preparationClaim\.controller\.signal\.aborted[\s\S]{0,120}runner\.abort\(\)/, 'accept 窗口取消后必须立即 abort 已登记 runner')
 assert.match(source, /runner\.completion\.finally\(cleanup\)/, 'attach 必须在 runner completion 时兜底清理连接')
 const shutdownSource = dbServiceSource.slice(dbServiceSource.indexOf('async function shutdownDbService'))
@@ -115,4 +115,45 @@ const throwingEndSubscriber = createChatSseSubscriber({
 })
 assert.doesNotThrow(() => assert.equal(throwingEndSubscriber.trySend({ type: 'message.delta', eventVersion: 1, data: {} }), false), '连接 cleanup 失败不能向 runner 传播')
 assert.equal(throwingEndDetached, 1)
+
+const initialBackpressureWrites: string[] = []
+let initialBackpressureDetached = 0
+let initialBackpressureEnded = 0
+const initialBackpressureResponse = {
+  destroyed: false,
+  writableEnded: false,
+  write: (chunk: string) => { initialBackpressureWrites.push(chunk); return false },
+  end: () => { initialBackpressureEnded += 1 }
+}
+assert.equal(writeChatSseEvent(initialBackpressureResponse, 'message.started', { turnId: 'initial-turn' }), false)
+let releaseInitialBackpressure!: () => void
+const initialBackpressureGate = new Promise<void>((resolve) => { releaseInitialBackpressure = resolve })
+const initialBackpressureRunner = new ChatGenerationRunner({
+  identity: { ownerId: 'owner', conversationId: 'initial-backpressure', turnId: 'initial-turn', assistantMessageId: 'assistant' },
+  execute: async ({ publish }) => {
+    await initialBackpressureGate
+    publish('message.delta', { delta: 'after-snapshot' }, { contentTextDelta: 'after-snapshot' })
+    return { status: 'completed', data: {} }
+  }
+})
+const initialBackpressureRegistry = new ChatGenerationRegistry()
+assert.equal(initialBackpressureRegistry.start(initialBackpressureRunner), true)
+let initialBackpressureSubscriber!: ReturnType<typeof createChatSseSubscriber>
+initialBackpressureSubscriber = createChatSseSubscriber({
+  response: initialBackpressureResponse,
+  detach: () => {
+    initialBackpressureDetached += 1
+    initialBackpressureRegistry.unsubscribe(initialBackpressureRunner.identity, initialBackpressureSubscriber)
+  }
+})
+assert.equal(initialBackpressureRegistry.subscribe(initialBackpressureRunner.identity, initialBackpressureSubscriber), false)
+assert.match(initialBackpressureWrites[0] ?? '', /event: message\.started/)
+assert.match(initialBackpressureWrites[1] ?? '', /event: message\.snapshot/)
+assert.equal(initialBackpressureWrites.length, 2, 'started 与 snapshot 各尝试一次后必须停止写入')
+assert.equal(initialBackpressureDetached, 1)
+assert.equal(initialBackpressureEnded, 1)
+releaseInitialBackpressure()
+await initialBackpressureRunner.completion
+assert.equal(initialBackpressureRunner.state, 'completed', '初始连接背压不得中止 runner')
+assert.equal(initialBackpressureWrites.length, 2, 'detach 后不得继续写 delta 或 terminal')
 console.log('chat stream reattach regression contract passed')
