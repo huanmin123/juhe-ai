@@ -129,8 +129,8 @@ func TestRouterExternalIntegrationSourceTokenUpdateChecksAdminBeforeMutationGuar
 	}
 }
 
-func TestRouterExternalIntegrationSourceTokenUpdateGuardMapsOversizedBodyTo413(t *testing.T) {
-	handlerCalls := 0
+func TestRouterExternalIntegrationSourceTokenUpdateGuardEnforcesExactBodyBoundary(t *testing.T) {
+	service := &managementExternalIntegrationSourceTokenUpdateServiceStub{}
 	router := NewRouter(RouterOptions{
 		Config:                      config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 		ManagementAPIAuthMiddleware: func(next http.Handler) http.Handler { return next },
@@ -140,11 +140,9 @@ func TestRouterExternalIntegrationSourceTokenUpdateGuardMapsOversizedBodyTo413(t
 				next.ServeHTTP(w, r)
 			})
 		},
-		ManagementExternalSourceTokenUpdateHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			handlerCalls++
-		}),
+		ManagementExternalSourceTokenUpdateHandler: newManagementExternalIntegrationSourceTokenUpdateHandler(service, managementOperationLogOptions{}),
 	})
-	body := `{"name":"` + strings.Repeat("x", (1<<20)+1) + `"}`
+	body := strings.Repeat("x", managementExternalIntegrationSourceTokenUpdateMaxBodyBytes+1)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPatch, managementExternalIntegrationSourceTokenUpdatePath, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -154,7 +152,7 @@ func TestRouterExternalIntegrationSourceTokenUpdateGuardMapsOversizedBodyTo413(t
 	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), "请求体过大") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if handlerCalls != 0 {
-		t.Fatalf("handler calls=%d", handlerCalls)
+	if service.calls != 0 {
+		t.Fatalf("service calls=%d", service.calls)
 	}
 }
