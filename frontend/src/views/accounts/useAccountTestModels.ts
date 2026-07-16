@@ -1,6 +1,5 @@
 import { ref, type ComputedRef } from 'vue'
 
-import { api } from '@/api/client'
 import type {
   AccountSupportedEndpointMode,
   AccountSummary
@@ -9,9 +8,9 @@ import type {
   AccountTestModelOption,
   AccountTestOptions
 } from '@/api/domains/accounts'
-import { accountOperationScopeParams } from './accountOperationScope'
 import type { AccountTestEndpointMode, AccountTestForm } from './accountTestFlow'
 import { prioritizeAccountTestEndpointModes } from './accountEndpointModes'
+import { loadAccountTestOptionsCached } from './accountTestOptionsCache'
 
 type UseAccountTestModelsInput = {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -35,12 +34,11 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     input.testForm.model = ''
     input.testForm.testEndpointMode = 'account_default'
     try {
-      const response = input.isManagementView.value
-        ? await api.accounts.testOptions(
-          account.id,
-          accountOperationScopeParams(account, input.accountScopeParams.value)
-        )
-        : await api.myAccounts.testOptions(account.id)
+      const response = await loadAccountTestOptionsCached({
+        account,
+        isManagementView: input.isManagementView.value,
+        scopeParams: input.accountScopeParams.value
+      })
       if (!isCurrentModelRequest(requestToken) || response.accountId !== account.id) return undefined
       testModelOptions.value = normalizeModelOptions(response.models)
       const defaultModel = response.defaultModel.trim()

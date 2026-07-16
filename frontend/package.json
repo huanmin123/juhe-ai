@@ -29,6 +29,7 @@
     "test:account-model-mapping-model-options": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-model-mapping-model-options-regression.ts",
     "test:account-test-protocols": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-test-protocols-regression.ts",
     "test:account-test-models": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-test-models-regression.ts",
+    "test:account-test-options-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-test-options-cache-regression.ts",
     "test:account-test-task-polling": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-test-task-polling-regression.ts",
     "test:account-edit-save-flow": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-edit-save-flow-regression.ts",
     "test:route-strategy-group-bindings": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/route-strategy-group-bindings-regression.ts",
