@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -30,12 +31,33 @@ func TestManagementExternalIntegrationSourceTokenUpdateSQLContract(t *testing.T)
 		"token lock": managementExternalIntegrationSourceTokenUpdateTokenLockSQL,
 		"update":     managementExternalIntegrationSourceTokenUpdateSQL,
 	} {
-		for _, forbidden := range []string{"token_hash", "token_secret_encrypted", "SELECT *"} {
-			if strings.Contains(strings.ToLower(sql), forbidden) {
-				t.Fatalf("%s SQL exposes forbidden field %q:\n%s", name, forbidden, sql)
-			}
+		if forbidden, found := managementExternalIntegrationSourceTokenUpdateSQLForbiddenField(sql); found {
+			t.Fatalf("%s SQL exposes forbidden field %q:\n%s", name, forbidden, sql)
 		}
 	}
+}
+
+func TestManagementExternalIntegrationSourceTokenUpdateSQLGateRejectsSelectStarCaseInsensitively(t *testing.T) {
+	for _, sql := range []string{
+		"SELECT * FROM juhe_business.external_integration_source_tokens",
+		"select * from juhe_business.external_integration_source_tokens",
+		"SeLeCt * FrOm juhe_business.external_integration_source_tokens",
+	} {
+		forbidden, found := managementExternalIntegrationSourceTokenUpdateSQLForbiddenField(sql)
+		if !found || forbidden != "select *" {
+			t.Fatalf("SQL gate result for %q = %q/%t, want select */true", sql, forbidden, found)
+		}
+	}
+}
+
+func managementExternalIntegrationSourceTokenUpdateSQLForbiddenField(sql string) (string, bool) {
+	lowerSQL := strings.ToLower(sql)
+	for _, forbidden := range []string{"token_hash", "token_secret_encrypted", "select *"} {
+		if strings.Contains(lowerSQL, forbidden) {
+			return forbidden, true
+		}
+	}
+	return "", false
 }
 
 func TestUpdateManagementExternalIntegrationSourceTokenLocksMergesUpdatesMapsAndValidates(t *testing.T) {
@@ -49,7 +71,7 @@ func TestUpdateManagementExternalIntegrationSourceTokenLocksMergesUpdatesMapsAnd
 		"token_1",
 		"Old Token",
 		"active",
-		`["old:read"]`,
+		`["api_keys:read"]`,
 		&expiresAt,
 		&lastUsedAt,
 		createdAt,
@@ -59,7 +81,7 @@ func TestUpdateManagementExternalIntegrationSourceTokenLocksMergesUpdatesMapsAnd
 	after := before
 	after.Name = "New Token"
 	after.Status = "disabled"
-	after.ScopesJSON = `{"mode":"strict","scopes":["new:write"]}`
+	after.ScopesJSON = `["api_keys:write"]`
 	after.ExpiresAt = pgTimestamptzPtr(&newExpiresAt)
 	after.UpdatedAt = pgTimestamptz(now)
 
@@ -82,7 +104,7 @@ func TestUpdateManagementExternalIntegrationSourceTokenLocksMergesUpdatesMapsAnd
 			HasStatus:    true,
 			Status:       "disabled",
 			HasScopes:    true,
-			ScopesJSON:   `{"mode":"strict","scopes":["new:write"]}`,
+			ScopesJSON:   `["api_keys:write"]`,
 			HasExpiresAt: true,
 			ExpiresAt:    &newExpiresAt,
 			UpdatedAt:    now,
@@ -120,9 +142,19 @@ func TestUpdateManagementExternalIntegrationSourceTokenLocksMergesUpdatesMapsAnd
 	if !reflect.DeepEqual(tx.updateArgs, wantArgs) {
 		t.Fatalf("update args = %#v, want %#v", tx.updateArgs, wantArgs)
 	}
-	if result.BeforeToken.ScopesJSON != `["old:read"]` || result.AfterToken.ScopesJSON != after.ScopesJSON {
+	if result.BeforeToken.ScopesJSON != `["api_keys:read"]` || result.AfterToken.ScopesJSON != `["api_keys:write"]` {
 		t.Fatalf("JSON mapping = before %q after %q", result.BeforeToken.ScopesJSON, result.AfterToken.ScopesJSON)
 	}
+	managementExternalIntegrationSourceTokenUpdateAssertScopesJSONArray(
+		t,
+		result.BeforeToken.ScopesJSON,
+		[]string{"api_keys:read"},
+	)
+	managementExternalIntegrationSourceTokenUpdateAssertScopesJSONArray(
+		t,
+		result.AfterToken.ScopesJSON,
+		[]string{"api_keys:write"},
+	)
 	if result.BeforeToken.ExpiresAt == nil || !result.BeforeToken.ExpiresAt.Equal(expiresAt) ||
 		result.BeforeToken.LastUsedAt == nil || !result.BeforeToken.LastUsedAt.Equal(lastUsedAt) ||
 		result.BeforeToken.RevokedAt != nil || result.AfterToken.RevokedAt != nil {
@@ -335,7 +367,7 @@ func TestUpdateManagementExternalIntegrationSourceTokenPreservesOperationErrorsW
 func TestUpdateManagementExternalIntegrationSourceTokenMappingAndValidationFailuresRollback(t *testing.T) {
 	now := time.Date(2026, 7, 17, 7, 0, 0, 0, time.UTC)
 	valid := managementExternalIntegrationSourceTokenUpdateTestRow(
-		"source_1", "token_1", "Token", "active", `{"nested":[1,true,null]}`,
+		"source_1", "token_1", "Token", "active", `["api_keys:read"]`,
 		nil, nil, now.Add(-time.Hour), now.Add(-time.Minute), nil,
 	)
 	validationErr := errors.New("snapshot invalid")
@@ -606,6 +638,21 @@ func optionalTimeEqual(left *time.Time, right *time.Time) bool {
 		return left == nil && right == nil
 	}
 	return left.Equal(*right)
+}
+
+func managementExternalIntegrationSourceTokenUpdateAssertScopesJSONArray(
+	t *testing.T,
+	raw string,
+	want []string,
+) {
+	t.Helper()
+	var got []string
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("unmarshal scopes JSON array %q: %v", raw, err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scopes JSON array = %#v, want %#v", got, want)
+	}
 }
 
 type managementExternalIntegrationSourceTokenUpdateContextKey struct{}

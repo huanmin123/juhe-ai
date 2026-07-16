@@ -13,6 +13,8 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
+// Go writes for external sources and tokens must lock source before token rows.
+// Traffic cutover must not allow Node and Go to own these mutations concurrently.
 const managementExternalIntegrationSourceTokenUpdateSourceLockSQL = `
 SELECT sources.id
 FROM juhe_business.external_integration_sources AS sources
