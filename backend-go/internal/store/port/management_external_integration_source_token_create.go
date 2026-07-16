@@ -26,8 +26,9 @@ type ManagementExternalIntegrationSourceTokenCreateInput struct {
 }
 
 type ManagementExternalIntegrationSourceTokenCreateResult struct {
-	Source ManagementExternalIntegrationSourceListRow
-	Token  ManagementExternalIntegrationSourcePrimaryTokenRow
+	Source       ManagementExternalIntegrationSourceListRow
+	Tokens       []ManagementExternalIntegrationSourcePrimaryTokenRow
+	CreatedToken ManagementExternalIntegrationSourcePrimaryTokenRow
 }
 
 type ManagementExternalIntegrationSourceTokenCreator interface {

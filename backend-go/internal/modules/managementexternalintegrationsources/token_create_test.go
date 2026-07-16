@@ -59,14 +59,17 @@ func TestTokenCreateServiceAppliesDefaultsAndReturnsMappedRows(t *testing.T) {
 	if result.Source.ID != input.SourceID || result.Source.Name != "映射后的来源" ||
 		result.Source.Status != publicapi.SourceStatusDisabled ||
 		!reflect.DeepEqual(result.Source.Scopes, []string{publicapi.ScopeGroupListRead}) ||
-		result.Source.Notes == nil || *result.Source.Notes != "来源备注" || result.Source.IsBuiltIn {
+		result.Source.Notes == nil || *result.Source.Notes != "来源备注" || result.Source.IsBuiltIn ||
+		result.Source.TokenCount != 2 || result.Source.ActiveTokenCount != 2 ||
+		result.Source.PrimaryToken != nil || len(result.Source.Tokens) != 2 ||
+		result.Source.Tokens[0].ID != "existing_active" || result.Source.Tokens[1].ID != input.TokenID {
 		t.Fatalf("mapped source = %#v", result.Source)
 	}
 }
 
 func TestTokenCreateServiceNormalizesFullInputAndMapsRevokedToken(t *testing.T) {
 	now := time.Date(2026, 7, 16, 16, 0, 0, 123456000, time.FixedZone("UTC+8", 8*60*60))
-	store := &managementExternalIntegrationSourceTokenCreateStoreStub{revokedAtFromInputTime: true}
+	store := &managementExternalIntegrationSourceTokenCreateStoreStub{}
 	service := NewTokenCreateServiceWithOptions(TokenCreateServiceOptions{
 		Store:    store,
 		Secret:   "external-source-token-create-test-secret",
@@ -100,9 +103,38 @@ func TestTokenCreateServiceNormalizesFullInputAndMapsRevokedToken(t *testing.T) 
 		!reflect.DeepEqual(result.Token.Scopes, []string{publicapi.ScopeAPIKeyListRead, publicapi.ScopeGroupListRead}) {
 		t.Fatalf("created full token = %#v", result.Token)
 	}
-	if result.Source.PrimaryToken == nil || result.Source.PrimaryToken.Status != publicapi.TokenStatusRevoked ||
-		result.Source.PrimaryToken.RevokedAt == nil || *result.Source.PrimaryToken.RevokedAt != "2026-07-16T08:00:00.123Z" {
-		t.Fatalf("mapped revoked token = %#v", result.Source.PrimaryToken)
+	if result.Source.TokenCount != 2 || result.Source.ActiveTokenCount != 1 ||
+		result.Source.PrimaryToken != nil || len(result.Source.Tokens) != 2 ||
+		result.Source.Tokens[0].Status != publicapi.TokenStatusActive ||
+		result.Source.Tokens[1].Status != publicapi.TokenStatusRevoked ||
+		result.Source.Tokens[1].RevokedAt != nil {
+		t.Fatalf("mapped revoked source detail = %#v", result.Source)
+	}
+}
+
+func TestTokenCreateServiceReturnsExistingActiveAndNewDisabledTokens(t *testing.T) {
+	store := &managementExternalIntegrationSourceTokenCreateStoreStub{}
+	service := newDeterministicTokenCreateService(store, []string{
+		"juis_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
+
+	result, err := service.Create(context.Background(), TokenCreateInput{
+		SourceID: "source_1",
+		Name:     "停用 Token",
+		Status:   publicapi.TokenStatusDisabled,
+	})
+	if err != nil {
+		t.Fatalf("create disabled external source token: %v", err)
+	}
+	if result.Source.TokenCount != 2 || result.Source.ActiveTokenCount != 1 ||
+		result.Source.PrimaryToken != nil || len(result.Source.Tokens) != 2 ||
+		result.Source.Tokens[0].ID != "existing_active" ||
+		result.Source.Tokens[1].ID != store.inputs[0].TokenID ||
+		result.Source.Tokens[1].Status != publicapi.TokenStatusDisabled {
+		t.Fatalf("mapped disabled source detail = %#v", result.Source)
+	}
+	if result.Token.Token == "" || result.Token.Token != "juis_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("created token plaintext = %q", result.Token.Token)
 	}
 }
 
@@ -268,10 +300,9 @@ func (s tokenCreateCodecStub) EncryptJSON(map[string]any) (string, error) {
 }
 
 type managementExternalIntegrationSourceTokenCreateStoreStub struct {
-	inputs                 []port.ManagementExternalIntegrationSourceTokenCreateInput
-	errors                 []error
-	calls                  int
-	revokedAtFromInputTime bool
+	inputs []port.ManagementExternalIntegrationSourceTokenCreateInput
+	errors []error
+	calls  int
 }
 
 func (s *managementExternalIntegrationSourceTokenCreateStoreStub) CreateManagementExternalIntegrationSourceToken(
@@ -285,10 +316,17 @@ func (s *managementExternalIntegrationSourceTokenCreateStoreStub) CreateManageme
 	}
 	notes := "来源备注"
 	expiresAt := input.CreatedAt.Add(24 * time.Hour)
-	var revokedAt *time.Time
-	if s.revokedAtFromInputTime && input.Status == publicapi.TokenStatusRevoked {
-		value := input.CreatedAt
-		revokedAt = &value
+	createdToken := port.ManagementExternalIntegrationSourcePrimaryTokenRow{
+		SourceRefID: input.SourceID,
+		ID:          input.TokenID,
+		Name:        input.Name,
+		TokenPrefix: input.TokenPrefix,
+		TokenSuffix: input.TokenSuffix,
+		Status:      input.Status,
+		ScopesJSON:  input.ScopesJSON,
+		ExpiresAt:   input.ExpiresAt,
+		CreatedAt:   input.CreatedAt,
+		UpdatedAt:   input.UpdatedAt,
 	}
 	return port.ManagementExternalIntegrationSourceTokenCreateResult{
 		Source: port.ManagementExternalIntegrationSourceListRow{
@@ -302,18 +340,20 @@ func (s *managementExternalIntegrationSourceTokenCreateStoreStub) CreateManageme
 			CreatedAt:      input.CreatedAt.Add(-time.Hour),
 			UpdatedAt:      input.UpdatedAt,
 		},
-		Token: port.ManagementExternalIntegrationSourcePrimaryTokenRow{
-			SourceRefID: input.SourceID,
-			ID:          input.TokenID,
-			Name:        input.Name,
-			TokenPrefix: input.TokenPrefix,
-			TokenSuffix: input.TokenSuffix,
-			Status:      input.Status,
-			ScopesJSON:  input.ScopesJSON,
-			ExpiresAt:   input.ExpiresAt,
-			CreatedAt:   input.CreatedAt,
-			UpdatedAt:   input.UpdatedAt,
-			RevokedAt:   revokedAt,
+		Tokens: []port.ManagementExternalIntegrationSourcePrimaryTokenRow{
+			{
+				SourceRefID: input.SourceID,
+				ID:          "existing_active",
+				Name:        "已有启用 Token",
+				TokenPrefix: "juis_old",
+				TokenSuffix: "existing",
+				Status:      publicapi.TokenStatusActive,
+				ScopesJSON:  `[]`,
+				CreatedAt:   input.CreatedAt.Add(-30 * time.Minute),
+				UpdatedAt:   input.CreatedAt.Add(-30 * time.Minute),
+			},
+			createdToken,
 		},
+		CreatedToken: createdToken,
 	}, nil
 }
