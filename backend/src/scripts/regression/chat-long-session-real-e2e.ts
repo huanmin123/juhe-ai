@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
@@ -30,6 +30,12 @@ import { extractSafeChatStreamFailure, type SafeChatStreamFailure } from './chat
 import { runChatLongSessionTurnAttempts, type ChatLongSessionAttemptMetric } from './chat-long-session-attempts.js'
 import { ChatLongSessionStreamProgress, type ChatLongSessionStreamIdleReason, type ChatLongSessionStreamProgressSnapshot } from './chat-long-session-stream-progress.js'
 import { consumeReaderWithBoundedCancellation } from './chat-long-session-reader.js'
+import {
+  buildChatLongSessionResumePlan,
+  chatLongSessionFixtureHash,
+  chatLongSessionResumeCanonicalHash,
+  type ChatLongSessionResumeMessage
+} from './chat-long-session-checkpoint.js'
 import {
   busyCleanupTargetPath,
   classifyProcessCommand,
@@ -154,6 +160,17 @@ interface AcceptanceSnapshot extends LedgerSnapshot {
   canonicalHash: string
 }
 
+interface ChatLongSessionCheckpoint {
+  schemaVersion: 1
+  fixtureHash: string
+  conversationId: string
+  accountId: string
+  gatewayKeyId: string
+  completedTurns: number
+  canonicalHash: string
+  turnMetrics: TurnMetric[]
+}
+
 async function runLocalPreflight(): Promise<void> {
   const preflightRoot = resolve(tmpdir(), `juhe-ai-chat-preflight-${Date.now()}-${Math.random().toString(16).slice(2)}`)
   const child = spawn('pnpm', ['test:chat-gateway-mock-ai'], {
@@ -184,7 +201,12 @@ async function runLocalPreflight(): Promise<void> {
 }
 
 async function runRealAcceptance(realProbe: boolean): Promise<void> {
-  const tempRoot = resolve(tmpdir(), `juhe-ai-chat-long-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  const configuredResumeRoot = process.env.JUHE_AI_CHAT_REAL_RESUME_ROOT?.trim()
+  const tempRoot = configuredResumeRoot
+    ? resolve(configuredResumeRoot)
+    : resolve(tmpdir(), `juhe-ai-chat-long-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  const resuming = Boolean(configuredResumeRoot)
+  if (resuming && !existsSync(tempRoot)) throw new Error('chat_long_session_resume_root_not_found')
   applyHermeticProcessEnv(tempRoot)
   const { runtimeConfig } = await import('../../config/runtime.js')
   const { logger } = await import('../../shared/logger.js')
@@ -228,7 +250,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
   runtimeConfig.codexContextRoot = join(tempRoot, 'codex-context')
   runtimeConfig.codexContextStateShardRoot = join(tempRoot, 'codex-context', 'state-shards')
   runtimeConfig.chatAssetsRoot = join(tempRoot, 'chat-assets')
-  runtimeConfig.secret = `chat-long-${Date.now()}`
+  runtimeConfig.secret = `chat-long-${hashId(tempRoot)}`
   knownSecrets.push(runtimeConfig.secret)
   runtimeConfig.runtimeMode = 'standalone'
   runtimeConfig.databaseDriver = 'sqlite'
@@ -245,7 +267,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
   runtimeConfig.chat.maxTurnsPerConversation = 50
   runtimeConfig.log.consoleEnabled = false
   runtimeConfig.log.fileEnabled = false
-  mkdirSync(tempRoot, { recursive: true })
+  if (!resuming) mkdirSync(tempRoot, { recursive: true })
   logger.level = 'silent'
 
   const databaseModule = await import('../../storage/database.js')
@@ -255,27 +277,42 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
   const chatRepository = await import('../../storage/chat.repository.js')
   const { compactChatContextOnce } = await import('../../modules/chat/chat-context-compaction.js')
   const access = { systemAccountId: 'sys_admin', role: 'user' as const }
+  const checkpointPath = join(tempRoot, 'chat-long-session.checkpoint.json')
 
   try {
-    const group = repositories.createGroup({ name: '长会话真实验收分组', providerCode: GPT_VENDOR_CODE, enabled: true }, access)
-    const account = repositories.createAccount({
-      providerCode: GPT_VENDOR_CODE,
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '长会话真实验收账户',
-      type: 'api_key',
-      credentials: { api_key: credential.apiKey, base_url: credential.baseUrl },
-      groupId: group.id,
-      supportedModels: credential.models,
-      healthCheckModel: credential.models[0],
-      status: 'active',
-      schedulable: true
-    }, access)
-    assert(repositories.recordAccountHealthCheckSuccess(account.id, { intervalHours: 24, jitterMinutes: 0, failureThreshold: 3, statusCode: 200 }))
-    const gatewayKey = createApiKeyRecordWithRouteStrategy(repositories, {
-      name: '长会话真实验收 Key',
-      groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
-      status: 'active'
-    }, access)
+    const resumedCheckpoint = resuming ? readChatLongSessionCheckpoint(checkpointPath) : undefined
+    if (resumedCheckpoint && resumedCheckpoint.fixtureHash !== chatLongSessionFixtureHash(fixture)) {
+      throw new Error('chat_long_session_resume_fixture_hash_mismatch')
+    }
+    let accountId: string
+    let gatewayKey: NonNullable<ReturnType<typeof repositories.findApiKeySecret>>
+    if (resumedCheckpoint) {
+      accountId = resumedCheckpoint.accountId
+      const existingGatewayKey = repositories.findApiKeySecret(resumedCheckpoint.gatewayKeyId, access)
+      if (!existingGatewayKey) throw new Error('chat_long_session_resume_gateway_key_not_found')
+      gatewayKey = existingGatewayKey
+    } else {
+      const group = repositories.createGroup({ name: '长会话真实验收分组', providerCode: GPT_VENDOR_CODE, enabled: true }, access)
+      const account = repositories.createAccount({
+        providerCode: GPT_VENDOR_CODE,
+        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+        name: '长会话真实验收账户',
+        type: 'api_key',
+        credentials: { api_key: credential.apiKey, base_url: credential.baseUrl },
+        groupId: group.id,
+        supportedModels: credential.models,
+        healthCheckModel: credential.models[0],
+        status: 'active',
+        schedulable: true
+      }, access)
+      accountId = account.id
+      assert(repositories.recordAccountHealthCheckSuccess(account.id, { intervalHours: 24, jitterMinutes: 0, failureThreshold: 3, statusCode: 200 }))
+      gatewayKey = createApiKeyRecordWithRouteStrategy(repositories, {
+        name: '长会话真实验收 Key',
+        groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
+        status: 'active'
+      }, access)
+    }
     assert(gatewayKey.key)
     const session = repositories.createSession(access.systemAccountId, 1)
     knownSecrets.push(gatewayKey.key, session.token)
@@ -302,8 +339,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
       backendProcessTree = mergeTrackedProcesses(backendProcessTree, await captureWindowsProcessTree(backend.pid))
     }
 
-    const created = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
-    const conversationId = created.data.id
+    const conversationId = resumedCheckpoint?.conversationId ?? (await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })).data.id
     const models = (await apiJson<{ data: ChatModelOption[] }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)).data
     assert(models.length > 0, '真实会话没有可用模型')
     const available = models.filter((model) => credential.models.includes(model.id))
@@ -334,10 +370,44 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
     let selectedModel = available[0]
     let reasoning: string | undefined
     let service: string | undefined
-    const turnMetrics: TurnMetric[] = []
-    const assistantResponses: ChatLongSessionResponse[] = []
-    const usageRecords: PersistedUsageMetric[] = []
     const client = createSqliteDatabaseClient(databaseModule.getChatDatabase())
+    const persistedMessages = resumedCheckpoint
+      ? await chatRepository.listChatMessages(client, {
+          conversationId,
+          systemAccountId: access.systemAccountId,
+          limit: 100,
+          now: new Date().toISOString()
+        })
+      : []
+    const resumeMessages: ChatLongSessionResumeMessage[] = persistedMessages.map((message) => ({
+      id: message.id,
+      turnId: message.turnId,
+      sequenceNo: message.sequenceNo,
+      role: message.role,
+      status: message.status,
+      contentText: message.contentText
+    }))
+    const resumePlan = buildChatLongSessionResumePlan(fixture, resumeMessages)
+    if (resumedCheckpoint) {
+      assert.equal(resumedCheckpoint.completedTurns, resumePlan.lastCompletedTurn, '续跑检查点与数据库最后完成轮次不一致')
+      assert.equal(resumedCheckpoint.canonicalHash, chatLongSessionResumeCanonicalHash(resumeMessages, resumePlan.lastCompletedTurn), '续跑检查点 canonical hash 不一致')
+      assert.equal(resumedCheckpoint.turnMetrics.length, resumePlan.lastCompletedTurn, '续跑检查点指标数量不一致')
+    }
+    const turnMetrics: TurnMetric[] = resumedCheckpoint ? [...resumedCheckpoint.turnMetrics] : []
+    const assistantResponses: ChatLongSessionResponse[] = [...resumePlan.completedResponses]
+    const usageRecords: PersistedUsageMetric[] = turnMetrics.map((metric) => metric.usage)
+    if (!resumedCheckpoint) {
+      writeChatLongSessionCheckpoint(checkpointPath, {
+        schemaVersion: 1,
+        fixtureHash: chatLongSessionFixtureHash(fixture),
+        conversationId,
+        accountId,
+        gatewayKeyId: gatewayKey.id,
+        completedTurns: 0,
+        canonicalHash: chatLongSessionResumeCanonicalHash([], 0),
+        turnMetrics: []
+      })
+    }
 
     for (const turn of fixture) {
       runBudget.assertActive(`main_turn_${turn.turn}`)
@@ -354,25 +424,34 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
       if (servicePlan.result === 'applied') service = servicePlan.value
       if (reasoning && !selectedModel.supportedReasoningEfforts.includes(reasoning)) { reasoning = undefined; reasoningPlan = { result: 'skipped', reason: 'capability_unavailable' } }
       if (service && !selectedModel.supportedServiceTiers.includes(service)) { service = undefined; servicePlan = { result: 'skipped', reason: 'capability_unavailable' } }
+      if (turn.turn < resumePlan.nextTurn) continue
+      const initialReplaceTurnId = turn.turn === resumePlan.nextTurn ? resumePlan.replaceTurnId : undefined
+      const clientMessageIdForAttempt = (attempt: number): string => initialReplaceTurnId
+        ? `${mainAttemptClientMessageId(turn.turn, attempt)}-resume`
+        : mainAttemptClientMessageId(turn.turn, attempt)
+      const traceIdForAttempt = (attempt: number): string => initialReplaceTurnId
+        ? `${mainAttemptTraceId(turn.turn, attempt)}-resume`
+        : mainAttemptTraceId(turn.turn, attempt)
       const attemptOutcome = await runChatLongSessionTurnAttempts({
         maxAttempts: 3,
         sleep,
         submit: async ({ attempt, replaceTurnId }) => {
-          const clientMessageId = mainAttemptClientMessageId(turn.turn, attempt)
+          const effectiveReplaceTurnId = replaceTurnId ?? initialReplaceTurnId
+          const clientMessageId = clientMessageIdForAttempt(attempt)
           const streamed = await postChatStreamWithRecovery(baseUrl, cookie, conversationId, {
             clientMessageId,
             content: turn.prompt,
             model: selectedModel.id,
             ...(reasoning ? { reasoningEffort: reasoning } : {}),
             ...(service ? { serviceTier: service } : {}),
-            ...(replaceTurnId ? { replaceTurnId } : {})
-          }, mainAttemptTraceId(turn.turn, attempt), runDeadline)
+            ...(effectiveReplaceTurnId ? { replaceTurnId: effectiveReplaceTurnId } : {})
+          }, traceIdForAttempt(attempt), runDeadline)
           return applyChatLongSessionArtifactQualityGate(turn, streamed)
         },
         resolveAcceptedTurnId: async ({ attempt }) => {
           const submission = await apiJson<{ data: { state: 'not_found' | 'preparing' | 'accepted'; turnId?: string } }>(
             baseUrl,
-            `/__aisys__/api/my-chat/conversations/${conversationId}/submissions/${mainAttemptClientMessageId(turn.turn, attempt)}`,
+            `/__aisys__/api/my-chat/conversations/${conversationId}/submissions/${clientMessageIdForAttempt(attempt)}`,
             cookie
           )
           return submission.data.state === 'accepted' ? submission.data.turnId : undefined
@@ -382,7 +461,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
         throw new Error(`第 ${turn.turn} 轮失败：${attemptOutcome.reason}${formatSafeStreamFailure(attemptOutcome.result.failure)}`)
       }
       const stream = attemptOutcome.result
-      const traceId = mainAttemptTraceId(turn.turn, attemptOutcome.attempts.length)
+      const traceId = traceIdForAttempt(attemptOutcome.attempts.length)
       assert.equal(stream.status, 200, `第 ${turn.turn} 轮 HTTP ${stream.status} ${stream.errorCode ?? ''}`)
       assert.equal(stream.terminalEvent, 'message.completed', `第 ${turn.turn} 轮缺少完成终态${formatSafeStreamFailure(stream.failure)}`)
       assistantResponses.push({ turn: turn.turn, assistantOutput: stream.assistantOutput })
@@ -407,6 +486,29 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
         usage: persistedUsage,
         attempts: attemptOutcome.attempts,
         ...(stream.errorCode ? { errorCode: stream.errorCode } : {})
+      })
+      const checkpointMessages = (await chatRepository.listChatMessages(client, {
+        conversationId,
+        systemAccountId: access.systemAccountId,
+        limit: 100,
+        now: new Date().toISOString()
+      })).map((message) => ({
+        id: message.id,
+        turnId: message.turnId,
+        sequenceNo: message.sequenceNo,
+        role: message.role,
+        status: message.status,
+        contentText: message.contentText
+      }))
+      writeChatLongSessionCheckpoint(checkpointPath, {
+        schemaVersion: 1,
+        fixtureHash: chatLongSessionFixtureHash(fixture),
+        conversationId,
+        accountId,
+        gatewayKeyId: gatewayKey.id,
+        completedTurns: turn.turn,
+        canonicalHash: chatLongSessionResumeCanonicalHash(checkpointMessages, turn.turn),
+        turnMetrics
       })
     }
 
@@ -512,7 +614,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
       generatedAt: new Date().toISOString(),
       mode: 'real',
       fixture: buildSafeFixtureSummary(fixture),
-      entities: { conversationHash: hashId(conversationId), controlledConversationHash: hashId(controlled.conversationId), accountHash: hashId(account.id) },
+      entities: { conversationHash: hashId(conversationId), controlledConversationHash: hashId(controlled.conversationId), accountHash: hashId(accountId) },
       score,
       turns: turnMetrics,
       turn51: { status: turn51.status, errorCode: turn51.errorCode, snapshotStable: true, before: before51 },
@@ -540,7 +642,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
   } catch (error) {
     const message = redactText(error instanceof Error ? error.stack ?? error.message : String(error), knownSecrets, credential.baseUrl)
     const diagnostics = realProbe ? '' : redactText(childDiagnostics, knownSecrets, credential.baseUrl)
-    primaryError = new Error(`${message}${diagnostics ? `\n临时后端诊断（已脱敏）：\n${diagnostics}` : ''}`, {
+    primaryError = new Error(`${message}${diagnostics ? `\n临时后端诊断（已脱敏）：\n${diagnostics}` : ''}\n续跑目录：${tempRoot}`, {
       cause: sanitizeErrorForDiagnostics(error, [...knownSecrets, credential.baseUrl])
     })
   } finally {
@@ -567,7 +669,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
           await assertTrackedProcessIdentitiesStopped(runnerReadWorkerIdentities)
         },
         async () => { databaseModule.closeStorageDatabases() },
-        async () => { if (!keepTemp) await removeTempRoot(tempRoot, [...backendProcessTree, ...runnerReadWorkerIdentities]) }
+        async () => { if (!keepTemp && executionSucceeded) await removeTempRoot(tempRoot, [...backendProcessTree, ...runnerReadWorkerIdentities]) }
       ], [...knownSecrets, credential.baseUrl])
     } finally {
       process.removeListener('SIGINT', handleSigint)
@@ -1419,6 +1521,42 @@ function resolveOutputPath(runHash: string): string {
   if (configured) return isAbsolute(configured) ? configured : resolve(repoRoot, configured)
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
   return resolve(repoRoot, 'reports', `chat-long-session-real-${timestamp}-${runHash}.json`)
+}
+
+function readChatLongSessionCheckpoint(path: string): ChatLongSessionCheckpoint {
+  const size = statSync(path).size
+  if (size <= 0 || size > 1024 * 1024) throw new Error('chat_long_session_resume_checkpoint_size_invalid')
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<ChatLongSessionCheckpoint>
+  if (
+    parsed.schemaVersion !== 1
+    || typeof parsed.fixtureHash !== 'string'
+    || typeof parsed.conversationId !== 'string'
+    || typeof parsed.accountId !== 'string'
+    || typeof parsed.gatewayKeyId !== 'string'
+    || !Number.isSafeInteger(parsed.completedTurns)
+    || Number(parsed.completedTurns) < 0
+    || Number(parsed.completedTurns) > fixture.length
+    || typeof parsed.canonicalHash !== 'string'
+    || !Array.isArray(parsed.turnMetrics)
+  ) throw new Error('chat_long_session_resume_checkpoint_invalid')
+  if (parsed.turnMetrics.length !== parsed.completedTurns) throw new Error('chat_long_session_resume_checkpoint_metric_count_invalid')
+  assertSafeCheckpointPayload(parsed)
+  return parsed as ChatLongSessionCheckpoint
+}
+
+function writeChatLongSessionCheckpoint(path: string, checkpoint: ChatLongSessionCheckpoint): void {
+  assert.equal(checkpoint.turnMetrics.length, checkpoint.completedTurns)
+  assertSafeCheckpointPayload(checkpoint)
+  const nextPath = `${path}.${process.pid}.next`
+  writeFileSync(nextPath, `${JSON.stringify(checkpoint, null, 2)}\n`, { encoding: 'utf8', flag: 'w' })
+  renameSync(nextPath, path)
+}
+
+function assertSafeCheckpointPayload(value: unknown): void {
+  const serialized = JSON.stringify(value)
+  if (/"(?:prompt|assistantOutput|contentText|apiKey|secret|sessionToken)"\s*:/i.test(serialized)) {
+    throw new Error('chat_long_session_checkpoint_contains_sensitive_content')
+  }
 }
 
 function environmentObservation(tempRoot: string, runtimeConfig: RuntimeConfig): Record<string, number> {

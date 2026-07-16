@@ -75,6 +75,8 @@ export function isTransientChatLongSessionFailure(failure: SafeChatStreamFailure
   const code = failure.code.toLowerCase()
   const message = failure.message.trim()
   if (isDeterministicChatLongSessionFailure(code, message)) return false
+  if (code === 'gateway_json_parser_busy' || code === 'gateway_json_parser_failed') return true
+  if (message === '网关请求解析繁忙，请稍后重试') return true
   if (/^(?:service_unavailable|upstream_(?:temporarily_)?unavailable)$/.test(code)) return true
   if (/(?:^|_)(?:429|5\d\d|timeout|timed_out|etimedout|connection|econnreset|econnrefused|econnaborted|enetunreach|epipe)(?:_|$)/.test(code)) return true
   const exactConnectionTermination = /^(?:(?:typeerror|error):\s*)?(?:(?:upstream\s+)?stream\s+)?terminated[.!]?$/i.test(message)

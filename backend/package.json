@@ -428,6 +428,7 @@
     "test:chat-long-session-process-tree": "tsx src/scripts/regression/chat-long-session-process-tree-regression.ts",
     "test:chat-long-session-entry-recovery": "tsx src/scripts/regression/chat-long-session-real-e2e.ts --offline-stream-recovery",
     "test:chat-long-session-module-init": "tsx src/scripts/regression/chat-long-session-real-e2e.ts --module-initialization-check",
+    "test:gateway-json-parser-lifecycle": "tsx src/scripts/regression/gateway-json-parser-lifecycle-regression.ts",
     "test:chat-postgres-redis-smoke": "tsx src/scripts/regression/chat-postgres-redis-smoke.ts",
     "test:chat-smoke-cleanup": "tsx src/scripts/regression/chat-smoke-cleanup-regression.ts",
     "test:real-chat-long-session": "tsx src/scripts/regression/chat-long-session-real-e2e.ts",

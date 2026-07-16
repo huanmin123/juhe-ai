@@ -22,6 +22,7 @@ import { ChatLongSessionRunBudget } from './chat-long-session-budget.js'
 import { listWindowsProcessIdentities, selectTrackedProcessTree, stopTrackedWindowsProcessTree, type TrackedProcessIdentity } from './chat-long-session-process-tree.js'
 import { extractSafeChatStreamFailure } from './chat-long-session-failure.js'
 import { isTransientChatLongSessionFailure, runChatLongSessionTurnAttempts } from './chat-long-session-attempts.js'
+import { buildChatLongSessionResumePlan, chatLongSessionResumeCanonicalHash } from './chat-long-session-checkpoint.js'
 import { loadRuntimeBaseEnv } from '../../config/runtime-base-env.js'
 import { ChatLongSessionStreamProgress } from './chat-long-session-stream-progress.js'
 import { consumeReaderWithBoundedCancellation } from './chat-long-session-reader.js'
@@ -71,6 +72,7 @@ assert.deepEqual(slowProgress.snapshot(400_000, 7), {
 })
 const regressionRoot = dirname(fileURLToPath(import.meta.url))
 const realSource = readFileSync(resolve(regressionRoot, 'chat-long-session-real-e2e.ts'), 'utf8')
+const gatewayBodyMiddlewareSource = readFileSync(resolve(regressionRoot, '../../modules/gateway/request/body-middleware.ts'), 'utf8')
 const realSourceFile = ts.createSourceFile('chat-long-session-real-e2e.ts', realSource, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS)
 const mainEntryStatements = realSourceFile.statements.filter(isAwaitMainStatement)
 assert.equal(mainEntryStatements.length, 1, '真实 runner 顶层必须且只能调用一次 await main()')
@@ -197,6 +199,10 @@ if (deterministicOutcome.status !== 'failed') throw new Error('expected determin
 assert.deepEqual([deterministicOutcome.status, deterministicOutcome.reason, deterministicSubmissions], ['failed', 'deterministic_failure', 1])
 assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'gateway_stream_failed', message: 'unsupported parameter' }), false, '折叠后的 gateway_stream_failed 不能掩盖确定性错误')
 assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'gateway_stream_failed', message: 'upstream temporarily unavailable' }), true)
+assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'gateway_json_parser_busy', message: '网关请求解析繁忙，请稍后重试' }), true, 'JSON 解析 worker 明确过载必须允许有界重试')
+assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'gateway_json_parser_failed', message: '网关请求解析暂时不可用，请稍后重试' }), true, 'JSON 解析 worker 基础设施失败必须允许有界重试')
+assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'gateway_stream_failed', message: '网关请求解析繁忙，请稍后重试' }), true, '流错误折叠后仍须识别精确的 JSON 解析过载提示')
+assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'gateway_stream_failed', message: '网关请求解析暂时不可用，请稍后重试' }), true, '流错误折叠后仍须识别精确的 JSON worker 基础设施失败提示')
 assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'gateway_stream_failed', message: 'maximum 500 tokens' }), false, '裸 5xx 数字不能误判为 HTTP 失败')
 assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'gateway_stream_failed', message: 'unsupported parameter: timeout' }), false, '参数名 timeout 不能误判为超时')
 assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'gateway_stream_failed', message: 'HTTP 503 Service Unavailable' }), true)
@@ -217,6 +223,25 @@ for (const message of [
   assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'gateway_stream_failed', message }), false, `${message} 的确定性业务语义必须优先`)
 }
 assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'invalid_request_error', message: 'stream terminated' }), false, '确定性 code 必须优先于连接终止 message')
+const resumeFixture = fixture.slice(0, 3)
+const resumePlan = buildChatLongSessionResumePlan(resumeFixture, [
+  { id: 'u1', turnId: 't1', sequenceNo: 1, role: 'user', status: 'completed', contentText: resumeFixture[0]!.prompt },
+  { id: 'a1', turnId: 't1', sequenceNo: 2, role: 'assistant', status: 'completed', contentText: 'answer-1' },
+  { id: 'u2', turnId: 't2', sequenceNo: 3, role: 'user', status: 'completed', contentText: resumeFixture[1]!.prompt },
+  { id: 'a2', turnId: 't2', sequenceNo: 4, role: 'assistant', status: 'failed', contentText: '' }
+])
+assert.deepEqual({ lastCompletedTurn: resumePlan.lastCompletedTurn, nextTurn: resumePlan.nextTurn, replaceTurnId: resumePlan.replaceTurnId }, { lastCompletedTurn: 1, nextTurn: 2, replaceTurnId: 't2' })
+assert.deepEqual(resumePlan.completedResponses, [{ turn: 1, assistantOutput: 'answer-1' }])
+const resumeCanonicalHash = chatLongSessionResumeCanonicalHash([
+  { id: 'u1', turnId: 't1', sequenceNo: 1, role: 'user', status: 'completed', contentText: resumeFixture[0]!.prompt },
+  { id: 'a1', turnId: 't1', sequenceNo: 2, role: 'assistant', status: 'completed', contentText: 'answer-1' }
+], 1)
+assert.match(resumeCanonicalHash, /^[a-f0-9]{64}$/)
+assert(!resumeCanonicalHash.includes('answer-1'), '续跑 canonical 只能保存内容哈希')
+assert.throws(() => buildChatLongSessionResumePlan(resumeFixture, [
+  { id: 'u1', turnId: 't1', sequenceNo: 1, role: 'user', status: 'completed', contentText: 'tampered prompt' },
+  { id: 'a1', turnId: 't1', sequenceNo: 2, role: 'assistant', status: 'completed', contentText: 'answer-1' }
+]), /fixture prompt hash mismatch/)
 const artifactQualityFailure = chatLongSessionArtifactQualityFailure({
   responseMode: 'artifact',
   assistantOutput: 'x'.repeat(chatLongSessionArtifactMaxBytes + 1)
@@ -252,6 +277,13 @@ assert(realSource.includes('supportedReasoningEfforts.includes(reasoning)'), '�
 assert(realSource.includes('supportedServiceTiers.includes(service)'), '每轮发送前必须重新校验 service capability')
 assert(realSource.includes("flag: 'wx'"), '真实报告必须 exclusive create，禁止覆盖同名文件')
 assert(realSource.includes('runHash'), '默认报告名必须包含 run hash')
+assert(realSource.includes('JUHE_AI_CHAT_REAL_RESUME_ROOT'), '真实长会话必须支持从显式临时根目录安全续跑')
+assert(realSource.includes('chatLongSessionFixtureHash') && realSource.includes('chatLongSessionResumeCanonicalHash'), '续跑必须校验 fixture hash 与已完成消息 canonical hash')
+assert(realSource.includes('effectiveReplaceTurnId'), '续跑必须原位替换最后一个失败轮，不能重复追加用户轮次')
+assert(realSource.includes('!keepTemp && executionSucceeded'), '失败运行必须保留临时数据库与有界检查点供续跑')
+assert(realSource.includes('assertSafeCheckpointPayload'), '检查点不得写入 prompt、回答或凭据')
+assert(gatewayBodyMiddlewareSource.includes("'gateway_json_parser_busy'"), 'JSON parser queue-full 响应必须保留稳定错误码')
+assert(gatewayBodyMiddlewareSource.includes("'gateway_json_parser_failed'"), 'JSON parser worker failure 响应必须与容量过载区分')
 assert(realSource.includes("child.kill('SIGKILL')"), '非 Windows stop 超时必须升级 SIGKILL')
 assert(realSource.includes('chat_long_session_child_stop_failed'), 'child 未确认退出必须使验收失败')
 assert(realSource.lastIndexOf('console.log(JSON.stringify(completedSummary))') > realSource.lastIndexOf('await removeTempRoot(tempRoot)'), '成功输出必须发生在临时资源清理之后')
@@ -291,7 +323,7 @@ assert((realSource.match(/chatLongSessionArtifactQualityFailure/g)?.length ?? 0)
 assert(realSource.indexOf("assert.equal(stream.terminalEvent, 'message.completed', `真实单轮 probe") < realSource.indexOf('const probeQualityFailure'), 'real probe 必须先确认 completed，再执行 artifact quality gate')
 assert(realSource.includes('maxAttempts: 3') && realSource.includes('sleep,'), '真实 runner 必须保持三次总尝试并注入 budget-aware sleep')
 assert(!realSource.includes('max_output_tokens'), '未确认请求合同前不得自造 max_output_tokens 字段')
-assert(realSource.includes('if (!keepTemp) await removeTempRoot(tempRoot,'), 'KEEP_TEMP=1 成功也必须保留临时目录')
+assert(realSource.includes('if (!keepTemp && executionSucceeded) await removeTempRoot(tempRoot,'), 'KEEP_TEMP=1 成功以及任何失败都必须保留临时目录')
 assert(realSource.includes("process.once('SIGINT'"), '必须注册 SIGINT 有界清理入口')
 assert(realSource.includes("process.once('SIGTERM'"), '必须注册 SIGTERM 有界清理入口')
 assert(realSource.includes('streamDeadline'), '每次 stream 必须接收总预算裁剪后的 deadline')

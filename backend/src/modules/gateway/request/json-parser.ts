@@ -177,7 +177,8 @@ export function isGatewayJsonWorkerQueueFullError(error: unknown): error is Gate
 }
 
 function shouldRunGatewayJsonWorkerInlineForTypeScriptRuntime(): boolean {
-  return false
+  // tsx worker threads do not reliably remap nested .js specifiers to TypeScript sources.
+  return currentModulePath.endsWith('.ts')
 }
 
 function parseGatewayJsonBodyInline(rawBody: Buffer, signal?: AbortSignal): Promise<unknown> {
