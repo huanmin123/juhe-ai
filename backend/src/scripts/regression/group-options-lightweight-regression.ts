@@ -263,11 +263,11 @@ function seedData(): SeedState {
         id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, notes, type, status, credential_mask, credentials_encrypted,
         proxy_profile_id, concurrency_limit, priority, super_priority_enabled,
         fallback_enabled, schedulable, account_expires_at, last_used_at, cooldown_until, last_error_code,
-        last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+        last_error_message, stream_failure_count, stream_failure_window_started_at, health_check_model, health_check_endpoint_mode, created_at, updated_at
       ) VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, NULL, 'api_key', 'active', 'sk-***', '{}',
         NULL, 20, 10, 0,
         0, 1, NULL, NULL, NULL, NULL,
-        NULL, 0, NULL, ?, ?)
+        NULL, 0, NULL, 'gpt-5.5', 'responses_sse', ?, ?)
     `)
     .run(userAccountId, user.id, '分组选项账户种子', now, now)
   databaseModule.getBusinessDatabase()
@@ -276,11 +276,11 @@ function seedData(): SeedState {
         id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, notes, type, status, credential_mask, credentials_encrypted,
         proxy_profile_id, concurrency_limit, priority, super_priority_enabled,
         fallback_enabled, schedulable, account_expires_at, last_used_at, cooldown_until, last_error_code,
-        last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+        last_error_message, stream_failure_count, stream_failure_window_started_at, health_check_model, health_check_endpoint_mode, created_at, updated_at
       ) VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?, NULL, 'api_key', 'active', 'sk-***', '{}',
         NULL, 20, 10, 0,
         0, 1, NULL, NULL, NULL, NULL,
-        NULL, 0, NULL, ?, ?)
+        NULL, 0, NULL, 'gpt-5.5', 'responses_sse', ?, ?)
     `)
     .run(adminAuthorizedAccountId, admin.id, '授权方分组选项账户种子', now, now)
   databaseModule.getBusinessDatabase()

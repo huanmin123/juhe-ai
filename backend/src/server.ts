@@ -5,21 +5,40 @@ import { basename, resolve } from 'node:path'
 import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
-import { startBackgroundWorkerSupervisor } from './modules/background/background-worker-supervisor.js'
+import {
+  startBackgroundWorkerSupervisor,
+  stopBackgroundWorkerSupervisor
+} from './modules/background/background-worker-supervisor.js'
+import { requestIngestWorkerDrainStatus } from './modules/background/background-ipc.js'
+import {
+  getAuditLogServerDispatchPendingCount,
+  waitForAuditLogServerDispatchIdle
+} from './modules/audit-logs/audit-log-queue.service.js'
+import {
+  getAuditLogTransportRuntime,
+  stopAuditLogTransportWorker
+} from './modules/audit-logs/audit-log-transport.service.js'
 import { createDbServiceHttpProxy } from './modules/db-service/db-service-http-proxy.js'
 import { getDbServiceState } from './modules/db-service/db-service-ipc.js'
-import { startDbServiceSupervisor } from './modules/db-service/db-service-supervisor.js'
+import {
+  startDbServiceSupervisor,
+  stopDbServiceSupervisor
+} from './modules/db-service/db-service-supervisor.js'
 import { handleGatewayDbServiceUnavailable, openAIGatewayRouter } from './modules/gateway/routes.js'
+import {
+  getActiveAuditCaptureCount,
+  waitForActiveAuditCapturesIdle
+} from './modules/gateway/audit/capture.service.js'
 import {
   captureGatewayRawBody,
   recordGatewayBodyRejection,
   rejectGatewayRawBodyByContentLength
 } from './modules/gateway/request/body-middleware.js'
-import { gatewayRawBodyHardLimit, type GatewayRawBodyRequest } from './modules/gateway/request/body.js'
+import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes, type GatewayRawBodyRequest } from './modules/gateway/request/body.js'
 import { preResolveGatewayRuntime } from './modules/gateway/request/pre-auth.js'
 import { admitSpeedFirstRequestBody } from './modules/gateway/request/speed-first-body-admission.middleware.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
-import { installProcessLogHandlers, logger } from './shared/logger.js'
+import { errorLogFields, installProcessLogHandlers, logger } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
@@ -29,6 +48,15 @@ import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
 import { createHttpCompressionMiddleware } from './shared/http-compression.js'
+import { dispatchAccountHealthCheck } from './modules/accounts/account-health-check-dispatch.service.js'
+import {
+  mountAccountHealthCheckDispatchBridge
+} from './modules/internal-api/account-health-check-dispatch.routes.js'
+import { stopModelCheckTokenWorker } from './modules/model-checks/model-checks-token-worker.service.js'
+import {
+  getPendingGatewayFailureUsageFinalizationCount,
+  waitForGatewayFailureUsageFinalizationsIdle
+} from './modules/gateway/usage/failure-finalization.service.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -47,6 +75,9 @@ const chatHttpProxy = createDbServiceHttpProxy({ maxInFlight: 128, timeoutMs: 15
 const backgroundWorkerStartupFallbackMs = 15_000
 let backgroundWorkerStartupFallbackTimer: NodeJS.Timeout | undefined
 let backgroundWorkerSupervisorStarted = false
+let serverShutdownInProgress = false
+const serverShutdownGraceMs = 40_000
+const httpShutdownGraceMs = 10_000
 
 type BodyParserError = Error & { status?: number; statusCode?: number; type?: string; received?: number; length?: number; limit?: number }
 
@@ -70,7 +101,9 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
     rawBodyBytes: Number(error.received ?? error.length ?? error.limit ?? 0),
     reason: 'gateway_body_parser',
     errorCode: error.type,
-    errorMessage: message
+    errorMessage: message,
+    limitBytes: statusCode === 413 ? Number(error.limit ?? gatewayRawBodyHardLimitBytes) : undefined,
+    limitScope: statusCode === 413 ? 'gateway' : undefined
   })
   getRequestLogger().warn({
     event: 'gateway_raw_body_rejected',
@@ -126,8 +159,13 @@ if (runtimeConfig.httpSecurity.trustProxy !== false) {
 }
 
 app.use(requestContextMiddleware)
-app.use(cors({ credentials: true, origin: createCorsOriginDelegate() }))
-app.use(createHttpCompressionMiddleware())
+const corsMiddleware = cors({ credentials: true, origin: createCorsOriginDelegate() })
+mountAccountHealthCheckDispatchBridge(app, {
+  corsMiddleware,
+  compressionMiddleware: createHttpCompressionMiddleware(),
+  secret: runtimeConfig.secret,
+  dispatch: dispatchAccountHealthCheck
+})
 
 app.get(`${systemPrefix}/health`, (_req, res) => {
   res.json({ status: 'ok', service: 'juhe-ai' })
@@ -406,3 +444,82 @@ server.on('error', (error: NodeJS.ErrnoException) => {
   }, '后端服务监听失败')
   process.exit(1)
 })
+
+installServerShutdownHooks(server)
+
+function installServerShutdownHooks(httpServer: http.Server): void {
+  process.once('SIGINT', () => void shutdownServer(httpServer, 0))
+  process.once('SIGTERM', () => void shutdownServer(httpServer, 0))
+}
+
+async function shutdownServer(httpServer: http.Server, exitCode: number): Promise<void> {
+  if (serverShutdownInProgress) return
+  serverShutdownInProgress = true
+  const forcedExit = setTimeout(() => {
+    logger.error({ event: 'server_shutdown_forced', graceMs: serverShutdownGraceMs }, '服务优雅退出超时，进程将强制结束')
+    process.exit(1)
+  }, serverShutdownGraceMs)
+
+  try {
+    const httpClosed = await closeHttpServer(httpServer, httpShutdownGraceMs)
+    const [failureUsageIdle, captureIdle] = await Promise.all([
+      waitForGatewayFailureUsageFinalizationsIdle(8_000),
+      waitForActiveAuditCapturesIdle(8_000)
+    ])
+    const dispatchIdle = await waitForAuditLogServerDispatchIdle(8_000)
+    const ingestAuditIdle = await waitForIngestAuditDrain(5_000)
+    if (!httpClosed || !failureUsageIdle || !captureIdle || !dispatchIdle || !ingestAuditIdle) {
+      logger.warn({
+        event: 'server_shutdown_drain_incomplete',
+        httpClosed,
+        failureUsageIdle,
+        captureIdle,
+        dispatchIdle,
+        ingestAuditIdle,
+        activeAuditCaptureCount: getActiveAuditCaptureCount(),
+        pendingFailureUsageFinalizationCount: getPendingGatewayFailureUsageFinalizationCount(),
+        pendingAuditDispatchCount: getAuditLogServerDispatchPendingCount(),
+        auditLogTransport: getAuditLogTransportRuntime()
+      }, '服务退出前部分请求或审计任务未在时限内排空')
+    }
+    await stopAuditLogTransportWorker()
+    await stopModelCheckTokenWorker()
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'server_shutdown_failed' }), '服务优雅退出失败')
+  } finally {
+    stopBackgroundWorkerSupervisor()
+    stopDbServiceSupervisor()
+    clearTimeout(forcedExit)
+    process.exit(exitCode)
+  }
+}
+
+async function closeHttpServer(httpServer: http.Server, timeoutMs: number): Promise<boolean> {
+  return await new Promise<boolean>((resolvePromise) => {
+    let settled = false
+    const finish = (closed: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      resolvePromise(closed)
+    }
+    const timeout = setTimeout(() => {
+      httpServer.closeAllConnections?.()
+      finish(false)
+    }, timeoutMs)
+    httpServer.close(() => finish(true))
+    httpServer.closeIdleConnections?.()
+  })
+}
+
+async function waitForIngestAuditDrain(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + Math.max(1, timeoutMs)
+  while (Date.now() < deadline) {
+    const status = await requestIngestWorkerDrainStatus(Math.min(1000, Math.max(1, deadline - Date.now())))
+    const parentQueueLength = status?.pendingQueues.auditLogs.queueLength ?? 0
+    const workerQueueLength = status?.snapshot?.auditLogQueue.queueLength ?? 0
+    if (parentQueueLength === 0 && workerQueueLength === 0) return true
+    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 25))
+  }
+  return false
+}

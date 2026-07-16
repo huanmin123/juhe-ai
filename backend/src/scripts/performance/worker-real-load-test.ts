@@ -296,7 +296,6 @@ async function seedData(upstreamBaseUrl: string): Promise<SeededGateway> {
     cooldownAccountRetestIntervalSeconds: 1,
     cooldownAccountRetestBatchSize: 100,
     cooldownAccountRetestMaxBackoffHours: 12,
-    cooldownAccountRetestLongTermIntervalHours: 1,
     temporaryUnschedulableRetryAttempts: 0
   })
   const fixture = fixtures.createMockGatewayFixture({

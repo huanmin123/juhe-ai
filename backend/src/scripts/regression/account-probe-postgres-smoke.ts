@@ -1,12 +1,16 @@
 import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import {
+  ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  GPT_OPENAI_V1_PROFILE_ID
+} from '../../domain/provider-protocol.js'
 import { handleDbServiceOperation } from '../../modules/db-service/db-service-handlers.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
-import { createAccountAsync, createGroupAsync } from '../../storage/repositories.js'
+import { createAccountAsync, createGroupAsync, createUsageRecordsBatchAsync, recordCooldownAccountRetestFailureAsync } from '../../storage/repositories.js'
 import { refreshDirtyGroupAccountStatsCacheAsync } from '../../storage/usage-stats.repository.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '账号探测 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
@@ -15,6 +19,7 @@ const marker = `account_probe_pg_smoke_${Date.now()}_${Math.random().toString(16
 const access: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
 const createdAccountIds: string[] = []
 const createdGroupIds: string[] = []
+const createdUsageTraceIds: string[] = []
 
 try {
   const group = await createGroupAsync({
@@ -40,9 +45,53 @@ try {
   }, access)
   createdAccountIds.push(account.id)
 
+  const anthropicGroup = await createGroupAsync({
+    name: `Anthropic账号探测PG烟测分组${marker}`,
+    providerCode: 'anthropic',
+    enabled: true
+  }, access)
+  createdGroupIds.push(anthropicGroup.id)
+  const anthropicAccount = await createAccountAsync({
+    name: `Anthropic账号探测PG烟测账号${marker}`,
+    providerCode: 'anthropic',
+    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+    type: 'api_key',
+    groupId: anthropicGroup.id,
+    credentials: {
+      api_key: `sk-anthropic-${marker}`,
+      base_url: 'https://api.anthropic.com/v1'
+    },
+    supportedModels: ['claude-sonnet-4-5'],
+    healthCheckModel: 'claude-sonnet-4-5',
+    healthCheckEndpointMode: 'messages_sse'
+  }, access)
+  createdAccountIds.push(anthropicAccount.id)
+
+  const geminiGroup = await createGroupAsync({
+    name: `Gemini账号探测PG烟测分组${marker}`,
+    providerCode: 'gemini',
+    enabled: true
+  }, access)
+  createdGroupIds.push(geminiGroup.id)
+  const geminiAccount = await createAccountAsync({
+    name: `Gemini账号探测PG烟测账号${marker}`,
+    providerCode: 'gemini',
+    providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+    type: 'api_key',
+    groupId: geminiGroup.id,
+    credentials: {
+      api_key: `sk-gemini-${marker}`,
+      base_url: 'https://generativelanguage.googleapis.com/v1beta'
+    },
+    supportedModels: ['gemini-2.5-flash'],
+    healthCheckModel: 'gemini-2.5-flash',
+    healthCheckEndpointMode: 'generate_content_sse'
+  }, access)
+  createdAccountIds.push(geminiAccount.id)
+
   assert.equal(account.status, 'pending_test', 'PG 新建账户应先进入待检查状态')
   assert.equal(account.schedulable, false, 'PG 新建账户健康成功前不得参与调度')
-  assert.equal(await refreshDirtyGroupAccountStatsCacheAsync(), 1, 'PG fixture 创建后应先刷新 pending 统计')
+  assert.equal(await refreshDirtyGroupAccountStatsCacheAsync(), 3, 'PG 多协议 fixture 创建后应先刷新三个 pending 分组统计')
   assert.deepEqual(
     await readGroupAccountStats(group.id),
     { available: 0, error: 1 },
@@ -60,6 +109,8 @@ try {
   })
   const healthCandidate = healthCandidates.find((item) => item.id === account.id)
   assert.ok(healthCandidate, 'PG health check 候选应返回到期账号')
+  assert.ok(healthCandidates.some((item) => item.id === anthropicAccount.id), 'PG 常规健康检查候选必须覆盖 Anthropic Messages')
+  assert.ok(healthCandidates.some((item) => item.id === geminiAccount.id), 'PG 常规健康检查候选必须覆盖 Gemini GenerateContent')
   assert.equal(healthCandidate.boundGroupId, group.id, 'PG health check 候选应带分组绑定')
   assert.deepEqual(healthCandidate.supportedModels, ['gpt-5-mini'], 'PG health check 候选应带支持模型')
 
@@ -141,6 +192,32 @@ try {
   assert.equal(afterRepeatedSuccess.last_health_check_status_code, 204, 'PG 重复健康成功应刷新状态码')
   assert.equal(await readGroupStatsDirtyReason(group.id), undefined, 'PG 重复健康成功未改变状态或调度时不得重复 dirty')
 
+  const trafficSuccessAt = new Date(Date.now() + 3_000).toISOString()
+  const trafficTraceId = `trace_${marker}_traffic_success`
+  createdUsageTraceIds.push(trafficTraceId)
+  await setHealthSignalFixture(account.id, new Date(Date.now() - 24 * 60 * 60_000).toISOString())
+  await createUsageRecordsBatchAsync([{
+    systemAccountId: access.systemAccountId,
+    traceId: trafficTraceId,
+    trafficSource: 'gateway',
+    accountId: account.id,
+    groupId: group.id,
+    providerCode: 'gpt',
+    endpoint: '/v1/responses',
+    model: 'gpt-5-mini',
+    stream: false,
+    success: true,
+    statusCode: 200,
+    durationMs: 10,
+    createdAt: trafficSuccessAt
+  }])
+  const afterTrafficSuccess = await readAccountRuntimeFields(account.id)
+  assert.equal(afterTrafficSuccess.last_health_success_at, trafficSuccessAt, 'PG 真实请求成功应刷新健康成功信号')
+  assert(
+    afterTrafficSuccess.next_health_check_at && afterTrafficSuccess.next_health_check_at > trafficSuccessAt,
+    'PG 真实请求成功应按系统间隔与 jitter 顺延下次健康复核'
+  )
+
   const rollbackBaselineAt = new Date(Date.now() - 30_000).toISOString()
   await setPendingHealthActivationFixture(account.id, group.id, rollbackBaselineAt)
   const beforeDirtyFailure = await readAccountRuntimeFields(account.id)
@@ -217,8 +294,7 @@ try {
       initialBackoffSeconds: 1,
       fastThresholdSeconds: 60,
       maxPauseMinutes: 1,
-      maxRecoveryHours: 12,
-      longTermIntervalHours: 24
+      maxRecoveryHours: 12
     }
   })
   assert.equal(cooldownFailure.changed, true, 'PG cooldown failure 应写回退避状态')
@@ -229,6 +305,41 @@ try {
   assert.equal(afterCooldownFailure.cooldown_retest_failure_count, 1, 'PG cooldown failure 应落库失败次数')
   assert.equal(afterCooldownFailure.last_error_code, 'cooldown_probe_smoke', 'PG cooldown failure 应落库错误码')
   assert(afterCooldownFailure.cooldown_until && afterCooldownFailure.cooldown_until > dueAt, 'PG cooldown failure 应写入下一次冷却时间')
+
+  const concurrentObservationStartedAt = new Date().toISOString()
+  const pool = await getPostgresPool()
+  await pool.query(`
+    UPDATE juhe_business.accounts
+    SET status = 'temporary_unavailable',
+        schedulable = 1,
+        cooldown_until = $1,
+        cooldown_retest_failure_count = 0,
+        cooldown_retest_observation_started_at = $2
+    WHERE id = $3
+  `, [dueAt, concurrentObservationStartedAt, account.id])
+  const concurrentFailures = await Promise.all([
+    recordCooldownAccountRetestFailureAsync(account.id, {
+      statusCode: 503,
+      errorMessage: 'PG concurrent cooldown smoke A',
+      initialBackoffSeconds: 1,
+      maxPauseMinutes: 1,
+      maxRecoveryHours: 12
+    }),
+    recordCooldownAccountRetestFailureAsync(account.id, {
+      statusCode: 503,
+      errorMessage: 'PG concurrent cooldown smoke B',
+      initialBackoffSeconds: 1,
+      maxPauseMinutes: 1,
+      maxRecoveryHours: 12
+    })
+  ])
+  assert.deepEqual(
+    concurrentFailures.map((item) => item.failureCount).sort((left, right) => left - right),
+    [1, 2],
+    'PG 并发冷却复测必须在行锁事务中分别观察 0 和 1，不能都写回 1'
+  )
+  const afterConcurrentFailures = await readAccountRuntimeFields(account.id)
+  assert.equal(afterConcurrentFailures.cooldown_retest_failure_count, 2, 'PG 并发冷却复测最终必须保留两次失败计数')
 
   await assertProbeExplainUsesIndexes(dueAt)
 
@@ -296,6 +407,20 @@ async function setPendingHealthActivationFixture(accountId: string, groupId: str
     WHERE id = $2
   `, [baselineAt, accountId])
   await pool.query('DELETE FROM juhe_business.group_account_stats_dirty WHERE group_id = $1', [groupId])
+}
+
+async function setHealthSignalFixture(accountId: string, baselineAt: string): Promise<void> {
+  const pool = await getPostgresPool()
+  await pool.query(`
+    UPDATE juhe_business.accounts
+    SET last_health_success_at = $1,
+        next_health_check_at = $1,
+        health_check_failure_count = 1,
+        last_health_check_error_code = 'traffic_success_baseline',
+        last_health_check_error_message = 'traffic success baseline',
+        updated_at = $1
+    WHERE id = $2
+  `, [baselineAt, accountId])
 }
 
 async function assertHealthActivationRollsBackWhenDirtyWriteBlocked(accountId: string, expectedConfigRevision: number): Promise<void> {
@@ -382,13 +507,15 @@ async function assertProbeExplainUsesIndexes(dueAt: string): Promise<void> {
       EXPLAIN (COSTS OFF)
       SELECT accounts.id
       FROM juhe_business.accounts accounts
-      WHERE accounts.provider_protocol_profile_id IN ('gpt-openai-v1')
+      WHERE accounts.health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse')
         AND accounts.type IN ('api_key', 'oauth')
         AND accounts.deleted_at IS NULL
-        AND accounts.status = 'active'
-        AND accounts.schedulable = 1
+        AND accounts.status IN ('active', 'pending_test')
+        AND (accounts.status = 'pending_test' OR accounts.schedulable = 1)
         AND (accounts.next_health_check_at IS NULL OR accounts.next_health_check_at <= $1)
-      ORDER BY accounts.next_health_check_at IS NOT NULL ASC,
+      ORDER BY CASE WHEN accounts.status = 'pending_test' THEN 0 ELSE 1 END ASC,
+        CASE WHEN accounts.status = 'pending_test' THEN accounts.updated_at END DESC,
+        accounts.next_health_check_at IS NOT NULL ASC,
         accounts.next_health_check_at ASC,
         accounts.last_health_check_at ASC,
         accounts.created_at ASC,
@@ -396,14 +523,15 @@ async function assertProbeExplainUsesIndexes(dueAt: string): Promise<void> {
       LIMIT 20
     `, [dueAt])
     const healthPlan = healthPlanRows.rows.map((row) => String(row['QUERY PLAN'] ?? '')).join('\n')
-    assert.match(healthPlan, /idx_accounts_health_check_pg_due/, 'PG health check due 查询应命中 profile 前导 health due 索引')
+    assert.match(healthPlan, /idx_accounts_health_check_candidate_order/, 'PG health check due 查询应命中谓词与排序一致的多协议 candidate index')
     assert.doesNotMatch(healthPlan, /\bSeq Scan\b/, 'PG health check due 查询不应出现 Seq Scan')
+    assert.doesNotMatch(healthPlan, /\bSort\b/, 'PG active health check due 查询不得额外排序候选窗口')
 
     const cooldownPlanRows = await client.query(`
       EXPLAIN (COSTS OFF)
       SELECT accounts.id
       FROM juhe_business.accounts accounts
-      WHERE accounts.provider_protocol_profile_id IN ('gpt-openai-v1')
+      WHERE accounts.health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse')
         AND accounts.type IN ('api_key', 'oauth')
         AND accounts.deleted_at IS NULL
         AND accounts.status IN ('temporary_unavailable', 'rate_limited')
@@ -414,8 +542,9 @@ async function assertProbeExplainUsesIndexes(dueAt: string): Promise<void> {
       LIMIT 20
     `, [dueAt])
     const cooldownPlan = cooldownPlanRows.rows.map((row) => String(row['QUERY PLAN'] ?? '')).join('\n')
-    assert.match(cooldownPlan, /idx_accounts_cooldown_retest_pg_due/, 'PG cooldown due 查询应命中 profile 前导 cooldown 索引')
+    assert.match(cooldownPlan, /idx_accounts_cooldown_retest_candidate_order/, 'PG cooldown due 查询应命中谓词与排序一致的 partial index')
     assert.doesNotMatch(cooldownPlan, /\bSeq Scan\b/, 'PG cooldown due 查询不应出现 Seq Scan')
+    assert.doesNotMatch(cooldownPlan, /\bSort\b/, 'PG cooldown due 查询不得额外排序候选窗口')
   } finally {
     await client.query('ROLLBACK').catch(() => undefined)
     client.release()
@@ -424,6 +553,9 @@ async function assertProbeExplainUsesIndexes(dueAt: string): Promise<void> {
 
 async function cleanupSmokeRows(): Promise<void> {
   const pool = await getPostgresPool()
+  if (createdUsageTraceIds.length > 0) {
+    await pool.query('DELETE FROM juhe_usage.usage_records WHERE trace_id = ANY($1::text[])', [createdUsageTraceIds]).catch(() => undefined)
+  }
   const accountIds = [...new Set(createdAccountIds)]
   if (accountIds.length > 0) {
     await pool.query('DELETE FROM juhe_business.group_accounts WHERE account_id = ANY($1::text[])', [accountIds])

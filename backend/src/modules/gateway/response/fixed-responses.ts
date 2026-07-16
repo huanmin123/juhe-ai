@@ -3,7 +3,7 @@ import type { Request, Response } from 'express'
 import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
 import { gatewayErrorPayload } from './responses.js'
-import { buildOpenAIModelsResponse } from '../protocols/openai-v1/route-helpers.js'
+import { buildOpenAIModelsResponse, isCodexModelsRequest } from '../protocols/openai-v1/route-helpers.js'
 import { buildAnthropicModelsResponse } from '../protocols/anthropic-v1/route-helpers.js'
 import { buildGeminiModelsResponse } from '../protocols/gemini-v1beta/route-helpers.js'
 import { listCachedProviderModelCatalogAsync } from '../runtime/runtime-cache.service.js'
@@ -25,6 +25,10 @@ import {
   compareProviderModelCatalogItems,
   type ProviderModelCatalogItem
 } from '../../model-pricing/model-catalog.service.js'
+import {
+  getAuthenticatedModelsResponseCache,
+  setAuthenticatedModelsResponseCache
+} from './models-response-cache.js'
 
 interface OpenAIModelsResponseUsageContext {
   traceId: string
@@ -150,20 +154,42 @@ async function sendModelsGatewayResponsePayload(input: {
   startedAt: number
 }): Promise<unknown> {
   const { req, res, auditCapture, protocol, providerCode, systemAccountId, providerCodes, startedAt } = input
-  const catalog = providerCodes?.length
-    ? await listProviderScopedModelCatalog({
-        providerCodes,
-        systemAccountId
+  const cacheKey = systemAccountId
+    ? {
+        systemAccountId,
+        providerCodes: providerCodes?.length ? providerCodes : [providerCode],
+        protocol,
+        variant: protocol === 'openai' ? (isCodexModelsRequest(req) ? 'codex' as const : 'openai' as const) : 'default' as const
+      }
+    : undefined
+  let responsePayload = cacheKey
+    ? await getAuthenticatedModelsResponseCache(cacheKey)
+    : undefined
+  if (!responsePayload) {
+    const cacheBuildStartedAtMs = Date.now()
+    const catalog = providerCodes?.length
+      ? await listProviderScopedModelCatalog({
+          providerCodes,
+          systemAccountId
+        })
+      : await listCachedProviderModelCatalogAsync({
+          providerCode,
+          systemAccountId
+        })
+    responsePayload = protocol === 'anthropic'
+      ? buildAnthropicModelsResponse(catalog)
+      : protocol === 'gemini'
+        ? buildGeminiModelsResponse(catalog)
+        : buildOpenAIModelsResponse(catalog, req)
+    if (cacheKey) {
+      await setAuthenticatedModelsResponseCache(cacheKey, responsePayload, {
+        buildStartedAtMs: cacheBuildStartedAtMs
       })
-    : await listCachedProviderModelCatalogAsync({
-        providerCode,
-        systemAccountId
-      })
-  const responsePayload = protocol === 'anthropic'
-    ? buildAnthropicModelsResponse(catalog)
-    : protocol === 'gemini'
-      ? buildGeminiModelsResponse(catalog)
-      : buildOpenAIModelsResponse(catalog, req)
+    }
+  }
+  if (cacheKey) {
+    setAuthenticatedModelsClientCacheHeaders(res)
+  }
   res.status(200).json(responsePayload)
   auditCapture.finalize({
     outcome: 'success',
@@ -177,11 +203,37 @@ async function sendModelsGatewayResponsePayload(input: {
   return responsePayload
 }
 
+export function setAuthenticatedModelsClientCacheHeaders(res: Response): void {
+  res.setHeader('Cache-Control', 'private, no-cache')
+  const varyHeaders = [
+    'Authorization',
+    'X-API-Key',
+    'X-Goog-API-Key',
+    'X-Juhe-Client-Profile',
+    'Anthropic-Version',
+    'Anthropic-Beta',
+    'X-Claude-Code-Session-Id',
+    'X-Claude-Code-Agent-Id',
+    'Originator',
+    'User-Agent',
+    'X-Codex-Client'
+  ]
+  const existing = String(res.getHeader('Vary') ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  const merged = new Map(existing.map((item) => [item.toLowerCase(), item]))
+  for (const header of varyHeaders) {
+    merged.set(header.toLowerCase(), header)
+  }
+  res.setHeader('Vary', [...merged.values()].join(', '))
+}
+
 async function listProviderScopedModelCatalog(input: {
   providerCodes: string[]
   systemAccountId?: string
 }): Promise<ProviderModelCatalogItem[]> {
-  const providerCodes = normalizedProviderCodeList(input.providerCodes)
+  const providerCodes = normalizedProviderCodeList(input.providerCodes).sort()
   if (!providerCodes.length) {
     return []
   }

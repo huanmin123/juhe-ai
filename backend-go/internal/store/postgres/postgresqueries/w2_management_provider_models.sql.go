@@ -80,15 +80,17 @@ SELECT
   supported_service_tiers_json,
   supported_reasoning_efforts_json,
   default_reasoning_effort,
-  pricing_model,
   release_date,
   shutdown_date,
   context_window_tokens,
+  max_input_tokens,
   max_output_tokens,
   input_usd_per_1m,
   output_usd_per_1m,
   cached_input_usd_per_1m,
   cache_write_usd_per_1m,
+  cache_write_1h_usd_per_1m,
+  service_tier_prices_json,
   image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
@@ -118,15 +120,17 @@ type FindManagementCustomProviderModelRow struct {
 	SupportedServiceTiersJson     string
 	SupportedReasoningEffortsJson string
 	DefaultReasoningEffort        pgtype.Text
-	PricingModel                  pgtype.Text
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
 	MaxOutputTokens               pgtype.Int4
 	InputUsdPer1m                 pgtype.Float8
 	OutputUsdPer1m                pgtype.Float8
 	CachedInputUsdPer1m           pgtype.Float8
 	CacheWriteUsdPer1m            pgtype.Float8
+	CacheWrite1hUsdPer1m          pgtype.Float8
+	ServiceTierPricesJson         string
 	ImageInputUsdPer1m            pgtype.Float8
 	ImageOutputUsdPer1m           pgtype.Float8
 	AudioInputUsdPer1m            pgtype.Float8
@@ -156,15 +160,17 @@ func (q *Queries) FindManagementCustomProviderModel(ctx context.Context, id stri
 		&i.SupportedServiceTiersJson,
 		&i.SupportedReasoningEffortsJson,
 		&i.DefaultReasoningEffort,
-		&i.PricingModel,
 		&i.ReleaseDate,
 		&i.ShutdownDate,
 		&i.ContextWindowTokens,
+		&i.MaxInputTokens,
 		&i.MaxOutputTokens,
 		&i.InputUsdPer1m,
 		&i.OutputUsdPer1m,
 		&i.CachedInputUsdPer1m,
 		&i.CacheWriteUsdPer1m,
+		&i.CacheWrite1hUsdPer1m,
+		&i.ServiceTierPricesJson,
 		&i.ImageInputUsdPer1m,
 		&i.ImageOutputUsdPer1m,
 		&i.AudioInputUsdPer1m,
@@ -194,15 +200,17 @@ SELECT
   supported_service_tiers_json,
   supported_reasoning_efforts_json,
   default_reasoning_effort,
-  pricing_model,
   release_date,
   shutdown_date,
   context_window_tokens,
+  max_input_tokens,
   max_output_tokens,
   input_usd_per_1m,
   output_usd_per_1m,
   cached_input_usd_per_1m,
   cache_write_usd_per_1m,
+  cache_write_1h_usd_per_1m,
+  service_tier_prices_json,
   image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
@@ -248,15 +256,17 @@ type FindManagementCustomProviderModelByScopeRow struct {
 	SupportedServiceTiersJson     string
 	SupportedReasoningEffortsJson string
 	DefaultReasoningEffort        pgtype.Text
-	PricingModel                  pgtype.Text
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
 	MaxOutputTokens               pgtype.Int4
 	InputUsdPer1m                 pgtype.Float8
 	OutputUsdPer1m                pgtype.Float8
 	CachedInputUsdPer1m           pgtype.Float8
 	CacheWriteUsdPer1m            pgtype.Float8
+	CacheWrite1hUsdPer1m          pgtype.Float8
+	ServiceTierPricesJson         string
 	ImageInputUsdPer1m            pgtype.Float8
 	ImageOutputUsdPer1m           pgtype.Float8
 	AudioInputUsdPer1m            pgtype.Float8
@@ -291,15 +301,17 @@ func (q *Queries) FindManagementCustomProviderModelByScope(ctx context.Context, 
 		&i.SupportedServiceTiersJson,
 		&i.SupportedReasoningEffortsJson,
 		&i.DefaultReasoningEffort,
-		&i.PricingModel,
 		&i.ReleaseDate,
 		&i.ShutdownDate,
 		&i.ContextWindowTokens,
+		&i.MaxInputTokens,
 		&i.MaxOutputTokens,
 		&i.InputUsdPer1m,
 		&i.OutputUsdPer1m,
 		&i.CachedInputUsdPer1m,
 		&i.CacheWriteUsdPer1m,
+		&i.CacheWrite1hUsdPer1m,
+		&i.ServiceTierPricesJson,
 		&i.ImageInputUsdPer1m,
 		&i.ImageOutputUsdPer1m,
 		&i.AudioInputUsdPer1m,
@@ -496,7 +508,7 @@ func (q *Queries) ListManagementProviderCodesByProtocol(ctx context.Context, arg
 
 const listManagementProviderModelCatalog = `-- name: ListManagementProviderModelCatalog :many
 SELECT
-  ''::text AS id,
+  id,
   provider_code,
   model,
   'built_in'::text AS scope,
@@ -513,7 +525,6 @@ SELECT
   codex_supported_reasoning_levels_json,
   codex_default_reasoning_level,
   codex_multi_agent_version,
-  pricing_model,
   context_window_tokens,
   max_input_tokens,
   max_output_tokens,
@@ -523,6 +534,10 @@ SELECT
   cached_input_usd_per_1m,
   cache_write_usd_per_1m,
   cache_write_1h_usd_per_1m,
+  service_tier_prices_json,
+  long_context_input_token_threshold,
+  long_context_input_cost_multiplier,
+  long_context_output_cost_multiplier,
   image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
@@ -567,16 +582,19 @@ SELECT
   '[]'::text AS codex_supported_reasoning_levels_json,
   NULL::text AS codex_default_reasoning_level,
   NULL::text AS codex_multi_agent_version,
-  pricing_model,
   context_window_tokens,
-  NULL::integer AS max_input_tokens,
+  max_input_tokens,
   max_output_tokens,
   NULL::integer AS max_tokens,
   input_usd_per_1m,
   output_usd_per_1m,
   cached_input_usd_per_1m,
   cache_write_usd_per_1m,
-  NULL::double precision AS cache_write_1h_usd_per_1m,
+  cache_write_1h_usd_per_1m,
+  service_tier_prices_json,
+  NULL::integer AS long_context_input_token_threshold,
+  NULL::double precision AS long_context_input_cost_multiplier,
+  NULL::double precision AS long_context_output_cost_multiplier,
   image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
@@ -632,7 +650,6 @@ type ListManagementProviderModelCatalogRow struct {
 	CodexSupportedReasoningLevelsJson string
 	CodexDefaultReasoningLevel        pgtype.Text
 	CodexMultiAgentVersion            pgtype.Text
-	PricingModel                      pgtype.Text
 	ContextWindowTokens               pgtype.Int4
 	MaxInputTokens                    pgtype.Int4
 	MaxOutputTokens                   pgtype.Int4
@@ -642,6 +659,10 @@ type ListManagementProviderModelCatalogRow struct {
 	CachedInputUsdPer1m               pgtype.Float8
 	CacheWriteUsdPer1m                pgtype.Float8
 	CacheWrite1hUsdPer1m              pgtype.Float8
+	ServiceTierPricesJson             string
+	LongContextInputTokenThreshold    pgtype.Int4
+	LongContextInputCostMultiplier    pgtype.Float8
+	LongContextOutputCostMultiplier   pgtype.Float8
 	ImageInputUsdPer1m                pgtype.Float8
 	ImageOutputUsdPer1m               pgtype.Float8
 	AudioInputUsdPer1m                pgtype.Float8
@@ -692,7 +713,6 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 			&i.CodexSupportedReasoningLevelsJson,
 			&i.CodexDefaultReasoningLevel,
 			&i.CodexMultiAgentVersion,
-			&i.PricingModel,
 			&i.ContextWindowTokens,
 			&i.MaxInputTokens,
 			&i.MaxOutputTokens,
@@ -702,6 +722,10 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 			&i.CachedInputUsdPer1m,
 			&i.CacheWriteUsdPer1m,
 			&i.CacheWrite1hUsdPer1m,
+			&i.ServiceTierPricesJson,
+			&i.LongContextInputTokenThreshold,
+			&i.LongContextInputCostMultiplier,
+			&i.LongContextOutputCostMultiplier,
 			&i.ImageInputUsdPer1m,
 			&i.ImageOutputUsdPer1m,
 			&i.AudioInputUsdPer1m,
@@ -729,25 +753,138 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 	return items, nil
 }
 
+const updateManagementBuiltInProviderModelPrices = `-- name: UpdateManagementBuiltInProviderModelPrices :one
+UPDATE juhe_business.provider_model_catalog
+SET input_usd_per_1m = CASE WHEN $1::boolean THEN $2::double precision ELSE input_usd_per_1m END,
+    output_usd_per_1m = CASE WHEN $3::boolean THEN $4::double precision ELSE output_usd_per_1m END,
+    cached_input_usd_per_1m = CASE WHEN $5::boolean THEN $6::double precision ELSE cached_input_usd_per_1m END,
+    cache_write_usd_per_1m = CASE WHEN $7::boolean THEN $8::double precision ELSE cache_write_usd_per_1m END,
+    cache_write_1h_usd_per_1m = CASE WHEN $9::boolean THEN $10::double precision ELSE cache_write_1h_usd_per_1m END,
+    service_tier_prices_json = CASE WHEN $11::boolean THEN $12::text ELSE service_tier_prices_json END,
+    image_input_usd_per_1m = CASE WHEN $13::boolean THEN $14::double precision ELSE image_input_usd_per_1m END,
+    image_output_usd_per_1m = CASE WHEN $15::boolean THEN $16::double precision ELSE image_output_usd_per_1m END,
+    audio_input_usd_per_1m = CASE WHEN $17::boolean THEN $18::double precision ELSE audio_input_usd_per_1m END,
+    audio_output_usd_per_1m = CASE WHEN $19::boolean THEN $20::double precision ELSE audio_output_usd_per_1m END,
+    output_usd_per_image = CASE WHEN $21::boolean THEN $22::double precision ELSE output_usd_per_image END,
+    updated_at = now()
+WHERE id = $23
+  AND provider_code = $24
+RETURNING id, provider_code, input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
+  cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+  image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m,
+  audio_output_usd_per_1m, output_usd_per_image, updated_at
+`
+
+type UpdateManagementBuiltInProviderModelPricesParams struct {
+	InputUsdPer1mPresent        bool
+	InputUsdPer1m               pgtype.Float8
+	OutputUsdPer1mPresent       bool
+	OutputUsdPer1m              pgtype.Float8
+	CachedInputUsdPer1mPresent  bool
+	CachedInputUsdPer1m         pgtype.Float8
+	CacheWriteUsdPer1mPresent   bool
+	CacheWriteUsdPer1m          pgtype.Float8
+	CacheWrite1hUsdPer1mPresent bool
+	CacheWrite1hUsdPer1m        pgtype.Float8
+	ServiceTierPricesPresent    bool
+	ServiceTierPricesJson       string
+	ImageInputUsdPer1mPresent   bool
+	ImageInputUsdPer1m          pgtype.Float8
+	ImageOutputUsdPer1mPresent  bool
+	ImageOutputUsdPer1m         pgtype.Float8
+	AudioInputUsdPer1mPresent   bool
+	AudioInputUsdPer1m          pgtype.Float8
+	AudioOutputUsdPer1mPresent  bool
+	AudioOutputUsdPer1m         pgtype.Float8
+	OutputUsdPerImagePresent    bool
+	OutputUsdPerImage           pgtype.Float8
+	ID                          string
+	ProviderCode                string
+}
+
+type UpdateManagementBuiltInProviderModelPricesRow struct {
+	ID                    string
+	ProviderCode          string
+	InputUsdPer1m         pgtype.Float8
+	OutputUsdPer1m        pgtype.Float8
+	CachedInputUsdPer1m   pgtype.Float8
+	CacheWriteUsdPer1m    pgtype.Float8
+	CacheWrite1hUsdPer1m  pgtype.Float8
+	ServiceTierPricesJson string
+	ImageInputUsdPer1m    pgtype.Float8
+	ImageOutputUsdPer1m   pgtype.Float8
+	AudioInputUsdPer1m    pgtype.Float8
+	AudioOutputUsdPer1m   pgtype.Float8
+	OutputUsdPerImage     pgtype.Float8
+	UpdatedAt             pgtype.Timestamptz
+}
+
+func (q *Queries) UpdateManagementBuiltInProviderModelPrices(ctx context.Context, arg UpdateManagementBuiltInProviderModelPricesParams) (UpdateManagementBuiltInProviderModelPricesRow, error) {
+	row := q.db.QueryRow(ctx, updateManagementBuiltInProviderModelPrices,
+		arg.InputUsdPer1mPresent,
+		arg.InputUsdPer1m,
+		arg.OutputUsdPer1mPresent,
+		arg.OutputUsdPer1m,
+		arg.CachedInputUsdPer1mPresent,
+		arg.CachedInputUsdPer1m,
+		arg.CacheWriteUsdPer1mPresent,
+		arg.CacheWriteUsdPer1m,
+		arg.CacheWrite1hUsdPer1mPresent,
+		arg.CacheWrite1hUsdPer1m,
+		arg.ServiceTierPricesPresent,
+		arg.ServiceTierPricesJson,
+		arg.ImageInputUsdPer1mPresent,
+		arg.ImageInputUsdPer1m,
+		arg.ImageOutputUsdPer1mPresent,
+		arg.ImageOutputUsdPer1m,
+		arg.AudioInputUsdPer1mPresent,
+		arg.AudioInputUsdPer1m,
+		arg.AudioOutputUsdPer1mPresent,
+		arg.AudioOutputUsdPer1m,
+		arg.OutputUsdPerImagePresent,
+		arg.OutputUsdPerImage,
+		arg.ID,
+		arg.ProviderCode,
+	)
+	var i UpdateManagementBuiltInProviderModelPricesRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderCode,
+		&i.InputUsdPer1m,
+		&i.OutputUsdPer1m,
+		&i.CachedInputUsdPer1m,
+		&i.CacheWriteUsdPer1m,
+		&i.CacheWrite1hUsdPer1m,
+		&i.ServiceTierPricesJson,
+		&i.ImageInputUsdPer1m,
+		&i.ImageOutputUsdPer1m,
+		&i.AudioInputUsdPer1m,
+		&i.AudioOutputUsdPer1m,
+		&i.OutputUsdPerImage,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const upsertManagementCustomProviderModel = `-- name: UpsertManagementCustomProviderModel :one
 INSERT INTO juhe_business.custom_provider_models (
   id, provider_code, model, scope, system_account_id, status,
   mode, supported_api_protocols_json, supported_service_tiers_json,
-  supported_reasoning_efforts_json, default_reasoning_effort, pricing_model,
-  release_date, shutdown_date, context_window_tokens, max_output_tokens,
-  input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
+  supported_reasoning_efforts_json, default_reasoning_effort,
+  release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
+  input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
   image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
   output_usd_per_image, currency, pricing_notes, capability_notes, notes,
   created_by, updated_by, created_at, updated_at
 ) VALUES (
   $1, $2, $3, $4, $5, $6,
   $7, $8, $9,
-  $10, $11, $12,
-  $13, $14, $15, $16,
-  $17, $18, $19, $20,
-  $21, $22, $23, $24,
-  $25, 'USD', $26, $27, $28,
-  $29, $29, now(), now()
+  $10, $11,
+  $12, $13, $14, $15, $16,
+  $17, $18, $19, $20, $21, $22,
+  $23, $24, $25, $26,
+  $27, 'USD', $28, $29, $30,
+  $31, $31, now(), now()
 )
 ON CONFLICT (id) DO UPDATE SET
   provider_code = EXCLUDED.provider_code,
@@ -760,15 +897,17 @@ ON CONFLICT (id) DO UPDATE SET
   supported_service_tiers_json = EXCLUDED.supported_service_tiers_json,
   supported_reasoning_efforts_json = EXCLUDED.supported_reasoning_efforts_json,
   default_reasoning_effort = EXCLUDED.default_reasoning_effort,
-  pricing_model = EXCLUDED.pricing_model,
   release_date = EXCLUDED.release_date,
   shutdown_date = EXCLUDED.shutdown_date,
   context_window_tokens = EXCLUDED.context_window_tokens,
+  max_input_tokens = EXCLUDED.max_input_tokens,
   max_output_tokens = EXCLUDED.max_output_tokens,
   input_usd_per_1m = EXCLUDED.input_usd_per_1m,
   output_usd_per_1m = EXCLUDED.output_usd_per_1m,
   cached_input_usd_per_1m = EXCLUDED.cached_input_usd_per_1m,
   cache_write_usd_per_1m = EXCLUDED.cache_write_usd_per_1m,
+  cache_write_1h_usd_per_1m = EXCLUDED.cache_write_1h_usd_per_1m,
+  service_tier_prices_json = EXCLUDED.service_tier_prices_json,
   image_input_usd_per_1m = EXCLUDED.image_input_usd_per_1m,
   image_output_usd_per_1m = EXCLUDED.image_output_usd_per_1m,
   audio_input_usd_per_1m = EXCLUDED.audio_input_usd_per_1m,
@@ -791,15 +930,17 @@ RETURNING
   supported_service_tiers_json,
   supported_reasoning_efforts_json,
   default_reasoning_effort,
-  pricing_model,
   release_date,
   shutdown_date,
   context_window_tokens,
+  max_input_tokens,
   max_output_tokens,
   input_usd_per_1m,
   output_usd_per_1m,
   cached_input_usd_per_1m,
   cache_write_usd_per_1m,
+  cache_write_1h_usd_per_1m,
+  service_tier_prices_json,
   image_input_usd_per_1m,
   image_output_usd_per_1m,
   audio_input_usd_per_1m,
@@ -826,15 +967,17 @@ type UpsertManagementCustomProviderModelParams struct {
 	SupportedServiceTiersJson     string
 	SupportedReasoningEffortsJson string
 	DefaultReasoningEffort        pgtype.Text
-	PricingModel                  pgtype.Text
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
 	MaxOutputTokens               pgtype.Int4
 	InputUsdPer1m                 pgtype.Float8
 	OutputUsdPer1m                pgtype.Float8
 	CachedInputUsdPer1m           pgtype.Float8
 	CacheWriteUsdPer1m            pgtype.Float8
+	CacheWrite1hUsdPer1m          pgtype.Float8
+	ServiceTierPricesJson         string
 	ImageInputUsdPer1m            pgtype.Float8
 	ImageOutputUsdPer1m           pgtype.Float8
 	AudioInputUsdPer1m            pgtype.Float8
@@ -858,15 +1001,17 @@ type UpsertManagementCustomProviderModelRow struct {
 	SupportedServiceTiersJson     string
 	SupportedReasoningEffortsJson string
 	DefaultReasoningEffort        pgtype.Text
-	PricingModel                  pgtype.Text
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
+	MaxInputTokens                pgtype.Int4
 	MaxOutputTokens               pgtype.Int4
 	InputUsdPer1m                 pgtype.Float8
 	OutputUsdPer1m                pgtype.Float8
 	CachedInputUsdPer1m           pgtype.Float8
 	CacheWriteUsdPer1m            pgtype.Float8
+	CacheWrite1hUsdPer1m          pgtype.Float8
+	ServiceTierPricesJson         string
 	ImageInputUsdPer1m            pgtype.Float8
 	ImageOutputUsdPer1m           pgtype.Float8
 	AudioInputUsdPer1m            pgtype.Float8
@@ -894,15 +1039,17 @@ func (q *Queries) UpsertManagementCustomProviderModel(ctx context.Context, arg U
 		arg.SupportedServiceTiersJson,
 		arg.SupportedReasoningEffortsJson,
 		arg.DefaultReasoningEffort,
-		arg.PricingModel,
 		arg.ReleaseDate,
 		arg.ShutdownDate,
 		arg.ContextWindowTokens,
+		arg.MaxInputTokens,
 		arg.MaxOutputTokens,
 		arg.InputUsdPer1m,
 		arg.OutputUsdPer1m,
 		arg.CachedInputUsdPer1m,
 		arg.CacheWriteUsdPer1m,
+		arg.CacheWrite1hUsdPer1m,
+		arg.ServiceTierPricesJson,
 		arg.ImageInputUsdPer1m,
 		arg.ImageOutputUsdPer1m,
 		arg.AudioInputUsdPer1m,
@@ -926,15 +1073,17 @@ func (q *Queries) UpsertManagementCustomProviderModel(ctx context.Context, arg U
 		&i.SupportedServiceTiersJson,
 		&i.SupportedReasoningEffortsJson,
 		&i.DefaultReasoningEffort,
-		&i.PricingModel,
 		&i.ReleaseDate,
 		&i.ShutdownDate,
 		&i.ContextWindowTokens,
+		&i.MaxInputTokens,
 		&i.MaxOutputTokens,
 		&i.InputUsdPer1m,
 		&i.OutputUsdPer1m,
 		&i.CachedInputUsdPer1m,
 		&i.CacheWriteUsdPer1m,
+		&i.CacheWrite1hUsdPer1m,
+		&i.ServiceTierPricesJson,
 		&i.ImageInputUsdPer1m,
 		&i.ImageOutputUsdPer1m,
 		&i.AudioInputUsdPer1m,

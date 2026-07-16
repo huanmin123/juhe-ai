@@ -293,11 +293,11 @@ func insertW5ProxyBindingFixture(t *testing.T, ctx context.Context, db *sql.DB, 
 		INSERT INTO juhe_business.accounts (
 			id, system_account_id, provider_code, provider_protocol_profile_id,
 			protocol_code, protocol_version, name, type, status,
-			credentials_encrypted, credential_mask, proxy_profile_id, created_at, updated_at
+			credentials_encrypted, credential_mask, proxy_profile_id, health_check_model, health_check_endpoint_mode, created_at, updated_at
 		) VALUES (
 			'acct_w5_proxy_bound', 'sys_w2_proxy_options', 'gpt', 'profile_gpt_openai_v1',
 			'openai', 'v1', 'W5 Bound Account', 'api_key', 'active',
-			'encrypted', 'sk-***', $1, $2, $3
+			'encrypted', 'sk-***', $1, 'gpt-5.4-mini', 'responses_sse', $2, $3
 		)
 	`, proxyID, now, now)
 	if err != nil {

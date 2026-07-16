@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import { ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES } from '../../domain/account-health-check-endpoint-mode.js'
+import { ANTHROPIC_ANTHROPIC_V1_PROFILE_ID, GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { installWorkerParentIpcHarness } from '../shared/worker-parent-ipc-harness.js'
@@ -21,6 +22,25 @@ runtimeConfig.processRole = 'worker'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const cooldownRetestRepositorySource = readFileSync(resolve('src/storage/account-cooldown-retest.repository.ts'), 'utf8')
+assert.match(
+  cooldownRetestRepositorySource,
+  /runInDatabaseTransaction\(\(\) => recordCooldownAccountRetestFailureInSqliteTransaction/,
+  'SQLite 冷却复测失败读改写必须由 BEGIN IMMEDIATE 事务串行化'
+)
+assert.match(
+  cooldownRetestRepositorySource,
+  /client\.transaction\(async \(tx\)[\s\S]+queryAccountCooldownRetestStateAsync\(tx, id, \{ forUpdate: true \}\)[\s\S]+UPDATE \$\{cooldownRetestTable\(tx, 'accounts'\)\}/,
+  'PostgreSQL 冷却复测必须在同一事务内锁定读取、决策并更新'
+)
+assert.match(
+  cooldownRetestRepositorySource,
+  /FOR UPDATE OF accounts/,
+  'PostgreSQL 冷却复测锁定读取必须明确锁 accounts 行'
+)
+assert.match(cooldownRetestRepositorySource, /accounts\.health_check_endpoint_mode IN/, '冷却复测候选必须按可执行生成检查 mode 筛选')
+assert.doesNotMatch(cooldownRetestRepositorySource, /listOpenAIProtocolProfileIds/, '冷却复测候选不得继续只允许 OpenAI profile')
 
 const restoreWorkerParentIpc = installWorkerParentIpcHarness()
 
@@ -39,6 +59,8 @@ const {
   cooldownAccountRetestStartupDelayMs,
   runWithBackgroundFullDiagnosticSlot
 } = await import('../../modules/background/account-probe-limits.js')
+
+assertSqliteCooldownCandidatePlan()
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
@@ -59,6 +81,10 @@ try {
     name: '冷却复测回归分组',
     providerCode: 'gpt'
   }, access)
+  const anthropicGroup = repositories.createGroup({
+    name: 'Anthropic 冷却复测回归分组',
+    providerCode: 'anthropic'
+  }, access)
   const workerGatewaySettings = await gatewayRuntimeCache.readCachedGatewaySettingsAsync()
   assert.equal(typeof workerGatewaySettings.defaultTemporaryUnschedulableMinutes, 'number', 'worker 角色应能本地读取网关设置，不能误走 DB service IPC')
   const workerGroupAccess = await gatewayRuntimeCache.resolveCachedGroupUsageAccessMetadataAsync(group.id, access.systemAccountId)
@@ -77,10 +103,38 @@ try {
   }, access)
   activateTestAccount(account.id)
   assert(repositories.setAccountGroup(account.id, group.id, access), '冷却复测观察窗口账号应能绑定分组')
-  const cooled = repositories.markAccountTemporaryUnavailable(account.id, '模拟临时不可调用')
+  const cooled = repositories.markAccountTemporaryUnavailable(account.id, '模拟临时不可调用', undefined, 'trace-cooldown-initial')
   assert.equal(cooled?.status, 'temporary_unavailable', '临时不可调用应进入恢复通道')
   assert.ok(cooled?.cooldownRetestObservationStartedAt, '进入临时不可调用时应记录自动恢复观察起点')
   assert.ok(Date.parse(cooled.cooldownUntil ?? '') - Date.now() <= 10_000, '临时不可调用首次暂停应走秒级快速恢复')
+
+  const anthropicAccount = repositories.createAccount({
+    providerCode: 'anthropic',
+    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+    name: 'Anthropic 冷却复测候选回归',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ant-cooldown-retest-recovery',
+      base_url: 'https://api.anthropic.com/v1'
+    },
+    status: 'active',
+    groupId: anthropicGroup.id,
+    supportedModels: ['claude-sonnet-4-5'],
+    healthCheckModel: 'claude-sonnet-4-5',
+    healthCheckEndpointMode: 'messages_sse'
+  }, access)
+  activateTestAccount(anthropicAccount.id)
+  assert(repositories.setAccountGroup(anthropicAccount.id, anthropicGroup.id, access), 'Anthropic 冷却复测账号应能绑定分组')
+  repositories.markAccountTemporaryUnavailable(anthropicAccount.id, '模拟 Anthropic 临时不可调用')
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
+    .run(new Date(Date.now() - 1000).toISOString(), anthropicAccount.id)
+  assert(
+    repositories.listAccountsDueForCooldownRetest(100).some((item) => item.id === anthropicAccount.id),
+    'Anthropic Messages 生成协议账户到期后必须进入冷却复测候选'
+  )
+  assert.equal(repositories.findAccountForCooldownRetest(anthropicAccount.id)?.id, anthropicAccount.id, 'Anthropic 单账号冷却复测读取不得被 OpenAI profile 限制')
+  repositories.updateAccount(anthropicAccount.id, { status: 'disabled' }, access)
 
   const expiredObservationStartedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
   databaseModule.getBusinessDatabase()
@@ -94,11 +148,11 @@ try {
     .run(expiredObservationStartedAt, new Date(Date.now() - 1000).toISOString(), account.id)
 
   const longRecovering = repositories.recordCooldownAccountRetestFailure(account.id, {
+    traceId: 'trace-cooldown-retest-latest',
     statusCode: 401,
     errorMessage: '仍然不可用',
     maxRecoveryHours: 1,
-    maxPauseMinutes: 1440,
-    longTermIntervalHours: 24
+    maxPauseMinutes: 1440
   })
   assert.equal(longRecovering.action, 'long_term_cooldown', '超过观察窗口后应进入长期不可用低频恢复')
   assert.equal(longRecovering.recoveryStage, 'long_term', '超过观察窗口后应标记长期恢复阶段')
@@ -106,15 +160,41 @@ try {
   assert.equal(longRecovering.account?.schedulable, true, '长期不可用账号应保留后台可恢复调度标记')
   assert.ok(longRecovering.account?.cooldownUntil, '长期不可用账号应写入下一次低频复测时间')
   assert.equal(longRecovering.account?.lastErrorCode, 'cooldown_retest_long_term_unavailable', '超过观察窗口后应写入长期不可用原因码')
-  assert.match(longRecovering.errorMessage, /进入长期不可用低频复测/, '失败摘要应说明仍会低频自动复测')
+  assert.equal(longRecovering.account?.lastErrorTraceId, 'trace-cooldown-retest-latest', '冷却复测的新错误摘要必须覆盖为本次探针 traceId')
+  assert.equal(longRecovering.longTermIntervalSeconds, 60 * 60, '长期不可用必须固定每 1 小时复测，不受旧设置值放大')
+  assert.match(longRecovering.errorMessage, /进入长期不可用每 1 小时复测/, '失败摘要应说明每 1 小时自动复测')
   assert(!repositories.listAccountsDueForCooldownRetest(20).some((item) => item.id === account.id), '长期不可用账号在下次复测时间前不应进入候选')
   databaseModule.getBusinessDatabase()
     .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
     .run(new Date(Date.now() - 1000).toISOString(), account.id)
   assert(repositories.listAccountsDueForCooldownRetest(20).some((item) => item.id === account.id), '长期不可用账号到达下次复测时间后仍应进入后台复测候选')
   databaseModule.getBusinessDatabase()
-    .prepare('UPDATE accounts SET cooldown_until = ? WHERE id = ?')
-    .run(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), account.id)
+    .prepare('UPDATE accounts SET cooldown_retest_observation_started_at = ?, cooldown_until = ? WHERE id = ?')
+    .run(
+      new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString(),
+      new Date(Date.now() - 1000).toISOString(),
+      account.id
+    )
+  const terminalFailure = repositories.recordCooldownAccountRetestFailure(account.id, {
+    statusCode: 401,
+    errorCode: 'invalid_api_key',
+    errorMessage: '持续不可用超过七天',
+    maxRecoveryHours: 1,
+    maxPauseMinutes: 1440
+  })
+  assert.equal(terminalFailure.action, 'error', '观察起点满 7 天仍失败必须终止自动冷却恢复')
+  assert.equal(terminalFailure.recoveryStage, 'terminal', '满 7 天失败必须进入终止阶段')
+  assert.equal(terminalFailure.transitionedToError, true, '满 7 天失败必须原子转为异常')
+  assert.equal(terminalFailure.account?.status, 'error', '满 7 天失败后账户状态必须为 error')
+  assert.equal(terminalFailure.account?.schedulable, false, '满 7 天失败后账户必须不可调度')
+  assert.equal(terminalFailure.account?.cooldownUntil, undefined, '转为异常后必须清空冷却时间')
+  assert.equal(terminalFailure.errorCode, 'cooldown_retest_observation_timeout', '满 7 天失败必须写入明确错误码')
+  assert.match(terminalFailure.errorMessage, /已持续 7 天仍未恢复/, '满 7 天失败必须写入明确错误原因')
+  assert(!repositories.listAccountsDueForCooldownRetest(20).some((item) => item.id === account.id), '异常账户不得继续进入冷却复测候选')
+  const terminalRecovered = repositories.clearAccountFailureState(account.id, access)
+  assert.equal(terminalRecovered?.status, 'pending_test', '长期不可用终态的异常恢复只能进入待检查')
+  assert.equal(terminalRecovered?.schedulable, false, '长期不可用终态恢复后后台检查通过前不得调度')
+  assert.equal(terminalRecovered?.cooldownRetestObservationStartedAt, undefined, '异常恢复必须清空长期观察起点')
 
   const freshAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -157,6 +237,27 @@ try {
   assert.match(freshAfterRetest?.lastErrorMessage ?? '', /HTTP 403；insufficient_quota；余额和订阅额度均不足/, '后台复测状态原因应保留真实上游错误摘要')
   assert.match(freshAfterRetest?.lastErrorMessage ?? '', /traceId trace-cooldown-retest-quota/, '后台复测状态原因应写入本地 traceId 作为追踪主键')
   assert.match(freshAfterRetest?.lastErrorMessage ?? '', /request id: upstream-request-id-should-display/, '后台复测状态原因应保留上游 request id')
+
+  const serializedAccount = createActiveCoolingAccount('冷却复测事务串行回归', 'sk-cooldown-retest-serialized', group.id)
+  const serializedFirst = repositories.recordCooldownAccountRetestFailure(serializedAccount.id, {
+    statusCode: 503,
+    errorMessage: '事务串行第一次失败',
+    maxPauseMinutes: 10,
+    maxRecoveryHours: 1
+  })
+  const serializedSecond = repositories.recordCooldownAccountRetestFailure(serializedAccount.id, {
+    statusCode: 503,
+    errorMessage: '事务串行第二次失败',
+    maxPauseMinutes: 10,
+    maxRecoveryHours: 1
+  })
+  assert.equal(serializedFirst.failureCount, 1, 'SQLite 事务内首次失败应从 0 累加到 1')
+  assert.equal(serializedSecond.failureCount, 2, 'SQLite 后续失败必须读取前一事务提交值并累加到 2')
+  assert.equal(
+    repositories.findAccountSummary(serializedAccount.id, access)?.cooldownRetestFailureCount,
+    2,
+    'SQLite 连续复测失败不得丢失已提交计数'
+  )
 
   const restored = repositories.clearAccountFailureState(freshAccount.id, access)
   assert.equal(restored?.cooldownRetestObservationStartedAt, undefined, '恢复正常时应清理自动恢复观察起点')
@@ -233,8 +334,7 @@ try {
   assert(dueIneligibleFailure, '后台探针配置失败账号应可读取')
   assert(cooldownRetestService.enqueueCooldownAccountRetest(dueIneligibleFailure, {
     maxPauseMinutes: 10,
-    maxRecoveryHours: 1,
-    longTermIntervalHours: 24
+    maxRecoveryHours: 1
   }), '后台探针配置失败账号应能入队')
   const recordedIneligibleFailure = await waitForAccountRetestFailure(ineligibleFailureAccount.id)
   assert.equal(recordedIneligibleFailure.cooldownRetestFailureCount, 1, '后台探针只要未完整成功就必须累计失败次数')
@@ -262,8 +362,7 @@ try {
   assert(dueProbeAccount?.cooldownUntil, '后台探针恢复前应有冷却时间')
   assert(cooldownRetestService.enqueueCooldownAccountRetest(dueProbeAccount, {
     maxPauseMinutes: 10,
-    maxRecoveryHours: 1,
-    longTermIntervalHours: 24
+    maxRecoveryHours: 1
   }), '后台探针恢复账号应能入队')
   const restoredByProbe = await waitForAccountStatus(probeAccount.id, 'active')
   assert(restoredByProbe, '后台探针测试通过后应能读取恢复后的账号')
@@ -352,8 +451,7 @@ try {
   const authorizedProbeHitBefore = mockOpenAIResponseHitCount
   assert(cooldownRetestService.enqueueCooldownAccountRetest(authorizedCandidate, {
     maxPauseMinutes: 10,
-    maxRecoveryHours: 1,
-    longTermIntervalHours: 24
+    maxRecoveryHours: 1
   }), '授权实例冷却复测候选应能入队')
   const restoredAuthorized = await waitForAccountStatus(authorizedInstance.id, 'active', granteeAccess)
   assert.equal(restoredAuthorized.status, 'active', '后台探针测试通过后授权实例应恢复为正常')
@@ -599,6 +697,27 @@ async function waitForAccountRetestFailure(accountId: string): Promise<NonNullab
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
   }
   throw new Error(`等待账号 ${accountId} 记录后台复测失败超时`)
+}
+
+function assertSqliteCooldownCandidatePlan(): void {
+  const endpointModes = [...ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES]
+  const plan = databaseModule.getBusinessDatabase().prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT accounts.id
+    FROM accounts INDEXED BY idx_accounts_cooldown_retest_candidate_order
+    WHERE accounts.health_check_endpoint_mode IN (${endpointModes.map(() => '?').join(', ')})
+      AND accounts.type IN ('api_key', 'oauth')
+      AND accounts.deleted_at IS NULL
+      AND accounts.status IN ('temporary_unavailable', 'rate_limited')
+      AND accounts.schedulable = 1
+      AND accounts.cooldown_until IS NOT NULL
+      AND accounts.cooldown_until <= ?
+    ORDER BY accounts.cooldown_until ASC, accounts.priority ASC, accounts.created_at ASC, accounts.id ASC
+    LIMIT 20
+  `).all(...endpointModes, new Date().toISOString()) as Array<{ detail?: string }>
+  const details = plan.map((row) => row.detail ?? '').join('\n')
+  assert.match(details, /idx_accounts_cooldown_retest_candidate_order/, 'SQLite 冷却复测候选必须命中谓词与排序一致的 partial index')
+  assert.doesNotMatch(details, /USE TEMP B-TREE FOR ORDER BY/, 'SQLite 冷却复测候选不得为稳定排序创建临时 B-Tree')
 }
 
 async function onceListening(server: http.Server): Promise<void> {

@@ -1,4 +1,5 @@
 import { runtimeConfig } from '../../../../config/runtime.js'
+import { modelCheckObservationHmac } from '../../../../modules/model-checks/model-checks-observation-security.js'
 import {
   codexContextStateShardIndexes,
   getBusinessDatabase,
@@ -47,6 +48,7 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
     deleteWhereIn(database, 'response_inspection_policies', 'id', mockResponseInspectionPolicyIds)
 
     const mockCustomProviderModelIds = selectIds(database, 'SELECT id FROM custom_provider_models WHERE model LIKE ?', 'mockdata-%')
+    database.prepare('DELETE FROM provider_system_default_health_check_models WHERE model LIKE ?').run('mockdata-%')
     deleteWhereIn(database, 'custom_provider_models', 'id', mockCustomProviderModelIds)
 
     const mockAccountTestTaskIds = selectIds(database, 'SELECT id FROM account_test_tasks WHERE id LIKE ? OR account_name LIKE ? OR status_message LIKE ?', `${idPrefix}%`, likeName, `${namePrefix}%`)
@@ -171,6 +173,25 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
     deleteWhereIn(database, 'client_ip_policy_hits', 'policy_id', mockClientIpPolicyIds)
     deleteWhereIn(database, 'client_ip_policies', 'id', mockClientIpPolicyIds)
     deleteWhereIn(database, 'account_usage_snapshots', 'account_id', mockAccountIds)
+    for (const tableName of [
+      'model_token_integrity_windows',
+      'model_token_integrity_rounds',
+      'model_trust_window_sources',
+      'model_identity_source_features',
+      'model_paired_similarity_windows',
+      'model_account_trust_results',
+      'model_trust_latest_dirty_accounts'
+    ]) {
+      deleteWhereIn(database, tableName, 'account_id', mockAccountIds)
+    }
+    database.prepare(`
+      DELETE FROM model_identity_baseline_versions
+      WHERE population_key_hmac = ?
+    `).run(modelCheckObservationHmac('mockdata-model-trust-population', 'population'))
+    database.prepare(`
+      DELETE FROM stats_job_state
+      WHERE job_name = 'model-trust-observation-aggregation'
+    `).run()
     deleteWhereIn(database, 'account_quality_dirty_accounts', 'account_id', mockAccountIds)
     database.prepare(`
       DELETE FROM client_ip_range_window_dirty_ips

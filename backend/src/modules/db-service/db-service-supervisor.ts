@@ -5,10 +5,20 @@ import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { attachDbServiceProcess } from './db-service-ipc.js'
+import { attachDbServiceProcess, getDbServiceState } from './db-service-ipc.js'
+import {
+  createDbServiceHealthRecoveryState,
+  dbServiceHealthRecoveryDefaults,
+  recordDbServiceHealthProbe,
+  resetDbServiceHealthRecoveryState
+} from './db-service-health-recovery.js'
 
 let dbServiceProcess: ChildProcess | undefined
 let restartTimer: NodeJS.Timeout | undefined
+let dbServiceHealthTimer: NodeJS.Timeout | undefined
+let dbServiceForceKillTimer: NodeJS.Timeout | undefined
+let dbServiceHealthProbeInFlight = false
+let dbServiceHealthRecoveryState = createDbServiceHealthRecoveryState(0)
 let restartAttempts = 0
 let stopping = false
 let shutdownHooksInstalled = false
@@ -22,6 +32,9 @@ const dbServiceSourcePath = resolve(sourceRoot, 'db-service.ts')
 const dbServiceDistPath = resolve(sourceRoot, 'db-service.js')
 const dbServiceRestartBaseDelayMs = 1000
 const dbServiceRestartMaxDelayMs = 30_000
+const dbServiceHealthProbeIntervalMs = 15_000
+const dbServiceHealthProbeTimeoutMs = 5_000
+const dbServiceForceKillDelayMs = 10_000
 
 interface DbServiceSupervisorOptions {
   onReady?: () => void
@@ -60,6 +73,8 @@ function startDbServiceProcess(): void {
   })
 
   dbServiceProcess = child
+  dbServiceHealthRecoveryState = resetDbServiceHealthRecoveryState(dbServiceHealthRecoveryState, Date.now())
+  startDbServiceHealthMonitor(child)
   attachDbServiceProcess(child, {
     onReady: () => {
       restartAttempts = 0
@@ -87,6 +102,7 @@ function startDbServiceProcess(): void {
     if (dbServiceProcess !== child) {
       return
     }
+    clearDbServiceHealthMonitor()
     dbServiceProcess = undefined
     dbServiceReady = false
     if (!stopping) {
@@ -101,12 +117,107 @@ function startDbServiceProcess(): void {
     if (dbServiceProcess !== child) {
       return
     }
+    clearDbServiceHealthMonitor()
     dbServiceProcess = undefined
     dbServiceReady = false
     if (!stopping) {
       scheduleDbServiceRestart()
     }
   })
+}
+
+function startDbServiceHealthMonitor(child: ChildProcess): void {
+  clearDbServiceHealthProbeTimer()
+  dbServiceHealthTimer = setInterval(() => {
+    void probeDbServiceHealth(child)
+  }, dbServiceHealthProbeIntervalMs)
+  dbServiceHealthTimer.unref()
+}
+
+async function probeDbServiceHealth(child: ChildProcess): Promise<void> {
+  if (stopping || dbServiceProcess !== child || dbServiceHealthProbeInFlight) return
+  const nowMs = Date.now()
+  if (nowMs - dbServiceHealthRecoveryState.childStartedAtMs < dbServiceHealthRecoveryDefaults.startupGraceMs) return
+
+  dbServiceHealthProbeInFlight = true
+  let healthy = false
+  let probeError: unknown
+  try {
+    const state = getDbServiceState()
+    if (state.pid === child.pid && state.ready && state.httpHost && state.httpPort) {
+      const response = await fetch(`http://${state.httpHost}:${state.httpPort}/__aisys__/api/health`, {
+        signal: AbortSignal.timeout(dbServiceHealthProbeTimeoutMs)
+      })
+      await response.arrayBuffer()
+      healthy = response.ok
+    }
+  } catch (error) {
+    probeError = error
+  } finally {
+    dbServiceHealthProbeInFlight = false
+  }
+  if (stopping || dbServiceProcess !== child) return
+
+  const result = recordDbServiceHealthProbe(dbServiceHealthRecoveryState, { nowMs: Date.now(), healthy })
+  dbServiceHealthRecoveryState = result.state
+  if (healthy) return
+
+  const fields = {
+    event: 'db_service_health_probe_failed',
+    pid: child.pid,
+    action: result.action,
+    consecutiveFailures: result.state.consecutiveFailures,
+    recoveryAttemptsInWindow: result.state.recoveryAttemptsMs.length,
+    errorMessage: probeError instanceof Error ? probeError.message : probeError ? String(probeError) : undefined
+  }
+  if (result.action === 'recover') {
+    logger.error(fields, 'DB service health 连续失败，定向终止当前子进程')
+    terminateUnhealthyDbServiceChild(child)
+    return
+  }
+  if (result.action === 'suppressed_budget' || result.action === 'suppressed_cooldown') {
+    logger.error(fields, 'DB service health 恢复受冷却或预算保护阻断，仅记录告警')
+    return
+  }
+  logger.warn(fields, 'DB service health 探测失败')
+}
+
+function terminateUnhealthyDbServiceChild(child: ChildProcess): void {
+  if (stopping || dbServiceProcess !== child || child.pid === undefined) return
+  clearDbServiceHealthProbeTimer()
+  const childPid = child.pid
+  child.kill('SIGTERM')
+  if (dbServiceForceKillTimer) clearTimeout(dbServiceForceKillTimer)
+  dbServiceForceKillTimer = setTimeout(() => {
+    dbServiceForceKillTimer = undefined
+    if (stopping || !isSameRunningDbServiceChild(child, childPid)) return
+    logger.error({ event: 'db_service_health_force_kill', pid: childPid }, 'DB service TERM 后未退出，强制终止同一子进程')
+    child.kill('SIGKILL')
+  }, dbServiceForceKillDelayMs)
+  dbServiceForceKillTimer.unref()
+}
+
+function isSameRunningDbServiceChild(child: ChildProcess, childPid: number): boolean {
+  return dbServiceProcess === child
+    && child.pid === childPid
+    && child.exitCode === null
+    && child.signalCode === null
+}
+
+function clearDbServiceHealthProbeTimer(): void {
+  if (dbServiceHealthTimer) {
+    clearInterval(dbServiceHealthTimer)
+    dbServiceHealthTimer = undefined
+  }
+}
+
+function clearDbServiceHealthMonitor(): void {
+  clearDbServiceHealthProbeTimer()
+  dbServiceHealthProbeInFlight = false
+  if (dbServiceForceKillTimer) {
+    clearTimeout(dbServiceForceKillTimer)
+    dbServiceForceKillTimer = undefined
+  }
 }
 
 function registerDbServiceReadyCallback(callback: () => void): void {
@@ -176,13 +287,12 @@ function installSupervisorShutdownHooks(): void {
   }
   shutdownHooksInstalled = true
 
-  process.once('exit', () => stopDbServiceProcess())
-  process.once('SIGINT', () => exitAfterDbServiceStop(0))
-  process.once('SIGTERM', () => exitAfterDbServiceStop(0))
+  process.once('exit', () => stopDbServiceSupervisor())
 }
 
-function stopDbServiceProcess(): void {
+export function stopDbServiceSupervisor(): void {
   stopping = true
+  clearDbServiceHealthMonitor()
   if (restartTimer) {
     clearTimeout(restartTimer)
     restartTimer = undefined
@@ -190,9 +300,4 @@ function stopDbServiceProcess(): void {
   if (dbServiceProcess && !dbServiceProcess.killed) {
     dbServiceProcess.kill('SIGTERM')
   }
-}
-
-function exitAfterDbServiceStop(exitCode: number): never {
-  stopDbServiceProcess()
-  process.exit(exitCode)
 }

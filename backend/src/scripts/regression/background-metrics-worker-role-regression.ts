@@ -43,10 +43,12 @@ assertRoleBlockContainsOnly('ingest-worker', [
   'runtime-log-index-maintenance'
 ])
 assertRoleBlockContainsOnly('stats-worker', [
+  'background-task-run-reconcile',
   'system-metrics-sample',
   'usage-stats-aggregation',
   'client-ip-stats-aggregation',
   'group-account-stats-refresh',
+  'model-trust-observation-aggregation',
   'usage-rank-snapshots-refresh',
   'system-metrics-trend-windows-refresh',
   'usage-overview-windows-refresh',
@@ -66,8 +68,8 @@ assert(backgroundJobsSource.includes("reason: 'stats_worker_startup_refresh'"), 
 assertRoleBlockContainsOnly('ops-worker', [
   'chat-retention-cleanup',
   'proxy-latency-refresh',
-  'account-health-check',
   'account-balance-refresh',
+  'account-health-check',
   'cooldown-account-retest',
   'account-api-key-cooldown-retest',
   'openai-oauth-access-token-refresh',

@@ -148,6 +148,7 @@ interface HandleUpstreamResponseInput {
 
 interface FinalizeHandledUpstreamResponseInput extends HandleUpstreamResponseInput {
   result: Exclude<UpstreamResponseHandlingResult, { alreadyFinalized: true } | { retryUpstream: true }>
+  completedAtMs?: number
 }
 
 const nonStreamResponseInspectionMaxBytes = 1024 * 1024
@@ -1375,6 +1376,7 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     success: upstreamResponse.ok,
     firstTokenMs: result.firstTokenMs,
     startedAt,
+    completedAtMs: input.completedAtMs,
     usage: result.usage,
     errorCode: typeof result.errorPayload.code === 'string' ? result.errorPayload.code : undefined,
     errorMessage: typeof result.errorPayload.message === 'string' ? result.errorPayload.message : undefined,

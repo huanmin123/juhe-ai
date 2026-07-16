@@ -453,6 +453,7 @@ function buildAccount(input: {
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
+    healthCheckEndpointMode: 'responses_sse',
     streamFailureCount: 0,
     accountOwnerSystemAccountId: 'sys_admin',
     groupOwnerSystemAccountId: 'sys_admin',

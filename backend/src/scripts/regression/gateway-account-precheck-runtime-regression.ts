@@ -833,6 +833,7 @@ function createRuntimeAccount(id: string, options: { priority?: number } = {}): 
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
     supportedModels: ['gpt-5.5'],
+    healthCheckEndpointMode: 'responses_sse',
     currentConcurrency: 0,
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-precheck-runtime',

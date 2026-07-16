@@ -837,12 +837,12 @@ func insertW5ManagementGroupListFixtures(
 		INSERT INTO juhe_business.accounts (
 			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, credentials_encrypted, credential_mask, concurrency_limit, priority,
-			client_compatibility, schedulable, health_check_model, created_at, updated_at
+			client_compatibility, schedulable, health_check_model, health_check_endpoint_mode, created_at, updated_at
 		) VALUES
 			($1, $3, 'openai', 'profile_openai_openai_v1', 'openai', 'v1', $1, 'api_key', 'active',
-				'v1:test:test:1', 'sk***1', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', $4, $4),
+			'v1:test:test:1', 'sk***1', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', 'chat_json', $4, $4),
 			($2, $3, 'openai', 'profile_openai_openai_v1', 'openai', 'v1', $2, 'api_key', 'active',
-				'v1:test:test:2', 'sk***2', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', $5, $5)
+			'v1:test:test:2', 'sk***2', 20, 0, 'openai_standard', true, 'gpt-5.6-sol', 'chat_json', $5, $5)
 	`,
 		w5ManagementGroupListOwnedAccount1,
 		w5ManagementGroupListOwnedAccount2,

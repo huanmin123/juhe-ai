@@ -1,5 +1,13 @@
 import type { AccountSummary, GroupSummary, SystemAccountSummary } from '../../../../domain/types.js'
+import {
+  modelCheckObservationHmac
+} from '../../../../modules/model-checks/model-checks-observation-security.js'
 import * as repositories from '../../../../storage/repositories.js'
+import {
+  aggregateModelTrustObservationsAsync,
+  createModelCheckObservationsAsync,
+  type ModelCheckObservationInput
+} from '../../../../storage/model-trust.repository.js'
 import {
   dayMs,
   idPrefix,
@@ -29,7 +37,7 @@ interface ModelCheckTargetSeed {
   comparisonAccount?: AccountSummary
 }
 
-export function createModelCheckMockdata(created: CreatedMockdata, options: MockdataOptions): ModelCheckMockdataCounts {
+export async function createModelCheckMockdata(created: CreatedMockdata, options: MockdataOptions): Promise<ModelCheckMockdataCounts> {
   const devPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.dev)
   const testerPrimaryInstance = authorizationInstanceAccount(created.accounts.primary, created.users.tester)
   const opsProxiedInstance = authorizationInstanceAccount(created.accounts.proxied, created.users.ops)
@@ -135,9 +143,115 @@ export function createModelCheckMockdata(created: CreatedMockdata, options: Mock
     }
   }
 
+  await createModelTrustMockdata(created)
+
   return {
     runs: runCount,
     items: itemCount
+  }
+}
+
+async function createModelTrustMockdata(created: CreatedMockdata): Promise<void> {
+  const runId = `${idPrefix}model_check_run_0002`
+  const systemAccountId = created.users.admin.id
+  const probeSetVersion = 'mockdata-model-trust-v1'
+  const featureVersion = 'mockdata-identity-v1'
+  const tokenizerVersion = 'mockdata-tokenizer-v1'
+  const populationKeyHmac = modelCheckObservationHmac('mockdata-model-trust-population', 'population')
+  const observations: ModelCheckObservationInput[] = []
+  const identitySources = [
+    created.accounts.primary,
+    created.accounts.oauth,
+    created.accounts.normal,
+    created.accounts.burstFast,
+    created.accounts.burstImage
+  ]
+
+  for (const [sourceIndex, account] of identitySources.entries()) {
+    const upstreamBucketHmac = modelCheckObservationHmac(`mockdata-upstream-${sourceIndex}`, 'upstream')
+    for (const [modelIndex, model] of ['gpt-5.5', 'gpt-5.4'].entries()) {
+      for (let probeIndex = 0; probeIndex < 3; probeIndex += 1) {
+        const base = 0.18 + modelIndex * 0.28 + sourceIndex * 0.012 + probeIndex * 0.004
+        observations.push({
+          id: `${idPrefix}model_trust_identity_${sourceIndex}_${modelIndex}_${probeIndex}`,
+          runId,
+          systemAccountId,
+          accountId: account.id,
+          providerCode,
+          providerProtocolProfileId: 'gpt-openai-v1',
+          endpointFamily: 'responses',
+          requestedModel: model,
+          mappedUpstreamModel: model,
+          observedModel: model,
+          mappingApplied: false,
+          upstreamBucketHmac,
+          cohortKeyHmac: modelCheckObservationHmac(`mockdata-cohort-${model}`, 'cohort'),
+          populationKeyHmac,
+          probeKeyHmac: modelCheckObservationHmac(`mockdata-identity-probe-${probeIndex}`, 'probe'),
+          probeFamily: `identity_probe_${probeIndex + 1}`,
+          probeSetVersion,
+          tokenizerVersion,
+          featureVersion,
+          roundIndex: 0,
+          paddingTokens: 0,
+          localInputTokens: 0,
+          constraintPassed: true,
+          featureVector: Array.from({ length: 8 }, (_, featureIndex) => Math.min(1, base + featureIndex * 0.006)),
+          observationStatus: 'observed',
+          identityStatus: 'consistent',
+          mappingStatus: 'direct',
+          protocolStatus: 'consistent',
+          evidenceCoverage: 100,
+          traceId: `${tracePrefix}model-trust-identity-${sourceIndex}-${modelIndex}-${probeIndex}`,
+          createdAt: new Date(Date.now() - (6 - sourceIndex) * dayMs + probeIndex * minuteMs).toISOString()
+        })
+      }
+    }
+  }
+
+  const tokenAccount = created.accounts.primary
+  const tokenModel = 'gpt-5.5'
+  for (let roundIndex = 0; roundIndex < 3; roundIndex += 1) {
+    for (const paddingTokens of [0, 512, 2048]) {
+      const localInputTokens = 100 + paddingTokens + roundIndex
+      observations.push({
+        id: `${idPrefix}model_trust_token_${roundIndex}_${paddingTokens}`,
+        runId,
+        systemAccountId,
+        accountId: tokenAccount.id,
+        providerCode,
+        providerProtocolProfileId: 'gpt-openai-v1',
+        endpointFamily: 'responses',
+        requestedModel: tokenModel,
+        mappedUpstreamModel: tokenModel,
+        observedModel: tokenModel,
+        mappingApplied: false,
+        upstreamBucketHmac: modelCheckObservationHmac('mockdata-upstream-token', 'upstream'),
+        cohortKeyHmac: modelCheckObservationHmac(`mockdata-cohort-${tokenModel}`, 'cohort'),
+        populationKeyHmac,
+        probeKeyHmac: modelCheckObservationHmac(`mockdata-token-probe-${roundIndex}-${paddingTokens}`, 'probe'),
+        probeFamily: 'token_input_differential',
+        probeSetVersion,
+        tokenizerVersion,
+        featureVersion: 'none',
+        roundIndex,
+        paddingTokens,
+        localInputTokens,
+        reportedInputTokens: localInputTokens + 10,
+        observationStatus: 'observed',
+        identityStatus: 'consistent',
+        mappingStatus: 'direct',
+        protocolStatus: 'consistent',
+        evidenceCoverage: 100,
+        traceId: `${tracePrefix}model-trust-token-${roundIndex}-${paddingTokens}`,
+        createdAt: new Date(Date.now() - dayMs + roundIndex * minuteMs + paddingTokens).toISOString()
+      })
+    }
+  }
+
+  await createModelCheckObservationsAsync(observations)
+  while (await aggregateModelTrustObservationsAsync(500)) {
+    // Exercise the same cursor-based aggregation path used by the stats worker.
   }
 }
 

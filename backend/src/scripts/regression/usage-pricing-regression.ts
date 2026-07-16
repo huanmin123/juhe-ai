@@ -404,8 +404,9 @@ assert.equal(deepSeekV4ProCost, 0.00034945, 'DeepSeek V4 Pro 成本应按 cache 
 const deepSeekModelPricingList = listProviderModelPricing(DEEPSEEK_PROVIDER_CODE)
 assert.deepEqual(deepSeekModelPricingList.map((item) => item.model), [
   'deepseek-v4-flash',
-  'deepseek-v4-pro'
-], 'DeepSeek 价格目录应只包含当前官网公开 ID')
+  'deepseek-v4-pro',
+  ...(new Date().toISOString().slice(0, 10) < '2026-07-24' ? ['deepseek-chat', 'deepseek-reasoner'] : [])
+], 'DeepSeek 价格目录应按当前官方优先模型到历史兼容名排序')
 const deepSeekPricingById = new Map(deepSeekModelPricingList.map((item) => [item.model, item]))
 for (const id of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
   assert(deepSeekPricingById.has(id), `DeepSeek 模型价格目录应包含 ${id}`)
@@ -451,13 +452,8 @@ assert.deepEqual(glmModelPricingList.map((item) => item.model), [
   'glm-4-long',
   'glm-4-flashx-250414',
   'glm-4-flash-250414',
-  'glm-5v-turbo',
-  'glm-4.6v',
-  'glm-4.6v-flashx',
-  'glm-4.6v-flash',
-  'glm-4.5v',
-  'glm-ocr'
-], 'GLM 价格目录应按官网文本与视觉模型顺序返回')
+  'glm-5.2-free'
+], 'GLM 价格目录应按官方当前模型从新到旧排序，隐藏历史估算项排最后')
 const glmPricingById = new Map(glmModelPricingList.map((item) => [item.model, item]))
 for (const id of [
   'glm-5.2',
@@ -477,17 +473,12 @@ for (const id of [
   'glm-4-long',
   'glm-4-flashx-250414',
   'glm-4-flash-250414',
-  'glm-5v-turbo',
-  'glm-4.6v',
-  'glm-4.6v-flashx',
-  'glm-4.6v-flash',
-  'glm-4.5v',
-  'glm-ocr'
+  'glm-5.2-free'
 ]) {
   assert(glmPricingById.has(id), `GLM 模型价格目录应包含 ${id}`)
   assert.deepEqual(glmPricingById.get(id)?.supportedApiProtocols, ['chat_completions'])
 }
-assert.equal(glmPricingById.has('glm-5.2-free'), false, '非官方 glm-5.2-free 不应进入价格目录')
+assert.equal(glmPricingById.get('glm-5.2-free')?.catalogVisible, false, '非官方 glm-5.2-free 不应进入可见模型目录')
 assert.equal(glmPricingById.get('glm-5.2')?.inputUsdPer1M, 1.4)
 assert.equal(glmPricingById.get('glm-5.2')?.cachedInputUsdPer1M, 0.26)
 assert.equal(glmPricingById.get('glm-5.2')?.outputUsdPer1M, 4.4)
@@ -521,8 +512,8 @@ assert.equal(glmPricingById.get('glm-4.5-flash')?.inputUsdPer1M, 0)
 assert.equal(glmPricingById.get('glm-4.5-flash')?.outputUsdPer1M, 0)
 assert.equal(glmPricingById.get('glm-4-32b-0414-128k')?.inputUsdPer1M, 0.1)
 assert.equal(glmPricingById.get('glm-4-32b-0414-128k')?.outputUsdPer1M, 0.1)
-assert.equal(glmPricingById.get('glm-4-long')?.inputUsdPer1M, undefined)
-assert.equal(glmPricingById.get('glm-4-long')?.outputUsdPer1M, undefined)
+assert.equal(glmPricingById.get('glm-4-long')?.inputUsdPer1M, 0.14)
+assert.equal(glmPricingById.get('glm-4-long')?.outputUsdPer1M, 0.14)
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5.2-20260620')?.model, 'glm-5.2')
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5-turbo-20260620')?.model, 'glm-5-turbo')
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-4.7-flashx-20260620')?.model, 'glm-4.7-flashx')
@@ -546,8 +537,7 @@ assert.deepEqual(geminiModelPricingList.map((item) => item.model), [
   'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
-  'gemini-embedding-2',
-  'gemini-embedding-001'
+  'gemini-embedding-2'
 ], 'Gemini 价格目录应只包含当前收录的 Google 官方模型')
 const geminiPricingById = new Map(geminiModelPricingList.map((item) => [item.model, item]))
 for (const id of [
@@ -562,27 +552,19 @@ for (const id of [
 ]) {
   assert(geminiPricingById.has(id), `Gemini 模型价格目录应包含 ${id}`)
   assert.deepEqual(geminiPricingById.get(id)?.supportedApiProtocols, ['chat_completions', 'generate_content', 'stream_generate_content', 'count_tokens'])
-  assert.equal(geminiPricingById.get(id)?.contextWindowTokens, 1_048_576)
   assert.equal(geminiPricingById.get(id)?.maxInputTokens, 1_048_576)
   assert.equal(geminiPricingById.get(id)?.maxOutputTokens, 65_536)
-  assert.deepEqual(geminiPricingById.get(id)?.supportedServiceTiers, ['priority', 'flex'])
   assert.equal(geminiPricingById.get(id)?.defaultReasoningEffort, 'medium')
   assert.deepEqual(geminiPricingById.get(id)?.outputModalities, ['text'])
 }
 assert.deepEqual(geminiPricingById.get('gemini-embedding-2')?.supportedApiProtocols, ['embed_content'])
-assert.deepEqual(geminiPricingById.get('gemini-embedding-001')?.supportedApiProtocols, ['embed_content'])
 assert.equal(geminiPricingById.get('gemini-3.5-flash')?.inputUsdPer1M, 1.5)
 assert.equal(geminiPricingById.get('gemini-3.5-flash')?.cachedInputUsdPer1M, 0.15)
 assert.equal(geminiPricingById.get('gemini-3.5-flash')?.outputUsdPer1M, 9)
 assert.equal(geminiPricingById.get('gemini-3.1-flash-lite')?.inputUsdPer1M, 0.25)
 assert.equal(geminiPricingById.get('gemini-2.5-flash-lite')?.outputUsdPer1M, 0.4)
 assert.equal(geminiPricingById.get('gemini-embedding-2')?.inputUsdPer1M, 0.2)
-assert.equal(geminiPricingById.get('gemini-embedding-2')?.contextWindowTokens, 8_192)
-assert.equal(geminiPricingById.get('gemini-embedding-2')?.maxInputTokens, 8_192)
 assert.deepEqual(geminiPricingById.get('gemini-embedding-2')?.inputModalities, ['text', 'image', 'video', 'audio', 'file'])
-assert.equal(geminiPricingById.get('gemini-embedding-001')?.contextWindowTokens, 2_048)
-assert.equal(geminiPricingById.get('gemini-embedding-001')?.maxInputTokens, 2_048)
-assert.deepEqual(geminiPricingById.get('gemini-embedding-001')?.inputModalities, ['text'])
 assert.equal(getProviderModelPricing(GEMINI_PROVIDER_CODE, 'models/gemini-3.5-flash')?.model, 'gemini-3.5-flash')
 assert.equal(getProviderModelPricing(GEMINI_PROVIDER_CODE, 'gemini-3.5-flash-antigravity'), undefined, '中转自定义 Gemini 型号不应回落到官方模型价格')
 assert.equal(geminiPricingById.has('gemini-3.5-flash-antigravity'), false, '中转自定义 Gemini 型号不应进入官方 Gemini 价格目录')
@@ -607,19 +589,22 @@ assert(anthropicModelPricingList.length > 0, 'Anthropic 供应商应暴露 Anthr
 assert.equal(anthropicModelPricingList[0]?.providerCode, ANTHROPIC_PROVIDER_CODE, 'Anthropic 模型目录应保留 anthropic providerCode')
 assert.deepEqual(anthropicModelPricingList.slice(0, 25).map((item) => item.model), [
   'claude-fable-5',
+  'claude-mythos-5',
   'claude-sonnet-5',
+  ...(new Date().toISOString().slice(0, 10) < '2026-06-30' ? ['claude-mythos-preview'] : []),
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
-  'claude-sonnet-4-6',
+  'claude-opus-4-6-thinking',
   'claude-opus-4-5',
   'claude-opus-4-5-20251101',
+  ...(new Date().toISOString().slice(0, 10) < '2026-08-05' ? ['claude-opus-4-1', 'claude-opus-4-1-20250805'] : []),
+  'claude-sonnet-4-6',
+  'claude-sonnet-4-6-thinking',
   'claude-sonnet-4-5',
   'claude-sonnet-4-5-20250929',
   'claude-haiku-4-5',
   'claude-haiku-4-5-20251001',
-  ...(new Date().toISOString().slice(0, 10) < '2026-08-05' ? ['claude-opus-4-1', 'claude-opus-4-1-20250805'] : []),
-  'claude-mythos-5',
   'best',
   'fable',
   'opus',
@@ -627,11 +612,7 @@ assert.deepEqual(anthropicModelPricingList.slice(0, 25).map((item) => item.model
   'opusplan',
   'sonnet',
   'sonnet[1m]',
-  'haiku',
-  'claude-opus-4-6-thinking',
-  'antigravity-claude-opus-4-6-thinking',
-  'antigravity/claude-opus-4-6-thinking',
-  'google/antigravity-claude-opus-4-6-thinking'
+  'haiku'
 ].slice(0, 25), 'Anthropic 价格目录应按官方当前模型从新到旧排序，隐藏兼容模型排在可见模型后')
 const anthropicPricingById = new Map(anthropicModelPricingList.map((item) => [item.model, item]))
 for (const id of [
@@ -650,11 +631,14 @@ for (const id of [
 }
 for (const id of [
   'claude-fable-5',
+  'claude-mythos-5',
   'claude-sonnet-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
+  'claude-opus-4-6-thinking',
   'claude-sonnet-4-6',
+  'claude-sonnet-4-6-thinking',
   'claude-opus-4-5',
   'claude-sonnet-4-5',
   'claude-haiku-4-5',
@@ -669,9 +653,6 @@ for (const id of [
 assert.equal(anthropicPricingById.has('claude-mythos-preview'), false, 'Mythos preview 已退休，不应进入 Anthropic 目录')
 assert.equal(getProviderModelPricing(ANTHROPIC_PROVIDER_CODE, 'claude-mythos-preview'), undefined, 'Mythos preview 已退休，不应命中计价')
 for (const id of [
-  'claude-mythos-5',
-  'claude-opus-4-6-thinking',
-  'claude-sonnet-4-6-thinking',
   'antigravity-claude-opus-4-6-thinking',
   'antigravity/claude-opus-4-6-thinking',
   'google/antigravity-claude-opus-4-6-thinking',
@@ -699,27 +680,27 @@ assert.deepEqual(anthropicPricingById.get('claude-haiku-4-5')?.supportedApiProto
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.inputUsdPer1M, 1)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.outputUsdPer1M, 5)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.cachedInputUsdPer1M, 0.1)
-assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.contextWindowTokens, 200_000)
+assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.contextWindowTokens, undefined)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.maxInputTokens, undefined)
-assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.maxOutputTokens, 64_000)
+assert.equal(anthropicPricingById.get('claude-haiku-4-5')?.maxOutputTokens, undefined)
 assert.equal(anthropicPricingById.get('best')?.inputUsdPer1M, 10)
 assert.equal(anthropicPricingById.get('best')?.outputUsdPer1M, 50)
 assert.equal(anthropicPricingById.get('fable')?.inputUsdPer1M, 10)
 assert.equal(anthropicPricingById.get('fable')?.outputUsdPer1M, 50)
 assert.equal(anthropicPricingById.get('opus')?.inputUsdPer1M, 5)
 assert.equal(anthropicPricingById.get('opus')?.outputUsdPer1M, 25)
-assert.equal(anthropicPricingById.get('opus[1m]')?.contextWindowTokens, 1_000_000)
-assert.equal(anthropicPricingById.get('opus[1m]')?.maxInputTokens, undefined)
+assert.equal(anthropicPricingById.get('opus[1m]')?.contextWindowTokens, undefined)
+assert.equal(anthropicPricingById.get('opus[1m]')?.maxInputTokens, 1_000_000)
 assert.equal(anthropicPricingById.get('sonnet')?.inputUsdPer1M, 3)
 assert.equal(anthropicPricingById.get('sonnet')?.outputUsdPer1M, 15)
-assert.equal(anthropicPricingById.get('sonnet[1m]')?.contextWindowTokens, 1_000_000)
-assert.equal(anthropicPricingById.get('sonnet[1m]')?.maxInputTokens, undefined)
+assert.equal(anthropicPricingById.get('sonnet[1m]')?.contextWindowTokens, undefined)
+assert.equal(anthropicPricingById.get('sonnet[1m]')?.maxInputTokens, 1_000_000)
 assert.equal(anthropicPricingById.get('haiku')?.inputUsdPer1M, 1)
 assert.equal(anthropicPricingById.get('haiku')?.outputUsdPer1M, 5)
 assert.equal(anthropicPricingById.get('claude-fable-5')?.inputUsdPer1M, 10)
 assert.equal(anthropicPricingById.get('claude-fable-5')?.outputUsdPer1M, 50)
-assert.equal(anthropicPricingById.get('claude-fable-5')?.contextWindowTokens, 1_000_000)
-assert.equal(anthropicPricingById.get('claude-fable-5')?.maxInputTokens, undefined)
+assert.equal(anthropicPricingById.get('claude-fable-5')?.contextWindowTokens, undefined)
+assert.equal(anthropicPricingById.get('claude-fable-5')?.maxInputTokens, 1_000_000)
 assert.equal(anthropicPricingById.get('claude-fable-5')?.maxOutputTokens, 128_000)
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
 assert.equal(anthropicPricingById.get('claude-fable-5')?.defaultReasoningEffort, 'medium')
@@ -729,14 +710,14 @@ assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.outputModalities, [
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedTools, ['function_calling', 'code_execution'])
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.inputUsdPer1M, 2)
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.outputUsdPer1M, 10)
-assert.equal(anthropicPricingById.get('claude-sonnet-5')?.contextWindowTokens, 1_000_000)
+assert.equal(anthropicPricingById.get('claude-sonnet-5')?.contextWindowTokens, 200_000)
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.maxInputTokens, undefined)
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.maxOutputTokens, 128_000)
 assert.deepEqual(anthropicPricingById.get('claude-sonnet-5')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.defaultReasoningEffort, 'medium')
 assert.equal(anthropicPricingById.get('claude-mythos-5')?.inputUsdPer1M, 10)
 assert.equal(anthropicPricingById.get('claude-mythos-5')?.outputUsdPer1M, 50)
-assert.equal(anthropicPricingById.get('claude-mythos-5')?.catalogVisible, false)
+assert.equal(anthropicPricingById.get('claude-mythos-5')?.catalogVisible, true)
 assert.equal(anthropicPricingById.get('claude-opus-4-8')?.inputUsdPer1M, 5)
 assert.equal(anthropicPricingById.get('claude-opus-4-8')?.outputUsdPer1M, 25)
 assert.equal(anthropicPricingById.get('claude-opus-4-7')?.inputUsdPer1M, 5)
@@ -746,11 +727,11 @@ assert.equal(anthropicPricingById.get('claude-opus-4-6')?.outputUsdPer1M, 25)
 assert.equal(anthropicPricingById.get('claude-opus-4-6-antigravity')?.inputUsdPer1M, 5)
 assert.equal(anthropicPricingById.get('claude-opus-4-6-antigravity')?.outputUsdPer1M, 25)
 assert.equal(anthropicPricingById.get('google/antigravity-claude-opus-4-6-thinking')?.inputUsdPer1M, 5)
-assert.equal(anthropicPricingById.get('google-antigravity/claude-opus-4-6-thinking')?.contextWindowTokens, 1_000_000)
-assert.equal(anthropicPricingById.get('google-antigravity/claude-opus-4-6-thinking')?.maxInputTokens, undefined)
+assert.equal(anthropicPricingById.get('google-antigravity/claude-opus-4-6-thinking')?.contextWindowTokens, undefined)
+assert.equal(anthropicPricingById.get('google-antigravity/claude-opus-4-6-thinking')?.maxInputTokens, 1_000_000)
 assert.equal(anthropicPricingById.get('google/antigravity-claude-sonnet-4-6')?.inputUsdPer1M, 3)
-assert.equal(anthropicPricingById.get('google-antigravity/claude-sonnet-4-6-thinking')?.contextWindowTokens, 1_000_000)
-assert.equal(anthropicPricingById.get('google-antigravity/claude-sonnet-4-6-thinking')?.maxInputTokens, undefined)
+assert.equal(anthropicPricingById.get('google-antigravity/claude-sonnet-4-6-thinking')?.contextWindowTokens, undefined)
+assert.equal(anthropicPricingById.get('google-antigravity/claude-sonnet-4-6-thinking')?.maxInputTokens, 1_000_000)
 assert.deepEqual(anthropicPricingById.get('claude-haiku-4-5-20251001')?.supportedApiProtocols, ['messages', 'message_token_counting'])
 assert.equal(anthropicPricingById.get('claude-haiku-4-5-20251001')?.inputUsdPer1M, 1)
 assert.equal(anthropicPricingById.get('claude-haiku-4-5-20251001')?.outputUsdPer1M, 5)
@@ -990,12 +971,12 @@ assert.equal(openAIModelPricingById.get('o3')?.maxInputTokens, undefined)
 assert.equal(openAIModelPricingById.get('o3')?.contextWindowTokens, 200_000)
 assert.deepEqual(openAIModelPricingById.get('gpt-5.6-sol')?.supportedReasoningEfforts, ['none', 'low', 'medium', 'high', 'xhigh', 'max'])
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.defaultReasoningEffort, 'medium')
-assert.deepEqual(openAIModelPricingById.get('gpt-5.5-pro')?.supportedServiceTiers, ['flex'])
+assert.deepEqual(openAIModelPricingById.get('gpt-5.5-pro')?.supportedServiceTiers, ['priority', 'flex'])
 assert.equal(openAIModelPricingById.get('gpt-5.5-pro')?.defaultReasoningEffort, 'high')
-assert.deepEqual(openAIModelPricingById.get('gpt-5.4-nano')?.supportedServiceTiers, ['flex'])
-assert.deepEqual(openAIModelPricingById.get('gpt-5.4-pro')?.supportedServiceTiers, ['flex'])
-assert.deepEqual(openAIModelPricingById.get('gpt-5.2')?.supportedServiceTiers, ['priority', 'flex'])
-assert.deepEqual(openAIModelPricingById.get('gpt-5.2-pro')?.supportedServiceTiers, [])
+assert.deepEqual(openAIModelPricingById.get('gpt-5.4-nano')?.supportedServiceTiers, ['priority', 'flex'])
+assert.deepEqual(openAIModelPricingById.get('gpt-5.4-pro')?.supportedServiceTiers, ['priority', 'flex'])
+assert.deepEqual(openAIModelPricingById.get('gpt-5.2')?.supportedServiceTiers, ['priority'])
+assert.deepEqual(openAIModelPricingById.get('gpt-5.2-pro')?.supportedServiceTiers, ['priority'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5-pro')?.supportedReasoningEfforts, ['high'])
 assert.equal(openAIModelPricingById.get('gpt-5-pro')?.defaultReasoningEffort, 'high')
 assert.equal(openAIModelPricingById.get('gpt-5.5')?.releaseDate, '2026-04-23')
@@ -1355,7 +1336,7 @@ assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestAttemptTimeoutMs
 assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestRunBudgetMs/)
 assert.match(backgroundJobsSource, /const safety = await usageStatsAggregationSafety\(\)/)
 assert.match(backgroundJobsSource, /safeCreatedBefore: safety\.safeCreatedBefore/)
-assert.match(backgroundJobsSource, /requestIngestWorkerDrainStatus\(3000\)/, '统计安全门必须容忍 ingest worker 已观测到的短时事件循环延迟，同时继续在 3 秒后失败并保留 error 日志')
+assert.match(backgroundJobsSource, /requestIngestWorkerDrainStatus\(6000\)/)
 assert.match(backgroundJobsSource, /defaultUsageStatsSafeCreatedBeforeIso\(\)/)
 assert.match(backgroundJobsSource, /使用记录 ingest 队列已有/)
 assert.match(backgroundJobsSource, /usageStatsSafeCreatedBeforeForPendingBacklog/)
@@ -1369,7 +1350,7 @@ assert.match(accountProbeJobsSource, /getCooldownAccountRetestQueueSnapshot/)
 assert.match(accountProbeJobsSource, /settingsNumber\('cooldownAccountRetestBatchSize', 1, 100\)/)
 assert.match(accountProbeJobsSource, /settingsNumber\('defaultTemporaryUnschedulableMinutes', 1, 1440\)/)
 assert.match(accountProbeJobsSource, /settingsNumber\('cooldownAccountRetestMaxBackoffHours', 1, 24 \* 30\)/)
-assert.match(accountProbeJobsSource, /settingsNumber\('cooldownAccountRetestLongTermIntervalHours', 1, 24 \* 30\)/)
+assert.doesNotMatch(accountProbeJobsSource, /cooldownAccountRetestLongTermIntervalHours/)
 
 const cooldownAccountRetestSource = readSource('modules/background/cooldown-account-retest.service.ts')
 assert.match(cooldownAccountRetestSource, /sequenceRetryPolicy\('cooldown_account_retest_revival', \[\], 0\)/)

@@ -41,17 +41,9 @@ import {
 import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import { resolveUsageServiceTiers, type UsageServiceTier } from './service-tier.js'
+import type { UsageReasoningEffort } from './reasoning-effort.js'
 
 type UpstreamAccount = OpenAIAccountSecret
-
-export function gatewayPricingSettingsFromRequest(req: Request): {
-  gptPriorityPriceMultiplier?: number
-  gptFlexPriceMultiplier?: number
-} | undefined {
-  return (req as Request & {
-    gatewayRuntime?: { settings?: { gptPriorityPriceMultiplier?: number; gptFlexPriceMultiplier?: number } }
-  }).gatewayRuntime?.settings
-}
 
 interface AccountUsageModelAccounting {
   upstreamModel?: string
@@ -86,6 +78,8 @@ export interface GatewayUsageContext {
   requestSnapshot: UsageRequestSnapshot
   requestedServiceTier?: UsageServiceTier
   effectiveServiceTier?: UsageServiceTier
+  requestedReasoningEffort?: UsageReasoningEffort
+  effectiveReasoningEffort?: UsageReasoningEffort
 }
 
 export interface GatewayFailureUsageContext extends GatewayUsageContext {
@@ -189,6 +183,10 @@ export async function recordFailedUpstreamAttempt(
     statusCode: input.statusCode,
     success: false,
     failureAttribution: failedUpstreamAttemptAttribution(input),
+    requestedServiceTier: usageContext.requestedServiceTier,
+    effectiveServiceTier: usageContext.effectiveServiceTier,
+    requestedReasoningEffort: usageContext.requestedReasoningEffort,
+    effectiveReasoningEffort: usageContext.effectiveReasoningEffort,
     durationMs: Date.now() - input.startedAt,
     errorCode,
     errorMessage,
@@ -219,9 +217,12 @@ export async function recordCompletedUpstreamAttempt(
     stream: boolean
     firstTokenMs?: number
     startedAt: number
+    completedAtMs?: number
     usage: ParsedUsage
     requestedServiceTier?: UsageServiceTier
     effectiveServiceTier?: UsageServiceTier
+    requestedReasoningEffort?: UsageReasoningEffort
+    effectiveReasoningEffort?: UsageReasoningEffort
     errorCode?: string
     errorMessage?: string
     failureAttribution?: UsageFailureAttribution
@@ -236,7 +237,6 @@ export async function recordCompletedUpstreamAttempt(
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
   const modelAccounting = accountUsageModelAccounting(input.account, model, catalogSystemAccountId, gatewayRequestEndpointFamily(req))
   const costModel = usageCostCatalogModel(modelAccounting, model)
-  const pricingMultipliers = gatewayPricingMultipliers(gatewayPricingSettingsFromRequest(req))
   const serviceTiers = resolveUsageServiceTiers({
     requestedServiceTier: input.requestedServiceTier,
     effectiveServiceTier: input.effectiveServiceTier,
@@ -267,7 +267,7 @@ export async function recordCompletedUpstreamAttempt(
     success: input.success,
     failureAttribution: input.success ? undefined : input.failureAttribution ?? 'account_upstream',
     firstTokenMs: input.firstTokenMs,
-    durationMs: Date.now() - input.startedAt,
+    durationMs: Math.max(0, (input.completedAtMs ?? Date.now()) - input.startedAt),
     inputTokens: input.usage.inputTokens,
     outputTokens: input.usage.outputTokens,
     cacheReadTokens: input.usage.cacheReadTokens,
@@ -275,7 +275,8 @@ export async function recordCompletedUpstreamAttempt(
     cacheWrite1hTokens: input.usage.cacheWrite1hTokens,
     thinkingTokens: input.usage.thinkingTokens,
     ...serviceTiers,
-    ...pricingMultipliers,
+    requestedReasoningEffort: input.requestedReasoningEffort,
+    effectiveReasoningEffort: input.effectiveReasoningEffort,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
     inputAudioTokens: input.usage.inputAudioTokens,
@@ -286,7 +287,6 @@ export async function recordCompletedUpstreamAttempt(
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
     cacheWriteCostUsd: estimateGatewayCatalogCacheWriteCostUsd({
@@ -294,7 +294,6 @@ export async function recordCompletedUpstreamAttempt(
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       cacheWriteTokens: input.usage.cacheWriteTokens,
       cacheWrite1hTokens: input.usage.cacheWrite1hTokens
     }),
@@ -303,7 +302,6 @@ export async function recordCompletedUpstreamAttempt(
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       inputTokens: input.usage.inputTokens,
       outputTokens: input.usage.outputTokens,
       cacheReadTokens: input.usage.cacheReadTokens,
@@ -342,12 +340,10 @@ export async function recordHybridScoringAttempt(input: {
   requestSnapshot?: unknown
   responseSnapshot?: unknown
   trafficSource?: Extract<OpenAIGatewayTrafficSource, 'hybrid_scoring' | 'hybrid_quality_scoring'>
-  settings?: { gptPriorityPriceMultiplier?: number; gptFlexPriceMultiplier?: number }
 }): Promise<void> {
   const catalogSystemAccountId = input.account.accountOwnerSystemAccountId || input.systemAccountId
   const modelAccounting = accountUsageModelAccounting(input.account, input.scoringModel, catalogSystemAccountId, 'chat_completions')
   const costModel = usageCostCatalogModel(modelAccounting, input.scoringModel)
-  const pricingMultipliers = gatewayPricingMultipliers(input.settings)
   const serviceTiers = resolveUsageServiceTiers({ reportedServiceTier: input.usage.serviceTier })
   await enqueueUsageRecord({
     traceId: input.traceId,
@@ -381,7 +377,6 @@ export async function recordHybridScoringAttempt(input: {
     cacheWrite1hTokens: input.usage.cacheWrite1hTokens,
     thinkingTokens: input.usage.thinkingTokens,
     ...serviceTiers,
-    ...pricingMultipliers,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
     inputAudioTokens: input.usage.inputAudioTokens,
@@ -392,7 +387,6 @@ export async function recordHybridScoringAttempt(input: {
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       cacheReadTokens: input.usage.cacheReadTokens
     }),
     cacheWriteCostUsd: estimateGatewayCatalogCacheWriteCostUsd({
@@ -400,7 +394,6 @@ export async function recordHybridScoringAttempt(input: {
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       cacheWriteTokens: input.usage.cacheWriteTokens,
       cacheWrite1hTokens: input.usage.cacheWrite1hTokens
     }),
@@ -409,7 +402,6 @@ export async function recordHybridScoringAttempt(input: {
       systemAccountId: catalogSystemAccountId,
       model: costModel,
       serviceTier: serviceTiers.billedServiceTier,
-      ...pricingMultipliers,
       inputTokens: input.usage.inputTokens,
       outputTokens: input.usage.outputTokens,
       cacheReadTokens: input.usage.cacheReadTokens,
@@ -444,6 +436,10 @@ export async function recordClientAbortedUpstreamAttempt(
     stream: boolean
     firstTokenMs?: number
     startedAt: number
+    requestedServiceTier?: UsageServiceTier
+    effectiveServiceTier?: UsageServiceTier
+    requestedReasoningEffort?: UsageReasoningEffort
+    effectiveReasoningEffort?: UsageReasoningEffort
     requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
@@ -464,6 +460,7 @@ export async function recordGatewayFailure(
   input: {
     statusCode: number
     startedAt: number
+    completedAtMs?: number
     responsePayload: GatewayErrorPayload
     errorMessage?: string
     errorCode?: string
@@ -471,6 +468,7 @@ export async function recordGatewayFailure(
     responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
   }
 ): Promise<void> {
+  const completedAtMs = input.completedAtMs ?? Date.now()
   const errorMessage = input.errorMessage ?? input.responsePayload.error.message
   const errorCode = input.errorCode
     ?? (typeof input.responsePayload.error.code === 'string' ? input.responsePayload.error.code : undefined)
@@ -478,7 +476,7 @@ export async function recordGatewayFailure(
   logGatewayAttemptFailure(usageContext, {
     event: 'gateway_request_failed',
     statusCode: input.statusCode,
-    durationMs: Date.now() - input.startedAt,
+    durationMs: Math.max(0, completedAtMs - input.startedAt),
     errorMessage,
     errorCode,
     apiKeyId: usageContext.apiKeyId,
@@ -514,14 +512,19 @@ export async function recordGatewayFailure(
     statusCode: input.statusCode,
     success: false,
     failureAttribution: input.failureAttribution ?? 'gateway_policy',
-    durationMs: Date.now() - input.startedAt,
+    requestedServiceTier: usageContext.requestedServiceTier,
+    effectiveServiceTier: usageContext.effectiveServiceTier,
+    requestedReasoningEffort: usageContext.requestedReasoningEffort,
+    effectiveReasoningEffort: usageContext.effectiveReasoningEffort,
+    durationMs: Math.max(0, completedAtMs - input.startedAt),
     errorCode,
     errorMessage,
     requestSnapshot: usageRecordSnapshot(usageContext, usageContext.requestSnapshot),
     responseSnapshot: usageRecordSnapshot(
       usageContext,
       input.responseSnapshot ?? buildGatewayErrorResponseSnapshot(input.statusCode, input.responsePayload)
-    )
+    ),
+    createdAt: new Date(completedAtMs).toISOString()
   })
 }
 
@@ -570,7 +573,7 @@ function accountUsageModelAccounting(
   const upstreamModel = resolved.upstreamModel ?? requestedModel
   return {
     upstreamModel,
-    pricingModel: resolveUsagePricingModel(account, catalogSystemAccountId, upstreamModel, requestedModel),
+    pricingModel: resolveUsagePricingModel(account, catalogSystemAccountId, upstreamModel),
     modelMappingApplied: resolved.modelMappingApplied,
     modelMappingSource: resolved.modelMappingSource,
     sourceEndpointFamily: resolved.sourceEndpointFamily,
@@ -581,22 +584,12 @@ function accountUsageModelAccounting(
 function resolveUsagePricingModel(
   account: UpstreamAccount,
   catalogSystemAccountId: string,
-  upstreamModel: string | undefined,
-  requestedModel: string | undefined
+  upstreamModel: string | undefined
 ): string | undefined {
-  const upstreamPricingModel = resolveGatewayCatalogPricingModel({
-    providerCode: account.providerCode,
-    systemAccountId: catalogSystemAccountId,
-    model: upstreamModel
-  })
-  if (upstreamPricingModel) return upstreamPricingModel
-
-  const sourceModel = requestedModel?.trim()
-  if (!sourceModel || sourceModel === upstreamModel) return undefined
   return resolveGatewayCatalogPricingModel({
     providerCode: account.providerCode,
     systemAccountId: catalogSystemAccountId,
-    model: sourceModel
+    model: upstreamModel
   })
 }
 
@@ -630,16 +623,6 @@ function resolveGatewayCatalogPricingModel(input: Parameters<typeof resolveCatal
 
 function canUseSynchronousCatalogPricingInGatewayRequest(): boolean {
   return runtimeConfig.cacheDriver !== 'redis'
-}
-
-function gatewayPricingMultipliers(settings: {
-  gptPriorityPriceMultiplier?: number
-  gptFlexPriceMultiplier?: number
-} | undefined): { priorityPriceMultiplier: number; flexPriceMultiplier: number } {
-  return {
-    priorityPriceMultiplier: settings?.gptPriorityPriceMultiplier ?? 2,
-    flexPriceMultiplier: settings?.gptFlexPriceMultiplier ?? 0.5
-  }
 }
 
 function logGatewayAttemptFailure(

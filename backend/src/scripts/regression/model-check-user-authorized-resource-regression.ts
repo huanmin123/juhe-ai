@@ -221,6 +221,12 @@ function seedData(upstreamBaseUrl: string): SeedState {
     status: 'active',
     schedulable: true
   }, ownerAccess)
+  assert(repositories.recordAccountHealthCheckSuccess(ownerAccount.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), '授权来源账户必须通过正式健康检查路径进入可调度状态')
   const granteeGroup = repositories.createGroup({
     name: '模型检测授权用户分组',
     providerCode: 'gpt',
@@ -347,7 +353,7 @@ function outputForProbe(body: Record<string, unknown>): string {
   if (text.includes('第一行 ALPHA')) return 'ALPHA\nBETA\nGAMMA'
   if (text.includes('VECTOR')) return 'VECTOR'
   if (text.includes('CROSS-MODEL-OK')) return 'CROSS-MODEL-OK'
-  const needle = text.match(/NEEDLE-\d+-[A-Z]+/)
+  const needle = text.match(/NEEDLE-(?:LOW|MEDIUM|HIGH|EXTREME)-\d+/)
   if (needle) return needle[0]
   if (body.text || text.includes('JSON')) return '{"status":"ok","value":7}'
   return 'OK-MODEL-CHECK'

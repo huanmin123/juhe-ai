@@ -13,6 +13,7 @@ import {
 import { sqliteWriterBoundaryStrictModeEnabled } from '../../storage/database.js'
 import type { ModelCheckItemSummary, ModelCheckRunSummary } from '../../domain/types.js'
 import { requestBackgroundWorkerDatasetWrite } from './background-ipc.js'
+import { createModelCheckObservationsAsync, type ModelCheckObservationInput } from '../../storage/model-trust.repository.js'
 
 export type BackgroundDatasetWriteOperation =
   | {
@@ -29,11 +30,16 @@ export type BackgroundDatasetWriteOperation =
     runId: string
     input: ModelCheckRunFinishInput
   }
+  | {
+    type: 'create_model_check_observations'
+    observations: ModelCheckObservationInput[]
+  }
 
 export type BackgroundDatasetWriteOperationResult<T extends BackgroundDatasetWriteOperation = BackgroundDatasetWriteOperation> =
   T extends { type: 'create_model_check_run' } ? ModelCheckRunSummary :
   T extends { type: 'create_model_check_items' } ? ModelCheckItemSummary[] :
   T extends { type: 'finish_model_check_run' } ? ModelCheckRunSummary | undefined :
+  T extends { type: 'create_model_check_observations' } ? number :
   unknown
 
 export async function requestDatasetWriter<T extends BackgroundDatasetWriteOperation>(
@@ -64,6 +70,8 @@ export async function handleDatasetWriteOperation(operation: BackgroundDatasetWr
       return runtimeConfig.databaseDriver === 'postgres'
         ? await finishModelCheckRunAsync(operation.runId, operation.input)
         : finishModelCheckRun(operation.runId, operation.input)
+    case 'create_model_check_observations':
+      return await createModelCheckObservationsAsync(operation.observations)
     default:
       return assertNever(operation)
   }

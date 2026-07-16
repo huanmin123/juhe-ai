@@ -15,6 +15,7 @@ import {
   isAuthorizationExpired,
   isAuthorizationPaused,
   isAuthorizedAccount,
+  isPendingHealthCheckFailed,
   isTemporaryAccountStatus
 } from './accountFormatters'
 
@@ -135,6 +136,11 @@ export function canBatchManageAccount(account: AccountSummary): boolean {
       && account.status !== 'error'
   }
   return canEditAccount(account) && account.status !== 'error'
+}
+
+export function canToggleAccountStatus(account: AccountSummary): boolean {
+  if (isAuthorizedAccount(account)) return canBatchManageAccount(account)
+  return canEditAccount(account) && account.permissions?.canViewCredentials !== false
 }
 
 export function canBatchEditAccount(account: AccountSummary): boolean {
@@ -279,7 +285,7 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     }
     if (account.status === 'error') {
       if (canBatchRestoreAccount(account)) {
-        items.push({ key: 'restore-normal', label: '恢复异常' })
+        items.push({ key: 'restore-normal', label: '异常恢复' })
       }
       pushDispatchFlagItems(items, account)
       return items.map(normalizeAccountMenuItem)
@@ -312,10 +318,24 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   }
   if (account.status === 'error') {
     if (canRestoreException(account)) {
-      items.push({ key: 'restore-normal', label: '恢复异常' })
+      items.push({ key: 'restore-normal', label: '异常恢复' })
     }
     pushDispatchFlagItems(items, account)
+    if (canToggleAccountStatus(account)) {
+      pushAccountStatusToggleItem(items, account)
+    }
     return items.map(normalizeAccountMenuItem)
+  }
+  if (isPendingHealthCheckFailed(account) && canToggleAccountStatus(account)) {
+    items.push({ key: 'recheck-health', label: '重新检查' })
+  }
+  if (account.status === 'pending_test' && canToggleAccountStatus(account)) {
+    items.push({
+      key: 'force-activate',
+      label: '人工恢复正常',
+      confirmTitle: `确认人工恢复账户「${account.name}」？确认后将跳过本次后台检查，但仍遵守账户时间计划；请仅在你确认上游当前可用时操作。`,
+      confirmOkText: '确认恢复'
+    })
   }
   if (canUseAccountActions(account)) {
     if (canManageOAuthAccount(account)) {
@@ -328,20 +348,26 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     pushDispatchFlagItems(items, account)
     if (account.status !== 'pending_test') {
       items.push({ key: 'migrate-traffic', label: '迁移流量' })
-      items.push({
-        key: 'toggle-status',
-        label: account.status === 'disabled' ? '启用账户' : '停用账户',
-        danger: account.status !== 'disabled',
-        icon: account.status === 'disabled' ? 'enable' : 'pause',
-        tone: account.status === 'disabled' ? 'success' : 'warning',
-        confirmTitle: account.status === 'disabled'
-          ? `确认启用账户「${account.name}」？`
-          : `确认停用账户「${account.name}」？停用后该账户将不再参与调度。`,
-        confirmOkText: account.status === 'disabled' ? '启用' : '停用'
-      })
+    }
+    if (canToggleAccountStatus(account)) {
+      pushAccountStatusToggleItem(items, account)
     }
   }
   return items.map(normalizeAccountMenuItem)
+}
+
+function pushAccountStatusToggleItem(items: AccountMenuItem[], account: AccountSummary): void {
+  items.push({
+    key: 'toggle-status',
+    label: account.status === 'disabled' ? '启用账户' : '停用账户',
+    danger: account.status !== 'disabled',
+    icon: account.status === 'disabled' ? 'enable' : 'pause',
+    tone: account.status === 'disabled' ? 'success' : 'warning',
+    confirmTitle: account.status === 'disabled'
+      ? `确认启用账户「${account.name}」？`
+      : `确认停用账户「${account.name}」？停用后该账户将不再参与调度。`,
+    confirmOkText: account.status === 'disabled' ? '启用' : '停用'
+  })
 }
 
 export function accountMenuItemsWithClone(menuItems: AccountMenuItem[], canClone: boolean): AccountMenuItem[] {
@@ -380,6 +406,8 @@ function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {
   if (item.key === 'refresh-oauth-token') return { ...item, icon: 'refresh', tone: 'info' }
   if (item.key === 'reauthorize-oauth') return { ...item, icon: 'reset', tone: 'warning' }
   if (item.key === 'restore-normal') return { ...item, icon: 'restore', tone: 'success' }
+  if (item.key === 'recheck-health') return { ...item, icon: 'refresh', tone: 'info' }
+  if (item.key === 'force-activate') return { ...item, icon: 'restore', tone: 'warning' }
   if (item.key === 'super-priority-on') return { ...item, icon: 'superPriority', tone: 'warning' }
   if (item.key === 'super-priority-off') return { ...item, icon: 'superPriority', tone: 'default' }
   if (item.key === 'fallback-on') return { ...item, icon: 'fallback', tone: 'purple' }

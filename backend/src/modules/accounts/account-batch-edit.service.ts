@@ -15,6 +15,7 @@ import {
 import {
   assertOpenAIEndpointModesCompatible
 } from '../../domain/openai-endpoint-modes.js'
+import { resolveHealthCheckEndpointMode } from '../../domain/account-health-check-endpoint-mode.js'
 import {
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
@@ -50,10 +51,13 @@ import { normalizeAccountErrorHandlingRules } from './account-error-policy-valid
 import type { AccountBatchEditRequest } from './account-request.schemas.js'
 import { normalizeAccountResponseInspectionRules } from './account-response-inspection-policy-validation.js'
 import { assertAccountGptRequestOverridesSupportedAsync } from './account-gpt-request-overrides.validation.js'
+import { effectiveAccountApiKeyCount } from './account-balance-config.js'
+import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapshot-cleanup.service.js'
 
 const modelConfigurationFields = new Set([
   'supportedModels',
   'healthCheckModel',
+  'healthCheckEndpointMode',
   'modelMappings',
   'supportedEndpointModes',
   'serviceTierOverride',
@@ -110,6 +114,11 @@ export async function batchEditAccountsAsync(
     access,
     prepare: async ({ client, accounts }) => prepareBatchUpdatesAsync(client, accounts, updates)
   })
+  cleanupDisabledBalanceSnapshots(
+    repositoryResult.balanceSnapshotCleanupAccountIds,
+    repositoryResult.configRevisions,
+    repositoryResult.batchId
+  )
   let accounts: AccountSummary[]
   try {
     const refreshed = await Promise.all(
@@ -209,6 +218,14 @@ async function prepareAccountUpdateAsync(
   if (!nextSupportedModels.includes(nextHealthCheckModel)) {
     throw new Error(`账户 ${account.id} 的检查模型必须属于最终支持模型`)
   }
+  const nextHealthCheckEndpointMode = resolveHealthCheckEndpointMode({
+    value: Object.prototype.hasOwnProperty.call(updates, 'healthCheckEndpointMode')
+      ? updates.healthCheckEndpointMode
+      : account.healthCheckEndpointMode,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    enabledEndpointModes: nextCredentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
+  })
 
   const shouldValidateMappings = Object.prototype.hasOwnProperty.call(updates, 'modelMappings')
     || Object.prototype.hasOwnProperty.call(updates, 'supportedEndpointModes')
@@ -270,9 +287,11 @@ async function prepareAccountUpdateAsync(
   )
   const proxyChanged = account.proxyProfileId !== nextProxyProfileId
   const healthCheckModelChanged = account.healthCheckModel !== nextHealthCheckModel
+  const healthCheckEndpointModeChanged = account.healthCheckEndpointMode !== nextHealthCheckEndpointMode
   const shouldScheduleHealthCheck = proxyChanged
     || supportedModelsChanged
     || healthCheckModelChanged
+    || healthCheckEndpointModeChanged
     || modelMappingsChanged
     || endpointModesChanged
   const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
@@ -318,6 +337,7 @@ async function prepareAccountUpdateAsync(
       ? undefined
       : account.cooldownRetestLastStatusCode,
     healthCheckModel: nextHealthCheckModel,
+    healthCheckEndpointMode: nextHealthCheckEndpointMode,
     supportedModels: nextSupportedModels,
     modelMappings: nextModelMappings,
     tags: nextTags,
@@ -327,7 +347,24 @@ async function prepareAccountUpdateAsync(
     dispatchChanged: account.priority !== nextPriority
       || account.superPriorityEnabled !== nextSuperPriorityEnabled
       || account.fallbackEnabled !== nextFallbackEnabled,
-    resetHealthCheckState: shouldScheduleHealthCheck && nextStatus !== 'disabled'
+    resetHealthCheckState: shouldScheduleHealthCheck && nextStatus !== 'disabled',
+    disableBalanceQuery: account.type === 'api_key' && effectiveAccountApiKeyCount(nextCredentials) > 1
+  }
+}
+
+function cleanupDisabledBalanceSnapshots(
+  accountIds: string[],
+  configRevisions: Record<string, number>,
+  batchId: string
+): void {
+  if (accountIds.length === 0) return
+  for (const accountId of accountIds) {
+    cleanupAccountBalanceSnapshotAfterSave({
+      accountId,
+      configRevision: configRevisions[accountId] ?? 1,
+      reason: 'batch_multiple_api_keys',
+      batchId
+    })
   }
 }
 

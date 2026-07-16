@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const providerModelCatalogSnapshotMigration = "../../../db/migrations/000036_w2_sync_provider_model_catalog_gpt_reasoning.sql"
+const providerModelCatalogSnapshotMigration = "../../../db/migrations/000039_w2_sync_provider_model_catalog_tier_pricing.sql"
 
 func TestProviderModelCatalogSnapshotMigrationCountsAndRepresentativeModels(t *testing.T) {
 	source, err := os.ReadFile(providerModelCatalogSnapshotMigration)
@@ -122,6 +122,43 @@ WHERE provider_code IN ('gpt', 'anthropic', 'gemini', 'deepseek', 'glm');`
 	}
 }
 
+func TestProviderModelCatalogSnapshotMigrationAddsTierPricingColumnsAndNodeValues(t *testing.T) {
+	source, err := os.ReadFile(providerModelCatalogSnapshotMigration)
+	if err != nil {
+		t.Fatalf("read provider model catalog snapshot migration: %v", err)
+	}
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
+
+	for _, column := range []string{
+		"priority_input_usd_per_1m double precision",
+		"priority_output_usd_per_1m double precision",
+		"priority_cached_input_usd_per_1m double precision",
+		"priority_cache_write_usd_per_1m double precision",
+		"priority_cache_write_1h_usd_per_1m double precision",
+		"flex_input_usd_per_1m double precision",
+		"flex_output_usd_per_1m double precision",
+		"flex_cached_input_usd_per_1m double precision",
+		"flex_cache_write_usd_per_1m double precision",
+		"flex_cache_write_1h_usd_per_1m double precision",
+		"long_context_input_token_threshold integer",
+		"long_context_input_cost_multiplier double precision",
+		"long_context_output_cost_multiplier double precision",
+	} {
+		if !strings.Contains(sql, "ADD COLUMN IF NOT EXISTS "+column) {
+			t.Fatalf("provider model catalog snapshot migration missing nullable column %q", column)
+		}
+	}
+
+	const solValues = `NULL, 1050000, 5, 30, 0.5, 6.25, NULL,
+    10, 60, 1, 12.5, NULL,
+    2.5, 15, 0.25, 3.125, NULL,
+    272000, 2, 1.5,
+    NULL, NULL, NULL, NULL, NULL, 922000, 128000,`
+	if !strings.Contains(sql, solValues) {
+		t.Fatalf("gpt-5.6-sol tier pricing and long-context metadata drifted from Node values")
+	}
+}
+
 func TestProviderModelCatalogSnapshotMigrationUpdatesAllCatalogFieldsOnConflict(t *testing.T) {
 	source, err := os.ReadFile(providerModelCatalogSnapshotMigration)
 	if err != nil {
@@ -159,6 +196,19 @@ func TestProviderModelCatalogSnapshotMigrationUpdatesAllCatalogFieldsOnConflict(
 		"cached_input_usd_per_1m":               "EXCLUDED.cached_input_usd_per_1m",
 		"cache_write_usd_per_1m":                "EXCLUDED.cache_write_usd_per_1m",
 		"cache_write_1h_usd_per_1m":             "EXCLUDED.cache_write_1h_usd_per_1m",
+		"priority_input_usd_per_1m":             "EXCLUDED.priority_input_usd_per_1m",
+		"priority_output_usd_per_1m":            "EXCLUDED.priority_output_usd_per_1m",
+		"priority_cached_input_usd_per_1m":      "EXCLUDED.priority_cached_input_usd_per_1m",
+		"priority_cache_write_usd_per_1m":       "EXCLUDED.priority_cache_write_usd_per_1m",
+		"priority_cache_write_1h_usd_per_1m":    "EXCLUDED.priority_cache_write_1h_usd_per_1m",
+		"flex_input_usd_per_1m":                 "EXCLUDED.flex_input_usd_per_1m",
+		"flex_output_usd_per_1m":                "EXCLUDED.flex_output_usd_per_1m",
+		"flex_cached_input_usd_per_1m":          "EXCLUDED.flex_cached_input_usd_per_1m",
+		"flex_cache_write_usd_per_1m":           "EXCLUDED.flex_cache_write_usd_per_1m",
+		"flex_cache_write_1h_usd_per_1m":        "EXCLUDED.flex_cache_write_1h_usd_per_1m",
+		"long_context_input_token_threshold":    "EXCLUDED.long_context_input_token_threshold",
+		"long_context_input_cost_multiplier":    "EXCLUDED.long_context_input_cost_multiplier",
+		"long_context_output_cost_multiplier":   "EXCLUDED.long_context_output_cost_multiplier",
 		"image_input_usd_per_1m":                "EXCLUDED.image_input_usd_per_1m",
 		"image_output_usd_per_1m":               "EXCLUDED.image_output_usd_per_1m",
 		"audio_input_usd_per_1m":                "EXCLUDED.audio_input_usd_per_1m",

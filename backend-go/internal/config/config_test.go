@@ -8,13 +8,14 @@ import (
 
 func TestConfigDefaultsValidate(t *testing.T) {
 	cfg := Config{
-		Host:            "127.0.0.1",
-		Port:            3000,
-		Env:             "test",
-		LogLevel:        "info",
-		RedisNamespace:  "juhe-ai",
-		TrustProxy:      "false",
-		ShutdownTimeout: 15 * time.Second,
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		Env:                        "test",
+		LogLevel:                   "info",
+		RedisNamespace:             "juhe-ai",
+		TrustProxy:                 "false",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            15 * time.Second,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -85,11 +86,12 @@ func TestTrustProxyConfigRejectsInvalidValues(t *testing.T) {
 	for _, value := range []string{"maybe", "-1", "17", "1.5"} {
 		t.Run(value, func(t *testing.T) {
 			cfg := Config{
-				Host:            "127.0.0.1",
-				Port:            3000,
-				RedisNamespace:  "juhe-ai",
-				TrustProxy:      value,
-				ShutdownTimeout: time.Second,
+				Host:                       "127.0.0.1",
+				Port:                       3000,
+				RedisNamespace:             "juhe-ai",
+				TrustProxy:                 value,
+				NodeInternalRequestTimeout: 2 * time.Second,
+				ShutdownTimeout:            time.Second,
 			}
 			if err := cfg.Validate(); err == nil {
 				t.Fatal("Validate() error = nil, want invalid trust proxy error")
@@ -124,11 +126,12 @@ func TestCookieSameSiteConfig(t *testing.T) {
 
 func TestConfigRejectsInvalidCookieSameSite(t *testing.T) {
 	cfg := Config{
-		Host:            "127.0.0.1",
-		Port:            3000,
-		RedisNamespace:  "juhe-ai",
-		CookieSameSite:  "invalid",
-		ShutdownTimeout: time.Second,
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		CookieSameSite:             "invalid",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want invalid cookie same-site error")
@@ -137,11 +140,12 @@ func TestConfigRejectsInvalidCookieSameSite(t *testing.T) {
 
 func TestConfigRequiresSecureCookieForSameSiteNone(t *testing.T) {
 	cfg := Config{
-		Host:            "127.0.0.1",
-		Port:            3000,
-		RedisNamespace:  "juhe-ai",
-		CookieSameSite:  "none",
-		ShutdownTimeout: time.Second,
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		CookieSameSite:             "none",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
 	}
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_COOKIE_SECURE") {
@@ -179,6 +183,20 @@ func TestLoadAllowsExplicitCookieSecureOverrideInProduction(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsNodeInternalRequestTimeout(t *testing.T) {
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.NodeInternalRequestTimeout != 2*time.Second {
+		t.Fatalf(
+			"NodeInternalRequestTimeout = %s, want %s",
+			cfg.NodeInternalRequestTimeout,
+			2*time.Second,
+		)
+	}
+}
+
 func TestLoadUsesExplicitRedisNamespace(t *testing.T) {
 	t.Setenv("JUHE_AI_REDIS_NAMESPACE", " prod west/1 ")
 	t.Setenv("JUHE_AI_SECRET", "namespace-secret-for-w5-tests-123456789")
@@ -206,7 +224,13 @@ func TestLoadDerivesRedisNamespaceFromSecret(t *testing.T) {
 }
 
 func TestConfigRejectsInvalidPort(t *testing.T) {
-	cfg := Config{Host: "127.0.0.1", Port: 70000, RedisNamespace: "juhe-ai", ShutdownTimeout: time.Second}
+	cfg := Config{
+		Host:                       "127.0.0.1",
+		Port:                       70000,
+		RedisNamespace:             "juhe-ai",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("Validate() expected error")
 	}
@@ -214,12 +238,13 @@ func TestConfigRejectsInvalidPort(t *testing.T) {
 
 func TestConfigRejectsSameRedisDB(t *testing.T) {
 	cfg := Config{
-		Host:            "127.0.0.1",
-		Port:            3000,
-		RedisNamespace:  "juhe-ai",
-		RedisCacheURL:   "redis://127.0.0.1:6379/0",
-		RedisStateURL:   "redis://127.0.0.1:6379/0",
-		ShutdownTimeout: time.Second,
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		RedisCacheURL:              "redis://127.0.0.1:6379/0",
+		RedisStateURL:              "redis://127.0.0.1:6379/0",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want duplicate Redis DB error")
@@ -228,12 +253,13 @@ func TestConfigRejectsSameRedisDB(t *testing.T) {
 
 func TestConfigRejectsSameRedisDBWithDefaultPort(t *testing.T) {
 	cfg := Config{
-		Host:            "127.0.0.1",
-		Port:            3000,
-		RedisNamespace:  "juhe-ai",
-		RedisCacheURL:   "redis://127.0.0.1/0",
-		RedisStateURL:   "redis://127.0.0.1:6379/0",
-		ShutdownTimeout: time.Second,
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		RedisCacheURL:              "redis://127.0.0.1/0",
+		RedisStateURL:              "redis://127.0.0.1:6379/0",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() error = nil, want duplicate Redis DB error")
@@ -242,13 +268,14 @@ func TestConfigRejectsSameRedisDBWithDefaultPort(t *testing.T) {
 
 func TestConfigAllowsDifferentRedisDBs(t *testing.T) {
 	cfg := Config{
-		Host:            "127.0.0.1",
-		Port:            3000,
-		RedisNamespace:  "juhe-ai",
-		RedisCacheURL:   "redis://127.0.0.1:6379/0",
-		RedisStateURL:   "redis://127.0.0.1:6379/1",
-		RedisQueueURL:   "redis://127.0.0.1:6379/2",
-		ShutdownTimeout: time.Second,
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		RedisCacheURL:              "redis://127.0.0.1:6379/0",
+		RedisStateURL:              "redis://127.0.0.1:6379/1",
+		RedisQueueURL:              "redis://127.0.0.1:6379/2",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -257,16 +284,18 @@ func TestConfigAllowsDifferentRedisDBs(t *testing.T) {
 
 func TestConfigPublicAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 	base := Config{
-		Host:             "127.0.0.1",
-		Port:             3000,
-		RedisNamespace:   "juhe-ai",
-		TrustProxy:       "false",
-		PublicAPIEnabled: true,
-		RedisCacheURL:    "redis://127.0.0.1:6379/0",
-		RedisStateURL:    "redis://127.0.0.1:6379/1",
-		RedisQueueURL:    "redis://127.0.0.1:6379/2",
-		Secret:           "12345678901234567890123456789012",
-		ShutdownTimeout:  time.Second,
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		TrustProxy:                 "false",
+		PublicAPIEnabled:           true,
+		RedisCacheURL:              "redis://127.0.0.1:6379/0",
+		RedisStateURL:              "redis://127.0.0.1:6379/1",
+		RedisQueueURL:              "redis://127.0.0.1:6379/2",
+		Secret:                     "12345678901234567890123456789012",
+		NodeInternalBaseURL:        "http://127.0.0.1:3001",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
 	}
 
 	for _, tc := range []struct {
@@ -299,6 +328,11 @@ func TestConfigPublicAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 			edit: func(cfg *Config) { cfg.Secret = "short-secret" },
 			want: "JUHE_AI_SECRET",
 		},
+		{
+			name: "node internal base URL",
+			edit: func(cfg *Config) { cfg.NodeInternalBaseURL = "" },
+			want: "JUHE_AI_NODE_INTERNAL_BASE_URL",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := base
@@ -320,16 +354,17 @@ func TestConfigPublicAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 
 func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 	base := Config{
-		Host:                 "127.0.0.1",
-		Port:                 3000,
-		RedisNamespace:       "juhe-ai",
-		TrustProxy:           "false",
-		ManagementAPIEnabled: true,
-		RedisCacheURL:        "redis://127.0.0.1:6379/0",
-		RedisStateURL:        "redis://127.0.0.1:6379/1",
-		RedisQueueURL:        "redis://127.0.0.1:6379/2",
-		Secret:               "12345678901234567890123456789012",
-		ShutdownTimeout:      time.Second,
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		TrustProxy:                 "false",
+		ManagementAPIEnabled:       true,
+		RedisCacheURL:              "redis://127.0.0.1:6379/0",
+		RedisStateURL:              "redis://127.0.0.1:6379/1",
+		RedisQueueURL:              "redis://127.0.0.1:6379/2",
+		Secret:                     "12345678901234567890123456789012",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
 	}
 
 	for _, tc := range []struct {
@@ -389,6 +424,7 @@ func TestConfigManagementAuthSessionsEnabledRequiresOnlyStateRedis(t *testing.T)
 		TrustProxy:                    "false",
 		ManagementAuthSessionsEnabled: true,
 		RedisStateURL:                 "redis://127.0.0.1:6379/1",
+		NodeInternalRequestTimeout:    2 * time.Second,
 		ShutdownTimeout:               time.Second,
 	}
 
@@ -412,6 +448,8 @@ func TestLoadParsesPublicAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
 	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6379/2")
 	t.Setenv("JUHE_AI_SECRET", "12345678901234567890123456789012")
+	t.Setenv("JUHE_AI_NODE_INTERNAL_BASE_URL", "http://127.0.0.1:3001")
+	t.Setenv("JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT", "750ms")
 
 	cfg, err := Load(LoadOptions{LoadDotEnv: false})
 	if err != nil {
@@ -422,6 +460,16 @@ func TestLoadParsesPublicAPIEnv(t *testing.T) {
 	}
 	if cfg.Secret != "12345678901234567890123456789012" {
 		t.Fatalf("Secret = %q, want configured secret", cfg.Secret)
+	}
+	if cfg.NodeInternalBaseURL != "http://127.0.0.1:3001" {
+		t.Fatalf("NodeInternalBaseURL = %q, want configured URL", cfg.NodeInternalBaseURL)
+	}
+	if cfg.NodeInternalRequestTimeout != 750*time.Millisecond {
+		t.Fatalf(
+			"NodeInternalRequestTimeout = %s, want %s",
+			cfg.NodeInternalRequestTimeout,
+			750*time.Millisecond,
+		)
 	}
 }
 
@@ -451,5 +499,38 @@ func TestLoadParsesManagementAuthSessionsEnv(t *testing.T) {
 	}
 	if !cfg.ManagementAuthSessionsEnabled {
 		t.Fatal("ManagementAuthSessionsEnabled = false, want true")
+	}
+}
+
+func TestConfigValidatesNodeInternalRequestTimeoutRangeRegardlessOfPublicAPI(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		timeout time.Duration
+		wantErr bool
+	}{
+		{name: "below minimum", timeout: 100*time.Millisecond - time.Nanosecond, wantErr: true},
+		{name: "minimum", timeout: 100 * time.Millisecond},
+		{name: "maximum", timeout: 10 * time.Second},
+		{name: "above maximum", timeout: 10*time.Second + time.Nanosecond, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Config{
+				Host:                       "127.0.0.1",
+				Port:                       3000,
+				RedisNamespace:             "juhe-ai",
+				NodeInternalRequestTimeout: test.timeout,
+				ShutdownTimeout:            time.Second,
+			}
+			err := cfg.Validate()
+			if test.wantErr && err == nil {
+				t.Fatal("Validate() error = nil, want timeout range error")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if err != nil && !strings.Contains(err.Error(), "JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT") {
+				t.Fatalf("Validate() error = %q, want timeout env name", err)
+			}
+		})
 	}
 }

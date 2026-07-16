@@ -45,7 +45,7 @@ export const glmAccountCredentialDriver: ProviderAccountCredentialDriver = {
       })
       const unsupported = modes.filter((mode) => !anthropicMessagesEndpointModes.includes(mode as 'messages_json' | 'messages_sse'))
       if (unsupported.length) {
-        throw new Error(`智谱 GLM Coding Anthropic 账户接口能力只支持 Messages API (JSON) 或 Messages API (Streaming)：${unsupported.join(', ')}`)
+        throw new Error(`智谱 GLM Coding Anthropic 账户上游接口能力只支持 Messages API (JSON) 或 Messages API (Streaming)：${unsupported.join(', ')}`)
       }
       return modes
     }
@@ -58,7 +58,7 @@ export const glmAccountCredentialDriver: ProviderAccountCredentialDriver = {
       const chatCapabilityName = context.providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID
         ? 'OpenAI Chat Completions'
         : '对话补全'
-      throw new Error(`智谱 GLM 账户接口能力只支持 ${chatCapabilityName} (JSON) 或 ${chatCapabilityName} (Streaming)：${unsupported.join(', ')}`)
+      throw new Error(`智谱 GLM 账户上游接口能力只支持 ${chatCapabilityName} (JSON) 或 ${chatCapabilityName} (Streaming)：${unsupported.join(', ')}`)
     }
     return modes
   }

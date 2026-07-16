@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -240,6 +242,37 @@ func managementGroupCreateMutationGuardConfig(scope managementGroupOptionScope) 
 	}
 }
 
+func managementRouteStrategyCreateMutationGuardConfig(
+	scope managementRouteStrategyOptionScope,
+) mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "route_strategies.create",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := managementGroupCreateMutationJSONFields(w, r)
+			if err != nil {
+				return nil, err
+			}
+			ownerSystemAccountID := ""
+			if authContext, ok := ManagementAuthContextFromRequest(r); ok {
+				ownerSystemAccountID = strings.TrimSpace(authContext.SystemAccountID)
+			}
+			if scope == managementRouteStrategyScopeAdmin {
+				selectedSystemAccountID := firstManagementQueryText(
+					r.URL.Query(),
+					"systemAccountId",
+				)
+				if selectedSystemAccountID != "" && selectedSystemAccountID != "all" {
+					ownerSystemAccountID = selectedSystemAccountID
+				}
+			}
+			return map[string]any{
+				"owner": ownerSystemAccountID,
+				"name":  mutationStringField(fields, "name"),
+			}, nil
+		},
+	}
+}
+
 func managementAPIKeyRefreshMutationGuardConfig(scope managementAPIKeyScope) mutationGuardConfig {
 	return mutationGuardConfig{
 		operationKey: "api_keys.refresh_key",
@@ -277,6 +310,33 @@ func managementAPIKeyCreateMutationGuardConfig(scope managementAPIKeyScope) muta
 				"owner": validated.OwnerSystemAccountID,
 				"name":  strings.TrimSpace(validated.Payload.Name),
 			}, nil
+		},
+	}
+}
+
+func managementClientIPPolicyMutationGuardConfig(action string) mutationGuardConfig {
+	if action != managementClientIPPolicyActionAllowlist &&
+		action != managementClientIPPolicyActionUnallowlist &&
+		action != managementClientIPPolicyActionBlacklist &&
+		action != managementClientIPPolicyActionUnblock {
+		panic("unsupported management client IP policy mutation action")
+	}
+	return mutationGuardConfig{
+		operationKey: "client_ip_stats." + action,
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := managementGroupCreateMutationJSONFields(w, r)
+			if err != nil {
+				return nil, err
+			}
+			fingerprint := map[string]any{
+				"ipHash": chi.URLParam(r, "ipHash"),
+				"reason": mutationAnyField(fields, "reason"),
+			}
+			if action == managementClientIPPolicyActionBlacklist {
+				fingerprint["durationMinutes"] = mutationNodeJSONNumberField(fields, "durationMinutes")
+				fingerprint["durationDays"] = mutationNodeJSONNumberField(fields, "durationDays")
+			}
+			return fingerprint, nil
 		},
 	}
 }
@@ -344,6 +404,25 @@ func mutationAnyField(fields map[string]json.RawMessage, name string) any {
 		return nil
 	}
 	return value
+}
+
+func mutationNodeJSONNumberField(fields map[string]json.RawMessage, name string) any {
+	value := mutationAnyField(fields, name)
+	number, ok := value.(json.Number)
+	if !ok {
+		return value
+	}
+	normalized, err := strconv.ParseFloat(number.String(), 64)
+	if math.IsInf(normalized, 0) {
+		return nil
+	}
+	if err != nil {
+		return number
+	}
+	if normalized == 0 {
+		return float64(0)
+	}
+	return normalized
 }
 
 func mutationSensitiveFingerprint(value string) string {

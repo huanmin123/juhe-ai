@@ -19,6 +19,17 @@ export type AccountSupportedEndpointMode =
   | 'generate_content_sse'
   | 'count_tokens'
   | 'embed_content'
+export type AccountHealthCheckEndpointMode = Extract<
+  AccountSupportedEndpointMode,
+  | 'chat_json'
+  | 'chat_sse'
+  | 'responses_json'
+  | 'responses_sse'
+  | 'messages_json'
+  | 'messages_sse'
+  | 'generate_content_json'
+  | 'generate_content_sse'
+>
 export const SYSTEM_ACCOUNT_ROLES = ['super_admin', 'admin', 'user'] as const
 export type SystemAccountRole = typeof SYSTEM_ACCOUNT_ROLES[number]
 export type ManagementSystemAccountRole = Extract<SystemAccountRole, 'super_admin' | 'admin'>
@@ -188,7 +199,6 @@ export interface ProviderModelPricing {
   scope?: 'built_in' | 'global' | 'personal'
   status?: 'draft' | 'active' | 'disabled'
   systemAccountId?: string
-  pricingModel?: string
   mode?: string
   catalogOrder?: number
   releaseDate?: string
@@ -203,6 +213,7 @@ export interface ProviderModelPricing {
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
+  serviceTierPrices?: Record<string, ProviderModelPriceSet>
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
@@ -213,15 +224,28 @@ export interface ProviderModelPricing {
   maxTokens?: number
   supportsPromptCaching: boolean
   supportsServiceTier: boolean
-  supportedServiceTiers?: Array<'priority' | 'flex'>
-  supportedReasoningEfforts?: Array<'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>
-  defaultReasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  supportedServiceTiers?: string[]
+  supportedReasoningEfforts?: string[]
+  defaultReasoningEffort?: string
   pricingNotes?: string
   capabilityNotes?: string
   notes?: string
   createdAt?: string
   updatedAt?: string
   source: string
+}
+
+export interface ProviderModelPriceSet {
+  inputUsdPer1M?: number
+  outputUsdPer1M?: number
+  cachedInputUsdPer1M?: number
+  cacheWriteUsdPer1M?: number
+  cacheWrite1hUsdPer1M?: number
+  imageInputUsdPer1M?: number
+  imageOutputUsdPer1M?: number
+  audioInputUsdPer1M?: number
+  audioOutputUsdPer1M?: number
+  outputUsdPerImage?: number
 }
 
 export interface AccountCredentials {
@@ -237,8 +261,8 @@ export interface AccountCredentials {
   account_id?: string
   chatgpt_user_id?: string
   plan_type?: string
-  service_tier_override?: 'default' | 'priority' | 'flex'
-  reasoning_effort_override?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  service_tier_override?: string
+  reasoning_effort_override?: string
   response_inspection_rules?: unknown[]
   [key: string]: unknown
 }
@@ -498,6 +522,7 @@ export interface AccountSummary {
   modelMappings?: AccountModelMapping[]
   tags?: AccountTagSummary[]
   healthCheckModel: string
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -517,6 +542,7 @@ export interface AccountSummary {
   cooldownUntil?: string
   lastErrorCode?: string
   lastErrorMessage?: string
+  lastErrorTraceId?: string
   cooldownRetestFailureCount?: number
   cooldownRetestObservationStartedAt?: string
   cooldownRetestLastAt?: string
@@ -525,9 +551,11 @@ export interface AccountSummary {
   nextHealthCheckAt?: string
   lastHealthSuccessAt?: string
   healthCheckFailureCount?: number
+  healthCheckFailureStartedAt?: string
   lastHealthCheckStatusCode?: number
   lastHealthCheckErrorCode?: string
   lastHealthCheckErrorMessage?: string
+  lastHealthCheckTraceId?: string
   apiKeyRuntime?: AccountApiKeyRuntimeSummary
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   streamFailureCount?: number
@@ -802,6 +830,7 @@ export interface ModelCheckRunRequest {
   targetId: string
   model: string
   profile?: ModelCheckProfile
+  includeExtremeContext?: boolean
   trustedComparison?: boolean
   trustedComparisonAccountId?: string
 }

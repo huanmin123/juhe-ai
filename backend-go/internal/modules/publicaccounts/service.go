@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"strings"
@@ -42,48 +43,59 @@ const (
 	invalidHealthCheckModelUnsupportedMessage = "账户检查模型必须属于账户支持模型"
 	providerModelsRequiredMessage             = "public account provider models reader is required"
 	hybridProviderCode                        = "hybrid"
+	accountHealthCheckReasonActivation        = "activation"
+	accountHealthCheckReasonConfiguration     = "configuration"
+	accountHealthCheckDispatchFailedEvent     = "public_account_health_check_dispatch_failed"
+	accountHealthCheckDispatchTimeout         = 2 * time.Second
 )
 
 var (
-	ErrTargetNotFound          = errors.New("public account target not found")
-	ErrTargetDisabled          = errors.New("public account target disabled")
-	ErrProviderProfileNotFound = errors.New("public account provider profile not found")
-	ErrProviderDisabled        = errors.New("public account provider disabled")
-	ErrProviderProfileDisabled = errors.New("public account provider profile disabled")
-	ErrUnsupportedAccountType  = errors.New("public account unsupported type")
-	ErrTargetGroupRequired     = errors.New("public account target group required")
-	ErrGroupNotFound           = errors.New("public account group not found")
-	ErrGroupProviderMismatch   = errors.New("public account group provider mismatch")
-	ErrAccountNotFound         = errors.New("public account not found")
-	ErrDuplicateAccountName    = errors.New("public account duplicate name")
-	ErrInvalidCredentials      = errors.New("public account invalid credentials")
-	ErrInvalidBaseURL          = errors.New("public account invalid base url")
-	ErrInvalidAPIKey           = errors.New("public account invalid api key")
-	ErrInvalidSupportedModels  = errors.New("public account invalid supported models")
-	ErrInvalidHealthCheckModel = errors.New("public account invalid health check model")
-	ErrInvalidAvailability     = errors.New("public account invalid availability schedule")
-	ErrInvalidDispatchField    = errors.New("public account invalid dispatch field")
-	ErrInvalidStatusTransition = errors.New("public account invalid status transition")
-	ErrCredentialCodecUnusable = errors.New("public account credential codec unusable")
+	ErrTargetNotFound                 = errors.New("public account target not found")
+	ErrTargetDisabled                 = errors.New("public account target disabled")
+	ErrProviderProfileNotFound        = errors.New("public account provider profile not found")
+	ErrProviderDisabled               = errors.New("public account provider disabled")
+	ErrProviderProfileDisabled        = errors.New("public account provider profile disabled")
+	ErrUnsupportedAccountType         = errors.New("public account unsupported type")
+	ErrTargetGroupRequired            = errors.New("public account target group required")
+	ErrGroupNotFound                  = errors.New("public account group not found")
+	ErrGroupProviderMismatch          = errors.New("public account group provider mismatch")
+	ErrAccountNotFound                = errors.New("public account not found")
+	ErrDuplicateAccountName           = errors.New("public account duplicate name")
+	ErrInvalidCredentials             = errors.New("public account invalid credentials")
+	ErrInvalidBaseURL                 = errors.New("public account invalid base url")
+	ErrInvalidAPIKey                  = errors.New("public account invalid api key")
+	ErrInvalidSupportedModels         = errors.New("public account invalid supported models")
+	ErrInvalidHealthCheckModel        = errors.New("public account invalid health check model")
+	ErrInvalidHealthCheckEndpointMode = errors.New("public account invalid health check endpoint mode")
+	ErrInvalidAvailability            = errors.New("public account invalid availability schedule")
+	ErrInvalidDispatchField           = errors.New("public account invalid dispatch field")
+	ErrInvalidStatusTransition        = errors.New("public account invalid status transition")
+	ErrCredentialCodecUnusable        = errors.New("public account credential codec unusable")
 )
 
 type Service struct {
-	store          port.PublicAccountStore
-	transactor     port.PublicAccountTransactor
-	providerModels ProviderModelReader
-	now            func() time.Time
-	newID          func(prefix string) string
-	codec          CredentialCodec
+	store                      port.PublicAccountStore
+	transactor                 port.PublicAccountTransactor
+	providerModels             ProviderModelReader
+	dispatcher                 AccountHealthCheckDispatcher
+	healthCheckDispatchTimeout time.Duration
+	logger                     *slog.Logger
+	now                        func() time.Time
+	newID                      func(prefix string) string
+	codec                      CredentialCodec
 }
 
 type Options struct {
-	Store          port.PublicAccountStore
-	Transactor     port.PublicAccountTransactor
-	ProviderModels ProviderModelReader
-	Now            func() time.Time
-	NewID          func(prefix string) string
-	Codec          CredentialCodec
-	Secret         string
+	Store                      port.PublicAccountStore
+	Transactor                 port.PublicAccountTransactor
+	ProviderModels             ProviderModelReader
+	HealthCheckDispatcher      AccountHealthCheckDispatcher
+	HealthCheckDispatchTimeout time.Duration
+	Logger                     *slog.Logger
+	Now                        func() time.Time
+	NewID                      func(prefix string) string
+	Codec                      CredentialCodec
+	Secret                     string
 }
 
 type CredentialCodec interface {
@@ -93,6 +105,10 @@ type CredentialCodec interface {
 
 type ProviderModelReader interface {
 	Models(ctx context.Context, input managementprovidermodels.ModelListInput) ([]managementprovidermodels.ModelCatalogItem, error)
+}
+
+type AccountHealthCheckDispatcher interface {
+	Dispatch(ctx context.Context, accountID string, reason string) error
 }
 
 type Target struct {
@@ -116,6 +132,7 @@ type AccountSummary struct {
 	ClientCompatibility       string   `json:"clientCompatibility,omitempty"`
 	Status                    string   `json:"status"`
 	SupportedModels           []string `json:"supportedModels,omitempty"`
+	HealthCheckEndpointMode   string   `json:"-"`
 	BoundGroupID              string   `json:"boundGroupId,omitempty"`
 	BoundGroupName            string   `json:"boundGroupName,omitempty"`
 	Schedulable               bool     `json:"schedulable"`
@@ -168,6 +185,7 @@ type AddInput struct {
 	BaseURL                   string
 	APIKey                    string
 	SupportedModels           StringListValue
+	HealthCheckEndpointMode   string
 	Status                    string
 	ConcurrencyLimit          *int
 	Priority                  *int
@@ -186,6 +204,7 @@ type UpdateInput struct {
 	BaseURL                   *string
 	APIKey                    *string
 	SupportedModels           StringListValue
+	HealthCheckEndpointMode   *string
 	Status                    *string
 	ConcurrencyLimit          *int
 	Priority                  *int
@@ -235,13 +254,20 @@ func NewService(opts Options) *Service {
 		}
 		codec = newAESGCMCredentialCodec(secret)
 	}
+	healthCheckDispatchTimeout := opts.HealthCheckDispatchTimeout
+	if healthCheckDispatchTimeout <= 0 {
+		healthCheckDispatchTimeout = accountHealthCheckDispatchTimeout
+	}
 	return &Service{
-		store:          opts.Store,
-		transactor:     opts.Transactor,
-		providerModels: opts.ProviderModels,
-		now:            now,
-		newID:          newID,
-		codec:          codec,
+		store:                      opts.Store,
+		transactor:                 opts.Transactor,
+		providerModels:             opts.ProviderModels,
+		dispatcher:                 opts.HealthCheckDispatcher,
+		healthCheckDispatchTimeout: healthCheckDispatchTimeout,
+		logger:                     opts.Logger,
+		now:                        now,
+		newID:                      newID,
+		codec:                      codec,
 	}
 }
 
@@ -352,6 +378,9 @@ func (s *Service) Add(ctx context.Context, input AddInput) (AccountResponse, err
 		if publicAccountAddRetryable(err) {
 			continue
 		}
+		if err == nil && response.Account != nil && response.Account.Status == StatusPendingTest {
+			s.dispatchAccountHealthCheck(ctx, response.Account.ID, accountHealthCheckReasonActivation)
+		}
 		return response, err
 	}
 	return response, err
@@ -418,6 +447,19 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 		if err != nil {
 			return err
 		}
+		var requestedHealthCheckEndpointMode *string
+		if input.HealthCheckEndpointMode != "" {
+			requestedHealthCheckEndpointMode = &input.HealthCheckEndpointMode
+		}
+		healthCheckEndpointMode, err := resolveHealthCheckEndpointMode(
+			requestedHealthCheckEndpointMode,
+			input.ProviderCode,
+			profile.ID,
+			profile.EnabledEndpointModes,
+		)
+		if err != nil {
+			return err
+		}
 		scheduleJSON, err := normalizeAvailabilityScheduleJSON(input.AvailabilitySchedule)
 		if err != nil {
 			return err
@@ -441,6 +483,7 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 			ClientCompatibility:       DefaultClientCompat,
 			SupportedModels:           models,
 			HealthCheckModel:          healthCheckModel,
+			HealthCheckEndpointMode:   healthCheckEndpointMode,
 			Schedulable:               false,
 			AvailabilityScheduleJSON:  scheduleJSON,
 			ConcurrencyLimit:          intPtrValue(input.ConcurrencyLimit, DefaultConcurrencyLimit),
@@ -462,6 +505,7 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 
 func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountResponse, error) {
 	var response AccountResponse
+	var healthCheckAccountID string
 	err := s.inTx(ctx, func(ctx context.Context, store port.PublicAccountStore) error {
 		current, target, err := s.accountAndTargetForWrite(ctx, store, input.AccountID, input.TargetUsername)
 		if err != nil {
@@ -473,7 +517,17 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		if input.Type != nil && strings.TrimSpace(*input.Type) != AccountTypeAPIKey {
 			return fmt.Errorf("%w: 公开账号接口仅支持 API Key 账户", ErrUnsupportedAccountType)
 		}
-		if err := s.assertAccountFilters(ctx, store, current, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
+		profile, err := s.requireProviderProfile(
+			ctx,
+			store,
+			current.SystemAccountID,
+			current.ProviderCode,
+			current.ProviderProtocolProfileID,
+		)
+		if err != nil {
+			return err
+		}
+		if err := s.assertAccountFilters(ctx, store, current, &profile, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
 			return err
 		}
 
@@ -547,11 +601,25 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		}
 		next.SupportedModels = models
 		next.HealthCheckModel = healthCheckModel
+		healthCheckEndpointMode := &current.HealthCheckEndpointMode
+		if input.HealthCheckEndpointMode != nil {
+			healthCheckEndpointMode = input.HealthCheckEndpointMode
+		}
+		next.HealthCheckEndpointMode, err = resolveHealthCheckEndpointMode(
+			healthCheckEndpointMode,
+			current.ProviderCode,
+			current.ProviderProtocolProfileID,
+			profile.EnabledEndpointModes,
+		)
+		if err != nil {
+			return err
+		}
 		if connectionConfigurationChanged && next.Status != port.PublicAccountStatusDisabled {
 			next.Status = port.PublicAccountStatusPendingTest
 			next.Schedulable = false
 		}
 		resetFailureState := input.Status != nil || connectionConfigurationChanged
+		scheduleHealthCheck := connectionConfigurationChanged || input.SupportedModels.Set() || input.HealthCheckEndpointMode != nil
 		updated, ok, err := store.UpdatePublicAccount(ctx, port.PublicAccountUpdateInput{
 			ID:                       current.ID,
 			SystemAccountID:          current.SystemAccountID,
@@ -564,8 +632,9 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 			SupportedModels:          next.SupportedModels,
 			SupportedModelsChanged:   supportedModelsChanged,
 			HealthCheckModel:         next.HealthCheckModel,
+			HealthCheckEndpointMode:  next.HealthCheckEndpointMode,
 			ResetFailureState:        resetFailureState,
-			ScheduleHealthCheck:      connectionConfigurationChanged || input.SupportedModels.Set(),
+			ScheduleHealthCheck:      scheduleHealthCheck,
 			ResetHealthDiagnostics:   connectionConfigurationChanged,
 			Schedulable:              next.Schedulable,
 			AvailabilityScheduleJSON: next.AvailabilityScheduleJSON,
@@ -583,9 +652,15 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		if !ok {
 			return ErrAccountNotFound
 		}
+		if scheduleHealthCheck {
+			healthCheckAccountID = updated.ID
+		}
 		response = accountResponse("updated", target, nil, updated, false, s.generatedAt())
 		return nil
 	})
+	if err == nil && healthCheckAccountID != "" {
+		s.dispatchAccountHealthCheck(ctx, healthCheckAccountID, accountHealthCheckReasonConfiguration)
+	}
 	return response, err
 }
 
@@ -611,7 +686,7 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (AccountRespons
 		if err := assertTargetActive(target); err != nil {
 			return err
 		}
-		if err := s.assertAccountFilters(ctx, store, current, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
+		if err := s.assertAccountFilters(ctx, store, current, nil, input.ProviderCode, input.ProviderProtocolProfileID, input.TargetGroupName); err != nil {
 			return err
 		}
 		deleted, err := store.DeletePublicAccount(ctx, current.ID, current.SystemAccountID, target.ID, s.now().UTC())
@@ -762,6 +837,7 @@ func (s *Service) assertAccountFilters(
 	ctx context.Context,
 	store port.PublicAccountStore,
 	account port.PublicAccountSummary,
+	currentProfile *port.PublicAccountProviderProfile,
 	providerCode *string,
 	profileID *string,
 	groupName *string,
@@ -770,16 +846,19 @@ func (s *Service) assertAccountFilters(
 		return ErrAccountNotFound
 	}
 	if profileID != nil {
-		provider := account.ProviderCode
-		if providerCode != nil && strings.TrimSpace(*providerCode) != "" {
-			provider = strings.TrimSpace(*providerCode)
-		}
-		profile, err := s.requireProviderProfile(ctx, store, account.SystemAccountID, provider, *profileID)
-		if err != nil {
-			return err
-		}
-		if profile.ID != account.ProviderProtocolProfileID {
-			return ErrAccountNotFound
+		requestedProfileID := strings.TrimSpace(*profileID)
+		if currentProfile == nil || requestedProfileID != currentProfile.ID {
+			provider := account.ProviderCode
+			if providerCode != nil && strings.TrimSpace(*providerCode) != "" {
+				provider = strings.TrimSpace(*providerCode)
+			}
+			profile, err := s.requireProviderProfile(ctx, store, account.SystemAccountID, provider, requestedProfileID)
+			if err != nil {
+				return err
+			}
+			if profile.ID != account.ProviderProtocolProfileID {
+				return ErrAccountNotFound
+			}
 		}
 	}
 	if groupName != nil {
@@ -849,6 +928,23 @@ func (s *Service) inTx(ctx context.Context, fn func(context.Context, port.Public
 		return s.transactor.PublicAccountInTx(ctx, fn)
 	}
 	return fn(ctx, s.store)
+}
+
+func (s *Service) dispatchAccountHealthCheck(ctx context.Context, accountID string, reason string) {
+	if s.dispatcher == nil {
+		return
+	}
+	dispatchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.healthCheckDispatchTimeout)
+	defer cancel()
+	if err := s.dispatcher.Dispatch(dispatchCtx, accountID, reason); err != nil && s.logger != nil {
+		s.logger.Warn(
+			"公开账户健康检查投递失败",
+			slog.String("event", accountHealthCheckDispatchFailedEvent),
+			slog.String("account_id", accountID),
+			slog.String("reason", reason),
+			slog.Any("error", err),
+		)
+	}
 }
 
 func publicAccountAddRetryable(err error) bool {
@@ -946,6 +1042,83 @@ func normalizeAccountHealthCheckModel(value string, supportedModels []string) (s
 		}
 	}
 	return "", fmt.Errorf("%w: %s", ErrInvalidHealthCheckModel, invalidHealthCheckModelUnsupportedMessage)
+}
+
+func resolveHealthCheckEndpointMode(value *string, providerCode string, profileID string, enabledEndpointModes []string) (string, error) {
+	if value == nil {
+		return defaultHealthCheckEndpointMode(providerCode, profileID, enabledEndpointModes)
+	}
+	mode := strings.TrimSpace(*value)
+	if !isHealthCheckEndpointMode(mode) {
+		return "", fmt.Errorf("%w: 账户健康检查请求形态无效", ErrInvalidHealthCheckEndpointMode)
+	}
+	if !stringListContains(enabledEndpointModes, mode) {
+		return "", fmt.Errorf(
+			"%w: 账户健康检查请求形态 %s 未启用",
+			ErrInvalidHealthCheckEndpointMode,
+			mode,
+		)
+	}
+	return mode, nil
+}
+
+func defaultHealthCheckEndpointMode(providerCode string, profileID string, enabledEndpointModes []string) (string, error) {
+	enabledModes := make([]string, 0, len(enabledEndpointModes))
+	for _, mode := range enabledEndpointModes {
+		mode = strings.TrimSpace(mode)
+		if isHealthCheckEndpointMode(mode) {
+			enabledModes = append(enabledModes, mode)
+		}
+	}
+	preferred := preferredHealthCheckEndpointMode(providerCode, profileID)
+	if stringListContains(enabledModes, preferred) {
+		return preferred, nil
+	}
+	for _, mode := range enabledModes {
+		if strings.HasSuffix(mode, "_json") {
+			return mode, nil
+		}
+	}
+	if len(enabledModes) > 0 {
+		return enabledModes[0], nil
+	}
+	return "", fmt.Errorf(
+		"%w: 账户至少需要启用一个可用于健康检查的请求形态",
+		ErrInvalidHealthCheckEndpointMode,
+	)
+}
+
+func preferredHealthCheckEndpointMode(providerCode string, profileID string) string {
+	providerCode = strings.TrimSpace(providerCode)
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "profile_gemini_native_v1beta" {
+		return "generate_content_json"
+	}
+	if strings.Contains(profileID, "anthropic") || providerCode == "anthropic" {
+		return "messages_json"
+	}
+	if providerCode == "gpt" {
+		return "responses_sse"
+	}
+	return "chat_json"
+}
+
+func isHealthCheckEndpointMode(mode string) bool {
+	switch strings.TrimSpace(mode) {
+	case "chat_json", "chat_sse", "responses_json", "responses_sse", "messages_json", "messages_sse", "generate_content_json", "generate_content_sse":
+		return true
+	default:
+		return false
+	}
+}
+
+func stringListContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, systemAccountID string, providerCode string, models []string) error {
@@ -1144,6 +1317,7 @@ func publicAccountSummary(account port.PublicAccountSummary, listShape bool) Acc
 		ClientCompatibility:       account.ClientCompatibility,
 		Status:                    string(account.Status),
 		SupportedModels:           append([]string(nil), account.SupportedModels...),
+		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
 		Schedulable:               account.Schedulable,
 		AvailabilitySchedule:      jsonValue(account.AvailabilityScheduleJSON),
 	}

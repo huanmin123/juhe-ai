@@ -53,8 +53,9 @@ async function main(): Promise<void> {
     await assertRateLimitCannotBeDisabled()
     await assertAuthenticatedUserLimit(baseUrl, adminCookie)
     await assertAllowlistedIpBypassesRateLimit(baseUrl, adminCookie)
+    await assertTestAppBypassesRateLimit(adminCookie)
 
-    console.log('后台系统 API 限流回归通过：限流位于 body parser 前，阈值可配置且固定启用，IP 与登录用户超限返回 429，健康检查和 IP 白名单不受影响')
+    console.log('后台系统 API 限流回归通过：限流位于 body parser 前，阈值可配置且固定启用，IP 与登录用户超限返回 429，健康检查、IP 白名单和测试 app 实例旁路符合预期')
   } finally {
     await closeServer(server)
     try {
@@ -177,6 +178,36 @@ async function assertAllowlistedIpBypassesRateLimit(baseUrl: string, adminCookie
   await assertStatus(baseUrl, '/__aisys__/api/settings/public', 200, { clientIp })
   await assertStatus(baseUrl, '/__aisys__/api/settings', 200, { clientIp, cookie: adminCookie })
   await assertStatus(baseUrl, '/__aisys__/api/settings', 200, { clientIp, cookie: adminCookie })
+}
+
+async function assertTestAppBypassesRateLimit(adminCookie: string): Promise<void> {
+  repositories.updateSettings({
+    systemApiRateLimitIpReadPerMinute: 1,
+    systemApiRateLimitIpReadBurstPer10Seconds: 1,
+    systemApiRateLimitIpWritePerMinute: 1,
+    systemApiRateLimitIpWriteBurstPer10Seconds: 1,
+    systemApiRateLimitUserReadPerMinute: 1,
+    systemApiRateLimitUserWritePerMinute: 1
+  })
+  clearSystemApiRateLimitStateForTest()
+
+  const app = createSystemApiApp({
+    systemApiPrefix: '/__aisys__/api',
+    trustProxy: true,
+    bypassSystemApiRateLimitForTest: true
+  })
+  const server = app.listen(0, '127.0.0.1')
+  try {
+    await listen(server)
+    const baseUrl = `http://127.0.0.1:${serverAddress(server).port}`
+    const clientIp = '198.51.100.105'
+    await assertStatus(baseUrl, '/__aisys__/api/settings/public', 200, { clientIp })
+    await assertStatus(baseUrl, '/__aisys__/api/settings/public', 200, { clientIp })
+    await assertStatus(baseUrl, '/__aisys__/api/settings', 200, { clientIp, cookie: adminCookie })
+    await assertStatus(baseUrl, '/__aisys__/api/settings', 200, { clientIp, cookie: adminCookie })
+  } finally {
+    await closeServer(server)
+  }
 }
 
 function seedClientIpRegistry(clientIp: string): void {

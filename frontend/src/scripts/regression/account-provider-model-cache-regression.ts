@@ -1,7 +1,8 @@
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import { api } from '@/api/client'
 import type { ProviderModelOption, ProviderModelPricing, ProviderModelsParams } from '@/types/domain'
+import { useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
 import {
   invalidateAccountProviderModelOptionsCache,
   useAccountProviderModelOptions
@@ -133,7 +134,72 @@ try {
   assertEqual(modelOptionCalls.length, 1, '混合供应商应请求一次全局模型选项接口')
   assertEqual(calls.length, 3, '混合供应商不应请求 /providers/hybrid/models 作为创建页模型候选')
 
-  console.log('账户模型选项缓存回归通过：自定义模型变更后可按供应商失效并重新拉取模型目录')
+  invalidateAccountProviderModelOptionsCache()
+  const providerScopeId = ref('sys_scope_a')
+  const providerScopeRequests = new Map<string, Deferred<ProviderModelPricing[]>>()
+  const providerScopeCalls: string[] = []
+  ;(api.providers as unknown as { models: ModelsLoader }).models = async (_code, params) => {
+    const systemAccountId = params?.systemAccountId ?? ''
+    providerScopeCalls.push(systemAccountId)
+    const request = deferred<ProviderModelPricing[]>()
+    providerScopeRequests.set(systemAccountId, request)
+    return request.promise
+  }
+  const racedProviderModels = useAccountProviderModelOptions({
+    currentProviderCode: () => 'openai',
+    extractApiErrorMessage: (error, fallback) => error instanceof Error ? error.message : fallback,
+    isManagementView: computed(() => true),
+    modelScopeParams: computed(() => ({ systemAccountId: providerScopeId.value }))
+  })
+  const providerScopeA = racedProviderModels.loadProviderModelOptions('openai')
+  providerScopeId.value = 'sys_scope_b'
+  const providerScopeB = racedProviderModels.loadProviderModelOptions('openai')
+  assertDeepEqual(providerScopeCalls, ['sys_scope_a', 'sys_scope_b'], '不同系统账户作用域必须各自发起模型目录请求')
+  providerScopeRequests.get('sys_scope_b')?.resolve([providerModel('scope-b-model', ['responses'])])
+  await providerScopeB
+  providerScopeRequests.get('sys_scope_a')?.resolve([providerModel('scope-a-model', ['chat_completions'])])
+  await providerScopeA
+  assertDeepEqual(
+    optionValues(racedProviderModels.providerModelOptions.value),
+    ['scope-b-model'],
+    '同供应商旧作用域的慢响应不得覆盖当前系统账户模型目录'
+  )
+  assertEqual(racedProviderModels.providerModelsLoading.value, false, '当前作用域完成后 loading 必须及时结束')
+
+  const globalScopeId = ref('sys_global_a')
+  const globalScopeRequests = new Map<string, Deferred<ProviderModelOption[]>>()
+  const globalScopeCalls: string[] = []
+  ;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = async (params) => {
+    const systemAccountId = params?.systemAccountId ?? ''
+    globalScopeCalls.push(systemAccountId)
+    const request = deferred<ProviderModelOption[]>()
+    globalScopeRequests.set(systemAccountId, request)
+    return request.promise
+  }
+  const racedGlobalModels = useProviderModelSelectOptions({
+    protocol: 'openai',
+    scopeParams: computed(() => ({ systemAccountId: globalScopeId.value }))
+  })
+  const globalScopeA = racedGlobalModels.loadModelOptions()
+  globalScopeId.value = 'sys_global_b'
+  const globalScopeB = racedGlobalModels.loadModelOptions()
+  assertDeepEqual(globalScopeCalls, ['sys_global_a', 'sys_global_b'], '全局模型选项切换作用域时不得复用旧 scope Promise')
+  globalScopeRequests.get('sys_global_b')?.resolve([
+    { providerCode: 'gpt', model: 'global-b-model', supportedApiProtocols: ['responses'] }
+  ])
+  await globalScopeB
+  globalScopeRequests.get('sys_global_a')?.resolve([
+    { providerCode: 'gpt', model: 'global-a-model', supportedApiProtocols: ['chat_completions'] }
+  ])
+  await globalScopeA
+  assertDeepEqual(
+    optionValues(racedGlobalModels.selectOptions.value),
+    ['global-b-model'],
+    '旧作用域全局模型选项响应不得覆盖当前系统账户候选'
+  )
+  assertEqual(racedGlobalModels.loading.value, false, '当前全局模型作用域完成后 loading 必须及时结束')
+
+  console.log('账户模型选项缓存回归通过：缓存失效、作用域隔离和逆序响应均符合预期')
 } finally {
   ;(api.providers as unknown as { models: ModelsLoader }).models = originalModels
   ;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = originalModelOptions
@@ -173,6 +239,19 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
   if (actualJson !== expectedJson) {
     throw new Error(`${message}，实际 ${actualJson}，预期 ${expectedJson}`)
   }
+}
+
+type Deferred<T> = {
+  promise: Promise<T>
+  resolve: (value: T) => void
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
 }
 
 function providerModel(model: string, supportedApiProtocols: ProviderModelPricing['supportedApiProtocols']): ProviderModelPricing {

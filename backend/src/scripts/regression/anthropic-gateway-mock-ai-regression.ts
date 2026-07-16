@@ -455,7 +455,7 @@ async function assertAnthropicSseRetryExhaustedErrorShape(baseUrl: string, upstr
     credentials: {
       api_key: 'sk-ant-empty-sse',
       base_url: upstreamBaseUrl,
-      supported_endpoint_modes: ['messages_sse']
+      supported_endpoint_modes: ['messages_json', 'messages_sse']
     },
     groupId: group.id,
     status: 'active',
@@ -1141,7 +1141,7 @@ async function assertAnthropicSseErrorSwitchesAccount(baseUrl: string, upstreamB
     credentials: {
       api_key: 'sk-ant-error-sse',
       base_url: upstreamBaseUrl,
-      supported_endpoint_modes: ['messages_sse']
+      supported_endpoint_modes: ['messages_json', 'messages_sse']
     },
     groupId: group.id,
     status: 'active',
@@ -1155,7 +1155,7 @@ async function assertAnthropicSseErrorSwitchesAccount(baseUrl: string, upstreamB
     credentials: {
       api_key: 'sk-ant-clean-sse',
       base_url: upstreamBaseUrl,
-      supported_endpoint_modes: ['messages_sse']
+      supported_endpoint_modes: ['messages_json', 'messages_sse']
     },
     groupId: group.id,
     status: 'active',

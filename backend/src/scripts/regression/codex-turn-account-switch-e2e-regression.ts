@@ -558,8 +558,10 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
     status: 'active',
     schedulable: true,
     priority: 0,
-    supportedModels: [codexSwitchTestModel]
+    supportedModels: [codexSwitchTestModel],
+    healthCheckModel: codexSwitchTestModel
   }, access)
+  activateFixtureAccount(failedAccount)
   if ((options.freshPriority ?? 10) === 0) {
     waitForClockTick()
   }
@@ -576,8 +578,10 @@ function seedTwoAccountGateway(upstreamBaseUrl: string, label: string, options: 
     status: 'active',
     schedulable: true,
     priority: options.freshPriority ?? 10,
-    supportedModels: [codexSwitchTestModel]
+    supportedModels: [codexSwitchTestModel],
+    healthCheckModel: codexSwitchTestModel
   }, access)
+  activateFixtureAccount(freshAccount)
   if ((options.freshPriority ?? 10) === 0) {
     forceGroupAccountOrder(group.id, failedAccount.id, freshAccount.id)
   }
@@ -624,8 +628,10 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
     status: 'active',
     schedulable: true,
     priority: 0,
-    supportedModels: [codexSwitchTestModel]
+    supportedModels: [codexSwitchTestModel],
+    healthCheckModel: codexSwitchTestModel
   }, access)
+  activateFixtureAccount(failedAccount)
   const latentFailedAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -639,8 +645,10 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
     status: 'active',
     schedulable: true,
     priority: 5,
-    supportedModels: [codexSwitchTestModel]
+    supportedModels: [codexSwitchTestModel],
+    healthCheckModel: codexSwitchTestModel
   }, access)
+  activateFixtureAccount(latentFailedAccount)
   const freshAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -654,8 +662,10 @@ function seedThreeAccountGateway(upstreamBaseUrl: string, label: string): Seeded
     status: 'active',
     schedulable: true,
     priority: 10,
-    supportedModels: [codexSwitchTestModel]
+    supportedModels: [codexSwitchTestModel],
+    healthCheckModel: codexSwitchTestModel
   }, access)
+  activateFixtureAccount(freshAccount)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `Codex 切号 e2e Key-三账号-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -700,8 +710,10 @@ function seedProbeFailureGateway(upstreamBaseUrl: string, label: string): Seeded
     status: 'active',
     schedulable: true,
     priority: 0,
-    supportedModels: [codexSwitchTestModel]
+    supportedModels: [codexSwitchTestModel],
+    healthCheckModel: codexSwitchTestModel
   }, access)
+  activateFixtureAccount(failedAccount)
   const probeFailedAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -715,8 +727,10 @@ function seedProbeFailureGateway(upstreamBaseUrl: string, label: string): Seeded
     status: 'active',
     schedulable: true,
     priority: 10,
-    supportedModels: [codexSwitchTestModel]
+    supportedModels: [codexSwitchTestModel],
+    healthCheckModel: codexSwitchTestModel
   }, access)
+  activateFixtureAccount(probeFailedAccount)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `Codex 切号 e2e Key-全部探针失败-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -1225,6 +1239,15 @@ function resolveMockScenario(body: Record<string, unknown>): string {
     }
   }
   return typeof body.input === 'string' ? body.input : 'unknown'
+}
+
+function activateFixtureAccount(account: ReturnType<typeof repositories.createAccount>): void {
+  repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    expectedConfigRevision: account.configRevision
+  })
 }
 
 function seedGatewayAccess(): { systemAccountId: string; role: 'user' } {

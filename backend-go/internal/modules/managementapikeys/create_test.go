@@ -672,8 +672,11 @@ func TestServiceCreateRetriesOnlyDuplicateHashUpToThreeAttempts(t *testing.T) {
 }
 
 func TestServiceCreateInvalidationsAreBestEffortAndSkipValidation(t *testing.T) {
+	events := []string{}
 	store := &managementAPIKeyCreateStoreStub{}
 	invalidator := &managementAPIKeyInvalidatorStub{
+		events:     &events,
+		lookupErr:  errors.New("lookup unavailable"),
 		runtimeErr: errors.New("runtime unavailable"),
 		quotaErr:   errors.New("quota unavailable"),
 	}
@@ -692,7 +695,9 @@ func TestServiceCreateInvalidationsAreBestEffortAndSkipValidation(t *testing.T) 
 		t.Fatalf("Create() error = %v", err)
 	}
 	if result.ID != "key_created" ||
-		invalidator.calls != 2 ||
+		invalidator.calls != 3 ||
+		invalidator.lookupReason != "api_key_created" ||
+		invalidator.lookupAPIKeyID != "key_created" ||
 		invalidator.runtimeReason != "api_key_created" ||
 		invalidator.quotaReason != "api_key_created" ||
 		invalidator.quotaAPIKeyID != "key_created" {
@@ -700,6 +705,9 @@ func TestServiceCreateInvalidationsAreBestEffortAndSkipValidation(t *testing.T) 
 	}
 	if invalidator.validationContextHasDeadline || invalidator.validationContextErr != nil {
 		t.Fatalf("validation invalidation was called: %+v", invalidator)
+	}
+	if got, want := strings.Join(events, ","), "lookup,runtime,quota"; got != want {
+		t.Fatalf("invalidation order = %q, want %q", got, want)
 	}
 }
 
@@ -724,20 +732,25 @@ func TestServiceCreateInvalidationsUseDetachedBoundedContextAfterRequestCancella
 	if result.ID != "key_created" || !errors.Is(ctx.Err(), context.Canceled) {
 		t.Fatalf("resultID=%q request context error=%v", result.ID, ctx.Err())
 	}
-	if invalidator.runtimeCalls != 1 ||
+	if invalidator.lookupCalls != 1 ||
+		invalidator.runtimeCalls != 1 ||
 		invalidator.quotaCalls != 1 ||
 		invalidator.validationCalls != 0 {
 		t.Fatalf("invalidator calls = %+v", invalidator)
 	}
-	if invalidator.runtimeContextErr != nil ||
+	if invalidator.lookupContextErr != nil ||
+		invalidator.runtimeContextErr != nil ||
 		invalidator.quotaContextErr != nil ||
+		!invalidator.lookupContextHasDeadline ||
 		!invalidator.runtimeContextHasDeadline ||
 		!invalidator.quotaContextHasDeadline {
 		t.Fatalf("invalidation contexts = %+v", invalidator)
 	}
-	if !invalidator.runtimeDeadline.Equal(invalidator.quotaDeadline) {
+	if !invalidator.lookupDeadline.Equal(invalidator.runtimeDeadline) ||
+		!invalidator.runtimeDeadline.Equal(invalidator.quotaDeadline) {
 		t.Fatalf(
-			"runtime deadline=%s quota deadline=%s, want one shared timeout context",
+			"lookup deadline=%s runtime deadline=%s quota deadline=%s, want one shared timeout context",
+			invalidator.lookupDeadline,
 			invalidator.runtimeDeadline,
 			invalidator.quotaDeadline,
 		)
@@ -896,11 +909,15 @@ var _ port.ManagementUsageStatsTimezoneReader = (*managementAPIKeyCreateStoreStu
 type managementAPIKeyCreateInvalidatorContextStub struct {
 	runtimeCalls              int
 	quotaCalls                int
+	lookupCalls               int
 	validationCalls           int
+	lookupContextErr          error
 	runtimeContextErr         error
 	quotaContextErr           error
+	lookupContextHasDeadline  bool
 	runtimeContextHasDeadline bool
 	quotaContextHasDeadline   bool
+	lookupDeadline            time.Time
 	runtimeDeadline           time.Time
 	quotaDeadline             time.Time
 }
@@ -909,6 +926,17 @@ func (s *managementAPIKeyCreateInvalidatorContextStub) InvalidateAPIKeyValidatio
 	context.Context,
 ) error {
 	s.validationCalls++
+	return nil
+}
+
+func (s *managementAPIKeyCreateInvalidatorContextStub) InvalidateAPIKeyLookupCache(
+	ctx context.Context,
+	_ string,
+	_ string,
+) error {
+	s.lookupCalls++
+	s.lookupContextErr = ctx.Err()
+	s.lookupDeadline, s.lookupContextHasDeadline = ctx.Deadline()
 	return nil
 }
 

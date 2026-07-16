@@ -48,18 +48,22 @@ export interface AccountRow {
   cooldown_until: string | null
   last_error_code: string | null
   last_error_message: string | null
+  last_error_trace_id: string | null
   cooldown_retest_failure_count: number
   cooldown_retest_observation_started_at: string | null
   cooldown_retest_last_at: string | null
   cooldown_retest_last_status_code: number | null
   health_check_model: string
+  health_check_endpoint_mode: import('../domain/types.js').AccountHealthCheckEndpointMode
   last_health_check_at: string | null
   next_health_check_at: string | null
   last_health_success_at: string | null
   health_check_failure_count: number
+  health_check_failure_started_at: string | null
   last_health_check_status_code: number | null
   last_health_check_error_code: string | null
   last_health_check_error_message: string | null
+  last_health_check_trace_id: string | null
   stream_failure_count: number
   stream_failure_window_started_at: string | null
   authorization_instance_source_account_id: string | null
@@ -210,6 +214,7 @@ export type AccountListRow = AccountRow & {
   source_last_error_code?: string | null
   source_last_error_message?: string | null
   source_health_check_model?: string | null
+  source_health_check_endpoint_mode?: import('../domain/types.js').AccountHealthCheckEndpointMode | null
   source_credential_mask?: string | null
   source_credentials_encrypted?: string | null
   source_proxy_profile_id?: string | null

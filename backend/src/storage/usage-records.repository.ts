@@ -1,6 +1,6 @@
 import type { SQLInputValue } from 'node:sqlite'
 
-import { buildSystemAccountScopeClause, canAccessAll, includeSystemAccountFields, scopedSystemAccountId, type AccessScope } from './access-scope.js'
+import { buildSystemAccountScopeClause, includeSystemAccountFields, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getUsageCatalogDatabase, mainDatabaseRuntimeInfo, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMapByIds, loadSystemAccountNameMapByIdsAsync } from './repository-lookups.js'
@@ -25,7 +25,7 @@ import {
 import { writeUsageRecordShardRowsWithWriterPool } from './usage-record-writer-pool.js'
 import { optionalString } from './value-utils.js'
 import type { ResourceAuthorizationSourceType } from '../domain/types.js'
-import { recordAccountHealthSuccessSignals } from './account-health-check.repository.js'
+import { accountHealthSuccessSignalSchedule, recordAccountHealthSuccessSignals } from './account-health-check.repository.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -35,12 +35,16 @@ import {
   postgresUsageRecordPartitionPruningClauseForId
 } from './postgres-usage-record-partitions.js'
 import {
-  estimateCatalogCacheReadCostUsdAsync,
-  estimateCatalogCacheWriteCostUsdAsync,
-  estimateCatalogCostUsdAsync,
-  resolveCatalogPricingModelAsync
+  buildCatalogCostBreakdown,
+  buildCatalogCostBreakdownFromPricing,
+  findCatalogItem,
+  listProviderModelCatalogAsync,
+  type ProviderModelCatalogItem
 } from '../modules/model-pricing/model-catalog.service.js'
+import type { ProviderCostBreakdown } from '../modules/model-pricing/model-pricing.service.js'
+import type { UsageReasoningEffort } from '../modules/gateway/usage/reasoning-effort.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
+import { readUsageHealthCheckSettingsSnapshot } from './usage-health-check-settings-snapshot.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -66,10 +70,13 @@ export interface UsageRecordSummary {
   model?: string
   upstreamModel?: string
   pricingModel?: string
-  requestedServiceTier?: 'default' | 'priority' | 'flex'
-  effectiveServiceTier?: 'default' | 'priority' | 'flex'
-  reportedServiceTier?: 'default' | 'priority' | 'flex'
-  billedServiceTier?: 'default' | 'priority' | 'flex'
+  requestedServiceTier?: string
+  effectiveServiceTier?: string
+  reportedServiceTier?: string
+  billedServiceTier?: string
+  requestedReasoningEffort?: UsageReasoningEffort
+  effectiveReasoningEffort?: UsageReasoningEffort
+  pricingSnapshot?: ProviderCostBreakdown
   modelMappingApplied?: boolean
   modelMappingSource?: string
   sourceEndpointFamily?: string
@@ -129,7 +136,6 @@ export interface UsageRecordListResult {
   hasMore: boolean
   page: number
   pageSize: number
-  requiresSystemAccountSelection?: boolean
 }
 
 export interface UsageRecordInput {
@@ -158,12 +164,13 @@ export interface UsageRecordInput {
   model?: string
   upstreamModel?: string
   pricingModel?: string
-  requestedServiceTier?: 'default' | 'priority' | 'flex'
-  effectiveServiceTier?: 'default' | 'priority' | 'flex'
-  reportedServiceTier?: 'default' | 'priority' | 'flex'
-  billedServiceTier?: 'default' | 'priority' | 'flex'
-  priorityPriceMultiplier?: number
-  flexPriceMultiplier?: number
+  requestedServiceTier?: string
+  effectiveServiceTier?: string
+  reportedServiceTier?: string
+  billedServiceTier?: string
+  requestedReasoningEffort?: UsageReasoningEffort
+  effectiveReasoningEffort?: UsageReasoningEffort
+  pricingSnapshot?: ProviderCostBreakdown
   modelMappingApplied?: boolean
   modelMappingSource?: string
   sourceEndpointFamily?: string
@@ -202,9 +209,6 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
     throw new Error('JUHE_AI_DATABASE_DRIVER=postgres 时请使用 listUsageRecordsAsync 读取使用记录')
   }
   const listOptions = normalizeUsageRecordListOptions(options)
-  if (usageRecordListRequiresSystemAccountSelection(access)) {
-    return emptyUsageRecordListResult(listOptions, true)
-  }
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const offset = (listOptions.page - 1) * listOptions.pageSize
   const rows = listUsageRecordRowsFromShards(
@@ -229,21 +233,6 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   }
 }
 
-function usageRecordListRequiresSystemAccountSelection(access?: AccessScope): boolean {
-  return canAccessAll(access) && !scopedSystemAccountId(access)
-}
-
-function emptyUsageRecordListResult(listOptions: NormalizedUsageRecordListOptions, requiresSystemAccountSelection = false): UsageRecordListResult {
-  return {
-    items: [],
-    total: 0,
-    hasMore: false,
-    page: listOptions.page,
-    pageSize: listOptions.pageSize,
-    requiresSystemAccountSelection
-  }
-}
-
 export async function listUsageRecordsAsync(access?: AccessScope, options?: UsageRecordListOptions): Promise<UsageRecordListResult> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
@@ -257,9 +246,6 @@ export async function listUsageRecordsAsync(access?: AccessScope, options?: Usag
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const listOptions = normalizeUsageRecordListOptions(options)
-  if (usageRecordListRequiresSystemAccountSelection(access)) {
-    return emptyUsageRecordListResult(listOptions, true)
-  }
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const offset = (listOptions.page - 1) * listOptions.pageSize
   const filters = await buildUsageRecordFiltersAsync(client, access, options)
@@ -436,6 +422,16 @@ export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): 
   }
 }
 
+export async function freezeUsageRecordPricingFactsAsync(input: UsageRecordInput): Promise<UsageRecordInput> {
+  if (!hasUsageRecordPricingSnapshotFact(input)) return input
+  const enriched = (await enrichUsageRecordPricingAsync([input]))[0] ?? input
+  if (enriched.pricingSnapshot !== undefined) {
+    return enriched
+  }
+  const pricingSnapshot = usageRecordPricingSnapshotForWrite(enriched)
+  return pricingSnapshot === undefined ? enriched : { ...enriched, pricingSnapshot }
+}
+
 async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Promise<void> {
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const accountLastUsedAt = new Map<string, string>()
@@ -446,38 +442,45 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Prom
     shardLocationMode: 'postgres'
   })
   if (writePlan.shardEntries.length === 0) return
+  const hasAccountHealthSuccess = [...writePlan.rowsByShard.values()]
+    .some((shardRows) => shardRows.rows.some((row) => Boolean(row.accountHealthSuccessAt)))
+  const healthCheckSettings = hasAccountHealthSuccess
+    ? await readUsageHealthCheckSettingsSnapshot()
+    : undefined
 
   await client.transaction(async (tx) => {
     for (const shardRows of writePlan.rowsByShard.values()) {
       await insertPostgresUsageRecordRows(tx, shardRows.rows)
       collectPostgresUsageRecordBusinessSideEffects(accountLastUsedAt, accountHealthSuccessAt, shardRows.rows)
     }
-    await flushPostgresUsageRecordBusinessSideEffects(tx, accountLastUsedAt, accountHealthSuccessAt)
+    await flushPostgresUsageRecordBusinessSideEffects(tx, accountLastUsedAt, accountHealthSuccessAt, healthCheckSettings)
   })
 }
 
 async function enrichUsageRecordPricingAsync(inputs: UsageRecordInput[]): Promise<UsageRecordInput[]> {
-  const pricingModelCache = new Map<string, Promise<string | undefined>>()
-  const resolvePricingModel = async (input: { providerCode: string; model?: string; systemAccountId?: string }): Promise<string | undefined> => {
-    const key = [input.providerCode, input.systemAccountId ?? '', input.model ?? ''].join('\u0000')
-    let pending = pricingModelCache.get(key)
+  const catalogCache = new Map<string, Promise<ProviderModelCatalogItem[]>>()
+  const loadCatalog = async (input: { providerCode: string; systemAccountId?: string }): Promise<ProviderModelCatalogItem[]> => {
+    const key = [input.providerCode, input.systemAccountId ?? ''].join('\u0000')
+    let pending = catalogCache.get(key)
     if (!pending) {
-      pending = resolveCatalogPricingModelAsync(input)
-      pricingModelCache.set(key, pending)
+      pending = listProviderModelCatalogAsync(input)
+      catalogCache.set(key, pending)
     }
     return await pending
   }
   const enriched: UsageRecordInput[] = []
   for (const input of inputs) {
-    enriched.push(await enrichSingleUsageRecordPricingAsync(input, resolvePricingModel))
+    enriched.push(await enrichSingleUsageRecordPricingAsync(input, loadCatalog))
   }
   return enriched
 }
 
 async function enrichSingleUsageRecordPricingAsync(
   input: UsageRecordInput,
-  resolvePricingModel: (input: { providerCode: string; model?: string; systemAccountId?: string }) => Promise<string | undefined>
+  loadCatalog: (input: { providerCode: string; systemAccountId?: string }) => Promise<ProviderModelCatalogItem[]>
 ): Promise<UsageRecordInput> {
+  if (input.pricingSnapshot !== undefined) return input
+  if (!hasUsageRecordPricingSnapshotFact(input)) return input
   if (!input.providerCode) return input
   const providerCode = input.providerCode
   const catalogSystemAccountId = input.accountOwnerSystemAccountId || input.systemAccountId
@@ -486,14 +489,9 @@ async function enrichSingleUsageRecordPricingAsync(
   const existingPricingModel = normalizeUsageRecordPricingModel(input.pricingModel)
 
   try {
+    const catalog = await loadCatalog({ providerCode, systemAccountId: catalogSystemAccountId })
     const pricingModel = existingPricingModel
-      ?? await resolveUsageRecordPricingModelAsync({
-        providerCode,
-        systemAccountId: catalogSystemAccountId,
-        upstreamModel,
-        requestedModel,
-        resolvePricingModel
-      })
+      ?? resolveUsageRecordPricingModel(catalog, upstreamModel, requestedModel)
     const costModel = pricingModel ?? upstreamModel ?? requestedModel
     if (!costModel) {
       return pricingModel && pricingModel !== input.pricingModel
@@ -504,56 +502,37 @@ async function enrichSingleUsageRecordPricingAsync(
     const enriched: UsageRecordInput = pricingModel && pricingModel !== input.pricingModel
       ? { ...input, pricingModel }
       : { ...input }
-
+    if (!hasUsageRecordCostDimension(enriched)) return enriched
+    const pricing = findCatalogItem(catalog, costModel)
+    if (!pricing) return enriched
+    const pricingSnapshot = buildCatalogCostBreakdownFromPricing(pricing, {
+      providerCode,
+      systemAccountId: catalogSystemAccountId,
+      model: costModel,
+      serviceTier: enriched.billedServiceTier,
+      inputTokens: enriched.inputTokens,
+      outputTokens: enriched.outputTokens,
+      cacheReadTokens: enriched.cacheReadTokens,
+      cacheWriteTokens: enriched.cacheWriteTokens,
+      cacheWrite1hTokens: enriched.cacheWrite1hTokens,
+      thinkingTokens: enriched.thinkingTokens,
+      inputImageTokens: enriched.inputImageTokens,
+      outputImageTokens: enriched.outputImageTokens,
+      inputAudioTokens: enriched.inputAudioTokens,
+      outputAudioTokens: enriched.outputAudioTokens,
+      outputImageCount: enriched.outputImageCount,
+      costUsd: enriched.costUsd
+    })
+    if (!pricingSnapshot) return enriched
     if (enriched.cacheReadCostUsd === undefined && enriched.cacheReadTokens !== undefined) {
-      enriched.cacheReadCostUsd = await estimateCatalogCacheReadCostUsdAsync({
-        providerCode,
-        systemAccountId: catalogSystemAccountId,
-        model: costModel,
-        serviceTier: enriched.billedServiceTier,
-        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
-        flexPriceMultiplier: enriched.flexPriceMultiplier,
-        cacheReadTokens: enriched.cacheReadTokens
-      })
+      enriched.cacheReadCostUsd = pricingSnapshot.cacheReadCostUsd
     }
-
-    if (
-      enriched.cacheWriteCostUsd === undefined
-      && (enriched.cacheWriteTokens !== undefined || enriched.cacheWrite1hTokens !== undefined)
-    ) {
-      enriched.cacheWriteCostUsd = await estimateCatalogCacheWriteCostUsdAsync({
-        providerCode,
-        systemAccountId: catalogSystemAccountId,
-        model: costModel,
-        serviceTier: enriched.billedServiceTier,
-        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
-        flexPriceMultiplier: enriched.flexPriceMultiplier,
-        cacheWriteTokens: enriched.cacheWriteTokens,
-        cacheWrite1hTokens: enriched.cacheWrite1hTokens
-      })
+    if (enriched.cacheWriteCostUsd === undefined && (enriched.cacheWriteTokens !== undefined || enriched.cacheWrite1hTokens !== undefined)) {
+      enriched.cacheWriteCostUsd = sumOptionalCosts(pricingSnapshot.cacheWriteCostUsd, pricingSnapshot.cacheWrite1hCostUsd)
+        ?? (pricingSnapshot.cacheWriteUsdPer1M !== undefined || pricingSnapshot.cacheWrite1hUsdPer1M !== undefined ? 0 : undefined)
     }
-
-    if (enriched.costUsd === undefined && hasUsageRecordCostDimension(enriched)) {
-      enriched.costUsd = await estimateCatalogCostUsdAsync({
-        providerCode,
-        systemAccountId: catalogSystemAccountId,
-        model: costModel,
-        serviceTier: enriched.billedServiceTier,
-        priorityPriceMultiplier: enriched.priorityPriceMultiplier,
-        flexPriceMultiplier: enriched.flexPriceMultiplier,
-        inputTokens: enriched.inputTokens,
-        outputTokens: enriched.outputTokens,
-        cacheReadTokens: enriched.cacheReadTokens,
-        cacheWriteTokens: enriched.cacheWriteTokens,
-        cacheWrite1hTokens: enriched.cacheWrite1hTokens,
-        thinkingTokens: enriched.thinkingTokens,
-        inputImageTokens: enriched.inputImageTokens,
-        outputImageTokens: enriched.outputImageTokens,
-        inputAudioTokens: enriched.inputAudioTokens,
-        outputAudioTokens: enriched.outputAudioTokens,
-        outputImageCount: enriched.outputImageCount
-      })
-    }
+    if (enriched.costUsd === undefined) enriched.costUsd = pricingSnapshot.accountChargeUsd
+    if (enriched.pricingSnapshot === undefined) enriched.pricingSnapshot = pricingSnapshot
 
     return enriched
   } catch (error) {
@@ -569,26 +548,19 @@ async function enrichSingleUsageRecordPricingAsync(
   }
 }
 
-async function resolveUsageRecordPricingModelAsync(input: {
-  providerCode: string
-  systemAccountId?: string
-  upstreamModel?: string
+function resolveUsageRecordPricingModel(
+  catalog: ProviderModelCatalogItem[],
+  upstreamModel?: string,
   requestedModel?: string
-  resolvePricingModel: (input: { providerCode: string; model?: string; systemAccountId?: string }) => Promise<string | undefined>
-}): Promise<string | undefined> {
-  const upstreamPricingModel = await input.resolvePricingModel({
-    providerCode: input.providerCode,
-    systemAccountId: input.systemAccountId,
-    model: input.upstreamModel
-  })
-  if (upstreamPricingModel) return upstreamPricingModel
+): string | undefined {
+  const actualModel = upstreamModel ?? requestedModel
+  if (!actualModel) return undefined
+  return findCatalogItem(catalog, actualModel)?.model
+}
 
-  if (!input.requestedModel || input.requestedModel === input.upstreamModel) return undefined
-  return await input.resolvePricingModel({
-    providerCode: input.providerCode,
-    systemAccountId: input.systemAccountId,
-    model: input.requestedModel
-  })
+function sumOptionalCosts(...values: Array<number | undefined>): number | undefined {
+  const present = values.filter((value): value is number => value !== undefined)
+  return present.length ? Number(present.reduce((sum, value) => sum + value, 0).toFixed(10)) : undefined
 }
 
 function normalizeUsageRecordPricingModel(value: string | undefined): string | undefined {
@@ -607,6 +579,58 @@ function hasUsageRecordCostDimension(input: UsageRecordInput): boolean {
     || input.inputAudioTokens !== undefined
     || input.outputAudioTokens !== undefined
     || input.outputImageCount !== undefined
+}
+
+function usageRecordPricingSnapshotForWrite(input: UsageRecordInput): ProviderCostBreakdown | undefined {
+  if (input.pricingSnapshot) return input.pricingSnapshot
+  if (!hasUsageRecordPricingSnapshotFact(input)) {
+    return undefined
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres' && input.providerCode && hasUsageRecordCostDimension(input)) {
+    const model = normalizeUsageRecordPricingModel(input.pricingModel)
+      ?? normalizeUsageRecordPricingModel(input.upstreamModel)
+      ?? normalizeUsageRecordPricingModel(input.model)
+    const catalogSnapshot = model
+      ? buildCatalogCostBreakdown({
+          providerCode: input.providerCode,
+          systemAccountId: input.accountOwnerSystemAccountId || input.systemAccountId,
+          model,
+          serviceTier: input.billedServiceTier ?? input.reportedServiceTier ?? input.effectiveServiceTier ?? input.requestedServiceTier,
+          inputTokens: input.inputTokens,
+          outputTokens: input.outputTokens,
+          cacheReadTokens: input.cacheReadTokens,
+          cacheWriteTokens: input.cacheWriteTokens,
+          cacheWrite1hTokens: input.cacheWrite1hTokens,
+          thinkingTokens: input.thinkingTokens,
+          inputImageTokens: input.inputImageTokens,
+          outputImageTokens: input.outputImageTokens,
+          inputAudioTokens: input.inputAudioTokens,
+          outputAudioTokens: input.outputAudioTokens,
+          outputImageCount: input.outputImageCount,
+          costUsd: input.costUsd
+        })
+      : undefined
+    if (catalogSnapshot) return catalogSnapshot
+  }
+  return {
+    cacheReadCostUsd: finiteUsageNumber(input.cacheReadCostUsd),
+    cacheWriteCostUsd: finiteUsageNumber(input.cacheWriteCostUsd),
+    thinkingTokens: finiteUsageNumber(input.thinkingTokens),
+    accountChargeUsd: finiteUsageNumber(input.costUsd),
+    multiplier: 1,
+    serviceTierPricingSource: 'unknown'
+  }
+}
+
+function hasUsageRecordPricingSnapshotFact(input: UsageRecordInput): boolean {
+  return hasUsageRecordCostDimension(input)
+    || finiteUsageNumber(input.cacheReadCostUsd) !== undefined
+    || finiteUsageNumber(input.cacheWriteCostUsd) !== undefined
+    || finiteUsageNumber(input.costUsd) !== undefined
+}
+
+function finiteUsageNumber(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function normalizeUsageRecordBatchWriteError(errors: unknown[]): Error {
@@ -645,6 +669,7 @@ function buildUsageRecordBatchWritePlan(
       : usageAccessMetadata({ ...input, systemAccountId }, accessLookupContext)
     const trafficSource = normalizeUsageRecordTrafficSource(input.trafficSource)
     const failureAttribution = usageFailureAttributionForInput(input)
+    const pricingSnapshot = usageRecordPricingSnapshotForWrite(input)
     const row: UsageRecordShardWriteRow = {
       id,
       params: [
@@ -667,6 +692,9 @@ function buildUsageRecordBatchWritePlan(
         input.effectiveServiceTier ?? input.requestedServiceTier ?? 'default',
         input.reportedServiceTier ?? null,
         input.billedServiceTier ?? input.reportedServiceTier ?? input.effectiveServiceTier ?? input.requestedServiceTier ?? 'default',
+        input.requestedReasoningEffort ?? null,
+        input.effectiveReasoningEffort ?? null,
+        pricingSnapshot ? JSON.stringify(pricingSnapshot) : null,
         input.modelMappingApplied ? 1 : 0,
         input.modelMappingSource ?? null,
         input.sourceEndpointFamily ?? null,
@@ -793,6 +821,9 @@ const postgresUsageRecordColumns = [
   'effective_service_tier',
   'reported_service_tier',
   'billed_service_tier',
+  'requested_reasoning_effort',
+  'effective_reasoning_effort',
+  'cost_breakdown_snapshot_json',
   'model_mapping_applied',
   'model_mapping_source',
   'source_endpoint_family',
@@ -1081,7 +1112,12 @@ function mergePostgresMaxIsoValue(target: Map<string, string>, key: string, valu
 async function flushPostgresUsageRecordBusinessSideEffects(
   client: DatabaseClient,
   accountLastUsedAt: Map<string, string>,
-  accountHealthSuccessAt: Map<string, string>
+  accountHealthSuccessAt: Map<string, string>,
+  healthCheckSettings?: {
+    intervalHours: number
+    jitterMinutes: number
+    failureThreshold: number
+  }
 ): Promise<void> {
   for (const [accountId, lastUsedAt] of accountLastUsedAt) {
     await client.execute(`
@@ -1093,17 +1129,37 @@ async function flushPostgresUsageRecordBusinessSideEffects(
     `, [lastUsedAt, lastUsedAt, accountId, lastUsedAt])
   }
   for (const [accountId, successAt] of accountHealthSuccessAt) {
+    const schedule = accountHealthSuccessSignalSchedule(accountId, successAt, healthCheckSettings ?? {})
     await client.execute(`
       UPDATE juhe_business.accounts
       SET last_health_success_at = ?,
+          next_health_check_at = ?,
           health_check_failure_count = 0,
+          health_check_failure_started_at = NULL,
           last_health_check_error_code = NULL,
           last_health_check_error_message = NULL,
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
+        AND status = 'active'
         AND (last_health_success_at IS NULL OR last_health_success_at <= ?)
-    `, [successAt, successAt, accountId, successAt])
+        AND (
+          next_health_check_at IS NULL
+          OR next_health_check_at < ?
+          OR next_health_check_at > ?
+          OR health_check_failure_count <> 0
+          OR last_health_check_error_code IS NOT NULL
+          OR last_health_check_error_message IS NOT NULL
+        )
+    `, [
+      successAt,
+      schedule.nextHealthCheckAt,
+      successAt,
+      accountId,
+      successAt,
+      schedule.refreshAfterAt,
+      schedule.nextHealthCheckAt
+    ])
   }
 }
 
@@ -1331,6 +1387,13 @@ function loadUsageRecordRowsByEntries(entries: UsageRecordEntryRow[]): UsageReco
             ur.model,
             ur.upstream_model,
             ur.pricing_model,
+            ur.requested_service_tier,
+            ur.effective_service_tier,
+            ur.reported_service_tier,
+            ur.billed_service_tier,
+            ur.requested_reasoning_effort,
+            ur.effective_reasoning_effort,
+            ur.cost_breakdown_snapshot_json,
             ur.model_mapping_applied,
             ur.model_mapping_source,
             ur.source_endpoint_family,
@@ -1391,6 +1454,13 @@ async function loadUsageRecordRowsByEntriesAsync(client: DatabaseClient, entries
         ur.model,
         ur.upstream_model,
         ur.pricing_model,
+        ur.requested_service_tier,
+        ur.effective_service_tier,
+        ur.reported_service_tier,
+        ur.billed_service_tier,
+        ur.requested_reasoning_effort,
+        ur.effective_reasoning_effort,
+        ur.cost_breakdown_snapshot_json,
         ur.model_mapping_applied,
         ur.model_mapping_source,
         ur.source_endpoint_family,
@@ -1451,6 +1521,13 @@ async function listPostgresUsageRecordRows(
       ur.model,
       ur.upstream_model,
       ur.pricing_model,
+      ur.requested_service_tier,
+      ur.effective_service_tier,
+      ur.reported_service_tier,
+      ur.billed_service_tier,
+      ur.requested_reasoning_effort,
+      ur.effective_reasoning_effort,
+      ur.cost_breakdown_snapshot_json,
       ur.model_mapping_applied,
       ur.model_mapping_source,
       ur.source_endpoint_family,
@@ -1536,6 +1613,13 @@ function listUsageRecordRowsFromShards(
           ur.model,
           ur.upstream_model,
           ur.pricing_model,
+          ur.requested_service_tier,
+          ur.effective_service_tier,
+          ur.reported_service_tier,
+          ur.billed_service_tier,
+          ur.requested_reasoning_effort,
+          ur.effective_reasoning_effort,
+          ur.cost_breakdown_snapshot_json,
           ur.model_mapping_applied,
           ur.model_mapping_source,
           ur.source_endpoint_family,

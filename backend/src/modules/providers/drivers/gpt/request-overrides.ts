@@ -1,10 +1,5 @@
-import type {
-  GptServiceTier,
-  GptWireReasoningEffort
-} from '../../../model-pricing/provider-driver.types.js'
-
-export type GptServiceTierOverride = 'default' | GptServiceTier
-export type GptReasoningEffortOverride = GptWireReasoningEffort
+export type GptServiceTierOverride = string
+export type GptReasoningEffortOverride = string
 export type GptRequestOverrideEndpointFamily = 'chat_completions' | 'responses'
 
 export interface GptAccountRequestOverrides {
@@ -20,8 +15,8 @@ export interface ApplyGptAccountRequestOverridesInput {
 }
 
 export interface GptRequestOverrideModelCapabilities {
-  supportedServiceTiers: readonly GptServiceTier[]
-  supportedReasoningEfforts: readonly GptWireReasoningEffort[]
+  supportedServiceTiers: readonly string[]
+  supportedReasoningEfforts: readonly string[]
 }
 
 export class GptAccountRequestOverrideError extends Error {
@@ -32,16 +27,8 @@ export function readGptAccountRequestOverrides(
   credentials: Record<string, unknown> | undefined
 ): GptAccountRequestOverrides {
   return {
-    serviceTier: optionalCredentialEnum(
-      credentials,
-      'service_tier_override',
-      gptServiceTierOverrides
-    ),
-    reasoningEffort: optionalCredentialEnum(
-      credentials,
-      'reasoning_effort_override',
-      gptReasoningEffortOverrides
-    )
+    serviceTier: optionalCredentialToken(credentials, 'service_tier_override'),
+    reasoningEffort: optionalCredentialToken(credentials, 'reasoning_effort_override')
   }
 }
 
@@ -50,6 +37,7 @@ export function applyGptAccountRequestOverrides(
   input: ApplyGptAccountRequestOverridesInput
 ): Record<string, unknown> {
   const overrides = readGptAccountRequestOverrides(input.credentials)
+  assertGptAccountRequestOverrideValues(overrides)
   const effectiveOverrides = effectiveGptAccountRequestOverrides(overrides, input.modelCapabilities)
   if (!hasApplicableGptAccountRequestOverrides(effectiveOverrides, input.endpointFamily, input.compact === true)) {
     return inputBody as Record<string, unknown>
@@ -79,6 +67,15 @@ export function applyGptAccountRequestOverrides(
   return body
 }
 
+export function assertGptAccountRequestOverrideValues(overrides: GptAccountRequestOverrides): void {
+  if (overrides.serviceTier && !new Set(['default', 'priority', 'flex']).has(overrides.serviceTier)) {
+    throw new GptAccountRequestOverrideError('GPT 账户请求覆盖字段 service_tier_override 无效')
+  }
+  if (overrides.reasoningEffort && !new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).has(overrides.reasoningEffort)) {
+    throw new GptAccountRequestOverrideError('GPT 账户请求覆盖字段 reasoning_effort_override 无效')
+  }
+}
+
 export function hasApplicableGptAccountRequestOverrides(
   overrides: GptAccountRequestOverrides,
   endpointFamily: GptRequestOverrideEndpointFamily | undefined,
@@ -92,86 +89,41 @@ export function effectiveGptAccountRequestOverrides(
   overrides: GptAccountRequestOverrides,
   capabilities: GptRequestOverrideModelCapabilities | undefined
 ): GptAccountRequestOverrides {
-  if (!capabilities) return {}
+  if (!overrides.serviceTier && !overrides.reasoningEffort) return {}
+  if (!capabilities) {
+    throw new GptAccountRequestOverrideError('账户请求覆盖缺少目标模型能力，无法精确生效')
+  }
+  if (overrides.serviceTier) {
+    const supported = overrides.serviceTier === 'default'
+      ? capabilities.supportedServiceTiers.length > 0
+      : capabilities.supportedServiceTiers.includes(overrides.serviceTier)
+    if (!supported) {
+      throw new GptAccountRequestOverrideError(`账户请求覆盖 service_tier_override=${overrides.serviceTier} 不受目标模型支持`)
+    }
+  }
+  if (overrides.reasoningEffort && !capabilities.supportedReasoningEfforts.includes(overrides.reasoningEffort)) {
+    throw new GptAccountRequestOverrideError(`账户请求覆盖 reasoning_effort_override=${overrides.reasoningEffort} 不受目标模型支持`)
+  }
   return {
-    serviceTier: downgradedServiceTier(overrides.serviceTier, capabilities.supportedServiceTiers),
-    reasoningEffort: downgradedReasoningEffort(overrides.reasoningEffort, capabilities.supportedReasoningEfforts)
+    serviceTier: overrides.serviceTier,
+    reasoningEffort: overrides.reasoningEffort
   }
 }
 
-function optionalCredentialEnum<TValue extends string>(
+function optionalCredentialToken(
   credentials: Record<string, unknown> | undefined,
-  key: string,
-  allowedValues: ReadonlySet<TValue>
-): TValue | undefined {
+  key: string
+): string | undefined {
   const raw = credentials?.[key]
   if (raw === undefined || raw === null || raw === '') {
     return undefined
   }
-  if (typeof raw === 'string' && allowedValues.has(raw as TValue)) {
-    return raw as TValue
+  if (typeof raw === 'string' && raw === raw.trim() && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(raw)) {
+    return raw
   }
-  throw new GptAccountRequestOverrideError(`GPT 账户请求覆盖字段 ${key} 无效`)
+  throw new GptAccountRequestOverrideError(`账户请求覆盖字段 ${key} 无效`)
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-const gptServiceTierOverrides = new Set<GptServiceTierOverride>([
-  'default',
-  'priority',
-  'flex'
-])
-
-const gptReasoningEffortOverrides = new Set<GptReasoningEffortOverride>([
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-])
-
-const gptReasoningEffortOrder: readonly GptReasoningEffortOverride[] = [
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-]
-
-function downgradedServiceTier(
-  configured: GptServiceTierOverride | undefined,
-  supported: readonly GptServiceTier[]
-): GptServiceTierOverride | undefined {
-  if (!configured) return undefined
-  if (configured === 'default') return supported.length ? 'default' : undefined
-  return supported.includes(configured) ? configured : undefined
-}
-
-function downgradedReasoningEffort(
-  configured: GptReasoningEffortOverride | undefined,
-  supported: readonly GptWireReasoningEffort[]
-): GptReasoningEffortOverride | undefined {
-  if (!configured) return undefined
-  return highestSupportedAtOrBelow(configured, supported, gptReasoningEffortOrder)
-}
-
-function highestSupportedAtOrBelow<TValue extends string>(
-  configured: TValue,
-  supported: readonly TValue[],
-  order: readonly TValue[]
-): TValue | undefined {
-  const configuredIndex = order.indexOf(configured)
-  if (configuredIndex < 0) return undefined
-  const supportedSet = new Set(supported)
-  for (let index = configuredIndex; index >= 0; index -= 1) {
-    const candidate = order[index]
-    if (candidate && supportedSet.has(candidate)) return candidate
-  }
-  return undefined
 }

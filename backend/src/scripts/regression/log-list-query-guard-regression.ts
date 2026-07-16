@@ -198,6 +198,17 @@ try {
       ['op_log_guard_short_keyword_middle', 'op_log_guard_short_keyword'],
       '短中文摘要搜索应通过倒排词项命中，不回退扫描操作日志表字段'
     )
+
+    const singleChineseKeyword = repositories.listOperationLogs({ summaryKeyword: '造', pageSize: 10 })
+    assert.deepEqual(
+      singleChineseKeyword.items.map((item) => item.id),
+      ['op_log_guard_short_keyword_middle', 'op_log_guard_short_keyword'],
+      '中文单字摘要搜索应通过倒排词项命中'
+    )
+    const singleEnglishKeyword = repositories.listOperationLogs({ summaryKeyword: 'k', pageSize: 10 })
+    assert.deepEqual(singleEnglishKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '英文单字摘要搜索应通过倒排词项命中')
+    const singleNumberKeyword = repositories.listOperationLogs({ summaryKeyword: '5', pageSize: 10 })
+    assert.deepEqual(singleNumberKeyword.items.map((item) => item.id), [], '不存在的数字单字摘要搜索应返回空列表且不回退主表扫描')
   } finally {
     datasetDatabase.prepare = originalPrepare
   }
@@ -213,6 +224,9 @@ try {
   const keywordSearchCalls = capturedCalls.filter((call) => /\bFROM\s+operation_log_summary_search_terms\s+search\b/i.test(call.sql))
   assert(keywordSearchCalls.some((call) => call.params.some((param) => param === 'keywordguardneedle')), '操作日志摘要搜索应使用摘要倒排词项表定位')
   assert(keywordSearchCalls.some((call) => call.params.some((param) => param === '造数')), '操作日志短中文摘要搜索应使用摘要倒排词项表定位')
+  assert(keywordSearchCalls.some((call) => call.params.some((param) => param === '造')), '操作日志中文单字搜索应使用摘要倒排词项表定位')
+  assert(keywordSearchCalls.some((call) => call.params.some((param) => param === 'k')), '操作日志英文单字搜索应使用摘要倒排词项表定位')
+  assert(keywordSearchCalls.some((call) => call.params.some((param) => param === '5')), '操作日志数字单字搜索应使用摘要倒排词项表定位')
   assert(capturedCalls.some((call) => /\bol\.actor_system_account_id\s*=\s*\?/i.test(call.sql)
     && call.params.some((param) => param === 'sys_operator')), '操作日志用户操作人筛选应使用 actor_system_account_id 精确条件')
   for (const call of keywordSearchCalls) {

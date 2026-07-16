@@ -11,6 +11,7 @@ import type {
   AccountTestTaskStatus,
   SystemAccountRole
 } from '../domain/types.js'
+import { ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES } from '../domain/account-health-check-endpoint-mode.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { decryptJson, encryptJson } from './crypto.js'
 import { getBusinessDatabase, newId, nowIso } from './database.js'
@@ -51,6 +52,7 @@ export interface AccountTestDraftSnapshot {
   clientCompatibility: AccountClientCompatibility
   supportedModels?: string[]
   healthCheckModel: string
+  healthCheckEndpointMode: import('../domain/types.js').AccountHealthCheckEndpointMode
   modelMappings?: AccountSummary['modelMappings']
   proxyProfileId?: string
   accountExpiresAt?: string
@@ -1631,7 +1633,8 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
   const credentials = record.credentials
   const clientCompatibility = accountClientCompatibility(normalizedOptionalText(record.clientCompatibility) ?? null)
   const healthCheckModel = normalizedOptionalText(record.healthCheckModel)
-  if (!id || !ownerSystemAccountId || !groupId || !providerCode || !name || !type || !clientCompatibility || !healthCheckModel) {
+  const healthCheckEndpointMode = accountHealthCheckEndpointModeValue(record.healthCheckEndpointMode)
+  if (!id || !ownerSystemAccountId || !groupId || !providerCode || !name || !type || !clientCompatibility || !healthCheckModel || !healthCheckEndpointMode) {
     return undefined
   }
   if (typeof credentials !== 'object' || credentials === null || Array.isArray(credentials)) {
@@ -1657,6 +1660,7 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
     clientCompatibility,
     supportedModels: stringListValue(record.supportedModels),
     healthCheckModel,
+    healthCheckEndpointMode,
     modelMappings: accountModelMappingsValue(record.modelMappings),
     proxyProfileId: normalizedOptionalText(record.proxyProfileId),
     accountExpiresAt: normalizedOptionalText(record.accountExpiresAt),
@@ -1664,6 +1668,13 @@ function normalizeAccountTestDraftSnapshot(value: unknown): AccountTestDraftSnap
     availabilityScheduleJson: normalizedOptionalText(record.availabilityScheduleJson),
     notes: normalizedOptionalText(record.notes)
   }
+}
+
+function accountHealthCheckEndpointModeValue(value: unknown): AccountSummary['healthCheckEndpointMode'] | undefined {
+  if (ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES.includes(value as AccountSummary['healthCheckEndpointMode'])) {
+    return value as AccountSummary['healthCheckEndpointMode']
+  }
+  return undefined
 }
 
 function stringListValue(value: unknown): string[] | undefined {

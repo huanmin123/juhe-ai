@@ -7,10 +7,12 @@ import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { normalizeServiceTierPrices } from './provider-model-catalog.repository.js'
+import { notifyCommittedModelCacheInvalidationAsync } from './model-cache-sync-warning.js'
 
 type CustomProviderModelApiProtocol = ProviderModelPricing['supportedApiProtocols'][number]
-type CustomProviderModelServiceTier = 'priority' | 'flex'
-type CustomProviderModelReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+type CustomProviderModelServiceTier = string
+type CustomProviderModelReasoningEffort = string
 export type CustomProviderModelScope = 'global' | 'personal'
 export type CustomProviderModelStatus = 'draft' | 'active' | 'disabled'
 
@@ -28,16 +30,11 @@ const customProviderModelApiProtocols = new Set<CustomProviderModelApiProtocol>(
   'audio',
   'realtime'
 ])
-const customProviderModelServiceTiers = new Set<CustomProviderModelServiceTier>(['priority', 'flex'])
-const customProviderModelReasoningEfforts = new Set<CustomProviderModelReasoningEffort>([
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max'
-])
+const customProviderModelCapabilityTokens = {
+  has(value: string): boolean {
+    return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value)
+  }
+} as ReadonlySet<string>
 
 export interface CustomProviderModelRecord {
   id: string
@@ -51,15 +48,17 @@ export interface CustomProviderModelRecord {
   supportedServiceTiers: CustomProviderModelServiceTier[]
   supportedReasoningEfforts: CustomProviderModelReasoningEffort[]
   defaultReasoningEffort?: CustomProviderModelReasoningEffort
-  pricingModel?: string
   releaseDate?: string
   shutdownDate?: string
   contextWindowTokens?: number
+  maxInputTokens?: number
   maxOutputTokens?: number
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
+  cacheWrite1hUsdPer1M?: number
+  serviceTierPrices?: Record<string, import('../domain/types.js').ProviderModelPriceSet>
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
@@ -94,15 +93,17 @@ export interface UpsertCustomProviderModelInput {
   supportedServiceTiers?: string[] | null
   supportedReasoningEfforts?: string[] | null
   defaultReasoningEffort?: string | null
-  pricingModel?: string | null
   releaseDate?: string | null
   shutdownDate?: string | null
   contextWindowTokens?: number | null
+  maxInputTokens?: number | null
   maxOutputTokens?: number | null
   inputUsdPer1M?: number | null
   outputUsdPer1M?: number | null
   cachedInputUsdPer1M?: number | null
   cacheWriteUsdPer1M?: number | null
+  cacheWrite1hUsdPer1M?: number | null
+  serviceTierPrices?: unknown
   imageInputUsdPer1M?: number | null
   imageOutputUsdPer1M?: number | null
   audioInputUsdPer1M?: number | null
@@ -126,15 +127,17 @@ interface CustomProviderModelRow {
   supported_service_tiers_json?: string | null
   supported_reasoning_efforts_json?: string | null
   default_reasoning_effort?: string | null
-  pricing_model?: string | null
   release_date?: string | null
   shutdown_date?: string | null
   context_window_tokens?: number | null
+  max_input_tokens?: number | null
   max_output_tokens?: number | null
   input_usd_per_1m?: number | null
   output_usd_per_1m?: number | null
   cached_input_usd_per_1m?: number | null
   cache_write_usd_per_1m?: number | null
+  cache_write_1h_usd_per_1m?: number | null
+  service_tier_prices_json?: string | null
   image_input_usd_per_1m?: number | null
   image_output_usd_per_1m?: number | null
   audio_input_usd_per_1m?: number | null
@@ -229,7 +232,10 @@ export async function findCustomProviderModelByIdAsync(id: string): Promise<Cust
   return row ? customProviderModelFromRow(row) : undefined
 }
 
-export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput): CustomProviderModelRecord {
+export function upsertCustomProviderModel(
+  input: UpsertCustomProviderModelInput,
+  options: { notifyCache?: boolean } = {}
+): CustomProviderModelRecord {
   const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
   const model = requiredText(input.model, '模型 ID 不能为空')
   const scope: CustomProviderModelScope = input.scope === 'global' ? 'global' : 'personal'
@@ -252,14 +258,14 @@ export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput)
       INSERT INTO custom_provider_models (
         id, provider_code, model, scope, system_account_id, status,
         mode, supported_api_protocols_json, supported_service_tiers_json,
-        supported_reasoning_efforts_json, default_reasoning_effort, pricing_model,
-        release_date, shutdown_date, context_window_tokens, max_output_tokens,
-        input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
+        supported_reasoning_efforts_json, default_reasoning_effort,
+        release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
+        input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
         image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
         output_usd_per_image, currency, pricing_notes, capability_notes, notes,
         created_by, updated_by, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         provider_code = excluded.provider_code,
         model = excluded.model,
@@ -271,15 +277,17 @@ export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput)
         supported_service_tiers_json = excluded.supported_service_tiers_json,
         supported_reasoning_efforts_json = excluded.supported_reasoning_efforts_json,
         default_reasoning_effort = excluded.default_reasoning_effort,
-        pricing_model = excluded.pricing_model,
         release_date = excluded.release_date,
         shutdown_date = excluded.shutdown_date,
         context_window_tokens = excluded.context_window_tokens,
+        max_input_tokens = excluded.max_input_tokens,
         max_output_tokens = excluded.max_output_tokens,
         input_usd_per_1m = excluded.input_usd_per_1m,
         output_usd_per_1m = excluded.output_usd_per_1m,
         cached_input_usd_per_1m = excluded.cached_input_usd_per_1m,
         cache_write_usd_per_1m = excluded.cache_write_usd_per_1m,
+        cache_write_1h_usd_per_1m = excluded.cache_write_1h_usd_per_1m,
+        service_tier_prices_json = excluded.service_tier_prices_json,
         image_input_usd_per_1m = excluded.image_input_usd_per_1m,
         image_output_usd_per_1m = excluded.image_output_usd_per_1m,
         audio_input_usd_per_1m = excluded.audio_input_usd_per_1m,
@@ -303,15 +311,17 @@ export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput)
       JSON.stringify(capabilities.supportedServiceTiers),
       JSON.stringify(capabilities.supportedReasoningEfforts),
       capabilities.defaultReasoningEffort ?? null,
-      optionalText(input.pricingModel) ?? null,
       optionalDate(input.releaseDate) ?? null,
       optionalDate(input.shutdownDate) ?? null,
       optionalInteger(input.contextWindowTokens) ?? null,
+      optionalInteger(input.maxInputTokens) ?? null,
       optionalInteger(input.maxOutputTokens) ?? null,
       optionalNumber(input.inputUsdPer1M) ?? null,
       optionalNumber(input.outputUsdPer1M) ?? null,
       optionalNumber(input.cachedInputUsdPer1M) ?? null,
       optionalNumber(input.cacheWriteUsdPer1M) ?? null,
+      optionalNumber(input.cacheWrite1hUsdPer1M) ?? null,
+      JSON.stringify(normalizeServiceTierPrices(input.serviceTierPrices)),
       optionalNumber(input.imageInputUsdPer1M) ?? null,
       optionalNumber(input.imageOutputUsdPer1M) ?? null,
       optionalNumber(input.audioInputUsdPer1M) ?? null,
@@ -330,13 +340,17 @@ export function upsertCustomProviderModel(input: UpsertCustomProviderModelInput)
   if (!saved) {
     throw new Error('自定义模型保存失败')
   }
-  notifyGatewayRuntimeCacheInvalidation('custom_provider_model_saved')
+  if (options.notifyCache !== false) {
+    notifyGatewayRuntimeCacheInvalidation('custom_provider_model_saved')
+  }
   return saved
 }
 
 export async function upsertCustomProviderModelAsync(input: UpsertCustomProviderModelInput): Promise<CustomProviderModelRecord> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return upsertCustomProviderModel(input)
+    const saved = upsertCustomProviderModel(input, { notifyCache: false })
+    await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_saved')
+    return saved
   }
   const providerCode = requiredText(input.providerCode, '供应商代码不能为空')
   const model = requiredText(input.model, '模型 ID 不能为空')
@@ -360,14 +374,14 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
     INSERT INTO ${customProviderModelsTable(client)} (
       id, provider_code, model, scope, system_account_id, status,
       mode, supported_api_protocols_json, supported_service_tiers_json,
-      supported_reasoning_efforts_json, default_reasoning_effort, pricing_model,
-      release_date, shutdown_date, context_window_tokens, max_output_tokens,
-      input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
+      supported_reasoning_efforts_json, default_reasoning_effort,
+      release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
+      input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
       image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
       output_usd_per_image, currency, pricing_notes, capability_notes, notes,
       created_by, updated_by, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       provider_code = excluded.provider_code,
       model = excluded.model,
@@ -379,15 +393,17 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
       supported_service_tiers_json = excluded.supported_service_tiers_json,
       supported_reasoning_efforts_json = excluded.supported_reasoning_efforts_json,
       default_reasoning_effort = excluded.default_reasoning_effort,
-      pricing_model = excluded.pricing_model,
       release_date = excluded.release_date,
       shutdown_date = excluded.shutdown_date,
       context_window_tokens = excluded.context_window_tokens,
+      max_input_tokens = excluded.max_input_tokens,
       max_output_tokens = excluded.max_output_tokens,
       input_usd_per_1m = excluded.input_usd_per_1m,
       output_usd_per_1m = excluded.output_usd_per_1m,
       cached_input_usd_per_1m = excluded.cached_input_usd_per_1m,
       cache_write_usd_per_1m = excluded.cache_write_usd_per_1m,
+      cache_write_1h_usd_per_1m = excluded.cache_write_1h_usd_per_1m,
+      service_tier_prices_json = excluded.service_tier_prices_json,
       image_input_usd_per_1m = excluded.image_input_usd_per_1m,
       image_output_usd_per_1m = excluded.image_output_usd_per_1m,
       audio_input_usd_per_1m = excluded.audio_input_usd_per_1m,
@@ -410,15 +426,17 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
     JSON.stringify(capabilities.supportedServiceTiers),
     JSON.stringify(capabilities.supportedReasoningEfforts),
     capabilities.defaultReasoningEffort ?? null,
-    optionalText(input.pricingModel) ?? null,
     optionalDate(input.releaseDate) ?? null,
     optionalDate(input.shutdownDate) ?? null,
     optionalInteger(input.contextWindowTokens) ?? null,
+    optionalInteger(input.maxInputTokens) ?? null,
     optionalInteger(input.maxOutputTokens) ?? null,
     optionalNumber(input.inputUsdPer1M) ?? null,
     optionalNumber(input.outputUsdPer1M) ?? null,
     optionalNumber(input.cachedInputUsdPer1M) ?? null,
     optionalNumber(input.cacheWriteUsdPer1M) ?? null,
+    optionalNumber(input.cacheWrite1hUsdPer1M) ?? null,
+    JSON.stringify(normalizeServiceTierPrices(input.serviceTierPrices)),
     optionalNumber(input.imageInputUsdPer1M) ?? null,
     optionalNumber(input.imageOutputUsdPer1M) ?? null,
     optionalNumber(input.audioInputUsdPer1M) ?? null,
@@ -437,7 +455,7 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
   if (!saved) {
     throw new Error('自定义模型保存失败')
   }
-  notifyGatewayRuntimeCacheInvalidation('custom_provider_model_saved')
+  await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_saved')
   return saved
 }
 
@@ -666,9 +684,9 @@ function customProviderModelColumns(): string {
   return `
     id, provider_code, model, scope, system_account_id, status,
     mode, supported_api_protocols_json, supported_service_tiers_json,
-    supported_reasoning_efforts_json, default_reasoning_effort, pricing_model,
-    release_date, shutdown_date, context_window_tokens, max_output_tokens,
-    input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
+    supported_reasoning_efforts_json, default_reasoning_effort,
+    release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
+    input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
     image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
     output_usd_per_image, currency, pricing_notes, capability_notes, notes,
     created_by, updated_by, created_at, updated_at
@@ -702,18 +720,20 @@ function customProviderModelFromRow(row: CustomProviderModelRow): CustomProvider
     status: row.status,
     mode: optionalText(row.mode),
     supportedApiProtocols: parseStringArray(row.supported_api_protocols_json),
-    supportedServiceTiers: parseEnumArray(row.supported_service_tiers_json, customProviderModelServiceTiers),
-    supportedReasoningEfforts: parseEnumArray(row.supported_reasoning_efforts_json, customProviderModelReasoningEfforts),
-    defaultReasoningEffort: optionalEnum(row.default_reasoning_effort, customProviderModelReasoningEfforts),
-    pricingModel: optionalText(row.pricing_model),
+    supportedServiceTiers: parseEnumArray(row.supported_service_tiers_json, customProviderModelCapabilityTokens),
+    supportedReasoningEfforts: parseEnumArray(row.supported_reasoning_efforts_json, customProviderModelCapabilityTokens),
+    defaultReasoningEffort: optionalEnum(row.default_reasoning_effort, customProviderModelCapabilityTokens),
     releaseDate: optionalText(row.release_date),
     shutdownDate: optionalText(row.shutdown_date),
     contextWindowTokens: optionalInteger(row.context_window_tokens),
+    maxInputTokens: optionalInteger(row.max_input_tokens),
     maxOutputTokens: optionalInteger(row.max_output_tokens),
     inputUsdPer1M: optionalNumber(row.input_usd_per_1m),
     outputUsdPer1M: optionalNumber(row.output_usd_per_1m),
     cachedInputUsdPer1M: optionalNumber(row.cached_input_usd_per_1m),
     cacheWriteUsdPer1M: optionalNumber(row.cache_write_usd_per_1m),
+    cacheWrite1hUsdPer1M: optionalNumber(row.cache_write_1h_usd_per_1m),
+    serviceTierPrices: normalizeServiceTierPrices(parseJsonObject(row.service_tier_prices_json)),
     imageInputUsdPer1M: optionalNumber(row.image_input_usd_per_1m),
     imageOutputUsdPer1M: optionalNumber(row.image_output_usd_per_1m),
     audioInputUsdPer1M: optionalNumber(row.audio_input_usd_per_1m),
@@ -746,9 +766,18 @@ function parseStringArray(raw: string | null | undefined): CustomProviderModelAp
   }
 }
 
+function parseJsonObject(raw: string | null | undefined): unknown {
+  if (!raw) return undefined
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+}
+
 function normalizeCustomProviderModelCapabilities(
   providerCode: string,
-  input: Pick<UpsertCustomProviderModelInput, 'mode' | 'supportedServiceTiers' | 'supportedReasoningEfforts' | 'defaultReasoningEffort'>
+  input: Pick<UpsertCustomProviderModelInput, 'mode' | 'supportedServiceTiers' | 'supportedReasoningEfforts' | 'defaultReasoningEffort' | 'serviceTierPrices'>
 ): {
   supportedServiceTiers: CustomProviderModelServiceTier[]
   supportedReasoningEfforts: CustomProviderModelReasoningEffort[]
@@ -756,22 +785,39 @@ function normalizeCustomProviderModelCapabilities(
 } {
   const supportedServiceTiers = normalizeEnumArray(
     input.supportedServiceTiers,
-    customProviderModelServiceTiers,
+    customProviderModelCapabilityTokens,
     '服务等级'
   )
   const supportedReasoningEfforts = normalizeEnumArray(
     input.supportedReasoningEfforts,
-    customProviderModelReasoningEfforts,
+    customProviderModelCapabilityTokens,
     '思考级别'
   )
   const defaultReasoningEffort = optionalEnumInput(
     input.defaultReasoningEffort,
-    customProviderModelReasoningEfforts,
+    customProviderModelCapabilityTokens,
     '默认思考级别'
   )
-  const isGptTextModel = providerCode === 'gpt' && (optionalText(input.mode) ?? 'text') === 'text'
-  if (!isGptTextModel && (supportedServiceTiers.length || supportedReasoningEfforts.length || defaultReasoningEffort)) {
-    throw new Error('只有 GPT 文本自定义模型支持服务等级和思考能力配置')
+  if (providerCode === 'gpt') {
+    const gptServiceTiers = new Set(['priority', 'flex'])
+    const gptReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    if ((input.supportedServiceTiers?.length ?? 0) > 2
+      || (input.supportedReasoningEfforts?.length ?? 0) > 7
+      || supportedServiceTiers.some((value) => !gptServiceTiers.has(value))
+      || supportedReasoningEfforts.some((value) => !gptReasoningEfforts.has(value))) {
+      throw new Error('自定义模型参数无效')
+    }
+  }
+  const isTextModel = (optionalText(input.mode) ?? 'text') === 'text'
+  const serviceTierPriceKeys = Object.keys(normalizeServiceTierPrices(input.serviceTierPrices))
+  if (!isTextModel && (supportedServiceTiers.length || supportedReasoningEfforts.length || defaultReasoningEffort)) {
+    throw new Error('只有文本自定义模型支持服务等级和思考能力配置')
+  }
+  if (!isTextModel && serviceTierPriceKeys.length) {
+    throw new Error('只有文本自定义模型支持服务档位价格')
+  }
+  if (serviceTierPriceKeys.some((tier) => !supportedServiceTiers.includes(tier))) {
+    throw new Error('服务档位价格必须属于模型支持的服务等级')
   }
   if (defaultReasoningEffort && !supportedReasoningEfforts.includes(defaultReasoningEffort)) {
     throw new Error('默认思考级别必须属于支持的思考级别')

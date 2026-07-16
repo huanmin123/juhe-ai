@@ -1,4 +1,5 @@
 import type { AccountSummary, GroupSummary, SystemAccountSummary } from '../../../../domain/types.js'
+import { buildCatalogCostBreakdown } from '../../../../modules/model-pricing/model-catalog.service.js'
 import * as repositories from '../../../../storage/repositories.js'
 import {
   chunks,
@@ -379,6 +380,13 @@ function appendCoverageUsageRecords(records: UsageRecordSeed[], created: Created
     {
       ordinal: nextOrdinal(records.length + 1200, (value) => value % 3 === 0 && value % 41 !== 0),
       idSuffix: 'coverage_chat_endpoint',
+      modelOverride: 'gpt-5.4',
+      requestedServiceTier: 'default',
+      effectiveServiceTier: 'priority',
+      reportedServiceTier: 'priority',
+      billedServiceTier: 'priority',
+      requestedReasoningEffort: 'medium',
+      effectiveReasoningEffort: 'high',
       scenario: {
         key: created.apiKeys.adminMain,
         owner: created.users.admin,
@@ -405,6 +413,14 @@ function appendCoverageUsageRecords(records: UsageRecordSeed[], created: Created
     {
       ordinal: nextOrdinal(records.length + 1400, (value) => value % 41 !== 0 && value % 11 !== 0 && value % 3 !== 0),
       idSuffix: 'coverage_manual_account_test',
+      modelOverride: 'gpt-5.4-mini',
+      requestedServiceTier: 'priority',
+      effectiveServiceTier: 'flex',
+      reportedServiceTier: 'flex',
+      billedServiceTier: 'flex',
+      requestedReasoningEffort: 'low',
+      effectiveReasoningEffort: 'high',
+      successOverride: true,
       scenario: {
         key: created.apiKeys.managerMain,
         owner: created.users.manager,
@@ -415,6 +431,22 @@ function appendCoverageUsageRecords(records: UsageRecordSeed[], created: Created
         trafficSource: 'manual_account_test'
       },
       account: created.accounts.managerPrimary
+    },
+    {
+      ordinal: nextOrdinal(records.length + 1450, (value) => value % 41 !== 0 && value % 11 !== 0 && value % 3 !== 0),
+      idSuffix: 'coverage_account_health_check',
+      modelOverride: created.accounts.primary.healthCheckModel,
+      successOverride: true,
+      scenario: {
+        key: created.apiKeys.adminMain,
+        owner: created.users.admin,
+        group: created.groups.main,
+        accounts: [created.accounts.primary],
+        label: 'admin-account-health-check-coverage',
+        clientIpBase: '10.10.19.',
+        trafficSource: 'account_health_check'
+      },
+      account: created.accounts.primary
     },
     {
       ordinal: nextOrdinal(records.length + 1500, (value) => value % 41 !== 0 && value % 11 !== 0 && value % 3 !== 0),
@@ -486,6 +518,13 @@ interface BuildUsageRecordInput {
   ordinal: number
   idSuffix?: string
   modelOverride?: string
+  requestedServiceTier?: UsageRecordSeed['requestedServiceTier']
+  effectiveServiceTier?: UsageRecordSeed['effectiveServiceTier']
+  reportedServiceTier?: UsageRecordSeed['reportedServiceTier']
+  billedServiceTier?: UsageRecordSeed['billedServiceTier']
+  requestedReasoningEffort?: UsageRecordSeed['requestedReasoningEffort']
+  effectiveReasoningEffort?: UsageRecordSeed['effectiveReasoningEffort']
+  successOverride?: boolean
   createdAt: Date
   scenario: KeyScenario
   account: AccountSummary
@@ -501,7 +540,7 @@ function buildUsageRecord(input: BuildUsageRecordInput): UsageRecordSeed {
     || input.account.status === 'temporary_unavailable'
     || input.account.schedulable === false
   const failureRoll = pseudoRandom(input.ordinal, 10)
-  const success = !forcedFailure && failureRoll > 0.11
+  const success = input.successOverride ?? (!forcedFailure && failureRoll > 0.11)
   const error = success ? undefined : errorForOrdinal(input.ordinal, forcedFailure)
   const inputTokens = success ? 120 + Math.floor(pseudoRandom(input.ordinal, 20) * 6800) : Math.floor(pseudoRandom(input.ordinal, 21) * 300)
   const outputTokens = success ? 40 + Math.floor(pseudoRandom(input.ordinal, 22) * 2200) : Math.floor(pseudoRandom(input.ordinal, 23) * 80)
@@ -512,8 +551,28 @@ function buildUsageRecord(input: BuildUsageRecordInput): UsageRecordSeed {
   const durationMs = success
     ? (firstTokenMs ?? 60) + 300 + Math.floor(pseudoRandom(input.ordinal, 31) * 4200)
     : 90 + Math.floor(pseudoRandom(input.ordinal, 32) * 1200)
-  const cost = usageCost(model, inputTokens, outputTokens, cacheReadTokens, success)
+  const requestedServiceTier = input.requestedServiceTier ?? 'default'
+  const effectiveServiceTier = input.effectiveServiceTier ?? requestedServiceTier
+  const reportedServiceTier = input.reportedServiceTier
+  const billedServiceTier = input.billedServiceTier ?? reportedServiceTier ?? effectiveServiceTier
   const modelMapping = modelMappingForRecord(input.account, model)
+  const pricingModel = modelMapping?.upstreamModel ?? model
+  const fallbackCost = usageCost(model, inputTokens, outputTokens, cacheReadTokens, success, billedServiceTier)
+  const tierCostBreakdown = success && billedServiceTier !== 'default'
+    ? buildCatalogCostBreakdown({
+        providerCode,
+        systemAccountId: input.scenario.owner.id,
+        model: pricingModel,
+        serviceTier: billedServiceTier,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens
+      })
+    : undefined
+  const cost = {
+    totalCost: tierCostBreakdown?.accountChargeUsd ?? fallbackCost.totalCost,
+    cacheReadCost: tierCostBreakdown?.cacheReadCostUsd ?? fallbackCost.cacheReadCost
+  }
   const inputImageTokens = isImageModel(model) || endpointInfo.path.includes('/images/')
     ? 85 + (input.ordinal % 400)
     : input.ordinal % 37 === 0 ? 85 + (input.ordinal % 400) : undefined
@@ -535,6 +594,13 @@ function buildUsageRecord(input: BuildUsageRecordInput): UsageRecordSeed {
     providerCode,
     model,
     upstreamModel: modelMapping?.upstreamModel,
+    pricingModel,
+    requestedServiceTier,
+    effectiveServiceTier,
+    reportedServiceTier,
+    billedServiceTier,
+    requestedReasoningEffort: input.requestedReasoningEffort,
+    effectiveReasoningEffort: input.effectiveReasoningEffort,
     modelMappingApplied: Boolean(modelMapping),
     modelMappingSource: modelMapping?.sourceModel,
     stream: endpointInfo.stream,
@@ -562,6 +628,12 @@ function buildUsageRecord(input: BuildUsageRecordInput): UsageRecordSeed {
             stream: endpointInfo.stream,
             input: `Mockdata 请求 ${input.ordinal + 1}`,
             max_output_tokens: 1024,
+            service_tier: requestedServiceTier,
+            ...(input.requestedReasoningEffort
+              ? endpointInfo.path === '/v1/chat/completions'
+                ? { reasoning_effort: input.requestedReasoningEffort }
+                : { reasoning: { effort: input.requestedReasoningEffort } }
+              : {}),
             ...(endpointInfo.path.includes('/images/') ? { prompt: `Mockdata 图片请求 ${input.ordinal + 1}`, size: '1024x1024' } : {})
           }
     },
@@ -570,6 +642,7 @@ function buildUsageRecord(input: BuildUsageRecordInput): UsageRecordSeed {
           status: 200,
           model,
           upstream_model: modelMapping?.upstreamModel,
+          service_tier: reportedServiceTier,
           usage: {
             input_tokens: inputTokens,
             output_tokens: outputTokens,
@@ -639,11 +712,19 @@ function errorForOrdinal(ordinal: number, forcedFailure: boolean): { statusCode:
   return errors[ordinal % errors.length]
 }
 
-function usageCost(model: string, inputTokens: number, outputTokens: number, cacheReadTokens: number, success: boolean): { totalCost: number; cacheReadCost: number } {
+function usageCost(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  cacheReadTokens: number,
+  success: boolean,
+  serviceTier: UsageRecordSeed['billedServiceTier'] = 'default'
+): { totalCost: number; cacheReadCost: number } {
   if (!success) return { totalCost: 0, cacheReadCost: 0 }
   const price = modelPrices[model] ?? modelPrices['gpt-5.4-mini']
+  const serviceTierMultiplier = serviceTier === 'priority' ? 2 : serviceTier === 'flex' ? 0.5 : 1
   const billableInputTokens = Math.max(0, inputTokens - cacheReadTokens)
-  const cacheReadCost = roundCost((cacheReadTokens / 1_000_000) * price.cached)
-  const totalCost = roundCost((billableInputTokens / 1_000_000) * price.input + (outputTokens / 1_000_000) * price.output + cacheReadCost)
+  const cacheReadCost = roundCost((cacheReadTokens / 1_000_000) * price.cached * serviceTierMultiplier)
+  const totalCost = roundCost(((billableInputTokens / 1_000_000) * price.input + (outputTokens / 1_000_000) * price.output) * serviceTierMultiplier + cacheReadCost)
   return { totalCost, cacheReadCost }
 }

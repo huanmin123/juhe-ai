@@ -83,6 +83,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
   }
   const result = await testOpenAIAccount(account, {
     diagnostics: 'limited',
+    testEndpointMode: account.healthCheckEndpointMode,
     groupId: account.boundGroupId,
     systemAccountId,
     trafficSource: 'cooldown_retest',

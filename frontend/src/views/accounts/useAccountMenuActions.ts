@@ -4,7 +4,7 @@ import { ref, type ComputedRef } from 'vue'
 import { api } from '@/api/client'
 import type { AccountSummary } from '@/types/domain'
 import { invalidateAccountDetailForAccount } from './accountDetailCache'
-import { hasAccountRuntimeRecoveryState, isAuthorizedAccount, isTemporaryAccountStatus } from './accountFormatters'
+import { hasAccountRuntimeRecoveryState, isAuthorizedAccount, isPendingHealthCheckFailed, isTemporaryAccountStatus } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import {
   authorizedAccountUnavailableText,
@@ -74,7 +74,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       return
     }
     if (!canEditAccount(account) && !(updateOptions.allowExceptionRecovery && canRestoreException(account))) {
-      message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试和恢复异常' : '授权账户不能修改状态')
+      message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试、异常恢复和停用' : '授权账户不能修改状态')
       return
     }
     try {
@@ -111,7 +111,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
         return
       }
       if (account.status === 'error') {
-        await updateAccountState(account, { clearFailureState: true }, '账户异常已恢复', { allowExceptionRecovery: true })
+        await updateAccountState(account, { clearFailureState: true }, '账户已进入待检查，后台检查通过后恢复', { allowExceptionRecovery: true })
         return
       }
       if (!hasAccountRuntimeRecoveryState(account) && !isTemporaryAccountStatus(account)) {
@@ -121,10 +121,39 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       await updateAccountState(account, { clearFailureState: true }, '账户已恢复正常')
       return
     }
+    if (key === 'recheck-health') {
+      if (isAuthorizedAccount(account) || !isPendingHealthCheckFailed(account)) {
+        message.warning('当前账户没有可重新检查的失败记录')
+        return
+      }
+      await updateAccountState(account, { clearFailureState: true }, '已提交重新检查，后台检查通过后恢复')
+      return
+    }
+    if (key === 'force-activate') {
+      if (isAuthorizedAccount(account) || account.status !== 'pending_test' || !canEditAccount(account)) {
+        message.warning('只有可编辑的自有待检查账户可以人工恢复正常')
+        return
+      }
+      const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
+      try {
+        const updated = options.isManagementView.value
+          ? await api.accounts.forceActivate(account.id, scopeParams)
+          : await api.myAccounts.forceActivate(account.id)
+        invalidateAccountDetail(account, scopeParams)
+        message.success(updated.status === 'active'
+          ? '账户已人工恢复正常并参与调度'
+          : '已确认账户可用，当前按时间计划保持停用')
+        await options.loadData()
+      } catch (error) {
+        console.error(error)
+        message.error(options.extractApiErrorMessage(error, '人工恢复账户失败'))
+      }
+      return
+    }
     if (!canUseAccountActions(account)) {
       if (!isAuthorizedAccount(account)) {
-        if (!['super-priority-off', 'fallback-off'].includes(key)) {
-          message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试、恢复异常和取消调度标记' : '当前账户不能执行管理操作')
+        if (!['restore-normal', 'recheck-health', 'force-activate', 'toggle-status', 'super-priority-off', 'fallback-off'].includes(key)) {
+          message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试、异常恢复、停用和取消调度标记' : '当前账户不能执行管理操作')
           return
         }
       } else if (!['restore-normal', 'toggle-status', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic'].includes(key)) {
@@ -142,11 +171,11 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       return
     }
     if (key === 'toggle-status') {
-      if (account.status === 'pending_test') {
-        message.warning('待检查账户需等待后台健康检查通过后才能参与调度')
-        return
-      }
       if (isAuthorizedAccount(account)) {
+        if (account.status === 'pending_test') {
+          message.warning('待检查授权账户需等待来源账户后台健康检查通过')
+          return
+        }
         if (!account.boundGroupId) {
           message.warning('请先把授权账户绑定到你的分组')
           return

@@ -30,7 +30,9 @@ import { readUpstreamBodyLimited } from '../upstream/body.js'
 import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
 import {
   createCodexResponsesChatBridgeCompactSnapshot,
-  hasCodexResponsesChatBridgeRuntimeAccount,
+  codexResponsesContextAllowsAccount,
+  hasExplicitCodexResponsesChatBridgeRuntimeAccount,
+  prepareCodexResponsesCompactDispatchForAccounts,
   restoreCodexResponsesChatBridgeInputForCompact
 } from './chat-bridge-state.js'
 
@@ -55,10 +57,20 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   groupSchedulingPolicy?: GroupSchedulingPolicy
   sameAccountRetryBudget: SameAccountRetryBudget
   signal?: AbortSignal
-}): Promise<'continued' | 'completed'> {
-  if (!isChatOnlyCodexResponsesCompactRequest(input.req, input.requestClientCompatibility, input.dispatchAccounts)) {
-    return 'continued'
+}): Promise<
+  | { outcome: 'continued'; accounts: UpstreamAccount[] }
+  | { outcome: 'completed' }
+> {
+  if (!isOpenAIResponsesCompactPostRequest(input.req)
+    || !prepareCodexResponsesCompactDispatchForAccounts(input.req, input.dispatchAccounts)) {
+    return {
+      outcome: 'continued',
+      accounts: input.dispatchAccounts.filter((account) => codexResponsesContextAllowsAccount(input.req, account))
+    }
   }
+  const bridgeDispatchAccounts = input.dispatchAccounts.filter((account) => (
+    hasExplicitCodexResponsesChatBridgeRuntimeAccount(input.req, [account])
+  ))
   const body = await parseGatewayJsonObject(input.req, input.signal)
   const previousResponseId = normalizedOptionalText(body.previous_response_id)
   const boundary = {
@@ -74,7 +86,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   })
   if (restoreResult.outcome !== 'found' && restoreResult.outcome !== 'no_previous') {
     await sendCompactFailure(input, restoreFailureForCompact(restoreResult.outcome))
-    return 'completed'
+    return { outcome: 'completed' }
   }
 
   const summaryRequest = buildCompactSummaryChatBody({
@@ -86,7 +98,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   try {
     upstreamResult = await fetchFirstAvailableUpstream(
       syntheticReq,
-      [...input.dispatchAccounts],
+      bridgeDispatchAccounts,
       input.activeGatewaySettings,
       input.usageContext,
       input.auditCapture,
@@ -114,7 +126,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
         code: 'codex_bridge_compact_summary_empty',
         message: '上游摘要模型没有返回可用的压缩摘要'
       })
-      return 'completed'
+      return { outcome: 'completed' }
     }
     const summaryUpstreamModel = resolveGatewayUsageModel(
       upstreamResult.account,
@@ -155,7 +167,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       responsePartType: 'gateway_response',
       accountId: upstreamResult.account.id
     })
-    return 'completed'
+    return { outcome: 'completed' }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await sendCompactFailure(input, {
@@ -164,7 +176,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       code: 'codex_bridge_compact_summary_failed',
       message: `上游摘要请求失败：${message}`
     })
-    return 'completed'
+    return { outcome: 'completed' }
   } finally {
     upstreamResult?.releaseConcurrency()
   }
@@ -294,15 +306,6 @@ async function parseGatewayJsonObject(req: Request, signal?: AbortSignal): Promi
     ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
     : JSON.parse(rawBody.toString('utf8')) as unknown
   return isPlainObject(parsed) ? { ...parsed } : {}
-}
-
-function isChatOnlyCodexResponsesCompactRequest(
-  req: Request,
-  requestClientCompatibility: ClientCompatibilityCapability,
-  accounts: readonly UpstreamAccount[]
-): boolean {
-  return isOpenAIResponsesCompactPostRequest(req)
-    && hasCodexResponsesChatBridgeRuntimeAccount(req, accounts, requestClientCompatibility)
 }
 
 function isOpenAIResponsesCompactPostRequest(req: Request): boolean {

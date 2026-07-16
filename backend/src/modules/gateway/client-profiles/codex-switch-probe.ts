@@ -191,6 +191,7 @@ function accountSummaryFromUpstreamAccount(account: UpstreamAccount): AccountSum
     supportedModels: account.supportedModels,
     modelMappings: account.modelMappings,
     healthCheckModel: account.healthCheckModel?.trim() || account.supportedModels?.[0]?.trim() || '',
+    healthCheckEndpointMode: account.healthCheckEndpointMode,
     proxyProfileId: account.proxyProfileId,
     proxyProfileUnavailable: account.proxyProfileUnavailable,
     proxyProfileErrorMessage: account.proxyProfileErrorMessage,

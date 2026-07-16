@@ -1,11 +1,21 @@
 package app
 
 import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 )
@@ -51,7 +61,15 @@ func TestNewManagementOperationLogQueueRejectsInvalidQueueURLWhenEnabled(t *test
 }
 
 func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
-	handlers, err := newPublicAPIHandlers(nil, "12345678901234567890123456789012", nil)
+	handlers, err := newPublicAPIHandlers(
+		nil,
+		"12345678901234567890123456789012",
+		nil,
+		nil,
+		nil,
+		2*time.Second,
+		nil,
+	)
 	if err != nil {
 		t.Fatalf("newPublicAPIHandlers() error = %v", err)
 	}
@@ -67,8 +85,129 @@ func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 	}
 }
 
+func TestNewPublicAccountHealthCheckDispatcherPrefersExplicitInjection(t *testing.T) {
+	injected := &appAccountHealthCheckDispatcherRecorder{}
+
+	dispatcher, err := newPublicAccountHealthCheckDispatcher(config.Config{
+		NodeInternalBaseURL:        "http://example.com:3000",
+		NodeInternalRequestTimeout: 0,
+	}, injected)
+	if err != nil {
+		t.Fatalf("newPublicAccountHealthCheckDispatcher() error = %v", err)
+	}
+	if dispatcher != injected {
+		t.Fatalf("dispatcher = %T, want injected recorder", dispatcher)
+	}
+}
+
+func TestNewPublicAccountHealthCheckDispatcherFailsFastOnMissingOrInvalidURL(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		baseURL string
+	}{
+		{name: "missing URL"},
+		{name: "invalid URL", baseURL: "http://example.com:3000"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newPublicAccountHealthCheckDispatcher(config.Config{
+				Secret:                     "12345678901234567890123456789012",
+				NodeInternalBaseURL:        test.baseURL,
+				NodeInternalRequestTimeout: 2 * time.Second,
+			}, nil)
+			if err == nil {
+				t.Fatal("newPublicAccountHealthCheckDispatcher() error = nil, want fail-fast error")
+			}
+			for _, want := range []string{"初始化公开账户健康检查投递器失败", "base URL"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want contains %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestNewPublicAccountHealthCheckDispatcherTrimsSecretForNodeSignature(t *testing.T) {
+	const trimmedSecret = "node-runtime-trimmed-secret-0123456789"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			http.Error(w, "read failed", http.StatusInternalServerError)
+			return
+		}
+		if got, want := request.Header.Get("X-Juhe-AI-Signature"), appNodeDispatchSignature(
+			trimmedSecret,
+			body,
+		); got != want {
+			http.Error(w, "signature mismatch", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	dispatcher, err := newPublicAccountHealthCheckDispatcher(config.Config{
+		Secret:                     " \t" + trimmedSecret + "\r\n ",
+		NodeInternalBaseURL:        server.URL,
+		NodeInternalRequestTimeout: 2 * time.Second,
+	}, nil)
+	if err != nil {
+		t.Fatalf("newPublicAccountHealthCheckDispatcher() error = %v", err)
+	}
+	if err := dispatcher.Dispatch(t.Context(), "acc_trimmed_secret", "activation"); err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+}
+
+func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) {
+	const credentialSecret = "  public-account-credential-secret  "
+	const dispatchTimeout = 5 * time.Second
+	dispatcher := &appAccountHealthCheckDispatcherRecorder{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var captured publicaccounts.Options
+	factoryCalls := 0
+
+	handlers, err := newPublicAPIHandlers(
+		nil,
+		credentialSecret,
+		nil,
+		dispatcher,
+		logger,
+		dispatchTimeout,
+		func(opts publicaccounts.Options) *publicaccounts.Service {
+			factoryCalls++
+			captured = opts
+			return publicaccounts.NewService(opts)
+		},
+	)
+	if err != nil {
+		t.Fatalf("newPublicAPIHandlers() error = %v", err)
+	}
+	if len(handlers) != len(publicapicatalog.Endpoints()) {
+		t.Fatalf("handlers = %d, want %d", len(handlers), len(publicapicatalog.Endpoints()))
+	}
+	if factoryCalls != 1 {
+		t.Fatalf("account service factory calls = %d, want 1", factoryCalls)
+	}
+	if captured.HealthCheckDispatcher != dispatcher {
+		t.Fatalf("HealthCheckDispatcher = %T, want injected recorder", captured.HealthCheckDispatcher)
+	}
+	if captured.Logger != logger {
+		t.Fatalf("Logger = %p, want %p", captured.Logger, logger)
+	}
+	if captured.HealthCheckDispatchTimeout != dispatchTimeout {
+		t.Fatalf(
+			"HealthCheckDispatchTimeout = %s, want %s",
+			captured.HealthCheckDispatchTimeout,
+			dispatchTimeout,
+		)
+	}
+	if captured.Secret != credentialSecret {
+		t.Fatalf("Secret = %q, want exact credential secret %q", captured.Secret, credentialSecret)
+	}
+}
+
 func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware != nil ||
 		handlers.AuthTouchMiddleware != nil ||
 		handlers.CaptchaHandler != nil ||
@@ -120,6 +259,12 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.ProviderModelOptionsHandler != nil ||
 		handlers.ProviderModelsHandler != nil ||
 		handlers.ProviderDefaultHealthCheckModelHandler != nil ||
+		handlers.RouteStrategyListHandler != nil ||
+		handlers.MyRouteStrategyListHandler != nil ||
+		handlers.RouteStrategyUpdateHandler != nil ||
+		handlers.MyRouteStrategyUpdateHandler != nil ||
+		handlers.RouteStrategyDetailHandler != nil ||
+		handlers.MyRouteStrategyDetailHandler != nil ||
 		handlers.RouteStrategyOptionsHandler != nil ||
 		handlers.MyRouteStrategyOptionsHandler != nil ||
 		handlers.APIKeyListHandler != nil ||
@@ -132,6 +277,8 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.MyAPIKeyCreateHandler != nil ||
 		handlers.APIKeyUpdateHandler != nil ||
 		handlers.MyAPIKeyUpdateHandler != nil ||
+		handlers.APIKeyDeleteHandler != nil ||
+		handlers.MyAPIKeyDeleteHandler != nil ||
 		handlers.GroupListHandler != nil ||
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
@@ -156,6 +303,12 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.SystemSettingsUpdateHandler != nil ||
 		handlers.GlobalSettingsHandler != nil ||
 		handlers.GlobalSettingsUpdateHandler != nil ||
+		handlers.ClientIPStatsHandler != nil ||
+		handlers.ClientIPStatsDetailHandler != nil ||
+		handlers.ClientIPAllowlistHandler != nil ||
+		handlers.ClientIPUnallowlistHandler != nil ||
+		handlers.ClientIPBlacklistHandler != nil ||
+		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.MyOperationLogsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
@@ -165,7 +318,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{ManagementAuthSessionsEnabled: true}, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{ManagementAuthSessionsEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
 		handlers.AuthTouchMiddleware == nil ||
 		handlers.SessionListHandler == nil ||
@@ -203,6 +356,12 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.ProviderModelOptionsHandler != nil ||
 		handlers.ProviderModelsHandler != nil ||
 		handlers.ProviderDefaultHealthCheckModelHandler != nil ||
+		handlers.RouteStrategyListHandler != nil ||
+		handlers.MyRouteStrategyListHandler != nil ||
+		handlers.RouteStrategyUpdateHandler != nil ||
+		handlers.MyRouteStrategyUpdateHandler != nil ||
+		handlers.RouteStrategyDetailHandler != nil ||
+		handlers.MyRouteStrategyDetailHandler != nil ||
 		handlers.RouteStrategyOptionsHandler != nil ||
 		handlers.APIKeyListHandler != nil ||
 		handlers.MyAPIKeyListHandler != nil ||
@@ -214,6 +373,8 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.MyAPIKeyCreateHandler != nil ||
 		handlers.APIKeyUpdateHandler != nil ||
 		handlers.MyAPIKeyUpdateHandler != nil ||
+		handlers.APIKeyDeleteHandler != nil ||
+		handlers.MyAPIKeyDeleteHandler != nil ||
 		handlers.GroupListHandler != nil ||
 		handlers.MyGroupListHandler != nil ||
 		handlers.GroupCreateHandler != nil ||
@@ -229,6 +390,12 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.SystemSettingsUpdateHandler != nil ||
 		handlers.GlobalSettingsHandler != nil ||
 		handlers.GlobalSettingsUpdateHandler != nil ||
+		handlers.ClientIPStatsHandler != nil ||
+		handlers.ClientIPStatsDetailHandler != nil ||
+		handlers.ClientIPAllowlistHandler != nil ||
+		handlers.ClientIPUnallowlistHandler != nil ||
+		handlers.ClientIPBlacklistHandler != nil ||
+		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
 		handlers.MyStatsUsageWindowHandler != nil {
@@ -237,7 +404,7 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 }
 
 func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
 		handlers.AuthTouchMiddleware == nil ||
 		handlers.CaptchaHandler == nil ||
@@ -289,6 +456,12 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.ProviderModelOptionsHandler == nil ||
 		handlers.ProviderModelsHandler == nil ||
 		handlers.ProviderDefaultHealthCheckModelHandler == nil ||
+		handlers.RouteStrategyListHandler == nil ||
+		handlers.MyRouteStrategyListHandler == nil ||
+		handlers.RouteStrategyUpdateHandler == nil ||
+		handlers.MyRouteStrategyUpdateHandler == nil ||
+		handlers.RouteStrategyDetailHandler == nil ||
+		handlers.MyRouteStrategyDetailHandler == nil ||
 		handlers.RouteStrategyOptionsHandler == nil ||
 		handlers.MyRouteStrategyOptionsHandler == nil ||
 		handlers.APIKeyListHandler == nil ||
@@ -301,6 +474,8 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.MyAPIKeyCreateHandler == nil ||
 		handlers.APIKeyUpdateHandler == nil ||
 		handlers.MyAPIKeyUpdateHandler == nil ||
+		handlers.APIKeyDeleteHandler == nil ||
+		handlers.MyAPIKeyDeleteHandler == nil ||
 		handlers.GroupListHandler == nil ||
 		handlers.MyGroupListHandler == nil ||
 		handlers.GroupCreateHandler == nil ||
@@ -325,6 +500,12 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.SystemSettingsUpdateHandler == nil ||
 		handlers.GlobalSettingsHandler == nil ||
 		handlers.GlobalSettingsUpdateHandler == nil ||
+		handlers.ClientIPStatsHandler == nil ||
+		handlers.ClientIPStatsDetailHandler == nil ||
+		handlers.ClientIPAllowlistHandler == nil ||
+		handlers.ClientIPUnallowlistHandler == nil ||
+		handlers.ClientIPBlacklistHandler == nil ||
+		handlers.ClientIPUnblockHandler == nil ||
 		handlers.OperationLogsHandler == nil ||
 		handlers.MyOperationLogsHandler == nil ||
 		handlers.StatsUsageWindowHandler == nil ||
@@ -342,14 +523,173 @@ func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyMutationDependencies(t *t
 	for _, required := range []string{
 		"Creator:                  store",
 		"Updater:                  store",
+		"Deleter:                  store",
 		"UsageStatsTimezoneReader: store",
+		"Logger:                   logger",
 		"APIKeyCreateHandler:",
 		"MyAPIKeyCreateHandler:",
 		"APIKeyUpdateHandler:",
 		"MyAPIKeyUpdateHandler:",
+		"APIKeyDeleteHandler:",
+		"MyAPIKeyDeleteHandler:",
+		"ManagementAPIKeyDeleteHandler:",
+		"ManagementMyAPIKeyDeleteHandler:",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("server.go missing explicit API Key mutation wiring %q", required)
+		}
+	}
+}
+
+func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *testing.T) {
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	if disabled.ClientIPAllowlistHandler != nil ||
+		disabled.ClientIPUnallowlistHandler != nil ||
+		disabled.ClientIPBlacklistHandler != nil ||
+		disabled.ClientIPUnblockHandler != nil {
+		t.Fatal("client IP policy handlers were created while management API disabled")
+	}
+
+	enabled := newManagementAPIHandler(
+		config.Config{ManagementAPIEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if enabled.ClientIPAllowlistHandler == nil ||
+		enabled.ClientIPUnallowlistHandler == nil ||
+		enabled.ClientIPBlacklistHandler == nil ||
+		enabled.ClientIPUnblockHandler == nil {
+		t.Fatal("client IP policy handlers were not created while management API enabled")
+	}
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"ManagementClientIPAllowlistHandler:",
+		"managementHandlers.ClientIPAllowlistHandler",
+		"ManagementClientIPUnallowlistHandler:",
+		"managementHandlers.ClientIPUnallowlistHandler",
+		"ManagementClientIPBlacklistHandler:",
+		"managementHandlers.ClientIPBlacklistHandler",
+		"ManagementClientIPUnblockHandler:",
+		"managementHandlers.ClientIPUnblockHandler",
+		"Transactor:  store",
+		"Invalidator: systemAccountInvalidator",
+		"httpapi.NewManagementClientIPAllowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
+		"httpapi.NewManagementClientIPUnallowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
+		"httpapi.NewManagementClientIPBlacklistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
+		"httpapi.NewManagementClientIPUnblockHandlerWithOperationLog(clientIPPolicyService, operationLogOptions)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server.go missing client IP policy wiring %q", required)
+		}
+	}
+}
+
+func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	if disabled.ClientIPStatsHandler != nil || disabled.ClientIPStatsDetailHandler != nil {
+		t.Fatal("client IP stats read handler was created while management API disabled")
+	}
+
+	sessionOnly := newManagementAPIHandler(
+		config.Config{ManagementAuthSessionsEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if sessionOnly.ClientIPStatsHandler != nil || sessionOnly.ClientIPStatsDetailHandler != nil {
+		t.Fatal("client IP stats read handler was created while only session switch enabled")
+	}
+
+	enabled := newManagementAPIHandler(
+		config.Config{ManagementAPIEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if enabled.ClientIPStatsHandler == nil || enabled.ClientIPStatsDetailHandler == nil {
+		t.Fatal("client IP stats read handler was not created while management API enabled")
+	}
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"ManagementClientIPStatsHandler:",
+		"ManagementClientIPStatsDetailHandler:",
+		"managementHandlers.ClientIPStatsHandler",
+		"managementHandlers.ClientIPStatsDetailHandler",
+		"managementclientipstats.NewServiceWithOptions(",
+		"ListReader:               store",
+		"DetailReader:             store",
+		"UsageStatsTimezoneReader: store",
+		"httpapi.NewManagementClientIPStatsHandler(clientIPStatsService)",
+		"httpapi.NewManagementClientIPStatsDetailHandler(clientIPStatsService)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server.go missing client IP stats read wiring %q", required)
+		}
+	}
+}
+
+func TestNewManagementAPIHandlerRouteStrategyDeleteOptInAndSharedServiceWiring(t *testing.T) {
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	if disabled.RouteStrategyDeleteHandler != nil ||
+		disabled.MyRouteStrategyDeleteHandler != nil {
+		t.Fatal("route strategy delete handlers were created while management API disabled")
+	}
+
+	enabled := newManagementAPIHandler(
+		config.Config{ManagementAPIEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if enabled.RouteStrategyDeleteHandler == nil ||
+		enabled.MyRouteStrategyDeleteHandler == nil {
+		t.Fatal("route strategy delete handlers were not created while management API enabled")
+	}
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"ManagementRouteStrategyDeleteHandler:",
+		"managementHandlers.RouteStrategyDeleteHandler",
+		"ManagementMyRouteStrategyDeleteHandler:",
+		"managementHandlers.MyRouteStrategyDeleteHandler",
+		"RouteStrategyDeleteHandler:",
+		"httpapi.NewManagementRouteStrategyDeleteHandlerWithOperationLog(routeStrategyService, operationLogOptions)",
+		"MyRouteStrategyDeleteHandler:",
+		"httpapi.NewManagementMyRouteStrategyDeleteHandlerWithOperationLog(routeStrategyService, operationLogOptions)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server.go missing shared route strategy delete wiring %q", required)
 		}
 	}
 }
@@ -406,4 +746,33 @@ func TestNewGatewaySystemAccountInvalidatorRejectsInvalidCacheURL(t *testing.T) 
 	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_CACHE_URL") {
 		t.Fatalf("newGatewaySystemAccountInvalidator() error = %v, want Redis cache URL error", err)
 	}
+}
+
+type appAccountHealthCheckDispatchCall struct {
+	accountID string
+	reason    string
+}
+
+type appAccountHealthCheckDispatcherRecorder struct {
+	calls []appAccountHealthCheckDispatchCall
+	err   error
+}
+
+func (r *appAccountHealthCheckDispatcherRecorder) Dispatch(
+	_ context.Context,
+	accountID string,
+	reason string,
+) error {
+	r.calls = append(r.calls, appAccountHealthCheckDispatchCall{
+		accountID: accountID,
+		reason:    reason,
+	})
+	return r.err
+}
+
+func appNodeDispatchSignature(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte("juhe-ai:account-health-check-dispatch:v1\n"))
+	_, _ = mac.Write(body)
+	return "v1=" + hex.EncodeToString(mac.Sum(nil))
 }

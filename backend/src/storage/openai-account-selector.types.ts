@@ -1,5 +1,6 @@
 import type {
   AccountClientCompatibility,
+  AccountHealthCheckEndpointMode,
   AccountSupportedEndpointMode,
   AccountModelMapping,
   AccountStatus,
@@ -48,6 +49,7 @@ export interface OpenAIAccountSecret {
   supportedModels?: string[]
   modelMappings?: AccountModelMapping[]
   healthCheckModel?: string
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -144,6 +146,7 @@ export interface OpenAIAccountRow {
   stream_failure_window_started_at: string | null
   account_expires_at: string | null
   health_check_model: string
+  health_check_endpoint_mode: AccountHealthCheckEndpointMode
   authorization_instance_source_account_id?: string | null
   authorization_instance_authorization_id?: string | null
   authorization_instance_owner_system_account_id?: string | null

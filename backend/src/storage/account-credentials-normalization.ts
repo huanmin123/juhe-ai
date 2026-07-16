@@ -221,36 +221,38 @@ function normalizeGptAccountRequestOverrides(
   const hasServiceTier = Object.prototype.hasOwnProperty.call(input, 'service_tier_override')
   const hasReasoningEffort = Object.prototype.hasOwnProperty.call(input, 'reasoning_effort_override')
   if (!hasServiceTier && !hasReasoningEffort) return
-  if (context.providerCode !== 'gpt') {
-    throw new Error('只有 GPT 账户支持服务等级和思考级别覆盖')
-  }
-  const serviceTier = optionalCredentialEnum(
+  const serviceTier = optionalCredentialToken(
     input.service_tier_override,
-    '服务等级覆盖',
-    new Set(['default', 'priority', 'flex'])
+    '服务等级覆盖'
   )
-  if (context.accountType === 'oauth' && serviceTier === 'flex') {
+  if (context.providerCode === 'gpt' && context.accountType === 'oauth' && serviceTier === 'flex') {
     throw new Error('OpenAI OAuth 账户不支持 Flex 服务等级覆盖')
   }
-  const reasoningEffort = optionalCredentialEnum(
+  const reasoningEffort = optionalCredentialToken(
     input.reasoning_effort_override,
-    '思考级别覆盖',
-    new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    '思考级别覆盖'
   )
+  if (context.providerCode === 'gpt') {
+    if (serviceTier && !new Set(['default', 'priority', 'flex']).has(serviceTier)) {
+      throw new Error('服务等级覆盖无效')
+    }
+    if (reasoningEffort && !new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).has(reasoningEffort)) {
+      throw new Error('思考级别覆盖无效')
+    }
+  }
   if (serviceTier) credentials.service_tier_override = serviceTier
   if (reasoningEffort) credentials.reasoning_effort_override = reasoningEffort
 }
 
-function optionalCredentialEnum<TValue extends string>(
+function optionalCredentialToken(
   value: unknown,
-  label: string,
-  allowedValues: ReadonlySet<TValue>
-): TValue | undefined {
+  label: string
+): string | undefined {
   if (value === undefined || value === null || value === '') return undefined
-  if (typeof value !== 'string' || !allowedValues.has(value as TValue)) {
+  if (typeof value !== 'string' || value !== value.trim() || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value)) {
     throw new Error(`${label}无效`)
   }
-  return value as TValue
+  return value
 }
 
 function requiredCredentialTextInput(value: unknown, label: string, maxBytes: number): string {

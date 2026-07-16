@@ -161,6 +161,7 @@ export interface AccountDraftTestAccountPayload {
   priority: number
   supportedModels: string[]
   healthCheckModel: string
+  healthCheckEndpointMode: import('@/types/domain').AccountHealthCheckEndpointMode
   modelMappings: Array<{ sourceModel: string; sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'; upstreamModel: string; upstreamEndpointFamily: 'chat_completions' | 'responses' | 'messages' | 'generate_content'; enabled: boolean }>
   proxyProfileId?: string | null
   groupId: string

@@ -3,7 +3,7 @@ import relativeTime from 'dayjs/plugin/relativeTime'
 
 dayjs.extend(relativeTime)
 
-const serverDateTimePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
+const serverDateTimePattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/
 
 export function formatDateTime(value?: string): string {
   if (!value) return '-'
@@ -71,15 +71,11 @@ export function formatMillisecondsAsSeconds(value?: number | null): string {
 
 export function parseStrictDatePickerValue(value?: string, label = '时间'): Dayjs | undefined {
   if (!value) return undefined
-  if (!serverDateTimePattern.test(value)) {
+  const parsedDate = strictServerDateTime(value)
+  if (!parsedDate) {
     throw new Error(`${label}格式异常，请清理后再编辑`)
   }
-  const parsed = dayjs(value)
-  const expectedIso = value.includes('.') ? value : value.replace('Z', '.000Z')
-  if (!parsed.isValid() || parsed.toDate().toISOString() !== expectedIso) {
-    throw new Error(`${label}无效，请清理后再编辑`)
-  }
-  return parsed
+  return dayjs(parsedDate)
 }
 
 export function formatServerDateTimeInput(value?: Dayjs | null): string | null {
@@ -87,8 +83,25 @@ export function formatServerDateTimeInput(value?: Dayjs | null): string | null {
 }
 
 function strictServerDateTime(value: string): Date | undefined {
-  if (!serverDateTimePattern.test(value)) return undefined
+  const match = serverDateTimePattern.exec(value)
+  if (!match) return undefined
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , timezone] = match
+  const year = Number(yearText)
+  const month = Number(monthText)
+  const day = Number(dayText)
+  const hour = Number(hourText)
+  const minute = Number(minuteText)
+  const second = Number(secondText)
+  if (
+    month < 1 || month > 12
+    || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()
+    || hour > 23 || minute > 59 || second > 59
+  ) return undefined
+  if (timezone !== 'Z') {
+    const offsetHour = Number(timezone.slice(1, 3))
+    const offsetMinute = Number(timezone.slice(4, 6))
+    if (offsetHour > 23 || offsetMinute > 59) return undefined
+  }
   const date = new Date(value)
-  const expectedIso = value.includes('.') ? value : value.replace('Z', '.000Z')
-  return Number.isNaN(date.getTime()) || date.toISOString() !== expectedIso ? undefined : date
+  return Number.isNaN(date.getTime()) ? undefined : date
 }

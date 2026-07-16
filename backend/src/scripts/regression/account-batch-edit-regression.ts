@@ -21,6 +21,7 @@ logger.level = 'silent'
 const [
   databaseModule,
   repositories,
+  balanceRepository,
   { batchEditAccountsAsync, loadAccountBatchEditContextAsync },
   {
     AccountBatchUpdateAccessError,
@@ -33,6 +34,7 @@ const [
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
+  import('../../storage/account-balance.repository.js'),
   import('../../modules/accounts/account-batch-edit.service.js'),
   import('../../storage/account-batch-update.repository.js'),
   import('../../modules/accounts/account-request.schemas.js'),
@@ -338,6 +340,52 @@ try {
     .get(accountA.id) as unknown as { next_health_check_at: string | null }
   assert.equal(healthScheduleRow.next_health_check_at, null, '单独修改检查模型应安排后台立即检查')
 
+  const multiA = repositories.createAccount({
+    providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '批量编辑多 Key A', type: 'api_key',
+    credentials: { api_keys: ['sk-batch-multi-a1', 'sk-batch-multi-a2'], base_url: 'https://api.openai.com/v1' },
+    groupId: group.id
+  }, access)
+  const multiB = repositories.createAccount({
+    providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '批量编辑多 Key B', type: 'api_key',
+    credentials: { api_keys: ['sk-batch-multi-b1', 'sk-batch-multi-b2'], base_url: 'https://api.openai.com/v1' },
+    groupId: group.id
+  }, access)
+  setAccountsActive([multiA.id, multiB.id])
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET balance_query_enabled = 1,
+        balance_query_config_json = ?,
+        balance_query_next_refresh_at = ?
+    WHERE id IN (?, ?)
+  `).run('{}', new Date().toISOString(), multiA.id, multiB.id)
+  for (const account of [multiA, multiB]) {
+    balanceRepository.replaceAccountBalanceSnapshot({
+      accountId: account.id,
+      systemAccountId: 'sys_admin',
+      snapshot: { status: 'fresh', remainingUsd: '3.210000' }
+    })
+  }
+  await batchEditAccountsAsync({
+    targets: targets(requiredAccount(multiA.id), requiredAccount(multiB.id)),
+    updates: { notes: { enabled: true, value: '多 Key 批量保存' } }
+  }, access)
+  const multiRows = databaseModule.getBusinessDatabase().prepare(`
+    SELECT balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
+    FROM accounts WHERE id IN (?, ?)
+  `).all(multiA.id, multiB.id) as Array<Record<string, unknown>>
+  assert.equal(multiRows.length, 2)
+  for (const row of multiRows) {
+    assert.equal(row.balance_query_enabled, 0, '批量编辑入口必须中央关闭多 Key 账户余额')
+    assert.equal(row.balance_query_next_refresh_at, null, '批量编辑关闭余额必须在同一事务清空调度')
+    assert.deepEqual(JSON.parse(String(row.balance_query_config_json)), { adapter: 'builtin', intervalMinutes: 5 }, '批量编辑必须为旧空配置写入已配置关闭标记')
+  }
+  await waitFor(() => balanceRepository.loadAccountBalanceSnapshotsByAccountIds([multiA.id, multiB.id]).size === 0)
+  assert.equal(balanceRepository.loadAccountBalanceSnapshotsByAccountIds([multiA.id, multiB.id]).size, 0, '批量事务提交后登记的有界后台任务必须最终幂等清理旧余额快照')
+
+  await assertBatchModelMappingTargetCapabilities(group.id)
+
   console.log('account-batch-edit-regression passed')
 } finally {
   try {
@@ -360,6 +408,7 @@ function assertRouteAndSchemaBoundary(): void {
   assert(systemApiSource.includes("app.use(`${systemApiPrefix}/accounts`, requireAdmin, accountsRouter)"), '批量编辑路由必须服务管理账户作用域')
   assert(repositorySource.includes("client.driver === 'postgres' ? ' FOR UPDATE' : ''"), 'PostgreSQL 批量编辑必须锁定目标账户')
   assert(repositorySource.includes('config_revision = config_revision + 1'), '批量编辑成功后必须递增配置版本')
+  assert(repositorySource.includes('balance_query_enabled = CASE WHEN ? = 1 THEN 0'), 'SQLite/PostgreSQL 批量编辑 SQL 必须统一关闭多 Key 余额')
   assert(!repositorySource.includes('updateAccountAsync('), '批量编辑 repository 不能循环调用单账户更新')
   assert.match(
     buildPostgresSchemaSql(),
@@ -427,6 +476,14 @@ function targets(...accounts: Array<{ id: string; configRevision?: number }>) {
   }))
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('等待批量余额快照后台清理超时')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
 function assertCredentialPoliciesMerged(accountId: string, expectedApiKey: string): void {
   const account = repositories.findAccountForTest(accountId, access)
   assert(account, `测试账户不存在：${accountId}`)
@@ -439,4 +496,54 @@ function assertCredentialPoliciesMerged(accountId: string, expectedApiKey: strin
     action: 'retry_next',
     status_codes: [429]
   }], '批量规则覆盖应只 merge 指定凭据键')
+}
+
+async function assertBatchModelMappingTargetCapabilities(groupId: string): Promise<void> {
+  const create = (suffix: string) => repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: `批量映射目标能力账户 ${suffix}`,
+    type: 'api_key',
+    credentials: {
+      api_key: `sk-account-batch-mapping-${suffix}`,
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['chat_json', 'responses_sse']
+    },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
+    groupId
+  }, access)
+  const accountC = create('C')
+  const accountD = create('D')
+  const enabledMapping = {
+    sourceModel: 'gpt-5.5',
+    sourceEndpointFamily: 'responses' as const,
+    upstreamModel: 'gpt-5.5',
+    upstreamEndpointFamily: 'chat_completions' as const,
+    enabled: true
+  }
+  await assert.rejects(batchEditAccountsAsync({
+    targets: targets(requiredAccount(accountC.id), requiredAccount(accountD.id)),
+    updates: {
+      supportedEndpointModes: { enabled: true, value: ['responses_json', 'responses_sse'] },
+      healthCheckEndpointMode: { enabled: true, value: 'responses_sse' },
+      modelMappings: { enabled: true, value: [enabledMapping] }
+    }
+  }, access), /Chat Completions.*上游接口能力/, '批量后端必须拒绝目标族能力缺失的启用映射')
+  assert.equal(requiredAccount(accountC.id).configRevision, 1, '批量映射能力冲突被拒绝后账户 C 版本必须不变')
+  assert.equal(requiredAccount(accountD.id).configRevision, 1, '批量映射能力冲突被拒绝后账户 D 版本必须不变')
+
+  const disabledMapping = { ...enabledMapping, enabled: false }
+  const accepted = await batchEditAccountsAsync({
+    targets: targets(requiredAccount(accountC.id), requiredAccount(accountD.id)),
+    updates: {
+      supportedEndpointModes: { enabled: true, value: ['responses_json', 'responses_sse'] },
+      healthCheckEndpointMode: { enabled: true, value: 'responses_sse' },
+      modelMappings: { enabled: true, value: [disabledMapping] }
+    }
+  }, access)
+  assert.equal(accepted.accounts.length, 2, '批量后端应允许目标族能力缺失的停用映射')
+  for (const account of accepted.accounts) {
+    assert.deepEqual(account.modelMappings, [disabledMapping], '批量后端应原样保留停用映射')
+  }
 }

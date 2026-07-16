@@ -8,6 +8,13 @@ export interface RuntimeStateStore {
   getJson<T>(key: RuntimeStateKey): Promise<T | undefined>
   getDeleteJson<T>(key: RuntimeStateKey): Promise<T | undefined>
   setJson<T>(key: RuntimeStateKey, value: T, ttlMs: number): Promise<void>
+  compareSetJson<T>(
+    key: RuntimeStateKey,
+    expectedValue: T | undefined,
+    nextValue: T,
+    ttlMs: number
+  ): Promise<boolean>
+  compareDeleteJson<T>(key: RuntimeStateKey, expectedValue: T): Promise<boolean>
   delete(key: RuntimeStateKey): Promise<void>
   incr(key: RuntimeStateKey, options: { ttlMs: number; max?: number }): Promise<number>
   acquireLock(key: RuntimeStateKey, options: { ttlMs: number; token: string }): Promise<boolean>
@@ -49,6 +56,34 @@ class MemoryRuntimeStateStore implements RuntimeStateStore {
       value,
       expiresAt: expiresAtFromTtl(ttlMs)
     })
+  }
+
+  async compareSetJson<T>(
+    key: RuntimeStateKey,
+    expectedValue: T | undefined,
+    nextValue: T,
+    ttlMs: number
+  ): Promise<boolean> {
+    const current = this.getFreshEntry(key)
+    if (expectedValue === undefined) {
+      if (current) return false
+    } else if (!current || JSON.stringify(current.value) !== JSON.stringify(expectedValue)) {
+      return false
+    }
+    this.entries.set(key, {
+      value: nextValue,
+      expiresAt: expiresAtFromTtl(ttlMs)
+    })
+    return true
+  }
+
+  async compareDeleteJson<T>(key: RuntimeStateKey, expectedValue: T): Promise<boolean> {
+    const current = this.getFreshEntry(key)
+    if (!current || JSON.stringify(current.value) !== JSON.stringify(expectedValue)) {
+      return false
+    }
+    this.entries.delete(key)
+    return true
   }
 
   async delete(key: RuntimeStateKey): Promise<void> {
@@ -143,6 +178,31 @@ class RedisRuntimeStateStore implements RuntimeStateStore {
     )
   }
 
+  async compareSetJson<T>(
+    key: RuntimeStateKey,
+    expectedValue: T | undefined,
+    nextValue: T,
+    ttlMs: number
+  ): Promise<boolean> {
+    const result = await (await this.client()).eval(compareSetJsonScript, {
+      keys: [this.redisKey(key)],
+      arguments: [
+        expectedValue === undefined ? '' : JSON.stringify(expectedValue),
+        JSON.stringify(nextValue),
+        String(normalizeTtlMs(ttlMs))
+      ]
+    })
+    return numericRedisResult(result) === 1
+  }
+
+  async compareDeleteJson<T>(key: RuntimeStateKey, expectedValue: T): Promise<boolean> {
+    const result = await (await this.client()).eval(compareDeleteJsonScript, {
+      keys: [this.redisKey(key)],
+      arguments: [JSON.stringify(expectedValue)]
+    })
+    return numericRedisResult(result) === 1
+  }
+
   async delete(key: RuntimeStateKey): Promise<void> {
     await (await this.client()).del(this.redisKey(key))
   }
@@ -202,6 +262,27 @@ else
   end
 end
 return next_value
+`
+
+const compareSetJsonScript = `
+local current = redis.call('GET', KEYS[1])
+if ARGV[1] == '' then
+  if current then
+    return 0
+  end
+elseif current ~= ARGV[1] then
+  return 0
+end
+redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
+return 1
+`
+
+const compareDeleteJsonScript = `
+local current = redis.call('GET', KEYS[1])
+if not current or current ~= ARGV[1] then
+  return 0
+end
+return redis.call('DEL', KEYS[1])
 `
 
 const releaseLockScript = `

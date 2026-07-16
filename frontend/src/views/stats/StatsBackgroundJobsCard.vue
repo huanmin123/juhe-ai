@@ -40,8 +40,8 @@
           </span>
         </template>
         <template v-else-if="column.key === 'running'">
-          <a-tag :color="record.running ? 'processing' : record.failureCount > 0 ? 'warning' : 'success'">
-            {{ record.running ? '运行中' : '空闲' }}
+          <a-tag :color="record.running ? 'processing' : record.lastError ? 'warning' : 'success'">
+            {{ record.running ? '运行中' : record.lastError ? '上次失败' : '空闲' }}
           </a-tag>
         </template>
         <template v-else-if="column.key === 'workerRole'">
@@ -83,8 +83,8 @@
                 </a-tooltip>
               </span>
             </strong>
-            <a-tag :color="record.running ? 'processing' : record.failureCount > 0 ? 'warning' : 'success'">
-              {{ record.running ? '运行中' : '空闲' }}
+            <a-tag :color="record.running ? 'processing' : record.lastError ? 'warning' : 'success'">
+              {{ record.running ? '运行中' : record.lastError ? '上次失败' : '空闲' }}
             </a-tag>
           </div>
           <div class="mobile-list-meta-grid">

@@ -27,6 +27,7 @@ import { captureGatewayRawBody } from '../../modules/gateway/request/body-middle
 import { stopGatewayJsonParseWorker } from '../../modules/gateway/request/json-parser.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import { sanitizeRequestHeaders } from '../../modules/gateway/usage/snapshots.js'
+import { applyOpenAIClientCompatibilityHeaders } from '../../modules/gateway/protocols/openai-v1/api-key-client-compatibility.js'
 
 type TestRequest = GatewayRawBodyRequest
 type MockResponse = EventEmitter & {
@@ -61,6 +62,7 @@ const apiKeyAccount: OpenAIAccountSecret = {
   fallbackEnabled: false,
   clientCompatibility: 'openai_standard',
   healthCheckModel: 'gpt-5.4',
+  healthCheckEndpointMode: 'responses_sse',
   baseUrl: 'https://api.openai.com/v1',
   streamFailureCount: 0,
   credentials: {}
@@ -113,14 +115,14 @@ function testGptAccountRequestOverridePureFunction(): void {
     endpointFamily: 'responses',
     modelCapabilities: {
       supportedServiceTiers: ['priority'],
-      supportedReasoningEfforts: ['low', 'medium', 'high']
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'max']
     }
   })
   assert.equal(responsesOutput.service_tier, 'priority')
   assert.deepEqual(responsesOutput.reasoning, {
-    effort: 'high',
+    effort: 'max',
     summary: 'detailed'
-  })
+  }, '目标模型明确支持 Max 时必须精确写入，不能向下降级')
   assert.equal(responsesOutput.reasoning_effort, undefined)
   assert.equal(responsesInput.service_tier, 'flex', '纯函数不能修改输入对象')
   assert.deepEqual(responsesInput.reasoning, {
@@ -161,19 +163,28 @@ function testGptAccountRequestOverridePureFunction(): void {
   })
   assert.equal(flexOutput.service_tier, 'flex')
 
-  const unsupportedServiceTierOutput = applyGptAccountRequestOverrides({
-    service_tier: 'flex'
-  }, {
-    credentials: {
-      service_tier_override: 'priority'
-    },
+  assert.throws(() => applyGptAccountRequestOverrides({ service_tier: 'flex' }, {
+    credentials: { service_tier_override: 'priority' },
     endpointFamily: 'responses',
     modelCapabilities: {
       supportedServiceTiers: [],
       supportedReasoningEfforts: []
     }
-  })
-  assert.equal(unsupportedServiceTierOutput.service_tier, 'flex', 'Priority 与 Flex 平级，不支持配置档位时必须保留客户端原值')
+  }), /service_tier_override=priority.*不受目标模型支持/, '目标模型不支持配置档位时必须明确失败，不能静默保留客户端原值')
+
+  assert.throws(() => applyGptAccountRequestOverrides({}, {
+    credentials: { reasoning_effort_override: 'max' },
+    endpointFamily: 'responses',
+    modelCapabilities: {
+      supportedServiceTiers: [],
+      supportedReasoningEfforts: ['high']
+    }
+  }), /reasoning_effort_override=max.*不受目标模型支持/, '目标模型不支持精确思考级别时不能向下降级')
+
+  assert.throws(() => applyGptAccountRequestOverrides({}, {
+    credentials: { service_tier_override: 'priority' },
+    endpointFamily: 'responses'
+  }), /缺少目标模型能力/, '运行时缺少目录能力时不能静默忽略账户覆盖')
 
   const compactOutput = applyGptAccountRequestOverrides({
     service_tier: 'flex',
@@ -390,10 +401,17 @@ async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
     truncation: 'disabled',
     user: 'local-user'
   }))
-  const req = createRequest(undefined, { 'content-type': 'application/json' }, rawBody, '/v1/responses')
+  const req = createRequest(undefined, {
+    'content-type': 'application/json',
+    originator: 'codex_cli_rs',
+    'user-agent': 'codex_cli_rs/0.125.0',
+    version: '0.125.0'
+  }, rawBody, '/v1/responses')
   const parts = await buildGatewayUpstreamRequestParts(req, {
     ...apiKeyAccount,
-    clientCompatibility: 'codex_responses'
+    providerCode: 'openai',
+    providerProtocolProfileId: 'profile_openai_openai_v1',
+    clientCompatibility: 'openai_standard'
   }, testIdentity, undefined, {
     requestClientCompatibility: 'codex_responses'
   })
@@ -420,9 +438,16 @@ async function testCodexResponsesCompatibilityRequestParts(): Promise<void> {
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
   assert.equal(parts.headers.get('content-type'), 'application/json')
   assert.equal(parts.headers.get('originator'), 'codex_cli_rs')
-  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.125.0')
-  assert.equal(parts.headers.get('version'), '0.125.0')
-  assert.equal(parts.headers.get('openai-beta'), 'responses=experimental')
+  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.144.4')
+  assert.equal(parts.headers.get('version'), null)
+  assert.equal(parts.headers.get('openai-beta'), null)
+  assert.equal(parts.headers.get('x-openai-internal-codex-responses-lite'), null)
+  const solHeaders = new Headers(parts.headers)
+  applyOpenAIClientCompatibilityHeaders(req, solHeaders, {
+    requestClientCompatibility: 'codex_responses',
+    modelOverride: 'gpt-5.6-sol'
+  })
+  assert.equal(solHeaders.get('x-openai-internal-codex-responses-lite'), 'true')
 
   const input = body.input
   assert.ok(Array.isArray(input))
@@ -634,9 +659,16 @@ function testOpenAIClientPathNormalization(): void {
   assert.equal(isCodexModelsRequest(createRequest(undefined, {}, undefined, '/v1/models', 'GET')), false)
   const openAIModels = buildOpenAIModelsResponse([modelCatalogItem('gpt-standard')])
   assert.equal('data' in openAIModels, true, '普通 /models 响应应保持 OpenAI 标准 data 字段')
-  const codexModels = buildOpenAIModelsResponse([modelCatalogItem('gpt-codex')], createRequest(undefined, {}, undefined, '/v1/models?client_version=0.99.0', 'GET'))
+  const oldCodexModels = buildOpenAIModelsResponse([
+    modelCatalogItem('gpt-5.6-sol'),
+    modelCatalogItem('gpt-5.5')
+  ], createRequest(undefined, {}, undefined, '/v1/models?client_version=0.125.0', 'GET'))
+  const codexModels = oldCodexModels
   assert.equal('models' in codexModels, true, 'Codex /models 响应应使用 models 字段')
   assert.equal('data' in codexModels, false, 'Codex /models 响应不应返回 OpenAI 标准 data 字段')
+  if ('models' in oldCodexModels && 'models' in codexModels) {
+    assert.deepEqual(oldCodexModels.models.map((item) => item.slug), ['gpt-5.6-sol', 'gpt-5.5'])
+  }
   assert.equal(buildUpstreamUrl('https://api.openai.com', '/models'), 'https://api.openai.com/v1/models')
   assert.equal(buildUpstreamUrl('https://api.openai.com/v1', '/models?limit=20'), 'https://api.openai.com/v1/models?limit=20')
   assert.equal(buildUpstreamUrl('https://api.openai.com', '/chat/completions'), 'https://api.openai.com/v1/chat/completions')
@@ -667,6 +699,7 @@ function modelCatalogItem(model: string): Parameters<typeof buildOpenAIModelsRes
     supportsPromptCaching: false,
     supportedServiceTiers: [],
     supportedReasoningEfforts: [],
+    defaultReasoningEffort: null,
     codexSupportedReasoningLevels: [],
     supportsServiceTier: false,
     source: 'regression',
@@ -838,8 +871,8 @@ async function testGatewayRawBodyInFlightLimit(): Promise<void> {
     assert.equal(nextA, true)
     assert.equal(reqA.rawBody?.length, rawBodyA.length)
     assert.deepEqual(getGatewayRequestBodyInFlightState(), {
-      currentBytes: 0,
-      requestCount: 0,
+      currentBytes: rawBodyA.length,
+      requestCount: 1,
       maxBytes,
       rejectedCount: 1
     })

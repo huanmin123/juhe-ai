@@ -32,14 +32,6 @@ func TestSystemServiceGetReturnsValidatedIndependentSnapshot(t *testing.T) {
 	if !ok || string(value) != "60" {
 		t.Fatalf("usageHotWindowRefreshIntervalSeconds = %q, %v; want 60", value, ok)
 	}
-	priority, ok := settings.Value("gptPriorityPriceMultiplier")
-	if !ok || string(priority) != "2" {
-		t.Fatalf("gptPriorityPriceMultiplier = %q, %v; want 2", priority, ok)
-	}
-	flex, ok := settings.Value("gptFlexPriceMultiplier")
-	if !ok || string(flex) != "0.5" {
-		t.Fatalf("gptFlexPriceMultiplier = %q, %v; want 0.5", flex, ok)
-	}
 	returnedValues := settings.Values()
 	returnedValues["gatewayTextRawBodyLimitMegabytes"][0] = '9'
 	storedValue, _ := stored.Value("gatewayTextRawBodyLimitMegabytes")
@@ -64,7 +56,6 @@ func TestSystemServiceUpdateValidatesRawPatchUsesUTCAndInvalidatesSeparately(t *
 	patch, err := systemsettings.NewPatch(map[string]json.RawMessage{
 		"gatewayTextRawBodyLimitMegabytes":     json.RawMessage(`32`),
 		"usageHotWindowRefreshIntervalSeconds": json.RawMessage(`600`),
-		"gptPriorityPriceMultiplier":           json.RawMessage(`2.5`),
 	})
 	if err != nil {
 		t.Fatalf("NewPatch() error = %v", err)
@@ -80,18 +71,20 @@ func TestSystemServiceUpdateValidatesRawPatchUsesUTCAndInvalidatesSeparately(t *
 			Settings: after,
 		},
 	}
-	invalidator := &systemSettingsInvalidatorStub{}
+	events := []string{}
+	invalidator := &systemSettingsInvalidatorStub{events: &events}
+	rateLimitCache := &systemAPIRateLimitSettingsCacheInvalidatorStub{events: &events}
 	service := NewSystemServiceWithOptions(SystemServiceOptions{
-		Store:       store,
-		Invalidator: invalidator,
-		Now:         func() time.Time { return now },
+		Store:                             store,
+		Invalidator:                       invalidator,
+		RateLimitSettingsCacheInvalidator: rateLimitCache,
+		Now:                               func() time.Time { return now },
 	})
 
 	result, err := service.Update(context.Background(), SystemUpdateInput{
 		Values: map[string]json.RawMessage{
 			"usageHotWindowRefreshIntervalSeconds": json.RawMessage(` 600 `),
 			"gatewayTextRawBodyLimitMegabytes":     json.RawMessage(`32`),
-			"gptPriorityPriceMultiplier":           json.RawMessage(`2.5`),
 		},
 	})
 
@@ -105,25 +98,22 @@ func TestSystemServiceUpdateValidatesRawPatchUsesUTCAndInvalidatesSeparately(t *
 		t.Fatalf("UpdatedAt = %v, want %v", store.updateInput.UpdatedAt, now.UTC())
 	}
 	entries := store.updateInput.Patch.Entries()
-	if len(entries) != 3 ||
+	if len(entries) != 2 ||
 		entries[0].Key != "gatewayTextRawBodyLimitMegabytes" ||
 		string(entries[0].Value) != "32" ||
-		entries[1].Key != "gptPriorityPriceMultiplier" ||
-		string(entries[1].Value) != "2.5" ||
-		entries[2].Key != "usageHotWindowRefreshIntervalSeconds" ||
-		string(entries[2].Value) != "600" {
+		entries[1].Key != "usageHotWindowRefreshIntervalSeconds" ||
+		string(entries[1].Value) != "600" {
 		t.Fatalf("store patch entries = %+v", entries)
 	}
 	resultValue, _ := result.Settings.Value("gatewayTextRawBodyLimitMegabytes")
 	if string(resultValue) != "32" {
 		t.Fatalf("updated value = %s, want 32", resultValue)
 	}
-	decimalValue, _ := result.Settings.Value("gptPriorityPriceMultiplier")
-	if string(decimalValue) != "2.5" {
-		t.Fatalf("updated decimal value = %s, want 2.5", decimalValue)
-	}
 	if invalidator.systemCacheCalls != 1 {
 		t.Fatalf("InvalidateSystemSettingsCache() calls = %d, want 1", invalidator.systemCacheCalls)
+	}
+	if rateLimitCache.calls != 1 {
+		t.Fatalf("ClearSystemAPIRateLimitSettingsCache() calls = %d, want 1", rateLimitCache.calls)
 	}
 	if invalidator.runtimeCalls != 1 || invalidator.runtimeReasons[0] != SystemSettingsUpdatedReason {
 		t.Fatalf("InvalidateGatewayRuntime() calls=%d reasons=%v", invalidator.runtimeCalls, invalidator.runtimeReasons)
@@ -132,6 +122,12 @@ func TestSystemServiceUpdateValidatesRawPatchUsesUTCAndInvalidatesSeparately(t *
 		invalidator.callOrder[0] != "system_cache" ||
 		invalidator.callOrder[1] != "gateway_runtime" {
 		t.Fatalf("invalidation order = %v", invalidator.callOrder)
+	}
+	if len(events) != 3 ||
+		events[0] != "rate_limit_cache" ||
+		events[1] != "system_cache" ||
+		events[2] != "gateway_runtime" {
+		t.Fatalf("all invalidation order = %v", events)
 	}
 }
 
@@ -176,9 +172,6 @@ func TestSystemServiceUpdateRejectsEmptyUnknownNullAndNonIntegerInput(t *testing
 		{name: "float", values: map[string]json.RawMessage{"accountTestTaskConcurrency": json.RawMessage(`1.0`)}},
 		{name: "numeric string", values: map[string]json.RawMessage{"accountTestTaskConcurrency": json.RawMessage(`"1"`)}},
 		{name: "trailing json", values: map[string]json.RawMessage{"accountTestTaskConcurrency": json.RawMessage(`1 true`)}},
-		{name: "decimal string", values: map[string]json.RawMessage{"gptPriorityPriceMultiplier": json.RawMessage(`"2"`)}},
-		{name: "decimal null", values: map[string]json.RawMessage{"gptFlexPriceMultiplier": json.RawMessage(`null`)}},
-		{name: "decimal out of range", values: map[string]json.RawMessage{"gptFlexPriceMultiplier": json.RawMessage(`100.0001`)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -204,15 +197,17 @@ func TestSystemServiceUpdateStoreErrorSkipsInvalidation(t *testing.T) {
 	wantErr := errors.New("postgres down")
 	store := &systemSettingsStoreStub{updateErr: wantErr}
 	invalidator := &systemSettingsInvalidatorStub{}
+	rateLimitCache := &systemAPIRateLimitSettingsCacheInvalidatorStub{}
 	service := NewSystemServiceWithOptions(SystemServiceOptions{
-		Store:       store,
-		Invalidator: invalidator,
+		Store:                             store,
+		Invalidator:                       invalidator,
+		RateLimitSettingsCacheInvalidator: rateLimitCache,
 	})
 
 	_, err := service.Update(context.Background(), SystemUpdateInput{
 		Values: map[string]json.RawMessage{
-			"accountTestTaskConcurrency": json.RawMessage(`10`),
-			"gptFlexPriceMultiplier":     json.RawMessage(`0.75`),
+			"accountTestTaskConcurrency":       json.RawMessage(`10`),
+			"gatewayTextRawBodyLimitMegabytes": json.RawMessage(`32`),
 		},
 	})
 
@@ -224,6 +219,9 @@ func TestSystemServiceUpdateStoreErrorSkipsInvalidation(t *testing.T) {
 	}
 	if invalidator.systemCacheCalls != 0 || invalidator.runtimeCalls != 0 {
 		t.Fatalf("invalidation calls = %d/%d, want 0/0", invalidator.systemCacheCalls, invalidator.runtimeCalls)
+	}
+	if rateLimitCache.calls != 0 {
+		t.Fatalf("rate limit cache invalidation calls = %d, want 0", rateLimitCache.calls)
 	}
 }
 
@@ -257,8 +255,8 @@ func TestSystemServiceUpdateRejectsInvalidReturnedSnapshotBeforeInvalidation(t *
 
 			_, err := service.Update(context.Background(), SystemUpdateInput{
 				Values: map[string]json.RawMessage{
-					"accountTestTaskConcurrency": json.RawMessage(`10`),
-					"gptFlexPriceMultiplier":     json.RawMessage(`0.75`),
+					"accountTestTaskConcurrency":       json.RawMessage(`10`),
+					"gatewayTextRawBodyLimitMegabytes": json.RawMessage(`32`),
 				},
 			})
 
@@ -284,11 +282,13 @@ func TestSystemServiceUpdateIgnoresEachInvalidationErrorAndStillCallsBoth(t *tes
 		systemCacheErr: errors.New("cache redis down"),
 		runtimeErr:     errors.New("state redis down"),
 	}
+	rateLimitCache := &systemAPIRateLimitSettingsCacheInvalidatorStub{}
 	var logs bytes.Buffer
 	service := NewSystemServiceWithOptions(SystemServiceOptions{
-		Store:       store,
-		Invalidator: invalidator,
-		Logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
+		Store:                             store,
+		Invalidator:                       invalidator,
+		RateLimitSettingsCacheInvalidator: rateLimitCache,
+		Logger:                            slog.New(slog.NewJSONHandler(&logs, nil)),
 	})
 
 	requestCtx, cancel := context.WithCancel(context.Background())
@@ -302,11 +302,14 @@ func TestSystemServiceUpdateIgnoresEachInvalidationErrorAndStillCallsBoth(t *tes
 	if err != nil {
 		t.Fatalf("Update() error = %v, want nil despite invalidation errors", err)
 	}
-	if result.Settings.Len() != 55 {
-		t.Fatalf("result settings length = %d, want 55", result.Settings.Len())
+	if result.Settings.Len() != 52 {
+		t.Fatalf("result settings length = %d, want 52", result.Settings.Len())
 	}
 	if invalidator.systemCacheCalls != 1 || invalidator.runtimeCalls != 1 {
 		t.Fatalf("invalidation calls = %d/%d, want 1/1", invalidator.systemCacheCalls, invalidator.runtimeCalls)
+	}
+	if rateLimitCache.calls != 1 {
+		t.Fatalf("rate limit cache invalidation calls = %d, want 1", rateLimitCache.calls)
 	}
 	if invalidator.systemCacheContextErr != nil || invalidator.runtimeContextErr != nil {
 		t.Fatalf(
@@ -345,17 +348,6 @@ func validSystemSettingsSnapshot(t *testing.T) systemsettings.Snapshot {
 	for _, definition := range systemsettings.Definitions() {
 		if definition.Kind == systemsettings.ValueKindTimezone {
 			values[definition.Key] = json.RawMessage(`"UTC"`)
-			continue
-		}
-		if definition.Kind == systemsettings.ValueKindDecimal {
-			switch definition.Key {
-			case "gptPriorityPriceMultiplier":
-				values[definition.Key] = json.RawMessage(`2`)
-			case "gptFlexPriceMultiplier":
-				values[definition.Key] = json.RawMessage(`0.5`)
-			default:
-				t.Fatalf("unexpected decimal system setting %q", definition.Key)
-			}
 			continue
 		}
 		values[definition.Key] = json.RawMessage(strconv.Itoa(definition.Minimum))
@@ -402,12 +394,16 @@ type systemSettingsInvalidatorStub struct {
 	runtimeErr            error
 	runtimeContextErr     error
 	callOrder             []string
+	events                *[]string
 }
 
 func (s *systemSettingsInvalidatorStub) InvalidateSystemSettingsCache(ctx context.Context) error {
 	s.systemCacheCalls++
 	s.systemCacheContextErr = ctx.Err()
 	s.callOrder = append(s.callOrder, "system_cache")
+	if s.events != nil {
+		*s.events = append(*s.events, "system_cache")
+	}
 	return s.systemCacheErr
 }
 
@@ -416,7 +412,24 @@ func (s *systemSettingsInvalidatorStub) InvalidateGatewayRuntime(ctx context.Con
 	s.runtimeContextErr = ctx.Err()
 	s.runtimeReasons = append(s.runtimeReasons, reason)
 	s.callOrder = append(s.callOrder, "gateway_runtime")
+	if s.events != nil {
+		*s.events = append(*s.events, "gateway_runtime")
+	}
 	return s.runtimeErr
 }
 
 var _ SystemSettingsInvalidator = (*systemSettingsInvalidatorStub)(nil)
+
+type systemAPIRateLimitSettingsCacheInvalidatorStub struct {
+	calls  int
+	events *[]string
+}
+
+func (s *systemAPIRateLimitSettingsCacheInvalidatorStub) ClearSystemAPIRateLimitSettingsCache() {
+	s.calls++
+	if s.events != nil {
+		*s.events = append(*s.events, "rate_limit_cache")
+	}
+}
+
+var _ SystemAPIRateLimitSettingsCacheInvalidator = (*systemAPIRateLimitSettingsCacheInvalidatorStub)(nil)

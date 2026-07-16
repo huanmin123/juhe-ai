@@ -33,8 +33,8 @@
             <div class="batch-edit-section">
               <AccountBatchEditField
                 v-model:checked="form.enabled.tags"
-                label="标签"
-                description="直接覆盖全部目标账户的标签；留空表示清空标签。"
+                label="账户标签"
+                description="直接覆盖全部目标账户的账户标签；留空表示清空账户标签。"
               >
                 <template #default="{ disabled }">
                   <a-select
@@ -61,6 +61,30 @@
                     :options="proxyOptions"
                     placeholder="不使用代理"
                   />
+                </template>
+              </AccountBatchEditField>
+
+              <AccountBatchEditField
+                v-model:checked="form.enabled.supportedEndpointModes"
+                :disabled="!homogeneousModelConfiguration"
+                label="上游接口能力"
+                description="直接覆盖账户真实上游支持的接口形态。"
+              >
+                <template #default="{ disabled }">
+                  <a-checkbox-group
+                    v-model:value="form.supportedEndpointModes"
+                    :disabled="disabled"
+                  >
+                    <div class="endpoint-mode-grid">
+                      <a-checkbox
+                        v-for="option in endpointModeOptions"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </a-checkbox>
+                    </div>
+                  </a-checkbox-group>
                 </template>
               </AccountBatchEditField>
 
@@ -131,15 +155,15 @@
 
               <AccountBatchEditField
                 v-model:checked="form.enabled.availabilitySchedule"
-                label="可用时间计划"
+                label="时间计划"
                 description="关闭计划开关并保存表示清除现有时间计划。"
               >
                 <template #default="{ disabled }">
                   <TimeScheduleSection
                     :form="scheduleForm"
                     :readonly="disabled"
-                    label="可用时间计划"
-                    readonly-label="可用时间计划"
+                    label="时间计划"
+                    readonly-label="时间计划"
                     row-key-prefix="account_batch_schedule_window"
                   />
                 </template>
@@ -147,15 +171,15 @@
 
               <AccountBatchEditField
                 v-model:checked="form.enabled.notes"
-                label="备注"
-                description="留空表示清空备注。"
+                label="说明"
+                description="留空表示清空说明。"
               >
                 <template #default="{ disabled }">
                   <a-textarea
                     v-model:value="form.notes"
                     :disabled="disabled"
                     :rows="3"
-                    placeholder="统一写入账户备注"
+                    placeholder="统一写入账户说明"
                   />
                 </template>
               </AccountBatchEditField>
@@ -225,53 +249,47 @@
                 </template>
               </AccountBatchEditField>
 
-              <AccountBatchEditField
-                v-model:checked="form.enabled.healthCheckModel"
-                :disabled="!homogeneousModelConfiguration"
-                label="检查模型"
-                description="后台激活、周期检查和恢复探测统一使用该模型。"
-              >
-                <template #default="{ disabled }">
-                  <a-select
-                    v-model:value="form.healthCheckModel"
-                    show-search
-                    option-filter-prop="label"
-                    :disabled="disabled || !healthCheckModelOptions.length"
-                    :options="healthCheckModelOptions"
-                    placeholder="选择检查模型"
-                  />
-                </template>
-              </AccountBatchEditField>
+              <div class="batch-edit-two-columns">
+                <AccountBatchEditField
+                  v-model:checked="form.enabled.healthCheckModel"
+                  :disabled="!homogeneousModelConfiguration"
+                  label="检查模型"
+                  description="后台激活、周期检查和恢复探测统一使用该模型。"
+                >
+                  <template #default="{ disabled }">
+                    <a-select
+                      v-model:value="form.healthCheckModel"
+                      show-search
+                      option-filter-prop="label"
+                      :disabled="disabled || !healthCheckModelOptions.length"
+                      :options="healthCheckModelOptions"
+                      placeholder="选择检查模型"
+                    />
+                  </template>
+                </AccountBatchEditField>
 
-              <AccountBatchEditField
-                v-model:checked="form.enabled.supportedEndpointModes"
-                :disabled="!homogeneousModelConfiguration"
-                label="接口能力限制"
-                description="直接覆盖账户可承接的请求形态。"
-              >
-                <template #default="{ disabled }">
-                  <a-checkbox-group
-                    v-model:value="form.supportedEndpointModes"
-                    :disabled="disabled"
-                  >
-                    <div class="endpoint-mode-grid">
-                      <a-checkbox
-                        v-for="option in endpointModeOptions"
-                        :key="option.value"
-                        :value="option.value"
-                      >
-                        {{ option.label }}
-                      </a-checkbox>
-                    </div>
-                  </a-checkbox-group>
-                </template>
-              </AccountBatchEditField>
+                <AccountBatchEditField
+                  v-model:checked="form.enabled.healthCheckEndpointMode"
+                  :disabled="!homogeneousModelConfiguration"
+                  label="检查请求形态"
+                  description="后台检查直接使用所选请求形态；GPT 建议使用 Responses API（Streaming）。"
+                >
+                  <template #default="{ disabled }">
+                    <a-select
+                      v-model:value="form.healthCheckEndpointMode"
+                      :disabled="disabled || !healthCheckEndpointModeOptions.length"
+                      :options="healthCheckEndpointModeOptions"
+                      placeholder="选择检查请求形态"
+                    />
+                  </template>
+                </AccountBatchEditField>
+              </div>
 
               <AccountBatchEditField
                 v-model:checked="form.enabled.modelMappings"
                 :disabled="!homogeneousModelConfiguration"
-                label="模型映射"
-                description="直接覆盖全部映射；留空表示清空映射。"
+                label="账号模型别名"
+                description="直接覆盖全部账号模型别名；留空表示清空。"
               >
                 <template #default="{ disabled }">
                   <div class="mapping-list">
@@ -305,10 +323,10 @@
                         option-filter-prop="label"
                         :disabled="disabled"
                         :options="mappingUpstreamModelOptions"
-                        placeholder="上游模型"
+                        placeholder="目标模型"
                       />
                       <a-switch v-model:checked="mapping.enabled" :disabled="disabled" />
-                      <a-tooltip title="删除映射">
+                      <a-tooltip title="删除别名">
                         <a-button
                           danger
                           type="text"
@@ -326,17 +344,18 @@
                       @click="addMapping"
                     >
                       <template #icon><PlusOutlined /></template>
-                      新增映射
+                      新增别名
                     </a-button>
                   </div>
                 </template>
               </AccountBatchEditField>
 
-              <template v-if="homogeneousAccount?.providerCode === 'gpt'">
+              <template v-if="serviceTierOptions.length || reasoningEffortOptions.length">
                 <div class="batch-edit-two-columns">
                   <AccountBatchEditField
+                    v-if="serviceTierOptions.length"
                     v-model:checked="form.enabled.serviceTierOverride"
-                    label="GPT 服务等级"
+                    label="服务等级"
                     description="不覆盖客户端设置表示清除账户覆盖。"
                   >
                     <template #default="{ disabled }">
@@ -348,8 +367,9 @@
                     </template>
                   </AccountBatchEditField>
                   <AccountBatchEditField
+                    v-if="reasoningEffortOptions.length"
                     v-model:checked="form.enabled.reasoningEffortOverride"
-                    label="GPT 思考级别"
+                    label="思考级别"
                     description="不覆盖客户端设置表示清除账户覆盖。"
                   >
                     <template #default="{ disabled }">
@@ -411,9 +431,11 @@ import {
   buildAccountBatchEditRequest,
   createAccountBatchEditForm,
   enabledAccountBatchEditFieldLabels,
+  intersectAccountSupportedEndpointModes,
   type AccountBatchEditForm
 } from './accountBatchEditForm'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
+import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import {
   accountGptRequestOverrideCapabilities,
@@ -421,8 +443,10 @@ import {
   availableAccountGptServiceTierOptions
 } from './accountGptRequestOverrides'
 import {
+  defaultAccountModelMappingSourceEndpointFamily,
   defaultAccountModelMappingUpstreamEndpointFamily,
-  isAccountModelMappingProtocolAllowed
+  isAccountModelMappingProtocolAllowed,
+  isAccountModelMappingSourceEndpointFamilyAllowed
 } from './accountModelMappingProtocolMatrix'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { endpointModesForProfile } from './accountProviderCapabilities'
@@ -485,6 +509,12 @@ const effectiveBatchModels = computed(() => (
   form.enabled.supportedModels ? normalizedTextList(form.supportedModels) : sharedSupportedModels.value
 ))
 const healthCheckModelOptions = computed(() => effectiveBatchModels.value.map((model) => ({ label: model, value: model })))
+const effectiveBatchEndpointModes = computed(() => (
+  form.enabled.supportedEndpointModes
+    ? form.supportedEndpointModes
+    : intersectAccountSupportedEndpointModes(accountDetails.value)
+))
+const healthCheckEndpointModeOptions = computed(() => accountHealthCheckEndpointModeOptions(effectiveBatchEndpointModes.value))
 const mappingUpstreamModelOptions = computed(() => {
   const labels = new Map(modelOptions.value.map((option) => [option.value, option.label]))
   return effectiveBatchModels.value.map((model) => ({ label: labels.get(model) ?? model, value: model }))
@@ -495,6 +525,7 @@ const endpointModeOptions = computed(() => {
   return accountEndpointModeOptionsForProfile(profile).filter((option) => allowed.has(option.value))
 })
 const gptCapabilities = computed(() => accountGptRequestOverrideCapabilities({
+  providerCode: homogeneousAccount.value?.providerCode,
   accountType: homogeneousAccount.value?.type ?? 'api_key',
   modelOptions: modelOptions.value,
   supportedModels: effectiveBatchModels.value
@@ -519,13 +550,17 @@ const confirmTitle = computed(() => (
   `确认用当前值覆盖 ${props.accounts.length} 个账户的 ${enabledLabels.value.join('、')}？`
 ))
 
-const sourceEndpointOptions = [
+const sourceEndpointBaseOptions = [
   { label: 'Chat Completions', value: 'chat_completions' },
   { label: 'Responses', value: 'responses' },
   { label: 'Messages', value: 'messages' },
   { label: 'Gemini GenerateContent', value: 'generate_content' },
   { label: 'Gemini StreamGenerateContent', value: 'stream_generate_content' }
 ] as const
+const sourceEndpointOptions = computed(() => sourceEndpointBaseOptions.map((option) => ({
+  ...option,
+  disabled: !isAccountModelMappingSourceEndpointFamilyAllowed(option.value, mappingContext())
+})))
 const upstreamEndpointBaseOptions = [
   { label: 'Chat Completions', value: 'chat_completions' },
   { label: 'Responses', value: 'responses' },
@@ -630,7 +665,7 @@ function close(): void {
 }
 
 function addMapping(): void {
-  const sourceEndpointFamily = 'chat_completions' as const
+  const sourceEndpointFamily = defaultAccountModelMappingSourceEndpointFamily(mappingContext())
   const upstreamEndpointFamily = defaultAccountModelMappingUpstreamEndpointFamily(
     sourceEndpointFamily,
     mappingContext()
@@ -654,6 +689,7 @@ function upstreamEndpointOptionsFor(mapping: AccountModelMapping) {
     disabled: !isAccountModelMappingProtocolAllowed({
       sourceEndpointFamily: mapping.sourceEndpointFamily,
       upstreamEndpointFamily: option.value,
+      enabled: mapping.enabled,
       context: mappingContext()
     })
   }))
@@ -664,7 +700,7 @@ function mappingContext() {
     providerProfile: selectedProtocolProfile.value ?? homogeneousAccount.value,
     supportedEndpointModes: form.enabled.supportedEndpointModes
       ? form.supportedEndpointModes
-      : homogeneousAccount.value?.credentials.supported_endpoint_modes
+      : intersectAccountSupportedEndpointModes(accountDetails.value)
   }
 }
 

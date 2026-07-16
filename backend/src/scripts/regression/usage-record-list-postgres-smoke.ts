@@ -23,7 +23,8 @@ const usageIds = [
   `usage_${marker}_other`,
   `usage_${marker}_priced`,
   `usage_${marker}_audio_image`,
-  `usage_${marker}_account_trace`
+  `usage_${marker}_account_trace`,
+  `usage_${marker}_unknown_pricing_snapshot`
 ]
 const usageCreatedAts = usageIds.map((_id, index) => new Date(createdAtBase + index).toISOString())
 const accountId = `acct_${marker}`
@@ -117,6 +118,11 @@ try {
       endpoint: '/v1/responses',
       providerCode: 'gpt',
       model: pricedModel,
+      requestedServiceTier: 'flex',
+      effectiveServiceTier: 'priority',
+      billedServiceTier: 'priority',
+      requestedReasoningEffort: 'low',
+      effectiveReasoningEffort: 'high',
       statusCode: 200,
       success: true,
       durationMs: 90,
@@ -161,6 +167,23 @@ try {
       inputTokens: 5,
       outputTokens: 6,
       createdAt: usageCreatedAts[5]
+    },
+    {
+      id: usageIds[6],
+      traceId: `historical_lock_${marker}`,
+      trafficSource: 'gateway',
+      systemAccountId: 'sys_admin',
+      endpoint: '/v1/responses',
+      providerCode: `unknown-provider-${marker}`,
+      model: `unknown-model-${marker}`,
+      statusCode: 200,
+      success: true,
+      durationMs: 60,
+      firstTokenMs: 15,
+      inputTokens: 100,
+      outputTokens: 20,
+      costUsd: 0.456,
+      createdAt: usageCreatedAts[6]
     }
   ])
   const writeCounts = await readSmokeWriteCounts()
@@ -173,6 +196,10 @@ try {
     pageSize: 10
   })
   assert.deepEqual(traceList.items.map((item) => item.id), [usageIds[5], usageIds[4], usageIds[3], usageIds[2], usageIds[1], usageIds[0]], 'PG 使用记录列表应按用户范围直接读取 usage_records 主表')
+  const pricedListItem = traceList.items.find((item) => item.id === usageIds[3])
+  assert.equal(pricedListItem?.billedServiceTier, 'priority', 'PG 使用记录列表投影必须保留实际计费服务档位')
+  assert.equal(pricedListItem?.requestedReasoningEffort, 'low', 'PG 使用记录列表投影必须保留请求思考级别')
+  assert.equal(pricedListItem?.effectiveReasoningEffort, 'high', 'PG 使用记录列表投影必须保留实际上游思考级别')
 
   const traceAccountList = await listUsageRecordsAsync(smokeAccess, {
     traceId: tracePrefix,
@@ -209,6 +236,7 @@ try {
   const expectedCost = await estimateCatalogCostUsdAsync({
     providerCode: 'gpt',
     model: pricedModel,
+    serviceTier: 'priority',
     inputTokens: 1_000_000,
     outputTokens: 1_000_000,
     cacheReadTokens: 100_000
@@ -216,11 +244,18 @@ try {
   const expectedCacheReadCost = await estimateCatalogCacheReadCostUsdAsync({
     providerCode: 'gpt',
     model: pricedModel,
+    serviceTier: 'priority',
     cacheReadTokens: 100_000
   })
   assert.equal(pricedDetail.pricingModel, pricedModel, 'PG 使用记录写入前应异步补齐 pricingModel')
   assert.equal(pricedDetail.costUsd, expectedCost, 'PG 使用记录写入前应异步补齐 costUsd')
   assert.equal(pricedDetail.cacheReadCostUsd, expectedCacheReadCost, 'PG 使用记录写入前应异步补齐 cacheReadCostUsd')
+  assert.equal(pricedDetail.pricingSnapshot?.accountChargeUsd, expectedCost, 'PG 使用记录必须固化请求时成本与最终单价快照')
+
+  const unknownPricingDetail = await getUsageRecordDetailAsync(usageIds[6], smokeAccess)
+  assert(unknownPricingDetail, 'PG 使用记录应读取目录未命中的历史锁定样本')
+  assert.equal(unknownPricingDetail.pricingSnapshot?.accountChargeUsd, 0.456, 'PG 目录未命中时仍应固化写入时已有成本')
+  assert.equal(unknownPricingDetail.pricingSnapshot?.serviceTierPricingSource, 'unknown', 'PG 目录未命中时必须固化 unknown 快照')
 
   const audioImageDetail = await getUsageRecordDetailAsync(usageIds[4], smokeAccess)
   assert(audioImageDetail, 'PG 使用记录详情应读取音频/按张图片补价记录')
@@ -435,8 +470,8 @@ async function seedSmokeAccount(): Promise<void> {
   await pool.query(`
     INSERT INTO juhe_business.accounts (
       id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
-      name, type, status, credentials_encrypted, credential_mask, created_at, updated_at
-    ) VALUES ($1, 'sys_admin', 'gpt', $2, $3, $4, $5, 'api_key', 'active', '{}', '', $6, $6)
+      name, type, status, credentials_encrypted, credential_mask, health_check_model, health_check_endpoint_mode, created_at, updated_at
+    ) VALUES ($1, 'sys_admin', 'gpt', $2, $3, $4, $5, 'api_key', 'active', '{}', '', 'gpt-5.4-mini', 'responses_sse', $6, $6)
     ON CONFLICT (id) DO UPDATE SET
       name = EXCLUDED.name,
       status = EXCLUDED.status,

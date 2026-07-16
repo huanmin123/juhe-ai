@@ -253,6 +253,12 @@ function assertQueueContracts(): void {
       assert.match(content, /async function enqueueRecordMaintenanceJobWithResultAsync[\s\S]*await enqueueRecordMaintenanceJobToRedisStream/, '数据维护 Redis Stream async-with-result 必须等待 XADD 成功')
       assert.match(content, /export function enqueueRecordMaintenanceJobWithResult\(input: RecordMaintenanceJob\): RecordMaintenanceEnqueueResult \{[\s\S]*droppedReason: 'redis_stream_async_required'/, '数据维护同步 withResult 在 redis_stream 下不能假报 queued=true')
       assert.doesNotMatch(content, /export function enqueueRecordMaintenanceJobWithResult\(input: RecordMaintenanceJob\): RecordMaintenanceEnqueueResult \{[\s\S]*void enqueueRecordMaintenanceJobToRedisStream/, '数据维护同步 withResult 禁止 fire-and-forget 写 Redis Stream')
+    } else if (contract.file === 'modules/runtime-logs/runtime-log-index-queue.service.ts') {
+      assert.match(content, /runtimeLogRedisProducer\.enqueue\(input, estimateRuntimeLogBytes\(input\)\)/, '运行日志索引 Redis Stream 入队必须先经过有界 producer')
+      assert.match(content, /onDrop: recordRuntimeLogRedisStreamDrop/, '运行日志索引 Redis Stream 入队失败必须记录分类丢弃事实和可观测错误')
+      assert.match(content, /disableOfflineQueue: true/, '运行日志专用 Redis producer 必须禁用 node-redis offline queue')
+      assert.match(content, /commandsQueueMaxLength: runtimeLogRedisProducerCommandQueueMaxLength/, '运行日志专用 Redis producer 必须限制底层命令队列')
+      assert.doesNotMatch(content, /scheduleProcessFatalError/, '派生运行日志索引单次入队失败不得终止业务主进程')
     } else {
       assert.match(content, /catch\(scheduleProcessFatalError\)/, `${contract.file} 同步入口 Redis Stream 入队失败必须进入受控 fail-fast，不能退化为未处理 Promise`)
     }
@@ -441,9 +447,17 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.match(functionBody(usageRecordsSource, 'recordHybridScoringAttempt'), /await enqueueUsageRecord/, '高性能混合评分使用记录必须等待 Redis Stream 接收')
   assert.match(functionBody(usageRecordsSource, 'recordGatewayFailure'), /await enqueueUsageRecord/, '高性能网关失败使用记录必须等待 Redis Stream 接收')
 
+  const usageRecordQueueSource = source('modules/gateway/usage/record-queue.service.ts')
+  assert.match(functionBody(usageRecordQueueSource, 'enqueueUsageRecord'), /shouldEnqueueUsageRecordToRedisStream\(\)[\s\S]*await freezeUsageRecordPricingFactsAsync\(queuedInput\)[\s\S]*enqueueUsageRecordToRedisStream\(frozenInput\)/, '高性能使用记录必须在 Redis Stream 入队前异步固化请求时计价事实')
+  assert.doesNotMatch(functionBody(usageRecordQueueSource, 'enqueueUsageRecord'), /buildCatalogCostBreakdown\(/, '高性能使用记录请求路径不得同步扫描目录生成计价快照')
+
   const usageRecordsRepositorySource = source('storage/usage-records.repository.ts')
-  assert.match(usageRecordsRepositorySource, /estimateCatalogCostUsdAsync/, 'PostgreSQL 使用记录写入必须使用异步模型目录补算成本')
+  assert.match(usageRecordsRepositorySource, /listProviderModelCatalogAsync/, 'PostgreSQL 使用记录写入必须使用异步模型目录快照补算成本')
   assert.match(functionBody(usageRecordsRepositorySource, 'createUsageRecordsBatchPostgres'), /await enrichUsageRecordPricingAsync\(inputs\)[\s\S]*buildUsageRecordBatchWritePlan\(enrichedInputs/, 'PostgreSQL 使用记录写入必须先异步补齐 pricingModel/costUsd，再生成写入计划')
+  const pricingEnrichmentBody = functionBody(usageRecordsRepositorySource, 'enrichUsageRecordPricingAsync')
+  assert.match(pricingEnrichmentBody, /catalogCache = new Map<[\s\S]*listProviderModelCatalogAsync\(input\)/, '批量计价应按供应商和账户作用域共享一次模型目录快照')
+  assert.doesNotMatch(usageRecordsRepositorySource, /estimateCatalog(?:CacheRead|CacheWrite|Cost)UsdAsync/, '使用记录补算不得为每个成本字段重复读取模型目录')
+  assert.match(functionBody(usageRecordsRepositorySource, 'enrichSingleUsageRecordPricingAsync'), /input\.pricingSnapshot !== undefined\) return input/, 'Redis consumer 不得用未来目录覆盖已固化计价快照')
 
   const auditCaptureSource = source('modules/gateway/audit/capture.service.ts')
   assert.match(functionBody(auditCaptureSource, 'auditModelAccounting'), /runtimeConfig\.cacheDriver !== 'redis'[\s\S]*resolveCatalogPricingModel/, '高性能审计尝试记录不能同步读取模型目录解析 pricingModel')

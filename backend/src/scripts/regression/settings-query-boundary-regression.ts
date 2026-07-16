@@ -3,7 +3,6 @@ import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
@@ -18,10 +17,10 @@ runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, settingsRepository, repositories] = await Promise.all([
+const [databaseModule, settingsRepository, accountErrorPolicy] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/settings.repository.js'),
-  import('../../storage/repositories.js')
+  import('../../modules/gateway/policy/account-error-policy.service.js')
 ])
 
 try {
@@ -84,28 +83,13 @@ try {
     .prepare("UPDATE system_settings SET value_json = ?, updated_at = ? WHERE system_account_id = 'sys_admin' AND key = 'defaultTemporaryUnschedulableMinutes'")
     .run('"5"', now)
   settingsRepository.clearSettingsRepositoryCache()
-  const settingsGroup = repositories.createGroup({
-    name: '非法临时不可调用设置读取回归分组',
-    providerCode: 'gpt'
-  }, { systemAccountId: 'sys_admin', role: 'admin' })
   assert.throws(
-    () => repositories.createAccount({
-      providerCode: 'gpt',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '非法临时不可调用设置读取回归',
-      type: 'api_key',
-      credentials: {
-        api_key: 'sk-settings-invalid-default-temporary-unschedulable',
-        base_url: 'https://api.openai.com/v1'
-      },
-      status: 'rate_limited',
-      groupId: settingsGroup.id
-    }, { systemAccountId: 'sys_admin', role: 'admin' }),
+    () => accountErrorPolicy.readGatewaySettings(),
     /defaultTemporaryUnschedulableMinutes 必须是整数/,
-    '账户运行路径读取非法临时不可调用设置时不能静默回退默认值'
+    '网关运行路径读取非法临时不可调用设置时不能静默回退默认值'
   )
 
-  console.log('系统设置查询和严格契约回归通过：读取在 SQL 层按固定 key 白名单约束，更新拒绝未知字段和字符串数字，账户运行路径不再二次兜底非法设置')
+  console.log('系统设置查询和严格契约回归通过：读取在 SQL 层按固定 key 白名单约束，更新拒绝未知字段和字符串数字，网关运行路径不再二次兜底非法设置')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

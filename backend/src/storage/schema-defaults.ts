@@ -543,8 +543,6 @@ export const DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS = [
 
 export const DEFAULT_SYSTEM_SETTINGS = [
   ['gatewayTextRawBodyLimitMegabytes', 16],
-  ['gptPriorityPriceMultiplier', 2],
-  ['gptFlexPriceMultiplier', 0.5],
   ['systemApiRateLimitIpReadPerMinute', 600],
   ['systemApiRateLimitIpReadBurstPer10Seconds', 120],
   ['systemApiRateLimitIpWritePerMinute', 180],
@@ -579,7 +577,6 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['cooldownAccountRetestIntervalSeconds', 3],
   ['cooldownAccountRetestBatchSize', 10],
   ['cooldownAccountRetestMaxBackoffHours', 12],
-  ['cooldownAccountRetestLongTermIntervalHours', 1],
   ['oauthAccessTokenRefreshIntervalSeconds', 60],
   ['oauthAccessTokenRefreshLeadSeconds', 300],
   ['oauthAccessTokenRefreshBatchSize', 20],

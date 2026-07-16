@@ -40,7 +40,7 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
 
   const accounts: AccountSummary[] = []
   for (let index = 0; index < accountCount; index += 1) {
-    accounts.push(repositories.createAccount({
+    const account = repositories.createAccount({
       providerCode: 'gpt',
       providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `${nameScope}账户-${index + 1}-${runId}`,
@@ -55,7 +55,20 @@ export function createMockGatewayFixture(options: MockGatewayFixtureOptions): Mo
       concurrencyLimit,
       priority: index,
       notes: `${options.label}通过 Mockdata 共享夹具生成，使用后可按造数前缀清理`
-    }, access))
+    }, access)
+    if (!repositories.recordAccountHealthCheckSuccess(account.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    })) {
+      throw new Error(`Mockdata 共享夹具账户激活失败：${account.id}`)
+    }
+    const activated = repositories.findAccountSummary(account.id, access)
+    if (!activated || activated.status !== 'active' || activated.schedulable === false) {
+      throw new Error(`Mockdata 共享夹具账户未进入可调度状态：${account.id}`)
+    }
+    accounts.push(activated)
   }
 
   const apiKey = options.createApiKey === false

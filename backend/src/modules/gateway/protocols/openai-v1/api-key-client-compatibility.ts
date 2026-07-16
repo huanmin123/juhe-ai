@@ -1,9 +1,5 @@
 import type { Request } from 'express'
 
-import {
-  accountSupportsClientCompatibility,
-  type AccountClientCompatibilityProfile
-} from '../../../../domain/account-client-compatibility.js'
 import type { ClientCompatibilityCapability } from '../../../../domain/types.js'
 import {
   getGatewayRequestBodyState,
@@ -15,21 +11,9 @@ import {
   parseGatewayJsonBodyInWorker
 } from '../../request/json-parser.js'
 import { splitPathAndQuery } from './route-helpers.js'
-import {
-  openAICodexOriginator,
-  openAICodexResponsesBetaHeader,
-  openAICodexUserAgent,
-  openAICodexVersion
-} from '../../adapters/gpt-codex/client-headers.js'
+import { normalizeOpenAICodexClientHeaders } from '../../adapters/gpt-codex/client-headers.js'
 import { normalizeOpenAICodexBuiltinTools } from '../../adapters/gpt-codex/builtin-tools.js'
-
-export interface OpenAIClientCompatibilityAccount {
-  providerCode?: AccountClientCompatibilityProfile['providerCode']
-  type?: AccountClientCompatibilityProfile['accountType']
-  clientCompatibility?: AccountClientCompatibilityProfile['clientCompatibility']
-  protocolCode?: AccountClientCompatibilityProfile['protocolCode']
-  protocolVersion?: AccountClientCompatibilityProfile['protocolVersion']
-}
+import { requestModel } from '../../request/metadata.js'
 
 export interface OpenAIClientCompatibilityOptions {
   modelOverride?: string
@@ -38,14 +22,10 @@ export interface OpenAIClientCompatibilityOptions {
 
 export async function buildOpenAIClientCompatibilityBody(
   req: Request,
-  account: OpenAIClientCompatibilityAccount,
   signal?: AbortSignal,
   options: OpenAIClientCompatibilityOptions = {}
 ): Promise<Buffer | undefined> {
-  if (!shouldApplyCodexResponsesCompatibility(account, options.requestClientCompatibility)) {
-    return undefined
-  }
-  if (!isOpenAIResponsesPostRequest(req)) {
+  if (!shouldForceOpenAICodexResponsesSse(req, options.requestClientCompatibility)) {
     return undefined
   }
   const body = await parseOpenAIClientCompatibilityJsonBody(req, signal)
@@ -58,38 +38,26 @@ export async function buildOpenAIClientCompatibilityBody(
 
 export function applyOpenAIClientCompatibilityHeaders(
   req: Request,
-  account: OpenAIClientCompatibilityAccount,
   headers: Headers,
-  options: Pick<OpenAIClientCompatibilityOptions, 'requestClientCompatibility'> = {}
+  options: OpenAIClientCompatibilityOptions = {}
 ): void {
-  if (!shouldApplyCodexResponsesCompatibility(account, options.requestClientCompatibility)) {
-    return
-  }
-  if (!isOpenAIResponsesPostRequest(req)) {
+  if (!shouldForceOpenAICodexResponsesSse(req, options.requestClientCompatibility)) {
     return
   }
   headers.set('accept', 'text/event-stream')
   headers.set('content-type', 'application/json')
-  setHeaderIfMissing(headers, 'originator', openAICodexOriginator)
-  setHeaderIfMissing(headers, 'user-agent', openAICodexUserAgent)
-  setHeaderIfMissing(headers, 'version', openAICodexVersion)
-  if (!headers.get('openai-beta')?.toLowerCase().includes('responses')) {
-    headers.set('openai-beta', openAICodexResponsesBetaHeader)
-  }
+  normalizeOpenAICodexClientHeaders(
+    headers,
+    options.modelOverride ?? requestModel(req)
+  )
 }
 
-function shouldApplyCodexResponsesCompatibility(
-  account: OpenAIClientCompatibilityAccount,
+export function shouldForceOpenAICodexResponsesSse(
+  req: Request,
   requestClientCompatibility?: ClientCompatibilityCapability
 ): boolean {
   return requestClientCompatibility === 'codex_responses'
-    && accountSupportsClientCompatibility({
-      providerCode: account.providerCode,
-      accountType: account.type,
-      clientCompatibility: account.clientCompatibility,
-      protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion
-    }, 'codex_responses')
+    && isOpenAIResponsesPostRequest(req)
 }
 
 function isOpenAIResponsesPostRequest(req: Request): boolean {
@@ -197,12 +165,6 @@ function normalizeCodexResponsesInputItems(input: unknown[]): unknown[] {
       role: 'developer'
     }
   })
-}
-
-function setHeaderIfMissing(headers: Headers, name: string, value: string): void {
-  if (!headers.get(name)) {
-    headers.set(name, value)
-  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -350,6 +350,7 @@ function candidateWindowRow(
     stream_failure_window_started_at: null,
     account_expires_at: null,
     health_check_model: 'gpt-5.5',
+    health_check_endpoint_mode: 'responses_sse',
     quality_score: options.qualityScore ?? null,
     quality_state: null,
     quality_ewma_first_token_ms: null

@@ -11,7 +11,7 @@ export function dispatchPendingAccountHealthCheck(
 }
 
 export function accountUpdateNeedsImmediateHealthCheck(input: Record<string, unknown>): boolean {
-  return ['credentials', 'proxyProfileId', 'supportedModels', 'healthCheckModel', 'modelMappings']
+  return ['credentials', 'proxyProfileId', 'supportedModels', 'healthCheckModel', 'healthCheckEndpointMode', 'modelMappings']
     .some((field) => Object.prototype.hasOwnProperty.call(input, field))
 }
 

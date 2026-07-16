@@ -206,6 +206,8 @@ try {
   assert.equal(accountQualityScoreCount(authorizedInstance.id), 1, '逻辑删除阶段不应同步删除授权实例质量快照')
   assert.equal(accountUsageSnapshotCount(account.id), 1, '逻辑删除阶段不应同步删除账户外部用量快照')
   assert.equal(accountUsageSnapshotCount(authorizedInstance.id), 1, '逻辑删除阶段不应同步删除授权实例外部用量快照')
+  assert.equal(modelTrustSourceCount(account.id), 1, '逻辑删除阶段不应同步删除模型可信来源窗口')
+  assert.equal(modelTrustSourceCount(authorizedInstance.id), 1, '逻辑删除阶段不应同步删除授权实例的模型可信来源窗口')
   assert.equal(usageStatsTotal(owner.id, 'account', account.id), 1, '逻辑删除阶段原账户自用统计应保留')
   assert.equal(usageStatsTotal(grantee.id, 'account', authorizedInstance.id), 1, '逻辑删除阶段授权实例账户统计应保留')
   assert.equal(usageStatsTotal(grantee.id, 'account_authorization', runtimeAuthorizationId), 1, '逻辑删除阶段授权统计应保留')
@@ -249,6 +251,8 @@ try {
   assert.equal(accountQualityScoreCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例质量快照')
   assert.equal(accountUsageSnapshotCount(account.id), 0, '过期物理清理应删除账户外部用量快照')
   assert.equal(accountUsageSnapshotCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例外部用量快照')
+  assert.equal(modelTrustSourceCount(account.id), 0, '过期物理清理应删除账户模型可信来源窗口')
+  assert.equal(modelTrustSourceCount(authorizedInstance.id), 0, '过期物理清理应删除授权实例模型可信来源窗口')
   assert.equal(usageStatsTotal(owner.id, 'account', account.id), 0, '过期物理清理后原账户自用统计不应残留')
   assert.equal(usageStatsTotal(grantee.id, 'account', authorizedInstance.id), 0, '过期物理清理后授权实例账户统计不应残留')
   assert.equal(usageStatsTotal(grantee.id, 'caller_account', authorizedInstance.id), 0, '过期物理清理后授权实例调用方账户统计不应残留')
@@ -474,6 +478,21 @@ function seedDetachedAccountStats(accountId: string, ownerSystemAccountId: strin
       ) VALUES (?, ?, 'openai_codex', 'regression', '{}', ?, ?)
     `)
     .run(ownerSystemAccountId, accountId, createdAt, createdAt)
+  statsDatabase
+    .prepare(`
+      INSERT INTO model_trust_window_sources (
+        system_account_id, account_id, cohort_key_hmac, mapped_upstream_model, upstream_bucket_hmac,
+        first_observed_at, last_observed_at, observation_count, updated_at
+      ) VALUES (?, ?, ?, 'gpt-regression', ?, ?, ?, 1, ?)
+    `)
+    .run(ownerSystemAccountId, accountId, `cohort_${accountId}`, `upstream_${accountId}`, createdAt, createdAt, createdAt)
+}
+
+function modelTrustSourceCount(accountId: string): number {
+  const row = databaseModule.getStatsDatabase()
+    .prepare('SELECT COUNT(*) AS count FROM model_trust_window_sources WHERE account_id = ?')
+    .get(accountId) as { count?: number } | undefined
+  return Number(row?.count ?? 0)
 }
 
 function usageStatsTotal(systemAccountId: string, scopeType: string, scopeId: string): number {

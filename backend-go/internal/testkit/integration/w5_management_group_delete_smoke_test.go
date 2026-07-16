@@ -530,11 +530,11 @@ func insertW5ManagementGroupDeleteFixtures(
 		INSERT INTO juhe_business.accounts (
 			id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
 			name, type, status, credentials_encrypted, credential_mask, concurrency_limit, priority,
-			client_compatibility, schedulable, health_check_model, created_at, updated_at
+			client_compatibility, schedulable, health_check_model, health_check_endpoint_mode, created_at, updated_at
 		) VALUES (
 			'acct_w5_group_delete_cascade', $1, 'openai', 'profile_openai_openai_v1', 'openai', 'v1',
 			'W5 Delete Cascade Account', 'api_key', 'active', 'v1:test:test:delete', 'sk***delete', 20, 0,
-			'openai_standard', true, 'gpt-5.6-sol', $2, $2
+			'openai_standard', true, 'gpt-5.6-sol', 'chat_json', $2, $2
 		)
 	`, w5ManagementGroupDeleteOwnerID, now); err != nil {
 		t.Fatalf("insert W5 management group delete account: %v", err)

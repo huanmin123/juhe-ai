@@ -59,8 +59,13 @@ try {
       groupId: group.id,
       accountId: account.id,
       endpoint: '/v1/responses',
-      providerCode: 'gpt',
-      model: index % 2 === 0 ? 'gpt-5.5' : 'gpt-5.5-mini',
+      providerCode: index === 7 ? 'unknown-provider-for-locked-snapshot' : 'gpt',
+      model: index === 7 ? 'unknown-model-for-locked-snapshot' : index % 2 === 0 ? 'gpt-5.5' : 'gpt-5.5-mini',
+      requestedServiceTier: 'default' as const,
+      effectiveServiceTier: 'default' as const,
+      billedServiceTier: 'default' as const,
+      requestedReasoningEffort: 'low' as const,
+      effectiveReasoningEffort: 'high' as const,
       stream: false,
       statusCode: 200,
       success: true,
@@ -90,8 +95,15 @@ try {
     records.slice(-5).reverse().map((record) => record.id),
     '使用记录列表应忽略非时间排序参数并保持 created_at DESC 排序'
   )
-  const detail = repositories.getUsageRecordDetail(records[7].id, access)
-  assert.equal(detail?.traceId, records[7].traceId, '使用记录详情应通过新格式 usage id 直接定位 shard')
+  const detail = repositories.getUsageRecordDetail(records[6].id, access)
+  assert.equal(detail?.traceId, records[6].traceId, '使用记录详情应通过新格式 usage id 直接定位 shard')
+  assert.equal(detail?.requestedReasoningEffort, 'low', 'SQLite 使用记录详情应保留请求思考级别')
+  assert.equal(detail?.effectiveReasoningEffort, 'high', 'SQLite 使用记录详情应保留实际上游思考级别')
+  assert.equal(detail?.pricingSnapshot?.accountChargeUsd, records[6].costUsd, 'SQLite 使用记录应固化请求时成本快照')
+  assert.equal(detail?.pricingSnapshot?.serviceTierPricingSource, 'default', 'Default 请求应锁定标准价来源')
+  const unknownPricingDetail = repositories.getUsageRecordDetail(records[7].id, access)
+  assert.equal(unknownPricingDetail?.pricingSnapshot?.accountChargeUsd, records[7].costUsd, '目录未命中时仍应锁定写入时已有成本事实')
+  assert.equal(unknownPricingDetail?.pricingSnapshot?.serviceTierPricingSource, 'unknown', '目录未命中时应写入 unknown 快照，禁止未来重新解释新记录')
 
   assert.equal(usageStatsRepository.aggregateUsageStatsBatch(1000), records.length, '统计聚合应从 usage shard 读取完整业务记录')
   assert.equal(apiKeyStatsTotal(apiKey.id), records.length, 'API Key 统计应按 shard 输入聚合到统计结果库')

@@ -31,52 +31,86 @@ export function invalidateAccountProviderModelOptionsCache(providerCode?: string
 export function useAccountProviderModelOptions(options: UseAccountProviderModelOptionsOptions) {
   const providerModelOptions = ref<AccountModelSelectOption[]>([])
   const providerModelsLoading = ref(false)
+  let latestRequestId = 0
+  let loadingKey: string | undefined
+  let loadingPromise: Promise<void> | undefined
 
   function resetProviderModelOptions(): void {
+    latestRequestId += 1
     providerModelOptions.value = []
     providerModelsLoading.value = false
+    loadingKey = undefined
+    loadingPromise = undefined
   }
 
   async function loadProviderModelOptions(providerCode: string): Promise<void> {
     const code = providerCode.trim()
-    providerModelOptions.value = []
-    if (!code) return
+    if (!code) {
+      resetProviderModelOptions()
+      return
+    }
     const cacheKey = providerModelCacheKey(code)
+    if (loadingKey === cacheKey && loadingPromise) return loadingPromise
+
+    const requestId = latestRequestId + 1
+    latestRequestId = requestId
+    loadingKey = undefined
+    loadingPromise = undefined
+    providerModelOptions.value = []
     const cached = providerModelOptionsCache.get(cacheKey)
     if (cached) {
       providerModelOptions.value = cached
       providerModelsLoading.value = false
       return
     }
+
+    const scopeParams = options.modelScopeParams.value
+      ? { ...options.modelScopeParams.value }
+      : undefined
     providerModelsLoading.value = true
-    try {
-      const models = isHybridProviderCode(code)
-        ? await api.providers.modelOptions(options.modelScopeParams.value)
-        : await api.providers.models(code, options.modelScopeParams.value)
-      const modelOptions = dedupeModelOptions(models.map((item) => ({
-        label: item.model,
-        value: item.model,
-        supportedApiProtocols: item.supportedApiProtocols,
-        supportedServiceTiers: item.supportedServiceTiers,
-        supportedReasoningEfforts: item.supportedReasoningEfforts,
-        defaultReasoningEffort: item.defaultReasoningEffort
-      })))
-      providerModelOptionsCache.set(cacheKey, modelOptions)
-      if (options.currentProviderCode() === code) {
-        providerModelOptions.value = modelOptions
+    const promise = (async () => {
+      try {
+        const models = isHybridProviderCode(code)
+          ? await api.providers.modelOptions(scopeParams)
+          : await api.providers.models(code, scopeParams)
+        const modelOptions = dedupeModelOptions(models.map((item) => ({
+          label: item.model,
+          value: item.model,
+          supportedApiProtocols: item.supportedApiProtocols,
+          supportedServiceTiers: item.supportedServiceTiers,
+          supportedReasoningEfforts: item.supportedReasoningEfforts,
+          defaultReasoningEffort: item.defaultReasoningEffort
+        })))
+        providerModelOptionsCache.set(cacheKey, modelOptions)
+        if (isCurrentRequest(requestId, cacheKey)) {
+          providerModelOptions.value = modelOptions
+        }
+      } catch (error) {
+        if (!isCurrentRequest(requestId, cacheKey)) return
+        console.error(error)
+        message.error(options.extractApiErrorMessage(error, '加载供应商模型失败'))
+      } finally {
+        if (requestId === latestRequestId) {
+          providerModelsLoading.value = false
+          loadingKey = undefined
+          loadingPromise = undefined
+        }
       }
-    } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '加载供应商模型失败'))
-    } finally {
-      if (options.currentProviderCode() === code) {
-        providerModelsLoading.value = false
-      }
-    }
+    })()
+    loadingKey = cacheKey
+    loadingPromise = promise
+    return promise
   }
 
   function providerModelCacheKey(providerCode: string): string {
     return `${providerCode}:${options.modelScopeParams.value?.systemAccountId ?? 'self'}:${options.isManagementView.value ? 'management' : 'self'}`
+  }
+
+  function isCurrentRequest(requestId: number, cacheKey: string): boolean {
+    const currentProviderCode = options.currentProviderCode().trim()
+    return requestId === latestRequestId
+      && Boolean(currentProviderCode)
+      && providerModelCacheKey(currentProviderCode) === cacheKey
   }
 
   function dedupeModelOptions(options: AccountModelSelectOption[]): AccountModelSelectOption[] {

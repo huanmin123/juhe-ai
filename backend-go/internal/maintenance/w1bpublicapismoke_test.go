@@ -47,6 +47,34 @@ func TestSmokeW1bDefaultRouterGuardKeepsPublicAPIDisabled(t *testing.T) {
 	}
 }
 
+func TestW1bPublicAPISmokeConfigUsesSafeNodeDummyURL(t *testing.T) {
+	cfg, err := w1bPublicAPISmokeConfig(config.Config{
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		RedisCacheURL:              "redis://127.0.0.1:6379/0",
+		RedisStateURL:              "redis://127.0.0.1:6379/1",
+		RedisQueueURL:              "redis://127.0.0.1:6379/2",
+		Secret:                     "12345678901234567890123456789012",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+	})
+	if err != nil {
+		t.Fatalf("w1bPublicAPISmokeConfig() error = %v", err)
+	}
+	if !cfg.PublicAPIEnabled {
+		t.Fatal("PublicAPIEnabled = false, want true")
+	}
+	if cfg.NodeInternalBaseURL != "http://127.0.0.1:1" {
+		t.Fatalf("NodeInternalBaseURL = %q, want safe loopback dummy URL", cfg.NodeInternalBaseURL)
+	}
+
+	dispatcher := w1bPublicAPISmokeHealthCheckDispatcher{}
+	if err := dispatcher.Dispatch(context.Background(), "acc_smoke", "activation"); err != nil {
+		t.Fatalf("smoke dispatcher error = %v", err)
+	}
+}
+
 func TestWriteW1bPublicAPISmokeResultNeverClaimsTakeover(t *testing.T) {
 	var out bytes.Buffer
 	err := writeW1bPublicAPISmokeResult(&out, W1bPublicAPISmokeResult{

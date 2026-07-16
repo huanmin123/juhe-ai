@@ -198,10 +198,11 @@ try {
   assert.equal(limitedSubmission.data.state, 'not_found', '轮次上限早拒绝不得留下 active preparation')
   const created = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
   const conversationId = created.data.id
-  const models = await apiJson<{ data: Array<{ id: string; supportsPromptCaching: boolean; supportedApiProtocols: string[] }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)
+  const models = await apiJson<{ data: Array<{ id: string; supportsPromptCaching: boolean; supportedApiProtocols: string[]; supportedTools: string[] }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)
   const selectedModel = models.data.find((item) => item.id === testModel)
   assert(selectedModel, 'AI 问答模型列表应来自绑定 Key 的真实网关 /v1/models')
   assert(selectedModel.supportedApiProtocols.includes('responses'), '聊天模型能力必须包含当前 API Key 实际可用的 Responses 路由')
+  assert(selectedModel.supportedTools.includes('web_search'), '聊天模型能力必须保留当前路由全部候选共同支持的联网搜索工具')
   assert.equal(selectedModel.supportsPromptCaching, true, '支持缓存计费的目录模型必须向聊天层透出 prompt caching 能力')
   assert(models.data.every((item) => realCredential?.models.includes(item.id) ?? item.id === testModel), '聊天模型列表不得暴露当前账户实际不支持的网关目录模型')
 

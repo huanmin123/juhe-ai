@@ -6,6 +6,7 @@
     :active-filter-count="activeFilterCount"
     :advanced-filter-count="advancedFilterCount"
     :refresh-loading="refreshLoading"
+    :search-disabled="businessFiltersDisabled"
     @update:keyword="emit('update:keyword', $event)"
     @reset="emit('reset')"
     @refresh="emit('refresh')"
@@ -19,11 +20,12 @@
             allow-clear
             format="YYYY-MM-DD"
             :placeholder="['开始日期', '结束日期']"
+            :disabled="businessFiltersDisabled"
             @change="handleDateRangeUpdate"
           />
         </a-form-item>
         <a-form-item label="请求结果">
-          <a-select :value="result" :options="resultOptions" @update:value="handleResultUpdate" />
+          <a-select :value="result" :options="resultOptions" :disabled="businessFiltersDisabled" @update:value="handleResultUpdate" />
         </a-form-item>
         <a-form-item v-if="isManagementView" label="系统账户">
           <SystemPrincipalSelect
@@ -47,7 +49,7 @@
             allow-clear
             :filter-option="false"
             :groups="groupOptions"
-            :disabled="groupDisabled"
+            :disabled="groupDisabled || businessFiltersDisabled"
             :loading="groupOptionsLoading"
             :placeholder="groupDisabled ? '请先选择系统账户' : '全部分组'"
             @update:value="handleGroupUpdate"
@@ -58,26 +60,27 @@
           />
         </a-form-item>
         <a-form-item label="状态码">
-          <a-input :value="statusCode" allow-clear placeholder="状态码" @update:value="handleStatusCodeUpdate" @press-enter="emit('search')" />
+          <a-input :value="statusCode" allow-clear :disabled="businessFiltersDisabled" placeholder="状态码" @update:value="handleStatusCodeUpdate" @press-enter="emit('search')" />
         </a-form-item>
         <a-form-item label="traceId">
-          <a-input :value="traceId" allow-clear placeholder="traceId 前缀" @update:value="handleTraceIdUpdate" @press-enter="emit('search')" />
+          <a-input :value="traceId" allow-clear :disabled="businessFiltersDisabled" placeholder="traceId 前缀" @update:value="handleTraceIdUpdate" @press-enter="emit('search')" />
         </a-form-item>
         <a-form-item label="模型">
           <ModelFilterSelect
             :value="model"
             :loading="modelsLoading"
             :models="modelOptions"
+            :disabled="businessFiltersDisabled"
             placeholder="全部模型"
             @change="handleModelChange"
             @update:value="handleModelUpdate"
           />
         </a-form-item>
         <a-form-item label="IP">
-          <a-input :value="clientIp" allow-clear placeholder="客户端 IP 前缀" @update:value="handleClientIpUpdate" @press-enter="emit('search')" />
+          <a-input :value="clientIp" allow-clear :disabled="businessFiltersDisabled" placeholder="客户端 IP 前缀" @update:value="handleClientIpUpdate" @press-enter="emit('search')" />
         </a-form-item>
         <a-form-item label="请求来源">
-          <a-select :value="trafficSource" :options="trafficSourceOptions" @update:value="handleTrafficSourceUpdate" />
+          <a-select :value="trafficSource" :options="trafficSourceOptions" :disabled="businessFiltersDisabled" @update:value="handleTrafficSourceUpdate" />
         </a-form-item>
       </a-form>
     </template>
@@ -90,16 +93,17 @@
           class="mobile-date-range-filter"
           format="YYYY-MM-DD"
           :placeholder="['开始日期', '结束日期']"
+          :disabled="businessFiltersDisabled"
           @change="handleDateRangeUpdate"
         />
       </label>
       <label class="mobile-filter-field">
         <span>请求结果</span>
-        <a-select :value="result" :options="resultOptions" @update:value="handleResultUpdate" />
+        <a-select :value="result" :options="resultOptions" :disabled="businessFiltersDisabled" @update:value="handleResultUpdate" />
       </label>
       <label class="mobile-filter-field">
         <span>请求来源</span>
-        <a-select :value="trafficSource" :options="trafficSourceOptions" @update:value="handleTrafficSourceUpdate" />
+        <a-select :value="trafficSource" :options="trafficSourceOptions" :disabled="businessFiltersDisabled" @update:value="handleTrafficSourceUpdate" />
       </label>
       <label class="mobile-filter-field">
         <span>分组</span>
@@ -109,7 +113,7 @@
           allow-clear
           :filter-option="false"
           :groups="groupOptions"
-          :disabled="groupDisabled"
+          :disabled="groupDisabled || businessFiltersDisabled"
           :loading="groupOptionsLoading"
           :placeholder="groupDisabled ? '请先选择系统账户' : '全部分组'"
           @update:value="handleGroupUpdate"
@@ -121,11 +125,11 @@
       </label>
       <label class="mobile-filter-field">
         <span>状态码</span>
-        <a-input :value="statusCode" allow-clear placeholder="状态码" @update:value="handleStatusCodeUpdate" @press-enter="emit('search')" />
+        <a-input :value="statusCode" allow-clear :disabled="businessFiltersDisabled" placeholder="状态码" @update:value="handleStatusCodeUpdate" @press-enter="emit('search')" />
       </label>
       <label class="mobile-filter-field">
         <span>traceId</span>
-        <a-input :value="traceId" allow-clear placeholder="traceId 前缀" @update:value="handleTraceIdUpdate" @press-enter="emit('search')" />
+        <a-input :value="traceId" allow-clear :disabled="businessFiltersDisabled" placeholder="traceId 前缀" @update:value="handleTraceIdUpdate" @press-enter="emit('search')" />
       </label>
       <label class="mobile-filter-field">
         <span>模型</span>
@@ -133,6 +137,7 @@
           :value="model"
           :loading="modelsLoading"
           :models="modelOptions"
+          :disabled="businessFiltersDisabled"
           placeholder="全部模型"
           @change="handleModelChange"
           @update:value="handleModelUpdate"
@@ -140,7 +145,7 @@
       </label>
       <label class="mobile-filter-field">
         <span>IP</span>
-        <a-input :value="clientIp" allow-clear placeholder="客户端 IP 前缀" @update:value="handleClientIpUpdate" @press-enter="emit('search')" />
+        <a-input :value="clientIp" allow-clear :disabled="businessFiltersDisabled" placeholder="客户端 IP 前缀" @update:value="handleClientIpUpdate" @press-enter="emit('search')" />
       </label>
       <label v-if="isManagementView" class="mobile-filter-field">
         <span>系统账户</span>
@@ -189,6 +194,7 @@ type DateRangeValue = Array<Dayjs | null | undefined> | null | undefined
 defineProps<{
   activeFilterCount: number
   advancedFilterCount: number
+  businessFiltersDisabled?: boolean
   clientIp: string
   dateRange?: [Dayjs, Dayjs]
   groupId?: string

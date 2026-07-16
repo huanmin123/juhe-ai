@@ -87,6 +87,20 @@ auditLogsRouter.get('/runtime', async (_req, res, next) => {
       droppedOverflowCount: auditLogQueue?.droppedOverflowCount ?? null,
       droppedOversizeCount: auditLogQueue?.droppedOversizeCount ?? null,
       activeCaptureCount: serverRuntime?.activeAuditCaptureCount ?? null,
+      transport: serverRuntime?.auditLogTransport
+        ? { available: true, ...serverRuntime.auditLogTransport }
+        : {
+          available: false,
+          queuedJobs: null,
+          queuedBytes: null,
+          activeJobs: null,
+          activeBytes: null,
+          workerCount: null,
+          completedCount: null,
+          failedCount: null,
+          rejectedCount: null,
+          pendingDispatchCount: null
+        },
       worker: {
         available: Boolean(workerSnapshot ?? workerRuntime),
         snapshotAvailable: workerSnapshotAvailable,

@@ -5,6 +5,8 @@
       <div class="mobile-list-card-tags">
         <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
         <a-tag v-if="record.modelMappingApplied && record.upstreamModel" color="orange">上游 {{ record.upstreamModel }}</a-tag>
+        <a-tag v-if="usageRecordServiceTierText(record)" color="gold">{{ usageRecordServiceTierText(record) }}</a-tag>
+        <a-tag v-if="usageRecordReasoningEffortText(record)" color="cyan">思考 {{ usageRecordReasoningEffortText(record) }}</a-tag>
         <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
         <a-tag :color="trafficSourceColor(record)">{{ trafficSourceText(record) }}</a-tag>
         <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
@@ -26,19 +28,17 @@
       </div>
       <div class="mobile-list-meta-item">
         <span>成本</span>
-        <strong>{{ formatCost(record.costUsd) }}</strong>
+        <strong>{{ formatCost(usageRecordDisplayCostUsd(record)) }}</strong>
       </div>
       <div class="mobile-list-meta-item">
         <span>Tokens</span>
         <strong>{{ formatRecordTokens(record) }}</strong>
       </div>
       <div class="mobile-list-meta-item">
-        <span>耗时</span>
-        <strong>{{ formatDuration(record.durationMs) }}</strong>
-      </div>
-      <div class="mobile-list-meta-item">
-        <span>首 token</span>
-        <strong>{{ formatDuration(record.firstTokenMs) }}</strong>
+        <span>延迟</span>
+        <strong class="latency-summary">
+          <span v-for="part in usageRecordLatencyParts(record)" :key="part">{{ part }}</span>
+        </strong>
       </div>
       <div class="mobile-list-meta-item">
         <span>时间</span>
@@ -79,13 +79,16 @@ import {
   displayUsageRecordGroupName,
   formatCost,
   formatDateTime,
-  formatDuration,
   formatEndpoint,
   formatRecordTokens,
   statusCodeColor,
   statusCodeText,
   trafficSourceColor,
   trafficSourceText,
+  usageRecordLatencyParts,
+  usageRecordDisplayCostUsd,
+  usageRecordReasoningEffortText,
+  usageRecordServiceTierText,
   usageRecordSystemAccountText
 } from './usageRecordFormatters'
 
@@ -126,3 +129,11 @@ function handleTraceAction(key: string): void {
   }
 }
 </script>
+
+<style scoped>
+.latency-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+</style>

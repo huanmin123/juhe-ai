@@ -14,7 +14,7 @@ export interface AccountModelSelectOption {
   supportedApiProtocols?: ProviderModelApiProtocol[]
   supportedServiceTiers?: ProviderModelServiceTier[]
   supportedReasoningEfforts?: ProviderModelReasoningEffort[]
-  defaultReasoningEffort?: ProviderModelReasoningEffort
+  defaultReasoningEffort?: ProviderModelReasoningEffort | null
 }
 
 export function providerModelsToOptions(models: ProviderModelPricing[]): AccountModelSelectOption[] {

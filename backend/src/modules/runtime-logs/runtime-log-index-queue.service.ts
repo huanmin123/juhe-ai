@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
+import { createDedicatedRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
@@ -14,6 +14,11 @@ import {
   type RuntimeLogLevel
 } from '../../storage/runtime-logs.repository.js'
 import { sendRuntimeLogLineToWorker } from '../background/background-ipc.js'
+import {
+  BoundedRuntimeLogRedisProducer,
+  type RuntimeLogRedisProducerDropEvent,
+  type RuntimeLogRedisProducerDropReason
+} from './runtime-log-redis-producer.js'
 
 const runtimeLogFlushIntervalMs = 200
 const runtimeLogRetryPolicy = fixedRetryPolicy('runtime_log_index_queue_flush', 1000)
@@ -30,6 +35,11 @@ const runtimeLogRedisStreamKey = 'juhe-ai:queue:runtime-log-index'
 const runtimeLogRedisStreamGroup = 'juhe-ai:runtime-log-index-writers'
 const runtimeLogRedisConsumerErrorRetryMs = 1000
 const runtimeLogRedisStopWaitMs = 2000
+const runtimeLogRedisProducerMaxInFlightCount = 64
+const runtimeLogRedisProducerMaxInFlightBytes = 4 * 1024 * 1024
+const runtimeLogRedisProducerCommandTimeoutMs = 1500
+const runtimeLogRedisProducerConnectTimeoutMs = 1000
+const runtimeLogRedisProducerCommandQueueMaxLength = 64
 
 interface QueuedRuntimeLog {
   input: RuntimeLogIndexInput
@@ -45,11 +55,14 @@ let droppedRuntimeLogCount = 0
 let droppedRuntimeLogOverflowCount = 0
 let droppedRuntimeLogOversizeCount = 0
 let droppedRuntimeLogSampledCount = 0
+let runtimeLogRedisEnqueueFailureCount = 0
+let runtimeLogRedisEnqueueLastErrorAt: string | undefined
 let flushLastSuccessAt: string | undefined
 let flushLastError: string | undefined
 let shutdownHooksInstalled = false
 let activeRuntimeLogFlushPromise: Promise<boolean> | undefined
 let runtimeLogRedisStreamQueueInstance: RedisStreamQueue<RuntimeLogIndexInput> | undefined
+let runtimeLogRedisProducerClientPromise: Promise<RedisCommandClient> | undefined
 let runtimeLogRedisConsumerStarted = false
 let runtimeLogRedisConsumerStopping = false
 let runtimeLogRedisConsumerPromise: Promise<void> | undefined
@@ -74,6 +87,16 @@ export interface RuntimeLogIndexRuntime {
   droppedOverflowCount: number
   droppedOversizeCount: number
   droppedSampledCount: number
+  redisEnqueueFailureCount: number
+  redisEnqueueLastErrorAt?: string
+  redisEnqueueInFlightCount: number
+  redisEnqueueInFlightBytes: number
+  redisEnqueueMaxInFlightCount: number
+  redisEnqueueMaxInFlightBytes: number
+  redisEnqueueSaturatedDropCount: number
+  redisEnqueueDisconnectedDropCount: number
+  redisEnqueueTimeoutDropCount: number
+  redisEnqueueCommandFailureDropCount: number
   flushLastSuccessAt?: string
   flushLastError?: string
   retentionDays: number
@@ -83,7 +106,7 @@ export function enqueueRuntimeLogLine(rawLine: string, options: RuntimeLogLineIn
   if (shouldEnqueueRuntimeLogToRedisStream()) {
     const input = runtimeLogInputFromLine(rawLine, options)
     if (!input) return
-    void enqueueRuntimeLogToRedisStream(input, rawLine, options).catch(scheduleProcessFatalError)
+    enqueueRuntimeLogToRedisStream(input)
     return
   }
   if (runtimeConfig.processRole === 'db-service') {
@@ -301,6 +324,7 @@ export function flushRuntimeLogIndexQueueForShutdownAsync(): Promise<boolean> {
 }
 
 export function getRuntimeLogIndexRuntime(): RuntimeLogIndexRuntime {
+  const redisProducer = runtimeLogRedisProducer.snapshot()
   return {
     queueLength: pendingRuntimeLogs.length,
     queueBytes: pendingRuntimeLogBytes,
@@ -308,6 +332,16 @@ export function getRuntimeLogIndexRuntime(): RuntimeLogIndexRuntime {
     droppedOverflowCount: droppedRuntimeLogOverflowCount,
     droppedOversizeCount: droppedRuntimeLogOversizeCount,
     droppedSampledCount: droppedRuntimeLogSampledCount,
+    redisEnqueueFailureCount: runtimeLogRedisEnqueueFailureCount,
+    redisEnqueueLastErrorAt: runtimeLogRedisEnqueueLastErrorAt,
+    redisEnqueueInFlightCount: redisProducer.inFlightCount,
+    redisEnqueueInFlightBytes: redisProducer.inFlightBytes,
+    redisEnqueueMaxInFlightCount: redisProducer.maxInFlightCount,
+    redisEnqueueMaxInFlightBytes: redisProducer.maxInFlightBytes,
+    redisEnqueueSaturatedDropCount: redisProducer.saturatedDropCount,
+    redisEnqueueDisconnectedDropCount: redisProducer.disconnectedDropCount,
+    redisEnqueueTimeoutDropCount: redisProducer.timeoutDropCount,
+    redisEnqueueCommandFailureDropCount: redisProducer.commandFailureDropCount,
     flushLastSuccessAt,
     flushLastError,
     retentionDays: runtimeLogIndexRetentionDays
@@ -336,6 +370,8 @@ export function clearRuntimeLogIndexQueueForTest(): void {
   droppedRuntimeLogOverflowCount = 0
   droppedRuntimeLogOversizeCount = 0
   droppedRuntimeLogSampledCount = 0
+  runtimeLogRedisEnqueueFailureCount = 0
+  runtimeLogRedisEnqueueLastErrorAt = undefined
   flushLastSuccessAt = undefined
   flushLastError = undefined
   shutdownHooksInstalled = false
@@ -345,6 +381,8 @@ export function clearRuntimeLogIndexQueueForTest(): void {
   runtimeLogRedisConsumerPromise = undefined
   void runtimeLogRedisStreamQueueInstance?.closeConsumer().catch(() => undefined)
   runtimeLogRedisStreamQueueInstance = undefined
+  invalidateRuntimeLogRedisProducerClient()
+  runtimeLogRedisProducer.clearForTest()
 }
 
 function runtimeLogInputFromLine(rawLine: string, options: RuntimeLogLineIndexOptions = {}): RuntimeLogIndexInput | undefined {
@@ -482,15 +520,65 @@ function writeRuntimeLogIndexError(message: string): void {
   process.stderr.write(`[runtime-log-index] ${message}\n`)
 }
 
-async function enqueueRuntimeLogToRedisStream(input: RuntimeLogIndexInput, _rawLine: string, _options: RuntimeLogLineIndexOptions): Promise<void> {
-  try {
-    await runtimeLogRedisStreamQueue().enqueue(input)
-  } catch (error) {
-    flushLastError = error instanceof Error ? error.message : String(error)
-    writeRuntimeLogIndexError(`运行日志索引写入 Redis Stream 失败，高性能模式禁止回退 IPC 或本地队列：${flushLastError}`)
-    throw error
-  }
+function enqueueRuntimeLogToRedisStream(input: RuntimeLogIndexInput): void {
+  runtimeLogRedisProducer.enqueue(input, estimateRuntimeLogBytes(input))
 }
+
+function recordRuntimeLogRedisStreamEnqueueFailure(error: unknown): void {
+  runtimeLogRedisEnqueueFailureCount += 1
+  droppedRuntimeLogCount += 1
+  runtimeLogRedisEnqueueLastErrorAt = nowIso()
+  flushLastError = runtimeLogRedisErrorText(error)
+  writeRuntimeLogIndexError(
+    `event=runtime_log_redis_stream_enqueue_failed failure_count=${runtimeLogRedisEnqueueFailureCount} dropped=true error=${flushLastError}`
+  )
+}
+
+function recordRuntimeLogRedisStreamDrop(event: RuntimeLogRedisProducerDropEvent<RuntimeLogIndexInput>): void {
+  const error = event.error ?? runtimeLogRedisDropError(event.reason)
+  runtimeLogRedisEnqueueFailureCount += 1
+  droppedRuntimeLogCount += 1
+  runtimeLogRedisEnqueueLastErrorAt = nowIso()
+  flushLastError = runtimeLogRedisErrorText(error)
+  if (!shouldWriteRuntimeLogRedisDrop(runtimeLogRedisEnqueueFailureCount)) return
+  const producer = runtimeLogRedisProducer.snapshot()
+  writeRuntimeLogIndexError(
+    `event=runtime_log_redis_stream_enqueue_dropped reason=${event.reason} failure_count=${runtimeLogRedisEnqueueFailureCount} `
+    + `bytes=${event.bytes} in_flight=${producer.inFlightCount} in_flight_bytes=${producer.inFlightBytes} error=${flushLastError}`
+  )
+}
+
+export function recordRuntimeLogRedisStreamEnqueueFailureForTest(error: unknown): void {
+  recordRuntimeLogRedisStreamEnqueueFailure(error)
+}
+
+function runtimeLogRedisErrorText(error: unknown): string {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : undefined
+  const parts = [
+    error instanceof Error && error.name.trim() ? error.name.trim() : undefined,
+    typeof record?.code === 'string' && record.code.trim() ? `code=${record.code.trim()}` : undefined,
+    error instanceof Error && error.message.trim() ? error.message.trim() : undefined,
+    !(error instanceof Error) && String(error).trim() ? String(error).trim() : undefined
+  ].filter((value): value is string => Boolean(value))
+  return (parts.join(' ') || 'unknown_error')
+    .replace(/(rediss?:\/\/[^:\s]+:)[^@\s]+@/gi, '$1***@')
+    .slice(0, 1024)
+}
+
+const runtimeLogRedisProducer = new BoundedRuntimeLogRedisProducer<RuntimeLogIndexInput>({
+  maxInFlightCount: runtimeLogRedisProducerMaxInFlightCount,
+  maxInFlightBytes: runtimeLogRedisProducerMaxInFlightBytes,
+  commandTimeoutMs: runtimeLogRedisProducerCommandTimeoutMs,
+  isReady: async () => (await runtimeLogRedisProducerClient()).isReady === true,
+  send: async (input) => await runtimeLogRedisStreamQueue().enqueue(input),
+  classifyError: classifyRuntimeLogRedisProducerError,
+  onDrop: recordRuntimeLogRedisStreamDrop,
+  onSuccess: () => {
+    flushLastSuccessAt = nowIso()
+    flushLastError = undefined
+  },
+  onTimeout: invalidateRuntimeLogRedisProducerClient
+})
 
 async function runRuntimeLogRedisStreamConsumer(): Promise<void> {
   const queue = runtimeLogRedisStreamQueue()
@@ -532,10 +620,72 @@ function runtimeLogRedisStreamQueue(): RedisStreamQueue<RuntimeLogIndexInput> {
     runtimeLogRedisStreamQueueInstance = new RedisStreamQueue<RuntimeLogIndexInput>({
       streamKey: runtimeLogRedisStreamKey,
       groupName: runtimeLogRedisStreamGroup,
-      readCount: runtimeLogBatchSize
+      readCount: runtimeLogBatchSize,
+      producerClient: readyRuntimeLogRedisProducerClient
     })
   }
   return runtimeLogRedisStreamQueueInstance
+}
+
+function runtimeLogRedisProducerClient(): Promise<RedisCommandClient> {
+  if (!runtimeLogRedisProducerClientPromise) {
+    const redisUrl = runtimeConfig.redis.queueUrl
+    if (!redisUrl) {
+      return Promise.reject(new Error('JUHE_AI_REDIS_QUEUE_URL 在 Redis Stream queue driver 下必须配置'))
+    }
+    const clientPromise = createDedicatedRedisClient(redisUrl, {
+      disableOfflineQueue: true,
+      commandsQueueMaxLength: runtimeLogRedisProducerCommandQueueMaxLength,
+      connectTimeoutMs: runtimeLogRedisProducerConnectTimeoutMs
+    }).catch((error) => {
+      if (runtimeLogRedisProducerClientPromise === clientPromise) {
+        runtimeLogRedisProducerClientPromise = undefined
+      }
+      throw error
+    })
+    clientPromise.catch(() => undefined)
+    runtimeLogRedisProducerClientPromise = clientPromise
+  }
+  return runtimeLogRedisProducerClientPromise
+}
+
+async function readyRuntimeLogRedisProducerClient(): Promise<RedisCommandClient> {
+  const client = await runtimeLogRedisProducerClient()
+  if (client.isReady !== true) {
+    throw Object.assign(new Error('runtime log Redis producer disconnected'), { code: 'REDIS_NOT_READY' })
+  }
+  return client
+}
+
+function invalidateRuntimeLogRedisProducerClient(): void {
+  const clientPromise = runtimeLogRedisProducerClientPromise
+  runtimeLogRedisProducerClientPromise = undefined
+  if (!clientPromise) return
+  void clientPromise.then((client) => client.destroy?.()).catch(() => undefined)
+}
+
+function classifyRuntimeLogRedisProducerError(error: unknown): RuntimeLogRedisProducerDropReason {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : undefined
+  const code = typeof record?.code === 'string' ? record.code : ''
+  const message = error instanceof Error ? error.message : String(error)
+  return code === 'REDIS_NOT_READY'
+    || /ECONN|EPIPE|socket|client is closed|offline queue|not open|disconnect|connect timeout|connection/i.test(`${code} ${message}`)
+    ? 'disconnected'
+    : 'command_failed'
+}
+
+function runtimeLogRedisDropError(reason: RuntimeLogRedisProducerDropReason): Error {
+  if (reason === 'saturated') {
+    return Object.assign(new Error('runtime log Redis producer capacity exhausted'), { code: 'RUNTIME_LOG_REDIS_SATURATED' })
+  }
+  if (reason === 'disconnected') {
+    return Object.assign(new Error('runtime log Redis producer disconnected'), { code: 'REDIS_NOT_READY' })
+  }
+  return new Error(`runtime log Redis producer dropped: ${reason}`)
+}
+
+function shouldWriteRuntimeLogRedisDrop(failureCount: number): boolean {
+  return failureCount <= 10 || failureCount % 100 === 0
 }
 
 export async function getRuntimeLogRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {

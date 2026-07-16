@@ -24,8 +24,6 @@ export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
 export interface GatewaySettings {
   gatewayTextRawBodyLimitMegabytes: number
-  gptPriorityPriceMultiplier?: number
-  gptFlexPriceMultiplier?: number
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
@@ -84,8 +82,6 @@ export function readGatewaySettingsReadOnly(): GatewaySettings {
 function gatewaySettingsFromRawSettings(settings: Record<string, unknown>): GatewaySettings {
   return {
     gatewayTextRawBodyLimitMegabytes: numberSetting(settings.gatewayTextRawBodyLimitMegabytes, 'gatewayTextRawBodyLimitMegabytes', 1, 64),
-    gptPriorityPriceMultiplier: decimalNumberSetting(settings.gptPriorityPriceMultiplier, 'gptPriorityPriceMultiplier', 0.01, 100),
-    gptFlexPriceMultiplier: decimalNumberSetting(settings.gptFlexPriceMultiplier, 'gptFlexPriceMultiplier', 0.01, 100),
     defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
@@ -106,8 +102,6 @@ export async function readGatewaySettingsAsync(): Promise<GatewaySettings> {
   const settings = await getSettingsAsync()
   return {
     gatewayTextRawBodyLimitMegabytes: numberSetting(settings.gatewayTextRawBodyLimitMegabytes, 'gatewayTextRawBodyLimitMegabytes', 1, 64),
-    gptPriorityPriceMultiplier: decimalNumberSetting(settings.gptPriorityPriceMultiplier, 'gptPriorityPriceMultiplier', 0.01, 100),
-    gptFlexPriceMultiplier: decimalNumberSetting(settings.gptFlexPriceMultiplier, 'gptFlexPriceMultiplier', 0.01, 100),
     defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 'defaultTemporaryUnschedulableMinutes', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
@@ -142,6 +136,7 @@ export function applyAccountErrorHandling(
     headers?: Headers | Record<string, string | string[]>
     bodyText?: string
     errorMessage?: string
+    traceId?: string
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
   }
@@ -177,7 +172,7 @@ export function applyAccountErrorHandling(
 
   if (statusCode !== undefined) {
     const reason = genericUpstreamResponseFailureReason(statusCode, upstreamSummary)
-    const updated = applyAccountTemporaryUnavailableSideEffect(account, reason)
+    const updated = applyAccountTemporaryUnavailableSideEffect(account, reason, input.traceId)
     return {
       action: 'cooldown',
       changed: Boolean(updated),
@@ -187,7 +182,7 @@ export function applyAccountErrorHandling(
   }
 
   const reason = genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
-  const updated = applyAccountTemporaryUnavailableSideEffect(account, reason)
+  const updated = applyAccountTemporaryUnavailableSideEffect(account, reason, input.traceId)
   return {
     action: 'cooldown',
     changed: Boolean(updated),
@@ -204,6 +199,7 @@ export async function applyAccountErrorHandlingAsync(
     headers?: Headers | Record<string, string | string[]>
     bodyText?: string
     errorMessage?: string
+    traceId?: string
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
   }
@@ -241,7 +237,7 @@ export async function applyAccountErrorHandlingAsync(
 
   if (statusCode !== undefined) {
     const reason = genericUpstreamResponseFailureReason(statusCode, upstreamSummary)
-    const updated = await applyAccountTemporaryUnavailableSideEffectAsync(account, reason)
+    const updated = await applyAccountTemporaryUnavailableSideEffectAsync(account, reason, input.traceId)
     return {
       action: 'cooldown',
       changed: Boolean(updated),
@@ -251,7 +247,7 @@ export async function applyAccountErrorHandlingAsync(
   }
 
   const reason = genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
-  const updated = await applyAccountTemporaryUnavailableSideEffectAsync(account, reason)
+  const updated = await applyAccountTemporaryUnavailableSideEffectAsync(account, reason, input.traceId)
   return {
     action: 'cooldown',
     changed: Boolean(updated),
@@ -326,22 +322,24 @@ function stringValue(value: unknown): string {
 
 function applyAccountTemporaryUnavailableSideEffect(
   account: AccountErrorPolicyAccount,
-  reason: string
+  reason: string,
+  traceId?: string
 ): { status: AccountStatus } | undefined {
   const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
   return authorizedTarget
-    ? markAuthorizedAccountBindingTemporaryUnavailableByContext({ ...authorizedTarget, reason })
-    : markAccountTemporaryUnavailable(account.id, reason)
+    ? markAuthorizedAccountBindingTemporaryUnavailableByContext({ ...authorizedTarget, reason, traceId })
+    : markAccountTemporaryUnavailable(account.id, reason, undefined, traceId)
 }
 
 async function applyAccountTemporaryUnavailableSideEffectAsync(
   account: AccountErrorPolicyAccount,
-  reason: string
+  reason: string,
+  traceId?: string
 ): Promise<{ status: AccountStatus } | undefined> {
   const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
   return authorizedTarget
-    ? await markAuthorizedAccountBindingTemporaryUnavailableByContextAsync({ ...authorizedTarget, reason })
-    : await markAccountTemporaryUnavailableAsync(account.id, reason)
+    ? await markAuthorizedAccountBindingTemporaryUnavailableByContextAsync({ ...authorizedTarget, reason, traceId })
+    : await markAccountTemporaryUnavailableAsync(account.id, reason, undefined, traceId)
 }
 
 function genericUpstreamResponseFailureReason(statusCode: number, upstreamSummary?: string): string {
@@ -366,16 +364,6 @@ function normalizeHeadersInput(headers?: Headers | Record<string, string | strin
 function numberSetting(value: unknown, key: string, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
     throw new Error(`系统设置 ${key} 必须是整数`)
-  }
-  if (value < min || value > max) {
-    throw new Error(`系统设置 ${key} 必须在 ${min} 到 ${max} 之间`)
-  }
-  return value
-}
-
-function decimalNumberSetting(value: unknown, key: string, min: number, max: number): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new Error(`系统设置 ${key} 必须是数字`)
   }
   if (value < min || value > max) {
     throw new Error(`系统设置 ${key} 必须在 ${min} 到 ${max} 之间`)

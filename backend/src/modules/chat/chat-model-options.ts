@@ -1,10 +1,11 @@
-const chatCatalogReasoningEfforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export const chatReasoningEfforts = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export const chatServiceTiers = ['default', 'priority', 'flex'] as const
 
 export type ChatReasoningEffort = typeof chatReasoningEfforts[number]
-type ChatCatalogReasoningEffort = typeof chatCatalogReasoningEfforts[number]
 export type ChatServiceTier = typeof chatServiceTiers[number]
+
+const chatReasoningEffortSet = new Set<string>(chatReasoningEfforts)
+const chatServiceTierSet = new Set<string>(chatServiceTiers)
 
 export interface ChatModelOption {
   id: string
@@ -33,9 +34,9 @@ export class ChatModelCapabilityError extends Error {
 interface ChatModelCatalogCapability {
   model: string
   supportsPromptCaching?: boolean
-  supportedReasoningEfforts: readonly ChatCatalogReasoningEffort[]
-  defaultReasoningEffort?: ChatCatalogReasoningEffort
-  supportedServiceTiers: readonly ChatServiceTier[]
+  supportedReasoningEfforts: readonly string[]
+  defaultReasoningEffort?: string | null
+  supportedServiceTiers: readonly string[]
   contextWindowTokens?: number
   maxInputTokens?: number
   maxOutputTokens?: number
@@ -55,17 +56,17 @@ export function buildChatModelOptions(modelIds: readonly string[], catalog: read
   return [...new Set(modelIds.filter(Boolean))].map((id) => {
     const items = byModel.get(id) ?? []
     const supportedReasoningEfforts = intersectCapabilities(
-      items.map((item) => item.supportedReasoningEfforts.filter((value): value is ChatReasoningEffort => value !== 'none'))
+      items.map((item) => item.supportedReasoningEfforts.filter(isChatReasoningEffort))
     )
     const catalogDefaultReasoningEffort = items
       .map((item) => item.defaultReasoningEffort)
-      .find((value): value is ChatReasoningEffort => Boolean(value && value !== 'none' && supportedReasoningEfforts.includes(value)))
+      .find((value): value is ChatReasoningEffort => Boolean(value && isChatReasoningEffort(value) && supportedReasoningEfforts.includes(value)))
     const defaultReasoningEffort = supportedReasoningEfforts.includes('medium')
       ? 'medium'
       : catalogDefaultReasoningEffort
         ? catalogDefaultReasoningEffort
         : supportedReasoningEfforts[0]
-    const catalogServiceTiers = intersectCapabilities(items.map((item) => item.supportedServiceTiers))
+    const catalogServiceTiers = intersectCapabilities(items.map((item) => item.supportedServiceTiers.filter(isChatServiceTier)))
     const supportedServiceTiers = catalogServiceTiers.length
       ? [...new Set<ChatServiceTier>(['default', ...catalogServiceTiers])]
       : []
@@ -94,6 +95,14 @@ export function buildChatModelOptions(modelIds: readonly string[], catalog: read
       supportedTools
     }
   })
+}
+
+function isChatReasoningEffort(value: string): value is ChatReasoningEffort {
+  return chatReasoningEffortSet.has(value)
+}
+
+function isChatServiceTier(value: string): value is ChatServiceTier {
+  return chatServiceTierSet.has(value)
 }
 
 function minimumKnownCapability(values: readonly (number | undefined)[]): number | undefined {

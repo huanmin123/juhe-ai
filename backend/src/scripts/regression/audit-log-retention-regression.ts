@@ -1,10 +1,11 @@
 import { strict as assert } from 'node:assert'
 import { createHash } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
-import type { Request } from 'express'
+import type { Request, Response } from 'express'
 
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
@@ -32,6 +33,7 @@ const [databaseModule, repositories, backgroundIpc, usageRecordQueue, usageRecor
 ])
 const auditCapture = await import('../../modules/gateway/audit/capture.service.js')
 const auditQueue = await import('../../modules/audit-logs/audit-log-queue.service.js')
+const gatewayBodyMiddleware = await import('../../modules/gateway/request/body-middleware.js')
 
 assertAuditPayloadCleanupUsesAsyncFiles()
 
@@ -52,6 +54,8 @@ const largeSuccessRequestBody = Buffer.from(JSON.stringify({
 }), 'utf8')
 
 try {
+  assertHttpCompletionTiming()
+  assertCaptureCancellationLifecycle()
   const unsampledTraceId = traceIdForBucket((bucket) => bucket >= 1000)
   const sampledTraceId = traceIdForBucket((bucket) => bucket < 1000)
   finalizeSuccessfulRequest(unsampledTraceId)
@@ -183,11 +187,12 @@ try {
   auditQueue.flushAllAuditLogQueue()
   const overflowEvents = repositories.listAuditLogs({ traceId: overflowTraceId })
   assert.equal(overflowEvents.total, 1, 'active capture 超限时应保留失败事件')
-  assert.equal(overflowEvents.items[0]?.captureStatus, 'complete', '超大失败 body 摘要化后事件主状态应保持完整')
+  assert.equal(overflowEvents.items[0]?.captureStatus, 'overflow', 'server 常驻正文超过 64MiB 后事件必须标记 overflow')
   assert(overflowEvents.items[0]?.payloadCount > 0, '超大失败 body 应保留摘要 payload')
   const overflowDetail = repositories.getAuditLogDetail(overflowEvents.items[0]?.id ?? '')
-  const overflowClientPayload = overflowDetail?.payloads.find((payload) => payload.partType === 'client_request')
-  assert.equal(overflowClientPayload?.captureStatus, 'summary_only', '超大失败 body 不应保留完整原文，应保留摘要')
+  assert.equal(overflowDetail?.payloads.some((payload) => payload.partType === 'client_request'), false, '超限后不得继续持有 client_request 正文')
+  const overflowMetadata = overflowDetail?.payloads.find((payload) => payload.partType === 'gateway_metadata')
+  assert.equal(overflowMetadata?.captureStatus, 'overflow', '超限后应保留轻量 overflow metadata')
 
   auditQueue.recordDroppedAuditCapture({
     traceId: 'trace-body-rejected-retained',
@@ -201,17 +206,79 @@ try {
     statusCode: 413,
     errorPhase: 'gateway',
     errorCode: 'entity.too.large',
-    errorMessage: '请求体过大'
+    errorMessage: '请求体过大',
+    contentType: 'application/json'
   })
   auditQueue.flushAllAuditLogQueue()
   const rejectedEvents = repositories.listAuditLogs({ traceId: 'trace-body-rejected-retained' })
   assert.equal(rejectedEvents.total, 1, '请求体被网关拒绝时也应保留失败事件')
   assert.equal(rejectedEvents.items[0]?.captureStatus, 'overflow', '请求体被网关拒绝时应标记为 overflow')
   const rejectedDetail = repositories.getAuditLogDetail(rejectedEvents.items[0]?.id ?? '')
+  const rejectedClientPayload = rejectedDetail?.payloads.find((payload) => payload.partType === 'client_request')
+  assert(rejectedClientPayload, '请求体被网关拒绝时应保留无正文客户端请求 payload')
+  assert.equal(rejectedClientPayload.captureStatus, 'overflow', '被拒绝正文的 payload 应标记为 overflow')
+  assert.equal(rejectedClientPayload.sizeBytes, 1024 * 1024, '被拒绝正文的 payload 应保留原始字节数')
+  assert.equal(rejectedClientPayload.contentType, 'application/json', '被拒绝正文的 payload 可保留 content type')
+  assert.equal(rejectedClientPayload.hasHeaders, false, '被拒绝正文的 payload 不应保存 headers')
+  assert.equal(rejectedClientPayload.hasBody, false, '被拒绝正文的 payload 不应保存 body')
   assert(rejectedDetail?.queryString?.includes('body-rejected-query-token'), '早期拒绝审计 queryString 应保留 token 参数原文')
   assert(rejectedDetail?.queryString?.includes('body-rejected-api-key'), '早期拒绝审计 queryString 应保留 api_key 参数原文')
   assert.equal(rejectedDetail?.queryString?.includes('token=%5Bredacted%5D'), false, '早期拒绝审计 queryString 不应写入 token 脱敏占位')
   assert.equal(rejectedDetail?.queryString?.includes('api_key=%5Bredacted%5D'), false, '早期拒绝审计 queryString 不应写入 api_key 脱敏占位')
+
+  auditQueue.recordDroppedAuditCapture({
+    traceId: 'trace-body-overloaded-without-overflow-payload',
+    auditOutcome: 'gateway_failed',
+    success: false,
+    bytes: 512 * 1024,
+    reason: 'gateway_body_rejected',
+    method: 'POST',
+    path: '/v1/responses',
+    statusCode: 503,
+    errorPhase: 'gateway',
+    errorCode: 'gateway_body_in_flight_limit_exceeded',
+    errorMessage: '网关请求体在途总量过高，请稍后重试',
+    contentType: 'application/json'
+  })
+  auditQueue.flushAllAuditLogQueue()
+  const overloadedEvents = repositories.listAuditLogs({ traceId: 'trace-body-overloaded-without-overflow-payload' })
+  const overloadedDetail = repositories.getAuditLogDetail(overloadedEvents.items[0]?.id ?? '')
+  assert.equal(
+    overloadedDetail?.payloads.some((payload) => payload.captureStatus === 'overflow'),
+    false,
+    '非 413 body rejection 不应生成 overflow payload'
+  )
+
+  await gatewayBodyMiddleware.recordGatewayBodyRejection({
+    method: 'POST',
+    path: '/v1/responses',
+    originalUrl: '/v1/responses',
+    headers: { 'content-type': 'application/json' }
+  } as never, {
+    statusCode: 413,
+    responsePayload: {
+      error: {
+        message: '请求体过大',
+        type: 'request_too_large'
+      }
+    },
+    rawBodyBytes: 2 * 1024 * 1024 + 8,
+    reason: 'gateway_body_size_limit',
+    errorCode: 'request_too_large',
+    errorMessage: '请求体过大',
+    limitBytes: 2 * 1024 * 1024,
+    limitScope: 'text'
+  })
+  auditQueue.flushAllAuditLogQueue()
+  const limitedEvents = repositories.listAuditLogs({ path: '/v1/responses', statusCode: 413 })
+  const limitedDetail = limitedEvents.items
+    .map((event) => repositories.getAuditLogDetail(event.id))
+    .find((detail) => detail?.errorMessage?.includes('limitScope=text'))
+  assert.match(
+    limitedDetail?.errorMessage ?? '',
+    /rawBodyBytes=2097160, limitBytes=2097152, limitScope=text/,
+    '正文超限审计错误描述应包含实际字节数、上限和作用域'
+  )
 
   const largeFailedTraceId = 'trace-large-failed-payload-summary'
   finalizeFailedRequestWithBody(largeFailedTraceId, largeFailedRequestBody)
@@ -521,6 +588,86 @@ function finalizeSuccessfulRequest(traceId: string): void {
   finalizeSuccessfulRequestWithBody(traceId, Buffer.from(JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' }), 'utf8'))
 }
 
+function assertHttpCompletionTiming(): void {
+  const traceId = 'trace-audit-http-completion-timing'
+  const activeCaptureCountBefore = auditCapture.getActiveAuditCaptureCount()
+  const response = Object.assign(new EventEmitter(), {
+    writableFinished: false,
+    destroyed: false
+  }) as unknown as Response
+  const startedAtMs = Date.now() - 25
+  const capture = auditCapture.createAuditCapture({
+    req: auditRequest(),
+    res: response,
+    traceId,
+    clientIp: '127.0.0.1',
+    startedAtMs
+  })
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore + 1, 'HTTP 请求处理中应计入活动审计捕获')
+  capture.finalize({
+    outcome: 'success',
+    success: true,
+    statusCode: 200
+  })
+  assert.equal(repositories.listAuditLogs({ traceId }).total, 0, 'HTTP 未完成前审计不得提前固化错误的客户端时间')
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore + 1, '等待 HTTP 完成的审计仍应计入活动捕获')
+  response.emit('finish')
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore, 'HTTP finish 后审计活动计数应归还')
+  auditQueue.flushAllAuditLogQueue()
+  const summary = repositories.listAuditLogs({ traceId }).items[0]
+  assert(summary?.httpCompletedAt, 'HTTP finish 后审计应保存返回客户端时间')
+  assert((summary?.httpDurationMs ?? 0) >= 25, 'HTTP 客户端耗时应从请求开始计算')
+  assert((summary?.durationMs ?? 0) >= (summary?.httpDurationMs ?? 0), '审计完成耗时不得早于 HTTP 客户端耗时')
+}
+
+function assertCaptureCancellationLifecycle(): void {
+  const routesSource = readFileSync(join(backendRoot, 'src', 'modules', 'gateway', 'routes.ts'), 'utf8')
+  assert.match(
+    routesSource,
+    /try \{[\s\S]*preflight = await prepareOpenAIGatewayDispatchContext\([\s\S]*\} catch \(error\) \{[\s\S]*auditCapture\.cancel\(\)[\s\S]*throw error[\s\S]*if \(!preflight\) \{[\s\S]*auditCapture\.cancel\(\)/,
+    '初始 preflight 抛错或无上下文返回时必须取消未 finalize 的审计捕获'
+  )
+
+  const activeCaptureCountBefore = auditCapture.getActiveAuditCaptureCount()
+  const response = Object.assign(new EventEmitter(), {
+    writableFinished: false,
+    destroyed: false
+  }) as unknown as Response
+  const canceledTraceId = 'trace-audit-preflight-canceled'
+  const canceledCapture = auditCapture.createAuditCapture({
+    req: auditRequest(),
+    res: response,
+    traceId: canceledTraceId,
+    clientIp: '127.0.0.1',
+    startedAtMs: Date.now()
+  })
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore + 1, 'preflight 开始后应登记活动捕获')
+  canceledCapture.cancel()
+  canceledCapture.cancel()
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore, 'preflight 抛错取消必须幂等归还活动捕获')
+  response.emit('finish')
+  canceledCapture.finalize({ outcome: 'gateway_failed', success: false, statusCode: 500 })
+  auditQueue.flushAllAuditLogQueue()
+  assert.equal(repositories.listAuditLogs({ traceId: canceledTraceId }).total, 0, '已取消捕获不得在迟到 finish/finalize 后重新写入')
+
+  const finalizedResponse = Object.assign(new EventEmitter(), {
+    writableFinished: false,
+    destroyed: false
+  }) as unknown as Response
+  const finalizedCapture = auditCapture.createAuditCapture({
+    req: auditRequest(),
+    res: finalizedResponse,
+    traceId: 'trace-audit-finalize-wins-over-cancel',
+    clientIp: '127.0.0.1',
+    startedAtMs: Date.now()
+  })
+  finalizedCapture.finalize({ outcome: 'success', success: true, statusCode: 200 })
+  finalizedCapture.cancel()
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore + 1, '已请求 finalize 的捕获不得被迟到 cancel 提前丢弃')
+  finalizedResponse.emit('finish')
+  assert.equal(auditCapture.getActiveAuditCaptureCount(), activeCaptureCountBefore, 'finalize 等到 HTTP finish 后必须只归还一次活动捕获')
+}
+
 function finalizeSuccessfulRequestWithBody(traceId: string, body: Buffer<ArrayBufferLike>): void {
   const capture = auditCapture.createAuditCapture({
     req: auditRequest(body),
@@ -557,12 +704,19 @@ function finalizeFailedRequestWithBody(traceId: string, body: Buffer<ArrayBuffer
 }
 
 function finalizeOverflowFailedRequest(traceId: string): void {
-  const capture = auditCapture.createAuditCapture({
-    req: auditRequest(Buffer.alloc(65 * 1024 * 1024, 'x')),
-    traceId,
-    clientIp: '127.0.0.1',
-    startedAtMs: Date.parse(now)
-  })
+  const previousProcessRole = runtimeConfig.processRole
+  let capture: ReturnType<typeof auditCapture.createAuditCapture>
+  try {
+    runtimeConfig.processRole = 'server'
+    capture = auditCapture.createAuditCapture({
+      req: auditRequest(Buffer.alloc(65 * 1024 * 1024, 'x')),
+      traceId,
+      clientIp: '127.0.0.1',
+      startedAtMs: Date.parse(now)
+    })
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
   capture.finalize({
     outcome: 'gateway_failed',
     success: false,

@@ -6,11 +6,22 @@ import { buildPostgresSchemaSql, collectPostgresSchemaStatements } from '../../s
 const statements = collectPostgresSchemaStatements()
 const sql = buildPostgresSchemaSql()
 const goPublicAccountsMigration = readFileSync('../backend-go/db/migrations/000005_w1b_public_accounts.sql', 'utf8')
+const healthCheckEndpointModeOfflineMigration = readFileSync(
+  'src/scripts/maintenance/account-health-check-endpoint-mode-migration.ts',
+  'utf8'
+)
 const customProviderModelRepositorySource = readFileSync('src/storage/custom-provider-models.repository.ts', 'utf8')
 const dataRetentionSource = readFileSync('src/storage/data-retention.repository.ts', 'utf8')
 const usagePartitionSource = readFileSync('src/storage/postgres-usage-record-partitions.ts', 'utf8')
 const tableMonitorSource = readFileSync('src/storage/table-monitor.repository.ts', 'utf8')
 const tableMonitorRoutesSource = readFileSync('src/modules/table-monitor/table-monitor.routes.ts', 'utf8')
+const postgresAccountFixtureSources = [
+  'src/scripts/regression/account-list-postgres-smoke.ts',
+  'src/scripts/regression/authorization-usage-range-postgres-smoke.ts',
+  'src/scripts/regression/client-ip-stats-postgres-smoke.ts',
+  'src/scripts/regression/performance-gateway-persistence-readiness-regression.ts',
+  'src/scripts/regression/usage-record-list-postgres-smoke.ts'
+].map((path) => ({ path, source: readFileSync(path, 'utf8') }))
 const schemaNames = new Set(statements.map((statement) => statement.schemaName))
 const usageRecordsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_usage' && /^CREATE TABLE IF NOT EXISTS usage_records\b/i.test(statement.sql))?.sql ?? ''
 
@@ -55,9 +66,16 @@ assert.match(usageRecordsCreateSql, /PRIMARY KEY \(created_at, id\)[\s\S]+\) PAR
 assert.doesNotMatch(usageRecordsCreateSql, /\bid text PRIMARY KEY\b/, 'PG 使用记录分区父表不能保留只包含 id 的主键')
 assert.match(sql, /usage_records[\s\S]+failure_attribution text/, '使用记录主表建表语句应直接包含失败归因字段')
 assert.match(usageRecordsCreateSql, /requested_service_tier text NOT NULL DEFAULT 'default'[\s\S]+effective_service_tier text NOT NULL DEFAULT 'default'[\s\S]+reported_service_tier text[\s\S]+billed_service_tier text NOT NULL DEFAULT 'default'/, 'PG 使用记录主表必须包含请求、实际上游、上游报告和计费服务档位')
+assert.match(usageRecordsCreateSql, /requested_reasoning_effort text[\s\S]+effective_reasoning_effort text[\s\S]+cost_breakdown_snapshot_json text/, 'PG 使用记录主表必须包含请求/实际上游思考级别与不可变计价快照')
 assert.match(sql, /usage_records[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 使用记录主表必须包含模型映射可观测字段')
 assert.match(sql, /usage_records[\s\S]+input_audio_tokens integer[\s\S]+output_audio_tokens integer[\s\S]+output_image_count integer/, '使用记录主表建表语句应包含音频 token 和输出图片数量字段')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS usage_stats_totals/, '应包含统计库 schema')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS model_token_integrity_windows/, 'PG 统计库应包含模型 Token 可信窗口')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS model_token_intercept_baseline_versions/, 'PG 统计库应包含固定截距基线版本')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS model_account_trust_results/, 'PG 统计库应包含账号模型可信最新结果')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS model_trust_latest_dirty_accounts/, 'PG 统计库应包含模型可信 latest 可重试脏队列')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated ON model_trust_latest_dirty_accounts\(updated_at, system_account_id, account_id, requested_model\)/, 'PG 模型可信脏队列必须有有界续跑索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_model_token_integrity_windows_activation ON model_token_integrity_windows\(cohort_key_hmac, requested_model, tokenizer_version, probe_set_version, account_id\)/, 'PG 固定截距激活物化必须有匹配索引')
 assert.match(sql, /usage_stats_totals[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+input_tokens bigint NOT NULL DEFAULT 0[\s\S]+duration_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 统计累计字段必须使用 bigint，避免生产聚合溢出')
 assert.match(sql, /usage_scope_range_windows[\s\S]+request_count bigint NOT NULL DEFAULT 0[\s\S]+first_token_ms_sum bigint NOT NULL DEFAULT 0/, 'PG 范围窗口累计字段必须使用 bigint')
 assert.match(sql, /usage_scope_range_windows[\s\S]+window_key text GENERATED ALWAYS AS \(start_date \|\| ':' \|\| end_date\) STORED/, 'PG usage scope 范围窗口必须生成 window_key')
@@ -100,8 +118,23 @@ assert.match(sql, /codex_context_sessions[\s\S]+storage_offset_bytes bigint NOT 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策略路由表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategy_groups/, '应包含策略路由分组绑定表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_model text NOT NULL/, 'AI 账户新建 schema 应直接包含账户检查模型字段')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_endpoint_mode text NOT NULL[\s\S]+CHECK \(health_check_endpoint_mode IN \('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse'\)\)/, 'AI 账户新建 schema 应直接包含受约束的健康检查请求形态')
 assert.doesNotMatch(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+last_successful_test_model text/, 'AI 账户新建 schema 不应继续包含旧的最后成功测试模型字段')
 assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+health_check_model text NOT NULL/, 'Go 公开账户 baseline 应包含账户检查模型字段')
+assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+health_check_endpoint_mode text NOT NULL[\s\S]+CHECK \(health_check_endpoint_mode IN \('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse'\)\)/, 'Go 公开账户 baseline 应包含受约束的健康检查请求形态')
+assert.match(healthCheckEndpointModeOfflineMigration, /LOCK TABLE juhe_business\.accounts IN ACCESS EXCLUSIVE MODE/, '历史字段切换必须通过停服离线事务锁定账户表')
+assert.match(healthCheckEndpointModeOfflineMigration, /RENAME COLUMN health_check_endpoint_family TO health_check_endpoint_mode/, '离线迁移必须直接替换旧列，不能双字段兼容')
+assert.match(healthCheckEndpointModeOfflineMigration, /if \(input\.providerCode === 'gpt'\) return 'responses_sse'/, '离线迁移必须把全部 GPT 账户切到 Responses Streaming')
+assert.match(healthCheckEndpointModeOfflineMigration, /legacyFamilyGenerationModes[\s\S]+chat_completions: \['chat_json', 'chat_sse'\][\s\S]+messages: \['messages_json', 'messages_sse'\][\s\S]+generate_content: \['generate_content_json', 'generate_content_sse'\]/, '离线迁移必须按历史协议族从加密能力中选择 JSON 或 Streaming')
+assert.match(healthCheckEndpointModeOfflineMigration, /migrationGenerationModeFallbackOrder[\s\S]+'chat_json'[\s\S]+'responses_json'[\s\S]+'messages_json'[\s\S]+'generate_content_json'[\s\S]+'chat_sse'/, '历史 family 与真实能力错配时必须按稳定顺序从全部生成 mode 回退，且 JSON 优先于 Streaming')
+assert.match(healthCheckEndpointModeOfflineMigration, /decryptJson\(encrypted\)/, '离线迁移必须通过应用层 codec 解密全部账户 supported endpoint modes')
+assert.match(healthCheckEndpointModeOfflineMigration, /encryptJson\(normalized\.credentials\)/, '离线迁移必须通过应用层 codec 重新加密 GPT supported endpoint modes')
+for (const fixture of postgresAccountFixtureSources) {
+  for (const match of fixture.source.matchAll(/INSERT INTO juhe_business\.accounts\s*\(([\s\S]*?)\)\s*(?:VALUES|SELECT)/gi)) {
+    assert.match(match[1], /\bhealth_check_model\b/, `${fixture.path} 的账户 fixture 必须写入 health_check_model`)
+    assert.match(match[1], /\bhealth_check_endpoint_mode\b/, `${fixture.path} 的账户 fixture 必须写入 health_check_endpoint_mode`)
+  }
+}
 assert.doesNotMatch(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+last_successful_test_model text/, 'Go 公开账户 baseline 不应包含旧的最后成功测试模型字段')
 assert.match(sql, /route_strategy_id text NOT NULL/, 'api_keys 建表语句应强制绑定 route_strategy_id')
 assert.match(sql, /api_keys[\s\S]+is_default integer NOT NULL DEFAULT 0/, 'api_keys 建表语句应包含默认 API Key 标识')

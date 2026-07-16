@@ -27,6 +27,7 @@ import {
   loadAccountResponseInspectionRules
 } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
+import { accountHealthCheckEndpointModeOptions, defaultAccountHealthCheckEndpointMode } from './accountHealthCheckEndpointMode'
 import {
   accountEditAccountTypeTitle,
   accountEditModalTitle,
@@ -330,6 +331,24 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         ensureDefaultGroupSelected()
       }
     }
+  )
+
+  watch(
+    [
+      () => [...form.supportedEndpointModes],
+      () => form.providerCode,
+      () => form.providerProtocolProfileId
+    ],
+    () => {
+      const available = accountHealthCheckEndpointModeOptions(form.supportedEndpointModes)
+      if (available.some((option) => option.value === form.healthCheckEndpointMode)) return
+      form.healthCheckEndpointMode = defaultAccountHealthCheckEndpointMode(
+        form.providerCode,
+        form.providerProtocolProfileId,
+        form.supportedEndpointModes
+      )
+    },
+    { immediate: true }
   )
 
   watch(

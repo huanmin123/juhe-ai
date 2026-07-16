@@ -13,6 +13,7 @@ import {
   type GatewayProbeResult
 } from '../../modules/model-checks/model-checks-evaluation.js'
 import { behaviorProbeDefinitions, longContextProbeDefinitions } from '../../modules/model-checks/model-checks.probes.js'
+import { buildModelCheckTrustReport } from '../../modules/model-checks/model-checks-trust-report.js'
 
 const model = 'gpt-5.5'
 const basicTimeout = evaluateBasicResponsesProbe(timeoutProbe('trace_basic_timeout'), model, 'target')
@@ -126,6 +127,23 @@ const unavailableSummary = summarizeChecks([
 ], { trustedComparison: false })
 assert.equal(unavailableSummary.level, 'unavailable', '基础链路请求失败时整体应不可检测')
 assert.equal(unavailableSummary.score, 0, '基础链路请求失败且没有有效证据时总分应为 0')
+const unavailableTrustReport = buildModelCheckTrustReport([
+  summary(basicTimeout),
+  summary(usageFromTimeout)
+], { requestedModel: model, probeSetVersion: 'request-failure-v1', evidenceCoverage: 100 })
+assert.equal(unavailableTrustReport.identityStatus, 'insufficient_evidence', '全部请求失败不能形成身份一致结论')
+assert.equal(unavailableTrustReport.mappingStatus, 'unknown', '没有 response model 不能形成 direct 映射结论')
+assert.equal(unavailableTrustReport.protocolStatus, 'insufficient_evidence', '全部请求失败不能降格成协议 warning')
+assert.equal(unavailableTrustReport.evidenceCoverage, 0, '没有有效模型响应时证据覆盖率必须归零')
+assert(unavailableTrustReport.reasonCodes.includes('model_response_evidence_unavailable'))
+
+const missingModelTrustReport = buildModelCheckTrustReport([
+  summary(passedItem('target.responses_basic', 'responses_basic', 20))
+], { requestedModel: model, probeSetVersion: 'missing-model-v1', evidenceCoverage: 100 })
+assert.equal(missingModelTrustReport.identityStatus, 'insufficient_evidence', '成功响应缺少 response model 仍不能形成身份一致结论')
+assert.equal(missingModelTrustReport.mappingStatus, 'unknown')
+assert.equal(missingModelTrustReport.protocolStatus, 'insufficient_evidence')
+assert.equal(missingModelTrustReport.evidenceCoverage, 0)
 
 const allLongTimeoutSummary = summarizeChecks([
   summary(evaluateBasicResponsesProbe(successProbe('trace_basic_ok_2', 'OK-MODEL-CHECK'), model, 'target')),

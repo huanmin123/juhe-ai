@@ -80,7 +80,7 @@ export function usageRecordListParams(input: UsageRecordListParamsInput): UsageR
     endDate: input.dateRange?.[1],
     groupId: input.groupId,
     model: input.model.trim() || undefined,
-    result: input.result,
+    result: input.result === 'all' ? undefined : input.result,
     statusCode: normalizedUsageRecordStatusCode(input.statusCode),
     systemAccountId: input.systemAccountId,
     traceId: input.traceId.trim() || undefined,

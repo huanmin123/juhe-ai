@@ -48,6 +48,7 @@ const (
 	w1bPublicAPISmokeTraceIDPrefix      = "w1b_public_api_smoke_"
 	w1bPublicAPISmokeTokenValuePrefix   = publicapi.TokenValuePrefix + "w1b_public_api_smoke_"
 	w1bPublicAPISmokeTokenPublicPrefix  = publicapi.TokenValuePrefix + "w1b_smoke_"
+	w1bPublicAPISmokeNodeDummyBaseURL   = "http://127.0.0.1:1"
 	w1bPublicAPISmokeDefaultRouterError = "接口不存在"
 )
 
@@ -128,10 +129,9 @@ func RunW1bPublicAPISmoke(ctx context.Context, cfg config.Config, out io.Writer)
 		return fmt.Errorf("W1b public API smoke 缺少必要配置: %v", missing)
 	}
 
-	smokeCfg := cfg
 	configuredEnabled := cfg.PublicAPIEnabled
-	smokeCfg.PublicAPIEnabled = true
-	if err := smokeCfg.Validate(); err != nil {
+	smokeCfg, err := w1bPublicAPISmokeConfig(cfg)
+	if err != nil {
 		return fmt.Errorf("W1b public API smoke 配置无效: %w", err)
 	}
 
@@ -310,6 +310,23 @@ type w1bPublicAPIRouteResult struct {
 	TraceID string
 }
 
+type w1bPublicAPISmokeHealthCheckDispatcher struct{}
+
+func (w1bPublicAPISmokeHealthCheckDispatcher) Dispatch(context.Context, string, string) error {
+	return nil
+}
+
+func w1bPublicAPISmokeConfig(cfg config.Config) (config.Config, error) {
+	cfg.PublicAPIEnabled = true
+	if strings.TrimSpace(cfg.NodeInternalBaseURL) == "" {
+		cfg.NodeInternalBaseURL = w1bPublicAPISmokeNodeDummyBaseURL
+	}
+	if err := cfg.Validate(); err != nil {
+		return config.Config{}, err
+	}
+	return cfg, nil
+}
+
 func smokeW1bDefaultRouterGuard(ctx context.Context, cfg config.Config) error {
 	cfg.PublicAPIEnabled = false
 	router := httpapi.NewRouter(httpapi.RouterOptions{
@@ -349,8 +366,9 @@ func smokeW1bPublicAPIRoute(
 		store,
 		stateRedis,
 		app.PublicAPIHandlerOptions{
-			NewLogID:          func() string { return logID },
-			APIKeyInvalidator: apiKeyInvalidator,
+			NewLogID:                     func() string { return logID },
+			APIKeyInvalidator:            apiKeyInvalidator,
+			AccountHealthCheckDispatcher: w1bPublicAPISmokeHealthCheckDispatcher{},
 		},
 	)
 	if err != nil {

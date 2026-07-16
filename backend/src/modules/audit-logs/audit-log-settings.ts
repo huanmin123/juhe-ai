@@ -1,3 +1,5 @@
+import { runtimeConfig } from '../../config/runtime.js'
+
 export interface AuditLogSettings {
   enabled: boolean
   fullBodyCaptureEnabled: boolean
@@ -9,26 +11,28 @@ export interface AuditLogSettings {
   activeCaptureMaxBytes: number
   successHotRetentionHours: number
   successRetentionDays: number
-  failureRetentionDays: number
-  errorGroupRetentionDays: number
+  problemRetentionDays: number
+  successFullBodyLimitBytes: number
+  problemFullBodyLimitBytes: number
 }
 
 const auditLogMb = 1024 * 1024
 
-// 原始审计日志是固定排障能力，不通过 system_settings 暴露配置。
+// 原始审计日志始终启用；runtimeConfig 负责环境变量合并和启动期校验。
 export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
   enabled: true,
   fullBodyCaptureEnabled: true,
-  successSampleRate: 0.1,
+  successSampleRate: runtimeConfig.auditLog.successSampleRate,
   flushIntervalSeconds: 5,
   batchSize: 500,
   queueMaxItems: 50000,
   queueMaxBytes: 256 * auditLogMb,
   activeCaptureMaxBytes: 64 * auditLogMb,
-  successHotRetentionHours: 1,
-  successRetentionDays: 7,
-  failureRetentionDays: 30,
-  errorGroupRetentionDays: 30
+  successHotRetentionHours: runtimeConfig.auditLog.successHotRetentionHours,
+  successRetentionDays: runtimeConfig.auditLog.successRetentionDays,
+  problemRetentionDays: runtimeConfig.auditLog.problemRetentionDays,
+  successFullBodyLimitBytes: runtimeConfig.auditLog.successFullBodyLimitBytes,
+  problemFullBodyLimitBytes: runtimeConfig.auditLog.problemFullBodyLimitBytes
 })
 
 export function readAuditLogSettings(): AuditLogSettings {

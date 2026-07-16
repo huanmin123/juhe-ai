@@ -260,26 +260,33 @@ func TestDecodeProviderStringArrayTrimsDedupes(t *testing.T) {
 
 func TestManagementProviderModelCatalogItemFromRowDecodesOptionalFields(t *testing.T) {
 	inputPrice := pgtype.Float8{Float64: 1.25, Valid: true}
+	longContextThreshold := pgtype.Int4{Int32: 272000, Valid: true}
+	longContextInputMultiplier := pgtype.Float8{Float64: 2, Valid: true}
+	longContextOutputMultiplier := pgtype.Float8{Float64: 1.5, Valid: true}
 	maxInput := pgtype.Int4{Int32: 128000, Valid: true}
 	row := postgresqueries.ListManagementProviderModelCatalogRow{
-		ID:                            "custom_model_1",
-		ProviderCode:                  "gpt",
-		Model:                         "gpt-custom",
-		Scope:                         "personal",
-		SystemAccountID:               pgtype.Text{String: "sys_user", Valid: true},
-		Status:                        "active",
-		Mode:                          pgtype.Text{String: "chat", Valid: true},
-		CatalogOrder:                  pgtype.Int4{Int32: 10, Valid: true},
-		SupportedApiProtocolsJson:     `[" chat_completions ","chat_completions","responses"]`,
-		SupportedServiceTiersJson:     `[" priority ","priority","flex"]`,
-		SupportedReasoningEffortsJson: `["low","high","high"]`,
-		DefaultReasoningEffort:        pgtype.Text{String: "high", Valid: true},
-		ContextWindowTokens:           maxInput,
-		MaxInputTokens:                maxInput,
-		InputUsdPer1m:                 inputPrice,
-		SupportsPromptCaching:         true,
-		CatalogVisible:                true,
-		Source:                        "custom-personal",
+		ID:                              "custom_model_1",
+		ProviderCode:                    "gpt",
+		Model:                           "gpt-custom",
+		Scope:                           "personal",
+		SystemAccountID:                 pgtype.Text{String: "sys_user", Valid: true},
+		Status:                          "active",
+		Mode:                            pgtype.Text{String: "chat", Valid: true},
+		CatalogOrder:                    pgtype.Int4{Int32: 10, Valid: true},
+		SupportedApiProtocolsJson:       `[" chat_completions ","chat_completions","responses"]`,
+		SupportedServiceTiersJson:       `[" priority ","priority","flex"]`,
+		SupportedReasoningEffortsJson:   `["low","high","high"]`,
+		DefaultReasoningEffort:          pgtype.Text{String: "high", Valid: true},
+		ContextWindowTokens:             maxInput,
+		MaxInputTokens:                  maxInput,
+		InputUsdPer1m:                   inputPrice,
+		ServiceTierPricesJson:           `{"priority":{"inputUsdPer1M":2.5},"flex":{"inputUsdPer1M":0.625}}`,
+		LongContextInputTokenThreshold:  longContextThreshold,
+		LongContextInputCostMultiplier:  longContextInputMultiplier,
+		LongContextOutputCostMultiplier: longContextOutputMultiplier,
+		SupportsPromptCaching:           true,
+		CatalogVisible:                  true,
+		Source:                          "custom-personal",
 	}
 
 	item, err := managementProviderModelCatalogItemFromRow(row)
@@ -291,6 +298,19 @@ func TestManagementProviderModelCatalogItemFromRowDecodesOptionalFields(t *testi
 	}
 	if item.ContextWindowTokens == nil || *item.ContextWindowTokens != 128000 {
 		t.Fatalf("context window = %#v", item.ContextWindowTokens)
+	}
+	if item.ServiceTierPrices["priority"].InputUSDPer1M == nil || *item.ServiceTierPrices["priority"].InputUSDPer1M != 2.5 ||
+		item.ServiceTierPrices["flex"].InputUSDPer1M == nil || *item.ServiceTierPrices["flex"].InputUSDPer1M != 0.625 {
+		t.Fatalf("tier prices = %+v", item.ServiceTierPrices)
+	}
+	if item.LongContextInputTokenThreshold == nil || *item.LongContextInputTokenThreshold != 272000 ||
+		item.LongContextInputCostMultiplier == nil || *item.LongContextInputCostMultiplier != 2 ||
+		item.LongContextOutputCostMultiplier == nil || *item.LongContextOutputCostMultiplier != 1.5 {
+		t.Fatalf("long-context metadata = threshold:%v input:%v output:%v",
+			item.LongContextInputTokenThreshold,
+			item.LongContextInputCostMultiplier,
+			item.LongContextOutputCostMultiplier,
+		)
 	}
 	if len(item.SupportedAPIProtocols) != 2 || item.SupportedAPIProtocols[0] != "chat_completions" || item.SupportedAPIProtocols[1] != "responses" {
 		t.Fatalf("protocols = %+v", item.SupportedAPIProtocols)

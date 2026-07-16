@@ -1,5 +1,5 @@
 import type { AccountSummary } from '../domain/types.js'
-import { GPT_OPENAI_V1_PROFILE_ID } from '../domain/provider-protocol.js'
+import { ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES } from '../domain/account-health-check-endpoint-mode.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../shared/account-concurrency.js'
@@ -29,7 +29,6 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { loadModelMappingsByAccountIdsAsync } from './account-model-mappings.repository.js'
 import { loadSupportedModelsByAccountIdsAsync } from './account-supported-models.repository.js'
 import { getPostgresPool } from './postgres-client.js'
-import { listOpenAIProtocolProfileIds, listOpenAIProtocolProfileIdsAsync } from './provider.repository.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { isResourceAuthorizationExpired } from './resource-authorization-helpers.js'
@@ -41,6 +40,9 @@ import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
 import { optionalString } from './value-utils.js'
 
 const businessSchemaName = 'juhe_business'
+const pendingHealthCheckRetryIntervalMs = 60 * 60_000
+const pendingHealthCheckFailureTimeoutMs = 24 * 60 * 60_000
+const pendingHealthCheckFailureTimeoutCode = 'account_activation_check_timeout'
 
 export interface AccountHealthCheckSettings {
   intervalHours: number
@@ -59,6 +61,7 @@ export interface AccountHealthCheckFailureInput extends AccountHealthCheckSettin
   countTowardsThreshold?: boolean
   expectedConfigRevision?: number
   observedAt?: string
+  traceId?: string
 }
 
 export interface AccountHealthCheckFailureResult {
@@ -66,7 +69,10 @@ export interface AccountHealthCheckFailureResult {
   failureCount: number
   reachedThreshold: boolean
   checkedAt: string
-  nextHealthCheckAt: string
+  nextHealthCheckAt?: string
+  failureStartedAt?: string
+  transitionedToError: boolean
+  accountStatus?: AccountSummary['status']
   errorCode: string
   errorMessage: string
 }
@@ -110,11 +116,13 @@ export function recordAccountHealthCheckSuccess(accountId: string, input: Accoun
   checkedAt?: string
   statusCode?: number
   expectedConfigRevision?: number
+  traceId?: string
 }): boolean {
   const checkedAt = normalizedIso(input.checkedAt) ?? nowIso()
   const nextHealthCheckAt = nextHealthCheckAtForAccount(accountId, checkedAt, input)
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
+  const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const database = getBusinessDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   let changed = false
@@ -137,13 +145,16 @@ export function recordAccountHealthCheckSuccess(accountId: string, input: Accoun
               cooldown_until = CASE WHEN status = 'pending_test' THEN NULL ELSE cooldown_until END,
               last_error_code = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_code END,
               last_error_message = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_message END,
+              last_error_trace_id = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_trace_id END,
               last_health_check_at = ?,
               last_health_success_at = ?,
               next_health_check_at = ?,
               health_check_failure_count = 0,
+              health_check_failure_started_at = NULL,
               last_health_check_status_code = ?,
               last_health_check_error_code = NULL,
               last_health_check_error_message = NULL,
+              last_health_check_trace_id = ?,
               updated_at = ?
           WHERE id = ?
             AND deleted_at IS NULL
@@ -156,6 +167,7 @@ export function recordAccountHealthCheckSuccess(accountId: string, input: Accoun
           checkedAt,
           nextHealthCheckAt,
           statusCode,
+          traceId,
           checkedAt,
           accountId,
           expectedConfigRevision ?? null,
@@ -181,6 +193,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
   checkedAt?: string
   statusCode?: number
   expectedConfigRevision?: number
+  traceId?: string
 }): Promise<boolean> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return recordAccountHealthCheckSuccess(accountId, input)
@@ -190,6 +203,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
   const nextHealthCheckAt = nextHealthCheckAtForAccount(accountId, checkedAt, input)
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
+  const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const mutationGuard = postgresHealthCheckMutationGuard({
     expectedConfigRevision
   })
@@ -214,13 +228,16 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
           cooldown_until = CASE WHEN status = 'pending_test' THEN NULL ELSE cooldown_until END,
           last_error_code = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_code END,
           last_error_message = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_message END,
+          last_error_trace_id = CASE WHEN status = 'pending_test' THEN NULL ELSE last_error_trace_id END,
           last_health_check_at = ?,
           last_health_success_at = ?,
           next_health_check_at = ?,
           health_check_failure_count = 0,
+          health_check_failure_started_at = NULL,
           last_health_check_status_code = ?,
           last_health_check_error_code = NULL,
           last_health_check_error_message = NULL,
+          last_health_check_trace_id = ?,
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
@@ -232,6 +249,7 @@ export async function recordAccountHealthCheckSuccessAsync(accountId: string, in
       checkedAt,
       nextHealthCheckAt,
       statusCode,
+      traceId,
       checkedAt,
       accountId,
       ...mutationGuard.params
@@ -260,7 +278,7 @@ function healthCheckSuccessChangesGroupStats(
   activationStatus: 'active' | 'disabled'
 ): boolean {
   const nextStatus = row.status === 'pending_test' ? activationStatus : row.status
-  const nextSchedulable = row.status === 'pending_test' ? 1 : Number(row.schedulable)
+  const nextSchedulable = row.status === 'pending_test' && activationStatus === 'active' ? 1 : row.status === 'pending_test' ? 0 : Number(row.schedulable)
   return nextStatus !== row.status || nextSchedulable !== Number(row.schedulable)
 }
 
@@ -276,6 +294,72 @@ function healthCheckActivationStatus(
     : 'disabled'
 }
 
+interface AccountHealthCheckFailureStateRow {
+  status: AccountSummary['status']
+  config_revision?: number
+  health_check_failure_count?: number
+  health_check_failure_started_at?: string | null
+  last_health_success_at?: string | null
+}
+
+interface AccountHealthCheckFailureDecision {
+  accountStatus: AccountSummary['status']
+  nextHealthCheckAt?: string
+  failureStartedAt?: string
+  transitionedToError: boolean
+  terminalErrorMessage?: string
+}
+
+function isHealthCheckFailureStateEligible(row: AccountHealthCheckFailureStateRow): boolean {
+  return row.status === 'active' || row.status === 'pending_test'
+}
+
+function accountHealthCheckFailureDecision(
+  row: AccountHealthCheckFailureStateRow,
+  input: {
+    checkedAt: string
+    failureCount: number
+    intervalHours: number
+    errorMessage: string
+  }
+): AccountHealthCheckFailureDecision {
+  if (row.status !== 'pending_test') {
+    return {
+      accountStatus: row.status,
+      nextHealthCheckAt: nextHealthCheckAtAfterFailure(
+        input.checkedAt,
+        Math.max(1, input.failureCount),
+        input.intervalHours
+      ),
+      transitionedToError: false
+    }
+  }
+  const failureStartedAt = normalizedIso(row.health_check_failure_started_at) ?? input.checkedAt
+  const checkedAtMs = Date.parse(input.checkedAt)
+  const failureStartedAtMs = Date.parse(failureStartedAt)
+  const failureElapsedMs = Number.isFinite(checkedAtMs) && Number.isFinite(failureStartedAtMs)
+    ? Math.max(0, checkedAtMs - failureStartedAtMs)
+    : 0
+  if (failureElapsedMs >= pendingHealthCheckFailureTimeoutMs) {
+    return {
+      accountStatus: 'error',
+      failureStartedAt,
+      transitionedToError: true,
+      terminalErrorMessage: pendingHealthCheckFailureTimeoutMessage(failureStartedAt, input.errorMessage)
+    }
+  }
+  return {
+    accountStatus: 'pending_test',
+    nextHealthCheckAt: new Date(checkedAtMs + pendingHealthCheckRetryIntervalMs).toISOString(),
+    failureStartedAt,
+    transitionedToError: false
+  }
+}
+
+function pendingHealthCheckFailureTimeoutMessage(failureStartedAt: string, lastError: string): string {
+  return `账户后台激活检查从首次失败 ${failureStartedAt} 起持续 24 小时仍未通过，已转为异常；最后错误：${lastError}`.slice(0, 1000)
+}
+
 export function recordAccountHealthCheckFailure(accountId: string, input: AccountHealthCheckFailureInput): AccountHealthCheckFailureResult {
   const database = getBusinessDatabase()
   const checkedAt = nowIso()
@@ -285,24 +369,24 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
   const observedAt = normalizedIso(input.observedAt)
+  const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const transactionStarted = beginDatabaseTransaction(database)
   let changed = false
   let failureCount = 0
-  let nextHealthCheckAt = nextHealthCheckAtAfterFailure(checkedAt, 1, input.intervalHours)
+  let nextHealthCheckAt: string | undefined
+  let failureStartedAt: string | undefined
+  let transitionedToError = false
+  let accountStatus: AccountSummary['status'] | undefined
   try {
     const row = database
       .prepare(`
-        SELECT config_revision, health_check_failure_count, last_health_success_at
+        SELECT status, config_revision, health_check_failure_count, health_check_failure_started_at, last_health_success_at
         FROM accounts
         WHERE id = ?
           AND deleted_at IS NULL
         LIMIT 1
       `)
-      .get(accountId) as unknown as {
-        config_revision?: number
-        health_check_failure_count?: number
-        last_health_success_at?: string | null
-      } | undefined
+      .get(accountId) as unknown as AccountHealthCheckFailureStateRow | undefined
     const configMatches = expectedConfigRevision === undefined
       || Number(row?.config_revision) === expectedConfigRevision
     const newerSuccessExists = Boolean(
@@ -310,42 +394,77 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
       && row?.last_health_success_at
       && row.last_health_success_at > observedAt
     )
-    if (row && configMatches && !newerSuccessExists) {
+    if (row && isHealthCheckFailureStateEligible(row) && configMatches && !newerSuccessExists) {
       const previousFailureCount = Math.max(0, Math.trunc(Number(row.health_check_failure_count ?? 0)))
       failureCount = countTowardsThreshold ? previousFailureCount + 1 : previousFailureCount
-      nextHealthCheckAt = nextHealthCheckAtAfterFailure(checkedAt, Math.max(1, failureCount), input.intervalHours)
+      const decision = accountHealthCheckFailureDecision(row, {
+        checkedAt,
+        failureCount,
+        intervalHours: input.intervalHours,
+        errorMessage
+      })
+      nextHealthCheckAt = decision.nextHealthCheckAt
+      failureStartedAt = decision.failureStartedAt
+      transitionedToError = decision.transitionedToError
+      accountStatus = decision.accountStatus
       const result = database
         .prepare(`
           UPDATE accounts
-          SET last_health_check_at = ?,
+          SET status = CASE WHEN ? = 1 THEN 'error' ELSE status END,
+              schedulable = CASE WHEN ? = 1 THEN 0 ELSE schedulable END,
+              cooldown_until = CASE WHEN ? = 1 THEN NULL ELSE cooldown_until END,
+              last_error_code = CASE WHEN ? = 1 THEN ? ELSE last_error_code END,
+              last_error_message = CASE WHEN ? = 1 THEN ? ELSE last_error_message END,
+              last_error_trace_id = CASE WHEN ? = 1 THEN ? ELSE last_error_trace_id END,
+              last_health_check_at = ?,
               next_health_check_at = ?,
               health_check_failure_count = ?,
+              health_check_failure_started_at = ?,
               last_health_check_status_code = ?,
               last_health_check_error_code = ?,
               last_health_check_error_message = ?,
+              last_health_check_trace_id = ?,
               updated_at = ?
           WHERE id = ?
             AND deleted_at IS NULL
+            AND status = ?
             AND (? IS NULL OR config_revision = ?)
             AND (? IS NULL OR last_health_success_at IS NULL OR last_health_success_at <= ?)
         `)
         .run(
+          transitionedToError ? 1 : 0,
+          transitionedToError ? 1 : 0,
+          transitionedToError ? 1 : 0,
+          transitionedToError ? 1 : 0,
+          pendingHealthCheckFailureTimeoutCode,
+          transitionedToError ? 1 : 0,
+          decision.terminalErrorMessage ?? null,
+          transitionedToError ? 1 : 0,
+          traceId,
           checkedAt,
-          nextHealthCheckAt,
+          nextHealthCheckAt ?? null,
           failureCount,
+          failureStartedAt ?? null,
           statusCode,
           errorCode,
           errorMessage,
+          traceId,
           checkedAt,
           accountId,
+          row.status,
           expectedConfigRevision ?? null,
           expectedConfigRevision ?? null,
           observedAt ?? null,
           observedAt ?? null
         )
       changed = Number(result.changes ?? 0) > 0
+      transitionedToError = changed && transitionedToError
+      if (transitionedToError) {
+        refreshGroupAccountStatsAfterWrite({ accountIds: [accountId], reason: 'account_activation_check_timeout' })
+      }
     } else {
       failureCount = Math.max(0, Math.trunc(Number(row?.health_check_failure_count ?? 0)))
+      accountStatus = row?.status
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -360,9 +479,14 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
     failureCount,
     reachedThreshold: changed
       && countTowardsThreshold
+      && accountStatus !== 'pending_test'
+      && accountStatus !== 'error'
       && failureCount >= normalizedFailureThreshold(input.failureThreshold),
     checkedAt,
     nextHealthCheckAt,
+    failureStartedAt,
+    transitionedToError,
+    accountStatus,
     errorCode,
     errorMessage
   }
@@ -380,17 +504,14 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
   const statusCode = normalizedStatusCode(input.statusCode)
   const expectedConfigRevision = normalizedConfigRevision(input.expectedConfigRevision)
   const observedAt = normalizedIso(input.observedAt)
+  const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const mutationGuard = postgresHealthCheckMutationGuard({
     expectedConfigRevision,
     observedAt
   })
   const mutation = await client.transaction(async (tx) => {
-    const row = await tx.one<{
-      config_revision?: number
-      health_check_failure_count?: number
-      last_health_success_at?: string | null
-    }>(`
-      SELECT config_revision, health_check_failure_count, last_health_success_at
+    const row = await tx.one<AccountHealthCheckFailureStateRow>(`
+      SELECT status, config_revision, health_check_failure_count, health_check_failure_started_at, last_health_success_at
       FROM ${healthCheckTable(tx, 'accounts')}
       WHERE id = ?
         AND deleted_at IS NULL
@@ -398,53 +519,80 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
       FOR UPDATE
     `, [accountId])
     const previousFailureCount = Math.max(0, Math.trunc(Number(row?.health_check_failure_count ?? 0)))
-    const fallbackNextHealthCheckAt = nextHealthCheckAtAfterFailure(
-      checkedAt,
-      Math.max(1, previousFailureCount),
-      input.intervalHours
-    )
     if (!row) {
-      return { changed: false, failureCount: 0, nextHealthCheckAt: fallbackNextHealthCheckAt }
+      return { changed: false, failureCount: 0, transitionedToError: false as const }
+    }
+    if (!isHealthCheckFailureStateEligible(row)) {
+      return { changed: false, failureCount: previousFailureCount, transitionedToError: false as const, accountStatus: row.status }
     }
     if (expectedConfigRevision !== undefined && Number(row.config_revision) !== expectedConfigRevision) {
-      return { changed: false, failureCount: previousFailureCount, nextHealthCheckAt: fallbackNextHealthCheckAt }
+      return { changed: false, failureCount: previousFailureCount, transitionedToError: false as const, accountStatus: row.status }
     }
     if (observedAt && row.last_health_success_at && row.last_health_success_at > observedAt) {
-      return { changed: false, failureCount: previousFailureCount, nextHealthCheckAt: fallbackNextHealthCheckAt }
+      return { changed: false, failureCount: previousFailureCount, transitionedToError: false as const, accountStatus: row.status }
     }
     const failureCount = countTowardsThreshold ? previousFailureCount + 1 : previousFailureCount
-    const nextHealthCheckAt = nextHealthCheckAtAfterFailure(
+    const decision = accountHealthCheckFailureDecision(row, {
       checkedAt,
-      Math.max(1, failureCount),
-      input.intervalHours
-    )
+      failureCount,
+      intervalHours: input.intervalHours,
+      errorMessage
+    })
     const result = await tx.execute(`
       UPDATE ${healthCheckTable(tx, 'accounts')}
-      SET last_health_check_at = ?,
+      SET status = CASE WHEN ? = 1 THEN 'error' ELSE status END,
+          schedulable = CASE WHEN ? = 1 THEN 0 ELSE schedulable END,
+          cooldown_until = CASE WHEN ? = 1 THEN NULL ELSE cooldown_until END,
+          last_error_code = CASE WHEN ? = 1 THEN ? ELSE last_error_code END,
+          last_error_message = CASE WHEN ? = 1 THEN ? ELSE last_error_message END,
+          last_error_trace_id = CASE WHEN ? = 1 THEN ? ELSE last_error_trace_id END,
+          last_health_check_at = ?,
           next_health_check_at = ?,
           health_check_failure_count = ?,
+          health_check_failure_started_at = ?,
           last_health_check_status_code = ?,
           last_health_check_error_code = ?,
           last_health_check_error_message = ?,
+          last_health_check_trace_id = ?,
           updated_at = ?
       WHERE id = ?
         AND deleted_at IS NULL
+        AND status = ?
         ${mutationGuard.sql}
     `, [
+      decision.transitionedToError ? 1 : 0,
+      decision.transitionedToError ? 1 : 0,
+      decision.transitionedToError ? 1 : 0,
+      decision.transitionedToError ? 1 : 0,
+      pendingHealthCheckFailureTimeoutCode,
+      decision.transitionedToError ? 1 : 0,
+      decision.terminalErrorMessage ?? null,
+      decision.transitionedToError ? 1 : 0,
+      traceId,
       checkedAt,
-      nextHealthCheckAt,
+      decision.nextHealthCheckAt ?? null,
       failureCount,
+      decision.failureStartedAt ?? null,
       statusCode,
       errorCode,
       errorMessage,
+      traceId,
       checkedAt,
       accountId,
+      row.status,
       ...mutationGuard.params
     ])
+    const changed = Number(result.changes ?? 0) > 0
+    if (changed && decision.transitionedToError) {
+      await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [accountId], reason: 'account_activation_check_timeout' }, tx)
+    }
     return {
-      changed: Number(result.changes ?? 0) > 0,
+      changed,
       failureCount,
-      nextHealthCheckAt
+      nextHealthCheckAt: decision.nextHealthCheckAt,
+      failureStartedAt: decision.failureStartedAt,
+      transitionedToError: changed && decision.transitionedToError,
+      accountStatus: changed ? decision.accountStatus : row.status
     }
   })
   const changed = mutation.changed
@@ -456,9 +604,14 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
     failureCount: mutation.failureCount,
     reachedThreshold: changed
       && countTowardsThreshold
+      && mutation.accountStatus !== 'pending_test'
+      && mutation.accountStatus !== 'error'
       && mutation.failureCount >= normalizedFailureThreshold(input.failureThreshold),
     checkedAt,
     nextHealthCheckAt: mutation.nextHealthCheckAt,
+    failureStartedAt: mutation.failureStartedAt,
+    transitionedToError: mutation.transitionedToError,
+    accountStatus: mutation.accountStatus,
     errorCode,
     errorMessage
   }
@@ -476,11 +629,13 @@ export function recordAccountHealthSuccessSignals(
     SET last_health_success_at = ?,
         next_health_check_at = ?,
         health_check_failure_count = 0,
+        health_check_failure_started_at = NULL,
         last_health_check_error_code = NULL,
         last_health_check_error_message = NULL,
         updated_at = ?
     WHERE id = ?
       AND deleted_at IS NULL
+      AND status = 'active'
       AND (
         last_health_success_at IS NULL
         OR last_health_success_at <= ?
@@ -544,11 +699,13 @@ async function recordAccountHealthSuccessSignalsAsync(
         SET last_health_success_at = ?,
             next_health_check_at = ?,
             health_check_failure_count = 0,
+            health_check_failure_started_at = NULL,
             last_health_check_error_code = NULL,
             last_health_check_error_message = NULL,
             updated_at = ?
         WHERE id = ?
           AND deleted_at IS NULL
+          AND status = 'active'
           AND (
             last_health_success_at IS NULL
             OR last_health_success_at <= ?
@@ -586,10 +743,9 @@ function dueHealthCheckRows(rows: AccountListRow[], options: AccountHealthCheckS
   const dueRows: AccountListRow[] = []
   const recentSuccessSignals = new Map<string, string>()
   for (const row of rows) {
-    const requiresFirstPendingCheck = row.status === 'pending_test' && !normalizedIso(row.last_health_check_at)
     const recentSuccessAt = normalizedIso(row.last_health_success_at)
     const recentSuccessMs = recentSuccessAt ? Date.parse(recentSuccessAt) : NaN
-    if (!requiresFirstPendingCheck && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
+    if (row.status !== 'pending_test' && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
       recentSuccessSignals.set(row.id, recentSuccessAt)
       continue
     }
@@ -605,10 +761,9 @@ async function dueHealthCheckRowsAsync(client: DatabaseClient, rows: AccountList
   const dueRows: AccountListRow[] = []
   const recentSuccessSignals = new Map<string, string>()
   for (const row of rows) {
-    const requiresFirstPendingCheck = row.status === 'pending_test' && !normalizedIso(row.last_health_check_at)
     const recentSuccessAt = normalizedIso(row.last_health_success_at)
     const recentSuccessMs = recentSuccessAt ? Date.parse(recentSuccessAt) : NaN
-    if (!requiresFirstPendingCheck && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
+    if (row.status !== 'pending_test' && recentSuccessAt && Number.isFinite(recentSuccessMs) && recentSuccessMs >= cutoffMs) {
       recentSuccessSignals.set(row.id, recentSuccessAt)
       continue
     }
@@ -619,11 +774,11 @@ async function dueHealthCheckRowsAsync(client: DatabaseClient, rows: AccountList
 }
 
 function queryAccountsDueForHealthCheck(limit: number, accountId: string | undefined): AccountListRow[] {
-  const providerProtocolProfileIds = openAIProtocolProfileIdsForQuery()
+  const endpointModes = [...ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES]
   const now = nowIso()
   const accountIdFilter = accountId ? 'AND accounts.id = ?' : ''
   const params: Array<string | number> = [
-    ...providerProtocolProfileIds,
+    ...endpointModes,
     now,
     now,
     now,
@@ -636,10 +791,10 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
   return hydrateAccountRowsWithRuntimeState(getBusinessDatabase()
     .prepare(`
       SELECT ${healthCheckAccountSelectColumns()}
-      FROM accounts
+      FROM accounts INDEXED BY idx_accounts_health_check_candidate_order
       LEFT JOIN resource_authorizations ra
         ON ra.id = accounts.authorization_instance_authorization_id
-      WHERE accounts.provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
+      WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
         AND accounts.type IN ('api_key', 'oauth')
         AND accounts.deleted_at IS NULL
         AND accounts.status IN ('active', 'pending_test')
@@ -688,11 +843,11 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
 }
 
 async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit: number, accountId: string | undefined): Promise<AccountListRow[]> {
-  const providerProtocolProfileIds = await openAIProtocolProfileIdsForQueryAsync()
+  const endpointModes = [...ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES]
   const now = nowIso()
   const accountIdFilter = accountId ? 'AND accounts.id = ?' : ''
   const params: Array<string | number> = [
-    ...providerProtocolProfileIds,
+    ...endpointModes,
     now,
     now,
     now,
@@ -729,7 +884,7 @@ async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit
     ) group_bindings ON TRUE
     LEFT JOIN ${healthCheckTable(client, 'groups')} bound_groups
       ON bound_groups.id = group_bindings.group_id
-    WHERE accounts.provider_protocol_profile_id IN (${sqlPlaceholders(providerProtocolProfileIds.length)})
+    WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
       AND accounts.type IN ('api_key', 'oauth')
       AND accounts.deleted_at IS NULL
       AND accounts.status IN ('active', 'pending_test')
@@ -872,6 +1027,7 @@ function healthCheckAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
       supportedModels: row.supported_models ?? [],
       modelMappings: row.model_mappings ?? [],
       healthCheckModel: row.health_check_model.trim(),
+      healthCheckEndpointMode: row.health_check_endpoint_mode,
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
@@ -887,9 +1043,12 @@ function healthCheckAccountSummaries(rows: AccountListRow[]): AccountSummary[] {
       nextHealthCheckAt: row.next_health_check_at ?? undefined,
       lastHealthSuccessAt: row.last_health_success_at ?? undefined,
       healthCheckFailureCount: Math.max(0, Number(row.health_check_failure_count ?? 0)),
+      healthCheckFailureStartedAt: row.health_check_failure_started_at ?? undefined,
       lastHealthCheckStatusCode: optionalNumber(row.last_health_check_status_code),
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
       lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
+      lastHealthCheckTraceId: row.last_health_check_trace_id ?? undefined,
+      lastErrorTraceId: row.last_error_trace_id ?? undefined,
       lastUsedAt: row.last_used_at ?? undefined,
       todayUsage: emptyAccountUsageSummary(),
       usage: emptyAccountUsageSummary(),
@@ -977,6 +1136,7 @@ async function healthCheckAccountSummariesAsync(client: DatabaseClient, rows: Ac
       supportedModels: supportedModelsByAccount.get(runtimeAccountId) ?? [],
       modelMappings: modelMappingsByAccount.get(runtimeAccountId) ?? [],
       healthCheckModel: row.health_check_model.trim(),
+      healthCheckEndpointMode: row.health_check_endpoint_mode,
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
@@ -992,9 +1152,12 @@ async function healthCheckAccountSummariesAsync(client: DatabaseClient, rows: Ac
       nextHealthCheckAt: row.next_health_check_at ?? undefined,
       lastHealthSuccessAt: row.last_health_success_at ?? undefined,
       healthCheckFailureCount: Math.max(0, Number(row.health_check_failure_count ?? 0)),
+      healthCheckFailureStartedAt: row.health_check_failure_started_at ?? undefined,
       lastHealthCheckStatusCode: optionalNumber(row.last_health_check_status_code),
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
       lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
+      lastHealthCheckTraceId: row.last_health_check_trace_id ?? undefined,
+      lastErrorTraceId: row.last_error_trace_id ?? undefined,
       lastUsedAt: row.last_used_at ?? undefined,
       todayUsage: emptyAccountUsageSummary(),
       usage: emptyAccountUsageSummary(),
@@ -1055,6 +1218,18 @@ function nextHealthCheckAtForAccount(accountId: string, baseIso: string, options
   const intervalMs = normalizedIntervalHours(options.intervalHours) * 60 * 60_000
   const jitterMs = stableAccountJitterMs(accountId, normalizedJitterMinutes(options.jitterMinutes))
   return new Date(safeBaseMs + intervalMs + jitterMs).toISOString()
+}
+
+export function accountHealthSuccessSignalSchedule(
+  accountId: string,
+  successAt: string,
+  options: Partial<AccountHealthCheckSettings>
+): { nextHealthCheckAt: string; refreshAfterAt: string } {
+  const settings = normalizedHealthCheckSettings(options)
+  return {
+    nextHealthCheckAt: nextHealthCheckAtForAccount(accountId, successAt, settings),
+    refreshAfterAt: healthSuccessRefreshAfterAt(successAt, settings.intervalHours)
+  }
 }
 
 function nextHealthCheckAtAfterFailure(baseIso: string, failureCount: number, intervalHours: number): string {
@@ -1166,16 +1341,6 @@ function supportedModelAccountIdForRow(row: AccountListRow): string {
     return row.authorization_instance_source_account_id
   }
   return row.id
-}
-
-function openAIProtocolProfileIdsForQuery(): string[] {
-  const profileIds = listOpenAIProtocolProfileIds().map((profileId) => profileId.trim()).filter(Boolean)
-  return profileIds.length ? profileIds : [GPT_OPENAI_V1_PROFILE_ID]
-}
-
-async function openAIProtocolProfileIdsForQueryAsync(): Promise<string[]> {
-  const profileIds = (await listOpenAIProtocolProfileIdsAsync()).map((profileId) => profileId.trim()).filter(Boolean)
-  return profileIds.length ? profileIds : [GPT_OPENAI_V1_PROFILE_ID]
 }
 
 function healthCheckTable(client: DatabaseClient, table: string): string {

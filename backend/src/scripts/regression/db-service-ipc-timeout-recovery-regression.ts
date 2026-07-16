@@ -26,10 +26,26 @@ class HungDbServiceChild extends EventEmitter {
   killed = false
   killSignal: NodeJS.Signals | undefined
   sentMessageCount = 0
+  cacheInvalidationResponseDelayMs: number | undefined
 
   send(message: unknown, callback?: (error?: Error | null) => void): boolean {
-    void message
     this.sentMessageCount += 1
+    const record = message as { type?: unknown, requestId?: unknown, operation?: { type?: unknown } }
+    if (
+      record.type === 'db_service_request'
+      && record.operation?.type === 'clear_gateway_runtime_cache'
+      && typeof record.requestId === 'string'
+      && this.cacheInvalidationResponseDelayMs !== undefined
+    ) {
+      setTimeout(() => {
+        this.emit('message', {
+          type: 'db_service_response',
+          requestId: record.requestId,
+          ok: true,
+          result: { cleared: true }
+        })
+      }, this.cacheInvalidationResponseDelayMs)
+    }
     callback?.()
     return true
   }
@@ -54,6 +70,21 @@ try {
 
   assert.equal(dbServiceIpc.getDbServiceState().ready, true, '测试前 DB service fake child 应处于 ready')
 
+  const timedOutBeforeInvalidation = dbServiceIpc.getDbServiceState().timedOutRequestCount
+  child.cacheInvalidationResponseDelayMs = 4_500
+  dbServiceIpc.clearDbServiceGatewayRuntimeCache()
+  await new Promise((resolve) => setTimeout(resolve, 4_700))
+  assert.equal(
+    dbServiceIpc.getDbServiceState().timedOutRequestCount,
+    timedOutBeforeInvalidation,
+    '缓存失效通知应容忍生产观测到的 server 事件循环峰值，不能把 4.5s 的健康 DB service 响应记为超时'
+  )
+  assert.equal(
+    dbServiceIpc.getDbServiceState().pendingRequestCount,
+    0,
+    '缓存失效健康响应应按 requestId 清理 pending，不能只依赖尚未触发的 10s timeout 假通过'
+  )
+
   await assert.rejects(
     dbServiceIpc.requestDbService({ type: 'status' }, { timeoutMs: 10 }),
     /本地数据库服务请求超时/,
@@ -73,7 +104,7 @@ try {
     /本地数据库服务请求超时/,
     '后续普通请求仍应独立按自身 timeout 失败，而不是被全局熔断拦截'
   )
-  assert.equal(child.sentMessageCount, 2, '单次超时后仍应允许后续请求继续发送给 DB service')
+  assert.equal(child.sentMessageCount, 3, '缓存失效与单次超时后仍应允许后续请求继续发送给 DB service')
 
   const pendingRequests = Array.from({ length: 2000 }, () => {
     return dbServiceIpc.requestDbService({ type: 'status' }, { timeoutMs: 1000 }).catch((error) => error)

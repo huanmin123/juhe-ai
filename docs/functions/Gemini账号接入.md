@@ -223,10 +223,10 @@ Remove-Item Env:\JUHE_REAL_GEMINI_OPENAI_CHAT_API_KEY, Env:\JUHE_REAL_GEMINI_OPE
 
 Gemini 模型目录必须单独维护在 `providerCode = gemini` 下。
 
-当前内置目录按 `2026-06-25` Google 官方 Gemini API Models / Pricing 页面核对，只收录当前代码已能准确表达端点族的官方文本 / 多模态生成模型和 Embedding 模型：
+当前内置目录按 `2026-07-15` Google 官方 Gemini API Models / Pricing / Deprecations 页面核对，只收录当前代码已能准确表达端点族的官方文本 / 多模态生成模型和 Embedding 模型：
 
 - 文本 / 多模态生成模型：`gemini-3.5-flash`、`gemini-3.1-pro-preview`、`gemini-3.1-pro-preview-customtools`、`gemini-3-flash-preview`、`gemini-3.1-flash-lite`、`gemini-2.5-pro`、`gemini-2.5-flash`、`gemini-2.5-flash-lite`。
-- Embedding 模型：`gemini-embedding-2`、`gemini-embedding-001`。
+- Embedding 模型：`gemini-embedding-2`。`gemini-embedding-001` 已于 `2026-07-14` shutdown，不再进入当前可用目录。
 
 不收录规则：
 

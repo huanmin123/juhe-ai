@@ -395,6 +395,12 @@ type PublicAPIKeyUpdateInput struct {
 	Now                             time.Time
 }
 
+type PublicAPIKeyRecordCleanupTargetInput struct {
+	APIKeyID        string
+	SystemAccountID string
+	Now             time.Time
+}
+
 var (
 	ErrPublicAPIKeyDuplicateName = errors.New("public api key duplicate name")
 	ErrPublicAPIKeyDuplicateHash = errors.New("public api key duplicate hash")
@@ -409,6 +415,7 @@ type PublicAPIKeyStore interface {
 	CreatePublicAPIKey(ctx context.Context, input PublicAPIKeyCreateInput) (PublicAPIKeySummary, error)
 	UpdatePublicAPIKey(ctx context.Context, input PublicAPIKeyUpdateInput) (PublicAPIKeySummary, bool, error)
 	DeletePublicAPIKey(ctx context.Context, apiKeyID string, systemAccountID string) (bool, error)
+	UpsertPublicAPIKeyRecordCleanupTarget(ctx context.Context, input PublicAPIKeyRecordCleanupTargetInput) error
 }
 
 type PublicAPIKeyTransactor interface {
@@ -435,6 +442,7 @@ type PublicAccountProviderProfile struct {
 	ProtocolCode            string
 	ProtocolVersion         string
 	AccountTypesJSON        string
+	EnabledEndpointModes    []string
 	DefaultSupportedModels  []string
 	DefaultHealthCheckModel string
 }
@@ -465,6 +473,7 @@ type PublicAccountSummary struct {
 	ClientCompatibility       string
 	SupportedModels           []string
 	HealthCheckModel          string
+	HealthCheckEndpointMode   string
 	BoundGroupID              *string
 	BoundGroupName            *string
 	Schedulable               bool
@@ -522,6 +531,7 @@ type PublicAccountCreateInput struct {
 	ClientCompatibility       string
 	SupportedModels           []string
 	HealthCheckModel          string
+	HealthCheckEndpointMode   string
 	Schedulable               bool
 	AvailabilityScheduleJSON  *string
 	ConcurrencyLimit          int
@@ -542,6 +552,7 @@ type PublicAccountUpdateInput struct {
 	SupportedModels          []string
 	SupportedModelsChanged   bool
 	HealthCheckModel         string
+	HealthCheckEndpointMode  string
 	ResetFailureState        bool
 	ScheduleHealthCheck      bool
 	ResetHealthDiagnostics   bool

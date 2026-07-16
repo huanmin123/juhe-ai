@@ -39,8 +39,8 @@
           <a-tag>{{ processRoleLabel(record.workerRole || 'worker') }}</a-tag>
         </template>
         <template v-else-if="column.key === 'status'">
-          <a-tag :color="queueStatusColor(record)">
-            {{ queueStatusText(record) }}
+          <a-tag :color="backgroundQueueStatusColor(record)">
+            {{ backgroundQueueStatusText(record) }}
           </a-tag>
         </template>
         <template v-else-if="column.key === 'backlog'">
@@ -68,7 +68,10 @@
           {{ formatQueueWait(record) }}
         </template>
         <template v-else-if="column.key === 'nextOrSuccessAt'">
-          {{ formatDateTime(record.nextRunAt || record.flushLastSuccessAt) }}
+          <span class="background-queue-time">
+            <span>{{ queueTimeLabel(record) }}</span>
+            <strong>{{ queueTimeText(record) }}</strong>
+          </span>
         </template>
         <template v-else-if="column.key === 'lastError'">
           <a-tooltip v-if="record.lastError" :title="record.lastError">
@@ -81,8 +84,8 @@
         <article class="background-queue-card">
           <div class="background-queue-card-head">
             <strong>{{ record.name }}</strong>
-            <a-tag :color="queueStatusColor(record)">
-              {{ queueStatusText(record) }}
+            <a-tag :color="backgroundQueueStatusColor(record)">
+              {{ backgroundQueueStatusText(record) }}
             </a-tag>
           </div>
           <div class="mobile-list-meta-grid">
@@ -127,8 +130,8 @@
               <strong>{{ formatQueueWait(record) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
-              <span>时间</span>
-              <strong>{{ formatDateTime(record.nextRunAt || record.flushLastSuccessAt) }}</strong>
+              <span>{{ queueTimeLabel(record) }}</span>
+              <strong>{{ queueTimeText(record) }}</strong>
             </div>
             <div v-if="record.lastError" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>最近错误</span>
@@ -148,7 +151,7 @@ import { formatDateTime } from '@/shared/formatters'
 import StatsChartCard from './StatsChartCard.vue'
 import { processRoleLabel } from './statsChartOptions'
 import { formatBytesMiB, formatDuration, formatInteger } from './statsFormatters'
-import { backgroundQueueBacklog, backgroundQueueDiagnosticCount, backgroundQueueProblemCount, type BackgroundQueueRow } from './statsBackgroundQueues'
+import { backgroundQueueBacklog, backgroundQueueHistoricalProblemCount, backgroundQueueStatusColor, backgroundQueueStatusText, type BackgroundQueueRow } from './statsBackgroundQueues'
 
 defineProps<{
   emptyDescription: string
@@ -177,7 +180,7 @@ const backgroundQueueColumns = [
   { title: '写入失败', key: 'flushFailureCount', width: 108, align: 'right', sorter: sortBackgroundQueueProblemCount },
   { title: '拒绝/超时/失败', key: 'rejectedTimedOutCount', width: 132, align: 'right', sorter: sortBackgroundQueueProblemCount },
   { title: '最老等待', key: 'oldestQueuedMs', width: 110, align: 'right', sorter: sortBackgroundQueueWait },
-  { title: '时间', key: 'nextOrSuccessAt', width: 168 },
+  { title: '调度 / 写入', key: 'nextOrSuccessAt', width: 196 },
   { title: '最近错误', key: 'lastError', ellipsis: true }
 ]
 
@@ -194,23 +197,6 @@ function queueTypeLabel(type: BackgroundQueueRow['queueType']): string {
   if (type === 'redis') return 'Redis Stream'
   if (type === 'writer') return '写入池'
   return '本地队列'
-}
-
-function queueStatusText(row: BackgroundQueueRow): string {
-  if (row.lastError || numberValue(row.flushFailureCount) > 0) return '异常'
-  if (backgroundQueueProblemCount(row) > 0) return '异常'
-  if (backgroundQueueDiagnosticCount(row) > 0) return '曾失败'
-  if (queueRunningCount(row) > 0) return '运行中'
-  if (backgroundQueueBacklog(row) > 0) return row.queueType === 'retry' ? '待执行' : '积压'
-  return '空闲'
-}
-
-function queueStatusColor(row: BackgroundQueueRow): string {
-  if (row.lastError || backgroundQueueProblemCount(row) > 0) return 'error'
-  if (backgroundQueueDiagnosticCount(row) > 0) return 'warning'
-  if (queueRunningCount(row) > 0) return 'processing'
-  if (backgroundQueueBacklog(row) > 0) return 'warning'
-  return 'success'
 }
 
 function formatQueueNumber(value: number): string {
@@ -250,7 +236,17 @@ function sortBackgroundQueueNumber(field: keyof Pick<BackgroundQueueRow, 'runnin
 }
 
 function sortBackgroundQueueProblemCount(left: BackgroundQueueRow, right: BackgroundQueueRow): number {
-  return backgroundQueueProblemCount(left) - backgroundQueueProblemCount(right)
+  return backgroundQueueHistoricalProblemCount(left) - backgroundQueueHistoricalProblemCount(right)
+}
+
+function queueTimeLabel(row: BackgroundQueueRow): string {
+  if (row.nextRunAt) return '下次运行'
+  if (row.flushLastSuccessAt) return '最近写入成功'
+  return '运行时间'
+}
+
+function queueTimeText(row: BackgroundQueueRow): string {
+  return formatDateTime(row.nextRunAt || row.flushLastSuccessAt)
 }
 
 function sortBackgroundQueueWait(left: BackgroundQueueRow, right: BackgroundQueueRow): number {
@@ -287,6 +283,20 @@ function numberValue(value: unknown): number {
 .background-queue-name {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.background-queue-time {
+  display: grid;
+  gap: 2px;
+}
+
+.background-queue-time span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.background-queue-time strong {
+  font-weight: 400;
 }
 
 .stats-queue-error {

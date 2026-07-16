@@ -24,7 +24,7 @@
           <div>
             <span class="eyebrow">普通用户</span>
             <h1>配置项、使用场景和排障路径手册</h1>
-            <p class="hero-lead">这份手册按页面可见配置来写：API Key、策略路由、分组、高并发、AI 账户、模型映射、接口能力、错误策略、响应检查、授权和使用记录。每个配置都说明它解决什么问题、什么时候该用、怎么配置和常见误区。</p>
+            <p class="hero-lead">这份手册按页面可见配置来写：API Key、策略路由、分组、高并发、AI 账户、模型映射、上游接口能力、错误策略、响应检查、授权和使用记录。每个配置都说明它解决什么问题、什么时候该用、怎么配置和常见误区。</p>
           </div>
           <aside class="hero-panel" aria-label="推荐阅读顺序">
             <p class="hero-panel-title">推荐阅读顺序</p>
@@ -50,7 +50,7 @@
         <a href="#groups">分组与高并发</a>
         <a href="#accounts">AI 账户</a>
         <a href="#operations">账户操作</a>
-        <a href="#models">模型与接口能力</a>
+        <a href="#models">模型与上游接口能力</a>
         <a href="#errors">错误与响应策略</a>
         <a href="#authorization">授权资源</a>
         <a href="#records">记录与观测</a>
@@ -1131,8 +1131,8 @@
         </section>
 
         <section id="models" class="section">
-          <h2>模型与接口能力</h2>
-          <p class="lead">模型和接口能力决定“这次请求能不能进入某个账号候选”。很多“没有可用账号”都不是账号坏了，而是模型或接口能力没有匹配上。</p>
+          <h2>模型与上游接口能力</h2>
+          <p class="lead">支持模型、模型别名和上游接口能力共同决定最终上游模型与协议是否匹配账号。很多“没有可用账号”都不是账号坏了，而是最终上游模型或接口形态没有匹配上。</p>
           <h3>支持模型</h3>
           <ul class="plain-list">
             <li>支持模型表示这个真实上游账号能调用哪些模型。</li>
@@ -1169,38 +1169,38 @@
             </tbody>
           </table>
           <div class="callout">
-            模型别名不是万能翻译器。普通账号主要用于当前供应商和当前接口范围内的模型名改写；如果页面允许选择更复杂的来源和目标组合，也必须确认目标账号真实支持对应模型和接口能力。
+            模型别名不是万能翻译器。普通账号主要用于当前供应商和当前接口范围内的模型名改写；如果页面允许选择更复杂的来源和目标组合，也必须确认映射右侧的目标模型和协议符合账号真实上游能力。
           </div>
 
-          <h3>接口能力限制</h3>
-          <p>接口能力限制用于声明账号可承接的请求形态。未勾选的请求不会进入该账号候选。</p>
+          <h3>上游接口能力</h3>
+          <p>上游接口能力只声明账号真实上游支持的接口形态。模型别名命中时按映射右侧的目标协议检查；未启用的最终上游接口形态不会进入该账号候选。</p>
           <table class="manual-table compact">
             <thead>
               <tr>
-                <th>能力</th>
-                <th>什么时候需要</th>
+                <th>上游接口能力</th>
+                <th>真实上游要求</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td>Chat Completions JSON / Streaming</td>
-                <td>客户端调用 `/chat/completions` 或兼容聊天补全接口时需要。</td>
+                <td>真实上游使用 Chat Completions JSON / Streaming 时启用；Responses → Chat 映射按右侧 Chat 能力检查。</td>
               </tr>
               <tr>
                 <td>Responses API JSON / Streaming</td>
-                <td>客户端调用 Responses 入口，或需要连续会话入口时需要。</td>
+                <td>真实上游原生提供 Responses JSON / Streaming 时启用；Responses → Chat 映射不要求原生 Responses 能力。</td>
               </tr>
               <tr>
                 <td>Messages API JSON / Streaming</td>
-                <td>Anthropic Messages 形态请求需要。</td>
+                <td>真实上游使用 Anthropic Messages JSON / Streaming 时启用。</td>
               </tr>
               <tr>
                 <td>Count tokens / countTokens</td>
-                <td>客户端需要先估算 token 或调用计数接口时需要。</td>
+                <td>真实上游提供对应 token 计数接口时启用。</td>
               </tr>
               <tr>
                 <td>generateContent / streamGenerateContent / embedContent</td>
-                <td>Gemini 原生接口相关请求需要。</td>
+                <td>真实上游使用 Gemini native 对应接口时启用。</td>
               </tr>
             </tbody>
           </table>
@@ -1528,7 +1528,7 @@
               </tr>
               <tr>
                 <td>账号测试</td>
-                <td>确认某个账号的凭据、Base URL、代理、模型和接口能力是否可用。</td>
+                <td>确认某个账号的凭据、Base URL、代理、模型和上游接口能力是否可用。</td>
                 <td>测试接口、状态码、错误码、错误消息、响应耗时、Key 池结果。</td>
               </tr>
               <tr>
@@ -1663,7 +1663,7 @@
           <div class="admin-grid">
             <article class="note-card">
               <h3>提示没有可用账号</h3>
-              <p>按顺序查：API Key 是否启用，策略路由是否启用，绑定分组是否启用，分组内账号是否正常，模型和接口能力是否匹配，并发是否已满，代理是否可用。</p>
+              <p>按顺序查：API Key 是否启用，策略路由是否启用，绑定分组是否启用，分组内账号是否正常，最终上游模型和上游接口能力是否匹配，并发是否已满，代理是否可用。</p>
             </article>
             <article class="note-card">
               <h3>请求走到不符合预期的账号</h3>
@@ -1679,7 +1679,7 @@
             </article>
             <article class="note-card">
               <h3>模型不支持</h3>
-              <p>检查客户端请求模型、账号支持模型、模型别名、接口能力限制和策略路由目标分组。模型名大小写和后缀也要一致。</p>
+              <p>检查客户端请求模型、账号支持模型、模型别名、上游接口能力和策略路由目标分组。模型名大小写和后缀也要一致。</p>
             </article>
             <article class="note-card">
               <h3>响应内容异常</h3>

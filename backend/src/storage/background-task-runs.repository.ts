@@ -1,5 +1,12 @@
 import { runtimeConfig } from '../config/runtime.js'
-import { getStatsDatabase, newId, nowIso } from './database.js'
+import {
+  beginImmediateDatabaseTransaction,
+  commitDatabaseTransaction,
+  getStatsDatabase,
+  newId,
+  nowIso,
+  rollbackDatabaseTransaction
+} from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
 
@@ -49,6 +56,19 @@ export interface BackgroundTaskRunSummary {
   exitCode?: number
   createdAt: string
   updatedAt: string
+}
+
+export interface BackgroundTaskRunReconcileInput {
+  queuedBefore: string
+  runningHeartbeatBefore: string
+  now?: string
+  limit?: number
+}
+
+export interface BackgroundTaskRunReconcileResult {
+  failedQueuedCount: number
+  failedRunningCount: number
+  deletedExpiredLeaseCount: number
 }
 
 type BackgroundTaskRunRow = Record<string, unknown>
@@ -253,6 +273,87 @@ export async function getBackgroundTaskRunAsync(runId: string, client?: Database
   return row ? backgroundTaskRunFromRow(row) : undefined
 }
 
+export function reconcileStaleBackgroundTaskRuns(input: BackgroundTaskRunReconcileInput): BackgroundTaskRunReconcileResult {
+  const now = input.now ?? nowIso()
+  const limit = normalizeReconcileLimit(input.limit)
+  const database = getStatsDatabase()
+  const transactionStarted = beginImmediateDatabaseTransaction(database)
+  try {
+    const failedQueuedCount = Number(database.prepare(reconcileQueuedTaskRunsSql(
+      'background_task_runs',
+      'background_job_leases'
+    )).run(
+      safeJson({ reconciled: true, reconciledReason: 'worker_never_started' }),
+      '临时维护 worker 未在期限内启动，后台任务已自动收口为失败',
+      now,
+      now,
+      input.queuedBefore,
+      now,
+      input.queuedBefore,
+      now,
+      limit
+    ).changes ?? 0)
+    const failedRunningCount = Number(database.prepare(reconcileRunningTaskRunsSql(
+      'background_task_runs',
+      'background_job_leases'
+    )).run(
+      safeJson({ reconciled: true, reconciledReason: 'lease_expired_after_worker_exit' }),
+      '临时维护 worker 心跳中断且无有效租约，后台任务已自动收口为失败',
+      now,
+      now,
+      input.runningHeartbeatBefore,
+      now,
+      input.runningHeartbeatBefore,
+      now,
+      limit
+    ).changes ?? 0)
+    const deletedExpiredLeaseCount = Number(database.prepare(deleteExpiredTemporaryLeasesSql(
+      'background_task_runs',
+      'background_job_leases'
+    )).run(now, limit).changes ?? 0)
+    commitDatabaseTransaction(database, transactionStarted)
+    return { failedQueuedCount, failedRunningCount, deletedExpiredLeaseCount }
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+export async function reconcileStaleBackgroundTaskRunsAsync(input: BackgroundTaskRunReconcileInput): Promise<BackgroundTaskRunReconcileResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return reconcileStaleBackgroundTaskRuns(input)
+  const now = input.now ?? nowIso()
+  const limit = normalizeReconcileLimit(input.limit)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  return await client.transaction(async (tx) => {
+    const runsTable = backgroundTaskRunTable(tx, 'background_task_runs')
+    const leasesTable = backgroundTaskRunTable(tx, 'background_job_leases')
+    const failedQueuedCount = (await tx.execute(reconcileQueuedTaskRunsSql(runsTable, leasesTable), [
+      safeJson({ reconciled: true, reconciledReason: 'worker_never_started' }),
+      '临时维护 worker 未在期限内启动，后台任务已自动收口为失败',
+      now,
+      now,
+      input.queuedBefore,
+      now,
+      input.queuedBefore,
+      now,
+      limit
+    ])).changes
+    const failedRunningCount = (await tx.execute(reconcileRunningTaskRunsSql(runsTable, leasesTable), [
+      safeJson({ reconciled: true, reconciledReason: 'lease_expired_after_worker_exit' }),
+      '临时维护 worker 心跳中断且无有效租约，后台任务已自动收口为失败',
+      now,
+      now,
+      input.runningHeartbeatBefore,
+      now,
+      input.runningHeartbeatBefore,
+      now,
+      limit
+    ])).changes
+    const deletedExpiredLeaseCount = (await tx.execute(deleteExpiredTemporaryLeasesSql(runsTable, leasesTable), [now, limit])).changes
+    return { failedQueuedCount, failedRunningCount, deletedExpiredLeaseCount }
+  })
+}
+
 export function acquireBackgroundJobLease(input: {
   leaseKey: string
   jobName: string
@@ -264,15 +365,7 @@ export function acquireBackgroundJobLease(input: {
 }): boolean {
   const now = input.now ?? nowIso()
   const database = getStatsDatabase()
-  const existing = database.prepare(`
-    SELECT lease_until AS leaseUntil
-    FROM background_job_leases
-    WHERE lease_key = ?
-  `).get(input.leaseKey) as { leaseUntil?: string } | undefined
-  if (existing && existing.leaseUntil && existing.leaseUntil > now) {
-    return false
-  }
-  database.prepare(`
+  const result = database.prepare(`
     INSERT INTO background_job_leases (
       lease_key, job_name, shard_key, owner_id, run_id, lease_until, heartbeat_at, started_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -285,6 +378,7 @@ export function acquireBackgroundJobLease(input: {
       heartbeat_at = excluded.heartbeat_at,
       started_at = excluded.started_at,
       updated_at = excluded.updated_at
+    WHERE background_job_leases.lease_until <= ?
   `).run(
     input.leaseKey,
     input.jobName,
@@ -294,9 +388,10 @@ export function acquireBackgroundJobLease(input: {
     input.leaseUntil,
     now,
     now,
+    now,
     now
   )
-  return true
+  return result.changes > 0
 }
 
 function renewBackgroundJobLease(leaseKey: string, ownerId: string, leaseUntil: string, now: string): boolean {
@@ -329,18 +424,8 @@ export async function acquireBackgroundJobLeaseAsync(input: {
   if (runtimeConfig.databaseDriver !== 'postgres') return acquireBackgroundJobLease(input)
   const now = input.now ?? nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  return await client.transaction(async (tx) => {
-    const existing = await tx.one<{ lease_until?: string | null }>(`
-      SELECT lease_until
-      FROM ${backgroundTaskRunTable(tx, 'background_job_leases')}
-      WHERE lease_key = ?
-      FOR UPDATE
-    `, [input.leaseKey])
-    if (existing?.lease_until && existing.lease_until > now) {
-      return false
-    }
-    await tx.execute(`
-      INSERT INTO ${backgroundTaskRunTable(tx, 'background_job_leases')} (
+  const result = await client.execute(`
+      INSERT INTO ${backgroundTaskRunTable(client, 'background_job_leases')} (
         lease_key, job_name, shard_key, owner_id, run_id, lease_until, heartbeat_at, started_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(lease_key) DO UPDATE SET
@@ -352,6 +437,7 @@ export async function acquireBackgroundJobLeaseAsync(input: {
         heartbeat_at = excluded.heartbeat_at,
         started_at = excluded.started_at,
         updated_at = excluded.updated_at
+      WHERE background_job_leases.lease_until <= ?
     `, [
       input.leaseKey,
       input.jobName,
@@ -361,13 +447,14 @@ export async function acquireBackgroundJobLeaseAsync(input: {
       input.leaseUntil,
       now,
       now,
+      now,
       now
     ])
-    return true
-  })
+  return result.changes > 0
 }
 
-async function renewBackgroundJobLeaseAsync(leaseKey: string, ownerId: string, leaseUntil: string, now: string, client?: DatabaseClient): Promise<boolean> {
+export async function renewBackgroundJobLeaseAsync(leaseKey: string, ownerId: string, leaseUntil: string, now = nowIso(), client?: DatabaseClient): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return renewBackgroundJobLease(leaseKey, ownerId, leaseUntil, now)
   const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
   const result = await databaseClient.execute(`
     UPDATE ${backgroundTaskRunTable(databaseClient, 'background_job_leases')}
@@ -394,6 +481,102 @@ export async function releaseBackgroundJobLeaseAsync(leaseKey: string, ownerId?:
 
 function backgroundTaskLeaseKey(runId: string): string {
   return `temporary-maintenance-worker:${runId}`
+}
+
+function reconcileQueuedTaskRunsSql(runsTable: string, leasesTable: string): string {
+  return `
+    UPDATE ${runsTable} AS target
+    SET status = 'failed',
+      result_json = ?,
+      error_message = ?,
+      finished_at = ?,
+      updated_at = ?
+    WHERE target.worker_role = 'temporary-maintenance-worker'
+      AND target.status = 'queued'
+      AND target.submitted_at <= ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${leasesTable} current_lease
+        WHERE current_lease.run_id = target.run_id
+          AND current_lease.job_name = 'temporary-maintenance-worker'
+          AND current_lease.lease_until > ?
+      )
+      AND target.run_id IN (
+      SELECT runs.run_id
+      FROM ${runsTable} runs
+      WHERE runs.worker_role = 'temporary-maintenance-worker'
+        AND runs.status = 'queued'
+        AND runs.submitted_at <= ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM ${leasesTable} leases
+          WHERE leases.run_id = runs.run_id
+            AND leases.job_name = 'temporary-maintenance-worker'
+            AND leases.lease_until > ?
+        )
+      ORDER BY runs.updated_at ASC, runs.run_id ASC
+      LIMIT ?
+    )
+  `
+}
+
+function reconcileRunningTaskRunsSql(runsTable: string, leasesTable: string): string {
+  return `
+    UPDATE ${runsTable} AS target
+    SET status = 'failed',
+      result_json = ?,
+      error_message = ?,
+      finished_at = ?,
+      updated_at = ?
+    WHERE target.worker_role = 'temporary-maintenance-worker'
+      AND target.status = 'running'
+      AND COALESCE(target.heartbeat_at, target.started_at, target.updated_at) <= ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${leasesTable} current_lease
+        WHERE current_lease.run_id = target.run_id
+          AND current_lease.job_name = 'temporary-maintenance-worker'
+          AND current_lease.lease_until > ?
+      )
+      AND target.run_id IN (
+      SELECT runs.run_id
+      FROM ${runsTable} runs
+      WHERE runs.worker_role = 'temporary-maintenance-worker'
+        AND runs.status = 'running'
+        AND COALESCE(runs.heartbeat_at, runs.started_at, runs.updated_at) <= ?
+        AND NOT EXISTS (
+          SELECT 1
+          FROM ${leasesTable} leases
+          WHERE leases.run_id = runs.run_id
+            AND leases.job_name = 'temporary-maintenance-worker'
+            AND leases.lease_until > ?
+        )
+      ORDER BY runs.updated_at ASC, runs.run_id ASC
+      LIMIT ?
+    )
+  `
+}
+
+function deleteExpiredTemporaryLeasesSql(runsTable: string, leasesTable: string): string {
+  return `
+    DELETE FROM ${leasesTable}
+    WHERE lease_key IN (
+      SELECT leases.lease_key
+      FROM ${leasesTable} leases
+      LEFT JOIN ${runsTable} runs ON runs.run_id = leases.run_id
+      WHERE leases.job_name = 'temporary-maintenance-worker'
+        AND leases.lease_until <= ?
+        AND (runs.run_id IS NULL OR runs.status NOT IN ('queued', 'running'))
+      ORDER BY leases.lease_until ASC, leases.lease_key ASC
+      LIMIT ?
+    )
+  `
+}
+
+function normalizeReconcileLimit(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(1000, Math.max(1, Math.trunc(value)))
+    : 500
 }
 
 function backgroundTaskRunTable(client: DatabaseClient, tableName: string): string {

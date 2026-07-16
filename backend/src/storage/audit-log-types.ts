@@ -85,6 +85,8 @@ export interface AuditLogInput {
   startedAt: string
   endedAt: string
   durationMs?: number
+  httpCompletedAt?: string
+  httpDurationMs?: number
   firstTokenMs?: number
   attempts: AuditLogAttemptInput[]
   payloads: AuditLogPayloadInput[]
@@ -135,6 +137,8 @@ export interface AuditLogSummary {
   startedAt: string
   endedAt: string
   durationMs?: number
+  httpCompletedAt?: string
+  httpDurationMs?: number
   firstTokenMs?: number
   createdAt: string
 }

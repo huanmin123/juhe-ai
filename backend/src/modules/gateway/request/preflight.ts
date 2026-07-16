@@ -87,7 +87,7 @@ import {
 } from './authorization-preflight.js'
 import { resolveHybridGatewayRoute, type HybridGatewayRuntimeRoute } from '../hybrid/routing.service.js'
 import { resolveNormalGatewayModelRoute } from '../routing/normal-model-route.service.js'
-import { applyCodexResponsesChatBridgeStatePreflight } from '../codex-responses/chat-bridge-state.js'
+import { applyCodexResponsesContextStatePreflight } from '../codex-responses/chat-bridge-state.js'
 import { applyCodexResponsesChatBridgeCompactPreflight } from '../codex-responses/compact-preflight.js'
 import {
   recoverableUnavailableMaxWaitMs,
@@ -96,6 +96,7 @@ import {
 import { requestModel } from './metadata.js'
 import { gatewayRequestEndpointFamily, openAIRequestEndpointFamily, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 import { consumePublicModelsRateLimit } from '../runtime/public-models-rate-limit.service.js'
+import { consumeAuthenticatedModelsRateLimit } from '../runtime/authenticated-models-rate-limit.service.js'
 import {
   createSameAccountRetryBudget,
   type SameAccountRetryBudget
@@ -208,14 +209,6 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
-  const activeGatewaySettings = mergeGatewaySettings(
-    gatewaySettings ?? await readCachedGatewaySettingsAsync(),
-    options.settingsOverride
-  )
-  const sameAccountRetryBudget = options.sameAccountRetryBudget
-    ?? createSameAccountRetryBudget(activeGatewaySettings.temporaryUnschedulableRetryAttempts)
-  options.sameAccountRetryBudget = sameAccountRetryBudget
-  let requestLane = options.requestLane ?? 'text'
   const trafficSource = options.trafficSource ?? 'gateway'
   const gatewayClientIp = trafficSource === 'gateway' ? clientIp : undefined
   let { systemAccountId, apiKeyId, groupId } = identity
@@ -242,6 +235,14 @@ export async function prepareOpenAIGatewayDispatchContext(
     endpoint,
     requestSnapshot
   })
+  const activeGatewaySettings = mergeGatewaySettings(
+    gatewaySettings ?? await readCachedGatewaySettingsAsync(),
+    options.settingsOverride
+  )
+  const sameAccountRetryBudget = options.sameAccountRetryBudget
+    ?? createSameAccountRetryBudget(activeGatewaySettings.temporaryUnschedulableRetryAttempts)
+  options.sameAccountRetryBudget = sameAccountRetryBudget
+  let requestLane = options.requestLane ?? 'text'
   const currentGroupUsageContext = (input: { groupId?: string; groupAccess?: GroupUsageAccessMetadata } = {}): GatewayFailureUsageContext => buildGatewayUsageContext({
     traceId,
     clientIp,
@@ -591,7 +592,55 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
-  const modelsResponseProtocol = resolveGatewayModelsResponseProtocol(req)
+  const modelsResponseProtocol = initialModelsResponseProtocol
+  if (modelsResponseProtocol && trafficSource === 'gateway' && apiKeyId) {
+    const authenticatedModelsRateLimitDecision = await consumeAuthenticatedModelsRateLimit({
+      apiKeyId,
+      clientIp: gatewayClientIp
+    })
+    if (!authenticatedModelsRateLimitDecision.allowed) {
+      const limiterUnavailable = authenticatedModelsRateLimitDecision.unavailable === true
+      const statusCode = limiterUnavailable ? 503 : 429
+      const errorCode = limiterUnavailable
+        ? 'authenticated_models_rate_limit_unavailable'
+        : 'authenticated_models_rate_limited'
+      const retryAfterSeconds = authenticatedModelsRateLimitDecision.retryAfterSeconds ?? (limiterUnavailable ? 5 : 1)
+      if (!res.headersSent) {
+        res.setHeader('Retry-After', String(retryAfterSeconds))
+      }
+      auditCapture.addGatewayMetadata({
+        label: 'authenticated_models_rate_limit',
+        metadata: {
+          scope: authenticatedModelsRateLimitDecision.scope,
+          limit: authenticatedModelsRateLimitDecision.limit,
+          retryAfterSeconds,
+          unavailable: limiterUnavailable
+        }
+      })
+      const responsePayload = gatewayErrorPayload(
+        limiterUnavailable ? '模型列表限流服务暂不可用，请稍后重试' : '模型列表请求过于频繁，请稍后重试',
+        limiterUnavailable ? 'service_unavailable' : 'rate_limit_exceeded',
+        errorCode
+      )
+      await sendGatewayFailureResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext,
+        startedAt,
+        statusCode,
+        responsePayload,
+        audit: {
+          outcome: 'gateway_failed',
+          errorPhase: limiterUnavailable ? 'security' : 'request_validation',
+          errorCode,
+          errorMessage: responsePayload.error.message
+        }
+      })
+      return undefined
+    }
+  }
+
   if (modelsResponseProtocol) {
     await recordClientIpErrorCircuitSuccessAsync({
       systemAccountId,
@@ -635,7 +684,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       }
     })
   }
-  const codexBridgeStatePreflight = await applyCodexResponsesChatBridgeStatePreflight({
+  const codexBridgeStatePreflight = await applyCodexResponsesContextStatePreflight({
     req,
     res,
     auditCapture,
@@ -645,8 +694,6 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyId,
     groupId,
     groupAccess,
-    requestClientCompatibility: clientStrategy.requestClientCompatibility,
-    rawCandidateAccounts,
     signal
   })
   if (codexBridgeStatePreflight === 'completed') {
@@ -801,7 +848,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     sameAccountRetryBudget,
     signal
   })
-  if (codexBridgeCompactPreflight === 'completed') {
+  if (codexBridgeCompactPreflight.outcome === 'completed') {
     dispatchPreparation.releaseClientIpConcurrency()
     return undefined
   }
@@ -809,7 +856,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   return {
     activeGatewaySettings,
     usageContext,
-    accounts: dispatchPreparation.accounts,
+    accounts: codexBridgeCompactPreflight.accounts,
     sessionAffinityKey,
     clientStrategy,
     clientIpAccountAvoidanceTracker,
@@ -1141,8 +1188,6 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
   if (!override) return base
   return {
     gatewayTextRawBodyLimitMegabytes: override.gatewayTextRawBodyLimitMegabytes ?? base.gatewayTextRawBodyLimitMegabytes,
-    gptPriorityPriceMultiplier: override.gptPriorityPriceMultiplier ?? base.gptPriorityPriceMultiplier,
-    gptFlexPriceMultiplier: override.gptFlexPriceMultiplier ?? base.gptFlexPriceMultiplier,
     defaultTemporaryUnschedulableMinutes: override.defaultTemporaryUnschedulableMinutes ?? base.defaultTemporaryUnschedulableMinutes,
     temporaryUnschedulableRetryIntervalSeconds: override.temporaryUnschedulableRetryIntervalSeconds ?? base.temporaryUnschedulableRetryIntervalSeconds,
     temporaryUnschedulableRetryAttempts: override.temporaryUnschedulableRetryAttempts ?? base.temporaryUnschedulableRetryAttempts,
@@ -1281,6 +1326,8 @@ export function buildGatewayUsageContext(input: {
     endpoint,
     requestSnapshot,
     requestedServiceTier: requestSnapshot.requestedServiceTier ?? 'default',
-    effectiveServiceTier: requestSnapshot.requestedServiceTier ?? 'default'
+    effectiveServiceTier: requestSnapshot.requestedServiceTier ?? 'default',
+    requestedReasoningEffort: requestSnapshot.requestedReasoningEffort,
+    effectiveReasoningEffort: requestSnapshot.requestedReasoningEffort
   }
 }

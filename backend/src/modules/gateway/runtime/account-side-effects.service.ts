@@ -2122,6 +2122,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     groupId: state.groupId,
     systemAccountId: state.systemAccountId,
     trafficSource: 'runtime_recovery_probe',
+    testEndpointMode: account.healthCheckEndpointMode,
     signal,
     disableAccountStateMutation: true,
     candidateAccount: state.account,

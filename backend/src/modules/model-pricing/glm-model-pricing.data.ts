@@ -1,11 +1,5 @@
-// Curated from official Z.ai / BigModel model and pricing docs on 2026-07-13.
+// Curated from official Z.ai / BigModel GLM text model and pricing docs on 2026-06-22.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
-
-const textInputModalities = ['text'] as const
-const visionInputModalities = ['text', 'image', 'video', 'file'] as const
-const documentVisionInputModalities = ['image', 'file'] as const
-const textOutputModalities = ['text'] as const
-const chatCompletionProtocols = ['chat_completions'] as const
 
 export const glmModelPricingData = [
   {
@@ -16,13 +10,15 @@ export const glmModelPricingData = [
     cache_read_input_token_cost: 0.26 / 1_000_000,
     output_cost_per_token: 4.4 / 1_000_000,
     context_window_tokens: 1_000_000,
-    max_output_tokens: 131_072,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
+    max_output_tokens: 128_000,
+    supported_api_protocols: ["chat_completions"],
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ['high', 'max'],
-    default_reasoning_effort: 'max'
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"],
+    supported_reasoning_efforts: ["high","max"],
+    default_reasoning_effort: "max"
   },
   {
     model: 'glm-5.1',
@@ -32,11 +28,13 @@ export const glmModelPricingData = [
     cache_read_input_token_cost: 0.26 / 1_000_000,
     output_cost_per_token: 4.4 / 1_000_000,
     context_window_tokens: 200_000,
-    max_output_tokens: 131_072,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    max_output_tokens: 128_000,
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: true,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-5',
@@ -46,11 +44,13 @@ export const glmModelPricingData = [
     cache_read_input_token_cost: 0.2 / 1_000_000,
     output_cost_per_token: 3.2 / 1_000_000,
     context_window_tokens: 200_000,
-    max_output_tokens: 131_072,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    max_output_tokens: 128_000,
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: true,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-5-turbo',
@@ -60,11 +60,13 @@ export const glmModelPricingData = [
     cache_read_input_token_cost: 0.24 / 1_000_000,
     output_cost_per_token: 4.0 / 1_000_000,
     context_window_tokens: 200_000,
-    max_output_tokens: 131_072,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    max_output_tokens: 128_000,
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: true,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4.7',
@@ -75,10 +77,12 @@ export const glmModelPricingData = [
     output_cost_per_token: 2.2 / 1_000_000,
     context_window_tokens: 200_000,
     max_output_tokens: 131_072,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: true,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4.7-flashx',
@@ -89,24 +93,27 @@ export const glmModelPricingData = [
     output_cost_per_token: 0.4 / 1_000_000,
     context_window_tokens: 200_000,
     max_output_tokens: 131_072,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: true,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4.7-flash',
     mode: 'chat',
     catalog_order: 70,
     input_cost_per_token: 0,
-    cache_read_input_token_cost: 0,
     output_cost_per_token: 0,
     context_window_tokens: 200_000,
     max_output_tokens: 131_072,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: false,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4.6',
@@ -117,10 +124,12 @@ export const glmModelPricingData = [
     output_cost_per_token: 2.2 / 1_000_000,
     context_window_tokens: 200_000,
     max_output_tokens: 131_072,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: true,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4.5',
@@ -131,10 +140,12 @@ export const glmModelPricingData = [
     output_cost_per_token: 2.2 / 1_000_000,
     context_window_tokens: 128_000,
     max_output_tokens: 98_304,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: true,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4.5-x',
@@ -145,10 +156,12 @@ export const glmModelPricingData = [
     output_cost_per_token: 8.9 / 1_000_000,
     context_window_tokens: 128_000,
     max_output_tokens: 98_304,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: true,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4.5-air',
@@ -159,10 +172,12 @@ export const glmModelPricingData = [
     output_cost_per_token: 1.1 / 1_000_000,
     context_window_tokens: 128_000,
     max_output_tokens: 98_304,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: true,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4.5-airx',
@@ -173,24 +188,27 @@ export const glmModelPricingData = [
     output_cost_per_token: 4.5 / 1_000_000,
     context_window_tokens: 128_000,
     max_output_tokens: 98_304,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: true,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4.5-flash',
     mode: 'chat',
     catalog_order: 130,
     input_cost_per_token: 0,
-    cache_read_input_token_cost: 0,
     output_cost_per_token: 0,
     context_window_tokens: 128_000,
     max_output_tokens: 98_304,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: false,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4-32b-0414-128k',
@@ -199,126 +217,70 @@ export const glmModelPricingData = [
     input_cost_per_token: 0.1 / 1_000_000,
     output_cost_per_token: 0.1 / 1_000_000,
     context_window_tokens: 128_000,
-    max_output_tokens: 16_384,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: false
+    max_output_tokens: 16_000,
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: false,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4-long',
     mode: 'chat',
     catalog_order: 150,
+    input_cost_per_token: 0.14 / 1_000_000,
+    output_cost_per_token: 0.14 / 1_000_000,
     context_window_tokens: 1_000_000,
-    max_output_tokens: 4_096,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: false
+    max_output_tokens: 4_000,
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: false,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4-flashx-250414',
     mode: 'chat',
     catalog_order: 160,
+    input_cost_per_token: 0,
+    output_cost_per_token: 0,
     context_window_tokens: 128_000,
-    max_output_tokens: 16_384,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    max_output_tokens: 16_000,
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: false,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
     model: 'glm-4-flash-250414',
     mode: 'chat',
     catalog_order: 170,
     input_cost_per_token: 0,
-    cache_read_input_token_cost: 0,
     output_cost_per_token: 0,
     context_window_tokens: 128_000,
-    max_output_tokens: 16_384,
-    input_modalities: textInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
+    max_output_tokens: 16_000,
+    supported_api_protocols: ["chat_completions"],
+    supports_prompt_caching: false,
+    supports_service_tier: false
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"]
   },
   {
-    model: 'glm-5v-turbo',
+    model: 'glm-5.2-free',
     mode: 'chat',
-    catalog_order: 200,
-    input_cost_per_token: 1.2 / 1_000_000,
-    cache_read_input_token_cost: 0.24 / 1_000_000,
-    output_cost_per_token: 4.0 / 1_000_000,
-    context_window_tokens: 200_000,
-    max_output_tokens: 131_072,
-    input_modalities: visionInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
-  },
-  {
-    model: 'glm-4.6v',
-    mode: 'chat',
-    catalog_order: 210,
-    input_cost_per_token: 0.3 / 1_000_000,
-    cache_read_input_token_cost: 0.05 / 1_000_000,
-    output_cost_per_token: 0.9 / 1_000_000,
-    context_window_tokens: 128_000,
-    max_output_tokens: 32_768,
-    input_modalities: visionInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
-  },
-  {
-    model: 'glm-4.6v-flashx',
-    mode: 'chat',
-    catalog_order: 220,
-    input_cost_per_token: 0.04 / 1_000_000,
-    cache_read_input_token_cost: 0.004 / 1_000_000,
-    output_cost_per_token: 0.4 / 1_000_000,
-    context_window_tokens: 128_000,
-    max_output_tokens: 32_768,
-    input_modalities: visionInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
-  },
-  {
-    model: 'glm-4.6v-flash',
-    mode: 'chat',
-    catalog_order: 230,
+    catalog_order: 999,
     input_cost_per_token: 0,
-    cache_read_input_token_cost: 0,
     output_cost_per_token: 0,
-    context_window_tokens: 128_000,
-    max_output_tokens: 32_768,
-    input_modalities: visionInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
-  },
-  {
-    model: 'glm-4.5v',
-    mode: 'chat',
-    catalog_order: 240,
-    input_cost_per_token: 0.6 / 1_000_000,
-    cache_read_input_token_cost: 0.11 / 1_000_000,
-    output_cost_per_token: 1.8 / 1_000_000,
-    max_output_tokens: 16_384,
-    input_modalities: visionInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: true
-  },
-  {
-    model: 'glm-ocr',
-    mode: 'chat',
-    catalog_order: 250,
-    input_cost_per_token: 0.03 / 1_000_000,
-    output_cost_per_token: 0.03 / 1_000_000,
-    input_modalities: documentVisionInputModalities,
-    output_modalities: textOutputModalities,
-    supported_api_protocols: chatCompletionProtocols,
-    supports_prompt_caching: false
+    context_window_tokens: 1_000_000,
+    max_output_tokens: 128_000,
+    supported_api_protocols: ['chat_completions'],
+    supports_prompt_caching: false,
+    supports_service_tier: false,
+    catalog_visible: false
   }
 ] as const

@@ -11,6 +11,11 @@ import {
   listModelCheckRunsAsync
 } from '../../storage/model-checks.repository.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
+import {
+  aggregateModelTrustObservationsAsync,
+  createModelCheckObservationsAsync,
+  findModelAccountTrustResultAsync
+} from '../../storage/model-trust.repository.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '模型检测 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -78,6 +83,47 @@ try {
     }
   ])
   assert.equal(items.length, 2, 'PG model check items should be inserted')
+  assert.equal(await createModelCheckObservationsAsync([{
+    id: `mco_${marker}`,
+    runId: run.id,
+    systemAccountId,
+    accountId,
+    providerCode: 'gpt',
+    providerProtocolProfileId: 'gpt-openai-v1',
+    endpointFamily: 'responses',
+    requestedModel: 'gpt-5.5',
+    mappedUpstreamModel: 'gpt-5.5',
+    observedModel: 'gpt-5.5',
+    mappingApplied: false,
+    upstreamBucketHmac: `hmac-sha256-v1:${'a'.repeat(64)}`,
+    cohortKeyHmac: `hmac-sha256-v1:${'b'.repeat(64)}`,
+    populationKeyHmac: `hmac-sha256-v1:${'b'.repeat(64)}`,
+    probeKeyHmac: `hmac-sha256-v1:${'c'.repeat(64)}`,
+    probeFamily: 'token_input_differential',
+    probeSetVersion: 'postgres-smoke',
+    tokenizerVersion: 'js-tiktoken@1.0.21:o200k_base',
+    featureVersion: 'none',
+    roundIndex: 0,
+    paddingTokens: 0,
+    localInputTokens: 100,
+    reportedInputTokens: 110,
+    observationStatus: 'observed',
+    identityStatus: 'consistent',
+    mappingStatus: 'direct',
+    protocolStatus: 'consistent',
+    evidenceCoverage: 10
+  }]), 1, 'PG model check observation should be inserted through current schema repository')
+  for (let index = 0; index < 20; index += 1) {
+    await aggregateModelTrustObservationsAsync(500)
+    if (await findModelAccountTrustResultAsync(systemAccountId, accountId, 'gpt-5.5')) break
+  }
+  const trustResult = await findModelAccountTrustResultAsync(systemAccountId, accountId, 'gpt-5.5')
+  assert.ok(trustResult, 'PG smoke 必须真实执行模型可信聚合并写入 latest')
+  const activationIndex = await (await getPostgresPool()).query(`
+    SELECT indexname FROM pg_indexes
+    WHERE schemaname = 'juhe_stats' AND indexname = 'idx_model_token_integrity_windows_activation'
+  `)
+  assert.equal(activationIndex.rowCount, 1, 'PG smoke 必须存在固定截距激活查询索引')
 
   const finished = await finishModelCheckRunAsync(run.id, {
     level: 'likely',
@@ -131,6 +177,13 @@ try {
 async function cleanupSmokeRows(ids: string[]): Promise<void> {
   if (!ids.length) return
   const pool = await getPostgresPool()
+  await pool.query('DELETE FROM juhe_stats.model_token_integrity_rounds WHERE account_id = $1', [accountId])
+  await pool.query('DELETE FROM juhe_stats.model_token_integrity_windows WHERE account_id = $1', [accountId])
+  await pool.query('DELETE FROM juhe_stats.model_trust_window_sources WHERE account_id = $1', [accountId])
+  await pool.query('DELETE FROM juhe_stats.model_account_trust_results WHERE account_id = $1', [accountId])
+  await pool.query('DELETE FROM juhe_stats.model_trust_latest_dirty_accounts WHERE account_id = $1', [accountId])
+  await pool.query('DELETE FROM juhe_stats.model_token_intercept_baseline_versions WHERE probe_set_version = $1', ['postgres-smoke'])
   await pool.query('DELETE FROM juhe_dataset.model_check_items WHERE run_id = ANY($1::text[])', [ids])
+  await pool.query('DELETE FROM juhe_dataset.model_check_observations WHERE run_id = ANY($1::text[])', [ids])
   await pool.query('DELETE FROM juhe_dataset.model_check_runs WHERE id = ANY($1::text[])', [ids])
 }

@@ -6,7 +6,11 @@ import { findAccountForTestAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { refreshAccountBalanceCandidate, testAccountBalanceCandidate } from './account-balance-query.service.js'
-import { normalizeAccountBalanceConfig, validateAccountBalanceCapability } from './account-balance-config.js'
+import {
+  MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE,
+  normalizeAccountBalanceConfig,
+  validateAccountBalanceCapability
+} from './account-balance-config.js'
 import { prepareAccountDraftTestSnapshotAsync } from './account-draft-test.service.js'
 import { accountBalanceDraftTestSchema } from './account-request.schemas.js'
 
@@ -32,7 +36,12 @@ export function registerAccountBalanceRoutes(router: Router): void {
         accountInput: parsed.data.account,
         requestAccess
       })
-      validateAccountBalanceCapability(preparedDraft.account, true)
+      const balanceDecision = validateAccountBalanceCapability(preparedDraft.account, true)
+      if (!balanceDecision.enabled) {
+        throw new Error(balanceDecision.autoDisabledForMultipleApiKeys
+          ? MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE
+          : '当前账户不支持上游余额查询')
+      }
       res.json(ok(await testAccountBalanceCandidate({
         id: preparedDraft.account.id,
         credentials: preparedDraft.account.credentials,

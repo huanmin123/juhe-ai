@@ -36,6 +36,7 @@ import {
   isAccountGptServiceTierOverrideAvailable
 } from './accountGptRequestOverrides'
 import { buildAccountBalancePayload, validateAccountBalanceForm } from './accountBalanceQuery'
+import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 
 export const ACCOUNT_API_KEY_BATCH_CREATE_LIMIT = 50
 
@@ -49,6 +50,7 @@ export type AccountSavePayload = {
   priority: number
   supportedModels: string[]
   healthCheckModel: string
+  healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string | null
@@ -70,6 +72,7 @@ export type AccountOAuthCreateCommonPayload = {
   priority: number
   supportedModels: string[]
   healthCheckModel: string
+  healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string
@@ -121,6 +124,9 @@ export function validateAccountSaveForm(input: {
   const healthCheckModel = form.healthCheckModel.trim()
   if (!healthCheckModel) return '请选择检查模型'
   if (!supportedModels.includes(healthCheckModel)) return '检查模型必须从账户支持模型中选择'
+  if (!accountHealthCheckEndpointModeOptions(form.supportedEndpointModes).some((option) => option.value === form.healthCheckEndpointMode)) {
+    return '检查请求形态必须选择已启用的 JSON 或流式上游能力'
+  }
   const requestOverrideValidation = validateAccountGptRequestOverrides(
     form,
     supportedModels,
@@ -163,7 +169,7 @@ type ModelMappingProtocolOption = {
   supportedApiProtocols?: ProviderModelApiProtocol[]
   supportedServiceTiers?: ProviderModelServiceTier[]
   supportedReasoningEfforts?: ProviderModelReasoningEffort[]
-  defaultReasoningEffort?: ProviderModelReasoningEffort
+  defaultReasoningEffort?: ProviderModelReasoningEffort | null
 }
 
 function resolveFormProviderProfile(form: AccountFormModel, providers: ProviderDefinition[] = FALLBACK_PROVIDERS): {
@@ -197,6 +203,7 @@ export function buildAccountSavePayload(input: {
     priority: input.form.priority,
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
     healthCheckModel: input.form.healthCheckModel.trim(),
+    healthCheckEndpointMode: input.form.healthCheckEndpointMode,
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
@@ -216,6 +223,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountU
     priority: payload.priority,
     supportedModels: payload.supportedModels,
     healthCheckModel: payload.healthCheckModel,
+    healthCheckEndpointMode: payload.healthCheckEndpointMode,
     modelMappings: payload.modelMappings,
     tags: payload.tags,
     proxyProfileId: payload.proxyProfileId,
@@ -244,6 +252,7 @@ export function buildOAuthCreateCommonPayload(input: {
     priority: input.form.priority,
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
     healthCheckModel: input.form.healthCheckModel.trim(),
+    healthCheckEndpointMode: input.form.healthCheckEndpointMode,
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: input.form.proxyProfileId,
@@ -325,8 +334,8 @@ function validateAccountGptRequestOverrides(
   supportedModels: string[],
   modelOptions: ModelMappingProtocolOption[]
 ): string | undefined {
-  if (form.providerCode !== 'gpt') return undefined
   const capabilities = accountGptRequestOverrideCapabilities({
+    providerCode: form.providerCode,
     accountType: form.type,
     modelOptions,
     supportedModels
@@ -401,6 +410,7 @@ function validateAccountModelMappings(
     const protocolValidation = accountModelMappingProtocolValidationMessage({
       sourceEndpointFamily,
       upstreamEndpointFamily,
+      enabled: item.enabled,
       context: { providerProfile, supportedEndpointModes }
     })
     if (protocolValidation) return protocolValidation

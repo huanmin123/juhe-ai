@@ -362,10 +362,11 @@ func TestManagementResourceAuthorizationAccountInstancePreservesHealthCheckModel
 	}
 	code := strings.ReplaceAll(string(source), "\r\n", "\n")
 	for _, want := range []string{
-		"protocol_version, name, type, concurrency_limit, health_check_model",
+		"protocol_version, name, type, concurrency_limit, health_check_model, health_check_endpoint_mode",
 		"health_check_model = $7",
-		"concurrency_limit, priority, super_priority_enabled, fallback_enabled, schedulable,\n  health_check_model,",
-		"source.ConcurrencyLimit, source.HealthCheckModel, authorization.ResourceID",
+		"health_check_endpoint_mode = $8",
+		"concurrency_limit, priority, super_priority_enabled, fallback_enabled, schedulable,\n  health_check_model, health_check_endpoint_mode,",
+		"source.ConcurrencyLimit, source.HealthCheckModel, source.HealthCheckEndpointMode, authorization.ResourceID",
 	} {
 		if !strings.Contains(code, want) {
 			t.Fatalf("authorization account instance implementation missing %q", want)

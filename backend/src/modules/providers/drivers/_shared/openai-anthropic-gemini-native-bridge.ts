@@ -152,6 +152,18 @@ function validateCommonUnsupportedFields(
   mapping: ResolvedOpenAIModelMapping,
   providerName?: string
 ): void {
+  if (mapping.sourceEndpointFamily === OPENAI_CHAT_COMPLETIONS_FAMILY || mapping.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY) {
+    const protectedFields = ['service_tier', 'reasoning', 'reasoning_effort', 'thinking']
+      .filter((field) => body[field] !== undefined && body[field] !== null)
+    if (protectedFields.length > 0) {
+      throw guidance(
+        req,
+        mapping,
+        `Gemini native 上游不能保真映射 OpenAI 的 ${protectedFields.join('、')} 字段。请移除这些请求控制，或改用支持对应字段的原生上游。`,
+        'unsupported_openai_request_controls_for_gemini_native'
+      )
+    }
+  }
   if (mapping.sourceEndpointFamily === OPENAI_RESPONSES_FAMILY) {
     if (body.previous_response_id !== undefined || body.context_management !== undefined) {
       throw guidance(req, mapping, 'Gemini native 上游不能保真承载 OpenAI Responses 的 previous_response_id / context_management 状态链。请改用真实 Responses 上游，或移除状态链字段后重试。', 'unsupported_responses_state_for_gemini_native')

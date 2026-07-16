@@ -1,4 +1,4 @@
-import type { AccountClientCompatibility, AccountSupportedEndpointMode, AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountClientCompatibility, AccountHealthCheckEndpointMode, AccountSupportedEndpointMode, AccountType, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import {
   DEEPSEEK_OPENAI_V1_PROFILE_ID,
   DEEPSEEK_PROVIDER_CODE,
@@ -23,6 +23,7 @@ import { FALLBACK_PROVIDERS } from './accountOptions'
 export type AccountEndpointModeLabelContext = AccountProviderProfileLike | ProviderProtocolProfileDefinition | ProviderDefinition | undefined
 export type AccountTestEndpointModeSource = AccountProviderProfileLike & {
   credentials?: Record<string, unknown>
+  healthCheckEndpointMode?: AccountHealthCheckEndpointMode
 }
 export type AccountTestEndpointModeDraftSource = {
   providerCode?: string
@@ -32,6 +33,7 @@ export type AccountTestEndpointModeDraftSource = {
   type?: unknown
   credentials?: Record<string, unknown>
   clientCompatibility?: AccountClientCompatibility
+  healthCheckEndpointMode?: AccountHealthCheckEndpointMode
 }
 
 export const accountEndpointModeOptions: Array<{ label: string; value: AccountSupportedEndpointMode }> = [
@@ -92,12 +94,12 @@ export function validateAccountEndpointModes(input: {
   allowedModes?: AccountSupportedEndpointMode[]
   profile?: AccountProviderProfileLike
 }): string | undefined {
-  if (!input.modes.length) return '请至少选择一项接口能力'
+  if (!input.modes.length) return '请至少选择一项上游接口能力'
   if (input.allowedModes?.length) {
     const allowedModes = new Set(input.allowedModes)
     const unsupportedModes = input.modes.filter((mode) => !allowedModes.has(mode))
     if (unsupportedModes.length) {
-      return `当前供应商协议不支持接口能力：${unsupportedModes.map((mode) => accountEndpointModeLabel(mode, input.profile)).join('、')}`
+      return `当前供应商协议不支持上游接口能力：${unsupportedModes.map((mode) => accountEndpointModeLabel(mode, input.profile)).join('、')}`
     }
   }
   const hasAnthropicMode = input.modes.some((mode) => anthropicAccountEndpointModes.includes(mode))
@@ -105,24 +107,24 @@ export function validateAccountEndpointModes(input: {
   const hasOpenAIMode = input.modes.some((mode) => openAIEndpointModes.includes(mode))
   const protocolModeCount = [hasOpenAIMode, hasAnthropicMode, hasGeminiMode].filter(Boolean).length
   if (protocolModeCount > 1 && !isHybridEndpointModeContext(input.profile)) {
-    return '不同协议的接口能力不能混选'
+    return '不同协议的上游接口能力不能混选'
   }
   if (hasAnthropicMode && !input.modes.includes('messages_json') && !input.modes.includes('messages_sse')) {
-    return `Anthropic API Key 至少需要启用 ${accountEndpointModeLabel('messages_json', input.profile)} 或 ${accountEndpointModeLabel('messages_sse', input.profile)}`
+    return `Anthropic API Key 上游接口能力至少需要启用 ${accountEndpointModeLabel('messages_json', input.profile)} 或 ${accountEndpointModeLabel('messages_sse', input.profile)}`
   }
   if (hasGeminiMode) {
     if (input.type !== 'api_key') return 'Gemini 原生协议当前仅支持 API Key 账户'
     if (!input.modes.includes('generate_content_json') && !input.modes.includes('generate_content_sse')) {
-      return `Gemini API Key 至少需要启用 ${accountEndpointModeLabel('generate_content_json', input.profile)} 或 ${accountEndpointModeLabel('generate_content_sse', input.profile)}`
+      return `Gemini API Key 上游接口能力至少需要启用 ${accountEndpointModeLabel('generate_content_json', input.profile)} 或 ${accountEndpointModeLabel('generate_content_sse', input.profile)}`
     }
     return undefined
   }
   if (input.type === 'oauth') {
     if (input.modes.some((mode) => !responsesEndpointModes.includes(mode))) {
-      return `OAuth 账户接口能力只能选择 ${accountEndpointModeLabel('responses_json', input.profile)} 或 ${accountEndpointModeLabel('responses_sse', input.profile)}`
+      return `OAuth 账户上游接口能力只能选择 ${accountEndpointModeLabel('responses_json', input.profile)} 或 ${accountEndpointModeLabel('responses_sse', input.profile)}`
     }
     if (!input.modes.includes('responses_sse')) {
-      return `OAuth 账户必须支持 ${accountEndpointModeLabel('responses_sse', input.profile)}`
+      return `OAuth 账户上游接口能力必须启用 ${accountEndpointModeLabel('responses_sse', input.profile)}`
     }
   }
   if (!hasOpenAIMode) return undefined
@@ -191,7 +193,21 @@ export function accountTestEndpointModesForAccount(
   )
   const supportedModes = normalizeAccountEndpointModes(source.credentials?.supported_endpoint_modes, fallback)
   const supportedSet = new Set(supportedModes)
-  return accountTestEndpointModeOrder(source).filter((mode) => supportedSet.has(mode))
+  return prioritizeAccountTestEndpointModes(
+    accountTestEndpointModeOrder(source).filter((mode) => supportedSet.has(mode)),
+    source.healthCheckEndpointMode
+  )
+}
+
+export function prioritizeAccountTestEndpointModes(
+  modes: readonly AccountSupportedEndpointMode[],
+  healthCheckMode?: AccountHealthCheckEndpointMode
+): AccountSupportedEndpointMode[] {
+  const normalized = [...new Set(modes)]
+  if (!healthCheckMode) return normalized
+  return normalized.includes(healthCheckMode)
+    ? [healthCheckMode, ...normalized.filter((mode) => mode !== healthCheckMode)]
+    : normalized
 }
 
 export function defaultAccountTestEndpointModeForSelection(
@@ -210,11 +226,23 @@ export function defaultAccountTestEndpointModeForSelection(
 }
 
 export function accountTestEndpointModeOrder(account?: AccountProviderProfileLike): AccountSupportedEndpointMode[] {
+  if (isHybridProviderCode(contextProviderCode(account))) {
+    return [
+      'chat_json',
+      'chat_sse',
+      'responses_json',
+      'responses_sse',
+      'messages_json',
+      'messages_sse',
+      'generate_content_json',
+      'generate_content_sse'
+    ]
+  }
   const protocolKind = accountProviderProtocolKind(account)
-  if (protocolKind === 'anthropic_v1') return ['messages_sse', 'messages_json']
-  if (protocolKind === 'gemini_v1beta') return ['generate_content_sse', 'generate_content_json']
-  if (account?.type === 'oauth') return ['responses_sse', 'responses_json']
-  return ['chat_sse', 'responses_sse', 'chat_json', 'responses_json']
+  if (protocolKind === 'anthropic_v1') return ['messages_json', 'messages_sse']
+  if (protocolKind === 'gemini_v1beta') return ['generate_content_json', 'generate_content_sse']
+  if (account?.type === 'oauth') return ['responses_json', 'responses_sse']
+  return ['chat_json', 'responses_json', 'chat_sse', 'responses_sse']
 }
 
 function chatCapabilityName(context?: AccountEndpointModeLabelContext): string {

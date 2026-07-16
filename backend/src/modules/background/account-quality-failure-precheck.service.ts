@@ -76,6 +76,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
     groupId,
     systemAccountId: item.systemAccountId,
     trafficSource: 'runtime_recovery_probe',
+    testEndpointMode: account.healthCheckEndpointMode,
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,

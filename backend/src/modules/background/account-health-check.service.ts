@@ -118,6 +118,7 @@ async function runAccountHealthCheckQueueItem(
     diagnostics: 'limited',
     groupId,
     trafficSource: 'account_health_check',
+    testEndpointMode: account.healthCheckEndpointMode,
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
@@ -136,7 +137,8 @@ async function runAccountHealthCheckQueueItem(
       jitterMinutes: item.jitterMinutes,
       failureThreshold: item.failureThreshold,
       statusCode: result.statusCode,
-      expectedConfigRevision: item.configRevision
+      expectedConfigRevision: item.configRevision,
+      traceId: result.traceId
       }
     }, backgroundProbeDbServiceTimeoutMs)
     const changed = healthCheckResult?.changed ?? false
@@ -168,7 +170,8 @@ async function runAccountHealthCheckQueueItem(
       errorMessage: result.message,
       countTowardsThreshold: result.accountFailureEligible !== false,
       expectedConfigRevision: item.configRevision,
-      observedAt
+      observedAt,
+      traceId: result.traceId
     }
   }, backgroundProbeDbServiceTimeoutMs)
 
@@ -178,6 +181,7 @@ async function runAccountHealthCheckQueueItem(
       type: 'mark_account_test_temporary_unavailable',
       accountId: account.id,
       reason: accountHealthCheckTemporaryUnavailableReason(failure.failureCount, result),
+      traceId: result.traceId,
       access: { systemAccountId: account.systemAccountId ?? '', role: 'user' },
       healthCheckGuard: {
         configRevision: item.configRevision,
@@ -198,14 +202,19 @@ async function runAccountHealthCheckQueueItem(
     durationMs: result.durationMs,
     failureCount: failure?.failureCount ?? 0,
     reachedThreshold: failure?.reachedThreshold ?? false,
+    failureStartedAt: failure?.failureStartedAt,
+    transitionedToError: failure?.transitionedToError ?? false,
     accountFailureEligible: result.accountFailureEligible,
     nextHealthCheckAt: failure?.nextHealthCheckAt,
     markedTemporaryUnavailable,
     attemptIndex: context.attemptIndex,
     retryNumber: context.retryNumber,
-    message: result.message
+    message: result.message,
+    traceId: result.traceId
   }
-  if (account.status !== 'pending_test' && failure?.reachedThreshold && result.accountFailureEligible !== false) {
+  if (failure?.transitionedToError) {
+    logger.error(logFields, '账号激活检查从首次失败起已持续 24 小时，账户已转为异常')
+  } else if (account.status !== 'pending_test' && failure?.reachedThreshold && result.accountFailureEligible !== false) {
     logger.warn(logFields, '账号健康检测连续失败，已尝试标记为临时不可调用')
   } else {
     logger.warn(logFields, '账号健康检测失败，已记录失败并安排短间隔复检')

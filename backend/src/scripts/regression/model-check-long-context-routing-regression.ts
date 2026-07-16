@@ -64,9 +64,9 @@ try {
   const summaries = Array.isArray(longContext.evidenceSummary.summaries)
     ? longContext.evidenceSummary.summaries as Array<Record<string, unknown>>
     : []
-  assert(summaries.some((item) => item.key === 'context_8k' && item.foundNeedle === true), '8k 窗口应通过，证明短上下文伪装可以过关')
-  assert(summaries.some((item) => item.key === 'context_20k' && item.foundNeedle === false), '20k 窗口应失败，识别按上下文长度降级')
-  assert(summaries.some((item) => item.key === 'context_60k' && item.foundNeedle === false), '60k 窗口应失败，识别按上下文长度降级')
+  assert(summaries.some((item) => item.key === 'context_low' && item.foundNeedle === true), 'profile 低档窗口应通过，证明短上下文伪装可以过关')
+  assert(summaries.some((item) => item.key === 'context_medium' && item.foundNeedle === false), 'profile 中档窗口应失败，识别按上下文长度降级')
+  assert(summaries.some((item) => item.key === 'context_high' && item.foundNeedle === false), 'profile 高档窗口应失败，识别按上下文长度降级')
   assert(!['high_confidence', 'likely'].includes(detail.level), `长度降级场景不能输出可信结论：${detail.level}`)
 
   console.log('模型检测长上下文降级回归通过：短探针全绿但大窗口失败时结论降为不确定')
@@ -179,7 +179,7 @@ function outputForProbe(body: Record<string, unknown>, rawBodyLength: number): s
   if (text.includes('第一行 ALPHA')) return 'ALPHA\nBETA\nGAMMA'
   if (text.includes('VECTOR')) return 'VECTOR'
   if (text.includes('CROSS-MODEL-OK')) return 'CROSS-MODEL-OK'
-  const needle = text.match(/NEEDLE-\d+-[A-Z]+/)
+  const needle = text.match(/NEEDLE-(?:LOW|MEDIUM|HIGH|EXTREME)-\d+/)
   if (needle) return needle[0]
   if (body.text || text.includes('JSON')) return '{"status":"ok","value":7}'
   return 'OK-MODEL-CHECK'

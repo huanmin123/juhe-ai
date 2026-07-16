@@ -5,6 +5,7 @@ import type {
   AccountBatchEditRequest,
   AccountGptReasoningEffortOverride,
   AccountGptServiceTierOverride,
+  AccountHealthCheckEndpointMode,
   AccountModelMapping,
   AccountSummary,
   AccountSupportedEndpointMode
@@ -25,6 +26,8 @@ import {
   validateAccountResponseInspectionRules
 } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
+import { accountModelMappingProtocolValidationMessage } from './accountModelMappingProtocolMatrix'
+import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 
 export type AccountBatchEditFieldKey =
   | 'tags'
@@ -40,6 +43,7 @@ export type AccountBatchEditFieldKey =
   | 'responseInspectionRules'
   | 'supportedModels'
   | 'healthCheckModel'
+  | 'healthCheckEndpointMode'
   | 'modelMappings'
   | 'supportedEndpointModes'
   | 'serviceTierOverride'
@@ -60,6 +64,7 @@ export interface AccountBatchEditForm {
   responseInspectionRules: AccountResponseInspectionRuleForm[]
   supportedModels: string[]
   healthCheckModel: string
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   modelMappings: AccountModelMapping[]
   supportedEndpointModes: AccountSupportedEndpointMode[]
   serviceTierOverride: AccountGptServiceTierOverride
@@ -72,23 +77,24 @@ export interface AccountBatchEditBuildResult {
 }
 
 export const accountBatchEditFieldLabels: Record<AccountBatchEditFieldKey, string> = {
-  tags: '标签',
+  tags: '账户标签',
   proxyProfileId: '代理',
   concurrencyLimit: '并发上限',
   priority: '优先级',
   superPriorityEnabled: '超级优先',
   fallbackEnabled: '降级备用',
   accountExpiresAt: '账户到期时间',
-  availabilitySchedule: '可用时间计划',
-  notes: '备注',
+  availabilitySchedule: '时间计划',
+  notes: '说明',
   errorHandlingRules: '错误处理策略',
   responseInspectionRules: '响应检查策略',
   supportedModels: '支持模型',
   healthCheckModel: '检查模型',
-  modelMappings: '模型映射',
-  supportedEndpointModes: '接口能力限制',
-  serviceTierOverride: 'GPT 服务等级',
-  reasoningEffortOverride: 'GPT 思考级别'
+  healthCheckEndpointMode: '检查请求形态',
+  modelMappings: '账号模型别名',
+  supportedEndpointModes: '上游接口能力',
+  serviceTierOverride: '服务等级',
+  reasoningEffortOverride: '思考级别'
 }
 
 export function createAccountBatchEditForm(): AccountBatchEditForm {
@@ -109,6 +115,7 @@ export function createAccountBatchEditForm(): AccountBatchEditForm {
     responseInspectionRules: [],
     supportedModels: [],
     healthCheckModel: '',
+    healthCheckEndpointMode: 'chat_json',
     modelMappings: [],
     supportedEndpointModes: [],
     serviceTierOverride: '',
@@ -183,7 +190,15 @@ export function buildAccountBatchEditRequest(
     return { message: '检查模型必须属于本次覆盖的支持模型' }
   }
   if (form.enabled.supportedEndpointModes && !form.supportedEndpointModes.length) {
-    return { message: '批量覆盖接口能力时至少选择一项' }
+    return { message: '批量覆盖上游接口能力时至少选择一项' }
+  }
+  if (form.enabled.healthCheckEndpointMode) {
+    const endpointModes = form.enabled.supportedEndpointModes
+      ? form.supportedEndpointModes
+      : intersectAccountSupportedEndpointModes(accounts)
+    if (!accountHealthCheckEndpointModeOptions(endpointModes).some((option) => option.value === form.healthCheckEndpointMode)) {
+      return { message: '检查请求形态必须选择全部目标账户已启用的 JSON 或流式请求能力' }
+    }
   }
   const invalidMappingIndex = form.enabled.modelMappings
     ? form.modelMappings.findIndex((mapping) => (
@@ -194,8 +209,10 @@ export function buildAccountBatchEditRequest(
       ))
     : -1
   if (invalidMappingIndex >= 0) {
-    return { message: `请完整填写第 ${invalidMappingIndex + 1} 条模型映射` }
+    return { message: `请完整填写第 ${invalidMappingIndex + 1} 条账号模型别名` }
   }
+  const mappingValidation = validateBatchAccountModelMappings(accounts, form)
+  if (mappingValidation) return { message: mappingValidation }
 
   const updates: AccountBatchEditRequest['updates'] = {}
   addUpdate(updates, 'tags', form.enabled.tags, normalizedTextList(form.tags))
@@ -226,6 +243,7 @@ export function buildAccountBatchEditRequest(
   )
   addUpdate(updates, 'supportedModels', form.enabled.supportedModels, supportedModels)
   addUpdate(updates, 'healthCheckModel', form.enabled.healthCheckModel, healthCheckModel)
+  addUpdate(updates, 'healthCheckEndpointMode', form.enabled.healthCheckEndpointMode, form.healthCheckEndpointMode)
   addUpdate(
     updates,
     'modelMappings',
@@ -246,6 +264,42 @@ export function buildAccountBatchEditRequest(
   addUpdate(updates, 'reasoningEffortOverride', form.enabled.reasoningEffortOverride, form.reasoningEffortOverride)
 
   return { payload: { targets, updates } }
+}
+
+export function intersectAccountSupportedEndpointModes(
+  accounts: AccountSummary[]
+): AccountSupportedEndpointMode[] {
+  if (!accounts.length) return []
+  const [first, ...rest] = accounts.map((account) => accountSupportedEndpointModes(account))
+  return first.filter((mode) => rest.every((modes) => modes.includes(mode)))
+}
+
+function validateBatchAccountModelMappings(
+  accounts: AccountSummary[],
+  form: AccountBatchEditForm
+): string | undefined {
+  if (!form.enabled.modelMappings && !form.enabled.supportedEndpointModes) return undefined
+  for (const account of accounts) {
+    const mappings = form.enabled.modelMappings ? form.modelMappings : account.modelMappings ?? []
+    const supportedEndpointModes = form.enabled.supportedEndpointModes
+      ? form.supportedEndpointModes
+      : accountSupportedEndpointModes(account)
+    for (const mapping of mappings) {
+      const message = accountModelMappingProtocolValidationMessage({
+        sourceEndpointFamily: mapping.sourceEndpointFamily,
+        upstreamEndpointFamily: mapping.upstreamEndpointFamily,
+        enabled: mapping.enabled,
+        context: { providerProfile: account, supportedEndpointModes }
+      })
+      if (message) return message
+    }
+  }
+  return undefined
+}
+
+function accountSupportedEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
+  const value = account.credentials?.supported_endpoint_modes
+  return Array.isArray(value) ? value as AccountSupportedEndpointMode[] : []
 }
 
 function addUpdate<TKey extends keyof AccountBatchEditRequest['updates']>(

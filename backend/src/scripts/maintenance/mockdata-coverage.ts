@@ -16,12 +16,23 @@ import { chunks, idPrefix, type CreatedMockdata } from './mockdata/shared.js'
 
 type BusinessDatabase = ReturnType<typeof getBusinessDatabase>
 
+const allowedEmptyTables = new Set([
+  'stats.usage_range_window_requests'
+])
+
 export function assertMockdataCoverage(created: CreatedMockdata): void {
   const database = getBusinessDatabase()
   assertBusinessCoverage(database, created)
   assertUsageCoverage()
   assertCreatedShape(created)
+  assertModelTrustCoverage()
   assertApplicationTablesHaveRows()
+}
+
+function assertModelTrustCoverage(): void {
+  assertMinimum('模型可信 observation 样本缺失', scalar(getDatasetDatabase(), 'SELECT COUNT(*) AS value FROM model_check_observations'), 1)
+  assertMinimum('模型可信身份基线样本缺失', scalar(getStatsDatabase(), 'SELECT COUNT(*) AS value FROM model_identity_baseline_versions'), 1)
+  assertMinimum('模型可信最新结果样本缺失', scalar(getStatsDatabase(), 'SELECT COUNT(*) AS value FROM model_account_trust_results'), 1)
 }
 
 function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMockdata): void {
@@ -96,8 +107,12 @@ function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMock
 function assertUsageCoverage(): void {
   const trafficSources = new Set<string>()
   const endpoints = new Set<string>()
+  const billedServiceTiers = new Set<string>()
+  const requestedReasoningEfforts = new Set<string>()
+  const effectiveReasoningEfforts = new Set<string>()
   let imageTokenRows = 0
   let modelMappingRows = 0
+  let pricingSnapshotRows = 0
   for (const location of listUsageRecordShardLocations()) {
     const database = getUsageRecordShardDatabase(location)
     for (const row of database.prepare("SELECT DISTINCT traffic_source AS value FROM usage_records WHERE id LIKE 'mockdata_%'").all() as Array<{ value?: string }>) {
@@ -106,13 +121,27 @@ function assertUsageCoverage(): void {
     for (const row of database.prepare("SELECT DISTINCT endpoint AS value FROM usage_records WHERE id LIKE 'mockdata_%'").all() as Array<{ value?: string }>) {
       if (row.value) endpoints.add(row.value)
     }
+    for (const row of database.prepare("SELECT DISTINCT billed_service_tier AS value FROM usage_records WHERE id LIKE 'mockdata_%'").all() as Array<{ value?: string }>) {
+      if (row.value) billedServiceTiers.add(row.value)
+    }
+    for (const row of database.prepare("SELECT DISTINCT requested_reasoning_effort AS value FROM usage_records WHERE id LIKE 'mockdata_%'").all() as Array<{ value?: string }>) {
+      if (row.value) requestedReasoningEfforts.add(row.value)
+    }
+    for (const row of database.prepare("SELECT DISTINCT effective_reasoning_effort AS value FROM usage_records WHERE id LIKE 'mockdata_%'").all() as Array<{ value?: string }>) {
+      if (row.value) effectiveReasoningEfforts.add(row.value)
+    }
     imageTokenRows += scalar(database, "SELECT COUNT(*) AS value FROM usage_records WHERE id LIKE 'mockdata_%' AND (COALESCE(input_image_tokens, 0) > 0 OR COALESCE(output_image_tokens, 0) > 0)")
     modelMappingRows += scalar(database, "SELECT COUNT(*) AS value FROM usage_records WHERE id LIKE 'mockdata_%' AND model_mapping_applied = 1")
+    pricingSnapshotRows += scalar(database, "SELECT COUNT(*) AS value FROM usage_records WHERE id LIKE 'mockdata_%' AND cost_breakdown_snapshot_json IS NOT NULL")
   }
   assertPresent('使用记录来源覆盖不完整', trafficSources, ['gateway', 'manual_account_test', 'account_health_check', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
   assertPresent('使用记录端点覆盖不完整', endpoints, ['GET /v1/models', 'POST /v1/responses', 'POST /v1/chat/completions', 'POST /v1/images/generations'])
+  assertPresent('使用记录实际服务档位覆盖不完整', billedServiceTiers, ['priority', 'flex'])
+  assertPresent('使用记录请求思考强度覆盖不完整', requestedReasoningEfforts, ['low', 'medium'])
+  assertPresent('使用记录最终思考强度覆盖不完整', effectiveReasoningEfforts, ['high'])
   assertMinimum('图片 token 使用记录样本缺失', imageTokenRows, 1)
   assertMinimum('模型映射使用记录样本缺失', modelMappingRows, 1)
+  assertMinimum('使用记录写入时计价快照样本缺失', pricingSnapshotRows, 1)
 }
 
 function assertCreatedShape(created: CreatedMockdata): void {
@@ -208,7 +237,7 @@ function collectEmptyTables(emptyTables: string[], databaseRole: string, databas
     const tableName = table.name
     if (!tableName) continue
     const row = database.prepare(`SELECT COUNT(*) AS value FROM ${quoteIdentifier(tableName)}`).get() as { value?: number } | undefined
-    if (Number(row?.value ?? 0) === 0) {
+    if (Number(row?.value ?? 0) === 0 && !allowedEmptyTables.has(`${databaseRole}.${tableName}`)) {
       emptyTables.push(`${databaseRole}.${tableName}`)
     }
   }

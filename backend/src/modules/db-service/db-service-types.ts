@@ -141,6 +141,20 @@ export interface DbServiceRuntimeSnapshot {
 export interface DbServiceServerRuntimeSnapshot {
   accountConcurrency?: Record<string, number>
   accountRuntimeAvailability?: Record<string, AccountRuntimeAvailability>
+  accountBalanceSnapshotCleanup?: {
+    name: string
+    pendingCount: number
+    runningCount: number
+    nextRunAt?: string
+    suppressedAccountCount: number
+    exhaustedAccountCount: number
+    completedCount: number
+    failedAttemptCount: number
+    exhaustedCount: number
+    lastSuccessAt?: string
+    lastErrorAt?: string
+    lastError?: string
+  }
   ingestWorker?: {
     pid?: number
     ready: boolean
@@ -328,6 +342,17 @@ export interface DbServiceServerRuntimeSnapshot {
   }>
   gatewayAccountSideEffects?: Record<string, unknown>
   activeAuditCaptureCount?: number
+  auditLogTransport?: {
+    queuedJobs: number
+    queuedBytes: number
+    activeJobs: number
+    activeBytes: number
+    workerCount: number
+    completedCount: number
+    failedCount: number
+    rejectedCount: number
+    pendingDispatchCount: number
+  }
 }
 
 export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency' | 'account_runtime'
@@ -555,6 +580,7 @@ export type DbServiceOperation =
       headers?: Record<string, string | string[]>
       bodyText?: string
       errorMessage?: string
+      traceId?: string
       settings?: GatewaySettings
       trafficSource?: OpenAIGatewayTrafficSource
     }
@@ -585,6 +611,7 @@ export type DbServiceOperation =
       thresholdWindowMinutes: number
       action: 'cooldown' | 'disable' | 'none'
       reason: string
+      traceId?: string
     }
   }
   | {
@@ -602,6 +629,7 @@ export type DbServiceOperation =
     type: 'mark_account_temporary_unavailable'
     account: OpenAIAccountSecret
     reason: string
+    traceId?: string
   }
   | {
     type: 'clear_account_failure_state'
@@ -618,6 +646,7 @@ export type DbServiceOperation =
     type: 'mark_account_test_temporary_unavailable'
     accountId: string
     reason: string
+    traceId?: string
     healthCheckGuard?: {
       configRevision: number
       checkedAt: string
@@ -661,6 +690,7 @@ export type DbServiceOperation =
       failureThreshold: number
       statusCode?: number
       expectedConfigRevision?: number
+      traceId?: string
     }
   }
   | {
@@ -695,6 +725,7 @@ export type DbServiceOperation =
       countTowardsThreshold?: boolean
       expectedConfigRevision?: number
       observedAt?: string
+      traceId?: string
     }
   }
   | {
@@ -716,7 +747,6 @@ export type DbServiceOperation =
       errorMessage?: string
       maxPauseMinutes?: number
       maxRecoveryHours?: number
-      longTermIntervalHours?: number
     }
   }
   | {
@@ -725,6 +755,7 @@ export type DbServiceOperation =
     errorCode: string
     reason: string
     preserveDisabled?: boolean
+    traceId?: string
   }
   | {
     type: 'update_proxy_test_state'
@@ -921,10 +952,10 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'record_account_health_check_success' } ? { changed: boolean } :
   T extends { type: 'commit_account_balance_refresh' } ? { changed: boolean } :
   T extends { type: 'enable_detected_account_balance_query' } ? { changed: boolean } :
-  T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt: string; errorCode: string; errorMessage: string } :
+  T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt?: string; failureStartedAt?: string; transitionedToError: boolean; accountStatus?: string; errorCode: string; errorMessage: string } :
   T extends { type: 'list_accounts_due_for_cooldown_retest' } ? import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestPage :
   T extends { type: 'find_account_for_cooldown_retest' } ? AccountSummary | undefined :
-  T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; errorCode: string; errorMessage: string } :
+  T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; observationTimeoutSeconds?: number; transitionedToError?: boolean; errorCode: string; errorMessage: string } :
   T extends { type: 'mark_account_exception' } ? { updated: boolean; accountStatus?: string } :
   T extends { type: 'update_proxy_test_state' } ? { updated: boolean; proxyStatus?: string } :
   T extends { type: 'mark_all_group_account_stats_dirty' } ? { marked: true } :

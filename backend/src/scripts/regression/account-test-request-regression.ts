@@ -12,9 +12,39 @@ import {
   createOpenAITestRequest,
   testPathFromEndpointMode
 } from '../../modules/accounts/account-test-request.js'
+import { hasAccountTestProtocolSuccessEvidence } from '../../modules/accounts/account-test-success-evidence.js'
 
 assert.equal(accountTestDefaultPrompt, '只输出 OK', '账号测试默认 prompt 应保持中文默认值')
 assert.equal(accountTestModelsPath, '/v1/models', '模型列表探测路径应保持 /v1/models')
+
+const protocolSuccessFixtures = [
+  ['chat_json', JSON.stringify({ object: 'chat.completion', choices: [{ finish_reason: 'stop', message: { content: 'OK' } }] })],
+  ['chat_sse', `data: ${JSON.stringify({ object: 'chat.completion.chunk', choices: [{ finish_reason: 'stop', delta: {} }] })}\n\ndata: [DONE]\n\n`],
+  ['responses_json', JSON.stringify({ object: 'response', status: 'completed', output: [] })],
+  ['responses_sse', `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { object: 'response', status: 'completed', output: [] } })}\n\n`],
+  ['messages_json', JSON.stringify({ type: 'message', stop_reason: 'end_turn', content: [] })],
+  ['messages_sse', `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`],
+  ['generate_content_json', JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'OK' }] } }] })],
+  ['generate_content_sse', `data: ${JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'OK' }] } }] })}\n\n`]
+] as const
+for (const [mode, body] of protocolSuccessFixtures) {
+  assert.equal(hasAccountTestProtocolSuccessEvidence(mode, body), true, `${mode} 应识别协议完成证据`)
+  for (const invalid of ['', 'data: [DONE]\n\n', '<html>ok</html>', '{invalid json']) {
+    assert.equal(hasAccountTestProtocolSuccessEvidence(mode, invalid), false, `${mode} 不得把空白、仅 DONE、HTML 或畸形 JSON 当作成功`)
+  }
+}
+assert.equal(hasAccountTestProtocolSuccessEvidence(
+  'chat_sse',
+  `data: ${JSON.stringify({ choices: [{ delta: { content: 'OK' }, finish_reason: null }] })}\n\ndata: [DONE]\n\n`
+), true, '兼容 Chat SSE 有非空 content chunk 且以 [DONE] 结束时应视为成功')
+assert.equal(hasAccountTestProtocolSuccessEvidence(
+  'chat_sse',
+  `data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant' }, finish_reason: null }] })}\n\ndata: [DONE]\n\n`
+), false, '只有角色 chunk 和 [DONE] 不构成模型输出成功证据')
+assert.equal(hasAccountTestProtocolSuccessEvidence(
+  'chat_sse',
+  `data: [DONE]\n\ndata: ${JSON.stringify({ choices: [{ delta: { content: 'late' }, finish_reason: null }] })}\n\n`
+), false, '[DONE] 之后追加内容属于非法事件顺序，不得构成成功证据')
 
 assert.equal(testPathFromEndpointMode('chat_json'), '/v1/chat/completions', 'Chat JSON 测试应使用 Chat Completions 路径')
 assert.equal(testPathFromEndpointMode('chat_sse'), '/v1/chat/completions', 'Chat SSE 测试应使用 Chat Completions 路径')
@@ -122,6 +152,13 @@ assert.deepEqual(anthropicRequest.body.thinking, { type: 'adaptive' }, 'Anthropi
 assert.deepEqual(anthropicRequest.body.output_config, { effort: 'high' }, 'Anthropic 账户测试应使用 Claude Code output_config')
 assert.equal(Array.isArray(anthropicRequest.body.system), true, 'Anthropic 账户测试应使用 Claude Code system block 数组')
 assert.match(JSON.stringify(anthropicRequest.body), /Claude Agent SDK/, 'Anthropic 账户测试应使用真实 Claude Code SDK system 文案')
+const anthropicSseRequest = createAnthropicTestRequest({
+  fallbackModel: 'claude-opus-4-8',
+  prompt: 'ok',
+  supportedEndpointModes: ['messages_sse'],
+  testEndpointMode: 'messages_sse'
+})
+assert.equal(anthropicSseRequest.body.stream, true, 'Messages SSE 测试必须使用 stream=true')
 
 const geminiRequest = createGeminiTestRequest({
   fallbackModel: 'gemini-2.5-pro',
@@ -151,10 +188,19 @@ const openAITestRequestInputSource = requestSource.match(/export type AccountTes
 assert.doesNotMatch(openAITestRequestInputSource, /requestShape|supportedEndpointModes|providerProtocolProfileId/, 'OpenAI 测试请求模块只按本次 testEndpointMode 构造请求，不从真实请求或供应商档案改写')
 assert.match(openAITestRequestInputSource, /testEndpointMode:\s*AccountSupportedEndpointMode/, 'OpenAI 测试请求输入必须显式接收本次测试 endpoint mode')
 const serviceSource = readFileSync(resolve('src/modules/accounts/account-test.service.ts'), 'utf8')
-assert.match(serviceSource, /normalizedAccountTestEndpointModes/, '测试服务必须从账号接口能力限制解析可测试形态')
-assert.match(serviceSource, /resolveAccountTestEndpointMode/, '测试服务必须校验本次 testEndpointMode 是否被账号接口能力限制允许')
+const optionsServiceSource = readFileSync(resolve('src/modules/accounts/account-test-options.service.ts'), 'utf8')
+const endpointModesSource = readFileSync(resolve('src/modules/accounts/account-test-endpoint-modes.ts'), 'utf8')
+assert.match(serviceSource, /accountManualTestEndpointModes/, '测试服务必须复用共享解析器读取账号可测试形态')
+assert.match(optionsServiceSource, /accountManualTestEndpointModes/, '测试选项必须复用共享解析器读取账号可测试形态')
+assert.match(endpointModesSource, /supported_endpoint_modes/, '共享解析器必须从账号上游接口能力读取可测试形态')
+assert.match(serviceSource, /resolveAccountTestEndpointMode/, '测试服务必须校验本次 testEndpointMode 是否被账号上游接口能力允许')
+assert.match(serviceSource, /isMessagesTestEndpointMode\(testEndpointMode\)/, '混合供应商测试请求必须按本次 mode 分派 Messages 请求构造与解析')
+assert.match(serviceSource, /isGeminiTestEndpointMode\(testEndpointMode\)/, '混合供应商测试请求必须按本次 mode 分派 Gemini 请求构造与解析')
+assert.match(serviceSource, /测试请求形态不在账户上游接口能力中/, '账户测试请求形态错误必须使用上游接口能力文案')
+assert.match(serviceSource, /账户上游接口能力中没有可用于连接测试的请求形态/, '账户测试空能力错误必须使用上游接口能力文案')
+assert.match(optionsServiceSource, /账户上游接口能力中没有可用于连接测试的请求形态/, '测试选项空能力错误必须使用上游接口能力文案')
 assert.match(serviceSource, /handleOpenAIGatewayRequest/, '真实网关测试编排仍应留在 account-test.service.ts')
-assert.match(serviceSource, /candidateAccounts:\s*\[resolved\.account\]/, '测试服务仍应固定候选账号')
+assert.match(serviceSource, /candidateAccounts:\s*\[diagnosticCandidate\]/, '测试服务仍应固定当前诊断候选账号')
 assert.match(serviceSource, /disableSessionAffinity:\s*true/, '测试服务仍应禁用 session affinity')
 assert.match(serviceSource, /trafficSource:\s*input\.trafficSource\s*\?\?\s*'manual_account_test'/, '测试服务仍应保留 manual_account_test 默认来源')
 assert.match(serviceSource, /resolveOpenAIRequestModelMapping/, '账户测试必须解析本次真实请求命中的模型映射')
@@ -167,4 +213,4 @@ assert.doesNotMatch(taskQueueSource, /requestShape:/, '管理端手动账号测�
 assert.doesNotMatch(taskQueueSource, /task\.clientCompatibility/, '管理端手动账号测试任务不得使用客户端画像作为测试请求形态')
 assert.match(taskQueueSource, /testEndpointMode:\s*task\.testEndpointMode/, '管理端手动账号测试任务必须透传本次 testEndpointMode')
 
-console.log('账号测试请求构造回归通过：endpoint mode、payload 字段、接口能力限制校验和真实网关编排边界均符合预期')
+console.log('账号测试请求构造回归通过：endpoint mode、payload 字段、上游接口能力校验和真实网关编排边界均符合预期')

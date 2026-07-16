@@ -1,4 +1,4 @@
-import type { AccountAvailabilitySchedule, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
+import type { AccountAvailabilitySchedule, AccountHealthCheckEndpointMode, AccountModelMapping, AccountSummary, AccountType } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   findAccountSummaryAsync,
@@ -49,6 +49,7 @@ export interface AccountExportAccount {
   fallbackEnabled?: boolean
   supportedModels?: string[]
   healthCheckModel?: string
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   modelMappings?: AccountModelMapping[]
   tags?: string[]
   accountExpiresAt?: string
@@ -82,6 +83,8 @@ const apiKeyExportCredentialKeys = [
   'api_key_weights',
   'base_url',
   'supported_endpoint_modes',
+  'service_tier_override',
+  'reasoning_effort_override',
   'error_handling_rules',
   'response_inspection_rules'
 ]
@@ -94,6 +97,8 @@ const oauthExportCredentialKeys = [
   'id_token',
   'base_url',
   'supported_endpoint_modes',
+  'service_tier_override',
+  'reasoning_effort_override',
   'account_id',
   'email',
   'chatgpt_user_id',
@@ -208,6 +213,7 @@ function buildExportAccount(account: AccountSummary, proxyRef: string | undefine
     providerProtocolProfileId: account.providerProtocolProfileId,
     type: account.type,
     status,
+    healthCheckEndpointMode: account.healthCheckEndpointMode,
     credentials: exportCredentials(account.type, account.credentials)
   }
   if (account.boundGroupName) {

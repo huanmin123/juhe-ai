@@ -231,6 +231,10 @@ func publicAccountProviderProfileFromRow(row postgresqueries.FindPublicAccountPr
 	if err != nil {
 		return port.PublicAccountProviderProfile{}, err
 	}
+	capabilities, err := decodeProviderStringArray(row.CapabilitiesJson, "provider profile capabilities_json")
+	if err != nil {
+		return port.PublicAccountProviderProfile{}, err
+	}
 	return port.PublicAccountProviderProfile{
 		ID:                      row.ID,
 		ProviderCode:            row.ProviderCode,
@@ -240,9 +244,27 @@ func publicAccountProviderProfileFromRow(row postgresqueries.FindPublicAccountPr
 		ProtocolCode:            row.ProtocolCode,
 		ProtocolVersion:         row.ProtocolVersion,
 		AccountTypesJSON:        row.AccountTypesJson,
+		EnabledEndpointModes:    publicAccountEnabledEndpointModes(capabilities),
 		DefaultSupportedModels:  defaultSupportedModels,
 		DefaultHealthCheckModel: strings.TrimSpace(row.DefaultHealthCheckModel),
 	}, nil
+}
+
+func publicAccountEnabledEndpointModes(capabilities []string) []string {
+	modes := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		switch capability {
+		case "chat":
+			modes = append(modes, "chat_json", "chat_sse")
+		case "responses":
+			modes = append(modes, "responses_json", "responses_sse")
+		case "messages":
+			modes = append(modes, "messages_json", "messages_sse")
+		case "generate_content":
+			modes = append(modes, "generate_content_json", "generate_content_sse")
+		}
+	}
+	return modes
 }
 
 func publicAccountFindExistingGroupByName(ctx context.Context, q *postgresqueries.Queries, systemAccountID string, providerCode string, name string) (port.PublicAccountGroupRef, bool, error) {
@@ -432,6 +454,7 @@ func publicAccountCreate(ctx context.Context, q *postgresqueries.Queries, input 
 		Priority:                  int32(input.Priority),
 		ClientCompatibility:       input.ClientCompatibility,
 		HealthCheckModel:          input.HealthCheckModel,
+		HealthCheckEndpointMode:   input.HealthCheckEndpointMode,
 		Schedulable:               input.Schedulable,
 		AvailabilityScheduleJson:  pgTextPtr(input.AvailabilityScheduleJSON),
 		Notes:                     pgTextPtr(input.Notes),
@@ -475,6 +498,7 @@ func publicAccountUpdate(ctx context.Context, q *postgresqueries.Queries, input 
 		CredentialFingerprint:    pgTextPtr(input.CredentialFingerprint),
 		CredentialMask:           input.CredentialMask,
 		HealthCheckModel:         input.HealthCheckModel,
+		HealthCheckEndpointMode:  input.HealthCheckEndpointMode,
 		ConcurrencyLimit:         int32(input.ConcurrencyLimit),
 		Priority:                 int32(input.Priority),
 		Schedulable:              input.Schedulable,
@@ -594,6 +618,7 @@ func publicAccountSummaryFromListRow(row postgresqueries.ListPublicAccountsRow) 
 		CredentialMask:            row.CredentialMask,
 		ClientCompatibility:       row.ClientCompatibility,
 		HealthCheckModel:          strings.TrimSpace(row.HealthCheckModel),
+		HealthCheckEndpointMode:   strings.TrimSpace(row.HealthCheckEndpointMode),
 		Schedulable:               row.Schedulable,
 		AvailabilityScheduleJSON:  textPtr(row.AvailabilityScheduleJson),
 		ConcurrencyLimit:          int(row.ConcurrencyLimit),
@@ -622,6 +647,7 @@ func publicAccountSummaryFromIDRow(row postgresqueries.FindPublicAccountByIDRow)
 		CredentialMask:            row.CredentialMask,
 		ClientCompatibility:       row.ClientCompatibility,
 		HealthCheckModel:          strings.TrimSpace(row.HealthCheckModel),
+		HealthCheckEndpointMode:   strings.TrimSpace(row.HealthCheckEndpointMode),
 		Schedulable:               row.Schedulable,
 		AvailabilityScheduleJSON:  textPtr(row.AvailabilityScheduleJson),
 		ConcurrencyLimit:          int(row.ConcurrencyLimit),
@@ -650,6 +676,7 @@ func publicAccountSummaryFromForUpdateRow(row postgresqueries.FindPublicAccountB
 		CredentialMask:            row.CredentialMask,
 		ClientCompatibility:       row.ClientCompatibility,
 		HealthCheckModel:          strings.TrimSpace(row.HealthCheckModel),
+		HealthCheckEndpointMode:   strings.TrimSpace(row.HealthCheckEndpointMode),
 		Schedulable:               row.Schedulable,
 		AvailabilityScheduleJSON:  textPtr(row.AvailabilityScheduleJson),
 		ConcurrencyLimit:          int(row.ConcurrencyLimit),
@@ -678,6 +705,7 @@ func publicAccountSummaryFromExistingRow(row postgresqueries.FindExistingPublicA
 		CredentialMask:            row.CredentialMask,
 		ClientCompatibility:       row.ClientCompatibility,
 		HealthCheckModel:          strings.TrimSpace(row.HealthCheckModel),
+		HealthCheckEndpointMode:   strings.TrimSpace(row.HealthCheckEndpointMode),
 		Schedulable:               row.Schedulable,
 		AvailabilityScheduleJSON:  textPtr(row.AvailabilityScheduleJson),
 		ConcurrencyLimit:          int(row.ConcurrencyLimit),

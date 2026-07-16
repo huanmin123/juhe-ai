@@ -184,7 +184,11 @@ async function runHttpSmoke(): Promise<void> {
   let server: http.Server | undefined
   try {
     console.log(`[performance-system-api-smoke:${label}] start app`)
-    const app = createSystemApiApp({ systemApiPrefix: '/__aisys__/api', trustProxy: true })
+    const app = createSystemApiApp({
+      systemApiPrefix: '/__aisys__/api',
+      trustProxy: true,
+      bypassSystemApiRateLimitForTest: true
+    })
     server = app.listen(0, '127.0.0.1')
     await listen(server)
     const baseUrl = `http://127.0.0.1:${serverAddress(server).port}`
@@ -284,13 +288,15 @@ async function runHttpSmoke(): Promise<void> {
     createdCustomModelIds.push(customModelTarget.id)
     assert.equal(customModelTarget.providerCode, 'gpt', 'performance smoke 自定义模型应归属目标供应商')
     assert.equal(customModelTarget.scope, 'personal', 'performance smoke 自定义模型应固定为个人模型')
-    const customModelAlias = await postEnvelope<{ id: string; model: string; pricingModel?: string }>(baseUrl, '/__aisys__/api/providers/gpt/models', {
+    const customModelAlias = await postEnvelope<{ id: string; model: string; inputUsdPer1M?: number; outputUsdPer1M?: number }>(baseUrl, '/__aisys__/api/providers/gpt/models', {
       model: `smoke-custom-alias-${suffix}`,
       supportedApiProtocols: ['responses'],
-      pricingModel: customModelTarget.model
+      inputUsdPer1M: 1,
+      outputUsdPer1M: 2
     }, cookie)
     createdCustomModelIds.push(customModelAlias.id)
-    assert.equal(customModelAlias.pricingModel, customModelTarget.model, 'performance smoke pricingModel 应能引用刚创建的个人模型')
+    assert.equal(customModelAlias.inputUsdPer1M, 1, 'performance smoke 别名模型应保存自身输入价格')
+    assert.equal(customModelAlias.outputUsdPer1M, 2, 'performance smoke 别名模型应保存自身输出价格')
     const customModels = await getEnvelope<Array<{ id?: string; model: string; scope: string }>>(baseUrl, '/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true', cookie)
     assert.ok(customModels.some((item) => item.id === customModelTarget.id && item.model === customModelTarget.model), 'performance smoke 应能在模型目录列表查回自定义目标模型')
     assert.ok(customModels.some((item) => item.id === customModelAlias.id && item.model === customModelAlias.model), 'performance smoke 应能在模型目录列表查回自定义别名模型')
@@ -373,13 +379,14 @@ async function runHttpSmoke(): Promise<void> {
       providerCode: 'gpt',
       providerProtocolProfileId: gptProviderProfileId,
       type: 'api_key',
-      status: 'temporary_unavailable',
+      status: 'disabled',
       groupId: createdGroup.id,
       credentials: {
         api_key: `sk-smoke-account-${aiAccountSuffix}`,
         base_url: 'https://example.invalid/v1'
       },
       supportedModels: [smokeModel],
+      healthCheckModel: smokeModel,
       modelMappings: [{
         sourceModel: smokeFallbackModel,
         sourceEndpointFamily: 'chat_completions',
@@ -390,10 +397,14 @@ async function runHttpSmoke(): Promise<void> {
       concurrencyLimit: 20
     }, cookie)
     createdAiAccountIds.push(createdAiAccount.id)
-    assert.equal(createdAiAccount.status, 'temporary_unavailable', 'performance smoke 应能创建临时不可用 AI 账户')
+    assert.equal(createdAiAccount.status, 'disabled', 'performance smoke 应能创建停用 AI 账户，避免依赖后台首次健康检查')
     assert.equal(createdAiAccount.boundGroupId, createdGroup.id, 'performance smoke AI 账户应绑定目标分组')
     assert.deepEqual(createdAiAccount.supportedModels, [smokeModel], 'performance smoke AI 账户应保存支持模型')
     assert.equal(createdAiAccount.modelMappings?.[0]?.sourceModel, smokeFallbackModel, 'performance smoke AI 账户应保存同协议模型别名映射')
+    const temporarilyUnavailableAiAccount = await patchEnvelope<{ id: string; status: string }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
+      status: 'temporary_unavailable'
+    }, cookie)
+    assert.equal(temporarilyUnavailableAiAccount.status, 'temporary_unavailable', 'performance smoke 应能把停用 AI 账户切换为临时不可用')
     const aiAccountBasicDetail = await getEnvelope<{
       id: string
       status: string
@@ -425,8 +436,8 @@ async function runHttpSmoke(): Promise<void> {
     const restoredAiAccount = await patchEnvelope<{ id: string; status: string; schedulable: boolean }>(baseUrl, `/__aisys__/api/accounts/${createdAiAccount.id}`, {
       clearFailureState: true
     }, cookie)
-    assert.equal(restoredAiAccount.status, 'active', 'performance smoke 应能恢复 AI 账户异常状态')
-    assert.equal(restoredAiAccount.schedulable, true, 'performance smoke 恢复异常状态后账户应参与调度')
+    assert.equal(restoredAiAccount.status, 'active', 'performance smoke 应能恢复 AI 账户临时不可调用状态')
+    assert.equal(restoredAiAccount.schedulable, true, 'performance smoke 恢复临时不可调用状态后账户应参与调度')
     const updatedAiAccountName = `${createdAiAccount.name}改`
     const updatedAiAccount = await patchEnvelope<{
       id: string

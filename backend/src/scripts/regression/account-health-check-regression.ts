@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import {
+  ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  GEMINI_NATIVE_V1BETA_PROFILE_ID,
+  GPT_OPENAI_V1_PROFILE_ID
+} from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import { accountTestFailureEligibleForAccount } from '../../modules/accounts/account-test-failure-eligibility.js'
 
@@ -33,6 +37,7 @@ const healthSettings = {
 
 try {
   const repositorySource = readFileSync(resolve('src/storage/account-health-check.repository.ts'), 'utf8')
+  const usageRepositorySource = readFileSync(resolve('src/storage/usage-records.repository.ts'), 'utf8')
   const serviceSource = readFileSync(resolve('src/modules/background/account-health-check.service.ts'), 'utf8')
   const postgresSuccessSource = sourceBetween(
     repositorySource,
@@ -44,7 +49,7 @@ try {
     'export async function recordAccountHealthCheckFailureAsync',
     'export function recordAccountHealthSuccessSignals'
   )
-  assert.match(repositorySource, /SELECT config_revision, health_check_failure_count, last_health_success_at[\s\S]+FOR UPDATE/, 'PostgreSQL 健康失败计数必须锁定账户行后递增')
+  assert.match(repositorySource, /SELECT status, config_revision, health_check_failure_count, health_check_failure_started_at, last_health_success_at[\s\S]+FOR UPDATE/, 'PostgreSQL 健康失败计数和首次失败窗口必须锁定账户行后更新')
   assert.match(repositorySource, /expectedConfigRevision[\s\S]+config_revision = \?/, '健康检查结果写入必须绑定账户配置版本')
   assert.doesNotMatch(postgresSuccessSource, /\(\? IS NULL OR/, 'PostgreSQL 健康成功写回不能使用无法推断参数类型的 NULL 守卫')
   assert.doesNotMatch(postgresFailureSource, /\(\? IS NULL OR/, 'PostgreSQL 健康失败写回不能使用无法推断参数类型的 NULL 守卫')
@@ -57,6 +62,19 @@ try {
   assert.match(serviceSource, /queuedConfigRevision[\s\S]+currentConfigRevision/, '健康检查队列执行前必须丢弃旧配置版本任务')
   assert.match(serviceSource, /healthCheckGuard/, '达到阈值后的保护状态写入必须携带健康失败快照')
   assert.match(serviceSource, /errorLogFields\(event\.error/, '健康检查队列耗尽日志必须保留真实异常')
+  assert.match(repositorySource, /pendingHealthCheckRetryIntervalMs = 60 \* 60_000/, '待检查账户失败后必须固定每 1 小时复检')
+  assert.match(repositorySource, /pendingHealthCheckFailureTimeoutMs = 24 \* 60 \* 60_000/, '待检查账户必须从首次失败起 24 小时收敛为异常')
+  assert.match(repositorySource, /account_activation_check_timeout/, '待检查超时必须写入明确异常码')
+  assert.match(usageRepositorySource, /accountHealthSuccessSignalSchedule\(accountId, successAt, healthCheckSettings \?\? \{\}\)/, 'PostgreSQL 真实成功请求必须复用健康检测间隔与 jitter 计划')
+  assert.match(usageRepositorySource, /SET last_health_success_at = \?,[\s\S]+next_health_check_at = \?/, 'PostgreSQL 真实成功请求必须同时顺延下次健康复核')
+  assert.match(usageRepositorySource, /next_health_check_at < \?[\s\S]+next_health_check_at > \?/, 'PostgreSQL 真实成功请求应与 SQLite 一致节流，避免每请求重写账户行')
+  assert.equal((repositorySource.match(/AND status = 'active'/g) ?? []).length >= 2, true, 'SQLite 和通用 PostgreSQL 成功信号写回应只更新 active 账户')
+  assert.match(usageRepositorySource, /WHERE id = \?[\s\S]+AND status = 'active'/, 'PostgreSQL usage 成功信号不得覆盖待检查状态')
+  assert.equal(
+    (repositorySource.match(/row\.status !== 'pending_test' && recentSuccessAt/g) ?? []).length,
+    2,
+    'SQLite 和 PostgreSQL 都必须让修改配置后的待检查账户忽略旧成功信号并立即进入检查候选'
+  )
 
   const database = databaseModule.getBusinessDatabase()
   const accountColumns = database.prepare('PRAGMA table_info(accounts)').all() as unknown as Array<{ name: string }>
@@ -65,9 +83,12 @@ try {
     'next_health_check_at',
     'last_health_success_at',
     'health_check_failure_count',
+    'health_check_failure_started_at',
     'last_health_check_status_code',
     'last_health_check_error_code',
-    'last_health_check_error_message'
+    'last_health_check_error_message',
+    'last_error_trace_id',
+    'last_health_check_trace_id'
   ]) {
     assert.ok(accountColumns.some((row) => row.name === column), `accounts 应包含 ${column} 字段`)
   }
@@ -92,9 +113,24 @@ try {
     providerCode: 'gpt',
     enabled: true
   }, access)
+  const anthropicGroup = repositories.createGroup({
+    name: 'Anthropic 健康检测回归分组',
+    providerCode: 'anthropic',
+    enabled: true
+  }, access)
+  const geminiGroup = repositories.createGroup({
+    name: 'Gemini 健康检测回归分组',
+    providerCode: 'gemini',
+    enabled: true
+  }, access)
   const dueAccount = createActiveAccount(repositories, group.id, '健康检测到期账号', 'sk-health-due')
   const recentAccount = createActiveAccount(repositories, group.id, '健康检测近期成功账号', 'sk-health-recent')
   const disabledAccount = createActiveAccount(repositories, group.id, '健康检测停用账号', 'sk-health-disabled')
+  const runtimeFailureTraceId = 'trace-runtime-failure-regression'
+  assert(repositories.markAccountTemporaryUnavailable(dueAccount.id, '上游运行态失败', undefined, runtimeFailureTraceId), '运行态失败应写入冷却状态')
+  assert.equal(repositories.findAccountSummary(dueAccount.id, access)?.lastErrorTraceId, runtimeFailureTraceId, '运行态错误提示必须保留对应 traceId')
+  repositories.clearAccountFailureStateResult(dueAccount.id, access, { allowErrorRestore: false })
+  assert.equal(repositories.findAccountSummary(dueAccount.id, access)?.lastErrorTraceId, undefined, '恢复账户时必须同步清理旧错误 traceId')
   repositories.updateAccount(disabledAccount.id, { status: 'disabled' }, access)
   const futureScheduledAccount = repositories.createAccount({
     providerCode: 'gpt',
@@ -167,12 +203,43 @@ try {
     pendingFirstCheckAccount.id
   )
 
+  const anthropicPendingAccount = repositories.createAccount({
+    providerCode: 'anthropic',
+    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+    name: 'Anthropic 待检查候选账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-health-anthropic-pending',
+      base_url: 'https://api.anthropic.com/v1'
+    },
+    groupId: anthropicGroup.id,
+    supportedModels: ['claude-sonnet-4-5'],
+    healthCheckModel: 'claude-sonnet-4-5',
+    healthCheckEndpointMode: 'messages_sse'
+  }, access)
+  const geminiPendingAccount = repositories.createAccount({
+    providerCode: 'gemini',
+    providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+    name: 'Gemini 待检查候选账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-health-gemini-pending',
+      base_url: 'https://generativelanguage.googleapis.com/v1beta'
+    },
+    groupId: geminiGroup.id,
+    supportedModels: ['gemini-2.5-flash'],
+    healthCheckModel: 'gemini-2.5-flash',
+    healthCheckEndpointMode: 'generate_content_sse'
+  }, access)
+
   const due = repositories.listAccountsDueForHealthCheck({ limit: 10, ...healthSettings })
-  assert.deepEqual(
-    due.map((account) => account.id),
-    [pendingFirstCheckAccount.id, dueAccount.id],
-    '从未完成后台检查的待检查账户必须忽略遗留的未来复检时间并优先入队'
-  )
+  const dueIds = due.map((account) => account.id)
+  for (const pendingId of [pendingFirstCheckAccount.id, anthropicPendingAccount.id, geminiPendingAccount.id]) {
+    assert.ok(dueIds.includes(pendingId), '八种生成协议的待检查账户都必须进入常规健康检查候选')
+    assert.ok(dueIds.indexOf(pendingId) < dueIds.indexOf(dueAccount.id), '待检查账户必须优先于到期 active 账户')
+  }
+  assert.equal(repositories.findAccountForHealthCheck(anthropicPendingAccount.id)?.id, anthropicPendingAccount.id, 'Anthropic Messages 待检查账户不得被 OpenAI profile 限制')
+  assert.equal(repositories.findAccountForHealthCheck(geminiPendingAccount.id)?.id, geminiPendingAccount.id, 'Gemini GenerateContent 待检查账户不得被 OpenAI profile 限制')
 
   const recentAfterSkip = repositories.findAccountSummary(recentAccount.id, access)
   assert.equal(recentAfterSkip?.healthCheckFailureCount, 0, '近期成功信号应清理健康检测失败计数')
@@ -184,13 +251,15 @@ try {
   repositories.recordAccountHealthCheckSuccess(dueAccount.id, {
     ...healthSettings,
     checkedAt: successAt,
-    statusCode: 200
+    statusCode: 200,
+    traceId: 'trace-health-success-regression'
   })
   const dueAfterSuccess = repositories.findAccountSummary(dueAccount.id, access)
   assert.equal(dueAfterSuccess?.lastHealthCheckAt, successAt, '健康检测成功应写入检测时间')
   assert.equal(dueAfterSuccess?.lastHealthSuccessAt, successAt, '健康检测成功应写入成功时间')
   assert.equal(dueAfterSuccess?.healthCheckFailureCount, 0, '健康检测成功应清零失败计数')
   assert.equal(dueAfterSuccess?.lastHealthCheckStatusCode, 200, '健康检测成功应记录 HTTP 状态码')
+  assert.equal(dueAfterSuccess?.lastHealthCheckTraceId, 'trace-health-success-regression', '健康检测成功应记录结构化 traceId')
 
   const staleProbeAccount = createActiveAccount(repositories, group.id, '健康检测配置版本账号', 'sk-health-revision')
   const staleProbeBefore = repositories.findAccountSummary(staleProbeAccount.id, access)
@@ -238,13 +307,15 @@ try {
   assert.equal(configurationFailure.reachedThreshold, false, '配置错误不得触发账户临时不可用阈值')
   const afterConfigurationFailure = repositories.findAccountSummary(dueAccount.id, access)
   assert.equal(afterConfigurationFailure?.lastHealthCheckErrorCode, 'model_not_found', '配置错误仍应保留健康检查诊断')
+  assert.equal(afterConfigurationFailure?.lastHealthCheckTraceId, undefined, '最新检查没有 traceId 时必须清理旧探针 trace，不能与新错误摘要错配')
   assert.ok(afterConfigurationFailure?.nextHealthCheckAt, '配置错误仍应安排后台复检')
 
   const firstFailure = repositories.recordAccountHealthCheckFailure(dueAccount.id, {
     ...healthSettings,
     statusCode: 401,
     errorCode: 'invalid_api_key',
-    errorMessage: '模拟失败'
+    errorMessage: '模拟失败',
+    traceId: 'trace-health-failure-regression'
   })
   assert.equal(firstFailure.failureCount, 1, '第一次失败应记录连续失败 1 次')
   assert.equal(firstFailure.reachedThreshold, false, '第一次失败不应达到阈值')
@@ -254,12 +325,14 @@ try {
     errorCode: 'invalid_api_key',
     errorMessage: '模拟失败'
   })
+  assert.equal(repositories.findAccountSummary(dueAccount.id, access)?.lastHealthCheckTraceId, undefined, '后续无 trace 探针应覆盖清理前一次失败 trace')
   assert.equal(secondFailure.failureCount, 2, '第二次失败应递增连续失败次数')
   const thirdFailure = repositories.recordAccountHealthCheckFailure(dueAccount.id, {
     ...healthSettings,
     statusCode: 401,
     errorCode: 'invalid_api_key',
-    errorMessage: '模拟失败'
+    errorMessage: '模拟失败',
+    traceId: 'trace-health-failure-latest'
   })
   assert.equal(thirdFailure.failureCount, 3, '第三次失败应递增到阈值')
   assert.equal(thirdFailure.reachedThreshold, true, '第三次失败应达到阈值')
@@ -267,6 +340,7 @@ try {
   assert.equal(dueAfterFailure?.lastHealthCheckStatusCode, 401, '失败应记录最近 HTTP 状态码')
   assert.equal(dueAfterFailure?.lastHealthCheckErrorCode, 'invalid_api_key', '失败应记录错误码')
   assert.match(dueAfterFailure?.lastHealthCheckErrorMessage ?? '', /模拟失败/, '失败应记录错误摘要')
+  assert.equal(dueAfterFailure?.lastHealthCheckTraceId, 'trace-health-failure-latest', '健康检测失败应记录最新探针的结构化 traceId')
   assert.ok(dueAfterFailure?.nextHealthCheckAt, '失败应写入短退避复检时间')
   const guardedAccount = repositories.findAccountSummary(dueAccount.id, access)
   assert.ok(guardedAccount?.configRevision, '达到阈值的账户应包含配置版本')
@@ -336,6 +410,24 @@ try {
   const trafficAfterEarlySuccess = repositories.findAccountSummary(trafficAccount.id, access)
   assert.equal(trafficAfterEarlySuccess?.lastHealthSuccessAt, trafficFirstHealthSuccessAt, '检测窗口未过半时不应为每次成功请求重写健康成功信号')
   assert.equal(trafficAfterEarlySuccess?.nextHealthCheckAt, trafficFirstNextHealthCheckAt, '检测窗口未过半时不应为每次成功请求重写下次健康检测')
+
+  const credentialChangedAccount = createActiveAccount(repositories, group.id, '健康检测修改 Key 竞态账号', 'sk-health-key-before')
+  repositories.updateAccount(credentialChangedAccount.id, {
+    credentials: { api_key: 'sk-health-key-after', base_url: 'https://api.openai.com/v1' }
+  }, access)
+  const pendingAfterCredentialChange = repositories.findAccountSummary(credentialChangedAccount.id, access)
+  assert.equal(pendingAfterCredentialChange?.status, 'pending_test', '修改 Key 后账户必须进入待检查')
+  assert.equal(pendingAfterCredentialChange?.nextHealthCheckAt, undefined, '修改 Key 后应立即等待后台检查')
+  repositories.createUsageRecordsBatch([{
+    systemAccountId: 'sys_admin', traceId: 'trace-old-inflight-success-after-key-change', trafficSource: 'gateway',
+    accountId: credentialChangedAccount.id, groupId: group.id, providerCode: 'gpt', endpoint: '/v1/responses', model: 'gpt-test',
+    stream: false, success: true, statusCode: 200, durationMs: 10,
+    createdAt: new Date(Date.now() + 60_000).toISOString()
+  }])
+  const pendingAfterInflightSuccess = repositories.findAccountSummary(credentialChangedAccount.id, access)
+  assert.equal(pendingAfterInflightSuccess?.status, 'pending_test', '旧在途成功请求不得激活新配置')
+  assert.equal(pendingAfterInflightSuccess?.nextHealthCheckAt, undefined, '旧在途成功请求不得把待检查推迟到正常周期')
+  assert(repositories.listAccountsDueForHealthCheck({ limit: 100, ...healthSettings }).some((item) => item.id === credentialChangedAccount.id), '修改 Key 的待检查账户应立即进入健康检查候选')
 
   const cooldownProbeAt = trafficAfterSuccess?.lastHealthSuccessAt
   repositories.createUsageRecordsBatch([{

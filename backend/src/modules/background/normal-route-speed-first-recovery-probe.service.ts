@@ -93,6 +93,7 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
     groupId: item.scope.groupId,
     systemAccountId: item.scope.systemAccountId,
     trafficSource: 'runtime_recovery_probe',
+    testEndpointMode: account.healthCheckEndpointMode,
     candidateAccount,
     disableAccountStateMutation: true,
     findAccountForTest: loadAccountForTestViaDbService,

@@ -7,7 +7,7 @@ import { invalidateAccountDetailForAccount } from './accountDetailCache'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { accountBatchConcurrency, runWithConcurrency } from './accountBatchExecution'
-import { canBatchManageAccount, canBatchRestoreAccount } from './accountRules'
+import { canBatchManageAccount, canBatchRestoreAccount, canToggleAccountStatus } from './accountRules'
 
 interface UseAccountBatchActionsOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -68,7 +68,7 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
   }
 
   async function batchSetStatus(status: 'active' | 'disabled') {
-    const selected = options.selectedAccounts.value.filter(canBatchManageAccount)
+    const selected = options.selectedAccounts.value.filter(canToggleAccountStatus)
     const eligible = status === 'active'
       ? selected.filter((account) => account.status === 'disabled')
       : selected.filter((account) => account.status !== 'disabled')

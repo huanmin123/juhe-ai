@@ -51,6 +51,7 @@ backend-go/
       settings/
       gateway/
     platform/
+      accounthealthcheckdispatch/
       postgres/
       redis/
     store/
@@ -96,6 +97,7 @@ Go 目标不是复制当前 Node 进程树。
 - worker：保留 `ingest`、`stats`、`ops` 三类角色的业务边界，但不再因为 Node 事件循环阻塞而拆出额外 DB service。
 - maintenance：生产维护脚本以独立命令运行，必须明确 dry run、影响范围和失败行为。
 - DB service：迁移完成后删除。Go 后端直接通过 PostgreSQL 连接池、事务、Redis state/cache/queue 和有界后台队列表达存储边界，不再为 SQLite 单写者保留独立进程。
+- W1b 到 W7 临时例外：Go public account 仅在新增结果为 `pending_test`，或更新的 API Key / Base URL 实际变化、显式提交 `supportedModels` 时，才在事务提交后通过 loopback Node internal bridge best-effort 触发现有健康任务；普通字段更新、删除和非 `pending_test` 新增不投递。Node Web 与 `ops-worker` 仍需运行；这不改变最终 Go-only 目标。
 
 目标进程拓扑先按独立角色设计，不把所有 worker 长期塞进主 server goroutine：
 
@@ -120,6 +122,7 @@ Go 解决的是 Node 单事件循环问题，不代表可以无界并发。
 - PostgreSQL 写入必须受事务范围、`statement_timeout`、`lock_timeout`、`idle_in_transaction_session_timeout`、批量窗口、分区查询窗口、稳定排序和热点 key 顺序约束；连接必须带 `application_name` 便于定位来源。
 - Redis cache、state、queue 必须使用独立 namespace / DB / 实例或明确隔离配置；Go 配置层要拒绝 cache / state / queue 指向同一个 Redis DB，queue 不和 cache/state 共用淘汰策略。来源系统限频这类跨实例运行态必须落在 Redis state，不允许生产路径退回进程内 map。
 - W1b public API 生产挂载必须由 `JUHE_AI_PUBLIC_API_ENABLED` 显式控制，默认不注册 `/__aipublic__`；开启时必须显式配置 Redis state、Redis queue 和稳定 `JUHE_AI_SECRET`，不能使用开发默认密钥或本地队列兜底。
+- 临时 bridge 使用无默认的 `JUHE_AI_NODE_INTERNAL_BASE_URL` 和默认 `2s`、范围 `100ms..10s` 的 timeout；URL 仅允许 `http` loopback IP literal + 显式端口。协议为 `POST /__aiinternal__/v1/account-health-check/dispatch`、`1024 bytes` 原始 JSON、HMAC-SHA256、`activation/configuration`、仅 `202` 成功。调用在事务提交后执行，失败不回滚、不重试；internal path 不得反代公网，当前仅支持同主机、同网络命名空间。
 - W2 管理端辅助接口已经具备 `requireAuth` 级 Go 会话鉴权基线，并已覆盖管理端只读辅助、标签删除 / 独立 PATCH 和 operation log 读路径；这些路径仍不覆盖授权来源 / grant / 授权写接口、主账户写入 `tags`、OAuth / 导入标签写路径、完整账号 summary 响应、operation log 保留清理或其他写接口 operation log。W3 已补当前用户 session list / revoke、系统账户 create 和完整 mixed PATCH，但仍只是 Go opt-in 灰度能力，不反向扩大 W2 只读接管范围；其中 session list / revoke 可通过 `JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED=true` 窄开关单独灰度挂载，其他 W2 / W3 / W4 管理路径仍只随 `JUHE_AI_MANAGEMENT_API_ENABLED=true` 挂载。W3 完整登录 / session 生产接管、`requireAdmin` 和 `my-*` 作用域尚未整体迁移前，生产 server 必须默认关闭 W2 opt-in。任何 `__aisys__/api` 后台路由都不能为了联调绕过会话鉴权、初始密码修改拦截、admin / 普通用户边界、`my-*` 作用域或模型目录可见性边界。
 - W3 当前已补 `GET /__aisys__/api/auth/captcha` 验证码发放 / 校验基础、`POST /__aisys__/api/auth/login` 登录 / session 创建小切片、`GET /__aisys__/api/auth/me` 当前用户读、`PATCH /__aisys__/api/auth/me` 当前用户资料更新、`POST /__aisys__/api/auth/change-password` 当前用户改密、`POST /__aisys__/api/auth/logout` 当前会话撤销、`GET /__aisys__/api/auth/sessions` 当前用户会话列表、`DELETE /__aisys__/api/auth/sessions/{id}` 当前用户单条会话撤销、`POST /__aisys__/api/system-accounts` 创建和 `PATCH /__aisys__/api/system-accounts/{id}` 完整 mixed partial update。session list 只读当前系统账户未过期 session、不 touch、不回显 token hash；session revoke 只按当前系统账户 + session ID 删除，撤销当前 session 时清 Cookie。PATCH 要求 `super_admin`，允许 `displayName/description/password/role/status/mustChangePassword/imageGenerationEnabled` 任意组合，禁止 `username` 和未知字段；PG 单语句锁定启用超级管理员集合和目标账户，禁止停用 / 降级最后一个启用 `super_admin`，提交 `password` 或 `status="disabled"` 时撤销目标全部 session，状态或图像权限真实变化会清理 gateway runtime cache / API Key validation cache，密码日志只记录“已重置”。这些仍只是 Go opt-in 灰度能力，不代表完整 Cookie 安全部署、完整会话管理生产接管、安全日志、前端 auth / 系统账户页 smoke、生产单 owner 切流或 Node `/auth` / `/system-accounts` 删除已完成。
 - W2 account tags PATCH 的 operation log 使用 Asynq `operation-logs` 队列；`JUHE_AI_MANAGEMENT_API_ENABLED=true` 时 Redis queue 是 Go server 启动依赖，配置缺失或 ping 失败必须 fail-fast；`JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED=true` 的 session-only 窄开关不注册 operation-log 写路径，因此不要求 Redis queue。单次 PATCH 已提交后日志入队失败才按 best-effort 处理，只记录运行日志，不回滚业务状态。
@@ -162,6 +165,7 @@ Go 运行边界矩阵：
 - `p-limit` 等为 Node 并发协调补出来的通用胶水，改为 context、semaphore、channel 或连接池。
 - `tsx` 开发运行链路和后端 TypeScript 编译链路。
 - Node worker role 中只为事件循环隔离存在的 IPC pending 防护。
+- W1b 临时 Go dispatch adapter、Node internal route 和两个 `JUHE_AI_NODE_INTERNAL_*` 配置；W7 接管健康任务时删除。
 
 不能删除的真实业务约束：
 

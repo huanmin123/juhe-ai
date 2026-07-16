@@ -23,6 +23,7 @@ import { saveCustomProviderModel } from '../../modules/model-pricing/model-catal
 import { logger } from '../../shared/logger.js'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import type { UsageRecordSummary } from '../../storage/repositories.js'
+import { closeSqliteReadWorkerPool } from '../../storage/sqlite-read-worker-pool.js'
 
 interface UpstreamHit {
   method: string
@@ -139,6 +140,7 @@ try {
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+  await closeSqliteReadWorkerPool().catch(() => undefined)
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
 }
@@ -211,7 +213,7 @@ function assertAccountModelMappingsRejectCrossProtocol(upstreamOrigin: string): 
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     enabled: true
   }, access)
-  const openAIResponsesBridgeAccount = repositories.createAccount({
+  const openAIResponsesBridgeAccount = createActiveAccount({
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     name: '协议交叉矩阵 OpenAI Responses 到 Chat 映射账号',
@@ -223,6 +225,7 @@ function assertAccountModelMappingsRejectCrossProtocol(upstreamOrigin: string): 
     },
     groupId: group.id,
     supportedModels: [openAIChatUpstreamModel],
+    healthCheckModel: openAIChatUpstreamModel,
     modelMappings: [{
       sourceModel: openAIResponsesSourceModel,
       sourceEndpointFamily: 'responses',
@@ -256,6 +259,7 @@ function assertAccountModelMappingsRejectCrossProtocol(upstreamOrigin: string): 
     },
     groupId: hybridGroup.id,
     supportedModels: [openAIChatUpstreamModel],
+    healthCheckModel: openAIChatUpstreamModel,
     modelMappings: [{
       sourceModel: openAIResponsesSourceModel,
       sourceEndpointFamily: 'responses',
@@ -274,7 +278,7 @@ function createOpenAIChatRuntime(upstreamOrigin: string): CrossRuntime {
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     name: '协议交叉矩阵 OpenAI Chat 账号',
@@ -286,6 +290,7 @@ function createOpenAIChatRuntime(upstreamOrigin: string): CrossRuntime {
     },
     groupId: group.id,
     supportedModels: [openAIChatUpstreamModel],
+    healthCheckModel: openAIChatUpstreamModel,
     modelMappings: [{
       sourceModel: openAIChatSourceModel,
       sourceEndpointFamily: 'chat_completions',
@@ -311,7 +316,7 @@ function createAnthropicMessagesRuntime(upstreamOrigin: string): CrossRuntime {
     providerCode: ANTHROPIC_PROVIDER_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
     name: '协议交叉矩阵 Anthropic Messages 账号',
@@ -323,6 +328,7 @@ function createAnthropicMessagesRuntime(upstreamOrigin: string): CrossRuntime {
     },
     groupId: group.id,
     supportedModels: [anthropicMessagesSourceModel],
+    healthCheckModel: anthropicMessagesSourceModel,
     status: 'active',
     schedulable: true
   }, access)
@@ -335,7 +341,7 @@ function createGeminiNativeRuntime(upstreamOrigin: string): CrossRuntime {
     providerCode: GEMINI_PROVIDER_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: GEMINI_PROVIDER_CODE,
     providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
     name: '协议交叉矩阵 Gemini native 账号',
@@ -347,6 +353,7 @@ function createGeminiNativeRuntime(upstreamOrigin: string): CrossRuntime {
     },
     groupId: group.id,
     supportedModels: [geminiGenerateContentSourceModel],
+    healthCheckModel: geminiGenerateContentSourceModel,
     status: 'active',
     schedulable: true
   }, access)
@@ -359,7 +366,7 @@ function createHybridOpenAIChatRuntime(upstreamOrigin: string): CrossRuntime {
     providerCode: HYBRID_PROVIDER_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: HYBRID_PROVIDER_CODE,
     providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
     name: '协议交叉矩阵混合供应商 OpenAI Chat 账号',
@@ -371,6 +378,7 @@ function createHybridOpenAIChatRuntime(upstreamOrigin: string): CrossRuntime {
     },
     groupId: group.id,
     supportedModels: [openAIChatUpstreamModel],
+    healthCheckModel: openAIChatUpstreamModel,
     modelMappings: [{
       sourceModel: anthropicMessagesSourceModel,
       sourceEndpointFamily: 'messages',
@@ -394,7 +402,7 @@ function createHybridOpenAIChatFailoverRuntime(upstreamOrigin: string): CrossRun
     { name: '协议交叉矩阵混合供应商故障账号', apiKey: 'sk-cross-hybrid-openai-chat-fail', priority: 0 },
     { name: '协议交叉矩阵混合供应商备用账号', apiKey: 'sk-cross-hybrid-openai-chat-good', priority: 1 }
   ]) {
-    repositories.createAccount({
+    createActiveAccount({
       providerCode: HYBRID_PROVIDER_CODE,
       providerProtocolProfileId: HYBRID_OPENAI_CHAT_V1_PROFILE_ID,
       name: account.name,
@@ -406,6 +414,7 @@ function createHybridOpenAIChatFailoverRuntime(upstreamOrigin: string): CrossRun
       },
       groupId: group.id,
       supportedModels: [openAIChatUpstreamModel],
+      healthCheckModel: openAIChatUpstreamModel,
       modelMappings: [{
         sourceModel: anthropicMessagesSourceModel,
         sourceEndpointFamily: 'messages',
@@ -419,6 +428,20 @@ function createHybridOpenAIChatFailoverRuntime(upstreamOrigin: string): CrossRun
     }, access)
   }
   return createRuntime(group.id, '协议交叉矩阵混合供应商 OpenAI Chat 切号 Key')
+}
+
+function createActiveAccount(
+  input: Parameters<typeof repositories.createAccount>[0],
+  accountAccess = access
+) {
+  const created = repositories.createAccount(input, accountAccess)
+  assert(repositories.recordAccountHealthCheckSuccess(created.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), `协议交叉矩阵账号应在健康检查通过后激活：${created.name}`)
+  return repositories.findAccountSummary(created.id, access) ?? created
 }
 
 function createRuntime(groupId: string, name: string): CrossRuntime {

@@ -25,6 +25,7 @@ import {
 import { requestBackgroundWorkerDbService, sendRecordMaintenanceJobsToWorker } from '../background/background-ipc.js'
 import { requestStatsWriter, type BackgroundStatsWriteOperation } from '../background/background-stats-writer.js'
 import type { BackgroundWorkerMessage } from '../background/background-ipc.types.js'
+import { auditSuccessRetentionCutoffIso } from '../audit-logs/audit-log-retention-policy.js'
 
 const currentModulePath = fileURLToPath(import.meta.url)
 const sourceRoot = resolve(dirname(currentModulePath), '../..')
@@ -1031,7 +1032,7 @@ async function cleanupAuditRetainedData(input: Extract<RecordMaintenanceJob, { t
   for (let index = 0; index < maxBatches; index += 1) {
     const deleted = await cleanupAuditLogsByRetentionAsync({
       successHotCutoffCreatedAt: cutoffHoursIso(nowMs, input.successHotRetentionHours),
-      successCutoffCreatedAt: cutoffDaysIso(nowMs, input.successRetentionDays),
+      successCutoffCreatedAt: auditSuccessRetentionCutoffIso(nowMs, input.successHotRetentionHours, input.successRetentionDays),
       failureCutoffCreatedAt: cutoffDaysIso(nowMs, input.failureRetentionDays),
       errorGroupCutoffUpdatedAt: cutoffDaysIso(nowMs, input.errorGroupRetentionDays),
       successSampleBucketThreshold: input.successSampleBucketThreshold,

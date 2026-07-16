@@ -11,7 +11,7 @@
 - 目标 Go owner：`backend-go/internal/modules/managementapikeys/`、`backend-go/internal/httpapi/management_api_key_create.go`、`backend-go/internal/httpapi/management_api_key_secret.go`、`backend-go/internal/store/postgres/managementapikeycreate.go`、`backend-go/internal/store/postgres/managementapikeysecret.go`、`backend-go/internal/store/postgres/queries/w5_management_api_key_create.sql`、`backend-go/internal/store/postgres/queries/w5_management_api_key_secret.sql`、`backend-go/internal/httpapi/router.go`、`backend-go/internal/app/server.go`
 - 关联 integration：`backend-go/internal/testkit/integration/w5_management_api_key_list_smoke_test.go`、`backend-go/internal/testkit/integration/w5_management_api_key_create_smoke_test.go`、`backend-go/internal/testkit/integration/w5_management_api_key_secret_smoke_test.go`
 - 关联计划：`../plans/计划-0081-Node转Go渐进减法迁移.md`
-- 相邻记录：[W5 管理端 API Key 列表迁移状态](模块迁移顺序与减法清单.md)
+- 相邻记录：[W5 管理端 API Key 删除迁移记录](W5-管理端APIKey删除迁移记录.md)
 
 ## 当前切片
 
@@ -26,7 +26,7 @@
 
 六条路径只在 `JUHE_AI_MANAGEMENT_API_ENABLED=true` 且完整注入管理鉴权、PostgreSQL store、稳定 `JUHE_AI_SECRET`、Redis cache/state invalidator 和 operation log queue 时注册。
 
-本切片不包含 API Key 普通更新、删除、路由策略编辑、前端生产入口切换、生产单 owner 切流或 Node 路由删除。API Key 列表属于相邻只读切片，W5 API Key CRUD 整体仍未接管。
+本切片不包含 API Key 普通更新、路由策略编辑、前端生产入口切换、生产单 owner 切流或 Node 路由删除。API Key 列表和普通更新属于相邻切片；删除已由独立的 [W5 管理端 API Key 删除迁移记录](W5-管理端APIKey删除迁移记录.md) 登记为 Go opt-in 代码完成，但 W5 API Key 生产接管仍未完成。
 
 ## 权限与 HTTP 边界
 
@@ -114,10 +114,10 @@ integration smoke 已编码覆盖真实 migrations、PostgreSQL、Redis cache/st
 - 在 Docker/testcontainers 健康环境真实通过 `TestW5ManagementAPIKeyUpdatePostgresRedisSmoke`，确认 PostgreSQL、Redis、Asynq 和 operation log 均实际执行而非 `SKIP`。
 - 前端 API Key 页面连接真实 Go HTTP 服务完成列表、复制完整密钥、管理员 / 个人刷新、刷新后旧密钥失效、新密钥调用成功和页面不持久化完整密钥 smoke。
 - 对 validation cache 失效失败后的“数据库已提交”场景补生产告警、排障和人工恢复演练。
-- 完成 API Key delete 等剩余 W5 CRUD，并统一评估单 owner 切流。
+- 将本切片与列表、更新及独立删除切片一起完成真实依赖、前端真实 Go smoke 和单 owner 切流评估。
 - 生产反向代理按路径形成单 owner，并完成停止 Go 后回退 Node 的演练。
 - 对应 Node route/service/store/test 已删除并提供 `rg` 静态证据。
 
 ## 当前结论
 
-Go 已具备 W5 API Key 创建、更新、完整密钥查看和刷新的一组独立 opt-in 实现，并完成非容器回归、integration 编译和真实依赖测试代码。真实 PostgreSQL / Redis / Asynq 执行、前端真实后端联调、API Key delete、生产切流和 Node 删除均未完成，本切片不能作为生产接管证据。
+Go 已具备 W5 API Key 创建、更新、完整密钥查看和刷新的一组独立 opt-in 实现，并完成非容器回归、integration 编译和真实依赖测试代码。API Key 删除的独立实现与边界见 [W5 管理端 API Key 删除迁移记录](W5-管理端APIKey删除迁移记录.md)。真实 PostgreSQL / Redis / Asynq 执行、前端真实后端联调、生产切流和 Node 删除均未完成，本切片不能作为生产接管证据。

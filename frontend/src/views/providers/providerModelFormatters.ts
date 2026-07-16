@@ -20,6 +20,7 @@ export type DirectPriceFieldKey =
   | 'outputUsdPer1M'
   | 'cachedInputUsdPer1M'
   | 'cacheWriteUsdPer1M'
+  | 'cacheWrite1hUsdPer1M'
   | 'imageInputUsdPer1M'
   | 'imageOutputUsdPer1M'
   | 'audioInputUsdPer1M'
@@ -69,6 +70,7 @@ export const directPriceFieldKeys: DirectPriceFieldKey[] = [
   'outputUsdPer1M',
   'cachedInputUsdPer1M',
   'cacheWriteUsdPer1M',
+  'cacheWrite1hUsdPer1M',
   'imageInputUsdPer1M',
   'imageOutputUsdPer1M',
   'audioInputUsdPer1M',
@@ -77,7 +79,7 @@ export const directPriceFieldKeys: DirectPriceFieldKey[] = [
 ]
 
 export const directPriceFieldsByCategory: Record<ModelCategoryKey, DirectPriceFieldKey[]> = {
-  text: ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M'],
+  text: ['inputUsdPer1M', 'outputUsdPer1M', 'cachedInputUsdPer1M', 'cacheWriteUsdPer1M', 'cacheWrite1hUsdPer1M'],
   image: ['imageInputUsdPer1M', 'imageOutputUsdPer1M', 'outputUsdPerImage'],
   audio: ['audioInputUsdPer1M', 'audioOutputUsdPer1M']
 }
@@ -104,6 +106,7 @@ export function hasDirectModelPrice(item: ProviderModelPricing): boolean {
     item.outputUsdPer1M,
     item.cachedInputUsdPer1M,
     item.cacheWriteUsdPer1M,
+    item.cacheWrite1hUsdPer1M,
     item.imageInputUsdPer1M,
     item.imageOutputUsdPer1M,
     item.audioInputUsdPer1M,
@@ -176,7 +179,9 @@ export function formatApiProtocol(protocol?: string): string {
 }
 
 export function formatModelServiceTier(value: ProviderModelServiceTier): string {
-  return value === 'priority' ? 'Priority' : 'Flex'
+  if (value === 'priority') return 'Priority'
+  if (value === 'flex') return 'Flex'
+  return value
 }
 
 export function formatModelReasoningEffort(value: ProviderModelReasoningEffort | 'ultra'): string {
@@ -187,13 +192,23 @@ export function formatModelReasoningEffort(value: ProviderModelReasoningEffort |
   if (value === 'high') return 'High'
   if (value === 'xhigh') return 'XHigh'
   if (value === 'max') return 'Max'
-  return 'Ultra'
+  if (value === 'ultra') return 'Ultra'
+  return value
 }
 
 export function formatModelReasoningCapabilities(item: ProviderModelPricing): string {
-  return item.supportedReasoningEfforts?.length
-    ? item.supportedReasoningEfforts.map(formatModelReasoningEffort).join(' / ')
-    : '-'
+  if (!item.supportedReasoningEfforts?.length) return '不支持'
+  const capabilities = item.supportedReasoningEfforts.map((effort) => {
+    const label = formatModelReasoningEffort(effort)
+    return effort === item.defaultReasoningEffort ? `${label}（默认）` : label
+  }).join(' / ')
+  return item.defaultReasoningEffort ? capabilities : `${capabilities}；默认：上游决定`
+}
+
+export function formatModelServiceTierCapabilities(item: ProviderModelPricing): string {
+  return item.supportedServiceTiers?.length
+    ? item.supportedServiceTiers.map(formatModelServiceTier).join(' / ')
+    : '仅标准'
 }
 
 export function formatModelRequestCapabilities(item: ProviderModelPricing): string {
@@ -202,7 +217,7 @@ export function formatModelRequestCapabilities(item: ProviderModelPricing): stri
     parts.push(`服务等级 ${item.supportedServiceTiers.map(formatModelServiceTier).join(' / ')}`)
   }
   const reasoningCapabilities = formatModelReasoningCapabilities(item)
-  if (reasoningCapabilities !== '-') parts.push(reasoningCapabilities)
+  if (reasoningCapabilities !== '不支持') parts.push(reasoningCapabilities)
   return parts.join('；') || '-'
 }
 
@@ -297,6 +312,10 @@ function apiProtocolMatchesModelCategory(protocol: ProviderModelApiProtocol, cat
     || protocol === 'chat_completions'
     || protocol === 'messages'
     || protocol === 'message_token_counting'
+    || protocol === 'generate_content'
+    || protocol === 'stream_generate_content'
+    || protocol === 'count_tokens'
+    || protocol === 'embed_content'
     || protocol === 'completions'
 }
 
@@ -305,15 +324,14 @@ function isProviderModelApiProtocol(value: string): value is ProviderModelApiPro
 }
 
 export function formatPrice(value?: number): string {
-  return typeof value === 'number' ? `$${trimNumber(value)}` : '-'
+  return typeof value === 'number' ? `$${trimNumber(value)}` : '官方未公布'
 }
 
 export function formatUnitPrice(value?: number): string {
-  return typeof value === 'number' ? `$${trimNumber(value)}` : '-'
+  return typeof value === 'number' ? `$${trimNumber(value)}` : '官方未公布'
 }
 
 export function formatModelPriceSummary(item: ProviderModelPricing): string {
-  if (item.pricingModel) return `计价 ${item.pricingModel}`
   const category = getModelCategory(item)
   if (category === 'image') {
     return [
@@ -343,7 +361,11 @@ export function formatTokens(value?: number): string {
 }
 
 export function formatModelInputTokens(item: ProviderModelPricing): string {
-  return formatTokens(item.maxInputTokens ?? item.contextWindowTokens)
+  return formatTokens(item.maxInputTokens)
+}
+
+export function formatModelContextTokens(item: ProviderModelPricing): string {
+  return formatTokens(item.contextWindowTokens)
 }
 
 export function formatModelModalities(values?: readonly string[]): string {

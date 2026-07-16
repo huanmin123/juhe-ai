@@ -120,7 +120,8 @@ try {
       status: 'active',
       schedulable: true
     }, access)
-    repositories.createAccount({
+    activateFixtureAccount(account.id)
+    const fallbackAccount = repositories.createAccount({
       providerCode: GEMINI_PROVIDER_CODE,
       providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
       name: 'Gemini Mock AI 回归备用账户',
@@ -202,7 +203,7 @@ try {
       providerCode: GEMINI_PROVIDER_CODE,
       enabled: true
     }, access)
-    repositories.createAccount({
+    const openAIChatRootAccount = repositories.createAccount({
       providerCode: GEMINI_PROVIDER_CODE,
       providerProtocolProfileId: GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
       name: 'Gemini OpenAI Chat NewAPI 根地址回归账户',
@@ -227,7 +228,7 @@ try {
       providerCode: GLM_PROVIDER_CODE,
       enabled: true
     }, access)
-    repositories.createAccount({
+    const glmBridgeAccount = repositories.createAccount({
       providerCode: GLM_PROVIDER_CODE,
       providerProtocolProfileId: GLM_GENERAL_OPENAI_V1_PROFILE_ID,
       name: 'Gemini Native 转 GLM Chat 回归账户',
@@ -308,9 +309,16 @@ try {
       },
       groupId: anthropicBridgeGroup.id,
       supportedModels: ['claude-haiku-4-5'],
+      healthCheckModel: 'claude-haiku-4-5',
+      healthCheckEndpointMode: 'messages_json',
       status: 'active',
       schedulable: true
     }, access)
+    activateFixtureAccount(glmBridgeAccount.id)
+    activateFixtureAccount(openAIChatRootAccount.id)
+    activateFixtureAccount(openAIChatAccount.id)
+    activateFixtureAccount(fallbackAccount.id)
+    activateFixtureAccount(anthropicBridgeAccount.id)
     const anthropicBridgeRules = [
       explicitHybridRule({
         id: 'gemini_generate_to_anthropic_messages',
@@ -381,6 +389,7 @@ try {
       status: 'active',
       schedulable: true
     }, access)
+    activateFixtureAccount(geminiNativeTargetBridgeAccount.id)
     const geminiNativeTargetBridgeRules = [
       explicitHybridRule({
         id: 'openai_chat_to_gemini_generate',
@@ -1721,6 +1730,15 @@ function fakeGatewayPostRequest(originalUrl: string): Request {
     body: {},
     header: () => undefined
   } as unknown as Request
+}
+
+function activateFixtureAccount(accountId: string): void {
+  assert(repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), `测试账户 ${accountId} 应通过后台检查激活`)
 }
 
 async function listen(server: http.Server): Promise<void> {

@@ -20,6 +20,7 @@ import { checkpointSqliteWal, type SqliteWalCheckpointResult } from '../../stora
 import { checkpointOpenUsageRecordShardDatabases } from '../../storage/usage-record-shards.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
 import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
+import { auditSuccessRetentionCutoffIso } from '../audit-logs/audit-log-retention-policy.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { deleteCodexContextStorageKeys } from '../gateway/codex-responses/chat-bridge-state.js'
@@ -154,8 +155,8 @@ export async function cleanupExpiredRetainedData(): Promise<DataRetentionCleanup
     const retention: DataRetentionPolicy = {
       auditLogSuccessHotHours: auditSettings.successHotRetentionHours,
       auditLogSuccessDays: auditSettings.successRetentionDays,
-      auditLogFailureDays: auditSettings.failureRetentionDays,
-      auditErrorGroupDays: auditSettings.errorGroupRetentionDays,
+      auditLogFailureDays: auditSettings.problemRetentionDays,
+      auditErrorGroupDays: auditSettings.problemRetentionDays,
       operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 1, operationLogRetentionMaxDays),
       publicApiLogDays: settingNumber(settings, 'publicApiLogRetentionDays', 1, publicApiLogRetentionMaxDays),
       runtimeLogDays: runtimeLogIndexRetentionDaysFromSettings(settings),
@@ -254,7 +255,7 @@ async function cleanupDatasetAndUsageRetainedData(input: {
   await yieldToEventLoop()
   result.auditLogs = await cleanupInBatches(() => cleanupAuditLogsByRetentionAsync({
       successHotCutoffCreatedAt: cutoffHoursIso(now, retention.auditLogSuccessHotHours),
-      successCutoffCreatedAt: cutoffIso(now, retention.auditLogSuccessDays),
+      successCutoffCreatedAt: auditSuccessRetentionCutoffIso(now, retention.auditLogSuccessHotHours, retention.auditLogSuccessDays),
       failureCutoffCreatedAt: cutoffIso(now, retention.auditLogFailureDays),
       errorGroupCutoffUpdatedAt: cutoffIso(now, retention.auditErrorGroupDays),
       successSampleBucketThreshold: input.successSampleBucketThreshold,

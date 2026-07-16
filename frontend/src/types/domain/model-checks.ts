@@ -4,6 +4,47 @@ export type ModelCheckProfile = 'full'
 export type ModelCheckLevel = 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable'
 export type ModelCheckStatus = 'running' | 'completed' | 'failed' | 'canceled'
 export type ModelCheckItemStatus = 'passed' | 'warning' | 'failed' | 'skipped'
+export type ModelIdentityStatus = 'consistent' | 'suspected_downgrade' | 'suspected_same_source' | 'population_outlier' | 'insufficient_evidence'
+export type ModelMappingStatus = 'direct' | 'configured_mapping' | 'undeclared_mismatch' | 'unknown'
+export type UsageIntegrityStatus = 'consistent' | 'warning' | 'suspected_padding' | 'unsupported' | 'insufficient_evidence'
+export type ModelProtocolStatus = 'consistent' | 'warning' | 'failed' | 'insufficient_evidence'
+export type ModelEvidenceStatus = 'stable' | 'candidate' | 'bootstrap' | 'insufficient'
+
+export interface ModelCheckTrustReport {
+  identityStatus: ModelIdentityStatus
+  mappingStatus: ModelMappingStatus
+  usageIntegrityStatus: UsageIntegrityStatus
+  protocolStatus: ModelProtocolStatus
+  evidenceStatus: ModelEvidenceStatus
+  requestedModel?: string
+  mappedUpstreamModel?: string
+  observedModel?: string
+  mappingApplied: boolean
+  probeSetVersion: string
+  evidenceCoverage: number
+  reasonCodes: string[]
+  observationCount?: number
+  roundCount?: number
+  independentSourceCount?: number
+  identityObservationCount?: number
+  pairedProbeCount?: number
+  slope?: number
+  intercept?: number
+  interceptBaselineMedian?: number
+  interceptBaselineMad?: number
+  interceptBaselineVersion?: number
+  interceptBaselineStatus?: 'unavailable' | 'calibration_pending' | 'active'
+  interceptStrongGateEnabled?: boolean
+  identityDistance?: number
+  pairedDistance?: number
+  pairedBaselineMedian?: number
+  pairedBaselineMad?: number
+  baselineVersion?: number
+  baselineVersionStatus?: 'active' | 'drift_protected' | 'retired'
+  featureVersion?: string
+  tokenizerVersion?: string
+  lastObservedAt?: string
+}
 
 export interface ModelCheckOption {
   value: string
@@ -31,6 +72,7 @@ export interface ModelCheckRunPayload {
   targetId: string
   model: ModelCheckModel
   profile?: ModelCheckProfile
+  includeExtremeContext?: boolean
   trustedComparison?: boolean
   trustedComparisonAccountId?: string
 }

@@ -69,7 +69,7 @@ interface DbServiceState {
 }
 
 const requestTimeoutMs = 5000
-const invalidateTimeoutMs = 500
+const invalidateTimeoutMs = 10_000
 const unavailableCircuitOpenMs = 3000
 const maxPendingRequests = 2000
 const maxPendingDatasetWriteRequests = 1000
@@ -1023,14 +1023,20 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     backgroundIpc,
     gatewaySideEffects,
     auditCapture,
+    auditLogTransport,
+    auditLogQueue,
     accountConcurrency,
-    highConcurrencyQueue
+    highConcurrencyQueue,
+    accountBalanceSnapshotCleanup
   ] = await Promise.all([
     import('../background/background-ipc.js'),
     import('../gateway/runtime/account-side-effects.service.js'),
     import('../gateway/audit/capture.service.js'),
+    import('../audit-logs/audit-log-transport.service.js'),
+    import('../audit-logs/audit-log-queue.service.js'),
     import('../../shared/account-concurrency.js'),
-    import('../gateway/runtime/high-concurrency-queue.service.js')
+    import('../gateway/runtime/high-concurrency-queue.service.js'),
+    import('../accounts/account-balance-snapshot-cleanup.service.js')
   ])
   const [
     ingestWorkerSnapshot,
@@ -1049,6 +1055,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
 
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
+    accountBalanceSnapshotCleanup: accountBalanceSnapshotCleanup.getAccountBalanceSnapshotCleanupRuntime(),
     ingestWorker: {
       pid: ingestWorkerSnapshot?.pid ?? ingestWorkerState?.pid,
       ready: ingestWorkerSnapshot?.ready ?? ingestWorkerState?.ready ?? false,
@@ -1177,7 +1184,11 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     },
     highConcurrencyQueues: highConcurrencyQueue.highConcurrencyGroupQueueSnapshot(),
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
-    activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount()
+    activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount(),
+    auditLogTransport: {
+      ...auditLogTransport.getAuditLogTransportRuntime(),
+      pendingDispatchCount: auditLogQueue.getAuditLogServerDispatchPendingCount()
+    }
   }
 }
 

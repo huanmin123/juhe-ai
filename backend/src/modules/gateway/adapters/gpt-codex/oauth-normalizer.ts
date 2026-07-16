@@ -37,6 +37,7 @@ export interface NormalizedCodexBody {
   body?: string
   stream: boolean
   session: OpenAIOAuthCodexSessionResolution
+  model?: string
 }
 
 export interface OpenAIOAuthCodexSessionResolution {
@@ -60,18 +61,17 @@ export function normalizeOpenAIOAuthCodexParsedBody(
   normalizeOpenAIOAuthCodexInput(body)
   normalizeOpenAIOAuthCodexTools(body)
   applyOpenAIOAuthCodexAccountRequestOverrides(body, input)
-  normalizeOpenAIOAuthCodexServiceTier(body)
 
   if (input.compact) {
     deleteFields(body, openAIOAuthCodexCompactDroppedFields)
-    return { body: JSON.stringify(body), stream: false, session }
+    return { body: JSON.stringify(body), stream: false, session, model: stringValue(body.model) }
   }
 
   deleteFields(body, openAIOAuthCodexDroppedFields)
   body.store = false
   body.stream = true
 
-  return { body: JSON.stringify(body), stream: true, session }
+  return { body: JSON.stringify(body), stream: true, session, model: stringValue(body.model) }
 }
 
 function applyOpenAIOAuthCodexAccountRequestOverrides(
@@ -213,15 +213,6 @@ function resolveGptRequestOverridesModuleUrl(): string {
     : new URL('../../../providers/drivers/gpt/request-overrides.js', import.meta.url).href
 }
 
-function normalizeOpenAIOAuthCodexServiceTier(body: Record<string, unknown>): void {
-  if (!Object.prototype.hasOwnProperty.call(body, 'service_tier')) {
-    return
-  }
-  if (body.service_tier !== 'priority') {
-    delete body.service_tier
-  }
-}
-
 function resolveOpenAIOAuthCodexSession(
   inputHeaders: Record<string, string | string[] | undefined>,
   body: Record<string, unknown>,
@@ -243,6 +234,7 @@ function resolveOpenAIOAuthCodexSession(
     rawPromptCacheKey
   )
   const rawConversationId = firstNonEmptyString(
+    headerValue(inputHeaders, 'thread-id'),
     headerValue(inputHeaders, 'conversation_id'),
     headerValue(inputHeaders, 'conversation-id'),
     headerValue(inputHeaders, 'x-conversation-id'),
@@ -316,6 +308,10 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return undefined
 }
 
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
 function deleteFields(body: Record<string, unknown>, fields: readonly string[]): void {
   for (const field of fields) {
     delete body[field]
@@ -349,7 +345,6 @@ const openAIOAuthCodexCompactDroppedFields = [
   'include',
   'parallel_tool_calls',
   'prompt_cache_key',
-  'reasoning',
   'store',
   'stream',
   'text',

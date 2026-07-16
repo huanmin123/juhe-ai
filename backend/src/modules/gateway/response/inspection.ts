@@ -290,7 +290,11 @@ function policyMatchesRuntimeContext(
   if (hasClientProfileMatcher) {
     if (!context?.clientProfile || !firstExactMatch(context.clientProfile, policy.match.clientProfiles)) return false
   }
-  if (!hasClientProfileMatcher && policy.match.errorCodes?.length) return false
+  if (
+    !hasClientProfileMatcher
+    && policy.match.errorCodes?.length
+    && (policy.scopeType !== 'provider' || !policy.providerCode)
+  ) return false
   return true
 }
 

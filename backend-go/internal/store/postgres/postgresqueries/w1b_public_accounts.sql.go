@@ -53,6 +53,7 @@ SELECT
   accounts.credential_mask,
   accounts.client_compatibility,
   accounts.health_check_model,
+  accounts.health_check_endpoint_mode,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -101,6 +102,7 @@ type FindExistingPublicAccountByNameInGroupRow struct {
 	CredentialMask            string
 	ClientCompatibility       string
 	HealthCheckModel          string
+	HealthCheckEndpointMode   string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -136,6 +138,7 @@ func (q *Queries) FindExistingPublicAccountByNameInGroup(ctx context.Context, ar
 		&i.CredentialMask,
 		&i.ClientCompatibility,
 		&i.HealthCheckModel,
+		&i.HealthCheckEndpointMode,
 		&i.Schedulable,
 		&i.AvailabilityScheduleJson,
 		&i.ConcurrencyLimit,
@@ -209,6 +212,7 @@ SELECT
   accounts.credential_mask,
   accounts.client_compatibility,
   accounts.health_check_model,
+  accounts.health_check_endpoint_mode,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -245,6 +249,7 @@ type FindPublicAccountByIDRow struct {
 	CredentialMask            string
 	ClientCompatibility       string
 	HealthCheckModel          string
+	HealthCheckEndpointMode   string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -274,6 +279,7 @@ func (q *Queries) FindPublicAccountByID(ctx context.Context, id string) (FindPub
 		&i.CredentialMask,
 		&i.ClientCompatibility,
 		&i.HealthCheckModel,
+		&i.HealthCheckEndpointMode,
 		&i.Schedulable,
 		&i.AvailabilityScheduleJson,
 		&i.ConcurrencyLimit,
@@ -303,6 +309,7 @@ SELECT
   accounts.credential_mask,
   accounts.client_compatibility,
   accounts.health_check_model,
+  accounts.health_check_endpoint_mode,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -340,6 +347,7 @@ type FindPublicAccountByIDForUpdateRow struct {
 	CredentialMask            string
 	ClientCompatibility       string
 	HealthCheckModel          string
+	HealthCheckEndpointMode   string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -369,6 +377,7 @@ func (q *Queries) FindPublicAccountByIDForUpdate(ctx context.Context, id string)
 		&i.CredentialMask,
 		&i.ClientCompatibility,
 		&i.HealthCheckModel,
+		&i.HealthCheckEndpointMode,
 		&i.Schedulable,
 		&i.AvailabilityScheduleJson,
 		&i.ConcurrencyLimit,
@@ -433,7 +442,8 @@ SELECT
   ) AS default_health_check_model,
   profiles.protocol_code,
   profiles.protocol_version,
-  profiles.account_types_json
+  profiles.account_types_json,
+  profiles.capabilities_json
 FROM juhe_business.provider_protocol_profiles AS profiles
 JOIN juhe_business.providers AS providers
   ON providers.code = profiles.provider_code
@@ -467,6 +477,7 @@ type FindPublicAccountProviderProfileRow struct {
 	ProtocolCode               string
 	ProtocolVersion            string
 	AccountTypesJson           string
+	CapabilitiesJson           string
 }
 
 func (q *Queries) FindPublicAccountProviderProfile(ctx context.Context, arg FindPublicAccountProviderProfileParams) (FindPublicAccountProviderProfileRow, error) {
@@ -483,6 +494,7 @@ func (q *Queries) FindPublicAccountProviderProfile(ctx context.Context, arg Find
 		&i.ProtocolCode,
 		&i.ProtocolVersion,
 		&i.AccountTypesJson,
+		&i.CapabilitiesJson,
 	)
 	return i, err
 }
@@ -557,6 +569,7 @@ INSERT INTO juhe_business.accounts (
   priority,
   client_compatibility,
   health_check_model,
+  health_check_endpoint_mode,
   schedulable,
   availability_schedule_json,
   notes,
@@ -585,7 +598,8 @@ INSERT INTO juhe_business.accounts (
   $19,
   $20,
   $21,
-  $22
+  $22,
+  $23
 )
 RETURNING
   id,
@@ -602,6 +616,7 @@ RETURNING
   credential_mask,
   client_compatibility,
   health_check_model,
+  health_check_endpoint_mode,
   schedulable,
   availability_schedule_json,
   concurrency_limit,
@@ -628,6 +643,7 @@ type InsertPublicAccountParams struct {
 	Priority                  int32
 	ClientCompatibility       string
 	HealthCheckModel          string
+	HealthCheckEndpointMode   string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	Notes                     pgtype.Text
@@ -651,6 +667,7 @@ type InsertPublicAccountRow struct {
 	CredentialMask            string
 	ClientCompatibility       string
 	HealthCheckModel          string
+	HealthCheckEndpointMode   string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -678,6 +695,7 @@ func (q *Queries) InsertPublicAccount(ctx context.Context, arg InsertPublicAccou
 		arg.Priority,
 		arg.ClientCompatibility,
 		arg.HealthCheckModel,
+		arg.HealthCheckEndpointMode,
 		arg.Schedulable,
 		arg.AvailabilityScheduleJson,
 		arg.Notes,
@@ -701,6 +719,7 @@ func (q *Queries) InsertPublicAccount(ctx context.Context, arg InsertPublicAccou
 		&i.CredentialMask,
 		&i.ClientCompatibility,
 		&i.HealthCheckModel,
+		&i.HealthCheckEndpointMode,
 		&i.Schedulable,
 		&i.AvailabilityScheduleJson,
 		&i.ConcurrencyLimit,
@@ -925,6 +944,7 @@ SELECT
   accounts.credential_mask,
   accounts.client_compatibility,
   accounts.health_check_model,
+  accounts.health_check_endpoint_mode,
   accounts.schedulable,
   accounts.availability_schedule_json,
   accounts.concurrency_limit,
@@ -995,6 +1015,7 @@ type ListPublicAccountsRow struct {
 	CredentialMask            string
 	ClientCompatibility       string
 	HealthCheckModel          string
+	HealthCheckEndpointMode   string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -1043,6 +1064,7 @@ func (q *Queries) ListPublicAccounts(ctx context.Context, arg ListPublicAccounts
 			&i.CredentialMask,
 			&i.ClientCompatibility,
 			&i.HealthCheckModel,
+			&i.HealthCheckEndpointMode,
 			&i.Schedulable,
 			&i.AvailabilityScheduleJson,
 			&i.ConcurrencyLimit,
@@ -1107,53 +1129,59 @@ SET name = $1,
     credential_fingerprint = $4,
     credential_mask = $5,
     health_check_model = $6,
-    concurrency_limit = $7,
-    priority = $8,
-    schedulable = $9,
-    availability_schedule_json = $10,
-    notes = $11,
+    health_check_endpoint_mode = $7,
+    concurrency_limit = $8,
+    priority = $9,
+    schedulable = $10,
+    availability_schedule_json = $11,
+    notes = $12,
     cooldown_until = CASE
-      WHEN $12::boolean THEN NULL
+      WHEN $13::boolean THEN NULL
       ELSE cooldown_until
     END,
     last_error_code = CASE
-      WHEN $12::boolean THEN NULL
+      WHEN $13::boolean THEN NULL
       ELSE last_error_code
     END,
     last_error_message = CASE
-      WHEN $12::boolean AND $2::text = 'pending_test'
+      WHEN $13::boolean AND $2::text = 'pending_test'
         THEN '账户配置已保存，等待后台检查'
-      WHEN $12::boolean THEN NULL
+      WHEN $13::boolean THEN NULL
       ELSE last_error_message
     END,
     next_health_check_at = CASE
-      WHEN $13::boolean
+      WHEN $14::boolean
       THEN NULL
       ELSE next_health_check_at
     END,
     health_check_failure_count = CASE
-      WHEN $14::boolean
+      WHEN $15::boolean
       THEN 0
       ELSE health_check_failure_count
     END,
+    health_check_failure_started_at = CASE
+      WHEN $15::boolean
+      THEN NULL
+      ELSE health_check_failure_started_at
+    END,
     last_health_check_status_code = CASE
-      WHEN $14::boolean
+      WHEN $15::boolean
       THEN NULL
       ELSE last_health_check_status_code
     END,
     last_health_check_error_code = CASE
-      WHEN $14::boolean
+      WHEN $15::boolean
       THEN NULL
       ELSE last_health_check_error_code
     END,
     last_health_check_error_message = CASE
-      WHEN $14::boolean
+      WHEN $15::boolean
       THEN NULL
       ELSE last_health_check_error_message
     END,
-    updated_at = $15
-WHERE id = $16
-  AND system_account_id = $17
+    updated_at = $16
+WHERE id = $17
+  AND system_account_id = $18
   AND deleted_at IS NULL
 RETURNING
   id,
@@ -1170,6 +1198,7 @@ RETURNING
   credential_mask,
   client_compatibility,
   health_check_model,
+  health_check_endpoint_mode,
   schedulable,
   availability_schedule_json,
   concurrency_limit,
@@ -1186,6 +1215,7 @@ type UpdatePublicAccountAllFieldsParams struct {
 	CredentialFingerprint    pgtype.Text
 	CredentialMask           string
 	HealthCheckModel         string
+	HealthCheckEndpointMode  string
 	ConcurrencyLimit         int32
 	Priority                 int32
 	Schedulable              bool
@@ -1214,6 +1244,7 @@ type UpdatePublicAccountAllFieldsRow struct {
 	CredentialMask            string
 	ClientCompatibility       string
 	HealthCheckModel          string
+	HealthCheckEndpointMode   string
 	Schedulable               bool
 	AvailabilityScheduleJson  pgtype.Text
 	ConcurrencyLimit          int32
@@ -1231,6 +1262,7 @@ func (q *Queries) UpdatePublicAccountAllFields(ctx context.Context, arg UpdatePu
 		arg.CredentialFingerprint,
 		arg.CredentialMask,
 		arg.HealthCheckModel,
+		arg.HealthCheckEndpointMode,
 		arg.ConcurrencyLimit,
 		arg.Priority,
 		arg.Schedulable,
@@ -1259,6 +1291,7 @@ func (q *Queries) UpdatePublicAccountAllFields(ctx context.Context, arg UpdatePu
 		&i.CredentialMask,
 		&i.ClientCompatibility,
 		&i.HealthCheckModel,
+		&i.HealthCheckEndpointMode,
 		&i.Schedulable,
 		&i.AvailabilityScheduleJson,
 		&i.ConcurrencyLimit,

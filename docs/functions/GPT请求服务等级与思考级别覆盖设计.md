@@ -220,7 +220,7 @@ interface CodexModelCapabilities {
 - `reported_service_tier`：上游响应明确报告的档位，可以为空。
 - `billed_service_tier`：上游有报告时使用报告值，否则使用实际上游档位。
 
-成本计算只消费 `billed_service_tier`。Priority 与 Flex 平级，均使用模型精确档位价格；模型未提供精确价格时才使用系统可配置的通用倍率。普通缓存写入与 1 小时缓存写入分别选择各自的档位价格，不能用普通缓存写入档位价格替代 1 小时价格。
+成本计算只消费 `billed_service_tier`。Priority 与 Flex 平级，均使用模型精确档位价格；模型未提供对应档位精确价格时保持未定价，禁止按标准价格倍率猜测。普通缓存写入与 1 小时缓存写入分别选择各自的档位价格，不能用普通缓存写入档位价格替代 1 小时价格。
 
 ### 5.2 Codex attestation 边界
 
@@ -433,7 +433,7 @@ Chat Completions：
 - 覆盖为 `default`：在 normalizer 之前删除 `service_tier`。
 - `flex`：当前 OAuth 适配器能力集合不包含，前端不显示，后端拒绝保存。
 - 普通 `/responses`：reasoning 覆盖写入后保留。
-- `/responses/compact`：可应用 service tier；reasoning 字段会按 compact 契约删除，因此 reasoning 覆盖不适用。
+- `/responses/compact`：保留客户端合法的 service tier 与 reasoning 字段；账户覆盖仍按该路径明确支持的字段边界执行，不能以 compact 为由静默过滤客户端字段。
 
 `/responses/compact` 的不适用状态应进入调试日志或审计元数据，不能伪装成已经成功覆盖。
 
@@ -647,7 +647,7 @@ defaultReasoningEffort?: GptWireReasoningEffort
 - Priority 可能产生更高价格，发布前必须确认 GPT-5.6 当前价格数据是否包含 Priority 计价；不能继续按标准价格低估。
 - 上游响应实际 `service_tier` 可能降级，统计和审计以响应实际值为事实，账户配置只表示请求意图。
 - 本次请求成本按响应实际 `service_tier=default|priority|flex` 选择价格；响应未返回有效档位时按标准档计费。GPT-5.6 优先使用目录中的档位专用价格，超过 272K 输入后再应用长上下文输入、缓存和输出倍率。
-- 系统设置提供 `Priority 通用倍率`（默认 `2`）和 `Flex 通用倍率`（默认 `0.5`），管理员可修改并随运行时设置缓存刷新生效。模型目录有档位专用价格时始终优先使用专用价格；只有模型明确支持该档位但缺少专用价格时才使用通用倍率。修改倍率不会自动为模型开放服务档位。
+- 系统设置不提供 Priority / Flex 通用倍率。模型目录必须维护精确档位价格；模型明确支持档位但缺少对应价格时记录未定价，不能按标准价格乘倍率估算。
 - Flex 能力只按价格源精确声明。当前纳入 GPT-5、GPT-5 Mini/Nano、GPT-5.4 全系列、GPT-5.5 全系列、GPT-5.6 Sol/Terra/Luna，以及 o3/o4-mini；未声明 Flex 的模型保持仅 Priority 或无服务档位能力。
 - GPT 管理模型目录将请求能力拆为“服务等级”和“思考级别”两列并使用 Tag 展示；思考列只展示 OpenAI API 可发送的 `reasoning.effort`，不混入 Codex picker 级别、多代理版本或默认值标识。Codex 专用字段仅供 Codex `/models` 协议响应使用。
 - `outputTokens` 是完整可计费输出，`thinkingTokens` 是其中的观测子集。OpenAI / Anthropic 不重复相加思考 Token；Gemini 将 `candidatesTokenCount + thoughtsTokenCount` 归一为完整输出。

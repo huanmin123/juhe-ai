@@ -1,5 +1,21 @@
 <template>
   <section class="form-section">
+    <a-form-item label="上游接口能力" tooltip="声明这个账号真实上游支持的接口形态。未勾选的上游请求不会进入该账号候选；OAuth 账号按来源能力只读。">
+      <a-checkbox-group
+        v-model:value="form.supportedEndpointModes"
+        :disabled="authorizedEditing || isOAuthForm"
+      >
+        <div class="endpoint-mode-grid">
+          <a-checkbox
+            v-for="option in endpointModeOptions"
+            :key="option.value"
+            :value="option.value"
+          >
+            {{ option.label }}
+          </a-checkbox>
+        </div>
+      </a-checkbox-group>
+    </a-form-item>
     <a-form-item label="账号模型别名" :tooltip="modelMappingTooltip">
       <div v-if="form.modelMappings.length" class="model-mapping-list">
         <div v-for="(mapping, index) in form.modelMappings" :key="index" class="model-mapping-row">
@@ -26,7 +42,7 @@
             <a-select
               v-model:value="mapping.upstreamEndpointFamily"
               :disabled="authorizedEditing"
-              :options="upstreamEndpointFamilyOptions(mapping.sourceEndpointFamily)"
+              :options="upstreamEndpointFamilyOptions(mapping)"
               class="model-mapping-endpoint"
               placeholder="目标协议"
             />
@@ -42,7 +58,7 @@
           </div>
           <div class="model-mapping-actions">
             <a-switch v-model:checked="mapping.enabled" :disabled="authorizedEditing" />
-            <a-tooltip title="删除映射">
+            <a-tooltip title="删除别名">
               <a-button type="text" danger :disabled="authorizedEditing" @click="removeModelMapping(index)">
                 <template #icon><DeleteOutlined /></template>
               </a-button>
@@ -54,22 +70,6 @@
         <template #icon><PlusOutlined /></template>
         新增别名
       </a-button>
-    </a-form-item>
-    <a-form-item label="接口能力限制" tooltip="限制这个账号可承接的接口形态。未勾选的请求不会进入该账号候选；OAuth 账号按来源能力只读。">
-      <a-checkbox-group
-        v-model:value="form.supportedEndpointModes"
-        :disabled="authorizedEditing || isOAuthForm"
-      >
-        <div class="endpoint-mode-grid">
-          <a-checkbox
-            v-for="option in endpointModeOptions"
-            :key="option.value"
-            :value="option.value"
-          >
-            {{ option.label }}
-          </a-checkbox>
-        </div>
-      </a-checkbox-group>
     </a-form-item>
     <a-form-item class="strategy-proxy-field" label="代理" tooltip="仅影响这个账号访问上游供应商时使用的代理；不使用代理时直接按 Base URL 访问上游。">
       <ProxySelect
@@ -109,8 +109,10 @@ import {
 } from './accountProviderCapabilities'
 import {
   defaultAccountModelMappingUpstreamEndpointFamily,
+  defaultAccountModelMappingSourceEndpointFamily,
   isAccountModelMappingProtocolAllowed,
-  isAccountModelMappingSourceEndpointFamilyAllowed
+  isAccountModelMappingSourceEndpointFamilyAllowed,
+  shouldResetAccountModelMappingUpstreamEndpointFamily
 } from './accountModelMappingProtocolMatrix'
 
 const props = defineProps<{
@@ -152,33 +154,26 @@ const sourceEndpointFamilyBaseOptions = [
   { label: 'Gemini GenerateContent', value: GEMINI_GENERATE_CONTENT_FAMILY },
   { label: 'Gemini StreamGenerateContent', value: GEMINI_STREAM_GENERATE_CONTENT_FAMILY }
 ] as const
-const sourceEndpointFamilyOptions = computed(() => sourceEndpointFamilyBaseOptions.map((option) => ({
-  ...option,
-  disabled: !isAccountModelMappingSourceEndpointFamilyAllowed(option.value, modelMappingProtocolContext())
-})))
+const sourceEndpointFamilyOptions = computed(() => sourceEndpointFamilyBaseOptions.filter((option) => (
+  isAccountModelMappingSourceEndpointFamilyAllowed(option.value, modelMappingProtocolContext())
+)))
 
 watch(() => [
   props.form.modelMappings.map((mapping) => `${mapping.sourceEndpointFamily}:${mapping.upstreamEndpointFamily}`).join('|'),
   props.selectedProtocolProfile?.protocolCode ?? '',
   props.selectedProtocolProfile?.protocolVersion ?? '',
-  props.form.supportedEndpointModes.join(','),
-  sourceModelOptionsFingerprint(props.mappingSourceModelOptions),
-  sourceModelOptionsFingerprint(props.mappingAnthropicSourceModelOptions),
-  sourceModelOptionsFingerprint(props.mappingGeminiSourceModelOptions),
-  sourceModelOptionsFingerprint(props.mappingUpstreamModelOptions)
+  props.form.supportedEndpointModes.join(',')
 ].join('|'), () => {
   for (const mapping of props.form.modelMappings) {
     if (!isAccountModelMappingSourceEndpointFamilyAllowed(mapping.sourceEndpointFamily, modelMappingProtocolContext())) {
-      mapping.sourceEndpointFamily = 'chat_completions'
+      mapping.sourceEndpointFamily = defaultAccountModelMappingSourceEndpointFamily(modelMappingProtocolContext())
     }
-    if (upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, mapping.upstreamEndpointFamily)) {
+    if (shouldResetAccountModelMappingUpstreamEndpointFamily({
+      sourceEndpointFamily: mapping.sourceEndpointFamily,
+      upstreamEndpointFamily: mapping.upstreamEndpointFamily,
+      context: modelMappingProtocolContext()
+    })) {
       mapping.upstreamEndpointFamily = defaultUpstreamEndpointFamilyForSource(mapping.sourceEndpointFamily)
-    }
-    if (!mappingSourceModelAllowed(mapping)) {
-      mapping.sourceModel = ''
-    }
-    if (!mappingUpstreamModelAllowed(mapping)) {
-      mapping.upstreamModel = ''
     }
   }
 })
@@ -202,44 +197,25 @@ function rawMappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel[
   return props.mappingSourceModelOptions
 }
 
-function mappingSourceModelAllowed(mapping: AccountFormModel['modelMappings'][number]): boolean {
-  const sourceModel = mapping.sourceModel.trim()
-  if (!sourceModel) return true
-  const options = mappingSourceModelOptionsFor(mapping)
-  if (!options.length) return true
-  return options.some((option) => option.value === sourceModel)
-}
-
-function sourceModelOptionsFingerprint(options: ModelMappingSourceModelOption[]): string {
-  return options.map((option) => `${option.value}:${option.supportedApiProtocols?.join(',') ?? ''}`).join('|')
-}
-
 function mappingUpstreamModelOptionsFor(upstreamEndpointFamily: AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']) {
   return filterAccountModelMappingOptionsByEndpointFamily(props.mappingUpstreamModelOptions, upstreamEndpointFamily)
 }
 
-function mappingUpstreamModelAllowed(mapping: AccountFormModel['modelMappings'][number]): boolean {
-  const upstreamModel = mapping.upstreamModel.trim()
-  if (!upstreamModel) return true
-  const options = mappingUpstreamModelOptionsFor(mapping.upstreamEndpointFamily)
-  if (!options.length) return true
-  return options.some((option) => option.value === upstreamModel)
-}
-
-function upstreamEndpointFamilyOptions(sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']) {
-  return upstreamEndpointFamilyBaseOptions.map((option) => ({
-    ...option,
-    disabled: upstreamEndpointFamilyDisabled(sourceEndpointFamily, option.value)
-  }))
+function upstreamEndpointFamilyOptions(mapping: AccountFormModel['modelMappings'][number]) {
+  return upstreamEndpointFamilyBaseOptions.filter((option) => (
+    !upstreamEndpointFamilyDisabled(mapping.sourceEndpointFamily, option.value, mapping.enabled)
+  ))
 }
 
 function upstreamEndpointFamilyDisabled(
   sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
-  upstreamEndpointFamily: AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']
+  upstreamEndpointFamily: AccountFormModel['modelMappings'][number]['upstreamEndpointFamily'],
+  enabled = true
 ): boolean {
   return !isAccountModelMappingProtocolAllowed({
     sourceEndpointFamily,
     upstreamEndpointFamily,
+    enabled,
     context: modelMappingProtocolContext()
   })
 }
@@ -257,11 +233,12 @@ function isOpenAIResponsesToChatMapping(mapping: AccountFormModel['modelMappings
 }
 
 function addModelMapping(): void {
+  const sourceEndpointFamily = defaultAccountModelMappingSourceEndpointFamily(modelMappingProtocolContext())
   props.form.modelMappings.push({
     sourceModel: '',
-    sourceEndpointFamily: OPENAI_CHAT_COMPLETIONS_FAMILY,
+    sourceEndpointFamily,
     upstreamModel: '',
-    upstreamEndpointFamily: OPENAI_CHAT_COMPLETIONS_FAMILY,
+    upstreamEndpointFamily: defaultAccountModelMappingUpstreamEndpointFamily(sourceEndpointFamily, modelMappingProtocolContext()),
     enabled: true
   })
 }

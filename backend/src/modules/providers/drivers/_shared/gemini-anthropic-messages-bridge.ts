@@ -177,6 +177,10 @@ function validateGeminiGenerateContentAnthropicMessagesBridgeBody(
   if (Array.isArray(body.safetySettings) && body.safetySettings.length > 0) {
     throw geminiGenerateContentGuidance(req, model, `当前${providerLabel(providerName)} Anthropic Messages 上游不能保真承载 Gemini safetySettings。请客户端切换 Gemini 原生上游，或移除 safetySettings 后重试。`, 'unsupported_gemini_safety_settings')
   }
+  const generationConfig = objectValue(body.generationConfig)
+  if (generationConfig?.thinkingConfig !== undefined && generationConfig.thinkingConfig !== null) {
+    throw geminiGenerateContentGuidance(req, model, `当前${providerLabel(providerName)} Anthropic Messages 上游不能保真承载 Gemini thinkingConfig。请移除思考配置，或改用支持该字段的 Gemini 原生上游。`, 'unsupported_gemini_thinking_config')
+  }
 }
 
 function geminiGenerateContentBodyToAnthropicMessagesBody(

@@ -1,7 +1,4 @@
 import { normalizeOpenAIAccountClientCompatibility } from '../../domain/account-client-compatibility.js'
-import { normalizeOpenAIEndpointModesForRuntime } from '../../domain/openai-endpoint-modes.js'
-import { normalizeAnthropicEndpointModesForRuntime } from '../../domain/anthropic-endpoint-modes.js'
-import { normalizeGeminiEndpointModesForRuntime } from '../../domain/gemini-endpoint-modes.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
   GEMINI_GENERATE_CONTENT_FAMILY,
@@ -31,6 +28,8 @@ import {
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountTestFailureEligibleForAccount } from './account-test-failure-eligibility.js'
+import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
+import { hasAccountTestProtocolSuccessEvidence } from './account-test-success-evidence.js'
 import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
@@ -177,8 +176,8 @@ export async function testOpenAIAccount(
   const traceId = createTraceId()
 
   try {
-    const supportedEndpointModes = normalizedAccountTestEndpointModes(account)
-    testEndpointMode = resolveAccountTestEndpointMode(account, supportedEndpointModes, input.testEndpointMode)
+    const supportedEndpointModes = accountManualTestEndpointModes(account)
+    testEndpointMode = resolveAccountTestEndpointMode(supportedEndpointModes, input.testEndpointMode)
     clientCompatibility = accountTestClientCompatibility(account, testEndpointMode, accountClientCompatibility)
     const resolved = await resolveAccountTestCandidate(account, {
       groupId: stringValue(input.groupId),
@@ -192,7 +191,9 @@ export async function testOpenAIAccount(
       systemAccountId: input.systemAccountId,
       sourceFamilies: [accountTestEndpointModeSourceFamily(testEndpointMode)]
     })
-    testRequest = anthropicProtocol
+    const messagesTestMode = isMessagesTestEndpointMode(testEndpointMode)
+    const geminiTestMode = isGeminiTestEndpointMode(testEndpointMode)
+    testRequest = messagesTestMode
       ? createAnthropicTestRequest({
         explicitModel,
         fallbackModel: model,
@@ -200,7 +201,7 @@ export async function testOpenAIAccount(
         supportedEndpointModes,
         testEndpointMode
       })
-      : geminiProtocol
+      : geminiTestMode
         ? createGeminiTestRequest({
           explicitModel,
           fallbackModel: model,
@@ -276,23 +277,31 @@ export async function testOpenAIAccount(
     const finalAccountStatus = finalSummary?.status ?? finalAccount.status
     const responseText = response.bodyText()
     const diagnosticAttemptText = diagnosticLastAttempt?.responseBodyText?.trim() ?? ''
-    const upstreamMessage = anthropicProtocol
+    const upstreamMessage = messagesTestMode
       ? parseAnthropicUpstreamMessage(diagnosticAttemptText) ?? parseAnthropicUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
-      : geminiProtocol
+      : geminiTestMode
         ? parseGeminiUpstreamMessage(diagnosticAttemptText) ?? parseGeminiUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
       : parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
     const upstreamErrorCode = parseUpstreamErrorCode(diagnosticAttemptText) ?? parseUpstreamErrorCode(responseText)
-    const streamFailureMessage = anthropicProtocol
+    const streamFailureMessage = messagesTestMode
       ? parseAnthropicStreamFailureMessage(responseText) ?? parseOpenAIStreamFailureMessage(responseText)
-      : geminiProtocol
+      : geminiTestMode
         ? parseGeminiStreamFailureMessage(responseText) ?? parseOpenAIStreamFailureMessage(responseText)
       : parseOpenAIStreamFailureMessage(responseText)
-    const outputText = anthropicProtocol
+    const outputText = messagesTestMode
       ? extractAnthropicResponseOutputText(responseText)
-      : geminiProtocol
+      : geminiTestMode
         ? extractGeminiResponseOutputText(responseText)
       : extractOpenAIResponseOutputText(responseText)
-    const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
+    const httpSucceeded = response.statusCode >= 200 && response.statusCode < 300
+    const protocolSuccessEvidence = Boolean(
+      testEndpointMode
+      && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseText)
+    )
+    const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence
+    const protocolEvidenceError = httpSucceeded && !streamFailureMessage && !protocolSuccessEvidence
+      ? '上游返回 HTTP 2xx，但响应中缺少所选检查协议的完成证据'
+      : undefined
     const diagnosticStatusCode = accountTestDiagnosticStatusCode(response.statusCode, success, diagnosticLastAttempt)
     const responseTruncated = response.bodyTruncated()
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
@@ -307,10 +316,10 @@ export async function testOpenAIAccount(
       traceId,
       success,
       statusCode: diagnosticStatusCode,
-      errorCode: success ? undefined : upstreamErrorCode,
+      errorCode: success ? undefined : protocolEvidenceError ? 'invalid_protocol_success_response' : upstreamErrorCode,
       message: success
         ? accountTestSuccessMessage(account, responseTruncated, requestUrl)
-        : proxyFailureMessage || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
+        : proxyFailureMessage || protocolEvidenceError || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
       model: testRequest?.model,
       ...accountTestModelMappingFields(modelMapping),
       testEndpointMode,
@@ -332,8 +341,8 @@ export async function testOpenAIAccount(
         ? false
         : accountTestFailureEligibleForAccount({
             statusCode: diagnosticStatusCode,
-            errorCode: upstreamErrorCode,
-            message: proxyFailureMessage || upstreamMessage || streamFailureMessage
+            errorCode: protocolEvidenceError ? 'invalid_protocol_success_response' : upstreamErrorCode,
+            message: proxyFailureMessage || protocolEvidenceError || upstreamMessage || streamFailureMessage
           })
     }), limitedDiagnostics)
   } catch (error) {
@@ -414,69 +423,22 @@ function sanitizeAccountTestResult(result: AccountTestResult): AccountTestResult
   return sanitizeDiagnosticPayload(result)
 }
 
-function normalizedAccountTestEndpointModes(account: AccountSummary): AccountSupportedEndpointMode[] {
-  if (isAnthropicProtocolProfile(account)) {
-    return normalizeAnthropicEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-      providerCode: account.providerCode,
-      accountType: account.type,
-      protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion,
-      providerProtocolProfileId: account.providerProtocolProfileId
-    }).filter((mode) => mode === 'messages_json' || mode === 'messages_sse')
-  }
-  if (isGeminiProtocolProfile(account)) {
-    return normalizeGeminiEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-      providerCode: account.providerCode,
-      accountType: account.type,
-      protocolCode: account.protocolCode,
-      protocolVersion: account.protocolVersion,
-      providerProtocolProfileId: account.providerProtocolProfileId
-    }).filter((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')
-  }
-  if (isOpenAIProtocolProfile(account)) {
-    return normalizeOpenAIEndpointModesForRuntime(account.credentials.supported_endpoint_modes, {
-      providerCode: account.providerCode,
-      providerProtocolProfileId: account.providerProtocolProfileId,
-      accountType: account.type,
-      clientCompatibility: account.clientCompatibility
-    })
-  }
-  return []
-}
-
 function resolveAccountTestEndpointMode(
-  account: AccountSummary,
   supportedModes: AccountSupportedEndpointMode[],
   requestedMode?: AccountSupportedEndpointMode
 ): AccountSupportedEndpointMode {
-  const allowedModes = accountTestEndpointModeOrder(account).filter((mode) => supportedModes.includes(mode))
+  const allowedModes = supportedModes
   if (requestedMode) {
-    if (!accountTestEndpointModeOrder(account).includes(requestedMode)) {
-      throw new AccountTestConfigurationError(`当前账户协议不支持该测试请求形态：${requestedMode}`)
-    }
     if (!allowedModes.includes(requestedMode)) {
-      throw new AccountTestConfigurationError(`测试请求形态不在账户接口能力限制中：${requestedMode}`)
+      throw new AccountTestConfigurationError(`测试请求形态不在账户上游接口能力中：${requestedMode}`)
     }
     return requestedMode
   }
   const mode = allowedModes[0]
   if (!mode) {
-    throw new AccountTestConfigurationError('账户接口能力限制中没有可用于连接测试的请求形态')
+    throw new AccountTestConfigurationError('账户上游接口能力中没有可用于连接测试的请求形态')
   }
   return mode
-}
-
-function accountTestEndpointModeOrder(account: AccountSummary): AccountSupportedEndpointMode[] {
-  if (isAnthropicProtocolProfile(account)) {
-    return ['messages_sse', 'messages_json']
-  }
-  if (isGeminiProtocolProfile(account)) {
-    return ['generate_content_sse', 'generate_content_json']
-  }
-  if (account.type === 'oauth') {
-    return ['responses_sse', 'responses_json']
-  }
-  return ['chat_sse', 'responses_sse', 'chat_json', 'responses_json']
 }
 
 function accountTestClientCompatibility(
@@ -484,6 +446,9 @@ function accountTestClientCompatibility(
   testEndpointMode: AccountSupportedEndpointMode,
   accountClientCompatibility: AccountClientCompatibility
 ): AccountClientCompatibility {
+  if (isMessagesTestEndpointMode(testEndpointMode) || isGeminiTestEndpointMode(testEndpointMode)) {
+    return 'openai_standard'
+  }
   if (!isOpenAIProtocolProfile(account)) {
     return 'openai_standard'
   }
@@ -500,6 +465,14 @@ function accountTestClientCompatibility(
     account.clientCompatibility,
     account
   )
+}
+
+function isMessagesTestEndpointMode(mode: AccountSupportedEndpointMode | undefined): boolean {
+  return mode === 'messages_json' || mode === 'messages_sse'
+}
+
+function isGeminiTestEndpointMode(mode: AccountSupportedEndpointMode | undefined): boolean {
+  return mode === 'generate_content_json' || mode === 'generate_content_sse'
 }
 
 function accountTestDiagnosticStatusCode(downstreamStatusCode: number, success: boolean, lastAttempt?: UpstreamAttempt): number | undefined {

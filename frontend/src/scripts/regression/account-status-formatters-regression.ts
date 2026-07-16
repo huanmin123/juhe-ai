@@ -2,6 +2,7 @@ import type { AccountEffectiveAvailabilityStatus, AccountStatus, AccountSummary,
 import { accountStatusColor, accountStatusText, accountStatusTooltipLines } from '../../views/accounts/accountFormatters'
 import type { AccountFilters } from '../../views/accounts/accountFormTypes'
 import { filterAccounts } from '../../views/accounts/accountListFilters'
+import { accountMenuItems, canToggleAccountStatus } from '../../views/accounts/accountRules'
 import { apiKeyStatusTagColor, apiKeyStatusTagLabel, apiKeyStatusTooltipLines } from '../../views/api-keys/apiKeyFormatters'
 
 const accountStatusValues: AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
@@ -37,13 +38,65 @@ const pendingHealthCheckFailedAccount = accountFixture({
 })
 assertStatus('待检查账户后台检查失败', pendingHealthCheckFailedAccount, '检查失败', 'red')
 assertTrue(
-  accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('系统将自动重试')),
-  '待检查账户失败 tooltip 应说明系统会自动重试'
+  accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('每 1 小时自动重试')),
+  '待检查账户失败 tooltip 应说明固定每 1 小时自动重试'
+)
+assertTrue(
+  accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('持续 24 小时')),
+  '待检查账户失败 tooltip 应说明 24 小时异常收敛窗口'
 )
 assertTrue(
   accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('Invalid API key')),
   '待检查账户失败 tooltip 应显示后台检查原因'
 )
+assertTrue(
+  accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'recheck-health' && item.label === '重新检查'),
+  '检查失败的自有待检查账户应显示重新检查'
+)
+assertTrue(
+  accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'force-activate' && item.label === '人工恢复正常'),
+  '自有待检查账户应允许用户确认后人工恢复正常'
+)
+assertTrue(
+  accountStatusTooltipLines(accountFixture({
+    status: 'pending_test',
+    lastHealthCheckAt: '2026-07-15T01:00:00.000Z',
+    lastHealthCheckTraceId: 'trace-health-check-regression'
+  })).some((line) => line.includes('健康检查 traceId：trace-health-check-regression')),
+  '账户状态提示应直接展示结构化健康检查 traceId'
+)
+assertTrue(
+  accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'toggle-status' && item.label === '停用账户'),
+  '检查失败的自有待检查账户应允许停用'
+)
+const activeHealthTimeline = accountStatusTooltipLines(accountFixture({
+  lastHealthCheckAt: '2026-07-11T01:00:00.000Z',
+  lastHealthSuccessAt: '2026-07-11T01:05:00.000Z',
+  nextHealthCheckAt: '2099-07-11T02:00:00.000Z'
+}))
+assertTrue(activeHealthTimeline.some((line) => line.includes('最近主动健康检查')), '正常账户应区分主动健康检查时间')
+assertTrue(activeHealthTimeline.some((line) => line.includes('最近健康成功信号')), '正常账户应保留健康成功信号文案')
+assertTrue(activeHealthTimeline.some((line) => line.includes('下次健康复核')), '正常账户应显示下次健康复核')
+
+const coolingHealthTimeline = accountStatusTooltipLines(accountFixture({
+  status: 'temporary_unavailable',
+  lastHealthCheckAt: '2026-07-11T01:00:00.000Z',
+  lastHealthSuccessAt: '2026-07-11T01:05:00.000Z',
+  nextHealthCheckAt: '2020-07-11T02:00:00.000Z',
+  cooldownUntil: '2099-07-11T03:00:00.000Z'
+}))
+assertTrue(coolingHealthTimeline.some((line) => line.includes('下次冷却复测')), '冷却账户应显示冷却复测时间')
+assertTrue(!coolingHealthTimeline.some((line) => line.includes('下次健康复核')), '冷却账户不得混入周期健康复核计划')
+assertTrue(!coolingHealthTimeline.some((line) => line.includes('等待复核')), '冷却账户的过期健康计划不得显示为等待复核')
+
+for (const status of ['disabled', 'error'] as const) {
+  const terminalTimeline = accountStatusTooltipLines(accountFixture({
+    status,
+    nextHealthCheckAt: '2020-07-11T02:00:00.000Z'
+  }))
+  assertTrue(!terminalTimeline.some((line) => line.includes('下次健康复核')), `${status} 账户不得显示下次健康复核`)
+  assertTrue(!terminalTimeline.some((line) => line.includes('等待复核')), `${status} 账户不得显示过期计划等待复核`)
+}
 assertStatus('停用账户', accountFixture({
   status: 'disabled',
   effectiveAvailability: {
@@ -55,7 +108,7 @@ assertStatus('停用账户', accountFixture({
     reason: '账户已停用，当前不可用'
   }
 }), '停用', 'default')
-assertStatus('异常账户', accountFixture({
+const errorAccount = accountFixture({
   status: 'error',
   lastErrorCode: 'upstream_failure',
   lastErrorMessage: 'mock account error for formatter regression',
@@ -67,7 +120,17 @@ assertStatus('异常账户', accountFixture({
     blockerScope: 'account',
     reason: 'mock account error for formatter regression'
   }
-}), '异常', 'red')
+})
+assertStatus('异常账户', errorAccount, '异常', 'red')
+assertTrue(
+  accountMenuItems(errorAccount).some((item) => item.key === 'restore-normal' && item.label === '异常恢复'),
+  '异常账户操作名称应为异常恢复'
+)
+assertTrue(
+  accountMenuItems(errorAccount).some((item) => item.key === 'toggle-status' && item.label === '停用账户'),
+  '自有异常账户应允许停用'
+)
+assertTrue(canToggleAccountStatus(errorAccount), '自有异常账户应满足状态停用资格')
 assertStatus('限流账户', accountFixture({
   status: 'rate_limited',
   cooldownUntil: '2099-01-01T00:00:00.000Z',
@@ -224,7 +287,7 @@ assertStatus('持久临时不可调用', accountFixture({
 const longTermUnavailableAccount = accountFixture({
   status: 'temporary_unavailable',
   lastErrorCode: 'cooldown_retest_long_term_unavailable',
-  lastErrorMessage: '后台冷却复测连续失败，进入长期不可用低频复测',
+  lastErrorMessage: '后台冷却复测连续失败，进入长期不可用每 1 小时复测',
   cooldownUntil: '2099-01-01T00:00:00.000Z',
   cooldownRetestFailureCount: 8,
   cooldownRetestObservationStartedAt: '2026-06-16T00:00:00.000Z',
@@ -234,13 +297,17 @@ const longTermUnavailableAccount = accountFixture({
     label: '账户临时不可调用',
     color: 'gold',
     blockerScope: 'account',
-    reason: '进入长期不可用低频复测'
+    reason: '进入长期不可用每 1 小时复测'
   }
 })
 assertStatus('长期不可用', longTermUnavailableAccount, '长期不可用', 'gold')
 assertTrue(
-  accountStatusTooltipLines(longTermUnavailableAccount).some((line) => line.includes('长期不可用低频复测')),
-  '长期不可用 tooltip 应说明后台仍会低频复测'
+  accountStatusTooltipLines(longTermUnavailableAccount).some((line) => line.includes('每 1 小时复测')),
+  '长期不可用 tooltip 应说明后台每 1 小时复测'
+)
+assertTrue(
+  accountStatusTooltipLines(longTermUnavailableAccount).some((line) => line.includes('满 7 天')),
+  '长期不可用 tooltip 应说明 7 天异常收敛窗口'
 )
 assertEqual(
   filterAccounts({ accounts: [longTermUnavailableAccount], filters: accountFilters(['temporary_unavailable']), isManagementView: false }).length,

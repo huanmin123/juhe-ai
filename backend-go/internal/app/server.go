@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"juhe-ai/backend-go/internal/config"
@@ -17,6 +18,8 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
 	"juhe-ai/backend-go/internal/modules/managementauthorizations"
+	"juhe-ai/backend-go/internal/modules/managementclientippolicies"
+	"juhe-ai/backend-go/internal/modules/managementclientipstats"
 	"juhe-ai/backend-go/internal/modules/managementgroups"
 	"juhe-ai/backend-go/internal/modules/managementoperationlogs"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
@@ -35,6 +38,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicgroups"
 	"juhe-ai/backend-go/internal/modules/publicroutestrategies"
 	"juhe-ai/backend-go/internal/modules/publicsettings"
+	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
@@ -75,6 +79,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	cancel()
 
 	var systemAPIClientIPAllowlistVersionReader httpapi.SystemAPIClientIPAllowlistVersionReader
+	var systemAPIRateLimitSettingsVersionReader httpapi.SystemAPIRateLimitSettingsVersionReader
 	var systemAPIClientIPAllowlistCacheRedis *redisplatform.Client
 	if cfg.RedisCacheURL != "" {
 		systemAPIClientIPAllowlistCacheRedis, err = redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
@@ -89,7 +94,17 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		if err != nil {
 			return err
 		}
+		systemAPIRateLimitSettingsVersionReader, err = httpapi.NewRedisSystemAPIRateLimitSettingsVersionReader(
+			systemAPIClientIPAllowlistCacheRedis,
+			cfg.RedisNamespace,
+		)
+		if err != nil {
+			return err
+		}
 	}
+	systemAPIRateLimitSettingsCache := httpapi.NewSystemAPIRateLimitSettingsCache(
+		systemAPIRateLimitSettingsVersionReader,
+	)
 
 	systemAccountInvalidator, closeSystemAccountInvalidator, err := newGatewaySystemAccountInvalidator(ctx, cfg, stateRedis)
 	if err != nil {
@@ -134,12 +149,15 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		logger,
 		systemAccountInvalidator,
 		accountConcurrencyReader,
+		systemAPIRateLimitSettingsCache,
 	)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                                            cfg,
 		Logger:                                            logger,
 		PublicSettingsService:                             &publicSettingsService,
 		SystemAPIRateLimitReader:                          store,
+		SystemAPIRateLimitSettingsCache:                   systemAPIRateLimitSettingsCache,
+		SystemAPIRateLimitSettingsVersionReader:           systemAPIRateLimitSettingsVersionReader,
 		SystemAPIClientIPAllowlistReader:                  store,
 		SystemAPIClientIPAllowlistVersionReader:           systemAPIClientIPAllowlistVersionReader,
 		SystemAPIIPRateLimiter:                            httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, cfg.RedisNamespace),
@@ -209,6 +227,16 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProviderCustomModelCreateHandler:        managementHandlers.ProviderCustomModelCreateHandler,
 		ManagementProviderCustomModelUpdateHandler:        managementHandlers.ProviderCustomModelUpdateHandler,
 		ManagementProviderCustomModelDeleteHandler:        managementHandlers.ProviderCustomModelDeleteHandler,
+		ManagementRouteStrategyListHandler:                managementHandlers.RouteStrategyListHandler,
+		ManagementMyRouteStrategyListHandler:              managementHandlers.MyRouteStrategyListHandler,
+		ManagementRouteStrategyCreateHandler:              managementHandlers.RouteStrategyCreateHandler,
+		ManagementMyRouteStrategyCreateHandler:            managementHandlers.MyRouteStrategyCreateHandler,
+		ManagementRouteStrategyUpdateHandler:              managementHandlers.RouteStrategyUpdateHandler,
+		ManagementMyRouteStrategyUpdateHandler:            managementHandlers.MyRouteStrategyUpdateHandler,
+		ManagementRouteStrategyDeleteHandler:              managementHandlers.RouteStrategyDeleteHandler,
+		ManagementMyRouteStrategyDeleteHandler:            managementHandlers.MyRouteStrategyDeleteHandler,
+		ManagementRouteStrategyDetailHandler:              managementHandlers.RouteStrategyDetailHandler,
+		ManagementMyRouteStrategyDetailHandler:            managementHandlers.MyRouteStrategyDetailHandler,
 		ManagementRouteStrategyOptionsHandler:             managementHandlers.RouteStrategyOptionsHandler,
 		ManagementMyRouteStrategyOptionsHandler:           managementHandlers.MyRouteStrategyOptionsHandler,
 		ManagementAPIKeyListHandler:                       managementHandlers.APIKeyListHandler,
@@ -221,6 +249,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAPIKeyCreateHandler:                   managementHandlers.MyAPIKeyCreateHandler,
 		ManagementAPIKeyUpdateHandler:                     managementHandlers.APIKeyUpdateHandler,
 		ManagementMyAPIKeyUpdateHandler:                   managementHandlers.MyAPIKeyUpdateHandler,
+		ManagementAPIKeyDeleteHandler:                     managementHandlers.APIKeyDeleteHandler,
+		ManagementMyAPIKeyDeleteHandler:                   managementHandlers.MyAPIKeyDeleteHandler,
 		ManagementGroupListHandler:                        managementHandlers.GroupListHandler,
 		ManagementMyGroupListHandler:                      managementHandlers.MyGroupListHandler,
 		ManagementGroupDetailHandler:                      managementHandlers.GroupDetailHandler,
@@ -247,6 +277,12 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
 		ManagementGlobalSettingsUpdateHandler:             managementHandlers.GlobalSettingsUpdateHandler,
+		ManagementClientIPStatsHandler:                    managementHandlers.ClientIPStatsHandler,
+		ManagementClientIPStatsDetailHandler:              managementHandlers.ClientIPStatsDetailHandler,
+		ManagementClientIPAllowlistHandler:                managementHandlers.ClientIPAllowlistHandler,
+		ManagementClientIPUnallowlistHandler:              managementHandlers.ClientIPUnallowlistHandler,
+		ManagementClientIPBlacklistHandler:                managementHandlers.ClientIPBlacklistHandler,
+		ManagementClientIPUnblockHandler:                  managementHandlers.ClientIPUnblockHandler,
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
@@ -347,6 +383,16 @@ type managementAPIHandlers struct {
 	ProviderCustomModelCreateHandler        http.Handler
 	ProviderCustomModelUpdateHandler        http.Handler
 	ProviderCustomModelDeleteHandler        http.Handler
+	RouteStrategyListHandler                http.Handler
+	MyRouteStrategyListHandler              http.Handler
+	RouteStrategyCreateHandler              http.Handler
+	MyRouteStrategyCreateHandler            http.Handler
+	RouteStrategyUpdateHandler              http.Handler
+	MyRouteStrategyUpdateHandler            http.Handler
+	RouteStrategyDeleteHandler              http.Handler
+	MyRouteStrategyDeleteHandler            http.Handler
+	RouteStrategyDetailHandler              http.Handler
+	MyRouteStrategyDetailHandler            http.Handler
 	RouteStrategyOptionsHandler             http.Handler
 	MyRouteStrategyOptionsHandler           http.Handler
 	APIKeyListHandler                       http.Handler
@@ -359,6 +405,8 @@ type managementAPIHandlers struct {
 	MyAPIKeyCreateHandler                   http.Handler
 	APIKeyUpdateHandler                     http.Handler
 	MyAPIKeyUpdateHandler                   http.Handler
+	APIKeyDeleteHandler                     http.Handler
+	MyAPIKeyDeleteHandler                   http.Handler
 	GroupListHandler                        http.Handler
 	MyGroupListHandler                      http.Handler
 	GroupDetailHandler                      http.Handler
@@ -385,6 +433,12 @@ type managementAPIHandlers struct {
 	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
 	GlobalSettingsUpdateHandler             http.Handler
+	ClientIPStatsHandler                    http.Handler
+	ClientIPStatsDetailHandler              http.Handler
+	ClientIPAllowlistHandler                http.Handler
+	ClientIPUnallowlistHandler              http.Handler
+	ClientIPBlacklistHandler                http.Handler
+	ClientIPUnblockHandler                  http.Handler
 	OperationLogsHandler                    http.Handler
 	MyOperationLogsHandler                  http.Handler
 	StatsUsageWindowHandler                 http.Handler
@@ -400,6 +454,7 @@ type managementAPIInvalidator interface {
 	managementapikeys.APIKeyGatewayCacheInvalidator
 	managementsettings.GlobalSettingsCacheInvalidator
 	managementsettings.SystemSettingsInvalidator
+	managementclientippolicies.ClientIPPolicyCacheInvalidator
 }
 
 type gatewayCacheInvalidator interface {
@@ -415,6 +470,7 @@ func newManagementAPIHandler(
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
+	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 ) managementAPIHandlers {
 	if !cfg.ManagementAPIEnabled && !cfg.ManagementAuthSessionsEnabled {
 		return managementAPIHandlers{}
@@ -444,15 +500,27 @@ func newManagementAPIHandler(
 		Store:       store,
 		Invalidator: systemAccountInvalidator,
 	})
-	routeStrategyService := managementroutestrategies.NewService(store)
+	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
+		managementroutestrategies.ServiceOptions{
+			OptionReader: store,
+			ListReader:   store,
+			DetailReader: store,
+			CreateStore:  store,
+			Transactor:   store,
+			Invalidator:  systemAccountInvalidator,
+			Logger:       logger,
+		},
+	)
 	apiKeyService := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
 		ListReader:               store,
 		Creator:                  store,
 		Updater:                  store,
+		Deleter:                  store,
 		UsageStatsTimezoneReader: store,
 		SecretStore:              store,
 		SecretTransactor:         store,
 		Invalidator:              systemAccountInvalidator,
+		Logger:                   logger,
 		Secret:                   cfg.Secret,
 	})
 	groupService := managementgroups.NewServiceWithOptions(managementgroups.ServiceOptions{
@@ -488,10 +556,25 @@ func newManagementAPIHandler(
 		GlobalSettingsCacheInvalidator: systemAccountInvalidator,
 	})
 	systemSettingsService := managementsettings.NewSystemServiceWithOptions(managementsettings.SystemServiceOptions{
-		Store:       store,
-		Invalidator: systemAccountInvalidator,
-		Logger:      logger,
+		Store:                             store,
+		Invalidator:                       systemAccountInvalidator,
+		RateLimitSettingsCacheInvalidator: systemAPIRateLimitSettingsCache,
+		Logger:                            logger,
 	})
+	clientIPPolicyService := managementclientippolicies.NewServiceWithOptions(
+		managementclientippolicies.ServiceOptions{
+			Transactor:  store,
+			Invalidator: systemAccountInvalidator,
+			Logger:      logger,
+		},
+	)
+	clientIPStatsService := managementclientipstats.NewServiceWithOptions(
+		managementclientipstats.ServiceOptions{
+			ListReader:               store,
+			DetailReader:             store,
+			UsageStatsTimezoneReader: store,
+		},
+	)
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
 		Config:         cfg,
 		Logger:         logger,
@@ -561,8 +644,18 @@ func newManagementAPIHandler(
 		ProviderModelsHandler:                   httpapi.NewManagementProviderModelsHandler(providerModelService),
 		ProviderDefaultHealthCheckModelHandler:  httpapi.NewManagementProviderDefaultHealthCheckModelHandler(providerModelService),
 		ProviderCustomModelCreateHandler:        httpapi.NewManagementProviderCustomModelCreateHandler(providerModelService),
-		ProviderCustomModelUpdateHandler:        httpapi.NewManagementProviderCustomModelUpdateHandler(providerModelService),
+		ProviderCustomModelUpdateHandler:        httpapi.NewManagementProviderCustomModelUpdateHandlerWithOperationLog(providerModelService, operationLogOptions),
 		ProviderCustomModelDeleteHandler:        httpapi.NewManagementProviderCustomModelDeleteHandler(providerModelService),
+		RouteStrategyListHandler:                httpapi.NewManagementRouteStrategyListHandler(routeStrategyService),
+		MyRouteStrategyListHandler:              httpapi.NewManagementMyRouteStrategyListHandler(routeStrategyService),
+		RouteStrategyCreateHandler:              httpapi.NewManagementRouteStrategyCreateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
+		MyRouteStrategyCreateHandler:            httpapi.NewManagementMyRouteStrategyCreateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
+		RouteStrategyUpdateHandler:              httpapi.NewManagementRouteStrategyUpdateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
+		MyRouteStrategyUpdateHandler:            httpapi.NewManagementMyRouteStrategyUpdateHandlerWithOperationLog(routeStrategyService, operationLogOptions),
+		RouteStrategyDeleteHandler:              httpapi.NewManagementRouteStrategyDeleteHandlerWithOperationLog(routeStrategyService, operationLogOptions),
+		MyRouteStrategyDeleteHandler:            httpapi.NewManagementMyRouteStrategyDeleteHandlerWithOperationLog(routeStrategyService, operationLogOptions),
+		RouteStrategyDetailHandler:              httpapi.NewManagementRouteStrategyDetailHandler(routeStrategyService),
+		MyRouteStrategyDetailHandler:            httpapi.NewManagementMyRouteStrategyDetailHandler(routeStrategyService),
 		RouteStrategyOptionsHandler:             httpapi.NewManagementRouteStrategyOptionsHandler(routeStrategyService),
 		MyRouteStrategyOptionsHandler:           httpapi.NewManagementMyRouteStrategyOptionsHandler(routeStrategyService),
 		APIKeyListHandler:                       httpapi.NewManagementAPIKeyListHandler(apiKeyService),
@@ -575,6 +668,8 @@ func newManagementAPIHandler(
 		MyAPIKeyCreateHandler:                   httpapi.NewManagementMyAPIKeyCreateHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		APIKeyUpdateHandler:                     httpapi.NewManagementAPIKeyUpdateHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		MyAPIKeyUpdateHandler:                   httpapi.NewManagementMyAPIKeyUpdateHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		APIKeyDeleteHandler:                     httpapi.NewManagementAPIKeyDeleteHandlerWithOperationLog(apiKeyService, operationLogOptions),
+		MyAPIKeyDeleteHandler:                   httpapi.NewManagementMyAPIKeyDeleteHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		GroupListHandler:                        httpapi.NewManagementGroupListHandler(groupService),
 		MyGroupListHandler:                      httpapi.NewManagementMyGroupListHandler(groupService),
 		GroupDetailHandler:                      httpapi.NewManagementGroupDetailHandler(groupService),
@@ -601,6 +696,12 @@ func newManagementAPIHandler(
 		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),
 		GlobalSettingsUpdateHandler:             httpapi.NewManagementGlobalSettingsUpdateHandlerWithOperationLog(globalSettingsUpdateService, operationLogOptions),
+		ClientIPStatsHandler:                    httpapi.NewManagementClientIPStatsHandler(clientIPStatsService),
+		ClientIPStatsDetailHandler:              httpapi.NewManagementClientIPStatsDetailHandler(clientIPStatsService),
+		ClientIPAllowlistHandler:                httpapi.NewManagementClientIPAllowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
+		ClientIPUnallowlistHandler:              httpapi.NewManagementClientIPUnallowlistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
+		ClientIPBlacklistHandler:                httpapi.NewManagementClientIPBlacklistHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
+		ClientIPUnblockHandler:                  httpapi.NewManagementClientIPUnblockHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
@@ -679,9 +780,10 @@ func newPublicAPIHandler(
 }
 
 type PublicAPIHandlerOptions struct {
-	Now               func() time.Time
-	NewLogID          func() string
-	APIKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator
+	Now                          func() time.Time
+	NewLogID                     func() string
+	APIKeyInvalidator            publicapikeys.APIKeyGatewayCacheInvalidator
+	AccountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher
 }
 
 func NewPublicAPIHandler(
@@ -730,7 +832,24 @@ func newPublicAPIHandlerWithOptions(
 		return nil, nil, err
 	}
 
-	handlers, err := newPublicAPIHandlers(store, cfg.Secret, opts.APIKeyInvalidator)
+	accountHealthCheckDispatcher, err := newPublicAccountHealthCheckDispatcher(
+		cfg,
+		opts.AccountHealthCheckDispatcher,
+	)
+	if err != nil {
+		_ = logQueue.Close()
+		return nil, nil, err
+	}
+
+	handlers, err := newPublicAPIHandlers(
+		store,
+		cfg.Secret,
+		opts.APIKeyInvalidator,
+		accountHealthCheckDispatcher,
+		logger,
+		cfg.NodeInternalRequestTimeout,
+		nil,
+	)
 	if err != nil {
 		_ = logQueue.Close()
 		return nil, nil, err
@@ -755,6 +874,10 @@ func newPublicAPIHandlers(
 	store *postgresstore.Store,
 	credentialSecret string,
 	apiKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator,
+	accountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher,
+	logger *slog.Logger,
+	healthCheckDispatchTimeout time.Duration,
+	accountServiceFactory publicAccountServiceFactory,
 ) (map[string]http.Handler, error) {
 	groupService := publicgroups.NewService(publicgroups.Options{Store: store, Transactor: store})
 	routeStrategyService := publicroutestrategies.NewService(publicroutestrategies.Options{Store: store, Transactor: store})
@@ -764,11 +887,17 @@ func newPublicAPIHandlers(
 		Invalidator: apiKeyInvalidator,
 	})
 	providerModelService := managementprovidermodels.NewService(store)
-	accountService := publicaccounts.NewService(publicaccounts.Options{
-		Store:          store,
-		Transactor:     store,
-		ProviderModels: providerModelService,
-		Secret:         credentialSecret,
+	if accountServiceFactory == nil {
+		accountServiceFactory = publicaccounts.NewService
+	}
+	accountService := accountServiceFactory(publicaccounts.Options{
+		Store:                      store,
+		Transactor:                 store,
+		ProviderModels:             providerModelService,
+		HealthCheckDispatcher:      accountHealthCheckDispatcher,
+		HealthCheckDispatchTimeout: healthCheckDispatchTimeout,
+		Logger:                     logger,
+		Secret:                     credentialSecret,
 	})
 
 	handlers := map[string]http.Handler{}
@@ -793,3 +922,23 @@ func newPublicAPIHandlers(
 	}
 	return handlers, nil
 }
+
+func newPublicAccountHealthCheckDispatcher(
+	cfg config.Config,
+	injected publicaccounts.AccountHealthCheckDispatcher,
+) (publicaccounts.AccountHealthCheckDispatcher, error) {
+	if injected != nil {
+		return injected, nil
+	}
+	dispatcher, err := accounthealthcheckdispatch.NewClientWithTimeout(
+		cfg.NodeInternalBaseURL,
+		strings.TrimSpace(cfg.Secret),
+		cfg.NodeInternalRequestTimeout,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("初始化公开账户健康检查投递器失败: %w", err)
+	}
+	return dispatcher, nil
+}
+
+type publicAccountServiceFactory func(publicaccounts.Options) *publicaccounts.Service

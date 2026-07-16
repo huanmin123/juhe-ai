@@ -20,6 +20,9 @@ interface RequestRecord {
 
 type MockScenario =
   | 'normal'
+  | 'ip_stats_not_ready'
+  | 'ip_stats_failure'
+  | 'ip_stats_timeout'
   | 'patch_failure'
   | 'cleanup_404'
   | 'patch_and_cleanup_failure'
@@ -44,6 +47,7 @@ const selectedGroupId = 'grp_plan0081_owner_secondary'
 const temporaryGroupId = 'grp_plan0081_temporary'
 const missingGroupId = 'grp_plan0081_missing_sensitive'
 const missingProviderCode = 'missing-provider-sensitive'
+const sensitiveClientIPHash = 'client_ip_plan0081_sensitive_hash'
 const requestRecords: RequestRecord[] = []
 const groups = new Map<string, MockGroup>()
 let scenario: MockScenario = 'normal'
@@ -66,6 +70,7 @@ try {
 
   await assertLogBoundaryRedaction(baseUrl)
   await assertReadOnlySmoke(baseUrl)
+  await assertClientIPRangeNotReadySmoke(baseUrl)
   await assertSuccessfulMutationSmoke(baseUrl)
   await assertPatchFailureStillCleansUp(baseUrl)
   await assertCleanup404IsIdempotent(baseUrl)
@@ -106,6 +111,22 @@ async function assertLogBoundaryRedaction(baseUrl: string): Promise<void> {
   assert.match(providerFailureMessage, /Mutation provider was not returned by providers\/options/)
   messages.push(providerFailureMessage)
 
+  resetMock('ip_stats_failure')
+  const clientIPFailureMessage = await captureFailureMessage(
+    runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined)
+  )
+  assert.equal(clientIPFailureMessage, 'client IP stats list failed with HTTP 503')
+  messages.push(clientIPFailureMessage)
+
+  resetMock('ip_stats_timeout')
+  const clientIPTimeoutMessage = await captureFailureMessage(
+    runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl, {
+      [realGoManagementSmokeEnv.timeoutMs]: '250'
+    }), () => undefined)
+  )
+  assert.match(clientIPTimeoutMessage, /^client IP stats list request failed: (TimeoutError|AbortError)$/)
+  messages.push(clientIPTimeoutMessage)
+
   const credentialedBaseUrl = 'https://smoke-user:smoke-password@example.test/private'
   const baseUrlFailureMessage = await captureFailureMessage(
     runRealGoManagementSmokeFromEnvironment(smokeEnvironment(credentialedBaseUrl), () => undefined)
@@ -134,16 +155,44 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=3 clientIpRangeReady=true'
   )
   assert.deepEqual(requestPaths(), [
     groupsListPath(),
     groupDetailPath(selectedGroupId),
     providersPath(),
-    modelOptionsPath()
+    modelOptionsPath(),
+    clientIPStatsPath()
   ])
   assert.equal(requestRecords.some((record) => ['POST', 'PATCH', 'DELETE'].includes(record.method ?? '')), false)
   assertNoCookieLeak(output)
+  assertNoEnvironmentIdentifierLeak(output, baseUrl)
+  assertRequestHeaders()
+}
+
+async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> {
+  resetMock('ip_stats_not_ready')
+  const output: string[] = []
+  const summary = await runRealGoManagementSmokeFromEnvironment(
+    smokeEnvironment(baseUrl),
+    (message) => output.push(message)
+  )
+
+  assert.deepEqual(summary, expectedSummary(false))
+  assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
+  assert.equal(
+    output[0],
+    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 clientIpItems=0 clientIpRangeReady=false'
+  )
+  assert.deepEqual(requestPaths(), [
+    groupsListPath(),
+    groupDetailPath(selectedGroupId),
+    providersPath(),
+    modelOptionsPath(),
+    clientIPStatsPath()
+  ])
+  assert.equal(requestRecords.every((record) => record.method === 'GET'), true)
+  assertNoEnvironmentIdentifierLeak(output, baseUrl)
   assertRequestHeaders()
 }
 
@@ -165,6 +214,7 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
     groupDetailPath(selectedGroupId),
     providersPath(),
     modelOptionsPath(),
+    clientIPStatsPath(),
     groupsCreatePath(),
     groupsListPath(),
     groupDetailPath(temporaryGroupId),
@@ -203,6 +253,7 @@ async function assertSuccessfulMutationSmoke(baseUrl: string): Promise<void> {
     }
   })
   assertNoCookieLeak(output)
+  assertNoEnvironmentIdentifierLeak(output, baseUrl)
   assertRequestHeaders()
 }
 
@@ -404,6 +455,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     ])
     return
   }
+  if (req.method === 'GET' && url.pathname === '/__aisys__/api/ip-stats') {
+    await handleClientIPStatsRequest(res, scenario)
+    return
+  }
 
   const groupId = groupIdFromPath(url.pathname)
   if (groupId) {
@@ -413,6 +468,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   res.statusCode = 404
   res.end(JSON.stringify({ message: 'not found' }))
+}
+
+async function handleClientIPStatsRequest(res: ServerResponse, requestScenario: MockScenario): Promise<void> {
+  if (requestScenario === 'ip_stats_timeout') {
+    await delay(1_000)
+    if (res.destroyed) {
+      return
+    }
+  }
+  if (requestScenario === 'ip_stats_failure') {
+    res.statusCode = 503
+    res.end(JSON.stringify({
+      message: `client IP window unavailable for ${sensitiveClientIPHash}; cookie=${cookie}`
+    }))
+    return
+  }
+  sendEnvelope(res, clientIPStatsListFixture(requestScenario !== 'ip_stats_not_ready'))
 }
 
 async function handleGroupDetailRequest(
@@ -627,12 +699,14 @@ function omitDynamicName(value: unknown): Record<string, unknown> {
   return rest
 }
 
-function expectedSummary(): Record<string, unknown> {
+function expectedSummary(clientIpRangeReady = true): Record<string, unknown> {
   return {
     groupCount: 3,
     selectedGroupId,
     providerCount: 2,
-    modelOptionCount: 2
+    modelOptionCount: 2,
+    clientIpItemCount: clientIpRangeReady ? 3 : 0,
+    clientIpRangeReady
   }
 }
 
@@ -668,6 +742,10 @@ function modelOptionsPath(): string {
   return `GET /__aisys__/api/providers/models/options?systemAccountId=${systemAccountId}`
 }
 
+function clientIPStatsPath(): string {
+  return 'GET /__aisys__/api/ip-stats?page=1&pageSize=20&sortField=requestCount&sortOrder=desc'
+}
+
 function assertRequestHeaders(): void {
   for (const record of requestRecords) {
     assert.equal(record.headers.cookie, cookie)
@@ -695,6 +773,7 @@ function assertNoEnvironmentIdentifierLeak(
     systemAccountId,
     selectedGroupId,
     temporaryGroupId,
+    sensitiveClientIPHash,
     'gpt',
     'openai',
     ...additionalIdentifiers
@@ -708,6 +787,102 @@ function assertNoEnvironmentIdentifierLeak(
   }
 }
 
+function clientIPStatsListFixture(rangeReady: boolean): Record<string, unknown> {
+  const items = rangeReady ? clientIPStatsItemsFixture() : []
+  return {
+    items,
+    pageUpperBound: items.length,
+    hasMore: false,
+    page: 1,
+    pageSize: 20,
+    range: {
+      startDate: '2026-07-14',
+      endDate: '2026-07-14',
+      days: 1,
+      maxDays: 31
+    },
+    rangeReady
+  }
+}
+
+function clientIPStatsItemsFixture(): Record<string, unknown>[] {
+  return [
+    {
+      ipHash: sensitiveClientIPHash,
+      aggregateIpKey: '203.0.113.0/24',
+      lastSeenAt: '2026-07-14T08:30:00.000Z',
+      status: 'blacklisted',
+      rangeUsage: clientIPUsageFixture({
+        requestCount: 10,
+        successCount: 8,
+        errorCount: 2,
+        inputTokens: 1_200,
+        outputTokens: 300,
+        activeDays: 1,
+        averageDurationMs: 425.5,
+        averageFirstTokenMs: 80.25,
+        maxDurationMs: 900,
+        lastUsedAt: '2026-07-14T08:25:00.000Z',
+        lastErrorAt: '2026-07-14T07:00:00.000Z'
+      })
+    },
+    {
+      ipHash: 'client_ip_plan0081_allowlisted',
+      aggregateIpKey: '198.51.100.0/24',
+      status: 'allowlisted',
+      rangeUsage: clientIPUsageFixture({
+        requestCount: 0,
+        successCount: 0,
+        errorCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        activeDays: 0
+      })
+    },
+    {
+      ipHash: 'client_ip_plan0081_normal',
+      aggregateIpKey: '192.0.2.0/24',
+      lastSeenAt: '',
+      status: 'normal',
+      rangeUsage: clientIPUsageFixture({
+        requestCount: 4,
+        successCount: 3,
+        errorCount: 1,
+        inputTokens: 80,
+        outputTokens: 20,
+        activeDays: 1
+      })
+    }
+  ]
+}
+
+function clientIPUsageFixture(overrides: Record<string, unknown>): Record<string, unknown> {
+  const requestCount = Number(overrides.requestCount ?? 0)
+  const errorCount = Number(overrides.errorCount ?? 0)
+  const inputTokens = Number(overrides.inputTokens ?? 0)
+  const outputTokens = Number(overrides.outputTokens ?? 0)
+  return {
+    requestCount,
+    successCount: 0,
+    errorCount,
+    errorRate: requestCount > 0 ? errorCount / requestCount : 0,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens: 5,
+    cacheReadCost: 0.001,
+    cacheWriteTokens: 3,
+    cacheWrite1hTokens: 2,
+    cacheWriteCost: 0.002,
+    thinkingTokens: 1,
+    inputImageTokens: 0,
+    outputImageTokens: 0,
+    totalTokens: inputTokens + outputTokens,
+    totalCost: 0.03,
+    activeDays: 0,
+    ...overrides
+  }
+}
+
 async function captureFailureMessage(operation: Promise<unknown>): Promise<string> {
   try {
     await operation
@@ -716,6 +891,10 @@ async function captureFailureMessage(operation: Promise<unknown>): Promise<strin
     return error.message
   }
   assert.fail('expected operation to fail')
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))
 }
 
 function listen(target: Server): Promise<void> {

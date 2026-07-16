@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { buildChatModelOptions, ChatModelCapabilityError, resolveChatModelRequestOptions } from '../../modules/chat/chat-model-options.js'
 
-const options = buildChatModelOptions(['gpt-test', 'mixed-cache-model', 'custom-model'], [{
+const options = buildChatModelOptions(['gpt-test', 'mixed-cache-model', 'vendor-model', 'custom-model'], [{
   model: 'gpt-test',
   supportsPromptCaching: true,
   supportedReasoningEfforts: ['none', 'low', 'medium', 'high'],
@@ -18,9 +18,9 @@ const options = buildChatModelOptions(['gpt-test', 'mixed-cache-model', 'custom-
 }, {
   model: 'gpt-test',
   supportsPromptCaching: true,
-  supportedReasoningEfforts: ['medium', 'high', 'xhigh'],
+  supportedReasoningEfforts: ['medium', 'high', 'xhigh', 'vendor-experimental'],
   defaultReasoningEffort: 'high',
-  supportedServiceTiers: ['priority'],
+  supportedServiceTiers: ['priority', 'spot'],
   contextWindowTokens: 64_000,
   maxInputTokens: 48_000,
   maxOutputTokens: 16_000,
@@ -58,6 +58,16 @@ const options = buildChatModelOptions(['gpt-test', 'mixed-cache-model', 'custom-
   inputModalities: ['text'],
   outputModalities: ['text'],
   supportedTools: []
+}, {
+  model: 'vendor-model',
+  supportsPromptCaching: false,
+  supportedReasoningEfforts: ['medium', 'vendor-experimental'],
+  defaultReasoningEffort: 'vendor-experimental',
+  supportedServiceTiers: ['priority', 'spot'],
+  supportedApiProtocols: ['responses'],
+  inputModalities: ['text'],
+  outputModalities: ['text'],
+  supportedTools: []
 }])
 
 assert.deepEqual(options, [
@@ -80,6 +90,17 @@ assert.deepEqual(options, [
     supportsPromptCaching: false,
     supportedReasoningEfforts: [],
     supportedServiceTiers: [],
+    supportedApiProtocols: ['responses'],
+    inputModalities: ['text'],
+    outputModalities: ['text'],
+    supportedTools: []
+  },
+  {
+    id: 'vendor-model',
+    supportsPromptCaching: false,
+    supportedReasoningEfforts: ['medium'],
+    defaultReasoningEffort: 'medium',
+    supportedServiceTiers: ['default', 'priority'],
     supportedApiProtocols: ['responses'],
     inputModalities: ['text'],
     outputModalities: ['text'],

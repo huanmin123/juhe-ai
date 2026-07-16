@@ -51,7 +51,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 - 导出只包含当前用户或管理员目标作用域内有权查看凭据和编辑的自有账户；授权账户实例不导出。
 - 如果账户绑定了可用代理，导出文件会同时写入 `proxies` 并通过账户 `proxyRef` 引用，便于再次导入时自动创建或复用代理。
 - 导出会保留账户标签为 `tags` 字符串数组；再次导入时会在目标系统账户维度自动创建缺失标签并绑定到账户。
-- 导出会保留账户级 `healthCheckModel`；再次导入时该值必须属于同一账户的 `supportedModels` 且满足协议最小检查能力，否则预览失败。
+- 导出会保留账户级 `healthCheckModel` 和精确 `healthCheckEndpointMode`；再次导入时检查模型必须属于同一账户的 `supportedModels`，请求形态必须是账户已启用的 Chat / Responses / Messages / GenerateContent JSON 或 Streaming mode，否则预览失败。导入省略请求形态时按新账户默认规则解析。
 - 导出必须为每个账户写出当前 `providerProtocolProfileId`，保证重新导入能还原到同一供应商协议档案；导入不得靠 `credentials.base_url`、供应商默认值或历史接入类型字段猜测档案。
 - 账户当前为 `pending_test` 时导出为 `status: "pending_test"`；账户当前为 `active` 且参与调度时导出为 `status: "active"`；其他运行态状态统一导出为 `status: "disabled"`。导入时 `active` 会按安全策略落成 `pending_test`，后台激活检查成功后才转为 `active`。
 - 导出的 JSON 文件可以在“导入账户”弹窗中直接粘贴预览，再确认导入。
@@ -263,6 +263,7 @@ AI 账户导入只支持项目自定义 JSON 协议，不直接兼容 sub2api、
 | `fallbackEnabled` | 否 | 降级备用开关。 |
 | `supportedModels` | 否 | 支持模型列表；省略时按供应商默认支持模型回填，最终必须非空。 |
 | `healthCheckModel` | 否 | 账户级检查模型；省略时按“个人默认 > 管理员系统默认 > 协议档案默认”初始化，最终必须持久化且属于账户 `supportedModels`。 |
+| `healthCheckEndpointMode` | 否 | 后台健康检查精确请求形态；允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`。省略时 GPT 官方默认 `responses_sse`，OpenAI-compatible 默认 `chat_json`，Anthropic 默认 `messages_json`，Gemini Native 默认 `generate_content_json`。 |
 | `modelMappings` | 否 | 账号模型映射列表；普通供应商账户只允许当前账号供应商模型目录内的同协议模型名改写，以及 OpenAI v1 的 Responses 到 Chat Completions 显式 bridge；混合供应商账户允许用该字段声明其他下游模型 / 协议入口到真实上游模型 / 协议的跨协议映射。条目包含 `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily`、`enabled`。 |
 | `tags` | 否 | 账户标签字符串数组；导入时按目标系统账户自动创建缺失标签并绑定到当前账户。 |
 | `accountExpiresAt` | 否 | 账户过期时间。 |
@@ -363,7 +364,7 @@ OAuth 账户：
 - `providerCode = openai` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = api_key` 时必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = oauth` 时必须有 `credentials.refresh_token` 或 `credentials.access_token`。
-- `providerCode = gpt` 的 API Key 和 OAuth 凭据可选包含 `service_tier_override=default|priority|flex` 与 `reasoning_effort_override=none|minimal|low|medium|high|xhigh|max`；空值表示不覆盖客户端请求。后端按最终支持模型的精确能力数组和适配器能力校验，拒绝 `fast`、`auto`、`ultra`，非 GPT 账户不得提交这两个字段。
+- 文本模型账户凭据可选包含字符串 `service_tier_override` 与 `reasoning_effort_override`；空值表示不覆盖客户端请求。值必须属于账户全部支持模型在当前供应商目录中声明的共同交集。GPT 仍只接受既有 OpenAI 值并保持 OAuth 禁止 Flex；Anthropic 按原生 `service_tier` / effort 映射；Gemini 只支持 thinking level，服务档位覆盖明确拒绝；DeepSeek / GLM 未声明能力时不得提交。`speed`、thinking budget 等原生字段只做同协议保护，不属于这两个账户控件。
 - `service_tier_override` 与 `reasoning_effort_override` 会在模型映射和协议桥接确定实际上游模型后覆盖最终上游请求；OpenAI Responses Multi-agent Beta 不属于本期导入字段。
 - `providerCode = anthropic` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。当前导入协议不接受 Anthropic OAuth、Setup Token、Claude Code token、`refresh_token` 或 `access_token`。
 - `providerCode = anthropic` 不接受 `credentials.anthropic_version` 或 `credentials.anthropic_beta`。`anthropic-version` 是客户端请求头，缺省时由网关按协议默认 `2023-06-01` 补齐；`anthropic-beta` 只透传客户端显式 header。

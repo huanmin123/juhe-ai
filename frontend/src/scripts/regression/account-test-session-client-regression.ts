@@ -84,8 +84,8 @@ assertDeepEqual(
     protocolCode: 'openai',
     protocolVersion: 'v1'
   })),
-  { model: 'gpt-5.1', testEndpointMode: 'chat_sse' },
-  'GPT API Key 默认测试形态应从接口能力限制中明确提交 endpoint mode'
+  { model: 'gpt-5.1', testEndpointMode: 'chat_json' },
+  'GPT API Key 默认测试形态应从上游接口能力中明确提交 endpoint mode'
 )
 assertDeepEqual(
   buildAccountTestPayload({ model: '', testEndpointMode: 'responses_sse' }, accountFixture({
@@ -104,8 +104,8 @@ assertDeepEqual(
     protocolCode: 'anthropic',
     protocolVersion: 'v1'
   })),
-  { model: 'claude-opus-4-8', testEndpointMode: 'messages_sse' },
-  'Anthropic 测试应从接口能力限制中明确提交 Messages endpoint mode'
+  { model: 'claude-opus-4-8', testEndpointMode: 'messages_json' },
+  'Anthropic 测试应从上游接口能力中明确提交 Messages endpoint mode'
 )
 
 await submitAccountTestTask({

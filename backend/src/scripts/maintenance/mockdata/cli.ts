@@ -61,7 +61,7 @@ import { createRecordCleanupMockdata } from './records/record-cleanup.js'
 import { createStorageMockdata } from './observability/storage.js'
 import { createUsageMockdata } from './records/usage.js'
 
-function main(): void {
+async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2))
   if (options.help) {
     printHelp()
@@ -88,7 +88,7 @@ function main(): void {
   createOperationMockdata(created, usageRecords)
   createRuntimeLogMockdata(usageRecords)
   createDatasetTableCoverageMockdata()
-  const modelCheckCounts = createModelCheckMockdata(created, options)
+  const modelCheckCounts = await createModelCheckMockdata(created, options)
   const cleanupCounts = createRecordCleanupMockdata()
   createMonitoringMockdata(options)
 
@@ -302,4 +302,4 @@ function assertNoMockSelfAuthorizations(adminId: string): void {
   }
 }
 
-main()
+await main()

@@ -16,22 +16,37 @@ import {
   type UpsertCustomProviderModelInput
 } from '../../storage/custom-provider-models.repository.js'
 import {
-  listProviderModelPricing,
+  getProviderModelPricing,
   type CostInput,
+  type ModelPriceSet,
   type ProviderCostBreakdown,
   type ProviderModelApiProtocol,
   type ProviderModelPricing
 } from './model-pricing.service.js'
 import {
+  listBuiltInProviderModels,
+  listBuiltInProviderModelsAsync,
+  type BuiltInProviderModelRecord
+} from '../../storage/provider-model-catalog.repository.js'
+import {
   DEEPSEEK_PROVIDER_CODE,
   GEMINI_PROVIDER_CODE,
   GLM_PROVIDER_CODE,
   GPT_VENDOR_CODE,
+  HYBRID_PROVIDER_CODE,
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   normalizeProviderToken
 } from '../../domain/provider-protocol.js'
-import { listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from '../../storage/provider.repository.js'
-import { clearSharedJsonCacheInBackground, createAppCache, createSharedJsonCache } from '../../shared/cache.js'
+import { usesOpenAICodexResponsesLite } from '../gateway/adapters/gpt-codex/client-headers.js'
+import {
+  listAnthropicProtocolProviderCodes,
+  listAnthropicProtocolProviderCodesAsync,
+  listGeminiProtocolProviderCodes,
+  listGeminiProtocolProviderCodesAsync,
+  listOpenAIProtocolProviderCodes,
+  listOpenAIProtocolProviderCodesAsync
+} from '../../storage/provider.repository.js'
+import { createAppCache, createSharedJsonCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 import { runtimeConfig } from '../../config/runtime.js'
@@ -40,12 +55,12 @@ import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from '../../stor
 
 export type ModelCatalogScope = 'built_in' | CustomProviderModelScope
 
-export interface ProviderModelCatalogItem extends ProviderModelPricing {
+export interface ProviderModelCatalogItem extends Omit<ProviderModelPricing, 'defaultReasoningEffort'> {
   id?: string
   scope: ModelCatalogScope
   status: 'draft' | 'active' | 'disabled'
+  defaultReasoningEffort: string | null
   systemAccountId?: string
-  pricingModel?: string
   contextWindowTokens?: number
   pricingNotes?: string
   capabilityNotes?: string
@@ -194,15 +209,13 @@ function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderMo
   }
   const sourceProviderCodes = modelCatalogSourceProviderCodes(options.providerCode)
   const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
-  const builtIn = builtInSourceProviderCodes.flatMap((providerCode) => listProviderModelPricing(providerCode)
-    .filter((item) => item.catalogVisible)
-    .map(toBuiltInCatalogItem))
+  const builtIn = listBuiltInProviderModels(builtInSourceProviderCodes).map(toBuiltInCatalogItem)
   const custom = sourceProviderCodes.flatMap((providerCode) => listCustomProviderModelsForCatalog({
       providerCode,
       systemAccountId: options.systemAccountId,
       includeInactive: options.includeInactive
     }).map(toCustomCatalogItem))
-  const merged = mergeModelCatalogItems([...builtIn, ...custom])
+  const merged = mergeModelCatalogItems([...builtIn, ...custom], normalizeProviderToken(options.providerCode) === HYBRID_PROVIDER_CODE)
 
   return merged
     .filter((item) => options.includeInactive || item.status === 'active')
@@ -213,16 +226,14 @@ function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderMo
 async function buildProviderModelCatalogAsync(options: ModelCatalogListOptions): Promise<ProviderModelCatalogItem[]> {
   const sourceProviderCodes = await modelCatalogSourceProviderCodesAsync(options.providerCode)
   const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
-  const builtIn = builtInSourceProviderCodes.flatMap((providerCode) => listProviderModelPricing(providerCode)
-    .filter((item) => item.catalogVisible)
-    .map(toBuiltInCatalogItem))
+  const builtIn = (await listBuiltInProviderModelsAsync(builtInSourceProviderCodes)).map(toBuiltInCatalogItem)
   const customCatalogs = await Promise.all(sourceProviderCodes.map((providerCode) => listCustomProviderModelsForCatalogAsync({
     providerCode,
     systemAccountId: options.systemAccountId,
     includeInactive: options.includeInactive
   })))
   const custom = customCatalogs.flatMap((items) => items.map(toCustomCatalogItem))
-  const merged = mergeModelCatalogItems([...builtIn, ...custom])
+  const merged = mergeModelCatalogItems([...builtIn, ...custom], normalizeProviderToken(options.providerCode) === HYBRID_PROVIDER_CODE)
 
   return merged
     .filter((item) => options.includeInactive || item.status === 'active')
@@ -382,7 +393,7 @@ export async function buildCatalogCostBreakdownAsync(input: CostInput & { system
   return buildCatalogCostBreakdownFromPricing(pricing, input)
 }
 
-function buildCatalogCostBreakdownFromPricing(
+export function buildCatalogCostBreakdownFromPricing(
   pricing: ProviderModelCatalogItem,
   input: CostInput & { systemAccountId?: string; costUsd?: number }
 ): ProviderCostBreakdown | undefined {
@@ -445,7 +456,9 @@ function buildCatalogCostBreakdownFromPricing(
     outputImageUnitCostUsd,
     outputUsdPerImage: pricing.outputUsdPerImage,
     accountChargeUsd: input.costUsd ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, cacheWrite1hCostUsd, inputImageCostUsd, outputImageCostUsd, inputAudioCostUsd, outputAudioCostUsd, outputImageUnitCostUsd),
-    multiplier: 1
+    multiplier: 1,
+    serviceTierPricingSource: tokenPrices.serviceTierPricingSource,
+    serviceTierMultiplier: tokenPrices.serviceTierMultiplier
   }
 }
 
@@ -455,10 +468,7 @@ function resolveCatalogPricing(input: CostInput & { systemAccountId?: string }):
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId
   })
-  const item = findCatalogItem(catalog, input.model)
-  if (!item) return undefined
-  if (!item.pricingModel) return item
-  return findCatalogItem(catalog, item.pricingModel)
+  return findCatalogItem(catalog, input.model)
 }
 
 async function resolveCatalogPricingAsync(input: CostInput & { systemAccountId?: string }): Promise<ProviderModelCatalogItem | undefined> {
@@ -467,10 +477,7 @@ async function resolveCatalogPricingAsync(input: CostInput & { systemAccountId?:
     providerCode: input.providerCode,
     systemAccountId: input.systemAccountId
   })
-  const item = findCatalogItem(catalog, input.model)
-  if (!item) return undefined
-  if (!item.pricingModel) return item
-  return findCatalogItem(catalog, item.pricingModel)
+  return findCatalogItem(catalog, input.model)
 }
 
 function modelCatalogCacheKey(options: ModelCatalogListOptions): string {
@@ -485,21 +492,26 @@ function modelCatalogCacheKey(options: ModelCatalogListOptions): string {
 function cloneProviderModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
   return items.map((item) => ({
     ...item,
+    defaultReasoningEffort: item.defaultReasoningEffort ?? null,
     supportedApiProtocols: [...item.supportedApiProtocols],
-    inputModalities: [...item.inputModalities],
-    outputModalities: [...item.outputModalities],
-    supportedTools: [...item.supportedTools],
+    inputModalities: [...(item.inputModalities ?? [])],
+    outputModalities: [...(item.outputModalities ?? [])],
+    supportedTools: [...(item.supportedTools ?? [])],
+    serviceTierPrices: cloneServiceTierPrices(item.serviceTierPrices),
     supportedServiceTiers: [...item.supportedServiceTiers],
     supportedReasoningEfforts: [...item.supportedReasoningEfforts],
     codexSupportedReasoningLevels: [...item.codexSupportedReasoningLevels]
   }))
 }
 
-function mergeModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
+function mergeModelCatalogItems(items: ProviderModelCatalogItem[], preserveProviderIdentity = false): ProviderModelCatalogItem[] {
   const merged = new Map<string, ProviderModelCatalogItem>()
   for (const item of items) {
-    const key = item.model.trim()
-    if (!key) continue
+    const model = item.model.trim()
+    if (!model) continue
+    const key = preserveProviderIdentity
+      ? `${normalizeProviderToken(item.providerCode) ?? ''}\n${model}`
+      : model
     const previous = merged.get(key)
     if (!previous || catalogPriority(item) >= catalogPriority(previous)) {
       merged.set(key, item)
@@ -508,14 +520,11 @@ function mergeModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderMode
   return [...merged.values()]
 }
 
-function hasResolvablePrice(item: ProviderModelCatalogItem, allItems: ProviderModelCatalogItem[]): boolean {
-  if (hasDirectPrice(item)) return true
-  if (!item.pricingModel) return false
-  const target = findCatalogItem(allItems, item.pricingModel)
-  return Boolean(target && hasDirectPrice(target) && !target.pricingModel)
+function hasResolvablePrice(item: ProviderModelCatalogItem, _allItems: ProviderModelCatalogItem[]): boolean {
+  return hasDirectPrice(item)
 }
 
-function hasDirectPrice(item: ProviderModelPricing): boolean {
+function hasDirectPrice(item: Omit<ProviderModelPricing, 'defaultReasoningEffort'>): boolean {
   return item.inputUsdPer1M !== undefined
     || item.outputUsdPer1M !== undefined
     || item.cachedInputUsdPer1M !== undefined
@@ -526,18 +535,28 @@ function hasDirectPrice(item: ProviderModelPricing): boolean {
     || item.audioInputUsdPer1M !== undefined
     || item.audioOutputUsdPer1M !== undefined
     || item.outputUsdPerImage !== undefined
+    || Object.keys(item.serviceTierPrices ?? {}).length > 0
 }
 
-function findCatalogItem(items: ProviderModelCatalogItem[], model: string): ProviderModelCatalogItem | undefined {
+export function findCatalogItem(items: ProviderModelCatalogItem[], model: string): ProviderModelCatalogItem | undefined {
   const normalized = model.trim()
   return items.find((item) => item.model.trim() === normalized)
 }
 
-function toBuiltInCatalogItem(item: ProviderModelPricing): ProviderModelCatalogItem {
+function toBuiltInCatalogItem(item: BuiltInProviderModelRecord): ProviderModelCatalogItem {
+  const staticCapabilities = getProviderModelPricing(item.providerCode, item.model)
   return {
     ...item,
+    defaultReasoningEffort: item.defaultReasoningEffort ?? null,
     scope: 'built_in',
-    status: 'active'
+    status: item.status,
+    inputModalities: [...(item.inputModalities?.length ? item.inputModalities : staticCapabilities?.inputModalities ?? [])],
+    outputModalities: [...(item.outputModalities?.length ? item.outputModalities : staticCapabilities?.outputModalities ?? [])],
+    supportedTools: [...(item.supportedTools?.length ? item.supportedTools : staticCapabilities?.supportedTools ?? [])],
+    supportedServiceTiers: [...(item.supportedServiceTiers ?? [])],
+    supportedReasoningEfforts: [...(item.supportedReasoningEfforts ?? [])],
+    codexSupportedReasoningLevels: [...(item.codexSupportedReasoningLevels ?? [])],
+    supportsServiceTier: (item.supportedServiceTiers?.length ?? 0) > 0
   }
 }
 
@@ -557,16 +576,19 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     outputUsdPer1M: item.outputUsdPer1M,
     cachedInputUsdPer1M: item.cachedInputUsdPer1M,
     cacheWriteUsdPer1M: item.cacheWriteUsdPer1M,
+    cacheWrite1hUsdPer1M: item.cacheWrite1hUsdPer1M,
+    serviceTierPrices: cloneServiceTierPrices(item.serviceTierPrices),
     imageInputUsdPer1M: item.imageInputUsdPer1M,
     imageOutputUsdPer1M: item.imageOutputUsdPer1M,
     audioInputUsdPer1M: item.audioInputUsdPer1M,
     audioOutputUsdPer1M: item.audioOutputUsdPer1M,
     outputUsdPerImage: item.outputUsdPerImage,
+    maxInputTokens: item.maxInputTokens,
     maxOutputTokens: item.maxOutputTokens,
     supportsPromptCaching: item.cachedInputUsdPer1M !== undefined,
     supportedServiceTiers: [...item.supportedServiceTiers],
     supportedReasoningEfforts: [...item.supportedReasoningEfforts],
-    defaultReasoningEffort: item.defaultReasoningEffort,
+    defaultReasoningEffort: item.defaultReasoningEffort ?? null,
     codexSupportedReasoningLevels: [],
     supportsServiceTier: item.supportedServiceTiers.length > 0,
     catalogVisible: true,
@@ -574,7 +596,6 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     scope: item.scope,
     status: item.status,
     systemAccountId: item.systemAccountId,
-    pricingModel: item.pricingModel,
     contextWindowTokens: item.contextWindowTokens,
     pricingNotes: item.pricingNotes,
     capabilityNotes: item.capabilityNotes,
@@ -631,7 +652,7 @@ function buildCodexModelInfo(item: ProviderModelCatalogItem, index: number): Cod
     experimental_supported_tools: [],
     input_modalities: ['text', 'image'],
     supports_search_tool: false,
-    use_responses_lite: false,
+    use_responses_lite: usesOpenAICodexResponsesLite(item.model),
     auto_review_model_override: null,
     tool_mode: null,
     multi_agent_version: item.codexMultiAgentVersion ?? null
@@ -710,6 +731,13 @@ function compareSharedCatalogOrder(left?: number, right?: number): number {
 function modelCatalogSourceProviderCodes(providerCode: string): string[] {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return []
+  if (normalizedProviderCode === HYBRID_PROVIDER_CODE) {
+    return [...new Set([
+      ...listOpenAIProtocolProviderCodes(),
+      ...listAnthropicProtocolProviderCodes(),
+      ...listGeminiProtocolProviderCodes()
+    ].map(normalizeProviderToken).filter((code): code is string => Boolean(code) && code !== HYBRID_PROVIDER_CODE))]
+  }
   if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return [normalizedProviderCode]
   if (runtimeConfig.databaseDriver === 'postgres') return [...postgresSyncOpenAIProtocolProviderCodes]
 
@@ -723,6 +751,14 @@ function modelCatalogSourceProviderCodes(providerCode: string): string[] {
 async function modelCatalogSourceProviderCodesAsync(providerCode: string): Promise<string[]> {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return []
+  if (normalizedProviderCode === HYBRID_PROVIDER_CODE) {
+    const providerCodes = await Promise.all([
+      listOpenAIProtocolProviderCodesAsync(),
+      listAnthropicProtocolProviderCodesAsync(),
+      listGeminiProtocolProviderCodesAsync()
+    ])
+    return [...new Set(providerCodes.flat().map(normalizeProviderToken).filter((code): code is string => Boolean(code) && code !== HYBRID_PROVIDER_CODE))]
+  }
   if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return [normalizedProviderCode]
 
   const openAIProtocolProviderCodes = (await listOpenAIProtocolProviderCodesAsync())
@@ -753,7 +789,10 @@ function modelCreatedUnixSeconds(item: ProviderModelCatalogItem): number {
   return Number.isFinite(time) ? Math.trunc(time / 1000) : 0
 }
 
-function defaultImageOutputTokens(input: CostInput, pricing: ProviderModelPricing): number {
+function defaultImageOutputTokens(
+  input: CostInput,
+  pricing: Pick<ProviderModelPricing, 'mode' | 'imageOutputUsdPer1M'>
+): number {
   if (input.outputImageTokens !== undefined || pricing.mode !== 'image_generation' || pricing.imageOutputUsdPer1M === undefined) {
     return 0
   }
@@ -798,30 +837,66 @@ function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: C
   cachedInputPrice?: number
   cacheWritePrice?: number
   cacheWrite1hPrice?: number
+  serviceTierPricingSource: ProviderCostBreakdown['serviceTierPricingSource']
+  serviceTierMultiplier?: number
 } {
   const tier = input.serviceTier
-  const tierSupported = (tier === 'priority' || tier === 'flex') && pricing.supportedServiceTiers.includes(tier)
-  const fallbackMultiplier = tier === 'priority'
-    ? normalizeCatalogMultiplier(input.priorityPriceMultiplier, 2)
-    : tier === 'flex'
-      ? normalizeCatalogMultiplier(input.flexPriceMultiplier, 0.5)
-      : 1
-  const selectPrice = (standard: number | undefined, priority: number | undefined, flex: number | undefined): number | undefined => {
-    if (!tierSupported) return standard
-    const specific = tier === 'priority' ? priority : flex
-    return specific ?? multiplyCatalogPrice(standard, fallbackMultiplier)
-  }
+  const tierKey = typeof tier === 'string' && tier !== 'default' && tier !== 'standard' ? tier : undefined
+  const tierSupported = tierKey !== undefined && pricing.supportedServiceTiers.some((supported) => supported === tierKey)
+  const tierPrices = tierSupported ? pricing.serviceTierPrices?.[tierKey] : undefined
+  const selectPrice = (standard: number | undefined, specific: number | undefined): number | undefined =>
+    tierKey ? specific : standard
   const longContext = pricing.longContextInputTokenThreshold !== undefined
     && Math.max(input.inputTokens ?? 0, 0) > pricing.longContextInputTokenThreshold
   const inputMultiplier = longContext ? normalizeCatalogMultiplier(pricing.longContextInputCostMultiplier) : 1
   const outputMultiplier = longContext ? normalizeCatalogMultiplier(pricing.longContextOutputCostMultiplier) : 1
+  const serviceTierPricing = catalogServiceTierPricingMetadata(pricing, input, tierSupported)
   return {
-    inputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.inputUsdPer1M, pricing.priorityInputUsdPer1M, pricing.flexInputUsdPer1M), inputMultiplier)),
-    outputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.outputUsdPer1M, pricing.priorityOutputUsdPer1M, pricing.flexOutputUsdPer1M), outputMultiplier)),
-    cachedInputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cachedInputUsdPer1M, pricing.priorityCachedInputUsdPer1M, pricing.flexCachedInputUsdPer1M), inputMultiplier)),
-    cacheWritePrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWriteUsdPer1M, pricing.priorityCacheWriteUsdPer1M, pricing.flexCacheWriteUsdPer1M), inputMultiplier)),
-    cacheWrite1hPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWrite1hUsdPer1M, pricing.priorityCacheWrite1hUsdPer1M, pricing.flexCacheWrite1hUsdPer1M), inputMultiplier))
+    inputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.inputUsdPer1M, tierPrices?.inputUsdPer1M), inputMultiplier)),
+    outputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.outputUsdPer1M, tierPrices?.outputUsdPer1M), outputMultiplier)),
+    cachedInputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cachedInputUsdPer1M, tierPrices?.cachedInputUsdPer1M), inputMultiplier)),
+    cacheWritePrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWriteUsdPer1M, tierPrices?.cacheWriteUsdPer1M), inputMultiplier)),
+    cacheWrite1hPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWrite1hUsdPer1M, tierPrices?.cacheWrite1hUsdPer1M), inputMultiplier)),
+    ...serviceTierPricing
   }
+}
+
+function catalogServiceTierPricingMetadata(
+  pricing: ProviderModelCatalogItem,
+  input: CostInput,
+  tierSupported: boolean
+): Pick<ProviderCostBreakdown, 'serviceTierPricingSource' | 'serviceTierMultiplier'> {
+  const tier = input.serviceTier
+  if (tier === undefined || tier === 'default' || tier === 'standard') {
+    return { serviceTierPricingSource: 'default' }
+  }
+  if (!tierSupported) return { serviceTierPricingSource: 'unknown' }
+  const tierPrices = pricing.serviceTierPrices?.[tier]
+  const pairs = [
+    [pricing.inputUsdPer1M, tierPrices?.inputUsdPer1M],
+    [pricing.outputUsdPer1M, tierPrices?.outputUsdPer1M],
+    [pricing.cachedInputUsdPer1M, tierPrices?.cachedInputUsdPer1M],
+    [pricing.cacheWriteUsdPer1M, tierPrices?.cacheWriteUsdPer1M],
+    [pricing.cacheWrite1hUsdPer1M, tierPrices?.cacheWrite1hUsdPer1M]
+  ] as const
+  let specificCount = 0
+  let missingSpecificCount = 0
+  for (const [standard, specific] of pairs) {
+    if (specific !== undefined) {
+      specificCount += 1
+    } else if (standard !== undefined) {
+      missingSpecificCount += 1
+    }
+  }
+  if (specificCount > 0 && missingSpecificCount === 0) {
+    return { serviceTierPricingSource: 'tier_specific' }
+  }
+  return { serviceTierPricingSource: 'unknown' }
+}
+
+function cloneServiceTierPrices(value?: Record<string, ModelPriceSet>): Record<string, ModelPriceSet> | undefined {
+  if (!value) return undefined
+  return Object.fromEntries(Object.entries(value).map(([tier, prices]) => [tier, { ...prices }]))
 }
 
 function multiplyCatalogPrice(value: number | undefined, multiplier: number): number | undefined {
@@ -870,18 +945,22 @@ async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: 
   await providerModelCatalogSharedCache.set(cacheKey, cloneProviderModelCatalogItems(value), { ttlMs: modelCatalogCacheTtlMs })
 }
 
-function clearProviderModelCatalogSharedCache(): void {
+async function clearProviderModelCatalogSharedCacheAsync(): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
-  clearSharedJsonCacheInBackground(
-    providerModelCatalogSharedCache,
-    'provider_model_catalog_shared_cache_clear_failed',
-    '供应商模型目录 Redis shared cache 清理失败'
-  )
+  await providerModelCatalogSharedCache.clear()
 }
 
-function clearProviderModelCatalogCaches(): void {
+async function clearProviderModelCatalogCaches(): Promise<void> {
   providerModelCatalogCache.clear()
-  clearProviderModelCatalogSharedCache()
+  try {
+    await clearProviderModelCatalogSharedCacheAsync()
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'provider_model_catalog_shared_cache_clear_failed',
+      cacheName: providerModelCatalogSharedCache.name
+    }), '供应商模型目录 Redis shared cache 清理失败')
+    throw error
+  }
 }
 
 registerGatewayRuntimeCacheInvalidator(clearProviderModelCatalogCaches)

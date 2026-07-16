@@ -1,6 +1,5 @@
 import type { Request } from 'express'
 
-import { accountSupportsClientCompatibility } from '../../../../domain/account-client-compatibility.js'
 import {
   accountSupportsOpenAIEndpointMode,
   openAIEndpointModeForRequestShape
@@ -18,7 +17,11 @@ import {
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import { buildOpenAIOAuthCodexRequestParts } from '../../../gateway/adapters/gpt-codex/oauth-adapter.js'
 import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/registry.js'
-import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody } from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
+import {
+  applyOpenAIClientCompatibilityHeaders,
+  buildOpenAIClientCompatibilityBody,
+  shouldForceOpenAICodexResponsesSse
+} from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import {
   buildOpenAIModelMappedJsonBody,
   isGeminiGenerateContentToChatCompletionsModelMapping,
@@ -58,16 +61,17 @@ import {
   prepareCodexResponsesChatBridgeHeaders,
   transformCodexResponsesChatBridgeUpstreamResponse
 } from '../_shared/codex-responses-chat-bridge.js'
-import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
+import type { ProviderDriver, ProviderDriverAccount, ProviderGatewayRequestContext } from '../_shared/types.js'
 import { prepareGptAccountBeforeDispatch } from './oauth-dispatch-preparation.js'
-import { resolveGptRequestOverrideModelCapabilities } from './request-override-capabilities.js'
-import { applyGptAccountRequestOverridesToBody } from './request-override-body.js'
+import { applyGptAccountRequestOverridesToBody, normalizeGptRequestOverrideCapabilitiesForGateway } from './request-override-body.js'
 import type { GptRequestOverrideEndpointFamily } from './request-overrides.js'
 
-function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
+function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount, context?: ProviderGatewayRequestContext) {
   return openAIEndpointModeForRequestShape({
     endpoint: req.path || req.originalUrl.split('?', 1)[0],
-    stream: isEffectiveOpenAIStreamRequest(req, account)
+    stream: account.type === 'api_key' && shouldForceOpenAICodexResponsesSse(req, context?.requestClientCompatibility)
+      ? true
+      : isEffectiveOpenAIStreamRequest(req, account)
   })
 }
 
@@ -170,21 +174,24 @@ export const gptProviderDriver: ProviderDriver = {
       }
     }
     if (account.type === 'oauth') {
-      const requestOverrideModelCapabilities = await resolveGptRequestOverrideModelCapabilities(
+      const { modelCapabilities: requestOverrideModelCapabilities } = await normalizeGptRequestOverrideCapabilitiesForGateway({
+        credentials: account.credentials,
         account,
-        modelMapping?.upstreamModel ?? requestModel(req)
-      )
+        endpointFamily: 'responses',
+        compact: isOpenAIResponsesCompactRequest(req),
+        upstreamModel: modelMapping?.upstreamModel ?? requestModel(req)
+      })
       return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal, {
         modelOverride: modelMapping?.upstreamModel,
         requestOverrideModelCapabilities
       })
     }
-    const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal, {
+    const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, signal, {
       modelOverride: modelMapping?.upstreamModel,
       requestClientCompatibility: context?.requestClientCompatibility
     })
     const headers = buildUpstreamHeaders(req.headers, account)
-    applyOpenAIClientCompatibilityHeaders(req, account, headers, {
+    applyOpenAIClientCompatibilityHeaders(req, headers, {
       requestClientCompatibility: context?.requestClientCompatibility
     })
     const body = compatibilityBody
@@ -261,10 +268,12 @@ export const gptProviderDriver: ProviderDriver = {
         clientCompatibility: account.clientCompatibility
       })
     }
-    if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) {
+    if (account.type === 'oauth'
+      && context?.requestClientCompatibility
+      && context.requestClientCompatibility !== 'codex_responses') {
       return false
     }
-    const mode = openAIEndpointModeForGatewayRequest(req, account)
+    const mode = openAIEndpointModeForGatewayRequest(req, account, context)
     if (!mode) return true
     return accountSupportsOpenAIEndpointMode({
       mode,

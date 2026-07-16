@@ -1,9 +1,11 @@
 import type {
   AccountAvailabilitySchedule,
+  AccountHealthCheckEndpointMode,
   AccountModelMapping,
   AccountModelMappingSourceEndpointFamily,
   AccountModelMappingUpstreamEndpointFamily
 } from '../../domain/types.js'
+import { ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES } from '../../domain/account-health-check-endpoint-mode.js'
 import { accountAvailabilityScheduleFromRequest } from '../../storage/account-availability-schedule.js'
 import { optionalServerDateTimeIso } from '../../storage/value-utils.js'
 
@@ -40,6 +42,7 @@ export const importAccountKeys: ReadonlySet<string> = new Set([
   'fallbackEnabled',
   'supportedModels',
   'healthCheckModel',
+  'healthCheckEndpointMode',
   'modelMappings',
   'tags',
   'accountExpiresAt',
@@ -177,6 +180,21 @@ export function optionalStringArrayField(record: Record<string, unknown>, key: s
     items.push(item.trim())
   }
   return items
+}
+
+export function optionalHealthCheckEndpointModeField(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+  messages: string[]
+): AccountHealthCheckEndpointMode | undefined {
+  if (!hasOwnField(record, key)) return undefined
+  const value = record[key]
+  if (ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES.includes(value as AccountHealthCheckEndpointMode)) {
+    return value as AccountHealthCheckEndpointMode
+  }
+  messages.push(`${label}必须是支持的 JSON 或 Streaming 请求形态`)
+  return undefined
 }
 
 export function optionalAccountTagsField(record: Record<string, unknown>, key: string, label: string, messages: string[]): string[] | undefined {

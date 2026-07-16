@@ -1,19 +1,23 @@
 import { Router } from 'express'
 
-import { runtimeConfig } from '../../config/runtime.js'
-import { ok, sendNotFound } from '../../shared/http.js'
+import { ok, sendBadRequest, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { getUsageRecordDetailAsync, listUsageRecordsAsync, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
+import { canAccessAll, scopedSystemAccountId } from '../../storage/access-scope.js'
 import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
-import { buildCatalogCostBreakdown, buildCatalogCostBreakdownAsync } from '../model-pricing/model-catalog.service.js'
 import type { ProviderCostBreakdown } from '../model-pricing/model-pricing.service.js'
 
 export const usageRecordsRouter = Router()
 
 usageRecordsRouter.get('/', async (req, res, next) => {
   try {
-    const result = await listUsageRecordsAsync(getRequestAccessScope(req.query.systemAccountId), await parseListOptionsAsync(req.query))
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    if (canAccessAll(access) && !scopedSystemAccountId(access) && hasAllSystemAccountUnsupportedFilters(req.query)) {
+      sendBadRequest(res, '请先选择系统账户后筛选')
+      return
+    }
+    const result = await listUsageRecordsAsync(access, await parseListOptionsAsync(req.query))
     res.json(ok({
       ...result,
       items: await Promise.all(result.items.map(withCostBreakdownAsync))
@@ -38,100 +42,59 @@ usageRecordsRouter.get('/:id', async (req, res, next) => {
 
 const usageRecordSortFields = new Set<UsageRecordSortField>(['createdAt'])
 const usageRecordTrafficSources = new Set<UsageRecordTrafficSource>(['gateway', 'manual_account_test', 'account_health_check', 'runtime_recovery_probe', 'cooldown_retest', 'hybrid_scoring', 'hybrid_quality_scoring'])
+const allSystemAccountUnsupportedFilterKeys = [
+  'accountKeyword',
+  'result',
+  'statusCode',
+  'clientIp',
+  'groupId',
+  'model',
+  'traceId',
+  'trafficSource',
+  'startDate',
+  'endDate'
+] as const
 
-export type UsageRecordResponse = UsageRecordSummary & {
+export type UsageRecordResponse = Omit<UsageRecordSummary, 'pricingSnapshot'> & {
   costBreakdown?: ProviderCostBreakdown
+}
+
+function hasAllSystemAccountUnsupportedFilters(query: Record<string, unknown>): boolean {
+  if (allSystemAccountUnsupportedFilterKeys.some((key) => optionalQueryText(query[key]))) {
+    return true
+  }
+  const sortBy = optionalQueryText(query.sortBy)
+  const sortOrder = optionalQueryText(query.sortOrder)
+  return Boolean((sortBy && sortBy !== 'createdAt') || (sortOrder && sortOrder !== 'desc'))
 }
 
 export function withCostBreakdown(record: UsageRecordSummary): UsageRecordResponse {
   const costBreakdown = usageRecordCostBreakdown(record)
+  const { pricingSnapshot: _pricingSnapshot, ...publicRecord } = record
+  void _pricingSnapshot
   return {
-    ...record,
+    ...publicRecord,
     costBreakdown
   }
 }
 
 export async function withCostBreakdownAsync(record: UsageRecordSummary): Promise<UsageRecordResponse> {
   const costBreakdown = await usageRecordCostBreakdownAsync(record)
+  const { pricingSnapshot: _pricingSnapshot, ...publicRecord } = record
+  void _pricingSnapshot
   return {
-    ...record,
+    ...publicRecord,
     costBreakdown
   }
 }
 
 function usageRecordCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown | undefined {
-  if (!record.success || runtimeConfig.databaseDriver === 'postgres' || runtimeConfig.cacheDriver === 'redis') return undefined
-  return usageRecordCatalogCostBreakdown(record) ?? fallbackUsageRecordCostBreakdown(record)
+  if (!record.success) return undefined
+  return record.pricingSnapshot ?? fallbackUsageRecordCostBreakdown(record)
 }
 
 async function usageRecordCostBreakdownAsync(record: UsageRecordSummary): Promise<ProviderCostBreakdown | undefined> {
-  if (!record.success) return undefined
-  return await usageRecordCatalogCostBreakdownAsync(record) ?? fallbackUsageRecordCostBreakdown(record)
-}
-
-function usageRecordCatalogCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown | undefined {
-  if (!record.providerCode) return undefined
-  for (const model of usageRecordPricingCandidateModels(record)) {
-    const breakdown = buildCatalogCostBreakdown({
-      providerCode: record.providerCode,
-      systemAccountId: record.systemAccountId,
-      model,
-      inputTokens: record.inputTokens,
-      outputTokens: record.outputTokens,
-      cacheReadTokens: record.cacheReadTokens,
-      cacheWriteTokens: record.cacheWriteTokens,
-      cacheWrite1hTokens: record.cacheWrite1hTokens,
-      thinkingTokens: record.thinkingTokens,
-      inputImageTokens: record.inputImageTokens,
-      outputImageTokens: record.outputImageTokens,
-      inputAudioTokens: record.inputAudioTokens,
-      outputAudioTokens: record.outputAudioTokens,
-      outputImageCount: record.outputImageCount,
-      costUsd: record.costUsd
-    })
-    if (breakdown) return breakdown
-  }
-  return undefined
-}
-
-async function usageRecordCatalogCostBreakdownAsync(record: UsageRecordSummary): Promise<ProviderCostBreakdown | undefined> {
-  if (!record.providerCode) return undefined
-  for (const model of usageRecordPricingCandidateModels(record)) {
-    const breakdown = await buildCatalogCostBreakdownAsync({
-      providerCode: record.providerCode,
-      systemAccountId: record.systemAccountId,
-      model,
-      inputTokens: record.inputTokens,
-      outputTokens: record.outputTokens,
-      cacheReadTokens: record.cacheReadTokens,
-      cacheWriteTokens: record.cacheWriteTokens,
-      cacheWrite1hTokens: record.cacheWrite1hTokens,
-      thinkingTokens: record.thinkingTokens,
-      inputImageTokens: record.inputImageTokens,
-      outputImageTokens: record.outputImageTokens,
-      inputAudioTokens: record.inputAudioTokens,
-      outputAudioTokens: record.outputAudioTokens,
-      outputImageCount: record.outputImageCount,
-      costUsd: record.costUsd
-    })
-    if (breakdown) return breakdown
-  }
-  return undefined
-}
-
-function usageRecordPricingCandidateModels(record: UsageRecordSummary): string[] {
-  const models = [
-    record.pricingModel,
-    record.upstreamModel,
-    record.model
-  ]
-  const seen = new Set<string>()
-  return models.flatMap((model) => {
-    const normalized = model?.trim()
-    if (!normalized || seen.has(normalized)) return []
-    seen.add(normalized)
-    return [normalized]
-  })
+  return usageRecordCostBreakdown(record)
 }
 
 function fallbackUsageRecordCostBreakdown(record: UsageRecordSummary): ProviderCostBreakdown {
@@ -140,7 +103,8 @@ function fallbackUsageRecordCostBreakdown(record: UsageRecordSummary): ProviderC
     cacheWriteCostUsd: record.cacheWriteCostUsd,
     thinkingTokens: record.thinkingTokens,
     accountChargeUsd: record.costUsd,
-    multiplier: 1
+    multiplier: 1,
+    serviceTierPricingSource: 'unknown'
   }
 }
 

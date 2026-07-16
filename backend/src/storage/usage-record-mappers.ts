@@ -2,6 +2,8 @@ import type { UsageRecordSummary } from './usage-records.repository.js'
 import { loadAccountNameMap, loadAccountNameMapAsync, loadApiKeyNameMap, loadApiKeyNameMapAsync, loadGroupNameMap, loadGroupNameMapAsync } from './repository-lookups.js'
 import type { DatabaseClient } from './database-client.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
+import { normalizeUsageReasoningEffort } from '../modules/gateway/usage/reasoning-effort.js'
+import { normalizeOptionalUsageServiceTier } from '../modules/gateway/usage/service-tier.js'
 
 export type UsageRecordRow = Record<string, unknown>
 
@@ -81,6 +83,9 @@ export function usageRecordSummaryFromRow(
     effectiveServiceTier: usageServiceTier(row.effective_service_tier),
     reportedServiceTier: usageServiceTier(row.reported_service_tier),
     billedServiceTier: usageServiceTier(row.billed_service_tier),
+    requestedReasoningEffort: usageReasoningEffort(row.requested_reasoning_effort),
+    effectiveReasoningEffort: usageReasoningEffort(row.effective_reasoning_effort),
+    pricingSnapshot: parseOptionalJsonObject(row.cost_breakdown_snapshot_json) as UsageRecordSummary['pricingSnapshot'],
     modelMappingApplied: row.model_mapping_applied === 1,
     modelMappingSource: optionalString(row.model_mapping_source),
     sourceEndpointFamily: optionalString(row.source_endpoint_family),
@@ -113,8 +118,12 @@ export function usageRecordSummaryFromRow(
   }
 }
 
+function usageReasoningEffort(value: unknown): UsageRecordSummary['effectiveReasoningEffort'] {
+  return normalizeUsageReasoningEffort(value)
+}
+
 function usageServiceTier(value: unknown): UsageRecordSummary['billedServiceTier'] {
-  return value === 'default' || value === 'priority' || value === 'flex' ? value : undefined
+  return normalizeOptionalUsageServiceTier(value)
 }
 
 function usageRecordTrafficSource(value: unknown): UsageRecordSummary['trafficSource'] {

@@ -1,6 +1,7 @@
 import type {
   AccountAvailabilitySchedule,
   AccountClientCompatibility,
+  AccountHealthCheckEndpointMode,
   AccountModelMapping,
   AccountStatus,
   AccountType
@@ -21,6 +22,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 
 const businessSchemaName = 'juhe_business'
+const disabledMultiKeyBalanceConfigJson = JSON.stringify({ adapter: 'builtin', intervalMinutes: 5 })
 
 export interface AccountBatchUpdateTarget {
   accountId: string
@@ -57,6 +59,7 @@ export interface AccountBatchUpdateLockedAccount {
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
   healthCheckModel: string
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   supportedModels: string[]
   modelMappings: AccountModelMapping[]
   tags: string[]
@@ -85,6 +88,7 @@ export interface AccountBatchUpdatePreparedAccount {
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
   healthCheckModel: string
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   supportedModels: string[]
   modelMappings: AccountModelMapping[]
   tags: string[]
@@ -93,6 +97,7 @@ export interface AccountBatchUpdatePreparedAccount {
   tagsChanged: boolean
   dispatchChanged: boolean
   resetHealthCheckState: boolean
+  disableBalanceQuery: boolean
 }
 
 export interface AccountBatchUpdatePrepareContext {
@@ -103,6 +108,7 @@ export interface AccountBatchUpdatePrepareContext {
 export interface AccountBatchUpdateResult {
   batchId: string
   accountIds: string[]
+  balanceSnapshotCleanupAccountIds: string[]
   configRevisions: Record<string, number>
 }
 
@@ -129,6 +135,7 @@ export async function updateAccountsBatchAsync(input: {
   const client = await accountBatchDatabaseClientAsync()
   const batchId = newId('account_batch')
   const accountIds = input.targets.map((target) => target.accountId)
+  const balanceSnapshotCleanupAccountIds: string[] = []
   const expectedRevisionByAccountId = new Map(input.targets.map((target) => [target.accountId, target.configRevision]))
   const configRevisions = await client.transaction(async (tx) => {
     const accounts = await loadLockedAccountsAsync(tx, accountIds, input.access)
@@ -169,7 +176,14 @@ export async function updateAccountsBatchAsync(input: {
             cooldown_retest_last_at = ?,
             cooldown_retest_last_status_code = ?,
             health_check_model = ?,
+            health_check_endpoint_mode = ?,
             next_health_check_at = CASE WHEN ? = 1 THEN NULL ELSE next_health_check_at END,
+            balance_query_enabled = CASE WHEN ? = 1 THEN 0 ELSE balance_query_enabled END,
+            balance_query_config_json = CASE
+              WHEN ? = 1 AND balance_query_config_json = '{}' THEN ?
+              ELSE balance_query_config_json
+            END,
+            balance_query_next_refresh_at = CASE WHEN ? = 1 THEN NULL ELSE balance_query_next_refresh_at END,
             config_revision = config_revision + 1,
             updated_at = ?
         WHERE id = ?
@@ -198,13 +212,21 @@ export async function updateAccountsBatchAsync(input: {
         prepared.cooldownRetestLastAt ?? null,
         prepared.cooldownRetestLastStatusCode ?? null,
         prepared.healthCheckModel,
+        prepared.healthCheckEndpointMode,
         prepared.resetHealthCheckState ? 1 : 0,
+        prepared.disableBalanceQuery ? 1 : 0,
+        prepared.disableBalanceQuery ? 1 : 0,
+        disabledMultiKeyBalanceConfigJson,
+        prepared.disableBalanceQuery ? 1 : 0,
         updatedAt,
         prepared.accountId,
         prepared.expectedConfigRevision
       ])
       if (result.changes !== 1) {
         throw new AccountBatchUpdateVersionConflictError(prepared.accountId)
+      }
+      if (prepared.disableBalanceQuery) {
+        balanceSnapshotCleanupAccountIds.push(prepared.accountId)
       }
       if (prepared.supportedModelsChanged) {
         await replaceAccountSupportedModelsInClientAsync(
@@ -276,7 +298,7 @@ export async function updateAccountsBatchAsync(input: {
       accountCount: accountIds.length
     }), '批量编辑已提交，但网关运行时缓存失效失败')
   }
-  return { batchId, accountIds, configRevisions }
+  return { batchId, accountIds, balanceSnapshotCleanupAccountIds, configRevisions }
 }
 
 function assertBatchTargets(targets: AccountBatchUpdateTarget[]): void {
@@ -329,6 +351,7 @@ async function loadLockedAccountsAsync(
       cooldown_retest_last_at,
       cooldown_retest_last_status_code,
       health_check_model,
+      health_check_endpoint_mode,
       authorization_instance_source_account_id,
       authorization_instance_authorization_id
     FROM ${accountBatchTable(client, 'accounts')}
@@ -369,6 +392,7 @@ async function loadLockedAccountsAsync(
     cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
     cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
     healthCheckModel: row.health_check_model.trim(),
+    healthCheckEndpointMode: row.health_check_endpoint_mode,
     supportedModels: related.supportedModels.get(row.id) ?? [],
     modelMappings: related.modelMappings.get(row.id) ?? [],
     tags: related.tags.get(row.id) ?? []
@@ -528,6 +552,7 @@ interface AccountBatchAccountRow {
   cooldown_retest_last_at: string | null
   cooldown_retest_last_status_code: number | null
   health_check_model: string
+  health_check_endpoint_mode: AccountHealthCheckEndpointMode
   authorization_instance_source_account_id: string | null
   authorization_instance_authorization_id: string | null
 }

@@ -112,6 +112,54 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (profile_id) REFERENCES provider_protocol_profiles(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS provider_model_catalog (
+      id TEXT PRIMARY KEY,
+      provider_code TEXT NOT NULL,
+      model TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      mode TEXT,
+      catalog_order INTEGER,
+      release_date TEXT,
+      shutdown_date TEXT,
+      supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
+      supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
+      supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+      default_reasoning_effort TEXT,
+      codex_supported_reasoning_levels_json TEXT NOT NULL DEFAULT '[]',
+      codex_default_reasoning_level TEXT,
+      codex_multi_agent_version TEXT,
+      context_window_tokens INTEGER,
+      max_input_tokens INTEGER,
+      max_output_tokens INTEGER,
+      max_tokens INTEGER,
+      input_usd_per_1m REAL,
+      output_usd_per_1m REAL,
+      cached_input_usd_per_1m REAL,
+      cache_write_usd_per_1m REAL,
+      cache_write_1h_usd_per_1m REAL,
+      service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
+      long_context_input_token_threshold INTEGER,
+      long_context_input_cost_multiplier REAL,
+      long_context_output_cost_multiplier REAL,
+      image_input_usd_per_1m REAL,
+      image_output_usd_per_1m REAL,
+      audio_input_usd_per_1m REAL,
+      audio_output_usd_per_1m REAL,
+      output_usd_per_image REAL,
+      supports_prompt_caching INTEGER NOT NULL DEFAULT 0,
+      catalog_visible INTEGER NOT NULL DEFAULT 1,
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (provider_code, model),
+      FOREIGN KEY (provider_code) REFERENCES providers(code),
+      CHECK (status IN ('active', 'disabled')),
+      CHECK (json_valid(service_tier_prices_json) AND json_type(service_tier_prices_json) = 'object')
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_provider_model_catalog_lookup
+      ON provider_model_catalog(provider_code, status, catalog_visible, catalog_order, model);
+
     CREATE TABLE IF NOT EXISTS custom_provider_models (
       id TEXT PRIMARY KEY,
       provider_code TEXT NOT NULL,
@@ -124,15 +172,17 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
       supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
       default_reasoning_effort TEXT,
-      pricing_model TEXT,
       release_date TEXT,
       shutdown_date TEXT,
       context_window_tokens INTEGER,
+      max_input_tokens INTEGER,
       max_output_tokens INTEGER,
       input_usd_per_1m REAL,
       output_usd_per_1m REAL,
       cached_input_usd_per_1m REAL,
       cache_write_usd_per_1m REAL,
+      cache_write_1h_usd_per_1m REAL,
+      service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
       image_input_usd_per_1m REAL,
       image_output_usd_per_1m REAL,
       audio_input_usd_per_1m REAL,
@@ -150,6 +200,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
       CHECK (scope IN ('personal', 'global')),
       CHECK (status IN ('draft', 'active', 'disabled')),
+      CHECK (json_valid(service_tier_prices_json) AND json_type(service_tier_prices_json) = 'object'),
       CHECK (
         (scope = 'personal' AND system_account_id IS NOT NULL)
         OR (scope = 'global' AND system_account_id IS NULL)
@@ -279,18 +330,22 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_until TEXT,
       last_error_code TEXT,
       last_error_message TEXT,
+      last_error_trace_id TEXT,
       cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
       cooldown_retest_observation_started_at TEXT,
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
       health_check_model TEXT NOT NULL,
+      health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse')),
       last_health_check_at TEXT,
       next_health_check_at TEXT,
       last_health_success_at TEXT,
       health_check_failure_count INTEGER NOT NULL DEFAULT 0,
+      health_check_failure_started_at TEXT,
       last_health_check_status_code INTEGER,
       last_health_check_error_code TEXT,
       last_health_check_error_message TEXT,
+      last_health_check_trace_id TEXT,
       stream_failure_count INTEGER NOT NULL DEFAULT 0,
       stream_failure_window_started_at TEXT,
       balance_query_enabled INTEGER NOT NULL DEFAULT 0,
@@ -832,15 +887,27 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_health_check_due
       ON accounts(status, next_health_check_at, updated_at, id)
       WHERE deleted_at IS NULL;
-    CREATE INDEX IF NOT EXISTS idx_accounts_health_check_pg_due
-      ON accounts(provider_protocol_profile_id, status, next_health_check_at ASC, updated_at ASC, id ASC)
-      WHERE deleted_at IS NULL;
-    CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_due
-      ON accounts(status, cooldown_until ASC, updated_at ASC, id ASC)
-      WHERE deleted_at IS NULL AND cooldown_until IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_pg_due
-      ON accounts(provider_protocol_profile_id, status, cooldown_until ASC, priority ASC, created_at ASC, id ASC)
-      WHERE deleted_at IS NULL AND cooldown_until IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_accounts_health_check_candidate_order
+      ON accounts(
+        (CASE WHEN status = 'pending_test' THEN 0 ELSE 1 END) ASC,
+        (CASE WHEN status = 'pending_test' THEN updated_at END) DESC,
+        (next_health_check_at IS NOT NULL) ASC,
+        next_health_check_at ASC,
+        last_health_check_at ASC,
+        created_at ASC,
+        id ASC
+      )
+      WHERE deleted_at IS NULL
+        AND status IN ('active', 'pending_test')
+        AND (status = 'pending_test' OR schedulable = 1)
+        AND type IN ('api_key', 'oauth');
+    CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_candidate_order
+      ON accounts(cooldown_until ASC, priority ASC, created_at ASC, id ASC, health_check_endpoint_mode)
+      WHERE deleted_at IS NULL
+        AND cooldown_until IS NOT NULL
+        AND schedulable = 1
+        AND type IN ('api_key', 'oauth')
+        AND status IN ('temporary_unavailable', 'rate_limited');
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;

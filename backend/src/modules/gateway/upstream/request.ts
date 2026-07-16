@@ -25,10 +25,7 @@ import {
   gatewayClientProfileHeader
 } from '../client-profiles/strategy.js'
 import {
-  openAICodexOriginator,
-  openAICodexResponsesBetaHeader,
-  openAICodexUserAgent,
-  openAICodexVersion
+  normalizeOpenAICodexClientHeaders
 } from '../adapters/gpt-codex/client-headers.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 
@@ -531,18 +528,7 @@ function applyOpenAICodexHeaders(headers: Headers, account: UpstreamHeaderAccoun
   if (!headers.get('content-type')) {
     headers.set('content-type', 'application/json')
   }
-  if (!headers.get('user-agent')) {
-    headers.set('user-agent', openAICodexUserAgent)
-  }
-  if (!headers.get('originator')) {
-    headers.set('originator', openAICodexOriginator)
-  }
-  if (!headers.get('version')) {
-    headers.set('version', openAICodexVersion)
-  }
-  if (!headers.get('openai-beta')) {
-    headers.set('openai-beta', openAICodexResponsesBetaHeader)
-  }
+  normalizeOpenAICodexClientHeaders(headers)
   const accountId = stringCredential(account.credentials, 'account_id')
   if (accountId && !headers.get('chatgpt-account-id')) {
     headers.set('chatgpt-account-id', accountId)

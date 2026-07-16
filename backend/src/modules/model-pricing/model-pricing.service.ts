@@ -33,17 +33,8 @@ export interface ProviderModelPricing {
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
-  priorityInputUsdPer1M?: number
-  priorityOutputUsdPer1M?: number
-  priorityCachedInputUsdPer1M?: number
-  priorityCacheWriteUsdPer1M?: number
-  flexInputUsdPer1M?: number
-  flexOutputUsdPer1M?: number
-  flexCachedInputUsdPer1M?: number
-  flexCacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
-  priorityCacheWrite1hUsdPer1M?: number
-  flexCacheWrite1hUsdPer1M?: number
+  serviceTierPrices?: ServiceTierPrices
   imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   audioInputUsdPer1M?: number
@@ -57,9 +48,9 @@ export interface ProviderModelPricing {
   longContextInputCostMultiplier?: number
   longContextOutputCostMultiplier?: number
   supportsPromptCaching: boolean
-  supportedServiceTiers: GptServiceTier[]
-  supportedReasoningEfforts: GptWireReasoningEffort[]
-  defaultReasoningEffort?: GptWireReasoningEffort
+  supportedServiceTiers: string[]
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort?: string
   codexSupportedReasoningLevels: CodexReasoningLevel[]
   codexDefaultReasoningLevel?: CodexReasoningLevel
   codexMultiAgentVersion?: 'v2'
@@ -68,12 +59,25 @@ export interface ProviderModelPricing {
   source: string
 }
 
+export interface ModelPriceSet {
+  inputUsdPer1M?: number
+  outputUsdPer1M?: number
+  cachedInputUsdPer1M?: number
+  cacheWriteUsdPer1M?: number
+  cacheWrite1hUsdPer1M?: number
+  imageInputUsdPer1M?: number
+  imageOutputUsdPer1M?: number
+  audioInputUsdPer1M?: number
+  audioOutputUsdPer1M?: number
+  outputUsdPerImage?: number
+}
+
+export type ServiceTierPrices = Record<string, ModelPriceSet>
+
 export interface CostInput {
   providerCode: string
   model?: string
-  serviceTier?: 'default' | GptServiceTier
-  priorityPriceMultiplier?: number
-  flexPriceMultiplier?: number
+  serviceTier?: string
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
@@ -115,6 +119,8 @@ export interface ProviderCostBreakdown {
   outputUsdPerImage?: number
   accountChargeUsd?: number
   multiplier: 1
+  serviceTierPricingSource: 'default' | 'tier_specific' | 'multiplier' | 'mixed' | 'unknown'
+  serviceTierMultiplier?: number
 }
 
 const modelPricingDriverHelpers: ModelPricingProviderDriverHelpers = {
@@ -123,12 +129,16 @@ const modelPricingDriverHelpers: ModelPricingProviderDriverHelpers = {
 }
 
 export function listProviderModelPricing(providerCode: string): ProviderModelPricing[] {
+  return listProviderModelPricingAsOf(providerCode, currentUtcDate())
+}
+
+export function listProviderModelPricingAsOf(providerCode: string, asOfDate: string): ProviderModelPricing[] {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return []
   const models = rawModelsForProvider(normalizedProviderCode)
   if (!models.length) return []
   const pricing = models
-    .filter((item) => !hasModelShutdown(item))
+    .filter((item) => !hasModelShutdown(item, asOfDate))
     .map((item) => toProviderModelPricing(item, normalizedProviderCode))
   return pricing.sort(compareProviderModels)
 }
@@ -291,7 +301,9 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
     outputImageUnitCostUsd,
     outputUsdPerImage: outputImageUnitPrice,
     accountChargeUsd: normalizePrice(input.costUsd) ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, cacheWrite1hCostUsd, inputImageCostUsd, outputImageCostUsd, inputAudioCostUsd, outputAudioCostUsd, outputImageUnitCostUsd),
-    multiplier: 1
+    multiplier: 1,
+    serviceTierPricingSource: tokenPrices.serviceTierPricingSource,
+    serviceTierMultiplier: tokenPrices.serviceTierMultiplier
   }
 }
 
@@ -373,32 +385,68 @@ function effectiveRawTokenPrices(pricing: RawModelPricing, input: CostInput): {
   cachedInputPrice?: number
   cacheWritePrice?: number
   cacheWrite1hPrice?: number
+  serviceTierPricingSource: ProviderCostBreakdown['serviceTierPricingSource']
+  serviceTierMultiplier?: number
 } {
   const tier = input.serviceTier
   const tierSupported = tier === 'priority' || tier === 'flex'
     ? pricing.supported_service_tiers?.includes(tier) === true
     : false
-  const fallbackMultiplier = tier === 'priority'
-    ? normalizeMultiplier(input.priorityPriceMultiplier, 2)
-    : tier === 'flex'
-      ? normalizeMultiplier(input.flexPriceMultiplier, 0.5)
-      : 1
   const tierPrice = (standard: number | undefined, priority: number | undefined, flex: number | undefined): number | undefined => {
     const specific = tier === 'priority' ? priority : tier === 'flex' ? flex : undefined
-    if (tierSupported) return normalizePrice(specific) ?? multiplyPrice(standard, fallbackMultiplier)
+    if (tierSupported) return normalizePrice(specific)
     return normalizePrice(standard)
   }
   const longContext = typeof pricing.long_context_input_token_threshold === 'number'
     && Math.max(input.inputTokens ?? 0, 0) > pricing.long_context_input_token_threshold
   const inputMultiplier = longContext ? normalizeMultiplier(pricing.long_context_input_cost_multiplier) : 1
   const outputMultiplier = longContext ? normalizeMultiplier(pricing.long_context_output_cost_multiplier) : 1
+  const serviceTierPricing = rawServiceTierPricingMetadata(pricing, input, tierSupported)
   return {
     inputPrice: multiplyPrice(tierPrice(pricing.input_cost_per_token, pricing.input_cost_per_token_priority, pricing.input_cost_per_token_flex), inputMultiplier),
     outputPrice: multiplyPrice(tierPrice(pricing.output_cost_per_token, pricing.output_cost_per_token_priority, pricing.output_cost_per_token_flex), outputMultiplier),
     cachedInputPrice: multiplyPrice(tierPrice(pricing.cache_read_input_token_cost, pricing.cache_read_input_token_cost_priority, pricing.cache_read_input_token_cost_flex), inputMultiplier),
     cacheWritePrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost, pricing.cache_creation_input_token_cost_priority, pricing.cache_creation_input_token_cost_flex), inputMultiplier),
-    cacheWrite1hPrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost_above_1hr, pricing.cache_creation_input_token_cost_above_1hr_priority, pricing.cache_creation_input_token_cost_above_1hr_flex), inputMultiplier)
+    cacheWrite1hPrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost_above_1hr, pricing.cache_creation_input_token_cost_above_1hr_priority, pricing.cache_creation_input_token_cost_above_1hr_flex), inputMultiplier),
+    ...serviceTierPricing
   }
+}
+
+function rawServiceTierPricingMetadata(
+  pricing: RawModelPricing,
+  input: CostInput,
+  tierSupported: boolean
+): Pick<ProviderCostBreakdown, 'serviceTierPricingSource' | 'serviceTierMultiplier'> {
+  const tier = input.serviceTier
+  if (!tierSupported || (tier !== 'priority' && tier !== 'flex')) {
+    return { serviceTierPricingSource: 'default' }
+  }
+  const pairs = [
+    [pricing.input_cost_per_token, tier === 'priority' ? pricing.input_cost_per_token_priority : pricing.input_cost_per_token_flex],
+    [pricing.output_cost_per_token, tier === 'priority' ? pricing.output_cost_per_token_priority : pricing.output_cost_per_token_flex],
+    [pricing.cache_read_input_token_cost, tier === 'priority' ? pricing.cache_read_input_token_cost_priority : pricing.cache_read_input_token_cost_flex],
+    [pricing.cache_creation_input_token_cost, tier === 'priority' ? pricing.cache_creation_input_token_cost_priority : pricing.cache_creation_input_token_cost_flex],
+    [pricing.cache_creation_input_token_cost_above_1hr, tier === 'priority' ? pricing.cache_creation_input_token_cost_above_1hr_priority : pricing.cache_creation_input_token_cost_above_1hr_flex]
+  ] as const
+  return serviceTierPricingMetadataFromPairs(pairs)
+}
+
+function serviceTierPricingMetadataFromPairs(
+  pairs: ReadonlyArray<readonly [number | undefined, number | undefined]>
+): Pick<ProviderCostBreakdown, 'serviceTierPricingSource' | 'serviceTierMultiplier'> {
+  let specificCount = 0
+  let fallbackCount = 0
+  for (const [standard, specific] of pairs) {
+    if (normalizePrice(specific) !== undefined) {
+      specificCount += 1
+    } else if (normalizePrice(standard) !== undefined) {
+      fallbackCount += 1
+    }
+  }
+  if (specificCount > 0 && fallbackCount === 0) {
+    return { serviceTierPricingSource: 'tier_specific' }
+  }
+  return { serviceTierPricingSource: 'unknown' }
 }
 
 function multiplyPrice(value: number | undefined, multiplier: number): number | undefined {
@@ -437,17 +485,8 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     outputUsdPer1M: perMillion(item.output_cost_per_token),
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost),
     cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost),
-    priorityInputUsdPer1M: perMillion(item.input_cost_per_token_priority),
-    priorityOutputUsdPer1M: perMillion(item.output_cost_per_token_priority),
-    priorityCachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_priority),
-    priorityCacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_priority),
-    flexInputUsdPer1M: perMillion(item.input_cost_per_token_flex),
-    flexOutputUsdPer1M: perMillion(item.output_cost_per_token_flex),
-    flexCachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_flex),
-    flexCacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_flex),
     cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr),
-    priorityCacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_priority),
-    flexCacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_flex),
+    serviceTierPrices: rawServiceTierPrices(item),
     imageInputUsdPer1M: perMillion(item.input_cost_per_image_token),
     imageOutputUsdPer1M: perMillion(item.output_cost_per_image_token),
     audioInputUsdPer1M: perMillion(item.input_cost_per_audio_token),
@@ -475,12 +514,34 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
   }
 }
 
+function rawServiceTierPrices(item: RawModelPricing): ServiceTierPrices | undefined {
+  const tiers: ServiceTierPrices = {}
+  const add = (tier: string, prices: ModelPriceSet): void => {
+    if (Object.values(prices).some((value) => value !== undefined)) tiers[tier] = prices
+  }
+  add('priority', {
+    inputUsdPer1M: perMillion(item.input_cost_per_token_priority),
+    outputUsdPer1M: perMillion(item.output_cost_per_token_priority),
+    cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_priority),
+    cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_priority),
+    cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_priority)
+  })
+  add('flex', {
+    inputUsdPer1M: perMillion(item.input_cost_per_token_flex),
+    outputUsdPer1M: perMillion(item.output_cost_per_token_flex),
+    cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_flex),
+    cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_flex),
+    cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_flex)
+  })
+  return Object.keys(tiers).length ? tiers : undefined
+}
+
 function canonicalOpenAIModelAlias(model: string): string {
   return model === 'gpt-5.6' ? 'gpt-5.6-sol' : model
 }
 
-function hasModelShutdown(item: RawModelPricing): boolean {
-  return typeof item.shutdown_date === 'string' && item.shutdown_date <= currentUtcDate()
+function hasModelShutdown(item: RawModelPricing, asOfDate = currentUtcDate()): boolean {
+  return typeof item.shutdown_date === 'string' && item.shutdown_date <= asOfDate
 }
 
 function normalizeModel(value: string): string {

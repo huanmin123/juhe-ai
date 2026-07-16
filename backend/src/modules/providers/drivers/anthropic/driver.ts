@@ -1,6 +1,5 @@
 import type { Request } from 'express'
 
-import { accountSupportsClientCompatibility } from '../../../../domain/account-client-compatibility.js'
 import {
   accountSupportsAnthropicEndpointMode,
   anthropicEndpointModeForRequestShape
@@ -45,6 +44,7 @@ import {
   isEffectiveOpenAIStreamRequest
 } from '../../../gateway/upstream/request.js'
 import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
+import { applyProviderAccountRequestOverridesToBody } from '../_shared/provider-request-overrides.js'
 import {
   buildOpenAIToAnthropicBridgeBody,
   isOpenAIToAnthropicBridgeCandidateRequest,
@@ -153,11 +153,11 @@ export const anthropicProviderDriver: ProviderDriver = {
       prepareGeminiGenerateContentAnthropicMessagesBridgeHeaders(headers, req)
       return {
         headers,
-        body: await buildGeminiGenerateContentAnthropicMessagesBridgeBody(req, {
+        body: await applyAnthropicOverrides(account, await buildGeminiGenerateContentAnthropicMessagesBridgeBody(req, {
           defaultModel: modelMapping.upstreamModel,
           guidanceProviderName: guidanceProviderNameForAccount(account),
           modelOverride: modelMapping.upstreamModel
-        }, signal)
+        }, signal), modelMapping.upstreamModel, signal)
       }
     }
     if (shouldUseOpenAIToAnthropicBridge(req, account)) {
@@ -169,7 +169,7 @@ export const anthropicProviderDriver: ProviderDriver = {
       })
       return {
         headers,
-        body: await buildOpenAIToAnthropicBridgeBody(req, {
+        body: await applyAnthropicOverrides(account, await buildOpenAIToAnthropicBridgeBody(req, {
           guidanceProviderName: guidanceProviderNameForAccount(account),
           modelOverride: openAIToAnthropicBridgeUpstreamModel(req, account),
           requestClientCompatibility: context?.requestClientCompatibility,
@@ -179,14 +179,17 @@ export const anthropicProviderDriver: ProviderDriver = {
           codeInterpreterExecutor: openAICompatibleCodeInterpreterExecutorForGatewayRequest(req),
           computerExecutor: openAICompatibleComputerExecutorForGatewayRequest(req),
           imageGenerationExecutor: openAICompatibleImageGenerationExecutorForGatewayRequest()
-        }, signal)
+        }, signal), openAIToAnthropicBridgeUpstreamModel(req, account), signal)
       }
     }
+    const nativeBody = modelMapping
+      ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal)
+      : buildAnthropicNativePassthroughBody(req)
     return {
       headers,
-      body: modelMapping
-        ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal)
-        : buildAnthropicNativePassthroughBody(req)
+      body: isAnthropicMessagesPath(req)
+        ? await applyAnthropicOverrides(account, nativeBody, modelMapping?.upstreamModel ?? requestModel(req), signal)
+        : nativeBody
     }
   },
   transformUpstreamResponse(req, account, response, context) {
@@ -206,7 +209,7 @@ export const anthropicProviderDriver: ProviderDriver = {
     })
   },
   endpointModeForRequest: anthropicEndpointModeForGatewayRequest,
-  accountSupportsRequest(req, account, context) {
+  accountSupportsRequest(req, account) {
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
     if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE)) {
       if (!isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping)) {
@@ -240,9 +243,6 @@ export const anthropicProviderDriver: ProviderDriver = {
         providerProtocolProfileId: account.providerProtocolProfileId
       })
     }
-    if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) {
-      return false
-    }
     const mode = anthropicEndpointModeForGatewayRequest(req, account)
     if (!mode) return true
     return accountSupportsAnthropicEndpointMode({
@@ -256,6 +256,21 @@ export const anthropicProviderDriver: ProviderDriver = {
       providerProtocolProfileId: account.providerProtocolProfileId
     })
   }
+}
+
+async function applyAnthropicOverrides(
+  account: DispatchAccountSecret,
+  body: Buffer | string | undefined,
+  upstreamModel: string | undefined,
+  signal?: AbortSignal
+): Promise<Buffer | string | undefined> {
+  if (account.providerCode !== ANTHROPIC_PROVIDER_CODE) return body
+  return await applyProviderAccountRequestOverridesToBody(body, {
+    account,
+    upstreamModel,
+    wireFormat: 'anthropic_messages',
+    signal
+  })
 }
 
 function guidanceProviderNameForAccount(account: DispatchAccountSecret): string {

@@ -67,7 +67,7 @@ func (h publicAPIKeyHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := h.service.List(r, input)
 	if err != nil {
-		writePublicAPIKeyServiceError(w, err, "API Key 列表读取失败", "list")
+		writePublicAPIKeyServiceError(w, err, "list")
 		return
 	}
 	writeData(w, http.StatusOK, response)
@@ -96,7 +96,7 @@ func (h publicAPIKeyHandler) add(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := h.service.Add(r, input)
 	if err != nil {
-		writePublicAPIKeyServiceError(w, err, "API Key 新增失败", "add")
+		writePublicAPIKeyServiceError(w, err, "add")
 		return
 	}
 	writeData(w, http.StatusCreated, response)
@@ -124,7 +124,7 @@ func (h publicAPIKeyHandler) update(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := h.service.Update(r, input)
 	if err != nil {
-		writePublicAPIKeyServiceError(w, err, "API Key 修改失败", "update")
+		writePublicAPIKeyServiceError(w, err, "update")
 		return
 	}
 	writeData(w, http.StatusOK, response)
@@ -152,7 +152,7 @@ func (h publicAPIKeyHandler) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := h.service.Delete(r, input)
 	if err != nil {
-		writePublicAPIKeyServiceError(w, err, "API Key 删除失败", "delete")
+		writePublicAPIKeyServiceError(w, err, "delete")
 		return
 	}
 	writeData(w, http.StatusOK, response)
@@ -362,7 +362,7 @@ func optionalBodyJSONValue(body map[string]any, key string) (publicapikeys.JSONV
 	return publicapikeys.NewJSONValue(record, true), nil
 }
 
-func writePublicAPIKeyServiceError(w http.ResponseWriter, err error, fallback string, operation string) {
+func writePublicAPIKeyServiceError(w http.ResponseWriter, err error, operation string) {
 	switch {
 	case errors.Is(err, publicapikeys.ErrTargetNotFound):
 		status := http.StatusBadRequest
@@ -384,16 +384,14 @@ func writePublicAPIKeyServiceError(w http.ResponseWriter, err error, fallback st
 		writeMessageError(w, http.StatusBadRequest, "默认 API Key 不允许删除")
 	case errors.Is(err, publicapikeys.ErrDefaultAPIKeyRouteStrategyChange):
 		writeMessageError(w, http.StatusBadRequest, "默认 API Key 不允许更换策略路由")
+	case errors.Is(err, publicapikeys.ErrDeleteTransactorRequired):
+		writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 	case errors.Is(err, publicapikeys.ErrInvalidExpiresAt),
 		errors.Is(err, publicapikeys.ErrInvalidQuotaLimits),
 		errors.Is(err, publicapikeys.ErrInvalidAvailabilitySchedule):
 		writeMessageError(w, http.StatusBadRequest, publicAPIKeyErrorDetail(err))
 	default:
-		message := strings.TrimSpace(err.Error())
-		if message == "" {
-			message = fallback
-		}
-		writeMessageError(w, http.StatusBadRequest, message)
+		writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 	}
 }
 

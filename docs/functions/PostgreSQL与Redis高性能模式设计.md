@@ -96,7 +96,7 @@ JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS=30000
 - 高性能模式默认禁止 cache/state/queue 指向同一个 Redis DB / 实例地址，防止清理、淘汰策略和队列事实互相污染；临时 smoke 需要复用时必须显式设置 `JUHE_AI_ALLOW_SHARED_REDIS_URLS=true`。
 - `JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS`、`JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS` 和 `JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS` 由应用在事务内执行 `SET LOCAL`，不要把这些参数追加到 PgBouncer startup parameter；否则部分 PgBouncer 配置会拒绝连接，事务池复用连接时也可能污染后续请求。
 - 生产环境不使用 `latest` 镜像；PostgreSQL 和 Redis 镜像必须固定 major / patch 或 digest。
-- 高性能模式不能为了吞吐降低原始审计保留语义。完全成功请求仍和 standalone 一样先进入最近 `1` 小时热保留窗口，超过热窗口后只保留 `10%` 稳定采样；失败、异常、中断和重试后成功链路继续全量进入审计。容量和吞吐问题通过 Redis Streams 背压、PG 小批次写入、热窗口清理、payload 摘要 / 压缩 / 去重解决，不通过关闭成功热窗口解决。
+- 高性能模式不能为了吞吐自行降低原始审计保留语义，必须和 standalone 使用相同的显式部署配置。默认完全成功请求先进入最近 `1` 小时热保留窗口，超过热窗口后只保留 `10%` 稳定采样；运维可按统一环境变量契约显式调整或关闭成功审计，失败、异常、中断和重试后成功链路仍全量进入审计。程序不因容量压力自动降采样，容量和吞吐问题通过 Redis Streams 背压、PG 小批次写入、热窗口清理、payload 摘要 / 压缩 / 去重治理。
 
 ## 部署边界
 
@@ -141,7 +141,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 
 - 分区键：`created_at` 日 range partition；过期在线数据在统计安全游标追平后按分区事务内 `DETACH / DROP`，不保留同库冷归档副本或归档 manifest。
 - 热查询索引白名单以用户维度开头：`system_account_id + created_at + id`、`system_account_id + api_key_id + created_at + id`、`system_account_id + account_id + created_at + id`、`system_account_id + trace_id COLLATE "C" + created_at + id`。
-- 管理员页面也必须先限定用户和日期窗口；低频全局 `created_at + id`、独立 `trace_id`、独立 `request_id`、全局 `model/path/status/client_ip` 不能作为大表默认索引。
+- 管理员使用记录页未限定用户时只能读取部署时区当天、`created_at DESC, id DESC` 的全用户列表，由当天分区和父表复合主键 `(created_at, id)` 承接；账户名称、结果、状态码、IP、分组、模型、trace ID、请求来源、手工日期或非默认排序必须先选择系统账户。其他管理员大表页面仍按各自功能边界先限定用户和日期窗口；独立 `trace_id`、独立 `request_id`、全局 `model/path/status/client_ip` 不能作为大表默认索引。
 - PostgreSQL 前缀筛选必须显式使用稳定 collation。`trace_id`、`client_ip`、API Key 名称和 AI 性能账号选项名称等文本前缀查询使用 `COLLATE "C"`、二进制上界和对应 C collation 表达式索引；不能依赖 `prefix + '\uffff'`，也不能假设数据库默认 collation 的排序行为和 SQLite 一致。
 - 清理策略：常规过期清理按统计安全游标追平后处理整日分区；已删除账号 / API Key 的关联明细小批次清理必须使用 `(created_at, id)` 命中分区，不能只按裸 `id` 删除。
 - 统计游标：`stats.stats_job_state` 继续记录按分区 / shard 窗口推进的游标，统计写入和游标推进在同一 PostgreSQL 事务提交。

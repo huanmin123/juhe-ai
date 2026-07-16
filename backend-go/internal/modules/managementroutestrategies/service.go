@@ -3,7 +3,11 @@ package managementroutestrategies
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -14,7 +18,27 @@ const (
 )
 
 type Service struct {
-	store port.ManagementRouteStrategyOptionReader
+	store        port.ManagementRouteStrategyOptionReader
+	listReader   port.ManagementRouteStrategyListReader
+	detailReader port.ManagementRouteStrategyDetailReader
+	createStore  port.PublicRouteStrategyStore
+	transactor   port.PublicRouteStrategyTransactor
+	invalidator  RuntimeInvalidator
+	logger       *slog.Logger
+	now          func() time.Time
+	newID        func(prefix string) string
+}
+
+type ServiceOptions struct {
+	OptionReader port.ManagementRouteStrategyOptionReader
+	ListReader   port.ManagementRouteStrategyListReader
+	DetailReader port.ManagementRouteStrategyDetailReader
+	CreateStore  port.PublicRouteStrategyStore
+	Transactor   port.PublicRouteStrategyTransactor
+	Invalidator  RuntimeInvalidator
+	Logger       *slog.Logger
+	Now          func() time.Time
+	NewID        func(prefix string) string
 }
 
 type OptionListInput struct {
@@ -37,7 +61,60 @@ type Option struct {
 }
 
 func NewService(store port.ManagementRouteStrategyOptionReader) *Service {
-	return &Service{store: store}
+	options := ServiceOptions{OptionReader: store}
+	if reader, ok := store.(port.ManagementRouteStrategyListReader); ok {
+		options.ListReader = reader
+	}
+	if reader, ok := store.(port.ManagementRouteStrategyDetailReader); ok {
+		options.DetailReader = reader
+	}
+	if writer, ok := store.(port.PublicRouteStrategyStore); ok {
+		options.CreateStore = writer
+	}
+	if transactor, ok := store.(port.PublicRouteStrategyTransactor); ok {
+		options.Transactor = transactor
+	}
+	return NewServiceWithOptions(options)
+}
+
+func NewServiceWithOptions(options ServiceOptions) *Service {
+	createStore := options.CreateStore
+	if createStore == nil {
+		if candidate, ok := options.OptionReader.(port.PublicRouteStrategyStore); ok {
+			createStore = candidate
+		}
+	}
+	transactor := options.Transactor
+	if transactor == nil {
+		if candidate, ok := createStore.(port.PublicRouteStrategyTransactor); ok {
+			transactor = candidate
+		}
+	}
+	logger := options.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	now := options.Now
+	if now == nil {
+		now = time.Now
+	}
+	newID := options.NewID
+	if newID == nil {
+		newID = func(prefix string) string {
+			return prefix + "_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+	}
+	return &Service{
+		store:        options.OptionReader,
+		listReader:   options.ListReader,
+		detailReader: options.DetailReader,
+		createStore:  createStore,
+		transactor:   transactor,
+		invalidator:  options.Invalidator,
+		logger:       logger,
+		now:          now,
+		newID:        newID,
+	}
 }
 
 func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option, error) {

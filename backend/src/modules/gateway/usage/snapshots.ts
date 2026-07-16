@@ -6,6 +6,7 @@ import {
 } from '../request/body.js'
 import { getGatewayRequestBodyState } from '../request/body.js'
 import { normalizeUsageServiceTier, type UsageServiceTier } from './service-tier.js'
+import { normalizeUsageReasoningEffort, type UsageReasoningEffort } from './reasoning-effort.js'
 import {
   headersToSafeObject,
   sanitizeHeaderRecord,
@@ -20,6 +21,7 @@ export interface UsageRequestSnapshot {
   clientIp?: string
   traceId: string
   requestedServiceTier?: UsageServiceTier
+  requestedReasoningEffort?: UsageReasoningEffort
   headers: Record<string, string | string[]>
   body?: unknown
   bodyOmission?: unknown
@@ -55,6 +57,10 @@ export function buildUsageRequestSnapshot(req: Request, traceId: string, clientI
       getGatewayRequestBodyState(req)?.serviceTier
         ?? (typeof req.body === 'object' && req.body !== null ? (req.body as Record<string, unknown>).service_tier : undefined)
     ),
+    requestedReasoningEffort: normalizeUsageReasoningEffort(
+      getGatewayRequestBodyState(req)?.reasoningEffort
+        ?? requestedReasoningEffortFromBody(req.body)
+    ),
     headers: sanitizeRequestHeaders(req.headers)
   }
   const bodySummary = buildGatewayRequestBodySummary(req)
@@ -64,6 +70,16 @@ export function buildUsageRequestSnapshot(req: Request, traceId: string, clientI
     snapshot.body = req.body
   }
   return snapshot
+}
+
+function requestedReasoningEffortFromBody(body: unknown): unknown {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return undefined
+  const record = body as Record<string, unknown>
+  if (typeof record.reasoning === 'object' && record.reasoning !== null && !Array.isArray(record.reasoning)) {
+    const nested = normalizeUsageReasoningEffort((record.reasoning as Record<string, unknown>).effort)
+    if (nested) return nested
+  }
+  return record.reasoning_effort
 }
 
 export function sanitizeRequestHeaders(headers: IncomingHttpHeaders): Record<string, string | string[]> {

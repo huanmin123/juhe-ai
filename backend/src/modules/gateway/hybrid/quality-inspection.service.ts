@@ -9,7 +9,7 @@ import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
 import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
 import { requestModel } from '../request/metadata.js'
-import { gatewayPricingSettingsFromRequest, recordHybridScoringAttempt } from '../usage/records.js'
+import { recordHybridScoringAttempt } from '../usage/records.js'
 import {
   dispatchHybridAuxiliaryChatCompletion,
   emptyHybridAuxiliaryUsage
@@ -128,7 +128,6 @@ export async function inspectHybridGatewayQuality(input: {
           groupId: dispatch.groupId,
           account: dispatch.account,
           endpoint: `${input.endpoint}#hybrid-quality-scoring`,
-          settings: gatewayPricingSettingsFromRequest(input.req),
           statusCode: dispatch.statusCode,
           success: false,
           startedAt,
@@ -162,7 +161,6 @@ export async function inspectHybridGatewayQuality(input: {
         groupId: dispatch.groupId,
         account: dispatch.account,
         endpoint: `${input.endpoint}#hybrid-quality-scoring`,
-        settings: gatewayPricingSettingsFromRequest(input.req),
         statusCode: dispatch.statusCode,
         success: false,
         startedAt,
@@ -192,7 +190,6 @@ export async function inspectHybridGatewayQuality(input: {
       groupId: dispatch.groupId,
       account: dispatch.account,
       endpoint: `${input.endpoint}#hybrid-quality-scoring`,
-      settings: gatewayPricingSettingsFromRequest(input.req),
       statusCode: dispatch.statusCode,
       success: true,
       startedAt,

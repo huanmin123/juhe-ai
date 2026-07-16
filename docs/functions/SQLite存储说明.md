@@ -71,12 +71,12 @@ JUHE_AI_USAGE_RECORD_WRITER_QUEUE_MAX_ITEMS=5000
 - `public_api_logs`
 - `operation_logs`、`operation_log_targets`、`operation_log_viewers`
 - `runtime_logs`、`runtime_log_file_cursors`
-- `model_check_runs`、`model_check_items`
+- `model_check_runs`、`model_check_items`、`model_check_observations`（仅受控探针有界脱敏事实，不保存普通用户正文）
 - `api_key_record_cleanup_targets`
 
 统计结果库保存可重建、紧凑且面向查询的结果数据：
 
-- `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、`usage_rank_snapshots`、`stats_job_state`、`usage_record_cleanup_deductions`
+- `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、`usage_rank_snapshots`、`model_token_integrity_windows`、`model_token_integrity_rounds`、`model_token_intercept_baseline_versions`、`model_trust_window_sources`、`model_identity_source_features`、`model_identity_baseline_versions`、`model_paired_similarity_windows`、`model_account_trust_results`、`stats_job_state`、`usage_record_cleanup_deductions`
 - `authorization_*_usage_*`、`usage_quota_hourly_windows`、`usage_scope_range_windows`
 - `client_ip_registry`、`client_ip_stats_daily`、`client_ip_usage_range_windows`、`client_ip_policies`、`client_ip_policy_hits`
 - `group_account_stats`、`account_quality_scores`、`account_quality_minute_stats`
@@ -153,13 +153,15 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 - `response_inspection_policies` 保存管理端响应检查策略。`scope_type = protocol` 时 `provider_code` 为空，表示当前 `protocol_code` 下的协议层规则；`scope_type = provider` 时必须写入同一协议下已启用的 `provider_code`，表示 GPT、DeepSeek、GLM、Kimi 或其他 OpenAI v1 兼容供应商的局部规则。`enabled`、`priority`、`scope_type`、`action` 和 `match_json` 都由数据库 CHECK 约束兜底，`match_json` 必须是合法 JSON 对象；写入路径不保留旧 action 或旧 matcher 默认值。运行时只在 API Key 校验和分组选定后按当前 `protocol_code + provider_code` 读取候选策略；fallback 切换到后备分组时必须重新读取目标分组协议和供应商对应的策略，不得沿用原分组策略。账户专属响应检查规则保存于账户凭据 `response_inspection_rules`，运行时优先于管理端策略执行；当前新版本不保留旧 `stream_intercept_policies` 表或账户凭据里的 `stream_intercept_rules`。
 - `accounts.system_account_id` 和 `groups.system_account_id` 表示当前资源行所属系统账户；授权实例账户的 `accounts.system_account_id` 是被授权用户，`authorization_instance_source_account_id` 记录来源账户，`authorization_instance_authorization_id` 指向用户级授权，`authorization_instance_owner_system_account_id` 记录原资源归属人。`group_accounts.system_account_id` 表示本地分组绑定所属的使用方系统账户；授权账户绑定到被授权用户分组时写入授权实例账户 ID 和稳定的 `account_authorization_id`。授权实例自己的 `accounts.status / schedulable / cooldown_until / last_error_* / stream_failure_*` 是被授权侧本地运行态；当前分组内排序、超级优先和降级备用以 `group_accounts.local_priority / local_super_priority_enabled / local_fallback_enabled` 为准；真实上游资源事实从来源账户补齐，包括凭据、`base_url`、账号类型、支持模型、代理、并发、可用时段和账户追加流式规则。归属人原账户停用、异常、限流 / 临时不可调用、冷却、关闭调度、套餐到期或测试失败不会覆盖或回写授权实例本地运行态，但会参与授权实例 `effectiveAvailability` 实际可用性计算并阻断调度、账户测试和迁移目标选择；来源账户资源配置变化会同步影响授权实例运行时。来源账户被逻辑删除时，来源账户及其授权实例都会立即隐藏且不可调度，对应授权关系转为已回收；授权实例账户不能通过账户删除接口删除，被授权人不想继续使用个人直授权时通过授权归还入口把个人授权标记为 `returned` 并隐藏该实例。
 - AI 账户名称最长 128 个字符，由后端写入入口强制校验，前端表单同步限制输入长度。`account_name_search_documents` 每个账户保存一条 NFKC + 小写后的规范化名称；`account_name_search_terms` 保存该规范化名称的去重 1/2/3 连续字符词项，字段包含 `account_id`、`system_account_id`、`term` 和 `created_at`。每个账户最多约 `128 + 127 + 126 = 381` 个词项，规模按账户数线性增长。账户创建、改名、授权实例物化、授权实例改名和账户逻辑删除会同步维护这两张表；AI 账户列表的名称包含匹配先通过 `term + system_account_id + account_id` 索引定位候选账号 ID，再通过 `account_name_search_documents.normalized_name LIKE` 做最终连续片段校验，避免把非连续词项误判为命中。历史库升级后如需补齐已有账户词项，使用 `pnpm --filter juhe-ai-backend maintenance:rebuild-account-name-search` 离线重建；列表请求路径不得为了补历史数据扫描 `accounts` 主表。
+- `accounts.health_check_endpoint_mode` 是不可空精确请求形态，只允许 Chat / Responses / Messages / GenerateContent 的 JSON / Streaming 八种 mode；与 `health_check_model` 一起定义后台系统探针，运行时直接使用该值，不读取旧字段或做协议猜测。GPT 新账户默认 `responses_sse`，其他协议档案默认对应 JSON mode。
 - `accounts.account_expires_at` 保存可选的本地套餐/账号购买到期时间；为空表示不过期，到期后账户自动改为停用并退出调度。
-- `accounts.availability_schedule_json` 保存账户时间计划；为空表示不限制时段。AI 账户和 API Key 一样只有一个可用控制状态：`accounts.status`。启用计划后，创建或编辑计划时按当前时间把 `active/disabled` 初始化为当前计划状态，并计算下一次计划边界写入 `accounts.availability_schedule_next_check_at`；background worker 之后只在开始 / 结束边界按分钟事件继续写 `status`。人工启用 / 停用也只写 `status`，不存在 `accounts.availability_schedule_active` 之类的独立计划派生列。账户计划只自动切换 `active <-> disabled`；`pending_test`、`error`、`rate_limited`、`temporary_unavailable` 等测试、异常、限流和冷却保护状态不能被计划边界自动拉回正常，仍由显式状态操作、恢复正常、恢复异常或冷却复测路径处理，人工测试本身不改状态。后台同步只读取 `next_check_at <= now` 或待补偿空检查点的账户，每轮最多 500 个，不能每 10 秒全量加载全部计划行，也不能用滚动 `updated_at` 游标延迟边界切换。跨天窗口按窗口开始日期应用 `dateRange` 和例外日期，结束日期当天启动的窗口可延续到次日凌晨，重叠窗口结束时仍有其他允许窗口则不能关闭状态。系统时区由后端统一默认值决定，前端不暴露用户时区配置。
+- `accounts.availability_schedule_json` 保存账户时间计划；为空表示不限制时段。AI 账户和 API Key 一样只有一个可用控制状态：`accounts.status`。启用计划后，创建或编辑计划时按当前时间把 `active/disabled` 初始化为当前计划状态，并计算下一次计划边界写入 `accounts.availability_schedule_next_check_at`；background worker 之后只在开始 / 结束边界按分钟事件继续写 `status`。人工启用 / 停用也只写 `status`，不存在 `accounts.availability_schedule_active` 之类的独立计划派生列。账户计划只自动切换 `active <-> disabled`；`pending_test`、`error`、`rate_limited`、`temporary_unavailable` 等测试、异常、限流和冷却保护状态不能被计划边界自动拉回正常，仍由显式状态操作、恢复正常、异常恢复或冷却复测路径处理，人工测试本身不改状态。后台同步只读取 `next_check_at <= now` 或待补偿空检查点的账户，每轮最多 500 个，不能每 10 秒全量加载全部计划行，也不能用滚动 `updated_at` 游标延迟边界切换。跨天窗口按窗口开始日期应用 `dateRange` 和例外日期，结束日期当天启动的窗口可延续到次日凌晨，重叠窗口结束时仍有其他允许窗口则不能关闭状态。系统时区由后端统一默认值决定，前端不暴露用户时区配置。
 - `accounts.last_error_code` 保存账户异常子类型；顶层状态仍统一使用 `status = error` 表示“异常”，可读细节继续放在 `accounts.last_error_message`。
 - `accounts.health_check_model` 保存账户必填检查模型，必须属于最终 `account_supported_models` 并满足协议最小检查能力。后台激活、周期健康、运行态恢复、账号级冷却复测和 Key 恢复探针严格读取该字段，缺失或非法时记录配置异常，不回退其他模型。`accounts` 不保存 `default_test_model` 或 `health_check_enabled`；默认检查模型只在新账户创建阶段解析。
+- `accounts.health_check_failure_started_at` 保存当前连续激活检查失败窗口的首次失败时间。`pending_test` 失败后固定每 1 小时复检，首次失败满 24 小时仍失败时原子转为 `error` 并写 `account_activation_check_timeout`；成功、重新检查、异常恢复和关键连接配置重置时清空该字段。重新检查和异常恢复都只进入不可调度的 `pending_test` 并立即投递后台检查，不能直接写为 `active`。自有账户在任意非 `disabled` 状态都可人工停用。
 - `account_test_tasks` 保存单账户人工诊断任务的轻量状态，任务由管理 API 创建并投递给 background worker 执行；表内只保留任务发起人、作用域、`test_session_id`、账户摘要、状态、取消标记和最终脱敏结果，创建 / 编辑弹窗发起的未保存账户测试会额外保存加密草稿快照 `draft_account_encrypted`，默认只保留已完成任务 24 小时。任务运行超时只从 `started_at` 开始计算，`queued` 或等待 worker 接收阶段不参与运行超时。
 - `account_test_sessions` 保存每次独立单账户测试会话，包括发起作用域、账户、状态、最后心跳、取消原因和完成时间；`account_test_session_tasks` 关联 session 与 task。账户 A、B 的会话互不阻塞，不存在用户级全局测试锁；停止操作只取消当前 session 的未完成任务，关闭弹窗不取消后台任务。项目不保存或创建多账户批量测试 session。
-- `accounts.cooldown_retest_failure_count`、`cooldown_retest_observation_started_at`、`cooldown_retest_last_at` 和 `cooldown_retest_last_status_code` 保存 `temporary_unavailable` / `rate_limited` 后台复测的连续失败次数、本轮自动恢复观察起点、最近复测时间和最近 HTTP 状态；复测失败时 `last_error_code/last_error_message` 记录本次上游真实错误摘要，复测成功、手动恢复、停用或到期时清空。进入慢速恢复后仍继续自动退避复测；超过 `cooldownAccountRetestMaxBackoffHours` 表达的长期不可用观察阈值后，账户主状态保持 `temporary_unavailable` / `rate_limited`，`last_error_code` 写入 `cooldown_retest_long_term_unavailable`，并按 `cooldownAccountRetestLongTermIntervalHours` 继续低频自动复测。
+- `accounts.cooldown_retest_failure_count`、`cooldown_retest_observation_started_at`、`cooldown_retest_last_at` 和 `cooldown_retest_last_status_code` 保存 `temporary_unavailable` / `rate_limited` 后台复测的连续失败次数、本轮自动恢复观察起点、最近复测时间和最近 HTTP 状态；复测失败时 `last_error_code/last_error_message` 记录本次上游真实错误摘要，复测成功、手动恢复、停用或到期时清空。超过 `cooldownAccountRetestMaxBackoffHours` 表达的快速恢复窗口后进入长期不可用阶段，固定每 1 小时自动复测；从 `cooldown_retest_observation_started_at` 起满 7 天仍失败时原子转为 `error`、关闭调度、清空冷却，并写 `cooldown_retest_observation_timeout` 和明确错误摘要。
 - `account_supported_models` 保存账号显式支持的模型列表；账号没有任何模型行表示不限制。网关账号池缓存 miss 时按账号 ID 批量读取这些行，并把结果放入运行时账号快照，正常请求只做内存过滤，不逐次查询该表。授权实例调度和列表补数只读取来源账户的模型列表，实例行不保存模型快照。
 - `account_tags` 保存系统账户维度的标签字典，`account_tag_bindings` 保存账户与标签的多对多绑定。标签名在同一系统账户内大小写敏感唯一，`Prod` 和 `prod` 属于两个不同标签；账户列表按 `tagIds` 通过绑定索引筛选，返回时按当前页账户 ID 批量读取绑定标签；删除标签前必须确认没有任何未删除账户仍绑定该标签。
 - `custom_provider_models` 保存管理员全局自定义模型和用户个人自定义模型。`scope = global` 的模型不绑定 `system_account_id`，所有系统账户可见；`scope = personal` 的模型只对对应 `system_account_id` 可见。GPT 自定义模型额外保存 `supported_service_tiers_json`、`supported_reasoning_efforts_json` 和 `default_reasoning_effort`；空数组表示能力未知，不能启用对应账户覆盖。状态为 `active` 且可解析价格的模型会进入当前作用域的 `/v1/models`、账号支持模型和账号模型映射选项。
@@ -268,7 +270,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `operation_logs`：保存业务操作主事件，包括操作人、业务作用域、模块、动作、主资源、安全差异和 trace ID。
 - `operation_log_targets`：保存一次操作涉及或影响的资源，支持按资源反查历史操作。
 - `operation_log_viewers`：保存普通用户可见性和可见原因，资源删除、授权回收或授权归还后仍按当时关系追溯。
-- `operation_log_summary_search_terms`：保存操作日志中文摘要生成的规范化倒排词项，`summaryKeyword` 查询通过 `term + created_at` 索引定位，避免在请求路径扫描 `operation_logs` 主表；资源、操作人、模块、动作和 trace ID 使用独立结构化筛选。
+- `operation_log_summary_search_terms`：保存操作日志摘要经 NFKC、转小写和非字母数字分词后生成的规范化倒排词项，包含去重的中文、英文字母和数字单字符；`summaryKeyword` 查询通过 `term + created_at` 索引定位，避免在请求路径扫描 `operation_logs` 主表；资源、操作人、模块、动作和 trace ID 使用独立结构化筛选。
 - `public_api_logs`：保存公开接口调用排障记录；列表按 `created_at + id` 固定窗口读取，按 `trace_id`、`source_ref_id`、`path`、`status_code`、`success`、`client_ip` 和时间范围筛选，详情读取按预算克隆和容量上限保存的 `request_data_json` 和 `response_data_json`，超大对象只保留截断预览。
 - `audit_logs`：保存进入原始审计的客户端请求事件元数据，用于后台页面检索；完全成功请求最近 1 小时全量热保留，超过热窗口后只保留 10% 稳定样本。
 - `audit_log_attempts`：保存审计请求下每次上游尝试、命中账号、代理、状态码和错误摘要。
@@ -355,6 +357,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `usage_records(system_account_id, first_token_ms, created_at, id)`、`usage_records(system_account_id, duration_ms, created_at, id)`、`usage_records(system_account_id, cost_usd, created_at, id)`：使用记录页按首 token、总耗时、成本排序时只取有限窗口，避免大数据量下前端全量排序或数据库临时排序。
 - `usage_records(first_token_ms, created_at, id)`、`usage_records(duration_ms, created_at, id)`、`usage_records(cost_usd, created_at, id)`：管理员查看全部系统账户时的全局排序索引。
 - `usage_record_shard_entries` 冗余使用记录列表常用筛选和排序字段，包含 `trace_id`、调用方、分组、账号、模型、来源、状态、客户端 IP 和排序指标；列表请求先从目录库读取固定 1001 行以内的候选窗口，再按当前页 ID 回 usage shard 补取详情；禁止在列表请求中逐 shard 拉取大窗口后用 JS 全局排序。
+- 管理员未选择系统账户时只允许读取部署时区当天、`created_at DESC, id DESC` 的全用户列表；日期窗口先把 SQLite usage shard 缩小到当天分片，单 shard 查询依赖 `(created_at, id)`，仍受 1001 行候选窗口约束并可正常分页。携带账户名称、结果、状态码、IP、分组、模型、trace ID、请求来源、手工日期或非默认排序时，接口必须先要求选择系统账户，不能把全用户总表作为任意筛选源。
 - `usage_record_account_shards(account_id, first_created_at, shard_key)`、`usage_record_api_key_shards(api_key_id, system_account_id, first_created_at, shard_key)`：已删除 AI 账户 / API Key 关联记录清理先读取去重 shard 目录，按固定 shard 窗口回 usage shard 清理；不能从请求或 worker 维护路径枚举全部 shard，也不能从 `usage_record_shard_entries` 明细表临时 `GROUP BY shard_key` 聚合定位。
 - 管理端和排障端分页列表统一使用固定 1001 行候选窗口，服务端会把过大的 `page` 收敛到当前 `pageSize` 下 `OFFSET <= 1000` 的范围内；API Key、AI 账户、分组、系统账户、代理、公告、外部来源系统、系统团队、统一授权、使用记录、审计日志、操作日志、运行日志、IP 统计、模型检测、账户用量和授权用量都不能因为深翻页产生线性增长的 SQLite offset 扫描。分页响应里的 `total` 或 `pageUpperBound` 只表示当前窗口上界，是否还有下一页以 `hasMore` 为准。
 - `accounts(fallback_enabled, super_priority_enabled, status, priority)`：自有账号调度和列表排序读取降级备用、超级优先与优先级。
@@ -449,7 +452,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - 账号质量刷新 worker 默认每 10 分钟执行一次：先 flush 使用记录队列，再消费 `account_quality_dirty_accounts` 中固定数量账号，从 `account_quality_minute_stats` 汇总这些账号近 10 分钟真实网关请求并刷新 `account_quality_scores`。分钟桶和 dirty 目录由用量统计 worker 随主游标增量写入；刷新 worker 不回扫 `usage_records`，也不一次性加载全部账号、全部近期样本账号或全部质量缓存，只按 dirty 账号窗口批量补业务元数据和旧质量行。无新样本账号的 `stale` 标记、已删除账号质量行和失效分钟桶按固定批次滚动推进，避免账号总量决定单轮 worker 阻塞时间。主动探测能力已删除，worker 只处理真实请求样本。超过 24 小时未更新的质量分不参与网关调度。
 - OpenAI OAuth Access Token 保活 worker 默认每 1 分钟扫描仍存在、未删除、有 `refresh_token` 且即将过期的真实 OAuth 来源账户，扫描不受账户状态和调度标记影响；授权实例不作为后台预刷新对象，因为实例不持有真实 token。成功时更新来源账户 `accounts.credentials_encrypted` 中的 token 凭据，不恢复普通冷却状态；连续 3 次失败会把非停用来源账户写为 `status = error`、`last_error_code = oauth_token_refresh_failed`，后续后台刷新成功会自动恢复该异常。手动停用账户不会被后台刷新失败覆盖成异常。
 - 网关请求中触发的 OpenAI OAuth Access Token 即时刷新，在 server 角色下必须通过 DB service 查最新账户、解析代理和持久化新凭据，不能直接读取或更新 SQLite；如果命中的是授权实例，刷新结果必须写回 `credentialSourceAccountId` 指向的来源账户，而不是写入授权实例。该路径只作为后台预刷新未覆盖时的正确性兜底，同账号并发刷新必须由进程内串行锁和最近刷新缓存收敛，避免一波临期请求重复打 DB service。
-- 冷却账号恢复性复测处理冷却到期的 `temporary_unavailable` / `rate_limited`、仍可调度、已绑定分组且未过期的账号；`error`、`disabled` 等硬状态不进入后台复测队列。复测不从 `usage_records` 读取历史 `endpoint/model/stream`，也不读取 `request_snapshot_json` 或重放用户 prompt、工具参数、文件内容。恢复探活严格读取账户 `health_check_model`，并由协议档案、endpoint modes 和模型能力解析最小请求形态；检查模型缺失或非法时记录配置异常，不回退默认模型或支持模型首项。后台复测固定启用，复用真实网关链路但候选只包含当前复测账号；失败后由复测任务按快速恢复和指数退避更新 `cooldown_until`，超过长期观察阈值后保持原冷却状态低频复测。恢复探活使用记录与审计标记 `traffic_source = cooldown_retest`，不参与业务统计或账户质量统计。
+- 冷却账号恢复性复测处理冷却到期的 `temporary_unavailable` / `rate_limited`、仍可调度、已绑定分组且未过期的账号；`error`、`disabled` 等硬状态不进入后台复测队列。复测不从 `usage_records` 读取历史 `endpoint/model/stream`，也不读取 `request_snapshot_json` 或重放用户 prompt、工具参数、文件内容。恢复探活严格读取账户 `health_check_model`，并由协议档案、endpoint modes 和模型能力解析最小请求形态；检查模型缺失或非法时记录配置异常，不回退默认模型或支持模型首项。后台复测固定启用，复用真实网关链路但候选只包含当前复测账号；失败后由复测任务按快速恢复和指数退避更新 `cooldown_until`，进入长期不可用后固定每 1 小时复测，从观察起点满 7 天仍失败时转为 `error`。恢复探活使用记录与审计标记 `traffic_source = cooldown_retest`，不参与业务统计或账户质量统计。
 - 代理延迟刷新 worker 固定每 1 分钟检测最多 20 个启用代理，测试目标来自已启用供应商的默认地址，并把最近状态、延迟和检测时间写回 `proxy_profiles`；出口 IP / 地区只由手动测试刷新，不提供系统设置项调整。
 - 授权账户调用需要同时写入调用方统计、调用方命中账户统计、授权实例账户统计、授权额度统计和授权报表：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；`我的用量` 按 `system_account_id + scope_type = caller_account + account_id` 读取本人对该授权实例的消耗；授权实例账户总量按被授权实例所属 `system_account_id + scope_type = account + account_id` 聚合；账号授权额度按被授权实例所属 `system_account_id + account_authorization_id` 聚合；管理侧团队 / 用户消耗按授权范围窗口表直读，并过滤授权方自用消耗。使用记录写入只拿到授权实例 `account_id` 时，存储层必须自动补齐 `account_owner_system_account_id`、`account_access_type = account_authorized` 和 `account_authorization_id`，避免旁路记录被误记成自有账户。
 - 授权分组调用需要写入调用方自己的 `system_account`、`caller_account`、API Key、模型和端点统计，并写入资源归属人侧的 `group_authorization` / 授权报表聚合；它不能写入分组所有者普通 `group` 统计，也不能把命中的来源账户写入资源归属人的普通 `account` 统计。当前调用方 API Key 和日志按 `system_account_id` 聚合；授权额度按当前有效授权 ID 聚合；管理侧团队 / 用户消耗按授权范围窗口表直读，并过滤资源归属人自用消耗。新建和编辑路由策略可以绑定有效授权分组，网关按调用方读取 `group_authorization_settings` 的本地启用、分组类型和调度策略覆盖；本地停用时该号池保留但不可调度。
@@ -467,9 +470,9 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录，按策略计算正文保留、压缩、去重和错误聚合，并用短事务批量写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 元数据；超过单次读取窗口的大 blob 保持 plain，文件写入本地数据目录。
 - 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
 - 操作日志在业务库写操作提交成功后入队，worker 从操作日志队列批量写入 `operation_logs`、`operation_log_targets`、`operation_log_viewers` 和 `operation_log_summary_search_terms`；操作日志入队或落库失败只影响追溯数据，不反向回滚已提交业务变更。
-- 数据集目录库、使用记录目录库、usage shard 和统计结果库维护类动作不在管理接口或 DB service 内直接执行；API Key / AI 账户删除后的关联记录清理、表监控手动非业务数据硬清理、OpenAI Codex 用量快照写入等都投递 `recordMaintenanceQueue` 或 stats-writer typed operation。模型检测虽然由 DB service system API 触发，但 `model_check_runs` / `model_check_items` 的创建和完成状态写入必须通过 dataset writer 转发给 ingest-worker。usage shard / usage catalog / dataset 部分由 ingest-worker 分批执行，stats 部分由 stats-worker 执行，stats-only 快照可由 stats-worker 本地合并；非 ingest worker 不消费 usage / dataset 维护队列。表监控硬清理只保留业务库，按截止时间清理数据集目录库、使用记录目录库、统计结果库、usage shard 和审计 payload 外部文件；普通表按 schema 动态枚举可识别时间列，usage shard 和审计 payload 文件走专门物理删除流程；不等待统计安全游标，也不做关联扣减。
+- 数据集目录库、使用记录目录库、usage shard 和统计结果库维护类动作不在管理接口或 DB service 内直接执行；API Key / AI 账户删除后的关联记录清理、表监控手动非业务数据硬清理、OpenAI Codex 用量快照写入等都投递 `recordMaintenanceQueue` 或 stats-writer typed operation。模型检测虽然由 DB service system API 触发，但 `model_check_runs` / `model_check_items` / `model_check_observations` 的创建和完成状态写入必须通过 dataset writer 转发给 ingest-worker；模型可信窗口由 stats-worker 读取 observation 游标增量写入 `model_token_integrity_windows`、`model_token_integrity_rounds`、`model_token_intercept_baseline_versions`、`model_trust_window_sources`、`model_identity_source_features`、`model_identity_baseline_versions`、`model_paired_similarity_windows` 和 `model_account_trust_results`。身份来源向量按累计特征均值聚合，约束维度使用累计通过率；映射 / 协议硬冲突只保留 observation 和 latest 诊断，不进入来源或基线。`model_trust_window_sources` 的 cohort 来源计数由 `idx_model_trust_window_sources_cohort(cohort_key_hmac, upstream_bucket_hmac)` 覆盖。Token 轮次表按 run / round 的 P0、P1、P2 有效掩码确认完整轮次；固定 intercept 版本表按上游桶折叠并保存 median / MAD / 分位、校准状态和默认关闭的强判门；详情 API 只读 latest，不在请求链聚合。usage shard / usage catalog / dataset 部分由 ingest-worker 分批执行，stats 部分由 stats-worker 执行，stats-only 快照可由 stats-worker 本地合并；非 ingest worker 不消费 usage / dataset 维护队列。表监控硬清理只保留业务库，按截止时间清理数据集目录库、使用记录目录库、统计结果库、usage shard 和审计 payload 外部文件；普通表按 schema 动态枚举可识别时间列，usage shard 和审计 payload 文件走专门物理删除流程；不等待统计安全游标，也不做关联扣减。
 - 运行日志索引 worker 从 Pino JSONL 输出流旁路接收日志行，按 worker 队列批量写入 `runtime_logs`，并随新增日志增量维护级别 / 事件 facets；常规维护只在 facets 缺失时重建，数据保留清理按已删除索引行扣减 facets，不能每轮或每次清理后对 `runtime_logs` 全量 `COUNT/GROUP BY`。
-- 日志搜索不再有额外回填任务；运行日志 keyword 只查 `runtime_logs.message`，操作日志 `summaryKeyword` 读取随操作日志写入同步生成的 `operation_log_summary_search_terms` 摘要倒排词项。
+- 运行日志 keyword 只查 `runtime_logs.message`；操作日志 `summaryKeyword` 日常读取随操作日志写入同步生成的 `operation_log_summary_search_terms` 摘要倒排词项。词项规则升级后通过发布包维护命令 `maintenance:rebuild-operation-log-search` 离线重建，按 `(created_at, id)` 游标分批处理，不在在线请求路径回填。
 - “日志搜索”索引查询读取当前 SQLite `runtime_logs` 表，使用 `traceId`、级别、事件和日志时间等通用索引条件缩小结果，关键字只对 `message` 列做普通模糊匹配；如果只有 keyword、没有显式开始或结束时间，后端默认只查最近 6 小时。列表默认展示最近 100 条并通过后端分页继续翻页。索引表保留周期由后台清理任务控制。
 - “日志搜索”的 `grep 模式` 通过后端 `rg` 直接扫描日志目录中当前保留的 `.log` 文件，不受索引表 3 天保留期限制；文件日志默认保留 30 天，并受最多 500 个轮转文件和单文件大小限制。该模式默认按文件时间搜索最近 3 天，单次文件时间范围最多 7 天，时间范围只用于筛选参与扫描的文件，不读取文件内容判断行时间；同一后端进程一次只允许 1 个 grep 搜索，单次 `rg` 搜索 15 秒超时，最多展示 100 行；多关键字必须在同一行同时命中，后端按日志时间或文件时间返回最新匹配。运行环境缺少 `rg` 时直接返回错误提示，不回退到慢速文件扫描。
 - 使用记录、操作日志、统计数据集域维护、审计和运行日志索引队列都是 best-effort 队列，系统重启、进程崩溃或队列溢出导致统计数据集域事实丢失或维护延迟可以接受；队列丢弃或投递失败计数应进入运维监控。
@@ -483,11 +486,11 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 | --- | --- | --- | --- | --- |
 | `runtime_logs` | 普通运行日志搜索索引 | 固定最近 3 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只删除 SQLite 搜索索引，不删除后端 `.log` 文件 |
 | `runtime_log_file_cursors` | 当前日志文件增量读取游标 | 固定最近 3 天未更新游标 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 当前存在的日志文件会被追尾任务持续刷新；缺失或长期未更新的过期文件游标会自动删除 |
-| `model_check_runs`、`model_check_items` | 模型检测历史和诊断明细 | 默认 30 天，最多 365 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只保留有界脱敏摘要，过期检测运行和检测项一起删除 |
+| `model_check_runs`、`model_check_items`、`model_check_observations` | 模型检测历史、诊断明细和受控 observation | 默认 30 天，最多 365 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | observation 通过 run 外键级联删除，只保留 HMAC 桶、Token 数值和固定 8 维身份特征，不保存题面、回答正文或普通流量正文 |
 | `operation_logs`、`operation_log_targets`、`operation_log_viewers`、`operation_log_summary_search_terms` | 业务操作追溯日志 | 默认 365 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只按时间清理，不因资源删除级联删除历史日志；摘要词项随操作日志级联删除 |
-| `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功请求热窗口默认 1 小时，成功长期样本默认 7 天，失败 / 异常事件默认 30 天 | 是，`audit-hot-retention-cleanup` 每分钟裁剪热窗口；`data-retention-cleanup` 按清理间隔清理长期过期数据 | 完全成功请求先全量热保留，超过热窗口后删除未命中 10% 长期采样的成功记录 |
-| `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩 blob 元数据 | 成功样本正文默认 7 天，失败 / 异常正文默认 30 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |
-| `audit_error_groups` | 重复错误聚合 | 默认 30 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只做展示和排障聚合，不替代事件记录 |
+| `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功请求热窗口默认 1 小时，成功长期样本默认 3 天，问题事件默认 7 天 | 是，`audit-hot-retention-cleanup` 每分钟裁剪热窗口；`data-retention-cleanup` 按清理间隔清理长期过期数据 | 完全成功请求先全量热保留，超过热窗口后删除未命中 10% 长期采样的成功记录；成功三项环境变量全为 0 时不采集成功审计 |
+| `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩 blob 元数据 | 成功样本正文默认 3 天，问题正文默认 7 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |
+| `audit_error_groups` | 重复错误聚合 | 默认 7 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只做展示和排障聚合，不替代事件记录 |
 | `codex_context_sessions`、`codex_context_responses`、`codex_context_compacts` | Responses Chat-only bridge 状态索引 | 固定 7 天未使用即清理 | 是，`data-retention-cleanup` 按清理间隔通过 DB service 清理过期关系，并且只删除没有任何剩余 response / compact 引用的 `backend/data/codex-context/` segment 文件 | 位于 `JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT` 下的多个 shard，不属于业务库。SQLite 只保存关系和文件引用；当前已落地 `previous_response_id` response 状态索引和 `juhecmp.v2.<compact_id>.<digest>` compact snapshot 索引。过期后旧 `previous_response_id` 或 compact snapshot 必须返回状态不存在 |
 | `usage_record_shards`、`usage_record_shard_entries`、`usage_record_account_shards`、`usage_record_api_key_shards` | usage shard 全局目录和 scope catalog | 跟随 `usage_records` 和物理 shard 文件 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理；表监控硬清理会按截止时间清理目录和空 shard 文件 | 只保存定位关系、筛选字段和 shard 文件引用，不保存完整使用记录正文；目录库按批删除，避免大事务拖住 usage catalog 写锁 |
 | `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 自动保留任务必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细；表监控的非业务数据硬清理是管理员显式操作，不走这个安全保留口径 |
@@ -516,7 +519,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `usage_stats_totals` 长期保留，作为账户、分组、授权和全局总量缓存。
 - `stats_job_state` 长期保留，作为统计游标和任务状态；它是自动保留任务和管理员手动清理删除 `usage_records` 的安全边界。
 - `group_account_stats` 是当前分组账户状态缓存，由刷新任务按脏分组刷新；业务库 `group_account_stats_dirty` 是刷新队列，不属于历史日志，处理完成即可删除。
-- 数据集目录库不维护需要回填的日志搜索影子表；操作日志摘要词项只随新操作日志同步写入并随保留期级联清理。数据集目录库、使用记录目录库和统计结果库新增表都应是普通表或普通索引，必须接入统一保留期或明确说明长期保留理由。
+- 数据集目录库不在在线请求路径维护或回填日志搜索影子表；操作日志摘要词项随新日志同步写入、随保留期级联清理，并允许在词项规则升级时由 `maintenance:rebuild-operation-log-search` 按 `(created_at, id)` 游标离线重建历史数据。数据集目录库、使用记录目录库和统计结果库新增表都应是普通表或普通索引，必须接入统一保留期或明确说明长期保留理由。
 - 普通日志文件由文件日志滚动配置清理，不属于 SQLite 表清理；当前默认保留 30 天，并受最多 500 个轮转文件和单文件大小限制；`grep 模式` 扫描当前保留的 `.log` 文件，但单次文件时间范围最多 7 天。
 
 统一清理规则：
@@ -1003,8 +1006,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `accountQualityWindowMinutes = 10`：真实网关请求首 token 统计窗口默认 10 分钟。
 - `accountTestTaskConcurrency = 100`：独立单账户人工测试 worker 系统级并发上限，合法范围 `1..1000`；不存在多账户批量测试提交上限或用户级全局锁。
 - 账号质量主动探测相关默认设置已删除，不允许通过系统配置恢复。
-- `cooldownAccountRetestMaxBackoffHours = 12`：冷却账号进入长期不可用低频复测的观察阈值，默认 12 小时；进入慢速恢复后仍继续自动退避复测，超过该窗口后不转异常，账户页派生展示“长期不可用”。
-- `cooldownAccountRetestLongTermIntervalHours = 1`：长期不可用后的低频自动复测间隔，默认 1 小时；后台冷却复测固定启用，只用于冷却到期后的恢复性测试；请求形态只学习真实流量的低风险元信息，不复用用户请求内容。
+- `cooldownAccountRetestMaxBackoffHours = 12`：冷却账号进入长期不可用阶段的快速恢复窗口，默认 12 小时；进入长期不可用后固定每 1 小时复测，从观察起点满 7 天仍失败则转异常。长期阶段间隔是状态机常量，不提供系统设置。
 - `cooldownAccountRetestIntervalSeconds = 3`：冷却账号后台复测默认扫描间隔，用于承接 3 秒起步的快速恢复通道。
 - `cooldownAccountRetestBatchSize = 10`：默认每轮最多恢复性复测 10 个冷却到期账号。
 
@@ -1015,7 +1017,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 每次请求事实由 `usage_records` 保底，原始审计不替代使用记录。
 - 失败、异常、重试后成功、客户端中断和流式中断默认进入原始审计，并按策略保全可捕获正文。
 - 默认正文保全按成功样本 `512KB`、问题链路 `2MB` 分档；超限后写 `summary_only` 摘要，不把摘要伪装成完整原文。
-- 最近 1 小时热保留窗口固定启用，审计日志页面可直接搜索热窗口内的原始内容。普通成功请求超过热窗口后只保留命中 10% 稳定采样的记录；未命中长期采样的成功记录由后台热窗口清理任务删除。
+- 默认启用最近 1 小时热保留窗口，审计日志页面可直接搜索热窗口内的原始内容。普通成功请求超过热窗口后只保留命中默认 10% 稳定采样的记录；未命中长期采样的成功记录由后台热窗口清理任务删除。部署环境变量可以调整或关闭成功热窗口与长期采样，但不能关闭问题链路审计。
 - 正文 blob 压缩后按原始 hash 精确去重，并通过 payload 引用关联到事件。
 - 重复错误按短时间窗口聚合展示，但每次 occurrence 仍由 `audit_logs` 事件追溯。
 - 问题列表 / 审计事件列表不新增 payload 字节列；`raw_payload_bytes` 和 `compressed_payload_bytes` 只用于后端报表、容量分析和内部接口字段。

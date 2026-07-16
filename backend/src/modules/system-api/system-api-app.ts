@@ -44,6 +44,7 @@ export interface SystemApiAppOptions {
   systemApiPrefix: string
   publicApiPrefix?: string
   trustProxy?: boolean | number
+  bypassSystemApiRateLimitForTest?: boolean
 }
 
 type BodyParserError = Error & {
@@ -68,8 +69,12 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(requestContextMiddleware)
   app.use(createHttpCompressionMiddleware())
   app.use(systemApiPrefix, noStoreSystemApiResponse)
-  app.use(systemApiPrefix, systemApiIpRateLimit)
-  app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
+  if (!options.bypassSystemApiRateLimitForTest) {
+    app.use(systemApiPrefix, systemApiIpRateLimit)
+    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
+  } else {
+    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
+  }
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))
   app.use(publicApiPrefix, capturePublicApiLog, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
@@ -90,7 +95,9 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(publicApiPrefix, externalIntegrationsRouter)
 
   app.use(systemApiPrefix, requireAuth)
-  app.use(systemApiPrefix, systemApiAuthenticatedRateLimit)
+  if (!options.bypassSystemApiRateLimitForTest) {
+    app.use(systemApiPrefix, systemApiAuthenticatedRateLimit)
+  }
   app.use(systemApiPrefix, systemApiDbServiceAdmissionControl)
   app.use(`${systemApiPrefix}/announcements`, announcementsRouter)
   app.use(`${systemApiPrefix}/my-accounts`, forceSelfAccessScope, accountsRouter)

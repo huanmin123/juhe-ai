@@ -224,6 +224,13 @@ export async function buildCodexResponsesChatBridgeBody(
   if (promptCacheKey !== undefined) {
     chatBody.prompt_cache_key = promptCacheKey
   }
+  if (typeof body.service_tier === 'string' && body.service_tier.trim()) {
+    chatBody.service_tier = body.service_tier.trim()
+  }
+  const reasoningEffort = stringValue(objectValue(body.reasoning)?.effort)
+  if (reasoningEffort) {
+    chatBody.reasoning_effort = reasoningEffort
+  }
 
   if (toolPlan.chatTools.length > 0) {
     chatBody.tools = toolPlan.chatTools

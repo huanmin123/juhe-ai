@@ -74,6 +74,7 @@ func TestW4ManagementAuthorizationAccountHealthCheckModelPostgresSmoke(t *testin
 		initial,
 		"",
 		"w4-source-health-model-v1",
+		"chat_completions",
 		false,
 	)
 
@@ -107,6 +108,7 @@ func TestW4ManagementAuthorizationAccountHealthCheckModelPostgresSmoke(t *testin
 		deletedInstance,
 		initial.ID,
 		"w4-source-health-model-v1",
+		"chat_completions",
 		true,
 	)
 
@@ -134,6 +136,7 @@ func TestW4ManagementAuthorizationAccountHealthCheckModelPostgresSmoke(t *testin
 		restoredInstance,
 		initial.ID,
 		"w4-source-health-model-v2",
+		"chat_completions",
 		false,
 	)
 	if restoredInstance.AuthorizationID != initial.AuthorizationID {
@@ -192,7 +195,7 @@ func insertW4AuthorizationAccountHealthModelFixtures(t *testing.T, ctx context.C
 			protocol_code, protocol_version, name, type, status,
 			credentials_encrypted, credential_fingerprint, credential_mask,
 			concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-			schedulable, health_check_model, created_at, updated_at
+			schedulable, health_check_model, health_check_endpoint_mode, created_at, updated_at
 		) VALUES (
 			'acc_w4_auth_health_source',
 			'sys_w4_auth_health_owner',
@@ -212,6 +215,7 @@ func insertW4AuthorizationAccountHealthModelFixtures(t *testing.T, ctx context.C
 			false,
 			true,
 			'w4-source-health-model-v1',
+			'chat_json',
 			$1,
 			$1
 		)
@@ -221,15 +225,16 @@ func insertW4AuthorizationAccountHealthModelFixtures(t *testing.T, ctx context.C
 }
 
 type w4AuthorizationAccountHealthModelInstance struct {
-	ID                   string
-	SystemAccountID      string
-	HealthCheckModel     string
-	SourceAccountID      string
-	AuthorizationID      string
-	OwnerSystemAccountID string
-	Status               string
-	Schedulable          bool
-	DeletedAt            sql.NullTime
+	ID                      string
+	SystemAccountID         string
+	HealthCheckModel        string
+	HealthCheckEndpointMode string
+	SourceAccountID         string
+	AuthorizationID         string
+	OwnerSystemAccountID    string
+	Status                  string
+	Schedulable             bool
+	DeletedAt               sql.NullTime
 }
 
 func readW4AuthorizationAccountHealthModelInstance(
@@ -245,6 +250,7 @@ func readW4AuthorizationAccountHealthModelInstance(
 			id,
 			system_account_id,
 			health_check_model,
+			health_check_endpoint_mode,
 			authorization_instance_source_account_id,
 			authorization_instance_authorization_id,
 			authorization_instance_owner_system_account_id,
@@ -260,6 +266,7 @@ func readW4AuthorizationAccountHealthModelInstance(
 		&row.ID,
 		&row.SystemAccountID,
 		&row.HealthCheckModel,
+		&row.HealthCheckEndpointMode,
 		&row.SourceAccountID,
 		&row.AuthorizationID,
 		&row.OwnerSystemAccountID,
@@ -277,6 +284,7 @@ func assertW4AuthorizationAccountHealthModelInstance(
 	row w4AuthorizationAccountHealthModelInstance,
 	wantID string,
 	wantHealthCheckModel string,
+	wantHealthCheckEndpointMode string,
 	wantDeleted bool,
 ) {
 	t.Helper()
@@ -287,14 +295,16 @@ func assertW4AuthorizationAccountHealthModelInstance(
 	if row.ID == "" ||
 		row.SystemAccountID != "sys_w4_auth_health_grantee" ||
 		row.HealthCheckModel != wantHealthCheckModel ||
+		row.HealthCheckEndpointMode != wantHealthCheckEndpointMode ||
 		row.SourceAccountID != "acc_w4_auth_health_source" ||
 		row.AuthorizationID == "" ||
 		row.OwnerSystemAccountID != "sys_w4_auth_health_owner" ||
 		row.DeletedAt.Valid != wantDeleted {
 		t.Fatalf(
-			"W4 authorization account instance = %+v, want health_check_model %q and deleted %t",
+			"W4 authorization account instance = %+v, want health_check_model %q, endpoint family %q and deleted %t",
 			row,
 			wantHealthCheckModel,
+			wantHealthCheckEndpointMode,
 			wantDeleted,
 		)
 	}

@@ -36,6 +36,7 @@ type JuheBusinessAccount struct {
 	LastErrorCode                             pgtype.Text
 	LastErrorMessage                          pgtype.Text
 	HealthCheckModel                          string
+	HealthCheckEndpointMode                   string
 	DeletedAt                                 pgtype.Timestamptz
 	DeletedBy                                 pgtype.Text
 	CreatedAt                                 pgtype.Timestamptz
@@ -50,6 +51,9 @@ type JuheBusinessAccount struct {
 	LastHealthCheckErrorCode                  pgtype.Text
 	LastHealthCheckErrorMessage               pgtype.Text
 	ConfigRevision                            int32
+	HealthCheckFailureStartedAt               pgtype.Timestamptz
+	LastErrorTraceID                          pgtype.Text
+	LastHealthCheckTraceID                    pgtype.Text
 }
 
 type JuheBusinessAccountModelMapping struct {
@@ -130,7 +134,6 @@ type JuheBusinessCustomProviderModel struct {
 	Status                        string
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
-	PricingModel                  pgtype.Text
 	ReleaseDate                   pgtype.Text
 	ShutdownDate                  pgtype.Text
 	ContextWindowTokens           pgtype.Int4
@@ -155,6 +158,9 @@ type JuheBusinessCustomProviderModel struct {
 	SupportedServiceTiersJson     string
 	SupportedReasoningEffortsJson string
 	DefaultReasoningEffort        pgtype.Text
+	CacheWrite1hUsdPer1m          pgtype.Float8
+	ServiceTierPricesJson         string
+	MaxInputTokens                pgtype.Int4
 }
 
 type JuheBusinessExternalIntegrationSource struct {
@@ -290,7 +296,6 @@ type JuheBusinessProviderModelCatalog struct {
 	ReleaseDate                       pgtype.Text
 	ShutdownDate                      pgtype.Text
 	SupportedApiProtocolsJson         string
-	PricingModel                      pgtype.Text
 	ContextWindowTokens               pgtype.Int4
 	InputUsdPer1m                     pgtype.Float8
 	OutputUsdPer1m                    pgtype.Float8
@@ -316,6 +321,10 @@ type JuheBusinessProviderModelCatalog struct {
 	CodexSupportedReasoningLevelsJson string
 	CodexDefaultReasoningLevel        pgtype.Text
 	CodexMultiAgentVersion            pgtype.Text
+	LongContextInputTokenThreshold    pgtype.Int4
+	LongContextInputCostMultiplier    pgtype.Float8
+	LongContextOutputCostMultiplier   pgtype.Float8
+	ServiceTierPricesJson             string
 }
 
 type JuheBusinessProviderProtocolProfile struct {
@@ -516,6 +525,17 @@ type JuheBusinessSystemTeamMember struct {
 	UpdatedAt       pgtype.Timestamptz
 }
 
+type JuheDatasetApiKeyRecordCleanupTarget struct {
+	ApiKeyID          string
+	SystemAccountID   string
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+	AttemptCount      int32
+	LastAttemptAt     pgtype.Timestamptz
+	LastBlockedReason pgtype.Text
+	LastErrorMessage  pgtype.Text
+}
+
 type JuheDatasetOperationLog struct {
 	ID                            string
 	TraceID                       pgtype.Text
@@ -711,6 +731,43 @@ type JuheStatsAuthorizationUserUsageSummaryDaily struct {
 	UpdatedAt                    pgtype.Timestamptz
 }
 
+type JuheStatsClientIpAccountRangeWindowDirtyIp struct {
+	IpHash    string
+	UpdatedAt string
+}
+
+type JuheStatsClientIpAccountUsageRangeWindow struct {
+	IpHash              string
+	AccountID           string
+	StartDate           string
+	EndDate             string
+	RequestCount        int64
+	SuccessCount        int64
+	ErrorCount          int64
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheReadCostUsd    float64
+	CacheWriteTokens    int64
+	CacheWrite1hTokens  int64
+	CacheWriteCostUsd   float64
+	ThinkingTokens      int64
+	InputImageTokens    int64
+	OutputImageTokens   int64
+	TotalCostUsd        float64
+	DurationMsSum       int64
+	DurationMsCount     int64
+	DurationMsMax       int64
+	AverageDurationMs   pgtype.Float8
+	FirstTokenMsSum     int64
+	FirstTokenMsCount   int64
+	AverageFirstTokenMs pgtype.Float8
+	ActiveDays          int32
+	LastUsedAt          pgtype.Text
+	LastErrorAt         pgtype.Text
+	UpdatedAt           string
+}
+
 type JuheStatsClientIpPolicy struct {
 	ID                        string
 	IpHash                    string
@@ -726,6 +783,11 @@ type JuheStatsClientIpPolicy struct {
 	DisabledReason            pgtype.Text
 }
 
+type JuheStatsClientIpRangeWindowDirtyIp struct {
+	IpHash    string
+	UpdatedAt string
+}
+
 type JuheStatsClientIpRegistry struct {
 	IpHash         string
 	BucketNo       int32
@@ -736,6 +798,37 @@ type JuheStatsClientIpRegistry struct {
 	LastSeenAt     string
 	CreatedAt      string
 	UpdatedAt      string
+}
+
+type JuheStatsClientIpUsageRangeWindow struct {
+	IpHash              string
+	StartDate           string
+	EndDate             string
+	RequestCount        int64
+	SuccessCount        int64
+	ErrorCount          int64
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheReadCostUsd    float64
+	CacheWriteTokens    int64
+	CacheWrite1hTokens  int64
+	CacheWriteCostUsd   float64
+	ThinkingTokens      int64
+	InputImageTokens    int64
+	OutputImageTokens   int64
+	TotalCostUsd        float64
+	DurationMsSum       int64
+	DurationMsCount     int64
+	DurationMsMax       int64
+	AverageDurationMs   pgtype.Float8
+	FirstTokenMsSum     int64
+	FirstTokenMsCount   int64
+	AverageFirstTokenMs pgtype.Float8
+	ActiveDays          int32
+	LastUsedAt          pgtype.Text
+	LastErrorAt         pgtype.Text
+	UpdatedAt           string
 }
 
 type JuheStatsGroupAccountStat struct {

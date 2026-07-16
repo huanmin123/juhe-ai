@@ -58,6 +58,51 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           FOREIGN KEY (run_id) REFERENCES model_check_runs(id) ON DELETE CASCADE
         );
 
+    CREATE TABLE IF NOT EXISTS model_check_observations (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          system_account_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          provider_code TEXT NOT NULL,
+          provider_protocol_profile_id TEXT NOT NULL,
+          endpoint_family TEXT NOT NULL,
+          requested_model TEXT NOT NULL,
+          mapped_upstream_model TEXT NOT NULL,
+          observed_model TEXT,
+          mapping_applied INTEGER NOT NULL DEFAULT 0,
+          upstream_bucket_hmac TEXT NOT NULL,
+          cohort_key_hmac TEXT NOT NULL,
+          population_key_hmac TEXT NOT NULL,
+          probe_key_hmac TEXT NOT NULL,
+          system_fingerprint_hmac TEXT,
+          probe_family TEXT NOT NULL,
+          probe_set_version TEXT NOT NULL,
+          tokenizer_version TEXT NOT NULL,
+          feature_version TEXT NOT NULL DEFAULT 'none',
+          round_index INTEGER NOT NULL,
+          padding_tokens INTEGER NOT NULL,
+          local_input_tokens INTEGER NOT NULL,
+          reported_input_tokens INTEGER,
+          cached_input_tokens INTEGER,
+          constraint_passed INTEGER,
+          feature_1 REAL,
+          feature_2 REAL,
+          feature_3 REAL,
+          feature_4 REAL,
+          feature_5 REAL,
+          feature_6 REAL,
+          feature_7 REAL,
+          feature_8 REAL,
+          observation_status TEXT NOT NULL,
+          identity_status TEXT NOT NULL,
+          mapping_status TEXT NOT NULL,
+          protocol_status TEXT NOT NULL,
+          evidence_coverage INTEGER NOT NULL DEFAULT 0,
+          trace_id TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (run_id) REFERENCES model_check_runs(id) ON DELETE CASCADE
+        );
+
     CREATE TABLE IF NOT EXISTS audit_logs (
           id TEXT PRIMARY KEY,
           trace_id TEXT NOT NULL,
@@ -98,6 +143,8 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           started_at TEXT NOT NULL,
           ended_at TEXT NOT NULL,
           duration_ms INTEGER,
+          http_completed_at TEXT,
+          http_duration_ms INTEGER,
           first_token_ms INTEGER,
           created_at TEXT NOT NULL
         );
@@ -389,6 +436,14 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_model_check_items_run_key ON model_check_items(run_id, item_key, id);
 
     CREATE INDEX IF NOT EXISTS idx_model_check_items_run_status ON model_check_items(run_id, status, created_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_model_check_observations_cursor ON model_check_observations(created_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_model_check_observations_account_model ON model_check_observations(system_account_id, account_id, requested_model, created_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_model_check_observations_cohort ON model_check_observations(cohort_key_hmac, mapped_upstream_model, created_at, id);
+
+    CREATE INDEX IF NOT EXISTS idx_model_check_observations_population ON model_check_observations(population_key_hmac, requested_model, probe_family, created_at, id);
 
     DROP INDEX IF EXISTS idx_audit_logs_trace_id;
     DROP INDEX IF EXISTS idx_audit_logs_outcome_created;

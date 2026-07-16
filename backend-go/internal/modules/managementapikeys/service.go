@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -26,17 +27,21 @@ const (
 var ErrAPIKeyListInvalid = errors.New("management API Key list invalid")
 
 type Service struct {
-	store                    port.ManagementAPIKeyListReader
-	creator                  port.ManagementAPIKeyCreator
-	updater                  port.ManagementAPIKeyUpdater
-	usageStatsTimezoneReader port.ManagementUsageStatsTimezoneReader
-	secretStore              port.ManagementAPIKeySecretStore
-	secretTransactor         port.ManagementAPIKeySecretTransactor
-	invalidator              APIKeyGatewayCacheInvalidator
-	codec                    secretJSONCodec
-	now                      func() time.Time
-	newID                    func(prefix string) string
-	newSecret                func() (string, error)
+	store                         port.ManagementAPIKeyListReader
+	creator                       port.ManagementAPIKeyCreator
+	updater                       port.ManagementAPIKeyUpdater
+	deleter                       port.ManagementAPIKeyDeleter
+	usageStatsTimezoneReader      port.ManagementUsageStatsTimezoneReader
+	secretStore                   port.ManagementAPIKeySecretStore
+	secretTransactor              port.ManagementAPIKeySecretTransactor
+	invalidator                   APIKeyGatewayCacheInvalidator
+	logger                        *slog.Logger
+	validationInvalidationTimeout time.Duration
+	refreshUsageTimeout           time.Duration
+	codec                         secretJSONCodec
+	now                           func() time.Time
+	newID                         func(prefix string) string
+	newSecret                     func() (string, error)
 }
 
 type ListInput struct {
@@ -87,6 +92,9 @@ func NewService(store port.ManagementAPIKeyListReader) *Service {
 	}
 	if updater, ok := store.(port.ManagementAPIKeyUpdater); ok {
 		opts.Updater = updater
+	}
+	if deleter, ok := store.(port.ManagementAPIKeyDeleter); ok {
+		opts.Deleter = deleter
 	}
 	if timezoneReader, ok := store.(port.ManagementUsageStatsTimezoneReader); ok {
 		opts.UsageStatsTimezoneReader = timezoneReader
@@ -234,36 +242,61 @@ func listItem(
 	usage port.ManagementAccountUsageSummary,
 	includeOwner bool,
 ) (ListItem, error) {
-	quotaLimits, err := parseQuotaLimits(row.QuotaLimitsJSON)
-	if err != nil {
-		return ListItem{}, fmt.Errorf("parse management API Key %q quota limits: %w", row.ID, err)
-	}
-	schedule, err := parseAvailabilitySchedule(row.AvailabilityScheduleJSON)
-	if err != nil {
-		return ListItem{}, fmt.Errorf("parse management API Key %q availability schedule: %w", row.ID, err)
-	}
+	item, _, err := listItemDetailed(row, usage, includeOwner)
+	return item, err
+}
+
+func listItemDetailed(
+	row port.ManagementAPIKeyListRow,
+	usage port.ManagementAccountUsageSummary,
+	includeOwner bool,
+) (ListItem, map[string]bool, error) {
 	item := ListItem{
-		ID:                   row.ID,
-		Name:                 row.Name,
-		Description:          row.Description,
-		KeyPrefix:            row.KeyPrefix,
-		KeySuffix:            row.KeySuffix,
-		Status:               row.Status,
-		IsDefault:            row.IsDefault,
-		RouteStrategyID:      row.RouteStrategyID,
-		RouteStrategyName:    row.RouteStrategyName,
-		RouteStrategyMode:    row.RouteStrategyMode,
-		RouteStrategyStatus:  row.RouteStrategyStatus,
-		ExpiresAt:            row.ExpiresAt,
-		QuotaLimits:          quotaLimits,
-		AvailabilitySchedule: schedule,
-		Usage:                usage,
+		ID:                  row.ID,
+		Name:                row.Name,
+		Description:         row.Description,
+		KeyPrefix:           row.KeyPrefix,
+		KeySuffix:           row.KeySuffix,
+		Status:              row.Status,
+		IsDefault:           row.IsDefault,
+		RouteStrategyID:     row.RouteStrategyID,
+		RouteStrategyName:   row.RouteStrategyName,
+		RouteStrategyMode:   row.RouteStrategyMode,
+		RouteStrategyStatus: row.RouteStrategyStatus,
+		ExpiresAt:           row.ExpiresAt,
+		Usage:               usage,
 	}
 	if includeOwner {
 		item.SystemAccountID = row.SystemAccountID
 		item.SystemAccountName = row.SystemAccountName
 	}
-	return item, nil
+
+	var parseErr error
+	uncertain := make(map[string]bool, 2)
+	quotaLimits, err := parseQuotaLimits(row.QuotaLimitsJSON)
+	if err != nil {
+		uncertain["quotaLimits"] = true
+		parseErr = fmt.Errorf("parse management API Key %q quota limits: %w", row.ID, err)
+	} else {
+		item.QuotaLimits = quotaLimits
+	}
+	schedule, err := parseAvailabilitySchedule(row.AvailabilityScheduleJSON)
+	if err != nil {
+		uncertain["availabilitySchedule"] = true
+		if parseErr == nil {
+			parseErr = fmt.Errorf(
+				"parse management API Key %q availability schedule: %w",
+				row.ID,
+				err,
+			)
+		}
+	} else {
+		item.AvailabilitySchedule = schedule
+	}
+	if len(uncertain) == 0 {
+		uncertain = nil
+	}
+	return item, uncertain, parseErr
 }
 
 func parseQuotaLimits(raw *string) (port.ManagementRequestQuotaLimits, error) {

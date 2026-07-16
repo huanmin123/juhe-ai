@@ -44,6 +44,11 @@ assert.deepEqual(
   {},
   '恢复账户只保留展示和轮询字段，不恢复凭据'
 )
+assert.equal(
+  readAccountTestRunSession(false, accountA.id)?.testingAccount.healthCheckEndpointMode,
+  'responses_sse',
+  'sessionStorage 恢复必须接受精确 JSON / Streaming 健康检查请求形态'
+)
 
 const managementAccount = accountFixture('account_session_management', '管理账户')
 writeAccountTestRunSession({
@@ -110,6 +115,8 @@ function accountFixture(id: string, name: string): AccountSummary {
     superPriorityEnabled: false,
     fallbackEnabled: false,
     clientCompatibility: 'openai_standard',
+    healthCheckModel: 'gpt-5.5',
+    healthCheckEndpointMode: 'responses_sse',
     modelMappings: [{
       sourceModel: 'gpt-5.5',
       sourceEndpointFamily: 'responses',

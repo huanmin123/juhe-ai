@@ -24,7 +24,7 @@ import {
 } from '../protocols/openai-v1/model-mapping.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { splitPathAndQuery } from '../protocols/openai-v1/route-helpers.js'
-import { requestModel, requestStream } from '../request/metadata.js'
+import { requestModel } from '../request/metadata.js'
 import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
 import {
   getGatewayRequestBodyState,
@@ -35,7 +35,7 @@ import {
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
-import type { ClientCompatibilityCapability } from '../../../domain/types.js'
+import { GatewayRequestValidationError } from '../request/validation-error.js'
 
 type JsonRecord = Record<string, unknown>
 type CodexContextRestoreFailureOutcome = 'not_found' | 'expired' | 'boundary_mismatch' | 'chain_too_deep' | 'chain_broken'
@@ -65,13 +65,21 @@ export type CodexResponsesChatBridgeCompletionHandler = (
   completion: CodexResponsesChatBridgeCompletion
 ) => void | Promise<void>
 
-export interface CodexResponsesChatBridgeRequestState {
+export interface CodexResponsesContextRequestState {
+  requestKind: 'responses' | 'compact'
   boundary: CodexContextStateBoundary
+  canonicalBody: JsonRecord
   currentBody: JsonRecord
   currentInput: unknown
+  materializedInput: unknown
   previousResponseId?: string
+  previousResponseKind: 'none' | 'internal' | 'external'
   sessionId?: string
   restored: boolean
+  materializedCurrentInputStartIndex?: number
+  activeBridgeAccountId?: string
+  lastRenderedBody?: JsonRecord
+  compactDispatchMode?: 'bridge' | 'native'
 }
 
 export interface CodexResponsesChatBridgeCompactSnapshotResult {
@@ -111,9 +119,10 @@ const maxStoredPayloadBytes = 8 * 1024 * 1024
 const maxRestoredInputBytes = 32 * 1024 * 1024
 const codexCompactionReferencePrefix = 'juhecmp.v2.'
 const codexInlineCompactionSummaryPrefix = 'juhecmp.v1.'
+const internalBridgeResponseIdPattern = /^resp_(?:chat_bridge|deepseek_bridge|glm_bridge|openai_bridge|openai_compatible_bridge|hybrid_chat_bridge)_/
 const segmentWriteLocks = new Map<string, Promise<void>>()
 
-export async function applyCodexResponsesChatBridgeStatePreflight(input: {
+export async function applyCodexResponsesContextStatePreflight(input: {
   req: Request
   res: Response
   auditCapture: AuditCaptureContext
@@ -123,15 +132,46 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
   apiKeyId?: string
   groupId: string
   groupAccess: GroupUsageAccessMetadata
-  requestClientCompatibility: ClientCompatibilityCapability
-  rawCandidateAccounts: readonly UpstreamAccount[]
   signal?: AbortSignal
 }): Promise<'continued' | 'completed'> {
-  if (!isChatOnlyCodexResponsesBridgeStateRequest(input.req, input.requestClientCompatibility, input.rawCandidateAccounts)) {
+  const requestKind = isOpenAIResponsesPostRequest(input.req)
+    ? 'responses'
+    : isOpenAIResponsesCompactPostRequest(input.req)
+      ? 'compact'
+      : undefined
+  if (!requestKind) {
     return 'continued'
   }
   const body = await parseGatewayJsonObject(input.req, input.signal)
+  const canonicalBody = { ...body }
   const boundary = codexContextBoundary(input)
+  const previousResponseId = normalizedOptionalText(body.previous_response_id)
+  if (requestKind === 'compact') {
+    const previousResponseKind = !previousResponseId
+      ? 'none'
+      : isInternalCodexBridgeResponseId(previousResponseId)
+        ? 'internal'
+        : 'external'
+    setCodexResponsesContextStateForRequest(input.req, {
+      requestKind,
+      boundary,
+      canonicalBody,
+      currentBody: canonicalBody,
+      currentInput: body.input,
+      materializedInput: body.input,
+      previousResponseId,
+      previousResponseKind,
+      restored: false
+    })
+    input.auditCapture.addGatewayMetadata({
+      label: 'codex_responses_context_state',
+      metadata: {
+        mode: `compact_${previousResponseKind}_previous_response`,
+        previousResponseId
+      }
+    })
+    return 'continued'
+  }
   const compactReferenceResult = await resolveCodexCompactionReferencesInInput({
     input: body.input,
     boundary,
@@ -141,23 +181,38 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
     await sendCodexBridgeStateFailure(input, compactReferenceFailure(compactReferenceResult.outcome))
     return 'completed'
   }
-  if (compactReferenceResult.changed) {
-    body.input = compactReferenceResult.input
-    replaceGatewayJsonBody(input.req, body)
-  }
-  const previousResponseId = normalizedOptionalText(body.previous_response_id)
-  setCodexResponsesChatBridgeRequestState(input.req, {
+  const materializedCurrentInput = compactReferenceResult.input
+  const baseState = {
+    requestKind: 'responses' as const,
     boundary,
-    currentBody: { ...body },
-    currentInput: body.input,
+    canonicalBody,
+    currentBody: { ...body, input: materializedCurrentInput },
+    currentInput: materializedCurrentInput,
+    materializedInput: materializedCurrentInput,
     previousResponseId,
+    previousResponseKind: 'none' as const,
     restored: false
-  })
+  }
   if (!previousResponseId) {
+    setCodexResponsesContextStateForRequest(input.req, baseState)
     input.auditCapture.addGatewayMetadata({
       label: 'codex_responses_chat_bridge_state',
       metadata: {
         mode: 'new_session'
+      }
+    })
+    return 'continued'
+  }
+  if (!isInternalCodexBridgeResponseId(previousResponseId)) {
+    setCodexResponsesContextStateForRequest(input.req, {
+      ...baseState,
+      previousResponseKind: 'external'
+    })
+    input.auditCapture.addGatewayMetadata({
+      label: 'codex_responses_context_state',
+      metadata: {
+        mode: 'external_previous_response',
+        previousResponseId
       }
     })
     return 'continued'
@@ -188,7 +243,7 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
   let restoredInput: unknown[]
   try {
     const payloads = await readPayloadChain(readResult.responses)
-    restoredInput = restoreResponsesInputFromPayloads(payloads, body.input)
+    restoredInput = restoreResponsesInputFromPayloads(payloads, materializedCurrentInput)
     assertRestoredInputSize(restoredInput)
   } catch (error) {
     logger.warn(errorLogFields(error, {
@@ -213,17 +268,14 @@ export async function applyCodexResponsesChatBridgeStatePreflight(input: {
     })
     return 'completed'
   }
-  const restoredBody: JsonRecord = {
-    ...body,
-    input: restoredInput
-  }
-  delete restoredBody.previous_response_id
-  replaceGatewayJsonBody(input.req, restoredBody)
-  setCodexResponsesChatBridgeRequestState(input.req, {
-    boundary,
-    currentBody: { ...body },
-    currentInput: body.input,
-    previousResponseId,
+  setCodexResponsesContextStateForRequest(input.req, {
+    ...baseState,
+    materializedInput: restoredInput,
+    materializedCurrentInputStartIndex: Math.max(
+      0,
+      restoredInput.length - responsesInputAsItems(materializedCurrentInput).length
+    ),
+    previousResponseKind: 'internal',
     sessionId: readResult.sessionId,
     restored: true
   })
@@ -244,8 +296,8 @@ export function codexResponsesChatBridgeCompletionHandlerForRequest(
   account: UpstreamAccount,
   model?: string
 ): CodexResponsesChatBridgeCompletionHandler | undefined {
-  const requestState = getCodexResponsesChatBridgeRequestState(req)
-  if (!requestState) return undefined
+  const requestState = getCodexResponsesContextState(req)
+  if (!requestState || requestState.activeBridgeAccountId !== account.id) return undefined
   return async (completion) => {
     try {
       const now = new Date()
@@ -520,37 +572,189 @@ function encodeInlineCodexCompactionSummary(summary: string): string {
   return `${codexInlineCompactionSummaryPrefix}${payload}`
 }
 
-export function getCodexResponsesChatBridgeRequestState(req: Request): CodexResponsesChatBridgeRequestState | undefined {
-  return (req as Request & { [requestStateSymbol]?: CodexResponsesChatBridgeRequestState })[requestStateSymbol]
+export function getCodexResponsesContextState(req: Request): CodexResponsesContextRequestState | undefined {
+  return (req as Request & { [requestStateSymbol]?: CodexResponsesContextRequestState })[requestStateSymbol]
 }
 
-function setCodexResponsesChatBridgeRequestState(req: Request, state: CodexResponsesChatBridgeRequestState): void {
-  ;(req as Request & { [requestStateSymbol]?: CodexResponsesChatBridgeRequestState })[requestStateSymbol] = state
+export function setCodexResponsesContextStateForRequest(req: Request, state: CodexResponsesContextRequestState): void {
+  ;(req as Request & { [requestStateSymbol]?: CodexResponsesContextRequestState })[requestStateSymbol] = state
 }
 
-function isChatOnlyCodexResponsesBridgeStateRequest(
+export function codexResponsesContextAllowsAccount(req: Request, account: UpstreamAccount): boolean {
+  const state = getCodexResponsesContextState(req)
+  if (!state) return true
+  const explicitBridge = isExplicitCodexResponsesChatBridgeAccount(req, account)
+  if (state.requestKind === 'compact') {
+    if (state.compactDispatchMode === 'native') return !explicitBridge
+    if (state.previousResponseKind === 'internal') return explicitBridge
+    if (state.previousResponseKind === 'external') return !explicitBridge
+    return true
+  }
+  return state.previousResponseKind !== 'external' || !explicitBridge
+}
+
+export function prepareCodexResponsesContextForAccount(req: Request, account: UpstreamAccount): boolean {
+  const state = getCodexResponsesContextState(req)
+  if (!state) return false
+  const explicitBridge = isExplicitCodexResponsesChatBridgeAccount(req, account)
+  if (state.requestKind === 'compact') {
+    if (state.compactDispatchMode === 'native' && explicitBridge) {
+      throw new GatewayRequestValidationError(
+        '原生 Responses compact 请求不能发送给 Chat bridge 账号',
+        'native_responses_compact_requires_native_account',
+        { accountScoped: true }
+      )
+    }
+    return false
+  }
+  synchronizeCodexResponsesDispatchBaseline(req, state)
+  if (explicitBridge && state.previousResponseKind === 'external') {
+    throw new Error('外部 previous_response_id 只能发送给原生 Responses 账号')
+  }
+  const body: JsonRecord = {
+    ...state.canonicalBody,
+    input: explicitBridge
+      ? state.materializedInput
+      : nativeResponsesInputFromMaterialized(state.materializedInput)
+  }
+  if (state.previousResponseKind === 'internal') {
+    delete body.previous_response_id
+  }
+  state.activeBridgeAccountId = explicitBridge ? account.id : undefined
+  const currentBody = currentGatewayJsonBody(req)
+  const bodyChanged = explicitBridge
+    || body.input !== currentBody?.input
+    || (state.previousResponseKind === 'internal' && Object.prototype.hasOwnProperty.call(currentBody ?? {}, 'previous_response_id'))
+  if (bodyChanged) {
+    state.lastRenderedBody = body
+    replaceGatewayJsonBody(req, body)
+  } else {
+    state.lastRenderedBody = currentBody ?? state.canonicalBody
+  }
+  return explicitBridge
+}
+
+export function prepareCodexResponsesCompactDispatchForAccounts(
   req: Request,
-  requestClientCompatibility: ClientCompatibilityCapability,
   accounts: readonly UpstreamAccount[]
 ): boolean {
-  return isOpenAIResponsesPostRequest(req)
-    && requestStream(req)
-    && hasCodexResponsesChatBridgeRuntimeAccount(req, accounts, requestClientCompatibility)
+  const state = getCodexResponsesContextState(req)
+  if (state?.requestKind !== 'compact') return false
+  const bridgeAccounts = accounts.filter((account) => isExplicitCodexResponsesChatBridgeAccount(req, account))
+  const nativeAccountCount = accounts.length - bridgeAccounts.length
+  if (state.previousResponseKind === 'external') {
+    state.compactDispatchMode = 'native'
+    return false
+  }
+  if (state.previousResponseKind === 'internal') {
+    state.compactDispatchMode = 'bridge'
+    return bridgeAccounts.length > 0
+  }
+  if (nativeAccountCount > 0) {
+    state.compactDispatchMode = 'native'
+    return false
+  }
+  state.compactDispatchMode = 'bridge'
+  return bridgeAccounts.length > 0
 }
 
-export function hasCodexResponsesChatBridgeRuntimeAccount(
+export function hasExplicitCodexResponsesChatBridgeRuntimeAccount(
   req: Request,
-  accounts: readonly UpstreamAccount[],
-  requestClientCompatibility: ClientCompatibilityCapability
+  accounts: readonly UpstreamAccount[]
 ): boolean {
-  const model = requestModel(req)
-  return accounts.some((account) => {
-    const explicitMappingBridge = isOpenAIResponsesToChatCompletionsModelMapping(
-      resolveOpenAIAccountModelMapping(account, model, OPENAI_RESPONSES_FAMILY)
-    )
-    return explicitMappingBridge
-      || (account.clientCompatibility === 'codex_responses' && requestClientCompatibility === 'codex_responses')
+  return accounts.some((account) => isExplicitCodexResponsesChatBridgeAccount(req, account))
+}
+
+function isExplicitCodexResponsesChatBridgeAccount(req: Request, account: UpstreamAccount): boolean {
+  const state = getCodexResponsesContextState(req)
+  const model = normalizedOptionalText(state?.canonicalBody.model) ?? requestModel(req)
+  return isOpenAIResponsesToChatCompletionsModelMapping(
+    resolveOpenAIAccountModelMapping(account, model, OPENAI_RESPONSES_FAMILY)
+  )
+}
+
+function nativeResponsesInputFromMaterialized(value: unknown): unknown {
+  if (!Array.isArray(value)) return value
+  let changed = false
+  const transformed = value.map((item) => {
+    const next = nativeResponsesItemFromMaterialized(item)
+    if (next !== item) changed = true
+    return next
   })
+  return changed ? transformed : value
+}
+
+function synchronizeCodexResponsesDispatchBaseline(
+  req: Request,
+  state: CodexResponsesContextRequestState
+): void {
+  const currentBody = currentGatewayJsonBody(req)
+  if (!currentBody || currentBody === state.lastRenderedBody) return
+  if (state.lastRenderedBody) {
+    state.materializedInput = currentBody.input
+    state.currentInput = currentInputFromMaterializedMutation(state, currentBody.input)
+  }
+  state.canonicalBody = { ...currentBody }
+  state.currentBody = { ...currentBody }
+}
+
+function currentInputFromMaterializedMutation(
+  state: CodexResponsesContextRequestState,
+  materializedInput: unknown
+): unknown {
+  const startIndex = state.materializedCurrentInputStartIndex
+  if (state.previousResponseKind !== 'internal'
+    || startIndex === undefined
+    || !Array.isArray(materializedInput)) {
+    return materializedInput
+  }
+  return cloneArray(materializedInput.slice(Math.min(startIndex, materializedInput.length)))
+}
+
+function currentGatewayJsonBody(req: Request): JsonRecord | undefined {
+  const request = req as GatewayRawBodyRequest
+  const body = request.body !== undefined
+    ? request.body
+    : request.gatewayParsedJsonBodyAvailable
+      ? request.gatewayParsedJsonBody
+      : undefined
+  return isPlainObject(body) ? body : undefined
+}
+
+function nativeResponsesItemFromMaterialized(item: unknown): unknown {
+  if (!isPlainObject(item)) return item
+  if (item.type !== 'compaction' && item.type !== 'compaction_summary') return item
+  const encryptedContent = normalizedOptionalText(item.encrypted_content)
+  if (!encryptedContent?.startsWith(codexInlineCompactionSummaryPrefix)) return item
+  const summary = decodeInlineCodexCompactionSummary(encryptedContent)
+  if (!summary) {
+    throw new Error('内部压缩摘要无法解析，禁止发送到原生 Responses 上游')
+  }
+  return {
+    type: 'message',
+    role: 'developer',
+    content: [{ type: 'input_text', text: summary }]
+  }
+}
+
+function decodeInlineCodexCompactionSummary(value: string): string | undefined {
+  try {
+    const encoded = value.slice(codexInlineCompactionSummaryPrefix.length)
+    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as unknown
+    return isPlainObject(parsed) ? normalizedOptionalText(parsed.summary) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isInternalCodexBridgeResponseId(value: string): boolean {
+  return internalBridgeResponseIdPattern.test(value)
+}
+
+function isOpenAIResponsesCompactPostRequest(req: Request): boolean {
+  if (req.method.toUpperCase() !== 'POST') return false
+  const { path } = splitPathAndQuery(req.originalUrl || req.path || '')
+  return (path.replace(/^\/v1(?=\/|$)/, '') || '/') === '/responses/compact'
 }
 
 function codexContextBoundary(input: {

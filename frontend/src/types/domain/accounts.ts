@@ -4,16 +4,8 @@ import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
 export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
-export type AccountGptServiceTierOverride = '' | 'default' | 'priority' | 'flex'
-export type AccountGptReasoningEffortOverride =
-  | ''
-  | 'none'
-  | 'minimal'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'max'
+export type AccountGptServiceTierOverride = string
+export type AccountGptReasoningEffortOverride = string
 export type AccountSupportedEndpointMode =
   | 'chat_json'
   | 'chat_sse'
@@ -26,6 +18,17 @@ export type AccountSupportedEndpointMode =
   | 'generate_content_sse'
   | 'count_tokens'
   | 'embed_content'
+export type AccountHealthCheckEndpointMode = Extract<
+  AccountSupportedEndpointMode,
+  | 'chat_json'
+  | 'chat_sse'
+  | 'responses_json'
+  | 'responses_sse'
+  | 'messages_json'
+  | 'messages_sse'
+  | 'generate_content_json'
+  | 'generate_content_sse'
+>
 export type AccountApiKeyRuntimeStatus = 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 
 export interface AccountCredentials {
@@ -270,6 +273,7 @@ export interface AccountSummary {
   modelMappings?: AccountModelMapping[]
   tags?: AccountTagSummary[]
   healthCheckModel: string
+  healthCheckEndpointMode: AccountHealthCheckEndpointMode
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -289,6 +293,7 @@ export interface AccountSummary {
   cooldownUntil?: string
   lastErrorCode?: string
   lastErrorMessage?: string
+  lastErrorTraceId?: string
   cooldownRetestFailureCount?: number
   cooldownRetestObservationStartedAt?: string
   cooldownRetestLastAt?: string
@@ -297,9 +302,11 @@ export interface AccountSummary {
   nextHealthCheckAt?: string
   lastHealthSuccessAt?: string
   healthCheckFailureCount?: number
+  healthCheckFailureStartedAt?: string
   lastHealthCheckStatusCode?: number
   lastHealthCheckErrorCode?: string
   lastHealthCheckErrorMessage?: string
+  lastHealthCheckTraceId?: string
   apiKeyRuntime?: AccountApiKeyRuntimeSummary
   apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   streamFailureCount?: number
@@ -364,6 +371,7 @@ export interface AccountBatchEditUpdates {
   responseInspectionRules?: AccountBatchEditField<unknown[]>
   supportedModels?: AccountBatchEditField<string[]>
   healthCheckModel?: AccountBatchEditField<string>
+  healthCheckEndpointMode?: AccountBatchEditField<AccountHealthCheckEndpointMode>
   modelMappings?: AccountBatchEditField<AccountModelMapping[]>
   supportedEndpointModes?: AccountBatchEditField<AccountSupportedEndpointMode[]>
   serviceTierOverride?: AccountBatchEditField<AccountGptServiceTierOverride | null>

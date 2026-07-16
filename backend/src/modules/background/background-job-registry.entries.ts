@@ -45,6 +45,20 @@ export const backgroundScheduledJobs = [
     writes: ['stats:usage_stats_*', 'stats:usage_model_*', 'stats:usage_error_*', 'stats:usage_latency_*']
   }),
   scheduled({
+    jobName: 'model-trust-observation-aggregation',
+    category: 'scheduled',
+    kind: 'stats',
+    lifecycle: 'persistent',
+    defaultRole: 'stats-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['stats:model_token_integrity_windows', 'stats:model_token_integrity_rounds', 'stats:model_token_intercept_baseline_versions', 'stats:model_trust_window_sources', 'stats:model_identity_*', 'stats:model_paired_similarity_windows', 'stats:model_account_trust_results', 'stats:stats_job_state'],
+    notes: '按 dataset observation 游标增量构建模型可信窗口和账号最新结果，API 只读结果表'
+  }),
+  scheduled({
     jobName: 'client-ip-stats-aggregation',
     category: 'scheduled',
     kind: 'stats',
@@ -134,6 +148,20 @@ export const backgroundScheduledJobs = [
     leaseRequired: true,
     blocksUserVisibleFreshness: false,
     writes: []
+  }),
+  scheduled({
+    jobName: 'background-task-run-reconcile',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'stats-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: ['stats:background_task_runs', 'stats:background_job_leases'],
+    notes: '启动后及低频周期回收无有效租约的临时维护任务陈旧状态；近期心跳和有效租约均阻止回收'
   }),
   scheduled({
     jobName: 'api-key-record-cleanup-retry',

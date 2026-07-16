@@ -96,6 +96,48 @@ func TestW5ManagementAPIKeyListMigrationAddsOnlyFreshListIndexes(t *testing.T) {
 	}
 }
 
+func TestPublicAPIKeyCleanupTargetUpsertPreservesRetryState(t *testing.T) {
+	source, err := os.ReadFile("queries/w1b_public_api_keys.sql")
+	if err != nil {
+		t.Fatalf("read public API Key SQL: %v", err)
+	}
+	sql := string(source)
+	for _, required := range []string{
+		"-- name: UpsertAPIKeyRecordCleanupTarget :exec",
+		"INSERT INTO juhe_dataset.api_key_record_cleanup_targets",
+		"api_key_id",
+		"system_account_id",
+		"created_at",
+		"updated_at",
+		"ON CONFLICT (api_key_id) DO UPDATE SET",
+		"system_account_id = EXCLUDED.system_account_id",
+		"updated_at = EXCLUDED.updated_at",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("public API Key cleanup upsert missing %q", required)
+		}
+	}
+	normalized := strings.Join(strings.Fields(sql), " ")
+	if !strings.Contains(
+		normalized,
+		"api_key_id, system_account_id, created_at, updated_at",
+	) {
+		t.Fatal("public API Key cleanup upsert must write the Node worker columns")
+	}
+	upsert := sql[strings.Index(sql, "-- name: UpsertAPIKeyRecordCleanupTarget"):]
+	for _, forbidden := range []string{
+		"created_at = EXCLUDED.created_at",
+		"attempt_count =",
+		"last_attempt_at =",
+		"last_blocked_reason =",
+		"last_error_message =",
+	} {
+		if strings.Contains(upsert, forbidden) {
+			t.Fatalf("public API Key cleanup upsert must preserve retry state, found %q", forbidden)
+		}
+	}
+}
+
 func TestListManagementAPIKeysMapsRowsAndUsesPageSizePlusOne(t *testing.T) {
 	expiresAt := time.Date(2026, 7, 10, 3, 2, 3, 0, time.UTC)
 	q := &managementAPIKeyListQueriesStub{

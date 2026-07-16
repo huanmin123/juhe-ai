@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import http from 'node:http'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -48,6 +48,14 @@ const healthSettings = {
 let mockOpenAIServer: http.Server | undefined
 
 try {
+  const accountsRouteSource = readFileSync(resolve('src/modules/accounts/accounts.routes.ts'), 'utf8')
+  const forceActivateRouteSource = readFileSync(resolve('src/modules/accounts/account-force-activate.routes.ts'), 'utf8')
+  const accountRuntimeMutationSource = readFileSync(resolve('src/storage/account-runtime-mutation.repository.ts'), 'utf8')
+  assert.match(
+    accountsRouteSource,
+    /requestedClearFailureState === true && account\.status === 'pending_test'[\s\S]+dispatchAccountHealthCheck\(account\.id, 'activation'\)/,
+    '重新检查和异常恢复进入 pending_test 后必须立即投递后台激活检查'
+  )
   setDbServiceUsageRecordLocalWriteAllowedForTest(true)
   mockOpenAIServer = createMockOpenAIServer()
   mockOpenAIServer.listen(0, '127.0.0.1')
@@ -90,6 +98,44 @@ try {
     'pending_test',
     '普通恢复入口不应激活待检查账户'
   )
+  assert.match(forceActivateRouteSource, /acknowledgedAccountAvailable !== true/, '人工恢复必须要求用户明确确认账户当前可用')
+  assert.match(forceActivateRouteSource, /accounts\.force_activate_pending/, '人工恢复必须写入独立操作审计键')
+  assert.match(accountRuntimeMutationSource, /forceActivatePendingAccountAsync[\s\S]+client\.transaction[\s\S]+config_revision = \?/, 'PostgreSQL 人工放行必须在事务内按配置版本 CAS')
+  assert.match(accountRuntimeMutationSource, /forceActivatePendingAccount[\s\S]+account_expires_at IS NULL OR account_expires_at > \?/, '人工放行写入时必须再次校验套餐未过期')
+
+  const forcePending = repositories.createAccount(accountPayload({
+    name: '用户确认后人工放行账户',
+    apiKey: 'sk-pending-force-activate',
+    groupId: group.id,
+    baseUrl: mockBaseUrl
+  }), access)
+  const forceActivated = repositories.forceActivatePendingAccount(forcePending.id, access)
+  assert.equal(forceActivated.changed, true, '账户所有者应能人工放行自有待检查账户')
+  assert.equal(forceActivated.account?.status, 'active', '人工放行后应立即恢复正常状态')
+  assert.equal(forceActivated.account?.schedulable, true, '人工放行后应立即参与调度')
+  assert.equal(
+    repositories.forceActivatePendingAccount(forcePending.id, access).changed,
+    false,
+    '人工放行必须使用 pending_test 精确状态守卫，不能重复执行'
+  )
+  const scheduledPending = repositories.createAccount({
+    ...accountPayload({
+      name: '时间计划外人工放行账户',
+      apiKey: 'sk-pending-force-scheduled',
+      groupId: group.id,
+      baseUrl: mockBaseUrl
+    }),
+    availabilitySchedule: {
+      enabled: true,
+      timezone: 'UTC',
+      mode: 'allow_windows' as const,
+      dateRange: { startDate: '2999-01-01' },
+      windows: [{ daysOfWeek: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '23:59' }]
+    }
+  }, access)
+  const scheduledForceResult = repositories.forceActivatePendingAccount(scheduledPending.id, access)
+  assert.equal(scheduledForceResult.account?.status, 'disabled', '人工放行不得绕过账户时间计划')
+  assert.equal(scheduledForceResult.account?.schedulable, true, '时间计划只控制当前状态，不应覆盖用户允许参与调度的持久开关')
 
   const pendingCandidate = repositories.findOpenAIAccountForGroup(
     group.id,
@@ -111,18 +157,62 @@ try {
   assert.equal(afterManualSuccess?.schedulable, false, '人工测试成功不能恢复账户调度')
   assert.equal(afterManualSuccess?.healthCheckModel, 'gpt-5.5', '人工测试成功不能改写检查模型')
 
-  assert.equal(repositories.recordAccountHealthCheckFailure(pending.id, {
+  const firstPendingFailure = repositories.recordAccountHealthCheckFailure(pending.id, {
     ...healthSettings,
     statusCode: 401,
     errorCode: 'invalid_api_key',
     errorMessage: 'Invalid API key'
-  }).changed, true, '后台健康检查失败应记录待检查账户的失败详情')
+  })
+  assert.equal(firstPendingFailure.changed, true, '后台健康检查失败应记录待检查账户的失败详情')
+  assert.equal(firstPendingFailure.transitionedToError, false, '首次失败不应立即把待检查账户转为异常')
+  assert.equal(
+    Date.parse(firstPendingFailure.nextHealthCheckAt ?? '') - Date.parse(firstPendingFailure.checkedAt),
+    60 * 60_000,
+    '待检查账户失败后必须固定 1 小时复检'
+  )
   const failedPending = repositories.findAccountSummary(pending.id, access)
   assert.equal(failedPending?.status, 'pending_test', '后台健康检查失败后仍应由系统自动重试')
   assert.equal(failedPending?.schedulable, false, '后台健康检查失败后不得参与调度')
   assert.equal(failedPending?.effectiveAvailability?.label, '账户检查失败', '待检查失败应显示明确状态')
   assert.equal(failedPending?.effectiveAvailability?.color, 'red', '待检查失败应使用红色状态')
   assert.match(failedPending?.effectiveAvailability?.reason ?? '', /自动重试/, '待检查失败应说明系统会自动重试')
+
+  const restartedPending = repositories.clearAccountFailureState(pending.id, access, { allowPendingTestRestore: true })
+  assert.equal(restartedPending?.status, 'pending_test', '重新检查必须保持待检查状态')
+  assert.equal(restartedPending?.schedulable, false, '重新检查后必须保持不可调度')
+  assert.equal(restartedPending?.lastHealthCheckAt, undefined, '重新检查必须清空上次健康检查时间')
+  assert.equal(restartedPending?.healthCheckFailureCount, 0, '重新检查必须清空健康检查失败计数')
+  assert.equal(restartedPending?.healthCheckFailureStartedAt, undefined, '重新检查必须清空首次失败窗口')
+  assert.equal(restartedPending?.lastHealthCheckErrorCode, undefined, '重新检查必须清空健康检查错误码')
+
+  repositories.recordAccountHealthCheckFailure(pending.id, {
+    ...healthSettings,
+    statusCode: 401,
+    errorCode: 'invalid_api_key',
+    errorMessage: 'Invalid API key after restart'
+  })
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET health_check_failure_started_at = ? WHERE id = ?')
+    .run(new Date(Date.now() - 25 * 60 * 60_000).toISOString(), pending.id)
+  const timedOutPending = repositories.recordAccountHealthCheckFailure(pending.id, {
+    ...healthSettings,
+    statusCode: 401,
+    errorCode: 'invalid_api_key',
+    errorMessage: 'Invalid API key after 24 hours'
+  })
+  assert.equal(timedOutPending.transitionedToError, true, '从首次失败起满 24 小时仍失败必须转为异常')
+  assert.equal(timedOutPending.nextHealthCheckAt, undefined, '转为异常后不应继续安排 pending_test 复检')
+  const timedOutAccount = repositories.findAccountSummary(pending.id, access)
+  assert.equal(timedOutAccount?.status, 'error', '激活检查超时必须写入 error 状态')
+  assert.equal(timedOutAccount?.schedulable, false, '激活检查超时后必须不可调度')
+  assert.equal(timedOutAccount?.lastErrorCode, 'account_activation_check_timeout', '激活检查超时必须写入明确错误码')
+  assert.match(timedOutAccount?.lastErrorMessage ?? '', /持续 24 小时仍未通过/, '激活检查超时必须写入明确错误原因')
+
+  const recoveredError = repositories.clearAccountFailureState(pending.id, access)
+  assert.equal(recoveredError?.status, 'pending_test', '异常恢复只能进入待检查，不能直接恢复正常')
+  assert.equal(recoveredError?.schedulable, false, '异常恢复后后台检查通过前不得调度')
+  assert.equal(recoveredError?.lastErrorCode, undefined, '异常恢复应清空终态错误码')
+  assert.equal(recoveredError?.healthCheckFailureStartedAt, undefined, '异常恢复应重置首次失败窗口')
 
   assert.equal(repositories.recordAccountHealthCheckSuccess(pending.id, {
     ...healthSettings,
@@ -208,7 +298,7 @@ try {
   assert.equal(exportResult.document.accounts[0]?.status, 'pending_test', '导出应保留待检查状态')
   assert.equal(exportResult.document.accounts[0]?.healthCheckModel, 'gpt-5.5', '导出应保留账户检查模型')
 
-  console.log('账户待检查回归通过：新建和关键配置变更进入 pending_test，人工测试不改状态或检查模型，只有后台健康检查成功激活')
+  console.log('账户待检查回归通过：新建和关键配置变更进入 pending_test，人工测试保持诊断语义，后台检查或用户确认人工放行可激活')
 } finally {
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)
@@ -262,13 +352,22 @@ function createMockOpenAIServer(): http.Server {
         }))
         return
       }
+      if (String(req.headers.accept ?? '').includes('text/event-stream')) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.end('event: response.completed\ndata: {"type":"response.completed","response":{"object":"response","status":"completed","output":[]}}\n\n')
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({
         id: 'resp_pending_test_mock',
         object: 'response',
         status: 'completed',
         model: 'gpt-5.5',
-        output: [],
+        output: [{
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'ok' }]
+        }],
         usage: {
           input_tokens: 1,
           output_tokens: 1,

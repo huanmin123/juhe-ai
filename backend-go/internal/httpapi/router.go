@@ -19,6 +19,8 @@ type RouterOptions struct {
 	Logger                                            *slog.Logger
 	PublicSettingsService                             *publicsettings.Service
 	SystemAPIRateLimitReader                          port.SystemAPIRateLimitReader
+	SystemAPIRateLimitSettingsCache                   SystemAPIRateLimitSettingsCache
+	SystemAPIRateLimitSettingsVersionReader           SystemAPIRateLimitSettingsVersionReader
 	SystemAPIClientIPAllowlistReader                  port.SystemAPIClientIPAllowlistReader
 	SystemAPIClientIPAllowlistVersionReader           SystemAPIClientIPAllowlistVersionReader
 	SystemAPIIPRateLimiter                            SystemAPIIPRateLimiter
@@ -88,6 +90,16 @@ type RouterOptions struct {
 	ManagementProviderCustomModelCreateHandler        http.Handler
 	ManagementProviderCustomModelUpdateHandler        http.Handler
 	ManagementProviderCustomModelDeleteHandler        http.Handler
+	ManagementRouteStrategyListHandler                http.Handler
+	ManagementMyRouteStrategyListHandler              http.Handler
+	ManagementRouteStrategyCreateHandler              http.Handler
+	ManagementMyRouteStrategyCreateHandler            http.Handler
+	ManagementRouteStrategyUpdateHandler              http.Handler
+	ManagementMyRouteStrategyUpdateHandler            http.Handler
+	ManagementRouteStrategyDeleteHandler              http.Handler
+	ManagementMyRouteStrategyDeleteHandler            http.Handler
+	ManagementRouteStrategyDetailHandler              http.Handler
+	ManagementMyRouteStrategyDetailHandler            http.Handler
 	ManagementRouteStrategyOptionsHandler             http.Handler
 	ManagementMyRouteStrategyOptionsHandler           http.Handler
 	ManagementAPIKeyListHandler                       http.Handler
@@ -100,6 +112,8 @@ type RouterOptions struct {
 	ManagementMyAPIKeyCreateHandler                   http.Handler
 	ManagementAPIKeyUpdateHandler                     http.Handler
 	ManagementMyAPIKeyUpdateHandler                   http.Handler
+	ManagementAPIKeyDeleteHandler                     http.Handler
+	ManagementMyAPIKeyDeleteHandler                   http.Handler
 	ManagementGroupListHandler                        http.Handler
 	ManagementMyGroupListHandler                      http.Handler
 	ManagementGroupDetailHandler                      http.Handler
@@ -126,6 +140,12 @@ type RouterOptions struct {
 	ManagementSystemSettingsUpdateHandler             http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
 	ManagementGlobalSettingsUpdateHandler             http.Handler
+	ManagementClientIPStatsHandler                    http.Handler
+	ManagementClientIPStatsDetailHandler              http.Handler
+	ManagementClientIPAllowlistHandler                http.Handler
+	ManagementClientIPUnallowlistHandler              http.Handler
+	ManagementClientIPBlacklistHandler                http.Handler
+	ManagementClientIPUnblockHandler                  http.Handler
 	ManagementOperationLogsHandler                    http.Handler
 	ManagementMyOperationLogsHandler                  http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
@@ -141,6 +161,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 		opts.SystemAPIClientIPAllowlistReader,
 		opts.SystemAPIClientIPAllowlistVersionReader,
 	)
+	systemAPIRateLimitSettingsCache := opts.SystemAPIRateLimitSettingsCache
+	if systemAPIRateLimitSettingsCache == nil {
+		systemAPIRateLimitSettingsCache = NewSystemAPIRateLimitSettingsCache(
+			opts.SystemAPIRateLimitSettingsVersionReader,
+		)
+	}
 	mutationGuards := newMutationGuardStore()
 
 	health := NewHealthHandler(opts.Config, opts.Logger)
@@ -154,6 +180,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				clientIPs,
 				systemAPIClientIPAllowlist,
 				opts.Logger,
+				systemAPIRateLimitSettingsCache,
 			))
 		}
 		system.Get("/health", health.ServeHTTP)
@@ -190,6 +217,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 						clientIPs,
 						systemAPIClientIPAllowlist,
 						opts.Logger,
+						systemAPIRateLimitSettingsCache,
 					),
 				)
 				if managementAPIWriteAuthMiddleware != nil {
@@ -202,6 +230,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 							clientIPs,
 							systemAPIClientIPAllowlist,
 							opts.Logger,
+							systemAPIRateLimitSettingsCache,
 						),
 					)
 				}
@@ -274,6 +303,16 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementProviderCustomModelCreateHandler == nil &&
 				opts.ManagementProviderCustomModelUpdateHandler == nil &&
 				opts.ManagementProviderCustomModelDeleteHandler == nil &&
+				opts.ManagementRouteStrategyListHandler == nil &&
+				opts.ManagementMyRouteStrategyListHandler == nil &&
+				opts.ManagementRouteStrategyCreateHandler == nil &&
+				opts.ManagementMyRouteStrategyCreateHandler == nil &&
+				opts.ManagementRouteStrategyUpdateHandler == nil &&
+				opts.ManagementMyRouteStrategyUpdateHandler == nil &&
+				opts.ManagementRouteStrategyDeleteHandler == nil &&
+				opts.ManagementMyRouteStrategyDeleteHandler == nil &&
+				opts.ManagementRouteStrategyDetailHandler == nil &&
+				opts.ManagementMyRouteStrategyDetailHandler == nil &&
 				opts.ManagementRouteStrategyOptionsHandler == nil &&
 				opts.ManagementMyRouteStrategyOptionsHandler == nil &&
 				opts.ManagementAPIKeyListHandler == nil &&
@@ -286,6 +325,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAPIKeyCreateHandler == nil &&
 				opts.ManagementAPIKeyUpdateHandler == nil &&
 				opts.ManagementMyAPIKeyUpdateHandler == nil &&
+				opts.ManagementAPIKeyDeleteHandler == nil &&
+				opts.ManagementMyAPIKeyDeleteHandler == nil &&
 				opts.ManagementGroupListHandler == nil &&
 				opts.ManagementMyGroupListHandler == nil &&
 				opts.ManagementGroupDetailHandler == nil &&
@@ -312,6 +353,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementSystemSettingsUpdateHandler == nil &&
 				opts.ManagementGlobalSettingsHandler == nil &&
 				opts.ManagementGlobalSettingsUpdateHandler == nil &&
+				opts.ManagementClientIPStatsHandler == nil &&
+				opts.ManagementClientIPStatsDetailHandler == nil &&
+				opts.ManagementClientIPAllowlistHandler == nil &&
+				opts.ManagementClientIPUnallowlistHandler == nil &&
+				opts.ManagementClientIPBlacklistHandler == nil &&
+				opts.ManagementClientIPUnblockHandler == nil &&
 				opts.ManagementOperationLogsHandler == nil &&
 				opts.ManagementMyOperationLogsHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
@@ -514,11 +561,61 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementProviderCustomModelDeleteHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Delete("/providers/{code}/models/{id}", opts.ManagementProviderCustomModelDeleteHandler.ServeHTTP)
 			}
+			if opts.ManagementRouteStrategyListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/route-strategies", opts.ManagementRouteStrategyListHandler.ServeHTTP)
+			}
+			if opts.ManagementMyRouteStrategyListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-route-strategies", opts.ManagementMyRouteStrategyListHandler.ServeHTTP)
+			}
+			if opts.ManagementRouteStrategyCreateHandler != nil {
+				system.With(
+					managementRouteStrategyCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementRouteStrategyCreateMutationGuardConfig(managementRouteStrategyScopeAdmin)),
+				).Post("/route-strategies", opts.ManagementRouteStrategyCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementMyRouteStrategyCreateHandler != nil {
+				system.With(
+					managementRouteStrategyCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					mutationGuards.Middleware(managementRouteStrategyCreateMutationGuardConfig(managementRouteStrategyScopeSelf)),
+				).Post("/my-route-strategies", opts.ManagementMyRouteStrategyCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementRouteStrategyUpdateHandler != nil {
+				system.With(
+					managementRouteStrategyCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+				).Patch("/route-strategies/{id}", opts.ManagementRouteStrategyUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementMyRouteStrategyUpdateHandler != nil {
+				system.With(
+					managementRouteStrategyCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+				).Patch("/my-route-strategies/{id}", opts.ManagementMyRouteStrategyUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementRouteStrategyDeleteHandler != nil {
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+				).Delete("/route-strategies/{id}", opts.ManagementRouteStrategyDeleteHandler.ServeHTTP)
+			}
+			if opts.ManagementMyRouteStrategyDeleteHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).
+					Delete("/my-route-strategies/{id}", opts.ManagementMyRouteStrategyDeleteHandler.ServeHTTP)
+			}
 			if opts.ManagementRouteStrategyOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/route-strategies/options", opts.ManagementRouteStrategyOptionsHandler.ServeHTTP)
 			}
 			if opts.ManagementMyRouteStrategyOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-route-strategies/options", opts.ManagementMyRouteStrategyOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementRouteStrategyDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/route-strategies/{id}", opts.ManagementRouteStrategyDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementMyRouteStrategyDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-route-strategies/{id}", opts.ManagementMyRouteStrategyDetailHandler.ServeHTTP)
 			}
 			if opts.ManagementAPIKeyListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/api-keys", opts.ManagementAPIKeyListHandler.ServeHTTP)
@@ -576,6 +673,17 @@ func NewRouter(opts RouterOptions) http.Handler {
 					managementGroupCreateJSONBodyMiddleware,
 					managementAPIWriteRateLimitMiddleware,
 				).Patch("/my-api-keys/{id}", opts.ManagementMyAPIKeyUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementAPIKeyDeleteHandler != nil {
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementAPIKeyAdminRoleMiddleware,
+				).Delete("/api-keys/{id}", opts.ManagementAPIKeyDeleteHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAPIKeyDeleteHandler != nil {
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+				).Delete("/my-api-keys/{id}", opts.ManagementMyAPIKeyDeleteHandler.ServeHTTP)
 			}
 			if opts.ManagementGroupListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/groups", opts.ManagementGroupListHandler.ServeHTTP)
@@ -676,6 +784,44 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementGlobalSettingsUpdateHandler != nil {
 				system.With(managementSettingsJSONBodyMiddleware, managementAPIWriteRateLimitMiddleware).
 					Patch("/settings/global", opts.ManagementGlobalSettingsUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementClientIPStatsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/ip-stats", opts.ManagementClientIPStatsHandler.ServeHTTP)
+			}
+			if opts.ManagementClientIPStatsDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/ip-stats/{ipHash}/detail", opts.ManagementClientIPStatsDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementClientIPAllowlistHandler != nil {
+				system.With(
+					managementGroupCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementClientIPPolicyMutationGuardConfig(managementClientIPPolicyActionAllowlist)),
+				).Post("/ip-stats/{ipHash}/allowlist", opts.ManagementClientIPAllowlistHandler.ServeHTTP)
+			}
+			if opts.ManagementClientIPUnallowlistHandler != nil {
+				system.With(
+					managementGroupCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementClientIPPolicyMutationGuardConfig(managementClientIPPolicyActionUnallowlist)),
+				).Post("/ip-stats/{ipHash}/unallowlist", opts.ManagementClientIPUnallowlistHandler.ServeHTTP)
+			}
+			if opts.ManagementClientIPBlacklistHandler != nil {
+				system.With(
+					managementGroupCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementClientIPPolicyMutationGuardConfig(managementClientIPPolicyActionBlacklist)),
+				).Post("/ip-stats/{ipHash}/blacklist", opts.ManagementClientIPBlacklistHandler.ServeHTTP)
+			}
+			if opts.ManagementClientIPUnblockHandler != nil {
+				system.With(
+					managementGroupCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementClientIPPolicyMutationGuardConfig(managementClientIPPolicyActionUnblock)),
+				).Post("/ip-stats/{ipHash}/unblock", opts.ManagementClientIPUnblockHandler.ServeHTTP)
 			}
 			if opts.ManagementOperationLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/operation-logs", opts.ManagementOperationLogsHandler.ServeHTTP)
@@ -786,6 +932,16 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementProviderCustomModelCreateHandler != nil ||
 		opts.ManagementProviderCustomModelUpdateHandler != nil ||
 		opts.ManagementProviderCustomModelDeleteHandler != nil ||
+		opts.ManagementRouteStrategyListHandler != nil ||
+		opts.ManagementMyRouteStrategyListHandler != nil ||
+		opts.ManagementRouteStrategyCreateHandler != nil ||
+		opts.ManagementMyRouteStrategyCreateHandler != nil ||
+		opts.ManagementRouteStrategyUpdateHandler != nil ||
+		opts.ManagementMyRouteStrategyUpdateHandler != nil ||
+		opts.ManagementRouteStrategyDeleteHandler != nil ||
+		opts.ManagementMyRouteStrategyDeleteHandler != nil ||
+		opts.ManagementRouteStrategyDetailHandler != nil ||
+		opts.ManagementMyRouteStrategyDetailHandler != nil ||
 		opts.ManagementRouteStrategyOptionsHandler != nil ||
 		opts.ManagementMyRouteStrategyOptionsHandler != nil ||
 		opts.ManagementAPIKeyListHandler != nil ||
@@ -798,6 +954,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAPIKeyCreateHandler != nil ||
 		opts.ManagementAPIKeyUpdateHandler != nil ||
 		opts.ManagementMyAPIKeyUpdateHandler != nil ||
+		opts.ManagementAPIKeyDeleteHandler != nil ||
+		opts.ManagementMyAPIKeyDeleteHandler != nil ||
 		opts.ManagementGroupListHandler != nil ||
 		opts.ManagementMyGroupListHandler != nil ||
 		opts.ManagementGroupDetailHandler != nil ||
@@ -824,6 +982,12 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
+		opts.ManagementClientIPStatsHandler != nil ||
+		opts.ManagementClientIPStatsDetailHandler != nil ||
+		opts.ManagementClientIPAllowlistHandler != nil ||
+		opts.ManagementClientIPUnallowlistHandler != nil ||
+		opts.ManagementClientIPBlacklistHandler != nil ||
+		opts.ManagementClientIPUnblockHandler != nil ||
 		opts.ManagementOperationLogsHandler != nil ||
 		opts.ManagementMyOperationLogsHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
@@ -843,6 +1007,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAPIKeyCreateHandler != nil ||
 		opts.ManagementAPIKeyUpdateHandler != nil ||
 		opts.ManagementMyAPIKeyUpdateHandler != nil ||
+		opts.ManagementAPIKeyDeleteHandler != nil ||
+		opts.ManagementMyAPIKeyDeleteHandler != nil ||
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||
 		opts.ManagementSystemTeamCreateHandler != nil ||
@@ -867,6 +1033,12 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementProviderCustomModelCreateHandler != nil ||
 		opts.ManagementProviderCustomModelUpdateHandler != nil ||
 		opts.ManagementProviderCustomModelDeleteHandler != nil ||
+		opts.ManagementRouteStrategyCreateHandler != nil ||
+		opts.ManagementMyRouteStrategyCreateHandler != nil ||
+		opts.ManagementRouteStrategyUpdateHandler != nil ||
+		opts.ManagementMyRouteStrategyUpdateHandler != nil ||
+		opts.ManagementRouteStrategyDeleteHandler != nil ||
+		opts.ManagementMyRouteStrategyDeleteHandler != nil ||
 		opts.ManagementGroupCreateHandler != nil ||
 		opts.ManagementMyGroupCreateHandler != nil ||
 		opts.ManagementGroupUpdateHandler != nil ||
@@ -878,5 +1050,9 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAccountTagUpdateHandler != nil ||
 		opts.ManagementMyAccountTagUpdateHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
-		opts.ManagementGlobalSettingsUpdateHandler != nil
+		opts.ManagementGlobalSettingsUpdateHandler != nil ||
+		opts.ManagementClientIPAllowlistHandler != nil ||
+		opts.ManagementClientIPUnallowlistHandler != nil ||
+		opts.ManagementClientIPBlacklistHandler != nil ||
+		opts.ManagementClientIPUnblockHandler != nil
 }

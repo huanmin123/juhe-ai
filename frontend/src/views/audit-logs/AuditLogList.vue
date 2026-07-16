@@ -17,7 +17,7 @@
     @mobile-refresh="$emit('mobile-refresh')"
   >
     <template #emptyText>
-      <a-empty class="page-empty-card" description="暂无审计日志。失败请求会全量记录，成功请求最近 1 小时全量保留，之后按 10% 采样保留。" />
+      <a-empty class="page-empty-card" :description="emptyDescription" />
     </template>
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'traceId'">
@@ -60,7 +60,9 @@
         <span>{{ displayName(record.systemAccountName, record.systemAccountId) }}</span>
       </template>
       <template v-else-if="column.key === 'duration'">
-        <span>{{ formatDuration(record.durationMs) }}</span>
+        <a-tooltip :title="auditDurationLabel(record)">
+          <span>{{ formatDuration(auditDurationMs(record)) }}</span>
+        </a-tooltip>
       </template>
       <template v-else-if="column.key === 'createdAt'">
         <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
@@ -92,8 +94,8 @@
             <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
-            <span>耗时</span>
-            <strong>{{ formatDuration(record.durationMs) }}</strong>
+            <span>{{ auditDurationLabel(record) }}</span>
+            <strong>{{ formatDuration(auditDurationMs(record)) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
             <span>时间</span>
@@ -136,9 +138,11 @@ const props = withDefaults(defineProps<{
   mobilePagination?: boolean
   pagination: Record<string, unknown>
   records: AuditLogSummary[]
+  emptyDescription?: string
 }>(), {
   columns: () => auditLogColumns,
-  mobilePagination: true
+  mobilePagination: true,
+  emptyDescription: '暂无审计日志。'
 })
 
 const emit = defineEmits<{
@@ -161,6 +165,14 @@ function handleActionClick(key: string, record: AuditLogSummary) {
 
 function auditEndpointText(record: AuditLogSummary): string {
   return `${record.method} ${record.path}`
+}
+
+function auditDurationMs(record: AuditLogSummary): number | undefined {
+  return record.httpDurationMs ?? record.durationMs
+}
+
+function auditDurationLabel(record: AuditLogSummary): string {
+  return record.httpDurationMs === undefined ? '审计耗时' : '客户端耗时'
 }
 </script>
 

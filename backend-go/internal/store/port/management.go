@@ -681,6 +681,7 @@ var (
 	ErrManagementAPIKeyHashExists            = errors.New("management API Key hash exists")
 	ErrManagementAPIKeyNotFound              = errors.New("management API Key not found")
 	ErrManagementAPIKeyDefaultRouteChange    = errors.New("management default API Key route change")
+	ErrManagementAPIKeyDefaultDelete         = errors.New("management default API Key delete")
 )
 
 type ManagementAPIKeyCreateInput struct {
@@ -740,6 +741,25 @@ type ManagementAPIKeyUpdater interface {
 		ctx context.Context,
 		input ManagementAPIKeyUpdateInput,
 	) (ManagementAPIKeyUpdateResult, error)
+}
+
+type ManagementAPIKeyDeleteInput struct {
+	APIKeyID             string
+	OwnerSystemAccountID string
+	DeletedAt            time.Time
+}
+
+type ManagementAPIKeyDeleteResult struct {
+	APIKeyID             string
+	Name                 string
+	OwnerSystemAccountID string
+}
+
+type ManagementAPIKeyDeleter interface {
+	DeleteManagementAPIKey(
+		ctx context.Context,
+		input ManagementAPIKeyDeleteInput,
+	) (ManagementAPIKeyDeleteResult, error)
 }
 
 type ManagementAPIKeyUsageScope struct {
@@ -1159,49 +1179,65 @@ type ManagementProviderModelProvider struct {
 }
 
 type ManagementProviderModelCatalogItem struct {
-	ID                            string
-	ProviderCode                  string
-	Model                         string
-	Scope                         string
-	SystemAccountID               string
-	Status                        string
-	Mode                          string
-	CatalogOrder                  *int
-	ReleaseDate                   string
-	ShutdownDate                  string
-	SupportedAPIProtocols         []string
-	SupportedServiceTiers         []string
-	SupportedReasoningEfforts     []string
-	DefaultReasoningEffort        string
-	CodexSupportedReasoningLevels []string
-	CodexDefaultReasoningLevel    string
-	CodexMultiAgentVersion        string
-	PricingModel                  string
-	ContextWindowTokens           *int
-	MaxInputTokens                *int
-	MaxOutputTokens               *int
-	MaxTokens                     *int
-	InputUSDPer1M                 *float64
-	OutputUSDPer1M                *float64
-	CachedInputUSDPer1M           *float64
-	CacheWriteUSDPer1M            *float64
-	CacheWrite1hUSDPer1M          *float64
-	ImageInputUSDPer1M            *float64
-	ImageOutputUSDPer1M           *float64
-	AudioInputUSDPer1M            *float64
-	AudioOutputUSDPer1M           *float64
-	OutputUSDPerImage             *float64
-	SupportsPromptCaching         bool
-	SupportsServiceTier           bool
-	CatalogVisible                bool
-	PricingNotes                  string
-	CapabilityNotes               string
-	Notes                         string
-	CreatedBy                     string
-	UpdatedBy                     string
-	Source                        string
-	CreatedAt                     time.Time
-	UpdatedAt                     time.Time
+	ID                              string
+	ProviderCode                    string
+	Model                           string
+	Scope                           string
+	SystemAccountID                 string
+	Status                          string
+	Mode                            string
+	CatalogOrder                    *int
+	ReleaseDate                     string
+	ShutdownDate                    string
+	SupportedAPIProtocols           []string
+	SupportedServiceTiers           []string
+	SupportedReasoningEfforts       []string
+	DefaultReasoningEffort          string
+	CodexSupportedReasoningLevels   []string
+	CodexDefaultReasoningLevel      string
+	CodexMultiAgentVersion          string
+	ContextWindowTokens             *int
+	MaxInputTokens                  *int
+	MaxOutputTokens                 *int
+	MaxTokens                       *int
+	InputUSDPer1M                   *float64
+	OutputUSDPer1M                  *float64
+	CachedInputUSDPer1M             *float64
+	CacheWriteUSDPer1M              *float64
+	CacheWrite1hUSDPer1M            *float64
+	ServiceTierPrices               map[string]ManagementProviderModelPriceSet
+	LongContextInputTokenThreshold  *int
+	LongContextInputCostMultiplier  *float64
+	LongContextOutputCostMultiplier *float64
+	ImageInputUSDPer1M              *float64
+	ImageOutputUSDPer1M             *float64
+	AudioInputUSDPer1M              *float64
+	AudioOutputUSDPer1M             *float64
+	OutputUSDPerImage               *float64
+	SupportsPromptCaching           bool
+	SupportsServiceTier             bool
+	CatalogVisible                  bool
+	PricingNotes                    string
+	CapabilityNotes                 string
+	Notes                           string
+	CreatedBy                       string
+	UpdatedBy                       string
+	Source                          string
+	CreatedAt                       time.Time
+	UpdatedAt                       time.Time
+}
+
+type ManagementProviderModelPriceSet struct {
+	InputUSDPer1M        *float64 `json:"inputUsdPer1M,omitempty"`
+	OutputUSDPer1M       *float64 `json:"outputUsdPer1M,omitempty"`
+	CachedInputUSDPer1M  *float64 `json:"cachedInputUsdPer1M,omitempty"`
+	CacheWriteUSDPer1M   *float64 `json:"cacheWriteUsdPer1M,omitempty"`
+	CacheWrite1hUSDPer1M *float64 `json:"cacheWrite1hUsdPer1M,omitempty"`
+	ImageInputUSDPer1M   *float64 `json:"imageInputUsdPer1M,omitempty"`
+	ImageOutputUSDPer1M  *float64 `json:"imageOutputUsdPer1M,omitempty"`
+	AudioInputUSDPer1M   *float64 `json:"audioInputUsdPer1M,omitempty"`
+	AudioOutputUSDPer1M  *float64 `json:"audioOutputUsdPer1M,omitempty"`
+	OutputUSDPerImage    *float64 `json:"outputUsdPerImage,omitempty"`
 }
 
 type ManagementProviderModelCatalogListInput struct {
@@ -1250,15 +1286,17 @@ type ManagementCustomProviderModelSaveInput struct {
 	SupportedServiceTiers     []string
 	SupportedReasoningEfforts []string
 	DefaultReasoningEffort    string
-	PricingModel              string
 	ReleaseDate               string
 	ShutdownDate              string
 	ContextWindowTokens       *int
+	MaxInputTokens            *int
 	MaxOutputTokens           *int
 	InputUSDPer1M             *float64
 	OutputUSDPer1M            *float64
 	CachedInputUSDPer1M       *float64
 	CacheWriteUSDPer1M        *float64
+	CacheWrite1hUSDPer1M      *float64
+	ServiceTierPrices         map[string]ManagementProviderModelPriceSet
 	ImageInputUSDPer1M        *float64
 	ImageOutputUSDPer1M       *float64
 	AudioInputUSDPer1M        *float64
@@ -1291,6 +1329,49 @@ type ManagementCustomProviderModelBindingSummary struct {
 	TotalAccountCount           int
 }
 
+type ManagementProviderModelOptionalFloat struct {
+	Present bool
+	Value   *float64
+}
+
+type ManagementProviderModelOptionalPriceMap struct {
+	Present bool
+	Value   map[string]ManagementProviderModelPriceSet
+}
+
+type ManagementBuiltInProviderModelPriceUpdateInput struct {
+	ID                   string
+	ProviderCode         string
+	InputUSDPer1M        ManagementProviderModelOptionalFloat
+	OutputUSDPer1M       ManagementProviderModelOptionalFloat
+	CachedInputUSDPer1M  ManagementProviderModelOptionalFloat
+	CacheWriteUSDPer1M   ManagementProviderModelOptionalFloat
+	CacheWrite1hUSDPer1M ManagementProviderModelOptionalFloat
+	ServiceTierPrices    ManagementProviderModelOptionalPriceMap
+	ImageInputUSDPer1M   ManagementProviderModelOptionalFloat
+	ImageOutputUSDPer1M  ManagementProviderModelOptionalFloat
+	AudioInputUSDPer1M   ManagementProviderModelOptionalFloat
+	AudioOutputUSDPer1M  ManagementProviderModelOptionalFloat
+	OutputUSDPerImage    ManagementProviderModelOptionalFloat
+}
+
+type ManagementBuiltInProviderModelPriceUpdateResult struct {
+	ID                   string
+	ProviderCode         string
+	InputUSDPer1M        *float64
+	OutputUSDPer1M       *float64
+	CachedInputUSDPer1M  *float64
+	CacheWriteUSDPer1M   *float64
+	CacheWrite1hUSDPer1M *float64
+	ServiceTierPrices    map[string]ManagementProviderModelPriceSet
+	ImageInputUSDPer1M   *float64
+	ImageOutputUSDPer1M  *float64
+	AudioInputUSDPer1M   *float64
+	AudioOutputUSDPer1M  *float64
+	OutputUSDPerImage    *float64
+	UpdatedAt            time.Time
+}
+
 type ManagementProviderModelCatalogReader interface {
 	FindManagementProviderModelProvider(ctx context.Context, code string) (ManagementProviderModelProvider, bool, error)
 	ListManagementEnabledModelProviderCodes(ctx context.Context) ([]string, error)
@@ -1311,6 +1392,7 @@ type ManagementCustomProviderModelWriter interface {
 	SaveManagementCustomProviderModel(ctx context.Context, input ManagementCustomProviderModelSaveInput) (ManagementProviderModelCatalogItem, error)
 	DeleteManagementCustomProviderModel(ctx context.Context, id string) (bool, error)
 	GetManagementCustomProviderModelBindingSummary(ctx context.Context, input ManagementCustomProviderModelBindingInput) (ManagementCustomProviderModelBindingSummary, error)
+	UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input ManagementBuiltInProviderModelPriceUpdateInput) (ManagementBuiltInProviderModelPriceUpdateResult, bool, error)
 }
 
 type ManagementRouteStrategyOption struct {
@@ -1334,6 +1416,78 @@ type ManagementRouteStrategyOptionListInput struct {
 
 type ManagementRouteStrategyOptionReader interface {
 	ListManagementRouteStrategyOptions(ctx context.Context, input ManagementRouteStrategyOptionListInput) ([]ManagementRouteStrategyOption, error)
+}
+
+type ManagementRouteStrategyListInput struct {
+	SystemAccountID string
+	Keyword         string
+	Mode            string
+	Status          string
+	Limit           int
+	Offset          int
+}
+
+type ManagementRouteStrategyListRow struct {
+	ID                string
+	SystemAccountID   string
+	SystemAccountName string
+	Name              string
+	Description       *string
+	Mode              string
+	Status            string
+	IsDefault         bool
+	ConfigJSON        *string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type ManagementRouteStrategyListPage struct {
+	Rows    []ManagementRouteStrategyListRow
+	HasMore bool
+}
+
+type ManagementRouteStrategyScope struct {
+	ID              string
+	SystemAccountID string
+}
+
+type ManagementRouteStrategyGroupBinding struct {
+	ID           string
+	GroupID      string
+	GroupName    string
+	ProviderCode string
+	Priority     int
+	Weight       int
+	Status       string
+	GroupEnabled bool
+}
+
+type ManagementRouteStrategyListEnrichment struct {
+	ID                  string
+	SystemAccountID     string
+	GroupBindingPreview []ManagementRouteStrategyGroupBinding
+	BindingCount        int64
+	APIKeyCount         int64
+}
+
+type ManagementRouteStrategyDetailInput struct {
+	RouteStrategyID string
+	SystemAccountID string
+}
+
+type ManagementRouteStrategyDetailRow struct {
+	ManagementRouteStrategyListRow
+	GroupBindings []ManagementRouteStrategyGroupBinding
+	APIKeyCount   int64
+}
+
+type ManagementRouteStrategyListReader interface {
+	ListManagementRouteStrategies(ctx context.Context, input ManagementRouteStrategyListInput) (ManagementRouteStrategyListPage, error)
+	ListManagementRouteStrategyListEnrichment(ctx context.Context, scopes []ManagementRouteStrategyScope) ([]ManagementRouteStrategyListEnrichment, error)
+}
+
+type ManagementRouteStrategyDetailReader interface {
+	FindManagementRouteStrategyDetail(ctx context.Context, input ManagementRouteStrategyDetailInput) (ManagementRouteStrategyDetailRow, bool, error)
 }
 
 type ManagementGroupOption struct {

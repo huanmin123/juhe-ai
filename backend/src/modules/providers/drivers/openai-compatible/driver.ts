@@ -1,6 +1,5 @@
 import type { Request } from 'express'
 
-import { accountSupportsClientCompatibility } from '../../../../domain/account-client-compatibility.js'
 import {
   accountSupportsOpenAIEndpointMode,
   openAIEndpointModeForRequestShape
@@ -18,12 +17,17 @@ import {
 } from '../../../../domain/provider-protocol.js'
 import type { DispatchAccountSecret } from '../../../../storage/openai-account-selector.types.js'
 import { isGatewayProtocolNativeRequest } from '../../../gateway/protocols/registry.js'
-import { applyOpenAIClientCompatibilityHeaders, buildOpenAIClientCompatibilityBody } from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
+import {
+  applyOpenAIClientCompatibilityHeaders,
+  buildOpenAIClientCompatibilityBody,
+  shouldForceOpenAICodexResponsesSse
+} from '../../../gateway/protocols/openai-v1/api-key-client-compatibility.js'
 import {
   buildOpenAIModelMappedJsonBody,
   isGeminiGenerateContentToChatCompletionsModelMapping,
   isAnthropicMessagesToChatCompletionsModelMapping,
   isOpenAIResponsesToChatCompletionsModelMapping,
+  openAIRequestEndpointFamily,
   openAIModelMappedUpstreamPathAndQuery,
   resolveOpenAIAccountModelMapping,
   resolveOpenAIRequestModelMapping
@@ -53,12 +57,15 @@ import {
   prepareCodexResponsesChatBridgeHeaders,
   transformCodexResponsesChatBridgeUpstreamResponse
 } from '../_shared/codex-responses-chat-bridge.js'
-import type { ProviderDriver, ProviderDriverAccount } from '../_shared/types.js'
+import type { ProviderDriver, ProviderDriverAccount, ProviderGatewayRequestContext } from '../_shared/types.js'
+import { applyProviderAccountRequestOverridesToBody } from '../_shared/provider-request-overrides.js'
 
-function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount) {
+function openAIEndpointModeForGatewayRequest(req: Request, account: ProviderDriverAccount, context?: ProviderGatewayRequestContext) {
   return openAIEndpointModeForRequestShape({
     endpoint: req.path || req.originalUrl.split('?', 1)[0],
-    stream: isEffectiveOpenAIStreamRequest(req, account)
+    stream: account.type === 'api_key' && shouldForceOpenAICodexResponsesSse(req, context?.requestClientCompatibility)
+      ? true
+      : isEffectiveOpenAIStreamRequest(req, account)
   })
 }
 
@@ -141,10 +148,10 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       prepareAnthropicMessagesChatBridgeHeaders(headers, req)
       return {
         headers,
-        body: await buildAnthropicMessagesChatBridgeBody(req, {
+        body: await applyOpenAICompatibleOverrides(account, await buildAnthropicMessagesChatBridgeBody(req, {
           defaultModel: modelMapping.upstreamModel,
           modelOverride: modelMapping.upstreamModel
-        }, signal)
+        }, signal), 'chat_completions', modelMapping.upstreamModel, signal)
       }
     }
     if (modelMapping && isGeminiGenerateContentToChatCompletionsModelMapping(modelMapping)) {
@@ -152,10 +159,10 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       prepareGeminiGenerateContentChatBridgeHeaders(headers, req)
       return {
         headers,
-        body: await buildGeminiGenerateContentChatBridgeBody(req, {
+        body: await applyOpenAICompatibleOverrides(account, await buildGeminiGenerateContentChatBridgeBody(req, {
           defaultModel: modelMapping.upstreamModel,
           modelOverride: modelMapping.upstreamModel
-        }, signal)
+        }, signal), 'chat_completions', modelMapping.upstreamModel, signal)
       }
     }
     if (modelMapping && isOpenAIResponsesToChatCompletionsModelMapping(modelMapping)) {
@@ -163,23 +170,29 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       prepareCodexResponsesChatBridgeHeaders(headers)
       return {
         headers,
-        body: await buildCodexResponsesChatBridgeBody(req, {
+        body: await applyOpenAICompatibleOverrides(account, await buildCodexResponsesChatBridgeBody(req, {
           defaultModel: modelMapping.upstreamModel,
           modelOverride: modelMapping.upstreamModel
-        }, signal)
+        }, signal), 'chat_completions', modelMapping.upstreamModel, signal)
       }
     }
-    const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, account, signal, {
+    const compatibilityBody = await buildOpenAIClientCompatibilityBody(req, signal, {
       modelOverride: modelMapping?.upstreamModel,
       requestClientCompatibility: context?.requestClientCompatibility
     })
     const headers = buildUpstreamHeaders(req.headers, account)
-    applyOpenAIClientCompatibilityHeaders(req, account, headers, {
+    applyOpenAIClientCompatibilityHeaders(req, headers, {
       requestClientCompatibility: context?.requestClientCompatibility
     })
     return {
       headers,
-      body: compatibilityBody ?? (modelMapping ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal) : buildUpstreamRequestBody(req))
+      body: await applyOpenAICompatibleOverrides(
+        account,
+        compatibilityBody ?? (modelMapping ? await buildOpenAIModelMappedJsonBody(req, modelMapping.upstreamModel, signal) : buildUpstreamRequestBody(req)),
+        modelMapping?.upstreamEndpointFamily ?? openAIRequestEndpointFamily(req),
+        modelMapping?.upstreamModel ?? requestModel(req),
+        signal
+      )
     }
   },
   transformUpstreamResponse(req, account, response, context) {
@@ -240,10 +253,7 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
         clientCompatibility: account.clientCompatibility
       })
     }
-    if (!accountSupportsClientCompatibility(account, context?.requestClientCompatibility)) {
-      return false
-    }
-    const mode = openAIEndpointModeForGatewayRequest(req, account)
+    const mode = openAIEndpointModeForGatewayRequest(req, account, context)
     if (!mode) return true
     return accountSupportsOpenAIEndpointMode({
       mode,
@@ -255,4 +265,27 @@ export const openAICompatibleProviderDriver: ProviderDriver = {
       clientCompatibility: account.clientCompatibility
     })
   }
+}
+
+async function applyOpenAICompatibleOverrides(
+  account: DispatchAccountSecret,
+  body: Buffer | string | undefined,
+  endpointFamily: string | undefined,
+  upstreamModel: string | undefined,
+  signal?: AbortSignal
+): Promise<Buffer | string | undefined> {
+  if (endpointFamily !== 'chat_completions' && endpointFamily !== 'responses') return body
+  const profileId = account.providerProtocolProfileId
+  const isOpenAIProfile = account.providerCode === OPENAI_COMPATIBLE_PROVIDER_CODE
+    && profileId === OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID
+  const isGeminiOpenAIChatProfile = account.providerCode === GEMINI_PROVIDER_CODE
+    && profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
+    && endpointFamily === 'chat_completions'
+  if (!isOpenAIProfile && !isGeminiOpenAIChatProfile) return body
+  return await applyProviderAccountRequestOverridesToBody(body, {
+    account,
+    upstreamModel,
+    wireFormat: endpointFamily === 'responses' ? 'openai_responses' : 'openai_chat',
+    signal
+  })
 }
