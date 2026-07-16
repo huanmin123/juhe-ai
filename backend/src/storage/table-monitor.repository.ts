@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { basename } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -5,6 +6,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import {
   beginDatabaseTransaction,
   codexContextStateShardIndexes,
+  codexContextStateShardPath,
   codexContextStateShardRootPath,
   commitDatabaseTransaction,
   datasetDatabasePath,
@@ -544,7 +546,9 @@ export async function cleanupTableStorageSnapshotsBeforeAsync(cutoffIso: string,
 }
 
 function monitoredDatabaseTargets(): MonitoredDatabaseTarget[] {
-  const codexContextStateShardDatabases = codexContextStateShardIndexes().map((shardIndex) => getCodexContextStateShardDatabase(shardIndex))
+  const codexContextStateShardDatabases = codexContextStateShardIndexes()
+    .filter((shardIndex) => existsSync(codexContextStateShardPath(shardIndex)))
+    .map((shardIndex) => getCodexContextStateShardDatabase(shardIndex))
   const codexContextStatePrimaryDatabase = codexContextStateShardDatabases[0]
   return [
     { role: 'business', path: runtimeConfig.databasePath, database: getBusinessDatabase() },

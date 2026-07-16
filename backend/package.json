@@ -292,6 +292,7 @@
     "test:background-ipc-snapshot-current-only": "tsx src/scripts/regression/background-ipc-snapshot-current-only-regression.ts",
     "test:table-monitor-default-scan": "tsx src/scripts/regression/table-monitor-default-scan-regression.ts",
     "test:table-monitor-dbstat-unavailable": "tsx src/scripts/regression/table-monitor-dbstat-unavailable-regression.ts",
+    "test:table-monitor-codex-context-clean-start": "tsx src/scripts/regression/table-monitor-codex-context-clean-start-regression.ts",
     "test:table-monitor-postgres-smoke": "tsx src/scripts/regression/table-monitor-postgres-smoke.ts",
     "test:gateway-runtime-cache": "tsx src/scripts/regression/gateway-runtime-cache-regression.ts",
     "test:gateway-runtime-hot-path-boundary": "tsx src/scripts/regression/gateway-runtime-hot-path-boundary-regression.ts",
