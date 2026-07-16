@@ -315,6 +315,35 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 	}
 }
 
+func TestServiceModelsIncludesTierOnlyPricedModel(t *testing.T) {
+	price := 1.5
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"gpt": {Code: "gpt", Enabled: true},
+		},
+		catalog: []port.ManagementProviderModelCatalogItem{{
+			ProviderCode: "gpt",
+			Model:        "tier-only-model",
+			Scope:        "global",
+			Status:       "active",
+			ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+				"priority": {InputUSDPer1M: &price},
+			},
+		}},
+	}
+
+	models, err := NewService(store).Models(context.Background(), ModelListInput{
+		ProviderCode:    "gpt",
+		IncludeUnpriced: false,
+	})
+	if err != nil {
+		t.Fatalf("Models() error = %v", err)
+	}
+	if len(models) != 1 || models[0].Model != "tier-only-model" {
+		t.Fatalf("models = %+v, want tier-only priced model", models)
+	}
+}
+
 func TestCatalogItemFromPortMapsRequestAndCodexCapabilities(t *testing.T) {
 	priorityInput := 10.0
 	priorityOutput := 60.0

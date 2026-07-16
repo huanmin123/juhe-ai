@@ -1775,7 +1775,8 @@ func hasDirectPrice(item port.ManagementProviderModelCatalogItem) bool {
 		item.ImageOutputUSDPer1M != nil ||
 		item.AudioInputUSDPer1M != nil ||
 		item.AudioOutputUSDPer1M != nil ||
-		item.OutputUSDPerImage != nil
+		item.OutputUSDPerImage != nil ||
+		providerModelPriceMapHasAnyPrice(item.ServiceTierPrices)
 }
 
 func dedupeModelOptions(items []port.ManagementProviderModelCatalogItem) []ModelOption {
