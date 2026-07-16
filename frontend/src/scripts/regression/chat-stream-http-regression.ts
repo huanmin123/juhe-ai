@@ -5,9 +5,12 @@ Object.assign(globalThis, {
 })
 
 const observedBodies: Array<Record<string, unknown>> = []
+const observedUrls: string[] = []
 let responseStatus = 409
-globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  observedUrls.push(String(input))
   observedBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>)
+  if (responseStatus === 200) return new Response('', { status: 200, headers: { 'content-type': 'text/event-stream' } })
   const payload = responseStatus === 401
     ? { code: 'auth_required', message: '请先登录' }
     : { code: 'chat_replace_conflict', message: '最近一轮已变化，请重新确认后再编辑' }
@@ -17,8 +20,8 @@ globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
   })
 }) as typeof fetch
 
-const { ChatStreamHttpError, streamChatMessage } = await import('../../api/domains/chat')
-const { setUnauthorizedHandler } = await import('../../api/http')
+const { attachChatStream, chatApi, ChatStreamHttpError, streamChatMessage } = await import('../../api/domains/chat')
+const { http, setUnauthorizedHandler } = await import('../../api/http')
 let thrown: unknown
 try {
   await streamChatMessage({
@@ -58,5 +61,28 @@ await assert.rejects(
   (error) => error instanceof ChatStreamHttpError && error.status === 401 && error.code === 'auth_required'
 )
 assert.equal(unauthorizedNotified, 1, 'typed stream error 必须继续触发现有 401 登录跳转处理')
+
+const encodedId = 'conv/with?reserved#chars'
+responseStatus = 200
+await streamChatMessage({ conversationId: encodedId, clientMessageId: 'encoded', content: 'path', model: 'mock', onEvent: () => undefined })
+await attachChatStream({ conversationId: encodedId, turnId: 'turn/with?#', onEvent: () => undefined })
+assert(observedUrls.at(-2)?.includes('/conversations/conv%2Fwith%3Freserved%23chars/stream'))
+assert(observedUrls.at(-1)?.includes('/conversations/conv%2Fwith%3Freserved%23chars/streams/turn%2Fwith%3F%23'))
+
+const axiosUrls: string[] = []
+const previousAdapter = http.defaults.adapter
+http.defaults.adapter = (async (config) => {
+  axiosUrls.push(String(config.url))
+  return { data: { data: config.method === 'post' ? { stopped: true } : [] }, status: 200, statusText: 'OK', headers: {}, config }
+})
+await chatApi.listMessages(encodedId, { afterSequenceNo: 1 })
+await chatApi.getConversationSync(encodedId, 2)
+await chatApi.stop(encodedId, { clientMessageId: 'client', turnId: 'turn/with?#' })
+http.defaults.adapter = previousAdapter
+assert.deepEqual(axiosUrls, [
+  '/my-chat/conversations/conv%2Fwith%3Freserved%23chars/messages',
+  '/my-chat/conversations/conv%2Fwith%3Freserved%23chars/sync',
+  '/my-chat/conversations/conv%2Fwith%3Freserved%23chars/stop'
+], 'chat API conversation 动态路径段必须统一编码')
 
 console.log('AI 问答流式 HTTP 类型错误与替换字段回归通过')

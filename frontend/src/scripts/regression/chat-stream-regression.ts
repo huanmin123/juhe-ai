@@ -5,6 +5,12 @@ import type { ChatMessage } from '../../types/domain/chat'
 
 const event = parseChatSseBlock('event: message.delta\ndata: {"messageId":"msg_2","delta":"你好","eventVersion":1}')
 assert.deepEqual(event, { type: 'message.delta', data: { messageId: 'msg_2', delta: '你好', eventVersion: 1 } })
+assert.equal(parseChatSseBlock('event: message.delta\ndata: {"messageId":"msg_2","eventVersion":2}'), undefined, 'delta 缺少文本必须拒绝')
+assert.equal(parseChatSseBlock('event: message.delta\ndata: {"messageId":"msg_2","delta":"x","eventVersion":1.5}'), undefined, 'eventVersion 必须是安全整数')
+assert.equal(parseChatSseBlock('event: message.started\ndata: {"turnId":"turn_1"}'), undefined, 'started 缺少 user/assistant 必须拒绝')
+assert.equal(parseChatSseBlock('event: message.snapshot\ndata: {"turnId":"turn_1","assistant":{"id":"msg_2"},"eventVersion":2}'), undefined, 'snapshot 助手投影不完整必须拒绝')
+assert.equal(parseChatSseBlock('event: tool.started\ndata: {"messageId":"msg_2","item":null,"eventVersion":2}'), undefined, 'tool item 必须是对象')
+assert.equal(parseChatSseBlock('event: message.failed\ndata: {"messageId":"msg_2","eventVersion":2}'), undefined, 'failed 必须包含 code/message')
 
 const messages: ChatMessage[] = [{
   id: 'msg_2', conversationId: 'conv_1', turnId: 'turn_1', sequenceNo: 2,

@@ -1,21 +1,38 @@
-import { attachChatStream, chatApi, streamChatMessage } from '@/api/domains/chat'
+import { attachChatStream, chatApi, ChatStreamHttpError, ChatStreamProtocolError, streamChatMessage } from '@/api/domains/chat'
 import type { ChatMessage, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent } from '@/types/domain/chat'
 
 import { applyChatStreamEvent } from './chatStream'
 
 export type ChatGenerationRuntimeStatus = 'preparing' | 'running' | 'completed' | 'failed' | 'canceled'
+export type ChatGenerationReconciliationReason = 'runner_terminal' | 'runner_missing' | 'http_error' | 'protocol_error'
+
+export interface ChatGenerationRuntimeError {
+  name: string
+  message: string
+  status?: number
+  code?: string
+}
+
+type DeepReadonly<T> = T extends (...args: any[]) => unknown
+  ? T
+  : T extends readonly (infer Item)[]
+    ? readonly DeepReadonly<Item>[]
+    : T extends object
+      ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+      : T
 
 export interface RunningTurn {
   readonly systemAccountId: string
   readonly conversationId: string
   readonly clientMessageId: string
-  turnId?: string
-  assistantMessageId?: string
-  eventVersion: number
-  status: ChatGenerationRuntimeStatus
-  controller: AbortController
-  reconnectAttempt: number
-  projection: ChatMessage
+  readonly turnId?: string
+  readonly assistantMessageId?: string
+  readonly eventVersion: number
+  readonly status: ChatGenerationRuntimeStatus
+  readonly reconnectAttempt: number
+  readonly projection: DeepReadonly<ChatMessage>
+  readonly reconciliationReason?: ChatGenerationReconciliationReason
+  readonly error?: Readonly<ChatGenerationRuntimeError>
 }
 
 export interface ChatGenerationRuntimeStartInput {
@@ -52,6 +69,7 @@ export interface ChatGenerationRuntimeDependencies {
   stop(conversationId: string, target: { clientMessageId: string; turnId: string }): Promise<{ stopped: boolean }>
   schedule(callback: () => void, delayMs: number): unknown
   cancelSchedule(handle: unknown): void
+  onReconcileRequired?(turn: RunningTurn): void
 }
 
 export interface ChatGenerationRuntimeOptions {
@@ -60,7 +78,19 @@ export interface ChatGenerationRuntimeOptions {
 
 type TurnSubscriber = (turn: RunningTurn | undefined) => void
 
-interface InternalTurn extends RunningTurn {
+interface InternalTurn {
+  systemAccountId: string
+  conversationId: string
+  clientMessageId: string
+  turnId?: string
+  assistantMessageId?: string
+  eventVersion: number
+  status: ChatGenerationRuntimeStatus
+  controller: AbortController
+  reconnectAttempt: number
+  projection: ChatMessage
+  reconciliationReason?: ChatGenerationReconciliationReason
+  error?: ChatGenerationRuntimeError
   reconnectTimer?: unknown
   stopRequested: boolean
   connectionActive: boolean
@@ -88,7 +118,7 @@ export class ChatGenerationRuntime {
   }
 
   get(systemAccountId: string, conversationId: string): RunningTurn | undefined {
-    return this.turns.get(runtimeKey(systemAccountId, conversationId))
+    return snapshotTurn(this.turns.get(runtimeKey(systemAccountId, conversationId)))
   }
 
   subscribe(systemAccountId: string, conversationId: string, subscriber: TurnSubscriber): () => void {
@@ -97,8 +127,8 @@ export class ChatGenerationRuntime {
     listeners.add(subscriber)
     this.subscribers.set(key, listeners)
     const turn = this.turns.get(key)
-    subscriber(turn)
-    if (turn?.status === 'running' && turn.turnId && !turn.connectionActive && turn.reconnectTimer === undefined) {
+    if (!this.deliverSubscriber(key, listeners, subscriber, turn)) return () => undefined
+    if (turn?.status === 'running' && turn.turnId && !turn.reconciliationReason && !turn.connectionActive && turn.reconnectTimer === undefined) {
       turn.reconnectAttempt = 0
       void this.runAttach(key, turn, false)
     }
@@ -111,7 +141,7 @@ export class ChatGenerationRuntime {
   start(input: ChatGenerationRuntimeStartInput): RunningTurn {
     const key = runtimeKey(input.systemAccountId, input.conversationId)
     const existing = this.turns.get(key)
-    if (existing && (existing.status === 'preparing' || existing.status === 'running')) return existing
+    if (existing && (existing.status === 'preparing' || existing.status === 'running')) return snapshotTurn(existing)!
     if (existing) this.releaseConnection(existing)
 
     const turn: InternalTurn = {
@@ -129,7 +159,7 @@ export class ChatGenerationRuntime {
     this.turns.set(key, turn)
     this.notify(key)
     void this.runPost(key, turn, input)
-    return turn
+    return snapshotTurn(turn)!
   }
 
   attach(input: ChatGenerationRuntimeAttachInput): RunningTurn {
@@ -137,10 +167,12 @@ export class ChatGenerationRuntime {
     const existing = this.turns.get(key)
     if (existing && existing.status === 'running' && existing.turnId === input.turnId) {
       if (!existing.connectionActive && existing.reconnectTimer === undefined) {
+        existing.reconciliationReason = undefined
+        existing.error = undefined
         existing.reconnectAttempt = 0
         void this.runAttach(key, existing, false)
       }
-      return existing
+      return snapshotTurn(existing)!
     }
     if (existing) this.releaseConnection(existing)
 
@@ -161,7 +193,7 @@ export class ChatGenerationRuntime {
     this.turns.set(key, turn)
     this.notify(key)
     void this.runAttach(key, turn)
-    return turn
+    return snapshotTurn(turn)!
   }
 
   async stop(
@@ -222,6 +254,7 @@ export class ChatGenerationRuntime {
   private async runPost(key: string, turn: InternalTurn, input: ChatGenerationRuntimeStartInput): Promise<void> {
     const controller = turn.controller
     turn.connectionActive = true
+    let failure: unknown
     try {
       await this.dependencies.streamMessage({
         conversationId: input.conversationId,
@@ -235,11 +268,12 @@ export class ChatGenerationRuntime {
         signal: controller.signal,
         onEvent: (event) => this.handleEvent(key, turn, event)
       })
-    } catch {
+    } catch (error) {
+      failure = error
     } finally {
       if (turn.controller === controller) turn.connectionActive = false
     }
-    this.handleDisconnect(key, turn, controller)
+    this.handleConnectionEnd(key, turn, controller, failure)
   }
 
   private async runAttach(key: string, turn: InternalTurn, reconnect = true): Promise<void> {
@@ -248,6 +282,7 @@ export class ChatGenerationRuntime {
     const controller = turn.controller
     turn.connectionActive = true
     if (reconnect) turn.reconnectAttempt += 1
+    let failure: unknown
     try {
       await this.dependencies.attachStream({
         conversationId: turn.conversationId,
@@ -255,11 +290,12 @@ export class ChatGenerationRuntime {
         signal: controller.signal,
         onEvent: (event) => this.handleEvent(key, turn, event)
       })
-    } catch {
+    } catch (error) {
+      failure = error
     } finally {
       if (turn.controller === controller) turn.connectionActive = false
     }
-    this.handleDisconnect(key, turn, controller)
+    this.handleConnectionEnd(key, turn, controller, failure)
   }
 
   private handleEvent(key: string, turn: InternalTurn, event: ChatStreamEvent): void {
@@ -270,6 +306,8 @@ export class ChatGenerationRuntime {
       turn.assistantMessageId = event.data.assistantMessage.id
       turn.projection = cloneJsonSafe(event.data.assistantMessage)
       turn.status = 'running'
+      turn.reconciliationReason = undefined
+      turn.error = undefined
       this.notify(key)
       return
     }
@@ -284,6 +322,8 @@ export class ChatGenerationRuntime {
     }
     applyChatStreamEvent([turn.projection], event)
     turn.eventVersion = event.data.eventVersion
+    turn.reconciliationReason = undefined
+    turn.error = undefined
     if (event.type === 'message.snapshot') turn.status = event.data.assistant.status === 'streaming' ? 'running' : event.data.assistant.status
     else if (event.type === 'message.completed') turn.status = 'completed'
     else if (event.type === 'message.failed') turn.status = 'failed'
@@ -291,6 +331,23 @@ export class ChatGenerationRuntime {
     else turn.status = 'running'
     if (isTerminal(turn.status)) this.releaseConnection(turn)
     this.notify(key)
+  }
+
+  private handleConnectionEnd(key: string, turn: InternalTurn, controller: AbortController, failure: unknown): void {
+    if (this.turns.get(key) !== turn || turn.controller !== controller || controller.signal.aborted || isTerminal(turn.status)) return
+    const stableFailure = classifyStableFailure(failure)
+    if (stableFailure) {
+      turn.reconciliationReason = stableFailure.reason
+      turn.error = stableFailure.error
+      this.notify(key)
+      try {
+        const snapshot = snapshotTurn(turn)
+        if (snapshot) this.dependencies.onReconcileRequired?.(snapshot)
+      } catch {
+      }
+      return
+    }
+    this.handleDisconnect(key, turn, controller)
   }
 
   private handleDisconnect(key: string, turn: InternalTurn, controller: AbortController): void {
@@ -320,7 +377,20 @@ export class ChatGenerationRuntime {
 
   private notify(key: string): void {
     const turn = this.turns.get(key)
-    for (const subscriber of this.subscribers.get(key) ?? []) subscriber(turn)
+    const listeners = this.subscribers.get(key)
+    if (!listeners) return
+    for (const subscriber of [...listeners]) this.deliverSubscriber(key, listeners, subscriber, turn)
+  }
+
+  private deliverSubscriber(key: string, listeners: Set<TurnSubscriber>, subscriber: TurnSubscriber, turn?: InternalTurn): boolean {
+    try {
+      subscriber(snapshotTurn(turn))
+      return true
+    } catch {
+      listeners.delete(subscriber)
+      if (!listeners.size) this.subscribers.delete(key)
+      return false
+    }
   }
 }
 
@@ -352,4 +422,37 @@ function emptyAssistantProjection(conversationId: string, model: string, turnId 
 
 function cloneJsonSafe<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
+}
+
+function snapshotTurn(turn?: InternalTurn): RunningTurn | undefined {
+  if (!turn) return undefined
+  return {
+    systemAccountId: turn.systemAccountId,
+    conversationId: turn.conversationId,
+    clientMessageId: turn.clientMessageId,
+    turnId: turn.turnId,
+    assistantMessageId: turn.assistantMessageId,
+    eventVersion: turn.eventVersion,
+    status: turn.status,
+    reconnectAttempt: turn.reconnectAttempt,
+    projection: cloneJsonSafe(turn.projection),
+    reconciliationReason: turn.reconciliationReason,
+    error: turn.error ? { ...turn.error } : undefined
+  }
+}
+
+function classifyStableFailure(failure: unknown): { reason: ChatGenerationReconciliationReason; error: ChatGenerationRuntimeError } | undefined {
+  if (failure instanceof ChatStreamProtocolError) {
+    return { reason: 'protocol_error', error: { name: failure.name, message: failure.message } }
+  }
+  if (!(failure instanceof ChatStreamHttpError) || failure.status >= 500) return undefined
+  const reason = failure.code === 'chat_stream_terminal'
+    ? 'runner_terminal'
+    : failure.code === 'chat_stream_runner_missing'
+      ? 'runner_missing'
+      : 'http_error'
+  return {
+    reason,
+    error: { name: failure.name, message: failure.message, status: failure.status, code: failure.code }
+  }
 }

@@ -5,6 +5,7 @@ import {
   type ChatGenerationRuntimeDependencies,
   type ChatGenerationRuntimeStartInput
 } from '../../views/chat/chatGenerationRuntime'
+import { ChatStreamHttpError } from '../../api/domains/chat'
 import type { ChatMessage, ChatStreamEvent } from '../../types/domain/chat'
 
 function deferred(): { promise: Promise<void>; resolve: () => void; reject: (error: unknown) => void } {
@@ -61,12 +62,20 @@ const startInput: ChatGenerationRuntimeStartInput = {
 }
 
 const notifications: string[] = []
+let badSubscriberCalls = 0
+runtime.subscribe('account', 'conversation', (turn) => {
+  if (!turn) return
+  badSubscriberCalls += 1
+  throw new Error('broken UI subscriber')
+})
 const unsubscribeOne = runtime.subscribe('account', 'conversation', (turn) => { notifications.push(`one:${turn?.status}:${turn?.eventVersion}`) })
 const unsubscribeTwo = runtime.subscribe('account', 'conversation', (turn) => { notifications.push(`two:${turn?.status}:${turn?.eventVersion}`) })
 const first = runtime.start(startInput)
 const duplicate = runtime.start(startInput)
-assert.equal(first, duplicate)
+assert.notEqual(first, duplicate, 'start 返回值必须是隔离的公开快照')
+assert.deepEqual(first, duplicate)
 assert.equal(posts.length, 1, '同一会话多个 UI subscriber / 重复 start 只能发起一次 POST')
+assert.equal(badSubscriberCalls, 1, '坏 subscriber 抛错不得阻断 start 或其他 subscriber')
 unsubscribeOne()
 assert.equal(posts[0]!.signal.aborted, false, 'UI unsubscribe 不得 abort 网络')
 
@@ -77,6 +86,15 @@ posts[0]!.onEvent({
 })
 posts[0]!.onEvent({ type: 'message.delta', data: { messageId: 'assistant', delta: '-new', eventVersion: 2 } })
 assert.equal(runtime.get('account', 'conversation')?.projection.contentText, 'snap-new')
+const leaked = runtime.get('account', 'conversation')!
+;(leaked as { eventVersion: number }).eventVersion = 999
+leaked.projection.contentText = 'consumer mutation'
+leaked.projection.toolEvents = [{ id: 'mutated', type: 'tool', status: 'completed', item: { nested: true } }]
+assert.deepEqual({
+  eventVersion: runtime.get('account', 'conversation')?.eventVersion,
+  contentText: runtime.get('account', 'conversation')?.projection.contentText,
+  toolEvents: runtime.get('account', 'conversation')?.projection.toolEvents
+}, { eventVersion: 2, contentText: 'snap-new', toolEvents: [] }, '消费者修改公开 DTO 不能污染 runtime 内部状态')
 posts[0]!.onEvent({ type: 'message.snapshot', data: { turnId: 'turn', assistant: { id: 'assistant', status: 'streaming', contentText: 'authoritative', reasoningText: '', toolEvents: [], contentBlocks: [] }, eventVersion: 3 } })
 assert.equal(runtime.get('account', 'conversation')?.projection.contentText, 'authoritative', 'snapshot 必须替换已有 partial')
 posts[0]!.onEvent({ type: 'message.delta', data: { messageId: 'assistant', delta: '-duplicate', eventVersion: 3 } })
@@ -121,7 +139,8 @@ const replacement = runtime.start({ ...startInput, clientMessageId: 'client-new'
 posts[1]!.onEvent({ type: 'message.started', data: { turnId: 'turn-new', userMessage: { ...user(), clientMessageId: 'client-new', turnId: 'turn-new' }, assistantMessage: { ...assistant('assistant-new'), turnId: 'turn-new' } } })
 await runtime.stop('account', 'conversation', { clientMessageId: 'client', turnId: 'turn' })
 assert.equal(stopCalls.length, 2, '旧 turn stop identity 不得影响新 turn')
-assert.equal(runtime.get('account', 'conversation'), replacement)
+assert.equal(runtime.get('account', 'conversation')?.clientMessageId, replacement.clientMessageId)
+assert.notEqual(runtime.get('account', 'conversation'), replacement)
 
 runtime.activateAccount('other-account')
 assert.equal(posts[1]!.signal.aborted, true, '账号切换必须 abort 旧账号前端连接')
@@ -139,5 +158,36 @@ assert.equal(timers.length, 0)
 assert(notifications.some((value) => value === 'two:running:3'), '保留的 UI subscriber 必须收到版本推进通知')
 unsubscribeTwo()
 runtime.close()
+
+const classificationTimers: Array<() => void> = []
+const reconciliation: string[] = []
+let classificationAttachError: unknown = new ChatStreamHttpError(409, 'chat_stream_terminal', 'turn terminal')
+let classificationAttachCalls = 0
+const classificationRuntime = new ChatGenerationRuntime({
+  streamMessage: async () => { throw new Error('unused') },
+  attachStream: async () => { classificationAttachCalls += 1; throw classificationAttachError },
+  stop: async () => ({ stopped: true }),
+  schedule: (callback) => { classificationTimers.push(callback); return callback },
+  cancelSchedule: () => undefined,
+  onReconcileRequired: (turn) => { reconciliation.push(turn.reconciliationReason ?? '') }
+})
+classificationRuntime.attach({ systemAccountId: 'account', conversationId: 'stable', turnId: 'turn-stable', assistantMessageId: 'assistant-stable' })
+await Promise.resolve(); await Promise.resolve()
+assert.equal(classificationTimers.length, 0, '稳定 runner terminal HTTP 错误不得进入断线重试')
+assert.equal(classificationRuntime.get('account', 'stable')?.reconciliationReason, 'runner_terminal')
+assert.equal(classificationRuntime.get('account', 'stable')?.error?.status, 409)
+assert.deepEqual(reconciliation, ['runner_terminal'])
+const unsubscribeStable = classificationRuntime.subscribe('account', 'stable', () => undefined)
+await Promise.resolve(); await Promise.resolve()
+assert.equal(classificationAttachCalls, 1, '稳定错误等待外部 sync 时 UI 订阅不得重新 attach')
+unsubscribeStable()
+
+const { ChatStreamProtocolError } = await import('../../api/domains/chat')
+classificationAttachError = new ChatStreamProtocolError('malformed SSE event')
+classificationRuntime.attach({ systemAccountId: 'account', conversationId: 'protocol', turnId: 'turn-protocol', assistantMessageId: 'assistant-protocol' })
+await Promise.resolve(); await Promise.resolve()
+assert.equal(classificationTimers.length, 0, '协议错误不得伪装成可重试网络断开')
+assert.equal(classificationRuntime.get('account', 'protocol')?.reconciliationReason, 'protocol_error')
+classificationRuntime.close()
 
 console.log('AI 问答应用级 generation runtime 回归通过')

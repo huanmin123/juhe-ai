@@ -10,13 +10,7 @@ export function parseChatSseBlock(block: string): ChatStreamEvent | undefined {
   if (!eventType || !dataLines.length) return undefined
   try {
     const data = JSON.parse(dataLines.join('\n')) as unknown
-    if (eventType === 'message.started') {
-      return { type: eventType, data } as ChatStreamEvent
-    }
-    if ((eventType === 'message.snapshot' || eventType === 'message.delta' || eventType === 'message.completed' || eventType === 'message.failed' || eventType === 'message.canceled' || eventType === 'reasoning.delta' || eventType === 'tool.started' || eventType === 'tool.updated' || eventType === 'tool.completed')
-      && hasSafeEventVersion(data)) {
-      return { type: eventType, data } as ChatStreamEvent
-    }
+    if (isValidChatStreamData(eventType, data)) return { type: eventType, data } as ChatStreamEvent
   } catch {
   }
   return undefined
@@ -76,12 +70,88 @@ export function applyChatStreamEvent(messages: ChatMessage[], event: ChatStreamE
   message.errorCode = event.data.code
 }
 
-function hasSafeEventVersion(data: unknown): data is { eventVersion: number } {
+function hasSafeEventVersion(data: unknown): data is Record<string, any> & { eventVersion: number } {
   return typeof data === 'object' && data !== null
     && Number.isSafeInteger((data as { eventVersion?: unknown }).eventVersion)
     && Number((data as { eventVersion: number }).eventVersion) >= 0
 }
 
+function isValidChatStreamData(eventType: string, data: unknown): boolean {
+  if (!isRecord(data)) return false
+  if (eventType === 'message.started') {
+    return nonEmptyString(data.turnId) && isChatMessage(data.userMessage) && isChatMessage(data.assistantMessage)
+  }
+  if (!hasSafeEventVersion(data)) return false
+  if (eventType === 'message.snapshot') return nonEmptyString(data.turnId) && isAssistantSnapshot(data.assistant)
+  if (eventType === 'message.delta' || eventType === 'reasoning.delta') return nonEmptyString(data.messageId) && typeof data.delta === 'string'
+  if (eventType === 'tool.started' || eventType === 'tool.updated' || eventType === 'tool.completed') return nonEmptyString(data.messageId) && isRecord(data.item)
+  if (eventType === 'message.completed') return nonEmptyString(data.messageId) && optionalString(data.finishReason) && optionalString(data.traceId)
+  if (eventType === 'message.failed') return nonEmptyString(data.messageId) && nonEmptyString(data.code) && typeof data.message === 'string'
+  if (eventType === 'message.canceled') return nonEmptyString(data.messageId) && optionalString(data.traceId)
+  return false
+}
+
+function isAssistantSnapshot(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return nonEmptyString(value.id)
+    && isMessageStatus(value.status)
+    && typeof value.contentText === 'string'
+    && typeof value.reasoningText === 'string'
+    && Array.isArray(value.toolEvents)
+    && value.toolEvents.every(isToolEvent)
+    && Array.isArray(value.contentBlocks)
+    && value.contentBlocks.every(isContentBlock)
+}
+
+function isChatMessage(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return nonEmptyString(value.id)
+    && nonEmptyString(value.conversationId)
+    && nonEmptyString(value.turnId)
+    && Number.isSafeInteger(value.sequenceNo)
+    && (value.role === 'user' || value.role === 'assistant')
+    && isMessageStatus(value.status)
+    && typeof value.contentText === 'string'
+    && typeof value.model === 'string'
+    && typeof value.createdAt === 'string'
+    && typeof value.expiresAt === 'string'
+}
+
+function isToolEvent(value: unknown): boolean {
+  return isRecord(value)
+    && nonEmptyString(value.id)
+    && nonEmptyString(value.type)
+    && (value.status === 'started' || value.status === 'updated' || value.status === 'completed' || value.status === 'failed')
+    && (value.item === undefined || isRecord(value.item))
+}
+
+function isContentBlock(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.type !== 'string') return false
+  if (value.type === 'reasoning') return typeof value.text === 'string'
+  if (value.type === 'tool_call') return nonEmptyString(value.id) && nonEmptyString(value.toolType)
+    && (value.status === 'started' || value.status === 'updated' || value.status === 'completed' || value.status === 'failed')
+    && (value.item === undefined || isRecord(value.item))
+  if (value.type === 'input_text') return typeof value.text === 'string' && Number.isSafeInteger(value.order)
+  if (value.type === 'input_image') return nonEmptyString(value.assetId) && Number.isSafeInteger(value.order)
+  return false
+}
+
+function isMessageStatus(value: unknown): boolean {
+  return value === 'completed' || value === 'streaming' || value === 'failed' || value === 'canceled'
+}
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string'
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 function cloneJsonSafe<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T
+  try { return JSON.parse(JSON.stringify(value)) as T } catch { return [] as T }
 }
