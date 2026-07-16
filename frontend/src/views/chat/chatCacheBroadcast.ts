@@ -25,9 +25,11 @@ export class ChatCacheBroadcast {
   readonly enabled: boolean
   private readonly channel?: ChannelLike
   private readonly listeners = new Set<(payload: ChatCacheBroadcastPayload) => void>()
+  private readonly diagnostic?: (code: string) => void
   private closed = false
 
-  constructor(options: { channelName?: string; channelFactory?: ChannelFactory } = {}) {
+  constructor(options: { channelName?: string; channelFactory?: ChannelFactory; diagnostic?: (code: string) => void } = {}) {
+    this.diagnostic = options.diagnostic
     const factory = 'channelFactory' in options
       ? options.channelFactory
       : typeof BroadcastChannel === 'function' ? (name: string) => new BroadcastChannel(name) : undefined
@@ -37,6 +39,7 @@ export class ChatCacheBroadcast {
       if (this.channel) this.channel.onmessage = (event) => this.receive(event.data)
     } catch {
       this.enabled = false
+      this.report('broadcast_construct_failed')
     }
   }
 
@@ -52,6 +55,7 @@ export class ChatCacheBroadcast {
       this.channel.postMessage(safePayload)
       return true
     } catch {
+      this.report('broadcast_publish_failed')
       return false
     }
   }
@@ -67,14 +71,18 @@ export class ChatCacheBroadcast {
     this.listeners.clear()
     if (this.channel) {
       this.channel.onmessage = null
-      try { this.channel.close() } catch { /* no-op */ }
+      try { this.channel.close() } catch { this.report('broadcast_close_failed') }
     }
   }
 
   private receive(value: unknown): void {
     if (this.closed || !isChatCacheBroadcastPayload(value)) return
     for (const listener of this.listeners) {
-      try { listener(value) } catch { /* listeners are isolated */ }
+      try { listener(value) } catch { this.report('broadcast_listener_failed') }
     }
+  }
+
+  private report(code: string): void {
+    try { this.diagnostic?.(code.slice(0, 64)) } catch { /* diagnostics are isolated */ }
   }
 }

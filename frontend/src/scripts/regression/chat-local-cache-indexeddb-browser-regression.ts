@@ -14,6 +14,7 @@ try {
   const tail = await adapter.readConversation('A', 'tail')
   assert(tail.messages.length === 200 && tail.messages[0]?.sequenceNo === 51 && tail.messages[199]?.sequenceNo === 250, '必须返回最新 200 条并升序')
   const beforeHead = tail.head!.byteSize
+  assert(await adapter.getTotalBytes() === beforeHead, '全局 byte metadata 必须与首个会话一致')
   await adapter.putHead({ systemAccountId: 'A', conversationId: 'tail', messageRevision: 9, lastAccessAt: 2, byteSize: 0, title: 'updated' })
   assert((await adapter.readConversation('A', 'tail')).head?.byteSize === beforeHead, 'putHead 必须事务合并保留 byteSize')
 
@@ -24,10 +25,10 @@ try {
   await seeded
   await adapter.clearAccount('A')
   const verify = database.transaction(['conversation_heads', 'messages', 'running_turns'], 'readonly'); const verified = txDone(verify)
-  const accountRange = IDBKeyRange.bound(['A'], ['A', []])
-  const counts = await Promise.all([request(verify.objectStore('conversation_heads').count(accountRange)), request(verify.objectStore('messages').count(IDBKeyRange.bound(['A'], ['A', [], []]))), request(verify.objectStore('running_turns').count(accountRange))])
+  const counts = await Promise.all([request(verify.objectStore('conversation_heads').index('by_account').count('A')), request(verify.objectStore('messages').index('by_account').count('A')), request(verify.objectStore('running_turns').index('by_account').count('A'))])
   await verified
   assert(counts.every((count) => count === 0), 'clearAccount 必须清理无 head 的 messages/running_turns')
+  assert(await adapter.getTotalBytes() === 0, 'clearAccount 必须同步扣减账户 head bytes')
 
   await adapter.putMessages('B', 'expiry', [message(1, 'expiry', '2026-01-01T00:00:00.000Z'), message(2, 'expiry')], { now: 3 })
   const expiryBefore = (await adapter.readConversation('B', 'expiry')).head!.byteSize

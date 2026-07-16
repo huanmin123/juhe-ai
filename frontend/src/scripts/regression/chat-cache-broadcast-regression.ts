@@ -30,6 +30,7 @@ broadcast.publish({ systemAccountId: 'account_1', conversationId: 'conv_1', mess
 assert.deepEqual(FakeChannel.last?.sent, [{ systemAccountId: 'account_1', conversationId: 'conv_1', messageRevision: 2 }])
 FakeChannel.last?.emit({ systemAccountId: 'account_1', conversationId: 'conv_1', messageRevision: 3 })
 assert.equal(received.length, 2)
+assert.ok(diagnostics.includes('broadcast_listener_failed'))
 FakeChannel.last?.emit({ systemAccountId: 'account_1', conversationId: 'conv_1', messageRevision: 2, content: 'secret' })
 assert.equal(received.length, 2)
 broadcast.close(); broadcast.close()
@@ -47,5 +48,9 @@ assert.ok(diagnostics.includes('broadcast_publish_failed'))
 const constructDiagnostics: string[] = []
 new ChatCacheBroadcast({ channelFactory: () => { throw new Error('secret body') }, diagnostic: (code) => constructDiagnostics.push(code) })
 assert.deepEqual(constructDiagnostics, ['broadcast_construct_failed'])
+const closeDiagnostics: string[] = []
+const closeFailure = new ChatCacheBroadcast({ channelFactory: () => ({ onmessage: null, postMessage: () => undefined, close: () => { throw new Error('close') } }), diagnostic: (code) => closeDiagnostics.push(code) })
+closeFailure.close()
+assert.deepEqual(closeDiagnostics, ['broadcast_close_failed'])
 
 console.log('AI 问答缓存广播回归通过')
