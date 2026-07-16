@@ -2,7 +2,7 @@
 
 ## 基本信息
 
-- 状态：进行中
+- 状态：已完成
 - 创建时间：2026-07-17
 - 需求来源：生产管理端性能排障与优化速度专题
 - 影响范围：PostgreSQL DatabaseClient、数据库级超时默认值、回归与部署
@@ -23,7 +23,15 @@
 - [x] 新增普通 SQL / 显式事务边界红绿回归。
 - [x] 移除普通 PostgreSQL SQL 的隐式事务包装。
 - [x] 保留显式事务的 `BEGIN + SET LOCAL + COMMIT/ROLLBACK`。
-- [ ] 完成目标回归、类型检查、构建和发布包。
-- [ ] 候选数据库应用超时默认值并通过 PgBouncer / PostgreSQL smoke。
-- [ ] 临时接管上线并完成 60 秒统一生产验收。
-- [ ] 观察管理接口长尾、事务语句速率和事件循环指标。
+- [x] 完成目标回归、类型检查、构建和发布包。
+- [x] 候选数据库应用超时默认值并通过 PgBouncer / PostgreSQL smoke。
+- [x] 临时接管上线并完成 60 秒统一生产验收。
+- [x] 确认生产新连接超时与主进程稳定性；长期性能趋势继续由后续性能阶段跟踪。
+
+## 完成结果
+
+- 发布提交：`a4bdcfce4`
+- 生产 release：`20260717-PgDirectQuery-a4bdcfce4`
+- 候选与生产 PgBouncer 门禁：`STAGE3_POSTGRES_QUERY_BOUNDARY_OK`
+- 数据库默认 timeout：`30s / 2s / 30s`
+- 生产统一验收：`VERIFY_SUCCESS`，固定 PID `54605`，1 server + 1 DB service + 3 worker。
