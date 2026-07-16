@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -110,7 +111,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 		t.Fatalf("create response = %+v", createBody.Data)
 	}
 	assertW2ProviderModelRequestCapabilities(t, &createBody.Data, []string{"priority", "flex"}, []string{"low", "high"}, "high", []string{}, "", "")
-	runW3ProviderModelCRUDAtomicInterleavingSmoke(t, ctx, store, createBody.Data.ID)
+	runW3ProviderModelCRUDAtomicInterleavingSmoke(t, ctx, db, store, createBody.Data.ID)
 
 	listRec := serveW3ProviderModelCRUDRequest(router, http.MethodGet, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options&includeInactive=true&includeUnpriced=true", sessionToken, "")
 	if listRec.Code != http.StatusOK {
@@ -212,12 +213,13 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	}
 }
 
-func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Context, store *postgresstore.Store, id string) {
+func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Context, db *sql.DB, store *postgresstore.Store, id string) {
 	t.Helper()
 	firstEntered := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	firstResult := make(chan error, 1)
 	secondResult := make(chan error, 1)
+	secondValidated := make(chan struct{}, 1)
 	first := port.ManagementCustomProviderModelUpdateInput{ID: id, ProviderCode: "gpt", ActorSystemAccountID: "sys_admin", ActorRole: "admin", Notes: port.ManagementProviderModelOptionalString{Present: true, Value: "first patch"}}
 	second := port.ManagementCustomProviderModelUpdateInput{ID: id, ProviderCode: "gpt", ActorSystemAccountID: "sys_admin", ActorRole: "admin", PricingNotes: port.ManagementProviderModelOptionalString{Present: true, Value: "second patch"}}
 	go func() {
@@ -238,6 +240,7 @@ func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Con
 	}
 	go func() {
 		_, _, err := store.UpdateManagementCustomProviderModel(ctx, second, func(result port.ManagementCustomProviderModelUpdateResult) error {
+			secondValidated <- struct{}{}
 			if result.Before.Notes != "first patch" {
 				return fmt.Errorf("second before notes = %q, want first patch", result.Before.Notes)
 			}
@@ -245,10 +248,13 @@ func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Con
 		})
 		secondResult <- err
 	}()
+	waitForW3ProviderModelLock(t, ctx, db)
 	select {
 	case err := <-secondResult:
-		t.Fatalf("second patch completed while first validation held lock: %v", err)
-	case <-time.After(250 * time.Millisecond):
+		t.Fatalf("second patch completed before the observed PostgreSQL lock wait: %v", err)
+	case <-secondValidated:
+		t.Fatal("second patch validation ran before the observed PostgreSQL lock wait")
+	default:
 	}
 	close(releaseFirst)
 	if err := <-firstResult; err != nil {
@@ -260,6 +266,43 @@ func runW3ProviderModelCRUDAtomicInterleavingSmoke(t *testing.T, ctx context.Con
 	final, found, err := store.FindManagementCustomProviderModel(ctx, id)
 	if err != nil || !found || final.Notes != "first patch" || final.PricingNotes != "second patch" {
 		t.Fatalf("final atomic custom provider model found=%t err=%v item=%+v", found, err, final)
+	}
+}
+
+func waitForW3ProviderModelLock(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	waitCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var waiting bool
+		err := db.QueryRowContext(waitCtx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND pid <> pg_backend_pid()
+				  AND state = 'active'
+				  AND wait_event_type = 'Lock'
+				  AND cardinality(pg_blocking_pids(pid)) > 0
+				  AND query LIKE '-- name: LockManagementCustomProviderModel :one%'
+			)
+		`).Scan(&waiting)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+				t.Fatal("second custom provider model update never entered a PostgreSQL row lock wait")
+			}
+			t.Fatalf("inspect custom provider model row lock wait: %v", err)
+		}
+		if waiting {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-waitCtx.Done():
+			t.Fatal("second custom provider model update never entered a PostgreSQL row lock wait")
+		}
 	}
 }
 
