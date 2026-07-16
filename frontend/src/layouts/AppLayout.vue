@@ -54,7 +54,7 @@
         <div v-if="mustChangePassword" class="password-lock-state">
           <a-result status="warning" title="请先修改初始密码" sub-title="完成后将自动进入控制台。" />
         </div>
-        <div v-else-if="routeSwitching" class="route-switch-page-shell" aria-busy="true">
+        <div v-if="!mustChangePassword && routeSwitching" class="route-switch-page-shell" aria-busy="true">
           <a-card class="page-card route-switch-toolbar-card">
             <div class="route-switch-skeleton-block">
               <span class="route-switch-skeleton-line route-switch-title-line" />
@@ -77,12 +77,14 @@
             </div>
           </a-card>
         </div>
-        <router-view v-else v-slot="{ Component, route: viewRoute }">
-          <KeepAlive v-if="viewRoute.meta.keepAlive !== false" :max="keepAliveMax">
-            <component :is="Component" :key="viewRoute.path" />
-          </KeepAlive>
-          <component :is="Component" v-else :key="viewRoute.path" />
-        </router-view>
+        <div v-if="!mustChangePassword" class="route-view-host" :class="{ 'route-view-host-hidden': routeSwitching }">
+          <router-view v-slot="{ Component, route: viewRoute }">
+            <KeepAlive v-if="viewRoute.meta.keepAlive !== false" :max="keepAliveMax">
+              <component :is="Component" :key="viewRoute.path" />
+            </KeepAlive>
+            <component :is="Component" v-else :key="viewRoute.path" />
+          </router-view>
+        </div>
       </a-layout-content>
     </a-layout>
     <AnnouncementModal
@@ -141,7 +143,7 @@ import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch
 import { isNavigationFailure, useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
-import { authState, changePassword, clearAuthState, logout, updateProfile } from '@/composables/useAuth'
+import { authState, changePassword, clearAuthState, clearCurrentAccountChatState, logout, updateProfile } from '@/composables/useAuth'
 import { appBrand, loadAppBrandSettings, syncDocumentTitle } from '@/composables/useAppBrand'
 import {
   appMenuMode,
@@ -580,6 +582,7 @@ async function handleRevokeAuthSession(session: AuthSessionSummary) {
       message.success('当前会话已撤销，请重新登录')
       sessionModalOpen.value = false
       resetAuthSessions()
+      await clearCurrentAccountChatState()
       clearAuthState()
       await router.replace('/login')
       return
@@ -1093,6 +1096,10 @@ watch(
   .route-switch-summary-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.route-view-host-hidden {
+  display: none;
 }
 
 @media (pointer: coarse) {

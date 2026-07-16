@@ -181,6 +181,9 @@ const unsubscribeStable = classificationRuntime.subscribe('account', 'stable', (
 await Promise.resolve(); await Promise.resolve()
 assert.equal(classificationAttachCalls, 1, '稳定错误等待外部 sync 时 UI 订阅不得重新 attach')
 unsubscribeStable()
+assert.equal(classificationRuntime.forget('account', 'stable', 'turn-other'), false, '迟到的旧 sync 不得清理不匹配 turn')
+assert.equal(classificationRuntime.forget('account', 'stable', 'turn-stable'), true, '权威 sync 已终态时必须只释放本地 runtime，不调用服务端 stop')
+assert.equal(classificationRuntime.get('account', 'stable'), undefined)
 
 const { ChatStreamProtocolError } = await import('../../api/domains/chat')
 classificationAttachError = new ChatStreamProtocolError('malformed SSE event')

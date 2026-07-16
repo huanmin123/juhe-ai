@@ -33,7 +33,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: 'AI 问答',
       description: '使用自己的 API Key 与可用模型进行对话。',
       viewScope: 'self',
-      keepAlive: false,
+      keepAlive: true,
       heavy: true,
       immersive: true
     }

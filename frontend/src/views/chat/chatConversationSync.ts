@@ -1,4 +1,6 @@
+import { chatApi, type ChatMessageListParams } from '@/api/domains/chat'
 import type { ChatConversationSyncHead, ChatMessage } from '@/types/domain/chat'
+import { getDefaultChatLocalCache } from './chatLocalCache'
 
 export type ChatConversationSyncDecision =
   | { type: 'unchanged' }
@@ -10,7 +12,7 @@ export type ChatConversationSyncDecision =
 export interface ChatConversationSyncDependencies {
   readCache(systemAccountId: string, conversationId: string): Promise<{ head?: { messageRevision: number }; messages: ChatMessage[] }>
   getSyncHead(conversationId: string, knownRevision: number): Promise<ChatConversationSyncHead>
-  listMessages(conversationId: string, cursor: { limit: number; afterSequenceNo?: number; fromSequenceNo?: number }): Promise<ChatMessage[]>
+  listMessages(conversationId: string, cursor: ChatMessageListParams): Promise<ChatMessage[]>
   deleteFromSequence(systemAccountId: string, conversationId: string, sequenceNo: number): Promise<unknown>
   deleteConversation(systemAccountId: string, conversationId: string): Promise<unknown>
   writeMessages(systemAccountId: string, conversationId: string, messages: readonly ChatMessage[]): Promise<unknown>
@@ -25,6 +27,11 @@ export interface ChatConversationSynchronizationResult {
   syncHead: ChatConversationSyncHead
   passes: number
 }
+
+export type ChatConversationSyncOutcome =
+  | ({ state: 'ready' } & ChatConversationSynchronizationResult)
+  | { state: 'not_found'; messages: []; passes: number }
+  | { state: 'forbidden'; messages: []; passes: number }
 
 export function decideChatConversationSync(input: {
   localRevision?: number
@@ -44,6 +51,8 @@ export function decideChatConversationSync(input: {
   if (lastLocalSequence !== undefined && lastLocalSequence < input.server.lastSequenceNo) {
     return { type: 'append', afterSequenceNo: lastLocalSequence }
   }
+  const firstServerTail = input.server.tail[0]
+  if (firstServerTail) return { type: 'refresh_from', fromSequenceNo: firstServerTail.sequenceNo }
   return { type: 'rebuild' }
 }
 
@@ -51,7 +60,7 @@ export async function synchronizeChatConversation(input: {
   systemAccountId: string
   conversationId: string
   dependencies: ChatConversationSyncDependencies
-}): Promise<ChatConversationSynchronizationResult> {
+}): Promise<ChatConversationSyncOutcome> {
   const { systemAccountId, conversationId, dependencies } = input
   const cached = await dependencies.readCache(systemAccountId, conversationId)
   let localRevision = cached.head?.messageRevision
@@ -61,16 +70,26 @@ export async function synchronizeChatConversation(input: {
 
   while (passes < 2) {
     passes += 1
-    latestHead = await dependencies.getSyncHead(conversationId, localRevision ?? 0)
+    try {
+      latestHead = await dependencies.getSyncHead(conversationId, localRevision ?? 0)
+    } catch (error) {
+      const status = chatHttpStatus(error)
+      if (status === 404) {
+        await dependencies.deleteConversation(systemAccountId, conversationId)
+        return { state: 'not_found', messages: [], passes }
+      }
+      if (status === 403) return { state: 'forbidden', messages: [], passes }
+      throw error
+    }
     const decision = decideChatConversationSync({ localRevision, localMessages: messages, server: latestHead })
     if (decision.type === 'unchanged') {
       await persistHead(dependencies, systemAccountId, conversationId, latestHead)
-      return { messages, messageRevision: latestHead.messageRevision, syncHead: latestHead, passes }
+      return { state: 'ready', messages, messageRevision: latestHead.messageRevision, syncHead: latestHead, passes }
     }
 
     if (decision.type === 'rebuild') {
       await dependencies.deleteConversation(systemAccountId, conversationId)
-      messages = await dependencies.listMessages(conversationId, { limit: 100, fromSequenceNo: 0 })
+      messages = await dependencies.listMessages(conversationId, { limit: 100 })
     } else if (decision.type === 'append') {
       const appended = await dependencies.listMessages(conversationId, { afterSequenceNo: decision.afterSequenceNo, limit: 100 })
       messages = mergeBySequence(messages, appended)
@@ -84,7 +103,30 @@ export async function synchronizeChatConversation(input: {
     localRevision = latestHead.messageRevision
   }
 
-  return { messages, messageRevision: latestHead.messageRevision, syncHead: latestHead, passes }
+  return { state: 'ready', messages, messageRevision: latestHead.messageRevision, syncHead: latestHead, passes }
+}
+
+export function createDefaultChatConversationSyncDependencies(options: { pendingConversationIds?: () => ReadonlySet<string> } = {}): ChatConversationSyncDependencies {
+  const cache = getDefaultChatLocalCache()
+  return {
+    readCache: async (systemAccountId, conversationId) => (await cache.readConversation(systemAccountId, conversationId)).value ?? { messages: [] },
+    getSyncHead: chatApi.getConversationSync,
+    listMessages: chatApi.listMessages,
+    deleteFromSequence: (systemAccountId, conversationId, sequenceNo) => cache.deleteFromSequence(systemAccountId, conversationId, sequenceNo),
+    deleteConversation: (systemAccountId, conversationId) => cache.deleteConversation(systemAccountId, conversationId),
+    writeMessages: (systemAccountId, conversationId, values) => cache.putMessages(systemAccountId, conversationId, values, {
+      currentConversationId: conversationId,
+      pendingConfirmationConversationIds: options.pendingConversationIds?.()
+    }),
+    writeHead: async (systemAccountId, head) => {
+      await cache.putHead(systemAccountId, head)
+      await cache.cleanupExpired(head.serverTime)
+    },
+    writeRunningTurn: (systemAccountId, conversationId, turn) => turn
+      ? cache.putRunningTurn(systemAccountId, conversationId, turn)
+      : cache.removeRunningTurn(systemAccountId, conversationId),
+    removeRunningTurn: (systemAccountId, conversationId) => cache.removeRunningTurn(systemAccountId, conversationId)
+  }
 }
 
 function mergeBySequence(current: readonly ChatMessage[], incoming: readonly ChatMessage[]): ChatMessage[] {
@@ -102,4 +144,10 @@ async function persistHead(
   await dependencies.writeHead(systemAccountId, head)
   if (head.activeTurn) await dependencies.writeRunningTurn(systemAccountId, conversationId, head.activeTurn)
   else await dependencies.removeRunningTurn(systemAccountId, conversationId)
+}
+
+function chatHttpStatus(error: unknown): number | undefined {
+  const candidate = error as { status?: unknown; response?: { status?: unknown } } | undefined
+  const status = candidate?.response?.status ?? candidate?.status
+  return typeof status === 'number' ? status : undefined
 }

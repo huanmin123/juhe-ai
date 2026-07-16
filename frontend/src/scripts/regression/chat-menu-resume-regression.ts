@@ -28,8 +28,11 @@ assert.match(viewSource, /onDeactivated/, '离开 AI 问答时必须只暂停页
 assert.doesNotMatch(viewSource, /onBeforeUnmount\([\s\S]{0,900}streamController\?\.abort\(\)/, '页面卸载不得中止已接受生成')
 assert.match(viewSource, /chatGenerationRuntime\.subscribe/, '页面必须订阅应用级生成运行态')
 assert.match(viewSource, /chatGenerationRuntime\.start/, '发送必须交给应用级生成运行态')
+assert.match(viewSource, /turn\.turnId && turn\.clientMessageId[\s\S]{0,700}activeStopTarget = active/, '返回旧会话时必须从 runtime 重建精确停止目标')
 assert.match(mainSource, /chatGenerationRuntime[\s\S]{0,500}(?:activateAccount|switchAccount)/, '应用入口必须根据登录账户切换 runtime 身份')
 assert.match(authSource, /clearAccount/, '明确退出登录必须清理当前账户聊天缓存')
 assert.match(layoutSource, /clearCurrentAccountChatState/, '撤销当前会话必须执行与明确退出相同的聊天清理')
+assert.match(layoutSource, /route-view-host/, '路由内容必须有独立常驻容器，切页反馈不能销毁 KeepAlive')
+assert.doesNotMatch(layoutSource, /<router-view\s+v-else/, 'router-view 不能作为 routeSwitching 的 v-else 分支被反复卸载')
 
 console.log('AI 问答菜单切换续跑、KeepAlive 与身份清理回归通过')

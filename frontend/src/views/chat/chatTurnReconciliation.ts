@@ -138,7 +138,6 @@ export async function reconcileChatSubmission(input: {
         }
         return { messages: latest, confirmed: true, accepted: false, terminal: false, lookupError }
       }
-      if (knownTurnId && lastAssistantStatus === 'streaming') await stopQuietly(input.stop, knownTurnId)
       if (attempt === maxAttempts - 1) return unresolvedResult()
       await wait(retryDelay(attempt))
       continue
@@ -147,7 +146,6 @@ export async function reconcileChatSubmission(input: {
     if (!isChatSubmissionStatus(rawStatus)) {
       lookupError = new Error('提交状态接口返回了无效响应')
       resetNotFoundWindow()
-      if (knownTurnId && lastAssistantStatus === 'streaming') await stopQuietly(input.stop, knownTurnId)
       if (attempt === maxAttempts - 1) return unresolvedResult()
       await wait(retryDelay(attempt))
       continue
@@ -158,7 +156,6 @@ export async function reconcileChatSubmission(input: {
       if (status.state !== 'accepted' || status.turnId !== knownTurnId) {
         lookupError = new Error('已接受的提交状态发生了非单调变化')
         resetNotFoundWindow()
-        if (lastAssistantStatus === 'streaming') await stopQuietly(input.stop, knownTurnId)
         if (attempt === maxAttempts - 1) return unresolvedResult()
         await wait(retryDelay(attempt))
         continue
@@ -213,8 +210,6 @@ export async function reconcileChatSubmission(input: {
       }
     }
 
-    await stopQuietly(input.stop, knownTurnId)
-    try { latest = await input.listMessages() } catch {}
     if (attempt === maxAttempts - 1) return unresolvedResult('accepted')
     await wait(retryDelay(attempt))
   }
@@ -282,10 +277,6 @@ function acceptedResult(input: {
     assistantStatus: input.assistantStatus,
     lookupError: input.lookupError
   }
-}
-
-async function stopQuietly(stop: (turnId: string) => Promise<void>, turnId: string): Promise<void> {
-  try { await stop(turnId) } catch {}
 }
 
 function retryDelay(attempt: number): number {

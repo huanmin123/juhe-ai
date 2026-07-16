@@ -106,13 +106,12 @@
 <script setup lang="ts">
 import { ArrowDownOutlined, CopyOutlined, MessageOutlined, MoreOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { chatApi, ChatStreamHttpError, streamChatMessage } from '@/api/domains/chat'
+import { computed, defineComponent, h, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { chatApi, ChatStreamHttpError } from '@/api/domains/chat'
 import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import type { ChatApiKeyOption, ChatContextStatus, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
-import { applyChatStreamEvent } from './chatStream'
 import { beginLatestTurnEdit, isDefinitiveChatHttpRejection, resolveChatReconciliationNotice, resolveChatSubmitFailure } from './chatTurnEditing'
 import {
   applyChatReconciliationIfActive,
@@ -138,6 +137,10 @@ import { defaultChatReasoningEffort, defaultChatServiceTier } from './composer/c
 import type { JSONContent } from '@tiptap/core'
 import { clampChatFloatingMenuPosition, resolveChatVisualViewportBounds } from './chatViewport'
 import { planChatCreateDialogFromConversationPane } from './chatConversationDrawer'
+import { chatGenerationRuntime, type RunningTurn } from './chatGenerationRuntime'
+import { getDefaultChatLocalCache } from './chatLocalCache'
+import { ChatCacheBroadcast } from './chatCacheBroadcast'
+import { createDefaultChatConversationSyncDependencies, synchronizeChatConversation } from './chatConversationSync'
 
 interface ChatTurnEditingState {
   conversationId: string
@@ -204,15 +207,26 @@ const renameTitle = ref('')
 const messageList = ref<InstanceType<typeof ChatMessageList>>()
 const composer = ref<InstanceType<typeof AIComposer>>()
 const editingTurn = ref<ChatTurnEditingState>()
-let streamController: AbortController | undefined
 let activeStopTarget: ActiveChatStopTarget | undefined
-let activeSendSettled: Promise<void> | undefined
 let pendingConfirmationTimer: number | undefined
 let pendingConfirmationRetryCount = 0
 let contextStatusTimer: number | undefined
 let conversationLoadEpoch = 0
 let disposed = false
+let pageActive = false
+let initialLoaded = false
+let runtimeUnsubscribe: (() => void) | undefined
+let broadcastUnsubscribe: (() => void) | undefined
+let subscribedRuntimeConversationId: string | undefined
+let lastRuntimeAcceptedKey: string | undefined
+let lastRuntimeTerminalKey: string | undefined
 let conversationMenuTrigger: HTMLElement | undefined
+
+const localCache = getDefaultChatLocalCache()
+const syncDependencies = createDefaultChatConversationSyncDependencies({
+  pendingConversationIds: () => pendingConfirmation.value ? new Set([pendingConfirmation.value.request.conversationId]) : new Set()
+})
+const cacheBroadcast = new ChatCacheBroadcast()
 
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationId.value))
 const turnLimitReached = computed(() => Boolean(selectedConversation.value && isChatTurnLimitReached(selectedConversation.value.userTurnCount, selectedConversation.value.userTurnLimit)))
@@ -313,8 +327,6 @@ async function selectConversation(id: string, options: {
   forceReload?: boolean
   silentLoadError?: boolean
 } = {}): Promise<boolean> {
-  const blockedBySubmission = submissionBlocked.value && !options.allowPendingRecovery
-  if (generating.value || blockedBySubmission) return false
   if (selectedConversationId.value === id && !options.forceReload) return true
   await cancelTurnEdit()
   const loadEpoch = ++conversationLoadEpoch
@@ -329,8 +341,52 @@ async function selectConversation(id: string, options: {
   messagesLoading.value = true
   modelsLoading.value = true
   try {
+    subscribeSelectedRuntime()
+    const conversation = conversations.value.find((item) => item.id === id)
+    if (!conversation) throw new Error('会话不存在')
     const conversationLoad = startChatConversationLoad({
-      loadMessages: () => chatApi.listMessages(id, { limit: 100 }),
+      loadMessages: async () => {
+        const cached = await localCache.readConversation(conversation.systemAccountId, id)
+        if (cached.ok && cached.value?.messages.length) {
+          if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
+            messages.value = cached.value.messages
+            hasOlderMessages.value = cached.value.messages.length === 100
+            messagesLoading.value = false
+            await nextTick()
+            messageList.value?.scrollToBottom()
+          }
+        }
+        const synchronized = await synchronizeChatConversation({
+          systemAccountId: conversation.systemAccountId,
+          conversationId: id,
+          dependencies: syncDependencies
+        })
+        if (synchronized.state === 'not_found') {
+          conversations.value = conversations.value.filter((item) => item.id !== id)
+          return []
+        }
+        if (synchronized.state === 'forbidden') return []
+        replaceConversation({ ...conversation, messageRevision: synchronized.messageRevision, activeTurnId: synchronized.syncHead.activeTurn?.turnId })
+        cacheBroadcast.publish({ systemAccountId: conversation.systemAccountId, conversationId: id, messageRevision: synchronized.messageRevision })
+        if (synchronized.syncHead.activeTurn) {
+          const active = synchronized.syncHead.activeTurn
+          const assistant = synchronized.messages.find((item) => item.id === active.assistantMessageId)
+          const user = synchronized.messages.find((item) => item.turnId === active.turnId && item.role === 'user')
+          const pending = pendingConfirmation.value
+          if (pending?.request.conversationId === id && (!user?.clientMessageId || pending.request.clientMessageId === user.clientMessageId)) {
+            activeStopTarget = { request: pending.request, turnId: active.turnId }
+          }
+          chatGenerationRuntime.attach({
+            systemAccountId: conversation.systemAccountId,
+            conversationId: id,
+            clientMessageId: user?.clientMessageId,
+            turnId: active.turnId,
+            assistantMessageId: active.assistantMessageId,
+            projection: assistant
+          })
+        }
+        return synchronized.messages
+      },
       loadModels: () => chatApi.listModels(id)
     })
     const messageItems = await conversationLoad.messages
@@ -475,61 +531,20 @@ async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatI
   if (activeEdit) activeEdit.phase = 'submitting'
   generating.value = true
   messageList.value?.scrollToBottom()
-  const controller = new AbortController()
-  streamController = controller
   const stopTarget: ActiveChatStopTarget = { request: requestContext }
   activeStopTarget = stopTarget
-  let streamStarted = false
-  let streamTerminal = false
-  let startedTurnId: string | undefined
-  try {
-    await streamChatMessage({
-      conversationId: requestContext.conversationId,
-      clientMessageId: requestContext.clientMessageId,
-      replaceTurnId: requestContext.replaceTurnId,
-      content,
-      contentBlocks: blocks.map((block) => block.type === 'input_image' ? { type: block.type, assetId: block.assetId } : { type: block.type, text: block.text }),
-      model,
-      reasoningEffort: selectedReasoningEffort.value || undefined,
-      serviceTier: selectedServiceTier.value || undefined,
-      signal: controller.signal,
-      onEvent: (event) => {
-        if (selectedConversationId.value !== requestContext.conversationId) return
-        if (event.type === 'message.started') {
-          streamStarted = true
-          startedTurnId = event.data.turnId
-          stopTarget.turnId = event.data.turnId
-          writeStoredPendingConfirmation({
-            request: requestContext,
-            streamStarted: true,
-            startedTurnId: event.data.turnId,
-            acceptedAssistantStatus: 'streaming',
-            silent: false,
-            errorMessage: '模型连接中断，正在确认回答终态'
-          })
-          applyChatStreamEvent(messages.value, event, { replaceTurnId: requestContext.replaceTurnId })
-          finishAcceptedTurnEdit(requestContext)
-          void refreshConversationSummary(requestContext.conversationId).catch(() => undefined)
-        } else {
-          applyChatStreamEvent(messages.value, event)
-        }
-        if (event.type === 'message.completed' || event.type === 'message.failed') streamTerminal = true
-        if (event.type === 'message.failed') message.error(event.data.message)
-      }
-    })
-    if (!streamStarted) throw new Error('模型响应缺少开始事件，请刷新后确认消息状态')
-    if (!streamTerminal) throw new Error('模型流已中断，正在确认消息终态')
-    await refreshConversationSummary(requestContext.conversationId)
-    await refreshContextStatus(requestContext.conversationId)
-    composer.value?.releaseSubmittedAssets()
-    clearPendingConfirmation(requestContext.systemAccountId)
-  } catch (error) {
-    await handleSubmitFailure(error, requestContext, streamStarted, startedTurnId, controller.signal.aborted)
-  } finally {
-    generating.value = false
-    if (streamController === controller) streamController = undefined
-    if (activeStopTarget === stopTarget) activeStopTarget = undefined
-  }
+  subscribeSelectedRuntime()
+  chatGenerationRuntime.start({
+    systemAccountId: requestContext.systemAccountId,
+    conversationId: requestContext.conversationId,
+    clientMessageId: requestContext.clientMessageId,
+    replaceTurnId: requestContext.replaceTurnId,
+    content,
+    contentBlocks: blocks.map((block) => block.type === 'input_image' ? { type: block.type, assetId: block.assetId } : { type: block.type, text: block.text }),
+    model,
+    reasoningEffort: selectedReasoningEffort.value || undefined,
+    serviceTier: selectedServiceTier.value || undefined
+  })
 }
 async function stopGeneration(): Promise<void> {
   const id = selectedConversationId.value
@@ -549,15 +564,13 @@ async function stopGeneration(): Promise<void> {
     } : undefined
   })
   if (!id || !target || stopping.value) return
-  const controller = streamController
-  const sendSettled = activeSendSettled
   stopping.value = true
   try {
-    await stopActiveChatGeneration({
-      controller,
-      sendSettled,
-      stop: () => chatApi.stop(id, { clientMessageId: target.clientMessageId, turnId: target.turnId })
-    })
+    const conversation = selectedConversation.value
+    const stoppedByRuntime = conversation && target.turnId
+      ? await chatGenerationRuntime.stop(conversation.systemAccountId, id, { clientMessageId: target.clientMessageId, turnId: target.turnId })
+      : false
+    if (!stoppedByRuntime) await stopActiveChatGeneration({ stop: () => chatApi.stop(id, { clientMessageId: target.clientMessageId, turnId: target.turnId }) })
     if (pendingConfirmation.value?.request.clientMessageId === target.clientMessageId) await retryPendingConfirmation(true)
   } finally {
     stopping.value = false
@@ -572,7 +585,118 @@ async function refreshMessages(conversationId = selectedConversationId.value): P
   }
   return latest
 }
-async function removeConversation(id: string): Promise<void> { try { await chatApi.deleteConversation(id); conversations.value = conversations.value.filter((item) => item.id !== id); if (selectedConversationId.value === id) { selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
+function subscribeSelectedRuntime(): void {
+  runtimeUnsubscribe?.()
+  runtimeUnsubscribe = undefined
+  subscribedRuntimeConversationId = undefined
+  if (!pageActive) return
+  const conversation = selectedConversation.value
+  if (!conversation) {
+    generating.value = false
+    return
+  }
+  subscribedRuntimeConversationId = conversation.id
+  runtimeUnsubscribe = chatGenerationRuntime.subscribe(conversation.systemAccountId, conversation.id, applyRuntimeTurn)
+}
+function applyRuntimeTurn(turn: RunningTurn | undefined): void {
+  const conversation = selectedConversation.value
+  if (!conversation || subscribedRuntimeConversationId !== conversation.id) return
+  generating.value = turn?.status === 'preparing' || turn?.status === 'running'
+  if (!turn) {
+    activeStopTarget = undefined
+    return
+  }
+  let active = activeStopTarget
+  if (turn.turnId && turn.clientMessageId && (!active || active.request.conversationId !== turn.conversationId || active.request.clientMessageId !== turn.clientMessageId)) {
+    active = {
+      request: {
+        systemAccountId: turn.systemAccountId,
+        conversationId: turn.conversationId,
+        clientMessageId: turn.clientMessageId,
+        snapshot: { type: 'doc', content: [] }
+      },
+      turnId: turn.turnId
+    }
+    activeStopTarget = active
+  }
+  if (turn.turnId && active?.request.clientMessageId === turn.clientMessageId) {
+    active.turnId = turn.turnId
+    const acceptedKey = `${turn.conversationId}:${turn.turnId}`
+    if (lastRuntimeAcceptedKey !== acceptedKey) {
+      lastRuntimeAcceptedKey = acceptedKey
+      finishAcceptedTurnEdit(active.request)
+      composer.value?.releaseSubmittedAssets()
+      clearPendingConfirmation(active.request.systemAccountId)
+      void refreshConversationFromSync(turn.conversationId)
+      void refreshConversationSummary(turn.conversationId).catch(() => undefined)
+    }
+  }
+  const projection = turn.projection as ChatMessage
+  if (projection.id && projection.sequenceNo > 0) {
+    const index = messages.value.findIndex((item) => item.id === projection.id)
+    if (index >= 0) messages.value[index] = cloneMessage(projection)
+    else messages.value.push(cloneMessage(projection))
+    messages.value.sort((left, right) => left.sequenceNo - right.sequenceNo)
+  }
+  if (turn.status === 'completed' || turn.status === 'failed' || turn.status === 'canceled' || turn.reconciliationReason) {
+    const terminalKey = `${turn.conversationId}:${turn.turnId ?? turn.clientMessageId}:${turn.status}:${turn.reconciliationReason ?? ''}`
+    if (lastRuntimeTerminalKey !== terminalKey) {
+      lastRuntimeTerminalKey = terminalKey
+      void refreshConversationFromSync(turn.conversationId)
+      void refreshContextStatus(turn.conversationId)
+      if (turn.status === 'failed') message.error(turn.error?.message || '模型生成失败')
+      if (turn.status !== 'running' && turn.status !== 'preparing') activeStopTarget = undefined
+    }
+  }
+  if (turn.status === 'failed' && !turn.turnId && active?.request.clientMessageId === turn.clientMessageId) {
+    void handleSubmitFailure(new Error(turn.error?.message || '发送失败'), active.request, false, undefined, false)
+  }
+}
+async function refreshConversationFromSync(conversationId: string): Promise<void> {
+  const conversation = conversations.value.find((item) => item.id === conversationId)
+  if (!conversation) return
+  try {
+    const result = await synchronizeChatConversation({ systemAccountId: conversation.systemAccountId, conversationId, dependencies: syncDependencies })
+    if (result.state === 'not_found') {
+      conversations.value = conversations.value.filter((item) => item.id !== conversationId)
+      if (selectedConversationId.value === conversationId) messages.value = []
+      return
+    }
+    if (result.state === 'forbidden') {
+      if (selectedConversationId.value === conversationId) messages.value = []
+      return
+    }
+    replaceConversation({ ...conversation, messageRevision: result.messageRevision, activeTurnId: result.syncHead.activeTurn?.turnId })
+    if (!disposed && selectedConversationId.value === conversationId) {
+      messages.value = result.messages
+      hasOlderMessages.value = result.messages.length === 100
+    }
+    if (result.syncHead.activeTurn) {
+      const active = result.syncHead.activeTurn
+      const assistant = result.messages.find((item) => item.id === active.assistantMessageId)
+      const user = result.messages.find((item) => item.turnId === active.turnId && item.role === 'user')
+      chatGenerationRuntime.attach({
+        systemAccountId: conversation.systemAccountId,
+        conversationId,
+        clientMessageId: user?.clientMessageId,
+        turnId: active.turnId,
+        assistantMessageId: active.assistantMessageId,
+        projection: assistant
+      })
+    } else {
+      const running = chatGenerationRuntime.get(conversation.systemAccountId, conversationId)
+      if (running?.turnId) chatGenerationRuntime.forget(conversation.systemAccountId, conversationId, running.turnId)
+      if (selectedConversationId.value === conversationId) generating.value = false
+    }
+    cacheBroadcast.publish({ systemAccountId: conversation.systemAccountId, conversationId, messageRevision: result.messageRevision })
+  } catch (error) {
+    if (!disposed && selectedConversationId.value === conversationId) console.error('[chat-sync]', error)
+  }
+}
+function cloneMessage(value: ChatMessage): ChatMessage {
+  return JSON.parse(JSON.stringify(value)) as ChatMessage
+}
+async function removeConversation(id: string): Promise<void> { try { const conversation = conversations.value.find((item) => item.id === id); await chatApi.deleteConversation(id); if (conversation) await localCache.deleteConversation(conversation.systemAccountId, id); conversations.value = conversations.value.filter((item) => item.id !== id); if (selectedConversationId.value === id) { selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {
   if (generating.value || submissionBlocked.value) { composer.value?.restore(payload.snapshot); return }
   if (!selectedConversation.value || !selectedModel.value || modelsLoading.value) {
@@ -581,10 +705,7 @@ function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSO
     return
   }
   const content = payload.blocks.map((item) => item.type === 'input_image' ? '[图片]' : item.text).join('\n')
-  const sendSettled = sendMessage(content, payload.snapshot, payload.blocks)
-  activeSendSettled = sendSettled
-  const clearActiveSend = () => { if (activeSendSettled === sendSettled) activeSendSettled = undefined }
-  void sendSettled.then(clearActiveSend, clearActiveSend)
+  void sendMessage(content, payload.snapshot, payload.blocks)
 }
 function beginTurnEdit(messageItem: ChatMessage): void {
   if (generating.value || submissionBlocked.value || editingTurn.value) return
@@ -888,8 +1009,54 @@ function sortConversations(): void { conversations.value.sort((left, right) => N
 function formatDetailTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false }) }
 function resetModelControls(): void { selectedReasoningEffort.value = defaultChatReasoningEffort(selectedModelOption.value); selectedServiceTier.value = defaultChatServiceTier(selectedModelOption.value) }
 watch(selectedModel, resetModelControls)
-onMounted(() => { updateMobile(); window.addEventListener('resize', updateMobile); window.addEventListener('click', handleWindowConversationMenuDismiss); window.addEventListener('blur', handleWindowConversationMenuDismiss); contextStatusTimer = window.setInterval(() => { void refreshContextStatus() }, 5_000); void loadInitial() })
-onBeforeUnmount(() => { disposed = true; conversationLoadEpoch += 1; window.removeEventListener('resize', updateMobile); window.removeEventListener('click', handleWindowConversationMenuDismiss); window.removeEventListener('blur', handleWindowConversationMenuDismiss); if (pendingConfirmationTimer !== undefined) { window.clearTimeout(pendingConfirmationTimer); pendingConfirmationTimer = undefined }; if (contextStatusTimer !== undefined) { window.clearInterval(contextStatusTimer); contextStatusTimer = undefined }; streamController?.abort() })
+function activateChatPage(): void {
+  if (pageActive || disposed) return
+  pageActive = true
+  updateMobile()
+  window.addEventListener('resize', updateMobile)
+  window.addEventListener('click', handleWindowConversationMenuDismiss)
+  window.addEventListener('blur', handleWindowConversationMenuDismiss)
+  contextStatusTimer = window.setInterval(() => {
+    void refreshContextStatus()
+    const conversation = selectedConversation.value
+    if (conversation && chatGenerationRuntime.get(conversation.systemAccountId, conversation.id)?.reconciliationReason) void refreshConversationFromSync(conversation.id)
+  }, 5_000)
+  subscribeSelectedRuntime()
+  broadcastUnsubscribe = cacheBroadcast.subscribe((payload) => {
+    const conversation = selectedConversation.value
+    if (!conversation || payload.systemAccountId !== conversation.systemAccountId || payload.conversationId !== conversation.id || payload.messageRevision <= conversation.messageRevision) return
+    void refreshConversationFromSync(conversation.id)
+  })
+  if (pendingConfirmation.value) schedulePendingConfirmation()
+  if (initialLoaded && selectedConversationId.value) void refreshConversationFromSync(selectedConversationId.value)
+}
+function deactivateChatPage(): void {
+  if (!pageActive) return
+  pageActive = false
+  window.removeEventListener('resize', updateMobile)
+  window.removeEventListener('click', handleWindowConversationMenuDismiss)
+  window.removeEventListener('blur', handleWindowConversationMenuDismiss)
+  runtimeUnsubscribe?.()
+  runtimeUnsubscribe = undefined
+  subscribedRuntimeConversationId = undefined
+  broadcastUnsubscribe?.()
+  broadcastUnsubscribe = undefined
+  if (pendingConfirmationTimer !== undefined) { window.clearTimeout(pendingConfirmationTimer); pendingConfirmationTimer = undefined }
+  if (contextStatusTimer !== undefined) { window.clearInterval(contextStatusTimer); contextStatusTimer = undefined }
+  closeConversationMenu()
+}
+onMounted(() => {
+  activateChatPage()
+  void loadInitial().finally(() => { initialLoaded = true })
+})
+onActivated(activateChatPage)
+onDeactivated(deactivateChatPage)
+onBeforeUnmount(() => {
+  disposed = true
+  conversationLoadEpoch += 1
+  deactivateChatPage()
+  cacheBroadcast.close()
+})
 </script>
 
 <style scoped>

@@ -73,6 +73,8 @@ const dependencies: ChatConversationSyncDependencies = {
   removeRunningTurn: async () => undefined
 }
 const synchronized = await synchronizeChatConversation({ systemAccountId: 'sys_1', conversationId: 'conv_1', dependencies })
+assert.equal(synchronized.state, 'ready')
+if (synchronized.state !== 'ready') throw new Error('同步应返回 ready')
 assert.equal(synchronized.messageRevision, 6)
 assert.equal(headCall, 2, '同步期间 revision 持续变化时最多复查一次')
 assert.deepEqual(calls.filter((item) => item.startsWith('messages:')), [
@@ -92,5 +94,31 @@ await synchronizeChatConversation({
   }
 })
 assert.equal(unchangedBodyCalls, 0, 'revision 相等时不得请求消息正文')
+
+let deletedOnNotFound = 0
+const notFound = await synchronizeChatConversation({
+  systemAccountId: 'sys_1',
+  conversationId: 'conv_1',
+  dependencies: {
+    ...dependencies,
+    getSyncHead: async () => { throw { response: { status: 404 } } },
+    deleteConversation: async () => { deletedOnNotFound += 1 }
+  }
+})
+assert.equal(notFound.state, 'not_found')
+assert.equal(deletedOnNotFound, 1, '权威 404 必须删除当前账户下的会话缓存')
+
+let deletedOnForbidden = 0
+const forbidden = await synchronizeChatConversation({
+  systemAccountId: 'sys_1',
+  conversationId: 'conv_1',
+  dependencies: {
+    ...dependencies,
+    getSyncHead: async () => { throw { response: { status: 403 } } },
+    deleteConversation: async () => { deletedOnForbidden += 1 }
+  }
+})
+assert.equal(forbidden.state, 'forbidden')
+assert.equal(deletedOnForbidden, 0, '普通 403 只隐藏正文，必须保留重新认证后可复用的本地缓存')
 
 console.log('AI 问答 IndexedDB cache-first 与 revision 差异同步回归通过')

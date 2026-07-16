@@ -92,7 +92,11 @@ const chatApiSource = readFileSync('../frontend/src/api/domains/chat.ts', 'utf8'
 assert.match(chatApiSource, /beforeIsPinned\?:\s*boolean/, '会话 API 游标必须包含置顶维度')
 assert.match(chatViewSource, /loadMoreConversations/, '会话列表必须允许访问第 51 个及更早会话')
 assert.match(chatViewSource, /beforeIsPinned:\s*last\.isPinned/, '加载更多必须传递完整置顶游标')
-assert.match(chatViewSource, /startChatConversationLoad\(\{[\s\S]{0,300}listMessages[\s\S]{0,300}listModels/, '页面必须并行启动消息主通道与模型旁路')
+const loadStartIndex = chatViewSource.indexOf('const conversationLoad = startChatConversationLoad({')
+const syncIndex = chatViewSource.indexOf('synchronizeChatConversation({', loadStartIndex)
+const modelIndex = chatViewSource.indexOf('loadModels: () => chatApi.listModels(id)', loadStartIndex)
+assert.ok(loadStartIndex >= 0 && syncIndex > loadStartIndex && modelIndex > syncIndex, '页面必须在同一独立加载通道中启动 cache-first 消息同步与模型旁路')
+assert.match(chatViewSource, /readConversation[\s\S]{0,900}messages\.value = cached\.value\.messages[\s\S]{0,1200}synchronizeChatConversation/, '页面必须先渲染 IndexedDB 可见历史，再请求轻量 sync head')
 assert.match(chatViewSource, /await conversationLoad\.messages[\s\S]{0,500}messages\.value = messageItems[\s\S]{0,900}conversationLoad\.models\.then/, '页面必须先选择并渲染消息，再异步应用模型列表结果')
 
 console.log('AI 问答会话与历史加载 epoch 回归通过')

@@ -244,6 +244,16 @@ export class ChatGenerationRuntime {
     this.activateAccount(systemAccountId)
   }
 
+  forget(systemAccountId: string, conversationId: string, expectedTurnId?: string): boolean {
+    const key = runtimeKey(systemAccountId, conversationId)
+    const turn = this.turns.get(key)
+    if (!turn || (expectedTurnId !== undefined && turn.turnId !== expectedTurnId)) return false
+    this.releaseConnection(turn)
+    this.turns.delete(key)
+    this.notify(key)
+    return true
+  }
+
   close(systemAccountId?: string): void {
     for (const [key, turn] of this.turns) {
       if (systemAccountId !== undefined && turn.systemAccountId !== systemAccountId) continue

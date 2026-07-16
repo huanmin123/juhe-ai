@@ -40,7 +40,7 @@ const lifecycle = await reconcileSequence([
   { state: 'accepted', turnId: 'turn_1', assistantStatus: 'canceled' }
 ])
 assert.deepEqual({ accepted: lifecycle.result.accepted, terminal: lifecycle.result.terminal, status: lifecycle.result.assistantStatus, statusCalls: lifecycle.statusCalls, stoppedTurnIds: lifecycle.stoppedTurnIds }, {
-  accepted: true, terminal: true, status: 'canceled', statusCalls: 4, stoppedTurnIds: ['turn_1']
+  accepted: true, terminal: true, status: 'canceled', statusCalls: 4, stoppedTurnIds: []
 }, 'not_found/preparing/accepted streaming 必须最终等待助手终态')
 assert.deepEqual(lifecycle.waits, [100, 200, 350])
 
@@ -149,7 +149,7 @@ assert.deepEqual({
   turnId: 'turn_started_before_disconnect',
   assistantStatus: 'streaming'
 }, 'SSE message.started 是权威 accepted 事实，同一轮 reconcile 内连续 not_found 也不得降级')
-assert.ok(firstAcceptedFactStops.length > 0 && firstAcceptedFactStops.every((turnId) => turnId === 'turn_started_before_disconnect'), '已知 accepted 后只能精确停止原 turn')
+assert.deepEqual(firstAcceptedFactStops, [], '已知 accepted 后必须交给 runtime 续跑，确权流程不得停止')
 
 let secondAcceptedFactCalls = 0
 const secondAcceptedFactStops: string[] = []
@@ -171,7 +171,7 @@ assert.deepEqual({ accepted: secondAcceptedFact.accepted, turnId: secondAccepted
   turnId: 'turn_started_before_disconnect',
   assistantStatus: 'streaming'
 }, '上一轮后台确权的 accepted 事实必须跨多次 reconcile 保持单调')
-assert.ok(secondAcceptedFactStops.length > 0 && secondAcceptedFactStops.every((turnId) => turnId === 'turn_started_before_disconnect'), '跨轮重试也只能精确停止原 turn')
+assert.deepEqual(secondAcceptedFactStops, [], '跨轮重试也不得停止已接受 turn')
 
 type RecoveryPendingSubmission = ChatPendingSubmission & { acceptedAssistantStatus?: ChatMessage['status'] }
 type PendingRecoveryAction = {
