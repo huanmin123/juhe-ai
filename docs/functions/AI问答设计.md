@@ -1,7 +1,7 @@
 # AI 问答设计
 
 > 本文定义 `juhe-ai` 第一版 AI 问答功能的目标架构、页面交互、接口、存储、流式协议、安全边界和验收口径。
-> 当前状态：AI 问答 MVP、Tiptap 输入、Responses 原生工具、版本化系统提示、极简 Markdown 消息流、最近完整成功轮次重编辑（含图片资产）、multipart 图片资产、隐藏图片说明、checkpoint + recent suffix 和主动压缩均已在隔离分支实现并完成完整验收；验收追踪见 [AI 问答上下文管理设计](AI问答上下文管理设计.md) 与 PLAN-0095。
+> 当前状态：AI 问答 MVP、Tiptap 输入、Responses 原生工具、版本化系统提示、极简 Markdown 消息流、最近完整成功轮次重编辑（含图片资产）、multipart 图片资产、隐藏图片说明、checkpoint + recent suffix、主动压缩和上游 Prompt Cache 稳定前缀均已在隔离分支实现并完成完整验收；见 [BUG-0111](../bug/问题-0111-AI问答破坏上游前缀缓存.md)。验收追踪见 [AI 问答上下文管理设计](AI问答上下文管理设计.md) 与 PLAN-0104。
 
 ## 1. 功能定位
 
@@ -25,13 +25,15 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 | API Key | 新建会话时选择当前用户自己的 API Key，会话创建后固定且不可更换 |
 | 模型 | 每轮都可以切换，但只能选择该 API Key 当前可用模型 |
 | 上下文 | 服务端使用独立 checkpoint + recent suffix；软水位异步压缩、硬水位发送前压缩，并始终使用模型目录最大有效输入窗口 |
+| 上游缓存 | 首期只为模型目录明确支持的 OpenAI 请求生成会话级稳定 opaque `prompt_cache_key`；保持 canonical prefix，并复用网关软亲和，未知兼容上游不发送 |
 | 输入 | 使用 Tiptap 3 最小编辑器，支持 Markdown 文本、撤销/重做、图片粘贴预览和 `/` 命令入口 |
 | 输出 | 支持安全 Markdown、列表、表格、代码块、LaTeX、Mermaid 和 HTTPS Markdown 图片 |
 | 消息列表 | 必须使用支持动态高度的虚拟列表和游标分页 |
 | 工具 | 不手写搜索、天气或 Shell；透传模型/上游原生 Responses tools，并展示工具事件 |
 | 历史操作 | 只支持重新编辑最近一个完整用户轮次；不支持任意历史分支、分享或多人会话 |
 | 数据模式 | standalone 使用独立 `juhe-ai-chat.sqlite3`，performance 使用独立 `juhe_chat` schema；两者使用同一业务契约 |
-| 容量门禁 | 每个用户最近 7 天聊天正文默认最多 2 GiB；超限后禁止继续发送，但允许读取、停止和删除 |
+| 会话门禁 | 每用户最多 50 个现存会话，每会话最多接受 50 个用户轮次；均可通过运行配置调整，达到上限返回稳定 409 机器码 |
+| 容量门禁 | 每个用户当前聊天保留窗口（默认 3 天）正文默认最多 2 GiB；超限后禁止继续发送，但允许读取、停止和删除 |
 
 ## 3. MVP 范围
 
@@ -43,7 +45,7 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 - 按 API Key 获取可用模型，并允许每轮切换模型。
 - Markdown 编辑、撤销/重做、图片原位粘贴与 multipart 上传、图文提问、流式回答、停止生成和中文错误提示。
 - Responses 内置工具事件透传与工具过程展示；不在本模块执行未注册的本地工具。
-- 最近 7 天渲染历史、图片资产、上下文 checkpoint 和后台有界清理。
+- 当前配置保留期（默认 3 天）的渲染历史、图片资产、上下文 checkpoint 和后台有界清理。
 - 上游真实 input usage、本地 tokenizer 兜底、最终 JSON 字节预检和只读上下文圆环。
 - Markdown、GFM 列表 / 表格、代码高亮、LaTeX、Mermaid 和 HTTPS 图片展示。
 - 动态高度虚拟列表、顶部加载历史、底部跟随和滚动位置保持。
@@ -54,7 +56,7 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 - 文件附件、知识库、本站自建联网搜索和语音输入；Responses 可使用上游实际支持的 Hosted Web Search。
 - MCP、Skill、站内 Function Tool、工具审批和工具执行 worker。
 - system prompt、temperature、top_p 等高级模型参数的用户配置；产品内置 Markdown 默认提示不开放给用户编辑。
-- 跨会话长期记忆和超过 7 天的聊天保留；当前结构化摘要只服务当前会话的 7 天保留边界。
+- 跨会话长期记忆和超过当前配置保留期的聊天保留；当前结构化摘要只服务当前会话的 当前配置保留边界。
 - 任意历史消息编辑、消息分支、指定旧回答重新生成、会话分享、多人协作。
 - 管理员读取其他用户聊天正文的管理页面或接口。
 - Go 后端实现或 Node / Go 双写。
@@ -149,10 +151,10 @@ AI 问答路由使用沉浸布局：隐藏全局 Header、清除内容区外边�
 
 ### 6.3 发送与停止
 
-- `Enter` 发送，`Shift + Enter` 换行；输入法组合输入期间不得误发送。
+- 普通段落中 `Enter` 发送，`Shift + Enter` 换行；列表、引用和代码块等结构块中的 `Enter` 交给编辑器继续当前结构，`Ctrl + Enter` / `Cmd + Enter` 在任意块中发送。输入法组合输入期间不得误发送。
 - 服务端接受轮次并发出 `message.started` 后，前端投影用户消息和助手生成中状态；接受前不伪造已提交消息。
 - 生成、停止或待确认期间统一禁止再次发送、编辑和切换会话，避免请求上下文跨会话漂移。
-- 点击停止时先中止当前 `fetch`，再调用 `POST /conversations/:id/stop` 让服务端权威收口；停止 HTTP 与旧发送对账完成前保持门禁。
+- 点击停止时先中止当前 `fetch`，再携带当前 `clientMessageId` 和已知 `turnId` 调用 `POST /conversations/:id/stop`；服务端只允许条件命中的准备或轮次收口，停止 HTTP 与旧发送对账完成前保持门禁。
 - 客户端断流或终态不确定时按 `clientMessageId` 刷新对账；无法确认时进入后台重试的待确认状态，不能直接恢复草稿造成重复计费。
 
 ### 6.4 会话列表
@@ -192,7 +194,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - Markdown 渲染按约 100ms 节流；消息完成后立即做一次最终渲染。
 - 用户位于底部容差范围内时自动跟随；主动向上滚动后停止抢占滚动，并显示“回到底部”图标按钮。
 - 顶部加载前记录首个可见 `messageId` 和像素偏移，prepend 后恢复锚点。
-- 历史消息使用 `beforeSequenceNo` 游标分页，不能一次加载最近 7 天全部消息。
+- 历史消息使用 `beforeSequenceNo` 游标分页，不能一次加载当前保留期全部消息。
 - 首屏默认读取最新 50 条；当前页面为减少顶部往返首次读取 100 条，后续历史同样最多 100 条，虚拟列表 overscan 保持有界。
 
 ## 8. 富文本渲染
@@ -235,11 +237,13 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 
 输入区改为独立 `AIComposer.vue`，不再继续扩展 `a-textarea`。编辑器使用 Tiptap 3 / ProseMirror 的事务和历史栈，业务层只维护聊天需要的内容投影。
 
-- `Enter` 发送，`Shift+Enter` 换行；输入法组合状态期间不发送。
+- 普通段落中 `Enter` 发送，`Shift+Enter` 换行；无序列表、有序列表、引用和代码块中的 `Enter` 遵循编辑器原生结构编辑，`Ctrl+Enter` / `Cmd+Enter` 在任意状态发送。输入法组合状态期间不发送。
 - 撤销、重做、选区、粘贴和拖放由编辑器内核处理。
-- 文本以 Markdown 语义输入；图片是行内编辑节点，保持“文字、图片、文字”的原始顺序。
+- 文本以 Markdown 语义输入；在块首输入 `- `、`1. `、`> `、代码围栏等 Markdown 前缀时由 StarterKit 输入规则创建真实列表、引用或代码块，后续 `Enter` 按该块的编辑器规则处理。图片是行内编辑节点，保持“文字、图片、文字”的原始顺序。
 - 图片粘贴后立即走 multipart 资产上传，编辑器节点只保存 `assetId` 和私有预览 URL；发送请求只传资产引用，不把 Data URL 放入聊天 JSON。提交成功后释放 `File` 与临时 Blob URL，失败暂存也受数量和总字节上限约束。
-- `/` 触发命令建议菜单；第一阶段命令只产生结构化输入意图，不执行本地命令。
+- 同一次富文本粘贴同时含文字和图片时，必须使用浏览器 DOM 结构按“文字、图片、文字”的原顺序插入，不能把全部文字移到图片前面；图片大小/数量过滤保留原剪贴板文件槽位，远程装饰图不消耗本地图片槽位，避免后一张合法图片错绑到前一个 HTML 图片位置。只有剪贴板没有 HTML 图片位置时才回退为文字后追加图片。图片节点通过 Backspace/Delete 或按钮离开文档后统一取消仍在进行的上传；切换会话、清空或离开页面会删除已上传但未提交的资产，上传响应晚于卸载时也要补偿删除。有序列表编号和嵌套层级在 Tiptap JSON 转 Markdown 时必须保持，并通过标准 Markdown 解析器验证。
+- `/` 只在当前普通文本块的光标前触发命令建议菜单；当前命令为清空输入、插入代码块和添加图片。列表通过 Markdown 输入规则创建，不再提供独立 `/list` 命令。
+- 斜杠查询没有候选项时，Enter 回到普通发送语义，不能被空命令菜单吞掉。
 - 发送前保存 Tiptap JSON 快照；发送成功清空编辑器，失败恢复快照，停止生成不恢复已经提交的用户消息。
 - 编辑器输出转换为 `input_text` / `input_image` 内容块；纯文本请求仍可降级为现有 `content` 字段。
 - 输入框不显示独立工具栏；撤销/重做使用编辑器原生快捷键，图片通过粘贴或 `/image`，交互说明合并到 placeholder。
@@ -276,7 +280,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - Mermaid 使用严格安全模式；生成 SVG 再经过允许 SVG profile 的清洗。
 - 表格、代码和长公式在窄屏横向滚动，不能撑破消息列。
 - 围栏代码块显示语言和复制按钮；复制操作不改变消息内容，也不触发重新渲染。
-- 外部图片即使不带 referrer 仍会向图片服务器暴露用户出口 IP；MVP 文档明确该边界，不把 7 天保留承诺解释为网络匿名。
+- 外部图片即使不带 referrer 仍会向图片服务器暴露用户出口 IP；MVP 文档明确该边界，不把 聊天保留承诺解释为网络匿名。
 
 ### 8.8 默认 Markdown 回答提示
 
@@ -300,7 +304,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 
 ### 8.9 最近一轮重新编辑
 
-只允许编辑当前会话最近一个完整成功轮次的用户消息，不建设任意历史分支：
+只允许编辑当前会话最近一个完整成功、失败或已停止轮次的用户消息，不建设任意历史分支：
 
 1. 用户悬浮或聚焦最近一条可编辑用户消息，点击编辑。
 2. 前端把该用户消息的 Tiptap 内容块恢复到输入框，原用户消息与对应助手回答降低强调，并显示“取消编辑”。
@@ -311,9 +315,10 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 
 约束：
 
-- 生成中、失败、取消、已过期或已经不是最近轮次的消息不能编辑。
+- 生成中、已过期或已经不是最近轮次的消息不能编辑；最近失败或已停止轮次可由用户显式编辑并重新生成，但产品不自动重试。
 - 编辑入口只出现在最近一个可编辑用户轮次，旧消息不显示编辑按钮。
 - 文本和已提交图片资产都可恢复到编辑器；图片继续引用原 `assetId`，替换事务会原子解绑旧轮次并绑定新轮次，不复制二进制或回退到 Data URL。
+- 后端在构造模型请求和触发可能计费的压缩前先校验 `replaceTurnId`，并从本次 history 显式排除旧用户消息与旧助手回答；单 DB service 进程还会先取得会话级发送准备占用，使另一标签页不能在预检与最终事务之间插入新轮次或制造无效收费压缩。多模态替换同时失效旧问答生成的图片说明。
 - 替换事务成功后旧轮次立即不可恢复；如果随后模型请求失败，保留新的失败轮次，不自动找回旧回答。
 - 替换第一轮且它仍是标题来源时，使用新用户文本重新生成会话标题。
 - 并发提交、目标轮次变化或会话正在生成统一返回 `409 chat_replace_conflict`，前端重新加载消息并保留当前草稿。
@@ -425,17 +430,40 @@ Content-Type: application/json
 ```
 
 - `clientMessageId` 必填且最长 100 字符；重复 ID 返回 `409 chat_message_already_exists`，不得再次请求上游。
-- `replaceTurnId` 可选，只允许最近纯文本完整成功轮次；冲突返回 `409 chat_replace_conflict`。
+- `replaceTurnId` 可选，只允许最近完整成功、失败或已停止的成对轮次；生成中或旧轮次冲突返回 `409 chat_replace_conflict`。
 - `content` 最大 `192 KiB`；相邻文本在图片边界之间合并，结构块最多 9 个（4 张图片与 5 段交错文本），当前支持 `input_text` / `input_image`，图片只允许 Responses 路径。
 - `/my-chat` 使用独立 `24 MiB` JSON 上限以容纳 Base64 膨胀，但必须先经过 session 鉴权、登录用户限流和 DB service 准入控制；其他 System API 继续保持 `256 KiB`。
 - 同一会话同时只允许一个生成任务。服务端接受后才发送 `message.started`；接受后的初始化失败必须把占位助手消息终结为失败。
 
 ```http
 POST /__aisys__/api/my-chat/conversations/:id/stop
+Content-Type: application/json
+
+{
+  "clientMessageId": "client_uuid",
+  "turnId": "turn_xxx"
+}
 ```
 
-- 仅会话所有者可以停止当前活动轮次；接受停止返回 `202`。
-- 没有活动轮次返回 `404`，页面仍需完成旧请求对账后再解除发送门禁。
+- 仅会话所有者可以停止匹配的准备请求或活动轮次；`turnId` 与 `clientMessageId` 至少提供一个，接受停止返回 `202`。
+- preparing 阶段按 `clientMessageId` 中断当前请求等待，客户端断开也从首个数据库等待前开始记录取消；已启动的共享压缩任务可按 CAS / 租约在后台完成或失效，但被取消的主请求不得继续进入流式上游。进入 accepting 边界后同步登记可取消句柄，即使已经落库，任何后续异常也必须收口为明确终态。
+- 已接受轮次按期望 `turnId` 原子取消；旧轮次 stop 遇到新轮次时不得误杀新轮次，并发或重复 stop 对已终态轮次保持幂等。
+- 没有匹配的准备或轮次返回 `404`，期望轮次已变化返回 `409 chat_turn_mismatch`；页面仍需完成旧请求对账后再解除发送门禁。
+
+### 10.5 提交状态确权
+
+```http
+GET /__aisys__/api/my-chat/conversations/:id/submissions/:clientMessageId
+```
+
+- 该接口是发送断流后的权威事实入口，不通过最近 100 条消息列表反查幂等状态。
+- `preparing` 表示同一 `clientMessageId` 已进入服务端预检但尚未接受轮次；自动确权只能等待，用户停止时必须按该 `clientMessageId` 精确取消，不能恢复草稿后重复提交。
+- `accepted` 返回 `turnId` 与 `assistantStatus`，且是跨 SSE、页面重载和多轮后台确权的单调事实；`message.started`、持久化 started turn 和上一轮状态都必须作为下一轮的初始 accepted 事实，后续临时错误、`preparing` 或 `not_found` 不能把它降级为未接受。`streaming` 必须按该 `turnId` 条件 stop 并持续确权到 `completed`、`failed` 或 `canceled`。
+- `not_found` 表示当前进程没有对应准备状态且幂等登记不存在；前端至少连续确认三次且跨越 1 秒 grace 后才能恢复草稿，任何临时错误或 preparing 都重置连续计数。
+- 请求上下文在 POST 前写入当前标签页的 `sessionStorage`，页面重载后继续按相同 `clientMessageId` 确权；记录使用 v2 账号分区 key 并严格校验 `systemAccountId`，防止同标签页切换账号泄露上一账号草稿。
+- 待确认会话不在首屏 50 条时按 ID 定向读取，不能把分页未命中误判为删除，也不能自动把图片资产草稿迁移到其他会话。
+- 只保存有界编辑器 JSON 和定位字段，不保存凭据、图片二进制或上游请求体；明确终态应用完成前持续保持发送、编辑和会话切换门禁。
+- 服务重启后若幂等登记已存在但进程内 stream 句柄丢失，stop 在事务中按期望 `turnId` 原子收口为 `canceled`，不依赖较晚的保留清理任务。
 
 ## 11. 内部 SSE 协议
 
@@ -465,7 +493,7 @@ data: {"messageId":"msg_xxx","code":"gateway_stream_failed","message":"模型请
 
 - 每 15 秒发送 SSE comment heartbeat。
 - Chat Completions 以 `[DONE]` 与 finish reason 收口；Responses 必须收到 `response.completed` 才能成功。HTTP EOF 不能替代协议终态。
-- Chat Completions 与 Responses 的单事件和 pending block 最大 `64 KiB`、单轮最多 2048 个事件；Responses reasoning/tool 辅助过程累计最大 `192 KiB`。超限进入失败终态，不能把无界过程写入内存或消息结构。
+- Chat Completions 与 Responses 的单事件和 pending block 最大 `64 KiB`；共享的单轮事件预算默认 `65536`，可通过 `JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS` 在 `2048..262144` 内调整。Responses reasoning/tool 辅助过程累计最大 `192 KiB`。collector 只保留事件计数和既有有界内容，空间复杂度不随事件数量增长；任一边界超限都进入失败终态，不能把无界过程写入内存或消息结构。
 - 非 SSE 的模型目录响应最大 `4 MiB`，上游错误响应最大 `64 KiB`；必须边读流边计数并在超限时取消 reader，不能先完整 `response.text()` 后再截断。
 - 用户主动取消后浏览器连接已经关闭，不依赖 `message.canceled` 送达；服务端落库状态为 `canceled`，页面刷新后以存储状态为准。
 - 工具 item 完整持久化供排障和历史恢复，普通 UI 按规范化动作聚合，不直接显示原始 ID 或 JSON。
@@ -477,7 +505,7 @@ data: {"messageId":"msg_xxx","code":"gateway_stream_failed","message":"模型请
 - 支持多行 `data:`、comment heartbeat、Chat `[DONE]` 与 Responses 事件序列。
 - 识别文本、reasoning、工具生命周期、完成、流内失败和无终止事件断流。
 - 解析器设置单事件、事件数和累计正文字节上限，禁止无界拼接。
-- Chat Completions 和 Responses 使用相同的事件/pending 上限基线；任何协议新增解析器时都必须同时补无分隔大块、事件洪泛、截断终态和 UTF-8 跨 chunk 回归。
+- Chat Completions 和 Responses 使用相同的运行时事件预算与固定 pending 上限基线；提高事件预算只用于容纳合法长输出，不取消 `64 KiB` 单事件、`192 KiB` 累计内容和严格配置范围形成的 DoS 防护。任何协议新增解析器时都必须同时补无分隔大块、默认高事件流、显式低预算拒绝、截断终态和 UTF-8 跨 chunk 回归。
 
 ## 12. 数据模型与存储拓扑
 
@@ -487,7 +515,7 @@ MVP 只新增会话、消息、发送幂等登记和紧凑容量窗口四类聊�
 - performance：在现有 PostgreSQL 集群新增独立 `juhe_chat` schema；会话元数据使用普通表，消息事实表按 UTC `created_at` 日分区。
 - Redis 只承担短期取消信号、SSE 协调或瞬时门禁，不保存聊天正文，也不是会话事实来源。
 - 聊天与业务库保持逻辑隔离，但 `system_account_id`、`api_key_id` 仍引用现有业务身份语义；跨库关联由受控 repository 查询完成，不在聊天请求路径扫描业务表。
-- 100 用户、每用户每月约 1 GiB 的估算下，7 天原始正文约 23 GiB；连同索引、WAL、膨胀和增长余量，生产磁盘按 60–80 GiB 起步并设置 70%/85% 容量告警。
+- 100 用户、每用户每月约 1 GiB 的估算下，默认 3 天原始正文约 10 GiB；连同索引、WAL、膨胀和增长余量，生产磁盘按 60–80 GiB 起步并设置 70%/85% 容量告警。
 
 ### 12.1 `chat_conversations`
 
@@ -502,6 +530,7 @@ MVP 只新增会话、消息、发送幂等登记和紧凑容量窗口四类聊�
 | `is_pinned` | 当前用户是否置顶，默认 false |
 | `last_model` | 最近一次已接受发送所选模型，可空 |
 | `next_sequence_no` | 下一消息序号，默认 1 |
+| `user_turn_count` | 已接受的普通用户轮次数，默认 0；替换不增加，失败和取消仍计数 |
 | `active_turn_id` | 当前生成轮次；空表示无生成任务 |
 | `active_started_at` | 当前生成开始时间，用于崩溃恢复 |
 | `last_message_at` | 稳定列表排序时间 |
@@ -534,8 +563,9 @@ PostgreSQL 中 `chat_conversations` 不分区；它是小型元数据表。会�
 | `finish_reason` | 正常完成原因，可空 |
 | `error_code` | 失败摘要码，可空 |
 | `created_at`、`completed_at` | UTC 时间 |
-| `content_bytes` | `content_text` 的 UTF-8 字节数，用于容量窗口增量维护 |
-| `expires_at` | 创建时间加 7 天 |
+| `content_bytes` | `content_text` 与已序列化 `content_blocks_json` 的实际 UTF-8 字节数 |
+| `storage_reserved_bytes` | 仅 `streaming` 助手消息非 0，记录本轮已原子占用的助手持久化上界；任何终态必须为 0 |
+| `expires_at` | 创建时间加配置的保留天数 |
 
 约束和索引：
 
@@ -543,13 +573,14 @@ PostgreSQL 中 `chat_conversations` 不分区；它是小型元数据表。会�
 - `(conversation_id, turn_id)`。
 - `(expires_at, id)`。
 - `role=user` 时 `client_message_id` 非空且状态只能是 `completed`；`role=assistant` 时 `client_message_id` 为空。
+- `role=assistant,status=streaming` 时 `storage_reserved_bytes > 0`；用户消息和所有助手终态的 `storage_reserved_bytes = 0`。
 - 同一轮用户和助手占位消息在同一事务中使用相同 `created_at` 与 `expires_at`，保证保留窗口一致。
 
 PostgreSQL 约束：
 
 - `chat_messages` 按 UTC `created_at` 创建每日 range partition，写入前确保当天和下一天分区存在。
 - 主键包含分区键；PostgreSQL 不能在日分区表上直接建立不含分区键的跨分区唯一约束，因此会话序号由锁定 `chat_conversations` 后原子分配，发送幂等由非分区登记表保证。
-- 清理时先直接 drop 已完全早于 7 天窗口的日分区；最老的部分重叠分区再按 `(expires_at, id)` 游标小批删除，保证精确滚动 `7 × 24` 小时。
+- 清理时先直接 drop 已完全早于当前配置保留窗口的日分区；最老的部分重叠分区再按 `(expires_at, id)` 游标小批删除，保证精确滚动 `retentionDays × 24` 小时。
 - SQLite 不模拟分区，使用 `(expires_at, id)` 覆盖索引和固定小批删除；不能在线执行阻塞式全库 `VACUUM`。
 
 ### 12.3 `chat_message_idempotency`
@@ -576,11 +607,13 @@ PostgreSQL 约束：
 | `system_account_id` | 用户 ID |
 | `bucket_date` | UTC 日期 |
 | `content_bytes` | 当日已持久化聊天正文 UTF-8 字节数 |
+| `reserved_bytes` | 当日仍在生成的助手消息已预留字节数 |
 | `updated_at` | UTC 时间 |
 
 - 主键 `(system_account_id, bucket_date)`。
-- 消息最终落库、取消、失败截断和删除时在同一 DB service 事务内增量调整对应窗口。
-- 发送门禁只读取当前用户最近 7 个日桶，最多 8 行，默认硬上限 `2 GiB`；不扫描消息明细。
+- 接受轮次时在用户配额锁内同时增加用户消息 `content_bytes` 和助手 `reserved_bytes`；容量判断始终使用 `SUM(content_bytes + reserved_bytes)`。
+- 助手正常完成、失败或取消时，在同一事务内将预留结算为实际 `content_bytes` 并释放差额；条件 stop、崩溃恢复、替换轮次和 retention 也必须同步释放或重建 reservation。
+- 发送门禁只读取当前用户当前保留窗口对应的有界日桶，最多 8 行，默认硬上限 `2 GiB`；不扫描消息明细。
 - 超限返回 `409 chat_storage_quota_exceeded`，允许用户继续读取、停止生成和删除会话；清理或删除释放容量后可继续发送。
 - 用户估算明显偏离时再通过系统设置调整上限；MVP 不做按租户分库分表和复杂计费套餐。
 
@@ -592,14 +625,14 @@ PostgreSQL 约束：
 
 1. 校验登录用户、会话归属、API Key 当前状态和输入大小。
 2. 在 DB service 单个事务中检查 `active_turn_id` 和 `clientMessageId`。
-3. 分配两个连续 `sequence_no`，写入已完成用户消息和 `streaming` 助手占位消息。
+3. 按当前配置保留窗口的 `content_bytes + reserved_bytes` 检查硬配额；在同一事务中分配两个连续 `sequence_no`，写入已完成用户消息和带 448 KiB reservation 的 `streaming` 助手占位消息。
 4. 设置会话 `active_turn_id`、`active_started_at`、`last_model` 和 `last_message_at`。
 5. 按完整成功轮次组装上下文。
 6. 使用绑定的真实 API Key 调用本机网关。
 7. delta 在内存中有界合批并向页面流式发送，不按 token 写数据库。
-8. 正常结束时一次更新助手消息为 `completed` 并清除 `active_turn_id`。
-9. 用户停止时保存已收到正文为 `canceled`，清除 `active_turn_id`。
-10. 失败时保存有界部分正文和错误码为 `failed`，清除 `active_turn_id`。
+8. 正常结束时先验证助手实际持久化字节不超过 reservation，再在单事务中结算窗口、更新为 `completed` 并清除 `active_turn_id`。
+9. 用户停止时保存有界部分正文为 `canceled`，结算预留并清除 `active_turn_id`。
+10. 失败时保存有界部分正文和错误码为 `failed`，结算预留并清除 `active_turn_id`；若序列化或实际字节超过 reservation，先提交安全 `failed` 终态与预留释放，再在事务外向调用方返回稳定错误，不得遗留 `streaming`。
 
 ### 13.2 幂等
 
@@ -639,7 +672,7 @@ PostgreSQL 约束：
 - 结果按模型入口还原为 OpenAI Chat messages 或 Responses input；图片说明仍保持原图文顺序。
 - 当前用户问题始终保留，不计入历史轮次数量。
 
-checkpoint 安装不删除或改写 7 天页面历史；重复压缩必须继承上一代全部结构化记忆，失败则继续使用旧 checkpoint。
+checkpoint 安装不删除或改写 当前保留期页面历史；重复压缩必须继承上一代全部结构化记忆，失败则继续使用旧 checkpoint。
 
 ### 14.3 当前 Token 预算与替换目标
 
@@ -661,18 +694,32 @@ checkpoint 安装不删除或改写 7 天页面历史；重复压缩必须继承
 - 上游真实 input usage 优先，本地 tokenizer / 保守估算兜底并标记 estimated；不能把累计计费用量当当前 active context。
 - 超出软/硬水位时按完整轮次生成结构化 checkpoint 并保留 recent suffix，不能留下半轮消息或静默删除页面历史。
 - 固定提示加当前输入已经超过预算时，在调用网关前返回明确中文错误，不能只清空历史后继续发送。
-- 自动压缩和图片隐藏说明使用会话绑定的真实 API Key 进入现有网关，继续遵守路由、额度、并发、计费、审计和 7 天保留边界。
+- 自动压缩和图片隐藏说明使用会话绑定的真实 API Key 进入现有网关，继续遵守路由、额度、并发、计费、审计和 当前配置保留边界。
 
 客户端窗口选择、64K 历史上限、64 轮查询和 16K 未知模型回退已经删除；当前请求使用 checkpoint + recent suffix、真实 usage 优先的 token 预算和最终 JSON 字节预检。压缩成功后原子安装 checkpoint，失败保留旧上下文；完整边界见 [AI 问答上下文管理设计](AI问答上下文管理设计.md)。
 
-## 15. 7 天保留与审计边界
+### 14.4 上游 Prompt Cache 契约
+
+Prompt Cache 是网关调用成本与延迟优化，不替代本站 checkpoint，也不改变页面历史。当前实现对能力明确的模型生成会话级稳定 opaque `prompt_cache_key`，并让 Responses 的当前文本与历史文本始终保持 `input_text` block 形态。
+
+- canonical instructions 和稳定工具 schema 在前，checkpoint / 历史与新增轮次在后；普通轮次只追加，不重排前缀。
+- Responses 同一种语义始终使用同一种 block 表示；工具顺序、对象字段和空字段确定化。
+- 服务端按固定版本、系统账户、API Key 和会话生成 SHA-256 base64url opaque key；普通轮次不混入具体上游账户、分组、turn、trace、时间或 `context_revision`。
+- 当前只向模型目录明确声明支持的 OpenAI 目标发送该 key。Anthropic 的显式 `cache_control` breakpoint 必须等待独立模型能力字段并由供应商驱动插入；Gemini implicit / explicit cache 也由其驱动承接。未知 OpenAI-compatible 上游不能收到猜测字段。
+- key 继续走现有网关软亲和；账户异常、并发满或不可用时优先按既有规则回退，不能为保缓存硬绑账户。
+- 图片 observation、主动压缩、checkpoint 安装和图片 projection 换代会自然形成新的精确前缀，允许一次预期冷缓存；无需为此新增数据库 cache epoch。
+- 命中只以上游明确的 cached / cache read / cache write usage 为事实。自动化回归只证明 key、prefix、能力过滤和回退稳定，不等于真实命中或固定成本倍率。
+
+真实应用连续轮次第二轮输入 `10948` token，其中 `9856` token 为上游明确返回的缓存读取，命中率约 `90.0%`。供应商阈值、TTL、价格倍率和缓存形态均不统一，不能把本次比例或“节省十倍”写成全局常量。官方资料见 [OpenAI Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)、[Anthropic Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) 和 [Gemini Context caching](https://ai.google.dev/gemini-api/docs/caching)；完整设计与真实验收矩阵见 [AI 问答上下文管理设计](AI问答上下文管理设计.md)。
+
+## 15. 可配置聊天保留与审计边界
 
 ### 15.1 聊天数据保留
 
-聊天窗口固定定义为滚动 `7 × 24` 小时，数据库统一使用 UTC。
+聊天窗口固定定义为滚动 `retentionDays × 24` 小时，数据库统一使用 UTC。
 
-- 每条聊天消息 `expires_at = created_at + 7 天`。
-- 活跃会话可以持续超过 7 天，但页面和模型只能读取仍在保留期内的消息。
+- 每条聊天消息 `expires_at = created_at + retentionDays`（默认 3 天）。
+- 活跃会话可以持续超过当前配置保留期，但页面和模型只能读取仍在保留期内的消息。
 - 标题来源消息过期后，从仍保留的最早用户消息重新生成标题。
 - 会话已无消息时删除会话。
 - 没有消息的空会话超过 24 小时后删除。
@@ -681,13 +728,13 @@ checkpoint 安装不删除或改写 7 天页面历史；重复压缩必须继承
 
 ### 15.2 聊天与审计相互独立
 
-聊天 7 天规则只约束 `chat_conversations`、`chat_messages`、容量窗口、页面历史和后续模型上下文，不自动改变现有网关原始审计策略。
+聊天保留规则只约束 `chat_conversations`、`chat_messages`、容量窗口、页面历史和后续模型上下文，不自动改变现有网关原始审计策略。
 
 - 聊天模块按客户端身份使用网关；审计模块按网关统一规则记录该客户端调用。
 - AI 问答请求仍按普通网关请求记录使用记录和原始审计。
 - 删除会话或消息不会级联删除使用记录、原始审计和计费事实。
 - 不增加“内部请求可关闭审计正文”的签名开关，避免形成能绕过当前审计保全政策的特殊通道。
-- 如果未来产品要承诺“7 天后任何位置都不存在对话正文”，必须单独修改 [安全与日志策略](安全与日志策略.md) 和 [原始审计日志设计](原始审计日志设计.md)，并明确合规、排障和保全代价。
+- 如果未来产品要承诺“保留期结束后任何位置都不存在对话正文”，必须单独修改 [安全与日志策略](安全与日志策略.md) 和 [原始审计日志设计](原始审计日志设计.md)，并明确合规、排障和保全代价。
 
 这是对原会话方案的重要修正：不能仅凭聊天上下文保留期，暗中改变全局审计规则。
 
@@ -715,18 +762,22 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 
 - 网关已经负责建流前的安全切号和路由回退，Chat 模块不重复重试模型请求。
 - 一旦已有可见输出，Chat 模块绝不自动重新提交请求，避免重复回答和重复计费。
-- 用户人工重新发送会创建新轮次，不覆盖失败轮次。
+- 网络错误、`408`、`425`、`429` 和 `5xx` 才进入后台提交状态重试；其他确定性 `4xx` 立即按未接受处理并恢复草稿，`chat_message_already_exists` 例外，必须先查询提交状态。
+- 后台确权使用有上限的指数退避；`accepted + streaming` 和 `preparing` 始终保留门禁，只有消息列表已刷新到终态，或满足连续次数与时间 grace 的权威 `not_found` 才解除。
+- 用户在输入框普通重发会创建新轮次；只有通过最近失败轮次的“编辑并重新生成”入口，才携带 `replaceTurnId` 原位替换该失败轮次。
 - `finish_reason=length` 显示“回答达到长度限制”。
 - 内容策略终止显示明确中文状态，但不暴露上游敏感正文。
 
 ## 18. 性能与容量边界
 
 - 用户输入和单条助手正文都设置 `192 KiB` 上限；超过上限主动中断并保存明确错误。
+- 每个活动助手轮次的单一持久化 reservation 常量为 `448 KiB`：`192 KiB` 可见回答 + `192 KiB` 持久结构块目标 + `64 KiB` 序列化/安全余量。`2 GiB` 用户窗口理论上可容纳约 4681 个同时预留，不会先于实际网关并发限制成为瓶颈。
 - 网关流解析、页面 delta buffer 和最终消息 buffer 都必须有累计字节上限。
 - 消息列表只用游标分页和虚拟化，不支持深 offset 或整会话加载。
 - Chat API 不扫描使用记录做统计；成本、Token 和账户命中继续读取现有预聚合或使用记录页面。
 - 清理 worker 每批最多 1000 条过期消息，并限制每轮批次数；涉及会话标题重算时按本批去重会话 ID 批量处理，避免逐消息 N+1。
-- 容量判断只读取 `chat_user_storage_windows` 最近 7 个日桶；PostgreSQL 接受轮次时按 `system_account_id` 持有事务级配额锁，使跨会话“读取、判断、占用”原子化。禁止请求路径对消息表执行 `SUM`、`COUNT` 或全会话正文累计。
+- 容量判断只读取 `chat_user_storage_windows` 当前保留窗口对应的有界日桶的 `content_bytes + reserved_bytes`；PostgreSQL 接受轮次时按 `system_account_id` 持有事务级配额锁，使跨会话“读取、判断、占用”原子化。禁止请求路径对消息表执行 `SUM`、`COUNT` 或全会话正文累计。
+- 图片容量读取 `chat_user_asset_usage` 单行预聚合，当前限制每用户 2 GiB / 1024 个活动资产；创建和删除分别原子增减，未提交草稿不能绕过配额持续占盘。
 - 100 用户规模不做分库分表；当聊天物理数据持续达到 200–300 GiB，或聊天 I/O 已影响业务 schema 延迟时，优先迁移到独立 PostgreSQL database / cluster，再评估按 `system_account_id` 哈希分片。
 - AI 问答路由加载 KaTeX；Mermaid 仅在消息实际包含图表时动态加载。其他业务路由不加载两者。
 - 代码高亮只注册常用语言，未知语言按纯文本代码块展示。
@@ -742,10 +793,10 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - 同一 `clientMessageId` 不产生第二次网关请求。
 - 同会话并发发送返回 `409`，不同会话允许并发。
 - 同一用户不同会话并发占用容量时，配额检查串行化且最终窗口不得超过上限。
-- 只有最近一个完整成功轮次可以携带 `replaceTurnId`；文本与已提交图片资产均支持，旧轮次、生成中和并发替换返回 `409 chat_replace_conflict`。
+- 只有最近一个完整成功、失败或已停止轮次可以携带 `replaceTurnId`；文本与已提交图片资产均支持，旧轮次、生成中和并发替换返回 `409 chat_replace_conflict`。
 - 替换事务复用原轮次序号、删除旧幂等登记，且新请求上下文不包含被替换的旧轮次。
 - SQLite standalone 与 PostgreSQL performance 使用相同契约。
-- 模型上下文只读取最近 7 天内的 active checkpoint + recent suffix，并用行数、字节和请求体预算触发预压缩。
+- 模型上下文只读取当前保留期内的 active checkpoint + recent suffix，并用行数、字节和请求体预算触发预压缩。
 - 失败、取消和崩溃遗留轮次不进入上下文。
 - 清理按索引和游标推进，活跃会话只保留窗口内消息。
 
@@ -761,6 +812,10 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 - 账户代理、错误切换、额度、并发和响应检查继续生效。
 - 使用记录包含正确用户、Key、分组、账户、模型和 trace；MVP 不伪造独立 `ai_chat` 来源字段。
 - Chat 模块不存在直接请求公共上游的代码路径。
+- 支持 Prompt Cache 的同一会话普通追加轮次具有稳定 opaque key 和 canonical prefix；system/tool/checkpoint/image projection 换代由精确前缀自然冷启动。
+- 未知 OpenAI-compatible、Anthropic 和 Gemini 目标不接收 OpenAI `prompt_cache_key`；Anthropic 显式 breakpoint 在模型能力字段落地前不发送。
+- 现有 session affinity 只优先上次成功账户；账户不可用时仍按网关错误切换，不为缓存命中破坏失败回退。
+- 使用记录保留上游明确返回的 cached / cache read / cache write；真实连续轮次已验证缓存读取和账户亲和，后续继续观察换代与失败回退后的 usage。
 
 ### 19.3 流式
 
@@ -793,7 +848,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 
 ## 20. 实施顺序
 
-1. 固定表结构、API、SSE、权限、7 天保留和容量门禁规则。
+1. 固定表结构、API、SSE、权限、可配置保留、会话/轮次上限和容量门禁规则。
 2. 实现 business schema、PostgreSQL schema、repository 和 DB service typed operations。
 3. 实现会话 CRUD、消息事务、幂等、上下文和清理恢复任务。
 4. 实现主进程 Chat Router、本机网关 client、内部元数据签名和 SSE 解析。
@@ -805,7 +860,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 
 ### 已完成第二阶段：多模态输入与上下文隔离
 
-- 按 PLAN-0095 实现 multipart 图片资产、缩放压缩、视觉问答、隐藏图片说明和生命周期。
+- 按 PLAN-0104 实现 multipart 图片资产、缩放压缩、视觉问答、隐藏图片说明和生命周期。
 - 同步实现渲染历史与模型上下文隔离、主动压缩和圆形上下文状态。
 - 直接使用当前最优字段结构，不为旧 Data URL 请求写兼容分支。
 
@@ -828,7 +883,7 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 
 原会话总体方向可行，但以下细节已在本文修正：
 
-1. 7 天聊天保留不等于修改全局审计保全；MVP 不增加关闭审计正文的内部特权。
+1. 聊天保留期不等于修改全局审计保全；MVP 不增加关闭审计正文的内部特权。
 2. 上下文按完整成功轮次筛选，不按单条 `completed` 消息筛选。
 3. 当前只为已落地的文本、图片资产、reasoning 投影和工具生命周期保存有界内容块，不为 MCP、Skill 或未实现附件类型预设计兼容结构。
 4. API Key 选择使用独立轻量 options 接口，不拉完整管理列表充当下拉数据。
@@ -837,6 +892,6 @@ MVP 不新增内部来源 header、HMAC 签名或 `trafficSource=ai_chat`，避�
 7. System API 进程承载流式模型请求并维持 SQLite 单写者；主进程使用独立聊天代理池隔离长连接，避免占用普通 System API 准入槽。
 8. AI 问答明确作为平台内置客户端接入网关，聊天数据生命周期与网关审计生命周期各自独立。
 9. 高频聊天正文从业务库拆出：standalone 使用独立 SQLite，performance 使用独立 `juhe_chat` schema 和 PostgreSQL 日分区。
-10. 每用户最近 7 天默认 2 GiB 容量门禁由日窗口增量维护；超限不阻断读取、停止与删除。
+10. 每用户当前保留窗口默认 2 GiB 容量门禁由日窗口增量维护；超限不阻断读取、停止与删除。
 
 以上修正不改变用户确认的产品方向，只移除会造成安全例外、孤立上下文、重复体系或不必要预设计的实现风险。

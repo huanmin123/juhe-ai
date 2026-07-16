@@ -11,6 +11,9 @@ import type { Request } from 'express'
 
 import type { DatabaseClient } from '../../storage/database-client.js'
 import {
+  ChatAssetQuotaExceededError,
+  claimUncommittedChatAssetForDeletion,
+  completeChatAssetDeletion,
   completeChatAssetProcessing,
   createChatAsset,
   failChatAssetProcessing,
@@ -28,7 +31,7 @@ import { ChatImageProcessingError, processChatImageFile } from './chat-image-pro
 export class ChatAssetUploadError extends Error {
   constructor(
     public readonly statusCode: 400 | 413 | 415,
-    public readonly code: 'chat_asset_invalid_request' | 'chat_asset_too_large' | 'chat_asset_unsupported_type',
+    public readonly code: 'chat_asset_invalid_request' | 'chat_asset_too_large' | 'chat_asset_unsupported_type' | 'chat_asset_quota_exceeded',
     message: string
   ) {
     super(message)
@@ -50,6 +53,7 @@ export async function uploadChatAsset(input: {
   systemAccountId: string
   conversationId: string
   now: string
+  retentionDays: number
 }): Promise<ChatAssetRecord> {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'juhe-ai-chat-upload-'))
   let storageKey: string | undefined
@@ -74,7 +78,9 @@ export async function uploadChatAsset(input: {
       originalHeight: processed.originalHeight,
       originalBytes: uploaded.bytes,
       originalSha256: uploaded.sha256,
-      now: input.now
+      quotaBytes: processed.byteSize,
+      now: input.now,
+      retentionDays: input.retentionDays
     })
     storageKey = storageKeyForChatAsset({
       assetId: pendingAsset.id,
@@ -100,15 +106,28 @@ export async function uploadChatAsset(input: {
       now: input.now
     })
   } catch (error) {
-    await removeChatAssetObject(storageKey).catch(() => undefined)
+    const objectRemoved = await removeChatAssetObject(storageKey).then(() => true, () => false)
     if (pendingAsset) {
-      await failChatAssetProcessing(input.client, {
-        assetId: pendingAsset.id,
-        systemAccountId: input.systemAccountId,
-        conversationId: input.conversationId,
-        errorCode: uploadErrorCode(error),
-        now: input.now
-      }).catch(() => undefined)
+      if (objectRemoved) {
+        const claim = await claimUncommittedChatAssetForDeletion(input.client, {
+          assetId: pendingAsset.id,
+          systemAccountId: input.systemAccountId,
+          conversationId: input.conversationId,
+          now: new Date().toISOString()
+        }).catch(() => undefined)
+        if (claim) await completeChatAssetDeletion(input.client, { assetId: pendingAsset.id, claimId: claim.claimId }).catch(() => false)
+      } else {
+        await failChatAssetProcessing(input.client, {
+          assetId: pendingAsset.id,
+          systemAccountId: input.systemAccountId,
+          conversationId: input.conversationId,
+          errorCode: uploadErrorCode(error),
+          now: input.now
+        }).catch(() => undefined)
+      }
+    }
+    if (error instanceof ChatAssetQuotaExceededError) {
+      throw new ChatAssetUploadError(413, 'chat_asset_quota_exceeded', error.message)
     }
     throw error
   } finally {
@@ -155,11 +174,14 @@ async function readMultipartImage(req: Request, temporaryDirectory: string): Pro
   busboy.on('filesLimit', () => {
     parseError = new ChatAssetUploadError(400, 'chat_asset_invalid_request', '每次只能上传一张图片')
   })
-  await new Promise<void>((resolve, reject) => {
-    busboy.once('finish', resolve)
-    busboy.once('error', reject)
-    req.pipe(busboy)
-  })
+  try {
+    await pipeline(req, busboy)
+  } catch (error) {
+    if (req.aborted || (error as NodeJS.ErrnoException).code === 'ECONNRESET') {
+      throw new ChatAssetUploadError(400, 'chat_asset_invalid_request', '图片上传连接已中断')
+    }
+    throw error
+  }
   if (parseError) throw parseError
   if (!upload) throw new ChatAssetUploadError(400, 'chat_asset_invalid_request', '缺少 file 图片字段')
   return await upload

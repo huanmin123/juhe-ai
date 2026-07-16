@@ -15,6 +15,7 @@ export function applyChatSchema(database: DatabaseSync): void {
       is_pinned INTEGER NOT NULL DEFAULT 0,
       last_model TEXT,
       next_sequence_no INTEGER NOT NULL DEFAULT 1,
+      user_turn_count INTEGER NOT NULL DEFAULT 0,
       active_turn_id TEXT,
       active_started_at TEXT,
       context_revision INTEGER NOT NULL DEFAULT 0,
@@ -37,6 +38,7 @@ export function applyChatSchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       CHECK (next_sequence_no >= 1),
+      CHECK (user_turn_count >= 0),
       CHECK (is_pinned IN (0, 1)),
       CHECK (context_revision >= 0),
       CHECK (compacted_through_sequence >= 0 AND compacted_through_sequence < next_sequence_no),
@@ -86,6 +88,7 @@ export function applyChatSchema(database: DatabaseSync): void {
       content_text TEXT NOT NULL DEFAULT '',
       content_blocks_json TEXT NOT NULL DEFAULT '[]',
       content_bytes INTEGER NOT NULL DEFAULT 0,
+      storage_reserved_bytes INTEGER NOT NULL DEFAULT 0,
       model TEXT NOT NULL,
       trace_id TEXT,
       finish_reason TEXT,
@@ -96,11 +99,16 @@ export function applyChatSchema(database: DatabaseSync): void {
       FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
       CHECK (sequence_no >= 1),
       CHECK (content_bytes >= 0),
+      CHECK (storage_reserved_bytes >= 0),
       CHECK (role IN ('user', 'assistant')),
       CHECK (status IN ('completed', 'streaming', 'failed', 'canceled')),
       CHECK (
         (role = 'user' AND client_message_id IS NOT NULL AND status = 'completed')
         OR (role = 'assistant' AND client_message_id IS NULL)
+      ),
+      CHECK (
+        (role = 'assistant' AND status = 'streaming' AND storage_reserved_bytes > 0)
+        OR (status != 'streaming' AND storage_reserved_bytes = 0)
       )
     );
 
@@ -121,9 +129,20 @@ export function applyChatSchema(database: DatabaseSync): void {
       system_account_id TEXT NOT NULL,
       bucket_date TEXT NOT NULL,
       content_bytes INTEGER NOT NULL DEFAULT 0,
+      reserved_bytes INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, bucket_date),
-      CHECK (content_bytes >= 0)
+      CHECK (content_bytes >= 0),
+      CHECK (reserved_bytes >= 0)
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_user_asset_usage (
+      system_account_id TEXT PRIMARY KEY,
+      asset_bytes INTEGER NOT NULL DEFAULT 0,
+      asset_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      CHECK (asset_bytes >= 0),
+      CHECK (asset_count >= 0)
     );
 
     CREATE TABLE IF NOT EXISTS chat_context_checkpoints (
@@ -212,6 +231,10 @@ export function applyChatSchema(database: DatabaseSync): void {
       processing_error_code TEXT,
       observation_status TEXT NOT NULL DEFAULT 'not_requested',
       observation_json TEXT,
+      observation_revision INTEGER NOT NULL DEFAULT 0,
+      observation_claim_id TEXT,
+      observation_claimed_at TEXT,
+      quota_bytes INTEGER NOT NULL,
       turn_id TEXT,
       message_id TEXT,
       committed_at TEXT,
@@ -236,6 +259,8 @@ export function applyChatSchema(database: DatabaseSync): void {
       CHECK (processed_sha256 IS NULL OR length(processed_sha256) = 64),
       CHECK (processing_status IN ('pending', 'ready', 'failed')),
       CHECK (observation_status IN ('not_requested', 'pending', 'ready', 'failed')),
+      CHECK (observation_revision >= 0),
+      CHECK (quota_bytes > 0),
       CHECK (cleanup_status IN ('active', 'claimed', 'failed')),
       CHECK (cleanup_attempt_count >= 0),
       CHECK (
@@ -248,6 +273,10 @@ export function applyChatSchema(database: DatabaseSync): void {
           AND processed_sha256 IS NOT NULL
           AND storage_key IS NOT NULL
         )
+      ),
+      CHECK (
+        (observation_status = 'pending' AND observation_claim_id IS NOT NULL AND observation_claimed_at IS NOT NULL)
+        OR (observation_status != 'pending' AND observation_claim_id IS NULL AND observation_claimed_at IS NULL)
       ),
       CHECK (
         (turn_id IS NULL AND message_id IS NULL AND committed_at IS NULL)

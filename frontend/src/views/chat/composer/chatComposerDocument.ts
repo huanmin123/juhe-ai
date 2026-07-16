@@ -68,15 +68,40 @@ function serialize(node: JSONContent, text: string[], blocks: ChatInputBlock[]):
     text.push('\n```\n\n')
     return
   }
+  if (node.type === 'bulletList' || node.type === 'orderedList') {
+    serializeList(node, text, blocks, 0)
+    flushText(text, blocks)
+    return
+  }
   if (node.type === 'heading') {
     const level = typeof node.attrs?.level === 'number' ? Math.min(6, Math.max(1, node.attrs.level)) : 1
     text.push(`${'#'.repeat(level)} `)
   }
   if (node.type === 'blockquote') text.push('> ')
-  if (node.type === 'listItem') text.push('- ')
   for (const child of node.content ?? []) serialize(child, text, blocks)
   if (node.type === 'paragraph' || node.type === 'heading') flushText(text, blocks)
-  else if (['listItem', 'blockquote', 'codeBlock'].includes(node.type ?? '')) text.push('\n')
+  else if (['blockquote', 'codeBlock'].includes(node.type ?? '')) text.push('\n')
+}
+
+function serializeList(node: JSONContent, text: string[], blocks: ChatInputBlock[], depth: number): void {
+  const ordered = node.type === 'orderedList'
+  const start = ordered && Number.isInteger(node.attrs?.start) ? Number(node.attrs?.start) : 1
+  ;(node.content ?? []).forEach((item, index) => {
+    if (item.type !== 'listItem') return
+    text.push(`${'    '.repeat(depth)}${ordered ? `${start + index}.` : '-'} `)
+    for (const child of item.content ?? []) {
+      if (child.type === 'bulletList' || child.type === 'orderedList') {
+        serializeList(child, text, blocks, depth + 1)
+        continue
+      }
+      if (child.type === 'paragraph') {
+        for (const inline of child.content ?? []) serialize(inline, text, blocks)
+        text.push('\n')
+        continue
+      }
+      serialize(child, text, blocks)
+    }
+  })
 }
 
 function serializeMarkedText(node: JSONContent): string {

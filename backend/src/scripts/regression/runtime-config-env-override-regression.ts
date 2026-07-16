@@ -25,6 +25,10 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.runtimeStateDriver, 'memory', 'standalone 默认运行态 driver 应为 memory')
   assert.equal(runtimeConfig.queueDriver, 'memory', 'standalone 默认队列 driver 应为 memory')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 64, 'standalone 默认 System API DB service 在途上限应为 64')
+  assert.equal(runtimeConfig.chat.retentionDays, 3, '聊天数据默认应保留 3 天')
+  assert.equal(runtimeConfig.chat.maxConversationsPerUser, 50, '每用户默认最多应创建 50 个会话')
+  assert.equal(runtimeConfig.chat.maxTurnsPerConversation, 50, '每个会话默认最多应接受 50 个用户轮次')
+  assert.equal(runtimeConfig.chat.upstreamSseMaxEvents, 65_536, '聊天上游 SSE 默认事件上限应为 65536')
 
   process.exit(0)
 }
@@ -58,7 +62,19 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   assert.equal(runtimeConfig.postgres.idleInTransactionSessionTimeoutMs, 55000, 'PostgreSQL idle transaction timeout 应正确读取')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 321, 'System API DB service 在途上限应正确读取')
   assert.equal(runtimeConfig.queue.redisStreamReadCount, 500, 'Redis Stream 批量读取数量应正确读取')
+  assert.deepEqual(runtimeConfig.chat, {
+    retentionDays: 9,
+    maxConversationsPerUser: 60,
+    maxTurnsPerConversation: 70,
+    upstreamSseMaxEvents: 131_072
+  }, '聊天保留、会话上限和轮次上限应支持进程环境变量覆盖')
 
+  process.exit(0)
+}
+
+if (process.env.JUHE_AI_RUNTIME_CONFIG_CHAT_SSE_CHILD === '1') {
+  const { runtimeConfig } = await import('../../config/runtime.js')
+  assert.equal(runtimeConfig.chat.upstreamSseMaxEvents, Number(process.env.JUHE_AI_RUNTIME_CONFIG_CHAT_SSE_EXPECTED))
   process.exit(0)
 }
 
@@ -167,7 +183,11 @@ const performanceResult = spawnRegression({
   JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS: '3000',
   JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS: '55000',
   JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT: '321',
-  JUHE_AI_REDIS_STREAM_READ_COUNT: '500'
+  JUHE_AI_REDIS_STREAM_READ_COUNT: '500',
+  JUHE_AI_CHAT_RETENTION_DAYS: '9',
+  JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER: '60',
+  JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION: '70',
+  JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS: '131072'
 })
 
 assertRegressionSuccess(performanceResult)
@@ -295,6 +315,29 @@ assertRegressionFailure(spawnRegression({
   JUHE_AI_QUEUE_DRIVER: 'memory',
   JUHE_AI_PORT: '70000'
 }), /JUHE_AI_PORT/, '非法数字配置必须 fail-fast，不能截断或回默认值')
+
+for (const [name, value] of [
+  ['JUHE_AI_CHAT_RETENTION_DAYS', '3.5'],
+  ['JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER', '0'],
+  ['JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION', '1001'],
+  ['JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS', '2047'],
+  ['JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS', '262145'],
+  ['JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS', '2048.5'],
+  ['JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS', 'many']
+] as const) {
+  assertRegressionFailure(spawnRegression({
+    JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD: '1',
+    [name]: value
+  }), new RegExp(name), `${name} 非法值必须在启动时 fail-fast`)
+}
+
+for (const value of ['2048', '262144']) {
+  assertRegressionSuccess(spawnRegression({
+    JUHE_AI_RUNTIME_CONFIG_CHAT_SSE_CHILD: '1',
+    JUHE_AI_RUNTIME_CONFIG_CHAT_SSE_EXPECTED: value,
+    JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS: value
+  }))
+}
 
 const overlayDir = mkdtempSync(join(tmpdir(), 'juhe-ai-runtime-config-'))
 const overlayPath = join(overlayDir, 'performance.env')

@@ -1,5 +1,5 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
-import type { ChatApiKeyOption, ChatAsset, ChatContextStatus, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent } from '@/types/domain/chat'
+import type { ChatApiKeyOption, ChatAsset, ChatContextStatus, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 export const chatApi = {
@@ -8,6 +8,7 @@ export const chatApi = {
   createConversation: (apiKeyId: string) => unwrap<ChatConversation>(http.post('/my-chat/conversations', { apiKeyId })),
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${conversationId}`)),
   listMessages: (conversationId: string, params?: { beforeSequenceNo?: number; limit?: number }) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${conversationId}/messages`, { params })),
+  getSubmissionStatus: (conversationId: string, clientMessageId: string) => unwrap<ChatSubmissionStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/submissions/${encodeURIComponent(clientMessageId)}`)),
   listModels: (conversationId: string) => unwrap<ChatModelOption[]>(http.get(`/my-chat/conversations/${conversationId}/models`)),
   getContextStatus: (conversationId: string) => unwrap<ChatContextStatus>(http.get(`/my-chat/conversations/${conversationId}/context-status`)),
   uploadAsset: (
@@ -26,8 +27,9 @@ export const chatApi = {
       }
     }))
   },
+  deleteAsset: (conversationId: string, assetId: string) => http.delete(`/my-chat/conversations/${conversationId}/assets/${assetId}`),
   updateConversation: (conversationId: string, payload: { title?: string; isPinned?: boolean }) => unwrap<ChatConversation>(http.patch(`/my-chat/conversations/${conversationId}`, payload)),
-  stop: (conversationId: string) => unwrap<{ stopped: boolean }>(http.post(`/my-chat/conversations/${conversationId}/stop`)),
+  stop: (conversationId: string, target: { clientMessageId?: string; turnId?: string }) => unwrap<{ stopped: boolean }>(http.post(`/my-chat/conversations/${conversationId}/stop`, target)),
   deleteConversation: (conversationId: string) => http.delete(`/my-chat/conversations/${conversationId}`)
 }
 

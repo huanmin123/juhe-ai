@@ -1,6 +1,7 @@
 import type { DatabaseClient } from '../../storage/database-client.js'
 import { listReadyChatAssetsByIds } from '../../storage/chat-assets.repository.js'
 import { loadChatModelContext, type ChatContextEntry, type ChatContextSourceMessage } from '../../storage/chat-context.repository.js'
+import type { ChatImageObservationTarget } from './chat-image-observation.js'
 import type { ChatTransportMessage, ChatTransportProtocol } from './chat-transport.js'
 import { countChatJsonTokens, countChatTextTokens } from './chat-token-count.js'
 
@@ -21,11 +22,13 @@ export async function loadChatTransportHistory(input: {
   systemAccountId: string
   protocol: ChatTransportProtocol
   now: string
+  excludeTurnId?: string
 }): Promise<{
   history: ChatTransportMessage[]
   estimatedTokens: number
   requestContextBytes: number
   unresolvedAssetIds: string[]
+  unresolvedAssets: ChatImageObservationTarget[]
   head: NonNullable<Awaited<ReturnType<typeof loadChatModelContext>>>['head']
 }> {
   const context = await loadChatModelContext(input.client, {
@@ -39,14 +42,22 @@ export async function loadChatTransportHistory(input: {
   if (!context.complete) throw new ChatModelContextError('模型上下文超过本地装载上限，需要先压缩', 'load_limit')
 
   const history: ChatTransportMessage[] = []
-  const unresolvedAssetIds = new Set<string>()
-  if (context.entries.length) history.push({ role: 'user', content: formatCheckpointEntries(context.entries) })
-  const suffix = completeMessagePairs(context.suffix)
+  const unresolvedAssets = new Map<string, ChatImageObservationTarget>()
+  if (context.entries.length) {
+    const checkpointContent = formatCheckpointEntries(context.entries)
+    history.push({
+      role: 'user',
+      content: input.protocol === 'responses'
+        ? [{ type: 'input_text', text: checkpointContent }]
+        : checkpointContent
+    })
+  }
+  const suffix = completeMessagePairs(context.suffix, input.excludeTurnId)
   for (const message of suffix) {
     history.push({
       role: message.role,
       content: message.role === 'user'
-        ? await renderUserContextMessage(input, message, unresolvedAssetIds)
+        ? await renderUserContextMessage(input, message, unresolvedAssets)
         : message.contentText
     })
   }
@@ -54,7 +65,8 @@ export async function loadChatTransportHistory(input: {
     history,
     estimatedTokens: history.reduce((total, message) => total + countTransportContentTokens(message.content) + 12, 0),
     requestContextBytes: Buffer.byteLength(JSON.stringify(history), 'utf8'),
-    unresolvedAssetIds: [...unresolvedAssetIds],
+    unresolvedAssetIds: [...unresolvedAssets.keys()],
+    unresolvedAssets: [...unresolvedAssets.values()],
     head: context.head
   }
 }
@@ -70,10 +82,11 @@ function formatCheckpointEntries(entries: ChatContextEntry[]): string {
   ].join('\n')
 }
 
-function completeMessagePairs(messages: ChatContextSourceMessage[]): ChatContextSourceMessage[] {
+function completeMessagePairs(messages: ChatContextSourceMessage[], excludeTurnId?: string): ChatContextSourceMessage[] {
   const result: ChatContextSourceMessage[] = []
   const usersByTurn = new Map<string, ChatContextSourceMessage>()
   for (const message of messages) {
+    if (excludeTurnId && message.turnId === excludeTurnId) continue
     if (message.role === 'user') {
       usersByTurn.set(message.turnId, message)
       continue
@@ -89,12 +102,16 @@ function completeMessagePairs(messages: ChatContextSourceMessage[]): ChatContext
 async function renderUserContextMessage(
   input: { client: DatabaseClient; conversationId: string; systemAccountId: string; protocol: ChatTransportProtocol; now: string },
   message: ChatContextSourceMessage,
-  unresolvedAssetIds: Set<string>
+  unresolvedAssets: Map<string, ChatImageObservationTarget>
 ): Promise<ChatTransportMessage['content']> {
   const blocks = message.contentBlocks
     .filter(isStoredInputBlock)
     .sort((left, right) => left.order - right.order)
-  if (!blocks.length) return message.contentText
+  if (!blocks.length) {
+    return input.protocol === 'responses'
+      ? [{ type: 'input_text', text: message.contentText }]
+      : message.contentText
+  }
   const assetIds = blocks.flatMap((block) => block.type === 'input_image' ? [block.assetId] : [])
   const assets = await listReadyChatAssetsByIds(input.client, {
     assetIds,
@@ -106,7 +123,13 @@ async function renderUserContextMessage(
   const unresolved = blocks.flatMap((block) => (
     block.type === 'input_image' && assetsById.get(block.assetId)?.observationStatus !== 'ready' ? [block] : []
   ))
-  for (const block of unresolved) unresolvedAssetIds.add(block.assetId)
+  for (const block of unresolved) {
+    unresolvedAssets.set(block.assetId, {
+      assetId: block.assetId,
+      expectedTurnId: message.turnId,
+      expectedMessageId: message.id
+    })
+  }
   if (unresolved.length && input.protocol !== 'responses') {
     throw new ChatModelContextError('当前模型不能读取最近图片且图片说明尚未完成，请稍后重试或切换支持图片的模型', 'unsupported_image')
   }
@@ -122,9 +145,9 @@ async function renderUserContextMessage(
     }
     return { type: 'input_text' as const, text: `[历史图片说明生成中 assetId=${asset.id}]` }
   })
-  return rendered.every((block) => block.type === 'input_text')
-    ? rendered.map((block) => block.text ?? '').join('\n')
-    : rendered
+  return input.protocol === 'responses'
+    ? rendered
+    : rendered.map((block) => block.text ?? '').join('\n')
 }
 
 function isStoredInputBlock(value: unknown): value is { type: 'input_text'; text: string; order: number } | { type: 'input_image'; assetId: string; order: number } {

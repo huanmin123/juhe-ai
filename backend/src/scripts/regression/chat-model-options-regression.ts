@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 
 import { buildChatModelOptions, ChatModelCapabilityError, resolveChatModelRequestOptions } from '../../modules/chat/chat-model-options.js'
 
-const options = buildChatModelOptions(['gpt-test', 'custom-model'], [{
+const options = buildChatModelOptions(['gpt-test', 'mixed-cache-model', 'custom-model'], [{
   model: 'gpt-test',
+  supportsPromptCaching: true,
   supportedReasoningEfforts: ['none', 'low', 'medium', 'high'],
   defaultReasoningEffort: 'high',
   supportedServiceTiers: ['priority', 'flex'],
@@ -16,6 +17,7 @@ const options = buildChatModelOptions(['gpt-test', 'custom-model'], [{
   supportedTools: ['web_search', 'file_search']
 }, {
   model: 'gpt-test',
+  supportsPromptCaching: true,
   supportedReasoningEfforts: ['medium', 'high', 'xhigh'],
   defaultReasoningEffort: 'high',
   supportedServiceTiers: ['priority'],
@@ -28,6 +30,7 @@ const options = buildChatModelOptions(['gpt-test', 'custom-model'], [{
   supportedTools: ['web_search']
 }, {
   model: 'gpt-test',
+  supportsPromptCaching: true,
   supportedReasoningEfforts: ['medium', 'high'],
   defaultReasoningEffort: 'medium',
   supportedServiceTiers: ['priority'],
@@ -37,11 +40,30 @@ const options = buildChatModelOptions(['gpt-test', 'custom-model'], [{
   inputModalities: ['text'],
   outputModalities: ['text'],
   supportedTools: ['web_search']
+}, {
+  model: 'mixed-cache-model',
+  supportsPromptCaching: true,
+  supportedReasoningEfforts: [],
+  supportedServiceTiers: [],
+  supportedApiProtocols: ['responses'],
+  inputModalities: ['text'],
+  outputModalities: ['text'],
+  supportedTools: []
+}, {
+  model: 'mixed-cache-model',
+  supportsPromptCaching: false,
+  supportedReasoningEfforts: [],
+  supportedServiceTiers: [],
+  supportedApiProtocols: ['responses'],
+  inputModalities: ['text'],
+  outputModalities: ['text'],
+  supportedTools: []
 }])
 
 assert.deepEqual(options, [
   {
     id: 'gpt-test',
+    supportsPromptCaching: true,
     supportedReasoningEfforts: ['medium', 'high'],
     defaultReasoningEffort: 'medium',
     supportedServiceTiers: ['default', 'priority'],
@@ -54,7 +76,18 @@ assert.deepEqual(options, [
     supportedTools: ['web_search']
   },
   {
+    id: 'mixed-cache-model',
+    supportsPromptCaching: false,
+    supportedReasoningEfforts: [],
+    supportedServiceTiers: [],
+    supportedApiProtocols: ['responses'],
+    inputModalities: ['text'],
+    outputModalities: ['text'],
+    supportedTools: []
+  },
+  {
     id: 'custom-model',
+    supportsPromptCaching: false,
     supportedReasoningEfforts: [],
     supportedServiceTiers: [],
     supportedApiProtocols: [],

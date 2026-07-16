@@ -41,8 +41,11 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = process.env.DEBUG_SYSTEM_API_REGRESSION === '1' ? 'debug' : 'silent'
 
 const databaseModule = await import('../../storage/database.js')
+const dbServiceHandlers = await import('../../modules/db-service/db-service-handlers.js')
 const sqliteReadWorkerPool = await import('../../storage/sqlite-read-worker-pool.js')
 databaseModule.getBusinessDatabase()
+const repositories = await import('../../storage/repositories.js')
+const authenticatedCookie = `juhe_ai_session=${repositories.createSession('sys_admin', 1).token}`
 
 let server: http.Server | undefined
 let admissionServer: http.Server | undefined
@@ -77,10 +80,29 @@ try {
   })
   assert.equal(chatImageBodyResponse.status, 401, 'AI 问答专用 parser 应接受超过通用 256KB、仍在 24MB 内的图片请求体')
 
+  const malformedChatJsonResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/missing/stream`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: authenticatedCookie },
+    body: '{'
+  })
+  assert.equal(malformedChatJsonResponse.status, 400, 'AI 问答专用 parser 应拒绝损坏的 JSON')
+  assert.deepEqual(await malformedChatJsonResponse.json(), { message: '请求体无效' }, '只有 body-parser 错误才能返回请求体无效')
+
+  const chatCleanup = await dbServiceHandlers.handleDbServiceOperation({
+    type: 'cleanup_chat_retention',
+    now: '2026-07-14T00:00:00.000Z',
+    interruptedBefore: '2026-07-13T23:40:00.000Z',
+    limit: 1000,
+    retentionDays: 7
+  })
+  assert.equal(chatCleanup.recoveredCompactions, 0, '会话保留清理的 1000 批次不应越过上下文维护的 500 上限')
+  assert.equal(chatCleanup.deletedCheckpoints, 0, '空聊天库的上下文 checkpoint 清理应正常完成')
+  assert.equal(chatCleanup.claimedAssets, 0, '空聊天库的资产清理应正常完成')
+
   admissionServer = await startAdmissionProbeServer()
   await assertAdmissionControlRejectsOverloadAndReleases(`http://127.0.0.1:${serverAddress(admissionServer).port}`)
 
-  console.log('DB service system API HTTP 回归通过：通用 256KB 与 AI 问答专用 24MB JSON 请求体边界可用')
+  console.log('DB service system API HTTP 回归通过：请求体边界与 AI 问答维护批次隔离可用')
 } finally {
   await closeServer(admissionServer)
   await closeServer(server)

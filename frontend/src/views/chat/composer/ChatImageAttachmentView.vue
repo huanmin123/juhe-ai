@@ -61,4 +61,8 @@ function removeImage(): void {
 .chat-image-node-status button, .chat-image-node-remove { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: inherit; background: rgba(255, 255, 255, .92); border: 1px solid currentColor; border-radius: 50%; cursor: pointer; }
 .chat-image-node-remove { position: absolute; top: 5px; right: 5px; color: #475569; border-color: #cbd5e1; opacity: 0; transition: opacity .15s ease; }
 .chat-image-node:hover .chat-image-node-remove, .chat-image-node:focus-within .chat-image-node-remove, .chat-image-node.is-selected .chat-image-node-remove, .chat-image-node.is-failed .chat-image-node-remove { opacity: 1; }
+@media (pointer: coarse) {
+  .chat-image-node-status button, .chat-image-node-remove { width: 44px; height: 44px; }
+  .chat-image-node-remove { top: 2px; right: 2px; opacity: 1; }
+}
 </style>

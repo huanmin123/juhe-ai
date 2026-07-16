@@ -29,6 +29,10 @@ export interface ChatAssetRecord {
   processingErrorCode?: string
   observationStatus: ChatAssetObservationStatus
   observation?: Record<string, unknown>
+  observationRevision: number
+  observationClaimId?: string
+  observationClaimedAt?: string
+  quotaBytes: number
   turnId?: string
   messageId?: string
   committedAt?: string
@@ -61,7 +65,9 @@ export interface ChatAssetCreateInput {
   originalHeight?: number
   originalBytes: number
   originalSha256: string
+  quotaBytes: number
   now: string
+  retentionDays: number
 }
 
 export interface ChatAssetProcessingResultInput {
@@ -110,6 +116,10 @@ interface ChatAssetRow {
   processing_error_code: unknown
   observation_status: unknown
   observation_json: unknown
+  observation_revision: unknown
+  observation_claim_id: unknown
+  observation_claimed_at: unknown
+  quota_bytes: unknown
   turn_id: unknown
   message_id: unknown
   committed_at: unknown
@@ -123,9 +133,17 @@ interface ChatAssetRow {
   expires_at: unknown
 }
 
-const chatAssetRetentionDays = 7
 const chatAssetObservationMaxBytes = 128 * 1024
 const maxChatAssetsPerMessage = 4
+export const chatAssetUserMaxBytes = 2 * 1024 * 1024 * 1024
+export const chatAssetUserMaxCount = 1_024
+
+export class ChatAssetQuotaExceededError extends Error {
+  constructor() {
+    super('聊天图片存储额度已满，请删除不用的会话或等待过期资产清理后重试')
+    this.name = 'ChatAssetQuotaExceededError'
+  }
+}
 
 export async function createChatAsset(client: DatabaseClient, input: ChatAssetCreateInput): Promise<ChatAssetRecord> {
   const id = input.id === undefined ? newChatAssetId() : normalizedAssetId(input.id)
@@ -135,36 +153,47 @@ export async function createChatAsset(client: DatabaseClient, input: ChatAssetCr
   const originalSha256 = normalizedSha256(input.originalSha256)
   const originalWidth = normalizedOptionalDimension(input.originalWidth, 'originalWidth')
   const originalHeight = normalizedOptionalDimension(input.originalHeight, 'originalHeight')
+  const quotaBytes = normalizedPositiveInteger(input.quotaBytes, 'quotaBytes', chatAssetProcessedMaxBytes)
   if ((originalWidth === undefined) !== (originalHeight === undefined)) throw new Error('聊天资产原始宽高必须同时提供')
-  const expiresAt = addDays(input.now, chatAssetRetentionDays)
-  const result = await client.execute(`
-    INSERT INTO ${chatTable(client, 'chat_assets')} (
-      id, system_account_id, conversation_id, original_filename, original_mime_type,
-      original_width, original_height, original_bytes, original_sha256,
-      processing_status, observation_status, cleanup_status, cleanup_attempt_count,
-      created_at, updated_at, expires_at
-    )
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'not_requested', 'active', 0, ?, ?, ?
-    FROM ${chatTable(client, 'chat_conversations')}
-    WHERE id = ? AND system_account_id = ?
-  `, [
-    id,
-    input.systemAccountId,
-    input.conversationId,
-    originalFilename,
-    originalMimeType,
-    originalWidth ?? null,
-    originalHeight ?? null,
-    originalBytes,
-    originalSha256,
-    input.now,
-    input.now,
-    expiresAt,
-    input.conversationId,
-    input.systemAccountId
-  ])
-  if (result.changes !== 1) throw new Error('聊天会话不存在或不属于当前用户')
-  return requireChatAsset(client, { assetId: id, systemAccountId: input.systemAccountId, conversationId: input.conversationId })
+  const expiresAt = addDays(input.now, input.retentionDays)
+  return client.transaction(async (tx) => {
+    await lockChatAssetUserQuota(tx, input.systemAccountId)
+    const usage = await getChatAssetUserUsage(tx, input.systemAccountId)
+    if (usage.assetBytes + quotaBytes > chatAssetUserMaxBytes || usage.assetCount + 1 > chatAssetUserMaxCount) {
+      throw new ChatAssetQuotaExceededError()
+    }
+    const row = await tx.one<ChatAssetRow>(`
+      INSERT INTO ${chatTable(tx, 'chat_assets')} (
+        id, system_account_id, conversation_id, original_filename, original_mime_type,
+        original_width, original_height, original_bytes, original_sha256, quota_bytes,
+        processing_status, observation_status, cleanup_status, cleanup_attempt_count,
+        created_at, updated_at, expires_at
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'not_requested', 'active', 0, ?, ?, ?
+      FROM ${chatTable(tx, 'chat_conversations')}
+      WHERE id = ? AND system_account_id = ?
+      RETURNING *
+    `, [
+      id,
+      input.systemAccountId,
+      input.conversationId,
+      originalFilename,
+      originalMimeType,
+      originalWidth ?? null,
+      originalHeight ?? null,
+      originalBytes,
+      originalSha256,
+      quotaBytes,
+      input.now,
+      input.now,
+      expiresAt,
+      input.conversationId,
+      input.systemAccountId
+    ])
+    if (!row) throw new Error('聊天会话不存在或不属于当前用户')
+    await incrementChatAssetUserUsage(tx, input.systemAccountId, quotaBytes, input.now)
+    return chatAssetFromRow(row)
+  })
 }
 
 export async function completeChatAssetProcessing(client: DatabaseClient, input: ChatAssetProcessingResultInput): Promise<ChatAssetRecord> {
@@ -174,13 +203,14 @@ export async function completeChatAssetProcessing(client: DatabaseClient, input:
   const processedBytes = normalizedPositiveInteger(input.processedBytes, 'processedBytes', chatAssetProcessedMaxBytes)
   const processedSha256 = normalizedSha256(input.processedSha256)
   const storageKey = normalizedStorageKey(input.storageKey)
-  const result = await client.execute(`
+  const row = await client.one<ChatAssetRow>(`
     UPDATE ${chatTable(client, 'chat_assets')}
     SET processed_mime_type = ?, processed_width = ?, processed_height = ?, processed_bytes = ?,
         processed_sha256 = ?, storage_key = ?, processing_status = 'ready',
         processing_error_code = NULL, updated_at = ?
     WHERE id = ? AND system_account_id = ? AND conversation_id = ?
       AND processing_status = 'pending' AND cleanup_status = 'active' AND expires_at > ?
+    RETURNING *
   `, [
     processedMimeType,
     processedWidth,
@@ -194,8 +224,8 @@ export async function completeChatAssetProcessing(client: DatabaseClient, input:
     input.conversationId,
     input.now
   ])
-  if (result.changes !== 1) throw new Error('聊天资产不存在、已过期或处理状态已变化')
-  return requireChatAsset(client, input)
+  if (!row) throw new Error('聊天资产不存在、已过期或处理状态已变化')
+  return chatAssetFromRow(row)
 }
 
 export async function failChatAssetProcessing(client: DatabaseClient, input: ChatAssetLookupInput & {
@@ -252,6 +282,7 @@ export async function commitChatAssetsToMessage(client: DatabaseClient, input: {
   conversationId: string
   messageId: string
   now: string
+  retentionDays: number
 }): Promise<ChatAssetRecord[]> {
   const assetIds = normalizedAssetIds(input.assetIds)
   if (assetIds.length === 0) return []
@@ -264,6 +295,7 @@ export async function commitChatAssetsToMessageInClient(client: DatabaseClient, 
   conversationId: string
   messageId: string
   now: string
+  retentionDays: number
 }): Promise<ChatAssetRecord[]> {
   const assetIds = normalizedAssetIds(input.assetIds)
   if (assetIds.length === 0) return []
@@ -292,7 +324,7 @@ export async function commitChatAssetsToMessageInClient(client: DatabaseClient, 
       throw new Error('聊天资产已绑定其他消息')
     }
   }
-  const expiresAt = addDays(input.now, chatAssetRetentionDays)
+  const expiresAt = addDays(input.now, input.retentionDays)
   const result = await client.execute(`
     UPDATE ${chatTable(client, 'chat_assets')}
     SET turn_id = ?, message_id = ?, committed_at = COALESCE(committed_at, ?), expires_at = ?, updated_at = ?
@@ -305,34 +337,58 @@ export async function commitChatAssetsToMessageInClient(client: DatabaseClient, 
 }
 
 export async function setChatAssetObservation(client: DatabaseClient, input: ChatAssetLookupInput & {
-  status: Exclude<ChatAssetObservationStatus, 'not_requested'>
+  status: Extract<ChatAssetObservationStatus, 'ready' | 'failed'>
   observation?: Record<string, unknown>
+  observationRevision: number
+  claimId: string
   now: string
 }): Promise<ChatAssetRecord | undefined> {
   const observationJson = input.observation === undefined ? null : boundedJson(input.observation, chatAssetObservationMaxBytes)
   if (input.status === 'ready' && !observationJson) throw new Error('图片说明完成时必须提供 observation')
-  const result = await client.execute(`
+  const observationRevision = nonNegativeSafeInteger(input.observationRevision, 'observationRevision')
+  const row = await client.one<ChatAssetRow>(`
     UPDATE ${chatTable(client, 'chat_assets')}
-    SET observation_status = ?, observation_json = ?, updated_at = ?
+    SET observation_status = ?, observation_json = ?, observation_claim_id = NULL,
+        observation_claimed_at = NULL, updated_at = ?
     WHERE id = ? AND system_account_id = ? AND conversation_id = ?
       AND processing_status = 'ready' AND cleanup_status = 'active' AND expires_at > ?
-  `, [input.status, observationJson, input.now, input.assetId, input.systemAccountId, input.conversationId, input.now])
-  if (result.changes !== 1) return undefined
-  return requireChatAsset(client, input)
+      AND observation_status = 'pending' AND observation_revision = ? AND observation_claim_id = ?
+    RETURNING *
+  `, [input.status, observationJson, input.now, input.assetId, input.systemAccountId, input.conversationId, input.now, observationRevision, input.claimId])
+  return row ? chatAssetFromRow(row) : undefined
 }
 
-export async function claimChatAssetObservation(client: DatabaseClient, input: ChatAssetLookupInput & { now: string }): Promise<ChatAssetRecord | undefined> {
+export async function claimChatAssetObservation(client: DatabaseClient, input: ChatAssetLookupInput & {
+  expectedTurnId: string
+  expectedMessageId: string
+  now: string
+}): Promise<ChatAssetRecord | undefined> {
   const staleBefore = new Date(Date.parse(input.now) - 15 * 60_000).toISOString()
-  const result = await client.execute(`
+  const claimId = observationClaimId()
+  const row = await client.one<ChatAssetRow>(`
     UPDATE ${chatTable(client, 'chat_assets')}
-    SET observation_status = 'pending', observation_json = NULL, updated_at = ?
+    SET observation_status = 'pending', observation_json = NULL,
+        observation_revision = observation_revision + 1,
+        observation_claim_id = ?, observation_claimed_at = ?, updated_at = ?
     WHERE id = ? AND system_account_id = ? AND conversation_id = ?
+      AND turn_id = ? AND message_id = ?
       AND processing_status = 'ready'
-      AND (observation_status IN ('not_requested', 'failed') OR (observation_status = 'pending' AND updated_at <= ?))
+      AND (observation_status IN ('not_requested', 'failed') OR (observation_status = 'pending' AND observation_claimed_at <= ?))
       AND cleanup_status = 'active' AND expires_at > ?
-  `, [input.now, input.assetId, input.systemAccountId, input.conversationId, staleBefore, input.now])
-  if (result.changes !== 1) return undefined
-  return requireChatAsset(client, input)
+    RETURNING *
+  `, [
+    claimId,
+    input.now,
+    input.now,
+    input.assetId,
+    input.systemAccountId,
+    input.conversationId,
+    input.expectedTurnId,
+    input.expectedMessageId,
+    staleBefore,
+    input.now
+  ])
+  return row ? chatAssetFromRow(row) : undefined
 }
 
 export async function claimUncommittedChatAssetForDeletion(client: DatabaseClient, input: ChatAssetLookupInput & {
@@ -410,11 +466,18 @@ export async function completeChatAssetDeletion(client: DatabaseClient, input: {
   assetId: string
   claimId: string
 }): Promise<boolean> {
-  const result = await client.execute(`
-    DELETE FROM ${chatTable(client, 'chat_assets')}
-    WHERE id = ? AND cleanup_status = 'claimed' AND cleanup_claim_id = ?
-  `, [input.assetId, input.claimId])
-  return result.changes === 1
+  return client.transaction(async (tx) => {
+    const asset = await getClaimedChatAsset(tx, input.assetId, input.claimId)
+    if (!asset) return false
+    await lockChatAssetUserQuota(tx, asset.systemAccountId)
+    const result = await tx.execute(`
+      DELETE FROM ${chatTable(tx, 'chat_assets')}
+      WHERE id = ? AND cleanup_status = 'claimed' AND cleanup_claim_id = ?
+    `, [input.assetId, input.claimId])
+    if (result.changes !== 1) return false
+    await decrementChatAssetUserUsage(tx, asset.systemAccountId, asset.quotaBytes, new Date().toISOString())
+    return true
+  })
 }
 
 export async function releaseChatAssetDeletionClaim(client: DatabaseClient, input: {
@@ -497,6 +560,10 @@ function chatAssetFromRow(row: ChatAssetRow): ChatAssetRecord {
     processingErrorCode: optionalString(row.processing_error_code),
     observationStatus: normalizedObservationStatus(row.observation_status),
     observation: optionalJsonObject(row.observation_json),
+    observationRevision: nonNegativeSafeInteger(Number(row.observation_revision), 'observationRevision'),
+    observationClaimId: optionalString(row.observation_claim_id),
+    observationClaimedAt: optionalString(row.observation_claimed_at),
+    quotaBytes: normalizedPositiveInteger(Number(row.quota_bytes), 'quotaBytes', chatAssetProcessedMaxBytes),
     turnId: optionalString(row.turn_id),
     messageId: optionalString(row.message_id),
     committedAt: optionalString(row.committed_at),
@@ -521,6 +588,58 @@ export function newChatAssetId(): string {
 
 function cleanupClaimId(): string {
   return `chat_asset_cleanup_${randomUUID().replace(/-/g, '')}`
+}
+
+function observationClaimId(): string {
+  return `chat_asset_observation_${randomUUID().replace(/-/g, '')}`
+}
+
+async function lockChatAssetUserQuota(client: DatabaseClient, systemAccountId: string): Promise<void> {
+  if (client.driver !== 'postgres') return
+  await client.execute('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [`juhe-ai:chat-asset-storage:${systemAccountId}`])
+}
+
+async function getChatAssetUserUsage(client: DatabaseClient, systemAccountId: string): Promise<{ assetBytes: number; assetCount: number; exists: boolean }> {
+  const row = await client.one<{ asset_bytes?: unknown; asset_count?: unknown }>(`
+    SELECT asset_bytes, asset_count FROM ${chatTable(client, 'chat_user_asset_usage')}
+    WHERE system_account_id = ?
+  `, [systemAccountId])
+  return {
+    assetBytes: nonNegativeSafeInteger(Number(row?.asset_bytes ?? 0), 'assetBytes'),
+    assetCount: nonNegativeSafeInteger(Number(row?.asset_count ?? 0), 'assetCount'),
+    exists: Boolean(row)
+  }
+}
+
+async function incrementChatAssetUserUsage(client: DatabaseClient, systemAccountId: string, bytes: number, now: string): Promise<void> {
+  const existing = await getChatAssetUserUsage(client, systemAccountId)
+  if (!existing.exists) {
+    const inserted = await client.execute(`
+      INSERT INTO ${chatTable(client, 'chat_user_asset_usage')} (system_account_id, asset_bytes, asset_count, updated_at)
+      VALUES (?, ?, 1, ?)
+    `, [systemAccountId, bytes, now])
+    if (inserted.changes !== 1) throw new Error('聊天资产用量初始化失败')
+    return
+  }
+  const updated = await client.execute(`
+    UPDATE ${chatTable(client, 'chat_user_asset_usage')}
+    SET asset_bytes = asset_bytes + ?, asset_count = asset_count + 1, updated_at = ?
+    WHERE system_account_id = ?
+  `, [bytes, now, systemAccountId])
+  if (updated.changes !== 1) throw new Error('聊天资产用量递增失败')
+}
+
+async function decrementChatAssetUserUsage(client: DatabaseClient, systemAccountId: string, bytes: number, now: string): Promise<void> {
+  const updated = await client.execute(`
+    UPDATE ${chatTable(client, 'chat_user_asset_usage')}
+    SET asset_bytes = asset_bytes - ?, asset_count = asset_count - 1, updated_at = ?
+    WHERE system_account_id = ? AND asset_bytes >= ? AND asset_count >= 1
+  `, [bytes, now, systemAccountId, bytes])
+  if (updated.changes !== 1) throw new Error('聊天资产用量扣减失败')
+  await client.execute(`
+    DELETE FROM ${chatTable(client, 'chat_user_asset_usage')}
+    WHERE system_account_id = ? AND asset_bytes = 0 AND asset_count = 0
+  `, [systemAccountId])
 }
 
 function normalizedAssetIds(values: readonly string[]): string[] {
@@ -578,6 +697,11 @@ function normalizedOptionalDimension(value: number | undefined, field: string): 
 
 function normalizedPositiveInteger(value: number, field: string, max: number): number {
   if (!Number.isSafeInteger(value) || value <= 0 || value > max) throw new Error(`${field} 必须是 1..${max} 的整数`)
+  return value
+}
+
+function nonNegativeSafeInteger(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} 必须是非负整数`)
   return value
 }
 

@@ -8,6 +8,7 @@ export type ChatServiceTier = typeof chatServiceTiers[number]
 
 export interface ChatModelOption {
   id: string
+  supportsPromptCaching: boolean
   supportedReasoningEfforts: ChatReasoningEffort[]
   defaultReasoningEffort?: ChatReasoningEffort
   supportedServiceTiers: ChatServiceTier[]
@@ -31,6 +32,7 @@ export class ChatModelCapabilityError extends Error {
 
 interface ChatModelCatalogCapability {
   model: string
+  supportsPromptCaching?: boolean
   supportedReasoningEfforts: readonly ChatCatalogReasoningEffort[]
   defaultReasoningEffort?: ChatCatalogReasoningEffort
   supportedServiceTiers: readonly ChatServiceTier[]
@@ -79,6 +81,7 @@ export function buildChatModelOptions(modelIds: readonly string[], catalog: read
     const supportedTools = intersectCapabilities(items.map((item) => item.supportedTools ?? []))
     return {
       id,
+      supportsPromptCaching: items.length > 0 && items.every((item) => item.supportsPromptCaching === true),
       supportedReasoningEfforts,
       ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
       supportedServiceTiers,

@@ -17,10 +17,15 @@
     "test:chat-stop-generation": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-stop-generation-regression.ts",
     "test:chat-conversation-summary": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-conversation-summary-regression.ts",
     "test:chat-conversation-load": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-conversation-load-regression.ts",
+    "test:chat-conversation-details": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-conversation-details-regression.ts",
     "test:chat-editor-history": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-editor-history-regression.ts",
     "test:chat-composer-state": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-composer-state-regression.ts",
     "test:chat-composer-document": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-composer-document-regression.ts",
     "test:chat-composer-commands": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-composer-commands-regression.ts",
+    "test:chat-composer-keyboard": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-composer-keyboard-regression.ts",
+    "test:chat-composer-editor-keydown": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-composer-editor-keydown-regression.ts",
+    "test:chat-mobile-interaction": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-mobile-interaction-regression.ts",
+    "test:chat-turn-limit": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-turn-limit-regression.ts",
     "test:chat-model-controls": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-model-controls-regression.ts",
     "test:chat-composer-responsive": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-composer-responsive-regression.ts",
     "test:chat-scroll-policy": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-scroll-policy-regression.ts",
@@ -93,6 +98,7 @@
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
+    "happy-dom": "20.0.11",
     "typescript": "^5.6.0",
     "unplugin-vue-components": "^32.0.0",
     "vite": "^5.4.0",

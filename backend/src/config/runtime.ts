@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { parse } from 'dotenv'
 import { assertDevelopmentAutoLoginConfig } from './development.js'
+import { loadRuntimeBaseEnv, loadRuntimeEnvFile } from './runtime-base-env.js'
 
 export interface RuntimeConfig {
   runtimeMode: RuntimeMode
@@ -68,6 +67,12 @@ export interface RuntimeConfig {
   usageShardRoot: string
   codexContextRoot: string
   chatAssetsRoot: string
+  chat: {
+    retentionDays: number
+    maxConversationsPerUser: number
+    maxTurnsPerConversation: number
+    upstreamSseMaxEvents: number
+  }
   openAICompatibleFilesRoot: string
   codexContextStateShardRoot: string
   codexContextStateShardCount: number
@@ -183,9 +188,9 @@ export const defaultStandaloneSystemApiDbServiceMaxInFlight = 64
 export const defaultPerformanceSystemApiDbServiceMaxInFlight = 256
 const minimumProductionSecretLength = 32
 
-const localEnv = loadLocalEnv(localEnvPath)
+const localEnv = loadRuntimeBaseEnv(localEnvPath, process.env)
 const localEnvOverlayPath = envFilePathConfig(process.env.JUHE_AI_ENV_FILE ?? localEnv.JUHE_AI_ENV_FILE)
-const localEnvOverlay = localEnvOverlayPath ? loadLocalEnv(localEnvOverlayPath) : {}
+const localEnvOverlay = localEnvOverlayPath ? loadRuntimeEnvFile(localEnvOverlayPath) : {}
 const hasPerformanceDriverHints = hasAnyRawConfig([
   'JUHE_AI_POSTGRES_URL',
   'JUHE_AI_REDIS_CACHE_URL',
@@ -295,6 +300,12 @@ export const runtimeConfig: RuntimeConfig = {
   usageShardRoot: pathConfig('JUHE_AI_USAGE_SHARD_ROOT', defaultUsageShardRoot),
   codexContextRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_ROOT', defaultCodexContextRoot),
   chatAssetsRoot: pathConfig('JUHE_AI_CHAT_ASSETS_ROOT', defaultChatAssetsRoot),
+  chat: {
+    retentionDays: integerConfig('JUHE_AI_CHAT_RETENTION_DAYS', 3, 1, 365),
+    maxConversationsPerUser: integerConfig('JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER', 50, 1, 1000),
+    maxTurnsPerConversation: integerConfig('JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION', 50, 1, 1000),
+    upstreamSseMaxEvents: integerConfig('JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS', 65_536, 2_048, 262_144)
+  },
   openAICompatibleFilesRoot: pathConfig('JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT', defaultOpenAICompatibleFilesRoot),
   codexContextStateShardRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT', defaultCodexContextStateShardRoot),
   codexContextStateShardCount: numberConfig('JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT', 16, 1, 256),
@@ -371,13 +382,6 @@ export const runtimeConfig: RuntimeConfig = {
     model: stringConfig('JUHE_AI_SMOKE_MODEL', 'gpt-5.4-mini'),
     prompt: stringConfig('JUHE_AI_SMOKE_PROMPT', '只输出 OK')
   }
-}
-
-function loadLocalEnv(path: string): Record<string, string> {
-  if (!existsSync(path)) {
-    return {}
-  }
-  return parse(readFileSync(path))
 }
 
 function envFilePathConfig(value: string | undefined): string | undefined {
@@ -609,6 +613,15 @@ function numberConfig(name: string, fallback: number, min: number, max: number):
     throw new Error(`${name} 必须在 ${min}-${max} 范围内`)
   }
   return integerValue
+}
+
+function integerConfig(name: string, fallback: number, min: number, max: number): number {
+  const rawValue = rawStringConfig(name)
+  if (!rawValue) return fallback
+  const value = Number(rawValue)
+  if (!Number.isInteger(value)) throw new Error(`${name} 必须配置为整数`)
+  if (value < min || value > max) throw new Error(`${name} 必须在 ${min}-${max} 范围内`)
+  return value
 }
 
 function pathConfig(name: string, fallback: string): string {

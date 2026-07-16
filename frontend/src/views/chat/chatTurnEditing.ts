@@ -33,7 +33,7 @@ export function beginLatestTurnEdit(messages: readonly ChatMessage[], userMessag
   if (userMessage.role !== 'user' || assistantMessage.role !== 'assistant') return undefined
   if (userMessage.turnId !== assistantMessage.turnId || userMessage.conversationId !== assistantMessage.conversationId) return undefined
   if (assistantMessage.sequenceNo !== userMessage.sequenceNo + 1) return undefined
-  if (userMessage.status !== 'completed' || assistantMessage.status !== 'completed') return undefined
+  if (userMessage.status !== 'completed' || !['completed', 'failed', 'canceled'].includes(assistantMessage.status)) return undefined
   const contentBlocks = strictInputBlocks(userMessage.contentBlocks)
   if (!contentBlocks?.length) return undefined
   return {

@@ -10,6 +10,8 @@ export interface ChatConversation {
   isPinned: boolean
   lastModel?: string
   activeTurnId?: string
+  userTurnCount: number
+  userTurnLimit: number
   lastMessageAt: string
   createdAt: string
   updatedAt: string
@@ -66,10 +68,16 @@ export interface ChatContextStatus {
   revision: number
 }
 
+export type ChatSubmissionStatus =
+  | { state: 'preparing' }
+  | { state: 'not_found' }
+  | { state: 'accepted'; turnId: string; assistantStatus: ChatMessageStatus }
+
 export type ChatReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type ChatServiceTier = 'default' | 'priority' | 'flex'
 export interface ChatModelOption {
   id: string
+  supportsPromptCaching: boolean
   supportedReasoningEfforts: ChatReasoningEffort[]
   defaultReasoningEffort?: ChatReasoningEffort
   supportedServiceTiers: ChatServiceTier[]

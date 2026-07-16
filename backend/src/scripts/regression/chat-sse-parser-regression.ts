@@ -38,13 +38,19 @@ await assert.rejects(
   'Chat Completions 无分隔 pending block 必须有硬上限'
 )
 
+async function* manySmallEvents(): AsyncGenerator<Uint8Array> {
+  for (let index = 0; index < 2050; index += 1) yield encoder.encode('data: {"choices":[{"delta":{"content":"x"}}]}\n\n')
+  yield encoder.encode('data: [DONE]\n\n')
+}
+
+const longEventStream = await collectOpenAIChatSse(manySmallEvents(), 4096)
+assert.equal(longEventStream.done, true, '默认事件预算必须允许超过 2048 个合法小事件完成')
+assert.equal(longEventStream.content, 'x'.repeat(2050))
+
 await assert.rejects(
-  collectOpenAIChatSse(async function* () {
-    for (let index = 0; index < 2050; index += 1) yield encoder.encode(': heartbeat\n\n')
-    yield encoder.encode('data: [DONE]\n\n')
-  }(), 1024),
-  /事件数量超过/,
-  'Chat Completions 事件数量必须有界'
+  collectOpenAIChatSse(manySmallEvents(), 4096, undefined, 2_048),
+  /事件数量超过 2048 上限/,
+  'Chat Completions 显式低事件预算仍必须拒绝第 2049 个事件'
 )
 
 console.log('AI 问答 OpenAI SSE 解析回归通过')

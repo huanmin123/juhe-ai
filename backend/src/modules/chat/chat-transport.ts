@@ -96,21 +96,23 @@ export function buildChatTransportRequest(input: {
   toolsEnabled: boolean
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier
+  promptCacheKey?: string
 }): { path: '/v1/chat/completions' | '/v1/responses'; body: Record<string, unknown> } {
   const messages = [{ role: 'system' as const, content: input.instructions }, ...input.history, { role: 'user' as const, content: input.currentContent }]
   if (input.protocol === 'responses') {
     const currentContent = input.currentBlocks?.length
       ? toResponsesBlocks(input.currentBlocks)
-      : input.currentContent
+      : toResponsesBlocks([{ type: 'input_text', text: input.currentContent }])
     return {
       path: '/v1/responses',
       body: {
         model: input.model,
         instructions: input.instructions,
-        input: [...input.history.map((message) => ({ ...message, content: typeof message.content === 'string' ? message.content : toResponsesBlocks(message.content) })), { role: 'user' as const, content: currentContent }],
+        input: [...input.history.map((message) => ({ ...message, content: toResponsesMessageContent(message) })), { role: 'user' as const, content: currentContent }],
         stream: true,
         ...(input.reasoningEffort ? { reasoning: { effort: input.reasoningEffort } } : {}),
         ...(input.serviceTier ? { service_tier: input.serviceTier } : {}),
+        ...(input.promptCacheKey ? { prompt_cache_key: input.promptCacheKey } : {}),
         ...(input.toolsEnabled ? { tools: [{ type: 'web_search' }], tool_choice: 'auto' } : {})
       }
     }
@@ -123,9 +125,17 @@ export function buildChatTransportRequest(input: {
       stream: true,
       stream_options: { include_usage: true },
       ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
-      ...(input.serviceTier ? { service_tier: input.serviceTier } : {})
+      ...(input.serviceTier ? { service_tier: input.serviceTier } : {}),
+      ...(input.promptCacheKey ? { prompt_cache_key: input.promptCacheKey } : {})
     }
   }
+}
+
+function toResponsesMessageContent(message: ChatTransportMessage): string | Array<Record<string, unknown>> {
+  if (typeof message.content !== 'string') return toResponsesBlocks(message.content)
+  return message.role === 'user'
+    ? toResponsesBlocks([{ type: 'input_text', text: message.content }])
+    : message.content
 }
 
 function toResponsesBlocks(blocks: ChatTransportInputBlock[]): Array<Record<string, unknown>> {

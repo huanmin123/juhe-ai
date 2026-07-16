@@ -30,5 +30,5 @@ const inputBlocks = computed(() => (props.message.contentBlocks ?? [])
 
 <style scoped>
 .chat-user-content { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
-.chat-user-image { width: auto; max-width: min(360px, 100%); max-height: 320px; display: block; object-fit: contain; border: 1px solid #e1e5ea; border-radius: 6px; }
+.chat-user-image { width: auto; max-width: min(360px, 100%); max-height: 320px; align-self: flex-start; display: block; object-fit: contain; border: 1px solid #e1e5ea; border-radius: 6px; }
 </style>

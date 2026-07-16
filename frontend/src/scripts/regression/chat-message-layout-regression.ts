@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 
 const source = readFileSync('../frontend/src/views/chat/ChatMessageList.vue', 'utf8')
 const toolSource = readFileSync('../frontend/src/views/chat/ChatToolEvent.vue', 'utf8')
+const userContentSource = readFileSync('../frontend/src/views/chat/ChatUserMessageContent.vue', 'utf8')
 
 assert.match(source, /message-row-user\s*\{\s*justify-content:\s*flex-end/, '用户消息必须位于右侧')
 assert.match(source, /message-row-assistant\s*\{\s*justify-content:\s*flex-start/, 'AI 消息必须位于左侧')
@@ -36,9 +37,12 @@ assert.match(source, /class="message-row"[\s\S]{0,260}:class="\[`message-row-/, 
 assert.match(source, /:ref="measureElement"/, '必须保留虚拟列表测量 ref')
 assert.match(source, /:data-index="item\.index"/, '必须保留虚拟列表 data-index')
 assert.match(source, /:key="messages\[item\.index\]\.id"/, '虚拟行 key 必须保持消息 id')
-assert.match(source, /new ResizeObserver\(followStream\)/, '不能破坏流式输出 ResizeObserver 跟随')
+assert.match(source, /new ResizeObserver\(handleObservedResize\)/, '流式内容和可视区变化必须通过统一 ResizeObserver 跟随')
 assert.match(source, /is-editing-turn[^\n]+opacity:\s*\.[0-9]+/, '编辑中必须淡化整轮消息')
 assert.match(source, /message-status-text/, '非完成态必须放在正文下方使用低强调文字')
+
+assert.match(userContentSource, /\.chat-user-image\s*\{[^}]*align-self:\s*flex-start/is, '小图必须脱离纵向 flex 容器的 stretch，保持自然尺寸')
+assert.match(userContentSource, /\.chat-user-image\s*\{[^}]*max-width:\s*min\(360px,\s*100%\)[^}]*max-height:\s*320px/is, '大图仍必须受 360px 宽度和 320px 高度上限约束')
 
 assert.match(toolSource, /思考摘要/, 'reasoning 折叠必须命名为“思考摘要”')
 assert.doesNotMatch(toolSource, /思考过程|JSON\.stringify|compactItem/, '过程区不能暴露“思考过程”或原始工具 JSON')

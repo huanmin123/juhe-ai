@@ -1,3 +1,18 @@
+export interface ChatStopTarget {
+  conversationId: string
+  clientMessageId: string
+  turnId?: string
+}
+
+export function resolveChatStopTarget(input: {
+  selectedConversationId?: string
+  active?: ChatStopTarget
+  pending?: ChatStopTarget
+}): ChatStopTarget | undefined {
+  const target = input.active ?? input.pending
+  return target?.conversationId === input.selectedConversationId ? target : undefined
+}
+
 export async function stopActiveChatGeneration(input: {
   controller?: AbortController
   stop: () => Promise<unknown>

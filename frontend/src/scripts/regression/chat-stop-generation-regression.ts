@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { stopActiveChatGeneration } from '../../views/chat/chatStopGeneration'
+import { resolveChatStopTarget, stopActiveChatGeneration } from '../../views/chat/chatStopGeneration'
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void
@@ -34,5 +34,23 @@ oldSendSettled.resolve()
 await stopping
 assert.equal(finished, true)
 assert.equal(newController.signal.aborted, false)
+
+const pendingTarget = resolveChatStopTarget({
+  selectedConversationId: 'conversation-pending',
+  pending: {
+    conversationId: 'conversation-pending',
+    clientMessageId: 'client-pending',
+    turnId: 'turn-pending'
+  }
+})
+assert.deepEqual(pendingTarget, {
+  conversationId: 'conversation-pending',
+  clientMessageId: 'client-pending',
+  turnId: 'turn-pending'
+}, '活动流句柄已释放后，停止按钮仍必须使用待确权记录精确停止 preparing/streaming 轮次')
+assert.equal(resolveChatStopTarget({
+  selectedConversationId: 'conversation-other',
+  pending: pendingTarget
+}), undefined, '待确权停止目标不能跨会话误用')
 
 console.log('AI 问答停止门禁与 controller 隔离回归通过')

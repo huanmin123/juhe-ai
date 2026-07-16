@@ -10,16 +10,16 @@
     <div class="ai-composer-footer">
       <div class="ai-composer-model-controls">
         <a-tooltip v-if="showConversationButton" title="对话记录"><a-button type="text" size="small" aria-label="对话记录" @click="emit('open-conversations')"><MenuOutlined /></a-button></a-tooltip>
-        <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled" size="small" :bordered="false" :popup-match-select-width="false" aria-label="选择模型" @update:value="emit('update:modelValue', $event)" />
-        <a-select v-if="reasoningOptions.length" :value="reasoningEffort" :options="reasoningOptions" :disabled="disabled" size="small" :bordered="false" :popup-match-select-width="false" aria-label="思考级别" @update:value="emit('update:reasoningEffort', $event)" />
-        <a-select v-if="serviceTierOptions.length" :value="serviceTier" :options="serviceTierOptions" :disabled="disabled" size="small" :bordered="false" :popup-match-select-width="false" aria-label="服务等级" @update:value="emit('update:serviceTier', $event)" />
-        <a-tooltip :title="contextTooltip">
-          <span class="ai-composer-context" role="img" :aria-label="contextTooltip">
-            <a-progress type="circle" :percent="contextPercent" :size="18" :stroke-width="12" :show-info="false" :status="contextProgressStatus" />
-          </span>
-        </a-tooltip>
+        <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled" size="small" :bordered="false" aria-label="选择模型" :style="{ width: `${modelControlWidths.triggerWidth}px` }" :dropdown-match-select-width="modelControlWidths.popupWidth" @update:value="emit('update:modelValue', $event)" />
+        <a-select v-if="reasoningOptions.length" :value="reasoningEffort" :options="reasoningOptions" :disabled="disabled" size="small" :bordered="false" aria-label="思考级别" :style="{ width: `${reasoningControlWidths.triggerWidth}px` }" :dropdown-match-select-width="reasoningControlWidths.popupWidth" @update:value="emit('update:reasoningEffort', $event)" />
+        <a-select v-if="serviceTierOptions.length" :value="serviceTier" :options="serviceTierOptions" :disabled="disabled" size="small" :bordered="false" aria-label="服务等级" :style="{ width: `${serviceTierControlWidths.triggerWidth}px` }" :dropdown-match-select-width="serviceTierControlWidths.popupWidth" @update:value="emit('update:serviceTier', $event)" />
       </div>
-      <a-tooltip v-if="disabled" title="停止生成"><a-button danger type="primary" aria-label="停止生成" @click="emit('stop')"><StopOutlined /></a-button></a-tooltip>
+      <a-tooltip :title="contextTooltip">
+        <span class="ai-composer-context" role="img" :aria-label="`上下文用量 ${contextTooltip}`">
+          <a-progress type="circle" :percent="contextPercent" :size="18" :stroke-width="12" :show-info="false" :status="contextProgressStatus" />
+        </span>
+      </a-tooltip>
+      <a-tooltip v-if="stoppable" title="停止生成"><a-button danger type="primary" aria-label="停止生成" @click="emit('stop')"><StopOutlined /></a-button></a-tooltip>
       <a-tooltip v-else :title="sendTooltip"><a-button type="primary" aria-label="发送" :disabled="!canSubmit" @click="submit"><SendOutlined /></a-button></a-tooltip>
     </div>
   </div>
@@ -31,20 +31,37 @@ import Placeholder from '@tiptap/extension-placeholder'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import type { JSONContent } from '@tiptap/core'
+import type { Editor, JSONContent } from '@tiptap/core'
 import { chatApi, chatAssetContentUrl } from '@/api/domains/chat'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { composerDocumentToBlocks, composerTextToDocument, type ChatInputBlock } from './chatComposerDocument'
 import { createChatComposerSubmission } from './chatComposerSubmission'
 import { ChatImageAttachment } from './ChatImageAttachment'
-import { chatComposerCommandQueryRange, chatComposerCommands, filterChatComposerCommands, moveChatComposerCommandIndex, type ChatComposerCommand } from './chatComposerCommands'
+import { chatComposerCommands, filterChatComposerCommands, findChatComposerCommandQuery, moveChatComposerCommandIndex, type ChatComposerCommand } from './chatComposerCommands'
+import { chatMixedClipboardParts, type ChatMixedClipboardPart } from './chatMixedClipboard'
+import { chatComposerControlWidths } from './chatComposerControlWidths'
+import { createChatComposerKeyDownHandler } from './chatComposerKeyDownHandler'
 import { reasoningEffortLabel, selectableChatReasoningEfforts } from './chatModelControls'
 import { replaceEditorContentWithoutHistory } from './chatEditorDocumentBoundary'
-import { maxChatImageCount, selectChatImageFiles } from './chatImageSelection'
+import { maxChatImageCount, selectChatImageFiles, selectChatImageFileSlots } from './chatImageSelection'
 import type { ChatContextStatus, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 
-const props = defineProps<{ contextStatus?: ChatContextStatus; conversationId: string; disabled: boolean; imageInputSupported: boolean; modelOptions: ChatModelOption[]; modelValue?: string; modelsLoading: boolean; reasoningEffort: ChatReasoningEffort | ''; serviceTier: ChatServiceTier | ''; showConversationButton: boolean }>()
+const props = defineProps<{
+  contextStatus?: ChatContextStatus
+  conversationId: string
+  disabled: boolean
+  stoppable: boolean
+  turnLimitReached: boolean
+  turnLimitMessage: string
+  imageInputSupported: boolean
+  modelOptions: ChatModelOption[]
+  modelValue?: string
+  modelsLoading: boolean
+  reasoningEffort: ChatReasoningEffort | ''
+  serviceTier: ChatServiceTier | ''
+  showConversationButton: boolean
+}>()
 const emit = defineEmits<{
   (event: 'submit', payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void
   (event: 'stop' | 'open-conversations'): void
@@ -76,49 +93,61 @@ interface ImageUploadRecord {
   height: number
   byteSize: number
   error: string
+  submitted: boolean
   controller?: AbortController
 }
 const imageUploadRecords = new Map<string, ImageUploadRecord>()
 
+const handleComposerKeyDown = createChatComposerKeyDownHandler({
+  commandOpen: () => commandOpen.value,
+  commandItemCount: () => commandItems.value.length,
+  moveCommand: (direction) => {
+    commandIndex.value = moveChatComposerCommandIndex(commandIndex.value, direction === 'next' ? 1 : -1, commandItems.value.length)
+  },
+  selectCommand: () => {
+    const item = commandItems.value[commandIndex.value]
+    if (!item) return false
+    selectCommand(item)
+    return true
+  },
+  closeCommand: () => { commandOpen.value = false },
+  submit
+})
+
 const editor = useEditor({
-  extensions: [StarterKit, Placeholder.configure({ placeholder: () => props.imageInputSupported ? '输入消息；Enter 发送，Shift+Enter 换行，可粘贴图片，/ 打开命令' : '输入消息；Enter 发送，Shift+Enter 换行，/ 打开命令' }), ChatImageAttachment.configure({ onRetry: retryImageUpload, onRemove: removeImageUpload })],
+  extensions: [StarterKit, Placeholder.configure({ placeholder: () => props.imageInputSupported ? '输入消息；Enter 发送，Shift+Enter 换行；支持 Markdown、图片和 / 命令' : '输入消息；Enter 发送，Shift+Enter 换行；支持 Markdown 和 / 命令' }), ChatImageAttachment.configure({ onRetry: retryImageUpload, onRemove: removeImageUpload })],
   content: { type: 'doc', content: [{ type: 'paragraph' }] },
   editable: !props.disabled,
   editorProps: {
-    handleKeyDown: (_view, event) => {
-      if (event.isComposing) return false
-      if (commandOpen.value && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
-        event.preventDefault()
-        const count = commandItems.value.length
-        commandIndex.value = moveChatComposerCommandIndex(commandIndex.value, event.key === 'ArrowDown' ? 1 : -1, count)
-        return true
-      }
-      if (commandOpen.value && event.key === 'Enter') {
-        event.preventDefault()
-        const item = commandItems.value[commandIndex.value]
-        if (item) selectCommand(item)
-        return true
-      }
-      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); return true }
-      if (event.key === 'Escape' && commandOpen.value) { commandOpen.value = false; return true }
-      return false
-    },
+    handleKeyDown: handleComposerKeyDown,
     handlePaste: (_view, event) => {
       const files = Array.from(event.clipboardData?.files ?? [])
-      if (!files.some((file) => file.type.startsWith('image/'))) return false
+      const imageFiles = files.filter((file) => file.type.startsWith('image/'))
+      if (!imageFiles.length) return false
       if (!props.imageInputSupported) { message.warning('当前模型不支持图片输入'); return true }
-      enqueueImages(files)
+      const imageFileSlots = selectChatImageFileSlots(imageFiles, imageItems.value.length)
+      const selectedFiles = imageFileSlots.filter((file): file is File => Boolean(file))
+      if (selectedFiles.length < imageFiles.length) message.warning(`每条消息最多 ${maxChatImageCount} 张图片，单张不能超过 32 MiB`)
+      const html = event.clipboardData?.getData('text/html') ?? ''
+      if (html && selectedFiles.length) {
+        const clipboardDocument = new DOMParser().parseFromString(html, 'text/html')
+        if (clipboardDocument.body.querySelector('img')) {
+          insertMixedClipboardParts(chatMixedClipboardParts(clipboardDocument.body, imageFileSlots))
+          return true
+        }
+      }
+      insertClipboardText(event.clipboardData?.getData('text/plain') ?? '')
+      for (const file of selectedFiles) insertImage(file)
       return true
     }
   },
   onUpdate: ({ editor: nextEditor }) => {
     contentRevision.value += 1
-    const text = nextEditor.getText()
-    const slash = /(?:^|\s)\/([^\s]*)$/.exec(text)
-    commandOpen.value = Boolean(slash)
-    commandQuery.value = slash?.[1] ?? ''
-    commandIndex.value = 0
+    syncCommandQuery(nextEditor)
     scheduleImageNodeSync()
+  },
+  onSelectionUpdate: ({ editor: nextEditor }) => {
+    syncCommandQuery(nextEditor)
   }
 })
 watch(() => props.disabled, (disabled) => editor.value?.setEditable(!disabled), { immediate: true })
@@ -126,9 +155,18 @@ watch(() => props.disabled, (disabled) => editor.value?.setEditable(!disabled), 
 const commandItems = computed(() => (commandOpen.value ? filterChatComposerCommands(commandQuery.value) : chatComposerCommands)
   .filter((item) => props.imageInputSupported || item.key !== 'image'))
 const selectedModelOption = computed(() => props.modelOptions.find((item) => item.id === props.modelValue))
-const modelSelectOptions = computed(() => props.modelOptions.map((item) => ({ label: item.id, value: item.id })))
-const reasoningOptions = computed(() => selectableChatReasoningEfforts(selectedModelOption.value).map((value) => ({ label: `思考 ${reasoningEffortLabel(value)}`, value })))
-const serviceTierOptions = computed(() => (selectedModelOption.value?.supportedServiceTiers ?? []).map((value) => ({ label: value === 'default' ? '服务 默认' : value === 'priority' ? '服务 优先' : '服务 Flex', value })))
+const modelSelectOptions = computed(() => props.modelOptions.map((item) => ({ label: item.id, value: item.id, title: item.id })))
+const reasoningOptions = computed(() => selectableChatReasoningEfforts(selectedModelOption.value).map((value) => {
+  const label = `思考 ${reasoningEffortLabel(value)}`
+  return { label, value, title: label }
+}))
+const serviceTierOptions = computed(() => (selectedModelOption.value?.supportedServiceTiers ?? []).map((value) => {
+  const label = value === 'default' ? '服务 默认' : value === 'priority' ? '服务 优先' : '服务 Flex'
+  return { label, value, title: label }
+}))
+const modelControlWidths = computed(() => chatComposerControlWidths('model', props.modelValue, modelSelectOptions.value.map((item) => item.label)))
+const reasoningControlWidths = computed(() => chatComposerControlWidths('reasoning', reasoningOptions.value.find((item) => item.value === props.reasoningEffort)?.label, reasoningOptions.value.map((item) => item.label)))
+const serviceTierControlWidths = computed(() => chatComposerControlWidths('service', serviceTierOptions.value.find((item) => item.value === props.serviceTier)?.label, serviceTierOptions.value.map((item) => item.label)))
 const contextLimitTokens = computed(() => selectedModelOption.value?.maxInputTokens ?? props.contextStatus?.limitTokens)
 const contextPercent = computed(() => {
   const limit = contextLimitTokens.value
@@ -136,12 +174,11 @@ const contextPercent = computed(() => {
 })
 const contextProgressStatus = computed(() => props.contextStatus?.state === 'compact_failed' ? 'exception' : contextPercent.value >= 85 ? 'exception' : 'normal')
 const contextTooltip = computed(() => {
-  if (!props.contextStatus) return '上下文用量暂不可用'
+  if (!props.contextStatus) return '用量暂不可用'
   const used = formatTokenCount(props.contextStatus?.usedTokens ?? 0)
   const limit = contextLimitTokens.value ? formatTokenCount(contextLimitTokens.value) : '未知'
   const state = { ready: '', compact_pending: ' · 等待压缩', compacting: ' · 正在压缩', compact_failed: ' · 压缩失败，将重试' }[props.contextStatus?.state ?? 'ready']
-  const source = props.contextStatus?.usageEstimated === false ? '上游用量' : '估算'
-  return `上下文 ${used} / ${limit} · ${source}${state}`
+  return `${used} / ${limit}${state}`
 })
 const imageItems = computed(() => {
   contentRevision.value
@@ -162,8 +199,9 @@ const hasContent = computed(() => {
   return Boolean(editor.value && (editor.value.getText().trim() || imageItems.value.length))
 })
 const imagesReady = computed(() => imageItems.value.every((item) => item.uploadStatus === 'uploaded' && Boolean(item.assetId)))
-const canSubmit = computed(() => Boolean(hasContent.value && props.modelValue && !props.modelsLoading && imagesReady.value && (props.imageInputSupported || imageItems.value.length === 0)))
+const canSubmit = computed(() => Boolean(hasContent.value && props.modelValue && !props.modelsLoading && imagesReady.value && !props.disabled && !props.turnLimitReached && (props.imageInputSupported || imageItems.value.length === 0)))
 const sendTooltip = computed(() => {
+  if (props.turnLimitReached) return props.turnLimitMessage
   if (imageItems.value.some((item) => item.uploadStatus === 'failed')) return '请重试或删除上传失败的图片'
   if (!imagesReady.value) return '请等待图片上传完成'
   if (imageItems.value.length && !props.imageInputSupported) return '当前模型不支持图片输入'
@@ -176,13 +214,13 @@ watch(() => props.imageInputSupported, () => {
 watch(() => props.conversationId, (conversationId, previousConversationId) => {
   if (!previousConversationId || conversationId === previousConversationId) return
   conversationGeneration += 1
-  disposeImageUploadRecords()
+  disposeImageUploadRecords(true)
   if (editor.value) replaceEditorContentWithoutHistory(editor.value, emptyComposerDocument())
   contentRevision.value += 1
 })
 
 function submit(): void {
-  if (!editor.value || !canSubmit.value || props.disabled) return
+  if (!editor.value || !canSubmit.value || props.disabled || props.turnLimitReached) return
   const snapshot = editor.value.getJSON()
   let blocks: ChatInputBlock[]
   try {
@@ -193,6 +231,8 @@ function submit(): void {
   }
   const payload = { blocks, snapshot }
   const submission = createChatComposerSubmission(snapshot as Record<string, unknown>)
+  const submittedAssetIds = new Set(blocks.flatMap((block) => block.type === 'input_image' ? [block.assetId] : []))
+  for (const record of imageUploadRecords.values()) record.submitted = submittedAssetIds.has(record.assetId)
   replaceEditorContentWithoutHistory(editor.value, emptyComposerDocument())
   contentRevision.value += 1
   emit('submit', { ...payload, snapshot: submission.snapshot as JSONContent })
@@ -228,8 +268,8 @@ function setBlocks(blocks: ChatInputBlock[]): void {
   replaceEditorContentWithoutHistory(editor.value, { type: 'doc', content: [{ type: 'paragraph', ...(inline.length ? { content: inline } : {}) }] })
   contentRevision.value += 1
 }
-function restore(snapshot: JSONContent): void { if (editor.value) replaceEditorContentWithoutHistory(editor.value, cloneDocument(snapshot)); contentRevision.value += 1; scheduleImageNodeSync(); editor.value?.commands.focus('end') }
-function clear(): void { conversationGeneration += 1; disposeImageUploadRecords(); if (editor.value) replaceEditorContentWithoutHistory(editor.value, emptyComposerDocument()); contentRevision.value += 1 }
+function restore(snapshot: JSONContent): void { for (const record of imageUploadRecords.values()) record.submitted = false; if (editor.value) replaceEditorContentWithoutHistory(editor.value, cloneDocument(snapshot)); contentRevision.value += 1; scheduleImageNodeSync(); editor.value?.commands.focus('end') }
+function clear(): void { conversationGeneration += 1; disposeImageUploadRecords(true); if (editor.value) replaceEditorContentWithoutHistory(editor.value, emptyComposerDocument()); contentRevision.value += 1 }
 function focus(): void { editor.value?.commands.focus() }
 function releaseSubmittedAssets(): void {
   const retainedLocalIds = new Set<string>()
@@ -239,6 +279,7 @@ function releaseSubmittedAssets(): void {
   for (const [localId, record] of imageUploadRecords) {
     if (retainedLocalIds.has(localId)) continue
     record.controller?.abort()
+    if (record.status === 'uploaded' && !record.submitted) deleteUploadedAsset(record)
     revokePreviewUrl(record.previewUrl)
     imageUploadRecords.delete(localId)
   }
@@ -246,13 +287,31 @@ function releaseSubmittedAssets(): void {
 function cloneDocument(document: JSONContent): JSONContent { return JSON.parse(JSON.stringify(document)) as JSONContent }
 function emptyComposerDocument(): JSONContent { return { type: 'doc', content: [{ type: 'paragraph' }] } }
 function formatTokenCount(value: number): string { return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1_000 ? `${(value / 1_000).toFixed(1)}K` : String(Math.max(0, Math.round(value))) }
+function syncCommandQuery(nextEditor: Editor): void {
+  const command = findChatComposerCommandQuery(nextEditor.state)
+  if (!command) {
+    commandOpen.value = false
+    commandQuery.value = ''
+    commandIndex.value = 0
+    return
+  }
+  commandOpen.value = true
+  commandQuery.value = command.query
+  commandIndex.value = 0
+}
 function selectCommand(item: ChatComposerCommand): void {
   if (!editor.value) return
+  const command = findChatComposerCommandQuery(editor.value.state)
+  if (!command) {
+    commandOpen.value = false
+    commandQuery.value = ''
+    commandIndex.value = 0
+    return
+  }
   if (item.key === 'clear') {
     clear()
   } else {
-    const cursor = editor.value.state.selection.from
-    editor.value.chain().focus().deleteRange(chatComposerCommandQueryRange(cursor, commandQuery.value)).run()
+    editor.value.chain().focus().deleteRange(command.range).run()
     if (item.key === 'image') fileInput.value?.click()
     else editor.value.commands.insertContent(item.insert)
   }
@@ -276,7 +335,8 @@ function insertImage(file: File): void {
     width: 0,
     height: 0,
     byteSize: file.size,
-    error: ''
+    error: '',
+    submitted: false
   }
   const inserted = editor.value.commands.insertContent({ type: 'chatImageAttachment', attrs: imageNodeAttrs(record) })
   if (!inserted) {
@@ -285,6 +345,16 @@ function insertImage(file: File): void {
   }
   imageUploadRecords.set(localId, record)
   void uploadImage(record)
+}
+function insertClipboardText(value: string): void {
+  if (!value || !editor.value) return
+  editor.value.commands.insertContent(composerTextToDocument(value).content?.[0]?.content ?? [])
+}
+function insertMixedClipboardParts(parts: readonly ChatMixedClipboardPart[]): void {
+  for (const part of parts) {
+    if (part.type === 'text') insertClipboardText(part.text)
+    else insertImage(part.file)
+  }
 }
 function enqueueImages(files: readonly File[]): void {
   if (!props.imageInputSupported) { message.warning('当前模型不支持图片输入'); return }
@@ -315,7 +385,10 @@ async function uploadImage(record: ImageUploadRecord): Promise<void> {
         patchImageNode(record.localId, { uploadProgress: progress })
       }
     })
-    if (!isCurrentUploadRecord(record) || record.controller !== controller) return
+    if (!isCurrentUploadRecord(record) || record.controller !== controller) {
+      void chatApi.deleteAsset(record.conversationId, asset.id).catch(() => undefined)
+      return
+    }
     record.status = 'uploaded'
     record.progress = 100
     record.assetId = asset.id
@@ -349,7 +422,7 @@ function removeImageUpload(localId: string): void {
   const record = imageUploadRecords.get(localId)
   if (!record) return
   if (record.status === 'uploaded') {
-    imageUploadRecords.delete(localId)
+    queueMicrotask(pruneDetachedImageRecords)
     return
   }
   if (record.status === 'uploading') {
@@ -366,13 +439,21 @@ function pruneDetachedImageRecords(): void {
   editor.value?.state.doc.descendants((node) => {
     if (node.type.name === 'chatImageAttachment') attached.add(String(node.attrs.localId ?? ''))
   })
-  const detached = [...imageUploadRecords.entries()].filter(([localId, record]) => !attached.has(localId) && record.status !== 'uploaded')
+  const detached = [...imageUploadRecords.entries()].filter(([localId, record]) => !attached.has(localId) && !record.submitted)
+  for (const [, record] of detached) {
+    if (record.status !== 'uploading') continue
+    record.controller?.abort()
+    record.status = 'failed'
+    record.progress = 0
+    record.error = '上传已取消，可撤销删除后重试'
+  }
   let retainedBytes = detached.reduce((total, [, record]) => total + (record.file?.size ?? 0), 0)
   while (detached.length > 8 || retainedBytes > 64 * 1024 * 1024) {
     const oldest = detached.shift()
     if (!oldest) break
     retainedBytes -= oldest[1].file?.size ?? 0
     oldest[1].controller?.abort()
+    if (oldest[1].status === 'uploaded') deleteUploadedAsset(oldest[1])
     revokePreviewUrl(oldest[1].previewUrl)
     imageUploadRecords.delete(oldest[0])
   }
@@ -411,6 +492,7 @@ function scheduleImageNodeSync(): void {
       }
     })
     for (const item of pending) patchImageNode(item.localId, item.attrs)
+    pruneDetachedImageRecords()
   })
 }
 
@@ -436,18 +518,20 @@ function isCurrentUploadRecord(record: ImageUploadRecord): boolean {
     && record.conversationId === props.conversationId
 }
 
-function disposeImageUploadRecords(): void {
+function disposeImageUploadRecords(deleteUploadedAssets = false): void {
   for (const record of imageUploadRecords.values()) {
     record.controller?.abort()
+    if (deleteUploadedAssets && record.status === 'uploaded' && !record.submitted) deleteUploadedAsset(record)
     revokePreviewUrl(record.previewUrl)
   }
   imageUploadRecords.clear()
 }
+function deleteUploadedAsset(record: ImageUploadRecord): void { if (record.assetId) void chatApi.deleteAsset(record.conversationId, record.assetId).catch(() => undefined) }
 function revokePreviewUrl(value: string): void { if (value.startsWith('blob:')) URL.revokeObjectURL(value) }
 
 onBeforeUnmount(() => {
   conversationGeneration += 1
-  disposeImageUploadRecords()
+  disposeImageUploadRecords(true)
 })
 defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSubmittedAssets })
 </script>
@@ -471,7 +555,12 @@ defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSu
 .ai-composer-command-menu small { color: #94a3b8; }
 @media (max-width: 520px) {
   .ai-composer-footer { align-items: flex-end; }
-  .ai-composer-model-controls { flex-wrap: wrap; row-gap: 0; overflow-x: visible; }
   .ai-composer-model-controls :deep(.ant-select-selector) { padding-inline: 3px !important; }
+}
+@media (pointer: coarse) {
+  .ai-composer-context { width: 44px; height: 44px; flex-basis: 44px; }
+  .ai-composer-footer :deep(.ant-btn) { min-width: 44px; height: 44px; padding: 0; }
+  .ai-composer-model-controls :deep(.ant-select-selector) { min-height: 44px !important; align-items: center; }
+  .ai-composer-model-controls :deep(.ant-select-selection-search-input) { height: 44px !important; }
 }
 </style>

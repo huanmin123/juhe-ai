@@ -15,6 +15,13 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+body.immersive-layout-active {
+  height: var(--app-visual-viewport-height, 100dvh);
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 * {
   scrollbar-color: rgba(100, 116, 139, 0.42) transparent;
   scrollbar-width: thin;

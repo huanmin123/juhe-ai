@@ -113,7 +113,10 @@ const supplementalSchemaStatements: PostgresSchemaStatement[] = [
 
 const postgresBigintColumnNames = new Set([
   'bytes',
+  'asset_bytes',
   'content_bytes',
+  'storage_reserved_bytes',
+  'reserved_bytes',
   'original_bytes',
   'processed_bytes',
   'request_body_bytes',
@@ -162,6 +165,7 @@ const postgresBigintColumnNames = new Set([
   'growth_bytes_24h',
   'growth_rows_24h',
   'next_sequence_no',
+  'user_turn_count',
   'sequence_no',
   'context_revision',
   'compacted_through_sequence',

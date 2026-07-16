@@ -7,6 +7,8 @@ export type ChatContextEntryKind = 'verbatim' | 'durable_memory' | 'task_state' 
 export type ChatContextEntryProvenance = 'user' | 'assistant' | 'tool' | 'asset' | 'provider'
 export type ChatContextEntryTrustLevel = 'untrusted' | 'assistant_derived' | 'provider_opaque'
 
+export const chatContextMaintenanceMaxBatchSize = 500
+
 export interface ChatContextHead {
   conversationId: string
   systemAccountId: string
@@ -211,28 +213,39 @@ export async function loadChatModelContext(client: DatabaseClient, input: {
   }
 
   const remainingRows = maxRows - entries.length
-  if (remainingRows < 1) {
-    return { head, checkpoint, entries, suffix: [], loadedBytes, complete: false, truncatedAt: 'suffix_messages' }
-  }
+  const suffixRowBudget = remainingRows - (remainingRows % 2)
+  const messagesTable = chatTable(client, 'chat_messages')
   const suffixRows = await client.query<ContextMessageRow>(`
-    SELECT id, turn_id, sequence_no, role, content_text, content_blocks_json,
-           content_bytes, model, created_at, completed_at, expires_at
-    FROM ${chatTable(client, 'chat_messages')}
-    WHERE conversation_id = ? AND system_account_id = ?
-      AND status = 'completed' AND expires_at > ? AND sequence_no > ?
-    ORDER BY sequence_no ASC
+    SELECT source.id, source.turn_id, source.sequence_no, source.role, source.content_text, source.content_blocks_json,
+           source.content_bytes, source.model, source.created_at, source.completed_at, source.expires_at
+    FROM ${messagesTable} AS source
+    WHERE source.conversation_id = ? AND source.system_account_id = ?
+      AND source.status = 'completed' AND source.expires_at > ? AND source.sequence_no > ?
+      AND EXISTS (
+        SELECT 1 FROM ${messagesTable} AS pair
+        WHERE pair.conversation_id = source.conversation_id
+          AND pair.system_account_id = source.system_account_id
+          AND pair.turn_id = source.turn_id
+          AND pair.status = 'completed' AND pair.expires_at > ?
+          AND (
+            (source.role = 'user' AND pair.role = 'assistant' AND pair.sequence_no = source.sequence_no + 1)
+            OR (source.role = 'assistant' AND pair.role = 'user' AND pair.sequence_no = source.sequence_no - 1)
+          )
+      )
+    ORDER BY source.sequence_no ASC
     LIMIT ?
-  `, [input.conversationId, input.systemAccountId, input.now, head.compactedThroughSequence, remainingRows + 1])
+  `, [input.conversationId, input.systemAccountId, input.now, head.compactedThroughSequence, input.now, suffixRowBudget + 2])
   const suffix: ChatContextSourceMessage[] = []
-  for (const row of suffixRows.slice(0, remainingRows)) {
-    const message = contextMessageFromRow(row)
-    if (loadedBytes + message.contentBytes > maxBytes) {
+  for (let index = 0; index < Math.min(suffixRows.length, suffixRowBudget); index += 2) {
+    const pair = contextMessagePair(suffixRows, index)
+    const pairBytes = pair[0].contentBytes + pair[1].contentBytes
+    if (loadedBytes + pairBytes > maxBytes) {
       return { head, checkpoint, entries, suffix, loadedBytes, complete: false, truncatedAt: 'suffix_messages' }
     }
-    suffix.push(message)
-    loadedBytes += message.contentBytes
+    suffix.push(...pair)
+    loadedBytes += pairBytes
   }
-  const complete = suffixRows.length <= remainingRows
+  const complete = suffixRows.length <= suffixRowBudget
   return {
     head,
     checkpoint,
@@ -260,9 +273,12 @@ export async function requestChatContextCompaction(client: DatabaseClient, input
         context_progress_earliest_expires_at = NULL, updated_at = ?
     WHERE id = ? AND system_account_id = ? AND context_revision = ?
       AND active_turn_id IS NULL
-      AND context_state IN ('ready', 'compact_failed')
+      AND (
+        context_state = 'ready'
+        OR (context_state = 'compact_failed' AND context_retry_at IS NOT NULL AND context_retry_at <= ?)
+      )
       AND ? > compacted_through_sequence AND ? <= next_sequence_no - 3
-  `, [input.now, input.conversationId, input.systemAccountId, expectedRevision, sourceThroughSequence, sourceThroughSequence])
+  `, [input.now, input.conversationId, input.systemAccountId, expectedRevision, input.now, sourceThroughSequence, sourceThroughSequence])
   return result.changes === 1
 }
 
@@ -322,41 +338,77 @@ export async function claimChatContextCompaction(client: DatabaseClient, input: 
   const sourceThroughSequence = positiveSafeInteger(input.sourceThroughSequence, 'sourceThroughSequence')
   const claimId = `chat_context_claim_${randomUUID().replace(/-/g, '')}`
   return client.transaction(async (tx) => {
+    const current = await tx.one<ContextHeadRow>(`
+      SELECT id, system_account_id, context_revision, active_checkpoint_id,
+             compacted_through_sequence
+      FROM ${chatTable(tx, 'chat_conversations')}
+      WHERE id = ? AND system_account_id = ? AND context_revision = ?
+      ${tx.driver === 'postgres' ? 'FOR UPDATE' : ''}
+    `, [input.conversationId, input.systemAccountId, expectedRevision])
+    if (!current) return undefined
+
+    const storedCheckpointId = optionalString(current.active_checkpoint_id)
+    const activeCheckpoint = storedCheckpointId
+      ? await loadActiveCheckpoint(tx, storedCheckpointId, input.conversationId, input.systemAccountId, input.now)
+      : undefined
+    const invalidatedCheckpoint = Boolean(storedCheckpointId && !activeCheckpoint)
+    const effectiveCompactedThroughSequence = activeCheckpoint
+      ? Number(current.compacted_through_sequence)
+      : 0
+    const claimRevision = expectedRevision + (invalidatedCheckpoint ? 1 : 0)
     const result = await tx.execute(`
       UPDATE ${chatTable(tx, 'chat_conversations')}
-      SET context_state = 'compacting', context_claim_id = ?,
-          context_claim_revision = context_revision, context_claim_through_sequence = ?,
+      SET context_revision = ?, active_checkpoint_id = ?,
+          compacted_through_sequence = ?,
+          active_context_tokens = CASE WHEN ? = 1 THEN NULL ELSE active_context_tokens END,
+          context_usage_estimated = CASE WHEN ? = 1 THEN 1 ELSE context_usage_estimated END,
+          context_state = 'compacting', context_claim_id = ?,
+          context_claim_revision = ?, context_claim_through_sequence = ?,
           context_claimed_at = ?, context_retry_at = NULL,
-          context_attempt_count = context_attempt_count + 1,
-          context_error_code = NULL, context_progress_sequence = compacted_through_sequence,
-          context_progress_earliest_expires_at = (
-            SELECT expires_at FROM ${chatTable(tx, 'chat_context_checkpoints')}
-            WHERE id = active_checkpoint_id AND status = 'active'
-            LIMIT 1
-          ),
+          context_error_code = NULL, context_progress_sequence = ?,
+          context_progress_earliest_expires_at = ?,
           updated_at = ?
       WHERE id = ? AND system_account_id = ? AND context_revision = ?
         AND active_turn_id IS NULL
-        AND ? > compacted_through_sequence AND ? <= next_sequence_no - 3
+        AND compacted_through_sequence = ?
+        AND ? > ? AND ? <= next_sequence_no - 3
         AND (
           context_state IN ('ready', 'compact_pending')
           OR (context_state = 'compact_failed' AND context_retry_at IS NOT NULL AND context_retry_at <= ?)
           OR (context_state = 'compacting' AND context_claimed_at <= ?)
         )
     `, [
+      claimRevision,
+      activeCheckpoint?.id ?? null,
+      effectiveCompactedThroughSequence,
+      invalidatedCheckpoint ? 1 : 0,
+      invalidatedCheckpoint ? 1 : 0,
       claimId,
+      claimRevision,
       sourceThroughSequence,
       input.now,
+      effectiveCompactedThroughSequence,
+      activeCheckpoint?.expiresAt ?? null,
       input.now,
       input.conversationId,
       input.systemAccountId,
       expectedRevision,
+      Number(current.compacted_through_sequence),
       sourceThroughSequence,
+      effectiveCompactedThroughSequence,
       sourceThroughSequence,
       input.now,
       input.staleClaimBefore
     ])
     if (result.changes !== 1) return undefined
+    if (invalidatedCheckpoint) {
+      await tx.execute(`
+        UPDATE ${chatTable(tx, 'chat_context_checkpoints')}
+        SET status = 'superseded'
+        WHERE id = ? AND conversation_id = ? AND system_account_id = ?
+          AND status = 'active' AND expires_at <= ?
+      `, [storedCheckpointId!, input.conversationId, input.systemAccountId, input.now])
+    }
     return requireCompactionClaim(tx, input.conversationId, input.systemAccountId, claimId)
   })
 }
@@ -371,39 +423,55 @@ export async function loadChatCompactionSourcePage(client: DatabaseClient, input
   maxBytes: number
 }): Promise<ChatCompactionSourcePage | undefined> {
   const afterSequence = nonNegativeSafeInteger(input.afterSequence, 'afterSequence')
-  const limit = boundedInteger(input.limit, 'limit', 1, maxCompactionSourceRows)
+  const limit = boundedInteger(input.limit, 'limit', 2, maxCompactionSourceRows)
+  const rowBudget = limit - (limit % 2)
   const maxBytes = boundedInteger(input.maxBytes, 'maxBytes', 1, maxContextLoadBytes)
   const claim = await findCompactionClaim(client, input.conversationId, input.systemAccountId, input.claimId)
   if (!claim) return undefined
   if (afterSequence !== claim.progressSequence) {
     throw new Error('压缩来源游标超出当前认领范围')
   }
+  const messagesTable = chatTable(client, 'chat_messages')
   const rows = await client.query<ContextMessageRow>(`
-    SELECT id, turn_id, sequence_no, role, content_text, content_blocks_json,
-           content_bytes, model, created_at, completed_at, expires_at
-    FROM ${chatTable(client, 'chat_messages')}
-    WHERE conversation_id = ? AND system_account_id = ?
-      AND status = 'completed' AND expires_at > ?
-      AND sequence_no > ? AND sequence_no <= ?
-    ORDER BY sequence_no ASC
+    SELECT source.id, source.turn_id, source.sequence_no, source.role, source.content_text, source.content_blocks_json,
+           source.content_bytes, source.model, source.created_at, source.completed_at, source.expires_at
+    FROM ${messagesTable} AS source
+    WHERE source.conversation_id = ? AND source.system_account_id = ?
+      AND source.status = 'completed' AND source.expires_at > ?
+      AND source.sequence_no > ? AND source.sequence_no <= ?
+      AND EXISTS (
+        SELECT 1 FROM ${messagesTable} AS pair
+        WHERE pair.conversation_id = source.conversation_id
+          AND pair.system_account_id = source.system_account_id
+          AND pair.turn_id = source.turn_id
+          AND pair.status = 'completed' AND pair.expires_at > ?
+          AND (
+            (source.role = 'user' AND pair.role = 'assistant' AND pair.sequence_no = source.sequence_no + 1)
+            OR (source.role = 'assistant' AND pair.role = 'user' AND pair.sequence_no = source.sequence_no - 1)
+          )
+      )
+    ORDER BY source.sequence_no ASC
     LIMIT ?
-  `, [input.conversationId, input.systemAccountId, input.now, afterSequence, claim.sourceThroughSequence, limit + 1])
+  `, [input.conversationId, input.systemAccountId, input.now, afterSequence, claim.sourceThroughSequence, input.now, rowBudget + 2])
   const messages: ChatContextSourceMessage[] = []
   let loadedBytes = 0
   let earliestExpiresAt: string | undefined
   let blockedByByteLimit = false
-  for (const row of rows.slice(0, limit)) {
-    const message = contextMessageFromRow(row)
-    if (loadedBytes + message.contentBytes > maxBytes) {
+  for (let index = 0; index < Math.min(rows.length, rowBudget); index += 2) {
+    const pair = contextMessagePair(rows, index)
+    const pairBytes = pair[0].contentBytes + pair[1].contentBytes
+    if (loadedBytes + pairBytes > maxBytes && messages.length > 0) {
       blockedByByteLimit = true
       break
     }
-    messages.push(message)
-    loadedBytes += message.contentBytes
-    earliestExpiresAt = earlierTimestamp(earliestExpiresAt, message.expiresAt)
+    if (pairBytes > maxContextLoadBytes) throw new Error('单个完整聊天轮次超过压缩来源绝对大小限制')
+    messages.push(...pair)
+    loadedBytes += pairBytes
+    earliestExpiresAt = earlierTimestamp(earliestExpiresAt, pair[0].expiresAt)
+    earliestExpiresAt = earlierTimestamp(earliestExpiresAt, pair[1].expiresAt)
   }
   const lastMessage = messages[messages.length - 1]
-  const rowOverflow = rows.length > limit
+  const rowOverflow = rows.length > rowBudget
   const hasMore = blockedByByteLimit || rowOverflow
   return {
     claim,
@@ -435,11 +503,11 @@ export async function recordChatContextCompactionProgress(client: DatabaseClient
           WHEN context_progress_earliest_expires_at IS NULL OR context_progress_earliest_expires_at > ? THEN ?
           ELSE context_progress_earliest_expires_at
         END,
-        updated_at = ?
+        context_claimed_at = ?, updated_at = ?
     WHERE id = ? AND system_account_id = ?
       AND context_state = 'compacting' AND context_claim_id = ?
       AND context_progress_sequence < ? AND context_claim_through_sequence >= ?
-  `, [throughSequence, earliestExpiresAt, earliestExpiresAt, input.now, input.conversationId, input.systemAccountId, input.claimId, throughSequence, throughSequence])
+  `, [throughSequence, earliestExpiresAt, earliestExpiresAt, input.now, input.now, input.conversationId, input.systemAccountId, input.claimId, throughSequence, throughSequence])
   return result.changes === 1
 }
 
@@ -476,6 +544,7 @@ export async function failChatContextCompaction(client: DatabaseClient, input: {
         context_claim_revision = NULL, context_claim_through_sequence = NULL,
         context_claimed_at = NULL, context_retry_at = ?, context_error_code = ?,
         context_progress_sequence = 0, context_progress_earliest_expires_at = NULL,
+        context_attempt_count = context_attempt_count + 1,
         updated_at = ?
     WHERE id = ? AND system_account_id = ?
       AND context_state = 'compacting' AND context_claim_id = ?
@@ -617,9 +686,10 @@ export async function installChatContextCheckpoint(client: DatabaseClient, input
           compacted_through_sequence = ?, context_state = 'ready',
           active_context_tokens = ?, effective_context_limit_tokens = ?,
           context_usage_estimated = ?,
-          context_claim_id = NULL, context_claim_revision = NULL,
+           context_claim_id = NULL, context_claim_revision = NULL,
           context_claim_through_sequence = NULL, context_claimed_at = NULL,
-          context_retry_at = NULL, context_error_code = NULL,
+           context_retry_at = NULL, context_error_code = NULL,
+           context_attempt_count = 0,
           context_progress_sequence = 0, context_progress_earliest_expires_at = NULL,
           updated_at = ?
       WHERE id = ? AND system_account_id = ? AND context_revision = ?
@@ -652,7 +722,7 @@ export async function recoverStaleChatContextCompactions(client: DatabaseClient,
   staleClaimBefore: string
   limit: number
 }): Promise<number> {
-  const limit = boundedInteger(input.limit, 'limit', 1, 500)
+  const limit = boundedInteger(input.limit, 'limit', 1, chatContextMaintenanceMaxBatchSize)
   const staleClaimBefore = normalizedTimestamp(input.staleClaimBefore, 'staleClaimBefore')
   const rows = await client.query<{ id?: unknown; system_account_id?: unknown }>(`
     SELECT id, system_account_id
@@ -683,7 +753,7 @@ export async function cleanupExpiredChatContextCheckpoints(client: DatabaseClien
   now: string
   limit: number
 }): Promise<{ deletedCheckpoints: number; hasMore: boolean }> {
-  const limit = boundedInteger(input.limit, 'limit', 1, 500)
+  const limit = boundedInteger(input.limit, 'limit', 1, chatContextMaintenanceMaxBatchSize)
   return client.transaction(async (tx) => {
     const rows = await tx.query<{ id?: unknown; conversation_id?: unknown; status?: unknown }>(`
       SELECT id, conversation_id, status
@@ -763,9 +833,19 @@ async function findCompactionClaim(client: DatabaseClient, conversationId: strin
     sourceFromSequence: Number(row.compacted_through_sequence) + 1,
     sourceThroughSequence: Number(row.context_claim_through_sequence),
     progressSequence: Number(row.context_progress_sequence),
-    attemptCount: Number(row.context_attempt_count),
+    attemptCount: Number(row.context_attempt_count) + 1,
     claimedAt: String(row.context_claimed_at)
   }
+}
+
+function contextMessagePair(rows: readonly ContextMessageRow[], startIndex: number): [ChatContextSourceMessage, ChatContextSourceMessage] {
+  const user = rows[startIndex] ? contextMessageFromRow(rows[startIndex]!) : undefined
+  const assistant = rows[startIndex + 1] ? contextMessageFromRow(rows[startIndex + 1]!) : undefined
+  if (!user || !assistant || user.role !== 'user' || assistant.role !== 'assistant'
+    || user.turnId !== assistant.turnId || assistant.sequenceNo !== user.sequenceNo + 1) {
+    throw new Error('聊天上下文完整轮次顺序不一致')
+  }
+  return [user, assistant]
 }
 
 function serializeCheckpointEntries(inputs: readonly ChatContextCheckpointEntryInput[], checkpointId: string, conversationId: string, createdAt: string, expiresAt: string): ChatContextEntry[] {

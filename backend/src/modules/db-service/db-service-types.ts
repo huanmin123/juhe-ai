@@ -775,6 +775,7 @@ export type DbServiceOperation =
     now: string
     interruptedBefore: string
     limit: number
+    retentionDays: number
   }
   | {
     type: 'save_codex_context_response_state'

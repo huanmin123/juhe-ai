@@ -3,6 +3,17 @@ import assert from 'node:assert/strict'
 import { buildChatSystemInstructions } from '../../modules/chat/chat-system-instructions.js'
 import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport } from '../../modules/chat/chat-transport.js'
 
+const promptCacheModule = await import('../../modules/chat/chat-prompt-cache.js').catch(() => undefined)
+assert.equal(typeof promptCacheModule?.buildChatPromptCacheKey, 'function', 'AI 问答必须提供稳定且不透明的 prompt cache key 生成器')
+const buildChatPromptCacheKey = promptCacheModule!.buildChatPromptCacheKey
+const firstConversationKey = buildChatPromptCacheKey({ systemAccountId: 'sys-user-1', apiKeyId: 'key-1', conversationId: 'conversation-1' })
+const repeatedConversationKey = buildChatPromptCacheKey({ systemAccountId: 'sys-user-1', apiKeyId: 'key-1', conversationId: 'conversation-1' })
+const otherConversationKey = buildChatPromptCacheKey({ systemAccountId: 'sys-user-1', apiKeyId: 'key-1', conversationId: 'conversation-2' })
+assert.equal(firstConversationKey, repeatedConversationKey, '相同用户、API Key 和会话必须复用相同 prompt cache key')
+assert.notEqual(firstConversationKey, otherConversationKey, '不同会话必须隔离 prompt cache key')
+assert(firstConversationKey.length <= 64, 'prompt cache key 不得超过上游 64 字符限制')
+assert.doesNotMatch(firstConversationKey, /sys-user-1|key-1|conversation-1/, 'prompt cache key 不得泄露内部明文 ID')
+
 assert.equal(selectChatTransport({ supportedProtocols: ['chat_completions'], preferResponses: true }), 'chat_completions')
 assert.equal(selectChatTransport({ supportedProtocols: ['responses'], preferResponses: true }), 'responses')
 assert.equal(selectChatTransport({ supportedProtocols: ['responses'], preferResponses: false }), 'responses')
@@ -18,19 +29,26 @@ assert.equal(resolveChatBudgetContent({ protocol: 'chat_completions', currentCon
 
 const instructions = buildChatSystemInstructions({ toolsEnabled: true }).text
 const responses = buildChatTransportRequest({
-  protocol: 'responses', instructions, model: 'model-a', history: [{ role: 'user', content: '此前问题' }], currentContent: '继续', currentBlocks: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', dataUrl: 'data:image/png;base64,abc' }, { type: 'input_text', text: '图片后' }], toolsEnabled: true, reasoningEffort: 'high', serviceTier: 'default'
+  protocol: 'responses', instructions, model: 'model-a', history: [{ role: 'user', content: [{ type: 'input_text', text: '此前问题' }] }], currentContent: '继续', currentBlocks: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', dataUrl: 'data:image/png;base64,abc' }, { type: 'input_text', text: '图片后' }], toolsEnabled: true, reasoningEffort: 'high', serviceTier: 'default', promptCacheKey: firstConversationKey
 })
 assert.equal(responses.path, '/v1/responses')
 assert.equal(responses.body.instructions, instructions)
-assert.deepEqual(responses.body.input, [{ role: 'user', content: '此前问题' }, { role: 'user', content: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', image_url: 'data:image/png;base64,abc', detail: 'high' }, { type: 'input_text', text: '图片后' }] }])
+assert.deepEqual(responses.body.input, [{ role: 'user', content: [{ type: 'input_text', text: '此前问题' }] }, { role: 'user', content: [{ type: 'input_text', text: '图片前' }, { type: 'input_image', image_url: 'data:image/png;base64,abc', detail: 'high' }, { type: 'input_text', text: '图片后' }] }])
 assert.equal((responses.body.input as Array<{ role: string }>).some((item) => item.role === 'system'), false)
 assert.equal(responses.body.stream, true)
 assert.deepEqual(responses.body.tools, [{ type: 'web_search' }])
 assert.deepEqual(responses.body.reasoning, { effort: 'high' })
 assert.equal(responses.body.service_tier, 'default')
+assert.equal(responses.body.prompt_cache_key, firstConversationKey)
+
+const responsesPlainText = buildChatTransportRequest({
+  protocol: 'responses', instructions, model: 'model-a', history: [], currentContent: '纯文本首轮', toolsEnabled: false
+})
+assert.deepEqual(responsesPlainText.body.input, [{ role: 'user', content: [{ type: 'input_text', text: '纯文本首轮' }] }], 'Responses 首轮纯文本必须与后续历史保持相同 input_text block 表示')
+assert.equal(Object.hasOwn(responsesPlainText.body, 'prompt_cache_key'), false, '未传入 cache key 时 Responses 不得伪造缓存键')
 
 const chat = buildChatTransportRequest({
-  protocol: 'chat_completions', instructions, model: 'model-a', history: [{ role: 'assistant', content: '此前回答' }], currentContent: '你好', toolsEnabled: true, reasoningEffort: 'low', serviceTier: 'flex'
+  protocol: 'chat_completions', instructions, model: 'model-a', history: [{ role: 'assistant', content: '此前回答' }], currentContent: '你好', toolsEnabled: true, reasoningEffort: 'low', serviceTier: 'flex', promptCacheKey: firstConversationKey
 })
 assert.equal(chat.path, '/v1/chat/completions')
 assert.deepEqual(chat.body.messages, [{ role: 'system', content: instructions }, { role: 'assistant', content: '此前回答' }, { role: 'user', content: '你好' }])
@@ -38,6 +56,7 @@ assert.equal((chat.body.messages as Array<{ role: string }>).filter((item) => it
 assert.equal('tools' in chat.body, false, 'Chat Completions 不应因 toolsEnabled 注入 Responses 工具字段')
 assert.equal(chat.body.reasoning_effort, 'low')
 assert.equal(chat.body.service_tier, 'flex')
+assert.equal(chat.body.prompt_cache_key, firstConversationKey)
 assert.deepEqual(chat.body.stream_options, { include_usage: true })
 
 const checked: string[] = []

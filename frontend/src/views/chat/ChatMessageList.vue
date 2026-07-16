@@ -1,5 +1,5 @@
 <template>
-  <div ref="scrollElement" class="message-scroll" tabindex="0" aria-label="对话消息" @scroll="handleScroll" @wheel.passive="handleWheel" @touchstart.passive="handleTouchStart" @touchmove.passive="handleTouchMove">
+  <div ref="scrollElement" class="message-scroll" tabindex="0" aria-label="对话消息" @scroll="handleScroll" @wheel.passive="handleWheel" @keydown="handleScrollKeyDown" @touchstart.passive="handleTouchStart" @touchmove.passive="handleTouchMove">
     <div v-if="loading" class="message-loading"><a-spin size="small" /><span>正在加载对话</span></div>
     <div v-else-if="!messages.length" class="message-empty">
       <MessageOutlined />
@@ -66,7 +66,7 @@ import type { ChatMessage, ChatMessageStatus } from '@/types/domain/chat'
 import ChatMarkdown from './ChatMarkdown.vue'
 import ChatToolEvent from './ChatToolEvent.vue'
 import ChatUserMessageContent from './ChatUserMessageContent.vue'
-import { chatDistanceFromBottom, resolveChatFollowState, shouldBreakChatFollowOnWheel, shouldShowChatJumpButton } from './chatScrollPolicy'
+import { chatDistanceFromBottom, resolveChatFollowState, resolveChatViewportResizeTransition, shouldBreakChatFollowOnWheel, shouldDetachChatFollowOnScroll, shouldShowChatJumpButton } from './chatScrollPolicy'
 
 const props = defineProps<{ messages: ChatMessage[]; loading: boolean; editableMessageId?: string; editingTurnId?: string }>()
 const emit = defineEmits<{ (event: 'near-top'): void; (event: 'jump-visibility', visible: boolean): void; (event: 'edit-message', message: ChatMessage): void }>()
@@ -76,7 +76,10 @@ const followLatest = ref(true)
 let lastJumpVisible = false
 let touchStartY = 0
 let userDetachedFromBottom = false
+let previousScrollTop = 0
+let programmaticScrollUntil = 0
 let resizeObserver: ResizeObserver | undefined
+let previousClientHeight = 0
 const virtualizer = useVirtualizer(computed(() => ({
   count: props.messages.length,
   getScrollElement: () => scrollElement.value ?? null,
@@ -89,19 +92,36 @@ const virtualItems = computed(() => virtualizer.value.getVirtualItems())
 function measureElement(element: unknown): void {
   if (element instanceof Element) virtualizer.value.measureElement(element)
 }
-function scrollToBottom(): void { userDetachedFromBottom = false; followLatest.value = true; emitJumpVisibility(false); nextTick(() => virtualizer.value.scrollToIndex(Math.max(0, props.messages.length - 1), { align: 'end' })) }
-function followStream(): void { if (followLatest.value) nextTick(() => virtualizer.value.scrollToIndex(Math.max(0, props.messages.length - 1), { align: 'end' })) }
+function scrollToBottom(): void { userDetachedFromBottom = false; followLatest.value = true; emitJumpVisibility(false); followStream() }
+function followStream(): void {
+  if (!followLatest.value) return
+  programmaticScrollUntil = Date.now() + 250
+  nextTick(() => virtualizer.value.scrollToIndex(Math.max(0, props.messages.length - 1), { align: 'end' }))
+}
 function handleScroll(): void {
   const element = scrollElement.value
   if (!element) return
+  const viewportChanged = previousClientHeight > 0 && previousClientHeight !== element.clientHeight
+  if (!viewportChanged && shouldDetachChatFollowOnScroll({ previousOffset: previousScrollTop, currentOffset: element.scrollTop, now: Date.now(), programmaticScrollUntil })) {
+    userDetachedFromBottom = true
+    followLatest.value = false
+  }
+  previousScrollTop = element.scrollTop
   const distance = chatDistanceFromBottom(element)
-  const next = resolveChatFollowState({ distance, userDetached: userDetachedFromBottom })
-  followLatest.value = next.followLatest
-  userDetachedFromBottom = next.userDetached
+  if (viewportChanged && !userDetachedFromBottom) {
+    const transition = resolveChatViewportResizeTransition({ followLatest: followLatest.value, userDetached: userDetachedFromBottom })
+    followLatest.value = transition.followLatest
+    userDetachedFromBottom = transition.userDetached
+  } else {
+    const next = resolveChatFollowState({ distance, userDetached: userDetachedFromBottom })
+    followLatest.value = next.followLatest
+    userDetachedFromBottom = next.userDetached
+  }
   emitJumpVisibility(shouldShowChatJumpButton(distance))
   if (element.scrollTop < 120) emit('near-top')
 }
 function handleWheel(event: WheelEvent): void { if (shouldBreakChatFollowOnWheel(event.deltaY)) { userDetachedFromBottom = true; followLatest.value = false } }
+function handleScrollKeyDown(event: KeyboardEvent): void { if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') { userDetachedFromBottom = true; followLatest.value = false } }
 function handleTouchStart(event: TouchEvent): void { touchStartY = event.touches[0]?.clientY ?? 0 }
 function handleTouchMove(event: TouchEvent): void { const current = event.touches[0]?.clientY ?? touchStartY; if (current > touchStartY + 4) { userDetachedFromBottom = true; followLatest.value = false }; touchStartY = current }
 function emitJumpVisibility(visible: boolean): void { if (visible === lastJumpVisible) return; lastJumpVisible = visible; emit('jump-visibility', visible) }
@@ -110,6 +130,7 @@ function captureScrollAnchor(): { offset: number; totalSize: number } {
 }
 async function restoreScrollAnchor(anchor: { offset: number; totalSize: number }): Promise<void> {
   await nextTick()
+  programmaticScrollUntil = Date.now() + 250
   virtualizer.value.measure()
   virtualizer.value.scrollToOffset(anchor.offset + Math.max(0, virtualizer.value.getTotalSize() - anchor.totalSize))
 }
@@ -122,7 +143,25 @@ async function copyMessage(content: string): Promise<void> {
 }
 
 watch(() => [props.messages.length, props.messages.at(-1)?.contentText.length, props.messages.at(-1)?.toolEvents?.length, props.messages.at(-1)?.reasoningText?.length], followStream)
-onMounted(() => { resizeObserver = new ResizeObserver(followStream); if (virtualSpace.value) resizeObserver.observe(virtualSpace.value) })
+function handleObservedResize(entries: ResizeObserverEntry[]): void {
+  for (const entry of entries) {
+    if (entry.target !== scrollElement.value) {
+      followStream()
+      continue
+    }
+    const transition = resolveChatViewportResizeTransition({ followLatest: followLatest.value, userDetached: userDetachedFromBottom })
+    followLatest.value = transition.followLatest
+    userDetachedFromBottom = transition.userDetached
+    previousClientHeight = scrollElement.value?.clientHeight ?? 0
+    if (transition.shouldScroll) followStream()
+  }
+}
+onMounted(() => {
+  resizeObserver = new ResizeObserver(handleObservedResize)
+  previousClientHeight = scrollElement.value?.clientHeight ?? 0
+  if (scrollElement.value) resizeObserver.observe(scrollElement.value)
+  if (virtualSpace.value) resizeObserver.observe(virtualSpace.value)
+})
 watch(virtualSpace, (next, previous) => { if (previous) resizeObserver?.unobserve(previous); if (next) resizeObserver?.observe(next) })
 onBeforeUnmount(() => resizeObserver?.disconnect())
 defineExpose({ scrollToBottom, followStream, captureScrollAnchor, restoreScrollAnchor })
@@ -155,9 +194,15 @@ defineExpose({ scrollToBottom, followStream, captureScrollAnchor, restoreScrollA
 @media (hover: none), (pointer: coarse) {
   .message-actions-controls { opacity: 1; pointer-events: auto; }
 }
+@media (pointer: coarse) {
+  .message-action-button { min-width: 44px; min-height: 44px; }
+  .message-actions, .message-actions-controls { min-height: 44px; }
+}
 @media (max-width: 720px) {
   .message-row { padding: 12px; }
+  .message-row[data-index="0"] { padding-top: calc(64px + env(safe-area-inset-top)); }
   .message-row-user .message-body { max-width: 88%; }
   .message-bubble-user { padding: 8px 11px; }
+  .message-loading, .message-empty { min-height: 0; padding-top: calc(52px + env(safe-area-inset-top)); }
 }
 </style>

@@ -1,5 +1,5 @@
 <template>
-  <a-layout class="app-shell" :class="{ 'app-shell-mobile': isMobile }">
+  <a-layout class="app-shell" :class="{ 'app-shell-mobile': isMobile, 'app-shell-immersive': immersiveLayout }">
     <AppSidebar
       v-model:open="sidebarOpen"
       v-model:collapsed="sidebarCollapsed"
@@ -155,6 +155,7 @@ import { menuRoutes, recoverRouteAssetLoadError } from '@/router'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { isAdminRole, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { AuthSessionSummary, PublishedAnnouncementSummary } from '@/types/domain'
+import { resolveChatViewportHeight } from '@/views/chat/chatViewport'
 import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
@@ -742,6 +743,19 @@ function updateViewport() {
 
 function handleResize() {
   updateViewport()
+  syncVisualViewportHeight()
+}
+
+function syncVisualViewportHeight(): void {
+  const height = resolveChatViewportHeight({
+    visualViewportHeight: window.visualViewport?.height,
+    innerHeight: window.innerHeight
+  })
+  if (height) document.documentElement.style.setProperty('--app-visual-viewport-height', `${height}px`)
+}
+
+function syncImmersiveBodyLock(active: boolean): void {
+  document.body.classList.toggle('immersive-layout-active', active)
 }
 
 async function refreshAnnouncementsSafely() {
@@ -763,6 +777,7 @@ async function refreshAnnouncementsSafely() {
 
 onMounted(() => {
   updateViewport()
+  syncVisualViewportHeight()
   loadAppBrandSettings().catch((error) => {
     console.error(error)
   })
@@ -770,6 +785,8 @@ onMounted(() => {
     void refreshAnnouncementsSafely()
   }, 60000)
   window.addEventListener('resize', handleResize, { passive: true })
+  window.visualViewport?.addEventListener('resize', syncVisualViewportHeight, { passive: true })
+  window.visualViewport?.addEventListener('scroll', syncVisualViewportHeight, { passive: true })
 })
 
 onBeforeUnmount(() => {
@@ -777,7 +794,12 @@ onBeforeUnmount(() => {
     window.clearInterval(announcementsRefreshTimer)
   }
   window.removeEventListener('resize', handleResize)
+  window.visualViewport?.removeEventListener('resize', syncVisualViewportHeight)
+  window.visualViewport?.removeEventListener('scroll', syncVisualViewportHeight)
+  document.body.classList.remove('immersive-layout-active')
 })
+
+watch(immersiveLayout, syncImmersiveBodyLock, { immediate: true })
 
 watch(
   () => route.path,
@@ -861,6 +883,19 @@ watch(
   background: #f5f7fb;
 }
 
+.app-shell-immersive {
+  height: var(--app-visual-viewport-height, 100dvh);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell-immersive .main-shell,
+.app-shell-immersive .content-immersive {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .main-shell {
   min-width: 0;
   background: #f5f7fb;
@@ -881,8 +916,8 @@ watch(
 
 .immersive-mobile-menu-trigger {
   position: fixed;
-  top: 10px;
-  left: 10px;
+  top: calc(10px + env(safe-area-inset-top));
+  left: calc(10px + env(safe-area-inset-left));
   z-index: 8;
   width: 36px;
   height: 36px;
@@ -1058,5 +1093,9 @@ watch(
   .route-switch-summary-grid {
     grid-template-columns: 1fr;
   }
+}
+
+@media (pointer: coarse) {
+  .immersive-mobile-menu-trigger { width: 44px; height: 44px; }
 }
 </style>

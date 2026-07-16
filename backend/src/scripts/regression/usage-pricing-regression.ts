@@ -1355,7 +1355,7 @@ assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestAttemptTimeoutMs
 assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestRunBudgetMs/)
 assert.match(backgroundJobsSource, /const safety = await usageStatsAggregationSafety\(\)/)
 assert.match(backgroundJobsSource, /safeCreatedBefore: safety\.safeCreatedBefore/)
-assert.match(backgroundJobsSource, /requestIngestWorkerDrainStatus\(1000\)/)
+assert.match(backgroundJobsSource, /requestIngestWorkerDrainStatus\(3000\)/, '统计安全门必须容忍 ingest worker 已观测到的短时事件循环延迟，同时继续在 3 秒后失败并保留 error 日志')
 assert.match(backgroundJobsSource, /defaultUsageStatsSafeCreatedBeforeIso\(\)/)
 assert.match(backgroundJobsSource, /使用记录 ingest 队列已有/)
 assert.match(backgroundJobsSource, /usageStatsSafeCreatedBeforeForPendingBacklog/)

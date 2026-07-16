@@ -137,10 +137,10 @@ docs/plans/
 
 | 编号 | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
-| PLAN-0095 | AI 问答上下文与多模态降负 | 待开始 | 2026-07-13 | AI 问答 / 上下文 / 图片资产 / Responses / worker / 前端 | `docs/plans/计划-0095-AI问答上下文与多模态降负.md` |
-| PLAN-0094 | AI 问答展示与重编辑 | 已完成 | 2026-07-13 | AI 问答 / system instructions / Markdown / 工具投影 / 最近轮次事务 / 前端 | `docs/plans/计划-0094-AI问答展示与重编辑.md` |
-| PLAN-0093 | AI 问答编辑器与模型工具 | 已完成 | 2026-07-12 | AI 问答 / Tiptap / Responses / 原生工具 / 多模态输入 / 前端 | `docs/plans/计划-0093-AI问答编辑器与模型工具.md` |
-| PLAN-0092 | AI 问答 MVP | 已完成 | 2026-07-12 | 前端 / Node 后端 / 独立聊天存储 / DB service / 网关 / API Key / worker / 审计 / 验证 | `docs/plans/计划-0092-AI问答MVP.md` |
+| PLAN-0104 | AI 问答上下文与多模态降负 | 已完成（含 Prompt Cache 真实命中验证） | 2026-07-13 | AI 问答 / 上下文 / 图片资产 / Responses / Prompt Cache / 账户亲和 / usage / worker / 前端 | `docs/plans/计划-0104-AI问答上下文与多模态降负.md` |
+| PLAN-0103 | AI 问答展示与重编辑 | 已完成 | 2026-07-13 | AI 问答 / system instructions / Markdown / 工具投影 / 最近轮次事务 / 前端 | `docs/plans/计划-0103-AI问答展示与重编辑.md` |
+| PLAN-0102 | AI 问答编辑器与模型工具 | 已完成 | 2026-07-12 | AI 问答 / Tiptap / Responses / 原生工具 / 多模态输入 / 前端 | `docs/plans/计划-0102-AI问答编辑器与模型工具.md` |
+| PLAN-0101 | AI 问答 MVP | 已完成 | 2026-07-12 | 前端 / Node 后端 / 独立聊天存储 / DB service / 网关 / API Key / worker / 审计 / 验证 | `docs/plans/计划-0101-AI问答MVP.md` |
 | PLAN-0091 | 移除 PostgreSQL 冷归档占位链路 | 已实现，待发布 | 2026-07-12 | PostgreSQL / 使用记录保留 / maintenance worker / 表监控 / 统计 schema / 前端 | `docs/plans/计划-0091-移除PostgreSQL冷归档占位链路.md` |
 | PLAN-0090 | 后台探针与快速模式高并发保护 | 进行中 | 2026-07-12 | AI 账户 / ops-worker / 高并发分组 / 普通路由速度优先 / 额度 / 网关 / 验证 | `docs/plans/计划-0090-后台探针与快速模式高并发保护.md` |
 | PLAN-0089 | AI 账户上游余额查询 | 能力暂停、NewAPI 语义和紧凑布局已实现，待发布 | 2026-07-11 | AI 账户 / 上游适配器 / ops-worker / 统计快照 / 前端 / 权限 / 存储 / 验证 | `docs/plans/计划-0089-AI账户上游余额查询.md` |

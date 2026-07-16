@@ -10,13 +10,13 @@ export type ChatResponsesEvent =
 export async function collectChatResponsesSse(
   chunks: AsyncIterable<Uint8Array>,
   onEvent: (event: ChatResponsesEvent) => void,
-  maxBytes = 192 * 1024
+  maxBytes = 192 * 1024,
+  maxEvents = 65_536
 ): Promise<{ content: string; inputTokens?: number; outputTokens?: number }> {
   const decoder = new TextDecoder('utf-8', { fatal: true })
   const encoder = new TextEncoder()
   const maxEventBytes = 64 * 1024
   const maxAuxiliaryBytes = 192 * 1024
-  const maxEvents = 2048
   let buffer = ''
   let content = ''
   let completed = false
@@ -25,8 +25,6 @@ export async function collectChatResponsesSse(
   let inputTokens: number | undefined
   let outputTokens: number | undefined
   const consumeEvent = (parsed: ChatResponsesEvent): void => {
-    eventCount += 1
-    if (eventCount > maxEvents) throw new Error('上游 Responses 事件数量超过 2048 上限')
     if (parsed.type === 'text_delta') {
       content += parsed.delta
       if (encoder.encode(content).byteLength > maxBytes) throw new Error('模型回答超过 192 KiB 上限')
@@ -44,21 +42,22 @@ export async function collectChatResponsesSse(
     }
     onEvent(parsed)
   }
+  const consumeBlock = (block: string): void => {
+    eventCount += 1
+    if (eventCount > maxEvents) throw new Error(`上游 Responses 事件数量超过 ${maxEvents} 上限`)
+    if (encoder.encode(block).byteLength > maxEventBytes) throw new Error('上游 Responses 单个事件超过 64 KiB 上限')
+    const parsed = parseBlock(block)
+    if (parsed) consumeEvent(parsed)
+  }
   for await (const chunk of chunks) {
     buffer += decoder.decode(chunk, { stream: true })
-    const split = consumeBlocks(buffer, (block) => {
-      if (encoder.encode(block).byteLength > maxEventBytes) throw new Error('上游 Responses 单个事件超过 64 KiB 上限')
-      const parsed = parseBlock(block)
-      if (!parsed) return
-      consumeEvent(parsed)
-    })
+    const split = consumeBlocks(buffer, consumeBlock)
     buffer = split.rest
     if (encoder.encode(buffer).byteLength > maxEventBytes) throw new Error('上游 Responses 单个事件超过 64 KiB 上限')
   }
   buffer += decoder.decode()
   if (encoder.encode(buffer).byteLength > maxEventBytes) throw new Error('上游 Responses 单个事件超过 64 KiB 上限')
-  const parsed = parseBlock(buffer)
-  if (parsed) consumeEvent(parsed)
+  if (buffer.trim()) consumeBlock(buffer)
   if (!completed) throw new Error('上游 Responses 流缺少 response.completed')
   return { content, inputTokens, outputTokens }
 }

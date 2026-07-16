@@ -62,14 +62,29 @@ await assert.rejects(
 
 async function* tooManyEvents(): AsyncGenerator<Uint8Array> {
   for (let index = 0; index < 2050; index += 1) {
-    yield new TextEncoder().encode('event: response.reasoning_text.delta\ndata: {"type":"response.reasoning_text.delta","delta":""}\n\n')
+    yield new TextEncoder().encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"x"}\n\n')
+  }
+  yield new TextEncoder().encode('event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n')
+}
+const longEventStream = await collectChatResponsesSse(tooManyEvents(), () => undefined)
+assert.equal(longEventStream.content, 'x'.repeat(2050), '默认事件预算必须允许超过 2048 个合法小 delta 完成')
+
+await assert.rejects(
+  () => collectChatResponsesSse(tooManyEvents(), () => undefined, 192 * 1024, 2_048),
+  /事件数量超过 2048 上限/,
+  'Responses 显式低事件预算仍必须拒绝第 2049 个事件'
+)
+
+async function* ignoredLifecycleEvents(): AsyncGenerator<Uint8Array> {
+  for (let index = 0; index < 2049; index += 1) {
+    yield new TextEncoder().encode('event: response.in_progress\ndata: {"type":"response.in_progress"}\n\n')
   }
   yield new TextEncoder().encode('event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n')
 }
 await assert.rejects(
-  () => collectChatResponsesSse(tooManyEvents(), () => undefined),
-  /事件数量超过/,
-  'Responses 事件总数必须有界且不得无界保留事件数组'
+  () => collectChatResponsesSse(ignoredLifecycleEvents(), () => undefined, 192 * 1024, 2_048),
+  /事件数量超过 2048 上限/,
+  'Responses 未投影的 lifecycle/unknown raw block 也必须消耗事件预算，不能绕过 CPU DoS 边界'
 )
 
 console.log('AI 问答 Responses SSE 工具事件回归通过')

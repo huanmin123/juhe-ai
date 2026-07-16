@@ -3,7 +3,7 @@
     <aside v-if="!mobile" class="conversation-panel">
       <ConversationPane />
     </aside>
-    <a-drawer v-else v-model:open="conversationDrawerOpen" title="对话记录" placement="left" :width="300" :body-style="{ padding: 0 }">
+    <a-drawer v-else v-model:open="conversationDrawerOpen" title="对话记录" placement="left" :width="300" :body-style="{ padding: 0 }" @after-open-change="handleConversationDrawerAfterOpenChange">
       <ConversationPane @selected="conversationDrawerOpen = false" />
     </a-drawer>
 
@@ -23,11 +23,15 @@
           <a-tooltip v-if="showJumpToBottom" title="回到底部"><a-button class="jump-bottom-button" shape="circle" aria-label="回到底部" @click="messageList?.scrollToBottom()"><ArrowDownOutlined /></a-button></a-tooltip>
           <div v-if="pendingConfirmation" class="submission-confirmation-bar">
             <span>正在确认上一条消息是否已提交，确认前不会重复发送</span>
-            <a-button type="link" size="small" :loading="confirmingSubmission" @click="retryPendingConfirmation">重新确认</a-button>
+            <a-button type="link" size="small" :loading="confirmingSubmission" @click="retryPendingConfirmation(true)">重新确认</a-button>
           </div>
           <div v-else-if="editingTurn" class="turn-editing-bar">
             <span>正在修改最近一轮消息</span>
             <a-button type="link" size="small" :disabled="editingTurn.phase === 'submitting'" @click="cancelTurnEdit">取消编辑</a-button>
+          </div>
+          <div v-else-if="turnLimitReached" class="turn-limit-bar">
+            <span>{{ turnLimitMessage }}</span>
+            <a-button type="link" size="small" :disabled="!apiKeys.length" @click="openCreateDialog">新建对话</a-button>
           </div>
           <AIComposer
             ref="composer"
@@ -37,6 +41,9 @@
             :conversation-id="selectedConversation.id"
             :context-status="contextStatus"
             :disabled="generating || submissionBlocked"
+            :stoppable="generating || Boolean(pendingConfirmation)"
+            :turn-limit-reached="turnLimitReached && !editingTurn"
+            :turn-limit-message="turnLimitMessage"
             :image-input-supported="Boolean(selectedModelOption?.inputModalities.includes('image') && selectedModelOption.supportedApiProtocols.includes('responses'))"
             :model-options="models"
             :models-loading="modelsLoading"
@@ -58,11 +65,11 @@
       <a-form layout="vertical"><a-form-item label="API Key" required><a-select v-model:value="newApiKeyId" :options="apiKeyOptions" placeholder="选择自己的 API Key" /></a-form-item></a-form>
     </a-modal>
 
-    <div v-if="conversationMenu" class="conversation-context-menu" :style="{ left: `${conversationMenu.x}px`, top: `${conversationMenu.y}px` }" @click.stop>
-      <button type="button" @click="openRenameDialog(conversationMenu.item)">重命名</button>
-      <button type="button" @click="togglePinned(conversationMenu.item)">{{ conversationMenu.item.isPinned ? '取消置顶' : '置顶' }}</button>
-      <button type="button" @click="openDetails(conversationMenu.item)">详情</button>
-      <button type="button" class="is-danger" @click="openDeleteDialog(conversationMenu.item)">删除</button>
+    <div v-if="conversationMenu" id="conversation-actions-menu" ref="conversationMenuElement" class="conversation-context-menu" role="menu" :style="{ left: `${conversationMenu.x}px`, top: `${conversationMenu.y}px` }" @click.stop @keydown="handleConversationMenuKeyDown">
+      <button type="button" role="menuitem" tabindex="-1" @click="openRenameDialog(conversationMenu.item)">重命名</button>
+      <button type="button" role="menuitem" tabindex="-1" @click="togglePinned(conversationMenu.item)">{{ conversationMenu.item.isPinned ? '取消置顶' : '置顶' }}</button>
+      <button type="button" role="menuitem" tabindex="-1" @click="openDetails(conversationMenu.item)">详情</button>
+      <button type="button" role="menuitem" tabindex="-1" class="is-danger" @click="openDeleteDialog(conversationMenu.item)">删除</button>
     </div>
 
     <a-modal v-model:open="renameDialogOpen" title="重命名会话" ok-text="保存" cancel-text="取消" :confirm-loading="conversationUpdating" @ok="renameConversation">
@@ -70,6 +77,16 @@
     </a-modal>
     <a-modal v-model:open="detailsDialogOpen" title="会话详情" :closable="false">
       <a-descriptions v-if="detailConversation" :column="1" size="small" bordered>
+        <a-descriptions-item label="会话 ID">
+          <span class="conversation-detail-id">
+            <code>{{ detailConversation.id }}</code>
+            <a-tooltip title="复制会话 ID">
+              <a-button type="text" size="small" aria-label="复制会话 ID" @click="copyTextToClipboard(detailConversation.id, '会话 ID 已复制')">
+                <template #icon><CopyOutlined /></template>
+              </a-button>
+            </a-tooltip>
+          </span>
+        </a-descriptions-item>
         <a-descriptions-item label="标题">{{ detailConversation.title }}</a-descriptions-item>
         <a-descriptions-item label="API Key">{{ detailConversation.apiKeyNameSnapshot }}</a-descriptions-item>
         <a-descriptions-item label="最近模型">{{ detailConversation.lastModel || '未使用' }}</a-descriptions-item>
@@ -87,23 +104,40 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowDownOutlined, MessageOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { ArrowDownOutlined, CopyOutlined, MessageOutlined, MoreOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { chatApi, ChatStreamHttpError, streamChatMessage } from '@/api/domains/chat'
+import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { copyTextToClipboard } from '@/shared/clipboard'
 import type { ChatApiKeyOption, ChatContextStatus, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 import { applyChatStreamEvent } from './chatStream'
 import { beginLatestTurnEdit, isDefinitiveChatHttpRejection, resolveChatReconciliationNotice, resolveChatSubmitFailure } from './chatTurnEditing'
-import { applyChatReconciliationIfActive, reconcileChatSubmission, type ChatSubmissionReconciliation } from './chatTurnReconciliation'
+import {
+  applyChatReconciliationIfActive,
+  reconcileChatPendingSubmissionRecovery,
+  reconcileChatSubmission,
+  type ChatPendingConversationAvailability,
+  type ChatSubmissionReconciliation
+} from './chatTurnReconciliation'
 import { createChatConversationSummaryRefresher, mergeChatConversationSummary } from './chatConversationSummary'
-import { isCurrentChatConversationLoad } from './chatConversationLoad'
-import { stopActiveChatGeneration } from './chatStopGeneration'
+import { canSubmitChatTurn, chatTurnLimitMessage, isChatTurnLimitReached, markChatConversationTurnLimitReached } from './chatTurnLimit'
+import { isCurrentChatConversationLoad, startChatConversationLoad } from './chatConversationLoad'
+import { resolveChatStopTarget, stopActiveChatGeneration } from './chatStopGeneration'
+import {
+  clearChatPendingSubmission,
+  readChatPendingSubmission,
+  writeChatPendingSubmission,
+  type ChatPendingSubmission
+} from './chatPendingSubmissionStorage'
 import ChatMessageList from './ChatMessageList.vue'
 import AIComposer from './composer/AIComposer.vue'
 import type { ChatInputBlock } from './composer/chatComposerDocument'
 import { defaultChatReasoningEffort, defaultChatServiceTier } from './composer/chatModelControls'
 import type { JSONContent } from '@tiptap/core'
+import { clampChatFloatingMenuPosition, resolveChatVisualViewportBounds } from './chatViewport'
+import { planChatCreateDialogFromConversationPane } from './chatConversationDrawer'
 
 interface ChatTurnEditingState {
   conversationId: string
@@ -117,18 +151,18 @@ interface ChatTurnEditingState {
 }
 
 interface ChatRequestContext {
+  readonly systemAccountId: string
   readonly conversationId: string
   readonly clientMessageId: string
   readonly replaceTurnId?: string
   readonly snapshot: JSONContent
 }
 
-interface PendingSubmissionConfirmation {
+type PendingSubmissionConfirmation = ChatPendingSubmission
+
+interface ActiveChatStopTarget {
   readonly request: ChatRequestContext
-  readonly streamStarted: boolean
-  readonly startedTurnId?: string
-  readonly silent: boolean
-  readonly errorMessage: string
+  turnId?: string
 }
 
 const conversations = ref<ChatConversation[]>([])
@@ -154,9 +188,11 @@ const confirmingSubmission = ref(false)
 const pendingConfirmation = ref<PendingSubmissionConfirmation>()
 const createDialogOpen = ref(false)
 const conversationDrawerOpen = ref(false)
+const pendingCreateAfterDrawerClose = ref(false)
 const newApiKeyId = ref<string>()
 const mobile = ref(false)
 const conversationMenu = ref<{ item: ChatConversation; x: number; y: number }>()
+const conversationMenuElement = ref<HTMLElement>()
 const renameDialogOpen = ref(false)
 const detailsDialogOpen = ref(false)
 const deleteDialogOpen = ref(false)
@@ -169,20 +205,25 @@ const messageList = ref<InstanceType<typeof ChatMessageList>>()
 const composer = ref<InstanceType<typeof AIComposer>>()
 const editingTurn = ref<ChatTurnEditingState>()
 let streamController: AbortController | undefined
+let activeStopTarget: ActiveChatStopTarget | undefined
 let activeSendSettled: Promise<void> | undefined
 let pendingConfirmationTimer: number | undefined
+let pendingConfirmationRetryCount = 0
 let contextStatusTimer: number | undefined
 let conversationLoadEpoch = 0
 let disposed = false
+let conversationMenuTrigger: HTMLElement | undefined
 
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationId.value))
+const turnLimitReached = computed(() => Boolean(selectedConversation.value && isChatTurnLimitReached(selectedConversation.value.userTurnCount, selectedConversation.value.userTurnLimit)))
+const turnLimitMessage = computed(() => chatTurnLimitMessage(selectedConversation.value?.userTurnLimit ?? 0))
 const selectedModelOption = computed(() => models.value.find((item) => item.id === selectedModel.value))
 const apiKeyOptions = computed(() => apiKeys.value.map((item) => ({ label: item.name, value: item.id })))
 const editableUserMessageId = computed(() => {
   const candidate = messages.value[messages.value.length - 2]
   return candidate && beginLatestTurnEdit(messages.value, candidate.id)?.userMessageId
 })
-const submissionBlocked = computed(() => stopping.value || Boolean(pendingConfirmation.value))
+const submissionBlocked = computed(() => stopping.value || confirmingSubmission.value || Boolean(pendingConfirmation.value))
 const refreshConversationSummary = createChatConversationSummaryRefresher({
   load: chatApi.getConversation,
   apply: (item) => {
@@ -196,10 +237,30 @@ const ConversationPane = defineComponent({
   emits: ['selected'],
   setup(_props, { emit }) {
     return () => h('div', { class: 'conversation-pane-inner' }, [
-      h('div', { class: 'conversation-pane-toolbar' }, [h('strong', '对话'), h('button', { class: 'conversation-new-button', type: 'button', disabled: !apiKeys.value.length, onClick: openCreateDialog }, [h(PlusOutlined), ' 新建'])]),
+      h('div', { class: 'conversation-pane-toolbar' }, [h('strong', '对话'), h('button', { class: 'conversation-new-button', type: 'button', disabled: !apiKeys.value.length, onClick: openCreateDialogFromConversationPane }, [h(PlusOutlined), ' 新建'])]),
       conversations.value.length
         ? h('div', { class: 'conversation-list' }, [
-            ...conversations.value.map((item) => h('button', { class: ['conversation-item', { active: item.id === selectedConversationId.value }], type: 'button', title: item.title, onContextmenu: (event: MouseEvent) => openConversationMenu(event, item), onClick: () => { void selectConversation(item.id); emit('selected') } }, item.title)),
+            ...conversations.value.map((item) => h('div', {
+              class: ['conversation-item', { active: item.id === selectedConversationId.value }],
+              onContextmenu: (event: MouseEvent) => openConversationMenu(event, item)
+            }, [
+              h('button', {
+                class: 'conversation-item-select',
+                type: 'button',
+                title: item.title,
+                onClick: async () => { if (await selectConversation(item.id)) emit('selected') }
+              }, item.title),
+              mobile.value ? h('button', {
+                class: 'conversation-more-button',
+                type: 'button',
+                title: '更多操作',
+                'aria-label': `更多会话操作：${item.title}`,
+                'aria-haspopup': 'menu',
+                'aria-controls': 'conversation-actions-menu',
+                'aria-expanded': conversationMenu.value?.item.id === item.id,
+                onClick: (event: MouseEvent) => openConversationMenuFromButton(event, item)
+              }, [h(MoreOutlined)]) : undefined
+            ])),
             ...(hasMoreConversations.value ? [h('button', { class: 'conversation-load-more', type: 'button', disabled: conversationsLoadingMore.value, onClick: () => { void loadMoreConversations() } }, conversationsLoadingMore.value ? '正在加载' : '加载更多')] : [])
           ])
         : h('div', { class: 'conversation-list-empty' }, '暂无对话')
@@ -214,7 +275,21 @@ async function loadInitial(): Promise<void> {
     conversations.value = conversationItems
     conversationCursor.value = conversationItems.at(-1)
     hasMoreConversations.value = conversationItems.length === 50
-    if (conversationItems[0]) await selectConversation(conversationItems[0].id)
+    const storedPending = readStoredPendingConfirmation()
+    if (storedPending) {
+      restorePendingConfirmation(storedPending)
+      const availability = await ensurePendingConversationAvailability(storedPending)
+      if (availability === 'not_found') {
+        clearPendingConfirmation(storedPending.request.systemAccountId)
+        message.warning('原会话已不可用，未确认草稿无法恢复')
+      } else if (!disposed) {
+        if (availability === 'ready') message.info('正在继续确认上一条消息的提交状态')
+        else message.error('暂时无法加载待确认会话，将继续后台重试')
+        schedulePendingConfirmation()
+      }
+    } else if (conversationItems[0]) {
+      await selectConversation(conversationItems[0].id)
+    }
   } catch (error) { message.error(extractApiErrorMessage(error, '加载 AI 问答失败')) }
 }
 async function loadMoreConversations(): Promise<void> {
@@ -233,8 +308,14 @@ async function loadMoreConversations(): Promise<void> {
     conversationsLoadingMore.value = false
   }
 }
-async function selectConversation(id: string): Promise<void> {
-  if (generating.value || submissionBlocked.value || selectedConversationId.value === id) return
+async function selectConversation(id: string, options: {
+  allowPendingRecovery?: boolean
+  forceReload?: boolean
+  silentLoadError?: boolean
+} = {}): Promise<boolean> {
+  const blockedBySubmission = submissionBlocked.value && !options.allowPendingRecovery
+  if (generating.value || blockedBySubmission) return false
+  if (selectedConversationId.value === id && !options.forceReload) return true
   await cancelTurnEdit()
   const loadEpoch = ++conversationLoadEpoch
   selectedConversationId.value = id
@@ -248,28 +329,66 @@ async function selectConversation(id: string): Promise<void> {
   messagesLoading.value = true
   modelsLoading.value = true
   try {
-    const [messageItems, modelItems] = await Promise.all([chatApi.listMessages(id, { limit: 100 }), chatApi.listModels(id)])
-    if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return
+    const conversationLoad = startChatConversationLoad({
+      loadMessages: () => chatApi.listMessages(id, { limit: 100 }),
+      loadModels: () => chatApi.listModels(id)
+    })
+    const messageItems = await conversationLoad.messages
+    if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return false
     messages.value = messageItems
     hasOlderMessages.value = messageItems.length === 100
-    models.value = modelItems
-    const conversation = conversations.value.find((item) => item.id === id)
-    selectedModel.value = conversation?.lastModel && modelItems.some((item) => item.id === conversation.lastModel) ? conversation.lastModel : modelItems[0]?.id
     void refreshContextStatus(id)
+    void conversationLoad.models.then((modelResult) => {
+      if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return
+      if (modelResult.ok) {
+        models.value = modelResult.value
+        const conversation = conversations.value.find((item) => item.id === id)
+        selectedModel.value = conversation?.lastModel && modelResult.value.some((item) => item.id === conversation.lastModel)
+          ? conversation.lastModel
+          : modelResult.value[0]?.id
+      } else if (!options.silentLoadError) {
+        message.error(extractApiErrorMessage(modelResult.error, '加载可用模型失败'))
+      }
+      modelsLoading.value = false
+    }).catch(() => {
+      if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) modelsLoading.value = false
+    })
+    return true
   } catch (error) {
     if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
-      message.error(extractApiErrorMessage(error, '加载对话失败'))
+      if (!options.silentLoadError) message.error(extractApiErrorMessage(error, '加载对话失败'))
+      modelsLoading.value = false
     }
+    return false
   } finally {
     if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
       messagesLoading.value = false
-      modelsLoading.value = false
       await nextTick()
       if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
         messageList.value?.scrollToBottom()
       }
     }
   }
+}
+async function ensurePendingConversationAvailability(pending: PendingSubmissionConfirmation): Promise<ChatPendingConversationAvailability> {
+  let conversation = conversations.value.find((item) => item.id === pending.request.conversationId)
+  if (!conversation) {
+    try {
+      const loaded = await chatApi.getConversation(pending.request.conversationId)
+      if (loaded.systemAccountId !== pending.request.systemAccountId) return 'retry'
+      conversation = loaded
+      conversations.value.push(loaded)
+      sortConversations()
+    } catch (error) {
+      return isNotFoundResponse(error) ? 'not_found' : 'retry'
+    }
+  }
+  const selected = await selectConversation(conversation.id, {
+    allowPendingRecovery: true,
+    forceReload: true,
+    silentLoadError: true
+  })
+  return selected ? 'ready' : 'retry'
 }
 async function loadOlderMessages(): Promise<void> {
   const id = selectedConversationId.value
@@ -295,10 +414,30 @@ async function loadOlderMessages(): Promise<void> {
   }
 }
 function openCreateDialog(): void { newApiKeyId.value = apiKeys.value[0]?.id; createDialogOpen.value = true }
+function openCreateDialogFromConversationPane(): void {
+  const plan = planChatCreateDialogFromConversationPane({ mobile: mobile.value, drawerOpen: conversationDrawerOpen.value })
+  if (plan.closeDrawer) {
+    pendingCreateAfterDrawerClose.value = true
+    conversationDrawerOpen.value = false
+    return
+  }
+  pendingCreateAfterDrawerClose.value = false
+  if (plan.openDialogNow) openCreateDialog()
+}
+function handleConversationDrawerAfterOpenChange(open: boolean): void {
+  if (open || !pendingCreateAfterDrawerClose.value) return
+  pendingCreateAfterDrawerClose.value = false
+  openCreateDialog()
+}
 async function createConversation(): Promise<void> {
   if (!newApiKeyId.value) return
   creating.value = true
-  try { const item = await chatApi.createConversation(newApiKeyId.value); conversations.value.unshift(item); createDialogOpen.value = false; await selectConversation(item.id) }
+  try {
+    const item = await chatApi.createConversation(newApiKeyId.value)
+    conversations.value.unshift(item)
+    createDialogOpen.value = false
+    if (await selectConversation(item.id)) conversationDrawerOpen.value = false
+  }
   catch (error) { message.error(extractApiErrorMessage(error, '创建对话失败')) }
   finally { creating.value = false }
 }
@@ -307,17 +446,39 @@ async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatI
   const model = selectedModel.value
   if (!conversation || !content.trim() || !model || generating.value || submissionBlocked.value) return
   const activeEdit = editingTurn.value?.conversationId === conversation.id ? editingTurn.value : undefined
-  if (activeEdit) activeEdit.phase = 'submitting'
+  if (!canSubmitChatTurn({
+    userTurnCount: conversation.userTurnCount,
+    userTurnLimit: conversation.userTurnLimit,
+    replaceTurnId: activeEdit?.turnId
+  })) {
+    composer.value?.restore(snapshot)
+    message.warning(chatTurnLimitMessage(conversation.userTurnLimit))
+    return
+  }
   const requestContext: ChatRequestContext = Object.freeze({
+    systemAccountId: conversation.systemAccountId,
     conversationId: conversation.id,
     clientMessageId: crypto.randomUUID(),
     replaceTurnId: activeEdit?.turnId,
     snapshot: cloneDocument(snapshot)
   })
+  if (!writeStoredPendingConfirmation({
+    request: requestContext,
+    streamStarted: false,
+    silent: false,
+    errorMessage: '发送连接中断，正在确认消息状态'
+  })) {
+    composer.value?.restore(requestContext.snapshot)
+    message.error('浏览器无法保存消息提交状态，本次消息未发送，请检查浏览器存储权限或空间后重试')
+    return
+  }
+  if (activeEdit) activeEdit.phase = 'submitting'
   generating.value = true
   messageList.value?.scrollToBottom()
   const controller = new AbortController()
   streamController = controller
+  const stopTarget: ActiveChatStopTarget = { request: requestContext }
+  activeStopTarget = stopTarget
   let streamStarted = false
   let streamTerminal = false
   let startedTurnId: string | undefined
@@ -337,6 +498,15 @@ async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatI
         if (event.type === 'message.started') {
           streamStarted = true
           startedTurnId = event.data.turnId
+          stopTarget.turnId = event.data.turnId
+          writeStoredPendingConfirmation({
+            request: requestContext,
+            streamStarted: true,
+            startedTurnId: event.data.turnId,
+            acceptedAssistantStatus: 'streaming',
+            silent: false,
+            errorMessage: '模型连接中断，正在确认回答终态'
+          })
           applyChatStreamEvent(messages.value, event, { replaceTurnId: requestContext.replaceTurnId })
           finishAcceptedTurnEdit(requestContext)
           void refreshConversationSummary(requestContext.conversationId).catch(() => undefined)
@@ -352,21 +522,43 @@ async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatI
     await refreshConversationSummary(requestContext.conversationId)
     await refreshContextStatus(requestContext.conversationId)
     composer.value?.releaseSubmittedAssets()
+    clearPendingConfirmation(requestContext.systemAccountId)
   } catch (error) {
     await handleSubmitFailure(error, requestContext, streamStarted, startedTurnId, controller.signal.aborted)
   } finally {
     generating.value = false
     if (streamController === controller) streamController = undefined
+    if (activeStopTarget === stopTarget) activeStopTarget = undefined
   }
 }
 async function stopGeneration(): Promise<void> {
   const id = selectedConversationId.value
-  if (!id || stopping.value) return
+  const active = activeStopTarget
+  const pending = pendingConfirmation.value
+  const target = resolveChatStopTarget({
+    selectedConversationId: id,
+    active: active ? {
+      conversationId: active.request.conversationId,
+      clientMessageId: active.request.clientMessageId,
+      turnId: active.turnId
+    } : undefined,
+    pending: pending ? {
+      conversationId: pending.request.conversationId,
+      clientMessageId: pending.request.clientMessageId,
+      turnId: pending.startedTurnId
+    } : undefined
+  })
+  if (!id || !target || stopping.value) return
   const controller = streamController
   const sendSettled = activeSendSettled
   stopping.value = true
   try {
-    await stopActiveChatGeneration({ controller, sendSettled, stop: () => chatApi.stop(id) })
+    await stopActiveChatGeneration({
+      controller,
+      sendSettled,
+      stop: () => chatApi.stop(id, { clientMessageId: target.clientMessageId, turnId: target.turnId })
+    })
+    if (pendingConfirmation.value?.request.clientMessageId === target.clientMessageId) await retryPendingConfirmation(true)
   } finally {
     stopping.value = false
   }
@@ -391,7 +583,8 @@ function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSO
   const content = payload.blocks.map((item) => item.type === 'input_image' ? '[图片]' : item.text).join('\n')
   const sendSettled = sendMessage(content, payload.snapshot, payload.blocks)
   activeSendSettled = sendSettled
-  void sendSettled.finally(() => { if (activeSendSettled === sendSettled) activeSendSettled = undefined })
+  const clearActiveSend = () => { if (activeSendSettled === sendSettled) activeSendSettled = undefined }
+  void sendSettled.then(clearActiveSend, clearActiveSend)
 }
 function beginTurnEdit(messageItem: ChatMessage): void {
   if (generating.value || submissionBlocked.value || editingTurn.value) return
@@ -420,22 +613,60 @@ function finishAcceptedTurnEdit(request: ChatRequestContext): void {
 }
 async function handleSubmitFailure(error: unknown, request: ChatRequestContext, streamStarted: boolean, startedTurnId: string | undefined, silent: boolean): Promise<void> {
   const replaceConflict = error instanceof ChatStreamHttpError && error.code === 'chat_replace_conflict'
+  const turnLimitExceeded = error instanceof ChatStreamHttpError && error.code === 'chat_turn_limit_exceeded'
   const errorMessage = extractApiErrorMessage(error, '发送失败')
+  if (replaceConflict || isDefinitiveChatRejection(error)) {
+    if (replaceConflict) { try { await refreshMessages(request.conversationId) } catch {} }
+    await applySubmissionOutcome({
+      request,
+      streamStarted,
+      silent,
+      errorMessage,
+      replaceConflict,
+      reconciliation: { messages: messages.value, confirmed: true, accepted: false, terminal: false }
+    })
+    if (turnLimitExceeded && !disposed) {
+      const conversation = conversations.value.find((item) => item.id === request.conversationId)
+      if (conversation) replaceConversation(markChatConversationTurnLimitReached(conversation))
+      void refreshConversationSummary(request.conversationId).catch(() => undefined)
+    }
+    if (!disposed) clearPendingConfirmation(request.systemAccountId)
+    return
+  }
   await applyChatReconciliationIfActive({
     reconcile: () => reconcileChatSubmission({
-      clientMessageId: request.clientMessageId,
-      acceptedTurnId: startedTurnId,
-      confirmPendingAcceptance: !(error instanceof ChatStreamHttpError) || error.code === 'chat_message_already_exists',
+      initialAcceptedTurnId: streamStarted ? startedTurnId : undefined,
+      initialAssistantStatus: streamStarted && startedTurnId ? 'streaming' : undefined,
+      getSubmissionStatus: () => chatApi.getSubmissionStatus(request.conversationId, request.clientMessageId),
       listMessages: () => refreshMessages(request.conversationId),
-      stop: async () => { await chatApi.stop(request.conversationId) }
+      stop: async (turnId) => { await chatApi.stop(request.conversationId, { clientMessageId: request.clientMessageId, turnId }) }
     }),
     isDisposed: () => disposed,
     apply: async (reconciliation) => {
-      if (!reconciliation.confirmed && !replaceConflict && !isDefinitiveChatRejection(error)) {
-        enterPendingConfirmation({ request, streamStarted, startedTurnId, silent, errorMessage })
+      if (!reconciliation.confirmed || (reconciliation.accepted && !reconciliation.terminal)) {
+        if (reconciliation.accepted) {
+          finishAcceptedTurnEdit(request)
+          composer.value?.releaseSubmittedAssets()
+        }
+        enterPendingConfirmation({
+          request,
+          streamStarted: streamStarted || reconciliation.accepted,
+          startedTurnId: reconciliation.turnId ?? startedTurnId,
+          acceptedAssistantStatus: reconciliation.assistantStatus ?? (streamStarted && startedTurnId ? 'streaming' : undefined),
+          silent,
+          errorMessage
+        })
         return
       }
-      await applySubmissionOutcome({ request, streamStarted, silent, errorMessage, replaceConflict, reconciliation })
+      await applySubmissionOutcome({
+        request,
+        streamStarted,
+        silent,
+        errorMessage: reconciliation.lookupError ? extractApiErrorMessage(reconciliation.lookupError, errorMessage) : errorMessage,
+        replaceConflict,
+        reconciliation
+      })
+      if (!disposed) clearPendingConfirmation(request.systemAccountId)
     }
   })
 }
@@ -476,40 +707,64 @@ async function applySubmissionOutcome(input: {
 }
 function enterPendingConfirmation(input: PendingSubmissionConfirmation): void {
   if (disposed) return
-  pendingConfirmation.value = Object.freeze(input)
+  setPendingConfirmation(input)
+  pendingConfirmationRetryCount = 0
   message.warning('暂时无法确认消息是否已提交，已暂停新的发送并将在后台重试')
   schedulePendingConfirmation()
 }
 function schedulePendingConfirmation(): void {
   if (pendingConfirmationTimer !== undefined) window.clearTimeout(pendingConfirmationTimer)
   if (disposed || !pendingConfirmation.value) return
-  pendingConfirmationTimer = window.setTimeout(() => { pendingConfirmationTimer = undefined; void retryPendingConfirmation() }, 1_200)
+  const delay = Math.min(15_000, 1_200 * 2 ** Math.min(pendingConfirmationRetryCount, 4))
+  pendingConfirmationTimer = window.setTimeout(() => { pendingConfirmationTimer = undefined; void retryPendingConfirmation() }, delay)
 }
-async function retryPendingConfirmation(): Promise<void> {
+async function retryPendingConfirmation(manual = false): Promise<void> {
   const pending = pendingConfirmation.value
   if (disposed || !pending || confirmingSubmission.value) return
   if (pendingConfirmationTimer !== undefined) { window.clearTimeout(pendingConfirmationTimer); pendingConfirmationTimer = undefined }
+  if (manual) pendingConfirmationRetryCount = 0
   confirmingSubmission.value = true
   try {
-    const reconciliation = await reconcileChatSubmission({
-      clientMessageId: pending.request.clientMessageId,
-      acceptedTurnId: pending.startedTurnId,
-      confirmPendingAcceptance: true,
-      listMessages: () => refreshMessages(pending.request.conversationId),
-      stop: async () => { await chatApi.stop(pending.request.conversationId) },
-      maxAttempts: 4
+    const recovery = await reconcileChatPendingSubmissionRecovery({
+      pending,
+      ensureConversation: () => ensurePendingConversationAvailability(pending),
+      reconcile: (initial) => reconcileChatSubmission({
+        ...initial,
+        getSubmissionStatus: () => chatApi.getSubmissionStatus(pending.request.conversationId, pending.request.clientMessageId),
+        listMessages: () => refreshMessages(pending.request.conversationId),
+        stop: async (turnId) => { await chatApi.stop(pending.request.conversationId, { clientMessageId: pending.request.clientMessageId, turnId }) },
+        maxAttempts: 4
+      })
     })
     if (disposed || pendingConfirmation.value !== pending) return
-    if (!reconciliation.confirmed) { schedulePendingConfirmation(); return }
-    pendingConfirmation.value = undefined
+    if (recovery.action === 'missing') {
+      clearPendingConfirmation(pending.request.systemAccountId)
+      message.warning('原会话已不可用，未确认草稿无法恢复')
+      return
+    }
+    if (recovery.action === 'retry') {
+      pendingConfirmationRetryCount += 1
+      setPendingConfirmation(recovery.pending)
+      schedulePendingConfirmation()
+      return
+    }
+    const reconciliation = recovery.reconciliation
+    if (!reconciliation) throw new Error('待确认恢复缺少提交状态')
     await applySubmissionOutcome({
       request: pending.request,
-      streamStarted: pending.streamStarted,
+      streamStarted: recovery.pending.streamStarted,
       silent: pending.silent,
-      errorMessage: pending.errorMessage,
+      errorMessage: reconciliation.lookupError ? extractApiErrorMessage(reconciliation.lookupError, pending.errorMessage) : pending.errorMessage,
       replaceConflict: false,
       reconciliation
     })
+    if (!disposed && pendingConfirmation.value === pending) clearPendingConfirmation(pending.request.systemAccountId)
+  } catch (error) {
+    if (!disposed && pendingConfirmation.value === pending) {
+      pendingConfirmationRetryCount += 1
+      schedulePendingConfirmation()
+      if (manual) message.error(extractApiErrorMessage(error, '确认消息状态失败，将继续后台重试'))
+    }
   } finally {
     if (!disposed) confirmingSubmission.value = false
   }
@@ -517,6 +772,39 @@ async function retryPendingConfirmation(): Promise<void> {
 function isDefinitiveChatRejection(error: unknown): boolean {
   if (!(error instanceof ChatStreamHttpError)) return false
   return isDefinitiveChatHttpRejection({ status: error.status, code: error.code })
+}
+function isNotFoundResponse(error: unknown): boolean {
+  const candidate = error as { status?: unknown; response?: { status?: unknown } } | undefined
+  return (candidate?.response?.status ?? candidate?.status) === 404
+}
+function setPendingConfirmation(input: PendingSubmissionConfirmation): void {
+  const next = Object.freeze(input)
+  pendingConfirmation.value = next
+  if (!writeStoredPendingConfirmation(next)) message.warning('浏览器暂时无法更新待确认状态，当前页面仍会继续确认')
+}
+function restorePendingConfirmation(input: PendingSubmissionConfirmation): void {
+  pendingConfirmation.value = Object.freeze(input)
+}
+function writeStoredPendingConfirmation(input: PendingSubmissionConfirmation): boolean {
+  try {
+    return writeChatPendingSubmission(window.sessionStorage, input)
+  } catch {
+    return false
+  }
+}
+function clearPendingConfirmation(systemAccountId = pendingConfirmation.value?.request.systemAccountId ?? authState.currentUser.value?.id): void {
+  pendingConfirmation.value = undefined
+  pendingConfirmationRetryCount = 0
+  if (systemAccountId) {
+    try { clearChatPendingSubmission(window.sessionStorage, systemAccountId) } catch {}
+  }
+}
+function readStoredPendingConfirmation(): PendingSubmissionConfirmation | undefined {
+  const systemAccountId = authState.currentUser.value?.id
+  if (!systemAccountId) return undefined
+  let stored: ChatPendingSubmission | undefined
+  try { stored = readChatPendingSubmission(window.sessionStorage, systemAccountId) } catch { return undefined }
+  return stored ? Object.freeze({ ...stored, request: Object.freeze(stored.request) }) : undefined
 }
 function cloneDocument(document: JSONContent): JSONContent { return JSON.parse(JSON.stringify(document)) as JSONContent }
 async function refreshContextStatus(conversationId = selectedConversationId.value): Promise<void> {
@@ -529,8 +817,66 @@ async function refreshContextStatus(conversationId = selectedConversationId.valu
   }
 }
 function updateMobile(): void { mobile.value = window.innerWidth <= 820 }
-function openConversationMenu(event: MouseEvent, item: ChatConversation): void { event.preventDefault(); conversationMenu.value = { item, x: Math.min(event.clientX, window.innerWidth - 150), y: Math.min(event.clientY, window.innerHeight - 160) } }
-function closeConversationMenu(): void { conversationMenu.value = undefined }
+function currentVisualViewportBounds() {
+  return resolveChatVisualViewportBounds({
+    offsetLeft: window.visualViewport?.offsetLeft,
+    offsetTop: window.visualViewport?.offsetTop,
+    width: window.visualViewport?.width,
+    height: window.visualViewport?.height,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight
+  })
+}
+function showConversationMenu(item: ChatConversation, preferredX: number, preferredY: number, trigger: HTMLElement): void {
+  const position = clampChatFloatingMenuPosition({
+    preferredX,
+    preferredY,
+    menuWidth: 136,
+    menuHeight: 188,
+    viewport: currentVisualViewportBounds(),
+    padding: 8
+  })
+  conversationMenuTrigger = trigger
+  conversationMenu.value = { item, ...position }
+  void nextTick(focusConversationMenu)
+}
+function focusConversationMenu(): void {
+  conversationMenuElement.value?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
+}
+function openConversationMenu(event: MouseEvent, item: ChatConversation): void {
+  event.preventDefault()
+  const row = event.currentTarget as HTMLElement
+  const trigger = row.querySelector<HTMLElement>('.conversation-item-select') ?? row
+  showConversationMenu(item, event.clientX, event.clientY, trigger)
+}
+function openConversationMenuFromButton(event: MouseEvent, item: ChatConversation): void {
+  event.preventDefault()
+  event.stopPropagation()
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  showConversationMenu(item, bounds.right - 136, bounds.bottom + 4, event.currentTarget as HTMLElement)
+}
+function handleConversationMenuKeyDown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closeConversationMenu(true)
+    return
+  }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  const items = [...(conversationMenuElement.value?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])]
+  if (!items.length) return
+  event.preventDefault()
+  const currentIndex = Math.max(0, items.indexOf(document.activeElement as HTMLElement))
+  const offset = event.key === 'ArrowDown' ? 1 : -1
+  items[(currentIndex + offset + items.length) % items.length]?.focus()
+}
+function closeConversationMenu(restoreFocus = false): void {
+  const trigger = conversationMenuTrigger
+  conversationMenu.value = undefined
+  conversationMenuTrigger = undefined
+  if (restoreFocus) void nextTick(() => trigger?.focus())
+}
+function handleWindowConversationMenuDismiss(): void { closeConversationMenu() }
 function openRenameDialog(item: ChatConversation): void { pendingConversation.value = item; renameTitle.value = item.title; renameDialogOpen.value = true; closeConversationMenu() }
 function openDetails(item: ChatConversation): void { detailConversation.value = item; detailsDialogOpen.value = true; closeConversationMenu() }
 function openDeleteDialog(item: ChatConversation): void { pendingConversation.value = item; deleteDialogOpen.value = true; closeConversationMenu() }
@@ -542,16 +888,17 @@ function sortConversations(): void { conversations.value.sort((left, right) => N
 function formatDetailTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false }) }
 function resetModelControls(): void { selectedReasoningEffort.value = defaultChatReasoningEffort(selectedModelOption.value); selectedServiceTier.value = defaultChatServiceTier(selectedModelOption.value) }
 watch(selectedModel, resetModelControls)
-onMounted(() => { updateMobile(); window.addEventListener('resize', updateMobile); window.addEventListener('click', closeConversationMenu); window.addEventListener('blur', closeConversationMenu); contextStatusTimer = window.setInterval(() => { void refreshContextStatus() }, 5_000); void loadInitial() })
-onBeforeUnmount(() => { disposed = true; conversationLoadEpoch += 1; window.removeEventListener('resize', updateMobile); window.removeEventListener('click', closeConversationMenu); window.removeEventListener('blur', closeConversationMenu); if (pendingConfirmationTimer !== undefined) { window.clearTimeout(pendingConfirmationTimer); pendingConfirmationTimer = undefined }; if (contextStatusTimer !== undefined) { window.clearInterval(contextStatusTimer); contextStatusTimer = undefined }; streamController?.abort() })
+onMounted(() => { updateMobile(); window.addEventListener('resize', updateMobile); window.addEventListener('click', handleWindowConversationMenuDismiss); window.addEventListener('blur', handleWindowConversationMenuDismiss); contextStatusTimer = window.setInterval(() => { void refreshContextStatus() }, 5_000); void loadInitial() })
+onBeforeUnmount(() => { disposed = true; conversationLoadEpoch += 1; window.removeEventListener('resize', updateMobile); window.removeEventListener('click', handleWindowConversationMenuDismiss); window.removeEventListener('blur', handleWindowConversationMenuDismiss); if (pendingConfirmationTimer !== undefined) { window.clearTimeout(pendingConfirmationTimer); pendingConfirmationTimer = undefined }; if (contextStatusTimer !== undefined) { window.clearInterval(contextStatusTimer); contextStatusTimer = undefined }; streamController?.abort() })
 </script>
 
 <style scoped>
-.chat-workspace { height: 100vh; height: 100dvh; min-height: 520px; display: grid; grid-template-columns: 260px minmax(0, 1fr); overflow: hidden; background: #fff; border: 0; border-radius: 0; }
+.chat-workspace { height: var(--app-visual-viewport-height, 100dvh); min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr); overflow: hidden; background: #fff; border: 0; border-radius: 0; }
 .conversation-panel { min-width: 0; border-right: 1px solid #e2e8f0; background: #f8fafc; }
 .chat-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .composer-shell { position: relative; padding: 12px clamp(12px, 3vw, 28px) 14px; border-top: 1px solid #e2e8f0; background: #fff; }
 .turn-editing-bar { display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 4px 4px; color: #64748b; font-size: 12px; }
+.turn-limit-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; padding: 0 4px 4px; color: #64748b; font-size: 12px; }
 .submission-confirmation-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 0 4px 4px; color: #b45309; font-size: 12px; }
 .jump-bottom-button { position: absolute; z-index: 4; top: -46px; left: 50%; color: #475569; background: rgba(255, 255, 255, .96); border-color: #d9e0e8; box-shadow: 0 4px 14px rgba(15, 23, 42, .14); transform: translateX(-50%); }
 .chat-start-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: #64748b; }
@@ -563,7 +910,9 @@ onBeforeUnmount(() => { disposed = true; conversationLoadEpoch += 1; window.remo
 :deep(.conversation-new-button) { height: 30px; display: inline-flex; align-items: center; padding: 0 9px; color: #1677ff; background: #fff; border: 1px solid #b9d7ff; border-radius: 6px; cursor: pointer; }
 :deep(.conversation-new-button:disabled) { color: #94a3b8; border-color: #e2e8f0; cursor: not-allowed; }
 :deep(.conversation-list) { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; }
-:deep(.conversation-item) { width: 100%; height: 38px; display: block; overflow: hidden; margin-bottom: 3px; padding: 0 10px; color: #273449; font-size: 13px; line-height: 36px; text-align: left; text-overflow: ellipsis; white-space: nowrap; background: transparent; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
+:deep(.conversation-item) { width: 100%; height: 38px; display: flex; align-items: stretch; overflow: hidden; margin-bottom: 3px; color: #273449; font-size: 13px; background: transparent; border: 1px solid transparent; border-radius: 6px; }
+:deep(.conversation-item-select) { min-width: 0; flex: 1; overflow: hidden; padding: 0 10px; color: inherit; font: inherit; line-height: 36px; text-align: left; text-overflow: ellipsis; white-space: nowrap; background: transparent; border: 0; cursor: pointer; }
+:deep(.conversation-more-button) { width: 38px; flex: 0 0 38px; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: #64748b; background: transparent; border: 0; cursor: pointer; }
 :deep(.conversation-item:hover) { background: #fff; border-color: #e2e8f0; }
 :deep(.conversation-item.active) { background: #eaf3ff; border-color: #b9d7ff; }
 :deep(.conversation-load-more) { width: 100%; height: 34px; color: #64748b; background: transparent; border: 0; cursor: pointer; }
@@ -574,6 +923,19 @@ onBeforeUnmount(() => { disposed = true; conversationLoadEpoch += 1; window.remo
 .conversation-context-menu button { width: 100%; display: block; padding: 7px 9px; color: #334155; text-align: left; background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
 .conversation-context-menu button:hover { background: #f1f5f9; }
 .conversation-context-menu button.is-danger { color: #dc2626; }
+.conversation-detail-id { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.conversation-detail-id code { flex: 1; min-width: 0; color: #334155; overflow-wrap: anywhere; }
 @media (max-width: 991px) and (min-width: 821px) { :deep(.conversation-pane-toolbar) { padding-left: 56px; } }
-@media (max-width: 820px) { .chat-workspace { height: 100vh; height: 100dvh; min-height: 440px; grid-template-columns: minmax(0, 1fr); } .composer-shell { padding: 9px; } :deep(.message-virtual-space) { margin-top: 52px; } :deep(.message-loading), :deep(.message-empty) { padding-top: 52px; } }
+@media (max-width: 820px) { .chat-workspace { grid-template-columns: minmax(0, 1fr); } .composer-shell { padding: 9px calc(9px + env(safe-area-inset-right)) calc(9px + env(safe-area-inset-bottom)) calc(9px + env(safe-area-inset-left)); } }
+@media (pointer: coarse) {
+  :deep(.conversation-new-button), :deep(.conversation-item), :deep(.conversation-item-select), :deep(.conversation-load-more), :deep(.conversation-more-button) { min-height: 44px; }
+  :deep(.conversation-item) { height: 44px; }
+  :deep(.conversation-item-select) { line-height: 42px; }
+  :deep(.conversation-more-button) { width: 44px; flex-basis: 44px; }
+  .conversation-context-menu button { min-height: 44px; }
+  .jump-bottom-button { min-width: 44px; height: 44px; }
+  .turn-editing-bar :deep(.ant-btn) { min-width: 44px; min-height: 44px; }
+  .turn-limit-bar :deep(.ant-btn) { min-width: 44px; min-height: 44px; }
+  .submission-confirmation-bar :deep(.ant-btn) { min-width: 44px; min-height: 44px; }
+}
 </style>

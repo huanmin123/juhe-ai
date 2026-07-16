@@ -25,12 +25,12 @@ try {
   const ownerId = 'asset_cleanup_owner'
   const conversationId = 'asset_cleanup_conversation'
   const createdAt = '2026-07-01T00:00:00.000Z'
-  const expiresAt = '2026-07-08T00:00:00.000Z'
+  const expiresAt = '2026-07-04T00:00:00.000Z'
   await chatRepository.createChatConversation(client, {
     id: conversationId,
     systemAccountId: ownerId,
     apiKeyId: 'asset_cleanup_key',
-    apiKeyNameSnapshot: '资产清理测试',
+    apiKeyNameSnapshot: '资产清理测试', maxConversationsPerUser: 1000,
     now: createdAt
   })
 
@@ -40,6 +40,7 @@ try {
   assert.deepEqual([successCleanup.claimedAssets, successCleanup.deletedAssets, successCleanup.failedAssets], [1, 1, 0])
   assert.equal(await exists(successful.storageKey!), false, '成功清理必须同时删除对象文件')
   assert.equal(await assetRepository.getChatAsset(client, { assetId: successful.id, systemAccountId: ownerId, conversationId }), undefined)
+  assert.equal(database.prepare('SELECT 1 FROM chat_user_asset_usage WHERE system_account_id = ?').get(ownerId), undefined, '资产删除必须同步扣减预聚合用量')
 
   const failed = await createReadyAsset('chat_asset_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'cc/dd/failure.png', Buffer.from('failure-object'))
   rmSync(assetStorage.chatAssetObjectPath(failed.storageKey!), { force: true })
@@ -59,6 +60,36 @@ try {
   const staleCleanup = await cleanupExpiredChatAssets({ client, now: '2026-07-08T00:16:01.000Z', limit: 10 })
   assert.equal(staleCleanup.deletedAssets, 1, '超过 15 分钟的清理认领必须被重新认领并完成')
 
+  const quotaOwnerId = 'asset_quota_owner'
+  const quotaConversationId = 'asset_quota_conversation'
+  await chatRepository.createChatConversation(client, { id: quotaConversationId, systemAccountId: quotaOwnerId, apiKeyId: 'quota_key', apiKeyNameSnapshot: '资产配额测试', maxConversationsPerUser: 1000, now: createdAt })
+  database.prepare('INSERT INTO chat_user_asset_usage (system_account_id, asset_bytes, asset_count, updated_at) VALUES (?, ?, ?, ?)')
+    .run(quotaOwnerId, assetRepository.chatAssetUserMaxBytes - 8, 1, createdAt)
+  await assert.rejects(assetRepository.createChatAsset(client, {
+    id: 'chat_asset_dddddddddddddddddddddddddddddddd',
+    systemAccountId: quotaOwnerId,
+    conversationId: quotaConversationId,
+    originalFilename: 'quota.png',
+    originalMimeType: 'image/png',
+    originalBytes: 16,
+    originalSha256: 'd'.repeat(64),
+    quotaBytes: 16, retentionDays: 7,
+    now: createdAt
+  }), (error) => error instanceof assetRepository.ChatAssetQuotaExceededError, '未提交资产也必须受用户预聚合配额限制')
+
+  const committed = await createReadyAsset('chat_asset_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'gg/hh/committed.png', Buffer.from('committed-object'))
+  const committedTurn = await chatRepository.acceptChatTurn(client, {
+    conversationId, systemAccountId: ownerId, clientMessageId: 'asset_retention_commit', userContent: '[图片]',
+    contentBlocks: [{ type: 'input_image', assetId: committed.id }], model: 'mock-model',
+    now: '2026-07-01T00:10:00.000Z', storageQuotaBytes: 1024 * 1024 ,
+    retentionDays: 3, maxTurnsPerConversation: 50
+  })
+  assert.equal((await assetRepository.getChatAsset(client, { assetId: committed.id, systemAccountId: ownerId, conversationId }))?.expiresAt, '2026-07-04T00:10:00.000Z', '资产绑定消息时必须按统一配置刷新保留期')
+  await chatRepository.cancelChatTurn(client, {
+    conversationId, systemAccountId: ownerId, turnId: committedTurn.turnId,
+    assistantContent: '', traceId: 'trace_asset_retention', now: '2026-07-01T00:11:00.000Z'
+  })
+
   async function createReadyAsset(id: string, storageKey: string, bytes: Buffer) {
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     await assetRepository.createChatAsset(client, {
@@ -69,7 +100,9 @@ try {
       originalMimeType: 'image/png',
       originalBytes: bytes.length,
       originalSha256: sha256,
-      now: createdAt
+      quotaBytes: bytes.length,
+      now: createdAt,
+      retentionDays: 3
     })
     await assetStorage.writeChatAssetObject({ storageKey, source: Readable.from(bytes), expectedBytes: bytes.length, expectedSha256: sha256 })
     return assetRepository.completeChatAssetProcessing(client, {

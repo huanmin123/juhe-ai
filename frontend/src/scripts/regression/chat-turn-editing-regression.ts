@@ -53,6 +53,8 @@ assert.deepEqual(beginLatestTurnEdit(messages, latestUser.id), {
     { type: 'input_text', text: '**Markdown**' }
   ]
 })
+assert.equal(isLatestEditableUserMessage([latestUser, message({ ...latestAssistant, status: 'failed' })], latestUser.id), true, '最近失败轮次必须允许显式编辑并重新生成')
+assert.equal(isLatestEditableUserMessage([latestUser, message({ ...latestAssistant, status: 'canceled' })], latestUser.id), true, '最近停止轮次必须允许显式编辑并重新生成')
 
 const imageEdit = beginLatestTurnEdit([
   message({
@@ -78,8 +80,6 @@ for (const invalid of [
   [latestUser, message({ ...latestAssistant, turnId: 'turn_other' })],
   [latestUser, message({ ...latestAssistant, sequenceNo: 5 })],
   [message({ ...latestUser, status: 'streaming' }), latestAssistant],
-  [latestUser, message({ ...latestAssistant, status: 'failed' })],
-  [latestUser, message({ ...latestAssistant, status: 'canceled' })],
   [message({ ...latestUser, contentBlocks: [] }), latestAssistant],
   [message({ ...latestUser, contentBlocks: [{ type: 'input_text', text: '原始 **Markdown**', order: 1 }] }), latestAssistant],
   [message({ ...latestUser, contentBlocks: [

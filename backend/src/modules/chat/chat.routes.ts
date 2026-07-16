@@ -6,6 +6,8 @@ import { ok } from '../../shared/http.js'
 import { getTraceId } from '../../shared/request-context.js'
 import {
   acceptChatTurn,
+  assertChatTurnReplaceable,
+  cancelActiveChatTurnIfMatches,
   cancelChatTurn,
   ChatConflictError,
   completeChatTurn,
@@ -30,13 +32,21 @@ import { collectChatResponsesSse } from './chat-responses-sse.js'
 import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport } from './chat-transport.js'
 import { buildChatModelOptions, ChatModelCapabilityError, chatReasoningEfforts, chatServiceTiers, resolveChatModelRequestOptions, type ChatModelOption } from './chat-model-options.js'
 import { buildChatSystemInstructions } from './chat-system-instructions.js'
-import { deleteActiveChatStreamIfMatches } from './chat-active-streams.js'
+import {
+  beginActiveChatAcceptance,
+  cancelActiveChatPreparation,
+  claimActiveChatPreparation,
+  deleteActiveChatPreparationIfMatches,
+  deleteActiveChatStreamIfMatches,
+  hasActiveChatPreparation,
+  type ActiveChatPreparation
+} from './chat-active-streams.js'
 import { sanitizeChatContentBlocksForPersistence } from './chat-content-blocks.js'
 import { readChatJsonResponse } from './chat-bounded-json.js'
 import { listProviderModelCatalogAsync, type ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 import { GPT_VENDOR_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
-import { chatAssetApiMetadata, getChatAsset } from '../../storage/chat-assets.repository.js'
-import { openChatAssetObject } from '../../storage/chat-asset-storage.js'
+import { chatAssetApiMetadata, claimUncommittedChatAssetForDeletion, completeChatAssetDeletion, getChatAsset, releaseChatAssetDeletionClaim } from '../../storage/chat-assets.repository.js'
+import { openChatAssetObject, removeChatAssetObject } from '../../storage/chat-asset-storage.js'
 import { ChatAssetUploadError, uploadChatAsset } from './chat-asset-upload.js'
 import { ChatAssetInputError, resolveChatAssetInput } from './chat-asset-input.js'
 import { getChatContextHead, recordChatContextUsage } from '../../storage/chat-context.repository.js'
@@ -44,6 +54,7 @@ import { loadChatTransportHistory, ChatModelContextError } from './chat-model-co
 import { compactChatContextOnce, scheduleChatContextCompaction } from './chat-context-compaction.js'
 import { scheduleChatImageObservations, waitForChatImageObservations } from './chat-image-observation.js'
 import { countChatTextTokens } from './chat-token-count.js'
+import { buildChatPromptCacheKey } from './chat-prompt-cache.js'
 
 export const chatRouter = Router()
 
@@ -73,12 +84,21 @@ const messagesQuerySchema = z.object({
   beforeSequenceNo: z.preprocess(queryScalar, z.coerce.number().int().min(1).max(2_147_483_647).optional()),
   limit: z.preprocess(queryScalar, z.coerce.number().int().min(1).max(100).default(50))
 }).strict()
+const submissionParamsSchema = z.object({
+  conversationId: z.string().trim().min(1).max(120),
+  clientMessageId: z.string().trim().min(1).max(100)
+}).strict()
+const stopBodySchema = z.object({
+  turnId: z.string().trim().min(1).max(100).optional(),
+  clientMessageId: z.string().trim().min(1).max(100).optional()
+}).strict().refine((value) => value.turnId !== undefined || value.clientMessageId !== undefined, '缺少要停止的消息或轮次')
 const createConversationSchema = z.object({ apiKeyId: z.string().trim().min(1, '请选择 API Key') }).strict()
 const updateConversationSchema = z.object({
   title: z.string().trim().min(1, '请输入会话标题').max(60, '会话标题最多 60 个字符').optional(),
   isPinned: z.boolean().optional()
 }).strict().refine((value) => value.title !== undefined || value.isPinned !== undefined, '没有可更新的会话字段')
 const activeStreams = new Map<string, { ownerId: string; turnId: string; controller: AbortController }>()
+const activePreparations = new Map<string, ActiveChatPreparation>()
 const maxMessageBytes = 192 * 1024
 const maxInternalChatRequestBytes = 15 * 1024 * 1024
 const storageQuotaBytes = 2 * 1024 * 1024 * 1024
@@ -87,6 +107,13 @@ class ChatRequestError extends Error {
   constructor(public readonly code: 'chat_image_not_supported' | 'chat_request_body_too_large', message: string) {
     super(message)
     this.name = 'ChatRequestError'
+  }
+}
+
+class ChatPreparationCanceledError extends Error {
+  constructor() {
+    super('消息准备已取消')
+    this.name = 'ChatPreparationCanceledError'
   }
 }
 
@@ -102,13 +129,14 @@ chatRouter.get('/conversations', async (req, res, next) => {
   try {
     const auth = requireChatAuth()
     const client = await getChatDatabaseClient()
-    res.json(ok(await listChatConversations(client, {
+    const conversations = await listChatConversations(client, {
       systemAccountId: auth.systemAccountId,
       beforeIsPinned: optionalBooleanQuery(req.query.beforeIsPinned),
       beforeLastMessageAt: textQuery(req.query.beforeLastMessageAt),
       beforeId: textQuery(req.query.beforeId),
       limit: integerQuery(req.query.limit, 30, 1, 50)
-    })))
+    })
+    res.json(ok(conversations.map(chatConversationResponse)))
   } catch (error) { next(error) }
 })
 
@@ -118,12 +146,14 @@ chatRouter.post('/conversations', async (req, res, next) => {
     const auth = requireChatAuth()
     const apiKey = await requireOwnedApiKey(body.apiKeyId, auth.systemAccountId)
     const client = await getChatDatabaseClient()
-    res.status(201).json(ok(await createChatConversation(client, {
+    const conversation = await createChatConversation(client, {
       systemAccountId: auth.systemAccountId,
       apiKeyId: apiKey.id,
       apiKeyNameSnapshot: apiKey.name,
-      now: new Date().toISOString()
-    })))
+      now: new Date().toISOString(),
+      maxConversationsPerUser: runtimeConfig.chat.maxConversationsPerUser
+    })
+    res.status(201).json(ok(chatConversationResponse(conversation)))
   } catch (error) { handleChatRouteError(error, res, next) }
 })
 
@@ -139,6 +169,34 @@ chatRouter.get('/conversations/:conversationId/messages', async (req, res, next)
       limit: query.limit,
       now: new Date().toISOString()
     })))
+  } catch (error) { handleChatRouteError(error, res, next) }
+})
+
+chatRouter.get('/conversations/:conversationId/submissions/:clientMessageId', async (req, res, next) => {
+  try {
+    const params = submissionParamsSchema.parse(req.params)
+    const auth = requireChatAuth()
+    const client = await getChatDatabaseClient()
+    const conversation = await getChatConversation(client, params.conversationId, auth.systemAccountId)
+    if (!conversation) {
+      res.status(404).json({ message: '会话不存在', code: 'chat_conversation_not_found' })
+      return
+    }
+    const accepted = await findChatTurnByClientMessageId(client, {
+      conversationId: conversation.id,
+      systemAccountId: auth.systemAccountId,
+      clientMessageId: params.clientMessageId
+    })
+    if (accepted) {
+      res.json(ok({ state: 'accepted', turnId: accepted.turnId, assistantStatus: accepted.assistantStatus }))
+      return
+    }
+    const preparing = hasActiveChatPreparation(activePreparations, {
+      conversationId: conversation.id,
+      ownerId: auth.systemAccountId,
+      clientMessageId: params.clientMessageId
+    })
+    res.json(ok({ state: preparing ? 'preparing' : 'not_found' }))
   } catch (error) { handleChatRouteError(error, res, next) }
 })
 
@@ -169,7 +227,7 @@ chatRouter.get('/conversations/:conversationId', async (req, res, next) => {
     const auth = requireChatAuth()
     const conversation = await getChatConversation(await getChatDatabaseClient(), req.params.conversationId, auth.systemAccountId)
     if (!conversation) { res.status(404).json({ message: '会话不存在' }); return }
-    res.json(ok(conversation))
+    res.json(ok(chatConversationResponse(conversation)))
   } catch (error) { next(error) }
 })
 
@@ -185,7 +243,7 @@ chatRouter.patch('/conversations/:conversationId', async (req, res, next) => {
       now: new Date().toISOString()
     })
     if (!conversation) { res.status(404).json({ message: '会话不存在' }); return }
-    res.json(ok(conversation))
+    res.json(ok(chatConversationResponse(conversation)))
   } catch (error) { handleChatRouteError(error, res, next) }
 })
 
@@ -198,7 +256,8 @@ chatRouter.post('/conversations/:conversationId/assets', async (req, res, next) 
       client: await getChatDatabaseClient(),
       systemAccountId: auth.systemAccountId,
       conversationId: conversation.id,
-      now: new Date().toISOString()
+      now: new Date().toISOString(),
+      retentionDays: runtimeConfig.chat.retentionDays
     })
     res.status(201).json(ok(chatAssetApiMetadata(asset)))
   } catch (error) { handleChatRouteError(error, res, next) }
@@ -233,6 +292,41 @@ chatRouter.get('/conversations/:conversationId/assets/:assetId/content', async (
   } catch (error) { next(error) }
 })
 
+chatRouter.delete('/conversations/:conversationId/assets/:assetId', async (req, res, next) => {
+  try {
+    const auth = requireChatAuth()
+    const conversation = await requireOwnedConversation(req.params.conversationId, auth.systemAccountId)
+    const client = await getChatDatabaseClient()
+    const now = new Date().toISOString()
+    const claim = await claimUncommittedChatAssetForDeletion(client, {
+      assetId: req.params.assetId,
+      systemAccountId: auth.systemAccountId,
+      conversationId: conversation.id,
+      now
+    })
+    if (!claim) {
+      res.status(409).json({ message: '图片已发送、已删除或当前不能清理', code: 'chat_asset_not_deletable' })
+      return
+    }
+    try {
+      await removeChatAssetObject(claim.asset.storageKey)
+      if (!await completeChatAssetDeletion(client, { assetId: claim.asset.id, claimId: claim.claimId })) {
+        throw new Error('聊天图片删除认领已变化')
+      }
+      res.status(204).end()
+    } catch (error) {
+      await releaseChatAssetDeletionClaim(client, {
+        assetId: claim.asset.id,
+        claimId: claim.claimId,
+        errorCode: error instanceof Error ? error.name || 'chat_asset_delete_failed' : 'chat_asset_delete_failed',
+        retryAt: new Date(Date.parse(now) + 60_000).toISOString(),
+        now
+      }).catch(() => false)
+      throw error
+    }
+  } catch (error) { next(error) }
+})
+
 chatRouter.get('/conversations/:conversationId/models', async (req, res, next) => {
   try {
     const auth = requireChatAuth()
@@ -264,7 +358,13 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
   let controller: AbortController | undefined
   let responseClosed = false
   let partialContent = ''
+  let preparationConversationId = ''
+  let preparationClaim: ActiveChatPreparation | undefined
   const contentBlocks: ChatMessageContentBlock[] = []
+  res.once('close', () => {
+    responseClosed = true
+    controller?.abort()
+  })
   try {
     const body = messageBodySchema.parse(req.body)
     const traceId = getTraceId()
@@ -274,20 +374,53 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     }
     const auth = requireChatAuth()
     ownerId = auth.systemAccountId
-    const conversation = await requireOwnedConversation(req.params.conversationId, ownerId)
     const client = await getChatDatabaseClient()
+    if (responseClosed || req.aborted || res.destroyed) return
+    const conversation = await getChatConversation(client, req.params.conversationId, ownerId)
+    if (responseClosed || req.aborted || res.destroyed) return
+    if (!conversation) {
+      res.status(404).json({ message: '会话不存在', code: 'chat_conversation_not_found' })
+      return
+    }
     const existingTurn = await findChatTurnByClientMessageId(client, {
       conversationId: conversation.id,
       systemAccountId: ownerId,
       clientMessageId: body.clientMessageId
     })
+    if (responseClosed || req.aborted || res.destroyed) return
     if (existingTurn) {
       res.status(409).json({ message: '该消息已提交，请刷新会话', code: 'chat_message_already_exists' })
       return
     }
+    if (!body.replaceTurnId && conversation.userTurnCount >= runtimeConfig.chat.maxTurnsPerConversation) {
+      throw new ChatConflictError('chat_turn_limit_exceeded')
+    }
+    if (conversation.activeTurnId) {
+      throw new ChatConflictError(body.replaceTurnId ? 'chat_replace_conflict' : 'chat_message_in_progress')
+    }
+    preparationConversationId = conversation.id
+    preparationClaim = claimActiveChatPreparation(activePreparations, {
+      conversationId: preparationConversationId,
+      ownerId,
+      clientMessageId: body.clientMessageId
+    })
+    if (!preparationClaim) throw new ChatConflictError(body.replaceTurnId ? 'chat_replace_conflict' : 'chat_message_in_progress')
+    controller = preparationClaim.controller
+    if (responseClosed || req.aborted || res.destroyed) controller.abort()
+    assertChatPreparationActive(preparationClaim)
+    if (body.replaceTurnId) {
+      await assertChatTurnReplaceable(client, {
+        conversationId: conversation.id,
+        systemAccountId: ownerId,
+        replaceTurnId: body.replaceTurnId,
+        now: new Date().toISOString()
+      })
+    }
+    assertChatPreparationActive(preparationClaim)
     const apiKey = await requireOwnedApiKey(conversation.apiKeyId, ownerId)
     const apiKeySecret = String(apiKey.key)
     const gatewayKey = await validateGatewayApiKeyAsync(apiKeySecret)
+    assertChatPreparationActive(preparationClaim)
     const accountSupportedProtocols = await resolveChatSupportedProtocols({
       groupIds: gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? [],
       model: body.model,
@@ -296,6 +429,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         requestedEndpointFamily: endpointFamily
       })
     })
+    assertChatPreparationActive(preparationClaim)
     if (!accountSupportedProtocols.length) {
       throw new ChatModelCapabilityError('当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射')
     }
@@ -305,6 +439,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       systemAccountId: ownerId,
       requestedModel: body.model
     })
+    assertChatPreparationActive(preparationClaim)
     const modelOption = buildChatModelOptions([body.model], catalog)[0]
     if (!modelOption) throw new ChatModelCapabilityError('当前模型能力信息不可用，请刷新模型列表')
     const supportsWebSearch = modelOption.supportedTools.includes('web_search')
@@ -323,10 +458,18 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       conversationId: conversation.id,
       now: new Date().toISOString()
     })
+    assertChatPreparationActive(preparationClaim)
     const modelRequestOptions = resolveChatModelRequestOptions(modelOption, {
       reasoningEffort: body.reasoningEffort,
       serviceTier: body.serviceTier
     })
+    const promptCacheKey = modelOption.supportsPromptCaching
+      ? buildChatPromptCacheKey({
+          systemAccountId: ownerId,
+          apiKeyId: apiKey.id,
+          conversationId: conversation.id
+        })
+      : undefined
     const systemInstructions = buildChatSystemInstructions({ toolsEnabled })
     const fixedBudgetInput = {
       currentUserContent: resolveChatBudgetContent({ protocol, currentContent: body.content, currentBlocks: resolvedInput.blocks }),
@@ -354,11 +497,14 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         conversationId: conversation.id,
         systemAccountId: ownerId,
         protocol,
-        now: new Date().toISOString()
+        now: new Date().toISOString(),
+        excludeTurnId: body.replaceTurnId
       })
+      assertChatPreparationActive(preparationClaim)
     } catch (error) {
       if (!(error instanceof ChatModelContextError) || error.reason !== 'load_limit') throw error
-      const compacted = await compactChatContextOnce(compactionInput)
+      const compacted = await waitForChatPreparation(compactChatContextOnce(compactionInput), preparationClaim)
+      assertChatPreparationActive(preparationClaim)
       if (compacted.status !== 'installed') throw error
       contextCompacted = true
       preparedContext = await loadChatTransportHistory({
@@ -366,13 +512,14 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         conversationId: conversation.id,
         systemAccountId: ownerId,
         protocol,
-        now: new Date().toISOString()
+        now: new Date().toISOString(),
+        excludeTurnId: body.replaceTurnId
       })
     }
     if (preparedContext.unresolvedAssetIds.length) {
       scheduleChatImageObservations({
         client,
-        assetIds: preparedContext.unresolvedAssetIds,
+        targets: preparedContext.unresolvedAssets,
         conversationId: conversation.id,
         systemAccountId: ownerId,
         apiKeySecret,
@@ -381,13 +528,15 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         userContent: '补全此前对话中的图片语义说明',
         assistantContent: ''
       })
-      await waitForChatImageObservations(preparedContext.unresolvedAssetIds, 1_000)
+      await waitForChatPreparation(waitForChatImageObservations(preparedContext.unresolvedAssetIds, 1_000), preparationClaim)
+      assertChatPreparationActive(preparationClaim)
       preparedContext = await loadChatTransportHistory({
         client,
         conversationId: conversation.id,
         systemAccountId: ownerId,
         protocol,
-        now: new Date().toISOString()
+        now: new Date().toISOString(),
+        excludeTurnId: body.replaceTurnId
       })
       if (preparedContext.unresolvedAssetIds.length) {
         throw new ChatModelContextError('历史图片语义说明仍在生成，请稍后重试', 'image_pending')
@@ -396,7 +545,8 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     let estimatedRequestTokens = estimateChatInputTokens({ history: preparedContext.history, ...fixedBudgetInput })
     const effectiveContextLimitTokens = modelRequestOptions.maxInputTokens
     if (effectiveContextLimitTokens && estimatedRequestTokens / effectiveContextLimitTokens >= 0.85) {
-      const compacted = await compactChatContextOnce(compactionInput)
+      const compacted = await waitForChatPreparation(compactChatContextOnce(compactionInput), preparationClaim)
+      assertChatPreparationActive(preparationClaim)
       if (compacted.status === 'installed') {
         contextCompacted = true
         preparedContext = await loadChatTransportHistory({
@@ -404,7 +554,8 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           conversationId: conversation.id,
           systemAccountId: ownerId,
           protocol,
-          now: new Date().toISOString()
+          now: new Date().toISOString(),
+          excludeTurnId: body.replaceTurnId
         })
         estimatedRequestTokens = estimateChatInputTokens({ history: preparedContext.history, ...fixedBudgetInput })
       }
@@ -419,11 +570,13 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       currentBlocks: resolvedInput.blocks,
       toolsEnabled,
       reasoningEffort: modelRequestOptions.reasoningEffort,
-      serviceTier: modelRequestOptions.serviceTier
+      serviceTier: modelRequestOptions.serviceTier,
+      promptCacheKey
     })
     let serializedTransportBody = JSON.stringify(transport.body)
     if (Buffer.byteLength(serializedTransportBody, 'utf8') > maxInternalChatRequestBytes && !contextCompacted && preparedContext.history.length) {
-      const compacted = await compactChatContextOnce(compactionInput)
+      const compacted = await waitForChatPreparation(compactChatContextOnce(compactionInput), preparationClaim)
+      assertChatPreparationActive(preparationClaim)
       if (compacted.status === 'installed') {
         contextCompacted = true
         preparedContext = await loadChatTransportHistory({
@@ -431,7 +584,8 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           conversationId: conversation.id,
           systemAccountId: ownerId,
           protocol,
-          now: new Date().toISOString()
+          now: new Date().toISOString(),
+          excludeTurnId: body.replaceTurnId
         })
         estimatedRequestTokens = estimateChatInputTokens({ history: preparedContext.history, ...fixedBudgetInput })
         if (effectiveContextLimitTokens && estimatedRequestTokens > effectiveContextLimitTokens) throw new ChatContextBudgetError()
@@ -444,7 +598,8 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           currentBlocks: resolvedInput.blocks,
           toolsEnabled,
           reasoningEffort: modelRequestOptions.reasoningEffort,
-          serviceTier: modelRequestOptions.serviceTier
+          serviceTier: modelRequestOptions.serviceTier,
+          promptCacheKey
         })
         serializedTransportBody = JSON.stringify(transport.body)
       }
@@ -452,6 +607,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     if (Buffer.byteLength(serializedTransportBody, 'utf8') > maxInternalChatRequestBytes) {
       throw new ChatRequestError('chat_request_body_too_large', '本轮模型请求体仍超过安全上限，请减少图片或等待图片说明完成后重试')
     }
+    if (!beginActiveChatAcceptance(activePreparations, conversation.id, preparationClaim.token)) throw new ChatPreparationCanceledError()
     accepted = await acceptChatTurn(client, {
       conversationId: conversation.id,
       systemAccountId: ownerId,
@@ -461,29 +617,32 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       model: body.model,
       now: new Date().toISOString(),
       storageQuotaBytes,
+      retentionDays: runtimeConfig.chat.retentionDays,
+      maxTurnsPerConversation: runtimeConfig.chat.maxTurnsPerConversation,
       replaceTurnId: body.replaceTurnId
     })
     if (accepted.duplicate) {
       res.status(409).json({ message: '该消息已提交，请刷新会话', code: 'chat_message_already_exists' })
       return
     }
-    const acceptedContextHead = await getChatContextHead(client, {
-      conversationId: conversation.id,
-      systemAccountId: ownerId
-    })
-    if (!acceptedContextHead) throw new Error('聊天上下文状态不存在')
-    controller = new AbortController()
     activeStreams.set(conversation.id, { ownerId, turnId: accepted.turnId, controller })
-    res.status(200)
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
-    res.setHeader('Cache-Control', 'no-cache, no-transform')
-    res.setHeader('X-Accel-Buffering', 'no')
-    res.flushHeaders()
-    writeSse(res, 'message.started', { turnId: accepted.turnId, userMessage: accepted.userMessage, assistantMessage: accepted.assistantMessage })
-    res.on('close', () => { responseClosed = true; controller?.abort() })
-    const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(': heartbeat\n\n') }, 15_000)
-    heartbeat.unref()
+    let heartbeat: ReturnType<typeof setInterval> | undefined
     try {
+      if (controller.signal.aborted || responseClosed || req.aborted || res.destroyed) throw new ChatPreparationCanceledError()
+      const acceptedContextHead = await getChatContextHead(client, {
+        conversationId: conversation.id,
+        systemAccountId: ownerId
+      })
+      if (!acceptedContextHead) throw new Error('聊天上下文状态不存在')
+      if (controller.signal.aborted || responseClosed || req.aborted || res.destroyed) throw new ChatPreparationCanceledError()
+      res.status(200)
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-cache, no-transform')
+      res.setHeader('X-Accel-Buffering', 'no')
+      res.flushHeaders()
+      writeSse(res, 'message.started', { turnId: accepted.turnId, userMessage: accepted.userMessage, assistantMessage: accepted.assistantMessage })
+      heartbeat = setInterval(() => { if (!res.writableEnded) res.write(': heartbeat\n\n') }, 15_000)
+      heartbeat.unref()
       const upstream = await fetch(gatewayUrl(transport.path), {
         method: 'POST',
         headers: {
@@ -515,16 +674,18 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
             } else if (event.type === 'failed') {
               throw new Error(upstreamMessage(event.error, '模型工具调用失败'))
             }
-          }, maxMessageBytes)
+          }, maxMessageBytes, runtimeConfig.chat.upstreamSseMaxEvents)
         : await collectOpenAIChatSse(readableStreamChunks(upstream.body), maxMessageBytes, (delta) => {
             partialContent += delta
             if (!res.writableEnded) writeSse(res, 'message.delta', { messageId: accepted?.assistantMessage.id, delta })
-          })
+          }, runtimeConfig.chat.upstreamSseMaxEvents)
       const finishReason = 'finishReason' in result && typeof result.finishReason === 'string' ? result.finishReason : 'stop'
+      if (controller.signal.aborted) throw new ChatPreparationCanceledError()
       await completeChatTurn(client, {
         conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId,
         assistantContent: result.content, contentBlocks: sanitizeChatContentBlocksForPersistence(contentBlocks), finishReason, traceId: traceId ?? '', now: new Date().toISOString()
       })
+      deleteActiveChatStreamIfMatches(activeStreams, conversation.id, accepted.turnId)
       const upstreamUsageAvailable = result.inputTokens !== undefined
       const activeContextTokens = upstreamUsageAvailable
         ? result.inputTokens! + (result.outputTokens ?? countChatTextTokens(result.content))
@@ -539,9 +700,15 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         now: new Date().toISOString()
       }).catch(() => false)
       if (resolvedInput.assetIds.length) {
+        const observationTurnId = accepted.turnId
+        const observationMessageId = accepted.userMessage.id
         scheduleChatImageObservations({
           client,
-          assetIds: resolvedInput.assetIds,
+          targets: resolvedInput.assetIds.map((assetId) => ({
+            assetId,
+            expectedTurnId: observationTurnId,
+            expectedMessageId: observationMessageId
+          })),
           conversationId: conversation.id,
           systemAccountId: ownerId,
           apiKeySecret,
@@ -565,22 +732,43 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       }
       if (!res.writableEnded) writeSse(res, 'message.completed', { messageId: accepted.assistantMessage.id, finishReason, traceId })
     } catch (error) {
-      const canceled = controller.signal.aborted
+      const canceled = controller.signal.aborted || error instanceof ChatPreparationCanceledError
       const persistedContentBlocks = sanitizeChatContentBlocksForPersistence(contentBlocks)
-      if (canceled) {
-        await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, traceId, now: new Date().toISOString() })
-      } else {
-        await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, errorCode: 'gateway_stream_failed', traceId, now: new Date().toISOString() })
-        if (!res.writableEnded) writeSse(res, 'message.failed', { messageId: accepted.assistantMessage.id, code: 'gateway_stream_failed', message: error instanceof Error ? error.message : '模型请求失败' })
+      try {
+        if (canceled) {
+          await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, traceId, now: new Date().toISOString() })
+        } else {
+          await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, errorCode: 'gateway_stream_failed', traceId, now: new Date().toISOString() })
+        }
+      } catch (finalizeError) {
+        const authoritative = await findChatTurnByClientMessageId(client, {
+          conversationId: conversation.id,
+          systemAccountId: ownerId,
+          clientMessageId: body.clientMessageId
+        }).catch(() => undefined)
+        if (!authoritative || authoritative.turnId !== accepted.turnId || authoritative.assistantStatus === 'streaming') throw finalizeError
+      }
+      if (!res.headersSent) {
+        if (canceled) {
+          if (!res.writableEnded && !responseClosed) res.status(499).json({ message: '消息准备已取消', code: 'chat_preparation_canceled' })
+        } else {
+          throw error
+        }
+      } else if (!canceled && !res.writableEnded) {
+        writeSse(res, 'message.failed', { messageId: accepted.assistantMessage.id, code: 'gateway_stream_failed', message: error instanceof Error ? error.message : '模型请求失败' })
       }
     } finally {
-      clearInterval(heartbeat)
+      if (heartbeat) clearInterval(heartbeat)
       deleteActiveChatStreamIfMatches(activeStreams, conversation.id, accepted.turnId)
       if (!res.writableEnded && !responseClosed) res.end()
     }
   } catch (error) {
     if (res.headersSent) {
       if (!res.writableEnded) res.end()
+      return
+    }
+    if (error instanceof ChatPreparationCanceledError || (!accepted && controller?.signal.aborted)) {
+      if (!res.writableEnded && !responseClosed) res.status(499).json({ message: '消息准备已取消', code: 'chat_preparation_canceled' })
       return
     }
     if (error instanceof ChatConflictError) {
@@ -608,20 +796,74 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       return
     }
     handleChatRouteError(error, res, next)
+  } finally {
+    if (preparationClaim) deleteActiveChatPreparationIfMatches(activePreparations, preparationConversationId, preparationClaim.token)
   }
 })
 
 chatRouter.post('/conversations/:conversationId/stop', async (req, res, next) => {
   try {
+    const body = stopBodySchema.parse(req.body)
     const auth = requireChatAuth()
-    const active = activeStreams.get(req.params.conversationId)
-    if (!active || active.ownerId !== auth.systemAccountId) {
-      res.status(404).json({ message: '当前没有正在生成的回答' })
+    const client = await getChatDatabaseClient()
+    const conversation = await getChatConversation(client, req.params.conversationId, auth.systemAccountId)
+    if (!conversation) {
+      res.status(404).json({ message: '会话不存在', code: 'chat_conversation_not_found' })
       return
     }
-    active.controller.abort()
-    res.status(202).json(ok({ stopped: true }))
-  } catch (error) { next(error) }
+    let expectedTurnId = body.turnId
+    if (body.clientMessageId) {
+      const accepted = await findChatTurnByClientMessageId(client, {
+        conversationId: conversation.id,
+        systemAccountId: auth.systemAccountId,
+        clientMessageId: body.clientMessageId
+      })
+      if (accepted) {
+        if (expectedTurnId && expectedTurnId !== accepted.turnId) {
+          res.status(409).json({ message: '要停止的轮次已变化', code: 'chat_turn_mismatch' })
+          return
+        }
+        expectedTurnId = accepted.turnId
+      } else if (!expectedTurnId) {
+        const preparationPhase = cancelActiveChatPreparation(activePreparations, {
+          conversationId: conversation.id,
+          ownerId: auth.systemAccountId,
+          clientMessageId: body.clientMessageId
+        })
+        if (preparationPhase) {
+          res.status(202).json(ok({ stopped: true, preparationPhase }))
+          return
+        }
+        res.status(404).json({ message: '当前没有匹配的准备或生成任务', code: 'chat_generation_not_found' })
+        return
+      }
+    }
+    if (!expectedTurnId) {
+      res.status(404).json({ message: '当前没有匹配的生成任务', code: 'chat_generation_not_found' })
+      return
+    }
+    const active = activeStreams.get(conversation.id)
+    if (active?.ownerId === auth.systemAccountId && active.turnId === expectedTurnId) {
+      active.controller.abort()
+      res.status(202).json(ok({ stopped: true, turnId: expectedTurnId }))
+      return
+    }
+    const result = await cancelActiveChatTurnIfMatches(client, {
+      conversationId: conversation.id,
+      systemAccountId: auth.systemAccountId,
+      expectedTurnId,
+      now: new Date().toISOString()
+    })
+    if (result.state === 'canceled' || result.state === 'already_terminal') {
+      res.status(202).json(ok({ stopped: true, turnId: expectedTurnId, state: result.state, assistantStatus: result.assistantStatus }))
+      return
+    }
+    if (result.state === 'turn_mismatch') {
+      res.status(409).json({ message: '要停止的轮次已变化', code: 'chat_turn_mismatch' })
+      return
+    }
+    res.status(404).json({ message: '当前没有匹配的生成任务', code: 'chat_generation_not_found' })
+  } catch (error) { handleChatRouteError(error, res, next) }
 })
 
 chatRouter.delete('/conversations/:conversationId', async (req, res, next) => {
@@ -637,6 +879,19 @@ async function requireOwnedConversation(conversationId: string, ownerId: string)
   const conversation = await getChatConversation(await getChatDatabaseClient(), conversationId, ownerId)
   if (!conversation) throw new Error('会话不存在')
   return conversation
+}
+
+function assertChatPreparationActive(preparation: ActiveChatPreparation): void {
+  if (preparation.controller.signal.aborted) throw new ChatPreparationCanceledError()
+}
+
+function waitForChatPreparation<T>(operation: Promise<T>, preparation: ActiveChatPreparation): Promise<T> {
+  assertChatPreparationActive(preparation)
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new ChatPreparationCanceledError())
+    preparation.controller.signal.addEventListener('abort', abort, { once: true })
+    operation.then(resolve, reject).finally(() => preparation.controller.signal.removeEventListener('abort', abort))
+  })
 }
 
 async function requireOwnedApiKey(apiKeyId: string | undefined, ownerId: string) {
@@ -661,7 +916,15 @@ function handleChatRouteError(error: unknown, res: ExpressResponse, next: NextFu
     res.status(error.statusCode).json({ message: error.message, code: error.code })
     return
   }
+  if (error instanceof ChatConflictError) {
+    res.status(409).json({ message: error.message, code: error.code })
+    return
+  }
   next(error)
+}
+
+function chatConversationResponse(conversation: Awaited<ReturnType<typeof getChatConversation>> extends infer T ? Exclude<T, undefined> : never) {
+  return { ...conversation, userTurnLimit: runtimeConfig.chat.maxTurnsPerConversation }
 }
 
 function gatewayUrl(path: string): string { return `http://127.0.0.1:${runtimeConfig.port}${path}` }

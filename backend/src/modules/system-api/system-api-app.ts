@@ -148,16 +148,15 @@ function noStoreSystemApiResponse(_req: Request, res: Response, next: NextFuncti
 }
 
 function handleJsonBodyError(error: BodyParserError, req: Request, res: Response, next: NextFunction): void {
+  if (!error || typeof error !== 'object' || typeof error.type !== 'string') {
+    next(error)
+    return
+  }
   const statusCode = Number.isInteger(error.statusCode)
     ? Number(error.statusCode)
     : Number.isInteger(error.status)
       ? Number(error.status)
       : 400
-
-  if (!error.type && statusCode < 400) {
-    next(error)
-    return
-  }
 
   res.locals.publicApiRequestBodyRejected = {
     statusCode,

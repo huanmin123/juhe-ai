@@ -7,6 +7,12 @@ import { commitChatAssetsToMessageInClient, expireChatAssetsForConversationInCli
 export type ChatMessageRole = 'user' | 'assistant'
 export type ChatMessageStatus = 'completed' | 'streaming' | 'failed' | 'canceled'
 
+export type CancelActiveChatTurnResult =
+  | { state: 'canceled'; assistantStatus: 'canceled' }
+  | { state: 'already_terminal'; assistantStatus: Exclude<ChatMessageStatus, 'streaming'> }
+  | { state: 'turn_mismatch' }
+  | { state: 'not_found' }
+
 export interface ChatConversation {
   id: string
   systemAccountId: string
@@ -16,6 +22,7 @@ export interface ChatConversation {
   isPinned: boolean
   lastModel?: string
   activeTurnId?: string
+  userTurnCount: number
   lastMessageAt: string
   createdAt: string
   updatedAt: string
@@ -54,16 +61,30 @@ export interface ChatInputContentBlock {
 
 const maxContentBlocksBytes = 256 * 1024
 const maxInputContentBlocks = 9
+// 192 KiB visible answer + 192 KiB persisted blocks target + 64 KiB serialization/safety margin.
+export const chatAssistantStorageReservationBytes = (192 + 192 + 64) * 1024
 const postgresIntegerMin = -2_147_483_648
 const postgresIntegerMax = 2_147_483_647
+const sqliteChatUserPolicyLocks = new Map<string, Promise<void>>()
 
 export class ChatConflictError extends Error {
-  constructor(public readonly code: 'chat_message_in_progress' | 'chat_storage_quota_exceeded' | 'chat_replace_conflict') {
+  constructor(public readonly code: 'chat_message_in_progress' | 'chat_storage_quota_exceeded' | 'chat_replace_conflict' | 'chat_conversation_limit_exceeded' | 'chat_turn_limit_exceeded') {
     super({
       chat_message_in_progress: '当前会话正在生成回答',
-      chat_storage_quota_exceeded: '最近 7 天聊天容量已达到上限，请先删除部分会话',
-      chat_replace_conflict: '最近一轮已变化，请重新确认后再编辑'
+      chat_storage_quota_exceeded: '聊天容量已达到上限，请先删除部分会话',
+      chat_replace_conflict: '最近一轮已变化，请重新确认后再编辑',
+      chat_conversation_limit_exceeded: '会话数量已达到上限，请先删除部分会话',
+      chat_turn_limit_exceeded: '当前会话轮次已达到上限，请新建会话继续提问'
     }[code])
+  }
+}
+
+export class ChatAssistantStorageLimitError extends Error {
+  readonly code = 'chat_assistant_storage_limit_exceeded'
+
+  constructor() {
+    super('助手回答超过可安全持久化的字节上限')
+    this.name = 'ChatAssistantStorageLimitError'
   }
 }
 
@@ -73,16 +94,22 @@ export async function createChatConversation(client: DatabaseClient, input: {
   apiKeyId: string
   apiKeyNameSnapshot: string
   now: string
+  maxConversationsPerUser: number
 }): Promise<ChatConversation> {
   const id = input.id ?? chatId('conv')
-  const table = chatTable(client, 'chat_conversations')
-  await client.execute(`
-    INSERT INTO ${table} (
-      id, system_account_id, api_key_id, api_key_name_snapshot, title,
-      next_sequence_no, last_message_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, '新对话', 1, ?, ?, ?)
-  `, [id, input.systemAccountId, input.apiKeyId, input.apiKeyNameSnapshot, input.now, input.now, input.now])
-  return requireConversation(client, id, input.systemAccountId)
+  return withSqliteChatUserPolicyLock(client, input.systemAccountId, () => client.transaction(async (tx) => {
+    await lockChatUserStorageQuota(tx, input.systemAccountId)
+    const table = chatTable(tx, 'chat_conversations')
+    const count = await tx.one<{ total?: unknown }>(`SELECT COUNT(*) AS total FROM ${table} WHERE system_account_id = ?`, [input.systemAccountId])
+    if (Number(count?.total ?? 0) >= input.maxConversationsPerUser) throw new ChatConflictError('chat_conversation_limit_exceeded')
+    await tx.execute(`
+      INSERT INTO ${table} (
+        id, system_account_id, api_key_id, api_key_name_snapshot, title,
+        next_sequence_no, user_turn_count, last_message_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, '新对话', 1, 0, ?, ?, ?)
+    `, [id, input.systemAccountId, input.apiKeyId, input.apiKeyNameSnapshot, input.now, input.now, input.now])
+    return requireConversation(tx, id, input.systemAccountId)
+  }))
 }
 
 export async function listChatConversations(client: DatabaseClient, input: {
@@ -117,13 +144,23 @@ export async function findChatTurnByClientMessageId(client: DatabaseClient, inpu
   conversationId: string
   systemAccountId: string
   clientMessageId: string
-}): Promise<{ turnId: string } | undefined> {
-  const row = await client.one<{ turn_id?: unknown }>(`
-    SELECT turn_id
-    FROM ${chatTable(client, 'chat_message_idempotency')}
-    WHERE conversation_id = ? AND client_message_id = ? AND system_account_id = ?
+}): Promise<{ turnId: string; assistantStatus: ChatMessageStatus } | undefined> {
+  const idempotencyTable = chatTable(client, 'chat_message_idempotency')
+  const messagesTable = chatTable(client, 'chat_messages')
+  const row = await client.one<{ turn_id?: unknown; assistant_status?: unknown }>(`
+    SELECT submission.turn_id, assistant.status AS assistant_status
+    FROM ${idempotencyTable} AS submission
+    JOIN ${messagesTable} AS assistant
+      ON assistant.id = submission.assistant_message_id
+      AND assistant.conversation_id = submission.conversation_id
+      AND assistant.system_account_id = submission.system_account_id
+      AND assistant.turn_id = submission.turn_id
+      AND assistant.role = 'assistant'
+    WHERE submission.conversation_id = ?
+      AND submission.client_message_id = ?
+      AND submission.system_account_id = ?
   `, [input.conversationId, input.clientMessageId, input.systemAccountId])
-  return row ? { turnId: String(row.turn_id) } : undefined
+  return row ? { turnId: String(row.turn_id), assistantStatus: String(row.assistant_status) as ChatMessageStatus } : undefined
 }
 
 export async function updateChatConversation(client: DatabaseClient, input: {
@@ -154,8 +191,10 @@ export async function deleteChatConversation(client: DatabaseClient, conversatio
     `, [conversationId, systemAccountId])
     if (!conversation) return false
     if (conversation.active_turn_id) throw new ChatConflictError('chat_message_in_progress')
-    const buckets = await tx.query<{ bucket_date?: unknown; content_bytes?: unknown }>(`
-      SELECT substr(created_at, 1, 10) AS bucket_date, COALESCE(SUM(content_bytes), 0) AS content_bytes
+    const buckets = await tx.query<{ bucket_date?: unknown; content_bytes?: unknown; reserved_bytes?: unknown }>(`
+      SELECT substr(created_at, 1, 10) AS bucket_date,
+             COALESCE(SUM(content_bytes), 0) AS content_bytes,
+             COALESCE(SUM(storage_reserved_bytes), 0) AS reserved_bytes
       FROM ${chatTable(tx, 'chat_messages')}
       WHERE conversation_id = ? AND system_account_id = ?
       GROUP BY substr(created_at, 1, 10)
@@ -164,13 +203,14 @@ export async function deleteChatConversation(client: DatabaseClient, conversatio
       await tx.execute(`
         UPDATE ${chatTable(tx, 'chat_user_storage_windows')}
         SET content_bytes = CASE WHEN content_bytes > ? THEN content_bytes - ? ELSE 0 END,
+            reserved_bytes = CASE WHEN reserved_bytes > ? THEN reserved_bytes - ? ELSE 0 END,
             updated_at = ?
         WHERE system_account_id = ? AND bucket_date = ?
-      `, [Number(bucket.content_bytes ?? 0), Number(bucket.content_bytes ?? 0), new Date().toISOString(), systemAccountId, String(bucket.bucket_date)])
+      `, [Number(bucket.content_bytes ?? 0), Number(bucket.content_bytes ?? 0), Number(bucket.reserved_bytes ?? 0), Number(bucket.reserved_bytes ?? 0), new Date().toISOString(), systemAccountId, String(bucket.bucket_date)])
     }
     await tx.execute(`
       DELETE FROM ${chatTable(tx, 'chat_user_storage_windows')}
-      WHERE system_account_id = ? AND content_bytes = 0
+      WHERE system_account_id = ? AND content_bytes = 0 AND reserved_bytes = 0
     `, [systemAccountId])
     await expireChatAssetsForConversationInClient(tx, {
       systemAccountId,
@@ -193,10 +233,11 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
   model: string
   now: string
   storageQuotaBytes: number
+  retentionDays: number
+  maxTurnsPerConversation: number
   replaceTurnId?: string
 }): Promise<{ turnId: string; userMessage: ChatMessage; assistantMessage: ChatMessage; duplicate: boolean }> {
   return client.transaction(async (tx) => {
-    await ensurePostgresChatMessagePartitions(tx, input.now)
     await lockChatUserStorageQuota(tx, input.systemAccountId)
     const conversation = await lockConversation(tx, input.conversationId, input.systemAccountId)
     const existing = await tx.one<IdempotencyRow>(`
@@ -208,6 +249,12 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
       const pair = await loadMessagePair(tx, input.conversationId, input.systemAccountId, String(existing.turn_id))
       return { turnId: String(existing.turn_id), ...pair, duplicate: true }
     }
+
+    const userTurnCount = normalizedChatUserTurnCount(conversation.user_turn_count)
+    if (!input.replaceTurnId && userTurnCount >= input.maxTurnsPerConversation) {
+      throw new ChatConflictError('chat_turn_limit_exceeded')
+    }
+    await ensurePostgresChatMessagePartitions(tx, input.now)
 
     const userContentBlocksJson = serializeInputContentMarkers(input.contentBlocks, input.userContent)
     const userBytes = Buffer.byteLength(input.userContent, 'utf8') + Buffer.byteLength(userContentBlocksJson, 'utf8')
@@ -226,9 +273,9 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
       userSequence = Number(replacement.userMessage.sequence_no)
       assistantSequence = Number(replacement.assistantMessage.sequence_no)
       replacedUserMessageId = String(replacement.userMessage.id)
-      const usedBytes = await recentStorageBytes(tx, input.systemAccountId, input.now)
+      const usedBytes = await recentStorageBytes(tx, input.systemAccountId, input.now, input.retentionDays)
       if (usedBytes < replacement.totalBytes) throw new Error('聊天容量窗口数据不一致：最近窗口小于待替换轮次')
-      if (usedBytes - replacement.totalBytes + userBytes > input.storageQuotaBytes) {
+      if (usedBytes - replacement.totalBytes + userBytes + chatAssistantStorageReservationBytes > input.storageQuotaBytes) {
         throw new ChatConflictError('chat_storage_quota_exceeded')
       }
       for (const [bucketDate, bytes] of replacement.bytesByBucket) {
@@ -241,7 +288,11 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
       if (deletedIdempotency.changes !== 1) throw new ChatConflictError('chat_replace_conflict')
       await tx.execute(`
         UPDATE ${chatTable(tx, 'chat_assets')}
-        SET turn_id = NULL, message_id = NULL, committed_at = NULL, updated_at = ?
+        SET turn_id = NULL, message_id = NULL, committed_at = NULL,
+            observation_status = 'not_requested', observation_json = NULL,
+            observation_revision = observation_revision + 1,
+            observation_claim_id = NULL, observation_claimed_at = NULL,
+            updated_at = ?
         WHERE system_account_id = ? AND conversation_id = ? AND message_id = ?
       `, [input.now, input.systemAccountId, input.conversationId, replacedUserMessageId])
       const deletedMessages = await tx.execute(`
@@ -251,14 +302,14 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
       if (deletedMessages.changes !== 2) throw new ChatConflictError('chat_replace_conflict')
     } else {
       if (conversation.active_turn_id) throw new ChatConflictError('chat_message_in_progress')
-      const usedBytes = await recentStorageBytes(tx, input.systemAccountId, input.now)
-      if (usedBytes + userBytes > input.storageQuotaBytes) throw new ChatConflictError('chat_storage_quota_exceeded')
+      const usedBytes = await recentStorageBytes(tx, input.systemAccountId, input.now, input.retentionDays)
+      if (usedBytes + userBytes + chatAssistantStorageReservationBytes > input.storageQuotaBytes) throw new ChatConflictError('chat_storage_quota_exceeded')
     }
 
     const turnId = chatId('turn')
     const userMessageId = chatId('msg')
     const assistantMessageId = chatId('msg')
-    const expiresAt = addDays(input.now, 7)
+    const expiresAt = addDays(input.now, input.retentionDays)
     const messagesTable = chatTable(tx, 'chat_messages')
     await tx.execute(`
       INSERT INTO ${messagesTable} (
@@ -271,21 +322,22 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
       systemAccountId: input.systemAccountId,
       conversationId: input.conversationId,
       messageId: userMessageId,
-      now: input.now
+      now: input.now,
+      retentionDays: input.retentionDays
     })
     await tx.execute(`
       INSERT INTO ${messagesTable} (
         id, conversation_id, system_account_id, turn_id, sequence_no,
-        role, status, content_text, content_bytes, model, created_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, 'assistant', 'streaming', '', 0, ?, ?, ?)
-    `, [assistantMessageId, input.conversationId, input.systemAccountId, turnId, assistantSequence, input.model, input.now, expiresAt])
+        role, status, content_text, content_bytes, storage_reserved_bytes, model, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, 'assistant', 'streaming', '', 0, ?, ?, ?, ?)
+    `, [assistantMessageId, input.conversationId, input.systemAccountId, turnId, assistantSequence, chatAssistantStorageReservationBytes, input.model, input.now, expiresAt])
     await tx.execute(`
       INSERT INTO ${chatTable(tx, 'chat_message_idempotency')} (
         conversation_id, client_message_id, system_account_id, turn_id,
         user_message_id, assistant_message_id, created_at, expires_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `, [input.conversationId, input.clientMessageId, input.systemAccountId, turnId, userMessageId, assistantMessageId, input.now, expiresAt])
-    await incrementStorageWindow(tx, input.systemAccountId, input.now, userBytes)
+    await incrementStorageWindow(tx, input.systemAccountId, input.now, userBytes, chatAssistantStorageReservationBytes)
     const title = titleFromContent(input.userContent)
     if (replacedUserMessageId) {
       await tx.execute(`
@@ -293,6 +345,12 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
         SET title = CASE WHEN title_source_message_id = ? THEN ? ELSE title END,
             title_source_message_id = CASE WHEN title_source_message_id = ? THEN ? ELSE title_source_message_id END,
             context_revision = context_revision + 1,
+            context_state = CASE WHEN context_state = 'compacting' THEN 'compact_pending' ELSE context_state END,
+            context_claim_id = NULL, context_claim_revision = NULL,
+            context_claim_through_sequence = NULL, context_claimed_at = NULL,
+            context_retry_at = CASE WHEN context_state = 'compacting' THEN NULL ELSE context_retry_at END,
+            context_error_code = CASE WHEN context_state = 'compacting' THEN NULL ELSE context_error_code END,
+            context_progress_sequence = 0, context_progress_earliest_expires_at = NULL,
             active_turn_id = ?, active_started_at = ?, last_model = ?, last_message_at = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `, [replacedUserMessageId, title, replacedUserMessageId, userMessageId, turnId, input.now, input.model, input.now, input.now, input.conversationId, input.systemAccountId])
@@ -302,13 +360,32 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
         SET title = CASE WHEN next_sequence_no = 1 THEN ? ELSE title END,
             title_source_message_id = CASE WHEN next_sequence_no = 1 THEN ? ELSE title_source_message_id END,
             context_revision = context_revision + 1,
-            next_sequence_no = ?, active_turn_id = ?, active_started_at = ?,
+            context_state = CASE WHEN context_state = 'compacting' THEN 'compact_pending' ELSE context_state END,
+            context_claim_id = NULL, context_claim_revision = NULL,
+            context_claim_through_sequence = NULL, context_claimed_at = NULL,
+            context_retry_at = CASE WHEN context_state = 'compacting' THEN NULL ELSE context_retry_at END,
+            context_error_code = CASE WHEN context_state = 'compacting' THEN NULL ELSE context_error_code END,
+            context_progress_sequence = 0, context_progress_earliest_expires_at = NULL,
+            next_sequence_no = ?, user_turn_count = user_turn_count + 1, active_turn_id = ?, active_started_at = ?,
             last_model = ?, last_message_at = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `, [title, userMessageId, assistantSequence + 1, turnId, input.now, input.model, input.now, input.now, input.conversationId, input.systemAccountId])
     }
     const pair = await loadMessagePair(tx, input.conversationId, input.systemAccountId, turnId)
     return { turnId, ...pair, duplicate: false }
+  })
+}
+
+export async function assertChatTurnReplaceable(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  replaceTurnId: string
+  now: string
+}): Promise<void> {
+  await client.transaction(async (tx) => {
+    const conversation = await lockConversation(tx, input.conversationId, input.systemAccountId)
+    if (conversation.active_turn_id) throw new ChatConflictError('chat_replace_conflict')
+    await requireReplaceableTurn(tx, { conversation, ...input })
   })
 }
 
@@ -359,6 +436,62 @@ export async function cancelChatTurn(client: DatabaseClient, input: {
   })
 }
 
+export async function cancelActiveChatTurnIfMatches(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  expectedTurnId: string
+  now: string
+}): Promise<CancelActiveChatTurnResult> {
+  return client.transaction(async (tx) => {
+    const lockSuffix = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
+    const conversation = await tx.one<ConversationRow>(`
+      SELECT * FROM ${chatTable(tx, 'chat_conversations')}
+      WHERE id = ? AND system_account_id = ?${lockSuffix}
+    `, [input.conversationId, input.systemAccountId])
+    if (!conversation) return { state: 'not_found' }
+
+    const assistant = await tx.one<ChatMessageRow>(`
+      SELECT * FROM ${chatTable(tx, 'chat_messages')}
+      WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ? AND role = 'assistant'
+      ${lockSuffix}
+    `, [input.conversationId, input.systemAccountId, input.expectedTurnId])
+    const initialState = classifyConditionalStopState(conversation, assistant, input.expectedTurnId)
+    if (initialState) return initialState
+    const reservationBytes = requiredAssistantStorageReservation(assistant!)
+
+    const messageResult = await tx.execute(`
+      UPDATE ${chatTable(tx, 'chat_messages')}
+      SET status = 'canceled', storage_reserved_bytes = 0,
+          finish_reason = NULL, error_code = NULL, completed_at = ?
+      WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
+        AND role = 'assistant' AND status = 'streaming'
+    `, [input.now, input.conversationId, input.systemAccountId, input.expectedTurnId])
+    if (messageResult.changes !== 1) {
+      return (await readConditionalStopState(tx, input)) ?? { state: 'turn_mismatch' }
+    }
+    await releaseStorageWindowReservationStrict(
+      tx,
+      input.systemAccountId,
+      String(assistant!.created_at),
+      reservationBytes,
+      input.now
+    )
+
+    const conversationResult = await tx.execute(`
+      UPDATE ${chatTable(tx, 'chat_conversations')}
+      SET active_turn_id = NULL, active_started_at = NULL, last_message_at = ?, updated_at = ?
+      WHERE id = ? AND system_account_id = ? AND active_turn_id = ?
+    `, [input.now, input.now, input.conversationId, input.systemAccountId, input.expectedTurnId])
+    if (conversationResult.changes !== 1) {
+      const authoritative = await readConditionalStopState(tx, input)
+      if (authoritative?.state !== 'already_terminal' || authoritative.assistantStatus !== 'canceled') {
+        return authoritative ?? { state: 'turn_mismatch' }
+      }
+    }
+    return { state: 'canceled', assistantStatus: 'canceled' }
+  })
+}
+
 async function finalizeChatTurn(client: DatabaseClient, input: {
   conversationId: string
   systemAccountId: string
@@ -371,32 +504,93 @@ async function finalizeChatTurn(client: DatabaseClient, input: {
   contentBlocks?: ChatMessageContentBlock[]
   now: string
 }): Promise<ChatMessage> {
-  return client.transaction(async (tx) => {
-    const contentBlocksJson = serializeContentBlocks(input.contentBlocks ?? [])
-    const bytes = Buffer.byteLength(input.assistantContent, 'utf8') + Buffer.byteLength(contentBlocksJson, 'utf8')
+  let requestedContentBlocksJson = '[]'
+  let requestedBytes = chatAssistantStorageReservationBytes + 1
+  let serializationExceeded = false
+  try {
+    requestedContentBlocksJson = serializeContentBlocks(input.contentBlocks ?? [])
+    requestedBytes = Buffer.byteLength(input.assistantContent, 'utf8') + Buffer.byteLength(requestedContentBlocksJson, 'utf8')
+  } catch {
+    serializationExceeded = true
+  }
+  const outcome = await client.transaction(async (tx) => {
+    const conversation = await lockConversation(tx, input.conversationId, input.systemAccountId)
+    if (String(conversation.active_turn_id ?? '') !== input.turnId) throw new Error('活动回答不存在')
+    const lockSuffix = tx.driver === 'postgres' ? ' FOR UPDATE' : ''
     const current = await tx.one<ChatMessageRow>(`
       SELECT * FROM ${chatTable(tx, 'chat_messages')}
       WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
-        AND role = 'assistant' AND status = 'streaming'
+        AND role = 'assistant' AND status = 'streaming'${lockSuffix}
     `, [input.conversationId, input.systemAccountId, input.turnId])
     if (!current) throw new Error('活动回答不存在')
+    const reservationBytes = requiredAssistantStorageReservation(current)
+    const storageLimitExceeded = serializationExceeded || requestedBytes > reservationBytes
+    const contentText = storageLimitExceeded ? '' : input.assistantContent
+    const contentBlocksJson = storageLimitExceeded ? '[]' : requestedContentBlocksJson
+    const bytes = storageLimitExceeded ? Buffer.byteLength('[]', 'utf8') : requestedBytes
+    const status = storageLimitExceeded ? 'failed' : input.status
+    const finishReason = storageLimitExceeded ? undefined : input.finishReason
+    const errorCode = storageLimitExceeded ? 'chat_assistant_storage_limit_exceeded' : input.errorCode
     const result = await tx.execute(`
       UPDATE ${chatTable(tx, 'chat_messages')}
       SET status = ?, content_text = ?, content_blocks_json = ?, content_bytes = ?, trace_id = ?,
-          finish_reason = ?, error_code = ?, completed_at = ?
+          storage_reserved_bytes = 0, finish_reason = ?, error_code = ?, completed_at = ?
       WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
         AND role = 'assistant' AND status = 'streaming'
-    `, [input.status, input.assistantContent, contentBlocksJson, bytes, input.traceId ?? null, input.finishReason ?? null, input.errorCode ?? null, input.now, input.conversationId, input.systemAccountId, input.turnId])
+    `, [status, contentText, contentBlocksJson, bytes, input.traceId ?? null, finishReason ?? null, errorCode ?? null, input.now, input.conversationId, input.systemAccountId, input.turnId])
     if (result.changes !== 1) throw new Error('活动回答不存在')
-    await incrementStorageWindow(tx, input.systemAccountId, String(current.created_at), bytes)
-    await tx.execute(`
+    await settleStorageWindowReservationStrict(tx, input.systemAccountId, String(current.created_at), reservationBytes, bytes, input.now)
+    const conversationResult = await tx.execute(`
       UPDATE ${chatTable(tx, 'chat_conversations')}
       SET active_turn_id = NULL, active_started_at = NULL, last_message_at = ?, updated_at = ?
       WHERE id = ? AND system_account_id = ? AND active_turn_id = ?
     `, [input.now, input.now, input.conversationId, input.systemAccountId, input.turnId])
+    if (conversationResult.changes !== 1) throw new Error('活动轮次状态更新失败')
     const pair = await loadMessagePair(tx, input.conversationId, input.systemAccountId, input.turnId)
-    return pair.assistantMessage
+    return { assistantMessage: pair.assistantMessage, storageLimitExceeded }
   })
+  if (outcome.storageLimitExceeded) throw new ChatAssistantStorageLimitError()
+  return outcome.assistantMessage
+}
+
+async function readConditionalStopState(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  expectedTurnId: string
+}): Promise<CancelActiveChatTurnResult | undefined> {
+  const lockSuffix = client.driver === 'postgres' ? ' FOR UPDATE' : ''
+  const conversation = await client.one<ConversationRow>(`
+    SELECT * FROM ${chatTable(client, 'chat_conversations')}
+    WHERE id = ? AND system_account_id = ?${lockSuffix}
+  `, [input.conversationId, input.systemAccountId])
+  if (!conversation) return { state: 'not_found' }
+  const assistant = await client.one<ChatMessageRow>(`
+    SELECT * FROM ${chatTable(client, 'chat_messages')}
+    WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ? AND role = 'assistant'
+    ${lockSuffix}
+  `, [input.conversationId, input.systemAccountId, input.expectedTurnId])
+  return classifyConditionalStopState(conversation, assistant, input.expectedTurnId)
+}
+
+function classifyConditionalStopState(
+  conversation: ConversationRow,
+  assistant: ChatMessageRow | undefined,
+  expectedTurnId: string
+): CancelActiveChatTurnResult | undefined {
+  if (!assistant) {
+    return nullable(conversation.active_turn_id) && String(conversation.active_turn_id) !== expectedTurnId
+      ? { state: 'turn_mismatch' }
+      : { state: 'not_found' }
+  }
+  const assistantStatus = String(assistant.status) as ChatMessageStatus
+  if (assistantStatus !== 'streaming') {
+    return {
+      state: 'already_terminal',
+      assistantStatus: assistantStatus as Exclude<ChatMessageStatus, 'streaming'>
+    }
+  }
+  if (String(conversation.active_turn_id ?? '') !== expectedTurnId) return { state: 'turn_mismatch' }
+  return undefined
 }
 
 export async function listChatMessages(client: DatabaseClient, input: {
@@ -462,9 +656,11 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
   now: string
   interruptedBefore: string
   limit: number
+  retentionDays: number
 }): Promise<ChatRetentionCleanupResult> {
   const limit = Math.max(2, Math.min(Math.trunc(input.limit), 1000))
-  const droppedPartitions = await dropExpiredPostgresChatPartitions(client, input.now)
+  const retentionDays = input.retentionDays
+  const droppedPartitions = await dropExpiredPostgresChatPartitions(client, input.now, retentionDays)
   return client.transaction(async (tx) => {
     const staleTurns = await tx.query<{ id?: unknown; system_account_id?: unknown; active_turn_id?: unknown }>(`
       SELECT id, system_account_id, active_turn_id
@@ -475,12 +671,27 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
     let recoveredTurns = 0
     for (const stale of staleTurns) {
       const now = input.now
+      const staleAssistant = await tx.one<ChatMessageRow>(`
+        SELECT * FROM ${chatTable(tx, 'chat_messages')}
+        WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
+          AND role = 'assistant' AND status = 'streaming'
+      `, [String(stale.id), String(stale.system_account_id), String(stale.active_turn_id)])
       const updated = await tx.execute(`
         UPDATE ${chatTable(tx, 'chat_messages')}
-        SET status = 'failed', error_code = 'stream_interrupted', completed_at = ?
+        SET status = 'failed', storage_reserved_bytes = 0,
+            error_code = 'stream_interrupted', completed_at = ?
         WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
           AND role = 'assistant' AND status = 'streaming'
       `, [now, String(stale.id), String(stale.system_account_id), String(stale.active_turn_id)])
+      if (updated.changes === 1 && staleAssistant) {
+        await releaseStorageWindowReservationStrict(
+          tx,
+          String(stale.system_account_id),
+          String(staleAssistant.created_at),
+          requiredAssistantStorageReservation(staleAssistant),
+          now
+        )
+      }
       await tx.execute(`
         UPDATE ${chatTable(tx, 'chat_conversations')}
         SET active_turn_id = NULL, active_started_at = NULL, updated_at = ?
@@ -502,27 +713,49 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
       const conversationId = String(expired.conversation_id)
       const systemAccountId = String(expired.system_account_id)
       const turnId = String(expired.turn_id)
-      const buckets = await tx.query<{ bucket_date?: unknown; content_bytes?: unknown }>(`
-        SELECT substr(created_at, 1, 10) AS bucket_date, COALESCE(SUM(content_bytes), 0) AS content_bytes
+      const buckets = await tx.query<{ bucket_date?: unknown; content_bytes?: unknown; reserved_bytes?: unknown }>(`
+        SELECT substr(created_at, 1, 10) AS bucket_date,
+               COALESCE(SUM(content_bytes), 0) AS content_bytes,
+               COALESCE(SUM(storage_reserved_bytes), 0) AS reserved_bytes
         FROM ${chatTable(tx, 'chat_messages')}
         WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
         GROUP BY substr(created_at, 1, 10)
       `, [conversationId, systemAccountId, turnId])
       for (const bucket of buckets) {
         const bytes = Number(bucket.content_bytes ?? 0)
+        const reservedBytes = Number(bucket.reserved_bytes ?? 0)
         await tx.execute(`
           UPDATE ${chatTable(tx, 'chat_user_storage_windows')}
-          SET content_bytes = CASE WHEN content_bytes > ? THEN content_bytes - ? ELSE 0 END, updated_at = ?
+          SET content_bytes = CASE WHEN content_bytes > ? THEN content_bytes - ? ELSE 0 END,
+              reserved_bytes = CASE WHEN reserved_bytes > ? THEN reserved_bytes - ? ELSE 0 END,
+              updated_at = ?
           WHERE system_account_id = ? AND bucket_date = ?
-        `, [bytes, bytes, input.now, systemAccountId, String(bucket.bucket_date)])
+        `, [bytes, bytes, reservedBytes, reservedBytes, input.now, systemAccountId, String(bucket.bucket_date)])
       }
       await tx.execute(`DELETE FROM ${chatTable(tx, 'chat_message_idempotency')} WHERE conversation_id = ? AND turn_id = ?`, [conversationId, turnId])
       const deleted = await tx.execute(`DELETE FROM ${chatTable(tx, 'chat_messages')} WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?`, [conversationId, systemAccountId, turnId])
+      await tx.execute(`
+        UPDATE ${chatTable(tx, 'chat_conversations')}
+        SET active_turn_id = NULL, active_started_at = NULL, updated_at = ?
+        WHERE id = ? AND system_account_id = ? AND active_turn_id = ?
+      `, [input.now, conversationId, systemAccountId, turnId])
       deletedMessages += deleted.changes
       affectedConversations.add(conversationId)
     }
     await tx.execute(`DELETE FROM ${chatTable(tx, 'chat_message_idempotency')} WHERE expires_at <= ?`, [input.now])
-    await tx.execute(`DELETE FROM ${chatTable(tx, 'chat_user_storage_windows')} WHERE content_bytes = 0 OR bucket_date < ?`, [storageWindowCutoffDate(input.now)])
+    await tx.execute(`
+      DELETE FROM ${chatTable(tx, 'chat_user_storage_windows')} AS storage_window
+      WHERE (content_bytes = 0 AND reserved_bytes = 0)
+        OR (
+          bucket_date < ?
+          AND NOT EXISTS (
+            SELECT 1 FROM ${chatTable(tx, 'chat_messages')} AS message
+            WHERE message.system_account_id = storage_window.system_account_id
+              AND substr(message.created_at, 1, 10) = storage_window.bucket_date
+            LIMIT 1
+          )
+        )
+    `, [storageWindowCutoffDate(input.now, retentionDays)])
     let deletedConversations = 0
     for (const conversationId of affectedConversations) {
       const deleted = await tx.execute(`
@@ -580,9 +813,9 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
   })
 }
 
-async function dropExpiredPostgresChatPartitions(client: DatabaseClient, now: string): Promise<number> {
+async function dropExpiredPostgresChatPartitions(client: DatabaseClient, now: string, retentionDays: number): Promise<number> {
   if (client.driver !== 'postgres') return 0
-  const cutoff = new Date(new Date(now).getTime() - 7 * 24 * 60 * 60 * 1000)
+  const cutoff = new Date(new Date(now).getTime() - retentionDays * 24 * 60 * 60 * 1000)
   const rows = await client.query<{ partition_name?: unknown }>(`
     SELECT child.relname AS partition_name
     FROM pg_inherits
@@ -604,9 +837,9 @@ async function dropExpiredPostgresChatPartitions(client: DatabaseClient, now: st
   return dropped
 }
 
-function storageWindowCutoffDate(now: string): string {
+function storageWindowCutoffDate(now: string, retentionDays: number): string {
   const date = new Date(now)
-  date.setUTCDate(date.getUTCDate() - 7)
+  date.setUTCDate(date.getUTCDate() - retentionDays)
   return date.toISOString().slice(0, 10)
 }
 
@@ -635,7 +868,7 @@ async function requireReplaceableTurn(client: DatabaseClient, input: {
     String(userMessage.role) !== 'user'
     || String(assistantMessage.role) !== 'assistant'
     || String(userMessage.status) !== 'completed'
-    || String(assistantMessage.status) !== 'completed'
+    || !['completed', 'failed', 'canceled'].includes(String(assistantMessage.status))
     || !Number.isSafeInteger(userSequence)
     || !Number.isSafeInteger(assistantSequence)
     || assistantSequence !== userSequence + 1
@@ -711,11 +944,11 @@ async function loadMessagePair(client: DatabaseClient, conversationId: string, s
   return { userMessage: mapMessage(rows[0]), assistantMessage: mapMessage(rows[1]) }
 }
 
-async function recentStorageBytes(client: DatabaseClient, systemAccountId: string, now: string): Promise<number> {
+async function recentStorageBytes(client: DatabaseClient, systemAccountId: string, now: string, retentionDays: number): Promise<number> {
   const start = new Date(now)
-  start.setUTCDate(start.getUTCDate() - 7)
+  start.setUTCDate(start.getUTCDate() - retentionDays)
   const row = await client.one<{ total?: number | string }>(`
-    SELECT COALESCE(SUM(content_bytes), 0) AS total
+    SELECT COALESCE(SUM(content_bytes + reserved_bytes), 0) AS total
     FROM ${chatTable(client, 'chat_user_storage_windows')}
     WHERE system_account_id = ? AND bucket_date >= ?
   `, [systemAccountId, start.toISOString().slice(0, 10)])
@@ -727,24 +960,90 @@ async function lockChatUserStorageQuota(client: DatabaseClient, systemAccountId:
   await client.execute('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [`juhe-ai:chat-storage:${systemAccountId}`])
 }
 
-async function incrementStorageWindow(client: DatabaseClient, systemAccountId: string, now: string, bytes: number): Promise<void> {
+async function withSqliteChatUserPolicyLock<T>(client: DatabaseClient, systemAccountId: string, operation: () => Promise<T>): Promise<T> {
+  if (client.driver !== 'sqlite') return operation()
+  const previous = sqliteChatUserPolicyLocks.get(systemAccountId) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolve) => { release = resolve })
+  const queued = previous.then(() => current)
+  sqliteChatUserPolicyLocks.set(systemAccountId, queued)
+  await previous
+  try {
+    return await operation()
+  } finally {
+    release()
+    if (sqliteChatUserPolicyLocks.get(systemAccountId) === queued) sqliteChatUserPolicyLocks.delete(systemAccountId)
+  }
+}
+
+async function incrementStorageWindow(client: DatabaseClient, systemAccountId: string, now: string, contentBytes: number, reservedBytes: number): Promise<void> {
   const table = chatTable(client, 'chat_user_storage_windows')
   const bucketDate = now.slice(0, 10)
   if (client.driver === 'postgres') {
     await client.execute(`
-      INSERT INTO ${table} (system_account_id, bucket_date, content_bytes, updated_at)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO ${table} (system_account_id, bucket_date, content_bytes, reserved_bytes, updated_at)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT (system_account_id, bucket_date)
-      DO UPDATE SET content_bytes = ${table}.content_bytes + EXCLUDED.content_bytes, updated_at = EXCLUDED.updated_at
-    `, [systemAccountId, bucketDate, bytes, now])
+      DO UPDATE SET content_bytes = ${table}.content_bytes + EXCLUDED.content_bytes,
+                    reserved_bytes = ${table}.reserved_bytes + EXCLUDED.reserved_bytes,
+                    updated_at = EXCLUDED.updated_at
+    `, [systemAccountId, bucketDate, contentBytes, reservedBytes, now])
     return
   }
   await client.execute(`
-    INSERT INTO ${table} (system_account_id, bucket_date, content_bytes, updated_at)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO ${table} (system_account_id, bucket_date, content_bytes, reserved_bytes, updated_at)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, bucket_date)
-    DO UPDATE SET content_bytes = content_bytes + excluded.content_bytes, updated_at = excluded.updated_at
-  `, [systemAccountId, bucketDate, bytes, now])
+    DO UPDATE SET content_bytes = content_bytes + excluded.content_bytes,
+                  reserved_bytes = reserved_bytes + excluded.reserved_bytes,
+                  updated_at = excluded.updated_at
+  `, [systemAccountId, bucketDate, contentBytes, reservedBytes, now])
+}
+
+async function settleStorageWindowReservationStrict(
+  client: DatabaseClient,
+  systemAccountId: string,
+  createdAt: string,
+  reservationBytes: number,
+  contentBytes: number,
+  now: string
+): Promise<void> {
+  if (!Number.isSafeInteger(contentBytes) || contentBytes < 0 || contentBytes > reservationBytes) {
+    throw new Error('助手消息实际字节超过预留')
+  }
+  const bucketDate = createdAt.slice(0, 10)
+  const result = await client.execute(`
+    UPDATE ${chatTable(client, 'chat_user_storage_windows')}
+    SET content_bytes = content_bytes + ?, reserved_bytes = reserved_bytes - ?, updated_at = ?
+    WHERE system_account_id = ? AND bucket_date = ? AND reserved_bytes >= ?
+  `, [contentBytes, reservationBytes, now, systemAccountId, bucketDate, reservationBytes])
+  if (result.changes !== 1) throw new Error(`聊天容量预留数据不一致：${bucketDate} 日桶缺失或不足`)
+}
+
+async function releaseStorageWindowReservationStrict(
+  client: DatabaseClient,
+  systemAccountId: string,
+  createdAt: string,
+  reservationBytes: number,
+  now: string
+): Promise<void> {
+  const bucketDate = createdAt.slice(0, 10)
+  const result = await client.execute(`
+    UPDATE ${chatTable(client, 'chat_user_storage_windows')}
+    SET reserved_bytes = reserved_bytes - ?, updated_at = ?
+    WHERE system_account_id = ? AND bucket_date = ? AND reserved_bytes >= ?
+  `, [reservationBytes, now, systemAccountId, bucketDate, reservationBytes])
+  if (result.changes !== 1) throw new Error(`聊天容量预留数据不一致：${bucketDate} 日桶缺失或不足`)
+  await client.execute(`
+    DELETE FROM ${chatTable(client, 'chat_user_storage_windows')}
+    WHERE system_account_id = ? AND bucket_date = ? AND content_bytes = 0 AND reserved_bytes = 0
+  `, [systemAccountId, bucketDate])
+}
+
+function requiredAssistantStorageReservation(row: ChatMessageRow): number {
+  const reservationBytes = Number(row.storage_reserved_bytes)
+  if (reservationBytes !== chatAssistantStorageReservationBytes) throw new Error('助手消息存储预留数据不一致')
+  return reservationBytes
 }
 
 async function decrementStorageWindowStrict(client: DatabaseClient, systemAccountId: string, bucketDate: string, bytes: number, now: string): Promise<void> {
@@ -757,7 +1056,7 @@ async function decrementStorageWindowStrict(client: DatabaseClient, systemAccoun
   if (result.changes !== 1) throw new Error(`聊天容量窗口数据不一致：${bucketDate} 日桶缺失或不足`)
   await client.execute(`
     DELETE FROM ${table}
-    WHERE system_account_id = ? AND bucket_date = ? AND content_bytes = 0
+    WHERE system_account_id = ? AND bucket_date = ? AND content_bytes = 0 AND reserved_bytes = 0
   `, [systemAccountId, bucketDate])
 }
 
@@ -773,6 +1072,15 @@ function addDays(value: string, days: number): string {
   const date = new Date(value)
   date.setUTCDate(date.getUTCDate() + days)
   return date.toISOString()
+}
+
+function normalizedChatUserTurnCount(value: unknown): number {
+  if (value === null || value === undefined) throw new Error('聊天会话轮次计数无效')
+  if (typeof value !== 'number' && typeof value !== 'string') throw new Error('聊天会话轮次计数无效')
+  if (typeof value === 'string' && !value.trim()) throw new Error('聊天会话轮次计数无效')
+  const count = Number(value)
+  if (!Number.isSafeInteger(count) || count < 0) throw new Error('聊天会话轮次计数无效')
+  return count
 }
 
 function titleFromContent(content: string): string {
@@ -800,6 +1108,7 @@ function mapConversation(row: ConversationRow): ChatConversation {
     id: String(row.id), systemAccountId: String(row.system_account_id),
     apiKeyId: nullable(row.api_key_id), apiKeyNameSnapshot: String(row.api_key_name_snapshot),
     title: String(row.title), isPinned: Number(row.is_pinned ?? 0) === 1, lastModel: nullable(row.last_model), activeTurnId: nullable(row.active_turn_id),
+    userTurnCount: normalizedChatUserTurnCount(row.user_turn_count),
     lastMessageAt: String(row.last_message_at), createdAt: String(row.created_at), updatedAt: String(row.updated_at)
   }
 }

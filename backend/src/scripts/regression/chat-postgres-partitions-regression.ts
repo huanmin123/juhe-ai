@@ -7,7 +7,13 @@ import {
   postgresChatMessagePartitionName
 } from '../../storage/postgres-chat-message-partitions.js'
 import { createSqliteDatabaseClient, type DatabaseClient } from '../../storage/database-client.js'
-import { acceptChatTurn, completeChatTurn, createChatConversation, listChatMessages } from '../../storage/chat.repository.js'
+import {
+  acceptChatTurn,
+  chatAssistantStorageReservationBytes,
+  completeChatTurn,
+  createChatConversation,
+  listChatMessages
+} from '../../storage/chat.repository.js'
 import { applyChatSchema } from '../../storage/schema.js'
 
 assert.equal(chatMessagePartitionDateKeyFromIso('2026-07-12T23:59:59.000Z'), '20260712')
@@ -27,9 +33,13 @@ const conversation = await createChatConversation(postgresContractClient, {
   id: 'chat_pg_contract_replace',
   systemAccountId: 'sys_pg_contract',
   apiKeyId: 'key_pg_contract',
-  apiKeyNameSnapshot: 'PG Contract Key',
+  apiKeyNameSnapshot: 'PG Contract Key', maxConversationsPerUser: 1000,
   now: '2026-08-20T00:00:00.000Z'
 })
+const createLockIndex = postgresContractQueries.findIndex((item) => /pg_advisory_xact_lock/.test(item.sql))
+const createCountIndex = postgresContractQueries.findIndex((item) => /SELECT COUNT\(\*\) AS total FROM\s+"chat_conversations"/.test(item.sql))
+const createInsertIndex = postgresContractQueries.findIndex((item) => /INSERT INTO\s+"chat_conversations"/.test(item.sql))
+assert(createLockIndex >= 0 && createLockIndex < createCountIndex && createCountIndex < createInsertIndex, 'PostgreSQL 会话创建必须在同一事务中先取得用户级 advisory lock，再计数并插入')
 const original = await acceptChatTurn(postgresContractClient, {
   conversationId: conversation.id,
   systemAccountId: 'sys_pg_contract',
@@ -38,7 +48,7 @@ const original = await acceptChatTurn(postgresContractClient, {
   contentBlocks: [{ type: 'input_text' }],
   model: 'mock-model',
   now: '2026-08-20T00:01:00.000Z',
-  storageQuotaBytes: 4096
+  storageQuotaBytes: chatAssistantStorageReservationBytes + 4096, retentionDays: 7, maxTurnsPerConversation: 1000
 })
 await completeChatTurn(postgresContractClient, {
   conversationId: conversation.id,
@@ -57,12 +67,13 @@ const replacement = await acceptChatTurn(postgresContractClient, {
   contentBlocks: [{ type: 'input_text' }],
   model: 'mock-model',
   now: '2026-08-20T00:03:00.000Z',
-  storageQuotaBytes: 4096,
+  storageQuotaBytes: chatAssistantStorageReservationBytes + 4096, retentionDays: 7, maxTurnsPerConversation: 1000,
   replaceTurnId: original.turnId
 })
 assert.equal(replacement.userMessage.sequenceNo, original.userMessage.sequenceNo)
 assert.equal(replacement.assistantMessage.sequenceNo, original.assistantMessage.sequenceNo)
-assert(postgresContractQueries.filter((item) => /pg_advisory_xact_lock/.test(item.sql)).length >= 2, 'PostgreSQL 接受和替换轮次都必须获取用户级容量事务锁')
+assert(postgresContractQueries.filter((item) => /pg_advisory_xact_lock/.test(item.sql)).length >= 3, 'PostgreSQL 创建、接受和替换轮次都必须获取同一用户级事务锁')
+assert(postgresContractQueries.some((item) => /user_turn_count\s*=\s*user_turn_count\s*\+\s*1/.test(item.sql)), 'PostgreSQL 普通接受必须在会话 UPDATE 中原子增加用户轮次计数')
 assert.deepEqual((await listChatMessages(postgresContractClient, {
   conversationId: conversation.id,
   systemAccountId: 'sys_pg_contract',
@@ -98,17 +109,20 @@ function asPostgresContractClient(sqliteClient: DatabaseClient, queries: Array<{
       queries.push({ sql, params })
       return client.query(stripPostgresOnlySql(sql), params)
     },
-    one: (sql, params) => client.one(stripPostgresOnlySql(sql), params),
+    one: (sql, params = []) => {
+      queries.push({ sql, params })
+      return client.one(stripPostgresOnlySql(sql), params)
+    },
     execute: (sql, params) => {
+      queries.push({ sql, params: params ?? [] })
       if (/PARTITION OF juhe_chat\.chat_messages/.test(sql)) return Promise.resolve({ changes: 0 })
-      if (/pg_advisory_xact_lock/.test(sql)) { queries.push({ sql, params: params ?? [] }); return Promise.resolve({ changes: 1 }) }
+      if (/pg_advisory_xact_lock/.test(sql)) return Promise.resolve({ changes: 1 })
       return client.execute(stripPostgresOnlySql(sql), params)
     },
     transaction: (operation) => client.transaction((tx) => operation(wrap(tx)))
   })
   return wrap(sqliteClient)
 }
-
 function stripPostgresOnlySql(sql: string): string {
   return sql
     .replace(/\s+FOR UPDATE\s*$/i, '')
