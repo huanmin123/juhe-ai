@@ -16,6 +16,7 @@ import {
   failChatTurn,
   findChatTurnByClientMessageId,
   getChatConversation,
+  getChatConversationSyncHead,
   listChatConversations,
   listChatMessages,
   updateChatConversation,
@@ -82,7 +83,13 @@ const messageBodySchema = z.object({
 }).strict()
 const messagesQuerySchema = z.object({
   beforeSequenceNo: z.preprocess(queryScalar, z.coerce.number().int().min(1).max(2_147_483_647).optional()),
-  limit: z.preprocess(queryScalar, z.coerce.number().int().min(1).max(100).default(50))
+  afterSequenceNo: z.preprocess(queryScalar, z.coerce.number().int().min(1).max(2_147_483_647).optional()),
+  fromSequenceNo: z.preprocess(queryScalar, z.coerce.number().int().min(1).max(2_147_483_647).optional()),
+  limit: z.preprocess(queryScalar, z.coerce.number().int().min(1).max(100).default(100))
+}).strict().refine((query) => [query.beforeSequenceNo, query.afterSequenceNo, query.fromSequenceNo]
+  .filter((value) => value !== undefined).length <= 1, '消息游标只能指定一个')
+const syncQuerySchema = z.object({
+  knownRevision: z.preprocess(queryScalar, z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER))
 }).strict()
 const submissionParamsSchema = z.object({
   conversationId: z.string().trim().min(1).max(120),
@@ -166,9 +173,34 @@ chatRouter.get('/conversations/:conversationId/messages', async (req, res, next)
       conversationId: req.params.conversationId,
       systemAccountId: auth.systemAccountId,
       beforeSequenceNo: query.beforeSequenceNo,
+      afterSequenceNo: query.afterSequenceNo,
+      fromSequenceNo: query.fromSequenceNo,
       limit: query.limit,
       now: new Date().toISOString()
     })))
+  } catch (error) { handleChatRouteError(error, res, next) }
+})
+
+chatRouter.get('/conversations/:conversationId/sync', async (req, res, next) => {
+  try {
+    const query = syncQuerySchema.parse(req.query)
+    const auth = requireChatAuth()
+    const client = await getChatDatabaseClient()
+    const serverTime = new Date().toISOString()
+    const head = await getChatConversationSyncHead(client, {
+      conversationId: req.params.conversationId,
+      systemAccountId: auth.systemAccountId,
+      now: serverTime
+    })
+    if (!head) {
+      res.status(404).json({ message: '会话不存在', code: 'chat_conversation_not_found' })
+      return
+    }
+    res.json(ok({
+      serverTime,
+      unchanged: query.knownRevision === head.messageRevision,
+      ...head
+    }))
   } catch (error) { handleChatRouteError(error, res, next) }
 })
 

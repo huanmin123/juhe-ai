@@ -48,6 +48,28 @@ export interface ChatMessage {
   expiresAt: string
 }
 
+export interface ChatConversationSyncMessage {
+  id: string
+  turnId: string
+  sequenceNo: number
+  role: ChatMessageRole
+  status: ChatMessageStatus
+  completedAt?: string
+  expiresAt: string
+}
+
+export interface ChatConversationSyncHead {
+  conversationId: string
+  messageRevision: number
+  lastSequenceNo: number
+  activeTurn?: {
+    turnId: string
+    assistantMessageId: string
+    startedAt: string
+  }
+  tail: ChatConversationSyncMessage[]
+}
+
 export type ChatMessageContentBlock =
   | { type: 'reasoning'; text: string }
   | { type: 'tool_call'; id: string; toolType: string; status: 'started' | 'updated' | 'completed' | 'failed'; item?: Record<string, unknown> }
@@ -139,6 +161,81 @@ export async function getChatConversation(client: DatabaseClient, conversationId
     SELECT * FROM ${chatTable(client, 'chat_conversations')} WHERE id = ? AND system_account_id = ?
   `, [conversationId, systemAccountId])
   return row ? mapConversation(row) : undefined
+}
+
+export async function getChatConversationSyncHead(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  now: string
+}): Promise<ChatConversationSyncHead | undefined> {
+  const rows = await client.query<ChatConversationSyncRow>(`
+    WITH owned_conversation AS (
+      SELECT id, message_revision, active_turn_id, active_started_at
+      FROM ${chatTable(client, 'chat_conversations')}
+      WHERE id = ? AND system_account_id = ?
+    ), visible_messages AS (
+      SELECT id, turn_id, sequence_no, role, status, completed_at, expires_at
+      FROM ${chatTable(client, 'chat_messages')}
+      WHERE conversation_id = ? AND system_account_id = ? AND expires_at > ?
+    ), tail_messages AS (
+      SELECT id, turn_id, sequence_no, role, status, completed_at, expires_at
+      FROM visible_messages
+      ORDER BY sequence_no DESC
+      LIMIT 2
+    ), active_assistant AS (
+      SELECT message.id, message.turn_id
+      FROM visible_messages AS message
+      JOIN owned_conversation AS conversation ON conversation.active_turn_id = message.turn_id
+      WHERE message.role = 'assistant' AND message.status = 'streaming'
+      LIMIT 1
+    )
+    SELECT conversation.id AS conversation_id,
+           conversation.message_revision,
+           COALESCE((SELECT MAX(sequence_no) FROM visible_messages), 0) AS last_sequence_no,
+           active.id AS active_assistant_message_id,
+           active.turn_id AS active_turn_id,
+           conversation.active_started_at,
+           tail.id AS tail_id,
+           tail.turn_id AS tail_turn_id,
+           tail.sequence_no AS tail_sequence_no,
+           tail.role AS tail_role,
+           tail.status AS tail_status,
+           tail.completed_at AS tail_completed_at,
+           tail.expires_at AS tail_expires_at
+    FROM owned_conversation AS conversation
+    LEFT JOIN active_assistant AS active ON 1 = 1
+    LEFT JOIN tail_messages AS tail ON 1 = 1
+    ORDER BY tail.sequence_no ASC
+  `, [input.conversationId, input.systemAccountId, input.conversationId, input.systemAccountId, input.now])
+  const first = rows[0]
+  if (!first) return undefined
+  const activeTurnId = nullable(first.active_turn_id)
+  const activeAssistantMessageId = nullable(first.active_assistant_message_id)
+  const activeStartedAt = nullable(first.active_started_at)
+  const tail = rows.flatMap((row): ChatConversationSyncMessage[] => {
+    const id = nullable(row.tail_id)
+    const turnId = nullable(row.tail_turn_id)
+    const expiresAt = nullable(row.tail_expires_at)
+    if (!id || !turnId || !expiresAt) return []
+    return [{
+      id,
+      turnId,
+      sequenceNo: Number(row.tail_sequence_no),
+      role: String(row.tail_role) as ChatMessageRole,
+      status: String(row.tail_status) as ChatMessageStatus,
+      completedAt: nullable(row.tail_completed_at),
+      expiresAt
+    }]
+  })
+  return {
+    conversationId: String(first.conversation_id),
+    messageRevision: normalizedChatMessageRevision(first.message_revision),
+    lastSequenceNo: Number(first.last_sequence_no),
+    activeTurn: activeTurnId && activeAssistantMessageId && activeStartedAt
+      ? { turnId: activeTurnId, assistantMessageId: activeAssistantMessageId, startedAt: activeStartedAt }
+      : undefined,
+    tail
+  }
 }
 
 export async function findChatTurnByClientMessageId(client: DatabaseClient, input: {
@@ -604,23 +701,38 @@ export async function listChatMessages(client: DatabaseClient, input: {
   conversationId: string
   systemAccountId: string
   beforeSequenceNo?: number
+  afterSequenceNo?: number
+  fromSequenceNo?: number
   limit: number
   now: string
 }): Promise<ChatMessage[]> {
+  const cursorCount = [input.beforeSequenceNo, input.afterSequenceNo, input.fromSequenceNo]
+    .filter((value) => value !== undefined).length
+  if (cursorCount > 1) throw new Error('消息游标只能指定一个')
   await requireConversation(client, input.conversationId, input.systemAccountId)
-  const hasCursor = Number.isSafeInteger(input.beforeSequenceNo)
-    && Number(input.beforeSequenceNo) >= postgresIntegerMin
-    && Number(input.beforeSequenceNo) <= postgresIntegerMax
+  const cursor = input.beforeSequenceNo ?? input.afterSequenceNo ?? input.fromSequenceNo
+  const hasCursor = Number.isSafeInteger(cursor)
+    && Number(cursor) >= postgresIntegerMin
+    && Number(cursor) <= postgresIntegerMax
+  const cursorCondition = !hasCursor
+    ? ''
+    : input.beforeSequenceNo !== undefined
+      ? 'AND sequence_no < ?'
+      : input.afterSequenceNo !== undefined
+        ? 'AND sequence_no > ?'
+        : 'AND sequence_no >= ?'
+  const ascending = input.afterSequenceNo !== undefined || input.fromSequenceNo !== undefined
+  const params = hasCursor
+    ? [input.conversationId, input.systemAccountId, input.now, cursor, Math.max(1, Math.min(input.limit, 100))]
+    : [input.conversationId, input.systemAccountId, input.now, Math.max(1, Math.min(input.limit, 100))]
   const rows = await client.query<ChatMessageRow>(`
     SELECT * FROM ${chatTable(client, 'chat_messages')}
     WHERE conversation_id = ? AND system_account_id = ? AND expires_at > ?
-      ${hasCursor ? 'AND sequence_no < ?' : ''}
-    ORDER BY sequence_no DESC
+      ${cursorCondition}
+    ORDER BY sequence_no ${ascending ? 'ASC' : 'DESC'}
     LIMIT ?
-  `, hasCursor
-    ? [input.conversationId, input.systemAccountId, input.now, input.beforeSequenceNo, Math.max(1, Math.min(input.limit, 100))]
-    : [input.conversationId, input.systemAccountId, input.now, Math.max(1, Math.min(input.limit, 100))])
-  return rows.reverse().map(mapMessage)
+  `, params)
+  return (ascending ? rows : rows.reverse()).map(mapMessage)
 }
 
 export async function listChatContextMessages(client: DatabaseClient, input: {
@@ -1256,4 +1368,5 @@ function nullable(value: unknown): string | undefined {
 
 type ConversationRow = Record<string, unknown> & { id?: unknown; system_account_id?: unknown; active_turn_id?: unknown; next_sequence_no?: unknown }
 type ChatMessageRow = Record<string, unknown>
+type ChatConversationSyncRow = Record<string, unknown>
 type IdempotencyRow = Record<string, unknown> & { turn_id?: unknown; user_message_id?: unknown; assistant_message_id?: unknown }
