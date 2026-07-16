@@ -167,6 +167,17 @@
 
 - 当前证据：`df6665e10` / `7bc5bc19b` 完成 service/store，`e167873cb` 完成 HTTP/router/app，`1d1d9938b` 增加真实 PostgreSQL 行锁竞争，`b36ea60bc` 修复前端 update ID 编码。远程隔离 Testcontainers PostgreSQL 已迁移到 schema 54 并通过 `TestW2ManagementExternalIntegrationSourceListPostgresSmoke`；容器、SSH/socat 隧道均已清理。真实 URL / Cookie listener mutation smoke 尚未运行，不构成生产接管证据。
 
+#### W2 外部来源删除切片（2026-07-16）
+
+- 目标：只迁移管理员 `DELETE /__aisys__/api/external-integration-sources/{id}`，继续由 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；集合 `POST`、详情 `POST/PUT`、内置 reset 和 Token writes 继续由 Node owner。
+- API 契约：写鉴权 touch、IP/user write limiter、管理员权限和 `external_integration_sources.delete` mutation guard 先于 handler；fingerprint 只含 ECMAScript trim 后的 `id`。空 ID 为 `400 来源系统不存在`，缺失为 `404`，内置 `extsrc_builtin_test` 为 `400 内置测试 Token 不支持删除`，内部错误统一 `500` 且不泄漏数据库细节；成功为 `204` 空 body、`no-store`。DELETE 不消费业务 body，也不新增 query 语义。
+- 存储契约：PostgreSQL 单事务 `FOR UPDATE` 锁定来源，锁后读取来源名称并以有界 `COUNT(*)` 统计关联 Token；删除来源主表并依赖当前 `ON DELETE CASCADE` 原子删除 Token。并发 Token 创建由父行锁 / 外键检查串行化；不读取或加载完整 Token 列表。`juhe_dataset.public_api_logs` 无外键且必须保留历史来源 / Token 快照，不随来源删除。
+- 副作用契约：提交成功后 best-effort 入队 Node 等价 `external_integration_sources.delete` operation log，固定 `admin_only/full`，changes 只有 `deleted false -> true` 与 `tokenCount before -> 0`；不新增 Redis cache invalidation。已建立鉴权上下文的并发在途请求不属于硬删除可撤回范围，后续新鉴权因数据库记录消失立即失败。
+- [ ] TDD：补 service ID / built-in / not-found / store error 与返回快照测试，再实现 delete port/service。
+- [ ] TDD：补 SQL `FOR UPDATE`、有界 Token count、FK cascade、并发创建串行化、历史日志保留和回滚测试，再实现 store/sqlc。
+- [ ] TDD：补 admin / 400 / 404 / 500 / 204、operation log、mutation guard、静态目录 405、router/app 三态测试，再接线 HTTP。
+- [ ] 扩展真实 PostgreSQL smoke 与前端专属无 Token fixture mutation smoke，验证 DELETE 后来源 / Token 不存在、旧 Token 鉴权失败、历史日志保留和 operation log ingest；生产切流前不删除 Node 路由。
+
 - [~] 建立 Go 后端最小工程和 PostgreSQL / Redis / Asynq 基线。
 - [~] 固定公开接口契约并迁移公开接口：W1a 公开设置读接口已进入 Go 实现中；W1b `/__aipublic__` 外部维护接口已补 Go catalog/auth、PostgreSQL auth/log adapter、Redis penalty-window helper、公开接口日志 snapshot/log builder、Asynq payload/enqueue/handler、`juhe-ai-worker ingest` 日志消费 runtime、HTTP shell / capture / 499 / ResponseWriter 透传契约、PG foundation smoke 用例、public API log Asynq smoke 用例、public group CRUD、public route strategy CRUD、public API Key CRUD、public account CRUD 四条真实资源纵切面、默认关闭的 opt-in 生产 router guard，以及 `w1b-public-api-smoke` 独立 maintenance smoke；public account 已补 `supportedModels` presence / null 类型边界、provider 默认模型继承、新增与更新最终非空、owner 可见 active / 可计价目录校验、update 未变化短路、hybrid 特例、重复名称组合优先级、默认 JSON 联表和 GPT-5.6 seed guard，非 Docker 验证已通过；public group / route strategy / API Key / account 四类完整 Redis limiter + public API log worker shell E2E 测试代码已补；未正式生产接管；真实 PG/Redis/Asynq integration、`w1b-public-api-smoke` 真实依赖执行与四类 shell E2E 待复跑。
 - [~] 迁移后台管理辅助接口：W2 已补管理端 options / catalog、系统账户列表读 / options、授权候选、providers / models、route strategies、groups、accounts options / tags、标签删除 / 独立 PATCH、operation log 读接口、operation log 保留清理 worker，以及个人 / 管理员两层默认检查模型写入，并保持 `JUHE_AI_MANAGEMENT_API_ENABLED=false` 默认不接管。当前 Provider 契约使用 `defaultHealthCheckModel` / `systemDefaultHealthCheckModel` / `/default-health-check-model`，优先级为“个人 > 管理员系统默认 > 协议档案”。W2 仍不覆盖完整 auth 与会话管理生产接管（不含 W3 auth 小切片）、授权来源 / grant / 授权写接口、主账户写入 `tags`、OAuth / 导入标签写路径、完整账号 summary 响应、operation log 保留清理生产接管 / 完整 data-retention 或其他写接口 operation log、前端 smoke、生产切流和 Node 删除；W3 已覆盖系统账户 create / 完整 mixed PATCH，自定义模型 CRUD 已作为后台写接口补充切片进入 Go opt-in，但仍未生产接管。
