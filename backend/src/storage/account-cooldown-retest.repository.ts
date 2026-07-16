@@ -96,6 +96,48 @@ export interface CooldownAccountRetestPage {
   nextCursor?: CooldownAccountRetestCursor
 }
 
+export interface CooldownAccountRetestDeferResult {
+  changed: boolean
+  cooldownUntil?: string
+}
+
+export function deferCooldownAccountRetest(id: string, delaySeconds = 10): CooldownAccountRetestDeferResult {
+  const now = nowIso()
+  const cooldownUntil = new Date(Date.now() + normalizedTaskFailureDelaySeconds(delaySeconds) * 1000).toISOString()
+  const result = getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET cooldown_until = ?, updated_at = ?
+    WHERE id = ?
+      AND deleted_at IS NULL
+      AND status IN ('temporary_unavailable', 'rate_limited')
+  `).run(cooldownUntil, now, id)
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) invalidateAccountLookupCache(id)
+  return { changed, cooldownUntil: changed ? cooldownUntil : undefined }
+}
+
+export async function deferCooldownAccountRetestAsync(id: string, delaySeconds = 10): Promise<CooldownAccountRetestDeferResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return deferCooldownAccountRetest(id, delaySeconds)
+  const now = nowIso()
+  const cooldownUntil = new Date(Date.now() + normalizedTaskFailureDelaySeconds(delaySeconds) * 1000).toISOString()
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const result = await client.execute(`
+    UPDATE ${cooldownRetestTable(client, 'accounts')}
+    SET cooldown_until = ?, updated_at = ?
+    WHERE id = ?
+      AND deleted_at IS NULL
+      AND status IN ('temporary_unavailable', 'rate_limited')
+  `, [cooldownUntil, now, id])
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) invalidateAccountLookupCache(id)
+  return { changed, cooldownUntil: changed ? cooldownUntil : undefined }
+}
+
+function normalizedTaskFailureDelaySeconds(value: number): number {
+  if (!Number.isFinite(value)) return 10
+  return Math.max(3, Math.min(60, Math.trunc(value)))
+}
+
 export function findAccountForCooldownRetest(accountId: string): AccountSummary | undefined {
   disableExpiredAccounts()
   return cooldownRetestDueAccountSummaries(queryAccountsDueForCooldownRetest(1, accountId))[0]

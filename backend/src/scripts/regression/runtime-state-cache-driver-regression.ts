@@ -28,6 +28,8 @@ const compareSetStateStore = stateStore as unknown as {
 }
 
 await stateStore.setJson('profile', { ok: true }, 1000)
+await stateStore.setJson('profile-b', { ok: false }, 1000)
+assert.deepEqual(await stateStore.getJsonMany('profile,profile-b,missing'.split(',')), [{ ok: true }, { ok: false }, undefined])
 assert.deepEqual(await stateStore.getJson('profile'), { ok: true })
 assert.deepEqual(await stateStore.getDeleteJson('profile'), { ok: true })
 assert.equal(await stateStore.getJson('profile'), undefined)

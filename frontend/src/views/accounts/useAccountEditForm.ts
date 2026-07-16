@@ -1,12 +1,13 @@
 import { message } from '@/lib/antd'
 import { computed, nextTick, reactive, ref, watch, type ComputedRef } from 'vue'
 
-import type { AccountDraftTestAccountPayload } from '@/api/client'
+import { api, type AccountDraftTestAccountPayload } from '@/api/client'
 import { useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
   AccountApiKeyRuntimeDetail,
+  AccountApiKeyRuntimeResponse,
   AccountSummary,
   AccountType,
   GroupOptionSummary,
@@ -28,6 +29,11 @@ import {
 } from './accountResponseInspectionPolicyPayload'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { accountHealthCheckEndpointModeOptions, defaultAccountHealthCheckEndpointMode } from './accountHealthCheckEndpointMode'
+import {
+  createSavedAccountApiKeyRuntimeSnapshot,
+  visibleSavedAccountApiKeyRuntimeDetails,
+  type SavedAccountApiKeyRuntimeSnapshot
+} from './accountApiKeyRuntimeDisplay'
 import {
   accountEditAccountTypeTitle,
   accountEditModalTitle,
@@ -87,6 +93,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const accountAdvancedDetailLoaded = ref(false)
   const editingId = ref<string>()
   const editingAccountDetail = ref<AccountSummary>()
+  const savedApiKeyRuntimeSnapshot = ref<SavedAccountApiKeyRuntimeSnapshot>()
   const cloningSourceId = ref<string>()
   const creatingAccountScopeParams = ref<AccountScopeParams>()
   const editingScheduleFingerprint = ref<string>()
@@ -239,6 +246,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (!modalOpen.value || accountEditDetailLoading.value || !isApiKeyForm.value || editingAuthorizedAccount.value) return undefined
     return draftApiKeyTestRuntimeDetailsForPayload(options.draftApiKeyTestSnapshot?.value, currentDraftTestPayload())
   })
+  const accountApiKeyRuntimeDetails = computed<AccountApiKeyRuntimeDetail[] | undefined>(() => (
+    visibleSavedAccountApiKeyRuntimeDetails(savedApiKeyRuntimeSnapshot.value, form.apiKeys)
+  ))
 
   function defaultForm(providerCode = '', type: AccountType = '', providerProtocolProfileId = ''): AccountFormModel {
     return defaultAccountForm(providerCode, type, options.providers.value, providerProtocolProfileId)
@@ -251,6 +261,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     cloningSourceId.value = undefined
     editingScheduleFingerprint.value = undefined
     cloningScheduleFingerprint.value = undefined
+    savedApiKeyRuntimeSnapshot.value = undefined
     clearDraftApiKeyTestSnapshot()
     Object.assign(form, defaultForm(providerCode, type))
     resetProviderModelOptions()
@@ -379,6 +390,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     modalOpen.value = false
     authResult.value = undefined
     clearDraftApiKeyTestSnapshot()
+    savedApiKeyRuntimeSnapshot.value = undefined
   }
 
   function selectProvider(providerCode: string) {
@@ -447,6 +459,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountEditDetailLoading.value = false
     authResult.value = undefined
     clearDraftApiKeyTestSnapshot()
+    savedApiKeyRuntimeSnapshot.value = undefined
 
     if (isAuthorizedAccount(account)) {
       accountEditDetailLoading.value = true
@@ -475,7 +488,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
     accountEditDetailLoading.value = true
     modalOpen.value = true
-    const sourceAccount = await loadAccountDetailForForm(account.id, editScopeParams, '加载账户基础配置失败', 'edit-basic')
+    const basicDetailRequest = loadAccountDetailForForm(account.id, editScopeParams, '加载账户基础配置失败', 'edit-basic')
+    const apiKeyRuntimeRequest = loadAccountApiKeyRuntimeForEdit(account.id, editScopeParams)
+    const sourceAccount = await basicDetailRequest
     if (!isCurrentFormOpenRequest(requestToken)) return
     if (!sourceAccount) {
       accountEditDetailLoading.value = false
@@ -493,6 +508,16 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
     accountAdvancedDetailLoaded.value = false
     accountEditDetailLoading.value = false
+    const savedApiKeys = [...form.apiKeys]
+    void apiKeyRuntimeRequest.then((response) => {
+      if (!isCurrentFormOpenRequest(requestToken)) return
+      savedApiKeyRuntimeSnapshot.value = createSavedAccountApiKeyRuntimeSnapshot({
+        accountId: sourceAccount.id,
+        configRevision: sourceAccount.configRevision ?? 1,
+        apiKeys: savedApiKeys,
+        response
+      })
+    })
   }
 
   async function ensureAccountEditDetailLoaded(): Promise<boolean> {
@@ -615,6 +640,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   async function openClone(account: AccountSummary) {
     const requestToken = nextFormOpenRequestToken()
+    savedApiKeyRuntimeSnapshot.value = undefined
     const cloneScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     if (options.isManagementView.value && !cloneScopeParams?.systemAccountId) {
       message.warning('无法确定克隆目标系统账户，请先筛选目标系统账户后再克隆')
@@ -700,6 +726,20 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
   }
 
+  async function loadAccountApiKeyRuntimeForEdit(
+    accountId: string,
+    scopeParams: AccountScopeParams | undefined
+  ): Promise<AccountApiKeyRuntimeResponse | undefined> {
+    try {
+      return options.isManagementView.value
+        ? await api.accounts.apiKeyRuntime(accountId, scopeParams)
+        : await api.myAccounts.apiKeyRuntime(accountId)
+    } catch (error) {
+      console.error(error)
+      return undefined
+    }
+  }
+
   function nextFormOpenRequestToken(): number {
     formOpenRequestToken += 1
     return formOpenRequestToken
@@ -721,6 +761,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountEditDetailLoading,
     accountErrorPolicyRules,
     accountResponseInspectionRules,
+    accountApiKeyRuntimeDetails,
     apiKeyTestDetails,
     accountTagOptions,
     accountTagOptionsLoading,

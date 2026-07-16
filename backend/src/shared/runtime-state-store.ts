@@ -6,6 +6,7 @@ export type RuntimeStateKey = string
 
 export interface RuntimeStateStore {
   getJson<T>(key: RuntimeStateKey): Promise<T | undefined>
+  getJsonMany<T>(keys: RuntimeStateKey[]): Promise<Array<T | undefined>>
   getDeleteJson<T>(key: RuntimeStateKey): Promise<T | undefined>
   setJson<T>(key: RuntimeStateKey, value: T, ttlMs: number): Promise<void>
   compareSetJson<T>(
@@ -43,6 +44,10 @@ class MemoryRuntimeStateStore implements RuntimeStateStore {
   async getJson<T>(key: RuntimeStateKey): Promise<T | undefined> {
     const entry = this.getFreshEntry(key)
     return entry?.value as T | undefined
+  }
+
+  async getJsonMany<T>(keys: RuntimeStateKey[]): Promise<Array<T | undefined>> {
+    return keys.map((key) => this.getFreshEntry(key)?.value as T | undefined)
   }
 
   async getDeleteJson<T>(key: RuntimeStateKey): Promise<T | undefined> {
@@ -158,6 +163,28 @@ class RedisRuntimeStateStore implements RuntimeStateStore {
       await this.delete(key)
       return undefined
     }
+  }
+
+  async getJsonMany<T>(keys: RuntimeStateKey[]): Promise<Array<T | undefined>> {
+    if (!keys.length) return []
+    const redisKeys = keys.map((key) => this.redisKey(key))
+    const rawValues = await (await this.client()).sendCommand(['MGET', ...redisKeys])
+    const values = Array.isArray(rawValues) ? rawValues : []
+    const malformedKeys: string[] = []
+    const output = redisKeys.map((redisKey, index) => {
+      const rawValue = values[index]
+      if (typeof rawValue !== 'string') return undefined
+      try {
+        return JSON.parse(rawValue) as T
+      } catch {
+        malformedKeys.push(redisKey)
+        return undefined
+      }
+    })
+    if (malformedKeys.length) {
+      await (await this.client()).sendCommand(['DEL', ...malformedKeys])
+    }
+    return output
   }
 
   async getDeleteJson<T>(key: RuntimeStateKey): Promise<T | undefined> {

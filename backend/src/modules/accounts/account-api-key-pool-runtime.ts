@@ -1,6 +1,25 @@
-import type { AccountTestApiKeyPoolItemResult } from '../../domain/types.js'
+import type { AccountApiKeyRuntimeDetail, AccountSummary, AccountTestApiKeyPoolItemResult } from '../../domain/types.js'
 import { accountApiKeyEntries, isAccountApiKeyPoolIsolationEnabled, type AccountApiKeyEntry } from '../../storage/account-api-key-rotation.js'
+import { loadAccountApiKeyRuntimeDetailsByAccountIdsAsync } from '../../storage/account-api-key-runtime-state.repository.js'
 import type { OpenAIAccountSecret } from '../../storage/openai-account-selector.types.js'
+
+export interface AccountApiKeyRuntimeResponse {
+  accountId: string
+  configRevision: number
+  items: AccountApiKeyRuntimeDetail[]
+}
+
+export async function loadOwnerAccountApiKeyRuntimeResponse(account: AccountSummary): Promise<AccountApiKeyRuntimeResponse | undefined> {
+  if (account.accessType === 'authorized' || account.accountAuthorizationId || account.authorizationInstanceSourceAccountId) {
+    return undefined
+  }
+  const items = (await loadAccountApiKeyRuntimeDetailsByAccountIdsAsync([account.id])).get(account.id) ?? []
+  return {
+    accountId: account.id,
+    configRevision: account.configRevision ?? 1,
+    items
+  }
+}
 
 export function accountApiKeyPoolCredentials(candidate: OpenAIAccountSecret): Record<string, unknown> {
   return {

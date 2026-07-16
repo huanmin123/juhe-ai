@@ -47,7 +47,7 @@
 
         <AccountApiKeySection
           v-if="isApiKeyForm && !authorizedEditing"
-          :api-key-runtime-details="accountDetail?.apiKeyRuntimeDetails"
+          :api-key-runtime-details="apiKeyRuntimeDetails"
           :api-key-test-details="apiKeyTestDetails"
           :base-url-placeholder="baseUrlPlaceholder"
           :deleting-tag-id="deletingTagId"
@@ -238,6 +238,7 @@ const advancedActiveKeys = ref<string[]>([])
 const props = withDefaults(defineProps<{
   accountTypeChoices: AccountTypeChoice[]
   accountDetail?: AccountSummary
+  apiKeyRuntimeDetails?: AccountApiKeyRuntimeDetail[]
   advancedLoaded?: boolean
   advancedLoading?: boolean
   apiKeyTestDetails?: AccountApiKeyRuntimeDetail[]

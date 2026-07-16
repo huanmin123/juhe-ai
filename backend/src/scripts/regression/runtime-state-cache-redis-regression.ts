@@ -114,6 +114,8 @@ async function verifyRuntimeStateStore(): Promise<void> {
   const stateStore = createRuntimeStateStore(stateName)
 
   await stateStore.setJson('profile', { ok: true }, 1000)
+  await stateStore.setJson('profile-b', { ok: false }, 1000)
+  assert.deepEqual(await stateStore.getJsonMany('profile,profile-b,missing'.split(',')), [{ ok: true }, { ok: false }, undefined], 'Redis state 应通过 MGET 保持输入顺序批量读取 JSON')
   assert.deepEqual(await stateStore.getJson('profile'), { ok: true }, 'Redis state 应能读取刚写入的 JSON')
   assert.deepEqual(await stateStore.getDeleteJson('profile'), { ok: true }, 'Redis state getDeleteJson 应返回旧值并原子删除')
   assert.equal(await stateStore.getJson('profile'), undefined, 'Redis state getDeleteJson 后应读不到旧值')

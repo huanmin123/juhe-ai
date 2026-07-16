@@ -419,6 +419,12 @@ async function main(): Promise<void> {
     assert(!authorizedDetailSecretJson.includes('sk-scope-user-b'), '授权实例详情不应泄露来源账户 API Key 明文')
     assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, 'error_handling_rules'), '授权实例详情不应返回来源账户错误处理策略')
     assert(!Object.prototype.hasOwnProperty.call(authorizedDetailCredentials, 'stream_intercept_rules'), '授权实例详情不应返回旧账户 stream_intercept_rules')
+    await assertStatus(
+      `${baseUrl}/__aisys__/api/my-accounts/${seed.userAAuthorizedUserBAccountId}/api-key-runtime`,
+      seed.userACookie,
+      403,
+      '授权实例不得读取来源账户 API Key 运行明细'
+    )
     summary.push('我的账户自有作用域检查通过')
 
     const adminMyAccounts = await getAccountItems(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}`, seed.adminCookie)

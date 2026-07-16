@@ -85,6 +85,7 @@ type AccountTestInput = {
   disableAccountStateMutation?: boolean
   candidateAccount?: OpenAIAccountSecret
   onDiagnosticAttemptProgress?: AccountDiagnosticAttemptProgressHandler
+  onUpstreamAttempt?: (attempt: UpstreamAttempt) => void
   findAccountForTest?: (accountId: string, access?: AccessScope) => AccountSummary | undefined | Promise<AccountSummary | undefined>
   findOpenAIAccountForGroup?: (groupId: string, accountId: string, systemAccountId: string, options?: { includeUnavailable?: boolean; ignoreAvailability?: boolean }) => OpenAIAccountSecret | undefined | Promise<OpenAIAccountSecret | undefined>
 }
@@ -258,6 +259,7 @@ export async function testOpenAIAccount(
       ignoreAccountRuntimeSuppression: true,
       onUpstreamAttemptDiagnostic: (lastAttempt) => {
         diagnosticLastAttempt = lastAttempt
+        notifyUpstreamAttempt(input.onUpstreamAttempt, lastAttempt)
       }
     })))
     if (input.signal?.aborted) {
@@ -373,6 +375,15 @@ export async function testOpenAIAccount(
       accountStatus: account.status,
       accountFailureEligible
     }), limitedDiagnostics)
+  }
+}
+
+function notifyUpstreamAttempt(handler: AccountTestInput['onUpstreamAttempt'], attempt: UpstreamAttempt): void {
+  if (!handler) return
+  try {
+    handler(attempt)
+  } catch (error) {
+    logger.warn(errorLogFields(error, { event: 'account_test_upstream_attempt_callback_failed' }), '账户测试上游尝试回调执行失败')
   }
 }
 

@@ -38,10 +38,17 @@ interface ApiEnvelope<T> {
 
 interface AccountResponse {
   id: string
+  configRevision?: number
   credentials?: Record<string, unknown>
   supportedModels?: string[]
   modelMappings?: unknown[]
   apiKeyRuntimeDetails?: unknown[]
+}
+
+interface AccountApiKeyRuntimeResponse {
+  accountId: string
+  configRevision: number
+  items: Array<Record<string, unknown>>
 }
 
 interface AccountListResponse {
@@ -138,6 +145,21 @@ try {
   assert.equal(multiKeyEditBasicDetail.credentials.api_key_strategy, 'weighted_round_robin', '账户编辑首屏详情应返回多 API Key 调度策略')
   assert.deepEqual(multiKeyEditBasicDetail.credentials.api_key_weights, [2, 1], '账户编辑首屏详情应返回多 API Key 权重')
   assertNoForbiddenCredentialKeysExcept(multiKeyEditBasicDetail, '账户编辑首屏多 Key 详情响应', new Set(['api_key', 'api_keys', 'api_key_strategy', 'api_key_weights']))
+
+  const runtimeResponse = await fetch(`${baseUrl}/__aisys__/api/accounts/${seed.multiApiKeyAccountId}/api-key-runtime`, {
+    headers: { cookie: seed.adminCookie }
+  })
+  assert.equal(runtimeResponse.status, 200, `账户 API Key 运行明细接口应可读取，实际响应：${await runtimeResponse.clone().text()}`)
+  assert.match(runtimeResponse.headers.get('cache-control') ?? '', /no-store/i, '账户 API Key 运行明细接口必须禁用客户端和中间缓存')
+  const runtimeEnvelope = JSON.parse(await runtimeResponse.text()) as ApiEnvelope<AccountApiKeyRuntimeResponse>
+  assert.equal(runtimeEnvelope.data.accountId, seed.multiApiKeyAccountId, '账户 API Key 运行明细必须绑定请求账户')
+  assert.equal(runtimeEnvelope.data.configRevision, multiKeyEditBasicDetail.configRevision, '账户 API Key 运行明细必须携带保存配置版本')
+  assert.equal(runtimeEnvelope.data.items.length, 2, '多 Key 账户运行明细应返回每个已保存 Key 的轻量状态')
+  assertNoCredentialLeak(runtimeEnvelope.data, '账户 API Key 运行明细响应')
+  for (const item of runtimeEnvelope.data.items) {
+    assert.equal(Object.prototype.hasOwnProperty.call(item, 'credentials'), false, '账户 API Key 运行明细不得返回 credentials')
+    assert.equal(Object.prototype.hasOwnProperty.call(item, 'apiKey'), false, '账户 API Key 运行明细不得返回 API Key 明文')
+  }
 
   const detail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/advanced`, seed.adminCookie)
   assert(detail.credentials, '账户高级详情应返回编辑凭据')

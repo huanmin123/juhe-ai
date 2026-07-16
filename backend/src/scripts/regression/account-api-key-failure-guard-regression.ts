@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+import type { RuntimeStateStore } from '../../shared/runtime-state-store.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-api-key-failure-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -33,6 +34,32 @@ const [
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+
+class RegressionRuntimeStateStore implements RuntimeStateStore {
+  private readonly values = new Map<string, unknown>()
+
+  async getJson<T>(key: string): Promise<T | undefined> { return this.values.get(key) as T | undefined }
+  async getJsonMany<T>(keys: string[]): Promise<Array<T | undefined>> {
+    return keys.map((key) => this.values.get(key) as T | undefined)
+  }
+  async getDeleteJson<T>(key: string): Promise<T | undefined> {
+    const value = this.values.get(key) as T | undefined
+    this.values.delete(key)
+    return value
+  }
+  async setJson<T>(key: string, value: T): Promise<void> { this.values.set(key, value) }
+  async compareSetJson<T>(): Promise<boolean> { return false }
+  async compareDeleteJson<T>(): Promise<boolean> { return false }
+  async delete(key: string): Promise<void> { this.values.delete(key) }
+  async incr(key: string, options: { max?: number }): Promise<number> {
+    const current = Number(this.values.get(key) ?? 0)
+    const next = current + 1
+    if (options.max === undefined || next <= options.max) this.values.set(key, next)
+    return next
+  }
+  async acquireLock(): Promise<boolean> { return false }
+  async releaseLock(): Promise<void> {}
+}
 
 try {
   const group = repositories.createGroup({
@@ -161,8 +188,51 @@ try {
   await delay(50)
   assert.equal(runtimeStatus(account.id, selectedB.selectedApiKeyFingerprint), undefined, '网关 error 状态也不能直接写成全局 Key 错误')
 
+  runtimeConfig.runtimeStateDriver = 'redis'
+  const transientStore = new RegressionRuntimeStateStore()
+  apiKeyFailureGuard.setGatewayAccountApiKeyTransientStateStoreForTest(transientStore)
+  const redisGatewayDecision = apiKeyFailureGuard.recordGatewayAccountApiKeyFailureGuard(selectedA, {
+    status: 'temporary_unavailable',
+    statusCode: 503,
+    errorMessage: 'Redis 运行态下的网关短暂失败',
+    trafficSource: 'gateway',
+    clientIp: '198.51.100.50',
+    apiKeyId: 'gateway-key-redis',
+    source: 'redis_transient_regression'
+  })
+  assert.equal(redisGatewayDecision.persist, false, 'Redis 运行态下真实网关失败不得持久化 DB Key runtime row')
+  await apiKeyEffects.recordGatewayAccountApiKeyFailure(selectedA, {
+    status: 'temporary_unavailable',
+    statusCode: 503,
+    errorMessage: 'Redis 运行态下的网关短暂失败',
+    trafficSource: 'gateway',
+    clientIp: '198.51.100.50',
+    apiKeyId: 'gateway-key-redis',
+    source: 'redis_transient_regression'
+  })
+  assertNoPersistedFailure(account.id, selectedA.selectedApiKeyFingerprint, 'Redis 短避让不得降级写入 DB Key runtime row')
+  const redisTransientStates = await apiKeyFailureGuard.loadGatewayAccountApiKeyTransientStatesForDispatch(
+    account.id,
+    [selectedA.selectedApiKeyFingerprint, selectedB.selectedApiKeyFingerprint]
+  )
+  assert.deepEqual(
+    redisTransientStates.map((state) => state.keyFingerprint),
+    [selectedA.selectedApiKeyFingerprint],
+    'Redis 短避让必须按完整 fingerprint 隔离，不能误伤同账户其他 Key'
+  )
+  await apiKeyFailureGuard.clearGatewayAccountApiKeyTransientFailure(selectedA)
+  assert.equal(
+    (await apiKeyFailureGuard.loadGatewayAccountApiKeyTransientStatesForDispatch(account.id, [selectedA.selectedApiKeyFingerprint])).length,
+    0,
+    '真实成功应能清理 Redis fingerprint 短避让'
+  )
+  apiKeyFailureGuard.setGatewayAccountApiKeyTransientStateStoreForTest(undefined)
+  runtimeConfig.runtimeStateDriver = 'memory'
+
   console.log('账户内 API Key 失败保护回归通过：网关失败只本地短避让，真实成功可写 active')
 } finally {
+  apiKeyFailureGuard.setGatewayAccountApiKeyTransientStateStoreForTest(undefined)
+  runtimeConfig.runtimeStateDriver = 'memory'
   apiKeyFailureGuard.clearGatewayAccountApiKeyFailureGuardsForTest()
   try {
     databaseModule.closeStorageDatabases()
