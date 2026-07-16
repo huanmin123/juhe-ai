@@ -31,18 +31,24 @@ applyChatSchema(database)
 const client = createSqliteDatabaseClient(database)
 const testStorageQuotaBytes = 64 * 1024 * 1024
 for (const [rawCount, expected] of [['0', 0], ['50', 50]] as const) {
-  assert.equal((await getChatConversation(chatConversationRowClient(rawCount), 'turn_count', 'turn_owner'))?.userTurnCount, expected, '合法 PostgreSQL bigint 字符串必须规范化为 number')
+  assert.equal((await getChatConversation(chatConversationRowClient(rawCount, 0), 'turn_count', 'turn_owner'))?.userTurnCount, expected, '合法 PostgreSQL bigint 字符串必须规范化为 number')
 }
 for (const rawCount of [null, undefined, '', '1.5', '-1', '9007199254740992', true, {}]) {
-  await assert.rejects(getChatConversation(chatConversationRowClient(rawCount), 'turn_count', 'turn_owner'), /聊天会话轮次计数无效/, `无效用户轮次计数必须 fail-fast：${String(rawCount)}`)
+  await assert.rejects(getChatConversation(chatConversationRowClient(rawCount, 0), 'turn_count', 'turn_owner'), /聊天会话轮次计数无效/, `无效用户轮次计数必须 fail-fast：${String(rawCount)}`)
+}
+for (const [rawRevision, expected] of [['0', 0], ['50', 50]] as const) {
+  assert.equal((await getChatConversation(chatConversationRowClient(0, rawRevision), 'turn_count', 'turn_owner'))?.messageRevision, expected, '合法 PostgreSQL bigint revision 字符串必须规范化为 number')
+}
+for (const rawRevision of [null, undefined, '', '1.5', '-1', '9007199254740992', true, {}]) {
+  await assert.rejects(getChatConversation(chatConversationRowClient(0, rawRevision), 'turn_count', 'turn_owner'), /聊天会话消息 revision 无效/, `无效消息 revision 必须 fail-fast：${String(rawRevision)}`)
 }
 
-function chatConversationRowClient(userTurnCount: unknown): DatabaseClient {
+function chatConversationRowClient(userTurnCount: unknown, messageRevision: unknown): DatabaseClient {
   return {
     ...client,
     one: async () => ({
       id: 'turn_count', system_account_id: 'turn_owner', api_key_id: 'key', api_key_name_snapshot: 'Key',
-      title: '计数测试', is_pinned: 0, last_model: null, active_turn_id: null, user_turn_count: userTurnCount, message_revision: 0,
+      title: '计数测试', is_pinned: 0, last_model: null, active_turn_id: null, user_turn_count: userTurnCount, message_revision: messageRevision,
       last_message_at: '2026-07-10T00:00:00.000Z', created_at: '2026-07-10T00:00:00.000Z', updated_at: '2026-07-10T00:00:00.000Z'
     })
   } as unknown as DatabaseClient
@@ -1095,6 +1101,7 @@ const newTitleTurn = await acceptChatTurn(client, {
   conversationId: titleConversation.id, systemAccountId: 'sys_user_1', clientMessageId: 'title_new', userContent: '仍在保留期的新标题', model: 'mock-model', now: '2026-07-11T00:01:00.000Z', storageQuotaBytes: testStorageQuotaBytes, retentionDays: 7, maxTurnsPerConversation: 1000
 })
 await completeChatTurn(client, { conversationId: titleConversation.id, systemAccountId: 'sys_user_1', turnId: newTitleTurn.turnId, assistantContent: '新回答', finishReason: 'stop', traceId: 'trace_title_new', now: '2026-07-11T00:02:00.000Z' })
+const titleRevisionBeforeCleanup = (await getChatConversation(client, titleConversation.id, 'sys_user_1'))?.messageRevision
 const cleanup = await cleanupChatRetention(client, {
   retentionDays: 7,
   now: '2026-07-12T00:10:00.000Z', interruptedBefore: '2026-07-12T00:00:00.000Z', limit: 1000
@@ -1103,6 +1110,7 @@ assert.equal(cleanup.recoveredTurns, 1, '超时 streaming 轮次应先恢复为�
 assert.equal(cleanup.deletedMessages, 4, '清理必须按完整轮次成对删除')
 assert.equal(cleanup.deletedConversations, 1, '没有保留消息的会话应删除')
 assert.equal((await getChatConversation(client, titleConversation.id, 'sys_user_1'))?.title, '仍在保留期的新标题', '标题来源过期后应使用最早保留用户消息重算')
+assert.equal((await getChatConversation(client, titleConversation.id, 'sys_user_1'))?.messageRevision, Number(titleRevisionBeforeCleanup) + 1, '清理旧轮且会话仍有新轮时必须推进一次 revision')
 assertStorageLedgerInvariant(database, 'sys_user_1', 'stale 恢复与 retention 清理')
 
 await assert.rejects(

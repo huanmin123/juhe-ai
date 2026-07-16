@@ -667,8 +667,11 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
 }): Promise<ChatRetentionCleanupResult> {
   const limit = Math.max(2, Math.min(Math.trunc(input.limit), 1000))
   const retentionDays = input.retentionDays
-  const droppedPartitions = await dropExpiredPostgresChatPartitions(client, input.now, retentionDays)
   return client.transaction(async (tx) => {
+    const affectedConversations = new Map<string, AffectedChatConversation>()
+    const partitionCleanup = await dropExpiredPostgresChatPartitions(tx, input.now, retentionDays, affectedConversations)
+    const advancedConversationKeys = partitionCleanup.advancedConversationKeys
+    const droppedPartitions = partitionCleanup.droppedPartitions
     const staleTurns = await tx.query<{ id?: unknown; system_account_id?: unknown; active_turn_id?: unknown }>(`
       SELECT id, system_account_id, active_turn_id
       FROM ${chatTable(tx, 'chat_conversations')}
@@ -716,7 +719,6 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
       ORDER BY MIN(expires_at) ASC, turn_id ASC LIMIT ?
     `, [input.now, Math.max(1, Math.floor(limit / 2))])
     let deletedMessages = 0
-    const affectedConversations = new Set<string>()
     for (const expired of expiredTurns) {
       const conversationId = String(expired.conversation_id)
       const systemAccountId = String(expired.system_account_id)
@@ -748,8 +750,11 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
         WHERE id = ? AND system_account_id = ? AND active_turn_id = ?
       `, [input.now, conversationId, systemAccountId, turnId])
       deletedMessages += deleted.changes
-      affectedConversations.add(conversationId)
+      if (deleted.changes > 0) {
+        affectedConversations.set(chatConversationKey(conversationId, systemAccountId), { conversationId, systemAccountId })
+      }
     }
+    await advanceChatConversationRevisions(tx, affectedConversations, advancedConversationKeys, input.now)
     await tx.execute(`DELETE FROM ${chatTable(tx, 'chat_message_idempotency')} WHERE expires_at <= ?`, [input.now])
     await tx.execute(`
       DELETE FROM ${chatTable(tx, 'chat_user_storage_windows')} AS storage_window
@@ -765,12 +770,12 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
         )
     `, [storageWindowCutoffDate(input.now, retentionDays)])
     let deletedConversations = 0
-    for (const conversationId of affectedConversations) {
+    for (const { conversationId, systemAccountId } of affectedConversations.values()) {
       const deleted = await tx.execute(`
         DELETE FROM ${chatTable(tx, 'chat_conversations')}
-        WHERE id = ? AND active_turn_id IS NULL
+        WHERE id = ? AND system_account_id = ? AND active_turn_id IS NULL
           AND NOT EXISTS (SELECT 1 FROM ${chatTable(tx, 'chat_messages')} WHERE conversation_id = ? LIMIT 1)
-      `, [conversationId, conversationId])
+      `, [conversationId, systemAccountId, conversationId])
       deletedConversations += deleted.changes
     }
     const staleTitles = await tx.query<{ id?: unknown; system_account_id?: unknown }>(`
@@ -821,10 +826,20 @@ export async function cleanupChatRetention(client: DatabaseClient, input: {
   })
 }
 
-async function dropExpiredPostgresChatPartitions(client: DatabaseClient, now: string, retentionDays: number): Promise<number> {
-  if (client.driver !== 'postgres') return 0
+interface AffectedChatConversation {
+  conversationId: string
+  systemAccountId: string
+}
+
+async function dropExpiredPostgresChatPartitions(
+  tx: DatabaseClient,
+  now: string,
+  retentionDays: number,
+  affectedConversations: Map<string, AffectedChatConversation>
+): Promise<{ droppedPartitions: number; advancedConversationKeys: Set<string> }> {
+  if (tx.driver !== 'postgres') return { droppedPartitions: 0, advancedConversationKeys: new Set() }
   const cutoff = new Date(new Date(now).getTime() - retentionDays * 24 * 60 * 60 * 1000)
-  const rows = await client.query<{ partition_name?: unknown }>(`
+  const rows = await tx.query<{ partition_name?: unknown }>(`
     SELECT child.relname AS partition_name
     FROM pg_inherits
     JOIN pg_class parent ON parent.oid = inhparent
@@ -832,17 +847,53 @@ async function dropExpiredPostgresChatPartitions(client: DatabaseClient, now: st
     JOIN pg_class child ON child.oid = inhrelid
     WHERE namespace.nspname = 'juhe_chat' AND parent.relname = 'chat_messages'
   `)
-  let dropped = 0
+  const expiredPartitionNames: string[] = []
   for (const row of rows) {
     const name = String(row.partition_name ?? '')
     const match = /^chat_messages_(\d{4})(\d{2})(\d{2})$/.exec(name)
     if (!match) continue
     const partitionEnd = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + 1))
     if (partitionEnd > cutoff) continue
-    await client.execute(`DROP TABLE IF EXISTS juhe_chat."${name}"`)
-    dropped += 1
+    expiredPartitionNames.push(name)
   }
-  return dropped
+  for (const name of expiredPartitionNames) {
+    const rows = await tx.query<{ conversation_id?: unknown; system_account_id?: unknown }>(`
+      SELECT DISTINCT conversation_id, system_account_id
+      FROM juhe_chat."${name}"
+    `)
+    for (const row of rows) {
+      const conversationId = String(row.conversation_id ?? '')
+      const systemAccountId = String(row.system_account_id ?? '')
+      affectedConversations.set(chatConversationKey(conversationId, systemAccountId), { conversationId, systemAccountId })
+    }
+  }
+  const advancedConversationKeys = new Set<string>()
+  await advanceChatConversationRevisions(tx, affectedConversations, advancedConversationKeys, now)
+  for (const name of expiredPartitionNames) {
+    await tx.execute(`DROP TABLE IF EXISTS juhe_chat."${name}"`)
+  }
+  return { droppedPartitions: expiredPartitionNames.length, advancedConversationKeys }
+}
+
+async function advanceChatConversationRevisions(
+  tx: DatabaseClient,
+  affectedConversations: Map<string, AffectedChatConversation>,
+  advancedConversationKeys: Set<string>,
+  now: string
+): Promise<void> {
+  for (const [key, conversation] of affectedConversations) {
+    if (advancedConversationKeys.has(key)) continue
+    await tx.execute(`
+      UPDATE ${chatTable(tx, 'chat_conversations')}
+      SET message_revision = message_revision + 1, updated_at = ?
+      WHERE id = ? AND system_account_id = ?
+    `, [now, conversation.conversationId, conversation.systemAccountId])
+    advancedConversationKeys.add(key)
+  }
+}
+
+function chatConversationKey(conversationId: string, systemAccountId: string): string {
+  return `${systemAccountId}\u0000${conversationId}`
 }
 
 function storageWindowCutoffDate(now: string, retentionDays: number): string {

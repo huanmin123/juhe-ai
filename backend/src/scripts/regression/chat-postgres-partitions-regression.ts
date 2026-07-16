@@ -11,7 +11,9 @@ import {
   acceptChatTurn,
   chatAssistantStorageReservationBytes,
   completeChatTurn,
+  cleanupChatRetention,
   createChatConversation,
+  getChatConversation,
   listChatMessages
 } from '../../storage/chat.repository.js'
 import { applyChatSchema } from '../../storage/schema.js'
@@ -27,7 +29,8 @@ assert.throws(() => postgresChatMessagePartitionName('2026-07-12'), /日期无�
 
 const database = new DatabaseSync(':memory:')
 applyChatSchema(database)
-const postgresContractQueries: Array<{ sql: string; params: readonly unknown[] }> = []
+interface CapturedQuery { sql: string; params: readonly unknown[]; inTransaction: boolean }
+const postgresContractQueries: CapturedQuery[] = []
 const postgresContractClient = asPostgresContractClient(createSqliteDatabaseClient(database), postgresContractQueries)
 const conversation = await createChatConversation(postgresContractClient, {
   id: 'chat_pg_contract_replace',
@@ -99,27 +102,57 @@ assert(oversizedCursorQuery, 'PostgreSQL 契约必须捕获超范围游标查询
 assert.doesNotMatch(oversizedCursorQuery.sql, /sequence_no\s*<\s*\?/i, '超过 PostgreSQL int4 上限的游标应按无界查询处理')
 assert.equal(oversizedCursorQuery.params.includes(Number.MAX_SAFE_INTEGER), false, 'repository 不得向 PostgreSQL 绑定超 int4 游标')
 
+const cleanupQueryStart = postgresContractQueries.length
+const revisionBeforePartitionCleanup = (await getChatConversation(postgresContractClient, conversation.id, 'sys_pg_contract'))?.messageRevision
+const partitionCleanup = await cleanupChatRetention(postgresContractClient, {
+  now: '2026-08-21T00:00:00.000Z', interruptedBefore: '2026-08-01T00:00:00.000Z', retentionDays: 7, limit: 100
+})
+assert.equal(partitionCleanup.droppedPartitions, 2)
+assert.equal((await getChatConversation(postgresContractClient, conversation.id, 'sys_pg_contract'))?.messageRevision, Number(revisionBeforePartitionCleanup) + 1)
+const cleanupQueries = postgresContractQueries.slice(cleanupQueryStart)
+const affectedIndexes = cleanupQueries.flatMap((item, index) => /SELECT DISTINCT conversation_id, system_account_id[\s\S]+chat_messages_2026080[12]/.test(item.sql) ? [index] : [])
+const revisionIndexes = cleanupQueries.flatMap((item, index) => /UPDATE\s+"chat_conversations"[\s\S]+message_revision = message_revision \+ 1/.test(item.sql) ? [index] : [])
+const dropIndexes = cleanupQueries.flatMap((item, index) => /DROP TABLE IF EXISTS juhe_chat\."chat_messages_2026080[12]"/.test(item.sql) ? [index] : [])
+assert.equal(affectedIndexes.length, 2, 'PG 分区清理必须逐分区收集受影响会话')
+assert.equal(revisionIndexes.length, 1, '同一 cleanup 中同一会话跨多个分区只能推进一次 revision')
+assert.equal(dropIndexes.length, 2, 'PG 分区清理必须 DROP 每个已过期合法分区')
+assert(Math.max(...affectedIndexes) < revisionIndexes[0] && revisionIndexes[0] < Math.min(...dropIndexes), 'PG 分区清理必须先收集全部会话、推进 revision，再 DROP')
+const revisionIndex = revisionIndexes[0]
+assert(affectedIndexes.every((index) => cleanupQueries[index]?.inTransaction), 'PG 受影响会话查询必须位于 cleanup transaction')
+assert.equal(cleanupQueries[revisionIndex]?.inTransaction, true, 'PG revision UPDATE 必须位于 cleanup transaction')
+assert(dropIndexes.every((index) => cleanupQueries[index]?.inTransaction), 'PG DROP 必须位于 cleanup transaction')
+
 console.log('AI 问答 PostgreSQL 日分区回归通过')
 
-function asPostgresContractClient(sqliteClient: DatabaseClient, queries: Array<{ sql: string; params: readonly unknown[] }>): DatabaseClient {
-  const wrap = (client: DatabaseClient): DatabaseClient => ({
+function asPostgresContractClient(sqliteClient: DatabaseClient, queries: CapturedQuery[]): DatabaseClient {
+  const wrap = (client: DatabaseClient, inTransaction = false): DatabaseClient => ({
     driver: 'postgres',
     dialect: client.dialect,
     query: (sql, params = []) => {
-      queries.push({ sql, params })
+      queries.push({ sql, params, inTransaction })
+      if (/FROM pg_inherits/.test(sql)) return Promise.resolve([
+        { partition_name: 'chat_messages_20260801' },
+        { partition_name: 'chat_messages_20260802' },
+        { partition_name: 'chat_messages_20260820' },
+        { partition_name: 'chat_messages_20260801_unsafe' }
+      ] as never)
+      if (/SELECT DISTINCT conversation_id, system_account_id[\s\S]+chat_messages_2026080[12]/.test(sql)) {
+        return Promise.resolve([{ conversation_id: 'chat_pg_contract_replace', system_account_id: 'sys_pg_contract' }] as never)
+      }
       return client.query(stripPostgresOnlySql(sql), params)
     },
     one: (sql, params = []) => {
-      queries.push({ sql, params })
+      queries.push({ sql, params, inTransaction })
       return client.one(stripPostgresOnlySql(sql), params)
     },
     execute: (sql, params) => {
-      queries.push({ sql, params: params ?? [] })
+      queries.push({ sql, params: params ?? [], inTransaction })
       if (/PARTITION OF juhe_chat\.chat_messages/.test(sql)) return Promise.resolve({ changes: 0 })
+      if (/DROP TABLE IF EXISTS juhe_chat\./.test(sql)) return Promise.resolve({ changes: 0 })
       if (/pg_advisory_xact_lock/.test(sql)) return Promise.resolve({ changes: 1 })
       return client.execute(stripPostgresOnlySql(sql), params)
     },
-    transaction: (operation) => client.transaction((tx) => operation(wrap(tx)))
+    transaction: (operation) => client.transaction((tx) => operation(wrap(tx, true)))
   })
   return wrap(sqliteClient)
 }
