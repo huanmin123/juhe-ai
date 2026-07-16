@@ -132,7 +132,7 @@ func TestW2ManagementExternalIntegrationSourceTokenCreatePostgresSmoke(t *testin
 		t.Fatal("token create changed the existing disabled token row")
 	}
 
-	rowsBeforeMissingAndBuiltIn := countW2ExternalSourceTokenCreateRows(t, ctx, db)
+	stateBeforeMissing := readW2ExternalSourceTokenCreateRelevantState(t, ctx, db)
 	missing := requestW2ExternalSourceTokenCreate(
 		t,
 		ctx,
@@ -142,6 +142,9 @@ func TestW2ManagementExternalIntegrationSourceTokenCreatePostgresSmoke(t *testin
 		w2ExternalSourceTokenCreateBody("Missing Source Token"),
 	)
 	assertW2ExternalSourceTokenCreateError(t, missing, "来源系统不存在")
+	assertW2ExternalSourceTokenCreateRelevantStateUnchanged(t, ctx, db, stateBeforeMissing, "missing source token create")
+
+	stateBeforeBuiltIn := readW2ExternalSourceTokenCreateRelevantState(t, ctx, db)
 	builtIn := requestW2ExternalSourceTokenCreate(
 		t,
 		ctx,
@@ -151,9 +154,7 @@ func TestW2ManagementExternalIntegrationSourceTokenCreatePostgresSmoke(t *testin
 		w2ExternalSourceTokenCreateBody("Built-in Source Token"),
 	)
 	assertW2ExternalSourceTokenCreateError(t, builtIn, managementexternalintegrationsources.ErrBuiltInTokenCreateRestricted.Error())
-	if rowsAfterMissingAndBuiltIn := countW2ExternalSourceTokenCreateRows(t, ctx, db); rowsAfterMissingAndBuiltIn != rowsBeforeMissingAndBuiltIn {
-		t.Fatal("missing or built-in token create changed source/token row counts")
-	}
+	assertW2ExternalSourceTokenCreateRelevantStateUnchanged(t, ctx, db, stateBeforeBuiltIn, "built-in source token create")
 	assertW2ExternalSourceTokenCreateTargetTokenCount(t, ctx, db, publicapi.BuiltInTestSourceID, 0)
 
 	collisionTokens := []string{
@@ -253,6 +254,14 @@ type w2ExternalSourceTokenCreateTokenSnapshot struct {
 type w2ExternalSourceTokenCreateRowCounts struct {
 	sources int
 	tokens  int
+}
+
+type w2ExternalSourceTokenCreateRelevantState struct {
+	targetSource  w2ExternalSourceTokenCreateSourceSnapshot
+	builtInSource w2ExternalSourceTokenCreateSourceSnapshot
+	existingToken w2ExternalSourceTokenCreateTokenSnapshot
+	relatedTokens []w2ExternalSourceTokenCreateTokenSnapshot
+	allRowCounts  w2ExternalSourceTokenCreateRowCounts
 }
 
 func w2ExternalSourceTokenCreateRouter(
@@ -365,16 +374,31 @@ func assertW2ExternalSourceTokenCreateResponse(
 		len(source.Tokens) != 2 {
 		t.Fatal("created token source detail fields are incomplete or inconsistent")
 	}
-	if source.Tokens[0].ID != w2ExternalSourceTokenCreateNewTokenID ||
-		source.Tokens[0].Status != publicapi.TokenStatusActive ||
-		source.Tokens[0].CreatedAt != "2026-07-16T09:10:11.123Z" ||
-		source.Tokens[0].UpdatedAt != "2026-07-16T09:10:11.123Z" ||
-		source.Tokens[0].LastUsedAt != nil || source.Tokens[0].RevokedAt != nil || source.Tokens[0].IsBuiltIn ||
-		source.Tokens[1].ID != w2ExternalSourceTokenCreateExistingTokenID ||
-		source.Tokens[1].Status != publicapi.TokenStatusDisabled ||
-		source.Tokens[1].CreatedAt != fixture.existingCreatedAt.Format("2006-01-02T15:04:05.000Z") ||
-		source.Tokens[1].UpdatedAt != fixture.existingUpdatedAt.Format("2006-01-02T15:04:05.000Z") {
-		t.Fatal("created token source detail token list is inconsistent")
+	newToken := source.Tokens[0]
+	if newToken.ID != w2ExternalSourceTokenCreateNewTokenID ||
+		newToken.Name != w2ExternalSourceTokenCreateNewName ||
+		newToken.TokenPrefix != plainToken[:8] ||
+		newToken.TokenSuffix != plainToken[len(plainToken)-8:] ||
+		newToken.Status != publicapi.TokenStatusActive ||
+		!reflect.DeepEqual(newToken.Scopes, []string{publicapi.ScopeAPIKeyListRead, publicapi.ScopeGroupListRead}) ||
+		newToken.ExpiresAt == nil || *newToken.ExpiresAt != "2026-08-02T03:04:05.678Z" ||
+		newToken.LastUsedAt != nil ||
+		newToken.CreatedAt != "2026-07-16T09:10:11.123Z" ||
+		newToken.UpdatedAt != "2026-07-16T09:10:11.123Z" ||
+		newToken.RevokedAt != nil || newToken.IsBuiltIn {
+		t.Fatal("created token source detail new token fields are incomplete or inconsistent")
+	}
+	oldToken := source.Tokens[1]
+	if oldToken.ID != w2ExternalSourceTokenCreateExistingTokenID ||
+		oldToken.Name != "W2 Existing Disabled Token" ||
+		oldToken.TokenPrefix != "juis_old" || oldToken.TokenSuffix != "oldtoken" ||
+		oldToken.Status != publicapi.TokenStatusDisabled ||
+		!reflect.DeepEqual(oldToken.Scopes, []string{publicapi.ScopeGroupListRead}) ||
+		oldToken.ExpiresAt != nil || oldToken.LastUsedAt != nil ||
+		oldToken.CreatedAt != fixture.existingCreatedAt.Format("2006-01-02T15:04:05.000Z") ||
+		oldToken.UpdatedAt != fixture.existingUpdatedAt.Format("2006-01-02T15:04:05.000Z") ||
+		oldToken.RevokedAt != nil || oldToken.IsBuiltIn {
+		t.Fatal("created token source detail existing token fields are incomplete or inconsistent")
 	}
 	var envelope struct {
 		Data struct {
@@ -648,6 +672,83 @@ func readW2ExternalSourceTokenCreateTokenSnapshot(
 		t.Fatalf("read external source token snapshot: %v", err)
 	}
 	return row
+}
+
+func readW2ExternalSourceTokenCreateRelatedTokenSnapshots(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+) []w2ExternalSourceTokenCreateTokenSnapshot {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, source_ref_id, name, token_hash, token_secret_encrypted,
+		       token_prefix, token_suffix, status, scopes_json, expires_at,
+		       last_used_at, created_at, updated_at, revoked_at
+		FROM juhe_business.external_integration_source_tokens
+		WHERE source_ref_id IN ($1, $2)
+		ORDER BY source_ref_id ASC, id ASC
+	`, w2ExternalSourceTokenCreateSourceID, publicapi.BuiltInTestSourceID)
+	if err != nil {
+		t.Fatalf("read related external source token snapshots: %v", err)
+	}
+	defer rows.Close()
+
+	snapshots := make([]w2ExternalSourceTokenCreateTokenSnapshot, 0, 2)
+	for rows.Next() {
+		var row w2ExternalSourceTokenCreateTokenSnapshot
+		if err := rows.Scan(
+			&row.id,
+			&row.sourceID,
+			&row.name,
+			&row.hash,
+			&row.secretEncrypted,
+			&row.prefix,
+			&row.suffix,
+			&row.status,
+			&row.scopesJSON,
+			&row.expiresAt,
+			&row.lastUsedAt,
+			&row.createdAt,
+			&row.updatedAt,
+			&row.revokedAt,
+		); err != nil {
+			t.Fatalf("scan related external source token snapshot: %v", err)
+		}
+		snapshots = append(snapshots, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate related external source token snapshots: %v", err)
+	}
+	return snapshots
+}
+
+func readW2ExternalSourceTokenCreateRelevantState(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+) w2ExternalSourceTokenCreateRelevantState {
+	t.Helper()
+	return w2ExternalSourceTokenCreateRelevantState{
+		targetSource:  readW2ExternalSourceTokenCreateSourceSnapshot(t, ctx, db, w2ExternalSourceTokenCreateSourceID),
+		builtInSource: readW2ExternalSourceTokenCreateSourceSnapshot(t, ctx, db, publicapi.BuiltInTestSourceID),
+		existingToken: readW2ExternalSourceTokenCreateTokenSnapshot(t, ctx, db, w2ExternalSourceTokenCreateExistingTokenID),
+		relatedTokens: readW2ExternalSourceTokenCreateRelatedTokenSnapshots(t, ctx, db),
+		allRowCounts:  countW2ExternalSourceTokenCreateRows(t, ctx, db),
+	}
+}
+
+func assertW2ExternalSourceTokenCreateRelevantStateUnchanged(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	before w2ExternalSourceTokenCreateRelevantState,
+	operation string,
+) {
+	t.Helper()
+	after := readW2ExternalSourceTokenCreateRelevantState(t, ctx, db)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("%s changed protected source or token fields", operation)
+	}
 }
 
 func countW2ExternalSourceTokenCreateRows(
