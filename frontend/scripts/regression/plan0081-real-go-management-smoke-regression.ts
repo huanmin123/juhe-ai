@@ -312,7 +312,11 @@ async function assertExternalIntegrationSourceApiEncoding(): Promise<void> {
       body: parseAxiosRequestBody(config.data)
     })
     return {
-      data: { data: capturedRequests.length === 1 ? {} : { token: 'local-capture-token' } },
+      data: {
+        data: String(config.url ?? '').endsWith('/secret')
+          ? { token: 'local-capture-token' }
+          : {}
+      },
       status: 200,
       statusText: 'OK',
       headers: {},
@@ -323,6 +327,7 @@ async function assertExternalIntegrationSourceApiEncoding(): Promise<void> {
   try {
     http.defaults.adapter = captureAdapter
     await externalIntegrationSourcesApi.detail(configuredExternalIntegrationSourceId)
+    await externalIntegrationSourcesApi.update(configuredExternalIntegrationSourceId, { status: 'disabled' })
     await externalIntegrationSourcesApi.tokenSecret(
       configuredExternalIntegrationSourceId,
       configuredExternalIntegrationSourceTokenId
@@ -336,6 +341,11 @@ async function assertExternalIntegrationSourceApiEncoding(): Promise<void> {
       method: 'GET',
       url: `/external-integration-sources/${encodeURIComponent(configuredExternalIntegrationSourceId)}`,
       body: undefined
+    },
+    {
+      method: 'PATCH',
+      url: `/external-integration-sources/${encodeURIComponent(configuredExternalIntegrationSourceId)}`,
+      body: { status: 'disabled' }
     },
     {
       method: 'GET',
