@@ -11,6 +11,7 @@ const healthCheckEndpointModeOfflineMigration = readFileSync(
   'utf8'
 )
 const customProviderModelRepositorySource = readFileSync('src/storage/custom-provider-models.repository.ts', 'utf8')
+const providerModelCatalogRepositorySource = readFileSync('src/storage/provider-model-catalog.repository.ts', 'utf8')
 const dataRetentionSource = readFileSync('src/storage/data-retention.repository.ts', 'utf8')
 const usagePartitionSource = readFileSync('src/storage/postgres-usage-record-partitions.ts', 'utf8')
 const tableMonitorSource = readFileSync('src/storage/table-monitor.repository.ts', 'utf8')
@@ -24,6 +25,9 @@ const postgresAccountFixtureSources = [
 ].map((path) => ({ path, source: readFileSync(path, 'utf8') }))
 const schemaNames = new Set(statements.map((statement) => statement.schemaName))
 const usageRecordsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_usage' && /^CREATE TABLE IF NOT EXISTS usage_records\b/i.test(statement.sql))?.sql ?? ''
+const providerModelCatalogCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS provider_model_catalog\b/i.test(statement.sql)
+)?.sql ?? ''
 
 assert.ok(statements.length > 100, 'PostgreSQL schema 应从现有 SQLite DDL 收集到完整建表和索引语句')
 assert.deepEqual(
@@ -53,6 +57,13 @@ for (const schemaName of schemaNames) {
 }
 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS system_accounts/, '应包含业务库 schema')
+assert.match(providerModelCatalogCreateSql, /catalog_visible integer NOT NULL DEFAULT 1/, 'Node PG 模型目录可见性字段必须保持 integer')
+assert.match(
+  providerModelCatalogRepositorySource,
+  /FROM juhe_business\.provider_model_catalog[\s\S]+catalog_visible = 1/,
+  'Node PG 模型目录查询必须对 integer 可见性字段使用整数谓词'
+)
+assert.doesNotMatch(providerModelCatalogRepositorySource, /catalog_visible = true/, 'Node PG 模型目录查询不得对 integer 字段使用 boolean 谓词')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS audit_logs/, '应包含数据集库 schema')
 assert.match(sql, /audit_logs[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 审计日志必须包含模型映射可观测字段')
 assert.match(sql, /audit_log_attempts[\s\S]+attempt_model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+attempt_model_mapping_source text[\s\S]+attempt_source_endpoint_family text[\s\S]+attempt_upstream_endpoint_family text/, 'PG 审计尝试表必须包含每次尝试的模型映射可观测字段')
