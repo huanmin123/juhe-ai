@@ -125,6 +125,9 @@ assert.equal(timers.length, 0, '重附着次数必须有界')
 assert.equal(runtime.get('account', 'conversation')?.status, 'running', '耗尽重连后保留 running 供外部 sync')
 assert.equal(runtime.get('account', 'conversation')?.reconciliationReason, 'reconnect_exhausted', '重连预算耗尽必须进入显式权威同步状态')
 assert.deepEqual(runtimeReconciliations, ['reconnect_exhausted'], '重连预算耗尽必须主动触发一次权威 sync 回调')
+runtime.attach({ systemAccountId: 'account', conversationId: 'conversation', clientMessageId: 'client', turnId: 'turn', assistantMessageId: 'assistant', eventVersion: 3, projection: runtime.get('account', 'conversation')?.projection as ChatMessage })
+await Promise.resolve(); await Promise.resolve()
+assert.equal(attaches.length, 3, '同一 active turn 的普通 sync/attach 不得重置已耗尽的重连预算')
 const unsubscribeRecovery = runtime.subscribe('account', 'conversation', () => undefined)
 await Promise.resolve()
 assert.equal(attaches.length, 3, '重连预算耗尽后 UI 重订阅不得静默重启 attach，必须等待权威 sync')
@@ -159,17 +162,19 @@ assert.equal(posts.length, 2)
 assert.equal(attaches.length, 5, 'stop 失败恢复和主动 attach 都必须使用 GET')
 attaches[4]!.onEvent({ type: 'message.snapshot', data: { turnId: 'turn-attach', assistant: { id: 'assistant-attach', status: 'streaming', contentText: 'attached', reasoningText: '', toolEvents: [], contentBlocks: [] }, eventVersion: 4 } })
 runtime.blockConversation('other-account', 'conversation')
+assert.equal(runtime.isConversationBlocked('other-account', 'conversation'), true, '403 门禁必须按账户与会话保留在应用 runtime')
 assert.equal(attaches[4]!.signal.aborted, true, '403 必须解除前端 SSE subscriber')
 assert.equal(runtime.get('other-account', 'conversation'), undefined, '403 后不得继续向 UI 投影该会话')
 assert.equal(stopCalls.length, 2, '403 解除前端投影不得停止后端生成')
 assert.throws(() => runtime.attach({ systemAccountId: 'other-account', conversationId: 'conversation', turnId: 'turn-attach', assistantMessageId: 'assistant-attach' }), /blocked/i, '重新认证前必须阻断 attach')
 runtime.allowConversation('other-account', 'conversation')
+assert.equal(runtime.isConversationBlocked('other-account', 'conversation'), false, '认证恢复后的成功 sync 必须显式解除门禁')
 runtime.attach({ systemAccountId: 'other-account', conversationId: 'conversation', clientMessageId: 'client-attach', turnId: 'turn-attach', assistantMessageId: 'assistant-attach' })
 assert.equal(attaches.length, 6, '认证恢复后必须允许重新 attach')
 attaches[5]!.onEvent({ type: 'message.completed', data: { messageId: 'assistant-attach', finishReason: 'stop', eventVersion: 5 } })
 assert.equal(runtime.get('other-account', 'conversation')?.status, 'completed')
 assert.equal(attaches[5]!.signal.aborted, true, 'terminal 必须清理网络连接')
-assert.equal(timers.length, 0)
+assert.equal(timers.length, 1, '终态只允许保留有界 TTL 回收定时器')
 assert(notifications.some((value) => value === 'two:running:3'), '保留的 UI subscriber 必须收到版本推进通知')
 unsubscribeTwo()
 runtime.close()
@@ -249,5 +254,53 @@ await Promise.resolve(); await Promise.resolve()
 assert.equal(failedProtocolRuntime.get('account', 'failed-protocol')?.status, 'failed', 'started 前协议错误必须结束 preparing')
 assert.equal(failedProtocolRuntime.get('account', 'failed-protocol')?.reconciliationReason, undefined, '未 accepted 的协议错误不得进入 reconciliation')
 failedProtocolRuntime.close()
+
+const terminalCallbacks: Array<() => void> = []
+const terminalEvents = new Map<string, (event: ChatStreamEvent) => void>()
+const terminalRuntime = new ChatGenerationRuntime({
+  streamMessage: async () => undefined,
+  attachStream: async (input) => { terminalEvents.set(input.conversationId, input.onEvent); await deferred().promise },
+  stop: async () => ({ stopped: true }),
+  schedule: (callback) => { terminalCallbacks.push(callback); return callback },
+  cancelSchedule: (handle) => { const index = terminalCallbacks.indexOf(handle as () => void); if (index >= 0) terminalCallbacks.splice(index, 1) }
+}, { terminalProjectionLimit: 2, terminalProjectionTtlMs: 60_000 })
+terminalRuntime.activateAccount('account')
+for (let index = 1; index <= 3; index += 1) {
+  const conversationId = `terminal-${index}`
+  const turnId = `turn-${index}`
+  const assistantMessageId = `assistant-${index}`
+  terminalRuntime.attach({ systemAccountId: 'account', conversationId, turnId, assistantMessageId })
+  await Promise.resolve()
+  terminalEvents.get(conversationId)?.({ type: 'message.completed', data: { messageId: assistantMessageId, finishReason: 'stop', eventVersion: 1 } })
+}
+assert.equal(terminalRuntime.get('account', 'terminal-1'), undefined, '后台未选中的旧终态投影必须按 LRU 有界回收')
+assert.equal(terminalRuntime.get('account', 'terminal-2')?.status, 'completed', '较新的终态投影必须保留供切回快速恢复')
+assert.equal(terminalRuntime.get('account', 'terminal-3')?.status, 'completed')
+terminalRuntime.close()
+
+let ttlNow = 1
+const ttlCallbacks: Array<() => void> = []
+let ttlEvent: ((event: ChatStreamEvent) => void) | undefined
+const ttlRuntime = new ChatGenerationRuntime({
+  streamMessage: async () => undefined,
+  attachStream: async (input) => { ttlEvent = input.onEvent; await deferred().promise },
+  stop: async () => ({ stopped: true }),
+  schedule: (callback) => { ttlCallbacks.push(callback); return callback },
+  cancelSchedule: (handle) => { const index = ttlCallbacks.indexOf(handle as () => void); if (index >= 0) ttlCallbacks.splice(index, 1) }
+}, { terminalProjectionLimit: 2, terminalProjectionTtlMs: 1_000, now: () => ttlNow })
+ttlRuntime.activateAccount('account')
+const unsubscribeTtl = ttlRuntime.subscribe('account', 'ttl-selected', () => undefined)
+ttlRuntime.attach({ systemAccountId: 'account', conversationId: 'ttl-selected', turnId: 'ttl-turn', assistantMessageId: 'ttl-assistant' })
+await Promise.resolve()
+ttlEvent?.({ type: 'message.completed', data: { messageId: 'ttl-assistant', finishReason: 'stop', eventVersion: 1 } })
+ttlNow = 1_001
+ttlCallbacks.shift()?.()
+assert.equal(ttlCallbacks.length, 0, '已选中的终态投影到期后不得形成 1ms 定时器自旋')
+assert.equal(ttlRuntime.get('account', 'ttl-selected')?.status, 'completed', '已选中会话到期仍应保留供当前 UI 使用')
+unsubscribeTtl()
+assert.equal(ttlCallbacks.length, 1, '终态会话解除订阅后必须重新安排立即回收')
+ttlCallbacks.shift()?.()
+assert.equal(ttlRuntime.get('account', 'ttl-selected'), undefined, '过期终态会话解除订阅后必须回收')
+ttlRuntime.close()
 
 console.log('AI 问答应用级 generation runtime 回归通过')

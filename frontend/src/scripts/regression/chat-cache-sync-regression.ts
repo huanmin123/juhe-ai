@@ -68,6 +68,40 @@ const projected = projectChatMessagesWithRuntime({
 })
 assert.equal(projected[1]?.contentText, 'runtime-new', 'DB 旧 streaming 正文不得覆盖更高 eventVersion runtime 投影')
 
+const projectionCommitGate = deferred<void>()
+let projectionVersion = 1
+let committedProjection = ''
+const projectionRaceCoordinator = new ChatConversationSyncCoordinator()
+projectionRaceCoordinator.activateAccount('sys_projection_race')
+const projectionRace = projectionRaceCoordinator.synchronize({
+  systemAccountId: 'sys_projection_race',
+  conversationId: 'conv_1',
+  projectMessages: (items) => ({
+    messages: items.map((item) => item.role === 'assistant' ? { ...item, contentText: `runtime-${projectionVersion}` } : item),
+    eventVersion: projectionVersion
+  }),
+  dependencies: {
+    readCache: async () => ({ head: { messageRevision: 1 }, messages: local }),
+    getSyncHead: async () => ({ ...head(1, []), unchanged: true }),
+    listMessages: async () => [],
+    deleteConversation: async () => undefined,
+    commitSnapshot: async (_account, _head, items) => {
+      committedProjection = items.find((item) => item.role === 'assistant')?.contentText ?? ''
+      if (committedProjection === 'runtime-1') await projectionCommitGate.promise
+      return true
+    }
+  }
+})
+await Promise.resolve(); await Promise.resolve()
+projectionVersion = 2
+projectionCommitGate.resolve()
+const projectionRaceResult = await projectionRace
+assert.equal(projectionRaceResult.state, 'ready')
+if (projectionRaceResult.state !== 'ready') throw new Error('投影竞态同步应 ready')
+assert.equal(projectionRaceResult.projectionEventVersion, 2, 'sync 返回前必须重新读取最新 runtime eventVersion')
+assert.equal(projectionRaceResult.messages.find((item) => item.role === 'assistant')?.contentText, 'runtime-2', '最终 UI 结果不得被旧投影覆盖倒退')
+assert.equal(committedProjection, 'runtime-2', 'IDB 提交期间投影推进时必须有界重投影并再次提交')
+
 const calls: string[] = []
 let headCall = 0
 const dependencies: ChatConversationSyncDependencies = {
@@ -83,12 +117,8 @@ const dependencies: ChatConversationSyncDependencies = {
     calls.push(`messages:${JSON.stringify(cursor)}`)
     return [message(2, 'assistant_1', 'completed')]
   },
-  deleteFromSequence: async (_accountId, _conversationId, sequenceNo) => { calls.push(`delete:${sequenceNo}`) },
   deleteConversation: async () => { calls.push('delete-conversation') },
-  writeMessages: async () => { calls.push('write-messages') },
-  writeHead: async (_accountId, syncHead) => { calls.push(`write-head:${syncHead.messageRevision}`) },
-  writeRunningTurn: async () => undefined,
-  removeRunningTurn: async () => undefined
+  commitSnapshot: async (_accountId, syncHead) => { calls.push(`commit:${syncHead.messageRevision}`); return true }
 }
 const synchronized = await synchronizeChatConversation({ systemAccountId: 'sys_1', conversationId: 'conv_1', dependencies })
 assert.equal(synchronized.state, 'ready')
@@ -160,8 +190,7 @@ const concurrentDependencies: ChatConversationSyncDependencies = {
   ...dependencies,
   readCache: async () => ({ head: { messageRevision: 1 }, messages: local }),
   getSyncHead: async () => { concurrentHeadCalls += 1; return delayedHead.promise },
-  writeHead: async () => { concurrentWrites += 1 },
-  writeMessages: async () => { concurrentWrites += 1 }
+  commitSnapshot: async () => { concurrentWrites += 1; return true }
 }
 const firstConcurrent = coordinator.synchronize({ systemAccountId: 'sys_concurrent', conversationId: 'conv_1', dependencies: concurrentDependencies })
 const secondConcurrent = coordinator.synchronize({ systemAccountId: 'sys_concurrent', conversationId: 'conv_1', dependencies: concurrentDependencies })
@@ -186,8 +215,7 @@ const regressive = await coordinator.synchronize({
     ...dependencies,
     readCache: async () => ({ head: { messageRevision: 9 }, messages: local }),
     getSyncHead: async () => ({ ...head(9, []), conversationId: 'conv_monotonic', unchanged: true }),
-    writeHead: async () => { regressiveWrites += 1 },
-    writeMessages: async () => { regressiveWrites += 1 }
+    commitSnapshot: async () => { regressiveWrites += 1; return true }
   }
 })
 assert.equal(regressive.state, 'superseded', '已经确认更高服务端 revision 后不得接受迟到的低 revision')
@@ -203,8 +231,7 @@ const logoutFlight = logoutCoordinator.synchronize({
     ...dependencies,
     readCache: async () => ({ head: { messageRevision: 1 }, messages: local }),
     getSyncHead: async () => logoutHead.promise,
-    writeHead: async () => { logoutWrites += 1 },
-    writeMessages: async () => { logoutWrites += 1 }
+    commitSnapshot: async () => { logoutWrites += 1; return true }
   }
 }).then((result) => { logoutAttachEligible = result.state === 'ready'; return result })
 logoutCoordinator.invalidateAccount('sys_logout')

@@ -74,6 +74,9 @@ export interface ChatGenerationRuntimeDependencies {
 
 export interface ChatGenerationRuntimeOptions {
   reconnectDelaysMs?: readonly number[]
+  terminalProjectionLimit?: number
+  terminalProjectionTtlMs?: number
+  now?: () => number
 }
 
 type TurnSubscriber = (turn: RunningTurn | undefined) => void
@@ -95,6 +98,9 @@ interface InternalTurn {
   stopRequested: boolean
   connectionActive: boolean
   accepted: boolean
+  terminalAt?: number
+  lastAccessAt: number
+  terminalTimer?: unknown
 }
 
 const defaultDependencies: ChatGenerationRuntimeDependencies = {
@@ -110,6 +116,9 @@ export class ChatGenerationRuntime {
   private readonly subscribers = new Map<string, Set<TurnSubscriber>>()
   private readonly blockedConversations = new Set<string>()
   private readonly reconnectDelaysMs: readonly number[]
+  private readonly terminalProjectionLimit: number
+  private readonly terminalProjectionTtlMs: number
+  private readonly now: () => number
   private activeSystemAccountId?: string
 
   constructor(
@@ -117,18 +126,26 @@ export class ChatGenerationRuntime {
     options: ChatGenerationRuntimeOptions = {}
   ) {
     this.reconnectDelaysMs = options.reconnectDelaysMs ?? [250, 500, 1000]
+    this.terminalProjectionLimit = Math.max(1, Math.min(128, Math.floor(options.terminalProjectionLimit ?? 32)))
+    this.terminalProjectionTtlMs = Math.max(1_000, Math.min(86_400_000, Math.floor(options.terminalProjectionTtlMs ?? 5 * 60_000)))
+    this.now = options.now ?? Date.now
   }
 
   get(systemAccountId: string, conversationId: string): RunningTurn | undefined {
-    return snapshotTurn(this.turns.get(runtimeKey(systemAccountId, conversationId)))
+    this.pruneTerminalProjections()
+    const turn = this.turns.get(runtimeKey(systemAccountId, conversationId))
+    if (turn) turn.lastAccessAt = this.now()
+    return snapshotTurn(turn)
   }
 
   subscribe(systemAccountId: string, conversationId: string, subscriber: TurnSubscriber): () => void {
+    this.pruneTerminalProjections()
     const key = runtimeKey(systemAccountId, conversationId)
     const listeners = this.subscribers.get(key) ?? new Set<TurnSubscriber>()
     listeners.add(subscriber)
     this.subscribers.set(key, listeners)
     const turn = this.turns.get(key)
+    if (turn) turn.lastAccessAt = this.now()
     if (!this.deliverSubscriber(key, listeners, subscriber, turn)) return () => undefined
     if (turn?.status === 'running' && turn.turnId && !turn.reconciliationReason && !turn.connectionActive && turn.reconnectTimer === undefined) {
       turn.reconnectAttempt = 0
@@ -137,6 +154,8 @@ export class ChatGenerationRuntime {
     return () => {
       listeners.delete(subscriber)
       if (!listeners.size) this.subscribers.delete(key)
+      const current = this.turns.get(key)
+      if (current && isTerminal(current.status)) this.scheduleTerminalEviction(current)
     }
   }
 
@@ -158,7 +177,8 @@ export class ChatGenerationRuntime {
       projection: emptyAssistantProjection(input.conversationId, input.model),
       stopRequested: false,
       connectionActive: false,
-      accepted: false
+      accepted: false,
+      lastAccessAt: this.now()
     }
     this.turns.set(key, turn)
     this.notify(key)
@@ -171,6 +191,8 @@ export class ChatGenerationRuntime {
     const key = runtimeKey(input.systemAccountId, input.conversationId)
     const existing = this.turns.get(key)
     if (existing && existing.status === 'running' && existing.turnId === input.turnId) {
+      existing.lastAccessAt = this.now()
+      if (existing.reconciliationReason === 'reconnect_exhausted' && !hasServerProgress(existing, input)) return snapshotTurn(existing)!
       if (!existing.connectionActive && existing.reconnectTimer === undefined) {
         existing.reconciliationReason = undefined
         existing.error = undefined
@@ -194,7 +216,8 @@ export class ChatGenerationRuntime {
       projection: input.projection ? cloneJsonSafe(input.projection) : emptyAssistantProjection(input.conversationId, '', input.turnId, input.assistantMessageId),
       stopRequested: false,
       connectionActive: false,
-      accepted: true
+      accepted: true,
+      lastAccessAt: this.now()
     }
     this.turns.set(key, turn)
     this.notify(key)
@@ -261,6 +284,10 @@ export class ChatGenerationRuntime {
 
   allowConversation(systemAccountId: string, conversationId: string): void {
     this.blockedConversations.delete(runtimeKey(systemAccountId, conversationId))
+  }
+
+  isConversationBlocked(systemAccountId: string, conversationId: string): boolean {
+    return this.blockedConversations.has(runtimeKey(systemAccountId, conversationId))
   }
 
   forget(systemAccountId: string, conversationId: string, expectedTurnId?: string): boolean {
@@ -369,7 +396,12 @@ export class ChatGenerationRuntime {
     else if (event.type === 'message.failed') turn.status = 'failed'
     else if (event.type === 'message.canceled') turn.status = 'canceled'
     else turn.status = 'running'
-    if (isTerminal(turn.status)) this.releaseConnection(turn)
+    if (isTerminal(turn.status)) {
+      turn.terminalAt = this.now()
+      this.releaseConnection(turn)
+      this.scheduleTerminalEviction(turn)
+      this.pruneTerminalProjections()
+    }
     this.notify(key)
   }
 
@@ -420,12 +452,46 @@ export class ChatGenerationRuntime {
     }, delay)
   }
 
+  private scheduleTerminalEviction(turn: InternalTurn): void {
+    if (turn.terminalAt === undefined || turn.terminalTimer !== undefined) return
+    const delay = Math.max(1, turn.terminalAt + this.terminalProjectionTtlMs - this.now())
+    turn.terminalTimer = this.dependencies.schedule(() => {
+      turn.terminalTimer = undefined
+      this.pruneTerminalProjections()
+      const key = runtimeKey(turn.systemAccountId, turn.conversationId)
+      if (this.turns.get(key) === turn && isTerminal(turn.status) && !this.subscribers.get(key)?.size) this.scheduleTerminalEviction(turn)
+    }, delay)
+  }
+
+  private pruneTerminalProjections(): void {
+    const now = this.now()
+    for (const [key, turn] of this.turns) {
+      if (!isTerminal(turn.status) || turn.terminalAt === undefined || now - turn.terminalAt < this.terminalProjectionTtlMs || this.subscribers.get(key)?.size) continue
+      this.releaseConnection(turn)
+      this.turns.delete(key)
+    }
+    const remaining = [...this.turns.entries()]
+      .filter(([, turn]) => isTerminal(turn.status))
+      .sort(([, left], [, right]) => left.lastAccessAt - right.lastAccessAt)
+    while (remaining.length > this.terminalProjectionLimit) {
+      const candidateIndex = remaining.findIndex(([key]) => !this.subscribers.get(key)?.size)
+      if (candidateIndex < 0) break
+      const [key, turn] = remaining.splice(candidateIndex, 1)[0]!
+      this.releaseConnection(turn)
+      this.turns.delete(key)
+    }
+  }
+
   private releaseConnection(turn: InternalTurn): void {
     turn.controller.abort()
     turn.connectionActive = false
     if (turn.reconnectTimer !== undefined) {
       this.dependencies.cancelSchedule(turn.reconnectTimer)
       turn.reconnectTimer = undefined
+    }
+    if (turn.terminalTimer !== undefined) {
+      this.dependencies.cancelSchedule(turn.terminalTimer)
+      turn.terminalTimer = undefined
     }
   }
 
@@ -452,6 +518,7 @@ export class ChatGenerationRuntime {
   }
 
   private notify(key: string): void {
+    this.pruneTerminalProjections()
     const turn = this.turns.get(key)
     const listeners = this.subscribers.get(key)
     if (!listeners) return
@@ -523,6 +590,26 @@ function snapshotTurn(turn?: InternalTurn): RunningTurn | undefined {
     projection: cloneJsonSafe(turn.projection),
     reconciliationReason: turn.reconciliationReason,
     error: turn.error ? { ...turn.error } : undefined
+  }
+}
+
+function hasServerProgress(turn: InternalTurn, input: ChatGenerationRuntimeAttachInput): boolean {
+  if (input.eventVersion !== undefined && input.eventVersion > turn.eventVersion) return true
+  if (!input.projection) return false
+  return JSON.stringify(progressProjection(input.projection)) !== JSON.stringify(progressProjection(turn.projection))
+}
+
+function progressProjection(value: unknown): unknown {
+  const candidate = value as Partial<ChatMessage> | undefined
+  if (!candidate) return undefined
+  return {
+    id: candidate.id,
+    sequenceNo: candidate.sequenceNo,
+    status: candidate.status,
+    contentText: candidate.contentText,
+    reasoningText: candidate.reasoningText,
+    contentBlocks: candidate.contentBlocks,
+    toolEvents: candidate.toolEvents
   }
 }
 

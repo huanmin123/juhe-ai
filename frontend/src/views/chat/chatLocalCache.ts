@@ -37,11 +37,21 @@ export interface ChatRunningTurn {
 export interface ChatCachePutContext { now: number }
 export interface ChatCacheEvictionCursor { lastAccessAt: number; systemAccountId: string; conversationId: string }
 export interface ChatCachePutResult { head: ChatCacheConversationHead; totalBytes: number }
+export interface ChatCacheSyncCommitResult extends ChatCachePutResult { committed: boolean }
+export interface ChatCacheSyncSnapshot {
+  systemAccountId: string
+  conversationId: string
+  messageRevision: number
+  messages: ChatMessage[]
+  runningTurn?: ChatRunningTurn
+  now: number
+}
 
 export interface ChatLocalCacheStorageAdapter {
   readConversation(systemAccountId: string, conversationId: string): Promise<{ head?: ChatCacheConversationHead; messages: ChatMessage[]; runningTurn?: ChatRunningTurn }>
   putHead(head: ChatCacheConversationHead): Promise<void>
   putMessages(systemAccountId: string, conversationId: string, messages: ChatMessage[], context: ChatCachePutContext): Promise<ChatCachePutResult>
+  commitSyncSnapshot(snapshot: ChatCacheSyncSnapshot): Promise<ChatCacheSyncCommitResult>
   deleteFromSequence(systemAccountId: string, conversationId: string, sequenceNo: number): Promise<void>
   deleteConversation(systemAccountId: string, conversationId: string): Promise<void>
   putRunningTurn(turn: ChatRunningTurn): Promise<void>
@@ -177,6 +187,49 @@ export class ChatLocalCache {
     }
   }
 
+  async commitSyncSnapshot(
+    account: string,
+    head: { conversationId: string; messageRevision: number; activeTurn?: { turnId: string; assistantMessageId?: string; startedAt: string } },
+    values: readonly unknown[],
+    options: ChatCacheWriteOptions = {}
+  ): Promise<ChatCacheResult<{ committed: boolean }>> {
+    if (!this.enabledState) return { enabled: false, ok: false }
+    const messages = values.slice(-MAX_MESSAGE_PAGE).map(cloneVisibleChatMessage)
+    if (messages.some((item) => !item || item.conversationId !== head.conversationId)) return { enabled: true, ok: false }
+    const runningTurn: ChatRunningTurn | undefined = head.activeTurn ? {
+      systemAccountId: account,
+      conversationId: head.conversationId,
+      turnId: head.activeTurn.turnId,
+      startedAt: head.activeTurn.startedAt,
+      ...(head.activeTurn.assistantMessageId ? { assistantMessageId: head.activeTurn.assistantMessageId } : {})
+    } : undefined
+    const snapshot: ChatCacheSyncSnapshot = {
+      systemAccountId: account,
+      conversationId: head.conversationId,
+      messageRevision: head.messageRevision,
+      messages: messages as ChatMessage[],
+      runningTurn,
+      now: this.clock()
+    }
+    if (!validatePersistentPayload(snapshot)) return { enabled: true, ok: false }
+    const write = async (): Promise<ChatCacheResult<{ committed: boolean }>> => {
+      const committed = await this.adapter.commitSyncSnapshot(snapshot)
+      if (committed.committed && !await this.enforceBudget(committed.totalBytes, account, head.conversationId, options)) return { enabled: true, ok: false }
+      return { enabled: true, ok: true, value: { committed: committed.committed } }
+    }
+    try {
+      return await write()
+    } catch (error) {
+      if (!isQuotaError(error)) return this.fail('commit_sync', error)
+      this.report('commit_sync_first', error)
+      try {
+        const budget = calculateChatCacheBudget(await this.safeEstimate())
+        await this.evict(Math.max(1, await this.adapter.getTotalBytes() - budget), account, head.conversationId, options)
+        return await write()
+      } catch (retryError) { return this.fail('commit_sync_retry', retryError) }
+    }
+  }
+
   async deleteFromSequence(account: string, conversation: string, sequenceNo: number) { return this.call('delete_from', () => this.adapter.deleteFromSequence(account, conversation, sequenceNo)) }
   async deleteConversation(account: string, conversation: string) { return this.call('delete_conversation', () => this.adapter.deleteConversation(account, conversation)) }
   async putRunningTurn(account: string, conversation: string, turn: Omit<ChatRunningTurn, 'systemAccountId' | 'conversationId'>): Promise<ChatCacheResult> {
@@ -270,6 +323,38 @@ export class NativeIndexedDbChatCacheAdapter implements ChatLocalCacheStorageAda
     const totalBytes = await adjustBytes(tx, account, head.byteSize - (current?.byteSize ?? 0)); return { head, totalBytes }
   }) }
 
+  async commitSyncSnapshot(snapshot: ChatCacheSyncSnapshot): Promise<ChatCacheSyncCommitResult> { return this.run(['conversation_heads', 'messages', 'running_turns', 'cache_metadata'], 'readwrite', async (tx) => {
+    const { systemAccountId: account, conversationId: conversation } = snapshot
+    const heads = tx.objectStore('conversation_heads')
+    const messageStore = tx.objectStore('messages')
+    const runningStore = tx.objectStore('running_turns')
+    const current = await requestValue<HeadRecord | undefined>(heads.get([account, conversation]))
+    if ((current?.messageRevision ?? -1) > snapshot.messageRevision) {
+      return { committed: false, head: current!, totalBytes: await currentTotalBytes(tx) }
+    }
+    messageStore.delete(messageRange(account, conversation))
+    let bytes = 0
+    for (const message of snapshot.messages) {
+      const record: MessageRecord = { ...message, systemAccountId: account, byteSize: approximateBytes(message) }
+      bytes += record.byteSize
+      messageStore.put(record)
+    }
+    const head: HeadRecord = {
+      ...(current ?? {}),
+      systemAccountId: account,
+      conversationId: conversation,
+      messageRevision: snapshot.messageRevision,
+      lastAccessAt: snapshot.now,
+      byteSize: bytes,
+      activeTurnId: snapshot.runningTurn?.turnId
+    }
+    heads.put(head)
+    if (snapshot.runningTurn) runningStore.put(snapshot.runningTurn)
+    else runningStore.delete([account, conversation])
+    const totalBytes = await adjustBytes(tx, account, bytes - (current?.byteSize ?? 0))
+    return { committed: true, head, totalBytes }
+  }) }
+
   async deleteFromSequence(account: string, conversation: string, sequenceNo: number): Promise<void> { await this.run(['conversation_heads', 'messages', 'cache_metadata'], 'readwrite', async (tx) => {
     const messages = tx.objectStore('messages'); const range = IDBKeyRange.bound([account, conversation, sequenceNo], [account, conversation, Number.MAX_SAFE_INTEGER]); let removed = 0
     await collectCursor(messages.openCursor(range), Number.MAX_SAFE_INTEGER, (cursor) => { removed += (cursor.value as MessageRecord).byteSize; cursor.delete() })
@@ -307,6 +392,7 @@ function messageRange(account: string, conversation: string): IDBKeyRange { retu
 function accountMessageRange(account: string): IDBKeyRange { return IDBKeyRange.bound([account, '', 0], [account, '\uffff', Number.MAX_SAFE_INTEGER]) }
 function stripMessageRecord(record: MessageRecord): ChatMessage { const { systemAccountId: _account, byteSize: _bytes, ...message } = record; return message }
 async function adjustTotal(tx: IDBTransaction, delta: number): Promise<number> { const store = tx.objectStore('cache_metadata'); const current = await requestValue<CacheMetadataRecord | undefined>(store.get(TOTAL_METADATA_ID)); const byteSize = Math.max(0, (current?.byteSize ?? 0) + delta); store.put({ id: TOTAL_METADATA_ID, byteSize }); return byteSize }
+async function currentTotalBytes(tx: IDBTransaction): Promise<number> { return (await requestValue<CacheMetadataRecord | undefined>(tx.objectStore('cache_metadata').get(TOTAL_METADATA_ID)))?.byteSize ?? 0 }
 function accountMetadataId(account: string): string { return `account:${account}` }
 async function adjustBytes(tx: IDBTransaction, account: string, delta: number): Promise<number> { const store = tx.objectStore('cache_metadata'); const accountId = accountMetadataId(account); const current = await requestValue<CacheMetadataRecord | undefined>(store.get(accountId)); store.put({ id: accountId, byteSize: Math.max(0, (current?.byteSize ?? 0) + delta) }); return adjustTotal(tx, delta) }
 function requestValue<T>(request: IDBRequest<T> & { transaction?: IDBTransaction | null }): Promise<T> { return new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => { const error = request.error ?? new Error('IndexedDB request failed'); try { request.transaction?.abort() } catch { /* transaction already aborting */ } reject(error) } }) }

@@ -25,6 +25,9 @@
             <span>正在确认上一条消息是否已提交，确认前不会重复发送</span>
             <a-button type="link" size="small" :loading="confirmingSubmission" @click="retryPendingConfirmation(true)">重新确认</a-button>
           </div>
+          <div v-else-if="conversationForbidden" class="submission-confirmation-bar">
+            <span>当前会话权限已失效，请重新登录或刷新权限后重试</span>
+          </div>
           <div v-else-if="editingTurn" class="turn-editing-bar">
             <span>正在修改最近一轮消息</span>
             <a-button type="link" size="small" :disabled="editingTurn.phase === 'submitting'" @click="cancelTurnEdit">取消编辑</a-button>
@@ -111,7 +114,7 @@ import { chatApi, ChatStreamHttpError } from '@/api/domains/chat'
 import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import type { ChatApiKeyOption, ChatContextStatus, ChatConversation, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatApiKeyOption, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 import { beginLatestTurnEdit, isDefinitiveChatHttpRejection, resolveChatReconciliationNotice, resolveChatSubmitFailure } from './chatTurnEditing'
 import {
   applyChatReconciliationIfActive,
@@ -186,6 +189,7 @@ const hasOlderMessages = ref(false)
 const modelsLoading = ref(false)
 const creating = ref(false)
 const generating = ref(false)
+const conversationAccessEpoch = ref(0)
 const stopping = ref(false)
 const confirmingSubmission = ref(false)
 const pendingConfirmation = ref<PendingSubmissionConfirmation>()
@@ -229,6 +233,10 @@ const syncDependencies = createDefaultChatConversationSyncDependencies({
 const cacheBroadcast = new ChatCacheBroadcast()
 
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationId.value))
+const conversationForbidden = computed(() => {
+  conversationAccessEpoch.value
+  return Boolean(selectedConversation.value && chatGenerationRuntime.isConversationBlocked(selectedConversation.value.systemAccountId, selectedConversation.value.id))
+})
 const turnLimitReached = computed(() => Boolean(selectedConversation.value && isChatTurnLimitReached(selectedConversation.value.userTurnCount, selectedConversation.value.userTurnLimit)))
 const turnLimitMessage = computed(() => chatTurnLimitMessage(selectedConversation.value?.userTurnLimit ?? 0))
 const selectedModelOption = computed(() => models.value.find((item) => item.id === selectedModel.value))
@@ -237,7 +245,7 @@ const editableUserMessageId = computed(() => {
   const candidate = messages.value[messages.value.length - 2]
   return candidate && beginLatestTurnEdit(messages.value, candidate.id)?.userMessageId
 })
-const submissionBlocked = computed(() => stopping.value || confirmingSubmission.value || Boolean(pendingConfirmation.value))
+const submissionBlocked = computed(() => stopping.value || confirmingSubmission.value || Boolean(pendingConfirmation.value) || conversationForbidden.value)
 const refreshConversationSummary = createChatConversationSummaryRefresher({
   load: chatApi.getConversation,
   apply: (item) => {
@@ -345,10 +353,12 @@ async function selectConversation(id: string, options: {
     const conversation = conversations.value.find((item) => item.id === id)
     if (!conversation) throw new Error('会话不存在')
     if (authState.currentUser.value?.id !== conversation.systemAccountId) return false
+    let loadedSyncHead: ChatConversationSyncHead | undefined
     const conversationLoad = startChatConversationLoad({
       loadMessages: async () => {
-        const cached = await localCache.readConversation(conversation.systemAccountId, id)
-        if (cached.ok && cached.value?.messages.length) {
+        const blockedBeforeSync = chatGenerationRuntime.isConversationBlocked(conversation.systemAccountId, id)
+        const cached = blockedBeforeSync ? undefined : await localCache.readConversation(conversation.systemAccountId, id)
+        if (cached?.ok && cached.value?.messages.length) {
           if (isCurrentConversationAccount(conversation.systemAccountId, id, loadEpoch)) {
             messages.value = cached.value.messages
             hasOlderMessages.value = cached.value.messages.length === 100
@@ -370,10 +380,15 @@ async function selectConversation(id: string, options: {
         }
         if (synchronized.state === 'forbidden') {
           chatGenerationRuntime.blockConversation(conversation.systemAccountId, id)
+          conversationAccessEpoch.value += 1
+          models.value = []
+          selectedModel.value = undefined
           return []
         }
         if (synchronized.state === 'superseded') return messages.value
+        loadedSyncHead = synchronized.syncHead
         chatGenerationRuntime.allowConversation(conversation.systemAccountId, id)
+        conversationAccessEpoch.value += 1
         replaceConversation({ ...conversation, messageRevision: synchronized.messageRevision, activeTurnId: synchronized.syncHead.activeTurn?.turnId })
         cacheBroadcast.publish({ systemAccountId: conversation.systemAccountId, conversationId: id, messageRevision: synchronized.messageRevision })
         if (synchronized.syncHead.activeTurn) {
@@ -401,15 +416,22 @@ async function selectConversation(id: string, options: {
     const messageItems = await conversationLoad.messages
     if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return false
     messages.value = messageItems
+    if (loadedSyncHead) messages.value = projectRuntimeMessages(conversation.systemAccountId, id, messageItems, loadedSyncHead).messages
     hasOlderMessages.value = messageItems.length === 100
     void refreshContextStatus(id)
     void conversationLoad.models.then((modelResult) => {
       if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return
       if (modelResult.ok) {
+        if (chatGenerationRuntime.isConversationBlocked(conversation.systemAccountId, id)) {
+          models.value = []
+          selectedModel.value = undefined
+          modelsLoading.value = false
+          return
+        }
         models.value = modelResult.value
-        const conversation = conversations.value.find((item) => item.id === id)
-        selectedModel.value = conversation?.lastModel && modelResult.value.some((item) => item.id === conversation.lastModel)
-          ? conversation.lastModel
+        const latestConversation = conversations.value.find((item) => item.id === id)
+        selectedModel.value = latestConversation?.lastModel && modelResult.value.some((item) => item.id === latestConversation.lastModel)
+          ? latestConversation.lastModel
           : modelResult.value[0]?.id
       } else if (!options.silentLoadError) {
         message.error(extractApiErrorMessage(modelResult.error, '加载可用模型失败'))
@@ -509,6 +531,11 @@ async function createConversation(): Promise<void> {
 async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatInputBlock[]): Promise<void> {
   const conversation = selectedConversation.value
   const model = selectedModel.value
+  if (conversation && chatGenerationRuntime.isConversationBlocked(conversation.systemAccountId, conversation.id)) {
+    composer.value?.restore(snapshot)
+    message.error('当前会话权限已失效，请重新登录或刷新权限后重试')
+    return
+  }
   if (!conversation || !content.trim() || !model || generating.value || submissionBlocked.value) return
   const activeEdit = editingTurn.value?.conversationId === conversation.id ? editingTurn.value : undefined
   if (!canSubmitChatTurn({
@@ -543,17 +570,28 @@ async function sendMessage(content: string, snapshot: JSONContent, blocks: ChatI
   const stopTarget: ActiveChatStopTarget = { request: requestContext }
   activeStopTarget = stopTarget
   subscribeSelectedRuntime()
-  chatGenerationRuntime.start({
-    systemAccountId: requestContext.systemAccountId,
-    conversationId: requestContext.conversationId,
-    clientMessageId: requestContext.clientMessageId,
-    replaceTurnId: requestContext.replaceTurnId,
-    content,
-    contentBlocks: blocks.map((block) => block.type === 'input_image' ? { type: block.type, assetId: block.assetId } : { type: block.type, text: block.text }),
-    model,
-    reasoningEffort: selectedReasoningEffort.value || undefined,
-    serviceTier: selectedServiceTier.value || undefined
-  })
+  try {
+    chatGenerationRuntime.start({
+      systemAccountId: requestContext.systemAccountId,
+      conversationId: requestContext.conversationId,
+      clientMessageId: requestContext.clientMessageId,
+      replaceTurnId: requestContext.replaceTurnId,
+      content,
+      contentBlocks: blocks.map((block) => block.type === 'input_image' ? { type: block.type, assetId: block.assetId } : { type: block.type, text: block.text }),
+      model,
+      reasoningEffort: selectedReasoningEffort.value || undefined,
+      serviceTier: selectedServiceTier.value || undefined
+    })
+  } catch (error) {
+    generating.value = false
+    activeStopTarget = undefined
+    clearPendingConfirmation(requestContext.systemAccountId)
+    const currentEdit = editingTurn.value
+    if (currentEdit && currentEdit.turnId === requestContext.replaceTurnId) currentEdit.phase = 'editing'
+    composer.value?.restore(requestContext.snapshot)
+    const runtimeUnavailable = error instanceof Error && /runtime (?:conversation blocked|account inactive)/i.test(error.message)
+    message.error(runtimeUnavailable ? '当前会话权限或登录状态已变化，请重新进入会话后重试' : extractApiErrorMessage(error, '发送失败，请稍后重试'))
+  }
 }
 async function stopGeneration(): Promise<void> {
   const id = selectedConversationId.value
@@ -658,7 +696,16 @@ function applyRuntimeTurn(turn: RunningTurn | undefined): void {
     }
   }
   if (turn.status === 'failed' && !turn.turnId && active?.request.clientMessageId === turn.clientMessageId) {
-    void handleSubmitFailure(new Error(turn.error?.message || '发送失败'), active.request, false, undefined, false)
+    if (turn.error?.status === 403) {
+      chatGenerationRuntime.blockConversation(turn.systemAccountId, turn.conversationId)
+      conversationAccessEpoch.value += 1
+      models.value = []
+      selectedModel.value = undefined
+    }
+    const failure = turn.error?.status
+      ? new ChatStreamHttpError(turn.error.status, turn.error.code, turn.error.message || '发送失败')
+      : new Error(turn.error?.message || '发送失败')
+    void handleSubmitFailure(failure, active.request, false, undefined, false)
   }
 }
 async function refreshConversationFromSync(conversationId: string): Promise<void> {
@@ -679,14 +726,20 @@ async function refreshConversationFromSync(conversationId: string): Promise<void
     }
     if (result.state === 'forbidden') {
       chatGenerationRuntime.blockConversation(conversation.systemAccountId, conversationId)
-      if (selectedConversationId.value === conversationId) messages.value = []
+      conversationAccessEpoch.value += 1
+      if (selectedConversationId.value === conversationId) {
+        messages.value = []
+        models.value = []
+        selectedModel.value = undefined
+      }
       return
     }
     if (result.state === 'superseded' || result.messageRevision < conversation.messageRevision) return
     chatGenerationRuntime.allowConversation(conversation.systemAccountId, conversationId)
+    conversationAccessEpoch.value += 1
     replaceConversation({ ...conversation, messageRevision: result.messageRevision, activeTurnId: result.syncHead.activeTurn?.turnId })
     if (!disposed && selectedConversationId.value === conversationId) {
-      messages.value = result.messages
+      messages.value = projectRuntimeMessages(conversation.systemAccountId, conversationId, result.messages, result.syncHead).messages
       hasOlderMessages.value = result.messages.length === 100
     }
     if (result.syncHead.activeTurn) {
@@ -723,9 +776,12 @@ function projectRuntimeMessages(
   conversationId: string,
   values: readonly ChatMessage[],
   syncHead: { activeTurn?: { turnId: string; assistantMessageId: string } }
-): ChatMessage[] {
+): { messages: ChatMessage[]; eventVersion?: number } {
   const running = chatGenerationRuntime.get(systemAccountId, conversationId)
-  return projectChatMessagesWithRuntime({ messages: values, activeTurn: syncHead.activeTurn, runtimeTurn: running })
+  return {
+    messages: projectChatMessagesWithRuntime({ messages: values, activeTurn: syncHead.activeTurn, runtimeTurn: running }),
+    eventVersion: running?.eventVersion
+  }
 }
 async function removeConversation(id: string): Promise<void> { try { const conversation = conversations.value.find((item) => item.id === id); await chatApi.deleteConversation(id); if (conversation) await localCache.deleteConversation(conversation.systemAccountId, id); conversations.value = conversations.value.filter((item) => item.id !== id); if (selectedConversationId.value === id) { selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {

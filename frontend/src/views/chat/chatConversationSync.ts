@@ -13,12 +13,8 @@ export interface ChatConversationSyncDependencies {
   readCache(systemAccountId: string, conversationId: string): Promise<{ head?: { messageRevision: number }; messages: ChatMessage[] }>
   getSyncHead(conversationId: string, knownRevision: number): Promise<ChatConversationSyncHead>
   listMessages(conversationId: string, cursor: ChatMessageListParams): Promise<ChatMessage[]>
-  deleteFromSequence(systemAccountId: string, conversationId: string, sequenceNo: number): Promise<unknown>
   deleteConversation(systemAccountId: string, conversationId: string): Promise<unknown>
-  writeMessages(systemAccountId: string, conversationId: string, messages: readonly ChatMessage[]): Promise<unknown>
-  writeHead(systemAccountId: string, head: ChatConversationSyncHead): Promise<unknown>
-  writeRunningTurn(systemAccountId: string, conversationId: string, turn: ChatConversationSyncHead['activeTurn']): Promise<unknown>
-  removeRunningTurn(systemAccountId: string, conversationId: string): Promise<unknown>
+  commitSnapshot(systemAccountId: string, head: ChatConversationSyncHead, messages: readonly ChatMessage[]): Promise<boolean | undefined>
 }
 
 export interface ChatConversationSynchronizationResult {
@@ -26,6 +22,7 @@ export interface ChatConversationSynchronizationResult {
   messageRevision: number
   syncHead: ChatConversationSyncHead
   passes: number
+  projectionEventVersion?: number
 }
 
 export type ChatConversationSyncOutcome =
@@ -38,7 +35,7 @@ interface ChatConversationSyncInput {
   systemAccountId: string
   conversationId: string
   dependencies: ChatConversationSyncDependencies
-  projectMessages?(messages: readonly ChatMessage[], head: ChatConversationSyncHead): ChatMessage[]
+  projectMessages?(messages: readonly ChatMessage[], head: ChatConversationSyncHead): ChatMessage[] | { messages: ChatMessage[]; eventVersion?: number }
 }
 
 interface SyncFlight {
@@ -194,6 +191,7 @@ async function synchronizeChatConversationInternal(
   let messages = [...cached.messages].sort((left, right) => left.sequenceNo - right.sequenceNo)
   let latestHead!: ChatConversationSyncHead
   let passes = 0
+  let projectionEventVersion: number | undefined
 
   while (passes < 2) {
     passes += 1
@@ -215,41 +213,31 @@ async function synchronizeChatConversationInternal(
     }
     const decision = decideChatConversationSync({ localRevision, localMessages: messages, server: latestHead })
     if (decision.type === 'unchanged') {
-      const projected = input.projectMessages?.(messages, latestHead) ?? messages
-      if (projected !== messages) {
-        if (!isCurrent()) return supersededOutcome(passes)
-        await dependencies.writeMessages(systemAccountId, conversationId, projected)
-        if (!isCurrent()) return supersededOutcome(passes)
-        messages = projected
-      }
-      if (!await persistHeadIfCurrent(dependencies, systemAccountId, conversationId, latestHead, isCurrent)) return supersededOutcome(passes)
-      return { state: 'ready', messages, messageRevision: latestHead.messageRevision, syncHead: latestHead, passes }
+      const committed = await commitProjectedSnapshot(input, messages, latestHead, isCurrent)
+      if (!committed.current) return supersededOutcome(passes)
+      messages = committed.messages
+      projectionEventVersion = committed.eventVersion
+      return { state: 'ready', messages, messageRevision: latestHead.messageRevision, syncHead: latestHead, passes, projectionEventVersion }
     }
 
     if (decision.type === 'rebuild') {
-      if (!isCurrent()) return supersededOutcome(passes)
-      await dependencies.deleteConversation(systemAccountId, conversationId)
-      if (!isCurrent()) return supersededOutcome(passes)
       messages = await dependencies.listMessages(conversationId, { limit: 100 })
     } else if (decision.type === 'append') {
       const appended = await dependencies.listMessages(conversationId, { afterSequenceNo: decision.afterSequenceNo, limit: 100 })
       messages = mergeBySequence(messages, appended)
     } else {
-      if (!isCurrent()) return supersededOutcome(passes)
-      await dependencies.deleteFromSequence(systemAccountId, conversationId, decision.fromSequenceNo)
-      if (!isCurrent()) return supersededOutcome(passes)
       const refreshed = await dependencies.listMessages(conversationId, { fromSequenceNo: decision.fromSequenceNo, limit: 100 })
       messages = mergeBySequence(messages.filter((message) => message.sequenceNo < decision.fromSequenceNo), refreshed)
     }
     if (!isCurrent()) return supersededOutcome(passes)
-    messages = input.projectMessages?.(messages, latestHead) ?? messages
-    await dependencies.writeMessages(systemAccountId, conversationId, messages)
-    if (!isCurrent()) return supersededOutcome(passes)
-    if (!await persistHeadIfCurrent(dependencies, systemAccountId, conversationId, latestHead, isCurrent)) return supersededOutcome(passes)
+    const committed = await commitProjectedSnapshot(input, messages, latestHead, isCurrent)
+    if (!committed.current) return supersededOutcome(passes)
+    messages = committed.messages
+    projectionEventVersion = committed.eventVersion
     localRevision = latestHead.messageRevision
   }
 
-  return { state: 'ready', messages, messageRevision: latestHead.messageRevision, syncHead: latestHead, passes }
+  return { state: 'ready', messages, messageRevision: latestHead.messageRevision, syncHead: latestHead, passes, projectionEventVersion }
 }
 
 export function createDefaultChatConversationSyncDependencies(options: { pendingConversationIds?: () => ReadonlySet<string> } = {}): ChatConversationSyncDependencies {
@@ -258,20 +246,15 @@ export function createDefaultChatConversationSyncDependencies(options: { pending
     readCache: async (systemAccountId, conversationId) => (await cache.readConversation(systemAccountId, conversationId)).value ?? { messages: [] },
     getSyncHead: chatApi.getConversationSync,
     listMessages: chatApi.listMessages,
-    deleteFromSequence: (systemAccountId, conversationId, sequenceNo) => cache.deleteFromSequence(systemAccountId, conversationId, sequenceNo),
     deleteConversation: (systemAccountId, conversationId) => cache.deleteConversation(systemAccountId, conversationId),
-    writeMessages: (systemAccountId, conversationId, values) => cache.putMessages(systemAccountId, conversationId, values, {
-      currentConversationId: conversationId,
-      pendingConfirmationConversationIds: options.pendingConversationIds?.()
-    }),
-    writeHead: async (systemAccountId, head) => {
-      await cache.putHead(systemAccountId, head)
+    commitSnapshot: async (systemAccountId, head, values) => {
+      const result = await cache.commitSyncSnapshot(systemAccountId, head, values, {
+        currentConversationId: head.conversationId,
+        pendingConfirmationConversationIds: options.pendingConversationIds?.()
+      })
       await cache.cleanupExpired(head.serverTime)
-    },
-    writeRunningTurn: (systemAccountId, conversationId, turn) => turn
-      ? cache.putRunningTurn(systemAccountId, conversationId, turn)
-      : cache.removeRunningTurn(systemAccountId, conversationId),
-    removeRunningTurn: (systemAccountId, conversationId) => cache.removeRunningTurn(systemAccountId, conversationId)
+      return result.ok ? result.value?.committed : undefined
+    }
   }
 }
 
@@ -281,19 +264,33 @@ function mergeBySequence(current: readonly ChatMessage[], incoming: readonly Cha
   return [...merged.values()].sort((left, right) => left.sequenceNo - right.sequenceNo)
 }
 
-async function persistHeadIfCurrent(
-  dependencies: ChatConversationSyncDependencies,
-  systemAccountId: string,
-  conversationId: string,
+async function commitProjectedSnapshot(
+  input: ChatConversationSyncInput,
+  authoritativeMessages: readonly ChatMessage[],
   head: ChatConversationSyncHead,
   isCurrent: () => boolean
-): Promise<boolean> {
-  if (!isCurrent()) return false
-  await dependencies.writeHead(systemAccountId, head)
-  if (!isCurrent()) return false
-  if (head.activeTurn) await dependencies.writeRunningTurn(systemAccountId, conversationId, head.activeTurn)
-  else await dependencies.removeRunningTurn(systemAccountId, conversationId)
-  return isCurrent()
+): Promise<{ current: boolean; messages: ChatMessage[]; eventVersion?: number }> {
+  let projection = readProjection(input, authoritativeMessages, head)
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!isCurrent()) return { current: false, messages: [] }
+    const committed = await input.dependencies.commitSnapshot(input.systemAccountId, head, projection.messages)
+    if (!isCurrent() || committed === false) return { current: false, messages: [] }
+    if (!input.projectMessages) break
+    const latest = readProjection(input, authoritativeMessages, head)
+    if (latest.eventVersion === undefined || projection.eventVersion === undefined || latest.eventVersion <= projection.eventVersion) break
+    projection = latest
+  }
+  return { current: isCurrent(), messages: projection.messages, eventVersion: projection.eventVersion }
+}
+
+function readProjection(
+  input: ChatConversationSyncInput,
+  messages: readonly ChatMessage[],
+  head: ChatConversationSyncHead
+): { messages: ChatMessage[]; eventVersion?: number } {
+  const projected = input.projectMessages?.(messages, head)
+  if (!projected) return { messages: messages as ChatMessage[] }
+  return Array.isArray(projected) ? { messages: projected } : projected
 }
 
 function supersededOutcome(passes = 0): ChatConversationSyncOutcome {

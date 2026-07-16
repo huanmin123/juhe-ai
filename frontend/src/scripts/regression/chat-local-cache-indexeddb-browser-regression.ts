@@ -1,11 +1,14 @@
 import { NativeIndexedDbChatCacheAdapter } from '../../views/chat/chatLocalCache'
-import type { ChatMessage } from '../../types/domain/chat'
+import { ChatConversationSyncCoordinator, type ChatConversationSyncDependencies } from '../../views/chat/chatConversationSync'
+import type { ChatConversationSyncHead, ChatMessage } from '../../types/domain/chat'
 
 const result = document.querySelector('#result')!
 function assert(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message) }
 function request<T>(value: IDBRequest<T>): Promise<T> { return new Promise((resolve, reject) => { value.onsuccess = () => resolve(value.result); value.onerror = () => reject(value.error) }) }
 function txDone(tx: IDBTransaction): Promise<void> { return new Promise((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error) }) }
 function message(sequenceNo: number, conversationId = 'tail', expiresAt = '2099-01-01T00:00:00.000Z'): ChatMessage { return { id: `m_${sequenceNo}`, conversationId, turnId: `t_${sequenceNo}`, sequenceNo, role: sequenceNo % 2 ? 'user' : 'assistant', status: 'completed', contentText: `message-${sequenceNo}`, model: 'model', createdAt: '2026-07-16T00:00:00.000Z', expiresAt } }
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } { let resolve!: (value: T) => void; return { promise: new Promise<T>((next) => { resolve = next }), resolve } }
+function syncHead(revision: number): ChatConversationSyncHead { return { conversationId: 'race', messageRevision: revision, unchanged: false, serverTime: '2026-07-16T00:00:00.000Z', lastSequenceNo: 2, tail: [] } }
 
 try {
   await new Promise<void>((resolve) => { const deletion = indexedDB.deleteDatabase('juhe-ai-chat-cache'); deletion.onsuccess = () => resolve(); deletion.onerror = () => resolve(); deletion.onblocked = () => resolve() })
@@ -32,6 +35,38 @@ try {
   assert(await adapter.getTotalBytes() === beforeHead, '全局 byte metadata 必须与首个会话一致')
   await adapter.putHead({ systemAccountId: 'A', conversationId: 'tail', messageRevision: 9, lastAccessAt: 2, byteSize: 0, title: 'updated' })
   assert((await adapter.readConversation('A', 'tail')).head?.byteSize === beforeHead, 'putHead 必须事务合并保留 byteSize')
+
+  const lowCoordinator = new ChatConversationSyncCoordinator()
+  const highCoordinator = new ChatConversationSyncCoordinator()
+  lowCoordinator.activateAccount('C'); highCoordinator.activateAccount('C')
+  const lowListStarted = deferred<void>()
+  const releaseLowList = deferred<void>()
+  const dependencies = (revision: number, text: string, waitForRelease = false): ChatConversationSyncDependencies => ({
+    readCache: async (account, conversation) => adapter.readConversation(account, conversation),
+    getSyncHead: async () => syncHead(revision),
+    listMessages: async () => {
+      if (waitForRelease) { lowListStarted.resolve(); await releaseLowList.promise }
+      return [{ ...message(1, 'race'), contentText: text }, { ...message(2, 'race'), contentText: `${text}-assistant` }]
+    },
+    deleteConversation: (account, conversation) => adapter.deleteConversation(account, conversation),
+    commitSnapshot: async (account, head, messages) => (await adapter.commitSyncSnapshot({
+      systemAccountId: account,
+      conversationId: head.conversationId,
+      messageRevision: head.messageRevision,
+      messages: [...messages],
+      now: revision
+    })).committed
+  })
+  const lowSync = lowCoordinator.synchronize({ systemAccountId: 'C', conversationId: 'race', dependencies: dependencies(5, 'low', true) })
+  await lowListStarted.promise
+  const highSync = await highCoordinator.synchronize({ systemAccountId: 'C', conversationId: 'race', dependencies: dependencies(6, 'high') })
+  assert(highSync.state === 'ready', '较高 revision coordinator 必须先提交成功')
+  releaseLowList.resolve()
+  const lowSyncResult = await lowSync
+  assert(lowSyncResult.state === 'superseded', '低 revision 晚到的另一 coordinator 必须被原子 CAS 拒绝')
+  const raceCache = await adapter.readConversation('C', 'race')
+  assert(raceCache.head?.messageRevision === 6 && raceCache.messages[0]?.contentText === 'high', '跨标签页交错写不得回退 head/messages')
+  await adapter.deleteConversation('C', 'race')
 
   const database = await new Promise<IDBDatabase>((resolve, reject) => { const opening = indexedDB.open('juhe-ai-chat-cache', 2); opening.onsuccess = () => resolve(opening.result); opening.onerror = () => reject(opening.error) })
   assert(database.version === 2 && database.objectStoreNames.contains('cache_metadata'), '真实 v1 schema 必须升级并安全重建为 v2')

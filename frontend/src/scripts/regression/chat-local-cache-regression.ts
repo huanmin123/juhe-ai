@@ -8,6 +8,7 @@ import {
   type ChatCacheConversationHead,
   type ChatCacheEvictionCursor,
   type ChatCachePutContext,
+  type ChatCacheSyncSnapshot,
   type ChatLocalCacheStorageAdapter,
   type ChatRunningTurn
 } from '../../views/chat/chatLocalCache'
@@ -55,6 +56,20 @@ class MemoryAdapter implements ChatLocalCacheStorageAdapter {
     const next = { ...head, byteSize: bytes, lastAccessAt: context.now }
     this.heads.set(key, next)
     return { head: structuredClone(next), totalBytes: await this.getTotalBytes() }
+  }
+  async commitSyncSnapshot(snapshot: ChatCacheSyncSnapshot) {
+    this.fail()
+    const key = this.key(snapshot.systemAccountId, snapshot.conversationId)
+    const current = this.heads.get(key)
+    if ((current?.messageRevision ?? -1) > snapshot.messageRevision) return { committed: false, head: structuredClone(current!), totalBytes: await this.getTotalBytes() }
+    const prefix = `${key}\u0000`
+    for (const messageKey of [...this.messages.keys()]) if (messageKey.startsWith(prefix)) this.messages.delete(messageKey)
+    let bytes = 0
+    for (const value of snapshot.messages) { this.messages.set(this.messageKey(snapshot.systemAccountId, snapshot.conversationId, value.sequenceNo), structuredClone(value)); bytes += Buffer.byteLength(JSON.stringify(value)) }
+    const head = { ...current, systemAccountId: snapshot.systemAccountId, conversationId: snapshot.conversationId, messageRevision: snapshot.messageRevision, lastAccessAt: snapshot.now, byteSize: bytes, activeTurnId: snapshot.runningTurn?.turnId }
+    this.heads.set(key, head)
+    if (snapshot.runningTurn) this.running.set(key, structuredClone(snapshot.runningTurn)); else this.running.delete(key)
+    return { committed: true, head: structuredClone(head), totalBytes: await this.getTotalBytes() }
   }
   async deleteFromSequence(account: string, conversation: string, sequenceNo: number): Promise<void> {
     this.fail(); const prefix = `${this.key(account, conversation)}\u0000`
@@ -152,6 +167,14 @@ assert.equal((await cache.readConversation('A', 'c1')).value?.runningTurn, undef
 await cache.clearAccount('A')
 assert.equal((await cache.readConversation('A', 'c1')).value?.head, undefined)
 assert.ok((await cache.readConversation('B', 'c1')).value?.head)
+const casAdapter = new MemoryAdapter()
+const casCache = new ChatLocalCache({ adapter: casAdapter })
+const committedRevision = await casCache.commitSyncSnapshot('A', { conversationId: 'c1', messageRevision: 5, activeTurn: { turnId: 'sync-turn', assistantMessageId: 'sync-assistant', startedAt: '2026-07-16T00:00:00.000Z' } }, [message(1, 'revision-5')])
+assert.deepEqual(committedRevision.value, { committed: true })
+const staleRevision = await casCache.commitSyncSnapshot('A', { conversationId: 'c1', messageRevision: 4 }, [message(1, 'stale-revision-4')])
+assert.deepEqual(staleRevision.value, { committed: false }, '低 revision sync snapshot 必须整次丢弃')
+assert.equal((await casCache.readConversation('A', 'c1')).value?.messages[0]?.contentText, 'revision-5', '低 revision 不得回退消息正文')
+assert.equal((await casCache.readConversation('A', 'c1')).value?.runningTurn?.turnId, 'sync-turn', '低 revision 不得清除较新 running turn')
 const payloadAdapter = new MemoryAdapter()
 const payloadCache = new ChatLocalCache({ adapter: payloadAdapter })
 assert.equal((await payloadCache.putHead('A', { conversationId: 'bad', messageRevision: 1, title: 'data:text/plain;base64,c2VjcmV0' })).ok, false)
