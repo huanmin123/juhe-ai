@@ -115,6 +115,82 @@ FROM juhe_business.external_integration_sources AS sources
 WHERE sources.id = sqlc.arg(source_id)::text
 FOR UPDATE;
 
+-- name: InsertManagementExternalIntegrationSource :one
+INSERT INTO juhe_business.external_integration_sources (
+  id,
+  name,
+  status,
+  scopes_json,
+  rate_limits_json,
+  expires_at,
+  notes,
+  created_at,
+  updated_at
+) VALUES (
+  sqlc.arg(source_id)::text,
+  sqlc.arg(name)::text,
+  sqlc.arg(status)::text,
+  sqlc.arg(scopes_json)::text,
+  sqlc.arg(rate_limits_json)::text,
+  sqlc.narg(expires_at)::timestamptz,
+  sqlc.narg(notes)::text,
+  sqlc.arg(created_at)::timestamptz,
+  sqlc.arg(updated_at)::timestamptz
+)
+RETURNING
+  id,
+  name,
+  status,
+  scopes_json,
+  rate_limits_json,
+  expires_at,
+  notes,
+  last_used_at,
+  created_at,
+  updated_at;
+
+-- name: InsertManagementExternalIntegrationSourceToken :one
+INSERT INTO juhe_business.external_integration_source_tokens (
+  id,
+  source_ref_id,
+  name,
+  token_hash,
+  token_secret_encrypted,
+  token_prefix,
+  token_suffix,
+  status,
+  scopes_json,
+  expires_at,
+  created_at,
+  updated_at
+) VALUES (
+  sqlc.arg(token_id)::text,
+  sqlc.arg(source_id)::text,
+  sqlc.arg(token_name)::text,
+  sqlc.arg(token_hash)::text,
+  sqlc.arg(token_secret_encrypted)::text,
+  sqlc.arg(token_prefix)::text,
+  sqlc.arg(token_suffix)::text,
+  sqlc.arg(token_status)::text,
+  sqlc.arg(token_scopes_json)::text,
+  sqlc.narg(token_expires_at)::timestamptz,
+  sqlc.arg(created_at)::timestamptz,
+  sqlc.arg(updated_at)::timestamptz
+)
+RETURNING
+  source_ref_id,
+  id,
+  name,
+  token_prefix,
+  token_suffix,
+  status,
+  scopes_json,
+  expires_at,
+  last_used_at,
+  created_at,
+  updated_at,
+  revoked_at;
+
 -- name: CountManagementExternalIntegrationSourceTokensForDelete :one
 SELECT COUNT(*)::bigint
 FROM juhe_business.external_integration_source_tokens AS tokens

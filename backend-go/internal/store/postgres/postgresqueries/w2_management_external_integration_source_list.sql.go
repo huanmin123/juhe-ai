@@ -127,6 +127,187 @@ func (q *Queries) FindManagementExternalIntegrationSourceTokenSecret(ctx context
 	return token_secret_encrypted, err
 }
 
+const insertManagementExternalIntegrationSource = `-- name: InsertManagementExternalIntegrationSource :one
+INSERT INTO juhe_business.external_integration_sources (
+  id,
+  name,
+  status,
+  scopes_json,
+  rate_limits_json,
+  expires_at,
+  notes,
+  created_at,
+  updated_at
+) VALUES (
+  $1::text,
+  $2::text,
+  $3::text,
+  $4::text,
+  $5::text,
+  $6::timestamptz,
+  $7::text,
+  $8::timestamptz,
+  $9::timestamptz
+)
+RETURNING
+  id,
+  name,
+  status,
+  scopes_json,
+  rate_limits_json,
+  expires_at,
+  notes,
+  last_used_at,
+  created_at,
+  updated_at
+`
+
+type InsertManagementExternalIntegrationSourceParams struct {
+	SourceID       string
+	Name           string
+	Status         string
+	ScopesJson     string
+	RateLimitsJson string
+	ExpiresAt      pgtype.Timestamptz
+	Notes          pgtype.Text
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) InsertManagementExternalIntegrationSource(ctx context.Context, arg InsertManagementExternalIntegrationSourceParams) (JuheBusinessExternalIntegrationSource, error) {
+	row := q.db.QueryRow(ctx, insertManagementExternalIntegrationSource,
+		arg.SourceID,
+		arg.Name,
+		arg.Status,
+		arg.ScopesJson,
+		arg.RateLimitsJson,
+		arg.ExpiresAt,
+		arg.Notes,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i JuheBusinessExternalIntegrationSource
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Status,
+		&i.ScopesJson,
+		&i.RateLimitsJson,
+		&i.ExpiresAt,
+		&i.Notes,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const insertManagementExternalIntegrationSourceToken = `-- name: InsertManagementExternalIntegrationSourceToken :one
+INSERT INTO juhe_business.external_integration_source_tokens (
+  id,
+  source_ref_id,
+  name,
+  token_hash,
+  token_secret_encrypted,
+  token_prefix,
+  token_suffix,
+  status,
+  scopes_json,
+  expires_at,
+  created_at,
+  updated_at
+) VALUES (
+  $1::text,
+  $2::text,
+  $3::text,
+  $4::text,
+  $5::text,
+  $6::text,
+  $7::text,
+  $8::text,
+  $9::text,
+  $10::timestamptz,
+  $11::timestamptz,
+  $12::timestamptz
+)
+RETURNING
+  source_ref_id,
+  id,
+  name,
+  token_prefix,
+  token_suffix,
+  status,
+  scopes_json,
+  expires_at,
+  last_used_at,
+  created_at,
+  updated_at,
+  revoked_at
+`
+
+type InsertManagementExternalIntegrationSourceTokenParams struct {
+	TokenID              string
+	SourceID             string
+	TokenName            string
+	TokenHash            string
+	TokenSecretEncrypted string
+	TokenPrefix          string
+	TokenSuffix          string
+	TokenStatus          string
+	TokenScopesJson      string
+	TokenExpiresAt       pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+}
+
+type InsertManagementExternalIntegrationSourceTokenRow struct {
+	SourceRefID string
+	ID          string
+	Name        string
+	TokenPrefix string
+	TokenSuffix string
+	Status      string
+	ScopesJson  string
+	ExpiresAt   pgtype.Timestamptz
+	LastUsedAt  pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	RevokedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) InsertManagementExternalIntegrationSourceToken(ctx context.Context, arg InsertManagementExternalIntegrationSourceTokenParams) (InsertManagementExternalIntegrationSourceTokenRow, error) {
+	row := q.db.QueryRow(ctx, insertManagementExternalIntegrationSourceToken,
+		arg.TokenID,
+		arg.SourceID,
+		arg.TokenName,
+		arg.TokenHash,
+		arg.TokenSecretEncrypted,
+		arg.TokenPrefix,
+		arg.TokenSuffix,
+		arg.TokenStatus,
+		arg.TokenScopesJson,
+		arg.TokenExpiresAt,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	var i InsertManagementExternalIntegrationSourceTokenRow
+	err := row.Scan(
+		&i.SourceRefID,
+		&i.ID,
+		&i.Name,
+		&i.TokenPrefix,
+		&i.TokenSuffix,
+		&i.Status,
+		&i.ScopesJson,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const listManagementExternalIntegrationSourcePrimaryTokens = `-- name: ListManagementExternalIntegrationSourcePrimaryTokens :many
 SELECT DISTINCT ON (tokens.source_ref_id)
   tokens.source_ref_id,
