@@ -36,6 +36,7 @@ import {
   chatLongSessionResumeCanonicalHash,
   type ChatLongSessionResumeMessage
 } from './chat-long-session-checkpoint.js'
+import { resolveChatLongSessionRunSecret } from './chat-long-session-run-identity.js'
 import {
   busyCleanupTargetPath,
   classifyProcessCommand,
@@ -207,7 +208,9 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
     : resolve(tmpdir(), `juhe-ai-chat-long-${Date.now()}-${Math.random().toString(16).slice(2)}`)
   const resuming = Boolean(configuredResumeRoot)
   if (resuming && !existsSync(tempRoot)) throw new Error('chat_long_session_resume_root_not_found')
-  applyHermeticProcessEnv(tempRoot)
+  if (!resuming) mkdirSync(tempRoot, { recursive: true })
+  const runSecret = resolveChatLongSessionRunSecret(tempRoot, { resuming })
+  applyHermeticProcessEnv(tempRoot, runSecret)
   const { runtimeConfig } = await import('../../config/runtime.js')
   const { logger } = await import('../../shared/logger.js')
   const credential = readRequiredCredential()
@@ -250,7 +253,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
   runtimeConfig.codexContextRoot = join(tempRoot, 'codex-context')
   runtimeConfig.codexContextStateShardRoot = join(tempRoot, 'codex-context', 'state-shards')
   runtimeConfig.chatAssetsRoot = join(tempRoot, 'chat-assets')
-  runtimeConfig.secret = `chat-long-${hashId(tempRoot)}`
+  runtimeConfig.secret = runSecret
   knownSecrets.push(runtimeConfig.secret)
   runtimeConfig.runtimeMode = 'standalone'
   runtimeConfig.databaseDriver = 'sqlite'
@@ -267,7 +270,6 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
   runtimeConfig.chat.maxTurnsPerConversation = 50
   runtimeConfig.log.consoleEnabled = false
   runtimeConfig.log.fileEnabled = false
-  if (!resuming) mkdirSync(tempRoot, { recursive: true })
   logger.level = 'silent'
 
   const databaseModule = await import('../../storage/database.js')
@@ -1453,7 +1455,7 @@ function startBackend(port: number, tempRoot: string, runtimeConfig: RuntimeConf
     cwd: repoRoot,
     env: {
       ...pickChildProcessBaseEnv(process.env),
-      ...buildHermeticJuheEnv(tempRoot, 'server'),
+      ...buildHermeticJuheEnv(tempRoot, 'server', runtimeConfig.secret),
       NODE_ENV: '',
       JUHE_AI_ENV_FILE: '',
       DATABASE_URL: '',
@@ -1568,9 +1570,9 @@ function environmentObservation(tempRoot: string, runtimeConfig: RuntimeConfig):
   return result
 }
 
-function applyHermeticProcessEnv(tempRoot: string): void {
+function applyHermeticProcessEnv(tempRoot: string, runSecret: string): void {
   Object.assign(process.env, {
-    ...buildHermeticJuheEnv(tempRoot, 'db-service'),
+    ...buildHermeticJuheEnv(tempRoot, 'db-service', runSecret),
     NODE_ENV: '',
     JUHE_AI_ENV_FILE: '',
     JUHE_AI_RUNTIME_MODE: 'standalone',
@@ -1601,7 +1603,7 @@ function applyHermeticProcessEnv(tempRoot: string): void {
   })
 }
 
-function buildHermeticJuheEnv(tempRoot: string, processRole: 'server' | 'db-service'): NodeJS.ProcessEnv {
+function buildHermeticJuheEnv(tempRoot: string, processRole: 'server' | 'db-service', runSecret = `chat-long-${hashId(tempRoot)}`): NodeJS.ProcessEnv {
   return {
     NODE_ENV: '', JUHE_AI_ENV_FILE: '', JUHE_AI_DISABLE_BASE_ENV: 'true', JUHE_AI_RUNTIME_MODE: 'standalone', JUHE_AI_PROCESS_ROLE: processRole, JUHE_AI_WORKER_ROLE: 'worker',
     JUHE_AI_DATABASE_DRIVER: 'sqlite', JUHE_AI_CACHE_DRIVER: 'memory', JUHE_AI_RUNTIME_STATE_DRIVER: 'memory', JUHE_AI_QUEUE_DRIVER: 'memory',
@@ -1618,7 +1620,7 @@ function buildHermeticJuheEnv(tempRoot: string, processRole: 'server' | 'db-serv
     JUHE_AI_CODEX_CONTEXT_ROOT: join(tempRoot, 'codex-context'), JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT: join(tempRoot, 'codex-context', 'state-shards'),
     JUHE_AI_CHAT_ASSETS_ROOT: join(tempRoot, 'chat-assets'), JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT: join(tempRoot, 'openai-files'),
     JUHE_AI_CODE_INTERPRETER_TEMP_ROOT: join(tempRoot, 'code-interpreter'), JUHE_AI_LOG_DIR: join(tempRoot, 'logs'),
-    JUHE_AI_SECRET: `chat-long-${hashId(tempRoot)}`, JUHE_AI_LOG_CONSOLE_ENABLED: 'false', JUHE_AI_LOG_FILE_ENABLED: 'false',
+    JUHE_AI_SECRET: runSecret, JUHE_AI_LOG_CONSOLE_ENABLED: 'false', JUHE_AI_LOG_FILE_ENABLED: 'false',
     JUHE_AI_USAGE_RECORD_WRITER_POOL_ENABLED: 'false', JUHE_AI_CODEX_CONTEXT_STATE_WRITER_POOL_ENABLED: 'false', JUHE_AI_SQLITE_READ_WORKER_POOL_SIZE: '1',
     JUHE_AI_CHAT_RETENTION_DAYS: '3', JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER: '50', JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION: '50',
     JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS: '65536'

@@ -87,11 +87,13 @@ assert(processTreeRegressionSource.includes("process.argv.includes('--cleanup-ha
 assert(processTreeRegressionSource.includes('HARNESS_SURVIVED_AFTER_CLEANUP'), '子 harness 必须在 cleanup 完成后输出存活 marker')
 assert(processTreeRegressionSource.includes("assert.match(output, /HARNESS_SURVIVED_AFTER_CLEANUP/)"), '外层进程必须断言 cleanup 后 marker')
 assert(!realSource.includes("import { runtimeConfig } from '../../config/runtime.js'"), 'real e2e 不得在清理父进程环境前静态加载 runtimeConfig')
-const sanitizeProcessEnvIndex = realSource.indexOf('applyHermeticProcessEnv(tempRoot)')
+const resolveRunSecretIndex = realSource.indexOf('resolveChatLongSessionRunSecret(tempRoot, { resuming })')
+const sanitizeProcessEnvIndex = realSource.indexOf('applyHermeticProcessEnv(tempRoot, runSecret)')
 const runtimeDynamicImportIndex = realSource.indexOf("await import('../../config/runtime.js')")
-assert(sanitizeProcessEnvIndex >= 0 && runtimeDynamicImportIndex > sanitizeProcessEnvIndex, '必须先清理当前进程 PG/Redis 环境，再动态加载 runtimeConfig')
+assert(resolveRunSecretIndex >= 0 && sanitizeProcessEnvIndex > resolveRunSecretIndex && runtimeDynamicImportIndex > sanitizeProcessEnvIndex, '必须先解析稳定 run identity、清理当前进程 PG/Redis 环境，再动态加载 runtimeConfig')
 assert(!realSource.includes('...process.env'), 'child env 必须从 OS allowlist 构造，不能展开父进程全部环境')
-assert(realSource.indexOf('applyHermeticProcessEnv(tempRoot)') < realSource.indexOf("await import('../../shared/logger.js')"), '必须设置 temp log path/disabled 后再加载 logger')
+assert(realSource.indexOf('applyHermeticProcessEnv(tempRoot, runSecret)') < realSource.indexOf("await import('../../shared/logger.js')"), '必须设置 temp log path/disabled 后再加载 logger')
+assert(!/interface ChatLongSessionCheckpoint[\s\S]*?\n}\n/.exec(realSource)?.[0].match(/\b(?:secret|apiKey)\b/i), 'checkpoint schema 不得持久化 runtime secret 或 API key')
 const childBaseEnv = pickChildProcessBaseEnv({ PATH: 'safe-path', SystemRoot: 'safe-root', JUHE_AI_POSTGRES_URL: 'secret-db', JUHE_AI_CHAT_REAL_API_KEY: 'secret-key' })
 assert.deepEqual(childBaseEnv, { PATH: 'safe-path', SystemRoot: 'safe-root' })
 const redacted = redactKnownSecrets(
@@ -305,7 +307,7 @@ for (const isolatedEnv of [
   'JUHE_AI_HOSTED_TOOL_TOOL_SEARCH_MODE', 'JUHE_AI_USAGE_RECORD_WRITER_POOL_ENABLED', 'JUHE_AI_SQLITE_READ_WORKER_POOL_SIZE',
   'JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS'
 ]) assert(realSource.includes(`${isolatedEnv}:`), `hermetic 缺少基础 .env 覆盖：${isolatedEnv}`)
-assert(realSource.includes("buildHermeticJuheEnv(tempRoot, 'server')"), 'child 必须覆盖基础 .env process role')
+assert(realSource.includes("buildHermeticJuheEnv(tempRoot, 'server', runtimeConfig.secret)"), 'child 必须覆盖基础 .env process role 并复用父进程 runtime secret')
 assert(realSource.includes('AbortSignal.timeout(2_000)'), 'waitForReady 每次 fetch 必须有短超时')
 assert(realSource.includes('const naturalCompactionBaseline = controlledContext'), '自然压缩基线必须在两次 follow-up 后读取')
 assert(realSource.includes("controlledReason: 'effective_context_limit_unavailable'"), '未知 context limit 必须明确走 controlled')
