@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import type { AccountScopeParams } from './accountOperationScope'
+import { invalidateAccountTestOptionsCache } from './accountTestOptionsCache'
 
 interface UseAccountProviderModelOptionsOptions {
   currentProviderCode: () => string
@@ -16,6 +17,7 @@ interface UseAccountProviderModelOptionsOptions {
 const providerModelOptionsCache = new Map<string, AccountModelSelectOption[]>()
 
 export function invalidateAccountProviderModelOptionsCache(providerCode?: string): void {
+  invalidateAccountTestOptionsCache()
   const code = providerCode?.trim()
   if (!code) {
     providerModelOptionsCache.clear()
