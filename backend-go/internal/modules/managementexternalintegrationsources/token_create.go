@@ -241,11 +241,16 @@ func normalizeTokenCreateInput(input TokenCreateInput) (normalizedTokenCreateInp
 	}
 	normalized, err := normalizeUpdateInput(UpdateInput{
 		SourceID: input.SourceID,
-		HasName:  true,
-		Name:     input.Name,
 	})
 	if err != nil {
 		return normalizedTokenCreateInput{}, tokenCreateValidationError{cause: err}
+	}
+	name := trimECMAScriptWhitespace(input.Name)
+	if name == "" {
+		return normalizedTokenCreateInput{}, tokenCreateValidationError{cause: errors.New("Token 名称不能为空")}
+	}
+	if utf16LengthOf(name) > 80 {
+		return normalizedTokenCreateInput{}, tokenCreateValidationError{cause: errors.New("Token 名称不能超过 80 个字符")}
 	}
 	status := input.Status
 	if status == "" {
@@ -265,7 +270,7 @@ func normalizeTokenCreateInput(input TokenCreateInput) (normalizedTokenCreateInp
 	}
 	return normalizedTokenCreateInput{
 		sourceID:   normalized.SourceID,
-		name:       normalized.Name,
+		name:       name,
 		status:     status,
 		scopesJSON: scopesJSON,
 		expiresAt:  expiresAt,

@@ -191,8 +191,6 @@ func TestTokenCreateServiceValidation(t *testing.T) {
 		want  string
 	}{
 		{name: "source id", input: TokenCreateInput{Name: "Token"}, want: "来源系统参数无效"},
-		{name: "name empty", input: TokenCreateInput{SourceID: "source_1"}, want: "来源系统名称不能为空"},
-		{name: "name utf16 length", input: TokenCreateInput{SourceID: "source_1", Name: strings.Repeat("😀", 41)}, want: "不能超过 80 个字符"},
 		{name: "status", input: TokenCreateInput{SourceID: "source_1", Name: "Token", Status: "paused"}, want: "token 状态无效"},
 		{name: "scopes type", input: TokenCreateInput{SourceID: "source_1", Name: "Token", Scopes: map[string]any{}}, want: "scopes 必须是字符串数组"},
 		{name: "scope empty", input: TokenCreateInput{SourceID: "source_1", Name: "Token", Scopes: []any{"\u3000"}}, want: "scopes 不能为空"},
@@ -215,6 +213,32 @@ func TestTokenCreateServiceValidation(t *testing.T) {
 	}
 }
 
+func TestTokenCreateServiceUsesNodeTokenNameValidationMessages(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "empty", value: "\uFEFF\u3000", want: "Token 名称不能为空"},
+		{name: "over 80 UTF-16 code units", value: strings.Repeat("😀", 40) + "a", want: "Token 名称不能超过 80 个字符"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &managementExternalIntegrationSourceTokenCreateStoreStub{}
+			_, err := NewTokenCreateService(store, "test-secret").Create(context.Background(), TokenCreateInput{
+				SourceID: "source_1",
+				Name:     test.value,
+			})
+			if err == nil || !IsTokenCreateValidationError(err) || err.Error() != test.want {
+				t.Fatalf("token name validation error = %v, want %q", err, test.want)
+			}
+			if store.calls != 0 {
+				t.Fatalf("invalid token create reached store: %d", store.calls)
+			}
+		})
+	}
+}
+
 func TestTokenCreateServiceValidationUsesNodeFirstErrorOrder(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -226,7 +250,7 @@ func TestTokenCreateServiceValidationUsesNodeFirstErrorOrder(t *testing.T) {
 			input: TokenCreateInput{
 				SourceID: "source_1", Status: "paused", Scopes: []any{"unknown:scope"}, ExpiresAt: "invalid",
 			},
-			want: "来源系统名称不能为空",
+			want: "Token 名称不能为空",
 		},
 		{
 			name: "status before scopes and expires",
