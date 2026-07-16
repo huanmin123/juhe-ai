@@ -518,6 +518,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.MyOperationLogsHandler == nil ||
 		handlers.ExternalIntegrationSourceListHandler == nil ||
 		handlers.ExternalIntegrationSourceDetailHandler == nil ||
+		handlers.ExternalIntegrationSourceCreateHandler == nil ||
 		handlers.ExternalIntegrationSourceUpdateHandler == nil ||
 		handlers.ExternalIntegrationSourceDeleteHandler == nil ||
 		handlers.ExternalIntegrationSourceScopesHandler == nil ||
@@ -532,6 +533,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ExternalIntegrationSourceListHandler != nil ||
 		disabled.ExternalIntegrationSourceDetailHandler != nil ||
+		disabled.ExternalIntegrationSourceCreateHandler != nil ||
 		disabled.ExternalIntegrationSourceUpdateHandler != nil ||
 		disabled.ExternalIntegrationSourceDeleteHandler != nil ||
 		disabled.ExternalSourceTokenSecretHandler != nil ||
@@ -552,6 +554,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 	)
 	if sessionOnly.ExternalIntegrationSourceListHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceDetailHandler != nil ||
+		sessionOnly.ExternalIntegrationSourceCreateHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceUpdateHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceDeleteHandler != nil ||
 		sessionOnly.ExternalSourceTokenSecretHandler != nil ||
@@ -572,6 +575,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 	)
 	if enabled.ExternalIntegrationSourceListHandler == nil ||
 		enabled.ExternalIntegrationSourceDetailHandler == nil ||
+		enabled.ExternalIntegrationSourceCreateHandler == nil ||
 		enabled.ExternalIntegrationSourceUpdateHandler == nil ||
 		enabled.ExternalIntegrationSourceDeleteHandler == nil ||
 		enabled.ExternalSourceTokenSecretHandler == nil ||
@@ -597,6 +601,10 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		"ManagementExternalIntegrationSourceDetailHandler:",
 		"managementHandlers.ExternalIntegrationSourceDetailHandler",
 		"httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService)",
+		"managementexternalintegrationsources.NewCreateService(store, cfg.Secret)",
+		"ManagementExternalIntegrationSourceCreateHandler:",
+		"managementHandlers.ExternalIntegrationSourceCreateHandler",
+		"httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions)",
 		"managementexternalintegrationsources.NewUpdateService(store)",
 		"ManagementExternalIntegrationSourceUpdateHandler:",
 		"managementHandlers.ExternalIntegrationSourceUpdateHandler",

@@ -360,6 +360,21 @@ func managementExternalIntegrationSourceUpdateMutationGuardConfig() mutationGuar
 	}
 }
 
+func managementExternalIntegrationSourceCreateMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "external_integration_sources.create",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := mutationJSONFields(w, r)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"name": mutationAnyField(fields, "name"),
+			}, nil
+		},
+	}
+}
+
 func managementExternalIntegrationSourceDeleteMutationGuardConfig() mutationGuardConfig {
 	return mutationGuardConfig{
 		operationKey: "external_integration_sources.delete",

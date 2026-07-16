@@ -153,6 +153,7 @@ type RouterOptions struct {
 	ManagementRuntimeLogsHandler                      http.Handler
 	ManagementExternalIntegrationSourceListHandler    http.Handler
 	ManagementExternalIntegrationSourceDetailHandler  http.Handler
+	ManagementExternalIntegrationSourceCreateHandler  http.Handler
 	ManagementExternalIntegrationSourceUpdateHandler  http.Handler
 	ManagementExternalIntegrationSourceDeleteHandler  http.Handler
 	ManagementExternalSourceTokenSecretHandler        http.Handler
@@ -377,6 +378,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementRuntimeLogsHandler == nil &&
 				opts.ManagementExternalIntegrationSourceListHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDetailHandler == nil &&
+				opts.ManagementExternalIntegrationSourceCreateHandler == nil &&
 				opts.ManagementExternalIntegrationSourceUpdateHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDeleteHandler == nil &&
 				opts.ManagementExternalSourceTokenSecretHandler == nil &&
@@ -868,6 +870,22 @@ func NewRouter(opts RouterOptions) http.Handler {
 					"/external-integration-sources",
 					opts.ManagementExternalIntegrationSourceListHandler.ServeHTTP,
 				)
+			} else if opts.ManagementExternalIntegrationSourceCreateHandler != nil {
+				system.Get("/external-integration-sources", func(w http.ResponseWriter, _ *http.Request) {
+					writeError(w, http.StatusNotFound, "接口不存在")
+				})
+			}
+			if opts.ManagementExternalIntegrationSourceCreateHandler != nil {
+				system.With(
+					managementGroupCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementExternalIntegrationSourceCreateMutationGuardConfig()),
+				).Post(
+					"/external-integration-sources",
+					opts.ManagementExternalIntegrationSourceCreateHandler.ServeHTTP,
+				)
+			} else if opts.ManagementExternalIntegrationSourceListHandler != nil {
 				system.Post("/external-integration-sources", func(w http.ResponseWriter, _ *http.Request) {
 					writeError(w, http.StatusNotFound, "接口不存在")
 				})
@@ -1135,6 +1153,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementRuntimeLogsHandler != nil ||
 		opts.ManagementExternalIntegrationSourceListHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
+		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||
 		opts.ManagementExternalSourceTokenSecretHandler != nil ||
@@ -1206,6 +1225,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementClientIPUnallowlistHandler != nil ||
 		opts.ManagementClientIPBlacklistHandler != nil ||
 		opts.ManagementClientIPUnblockHandler != nil ||
+		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDeleteHandler != nil
 }
