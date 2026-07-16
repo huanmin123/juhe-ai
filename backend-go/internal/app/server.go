@@ -905,6 +905,7 @@ func newPublicAPIHandlerWithOptions(
 	handlers, err := newPublicAPIHandlers(
 		store,
 		cfg.Secret,
+		cfg.UpstreamBaseURLPrivateAllowlist,
 		opts.APIKeyInvalidator,
 		accountHealthCheckDispatcher,
 		logger,
@@ -934,6 +935,7 @@ func newPublicAPIHandlerWithOptions(
 func newPublicAPIHandlers(
 	store *postgresstore.Store,
 	credentialSecret string,
+	privateBaseURLAllowlist []string,
 	apiKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator,
 	accountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher,
 	logger *slog.Logger,
@@ -959,6 +961,7 @@ func newPublicAPIHandlers(
 		HealthCheckDispatchTimeout: healthCheckDispatchTimeout,
 		Logger:                     logger,
 		Secret:                     credentialSecret,
+		PrivateBaseURLAllowlist:    privateBaseURLAllowlist,
 	})
 
 	handlers := map[string]http.Handler{}

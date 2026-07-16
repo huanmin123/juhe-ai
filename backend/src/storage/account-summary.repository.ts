@@ -1630,7 +1630,7 @@ export function loadAuthorizationQuotaExceededByAuthorizationId(rows: AccountLis
   return output
 }
 
-async function loadAuthorizationQuotaExceededByAuthorizationIdAsync(client: DatabaseClient, rows: AccountListRow[]): Promise<Map<string, boolean>> {
+export async function loadAuthorizationQuotaExceededByAuthorizationIdAsync(client: DatabaseClient, rows: AccountListRow[]): Promise<Map<string, boolean>> {
   const now = new Date()
   const output = new Map<string, boolean>()
   const checks: Array<{

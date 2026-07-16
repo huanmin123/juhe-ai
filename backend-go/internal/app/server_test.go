@@ -67,6 +67,7 @@ func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 		2*time.Second,
 		nil,
 	)
@@ -161,6 +162,7 @@ func TestNewPublicAccountHealthCheckDispatcherTrimsSecretForNodeSignature(t *tes
 func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) {
 	const credentialSecret = "  public-account-credential-secret  "
 	const dispatchTimeout = 5 * time.Second
+	privateBaseURLAllowlist := []string{"http://192.168.40.199:8317"}
 	dispatcher := &appAccountHealthCheckDispatcherRecorder{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var captured publicaccounts.Options
@@ -169,6 +171,7 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 	handlers, err := newPublicAPIHandlers(
 		nil,
 		credentialSecret,
+		privateBaseURLAllowlist,
 		nil,
 		dispatcher,
 		logger,
@@ -203,6 +206,9 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 	}
 	if captured.Secret != credentialSecret {
 		t.Fatalf("Secret = %q, want exact credential secret %q", captured.Secret, credentialSecret)
+	}
+	if len(captured.PrivateBaseURLAllowlist) != 1 || captured.PrivateBaseURLAllowlist[0] != privateBaseURLAllowlist[0] {
+		t.Fatalf("PrivateBaseURLAllowlist = %v, want %v", captured.PrivateBaseURLAllowlist, privateBaseURLAllowlist)
 	}
 }
 
@@ -663,7 +669,7 @@ func TestNewManagementAPIHandlerInjectsProviderModelLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read server.go: %v", err)
 	}
-	text := string(source)
+	text := strings.ReplaceAll(string(source), "\r\n", "\n")
 	wiring := `providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
 		Store:       store,
 		Invalidator: systemAccountInvalidator,

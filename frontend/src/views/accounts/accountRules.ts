@@ -331,9 +331,9 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   }
   if (account.status === 'pending_test' && canToggleAccountStatus(account)) {
     items.push({
-      key: 'force-activate',
-      label: '人工恢复正常',
-      confirmTitle: `确认人工恢复账户「${account.name}」？确认后将跳过本次后台检查，但仍遵守账户时间计划；请仅在你确认上游当前可用时操作。`,
+      key: 'restore-normal',
+      label: '恢复正常',
+      confirmTitle: `确认恢复账户「${account.name}」？确认后将跳过本次后台检查，但仍遵守账户时间计划；请仅在你确认上游当前可用时操作。`,
       confirmOkText: '确认恢复'
     })
   }
@@ -407,7 +407,6 @@ function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {
   if (item.key === 'reauthorize-oauth') return { ...item, icon: 'reset', tone: 'warning' }
   if (item.key === 'restore-normal') return { ...item, icon: 'restore', tone: 'success' }
   if (item.key === 'recheck-health') return { ...item, icon: 'refresh', tone: 'info' }
-  if (item.key === 'force-activate') return { ...item, icon: 'restore', tone: 'warning' }
   if (item.key === 'super-priority-on') return { ...item, icon: 'superPriority', tone: 'warning' }
   if (item.key === 'super-priority-off') return { ...item, icon: 'superPriority', tone: 'default' }
   if (item.key === 'fallback-on') return { ...item, icon: 'fallback', tone: 'purple' }

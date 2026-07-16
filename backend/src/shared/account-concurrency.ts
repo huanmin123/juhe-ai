@@ -181,7 +181,16 @@ export async function loadAccountCurrentConcurrencyByIdsAsync(accountIds: string
   const client = await redisStateClient()
   for (let index = 0; index < normalizedAccountIds.length; index += 100) {
     const chunk = normalizedAccountIds.slice(index, index + 100)
-    const values = await Promise.all(chunk.map((accountId) => loadRedisAccountConcurrencyCount(client, accountId, lane)))
+    const values = numericRedisArray(await client.eval(redisLoadAccountConcurrencyBatchScript, {
+      keys: chunk.flatMap((accountId) => [
+        redisAccountConcurrencyKey(accountId),
+        redisAccountConcurrencyLaneKey(accountId, 'text'),
+        redisAccountConcurrencyLaneKey(accountId, 'image'),
+        lane ? redisAccountConcurrencyLaneKey(accountId, lane) : redisAccountConcurrencyKey(accountId),
+        redisAccountConcurrencyMetadataKey(accountId)
+      ]),
+      arguments: [String(Date.now())]
+    }))
     chunk.forEach((accountId, valueIndex) => result.set(accountId, values[valueIndex] ?? 0))
   }
   return result
@@ -421,24 +430,6 @@ async function releaseRedisAccountConcurrency(accountId: string, redisToken: str
     ],
     arguments: [redisToken]
   })
-}
-
-async function loadRedisAccountConcurrencyCount(
-  client: RedisCommandClient,
-  accountId: string,
-  lane?: AccountConcurrencyLane
-): Promise<number> {
-  const result = await client.eval(redisLoadAccountConcurrencyScript, {
-    keys: [
-      redisAccountConcurrencyKey(accountId),
-      redisAccountConcurrencyLaneKey(accountId, 'text'),
-      redisAccountConcurrencyLaneKey(accountId, 'image'),
-      lane ? redisAccountConcurrencyLaneKey(accountId, lane) : redisAccountConcurrencyKey(accountId),
-      redisAccountConcurrencyMetadataKey(accountId)
-    ],
-    arguments: [String(Date.now())]
-  })
-  return numericRedisResult(result)
 }
 
 async function loadRedisAccountInFlightStatsByIds(accountIds: string[], input: {
@@ -705,8 +696,9 @@ end
 return 1
 `
 
-const redisLoadAccountConcurrencyScript = `
+const redisLoadAccountConcurrencyBatchScript = `
 local now_ms = tonumber(ARGV[1])
+local results = {}
 
 local function hdel_expired(metadata_key, expired)
   local index = 1
@@ -717,27 +709,21 @@ local function hdel_expired(metadata_key, expired)
   end
 end
 
-local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now_ms)
-if #expired > 0 then
-  hdel_expired(KEYS[5], expired)
+for key_index = 1, #KEYS, 5 do
+  local expired = redis.call('ZRANGEBYSCORE', KEYS[key_index], '-inf', now_ms)
+  if #expired > 0 then
+    hdel_expired(KEYS[key_index + 4], expired)
+  end
+  redis.call('ZREMRANGEBYSCORE', KEYS[key_index], '-inf', now_ms)
+  redis.call('ZREMRANGEBYSCORE', KEYS[key_index + 1], '-inf', now_ms)
+  redis.call('ZREMRANGEBYSCORE', KEYS[key_index + 2], '-inf', now_ms)
+  if redis.call('ZCARD', KEYS[key_index]) == 0 then redis.call('DEL', KEYS[key_index]) end
+  if redis.call('ZCARD', KEYS[key_index + 1]) == 0 then redis.call('DEL', KEYS[key_index + 1]) end
+  if redis.call('ZCARD', KEYS[key_index + 2]) == 0 then redis.call('DEL', KEYS[key_index + 2]) end
+  if redis.call('HLEN', KEYS[key_index + 4]) == 0 then redis.call('DEL', KEYS[key_index + 4]) end
+  table.insert(results, redis.call('ZCARD', KEYS[key_index + 3]))
 end
-redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms)
-redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now_ms)
-redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now_ms)
-
-if redis.call('ZCARD', KEYS[1]) == 0 then
-  redis.call('DEL', KEYS[1])
-end
-if redis.call('ZCARD', KEYS[2]) == 0 then
-  redis.call('DEL', KEYS[2])
-end
-if redis.call('ZCARD', KEYS[3]) == 0 then
-  redis.call('DEL', KEYS[3])
-end
-if redis.call('HLEN', KEYS[5]) == 0 then
-  redis.call('DEL', KEYS[5])
-end
-return redis.call('ZCARD', KEYS[4])
+return results
 `
 
 const redisRefreshAccountConcurrencySlotsScript = `

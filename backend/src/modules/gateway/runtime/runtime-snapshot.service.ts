@@ -3,6 +3,7 @@ import { accountSummaryWithEffectiveAvailability } from '../../../domain/account
 import { runtimeConfig } from '../../../config/runtime.js'
 import { loadAccountCurrentConcurrencyByIdsAsync } from '../../../shared/account-concurrency.js'
 import { requestServerAccountConcurrencySnapshot, requestServerAccountRuntimeSnapshot } from '../../db-service/db-service-ipc.js'
+import { loadDistributedGatewayAccountRuntimeAvailability } from './account-side-effects.service.js'
 
 type AccountConcurrencySnapshot = Record<string, number>
 export type AccountRuntimeAvailabilitySnapshot = Record<string, AccountRuntimeAvailability>
@@ -21,6 +22,50 @@ interface RuntimeSnapshotCache<T> {
 export interface AccountRuntimeSnapshotStatus {
   accountConcurrencyAvailable: boolean
   accountRuntimeAvailabilityAvailable: boolean
+}
+
+export async function loadAccountRuntimeAvailabilityByKeys(runtimeKeys: string[]): Promise<{
+  available: boolean
+  values: AccountRuntimeAvailabilitySnapshot
+}> {
+  const keys = [...new Set(runtimeKeys.filter(Boolean))].slice(0, 100)
+  try {
+    if (runtimeConfig.runtimeStateDriver === 'redis') {
+      return { available: true, values: await loadDistributedGatewayAccountRuntimeAvailability(keys) }
+    }
+    const runtime = await loadServerAccountRuntimeSnapshot()
+    if (!runtime?.accountRuntimeAvailability) return { available: false, values: {} }
+    return {
+      available: true,
+      values: Object.fromEntries(keys.flatMap((key) => {
+        const value = runtime.accountRuntimeAvailability?.[key]
+        return value ? [[key, value]] : []
+      }))
+    }
+  } catch {
+    return { available: false, values: {} }
+  }
+}
+
+export async function loadAccountConcurrencyByIds(accountIds: string[]): Promise<{
+  available: boolean
+  values: Record<string, number>
+}> {
+  const ids = [...new Set(accountIds.filter(Boolean))].slice(0, 100)
+  try {
+    if (runtimeConfig.runtimeStateDriver === 'redis') {
+      const values = await loadRedisAccountConcurrencySnapshot(ids)
+      return { available: Boolean(values), values: values ?? {} }
+    }
+    const runtime = await loadServerAccountRuntimeSnapshot()
+    if (!runtime?.accountConcurrency) return { available: false, values: {} }
+    return {
+      available: true,
+      values: Object.fromEntries(ids.map((id) => [id, numberValue(runtime.accountConcurrency?.[id])]))
+    }
+  } catch {
+    return { available: false, values: {} }
+  }
 }
 
 const serverRuntimeSnapshotCacheTtlMs = 300
