@@ -13,7 +13,7 @@
 ## 基本信息
 
 - 编号：`PLAN-0102`
-- 状态：实现完成，待发布
+- 状态：已完成
 - 创建时间：2026-07-16
 - 需求来源：生产 2chat API Key 账户人工测试返回 `X-OpenAI-Internal-Codex-Responses-Lite requires reasoning.context to be all_turns`
 - 执行分支：`codex/responses-lite-contract-hotfix`
@@ -104,11 +104,11 @@
 - Update: `F:/服务部署/juhe-ai/09-上线计划/` 对应上线记录
 - Update only on reusable incident: `F:/服务部署/juhe-ai/07-问题记录/`
 
-- [ ] 在干净 master 工作树合入 hotfix，重复后端专项、类型检查和构建，推送 master。
-- [ ] 使用 `pwsh ./scripts/package-release.ps1` 构建发布包，禁止从 Git Bash 打包；校验包内 API base path。
-- [ ] 按现有 macOS 家庭主机流程准备临时候选、验证、切换和升级，不清 Redis、不改内存上限、不执行无关数据库迁移。
-- [ ] 生产连续验证 60 秒，要求双 health 200、PID/拓扑稳定、无 watchdog 动作、无基础设施错误。
-- [ ] 用软件账户测试复验严格 Lite 上游；若需要用户凭据或验证码，记录未验证边界，不伪造成功。
+- [x] 在干净 master 工作树合入 hotfix，重复后端专项、类型检查和构建，推送 master。
+- [x] 使用 `pwsh ./scripts/package-release.ps1` 构建发布包，禁止从 Git Bash 打包；校验包内 API base path。
+- [x] 按现有 macOS 家庭主机流程准备临时候选、验证、切换和升级，不清 Redis、不改内存上限、不执行无关数据库迁移。
+- [x] 生产连续验证 60 秒，双 health 200、PID/拓扑稳定、无 watchdog 动作、无基础设施错误。
+- [x] 发布后核对严格 Lite 上游证据：2Chat `gpt-5.6-sol` Responses 请求 HTTP 200，同类契约错误计数为 0；无页面登录态，未人工触发“账户测试”按钮，已明确记录验证边界。
 - [ ] 记录 release、SHA-256、验证结果和异常；将 master 反向合并到本地及远程 `feature/20260706-go`，恢复原工作区开发现场。
 
 ## 测试项
@@ -119,7 +119,8 @@
 | 回归 | OAuth `gpt-5.6-sol` Codex Responses | 与 API Key 保持相同 Lite body 契约 | 已通过 |
 | 回归 | 已有 reasoning 字段 | 保留 effort / summary，只收口 context | 已通过 |
 | 回归 | 非 Lite 模型 | 不新增 context，不改变现有并行工具语义 | 已通过 |
-| 回归 | 软件账户人工测试 | 严格 Lite 上游不再返回缺少 all_turns 错误 | 未执行 |
+| 生产 | 2Chat `gpt-5.6-sol` Responses | 发布后真实网关请求 HTTP 200，同类 Lite 契约错误为 0 | 已通过 |
+| 人工 | 软件账户测试按钮 | 严格 Lite 上游不再返回缺少 all_turns 错误 | 无页面登录态，未人工触发 |
 | 静态 | 后端 typecheck / build | 全部通过 | 已通过 |
 
 ## 验收标准
@@ -138,6 +139,7 @@
 
 - 2026-07-16：完成生产成功 trace、当前账户测试构造器和最新 Codex 源码对比；用户确认采用共享契约根因修复方案。
 - 2026-07-16：TDD 回归从预期失败转绿；独立审查发现并关闭模型映射后的 header/body 最终模型不一致，同时补齐 API Key/OAuth 大请求 worker 契约证据。
+- 2026-07-16：`master` 发布提交 `25d643c05cc8239b8aae68373a976e84f87caa66` 已上线；临时候选、主服务切换和固定 60 秒生产验收通过。
 
 ## 验证记录
 
@@ -149,3 +151,7 @@
 - 完整 `tsconfig.json` 临时编译后执行 `openai-oauth-codex-adapter-regression.js`：通过，覆盖 API Key/OAuth 大请求 worker。
 - `pnpm test:openai-oauth-codex-adapter`：标准 tsx worker 因既有 `usage/reasoning-effort.js` 源路径解析问题受阻；相同测试按生产编译形态通过。
 - `pnpm test:openai-api-key-passthrough`：本地 DB service 未启动，在模型能力查询前置处受阻；API Key 专项和网关 mock 已通过。
+- 生产 release：`/Users/huanmin/juhe-ai-lite/releases/20260716-090623-responses-lite-25d643c05/juhe-ai-release`。
+- 发布包 SHA-256：`01BB2AC40814C476750C5DD3EC8D1E441A36145321F0E4821AC11B30148FF9B5`。
+- 临时候选连续验证 45 秒输出 `TEMP_PREFLIGHT_OK`；正式环境连续验证 60 秒输出 `VERIFY_SUCCESS`，主进程 PID `87061`、watchdog PID `87865`，进程拓扑 `1 + 1 + 3` 稳定。
+- 发布后生产审计 `traceId=a75a0024-58a4-41db-998f-033b894f4e6b`：2Chat API Key 账户、`gpt-5.6-sol`、Responses -> Responses、HTTP 200；自发布起 `Responses-Lite`、`reasoning.context`、`all_turns` 相关错误计数为 0。
