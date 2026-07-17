@@ -5,10 +5,12 @@
 - 编号：PLAN-0081
 - 状态：进行中
 - 创建时间：2026-07-06
-- 更新时间：2026-07-17
+- 更新时间：2026-07-18
 - 需求来源：用户对话
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证
+
+- 2026-07-18 W1b 公开基础资源真实依赖复跑：通过 SSH Docker tunnel，以 `JUHE_AI_REQUIRE_INTEGRATION=1` 强制执行公开 API foundation、API Key PostgreSQL / Shell E2E、API log Asynq、groups PostgreSQL / Shell E2E 和 route strategies PostgreSQL / Shell E2E。首次批量执行除 `TestW1bPublicGroupsPostgresSmoke` 外均为 `PASS` 且不是 `SKIP`；失败根因是测试夹具把同一策略的两个 active binding 都固定为 `priority=1`，同时以只允许单分组的 `normal` 模式构造多分组状态，违反 Node / Go 共同契约。提交 `66dc2fb0e` 将夹具改为显式唯一 priority、使用合法 `round_robin` 模式，并让 owner mismatch 探针避开唯一索引以真实命中外键边界；integration 编译、`go vet -tags=integration ./internal/testkit/integration` 和 fresh PostgreSQL `18-bookworm` / Goose schema `55` 上的 `TestW1bPublicGroupsPostgresSmoke` 均通过。临时 PostgreSQL、Redis、Ryuk 和本地 tunnel 均已清理；该证据不代表生产 listener、生产单 owner、回滚或 Node 删除完成。
 
 - 2026-07-18 W4 授权账户健康检查模型真实依赖证据：在 `HEAD=7c0f4b6c9` 上通过 SSH Docker tunnel，以 `JUHE_AI_REQUIRE_INTEGRATION=1` 强制执行 `TestW4ManagementAuthorizationAccountHealthCheckModelPostgresSmoke`；fresh PostgreSQL `18-bookworm` 成功迁移 Goose schema `55`，目标用例 `PASS` 且不是 `SKIP`。测试覆盖授权实例继承 / 覆盖 health-check model、目标 owner 模型目录约束、source / grant / runtime 三层事实和错误路径原子性；临时 PostgreSQL、Ryuk 和本地 tunnel 均已清理。结合已具名通过的 W4 team、authorization create/update/revoke 与 revoke concurrency，当前现存 W4 integration 均已有真实执行证据；授权 expire / return / expiry sweep 的新增完整写链测试、生产单 owner、回滚和 Node 删除仍未完成。
 
