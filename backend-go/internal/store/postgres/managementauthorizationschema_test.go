@@ -355,6 +355,23 @@ func TestManagementResourceAuthorizationRevokeQueryKeepsTeamGrantScope(t *testin
 	}
 }
 
+func TestManagementResourceAuthorizationRevokeQueryExcludesTerminalGrants(t *testing.T) {
+	source, err := os.ReadFile("managementauthorizations.go")
+	if err != nil {
+		t.Fatalf("read management authorizations store: %v", err)
+	}
+	code := strings.ReplaceAll(string(source), "\r\n", "\n")
+	start := strings.Index(code, "func findRevocableManagementGrantTx(")
+	end := strings.Index(code, "\nfunc revokeManagementManualGrantSourcesTx(")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatal("find revocable management grant function block not found")
+	}
+	query := code[start:end]
+	if !strings.Contains(query, "AND status IN ('active', 'paused', 'expired')") {
+		t.Fatalf("find revocable management grant query must exclude terminal statuses:\n%s", query)
+	}
+}
+
 func TestManagementResourceAuthorizationAccountInstancePreservesHealthCheckModel(t *testing.T) {
 	source, err := os.ReadFile("managementauthorizations.go")
 	if err != nil {

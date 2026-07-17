@@ -1814,6 +1814,7 @@ SELECT id, resource_type, resource_id, resource_owner_system_account_id,
   created_at, revoked_by, revoked_at, updated_at
 FROM juhe_business.resource_authorization_grants
 WHERE id = $1
+  AND status IN ('active', 'paused', 'expired')
 `+ownerClause+`LIMIT 1
 FOR UPDATE
 `, args...).Scan(
