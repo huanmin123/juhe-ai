@@ -95,7 +95,10 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       : `共 ${formatNumber(total)} 个账户`,
     fetchPage: async (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-      await loadAccountOptions(systemAccountId, Boolean(_loadOptions?.forceOptions))
+      void loadAccountOptions(systemAccountId, Boolean(_loadOptions?.forceOptions)).catch((error) => {
+        console.error(error)
+        message.error('加载账户筛选选项失败')
+      })
       const accountList = await fetchAccountList(systemAccountId, pageState)
       const runtimeAvailable = accountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
       return {

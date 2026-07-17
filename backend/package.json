@@ -394,6 +394,7 @@
     "test:runtime-config-env-override": "tsx src/scripts/regression/runtime-config-env-override-regression.ts",
     "test:redis-stream-queue": "tsx src/scripts/regression/redis-stream-queue-regression.ts",
     "test:database-client": "tsx src/scripts/regression/database-client-regression.ts",
+    "test:postgres-query-transaction-boundary": "tsx src/scripts/regression/postgres-query-transaction-boundary-regression.ts",
     "test:provider-repository-driver": "tsx src/scripts/regression/provider-repository-driver-regression.ts",
     "test:system-account-session-driver": "tsx src/scripts/regression/system-account-session-driver-regression.ts",
     "test:system-account-management-driver": "tsx src/scripts/regression/system-account-management-driver-regression.ts",
