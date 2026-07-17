@@ -2590,7 +2590,7 @@ function assertProviders(value: unknown): ProviderRecord[] {
     ]) {
       expect(isNonEmptyString(item[field]), `${label}.${field} must be a non-empty string`)
     }
-    assertProviderEndpointDefaults(item, item.code, label)
+    assertProviderTopLevelEndpointDefaults(item, item.code, label)
     expect(typeof item.enabled === 'boolean', `${label}.enabled must be boolean`)
     assertStringArray(item.defaultSupportedModels, `${label}.defaultSupportedModels`)
     assertStringArray(item.accountTypes, `${label}.accountTypes`)
@@ -2603,7 +2603,11 @@ function assertProviders(value: unknown): ProviderRecord[] {
         expect(isNonEmptyString(profile[field]), `${profileLabel}.${field} must be a non-empty string`)
       }
       expect(profile.providerCode === item.code, `${profileLabel}.providerCode must match provider code`)
-      assertProviderEndpointDefaults(profile, item.code, profileLabel)
+      expect(typeof profile.enabled === 'boolean', `${profileLabel}.enabled must be boolean`)
+      assertStringArray(profile.accountTypes, `${profileLabel}.accountTypes`)
+      assertStringArray(profile.capabilities, `${profileLabel}.capabilities`)
+      assertProviderEndpointFamilies(profile.endpointFamilies, profileLabel)
+      assertProviderProfileEndpointDefaults(profile, item.code, profileLabel)
     }
     expect(
       item.protocolProfiles.some((profile) => isRecord(profile) && profile.id === item.defaultProtocolProfileId),
@@ -2611,15 +2615,48 @@ function assertProviders(value: unknown): ProviderRecord[] {
     )
     return item as unknown as ProviderRecord
   })
-  const providersByCode = new Map(providers.map((provider) => [provider.code, provider]))
-  expect(providersByCode.size === providers.length, 'providers/options provider codes must be unique')
+  const providerCodes = new Set<string>()
+  for (const provider of providers) {
+    expect(!providerCodes.has(provider.code), `providers/options contains duplicate provider code ${provider.code}`)
+    providerCodes.add(provider.code)
+  }
   for (const code of builtInProviderCodes) {
-    expect(providersByCode.has(code), `providers/options must include built-in provider ${code}`)
+    expect(providerCodes.has(code), `providers/options must include built-in provider ${code}`)
   }
   return providers
 }
 
-function assertProviderEndpointDefaults(
+function assertProviderEndpointFamilies(value: unknown, profileLabel: string): void {
+  expect(Array.isArray(value), `${profileLabel}.endpointFamilies must be an array`)
+  for (const [index, family] of value.entries()) {
+    const label = `${profileLabel}.endpointFamilies item ${index}`
+    expect(isRecord(family), `${label} must be an object`)
+    expect(isNonEmptyString(family.code), `${label}.code must be a non-empty string`)
+    expect(isNonEmptyString(family.name), `${label}.name must be a non-empty string`)
+    if (Object.hasOwn(family, 'description')) {
+      expect(typeof family.description === 'string', `${label}.description must be a string`)
+    }
+  }
+}
+
+function assertProviderTopLevelEndpointDefaults(
+  value: Record<string, unknown>,
+  providerCode: string,
+  label: string
+): void {
+  for (const field of ['baseUrl', 'defaultHealthCheckModel']) {
+    expect(typeof value[field] === 'string', `${label}.${field} must be a string`)
+  }
+  if (providerCode === 'hybrid') {
+    expect(value.baseUrl === '', `${label}.baseUrl must be empty for hybrid`)
+  } else if (builtInProviderCodes.has(providerCode)) {
+    for (const field of ['baseUrl', 'defaultHealthCheckModel']) {
+      expect(isNonEmptyString(value[field]), `${label}.${field} must be a non-empty string`)
+    }
+  }
+}
+
+function assertProviderProfileEndpointDefaults(
   value: Record<string, unknown>,
   providerCode: string,
   label: string

@@ -107,6 +107,8 @@ type MockScenario =
   | 'public_api_log_detail_request_data_invalid'
   | 'public_api_log_detail_response_data_invalid'
   | 'public_api_log_detail_no_store'
+  | 'provider_duplicate_code'
+  | 'provider_profile_endpoint_families_missing'
   | 'route_strategies_empty'
   | 'route_strategies_invalid'
   | 'route_strategy_detail_invalid'
@@ -189,6 +191,7 @@ try {
   await assertRouteStrategyReadScenarios(baseUrl)
   await assertApiKeyListReadScenarios(baseUrl)
   await assertReadOnlySmoke(baseUrl)
+  await assertProviderOptionsResponseRequirements(baseUrl)
   await assertAccountTestOptionsReadSmoke(baseUrl)
   await assertAccountTestOptionsResponseRequirements(baseUrl)
   await assertClientIPRangeNotReadySmoke(baseUrl)
@@ -1155,6 +1158,24 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assertRequestHeaders()
 }
 
+async function assertProviderOptionsResponseRequirements(baseUrl: string): Promise<void> {
+  const cases = [
+    [
+      'provider_profile_endpoint_families_missing',
+      /providers\/options provider hybrid\.protocolProfiles item 0\.endpointFamilies must be an array/
+    ],
+    ['provider_duplicate_code', /providers\/options contains duplicate provider code gpt/]
+  ] as const
+  for (const [requestScenario, expectedMessage] of cases) {
+    resetMock(requestScenario)
+    await assert.rejects(
+      runRealGoManagementSmokeFromEnvironment(smokeEnvironment(baseUrl), () => undefined),
+      expectedMessage
+    )
+    assertRequestHeaders()
+  }
+}
+
 async function assertAccountTestOptionsReadSmoke(baseUrl: string): Promise<void> {
   resetMock('normal')
   const output: string[] = []
@@ -1933,7 +1954,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/providers/options') {
-    sendEnvelope(res, [
+    const providers = [
       ['hybrid', 'Hybrid'],
       ['openai', 'OpenAI'],
       ['gpt', 'GPT'],
@@ -1941,7 +1962,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       ['anthropic', 'Anthropic'],
       ['gemini', 'Gemini'],
       ['glm', 'GLM']
-    ].map(([code, name]) => providerFixture(code, name)))
+    ].map(([code, name]) => providerFixture(code, name))
+    if (scenario === 'provider_profile_endpoint_families_missing') {
+      const hybridProfiles = fixtureRecord(providers[0]).protocolProfiles
+      assert(Array.isArray(hybridProfiles))
+      delete fixtureRecord(hybridProfiles[0]).endpointFamilies
+    }
+    if (scenario === 'provider_duplicate_code') {
+      providers.push(providerFixture('gpt', 'Duplicate GPT'))
+    }
+    sendEnvelope(res, providers)
     return
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/providers/models/options') {
@@ -2248,11 +2278,14 @@ function groupResponse(group: MockGroup): Record<string, unknown> {
 function providerFixture(code: string, name: string): Record<string, unknown> {
   const profileId = `profile_${code}_openai_v1`
   const baseUrl = code === 'hybrid' ? '' : 'https://api.example.test/v1'
-  const defaultHealthCheckModel = code === 'hybrid'
+  const profileDefaultHealthCheckModel = code === 'hybrid'
     ? ''
     : code === 'gpt'
       ? 'gpt-5.6-sol'
       : 'provider-model'
+  const defaultHealthCheckModel = code === 'hybrid'
+    ? 'hybrid-user-preference-model'
+    : profileDefaultHealthCheckModel
   return {
     id: `provider_${code}`,
     code,
@@ -2274,7 +2307,7 @@ function providerFixture(code: string, name: string): Record<string, unknown> {
       protocolCode: 'openai',
       protocolVersion: 'v1',
       baseUrl,
-      defaultHealthCheckModel,
+      defaultHealthCheckModel: profileDefaultHealthCheckModel,
       accountTypes: ['api_key'],
       capabilities: ['chat_completions', 'responses'],
       endpointFamilies: []
