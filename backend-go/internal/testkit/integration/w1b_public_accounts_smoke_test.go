@@ -348,10 +348,11 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	}
 
 	credentialExtensions := map[string]any{
-		"api_key":          initialSecret,
-		"base_url":         "https://api.openai.com/v1",
-		"service_tier":     "priority",
-		"reasoning_effort": "high",
+		"api_key":                  initialSecret,
+		"base_url":                 "https://api.openai.com/v1",
+		"service_tier":             "priority",
+		"reasoning_effort":         "high",
+		"supported_endpoint_modes": []any{"chat_json", "chat_sse", "responses_json", "responses_sse"},
 		"endpoint": map[string]any{
 			"path": "/responses",
 			"mode": "strict",
