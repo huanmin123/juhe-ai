@@ -41,6 +41,17 @@ assert.match(
   'stats overview quick ranges must refresh the window before calculating today'
 )
 
+for (const [name, source] of [
+  ['stats overview', statsViewSource],
+  ['system metrics', systemMetricsViewSource]
+] as const) {
+  assert.match(
+    source,
+    /:value="quickRangeValue \?\? ''"/,
+    `${name} must pass an empty string instead of undefined when no quick range matches`
+  )
+}
+
 assert.match(
   systemMetricsViewSource,
   /await\s+loadUsageStatsWindow\(\{ force: true \}\)[\s\S]*const rangeParams = selectedRangeParams\(\)/,
