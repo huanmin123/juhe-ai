@@ -5,6 +5,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -32,6 +35,7 @@ import (
 	"juhe-ai/backend-go/internal/httpapi"
 	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/migrationcatalog"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizations"
@@ -78,15 +82,15 @@ func TestW4ManagementAuthorizationRevokePostgresRedisAsynqSmoke(t *testing.T) {
 		workerRunErr      error
 	)
 	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cleanupCancel()
 		if stopWorker != nil {
 			stopWorker()
+			workerCleanupCtx, workerCleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
 			select {
 			case <-workerDone:
-			case <-cleanupCtx.Done():
-				t.Errorf("authorization revoke worker shutdown: %v", cleanupCtx.Err())
+			case <-workerCleanupCtx.Done():
+				t.Errorf("authorization revoke worker shutdown: %v", workerCleanupCtx.Err())
 			}
+			workerCleanupCancel()
 			workerErrMu.Lock()
 			err := workerRunErr
 			workerErrMu.Unlock()
@@ -131,14 +135,18 @@ func TestW4ManagementAuthorizationRevokePostgresRedisAsynqSmoke(t *testing.T) {
 			}
 		}
 		if redisContainer != nil {
-			if err := redisContainer.Terminate(cleanupCtx); err != nil {
+			redisCleanupCtx, redisCleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			if err := redisContainer.Terminate(redisCleanupCtx); err != nil {
 				t.Errorf("terminate authorization revoke redis: %v", err)
 			}
+			redisCleanupCancel()
 		}
 		if postgresContainer != nil {
-			if err := postgresContainer.Terminate(cleanupCtx); err != nil {
+			postgresCleanupCtx, postgresCleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+			if err := postgresContainer.Terminate(postgresCleanupCtx); err != nil {
 				t.Errorf("terminate authorization revoke postgres: %v", err)
 			}
+			postgresCleanupCancel()
 		}
 	})
 
@@ -162,8 +170,9 @@ func TestW4ManagementAuthorizationRevokePostgresRedisAsynqSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read authorization revoke Goose version: %v", err)
 	}
-	if version != 55 {
-		t.Fatalf("authorization revoke Goose version = %d, want 55", version)
+	wantVersion := latestW4AuthorizationRevokeMigrationVersion(t)
+	if version != wantVersion {
+		t.Fatalf("authorization revoke Goose version = %d, want latest catalog version %d", version, wantVersion)
 	}
 
 	redisContainer, err = tcredis.Run(ctx, redisImage)
@@ -247,7 +256,7 @@ func TestW4ManagementAuthorizationRevokePostgresRedisAsynqSmoke(t *testing.T) {
 	assertW4AuthorizationRevokePreRequestState(t, ctx, db)
 	stateBeforeSuccess := readW4AuthorizationRevokeRedisDB(t, ctx, keyspaceRedis)
 	if len(stateBeforeSuccess) != 0 {
-		t.Fatalf("authorization revoke state Redis before request = %+v, want empty DB", stateBeforeSuccess)
+		t.Fatal("authorization revoke state Redis before request is not empty")
 	}
 	queueBeforeSuccess := readW4AuthorizationRevokeQueueInfo(t, inspector, true)
 	assertW4AuthorizationRevokeSecretFree(t, "logger before request", logBuffer.String(), w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
@@ -288,10 +297,11 @@ func TestW4ManagementAuthorizationRevokePostgresRedisAsynqSmoke(t *testing.T) {
 	}
 	operationLogsBeforeRepeat := readW4AuthorizationRevokeOperationLogSnapshot(t, ctx, db)
 	assertW4AuthorizationRevokeSecretFree(t, "PostgreSQL operation logs after ingest", operationLogsBeforeRepeat, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
-	queueTasksBeforeRepeat := readW4AuthorizationRevokeAsynqTaskSnapshot(t, ctx, queueRedis)
-	assertW4AuthorizationRevokeAsynqPayloadsSecretFree(t, queueTasksBeforeRepeat, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
+	queueDBAfterSuccess := readW4AuthorizationRevokeRedisDB(t, ctx, queueRedis)
+	assertW4AuthorizationRevokeRedisDBSecretFree(t, "queue Redis full DB after success", queueDBAfterSuccess, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
+	queueStableBeforeRepeat := stableW4AuthorizationRevokeQueueRedisSnapshot(queueDBAfterSuccess)
 	assertW4AuthorizationRevokeSecretFree(t, "logger after operation-log ingest", logBuffer.String(), w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
-	assertW4AuthorizationRevokeAsynqTaskSnapshotPresent(t, queueTasksBeforeRepeat)
+	assertW4AuthorizationRevokeAsynqTaskSnapshotPresent(t, queueStableBeforeRepeat)
 	queueBeforeRepeat := readW4AuthorizationRevokeQueueInfo(t, inspector, false)
 	assertW4AuthorizationRevokeQueueSuccessTransition(t, queueBeforeSuccess, queueBeforeRepeat)
 	countsBeforeRepeat := readW4AuthorizationRevokeCounts(t, ctx, db)
@@ -321,8 +331,9 @@ func TestW4ManagementAuthorizationRevokePostgresRedisAsynqSmoke(t *testing.T) {
 	assertW4AuthorizationRevokeSecretFree(t, "PostgreSQL operation logs after repeat", operationLogsAfterRepeat, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
 	stateAfterRepeat := readW4AuthorizationRevokeRedisDB(t, ctx, keyspaceRedis)
 	assertW4AuthorizationRevokeRedisDBSecretFree(t, "state Redis after repeat", stateAfterRepeat, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
-	queueTasksAfterRepeat := readW4AuthorizationRevokeAsynqTaskSnapshot(t, ctx, queueRedis)
-	assertW4AuthorizationRevokeAsynqPayloadsSecretFree(t, queueTasksAfterRepeat, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
+	queueDBAfterRepeat := readW4AuthorizationRevokeRedisDB(t, ctx, queueRedis)
+	assertW4AuthorizationRevokeRedisDBSecretFree(t, "queue Redis full DB after repeat", queueDBAfterRepeat, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
+	queueStableAfterRepeat := stableW4AuthorizationRevokeQueueRedisSnapshot(queueDBAfterRepeat)
 	assertW4AuthorizationRevokeSecretFree(t, "logger after repeat", logBuffer.String(), w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
 	if got := readW4AuthorizationRevokeQueueInfo(t, inspector, false); got != queueBeforeRepeat {
 		t.Fatalf("authorization revoke queue changed after repeat: before=%+v after=%+v", queueBeforeRepeat, got)
@@ -339,7 +350,7 @@ func TestW4ManagementAuthorizationRevokePostgresRedisAsynqSmoke(t *testing.T) {
 	if !reflect.DeepEqual(stateAfterRepeat, stateBeforeRepeat) {
 		t.Fatal("authorization revoke state Redis key/value snapshot changed after repeat")
 	}
-	if !reflect.DeepEqual(queueTasksAfterRepeat, queueTasksBeforeRepeat) {
+	if !reflect.DeepEqual(queueStableAfterRepeat, queueStableBeforeRepeat) {
 		t.Fatal("authorization revoke Asynq task/payload snapshot changed after repeat")
 	}
 	if invalidationCalls != 2 || logIDCalls != 1 {
@@ -463,29 +474,30 @@ func readW4AuthorizationRevokeRedisDB(t *testing.T, ctx context.Context, client 
 	}
 	sort.Strings(keys)
 	entries := make([]w4AuthorizationRevokeRedisEntry, 0, len(keys))
-	for _, key := range keys {
+	for index, key := range keys {
+		descriptor := fmt.Sprintf("entry=%d key_sha256=%s", index, w4AuthorizationRevokeShortDigest(key))
 		kind, err := client.Type(ctx, key).Result()
 		if err != nil {
-			t.Fatalf("read authorization revoke Redis key type %q: %v", key, err)
+			t.Fatalf("read authorization revoke Redis key type (%s): %v", descriptor, err)
 		}
-		entries = append(entries, w4AuthorizationRevokeRedisEntry{Key: key, Type: kind, Value: readW4AuthorizationRevokeRedisValue(t, ctx, client, key, kind)})
+		entries = append(entries, w4AuthorizationRevokeRedisEntry{Key: key, Type: kind, Value: readW4AuthorizationRevokeRedisValue(t, ctx, client, key, kind, descriptor)})
 	}
 	return entries
 }
 
-func readW4AuthorizationRevokeRedisValue(t *testing.T, ctx context.Context, client *goredis.Client, key, kind string) string {
+func readW4AuthorizationRevokeRedisValue(t *testing.T, ctx context.Context, client *goredis.Client, key, kind, descriptor string) string {
 	t.Helper()
 	switch kind {
 	case "string":
 		value, err := client.Get(ctx, key).Result()
 		if err != nil {
-			t.Fatalf("read authorization revoke Redis string %q: %v", key, err)
+			t.Fatalf("read authorization revoke Redis string (%s): %v", descriptor, err)
 		}
 		return value
 	case "hash":
 		values, err := client.HGetAll(ctx, key).Result()
 		if err != nil {
-			t.Fatalf("read authorization revoke Redis hash %q: %v", key, err)
+			t.Fatalf("read authorization revoke Redis hash (%s): %v", descriptor, err)
 		}
 		fields := make([]string, 0, len(values))
 		for field := range values {
@@ -500,55 +512,121 @@ func readW4AuthorizationRevokeRedisValue(t *testing.T, ctx context.Context, clie
 	case "list":
 		values, err := client.LRange(ctx, key, 0, -1).Result()
 		if err != nil {
-			t.Fatalf("read authorization revoke Redis list %q: %v", key, err)
+			t.Fatalf("read authorization revoke Redis list (%s): %v", descriptor, err)
 		}
 		return strings.Join(values, "\n")
 	case "set":
 		values, err := client.SMembers(ctx, key).Result()
 		if err != nil {
-			t.Fatalf("read authorization revoke Redis set %q: %v", key, err)
+			t.Fatalf("read authorization revoke Redis set (%s): %v", descriptor, err)
 		}
 		sort.Strings(values)
 		return strings.Join(values, "\n")
 	case "zset":
 		values, err := client.ZRangeWithScores(ctx, key, 0, -1).Result()
 		if err != nil {
-			t.Fatalf("read authorization revoke Redis zset %q: %v", key, err)
+			t.Fatalf("read authorization revoke Redis zset (%s): %v", descriptor, err)
 		}
 		parts := make([]string, 0, len(values))
 		for _, value := range values {
 			parts = append(parts, fmt.Sprintf("%v=%g", value.Member, value.Score))
 		}
 		return strings.Join(parts, "\n")
+	case "stream":
+		messages, err := client.XRange(ctx, key, "-", "+").Result()
+		if err != nil {
+			t.Fatalf("read authorization revoke Redis stream (%s): %v", descriptor, err)
+		}
+		parts := make([]string, 0, len(messages))
+		for _, message := range messages {
+			fields := make([]string, 0, len(message.Values))
+			for field := range message.Values {
+				fields = append(fields, field)
+			}
+			sort.Strings(fields)
+			values := make([]string, 0, len(fields)+1)
+			values = append(values, message.ID)
+			for _, field := range fields {
+				values = append(values, field+"="+fmt.Sprint(message.Values[field]))
+			}
+			parts = append(parts, strings.Join(values, "|"))
+		}
+		return strings.Join(parts, "\n")
 	default:
 		raw, err := client.Dump(ctx, key).Result()
 		if err != nil {
-			t.Fatalf("dump authorization revoke Redis %s key %q: %v", kind, key, err)
+			t.Fatalf("dump authorization revoke Redis %s key (%s): %v", kind, descriptor, err)
 		}
 		return string(raw)
 	}
 }
 
-func readW4AuthorizationRevokeAsynqTaskSnapshot(t *testing.T, ctx context.Context, client *goredis.Client) []w4AuthorizationRevokeRedisEntry {
-	t.Helper()
-	queuePrefix := "asynq:{" + operationlogjob.QueueName + "}:"
-	taskPrefix := queuePrefix + "t:"
-	stableStateKeys := map[string]bool{
-		queuePrefix + "pending":   true,
-		queuePrefix + "active":    true,
-		queuePrefix + "scheduled": true,
-		queuePrefix + "retry":     true,
-		queuePrefix + "archived":  true,
-		queuePrefix + "completed": true,
-	}
-	all := readW4AuthorizationRevokeRedisDB(t, ctx, client)
-	result := make([]w4AuthorizationRevokeRedisEntry, 0, len(all))
-	for _, entry := range all {
-		if strings.HasPrefix(entry.Key, taskPrefix) || stableStateKeys[entry.Key] {
+const (
+	w4AuthorizationRevokeQueueKeyStable    = "stable"
+	w4AuthorizationRevokeQueueKeyHeartbeat = "heartbeat"
+	w4AuthorizationRevokeQueueKeyLease     = "lease"
+	w4AuthorizationRevokeQueueKeyStats     = "stats"
+)
+
+func stableW4AuthorizationRevokeQueueRedisSnapshot(entries []w4AuthorizationRevokeRedisEntry) []w4AuthorizationRevokeRedisEntry {
+	result := make([]w4AuthorizationRevokeRedisEntry, 0, len(entries))
+	for _, entry := range entries {
+		if classifyW4AuthorizationRevokeQueueRedisKey(entry.Key) == w4AuthorizationRevokeQueueKeyStable {
 			result = append(result, entry)
 		}
 	}
 	return result
+}
+
+func classifyW4AuthorizationRevokeQueueRedisKey(key string) string {
+	if key == "asynq:servers" || key == "asynq:workers" || strings.HasPrefix(key, "asynq:servers:{") || strings.HasPrefix(key, "asynq:workers:{") {
+		return w4AuthorizationRevokeQueueKeyHeartbeat
+	}
+	if !strings.HasPrefix(key, "asynq:{") {
+		return w4AuthorizationRevokeQueueKeyStable
+	}
+	separator := strings.Index(key, "}:")
+	if separator < 0 {
+		return w4AuthorizationRevokeQueueKeyStable
+	}
+	suffix := key[separator+2:]
+	switch {
+	case suffix == "lease":
+		return w4AuthorizationRevokeQueueKeyLease
+	case suffix == "processed", suffix == "failed", strings.HasPrefix(suffix, "processed:"), strings.HasPrefix(suffix, "failed:"):
+		return w4AuthorizationRevokeQueueKeyStats
+	default:
+		return w4AuthorizationRevokeQueueKeyStable
+	}
+}
+
+func TestClassifyW4AuthorizationRevokeQueueRedisKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{name: "operation log task payload", key: "asynq:{operation-logs}:t:task-id", want: w4AuthorizationRevokeQueueKeyStable},
+		{name: "operation log completed state", key: "asynq:{operation-logs}:completed", want: w4AuthorizationRevokeQueueKeyStable},
+		{name: "unexpected other queue task", key: "asynq:{unexpected}:t:task-id", want: w4AuthorizationRevokeQueueKeyStable},
+		{name: "unexpected other queue state", key: "asynq:{unexpected}:pending", want: w4AuthorizationRevokeQueueKeyStable},
+		{name: "unrelated key", key: "custom:key", want: w4AuthorizationRevokeQueueKeyStable},
+		{name: "server heartbeat", key: "asynq:servers:{host:1:id}", want: w4AuthorizationRevokeQueueKeyHeartbeat},
+		{name: "global workers heartbeat", key: "asynq:workers", want: w4AuthorizationRevokeQueueKeyHeartbeat},
+		{name: "worker heartbeat", key: "asynq:workers:{host:1:id}", want: w4AuthorizationRevokeQueueKeyHeartbeat},
+		{name: "queue lease", key: "asynq:{operation-logs}:lease", want: w4AuthorizationRevokeQueueKeyLease},
+		{name: "processed total", key: "asynq:{operation-logs}:processed", want: w4AuthorizationRevokeQueueKeyStats},
+		{name: "processed daily", key: "asynq:{operation-logs}:processed:2026-07-17", want: w4AuthorizationRevokeQueueKeyStats},
+		{name: "failed total", key: "asynq:{unexpected}:failed", want: w4AuthorizationRevokeQueueKeyStats},
+		{name: "failed daily", key: "asynq:{unexpected}:failed:2026-07-17", want: w4AuthorizationRevokeQueueKeyStats},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyW4AuthorizationRevokeQueueRedisKey(tc.key); got != tc.want {
+				t.Fatalf("classifyW4AuthorizationRevokeQueueRedisKey() = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func assertW4AuthorizationRevokeAsynqTaskSnapshotPresent(t *testing.T, entries []w4AuthorizationRevokeRedisEntry) {
@@ -722,6 +800,19 @@ WHERE s.id = $1
 	return raw
 }
 
+func latestW4AuthorizationRevokeMigrationVersion(t *testing.T) int64 {
+	t.Helper()
+	migrationDir := filepath.Join(repoRoot(t), "db", "migrations")
+	catalog, err := migrationcatalog.Inspect(os.DirFS(migrationDir))
+	if err != nil {
+		t.Fatalf("inspect authorization revoke migration catalog: %v", err)
+	}
+	if len(catalog.Entries) == 0 {
+		t.Fatal("authorization revoke migration catalog is empty")
+	}
+	return catalog.Entries[len(catalog.Entries)-1].Version
+}
+
 func assertW4AuthorizationRevokePreRequestState(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
 	for _, row := range []struct {
@@ -789,22 +880,19 @@ func assertW4AuthorizationRevokeExactStateKeys(t *testing.T, entries []w4Authori
 func assertW4AuthorizationRevokeHTTPResponseSecretFree(t *testing.T, label string, response w4AuthorizationRevokeHTTPResponse, values ...string) {
 	t.Helper()
 	assertW4AuthorizationRevokeSecretFree(t, label+" HTTP body", response.Body, values...)
+	index := 0
 	for name, headers := range response.Header {
-		assertW4AuthorizationRevokeSecretFree(t, label+" HTTP header "+name, strings.Join(headers, "\n"), values...)
+		assertW4AuthorizationRevokeSecretFree(t, fmt.Sprintf("%s HTTP header entry %d", label, index), name+"\n"+strings.Join(headers, "\n"), values...)
+		index++
 	}
 }
 
 func assertW4AuthorizationRevokeRedisDBSecretFree(t *testing.T, label string, entries []w4AuthorizationRevokeRedisEntry, values ...string) {
 	t.Helper()
-	for _, entry := range entries {
-		assertW4AuthorizationRevokeSecretFree(t, label+" key "+entry.Key, entry.Key+"\n"+entry.Value, values...)
+	for index, entry := range entries {
+		descriptor := fmt.Sprintf("%s entry %d key_sha256=%s", label, index, w4AuthorizationRevokeShortDigest(entry.Key))
+		assertW4AuthorizationRevokeSecretFree(t, descriptor, entry.Key+"\n"+entry.Value, values...)
 	}
-}
-
-// The queue Redis DB contains each Asynq task state plus its serialized payload.
-func assertW4AuthorizationRevokeAsynqPayloadsSecretFree(t *testing.T, entries []w4AuthorizationRevokeRedisEntry, values ...string) {
-	t.Helper()
-	assertW4AuthorizationRevokeRedisDBSecretFree(t, "Asynq task payloads across all queue states", entries, values...)
 }
 
 func assertW4AuthorizationRevokeSecretFree(t *testing.T, label, raw string, values ...string) {
@@ -814,6 +902,11 @@ func assertW4AuthorizationRevokeSecretFree(t *testing.T, label, raw string, valu
 			t.Fatalf("authorization revoke sensitive value leaked in %s", label)
 		}
 	}
+}
+
+func w4AuthorizationRevokeShortDigest(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("%x", sum[:6])
 }
 
 type w4AuthorizationRevokeLockedBuffer struct {
