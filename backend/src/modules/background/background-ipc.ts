@@ -1735,7 +1735,7 @@ async function clearServerGatewayRuntimeCache(): Promise<void> {
 
 async function clearServerAccountRuntimeAvailability(target: AccountRuntimeAvailabilityClearTarget): Promise<void> {
   const gatewaySideEffects = await import('../gateway/runtime/account-side-effects.service.js')
-  gatewaySideEffects.clearGatewayAccountRuntimeAvailability(target)
+  gatewaySideEffects.clearGatewayAutomaticAccountRuntimeAvailability(target)
 }
 
 async function buildIngestWorkerDrainStatus(timeoutMs = 1000): Promise<BackgroundWorkerIngestDrainStatus> {

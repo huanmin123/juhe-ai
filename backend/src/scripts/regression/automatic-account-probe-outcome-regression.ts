@@ -3,6 +3,32 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { automaticAccountProbeOutcome } from '../../modules/accounts/automatic-account-probe-outcome.js'
 import { isRealUpstreamAttempt } from '../../modules/gateway/upstream/attempt.js'
+import {
+  accountPrecheckMinimumObservationMs,
+  accountPrecheckProbeIntervalMs,
+  nextAccountPrecheckProbeAtMs
+} from '../../modules/gateway/runtime/account-probe-confirmation-policy.js'
+
+assert.equal(accountPrecheckProbeIntervalMs, 2 * 60_000)
+assert.equal(accountPrecheckMinimumObservationMs, 5 * 60_000)
+assert.equal(nextAccountPrecheckProbeAtMs({
+  attemptCount: 1,
+  maxAttempts: 3,
+  startedAtMs: 0,
+  nowMs: 60_000
+}), 180_000, '后台确认轮次必须跨时间分散，不能在同一短突发内连跑')
+assert.equal(nextAccountPrecheckProbeAtMs({
+  attemptCount: 3,
+  maxAttempts: 3,
+  startedAtMs: 0,
+  nowMs: 240_000
+}), 300_000, '探针次数达到门槛后仍必须满足最小观察时间')
+assert.equal(nextAccountPrecheckProbeAtMs({
+  attemptCount: 3,
+  maxAttempts: 3,
+  startedAtMs: 0,
+  nowMs: 300_000
+}), undefined, '次数和跨时间观察均满足后才允许最终确认')
 
 assert.equal(isRealUpstreamAttempt({
   upstreamUrl: 'account:capacity_limited'
@@ -25,19 +51,69 @@ const healthCheckSource = readFileSync(fileURLToPath(new URL('../../modules/back
 const qualityPrecheckSource = readFileSync(fileURLToPath(new URL('../../modules/background/account-quality-failure-precheck.service.ts', import.meta.url)), 'utf8')
 const cooldownRetestSource = readFileSync(fileURLToPath(new URL('../../modules/background/cooldown-account-retest.service.ts', import.meta.url)), 'utf8')
 const apiKeyRetestSource = readFileSync(fileURLToPath(new URL('../../modules/background/account-api-key-cooldown-retest.service.ts', import.meta.url)), 'utf8')
+const backgroundIpcSource = readFileSync(fileURLToPath(new URL('../../modules/background/background-ipc.ts', import.meta.url)), 'utf8')
+const inspectionRuntimeSource = readFileSync(fileURLToPath(new URL('../../modules/gateway/response/inspection-runtime-effects.ts', import.meta.url)), 'utf8')
 assert.doesNotMatch(sideEffectsSource, /result\.success\s*\|\|\s*result\.accountFailureEligible\s*===\s*false/)
-assert.match(
-  sideEffectsSource,
-  /if \(operation\.input\.trafficSource === 'gateway'\) \{\s*return\s*\}/,
-  '用户业务请求无论成功失败都不能直接改变账户级状态'
-)
 assert.match(
   sideEffectsSource,
   /const current = recoveryProbeStates\.get\(runtimeKey\)\s*if \(current\) return\s*const generation = nextRuntimeProbeGeneration/,
   '重复用户失败信号不得替换本地在途探针 generation'
 )
+assert.match(
+  inspectionRuntimeSource,
+  /configured_response_policy[\s\S]*suppressGatewayAccountLocallyForSeconds\(/,
+  '用户显式响应拦截策略应允许直接执行配置的账户运行态避让'
+)
+assert.match(
+  sideEffectsSource,
+  /createRuntimeStateStore\('gateway-configured-account-policy-avoidance'\)/,
+  '用户显式响应拦截账户避让必须使用独立的 memory/Redis TTL store'
+)
+assert.match(
+  sideEffectsSource,
+  /configuredPolicyAvoidanceStore\.getJsonMany/,
+  '分布式运行态加载和候选过滤必须读取显式响应策略账户避让'
+)
+assert.match(
+  sideEffectsSource,
+  /configuredPolicyAvoidanceStore\.delete\(runtimeKey\)/,
+  '手动恢复必须清理显式响应策略账户避让'
+)
+assert.doesNotMatch(
+  sideEffectsSource.match(/async function clearDistributedRecoveryProbeState\([^]*?\n\}/)?.[0] ?? '',
+  /configuredPolicyAvoidanceStore\.delete/,
+  '后台探针成功清理自动复核状态时不得误清用户显式响应策略 TTL'
+)
+assert.match(
+  backgroundIpcSource,
+  /clearServerAccountRuntimeAvailability[\s\S]{0,300}clearGatewayAutomaticAccountRuntimeAvailability/,
+  '后台健康检查成功必须使用自动探针专用清理入口，不能解除用户显式策略 TTL'
+)
 assert.match(sideEffectsSource, /distributedRecoveryProbeStore\.setIfAbsent\(/, 'Redis 用户信号只能首次创建后台事件')
 assert.doesNotMatch(sideEffectsSource, /mergeDistributedRecoveryProbeFailureState\(/, 'Redis 用户信号不得 merge 或续期已有后台事件')
+assert.match(
+  sideEffectsSource,
+  /function isPrecheckRuntimeBlocking\([^)]*\): boolean \{[\s\S]{0,120}return false[\s\S]{0,20}\}/,
+  '后台最终确认前账户必须继续允许调度'
+)
+assert.match(
+  sideEffectsSource,
+  /operation\.input\.trafficSource === 'gateway'\s*&&\s*!operation\.input\.policyDecision/,
+  '普通网关请求应被拦截，但显式账户错误策略必须保留状态写权限'
+)
+const distributedSuppressionFilterSource = sideEffectsSource.match(
+  /async function filterConfiguredPolicyAvoidances<[^>]+>\([^]*?\n\}/
+)?.[0] ?? ''
+assert.doesNotMatch(
+  distributedSuppressionFilterSource,
+  /distributedRecoveryProbeStore|precheck_pending|recovery_wait/,
+  'Redis 易失探针状态不能参与候选池硬过滤'
+)
+assert.match(
+  distributedSuppressionFilterSource,
+  /loadConfiguredPolicyAvoidanceStates/,
+  '候选池硬过滤只允许读取用户显式配置的账户避让'
+)
 assert.match(sideEffectsSource, /onUpstreamAttempt:/)
 assert.match(sideEffectsSource, /isRealUpstreamAttempt\(attempt\)/, '网关后台复核只能接受真实 HTTP(S) 上游尝试')
 assert.match(sideEffectsSource, /automaticAccountProbeOutcome\(result, upstreamAttemptObserved\)/)
@@ -60,11 +136,6 @@ assert.doesNotMatch(
   sideEffectsSource,
   /state\.phase === 'precheck_pending' \? 'precheck_pending' : 'local_suppressed'/,
   '尚未执行后台探针的 recovery_wait 不得显示成短暂避让'
-)
-assert.match(
-  sideEffectsSource,
-  /filterDistributedRecoveryProbeSuppressions[\s\S]*state\?\.phase === 'precheck_pending'/,
-  'Redis 硬过滤只能考虑后台探针已推进的 precheck_pending，不能过滤 recovery_wait'
 )
 for (const [name, source] of [
   ['主动健康检查', healthCheckSource],

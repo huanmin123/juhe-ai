@@ -49,7 +49,9 @@ const textKeywordDecision = decideAccountErrorPolicy({
   status: 'active'
 }, 429, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"error":{"message":"retry after 200 seconds"}}'), settings)
 
-assert.equal(textKeywordDecision, undefined, '运行时不应根据上游状态码或文本关键词直接命中账号错误策略')
+assert.equal(textKeywordDecision?.action, 'cooldown', '用户显式账户错误策略命中后应允许改变账户状态')
+assert.equal(textKeywordDecision?.cooldownStatus, 'temporary_unavailable')
+assert.equal(textKeywordDecision?.ruleName, '文本 200')
 
 const successDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_validation',
@@ -81,7 +83,16 @@ const anthropicErrorTypeAsCodeDecision = decideAccountErrorPolicy({
   status: 'active'
 }, 503, new Headers({ 'content-type': 'application/json' }), Buffer.from('{"type":"error","error":{"type":"overloaded_error","message":"mock overloaded"}}'), settings)
 
-assert.equal(anthropicErrorTypeAsCodeDecision, undefined, '运行时不应把 Anthropic error.type 当作通用账号错误策略 code 匹配')
+assert.equal(anthropicErrorTypeAsCodeDecision?.action, 'cooldown', '显式规则应按当前协议解析后的错误码命中')
+assert.equal(anthropicErrorTypeAsCodeDecision?.ruleName, 'Anthropic overloaded')
+
+const unconfiguredDecision = decideAccountErrorPolicy({
+  id: 'account_error_policy_unconfigured',
+  providerCode: 'openai',
+  credentials: {},
+  status: 'active'
+}, 503, new Headers(), Buffer.from('failed'), settings)
+assert.equal(unconfiguredDecision, undefined, '没有用户显式规则时不能由普通请求自动决定账户状态')
 
 console.log('account error policy validation regression passed')
 
