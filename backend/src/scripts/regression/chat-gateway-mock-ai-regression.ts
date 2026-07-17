@@ -172,9 +172,11 @@ try {
 
   const keys = await apiJson<{ data: Array<{ id: string }> }>(baseUrl, '/__aisys__/api/my-chat/api-keys', cookie)
   assert(keys.data.some((item) => item.id === gatewayKey.id), 'AI 问答应列出当前用户自己的可用 API Key')
-  const invalidCreate = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{}' })
+  const invalidCreate = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ unexpected: true }) })
   assert.equal(invalidCreate.status, 400, 'AI 问答参数校验失败必须返回 400 而不是全局 500')
-  const limitedConversation = await apiJson<{ data: { id: string; userTurnLimit: number } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
+  const defaultConversation = await apiJson<{ data: { id: string; apiKeyNameSnapshot: string; userTurnLimit: number } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, {})
+  assert.equal(defaultConversation.data.apiKeyNameSnapshot, '默认 GPT API Key', '省略 API Key 时必须绑定当前用户默认 GPT API Key')
+  const limitedConversation = defaultConversation
   assert.equal(limitedConversation.data.userTurnLimit, 50, '会话响应必须附加当前运行时轮次上限')
   databaseModule.getChatDatabase().prepare('UPDATE chat_conversations SET user_turn_count = 50 WHERE id = ?').run(limitedConversation.data.id)
   const limitedCountsBefore = {
@@ -200,11 +202,11 @@ try {
   const conversationId = created.data.id
   const models = await apiJson<{ data: Array<{ id: string; supportsPromptCaching: boolean; supportedApiProtocols: string[]; supportedTools: string[] }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)
   const selectedModel = models.data.find((item) => item.id === testModel)
-  assert(selectedModel, 'AI 问答模型列表应来自绑定 Key 的真实网关 /v1/models')
-  assert(selectedModel.supportedApiProtocols.includes('responses'), '聊天模型能力必须包含当前 API Key 实际可用的 Responses 路由')
-  assert(selectedModel.supportedTools.includes('web_search'), '聊天模型能力必须保留当前路由全部候选共同支持的联网搜索工具')
+  assert(selectedModel, 'AI 问答模型列表应来自绑定 Key 路由供应商的稳定模型目录')
+  assert(selectedModel.supportedApiProtocols.includes('responses'), '聊天模型目录能力必须包含 Responses 路由')
+  assert(selectedModel.supportedTools.includes('web_search'), '聊天模型目录能力必须保留联网搜索工具')
   assert.equal(selectedModel.supportsPromptCaching, true, '支持缓存计费的目录模型必须向聊天层透出 prompt caching 能力')
-  assert(models.data.every((item) => realCredential?.models.includes(item.id) ?? item.id === testModel), '聊天模型列表不得暴露当前账户实际不支持的网关目录模型')
+  assert(models.data.length >= (realCredential?.models.length ?? 1), '聊天模型列表必须稳定展示路由供应商目录，不能随账户临时状态收缩')
 
   const streamResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
     method: 'POST',

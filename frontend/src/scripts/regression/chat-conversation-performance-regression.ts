@@ -40,6 +40,12 @@ now = 30_000
 assert.deepEqual(await ttlCoordinator.load(ttlRequest), ['model_2'], '模型配置缓存到期后必须重新加载')
 assert.equal(ttlCalls, 2, '过期模型缓存必须只触发一次新的加载')
 
+now = 60_000
+assert.deepEqual(ttlCoordinator.peek('key_ttl'), ['model_2'], '切换会话必须能直接复用过期的前端快照，不得自动访问后端')
+assert.equal(ttlCalls, 2, '读取已有前端快照不能触发网络请求')
+assert.deepEqual(await ttlCoordinator.refreshIfExpired(ttlRequest), ['model_3'], '用户展开模型下拉时才刷新过期快照')
+assert.equal(ttlCalls, 3, '过期快照展开时只能刷新一次')
+
 let timeoutAttempts = 0
 const retryCoordinator = new ChatModelLoadCoordinator<string>({
   load: async () => {
@@ -93,5 +99,10 @@ assert.equal(await contextSecond, 42)
 
 const chatViewSource = readFileSync('../frontend/src/views/chat/ChatView.vue', 'utf8')
 assert.match(chatViewSource, /ChatSingleFlightCoordinator/, '上下文状态请求必须通过可测试的 single-flight 协调器去重')
+assert.doesNotMatch(chatViewSource, /listApiKeys|newApiKeyId|选择自己的 API Key/, '新建对话不得再加载或要求用户选择 API Key')
+assert.match(chatViewSource, /chatApi\.createConversation\(\)/, '新建对话必须由后端自动绑定默认 GPT API Key')
+assert.match(chatViewSource, /selectionEpochAtStart[\s\S]{0,500}conversationLoadEpoch === selectionEpochAtStart/, '创建请求返回时不得覆盖用户等待期间的新会话选择')
+assert.match(chatViewSource, /@models-open=/, '模型下拉展开必须显式触发按需刷新')
+assert.match(chatViewSource, /normalizeChatModelControls/, '同模型能力刷新后必须规范化思考和服务选项')
 
 console.log('AI 问答会话性能回归通过')

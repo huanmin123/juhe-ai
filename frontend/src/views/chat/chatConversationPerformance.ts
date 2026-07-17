@@ -49,6 +49,21 @@ export class ChatModelLoadCoordinator<T> {
     return promise
   }
 
+  peek(apiKeyId: string): readonly T[] | undefined {
+    return this.cache.get(apiKeyId)?.value
+  }
+
+  refresh(request: ChatModelLoadRequest): Promise<readonly T[]> {
+    this.cache.delete(request.apiKeyId)
+    return this.load(request)
+  }
+
+  refreshIfExpired(request: ChatModelLoadRequest): Promise<readonly T[]> {
+    const cached = this.cache.get(request.apiKeyId)
+    if (cached && cached.expiresAt > this.now()) return Promise.resolve(cached.value)
+    return this.refresh(request)
+  }
+
   cancel(apiKeyId: string | undefined): void {
     if (apiKeyId) this.inFlight.get(apiKeyId)?.controller.abort()
   }
