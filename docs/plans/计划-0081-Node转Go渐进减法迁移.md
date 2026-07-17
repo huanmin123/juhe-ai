@@ -10,6 +10,8 @@
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证
 
+- 2026-07-18 W4 授权账户健康检查模型真实依赖证据：在 `HEAD=7c0f4b6c9` 上通过 SSH Docker tunnel，以 `JUHE_AI_REQUIRE_INTEGRATION=1` 强制执行 `TestW4ManagementAuthorizationAccountHealthCheckModelPostgresSmoke`；fresh PostgreSQL `18-bookworm` 成功迁移 Goose schema `55`，目标用例 `PASS` 且不是 `SKIP`。测试覆盖授权实例继承 / 覆盖 health-check model、目标 owner 模型目录约束、source / grant / runtime 三层事实和错误路径原子性；临时 PostgreSQL、Ryuk 和本地 tunnel 均已清理。结合已具名通过的 W4 team、authorization create/update/revoke 与 revoke concurrency，当前现存 W4 integration 均已有真实执行证据；授权 expire / return / expiry sweep 的新增完整写链测试、生产单 owner、回滚和 Node 删除仍未完成。
+
 - 2026-07-18 W5 代理 CRUD 真实依赖证据：在 `HEAD=216f220a4` 上通过 SSH Docker tunnel，以 `JUHE_AI_REQUIRE_INTEGRATION=1` 强制执行 `TestW5ManagementProxyCRUDPostgresSmoke`；fresh PostgreSQL `18-bookworm` 成功迁移 Goose schema `55`，目标用例 `PASS` 且不是 `SKIP`。测试覆盖 admin-only、代理 create/list/update/delete、凭据加密与响应脱敏、重复名称 / 非法字段 / 绑定引用删除保护、session touch、稳定 HTTP / PostgreSQL 契约和 operation-log payload；临时 PostgreSQL、Ryuk 和本地 tunnel 均已清理。真实代理连通测试、前端真实 Go listener、生产单 owner、回滚和 Node 删除仍未完成。
 
 - 2026-07-18 追加主线对齐：`feature/20260706-go` 已通过 merge `ba7a62630` 继续纳入 `master=6a9479192`。Node 将 AI Chat 的轻量 API Key 查询从通用 `api-key.repository` 收口到专用 `chat-api-key.repository`，避免通用管理路径承担 Chat 模型加载语义；这进一步确认该变更属于尚未迁移的 Chat owner，Go 当前不提前复制。合并后 Node `chat-routes-contract`、`chat-model-availability`、`api-key-management-driver` 和 backend typecheck 均通过，merge 已推送远程。
