@@ -1,6 +1,7 @@
 import type { DatabaseClient } from './database-client.js'
 import { createApiKey, encryptJson, hashPassword, hashSecret } from './crypto.js'
 import { HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
+import { listProviderModelPricing } from '../modules/model-pricing/model-pricing.service.js'
 import {
   builtInExternalIntegrationTestRateLimits,
   builtInExternalIntegrationTestSourceId,
@@ -107,6 +108,70 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
       `,
       [JSON.stringify(provider.defaultSupportedModels), now, provider.code]
     )
+  }
+
+  for (const provider of DEFAULT_PROVIDER_SEEDS) {
+    if (provider.code === HYBRID_PROVIDER_CODE || provider.code === 'openai') continue
+    for (const model of listProviderModelPricing(provider.code)) {
+      await query(
+        `
+          INSERT INTO ${businessTable('provider_model_catalog')} (
+            id, provider_code, model, status, mode, catalog_order, release_date, shutdown_date,
+            supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+            default_reasoning_effort, codex_supported_reasoning_levels_json, codex_default_reasoning_level,
+            codex_multi_agent_version, context_window_tokens, max_input_tokens, max_output_tokens, max_tokens,
+            input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
+            cache_write_1h_usd_per_1m, service_tier_prices_json,
+            long_context_input_token_threshold, long_context_input_cost_multiplier, long_context_output_cost_multiplier,
+            image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+            output_usd_per_image, supports_prompt_caching, catalog_visible, source, created_at, updated_at
+          ) VALUES (
+            $1, $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+            $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37
+          )
+          ON CONFLICT DO NOTHING
+        `,
+        [
+          `provider_model_${provider.code}_${model.model.replace(/[^a-zA-Z0-9]+/g, '_')}`,
+          provider.code,
+          model.model,
+          model.mode ?? null,
+          model.catalogOrder ?? null,
+          model.releaseDate ?? null,
+          model.shutdownDate ?? null,
+          JSON.stringify(model.supportedApiProtocols),
+          JSON.stringify(model.supportedServiceTiers),
+          JSON.stringify(model.supportedReasoningEfforts),
+          model.defaultReasoningEffort ?? null,
+          JSON.stringify(model.codexSupportedReasoningLevels),
+          model.codexDefaultReasoningLevel ?? null,
+          model.codexMultiAgentVersion ?? null,
+          model.contextWindowTokens ?? null,
+          model.maxInputTokens ?? null,
+          model.maxOutputTokens ?? null,
+          model.maxTokens ?? null,
+          model.inputUsdPer1M ?? null,
+          model.outputUsdPer1M ?? null,
+          model.cachedInputUsdPer1M ?? null,
+          model.cacheWriteUsdPer1M ?? null,
+          model.cacheWrite1hUsdPer1M ?? null,
+          JSON.stringify(model.serviceTierPrices ?? {}),
+          model.longContextInputTokenThreshold ?? null,
+          model.longContextInputCostMultiplier ?? null,
+          model.longContextOutputCostMultiplier ?? null,
+          model.imageInputUsdPer1M ?? null,
+          model.imageOutputUsdPer1M ?? null,
+          model.audioInputUsdPer1M ?? null,
+          model.audioOutputUsdPer1M ?? null,
+          model.outputUsdPerImage ?? null,
+          model.supportsPromptCaching ? 1 : 0,
+          model.catalogVisible === false ? 0 : 1,
+          model.source,
+          now,
+          now
+        ]
+      )
+    }
   }
 
   for (const protocol of DEFAULT_PROTOCOL_SEEDS) {
