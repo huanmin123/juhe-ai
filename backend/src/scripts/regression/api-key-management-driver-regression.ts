@@ -91,10 +91,12 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   const defaultApiKeys = defaultApiKeyPage.items.filter((item) => item.isDefault)
   assert.equal(defaultApiKeys.length, defaultRouteResourceCount, 'API Key 列表应包含非混合默认路由对应的默认 API Key')
   assert.equal(defaultApiKeys.every((item) => item.routeStrategyMode === 'normal'), true, '默认 API Key 必须绑定默认普通路由')
-  const defaultGptApiKey = await repositories.findDefaultApiKeySecretForProviderAsync(GPT_VENDOR_CODE, adminAccess)
-  assert.equal(defaultGptApiKey?.isDefault, true, 'AI 问答必须能按 GPT 供应商精确找到默认 API Key')
+  const defaultGptApiKey = await repositories.findDefaultChatApiKeySecretForProviderAsync(GPT_VENDOR_CODE, adminAccess.systemAccountId)
   assert.equal(defaultGptApiKey?.status, 'active', '默认 GPT API Key 必须处于可用状态')
   assert.ok(defaultGptApiKey?.key?.startsWith('sk-'), '默认 GPT API Key 查询必须返回服务端调用所需完整密钥')
+  assert.equal((await repositories.findChatApiKeySecretAsync(defaultGptApiKey!.id, adminAccess.systemAccountId))?.key, defaultGptApiKey?.key, '聊天专用 Key ID 查询必须返回同一完整密钥')
+  assert.equal(await repositories.findChatApiKeySecretAsync(defaultGptApiKey!.id, 'sys_other'), undefined, '聊天专用 Key 查询不得跨系统账户读取密钥')
+  assert.equal(await repositories.findDefaultChatApiKeySecretForProviderAsync('provider_not_found', adminAccess.systemAccountId), undefined, '默认 Key 查询不得命中未绑定的供应商')
 
   const suffix = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`
   const group = await repositories.createGroupAsync({
@@ -154,6 +156,12 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
 
   const secret = await repositories.findApiKeySecretAsync(created.id, adminAccess)
   assert.equal(secret?.key, created.key, '异步 API Key secret 查询应返回当前完整密钥')
+  assert.equal((await repositories.findChatApiKeySecretAsync(created.id, adminAccess.systemAccountId))?.key, created.key, '启用且未过期的 Key 必须可供聊天链路读取')
+
+  await repositories.updateApiKeyAsync(created.id, {
+    expiresAt: '2000-01-01T00:00:00.000Z'
+  }, adminAccess)
+  assert.equal(await repositories.findChatApiKeySecretAsync(created.id, adminAccess.systemAccountId), undefined, '已过期 Key 不得供聊天链路读取')
 
   await repositories.updateRouteStrategyAsync(routeStrategy.id, {
     groupBindings: [{ groupId: group.id, priority: 1, weight: 20, status: 'active' }]
@@ -165,6 +173,7 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   }, adminAccess)
   assert.equal(updated?.name, `${name}改`, '异步更新 API Key 应返回新名称')
   assert.equal(updated?.status, 'disabled', '异步更新 API Key 应更新状态')
+  assert.equal(await repositories.findChatApiKeySecretAsync(created.id, adminAccess.systemAccountId), undefined, '已停用 Key 不得供聊天链路读取')
   assert.equal((await repositories.findRouteStrategySummaryAsync(routeStrategy.id, adminAccess))?.groupBindings[0]?.weight, 20, '异步更新策略路由应更新绑定权重')
   assert.equal(await repositories.validateGatewayApiKeyAsync(created.key), undefined, '异步停用 API Key 后网关校验应失效')
 

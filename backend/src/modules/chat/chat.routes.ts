@@ -25,7 +25,7 @@ import {
   type ChatMessageStatus
 } from '../../storage/chat.repository.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
-import { findApiKeySecretAsync, findDefaultApiKeySecretForProviderAsync, listApiKeysAsync } from '../../storage/repositories.js'
+import { findChatApiKeySecretAsync, findDefaultChatApiKeySecretForProviderAsync, listApiKeysAsync } from '../../storage/repositories.js'
 import { validateGatewayApiKeyAsync } from '../../storage/gateway-api-key.repository.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { listCachedOpenAIAccountsForGroupAsync, listCachedProviderModelCatalogAsync } from '../gateway/runtime/runtime-cache.service.js'
@@ -1006,7 +1006,7 @@ function waitForChatPreparation<T>(operation: Promise<T>, preparation: ActiveCha
 
 async function requireOwnedApiKey(apiKeyId: string | undefined, ownerId: string) {
   if (!apiKeyId) throw new Error('会话绑定的 API Key 已删除')
-  const key = await findApiKeySecretAsync(apiKeyId, { systemAccountId: ownerId, role: 'user' })
+  const key = await findChatApiKeySecretAsync(apiKeyId, ownerId)
   if (!key?.key || key.status !== 'active') throw new Error('API Key 不存在或不可用')
   return key
 }
@@ -1079,7 +1079,7 @@ async function listChatModelCatalog(input: { groupIds: readonly string[]; system
 }
 
 async function requireDefaultChatApiKey(ownerId: string) {
-  const key = await findDefaultApiKeySecretForProviderAsync(GPT_VENDOR_CODE, { systemAccountId: ownerId, role: 'user' })
+  const key = await findDefaultChatApiKeySecretForProviderAsync(GPT_VENDOR_CODE, ownerId)
   if (!key?.key || key.status !== 'active') throw new Error('默认 GPT API Key 不存在或不可用')
   return key
 }

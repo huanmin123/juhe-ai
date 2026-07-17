@@ -33,9 +33,12 @@ for (const contract of [
 ]) {
   assert.match(routesSource, contract)
 }
-assert.match(routesSource, /findApiKeySecretAsync/, '模型和发送必须在服务端按当前用户读取真实 API Key')
+assert.match(routesSource, /findChatApiKeySecretAsync/, '模型和发送必须通过聊天专用轻量查询按当前用户读取真实 API Key')
+assert.doesNotMatch(routesSource, /findApiKeySecretAsync|findDefaultApiKeySecretForProviderAsync/, '聊天请求不得加载通用 API Key 用量摘要')
 assert.match(routesSource, /createConversationSchema = z\.object\(\{ apiKeyId: z\.string\(\)[\s\S]{0,120}optional\(\)/, '创建会话必须允许省略 API Key')
-assert.match(routesSource, /findDefaultApiKeySecretForProviderAsync/, '省略 API Key 时必须绑定当前用户的默认 GPT API Key')
+assert.match(routesSource, /findDefaultChatApiKeySecretForProviderAsync/, '省略 API Key 时必须绑定当前用户的默认 GPT API Key')
+const chatApiKeyRepositorySource = readFileSync('src/storage/chat-api-key.repository.ts', 'utf8')
+assert.doesNotMatch(chatApiKeyRepositorySource, /usage-summary|loadApiKeyUsage|apiKeySummariesFromRows/, '聊天专用 Key 查询不得读取用量摘要或通用管理 DTO')
 const modelsRouteSource = routesSource.slice(
   routesSource.indexOf("chatRouter.get('/conversations/:conversationId/models'"),
   routesSource.indexOf("chatRouter.post('/conversations/:conversationId/stream'")

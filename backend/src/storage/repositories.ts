@@ -462,7 +462,6 @@ export {
   deleteApiKeyWithRelatedCleanupAsync,
   findApiKeySecret,
   findApiKeySecretAsync,
-  findDefaultApiKeySecretForProviderAsync,
   findApiKeySummary,
   findApiKeySummaryAsync,
   ensureDefaultApiKeysForSystemAccount,
@@ -476,6 +475,11 @@ export {
   updateApiKey,
   updateApiKeyAsync
 } from './api-key.repository.js'
+export {
+  findChatApiKeySecretAsync,
+  findDefaultChatApiKeySecretForProviderAsync,
+  type ChatApiKeySecret
+} from './chat-api-key.repository.js'
 export {
   assertRouteStrategySelectableForApiKey,
   assertRouteStrategySelectableForApiKeyAsync,
