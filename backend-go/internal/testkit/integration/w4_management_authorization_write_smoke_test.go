@@ -457,6 +457,7 @@ type w4AuthorizationWriteFacts struct {
 	SourceType           string
 	SourceStatus         string
 	SourceCreatedBy      string
+	DirtyGroupID         string
 	DirtyReason          string
 	GrantCreatedAt       time.Time
 	RuntimeCreatedAt     time.Time
@@ -468,39 +469,54 @@ func readW4AuthorizationWriteFacts(t *testing.T, ctx context.Context, db *sql.DB
 	t.Helper()
 	var facts w4AuthorizationWriteFacts
 	if err := db.QueryRowContext(ctx, `
-		SELECT
-			g.id, g.status, g.created_by, g.created_at,
-			r.id, r.status, r.effective_source_type, r.created_by, r.created_at,
-			s.source_type, s.status, s.created_by, s.created_at,
-			d.reason, d.updated_at
-		FROM juhe_business.resource_authorization_grants AS g
-		JOIN juhe_business.resource_authorizations AS r
-		  ON r.resource_type = g.resource_type
-		 AND r.resource_id = g.resource_id
-		 AND r.grantee_system_account_id = g.grantee_system_account_id
-		JOIN juhe_business.resource_authorization_sources AS s ON s.authorization_id = r.id
-		JOIN juhe_business.group_account_stats_dirty AS d ON d.group_id = g.resource_id
-		WHERE g.resource_type = 'group'
-		  AND g.resource_id = $1
-		  AND g.grantee_system_account_id = $2
+		SELECT id, status, created_by, created_at
+		FROM juhe_business.resource_authorization_grants
+		WHERE resource_type = 'group' AND resource_id = $1 AND grantee_system_account_id = $2
 	`, w4AuthorizationWriteGroupID, w4AuthorizationWriteGranteeID).Scan(
 		&facts.GrantID,
 		&facts.GrantStatus,
 		&facts.GrantCreatedBy,
 		&facts.GrantCreatedAt,
+	); err != nil {
+		t.Fatalf("read W4 authorization grant fact: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT id, status, effective_source_type, created_by, created_at
+		FROM juhe_business.resource_authorizations
+		WHERE resource_type = 'group' AND resource_id = $1 AND grantee_system_account_id = $2
+	`, w4AuthorizationWriteGroupID, w4AuthorizationWriteGranteeID).Scan(
 		&facts.RuntimeID,
 		&facts.RuntimeStatus,
 		&facts.RuntimeEffectiveType,
 		&facts.RuntimeCreatedBy,
 		&facts.RuntimeCreatedAt,
+	); err != nil {
+		t.Fatalf("read W4 runtime authorization fact: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT source_type, status, created_by, created_at
+		FROM juhe_business.resource_authorization_sources
+		WHERE authorization_id = $1
+		ORDER BY id
+		LIMIT 1
+	`, facts.RuntimeID).Scan(
 		&facts.SourceType,
 		&facts.SourceStatus,
 		&facts.SourceCreatedBy,
 		&facts.SourceCreatedAt,
+	); err != nil {
+		t.Fatalf("read W4 authorization source fact: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT group_id, reason, updated_at
+		FROM juhe_business.group_account_stats_dirty
+		WHERE group_id = '__all__'
+	`).Scan(
+		&facts.DirtyGroupID,
 		&facts.DirtyReason,
 		&facts.DirtyUpdatedAt,
 	); err != nil {
-		t.Fatalf("read W4 authorization write facts: %v", err)
+		t.Fatalf("read W4 authorization dirty fact: %v", err)
 	}
 	return facts
 }
@@ -518,6 +534,7 @@ func assertW4AuthorizationWriteFacts(t *testing.T, facts w4AuthorizationWriteFac
 		facts.SourceType != "manual" ||
 		facts.SourceStatus != "active" ||
 		facts.SourceCreatedBy != w4AuthorizationWriteAdminID ||
+		facts.DirtyGroupID != "__all__" ||
 		facts.DirtyReason != managementauthorizations.ResourceAuthorizationCreatedReason ||
 		!facts.GrantCreatedAt.UTC().Equal(now) ||
 		!facts.RuntimeCreatedAt.UTC().Equal(now) ||
@@ -713,9 +730,9 @@ func readW4AuthorizationWriteDirtyRows(t *testing.T, ctx context.Context, db *sq
 	rows, err := db.QueryContext(ctx, `
 		SELECT group_id, reason, updated_at
 		FROM juhe_business.group_account_stats_dirty
-		WHERE group_id = $1
+		WHERE group_id = '__all__'
 		ORDER BY group_id
-	`, w4AuthorizationWriteGroupID)
+	`)
 	if err != nil {
 		t.Fatalf("query authorization dirty snapshot: %v", err)
 	}
@@ -1081,7 +1098,7 @@ func readW4AuthorizationWriteCounts(t *testing.T, ctx context.Context, db *sql.D
 		{&counts.Grants, `SELECT count(*) FROM juhe_business.resource_authorization_grants WHERE resource_type = 'group' AND resource_id = $1 AND grantee_system_account_id = $2`, []any{w4AuthorizationWriteGroupID, w4AuthorizationWriteGranteeID}},
 		{&counts.Runtime, `SELECT count(*) FROM juhe_business.resource_authorizations WHERE resource_type = 'group' AND resource_id = $1 AND grantee_system_account_id = $2`, []any{w4AuthorizationWriteGroupID, w4AuthorizationWriteGranteeID}},
 		{&counts.Sources, `SELECT count(*) FROM juhe_business.resource_authorization_sources WHERE authorization_id IN (SELECT id FROM juhe_business.resource_authorizations WHERE resource_type = 'group' AND resource_id = $1 AND grantee_system_account_id = $2)`, []any{w4AuthorizationWriteGroupID, w4AuthorizationWriteGranteeID}},
-		{&counts.Dirty, `SELECT count(*) FROM juhe_business.group_account_stats_dirty WHERE group_id = $1`, []any{w4AuthorizationWriteGroupID}},
+		{&counts.Dirty, `SELECT count(*) FROM juhe_business.group_account_stats_dirty WHERE group_id = '__all__'`, nil},
 		{&counts.OperationLogs, `SELECT count(*) FROM juhe_dataset.operation_logs WHERE id = $1`, []any{w4AuthorizationWriteLogID}},
 		{&counts.OperationLogTargets, `SELECT count(*) FROM juhe_dataset.operation_log_targets WHERE operation_log_id = $1`, []any{w4AuthorizationWriteLogID}},
 		{&counts.OperationLogViewers, `SELECT count(*) FROM juhe_dataset.operation_log_viewers WHERE operation_log_id = $1`, []any{w4AuthorizationWriteLogID}},
