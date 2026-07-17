@@ -132,7 +132,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
           ON CONFLICT DO NOTHING
         `,
         [
-          `provider_model_${provider.code}_${model.model.replace(/[^a-zA-Z0-9]+/g, '_')}`,
+          providerModelCatalogId(provider.code, model.model),
           provider.code,
           model.model,
           model.mode ?? null,
@@ -442,6 +442,16 @@ function defaultApiKeyIdForRouteStrategy(routeStrategyId: string): string {
 
 function defaultApiKeyNameForRouteStrategy(routeStrategyName: string): string {
   return routeStrategyName.replace(/路由$/, 'API Key')
+}
+
+function providerModelCatalogId(providerCode: string, model: string): string {
+  const slug = `${providerCode}_${model}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 72)
+  const hash = hashSecret(`${providerCode}\u0000${model}`).slice(0, 12)
+  return `provider_model_${slug}_${hash}`
 }
 
 async function seedBuiltInExternalIntegrationTestToken(

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 
 import { HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
@@ -70,13 +71,36 @@ const expectedModelKeys = DEFAULT_PROVIDER_SEEDS
   .sort()
 assert.deepEqual(seededModelKeys, expectedModelKeys, 'PostgreSQL seed 模型键集合必须与 Node 权威价格目录一致')
 
+const seededModelIds = modelInsertStatements.map(({ values }) => String(values[0]))
+assert.equal(seededModelIds.length, expectedModelKeys.length, 'PostgreSQL seed 生成 ID 数量必须等于权威模型键数量')
+assert.equal(new Set(seededModelIds).size, expectedModelKeys.length, 'PostgreSQL seed 模型 ID 必须全局唯一')
+const slashCollisionPair = [
+  'antigravity-claude-opus-4-6-thinking',
+  'antigravity/claude-opus-4-6-thinking'
+].map((model) => modelInsertStatements.find(({ values }) => values[1] === 'anthropic' && values[2] === model))
+assert.ok(slashCollisionPair.every(Boolean), 'slash/hyphen 碰撞样本必须存在于权威模型目录')
+assert.notEqual(slashCollisionPair[0]?.values[0], slashCollisionPair[1]?.values[0], 'slash/hyphen 模型名必须生成不同 ID')
+
+function expectedProviderModelId(providerCode: string, model: string): string {
+  const slug = `${providerCode}_${model}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 72)
+  const hash = createHash('sha256')
+    .update(`${providerCode}\u0000${model}`)
+    .digest('hex')
+    .slice(0, 12)
+  return `provider_model_${slug}_${hash}`
+}
+
 const expectedModelValues = new Map<string, readonly unknown[]>(
   DEFAULT_PROVIDER_SEEDS
     .filter((provider) => provider.code !== HYBRID_PROVIDER_CODE && provider.code !== 'openai')
     .flatMap((provider) => listProviderModelPricing(provider.code).map((model) => [
       `${provider.code}\u0000${model.model}`,
       [
-        `provider_model_${provider.code}_${model.model.replace(/[^a-zA-Z0-9]+/g, '_')}`,
+        expectedProviderModelId(provider.code, model.model),
         provider.code,
         model.model,
         model.mode ?? null,
