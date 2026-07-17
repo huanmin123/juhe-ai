@@ -10,6 +10,8 @@
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证
 
+- 2026-07-18 W5 代理 CRUD 真实依赖证据：在 `HEAD=216f220a4` 上通过 SSH Docker tunnel，以 `JUHE_AI_REQUIRE_INTEGRATION=1` 强制执行 `TestW5ManagementProxyCRUDPostgresSmoke`；fresh PostgreSQL `18-bookworm` 成功迁移 Goose schema `55`，目标用例 `PASS` 且不是 `SKIP`。测试覆盖 admin-only、代理 create/list/update/delete、凭据加密与响应脱敏、重复名称 / 非法字段 / 绑定引用删除保护、session touch、稳定 HTTP / PostgreSQL 契约和 operation-log payload；临时 PostgreSQL、Ryuk 和本地 tunnel 均已清理。真实代理连通测试、前端真实 Go listener、生产单 owner、回滚和 Node 删除仍未完成。
+
 - 2026-07-18 追加主线对齐：`feature/20260706-go` 已通过 merge `ba7a62630` 继续纳入 `master=6a9479192`。Node 将 AI Chat 的轻量 API Key 查询从通用 `api-key.repository` 收口到专用 `chat-api-key.repository`，避免通用管理路径承担 Chat 模型加载语义；这进一步确认该变更属于尚未迁移的 Chat owner，Go 当前不提前复制。合并后 Node `chat-routes-contract`、`chat-model-availability`、`api-key-management-driver` 和 backend typecheck 均通过，merge 已推送远程。
 
 - 2026-07-18 W5 分组剩余 CRUD 真实依赖证据：在 `HEAD=7f6771db3` 上通过 SSH Docker tunnel，以 `JUHE_AI_REQUIRE_INTEGRATION=1` 一次强制执行 `TestW5ManagementGroupListPostgresSmoke`、`TestW5ManagementGroupDetailPostgresRedisSmoke`、`TestW5ManagementGroupUpdatePostgresRedisSmoke`、`TestW5ManagementGroupDeletePostgresRedisSmoke`；四项均在各自 fresh PostgreSQL `18-bookworm` / Goose schema `55` 上 `PASS`，detail / update / delete 另使用 Redis `8.2.7-bookworm`，全部不是 `SKIP`。覆盖 admin / self / authorized 作用域、1000 行 progressive list、预聚合 stats / usage / authorization 装配、detail 完整账户与授权投影、owner / grantee 更新边界、默认分组与供应商保护、路由唯一可用保护、删除级联与授权历史保留、stats dirty、Redis lookup / runtime 失效和 operation-log payload；临时 PostgreSQL、Redis、Ryuk 和本地 tunnel 均已清理。结合此前 create 真实写链与前端真实 listener mutation smoke，W5 分组 CRUD 的隔离依赖证据已覆盖，但 Node stats writer 到 Go reader freshness、生产单 owner、回滚和 Node 删除仍未完成。
