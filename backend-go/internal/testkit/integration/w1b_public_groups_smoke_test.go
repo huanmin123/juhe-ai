@@ -157,7 +157,7 @@ func TestW1bPublicGroupsPostgresSmoke(t *testing.T) {
 		t.Fatalf("update with wrong target error = %v, want ErrGroupNotFound", err)
 	}
 
-	insertW1bRouteStrategyGroup(t, ctx, db, listed.Target.SystemAccountID, "route_w1b_smoke", "rsg_w1b_smoke_1", added.Group.ID, now)
+	insertW1bRouteStrategyGroup(t, ctx, db, listed.Target.SystemAccountID, "route_w1b_smoke", "rsg_w1b_smoke_1", added.Group.ID, 1, now)
 	if _, err := service.Delete(ctx, publicgroups.DeleteInput{GroupID: added.Group.ID}); !errors.Is(err, publicgroups.ErrRouteStrategyWouldLose) {
 		t.Fatalf("delete protected group error = %v, want ErrRouteStrategyWouldLose", err)
 	}
@@ -170,7 +170,7 @@ func TestW1bPublicGroupsPostgresSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add backup public group: %v", err)
 	}
-	insertW1bRouteStrategyBinding(t, ctx, db, listed.Target.SystemAccountID, "route_w1b_smoke", "rsg_w1b_smoke_2", backup.Group.ID, now)
+	insertW1bRouteStrategyBinding(t, ctx, db, listed.Target.SystemAccountID, "route_w1b_smoke", "rsg_w1b_smoke_2", backup.Group.ID, 2, now)
 
 	deleted, err := service.Delete(ctx, publicgroups.DeleteInput{GroupID: added.Group.ID})
 	if err != nil {
@@ -221,28 +221,28 @@ func insertW1bGroupAccount(t *testing.T, ctx context.Context, db dbExecutor, own
 	}
 }
 
-func insertW1bRouteStrategyGroup(t *testing.T, ctx context.Context, db dbExecutor, ownerID string, routeID string, bindingID string, groupID string, now time.Time) {
+func insertW1bRouteStrategyGroup(t *testing.T, ctx context.Context, db dbExecutor, ownerID string, routeID string, bindingID string, groupID string, priority int, now time.Time) {
 	t.Helper()
 
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO juhe_business.route_strategies (
 			id, system_account_id, name, mode, status, is_default, created_at, updated_at
-		) VALUES ($1, $2, $3, 'normal', 'active', false, $4, $5)
+		) VALUES ($1, $2, $3, 'round_robin', 'active', false, $4, $5)
 	`, routeID, ownerID, routeID, now, now)
 	if err != nil {
 		t.Fatalf("insert route strategy: %v", err)
 	}
-	insertW1bRouteStrategyBinding(t, ctx, db, ownerID, routeID, bindingID, groupID, now)
+	insertW1bRouteStrategyBinding(t, ctx, db, ownerID, routeID, bindingID, groupID, priority, now)
 }
 
-func insertW1bRouteStrategyBinding(t *testing.T, ctx context.Context, db dbExecutor, ownerID string, routeID string, bindingID string, groupID string, now time.Time) {
+func insertW1bRouteStrategyBinding(t *testing.T, ctx context.Context, db dbExecutor, ownerID string, routeID string, bindingID string, groupID string, priority int, now time.Time) {
 	t.Helper()
 
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO juhe_business.route_strategy_groups (
 			id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, 1, 1, 'active', $5, $6)
-	`, bindingID, routeID, ownerID, groupID, now, now)
+		) VALUES ($1, $2, $3, $4, $5, 1, 'active', $6, $7)
+	`, bindingID, routeID, ownerID, groupID, priority, now, now)
 	if err != nil {
 		t.Fatalf("insert route strategy group: %v", err)
 	}
@@ -254,7 +254,7 @@ func assertW1bRouteStrategyOwnerMismatchRejected(t *testing.T, ctx context.Conte
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO juhe_business.route_strategy_groups (
 			id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, 1, 1, 'active', $5, $6)
+		) VALUES ($1, $2, $3, $4, 3, 1, 'active', $5, $6)
 	`, "rsg_w1b_owner_mismatch", "route_w1b_smoke", otherOwnerID, groupID, now, now)
 	if err == nil {
 		t.Fatalf("insert owner-mismatched route strategy group succeeded; want FK failure for owner %s group owner %s", otherOwnerID, ownerID)
@@ -281,8 +281,8 @@ func assertW1bConcurrentRouteStrategyDeleteProtection(t *testing.T, ctx context.
 		t.Fatalf("add concurrent second group: %v", err)
 	}
 
-	insertW1bRouteStrategyGroup(t, ctx, db, ownerID, "route_w1b_concurrent", "rsg_w1b_concurrent_1", first.Group.ID, now)
-	insertW1bRouteStrategyBinding(t, ctx, db, ownerID, "route_w1b_concurrent", "rsg_w1b_concurrent_2", second.Group.ID, now)
+	insertW1bRouteStrategyGroup(t, ctx, db, ownerID, "route_w1b_concurrent", "rsg_w1b_concurrent_1", first.Group.ID, 1, now)
+	insertW1bRouteStrategyBinding(t, ctx, db, ownerID, "route_w1b_concurrent", "rsg_w1b_concurrent_2", second.Group.ID, 2, now)
 
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
