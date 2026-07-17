@@ -222,6 +222,7 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 		t.Fatal("authorization update state Redis before request is not empty")
 	}
 	queueBefore := readW4AuthorizationRevokeQueueInfo(t, inspector, true)
+	assertW4AuthorizationRevokeSecretFree(t, "authorization update logger before request", logs.String(), w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
 	response := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateAdminID, `{"status":"paused","limits":{"daily":{"enabled":true,"limit":17}}}`, "req_w4_authorization_update")
 	assertW4AuthorizationRevokeHTTPResponseSecretFree(t, "update success", w4AuthorizationRevokeHTTPResponse{StatusCode: response.StatusCode, Body: response.Body, Header: response.Header}, w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
 	if response.StatusCode != http.StatusOK {
@@ -242,6 +243,7 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 		t.Fatalf("authorization update invalidations = %d, want 2", invalidationCalls)
 	}
 	stateBeforeFailure := readW4AuthorizationRevokeRedisDB(t, ctx, stateKeyspace)
+	assertW4AuthorizationRevokeRedisDBSecretFree(t, "authorization update state Redis", stateBeforeFailure, w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
 	assertW4AuthorizationRevokeExactStateKeysForNamespace(t, w4AuthorizationUpdateNamespace, stateBeforeFailure)
 	if err := waitForOperationLogQueueDrained(ctx, inspector, workerDone, func() error { workerMu.Lock(); defer workerMu.Unlock(); return workerErr }); err != nil {
 		t.Fatal(err)
@@ -249,7 +251,9 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 	queueAfter := readW4AuthorizationRevokeQueueInfo(t, inspector, false)
 	assertW4AuthorizationRevokeQueueSuccessTransition(t, queueBefore, queueAfter)
 	operationsBeforeFailure := readW4AuthorizationRevokeOperationLogSnapshot(t, ctx, db)
-	queueStableBeforeFailure := stableW4AuthorizationRevokeQueueRedisSnapshot(readW4AuthorizationRevokeRedisDB(t, ctx, queueRedis))
+	queueAfterSuccess := readW4AuthorizationRevokeRedisDB(t, ctx, queueRedis)
+	assertW4AuthorizationRevokeRedisDBSecretFree(t, "authorization update Asynq Redis", queueAfterSuccess, w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
+	queueStableBeforeFailure := stableW4AuthorizationRevokeQueueRedisSnapshot(queueAfterSuccess)
 	assertW4AuthorizationRevokeAsynqTaskSnapshotPresent(t, queueStableBeforeFailure)
 	assertW4AuthorizationUpdateOperationLog(t, ctx, db, now)
 	businessBeforeFailure := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db)
@@ -260,16 +264,18 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 	}
 	businessTerminal := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db)
 	terminal := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateAdminID, `{"status":"active"}`, "req_w4_authorization_update_terminal")
+	assertW4AuthorizationRevokeHTTPResponseSecretFree(t, "terminal update", w4AuthorizationRevokeHTTPResponse{StatusCode: terminal.StatusCode, Body: terminal.Body, Header: terminal.Header}, w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
 	if terminal.StatusCode != http.StatusNotFound {
 		t.Fatalf("terminal authorization update status = %d, body=%s", terminal.StatusCode, terminal.Body)
 	}
 	assertW4AuthorizationUpdateNoSideEffects(t, ctx, db, stateKeyspace, queueRedis, inspector, businessTerminal, operationsBeforeFailure, stateBeforeFailure, queueStableBeforeFailure, queueAfter, invalidationCalls, logIDCalls)
 	denied := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateGranteeID, `{"status":"active"}`, "req_w4_authorization_update_denied")
+	assertW4AuthorizationRevokeHTTPResponseSecretFree(t, "denied update", w4AuthorizationRevokeHTTPResponse{StatusCode: denied.StatusCode, Body: denied.Body, Header: denied.Header}, w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
 	if denied.StatusCode != http.StatusForbidden {
 		t.Fatalf("non-admin authorization update status = %d, body=%s", denied.StatusCode, denied.Body)
 	}
 	assertW4AuthorizationUpdateNoSideEffects(t, ctx, db, stateKeyspace, queueRedis, inspector, businessTerminal, operationsBeforeFailure, stateBeforeFailure, queueStableBeforeFailure, queueAfter, invalidationCalls, logIDCalls)
-	assertW4AuthorizationRevokeSecretFree(t, "authorization update business", businessBeforeFailure+businessTerminal+operationsBeforeFailure+logs.String(), w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
+	assertW4AuthorizationRevokeSecretFree(t, "authorization update PostgreSQL and logger", businessBeforeFailure+businessTerminal+operationsBeforeFailure+readW4AuthorizationUpdateSessionSnapshot(t, ctx, db)+logs.String(), w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
 }
 
 type w4AuthorizationUpdateResponse struct {
@@ -405,6 +411,15 @@ func readW4AuthorizationUpdateBusinessSnapshot(t *testing.T, ctx context.Context
 	var raw string
 	if err := db.QueryRowContext(ctx, `SELECT jsonb_build_object('grant',(SELECT to_jsonb(x) FROM juhe_business.resource_authorization_grants x WHERE id=$1),'runtime',(SELECT to_jsonb(x) FROM juhe_business.resource_authorizations x WHERE id=$2),'source',(SELECT to_jsonb(x) FROM juhe_business.resource_authorization_sources x WHERE id=$3),'dirty',(SELECT COALESCE(jsonb_agg(to_jsonb(x) ORDER BY group_id),'[]'::jsonb) FROM juhe_business.group_account_stats_dirty x))::text`, w4AuthorizationUpdateGrantID, w4AuthorizationUpdateRuntimeID, w4AuthorizationUpdateSourceID).Scan(&raw); err != nil {
 		t.Fatalf("read authorization update business snapshot: %v", err)
+	}
+	return raw
+}
+
+func readW4AuthorizationUpdateSessionSnapshot(t *testing.T, ctx context.Context, db *sql.DB) string {
+	t.Helper()
+	var raw string
+	if err := db.QueryRowContext(ctx, `SELECT row_to_json(s)::text FROM juhe_business.system_sessions s WHERE id = $1`, w4AuthorizationUpdateSessionID).Scan(&raw); err != nil {
+		t.Fatalf("read authorization update session snapshot: %v", err)
 	}
 	return raw
 }
