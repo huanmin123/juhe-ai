@@ -53,6 +53,27 @@ const (
 	w4AuthorizationUpdateRepeatLogID      = "oplog_w4_authorization_update_repeat"
 )
 
+type w4AuthorizationUpdateClock struct {
+	mu  sync.RWMutex
+	now time.Time
+}
+
+func newW4AuthorizationUpdateClock(now time.Time) *w4AuthorizationUpdateClock {
+	return &w4AuthorizationUpdateClock{now: now.UTC()}
+}
+
+func (c *w4AuthorizationUpdateClock) Now() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.now
+}
+
+func (c *w4AuthorizationUpdateClock) Set(now time.Time) {
+	c.mu.Lock()
+	c.now = now.UTC()
+	c.mu.Unlock()
+}
+
 func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -177,17 +198,19 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 	}
 	queueRedis = goredis.NewClient(queueScanOpts)
 
-	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
-	insertW4AuthorizationUpdateFixture(t, ctx, db, now)
-	insertW2ManagementSessionForAccountFixture(t, ctx, db, w4AuthorizationUpdateSessionID, w4AuthorizationUpdateAdminID, w4AuthorizationUpdateToken, now.Add(-time.Minute))
-	insertW2ManagementSessionForAccountFixture(t, ctx, db, w4AuthorizationUpdateGranteeSessionID, w4AuthorizationUpdateGranteeID, w4AuthorizationUpdateGranteeToken, now.Add(-time.Minute))
+	firstNow := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
+	secondNow := firstNow.Add(2 * time.Minute)
+	clock := newW4AuthorizationUpdateClock(firstNow)
+	insertW4AuthorizationUpdateFixture(t, ctx, db, firstNow)
+	insertW2ManagementSessionForAccountFixture(t, ctx, db, w4AuthorizationUpdateSessionID, w4AuthorizationUpdateAdminID, w4AuthorizationUpdateToken, firstNow.Add(-time.Minute))
+	insertW2ManagementSessionForAccountFixture(t, ctx, db, w4AuthorizationUpdateGranteeSessionID, w4AuthorizationUpdateGranteeID, w4AuthorizationUpdateGranteeToken, firstNow.Add(-time.Minute))
 	store, err = postgresstore.Open(ctx, postgresURL)
 	if err != nil {
 		t.Fatalf("open authorization update postgres store: %v", err)
 	}
 	var invalidationCalls int
 	invalidator, err := gatewaycache.NewSystemAccountInvalidator(gatewaycache.SystemAccountInvalidatorOptions{
-		State: stateRedis, Namespace: w4AuthorizationUpdateNamespace, Now: func() time.Time { return now },
+		State: stateRedis, Namespace: w4AuthorizationUpdateNamespace, Now: clock.Now,
 		NewVersion: func(time.Time) (string, error) {
 			invalidationCalls++
 			return fmt.Sprintf("w4-authorization-update-version-%d", invalidationCalls), nil
@@ -210,13 +233,13 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 	}()
 	logClient = queue.NewClient(queueOpts)
 	inspector = queue.NewInspector(queueOpts)
-	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store, Now: func() time.Time { return now }})
-	service := managementauthorizations.NewServiceWithOptions(managementauthorizations.ServiceOptions{Store: store, Now: func() time.Time { return now }, Secret: "w4-authorization-update-test-secret", AuthorizationInvalidator: invalidator})
+	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store, Now: clock.Now})
+	service := managementauthorizations.NewServiceWithOptions(managementauthorizations.ServiceOptions{Store: store, Now: clock.Now, Secret: "w4-authorization-update-test-secret", AuthorizationInvalidator: invalidator})
 	logIDCalls := 0
 	cfg := config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true, TrustProxy: "false"}
 	server = httptest.NewServer(httpapi.NewRouter(httpapi.RouterOptions{
 		Config: cfg, Logger: logger, ManagementAPIAuthMiddleware: httpapi.NewManagementAPIAuthMiddleware(authenticator), ManagementAPIAuthTouchMiddleware: httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
-		ManagementAuthorizationUpdateHandler: httpapi.NewManagementAuthorizationUpdateHandlerWithOperationLog(service, httpapi.ManagementOperationLogOptions{Config: cfg, Logger: logger, Client: logClient, SettingsReader: store, Now: func() time.Time { return now }, NewLogID: func() string {
+		ManagementAuthorizationUpdateHandler: httpapi.NewManagementAuthorizationUpdateHandlerWithOperationLog(service, httpapi.ManagementOperationLogOptions{Config: cfg, Logger: logger, Client: logClient, SettingsReader: store, Now: clock.Now, NewLogID: func() string {
 			logIDCalls++
 			if logIDCalls == 1 {
 				return w4AuthorizationUpdateLogID
@@ -254,11 +277,11 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 	if err := json.Unmarshal([]byte(response.Body), &envelope); err != nil {
 		t.Fatalf("decode authorization update response: %v", err)
 	}
-	if envelope.Data.ID != w4AuthorizationUpdateGrantID || envelope.Data.Status != "paused" || !envelope.Data.UpdatedAt.UTC().Equal(now) {
+	if envelope.Data.ID != w4AuthorizationUpdateGrantID || envelope.Data.Status != "paused" || !envelope.Data.UpdatedAt.UTC().Equal(firstNow) || envelope.Data.Limits.Daily == nil || !envelope.Data.Limits.Daily.Enabled || envelope.Data.Limits.Daily.Limit != 17 {
 		t.Fatalf("authorization update response = %+v", envelope.Data)
 	}
-	assertW4AuthorizationUpdateBusinessRows(t, ctx, db, now, sourceBaseline)
-	assertW4AuthorizationUpdateInvalidations(t, ctx, stateRedis, now, 1)
+	assertW4AuthorizationUpdateBusinessRows(t, ctx, db, firstNow, sourceBaseline)
+	assertW4AuthorizationUpdateInvalidations(t, ctx, stateRedis, firstNow, 1)
 	if invalidationCalls != 2 {
 		t.Fatalf("authorization update invalidations = %d, want 2", invalidationCalls)
 	}
@@ -276,7 +299,7 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 	assertW4AuthorizationUpdateRedisSecretFree(t, "Asynq Redis after success", queueAfterSuccess)
 	queueStableBeforeRepeat := stableW4AuthorizationRevokeQueueRedisSnapshot(queueAfterSuccess)
 	assertW4AuthorizationRevokeAsynqTaskSnapshotPresent(t, queueStableBeforeRepeat)
-	assertW4AuthorizationUpdateOperationLog(t, ctx, db, w4AuthorizationUpdateLogID, "req_w4_authorization_update", now)
+	assertW4AuthorizationUpdateOperationLog(t, ctx, db, w4AuthorizationUpdateLogID, "req_w4_authorization_update", firstNow)
 	auditCountsAfterFirst := readW4AuthorizationUpdateAuditCounts(t, ctx, db)
 	if auditCountsAfterFirst.Logs != 1 || auditCountsAfterFirst.Targets != 3 || auditCountsAfterFirst.Viewers != 3 || auditCountsAfterFirst.Terms == 0 {
 		t.Fatalf("authorization update first audit counts = %+v", auditCountsAfterFirst)
@@ -285,18 +308,31 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL business after success", businessBeforeRepeat)
 
 	// The production contract records every successful PATCH, even when the normalized values are unchanged.
+	clock.Set(secondNow)
 	repeat := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateAdminID, payload, "req_w4_authorization_update_repeat")
 	assertW4AuthorizationUpdateHTTPSecretFree(t, "repeated update", repeat)
 	if repeat.StatusCode != http.StatusOK {
 		t.Fatalf("repeated authorization update status = %d", repeat.StatusCode)
 	}
+	var repeatedEnvelope struct {
+		Data managementauthorizations.Summary `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(repeat.Body), &repeatedEnvelope); err != nil {
+		t.Fatalf("decode repeated authorization update response: %v", err)
+	}
+	if repeatedEnvelope.Data.ID != w4AuthorizationUpdateGrantID || repeatedEnvelope.Data.Status != "paused" || !repeatedEnvelope.Data.UpdatedAt.UTC().Equal(secondNow) || repeatedEnvelope.Data.Limits.Daily == nil || !repeatedEnvelope.Data.Limits.Daily.Enabled || repeatedEnvelope.Data.Limits.Daily.Limit != 17 {
+		t.Fatalf("repeated authorization update response = %+v", repeatedEnvelope.Data)
+	}
 	if err := waitForOperationLogQueueDrained(ctx, inspector, workerDone, func() error { workerMu.Lock(); defer workerMu.Unlock(); return workerErr }); err != nil {
 		t.Fatal(err)
 	}
-	if got := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db); got != businessBeforeRepeat {
-		t.Fatal("authorization update business rows changed after equal-value repeat")
+	assertW4AuthorizationUpdateBusinessRows(t, ctx, db, secondNow, sourceBaseline)
+	businessAfterRepeat := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL business after repeat", businessAfterRepeat)
+	if businessAfterRepeat == businessBeforeRepeat {
+		t.Fatal("authorization update business timestamps did not advance after equal-value repeat")
 	}
-	assertW4AuthorizationUpdateInvalidations(t, ctx, stateRedis, now, 3)
+	assertW4AuthorizationUpdateInvalidations(t, ctx, stateRedis, secondNow, 3)
 	stateBeforeFailure := readW4AuthorizationRevokeRedisDB(t, ctx, stateKeyspace)
 	assertW4AuthorizationUpdateRedisSecretFree(t, "state Redis after repeat", stateBeforeFailure)
 	queueAfterRepeat := readW4AuthorizationRevokeQueueInfo(t, inspector, false)
@@ -310,7 +346,7 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 		t.Fatal("authorization update stable Asynq snapshot did not add the repeated operation task")
 	}
 	assertW4AuthorizationRevokeAsynqTaskSnapshotPresent(t, queueStableBeforeFailure)
-	assertW4AuthorizationUpdateOperationLog(t, ctx, db, w4AuthorizationUpdateRepeatLogID, "req_w4_authorization_update_repeat", now)
+	assertW4AuthorizationUpdateOperationLog(t, ctx, db, w4AuthorizationUpdateRepeatLogID, "req_w4_authorization_update_repeat", secondNow)
 	auditCountsAfterRepeat := readW4AuthorizationUpdateAuditCounts(t, ctx, db)
 	if auditCountsAfterRepeat.Logs != 2 || auditCountsAfterRepeat.Targets != 6 || auditCountsAfterRepeat.Viewers != 6 || auditCountsAfterRepeat.Terms != auditCountsAfterFirst.Terms*2 {
 		t.Fatalf("authorization update repeated audit counts = %+v, first=%+v", auditCountsAfterRepeat, auditCountsAfterFirst)
@@ -449,8 +485,9 @@ func assertW4AuthorizationUpdateBusinessRows(t *testing.T, ctx context.Context, 
 		t.Fatal("authorization update source row changed")
 	}
 	var reason string
-	if err := db.QueryRowContext(ctx, `SELECT reason FROM juhe_business.group_account_stats_dirty WHERE group_id='__all__'`).Scan(&reason); err != nil || reason != managementauthorizations.ResourceAuthorizationUpdatedReason {
-		t.Fatalf("authorization update dirty reason=%q err=%v", reason, err)
+	var dirtyUpdatedAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT reason, updated_at FROM juhe_business.group_account_stats_dirty WHERE group_id='__all__'`).Scan(&reason, &dirtyUpdatedAt); err != nil || reason != managementauthorizations.ResourceAuthorizationUpdatedReason || !dirtyUpdatedAt.UTC().Equal(now) {
+		t.Fatalf("authorization update dirty metadata mismatch: err=%v", err)
 	}
 }
 
@@ -563,13 +600,20 @@ func assertW4AuthorizationUpdateOperationLog(t *testing.T, ctx context.Context, 
 	if len(decoded) != 2 || decoded[0].Field != "status" || string(decoded[0].After) != `"paused"` || decoded[1].Field != "limits" {
 		t.Fatal("authorization update changes do not contain exact status and limits fields")
 	}
+	var limitsJSON string
+	if err := json.Unmarshal(decoded[1].After, &limitsJSON); err != nil {
+		t.Fatalf("decode authorization update audit limits string: %v", err)
+	}
+	if strings.TrimSpace(limitsJSON) == "" {
+		t.Fatal("authorization update audit limits string is empty")
+	}
 	var limits struct {
 		Daily struct {
 			Enabled bool `json:"enabled"`
 			Limit   int  `json:"limit"`
 		} `json:"daily"`
 	}
-	if err := json.Unmarshal(decoded[1].After, &limits); err != nil || !limits.Daily.Enabled || limits.Daily.Limit != 17 {
+	if err := json.Unmarshal([]byte(limitsJSON), &limits); err != nil || !limits.Daily.Enabled || limits.Daily.Limit != 17 {
 		t.Fatalf("decode authorization update audit limits: %v", err)
 	}
 	assertW4AuthorizationUpdateTargets(t, ctx, db, logID)
