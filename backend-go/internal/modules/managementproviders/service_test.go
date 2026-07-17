@@ -80,6 +80,16 @@ func TestServiceOptionsPreservesDeepSeekAndHybridContractsByCode(t *testing.T) {
 			ProtocolCode:             "openai",
 			ProtocolVersion:          "v1",
 			DefaultSupportedModels:   []string{"gpt-5.6-sol", "deepseek-v4-flash"},
+			ProtocolProfiles: []port.ManagementProviderProtocolProfile{
+				{
+					ID:              "profile_hybrid_openai_chat_v1",
+					ProviderCode:    "hybrid",
+					Enabled:         true,
+					ProtocolCode:    "openai",
+					ProtocolVersion: "v1",
+					BaseURL:         "",
+				},
+			},
 		},
 		{
 			ID:                       "provider_deepseek",
@@ -108,8 +118,11 @@ func TestServiceOptionsPreservesDeepSeekAndHybridContractsByCode(t *testing.T) {
 		t.Fatalf("deepseek option = %+v", deepseek)
 	}
 	hybrid := byCode["hybrid"]
-	if hybrid.DefaultProtocolProfileID != "profile_hybrid_openai_chat_v1" || hybrid.ProtocolCode != "openai" {
+	if hybrid.DefaultProtocolProfileID != "profile_hybrid_openai_chat_v1" || hybrid.ProtocolCode != "openai" || hybrid.BaseURL != "" {
 		t.Fatalf("hybrid option = %+v", hybrid)
+	}
+	if len(hybrid.ProtocolProfiles) != 1 || hybrid.ProtocolProfiles[0].ID != hybrid.DefaultProtocolProfileID || hybrid.ProtocolProfiles[0].BaseURL != "" {
+		t.Fatalf("hybrid default profile = %+v", hybrid.ProtocolProfiles)
 	}
 }
 

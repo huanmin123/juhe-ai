@@ -136,9 +136,18 @@ func assertDeepSeekAndHybridProviderOptions(t *testing.T, options []managementpr
 		t.Fatalf("deepseek provider contract = %+v", deepseek)
 	}
 	hybrid := findProviderOption(options, "hybrid")
-	if hybrid == nil || hybrid.DefaultProtocolProfileID != "profile_hybrid_openai_chat_v1" || hybrid.ProtocolCode != "openai" {
+	if hybrid == nil || hybrid.DefaultProtocolProfileID != "profile_hybrid_openai_chat_v1" || hybrid.ProtocolCode != "openai" || hybrid.BaseURL != "" {
 		t.Fatalf("hybrid provider contract = %+v", hybrid)
 	}
+	for _, profile := range hybrid.ProtocolProfiles {
+		if profile.ID == hybrid.DefaultProtocolProfileID {
+			if profile.BaseURL != "" {
+				t.Fatalf("hybrid default profile BaseURL = %q, want empty", profile.BaseURL)
+			}
+			return
+		}
+	}
+	t.Fatalf("hybrid default profile %q missing: %+v", hybrid.DefaultProtocolProfileID, hybrid.ProtocolProfiles)
 }
 
 func findProviderOption(options []managementproviders.Option, code string) *managementproviders.Option {
