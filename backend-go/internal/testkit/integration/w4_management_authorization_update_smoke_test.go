@@ -51,6 +51,7 @@ const (
 	w4AuthorizationUpdateGroupID          = "grp_w4_authorization_update_owner"
 	w4AuthorizationUpdateLogID            = "oplog_w4_authorization_update"
 	w4AuthorizationUpdateRepeatLogID      = "oplog_w4_authorization_update_repeat"
+	w4AuthorizationUpdateReactivateLogID  = "oplog_w4_authorization_update_reactivate"
 )
 
 type w4AuthorizationUpdateClock struct {
@@ -200,6 +201,8 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 
 	firstNow := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
 	secondNow := firstNow.Add(2 * time.Minute)
+	revokedAt := secondNow.Add(time.Minute)
+	thirdNow := secondNow.Add(2 * time.Minute)
 	clock := newW4AuthorizationUpdateClock(firstNow)
 	insertW4AuthorizationUpdateFixture(t, ctx, db, firstNow)
 	insertW2ManagementSessionForAccountFixture(t, ctx, db, w4AuthorizationUpdateSessionID, w4AuthorizationUpdateAdminID, w4AuthorizationUpdateToken, firstNow.Add(-time.Minute))
@@ -241,10 +244,14 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 		Config: cfg, Logger: logger, ManagementAPIAuthMiddleware: httpapi.NewManagementAPIAuthMiddleware(authenticator), ManagementAPIAuthTouchMiddleware: httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
 		ManagementAuthorizationUpdateHandler: httpapi.NewManagementAuthorizationUpdateHandlerWithOperationLog(service, httpapi.ManagementOperationLogOptions{Config: cfg, Logger: logger, Client: logClient, SettingsReader: store, Now: clock.Now, NewLogID: func() string {
 			logIDCalls++
-			if logIDCalls == 1 {
+			switch logIDCalls {
+			case 1:
 				return w4AuthorizationUpdateLogID
+			case 2:
+				return w4AuthorizationUpdateRepeatLogID
+			default:
+				return w4AuthorizationUpdateReactivateLogID
 			}
-			return w4AuthorizationUpdateRepeatLogID
 		}}),
 	}))
 
@@ -299,7 +306,7 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 	assertW4AuthorizationUpdateRedisSecretFree(t, "Asynq Redis after success", queueAfterSuccess)
 	queueStableBeforeRepeat := stableW4AuthorizationRevokeQueueRedisSnapshot(queueAfterSuccess)
 	assertW4AuthorizationRevokeAsynqTaskSnapshotPresent(t, queueStableBeforeRepeat)
-	assertW4AuthorizationUpdateOperationLog(t, ctx, db, w4AuthorizationUpdateLogID, "req_w4_authorization_update", firstNow)
+	assertW4AuthorizationUpdateOperationLog(t, ctx, db, w4AuthorizationUpdateLogID, "req_w4_authorization_update", "paused", firstNow)
 	auditCountsAfterFirst := readW4AuthorizationUpdateAuditCounts(t, ctx, db)
 	if auditCountsAfterFirst.Logs != 1 || auditCountsAfterFirst.Targets != 3 || auditCountsAfterFirst.Viewers != 3 || auditCountsAfterFirst.Terms == 0 {
 		t.Fatalf("authorization update first audit counts = %+v", auditCountsAfterFirst)
@@ -346,7 +353,7 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 		t.Fatal("authorization update stable Asynq snapshot did not add the repeated operation task")
 	}
 	assertW4AuthorizationRevokeAsynqTaskSnapshotPresent(t, queueStableBeforeFailure)
-	assertW4AuthorizationUpdateOperationLog(t, ctx, db, w4AuthorizationUpdateRepeatLogID, "req_w4_authorization_update_repeat", secondNow)
+	assertW4AuthorizationUpdateOperationLog(t, ctx, db, w4AuthorizationUpdateRepeatLogID, "req_w4_authorization_update_repeat", "paused", secondNow)
 	auditCountsAfterRepeat := readW4AuthorizationUpdateAuditCounts(t, ctx, db)
 	if auditCountsAfterRepeat.Logs != 2 || auditCountsAfterRepeat.Targets != 6 || auditCountsAfterRepeat.Viewers != 6 || auditCountsAfterRepeat.Terms != auditCountsAfterFirst.Terms*2 {
 		t.Fatalf("authorization update repeated audit counts = %+v, first=%+v", auditCountsAfterRepeat, auditCountsAfterFirst)
@@ -355,25 +362,68 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 		t.Fatalf("authorization update repeat side effects = invalidations=%d logIDs=%d, want 4 and 2", invalidationCalls, logIDCalls)
 	}
 
-	// Terminal rows and a non-owner cannot mutate the committed update or emit another invalidation/log task.
-	if _, err := db.ExecContext(ctx, `UPDATE juhe_business.resource_authorization_grants SET status = 'revoked' WHERE id = $1`, w4AuthorizationUpdateGrantID); err != nil {
-		t.Fatalf("make update fixture terminal: %v", err)
+	// Revoked and returned grants remain reusable. Restore a real revoked three-table state, then reactivate it through PATCH.
+	makeW4AuthorizationUpdateFixtureRevoked(t, ctx, db, revokedAt)
+	assertW4AuthorizationUpdateRevokedRows(t, ctx, db, revokedAt)
+	clock.Set(thirdNow)
+	reactivatePayload := `{"status":"active","limits":{"daily":{"enabled":true,"limit":17}}}`
+	reactivated := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateAdminID, reactivatePayload, "req_w4_authorization_update_reactivate")
+	assertW4AuthorizationUpdateHTTPSecretFree(t, "reactivated update", reactivated)
+	if reactivated.StatusCode != http.StatusOK {
+		t.Fatalf("reactivated authorization update status = %d, body=%s", reactivated.StatusCode, reactivated.Body)
 	}
-	businessTerminal := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db)
-	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL terminal baseline", businessTerminal)
-	terminal := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateAdminID, `{"status":"active"}`, "req_w4_authorization_update_terminal")
-	assertW4AuthorizationUpdateHTTPSecretFree(t, "terminal update", terminal)
-	if terminal.StatusCode != http.StatusNotFound {
-		t.Fatalf("terminal authorization update status = %d, body=%s", terminal.StatusCode, terminal.Body)
+	var reactivatedEnvelope struct {
+		Data managementauthorizations.Summary `json:"data"`
 	}
-	assertW4AuthorizationUpdateNoSideEffects(t, ctx, db, stateKeyspace, queueRedis, inspector, businessTerminal, operationsBeforeFailure, stateBeforeFailure, queueStableBeforeFailure, queueAfterRepeat, invalidationCalls, logIDCalls)
+	if err := json.Unmarshal([]byte(reactivated.Body), &reactivatedEnvelope); err != nil {
+		t.Fatalf("decode reactivated authorization update response: %v", err)
+	}
+	if reactivatedEnvelope.Data.ID != w4AuthorizationUpdateGrantID || reactivatedEnvelope.Data.Status != "active" || !reactivatedEnvelope.Data.UpdatedAt.UTC().Equal(thirdNow) || reactivatedEnvelope.Data.Limits.Daily == nil || !reactivatedEnvelope.Data.Limits.Daily.Enabled || reactivatedEnvelope.Data.Limits.Daily.Limit != 17 {
+		t.Fatalf("reactivated authorization update response = %+v", reactivatedEnvelope.Data)
+	}
+	if err := waitForOperationLogQueueDrained(ctx, inspector, workerDone, func() error { workerMu.Lock(); defer workerMu.Unlock(); return workerErr }); err != nil {
+		t.Fatal(err)
+	}
+	assertW4AuthorizationUpdateReactivatedRows(t, ctx, db, thirdNow, firstNow.Add(-time.Hour))
+	assertW4AuthorizationUpdateInvalidations(t, ctx, stateRedis, thirdNow, 5)
+	if invalidationCalls != 6 || logIDCalls != 3 {
+		t.Fatalf("authorization update reactivation side effects = invalidations=%d logIDs=%d, want 6 and 3", invalidationCalls, logIDCalls)
+	}
+	stateBeforeFailure = readW4AuthorizationRevokeRedisDB(t, ctx, stateKeyspace)
+	assertW4AuthorizationUpdateRedisSecretFree(t, "state Redis after reactivation", stateBeforeFailure)
+	assertW4AuthorizationRevokeExactStateKeysForNamespace(t, w4AuthorizationUpdateNamespace, stateBeforeFailure)
+	queueAfterReactivate := readW4AuthorizationRevokeQueueInfo(t, inspector, false)
+	assertW4AuthorizationUpdateQueueIncrement(t, queueAfterRepeat, queueAfterReactivate)
+	operationsBeforeFailure = readW4AuthorizationRevokeOperationLogSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL audit after reactivation", operationsBeforeFailure)
+	queueAfterReactivateRaw := readW4AuthorizationRevokeRedisDB(t, ctx, queueRedis)
+	assertW4AuthorizationUpdateRedisSecretFree(t, "Asynq Redis after reactivation", queueAfterReactivateRaw)
+	queueStableBeforeFailure = stableW4AuthorizationRevokeQueueRedisSnapshot(queueAfterReactivateRaw)
+	if reflect.DeepEqual(queueStableBeforeFailure, stableW4AuthorizationRevokeQueueRedisSnapshot(queueAfterRepeatRaw)) {
+		t.Fatal("authorization update stable Asynq snapshot did not add the reactivation operation task")
+	}
+	assertW4AuthorizationRevokeAsynqTaskSnapshotPresent(t, queueStableBeforeFailure)
+	assertW4AuthorizationUpdateOperationLog(t, ctx, db, w4AuthorizationUpdateReactivateLogID, "req_w4_authorization_update_reactivate", "active", thirdNow)
+	auditCountsAfterReactivate := readW4AuthorizationUpdateAuditCounts(t, ctx, db)
+	if auditCountsAfterReactivate.Logs != 3 || auditCountsAfterReactivate.Targets != 9 || auditCountsAfterReactivate.Viewers != 9 || auditCountsAfterReactivate.Terms != auditCountsAfterFirst.Terms*3 {
+		t.Fatalf("authorization update reactivation audit counts = %+v, first=%+v", auditCountsAfterReactivate, auditCountsAfterFirst)
+	}
+	businessBeforeFailure := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL business after reactivation", businessBeforeFailure)
+
+	wrongOwner := doW4AuthorizationUpdateRequestForOwner(t, ctx, server.URL, w4AuthorizationUpdateAdminID, w4AuthorizationUpdateGranteeID, reactivatePayload, "req_w4_authorization_update_wrong_owner")
+	assertW4AuthorizationUpdateHTTPSecretFree(t, "wrong-owner update", wrongOwner)
+	if wrongOwner.StatusCode != http.StatusNotFound {
+		t.Fatalf("wrong-owner authorization update status = %d, body=%s", wrongOwner.StatusCode, wrongOwner.Body)
+	}
+	assertW4AuthorizationUpdateNoSideEffects(t, ctx, db, stateKeyspace, queueRedis, inspector, businessBeforeFailure, operationsBeforeFailure, stateBeforeFailure, queueStableBeforeFailure, queueAfterReactivate, invalidationCalls, logIDCalls)
 	denied := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateGranteeID, `{"status":"active"}`, "req_w4_authorization_update_denied")
 	assertW4AuthorizationUpdateHTTPSecretFree(t, "denied update", denied)
 	if denied.StatusCode != http.StatusForbidden {
 		t.Fatalf("non-admin authorization update status = %d, body=%s", denied.StatusCode, denied.Body)
 	}
-	assertW4AuthorizationUpdateNoSideEffects(t, ctx, db, stateKeyspace, queueRedis, inspector, businessTerminal, operationsBeforeFailure, stateBeforeFailure, queueStableBeforeFailure, queueAfterRepeat, invalidationCalls, logIDCalls)
-	assertW4AuthorizationUpdateSecretFree(t, "final PostgreSQL and logger", businessTerminal+operationsBeforeFailure+readW4AuthorizationUpdateSessionSnapshot(t, ctx, db)+logs.String())
+	assertW4AuthorizationUpdateNoSideEffects(t, ctx, db, stateKeyspace, queueRedis, inspector, businessBeforeFailure, operationsBeforeFailure, stateBeforeFailure, queueStableBeforeFailure, queueAfterReactivate, invalidationCalls, logIDCalls)
+	assertW4AuthorizationUpdateSecretFree(t, "final PostgreSQL and logger", businessBeforeFailure+operationsBeforeFailure+readW4AuthorizationUpdateSessionSnapshot(t, ctx, db)+logs.String())
 }
 
 type w4AuthorizationUpdateResponse struct {
@@ -384,7 +434,12 @@ type w4AuthorizationUpdateResponse struct {
 
 func doW4AuthorizationUpdateRequest(t *testing.T, ctx context.Context, serverURL, actorID, body, requestID string) w4AuthorizationUpdateResponse {
 	t.Helper()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, serverURL+"/__aisys__/api/authorizations/"+w4AuthorizationUpdateGrantID+"?systemAccountId="+w4AuthorizationUpdateOwnerID, strings.NewReader(body))
+	return doW4AuthorizationUpdateRequestForOwner(t, ctx, serverURL, actorID, w4AuthorizationUpdateOwnerID, body, requestID)
+}
+
+func doW4AuthorizationUpdateRequestForOwner(t *testing.T, ctx context.Context, serverURL, actorID, ownerID, body, requestID string) w4AuthorizationUpdateResponse {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, serverURL+"/__aisys__/api/authorizations/"+w4AuthorizationUpdateGrantID+"?systemAccountId="+ownerID, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("create authorization update request: %v", err)
 	}
@@ -426,6 +481,109 @@ func insertW4AuthorizationUpdateFixture(t *testing.T, ctx context.Context, db *s
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO juhe_business.resource_authorization_sources (id, authorization_id, source_type, status, activated_at, created_by, created_at, updated_at) VALUES ($1, $2, 'manual', 'active', $3, $4, $3, $3)`, w4AuthorizationUpdateSourceID, w4AuthorizationUpdateRuntimeID, created, w4AuthorizationUpdateOwnerID); err != nil {
 		t.Fatalf("insert authorization update source: %v", err)
+	}
+}
+
+func makeW4AuthorizationUpdateFixtureRevoked(t *testing.T, ctx context.Context, db *sql.DB, revokedAt time.Time) {
+	t.Helper()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin authorization update revoked fixture: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+UPDATE juhe_business.resource_authorization_grants
+SET status='revoked', revoked_by=$2, revoked_at=$3, updated_at=$3
+WHERE id=$1`, w4AuthorizationUpdateGrantID, w4AuthorizationUpdateAdminID, revokedAt.UTC()); err != nil {
+		t.Fatalf("revoke authorization update grant fixture: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE juhe_business.resource_authorizations
+SET status='revoked', effective_source_type=NULL, effective_source_team_id=NULL,
+    revoked_by=$2, revoked_at=$3, revoked_reason='authorization_revoked',
+    last_source_changed_at=$3, updated_at=$3
+WHERE id=$1`, w4AuthorizationUpdateRuntimeID, w4AuthorizationUpdateAdminID, revokedAt.UTC()); err != nil {
+		t.Fatalf("revoke authorization update runtime fixture: %v", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE juhe_business.resource_authorization_sources
+SET status='revoked', ended_at=$3, ended_reason='authorization_revoked',
+    revoked_by=$2, revoked_at=$3, updated_at=$3
+WHERE id=$1`, w4AuthorizationUpdateSourceID, w4AuthorizationUpdateAdminID, revokedAt.UTC()); err != nil {
+		t.Fatalf("revoke authorization update source fixture: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit authorization update revoked fixture: %v", err)
+	}
+}
+
+func assertW4AuthorizationUpdateRevokedRows(t *testing.T, ctx context.Context, db *sql.DB, revokedAt time.Time) {
+	t.Helper()
+	var grantStatus, grantRevokedBy string
+	var grantRevokedAt, grantUpdatedAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT status, revoked_by, revoked_at, updated_at FROM juhe_business.resource_authorization_grants WHERE id=$1`, w4AuthorizationUpdateGrantID).Scan(&grantStatus, &grantRevokedBy, &grantRevokedAt, &grantUpdatedAt); err != nil {
+		t.Fatalf("read revoked authorization update grant: %v", err)
+	}
+	if grantStatus != "revoked" || grantRevokedBy != w4AuthorizationUpdateAdminID || !grantRevokedAt.UTC().Equal(revokedAt) || !grantUpdatedAt.UTC().Equal(revokedAt) {
+		t.Fatal("authorization update revoked grant does not match the production terminal contract")
+	}
+	var runtimeStatus, runtimeRevokedBy, runtimeReason string
+	var effectiveSourceType, effectiveSourceTeamID sql.NullString
+	var runtimeRevokedAt, lastSourceChangedAt, runtimeUpdatedAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT status, effective_source_type, effective_source_team_id, revoked_by, revoked_at, revoked_reason, last_source_changed_at, updated_at FROM juhe_business.resource_authorizations WHERE id=$1`, w4AuthorizationUpdateRuntimeID).Scan(&runtimeStatus, &effectiveSourceType, &effectiveSourceTeamID, &runtimeRevokedBy, &runtimeRevokedAt, &runtimeReason, &lastSourceChangedAt, &runtimeUpdatedAt); err != nil {
+		t.Fatalf("read revoked authorization update runtime: %v", err)
+	}
+	if runtimeStatus != "revoked" || effectiveSourceType.Valid || effectiveSourceTeamID.Valid || runtimeRevokedBy != w4AuthorizationUpdateAdminID || !runtimeRevokedAt.UTC().Equal(revokedAt) || runtimeReason != "authorization_revoked" || !lastSourceChangedAt.UTC().Equal(revokedAt) || !runtimeUpdatedAt.UTC().Equal(revokedAt) {
+		t.Fatal("authorization update revoked runtime does not match the no-active-source contract")
+	}
+	var sourceStatus, sourceEndedReason, sourceRevokedBy string
+	var sourceEndedAt, sourceRevokedAt, sourceUpdatedAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT status, ended_at, ended_reason, revoked_by, revoked_at, updated_at FROM juhe_business.resource_authorization_sources WHERE id=$1`, w4AuthorizationUpdateSourceID).Scan(&sourceStatus, &sourceEndedAt, &sourceEndedReason, &sourceRevokedBy, &sourceRevokedAt, &sourceUpdatedAt); err != nil {
+		t.Fatalf("read revoked authorization update source: %v", err)
+	}
+	if sourceStatus != "revoked" || !sourceEndedAt.UTC().Equal(revokedAt) || sourceEndedReason != "authorization_revoked" || sourceRevokedBy != w4AuthorizationUpdateAdminID || !sourceRevokedAt.UTC().Equal(revokedAt) || !sourceUpdatedAt.UTC().Equal(revokedAt) {
+		t.Fatal("authorization update revoked source does not match the production terminal contract")
+	}
+}
+
+func assertW4AuthorizationUpdateReactivatedRows(t *testing.T, ctx context.Context, db *sql.DB, now, originalActivatedAt time.Time) {
+	t.Helper()
+	var grantStatus string
+	var grantRevokedBy sql.NullString
+	var grantRevokedAt sql.NullTime
+	var grantUpdatedAt time.Time
+	var grantLimitsMatch bool
+	if err := db.QueryRowContext(ctx, `SELECT status, revoked_by, revoked_at, updated_at, limits_json::jsonb = '{"daily":{"enabled":true,"limit":17}}'::jsonb FROM juhe_business.resource_authorization_grants WHERE id=$1`, w4AuthorizationUpdateGrantID).Scan(&grantStatus, &grantRevokedBy, &grantRevokedAt, &grantUpdatedAt, &grantLimitsMatch); err != nil {
+		t.Fatalf("read reactivated authorization update grant: %v", err)
+	}
+	if grantStatus != "active" || grantRevokedBy.Valid || grantRevokedAt.Valid || !grantUpdatedAt.UTC().Equal(now) || !grantLimitsMatch {
+		t.Fatal("authorization update reactivated grant does not match the active contract")
+	}
+	var runtimeStatus string
+	var effectiveSourceType, effectiveSourceTeamID, runtimeRevokedBy, runtimeReason sql.NullString
+	var runtimeRevokedAt sql.NullTime
+	var lastSourceChangedAt, runtimeUpdatedAt time.Time
+	var runtimeLimitsMatch bool
+	if err := db.QueryRowContext(ctx, `SELECT status, effective_source_type, effective_source_team_id, revoked_by, revoked_at, revoked_reason, last_source_changed_at, updated_at, limits_json::jsonb = '{"daily":{"enabled":true,"limit":17}}'::jsonb FROM juhe_business.resource_authorizations WHERE id=$1`, w4AuthorizationUpdateRuntimeID).Scan(&runtimeStatus, &effectiveSourceType, &effectiveSourceTeamID, &runtimeRevokedBy, &runtimeRevokedAt, &runtimeReason, &lastSourceChangedAt, &runtimeUpdatedAt, &runtimeLimitsMatch); err != nil {
+		t.Fatalf("read reactivated authorization update runtime: %v", err)
+	}
+	if runtimeStatus != "active" || !effectiveSourceType.Valid || effectiveSourceType.String != "manual" || effectiveSourceTeamID.Valid || runtimeRevokedBy.Valid || runtimeRevokedAt.Valid || runtimeReason.Valid || !lastSourceChangedAt.UTC().Equal(now) || !runtimeUpdatedAt.UTC().Equal(now) || !runtimeLimitsMatch {
+		t.Fatal("authorization update reactivated runtime does not match the manual-source contract")
+	}
+	var sourceStatus string
+	var sourceActivatedAt, sourceUpdatedAt time.Time
+	var sourceEndedAt, sourceRevokedAt sql.NullTime
+	var sourceEndedReason, sourceRevokedBy sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT status, activated_at, ended_at, ended_reason, revoked_by, revoked_at, updated_at FROM juhe_business.resource_authorization_sources WHERE id=$1`, w4AuthorizationUpdateSourceID).Scan(&sourceStatus, &sourceActivatedAt, &sourceEndedAt, &sourceEndedReason, &sourceRevokedBy, &sourceRevokedAt, &sourceUpdatedAt); err != nil {
+		t.Fatalf("read reactivated authorization update source: %v", err)
+	}
+	if sourceStatus != "active" || !sourceActivatedAt.UTC().Equal(originalActivatedAt) || sourceEndedAt.Valid || sourceEndedReason.Valid || sourceRevokedBy.Valid || sourceRevokedAt.Valid || !sourceUpdatedAt.UTC().Equal(now) {
+		t.Fatal("authorization update source does not match the production reactivation contract")
+	}
+	var dirtyReason string
+	var dirtyUpdatedAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT reason, updated_at FROM juhe_business.group_account_stats_dirty WHERE group_id='__all__'`).Scan(&dirtyReason, &dirtyUpdatedAt); err != nil || dirtyReason != managementauthorizations.ResourceAuthorizationUpdatedReason || !dirtyUpdatedAt.UTC().Equal(now) {
+		t.Fatalf("authorization update reactivation dirty metadata mismatch: err=%v", err)
 	}
 }
 
@@ -579,7 +737,7 @@ func readW4AuthorizationUpdateAuditCounts(t *testing.T, ctx context.Context, db 
 	return counts
 }
 
-func assertW4AuthorizationUpdateOperationLog(t *testing.T, ctx context.Context, db *sql.DB, logID, traceID string, now time.Time) {
+func assertW4AuthorizationUpdateOperationLog(t *testing.T, ctx context.Context, db *sql.DB, logID, traceID, wantStatus string, now time.Time) {
 	t.Helper()
 	var trace, actor, scope, mode, module, action, key, resourceType, resourceID, resourceName, summary, changes, method, path string
 	var status int
@@ -597,7 +755,7 @@ func assertW4AuthorizationUpdateOperationLog(t *testing.T, ctx context.Context, 
 	if err := json.Unmarshal([]byte(changes), &decoded); err != nil {
 		t.Fatalf("decode authorization update changes: %v", err)
 	}
-	if len(decoded) != 2 || decoded[0].Field != "status" || string(decoded[0].After) != `"paused"` || decoded[1].Field != "limits" {
+	if len(decoded) != 2 || decoded[0].Field != "status" || string(decoded[0].After) != fmt.Sprintf("%q", wantStatus) || decoded[1].Field != "limits" {
 		t.Fatal("authorization update changes do not contain exact status and limits fields")
 	}
 	var limitsJSON string
@@ -748,7 +906,7 @@ func assertW4AuthorizationUpdateNoSideEffects(t *testing.T, ctx context.Context,
 	if got := readW4AuthorizationRevokeQueueInfo(t, inspector, false); got != wantQueueInfo {
 		t.Fatal("authorization update queue counters changed after failed request")
 	}
-	if invalidations != 4 || logIDs != 2 {
+	if invalidations != 6 || logIDs != 3 {
 		t.Fatalf("authorization update failed side effects = invalidations=%d logIDs=%d", invalidations, logIDs)
 	}
 }
