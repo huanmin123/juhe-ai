@@ -65,6 +65,9 @@
         <template v-else-if="column.key === 'failureCount'">
           {{ formatInteger(record.failureCount) }}
         </template>
+        <template v-else-if="column.key === 'partialCount'">
+          {{ formatInteger(record.partialCount) }}
+        </template>
         <template v-else-if="column.key === 'skippedCount'">
           {{ formatInteger(record.skippedCount) }}
         </template>
@@ -77,6 +80,12 @@
         <template v-else-if="column.key === 'lastError'">
           <a-tooltip v-if="record.lastError" :title="record.lastError">
             <span class="stats-job-error">{{ record.lastError }}</span>
+          </a-tooltip>
+          <span v-else>-</span>
+        </template>
+        <template v-else-if="column.key === 'lastWarning'">
+          <a-tooltip v-if="record.lastWarning" :title="record.lastWarning">
+            <span class="stats-job-error">{{ record.lastWarning }}</span>
           </a-tooltip>
           <span v-else>-</span>
         </template>
@@ -126,6 +135,10 @@
               <strong>{{ formatInteger(record.failureCount) }}</strong>
             </div>
             <div class="mobile-list-meta-item">
+              <span>部分失败</span>
+              <strong>{{ formatInteger(record.partialCount) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
               <span>跳过</span>
               <strong>{{ formatInteger(record.skippedCount) }}</strong>
             </div>
@@ -137,9 +150,17 @@
               <span>最近失败</span>
               <strong>{{ formatDateTime(record.lastErrorAt) }}</strong>
             </div>
+            <div class="mobile-list-meta-item">
+              <span>最近部分失败</span>
+              <strong>{{ formatDateTime(record.lastWarningAt) }}</strong>
+            </div>
             <div v-if="record.lastError" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>最近错误</span>
               <strong>{{ record.lastError }}</strong>
+            </div>
+            <div v-if="record.lastWarning" class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>部分失败原因</span>
+              <strong>{{ record.lastWarning }}</strong>
             </div>
           </div>
         </article>
@@ -185,10 +206,12 @@ const backgroundJobColumns = [
   { title: '最长耗时', key: 'maxDurationMs', width: 96 },
   { title: '成功', key: 'successCount', width: 84, align: 'right', sorter: sortBackgroundJobNumber('successCount') },
   { title: '累计失败（本进程）', key: 'failureCount', width: 148, align: 'right', sorter: sortBackgroundJobNumber('failureCount'), defaultSortOrder: 'descend' },
+  { title: '部分失败（本进程）', key: 'partialCount', width: 148, align: 'right', sorter: sortBackgroundJobNumber('partialCount') },
   { title: '跳过', key: 'skippedCount', width: 84, align: 'right', sorter: sortBackgroundJobNumber('skippedCount') },
   { title: '最近完成', key: 'lastFinishedAt', width: 168 },
   { title: '最近失败', key: 'lastErrorAt', width: 168 },
-  { title: '最近错误', key: 'lastError', ellipsis: true }
+  { title: '最近错误', key: 'lastError', ellipsis: true },
+  { title: '部分失败原因', key: 'lastWarning', ellipsis: true }
 ]
 
 function handleTableChange(...args: unknown[]): void {
@@ -199,22 +222,31 @@ function formatJobDuration(value?: number): string {
   return value === undefined ? '-' : formatDuration(value)
 }
 
-function sortBackgroundJobNumber(field: 'runCount' | 'successCount' | 'failureCount' | 'skippedCount') {
+function sortBackgroundJobNumber(field: 'runCount' | 'successCount' | 'failureCount' | 'partialCount' | 'skippedCount') {
   return (left: BackgroundJobRow, right: BackgroundJobRow) => numberValue(left[field]) - numberValue(right[field])
 }
 
 function backgroundJobStatusText(row: BackgroundJobRow): string {
   if (row.running) return '运行中'
   if (row.lastError) return '上次失败'
-  if (row.lastErrorAt && isAfter(row.lastSuccessAt, row.lastErrorAt)) return '已恢复'
+  if (row.lastWarning) return '部分失败'
+  const latestProblemAt = latestTimestamp(row.lastErrorAt, row.lastWarningAt)
+  if (latestProblemAt && isAfter(row.lastSuccessAt, latestProblemAt)) return '已恢复'
   if (row.lastErrorAt) return '曾失败'
+  if (row.lastWarningAt) return '曾部分失败'
   return '空闲'
 }
 
 function backgroundJobStatusColor(row: BackgroundJobRow): string {
   if (row.running) return 'processing'
-  if (row.lastError || (row.lastErrorAt && !isAfter(row.lastSuccessAt, row.lastErrorAt))) return 'warning'
+  if (row.lastError || row.lastWarning) return 'warning'
+  const latestProblemAt = latestTimestamp(row.lastErrorAt, row.lastWarningAt)
+  if (latestProblemAt && !isAfter(row.lastSuccessAt, latestProblemAt)) return 'warning'
   return 'success'
+}
+
+function latestTimestamp(...values: Array<string | undefined>): string | undefined {
+  return values.filter((value): value is string => Boolean(value)).sort().at(-1)
 }
 
 function isAfter(value: string | undefined, baseline: string): boolean {

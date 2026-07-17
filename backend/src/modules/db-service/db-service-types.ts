@@ -180,11 +180,14 @@ export interface DbServiceServerRuntimeSnapshot {
         lastSuccessAt?: string
         lastErrorAt?: string
         lastError?: string
+        lastWarningAt?: string
+        lastWarning?: string
         lastDurationMs?: number
         maxDurationMs?: number
         runCount: number
         successCount: number
         failureCount: number
+        partialCount: number
         skippedCount: number
       }>
       usageRecordQueue: DbServiceRuntimeQueueSnapshot
@@ -216,11 +219,14 @@ export interface DbServiceServerRuntimeSnapshot {
         lastSuccessAt?: string
         lastErrorAt?: string
         lastError?: string
+        lastWarningAt?: string
+        lastWarning?: string
         lastDurationMs?: number
         maxDurationMs?: number
         runCount: number
         successCount: number
         failureCount: number
+        partialCount: number
         skippedCount: number
       }>
       recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
@@ -254,11 +260,14 @@ export interface DbServiceServerRuntimeSnapshot {
         lastSuccessAt?: string
         lastErrorAt?: string
         lastError?: string
+        lastWarningAt?: string
+        lastWarning?: string
         lastDurationMs?: number
         maxDurationMs?: number
         runCount: number
         successCount: number
         failureCount: number
+        partialCount: number
         skippedCount: number
       }>
       accountHealthCheckQueue?: {

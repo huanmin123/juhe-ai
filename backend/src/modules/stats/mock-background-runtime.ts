@@ -389,6 +389,7 @@ function job(
     running?: boolean
     successCount?: number
     failureCount?: number
+    partialCount?: number
     skippedCount?: number
     lastDurationMs?: number
     maxDurationMs?: number
@@ -406,9 +407,10 @@ function job(
     lastSuccessAt: input.lastSuccessAt,
     lastDurationMs: input.lastDurationMs,
     maxDurationMs: input.maxDurationMs,
-    runCount: (input.successCount ?? 0) + (input.failureCount ?? 0) + (input.skippedCount ?? 0),
+    runCount: (input.successCount ?? 0) + (input.failureCount ?? 0) + (input.partialCount ?? 0) + (input.skippedCount ?? 0),
     successCount: input.successCount ?? 0,
     failureCount: input.failureCount ?? 0,
+    partialCount: input.partialCount ?? 0,
     skippedCount: input.skippedCount ?? 0
   }
 }

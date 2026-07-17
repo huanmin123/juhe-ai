@@ -13,11 +13,13 @@ const refreshRunBudgetMs = 45_000
 const refreshCandidateTimeoutMs = 20_000
 
 export interface AccountBalanceRefreshRunSummary {
+  outcome: 'success' | 'partial'
   selectedCount: number
   processedCount: number
   deferredCount: number
-  infrastructureFailureCount: number
+  candidateFailureCount: number
   durationMs: number
+  warning?: string
 }
 
 interface AccountBalanceRefreshDependencies {
@@ -27,6 +29,13 @@ interface AccountBalanceRefreshDependencies {
   runBudgetMs?: number
   candidateTimeoutMs?: number
   now?: () => number
+}
+
+class AccountBalanceRefreshCandidateTimeoutError extends Error {
+  constructor(accountId: string) {
+    super(`AI 账户余额刷新候选超时：${accountId}`)
+    this.name = 'AccountBalanceRefreshCandidateTimeoutError'
+  }
 }
 
 export async function runAccountBalanceRefresh(
@@ -41,10 +50,13 @@ export async function runAccountBalanceRefresh(
   const candidates = await (dependencies.listDueCandidates ?? listAccountsDueForBalanceRefreshAsync)({ limit: refreshBatchSize - recoveryCandidates.length })
   candidates.push(...recoveryCandidates)
   let cursor = 0
-  let infrastructureFailureCount = 0
+  let candidateFailureCount = 0
   let processedCount = 0
+  let taskFailed = false
+  let taskFailure: unknown
   await Promise.all(Array.from({ length: Math.min(refreshConcurrency, candidates.length) }, async () => {
     while (cursor < candidates.length) {
+      if (taskFailed) return
       const remainingRunMs = runBudgetMs - (now() - startedAtMs)
       if (remainingRunMs <= 0) return
       const candidate = candidates[cursor]
@@ -53,7 +65,12 @@ export async function runAccountBalanceRefresh(
         await withTimeout(refreshCandidate(candidate), Math.min(candidateTimeoutMs, remainingRunMs), candidate.id)
         processedCount += 1
       } catch (error) {
-        infrastructureFailureCount += 1
+        if (!(error instanceof AccountBalanceRefreshCandidateTimeoutError)) {
+          taskFailed = true
+          taskFailure = error
+          return
+        }
+        candidateFailureCount += 1
         logger.warn(errorLogFields(error, {
           event: 'account_balance_refresh_failed',
           accountId: candidate.id,
@@ -62,15 +79,21 @@ export async function runAccountBalanceRefresh(
       }
     }
   }))
+  if (taskFailed) throw taskFailure
   const summary: AccountBalanceRefreshRunSummary = {
+    outcome: candidateFailureCount > 0 ? 'partial' : 'success',
     selectedCount: candidates.length,
     processedCount,
     deferredCount: Math.max(0, candidates.length - cursor),
-    infrastructureFailureCount,
-    durationMs: Math.max(0, now() - startedAtMs)
+    candidateFailureCount,
+    durationMs: Math.max(0, now() - startedAtMs),
+    ...(candidateFailureCount > 0
+      ? { warning: `AI 账户余额刷新部分失败：${candidateFailureCount} 个候选失败，已完成 ${processedCount}/${candidates.length}` }
+      : {})
   }
-  if (infrastructureFailureCount > 0) {
-    throw new Error(`AI 账户余额刷新存在 ${infrastructureFailureCount} 个基础设施失败；已处理 ${processedCount}/${candidates.length} 个候选`)
+  if (summary.outcome === 'partial') {
+    logger.warn({ event: 'account_balance_refresh_partial', ...summary }, summary.warning)
+    return summary
   }
   logger.info({ event: 'account_balance_refresh_completed', ...summary }, 'AI 账户上游余额刷新完成')
   return summary
@@ -82,7 +105,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, accountId:
     return await Promise.race([
       promise,
       new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error(`AI 账户余额刷新候选超时：${accountId}`)), Math.max(1, timeoutMs))
+        timeout = setTimeout(() => reject(new AccountBalanceRefreshCandidateTimeoutError(accountId)), Math.max(1, timeoutMs))
       })
     ])
   } finally {
