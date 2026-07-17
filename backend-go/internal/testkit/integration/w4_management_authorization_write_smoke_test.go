@@ -11,12 +11,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/pressly/goose/v3"
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
@@ -60,6 +63,7 @@ func TestW4ManagementAuthorizationWritePostgresRedisAsynqSmoke(t *testing.T) {
 		db                *sql.DB
 		store             *postgresstore.Store
 		stateRedis        *redisplatform.Client
+		keyspaceRedis     *goredis.Client
 		logClient         *queue.Client
 		inspector         *queue.Inspector
 		httpServer        *httptest.Server
@@ -102,6 +106,11 @@ func TestW4ManagementAuthorizationWritePostgresRedisAsynqSmoke(t *testing.T) {
 		if stateRedis != nil {
 			if err := stateRedis.Close(); err != nil {
 				t.Errorf("close state redis: %v", err)
+			}
+		}
+		if keyspaceRedis != nil {
+			if err := keyspaceRedis.Close(); err != nil {
+				t.Errorf("close keyspace redis: %v", err)
 			}
 		}
 		if store != nil {
@@ -166,6 +175,11 @@ func TestW4ManagementAuthorizationWritePostgresRedisAsynqSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open state redis: %v", err)
 	}
+	keyspaceRedisOptions, err := goredis.ParseURL(redisStateURL)
+	if err != nil {
+		t.Fatalf("parse state redis url for keyspace snapshot: %v", err)
+	}
+	keyspaceRedis = goredis.NewClient(keyspaceRedisOptions)
 
 	now := time.Date(2026, 7, 17, 10, 30, 0, 0, time.UTC)
 	insertW4AuthorizationWriteFixtures(t, ctx, db, now)
@@ -312,8 +326,12 @@ func TestW4ManagementAuthorizationWritePostgresRedisAsynqSmoke(t *testing.T) {
 	}) || countsBeforeDuplicate.OperationLogTerms == 0 {
 		t.Fatalf("authorization write counts = %+v", countsBeforeDuplicate)
 	}
-	runtimeInvalidationBefore := readW4AuthorizationWriteInvalidationRaw(t, ctx, stateRedis, gatewaycache.GatewayRuntimeCacheTopic)
-	quotaInvalidationBefore := readW4AuthorizationWriteInvalidationRaw(t, ctx, stateRedis, gatewaycache.AuthorizationQuotaCacheTopic)
+	businessRowsBeforeDuplicate := readW4AuthorizationWriteBusinessRows(t, ctx, db)
+	redisKeyspaceBeforeDuplicate := readW4AuthorizationWriteRedisKeyspace(t, ctx, keyspaceRedis)
+	if len(redisKeyspaceBeforeDuplicate) != 2 {
+		t.Fatalf("authorization Redis namespace keyspace = %+v, want exactly 2 invalidation keys", redisKeyspaceBeforeDuplicate)
+	}
+	assertW4AuthorizationWriteSessionStorage(t, ctx, db)
 
 	duplicateBody := strings.Replace(createBody, "W4 authorization write smoke", w4AuthorizationWriteCanary, 1)
 	duplicateResponse := doW4AuthorizationWriteRequest(t, ctx, httpServer.URL, duplicateBody, "req_w4_authorization_write_duplicate")
@@ -343,16 +361,17 @@ func TestW4ManagementAuthorizationWritePostgresRedisAsynqSmoke(t *testing.T) {
 	if got := readW4AuthorizationWriteCounts(t, ctx, db); got != countsBeforeDuplicate {
 		t.Fatalf("authorization business/log counts changed after duplicate: before=%+v after=%+v", countsBeforeDuplicate, got)
 	}
-	if got := readW4AuthorizationWriteInvalidationRaw(t, ctx, stateRedis, gatewaycache.GatewayRuntimeCacheTopic); got != runtimeInvalidationBefore {
-		t.Fatalf("gateway runtime invalidation changed after duplicate: before=%s after=%s", runtimeInvalidationBefore, got)
+	if got := readW4AuthorizationWriteBusinessRows(t, ctx, db); !reflect.DeepEqual(got, businessRowsBeforeDuplicate) {
+		t.Fatalf("authorization business rows changed after duplicate:\nbefore=%+v\nafter=%+v", businessRowsBeforeDuplicate, got)
 	}
-	if got := readW4AuthorizationWriteInvalidationRaw(t, ctx, stateRedis, gatewaycache.AuthorizationQuotaCacheTopic); got != quotaInvalidationBefore {
-		t.Fatalf("authorization quota invalidation changed after duplicate: before=%s after=%s", quotaInvalidationBefore, got)
+	if got := readW4AuthorizationWriteRedisKeyspace(t, ctx, keyspaceRedis); !reflect.DeepEqual(got, redisKeyspaceBeforeDuplicate) {
+		t.Fatalf("authorization Redis namespace changed after duplicate:\nbefore=%+v\nafter=%+v", redisKeyspaceBeforeDuplicate, got)
 	}
 	if invalidationCalls != 2 || logIDCalls != 1 {
 		t.Fatalf("duplicate side-effect calls: invalidations=%d logIDs=%d, want 2 and 1", invalidationCalls, logIDCalls)
 	}
 	assertW4AuthorizationWriteSensitiveValuesAbsent(t, ctx, db, w4AuthorizationWriteCanary, w4AuthorizationWriteAdminToken)
+	assertW4AuthorizationWriteSessionStorage(t, ctx, db)
 }
 
 type w4AuthorizationWriteHTTPResponse struct {
@@ -506,6 +525,256 @@ func assertW4AuthorizationWriteFacts(t *testing.T, facts w4AuthorizationWriteFac
 		!facts.DirtyUpdatedAt.UTC().Equal(now) {
 		t.Fatalf("authorization write facts = %+v", facts)
 	}
+}
+
+type w4AuthorizationWriteGrantRow struct {
+	ID                           string
+	ResourceType                 string
+	ResourceID                   string
+	ResourceOwnerSystemAccountID string
+	GranteeType                  string
+	GranteeSystemAccountID       sql.NullString
+	GranteeTeamID                sql.NullString
+	Scope                        string
+	Status                       string
+	Remark                       sql.NullString
+	ExpiresAt                    sql.NullTime
+	LimitsJSON                   sql.NullString
+	CreatedBy                    string
+	CreatedAt                    time.Time
+	RevokedBy                    sql.NullString
+	RevokedAt                    sql.NullTime
+	UpdatedAt                    time.Time
+}
+
+type w4AuthorizationWriteRuntimeRow struct {
+	ID                           string
+	ResourceType                 string
+	ResourceID                   string
+	ResourceOwnerSystemAccountID string
+	GranteeSystemAccountID       string
+	Scope                        string
+	Status                       string
+	EffectiveSourceType          sql.NullString
+	EffectiveSourceTeamID        sql.NullString
+	ActivatedAt                  sql.NullTime
+	LastSourceChangedAt          sql.NullTime
+	Remark                       sql.NullString
+	ExpiresAt                    sql.NullTime
+	LimitsJSON                   sql.NullString
+	CreatedBy                    string
+	CreatedAt                    time.Time
+	RevokedBy                    sql.NullString
+	RevokedAt                    sql.NullTime
+	RevokedReason                sql.NullString
+	UpdatedAt                    time.Time
+}
+
+type w4AuthorizationWriteSourceRow struct {
+	ID              string
+	AuthorizationID string
+	SourceType      string
+	SourceTeamID    sql.NullString
+	Status          string
+	ActivatedAt     sql.NullTime
+	EndedAt         sql.NullTime
+	EndedReason     sql.NullString
+	CreatedBy       string
+	CreatedAt       time.Time
+	RevokedBy       sql.NullString
+	RevokedAt       sql.NullTime
+	UpdatedAt       time.Time
+}
+
+type w4AuthorizationWriteDirtyRow struct {
+	GroupID   string
+	Reason    sql.NullString
+	UpdatedAt time.Time
+}
+
+type w4AuthorizationWriteBusinessRows struct {
+	Grants  []w4AuthorizationWriteGrantRow
+	Runtime []w4AuthorizationWriteRuntimeRow
+	Sources []w4AuthorizationWriteSourceRow
+	Dirty   []w4AuthorizationWriteDirtyRow
+}
+
+func readW4AuthorizationWriteBusinessRows(t *testing.T, ctx context.Context, db *sql.DB) w4AuthorizationWriteBusinessRows {
+	t.Helper()
+	return w4AuthorizationWriteBusinessRows{
+		Grants:  readW4AuthorizationWriteGrantRows(t, ctx, db),
+		Runtime: readW4AuthorizationWriteRuntimeRows(t, ctx, db),
+		Sources: readW4AuthorizationWriteSourceRows(t, ctx, db),
+		Dirty:   readW4AuthorizationWriteDirtyRows(t, ctx, db),
+	}
+}
+
+func readW4AuthorizationWriteGrantRows(t *testing.T, ctx context.Context, db *sql.DB) []w4AuthorizationWriteGrantRow {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
+		       grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at,
+		       limits_json, created_by, created_at, revoked_by, revoked_at, updated_at
+		FROM juhe_business.resource_authorization_grants
+		WHERE resource_type = 'group' AND resource_id = $1 AND grantee_system_account_id = $2
+		ORDER BY id
+	`, w4AuthorizationWriteGroupID, w4AuthorizationWriteGranteeID)
+	if err != nil {
+		t.Fatalf("query authorization grant snapshot: %v", err)
+	}
+	defer rows.Close()
+	result := []w4AuthorizationWriteGrantRow{}
+	for rows.Next() {
+		var row w4AuthorizationWriteGrantRow
+		if err := rows.Scan(
+			&row.ID, &row.ResourceType, &row.ResourceID, &row.ResourceOwnerSystemAccountID, &row.GranteeType,
+			&row.GranteeSystemAccountID, &row.GranteeTeamID, &row.Scope, &row.Status, &row.Remark, &row.ExpiresAt,
+			&row.LimitsJSON, &row.CreatedBy, &row.CreatedAt, &row.RevokedBy, &row.RevokedAt, &row.UpdatedAt,
+		); err != nil {
+			t.Fatalf("scan authorization grant snapshot: %v", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate authorization grant snapshot: %v", err)
+	}
+	return result
+}
+
+func readW4AuthorizationWriteRuntimeRows(t *testing.T, ctx context.Context, db *sql.DB) []w4AuthorizationWriteRuntimeRow {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
+		       scope, status, effective_source_type, effective_source_team_id, activated_at,
+		       last_source_changed_at, remark, expires_at, limits_json, created_by, created_at,
+		       revoked_by, revoked_at, revoked_reason, updated_at
+		FROM juhe_business.resource_authorizations
+		WHERE resource_type = 'group' AND resource_id = $1 AND grantee_system_account_id = $2
+		ORDER BY id
+	`, w4AuthorizationWriteGroupID, w4AuthorizationWriteGranteeID)
+	if err != nil {
+		t.Fatalf("query runtime authorization snapshot: %v", err)
+	}
+	defer rows.Close()
+	result := []w4AuthorizationWriteRuntimeRow{}
+	for rows.Next() {
+		var row w4AuthorizationWriteRuntimeRow
+		if err := rows.Scan(
+			&row.ID, &row.ResourceType, &row.ResourceID, &row.ResourceOwnerSystemAccountID, &row.GranteeSystemAccountID,
+			&row.Scope, &row.Status, &row.EffectiveSourceType, &row.EffectiveSourceTeamID, &row.ActivatedAt,
+			&row.LastSourceChangedAt, &row.Remark, &row.ExpiresAt, &row.LimitsJSON, &row.CreatedBy, &row.CreatedAt,
+			&row.RevokedBy, &row.RevokedAt, &row.RevokedReason, &row.UpdatedAt,
+		); err != nil {
+			t.Fatalf("scan runtime authorization snapshot: %v", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate runtime authorization snapshot: %v", err)
+	}
+	return result
+}
+
+func readW4AuthorizationWriteSourceRows(t *testing.T, ctx context.Context, db *sql.DB) []w4AuthorizationWriteSourceRow {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		SELECT s.id, s.authorization_id, s.source_type, s.source_team_id, s.status,
+		       s.activated_at, s.ended_at, s.ended_reason, s.created_by, s.created_at,
+		       s.revoked_by, s.revoked_at, s.updated_at
+		FROM juhe_business.resource_authorization_sources AS s
+		JOIN juhe_business.resource_authorizations AS r ON r.id = s.authorization_id
+		WHERE r.resource_type = 'group' AND r.resource_id = $1 AND r.grantee_system_account_id = $2
+		ORDER BY s.id
+	`, w4AuthorizationWriteGroupID, w4AuthorizationWriteGranteeID)
+	if err != nil {
+		t.Fatalf("query authorization source snapshot: %v", err)
+	}
+	defer rows.Close()
+	result := []w4AuthorizationWriteSourceRow{}
+	for rows.Next() {
+		var row w4AuthorizationWriteSourceRow
+		if err := rows.Scan(
+			&row.ID, &row.AuthorizationID, &row.SourceType, &row.SourceTeamID, &row.Status,
+			&row.ActivatedAt, &row.EndedAt, &row.EndedReason, &row.CreatedBy, &row.CreatedAt,
+			&row.RevokedBy, &row.RevokedAt, &row.UpdatedAt,
+		); err != nil {
+			t.Fatalf("scan authorization source snapshot: %v", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate authorization source snapshot: %v", err)
+	}
+	return result
+}
+
+func readW4AuthorizationWriteDirtyRows(t *testing.T, ctx context.Context, db *sql.DB) []w4AuthorizationWriteDirtyRow {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		SELECT group_id, reason, updated_at
+		FROM juhe_business.group_account_stats_dirty
+		WHERE group_id = $1
+		ORDER BY group_id
+	`, w4AuthorizationWriteGroupID)
+	if err != nil {
+		t.Fatalf("query authorization dirty snapshot: %v", err)
+	}
+	defer rows.Close()
+	result := []w4AuthorizationWriteDirtyRow{}
+	for rows.Next() {
+		var row w4AuthorizationWriteDirtyRow
+		if err := rows.Scan(&row.GroupID, &row.Reason, &row.UpdatedAt); err != nil {
+			t.Fatalf("scan authorization dirty snapshot: %v", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate authorization dirty snapshot: %v", err)
+	}
+	return result
+}
+
+type w4AuthorizationWriteRedisEntry struct {
+	Key   string
+	Value string
+}
+
+func readW4AuthorizationWriteRedisKeyspace(
+	t *testing.T,
+	ctx context.Context,
+	client *goredis.Client,
+) []w4AuthorizationWriteRedisEntry {
+	t.Helper()
+	pattern := "juhe-ai:" + w4AuthorizationWriteNamespace + ":*"
+	keySet := make(map[string]struct{}, 2)
+	var cursor uint64
+	for {
+		page, next, err := client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			t.Fatalf("scan authorization Redis namespace: %v", err)
+		}
+		for _, key := range page {
+			keySet[key] = struct{}{}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	keys := make([]string, 0, len(keySet))
+	for key := range keySet {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	entries := make([]w4AuthorizationWriteRedisEntry, 0, len(keys))
+	for _, key := range keys {
+		value, err := client.Get(ctx, key).Result()
+		if err != nil {
+			t.Fatalf("read authorization Redis key %s: %v", key, err)
+		}
+		entries = append(entries, w4AuthorizationWriteRedisEntry{Key: key, Value: value})
+	}
+	return entries
 }
 
 func assertW4AuthorizationWriteInvalidations(
@@ -834,39 +1103,150 @@ func assertW4AuthorizationWriteSensitiveValuesAbsent(
 ) {
 	t.Helper()
 	queries := []struct {
+		name  string
 		query string
-		args  []any
+		args  func(string) []any
 	}{
-		{`SELECT concat_ws('|', id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, scope, status, remark, limits_json, created_by, revoked_by) FROM juhe_business.resource_authorization_grants WHERE resource_id = $1`, []any{w4AuthorizationWriteGroupID}},
-		{`SELECT concat_ws('|', id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, effective_source_type, effective_source_team_id, remark, limits_json, created_by, revoked_by, revoked_reason) FROM juhe_business.resource_authorizations WHERE resource_id = $1`, []any{w4AuthorizationWriteGroupID}},
-		{`SELECT concat_ws('|', s.id, s.authorization_id, s.source_type, s.source_team_id, s.status, s.ended_reason, s.created_by, s.revoked_by) FROM juhe_business.resource_authorization_sources AS s JOIN juhe_business.resource_authorizations AS r ON r.id = s.authorization_id WHERE r.resource_id = $1`, []any{w4AuthorizationWriteGroupID}},
-		{`SELECT concat_ws('|', id, trace_id, actor_system_account_id, actor_username, actor_display_name, actor_role, operation_scope_system_account_id, mode, module, action, operation_key, resource_type, resource_id, resource_name, summary, changes_json, metadata_json, method, path, client_ip, user_agent) FROM juhe_dataset.operation_logs WHERE id = $1`, []any{w4AuthorizationWriteLogID}},
-		{`SELECT concat_ws('|', target_type, target_id, target_name, target_owner_system_account_id, relation) FROM juhe_dataset.operation_log_targets WHERE operation_log_id = $1`, []any{w4AuthorizationWriteLogID}},
-		{`SELECT concat_ws('|', system_account_id, visibility_reason, detail_level) FROM juhe_dataset.operation_log_viewers WHERE operation_log_id = $1`, []any{w4AuthorizationWriteLogID}},
-		{`SELECT term FROM juhe_dataset.operation_log_summary_search_terms WHERE operation_log_id = $1`, []any{w4AuthorizationWriteLogID}},
+		{
+			name: "authorization grants",
+			query: `SELECT count(*) FROM juhe_business.resource_authorization_grants
+				WHERE resource_id = $2 AND (
+					strpos(id, $1) > 0 OR strpos(resource_type, $1) > 0 OR strpos(resource_id, $1) > 0 OR
+					strpos(resource_owner_system_account_id, $1) > 0 OR strpos(grantee_type, $1) > 0 OR
+					strpos(COALESCE(grantee_system_account_id, ''), $1) > 0 OR strpos(COALESCE(grantee_team_id, ''), $1) > 0 OR
+					strpos(scope, $1) > 0 OR strpos(status, $1) > 0 OR strpos(COALESCE(remark, ''), $1) > 0 OR
+					strpos(COALESCE(limits_json, ''), $1) > 0 OR strpos(created_by, $1) > 0 OR
+					strpos(COALESCE(revoked_by, ''), $1) > 0
+				)`,
+			args: func(value string) []any { return []any{value, w4AuthorizationWriteGroupID} },
+		},
+		{
+			name: "runtime authorizations",
+			query: `SELECT count(*) FROM juhe_business.resource_authorizations
+				WHERE resource_id = $2 AND (
+					strpos(id, $1) > 0 OR strpos(resource_type, $1) > 0 OR strpos(resource_id, $1) > 0 OR
+					strpos(resource_owner_system_account_id, $1) > 0 OR strpos(grantee_system_account_id, $1) > 0 OR
+					strpos(scope, $1) > 0 OR strpos(status, $1) > 0 OR strpos(COALESCE(effective_source_type, ''), $1) > 0 OR
+					strpos(COALESCE(effective_source_team_id, ''), $1) > 0 OR strpos(COALESCE(remark, ''), $1) > 0 OR
+					strpos(COALESCE(limits_json, ''), $1) > 0 OR strpos(created_by, $1) > 0 OR
+					strpos(COALESCE(revoked_by, ''), $1) > 0 OR strpos(COALESCE(revoked_reason, ''), $1) > 0
+				)`,
+			args: func(value string) []any { return []any{value, w4AuthorizationWriteGroupID} },
+		},
+		{
+			name: "authorization sources",
+			query: `SELECT count(*)
+				FROM juhe_business.resource_authorization_sources AS s
+				JOIN juhe_business.resource_authorizations AS r ON r.id = s.authorization_id
+				WHERE r.resource_id = $2 AND (
+					strpos(s.id, $1) > 0 OR strpos(s.authorization_id, $1) > 0 OR strpos(s.source_type, $1) > 0 OR
+					strpos(COALESCE(s.source_team_id, ''), $1) > 0 OR strpos(s.status, $1) > 0 OR
+					strpos(COALESCE(s.ended_reason, ''), $1) > 0 OR strpos(s.created_by, $1) > 0 OR
+					strpos(COALESCE(s.revoked_by, ''), $1) > 0
+				)`,
+			args: func(value string) []any { return []any{value, w4AuthorizationWriteGroupID} },
+		},
+		{
+			name: "operation logs",
+			query: `SELECT count(*) FROM juhe_dataset.operation_logs
+				WHERE id = $2 AND (
+					strpos(id, $1) > 0 OR strpos(COALESCE(trace_id, ''), $1) > 0 OR strpos(actor_system_account_id, $1) > 0 OR
+					strpos(COALESCE(actor_username, ''), $1) > 0 OR strpos(COALESCE(actor_display_name, ''), $1) > 0 OR
+					strpos(actor_role, $1) > 0 OR strpos(COALESCE(operation_scope_system_account_id, ''), $1) > 0 OR
+					strpos(mode, $1) > 0 OR strpos(module, $1) > 0 OR strpos(action, $1) > 0 OR strpos(operation_key, $1) > 0 OR
+					strpos(resource_type, $1) > 0 OR strpos(COALESCE(resource_id, ''), $1) > 0 OR
+					strpos(COALESCE(resource_name, ''), $1) > 0 OR strpos(summary, $1) > 0 OR
+					strpos(changes_json, $1) > 0 OR strpos(metadata_json, $1) > 0 OR
+					strpos(COALESCE(method, ''), $1) > 0 OR strpos(COALESCE(path, ''), $1) > 0 OR
+					strpos(COALESCE(client_ip, ''), $1) > 0 OR strpos(COALESCE(user_agent, ''), $1) > 0
+				)`,
+			args: func(value string) []any { return []any{value, w4AuthorizationWriteLogID} },
+		},
+		{
+			name: "operation log targets",
+			query: `SELECT count(*) FROM juhe_dataset.operation_log_targets
+				WHERE operation_log_id = $2 AND (
+					strpos(id, $1) > 0 OR strpos(operation_log_id, $1) > 0 OR strpos(target_type, $1) > 0 OR
+					strpos(COALESCE(target_id, ''), $1) > 0 OR strpos(COALESCE(target_name, ''), $1) > 0 OR
+					strpos(COALESCE(target_owner_system_account_id, ''), $1) > 0 OR strpos(relation, $1) > 0
+				)`,
+			args: func(value string) []any { return []any{value, w4AuthorizationWriteLogID} },
+		},
+		{
+			name: "operation log viewers",
+			query: `SELECT count(*) FROM juhe_dataset.operation_log_viewers
+				WHERE operation_log_id = $2 AND (
+					strpos(operation_log_id, $1) > 0 OR strpos(system_account_id, $1) > 0 OR
+					strpos(visibility_reason, $1) > 0 OR strpos(detail_level, $1) > 0
+				)`,
+			args: func(value string) []any { return []any{value, w4AuthorizationWriteLogID} },
+		},
+		{
+			name: "operation log search terms",
+			query: `SELECT count(*) FROM juhe_dataset.operation_log_summary_search_terms
+				WHERE operation_log_id = $2 AND (strpos(operation_log_id, $1) > 0 OR strpos(term, $1) > 0)`,
+			args: func(value string) []any { return []any{value, w4AuthorizationWriteLogID} },
+		},
+		{
+			name: "system sessions",
+			query: `SELECT count(*) FROM juhe_business.system_sessions
+				WHERE id = $2 AND (strpos(id, $1) > 0 OR strpos(system_account_id, $1) > 0 OR strpos(token_hash, $1) > 0)`,
+			args: func(value string) []any { return []any{value, w4AuthorizationWriteAdminSession} },
+		},
 	}
-	for _, query := range queries {
-		rows, err := db.QueryContext(ctx, query.query, query.args...)
-		if err != nil {
-			t.Fatalf("query authorization sensitive-value surface: %v", err)
-		}
-		for rows.Next() {
-			var raw string
-			if err := rows.Scan(&raw); err != nil {
-				rows.Close()
-				t.Fatalf("scan authorization sensitive-value surface: %v", err)
+	for _, value := range values {
+		for _, query := range queries {
+			var count int
+			if err := db.QueryRowContext(ctx, query.query, query.args(value)...).Scan(&count); err != nil {
+				t.Fatalf("scan forbidden value %q in %s: %v", value, query.name, err)
 			}
-			for _, value := range values {
-				if strings.Contains(raw, value) {
-					rows.Close()
-					t.Fatalf("authorization business/audit surface contains forbidden value %q", value)
-				}
+			if count != 0 {
+				t.Fatalf("forbidden value %q found in %s", value, query.name)
 			}
 		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			t.Fatalf("iterate authorization sensitive-value surface: %v", err)
-		}
-		rows.Close()
+	}
+}
+
+func assertW4AuthorizationWriteSessionStorage(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	var (
+		id              string
+		systemAccountID string
+		tokenHash       string
+		expiresAt       time.Time
+		createdAt       time.Time
+		lastSeenAt      time.Time
+	)
+	if err := db.QueryRowContext(ctx, `
+		SELECT id, system_account_id, token_hash, expires_at, created_at, last_seen_at
+		FROM juhe_business.system_sessions
+		WHERE id = $1
+	`, w4AuthorizationWriteAdminSession).Scan(
+		&id,
+		&systemAccountID,
+		&tokenHash,
+		&expiresAt,
+		&createdAt,
+		&lastSeenAt,
+	); err != nil {
+		t.Fatalf("read authorization admin session storage: %v", err)
+	}
+	wantHash := managementauth.HashSessionToken(w4AuthorizationWriteAdminToken)
+	if id != w4AuthorizationWriteAdminSession ||
+		systemAccountID != w4AuthorizationWriteAdminID ||
+		tokenHash != wantHash ||
+		tokenHash == w4AuthorizationWriteAdminToken ||
+		!expiresAt.After(createdAt) ||
+		lastSeenAt.Before(createdAt) {
+		t.Fatalf(
+			"authorization admin session storage id=%q account=%q hashMatches=%t plaintext=%t expires=%s created=%s lastSeen=%s",
+			id,
+			systemAccountID,
+			tokenHash == wantHash,
+			tokenHash == w4AuthorizationWriteAdminToken,
+			expiresAt.UTC().Format(time.RFC3339Nano),
+			createdAt.UTC().Format(time.RFC3339Nano),
+			lastSeenAt.UTC().Format(time.RFC3339Nano),
+		)
 	}
 }
