@@ -939,30 +939,156 @@ func assertW4AuthorizationWriteOperationLog(
 
 func assertW4AuthorizationWriteChanges(t *testing.T, raw string) {
 	t.Helper()
-	var changes []port.OperationLogChange
+	var changes []struct {
+		Field     string          `json:"field"`
+		Label     string          `json:"label"`
+		Before    json.RawMessage `json:"before"`
+		After     json.RawMessage `json:"after"`
+		Sensitive bool            `json:"sensitive"`
+	}
 	if err := json.Unmarshal([]byte(raw), &changes); err != nil {
 		t.Fatalf("decode authorization operation-log changes: %v", err)
 	}
-	wantFields := []string{"resourceType", "resourceId", "grantee", "targetGroupId", "status", "expiresAt", "limits"}
+	dailyLimit := port.ManagementRequestQuotaLimit{Enabled: true, Limit: 17}
+	wantLimits := port.ManagementRequestQuotaLimits{Daily: &dailyLimit}
+	wantAfter := []any{
+		"group",
+		w4AuthorizationWriteGroupName,
+		"W4 Authorization Grantee",
+		"",
+		"active",
+		"",
+		wantLimits,
+	}
+	wantFields := []struct {
+		field string
+		label string
+	}{
+		{field: "resourceType", label: "资源类型"},
+		{field: "resourceId", label: "授权资源"},
+		{field: "grantee", label: "被授权目标"},
+		{field: "targetGroupId", label: "目标分组"},
+		{field: "status", label: "状态"},
+		{field: "expiresAt", label: "过期时间"},
+		{field: "limits", label: "额度限制"},
+	}
 	if len(changes) != len(wantFields) {
-		t.Fatalf("authorization operation-log changes = %+v", changes)
+		t.Fatalf("authorization operation-log changes count=%d fields=%s", len(changes), w4AuthorizationWriteChangeDiagnostics(changes))
 	}
 	for index, change := range changes {
-		if change.Field != wantFields[index] || change.Before != nil || change.Sensitive {
-			t.Fatalf("authorization operation-log change[%d] = %+v", index, change)
+		wantAfterJSON, err := json.Marshal(wantAfter[index])
+		if err != nil {
+			t.Fatalf("marshal expected authorization change %s: %v", wantFields[index].field, err)
+		}
+		var wantValue any
+		var gotValue any
+		if err := json.Unmarshal(wantAfterJSON, &wantValue); err != nil {
+			t.Fatalf("decode expected authorization change %s: %v", wantFields[index].field, err)
+		}
+		if len(change.After) == 0 {
+			t.Fatalf("authorization operation-log change[%d] field=%q label=%q after=<missing> wantType=%s wantValue=%s", index, change.Field, change.Label, jsonType(wantAfterJSON), safeJSONDiagnostic(wantAfterJSON))
+		}
+		if err := json.Unmarshal(change.After, &gotValue); err != nil {
+			t.Fatalf("decode authorization change[%d] field=%q after type=%s value=%s: %v", index, change.Field, jsonType(change.After), safeJSONDiagnostic(change.After), err)
+		}
+		if change.Field != wantFields[index].field ||
+			change.Label != wantFields[index].label ||
+			len(change.Before) != 0 ||
+			change.Sensitive ||
+			!reflect.DeepEqual(gotValue, wantValue) {
+			t.Fatalf(
+				"unsafe or incorrect authorization operation-log change[%d]: got field=%q label=%q before=%s afterType=%s after=%s sensitive=%t; want field=%q label=%q before=<missing> afterType=%s after=%s sensitive=false",
+				index,
+				change.Field,
+				change.Label,
+				jsonPresence(change.Before),
+				jsonType(change.After),
+				safeJSONDiagnostic(change.After),
+				change.Sensitive,
+				wantFields[index].field,
+				wantFields[index].label,
+				jsonType(wantAfterJSON),
+				safeJSONDiagnostic(wantAfterJSON),
+			)
 		}
 	}
-	if changes[0].After != "group" ||
-		changes[1].After != w4AuthorizationWriteGroupName ||
-		changes[2].After != "W4 Authorization Grantee" ||
-		changes[3].After != "" ||
-		changes[4].After != "active" ||
-		changes[5].After != "" ||
-		!strings.Contains(raw, `"limit":17`) ||
-		strings.Contains(raw, w4AuthorizationWriteAdminToken) ||
-		strings.Contains(raw, "cipher") ||
-		strings.Contains(raw, "secret") {
-		t.Fatalf("unsafe or incorrect authorization operation-log changes: %s", raw)
+	if strings.Contains(raw, w4AuthorizationWriteAdminToken) || strings.Contains(raw, "cipher") || strings.Contains(raw, "secret") {
+		t.Fatalf("authorization operation-log changes contain forbidden sensitive material; fields=%s", w4AuthorizationWriteChangeDiagnostics(changes))
+	}
+}
+
+func w4AuthorizationWriteChangeDiagnostics(changes []struct {
+	Field     string          `json:"field"`
+	Label     string          `json:"label"`
+	Before    json.RawMessage `json:"before"`
+	After     json.RawMessage `json:"after"`
+	Sensitive bool            `json:"sensitive"`
+}) string {
+	items := make([]string, 0, len(changes))
+	for index, change := range changes {
+		items = append(items, fmt.Sprintf(
+			"%d:%s/%s before=%s afterType=%s after=%s sensitive=%t",
+			index,
+			change.Field,
+			change.Label,
+			jsonPresence(change.Before),
+			jsonType(change.After),
+			safeJSONDiagnostic(change.After),
+			change.Sensitive,
+		))
+	}
+	return strings.Join(items, "; ")
+}
+
+func jsonPresence(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "missing"
+	}
+	return "present"
+}
+
+func jsonType(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "missing"
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "null" {
+		return "null"
+	}
+	if strings.HasPrefix(trimmed, `"`) {
+		return "string"
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		return "object"
+	}
+	if strings.HasPrefix(trimmed, "[") {
+		return "array"
+	}
+	if trimmed == "true" || trimmed == "false" {
+		return "bool"
+	}
+	return "number"
+}
+
+func safeJSONDiagnostic(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "<missing>"
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "<invalid-json>"
+	}
+	switch typed := value.(type) {
+	case string:
+		return fmt.Sprintf("%q", typed)
+	case nil:
+		return "null"
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return "<unprintable>"
+		}
+		return string(encoded)
 	}
 }
 
