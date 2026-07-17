@@ -33,7 +33,8 @@ type UseResponsivePagedListOptions<T, ExtraOptions extends Record<string, unknow
   transformItems?: (
     nextItems: T[],
     options: ResponsivePagedListLoadOptions & ExtraOptions,
-    result: ResponsivePagedListResult<T>
+    result: ResponsivePagedListResult<T>,
+    currentItems: T[]
   ) => T[]
   mergeItems?: (currentItems: T[], nextItems: T[], options: ResponsivePagedListLoadOptions & ExtraOptions) => T[]
   onLoaded?: (result: ResponsivePagedListResult<T>, options: ResponsivePagedListLoadOptions & ExtraOptions) => void
@@ -138,7 +139,7 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
   }
 
   function applyPageResult(result: ResponsivePagedListResult<T>, loadOptions: ResponsivePagedListLoadOptions & ExtraOptions): void {
-    const transformedItems = options.transformItems?.(result.items, loadOptions, result) ?? result.items
+    const transformedItems = options.transformItems?.(result.items, loadOptions, result, items.value) ?? result.items
     const nextItems = loadOptions.append
       ? options.mergeItems?.(items.value, transformedItems, loadOptions) ?? [...items.value, ...transformedItems]
       : transformedItems

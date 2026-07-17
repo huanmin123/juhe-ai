@@ -6,6 +6,7 @@ export interface RuntimeProbeStateStore<TState extends { runtimeKey: string; gen
   get(runtimeKey: string): Promise<TState | undefined>
   getMany(runtimeKeys: string[]): Promise<Map<string, TState>>
   set(state: TState, ttlMs: number): Promise<boolean>
+  setIfAbsent(state: TState, ttlMs: number): Promise<boolean>
   merge(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions): Promise<TState | undefined>
   delete(runtimeKey: string): Promise<void>
   deleteGeneration(runtimeKey: string, generation: number): Promise<boolean>
@@ -14,6 +15,7 @@ export interface RuntimeProbeStateStore<TState extends { runtimeKey: string; gen
 }
 
 export interface RuntimeProbeStateMergeOptions {
+  preserveCurrentFields?: readonly string[]
   incrementFields?: readonly string[]
   maxFields?: readonly string[]
   minFields?: readonly string[]
@@ -68,6 +70,15 @@ implements RuntimeProbeStateStore<TState> {
     if (current && current.generation > state.generation) {
       return false
     }
+    this.entries.set(state.runtimeKey, {
+      value: state,
+      expiresAtMs: Date.now() + normalizedTtlMs(ttlMs)
+    })
+    return true
+  }
+
+  async setIfAbsent(state: TState, ttlMs: number): Promise<boolean> {
+    if (this.freshEntry(state.runtimeKey)) return false
     this.entries.set(state.runtimeKey, {
       value: state,
       expiresAtMs: Date.now() + normalizedTtlMs(ttlMs)
@@ -183,6 +194,19 @@ implements RuntimeProbeStateStore<TState> {
     return numericRedisResult(result) === 1
   }
 
+  async setIfAbsent(state: TState, ttlMs: number): Promise<boolean> {
+    const result = await (await this.client()).eval(redisSetProbeStateIfAbsentScript, {
+      keys: [this.stateKey(state.runtimeKey), this.dueKey],
+      arguments: [
+        JSON.stringify(state),
+        String(normalizedTtlMs(ttlMs)),
+        String(Math.max(0, Math.trunc(state.nextProbeAtMs))),
+        state.runtimeKey
+      ]
+    })
+    return numericRedisResult(result) === 1
+  }
+
   async merge(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions): Promise<TState | undefined> {
     const result = await (await this.client()).eval(redisMergeProbeStateScript, {
       keys: [this.stateKey(state.runtimeKey), this.dueKey],
@@ -280,6 +304,16 @@ redis.call('PEXPIRE', KEYS[2], ARGV[2])
 return 1
 `
 
+const redisSetProbeStateIfAbsentScript = `
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  return 0
+end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
+redis.call('PEXPIRE', KEYS[2], ARGV[2])
+return 1
+`
+
 const redisMergeProbeStateScript = `
 local incoming_ok, incoming = pcall(cjson.decode, ARGV[1])
 if not incoming_ok or type(incoming) ~= 'table' then
@@ -319,12 +353,10 @@ end
 
 local current_generation = tonumber(base['generation'])
 local incoming_generation = tonumber(incoming['generation'])
-if current_generation and incoming_generation then
-  if current_generation > incoming_generation then
-    merged['generation'] = current_generation
-  else
-    merged['generation'] = incoming_generation
-  end
+if current_generation then
+  merged['generation'] = current_generation
+elseif incoming_generation then
+  merged['generation'] = incoming_generation
 end
 
 if type(options['incrementFields']) == 'table' then
@@ -402,6 +434,14 @@ if type(options['unionArrayFields']) == 'table' then
           end
         end
       end
+    end
+  end
+end
+
+if type(options['preserveCurrentFields']) == 'table' then
+  for _, field in ipairs(options['preserveCurrentFields']) do
+    if base[field] ~= nil then
+      merged[field] = base[field]
     end
   end
 end
@@ -489,8 +529,10 @@ function mergeProbeStateValues<TState extends { runtimeKey: string; generation: 
   const incomingRecord = incoming as Record<string, unknown>
   const currentGeneration = finiteNumber(currentRecord?.generation)
   const incomingGeneration = finiteNumber(incomingRecord.generation)
-  if (currentGeneration !== undefined && incomingGeneration !== undefined) {
-    merged.generation = Math.max(currentGeneration, incomingGeneration)
+  if (currentGeneration !== undefined) {
+    merged.generation = currentGeneration
+  } else if (incomingGeneration !== undefined) {
+    merged.generation = incomingGeneration
   }
   for (const field of options.incrementFields ?? []) {
     merged[field] = numberValue(currentRecord?.[field]) + numberValue(incomingRecord[field])
@@ -523,6 +565,11 @@ function mergeProbeStateValues<TState extends { runtimeKey: string; generation: 
         numberValue(incomingRecord[entry.countField]),
         output.length
       )
+    }
+  }
+  for (const field of options.preserveCurrentFields ?? []) {
+    if (currentRecord?.[field] !== undefined) {
+      merged[field] = currentRecord[field]
     }
   }
   return merged as TState

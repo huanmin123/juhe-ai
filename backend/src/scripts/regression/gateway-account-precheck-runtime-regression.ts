@@ -66,9 +66,8 @@ try {
   testLocalSuppressionStoreBoundary()
   testRuntimeDegradationOrderingAndSuccessRecovery()
   await testRuntimeDegradationDispatchPreparationFallback()
-  testLocalSuppressionHalfOpenEscalation()
-  await testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence()
-  await testRuntimePrecheckPendingAndSuccessRecovery()
+  testGatewayFailuresDoNotCreateAccountSuppression()
+  await testGatewayRequestCannotPersistAccountStatus()
   await testPersistedAccountErrorClearsRuntimeAvailability()
   await testStalePrecheckAfterManualRestoreIsSkipped()
   await testFailedUsageDoesNotMakePrecheckStale()
@@ -462,6 +461,32 @@ async function testRuntimePrecheckPendingAndSuccessRecovery(): Promise<void> {
   assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[authorizedRuntimeKey], undefined, '授权账号绑定维度运行态清理后不应残留')
 }
 
+function testGatewayFailuresDoNotCreateAccountSuppression(): void {
+  const account = createRuntimeAccount('gateway-failure-observation-account')
+  const first = gatewaySideEffects.suppressGatewayAccountLocally(account, undefined, '用户请求失败')
+  assert.equal(first.action, 'redis_managed', '用户请求失败只能投递后台核实信号')
+  assert.equal(first.localFailureCount, 0, '用户请求失败不能推进账户级避让轮次')
+  assert.equal(first.delayMs, undefined, '用户请求失败不能创建账户级避让 TTL')
+  for (let index = 0; index < 5; index += 1) {
+    gatewaySideEffects.suppressGatewayAccountLocally(account, undefined, `重复用户请求失败 ${index + 1}`)
+  }
+
+  const dispatchable = gatewaySideEffects.filterLocallySuppressedGatewayAccounts([account], { acquireHalfOpenLease: true })
+  assert.equal(dispatchable.accounts.length, 1, '后台探针确认前账户必须保持可调度')
+  assert.equal(dispatchable.allSuppressed, false, '用户请求失败不能把整个候选池打空')
+  assert.notEqual(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]?.status,
+    'local_suppressed',
+    '用户请求失败不能显示成账户短暂避让'
+  )
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id],
+    undefined,
+    '任意数量用户请求失败都不能创建账户级运行态'
+  )
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+}
+
 function testLocalSuppressionHalfOpenEscalation(): void {
   const account = createRuntimeAccount('local-suppression-half-open-account')
   const first = gatewaySideEffects.suppressGatewayAccountLocally(account, undefined, '第一轮上游失败')
@@ -625,6 +650,24 @@ async function testUnavailableProxyPreparationEscalatesAfterHalfOpenSequence(): 
 
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
+}
+
+async function testGatewayRequestCannotPersistAccountStatus(): Promise<void> {
+  const { account, gatewayAccount } = createGatewayAccount('用户请求无账户状态写权限', [
+    accountErrorRule('用户请求 529 不落状态', [529], 'temp_unschedulable')
+  ])
+  await gatewaySideEffects.enqueueGatewayAccountErrorHandlingSideEffect({
+    type: 'apply_account_error_handling',
+    account: gatewayAccount,
+    input: {
+      success: false,
+      statusCode: 529,
+      bodyText: '{"error":{"message":"用户请求模拟失败"}}',
+      trafficSource: 'gateway'
+    }
+  })
+  await withDbServiceRole(() => gatewaySideEffects.flushGatewayAccountSideEffectsForTest())
+  assertActiveAccount(account.id, '用户业务请求失败不能写账户持久状态')
 }
 
 async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<void> {

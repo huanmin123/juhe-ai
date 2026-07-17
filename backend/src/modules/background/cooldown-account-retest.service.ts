@@ -5,6 +5,7 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
+import { isRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
@@ -79,7 +80,10 @@ async function runCooldownAccountRetestQueueItem(
     trafficSource: 'cooldown_retest',
     testEndpointMode: account.healthCheckEndpointMode,
     disableAccountStateMutation: true,
-    onUpstreamAttempt: () => { upstreamAttemptObserved = true },
+    retryAllFailures: true,
+    onUpstreamAttempt: (attempt) => {
+      if (isRealUpstreamAttempt(attempt)) upstreamAttemptObserved = true
+    },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
     gatewaySettingsOverride: {
@@ -116,7 +120,7 @@ async function runCooldownAccountRetestQueueItem(
     return true
   }
 
-  if (probeOutcome === 'probe_task_failure' || result.accountFailureEligible === false) {
+  if (probeOutcome === 'probe_task_failure') {
     const deferred = await requestBackgroundWorkerDbService({
       type: 'defer_cooldown_account_retest',
       accountId: account.id,

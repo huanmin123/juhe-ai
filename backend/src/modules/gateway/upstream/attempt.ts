@@ -11,3 +11,12 @@ export interface UpstreamAttempt {
   responseHeaders?: Record<string, string>
   responseBodyText?: string
 }
+
+export function isRealUpstreamAttempt(attempt: Pick<UpstreamAttempt, 'upstreamUrl'>): boolean {
+  try {
+    const url = new URL(attempt.upstreamUrl)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
