@@ -111,28 +111,13 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
     )
   }
 
+  const modelSeedRows: string[] = []
+  const modelSeedValues: unknown[] = []
   for (const provider of DEFAULT_PROVIDER_SEEDS) {
     if (provider.code === HYBRID_PROVIDER_CODE || provider.code === 'openai') continue
     for (const model of listProviderModelPricing(provider.code)) {
-      await query(
-        `
-          INSERT INTO ${businessTable('provider_model_catalog')} (
-            id, provider_code, model, status, mode, catalog_order, release_date, shutdown_date,
-            supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
-            default_reasoning_effort, codex_supported_reasoning_levels_json, codex_default_reasoning_level,
-            codex_multi_agent_version, context_window_tokens, max_input_tokens, max_output_tokens, max_tokens,
-            input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
-            cache_write_1h_usd_per_1m, service_tier_prices_json,
-            long_context_input_token_threshold, long_context_input_cost_multiplier, long_context_output_cost_multiplier,
-            image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
-            output_usd_per_image, supports_prompt_caching, catalog_visible, source, created_at, updated_at
-          ) VALUES (
-            $1, $2, $3, 'active', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-            $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37
-          )
-          ON CONFLICT DO NOTHING
-        `,
-        [
+      const firstParameterIndex = modelSeedValues.length + 1
+      modelSeedValues.push(
           providerModelCatalogId(provider.code, model.model),
           provider.code,
           model.model,
@@ -170,9 +155,30 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
           model.source,
           now,
           now
-        ]
       )
+      const placeholders = Array.from({ length: 37 }, (_item, index) => `$${firstParameterIndex + index}`)
+      modelSeedRows.push(`(${placeholders.slice(0, 3).join(', ')}, 'active', ${placeholders.slice(3).join(', ')})`)
     }
+  }
+  if (modelSeedRows.length > 0) {
+    await query(
+      `
+        INSERT INTO ${businessTable('provider_model_catalog')} (
+          id, provider_code, model, status, mode, catalog_order, release_date, shutdown_date,
+          supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+          default_reasoning_effort, codex_supported_reasoning_levels_json, codex_default_reasoning_level,
+          codex_multi_agent_version, context_window_tokens, max_input_tokens, max_output_tokens, max_tokens,
+          input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
+          cache_write_1h_usd_per_1m, service_tier_prices_json,
+          long_context_input_token_threshold, long_context_input_cost_multiplier, long_context_output_cost_multiplier,
+          image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+          output_usd_per_image, supports_prompt_caching, catalog_visible, source, created_at, updated_at
+        ) VALUES
+          ${modelSeedRows.join(',\n          ')}
+        ON CONFLICT DO NOTHING
+      `,
+      modelSeedValues
+    )
   }
 
   for (const protocol of DEFAULT_PROTOCOL_SEEDS) {
