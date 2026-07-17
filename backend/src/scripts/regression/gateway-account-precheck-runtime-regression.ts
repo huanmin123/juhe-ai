@@ -9,7 +9,7 @@ import type { AccountSummary } from '../../domain/types.js'
 import { GPT_OPENAI_V1_PROFILE_ID, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 import type { GroupUsageAccessMetadata } from '../../storage/openai-account-selector.types.js'
-import type { GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
+import { decideAccountErrorPolicy, type GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
 import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
 import type { AccountErrorHandlingRule, AccountErrorHandlingRuleAction } from '../../modules/accounts/account-error-policy-validation.js'
 import type { OpenAIGatewayClientStrategyContext } from '../../modules/gateway/client-profiles/strategy.js'
@@ -67,7 +67,9 @@ try {
   testRuntimeDegradationOrderingAndSuccessRecovery()
   await testRuntimeDegradationDispatchPreparationFallback()
   testGatewayFailuresDoNotCreateAccountSuppression()
+  await testConfiguredResponsePolicyAvoidance()
   await testGatewayRequestCannotPersistAccountStatus()
+  await testExplicitAccountErrorPolicyCanPersistAccountStatus()
   await testPersistedAccountErrorClearsRuntimeAvailability()
   await testStalePrecheckAfterManualRestoreIsSkipped()
   await testFailedUsageDoesNotMakePrecheckStale()
@@ -487,6 +489,46 @@ function testGatewayFailuresDoNotCreateAccountSuppression(): void {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
 }
 
+async function testConfiguredResponsePolicyAvoidance(): Promise<void> {
+  const avoided = createRuntimeAccount('configured-response-policy-avoided')
+  const available = createRuntimeAccount('configured-response-policy-available')
+
+  await gatewaySideEffects.suppressGatewayAccountLocallyForSeconds(
+    avoided,
+    30 * 60,
+    '模拟用户显式响应拦截策略'
+  )
+  const runtime = gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[avoided.id]
+  assert.equal(runtime?.status, 'local_suppressed', '显式响应策略应进入独立账户运行态避让')
+  assert(runtime?.until, '显式响应策略运行态应展示预计释放时间')
+  assert(
+    Date.parse(runtime.until) - Date.now() > 20 * 60_000,
+    '显式响应策略配置 30 分钟时不得被旧的 10 分钟本地上限截断'
+  )
+
+  const filtered = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([avoided, available])
+  assert.deepEqual(filtered.accounts.map((account) => account.id), [available.id], '显式响应策略只能过滤命中的账户')
+  assert.deepEqual(filtered.suppressedAccountIds, [avoided.id], '显式响应策略过滤结果应报告命中账户')
+
+  gatewaySideEffects.clearGatewayAutomaticAccountRuntimeAvailability(avoided)
+  const afterAutomaticRecovery = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([avoided, available])
+  assert.deepEqual(
+    afterAutomaticRecovery.accounts.map((account) => account.id),
+    [available.id],
+    '后台探针成功只能清理自动复核层，不得提前解除用户显式响应策略 TTL'
+  )
+
+  const cleared = gatewaySideEffects.clearGatewayAccountRuntimeAvailability(avoided)
+  assert.equal(cleared.cleared, true, '手动恢复应清理显式响应策略账户避让')
+  assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[avoided.id], undefined)
+  const restored = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([avoided, available])
+  assert.deepEqual(
+    restored.accounts.map((account) => account.id),
+    [avoided.id, available.id],
+    '手动恢复后账户应立即恢复调度'
+  )
+}
+
 function testLocalSuppressionHalfOpenEscalation(): void {
   const account = createRuntimeAccount('local-suppression-half-open-account')
   const first = gatewaySideEffects.suppressGatewayAccountLocally(account, undefined, '第一轮上游失败')
@@ -670,6 +712,35 @@ async function testGatewayRequestCannotPersistAccountStatus(): Promise<void> {
   assertActiveAccount(account.id, '用户业务请求失败不能写账户持久状态')
 }
 
+async function testExplicitAccountErrorPolicyCanPersistAccountStatus(): Promise<void> {
+  const { account, gatewayAccount } = createGatewayAccount('显式账户错误策略允许写状态', [
+    accountErrorRule('用户显式 529 冷却', [529], 'temp_unschedulable')
+  ])
+  const policyDecision = decideAccountErrorPolicy(
+    gatewayAccount,
+    529,
+    new Headers({ 'content-type': 'application/json' }),
+    Buffer.from('{"error":{"message":"用户策略命中"}}'),
+    gatewaySettings
+  )
+  assert.equal(policyDecision?.action, 'cooldown', '测试规则应先得到明确策略决策')
+  await gatewaySideEffects.enqueueGatewayAccountErrorHandlingSideEffect({
+    type: 'apply_account_error_handling',
+    account: gatewayAccount,
+    input: {
+      success: false,
+      statusCode: 529,
+      bodyText: '{"error":{"message":"用户策略命中"}}',
+      trafficSource: 'gateway',
+      policyDecision
+    }
+  })
+  await withDbServiceRole(() => gatewaySideEffects.flushGatewayAccountSideEffectsForTest())
+  const latest = repositories.findAccountSummary(account.id, adminAccess)
+  assert.equal(latest?.status, 'temporary_unavailable', '显式命中的账户错误策略应允许写账户状态')
+  assert.match(latest?.lastErrorMessage ?? '', /用户显式 529 冷却/, '错误摘要应记录命中的用户规则')
+}
+
 async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<void> {
   const { account, gatewayAccount } = createGatewayAccount('落库错误清理运行态', [
     accountErrorRule('测试 529 冷却', [529], 'temp_unschedulable')
@@ -684,7 +755,14 @@ async function testPersistedAccountErrorClearsRuntimeAvailability(): Promise<voi
       success: false,
       statusCode: 529,
       bodyText: '{"error":{"code":"overloaded","message":"模拟 529 失败"}}',
-      trafficSource: 'manual_account_test'
+      trafficSource: 'gateway',
+      policyDecision: decideAccountErrorPolicy(
+        gatewayAccount,
+        529,
+        new Headers({ 'content-type': 'application/json' }),
+        Buffer.from('{"error":{"code":"overloaded","message":"模拟 529 失败"}}'),
+        gatewaySettings
+      )
     }
   })
   await withDbServiceRole(() => gatewaySideEffects.flushGatewayAccountSideEffectsForTest())
