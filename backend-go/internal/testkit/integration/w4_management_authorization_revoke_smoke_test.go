@@ -626,11 +626,48 @@ func TestIsW4AuthorizationRevokeQueueNotFound(t *testing.T) {
 
 func assertW4AuthorizationRevokeQueueSuccessTransition(t *testing.T, before, after queue.QueueInfo) {
 	t.Helper()
-	if before.Size != 0 || before.Pending != 0 || before.Active != 0 || before.Retry != 0 || before.Archived != 0 || before.Completed != 0 {
-		t.Fatalf("authorization revoke queue baseline = %+v, want all counters zero", before)
+	if err := validateW4AuthorizationRevokeQueueSuccessTransition(before, after); err != nil {
+		t.Fatalf("authorization revoke queue success transition: %v", err)
 	}
-	if after.Size != 0 || after.Pending != 0 || after.Active != 0 || after.Retry != 0 || after.Archived != 0 || after.Completed != before.Completed+1 {
-		t.Fatalf("authorization revoke queue success transition before=%+v after=%+v, want completed +1 only", before, after)
+}
+
+func validateW4AuthorizationRevokeQueueSuccessTransition(before, after queue.QueueInfo) error {
+	if before.Size != 0 || before.Pending != 0 || before.Active != 0 || before.Retry != 0 || before.Archived != 0 || before.Completed != 0 {
+		return fmt.Errorf("baseline counters are not zero: %+v", before)
+	}
+	if after.Pending != 0 || after.Active != 0 || after.Retry != 0 || after.Archived != 0 {
+		return fmt.Errorf("non-terminal counters are not zero: %+v", after)
+	}
+	if after.Size != before.Size+1 {
+		return fmt.Errorf("size = %d, want %d", after.Size, before.Size+1)
+	}
+	if after.Completed != before.Completed+1 {
+		return fmt.Errorf("completed = %d, want %d", after.Completed, before.Completed+1)
+	}
+	return nil
+}
+
+func TestValidateW4AuthorizationRevokeQueueSuccessTransition(t *testing.T) {
+	baseline := queue.QueueInfo{Queue: operationlogjob.QueueName}
+	success := queue.QueueInfo{Queue: operationlogjob.QueueName, Size: 1, Completed: 1}
+	tests := []struct {
+		name    string
+		after   queue.QueueInfo
+		wantErr bool
+	}{
+		{name: "valid transition", after: success},
+		{name: "size did not increment", after: queue.QueueInfo{Queue: operationlogjob.QueueName, Completed: 1}, wantErr: true},
+		{name: "completed did not increment", after: queue.QueueInfo{Queue: operationlogjob.QueueName, Size: 1}, wantErr: true},
+		{name: "pending remains", after: queue.QueueInfo{Queue: operationlogjob.QueueName, Size: 1, Pending: 1, Completed: 1}, wantErr: true},
+		{name: "archived remains", after: queue.QueueInfo{Queue: operationlogjob.QueueName, Size: 1, Archived: 1, Completed: 1}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateW4AuthorizationRevokeQueueSuccessTransition(baseline, tc.after)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateW4AuthorizationRevokeQueueSuccessTransition() error = %v, wantErr %t", err, tc.wantErr)
+			}
+		})
 	}
 }
 
