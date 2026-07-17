@@ -10,11 +10,11 @@ export function mergeAccountListRuntimeSnapshot(
   const currentByIdentity = new Map(current.map((account) => [accountRuntimeIdentity(account), account]))
   return incoming.map((account) => {
     const previous = currentByIdentity.get(accountRuntimeIdentity(account))
-    if (!previous || previous.accountRuntimeAvailabilityAvailable !== true || !previous.runtimeAvailability) return account
+    if (!previous || previous.accountRuntimeAvailabilityAvailable !== true) return account
     return {
       ...account,
       runtimeAvailability: previous.runtimeAvailability,
-      effectiveAvailability: previous.effectiveAvailability,
+      effectiveAvailability: effectiveAvailabilityWithPreservedRuntime(previous, account),
       accountRuntimeAvailabilityAvailable: true
     }
   })
@@ -28,6 +28,15 @@ function accountRuntimeIdentity(account: AccountSummary): string {
     account.accountAuthorizationId ?? '',
     account.authorizationInstanceSourceAccountId ?? ''
   ].join('\u0000')
+}
+
+function effectiveAvailabilityWithPreservedRuntime(previous: AccountSummary, incoming: AccountSummary) {
+  if (!previous.runtimeAvailability) return incoming.effectiveAvailability
+  const incomingAvailability = incoming.effectiveAvailability
+  if (incomingAvailability?.available === false && incomingAvailability.blockerScope !== 'runtime') {
+    return incomingAvailability
+  }
+  return previous.effectiveAvailability
 }
 
 export function replaceAccountListRow(
@@ -45,7 +54,7 @@ export function replaceAccountListRow(
     currentConcurrencyAvailable: current.currentConcurrencyAvailable,
     accountRuntimeAvailabilityAvailable: current.accountRuntimeAvailabilityAvailable,
     runtimeAvailability: current.runtimeAvailability,
-    effectiveAvailability: current.runtimeAvailability ? current.effectiveAvailability : updated.effectiveAvailability,
+    effectiveAvailability: effectiveAvailabilityWithPreservedRuntime(current, updated),
     qualityScore: current.qualityScore,
     qualityState: current.qualityState,
     qualityEwmaFirstTokenMs: current.qualityEwmaFirstTokenMs,
@@ -117,7 +126,7 @@ export function mergeAccountStatusSnapshot(
       runtimeAvailability: runtimeSnapshotAvailable ? item.runtimeAvailability : account.runtimeAvailability,
       effectiveAvailability: runtimeSnapshotAvailable
         ? item.effectiveAvailability
-        : account.runtimeAvailability ? account.effectiveAvailability : item.effectiveAvailability,
+        : effectiveAvailabilityWithPreservedRuntime(account, { ...account, ...item } as AccountSummary),
       lastUsedAt: item.lastUsedAt,
       todayUsage: item.todayUsage,
       accountRuntimeAvailabilityAvailable: runtimeSnapshotAvailable
