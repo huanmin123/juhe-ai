@@ -1,8 +1,8 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getRequestLogger, getTraceId } from '../../../shared/request-context.js'
-import { type GatewaySettings } from '../policy/account-error-policy.service.js'
+import { type AccountErrorPolicyDecision, type GatewaySettings } from '../policy/account-error-policy.service.js'
 import {
-  clearGatewayAccountRuntimeAvailability,
+  clearGatewayAutomaticAccountRuntimeAvailability,
   enqueueGatewayAccountErrorHandlingSideEffect,
   recordGatewayAccountFailureForPrecheck,
   suppressGatewayAccountLocally
@@ -28,6 +28,7 @@ export async function applyAccountErrorHandlingWithCacheInvalidation(
     errorMessage?: string
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
+    policyDecision?: AccountErrorPolicyDecision
   }
 ): Promise<void> {
   const normalizedInput = {
@@ -58,7 +59,7 @@ export function markGatewayAccountTemporaryUnavailableWithCacheInvalidation(
     if (!result.updated) {
       return false
     }
-    const cleared = clearGatewayAccountRuntimeAvailability(account)
+    const cleared = clearGatewayAutomaticAccountRuntimeAvailability(account)
     if (!cleared.cleared) {
       clearGatewayRuntimeCache()
     }

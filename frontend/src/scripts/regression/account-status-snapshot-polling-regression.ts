@@ -160,6 +160,7 @@ const refreshedWithoutRuntime = {
 const preservedRefresh = mergeAccountListRuntimeSnapshot([previousRuntimeAccount], [refreshedWithoutRuntime], false)
 assert.equal(preservedRefresh[0]?.runtimeAvailability?.status, 'local_suppressed')
 assert.equal(preservedRefresh[0]?.accountRuntimeAvailabilityAvailable, true)
+
 assert.equal(preservedRefresh[0]?.effectiveAvailability, previousRuntimeAccount.effectiveAvailability)
 
 const changedScopeRefresh = mergeAccountListRuntimeSnapshot([previousRuntimeAccount], [refreshedWithoutRuntime], false, false)
@@ -181,6 +182,36 @@ const confirmedRefresh = mergeAccountListRuntimeSnapshot([previousRuntimeAccount
 assert.equal(confirmedRefresh[0]?.runtimeAvailability, undefined)
 assert.equal(confirmedRefresh[0]?.accountRuntimeAvailabilityAvailable, true)
 
+const confirmedNormalAccount = {
+  ...previousRuntimeAccount,
+  runtimeAvailability: undefined,
+  effectiveAvailability: { available: true, status: 'available', label: '可调度', color: 'green' },
+  accountRuntimeAvailabilityAvailable: true
+} as AccountSummary
+const unavailableAfterConfirmedNormal = mergeAccountListRuntimeSnapshot(
+  [confirmedNormalAccount],
+  [{ ...confirmedNormalAccount, accountRuntimeAvailabilityAvailable: false }],
+  false
+)
+assert.equal(unavailableAfterConfirmedNormal[0]?.accountRuntimeAvailabilityAvailable, true, '不可用刷新必须保留已明确为正常的运行态快照证据')
+
+const disabledEffectiveAvailability = {
+  available: false,
+  status: 'disabled',
+  label: '已停用',
+  color: 'default',
+  blockerScope: 'account'
+} as NonNullable<AccountSummary['effectiveAvailability']>
+const disabledRefresh = {
+  ...refreshedWithoutRuntime,
+  status: 'disabled',
+  schedulable: false,
+  effectiveAvailability: disabledEffectiveAvailability
+} as AccountSummary
+const preservedRuntimeWithDisabledAccount = mergeAccountListRuntimeSnapshot([previousRuntimeAccount], [disabledRefresh], false)
+assert.equal(preservedRuntimeWithDisabledAccount[0]?.runtimeAvailability?.status, 'local_suppressed')
+assert.equal(preservedRuntimeWithDisabledAccount[0]?.effectiveAvailability?.status, 'disabled', '新账户级阻断必须优先于旧运行态派生状态')
+
 const unavailablePollingSnapshot = mergeAccountStatusSnapshot([previousRuntimeAccount], {
   generatedAt: '2026-07-17T00:02:00.000Z',
   runtimeSnapshot: {
@@ -200,8 +231,30 @@ assert.equal(unavailablePollingSnapshot[0]?.runtimeAvailability?.status, 'local_
 assert.equal(unavailablePollingSnapshot[0]?.effectiveAvailability?.status, 'runtime_local_suppressed')
 assert.equal(unavailablePollingSnapshot[0]?.accountRuntimeAvailabilityAvailable, true)
 
+const unavailablePollingWithDisabledAccount = mergeAccountStatusSnapshot([previousRuntimeAccount], {
+  generatedAt: '2026-07-17T00:03:00.000Z',
+  runtimeSnapshot: {
+    accountConcurrencyAvailable: true,
+    accountRuntimeAvailabilityAvailable: false
+  },
+  items: [{
+    id: previousRuntimeAccount.id,
+    status: 'disabled',
+    schedulable: false,
+    currentConcurrency: 0,
+    todayUsage: usage(0),
+    effectiveAvailability: disabledEffectiveAvailability
+  }]
+})
+assert.equal(unavailablePollingWithDisabledAccount[0]?.runtimeAvailability?.status, 'local_suppressed')
+assert.equal(unavailablePollingWithDisabledAccount[0]?.effectiveAvailability?.status, 'disabled', '轮询更新的账户级阻断必须优先于旧运行态派生状态')
+
 const rowRuntimePreserved = replaceAccountListRow([previousRuntimeAccount], refreshedWithoutRuntime)
 assert.equal(rowRuntimePreserved[0]?.runtimeAvailability?.status, 'local_suppressed')
 assert.equal(rowRuntimePreserved[0]?.effectiveAvailability?.status, 'runtime_local_suppressed')
+
+const rowRuntimeWithDisabledAccount = replaceAccountListRow([previousRuntimeAccount], disabledRefresh)
+assert.equal(rowRuntimeWithDisabledAccount[0]?.runtimeAvailability?.status, 'local_suppressed')
+assert.equal(rowRuntimeWithDisabledAccount[0]?.effectiveAvailability?.status, 'disabled', '行级更新的账户级阻断必须优先于旧运行态派生状态')
 
 console.log('账户状态快照前端回归通过：局部合并、100 ID、递归周期、hidden 与非重叠约束生效')

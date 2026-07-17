@@ -17,7 +17,7 @@ import type {
 } from '../background/background-stats-writer.js'
 import type { ApiKeyQuotaDecision } from '../gateway/quota/api-key-quota.service.js'
 import type { RequestQuotaCosts } from '../gateway/quota/request-quota-checker.js'
-import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
+import type { AccountErrorHandlingResult, AccountErrorPolicyDecision, GatewaySettings } from '../gateway/policy/account-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/quota/authorization-quota.service.js'
 import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
@@ -590,6 +590,7 @@ export type DbServiceOperation =
       traceId?: string
       settings?: GatewaySettings
       trafficSource?: OpenAIGatewayTrafficSource
+      policyDecision?: AccountErrorPolicyDecision
     }
   }
   | {

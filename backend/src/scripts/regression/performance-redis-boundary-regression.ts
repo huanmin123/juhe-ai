@@ -229,6 +229,7 @@ function assertRuntimeStateStoreCallsites(): void {
       'modules/gateway/client-profiles/codex-turn-retry.service.ts:gateway-codex-turn-retry',
       'modules/gateway/hybrid/affinity.service.ts:gateway-hybrid-route-affinity',
       'modules/gateway/quota/quota-snapshot-cache.service.ts:gateway_quota_snapshot',
+      'modules/gateway/runtime/account-side-effects.service.ts:gateway-configured-account-policy-avoidance',
       'modules/gateway/runtime/client-ip-account-avoidance.service.ts:gateway-client-ip-account-avoidance',
       'modules/gateway/runtime/client-ip-error-circuit.service.ts:gateway-client-ip-error-circuit',
       'modules/gateway/runtime/normal-route-latency-degradation.service.ts:gateway-normal-route-latency-degradation',
@@ -414,15 +415,15 @@ function assertStrictRedisCacheBoundaries(): void {
   assert.match(functionBody(accountSideEffectsSource, 'canUseProcessLocalGatewayAccountRuntimeState'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*failureStorms\.clear\(\)[\s\S]*successObservations\.clear\(\)[\s\S]*precheckStates\.clear\(\)[\s\S]*recoveryProbeStates\.clear\(\)[\s\S]*return false/, 'Redis runtime state 下账号 failure/precheck/recovery/success 本机运行态必须禁用并清空')
   assert.doesNotMatch(functionBody(accountSideEffectsSource, 'canUseProcessLocalGatewayAccountRuntimeState'), /recoveryProbeLastStartedAtByScope\.clear\(\)|runningRecoveryProbeCount = 0/, 'Redis runtime state 下读取管理快照不能清空本进程正在执行的恢复探针预算')
   assert.match(functionBody(accountSideEffectsSource, 'recordGatewayAccountFailureForPrecheckInternal'), /runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*recordDistributedGatewayAccountFailureForPrecheck[\s\S]*return/, 'Redis runtime state 下账号失败必须写入共享探针状态，不能直接使用本机 failureStorm/precheck Map')
-  assert.match(accountSideEffectsSource, /distributedRecoveryProbeFailureMergeOptions[\s\S]*incrementFields: \['failureCount'\][\s\S]*clientIpMarkers[\s\S]*apiKeyMarkers/, 'Redis runtime state 下账号失败观测必须原子合并 failureCount 和 distinct Client-IP/API-Key 观测')
-  assert.match(functionBody(accountSideEffectsSource, 'recordDistributedGatewayAccountFailureForPrecheck'), /runtimeProbeObservationMarker[\s\S]*mergeDistributedRecoveryProbeFailureState/, 'Redis runtime state 下账号失败记录必须使用哈希观测标记并通过 merge 写入共享探针状态')
+  assert.match(functionBody(accountSideEffectsSource, 'recordDistributedGatewayAccountFailureForPrecheck'), /runtimeProbeObservationMarker[\s\S]*distributedRecoveryProbeStore\.setIfAbsent/, 'Redis runtime state 下用户失败只能用脱敏观测标记原子首次创建后台核实事件')
+  assert.doesNotMatch(accountSideEffectsSource, /mergeDistributedRecoveryProbeFailureState|distributedRecoveryProbeFailureMergeOptions/, 'Redis runtime state 下后续用户失败不得 merge、续期或改写已有后台核实事件')
   assert.match(functionBody(accountSideEffectsSource, 'runDistributedGatewayAccountRecoveryProbe'), /loadDistributedRecoveryProbeStateWithAccount[\s\S]*runSingleGatewayAccountPrecheck[\s\S]*currentDistributedRecoveryProbeState/, 'Redis runtime state 下恢复探针必须重载账号凭据、使用账号测试健康探针并校验 generation')
   assert.match(functionBody(accountSideEffectsSource, 'runDistributedGatewayAccountRecoveryProbe'), /if \(!persisted\) \{[\s\S]*distributedRecoveryProbeStore\.delete\(runtimeKey\)[\s\S]*return[\s\S]*\}/, 'Redis 探针 due 索引命中已过期状态时必须清理 due 成员，避免旧 runtimeKey 反复占用 sweep batch')
   assert.match(functionBody(accountSideEffectsSource, 'loadDistributedRecoveryProbeStateWithAccount'), /type: 'find_openai_account_for_group'[\s\S]*ignoreAvailability: true/, 'Redis 探针执行前必须通过 DB service 重载账号凭据，Redis 状态不得保存凭据')
   assert.doesNotMatch(functionBody(accountSideEffectsSource, 'recordDistributedGatewayAccountFailureForPrecheck'), /\bapiKey:\s*|apiKeys|refreshToken|credentials|accessToken|secretKey/, 'Redis 探针状态不得写入账号凭据字段')
-  assert.match(functionBody(accountSideEffectsSource, 'filterGatewayAccountRuntimeSuppressionsAsync'), /runtimeConfig\.runtimeStateDriver !== 'redis'[\s\S]*filterLocallySuppressedGatewayAccounts[\s\S]*filterDistributedRecoveryProbeSuppressions/, 'Redis runtime state 下调度过滤必须读取共享探针运行态')
-  assert.match(functionBody(accountSideEffectsSource, 'filterDistributedRecoveryProbeSuppressions'), /cachedDistributedRecoveryProbeSuppressionState[\s\S]*loadDistributedRecoveryProbeSuppressionState/, 'Redis runtime state 下调度过滤必须使用近端短 TTL 缓存，避免每次请求按候选账号数量打 Redis')
-  assert.match(accountSideEffectsSource, /distributedRecoveryProbeSuppressionCacheTtlMs\s*=\s*1000[\s\S]*distributedRecoveryProbeSuppressionNegativeCacheTtlMs\s*=\s*500/, 'Redis 探针调度过滤近端缓存必须保持短 TTL，只允许短暂不一致')
+  assert.match(functionBody(accountSideEffectsSource, 'filterGatewayAccountRuntimeSuppressionsAsync'), /filterConfiguredPolicyAvoidances[\s\S]*runtimeConfig\.runtimeStateDriver === 'redis'[\s\S]*filterLocallySuppressedGatewayAccounts/, 'Redis runtime state 下调度硬过滤只能读取用户显式策略避让，自动探针状态保持可调度')
+  assert.match(functionBody(accountSideEffectsSource, 'loadConfiguredPolicyAvoidanceStates'), /cachedConfiguredPolicyAvoidanceState[\s\S]*configuredPolicyAvoidanceStore\.getJsonMany[\s\S]*rememberConfiguredPolicyAvoidanceState/, 'Redis runtime state 下显式策略避让过滤必须使用批量 miss 加载与近端短 TTL 缓存')
+  assert.match(accountSideEffectsSource, /configuredPolicyAvoidanceCacheTtlMs\s*=\s*1000[\s\S]*configuredPolicyAvoidanceNegativeCacheTtlMs\s*=\s*500/, 'Redis 显式策略避让近端缓存必须保持短 TTL，只允许短暂不一致')
 
   const sessionAffinitySource = source('modules/gateway/runtime/session-affinity.service.ts')
   assert.match(functionBody(sessionAffinitySource, 'canUseProcessLocalSessionAffinity'), /runtimeConfig\.cacheDriver !== 'redis'[\s\S]*clearSessionAffinityIndexes\(\)[\s\S]*return false/, 'Redis cache driver 下 session affinity 本机索引必须禁用并清空')

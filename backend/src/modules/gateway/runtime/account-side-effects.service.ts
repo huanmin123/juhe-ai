@@ -10,6 +10,7 @@ import { requestGatewayDbService } from './gateway-db-service-request.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../../shared/retry-policy.js'
 import { createRuntimeProbeStateStore } from '../../../shared/runtime-probe-state-store.js'
+import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import {
   getAccountCurrentConcurrencyAsync,
   getAccountCurrentConcurrency,
@@ -23,6 +24,10 @@ import {
 } from '../../accounts/account-diagnostic-retry-policy.js'
 import { automaticAccountProbeOutcome } from '../../accounts/automatic-account-probe-outcome.js'
 import { isRealUpstreamAttempt } from '../upstream/attempt.js'
+import {
+  accountPrecheckMinimumObservationMs,
+  nextAccountPrecheckProbeAtMs
+} from './account-probe-confirmation-policy.js'
 import { accountSummaryFromGatewayPrecheckAccount } from './account-precheck-summary.mapper.js'
 import {
   activateLocalAccountRuntimeDegradation,
@@ -135,6 +140,7 @@ interface PrecheckState {
   distinctApiKeyCount: number
   running: boolean
   waitingForConcurrencyDrain?: boolean
+  minimumObservationCompletedForTest?: boolean
 }
 
 interface RecoveryProbeState {
@@ -178,10 +184,21 @@ interface DistributedRecoveryProbeState {
   precheckRequested: boolean
 }
 
+interface ConfiguredPolicyAvoidanceState {
+  runtimeKey: string
+  accountId: string
+  reason: string
+  startedAtMs: number
+  untilMs: number
+}
+
 export async function loadDistributedGatewayAccountRuntimeAvailability(
   runtimeKeys: string[]
 ): Promise<Record<string, AccountRuntimeAvailability>> {
-  const states = await distributedRecoveryProbeStore.getMany(runtimeKeys)
+  const [states, configuredPolicyAvoidances] = await Promise.all([
+    distributedRecoveryProbeStore.getMany(runtimeKeys),
+    configuredPolicyAvoidanceStore.getJsonMany<ConfiguredPolicyAvoidanceState>(runtimeKeys)
+  ])
   const result: Record<string, AccountRuntimeAvailability> = {}
   for (const [runtimeKey, state] of states) {
     if (state.phase === 'recovery_wait' && state.attemptCount === 0) continue
@@ -196,6 +213,10 @@ export async function loadDistributedGatewayAccountRuntimeAvailability(
       precheckAttemptCount: state.attemptCount
     }
   }
+  configuredPolicyAvoidances.forEach((state, index) => {
+    if (!state) return
+    result[runtimeKeys[index]] = configuredPolicyAvoidanceAvailability(state)
+  })
   return result
 }
 
@@ -239,14 +260,15 @@ const distributedRecoveryProbeStateTtlMs = Math.max(localSuppressionMaxMs, prech
 const distributedRecoveryProbeSweepIntervalMs = 1_000
 const distributedRecoveryProbeSweepBatchSize = 25
 const distributedRecoveryProbeDueRetryDelayMs = 250
-const distributedRecoveryProbeSuppressionCacheTtlMs = 1000
-const distributedRecoveryProbeSuppressionNegativeCacheTtlMs = 500
-const distributedRecoveryProbeSuppressionCacheMaxEntries = 5000
+const configuredPolicyAvoidanceCacheTtlMs = 1000
+const configuredPolicyAvoidanceNegativeCacheTtlMs = 500
+const configuredPolicyAvoidanceCacheMaxEntries = 5000
 const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
 const maxSideEffectQueueLength = 5000
 const gatewayAutomaticProbeLimit = pLimit(recoveryProbeMaxConcurrentRuns)
 
 const distributedRecoveryProbeStore = createRuntimeProbeStateStore<DistributedRecoveryProbeState>('gateway-account-recovery')
+const configuredPolicyAvoidanceStore = createRuntimeStateStore('gateway-configured-account-policy-avoidance')
 const sideEffectQueue = new AccountSideEffectQueue()
 const failureStorms = new Map<string, FailureStormEntry>()
 const successObservations = new Map<string, SuccessObservationEntry>()
@@ -257,7 +279,8 @@ const precheckRunTimers = new Map<string, NodeJS.Timeout>()
 const precheckConcurrencyDrainWaits = new Map<string, { unsubscribe: () => void; timer: NodeJS.Timeout }>()
 const runtimeProbeGenerationCounters = new Map<string, number>()
 const recoveryProbeLastStartedAtByScope = new Map<string, number>()
-const distributedRecoveryProbeSuppressionCache = new Map<string, { state?: DistributedRecoveryProbeState; expiresAtMs: number }>()
+const configuredPolicyAvoidancesMemory = new Map<string, ConfiguredPolicyAvoidanceState>()
+const configuredPolicyAvoidanceCache = new Map<string, { state?: ConfiguredPolicyAvoidanceState; expiresAtMs: number }>()
 let processingSideEffects = false
 let drainTimer: NodeJS.Timeout | undefined
 let drainTimerDueAtMs: number | undefined
@@ -275,7 +298,7 @@ let droppedCount = 0
 let expiredCount = 0
 
 export async function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): Promise<void> {
-  if (operation.input.trafficSource === 'gateway') {
+  if (operation.input.trafficSource === 'gateway' && !operation.input.policyDecision) {
     return
   }
   if (operation.input.success) {
@@ -311,16 +334,28 @@ export function suppressGatewayAccountLocally(
   }
 }
 
-export function suppressGatewayAccountLocallyForSeconds(
+export async function suppressGatewayAccountLocallyForSeconds(
   account: SuppressibleGatewayAccount | string,
   seconds: number | undefined,
   reason = '响应检查策略运行态避让'
-): void {
+): Promise<void> {
   const value = typeof seconds === 'number' && Number.isFinite(seconds) ? Math.max(1, Math.trunc(seconds)) : 60
-  suppressLocalAccount(gatewayAccountRuntimeKey(account), Math.min(value * 1000, localSuppressionMaxMs), reason, 'local_suppressed', {
+  const ttlMs = value * 1000
+  const runtimeKey = gatewayAccountRuntimeKey(account)
+  const now = Date.now()
+  const state: ConfiguredPolicyAvoidanceState = {
+    runtimeKey,
     accountId: gatewayAccountId(account),
-    accountConcurrencyAccountId: gatewayRuntimeConcurrencyAccountId(account)
-  })
+    reason,
+    startedAtMs: now,
+    untilMs: now + ttlMs
+  }
+  await configuredPolicyAvoidanceStore.setJson(runtimeKey, state, ttlMs)
+  rememberConfiguredPolicyAvoidanceState(runtimeKey, state)
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    configuredPolicyAvoidancesMemory.set(runtimeKey, state)
+  }
+  clearGatewayRuntimeCache()
 }
 
 export function recordGatewayAccountFailureForPrecheck(
@@ -365,7 +400,8 @@ export async function completeGatewayAccountPrecheckForTest(
     reason: input.reason,
     distinctClientIpCount: input.clientIp ? 1 : 0,
     distinctApiKeyCount: input.apiKeyId ? 1 : 0,
-    running: false
+    running: false,
+    minimumObservationCompletedForTest: true
   })
   await runGatewayAccountPrecheck(runtimeKey)
 }
@@ -507,7 +543,6 @@ async function recordDistributedGatewayAccountFailureForPrecheck(
   const runtimeKey = gatewayAccountRuntimeKey(account)
   const current = await distributedRecoveryProbeStore.get(runtimeKey)
   if (current) {
-    rememberDistributedRecoveryProbeSuppressionState(runtimeKey, current)
     scheduleDistributedRecoveryProbeSweep(Math.max(0, current.nextProbeAtMs - Date.now()))
     return
   }
@@ -542,11 +577,9 @@ async function recordDistributedGatewayAccountFailureForPrecheck(
   const created = await distributedRecoveryProbeStore.setIfAbsent(state, distributedRecoveryProbeStateTtlMs)
   if (!created) {
     const existing = await distributedRecoveryProbeStore.get(runtimeKey).catch(() => undefined)
-    rememberDistributedRecoveryProbeSuppressionState(runtimeKey, existing)
     if (existing) scheduleDistributedRecoveryProbeSweep(Math.max(0, existing.nextProbeAtMs - Date.now()))
     return
   }
-  rememberDistributedRecoveryProbeSuppressionState(runtimeKey, state)
   scheduleDistributedRecoveryProbeSweep(Math.max(0, state.nextProbeAtMs - Date.now()))
   logger.info({
     event: 'gateway_account_distributed_recovery_probe_scheduled',
@@ -739,7 +772,6 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
     const persisted = await distributedRecoveryProbeStore.get(runtimeKey)
     if (!persisted) {
       await distributedRecoveryProbeStore.delete(runtimeKey)
-      rememberDistributedRecoveryProbeSuppressionState(runtimeKey, undefined)
       return
     }
     const now = Date.now()
@@ -908,7 +940,8 @@ async function runDistributedGatewayAccountPrecheck(
 ): Promise<void> {
   let state = initialState
   const generation = state.generation
-  for (let attempt = state.attemptCount; attempt < precheckMaxAttempts; attempt += 1) {
+  if (state.attemptCount < precheckMaxAttempts) {
+    const attempt = state.attemptCount
     const latest = await currentDistributedRecoveryProbeState(state.runtimeKey, generation)
     if (!latest) {
       logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_attempt_ignored')
@@ -964,9 +997,30 @@ async function runDistributedGatewayAccountPrecheck(
       ...stateAfterResult,
       reason: accountPrecheckFailureReason(result)
     }
-    const persistedFailure = await persistDistributedRecoveryProbeState(state)
+    const nextProbeAtMs = nextAccountPrecheckProbeAtMs({
+      attemptCount: state.attemptCount,
+      maxAttempts: precheckMaxAttempts,
+      startedAtMs: state.startedAtMs,
+      nowMs: Date.now()
+    })
+    const persistedFailure = await persistDistributedRecoveryProbeState({
+      ...state,
+      nextProbeAtMs: nextProbeAtMs ?? Date.now()
+    })
     if (!persistedFailure) {
       logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_failure_write_ignored')
+      return
+    }
+    if (nextProbeAtMs !== undefined) {
+      logger.warn({
+        event: 'gateway_account_distributed_precheck_failed_waiting_next_round',
+        accountId: account.id,
+        accountName: account.name,
+        runtimeKey: state.runtimeKey,
+        generation,
+        attemptCount: state.attemptCount,
+        nextProbeAt: new Date(nextProbeAtMs).toISOString()
+      }, 'Redis 运行态账号事前确认本轮未通过，已等待跨时间独立复核')
       return
     }
   }
@@ -974,6 +1028,19 @@ async function runDistributedGatewayAccountPrecheck(
   const finalState = await currentDistributedRecoveryProbeState(state.runtimeKey, generation)
   if (!finalState) {
     logStaleDistributedRecoveryProbeResult(state.runtimeKey, generation, 'gateway_account_distributed_precheck_stale_final_ignored')
+    return
+  }
+  const confirmationAtMs = nextAccountPrecheckProbeAtMs({
+    attemptCount: finalState.attemptCount,
+    maxAttempts: precheckMaxAttempts,
+    startedAtMs: finalState.startedAtMs,
+    nowMs: Date.now()
+  })
+  if (confirmationAtMs !== undefined) {
+    await persistDistributedRecoveryProbeState({
+      ...finalState,
+      nextProbeAtMs: confirmationAtMs
+    })
     return
   }
   const accountConcurrencyAccountId = gatewayAccountConcurrencyAccountId(account)
@@ -1043,15 +1110,6 @@ function promoteRecoveryProbeToPrecheck(runtimeKey: string, state: RecoveryProbe
     distinctClientIpCount: state.distinctClientIpCount,
     distinctApiKeyCount: state.distinctApiKeyCount,
     running: false
-  })
-  suppressLocalAccount(runtimeKey, precheckSuppressionMs(), reason, 'precheck_pending', {
-    accountId: state.account.id,
-    accountConcurrencyAccountId: gatewayAccountConcurrencyAccountId(state.account),
-    sinceMs: state.startedAtMs,
-    failureCount: state.failureCount,
-    distinctClientIpCount: state.distinctClientIpCount,
-    distinctApiKeyCount: state.distinctApiKeyCount,
-    precheckAttemptCount: 0
   })
   logger.warn({
     event: 'gateway_account_precheck_scheduled',
@@ -1182,32 +1240,27 @@ async function persistDistributedRecoveryProbeState(state: DistributedRecoveryPr
   const persisted = await distributedRecoveryProbeStore.set(state, distributedRecoveryProbeStateTtlMs)
   if (!persisted) {
     const current = await distributedRecoveryProbeStore.get(state.runtimeKey).catch(() => undefined)
-    rememberDistributedRecoveryProbeSuppressionState(state.runtimeKey, current)
     if (current) {
       scheduleDistributedRecoveryProbeSweep(Math.max(0, current.nextProbeAtMs - Date.now()))
     }
     return false
   }
-  rememberDistributedRecoveryProbeSuppressionState(state.runtimeKey, state)
   scheduleDistributedRecoveryProbeSweep(Math.max(0, state.nextProbeAtMs - Date.now()))
   return true
 }
 
 async function clearDistributedRecoveryProbeState(runtimeKey: string): Promise<void> {
   await distributedRecoveryProbeStore.delete(runtimeKey)
-  rememberDistributedRecoveryProbeSuppressionState(runtimeKey, undefined)
   clearGatewayRuntimeCache()
 }
 
 async function clearDistributedRecoveryProbeStateGeneration(runtimeKey: string, generation: number): Promise<boolean> {
   const cleared = await distributedRecoveryProbeStore.deleteGeneration(runtimeKey, generation)
   if (cleared) {
-    rememberDistributedRecoveryProbeSuppressionState(runtimeKey, undefined)
     clearGatewayRuntimeCache()
     return true
   }
   const current = await distributedRecoveryProbeStore.get(runtimeKey).catch(() => undefined)
-  rememberDistributedRecoveryProbeSuppressionState(runtimeKey, current)
   if (current) {
     scheduleDistributedRecoveryProbeSweep(Math.max(0, current.nextProbeAtMs - Date.now()))
   }
@@ -1353,6 +1406,7 @@ function shouldTriggerFailureStormPrecheck(
 export function snapshotGatewayAccountRuntimeAvailability(): Record<string, AccountRuntimeAvailability> {
   if (!canUseProcessLocalGatewayAccountRuntimeState()) return {}
   cleanupExpiredFailureStorms()
+  cleanupExpiredConfiguredPolicyAvoidancesMemory()
   const snapshot = snapshotLocalAccountRuntimeAvailability(isPrecheckRuntimeBlocking)
   for (const [runtimeKey, state] of precheckStates) {
     snapshot[runtimeKey] = {
@@ -1366,6 +1420,9 @@ export function snapshotGatewayAccountRuntimeAvailability(): Record<string, Acco
       distinctApiKeyCount: state.distinctApiKeyCount,
       precheckAttemptCount: state.attemptCount
     }
+  }
+  for (const [runtimeKey, state] of configuredPolicyAvoidancesMemory) {
+    snapshot[runtimeKey] = configuredPolicyAvoidanceAvailability(state)
   }
   return snapshot
 }
@@ -1381,30 +1438,36 @@ export async function filterGatewayAccountRuntimeSuppressionsAsync<T extends Sup
   accounts: T[],
   options: LocalAccountSuppressionFilterOptions = {}
 ): Promise<LocalAccountSuppressionFilterResult<T>> {
-  if (runtimeConfig.runtimeStateDriver !== 'redis') {
-    return filterLocallySuppressedGatewayAccounts(accounts, options)
+  const configuredPolicyResult = await filterConfiguredPolicyAvoidances(accounts)
+  if (runtimeConfig.runtimeStateDriver === 'redis' || configuredPolicyResult.accounts.length === 0) {
+    return configuredPolicyResult
   }
-  return await filterDistributedRecoveryProbeSuppressions(accounts)
+  const localResult = filterLocallySuppressedGatewayAccounts(configuredPolicyResult.accounts, options)
+  const nextRetryAtMs = earliestTime(configuredPolicyResult.nextRetryAtMs, localResult.nextRetryAtMs)
+  return {
+    ...localResult,
+    suppressedCount: configuredPolicyResult.suppressedCount + localResult.suppressedCount,
+    allSuppressed: localResult.accounts.length === 0 && accounts.length > 0,
+    suppressedAccountIds: [...configuredPolicyResult.suppressedAccountIds, ...localResult.suppressedAccountIds],
+    nextRetryAtMs,
+    nextRetryAfterMs: nextRetryAtMs === undefined ? undefined : Math.max(0, nextRetryAtMs - Date.now())
+  }
 }
 
-async function filterDistributedRecoveryProbeSuppressions<T extends SuppressibleGatewayAccount>(
+async function filterConfiguredPolicyAvoidances<T extends SuppressibleGatewayAccount>(
   accounts: T[]
 ): Promise<LocalAccountSuppressionFilterResult<T>> {
   const now = Date.now()
-  const states = await Promise.all(accounts.map(async (account) => {
-    const runtimeKey = gatewayAccountRuntimeKey(account)
-    const cached = cachedDistributedRecoveryProbeSuppressionState(runtimeKey, now)
-    const state = cached.hit ? cached.state : await loadDistributedRecoveryProbeSuppressionState(runtimeKey, now)
-    return { account, runtimeKey, state }
-  }))
-  const suppressed = states.filter((item) => item.state?.phase === 'precheck_pending')
+  const runtimeKeys = accounts.map((account) => gatewayAccountRuntimeKey(account))
+  const avoidanceStates = await loadConfiguredPolicyAvoidanceStates(runtimeKeys, now)
+  const states = accounts.map((account, index) => ({ account, runtimeKey: runtimeKeys[index], state: avoidanceStates[index] }))
+  const suppressed = states.filter((item) => item.state !== undefined)
   const suppressedRuntimeKeys = new Set(suppressed.map((item) => item.runtimeKey))
-  const filteredAccounts = states
+  const visibleAccounts = states
     .filter((item) => !suppressedRuntimeKeys.has(item.runtimeKey))
     .map((item) => item.account)
-  const visibleAccounts = filteredAccounts.length === 0 && accounts.length > 0 ? accounts : filteredAccounts
   const nextRetryAtMs = suppressed
-    .map((item) => item.state?.nextProbeAtMs ?? now + distributedRecoveryProbeDueRetryDelayMs)
+    .map((item) => item.state?.untilMs ?? now + distributedRecoveryProbeDueRetryDelayMs)
     .reduce<number | undefined>((earliest, value) => {
       const retryAtMs = value <= now ? now + distributedRecoveryProbeDueRetryDelayMs : value
       return earliest === undefined ? retryAtMs : Math.min(earliest, retryAtMs)
@@ -1412,7 +1475,7 @@ async function filterDistributedRecoveryProbeSuppressions<T extends Suppressible
   return {
     accounts: visibleAccounts,
     suppressedCount: suppressed.length,
-    allSuppressed: false,
+    allSuppressed: visibleAccounts.length === 0 && accounts.length > 0,
     suppressedAccountIds: suppressed.map((item) => item.account.id),
     acquiredHalfOpenLeases: [],
     nextRetryAtMs,
@@ -1420,49 +1483,82 @@ async function filterDistributedRecoveryProbeSuppressions<T extends Suppressible
   }
 }
 
-function cachedDistributedRecoveryProbeSuppressionState(
+function earliestTime(first: number | undefined, second: number | undefined): number | undefined {
+  if (first === undefined) return second
+  if (second === undefined) return first
+  return Math.min(first, second)
+}
+
+function configuredPolicyAvoidanceAvailability(state: ConfiguredPolicyAvoidanceState): AccountRuntimeAvailability {
+  return {
+    status: 'local_suppressed',
+    reason: state.reason,
+    since: new Date(state.startedAtMs).toISOString(),
+    until: new Date(state.untilMs).toISOString()
+  }
+}
+
+function cleanupExpiredConfiguredPolicyAvoidancesMemory(now = Date.now()): void {
+  for (const [runtimeKey, state] of configuredPolicyAvoidancesMemory) {
+    if (state.untilMs <= now) configuredPolicyAvoidancesMemory.delete(runtimeKey)
+  }
+}
+
+async function loadConfiguredPolicyAvoidanceStates(
+  runtimeKeys: string[],
+  now = Date.now()
+): Promise<Array<ConfiguredPolicyAvoidanceState | undefined>> {
+  const states = new Array<ConfiguredPolicyAvoidanceState | undefined>(runtimeKeys.length)
+  const missedIndexes: number[] = []
+  const missedRuntimeKeys: string[] = []
+  runtimeKeys.forEach((runtimeKey, index) => {
+    const cached = cachedConfiguredPolicyAvoidanceState(runtimeKey, now)
+    if (cached.hit) {
+      states[index] = cached.state
+      return
+    }
+    missedIndexes.push(index)
+    missedRuntimeKeys.push(runtimeKey)
+  })
+  if (missedRuntimeKeys.length === 0) return states
+  const loaded = await configuredPolicyAvoidanceStore.getJsonMany<ConfiguredPolicyAvoidanceState>(missedRuntimeKeys)
+  loaded.forEach((state, missIndex) => {
+    const runtimeKey = missedRuntimeKeys[missIndex]
+    const outputIndex = missedIndexes[missIndex]
+    states[outputIndex] = state
+    rememberConfiguredPolicyAvoidanceState(runtimeKey, state, now)
+  })
+  return states
+}
+
+function cachedConfiguredPolicyAvoidanceState(
   runtimeKey: string,
   now: number
-): { hit: boolean; state?: DistributedRecoveryProbeState } {
-  const entry = distributedRecoveryProbeSuppressionCache.get(runtimeKey)
+): { hit: boolean; state?: ConfiguredPolicyAvoidanceState } {
+  const entry = configuredPolicyAvoidanceCache.get(runtimeKey)
   if (!entry) return { hit: false }
   if (entry.expiresAtMs <= now) {
-    distributedRecoveryProbeSuppressionCache.delete(runtimeKey)
+    configuredPolicyAvoidanceCache.delete(runtimeKey)
     return { hit: false }
   }
   return { hit: true, state: entry.state }
 }
 
-async function loadDistributedRecoveryProbeSuppressionState(
+function rememberConfiguredPolicyAvoidanceState(
   runtimeKey: string,
-  now: number
-): Promise<DistributedRecoveryProbeState | undefined> {
-  const state = await distributedRecoveryProbeStore.get(runtimeKey)
-  rememberDistributedRecoveryProbeSuppressionState(runtimeKey, state, now)
-  return state
-}
-
-function rememberDistributedRecoveryProbeSuppressionState(
-  runtimeKey: string,
-  state: DistributedRecoveryProbeState | undefined,
+  state: ConfiguredPolicyAvoidanceState | undefined,
   now = Date.now()
 ): void {
-  if (runtimeConfig.runtimeStateDriver !== 'redis') return
-  const ttlMs = state ? distributedRecoveryProbeSuppressionCacheTtlMs : distributedRecoveryProbeSuppressionNegativeCacheTtlMs
-  distributedRecoveryProbeSuppressionCache.set(runtimeKey, {
+  const cacheTtlMs = state ? configuredPolicyAvoidanceCacheTtlMs : configuredPolicyAvoidanceNegativeCacheTtlMs
+  configuredPolicyAvoidanceCache.set(runtimeKey, {
     state,
-    expiresAtMs: now + ttlMs
+    expiresAtMs: Math.min(now + cacheTtlMs, state?.untilMs ?? Number.POSITIVE_INFINITY)
   })
-  evictDistributedRecoveryProbeSuppressionCacheIfNeeded(now)
-}
-
-function evictDistributedRecoveryProbeSuppressionCacheIfNeeded(now: number): void {
-  if (distributedRecoveryProbeSuppressionCache.size <= distributedRecoveryProbeSuppressionCacheMaxEntries) return
-  for (const [runtimeKey, entry] of distributedRecoveryProbeSuppressionCache) {
-    if (entry.expiresAtMs <= now || distributedRecoveryProbeSuppressionCache.size > distributedRecoveryProbeSuppressionCacheMaxEntries) {
-      distributedRecoveryProbeSuppressionCache.delete(runtimeKey)
+  for (const [key, entry] of configuredPolicyAvoidanceCache) {
+    if (entry.expiresAtMs <= now || configuredPolicyAvoidanceCache.size > configuredPolicyAvoidanceCacheMaxEntries) {
+      configuredPolicyAvoidanceCache.delete(key)
     }
-    if (distributedRecoveryProbeSuppressionCache.size <= distributedRecoveryProbeSuppressionCacheMaxEntries) return
+    if (configuredPolicyAvoidanceCache.size <= configuredPolicyAvoidanceCacheMaxEntries) break
   }
 }
 
@@ -1588,9 +1684,32 @@ export function clearGatewayLocalAccountSuppressionsForTest(): void {
   failureStorms.clear()
   successObservations.clear()
   precheckStates.clear()
+  configuredPolicyAvoidancesMemory.clear()
+  configuredPolicyAvoidanceCache.clear()
   runtimeProbeGenerationCounters.clear()
   recoveryProbeLastStartedAtByScope.clear()
   runningRecoveryProbeCount = 0
+}
+
+export function clearGatewayAutomaticAccountRuntimeAvailability(
+  account: GatewayAccountRuntimeClearTarget | SuppressibleGatewayAccount | string
+): GatewayAccountRuntimeClearResult {
+  const clearedKeys: string[] = []
+  for (const runtimeKey of gatewayAccountRuntimeClearKeys(account)) {
+    if (runtimeConfig.runtimeStateDriver === 'redis') {
+      void clearDistributedRecoveryProbeState(runtimeKey).catch((error) => {
+        logger.error(errorLogFields(error, {
+          event: 'gateway_account_automatic_runtime_availability_clear_failed',
+          runtimeKey
+        }), 'Redis 自动探针账号运行态清理失败')
+      })
+      clearedKeys.push(runtimeKey)
+    } else if (clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)) {
+      clearedKeys.push(runtimeKey)
+    }
+  }
+  if (clearedKeys.length > 0) clearGatewayRuntimeCache()
+  return { cleared: clearedKeys.length > 0, clearedKeys }
 }
 
 export function clearGatewayAccountRuntimeAvailability(
@@ -1599,15 +1718,29 @@ export function clearGatewayAccountRuntimeAvailability(
   const clearedKeys: string[] = []
   for (const runtimeKey of gatewayAccountRuntimeClearKeys(account)) {
     if (runtimeConfig.runtimeStateDriver === 'redis') {
-      void clearDistributedRecoveryProbeState(runtimeKey).catch((error) => {
+      void Promise.all([
+        clearDistributedRecoveryProbeState(runtimeKey),
+        configuredPolicyAvoidanceStore.delete(runtimeKey)
+      ]).catch((error) => {
         logger.error(errorLogFields(error, {
           event: 'gateway_account_distributed_runtime_availability_clear_failed',
           runtimeKey
         }), 'Redis 运行态账号恢复状态清理失败')
       })
+      rememberConfiguredPolicyAvoidanceState(runtimeKey, undefined)
       clearedKeys.push(runtimeKey)
-    } else if (clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)) {
-      clearedKeys.push(runtimeKey)
+    } else {
+      const configuredPolicyCleared = configuredPolicyAvoidancesMemory.delete(runtimeKey)
+      rememberConfiguredPolicyAvoidanceState(runtimeKey, undefined)
+      void configuredPolicyAvoidanceStore.delete(runtimeKey).catch((error) => {
+        logger.error(errorLogFields(error, {
+          event: 'gateway_account_configured_policy_avoidance_clear_failed',
+          runtimeKey
+        }), '用户显式策略账号运行态避让清理失败')
+      })
+      if (clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey) || configuredPolicyCleared) {
+        clearedKeys.push(runtimeKey)
+      }
     }
   }
   if (clearedKeys.length > 0) {
@@ -1831,9 +1964,14 @@ function cleanupExpiredFailureStorms(): void {
   }
 }
 
-function isPrecheckRuntimeBlocking(runtimeKey: string): boolean {
-  if (!canUseProcessLocalGatewayAccountRuntimeState()) return false
-  return precheckStates.has(runtimeKey)
+function isPrecheckRuntimeBlocking(_runtimeKey: string): boolean {
+  return false
+}
+
+function precheckPolicyStartedAtMs(state: PrecheckState): number {
+  return state.minimumObservationCompletedForTest
+    ? Date.now() - accountPrecheckMinimumObservationMs
+    : state.startedAtMs
 }
 
 function precheckSuppressionMs(): number {
@@ -1896,14 +2034,6 @@ function deferPrecheckMarkUntilConcurrencyDrained(runtimeKey: string, state: Pre
   state.reason = reason
   state.running = false
   state.waitingForConcurrencyDrain = true
-  suppressLocalAccount(runtimeKey, precheckSuppressionMs(), reason, 'precheck_pending', {
-    accountId: state.account.id,
-    accountConcurrencyAccountId,
-    failureCount: state.failureCount,
-    distinctClientIpCount: state.distinctClientIpCount,
-    distinctApiKeyCount: state.distinctApiKeyCount,
-    precheckAttemptCount: state.attemptCount
-  })
   schedulePrecheckAfterConcurrencyDrain(runtimeKey, accountConcurrencyAccountId)
   logger.warn({
     event: 'gateway_account_precheck_mark_deferred_for_concurrency',
@@ -1955,7 +2085,8 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
   const generation = state.generation
   state.running = true
   try {
-    for (let attempt = state.attemptCount; attempt < precheckMaxAttempts; attempt += 1) {
+    if (state.attemptCount < precheckMaxAttempts) {
+      const attempt = state.attemptCount
       const latestState = currentPrecheckState(runtimeKey, generation)
       if (!latestState) {
         logStalePrecheckResult(runtimeKey, generation, 'gateway_account_precheck_stale_attempt_ignored')
@@ -1963,14 +2094,6 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
       }
       latestState.attemptCount = attempt + 1
       latestState.lastAttemptAtMs = Date.now()
-      suppressLocalAccount(runtimeKey, precheckSuppressionMs(), latestState.reason, 'precheck_pending', {
-        accountId: latestState.account.id,
-        accountConcurrencyAccountId: gatewayAccountConcurrencyAccountId(latestState.account),
-        failureCount: latestState.failureCount,
-        distinctClientIpCount: latestState.distinctClientIpCount,
-        distinctApiKeyCount: latestState.distinctApiKeyCount,
-        precheckAttemptCount: latestState.attemptCount
-      })
       const timeoutMs = accountDiagnosticRetryTimeoutMs[attempt] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
       const result = await runWithGatewayAutomaticProbeSlot(() => runSingleGatewayAccountPrecheck(latestState, timeoutMs))
       const stateAfterResult = currentPrecheckState(runtimeKey, generation)
@@ -2004,11 +2127,33 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
         return
       }
       stateAfterResult.reason = accountPrecheckFailureReason(result)
+      const nextProbeAtMs = nextAccountPrecheckProbeAtMs({
+        attemptCount: stateAfterResult.attemptCount,
+        maxAttempts: precheckMaxAttempts,
+        startedAtMs: precheckPolicyStartedAtMs(stateAfterResult),
+        nowMs: Date.now()
+      })
+      if (nextProbeAtMs !== undefined) {
+        stateAfterResult.running = false
+        scheduleGatewayAccountPrecheckRun(runtimeKey, Math.max(0, nextProbeAtMs - Date.now()))
+        return
+      }
     }
 
     const finalState = currentPrecheckState(runtimeKey, generation)
     if (!finalState) {
       logStalePrecheckResult(runtimeKey, generation, 'gateway_account_precheck_stale_final_ignored')
+      return
+    }
+    const confirmationAtMs = nextAccountPrecheckProbeAtMs({
+      attemptCount: finalState.attemptCount,
+      maxAttempts: precheckMaxAttempts,
+      startedAtMs: precheckPolicyStartedAtMs(finalState),
+      nowMs: Date.now()
+    })
+    if (confirmationAtMs !== undefined) {
+      finalState.running = false
+      scheduleGatewayAccountPrecheckRun(runtimeKey, Math.max(0, confirmationAtMs - Date.now()))
       return
     }
     if (deferPrecheckMarkUntilConcurrencyDrained(runtimeKey, finalState)) {
