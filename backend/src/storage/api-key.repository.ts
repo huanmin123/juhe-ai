@@ -177,56 +177,6 @@ export async function findApiKeySecretAsync(id: string, access?: AccessScope): P
   return row ? (await apiKeySummariesFromRowsAsync([row], access, { includeSecret: true }))[0] : undefined
 }
 
-export async function findDefaultApiKeySecretForProviderAsync(providerCode: string, access?: AccessScope): Promise<ApiKeySummary | undefined> {
-  const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
-  const currentTime = nowIso()
-  if (runtimeConfig.databaseDriver !== 'postgres') {
-    const row = getBusinessDatabase().prepare(`
-      SELECT ${apiKeyListColumns({ includeSecret: true })}
-      FROM api_keys
-      ${apiKeyListJoins()}
-      INNER JOIN route_strategy_groups
-        ON route_strategy_groups.route_strategy_id = api_keys.route_strategy_id
-        AND route_strategy_groups.system_account_id = api_keys.system_account_id
-        AND route_strategy_groups.status = 'active'
-      INNER JOIN groups
-        ON groups.id = route_strategy_groups.group_id
-        AND groups.system_account_id = route_strategy_groups.system_account_id
-      WHERE api_keys.is_default = 1
-        AND api_keys.status = 'active'
-        AND (api_keys.expires_at IS NULL OR api_keys.expires_at > ?)
-        AND route_strategies.status = 'active'
-        AND groups.enabled = 1
-        AND groups.provider_code = ?${scope.clause.replace(/^\s*WHERE/i, ' AND')}
-      ORDER BY api_keys.created_at ASC, api_keys.id ASC
-      LIMIT 1
-    `).get(currentTime, providerCode, ...scope.params) as unknown as ApiKeyRow | undefined
-    return row ? apiKeySummariesFromRows([row], access, { includeSecret: true })[0] : undefined
-  }
-  const client = await getApiKeyDatabaseClient()
-  const row = await client.one<ApiKeyRow>(`
-    SELECT ${apiKeyListColumns({ includeSecret: true })}
-    FROM ${apiKeyTable(client, 'api_keys')} api_keys
-    ${apiKeyListJoinsForClient(client)}
-    INNER JOIN ${apiKeyTable(client, 'route_strategy_groups')} route_strategy_groups
-      ON route_strategy_groups.route_strategy_id = api_keys.route_strategy_id
-      AND route_strategy_groups.system_account_id = api_keys.system_account_id
-      AND route_strategy_groups.status = 'active'
-    INNER JOIN ${apiKeyTable(client, 'groups')} groups
-      ON groups.id = route_strategy_groups.group_id
-      AND groups.system_account_id = route_strategy_groups.system_account_id
-    WHERE api_keys.is_default = 1
-      AND api_keys.status = 'active'
-      AND (api_keys.expires_at IS NULL OR api_keys.expires_at > ?)
-      AND route_strategies.status = 'active'
-      AND groups.enabled = 1
-      AND groups.provider_code = ?${scope.clause.replace(/^\s*WHERE/i, ' AND')}
-    ORDER BY api_keys.created_at ASC, api_keys.id ASC
-    LIMIT 1
-  `, [currentTime, providerCode, ...scope.params])
-  return row ? (await apiKeySummariesFromRowsAsync([row], access, { includeSecret: true }))[0] : undefined
-}
-
 function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false): ApiKeyListResult {
   const normalized = normalizeApiKeyListOptions(options)
   const scope = buildSystemAccountWhereClause(access, 'api_keys.system_account_id')
