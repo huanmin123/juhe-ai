@@ -13,9 +13,18 @@ import (
 )
 
 const (
-	geminiNativeProfileID = "profile_gemini_native_v1beta"
-	glmCodingProfileID    = "profile_glm_coding_openai_v1"
+	deepSeekOpenAIProfileID = "profile_deepseek_openai_v1"
+	geminiNativeProfileID   = "profile_gemini_native_v1beta"
+	glmCodingProfileID      = "profile_glm_coding_openai_v1"
+	hybridOpenAIProfileID   = "profile_hybrid_openai_chat_v1"
 )
+
+var preferredManagementProviderProfileIDs = map[string]string{
+	"deepseek": deepSeekOpenAIProfileID,
+	"gemini":   geminiNativeProfileID,
+	"glm":      glmCodingProfileID,
+	"hybrid":   hybridOpenAIProfileID,
+}
 
 type managementProviderRow struct {
 	ID                         string
@@ -253,13 +262,9 @@ func preferredManagementProviderDefaultProfile(profiles []port.ManagementProvide
 	if len(candidates) == 0 {
 		candidates = profiles
 	}
+	preferredProfileID := preferredManagementProviderProfileIDs[candidates[0].ProviderCode]
 	for index := range candidates {
-		if candidates[index].ProviderCode == "gemini" && candidates[index].ID == geminiNativeProfileID {
-			return &candidates[index]
-		}
-	}
-	for index := range candidates {
-		if candidates[index].ProviderCode == "glm" && candidates[index].ID == glmCodingProfileID {
+		if candidates[index].ID == preferredProfileID {
 			return &candidates[index]
 		}
 	}

@@ -2,6 +2,7 @@ package managementproviders
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"juhe-ai/backend-go/internal/store/port"
@@ -65,6 +66,50 @@ func TestServiceOptionsMapsProviderDefinitions(t *testing.T) {
 	if len(got.ProtocolProfiles) != 1 || got.ProtocolProfiles[0].DefaultHealthCheckModel != "gpt-5-system" ||
 		got.ProtocolProfiles[0].EndpointFamilies[0].Code != "chat_completions" {
 		t.Fatalf("profiles = %+v", got.ProtocolProfiles)
+	}
+}
+
+func TestServiceOptionsPreservesDeepSeekAndHybridContractsByCode(t *testing.T) {
+	store := &providerOptionStoreStub{options: []port.ManagementProviderOption{
+		{
+			ID:                       "provider_hybrid",
+			Code:                     "hybrid",
+			Name:                     "Hybrid",
+			Enabled:                  true,
+			DefaultProtocolProfileID: "profile_hybrid_openai_chat_v1",
+			ProtocolCode:             "openai",
+			ProtocolVersion:          "v1",
+			DefaultSupportedModels:   []string{"gpt-5.6-sol", "deepseek-v4-flash"},
+		},
+		{
+			ID:                       "provider_deepseek",
+			Code:                     "deepseek",
+			Name:                     "DeepSeek",
+			Enabled:                  true,
+			DefaultProtocolProfileID: "profile_deepseek_openai_v1",
+			ProtocolCode:             "openai",
+			ProtocolVersion:          "v1",
+			BaseURL:                  "https://api.deepseek.com",
+			DefaultSupportedModels:   []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+		},
+	}}
+
+	options, err := NewService(store).Options(context.Background(), OptionListInput{})
+	if err != nil {
+		t.Fatalf("Options() error = %v", err)
+	}
+	byCode := make(map[string]Option, len(options))
+	for _, option := range options {
+		byCode[option.Code] = option
+	}
+	deepseek := byCode["deepseek"]
+	if deepseek.DefaultProtocolProfileID != "profile_deepseek_openai_v1" || deepseek.BaseURL != "https://api.deepseek.com" ||
+		!reflect.DeepEqual(deepseek.DefaultSupportedModels, []string{"deepseek-v4-flash", "deepseek-v4-pro"}) {
+		t.Fatalf("deepseek option = %+v", deepseek)
+	}
+	hybrid := byCode["hybrid"]
+	if hybrid.DefaultProtocolProfileID != "profile_hybrid_openai_chat_v1" || hybrid.ProtocolCode != "openai" {
+		t.Fatalf("hybrid option = %+v", hybrid)
 	}
 }
 

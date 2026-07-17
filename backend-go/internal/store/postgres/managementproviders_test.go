@@ -74,6 +74,84 @@ func TestManagementProviderOptionFromRowKeepsSystemAndProtocolHealthCheckDefault
 	}
 }
 
+func TestManagementProviderOptionFromRowUsesDeterministicDefaultProfileByProviderCode(t *testing.T) {
+	tests := []struct {
+		name          string
+		providerCode  string
+		profiles      []port.ManagementProviderProtocolProfile
+		wantProfileID string
+		wantProtocol  string
+		wantBaseURL   string
+	}{
+		{
+			name:         "deepseek",
+			providerCode: "deepseek",
+			profiles: []port.ManagementProviderProtocolProfile{
+				{
+					ID:              "profile_deepseek_anthropic_v1",
+					ProviderCode:    "deepseek",
+					Enabled:         true,
+					ProtocolCode:    "anthropic",
+					ProtocolVersion: "v1",
+					BaseURL:         "https://api.deepseek.com/anthropic",
+				},
+				{
+					ID:              "profile_deepseek_openai_v1",
+					ProviderCode:    "deepseek",
+					Enabled:         true,
+					ProtocolCode:    "openai",
+					ProtocolVersion: "v1",
+					BaseURL:         "https://api.deepseek.com",
+				},
+			},
+			wantProfileID: "profile_deepseek_openai_v1",
+			wantProtocol:  "openai",
+			wantBaseURL:   "https://api.deepseek.com",
+		},
+		{
+			name:         "hybrid",
+			providerCode: "hybrid",
+			profiles: []port.ManagementProviderProtocolProfile{
+				{
+					ID:              "profile_hybrid_anthropic_messages_v1",
+					ProviderCode:    "hybrid",
+					Enabled:         true,
+					ProtocolCode:    "anthropic",
+					ProtocolVersion: "v1",
+				},
+				{
+					ID:              "profile_hybrid_openai_chat_v1",
+					ProviderCode:    "hybrid",
+					Enabled:         true,
+					ProtocolCode:    "openai",
+					ProtocolVersion: "v1",
+				},
+			},
+			wantProfileID: "profile_hybrid_openai_chat_v1",
+			wantProtocol:  "openai",
+			wantBaseURL:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			option, err := managementProviderOptionFromRow(managementProviderRow{
+				ID:                         "provider_" + tt.providerCode,
+				Code:                       tt.providerCode,
+				Name:                       tt.providerCode,
+				Enabled:                    true,
+				DefaultSupportedModelsJson: `[]`,
+			}, tt.profiles, "", "")
+			if err != nil {
+				t.Fatalf("managementProviderOptionFromRow() error = %v", err)
+			}
+			if option.DefaultProtocolProfileID != tt.wantProfileID || option.ProtocolCode != tt.wantProtocol || option.BaseURL != tt.wantBaseURL {
+				t.Fatalf("option = %+v, want profile=%q protocol=%q baseURL=%q", option, tt.wantProfileID, tt.wantProtocol, tt.wantBaseURL)
+			}
+		})
+	}
+}
+
 func TestManagementProviderOptionFromRowFallsBackToSystemHealthCheckDefault(t *testing.T) {
 	profiles := []port.ManagementProviderProtocolProfile{
 		{
