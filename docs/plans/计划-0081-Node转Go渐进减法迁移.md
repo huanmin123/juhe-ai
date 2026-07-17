@@ -10,7 +10,7 @@
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证
 
-- 2026-07-17 当前进度与主线对齐：`feature/20260706-go` 已通过合并提交 `0cdaa795f` 纳入最新 `master=43001c154`。W2 external integration source Token `PATCH /__aisys__/api/external-integration-sources/{id}/tokens/{tokenId}` 的 service / store / HTTP/router/app 已完成；PostgreSQL 18.4 fresh schema `54` 真实 smoke 覆盖 partial presence、`revokedAt` 状态机、失败回滚、并发 PATCH 原子合并、Token PATCH 与来源 DELETE 的 source -> token 锁顺序以及测试资源清理。W2 provider built-in model update 已改为事务内原子锁定快照并通过 PostgreSQL 18 smoke。W3 custom provider model PATCH 已修复 Go `Find+Save` 的丢失更新窗口，改为 `FOR UPDATE` 后原子 merge，并通过实际观察第二事务 lock wait 的 PostgreSQL 18 smoke；Node 当前 owner 的同类先读后写竞态仍是剩余对齐风险。W3 captcha 在 disabled 模式下的输入校验已与 Node 对齐。上述均为已迁移切片证据，不代表整体完成：production listener、operation log ingest、前端连接真实 Go 后端 smoke、production single-owner cutover 及 W4/W5 门禁仍未完成，计划状态保持进行中。
+- 2026-07-17 当前进度与主线对齐：`feature/20260706-go` 已通过合并提交 `0ba358091` 纳入最新 `master=5d01f2db2`；本轮 master 新增的 Node 网关 / 后台探针 owner 仍留在 Node，未提前迁入 Go。Go 已修复 tier-only `serviceTierPrices` 误判并覆盖 `0` / 空 / `nil` 边界；`providers/options` 的 DeepSeek 默认 profile 与 2 项 models 已对齐 Node，Goose schema 版本为 `55`，hybrid 空 URL 契约与 frontend smoke 已修正。Node PostgreSQL 生产问题已修复：`catalog_visible` 使用 integer predicate，fresh PG 补齐 `provider_model_catalog` seed，SQLite / PostgreSQL 共享稳定 ID 避免 155 模型碰撞，PG 以单条 5735 参数批量 seed 且 `ON CONFLICT` 不覆盖已有行。真实 PostgreSQL 18 已连续两次 seed 得到 `155/155`，marker 保留，account-probe smoke 通过。前端连接真实 Go TCP listener 的只读 smoke 通过：PostgreSQL `18.4` / Goose `55`，两路 health 均为 `200`，groups=`1`、providers=`7`、modelOptions=`128`，所有 mutation / secret / detail flags 均为 `false`；表级行数证明仅写入 3 条 fixture，清理后恢复 `278` 行基线，Redis 仅承载隔离短态。以上仍不代表迁移完成：production single-owner cutover、operation log ingest 写链、W4/W5 剩余生产门禁、回滚演练和 Node 删除均未完成，计划状态保持进行中。
 
 - 2026-07-16 真实依赖与主线对齐：`feature/20260706-go` 已通过合并提交 `9c2087f94` 纳入 `origin/master=5a4ae80a5`，并完成从用户指定基线 `ddbb3d3d` 到当前最新 Node 代码的已迁移 owner 漂移复核；命中 W2/W3 管理模型目录、W4 团队 operation log、W4 授权健康字段、W5 API Key 删除 viewer 和 W1b/W6 PostgreSQL fixture 的确定差异均已同步，未迁移的网关、OAuth、健康 worker、余额和明细 writer 继续由 Node 单 owner，不提前复制。通过 SSH Docker tunnel 使用隔离 Testcontainers 实例实际执行 PostgreSQL、Redis 与 Asynq 验证，Go fresh schema 已迁移到 migration `54`；W3 provider model CRUD、W4 system teams 以及覆盖 W1b/W3/W4/W5/W6 的 10 项目标 integration 测试均真实通过，因此本文针对这些相同测试的早期“本机 Docker 不可用 / `SKIP` / 待复跑”记录已被本条后续证据覆盖，但不外推为尚未执行的跨运行时 writer、浏览器真实 listener 或生产切流证据。合并后再次通过 W3 provider model PostgreSQL smoke、`go test ./... -count=1`、`go vet ./...`、migration preflight（共 54 个连续版本）、Node backend typecheck / model catalog regression、frontend typecheck / PLAN-0081 real-Go-management regression；隔离容器和本地 tunnel 均已清理。生产单 owner 切流、回滚演练与 Node 删除仍未完成。
 - 本轮口径更新：W1b public account 仅在新增结果为 `pending_test` 后投递 `activation`，或更新的 API Key / Base URL 实际变化、显式提交 `supportedModels` 后投递 `configuration`；普通字段更新、删除和非 `pending_test` 新增不投递。投递通过 loopback Node internal bridge best-effort 触发现有健康任务。`JUHE_AI_NODE_INTERNAL_BASE_URL` 无默认、public API 开启时必填，仅允许 `http` loopback IP literal + 显式端口；`JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT` 默认 `2s`、范围 `100ms..10s`；双方共享 trim 后一致的 `JUHE_AI_SECRET`。Node Web 与 `ops-worker` 仍需运行，Node 先就绪但 Go 不做存活探测。协议固定 `POST /__aiinternal__/v1/account-health-check/dispatch`、`1024 bytes`、HMAC-SHA256、`activation/configuration`、仅 `202` 成功。失败不回滚提交，也不构成可靠交付；当前只支持同主机、同网络命名空间，internal path 不得反代公网。W7 接管健康任务并删除临时 adapter、Node route 和 env；计划状态保持进行中。
@@ -292,6 +292,7 @@
 
 | 日期 | 状态 | 记录人 | 进展 / 决策 / 阻塞 |
 | --- | --- | --- | --- |
+| 2026-07-17 | 进行中 | AI | 合并 `0ba358091` 已纳入 `master=5d01f2db2`；完成 Go tier-only 价格边界、DeepSeek options、hybrid 空 URL 与前端 smoke 对齐，并修复 Node PostgreSQL 模型目录生产 seed。真实 PG18 seed、account-probe 及前端连接真实 Go TCP listener 的只读 smoke 已通过；新增 Node 网关 / 后台探针 owner 不提前迁 Go。production single-owner cutover、operation log ingest 写链、W4/W5 剩余生产门禁、回滚和 Node 删除仍未完成。 |
 | 2026-07-06 | 进行中 | AI | 创建 Go 渐进减法迁移规划，先落文档基线，不改业务代码。 |
 | 2026-07-06 | 进行中 | AI | 根据最新决策补充 PostgreSQL + Redis 单模式目标，新增 SQLite 移除范围和旧数据离线处理边界。 |
 | 2026-07-06 | 进行中 | AI | 按 10 个 agent 审阅结果补齐 PG/Redis 基线前置、网关 W9/W10 门禁、测试命令矩阵、部署收尾、旧 SQLite 文档过渡说明和历史计划方向收口。 |
@@ -474,6 +475,7 @@
 
 ## 验证记录
 
+- 2026-07-17 真实依赖与 listener 验证：Node PostgreSQL 修复覆盖 `catalog_visible` integer predicate、fresh PG `provider_model_catalog` seed、SQLite / PostgreSQL 共享稳定 ID、单条 5735 参数批量 seed 与不覆盖既有行的 `ON CONFLICT`；真实 PostgreSQL 18 连续两次 seed 均为 `155/155`，既有 marker 保留，account-probe smoke 为 `PASS`。前端通过真实 Go TCP listener 执行只读 smoke：PostgreSQL `18.4` / Goose `55`、两路 health `200`、groups=`1`、providers=`7`、modelOptions=`128`，mutation / secret / detail flags 全部为 `false`；表级行数核对仅有 3 条 fixture insert，清理后恢复 `278` 行基线，Redis 仅使用隔离短态。该证据不覆盖 operation log ingest 写链、生产 single-owner cutover、回滚或 Node 删除。
 - 类型检查：不适用，W0 Go 工程使用 Go 验证矩阵替代 Node 类型检查。
 - 构建：已执行 `go build ./...`，通过。
 - 文档检查：已执行迁移入口检索、相对链接检查和 Go 目标存储方向检查；新增文档命名、入口索引和相对链接检查通过。
