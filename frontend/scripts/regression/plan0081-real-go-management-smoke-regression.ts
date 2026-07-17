@@ -1139,7 +1139,7 @@ async function assertReadOnlySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=7 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=3 clientIpRangeReady=true clientIpDetailChecked=true routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1345,7 +1345,7 @@ async function assertClientIPRangeNotReadySmoke(baseUrl: string): Promise<void> 
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=7 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=0 clientIpRangeReady=false clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1372,7 +1372,7 @@ async function assertClientIPRangeEmptySmoke(baseUrl: string): Promise<void> {
   assert.deepEqual(output, [formatRealGoManagementSmokeSummary(summary)])
   assert.equal(
     output[0],
-    'PLAN-0081 real Go management smoke passed groups=3 providers=2 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
+    'PLAN-0081 real Go management smoke passed groups=3 providers=7 modelOptions=2 adminApiKeyCount=2 selfApiKeyCount=1 externalIntegrationSourceTokenSecretChecked=false externalIntegrationSourcePatchChecked=false externalIntegrationSourceDeleteChecked=false clientIpItems=0 clientIpRangeReady=true clientIpDetailChecked=false routeStrategies=1 routeStrategyDetailChecked=true accountTestOptionsChecked=false publicApiLogCount=0 publicApiLogDetailChecked=false'
   )
   assert.deepEqual(requestPaths(), [
     publicAPILogsListPath(),
@@ -1934,9 +1934,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/providers/options') {
     sendEnvelope(res, [
-      providerFixture('gpt', 'GPT'),
-      providerFixture('openai', 'OpenAI')
-    ])
+      ['hybrid', 'Hybrid'],
+      ['openai', 'OpenAI'],
+      ['gpt', 'GPT'],
+      ['deepseek', 'DeepSeek'],
+      ['anthropic', 'Anthropic'],
+      ['gemini', 'Gemini'],
+      ['glm', 'GLM']
+    ].map(([code, name]) => providerFixture(code, name)))
     return
   }
   if (req.method === 'GET' && url.pathname === '/__aisys__/api/providers/models/options') {
@@ -2242,6 +2247,12 @@ function groupResponse(group: MockGroup): Record<string, unknown> {
 
 function providerFixture(code: string, name: string): Record<string, unknown> {
   const profileId = `profile_${code}_openai_v1`
+  const baseUrl = code === 'hybrid' ? '' : 'https://api.example.test/v1'
+  const defaultHealthCheckModel = code === 'hybrid'
+    ? ''
+    : code === 'gpt'
+      ? 'gpt-5.6-sol'
+      : 'provider-model'
   return {
     id: `provider_${code}`,
     code,
@@ -2250,9 +2261,9 @@ function providerFixture(code: string, name: string): Record<string, unknown> {
     defaultProtocolProfileId: profileId,
     protocolCode: 'openai',
     protocolVersion: 'v1',
-    baseUrl: 'https://api.example.test/v1',
-    defaultHealthCheckModel: code === 'gpt' ? 'gpt-5.6-sol' : 'gpt-4.1',
-    defaultSupportedModels: code === 'gpt' ? ['gpt-5.6-sol'] : ['gpt-4.1'],
+    baseUrl,
+    defaultHealthCheckModel,
+    defaultSupportedModels: code === 'gpt' ? ['gpt-5.6-sol'] : ['provider-model'],
     accountTypes: ['api_key'],
     capabilities: ['chat_completions', 'responses'],
     protocolProfiles: [{
@@ -2262,8 +2273,8 @@ function providerFixture(code: string, name: string): Record<string, unknown> {
       enabled: true,
       protocolCode: 'openai',
       protocolVersion: 'v1',
-      baseUrl: 'https://api.example.test/v1',
-      defaultHealthCheckModel: code === 'gpt' ? 'gpt-5.6-sol' : 'gpt-4.1',
+      baseUrl,
+      defaultHealthCheckModel,
       accountTypes: ['api_key'],
       capabilities: ['chat_completions', 'responses'],
       endpointFamilies: []
@@ -2480,7 +2491,7 @@ function expectedSummary(
     adminApiKeyCount: 2,
     groupCount: 3,
     selectedGroupId,
-    providerCount: 2,
+    providerCount: 7,
     modelOptionCount: 2,
     publicApiLogCount: 0,
     publicApiLogDetailChecked: false,
