@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -49,6 +50,7 @@ const (
 	w4AuthorizationUpdateSourceID         = "rauthsrc_w4_authorization_update"
 	w4AuthorizationUpdateGroupID          = "grp_w4_authorization_update_owner"
 	w4AuthorizationUpdateLogID            = "oplog_w4_authorization_update"
+	w4AuthorizationUpdateRepeatLogID      = "oplog_w4_authorization_update_repeat"
 )
 
 func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
@@ -214,17 +216,35 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 	cfg := config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true, TrustProxy: "false"}
 	server = httptest.NewServer(httpapi.NewRouter(httpapi.RouterOptions{
 		Config: cfg, Logger: logger, ManagementAPIAuthMiddleware: httpapi.NewManagementAPIAuthMiddleware(authenticator), ManagementAPIAuthTouchMiddleware: httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
-		ManagementAuthorizationUpdateHandler: httpapi.NewManagementAuthorizationUpdateHandlerWithOperationLog(service, httpapi.ManagementOperationLogOptions{Config: cfg, Logger: logger, Client: logClient, SettingsReader: store, Now: func() time.Time { return now }, NewLogID: func() string { logIDCalls++; return w4AuthorizationUpdateLogID }}),
+		ManagementAuthorizationUpdateHandler: httpapi.NewManagementAuthorizationUpdateHandlerWithOperationLog(service, httpapi.ManagementOperationLogOptions{Config: cfg, Logger: logger, Client: logClient, SettingsReader: store, Now: func() time.Time { return now }, NewLogID: func() string {
+			logIDCalls++
+			if logIDCalls == 1 {
+				return w4AuthorizationUpdateLogID
+			}
+			return w4AuthorizationUpdateRepeatLogID
+		}}),
 	}))
 
 	assertW4AuthorizationUpdateBaseline(t, ctx, db)
-	if state := readW4AuthorizationRevokeRedisDB(t, ctx, stateKeyspace); len(state) != 0 {
+	baselineSessions := readW4AuthorizationUpdateSessionSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL sessions before request", baselineSessions)
+	stateBaseline := readW4AuthorizationRevokeRedisDB(t, ctx, stateKeyspace)
+	assertW4AuthorizationUpdateRedisSecretFree(t, "state Redis before request", stateBaseline)
+	if len(stateBaseline) != 0 {
 		t.Fatal("authorization update state Redis before request is not empty")
 	}
+	queueBaselineRaw := readW4AuthorizationRevokeRedisDB(t, ctx, queueRedis)
+	assertW4AuthorizationUpdateRedisSecretFree(t, "queue Redis before request", queueBaselineRaw)
+	if stable := stableW4AuthorizationRevokeQueueRedisSnapshot(queueBaselineRaw); len(stable) != 0 {
+		t.Fatalf("authorization update stable Asynq baseline count = %d, want 0", len(stable))
+	}
 	queueBefore := readW4AuthorizationRevokeQueueInfo(t, inspector, true)
-	assertW4AuthorizationRevokeSecretFree(t, "authorization update logger before request", logs.String(), w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
-	response := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateAdminID, `{"status":"paused","limits":{"daily":{"enabled":true,"limit":17}}}`, "req_w4_authorization_update")
-	assertW4AuthorizationRevokeHTTPResponseSecretFree(t, "update success", w4AuthorizationRevokeHTTPResponse{StatusCode: response.StatusCode, Body: response.Body, Header: response.Header}, w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
+	assertW4AuthorizationUpdateSecretFree(t, "logger before request", logs.String())
+	sourceBaseline := readW4AuthorizationUpdateSourceSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL source before request", sourceBaseline)
+	payload := `{"status":"paused","limits":{"daily":{"enabled":true,"limit":17}}}`
+	response := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateAdminID, payload, "req_w4_authorization_update")
+	assertW4AuthorizationUpdateHTTPSecretFree(t, "update success", response)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("authorization update status = %d, body=%s", response.StatusCode, response.Body)
 	}
@@ -237,45 +257,87 @@ func TestW4ManagementAuthorizationUpdatePostgresRedisAsynqSmoke(t *testing.T) {
 	if envelope.Data.ID != w4AuthorizationUpdateGrantID || envelope.Data.Status != "paused" || !envelope.Data.UpdatedAt.UTC().Equal(now) {
 		t.Fatalf("authorization update response = %+v", envelope.Data)
 	}
-	assertW4AuthorizationUpdateBusinessRows(t, ctx, db, now)
-	assertW4AuthorizationUpdateInvalidations(t, ctx, stateRedis, now)
+	assertW4AuthorizationUpdateBusinessRows(t, ctx, db, now, sourceBaseline)
+	assertW4AuthorizationUpdateInvalidations(t, ctx, stateRedis, now, 1)
 	if invalidationCalls != 2 {
 		t.Fatalf("authorization update invalidations = %d, want 2", invalidationCalls)
 	}
-	stateBeforeFailure := readW4AuthorizationRevokeRedisDB(t, ctx, stateKeyspace)
-	assertW4AuthorizationRevokeRedisDBSecretFree(t, "authorization update state Redis", stateBeforeFailure, w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
-	assertW4AuthorizationRevokeExactStateKeysForNamespace(t, w4AuthorizationUpdateNamespace, stateBeforeFailure)
+	stateBeforeRepeat := readW4AuthorizationRevokeRedisDB(t, ctx, stateKeyspace)
+	assertW4AuthorizationUpdateRedisSecretFree(t, "state Redis after success", stateBeforeRepeat)
+	assertW4AuthorizationRevokeExactStateKeysForNamespace(t, w4AuthorizationUpdateNamespace, stateBeforeRepeat)
 	if err := waitForOperationLogQueueDrained(ctx, inspector, workerDone, func() error { workerMu.Lock(); defer workerMu.Unlock(); return workerErr }); err != nil {
 		t.Fatal(err)
 	}
-	queueAfter := readW4AuthorizationRevokeQueueInfo(t, inspector, false)
-	assertW4AuthorizationRevokeQueueSuccessTransition(t, queueBefore, queueAfter)
-	operationsBeforeFailure := readW4AuthorizationRevokeOperationLogSnapshot(t, ctx, db)
+	queueAfterFirst := readW4AuthorizationRevokeQueueInfo(t, inspector, false)
+	assertW4AuthorizationRevokeQueueSuccessTransition(t, queueBefore, queueAfterFirst)
+	operationsBeforeRepeat := readW4AuthorizationRevokeOperationLogSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL audit after success", operationsBeforeRepeat)
 	queueAfterSuccess := readW4AuthorizationRevokeRedisDB(t, ctx, queueRedis)
-	assertW4AuthorizationRevokeRedisDBSecretFree(t, "authorization update Asynq Redis", queueAfterSuccess, w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
-	queueStableBeforeFailure := stableW4AuthorizationRevokeQueueRedisSnapshot(queueAfterSuccess)
+	assertW4AuthorizationUpdateRedisSecretFree(t, "Asynq Redis after success", queueAfterSuccess)
+	queueStableBeforeRepeat := stableW4AuthorizationRevokeQueueRedisSnapshot(queueAfterSuccess)
+	assertW4AuthorizationRevokeAsynqTaskSnapshotPresent(t, queueStableBeforeRepeat)
+	assertW4AuthorizationUpdateOperationLog(t, ctx, db, w4AuthorizationUpdateLogID, "req_w4_authorization_update", now)
+	auditCountsAfterFirst := readW4AuthorizationUpdateAuditCounts(t, ctx, db)
+	if auditCountsAfterFirst.Logs != 1 || auditCountsAfterFirst.Targets != 3 || auditCountsAfterFirst.Viewers != 3 || auditCountsAfterFirst.Terms == 0 {
+		t.Fatalf("authorization update first audit counts = %+v", auditCountsAfterFirst)
+	}
+	businessBeforeRepeat := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL business after success", businessBeforeRepeat)
+
+	// The production contract records every successful PATCH, even when the normalized values are unchanged.
+	repeat := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateAdminID, payload, "req_w4_authorization_update_repeat")
+	assertW4AuthorizationUpdateHTTPSecretFree(t, "repeated update", repeat)
+	if repeat.StatusCode != http.StatusOK {
+		t.Fatalf("repeated authorization update status = %d", repeat.StatusCode)
+	}
+	if err := waitForOperationLogQueueDrained(ctx, inspector, workerDone, func() error { workerMu.Lock(); defer workerMu.Unlock(); return workerErr }); err != nil {
+		t.Fatal(err)
+	}
+	if got := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db); got != businessBeforeRepeat {
+		t.Fatal("authorization update business rows changed after equal-value repeat")
+	}
+	assertW4AuthorizationUpdateInvalidations(t, ctx, stateRedis, now, 3)
+	stateBeforeFailure := readW4AuthorizationRevokeRedisDB(t, ctx, stateKeyspace)
+	assertW4AuthorizationUpdateRedisSecretFree(t, "state Redis after repeat", stateBeforeFailure)
+	queueAfterRepeat := readW4AuthorizationRevokeQueueInfo(t, inspector, false)
+	assertW4AuthorizationUpdateQueueIncrement(t, queueAfterFirst, queueAfterRepeat)
+	operationsBeforeFailure := readW4AuthorizationRevokeOperationLogSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL audit after repeat", operationsBeforeFailure)
+	queueAfterRepeatRaw := readW4AuthorizationRevokeRedisDB(t, ctx, queueRedis)
+	assertW4AuthorizationUpdateRedisSecretFree(t, "Asynq Redis after repeat", queueAfterRepeatRaw)
+	queueStableBeforeFailure := stableW4AuthorizationRevokeQueueRedisSnapshot(queueAfterRepeatRaw)
+	if reflect.DeepEqual(queueStableBeforeFailure, queueStableBeforeRepeat) {
+		t.Fatal("authorization update stable Asynq snapshot did not add the repeated operation task")
+	}
 	assertW4AuthorizationRevokeAsynqTaskSnapshotPresent(t, queueStableBeforeFailure)
-	assertW4AuthorizationUpdateOperationLog(t, ctx, db, now)
-	businessBeforeFailure := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateOperationLog(t, ctx, db, w4AuthorizationUpdateRepeatLogID, "req_w4_authorization_update_repeat", now)
+	auditCountsAfterRepeat := readW4AuthorizationUpdateAuditCounts(t, ctx, db)
+	if auditCountsAfterRepeat.Logs != 2 || auditCountsAfterRepeat.Targets != 6 || auditCountsAfterRepeat.Viewers != 6 || auditCountsAfterRepeat.Terms != auditCountsAfterFirst.Terms*2 {
+		t.Fatalf("authorization update repeated audit counts = %+v, first=%+v", auditCountsAfterRepeat, auditCountsAfterFirst)
+	}
+	if invalidationCalls != 4 || logIDCalls != 2 {
+		t.Fatalf("authorization update repeat side effects = invalidations=%d logIDs=%d, want 4 and 2", invalidationCalls, logIDCalls)
+	}
 
 	// Terminal rows and a non-owner cannot mutate the committed update or emit another invalidation/log task.
 	if _, err := db.ExecContext(ctx, `UPDATE juhe_business.resource_authorization_grants SET status = 'revoked' WHERE id = $1`, w4AuthorizationUpdateGrantID); err != nil {
 		t.Fatalf("make update fixture terminal: %v", err)
 	}
 	businessTerminal := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL terminal baseline", businessTerminal)
 	terminal := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateAdminID, `{"status":"active"}`, "req_w4_authorization_update_terminal")
-	assertW4AuthorizationRevokeHTTPResponseSecretFree(t, "terminal update", w4AuthorizationRevokeHTTPResponse{StatusCode: terminal.StatusCode, Body: terminal.Body, Header: terminal.Header}, w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
+	assertW4AuthorizationUpdateHTTPSecretFree(t, "terminal update", terminal)
 	if terminal.StatusCode != http.StatusNotFound {
 		t.Fatalf("terminal authorization update status = %d, body=%s", terminal.StatusCode, terminal.Body)
 	}
-	assertW4AuthorizationUpdateNoSideEffects(t, ctx, db, stateKeyspace, queueRedis, inspector, businessTerminal, operationsBeforeFailure, stateBeforeFailure, queueStableBeforeFailure, queueAfter, invalidationCalls, logIDCalls)
+	assertW4AuthorizationUpdateNoSideEffects(t, ctx, db, stateKeyspace, queueRedis, inspector, businessTerminal, operationsBeforeFailure, stateBeforeFailure, queueStableBeforeFailure, queueAfterRepeat, invalidationCalls, logIDCalls)
 	denied := doW4AuthorizationUpdateRequest(t, ctx, server.URL, w4AuthorizationUpdateGranteeID, `{"status":"active"}`, "req_w4_authorization_update_denied")
-	assertW4AuthorizationRevokeHTTPResponseSecretFree(t, "denied update", w4AuthorizationRevokeHTTPResponse{StatusCode: denied.StatusCode, Body: denied.Body, Header: denied.Header}, w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
+	assertW4AuthorizationUpdateHTTPSecretFree(t, "denied update", denied)
 	if denied.StatusCode != http.StatusForbidden {
 		t.Fatalf("non-admin authorization update status = %d, body=%s", denied.StatusCode, denied.Body)
 	}
-	assertW4AuthorizationUpdateNoSideEffects(t, ctx, db, stateKeyspace, queueRedis, inspector, businessTerminal, operationsBeforeFailure, stateBeforeFailure, queueStableBeforeFailure, queueAfter, invalidationCalls, logIDCalls)
-	assertW4AuthorizationRevokeSecretFree(t, "authorization update PostgreSQL and logger", businessBeforeFailure+businessTerminal+operationsBeforeFailure+readW4AuthorizationUpdateSessionSnapshot(t, ctx, db)+logs.String(), w4AuthorizationUpdateToken, w4AuthorizationUpdateCanary)
+	assertW4AuthorizationUpdateNoSideEffects(t, ctx, db, stateKeyspace, queueRedis, inspector, businessTerminal, operationsBeforeFailure, stateBeforeFailure, queueStableBeforeFailure, queueAfterRepeat, invalidationCalls, logIDCalls)
+	assertW4AuthorizationUpdateSecretFree(t, "final PostgreSQL and logger", businessTerminal+operationsBeforeFailure+readW4AuthorizationUpdateSessionSnapshot(t, ctx, db)+logs.String())
 }
 
 type w4AuthorizationUpdateResponse struct {
@@ -333,16 +395,33 @@ func insertW4AuthorizationUpdateFixture(t *testing.T, ctx context.Context, db *s
 
 func assertW4AuthorizationUpdateBaseline(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
-	var count int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM juhe_business.resource_authorization_grants WHERE id=$1 AND status='active'`, w4AuthorizationUpdateGrantID).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("authorization update active grant baseline: count=%d err=%v", count, err)
+	for _, row := range []struct{ table, id string }{{"resource_authorization_grants", w4AuthorizationUpdateGrantID}, {"resource_authorizations", w4AuthorizationUpdateRuntimeID}, {"resource_authorization_sources", w4AuthorizationUpdateSourceID}} {
+		var count int
+		if err := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM juhe_business.%s WHERE id=$1 AND status='active'`, row.table), row.id).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("authorization update active %s baseline: count=%d err=%v", row.table, count, err)
+		}
 	}
+	var count int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM juhe_business.group_account_stats_dirty WHERE group_id='__all__'`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("authorization update dirty baseline: count=%d err=%v", count, err)
 	}
+	var logs, targets, viewers, terms int
+	if err := db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM juhe_dataset.operation_logs), (SELECT count(*) FROM juhe_dataset.operation_log_targets), (SELECT count(*) FROM juhe_dataset.operation_log_viewers), (SELECT count(*) FROM juhe_dataset.operation_log_summary_search_terms)`).Scan(&logs, &targets, &viewers, &terms); err != nil {
+		t.Fatalf("read authorization update audit baseline counts: %v", err)
+	}
+	if logs != 0 || targets != 0 || viewers != 0 || terms != 0 {
+		t.Fatalf("authorization update audit baseline counts = logs=%d targets=%d viewers=%d terms=%d", logs, targets, viewers, terms)
+	}
+	var sessions, hashOnly int
+	if err := db.QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE token_hash <> '' AND token_hash <> $1 AND token_hash <> $2) FROM juhe_business.system_sessions WHERE id IN ($3,$4)`, w4AuthorizationUpdateToken, w4AuthorizationUpdateGranteeToken, w4AuthorizationUpdateSessionID, w4AuthorizationUpdateGranteeSessionID).Scan(&sessions, &hashOnly); err != nil {
+		t.Fatalf("read authorization update session baseline: %v", err)
+	}
+	if sessions != 2 || hashOnly != 2 {
+		t.Fatalf("authorization update session baseline = sessions=%d hashOnly=%d, want 2 and 2", sessions, hashOnly)
+	}
 }
 
-func assertW4AuthorizationUpdateBusinessRows(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {
+func assertW4AuthorizationUpdateBusinessRows(t *testing.T, ctx context.Context, db *sql.DB, now time.Time, sourceBaseline string) {
 	t.Helper()
 	for _, row := range []struct {
 		table, id, wantStatus string
@@ -357,13 +436,25 @@ func assertW4AuthorizationUpdateBusinessRows(t *testing.T, ctx context.Context, 
 			t.Fatalf("updated %s = status=%q updated=%s", row.table, status, updated)
 		}
 	}
+	for _, row := range []struct{ table, id string }{{"resource_authorization_grants", w4AuthorizationUpdateGrantID}, {"resource_authorizations", w4AuthorizationUpdateRuntimeID}} {
+		var matches bool
+		if err := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT limits_json::jsonb = '{"daily":{"enabled":true,"limit":17}}'::jsonb FROM juhe_business.%s WHERE id=$1`, row.table), row.id).Scan(&matches); err != nil {
+			t.Fatalf("read authorization update %s limits: %v", row.table, err)
+		}
+		if !matches {
+			t.Fatalf("authorization update %s limits_json does not equal expected daily limit", row.table)
+		}
+	}
+	if got := readW4AuthorizationUpdateSourceSnapshot(t, ctx, db); got != sourceBaseline {
+		t.Fatal("authorization update source row changed")
+	}
 	var reason string
 	if err := db.QueryRowContext(ctx, `SELECT reason FROM juhe_business.group_account_stats_dirty WHERE group_id='__all__'`).Scan(&reason); err != nil || reason != managementauthorizations.ResourceAuthorizationUpdatedReason {
 		t.Fatalf("authorization update dirty reason=%q err=%v", reason, err)
 	}
 }
 
-func assertW4AuthorizationUpdateInvalidations(t *testing.T, ctx context.Context, client *redisplatform.Client, now time.Time) {
+func assertW4AuthorizationUpdateInvalidations(t *testing.T, ctx context.Context, client *redisplatform.Client, now time.Time, firstVersion int) {
 	t.Helper()
 	for index, topic := range []string{gatewaycache.GatewayRuntimeCacheTopic, gatewaycache.AuthorizationQuotaCacheTopic} {
 		key, err := gatewaycache.RuntimeStateKey(w4AuthorizationUpdateNamespace, gatewaycache.RuntimeInvalidationStoreName, "topic:"+topic)
@@ -378,8 +469,8 @@ func assertW4AuthorizationUpdateInvalidations(t *testing.T, ctx context.Context,
 		if err := json.Unmarshal(raw, &state); err != nil {
 			t.Fatal(err)
 		}
-		if state.Version != fmt.Sprintf("w4-authorization-update-version-%d", index+1) || state.Reason != managementauthorizations.ResourceAuthorizationUpdatedReason || state.PublishedAt != now.Format("2006-01-02T15:04:05.000Z") {
-			t.Fatalf("authorization update invalidation = %+v", state)
+		if state.Version != fmt.Sprintf("w4-authorization-update-version-%d", firstVersion+index) || state.Reason != managementauthorizations.ResourceAuthorizationUpdatedReason || state.PublishedAt != now.Format("2006-01-02T15:04:05.000Z") {
+			t.Fatalf("authorization update invalidation fields do not match expected topic index %d", index)
 		}
 	}
 }
@@ -394,6 +485,7 @@ func assertW4AuthorizationRevokeExactStateKeysForNamespace(t *testing.T, namespa
 		}
 		want = append(want, key)
 	}
+	sort.Strings(want)
 	got := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if entry.Type != "string" {
@@ -401,8 +493,9 @@ func assertW4AuthorizationRevokeExactStateKeysForNamespace(t *testing.T, namespa
 		}
 		got = append(got, entry.Key)
 	}
+	sort.Strings(got)
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("authorization update state keys = %v, want %v", got, want)
+		t.Fatalf("authorization update state key count/digest mismatch: got=%d want=%d", len(got), len(want))
 	}
 }
 
@@ -418,50 +511,200 @@ func readW4AuthorizationUpdateBusinessSnapshot(t *testing.T, ctx context.Context
 func readW4AuthorizationUpdateSessionSnapshot(t *testing.T, ctx context.Context, db *sql.DB) string {
 	t.Helper()
 	var raw string
-	if err := db.QueryRowContext(ctx, `SELECT row_to_json(s)::text FROM juhe_business.system_sessions s WHERE id = $1`, w4AuthorizationUpdateSessionID).Scan(&raw); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(to_jsonb(s) ORDER BY s.id),'[]'::jsonb)::text FROM juhe_business.system_sessions s WHERE s.id IN ($1,$2)`, w4AuthorizationUpdateSessionID, w4AuthorizationUpdateGranteeSessionID).Scan(&raw); err != nil {
 		t.Fatalf("read authorization update session snapshot: %v", err)
 	}
 	return raw
 }
 
-func assertW4AuthorizationUpdateOperationLog(t *testing.T, ctx context.Context, db *sql.DB, now time.Time) {
+func readW4AuthorizationUpdateSourceSnapshot(t *testing.T, ctx context.Context, db *sql.DB) string {
 	t.Helper()
-	var key, action, method, path string
+	var raw string
+	if err := db.QueryRowContext(ctx, `SELECT to_jsonb(s)::text FROM juhe_business.resource_authorization_sources s WHERE id=$1`, w4AuthorizationUpdateSourceID).Scan(&raw); err != nil {
+		t.Fatalf("read authorization update source snapshot: %v", err)
+	}
+	return raw
+}
+
+type w4AuthorizationUpdateAuditCounts struct {
+	Logs    int
+	Targets int
+	Viewers int
+	Terms   int
+}
+
+func readW4AuthorizationUpdateAuditCounts(t *testing.T, ctx context.Context, db *sql.DB) w4AuthorizationUpdateAuditCounts {
+	t.Helper()
+	var counts w4AuthorizationUpdateAuditCounts
+	if err := db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM juhe_dataset.operation_logs), (SELECT count(*) FROM juhe_dataset.operation_log_targets), (SELECT count(*) FROM juhe_dataset.operation_log_viewers), (SELECT count(*) FROM juhe_dataset.operation_log_summary_search_terms)`).Scan(&counts.Logs, &counts.Targets, &counts.Viewers, &counts.Terms); err != nil {
+		t.Fatalf("read authorization update audit counts: %v", err)
+	}
+	return counts
+}
+
+func assertW4AuthorizationUpdateOperationLog(t *testing.T, ctx context.Context, db *sql.DB, logID, traceID string, now time.Time) {
+	t.Helper()
+	var trace, actor, scope, mode, module, action, key, resourceType, resourceID, resourceName, summary, changes, method, path string
 	var status int
-	if err := db.QueryRowContext(ctx, `SELECT operation_key, action, method, path, status_code FROM juhe_dataset.operation_logs WHERE id=$1`, w4AuthorizationUpdateLogID).Scan(&key, &action, &method, &path, &status); err != nil {
+	var createdAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT trace_id, actor_system_account_id, operation_scope_system_account_id, mode, module, action, operation_key, resource_type, resource_id, resource_name, summary, changes_json, method, path, status_code, created_at FROM juhe_dataset.operation_logs WHERE id=$1`, logID).Scan(&trace, &actor, &scope, &mode, &module, &action, &key, &resourceType, &resourceID, &resourceName, &summary, &changes, &method, &path, &status, &createdAt); err != nil {
 		t.Fatalf("read authorization update operation log: %v", err)
 	}
-	if key != "authorizations.update" || action != "update" || method != http.MethodPatch || path != "/__aisys__/api/authorizations/"+w4AuthorizationUpdateGrantID || status != http.StatusOK {
-		t.Fatalf("authorization update operation log = key=%q action=%q method=%q path=%q status=%d", key, action, method, path, status)
+	if trace != traceID || actor != w4AuthorizationUpdateAdminID || scope != w4AuthorizationUpdateOwnerID || mode != "admin" || module != "authorizations" || action != "update" || key != "authorizations.update" || resourceType != "authorization" || resourceID != w4AuthorizationUpdateGrantID || resourceName != "W4 Update Owner Group" || summary != "更新资源授权：W4 Update Owner Group -> W4 Update Grantee" || method != http.MethodPatch || path != "/__aisys__/api/authorizations/"+w4AuthorizationUpdateGrantID || status != http.StatusOK || !createdAt.UTC().Equal(now) {
+		t.Fatal("authorization update operation log core fields do not match the HTTP contract")
 	}
-	var targets, viewers, terms int
-	if err := db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM juhe_dataset.operation_log_targets WHERE operation_log_id=$1), (SELECT count(*) FROM juhe_dataset.operation_log_viewers WHERE operation_log_id=$1), (SELECT count(*) FROM juhe_dataset.operation_log_summary_search_terms WHERE operation_log_id=$1)`, w4AuthorizationUpdateLogID).Scan(&targets, &viewers, &terms); err != nil {
-		t.Fatal(err)
+	var decoded []struct {
+		Field string          `json:"field"`
+		After json.RawMessage `json:"after"`
 	}
-	if targets != 3 || viewers != 3 || terms == 0 {
-		t.Fatalf("authorization update operation log relations = targets=%d viewers=%d terms=%d", targets, viewers, terms)
+	if err := json.Unmarshal([]byte(changes), &decoded); err != nil {
+		t.Fatalf("decode authorization update changes: %v", err)
 	}
-	_ = now
+	if len(decoded) != 2 || decoded[0].Field != "status" || string(decoded[0].After) != `"paused"` || decoded[1].Field != "limits" {
+		t.Fatal("authorization update changes do not contain exact status and limits fields")
+	}
+	var limits struct {
+		Daily struct {
+			Enabled bool `json:"enabled"`
+			Limit   int  `json:"limit"`
+		} `json:"daily"`
+	}
+	if err := json.Unmarshal(decoded[1].After, &limits); err != nil || !limits.Daily.Enabled || limits.Daily.Limit != 17 {
+		t.Fatalf("decode authorization update audit limits: %v", err)
+	}
+	assertW4AuthorizationUpdateTargets(t, ctx, db, logID)
+	assertW4AuthorizationUpdateViewers(t, ctx, db, logID)
+	assertW4AuthorizationUpdateTerms(t, ctx, db, logID)
+}
+
+func assertW4AuthorizationUpdateTargets(t *testing.T, ctx context.Context, db *sql.DB, logID string) {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `SELECT target_type, COALESCE(target_id,''), COALESCE(target_name,''), COALESCE(target_owner_system_account_id,''), relation FROM juhe_dataset.operation_log_targets WHERE operation_log_id=$1`, logID)
+	if err != nil {
+		t.Fatalf("query authorization update targets: %v", err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var kind, id, name, owner, relation string
+		if err := rows.Scan(&kind, &id, &name, &owner, &relation); err != nil {
+			t.Fatalf("scan authorization update target: %v", err)
+		}
+		got[relation] = strings.Join([]string{kind, id, name, owner}, "|")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate authorization update targets: %v", err)
+	}
+	want := map[string]string{"owner": "group|" + w4AuthorizationUpdateGroupID + "|W4 Update Owner Group|" + w4AuthorizationUpdateOwnerID, "grantee": "system_account|" + w4AuthorizationUpdateGranteeID + "|W4 Update Grantee|" + w4AuthorizationUpdateGranteeID, "primary": "authorization|" + w4AuthorizationUpdateGrantID + "|W4 Update Owner Group|" + w4AuthorizationUpdateOwnerID}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatal("authorization update target semantics do not match owner/grantee/primary contract")
+	}
+}
+
+func assertW4AuthorizationUpdateViewers(t *testing.T, ctx context.Context, db *sql.DB, logID string) {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `SELECT system_account_id, visibility_reason, detail_level FROM juhe_dataset.operation_log_viewers WHERE operation_log_id=$1`, logID)
+	if err != nil {
+		t.Fatalf("query authorization update viewers: %v", err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var account, reason, detail string
+		if err := rows.Scan(&account, &reason, &detail); err != nil {
+			t.Fatalf("scan authorization update viewer: %v", err)
+		}
+		got[account+"|"+reason] = detail
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate authorization update viewers: %v", err)
+	}
+	want := map[string]string{w4AuthorizationUpdateAdminID + "|actor_self": "full", w4AuthorizationUpdateOwnerID + "|authorization_owner": "full", w4AuthorizationUpdateGranteeID + "|authorization_grantee": "full"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatal("authorization update viewer identity/reason/detail semantics do not match")
+	}
+}
+
+func assertW4AuthorizationUpdateTerms(t *testing.T, ctx context.Context, db *sql.DB, logID string) {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `SELECT term FROM juhe_dataset.operation_log_summary_search_terms WHERE operation_log_id=$1`, logID)
+	if err != nil {
+		t.Fatalf("query authorization update search terms: %v", err)
+	}
+	defer rows.Close()
+	got := map[string]bool{}
+	for rows.Next() {
+		var term string
+		if err := rows.Scan(&term); err != nil {
+			t.Fatalf("scan authorization update search term: %v", err)
+		}
+		got[term] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate authorization update search terms: %v", err)
+	}
+	for _, want := range []string{"w4", "update", "owner", "group", "grantee"} {
+		if !got[want] {
+			t.Fatalf("authorization update search terms missing expected token %q", want)
+		}
+	}
+}
+
+func assertW4AuthorizationUpdateQueueIncrement(t *testing.T, before, after queue.QueueInfo) {
+	t.Helper()
+	if before.Pending != 0 || before.Active != 0 || before.Retry != 0 || before.Archived != 0 || after.Pending != 0 || after.Active != 0 || after.Retry != 0 || after.Archived != 0 || after.Size != before.Size+1 || after.Completed != before.Completed+1 {
+		t.Fatalf("authorization update repeat queue transition invalid: before=%+v after=%+v", before, after)
+	}
+}
+
+func assertW4AuthorizationUpdateSecretFree(t *testing.T, label, raw string) {
+	t.Helper()
+	assertW4AuthorizationRevokeSecretFree(t, label, raw, w4AuthorizationUpdateToken, w4AuthorizationUpdateGranteeToken, w4AuthorizationUpdateCanary)
+}
+
+func assertW4AuthorizationUpdateHTTPSecretFree(t *testing.T, label string, response w4AuthorizationUpdateResponse) {
+	t.Helper()
+	assertW4AuthorizationUpdateSecretFree(t, label+" HTTP body", response.Body)
+	index := 0
+	for name, values := range response.Header {
+		assertW4AuthorizationUpdateSecretFree(t, fmt.Sprintf("%s HTTP header entry %d", label, index), name+"\n"+strings.Join(values, "\n"))
+		index++
+	}
+}
+
+func assertW4AuthorizationUpdateRedisSecretFree(t *testing.T, label string, entries []w4AuthorizationRevokeRedisEntry) {
+	t.Helper()
+	for index, entry := range entries {
+		assertW4AuthorizationUpdateSecretFree(t, fmt.Sprintf("%s entry %d key_sha256=%s", label, index, w4AuthorizationRevokeShortDigest(entry.Key)), entry.Key+"\n"+entry.Value)
+	}
 }
 
 func assertW4AuthorizationUpdateNoSideEffects(t *testing.T, ctx context.Context, db *sql.DB, state *goredis.Client, queueDB *goredis.Client, inspector *queue.Inspector, wantBusiness, wantOperations string, wantState, wantQueue []w4AuthorizationRevokeRedisEntry, wantQueueInfo queue.QueueInfo, invalidations, logIDs int) {
 	t.Helper()
-	if got := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db); got != wantBusiness {
+	gotBusiness := readW4AuthorizationUpdateBusinessSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL business after rejected update", gotBusiness)
+	if gotBusiness != wantBusiness {
 		t.Fatal("authorization update business changed after failed request")
 	}
-	if got := readW4AuthorizationRevokeOperationLogSnapshot(t, ctx, db); got != wantOperations {
+	gotOperations := readW4AuthorizationRevokeOperationLogSnapshot(t, ctx, db)
+	assertW4AuthorizationUpdateSecretFree(t, "PostgreSQL audit after rejected update", gotOperations)
+	if gotOperations != wantOperations {
 		t.Fatal("authorization update operation logs changed after failed request")
 	}
-	if got := readW4AuthorizationRevokeRedisDB(t, ctx, state); !reflect.DeepEqual(got, wantState) {
+	gotState := readW4AuthorizationRevokeRedisDB(t, ctx, state)
+	assertW4AuthorizationUpdateRedisSecretFree(t, "state Redis after rejected update", gotState)
+	if !reflect.DeepEqual(gotState, wantState) {
 		t.Fatal("authorization update state Redis changed after failed request")
 	}
-	if got := stableW4AuthorizationRevokeQueueRedisSnapshot(readW4AuthorizationRevokeRedisDB(t, ctx, queueDB)); !reflect.DeepEqual(got, wantQueue) {
+	queueRaw := readW4AuthorizationRevokeRedisDB(t, ctx, queueDB)
+	assertW4AuthorizationUpdateRedisSecretFree(t, "Asynq Redis after rejected update", queueRaw)
+	if got := stableW4AuthorizationRevokeQueueRedisSnapshot(queueRaw); !reflect.DeepEqual(got, wantQueue) {
 		t.Fatal("authorization update queue snapshot changed after failed request")
 	}
 	if got := readW4AuthorizationRevokeQueueInfo(t, inspector, false); got != wantQueueInfo {
 		t.Fatal("authorization update queue counters changed after failed request")
 	}
-	if invalidations != 2 || logIDs != 1 {
+	if invalidations != 4 || logIDs != 2 {
 		t.Fatalf("authorization update failed side effects = invalidations=%d logIDs=%d", invalidations, logIDs)
 	}
 }
