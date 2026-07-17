@@ -268,6 +268,8 @@ func TestW4ManagementAuthorizationRevokePostgresRedisAsynqSmoke(t *testing.T) {
 	}
 	businessBeforeRepeat := readW4AuthorizationRevokeBusinessSnapshot(t, ctx, db)
 	assertW4AuthorizationRevokeSecretFree(t, "PostgreSQL business after success", businessBeforeRepeat, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
+	sessionAfterSuccess := readW4AuthorizationRevokeSessionSnapshot(t, ctx, db)
+	assertW4AuthorizationRevokeSecretFree(t, "PostgreSQL session after success touch", sessionAfterSuccess, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
 	stateBeforeRepeat := readW4AuthorizationRevokeRedisDB(t, ctx, keyspaceRedis)
 	assertW4AuthorizationRevokeRedisDBSecretFree(t, "state Redis after success", stateBeforeRepeat, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
 	assertW4AuthorizationRevokeSecretFree(t, "logger after business commit", logBuffer.String(), w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
@@ -312,6 +314,9 @@ func TestW4ManagementAuthorizationRevokePostgresRedisAsynqSmoke(t *testing.T) {
 	}
 	businessAfterRepeat := readW4AuthorizationRevokeBusinessSnapshot(t, ctx, db)
 	assertW4AuthorizationRevokeSecretFree(t, "PostgreSQL business after repeat", businessAfterRepeat, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
+	// Authentication touch may update session timestamps, so scan each snapshot without requiring row equality.
+	sessionAfterRepeat := readW4AuthorizationRevokeSessionSnapshot(t, ctx, db)
+	assertW4AuthorizationRevokeSecretFree(t, "PostgreSQL session after repeat touch", sessionAfterRepeat, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
 	operationLogsAfterRepeat := readW4AuthorizationRevokeOperationLogSnapshot(t, ctx, db)
 	assertW4AuthorizationRevokeSecretFree(t, "PostgreSQL operation logs after repeat", operationLogsAfterRepeat, w4AuthorizationRevokeToken, w4AuthorizationRevokeCanary)
 	stateAfterRepeat := readW4AuthorizationRevokeRedisDB(t, ctx, keyspaceRedis)
@@ -663,6 +668,19 @@ func readW4AuthorizationRevokeBusinessSnapshot(t *testing.T, ctx context.Context
 	var raw string
 	if err := db.QueryRowContext(ctx, `SELECT jsonb_build_object('grants', (SELECT COALESCE(jsonb_agg(to_jsonb(g) ORDER BY g.id), '[]'::jsonb) FROM juhe_business.resource_authorization_grants g WHERE g.id = $1), 'runtime', (SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.id), '[]'::jsonb) FROM juhe_business.resource_authorizations r WHERE r.id = $2), 'sources', (SELECT COALESCE(jsonb_agg(to_jsonb(s) ORDER BY s.id), '[]'::jsonb) FROM juhe_business.resource_authorization_sources s WHERE s.id = $3), 'dirty', (SELECT COALESCE(jsonb_agg(to_jsonb(d) ORDER BY d.group_id), '[]'::jsonb) FROM juhe_business.group_account_stats_dirty d WHERE d.group_id = '__all__'))::text`, w4AuthorizationRevokeGrantID, w4AuthorizationRevokeRuntimeID, w4AuthorizationRevokeSourceID).Scan(&raw); err != nil {
 		t.Fatalf("read authorization revoke business snapshot: %v", err)
+	}
+	return raw
+}
+
+func readW4AuthorizationRevokeSessionSnapshot(t *testing.T, ctx context.Context, db *sql.DB) string {
+	t.Helper()
+	var raw string
+	if err := db.QueryRowContext(ctx, `
+SELECT row_to_json(s)::text
+FROM juhe_business.system_sessions s
+WHERE s.id = $1
+`, w4AuthorizationRevokeSessionID).Scan(&raw); err != nil {
+		t.Fatalf("read authorization revoke session snapshot: %v", err)
 	}
 	return raw
 }
