@@ -33,6 +33,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizations"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -269,13 +270,19 @@ func TestW4ManagementAuthorizationWritePostgresRedisAsynqSmoke(t *testing.T) {
 	})
 	httpServer = httptest.NewServer(router)
 
+	dailyLimit := port.ManagementRequestQuotaLimit{Enabled: true, Limit: 17}
+	limitsFixture := port.ManagementRequestQuotaLimits{Daily: &dailyLimit}
+	limitsJSON, err := json.Marshal(limitsFixture)
+	if err != nil {
+		t.Fatalf("marshal authorization limits fixture: %v", err)
+	}
 	createBody := `{
 		"resourceType":"group",
 		"resourceId":"` + w4AuthorizationWriteGroupID + `",
 		"granteeType":"system_account",
 		"granteeId":"` + w4AuthorizationWriteGranteeID + `",
 		"remark":"W4 authorization write smoke",
-		"limits":{"daily":{"enabled":true,"limit":17}}
+		"limits":` + string(limitsJSON) + `
 	}`
 	createResponse := doW4AuthorizationWriteRequest(t, ctx, httpServer.URL, createBody, "req_w4_authorization_write_create")
 	if createResponse.StatusCode != http.StatusCreated {
@@ -311,7 +318,7 @@ func TestW4ManagementAuthorizationWritePostgresRedisAsynqSmoke(t *testing.T) {
 	if queueBeforeDuplicate.Completed != 1 {
 		t.Fatalf("operation log queue completed = %d, want 1", queueBeforeDuplicate.Completed)
 	}
-	assertW4AuthorizationWriteOperationLog(t, ctx, db, created, now)
+	assertW4AuthorizationWriteOperationLog(t, ctx, db, created, now, string(limitsJSON))
 	countsBeforeDuplicate := readW4AuthorizationWriteCounts(t, ctx, db)
 	if countsBeforeDuplicate != (w4AuthorizationWriteCounts{
 		Grants:              1,
@@ -861,6 +868,7 @@ func assertW4AuthorizationWriteOperationLog(
 	db *sql.DB,
 	created managementauthorizations.Summary,
 	now time.Time,
+	wantLimitsJSON string,
 ) {
 	t.Helper()
 	var (
@@ -930,13 +938,13 @@ func assertW4AuthorizationWriteOperationLog(
 		!createdAt.UTC().Equal(now) {
 		t.Fatalf("authorization operation log mismatch: key=%q resource=%q summary=%q trace=%q actor=%q scope=%q", operationKey, resourceID, summary, traceID, actorID, scopeID)
 	}
-	assertW4AuthorizationWriteChanges(t, changesJSON)
+	assertW4AuthorizationWriteChanges(t, changesJSON, wantLimitsJSON)
 	assertW4AuthorizationWriteTargets(t, ctx, db, created.ID)
 	assertW4AuthorizationWriteViewers(t, ctx, db)
 	assertW4AuthorizationWriteSearchTerms(t, ctx, db)
 }
 
-func assertW4AuthorizationWriteChanges(t *testing.T, raw string) {
+func assertW4AuthorizationWriteChanges(t *testing.T, raw string, wantLimitsJSON string) {
 	t.Helper()
 	var changes []struct {
 		Field     string          `json:"field"`
@@ -955,7 +963,7 @@ func assertW4AuthorizationWriteChanges(t *testing.T, raw string) {
 		"",
 		"active",
 		"",
-		"{}",
+		wantLimitsJSON,
 	}
 	wantFields := []struct {
 		field string
