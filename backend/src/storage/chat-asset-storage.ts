@@ -7,8 +7,8 @@ import { pipeline } from 'node:stream/promises'
 
 import { runtimeConfig } from '../config/runtime.js'
 
-export const chatAssetOriginalMaxBytes = 32 * 1024 * 1024
-export const chatAssetProcessedMaxBytes = 4 * 1024 * 1024
+export const chatAssetOriginalMaxBytes = 1024 * 1024
+export const chatAssetProcessedMaxBytes = 1024 * 1024
 
 export class ChatAssetStorageError extends Error {
   constructor(public readonly code: 'chat_asset_empty' | 'chat_asset_too_large' | 'chat_asset_integrity_mismatch', message: string) {

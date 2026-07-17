@@ -45,6 +45,8 @@ import { createChatComposerKeyDownHandler } from './chatComposerKeyDownHandler'
 import { reasoningEffortLabel, selectableChatReasoningEfforts } from './chatModelControls'
 import { replaceEditorContentWithoutHistory } from './chatEditorDocumentBoundary'
 import { maxChatImageCount, selectChatImageFiles, selectChatImageFileSlots } from './chatImageSelection'
+import { createChatImagePreparationState } from './chatImagePreparationState'
+import { prepareChatImageForUpload } from './chatImageProcessing'
 import type { ChatContextStatus, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 
 const props = defineProps<{
@@ -74,7 +76,10 @@ const commandOpen = ref(false)
 const commandQuery = ref('')
 const commandIndex = ref(0)
 const contentRevision = ref(0)
-let conversationGeneration = 0
+const imagePreparationState = createChatImagePreparationState()
+const initialImagePreparationSnapshot = imagePreparationState.snapshot()
+const pendingImagePreparationCount = ref(initialImagePreparationSnapshot.pendingCount)
+let conversationGeneration = initialImagePreparationSnapshot.generation
 let imageSyncScheduled = false
 
 type ImageUploadStatus = 'uploading' | 'uploaded' | 'failed'
@@ -125,19 +130,18 @@ const editor = useEditor({
       const imageFiles = files.filter((file) => file.type.startsWith('image/'))
       if (!imageFiles.length) return false
       if (!props.imageInputSupported) { message.warning('当前模型不支持图片输入'); return true }
-      const imageFileSlots = selectChatImageFileSlots(imageFiles, imageItems.value.length)
+      const imageFileSlots = selectChatImageFileSlots(imageFiles, imageItems.value.length + pendingImagePreparationCount.value)
       const selectedFiles = imageFileSlots.filter((file): file is File => Boolean(file))
-      if (selectedFiles.length < imageFiles.length) message.warning(`每条消息最多 ${maxChatImageCount} 张图片，单张不能超过 32 MiB`)
+      if (selectedFiles.length < imageFiles.length) message.warning(`每条消息最多 ${maxChatImageCount} 张图片；原图不能超过 32 MiB，压缩后每张不能超过 1 MiB`)
       const html = event.clipboardData?.getData('text/html') ?? ''
       if (html && selectedFiles.length) {
         const clipboardDocument = new DOMParser().parseFromString(html, 'text/html')
         if (clipboardDocument.body.querySelector('img')) {
-          insertMixedClipboardParts(chatMixedClipboardParts(clipboardDocument.body, imageFileSlots))
+          void insertMixedClipboardParts(chatMixedClipboardParts(clipboardDocument.body, imageFileSlots))
           return true
         }
       }
-      insertClipboardText(event.clipboardData?.getData('text/plain') ?? '')
-      for (const file of selectedFiles) insertImage(file)
+      void insertPlainClipboardParts(event.clipboardData?.getData('text/plain') ?? '', selectedFiles)
       return true
     }
   },
@@ -199,9 +203,10 @@ const hasContent = computed(() => {
   return Boolean(editor.value && (editor.value.getText().trim() || imageItems.value.length))
 })
 const imagesReady = computed(() => imageItems.value.every((item) => item.uploadStatus === 'uploaded' && Boolean(item.assetId)))
-const canSubmit = computed(() => Boolean(hasContent.value && props.modelValue && !props.modelsLoading && imagesReady.value && !props.disabled && !props.turnLimitReached && (props.imageInputSupported || imageItems.value.length === 0)))
+const canSubmit = computed(() => Boolean(hasContent.value && props.modelValue && !props.modelsLoading && imagesReady.value && pendingImagePreparationCount.value === 0 && !props.disabled && !props.turnLimitReached && (props.imageInputSupported || imageItems.value.length === 0)))
 const sendTooltip = computed(() => {
   if (props.turnLimitReached) return props.turnLimitMessage
+  if (pendingImagePreparationCount.value > 0) return '图片正在压缩，请稍候'
   if (imageItems.value.some((item) => item.uploadStatus === 'failed')) return '请重试或删除上传失败的图片'
   if (!imagesReady.value) return '请等待图片上传完成'
   if (imageItems.value.length && !props.imageInputSupported) return '当前模型不支持图片输入'
@@ -213,7 +218,7 @@ watch(() => props.imageInputSupported, () => {
 })
 watch(() => props.conversationId, (conversationId, previousConversationId) => {
   if (!previousConversationId || conversationId === previousConversationId) return
-  conversationGeneration += 1
+  advanceConversationGeneration()
   disposeImageUploadRecords(true)
   if (editor.value) replaceEditorContentWithoutHistory(editor.value, emptyComposerDocument())
   contentRevision.value += 1
@@ -269,7 +274,7 @@ function setBlocks(blocks: ChatInputBlock[]): void {
   contentRevision.value += 1
 }
 function restore(snapshot: JSONContent): void { for (const record of imageUploadRecords.values()) record.submitted = false; if (editor.value) replaceEditorContentWithoutHistory(editor.value, cloneDocument(snapshot)); contentRevision.value += 1; scheduleImageNodeSync(); editor.value?.commands.focus('end') }
-function clear(): void { conversationGeneration += 1; disposeImageUploadRecords(true); if (editor.value) replaceEditorContentWithoutHistory(editor.value, emptyComposerDocument()); contentRevision.value += 1 }
+function clear(): void { advanceConversationGeneration(); disposeImageUploadRecords(true); if (editor.value) replaceEditorContentWithoutHistory(editor.value, emptyComposerDocument()); contentRevision.value += 1 }
 function focus(): void { editor.value?.commands.focus() }
 function releaseSubmittedAssets(): void {
   const retainedLocalIds = new Set<string>()
@@ -317,16 +322,37 @@ function selectCommand(item: ChatComposerCommand): void {
   }
   commandOpen.value = false
 }
-function insertImage(file: File): void {
-  if (!props.imageInputSupported || !props.conversationId || !editor.value || imageItems.value.length >= maxChatImageCount) return
+async function insertImage(sourceFile: File): Promise<void> {
+  const preparationConversationId = props.conversationId
+  const preparationGeneration = conversationGeneration
+  const preparationEditor = editor.value
+  if (!props.imageInputSupported || !preparationConversationId || !preparationEditor || imageItems.value.length + pendingImagePreparationCount.value >= maxChatImageCount) return
+  const preparationToken = imagePreparationState.begin()
+  syncPendingImagePreparationCount()
+  let file: File
+  try {
+    file = await prepareChatImageForUpload(sourceFile)
+  } catch (error) {
+    message.warning(error instanceof Error ? error.message : '图片压缩失败')
+    return
+  } finally {
+    imagePreparationState.release(preparationToken)
+    syncPendingImagePreparationCount()
+  }
+  if (!props.imageInputSupported
+    || props.conversationId !== preparationConversationId
+    || conversationGeneration !== preparationGeneration
+    || !imagePreparationState.isCurrent(preparationToken)
+    || editor.value !== preparationEditor
+    || imageItems.value.length >= maxChatImageCount) return
   const localId = crypto.randomUUID()
   const previewUrl = URL.createObjectURL(file)
   const record: ImageUploadRecord = {
     localId,
     file,
     previewUrl,
-    conversationId: props.conversationId,
-    generation: conversationGeneration,
+    conversationId: preparationConversationId,
+    generation: preparationGeneration,
     status: 'uploading',
     progress: 0,
     assetId: '',
@@ -338,7 +364,7 @@ function insertImage(file: File): void {
     error: '',
     submitted: false
   }
-  const inserted = editor.value.commands.insertContent({ type: 'chatImageAttachment', attrs: imageNodeAttrs(record) })
+  const inserted = preparationEditor.commands.insertContent({ type: 'chatImageAttachment', attrs: imageNodeAttrs(record) })
   if (!inserted) {
     URL.revokeObjectURL(previewUrl)
     return
@@ -350,21 +376,25 @@ function insertClipboardText(value: string): void {
   if (!value || !editor.value) return
   editor.value.commands.insertContent(composerTextToDocument(value).content?.[0]?.content ?? [])
 }
-function insertMixedClipboardParts(parts: readonly ChatMixedClipboardPart[]): void {
+async function insertMixedClipboardParts(parts: readonly ChatMixedClipboardPart[]): Promise<void> {
   for (const part of parts) {
     if (part.type === 'text') insertClipboardText(part.text)
-    else insertImage(part.file)
+    else await insertImage(part.file)
   }
 }
-function enqueueImages(files: readonly File[]): void {
+async function insertPlainClipboardParts(text: string, files: readonly File[]): Promise<void> {
+  insertClipboardText(text)
+  for (const file of files) await insertImage(file)
+}
+async function enqueueImages(files: readonly File[]): Promise<void> {
   if (!props.imageInputSupported) { message.warning('当前模型不支持图片输入'); return }
   if (!props.conversationId) { message.warning('请先选择对话'); return }
-  const selectedFiles = selectChatImageFiles(files, imageItems.value.length)
+  const selectedFiles = selectChatImageFiles(files, imageItems.value.length + pendingImagePreparationCount.value)
   const imageFileCount = files.filter((file) => file.type.startsWith('image/')).length
-  if (selectedFiles.length < imageFileCount) message.warning(`每条消息最多 ${maxChatImageCount} 张图片，单张不能超过 32 MiB`)
-  for (const file of selectedFiles) insertImage(file)
+  if (selectedFiles.length < imageFileCount) message.warning(`每条消息最多 ${maxChatImageCount} 张图片；原图不能超过 32 MiB，压缩后每张不能超过 1 MiB`)
+  for (const file of selectedFiles) await insertImage(file)
 }
-function handleFileChange(event: Event): void { const input = event.target as HTMLInputElement; enqueueImages(Array.from(input.files ?? [])); input.value = '' }
+function handleFileChange(event: Event): void { const input = event.target as HTMLInputElement; void enqueueImages(Array.from(input.files ?? [])); input.value = '' }
 
 async function uploadImage(record: ImageUploadRecord): Promise<void> {
   if (!isCurrentUploadRecord(record) || record.controller) return
@@ -528,9 +558,15 @@ function disposeImageUploadRecords(deleteUploadedAssets = false): void {
 }
 function deleteUploadedAsset(record: ImageUploadRecord): void { if (record.assetId) void chatApi.deleteAsset(record.conversationId, record.assetId).catch(() => undefined) }
 function revokePreviewUrl(value: string): void { if (value.startsWith('blob:')) URL.revokeObjectURL(value) }
+function syncPendingImagePreparationCount(): void { pendingImagePreparationCount.value = imagePreparationState.snapshot().pendingCount }
+function advanceConversationGeneration(): void {
+  const snapshot = imagePreparationState.advanceGeneration()
+  conversationGeneration = snapshot.generation
+  pendingImagePreparationCount.value = snapshot.pendingCount
+}
 
 onBeforeUnmount(() => {
-  conversationGeneration += 1
+  advanceConversationGeneration()
   disposeImageUploadRecords(true)
 })
 defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSubmittedAssets })

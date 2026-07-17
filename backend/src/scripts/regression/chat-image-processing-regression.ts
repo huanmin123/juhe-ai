@@ -6,9 +6,12 @@ import { join } from 'node:path'
 import sharp from 'sharp'
 
 import { chatImageJpegQuality, chatImageMaxEdge, processChatImageFile } from '../../modules/chat/chat-image-processing.js'
+import { chatAssetOriginalMaxBytes, chatAssetProcessedMaxBytes } from '../../storage/chat-asset-storage.js'
 
 assert.equal(chatImageMaxEdge, 1_024)
 assert.equal(chatImageJpegQuality, 85)
+assert.equal(chatAssetOriginalMaxBytes, 1024 * 1024, '后端必须在读取请求体时把单张上传硬限制为 1 MiB')
+assert.equal(chatAssetProcessedMaxBytes, 1024 * 1024, '后端处理后的图片也不得超过 1 MiB')
 
 const root = await mkdtemp(join(tmpdir(), 'juhe-ai-chat-image-policy-'))
 try {

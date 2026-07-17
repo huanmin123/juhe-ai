@@ -7,7 +7,7 @@ import sharp, { type Metadata } from 'sharp'
 sharp.cache({ files: 0 })
 
 const maxDecodedPixels = 40_000_000
-const maxModelImageBytes = 2 * 1024 * 1024
+const maxModelImageBytes = 1024 * 1024
 export const chatImageMaxEdge = 1_024
 export const chatImageJpegQuality = 85
 const maxModelImagePatches = 2_500
@@ -56,7 +56,7 @@ export async function processChatImageFile(filePath: string): Promise<ChatProces
     if (!dimensions) throw new ChatImageProcessingError('无法读取图片尺寸')
     const target = boundedImageDimensions(dimensions.width, dimensions.height)
     const output = await encodeModelImage({ filePath, width: target.width, height: target.height })
-    if (output.buffer.byteLength > maxModelImageBytes) throw new ChatImageProcessingError('图片按 JPEG 85 处理后仍超过 2 MiB，请裁剪图片后重试')
+    if (output.buffer.byteLength > maxModelImageBytes) throw new ChatImageProcessingError('图片按 JPEG 85 处理后仍超过 1 MiB，请裁剪图片后重试')
     return {
       buffer: output.buffer,
       originalMimeType: originalMimeType(metadata.format),

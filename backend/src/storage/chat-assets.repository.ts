@@ -152,6 +152,18 @@ export class ChatAssetCountExceededError extends Error {
   }
 }
 
+export async function assertChatAssetUploadSlotAvailable(client: DatabaseClient, input: {
+  systemAccountId: string
+  conversationId: string
+  now: string
+}): Promise<number> {
+  return await client.transaction(async (tx) => {
+    await lockChatAssetUserQuota(tx, input.systemAccountId)
+    const uncommittedCount = await assertUncommittedChatAssetCountAvailable(tx, input)
+    return maxChatAssetsPerMessage - uncommittedCount
+  })
+}
+
 export async function createChatAsset(client: DatabaseClient, input: ChatAssetCreateInput): Promise<ChatAssetRecord> {
   const id = input.id === undefined ? newChatAssetId() : normalizedAssetId(input.id)
   const originalFilename = normalizedFilename(input.originalFilename)
@@ -165,15 +177,7 @@ export async function createChatAsset(client: DatabaseClient, input: ChatAssetCr
   const expiresAt = addDays(input.now, input.retentionDays)
   return client.transaction(async (tx) => {
     await lockChatAssetUserQuota(tx, input.systemAccountId)
-    const uncommitted = await tx.one<{ total?: unknown }>(`
-      SELECT COUNT(*) AS total
-      FROM ${chatTable(tx, 'chat_assets')}
-      WHERE system_account_id = ? AND conversation_id = ?
-        AND turn_id IS NULL AND message_id IS NULL
-        AND processing_status IN ('pending', 'ready') AND cleanup_status = 'active'
-        AND expires_at > ?
-    `, [input.systemAccountId, input.conversationId, input.now])
-    if (Number(uncommitted?.total ?? 0) >= maxChatAssetsPerMessage) throw new ChatAssetCountExceededError()
+    await assertUncommittedChatAssetCountAvailable(tx, input)
     const usage = await getChatAssetUserUsage(tx, input.systemAccountId)
     if (usage.assetBytes + quotaBytes > chatAssetUserMaxBytes || usage.assetCount + 1 > chatAssetUserMaxCount) {
       throw new ChatAssetQuotaExceededError()
@@ -210,6 +214,24 @@ export async function createChatAsset(client: DatabaseClient, input: ChatAssetCr
     await incrementChatAssetUserUsage(tx, input.systemAccountId, quotaBytes, input.now)
     return chatAssetFromRow(row)
   })
+}
+
+async function assertUncommittedChatAssetCountAvailable(client: DatabaseClient, input: {
+  systemAccountId: string
+  conversationId: string
+  now: string
+}): Promise<number> {
+  const uncommitted = await client.one<{ total?: unknown }>(`
+    SELECT COUNT(*) AS total
+    FROM ${chatTable(client, 'chat_assets')}
+    WHERE system_account_id = ? AND conversation_id = ?
+      AND turn_id IS NULL AND message_id IS NULL
+      AND processing_status IN ('pending', 'ready') AND cleanup_status = 'active'
+      AND expires_at > ?
+  `, [input.systemAccountId, input.conversationId, input.now])
+  const uncommittedCount = Number(uncommitted?.total ?? 0)
+  if (uncommittedCount >= maxChatAssetsPerMessage) throw new ChatAssetCountExceededError()
+  return uncommittedCount
 }
 
 export async function completeChatAssetProcessing(client: DatabaseClient, input: ChatAssetProcessingResultInput): Promise<ChatAssetRecord> {

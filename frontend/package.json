@@ -107,6 +107,7 @@
     "animejs": "^4.4.1",
     "ant-design-vue": "^4.2.6",
     "axios": "^1.15.0",
+    "compressorjs": "1.3.0",
     "dayjs": "^1.11.13",
     "dompurify": "3.4.12",
     "echarts": "^6.0.0",

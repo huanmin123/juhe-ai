@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { marked } from 'marked'
 import { composerDocumentToBlocks, composerTextToDocument } from '../../views/chat/composer/chatComposerDocument'
 import { selectChatImageFiles, selectChatImageFileSlots } from '../../views/chat/composer/chatImageSelection'
+import { chatImageUploadJpegQuality, chatImageUploadMaxBytes, prepareChatImageForUpload, resolveChatImageUploadSize } from '../../views/chat/composer/chatImageProcessing'
 import { chatMixedClipboardParts } from '../../views/chat/composer/chatMixedClipboard'
 
 const blocks = composerDocumentToBlocks({ type: 'doc', content: [
@@ -113,6 +115,10 @@ assert.deepEqual(
 )
 
 const composerSource = readFileSync('../frontend/src/views/chat/composer/AIComposer.vue', 'utf8')
+const imageProcessingSource = readFileSync('../frontend/src/views/chat/composer/chatImageProcessing.ts', 'utf8')
+const imagePreparationStateUrl = new URL('../../views/chat/composer/chatImagePreparationState.ts', import.meta.url)
+assert.equal(existsSync(fileURLToPath(imagePreparationStateUrl)), true, '图片异步准备必须使用可独立验证的 generation/token 状态 helper')
+const { createChatImagePreparationState } = await import('../../views/chat/composer/chatImagePreparationState')
 const keyDownHandlerSource = readFileSync('../frontend/src/views/chat/composer/chatComposerKeyDownHandler.ts', 'utf8')
 const imageAttachmentSource = readFileSync('../frontend/src/views/chat/composer/ChatImageAttachment.ts', 'utf8')
 const imageAttachmentViewSource = readFileSync('../frontend/src/views/chat/composer/ChatImageAttachmentView.vue', 'utf8')
@@ -136,8 +142,79 @@ assert.deepEqual(
 )
 assert.deepEqual(selectChatImageFiles([imageFile('4'), imageFile('5'), imageFile('6')], 4).map((file) => file.name), ['4'], '已有图片和多次粘贴必须共享 5 张总槽位')
 assert.deepEqual(selectChatImageFiles([imageFile('large', 32 * 1024 * 1024 + 1), imageFile('text', 1, 'text/plain')], 0), [], '非图片和超过 32 MiB 的文件必须在上传前过滤')
-assert.match(composerSource, /for \(const file of selectedFiles\) insertImage\(file\)/, '多图必须同步按选择顺序插入文档，再独立上传')
+assert.equal(chatImageUploadJpegQuality, 0.85)
+assert.equal(chatImageUploadMaxBytes, 1024 * 1024)
+assert.deepEqual(resolveChatImageUploadSize(4096, 2048), { width: 1024, height: 512 })
+assert.deepEqual(resolveChatImageUploadSize(320, 240), { width: 320, height: 240 })
+const preparedImage = await prepareChatImageForUpload(
+  new File([new Uint8Array([1, 2, 3])], '透明截图.png', { type: 'image/png', lastModified: 123 }),
+  {
+    decode: async () => ({ width: 2048, height: 4096 }),
+    encodeJpeg: async (_source, size, quality) => {
+      assert.deepEqual(size, { width: 512, height: 1024 })
+      assert.equal(quality, 0.85)
+      return new Blob([new Uint8Array([4, 5])], { type: 'image/jpeg' })
+    }
+  }
+)
+assert.deepEqual(
+  { name: preparedImage.name, type: preparedImage.type, size: preparedImage.size, lastModified: preparedImage.lastModified },
+  { name: '透明截图.jpg', type: 'image/jpeg', size: 2, lastModified: 123 },
+  '上传前必须缩放并统一转换为 JPEG 85'
+)
+await assert.rejects(
+  prepareChatImageForUpload(
+    new File([new Uint8Array([1])], '超限.png', { type: 'image/png' }),
+    {
+      decode: async () => ({ width: 1024, height: 1024 }),
+      encodeJpeg: async () => new Blob([new Uint8Array(chatImageUploadMaxBytes + 1)], { type: 'image/jpeg' })
+    }
+  ),
+  /压缩后仍超过 1 MiB/,
+  '压缩后超过 1 MiB 必须拒绝，不能进入编辑器或上传'
+)
+const preparationState = createChatImagePreparationState()
+assert.equal(typeof preparationState.snapshot, 'function', '图片准备状态必须提供生产可用 snapshot，统一驱动 generation、pending 与有界性观测')
+let finishOldPreparation!: () => void
+const oldPreparationDeferred = new Promise<void>((resolve) => { finishOldPreparation = resolve })
+const oldPreparationToken = preparationState.begin()
+const oldPreparationTask = oldPreparationDeferred.finally(() => preparationState.release(oldPreparationToken))
+assert.equal(preparationState.pendingCount(), 1, '当前代次新建 token 必须立即进入 pending')
+assert.deepEqual(preparationState.snapshot(), { generation: 0, pendingCount: 1, activeTokenCount: 1 })
+assert.equal(preparationState.isCurrent(oldPreparationToken), true)
+const nextGeneration = preparationState.advanceGeneration()
+assert.deepEqual(nextGeneration, { generation: 1, pendingCount: 0, activeTokenCount: 0 }, '推进代次必须物理清除旧 token，避免永不 settle 的 Compressor 任务令 Map 无界增长')
+assert.equal(preparationState.pendingCount(), 0, '切换会话或 clear 后旧代次 token 不得阻塞新会话')
+assert.equal(preparationState.isCurrent(oldPreparationToken), false)
+const newPreparationToken = preparationState.begin()
+assert.equal(preparationState.pendingCount(), 1)
+assert.deepEqual(preparationState.snapshot(), { generation: 1, pendingCount: 1, activeTokenCount: 1 })
+finishOldPreparation()
+await oldPreparationTask
+assert.equal(preparationState.pendingCount(), 1, '旧任务 finally 只能释放自身 token，不能扣减新代次 pending')
+assert.equal(preparationState.snapshot().activeTokenCount, 1, '旧 token 已在推进代次时清除，迟到 release 不能删除新 token')
+preparationState.release(oldPreparationToken)
+assert.equal(preparationState.pendingCount(), 1, '重复释放旧 token 必须幂等')
+preparationState.release(newPreparationToken)
+assert.equal(preparationState.pendingCount(), 0)
+assert.equal(preparationState.snapshot().activeTokenCount, 0)
+preparationState.release(newPreparationToken)
+assert.equal(preparationState.pendingCount(), 0, '重复释放当前 token 不能产生负数')
+assert.match(composerSource, /for \(const file of selectedFiles\) await insertImage\(file\)/, '多图必须按选择顺序完成压缩门禁后再插入文档')
 assert.match(composerSource, /imageItems\.value\.length >= maxChatImageCount/, '逐张插入也必须在编辑器边界复核图片总数，防止并发粘贴突破 5 张')
+assert.match(composerSource, /async function insertImage[\s\S]{0,800}await prepareChatImageForUpload[\s\S]{0,800}crypto\.randomUUID/, '图片必须压缩并通过 1 MiB 门禁后才插入编辑器')
+assert.match(composerSource, /const pendingImagePreparationCount = ref\(initialImagePreparationSnapshot\.pendingCount\)/, '异步图片准备数量必须由生产 snapshot 初始化为响应式状态，供发送门禁即时消费')
+assert.match(composerSource, /const canSubmit = computed\(\(\) => Boolean\([\s\S]{0,320}pendingImagePreparationCount\.value === 0/, '仍有图片压缩任务时必须禁止发送，不能提交半条混合消息')
+assert.match(composerSource, /pendingImagePreparationCount\.value > 0[\s\S]{0,120}图片正在压缩/, '图片压缩期间发送按钮必须给出明确中文提示')
+assert.match(
+  composerSource,
+  /async function insertImage[\s\S]{0,420}const preparationConversationId = props\.conversationId[\s\S]{0,180}const preparationGeneration = conversationGeneration[\s\S]{0,180}const preparationEditor = editor\.value[\s\S]{0,600}await prepareChatImageForUpload[\s\S]{0,420}props\.conversationId !== preparationConversationId[\s\S]{0,180}conversationGeneration !== preparationGeneration[\s\S]{0,180}editor\.value !== preparationEditor/,
+  '图片压缩完成后必须复核发起时的会话、代次和编辑器实例，丢弃切换会话或 clear 后的迟到结果'
+)
+assert.match(composerSource, /const preparationToken = imagePreparationState\.begin\(\)[\s\S]{0,500}finally \{[\s\S]{0,180}imagePreparationState\.release\(preparationToken\)[\s\S]{0,120}syncPendingImagePreparationCount\(\)/, '组件必须用独立 token 跟踪每个准备任务，并在 finally 幂等释放后同步当前代次 pending')
+assert.match(composerSource, /async function insertPlainClipboardParts[\s\S]{0,260}for \(const file of files\) await insertImage\(file\)/, '普通剪贴板多图也必须串行准备，保持选择顺序')
+assert.match(composerSource, /void insertPlainClipboardParts\(event\.clipboardData\?\.getData\('text\/plain'\) \?\? '', selectedFiles\)/, '普通图片粘贴必须通过串行剪贴板入口，不能并发 fire-and-forget 每张图片')
+assert.match(imageProcessingSource, /压缩后仍超过 1 MiB/, '前端必须提示压缩后仍超限，不能静默失败')
 assert.match(composerSource, /URL\.createObjectURL\(file\)/, '图片预览必须使用本地 object URL，不能把 base64 保存进文档')
 assert.match(composerSource, /revokePreviewUrl\(record\.previewUrl\)/, '会话切换或组件卸载必须释放 object URL')
 assert.match(composerSource, /record\.file = undefined[\s\S]{0,120}revokePreviewUrl\(previousPreviewUrl\)/, '上传完成后必须立即释放本地大文件引用并改用私有资产 URL')
@@ -145,7 +222,8 @@ assert.match(chatViewSource, /composer\.value\?\.releaseSubmittedAssets\(\)/, '�
 assert.match(chatApiSource, /FormData[\s\S]*body\.append\('file'/, '图片必须通过 multipart 独立上传')
 assert.match(composerSource, /uploadStatus === 'uploaded'/, '只有上传完成并取得 assetId 的图片才能发送')
 assert.match(composerSource, /function submit[\s\S]{0,1000}replaceEditorContentWithoutHistory\(editor\.value, emptyComposerDocument\(\)\)/, '成功提交清空必须切断 UndoRedo 历史')
-assert.match(composerSource, /conversationGeneration \+= 1[\s\S]{0,100}disposeImageUploadRecords\(true\)/, '会话切换或清空必须中止旧会话上传任务并清理未提交资产')
+assert.match(composerSource, /function advanceConversationGeneration[\s\S]{0,220}const snapshot = imagePreparationState\.advanceGeneration\(\)[\s\S]{0,120}conversationGeneration = snapshot\.generation[\s\S]{0,120}pendingImagePreparationCount\.value = snapshot\.pendingCount/, '会话切换或 clear 必须消费有界 snapshot，推进图片准备代次并立即清空当前 pending 展示')
+assert.match(composerSource, /advanceConversationGeneration\(\)[\s\S]{0,100}disposeImageUploadRecords\(true\)/, '会话切换或清空必须失效旧准备任务并清理未提交资产')
 assert.match(composerSource, /getData\('text\/html'\)[\s\S]{0,420}chatMixedClipboardParts/, '富文本混合剪贴板必须使用 DOM 顺序保留文字和图片')
 assert.match(composerSource, /onBeforeUnmount\(\(\) => \{[\s\S]{0,120}disposeImageUploadRecords\(true\)/, '离开 AI 问答页面必须删除已上传但未提交的草稿图片')
 assert.match(composerSource, /if \(!isCurrentUploadRecord\(record\) \|\| record\.controller !== controller\) \{[\s\S]{0,180}chatApi\.deleteAsset/, '上传完成与组件卸载竞态必须删除迟到的未提交资产')

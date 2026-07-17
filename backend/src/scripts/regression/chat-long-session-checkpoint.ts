@@ -18,6 +18,20 @@ export interface ChatLongSessionResumePlan {
   completedResponses: ChatLongSessionResponse[]
 }
 
+export function buildChatLongSessionAttemptIdentity(
+  turn: number,
+  attempt: number,
+  resumeInvocationId?: string
+): { clientMessageId: string; traceId: string } {
+  const turnNumber = String(turn).padStart(2, '0')
+  const attemptSuffix = attempt === 1 ? '' : `-retry-${attempt}`
+  const resumeSuffix = resumeInvocationId ? `-resume-${resumeInvocationId}` : ''
+  return {
+    clientMessageId: `long-real-${turnNumber}${attemptSuffix}${resumeSuffix}`,
+    traceId: `chat-long-main-${turnNumber}${attemptSuffix}${resumeSuffix}`
+  }
+}
+
 export function buildChatLongSessionResumePlan(
   fixture: readonly ChatLongSessionTurn[],
   inputMessages: readonly ChatLongSessionResumeMessage[]

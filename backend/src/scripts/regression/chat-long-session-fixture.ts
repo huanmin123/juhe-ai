@@ -135,6 +135,59 @@ const featureEvidencePatterns: Record<string, RegExp[]> = {
   'REQ-50': [/id=["']aurora-acceptance-ready["']/i]
 }
 
+const featureAcceptanceCriteria: Record<string, string> = {
+  'REQ-01': '完整文档包含 <!doctype html>',
+  'REQ-02': ':root 规则中定义 --surface 变量',
+  'REQ-03': '使用 <nav> 顶部导航',
+  'REQ-04': '使用 <main> 主内容区域',
+  'REQ-05': '使用 <footer> 页脚',
+  'REQ-06': 'body 规则显式设置 font-family',
+  'REQ-07': '.app-shell 使用 display:grid',
+  'REQ-08': '概览 section 的 class 包含 overview',
+  'REQ-09': '.content 规则设置 max-width',
+  'REQ-10': '.stats-grid 规则设置 grid-template-columns',
+  'REQ-11': '活动 section 的 class 包含 activity',
+  'REQ-12': '.stack 规则设置 gap',
+  'REQ-13': '指标组件 class 包含 metric-card',
+  'REQ-14': '趋势组件 class 包含 trend-chart',
+  'REQ-15': '活动列表使用 class 包含 activity-list 的 <ul>',
+  'REQ-16': '搜索控件使用 type="search" 的 <input>',
+  'REQ-17': '状态标签 class 包含 status-badge',
+  'REQ-18': '包含可操作的 <button>',
+  'REQ-19': '空状态 class 包含 empty-state',
+  'REQ-20': '动态状态区域设置 aria-live="polite"',
+  'REQ-21': '包含 max-width:1024px 媒体查询',
+  'REQ-22': '包含 max-width:720px 媒体查询',
+  'REQ-23': '折叠导航 class 包含 mobile-nav',
+  'REQ-24': '媒体查询内把 .stats-grid 的 grid-template-columns 设为 1fr',
+  'REQ-25': '长文本使用 overflow-wrap:anywhere',
+  'REQ-26': '触控控件设置 min-height:44px',
+  'REQ-27': '跳转链接 class 包含 skip-link',
+  'REQ-28': '<nav> 设置 aria-label',
+  'REQ-29': '<input> 设置 aria-label',
+  'REQ-30': '定义 :focus-visible 规则',
+  'REQ-31': '包含 prefers-reduced-motion:reduce 媒体查询',
+  'REQ-32': '定义六位十六进制 --ink 颜色变量',
+  'REQ-33': 'body 规则设置 overflow-x:hidden',
+  'REQ-34': '可聚焦目标设置 scroll-margin-top',
+  'REQ-35': '表格设置 table-layout:fixed',
+  'REQ-36': '.action-button 设置 min-width',
+  'REQ-37': '标题使用 text-wrap:balance',
+  'REQ-38': '包含 @media print 打印规则',
+  'REQ-39': '定义 --color-surface 变量',
+  'REQ-40': '定义 --space-3 变量',
+  'REQ-41': '主内容 class 包含 dashboard__content',
+  'REQ-42': '低权重选择器使用 :where()',
+  'REQ-43': '定义 --surface-elevated 变量',
+  'REQ-44': '媒体查询中包含 .mobile-nav 规则',
+  'REQ-45': '至少一个 <section> 设置 aria-labelledby',
+  'REQ-46': '响应式尺寸使用 clamp()',
+  'REQ-47': '当前导航项设置 aria-current="page"',
+  'REQ-48': '实际样式引用 var(--color-surface)',
+  'REQ-49': '验收容器设置 data-review="passed"',
+  'REQ-50': '最终完成标记设置 id="aurora-acceptance-ready"'
+}
+
 const stagePlan: Array<{ stage: ChatLongSessionStage; count: number }> = [
   { stage: 'foundation', count: 6 },
   { stage: 'layout', count: 6 },
@@ -201,10 +254,12 @@ export function buildChatLongSessionFixture(): ChatLongSessionTurn[] {
       const anchorText = exactAnchors.join('、')
       const forbiddenText = forbiddenRegressions.map((item) => item.needle).join('、')
       const requirementText = requiredFeatureIds.join(' ')
+      const introducedAcceptance = `${introducedFeatureId} 的验收证据：${featureAcceptanceCriteria[introducedFeatureId]}`
+      const cumulativeAcceptance = requiredFeatureIds.map((id) => `${id}：${featureAcceptanceCriteria[id]}`).join('；')
       const responseMode = artifactCheckpointTurns.has(turn) ? 'artifact' : 'manifest'
       const prompt = responseMode === 'artifact'
-        ? `继续演进同一个 Aurora Dashboard 单文件 HTML+CSS 项目：${request}（${introducedFeatureId}）。这是 checkpoint：根 html 元素必须且只能有一个 data-requirements 属性，其空格分隔累计值必须为 data-requirements="${requirementText}"；在页面可见文本或语义属性中逐字保留锚点：${anchorText}，禁止用注释保存锚点。不得在项目 artifact 中出现禁止回归标记：${forbiddenText}。返回更新后的完整有效 HTML，且仅返回一个 html 代码块；UTF-8 总字节数必须 <= 32768。禁止解释、禁止 HTML/CSS 注释、禁止重复示例、禁止占位和冗余内容；HTML/CSS 保持可读但高度紧凑，不要改写为独立问答。${probeText}`
-        : `继续演进同一个 Aurora Dashboard 单文件 HTML+CSS 项目：${request}（${introducedFeatureId}）。本轮只返回单个严格 JSON manifest，禁止输出 HTML、Markdown 代码块或额外文字；JSON 结构必须为 {"introducedFeatureId":"${introducedFeatureId}","changeSummary":"不超过200个中文字符的实现决策摘要","decisionAnchors":${JSON.stringify(exactAnchors)},"forbiddenConfirmed":${JSON.stringify(forbiddenRegressions.map((item) => item.id))}}。后续 checkpoint 的目标 data-requirements="${requirementText}"。${probeText}`
+        ? `继续演进同一个 Aurora Dashboard 单文件 HTML+CSS 项目：${request}（${introducedFeatureId}）。${introducedAcceptance}。这是 checkpoint：根 html 元素必须且只能有一个 data-requirements 属性，其空格分隔累计值必须为 data-requirements="${requirementText}"；累计验收证据必须全部保留：${cumulativeAcceptance}。在页面可见文本或语义属性中逐字保留锚点：${anchorText}，禁止用注释保存锚点。不得在项目 artifact 中出现禁止回归标记：${forbiddenText}。返回更新后的完整有效 HTML，且仅返回一个 html 代码块；UTF-8 总字节数必须 <= 32768。禁止解释、禁止 HTML/CSS 注释、禁止重复示例、禁止占位和冗余内容；HTML/CSS 保持可读但高度紧凑，不要改写为独立问答。${probeText}`
+        : `继续演进同一个 Aurora Dashboard 单文件 HTML+CSS 项目：${request}（${introducedFeatureId}）。${introducedAcceptance}。本轮只返回单个严格 JSON manifest，禁止输出 HTML、Markdown 代码块或额外文字；JSON 结构必须为 {"introducedFeatureId":"${introducedFeatureId}","changeSummary":"不超过200个中文字符的实现决策摘要","decisionAnchors":${JSON.stringify(exactAnchors)},"forbiddenConfirmed":${JSON.stringify(forbiddenRegressions.map((item) => item.id))}}。后续 checkpoint 的目标 data-requirements="${requirementText}"。${probeText}`
       turns.push({
         turn,
         stage: stageEntry.stage,

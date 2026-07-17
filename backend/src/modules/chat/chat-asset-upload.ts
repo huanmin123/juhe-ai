@@ -13,6 +13,7 @@ import type { DatabaseClient } from '../../storage/database-client.js'
 import {
   ChatAssetQuotaExceededError,
   ChatAssetCountExceededError,
+  assertChatAssetUploadSlotAvailable,
   claimUncommittedChatAssetForDeletion,
   completeChatAssetDeletion,
   completeChatAssetProcessing,
@@ -48,6 +49,40 @@ interface UploadedTemporaryImage {
   sha256: string
 }
 
+export interface ChatAssetUploadSlotReservation {
+  transferToDatabase(): void
+  release(): void
+}
+
+export class ChatAssetUploadSlotReservations {
+  private readonly reservedSlotsByConversation = new Map<string, number>()
+
+  reserve(
+    systemAccountId: string,
+    conversationId: string,
+    availableSlots: number
+  ): ChatAssetUploadSlotReservation | undefined {
+    const reservationKey = `${systemAccountId}\u0000${conversationId}`
+    const reservedSlots = this.reservedSlotsByConversation.get(reservationKey) ?? 0
+    if (reservedSlots >= availableSlots) return undefined
+    this.reservedSlotsByConversation.set(reservationKey, reservedSlots + 1)
+    let released = false
+    const release = () => {
+      if (released) return
+      released = true
+      const remainingSlots = (this.reservedSlotsByConversation.get(reservationKey) ?? 1) - 1
+      if (remainingSlots > 0) {
+        this.reservedSlotsByConversation.set(reservationKey, remainingSlots)
+      } else {
+        this.reservedSlotsByConversation.delete(reservationKey)
+      }
+    }
+    return { transferToDatabase: release, release }
+  }
+}
+
+const chatAssetUploadSlotReservations = new ChatAssetUploadSlotReservations()
+
 export async function uploadChatAsset(input: {
   req: Request
   client: DatabaseClient
@@ -55,11 +90,21 @@ export async function uploadChatAsset(input: {
   conversationId: string
   now: string
   retentionDays: number
+  lifecycle?: {
+    afterAssetTransferredToDatabase?: () => Promise<void>
+  }
 }): Promise<ChatAssetRecord> {
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'juhe-ai-chat-upload-'))
+  const uploadSlot = await reserveChatAssetUploadSlot(input).catch((error: unknown) => {
+    if (error instanceof ChatAssetCountExceededError) {
+      throw new ChatAssetUploadError(400, 'chat_asset_count_exceeded', error.message)
+    }
+    throw error
+  })
+  let temporaryDirectory: string | undefined
   let storageKey: string | undefined
   let pendingAsset: ChatAssetRecord | undefined
   try {
+    temporaryDirectory = await mkdtemp(join(tmpdir(), 'juhe-ai-chat-upload-'))
     const uploaded = await readMultipartImage(input.req, temporaryDirectory)
     const processed = await processChatImageFile(uploaded.filePath).catch((error: unknown) => {
       if (error instanceof ChatImageProcessingError) {
@@ -83,6 +128,8 @@ export async function uploadChatAsset(input: {
       now: input.now,
       retentionDays: input.retentionDays
     })
+    uploadSlot.transferToDatabase()
+    await input.lifecycle?.afterAssetTransferredToDatabase?.()
     storageKey = storageKeyForChatAsset({
       assetId: pendingAsset.id,
       sha256: processed.sha256,
@@ -135,8 +182,21 @@ export async function uploadChatAsset(input: {
     }
     throw error
   } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined)
+    uploadSlot.release()
+    if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined)
   }
+}
+
+async function reserveChatAssetUploadSlot(input: {
+  client: DatabaseClient
+  systemAccountId: string
+  conversationId: string
+  now: string
+}): Promise<ChatAssetUploadSlotReservation> {
+  const availableSlots = await assertChatAssetUploadSlotAvailable(input.client, input)
+  const reservation = chatAssetUploadSlotReservations.reserve(input.systemAccountId, input.conversationId, availableSlots)
+  if (!reservation) throw new ChatAssetCountExceededError()
+  return reservation
 }
 
 async function readMultipartImage(req: Request, temporaryDirectory: string): Promise<UploadedTemporaryImage> {
@@ -216,7 +276,7 @@ async function writeTemporaryImage(input: {
   })
   await pipeline(input.stream, counter, createWriteStream(input.filePath, { flags: 'wx' }))
   if (limitHit || bytes > chatAssetOriginalMaxBytes) {
-    throw new ChatAssetUploadError(413, 'chat_asset_too_large', '单张原始图片不能超过 32 MiB')
+    throw new ChatAssetUploadError(413, 'chat_asset_too_large', '单张上传图片不能超过 1 MiB')
   }
   if (bytes <= 0) throw new ChatAssetUploadError(400, 'chat_asset_invalid_request', '上传图片不能为空')
   return {

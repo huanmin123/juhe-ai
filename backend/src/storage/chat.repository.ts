@@ -420,6 +420,28 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
         WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
       `, [input.conversationId, input.systemAccountId, input.replaceTurnId])
       if (deletedIdempotency.changes !== 1) throw new ChatConflictError('chat_replace_conflict')
+      const retainedAssetIds = [...new Set(
+        input.contentBlocks
+          ?.filter((block) => block.type === 'input_image' && block.assetId)
+          .map((block) => block.assetId!) ?? []
+      )]
+      await tx.execute(`
+        UPDATE ${chatTable(tx, 'chat_assets')}
+        SET expires_at = CASE WHEN expires_at > ? THEN ? ELSE expires_at END,
+            cleanup_retry_at = CASE WHEN cleanup_status = 'failed' THEN ? ELSE cleanup_retry_at END,
+            updated_at = ?
+        WHERE system_account_id = ? AND conversation_id = ? AND message_id = ?
+          ${retainedAssetIds.length > 0 ? `AND id NOT IN (${tx.dialect.bindPlaceholders(retainedAssetIds.length)})` : ''}
+      `, [
+        input.now,
+        input.now,
+        input.now,
+        input.now,
+        input.systemAccountId,
+        input.conversationId,
+        replacedUserMessageId,
+        ...retainedAssetIds
+      ])
       await tx.execute(`
         UPDATE ${chatTable(tx, 'chat_assets')}
         SET turn_id = NULL, message_id = NULL, committed_at = NULL,

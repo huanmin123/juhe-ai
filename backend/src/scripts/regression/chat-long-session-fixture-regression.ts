@@ -22,13 +22,76 @@ import { ChatLongSessionRunBudget } from './chat-long-session-budget.js'
 import { listWindowsProcessIdentities, selectTrackedProcessTree, stopTrackedWindowsProcessTree, type TrackedProcessIdentity } from './chat-long-session-process-tree.js'
 import { extractSafeChatStreamFailure } from './chat-long-session-failure.js'
 import { isTransientChatLongSessionFailure, runChatLongSessionTurnAttempts } from './chat-long-session-attempts.js'
-import { buildChatLongSessionResumePlan, chatLongSessionResumeCanonicalHash } from './chat-long-session-checkpoint.js'
+import {
+  buildChatLongSessionAttemptIdentity,
+  buildChatLongSessionResumePlan,
+  chatLongSessionResumeCanonicalHash
+} from './chat-long-session-checkpoint.js'
 import { loadRuntimeBaseEnv } from '../../config/runtime-base-env.js'
 import { ChatLongSessionStreamProgress } from './chat-long-session-stream-progress.js'
 import { consumeReaderWithBoundedCancellation } from './chat-long-session-reader.js'
 import { buildSafeBusyCleanupDiagnostic, runBoundedDiagnosticProcess } from './chat-long-session-cleanup-diagnostics.js'
+import {
+  buildChatLongSessionSemanticSeedPlan,
+  chatLongSessionControlledSeedMaxTokens,
+  chatLongSessionSemanticSeedMaxTurns
+} from './chat-long-session-semantic-seed.js'
+import { withoutChatLongSessionAcceptanceObservability } from './chat-long-session-acceptance-snapshot.js'
+import { shouldRemoveChatLongSessionTemp } from './chat-long-session-temp-retention.js'
 
 const fixture = buildChatLongSessionFixture()
+const successfulTempRemoval = {
+  keepTemp: false,
+  executionSucceeded: true,
+  acceptancePassed: true,
+  realProbe: false,
+  reportWritten: true,
+  primaryError: false,
+  cleanupHealthy: true
+}
+assert.equal(shouldRemoveChatLongSessionTemp(successfulTempRemoval), true)
+assert.equal(shouldRemoveChatLongSessionTemp({ ...successfulTempRemoval, primaryError: true }), false, '主流程或迟到中断失败时必须保留诊断目录')
+assert.equal(shouldRemoveChatLongSessionTemp({ ...successfulTempRemoval, cleanupHealthy: false }), false, '任一前置 cleanup 失败时必须保留诊断目录')
+assert.equal(shouldRemoveChatLongSessionTemp({ ...successfulTempRemoval, reportWritten: false }), false, '正式报告未写成时必须保留诊断目录')
+assert.equal(shouldRemoveChatLongSessionTemp({ ...successfulTempRemoval, realProbe: true, acceptancePassed: false, reportWritten: false }), true, '成功 real-probe 无需正式报告即可清理')
+assert.equal(chatLongSessionSemanticSeedMaxTurns, 50, '真实验收业务轮次上限必须固定为 50')
+assert.equal(buildChatLongSessionSemanticSeedPlan(50, 0).artifacts.length, 50, 'turns=50 精确边界必须可用')
+for (const invalidTurns of [-1, 1.5, 51, 1e9, 2 ** 32, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+  assert.throws(
+    () => buildChatLongSessionSemanticSeedPlan(invalidTurns, 0),
+    /chat_long_session_semantic_seed_turns_invalid/,
+    `turns=${String(invalidTurns)} 必须在分配 artifact 前 fail-fast`
+  )
+}
+for (const invalidTarget of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+  assert.throws(
+    () => buildChatLongSessionSemanticSeedPlan(1, invalidTarget),
+    /chat_long_session_semantic_seed_target_tokens_invalid/,
+    `target=${String(invalidTarget)} 必须在 token 计算前 fail-fast`
+  )
+}
+assert.deepEqual(
+  buildChatLongSessionSemanticSeedPlan(0, 0),
+  { artifacts: [], totalBytes: 0, totalTokens: 0 },
+  'turns=0,target=0 必须返回明确的空计划'
+)
+assert.throws(
+  () => buildChatLongSessionSemanticSeedPlan(0, 1),
+  /chat_long_session_semantic_seed_zero_turns_requires_zero_target/,
+  '零轮次不能悄悄吞掉非零 token 目标'
+)
+const maximumSemanticSeed = buildChatLongSessionSemanticSeedPlan(42, chatLongSessionControlledSeedMaxTokens)
+assert(maximumSemanticSeed.totalTokens <= chatLongSessionControlledSeedMaxTokens, '受控预填的实际 token 数不得越过 18 万硬上限')
+assert(maximumSemanticSeed.totalTokens > chatLongSessionControlledSeedMaxTokens * 0.9, '受控预填不能因为硬上限实现而退化为过小样本')
+assert.deepEqual(
+  withoutChatLongSessionAcceptanceObservability({ businessHash: 'same', auditLogCount: 12, upstreamAttemptCount: 20 }),
+  withoutChatLongSessionAcceptanceObservability({ businessHash: 'same', auditLogCount: 13, upstreamAttemptCount: 21 }),
+  '第 51 轮业务副作用比较必须忽略异步审计日志及其 attempt 的同步增长'
+)
+assert(fixture.every((turn) => turn.prompt.includes(`${turn.introducedFeatureId} 的验收证据`)), '每轮必须把机器评分证据公开写入提示词，禁止隐藏验收条件')
+assert.match(fixture[49]!.prompt, /REQ-50 的验收证据[^。]*aurora-acceptance-ready/, '最终轮必须明确公开 REQ-50 的验收证据')
+const cumulativeEvidenceIndex = fixture[49]!.prompt.indexOf('累计验收证据')
+assert(cumulativeEvidenceIndex >= 0 && fixture[49]!.prompt.indexOf('REQ-01', cumulativeEvidenceIndex) < fixture[49]!.prompt.lastIndexOf('REQ-50'), '最终 checkpoint 必须累计列出全部验收证据')
 const idleProgress = new ChatLongSessionStreamProgress({ startedAt: 0, eventIdleMs: 180_000, progressIdleMs: 300_000 })
 let canceledReaderCalls = 0
 const fakeReader = { cancel: async () => { canceledReaderCalls += 1 } } as unknown as ReadableStreamDefaultReader<Uint8Array>
@@ -72,6 +135,7 @@ assert.deepEqual(slowProgress.snapshot(400_000, 7), {
 })
 const regressionRoot = dirname(fileURLToPath(import.meta.url))
 const realSource = readFileSync(resolve(regressionRoot, 'chat-long-session-real-e2e.ts'), 'utf8')
+const semanticSeedSource = readFileSync(resolve(regressionRoot, 'chat-long-session-semantic-seed.ts'), 'utf8')
 const gatewayBodyMiddlewareSource = readFileSync(resolve(regressionRoot, '../../modules/gateway/request/body-middleware.ts'), 'utf8')
 const realSourceFile = ts.createSourceFile('chat-long-session-real-e2e.ts', realSource, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS)
 const mainEntryStatements = realSourceFile.statements.filter(isAwaitMainStatement)
@@ -87,7 +151,7 @@ assert(processTreeRegressionSource.includes("process.argv.includes('--cleanup-ha
 assert(processTreeRegressionSource.includes('HARNESS_SURVIVED_AFTER_CLEANUP'), '子 harness 必须在 cleanup 完成后输出存活 marker')
 assert(processTreeRegressionSource.includes("assert.match(output, /HARNESS_SURVIVED_AFTER_CLEANUP/)"), '外层进程必须断言 cleanup 后 marker')
 assert(!realSource.includes("import { runtimeConfig } from '../../config/runtime.js'"), 'real e2e 不得在清理父进程环境前静态加载 runtimeConfig')
-const resolveRunSecretIndex = realSource.indexOf('resolveChatLongSessionRunSecret(tempRoot, { resuming })')
+const resolveRunSecretIndex = realSource.indexOf('resolveChatLongSessionRunSecret(tempRoot, {')
 const sanitizeProcessEnvIndex = realSource.indexOf('applyHermeticProcessEnv(tempRoot, runSecret)')
 const runtimeDynamicImportIndex = realSource.indexOf("await import('../../config/runtime.js')")
 assert(resolveRunSecretIndex >= 0 && sanitizeProcessEnvIndex > resolveRunSecretIndex && runtimeDynamicImportIndex > sanitizeProcessEnvIndex, '必须先解析稳定 run identity、清理当前进程 PG/Redis 环境，再动态加载 runtimeConfig')
@@ -226,6 +290,21 @@ for (const message of [
 }
 assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: 'invalid_request_error', message: 'stream terminated' }), false, '确定性 code 必须优先于连接终止 message')
 const resumeFixture = fixture.slice(0, 3)
+assert.deepEqual(
+  buildChatLongSessionAttemptIdentity(50, 1),
+  { clientMessageId: 'long-real-50', traceId: 'chat-long-main-50' },
+  '首次运行必须保留稳定标识'
+)
+assert.deepEqual(
+  buildChatLongSessionAttemptIdentity(50, 2, 'a1b2c3d4e5f6'),
+  { clientMessageId: 'long-real-50-retry-2-resume-a1b2c3d4e5f6', traceId: 'chat-long-main-50-retry-2-resume-a1b2c3d4e5f6' },
+  '同一次续跑必须使用 invocation 标识隔离历史幂等记录'
+)
+assert.notDeepEqual(
+  buildChatLongSessionAttemptIdentity(50, 1, 'a1b2c3d4e5f6'),
+  buildChatLongSessionAttemptIdentity(50, 1, '001122334455'),
+  '不同续跑进程不得复用已取消提交的 clientMessageId'
+)
 const resumePlan = buildChatLongSessionResumePlan(resumeFixture, [
   { id: 'u1', turnId: 't1', sequenceNo: 1, role: 'user', status: 'completed', contentText: resumeFixture[0]!.prompt },
   { id: 'a1', turnId: 't1', sequenceNo: 2, role: 'assistant', status: 'completed', contentText: 'answer-1' },
@@ -265,8 +344,9 @@ assert(realSource.includes('completedAssistantCount, 50'), '第 50 轮必须断�
 assert(realSource.includes('activeTurn, false'), '第 50 轮必须断言无 active turn')
 assert(realSource.includes('minimumStableMs: 2_000'), '第 51 次后必须等待至少 2 秒连续稳定')
 assert(!realSource.includes("'x'.repeat"), '受控预填不得使用重复 x 伪造上下文')
-assert(realSource.includes('countChatTextTokens'), '受控预填必须复用生产 tokenizer')
+assert(semanticSeedSource.includes('countChatTextTokens'), '受控预填必须复用生产 tokenizer')
 assert(realSource.includes('0.72'), '受控预填目标必须达到有效窗口 72%')
+assert(semanticSeedSource.includes('chatLongSessionControlledSeedMaxTokens') && semanticSeedSource.includes('180_000'), '真实受控预填必须限制在稳定的 18 万 token，避免按超大声明窗口压垮上游')
 assert(realSource.includes('observedCompactionChange'), '初始 ready 不能直接视为自然压缩完成')
 assert(realSource.includes("contextState, 'compacting'"), 'controlled 压缩前必须排除 active compacting claim')
 assert.deepEqual(decideChatSubmissionRecovery({ state: 'not_found', attempt: 0, timedOut: false }), { action: 'retry' })
@@ -282,7 +362,13 @@ assert(realSource.includes('runHash'), '默认报告名必须包含 run hash')
 assert(realSource.includes('JUHE_AI_CHAT_REAL_RESUME_ROOT'), '真实长会话必须支持从显式临时根目录安全续跑')
 assert(realSource.includes('chatLongSessionFixtureHash') && realSource.includes('chatLongSessionResumeCanonicalHash'), '续跑必须校验 fixture hash 与已完成消息 canonical hash')
 assert(realSource.includes('effectiveReplaceTurnId'), '续跑必须原位替换最后一个失败轮，不能重复追加用户轮次')
-assert(realSource.includes('!keepTemp && executionSucceeded'), '失败运行必须保留临时数据库与有界检查点供续跑')
+assert(realSource.includes('runControlledChatTurnWithRetries'), '受控压缩前后真实轮次必须复用临时错误三次重试策略')
+assert(realSource.includes('cleanupPreviousControlledConversations'), '受控阶段失败续跑前必须清理旧临时会话，避免重复占用存储配额')
+assert(realSource.includes('refreshUnavailableCheckpointUsage'), '续跑必须重新查询已迟到落库的 usage，不能永久复用 unavailable 指标')
+assert(realSource.includes('traceId,'), '每轮 checkpoint 必须保留非敏感 traceId 供 usage 延迟自愈')
+assert(realSource.includes('withoutChatLongSessionAcceptanceObservability'), '第 51 轮无业务副作用断言必须排除后台模型探针等异步审计增长')
+assert(!realSource.includes('upstreamAttempts: dataset.prepare'), '异步审计 attempt 不得进入第 51 轮业务 canonical hash')
+assert(realSource.includes('executionSucceeded,') && realSource.includes('shouldRemoveChatLongSessionTemp'), '执行未完成时必须由统一门禁保留临时数据库与有界检查点供续跑')
 assert(realSource.includes('assertSafeCheckpointPayload'), '检查点不得写入 prompt、回答或凭据')
 assert(gatewayBodyMiddlewareSource.includes("'gateway_json_parser_busy'"), 'JSON parser queue-full 响应必须保留稳定错误码')
 assert(gatewayBodyMiddlewareSource.includes("'gateway_json_parser_failed'"), 'JSON parser worker failure 响应必须与容量过载区分')
@@ -296,7 +382,9 @@ assert(realSource.includes("process.argv.includes('--real-probe')"), '必须提�
 assert(realSource.includes("mode: 'real-probe'"), 'real-probe 输出必须明确标记模式')
 const probeOutputIndex = realSource.indexOf('if (realProbe) {\n    assert(completedSummary)')
 const reportWriteIndex = realSource.indexOf('writeFileSync(completedOutputPath')
-assert(probeOutputIndex >= 0 && reportWriteIndex > probeOutputIndex, 'real-probe 必须在 cleanup 后输出并于正式报告写入前返回')
+const tempRemovalIndex = realSource.indexOf('await removeTempRoot(tempRoot')
+assert(probeOutputIndex >= 0 && reportWriteIndex >= 0 && reportWriteIndex < tempRemovalIndex, '正式报告必须在删除可恢复临时数据前写入')
+assert(realSource.includes('reportWritten,') && realSource.includes('shouldRemoveChatLongSessionTemp'), '报告写入状态与 real-probe 例外必须交给统一删除门禁判断')
 assert(!realSource.includes('sleep(300_000)'), 'local-preflight timeout 必须可取消，不能在成功后保持事件循环 5 分钟')
 for (const isolatedEnv of [
   'JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT', 'JUHE_AI_CODEX_WEB_SEARCH_API_KEY',
@@ -325,7 +413,12 @@ assert((realSource.match(/chatLongSessionArtifactQualityFailure/g)?.length ?? 0)
 assert(realSource.indexOf("assert.equal(stream.terminalEvent, 'message.completed', `真实单轮 probe") < realSource.indexOf('const probeQualityFailure'), 'real probe 必须先确认 completed，再执行 artifact quality gate')
 assert(realSource.includes('maxAttempts: 3') && realSource.includes('sleep,'), '真实 runner 必须保持三次总尝试并注入 budget-aware sleep')
 assert(!realSource.includes('max_output_tokens'), '未确认请求合同前不得自造 max_output_tokens 字段')
-assert(realSource.includes('if (!keepTemp && executionSucceeded) await removeTempRoot(tempRoot,'), 'KEEP_TEMP=1 成功以及任何失败都必须保留临时目录')
+assert(realSource.includes('let acceptancePassed = false'), '真实验收必须区分执行完整与质量阈值通过，失败也要能落量化报告')
+assert(realSource.includes('acceptance: { passed: acceptancePassed'), '真实报告必须显式记录质量阈值是否通过')
+assert(realSource.indexOf('completedReport = report') < realSource.indexOf('if (scoreFailure) throw scoreFailure'), '质量阈值失败必须先构造并登记报告，再抛错')
+assert(realSource.includes('shouldRemoveChatLongSessionTemp({'), '临时目录删除必须走可行为验证的统一门禁')
+assert(realSource.includes('cleanupHealthy = false'), '任一前置 cleanup 失败必须阻止后续删除诊断目录')
+assert(realSource.includes('primaryError: Boolean(primaryError)'), '迟到中断或主流程错误必须进入删除门禁')
 assert(realSource.includes("process.once('SIGINT'"), '必须注册 SIGINT 有界清理入口')
 assert(realSource.includes("process.once('SIGTERM'"), '必须注册 SIGTERM 有界清理入口')
 assert(realSource.includes('streamDeadline'), '每次 stream 必须接收总预算裁剪后的 deadline')

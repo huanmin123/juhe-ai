@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import net from 'node:net'
@@ -10,7 +10,6 @@ import { fileURLToPath } from 'node:url'
 
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import type { RuntimeConfig } from '../../config/runtime.js'
-import { countChatTextTokens } from '../../modules/chat/chat-token-count.js'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import {
   buildChatLongSessionFixture,
@@ -31,12 +30,19 @@ import { runChatLongSessionTurnAttempts, type ChatLongSessionAttemptMetric } fro
 import { ChatLongSessionStreamProgress, type ChatLongSessionStreamIdleReason, type ChatLongSessionStreamProgressSnapshot } from './chat-long-session-stream-progress.js'
 import { consumeReaderWithBoundedCancellation } from './chat-long-session-reader.js'
 import {
+  buildChatLongSessionAttemptIdentity,
   buildChatLongSessionResumePlan,
   chatLongSessionFixtureHash,
   chatLongSessionResumeCanonicalHash,
   type ChatLongSessionResumeMessage
 } from './chat-long-session-checkpoint.js'
 import { resolveChatLongSessionRunSecret } from './chat-long-session-run-identity.js'
+import { withoutChatLongSessionAcceptanceObservability } from './chat-long-session-acceptance-snapshot.js'
+import { shouldRemoveChatLongSessionTemp } from './chat-long-session-temp-retention.js'
+import {
+  buildChatLongSessionSemanticSeedPlan,
+  chatLongSessionControlledSeedMaxTokens
+} from './chat-long-session-semantic-seed.js'
 import {
   busyCleanupTargetPath,
   classifyProcessCommand,
@@ -107,6 +113,7 @@ interface ContextStatus {
 
 interface TurnMetric {
   turn: number
+  traceId?: string
   firstDeltaMs: number | null
   totalMs: number
   eventCount: number
@@ -209,11 +216,15 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
   const resuming = Boolean(configuredResumeRoot)
   if (resuming && !existsSync(tempRoot)) throw new Error('chat_long_session_resume_root_not_found')
   if (!resuming) mkdirSync(tempRoot, { recursive: true })
-  const runSecret = resolveChatLongSessionRunSecret(tempRoot, { resuming })
+  const credential = readRequiredCredential()
+  const runSecret = resolveChatLongSessionRunSecret(tempRoot, {
+    resuming,
+    keyMaterial: credential.apiKey,
+    allowLegacyPathDerivation: process.env.JUHE_AI_CHAT_REAL_ALLOW_LEGACY_PATH_SECRET === '1'
+  })
   applyHermeticProcessEnv(tempRoot, runSecret)
   const { runtimeConfig } = await import('../../config/runtime.js')
   const { logger } = await import('../../shared/logger.js')
-  const credential = readRequiredCredential()
   const runAbortController = new AbortController()
   const runDeadline = Date.now() + 4 * 60 * 60 * 1000
   const runBudget = new ChatLongSessionRunBudget(runDeadline, runAbortController.signal)
@@ -231,6 +242,9 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
   let completedOutputPath = ''
   let completedSummary: Record<string, unknown> | undefined
   let executionSucceeded = false
+  let acceptancePassed = false
+  let reportWritten = false
+  let cleanupHealthy = true
   let primaryError: Error | undefined
   let interruptedSignal: NodeJS.Signals | undefined
   let signalStopPromise: Promise<void> | undefined
@@ -390,12 +404,16 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
       contentText: message.contentText
     }))
     const resumePlan = buildChatLongSessionResumePlan(fixture, resumeMessages)
+    const resumeInvocationId = resumedCheckpoint ? randomBytes(6).toString('hex') : undefined
     if (resumedCheckpoint) {
       assert.equal(resumedCheckpoint.completedTurns, resumePlan.lastCompletedTurn, '续跑检查点与数据库最后完成轮次不一致')
       assert.equal(resumedCheckpoint.canonicalHash, chatLongSessionResumeCanonicalHash(resumeMessages, resumePlan.lastCompletedTurn), '续跑检查点 canonical hash 不一致')
       assert.equal(resumedCheckpoint.turnMetrics.length, resumePlan.lastCompletedTurn, '续跑检查点指标数量不一致')
     }
     const turnMetrics: TurnMetric[] = resumedCheckpoint ? [...resumedCheckpoint.turnMetrics] : []
+    if (resumedCheckpoint && await refreshUnavailableCheckpointUsage(turnMetrics, repositories, access)) {
+      writeChatLongSessionCheckpoint(checkpointPath, { ...resumedCheckpoint, turnMetrics })
+    }
     const assistantResponses: ChatLongSessionResponse[] = [...resumePlan.completedResponses]
     const usageRecords: PersistedUsageMetric[] = turnMetrics.map((metric) => metric.usage)
     if (!resumedCheckpoint) {
@@ -428,18 +446,17 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
       if (service && !selectedModel.supportedServiceTiers.includes(service)) { service = undefined; servicePlan = { result: 'skipped', reason: 'capability_unavailable' } }
       if (turn.turn < resumePlan.nextTurn) continue
       const initialReplaceTurnId = turn.turn === resumePlan.nextTurn ? resumePlan.replaceTurnId : undefined
-      const clientMessageIdForAttempt = (attempt: number): string => initialReplaceTurnId
-        ? `${mainAttemptClientMessageId(turn.turn, attempt)}-resume`
-        : mainAttemptClientMessageId(turn.turn, attempt)
-      const traceIdForAttempt = (attempt: number): string => initialReplaceTurnId
-        ? `${mainAttemptTraceId(turn.turn, attempt)}-resume`
-        : mainAttemptTraceId(turn.turn, attempt)
+      const identityForAttempt = (attempt: number) => buildChatLongSessionAttemptIdentity(
+        turn.turn,
+        attempt,
+        initialReplaceTurnId ? resumeInvocationId : undefined
+      )
       const attemptOutcome = await runChatLongSessionTurnAttempts({
         maxAttempts: 3,
         sleep,
         submit: async ({ attempt, replaceTurnId }) => {
           const effectiveReplaceTurnId = replaceTurnId ?? initialReplaceTurnId
-          const clientMessageId = clientMessageIdForAttempt(attempt)
+          const { clientMessageId, traceId } = identityForAttempt(attempt)
           const streamed = await postChatStreamWithRecovery(baseUrl, cookie, conversationId, {
             clientMessageId,
             content: turn.prompt,
@@ -447,13 +464,13 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
             ...(reasoning ? { reasoningEffort: reasoning } : {}),
             ...(service ? { serviceTier: service } : {}),
             ...(effectiveReplaceTurnId ? { replaceTurnId: effectiveReplaceTurnId } : {})
-          }, traceIdForAttempt(attempt), runDeadline)
+          }, traceId, runDeadline)
           return applyChatLongSessionArtifactQualityGate(turn, streamed)
         },
         resolveAcceptedTurnId: async ({ attempt }) => {
           const submission = await apiJson<{ data: { state: 'not_found' | 'preparing' | 'accepted'; turnId?: string } }>(
             baseUrl,
-            `/__aisys__/api/my-chat/conversations/${conversationId}/submissions/${clientMessageIdForAttempt(attempt)}`,
+            `/__aisys__/api/my-chat/conversations/${conversationId}/submissions/${identityForAttempt(attempt).clientMessageId}`,
             cookie
           )
           return submission.data.state === 'accepted' ? submission.data.turnId : undefined
@@ -463,7 +480,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
         throw new Error(`第 ${turn.turn} 轮失败：${attemptOutcome.reason}${formatSafeStreamFailure(attemptOutcome.result.failure)}`)
       }
       const stream = attemptOutcome.result
-      const traceId = traceIdForAttempt(attemptOutcome.attempts.length)
+      const traceId = identityForAttempt(attemptOutcome.attempts.length).traceId
       assert.equal(stream.status, 200, `第 ${turn.turn} 轮 HTTP ${stream.status} ${stream.errorCode ?? ''}`)
       assert.equal(stream.terminalEvent, 'message.completed', `第 ${turn.turn} 轮缺少完成终态${formatSafeStreamFailure(stream.failure)}`)
       assistantResponses.push({ turn: turn.turn, assistantOutput: stream.assistantOutput })
@@ -475,6 +492,7 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
       }
       turnMetrics.push({
         turn: turn.turn,
+        traceId,
         firstDeltaMs: stream.firstDeltaMs,
         totalMs: stream.totalMs,
         eventCount: stream.eventCount,
@@ -527,8 +545,14 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
     }, undefined, runDeadline)
     assert.deepEqual([turn51.status, turn51.errorCode], [409, 'chat_turn_limit_exceeded'])
     const after51 = await waitForAcceptanceSnapshotStable(databaseModule, client, conversationId, access.systemAccountId, { minimumStableMs: 2_000, repositories, access })
-    assert.deepEqual(after51, before51, '第 51 次 HTTP 发送不得改变消息、幂等、轮次、上下文、checkpoint、资产或账本')
+    assert.deepEqual(
+      withoutChatLongSessionAcceptanceObservability(after51),
+      withoutChatLongSessionAcceptanceObservability(before51),
+      '第 51 次 HTTP 发送不得改变消息、幂等、轮次、上下文、checkpoint、资产或账本'
+    )
+    assert(after51.auditLogCount >= before51.auditLogCount, '异步审计总数不得倒退')
 
+    await cleanupPreviousControlledConversations(client, chatRepository, access.systemAccountId, conversationId)
     const controlled = await seedControlledConversation({
       client,
       chatRepository,
@@ -545,11 +569,16 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
     const controlledResponses: Array<{ firstDeltaMs: number | null; totalMs: number; status: number }> = []
     for (let index = 0; index < preCompactionFollowups.length; index += 1) {
       const controlledTraceId = `chat-long-controlled-${index + 43}`
-      const streamed = await postChatStreamWithRecovery(baseUrl, cookie, controlled.conversationId, {
-        clientMessageId: `controlled-http-${index + 43}`,
-        content: preCompactionFollowups[index],
-        model: controlled.model.id
-      }, controlledTraceId, runDeadline)
+      const streamed = await runControlledChatTurnWithRetries({
+        baseUrl,
+        cookie,
+        conversationId: controlled.conversationId,
+        clientMessageIdBase: `controlled-http-${index + 43}`,
+        traceIdBase: controlledTraceId,
+        content: preCompactionFollowups[index]!,
+        model: controlled.model.id,
+        runDeadline
+      })
       assert.equal(streamed.status, 200)
       controlledResponses.push({ firstDeltaMs: streamed.firstDeltaMs, totalMs: streamed.totalMs, status: streamed.status })
       controlledContext = (await apiJson<{ data: ContextStatus }>(baseUrl, `/__aisys__/api/my-chat/conversations/${controlled.conversationId}/context-status`, cookie)).data
@@ -588,11 +617,16 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
       controlledContext = (await apiJson<{ data: ContextStatus }>(baseUrl, `/__aisys__/api/my-chat/conversations/${controlled.conversationId}/context-status`, cookie)).data
     }
     assert(controlledContext.compactedThroughSequence > 0, '受控会话未形成有效 checkpoint')
-    const recall = await postChatStreamWithRecovery(baseUrl, cookie, controlled.conversationId, {
-      clientMessageId: 'controlled-http-45',
+    const recall = await runControlledChatTurnWithRetries({
+      baseUrl,
+      cookie,
+      conversationId: controlled.conversationId,
+      clientMessageIdBase: 'controlled-http-45',
+      traceIdBase: 'chat-long-controlled-45',
       content: '压缩完成后最终返回完整 HTML，并同时保留早期锚点 PROJECT-AURORA-FOUNDATION、最近版本标记 REQ-C42，以及压缩后新增需求 REQ-C43 和 REQ-C44。',
-      model: controlled.model.id
-    }, 'chat-long-controlled-45', runDeadline)
+      model: controlled.model.id,
+      runDeadline
+    })
     assert.equal(recall.status, 200)
     assert.match(recall.assistantOutput, /PROJECT-AURORA-FOUNDATION/, '压缩后回答遗漏早期锚点')
     assert.match(recall.assistantOutput, /REQ-C42/, '压缩后回答遗漏最近预填项目版本')
@@ -610,13 +644,20 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
     assert.equal(controlledLedger.reservedBytes, 0)
 
     const score = scoreChatLongSession(fixture, assistantResponses)
-    assertChatLongSessionScore(score)
+    let scoreFailure: Error | undefined
+    try {
+      assertChatLongSessionScore(score)
+      acceptancePassed = true
+    } catch (error) {
+      scoreFailure = error instanceof Error ? error : new Error(String(error))
+    }
     const report = {
       schemaVersion: 1,
       generatedAt: new Date().toISOString(),
       mode: 'real',
       fixture: buildSafeFixtureSummary(fixture),
       entities: { conversationHash: hashId(conversationId), controlledConversationHash: hashId(controlled.conversationId), accountHash: hashId(accountId) },
+      acceptance: { passed: acceptancePassed, ...(scoreFailure ? { failureCode: scoreFailure.message } : {}) },
       score,
       turns: turnMetrics,
       turn51: { status: turn51.status, errorCode: turn51.errorCode, snapshotStable: true, before: before51 },
@@ -638,8 +679,9 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
     const runHash = hashId(`${tempRoot}:${report.generatedAt}`).slice(0, 12)
     completedReport = report
     completedOutputPath = resolveOutputPath(runHash)
-    completedSummary = { ok: true, outputPath: completedOutputPath, score: report.score, turnCount: turnMetrics.length, controlled: compactionResult.trigger }
+    completedSummary = { ok: acceptancePassed, outputPath: completedOutputPath, score: report.score, turnCount: turnMetrics.length, controlled: compactionResult.trigger }
     executionSucceeded = true
+    if (scoreFailure) throw scoreFailure
     }
   } catch (error) {
     const message = redactText(error instanceof Error ? error.stack ?? error.message : String(error), knownSecrets, credential.baseUrl)
@@ -652,26 +694,63 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
     try {
       await runIndependentCleanup(primaryError, [
         async () => {
-          const stopErrors: unknown[] = []
-          try { if (backendProcessTracker) backendProcessTree = await backendProcessTracker.stop() } catch (error) { stopErrors.push(error) }
-          try { if (signalStopPromise) await signalStopPromise } catch (error) { stopErrors.push(error) }
-          if (signalStopError) stopErrors.push(signalStopError)
-          try { await stopProcess(backend, { tracked: backendProcessTree, servicePort: backendPort }) } catch (error) { stopErrors.push(error) }
-          try { await assertTrackedProcessIdentitiesStopped(backendProcessTree) } catch (error) { stopErrors.push(error) }
-          if (stopErrors.length) {
-            throw new AggregateError(
-              stopErrors.map((error) => sanitizeErrorForDiagnostics(error, [...knownSecrets, credential.baseUrl])),
-              'chat_long_session_stop_failed'
-            )
+          try {
+            const stopErrors: unknown[] = []
+            try { if (backendProcessTracker) backendProcessTree = await backendProcessTracker.stop() } catch (error) { stopErrors.push(error) }
+            try { if (signalStopPromise) await signalStopPromise } catch (error) { stopErrors.push(error) }
+            if (signalStopError) stopErrors.push(signalStopError)
+            try { await stopProcess(backend, { tracked: backendProcessTree, servicePort: backendPort }) } catch (error) { stopErrors.push(error) }
+            try { await assertTrackedProcessIdentitiesStopped(backendProcessTree) } catch (error) { stopErrors.push(error) }
+            if (stopErrors.length) {
+              throw new AggregateError(
+                stopErrors.map((error) => sanitizeErrorForDiagnostics(error, [...knownSecrets, credential.baseUrl])),
+                'chat_long_session_stop_failed'
+              )
+            }
+          } catch (error) {
+            cleanupHealthy = false
+            throw error
           }
         },
         async () => {
-          runnerReadWorkerIdentities = await captureRunnerLocalSqliteReadWorkers()
-          await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
-          await assertTrackedProcessIdentitiesStopped(runnerReadWorkerIdentities)
+          try {
+            runnerReadWorkerIdentities = await captureRunnerLocalSqliteReadWorkers()
+            await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
+            await assertTrackedProcessIdentitiesStopped(runnerReadWorkerIdentities)
+          } catch (error) {
+            cleanupHealthy = false
+            throw error
+          }
         },
-        async () => { databaseModule.closeStorageDatabases() },
-        async () => { if (!keepTemp && executionSucceeded) await removeTempRoot(tempRoot, [...backendProcessTree, ...runnerReadWorkerIdentities]) }
+        async () => {
+          try {
+            databaseModule.closeStorageDatabases()
+          } catch (error) {
+            cleanupHealthy = false
+            throw error
+          }
+        },
+        async () => {
+          if (!realProbe && executionSucceeded) {
+            assert(completedReport && completedOutputPath)
+            mkdirSync(dirname(completedOutputPath), { recursive: true })
+            writeFileSync(completedOutputPath, `${JSON.stringify(completedReport, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
+            reportWritten = true
+          }
+        },
+        async () => {
+          if (shouldRemoveChatLongSessionTemp({
+            keepTemp,
+            executionSucceeded,
+            acceptancePassed,
+            realProbe,
+            reportWritten,
+            primaryError: Boolean(primaryError),
+            cleanupHealthy
+          })) {
+            await removeTempRoot(tempRoot, [...backendProcessTree, ...runnerReadWorkerIdentities])
+          }
+        }
       ], [...knownSecrets, credential.baseUrl])
     } finally {
       process.removeListener('SIGINT', handleSigint)
@@ -686,9 +765,65 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
     return
   }
   assert(completedReport && completedOutputPath && completedSummary)
-  mkdirSync(dirname(completedOutputPath), { recursive: true })
-  writeFileSync(completedOutputPath, `${JSON.stringify(completedReport, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
+  assert(reportWritten)
   console.log(JSON.stringify(completedSummary))
+}
+
+async function cleanupPreviousControlledConversations(
+  client: import('../../storage/database-client.js').DatabaseClient,
+  chatRepository: typeof import('../../storage/chat.repository.js'),
+  systemAccountId: string,
+  mainConversationId: string
+): Promise<void> {
+  const rows = await client.query<{ id?: unknown }>(`
+    SELECT id FROM chat_conversations
+    WHERE system_account_id = ? AND id <> ?
+    ORDER BY created_at ASC
+  `, [systemAccountId, mainConversationId])
+  for (const row of rows) {
+    const conversationId = String(row.id ?? '')
+    if (conversationId) await chatRepository.deleteChatConversation(client, conversationId, systemAccountId)
+  }
+}
+
+async function runControlledChatTurnWithRetries(input: {
+  baseUrl: string
+  cookie: string
+  conversationId: string
+  clientMessageIdBase: string
+  traceIdBase: string
+  content: string
+  model: string
+  runDeadline: number
+}): Promise<Awaited<ReturnType<typeof postChatStream>>> {
+  const clientMessageIdForAttempt = (attempt: number) => attempt === 1
+    ? input.clientMessageIdBase
+    : `${input.clientMessageIdBase}-retry-${attempt}`
+  const traceIdForAttempt = (attempt: number) => attempt === 1
+    ? input.traceIdBase
+    : `${input.traceIdBase}-retry-${attempt}`
+  const outcome = await runChatLongSessionTurnAttempts({
+    maxAttempts: 3,
+    sleep,
+    submit: ({ attempt, replaceTurnId }) => postChatStreamWithRecovery(input.baseUrl, input.cookie, input.conversationId, {
+      clientMessageId: clientMessageIdForAttempt(attempt),
+      content: input.content,
+      model: input.model,
+      ...(replaceTurnId ? { replaceTurnId } : {})
+    }, traceIdForAttempt(attempt), input.runDeadline),
+    resolveAcceptedTurnId: async ({ attempt }) => {
+      const submission = await apiJson<{ data: { state: 'not_found' | 'preparing' | 'accepted'; turnId?: string } }>(
+        input.baseUrl,
+        `/__aisys__/api/my-chat/conversations/${input.conversationId}/submissions/${clientMessageIdForAttempt(attempt)}`,
+        input.cookie
+      )
+      return submission.data.state === 'accepted' ? submission.data.turnId : undefined
+    }
+  })
+  if (outcome.status === 'failed') {
+    throw new Error(`受控会话失败：${outcome.reason}${formatSafeStreamFailure(outcome.result.failure)}`)
+  }
+  return outcome.result
 }
 
 async function seedControlledConversation(input: {
@@ -700,8 +835,13 @@ async function seedControlledConversation(input: {
 }): Promise<{ conversationId: string; seededTurns: number; targetBytes: number; targetTokens: number; estimatedTokens: number; naturalEligible: boolean; controlledReason?: string; model: ChatModelOption }> {
   const seededTurns = 42
   const tokenLimit = input.model.maxInputTokens ?? input.model.contextWindowTokens
-  const targetTokens = tokenLimit ? Math.ceil(tokenLimit * 0.72) : 0
-  const seedPlan = buildSemanticSeedPlan(seededTurns, targetTokens)
+  const naturalTargetTokens = tokenLimit ? Math.ceil(tokenLimit * 0.72) : 0
+  const targetTokens = Math.min(naturalTargetTokens, chatLongSessionControlledSeedMaxTokens)
+  const seedPlan = buildChatLongSessionSemanticSeedPlan(
+    seededTurns,
+    targetTokens,
+    (label) => activeRunBudget?.assertActive(label)
+  )
   const now = new Date().toISOString()
   const conversation = await input.chatRepository.createChatConversation(input.client, {
     systemAccountId: input.systemAccountId,
@@ -750,43 +890,14 @@ async function seedControlledConversation(input: {
     targetBytes: seedPlan.totalBytes,
     targetTokens,
     estimatedTokens: seedPlan.totalTokens,
-    naturalEligible: Boolean(tokenLimit) && seedPlan.totalTokens >= targetTokens,
+    naturalEligible: Boolean(tokenLimit) && seedPlan.totalTokens >= naturalTargetTokens,
     ...(!tokenLimit
       ? { controlledReason: 'effective_context_limit_unavailable' }
-      : seedPlan.totalTokens >= targetTokens ? {} : { controlledReason: 'safe_seed_limits_below_72_percent' }),
+      : targetTokens < naturalTargetTokens
+        ? { controlledReason: 'safe_seed_cap_below_72_percent' }
+        : seedPlan.totalTokens >= naturalTargetTokens ? {} : { controlledReason: 'safe_seed_limits_below_72_percent' }),
     model: input.model
   }
-}
-
-function buildSemanticSeedPlan(turns: number, targetTokens: number): { artifacts: string[]; totalBytes: number; totalTokens: number } {
-  const artifacts: string[] = []
-  const perArtifactTarget = Math.ceil(targetTokens / turns)
-  const perArtifactByteLimit = Math.min(191 * 1024, Math.floor(3_800_000 / turns))
-  for (let version = 1; version <= turns; version += 1) {
-    activeRunBudget?.assertActive(`semantic_seed_${version}`)
-    let modules = 1
-    let artifact = seededArtifact(version, modules)
-    while (countChatTextTokens(artifact) < perArtifactTarget) {
-      activeRunBudget?.assertActive(`semantic_seed_${version}_${modules}`)
-      const candidate = seededArtifact(version, modules + 8)
-      if (Buffer.byteLength(candidate, 'utf8') >= perArtifactByteLimit) break
-      modules += 8
-      artifact = candidate
-    }
-    artifacts.push(artifact)
-  }
-  return {
-    artifacts,
-    totalBytes: artifacts.reduce((total, artifact) => total + Buffer.byteLength(artifact, 'utf8'), 0),
-    totalTokens: artifacts.reduce((total, artifact) => total + countChatTextTokens(artifact), 0)
-  }
-}
-
-function seededArtifact(version: number, moduleCount: number): string {
-  const requirements = Array.from({ length: version }, (_, index) => `REQ-C${String(index + 1).padStart(2, '0')}`).join(' ')
-  const styles = Array.from({ length: moduleCount }, (_, index) => `.project-module-${version}-${index}{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--space-${index % 8});padding:${(index % 12) + 4}px;border:1px solid var(--line);container-type:inline-size}`).join('\n')
-  const modules = Array.from({ length: moduleCount }, (_, index) => `<section class="project-module-${version}-${index}" aria-labelledby="module-${version}-${index}"><h2 id="module-${version}-${index}">运营模块 ${index + 1}</h2><p>版本 ${version} 的连续项目模块，保留筛选、状态、负责人、更新时间和响应式布局决策。</p><button type="button" aria-label="打开模块 ${index + 1}">查看</button></section>`).join('\n')
-  return `<!doctype html><html lang="zh-CN" data-requirements="${requirements}"><head><meta charset="utf-8"><style>:root{--surface:#fff;--ink:#17202a;--line:#d7dce2;${Array.from({ length: 8 }, (_, index) => `--space-${index}:${index + 4}px`).join(';')}}body{font-family:Arial,sans-serif}.app-shell{display:grid;grid-template-columns:18rem minmax(0,1fr)}${styles}@media(max-width:720px){.app-shell{grid-template-columns:1fr}}</style></head><body><header><nav aria-label="主导航">Aurora Dashboard</nav></header><div class="app-shell"><aside>项目导航</aside><main id="aurora-dashboard"><h1>PROJECT-AURORA-FOUNDATION 版本 ${version}</h1>${modules}</main></div><footer>连续项目版本 ${version}</footer></body></html>`
 }
 
 async function snapshotLedger(client: import('../../storage/database-client.js').DatabaseClient, conversationId: string, systemAccountId: string): Promise<LedgerSnapshot> {
@@ -861,7 +972,6 @@ async function waitForAcceptanceSnapshotStable(
 
 function canonicalAcceptanceHash(databaseModule: typeof import('../../storage/database.js'), conversationId: string, systemAccountId: string): string {
   const chat = databaseModule.getChatDatabase()
-  const dataset = databaseModule.getDatasetDatabase()
   const catalog = databaseModule.getUsageCatalogDatabase()
   const snapshot = {
     conversation: chat.prepare('SELECT * FROM chat_conversations WHERE id = ? AND system_account_id = ?').all(conversationId, systemAccountId),
@@ -871,9 +981,7 @@ function canonicalAcceptanceHash(databaseModule: typeof import('../../storage/da
     entries: chat.prepare('SELECT * FROM chat_context_entries WHERE conversation_id = ? ORDER BY checkpoint_id, sequence').all(conversationId),
     assets: chat.prepare('SELECT * FROM chat_assets WHERE conversation_id = ? AND system_account_id = ? ORDER BY id').all(conversationId, systemAccountId),
     storageWindows: chat.prepare('SELECT * FROM chat_user_storage_windows WHERE system_account_id = ? ORDER BY bucket_date').all(systemAccountId),
-    usageCatalog: catalog.prepare('SELECT * FROM usage_record_shard_entries ORDER BY usage_id').all(),
-    auditLogs: dataset.prepare('SELECT * FROM audit_logs ORDER BY created_at, id').all(),
-    upstreamAttempts: dataset.prepare('SELECT * FROM audit_log_attempts ORDER BY audit_log_id, attempt_index').all()
+    usageCatalog: catalog.prepare('SELECT * FROM usage_record_shard_entries ORDER BY usage_id').all()
   }
   return createHash('sha256').update(stableJson(snapshot)).digest('hex')
 }
@@ -1053,16 +1161,6 @@ async function readChatStreamChunk(
       (error) => { clearTimeout(timeout); rejectRead(error) }
     )
   })
-}
-
-function mainAttemptClientMessageId(turn: number, attempt: number): string {
-  const base = `long-real-${String(turn).padStart(2, '0')}`
-  return attempt === 1 ? base : `${base}-retry-${attempt}`
-}
-
-function mainAttemptTraceId(turn: number, attempt: number): string {
-  const base = `chat-long-main-${String(turn).padStart(2, '0')}`
-  return attempt === 1 ? base : `${base}-retry-${attempt}`
 }
 
 function formatSafeStreamFailure(failure: SafeChatStreamFailure | undefined): string {
@@ -1364,6 +1462,23 @@ async function waitForPersistedUsage(
     await sleep(250)
   }
   return { status: 'unavailable', cacheStatus: 'unavailable' }
+}
+
+async function refreshUnavailableCheckpointUsage(
+  turnMetrics: TurnMetric[],
+  repositories: typeof import('../../storage/repositories.js'),
+  access: { systemAccountId: string; role: 'user' }
+): Promise<boolean> {
+  let changed = false
+  for (const metric of turnMetrics) {
+    if (metric.usage.status === 'available') continue
+    if (!metric.traceId) throw new Error(`chat_long_session_checkpoint_usage_trace_missing_${metric.turn}`)
+    const usage = await waitForPersistedUsage(repositories, access, metric.traceId)
+    if (usage.status !== 'available') throw new Error(`chat_long_session_checkpoint_usage_unavailable_${metric.turn}`)
+    metric.usage = usage
+    changed = true
+  }
+  return changed
 }
 
 function numberField<K extends string>(key: K, value: number | undefined): Record<K, number> | Record<string, never> {

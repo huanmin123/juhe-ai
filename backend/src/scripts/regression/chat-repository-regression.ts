@@ -831,6 +831,7 @@ const imageReplaceConversation = await createChatConversation(client, {
   id: 'chat_conv_replace_image', systemAccountId: 'sys_user_1', apiKeyId: 'key_1', apiKeyNameSnapshot: '默认 Key', maxConversationsPerUser: 1000, now: '2026-07-13T03:00:00.000Z'
 })
 const imageAssetId = 'chat_asset_11111111111111111111111111111111'
+const droppedImageAssetId = 'chat_asset_22222222222222222222222222222222'
 await createChatAsset(client, {
   id: imageAssetId,
   systemAccountId: 'sys_user_1',
@@ -856,6 +857,31 @@ await completeChatAssetProcessing(client, {
   storageKey: 'repository-tests/ready-image.png',
   now: '2026-07-13T03:00:20.000Z'
 })
+await createChatAsset(client, {
+  id: droppedImageAssetId,
+  systemAccountId: 'sys_user_1',
+  conversationId: imageReplaceConversation.id,
+  originalFilename: 'repository-test-dropped.png',
+  originalMimeType: 'image/png',
+  originalWidth: 1,
+  originalHeight: 1,
+  originalBytes: 68,
+  originalSha256: '3'.repeat(64),
+  quotaBytes: 68, retentionDays: 7,
+  now: '2026-07-13T03:00:10.000Z'
+})
+await completeChatAssetProcessing(client, {
+  assetId: droppedImageAssetId,
+  systemAccountId: 'sys_user_1',
+  conversationId: imageReplaceConversation.id,
+  processedMimeType: 'image/jpeg',
+  processedWidth: 1,
+  processedHeight: 1,
+  processedBytes: 68,
+  processedSha256: '4'.repeat(64),
+  storageKey: 'repository-tests/dropped-image.jpg',
+  now: '2026-07-13T03:00:20.000Z'
+})
 const imageReplaceTurn = await acceptChatTurn(client, {
   conversationId: imageReplaceConversation.id,
   systemAccountId: 'sys_user_1',
@@ -864,6 +890,7 @@ const imageReplaceTurn = await acceptChatTurn(client, {
   contentBlocks: [
     { type: 'input_text', text: '前文' },
     { type: 'input_image', assetId: imageAssetId },
+    { type: 'input_image', assetId: droppedImageAssetId },
     { type: 'input_text', text: '后文' }
   ],
   model: 'mock-model',
@@ -879,7 +906,8 @@ const imageMessages = await listChatMessages(client, {
 assert.deepEqual(imageMessages[0]?.contentBlocks, [
   { type: 'input_text', text: '前文', order: 0 },
   { type: 'input_image', assetId: imageAssetId, order: 1 },
-  { type: 'input_text', text: '后文', order: 2 }
+  { type: 'input_image', assetId: droppedImageAssetId, order: 2 },
+  { type: 'input_text', text: '后文', order: 3 }
 ])
 const committedImageAsset = await getChatAsset(client, {
   assetId: imageAssetId,
@@ -930,6 +958,9 @@ const reboundImageAsset = await getChatAsset(client, { assetId: imageAssetId, sy
 assert.deepEqual([reboundImageAsset?.turnId, reboundImageAsset?.messageId], [replacedImageTurn.turnId, replacedImageTurn.userMessage.id], '含图片的最近一轮重新生成时必须把原资产原子改绑到新轮次')
 assert.equal(reboundImageAsset?.observationStatus, 'not_requested', '重新生成必须失效旧问题与旧回答产生的图片说明')
 assert.equal(reboundImageAsset?.observation, undefined)
+const droppedImageAsset = await getChatAsset(client, { assetId: droppedImageAssetId, systemAccountId: 'sys_user_1', conversationId: imageReplaceConversation.id })
+assert.equal(droppedImageAsset?.messageId, undefined, '替换后未复用的旧图片必须解除消息绑定')
+assert.equal(droppedImageAsset?.expiresAt, '2026-07-13T03:04:00.000Z', '替换后未复用的旧图片必须立即到期，不能占用后续 5 张草稿槽位')
 const delayedOldObservationClaim = await claimChatAssetObservation(client, {
   assetId: imageAssetId,
   systemAccountId: 'sys_user_1',
