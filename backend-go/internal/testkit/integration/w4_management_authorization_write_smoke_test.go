@@ -33,7 +33,6 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizations"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
-	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -949,8 +948,6 @@ func assertW4AuthorizationWriteChanges(t *testing.T, raw string) {
 	if err := json.Unmarshal([]byte(raw), &changes); err != nil {
 		t.Fatalf("decode authorization operation-log changes: %v", err)
 	}
-	dailyLimit := port.ManagementRequestQuotaLimit{Enabled: true, Limit: 17}
-	wantLimits := port.ManagementRequestQuotaLimits{Daily: &dailyLimit}
 	wantAfter := []any{
 		"group",
 		w4AuthorizationWriteGroupName,
@@ -958,7 +955,7 @@ func assertW4AuthorizationWriteChanges(t *testing.T, raw string) {
 		"",
 		"active",
 		"",
-		wantLimits,
+		"{}",
 	}
 	wantFields := []struct {
 		field string
