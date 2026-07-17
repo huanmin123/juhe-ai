@@ -46,6 +46,12 @@ interface AccountBalanceQueryResolution {
   preferredBuiltinAdapter?: AccountBalanceBuiltinAdapter
 }
 
+interface AccountBalanceRefreshAttempt {
+  snapshot: AccountBalanceSnapshot
+  nextConfig: AccountBalanceQueryConfig
+  nextRefreshAfter: string | null
+}
+
 type AccountBalanceRefreshMode = 'automatic' | 'manual'
 type AccountBalanceFailureKind = 'transient' | 'deterministic'
 
@@ -61,6 +67,7 @@ export async function refreshAccountBalanceCandidate(
   dependencies: {
     mode?: AccountBalanceRefreshMode
     query?: (candidate: AccountBalanceRefreshCandidate) => Promise<AccountBalanceSnapshot>
+    resolveProxyUrl?: (proxyProfileId: string) => Promise<string | undefined>
   } = {}
 ): Promise<AccountBalanceSnapshot> {
   if (!candidate) throw new Error('余额刷新账户不存在')
@@ -82,32 +89,58 @@ export async function refreshAccountBalanceCandidate(
   }
 
   try {
+    const attempt = await resolveAccountBalanceRefreshAttempt(candidate, dependencies)
+    await persistBalanceRefreshIfCurrent(
+      candidate,
+      attempt.nextConfig,
+      attempt.snapshot,
+      attempt.nextRefreshAfter,
+      dependencies.mode
+    )
+    return attempt.snapshot
+  } finally {
+    await releaseBalanceLease(leaseKey, ownerId)
+  }
+}
+
+async function resolveAccountBalanceRefreshAttempt(
+  candidate: AccountBalanceRefreshCandidate,
+  dependencies: {
+    mode?: AccountBalanceRefreshMode
+    query?: (candidate: AccountBalanceRefreshCandidate) => Promise<AccountBalanceSnapshot>
+    resolveProxyUrl?: (proxyProfileId: string) => Promise<string | undefined>
+  }
+): Promise<AccountBalanceRefreshAttempt> {
+  const resolvedProxyUrl = dependencies.query || !candidate.proxyProfileId
+    ? undefined
+    : (await (dependencies.resolveProxyUrl ?? resolveProxyUrlForProfileAsync)(candidate.proxyProfileId) ?? null)
+  try {
     const resolution = dependencies.query
       ? { snapshot: await dependencies.query(candidate) }
-      : await queryAccountBalanceResolution(candidate)
+      : await queryAccountBalanceResolution(candidate, resolvedProxyUrl)
     const completedAt = new Date().toISOString()
     const successful = isSuccessfulBalanceSnapshot(resolution.snapshot)
     const snapshot: AccountBalanceSnapshot = {
       ...resolution.snapshot,
       lastAttemptAt: completedAt,
-      ...(successful
-        ? { lastSuccessAt: completedAt }
-        : {})
+      ...(successful ? { lastSuccessAt: completedAt } : {})
     }
     if (!successful) {
-      const unsupportedSnapshot: AccountBalanceSnapshot = {
-        ...snapshot,
-        status: 'unsupported',
-        errorMessage: snapshot.errorMessage ?? '当前配置未找到可用余额接口，后台查询已暂停'
+      return {
+        snapshot: {
+          ...snapshot,
+          status: 'unsupported',
+          errorMessage: snapshot.errorMessage ?? '当前配置未找到可用余额接口，后台查询已暂停'
+        },
+        nextConfig: resolvedBalanceConfig(candidate.config, undefined),
+        nextRefreshAfter: null
       }
-      const nextConfig = resolvedBalanceConfig(candidate.config, undefined)
-      await persistBalanceRefreshIfCurrent(candidate, nextConfig, unsupportedSnapshot, null, dependencies.mode)
-      return unsupportedSnapshot
     }
-    const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
-    const nextConfig = resolvedBalanceConfig(candidate.config, resolution.preferredBuiltinAdapter)
-    await persistBalanceRefreshIfCurrent(candidate, nextConfig, snapshot, nextRefreshAfter, dependencies.mode)
-    return snapshot
+    return {
+      snapshot,
+      nextConfig: resolvedBalanceConfig(candidate.config, resolution.preferredBuiltinAdapter),
+      nextRefreshAfter: new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
+    }
   } catch (error) {
     const completedAt = new Date().toISOString()
     const errorMessage = accountBalanceErrorMessage(error)
@@ -118,37 +151,31 @@ export async function refreshAccountBalanceCandidate(
     }
     if (dependencies.mode === 'manual') {
       if (accountBalanceFailureKind(error) === 'deterministic') {
-        const unsupportedSnapshot: AccountBalanceSnapshot = {
-          ...failedSnapshot,
-          status: 'unsupported'
+        return {
+          snapshot: { ...failedSnapshot, status: 'unsupported' },
+          nextConfig: resolvedBalanceConfig(candidate.config, undefined),
+          nextRefreshAfter: null
         }
-        await persistBalanceRefreshIfCurrent(candidate, resolvedBalanceConfig(candidate.config, undefined), unsupportedSnapshot, null, dependencies.mode)
-        return unsupportedSnapshot
       }
-      const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
-      await persistBalanceRefreshIfCurrent(candidate, candidate.config, failedSnapshot, nextRefreshAfter, dependencies.mode)
-      return failedSnapshot
+      return {
+        snapshot: failedSnapshot,
+        nextConfig: candidate.config,
+        nextRefreshAfter: new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
+      }
     }
-
     if (accountBalanceFailureKind(error) === 'deterministic') {
-      const nextConfig = resolvedBalanceConfig(candidate.config, undefined)
-      const unsupportedSnapshot: AccountBalanceSnapshot = {
-        status: 'unsupported',
-        errorMessage,
-        lastAttemptAt: completedAt
+      return {
+        snapshot: { status: 'unsupported', errorMessage, lastAttemptAt: completedAt },
+        nextConfig: resolvedBalanceConfig(candidate.config, undefined),
+        nextRefreshAfter: null
       }
-      await persistBalanceRefreshIfCurrent(candidate, nextConfig, unsupportedSnapshot, null, dependencies.mode)
-      return unsupportedSnapshot
     }
-
     const previousSnapshot = await loadCurrentGenerationBalanceSnapshot(candidate)
-    const snapshot = nextTransientFailureSnapshot(previousSnapshot, errorMessage, completedAt)
-    const nextRefreshAfter = new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
-    const nextConfig = candidate.config
-    await persistBalanceRefreshIfCurrent(candidate, nextConfig, snapshot, nextRefreshAfter, dependencies.mode)
-    return snapshot
-  } finally {
-    await releaseBalanceLease(leaseKey, ownerId)
+    return {
+      snapshot: nextTransientFailureSnapshot(previousSnapshot, errorMessage, completedAt),
+      nextConfig: candidate.config,
+      nextRefreshAfter: new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
+    }
   }
 }
 
@@ -182,15 +209,18 @@ export async function testAccountBalanceCandidate(
   }
 }
 
-async function queryAccountBalanceResolution(candidate: AccountBalanceQueryCandidate): Promise<AccountBalanceQueryResolution> {
+async function queryAccountBalanceResolution(
+  candidate: AccountBalanceQueryCandidate,
+  resolvedProxyUrl?: string | null
+): Promise<AccountBalanceQueryResolution> {
   if (candidate.config.adapter === 'builtin') {
-    const result = await queryBuiltinAccountBalance(candidate)
+    const result = await queryBuiltinAccountBalance(candidate, { resolvedProxyUrl })
     return {
       snapshot: result.snapshot,
       ...(isSuccessfulBalanceSnapshot(result.snapshot) ? { preferredBuiltinAdapter: result.adapter } : {})
     }
   }
-  const context = await accountBalanceRequestContext(candidate)
+  const context = await accountBalanceRequestContext(candidate, resolvedProxyUrl)
   if (!candidate.config.custom) throw deterministicBalanceError('自定义余额查询配置缺失')
   const target = new URL(candidate.config.custom.path, context.baseUrl)
   if (target.origin !== context.baseUrl.origin) throw deterministicBalanceError('自定义余额查询必须与账户 Base URL 同源')
@@ -201,11 +231,12 @@ export async function queryBuiltinAccountBalance(
   candidate: AccountBalanceQueryCandidate,
   dependencies: {
     queryAdapter?: (candidate: AccountBalanceQueryCandidate, adapter: AccountBalanceBuiltinAdapter) => Promise<AccountBalanceSnapshot>
+    resolvedProxyUrl?: string | null
   } = {}
 ): Promise<AccountBalanceBuiltinQueryResult> {
   if (candidate.config.adapter !== 'builtin') throw deterministicBalanceError('账户未配置内置余额适配')
   const adapters = preferredBuiltinAdapterOrder(candidate.config.preferredBuiltinAdapter)
-  const context = dependencies.queryAdapter ? undefined : await accountBalanceRequestContext(candidate)
+  const context = dependencies.queryAdapter ? undefined : await accountBalanceRequestContext(candidate, dependencies.resolvedProxyUrl)
   const queryAdapter = dependencies.queryAdapter
     ?? ((_candidate: AccountBalanceQueryCandidate, adapter: AccountBalanceBuiltinAdapter) => queryBuiltinAdapter(context as AccountBalanceRequestContext, adapter))
   let transientError: unknown
@@ -247,7 +278,10 @@ export async function queryBuiltinAccountBalance(
   }
 }
 
-async function accountBalanceRequestContext(candidate: Pick<AccountBalanceRefreshCandidate, 'credentials' | 'proxyProfileId'>): Promise<AccountBalanceRequestContext> {
+async function accountBalanceRequestContext(
+  candidate: Pick<AccountBalanceRefreshCandidate, 'credentials' | 'proxyProfileId'>,
+  resolvedProxyUrl?: string | null
+): Promise<AccountBalanceRequestContext> {
   const baseUrlText = typeof candidate.credentials.base_url === 'string' ? candidate.credentials.base_url.trim() : ''
   if (!baseUrlText) throw deterministicBalanceError('账户未配置 Base URL')
   let baseUrl: URL
@@ -257,7 +291,11 @@ async function accountBalanceRequestContext(candidate: Pick<AccountBalanceRefres
     throw deterministicBalanceError('账户 Base URL 无效')
   }
   const apiKey = accountApiKey(candidate.credentials)
-  const proxyUrl = candidate.proxyProfileId ? await resolveProxyUrlForProfileAsync(candidate.proxyProfileId) : undefined
+  const proxyUrl = resolvedProxyUrl !== undefined
+    ? resolvedProxyUrl ?? undefined
+    : candidate.proxyProfileId
+      ? await resolveProxyUrlForProfileAsync(candidate.proxyProfileId)
+      : undefined
   return { baseUrl, apiKey, proxyUrl, deadlineAtMs: Date.now() + requestTimeoutMs }
 }
 

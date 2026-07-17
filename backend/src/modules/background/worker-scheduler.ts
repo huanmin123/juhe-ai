@@ -5,7 +5,12 @@ interface WorkerScheduledJobOptions {
   intervalMs: number
   initialDelayMs?: number
   runImmediately?: boolean
-  task: () => void | Promise<void>
+  task: () => void | WorkerScheduledJobTaskResult | Promise<void | WorkerScheduledJobTaskResult>
+}
+
+export interface WorkerScheduledJobTaskResult {
+  outcome: 'success' | 'partial'
+  warning?: string
 }
 
 export interface WorkerScheduledJobRuntimeSnapshot {
@@ -18,11 +23,14 @@ export interface WorkerScheduledJobRuntimeSnapshot {
   lastSuccessAt?: string
   lastErrorAt?: string
   lastError?: string
+  lastWarningAt?: string
+  lastWarning?: string
   lastDurationMs?: number
   maxDurationMs?: number
   runCount: number
   successCount: number
   failureCount: number
+  partialCount: number
   skippedCount: number
 }
 
@@ -37,11 +45,14 @@ interface WorkerScheduledJobState {
   lastSuccessAt?: string
   lastErrorAt?: string
   lastError?: string
+  lastWarningAt?: string
+  lastWarning?: string
   lastDurationMs?: number
   maxDurationMs?: number
   runCount: number
   successCount: number
   failureCount: number
+  partialCount: number
   skippedCount: number
 }
 
@@ -62,6 +73,7 @@ export class WorkerScheduler {
       runCount: 0,
       successCount: 0,
       failureCount: 0,
+      partialCount: 0,
       skippedCount: 0
     }
     this.jobs.set(options.name, state)
@@ -70,7 +82,7 @@ export class WorkerScheduler {
 
   private startJobTimer(
     name: string,
-    task: () => void | Promise<void>,
+    task: () => void | WorkerScheduledJobTaskResult | Promise<void | WorkerScheduledJobTaskResult>,
     state: WorkerScheduledJobState,
     runImmediately: boolean
   ): void {
@@ -114,17 +126,20 @@ export class WorkerScheduler {
         lastSuccessAt: state.lastSuccessAt,
         lastErrorAt: state.lastErrorAt,
         lastError: state.lastError,
+        lastWarningAt: state.lastWarningAt,
+        lastWarning: state.lastWarning,
         lastDurationMs: state.lastDurationMs,
         maxDurationMs: state.maxDurationMs,
         runCount: state.runCount,
         successCount: state.successCount,
         failureCount: state.failureCount,
+        partialCount: state.partialCount,
         skippedCount: state.skippedCount
       }))
       .sort((left, right) => left.name.localeCompare(right.name))
   }
 
-  private async runJob(name: string, task: () => void | Promise<void>): Promise<void> {
+  private async runJob(name: string, task: () => void | WorkerScheduledJobTaskResult | Promise<void | WorkerScheduledJobTaskResult>): Promise<void> {
     const state = this.jobs.get(name)
     if (!state || state.stopped) {
       return
@@ -144,14 +159,23 @@ export class WorkerScheduler {
     state.lastStartedAt = new Date().toISOString()
     const startedAtMs = Date.now()
     try {
-      await task()
-      state.successCount += 1
-      state.lastSuccessAt = new Date().toISOString()
-      state.lastError = undefined
+      const result = await task()
+      if (result?.outcome === 'partial') {
+        state.partialCount += 1
+        state.lastWarningAt = new Date().toISOString()
+        state.lastWarning = result.warning ?? '后台任务部分完成'
+        state.lastError = undefined
+      } else {
+        state.successCount += 1
+        state.lastSuccessAt = new Date().toISOString()
+        state.lastError = undefined
+        state.lastWarning = undefined
+      }
     } catch (error) {
       state.failureCount += 1
       state.lastErrorAt = new Date().toISOString()
       state.lastError = error instanceof Error ? error.message : String(error)
+      state.lastWarning = undefined
       logger.error(errorLogFields(error, {
         event: 'background_job_failed',
         jobName: name
