@@ -25,10 +25,10 @@ import {
   type ChatMessageStatus
 } from '../../storage/chat.repository.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
-import { findApiKeySecretAsync, listApiKeysAsync } from '../../storage/repositories.js'
+import { findApiKeySecretAsync, findDefaultApiKeySecretForProviderAsync, listApiKeysAsync } from '../../storage/repositories.js'
 import { validateGatewayApiKeyAsync } from '../../storage/gateway-api-key.repository.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
-import { listCachedOpenAIAccountsForGroupAsync } from '../gateway/runtime/runtime-cache.service.js'
+import { listCachedOpenAIAccountsForGroupAsync, listCachedProviderModelCatalogAsync } from '../gateway/runtime/runtime-cache.service.js'
 import { collectOpenAIChatSse } from './chat-gateway-sse.js'
 import { ChatContextBudgetError, estimateChatInputTokens, validateFixedChatInputBudget } from './chat-context-budget.js'
 import { collectChatResponsesSse } from './chat-responses-sse.js'
@@ -45,7 +45,7 @@ import {
 } from './chat-active-streams.js'
 import { sanitizeChatContentBlocksForPersistence } from './chat-content-blocks.js'
 import { readChatJsonResponse } from './chat-bounded-json.js'
-import { listProviderModelCatalogAsync, type ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
+import { type ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 import { GPT_VENDOR_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 import { chatAssetApiMetadata, claimUncommittedChatAssetForDeletion, completeChatAssetDeletion, getChatAsset, releaseChatAssetDeletionClaim } from '../../storage/chat-assets.repository.js'
 import { openChatAssetObject, removeChatAssetObject } from '../../storage/chat-asset-storage.js'
@@ -60,7 +60,7 @@ import { buildChatPromptCacheKey } from './chat-prompt-cache.js'
 import { ChatGenerationRunner, type ChatGenerationSubscriber } from './chat-generation-runner.js'
 import { createChatSseSubscriber, writeChatSseEvent } from './chat-sse-subscriber.js'
 import { chatGenerationRegistry, isActiveChatGeneration, shutdownChatGenerationRegistry } from './chat-generation-runtime.js'
-import { createChatModelOptionsSnapshotCache, resolveChatModelOptionsFromAccountSnapshot } from './chat-model-availability.js'
+import { createChatModelOptionsSnapshotCache, loadChatModelOptionsFromProviderCatalogs } from './chat-model-availability.js'
 import { logger } from '../../shared/logger.js'
 
 export const chatRouter = Router()
@@ -106,7 +106,7 @@ const stopBodySchema = z.object({
   turnId: z.string().trim().min(1).max(100).optional(),
   clientMessageId: z.string().trim().min(1).max(100).optional()
 }).strict().refine((value) => value.turnId !== undefined || value.clientMessageId !== undefined, '缺少要停止的消息或轮次')
-const createConversationSchema = z.object({ apiKeyId: z.string().trim().min(1, '请选择 API Key') }).strict()
+const createConversationSchema = z.object({ apiKeyId: z.string().trim().min(1).optional() }).strict()
 const updateConversationSchema = z.object({
   title: z.string().trim().min(1, '请输入会话标题').max(60, '会话标题最多 60 个字符').optional(),
   isPinned: z.boolean().optional()
@@ -116,7 +116,7 @@ const registry = chatGenerationRegistry
 const maxMessageBytes = 192 * 1024
 const maxInternalChatRequestBytes = 15 * 1024 * 1024
 const storageQuotaBytes = 2 * 1024 * 1024 * 1024
-const chatModelOptionsCacheTtlMs = 5_000
+const chatModelOptionsCacheTtlMs = 30_000
 const chatModelOptionsSlowStageMs = 1_000
 const chatModelOptionsSnapshotCache = createChatModelOptionsSnapshotCache<ChatModelOption[]>({ ttlMs: chatModelOptionsCacheTtlMs })
 
@@ -170,7 +170,9 @@ chatRouter.post('/conversations', async (req, res, next) => {
   try {
     const body = createConversationSchema.parse(req.body)
     const auth = requireChatAuth()
-    const apiKey = await requireOwnedApiKey(body.apiKeyId, auth.systemAccountId)
+    const apiKey = body.apiKeyId
+      ? await requireOwnedApiKey(body.apiKeyId, auth.systemAccountId)
+      : await requireDefaultChatApiKey(auth.systemAccountId)
     const client = await getChatDatabaseClient()
     const conversation = await createChatConversation(client, {
       systemAccountId: auth.systemAccountId,
@@ -385,25 +387,20 @@ chatRouter.get('/conversations/:conversationId/models', async (req, res, next) =
     const apiKey = await requireOwnedApiKey(conversation.apiKeyId, auth.systemAccountId)
     const cacheIdentity = `${auth.systemAccountId}:${apiKey.id}`
     const modelOptions = await chatModelOptionsSnapshotCache.getOrLoad(cacheIdentity, async () => {
-      const response = await measureChatModelOptionsStage('gateway_models', auth.systemAccountId, apiKey.id, async () => (
-        await fetch(gatewayUrl('/v1/models'), { headers: { authorization: `Bearer ${apiKey.key}` } })
-      ))
-      const payload = await readChatJsonResponse(response, 4 * 1024 * 1024)
-      if (!response.ok) throw new Error(upstreamMessage(payload, `模型列表请求失败（HTTP ${response.status}）`))
-      const data = Array.isArray((payload as { data?: unknown }).data) ? (payload as { data: Array<{ id?: unknown }> }).data : []
-      const modelIds = data.map((item) => String(item.id ?? '')).filter(Boolean)
       const gatewayKey = await measureChatModelOptionsStage('api_key_route', auth.systemAccountId, apiKey.id, async () => (
         await validateGatewayApiKeyAsync(String(apiKey.key))
       ))
-      const groupIds = gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? []
-      const snapshot = await loadChatModelCatalogSnapshot({
-        groupIds,
-        systemAccountId: auth.systemAccountId,
-        apiKeyId: apiKey.id
-      })
-      return resolveChatModelOptionsFromAccountSnapshot({
-        modelOptions: buildChatModelOptions(modelIds, snapshot.catalog),
-        accounts: snapshot.accounts
+      if (!gatewayKey) throw new Error('API Key 不存在或不可用')
+      return loadChatModelOptionsFromProviderCatalogs({
+        bindings: (gatewayKey.group_bindings ?? []).map((binding) => ({
+          status: binding.status,
+          providerCode: normalizeProviderToken(binding.provider_code) ?? ''
+        })),
+        loadCatalog: (providerCode) => listCachedProviderModelCatalogAsync({
+          providerCode,
+          systemAccountId: auth.systemAccountId,
+          includeUnpriced: true
+        })
       })
     })
     res.json(ok(modelOptions))
@@ -1081,6 +1078,12 @@ async function listChatModelCatalog(input: { groupIds: readonly string[]; system
   return (await loadChatModelCatalogSnapshot(input)).catalog
 }
 
+async function requireDefaultChatApiKey(ownerId: string) {
+  const key = await findDefaultApiKeySecretForProviderAsync(GPT_VENDOR_CODE, { systemAccountId: ownerId, role: 'user' })
+  if (!key?.key || key.status !== 'active') throw new Error('默认 GPT API Key 不存在或不可用')
+  return key
+}
+
 async function loadChatModelCatalogSnapshot(input: {
   groupIds: readonly string[]
   systemAccountId: string
@@ -1096,7 +1099,7 @@ async function loadChatModelCatalogSnapshot(input: {
   const providerCodes = [...new Set(accounts.map((account) => normalizeProviderToken(account.providerCode)).filter((code): code is string => Boolean(code)))]
   const catalogs = await measureChatModelOptionsStage('model_catalog', input.systemAccountId, input.apiKeyId, async () => (
     await Promise.all(providerCodes.map(async (providerCode) => {
-      const items = await listProviderModelCatalogAsync({
+      const items = await listCachedProviderModelCatalogAsync({
         providerCode,
         systemAccountId: input.systemAccountId,
         includeUnpriced: true

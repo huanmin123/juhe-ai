@@ -1,4 +1,6 @@
 import type { ChatTransportProtocol } from './chat-transport.js'
+import { buildChatModelOptions, type ChatModelOption } from './chat-model-options.js'
+import { GPT_VENDOR_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 
 interface ChatModelAccountSnapshot {
   supportedEndpointModes?: readonly string[]
@@ -17,6 +19,26 @@ interface ChatModelOptionLike {
   supportedApiProtocols?: readonly string[]
 }
 
+interface ChatProviderBinding {
+  status: 'active' | 'disabled'
+  providerCode: string
+}
+
+interface ChatProviderCatalogItem {
+  model: string
+  supportsPromptCaching?: boolean
+  supportedReasoningEfforts: readonly string[]
+  defaultReasoningEffort?: string | null
+  supportedServiceTiers: readonly string[]
+  contextWindowTokens?: number
+  maxInputTokens?: number
+  maxOutputTokens?: number
+  supportedApiProtocols?: readonly string[]
+  inputModalities?: readonly string[]
+  outputModalities?: readonly string[]
+  supportedTools?: readonly string[]
+}
+
 interface CacheEntry<TValue> {
   expiresAtMs: number
   value: TValue
@@ -30,6 +52,28 @@ export function resolveChatModelOptionsFromAccountSnapshot<TOption extends ChatM
     const supportedApiProtocols = supportedProtocolsForModel(input.accounts, modelOption.id)
     return supportedApiProtocols.length ? [{ ...modelOption, supportedApiProtocols }] : []
   })
+}
+
+export async function loadChatModelOptionsFromProviderCatalogs(input: {
+  bindings: readonly ChatProviderBinding[]
+  loadCatalog: (providerCode: string) => Promise<ChatProviderCatalogItem[]>
+}): Promise<ChatModelOption[]> {
+  const providerCodes = [...new Set(input.bindings
+    .filter((binding) => binding.status === 'active')
+    .map((binding) => binding.providerCode.trim())
+    .filter(Boolean))]
+  const catalog = (await Promise.all(providerCodes.map(async (providerCode) => (
+    (await input.loadCatalog(providerCode)).map((item) => stableProviderCatalogItem(providerCode, item))
+  )))).flat()
+  return buildChatModelOptions(catalog.map((item) => item.model), catalog)
+}
+
+function stableProviderCatalogItem(providerCode: string, item: ChatProviderCatalogItem): ChatProviderCatalogItem {
+  if (normalizeProviderToken(providerCode) !== GPT_VENDOR_CODE) return item
+  return {
+    ...item,
+    supportedServiceTiers: item.supportedServiceTiers.filter((tier) => tier !== 'flex')
+  }
 }
 
 export function createChatModelOptionsSnapshotCache<TValue>(input: {

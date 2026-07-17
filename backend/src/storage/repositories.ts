@@ -462,6 +462,7 @@ export {
   deleteApiKeyWithRelatedCleanupAsync,
   findApiKeySecret,
   findApiKeySecretAsync,
+  findDefaultApiKeySecretForProviderAsync,
   findApiKeySummary,
   findApiKeySummaryAsync,
   ensureDefaultApiKeysForSystemAccount,

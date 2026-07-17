@@ -10,7 +10,7 @@
     <div class="ai-composer-footer">
       <div class="ai-composer-model-controls">
         <a-tooltip v-if="showConversationButton" title="对话记录"><a-button type="text" size="small" aria-label="对话记录" @click="emit('open-conversations')"><MenuOutlined /></a-button></a-tooltip>
-        <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled" size="small" :bordered="false" aria-label="选择模型" :style="{ width: `${modelControlWidths.triggerWidth}px` }" :dropdown-match-select-width="modelControlWidths.popupWidth" @update:value="emit('update:modelValue', $event)" />
+        <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled" size="small" :bordered="false" aria-label="选择模型" :style="{ width: `${modelControlWidths.triggerWidth}px` }" :dropdown-match-select-width="modelControlWidths.popupWidth" @dropdown-visible-change="handleModelDropdownVisibleChange" @update:value="emit('update:modelValue', $event)" />
         <a-select v-if="reasoningOptions.length" :value="reasoningEffort" :options="reasoningOptions" :disabled="disabled" size="small" :bordered="false" aria-label="思考级别" :style="{ width: `${reasoningControlWidths.triggerWidth}px` }" :dropdown-match-select-width="reasoningControlWidths.popupWidth" @update:value="emit('update:reasoningEffort', $event)" />
         <a-select v-if="serviceTierOptions.length" :value="serviceTier" :options="serviceTierOptions" :disabled="disabled" size="small" :bordered="false" aria-label="服务等级" :style="{ width: `${serviceTierControlWidths.triggerWidth}px` }" :dropdown-match-select-width="serviceTierControlWidths.popupWidth" @update:value="emit('update:serviceTier', $event)" />
       </div>
@@ -66,11 +66,15 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   (event: 'submit', payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void
-  (event: 'stop' | 'open-conversations'): void
+  (event: 'stop' | 'open-conversations' | 'models-open'): void
   (event: 'update:modelValue', value?: string): void
   (event: 'update:reasoningEffort', value: ChatReasoningEffort | ''): void
   (event: 'update:serviceTier', value: ChatServiceTier | ''): void
 }>()
+
+function handleModelDropdownVisibleChange(open: boolean): void {
+  if (open) emit('models-open')
+}
 const fileInput = ref<HTMLInputElement>()
 const commandOpen = ref(false)
 const commandQuery = ref('')

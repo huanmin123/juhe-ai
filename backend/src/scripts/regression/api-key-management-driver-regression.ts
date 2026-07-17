@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { AccessScope } from '../../storage/access-scope.js'
-import { GPT_OPENAI_V1_PROFILE_ID, HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { DEFAULT_BUILT_IN_GROUPS, DEFAULT_GPT_GROUP } from '../../storage/schema-defaults.js'
 
 const createdApiKeyIds: string[] = []
@@ -91,6 +91,10 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   const defaultApiKeys = defaultApiKeyPage.items.filter((item) => item.isDefault)
   assert.equal(defaultApiKeys.length, defaultRouteResourceCount, 'API Key 列表应包含非混合默认路由对应的默认 API Key')
   assert.equal(defaultApiKeys.every((item) => item.routeStrategyMode === 'normal'), true, '默认 API Key 必须绑定默认普通路由')
+  const defaultGptApiKey = await repositories.findDefaultApiKeySecretForProviderAsync(GPT_VENDOR_CODE, adminAccess)
+  assert.equal(defaultGptApiKey?.isDefault, true, 'AI 问答必须能按 GPT 供应商精确找到默认 API Key')
+  assert.equal(defaultGptApiKey?.status, 'active', '默认 GPT API Key 必须处于可用状态')
+  assert.ok(defaultGptApiKey?.key?.startsWith('sk-'), '默认 GPT API Key 查询必须返回服务端调用所需完整密钥')
 
   const suffix = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`
   const group = await repositories.createGroupAsync({
