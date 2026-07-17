@@ -7,8 +7,10 @@ import { join, resolve } from 'node:path'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
+import { HYBRID_PROVIDER_CODE, OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
+import { providerModelCatalogId } from '../../storage/provider-model-catalog-id.js'
+import { DEFAULT_PROVIDER_SEEDS } from '../../storage/schema-defaults.js'
 
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-catalog-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -49,6 +51,32 @@ const [
 ])
 
 try {
+  assert.equal(
+    providerModelCatalogId('gpt', 'gpt-5.6-sol'),
+    'provider_model_gpt_gpt_5_6_sol_69ec47b65152',
+    'Node 稳定模型 ID 必须与 Go migration generator 一致'
+  )
+  const sqliteBuiltInModels = databaseModule.getBusinessDatabase().prepare(`
+    SELECT id, provider_code, model
+    FROM provider_model_catalog
+    ORDER BY provider_code, model
+  `).all() as Array<{ id: string; provider_code: string; model: string }>
+  const expectedSqliteModelKeys = DEFAULT_PROVIDER_SEEDS
+    .filter((provider) => provider.code !== HYBRID_PROVIDER_CODE && provider.code !== 'openai')
+    .flatMap((provider) => modelPricingService.listProviderModelPricing(provider.code)
+      .map((model) => `${provider.code}\u0000${model.model}`))
+    .sort()
+  const sqliteModelKeys = sqliteBuiltInModels
+    .map((row) => `${row.provider_code}\u0000${row.model}`)
+    .sort()
+  assert.equal(expectedSqliteModelKeys.length, 155, '当前 Node 权威模型目录应包含 155 个模型键')
+  assert.equal(sqliteBuiltInModels.length, expectedSqliteModelKeys.length, 'SQLite fresh seed 必须落库全部权威模型')
+  assert.deepEqual(sqliteModelKeys, expectedSqliteModelKeys, 'SQLite fresh seed 最终模型键集合必须与 Node 权威目录一致')
+  assert.equal(new Set(sqliteBuiltInModels.map((row) => row.id)).size, expectedSqliteModelKeys.length, 'SQLite 模型 ID 必须全局唯一')
+  for (const model of ['antigravity-claude-opus-4-6-thinking', 'antigravity/claude-opus-4-6-thinking']) {
+    assert(sqliteBuiltInModels.some((row) => row.provider_code === 'anthropic' && row.model === model), `SQLite 必须落库碰撞样本 ${model}`)
+  }
+
   const builtInVisibilityFixture = databaseModule.getBusinessDatabase().prepare(`
     SELECT status, shutdown_date
     FROM provider_model_catalog

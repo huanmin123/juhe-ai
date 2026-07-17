@@ -2,6 +2,7 @@ import type { DatabaseClient } from './database-client.js'
 import { createApiKey, encryptJson, hashPassword, hashSecret } from './crypto.js'
 import { HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
 import { listProviderModelPricing } from '../modules/model-pricing/model-pricing.service.js'
+import { providerModelCatalogId } from './provider-model-catalog-id.js'
 import {
   builtInExternalIntegrationTestRateLimits,
   builtInExternalIntegrationTestSourceId,
@@ -442,16 +443,6 @@ function defaultApiKeyIdForRouteStrategy(routeStrategyId: string): string {
 
 function defaultApiKeyNameForRouteStrategy(routeStrategyName: string): string {
   return routeStrategyName.replace(/路由$/, 'API Key')
-}
-
-function providerModelCatalogId(providerCode: string, model: string): string {
-  const slug = `${providerCode}_${model}`
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 72)
-  const hash = hashSecret(`${providerCode}\u0000${model}`).slice(0, 12)
-  return `provider_model_${slug}_${hash}`
 }
 
 async function seedBuiltInExternalIntegrationTestToken(
