@@ -436,6 +436,8 @@
     "test:chat-bounded-json": "tsx src/scripts/regression/chat-bounded-json-regression.ts",
     "test:chat-transport": "tsx src/scripts/regression/chat-transport-regression.ts",
     "test:chat-model-options": "tsx src/scripts/regression/chat-model-options-regression.ts",
+    "test:chat-model-availability": "tsx src/scripts/regression/chat-model-availability-regression.ts",
+    "test:chat-conversation-not-found": "tsx src/scripts/regression/chat-conversation-not-found-regression.ts",
     "test:chat-long-session-fixture": "tsx src/scripts/regression/chat-long-session-fixture-regression.ts",
     "test:chat-long-session-run-identity": "tsx src/scripts/regression/chat-long-session-run-identity-regression.ts",
     "test:chat-long-session-process-tree": "tsx src/scripts/regression/chat-long-session-process-tree-regression.ts",

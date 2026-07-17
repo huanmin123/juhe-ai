@@ -23,6 +23,7 @@
     "test:chat-stop-generation": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-stop-generation-regression.ts",
     "test:chat-conversation-summary": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-conversation-summary-regression.ts",
     "test:chat-conversation-load": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-conversation-load-regression.ts",
+    "test:chat-conversation-performance": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-conversation-performance-regression.ts",
     "test:chat-conversation-details": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-conversation-details-regression.ts",
     "test:chat-editor-history": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-editor-history-regression.ts",
     "test:chat-composer-state": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/chat-composer-state-regression.ts",

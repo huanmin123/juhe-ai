@@ -145,6 +145,7 @@ import { getDefaultChatLocalCache } from './chatLocalCache'
 import { ChatCacheBroadcast } from './chatCacheBroadcast'
 import { createDefaultChatConversationSyncDependencies, hasOlderChatMessages, projectChatMessagesWithRuntime, restoreChatActiveTurnFromSync, synchronizeChatConversation } from './chatConversationSync'
 import { ChatRuntimeReconciliationScheduler } from './chatRuntimeReconciliation'
+import { applyDeletedChatConversation, ChatModelLoadCoordinator, ChatSingleFlightCoordinator } from './chatConversationPerformance'
 
 interface ChatTurnEditingState {
   conversationId: string
@@ -228,6 +229,10 @@ let lastRuntimeTerminalKey: string | undefined
 let conversationMenuTrigger: HTMLElement | undefined
 
 const localCache = getDefaultChatLocalCache()
+const modelLoadCoordinator = new ChatModelLoadCoordinator<ChatModelOption>({
+  load: ({ conversationId }, signal) => chatApi.listModels(conversationId, { signal })
+})
+const contextStatusCoordinator = new ChatSingleFlightCoordinator<ChatContextStatus>()
 const syncDependencies = createDefaultChatConversationSyncDependencies({
   pendingConversationIds: () => pendingConfirmation.value ? new Set([pendingConfirmation.value.request.conversationId]) : new Set()
 })
@@ -338,6 +343,11 @@ async function selectConversation(id: string, options: {
   silentLoadError?: boolean
 } = {}): Promise<boolean> {
   if (selectedConversationId.value === id && !options.forceReload) return true
+  const previousConversation = selectedConversation.value
+  const nextConversation = conversations.value.find((item) => item.id === id)
+  const previousModelCacheKey = previousConversation ? previousConversation.apiKeyId ?? previousConversation.id : undefined
+  const nextModelCacheKey = nextConversation ? nextConversation.apiKeyId ?? nextConversation.id : undefined
+  if (previousModelCacheKey !== nextModelCacheKey) modelLoadCoordinator.cancel(previousModelCacheKey)
   await cancelTurnEdit()
   const loadEpoch = ++conversationLoadEpoch
   selectedConversationId.value = id
@@ -405,7 +415,7 @@ async function selectConversation(id: string, options: {
         }
         return synchronized.messages
       },
-      loadModels: () => chatApi.listModels(id)
+      loadModels: () => modelLoadCoordinator.load({ apiKeyId: conversation.apiKeyId ?? conversation.id, conversationId: id }).then((items) => [...items])
     })
     const messageItems = await conversationLoad.messages
     if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return false
@@ -814,7 +824,33 @@ function attachActiveTurnFromSync(
     attach: (input) => chatGenerationRuntime.attach(input)
   })
 }
-async function removeConversation(id: string): Promise<void> { try { const conversation = conversations.value.find((item) => item.id === id); await chatApi.deleteConversation(id); if (conversation) await localCache.deleteConversation(conversation.systemAccountId, id); conversations.value = conversations.value.filter((item) => item.id !== id); if (selectedConversationId.value === id) { selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
+async function removeConversation(id: string): Promise<void> {
+  const conversation = conversations.value.find((item) => item.id === id)
+  try {
+    await chatApi.deleteConversation(id)
+  } catch (error) {
+    if (!isNotFoundResponse(error)) {
+      message.error(extractApiErrorMessage(error, '删除对话失败'))
+      return
+    }
+  }
+
+  const deleted = applyDeletedChatConversation({
+    conversations: conversations.value,
+    selectedConversationId: selectedConversationId.value,
+    deletedConversationId: id
+  })
+  conversations.value = deleted.conversations
+  selectedConversationId.value = deleted.selectedConversationId
+  if (!deleted.selectedConversationId) {
+    messages.value = []
+    models.value = []
+    selectedModel.value = undefined
+    contextStatus.value = undefined
+  }
+  if (conversation) void localCache.deleteConversation(conversation.systemAccountId, id).catch(() => undefined)
+  if (deleted.nextConversationId) void selectConversation(deleted.nextConversationId)
+}
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {
   if (generating.value || submissionBlocked.value) { composer.value?.restore(payload.snapshot); return }
   if (!selectedConversation.value || !selectedModel.value || modelsLoading.value) {
@@ -1049,7 +1085,7 @@ function cloneDocument(document: JSONContent): JSONContent { return JSON.parse(J
 async function refreshContextStatus(conversationId = selectedConversationId.value): Promise<void> {
   if (!conversationId) return
   try {
-    const next = await chatApi.getContextStatus(conversationId)
+    const next = await contextStatusCoordinator.load(conversationId, () => chatApi.getContextStatus(conversationId))
     if (!disposed && selectedConversationId.value === conversationId) contextStatus.value = next
   } catch {
     if (!disposed && selectedConversationId.value === conversationId) contextStatus.value = undefined
