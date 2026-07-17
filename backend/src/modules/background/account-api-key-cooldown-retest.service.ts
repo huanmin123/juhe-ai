@@ -7,6 +7,7 @@ import {
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
+import { isRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
@@ -91,7 +92,9 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     trafficSource: 'cooldown_retest',
     candidateAccount: fixedKeyCandidate,
     disableAccountStateMutation: true,
-    onUpstreamAttempt: () => { upstreamAttemptObserved = true },
+    onUpstreamAttempt: (attempt) => {
+      if (isRealUpstreamAttempt(attempt)) upstreamAttemptObserved = true
+    },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
     gatewaySettingsOverride: {
@@ -120,7 +123,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     return true
   }
 
-  if (probeOutcome === 'probe_task_failure' || result.accountFailureEligible === false) {
+  if (probeOutcome === 'probe_task_failure') {
     logger.warn({
       event: 'background_account_api_key_cooldown_retest_task_failed',
       accountId: account.id,

@@ -16,7 +16,7 @@ import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { mergeAccountStatusSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
+import { mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
 import { createAccountStatusSnapshotPolling, isAccountStatusSnapshotCurrent } from './accountStatusSnapshotPolling'
 
 interface AccountsPageState {
@@ -73,6 +73,12 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   })
   const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, options.isManagementView.value, allSystemAccountsValue))
   const accountListRevision = ref(0)
+  let acceptedRuntimeScopeSignature = ''
+
+  const runtimeScopeSignature = (): string => {
+    const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
+    return `${options.isManagementView.value ? 'management' : 'self'}:${systemAccountId ?? ''}`
+  }
 
   const {
     items: accounts,
@@ -109,6 +115,15 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         hasMore: accountList.hasMore
       }
     },
+    transformItems: (nextItems, _loadOptions, _result, currentItems) => {
+      const currentScopeSignature = runtimeScopeSignature()
+      return mergeAccountListRuntimeSnapshot(
+        currentItems,
+        nextItems,
+        nextItems.some((account) => account.accountRuntimeAvailabilityAvailable === true),
+        acceptedRuntimeScopeSignature === currentScopeSignature
+      )
+    },
     requestSignature: (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
       return [
@@ -117,6 +132,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       ]
     },
     onLoaded: () => {
+      acceptedRuntimeScopeSignature = runtimeScopeSignature()
       accountListRevision.value += 1
       const selectableAccountIds = new Set(accounts.value.filter(canSelectAccountForBatch).map((account) => account.id))
       options.onLoaded?.(selectableAccountIds)
