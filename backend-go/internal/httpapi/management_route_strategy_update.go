@@ -460,7 +460,11 @@ func managementRouteStrategyUpdateOperationChanges(
 		changes, "name", "名称", before.Name, after.Name,
 	)
 	changes = appendManagementRouteStrategyUpdateChange(
-		changes, "description", "说明", before.Description, after.Description,
+		changes,
+		"description",
+		"说明",
+		managementRouteStrategyUpdateOptionalTextLogValue(before.Description),
+		managementRouteStrategyUpdateOptionalTextLogValue(after.Description),
 	)
 	changes = appendManagementRouteStrategyUpdateChange(
 		changes, "mode", "路由模式", before.Mode, after.Mode,
@@ -486,6 +490,13 @@ func managementRouteStrategyUpdateOperationChanges(
 		after.HybridRoutingConfig,
 	)
 	return changes
+}
+
+func managementRouteStrategyUpdateOptionalTextLogValue(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 type managementRouteStrategyUpdateBindingLogValue struct {

@@ -666,6 +666,10 @@ func TestManagementRouteStrategyUpdateHandlerLogsOnlySevenActualSafeChanges(t *t
 			t.Fatalf("change[%d] = %+v, want %q", index, logInput.Changes[index], field)
 		}
 	}
+	if logInput.Changes[1].Before != beforeDescription ||
+		logInput.Changes[1].After != afterDescription {
+		t.Fatalf("description change = %+v, want plain text values", logInput.Changes[1])
+	}
 
 	queue = &operationLogQueueStub{}
 	service.result.Before = after
