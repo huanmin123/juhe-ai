@@ -1512,6 +1512,10 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
   assert(fallbackCandidateSource.includes('orderedQuotaAllowedAccounts'), 'API Key 分组 fallback 响应检查策略必须基于目标候选分组完成过滤和排序后的账号集合加载')
   assert(gatewayPreflightSource.includes('responseInspectionPolicies: candidate.responseInspectionPolicies'), 'fallback dispatch context 必须使用目标候选分组的响应检查策略')
   assert(!gatewayPreflightSource.includes('responseInspectionPolicies: input.responseInspectionPolicies'), 'fallback dispatch context 不得沿用原分组传入的响应检查策略')
+  assert(
+    gatewayPreflightSource.includes('runtimeResponseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(candidateFilter.accounts)'),
+    '主预检必须始终按模型与能力过滤后的最终候选账号集合重新加载响应检查策略'
+  )
 }
 
 {
