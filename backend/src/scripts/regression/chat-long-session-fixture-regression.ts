@@ -134,7 +134,7 @@ assert.deepEqual(slowProgress.snapshot(400_000, 7), {
   progressIdleMs: 110_000
 })
 const regressionRoot = dirname(fileURLToPath(import.meta.url))
-const realSource = readFileSync(resolve(regressionRoot, 'chat-long-session-real-e2e.ts'), 'utf8')
+const realSource = readFileSync(resolve(regressionRoot, 'chat-long-session-real-e2e.ts'), 'utf8').replaceAll('\r\n', '\n')
 const semanticSeedSource = readFileSync(resolve(regressionRoot, 'chat-long-session-semantic-seed.ts'), 'utf8')
 const gatewayBodyMiddlewareSource = readFileSync(resolve(regressionRoot, '../../modules/gateway/request/body-middleware.ts'), 'utf8')
 const realSourceFile = ts.createSourceFile('chat-long-session-real-e2e.ts', realSource, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS)
