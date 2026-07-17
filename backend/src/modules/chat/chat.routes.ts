@@ -60,6 +60,8 @@ import { buildChatPromptCacheKey } from './chat-prompt-cache.js'
 import { ChatGenerationRunner, type ChatGenerationSubscriber } from './chat-generation-runner.js'
 import { createChatSseSubscriber, writeChatSseEvent } from './chat-sse-subscriber.js'
 import { chatGenerationRegistry, isActiveChatGeneration, shutdownChatGenerationRegistry } from './chat-generation-runtime.js'
+import { createChatModelOptionsSnapshotCache, resolveChatModelOptionsFromAccountSnapshot } from './chat-model-availability.js'
+import { logger } from '../../shared/logger.js'
 
 export const chatRouter = Router()
 export { isActiveChatGeneration, shutdownChatGenerationRegistry }
@@ -114,11 +116,23 @@ const registry = chatGenerationRegistry
 const maxMessageBytes = 192 * 1024
 const maxInternalChatRequestBytes = 15 * 1024 * 1024
 const storageQuotaBytes = 2 * 1024 * 1024 * 1024
+const chatModelOptionsCacheTtlMs = 5_000
+const chatModelOptionsSlowStageMs = 1_000
+const chatModelOptionsSnapshotCache = createChatModelOptionsSnapshotCache<ChatModelOption[]>({ ttlMs: chatModelOptionsCacheTtlMs })
 
 class ChatRequestError extends Error {
   constructor(public readonly code: 'chat_image_not_supported' | 'chat_request_body_too_large', message: string) {
     super(message)
     this.name = 'ChatRequestError'
+  }
+}
+
+class ChatConversationNotFoundError extends Error {
+  readonly code = 'chat_conversation_not_found'
+
+  constructor() {
+    super('会话不存在')
+    this.name = 'ChatConversationNotFoundError'
   }
 }
 
@@ -326,7 +340,7 @@ chatRouter.get('/conversations/:conversationId/assets/:assetId/content', async (
     })
     res.once('close', () => object.stream.destroy())
     object.stream.pipe(res)
-  } catch (error) { next(error) }
+  } catch (error) { handleChatRouteError(error, res, next) }
 })
 
 chatRouter.delete('/conversations/:conversationId/assets/:assetId', async (req, res, next) => {
@@ -361,7 +375,7 @@ chatRouter.delete('/conversations/:conversationId/assets/:assetId', async (req, 
       }).catch(() => false)
       throw error
     }
-  } catch (error) { next(error) }
+  } catch (error) { handleChatRouteError(error, res, next) }
 })
 
 chatRouter.get('/conversations/:conversationId/models', async (req, res, next) => {
@@ -369,24 +383,31 @@ chatRouter.get('/conversations/:conversationId/models', async (req, res, next) =
     const auth = requireChatAuth()
     const conversation = await requireOwnedConversation(req.params.conversationId, auth.systemAccountId)
     const apiKey = await requireOwnedApiKey(conversation.apiKeyId, auth.systemAccountId)
-    const response = await fetch(gatewayUrl('/v1/models'), { headers: { authorization: `Bearer ${apiKey.key}` } })
-    const payload = await readChatJsonResponse(response, 4 * 1024 * 1024)
-    if (!response.ok) throw new Error(upstreamMessage(payload, `模型列表请求失败（HTTP ${response.status}）`))
-    const data = Array.isArray((payload as { data?: unknown }).data) ? (payload as { data: Array<{ id?: unknown }> }).data : []
-    const modelIds = data.map((item) => String(item.id ?? '')).filter(Boolean)
-    const gatewayKey = await validateGatewayApiKeyAsync(String(apiKey.key))
-    const groupIds = gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? []
-    const catalog = await listChatModelCatalog({
-      groupIds,
-      systemAccountId: auth.systemAccountId
-    })
-    const modelOptions = await resolveRouteChatModelOptions({
-      modelOptions: buildChatModelOptions(modelIds, catalog),
-      groupIds,
-      systemAccountId: auth.systemAccountId
+    const cacheIdentity = `${auth.systemAccountId}:${apiKey.id}`
+    const modelOptions = await chatModelOptionsSnapshotCache.getOrLoad(cacheIdentity, async () => {
+      const response = await measureChatModelOptionsStage('gateway_models', auth.systemAccountId, apiKey.id, async () => (
+        await fetch(gatewayUrl('/v1/models'), { headers: { authorization: `Bearer ${apiKey.key}` } })
+      ))
+      const payload = await readChatJsonResponse(response, 4 * 1024 * 1024)
+      if (!response.ok) throw new Error(upstreamMessage(payload, `模型列表请求失败（HTTP ${response.status}）`))
+      const data = Array.isArray((payload as { data?: unknown }).data) ? (payload as { data: Array<{ id?: unknown }> }).data : []
+      const modelIds = data.map((item) => String(item.id ?? '')).filter(Boolean)
+      const gatewayKey = await measureChatModelOptionsStage('api_key_route', auth.systemAccountId, apiKey.id, async () => (
+        await validateGatewayApiKeyAsync(String(apiKey.key))
+      ))
+      const groupIds = gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? []
+      const snapshot = await loadChatModelCatalogSnapshot({
+        groupIds,
+        systemAccountId: auth.systemAccountId,
+        apiKeyId: apiKey.id
+      })
+      return resolveChatModelOptionsFromAccountSnapshot({
+        modelOptions: buildChatModelOptions(modelIds, snapshot.catalog),
+        accounts: snapshot.accounts
+      })
     })
     res.json(ok(modelOptions))
-  } catch (error) { next(error) }
+  } catch (error) { handleChatRouteError(error, res, next) }
 })
 
 chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) => {
@@ -969,7 +990,7 @@ chatRouter.delete('/conversations/:conversationId', async (req, res, next) => {
 
 async function requireOwnedConversation(conversationId: string, ownerId: string) {
   const conversation = await getChatConversation(await getChatDatabaseClient(), conversationId, ownerId)
-  if (!conversation) throw new Error('会话不存在')
+  if (!conversation) throw new ChatConversationNotFoundError()
   return conversation
 }
 
@@ -1040,6 +1061,10 @@ function handleChatRouteError(error: unknown, res: ExpressResponse, next: NextFu
     res.status(error.statusCode).json({ message: error.message, code: error.code })
     return
   }
+  if (error instanceof ChatConversationNotFoundError) {
+    res.status(404).json({ message: error.message, code: error.code })
+    return
+  }
   if (error instanceof ChatConflictError) {
     res.status(409).json({ message: error.message, code: error.code })
     return
@@ -1053,47 +1078,59 @@ function chatConversationResponse(conversation: Awaited<ReturnType<typeof getCha
 
 function gatewayUrl(path: string): string { return `http://127.0.0.1:${runtimeConfig.port}${path}` }
 async function listChatModelCatalog(input: { groupIds: readonly string[]; systemAccountId: string; requestedModel?: string }): Promise<ProviderModelCatalogItem[]> {
-  const accountLists = await Promise.all([...new Set(input.groupIds.filter(Boolean))].map((groupId) => (
-    listCachedOpenAIAccountsForGroupAsync(groupId, input.systemAccountId, { requestedModel: input.requestedModel })
-  )))
-  const accounts = accountLists.flat()
-  const providerCodes = [...new Set(accounts.map((account) => normalizeProviderToken(account.providerCode)).filter((code): code is string => Boolean(code)))]
-  const catalogs = await Promise.all(providerCodes.map(async (providerCode) => {
-    const items = await listProviderModelCatalogAsync({
-      providerCode,
-      systemAccountId: input.systemAccountId,
-      includeUnpriced: true
-    })
-    const providerAccounts = accounts.filter((account) => normalizeProviderToken(account.providerCode) === providerCode)
-    return items
-      .filter((item) => normalizeProviderToken(item.providerCode) === providerCode)
-      .map((item) => constrainCatalogItemForAccountTypes(item, providerCode, providerAccounts.map((account) => account.type)))
-  }))
-  return catalogs.flat()
+  return (await loadChatModelCatalogSnapshot(input)).catalog
 }
 
-async function resolveRouteChatModelOptions(input: {
-  modelOptions: readonly ChatModelOption[]
+async function loadChatModelCatalogSnapshot(input: {
   groupIds: readonly string[]
   systemAccountId: string
-}): Promise<ChatModelOption[]> {
-  const result: ChatModelOption[] = []
-  const batchSize = 8
-  for (let offset = 0; offset < input.modelOptions.length; offset += batchSize) {
-    const batch = await Promise.all(input.modelOptions.slice(offset, offset + batchSize).map(async (modelOption) => {
-      const supportedApiProtocols = await resolveChatSupportedProtocols({
-        groupIds: input.groupIds,
-        model: modelOption.id,
-        loadAccounts: (groupId, model, endpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, input.systemAccountId, {
-          requestedModel: model,
-          requestedEndpointFamily: endpointFamily
-        })
+  requestedModel?: string
+  apiKeyId?: string
+}): Promise<{ accounts: Awaited<ReturnType<typeof listCachedOpenAIAccountsForGroupAsync>>; catalog: ProviderModelCatalogItem[] }> {
+  const accountLists = await measureChatModelOptionsStage('account_snapshot', input.systemAccountId, input.apiKeyId, async () => (
+    await Promise.all([...new Set(input.groupIds.filter(Boolean))].map((groupId) => (
+      listCachedOpenAIAccountsForGroupAsync(groupId, input.systemAccountId, { requestedModel: input.requestedModel })
+    )))
+  ))
+  const accounts = accountLists.flat()
+  const providerCodes = [...new Set(accounts.map((account) => normalizeProviderToken(account.providerCode)).filter((code): code is string => Boolean(code)))]
+  const catalogs = await measureChatModelOptionsStage('model_catalog', input.systemAccountId, input.apiKeyId, async () => (
+    await Promise.all(providerCodes.map(async (providerCode) => {
+      const items = await listProviderModelCatalogAsync({
+        providerCode,
+        systemAccountId: input.systemAccountId,
+        includeUnpriced: true
       })
-      return supportedApiProtocols.length ? { ...modelOption, supportedApiProtocols } : undefined
+      const providerAccounts = accounts.filter((account) => normalizeProviderToken(account.providerCode) === providerCode)
+      return items
+        .filter((item) => normalizeProviderToken(item.providerCode) === providerCode)
+        .map((item) => constrainCatalogItemForAccountTypes(item, providerCode, providerAccounts.map((account) => account.type)))
     }))
-    result.push(...batch.filter((item): item is NonNullable<typeof item> => Boolean(item)))
+  ))
+  return { accounts, catalog: catalogs.flat() }
+}
+
+async function measureChatModelOptionsStage<TValue>(
+  stage: 'gateway_models' | 'api_key_route' | 'account_snapshot' | 'model_catalog',
+  systemAccountId: string,
+  apiKeyId: string | undefined,
+  run: () => Promise<TValue>
+): Promise<TValue> {
+  const startedAtMs = Date.now()
+  try {
+    return await run()
+  } finally {
+    const elapsedMs = Date.now() - startedAtMs
+    if (elapsedMs >= chatModelOptionsSlowStageMs) {
+      logger.warn({
+        event: 'chat_model_options_stage_slow',
+        stage,
+        elapsedMs,
+        systemAccountId,
+        ...(apiKeyId ? { apiKeyId } : {})
+      }, '聊天模型列表阶段耗时过长')
+    }
   }
-  return result
 }
 
 function constrainCatalogItemForAccountTypes(
