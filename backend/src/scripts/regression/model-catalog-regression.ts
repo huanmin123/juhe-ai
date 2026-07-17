@@ -282,6 +282,11 @@ try {
   assert.equal(publicModels.has('gpt-regression-overridden-pricing-alias'), false, '无价自定义模型不应进入公开模型目录')
   assert.equal(publicModels.has('openai-regression-personal'), false, 'GPT 模型目录不应反向包含 OpenAI 兼容自定义模型')
 
+  const gpt55Snapshot = publicCatalog.find((item) => item.model === 'gpt-5.5-2026-04-23' && item.scope === 'built_in')
+  assert(gpt55Snapshot, 'GPT-5.5 版本化内置模型必须进入模型目录')
+  assert(gpt55Snapshot.inputModalities.includes('image'), '内置模型目录必须保留静态模型资料中的图片输入能力')
+  assert(gpt55Snapshot.supportedTools.includes('web_search'), '内置模型目录必须保留静态模型资料中的联网搜索工具能力')
+
   const gpt56WireReasoning = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
   const gpt56ServiceTiers = ['priority', 'flex']
   const gpt56CodexReasoning = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -512,7 +517,8 @@ try {
 
   const glmCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'glm',
-    systemAccountId: 'sys_admin'
+    systemAccountId: 'sys_admin',
+    includeUnpriced: true
   })
   const glmModels = new Set(glmCatalog.map((item) => item.model))
   for (const id of [
@@ -641,7 +647,7 @@ try {
     'claude-sonnet-4-5',
     'claude-opus-4-5'
   ]) {
-    assert(anthropicModels.has(id), `Anthropic 模型目录应包含当前有效 Claude / Claude Code 兼容模型 ${id}`)
+    assert(anthropicModels.has(id), `Anthropic 模型目录应包含当前官网模型 ${id}`)
   }
   assert(anthropicModels.has('claude-haiku-4-5-20251001'), 'Anthropic 模型目录应包含 Haiku 4.5 官方 dated ID')
   assert(anthropicModels.has('claude-sonnet-4-5-20250929'), 'Anthropic 模型目录应包含 Sonnet 4.5 官方 dated ID')

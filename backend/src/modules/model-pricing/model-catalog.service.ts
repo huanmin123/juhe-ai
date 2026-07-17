@@ -16,6 +16,7 @@ import {
   type UpsertCustomProviderModelInput
 } from '../../storage/custom-provider-models.repository.js'
 import {
+  getProviderModelPricing,
   type CostInput,
   type ModelPriceSet,
   type ProviderCostBreakdown,
@@ -493,6 +494,9 @@ function cloneProviderModelCatalogItems(items: ProviderModelCatalogItem[]): Prov
     ...item,
     defaultReasoningEffort: item.defaultReasoningEffort ?? null,
     supportedApiProtocols: [...item.supportedApiProtocols],
+    inputModalities: [...(item.inputModalities ?? [])],
+    outputModalities: [...(item.outputModalities ?? [])],
+    supportedTools: [...(item.supportedTools ?? [])],
     serviceTierPrices: cloneServiceTierPrices(item.serviceTierPrices),
     supportedServiceTiers: [...item.supportedServiceTiers],
     supportedReasoningEfforts: [...item.supportedReasoningEfforts],
@@ -540,11 +544,15 @@ export function findCatalogItem(items: ProviderModelCatalogItem[], model: string
 }
 
 function toBuiltInCatalogItem(item: BuiltInProviderModelRecord): ProviderModelCatalogItem {
+  const staticCapabilities = getProviderModelPricing(item.providerCode, item.model)
   return {
     ...item,
     defaultReasoningEffort: item.defaultReasoningEffort ?? null,
     scope: 'built_in',
     status: item.status,
+    inputModalities: [...(item.inputModalities?.length ? item.inputModalities : staticCapabilities?.inputModalities ?? [])],
+    outputModalities: [...(item.outputModalities?.length ? item.outputModalities : staticCapabilities?.outputModalities ?? [])],
+    supportedTools: [...(item.supportedTools?.length ? item.supportedTools : staticCapabilities?.supportedTools ?? [])],
     supportedServiceTiers: [...(item.supportedServiceTiers ?? [])],
     supportedReasoningEfforts: [...(item.supportedReasoningEfforts ?? [])],
     codexSupportedReasoningLevels: [...(item.codexSupportedReasoningLevels ?? [])],
@@ -561,6 +569,9 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     releaseDate: item.releaseDate,
     shutdownDate: item.shutdownDate,
     supportedApiProtocols: item.supportedApiProtocols as ProviderModelApiProtocol[],
+    inputModalities: [],
+    outputModalities: [],
+    supportedTools: [],
     inputUsdPer1M: item.inputUsdPer1M,
     outputUsdPer1M: item.outputUsdPer1M,
     cachedInputUsdPer1M: item.cachedInputUsdPer1M,

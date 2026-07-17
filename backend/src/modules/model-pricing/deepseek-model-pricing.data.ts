@@ -13,7 +13,12 @@ export const deepSeekModelPricingData = [
     context_window_tokens: 1_000_000,
     max_output_tokens: 384_000,
     supports_prompt_caching: true,
-    supported_api_protocols: ['chat_completions', 'messages']
+    supported_api_protocols: ["chat_completions","messages"]
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"],
+    supported_reasoning_efforts: ["high","max"],
+    default_reasoning_effort: "high"
   },
   {
     model: 'deepseek-v4-pro',
@@ -26,7 +31,12 @@ export const deepSeekModelPricingData = [
     context_window_tokens: 1_000_000,
     max_output_tokens: 384_000,
     supports_prompt_caching: true,
-    supported_api_protocols: ['chat_completions', 'messages']
+    supported_api_protocols: ["chat_completions","messages","completions"]
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"],
+    supported_reasoning_efforts: ["high","max"],
+    default_reasoning_effort: "high"
   },
   {
     model: 'deepseek-chat',

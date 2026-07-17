@@ -86,6 +86,9 @@ export interface ProviderModelPricing {
   shutdownDate?: string
   contextWindowTokens?: number
   supportedApiProtocols?: ProviderModelApiProtocol[]
+  inputModalities?: Array<'text' | 'image' | 'audio' | 'video' | 'file'>
+  outputModalities?: Array<'text' | 'image' | 'audio' | 'video' | 'file'>
+  supportedTools?: string[]
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number

@@ -1240,6 +1240,8 @@ async function assertOpenAIChatToGeminiNativeJson(baseUrl: string, localApiKey: 
       ],
       tools: [{ type: 'function', function: { name: 'lookup_order', parameters: { type: 'object', properties: { id: { type: 'string' } } } } }],
       response_format: { type: 'json_object' },
+      reasoning_effort: 'medium',
+      service_tier: 'default',
       temperature: 0.2,
       max_tokens: 64
     })
@@ -1253,13 +1255,15 @@ async function assertOpenAIChatToGeminiNativeJson(baseUrl: string, localApiKey: 
   assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:generateContent')
   assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-target-upstream')
   assert.equal(upstreamHits[0]?.authorization, '', 'OpenAI -> Gemini native 上游不应透传本地 Authorization')
-  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>; systemInstruction?: { parts?: Array<{ text?: string }> }; generationConfig?: { responseMimeType?: string; temperature?: number; maxOutputTokens?: number }; tools?: Array<{ functionDeclarations?: Array<{ name?: string }> }> }
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>; systemInstruction?: { parts?: Array<{ text?: string }> }; generationConfig?: { responseMimeType?: string; temperature?: number; maxOutputTokens?: number; thinkingConfig?: { thinkingLevel?: string } }; serviceTier?: string; tools?: Array<{ functionDeclarations?: Array<{ name?: string }> }> }
   assert.equal(upstreamBody.systemInstruction?.parts?.[0]?.text, '只输出简短中文')
   assert.equal(upstreamBody.contents?.[0]?.role, 'user')
   assert.equal(upstreamBody.contents?.[0]?.parts?.[0]?.text, 'reply with gemini json ok')
   assert.equal(upstreamBody.generationConfig?.responseMimeType, 'application/json')
   assert.equal(upstreamBody.generationConfig?.temperature, 0.2)
   assert.equal(upstreamBody.generationConfig?.maxOutputTokens, 64)
+  assert.equal(upstreamBody.generationConfig?.thinkingConfig?.thinkingLevel, 'MEDIUM')
+  assert.equal(upstreamBody.serviceTier, 'standard')
   assert.equal(upstreamBody.tools?.[0]?.functionDeclarations?.[0]?.name, 'lookup_order')
 }
 

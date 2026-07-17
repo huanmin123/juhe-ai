@@ -65,6 +65,7 @@ export const dbServiceOperationAccessModeByType = {
   expire_due_resource_authorizations: 'maintenance',
   cleanup_expired_deleted_accounts: 'maintenance',
   cleanup_expired_system_sessions: 'maintenance',
+  cleanup_chat_retention: 'maintenance',
   save_codex_context_response_state: 'write',
   save_codex_context_compact_state: 'write',
   read_codex_context_response_chain: 'read',

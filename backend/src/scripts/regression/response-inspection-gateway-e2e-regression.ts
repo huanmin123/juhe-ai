@@ -56,7 +56,8 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue
+  auditLogQueue,
+  sqliteReadWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -66,7 +67,8 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -124,6 +126,7 @@ try {
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
+  await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
 }
@@ -136,7 +139,7 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     providerCode: accountProvider.providerCode,
     enabled: true
   }, access)
-  repositories.createAccount({
+  const pollutedAccount = repositories.createAccount({
     providerCode: accountProvider.providerCode,
     providerProtocolProfileId: accountProvider.providerProtocolProfileId,
     name: `响应检查污染账号 ${scenario}`,
@@ -147,11 +150,10 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
       supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
     },
     groupId: group.id,
-    status: 'active',
     schedulable: true,
     priority: 0
   }, access)
-  repositories.createAccount({
+  const cleanAccount = repositories.createAccount({
     providerCode: accountProvider.providerCode,
     providerProtocolProfileId: accountProvider.providerProtocolProfileId,
     name: `响应检查干净账号 ${scenario}`,
@@ -162,10 +164,11 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
       supported_endpoint_modes: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse']
     },
     groupId: group.id,
-    status: 'active',
     schedulable: true,
     priority: 10
   }, access)
+  activateAccount(pollutedAccount.id)
+  activateAccount(cleanAccount.id)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `响应检查 E2E Key ${scenario}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -199,7 +202,7 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
   })
   const responseText = await response.text()
   assert.equal(response.status, 200, `${scenario} 应在污染账号命中策略后切到干净账号成功，实际 HTTP ${response.status}: ${responseText}`)
-  assert.equal(upstreamHits.length, 2, `${scenario} 应先命中污染账号再服务端切到干净账号`)
+  assert.equal(upstreamHits.length, 2, `${scenario} 应先命中污染账号再服务端切到干净账号：${JSON.stringify({ upstreamHits, responseText })}`)
   assert.equal(upstreamHits[0]?.authorization, `Bearer sk-upstream-polluted-${scenario}`, `${scenario} 第一次请求应命中污染账号`)
   assert.equal(upstreamHits[1]?.authorization, `Bearer sk-upstream-clean-${scenario}`, `${scenario} 第二次请求应命中干净账号`)
   assert.equal(upstreamHits.some((hit) => hit.bodyText.includes('公益服务器压力很大')), false, `${scenario} 客户端请求体不应携带污染文本`)
@@ -244,7 +247,7 @@ async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBase
     providerCode: accountProvider.providerCode,
     enabled: true
   }, access)
-  repositories.createAccount({
+  const exhaustedAccount = repositories.createAccount({
     providerCode: accountProvider.providerCode,
     providerProtocolProfileId: accountProvider.providerProtocolProfileId,
     name: '响应检查破损 gzip 单账号',
@@ -255,10 +258,10 @@ async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBase
       supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     groupId: group.id,
-    status: 'active',
     schedulable: true,
     priority: 0
   }, access)
+  activateAccount(exhaustedAccount.id)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '响应检查 E2E Key codex broken gzip exhausted',
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -291,6 +294,15 @@ async function runCodexBrokenGzipExhaustedScenario(baseUrl: string, upstreamBase
   assert(!responseText.includes('incorrect header check'), `codex_broken_gzip_exhausted 不应泄露 zlib 解码细节：${responseText}`)
   assert(!responseText.includes('error decoding response body'), `codex_broken_gzip_exhausted 不应泄露 Codex 传输解码文本：${responseText}`)
   assert(!responseText.includes('not a valid gzip'), `codex_broken_gzip_exhausted 不应泄露 mock 上游原始破损内容：${responseText}`)
+}
+
+function activateAccount(accountId: string): void {
+  assert.equal(repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, `后台健康检查应激活待检查账户 ${accountId}`)
 }
 
 function requestBodyForScenario(scenario: ScenarioName, stream: boolean): Record<string, unknown> {

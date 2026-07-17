@@ -1,4 +1,4 @@
-import { fork } from 'node:child_process'
+import { fork, type ChildProcess } from 'node:child_process'
 import { availableParallelism } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -52,10 +52,12 @@ import type {
   CodexContextStateWriterOperation,
   CodexContextStateWriterOperationResult
 } from './codex-context-state-writer-pool.types.js'
+import { createCodexContextWriterStderrCapture } from './codex-context-state-writer-diagnostics.js'
 
 export interface CodexContextStateWriterPoolRuntime {
   enabled: boolean
   workerCount: number
+  workerPids: number[]
   queueLength: number
   activeJobs: number
   handledJobs: number
@@ -96,6 +98,8 @@ const codexContextStateWriterOperationTypes = new Set<CodexContextStateWriterOpe
 ])
 const writerBatchDelayMs = 2
 const writerBatchMaxItems = 256
+const writerStderrMaxBytes = 8 * 1024
+const writerChildren = new Map<number, ChildProcess>()
 const writerPool = new KeyedChildProcessPool<CodexContextStateWriterOperation>({
   name: 'Responses bridge state index',
   createWorker: createWriterChild,
@@ -209,6 +213,9 @@ export function getCodexContextStateWriterPoolRuntime(): CodexContextStateWriter
   return {
     enabled: codexContextStateWriterPoolEnabled(),
     workerCount: runtime.workerCount,
+    workerPids: [...writerChildren.entries()]
+      .sort(([left], [right]) => left - right)
+      .flatMap(([, child]) => typeof child.pid === 'number' ? [child.pid] : []),
     queueLength: runtime.queueLength,
     activeJobs: runtime.activeJobs,
     handledJobs: runtime.handledJobs,
@@ -392,12 +399,37 @@ function targetWriterPoolSize(): number {
   return Math.max(1, Math.min(configured > 0 ? configured : fallback, codexContextStateShardCount(), 64))
 }
 
-function createWriterChild() {
-  return fork(resolveWriterWorkerPath(), [], {
+function createWriterChild(slotIndex: number): ChildProcess {
+  const child = fork(resolveWriterWorkerPath(), [], {
     execArgv: writerWorkerExecArgv(),
     env: writerWorkerEnv(),
-    stdio: ['ignore', 'ignore', 'ignore', 'ipc']
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc']
   })
+  writerChildren.set(slotIndex, child)
+  const stderr = createCodexContextWriterStderrCapture({
+    maxBytes: writerStderrMaxBytes,
+    secrets: [runtimeConfig.secret]
+  })
+  child.stderr?.on('data', (chunk: Buffer | string) => stderr.append(chunk))
+  child.once('exit', () => {
+    if (writerChildren.get(slotIndex) === child) writerChildren.delete(slotIndex)
+  })
+  child.once('close', (exitCode, signal) => {
+    if (writerChildren.get(slotIndex) === child) writerChildren.delete(slotIndex)
+    if (exitCode === 0 && !signal) return
+    const snapshot = stderr.snapshot()
+    logger.warn({
+      event: 'codex_context_state_writer_exited',
+      workerSlot: slotIndex,
+      workerPid: child.pid,
+      exitCode,
+      signal,
+      stderrSummary: snapshot.summary || undefined,
+      stderrCapturedBytes: snapshot.capturedBytes,
+      stderrTruncated: snapshot.truncated
+    }, 'Responses bridge state writer worker 异常退出')
+  })
+  return child
 }
 
 function shardIndexForOperation(operation: CodexContextStateWriterOperation): number {

@@ -11,6 +11,7 @@ import { authRouter } from '../auth/auth.routes.js'
 import { externalIntegrationsRouter } from '../external-integrations/external-integrations.routes.js'
 import { externalIntegrationSourcesRouter } from '../external-integrations/external-integration-sources.routes.js'
 import { groupsRouter } from '../groups/groups.routes.js'
+import { chatRouter } from '../chat/chat.routes.js'
 import { ipStatsRouter } from '../ip-stats/ip-stats.routes.js'
 import { modelChecksRouter } from '../model-checks/model-checks.routes.js'
 import { myOperationLogsRouter, operationLogsRouter } from '../operation-logs/operation-logs.routes.js'
@@ -53,6 +54,7 @@ type BodyParserError = Error & {
 }
 
 export const systemApiJsonBodyLimit = '256kb'
+export const chatSystemApiJsonBodyLimit = '24mb'
 export { systemApiDbServiceAdmissionControl, systemApiDbServiceMaxInFlight }
 
 export function createSystemApiApp(options: SystemApiAppOptions): express.Express {
@@ -69,6 +71,9 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(systemApiPrefix, noStoreSystemApiResponse)
   if (!options.bypassSystemApiRateLimitForTest) {
     app.use(systemApiPrefix, systemApiIpRateLimit)
+    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
+  } else {
+    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
   }
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))
@@ -150,16 +155,15 @@ function noStoreSystemApiResponse(_req: Request, res: Response, next: NextFuncti
 }
 
 function handleJsonBodyError(error: BodyParserError, req: Request, res: Response, next: NextFunction): void {
+  if (!error || typeof error !== 'object' || typeof error.type !== 'string') {
+    next(error)
+    return
+  }
   const statusCode = Number.isInteger(error.statusCode)
     ? Number(error.statusCode)
     : Number.isInteger(error.status)
       ? Number(error.status)
       : 400
-
-  if (!error.type && statusCode < 400) {
-    next(error)
-    return
-  }
 
   res.locals.publicApiRequestBodyRejected = {
     statusCode,

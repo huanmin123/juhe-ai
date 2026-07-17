@@ -205,6 +205,9 @@ export interface ProviderModelPricing {
   shutdownDate?: string
   contextWindowTokens?: number
   supportedApiProtocols: Array<'chat_completions' | 'responses' | 'messages' | 'message_token_counting' | 'generate_content' | 'stream_generate_content' | 'count_tokens' | 'embed_content' | 'completions' | 'images' | 'audio' | 'realtime'>
+  inputModalities?: Array<'text' | 'image' | 'audio' | 'video' | 'file'>
+  outputModalities?: Array<'text' | 'image' | 'audio' | 'video' | 'file'>
+  supportedTools?: string[]
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number

@@ -220,6 +220,10 @@ export async function buildCodexResponsesChatBridgeBody(
   if (options.thinking && isPlainObject(options.thinking)) {
     chatBody.thinking = options.thinking
   }
+  const promptCacheKey = stringValue(body.prompt_cache_key)
+  if (promptCacheKey !== undefined) {
+    chatBody.prompt_cache_key = promptCacheKey
+  }
   if (typeof body.service_tier === 'string' && body.service_tier.trim()) {
     chatBody.service_tier = body.service_tier.trim()
   }

@@ -50,11 +50,14 @@ interface BackgroundScheduledJobSnapshot {
   lastSuccessAt?: string
   lastErrorAt?: string
   lastError?: string
+  lastWarningAt?: string
+  lastWarning?: string
   lastDurationMs?: number
   maxDurationMs?: number
   runCount: number
   successCount: number
   failureCount: number
+  partialCount: number
   skippedCount: number
 }
 
@@ -502,6 +505,7 @@ function emptyBackgroundJobRow(input: {
     runCount: input.runCount ?? 0,
     successCount: input.successCount ?? 0,
     failureCount: input.failureCount ?? 0,
+    partialCount: 0,
     skippedCount: 0,
     retryQueue: input.retryQueue,
     localQueue: input.localQueue

@@ -1,5 +1,5 @@
 <template>
-  <a-layout class="app-shell" :class="{ 'app-shell-mobile': isMobile }">
+  <a-layout class="app-shell" :class="{ 'app-shell-mobile': isMobile, 'app-shell-immersive': immersiveLayout }">
     <AppSidebar
       v-model:open="sidebarOpen"
       v-model:collapsed="sidebarCollapsed"
@@ -12,7 +12,25 @@
       @menu-click="handleMenuClick"
     />
     <a-layout class="main-shell">
+      <a-dropdown v-if="immersiveLayout && isMobile" :trigger="['click']" placement="bottomLeft">
+        <button class="immersive-mobile-menu-trigger" type="button" aria-label="打开系统菜单">
+          <MenuOutlined />
+        </button>
+        <template #overlay>
+          <a-menu @click="handleImmersiveMenuClick">
+            <a-menu-item key="navigation">打开导航</a-menu-item>
+            <a-menu-divider />
+            <a-menu-item v-if="canSwitchMenuMode" key="switch-mode">{{ switchMenuModeLabel }}</a-menu-item>
+            <a-menu-divider v-if="canSwitchMenuMode" />
+            <a-menu-item key="display-name">修改名称</a-menu-item>
+            <a-menu-item key="password">修改密码</a-menu-item>
+            <a-menu-item key="sessions">会话管理</a-menu-item>
+            <a-menu-item key="logout" danger>退出登录</a-menu-item>
+          </a-menu>
+        </template>
+      </a-dropdown>
       <AppHeader
+        v-if="!immersiveLayout"
         :announcement-bell-shaking="hasNewAnnouncements"
         :can-switch-menu-mode="canSwitchMenuMode"
         :description="currentPageDescription"
@@ -28,7 +46,7 @@
         @open-sidebar="sidebarOpen = true"
         @user-menu-click="handleUserMenuClick"
       />
-      <a-layout-content class="content">
+      <a-layout-content class="content" :class="{ 'content-immersive': immersiveLayout }">
         <div v-if="routeSwitching" class="route-switch-indicator" role="status" aria-live="polite">
           <a-spin size="small" />
           <span>正在打开页面</span>
@@ -36,7 +54,7 @@
         <div v-if="mustChangePassword" class="password-lock-state">
           <a-result status="warning" title="请先修改初始密码" sub-title="完成后将自动进入控制台。" />
         </div>
-        <div v-else-if="routeSwitching" class="route-switch-page-shell" aria-busy="true">
+        <div v-if="!mustChangePassword && routeSwitching" class="route-switch-page-shell" aria-busy="true">
           <a-card class="page-card route-switch-toolbar-card">
             <div class="route-switch-skeleton-block">
               <span class="route-switch-skeleton-line route-switch-title-line" />
@@ -59,12 +77,14 @@
             </div>
           </a-card>
         </div>
-        <router-view v-else v-slot="{ Component, route: viewRoute }">
-          <KeepAlive v-if="viewRoute.meta.keepAlive !== false" :max="keepAliveMax">
-            <component :is="Component" :key="viewRoute.path" />
-          </KeepAlive>
-          <component :is="Component" v-else :key="viewRoute.path" />
-        </router-view>
+        <div v-if="!mustChangePassword" class="route-view-host" :class="{ 'route-view-host-hidden': routeSwitching }">
+          <router-view v-slot="{ Component, route: viewRoute }">
+            <KeepAlive v-if="viewRoute.meta.keepAlive !== false" :max="keepAliveMax">
+              <component :is="Component" :key="viewRoute.path" />
+            </KeepAlive>
+            <component :is="Component" v-else :key="viewRoute.path" />
+          </router-view>
+        </div>
       </a-layout-content>
     </a-layout>
     <AnnouncementModal
@@ -105,6 +125,8 @@ import {
   FundOutlined,
   HistoryOutlined,
   LinkOutlined,
+  MessageOutlined,
+  MenuOutlined,
   SearchOutlined,
   FileSearchOutlined,
   NodeIndexOutlined,
@@ -121,7 +143,7 @@ import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch
 import { isNavigationFailure, useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
-import { authState, changePassword, clearAuthState, logout, updateProfile } from '@/composables/useAuth'
+import { authState, changePassword, clearAuthState, clearCurrentAccountChatState, logout, updateProfile } from '@/composables/useAuth'
 import { appBrand, loadAppBrandSettings, syncDocumentTitle } from '@/composables/useAppBrand'
 import {
   appMenuMode,
@@ -135,6 +157,7 @@ import { menuRoutes, recoverRouteAssetLoadError } from '@/router'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { isAdminRole, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
 import type { AuthSessionSummary, PublishedAnnouncementSummary } from '@/types/domain'
+import { resolveChatViewportHeight } from '@/views/chat/chatViewport'
 import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
@@ -198,6 +221,7 @@ const openMenuKeys = computed(() => {
 })
 const currentUser = authState.currentUser
 const mustChangePassword = computed(() => Boolean(currentUser.value?.mustChangePassword))
+const immersiveLayout = computed(() => !mustChangePassword.value && route.meta.immersive === true)
 const currentPageTitle = computed(() => mustChangePassword.value ? '修改登录密码' : pendingMenuRoute.value?.meta?.title || route.meta.title || '轻量中转管理')
 const currentPageDescription = computed(() => mustChangePassword.value ? '请先完成初始密码修改' : pendingMenuRoute.value?.meta?.description || route.meta.description || 'OpenAI OAuth + API Key')
 const requireOldPasswordForPasswordChange = computed(() => !mustChangePassword.value)
@@ -247,6 +271,7 @@ const ApiKeyMenuIcon = () =>
   ])
 
 const menuIconMap = {
+  '/my-chat': MessageOutlined,
   '/providers': GlobalOutlined,
   '/my-models': AppstoreOutlined,
   '/my-accounts': UserSwitchOutlined,
@@ -402,6 +427,14 @@ async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onCl
   }
 }
 
+async function handleImmersiveMenuClick(event: Parameters<NonNullable<MenuProps['onClick']>>[0]) {
+  if (event.key === 'navigation') {
+    sidebarOpen.value = true
+    return
+  }
+  await handleUserMenuClick(event)
+}
+
 async function openAnnouncements() {
   if (mustChangePassword.value) {
     message.warning('请先修改初始密码')
@@ -549,6 +582,7 @@ async function handleRevokeAuthSession(session: AuthSessionSummary) {
       message.success('当前会话已撤销，请重新登录')
       sessionModalOpen.value = false
       resetAuthSessions()
+      await clearCurrentAccountChatState()
       clearAuthState()
       await router.replace('/login')
       return
@@ -712,6 +746,19 @@ function updateViewport() {
 
 function handleResize() {
   updateViewport()
+  syncVisualViewportHeight()
+}
+
+function syncVisualViewportHeight(): void {
+  const height = resolveChatViewportHeight({
+    visualViewportHeight: window.visualViewport?.height,
+    innerHeight: window.innerHeight
+  })
+  if (height) document.documentElement.style.setProperty('--app-visual-viewport-height', `${height}px`)
+}
+
+function syncImmersiveBodyLock(active: boolean): void {
+  document.body.classList.toggle('immersive-layout-active', active)
 }
 
 async function refreshAnnouncementsSafely() {
@@ -733,6 +780,7 @@ async function refreshAnnouncementsSafely() {
 
 onMounted(() => {
   updateViewport()
+  syncVisualViewportHeight()
   loadAppBrandSettings().catch((error) => {
     console.error(error)
   })
@@ -740,6 +788,8 @@ onMounted(() => {
     void refreshAnnouncementsSafely()
   }, 60000)
   window.addEventListener('resize', handleResize, { passive: true })
+  window.visualViewport?.addEventListener('resize', syncVisualViewportHeight, { passive: true })
+  window.visualViewport?.addEventListener('scroll', syncVisualViewportHeight, { passive: true })
 })
 
 onBeforeUnmount(() => {
@@ -747,7 +797,12 @@ onBeforeUnmount(() => {
     window.clearInterval(announcementsRefreshTimer)
   }
   window.removeEventListener('resize', handleResize)
+  window.visualViewport?.removeEventListener('resize', syncVisualViewportHeight)
+  window.visualViewport?.removeEventListener('scroll', syncVisualViewportHeight)
+  document.body.classList.remove('immersive-layout-active')
 })
+
+watch(immersiveLayout, syncImmersiveBodyLock, { immediate: true })
 
 watch(
   () => route.path,
@@ -831,6 +886,19 @@ watch(
   background: #f5f7fb;
 }
 
+.app-shell-immersive {
+  height: var(--app-visual-viewport-height, 100dvh);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell-immersive .main-shell,
+.app-shell-immersive .content-immersive {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .main-shell {
   min-width: 0;
   background: #f5f7fb;
@@ -842,6 +910,29 @@ watch(
   background:
     radial-gradient(circle at 20% 0%, rgba(22, 119, 255, 0.06), transparent 28%),
     #f5f7fb;
+}
+
+.content-immersive {
+  padding: 0;
+  background: #fff;
+}
+
+.immersive-mobile-menu-trigger {
+  position: fixed;
+  top: calc(10px + env(safe-area-inset-top));
+  left: calc(10px + env(safe-area-inset-left));
+  z-index: 8;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #475569;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #dbe3ec;
+  border-radius: 50%;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  cursor: pointer;
 }
 
 .route-switch-indicator {
@@ -992,6 +1083,10 @@ watch(
     padding: 16px;
   }
 
+  .content-immersive {
+    padding: 0;
+  }
+
   .route-switch-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1001,5 +1096,13 @@ watch(
   .route-switch-summary-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.route-view-host-hidden {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .immersive-mobile-menu-trigger { width: 44px; height: 44px; }
 }
 </style>

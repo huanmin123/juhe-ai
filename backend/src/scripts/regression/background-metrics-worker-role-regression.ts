@@ -66,6 +66,7 @@ assert.match(backgroundJobsSource, /runtimeConfig\.databaseDriver === 'postgres'
 assert.match(backgroundJobsSource, /function refreshBackgroundJobSettingsSnapshotIfNeeded\(\): Promise<void>/, 'PG 后台任务系统设置快照刷新必须返回 Promise，避免启动时异步未完成就注册默认 interval')
 assert(backgroundJobsSource.includes("reason: 'stats_worker_startup_refresh'"), 'PG stats-worker 首次分组统计刷新必须写全量脏标记，修复已有统计缓存缺失或旧 0 值')
 assertRoleBlockContainsOnly('ops-worker', [
+  'chat-retention-cleanup',
   'proxy-latency-refresh',
   'account-balance-refresh',
   'account-health-check',

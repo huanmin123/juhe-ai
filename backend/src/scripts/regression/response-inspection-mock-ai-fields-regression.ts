@@ -62,7 +62,8 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue
+  auditLogQueue,
+  sqliteReadWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -72,7 +73,8 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -167,6 +169,7 @@ try {
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
+  await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
 }
@@ -204,7 +207,7 @@ async function runFieldScenario(
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     enabled: true
   }, access)
-  repositories.createAccount({
+  const pollutedAccount = repositories.createAccount({
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     name: `mock ai polluted ${scenarioId}`,
@@ -226,11 +229,10 @@ async function runFieldScenario(
         : {})
     },
     groupId: group.id,
-    status: 'active',
     schedulable: true,
     priority: 0
   }, access)
-  repositories.createAccount({
+  const cleanAccount = repositories.createAccount({
     providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
     providerProtocolProfileId: OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
     name: `mock ai clean ${scenarioId}`,
@@ -241,10 +243,11 @@ async function runFieldScenario(
       supported_endpoint_modes: ['responses_json', 'responses_sse']
     },
     groupId: group.id,
-    status: 'active',
     schedulable: true,
     priority: 10
   }, access)
+  activateAccount(pollutedAccount.id)
+  activateAccount(cleanAccount.id)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `mock ai key ${scenarioId}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -283,6 +286,15 @@ async function runFieldScenario(
   assert(responseText.includes(includeMarkerFor(scenarioId)), `${scenarioId} pass response should include positive include marker`)
   assert(responseText.includes(excludeMarkerFor(scenarioId)), `${scenarioId} pass response should include exclude marker`)
   assert(!responseText.includes(`clean ${scenarioId}`), `${scenarioId} pass scenario should not switch accounts`)
+}
+
+function activateAccount(accountId: string): void {
+  assert.equal(repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, `后台健康检查应激活待检查账户 ${accountId}`)
 }
 
 async function assertResponseInspectionAudit(

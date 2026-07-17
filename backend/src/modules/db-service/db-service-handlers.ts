@@ -1,6 +1,15 @@
 import { performance } from 'node:perf_hooks'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { getChatDatabaseClient } from '../../storage/chat-client.js'
+import { cleanupChatRetention } from '../../storage/chat.repository.js'
+import { cleanupExpiredChatAssets } from '../chat/chat-asset-cleanup.js'
+import { isActiveChatGeneration } from '../chat/chat-generation-runtime.js'
+import {
+  chatContextMaintenanceMaxBatchSize,
+  cleanupExpiredChatContextCheckpoints,
+  recoverStaleChatContextCompactions
+} from '../../storage/chat-context.repository.js'
 import {
   commitAccountBalanceRefreshAsync,
   enableDetectedAccountBalanceQueryAsync
@@ -1026,6 +1035,19 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           ? await cleanupExpiredSystemSessionsAsync(operation.expiredBefore, operation.limit)
           : cleanupExpiredSystemSessions(operation.expiredBefore, operation.limit)
       }
+    case 'cleanup_chat_retention': {
+      const client = await getChatDatabaseClient()
+      const retention = await cleanupChatRetention(client, { ...operation, isActiveTurn: isActiveChatGeneration })
+      const contextMaintenanceLimit = Math.max(1, Math.min(Math.trunc(operation.limit), chatContextMaintenanceMaxBatchSize))
+      const recoveredCompactions = await recoverStaleChatContextCompactions(client, {
+        now: operation.now,
+        staleClaimBefore: operation.interruptedBefore,
+        limit: contextMaintenanceLimit
+      })
+      const context = await cleanupExpiredChatContextCheckpoints(client, { now: operation.now, limit: contextMaintenanceLimit })
+      const assets = await cleanupExpiredChatAssets({ client, now: operation.now, limit: contextMaintenanceLimit })
+      return { ...retention, recoveredCompactions, ...context, ...assets, hasMoreCheckpoints: context.hasMore, hasMore: retention.hasMore || context.hasMore || assets.hasMoreAssets }
+    }
     default:
       if (runtimeConfig.databaseDriver === 'postgres') {
         throw new Error(`PostgreSQL DB service operation 未接入 async driver：${operationType}`)
@@ -1552,6 +1574,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return getRuntimeLogDetailAsync(operation.id)
     case 'get_runtime_log_facets':
       return getRuntimeLogFacetsAsync()
+    case 'cleanup_chat_retention':
+      throw new Error('cleanup_chat_retention 必须走异步 DB service handler')
     case 'status':
       return buildDbServiceRuntimeSnapshot()
     default:

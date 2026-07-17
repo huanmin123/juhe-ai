@@ -2,30 +2,31 @@ import { message } from '@/lib/antd'
 
 export async function copyTextToClipboard(value: string, successMessage = '已复制'): Promise<boolean> {
   if (!value) return false
+  try {
+    await writeTextToClipboard(value)
+    message.success(successMessage)
+    return true
+  } catch (error) {
+    console.error(error)
+    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    message.error(clipboard?.writeText ? resolveClipboardFailureMessage(error) : resolveClipboardUnavailableMessage())
+    return false
+  }
+}
+
+export async function writeTextToClipboard(value: string): Promise<void> {
   const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+  let clipboardError: unknown
   if (clipboard?.writeText) {
     try {
       await clipboard.writeText(value)
-      message.success(successMessage)
-      return true
+      return
     } catch (error) {
-      if (copyTextWithSelectionFallback(value)) {
-        message.success(successMessage)
-        return true
-      }
-      console.error(error)
-      message.error(resolveClipboardFailureMessage(error))
-      return false
+      clipboardError = error
     }
   }
-
-  if (copyTextWithSelectionFallback(value)) {
-    message.success(successMessage)
-    return true
-  }
-
-  message.error(resolveClipboardUnavailableMessage())
-  return false
+  if (copyTextWithSelectionFallback(value)) return
+  throw clipboardError instanceof Error ? clipboardError : new Error('clipboard unavailable')
 }
 
 function copyTextWithSelectionFallback(value: string): boolean {

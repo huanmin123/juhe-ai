@@ -180,11 +180,14 @@ export interface DbServiceServerRuntimeSnapshot {
         lastSuccessAt?: string
         lastErrorAt?: string
         lastError?: string
+        lastWarningAt?: string
+        lastWarning?: string
         lastDurationMs?: number
         maxDurationMs?: number
         runCount: number
         successCount: number
         failureCount: number
+        partialCount: number
         skippedCount: number
       }>
       usageRecordQueue: DbServiceRuntimeQueueSnapshot
@@ -216,11 +219,14 @@ export interface DbServiceServerRuntimeSnapshot {
         lastSuccessAt?: string
         lastErrorAt?: string
         lastError?: string
+        lastWarningAt?: string
+        lastWarning?: string
         lastDurationMs?: number
         maxDurationMs?: number
         runCount: number
         successCount: number
         failureCount: number
+        partialCount: number
         skippedCount: number
       }>
       recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
@@ -254,11 +260,14 @@ export interface DbServiceServerRuntimeSnapshot {
         lastSuccessAt?: string
         lastErrorAt?: string
         lastError?: string
+        lastWarningAt?: string
+        lastWarning?: string
         lastDurationMs?: number
         maxDurationMs?: number
         runCount: number
         successCount: number
         failureCount: number
+        partialCount: number
         skippedCount: number
       }>
       accountHealthCheckQueue?: {
@@ -815,6 +824,13 @@ export type DbServiceOperation =
     limit: number
   }
   | {
+    type: 'cleanup_chat_retention'
+    now: string
+    interruptedBefore: string
+    limit: number
+    retentionDays: number
+  }
+  | {
     type: 'save_codex_context_response_state'
     input: CodexContextResponseStateIndexInput
   }
@@ -973,6 +989,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'expire_due_resource_authorizations' } ? { expired: number } :
   T extends { type: 'cleanup_expired_deleted_accounts' } ? import('../../storage/repositories.js').ExpiredDeletedAccountCleanupResult :
   T extends { type: 'cleanup_expired_system_sessions' } ? { deleted: number } :
+  T extends { type: 'cleanup_chat_retention' } ? import('../../storage/chat.repository.js').ChatRetentionCleanupResult :
   T extends { type: 'save_codex_context_response_state' } ? CodexContextResponseStateIndex :
   T extends { type: 'save_codex_context_compact_state' } ? CodexContextCompactStateIndex :
   T extends { type: 'read_codex_context_response_chain' } ? CodexContextResponseChainReadResult :

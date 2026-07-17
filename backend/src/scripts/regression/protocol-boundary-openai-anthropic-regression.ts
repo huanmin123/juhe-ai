@@ -140,6 +140,14 @@ try {
     'OpenAI -> Anthropic bridge 不应继续接收 Chat legacy function history'
   )
 
+  const adaptiveThinkingBody = JSON.parse((await buildOpenAIToAnthropicBridgeBody(gatewayPostRequest('/v1/responses', {
+    model: 'claude-fable-5',
+    input: '深入分析',
+    reasoning: { effort: 'max' }
+  }), {})).toString('utf8')) as Record<string, unknown>
+  assert.deepEqual(adaptiveThinkingBody.thinking, { type: 'adaptive' }, 'Anthropic 新模型思考级别应转换为 adaptive thinking')
+  assert.deepEqual(adaptiveThinkingBody.output_config, { effort: 'max' }, 'Anthropic max 思考级别应写入官方 output_config.effort')
+
   const chatBridgeBody = JSON.parse((await buildOpenAIToAnthropicBridgeBody(gatewayPostRequest('/v1/chat/completions', {
     model: 'gpt-5.5',
     messages: [{ role: 'user', content: '需要检索时继续分析' }],

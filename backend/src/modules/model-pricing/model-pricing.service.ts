@@ -6,6 +6,7 @@ import type {
   GptWireReasoningEffort,
   ModelPricingProviderDriverHelpers,
   ProviderModelApiProtocol,
+  ProviderModelModality,
   RawModelPricing
 } from './provider-driver.types.js'
 
@@ -13,7 +14,8 @@ export type {
   CodexReasoningLevel,
   GptServiceTier,
   GptWireReasoningEffort,
-  ProviderModelApiProtocol
+  ProviderModelApiProtocol,
+  ProviderModelModality
 } from './provider-driver.types.js'
 
 export interface ProviderModelPricing {
@@ -24,6 +26,9 @@ export interface ProviderModelPricing {
   releaseDate?: string
   shutdownDate?: string
   supportedApiProtocols: ProviderModelApiProtocol[]
+  inputModalities: ProviderModelModality[]
+  outputModalities: ProviderModelModality[]
+  supportedTools: string[]
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
@@ -473,6 +478,9 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     supportedApiProtocols: driver?.inferModelApiProtocols(item, modelPricingDriverHelpers)
       ?? (item.supported_api_protocols ? [...item.supported_api_protocols] : undefined)
       ?? [],
+    inputModalities: item.input_modalities ? [...item.input_modalities] : [],
+    outputModalities: item.output_modalities ? [...item.output_modalities] : [],
+    supportedTools: item.supported_tools ? [...item.supported_tools] : [],
     inputUsdPer1M: perMillion(item.input_cost_per_token),
     outputUsdPer1M: perMillion(item.output_cost_per_token),
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost),

@@ -1,3 +1,4 @@
+import { lstatSync, statSync } from 'node:fs'
 import { basename } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 
@@ -5,6 +6,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import {
   beginDatabaseTransaction,
   codexContextStateShardIndexes,
+  codexContextStateShardPath,
   codexContextStateShardRootPath,
   commitDatabaseTransaction,
   datasetDatabasePath,
@@ -544,7 +546,8 @@ export async function cleanupTableStorageSnapshotsBeforeAsync(cutoffIso: string,
 }
 
 function monitoredDatabaseTargets(): MonitoredDatabaseTarget[] {
-  const codexContextStateShardDatabases = codexContextStateShardIndexes().map((shardIndex) => getCodexContextStateShardDatabase(shardIndex))
+  const codexContextStateShardDatabases = existingCodexContextStateShardIndexes()
+    .map((shardIndex) => getCodexContextStateShardDatabase(shardIndex))
   const codexContextStatePrimaryDatabase = codexContextStateShardDatabases[0]
   return [
     { role: 'business', path: runtimeConfig.databasePath, database: getBusinessDatabase() },
@@ -560,6 +563,37 @@ function monitoredDatabaseTargets(): MonitoredDatabaseTarget[] {
         }]
       : [])
   ]
+}
+
+function existingCodexContextStateShardIndexes(): number[] {
+  const shardRoot = codexContextStateShardRootPath()
+  let shardRootStats
+  try {
+    shardRootStats = statSync(shardRoot)
+  } catch (error) {
+    if (isMissingPathError(error)) return []
+    throw error
+  }
+  if (!shardRootStats.isDirectory()) {
+    throw Object.assign(new Error(`Codex context state shard root is not a directory: ${shardRoot}`), {
+      code: 'ENOTDIR',
+      path: shardRoot,
+      syscall: 'stat'
+    })
+  }
+  return codexContextStateShardIndexes().filter((shardIndex) => {
+    try {
+      lstatSync(codexContextStateShardPath(shardIndex))
+      return true
+    } catch (error) {
+      if (isMissingPathError(error)) return false
+      throw error
+    }
+  })
+}
+
+function isMissingPathError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT'
 }
 
 function collectTargetTableRows(

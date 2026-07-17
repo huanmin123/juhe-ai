@@ -1,4 +1,4 @@
-# PLAN-0102 Responses Lite 请求契约修复
+# PLAN-0105 Responses Lite 请求契约修复
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -12,7 +12,7 @@
 
 ## 基本信息
 
-- 编号：`PLAN-0102`
+- 编号：`PLAN-0105`
 - 状态：已完成
 - 创建时间：2026-07-16
 - 需求来源：生产 2chat API Key 账户人工测试返回 `X-OpenAI-Internal-Codex-Responses-Lite requires reasoning.context to be all_turns`
@@ -89,7 +89,7 @@
 
 **Files:**
 
-- Modify: `docs/plans/计划-0102-Responses-Lite请求契约修复.md`
+- Modify: `docs/plans/计划-0105-Responses-Lite请求契约修复.md`
 - Modify when needed: `docs/develop/测试与验证说明.md`
 
 - [x] OAuth adapter 完整测试树临时编译为 `.js` 后运行通过；API Key 网关 mock 和账户测试请求回归通过。标准 tsx OAuth worker 命令受既有 `.js` 源模块解析问题阻断，API Key passthrough 受未启动 DB service 阻断，均已记录且未伪报通过。

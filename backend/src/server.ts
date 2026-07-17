@@ -71,6 +71,7 @@ const helpPrefix = `${systemPrefix}/help`
 const gatewayRawBodyLimit = gatewayRawBodyHardLimit
 const httpListenBacklog = 8192
 const dbServiceHttpProxy = createDbServiceHttpProxy()
+const chatHttpProxy = createDbServiceHttpProxy({ maxInFlight: 128, timeoutMs: 15 * 60_000 })
 const backgroundWorkerStartupFallbackMs = 15_000
 let backgroundWorkerStartupFallbackTimer: NodeJS.Timeout | undefined
 let backgroundWorkerSupervisorStarted = false
@@ -176,6 +177,7 @@ app.get(`${systemPrefix}/health`, (_req, res) => {
   res.json({ status: 'ok', service: 'juhe-ai' })
 })
 
+app.use(`${systemApiPrefix}/my-chat`, chatHttpProxy)
 app.use(systemApiPrefix, dbServiceHttpProxy)
 app.use(publicApiPrefix, dbServiceHttpProxy)
 

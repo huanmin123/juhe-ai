@@ -1,0 +1,263 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+
+import {
+  ChatLocalCache,
+  calculateChatCacheBudget,
+  cloneVisibleChatMessage,
+  type ChatCacheConversationHead,
+  type ChatCacheEvictionCursor,
+  type ChatCachePutContext,
+  type ChatCacheSyncSnapshot,
+  type ChatLocalCacheStorageAdapter,
+  type ChatRunningTurn
+} from '../../views/chat/chatLocalCache'
+import type { ChatMessage } from '../../types/domain/chat'
+
+class MemoryAdapter implements ChatLocalCacheStorageAdapter {
+  readonly heads = new Map<string, ChatCacheConversationHead>()
+  readonly messages = new Map<string, ChatMessage>()
+  readonly running = new Map<string, ChatRunningTurn>()
+  failWith?: Error
+  putFailures: Error[] = []
+  putMessagesCalls = 0
+  putHeadCalls = 0
+
+  private key(account: string, conversation: string): string { return `${account}\u0000${conversation}` }
+  private messageKey(account: string, conversation: string, sequenceNo: number): string { return `${this.key(account, conversation)}\u0000${sequenceNo}` }
+  private fail(): void { if (this.failWith) throw this.failWith }
+
+  async readConversation(account: string, conversation: string) {
+    this.fail()
+    const prefix = `${this.key(account, conversation)}\u0000`
+    return {
+      head: this.heads.get(this.key(account, conversation)),
+      messages: [...this.messages.entries()].filter(([key]) => key.startsWith(prefix)).map(([, value]) => structuredClone(value)).sort((a, b) => a.sequenceNo - b.sequenceNo),
+      runningTurn: this.running.get(this.key(account, conversation))
+    }
+  }
+
+  async putHead(head: ChatCacheConversationHead): Promise<void> { this.putHeadCalls += 1; this.fail(); const key = this.key(head.systemAccountId, head.conversationId); const current = this.heads.get(key); this.heads.set(key, structuredClone({ ...head, byteSize: current?.byteSize ?? head.byteSize })) }
+  async putMessages(account: string, conversation: string, messages: ChatMessage[], context: ChatCachePutContext) {
+    this.putMessagesCalls += 1
+    const putFailure = this.putFailures.shift()
+    if (putFailure) throw putFailure
+    this.fail()
+    const key = this.key(account, conversation)
+    const head = this.heads.get(key) ?? { systemAccountId: account, conversationId: conversation, messageRevision: 0, lastAccessAt: context.now, byteSize: 0 }
+    let bytes = head.byteSize
+    for (const message of messages) {
+      const messageKey = this.messageKey(account, conversation, message.sequenceNo)
+      const old = this.messages.get(messageKey)
+      if (old) bytes -= Buffer.byteLength(JSON.stringify(old))
+      this.messages.set(messageKey, structuredClone(message))
+      bytes += Buffer.byteLength(JSON.stringify(message))
+    }
+    const next = { ...head, byteSize: bytes, lastAccessAt: context.now }
+    this.heads.set(key, next)
+    return { head: structuredClone(next), totalBytes: await this.getTotalBytes() }
+  }
+  async commitSyncSnapshot(snapshot: ChatCacheSyncSnapshot) {
+    this.fail()
+    const key = this.key(snapshot.systemAccountId, snapshot.conversationId)
+    const current = this.heads.get(key)
+    if ((current?.messageRevision ?? -1) > snapshot.messageRevision) return { committed: false, head: structuredClone(current!), totalBytes: await this.getTotalBytes() }
+    const prefix = `${key}\u0000`
+    for (const messageKey of [...this.messages.keys()]) if (messageKey.startsWith(prefix)) this.messages.delete(messageKey)
+    let bytes = 0
+    for (const value of snapshot.messages) { this.messages.set(this.messageKey(snapshot.systemAccountId, snapshot.conversationId, value.sequenceNo), structuredClone(value)); bytes += Buffer.byteLength(JSON.stringify(value)) }
+    const head = { ...current, systemAccountId: snapshot.systemAccountId, conversationId: snapshot.conversationId, messageRevision: snapshot.messageRevision, lastAccessAt: snapshot.now, byteSize: bytes, activeTurnId: snapshot.runningTurn?.turnId }
+    this.heads.set(key, head)
+    if (snapshot.runningTurn) this.running.set(key, structuredClone(snapshot.runningTurn)); else this.running.delete(key)
+    return { committed: true, head: structuredClone(head), totalBytes: await this.getTotalBytes() }
+  }
+  async deleteFromSequence(account: string, conversation: string, sequenceNo: number): Promise<void> {
+    this.fail(); const prefix = `${this.key(account, conversation)}\u0000`
+    for (const [key, value] of this.messages) if (key.startsWith(prefix) && value.sequenceNo >= sequenceNo) this.messages.delete(key)
+  }
+  async deleteConversation(account: string, conversation: string): Promise<void> {
+    this.fail(); const prefix = `${this.key(account, conversation)}\u0000`
+    for (const key of this.messages.keys()) if (key.startsWith(prefix)) this.messages.delete(key)
+    this.heads.delete(this.key(account, conversation)); this.running.delete(this.key(account, conversation))
+  }
+  async putRunningTurn(turn: ChatRunningTurn): Promise<void> { this.fail(); this.running.set(this.key(turn.systemAccountId, turn.conversationId), structuredClone(turn)) }
+  async removeRunningTurn(account: string, conversation: string): Promise<void> { this.fail(); this.running.delete(this.key(account, conversation)) }
+  async touch(account: string, conversation: string, now: number): Promise<void> { this.fail(); const key = this.key(account, conversation); const head = this.heads.get(key); if (head) this.heads.set(key, { ...head, lastAccessAt: now }) }
+  async clearAccount(account: string): Promise<void> { this.fail(); for (const head of [...this.heads.values()]) if (head.systemAccountId === account) await this.deleteConversation(account, head.conversationId) }
+  async getTotalBytes(): Promise<number> { return [...this.heads.values()].reduce((total, head) => total + head.byteSize, 0) }
+  async listEvictionCandidates(limit: number, after?: ChatCacheEvictionCursor): Promise<ChatCacheConversationHead[]> {
+    this.fail()
+    const ordered = [...this.heads.values()].sort((a, b) => a.lastAccessAt - b.lastAccessAt || a.systemAccountId.localeCompare(b.systemAccountId) || a.conversationId.localeCompare(b.conversationId))
+    const start = after ? ordered.findIndex((head) => head.lastAccessAt === after.lastAccessAt && head.systemAccountId === after.systemAccountId && head.conversationId === after.conversationId) + 1 : 0
+    return ordered.slice(start, start + limit)
+  }
+  async cleanupExpired(serverTime: string, conversationLimit: number, messageLimit: number): Promise<{ conversations: number; messages: number }> {
+    this.fail(); let conversations = 0; let messages = 0
+    for (const head of [...this.heads.values()].sort((a, b) => a.lastAccessAt - b.lastAccessAt)) {
+      if (conversations >= conversationLimit || messages >= messageLimit) break
+      conversations += 1
+      const prefix = `${this.key(head.systemAccountId, head.conversationId)}\u0000`
+      for (const [key, message] of this.messages) {
+        if (messages >= messageLimit) break
+        if (key.startsWith(prefix) && message.expiresAt <= serverTime) { this.messages.delete(key); messages += 1 }
+      }
+      if (![...this.messages.keys()].some((key) => key.startsWith(prefix)) && !this.running.has(this.key(head.systemAccountId, head.conversationId))) this.heads.delete(this.key(head.systemAccountId, head.conversationId))
+    }
+    return { conversations, messages }
+  }
+  close(): void {}
+}
+
+function message(sequenceNo: number, text: string, expiresAt = '2026-07-20T00:00:00.000Z'): ChatMessage {
+  return { id: `m${sequenceNo}`, conversationId: 'c1', turnId: `t${sequenceNo}`, sequenceNo, role: sequenceNo % 2 ? 'user' : 'assistant', status: 'completed', contentText: text, model: 'm', createdAt: '2026-07-16T00:00:00.000Z', expiresAt }
+}
+
+assert.equal(calculateChatCacheBudget({ quota: 2 * 1024 ** 3 }), 256 * 1024 ** 2)
+assert.equal(calculateChatCacheBudget({ quota: 100 * 1024 ** 2 }), 20 * 1024 ** 2)
+assert.equal(calculateChatCacheBudget(undefined), 64 * 1024 ** 2)
+
+const sanitized = cloneVisibleChatMessage({
+  ...message(1, 'visible'), apiKey: 'secret', token: 'secret', password: 'secret', proxy: 'secret', upstreamBody: { hidden: true }, checkpoint: 'secret',
+  contentBlocks: [
+    { type: 'input_text', text: 'visible', order: 0, metadata: { safe: true, token: 'secret' } },
+    { type: 'input_image', assetId: 'asset_1', order: 1, dataUrl: 'data:image/png;base64,AAAA', hiddenDescription: 'secret' },
+    { type: 'reasoning', text: 'thinking', extra: 'drop' },
+    { type: 'tool_call', id: 'tool_1', toolType: 'search', status: 'completed', item: { query: 'safe', password: 'secret' } }
+  ]
+} as unknown as ChatMessage)
+assert.ok(sanitized)
+assert.equal(JSON.stringify(sanitized).includes('secret'), false)
+assert.equal(JSON.stringify(sanitized).includes('base64'), false)
+assert.equal((sanitized!.contentBlocks?.[1] as { assetId?: string }).assetId, 'asset_1')
+assert.equal('item' in (sanitized!.contentBlocks?.[3] ?? {}), false, 'tool_call 原始 item 不得进入展示缓存')
+const deepToolPayload = cloneVisibleChatMessage({
+  ...message(2, 'safe'),
+  contentBlocks: [{ type: 'tool_call', id: 'tool_deep', toolType: 'search', status: 'completed', item: { query: 'safe', nested: { a: { b: { c: { d: { e: { password: 'deep-secret', raw: 'data:image/png;base64,AAAA' } } } } } } } }],
+  toolEvents: [{ id: 'tool_deep', type: 'search', status: 'completed', item: { authorization: 'Bearer secret', response: { token: 'secret', payload: 'raw-upstream-body' } } }]
+})
+assert.ok(deepToolPayload)
+assert.equal(JSON.stringify(deepToolPayload).includes('deep-secret'), false)
+assert.equal(JSON.stringify(deepToolPayload).includes('base64'), false)
+assert.equal(JSON.stringify(deepToolPayload).includes('raw-upstream-body'), false)
+assert.equal(deepToolPayload!.toolEvents?.[0]?.item, undefined)
+assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), contentText: 'data:image/png;base64,AAAA' }), undefined)
+assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), model: 'data:application/octet-stream;base64,AAAA' }), undefined)
+assert.equal(cloneVisibleChatMessage({ ...message(1, 'x'), blob: new Blob(['x']) } as unknown as ChatMessage), undefined)
+const cyclic = message(1, 'x') as ChatMessage & { metadata?: unknown }; cyclic.metadata = cyclic
+assert.equal(cloneVisibleChatMessage(cyclic), undefined)
+
+let now = 10
+const adapter = new MemoryAdapter()
+const cache = new ChatLocalCache({ adapter, clock: () => now, estimate: async () => ({ quota: 1_000_000 }) })
+await cache.putHead('A', { conversationId: 'c1', messageRevision: 1 })
+await cache.putHead('B', { conversationId: 'c1', messageRevision: 2 })
+await cache.putMessages('A', 'c1', [message(2, 'two'), message(1, 'one')])
+assert.deepEqual((await cache.readConversation('A', 'c1')).value?.messages.map((item) => item.sequenceNo), [1, 2])
+assert.equal((await cache.readConversation('B', 'c1')).value?.messages.length, 0)
+const oldBytes = adapter.heads.get('A\u0000c1')!.byteSize
+await cache.putMessages('A', 'c1', [message(1, 'replacement-longer')])
+assert.notEqual(adapter.heads.get('A\u0000c1')!.byteSize, oldBytes)
+assert.equal((await cache.readConversation('A', 'c1')).value?.messages.length, 2)
+await cache.deleteFromSequence('A', 'c1', 2)
+assert.deepEqual((await cache.readConversation('A', 'c1')).value?.messages.map((item) => item.sequenceNo), [1])
+await cache.putRunningTurn('A', 'c1', { turnId: 'turn', assistantMessageId: 'assistant', startedAt: '2026-07-16T00:00:00.000Z' })
+assert.equal((await cache.readConversation('A', 'c1')).value?.runningTurn?.turnId, 'turn')
+await cache.removeRunningTurn('A', 'c1')
+assert.equal((await cache.readConversation('A', 'c1')).value?.runningTurn, undefined)
+await cache.clearAccount('A')
+assert.equal((await cache.readConversation('A', 'c1')).value?.head, undefined)
+assert.ok((await cache.readConversation('B', 'c1')).value?.head)
+const casAdapter = new MemoryAdapter()
+const casCache = new ChatLocalCache({ adapter: casAdapter })
+const committedRevision = await casCache.commitSyncSnapshot('A', { conversationId: 'c1', messageRevision: 5, activeTurn: { turnId: 'sync-turn', assistantMessageId: 'sync-assistant', startedAt: '2026-07-16T00:00:00.000Z' } }, [message(1, 'revision-5')])
+assert.deepEqual(committedRevision.value, { committed: true })
+const staleRevision = await casCache.commitSyncSnapshot('A', { conversationId: 'c1', messageRevision: 4 }, [message(1, 'stale-revision-4')])
+assert.deepEqual(staleRevision.value, { committed: false }, '低 revision sync snapshot 必须整次丢弃')
+assert.equal((await casCache.readConversation('A', 'c1')).value?.messages[0]?.contentText, 'revision-5', '低 revision 不得回退消息正文')
+assert.equal((await casCache.readConversation('A', 'c1')).value?.runningTurn?.turnId, 'sync-turn', '低 revision 不得清除较新 running turn')
+const payloadAdapter = new MemoryAdapter()
+const payloadCache = new ChatLocalCache({ adapter: payloadAdapter })
+assert.equal((await payloadCache.putHead('A', { conversationId: 'bad', messageRevision: 1, title: 'data:text/plain;base64,c2VjcmV0' })).ok, false)
+assert.equal(payloadAdapter.putHeadCalls, 0)
+assert.equal((await payloadCache.putRunningTurn('A', 'bad', { turnId: 'data:text/plain;base64,dA==', startedAt: '2026-07-16T00:00:00.000Z' })).ok, false)
+assert.equal(payloadAdapter.running.size, 0)
+
+const lruAdapter = new MemoryAdapter()
+const lru = new ChatLocalCache({ adapter: lruAdapter, clock: () => 100, estimate: async () => ({ quota: 500 }) })
+for (const [conversationId, lastAccessAt] of [['old', 1], ['current', 2], ['running', 3], ['pending', 4], ['new', 5]] as const) {
+  await lruAdapter.putHead({ systemAccountId: 'A', conversationId, messageRevision: 1, lastAccessAt, byteSize: 80 })
+}
+await lruAdapter.putRunningTurn({ systemAccountId: 'A', conversationId: 'running', turnId: 't', startedAt: 'x' })
+await lru.putMessages('A', 'new', [{ ...message(1, 'x'.repeat(200)), conversationId: 'new' }], { currentConversationId: 'current', pendingConfirmationConversationIds: new Set(['pending']) })
+assert.equal(lruAdapter.heads.has('A\u0000old'), false)
+assert.equal(lruAdapter.heads.has('A\u0000current'), true)
+assert.equal(lruAdapter.heads.has('A\u0000running'), true)
+assert.equal(lruAdapter.heads.has('A\u0000pending'), true)
+
+const differenceAdapter = new MemoryAdapter()
+await differenceAdapter.putHead({ systemAccountId: 'A', conversationId: 'old', messageRevision: 1, lastAccessAt: 1, byteSize: 200 })
+await differenceAdapter.putHead({ systemAccountId: 'A', conversationId: 'keep', messageRevision: 1, lastAccessAt: 2, byteSize: 200 })
+const differenceCache = new ChatLocalCache({ adapter: differenceAdapter, estimate: async () => ({ quota: 2_500 }) })
+await differenceCache.putMessages('A', 'written', [{ ...message(1, ''), conversationId: 'written' }])
+assert.equal(differenceAdapter.heads.has('A\u0000old'), false)
+assert.equal(differenceAdapter.heads.has('A\u0000keep'), true, 'LRU 只释放超过预算的差值，不得按整个预算过度淘汰')
+
+const pagedAdapter = new MemoryAdapter()
+for (let index = 1; index <= 16; index += 1) await pagedAdapter.putHead({ systemAccountId: 'A', conversationId: `active_${index}`, messageRevision: 1, lastAccessAt: index, byteSize: 10, activeTurnId: `turn_${index}` })
+await pagedAdapter.putHead({ systemAccountId: 'A', conversationId: 'victim', messageRevision: 1, lastAccessAt: 17, byteSize: 10 })
+pagedAdapter.putFailures.push(Object.assign(new Error('quota'), { name: 'QuotaExceededError' }))
+const pagedCache = new ChatLocalCache({ adapter: pagedAdapter })
+const pagedResult = await pagedCache.putMessages('A', 'written', [{ ...message(1, 'safe'), conversationId: 'written' }])
+assert.equal(pagedResult.ok, true, '首次 quota 淘汰后应重试成功')
+assert.equal(pagedAdapter.heads.has('A\u0000victim'), false, '前一页全是 active turn 时必须继续有界翻页淘汰后页')
+assert.equal([...pagedAdapter.heads.values()].filter((head) => head.activeTurnId).length, 16, 'activeTurnId head 不得淘汰')
+
+const retryBudgetAdapter = new MemoryAdapter()
+await retryBudgetAdapter.putHead({ systemAccountId: 'A', conversationId: 'tiny', messageRevision: 1, lastAccessAt: 1, byteSize: 1 * 1024 ** 2 })
+await retryBudgetAdapter.putHead({ systemAccountId: 'A', conversationId: 'large', messageRevision: 1, lastAccessAt: 2, byteSize: 63 * 1024 ** 2 })
+retryBudgetAdapter.putFailures.push(Object.assign(new Error('quota'), { name: 'QuotaExceededError' }))
+const retryBudgetCache = new ChatLocalCache({ adapter: retryBudgetAdapter, estimate: async () => ({ quota: 320 * 1024 ** 2 }) })
+const retryBudgetMessages = Array.from({ length: 200 }, (_, index) => ({ ...message(index + 1, 'x'.repeat(42 * 1024)), conversationId: 'written' }))
+const retryBudgetResult = await retryBudgetCache.putMessages('A', 'written', retryBudgetMessages)
+assert.equal(retryBudgetResult.ok, true, 'quota 重试写入后仍应成功执行软预算淘汰')
+assert.ok(await retryBudgetAdapter.getTotalBytes() <= 64 * 1024 ** 2, 'quota 重试成功后的总量不得停留在软预算之上')
+assert.equal(retryBudgetAdapter.heads.has('A\u0000large'), false, '重试写入造成的新超额必须继续有界淘汰')
+
+const disabledAdapter = new MemoryAdapter()
+disabledAdapter.putFailures.push(Object.assign(new Error('quota-1'), { name: 'QuotaExceededError' }), Object.assign(new Error('quota-2'), { name: 'QuotaExceededError' }))
+const disabledCache = new ChatLocalCache({ adapter: disabledAdapter })
+const disabledResult = await disabledCache.putMessages('A', 'c1', [message(1, 'safe')])
+assert.deepEqual({ ok: disabledResult.ok, enabled: disabledResult.enabled }, { ok: false, enabled: false })
+const callsAfterDisable = disabledAdapter.putMessagesCalls
+const disabledNoop = await disabledCache.putMessages('A', 'c1', [message(2, 'no-op')])
+assert.equal(disabledNoop.enabled, false)
+assert.equal(disabledAdapter.putMessagesCalls, callsAfterDisable, '禁用后写入不得再访问 storage')
+
+const expiryAdapter = new MemoryAdapter()
+const expiry = new ChatLocalCache({ adapter: expiryAdapter })
+await expiry.putMessages('A', 'c1', [message(1, 'old', '2026-07-15T00:00:00.000Z'), message(2, 'new')])
+await expiry.putMessages('A', 'c2', [{ ...message(1, 'old', '2026-07-15T00:00:00.000Z'), conversationId: 'c2' }])
+const cleaned = await expiry.cleanupExpired('2026-07-16T00:00:00.000Z', { conversationLimit: 1, messageLimit: 1 })
+assert.deepEqual(cleaned.value, { conversations: 1, messages: 1 })
+assert.equal(expiryAdapter.heads.size, 2, '有界清理不得越过单次会话上限')
+
+for (const error of [Object.assign(new Error('quota'), { name: 'QuotaExceededError' }), Object.assign(new Error('security'), { name: 'SecurityError' })]) {
+  const failing = new MemoryAdapter(); failing.failWith = error
+  const diagnostics: string[] = []
+  const degraded = new ChatLocalCache({ adapter: failing, diagnostic: (code) => diagnostics.push(code) })
+  const result = await degraded.putMessages('A', 'c1', [message(1, 'x')])
+  assert.equal(result.ok, false)
+  assert.ok(diagnostics[0]?.startsWith('cache_'))
+}
+
+console.log('AI 问答本地展示缓存回归通过')
+
+const source = readFileSync(new URL('../../views/chat/chatLocalCache.ts', import.meta.url), 'utf8')
+for (const store of ['conversation_heads', 'messages', 'running_turns']) assert.match(source, new RegExp(`createObjectStore\\('${store}'`))
+assert.match(source, /keyPath: \['systemAccountId', 'conversationId', 'sequenceNo'\]/)
+assert.match(source, /createIndex\('by_conversation', \['systemAccountId', 'conversationId'\]\)/)
+assert.match(source, /this\.run\(\['conversation_heads', 'messages', 'cache_metadata'\], 'readwrite'/, '消息与字节元数据必须在同一事务更新')
+assert.doesNotMatch(source, /getAll\(\s*\)/, '生产 IndexedDB 读取必须带 key range 或 limit，不能无界全库读取')
+assert.doesNotMatch(source, /transaction\.onerror\s*=/, '事务只能由 complete/abort 终结，request error 应 abort 后等待事务终态')
+assert.match(source, /request\.transaction\?\.abort\(\)/, 'request error 必须主动 abort 事务')
+assert.match(source, /openCursor\([\s\S]{0,160}'prev'/, '会话消息必须从尾部使用 prev cursor 有界读取')

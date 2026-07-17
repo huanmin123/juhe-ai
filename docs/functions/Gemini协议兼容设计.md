@@ -165,6 +165,8 @@ Gemini native 直连请求体字段扩展较快，默认保持 raw passthrough�
 
 如果命中 Gemini native 直连账号模型别名，只改 URL 中的 `{model}`，不改请求体。如果命中 混合供应商账户里的 `generate_content|stream_generate_content -> chat_completions` 或 `generate_content|stream_generate_content -> messages` 桥接规则，才由共享 bridge 将 `contents`、`systemInstruction`、`generationConfig`、`tools.functionDeclarations` 和 `toolConfig` 转为目标上游请求；不支持的 Gemini native 能力返回 Gemini 形态的 agent guidance。
 
+反向的 OpenAI Chat / Responses -> Gemini native 桥接会把 `reasoning_effort` 或 `reasoning.effort` 转为 `generationConfig.thinkingConfig.thinkingLevel`，并把 `service_tier=default|priority|flex` 分别转为 Gemini `serviceTier=standard|priority|flex`。只有模型目录明确声明对应能力时，AI 问答才提供这些选项。
+
 ## 响应兼容细节
 
 ### JSON

@@ -14,6 +14,8 @@ export type ProviderModelApiProtocol =
 
 export type GptServiceTier = 'priority' | 'flex'
 
+export type ProviderModelModality = 'text' | 'image' | 'audio' | 'video' | 'file'
+
 export type GptWireReasoningEffort =
   | 'none'
   | 'minimal'
@@ -59,6 +61,9 @@ export interface RawModelPricing {
   long_context_output_cost_multiplier?: number
   shutdown_date?: string
   supported_api_protocols?: readonly ProviderModelApiProtocol[]
+  input_modalities?: readonly ProviderModelModality[]
+  output_modalities?: readonly ProviderModelModality[]
+  supported_tools?: readonly string[]
   supports_prompt_caching?: boolean
   supported_service_tiers?: readonly GptServiceTier[]
   supported_reasoning_efforts?: readonly GptWireReasoningEffort[]

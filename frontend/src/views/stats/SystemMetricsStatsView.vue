@@ -15,7 +15,7 @@
             @open-change="handleDateRangeOpenChange"
           />
           <a-segmented
-            :value="quickRangeValue"
+            :value="quickRangeValue ?? ''"
             :disabled="loading"
             :options="quickRangeOptions"
             class="system-metrics-quick-range"

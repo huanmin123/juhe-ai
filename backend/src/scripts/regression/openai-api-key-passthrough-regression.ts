@@ -311,6 +311,7 @@ async function testGptRequestOverridesAfterResponsesToChatBridge(): Promise<void
   const requestBody = {
     model: 'gpt-client-alias',
     input: 'hello',
+    prompt_cache_key: 'chat-bridge-cache-v1',
     service_tier: 'flex',
     reasoning: { effort: 'low' }
   }
@@ -333,6 +334,7 @@ async function testGptRequestOverridesAfterResponsesToChatBridge(): Promise<void
   const body = parseJsonBuffer(parts.body)
 
   assert.equal(body.model, 'gpt-5.6-terra')
+  assert.equal(body.prompt_cache_key, 'chat-bridge-cache-v1', 'Responses 到 Chat Completions 桥接不得丢失 prompt_cache_key')
   assert.equal(body.service_tier, 'priority')
   assert.equal(body.reasoning_effort, 'high')
   assert.equal(body.reasoning, undefined)
@@ -691,6 +693,9 @@ function modelCatalogItem(model: string): Parameters<typeof buildOpenAIModelsRes
     model,
     mode: 'text',
     supportedApiProtocols: ['responses'],
+    inputModalities: ['text'],
+    outputModalities: ['text'],
+    supportedTools: [],
     supportsPromptCaching: false,
     supportedServiceTiers: [],
     supportedReasoningEfforts: [],

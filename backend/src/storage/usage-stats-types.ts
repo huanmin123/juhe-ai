@@ -299,11 +299,14 @@ export interface SystemMetricsOverview {
     lastSuccessAt?: string
     lastErrorAt?: string
     lastError?: string
+    lastWarningAt?: string
+    lastWarning?: string
     lastDurationMs?: number
     maxDurationMs?: number
     runCount: number
     successCount: number
     failureCount: number
+    partialCount: number
     skippedCount: number
     retryQueue?: {
       name: string

@@ -5,11 +5,12 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { defaultDatasetDatabasePath, defaultUsageCatalogDatabasePath, isProductionRuntime, runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
-import { applyBusinessSchema, applyCodexContextStateSchema, applyDatasetSchema, applyStatsSchema, applyUsageCatalogSchema, seedDefaults } from './schema.js'
+import { applyBusinessSchema, applyChatSchema, applyCodexContextStateSchema, applyDatasetSchema, applyStatsSchema, applyUsageCatalogSchema, seedDefaults } from './schema.js'
 import { sqliteBusyTimeoutMs } from './sqlite-config.js'
 import { closeUsageRecordShardDatabases } from './usage-record-shards.js'
 
 let businessDatabase: DatabaseSync | undefined
+let chatDatabase: DatabaseSync | undefined
 let datasetDatabase: DatabaseSync | undefined
 let usageCatalogDatabase: DatabaseSync | undefined
 let statsDatabase: DatabaseSync | undefined
@@ -19,7 +20,7 @@ const afterCommitEffectsByDatabase = new WeakMap<DatabaseSync, AfterCommitEffect
 const require = createRequire(import.meta.url)
 let DatabaseSyncConstructor: typeof import('node:sqlite').DatabaseSync | undefined
 
-export type SqliteMainDatabaseKind = 'business' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
+export type SqliteMainDatabaseKind = 'business' | 'chat' | 'dataset' | 'usage-catalog' | 'stats' | 'codex-context-state'
 export type SqliteWriterOwner = 'db-service' | 'ingest-worker' | 'stats-writer' | 'usage-shard-writer'
 
 export interface SqliteDatabaseRuntimeInfo {
@@ -45,6 +46,16 @@ export function getBusinessDatabase(): DatabaseSync {
     seedDefaults(businessDatabase)
   }
   return businessDatabase
+}
+
+export function getChatDatabase(): DatabaseSync {
+  assertSqliteDatabaseDriver()
+  assertDistinctStoragePaths()
+  if (chatDatabase) return chatDatabase
+  chatDatabase = createSqliteDatabase(runtimeConfig.chatDatabasePath, 'chat')
+  configureDatabase(chatDatabase, 'chat')
+  if (shouldApplyMainDatabaseSchema('chat')) applyChatSchema(chatDatabase)
+  return chatDatabase
 }
 
 export function getDatasetDatabase(): DatabaseSync {
@@ -96,6 +107,7 @@ export function getCodexContextStateShardDatabase(shardIndex: number): DatabaseS
 export function closeStorageDatabases(): void {
   closeUsageRecordShardDatabases()
   closeDatabaseHandle(businessDatabase)
+  closeDatabaseHandle(chatDatabase)
   closeDatabaseHandle(datasetDatabase)
   closeDatabaseHandle(usageCatalogDatabase)
   closeDatabaseHandle(statsDatabase)
@@ -103,6 +115,7 @@ export function closeStorageDatabases(): void {
     closeDatabaseHandle(database)
   }
   businessDatabase = undefined
+  chatDatabase = undefined
   datasetDatabase = undefined
   usageCatalogDatabase = undefined
   statsDatabase = undefined
@@ -291,6 +304,7 @@ function closeDatabaseHandle(database: DatabaseSync | undefined): void {
 function assertDistinctStoragePaths(): void {
   const targets = [
     { role: '业务库', path: runtimeConfig.databasePath },
+    { role: '聊天库', path: runtimeConfig.chatDatabasePath },
     { role: '数据集目录库', path: datasetDatabasePath() },
     { role: '使用记录目录库', path: usageCatalogDatabasePath() },
     { role: '统计结果库', path: statsDatabasePath() },
@@ -304,7 +318,7 @@ function assertDistinctStoragePaths(): void {
     const key = normalize(target.path).toLowerCase()
     const existingRole = seen.get(key)
     if (existingRole) {
-      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_USAGE_CATALOG_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`)
+      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_CHAT_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH、JUHE_AI_USAGE_CATALOG_DATABASE_PATH、JUHE_AI_STATS_DATABASE_PATH、JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT 和 JUHE_AI_CODEX_CONTEXT_STATE_SHARD_COUNT`)
     }
     seen.set(key, target.role)
   }
@@ -315,7 +329,7 @@ export function nowIso(): string {
 }
 
 export function sqliteWriterOwnerForMainDatabase(kind: SqliteMainDatabaseKind): SqliteWriterOwner {
-  if (kind === 'business' || kind === 'codex-context-state') {
+  if (kind === 'business' || kind === 'chat' || kind === 'codex-context-state') {
     return 'db-service'
   }
   if (kind === 'dataset' || kind === 'usage-catalog') {
@@ -328,7 +342,7 @@ export function currentProcessOwnsSqliteMainDatabase(kind: SqliteMainDatabaseKin
   if (sqliteOfflineMaintenanceOwnsAllMainDatabases()) {
     return true
   }
-  if (kind === 'business' || kind === 'codex-context-state') {
+  if (kind === 'business' || kind === 'chat' || kind === 'codex-context-state') {
     return runtimeConfig.processRole === 'db-service'
   }
   if (kind === 'dataset' || kind === 'usage-catalog') {
@@ -360,6 +374,8 @@ export function sqliteWriterBoundaryStrictModeEnabled(): boolean {
 export function mainDatabaseRuntimeInfo(kind: SqliteMainDatabaseKind): SqliteDatabaseRuntimeInfo {
   const path = kind === 'business'
     ? runtimeConfig.databasePath
+    : kind === 'chat'
+      ? runtimeConfig.chatDatabasePath
     : kind === 'dataset'
       ? datasetDatabasePath()
       : kind === 'usage-catalog'

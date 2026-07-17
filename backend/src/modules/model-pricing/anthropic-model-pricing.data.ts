@@ -13,9 +13,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 1 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 128_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'fable',
@@ -28,9 +34,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 1 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 128_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'opus',
@@ -43,9 +55,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 128_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'opus[1m]',
@@ -58,9 +76,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 128_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'opusplan',
@@ -73,9 +97,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 128_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'sonnet',
@@ -87,9 +117,15 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost_above_1hr: 6 / 1_000_000,
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'sonnet[1m]',
@@ -101,9 +137,15 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost_above_1hr: 6 / 1_000_000,
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'haiku',
@@ -114,9 +156,13 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost: 1.25 / 1_000_000,
     cache_creation_input_token_cost_above_1hr: 2 / 1_000_000,
     cache_read_input_token_cost: 0.1 / 1_000_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"]
   },
   {
     model: 'claude-fable-5',
@@ -128,9 +174,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 1 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 128_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'claude-mythos-5',
@@ -142,9 +194,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 1 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 128_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'claude-sonnet-5',
@@ -156,9 +214,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.2 / 1_000_000,
     context_window_tokens: 200_000,
     max_output_tokens: 128_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'claude-mythos-preview',
@@ -185,9 +249,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 128_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'claude-opus-4-7',
@@ -199,9 +269,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 128_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'claude-opus-4-6',
@@ -213,9 +289,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 128_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'claude-opus-4-6-thinking',
@@ -227,9 +309,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'antigravity-claude-opus-4-6-thinking',
@@ -242,9 +330,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'antigravity/claude-opus-4-6-thinking',
@@ -257,9 +351,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'google/antigravity-claude-opus-4-6-thinking',
@@ -272,9 +372,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'google-antigravity/claude-opus-4-6-thinking',
@@ -287,9 +393,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'google-antigravity:claude-opus-4-6-thinking',
@@ -302,9 +414,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'claude-opus-4-6-antigravity',
@@ -317,9 +435,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.5 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'claude-opus-4-5',
@@ -329,9 +453,13 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost: 6.25 / 1_000_000,
     cache_creation_input_token_cost_above_1hr: 10 / 1_000_000,
     cache_read_input_token_cost: 0.5 / 1_000_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"]
   },
   {
     model: 'claude-opus-4-5-20251101',
@@ -342,9 +470,13 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost: 6.25 / 1_000_000,
     cache_creation_input_token_cost_above_1hr: 10 / 1_000_000,
     cache_read_input_token_cost: 0.5 / 1_000_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"]
   },
   {
     model: 'claude-opus-4-1',
@@ -358,9 +490,13 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 1.5 / 1_000_000,
     max_input_tokens: 200_000,
     max_output_tokens: 32_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"]
   },
   {
     model: 'claude-opus-4-1-20250805',
@@ -374,9 +510,13 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 1.5 / 1_000_000,
     max_input_tokens: 200_000,
     max_output_tokens: 32_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"]
   },
   {
     model: 'claude-sonnet-4-6',
@@ -387,9 +527,15 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost_above_1hr: 6 / 1_000_000,
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'claude-sonnet-4-6-antigravity',
@@ -402,9 +548,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'antigravity-claude-sonnet-4-6',
@@ -417,9 +569,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'antigravity/claude-sonnet-4-6',
@@ -432,9 +590,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'google/antigravity-claude-sonnet-4-6',
@@ -447,9 +611,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'google-antigravity/claude-sonnet-4-6',
@@ -462,9 +632,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'google-antigravity:claude-sonnet-4-6',
@@ -477,9 +653,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'claude-sonnet-4-6-thinking',
@@ -491,9 +673,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'antigravity-claude-sonnet-4-6-thinking',
@@ -506,9 +694,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'antigravity/claude-sonnet-4-6-thinking',
@@ -521,9 +715,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'google/antigravity-claude-sonnet-4-6-thinking',
@@ -536,9 +736,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'google-antigravity/claude-sonnet-4-6-thinking',
@@ -551,9 +757,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'google-antigravity:claude-sonnet-4-6-thinking',
@@ -566,9 +778,15 @@ export const anthropicModelPricingData = [
     cache_read_input_token_cost: 0.3 / 1_000_000,
     max_input_tokens: 1_000_000,
     max_output_tokens: 64_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "medium"
   },
   {
     model: 'claude-sonnet-4-5',
@@ -578,9 +796,13 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost: 3.75 / 1_000_000,
     cache_creation_input_token_cost_above_1hr: 6 / 1_000_000,
     cache_read_input_token_cost: 0.3 / 1_000_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"]
   },
   {
     model: 'claude-sonnet-4-5-20250929',
@@ -591,9 +813,13 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost: 3.75 / 1_000_000,
     cache_creation_input_token_cost_above_1hr: 6 / 1_000_000,
     cache_read_input_token_cost: 0.3 / 1_000_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"]
   },
   {
     model: 'claude-haiku-4-5',
@@ -603,9 +829,13 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost: 1.25 / 1_000_000,
     cache_creation_input_token_cost_above_1hr: 2 / 1_000_000,
     cache_read_input_token_cost: 0.1 / 1_000_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"]
   },
   {
     model: 'claude-haiku-4-5-20251001',
@@ -616,9 +846,13 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost: 1.25 / 1_000_000,
     cache_creation_input_token_cost_above_1hr: 2 / 1_000_000,
     cache_read_input_token_cost: 0.1 / 1_000_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"]
   },
   {
     model: 'claude-fake-5',
@@ -629,8 +863,12 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost: 1.25 / 1_000_000,
     cache_creation_input_token_cost_above_1hr: 2 / 1_000_000,
     cache_read_input_token_cost: 0.1 / 1_000_000,
-    supported_api_protocols: ['messages', 'message_token_counting'],
+    supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
     supports_service_tier: true
+  ,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"]
   }
 ]

@@ -4,6 +4,7 @@ import { logger } from '../../../shared/logger.js'
 import { bindRequestContextFields } from '../../../shared/request-context.js'
 import { type GatewayApiKeyRow, type GroupUsageAccessMetadata, type OpenAIAccountsForGroupDiagnostics } from '../../../storage/repositories.js'
 import {
+  listCachedActiveResponseInspectionPoliciesForAccountsAsync,
   listFreshOpenAIAccountsForGroupAsync,
   listCachedOpenAIAccountsForGroupAsync,
   listRecoverableUnavailableOpenAIAccountsForGroupAsync,
@@ -752,6 +753,8 @@ export async function prepareOpenAIGatewayDispatchContext(
   if (candidateFilter.outcome === 'completed') {
     return undefined
   }
+  runtimeResponseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(candidateFilter.accounts)
+  options.responseInspectionPolicies = runtimeResponseInspectionPolicies
 
   const imagePermissionPreflight = await applyOpenAIGatewayImagePermissionPreflight({
     req,

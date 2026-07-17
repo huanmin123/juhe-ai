@@ -14,6 +14,7 @@ declare module 'vue-router' {
     description: string
     keepAlive?: boolean
     heavy?: boolean
+    immersive?: boolean
     menuGroup?: string
     menuGroupTitle?: string
     public?: boolean
@@ -25,6 +26,18 @@ declare module 'vue-router' {
 const managementRoles: SystemAccountRole[] = ['super_admin', 'admin']
 
 export const menuRoutes: RouteRecordRaw[] = [
+  {
+    path: '/my-chat',
+    component: () => import('@/views/chat/ChatView.vue'),
+    meta: {
+      title: 'AI 问答',
+      description: '使用自己的 API Key 与可用模型进行对话。',
+      viewScope: 'self',
+      keepAlive: true,
+      heavy: true,
+      immersive: true
+    }
+  },
   {
     path: '/my-stats',
     component: () => import('@/views/stats/StatsView.vue'),

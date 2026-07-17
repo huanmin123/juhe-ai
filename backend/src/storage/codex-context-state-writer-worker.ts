@@ -25,11 +25,16 @@ import type {
   CodexContextStateWriterWorkerMessage,
   CodexContextStateWriterWorkerResponse
 } from './codex-context-state-writer-pool.types.js'
+import { serializeCodexContextWriterFatalDiagnostic } from './codex-context-state-writer-diagnostics.js'
 
 if (runtimeConfig.processRole !== 'db-service') {
   runtimeConfig.processRole = 'db-service'
 }
 logger.level = runtimeConfig.log.consoleEnabled ? logger.level : 'silent'
+let fatalExitStarted = false
+
+process.once('uncaughtException', (error) => exitAfterFatalDiagnostic('uncaught_exception', error))
+process.once('unhandledRejection', (reason) => exitAfterFatalDiagnostic('unhandled_rejection', reason))
 
 process.on('message', (message: CodexContextStateWriterWorkerMessage) => {
   try {
@@ -56,6 +61,25 @@ process.once('disconnect', () => {
   closeStorageDatabases()
   process.exit(0)
 })
+
+function exitAfterFatalDiagnostic(kind: string, error: unknown): void {
+  if (fatalExitStarted) return
+  fatalExitStarted = true
+  const line = serializeCodexContextWriterFatalDiagnostic({
+    kind,
+    error,
+    maxBytes: 8 * 1024,
+    secrets: [runtimeConfig.secret]
+  })
+  closeStorageDatabases()
+  const forceExit = setTimeout(() => process.exit(1), 100)
+  forceExit.unref()
+  try {
+    process.stderr.write(line, () => process.exit(1))
+  } catch {
+    process.exit(1)
+  }
+}
 
 function handleCodexContextStateWriterOperation(operation: CodexContextStateWriterOperation): unknown {
   switch (operation.type) {

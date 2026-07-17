@@ -29,10 +29,16 @@ export const openAIGPT5ModelPricingData = [
     long_context_output_cost_multiplier: 1.5,
     supports_prompt_caching: true,
     supported_service_tiers: ["priority", "flex"],
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh","max"],
     codex_supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
     codex_default_reasoning_level: "low",
     codex_multi_agent_version: "v2"
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp","tool_search"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.6-terra",
@@ -60,10 +66,16 @@ export const openAIGPT5ModelPricingData = [
     long_context_output_cost_multiplier: 1.5,
     supports_prompt_caching: true,
     supported_service_tiers: ["priority", "flex"],
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh","max"],
     codex_supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
     codex_default_reasoning_level: "medium",
     codex_multi_agent_version: "v2"
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp","tool_search"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.6-luna",
@@ -91,9 +103,15 @@ export const openAIGPT5ModelPricingData = [
     long_context_output_cost_multiplier: 1.5,
     supports_prompt_caching: true,
     supported_service_tiers: ["priority", "flex"],
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh","max"],
     codex_supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
     codex_default_reasoning_level: "medium"
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp","tool_search"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-search-api",
@@ -102,6 +120,10 @@ export const openAIGPT5ModelPricingData = [
     max_tokens: 200000,
     max_input_tokens: 200000,
     supported_api_protocols: ["chat_completions"]
+  ,
+    input_modalities: ["text"],
+    output_modalities: ["text"],
+    supported_tools: ["web_search"]
   },
   {
     model: "gpt-5.5",
@@ -117,8 +139,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 5e-7,
     cache_read_input_token_cost_priority: 0.00000125,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.5-2026-04-23",
@@ -134,8 +162,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 5e-7,
     cache_read_input_token_cost_priority: 0.00000125,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.5-pro",
@@ -147,8 +181,14 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.00003,
     output_cost_per_token: 0.00018,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","mcp"],
+    default_reasoning_effort: "high"
   },
   {
     model: "gpt-5.5-pro-2026-04-23",
@@ -160,8 +200,14 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.00003,
     output_cost_per_token: 0.00018,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","mcp"],
+    default_reasoning_effort: "high"
   },
   {
     model: "gpt-5.4",
@@ -177,8 +223,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 2.5e-7,
     cache_read_input_token_cost_priority: 5e-7,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
+    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-2026-03-05",
@@ -194,8 +246,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 2.5e-7,
     cache_read_input_token_cost_priority: 5e-7,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
+    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-mini",
@@ -212,8 +270,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 7.5e-8,
     cache_read_input_token_cost_priority: 1.5e-7,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
+    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-mini-2026-03-17",
@@ -230,8 +294,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 7.5e-8,
     cache_read_input_token_cost_priority: 1.5e-7,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
+    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-nano",
@@ -245,8 +315,14 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00000125,
     cache_read_input_token_cost: 2e-8,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","mcp"],
+    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-nano-2026-03-17",
@@ -260,8 +336,14 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00000125,
     cache_read_input_token_cost: 2e-8,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","mcp"],
+    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-pro",
@@ -274,8 +356,14 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00018,
     cache_read_input_token_cost: 0.000003,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","apply_patch","computer_use","mcp"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.4-pro-2026-03-05",
@@ -288,8 +376,14 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00018,
     cache_read_input_token_cost: 0.000003,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["medium","high","xhigh"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","apply_patch","computer_use","mcp"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.3-chat-latest",
@@ -305,6 +399,11 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.75e-7,
     cache_read_input_token_cost_priority: 3.5e-7,
     supports_prompt_caching: true
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"]
   },
   {
     model: "gpt-5.3-codex",
@@ -322,6 +421,12 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost_priority: 3.5e-7,
     supports_prompt_caching: true,
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","hosted_shell","skills"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh"]
   },
   {
     model: "gpt-5.2",
@@ -337,8 +442,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.75e-7,
     cache_read_input_token_cost_priority: 3.5e-7,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh"],
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","mcp"],
+    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.2-2025-12-11",
@@ -354,8 +465,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.75e-7,
     cache_read_input_token_cost_priority: 3.5e-7,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["none","low","medium","high","xhigh"],
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","mcp"],
+    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.2-pro",
@@ -367,8 +484,13 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.000021,
     output_cost_per_token: 0.000168,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["medium","high","xhigh"],
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","file_search","image_generation","mcp","web_search"]
   },
   {
     model: "gpt-5.2-pro-2025-12-11",
@@ -380,8 +502,13 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.000021,
     output_cost_per_token: 0.000168,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["medium", "high", "xhigh"],
+    supported_reasoning_efforts: ["medium","high","xhigh"],
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","file_search","image_generation","mcp","web_search"]
   },
   {
     model: "gpt-5.2-chat-latest",
@@ -394,6 +521,11 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.000014,
     cache_read_input_token_cost: 1.75e-7,
     supports_prompt_caching: true
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"]
   },
   {
     model: "gpt-5.2-codex",
@@ -411,6 +543,12 @@ export const openAIGPT5ModelPricingData = [
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true,
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","hosted_shell","skills"],
+    supported_reasoning_efforts: ["low","medium","high","xhigh"]
   },
   {
     model: "gpt-5.1",
@@ -426,8 +564,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high"],
+    supported_reasoning_efforts: ["none","low","medium","high"],
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","apply_patch","mcp"],
+    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.1-2025-11-13",
@@ -443,8 +587,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["none", "low", "medium", "high"],
+    supported_reasoning_efforts: ["none","low","medium","high"],
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","apply_patch","mcp"],
+    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.1-chat-latest",
@@ -458,6 +608,11 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"]
   },
   {
     model: "gpt-5.1-codex",
@@ -475,6 +630,11 @@ export const openAIGPT5ModelPricingData = [
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true,
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search"]
   },
   {
     model: "gpt-5.1-codex-max",
@@ -492,6 +652,11 @@ export const openAIGPT5ModelPricingData = [
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true,
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search"]
   },
   {
     model: "gpt-5.1-codex-mini",
@@ -506,6 +671,11 @@ export const openAIGPT5ModelPricingData = [
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true,
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search"]
   },
   {
     model: "gpt-5",
@@ -522,8 +692,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["minimal", "low", "medium", "high"],
+    supported_reasoning_efforts: ["minimal","low","medium","high"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-2025-08-07",
@@ -540,8 +716,14 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     cache_read_input_token_cost_priority: 2.5e-7,
     supports_prompt_caching: true,
-    supported_reasoning_efforts: ["minimal", "low", "medium", "high"],
+    supported_reasoning_efforts: ["minimal","low","medium","high"],
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-chat-latest",
@@ -555,6 +737,11 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost: 1.25e-7,
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"]
   },
   {
     model: "gpt-5-codex",
@@ -572,6 +759,11 @@ export const openAIGPT5ModelPricingData = [
     shutdown_date: "2026-07-23",
     supports_prompt_caching: true,
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search"]
   },
   {
     model: "gpt-5-mini",
@@ -589,6 +781,13 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost_priority: 4.5e-8,
     supports_prompt_caching: true,
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","code_interpreter","mcp"],
+    supported_reasoning_efforts: ["minimal","low","medium","high"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-mini-2025-08-07",
@@ -606,6 +805,13 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost_priority: 4.5e-8,
     supports_prompt_caching: true,
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","code_interpreter","mcp"],
+    supported_reasoning_efforts: ["minimal","low","medium","high"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-nano",
@@ -623,6 +829,13 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost_priority: 5e-8,
     supports_prompt_caching: true,
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"],
+    supported_reasoning_efforts: ["minimal","low","medium","high"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-nano-2025-08-07",
@@ -640,6 +853,13 @@ export const openAIGPT5ModelPricingData = [
     cache_read_input_token_cost_priority: 5e-8,
     supports_prompt_caching: true,
     supported_service_tiers: ["priority", "flex"]
+  ,
+    supported_api_protocols: ["chat_completions","responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"],
+    supported_reasoning_efforts: ["minimal","low","medium","high"],
+    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-pro",
@@ -652,6 +872,13 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00012,
     supports_prompt_caching: true,
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","file_search","image_generation","mcp","web_search"],
+    supported_reasoning_efforts: ["high"],
+    default_reasoning_effort: "high"
   },
   {
     model: "gpt-5-pro-2025-10-06",
@@ -664,5 +891,12 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token: 0.00012,
     supports_prompt_caching: true,
     supported_service_tiers: ["priority"]
+  ,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","file_search","image_generation","mcp","web_search"],
+    supported_reasoning_efforts: ["high"],
+    default_reasoning_effort: "high"
   }
 ] as const

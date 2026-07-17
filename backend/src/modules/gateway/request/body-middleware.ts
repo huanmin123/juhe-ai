@@ -373,17 +373,18 @@ async function extractLargeJsonBodyMetadata(
       }, '网关大 JSON 请求体元数据 worker 队列已满，拒绝本次请求以保护主进程')
       await recordGatewayBodyRejection(req, {
         statusCode: 503,
-        responsePayload: gatewayErrorPayload('网关请求解析繁忙，请稍后重试', 'server_overloaded'),
+        responsePayload: gatewayErrorPayload('网关请求解析繁忙，请稍后重试', 'server_overloaded', 'gateway_json_parser_busy'),
         rawBodyBytes: rawBody.length,
         reason: 'gateway_body_metadata_worker',
-        errorCode: 'server_overloaded',
+        errorCode: 'gateway_json_parser_busy',
         errorMessage: '网关请求解析繁忙，请稍后重试'
       })
       if (!res.headersSent) {
         res.status(503).json({
           error: {
             message: '网关请求解析繁忙，请稍后重试',
-            type: 'server_overloaded'
+            type: 'server_overloaded',
+            code: 'gateway_json_parser_busy'
           }
         })
       }
@@ -399,17 +400,18 @@ async function extractLargeJsonBodyMetadata(
     }, '网关大 JSON 请求体元数据 worker 扫描失败，拒绝本次请求以保护主进程')
     await recordGatewayBodyRejection(req, {
       statusCode: 503,
-      responsePayload: gatewayErrorPayload('网关请求解析繁忙，请稍后重试', 'server_overloaded'),
+      responsePayload: gatewayErrorPayload('网关请求解析暂时不可用，请稍后重试', 'server_overloaded', 'gateway_json_parser_failed'),
       rawBodyBytes: rawBody.length,
       reason: 'gateway_body_metadata_worker',
-      errorCode: 'server_overloaded',
-      errorMessage: '网关请求解析繁忙，请稍后重试'
+      errorCode: 'gateway_json_parser_failed',
+      errorMessage: '网关请求解析暂时不可用，请稍后重试'
     })
     if (!res.headersSent) {
       res.status(503).json({
         error: {
-          message: '网关请求解析繁忙，请稍后重试',
-          type: 'server_overloaded'
+          message: '网关请求解析暂时不可用，请稍后重试',
+          type: 'server_overloaded',
+          code: 'gateway_json_parser_failed'
         }
       })
     }

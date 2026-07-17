@@ -79,6 +79,13 @@
               <span v-if="!record.supportedApiProtocols?.length" class="muted-text">-</span>
             </a-space>
           </template>
+          <template v-else-if="column.key === 'modalities'">
+            <div class="price-cell">
+              <span>输入 {{ formatModelModalities(record.inputModalities) }}</span>
+              <span>输出 {{ formatModelModalities(record.outputModalities) }}</span>
+              <span v-if="record.supportedTools?.length">工具 {{ formatModelTools(record.supportedTools) }}</span>
+            </div>
+          </template>
           <template v-else-if="column.key === 'serviceTiers'">
             <div v-if="record.supportedServiceTiers?.length" class="tier-price-list">
               <div v-for="tier in record.supportedServiceTiers" :key="tier" class="tier-price-row">
@@ -163,6 +170,10 @@
               <strong>{{ record.releaseDate || '-' }}</strong>
               <span>接口协议</span>
               <strong>{{ (record.supportedApiProtocols ?? []).map(formatApiProtocol).join(' / ') || '-' }}</strong>
+              <span>输入 / 输出模态</span>
+              <strong>{{ formatModelModalities(record.inputModalities) }} / {{ formatModelModalities(record.outputModalities) }}</strong>
+              <span>工具</span>
+              <strong>{{ formatModelTools(record.supportedTools) }}</strong>
               <span>服务等级</span>
               <strong>{{ formatModelServiceTierCapabilities(record) }}</strong>
               <span>思考级别</span>
@@ -201,6 +212,8 @@ import {
   formatModelCategory,
   formatModelContextTokens,
   formatModelInputTokens,
+  formatModelModalities,
+  formatModelTools,
   formatModelPriceSummary,
   formatModelReasoningCapabilities,
   formatModelReasoningEffort,

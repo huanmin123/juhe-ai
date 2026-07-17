@@ -1,11 +1,17 @@
 import { strict as assert } from 'node:assert'
+import { fork } from 'node:child_process'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import {
+  createCodexContextWriterStderrCapture,
+  sanitizeCodexContextWriterDiagnostic
+} from '../../storage/codex-context-state-writer-diagnostics.js'
 import * as databaseModule from '../../storage/database.js'
 import * as writerPool from '../../storage/codex-context-state-writer-pool.js'
 
@@ -44,9 +50,12 @@ const sharedStorageKey = 'sessions/shared/segments/2026062200.json.gz'
 
 try {
   await runRegression()
-  console.log('Responses bridge state writer pool 回归通过：并发 shard 写入、read-after-write、compact 边界、cleanup 屏障和 shared storageKey 保护正常')
+  console.log('Responses bridge state writer pool 回归通过：精确 worker 数、异常补员、关闭回收、有界脱敏 stderr 和存储语义正常')
 } finally {
+  const livePidsBeforeClose = writerPool.getCodexContextStateWriterPoolRuntime().workerPids
   await writerPool.closeCodexContextStateWriterPool()
+  assert.equal(writerPool.getCodexContextStateWriterPoolRuntime().workerCount, 0, 'close 后 runtime 不应遗留 worker')
+  await waitFor(() => livePidsBeforeClose.every((pid) => !processExists(pid)), 'close 后真实 writer 子进程应全部退出')
   databaseModule.closeStorageDatabases()
   await removeTempRoot()
 }
@@ -75,10 +84,168 @@ async function runRegression(): Promise<void> {
   await assertResponseChainRestores(tails)
   await assertCompactState()
   await assertCleanupBarrierAndStorageKeyProtection()
+  await assertExactWorkerRecovery()
+  assertBoundedSanitizedStderr()
+  await assertRealWorkerFatalDiagnostic()
 
   const runtimeAfterCleanup = writerPool.getCodexContextStateWriterPoolRuntime()
   assert.equal(runtimeAfterCleanup.queueLength, 0, 'writer pool 队列应清空')
   assert.equal(runtimeAfterCleanup.activeJobs, 0, 'writer pool 不应遗留活动任务')
+}
+
+async function assertExactWorkerRecovery(): Promise<void> {
+  const before = writerPool.getCodexContextStateWriterPoolRuntime()
+  assert.equal(before.workerCount, 4, '首次请求后应精确创建配置的 4 个 writer')
+  assert.equal(before.workerPids.length, 4, 'runtime 应暴露 4 个实时 writer PID')
+  assert.equal(new Set(before.workerPids).size, 4, '实时 writer PID 不应重复')
+  assert(before.workerPids.every(processExists), 'runtime 中的 writer PID 应真实存活')
+
+  const killedPid = before.workerPids[0]
+  assert(killedPid, '应存在可终止的 writer PID')
+  process.kill(killedPid, 'SIGTERM')
+  await waitFor(() => !writerPool.getCodexContextStateWriterPoolRuntime().workerPids.includes(killedPid), '被终止的 writer 应从 runtime 移除')
+
+  await writerPool.requestCodexContextStateWriter({
+    type: 'read_response_row',
+    responseId: 'pool_resp_0_0'
+  })
+  const after = writerPool.getCodexContextStateWriterPoolRuntime()
+  assert.equal(after.workerCount, 4, '下一次请求应只把 pool 补回目标 4 个 worker')
+  assert.equal(after.workerPids.length, 4, '补员后实时 PID 数不能超过目标值')
+  assert.equal(new Set(after.workerPids).size, 4, '补员后 PID 不应重复')
+  assert.equal(after.workerPids.includes(killedPid), false, '补员后不能继续报告已退出 PID')
+  assert(after.workerPids.every(processExists), '补员后的 writer PID 应真实存活')
+}
+
+function assertBoundedSanitizedStderr(): void {
+  const secret = 'writer-secret-value-123456789'
+  const bearer = 'bearer-secret-value-123456789'
+  const postgresPassword = 'postgres-password-123456789'
+  const redisToken = 'redis-token-123456789'
+  const queryToken = 'query-token-123456789'
+  const querySignature = 'query-signature-123456789'
+  const queryCredential = 'query-credential-123456789'
+  const awsCredential = 'aws-credential-123456789'
+  const basicCredential = 'dXNlcjpiYXNpYy1zZWNyZXQtMTIzNDU2Nzg5'
+  const proxyBasicCredential = 'cHJveHk6c2VjcmV0LTEyMzQ1Njc4OQ=='
+  const tokenCredential = 'opaque-token-secret-123456789'
+  const digestCredential = 'digest-secret-response-123456789'
+  const apiKeyCredential = 'authorization-api-key-123456789'
+  const capture = createCodexContextWriterStderrCapture({
+    maxBytes: 8 * 1024,
+    secrets: [secret]
+  })
+  capture.append(Buffer.from([
+    `fatal api_key=${secret} Authorization: Bearer ${bearer}`,
+    `postgresql://db_user:${postgresPassword}@db.internal:5432/app?sslmode=require&access_token=${queryToken}&application_name=juhe`,
+    `redis://${redisToken}@redis.internal:6379/0?AUTH=${queryToken}&db=0`,
+    `https://api.internal/v1/models?signature=${querySignature}&credential=${queryCredential}&normal=visible`,
+    `https://s3.internal/object?X-Amz-Credential=${awsCredential}&X-Amz-Signature=${querySignature}&normal=visible`,
+    `Authorization: Basic ${basicCredential}; status=kept`,
+    `Proxy-Authorization=Basic ${proxyBasicCredential}; proxy_status=kept`,
+    `authorization: Token ${tokenCredential}; token_status=kept`,
+    `AUTHORIZATION: Digest username="user", response="${digestCredential}"; digest_status=kept`,
+    `proxy_authorization: API-Key ${apiKeyCredential}; api_key_status=kept`
+  ].join('\n')))
+  const snapshot = capture.snapshot()
+  assert.equal(snapshot.truncated, false, '未超过上限的 stderr 不应标记截断')
+  assert(Buffer.byteLength(snapshot.summary, 'utf8') <= 8 * 1024, '脱敏摘要也不能超过 8KiB')
+  assert.equal(snapshot.summary.includes(secret), false, 'stderr 摘要不能泄露显式 secret')
+  assert.equal(snapshot.summary.includes(bearer), false, 'stderr 摘要不能泄露 Bearer token')
+  assert.equal(snapshot.summary.includes(postgresPassword), false, 'stderr 摘要不能泄露 PostgreSQL userinfo 密码')
+  assert.equal(snapshot.summary.includes(redisToken), false, 'stderr 摘要不能泄露 Redis 无密码 userinfo token')
+  assert.equal(snapshot.summary.includes(queryToken), false, 'stderr 摘要不能泄露 query token/auth')
+  assert.equal(snapshot.summary.includes(querySignature), false, 'stderr 摘要不能泄露 query signature')
+  assert.equal(snapshot.summary.includes(queryCredential), false, 'stderr 摘要不能泄露 query credential')
+  assert.equal(snapshot.summary.includes(awsCredential), false, 'stderr 摘要不能泄露 AWS credential')
+  assert.equal(snapshot.summary.includes(basicCredential), false, 'stderr 摘要不能泄露 Basic Authorization 凭据')
+  assert.equal(snapshot.summary.includes(proxyBasicCredential), false, 'stderr 摘要不能泄露 Proxy-Authorization 凭据')
+  assert.equal(snapshot.summary.includes(tokenCredential), false, 'stderr 摘要不能泄露 Token Authorization 凭据')
+  assert.equal(snapshot.summary.includes(digestCredential), false, 'stderr 摘要不能泄露 Digest Authorization 凭据')
+  assert.equal(snapshot.summary.includes(apiKeyCredential), false, 'stderr 摘要不能泄露 API-Key Authorization 凭据')
+  assert(snapshot.summary.includes('postgresql://[REDACTED]@db.internal:5432/app?sslmode=require&access_token=[REDACTED]&application_name=juhe'), 'PostgreSQL URI 应保留 scheme、host、path 和非敏感 query')
+  assert(snapshot.summary.includes('redis://[REDACTED]@redis.internal:6379/0?AUTH=[REDACTED]&db=0'), 'Redis URI 应保留 scheme、host、path 和普通 query')
+  assert(snapshot.summary.includes('https://api.internal/v1/models?signature=[REDACTED]&credential=[REDACTED]&normal=visible'), 'HTTPS credential query 脱敏不能破坏 host、path 和普通参数')
+  assert(snapshot.summary.includes('https://s3.internal/object?X-Amz-Credential=[REDACTED]&X-Amz-Signature=[REDACTED]&normal=visible'), 'AWS Credential/Signature 脱敏应保留 host、path 和普通参数')
+  assert(snapshot.summary.includes('Authorization: [REDACTED]; status=kept'), 'Authorization 脱敏应保留分号后的诊断字段')
+  assert(snapshot.summary.includes('Proxy-Authorization=[REDACTED]; proxy_status=kept'), 'Proxy-Authorization 脱敏应保留分号后的诊断字段')
+  assert(snapshot.summary.includes('authorization: [REDACTED]; token_status=kept'), 'Token Authorization 脱敏应保留分号后的诊断字段')
+  assert(snapshot.summary.includes('AUTHORIZATION: [REDACTED]; digest_status=kept'), 'Digest Authorization 脱敏应覆盖逗号参数并保留后续字段')
+  assert(snapshot.summary.includes('proxy_authorization: [REDACTED]; api_key_status=kept'), 'API-Key Proxy Authorization 脱敏应兼容大小写和下划线')
+  assert(snapshot.summary.includes('[REDACTED]'), 'stderr 摘要应保留脱敏占位符')
+
+  const jsonSecret = 'json-basic-secret-123456789'
+  const sanitizedJson = sanitizeCodexContextWriterDiagnostic(JSON.stringify({
+    authorization: `Basic ${jsonSecret}`,
+    status: 'failed'
+  }))
+  assert.equal(sanitizedJson.includes(jsonSecret), false, 'JSON quoted Authorization 不能泄露凭据')
+  assert.deepEqual(JSON.parse(sanitizedJson), {
+    authorization: '[REDACTED]',
+    status: 'failed'
+  }, 'JSON quoted Authorization 脱敏后仍应保持合法 JSON 和相邻字段')
+
+  const boundaryCapture = createCodexContextWriterStderrCapture({
+    maxBytes: 8 * 1024,
+    secrets: [secret]
+  })
+  boundaryCapture.append(Buffer.from(`${'x'.repeat(8 * 1024 - 8)}${secret}`))
+  const boundary = boundaryCapture.snapshot()
+  assert.equal(boundary.capturedBytes, 8 * 1024, 'stderr 原始捕获总量必须限制为 8KiB')
+  assert.equal(boundary.truncated, true, '完整 secret 跨越捕获边界时应标记截断')
+  assert(Buffer.byteLength(boundary.summary, 'utf8') <= 8 * 1024, '截断后的安全摘要不能超过 8KiB')
+  assert.equal(boundary.summary.includes(secret.slice(0, 8)), false, '截断边界不能泄露 secret 前缀')
+  assert(boundary.summary.includes('stderr') && boundary.summary.includes('truncated'), '跨边界时应返回固定安全摘要')
+}
+
+async function assertRealWorkerFatalDiagnostic(): Promise<void> {
+  const secret = 'fatal-worker-secret-123456789'
+  const fixturePath = resolve(dirname(fileURLToPath(import.meta.url)), 'codex-context-state-writer-fatal-fixture.ts')
+  const child = fork(fixturePath, [], {
+    execArgv: process.execArgv,
+    env: {
+      ...process.env,
+      JUHE_AI_PROCESS_ROLE: 'db-service',
+      JUHE_AI_SECRET: secret,
+      JUHE_AI_TEST_CODEX_WRITER_FATAL_SECRET: secret
+    },
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc']
+  })
+  const chunks: Buffer[] = []
+  child.stderr?.on('data', (chunk: Buffer) => chunks.push(chunk))
+  const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, reject) => {
+    child.once('error', reject)
+    child.once('close', (code, signal) => resolveExit({ code, signal }))
+  })
+  const stderr = Buffer.concat(chunks)
+  const text = stderr.toString('utf8')
+  assert.equal(exit.code, 1, 'worker 未处理异常应以退出码 1 结束')
+  assert.equal(exit.signal, null, 'worker fatal 退出不应依赖强杀信号')
+  assert(stderr.length <= 8 * 1024, 'worker fatal stderr 必须保持在 8KiB 内')
+  assert(text.includes('codex_context_state_writer_fatal'), 'worker fatal stderr 应包含稳定事件名')
+  assert.equal(text.includes(secret), false, 'worker fatal stderr 不能泄露运行时 secret')
+  assert(text.includes('[REDACTED]'), 'worker fatal stderr 应保留脱敏占位符')
+  const parsed = JSON.parse(text.trim()) as { event?: unknown; summary?: unknown }
+  assert.equal(parsed.event, 'codex_context_state_writer_fatal', '有界 fatal stderr 仍应是合法 JSON')
+  assert.equal(typeof parsed.summary, 'string', '有界 fatal stderr 应保留字符串摘要')
+}
+
+async function waitFor(predicate: () => boolean, message: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await delay(25)
+  }
+  assert.fail(message)
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function writeConcurrentResponseChains(): Promise<string[]> {

@@ -79,6 +79,8 @@ assert.match(auditLogEmptyDescription(auditSettings({ successHotRetentionHours: 
 
 const jobsCardSource = readFileSync(new URL('../../views/stats/StatsBackgroundJobsCard.vue', import.meta.url), 'utf8')
 assert(jobsCardSource.includes("if (row.lastError) return '上次失败'"), '后台任务最近失败时不能显示为空闲')
+assert(jobsCardSource.includes("if (row.lastWarning) return '部分失败'"), '候选级部分失败必须与整项后台任务失败区分')
+assert(jobsCardSource.includes("title: '部分失败（本进程）'"), '后台任务必须单独展示部分失败次数')
 assert(jobsCardSource.includes("return '已恢复'"), '后台任务后续成功后必须与当前失败区分')
 assert(jobsCardSource.includes("title: '累计失败（本进程）'"), '后台任务历史失败必须明确计数作用域')
 assert(jobsCardSource.includes("title: '最近失败'"), '后台任务必须展示最近失败时间以区分当前异常和历史计数')
