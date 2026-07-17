@@ -1,5 +1,35 @@
 import type { AccountBalanceSnapshot, AccountStatusSnapshotResult, AccountSummary } from '@/types/domain'
 
+export function mergeAccountListRuntimeSnapshot(
+  current: AccountSummary[],
+  incoming: AccountSummary[],
+  runtimeSnapshotAvailable: boolean,
+  sameScope = true
+): AccountSummary[] {
+  if (runtimeSnapshotAvailable || !sameScope || current.length === 0) return incoming
+  const currentByIdentity = new Map(current.map((account) => [accountRuntimeIdentity(account), account]))
+  return incoming.map((account) => {
+    const previous = currentByIdentity.get(accountRuntimeIdentity(account))
+    if (!previous || previous.accountRuntimeAvailabilityAvailable !== true || !previous.runtimeAvailability) return account
+    return {
+      ...account,
+      runtimeAvailability: previous.runtimeAvailability,
+      effectiveAvailability: previous.effectiveAvailability,
+      accountRuntimeAvailabilityAvailable: true
+    }
+  })
+}
+
+function accountRuntimeIdentity(account: AccountSummary): string {
+  return [
+    account.id,
+    account.bindingSystemAccountId ?? account.systemAccountId ?? '',
+    account.boundGroupId ?? '',
+    account.accountAuthorizationId ?? '',
+    account.authorizationInstanceSourceAccountId ?? ''
+  ].join('\u0000')
+}
+
 export function replaceAccountListRow(
   accounts: AccountSummary[],
   updated: AccountSummary
@@ -14,6 +44,8 @@ export function replaceAccountListRow(
     currentConcurrency: current.currentConcurrency,
     currentConcurrencyAvailable: current.currentConcurrencyAvailable,
     accountRuntimeAvailabilityAvailable: current.accountRuntimeAvailabilityAvailable,
+    runtimeAvailability: current.runtimeAvailability,
+    effectiveAvailability: current.runtimeAvailability ? current.effectiveAvailability : updated.effectiveAvailability,
     qualityScore: current.qualityScore,
     qualityState: current.qualityState,
     qualityEwmaFirstTokenMs: current.qualityEwmaFirstTokenMs,
@@ -54,6 +86,7 @@ export function mergeAccountStatusSnapshot(
   snapshot: AccountStatusSnapshotResult
 ): AccountSummary[] {
   const itemsById = new Map(snapshot.items.map((item) => [item.id, item]))
+  const runtimeSnapshotAvailable = snapshot.runtimeSnapshot.accountRuntimeAvailabilityAvailable === true
   let changed = false
   const next = accounts.map((account) => {
     const item = itemsById.get(account.id)
@@ -81,11 +114,15 @@ export function mergeAccountStatusSnapshot(
       authorizationInstanceSourceAccountLastErrorCode: item.authorizationInstanceSourceAccountLastErrorCode,
       authorizationInstanceSourceAccountLastErrorMessage: item.authorizationInstanceSourceAccountLastErrorMessage,
       apiKeyRuntime: item.apiKeyRuntime,
-      runtimeAvailability: item.runtimeAvailability,
-      effectiveAvailability: item.effectiveAvailability,
+      runtimeAvailability: runtimeSnapshotAvailable ? item.runtimeAvailability : account.runtimeAvailability,
+      effectiveAvailability: runtimeSnapshotAvailable
+        ? item.effectiveAvailability
+        : account.runtimeAvailability ? account.effectiveAvailability : item.effectiveAvailability,
       lastUsedAt: item.lastUsedAt,
       todayUsage: item.todayUsage,
-      accountRuntimeAvailabilityAvailable: snapshot.runtimeSnapshot.accountRuntimeAvailabilityAvailable === true
+      accountRuntimeAvailabilityAvailable: runtimeSnapshotAvailable
+        ? true
+        : account.accountRuntimeAvailabilityAvailable
     }
   })
   return changed ? next : accounts

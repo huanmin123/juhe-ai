@@ -86,6 +86,7 @@ type AccountTestInput = {
   candidateAccount?: OpenAIAccountSecret
   onDiagnosticAttemptProgress?: AccountDiagnosticAttemptProgressHandler
   onUpstreamAttempt?: (attempt: UpstreamAttempt) => void
+  retryAllFailures?: boolean
   findAccountForTest?: (accountId: string, access?: AccessScope) => AccountSummary | undefined | Promise<AccountSummary | undefined>
   findOpenAIAccountForGroup?: (groupId: string, accountId: string, systemAccountId: string, options?: { includeUnavailable?: boolean; ignoreAvailability?: boolean }) => OpenAIAccountSecret | undefined | Promise<OpenAIAccountSecret | undefined>
 }
@@ -112,7 +113,7 @@ export async function testOpenAIAccountWithDiagnosticRetries(
       gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(input.gatewaySettingsOverride, timeoutMs)
     })
     lastResult = result
-    if (result.success || result.accountFailureEligible === false || input.signal?.aborted) {
+    if (result.success || (!input.retryAllFailures && result.accountFailureEligible === false) || input.signal?.aborted) {
       return accountTestResultWithTotalDuration(result, startedAt)
     }
     if (attemptIndex + 1 < accountDiagnosticRetryTimeoutMs.length) {

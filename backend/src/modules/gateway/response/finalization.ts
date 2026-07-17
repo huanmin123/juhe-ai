@@ -1363,7 +1363,9 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
         trafficSource: usageContext.trafficSource
       })
     }
-    if (input.accountStateMutationEnabled !== false && (account.streamFailureCount > 0 || account.streamFailureWindowStartedAt || account.lastErrorMessage)) {
+    if (input.accountStateMutationEnabled !== false
+      && usageContext.trafficSource !== 'gateway'
+      && (account.streamFailureCount > 0 || account.streamFailureWindowStartedAt || account.lastErrorMessage)) {
       clearAccountStreamFailureStateWithCacheInvalidation(account)
     }
   }

@@ -5,7 +5,9 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccountHealthCheckSettings } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
-import { requestBackgroundWorkerDbService } from './background-ipc.js'
+import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
+import { isRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
+import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer } from './background-ipc.js'
 import {
   accountHealthCheckTriggerPriority,
   type AccountHealthCheckTriggerReason
@@ -114,12 +116,17 @@ async function runAccountHealthCheckQueueItem(
 
   const groupId = account.boundGroupId
   const observedAt = new Date().toISOString()
+  let upstreamAttemptObserved = false
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'limited',
     groupId,
     trafficSource: 'account_health_check',
     testEndpointMode: account.healthCheckEndpointMode,
     disableAccountStateMutation: true,
+    retryAllFailures: true,
+    onUpstreamAttempt: (attempt) => {
+      if (isRealUpstreamAttempt(attempt)) upstreamAttemptObserved = true
+    },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
     gatewaySettingsOverride: {
@@ -127,8 +134,9 @@ async function runAccountHealthCheckQueueItem(
       temporaryUnschedulableRetryIntervalSeconds: 0
     }
   })
+  const probeOutcome = automaticAccountProbeOutcome(result, upstreamAttemptObserved)
 
-  if (result.success) {
+  if (probeOutcome === 'complete_success') {
     const healthCheckResult = await requestBackgroundWorkerDbService({
       type: 'record_account_health_check_success',
       accountId: account.id,
@@ -142,6 +150,7 @@ async function runAccountHealthCheckQueueItem(
       }
     }, backgroundProbeDbServiceTimeoutMs)
     const changed = healthCheckResult?.changed ?? false
+    sendAccountRuntimeClearToServer({ accountId: account.id })
     logger.info({
       event: 'background_account_health_check_passed',
       accountId: account.id,
@@ -168,7 +177,7 @@ async function runAccountHealthCheckQueueItem(
       statusCode: result.statusCode,
       errorCode: result.errorCode,
       errorMessage: result.message,
-      countTowardsThreshold: result.accountFailureEligible !== false,
+      countTowardsThreshold: probeOutcome === 'upstream_failure',
       expectedConfigRevision: item.configRevision,
       observedAt,
       traceId: result.traceId
@@ -176,7 +185,7 @@ async function runAccountHealthCheckQueueItem(
   }, backgroundProbeDbServiceTimeoutMs)
 
   let markedTemporaryUnavailable = false
-  if (account.status !== 'pending_test' && failure?.reachedThreshold && result.accountFailureEligible !== false) {
+  if (account.status !== 'pending_test' && failure?.reachedThreshold && probeOutcome === 'upstream_failure') {
     const updated = await requestBackgroundWorkerDbService({
       type: 'mark_account_test_temporary_unavailable',
       accountId: account.id,
@@ -214,7 +223,7 @@ async function runAccountHealthCheckQueueItem(
   }
   if (failure?.transitionedToError) {
     logger.error(logFields, '账号激活检查从首次失败起已持续 24 小时，账户已转为异常')
-  } else if (account.status !== 'pending_test' && failure?.reachedThreshold && result.accountFailureEligible !== false) {
+  } else if (account.status !== 'pending_test' && failure?.reachedThreshold && probeOutcome === 'upstream_failure') {
     logger.warn(logFields, '账号健康检测连续失败，已尝试标记为临时不可调用')
   } else {
     logger.warn(logFields, '账号健康检测失败，已记录失败并安排短间隔复检')

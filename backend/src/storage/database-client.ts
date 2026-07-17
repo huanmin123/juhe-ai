@@ -194,9 +194,7 @@ function createPostgresDatabaseClientInternal(client: PostgresPoolLike, transact
     dialect: postgresDialect,
     async query<T extends object = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<T[]> {
       const bound = postgresDialect.bind(sql, params)
-      const result = transactionActive
-        ? await queryPostgres(client, bound.sql, bound.params)
-        : await queryPostgresWithLocalTimeout(client, bound.sql, bound.params)
+      const result = await queryPostgres(client, bound.sql, bound.params)
       return normalizePostgresRows(result.rows) as T[]
     },
     async one<T extends object = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<T | undefined> {
@@ -205,9 +203,7 @@ function createPostgresDatabaseClientInternal(client: PostgresPoolLike, transact
     },
     async execute(sql: string, params: readonly unknown[] = []): Promise<ExecuteResult> {
       const bound = postgresDialect.bind(sql, params)
-      const result = transactionActive
-        ? await queryPostgres(client, bound.sql, bound.params)
-        : await queryPostgresWithLocalTimeout(client, bound.sql, bound.params)
+      const result = await queryPostgres(client, bound.sql, bound.params)
       return {
         changes: Number(result.rowCount ?? result.rows.length ?? 0)
       }
@@ -244,35 +240,6 @@ function createPostgresDatabaseClientInternal(client: PostgresPoolLike, transact
         releaseConnection()
       }
     }
-  }
-}
-
-async function queryPostgresWithLocalTimeout(client: PostgresPoolLike, sql: string, params: readonly unknown[]): Promise<{ rows: Array<Record<string, unknown>>; rowCount?: number | null }> {
-  if (!client.connect) {
-    return queryPostgres(client, sql, params)
-  }
-  const connection = await client.connect()
-  let released = false
-  const releaseConnection = (): void => {
-    if (released) return
-    released = true
-    connection.release()
-  }
-  try {
-    await connection.query('BEGIN')
-    await connection.query(postgresTransactionLocalTimeoutSetSql())
-    const result = await queryPostgres(connection, sql, params)
-    await connection.query('COMMIT')
-    return result
-  } catch (error) {
-    try {
-      await connection.query('ROLLBACK')
-    } finally {
-      releaseConnection()
-    }
-    throw error
-  } finally {
-    releaseConnection()
   }
 }
 

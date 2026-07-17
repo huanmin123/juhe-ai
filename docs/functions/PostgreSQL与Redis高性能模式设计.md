@@ -94,7 +94,7 @@ JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS=30000
 - `JUHE_AI_QUEUE_DRIVER=redis_stream` 使用 Redis Streams 承接高性能模式队列缓冲；`JUHE_AI_REDIS_QUEUE_URL` 默认应指向独立 `redis-queue`，不再复用 `redis-state`。Redis Stream 入队失败不回退 IPC 或本地内存队列，避免掩盖队列基础设施故障；可靠队列入队不使用 `MAXLEN ~` 自动裁剪，消息成功 `XACK` 后同步 `XDEL` 删除已落库条目。
 - `JUHE_AI_REDIS_NAMESPACE` 是 Redis key 的部署隔离前缀，生产建议显式配置并保持稳定；压测、回归和多套环境共用 Redis 实例时必须使用不同 namespace。
 - 高性能模式默认禁止 cache/state/queue 指向同一个 Redis DB / 实例地址，防止清理、淘汰策略和队列事实互相污染；临时 smoke 需要复用时必须显式设置 `JUHE_AI_ALLOW_SHARED_REDIS_URLS=true`。
-- `JUHE_AI_POSTGRES_STATEMENT_TIMEOUT_MS`、`JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS` 和 `JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS` 由应用在事务内执行 `SET LOCAL`，不要把这些参数追加到 PgBouncer startup parameter；否则部分 PgBouncer 配置会拒绝连接，事务池复用连接时也可能污染后续请求。
+- 普通单条 SQL 使用数据库或应用 role 默认的 `statement_timeout`、`lock_timeout` 和 `idle_in_transaction_session_timeout`；显式多语句事务再按 `JUHE_AI_POSTGRES_*_TIMEOUT_MS` 执行 `SET LOCAL`。上线必须通过 PgBouncer 新连接 `SHOW` 三项默认值，不能把 timeout 追加到 URL startup parameter。
 - 生产环境不使用 `latest` 镜像；PostgreSQL 和 Redis 镜像必须固定 major / patch 或 digest。
 - 高性能模式不能为了吞吐自行降低原始审计保留语义，必须和 standalone 使用相同的显式部署配置。默认完全成功请求先进入最近 `1` 小时热保留窗口，超过热窗口后只保留 `10%` 稳定采样；运维可按统一环境变量契约显式调整或关闭成功审计，失败、异常、中断和重试后成功链路仍全量进入审计。程序不因容量压力自动降采样，容量和吞吐问题通过 Redis Streams 背压、PG 小批次写入、热窗口清理、payload 摘要 / 压缩 / 去重治理。
 

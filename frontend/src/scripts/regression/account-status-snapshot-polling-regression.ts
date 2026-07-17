@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 
 import type { AccountStatusSnapshotResult, AccountSummary } from '../../types/domain/accounts.js'
-import { mergeAccountStatusSnapshot, replaceAccountListRow } from '../../views/accounts/accountListMutations.js'
+import { mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountListRow } from '../../views/accounts/accountListMutations.js'
 import { accountStatusSnapshotPollingDelayMs, createAccountStatusSnapshotPolling, isAccountStatusSnapshotCurrent } from '../../views/accounts/accountStatusSnapshotPolling.js'
 
 const usage = (requestCount: number) => ({
@@ -134,5 +134,74 @@ await Promise.resolve()
 assert.equal(maxConcurrent, 1)
 assert.equal(delays[0], 30_000)
 polling.stop()
+
+const previousRuntimeAccount = {
+  id: 'acc_runtime_refresh',
+  runtimeAvailability: {
+    status: 'local_suppressed',
+    reason: '已确认运行态',
+    since: '2026-07-17T00:00:00.000Z',
+    until: '2026-07-17T00:01:00.000Z'
+  },
+  effectiveAvailability: {
+    available: false,
+    status: 'runtime_local_suppressed',
+    label: '短暂避让',
+    color: 'gold',
+    blockerScope: 'runtime'
+  },
+  accountRuntimeAvailabilityAvailable: true
+} as AccountSummary
+const refreshedWithoutRuntime = {
+  ...previousRuntimeAccount,
+  runtimeAvailability: undefined,
+  accountRuntimeAvailabilityAvailable: false
+} as AccountSummary
+const preservedRefresh = mergeAccountListRuntimeSnapshot([previousRuntimeAccount], [refreshedWithoutRuntime], false)
+assert.equal(preservedRefresh[0]?.runtimeAvailability?.status, 'local_suppressed')
+assert.equal(preservedRefresh[0]?.accountRuntimeAvailabilityAvailable, true)
+assert.equal(preservedRefresh[0]?.effectiveAvailability, previousRuntimeAccount.effectiveAvailability)
+
+const changedScopeRefresh = mergeAccountListRuntimeSnapshot([previousRuntimeAccount], [refreshedWithoutRuntime], false, false)
+assert.equal(changedScopeRefresh[0]?.runtimeAvailability, undefined)
+
+const changedBindingRefresh = mergeAccountListRuntimeSnapshot(
+  [{ ...previousRuntimeAccount, bindingSystemAccountId: 'sys_a', boundGroupId: 'group_a', accountAuthorizationId: 'auth_a' }],
+  [{ ...refreshedWithoutRuntime, bindingSystemAccountId: 'sys_b', boundGroupId: 'group_a', accountAuthorizationId: 'auth_a' }],
+  false
+)
+assert.equal(changedBindingRefresh[0]?.runtimeAvailability, undefined)
+
+const refreshedWithConfirmedRuntime = {
+  ...previousRuntimeAccount,
+  runtimeAvailability: undefined,
+  accountRuntimeAvailabilityAvailable: true
+} as AccountSummary
+const confirmedRefresh = mergeAccountListRuntimeSnapshot([previousRuntimeAccount], [refreshedWithConfirmedRuntime], true)
+assert.equal(confirmedRefresh[0]?.runtimeAvailability, undefined)
+assert.equal(confirmedRefresh[0]?.accountRuntimeAvailabilityAvailable, true)
+
+const unavailablePollingSnapshot = mergeAccountStatusSnapshot([previousRuntimeAccount], {
+  generatedAt: '2026-07-17T00:02:00.000Z',
+  runtimeSnapshot: {
+    accountConcurrencyAvailable: true,
+    accountRuntimeAvailabilityAvailable: false
+  },
+  items: [{
+    id: previousRuntimeAccount.id,
+    status: 'active',
+    schedulable: true,
+    currentConcurrency: 0,
+    todayUsage: usage(0),
+    effectiveAvailability: { available: true, status: 'available', label: '可调度', color: 'green' }
+  }]
+})
+assert.equal(unavailablePollingSnapshot[0]?.runtimeAvailability?.status, 'local_suppressed')
+assert.equal(unavailablePollingSnapshot[0]?.effectiveAvailability?.status, 'runtime_local_suppressed')
+assert.equal(unavailablePollingSnapshot[0]?.accountRuntimeAvailabilityAvailable, true)
+
+const rowRuntimePreserved = replaceAccountListRow([previousRuntimeAccount], refreshedWithoutRuntime)
+assert.equal(rowRuntimePreserved[0]?.runtimeAvailability?.status, 'local_suppressed')
+assert.equal(rowRuntimePreserved[0]?.effectiveAvailability?.status, 'runtime_local_suppressed')
 
 console.log('账户状态快照前端回归通过：局部合并、100 ID、递归周期、hidden 与非重叠约束生效')
