@@ -8,6 +8,8 @@ import {
   type UpstreamAttempt
 } from '../upstream/attempt.js'
 import {
+  decideAccountErrorPolicy,
+  type AccountErrorPolicyDecision,
   type GatewaySettings
 } from '../policy/account-error-policy.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
@@ -59,6 +61,7 @@ export type AccountFailureInput = {
   bodyText: string
   settings: GatewaySettings
   trafficSource?: GatewayUsageContext['trafficSource']
+  policyDecision?: AccountErrorPolicyDecision
 }
 
 interface HandleFailedUpstreamResponseInput {
@@ -248,8 +251,12 @@ export async function handleFailedUpstreamResponse(
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
 
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
+  const explicitPolicyDecision = accountStateMutationEnabled && usageContext.trafficSource === 'gateway'
+    ? decideAccountErrorPolicy(account, response.status, response.headers, responseBody, settings)
+    : undefined
   const isolateAccountApiKeyFailure = hasAlternativeAccountApiKeys(account)
   const responseKeyFailoverEligible = accountStateMutationEnabled
+    && !explicitPolicyDecision
     && isolateAccountApiKeyFailure
     && !isAccountProbeTrafficSource(usageContext.trafficSource)
     && isRealUpstreamUrl(upstreamUrl)
@@ -263,7 +270,23 @@ export async function handleFailedUpstreamResponse(
   if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway') {
     await recordGatewayUpstreamBucketFailureAsync(account, '上游响应失败')
   }
-  if (accountStateMutationEnabled && !isAccountProbeTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
+  if (explicitPolicyDecision) {
+    auditCapture.addGatewayMetadata({
+      label: 'account_error_policy_matched',
+      metadata: {
+        accountId: account.id,
+        ruleName: explicitPolicyDecision.ruleName,
+        action: explicitPolicyDecision.action,
+        cooldownStatus: explicitPolicyDecision.cooldownStatus
+      }
+    })
+    if (explicitPolicyDecision.action !== 'retry_next') {
+      await applyAccountErrorHandlingWithCacheInvalidation(account, {
+        ...failureInput,
+        policyDecision: explicitPolicyDecision
+      })
+    }
+  } else if (accountStateMutationEnabled && !isAccountProbeTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
     const reason = responseBodyRead.truncated
       ? `上游账号返回非成功状态：HTTP ${response.status}`
       : parsedErrorMessage || diagnosticErrorMessage || `上游账号返回非成功状态：HTTP ${response.status}`

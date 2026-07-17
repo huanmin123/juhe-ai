@@ -5,10 +5,14 @@ import {
   clearAccountFailureStateResultAsync,
   clearAuthorizedAccountBindingFailureStateByContext,
   clearAuthorizedAccountBindingFailureStateByContextAsync,
-  markAccountTemporaryUnavailable,
-  markAccountTemporaryUnavailableAsync,
-  markAuthorizedAccountBindingTemporaryUnavailableByContext,
-  markAuthorizedAccountBindingTemporaryUnavailableByContextAsync,
+  markAccountCooldown,
+  markAccountCooldownAsync,
+  markAccountDisabledByFailure,
+  markAccountDisabledByFailureAsync,
+  markAuthorizedAccountBindingCooldownByContext,
+  markAuthorizedAccountBindingCooldownByContextAsync,
+  markAuthorizedAccountBindingDisabledByFailure,
+  markAuthorizedAccountBindingDisabledByFailureAsync,
   type AuthorizedAccountBindingRuntimeTarget
 } from '../../../storage/repositories.js'
 import {
@@ -19,6 +23,10 @@ import {
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import { sanitizeDiagnosticPayload } from '../diagnostics/diagnostic-sanitizer.js'
 import { parseGatewayProtocolErrorPayload } from '../protocols/registry.js'
+import {
+  normalizeAccountErrorHandlingRules,
+  type AccountErrorHandlingRule
+} from '../../accounts/account-error-policy-validation.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
@@ -139,6 +147,7 @@ export function applyAccountErrorHandling(
     traceId?: string
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
+    policyDecision?: AccountErrorPolicyDecision
   }
 ): AccountErrorHandlingResult {
   assertLocalGatewayDatabaseAccess('applyAccountErrorHandling')
@@ -165,30 +174,8 @@ export function applyAccountErrorHandling(
     return { action: 'none', changed: result.changed, accountStatus: result.account?.status ?? account.status }
   }
 
-  const statusCode = input.statusCode
-  const bodyText = input.bodyText ?? input.errorMessage ?? ''
-  const headers = normalizeHeadersInput(input.headers)
-  const upstreamSummary = accountErrorPolicyUpstreamSummary(account, bodyText, headers)
-
-  if (statusCode !== undefined) {
-    const reason = genericUpstreamResponseFailureReason(statusCode, upstreamSummary)
-    const updated = applyAccountTemporaryUnavailableSideEffect(account, reason, input.traceId)
-    return {
-      action: 'cooldown',
-      changed: Boolean(updated),
-      accountStatus: updated?.status ?? account.status,
-      reason
-    }
-  }
-
-  const reason = genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
-  const updated = applyAccountTemporaryUnavailableSideEffect(account, reason, input.traceId)
-  return {
-    action: 'cooldown',
-    changed: Boolean(updated),
-    accountStatus: updated?.status ?? account.status,
-    reason
-  }
+  if (!input.policyDecision) return { action: 'none', changed: false, accountStatus: account.status }
+  return applyExplicitAccountErrorPolicyDecision(account, input, input.policyDecision)
 }
 
 export async function applyAccountErrorHandlingAsync(
@@ -202,6 +189,7 @@ export async function applyAccountErrorHandlingAsync(
     traceId?: string
     settings?: GatewaySettings
     trafficSource?: OpenAIGatewayTrafficSource
+    policyDecision?: AccountErrorPolicyDecision
   }
 ): Promise<AccountErrorHandlingResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
@@ -230,30 +218,8 @@ export async function applyAccountErrorHandlingAsync(
     return { action: 'none', changed: result.changed, accountStatus: result.account?.status ?? account.status }
   }
 
-  const statusCode = input.statusCode
-  const bodyText = input.bodyText ?? input.errorMessage ?? ''
-  const headers = normalizeHeadersInput(input.headers)
-  const upstreamSummary = accountErrorPolicyUpstreamSummary(account, bodyText, headers)
-
-  if (statusCode !== undefined) {
-    const reason = genericUpstreamResponseFailureReason(statusCode, upstreamSummary)
-    const updated = await applyAccountTemporaryUnavailableSideEffectAsync(account, reason, input.traceId)
-    return {
-      action: 'cooldown',
-      changed: Boolean(updated),
-      accountStatus: updated?.status ?? account.status,
-      reason
-    }
-  }
-
-  const reason = genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
-  const updated = await applyAccountTemporaryUnavailableSideEffectAsync(account, reason, input.traceId)
-  return {
-    action: 'cooldown',
-    changed: Boolean(updated),
-    accountStatus: updated?.status ?? account.status,
-    reason
-  }
+  if (!input.policyDecision) return { action: 'none', changed: false, accountStatus: account.status }
+  return await applyExplicitAccountErrorPolicyDecisionAsync(account, input, input.policyDecision)
 }
 
 export function decideAccountErrorPolicy(
@@ -263,15 +229,188 @@ export function decideAccountErrorPolicy(
   body: Buffer,
   settings: GatewaySettings
 ): AccountErrorPolicyDecision | undefined {
-  void account
-  void statusCode
-  void headers
-  void body
-  void settings
-  // 账号级策略不能脱离具体客户端画像按上游状态码、错误类型或错误码做业务判断。
-  // 上游失败只作为泛化失败信号参与服务端切号、短期避让和事前确认。
-  // 明确客户端画像下的可重试语义由 response inspection 管线负责。
-  return undefined
+  if (statusCode >= 200 && statusCode <= 299) return undefined
+  const rules = normalizeAccountErrorHandlingRules(account.credentials.error_handling_rules)
+    .filter((rule) => rule.enabled)
+    .sort((left, right) => left.priority - right.priority)
+  const payload = accountErrorPolicyPayload(body.toString('utf8'), headers, account)
+  const errorCode = stringValue(payload.code).toLowerCase()
+  const errorType = stringValue(payload.type).toLowerCase()
+  const searchableText = body.toString('utf8').toLowerCase()
+  const rule = rules.find((candidate) => accountErrorRuleMatches(candidate, statusCode, errorCode, errorType, searchableText))
+  if (!rule) return undefined
+  if (rule.action === 'retry_next') return { action: 'retry_next', ruleName: rule.name }
+  if (rule.action === 'error_disabled') return { action: 'disable', ruleName: rule.name }
+  if (rule.action === 'rate_limited') {
+    return {
+      action: 'cooldown',
+      ruleName: rule.name,
+      cooldownStatus: 'rate_limited',
+      cooldownUntil: accountErrorRuleCooldownUntil(rule, new Date())
+    }
+  }
+  return {
+    action: 'cooldown',
+    ruleName: rule.name,
+    cooldownStatus: 'temporary_unavailable',
+    cooldownUntil: new Date(Date.now() + settings.defaultTemporaryUnschedulableMinutes * 60_000).toISOString()
+  }
+}
+
+function accountErrorPolicyPayload(
+  bodyText: string,
+  headers: Headers,
+  account: AccountErrorPolicyAccount
+): Record<string, unknown> {
+  try {
+    return parseErrorPayload(bodyText, headers, account)
+  } catch {
+    try {
+      const parsed = JSON.parse(bodyText) as Record<string, unknown>
+      const nested = parsed.error
+      return nested && typeof nested === 'object' && !Array.isArray(nested)
+        ? nested as Record<string, unknown>
+        : parsed
+    } catch {
+      return {}
+    }
+  }
+}
+
+function accountErrorRuleMatches(
+  rule: AccountErrorHandlingRule,
+  statusCode: number,
+  errorCode: string,
+  errorType: string,
+  searchableText: string
+): boolean {
+  return (!rule.status_codes?.length || rule.status_codes.includes(statusCode))
+    && (!rule.error_codes?.length || rule.error_codes.some((value) => value.toLowerCase() === errorCode))
+    && (!rule.error_types?.length || rule.error_types.some((value) => value.toLowerCase() === errorType))
+    && (!rule.keywords?.length || rule.keywords.some((value) => searchableText.includes(value.toLowerCase())))
+}
+
+function accountErrorRuleCooldownUntil(rule: AccountErrorHandlingRule, now: Date): string | undefined {
+  if (rule.reset_strategy === 'duration') {
+    return new Date(now.getTime() + Math.max(1, rule.duration_hours ?? 1) * 3_600_000).toISOString()
+  }
+  const target = new Date(now)
+  target.setMinutes(0, 0, 0)
+  target.setHours(rule.reset_strategy === 'weekly' ? rule.weekly_reset_hour ?? 0 : rule.daily_reset_hour ?? 0)
+  if (rule.reset_strategy === 'weekly') {
+    const daysAhead = ((rule.weekly_reset_day ?? 0) - target.getDay() + 7) % 7
+    target.setDate(target.getDate() + daysAhead)
+  }
+  if (target.getTime() <= now.getTime()) {
+    target.setDate(target.getDate() + (rule.reset_strategy === 'weekly' ? 7 : 1))
+  }
+  return target.toISOString()
+}
+
+function applyExplicitAccountErrorPolicyDecision(
+  account: AccountErrorPolicyAccount,
+  input: {
+    statusCode?: number
+    headers?: Headers | Record<string, string | string[]>
+    bodyText?: string
+    errorMessage?: string
+    traceId?: string
+  },
+  decision: AccountErrorPolicyDecision
+): AccountErrorHandlingResult {
+  if (decision.action === 'retry_next') {
+    return { action: 'retry_next', changed: false, accountStatus: account.status }
+  }
+  const reason = explicitAccountErrorPolicyReason(account, input, decision)
+  const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
+  const updated = decision.action === 'disable'
+    ? authorizedTarget
+      ? markAuthorizedAccountBindingDisabledByFailure({ ...authorizedTarget, reason })
+      : markAccountDisabledByFailure(account.id, reason)
+    : authorizedTarget
+      ? markAuthorizedAccountBindingCooldownByContext({
+          ...authorizedTarget,
+          status: decision.cooldownStatus,
+          cooldownUntil: decision.cooldownUntil,
+          reason,
+          traceId: input.traceId
+        })
+      : markAccountCooldown(
+          account.id,
+          decision.cooldownUntil,
+          reason,
+          decision.cooldownStatus,
+          undefined,
+          input.traceId
+        )
+  return {
+    action: decision.action,
+    changed: Boolean(updated),
+    accountStatus: updated?.status ?? account.status,
+    reason
+  }
+}
+
+async function applyExplicitAccountErrorPolicyDecisionAsync(
+  account: AccountErrorPolicyAccount,
+  input: {
+    statusCode?: number
+    headers?: Headers | Record<string, string | string[]>
+    bodyText?: string
+    errorMessage?: string
+    traceId?: string
+  },
+  decision: AccountErrorPolicyDecision
+): Promise<AccountErrorHandlingResult> {
+  if (decision.action === 'retry_next') {
+    return { action: 'retry_next', changed: false, accountStatus: account.status }
+  }
+  const reason = explicitAccountErrorPolicyReason(account, input, decision)
+  const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
+  const updated = decision.action === 'disable'
+    ? authorizedTarget
+      ? await markAuthorizedAccountBindingDisabledByFailureAsync({ ...authorizedTarget, reason })
+      : await markAccountDisabledByFailureAsync(account.id, reason)
+    : authorizedTarget
+      ? await markAuthorizedAccountBindingCooldownByContextAsync({
+          ...authorizedTarget,
+          status: decision.cooldownStatus,
+          cooldownUntil: decision.cooldownUntil,
+          reason,
+          traceId: input.traceId
+        })
+      : await markAccountCooldownAsync(
+          account.id,
+          decision.cooldownUntil,
+          reason,
+          decision.cooldownStatus,
+          undefined,
+          input.traceId
+        )
+  return {
+    action: decision.action,
+    changed: Boolean(updated),
+    accountStatus: updated?.status ?? account.status,
+    reason
+  }
+}
+
+function explicitAccountErrorPolicyReason(
+  account: AccountErrorPolicyAccount,
+  input: {
+    statusCode?: number
+    headers?: Headers | Record<string, string | string[]>
+    bodyText?: string
+    errorMessage?: string
+  },
+  decision: AccountErrorPolicyDecision
+): string {
+  const bodyText = input.bodyText ?? input.errorMessage ?? ''
+  const summary = accountErrorPolicyUpstreamSummary(account, bodyText, normalizeHeadersInput(input.headers))
+  const failure = input.statusCode === undefined
+    ? genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
+    : genericUpstreamResponseFailureReason(input.statusCode, summary)
+  return `账户错误策略「${decision.ruleName ?? '未命名规则'}」命中；${failure}`.slice(0, 1000)
 }
 
 function authorizedAccountBindingRuntimeTarget(account: AccountErrorPolicyAccount): AuthorizedAccountBindingRuntimeTarget | undefined {
@@ -318,28 +457,6 @@ function accountErrorPolicyUpstreamSummary(
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value.trim() : ''
-}
-
-function applyAccountTemporaryUnavailableSideEffect(
-  account: AccountErrorPolicyAccount,
-  reason: string,
-  traceId?: string
-): { status: AccountStatus } | undefined {
-  const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
-  return authorizedTarget
-    ? markAuthorizedAccountBindingTemporaryUnavailableByContext({ ...authorizedTarget, reason, traceId })
-    : markAccountTemporaryUnavailable(account.id, reason, undefined, traceId)
-}
-
-async function applyAccountTemporaryUnavailableSideEffectAsync(
-  account: AccountErrorPolicyAccount,
-  reason: string,
-  traceId?: string
-): Promise<{ status: AccountStatus } | undefined> {
-  const authorizedTarget = authorizedAccountBindingRuntimeTarget(account)
-  return authorizedTarget
-    ? await markAuthorizedAccountBindingTemporaryUnavailableByContextAsync({ ...authorizedTarget, reason, traceId })
-    : await markAccountTemporaryUnavailableAsync(account.id, reason, undefined, traceId)
 }
 
 function genericUpstreamResponseFailureReason(statusCode: number, upstreamSummary?: string): string {

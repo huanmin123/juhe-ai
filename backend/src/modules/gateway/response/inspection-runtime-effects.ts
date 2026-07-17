@@ -2,8 +2,7 @@ import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import { responseInspectionAuditMetadata } from '../audit/metadata.js'
 import {
-  recordGatewayAccountFailureForPrecheck,
-  suppressGatewayAccountLocally
+  suppressGatewayAccountLocallyForSeconds
 } from '../runtime/account-side-effects.service.js'
 import {
   suppressGatewayUpstreamBucketForSecondsAsync
@@ -24,19 +23,7 @@ export async function applyResponseInspectionPolicyRuntimeSideEffects(
   }
   const reason = `响应检查策略命中：${decision.policyName ?? decision.policyId ?? decision.matchedValue ?? '未命名策略'}`
   if (decision.accountState === 'runtime_avoidance' || decision.accountSwitch === 'avoid_account_ttl') {
-    const localSuppression = suppressGatewayAccountLocally(account, settings, reason)
-    if (usageContext?.trafficSource === 'gateway') {
-      recordGatewayAccountFailureForPrecheck(account, settings, {
-        systemAccountId: usageContext.systemAccountId,
-        groupId: usageContext.groupId,
-        apiKeyId: usageContext.apiKeyId,
-        clientIp: usageContext.clientIp,
-      endpoint: usageContext.endpoint,
-      reason,
-      forcePrecheck: localSuppression.action === 'precheck_required',
-      localSuppressionDelayMs: localSuppression.delayMs
-    })
-    }
+    await suppressGatewayAccountLocallyForSeconds(account, settings.defaultTemporaryUnschedulableMinutes * 60, reason)
   }
   if (decision.accountSwitch === 'avoid_upstream_bucket_ttl') {
     const ttlSeconds = Math.max(1, settings.defaultTemporaryUnschedulableMinutes * 60)
