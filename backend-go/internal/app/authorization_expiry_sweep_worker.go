@@ -133,7 +133,7 @@ func RunAuthorizationExpirySweepWorker(ctx context.Context, cfg config.Config, l
 func newAuthorizationExpirySweepService(
 	expiryStore port.ManagementResourceAuthorizationExpirySweeper,
 	invalidator managementauthorizations.AuthorizationInvalidator,
-	publisher managementauthorizations.AccountsStaticResetPublisher,
+	publisher managementauthorizations.AuthorizationPageDataPublisher,
 	teamReader managementauthorizations.TeamReader,
 	logger *slog.Logger,
 ) *managementauthorizations.Service {

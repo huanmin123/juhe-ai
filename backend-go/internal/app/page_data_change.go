@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -63,12 +64,18 @@ func (p accountsStaticResetPublisherAdapter) PublishAccountsStaticReset(
 	if p.publisher == nil {
 		return fmt.Errorf("page data change publisher is required")
 	}
-	for _, domain := range []string{"accounts.static", "accounts.options"} {
-		if err := p.PublishPageDataReset(ctx, domain, ownerSystemAccountIDs, allScopes); err != nil {
-			return err
-		}
+	var publishErr error
+	domains := []string{"accounts.static", "accounts.options"}
+	results := make(chan error, len(domains))
+	for _, domain := range domains {
+		go func(domain string) {
+			results <- p.PublishPageDataReset(ctx, domain, append([]string(nil), ownerSystemAccountIDs...), allScopes)
+		}(domain)
 	}
-	return nil
+	for range domains {
+		publishErr = errors.Join(publishErr, <-results)
+	}
+	return publishErr
 }
 
 func (p accountsStaticResetPublisherAdapter) PublishPageDataReset(
