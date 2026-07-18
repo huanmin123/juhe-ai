@@ -40,7 +40,7 @@ async function main(): Promise<void> {
     assert(status.ready === true, 'db-service 角色下 DB service 本地状态读取应成功')
 
     const settings = await requestDbService({ type: 'read_gateway_settings' })
-    assert(typeof settings.streamRequestTimeoutSeconds === 'number', 'db-service 角色下 DB service 本地读取网关设置应成功')
+    assert(typeof settings.textFirstResponseTimeoutSeconds === 'number', 'db-service 角色下 DB service 本地读取网关设置应成功')
     assert.equal(repositories.listPublicGlobalSettings().appName, '聚合 AI', '断言前置数据库本身可读，失败路径不是因为库未初始化')
 
     const previousProcessRole = runtimeConfig.processRole

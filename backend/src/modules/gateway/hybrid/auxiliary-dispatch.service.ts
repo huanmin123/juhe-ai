@@ -10,6 +10,7 @@ import { prepareOpenAIGatewayDispatchAccounts } from '../dispatch/preparation.js
 import { fetchFirstAvailableUpstream, UpstreamAttemptError } from '../dispatch/upstream-dispatch.js'
 import { readCachedGatewaySettingsAsync } from '../runtime/runtime-cache.service.js'
 import { createClientIpAccountAvoidanceTracker } from '../runtime/client-ip-account-avoidance.service.js'
+import { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 import { groupUsageMetadata, type GatewayFailureUsageContext } from '../usage/records.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import { buildUsageRequestSnapshot } from '../usage/snapshots.js'
@@ -122,6 +123,7 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
   })
   const dispatchSignal = hybridAuxiliaryAbortSignal(input.signal, input.timeoutMs)
   const settings = await hybridAuxiliaryGatewaySettings(input.timeoutMs)
+  const serverRetryBudget = new ServerRetryBudget(input.timeoutMs)
   const preparation = await prepareOpenAIGatewayDispatchAccounts({
     req: input.req,
     res: response.asResponse(),
@@ -138,7 +140,7 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
     clientIp: undefined,
     clientStrategy,
     requestLane: 'text',
-    requestDeadlineAtMs: startedAt + input.timeoutMs,
+    serverRetryBudget,
     signal: dispatchSignal,
     attemptFallback: async () => ({ attempted: false })
   })
@@ -172,7 +174,12 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
       selection.groupAccess.schedulingPolicy,
       true,
       clientStrategy.requestClientCompatibility,
-      selection.modelFilter.modelPriority
+      selection.modelFilter.modelPriority,
+      undefined,
+      undefined,
+      false,
+      serverRetryBudget,
+      false
     )
     let released = false
     const release = () => {
@@ -338,9 +345,9 @@ async function hybridAuxiliaryGatewaySettings(timeoutMs: number) {
   const base = await readCachedGatewaySettingsAsync()
   return {
     ...base,
-    streamRequestTimeoutSeconds: Math.max(1, Math.ceil(timeoutMs / 1000)),
-    streamClientTotalWaitTimeoutSeconds: Math.max(10, Math.ceil(timeoutMs / 1000)),
-    streamMaxLifetimeSeconds: Math.max(60, Math.ceil(timeoutMs / 1000))
+    textFirstResponseTimeoutSeconds: Math.max(1, Math.ceil(timeoutMs / 1000)),
+    noAvailableAccountWaitTimeoutSeconds: Math.max(10, Math.ceil(timeoutMs / 1000)),
+    textUncommittedAttemptMaxLifetimeSeconds: Math.max(60, Math.ceil(timeoutMs / 1000))
   }
 }
 
