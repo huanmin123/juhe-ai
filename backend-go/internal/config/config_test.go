@@ -549,6 +549,43 @@ func TestConfigManagementAuthSessionsEnabledRequiresPostgresAndStateRedis(t *tes
 	}
 }
 
+func TestConfigOwnerLockRequiresExplicitRuntimeFields(t *testing.T) {
+	base := Config{
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		TrustProxy:                 "false",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+		OwnerLockEnabled:           true,
+		OwnerLockPath:              "runtime/owner.lock",
+		OwnerLockDeploymentEpoch:   "epoch-1",
+		OwnerLockRole:              "server",
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		edit func(*Config)
+		want string
+	}{
+		{name: "path", edit: func(cfg *Config) { cfg.OwnerLockPath = "" }, want: "JUHE_AI_OWNER_LOCK_PATH"},
+		{name: "epoch", edit: func(cfg *Config) { cfg.OwnerLockDeploymentEpoch = "" }, want: "JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH"},
+		{name: "role", edit: func(cfg *Config) { cfg.OwnerLockRole = "management" }, want: "JUHE_AI_OWNER_LOCK_ROLE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			tc.edit(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() error = %v, want contains %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadParsesPublicAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_PUBLIC_API_ENABLED", "true")
 	t.Setenv("JUHE_AI_POSTGRES_URL", "postgres://127.0.0.1:5432/juhe_ai")

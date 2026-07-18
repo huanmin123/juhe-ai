@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -42,15 +43,38 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicgroups"
 	"juhe-ai/backend-go/internal/modules/publicroutestrategies"
 	"juhe-ai/backend-go/internal/modules/publicsettings"
+	"juhe-ai/backend-go/internal/ownerlock"
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	"juhe-ai/backend-go/internal/secretcrypto"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
+	"juhe-ai/backend-go/internal/version"
 )
 
 func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err := cfg.Validate(); err != nil {
 		return err
+	}
+	var runtimeOwnerLock *ownerlock.Lock
+	if cfg.OwnerLockEnabled {
+		if strings.TrimSpace(cfg.OwnerLockRole) != "server" {
+			return fmt.Errorf("Go HTTP server owner lock role must be server")
+		}
+		lock, err := ownerlock.Acquire(cfg.OwnerLockPath, ownerlock.Metadata{
+			DeploymentEpoch: cfg.OwnerLockDeploymentEpoch,
+			RouteOwner:      cfg.OwnerLockRole,
+			Version:         version.Version,
+			PID:             os.Getpid(),
+		})
+		if err != nil {
+			return err
+		}
+		runtimeOwnerLock = lock
+		defer func() {
+			if err := runtimeOwnerLock.Release(); err != nil {
+				logger.Error("释放 Go owner lock 失败", slog.String("error", err.Error()))
+			}
+		}()
 	}
 	if cfg.PostgresURL == "" {
 		return fmt.Errorf("JUHE_AI_POSTGRES_URL 不能为空")

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,24 @@ func TestNewPublicAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 	}
 	if handler != nil || logQueue != nil {
 		t.Fatalf("newPublicAPIHandler() = (%v, %v), want nil handler and queue when disabled", handler, logQueue)
+	}
+}
+
+func TestRunServerRejectsWorkerOwnerLockRoleBeforeDependencies(t *testing.T) {
+	err := RunServer(t.Context(), config.Config{
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "owner-lock-test",
+		TrustProxy:                 "false",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+		OwnerLockEnabled:           true,
+		OwnerLockPath:              filepath.Join(t.TempDir(), "owner.lock"),
+		OwnerLockDeploymentEpoch:   "epoch-test",
+		OwnerLockRole:              "worker",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil || !strings.Contains(err.Error(), "role must be server") {
+		t.Fatalf("RunServer() error = %v, want server role error", err)
 	}
 }
 

@@ -44,6 +44,10 @@ type Config struct {
 	MetricsEnabled                  bool          `env:"JUHE_AI_METRICS_ENABLED" envDefault:"false"`
 	PprofEnabled                    bool          `env:"JUHE_AI_PPROF_ENABLED" envDefault:"false"`
 	ShutdownTimeout                 time.Duration `env:"JUHE_AI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
+	OwnerLockEnabled                bool          `env:"JUHE_AI_OWNER_LOCK_ENABLED" envDefault:"false"`
+	OwnerLockPath                   string        `env:"JUHE_AI_OWNER_LOCK_PATH"`
+	OwnerLockDeploymentEpoch        string        `env:"JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH"`
+	OwnerLockRole                   string        `env:"JUHE_AI_OWNER_LOCK_ROLE" envDefault:"server"`
 }
 
 type TrustProxyConfig struct {
@@ -134,6 +138,18 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.ShutdownTimeout <= 0 {
 		return fmt.Errorf("JUHE_AI_SHUTDOWN_TIMEOUT 必须大于 0")
+	}
+	if cfg.OwnerLockEnabled {
+		if strings.TrimSpace(cfg.OwnerLockPath) == "" {
+			return fmt.Errorf("启用 owner lock 时 JUHE_AI_OWNER_LOCK_PATH 不能为空")
+		}
+		if strings.TrimSpace(cfg.OwnerLockDeploymentEpoch) == "" {
+			return fmt.Errorf("启用 owner lock 时 JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH 不能为空")
+		}
+		role := strings.TrimSpace(cfg.OwnerLockRole)
+		if role != "server" && role != "worker" {
+			return fmt.Errorf("JUHE_AI_OWNER_LOCK_ROLE 只能配置为 server 或 worker")
+		}
 	}
 	if cfg.NodeInternalRequestTimeout < 100*time.Millisecond ||
 		cfg.NodeInternalRequestTimeout > 10*time.Second {
