@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 )
 
 type pageDataCacheWriterStub struct {
+	mu     sync.Mutex
 	keys   []string
 	values []string
 	ttls   []time.Duration
@@ -21,6 +24,8 @@ type pageDataCacheWriterStub struct {
 }
 
 func (s *pageDataCacheWriterStub) SetPageDataVersion(_ context.Context, key, value string, ttl time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.keys = append(s.keys, key)
 	s.values = append(s.values, value)
 	s.ttls = append(s.ttls, ttl)
@@ -48,8 +53,11 @@ func TestAccountsStaticResetPublisherAdapterBuildsAndPublishesEveryEvent(t *test
 	if got, want := len(cache.keys), 2; got != want {
 		t.Fatalf("cache version writes = %d, want %d", got, want)
 	}
-	if cache.keys[0] != "juhe-ai:prod:cache-version:page_data_accounts_static" || cache.keys[1] != "juhe-ai:prod:cache-version:page_data_accounts_options" {
-		t.Fatalf("cache keys = %#v", cache.keys)
+	keys := append([]string(nil), cache.keys...)
+	sort.Strings(keys)
+	wantKeys := []string{"juhe-ai:prod:cache-version:page_data_accounts_options", "juhe-ai:prod:cache-version:page_data_accounts_static"}
+	if !reflect.DeepEqual(keys, wantKeys) {
+		t.Fatalf("cache keys = %#v, want %#v", keys, wantKeys)
 	}
 	if cache.ttls[0] != 30*24*time.Hour || cache.ttls[1] != 30*24*time.Hour {
 		t.Fatalf("cache TTLs = %#v", cache.ttls)
@@ -78,6 +86,43 @@ func TestAccountsStaticResetPublisherAdapterPreservesPublishCause(t *testing.T) 
 
 	if err := adapter.PublishAccountsStaticReset(t.Context(), []string{"owner-a"}, false); !errors.Is(err, cause) {
 		t.Fatalf("PublishAccountsStaticReset() error = %v, want cause", err)
+	}
+}
+
+func TestAccountsStaticResetPublisherAdapterAttemptsOptionsAfterStaticFailure(t *testing.T) {
+	cause := errors.New("static reset failed")
+	core := &pageDataCorePublisherStub{buildErr: cause}
+	adapter := accountsStaticResetPublisherAdapter{publisher: core}
+
+	err := adapter.PublishAccountsStaticReset(t.Context(), []string{"owner-a"}, false)
+	if !errors.Is(err, cause) {
+		t.Fatalf("PublishAccountsStaticReset() error = %v, want %v", err, cause)
+	}
+	domains := append([]string(nil), core.domains...)
+	sort.Strings(domains)
+	if got, want := domains, []string{"accounts.options", "accounts.static"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("attempted domains = %#v, want %#v", got, want)
+	}
+}
+
+func TestAccountsStaticResetPublisherAdapterStartsBothDomainsConcurrently(t *testing.T) {
+	core := newBlockingPageDataCorePublisherStub()
+	adapter := accountsStaticResetPublisherAdapter{publisher: core}
+	done := make(chan error, 1)
+	go func() {
+		done <- adapter.PublishAccountsStaticReset(t.Context(), []string{"owner-a"}, false)
+	}()
+
+	<-core.staticStarted
+	select {
+	case <-core.optionsStarted:
+		close(core.releaseStatic)
+	case <-time.After(2 * time.Second):
+		close(core.releaseStatic)
+		t.Fatal("accounts.options did not start while accounts.static was blocked")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("PublishAccountsStaticReset() error = %v", err)
 	}
 }
 
@@ -160,6 +205,7 @@ func sourceBlockBetween(t *testing.T, source string, startMarker string, endMark
 }
 
 type pageDataCorePublisherStub struct {
+	mu           sync.Mutex
 	ownerIDs     []string
 	domains      []string
 	allScopes    bool
@@ -169,7 +215,36 @@ type pageDataCorePublisherStub struct {
 	publishErr   error
 }
 
+type blockingPageDataCorePublisherStub struct {
+	staticStarted  chan struct{}
+	optionsStarted chan struct{}
+	releaseStatic  chan struct{}
+}
+
+func newBlockingPageDataCorePublisherStub() *blockingPageDataCorePublisherStub {
+	return &blockingPageDataCorePublisherStub{
+		staticStarted: make(chan struct{}), optionsStarted: make(chan struct{}), releaseStatic: make(chan struct{}),
+	}
+}
+
+func (s *blockingPageDataCorePublisherStub) NewRangeResetEvents(domain string, _ []string, _ bool) ([]redisplatform.PageDataChangeEvent, error) {
+	switch domain {
+	case "accounts.static":
+		close(s.staticStarted)
+		<-s.releaseStatic
+	case "accounts.options":
+		close(s.optionsStarted)
+	}
+	return nil, nil
+}
+
+func (s *blockingPageDataCorePublisherStub) Publish(_ context.Context, _ redisplatform.PageDataChangeEvent) error {
+	return nil
+}
+
 func (s *pageDataCorePublisherStub) NewRangeResetEvents(domain string, ownerIDs []string, allScopes bool) ([]redisplatform.PageDataChangeEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.domains = append(s.domains, domain)
 	s.ownerIDs = append([]string(nil), ownerIDs...)
 	s.allScopes = allScopes
@@ -177,6 +252,8 @@ func (s *pageDataCorePublisherStub) NewRangeResetEvents(domain string, ownerIDs 
 }
 
 func (s *pageDataCorePublisherStub) Publish(_ context.Context, event redisplatform.PageDataChangeEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.publishedIDs = append(s.publishedIDs, event.EventID)
 	return s.publishErr
 }
