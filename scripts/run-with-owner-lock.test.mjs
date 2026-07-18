@@ -2,12 +2,13 @@
 
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, stat, writeFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, stat, symlink, writeFile, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import { runWithOwnerLock } from './run-with-owner-lock.mjs'
 
 const cliPath = fileURLToPath(new URL('./run-with-owner-lock.mjs', import.meta.url))
 const projectRoot = fileURLToPath(new URL('..', import.meta.url))
@@ -24,11 +25,11 @@ function resolveNodeExecutable() {
 
 const nodeExecutable = resolveNodeExecutable()
 
-function cliArgs(lockPath, extra = []) {
+function cliArgs(lockPath, extra = [], releaseRoot = projectRoot) {
   return [
     cliPath,
     '--lock-path', lockPath,
-    '--release-root', projectRoot,
+    '--release-root', releaseRoot,
     '--deployment-epoch', 'owner-lock-test-epoch',
     '--role', 'management',
     '--version', '0.1.0-test',
@@ -236,6 +237,56 @@ test('a child spawn failure releases the acquired lock', async () => {
   try {
     const result = await runCli(cliArgs(lockPath, ['--', path.join(directory, 'missing-command')])).result
     assert.notEqual(result.code, 0)
+    await assert.rejects(stat(lockPath), error => error?.code === 'ENOENT')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a physical lock path inside a symlinked release root is rejected', async () => {
+  const directory = await createTempDirectory()
+  const physicalRelease = path.join(directory, 'releases', 'candidate')
+  const currentRelease = path.join(directory, 'current')
+  const lockPath = path.join(physicalRelease, 'runtime', 'owner.lock')
+
+  try {
+    await mkdir(physicalRelease, { recursive: true })
+    await symlink(physicalRelease, currentRelease, process.platform === 'win32' ? 'junction' : 'dir')
+    const result = await runCli(cliArgs(lockPath, await commandArgs(50), currentRelease)).result
+    assert.notEqual(result.code, 0)
+    assert.match(`${result.stdout}${result.stderr}`, /outside|release root|lock path/i)
+    await assert.rejects(stat(lockPath), error => error?.code === 'ENOENT')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a post-spawn metadata failure stops the child before releasing the lock', async () => {
+  const directory = await createTempDirectory()
+  const lockPath = path.join(directory, 'metadata-failure.lock')
+  const pidPath = path.join(directory, 'child.pid')
+  let metadataWrites = 0
+
+  try {
+    await assert.rejects(runWithOwnerLock({
+      lockPath,
+      deploymentEpoch: 'owner-lock-test-epoch',
+      role: 'management',
+      version: '0.1.0-test',
+      command: nodeExecutable,
+      commandArgs: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); setInterval(() => {}, 1000)`],
+      writeMetadata: async (targetLockPath, metadata) => {
+        metadataWrites += 1
+        if (metadataWrites === 2) {
+          await new Promise(resolve => setTimeout(resolve, 200))
+          throw new Error('injected metadata failure')
+        }
+        await writeFile(path.join(targetLockPath, 'metadata.json'), JSON.stringify(metadata), 'utf8')
+      }
+    }), /injected metadata failure/)
+
+    const childPid = Number(await readFile(pidPath, 'utf8'))
+    assert.throws(() => process.kill(childPid, 0), error => error?.code === 'ESRCH')
     await assert.rejects(stat(lockPath), error => error?.code === 'ENOENT')
   } finally {
     await rm(directory, { recursive: true, force: true })

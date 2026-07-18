@@ -3,6 +3,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { existsSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -55,8 +56,8 @@ export function parseArguments(argv) {
     throw new Error(`release root must be absolute: ${options.releaseroot}`)
   }
 
-  const lockPath = path.normalize(options.lockpath)
-  const releaseRoot = path.normalize(options.releaseroot)
+  const lockPath = canonicalizePath(options.lockpath)
+  const releaseRoot = canonicalizePath(options.releaseroot)
   const relativeToRelease = path.relative(releaseRoot, lockPath)
   const insideRelease = relativeToRelease === ''
     || (relativeToRelease !== '..' && !relativeToRelease.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeToRelease))
@@ -73,6 +74,19 @@ export function parseArguments(argv) {
     command: argv[commandIndex + 1],
     commandArgs: argv.slice(commandIndex + 2),
   }
+}
+
+function canonicalizePath(inputPath) {
+  let existingPath = path.resolve(inputPath)
+  const missingSegments = []
+  while (!existsSync(existingPath)) {
+    const parentPath = path.dirname(existingPath)
+    if (parentPath === existingPath) break
+    missingSegments.unshift(path.basename(existingPath))
+    existingPath = parentPath
+  }
+  const realExistingPath = realpathSync.native(existingPath)
+  return path.normalize(path.join(realExistingPath, ...missingSegments))
 }
 
 function processIsAlive(pid) {
@@ -150,9 +164,38 @@ function forwardSignal(child, signal) {
   }
 }
 
+function waitForChildWithTimeout(childResult, timeoutMs) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(null), timeoutMs)
+    childResult.then(result => {
+      clearTimeout(timer)
+      resolve(result)
+    })
+  })
+}
+
+async function stopChild(child, childResult) {
+  if (!child?.pid) return childResult
+  if (child.exitCode === null && child.signalCode === null) {
+    forwardSignal(child, 'SIGTERM')
+  }
+  let result = await waitForChildWithTimeout(childResult, 5000)
+  if (result !== null) return result
+
+  forwardSignal(child, 'SIGKILL')
+  result = await waitForChildWithTimeout(childResult, 5000)
+  if (result === null) {
+    throw new Error(`child process did not exit after SIGKILL: ${child.pid}`)
+  }
+  return result
+}
+
 export async function runWithOwnerLock(config) {
   const lockPath = config.lockPath
   const ownerId = randomUUID()
+  const writeOwnerMetadata = config.writeMetadata ?? writeMetadata
+  let child = null
+  let childResult = null
   await mkdir(path.dirname(lockPath), { recursive: true })
   await acquireLockDirectory(lockPath)
 
@@ -165,7 +208,7 @@ export async function runWithOwnerLock(config) {
 
   try {
     const startedAt = new Date().toISOString()
-    await writeMetadata(lockPath, {
+    await writeOwnerMetadata(lockPath, {
       ownerId,
       deploymentEpoch: config.deploymentEpoch,
       role: config.role,
@@ -176,12 +219,12 @@ export async function runWithOwnerLock(config) {
       args: config.commandArgs,
     })
 
-    const child = spawn(config.command, config.commandArgs, { stdio: 'inherit' })
-    const childResult = new Promise(resolve => {
+    child = spawn(config.command, config.commandArgs, { stdio: 'inherit' })
+    childResult = new Promise(resolve => {
       child.once('error', error => resolve({ error }))
       child.once('close', (code, signal) => resolve({ code, signal }))
     })
-    await writeMetadata(lockPath, {
+    await writeOwnerMetadata(lockPath, {
       ownerId,
       deploymentEpoch: config.deploymentEpoch,
       role: config.role,
@@ -211,6 +254,13 @@ export async function runWithOwnerLock(config) {
     if (result.signal) return SIGNAL_EXIT_CODES.get(result.signal) ?? 1
     return result.code ?? 1
   } catch (error) {
+    if (child && childResult) {
+      try {
+        await stopChild(child, childResult)
+      } catch (shutdownError) {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; child shutdown failed and owner lock was retained: ${shutdownError instanceof Error ? shutdownError.message : String(shutdownError)}`)
+      }
+    }
     await cleanup().catch(cleanupError => {
       throw new Error(`${error instanceof Error ? error.message : String(error)}; failed to release owner lock: ${cleanupError.message}`)
     })
