@@ -263,7 +263,7 @@ func (s *publicAPIShell) enqueueLog(r *http.Request, response *publicAPIResponse
 		statusCode = 499
 	}
 	responseSize := response.SizeBytes()
-	queryString := publicapilog.SanitizeQueryString(r.URL.RawQuery)
+	queryString := r.URL.RawQuery
 	requestSnapshot := publicapilog.BuildRequestSnapshot(publicapilog.RequestSnapshotInput{
 		Method:             r.Method,
 		Path:               r.URL.Path,

@@ -11,19 +11,50 @@ const healthCheckEndpointModeOfflineMigration = readFileSync(
   'utf8'
 )
 const customProviderModelRepositorySource = readFileSync('src/storage/custom-provider-models.repository.ts', 'utf8')
+const providerModelCatalogRepositorySource = readFileSync('src/storage/provider-model-catalog.repository.ts', 'utf8')
 const dataRetentionSource = readFileSync('src/storage/data-retention.repository.ts', 'utf8')
 const usagePartitionSource = readFileSync('src/storage/postgres-usage-record-partitions.ts', 'utf8')
 const tableMonitorSource = readFileSync('src/storage/table-monitor.repository.ts', 'utf8')
 const tableMonitorRoutesSource = readFileSync('src/modules/table-monitor/table-monitor.routes.ts', 'utf8')
+const clientIPStatsNodeWriterFixtureSource = readFileSync(
+  'src/scripts/regression/client-ip-stats-node-writer-go-reader-fixture.ts',
+  'utf8'
+)
+const clientIPStatsAccountInsertMatch = clientIPStatsNodeWriterFixtureSource.match(
+  /INSERT INTO "juhe_business"\."accounts"\s*\(([\s\S]*?)\)\s*VALUES\s*\(([\s\S]*?)\)\s*ON CONFLICT\(id\)/i
+)
+assert.ok(clientIPStatsAccountInsertMatch, '必须提取客户端 IP Node writer -> Go reader fixture 的账户 INSERT')
+const clientIPStatsAccountInsertColumns = clientIPStatsAccountInsertMatch[1]
+const clientIPStatsAccountInsertValues = clientIPStatsAccountInsertMatch[2]
 const postgresAccountFixtureSources = [
   'src/scripts/regression/account-list-postgres-smoke.ts',
   'src/scripts/regression/authorization-usage-range-postgres-smoke.ts',
   'src/scripts/regression/client-ip-stats-postgres-smoke.ts',
+  'src/scripts/regression/client-ip-stats-node-writer-go-reader-fixture.ts',
   'src/scripts/regression/performance-gateway-persistence-readiness-regression.ts',
   'src/scripts/regression/usage-record-list-postgres-smoke.ts'
 ].map((path) => ({ path, source: readFileSync(path, 'utf8') }))
 const schemaNames = new Set(statements.map((statement) => statement.schemaName))
 const usageRecordsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_usage' && /^CREATE TABLE IF NOT EXISTS usage_records\b/i.test(statement.sql))?.sql ?? ''
+const providerModelCatalogCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS provider_model_catalog\b/i.test(statement.sql)
+)?.sql ?? ''
+const listBuiltInProviderModelsAsyncStart = providerModelCatalogRepositorySource.indexOf('export async function listBuiltInProviderModelsAsync')
+const listBuiltInProviderModelsAsyncEnd = providerModelCatalogRepositorySource.indexOf(
+  'export async function findBuiltInProviderModelByIdAsync',
+  listBuiltInProviderModelsAsyncStart
+)
+assert.notEqual(listBuiltInProviderModelsAsyncStart, -1, '必须找到 listBuiltInProviderModelsAsync')
+assert.notEqual(listBuiltInProviderModelsAsyncEnd, -1, '必须找到 listBuiltInProviderModelsAsync 的函数边界')
+const listBuiltInProviderModelsAsyncSource = providerModelCatalogRepositorySource.slice(
+  listBuiltInProviderModelsAsyncStart,
+  listBuiltInProviderModelsAsyncEnd
+)
+const listBuiltInProviderModelsAsyncSqlMatch = listBuiltInProviderModelsAsyncSource.match(
+  /const rows = await client\.query<ProviderModelCatalogRow>\(`([\s\S]*?)`, \[providerCodes\]\)/
+)
+assert.ok(listBuiltInProviderModelsAsyncSqlMatch, '必须精确提取 listBuiltInProviderModelsAsync 的 PostgreSQL SQL 模板')
+const listBuiltInProviderModelsAsyncSql = listBuiltInProviderModelsAsyncSqlMatch[1]
 
 assert.ok(statements.length > 100, 'PostgreSQL schema 应从现有 SQLite DDL 收集到完整建表和索引语句')
 assert.deepEqual(
@@ -53,6 +84,14 @@ for (const schemaName of schemaNames) {
 }
 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS system_accounts/, '应包含业务库 schema')
+assert.match(providerModelCatalogCreateSql, /catalog_visible integer NOT NULL DEFAULT 1(?=\s|,|\)|;|$)/, 'Node PG 模型目录可见性字段必须保持 integer')
+assert.match(listBuiltInProviderModelsAsyncSql, /FROM juhe_business\.provider_model_catalog\b/, '必须提取 Node PG 模型目录查询的目标 SQL 模板')
+assert.match(
+  listBuiltInProviderModelsAsyncSql,
+  /catalog_visible = 1(?=\s|,|\)|;|$)/,
+  'Node PG 模型目录查询必须对 integer 可见性字段使用整数谓词'
+)
+assert.doesNotMatch(listBuiltInProviderModelsAsyncSql, /catalog_visible = true\b/, 'Node PG 模型目录查询不得对 integer 字段使用 boolean 谓词')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS audit_logs/, '应包含数据集库 schema')
 assert.match(sql, /audit_logs[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 审计日志必须包含模型映射可观测字段')
 assert.match(sql, /audit_log_attempts[\s\S]+attempt_model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+attempt_model_mapping_source text[\s\S]+attempt_source_endpoint_family text[\s\S]+attempt_upstream_endpoint_family text/, 'PG 审计尝试表必须包含每次尝试的模型映射可观测字段')
@@ -129,8 +168,27 @@ assert.match(healthCheckEndpointModeOfflineMigration, /legacyFamilyGenerationMod
 assert.match(healthCheckEndpointModeOfflineMigration, /migrationGenerationModeFallbackOrder[\s\S]+'chat_json'[\s\S]+'responses_json'[\s\S]+'messages_json'[\s\S]+'generate_content_json'[\s\S]+'chat_sse'/, '历史 family 与真实能力错配时必须按稳定顺序从全部生成 mode 回退，且 JSON 优先于 Streaming')
 assert.match(healthCheckEndpointModeOfflineMigration, /decryptJson\(encrypted\)/, '离线迁移必须通过应用层 codec 解密全部账户 supported endpoint modes')
 assert.match(healthCheckEndpointModeOfflineMigration, /encryptJson\(normalized\.credentials\)/, '离线迁移必须通过应用层 codec 重新加密 GPT supported endpoint modes')
+assert.match(
+  clientIPStatsAccountInsertColumns,
+  /health_check_model,\s*health_check_endpoint_mode,\s*created_at,\s*updated_at/,
+  '客户端 IP Node writer -> Go reader fixture 必须写入当前健康检查请求形态字段'
+)
+assert.match(
+  clientIPStatsAccountInsertValues,
+  /'gpt-5\.5',\s*'responses_sse'/,
+  '客户端 IP Node writer -> Go reader fixture 的 GPT 账户必须使用精确 Responses Streaming 请求形态'
+)
+assert.doesNotMatch(
+  clientIPStatsAccountInsertColumns,
+  /health_check_endpoint_family/,
+  '客户端 IP Node writer -> Go reader fixture 不得恢复旧健康检查协议族字段'
+)
 for (const fixture of postgresAccountFixtureSources) {
-  for (const match of fixture.source.matchAll(/INSERT INTO juhe_business\.accounts\s*\(([\s\S]*?)\)\s*(?:VALUES|SELECT)/gi)) {
+  const accountInsertMatches = [...fixture.source.matchAll(
+    /INSERT INTO (?:"juhe_business"\."accounts"|juhe_business\.accounts)\s*\(([\s\S]*?)\)\s*(?:VALUES|SELECT)/gi
+  )]
+  assert.ok(accountInsertMatches.length > 0, `${fixture.path} 必须至少包含一条可检查的账户 INSERT fixture`)
+  for (const match of accountInsertMatches) {
     assert.match(match[1], /\bhealth_check_model\b/, `${fixture.path} 的账户 fixture 必须写入 health_check_model`)
     assert.match(match[1], /\bhealth_check_endpoint_mode\b/, `${fixture.path} 的账户 fixture 必须写入 health_check_endpoint_mode`)
   }

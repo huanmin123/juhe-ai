@@ -19,6 +19,7 @@ const (
 
 type Service struct {
 	listReader               port.ManagementClientIPStatsListReader
+	registryReader           port.ManagementClientIPStatsRegistryReader
 	detailReader             port.ManagementClientIPStatsDetailReader
 	usageStatsTimezoneReader port.ManagementUsageStatsTimezoneReader
 	now                      func() time.Time
@@ -26,6 +27,7 @@ type Service struct {
 
 type ServiceOptions struct {
 	ListReader               port.ManagementClientIPStatsListReader
+	RegistryReader           port.ManagementClientIPStatsRegistryReader
 	DetailReader             port.ManagementClientIPStatsDetailReader
 	UsageStatsTimezoneReader port.ManagementUsageStatsTimezoneReader
 	Now                      func() time.Time
@@ -96,6 +98,9 @@ type ListResult struct {
 
 func NewService(reader port.ManagementClientIPStatsListReader) *Service {
 	options := ServiceOptions{ListReader: reader}
+	if registryReader, ok := any(reader).(port.ManagementClientIPStatsRegistryReader); ok {
+		options.RegistryReader = registryReader
+	}
 	if detailReader, ok := any(reader).(port.ManagementClientIPStatsDetailReader); ok {
 		options.DetailReader = detailReader
 	}
@@ -112,6 +117,7 @@ func NewServiceWithOptions(options ServiceOptions) *Service {
 	}
 	return &Service{
 		listReader:               options.ListReader,
+		registryReader:           options.RegistryReader,
 		detailReader:             options.DetailReader,
 		usageStatsTimezoneReader: options.UsageStatsTimezoneReader,
 		now:                      now,

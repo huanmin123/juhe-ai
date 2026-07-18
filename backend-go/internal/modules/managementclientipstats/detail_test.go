@@ -18,13 +18,15 @@ func TestServiceDetailNormalizesNodeBoundariesAndMapsResult(t *testing.T) {
 	store := &clientIPStatsDetailStoreStub{
 		timezone:      "Asia/Shanghai",
 		timezoneFound: true,
-		page: port.ManagementClientIPStatsDetailPage{
-			Found:          true,
+		registryFound: true,
+		registry: port.ManagementClientIPStatsRegistry{
 			IPHash:         strings.Repeat("a", 64),
 			AggregateIPKey: "198.18.20",
 			LastSeenAt:     "2026-07-14T00:00:04.000Z",
-			RangeReady:     true,
-			HasMore:        true,
+		},
+		page: port.ManagementClientIPStatsDetailPage{
+			RangeReady: true,
+			HasMore:    true,
 			Rows: []port.ManagementClientIPAccountUsageRow{{
 				AccountID:                     "account_1",
 				AccountName:                   &accountName,
@@ -42,6 +44,7 @@ func TestServiceDetailNormalizesNodeBoundariesAndMapsResult(t *testing.T) {
 		},
 	}
 	service := NewServiceWithOptions(ServiceOptions{
+		RegistryReader:           store,
 		DetailReader:             store,
 		UsageStatsTimezoneReader: store,
 		Now: func() time.Time {
@@ -60,8 +63,8 @@ func TestServiceDetailNormalizesNodeBoundariesAndMapsResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Detail() error = %v", err)
 	}
-	if store.calls != 1 {
-		t.Fatalf("detail calls = %d, want 1", store.calls)
+	if store.registryCalls != 1 || store.calls != 1 {
+		t.Fatalf("registry/detail calls = %d / %d, want 1 / 1", store.registryCalls, store.calls)
 	}
 	if store.input.IPHash != strings.Repeat("a", 64) || store.input.StartDate != "2026-06-14" || store.input.EndDate != "2026-07-14" || store.input.SortField != port.ManagementClientIPStatsSortRequestCount || store.input.SortOrder != port.ManagementClientIPStatsSortAscending || store.input.Limit != 4 || store.input.Offset != 996 {
 		t.Fatalf("detail input = %+v", store.input)
@@ -81,15 +84,18 @@ func TestServiceDetailReturnsReadyMetadataWithoutRows(t *testing.T) {
 	store := &clientIPStatsDetailStoreStub{
 		timezone:      "UTC",
 		timezoneFound: true,
-		page: port.ManagementClientIPStatsDetailPage{
-			Found:          true,
+		registryFound: true,
+		registry: port.ManagementClientIPStatsRegistry{
 			IPHash:         strings.Repeat("b", 64),
 			AggregateIPKey: "203.0.113",
 			LastSeenAt:     "2026-07-14T00:00:00.000Z",
-			RangeReady:     false,
+		},
+		page: port.ManagementClientIPStatsDetailPage{
+			RangeReady: false,
 		},
 	}
 	service := NewServiceWithOptions(ServiceOptions{
+		RegistryReader:           store,
 		DetailReader:             store,
 		UsageStatsTimezoneReader: store,
 		Now: func() time.Time {
@@ -115,27 +121,50 @@ func TestServiceDetailMapsMissingRegistryAndInvalidHash(t *testing.T) {
 		timezoneFound: true,
 	}
 	service := NewServiceWithOptions(ServiceOptions{
+		RegistryReader:           store,
 		DetailReader:             store,
 		UsageStatsTimezoneReader: store,
 	})
 
 	_, err := service.Detail(context.Background(), DetailInput{IPHash: strings.Repeat("c", 64)})
-	if !errors.Is(err, ErrIPNotFound) || store.calls != 1 {
-		t.Fatalf("missing registry error/calls = %v / %d", err, store.calls)
+	if !errors.Is(err, ErrIPNotFound) || store.registryCalls != 1 || store.calls != 0 || store.timezoneCalls != 0 {
+		t.Fatalf("missing registry error/calls = %v / registry %d detail %d timezone %d", err, store.registryCalls, store.calls, store.timezoneCalls)
 	}
 	store.calls = 0
+	store.registryCalls = 0
 	store.timezoneCalls = 0
 	_, err = service.Detail(context.Background(), DetailInput{IPHash: "not-a-hash"})
-	if !errors.Is(err, ErrIPNotFound) || store.calls != 0 || store.timezoneCalls != 0 {
-		t.Fatalf("invalid hash error/calls = %v / detail %d timezone %d", err, store.calls, store.timezoneCalls)
+	if !errors.Is(err, ErrIPNotFound) || store.registryCalls != 0 || store.calls != 0 || store.timezoneCalls != 0 {
+		t.Fatalf("invalid hash error/calls = %v / registry %d detail %d timezone %d", err, store.registryCalls, store.calls, store.timezoneCalls)
+	}
+}
+
+func TestServiceDetailReturnsNotFoundBeforeTimezoneFailure(t *testing.T) {
+	store := &clientIPStatsDetailStoreStub{timezoneErr: errors.New("settings unavailable")}
+	service := NewServiceWithOptions(ServiceOptions{
+		RegistryReader:           store,
+		DetailReader:             store,
+		UsageStatsTimezoneReader: store,
+	})
+
+	_, err := service.Detail(context.Background(), DetailInput{IPHash: strings.Repeat("e", 64)})
+	if !errors.Is(err, ErrIPNotFound) || store.registryCalls != 1 || store.timezoneCalls != 0 || store.calls != 0 {
+		t.Fatalf("error/calls = %v / registry %d timezone %d detail %d", err, store.registryCalls, store.timezoneCalls, store.calls)
 	}
 }
 
 func TestServiceDetailRequiresReader(t *testing.T) {
 	service := NewServiceWithOptions(ServiceOptions{})
 	_, err := service.Detail(context.Background(), DetailInput{IPHash: strings.Repeat("d", 64)})
-	if err == nil || !strings.Contains(err.Error(), "detail reader is required") {
+	if err == nil || !strings.Contains(err.Error(), "registry reader is required") {
 		t.Fatalf("Detail() error = %v", err)
+	}
+
+	store := &clientIPStatsDetailStoreStub{}
+	service = NewServiceWithOptions(ServiceOptions{RegistryReader: store})
+	_, err = service.Detail(context.Background(), DetailInput{IPHash: strings.Repeat("d", 64)})
+	if err == nil || !strings.Contains(err.Error(), "detail reader is required") {
+		t.Fatalf("Detail() error with registry reader = %v", err)
 	}
 }
 
@@ -144,10 +173,22 @@ type clientIPStatsDetailStoreStub struct {
 	timezoneFound bool
 	timezoneErr   error
 	timezoneCalls int
+	registry      port.ManagementClientIPStatsRegistry
+	registryFound bool
+	registryErr   error
+	registryCalls int
 	page          port.ManagementClientIPStatsDetailPage
 	err           error
 	input         port.ManagementClientIPStatsDetailInput
 	calls         int
+}
+
+func (s *clientIPStatsDetailStoreStub) FindManagementClientIPStatsRegistry(
+	_ context.Context,
+	_ string,
+) (port.ManagementClientIPStatsRegistry, bool, error) {
+	s.registryCalls++
+	return s.registry, s.registryFound, s.registryErr
 }
 
 func (s *clientIPStatsDetailStoreStub) GetManagementUsageStatsTimezone(context.Context) (string, bool, error) {
@@ -155,7 +196,7 @@ func (s *clientIPStatsDetailStoreStub) GetManagementUsageStatsTimezone(context.C
 	return s.timezone, s.timezoneFound, s.timezoneErr
 }
 
-func (s *clientIPStatsDetailStoreStub) GetManagementClientIPStatsDetail(
+func (s *clientIPStatsDetailStoreStub) ListManagementClientIPStatsDetail(
 	_ context.Context,
 	input port.ManagementClientIPStatsDetailInput,
 ) (port.ManagementClientIPStatsDetailPage, error) {
@@ -165,4 +206,5 @@ func (s *clientIPStatsDetailStoreStub) GetManagementClientIPStatsDetail(
 }
 
 var _ port.ManagementClientIPStatsDetailReader = (*clientIPStatsDetailStoreStub)(nil)
+var _ port.ManagementClientIPStatsRegistryReader = (*clientIPStatsDetailStoreStub)(nil)
 var _ port.ManagementUsageStatsTimezoneReader = (*clientIPStatsDetailStoreStub)(nil)

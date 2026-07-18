@@ -317,6 +317,11 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.MyOperationLogsHandler != nil ||
+		handlers.ExternalIntegrationSourceListHandler != nil ||
+		handlers.ExternalIntegrationSourceDetailHandler != nil ||
+		handlers.ExternalSourceTokenCreateHandler != nil ||
+		handlers.ExternalIntegrationSourceScopesHandler != nil ||
+		handlers.ExternalIntegrationSourceAPIDocsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
 		handlers.MyStatsUsageWindowHandler != nil {
 		t.Fatal("newManagementAPIHandler() returned middleware or handler while disabled")
@@ -403,6 +408,11 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 		handlers.ClientIPBlacklistHandler != nil ||
 		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
+		handlers.ExternalIntegrationSourceListHandler != nil ||
+		handlers.ExternalIntegrationSourceDetailHandler != nil ||
+		handlers.ExternalSourceTokenCreateHandler != nil ||
+		handlers.ExternalIntegrationSourceScopesHandler != nil ||
+		handlers.ExternalIntegrationSourceAPIDocsHandler != nil ||
 		handlers.StatsUsageWindowHandler != nil ||
 		handlers.MyStatsUsageWindowHandler != nil {
 		t.Fatal("newManagementAPIHandler() returned non-session management handlers while only session switch enabled")
@@ -514,9 +524,124 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.ClientIPUnblockHandler == nil ||
 		handlers.OperationLogsHandler == nil ||
 		handlers.MyOperationLogsHandler == nil ||
+		handlers.ExternalIntegrationSourceListHandler == nil ||
+		handlers.ExternalIntegrationSourceDetailHandler == nil ||
+		handlers.ExternalIntegrationSourceCreateHandler == nil ||
+		handlers.ExternalIntegrationSourceUpdateHandler == nil ||
+		handlers.ExternalIntegrationSourceDeleteHandler == nil ||
+		handlers.ExternalSourceTokenCreateHandler == nil ||
+		handlers.ExternalIntegrationSourceScopesHandler == nil ||
+		handlers.ExternalIntegrationSourceAPIDocsHandler == nil ||
 		handlers.StatsUsageWindowHandler == nil ||
 		handlers.MyStatsUsageWindowHandler == nil {
 		t.Fatal("newManagementAPIHandler() returned nil middleware or handler while enabled")
+	}
+}
+
+func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testing.T) {
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	if disabled.ExternalIntegrationSourceListHandler != nil ||
+		disabled.ExternalIntegrationSourceDetailHandler != nil ||
+		disabled.ExternalIntegrationSourceCreateHandler != nil ||
+		disabled.ExternalIntegrationSourceUpdateHandler != nil ||
+		disabled.ExternalIntegrationSourceDeleteHandler != nil ||
+		disabled.ExternalSourceTokenCreateHandler != nil ||
+		disabled.ExternalSourceTokenSecretHandler != nil ||
+		disabled.ExternalIntegrationSourceScopesHandler != nil ||
+		disabled.ExternalIntegrationSourceAPIDocsHandler != nil {
+		t.Fatal("external integration source handler was created while management API disabled")
+	}
+
+	sessionOnly := newManagementAPIHandler(
+		config.Config{ManagementAuthSessionsEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if sessionOnly.ExternalIntegrationSourceListHandler != nil ||
+		sessionOnly.ExternalIntegrationSourceDetailHandler != nil ||
+		sessionOnly.ExternalIntegrationSourceCreateHandler != nil ||
+		sessionOnly.ExternalIntegrationSourceUpdateHandler != nil ||
+		sessionOnly.ExternalIntegrationSourceDeleteHandler != nil ||
+		sessionOnly.ExternalSourceTokenCreateHandler != nil ||
+		sessionOnly.ExternalSourceTokenSecretHandler != nil ||
+		sessionOnly.ExternalIntegrationSourceScopesHandler != nil ||
+		sessionOnly.ExternalIntegrationSourceAPIDocsHandler != nil {
+		t.Fatal("external integration source handler was created while only session switch enabled")
+	}
+
+	enabled := newManagementAPIHandler(
+		config.Config{ManagementAPIEnabled: true},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	if enabled.ExternalIntegrationSourceListHandler == nil ||
+		enabled.ExternalIntegrationSourceDetailHandler == nil ||
+		enabled.ExternalIntegrationSourceCreateHandler == nil ||
+		enabled.ExternalIntegrationSourceUpdateHandler == nil ||
+		enabled.ExternalIntegrationSourceDeleteHandler == nil ||
+		enabled.ExternalSourceTokenCreateHandler == nil ||
+		enabled.ExternalSourceTokenSecretHandler == nil ||
+		enabled.ExternalIntegrationSourceScopesHandler == nil ||
+		enabled.ExternalIntegrationSourceAPIDocsHandler == nil {
+		t.Fatal("external integration source handler was not created while management API enabled")
+	}
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"managementexternalintegrationsources.NewServiceWithOptions(",
+		"ListReader:   store",
+		"DetailReader: store",
+		"SecretReader: store",
+		"Secret:       cfg.Secret",
+		"ManagementExternalIntegrationSourceListHandler:",
+		"managementHandlers.ExternalIntegrationSourceListHandler",
+		"httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService)",
+		"ManagementExternalIntegrationSourceDetailHandler:",
+		"managementHandlers.ExternalIntegrationSourceDetailHandler",
+		"httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService)",
+		"managementexternalintegrationsources.NewCreateService(store, cfg.Secret)",
+		"ManagementExternalIntegrationSourceCreateHandler:",
+		"managementHandlers.ExternalIntegrationSourceCreateHandler",
+		"httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions)",
+		"managementexternalintegrationsources.NewUpdateService(store)",
+		"ManagementExternalIntegrationSourceUpdateHandler:",
+		"managementHandlers.ExternalIntegrationSourceUpdateHandler",
+		"httpapi.NewManagementExternalIntegrationSourceUpdateHandlerWithOperationLog(externalIntegrationSourceUpdateService, operationLogOptions)",
+		"managementexternalintegrationsources.NewDeleteService(store)",
+		"ManagementExternalIntegrationSourceDeleteHandler:",
+		"managementHandlers.ExternalIntegrationSourceDeleteHandler",
+		"httpapi.NewManagementExternalIntegrationSourceDeleteHandlerWithOperationLog(externalIntegrationSourceDeleteService, operationLogOptions)",
+		"managementexternalintegrationsources.NewTokenCreateService(store, cfg.Secret)",
+		"ManagementExternalSourceTokenCreateHandler:",
+		"managementHandlers.ExternalSourceTokenCreateHandler",
+		"httpapi.NewManagementExternalIntegrationSourceTokenCreateHandlerWithOperationLog(externalIntegrationSourceTokenCreateService, operationLogOptions)",
+		"ManagementExternalSourceTokenSecretHandler:",
+		"managementHandlers.ExternalSourceTokenSecretHandler",
+		"httpapi.NewManagementExternalIntegrationSourceTokenSecretHandler(externalIntegrationSourceService)",
+		"ManagementExternalIntegrationSourceScopesHandler:",
+		"managementHandlers.ExternalIntegrationSourceScopesHandler",
+		"httpapi.NewManagementExternalIntegrationSourceScopesHandler()",
+		"ManagementExternalIntegrationSourceAPIDocsHandler:",
+		"managementHandlers.ExternalIntegrationSourceAPIDocsHandler",
+		"httpapi.NewManagementExternalIntegrationSourceAPIDocsHandler()",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server.go missing external integration source wiring %q", required)
+		}
 	}
 }
 
@@ -544,6 +669,24 @@ func TestNewManagementAPIHandlerExplicitlyInjectsAPIKeyMutationDependencies(t *t
 		if !strings.Contains(text, required) {
 			t.Fatalf("server.go missing explicit API Key mutation wiring %q", required)
 		}
+	}
+}
+
+func TestNewManagementAPIHandlerInjectsProviderModelLogger(t *testing.T) {
+	t.Parallel()
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := strings.ReplaceAll(string(source), "\r\n", "\n")
+	wiring := `providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
+		Store:       store,
+		Invalidator: systemAccountInvalidator,
+		Logger:      logger,
+	})`
+	if !strings.Contains(text, wiring) {
+		t.Fatalf("server.go missing provider model logger wiring %q", wiring)
 	}
 }
 
@@ -646,6 +789,7 @@ func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
 		"managementHandlers.ClientIPStatsDetailHandler",
 		"managementclientipstats.NewServiceWithOptions(",
 		"ListReader:               store",
+		"RegistryReader:           store",
 		"DetailReader:             store",
 		"UsageStatsTimezoneReader: store",
 		"httpapi.NewManagementClientIPStatsHandler(clientIPStatsService)",

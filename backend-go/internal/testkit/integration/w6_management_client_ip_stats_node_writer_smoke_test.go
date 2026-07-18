@@ -102,7 +102,7 @@ func TestW6ManagementClientIPStatsNodeWriterGoReaderSmoke(t *testing.T) {
 	w6ManagementClientIPStatsAssertFixtureContract(t, fixture)
 	t.Setenv("JUHE_AI_USAGE_STATS_TIMEZONE", fixture.Timezone)
 	w6ManagementClientIPStatsBaselineGooseHistory(t, db)
-	runGooseMigrations(t, db)
+	w6ManagementClientIPStatsRunGooseTargetMigration(t, db)
 	w6ManagementClientIPStatsAssertGooseUpgrade(t, db)
 
 	store, err := postgresstore.Open(ctx, postgresURL)
@@ -129,6 +129,7 @@ func TestW6ManagementClientIPStatsNodeWriterGoReaderSmoke(t *testing.T) {
 	service := managementclientipstats.NewServiceWithOptions(
 		managementclientipstats.ServiceOptions{
 			ListReader:               store,
+			RegistryReader:           store,
 			UsageStatsTimezoneReader: store,
 			Now:                      time.Now,
 		},
@@ -306,6 +307,7 @@ func w6ManagementClientIPStatsRunNodeWriterFixture(
 	backendDir string,
 	helperPath string,
 	postgresURL string,
+	additionalEnvironment ...string,
 ) w6ManagementClientIPStatsNodeWriterFixture {
 	t.Helper()
 
@@ -315,7 +317,10 @@ func w6ManagementClientIPStatsRunNodeWriterFixture(
 	stderr := newW6ManagementClientIPStatsBoundedOutput(w6ManagementClientIPStatsNodeWriterOutputLimit)
 	command := exec.CommandContext(nodeCtx, nodePath, "--import", "tsx", helperPath)
 	command.Dir = backendDir
-	command.Env = w6ManagementClientIPStatsNodeWriterEnvironment(postgresURL)
+	command.Env = append(
+		w6ManagementClientIPStatsNodeWriterEnvironment(postgresURL),
+		additionalEnvironment...,
+	)
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.WaitDelay = 5 * time.Second
@@ -729,8 +734,36 @@ func w6ManagementClientIPStatsBaselineGooseHistory(t *testing.T, db *sql.DB) {
 	}
 }
 
+func w6ManagementClientIPStatsRunGooseTargetMigration(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	if err := goose.SetDialect("postgres"); err != nil {
+		t.Fatalf("set goose dialect for target migration: %v", err)
+	}
+	migrationDir := filepath.Join(repoRoot(t), "db", "migrations")
+	if err := goose.UpTo(db, migrationDir, w6ManagementClientIPStatsGooseTargetVersion); err != nil {
+		t.Fatalf(
+			"goose up to %06d over Node schema: %v",
+			w6ManagementClientIPStatsGooseTargetVersion,
+			err,
+		)
+	}
+}
+
 func w6ManagementClientIPStatsAssertGooseUpgrade(t *testing.T, db *sql.DB) {
 	t.Helper()
+
+	version, err := goose.GetDBVersion(db)
+	if err != nil {
+		t.Fatalf("inspect current goose version after Node writer: %v", err)
+	}
+	if version != w6ManagementClientIPStatsGooseTargetVersion {
+		t.Fatalf(
+			"current goose version after Node writer = %d, want exactly %d",
+			version,
+			w6ManagementClientIPStatsGooseTargetVersion,
+		)
+	}
 
 	var applied bool
 	if err := db.QueryRow(`
@@ -744,6 +777,20 @@ LIMIT 1
 	}
 	if !applied {
 		t.Fatalf("goose migration %06d is not applied after Node writer", w6ManagementClientIPStatsGooseTargetVersion)
+	}
+	var newerApplied int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM goose_db_version WHERE version_id > $1 AND is_applied = TRUE",
+		w6ManagementClientIPStatsGooseTargetVersion,
+	).Scan(&newerApplied); err != nil {
+		t.Fatalf("inspect goose versions newer than %06d: %v", w6ManagementClientIPStatsGooseTargetVersion, err)
+	}
+	if newerApplied != 0 {
+		t.Fatalf(
+			"goose applied %d migration(s) newer than explicitly locked target %06d",
+			newerApplied,
+			w6ManagementClientIPStatsGooseTargetVersion,
+		)
 	}
 }
 

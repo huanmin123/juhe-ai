@@ -18,6 +18,8 @@ import {
   createExternalIntegrationSourceTokenInClientAsync,
   loadExternalIntegrationSourcePrimaryTokensBySourceIds,
   loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync,
+  loadExternalIntegrationSourceTokenStatsBySourceIds,
+  loadExternalIntegrationSourceTokenStatsBySourceIdsAsync,
   loadExternalIntegrationSourceTokensBySourceIds,
   loadExternalIntegrationSourceTokensBySourceIdsAsync,
   syncExternalIntegrationSourceTokenState,
@@ -126,28 +128,35 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
   const rows = getBusinessDatabase().prepare(`
     SELECT
-      sources.*,
-      (
-        SELECT COUNT(*)
-        FROM external_integration_source_tokens AS tokens
-        WHERE tokens.source_ref_id = sources.id
-      ) AS token_count,
-      (
-        SELECT COUNT(*)
-        FROM external_integration_source_tokens AS tokens
-        WHERE tokens.source_ref_id = sources.id
-          AND tokens.status = 'active'
-      ) AS active_token_count
+      sources.id,
+      sources.name,
+      sources.status,
+      sources.scopes_json,
+      sources.rate_limits_json,
+      sources.expires_at,
+      sources.notes,
+      sources.last_used_at,
+      sources.created_at,
+      sources.updated_at
     FROM external_integration_sources AS sources
     ${whereSql}
     ORDER BY sources.updated_at DESC, sources.id DESC
     LIMIT ? OFFSET ?
-  `).all(...params, pageSize + 1, offset) as unknown as ExternalIntegrationSourceListRow[]
+  `).all(...params, pageSize + 1, offset) as unknown as ExternalIntegrationSourceRow[]
 
   const pageRows = rows.slice(0, pageSize)
-  const primaryTokensBySourceId = loadExternalIntegrationSourcePrimaryTokensBySourceIds(pageRows.map((row) => row.id))
+  const pageSourceIds = pageRows.map((row) => row.id)
+  const tokenStatsBySourceId = loadExternalIntegrationSourceTokenStatsBySourceIds(pageSourceIds)
+  const primaryTokensBySourceId = loadExternalIntegrationSourcePrimaryTokensBySourceIds(pageSourceIds)
   return {
-    items: pageRows.map((row) => mapSourceListItem(row, primaryTokensBySourceId.get(row.id))),
+    items: pageRows.map((row) => {
+      const stats = tokenStatsBySourceId.get(row.id)
+      return mapSourceListItem({
+        ...row,
+        token_count: stats?.tokenCount ?? 0,
+        active_token_count: stats?.activeTokenCount ?? 0
+      }, primaryTokensBySourceId.get(row.id))
+    }),
     page,
     pageSize,
     pageUpperBound: offset + pageRows.length + (rows.length > pageSize ? 1 : 0),
@@ -181,20 +190,18 @@ export async function listExternalIntegrationSourcesAsync(options: ExternalInteg
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const rows = await client.query<ExternalIntegrationSourceListRow>(`
+  const rows = await client.query<ExternalIntegrationSourceRow>(`
     SELECT
-      sources.*,
-      (
-        SELECT COUNT(*)
-        FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_source_tokens')} AS tokens
-        WHERE tokens.source_ref_id = sources.id
-      ) AS token_count,
-      (
-        SELECT COUNT(*)
-        FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_source_tokens')} AS tokens
-        WHERE tokens.source_ref_id = sources.id
-          AND tokens.status = 'active'
-      ) AS active_token_count
+      sources.id,
+      sources.name,
+      sources.status,
+      sources.scopes_json,
+      sources.rate_limits_json,
+      sources.expires_at,
+      sources.notes,
+      sources.last_used_at,
+      sources.created_at,
+      sources.updated_at
     FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')} AS sources
     ${whereSql}
     ORDER BY sources.updated_at DESC, sources.id DESC
@@ -202,9 +209,18 @@ export async function listExternalIntegrationSourcesAsync(options: ExternalInteg
   `, [...params, pageSize + 1, offset])
 
   const pageRows = rows.slice(0, pageSize)
-  const primaryTokensBySourceId = await loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync(pageRows.map((row) => row.id), client)
+  const pageSourceIds = pageRows.map((row) => row.id)
+  const tokenStatsBySourceId = await loadExternalIntegrationSourceTokenStatsBySourceIdsAsync(pageSourceIds, client)
+  const primaryTokensBySourceId = await loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync(pageSourceIds, client)
   return {
-    items: pageRows.map((row) => mapSourceListItem(row, primaryTokensBySourceId.get(row.id))),
+    items: pageRows.map((row) => {
+      const stats = tokenStatsBySourceId.get(row.id)
+      return mapSourceListItem({
+        ...row,
+        token_count: stats?.tokenCount ?? 0,
+        active_token_count: stats?.activeTokenCount ?? 0
+      }, primaryTokensBySourceId.get(row.id))
+    }),
     page,
     pageSize,
     pageUpperBound: offset + pageRows.length + (rows.length > pageSize ? 1 : 0),

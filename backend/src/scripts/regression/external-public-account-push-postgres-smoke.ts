@@ -5,6 +5,11 @@ import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider
 import { closeRedisClients } from '../../shared/redis-client.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import {
+  AccountConfigRevisionConflictError,
+  findAccountSummaryAsync,
+  updateAccountAsync
+} from '../../storage/repositories.js'
+import {
   addPublicApiKeyAsync,
   addPublicGroupAsync,
   addPublicWelfareAccountAsync,
@@ -84,6 +89,40 @@ try {
   assert.equal(updatedAccount.action, 'updated', 'PG 公开账号应可修改')
   assert.equal(updatedAccount.account.name, updatedAccountName, 'PG 公开账号修改应返回新名称')
   assert.equal(updatedAccount.account.status, 'active', 'PG 公开账号修改应更新状态')
+
+  const ownerAccess = {
+    systemAccountId: createdAccount.target.systemAccountId,
+    role: 'user' as const
+  }
+  const staleAccount = await findAccountSummaryAsync(createdAccount.account.id, ownerAccess)
+  assert(staleAccount, 'PG revision smoke 必须读取公开账号 owner summary')
+  assert.equal(typeof staleAccount.configRevision, 'number', 'PG revision smoke 必须读取 stale config revision')
+
+  const winnerNotes = `PG revision winner ${marker}`
+  const winner = await updateAccountAsync(createdAccount.account.id, { notes: winnerNotes }, ownerAccess)
+  assert(winner, 'PG revision smoke 必须先提交 winner notes')
+  assert.equal(winner.notes, winnerNotes, 'PG revision winner 应写入 notes')
+  assert.equal(winner.configRevision, (staleAccount.configRevision ?? 0) + 1, 'PG revision winner 应递增配置版本')
+  const winnerCredentials = structuredClone(winner.credentials)
+  const winnerModels = [...(winner.supportedModels ?? [])]
+
+  await assert.rejects(
+    updateAccountAsync(createdAccount.account.id, {
+      notes: `PG stale revision 不应写入 ${marker}`
+    }, ownerAccess, {
+      expectedConfigRevision: staleAccount.configRevision
+    }),
+    (error: unknown) => error instanceof AccountConfigRevisionConflictError
+      && error.expectedConfigRevision === staleAccount.configRevision,
+    'PG updateAccountAsync 必须拒绝 stale expected revision'
+  )
+
+  const afterStaleRejection = await findAccountSummaryAsync(createdAccount.account.id, ownerAccess)
+  assert(afterStaleRejection, 'PG stale revision 拒绝后账号应仍存在')
+  assert.equal(afterStaleRejection.notes, winnerNotes, 'PG stale revision 不得覆盖 winner notes')
+  assert.equal(afterStaleRejection.configRevision, winner.configRevision, 'PG stale revision 不得递增 winner revision')
+  assert.deepEqual(afterStaleRejection.credentials, winnerCredentials, 'PG stale revision 不得覆盖 winner credentials')
+  assert.deepEqual(afterStaleRejection.supportedModels ?? [], winnerModels, 'PG stale revision 不得覆盖 winner models')
 
   const createdGroup = await addPublicGroupAsync({
     targetUsername,

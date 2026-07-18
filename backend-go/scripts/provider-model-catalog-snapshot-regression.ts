@@ -12,6 +12,29 @@ import {
   providerModelCatalogSnapshotSQL
 } from './generate-provider-model-catalog.js'
 
+const lfSnapshotFixture = 'catalog-model-a\ncatalog-model-b\n'
+const crlfSnapshotFixture = lfSnapshotFixture.replace(/\n/g, '\r\n')
+assert.equal(
+  normalizeSnapshotLineEndings(crlfSnapshotFixture),
+  normalizeSnapshotLineEndings(lfSnapshotFixture),
+  'snapshot comparison must treat LF and CRLF as equivalent'
+)
+assert.notEqual(
+  normalizeSnapshotLineEndings(lfSnapshotFixture.replace('catalog-model-b', 'catalog-model-c')),
+  normalizeSnapshotLineEndings(lfSnapshotFixture),
+  'snapshot comparison must retain real character differences'
+)
+assert.notEqual(
+  normalizeSnapshotLineEndings(lfSnapshotFixture.replace('catalog-model-b\n', 'catalog-model-b \n')),
+  normalizeSnapshotLineEndings(lfSnapshotFixture),
+  'snapshot comparison must retain horizontal whitespace differences'
+)
+assert.notEqual(
+  normalizeSnapshotLineEndings(lfSnapshotFixture.slice(0, -1)),
+  normalizeSnapshotLineEndings(lfSnapshotFixture),
+  'snapshot comparison must retain the trailing newline contract'
+)
+
 assert.equal(
   PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE,
   '2026-07-15',
@@ -101,7 +124,7 @@ assert.doesNotMatch(providerModelCatalogSnapshotSQL, /\n[ \t]+\n/, 'generated ca
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /,\n\s*\n\s*\)/, 'generated catalog SQL must not leave a trailing comma before a tuple closes')
 assert.equal(
   normalizeSnapshotLineEndings(
-    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000052_w2_complete_provider_model_catalog_20260715.sql'), 'utf8')
+    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000054_w2_sync_provider_model_catalog_20260716.sql'), 'utf8')
   ),
   normalizeSnapshotLineEndings(providerModelCatalogSnapshotSQL),
   'unified provider catalog seed migration must match the generated current-schema snapshot'

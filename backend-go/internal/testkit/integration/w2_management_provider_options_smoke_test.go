@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -84,6 +85,7 @@ func TestW2ManagementProviderOptionsPostgresSmoke(t *testing.T) {
 	if len(gpt.ProtocolProfiles[0].EndpointFamilies) == 0 {
 		t.Fatalf("gpt profile endpoint families missing: %+v", gpt.ProtocolProfiles)
 	}
+	assertDeepSeekAndHybridProviderOptions(t, options)
 
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
 		Store: store,
@@ -122,6 +124,30 @@ func TestW2ManagementProviderOptionsPostgresSmoke(t *testing.T) {
 		provider.ProtocolProfiles[0].DefaultHealthCheckModel != "gpt-5.6-sol" {
 		t.Fatalf("provider options response health check model contract = %+v", provider)
 	}
+	assertDeepSeekAndHybridProviderOptions(t, body.Data)
+}
+
+func assertDeepSeekAndHybridProviderOptions(t *testing.T, options []managementproviders.Option) {
+	t.Helper()
+	deepseek := findProviderOption(options, "deepseek")
+	if deepseek == nil || deepseek.DefaultProtocolProfileID != "profile_deepseek_openai_v1" ||
+		deepseek.ProtocolCode != "openai" || deepseek.BaseURL != "https://api.deepseek.com" ||
+		!reflect.DeepEqual(deepseek.DefaultSupportedModels, []string{"deepseek-v4-flash", "deepseek-v4-pro"}) {
+		t.Fatalf("deepseek provider contract = %+v", deepseek)
+	}
+	hybrid := findProviderOption(options, "hybrid")
+	if hybrid == nil || hybrid.DefaultProtocolProfileID != "profile_hybrid_openai_chat_v1" || hybrid.ProtocolCode != "openai" || hybrid.BaseURL != "" {
+		t.Fatalf("hybrid provider contract = %+v", hybrid)
+	}
+	for _, profile := range hybrid.ProtocolProfiles {
+		if profile.ID == hybrid.DefaultProtocolProfileID {
+			if profile.BaseURL != "" {
+				t.Fatalf("hybrid default profile BaseURL = %q, want empty", profile.BaseURL)
+			}
+			return
+		}
+	}
+	t.Fatalf("hybrid default profile %q missing: %+v", hybrid.DefaultProtocolProfileID, hybrid.ProtocolProfiles)
 }
 
 func findProviderOption(options []managementproviders.Option, code string) *managementproviders.Option {

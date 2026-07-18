@@ -16,6 +16,7 @@ import (
 	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementsystemteams"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestManagementSystemTeamsHandlerListsAdminScope(t *testing.T) {
@@ -211,7 +212,7 @@ func TestManagementSystemTeamCreateHandlerRequiresAdminAndWritesOperationLog(t *
 		logInput.ResourceType != "system_team" ||
 		logInput.ResourceID != "team_ops" ||
 		logInput.ActorSystemAccountID != "sys_admin" ||
-		logInput.OperationScopeSystemAccountID != "sys_admin" ||
+		logInput.OperationScopeSystemAccountID != "" ||
 		logInput.StatusCode == nil ||
 		*logInput.StatusCode != http.StatusCreated {
 		t.Fatalf("operation log input = %+v", logInput)
@@ -224,7 +225,7 @@ func TestManagementSystemTeamCreateHandlerRequiresAdminAndWritesOperationLog(t *
 	}
 	if len(logInput.Viewers) != 1 ||
 		logInput.Viewers[0].SystemAccountID != "sys_admin" ||
-		logInput.Viewers[0].VisibilityReason != "team_creator" {
+		logInput.Viewers[0].VisibilityReason != "actor_self" {
 		t.Fatalf("operation log viewers = %+v", logInput.Viewers)
 	}
 }
@@ -416,6 +417,7 @@ func TestManagementSystemTeamPatchHandlerUpdatesAndWritesOperationLog(t *testing
 	if logInput.OperationKey != "system_teams.update" ||
 		logInput.Action != "update" ||
 		logInput.ResourceID != "team_ops" ||
+		logInput.OperationScopeSystemAccountID != "" ||
 		logInput.StatusCode == nil ||
 		*logInput.StatusCode != http.StatusOK {
 		t.Fatalf("operation log input = %+v", logInput)
@@ -427,6 +429,12 @@ func TestManagementSystemTeamPatchHandlerUpdatesAndWritesOperationLog(t *testing
 		logInput.Viewers[0].SystemAccountID != "sys_admin" ||
 		logInput.Viewers[1].SystemAccountID != "sys_member" {
 		t.Fatalf("operation log viewers = %+v", logInput.Viewers)
+	}
+	if len(logInput.Targets) != 1 ||
+		logInput.Targets[0].TargetID != "sys_member" ||
+		logInput.Targets[0].TargetOwnerSystemAccountID != "sys_member" ||
+		logInput.Targets[0].Relation != "team_member" {
+		t.Fatalf("operation log targets = %+v", logInput.Targets)
 	}
 }
 
@@ -585,11 +593,20 @@ func TestManagementSystemTeamMembersAddHandlerAddsAndWritesOperationLog(t *testi
 	if logInput.OperationKey != "system_teams.add_members" ||
 		logInput.Action != "add_members" ||
 		logInput.ResourceID != "team_ops" ||
+		logInput.OperationScopeSystemAccountID != "" ||
 		len(logInput.Changes) != 1 ||
 		logInput.Changes[0].Field != "members" ||
 		logInput.Changes[0].After != "新成员" ||
-		len(logInput.Targets) != 2 {
+		len(logInput.Targets) != 3 {
 		t.Fatalf("operation log input = %+v", logInput)
+	}
+	for index, wantID := range []string{"sys_old", "sys_new", "sys_new"} {
+		target := logInput.Targets[index]
+		if target.TargetID != wantID ||
+			target.TargetOwnerSystemAccountID != wantID ||
+			target.Relation != "team_member" {
+			t.Fatalf("operation log target %d = %+v", index, target)
+		}
 	}
 }
 
@@ -652,11 +669,57 @@ func TestManagementSystemTeamMemberDeleteHandlerRemovesAndWritesOperationLog(t *
 	if logInput.OperationKey != "system_teams.remove_member" ||
 		logInput.Action != "remove_member" ||
 		logInput.ResourceID != "team_ops" ||
+		logInput.OperationScopeSystemAccountID != "" ||
 		len(logInput.Changes) != 1 ||
 		logInput.Changes[0].Field != "member" ||
 		logInput.Changes[0].Before != "新成员" ||
 		len(logInput.Targets) != 2 {
 		t.Fatalf("operation log input = %+v", logInput)
+	}
+	for index, wantID := range []string{"sys_old", "sys_new"} {
+		target := logInput.Targets[index]
+		if target.TargetID != wantID ||
+			target.TargetOwnerSystemAccountID != wantID ||
+			target.Relation != "team_member" {
+			t.Fatalf("operation log target %d = %+v", index, target)
+		}
+	}
+}
+
+func TestSystemTeamOperationViewersKeepActorAndMemberReasons(t *testing.T) {
+	member := managementsystemteams.MemberSummary{SystemAccountID: "sys_actor"}
+	tests := []struct {
+		name    string
+		viewers []port.OperationLogViewerInput
+	}{
+		{
+			name:    "update",
+			viewers: systemTeamUpdateOperationViewers("sys_actor", []managementsystemteams.MemberSummary{member}),
+		},
+		{
+			name: "add or remove member",
+			viewers: systemTeamMemberOperationViewers(
+				"sys_actor",
+				[]managementsystemteams.MemberSummary{member},
+				[]managementsystemteams.MemberSummary{member},
+			),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if len(test.viewers) != 2 {
+				t.Fatalf("viewers = %+v, want actor_self and team_member", test.viewers)
+			}
+			if test.viewers[0].SystemAccountID != "sys_actor" ||
+				test.viewers[0].VisibilityReason != "actor_self" ||
+				test.viewers[0].DetailLevel != "full" ||
+				test.viewers[1].SystemAccountID != "sys_actor" ||
+				test.viewers[1].VisibilityReason != "team_member" ||
+				test.viewers[1].DetailLevel != "full" {
+				t.Fatalf("viewers = %+v, want distinct actor and member reasons", test.viewers)
+			}
+		})
 	}
 }
 

@@ -14,18 +14,22 @@ import (
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
+	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
 	"juhe-ai/backend-go/internal/modules/managementapikeys"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
 	"juhe-ai/backend-go/internal/modules/managementauthorizations"
 	"juhe-ai/backend-go/internal/modules/managementclientippolicies"
 	"juhe-ai/backend-go/internal/modules/managementclientipstats"
+	"juhe-ai/backend-go/internal/modules/managementexternalintegrationsources"
 	"juhe-ai/backend-go/internal/modules/managementgroups"
 	"juhe-ai/backend-go/internal/modules/managementoperationlogs"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/managementproviders"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
+	"juhe-ai/backend-go/internal/modules/managementpublicapilogs"
 	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
+	"juhe-ai/backend-go/internal/modules/managementruntimelogs"
 	"juhe-ai/backend-go/internal/modules/managementsettings"
 	"juhe-ai/backend-go/internal/modules/managementstats"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
@@ -40,6 +44,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicsettings"
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/secretcrypto"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -273,6 +278,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyGroupAccountOptionsHandler:            managementHandlers.MyGroupAccountOptionsHandler,
 		ManagementAccountOptionsHandler:                   managementHandlers.AccountOptionsHandler,
 		ManagementMyAccountOptionsHandler:                 managementHandlers.MyAccountOptionsHandler,
+		ManagementAccountTestOptionsHandler:               managementHandlers.AccountTestOptionsHandler,
+		ManagementMyAccountTestOptionsHandler:             managementHandlers.MyAccountTestOptionsHandler,
 		ManagementAccountTagsHandler:                      managementHandlers.AccountTagsHandler,
 		ManagementMyAccountTagsHandler:                    managementHandlers.MyAccountTagsHandler,
 		ManagementAccountTagDeleteHandler:                 managementHandlers.AccountTagDeleteHandler,
@@ -291,6 +298,18 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementClientIPUnblockHandler:                  managementHandlers.ClientIPUnblockHandler,
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
+		ManagementRuntimeLogsHandler:                      managementHandlers.RuntimeLogsHandler,
+		ManagementExternalIntegrationSourceListHandler:    managementHandlers.ExternalIntegrationSourceListHandler,
+		ManagementExternalIntegrationSourceDetailHandler:  managementHandlers.ExternalIntegrationSourceDetailHandler,
+		ManagementExternalIntegrationSourceCreateHandler:  managementHandlers.ExternalIntegrationSourceCreateHandler,
+		ManagementExternalIntegrationSourceUpdateHandler:  managementHandlers.ExternalIntegrationSourceUpdateHandler,
+		ManagementExternalIntegrationSourceDeleteHandler:  managementHandlers.ExternalIntegrationSourceDeleteHandler,
+		ManagementExternalSourceTokenCreateHandler:        managementHandlers.ExternalSourceTokenCreateHandler,
+		ManagementExternalSourceTokenUpdateHandler:        managementHandlers.ExternalSourceTokenUpdateHandler,
+		ManagementExternalSourceTokenSecretHandler:        managementHandlers.ExternalSourceTokenSecretHandler,
+		ManagementExternalIntegrationSourceScopesHandler:  managementHandlers.ExternalIntegrationSourceScopesHandler,
+		ManagementExternalIntegrationSourceAPIDocsHandler: managementHandlers.ExternalIntegrationSourceAPIDocsHandler,
+		ManagementPublicAPILogsHandler:                    managementHandlers.PublicAPILogsHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
 		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
 	})
@@ -429,6 +448,8 @@ type managementAPIHandlers struct {
 	MyGroupAccountOptionsHandler            http.Handler
 	AccountOptionsHandler                   http.Handler
 	MyAccountOptionsHandler                 http.Handler
+	AccountTestOptionsHandler               http.Handler
+	MyAccountTestOptionsHandler             http.Handler
 	AccountTagsHandler                      http.Handler
 	MyAccountTagsHandler                    http.Handler
 	AccountTagDeleteHandler                 http.Handler
@@ -447,6 +468,18 @@ type managementAPIHandlers struct {
 	ClientIPUnblockHandler                  http.Handler
 	OperationLogsHandler                    http.Handler
 	MyOperationLogsHandler                  http.Handler
+	RuntimeLogsHandler                      http.Handler
+	ExternalIntegrationSourceListHandler    http.Handler
+	ExternalIntegrationSourceDetailHandler  http.Handler
+	ExternalIntegrationSourceCreateHandler  http.Handler
+	ExternalIntegrationSourceUpdateHandler  http.Handler
+	ExternalIntegrationSourceDeleteHandler  http.Handler
+	ExternalSourceTokenCreateHandler        http.Handler
+	ExternalSourceTokenUpdateHandler        http.Handler
+	ExternalSourceTokenSecretHandler        http.Handler
+	ExternalIntegrationSourceScopesHandler  http.Handler
+	ExternalIntegrationSourceAPIDocsHandler http.Handler
+	PublicAPILogsHandler                    http.Handler
 	StatsUsageWindowHandler                 http.Handler
 	MyStatsUsageWindowHandler               http.Handler
 }
@@ -507,6 +540,7 @@ func newManagementAPIHandler(
 	providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
 		Store:       store,
 		Invalidator: systemAccountInvalidator,
+		Logger:      logger,
 	})
 	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
 		managementroutestrategies.ServiceOptions{
@@ -541,6 +575,11 @@ func newManagementAPIHandler(
 		Logger:                  logger,
 	})
 	accountService := managementaccounts.NewService(store)
+	accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
+		Reader:          store,
+		ModelCatalog:    providerModelService,
+		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
+	})
 	systemAccountService := managementsystemaccounts.NewServiceWithOptions(managementsystemaccounts.ServiceOptions{
 		Store:                    store,
 		Secret:                   cfg.Secret,
@@ -557,6 +596,21 @@ func newManagementAPIHandler(
 	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
+	runtimeLogService := managementruntimelogs.NewService(store)
+	externalIntegrationSourceService := managementexternalintegrationsources.NewServiceWithOptions(
+		managementexternalintegrationsources.ServiceOptions{
+			ListReader:   store,
+			DetailReader: store,
+			SecretReader: store,
+			Secret:       cfg.Secret,
+		},
+	)
+	externalIntegrationSourceUpdateService := managementexternalintegrationsources.NewUpdateService(store)
+	externalIntegrationSourceDeleteService := managementexternalintegrationsources.NewDeleteService(store)
+	externalIntegrationSourceCreateService := managementexternalintegrationsources.NewCreateService(store, cfg.Secret)
+	externalIntegrationSourceTokenCreateService := managementexternalintegrationsources.NewTokenCreateService(store, cfg.Secret)
+	externalIntegrationSourceTokenUpdateService := managementexternalintegrationsources.NewTokenUpdateService(store)
+	publicAPILogService := managementpublicapilogs.NewService(store)
 	statsService := managementstats.NewService(store)
 	globalSettingsService := publicsettings.NewService(store)
 	globalSettingsUpdateService := managementsettings.NewServiceWithOptions(managementsettings.ServiceOptions{
@@ -579,6 +633,7 @@ func newManagementAPIHandler(
 	clientIPStatsService := managementclientipstats.NewServiceWithOptions(
 		managementclientipstats.ServiceOptions{
 			ListReader:               store,
+			RegistryReader:           store,
 			DetailReader:             store,
 			UsageStatsTimezoneReader: store,
 		},
@@ -694,6 +749,8 @@ func newManagementAPIHandler(
 		MyGroupAccountOptionsHandler:            httpapi.NewManagementMyGroupAccountOptionsHandler(groupService),
 		AccountOptionsHandler:                   httpapi.NewManagementAccountOptionsHandler(accountService),
 		MyAccountOptionsHandler:                 httpapi.NewManagementMyAccountOptionsHandler(accountService),
+		AccountTestOptionsHandler:               httpapi.NewManagementAccountTestOptionsHandler(accountTestOptionsService),
+		MyAccountTestOptionsHandler:             httpapi.NewManagementMyAccountTestOptionsHandler(accountTestOptionsService),
 		AccountTagsHandler:                      httpapi.NewManagementAccountTagsHandler(accountService),
 		MyAccountTagsHandler:                    httpapi.NewManagementMyAccountTagsHandler(accountService),
 		AccountTagDeleteHandler:                 httpapi.NewManagementAccountTagDeleteHandler(accountService),
@@ -712,6 +769,18 @@ func newManagementAPIHandler(
 		ClientIPUnblockHandler:                  httpapi.NewManagementClientIPUnblockHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
+		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService),
+		ExternalIntegrationSourceListHandler:    httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService),
+		ExternalIntegrationSourceDetailHandler:  httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService),
+		ExternalIntegrationSourceCreateHandler:  httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions),
+		ExternalIntegrationSourceUpdateHandler:  httpapi.NewManagementExternalIntegrationSourceUpdateHandlerWithOperationLog(externalIntegrationSourceUpdateService, operationLogOptions),
+		ExternalIntegrationSourceDeleteHandler:  httpapi.NewManagementExternalIntegrationSourceDeleteHandlerWithOperationLog(externalIntegrationSourceDeleteService, operationLogOptions),
+		ExternalSourceTokenCreateHandler:        httpapi.NewManagementExternalIntegrationSourceTokenCreateHandlerWithOperationLog(externalIntegrationSourceTokenCreateService, operationLogOptions),
+		ExternalSourceTokenUpdateHandler:        httpapi.NewManagementExternalIntegrationSourceTokenUpdateHandlerWithOperationLog(externalIntegrationSourceTokenUpdateService, operationLogOptions),
+		ExternalSourceTokenSecretHandler:        httpapi.NewManagementExternalIntegrationSourceTokenSecretHandler(externalIntegrationSourceService),
+		ExternalIntegrationSourceScopesHandler:  httpapi.NewManagementExternalIntegrationSourceScopesHandler(),
+		ExternalIntegrationSourceAPIDocsHandler: httpapi.NewManagementExternalIntegrationSourceAPIDocsHandler(),
+		PublicAPILogsHandler:                    httpapi.NewManagementPublicAPILogsHandler(publicAPILogService),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
 	}

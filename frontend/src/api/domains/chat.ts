@@ -5,12 +5,12 @@ import { parseChatSseBlock } from '@/views/chat/chatStream'
 export const chatApi = {
   listApiKeys: () => unwrap<ChatApiKeyOption[]>(http.get('/my-chat/api-keys')),
   listConversations: (params?: { beforeIsPinned?: boolean; beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
-  createConversation: (apiKeyId: string) => unwrap<ChatConversation>(http.post('/my-chat/conversations', { apiKeyId })),
+  createConversation: (apiKeyId?: string) => unwrap<ChatConversation>(http.post('/my-chat/conversations', apiKeyId ? { apiKeyId } : {})),
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)),
   listMessages: (conversationId: string, params?: ChatMessageListParams) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/messages`, { params })),
   getConversationSync: (conversationId: string, knownRevision?: number) => unwrap<ChatConversationSyncHead>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/sync`, { params: { knownRevision: knownRevision ?? 0 } })),
   getSubmissionStatus: (conversationId: string, clientMessageId: string) => unwrap<ChatSubmissionStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/submissions/${encodeURIComponent(clientMessageId)}`)),
-  listModels: (conversationId: string) => unwrap<ChatModelOption[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/models`)),
+  listModels: (conversationId: string, options?: { signal?: AbortSignal }) => unwrap<ChatModelOption[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/models`, { signal: options?.signal })),
   getContextStatus: (conversationId: string) => unwrap<ChatContextStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/context-status`)),
   uploadAsset: (
     conversationId: string,

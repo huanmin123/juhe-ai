@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -63,6 +64,11 @@ func (s *mutationGuardStore) Middleware(config mutationGuardConfig) func(http.Ha
 			}
 			fingerprint, err := config.fingerprint(w, r)
 			if err != nil {
+				var maxBytesErr *http.MaxBytesError
+				if errors.As(err, &maxBytesErr) {
+					writeMessageError(w, http.StatusRequestEntityTooLarge, "请求体过大")
+					return
+				}
 				writeMessageError(w, http.StatusBadRequest, "请求参数无效")
 				return
 			}
@@ -341,6 +347,90 @@ func managementClientIPPolicyMutationGuardConfig(action string) mutationGuardCon
 	}
 }
 
+func managementExternalIntegrationSourceUpdateMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "external_integration_sources.update",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := mutationJSONFields(w, r)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"id":         strings.TrimSpace(chi.URLParam(r, "id")),
+				"name":       mutationAnyField(fields, "name"),
+				"status":     mutationAnyField(fields, "status"),
+				"expiresAt":  mutationAnyField(fields, "expiresAt"),
+				"rateLimits": mutationNodeJSONValue(mutationAnyField(fields, "rateLimits")),
+			}, nil
+		},
+	}
+}
+
+func managementExternalIntegrationSourceCreateMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "external_integration_sources.create",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := mutationJSONFields(w, r)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"name": mutationAnyField(fields, "name"),
+			}, nil
+		},
+	}
+}
+
+func managementExternalIntegrationSourceTokenCreateMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "external_integration_sources.create_token",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := mutationJSONFields(w, r)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"id":        chi.URLParam(r, "id"),
+				"name":      mutationAnyField(fields, "name"),
+				"expiresAt": mutationAnyField(fields, "expiresAt"),
+			}, nil
+		},
+	}
+}
+
+func managementExternalIntegrationSourceTokenUpdateMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "external_integration_sources.update_token",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := mutationJSONFieldsWithLimit(w, r, managementExternalIntegrationSourceTokenUpdateMaxBodyBytes)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"id":        chi.URLParam(r, "id"),
+				"tokenId":   chi.URLParam(r, "tokenId"),
+				"name":      mutationAnyField(fields, "name"),
+				"status":    mutationAnyField(fields, "status"),
+				"expiresAt": mutationAnyField(fields, "expiresAt"),
+			}, nil
+		},
+	}
+}
+
+func managementExternalIntegrationSourceDeleteMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "external_integration_sources.delete",
+		fingerprint: func(_ http.ResponseWriter, r *http.Request) (any, error) {
+			return map[string]any{
+				"id": strings.TrimFunc(
+					chi.URLParam(r, "id"),
+					managementGroupListECMAScriptWhitespace,
+				),
+			}, nil
+		},
+	}
+}
+
 func managementGroupCreateMutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
@@ -355,7 +445,11 @@ func managementGroupCreateMutationJSONFields(w http.ResponseWriter, r *http.Requ
 }
 
 func mutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	return mutationJSONFieldsWithLimit(w, r, 1<<20)
+}
+
+func mutationJSONFieldsWithLimit(w http.ResponseWriter, r *http.Request, maxBytes int64) (map[string]json.RawMessage, error) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -407,11 +501,31 @@ func mutationAnyField(fields map[string]json.RawMessage, name string) any {
 }
 
 func mutationNodeJSONNumberField(fields map[string]json.RawMessage, name string) any {
-	value := mutationAnyField(fields, name)
-	number, ok := value.(json.Number)
-	if !ok {
-		return value
+	return mutationNodeJSONValue(mutationAnyField(fields, name))
+}
+
+func mutationNodeJSONValue(value any) any {
+	switch typed := value.(type) {
+	case json.Number:
+		return mutationNodeJSONNumber(typed)
+	case map[string]any:
+		normalized := make(map[string]any, len(typed))
+		for key, item := range typed {
+			normalized[key] = mutationNodeJSONValue(item)
+		}
+		return normalized
+	case []any:
+		normalized := make([]any, 0, len(typed))
+		for _, item := range typed {
+			normalized = append(normalized, mutationNodeJSONValue(item))
+		}
+		return normalized
+	default:
+		return typed
 	}
+}
+
+func mutationNodeJSONNumber(number json.Number) any {
 	normalized, err := strconv.ParseFloat(number.String(), 64)
 	if math.IsInf(normalized, 0) {
 		return nil

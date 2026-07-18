@@ -34,7 +34,7 @@
           </div>
           <div v-else-if="turnLimitReached" class="turn-limit-bar">
             <span>{{ turnLimitMessage }}</span>
-            <a-button type="link" size="small" :disabled="!apiKeys.length" @click="openCreateDialog">新建对话</a-button>
+            <a-button type="link" size="small" :loading="creating" @click="createConversation">新建对话</a-button>
           </div>
           <AIComposer
             ref="composer"
@@ -52,6 +52,7 @@
             :models-loading="modelsLoading"
             :show-conversation-button="mobile"
             @open-conversations="conversationDrawerOpen = true"
+            @models-open="refreshSelectedModelsIfExpired"
             @submit="handleComposerSubmit"
             @stop="stopGeneration"
           />
@@ -60,13 +61,9 @@
       <div v-else class="chat-start-state">
         <MessageOutlined />
         <strong>新建对话后开始提问</strong>
-        <a-button type="primary" :disabled="!apiKeys.length" @click="openCreateDialog"><PlusOutlined />新建对话</a-button>
+        <a-button type="primary" :loading="creating" @click="createConversation"><PlusOutlined />新建对话</a-button>
       </div>
     </main>
-
-    <a-modal v-model:open="createDialogOpen" title="新建对话" ok-text="创建" cancel-text="取消" :confirm-loading="creating" :ok-button-props="{ disabled: !newApiKeyId }" @ok="createConversation">
-      <a-form layout="vertical"><a-form-item label="API Key" required><a-select v-model:value="newApiKeyId" :options="apiKeyOptions" placeholder="选择自己的 API Key" /></a-form-item></a-form>
-    </a-modal>
 
     <div v-if="conversationMenu" id="conversation-actions-menu" ref="conversationMenuElement" class="conversation-context-menu" role="menu" :style="{ left: `${conversationMenu.x}px`, top: `${conversationMenu.y}px` }" @click.stop @keydown="handleConversationMenuKeyDown">
       <button type="button" role="menuitem" tabindex="-1" @click="openRenameDialog(conversationMenu.item)">重命名</button>
@@ -114,7 +111,7 @@ import { chatApi, ChatStreamHttpError } from '@/api/domains/chat'
 import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import type { ChatApiKeyOption, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 import { beginLatestTurnEdit, isDefinitiveChatHttpRejection, resolveChatReconciliationNotice, resolveChatSubmitFailure } from './chatTurnEditing'
 import {
   applyChatReconciliationIfActive,
@@ -136,15 +133,15 @@ import {
 import ChatMessageList from './ChatMessageList.vue'
 import AIComposer from './composer/AIComposer.vue'
 import type { ChatInputBlock } from './composer/chatComposerDocument'
-import { defaultChatReasoningEffort, defaultChatServiceTier } from './composer/chatModelControls'
+import { defaultChatReasoningEffort, defaultChatServiceTier, normalizeChatModelControls } from './composer/chatModelControls'
 import type { JSONContent } from '@tiptap/core'
 import { clampChatFloatingMenuPosition, resolveChatVisualViewportBounds } from './chatViewport'
-import { planChatCreateDialogFromConversationPane } from './chatConversationDrawer'
 import { chatGenerationRuntime, type RunningTurn } from './chatGenerationRuntime'
 import { getDefaultChatLocalCache } from './chatLocalCache'
 import { ChatCacheBroadcast } from './chatCacheBroadcast'
 import { createDefaultChatConversationSyncDependencies, hasOlderChatMessages, projectChatMessagesWithRuntime, restoreChatActiveTurnFromSync, synchronizeChatConversation } from './chatConversationSync'
 import { ChatRuntimeReconciliationScheduler } from './chatRuntimeReconciliation'
+import { applyDeletedChatConversation, ChatModelLoadCoordinator, ChatSingleFlightCoordinator } from './chatConversationPerformance'
 
 interface ChatTurnEditingState {
   conversationId: string
@@ -176,7 +173,6 @@ const conversations = ref<ChatConversation[]>([])
 const conversationCursor = ref<ChatConversation>()
 const conversationsLoadingMore = ref(false)
 const hasMoreConversations = ref(false)
-const apiKeys = ref<ChatApiKeyOption[]>([])
 const selectedConversationId = ref<string>()
 const messages = ref<ChatMessage[]>([])
 const models = ref<ChatModelOption[]>([])
@@ -194,10 +190,8 @@ const conversationAccessEpoch = ref(0)
 const stopping = ref(false)
 const confirmingSubmission = ref(false)
 const pendingConfirmation = ref<PendingSubmissionConfirmation>()
-const createDialogOpen = ref(false)
 const conversationDrawerOpen = ref(false)
 const pendingCreateAfterDrawerClose = ref(false)
-const newApiKeyId = ref<string>()
 const mobile = ref(false)
 const conversationMenu = ref<{ item: ChatConversation; x: number; y: number }>()
 const conversationMenuElement = ref<HTMLElement>()
@@ -228,6 +222,10 @@ let lastRuntimeTerminalKey: string | undefined
 let conversationMenuTrigger: HTMLElement | undefined
 
 const localCache = getDefaultChatLocalCache()
+const modelLoadCoordinator = new ChatModelLoadCoordinator<ChatModelOption>({
+  load: ({ conversationId }, signal) => chatApi.listModels(conversationId, { signal })
+})
+const contextStatusCoordinator = new ChatSingleFlightCoordinator<ChatContextStatus>()
 const syncDependencies = createDefaultChatConversationSyncDependencies({
   pendingConversationIds: () => pendingConfirmation.value ? new Set([pendingConfirmation.value.request.conversationId]) : new Set()
 })
@@ -242,7 +240,6 @@ const conversationForbidden = computed(() => {
 const turnLimitReached = computed(() => Boolean(selectedConversation.value && isChatTurnLimitReached(selectedConversation.value.userTurnCount, selectedConversation.value.userTurnLimit)))
 const turnLimitMessage = computed(() => chatTurnLimitMessage(selectedConversation.value?.userTurnLimit ?? 0))
 const selectedModelOption = computed(() => models.value.find((item) => item.id === selectedModel.value))
-const apiKeyOptions = computed(() => apiKeys.value.map((item) => ({ label: item.name, value: item.id })))
 const editableUserMessageId = computed(() => {
   const candidate = messages.value[messages.value.length - 2]
   return candidate && beginLatestTurnEdit(messages.value, candidate.id)?.userMessageId
@@ -261,7 +258,7 @@ const ConversationPane = defineComponent({
   emits: ['selected'],
   setup(_props, { emit }) {
     return () => h('div', { class: 'conversation-pane-inner' }, [
-      h('div', { class: 'conversation-pane-toolbar' }, [h('strong', '对话'), h('button', { class: 'conversation-new-button', type: 'button', disabled: !apiKeys.value.length, onClick: openCreateDialogFromConversationPane }, [h(PlusOutlined), ' 新建'])]),
+      h('div', { class: 'conversation-pane-toolbar' }, [h('strong', '对话'), h('button', { class: 'conversation-new-button', type: 'button', disabled: creating.value, onClick: createConversationFromPane }, [h(PlusOutlined), ' 新建'])]),
       conversations.value.length
         ? h('div', { class: 'conversation-list' }, [
             ...conversations.value.map((item) => h('div', {
@@ -294,8 +291,7 @@ const ConversationPane = defineComponent({
 
 async function loadInitial(): Promise<void> {
   try {
-    const [keyItems, conversationItems] = await Promise.all([chatApi.listApiKeys(), chatApi.listConversations({ limit: 50 })])
-    apiKeys.value = keyItems
+    const conversationItems = await chatApi.listConversations({ limit: 50 })
     conversations.value = conversationItems
     conversationCursor.value = conversationItems.at(-1)
     hasMoreConversations.value = conversationItems.length === 50
@@ -335,9 +331,15 @@ async function loadMoreConversations(): Promise<void> {
 async function selectConversation(id: string, options: {
   allowPendingRecovery?: boolean
   forceReload?: boolean
+  refreshModels?: boolean
   silentLoadError?: boolean
 } = {}): Promise<boolean> {
   if (selectedConversationId.value === id && !options.forceReload) return true
+  const previousConversation = selectedConversation.value
+  const nextConversation = conversations.value.find((item) => item.id === id)
+  const previousModelCacheKey = previousConversation ? previousConversation.apiKeyId ?? previousConversation.id : undefined
+  const nextModelCacheKey = nextConversation ? nextConversation.apiKeyId ?? nextConversation.id : undefined
+  if (previousModelCacheKey !== nextModelCacheKey) modelLoadCoordinator.cancel(previousModelCacheKey)
   await cancelTurnEdit()
   const loadEpoch = ++conversationLoadEpoch
   selectedConversationId.value = id
@@ -356,6 +358,8 @@ async function selectConversation(id: string, options: {
     if (!conversation) throw new Error('会话不存在')
     if (authState.currentUser.value?.id !== conversation.systemAccountId) return false
     let loadedSyncHead: ChatConversationSyncHead | undefined
+    const modelRequest = { apiKeyId: conversation.apiKeyId ?? conversation.id, conversationId: id }
+    const cachedModels = modelLoadCoordinator.peek(modelRequest.apiKeyId)
     const conversationLoad = startChatConversationLoad({
       loadMessages: async () => {
         const blockedBeforeSync = chatGenerationRuntime.isConversationBlocked(conversation.systemAccountId, id)
@@ -405,7 +409,11 @@ async function selectConversation(id: string, options: {
         }
         return synchronized.messages
       },
-      loadModels: () => chatApi.listModels(id)
+      loadModels: () => (options.refreshModels
+        ? modelLoadCoordinator.refresh(modelRequest)
+        : cachedModels
+          ? Promise.resolve(cachedModels)
+          : modelLoadCoordinator.load(modelRequest)).then((items) => [...items])
     })
     const messageItems = await conversationLoad.messages
     if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return false
@@ -494,30 +502,34 @@ async function loadOlderMessages(): Promise<void> {
     }
   }
 }
-function openCreateDialog(): void { newApiKeyId.value = apiKeys.value[0]?.id; createDialogOpen.value = true }
-function openCreateDialogFromConversationPane(): void {
-  const plan = planChatCreateDialogFromConversationPane({ mobile: mobile.value, drawerOpen: conversationDrawerOpen.value })
-  if (plan.closeDrawer) {
+function createConversationFromPane(): void {
+  if (mobile.value && conversationDrawerOpen.value) {
     pendingCreateAfterDrawerClose.value = true
     conversationDrawerOpen.value = false
     return
   }
   pendingCreateAfterDrawerClose.value = false
-  if (plan.openDialogNow) openCreateDialog()
+  void createConversation()
 }
 function handleConversationDrawerAfterOpenChange(open: boolean): void {
   if (open || !pendingCreateAfterDrawerClose.value) return
   pendingCreateAfterDrawerClose.value = false
-  openCreateDialog()
+  void createConversation()
 }
 async function createConversation(): Promise<void> {
-  if (!newApiKeyId.value) return
+  if (creating.value) return
+  const selectionEpochAtStart = conversationLoadEpoch
+  const selectedConversationIdAtStart = selectedConversationId.value
   creating.value = true
   try {
-    const item = await chatApi.createConversation(newApiKeyId.value)
+    const item = await chatApi.createConversation()
     conversations.value.unshift(item)
-    createDialogOpen.value = false
-    if (await selectConversation(item.id)) conversationDrawerOpen.value = false
+    if (
+      pageActive
+      && conversationLoadEpoch === selectionEpochAtStart
+      && selectedConversationId.value === selectedConversationIdAtStart
+      && await selectConversation(item.id, { refreshModels: true })
+    ) conversationDrawerOpen.value = false
   }
   catch (error) { message.error(extractApiErrorMessage(error, '创建对话失败')) }
   finally { creating.value = false }
@@ -814,7 +826,54 @@ function attachActiveTurnFromSync(
     attach: (input) => chatGenerationRuntime.attach(input)
   })
 }
-async function removeConversation(id: string): Promise<void> { try { const conversation = conversations.value.find((item) => item.id === id); await chatApi.deleteConversation(id); if (conversation) await localCache.deleteConversation(conversation.systemAccountId, id); conversations.value = conversations.value.filter((item) => item.id !== id); if (selectedConversationId.value === id) { selectedConversationId.value = undefined; messages.value = []; const next = conversations.value[0]; if (next) await selectConversation(next.id) } } catch (error) { message.error(extractApiErrorMessage(error, '删除对话失败')) } }
+async function removeConversation(id: string): Promise<void> {
+  const conversation = conversations.value.find((item) => item.id === id)
+  try {
+    await chatApi.deleteConversation(id)
+  } catch (error) {
+    if (!isNotFoundResponse(error)) {
+      message.error(extractApiErrorMessage(error, '删除对话失败'))
+      return
+    }
+  }
+
+  const deleted = applyDeletedChatConversation({
+    conversations: conversations.value,
+    selectedConversationId: selectedConversationId.value,
+    deletedConversationId: id
+  })
+  conversations.value = deleted.conversations
+  selectedConversationId.value = deleted.selectedConversationId
+  if (!deleted.selectedConversationId) {
+    messages.value = []
+    models.value = []
+    selectedModel.value = undefined
+    contextStatus.value = undefined
+  }
+  if (conversation) void localCache.deleteConversation(conversation.systemAccountId, id).catch(() => undefined)
+  if (deleted.nextConversationId) void selectConversation(deleted.nextConversationId)
+}
+async function refreshSelectedModelsIfExpired(): Promise<void> {
+  const conversation = selectedConversation.value
+  if (!conversation) return
+  const request = { apiKeyId: conversation.apiKeyId ?? conversation.id, conversationId: conversation.id }
+  modelsLoading.value = true
+  try {
+    const items = [...await modelLoadCoordinator.refreshIfExpired(request)]
+    if (selectedConversationId.value !== conversation.id) return
+    models.value = items
+    if (!selectedModel.value || !items.some((item) => item.id === selectedModel.value)) {
+      selectedModel.value = conversation.lastModel && items.some((item) => item.id === conversation.lastModel)
+        ? conversation.lastModel
+        : items[0]?.id
+    }
+    normalizeCurrentModelControls()
+  } catch (error) {
+    if (selectedConversationId.value === conversation.id) message.error(extractApiErrorMessage(error, '刷新可用模型失败'))
+  } finally {
+    if (selectedConversationId.value === conversation.id) modelsLoading.value = false
+  }
+}
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {
   if (generating.value || submissionBlocked.value) { composer.value?.restore(payload.snapshot); return }
   if (!selectedConversation.value || !selectedModel.value || modelsLoading.value) {
@@ -1049,7 +1108,7 @@ function cloneDocument(document: JSONContent): JSONContent { return JSON.parse(J
 async function refreshContextStatus(conversationId = selectedConversationId.value): Promise<void> {
   if (!conversationId) return
   try {
-    const next = await chatApi.getContextStatus(conversationId)
+    const next = await contextStatusCoordinator.load(conversationId, () => chatApi.getContextStatus(conversationId))
     if (!disposed && selectedConversationId.value === conversationId) contextStatus.value = next
   } catch {
     if (!disposed && selectedConversationId.value === conversationId) contextStatus.value = undefined
@@ -1126,6 +1185,15 @@ function replaceConversation(next: ChatConversation): void { const index = conve
 function sortConversations(): void { conversations.value.sort((left, right) => Number(right.isPinned) - Number(left.isPinned) || Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt) || right.id.localeCompare(left.id)) }
 function formatDetailTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false }) }
 function resetModelControls(): void { selectedReasoningEffort.value = defaultChatReasoningEffort(selectedModelOption.value); selectedServiceTier.value = defaultChatServiceTier(selectedModelOption.value) }
+function normalizeCurrentModelControls(): void {
+  const normalized = normalizeChatModelControls({
+    model: selectedModelOption.value,
+    reasoningEffort: selectedReasoningEffort.value,
+    serviceTier: selectedServiceTier.value
+  })
+  selectedReasoningEffort.value = normalized.reasoningEffort
+  selectedServiceTier.value = normalized.serviceTier
+}
 watch(selectedModel, resetModelControls)
 function activateChatPage(): void {
   if (pageActive || disposed) return

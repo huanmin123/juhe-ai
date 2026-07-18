@@ -348,10 +348,11 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	}
 
 	credentialExtensions := map[string]any{
-		"api_key":          initialSecret,
-		"base_url":         "https://api.openai.com/v1",
-		"service_tier":     "priority",
-		"reasoning_effort": "high",
+		"api_key":                  initialSecret,
+		"base_url":                 "https://api.openai.com/v1",
+		"service_tier":             "priority",
+		"reasoning_effort":         "high",
+		"supported_endpoint_modes": []any{"chat_json", "chat_sse", "responses_json", "responses_sse"},
 		"endpoint": map[string]any{
 			"path": "/responses",
 			"mode": "strict",
@@ -387,6 +388,7 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	)
 	assertW1bPublicAccountRuntimeReset(t, ctx, db, accountID)
 	seedW1bPublicAccountPendingHealthDiagnostics(t, ctx, db, accountID, now)
+	runtimeBeforePendingNotesUpdate := readW1bPublicAccountRuntimeState(t, ctx, db, accountID)
 	pendingNotes := "待检查状态下仅更新备注"
 	if _, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID: accountID,
@@ -394,7 +396,11 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("update pending public account notes: %v", err)
 	}
-	assertW1bPublicAccountRuntimeReset(t, ctx, db, accountID)
+	assertW1bPublicAccountRuntimeState(
+		t,
+		readW1bPublicAccountRuntimeState(t, ctx, db, accountID),
+		runtimeBeforePendingNotesUpdate,
+	)
 
 	invalidUpdatedName := "不应保存的账号名称"
 	invalidUpdatedSecret := "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -449,6 +455,7 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	slices.Reverse(equivalentModels)
 	equivalentModels = append(equivalentModels, " "+w1bValidBuiltInModel+" ")
 	modelBindingsBeforeEquivalentUpdate := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
+	runtimeBeforeEquivalentUpdate := readW1bPublicAccountRuntimeState(t, ctx, db, accountID)
 	preservedForEquivalentModels, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID:       accountID,
 		SupportedModels: publicaccounts.NewStringListValue(equivalentModels, true),
@@ -460,10 +467,15 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountModels(t, ctx, db, accountID, w1bGPTDefaultSupportedModels)
 	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeEquivalentUpdate)
 	assertW1bPublicAccountResponseHidesHealthCheckModel(t, preservedForEquivalentModels)
-	assertW1bPublicAccountRuntimeReset(t, ctx, db, accountID)
+	assertW1bPublicAccountHealthCheckScheduled(
+		t,
+		readW1bPublicAccountRuntimeState(t, ctx, db, accountID),
+		runtimeBeforeEquivalentUpdate,
+	)
 
 	setW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bValidBuiltInModel)
 	seedW1bPublicAccountRuntimeState(t, ctx, db, accountID, now)
+	runtimeBeforeContainingModelsUpdate := readW1bPublicAccountRuntimeState(t, ctx, db, accountID)
 	preservedForContainingModels, err := service.Update(ctx, publicaccounts.UpdateInput{
 		AccountID:       accountID,
 		SupportedModels: publicaccounts.NewStringListValue([]string{w1bValidBuiltInModel, "gpt-5.5"}, true),
@@ -474,7 +486,11 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountHealthCheckModel(t, ctx, db, accountID, w1bValidBuiltInModel)
 	assertW1bPublicAccountModels(t, ctx, db, accountID, []string{w1bValidBuiltInModel, "gpt-5.5"})
 	assertW1bPublicAccountResponseHidesHealthCheckModel(t, preservedForContainingModels)
-	assertW1bPublicAccountRuntimeReset(t, ctx, db, accountID)
+	assertW1bPublicAccountHealthCheckScheduled(
+		t,
+		readW1bPublicAccountRuntimeState(t, ctx, db, accountID),
+		runtimeBeforeContainingModelsUpdate,
+	)
 
 	modelBindingsBeforeRejectedRemoval := readW1bPublicAccountModelBindings(t, ctx, db, accountID)
 	if _, err := service.Update(ctx, publicaccounts.UpdateInput{
@@ -488,7 +504,6 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountModelBindingsUnchanged(t, ctx, db, accountID, modelBindingsBeforeRejectedRemoval)
 
 	seedW1bPublicAccountRuntimeState(t, ctx, db, accountID, now)
-	runtimeBeforeDisabledUpdate := readW1bPublicAccountRuntimeState(t, ctx, db, accountID)
 	updatedSecret := "sk-fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	updatedBaseURL := "https://api.openai.com/v2"
 	updatedName := "公开账号更新"
@@ -522,7 +537,6 @@ func TestW1bPublicAccountsPostgresSmoke(t *testing.T) {
 	assertW1bPublicAccountDisabledRuntimeState(
 		t,
 		readW1bPublicAccountRuntimeState(t, ctx, db, accountID),
-		runtimeBeforeDisabledUpdate,
 	)
 
 	hybridModel := "w1b-hybrid-arbitrary-model"
@@ -885,10 +899,21 @@ func assertW1bPublicAccountRuntimeState(
 	}
 }
 
-func assertW1bPublicAccountDisabledRuntimeState(
+func assertW1bPublicAccountHealthCheckScheduled(
 	t *testing.T,
 	got w1bPublicAccountRuntimeState,
 	before w1bPublicAccountRuntimeState,
+) {
+	t.Helper()
+
+	want := before
+	want.NextHealthCheckAt = sql.NullTime{}
+	assertW1bPublicAccountRuntimeState(t, got, want)
+}
+
+func assertW1bPublicAccountDisabledRuntimeState(
+	t *testing.T,
+	got w1bPublicAccountRuntimeState,
 ) {
 	t.Helper()
 
@@ -897,12 +922,12 @@ func assertW1bPublicAccountDisabledRuntimeState(
 		got.CooldownUntil.Valid ||
 		got.LastErrorCode.Valid ||
 		got.LastErrorMessage.Valid ||
-		!equalW1bNullTime(got.NextHealthCheckAt, before.NextHealthCheckAt) ||
-		got.HealthCheckFailureCount != before.HealthCheckFailureCount ||
-		got.LastHealthCheckStatusCode != before.LastHealthCheckStatusCode ||
-		got.LastHealthCheckErrorCode != before.LastHealthCheckErrorCode ||
-		got.LastHealthCheckErrorMessage != before.LastHealthCheckErrorMessage {
-		t.Fatalf("disabled runtime state = %+v, before %+v", got, before)
+		got.NextHealthCheckAt.Valid ||
+		got.HealthCheckFailureCount != 0 ||
+		got.LastHealthCheckStatusCode.Valid ||
+		got.LastHealthCheckErrorCode.Valid ||
+		got.LastHealthCheckErrorMessage.Valid {
+		t.Fatalf("disabled runtime state was not reset: %+v", got)
 	}
 }
 
@@ -1130,8 +1155,10 @@ func assertW1bPublicAccountModels(t *testing.T, ctx context.Context, db *sql.DB,
 func assertW1bPublicAccountModelList(t *testing.T, got []string, want []string) {
 	t.Helper()
 
-	if !slices.Equal(got, want) {
-		t.Fatalf("supported models = %v, want %v", got, want)
+	sortedWant := slices.Clone(want)
+	slices.Sort(sortedWant)
+	if !slices.Equal(got, sortedWant) {
+		t.Fatalf("supported models = %v, want %v", got, sortedWant)
 	}
 }
 

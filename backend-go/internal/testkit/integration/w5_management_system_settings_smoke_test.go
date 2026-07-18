@@ -690,7 +690,7 @@ func assertW5SystemSettingsOperationLog(
 		!row.CreatedAt.UTC().Equal(wantCreatedAt.UTC()) {
 		t.Fatalf("system settings operation log = %+v", row)
 	}
-	const wantChanges = `[{"field":"accountTestTaskConcurrency","label":"accountTestTaskConcurrency","before":100,"after":8},{"field":"gatewayTextRawBodyLimitMegabytes","label":"gatewayTextRawBodyLimitMegabytes","before":16,"after":32},{"field":"systemMetricsHourlyRetentionDays","label":"systemMetricsHourlyRetentionDays","before":1,"after":20}]`
+	const wantChanges = `[{"field":"accountTestTaskConcurrency","label":"accountTestTaskConcurrency","before":100,"after":8},{"field":"gatewayTextRawBodyLimitMegabytes","label":"gatewayTextRawBodyLimitMegabytes","before":16,"after":32},{"field":"systemMetricsHourlyRetentionDays","label":"systemMetricsHourlyRetentionDays","before":30,"after":20}]`
 	if row.ChangesJSON != wantChanges {
 		t.Fatalf("system settings operation log changes = %s, want %s", row.ChangesJSON, wantChanges)
 	}

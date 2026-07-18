@@ -21,6 +21,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/managementproviders"
+	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -84,10 +85,88 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	if findW2ProviderModel(models, "gpt-5.6-sol") == nil {
 		t.Fatalf("seeded gpt-5.6-sol model missing: %+v", models)
 	}
-	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-sol"), "2026-06-26", 372000, 0.5, 6.25)
+	builtInModel := findW2ProviderModel(models, "gpt-5.6-sol")
+	if builtInModel.ID == "" || builtInModel.InputUSDPer1M == nil || builtInModel.OutputUSDPer1M == nil {
+		t.Fatalf("seeded gpt-5.6-sol model missing provider_model_catalog ID: %+v", builtInModel)
+	}
+	originalInputPrice := *builtInModel.InputUSDPer1M
+	originalOutputPrice := *builtInModel.OutputUSDPer1M
+	inputPrice := 41.0
+	_, found, err := store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
+		InputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true, Value: &inputPrice},
+	}, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error { return nil })
+	if err != nil || !found {
+		t.Fatalf("update built-in input price: found=%v err=%v", found, err)
+	}
+	outputPrice := 42.0
+	_, found, err = store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
+		OutputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true, Value: &outputPrice},
+	}, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error { return nil })
+	if err != nil || !found {
+		t.Fatalf("update built-in output price: found=%v err=%v", found, err)
+	}
+	var actualInputPrice sql.NullFloat64
+	var actualOutputPrice sql.NullFloat64
+	if err := db.QueryRowContext(ctx, `
+		SELECT input_usd_per_1m, output_usd_per_1m
+		FROM juhe_business.provider_model_catalog
+		WHERE id = $1
+	`, builtInModel.ID).Scan(&actualInputPrice, &actualOutputPrice); err != nil {
+		t.Fatalf("query sequential built-in prices: %v", err)
+	}
+	if !actualInputPrice.Valid || actualInputPrice.Float64 != inputPrice || !actualOutputPrice.Valid || actualOutputPrice.Float64 != outputPrice {
+		t.Fatalf("sequential built-in prices = input:%+v output:%+v", actualInputPrice, actualOutputPrice)
+	}
+	_, found, err = store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
+		InputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true},
+	}, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error { return nil })
+	if err != nil || !found {
+		t.Fatalf("clear built-in input price: found=%v err=%v", found, err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT input_usd_per_1m, output_usd_per_1m
+		FROM juhe_business.provider_model_catalog
+		WHERE id = $1
+	`, builtInModel.ID).Scan(&actualInputPrice, &actualOutputPrice); err != nil {
+		t.Fatalf("query cleared built-in price: %v", err)
+	}
+	if actualInputPrice.Valid || !actualOutputPrice.Valid || actualOutputPrice.Float64 != outputPrice {
+		t.Fatalf("cleared built-in prices = input:%+v output:%+v", actualInputPrice, actualOutputPrice)
+	}
+	restored, found, err := store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
+		ID: builtInModel.ID, ProviderCode: builtInModel.ProviderCode,
+		InputUSDPer1M:  port.ManagementProviderModelOptionalFloat{Present: true, Value: &originalInputPrice},
+		OutputUSDPer1M: port.ManagementProviderModelOptionalFloat{Present: true, Value: &originalOutputPrice},
+	}, func(port.ManagementBuiltInProviderModelPriceUpdateResult) error { return nil })
+	if err != nil || !found {
+		t.Fatalf("restore built-in prices: found=%v err=%v", found, err)
+	}
+	if restored.Before.InputUSDPer1M != nil ||
+		restored.Before.OutputUSDPer1M == nil || *restored.Before.OutputUSDPer1M != outputPrice {
+		t.Fatalf("pre-restore RETURNING prices = %+v", restored.Before)
+	}
+	if restored.After.InputUSDPer1M == nil || *restored.After.InputUSDPer1M != originalInputPrice ||
+		restored.After.OutputUSDPer1M == nil || *restored.After.OutputUSDPer1M != originalOutputPrice {
+		t.Fatalf("restored RETURNING prices = %+v", restored)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT input_usd_per_1m, output_usd_per_1m
+		FROM juhe_business.provider_model_catalog
+		WHERE id = $1
+	`, builtInModel.ID).Scan(&actualInputPrice, &actualOutputPrice); err != nil {
+		t.Fatalf("query restored built-in prices: %v", err)
+	}
+	if !actualInputPrice.Valid || actualInputPrice.Float64 != originalInputPrice ||
+		!actualOutputPrice.Valid || actualOutputPrice.Float64 != originalOutputPrice {
+		t.Fatalf("restored built-in prices = input:%+v output:%+v", actualInputPrice, actualOutputPrice)
+	}
+	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-sol"), "2026-06-26", 922000, 0.5, 6.25)
 	assertW2ProviderModelTierPricing(t, findW2ProviderModel(models, "gpt-5.6-sol"))
-	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-terra"), "2026-06-26", 372000, 0.25, 3.125)
-	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-luna"), "2026-06-26", 372000, 0.1, 1.25)
+	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-terra"), "2026-06-26", 922000, 0.25, 3.125)
+	assertW2ProviderModelPricing(t, findW2ProviderModel(models, "gpt-5.6-luna"), "2026-06-26", 922000, 0.1, 1.25)
 	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-sol"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "low", "v2")
 	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-terra"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max", "ultra"}, "medium", "v2")
 	assertW2ProviderModelRequestCapabilities(t, findW2ProviderModel(models, "gpt-5.6-luna"), priorityFlexTiers, []string{"none", "low", "medium", "high", "xhigh", "max"}, "", []string{"low", "medium", "high", "xhigh", "max"}, "medium", "")
@@ -211,8 +290,8 @@ func TestW2ManagementProviderModelsPostgresSmoke(t *testing.T) {
 	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-sol", "supportedServiceTiers", "supportedReasoningEfforts")
 	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-terra", "supportedServiceTiers", "supportedReasoningEfforts")
 	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "gpt-5.6-luna", "supportedServiceTiers", "supportedReasoningEfforts")
-	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "o3", "supportedServiceTiers", "supportedReasoningEfforts")
-	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "o4-mini", "supportedServiceTiers", "supportedReasoningEfforts")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "o3", "supportedServiceTiers")
+	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "o4-mini", "supportedServiceTiers")
 	assertW2ProviderModelOptionWireFields(t, optionsResponseBody, "gpt", "w2-personal-model", "supportedServiceTiers", "supportedReasoningEfforts", "defaultReasoningEffort")
 
 	putReq := httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model?systemAccountId=sys_w2_proxy_options", strings.NewReader(`{"model":"gpt-5.6-sol"}`))
@@ -331,16 +410,18 @@ func assertW2ProviderModelTierPricing(t *testing.T, item *managementprovidermode
 	if item == nil {
 		t.Fatalf("provider model missing")
 	}
-	if item.PriorityInputUSDPer1M == nil || *item.PriorityInputUSDPer1M != 10 ||
-		item.PriorityOutputUSDPer1M == nil || *item.PriorityOutputUSDPer1M != 60 ||
-		item.PriorityCachedInputUSDPer1M == nil || *item.PriorityCachedInputUSDPer1M != 1 ||
-		item.PriorityCacheWriteUSDPer1M == nil || *item.PriorityCacheWriteUSDPer1M != 12.5 ||
-		item.PriorityCacheWrite1hUSDPer1M != nil ||
-		item.FlexInputUSDPer1M == nil || *item.FlexInputUSDPer1M != 2.5 ||
-		item.FlexOutputUSDPer1M == nil || *item.FlexOutputUSDPer1M != 15 ||
-		item.FlexCachedInputUSDPer1M == nil || *item.FlexCachedInputUSDPer1M != 0.25 ||
-		item.FlexCacheWriteUSDPer1M == nil || *item.FlexCacheWriteUSDPer1M != 3.125 ||
-		item.FlexCacheWrite1hUSDPer1M != nil {
+	priority := item.ServiceTierPrices["priority"]
+	flex := item.ServiceTierPrices["flex"]
+	if priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != 10 ||
+		priority.OutputUSDPer1M == nil || *priority.OutputUSDPer1M != 60 ||
+		priority.CachedInputUSDPer1M == nil || *priority.CachedInputUSDPer1M != 1 ||
+		priority.CacheWriteUSDPer1M == nil || *priority.CacheWriteUSDPer1M != 12.5 ||
+		priority.CacheWrite1hUSDPer1M != nil ||
+		flex.InputUSDPer1M == nil || *flex.InputUSDPer1M != 2.5 ||
+		flex.OutputUSDPer1M == nil || *flex.OutputUSDPer1M != 15 ||
+		flex.CachedInputUSDPer1M == nil || *flex.CachedInputUSDPer1M != 0.25 ||
+		flex.CacheWriteUSDPer1M == nil || *flex.CacheWriteUSDPer1M != 3.125 ||
+		flex.CacheWrite1hUSDPer1M != nil {
 		t.Fatalf("%s tier pricing metadata = %+v", item.Model, item)
 	}
 	if item.LongContextInputTokenThreshold == nil || *item.LongContextInputTokenThreshold != 272000 ||
@@ -363,15 +444,25 @@ func assertW2ProviderModelWireTierPricing(t *testing.T, body []byte, model strin
 		if err := json.Unmarshal(item["model"], &actualModel); err != nil || actualModel != model {
 			continue
 		}
+		var prices map[string]port.ManagementProviderModelPriceSet
+		if err := json.Unmarshal(item["serviceTierPrices"], &prices); err != nil {
+			t.Fatalf("decode %s wire tier prices: %v", model, err)
+		}
+		priority := prices["priority"]
+		flex := prices["flex"]
+		if priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != 10 ||
+			priority.OutputUSDPer1M == nil || *priority.OutputUSDPer1M != 60 ||
+			priority.CachedInputUSDPer1M == nil || *priority.CachedInputUSDPer1M != 1 ||
+			priority.CacheWriteUSDPer1M == nil || *priority.CacheWriteUSDPer1M != 12.5 ||
+			priority.CacheWrite1hUSDPer1M != nil ||
+			flex.InputUSDPer1M == nil || *flex.InputUSDPer1M != 2.5 ||
+			flex.OutputUSDPer1M == nil || *flex.OutputUSDPer1M != 15 ||
+			flex.CachedInputUSDPer1M == nil || *flex.CachedInputUSDPer1M != 0.25 ||
+			flex.CacheWriteUSDPer1M == nil || *flex.CacheWriteUSDPer1M != 3.125 ||
+			flex.CacheWrite1hUSDPer1M != nil {
+			t.Fatalf("%s wire tier pricing = %+v", model, prices)
+		}
 		for field, want := range map[string]string{
-			"priorityInputUsdPer1M":           "10",
-			"priorityOutputUsdPer1M":          "60",
-			"priorityCachedInputUsdPer1M":     "1",
-			"priorityCacheWriteUsdPer1M":      "12.5",
-			"flexInputUsdPer1M":               "2.5",
-			"flexOutputUsdPer1M":              "15",
-			"flexCachedInputUsdPer1M":         "0.25",
-			"flexCacheWriteUsdPer1M":          "3.125",
 			"longContextInputTokenThreshold":  "272000",
 			"longContextInputCostMultiplier":  "2",
 			"longContextOutputCostMultiplier": "1.5",
@@ -380,9 +471,9 @@ func assertW2ProviderModelWireTierPricing(t *testing.T, body []byte, model strin
 				t.Fatalf("%s wire field %s = %s, want %s", model, field, item[field], want)
 			}
 		}
-		for _, field := range []string{"priorityCacheWrite1hUsdPer1M", "flexCacheWrite1hUsdPer1M"} {
+		for _, field := range []string{"priorityInputUsdPer1M", "priorityCacheWrite1hUsdPer1M", "flexInputUsdPer1M", "flexCacheWrite1hUsdPer1M"} {
 			if _, ok := item[field]; ok {
-				t.Fatalf("%s wire field %s must be omitted for undefined Node metadata", model, field)
+				t.Fatalf("%s wire field %s must be omitted from unified pricing payload", model, field)
 			}
 		}
 		return
@@ -485,11 +576,12 @@ func assertW2ProviderModelCatalogSnapshot(t *testing.T, ctx context.Context, db 
 		total   int64
 		visible int64
 	}
+	// Total includes historical disabled rows retained by sync migrations; visible follows the current snapshot.
 	wantCounts := map[string]counts{
 		"gpt":       {total: 81, visible: 81},
-		"anthropic": {total: 42, visible: 24},
-		"gemini":    {total: 10, visible: 10},
-		"deepseek":  {total: 6, visible: 6},
+		"anthropic": {total: 43, visible: 17},
+		"gemini":    {total: 10, visible: 9},
+		"deepseek":  {total: 6, visible: 4},
 		"glm":       {total: 18, visible: 17},
 	}
 
@@ -534,7 +626,7 @@ func assertW2ProviderModelCatalogSnapshot(t *testing.T, ctx context.Context, db 
 	}{
 		{providerCode: "gpt", model: "gpt-4.1"},
 		{providerCode: "gpt", model: "o3"},
-		{providerCode: "anthropic", model: "claude-3-7-sonnet-latest"},
+		{providerCode: "anthropic", model: "claude-sonnet-4-6"},
 		{providerCode: "gemini", model: "gemini-2.5-flash-lite"},
 		{providerCode: "deepseek", model: "deepseek-chat"},
 		{providerCode: "glm", model: "glm-4.7"},
@@ -631,52 +723,42 @@ func assertW2ProviderModelRequestCapabilitiesRow(
 
 func assertW2ProviderModelTierPricingRow(t *testing.T, ctx context.Context, db *sql.DB, model string) {
 	t.Helper()
-	var priorityInput, priorityOutput, priorityCachedInput, priorityCacheWrite sql.NullFloat64
-	var priorityCacheWrite1h sql.NullFloat64
-	var flexInput, flexOutput, flexCachedInput, flexCacheWrite sql.NullFloat64
-	var flexCacheWrite1h sql.NullFloat64
+	var serviceTierPricesJSON string
 	var longContextThreshold sql.NullInt64
 	var longContextInputMultiplier, longContextOutputMultiplier sql.NullFloat64
 	if err := db.QueryRowContext(ctx, `
 		SELECT
-			priority_input_usd_per_1m,
-			priority_output_usd_per_1m,
-			priority_cached_input_usd_per_1m,
-			priority_cache_write_usd_per_1m,
-			priority_cache_write_1h_usd_per_1m,
-			flex_input_usd_per_1m,
-			flex_output_usd_per_1m,
-			flex_cached_input_usd_per_1m,
-			flex_cache_write_usd_per_1m,
-			flex_cache_write_1h_usd_per_1m,
+			service_tier_prices_json,
 			long_context_input_token_threshold,
 			long_context_input_cost_multiplier,
 			long_context_output_cost_multiplier
 		FROM juhe_business.provider_model_catalog
 		WHERE provider_code = 'gpt' AND model = $1
 	`, model).Scan(
-		&priorityInput,
-		&priorityOutput,
-		&priorityCachedInput,
-		&priorityCacheWrite,
-		&priorityCacheWrite1h,
-		&flexInput,
-		&flexOutput,
-		&flexCachedInput,
-		&flexCacheWrite,
-		&flexCacheWrite1h,
+		&serviceTierPricesJSON,
 		&longContextThreshold,
 		&longContextInputMultiplier,
 		&longContextOutputMultiplier,
 	); err != nil {
 		t.Fatalf("query %s tier pricing metadata: %v", model, err)
 	}
-	if priorityInput.Float64 != 10 || priorityOutput.Float64 != 60 ||
-		priorityCachedInput.Float64 != 1 || priorityCacheWrite.Float64 != 12.5 ||
-		priorityCacheWrite1h.Valid ||
-		flexInput.Float64 != 2.5 || flexOutput.Float64 != 15 ||
-		flexCachedInput.Float64 != 0.25 || flexCacheWrite.Float64 != 3.125 ||
-		flexCacheWrite1h.Valid ||
+	var serviceTierPrices map[string]port.ManagementProviderModelPriceSet
+	if err := json.Unmarshal([]byte(serviceTierPricesJSON), &serviceTierPrices); err != nil {
+		t.Fatalf("decode %s tier pricing metadata: %v", model, err)
+	}
+	priority, priorityOK := serviceTierPrices["priority"]
+	flex, flexOK := serviceTierPrices["flex"]
+	if !priorityOK || !flexOK ||
+		priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != 10 ||
+		priority.OutputUSDPer1M == nil || *priority.OutputUSDPer1M != 60 ||
+		priority.CachedInputUSDPer1M == nil || *priority.CachedInputUSDPer1M != 1 ||
+		priority.CacheWriteUSDPer1M == nil || *priority.CacheWriteUSDPer1M != 12.5 ||
+		priority.CacheWrite1hUSDPer1M != nil ||
+		flex.InputUSDPer1M == nil || *flex.InputUSDPer1M != 2.5 ||
+		flex.OutputUSDPer1M == nil || *flex.OutputUSDPer1M != 15 ||
+		flex.CachedInputUSDPer1M == nil || *flex.CachedInputUSDPer1M != 0.25 ||
+		flex.CacheWriteUSDPer1M == nil || *flex.CacheWriteUSDPer1M != 3.125 ||
+		flex.CacheWrite1hUSDPer1M != nil ||
 		longContextThreshold.Int64 != 272000 ||
 		longContextInputMultiplier.Float64 != 2 ||
 		longContextOutputMultiplier.Float64 != 1.5 {

@@ -1308,6 +1308,45 @@ type ManagementCustomProviderModelSaveInput struct {
 	ActorSystemAccountID      string
 }
 
+type ManagementCustomProviderModelUpdateInput struct {
+	ID                        string
+	ProviderCode              string
+	ActorSystemAccountID      string
+	ActorRole                 string
+	Status                    ManagementProviderModelOptionalString
+	Mode                      ManagementProviderModelOptionalString
+	SupportedAPIProtocols     ManagementProviderModelOptionalStringList
+	SupportedServiceTiers     ManagementProviderModelOptionalStringList
+	SupportedReasoningEfforts ManagementProviderModelOptionalStringList
+	DefaultReasoningEffort    ManagementProviderModelOptionalString
+	ReleaseDate               ManagementProviderModelOptionalString
+	ShutdownDate              ManagementProviderModelOptionalString
+	ContextWindowTokens       ManagementProviderModelOptionalInt
+	MaxInputTokens            ManagementProviderModelOptionalInt
+	MaxOutputTokens           ManagementProviderModelOptionalInt
+	InputUSDPer1M             ManagementProviderModelOptionalFloat
+	OutputUSDPer1M            ManagementProviderModelOptionalFloat
+	CachedInputUSDPer1M       ManagementProviderModelOptionalFloat
+	CacheWriteUSDPer1M        ManagementProviderModelOptionalFloat
+	CacheWrite1hUSDPer1M      ManagementProviderModelOptionalFloat
+	ServiceTierPrices         ManagementProviderModelOptionalPriceMap
+	ImageInputUSDPer1M        ManagementProviderModelOptionalFloat
+	ImageOutputUSDPer1M       ManagementProviderModelOptionalFloat
+	AudioInputUSDPer1M        ManagementProviderModelOptionalFloat
+	AudioOutputUSDPer1M       ManagementProviderModelOptionalFloat
+	OutputUSDPerImage         ManagementProviderModelOptionalFloat
+	PricingNotes              ManagementProviderModelOptionalString
+	CapabilityNotes           ManagementProviderModelOptionalString
+	Notes                     ManagementProviderModelOptionalString
+}
+
+type ManagementCustomProviderModelUpdateResult struct {
+	Before ManagementProviderModelCatalogItem
+	After  ManagementProviderModelCatalogItem
+}
+
+type ManagementCustomProviderModelUpdateValidate func(ManagementCustomProviderModelUpdateResult) error
+
 type ManagementCustomProviderModelScopeInput struct {
 	ProviderCode    string
 	Scope           string
@@ -1381,7 +1420,7 @@ type ManagementBuiltInProviderModelPriceUpdateInput struct {
 	OutputUSDPerImage         ManagementProviderModelOptionalFloat
 }
 
-type ManagementBuiltInProviderModelPriceUpdateResult struct {
+type ManagementProviderModelConfigurationSnapshot struct {
 	ID                        string
 	ProviderCode              string
 	Status                    string
@@ -1409,6 +1448,13 @@ type ManagementBuiltInProviderModelPriceUpdateResult struct {
 	UpdatedAt                 time.Time
 }
 
+type ManagementBuiltInProviderModelPriceUpdateResult struct {
+	Before ManagementProviderModelConfigurationSnapshot
+	After  ManagementProviderModelConfigurationSnapshot
+}
+
+type ManagementBuiltInProviderModelUpdateValidate func(ManagementBuiltInProviderModelPriceUpdateResult) error
+
 type ManagementProviderModelCatalogReader interface {
 	FindManagementProviderModelProvider(ctx context.Context, code string) (ManagementProviderModelProvider, bool, error)
 	ListManagementEnabledModelProviderCodes(ctx context.Context) ([]string, error)
@@ -1427,9 +1473,10 @@ type ManagementCustomProviderModelWriter interface {
 	FindManagementCustomProviderModel(ctx context.Context, id string) (ManagementProviderModelCatalogItem, bool, error)
 	FindManagementCustomProviderModelByScope(ctx context.Context, input ManagementCustomProviderModelScopeInput) (ManagementProviderModelCatalogItem, bool, error)
 	SaveManagementCustomProviderModel(ctx context.Context, input ManagementCustomProviderModelSaveInput) (ManagementProviderModelCatalogItem, error)
+	UpdateManagementCustomProviderModel(ctx context.Context, input ManagementCustomProviderModelUpdateInput, validate ManagementCustomProviderModelUpdateValidate) (ManagementCustomProviderModelUpdateResult, bool, error)
 	DeleteManagementCustomProviderModel(ctx context.Context, id string) (bool, error)
 	GetManagementCustomProviderModelBindingSummary(ctx context.Context, input ManagementCustomProviderModelBindingInput) (ManagementCustomProviderModelBindingSummary, error)
-	UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input ManagementBuiltInProviderModelPriceUpdateInput) (ManagementBuiltInProviderModelPriceUpdateResult, bool, error)
+	UpdateManagementBuiltInProviderModelPrices(ctx context.Context, input ManagementBuiltInProviderModelPriceUpdateInput, validate ManagementBuiltInProviderModelUpdateValidate) (ManagementBuiltInProviderModelPriceUpdateResult, bool, error)
 }
 
 type ManagementRouteStrategyOption struct {
@@ -1622,11 +1669,6 @@ type ManagementGroupAccountStatsRow struct {
 	ConcurrencyLimit   int
 }
 
-type ManagementGroupAccountIDRow struct {
-	GroupID   string
-	AccountID string
-}
-
 type ManagementGroupUsageLookupInput struct {
 	Key             string
 	SystemAccountID string
@@ -1770,10 +1812,6 @@ type ManagementGroupAccountStatsReader interface {
 	ListManagementGroupAccountStats(ctx context.Context, groupIDs []string) ([]ManagementGroupAccountStatsRow, error)
 }
 
-type ManagementGroupAccountIDReader interface {
-	ListManagementGroupAccountIDs(ctx context.Context, groupIDs []string) ([]ManagementGroupAccountIDRow, error)
-}
-
 type ManagementGroupUsageReader interface {
 	ListManagementGroupUsageTotals(ctx context.Context, inputs []ManagementGroupUsageLookupInput) ([]ManagementGroupUsageRow, error)
 	ListManagementGroupUsageDaily(ctx context.Context, statDate string, inputs []ManagementGroupUsageLookupInput) ([]ManagementGroupUsageRow, error)
@@ -1786,7 +1824,6 @@ type ManagementGroupAuthorizationSourceReader interface {
 type ManagementGroupListReader interface {
 	ManagementGroupListPageReader
 	ManagementGroupAccountStatsReader
-	ManagementGroupAccountIDReader
 	ManagementGroupUsageReader
 	ManagementGroupAuthorizationSourceReader
 }

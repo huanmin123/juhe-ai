@@ -38,22 +38,23 @@ export async function accountManualTestOptionsAsync(account: AccountSummary): Pr
     includeUnpriced: true
   })
   const accountEndpointModes = accountManualTestEndpointModes(account)
-  const models = catalog
+  const eligibleModels = catalog
     .filter((item) => item.status === 'active' && isAccountManualTestModel(item, account))
     .map((item) => ({
       model: item.model,
       supportedApiProtocols: [...(item.supportedApiProtocols ?? [])],
       testEndpointModes: accountManualTestEndpointModesForModel(account, item, catalog, accountEndpointModes)
     }))
-    .filter((item) => item.testEndpointModes.length > 0)
-  if (!models.some((item) => item.model === account.healthCheckModel)) {
+  const defaultModel = eligibleModels.find((item) => item.model === account.healthCheckModel)
+  if (!defaultModel) {
     throw new Error(`账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：${account.healthCheckModel}`)
   }
-  const testEndpointModes = models.find((item) => item.model === account.healthCheckModel)?.testEndpointModes ?? []
+  const testEndpointModes = defaultModel.testEndpointModes
   const defaultTestEndpointMode = testEndpointModes[0]
   if (!defaultTestEndpointMode) {
     throw new Error('账户上游接口能力中没有可用于连接测试的请求形态')
   }
+  const models = eligibleModels.filter((item) => item.testEndpointModes.length > 0)
   return {
     accountId: account.id,
     defaultModel: account.healthCheckModel,

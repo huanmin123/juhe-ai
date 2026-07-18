@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1562,6 +1563,14 @@ func assertW5ManagementAPIKeyDeleteOperationLogViewer(
 	logID string,
 ) {
 	t.Helper()
+	var actorSystemAccountID string
+	if err := db.QueryRowContext(ctx, `
+		SELECT actor_system_account_id
+		FROM juhe_dataset.operation_logs
+		WHERE id = $1
+	`, logID).Scan(&actorSystemAccountID); err != nil {
+		t.Fatalf("query API Key delete operation log actor %s: %v", logID, err)
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT system_account_id, visibility_reason, detail_level
 		FROM juhe_dataset.operation_log_viewers
@@ -1572,32 +1581,25 @@ func assertW5ManagementAPIKeyDeleteOperationLogViewer(
 	}
 	defer rows.Close()
 
-	count := 0
+	want := map[string]string{
+		actorSystemAccountID + "\x00actor_self":              "full",
+		w5ManagementAPIKeyListOwnerID + "\x00resource_owner": "full",
+	}
+	got := make(map[string]string, len(want))
 	for rows.Next() {
-		count++
 		var systemAccountID string
 		var visibilityReason string
 		var detailLevel string
 		if err := rows.Scan(&systemAccountID, &visibilityReason, &detailLevel); err != nil {
 			t.Fatalf("scan API Key delete operation log viewer %s: %v", logID, err)
 		}
-		if systemAccountID != w5ManagementAPIKeyListOwnerID ||
-			visibilityReason != "resource_owner" ||
-			detailLevel != "full" {
-			t.Fatalf(
-				"API Key delete operation log viewer %s = %q/%q/%q",
-				logID,
-				systemAccountID,
-				visibilityReason,
-				detailLevel,
-			)
-		}
+		got[systemAccountID+"\x00"+visibilityReason] = detailLevel
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate API Key delete operation log viewers %s: %v", logID, err)
 	}
-	if count != 1 {
-		t.Fatalf("API Key delete operation log viewers %s = %d, want 1", logID, count)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("API Key delete operation log viewers %s = %+v, want %+v", logID, got, want)
 	}
 }
 

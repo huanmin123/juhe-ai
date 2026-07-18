@@ -17,9 +17,13 @@ assertFunctionExcludes(systemTeamRepository, 'listSystemTeamsPageAsync', 'listSy
 
 const externalSourceRepository = readSource('storage/external-integration-source.repository.ts')
 assertIncludes(externalSourceRepository, 'mapSourceListItem', '外部接入源列表必须使用轻量映射')
+assertIncludes(externalSourceRepository, 'loadExternalIntegrationSourceTokenStatsBySourceIds', '外部接入源列表必须只对当前页批量读取 token 计数')
 assertIncludes(externalSourceRepository, 'loadExternalIntegrationSourcePrimaryTokensBySourceIds', '外部接入源列表只能加载主 token 预览')
 assertFunctionExcludes(externalSourceRepository, 'listExternalIntegrationSources', 'loadExternalIntegrationSourceTokensBySourceIds(', '外部接入源列表不得加载完整 tokens')
 assertFunctionExcludes(externalSourceRepository, 'listExternalIntegrationSourcesAsync', 'loadExternalIntegrationSourceTokensBySourceIdsAsync(', '外部接入源异步列表不得加载完整 tokens')
+const externalSourceTokenRepository = readSource('storage/external-integration-source-token.repository.ts')
+assertFunctionExcludes(externalSourceTokenRepository, 'loadExternalIntegrationSourcePrimaryTokensBySourceIds', 'tokens.*', '外部接入源主 token 预览不得读取 token hash 或密文')
+assertFunctionExcludes(externalSourceTokenRepository, 'loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync', 'tokens.*', '外部接入源异步主 token 预览不得读取 token hash 或密文')
 
 const modelChecksRepository = readSource('storage/model-checks.repository.ts')
 assertIncludes(modelChecksRepository, 'modelCheckRunListSelectColumns', '模型检查列表必须使用列表字段选择器')

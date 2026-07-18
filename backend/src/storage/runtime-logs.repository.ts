@@ -678,20 +678,27 @@ function runtimeLogFileCursorFromRow(row: RuntimeLogRow): RuntimeLogFileCursor {
 }
 
 function normalizeRuntimeLogIndexInput(input: RuntimeLogIndexInput): NormalizedRuntimeLogIndexInput {
+  const fallbackNowIso = nowIso()
   return {
     id: input.id ?? newId('rtlog'),
     logFile: input.logFile,
     logOffset: integerOrNull(input.logOffset),
     lineNumber: integerOrNull(input.lineNumber),
-    time: input.time,
+    time: normalizeRuntimeLogTimestamp(input.time) ?? fallbackNowIso,
     level: normalizeLevel(input.level),
     traceId: input.traceId,
     event: input.event,
     message: input.message,
     errorMessage: input.errorMessage,
     rawJson: truncateRuntimeLogRawJson(input.rawJson),
-    createdAt: input.createdAt ?? nowIso()
+    createdAt: normalizeRuntimeLogTimestamp(input.createdAt) ?? fallbackNowIso
   }
+}
+
+function normalizeRuntimeLogTimestamp(value: string | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined
 }
 
 function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getDatasetDatabase>, rows: RuntimeLogFacetInput[]): void {

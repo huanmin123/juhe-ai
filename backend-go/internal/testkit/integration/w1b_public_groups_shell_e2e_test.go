@@ -284,8 +284,10 @@ func assertW1bShellPublicAPILogs(t *testing.T, ctx context.Context, db *sql.DB, 
 	t.Helper()
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, trace_id, source_ref_id, token_id, token_prefix, is_test_token, method, path, query_string,
-		       client_ip, user_agent, status_code, success, request_capture_status, response_capture_status,
+		SELECT id, COALESCE(trace_id, ''), COALESCE(source_ref_id, ''), COALESCE(token_id, ''),
+		       COALESCE(token_prefix, ''), is_test_token, method, path, COALESCE(query_string, ''),
+		       COALESCE(client_ip, ''), COALESCE(user_agent, ''), COALESCE(status_code, 0), success,
+		       request_capture_status, response_capture_status,
 		       request_data_json, response_data_json, COALESCE(error_code, ''), COALESCE(error_message, '')
 		FROM juhe_dataset.public_api_logs
 		WHERE id LIKE 'publog_w1b_group_shell_%'

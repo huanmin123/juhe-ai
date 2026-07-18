@@ -104,6 +104,19 @@ type ManagementClientIPStatsDetailInput struct {
 	Offset    int
 }
 
+type ManagementClientIPStatsRegistry struct {
+	IPHash         string
+	AggregateIPKey string
+	LastSeenAt     string
+}
+
+type ManagementClientIPStatsRegistryReader interface {
+	FindManagementClientIPStatsRegistry(
+		ctx context.Context,
+		ipHash string,
+	) (ManagementClientIPStatsRegistry, bool, error)
+}
+
 type ManagementClientIPAccountUsageRow struct {
 	AccountID                     string
 	AccountName                   *string
@@ -113,17 +126,13 @@ type ManagementClientIPAccountUsageRow struct {
 }
 
 type ManagementClientIPStatsDetailPage struct {
-	Found          bool
-	IPHash         string
-	AggregateIPKey string
-	LastSeenAt     string
-	Rows           []ManagementClientIPAccountUsageRow
-	HasMore        bool
-	RangeReady     bool
+	Rows       []ManagementClientIPAccountUsageRow
+	HasMore    bool
+	RangeReady bool
 }
 
 type ManagementClientIPStatsDetailReader interface {
-	GetManagementClientIPStatsDetail(
+	ListManagementClientIPStatsDetail(
 		ctx context.Context,
 		input ManagementClientIPStatsDetailInput,
 	) (ManagementClientIPStatsDetailPage, error)

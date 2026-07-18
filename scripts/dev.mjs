@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveDevelopmentAutoLoginUsername } from './dev-config.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const frontendRoot = resolve(root, 'frontend')
@@ -34,10 +35,13 @@ try {
 await new Promise(() => undefined)
 
 function startPnpm(args, label, onOutput) {
+  const developmentAutoLoginUsername = resolveDevelopmentAutoLoginUsername(process.env.JUHE_AI_DEV_AUTO_LOGIN_USERNAME)
   const childEnv = label === 'backend'
     ? {
         ...process.env,
-        JUHE_AI_DEV_AUTO_LOGIN_USERNAME: process.env.JUHE_AI_DEV_AUTO_LOGIN_USERNAME || 'admin'
+        ...(developmentAutoLoginUsername === undefined
+          ? {}
+          : { JUHE_AI_DEV_AUTO_LOGIN_USERNAME: developmentAutoLoginUsername })
       }
     : process.env
   const child = spawn(pnpmRunner.command, [...pnpmRunner.args, ...args], {

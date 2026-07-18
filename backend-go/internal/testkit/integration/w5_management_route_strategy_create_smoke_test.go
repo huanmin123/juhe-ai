@@ -266,7 +266,7 @@ func TestW5ManagementRouteStrategyCreatePostgresSmoke(t *testing.T) {
 	var bindingCount int
 	if err := db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
-		FROM juhe_business.route_strategy_group_bindings AS bindings
+		FROM juhe_business.route_strategy_groups AS bindings
 		JOIN juhe_business.route_strategies AS strategies
 		  ON strategies.id = bindings.route_strategy_id
 		WHERE strategies.system_account_id = $1

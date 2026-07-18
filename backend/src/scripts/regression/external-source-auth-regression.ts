@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import type { Express } from 'express'
 
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import type { AccountSummary } from '../../domain/types.js'
 
 if (process.env.JUHE_AI_EXTERNAL_SOURCE_AUTH_DEMO_CHILD === '1') {
   await runChild()
@@ -76,10 +77,15 @@ async function runChild(): Promise<void> {
     flushExternalIntegrationSourceLastUsedTouchesForTest
   } = await import('../../storage/external-integration-source-auth.repository.js')
   const {
+    AccountConfigRevisionConflictError,
     createSession,
+    findAccountSummary,
     findSystemAccountByUsername,
+    updateAccount,
+    updateAccountAsync,
     updateSystemAccount
   } = await import('../../storage/repositories.js')
+  const { updatePublicWelfareAccount } = await import('../../modules/external-integrations/external-public-account-push.service.js')
   const { closeStorageDatabases, getBusinessDatabase } = await import('../../storage/database.js')
   const { closeSqliteReadWorkerPool } = await import('../../storage/sqlite-read-worker-pool.js')
 
@@ -200,7 +206,16 @@ async function runChild(): Promise<void> {
     const roundRobinRouteStrategy = await createPublicRouteStrategy(baseUrl, resourceToken, targetUsername, publicGroup.id, '公开轮询路由', 'round_robin')
     await assertPublicRouteStrategyCrud(baseUrl, resourceToken, targetUsername, publicGroup.id, routeStrategy.id)
     const apiKeyId = await assertPublicApiKeyCrud(baseUrl, resourceToken, targetUsername, routeStrategy.id, roundRobinRouteStrategy.id)
-    const accountId = await assertPublicAccountCrud(baseUrl, resourceToken, targetUsername)
+    const accountId = await assertPublicAccountCrud(baseUrl, resourceToken, targetUsername, {
+      repositories: {
+        AccountConfigRevisionConflictError,
+        findAccountSummary,
+        findSystemAccountByUsername,
+        updateAccount,
+        updateAccountAsync
+      },
+      service: { updatePublicWelfareAccount }
+    })
 
     await assertDisabledTargetBoundary(baseUrl, resourceToken, targetUsername, {
       groupId: publicGroup.id,
@@ -285,6 +300,14 @@ async function assertBuiltInSourceManagement(baseUrl: string, adminCookie: strin
   const builtInSource = builtInList.body.data.items.find((item: any) => item.id === builtInSourceId)
   assert(builtInSource, '外部来源授权列表应默认包含内置测试来源')
   assert.equal(builtInSource.isBuiltIn, true, '内置测试来源应带只读标识')
+  assert.equal(builtInSource.tokenCount, 1, '外部来源列表应只对当前页批量回填 tokenCount')
+  assert.equal(builtInSource.activeTokenCount, 1, '外部来源列表应只对当前页批量回填 activeTokenCount')
+  assert.equal(builtInSource.primaryToken?.isBuiltIn, true, '外部来源列表应返回内置主 Token 摘要')
+  assert.equal(builtInSource.primaryToken?.tokenPrefix, builtInTestToken.slice(0, 8), '主 Token 摘要应保留前缀')
+  assert.equal(builtInSource.primaryToken?.tokenSuffix, builtInTestToken.slice(-8), '主 Token 摘要应保留后缀')
+  for (const sensitiveField of ['token', 'tokenHash', 'tokenSecretEncrypted']) {
+    assert.equal(Object.hasOwn(builtInSource.primaryToken ?? {}, sensitiveField), false, `主 Token 摘要不应返回 ${sensitiveField}`)
+  }
   assert.deepEqual(builtInSource.scopes, expectedScopes, '内置测试来源应授权当前全部公开资源维护接口')
   assert.equal(builtInSource.scopes.some((scope: string) => scope.includes('usage') || scope.includes('ranking') || scope.includes('access_info') || scope.includes('source_auth_demo')), false, '内置测试来源不应再授权旧公开统计或 demo scope')
 
@@ -473,7 +496,20 @@ async function assertPublicApiKeyCrud(baseUrl: string, token: string, targetUser
   return apiKeyId
 }
 
-async function assertPublicAccountCrud(baseUrl: string, token: string, targetUsername: string): Promise<string> {
+async function assertPublicAccountCrud(
+  baseUrl: string,
+  token: string,
+  targetUsername: string,
+  dependencies: {
+    repositories: Pick<typeof import('../../storage/repositories.js'),
+      | 'AccountConfigRevisionConflictError'
+      | 'findAccountSummary'
+      | 'findSystemAccountByUsername'
+      | 'updateAccount'
+      | 'updateAccountAsync'>
+    service: Pick<typeof import('../../modules/external-integrations/external-public-account-push.service.js'), 'updatePublicWelfareAccount'>
+  }
+): Promise<string> {
   const add = await requestJson(baseUrl, '/__aipublic__/account/add', {
     Authorization: `Bearer ${token}`
   }, 'POST', {
@@ -486,7 +522,7 @@ async function assertPublicAccountCrud(baseUrl: string, token: string, targetUse
     baseUrl: 'https://push.example/v1',
     apiKey: 'sk-public-account-regression',
     status: 'disabled',
-    supportedModels: ['gpt-5.5']
+    supportedModels: ['gpt-5.6-sol']
   })
   assert.equal(add.status, 201, `公开账号新增应成功：${JSON.stringify(add.body)}`)
   assert(add.body.data.account.id, '公开账号新增应返回账号 ID')
@@ -499,16 +535,101 @@ async function assertPublicAccountCrud(baseUrl: string, token: string, targetUse
   assert.equal(list.status, 200)
   assert(list.body.data.items.some((item: any) => item.id === accountId), '公开账号列表应返回新增账号')
 
-  const update = await requestJson(baseUrl, '/__aipublic__/account/update', {
+  const target = dependencies.repositories.findSystemAccountByUsername(targetUsername)
+  assert(target, '公开账号新增应自动创建目标 owner')
+  const access = { systemAccountId: target.id, role: 'user' as const }
+  const existing = dependencies.repositories.findAccountSummary(accountId, access)
+  assert(existing, '公开账号新增后应能按目标 owner 读取')
+  const accountWithOverrides = dependencies.repositories.updateAccount(accountId, {
+    credentials: {
+      ...existing.credentials,
+      service_tier_override: 'priority',
+      reasoning_effort_override: 'low'
+    }
+  }, access)
+  assert(accountWithOverrides, '回归夹具应能为公开 GPT 账户注入合法覆盖')
+
+  const syncUpdate = dependencies.service.updatePublicWelfareAccount({
+    accountId,
+    apiKey: 'sk-public-account-regression-sync-compatible',
+    supportedModels: ['gpt-5.6-sol', 'gpt-5.5-2026-04-23']
+  })
+  assert.deepEqual(syncUpdate.account.supportedModels, ['gpt-5.6-sol', 'gpt-5.5-2026-04-23'], '同步公开更新应接受支持覆盖的模型')
+  const afterSyncUpdate = dependencies.repositories.findAccountSummary(accountId, access)
+  assert(afterSyncUpdate, '同步公开更新后账户应仍存在')
+  assert.equal(afterSyncUpdate.credentials.service_tier_override, 'priority', '同步公开更新必须保留服务等级覆盖')
+  assert.equal(afterSyncUpdate.credentials.reasoning_effort_override, 'low', '同步公开更新必须保留思考级别覆盖')
+
+  const asyncUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
     Authorization: `Bearer ${token}`
   }, 'POST', {
     accountId,
-    apiKey: 'sk-public-account-regression-updated',
-    status: 'disabled'
+    apiKey: 'sk-public-account-regression-async-compatible',
+    supportedModels: ['gpt-5.6-sol', 'gpt-5.5']
   })
-  assert.equal(update.status, 200, `公开账号修改应成功：${JSON.stringify(update.body)}`)
-  assert.equal(update.body.data.account.status, 'disabled')
+  assert.equal(asyncUpdate.status, 200, `异步公开账号修改应成功：${JSON.stringify(asyncUpdate.body)}`)
+  assert.deepEqual(asyncUpdate.body.data.account.supportedModels, ['gpt-5.6-sol', 'gpt-5.5'], '异步公开更新应接受支持覆盖的模型')
+  const afterAsyncUpdate = dependencies.repositories.findAccountSummary(accountId, access)
+  assert(afterAsyncUpdate, '异步公开更新后账户应仍存在')
+  assert.equal(afterAsyncUpdate.credentials.service_tier_override, 'priority', '异步公开更新必须保留服务等级覆盖')
+  assert.equal(afterAsyncUpdate.credentials.reasoning_effort_override, 'low', '异步公开更新必须保留思考级别覆盖')
+
+  const staleConfigRevision = afterAsyncUpdate.configRevision
+  assert.equal(typeof staleConfigRevision, 'number', 'SQLite stale revision 回归必须读取当前配置版本')
+  const concurrentWinner = dependencies.repositories.updateAccount(accountId, {
+    notes: 'SQLite revision 并发赢家'
+  }, access)
+  assert(concurrentWinner, 'SQLite stale revision 回归必须先提交并发赢家')
+  const concurrentWinnerSnapshot = publicAccountMutationSnapshot(concurrentWinner)
+  await assert.rejects(
+    dependencies.repositories.updateAccountAsync(accountId, {
+      notes: 'SQLite 陈旧写入不应落库'
+    }, access, {
+      expectedConfigRevision: staleConfigRevision
+    }),
+    (error: unknown) => error instanceof dependencies.repositories.AccountConfigRevisionConflictError,
+    'SQLite updateAccountAsync 必须拒绝 stale expected revision'
+  )
+  const afterStaleRevisionRejection = dependencies.repositories.findAccountSummary(accountId, access)
+  assert(afterStaleRevisionRejection, 'SQLite stale revision 拒绝后账户应仍存在')
+  assert.deepEqual(
+    publicAccountMutationSnapshot(afterStaleRevisionRejection),
+    concurrentWinnerSnapshot,
+    'SQLite stale revision 失败不得修改 revision、notes、credentials 或 models'
+  )
+
+  const stableSnapshot = concurrentWinnerSnapshot
+  assert.throws(() => dependencies.service.updatePublicWelfareAccount({
+    accountId,
+    apiKey: 'sk-public-account-regression-sync-rejected',
+    supportedModels: ['gpt-image-2']
+  }), /账户全部支持模型必须共同支持/, '同步公开更新必须拒绝不支持现有 GPT 覆盖的模型')
+  const afterSyncRejection = dependencies.repositories.findAccountSummary(accountId, access)
+  assert(afterSyncRejection, '同步公开更新拒绝后账户应仍存在')
+  assert.deepEqual(publicAccountMutationSnapshot(afterSyncRejection), stableSnapshot, '同步校验失败后账户 models/credentials 必须原子不变')
+
+  const missingCatalogUpdate = await requestJson(baseUrl, '/__aipublic__/account/update', {
+    Authorization: `Bearer ${token}`
+  }, 'POST', {
+    accountId,
+    apiKey: 'sk-public-account-regression-async-rejected',
+    supportedModels: ['gpt-public-catalog-missing']
+  })
+  assert.equal(missingCatalogUpdate.status, 400, `异步公开更新目录缺失模型应被拒绝：${JSON.stringify(missingCatalogUpdate.body)}`)
+  assert.match(missingCatalogUpdate.body.message, /模型目录缺少账户支持模型.*gpt-public-catalog-missing/)
+  const afterAsyncRejection = dependencies.repositories.findAccountSummary(accountId, access)
+  assert(afterAsyncRejection, '异步公开更新拒绝后账户应仍存在')
+  assert.deepEqual(publicAccountMutationSnapshot(afterAsyncRejection), stableSnapshot, '异步校验失败后账户 models/credentials 必须原子不变')
   return accountId
+}
+
+function publicAccountMutationSnapshot(account: AccountSummary): Pick<AccountSummary, 'configRevision' | 'credentials' | 'notes' | 'supportedModels'> {
+  return {
+    configRevision: account.configRevision,
+    credentials: structuredClone(account.credentials),
+    notes: account.notes,
+    supportedModels: [...(account.supportedModels ?? [])]
+  }
 }
 
 async function assertDisabledTargetBoundary(baseUrl: string, token: string, targetUsername: string, ids: {

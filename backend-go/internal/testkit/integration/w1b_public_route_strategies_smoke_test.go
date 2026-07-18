@@ -505,7 +505,7 @@ func insertW1bDefaultRouteStrategy(t *testing.T, ctx context.Context, db *sql.DB
 	if err != nil {
 		t.Fatalf("insert default route strategy: %v", err)
 	}
-	insertW1bRouteStrategyBinding(t, ctx, db, ownerID, routeID, bindingID, groupID, now)
+	insertW1bRouteStrategyBinding(t, ctx, db, ownerID, routeID, bindingID, groupID, 1, now)
 }
 
 func w1bRouteStrategyTimePtr(value time.Time) *time.Time {

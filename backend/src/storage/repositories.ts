@@ -99,7 +99,7 @@ import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot, ups
 import { createApiKeyRecord, createApiKeyRecordAsync, deleteApiKey, deleteApiKeyAsync, findApiKeySecret, findApiKeySecretAsync, findApiKeySummary, findApiKeySummaryAsync, listApiKeys, listApiKeysAsync, listApiKeysPage, listApiKeysPageAsync, refreshApiKeySecret, refreshApiKeySecretAsync, updateApiKey, updateApiKeyAsync } from './api-key.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, maskSecret } from './crypto.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction, runInDatabaseTransaction } from './database.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { runtimeConfig } from '../config/runtime.js'
 import type { DatabaseClient } from './database-client.js'
@@ -477,6 +477,11 @@ export {
   updateApiKey,
   updateApiKeyAsync
 } from './api-key.repository.js'
+export {
+  findChatApiKeySecretAsync,
+  findDefaultChatApiKeySecretForProviderAsync,
+  type ChatApiKeySecret
+} from './chat-api-key.repository.js'
 export {
   assertRouteStrategySelectableForApiKey,
   assertRouteStrategySelectableForApiKeyAsync,
@@ -2565,9 +2570,45 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   return { ...next, tags: savedTags }
 }
 
-export async function updateAccountAsync(id: string, input: Record<string, unknown>, access?: AccessScope): Promise<AccountSummary | undefined> {
+export interface UpdateAccountAsyncOptions {
+  expectedConfigRevision?: number
+}
+
+export class AccountConfigRevisionConflictError extends Error {
+  constructor(
+    readonly accountId: string,
+    readonly expectedConfigRevision: number,
+    readonly actualConfigRevision?: number
+  ) {
+    super(`账户配置已发生并发变更，请重试：${accountId}`)
+    this.name = 'AccountConfigRevisionConflictError'
+  }
+}
+
+export async function updateAccountAsync(
+  id: string,
+  input: Record<string, unknown>,
+  access?: AccessScope,
+  options?: UpdateAccountAsyncOptions
+): Promise<AccountSummary | undefined> {
+  const expectedConfigRevision = options?.expectedConfigRevision
+  if (expectedConfigRevision !== undefined && (!Number.isInteger(expectedConfigRevision) || expectedConfigRevision < 1)) {
+    throw new Error('账户配置版本无效')
+  }
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return updateAccount(id, input, access)
+    if (expectedConfigRevision === undefined) {
+      return updateAccount(id, input, access)
+    }
+    const database = getBusinessDatabase()
+    return runInDatabaseTransaction(() => {
+      const current = findAccountSummary(id, access)
+      if (!current) return undefined
+      const currentConfigRevision = current.configRevision ?? 1
+      if (currentConfigRevision !== expectedConfigRevision) {
+        throw new AccountConfigRevisionConflictError(id, expectedConfigRevision, currentConfigRevision)
+      }
+      return updateAccount(id, input, access)
+    }, database)
   }
   assertKnownInputKeys(input, accountUpdateInputKeys, '账户更新参数')
   const client = createPostgresDatabaseClient(await getPostgresPool())
@@ -2584,6 +2625,10 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   }
   if (!canManageResourceOwner(systemAccountId, access)) {
     return undefined
+  }
+  const currentConfigRevision = current.configRevision ?? 1
+  if (expectedConfigRevision !== undefined && currentConfigRevision !== expectedConfigRevision) {
+    throw new AccountConfigRevisionConflictError(id, expectedConfigRevision, currentConfigRevision)
   }
   const currentBalanceState = accountBalanceStateFromRow(await client.one<AccountBalanceStateRow>(`
     SELECT balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at
@@ -2858,6 +2903,9 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   let renamedAuthorizationInstanceIds: string[] = []
   let savedTags = next.tags ?? []
   let updated = false
+  const expectedConfigRevisionClause = expectedConfigRevision === undefined
+    ? ''
+    : ' AND config_revision = ?'
   try {
     await client.transaction(async (tx) => {
       const result = await tx.execute(`
@@ -2877,6 +2925,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
             config_revision = config_revision + 1, updated_at = ?
         WHERE id = ?
           AND system_account_id = ?
+          ${expectedConfigRevisionClause}
           AND deleted_at IS NULL
       `, [
         next.name,
@@ -2917,9 +2966,13 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         balanceUpdate.nextRefreshAt ?? null,
         updatedAt,
         id,
-        systemAccountId
+        systemAccountId,
+        ...(expectedConfigRevision === undefined ? [] : [expectedConfigRevision])
       ])
-      if (Number(result.changes ?? 0) <= 0) {
+      if (result.changes !== 1) {
+        if (expectedConfigRevision !== undefined) {
+          throw new AccountConfigRevisionConflictError(id, expectedConfigRevision)
+        }
         return
       }
       updated = true
@@ -3010,9 +3063,9 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     throw error
   }
 
-  if (updated) {
-    await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_updated' })
-  }
+  if (!updated) return undefined
+
+  await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_updated' })
   invalidateAccountLookupCache(id)
   for (const instanceId of renamedAuthorizationInstanceIds) {
     invalidateAccountLookupCache(instanceId)

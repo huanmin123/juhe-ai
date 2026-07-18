@@ -33,7 +33,19 @@ for (const contract of [
 ]) {
   assert.match(routesSource, contract)
 }
-assert.match(routesSource, /findApiKeySecretAsync/, '模型和发送必须在服务端按当前用户读取真实 API Key')
+assert.match(routesSource, /findChatApiKeySecretAsync/, '模型和发送必须通过聊天专用轻量查询按当前用户读取真实 API Key')
+assert.doesNotMatch(routesSource, /findApiKeySecretAsync|findDefaultApiKeySecretForProviderAsync/, '聊天请求不得加载通用 API Key 用量摘要')
+assert.match(routesSource, /createConversationSchema = z\.object\(\{ apiKeyId: z\.string\(\)[\s\S]{0,120}optional\(\)/, '创建会话必须允许省略 API Key')
+assert.match(routesSource, /findDefaultChatApiKeySecretForProviderAsync/, '省略 API Key 时必须绑定当前用户的默认 GPT API Key')
+const chatApiKeyRepositorySource = readFileSync('src/storage/chat-api-key.repository.ts', 'utf8')
+assert.doesNotMatch(chatApiKeyRepositorySource, /usage-summary|loadApiKeyUsage|apiKeySummariesFromRows/, '聊天专用 Key 查询不得读取用量摘要或通用管理 DTO')
+const modelsRouteSource = routesSource.slice(
+  routesSource.indexOf("chatRouter.get('/conversations/:conversationId/models'"),
+  routesSource.indexOf("chatRouter.post('/conversations/:conversationId/stream'")
+)
+assert.doesNotMatch(modelsRouteSource, /fetch\(gatewayUrl\('\/v1\/models'\)/, '聊天模型列表不得通过内部 HTTP 重走完整网关模型链路')
+assert.doesNotMatch(modelsRouteSource, /listCachedOpenAIAccountsForGroupAsync|loadChatModelCatalogSnapshot/, '聊天模型列表不得读取分组账户快照，耗时不能随账户数量增长')
+assert.match(modelsRouteSource, /loadChatModelOptionsFromProviderCatalogs/, '聊天模型列表必须按路由供应商合集读取共享目录')
 assert.match(routesSource, /buildChatTransportRequest/, 'AI 问答模型调用必须通过 Chat\/Responses transport 重新进入现有网关')
 assert.match(routesSource, /collectChatResponsesSse\([\s\S]{0,1400}maxMessageBytes,\s*runtimeConfig\.chat\.upstreamSseMaxEvents\s*\)/, 'Responses collector 必须显式接收运行时 SSE 事件预算')
 assert.match(routesSource, /collectOpenAIChatSse\([\s\S]{0,500}runtimeConfig\.chat\.upstreamSseMaxEvents\s*\)/, 'Chat Completions collector 必须显式接收同一运行时 SSE 事件预算')

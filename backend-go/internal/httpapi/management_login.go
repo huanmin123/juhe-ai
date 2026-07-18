@@ -128,18 +128,17 @@ func decodeManagementLoginBody(w http.ResponseWriter, r *http.Request, captchaDi
 		writeMessageError(w, http.StatusBadRequest, "登录参数无效")
 		return managementLoginBody{}, false
 	}
-	var captchaID, captchaCode string
-	if !captchaDisabled {
-		captchaID, ok = decodeRequiredManagementLoginString(payload, "captchaId")
-		if !ok || strings.TrimSpace(captchaID) == "" {
-			writeMessageError(w, http.StatusBadRequest, "登录参数无效")
-			return managementLoginBody{}, false
-		}
-		captchaCode, ok = decodeRequiredManagementLoginString(payload, "captchaCode")
-		if !ok || strings.TrimSpace(captchaCode) == "" {
-			writeMessageError(w, http.StatusBadRequest, "登录参数无效")
-			return managementLoginBody{}, false
-		}
+	captchaID, captchaIDValid := decodeRequiredManagementLoginString(payload, "captchaId")
+	_, captchaIDPresent := payload["captchaId"]
+	if (!captchaDisabled || captchaIDPresent) && (!captchaIDValid || strings.TrimSpace(captchaID) == "") {
+		writeMessageError(w, http.StatusBadRequest, "登录参数无效")
+		return managementLoginBody{}, false
+	}
+	captchaCode, captchaCodeValid := decodeRequiredManagementLoginString(payload, "captchaCode")
+	_, captchaCodePresent := payload["captchaCode"]
+	if (!captchaDisabled || captchaCodePresent) && (!captchaCodeValid || strings.TrimSpace(captchaCode) == "") {
+		writeMessageError(w, http.StatusBadRequest, "登录参数无效")
+		return managementLoginBody{}, false
 	}
 	return managementLoginBody{
 		username:    username,

@@ -10,72 +10,247 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-func TestServiceModelOptionsUsesProtocolScopeAndDedupe(t *testing.T) {
-	store := &providerModelStoreStub{
-		protocolCodes: map[string][]string{
-			"openai:v1": {"gpt"},
+func TestServiceModelOptionsSelectsHighestPriorityCatalogScope(t *testing.T) {
+	builtIn := port.ManagementProviderModelCatalogItem{
+		ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active",
+		SupportedAPIProtocols:     []string{"chat_completions"},
+		SupportedServiceTiers:     []string{"priority"},
+		SupportedReasoningEfforts: []string{"low"},
+		DefaultReasoningEffort:    "low",
+	}
+	global := port.ManagementProviderModelCatalogItem{
+		ProviderCode: "gpt", Model: "gpt-5.5", Scope: "global", Status: "active",
+		SupportedAPIProtocols:     []string{"responses"},
+		SupportedServiceTiers:     []string{"flex"},
+		SupportedReasoningEfforts: []string{"high"},
+		DefaultReasoningEffort:    "high",
+	}
+	personal := port.ManagementProviderModelCatalogItem{
+		ProviderCode: "gpt", Model: "gpt-5.5", Scope: "personal", Status: "active",
+		SupportedAPIProtocols:     []string{"messages"},
+		SupportedReasoningEfforts: []string{"max"},
+		DefaultReasoningEffort:    "max",
+	}
+	personalWithUnsupportedDefault := personal
+	personalWithUnsupportedDefault.DefaultReasoningEffort = "low"
+	tests := []struct {
+		name                 string
+		catalog              []port.ManagementProviderModelCatalogItem
+		wantProtocols        []string
+		wantServiceTiers     []string
+		wantReasoningEfforts []string
+		wantDefaultReasoning string
+	}{
+		{
+			name:                 "personal overrides global and built-in",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn, global, personal},
+			wantProtocols:        []string{"messages"},
+			wantReasoningEfforts: []string{"max"},
+			wantDefaultReasoning: "max",
 		},
+		{
+			name:                 "global replaces missing personal",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn, global},
+			wantProtocols:        []string{"responses"},
+			wantServiceTiers:     []string{"flex"},
+			wantReasoningEfforts: []string{"high"},
+			wantDefaultReasoning: "high",
+		},
+		{
+			name:                 "built-in replaces missing custom scopes",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn},
+			wantProtocols:        []string{"chat_completions"},
+			wantServiceTiers:     []string{"priority"},
+			wantReasoningEfforts: []string{"low"},
+			wantDefaultReasoning: "low",
+		},
+		{
+			name:                 "invalid personal default does not fall back to lower scope",
+			catalog:              []port.ManagementProviderModelCatalogItem{builtIn, global, personalWithUnsupportedDefault},
+			wantProtocols:        []string{"messages"},
+			wantReasoningEfforts: []string{"max"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &providerModelStoreStub{
+				enabledCodes:  []string{"gpt"},
+				protocolCodes: map[string][]string{"openai:v1": {"gpt"}},
+				catalog:       tt.catalog,
+			}
+			service := NewService(store)
+
+			options, err := service.ModelOptions(context.Background(), ModelOptionListInput{
+				SystemAccountID: " sys_user ",
+				Protocol:        "openai",
+			})
+			if err != nil {
+				t.Fatalf("ModelOptions() error = %v", err)
+			}
+			if len(options) != 1 {
+				t.Fatalf("options = %+v, want 1 effective item", options)
+			}
+
+			option := options[0]
+			if option.ProviderCode != "gpt" || option.Model != "gpt-5.5" {
+				t.Fatalf("option = %+v", option)
+			}
+			if !slices.Equal(option.SupportedAPIProtocols, tt.wantProtocols) {
+				t.Fatalf("protocols = %+v, want %+v", option.SupportedAPIProtocols, tt.wantProtocols)
+			}
+			if !slices.Equal(option.SupportedServiceTiers, tt.wantServiceTiers) {
+				t.Fatalf("service tiers = %+v, want %+v", option.SupportedServiceTiers, tt.wantServiceTiers)
+			}
+			if !slices.Equal(option.SupportedReasoningEfforts, tt.wantReasoningEfforts) {
+				t.Fatalf("reasoning efforts = %+v, want %+v", option.SupportedReasoningEfforts, tt.wantReasoningEfforts)
+			}
+			if option.DefaultReasoningEffort != tt.wantDefaultReasoning {
+				t.Fatalf("default reasoning effort = %q, want %q", option.DefaultReasoningEffort, tt.wantDefaultReasoning)
+			}
+			if store.catalogInput.SystemAccountID != "sys_user" || store.catalogInput.IncludeInactive {
+				t.Fatalf("catalog input = %+v", store.catalogInput)
+			}
+		})
+	}
+}
+
+func TestServiceModelOptionsAppliesOpenAIAggregateScopeAcrossSourceProviders(t *testing.T) {
+	store := &providerModelStoreStub{
+		enabledCodes:  []string{"gpt", "openai"},
+		protocolCodes: map[string][]string{"openai:v1": {"gpt", "openai"}},
 		catalog: []port.ManagementProviderModelCatalogItem{
 			{
-				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "built_in", Status: "active",
-				SupportedAPIProtocols:     []string{"chat_completions"},
-				SupportedServiceTiers:     []string{"priority", "priority"},
-				SupportedReasoningEfforts: []string{"low"},
-				DefaultReasoningEffort:    "ultra",
-			},
-			{
-				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "global", Status: "active",
+				ProviderCode: "gpt", Model: "shared-model", Scope: "personal", Status: "active",
 				SupportedAPIProtocols:     []string{"responses"},
-				SupportedServiceTiers:     []string{"flex", "priority"},
-				SupportedReasoningEfforts: []string{"high"},
-				DefaultReasoningEffort:    " max ",
+				SupportedReasoningEfforts: []string{"max"},
+				DefaultReasoningEffort:    "max",
 			},
 			{
-				ProviderCode: "gpt", Model: "gpt-5.5", Scope: "personal", Status: "active",
-				SupportedReasoningEfforts: []string{"max", "high"},
+				ProviderCode: "openai", Model: "shared-model", Scope: "global", Status: "active",
+				SupportedAPIProtocols:     []string{"chat_completions"},
+				SupportedReasoningEfforts: []string{"low"},
+				DefaultReasoningEffort:    "low",
+			},
+			{
+				ProviderCode: "openai", Model: "openai-only", Scope: "global", Status: "active",
+				SupportedAPIProtocols: []string{"chat_completions"},
+			},
+		},
+	}
+
+	options, err := NewService(store).ModelOptions(context.Background(), ModelOptionListInput{SystemAccountID: "sys_user"})
+	if err != nil {
+		t.Fatalf("ModelOptions() error = %v", err)
+	}
+	if len(options) != 2 {
+		t.Fatalf("options = %+v, want effective gpt shared model and openai-only model", options)
+	}
+	if options[0].ProviderCode != "gpt" || options[0].Model != "shared-model" {
+		t.Fatalf("first option = %+v, want gpt personal winner", options[0])
+	}
+	if !slices.Equal(options[0].SupportedAPIProtocols, []string{"responses"}) ||
+		!slices.Equal(options[0].SupportedReasoningEfforts, []string{"max"}) ||
+		options[0].DefaultReasoningEffort != "max" {
+		t.Fatalf("gpt personal winner capabilities = %+v", options[0])
+	}
+	if options[1].ProviderCode != "openai" || options[1].Model != "openai-only" {
+		t.Fatalf("second option = %+v, want openai-only model", options[1])
+	}
+	for _, option := range options {
+		if option.ProviderCode == "openai" && option.Model == "shared-model" {
+			t.Fatalf("lower-priority openai global option leaked through aggregate catalog: %+v", options)
+		}
+	}
+}
+
+func TestServiceModelOptionsUsesOpenAISourceOrderForEqualScope(t *testing.T) {
+	store := &providerModelStoreStub{
+		enabledCodes:  []string{"openai"},
+		protocolCodes: map[string][]string{"openai:v1": {"gpt", "openai"}},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{
+				ProviderCode: "gpt", Model: "shared-model", Scope: "global", Status: "active",
+				SupportedReasoningEfforts: []string{"high"},
+				DefaultReasoningEffort:    "high",
+			},
+			{
+				ProviderCode: "openai", Model: "shared-model", Scope: "global", Status: "active",
+				SupportedReasoningEfforts: []string{"low"},
 				DefaultReasoningEffort:    "low",
 			},
 		},
 	}
-	service := NewService(store)
 
-	options, err := service.ModelOptions(context.Background(), ModelOptionListInput{
-		SystemAccountID: " sys_user ",
-		Protocol:        "openai",
-	})
+	options, err := NewService(store).ModelOptions(context.Background(), ModelOptionListInput{})
 	if err != nil {
 		t.Fatalf("ModelOptions() error = %v", err)
 	}
+	if len(options) != 1 || options[0].ProviderCode != "openai" || options[0].Model != "shared-model" {
+		t.Fatalf("options = %+v, want later openai source to win equal global scope", options)
+	}
+	if options[0].DefaultReasoningEffort != "low" || !slices.Equal(options[0].SupportedReasoningEfforts, []string{"low"}) {
+		t.Fatalf("equal-scope source winner capabilities = %+v", options[0])
+	}
+}
 
-	if len(options) != 1 {
-		t.Fatalf("options = %+v, want 1 deduped item", options)
+func TestServiceModelOptionsPreservesProviderCatalogOrderForHybridFirstWin(t *testing.T) {
+	store := &providerModelStoreStub{
+		enabledCodes:  []string{"z-provider", "a-provider"},
+		protocolCodes: map[string][]string{"openai:v1": {"a-provider", "z-provider"}},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{
+				ProviderCode: "a-provider", Model: "shared-model", Scope: "global", Status: "active",
+				ReleaseDate:               "2026-07-01",
+				SupportedReasoningEfforts: []string{"low"},
+				DefaultReasoningEffort:    "low",
+			},
+			{
+				ProviderCode: "z-provider", Model: "older-model", Scope: "global", Status: "active",
+				ReleaseDate:               "2026-05-01",
+				SupportedReasoningEfforts: []string{"medium"},
+				DefaultReasoningEffort:    "medium",
+			},
+			{
+				ProviderCode: "z-provider", Model: "shared-model", Scope: "global", Status: "active",
+				ReleaseDate:               "2026-06-01",
+				SupportedReasoningEfforts: []string{"high"},
+				DefaultReasoningEffort:    "high",
+			},
+		},
 	}
-	if options[0].ProviderCode != "gpt" || options[0].Model != "gpt-5.5" {
-		t.Fatalf("option = %+v", options[0])
+
+	options, err := NewService(store).ModelOptions(context.Background(), ModelOptionListInput{Protocol: "openai"})
+	if err != nil {
+		t.Fatalf("ModelOptions() error = %v", err)
 	}
-	if len(options[0].SupportedAPIProtocols) != 2 || options[0].SupportedAPIProtocols[0] != "chat_completions" || options[0].SupportedAPIProtocols[1] != "responses" {
-		t.Fatalf("protocols = %+v", options[0].SupportedAPIProtocols)
+	if len(options) != 3 {
+		t.Fatalf("options = %+v, want 3 provider-scoped options", options)
 	}
-	if !slices.Equal(options[0].SupportedServiceTiers, []string{"priority", "flex"}) {
-		t.Fatalf("service tiers = %+v", options[0].SupportedServiceTiers)
+	wantProviderModels := [][2]string{
+		{"z-provider", "shared-model"},
+		{"z-provider", "older-model"},
+		{"a-provider", "shared-model"},
 	}
-	if !slices.Equal(options[0].SupportedReasoningEfforts, []string{"low", "high", "max"}) {
-		t.Fatalf("reasoning efforts = %+v", options[0].SupportedReasoningEfforts)
+	for index, want := range wantProviderModels {
+		if options[index].ProviderCode != want[0] || options[index].Model != want[1] {
+			t.Fatalf("options[%d] = %+v, want provider=%q model=%q", index, options[index], want[0], want[1])
+		}
 	}
-	if options[0].DefaultReasoningEffort != "max" {
-		t.Fatalf("default reasoning effort = %q, want first valid candidate max", options[0].DefaultReasoningEffort)
-	}
-	if store.catalogInput.SystemAccountID != "sys_user" || store.catalogInput.IncludeInactive {
-		t.Fatalf("catalog input = %+v", store.catalogInput)
+	firstShared := options[0]
+	if firstShared.DefaultReasoningEffort != "high" || !slices.Equal(firstShared.SupportedReasoningEfforts, []string{"high"}) {
+		t.Fatalf("hybrid first-win shared option = %+v, want z-provider high", firstShared)
 	}
 }
 
 func TestServiceModelOptionsExcludesHybridProvider(t *testing.T) {
 	store := &providerModelStoreStub{
+		enabledCodes: []string{"hybrid"},
 		protocolCodes: map[string][]string{
 			"openai:v1": {"hybrid"},
 		},
@@ -137,6 +312,77 @@ func TestServiceModelsMergesScopesAndFiltersUnpriced(t *testing.T) {
 	}
 	if !store.catalogInput.IncludeInactive || store.catalogInput.SystemAccountID != "sys_user" {
 		t.Fatalf("catalog input = %+v", store.catalogInput)
+	}
+}
+
+func TestServiceModelsIncludesTierOnlyPricedModel(t *testing.T) {
+	price := 1.5
+	zeroPrice := 0.0
+	tests := []struct {
+		name              string
+		serviceTierPrices map[string]port.ManagementProviderModelPriceSet
+		wantIncluded      bool
+	}{
+		{
+			name:              "empty tier prices",
+			serviceTierPrices: map[string]port.ManagementProviderModelPriceSet{},
+			wantIncluded:      false,
+		},
+		{
+			name: "tier price with all fields nil",
+			serviceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+				"priority": {},
+			},
+			wantIncluded: false,
+		},
+		{
+			name: "non-zero tier price",
+			serviceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+				"priority": {InputUSDPer1M: &price},
+			},
+			wantIncluded: true,
+		},
+		{
+			name: "zero tier price",
+			serviceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+				"priority": {InputUSDPer1M: &zeroPrice},
+			},
+			wantIncluded: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &providerModelStoreStub{
+				providers: map[string]port.ManagementProviderModelProvider{
+					"gpt": {Code: "gpt", Enabled: true},
+				},
+				catalog: []port.ManagementProviderModelCatalogItem{{
+					ProviderCode:      "gpt",
+					Model:             "tier-only-model",
+					Scope:             "global",
+					Status:            "active",
+					ServiceTierPrices: tt.serviceTierPrices,
+				}},
+			}
+
+			models, err := NewService(store).Models(context.Background(), ModelListInput{
+				ProviderCode:    "gpt",
+				IncludeUnpriced: false,
+			})
+			if err != nil {
+				t.Fatalf("Models() error = %v", err)
+			}
+			if tt.wantIncluded {
+				if len(models) != 1 || models[0].Model != "tier-only-model" {
+					t.Fatalf("models = %+v, want tier-only priced model", models)
+				}
+				return
+			}
+			if len(models) != 0 {
+				t.Fatalf("models = %+v, want tier-only unpriced model filtered", models)
+			}
+		})
 	}
 }
 
@@ -236,6 +482,35 @@ func TestModelCatalogWireDefaultReasoningEffortIsExplicitlyNullable(t *testing.T
 	}
 }
 
+func cacheWarningLogger() (*slog.Logger, *bytes.Buffer) {
+	var logs bytes.Buffer
+	return slog.New(slog.NewJSONHandler(&logs, nil)), &logs
+}
+
+func TestNewServiceWithOptionsDefaultsLogger(t *testing.T) {
+	t.Parallel()
+
+	service := NewServiceWithOptions(ServiceOptions{})
+	if service.logger != slog.Default() {
+		t.Fatalf("logger = %p, want slog.Default() %p", service.logger, slog.Default())
+	}
+}
+
+func assertCacheWarning(t *testing.T, logs *bytes.Buffer, reason string, traceID string) {
+	t.Helper()
+	output := logs.String()
+	for _, expected := range []string{
+		`"event":"model_cache_sync_failed_after_commit"`,
+		`"reason":"` + reason + `"`,
+		`"trace_id":"` + traceID + `"`,
+		`"error":"invalidation failed"`,
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("cache sync warning = %s, want %s", output, expected)
+		}
+	}
+}
+
 func TestServiceModelsOpenAICompatibleExcludesHybridSource(t *testing.T) {
 	price := 1.5
 	store := &providerModelStoreStub{
@@ -247,6 +522,7 @@ func TestServiceModelsOpenAICompatibleExcludesHybridSource(t *testing.T) {
 		},
 		catalog: []port.ManagementProviderModelCatalogItem{
 			{ProviderCode: "gpt", Model: "gpt-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
+			{ProviderCode: "openai", Model: "openai-built-in", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
 			{ProviderCode: "openai", Model: "openai-custom", Scope: "personal", Status: "active", Source: "custom-personal", InputUSDPer1M: &price},
 			{ProviderCode: "hybrid", Model: "hybrid-direct", Scope: "personal", Status: "active", Source: "custom-personal", InputUSDPer1M: &price},
 		},
@@ -266,6 +542,12 @@ func TestServiceModelsOpenAICompatibleExcludesHybridSource(t *testing.T) {
 	}
 	if findModelCatalogItem(models, "hybrid-direct") != nil {
 		t.Fatalf("models = %+v, want no hybrid source entries", models)
+	}
+	if !slices.Equal(store.catalogInput.BuiltInProviderCodes, []string{"gpt"}) {
+		t.Fatalf("built-in provider codes = %+v, want [gpt]", store.catalogInput.BuiltInProviderCodes)
+	}
+	if !slices.Equal(store.catalogInput.CustomProviderCodes, []string{"gpt", "openai"}) {
+		t.Fatalf("custom provider codes = %+v, want [gpt openai]", store.catalogInput.CustomProviderCodes)
 	}
 }
 
@@ -292,6 +574,7 @@ func TestServiceModelsHybridUsesDistinctProtocolProviderUnion(t *testing.T) {
 		},
 		catalog: []port.ManagementProviderModelCatalogItem{
 			{ProviderCode: "gpt", Model: "gpt-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
+			{ProviderCode: "openai", Model: "openai-built-in", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
 			{ProviderCode: "openai", Model: "openai-custom", Scope: "personal", Status: "active", Source: "custom-personal", InputUSDPer1M: &price},
 			{ProviderCode: "shared", Model: "shared-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
 			{ProviderCode: "anthropic", Model: "anthropic-model", Scope: "built_in", Status: "active", Source: "seed", InputUSDPer1M: &price},
@@ -307,14 +590,23 @@ func TestServiceModelsHybridUsesDistinctProtocolProviderUnion(t *testing.T) {
 		t.Fatalf("Models() error = %v", err)
 	}
 	wantProviderCodes := []string{"gpt", "openai", "shared", "anthropic", "gemini"}
-	if !slices.Equal(store.catalogInput.BuiltInProviderCodes, wantProviderCodes) || !slices.Equal(store.catalogInput.CustomProviderCodes, wantProviderCodes) {
-		t.Fatalf("catalog input = %+v, want protocol provider union %+v", store.catalogInput, wantProviderCodes)
+	if !slices.Equal(store.catalogInput.BuiltInProviderCodes, wantProviderCodes) {
+		t.Fatalf("built-in provider codes = %+v, want %+v", store.catalogInput.BuiltInProviderCodes, wantProviderCodes)
+	}
+	if !slices.Equal(store.catalogInput.CustomProviderCodes, wantProviderCodes) {
+		t.Fatalf("custom provider codes = %+v, want %+v", store.catalogInput.CustomProviderCodes, wantProviderCodes)
+	}
+	if len(models) != 6 {
+		t.Fatalf("hybrid models = %+v, want protocol-source built-in/custom entries", models)
 	}
 	if findModelCatalogItem(models, "hybrid-direct") != nil {
 		t.Fatalf("hybrid models = %+v, want no hybrid source entries", models)
 	}
 	if findModelCatalogItem(models, "legacy-model") != nil {
 		t.Fatalf("hybrid models = %+v, want no enabled-only legacy provider entries", models)
+	}
+	if findModelCatalogItem(models, "openai-built-in") == nil || findModelCatalogItem(models, "openai-custom") == nil {
+		t.Fatalf("hybrid models = %+v, want openai built-in and custom entries", models)
 	}
 }
 
@@ -551,11 +843,31 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 	}
 }
 
+func TestServiceCreateCustomModelChecksProviderBeforeInvalidFields(t *testing.T) {
+	_, err := NewService(&providerModelStoreStub{}).CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "missing",
+		Fields:       CustomModelMutation{Invalid: true},
+	})
+	if !errors.Is(err, ErrProviderNotFound) {
+		t.Fatalf("missing provider error = %v, want ErrProviderNotFound", err)
+	}
+
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+	}
+	_, err = NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "gpt",
+		Fields:       CustomModelMutation{Invalid: true},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "自定义模型参数无效" {
+		t.Fatalf("invalid fields message = %q, ok = %v, err = %v", message, ok, err)
+	}
+}
+
 func TestServiceCreateCustomModelLogsCommittedCacheInvalidationFailureWithoutFailingWrite(t *testing.T) {
-	var logs bytes.Buffer
-	previousLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	t.Parallel()
+	logger, logs := cacheWarningLogger()
 	price := 1.25
 	store := &providerModelStoreStub{
 		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
@@ -565,6 +877,7 @@ func TestServiceCreateCustomModelLogsCommittedCacheInvalidationFailureWithoutFai
 		Store:       store,
 		Invalidator: invalidator,
 		NewID:       func(prefix string) string { return prefix + "_fixed" },
+		Logger:      logger,
 	})
 
 	result, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
@@ -587,9 +900,7 @@ func TestServiceCreateCustomModelLogsCommittedCacheInvalidationFailureWithoutFai
 	if invalidator.calls != 1 || invalidator.reason != CustomProviderModelSavedReason {
 		t.Fatalf("invalidation calls=%d reason=%q", invalidator.calls, invalidator.reason)
 	}
-	if !strings.Contains(logs.String(), `"event":"model_cache_sync_failed_after_commit"`) || !strings.Contains(logs.String(), `"trace_id":"trace_model_cache_sync"`) {
-		t.Fatalf("cache sync warning log = %s", logs.String())
-	}
+	assertCacheWarning(t, logs, CustomProviderModelSavedReason, "trace_model_cache_sync")
 }
 
 func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
@@ -764,10 +1075,9 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 	if err != nil {
 		t.Fatalf("UpdateCustomModel() clone error = %v", err)
 	}
-	if !slices.Equal(store.saveInput.SupportedServiceTiers, []string{"priority"}) ||
-		!slices.Equal(store.saveInput.SupportedReasoningEfforts, []string{"low", "high"}) ||
-		store.saveInput.DefaultReasoningEffort != "high" {
-		t.Fatalf("cloned save input = %+v", store.saveInput)
+	if store.customUpdateCalls != 1 || store.saveCalls != 0 || store.customUpdateInput.Notes.Value != "updated" ||
+		store.customUpdateInput.SupportedServiceTiers.Present || store.customUpdateInput.SupportedReasoningEfforts.Present {
+		t.Fatalf("atomic update input = %+v", store.customUpdateInput)
 	}
 
 	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
@@ -792,8 +1102,8 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 			DefaultReasoningEffort: OptionalString{Set: true, Value: ""},
 		},
 	})
-	if err != nil || store.saveInput.DefaultReasoningEffort != "" {
-		t.Fatalf("explicit default reasoning clear err = %v, save = %+v", err, store.saveInput)
+	if err != nil || !store.customUpdateInput.DefaultReasoningEffort.Present || store.customUpdateInput.DefaultReasoningEffort.Value != "" {
+		t.Fatalf("explicit default reasoning clear err = %v, update = %+v", err, store.customUpdateInput)
 	}
 
 	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
@@ -812,11 +1122,51 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 	if err != nil {
 		t.Fatalf("UpdateCustomModel() clear error = %v", err)
 	}
-	if store.saveInput.Mode != "image" ||
-		len(store.saveInput.SupportedServiceTiers) != 0 ||
-		len(store.saveInput.SupportedReasoningEfforts) != 0 ||
-		store.saveInput.DefaultReasoningEffort != "" {
-		t.Fatalf("cleared save input = %+v", store.saveInput)
+	if store.customUpdateInput.Mode.Value != "image" ||
+		len(store.customUpdateInput.SupportedServiceTiers.Value) != 0 ||
+		len(store.customUpdateInput.SupportedReasoningEfforts.Value) != 0 ||
+		store.customUpdateInput.DefaultReasoningEffort.Value != "" {
+		t.Fatalf("cleared update input = %+v", store.customUpdateInput)
+	}
+}
+
+func TestServiceUpdateCustomModelPassesSparsePresenceToAtomicStoreWithoutFindOrSave(t *testing.T) {
+	price := 1.25
+	updatedPrice := 2.5
+	existing := port.ManagementProviderModelCatalogItem{
+		ID: "custom_model_1", ProviderCode: "gpt", Model: "custom-chat", Scope: "personal",
+		SystemAccountID: "sys_user", Status: "active", SupportedAPIProtocols: []string{"responses"}, InputUSDPer1M: &price,
+	}
+	after := existing
+	after.SupportedAPIProtocols = []string{}
+	after.InputUSDPer1M = &updatedPrice
+	store := &providerModelStoreStub{
+		customByID:         map[string]port.ManagementProviderModelCatalogItem{"custom_model_1": existing},
+		customUpdateResult: port.ManagementCustomProviderModelUpdateResult{Before: existing, After: after},
+	}
+
+	result, err := NewService(store).UpdateCustomModelWithSnapshots(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "custom_model_1", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{
+			SupportedAPIProtocols: OptionalStringList{Set: true, Value: []string{}},
+			InputUSDPer1M:         OptionalFloat{Set: true, Value: &updatedPrice},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModelWithSnapshots() error = %v", err)
+	}
+	if store.customFindCalls != 0 || store.saveCalls != 0 || store.customUpdateCalls != 1 {
+		t.Fatalf("find/save/update calls = %d/%d/%d, want 0/0/1", store.customFindCalls, store.saveCalls, store.customUpdateCalls)
+	}
+	input := store.customUpdateInput
+	if input.ID != "custom_model_1" || input.ProviderCode != "gpt" || input.ActorSystemAccountID != "sys_user" || input.ActorRole != "user" ||
+		!input.SupportedAPIProtocols.Present || input.SupportedAPIProtocols.Value == nil || len(input.SupportedAPIProtocols.Value) != 0 ||
+		!input.InputUSDPer1M.Present || input.InputUSDPer1M.Value == nil || *input.InputUSDPer1M.Value != updatedPrice || input.Status.Present {
+		t.Fatalf("atomic update input = %+v", input)
+	}
+	if result.Before.InputUSDPer1M == nil || *result.Before.InputUSDPer1M != price ||
+		result.After.InputUSDPer1M == nil || *result.After.InputUSDPer1M != updatedPrice {
+		t.Fatalf("snapshots = %+v", result)
 	}
 }
 
@@ -839,8 +1189,8 @@ func TestServiceCreateCustomModelRejectsGlobalForOrdinaryUser(t *testing.T) {
 	if !ok || message != "只有管理员可以创建全局模型" {
 		t.Fatalf("forbidden message = %q, %v; err = %v", message, ok, err)
 	}
-	if store.saveInput.Model != "" {
-		t.Fatalf("save should not be called, got %+v", store.saveInput)
+	if store.saveCalls != 0 {
+		t.Fatalf("save should not be called, calls=%d", store.saveCalls)
 	}
 }
 
@@ -1008,7 +1358,7 @@ func TestServiceCreateCustomModelRejectsUnavailableConfigurationTemplate(t *test
 	}
 }
 
-func TestServiceCreateCustomModelResolvesTemplateFromMergedVisibleCatalog(t *testing.T) {
+func TestServiceCreateCustomModelResolvesConfigurationTemplateFromMergedOrdinaryCatalog(t *testing.T) {
 	price := 1.0
 	store := &providerModelStoreStub{
 		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
@@ -1021,41 +1371,125 @@ func TestServiceCreateCustomModelResolvesTemplateFromMergedVisibleCatalog(t *tes
 
 	_, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
 		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user",
-		Fields: CustomModelMutation{ConfigurationTemplateID: OptionalString{Set: true, Value: "built_in_shared"}, Model: OptionalString{Set: true, Value: "copy-built-in"}},
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "built_in_shared"},
+			Model:                   OptionalString{Set: true, Value: "copy-built-in"},
+		},
 	})
-	if message, ok := CustomModelValidationMessage(err); !ok || message != "配置模板不可用" {
-		t.Fatalf("covered built-in template message = %q, ok = %v, err = %v", message, ok, err)
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "配置模板不可用" {
+		t.Fatalf("built-in template message = %q, ok = %v, err = %v", message, ok, err)
 	}
+
 	result, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
 		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user",
-		Fields: CustomModelMutation{ConfigurationTemplateID: OptionalString{Set: true, Value: "personal_shared"}, Model: OptionalString{Set: true, Value: "copy-personal"}},
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "personal_shared"},
+			Model:                   OptionalString{Set: true, Value: "copy-personal"},
+		},
 	})
-	if err != nil || result.Model != "copy-personal" {
-		t.Fatalf("visible personal template result = %+v, err = %v", result, err)
+	if err != nil {
+		t.Fatalf("personal template CreateCustomModel() error = %v", err)
+	}
+	if result.Model != "copy-personal" || result.InputUSDPer1M == nil || *result.InputUSDPer1M != price {
+		t.Fatalf("personal template result = %+v", result)
 	}
 }
 
-func TestServiceUpdateBuiltInModelPricesPreservesPatchPresence(t *testing.T) {
-	inputPrice := 1.0
-	outputPrice := 2.0
-	cachedInputPrice := 0.5
-	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
-		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
-		InputUSDPer1M: &inputPrice, OutputUSDPer1M: &outputPrice, CachedInputUSDPer1M: &cachedInputPrice,
-	}}}
-	nextInputPrice := 11.0
-	result, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
-		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
-		Fields: CustomModelMutation{InputUSDPer1M: OptionalFloat{Set: true, Value: &nextInputPrice}},
+func TestServiceCreateCustomModelMergesHybridConfigurationTemplatesByProviderAndModel(t *testing.T) {
+	price := 1.0
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"hybrid": {Code: "hybrid", Enabled: true}},
+		protocolCodes: map[string][]string{
+			"openai:v1":    {"gpt"},
+			"anthropic:v1": {"anthropic"},
+		},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{ID: "gpt_built_in_shared", ProviderCode: "gpt", Model: "shared-model", Scope: "built_in", Status: "active", InputUSDPer1M: &price},
+			{ID: "gpt_personal_shared", ProviderCode: "gpt", Model: "shared-model", Scope: "personal", SystemAccountID: "sys_user", Status: "active", InputUSDPer1M: &price},
+			{ID: "anthropic_built_in_shared", ProviderCode: "anthropic", Model: "shared-model", Scope: "built_in", Status: "active", InputUSDPer1M: &price},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, NewID: func(prefix string) string { return prefix + "_hybrid" }})
+
+	_, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "hybrid", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "gpt_built_in_shared"},
+			Model:                   OptionalString{Set: true, Value: "copy-covered-gpt"},
+		},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "配置模板不可用" {
+		t.Fatalf("covered hybrid template message = %q, ok = %v, err = %v", message, ok, err)
+	}
+
+	result, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "hybrid", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "anthropic_built_in_shared"},
+			Model:                   OptionalString{Set: true, Value: "copy-anthropic"},
+		},
 	})
 	if err != nil {
-		t.Fatalf("UpdateCustomModel() error = %v", err)
+		t.Fatalf("cross-provider hybrid template CreateCustomModel() error = %v", err)
 	}
-	if len(store.builtInUpdateInputs) != 1 || !store.builtInUpdateInputs[0].InputUSDPer1M.Present || store.builtInUpdateInputs[0].OutputUSDPer1M.Present {
-		t.Fatalf("built-in store input = %+v", store.builtInUpdateInputs)
+	if result.Model != "copy-anthropic" {
+		t.Fatalf("cross-provider hybrid template result = %+v", result)
 	}
-	if result.ID != "provider_model_gpt_real" || result.InputUSDPer1M == nil || *result.InputUSDPer1M != nextInputPrice || result.OutputUSDPer1M == nil || *result.OutputUSDPer1M != outputPrice {
-		t.Fatalf("result = %+v", result)
+}
+
+func TestServiceCreateCustomModelRequiresPersonalOwnerBeforeResolvingTemplate(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+	}
+	_, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "gpt", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{
+			ConfigurationTemplateID: OptionalString{Set: true, Value: "missing_template"},
+			Model:                   OptionalString{Set: true, Value: "copy-without-owner"},
+		},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "请选择模型归属的系统账户" {
+		t.Fatalf("owner message = %q, ok = %v, err = %v", message, ok, err)
+	}
+	if store.catalogCalls != 0 {
+		t.Fatalf("catalog calls = %d, want 0", store.catalogCalls)
+	}
+}
+
+func TestServiceUpdateCustomModelRejectsConfigurationTemplateAfterCreate(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+		customByID: map[string]port.ManagementProviderModelCatalogItem{
+			"custom_model_1": {ID: "custom_model_1", ProviderCode: "gpt", Model: "custom", Scope: "personal", SystemAccountID: "sys_user", Status: "active"},
+		},
+	}
+	_, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "custom_model_1", ActorSystemAccountID: "sys_user", ActorRole: "user",
+		Fields: CustomModelMutation{ConfigurationTemplateID: OptionalString{Set: true, Value: "template"}},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "配置模板只能在新建模型时使用" {
+		t.Fatalf("message = %q, ok = %v, err = %v", message, ok, err)
+	}
+}
+
+func TestServiceUpdateBuiltInModelRejectsConfigurationTemplateWithBuiltInValidationMessage(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}},
+		catalog: []port.ManagementProviderModelCatalogItem{
+			{ID: "provider_model_gpt_test", ProviderCode: "gpt", Model: "gpt-test", Scope: "built_in", Status: "active"},
+		},
+	}
+	_, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_test", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{ConfigurationTemplateID: OptionalString{Set: true, Value: "template"}},
+	})
+	message, ok := CustomModelValidationMessage(err)
+	if !ok || message != "内置模型配置参数无效" {
+		t.Fatalf("message = %q, ok = %v, err = %v", message, ok, err)
 	}
 }
 
@@ -1087,6 +1521,37 @@ func TestServiceUpdateBuiltInModelAllowsCompleteCatalogConfiguration(t *testing.
 		!slices.Equal(result.SupportedServiceTiers, []string{"priority"}) || result.DefaultReasoningEffort != "high" ||
 		result.ContextWindowTokens == nil || *result.ContextWindowTokens != contextTokens || result.MaxInputTokens == nil || *result.MaxInputTokens != maxInputTokens {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestServiceUpdateBuiltInModelReturnsActualBeforeAndAfterSnapshots(t *testing.T) {
+	previousInputPrice := 1.0
+	updatedInputPrice := 4.0
+	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
+		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "disabled",
+		InputUSDPer1M: &previousInputPrice,
+	}}}
+	atomicBeforePrice := 9.0
+	atomicAfterPrice := 4.0
+	store.builtInUpdateResult = port.ManagementBuiltInProviderModelPriceUpdateResult{
+		Before: port.ManagementProviderModelConfigurationSnapshot{ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "disabled", InputUSDPer1M: &atomicBeforePrice},
+		After:  port.ManagementProviderModelConfigurationSnapshot{ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", InputUSDPer1M: &atomicAfterPrice},
+	}
+
+	result, err := NewService(store).UpdateCustomModelWithSnapshots(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{
+			Status: OptionalString{Set: true, Value: "active"}, InputUSDPer1M: OptionalFloat{Set: true, Value: &updatedInputPrice},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModel() error = %v", err)
+	}
+	if result.Before.Status != "disabled" || result.Before.InputUSDPer1M == nil || *result.Before.InputUSDPer1M != atomicBeforePrice {
+		t.Fatalf("before = %+v", result.Before)
+	}
+	if result.After.Status != "active" || result.After.InputUSDPer1M == nil || *result.After.InputUSDPer1M != atomicAfterPrice {
+		t.Fatalf("after = %+v", result.After)
 	}
 }
 
@@ -1142,6 +1607,226 @@ func TestServiceCreateCustomModelRejectsInt4Overflow(t *testing.T) {
 	if store.saveInput.Model != "" {
 		t.Fatalf("save should not be called, got %+v", store.saveInput)
 	}
+}
+
+func TestServiceModelsReturnsBuiltInCatalogID(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"gpt": {Code: "gpt", Enabled: true},
+		},
+		catalog: []port.ManagementProviderModelCatalogItem{{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
+		}},
+	}
+
+	models, err := NewService(store).Models(context.Background(), ModelListInput{
+		ProviderCode:    "gpt",
+		IncludeUnpriced: true,
+	})
+	if err != nil {
+		t.Fatalf("Models() error = %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "provider_model_gpt_real" {
+		t.Fatalf("models = %+v, want real built-in catalog ID", models)
+	}
+}
+
+func TestServiceUpdateBuiltInModelPricesPreservesFieldPresenceAndOrder(t *testing.T) {
+	inputPrice := 1.0
+	outputPrice := 2.0
+	cachedInputPrice := 0.5
+	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
+		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
+		InputUSDPer1M: &inputPrice, OutputUSDPer1M: &outputPrice, CachedInputUSDPer1M: &cachedInputPrice,
+	}}}
+	service := NewService(store)
+
+	nextInputPrice := 11.0
+	first, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{InputUSDPer1M: OptionalFloat{Set: true, Value: &nextInputPrice}},
+	})
+	if err != nil {
+		t.Fatalf("first UpdateCustomModel() error = %v", err)
+	}
+	nextOutputPrice := 22.0
+	second, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{OutputUSDPer1M: OptionalFloat{Set: true, Value: &nextOutputPrice}},
+	})
+	if err != nil {
+		t.Fatalf("second UpdateCustomModel() error = %v", err)
+	}
+	third, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{InputUSDPer1M: OptionalFloat{Set: true}},
+	})
+	if err != nil {
+		t.Fatalf("third UpdateCustomModel() error = %v", err)
+	}
+
+	if first.InputUSDPer1M == nil || *first.InputUSDPer1M != nextInputPrice || first.OutputUSDPer1M == nil || *first.OutputUSDPer1M != outputPrice {
+		t.Fatalf("first result = %+v", first)
+	}
+	if second.InputUSDPer1M == nil || *second.InputUSDPer1M != nextInputPrice || second.OutputUSDPer1M == nil || *second.OutputUSDPer1M != nextOutputPrice {
+		t.Fatalf("second result = %+v", second)
+	}
+	if third.InputUSDPer1M != nil || third.OutputUSDPer1M == nil || *third.OutputUSDPer1M != nextOutputPrice ||
+		third.CachedInputUSDPer1M == nil || *third.CachedInputUSDPer1M != cachedInputPrice {
+		t.Fatalf("third result = %+v", third)
+	}
+	if len(store.builtInUpdateInputs) != 3 {
+		t.Fatalf("built-in update calls = %d, want 3", len(store.builtInUpdateInputs))
+	}
+	firstInput := store.builtInUpdateInputs[0]
+	secondInput := store.builtInUpdateInputs[1]
+	thirdInput := store.builtInUpdateInputs[2]
+	if !firstInput.InputUSDPer1M.Present || firstInput.OutputUSDPer1M.Present || firstInput.CachedInputUSDPer1M.Present {
+		t.Fatalf("first store input = %+v", firstInput)
+	}
+	if secondInput.InputUSDPer1M.Present || !secondInput.OutputUSDPer1M.Present || secondInput.CachedInputUSDPer1M.Present {
+		t.Fatalf("second store input = %+v", secondInput)
+	}
+	if !thirdInput.InputUSDPer1M.Present || thirdInput.InputUSDPer1M.Value != nil || thirdInput.OutputUSDPer1M.Present {
+		t.Fatalf("third store input = %+v", thirdInput)
+	}
+}
+
+func TestServiceUpdateBuiltInModelRejectsInvalidFinalConfigurationFromLockedSnapshot(t *testing.T) {
+	store := &providerModelStoreStub{
+		catalog: []port.ManagementProviderModelCatalogItem{{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active", Mode: "text",
+		}},
+		builtInUpdateResult: port.ManagementBuiltInProviderModelPriceUpdateResult{
+			After: port.ManagementProviderModelConfigurationSnapshot{
+				ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", Mode: "image",
+				SupportedReasoningEfforts: []string{"low"}, DefaultReasoningEffort: "low",
+			},
+		},
+	}
+
+	_, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{Mode: OptionalString{Set: true, Value: "image"}},
+	})
+	if message, ok := CustomModelValidationMessage(err); !ok || message != "只有文本自定义模型支持服务等级和思考能力配置" {
+		t.Fatalf("validation = %q/%t, err = %v", message, ok, err)
+	}
+	if store.catalog[0].Mode != "text" {
+		t.Fatalf("invalid final state was persisted: %+v", store.catalog[0])
+	}
+}
+
+func TestServiceUpdateBuiltInModelRevalidatesDefaultReasoningEffortAgainstLockedSupportedEfforts(t *testing.T) {
+	store := &providerModelStoreStub{
+		catalog: []port.ManagementProviderModelCatalogItem{{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active", Mode: "text",
+			SupportedReasoningEfforts: []string{"low"}, DefaultReasoningEffort: "low",
+		}},
+		builtInUpdateResult: port.ManagementBuiltInProviderModelPriceUpdateResult{
+			Before: port.ManagementProviderModelConfigurationSnapshot{
+				ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", Mode: "text",
+				SupportedReasoningEfforts: []string{"high"}, DefaultReasoningEffort: "high",
+			},
+			After: port.ManagementProviderModelConfigurationSnapshot{
+				ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", Mode: "text",
+				SupportedReasoningEfforts: []string{"high"}, DefaultReasoningEffort: "low",
+			},
+		},
+	}
+
+	_, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{DefaultReasoningEffort: OptionalString{Set: true, Value: "low"}},
+	})
+	if message, ok := CustomModelValidationMessage(err); !ok || message != "默认思考级别必须属于支持的思考级别" {
+		t.Fatalf("validation = %q/%t, err = %v", message, ok, err)
+	}
+}
+
+func TestServiceUpdateBuiltInModelPersistsNormalizedStringLists(t *testing.T) {
+	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
+		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active", Mode: "text",
+	}}}
+	_, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{SupportedAPIProtocols: OptionalStringList{Set: true, Value: []string{" responses ", "responses", "chat_completions"}}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModel() error = %v", err)
+	}
+	got := store.builtInUpdateInputs[0].SupportedAPIProtocols.Value
+	if !slices.Equal(got, []string{"responses", "chat_completions"}) {
+		t.Fatalf("stored protocols = %#v", got)
+	}
+}
+
+func TestServiceUpdateBuiltInModelPricesReturnsPersistedSnapshot(t *testing.T) {
+	inputPrice := 1.0
+	staleOutputPrice := 2.0
+	persistedInputPrice := 11.0
+	persistedOutputPrice := 77.0
+	persistedCachedInputPrice := 0.75
+	persistedTierInputPrice := 8.0
+	updatedAt := time.Date(2026, 7, 15, 8, 9, 10, 0, time.UTC)
+	store := &providerModelStoreStub{
+		catalog: []port.ManagementProviderModelCatalogItem{{
+			ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
+			InputUSDPer1M: &inputPrice, OutputUSDPer1M: &staleOutputPrice,
+		}},
+		builtInUpdateResult: port.ManagementBuiltInProviderModelPriceUpdateResult{
+			Before: port.ManagementProviderModelConfigurationSnapshot{ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", Mode: "text", SupportedServiceTiers: []string{"priority"}},
+			After: port.ManagementProviderModelConfigurationSnapshot{
+				ID: "provider_model_gpt_real", ProviderCode: "gpt", Status: "active", Mode: "text", SupportedServiceTiers: []string{"priority"},
+				InputUSDPer1M: &persistedInputPrice, OutputUSDPer1M: &persistedOutputPrice, CachedInputUSDPer1M: &persistedCachedInputPrice,
+				ServiceTierPrices: map[string]port.ManagementProviderModelPriceSet{
+					"priority": {InputUSDPer1M: &persistedTierInputPrice},
+				},
+				UpdatedAt: updatedAt,
+			},
+		},
+	}
+
+	result, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		Fields: CustomModelMutation{InputUSDPer1M: OptionalFloat{Set: true, Value: &persistedInputPrice}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomModel() error = %v", err)
+	}
+	priority := result.ServiceTierPrices["priority"]
+	if result.ID != "provider_model_gpt_real" || result.ProviderCode != "gpt" || result.Model != "gpt-real" ||
+		result.InputUSDPer1M == nil || *result.InputUSDPer1M != persistedInputPrice ||
+		result.OutputUSDPer1M == nil || *result.OutputUSDPer1M != persistedOutputPrice ||
+		result.CachedInputUSDPer1M == nil || *result.CachedInputUSDPer1M != persistedCachedInputPrice ||
+		priority.InputUSDPer1M == nil || *priority.InputUSDPer1M != persistedTierInputPrice ||
+		result.UpdatedAt != updatedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("result = %+v, want persisted price snapshot", result)
+	}
+}
+
+func TestServiceUpdateBuiltInModelPricesLogsCommittedCacheInvalidationFailureWithoutFailingWrite(t *testing.T) {
+	t.Parallel()
+	logger, logs := cacheWarningLogger()
+	price := 4.0
+	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
+		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
+	}}}
+	invalidator := &customProviderModelInvalidatorStub{err: errors.New("invalidation failed")}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator, Logger: logger})
+
+	result, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
+		TraceID: "trace_builtin_cache_sync",
+		Fields:  CustomModelMutation{InputUSDPer1M: OptionalFloat{Set: true, Value: &price}},
+	})
+	if err != nil || result.InputUSDPer1M == nil || *result.InputUSDPer1M != price {
+		t.Fatalf("result = %+v, err = %v", result, err)
+	}
+	if len(store.builtInUpdateInputs) != 1 || invalidator.calls != 1 || invalidator.reason != CustomProviderModelSavedReason {
+		t.Fatalf("updates=%d invalidation calls=%d reason=%q", len(store.builtInUpdateInputs), invalidator.calls, invalidator.reason)
+	}
+	assertCacheWarning(t, logs, CustomProviderModelSavedReason, "trace_builtin_cache_sync")
 }
 
 func TestServiceUpdateCustomModelPrioritizesLookupAndPermissionBeforeBodyValidation(t *testing.T) {
@@ -1311,6 +1996,8 @@ func TestServiceUpdateGlobalCustomModelClearsPersonalAndSystemDefaultsWhenDisabl
 }
 
 func TestServiceUpdateCustomModelLogsCommittedCacheInvalidationFailureWithoutFailingWrite(t *testing.T) {
+	t.Parallel()
+	logger, logs := cacheWarningLogger()
 	price := 1.25
 	existing := port.ManagementProviderModelCatalogItem{
 		ID:              "custom_model_1",
@@ -1325,24 +2012,26 @@ func TestServiceUpdateCustomModelLogsCommittedCacheInvalidationFailureWithoutFai
 		customByID: map[string]port.ManagementProviderModelCatalogItem{"custom_model_1": existing},
 	}
 	invalidator := &customProviderModelInvalidatorStub{err: errors.New("invalidation failed")}
-	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator, Logger: logger})
 
 	result, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
 		ProviderCode:         "gpt",
 		ID:                   "custom_model_1",
 		ActorSystemAccountID: "sys_user",
 		ActorRole:            "user",
+		TraceID:              "trace_update_cache_sync",
 		Fields:               CustomModelMutation{Notes: OptionalString{Set: true, Value: "updated"}},
 	})
 	if err != nil || result.Notes != "updated" {
 		t.Fatalf("result = %+v, err = %v", result, err)
 	}
-	if store.saveInput.Notes != "updated" {
-		t.Fatalf("save=%+v", store.saveInput)
+	if !store.customUpdateInput.Notes.Present || store.customUpdateInput.Notes.Value != "updated" || store.saveCalls != 0 {
+		t.Fatalf("update=%+v save calls=%d", store.customUpdateInput, store.saveCalls)
 	}
 	if invalidator.calls != 1 || invalidator.reason != CustomProviderModelSavedReason {
 		t.Fatalf("invalidation calls=%d reason=%q", invalidator.calls, invalidator.reason)
 	}
+	assertCacheWarning(t, logs, CustomProviderModelSavedReason, "trace_update_cache_sync")
 }
 
 func TestServiceDeleteCustomModelChecksBindingsAndInvalidates(t *testing.T) {
@@ -1409,6 +2098,8 @@ func TestServiceDeleteCustomModelChecksBindingsAndInvalidates(t *testing.T) {
 }
 
 func TestServiceDeleteCustomModelLogsCommittedCacheInvalidationFailureWithoutFailingWrite(t *testing.T) {
+	t.Parallel()
+	logger, logs := cacheWarningLogger()
 	existing := port.ManagementProviderModelCatalogItem{
 		ID:              "custom_model_1",
 		ProviderCode:    "gpt",
@@ -1422,13 +2113,14 @@ func TestServiceDeleteCustomModelLogsCommittedCacheInvalidationFailureWithoutFai
 		deleteResult: true,
 	}
 	invalidator := &customProviderModelInvalidatorStub{err: errors.New("invalidation failed")}
-	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator, Logger: logger})
 
 	result, err := service.DeleteCustomModel(context.Background(), CustomModelDeleteInput{
 		ProviderCode:         "gpt",
 		ID:                   "custom_model_1",
 		ActorSystemAccountID: "sys_user",
 		ActorRole:            "user",
+		TraceID:              "trace_delete_cache_sync",
 	})
 	if err != nil || !result.Deleted {
 		t.Fatalf("result = %+v, err = %v", result, err)
@@ -1439,6 +2131,7 @@ func TestServiceDeleteCustomModelLogsCommittedCacheInvalidationFailureWithoutFai
 	if invalidator.calls != 1 || invalidator.reason != CustomProviderModelDeletedReason {
 		t.Fatalf("invalidation calls=%d reason=%q", invalidator.calls, invalidator.reason)
 	}
+	assertCacheWarning(t, logs, CustomProviderModelDeletedReason, "trace_delete_cache_sync")
 }
 
 type providerModelStoreStub struct {
@@ -1447,6 +2140,9 @@ type providerModelStoreStub struct {
 	protocolCodes          map[string][]string
 	catalog                []port.ManagementProviderModelCatalogItem
 	catalogInput           port.ManagementProviderModelCatalogListInput
+	catalogCalls           int
+	builtInUpdateInputs    []port.ManagementBuiltInProviderModelPriceUpdateInput
+	builtInUpdateResult    port.ManagementBuiltInProviderModelPriceUpdateResult
 	setDefaultInput        port.ManagementProviderDefaultHealthCheckModelInput
 	setDefaultResult       port.ManagementProviderDefaultHealthCheckModelPreference
 	setDefaultErr          error
@@ -1455,7 +2151,12 @@ type providerModelStoreStub struct {
 	setSystemDefaultErr    error
 	customByID             map[string]port.ManagementProviderModelCatalogItem
 	customByScope          map[string]port.ManagementProviderModelCatalogItem
+	customFindCalls        int
+	customUpdateInput      port.ManagementCustomProviderModelUpdateInput
+	customUpdateResult     port.ManagementCustomProviderModelUpdateResult
+	customUpdateCalls      int
 	saveInput              port.ManagementCustomProviderModelSaveInput
+	saveCalls              int
 	saveResult             port.ManagementProviderModelCatalogItem
 	deleteID               string
 	deleteResult           bool
@@ -1465,13 +2166,14 @@ type providerModelStoreStub struct {
 	clearErr               error
 	clearSystemInput       port.ManagementProviderSystemDefaultHealthCheckModelClearInput
 	clearSystemErr         error
-	builtInUpdateInputs    []port.ManagementBuiltInProviderModelPriceUpdateInput
 }
 
-func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
+func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput, validate port.ManagementBuiltInProviderModelUpdateValidate) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
 	s.builtInUpdateInputs = append(s.builtInUpdateInputs, input)
 	for index := range s.catalog {
 		if s.catalog[index].ID == input.ID && s.catalog[index].ProviderCode == input.ProviderCode {
+			original := s.catalog[index]
+			before := builtInProviderModelConfigurationSnapshotFromCatalog(s.catalog[index])
 			applyBuiltInProviderModelOptionalString(&s.catalog[index].Status, input.Status)
 			applyBuiltInProviderModelOptionalString(&s.catalog[index].Mode, input.Mode)
 			applyBuiltInProviderModelOptionalStringList(&s.catalog[index].SupportedAPIProtocols, input.SupportedAPIProtocols)
@@ -1486,19 +2188,65 @@ func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ co
 			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].InputUSDPer1M, input.InputUSDPer1M)
 			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].OutputUSDPer1M, input.OutputUSDPer1M)
 			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].CachedInputUSDPer1M, input.CachedInputUSDPer1M)
-			item := s.catalog[index]
-			return port.ManagementBuiltInProviderModelPriceUpdateResult{
-				ID: item.ID, ProviderCode: item.ProviderCode, InputUSDPer1M: item.InputUSDPer1M,
-				Status: item.Status, Mode: item.Mode, SupportedAPIProtocols: append([]string(nil), item.SupportedAPIProtocols...),
-				SupportedServiceTiers: append([]string(nil), item.SupportedServiceTiers...), SupportedReasoningEfforts: append([]string(nil), item.SupportedReasoningEfforts...),
-				DefaultReasoningEffort: item.DefaultReasoningEffort, ReleaseDate: item.ReleaseDate, ShutdownDate: item.ShutdownDate,
-				ContextWindowTokens: cloneIntPtr(item.ContextWindowTokens), MaxInputTokens: cloneIntPtr(item.MaxInputTokens), MaxOutputTokens: cloneIntPtr(item.MaxOutputTokens),
-				OutputUSDPer1M: item.OutputUSDPer1M, CachedInputUSDPer1M: item.CachedInputUSDPer1M,
-				ServiceTierPrices: cloneProviderModelPriceMap(item.ServiceTierPrices),
-			}, true, nil
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].CacheWriteUSDPer1M, input.CacheWriteUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].CacheWrite1hUSDPer1M, input.CacheWrite1hUSDPer1M)
+			if input.ServiceTierPrices.Present {
+				s.catalog[index].ServiceTierPrices = cloneProviderModelPriceMap(input.ServiceTierPrices.Value)
+			}
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].ImageInputUSDPer1M, input.ImageInputUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].ImageOutputUSDPer1M, input.ImageOutputUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].AudioInputUSDPer1M, input.AudioInputUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].AudioOutputUSDPer1M, input.AudioOutputUSDPer1M)
+			applyBuiltInProviderModelOptionalFloat(&s.catalog[index].OutputUSDPerImage, input.OutputUSDPerImage)
+			if s.builtInUpdateResult.After.ID != "" {
+				if err := validate(s.builtInUpdateResult); err != nil {
+					s.catalog[index] = original
+					return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+				}
+				return s.builtInUpdateResult, true, nil
+			}
+			result := port.ManagementBuiltInProviderModelPriceUpdateResult{
+				Before: before,
+				After:  builtInProviderModelConfigurationSnapshotFromCatalog(s.catalog[index]),
+			}
+			if err := validate(result); err != nil {
+				s.catalog[index] = original
+				return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+			}
+			return result, true, nil
 		}
 	}
 	return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, nil
+}
+
+func builtInProviderModelConfigurationSnapshotFromCatalog(item port.ManagementProviderModelCatalogItem) port.ManagementProviderModelConfigurationSnapshot {
+	return port.ManagementProviderModelConfigurationSnapshot{
+		ID:                        item.ID,
+		ProviderCode:              item.ProviderCode,
+		Status:                    item.Status,
+		Mode:                      item.Mode,
+		SupportedAPIProtocols:     append([]string(nil), item.SupportedAPIProtocols...),
+		SupportedServiceTiers:     append([]string(nil), item.SupportedServiceTiers...),
+		SupportedReasoningEfforts: append([]string(nil), item.SupportedReasoningEfforts...),
+		DefaultReasoningEffort:    item.DefaultReasoningEffort,
+		ReleaseDate:               item.ReleaseDate,
+		ShutdownDate:              item.ShutdownDate,
+		ContextWindowTokens:       cloneIntPtr(item.ContextWindowTokens),
+		MaxInputTokens:            cloneIntPtr(item.MaxInputTokens),
+		MaxOutputTokens:           cloneIntPtr(item.MaxOutputTokens),
+		InputUSDPer1M:             cloneFloatPtr(item.InputUSDPer1M),
+		OutputUSDPer1M:            cloneFloatPtr(item.OutputUSDPer1M),
+		CachedInputUSDPer1M:       cloneFloatPtr(item.CachedInputUSDPer1M),
+		CacheWriteUSDPer1M:        cloneFloatPtr(item.CacheWriteUSDPer1M),
+		CacheWrite1hUSDPer1M:      cloneFloatPtr(item.CacheWrite1hUSDPer1M),
+		ServiceTierPrices:         cloneProviderModelPriceMap(item.ServiceTierPrices),
+		ImageInputUSDPer1M:        cloneFloatPtr(item.ImageInputUSDPer1M),
+		ImageOutputUSDPer1M:       cloneFloatPtr(item.ImageOutputUSDPer1M),
+		AudioInputUSDPer1M:        cloneFloatPtr(item.AudioInputUSDPer1M),
+		AudioOutputUSDPer1M:       cloneFloatPtr(item.AudioOutputUSDPer1M),
+		OutputUSDPerImage:         cloneFloatPtr(item.OutputUSDPerImage),
+		UpdatedAt:                 item.UpdatedAt,
+	}
 }
 
 func applyBuiltInProviderModelOptionalString(target *string, input port.ManagementProviderModelOptionalString) {
@@ -1539,6 +2287,7 @@ func (s *providerModelStoreStub) ListManagementProviderCodesByProtocol(_ context
 }
 
 func (s *providerModelStoreStub) ListManagementProviderModelCatalog(_ context.Context, input port.ManagementProviderModelCatalogListInput) ([]port.ManagementProviderModelCatalogItem, error) {
+	s.catalogCalls++
 	s.catalogInput = input
 	allowed := map[string]struct{}{}
 	for _, code := range append(append([]string{}, input.BuiltInProviderCodes...), input.CustomProviderCodes...) {
@@ -1601,6 +2350,7 @@ func (s *providerModelStoreStub) ClearManagementProviderSystemDefaultHealthCheck
 }
 
 func (s *providerModelStoreStub) FindManagementCustomProviderModel(_ context.Context, id string) (port.ManagementProviderModelCatalogItem, bool, error) {
+	s.customFindCalls++
 	item, ok := s.customByID[id]
 	return item, ok, nil
 }
@@ -1611,6 +2361,7 @@ func (s *providerModelStoreStub) FindManagementCustomProviderModelByScope(_ cont
 }
 
 func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Context, input port.ManagementCustomProviderModelSaveInput) (port.ManagementProviderModelCatalogItem, error) {
+	s.saveCalls++
 	s.saveInput = input
 	if s.saveResult.ID != "" {
 		return s.saveResult, nil
@@ -1650,6 +2401,55 @@ func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Con
 		Notes:                     input.Notes,
 		Source:                    "custom-" + input.Scope,
 	}, nil
+}
+
+func (s *providerModelStoreStub) UpdateManagementCustomProviderModel(_ context.Context, input port.ManagementCustomProviderModelUpdateInput, validate port.ManagementCustomProviderModelUpdateValidate) (port.ManagementCustomProviderModelUpdateResult, bool, error) {
+	s.customUpdateCalls++
+	s.customUpdateInput = input
+	result := s.customUpdateResult
+	if result.Before.ID == "" {
+		before, found := s.customByID[input.ID]
+		if !found || before.ProviderCode != input.ProviderCode {
+			return port.ManagementCustomProviderModelUpdateResult{}, false, nil
+		}
+		result.Before = before
+		result.After = before
+		applyCustomProviderModelUpdateStub(&result.After, input)
+	}
+	if err := validate(result); err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, err
+	}
+	return result, true, nil
+}
+
+func applyCustomProviderModelUpdateStub(item *port.ManagementProviderModelCatalogItem, input port.ManagementCustomProviderModelUpdateInput) {
+	applyBuiltInProviderModelOptionalString(&item.Status, input.Status)
+	applyBuiltInProviderModelOptionalString(&item.Mode, input.Mode)
+	applyBuiltInProviderModelOptionalStringList(&item.SupportedAPIProtocols, input.SupportedAPIProtocols)
+	applyBuiltInProviderModelOptionalStringList(&item.SupportedServiceTiers, input.SupportedServiceTiers)
+	applyBuiltInProviderModelOptionalStringList(&item.SupportedReasoningEfforts, input.SupportedReasoningEfforts)
+	applyBuiltInProviderModelOptionalString(&item.DefaultReasoningEffort, input.DefaultReasoningEffort)
+	applyBuiltInProviderModelOptionalString(&item.ReleaseDate, input.ReleaseDate)
+	applyBuiltInProviderModelOptionalString(&item.ShutdownDate, input.ShutdownDate)
+	applyBuiltInProviderModelOptionalInt(&item.ContextWindowTokens, input.ContextWindowTokens)
+	applyBuiltInProviderModelOptionalInt(&item.MaxInputTokens, input.MaxInputTokens)
+	applyBuiltInProviderModelOptionalInt(&item.MaxOutputTokens, input.MaxOutputTokens)
+	applyBuiltInProviderModelOptionalFloat(&item.InputUSDPer1M, input.InputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.OutputUSDPer1M, input.OutputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.CachedInputUSDPer1M, input.CachedInputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.CacheWriteUSDPer1M, input.CacheWriteUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.CacheWrite1hUSDPer1M, input.CacheWrite1hUSDPer1M)
+	if input.ServiceTierPrices.Present {
+		item.ServiceTierPrices = cloneProviderModelPriceMap(input.ServiceTierPrices.Value)
+	}
+	applyBuiltInProviderModelOptionalFloat(&item.ImageInputUSDPer1M, input.ImageInputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.ImageOutputUSDPer1M, input.ImageOutputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.AudioInputUSDPer1M, input.AudioInputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.AudioOutputUSDPer1M, input.AudioOutputUSDPer1M)
+	applyBuiltInProviderModelOptionalFloat(&item.OutputUSDPerImage, input.OutputUSDPerImage)
+	applyBuiltInProviderModelOptionalString(&item.PricingNotes, input.PricingNotes)
+	applyBuiltInProviderModelOptionalString(&item.CapabilityNotes, input.CapabilityNotes)
+	applyBuiltInProviderModelOptionalString(&item.Notes, input.Notes)
 }
 
 func (s *providerModelStoreStub) DeleteManagementCustomProviderModel(_ context.Context, id string) (bool, error) {

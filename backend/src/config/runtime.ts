@@ -731,7 +731,7 @@ function httpSecurityConfig(): RuntimeConfig['httpSecurity'] {
   const allowedOrigins = allowedOriginsConfig('JUHE_AI_ALLOWED_ORIGINS', production)
   const cookieSecure = strictBooleanConfig('JUHE_AI_COOKIE_SECURE', production)
   const cookieSameSite = cookieSameSiteConfig('JUHE_AI_COOKIE_SAME_SITE', 'lax')
-  if (cookieSameSite === 'none' && !cookieSecure) {
+  if (production && cookieSameSite === 'none' && !cookieSecure) {
     throw new Error('JUHE_AI_COOKIE_SAME_SITE=none 时必须启用 JUHE_AI_COOKIE_SECURE=true')
   }
   return {
@@ -750,10 +750,16 @@ function httpSecurityConfig(): RuntimeConfig['httpSecurity'] {
 function allowedOriginsConfig(name: string, requireExplicit: boolean): string[] {
   const rawValue = rawStringConfig(name) ?? ''
   const parts = rawValue.split(',').map((part) => part.trim()).filter(Boolean)
-  if (parts.includes('*')) {
-    throw new Error(`${name} 不允许配置 *；需要逐项填写完整后台前端 Origin`)
+  const allowAnyOrigin = parts.includes('*')
+  const origins = Array.from(new Set(
+    parts.filter((part) => part !== '*').map((part) => normalizeAllowedOrigin(name, part))
+  ))
+  if (allowAnyOrigin) {
+    if (requireExplicit) {
+      throw new Error(`${name} 不允许配置 *；需要逐项填写完整后台前端 Origin`)
+    }
+    return []
   }
-  const origins = Array.from(new Set(parts.map((part) => normalizeAllowedOrigin(name, part))))
   if (requireExplicit && origins.length === 0) {
     throw new Error(`${name} 在生产环境必须显式配置后台前端 Origin，不能继续反射任意跨域来源`)
   }
@@ -845,10 +851,10 @@ function computerAdapterEndpointConfig(name: string, required: boolean): string 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`${name} 只允许 http 或 https URL`)
   }
-  if (url.username || url.password || url.search || url.hash) {
+  if (url.username || url.password || (isProductionRuntime() && (url.search || url.hash))) {
     throw new Error(`${name} 不能包含用户名密码、查询参数或片段标识`)
   }
-  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
+  if (isProductionRuntime() && url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
     throw new Error(`${name} 使用 http 时只能指向 loopback 本机地址；远程 sandbox adapter 必须使用 https`)
   }
   return url.toString()

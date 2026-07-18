@@ -183,7 +183,6 @@ export interface ApiKeySummary {
   description?: string
   keyPrefix: string
   keySuffix: string
-  key?: string
   status: 'active' | 'disabled'
   isDefault?: boolean
   routeStrategyId: string

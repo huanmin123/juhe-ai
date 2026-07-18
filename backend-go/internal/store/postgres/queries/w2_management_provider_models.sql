@@ -142,39 +142,40 @@ WHERE provider_code = ANY(sqlc.arg(custom_provider_codes)::text[])
   )
 ORDER BY provider_code ASC, scope ASC, model ASC, id ASC;
 
--- name: UpdateManagementBuiltInProviderModelPrices :one
+-- name: LockManagementBuiltInProviderModelConfiguration :one
+SELECT id, provider_code, status, mode, supported_api_protocols_json, supported_service_tiers_json,
+       supported_reasoning_efforts_json, default_reasoning_effort, release_date, shutdown_date,
+       context_window_tokens, max_input_tokens, max_output_tokens, input_usd_per_1m, output_usd_per_1m,
+       cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+       image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+       output_usd_per_image, updated_at
+FROM juhe_business.provider_model_catalog
+WHERE id = sqlc.arg(id) AND provider_code = sqlc.arg(provider_code)
+FOR UPDATE;
+
+-- name: UpdateManagementBuiltInProviderModelConfiguration :one
 UPDATE juhe_business.provider_model_catalog
-SET status = CASE WHEN sqlc.arg(status_present)::boolean THEN sqlc.arg(status)::text ELSE status END,
-    mode = CASE WHEN sqlc.arg(mode_present)::boolean THEN NULLIF(sqlc.arg(mode)::text, '') ELSE mode END,
-    supported_api_protocols_json = CASE WHEN sqlc.arg(supported_api_protocols_present)::boolean THEN sqlc.arg(supported_api_protocols_json)::text ELSE supported_api_protocols_json END,
-    supported_service_tiers_json = CASE WHEN sqlc.arg(supported_service_tiers_present)::boolean THEN sqlc.arg(supported_service_tiers_json)::text ELSE supported_service_tiers_json END,
-    supported_reasoning_efforts_json = CASE WHEN sqlc.arg(supported_reasoning_efforts_present)::boolean THEN sqlc.arg(supported_reasoning_efforts_json)::text ELSE supported_reasoning_efforts_json END,
-    default_reasoning_effort = CASE WHEN sqlc.arg(default_reasoning_effort_present)::boolean THEN NULLIF(sqlc.arg(default_reasoning_effort)::text, '') ELSE default_reasoning_effort END,
-    release_date = CASE WHEN sqlc.arg(release_date_present)::boolean THEN NULLIF(sqlc.arg(release_date)::text, '') ELSE release_date END,
-    shutdown_date = CASE WHEN sqlc.arg(shutdown_date_present)::boolean THEN NULLIF(sqlc.arg(shutdown_date)::text, '') ELSE shutdown_date END,
-    context_window_tokens = CASE WHEN sqlc.arg(context_window_tokens_present)::boolean THEN sqlc.narg(context_window_tokens)::integer ELSE context_window_tokens END,
-    max_input_tokens = CASE WHEN sqlc.arg(max_input_tokens_present)::boolean THEN sqlc.narg(max_input_tokens)::integer ELSE max_input_tokens END,
-    max_output_tokens = CASE WHEN sqlc.arg(max_output_tokens_present)::boolean THEN sqlc.narg(max_output_tokens)::integer ELSE max_output_tokens END,
-    input_usd_per_1m = CASE WHEN sqlc.arg(input_usd_per_1m_present)::boolean THEN sqlc.narg(input_usd_per_1m)::double precision ELSE input_usd_per_1m END,
-    output_usd_per_1m = CASE WHEN sqlc.arg(output_usd_per_1m_present)::boolean THEN sqlc.narg(output_usd_per_1m)::double precision ELSE output_usd_per_1m END,
-    cached_input_usd_per_1m = CASE WHEN sqlc.arg(cached_input_usd_per_1m_present)::boolean THEN sqlc.narg(cached_input_usd_per_1m)::double precision ELSE cached_input_usd_per_1m END,
-    cache_write_usd_per_1m = CASE WHEN sqlc.arg(cache_write_usd_per_1m_present)::boolean THEN sqlc.narg(cache_write_usd_per_1m)::double precision ELSE cache_write_usd_per_1m END,
-    cache_write_1h_usd_per_1m = CASE WHEN sqlc.arg(cache_write_1h_usd_per_1m_present)::boolean THEN sqlc.narg(cache_write_1h_usd_per_1m)::double precision ELSE cache_write_1h_usd_per_1m END,
-    service_tier_prices_json = CASE WHEN sqlc.arg(service_tier_prices_present)::boolean THEN sqlc.arg(service_tier_prices_json)::text ELSE service_tier_prices_json END,
-    image_input_usd_per_1m = CASE WHEN sqlc.arg(image_input_usd_per_1m_present)::boolean THEN sqlc.narg(image_input_usd_per_1m)::double precision ELSE image_input_usd_per_1m END,
-    image_output_usd_per_1m = CASE WHEN sqlc.arg(image_output_usd_per_1m_present)::boolean THEN sqlc.narg(image_output_usd_per_1m)::double precision ELSE image_output_usd_per_1m END,
-    audio_input_usd_per_1m = CASE WHEN sqlc.arg(audio_input_usd_per_1m_present)::boolean THEN sqlc.narg(audio_input_usd_per_1m)::double precision ELSE audio_input_usd_per_1m END,
-    audio_output_usd_per_1m = CASE WHEN sqlc.arg(audio_output_usd_per_1m_present)::boolean THEN sqlc.narg(audio_output_usd_per_1m)::double precision ELSE audio_output_usd_per_1m END,
-    output_usd_per_image = CASE WHEN sqlc.arg(output_usd_per_image_present)::boolean THEN sqlc.narg(output_usd_per_image)::double precision ELSE output_usd_per_image END,
-    updated_at = now()
-WHERE id = sqlc.arg(id)
-  AND provider_code = sqlc.arg(provider_code)
+SET status = sqlc.arg(status), mode = sqlc.narg(mode),
+    supported_api_protocols_json = sqlc.arg(supported_api_protocols_json),
+    supported_service_tiers_json = sqlc.arg(supported_service_tiers_json),
+    supported_reasoning_efforts_json = sqlc.arg(supported_reasoning_efforts_json),
+    default_reasoning_effort = sqlc.narg(default_reasoning_effort),
+    release_date = sqlc.narg(release_date), shutdown_date = sqlc.narg(shutdown_date),
+    context_window_tokens = sqlc.narg(context_window_tokens), max_input_tokens = sqlc.narg(max_input_tokens),
+    max_output_tokens = sqlc.narg(max_output_tokens), input_usd_per_1m = sqlc.narg(input_usd_per_1m),
+    output_usd_per_1m = sqlc.narg(output_usd_per_1m), cached_input_usd_per_1m = sqlc.narg(cached_input_usd_per_1m),
+    cache_write_usd_per_1m = sqlc.narg(cache_write_usd_per_1m), cache_write_1h_usd_per_1m = sqlc.narg(cache_write_1h_usd_per_1m),
+    service_tier_prices_json = sqlc.arg(service_tier_prices_json), image_input_usd_per_1m = sqlc.narg(image_input_usd_per_1m),
+    image_output_usd_per_1m = sqlc.narg(image_output_usd_per_1m), audio_input_usd_per_1m = sqlc.narg(audio_input_usd_per_1m),
+    audio_output_usd_per_1m = sqlc.narg(audio_output_usd_per_1m), output_usd_per_image = sqlc.narg(output_usd_per_image),
+    updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND provider_code = sqlc.arg(provider_code)
 RETURNING id, provider_code, status, mode, supported_api_protocols_json, supported_service_tiers_json,
-  supported_reasoning_efforts_json, default_reasoning_effort, release_date, shutdown_date,
-  context_window_tokens, max_input_tokens, max_output_tokens, input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
-  cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
-  image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m,
-  audio_output_usd_per_1m, output_usd_per_image, updated_at;
+          supported_reasoning_efforts_json, default_reasoning_effort, release_date, shutdown_date,
+          context_window_tokens, max_input_tokens, max_output_tokens, input_usd_per_1m, output_usd_per_1m,
+          cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+          image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+          output_usd_per_image, updated_at;
 
 -- name: FindManagementCustomProviderModel :one
 SELECT
@@ -264,6 +265,50 @@ WHERE provider_code = sqlc.arg(provider_code)
     )
   )
 LIMIT 1;
+
+-- name: LockManagementCustomProviderModel :one
+SELECT
+  id, provider_code, model, scope, system_account_id, status, mode,
+  supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+  default_reasoning_effort, release_date, shutdown_date,
+  context_window_tokens, max_input_tokens, max_output_tokens,
+  input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
+  cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+  image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+  output_usd_per_image, pricing_notes, capability_notes, notes,
+  created_by, updated_by, created_at, updated_at
+FROM juhe_business.custom_provider_models
+WHERE id = sqlc.arg(id) AND provider_code = sqlc.arg(provider_code)
+FOR UPDATE;
+
+-- name: UpdateManagementCustomProviderModel :one
+UPDATE juhe_business.custom_provider_models
+SET status = sqlc.arg(status), mode = sqlc.narg(mode),
+    supported_api_protocols_json = sqlc.arg(supported_api_protocols_json),
+    supported_service_tiers_json = sqlc.arg(supported_service_tiers_json),
+    supported_reasoning_efforts_json = sqlc.arg(supported_reasoning_efforts_json),
+    default_reasoning_effort = sqlc.narg(default_reasoning_effort),
+    release_date = sqlc.narg(release_date), shutdown_date = sqlc.narg(shutdown_date),
+    context_window_tokens = sqlc.narg(context_window_tokens), max_input_tokens = sqlc.narg(max_input_tokens),
+    max_output_tokens = sqlc.narg(max_output_tokens), input_usd_per_1m = sqlc.narg(input_usd_per_1m),
+    output_usd_per_1m = sqlc.narg(output_usd_per_1m), cached_input_usd_per_1m = sqlc.narg(cached_input_usd_per_1m),
+    cache_write_usd_per_1m = sqlc.narg(cache_write_usd_per_1m), cache_write_1h_usd_per_1m = sqlc.narg(cache_write_1h_usd_per_1m),
+    service_tier_prices_json = sqlc.arg(service_tier_prices_json), image_input_usd_per_1m = sqlc.narg(image_input_usd_per_1m),
+    image_output_usd_per_1m = sqlc.narg(image_output_usd_per_1m), audio_input_usd_per_1m = sqlc.narg(audio_input_usd_per_1m),
+    audio_output_usd_per_1m = sqlc.narg(audio_output_usd_per_1m), output_usd_per_image = sqlc.narg(output_usd_per_image),
+    pricing_notes = sqlc.narg(pricing_notes), capability_notes = sqlc.narg(capability_notes), notes = sqlc.narg(notes),
+    updated_by = sqlc.arg(actor_system_account_id), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND provider_code = sqlc.arg(provider_code)
+RETURNING
+  id, provider_code, model, scope, system_account_id, status, mode,
+  supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
+  default_reasoning_effort, release_date, shutdown_date,
+  context_window_tokens, max_input_tokens, max_output_tokens,
+  input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,
+  cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
+  image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
+  output_usd_per_image, pricing_notes, capability_notes, notes,
+  created_by, updated_by, created_at, updated_at;
 
 -- name: UpsertManagementCustomProviderModel :one
 INSERT INTO juhe_business.custom_provider_models (

@@ -48,6 +48,11 @@ type Endpoint struct {
 	Scope  string
 }
 
+type ScopeOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
 var endpoints = []Endpoint{
 	{ID: "api-key-list", Method: http.MethodGet, Path: Prefix + "/api-key/list", Scope: ScopeAPIKeyListRead},
 	{ID: "api-key-add", Method: http.MethodPost, Path: Prefix + "/api-key/add", Scope: ScopeAPIKeyAddWrite},
@@ -67,9 +72,34 @@ var endpoints = []Endpoint{
 	{ID: "account-delete", Method: http.MethodPost, Path: Prefix + "/account/del", Scope: ScopeAccountDeleteWrite},
 }
 
+var scopeOptions = []ScopeOption{
+	{Value: ScopeAPIKeyListRead, Label: "GET API Key 列表"},
+	{Value: ScopeRouteStrategyListRead, Label: "GET 路由策略列表"},
+	{Value: ScopeGroupListRead, Label: "GET 分组列表"},
+	{Value: ScopeAccountListRead, Label: "GET 账号列表"},
+	{Value: ScopeAPIKeyAddWrite, Label: "POST API Key 新增"},
+	{Value: ScopeAPIKeyUpdateWrite, Label: "POST API Key 修改"},
+	{Value: ScopeAPIKeyDeleteWrite, Label: "POST API Key 删除"},
+	{Value: ScopeRouteStrategyAddWrite, Label: "POST 路由策略新增"},
+	{Value: ScopeRouteStrategyUpdateWrite, Label: "POST 路由策略修改"},
+	{Value: ScopeRouteStrategyDeleteWrite, Label: "POST 路由策略删除"},
+	{Value: ScopeGroupAddWrite, Label: "POST 分组新增"},
+	{Value: ScopeGroupUpdateWrite, Label: "POST 分组修改"},
+	{Value: ScopeGroupDeleteWrite, Label: "POST 分组删除"},
+	{Value: ScopeAccountAddWrite, Label: "POST 账号新增"},
+	{Value: ScopeAccountUpdateWrite, Label: "POST 账号修改"},
+	{Value: ScopeAccountDeleteWrite, Label: "POST 账号删除"},
+}
+
 func Endpoints() []Endpoint {
 	out := make([]Endpoint, len(endpoints))
 	copy(out, endpoints)
+	return out
+}
+
+func ScopeOptions() []ScopeOption {
+	out := make([]ScopeOption, len(scopeOptions))
+	copy(out, scopeOptions)
 	return out
 }
 

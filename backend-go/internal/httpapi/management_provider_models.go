@@ -21,7 +21,7 @@ type managementProviderModelService interface {
 	Models(r *http.Request, input managementprovidermodels.ModelListInput) ([]managementprovidermodels.ModelCatalogItem, error)
 	SetDefaultHealthCheckModel(r *http.Request, input managementprovidermodels.DefaultHealthCheckModelInput) (managementprovidermodels.DefaultHealthCheckModelResult, error)
 	CreateCustomModel(r *http.Request, input managementprovidermodels.CustomModelCreateInput) (managementprovidermodels.ModelCatalogItem, error)
-	UpdateCustomModel(r *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.ModelCatalogItem, error)
+	UpdateCustomModelWithSnapshots(r *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.CustomModelUpdateResult, error)
 	DeleteCustomModel(r *http.Request, input managementprovidermodels.CustomModelDeleteInput) (managementprovidermodels.CustomModelDeleteResult, error)
 }
 
@@ -45,8 +45,8 @@ func (s managementProviderModelServiceAdapter) CreateCustomModel(r *http.Request
 	return s.service.CreateCustomModel(r.Context(), input)
 }
 
-func (s managementProviderModelServiceAdapter) UpdateCustomModel(r *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.ModelCatalogItem, error) {
-	return s.service.UpdateCustomModel(r.Context(), input)
+func (s managementProviderModelServiceAdapter) UpdateCustomModelWithSnapshots(r *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.CustomModelUpdateResult, error) {
+	return s.service.UpdateCustomModelWithSnapshots(r.Context(), input)
 }
 
 func (s managementProviderModelServiceAdapter) DeleteCustomModel(r *http.Request, input managementprovidermodels.CustomModelDeleteInput) (managementprovidermodels.CustomModelDeleteResult, error) {
@@ -211,7 +211,7 @@ func newManagementProviderCustomModelUpdateHandler(service managementProviderMod
 		if !ok {
 			return
 		}
-		result, err := service.UpdateCustomModel(r, managementprovidermodels.CustomModelUpdateInput{
+		result, err := service.UpdateCustomModelWithSnapshots(r, managementprovidermodels.CustomModelUpdateInput{
 			ProviderCode:         chi.URLParam(r, "code"),
 			ID:                   chi.URLParam(r, "id"),
 			ActorSystemAccountID: authContext.SystemAccountID,
@@ -223,16 +223,17 @@ func newManagementProviderCustomModelUpdateHandler(service managementProviderMod
 			writeManagementProviderCustomModelError(w, err)
 			return
 		}
-		if result.Scope == "built_in" {
-			recordManagementProviderModelConfigurationUpdateOperationLog(r, authContext, result, operationLogs)
+		if result.After.Scope == "built_in" {
+			recordManagementProviderModelConfigurationUpdateOperationLog(r, authContext, result.Before, result.After, operationLogs)
 		}
-		writeData(w, http.StatusOK, result)
+		writeData(w, http.StatusOK, result.After)
 	})
 }
 
 func recordManagementProviderModelConfigurationUpdateOperationLog(
 	r *http.Request,
 	authContext managementauth.Context,
+	before managementprovidermodels.ModelCatalogItem,
 	result managementprovidermodels.ModelCatalogItem,
 	opts managementOperationLogOptions,
 ) {
@@ -259,7 +260,7 @@ func recordManagementProviderModelConfigurationUpdateOperationLog(
 		Mode:                          "admin",
 		Module:                        "providers",
 		Action:                        "update_model_configuration",
-		OperationKey:                  "providers.models.update_configuration",
+		OperationKey:                  "providers.update_model_configuration",
 		ResourceType:                  "provider_model",
 		ResourceID:                    result.ID,
 		ResourceName:                  result.Model,
@@ -267,9 +268,10 @@ func recordManagementProviderModelConfigurationUpdateOperationLog(
 		DetailLevel:                   "full",
 		VisibilityScope:               "admin_only",
 		Changes: []port.OperationLogChange{{
-			Field: "configuration",
-			Label: "模型配置",
-			After: managementProviderModelConfigurationSnapshot(result),
+			Field:  "configuration",
+			Label:  "模型配置",
+			Before: managementProviderModelConfigurationSnapshot(before),
+			After:  managementProviderModelConfigurationSnapshot(result),
 		}},
 		Method:     r.Method,
 		Path:       r.URL.Path,
@@ -363,7 +365,8 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 		switch field {
 		case "configurationTemplateId":
 			value, ok := decodeManagementProviderCustomModelRequiredString(raw)
-			if !ok {
+			value = strings.TrimSpace(value)
+			if !ok || value == "" {
 				fields.Invalid = true
 				continue
 			}

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 
 import { assertDevelopmentAutoLoginConfig } from '../../config/development.js'
+import { resolveDevelopmentAutoLoginUsername } from '../../../../scripts/dev-config.mjs'
+
+assert.equal(resolveDevelopmentAutoLoginUsername(undefined), undefined)
+assert.equal(resolveDevelopmentAutoLoginUsername(''), '')
+assert.equal(resolveDevelopmentAutoLoginUsername('developer'), 'developer')
 
 assert.doesNotThrow(() => assertDevelopmentAutoLoginConfig({
   username: undefined,
@@ -22,10 +27,15 @@ assert.throws(() => assertDevelopmentAutoLoginConfig({
   nodeEnv: 'production',
   host: '127.0.0.1'
 }), /不能在 NODE_ENV=production/)
-assert.throws(() => assertDevelopmentAutoLoginConfig({
+assert.doesNotThrow(() => assertDevelopmentAutoLoginConfig({
   username: 'admin',
   nodeEnv: 'development',
   host: '0.0.0.0'
-}), /只允许后端监听回环地址/)
+}))
+assert.doesNotThrow(() => assertDevelopmentAutoLoginConfig({
+  username: 'admin',
+  nodeEnv: 'development',
+  host: '127.0.0.2'
+}))
 
 console.log('development auto login regression passed')

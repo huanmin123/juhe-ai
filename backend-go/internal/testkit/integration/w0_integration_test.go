@@ -310,16 +310,10 @@ func TestW0RedisAndAsynqSmoke(t *testing.T) {
 		return errors.New("force retry exhaustion")
 	})
 
-	serverErr := make(chan error, 1)
-	go func() {
-		serverErr <- server.Run(mux)
-	}()
-	defer func() {
-		server.Shutdown()
-		if err := <-serverErr; err != nil {
-			t.Fatalf("asynq server run: %v", err)
-		}
-	}()
+	if err := server.Start(mux); err != nil {
+		t.Fatalf("start asynq server: %v", err)
+	}
+	defer server.Shutdown()
 
 	maxRetry := 2
 	retryTask, err := client.Enqueue(ctx, "w0:retry-once", []byte(`{"version":1}`), queue.EnqueueOptions{

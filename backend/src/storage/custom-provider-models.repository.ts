@@ -459,24 +459,31 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
   return saved
 }
 
-export function deleteCustomProviderModel(id: string): boolean {
+export function deleteCustomProviderModel(
+  id: string,
+  options: { notifyCache?: boolean } = {}
+): boolean {
   const result = getBusinessDatabase()
     .prepare('DELETE FROM custom_provider_models WHERE id = ?')
     .run(id)
-  if (result.changes > 0) {
-    notifyGatewayRuntimeCacheInvalidation('custom_provider_model_deleted')
+  if (result.changes > 0 && options.notifyCache !== false) {
+    void notifyCommittedModelCacheInvalidationAsync('custom_provider_model_deleted')
   }
   return result.changes > 0
 }
 
 export async function deleteCustomProviderModelAsync(id: string): Promise<boolean> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return deleteCustomProviderModel(id)
+    const deleted = deleteCustomProviderModel(id, { notifyCache: false })
+    if (deleted) {
+      await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_deleted')
+    }
+    return deleted
   }
   const client = await getCustomProviderModelsDatabaseClient()
   const result = await client.execute(`DELETE FROM ${customProviderModelsTable(client)} WHERE id = ?`, [id])
   if (result.changes > 0) {
-    notifyGatewayRuntimeCacheInvalidation('custom_provider_model_deleted')
+    await notifyCommittedModelCacheInvalidationAsync('custom_provider_model_deleted')
   }
   return result.changes > 0
 }

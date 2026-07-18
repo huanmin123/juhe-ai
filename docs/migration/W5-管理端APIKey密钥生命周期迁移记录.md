@@ -107,6 +107,12 @@ integration smoke 已编码覆盖真实 migrations、PostgreSQL、Redis cache/st
 - 因此本次只修正 create 预校验去重边界和测试诊断脱敏，不扩展 gateway quota、authorization quota、account health、OAuth、usage/audit 或 worker 迁移范围。
 - 本机 `TestW5ManagementAPIKeyUpdatePostgresRedisSmoke` 仍因 Docker provider 不可用输出 `SKIP`；该结果只表示真实依赖测试未执行，不是 PostgreSQL / Redis / Asynq / HTTP 通过证据。
 
+## 前端路径与真实 Go Smoke
+
+- `33e940be3` 已将管理端 / 自助端 update、secret、refresh、delete 共 8 个动态 API Key ID 路径段统一改为 `encodeURIComponent`，运行时 Axios adapter regression 使用包含 `/ ? # %` 和空格的 ID 固定请求 URL；`ApiKeySummary` 不再允许完整 `key`，创建 / 刷新和独立 secret DTO 继续承载一次性明文。
+- `fdf27f442` 已把管理端 `GET /api-keys?page=1&pageSize=20&status=all` 和自助端 `GET /my-api-keys?page=1&pageSize=20&status=all` 加入 PLAN-0081 真实 Go management smoke。管理列表要求 owner 字段，自助列表禁止 owner 字段；两者校验 progressive total、字段白名单和递归敏感字段边界，仅允许列表项根级 `keyPrefix/keySuffix`。该 smoke 不请求不存在的 API Key 详情，也不触发 secret。
+- 本地 smoke regression、API 路径 regression、刷新行 regression 和前端 typecheck 已通过；显式真实 URL / Cookie / Go listener 尚未执行，因此只补前端契约证据，不构成真实 PostgreSQL / Redis / session 或生产切流通过。
+
 ## 剩余门禁
 
 满足以下条件前不得声明生产接管或删除 Node API Key 密钥接口：

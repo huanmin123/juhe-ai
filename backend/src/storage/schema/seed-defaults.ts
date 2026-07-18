@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { createApiKey, encryptJson, hashPassword, hashSecret } from '../crypto.js'
 import { HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
+import { providerModelCatalogId } from '../provider-model-catalog-id.js'
 import {
   builtInExternalIntegrationTestRateLimits,
   builtInExternalIntegrationTestSourceId,
@@ -110,7 +111,7 @@ export function seedDefaults(database: DatabaseSync): void {
     if (provider.code === 'hybrid' || provider.code === 'openai') continue
     for (const model of listProviderModelPricing(provider.code)) {
       modelStatement.run(
-        `provider_model_${provider.code}_${model.model.replace(/[^a-zA-Z0-9]+/g, '_')}`,
+        providerModelCatalogId(provider.code, model.model),
         provider.code,
         model.model,
         model.mode ?? null,
