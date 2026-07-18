@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -173,7 +174,16 @@ func main() {
 	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.SnapshotTTL, "snapshot-ttl", 0, "Redis runtime state snapshot TTL; 0 uses the service default")
 	root.AddCommand(gatewayQuotaSnapshotCommand)
 
+	os.Exit(executeCommand(root, os.Stderr))
+}
+
+func executeCommand(root *cobra.Command, stderr io.Writer) int {
+	root.SetErr(stderr)
+	root.SilenceErrors = true
+	root.SilenceUsage = true
 	if err := root.Execute(); err != nil {
-		os.Exit(1)
+		logging.WriteFatal(stderr, err)
+		return 1
 	}
+	return 0
 }
