@@ -168,6 +168,8 @@ if ($ownerLockEnabled -eq 'true') {
   if ($ownerLockEpoch -ne $manifestEpoch) { throw 'JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH does not match deploy/owner-manifest.json.' }
   $nodeVersion = node -p "require('./package.json').version"
   if ($LASTEXITCODE -ne 0 -or -not $nodeVersion) { throw 'Unable to read Node release version.' }
+  node scripts/validate-owner-manifest.mjs --require-deployment-epoch=$ownerLockEpoch --require-node-version=$nodeVersion --require-schema-version=55 deploy/owner-manifest.json
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   node scripts/run-with-owner-lock.mjs --lock-path $ownerLockPath --deployment-epoch $ownerLockEpoch --role server --version $nodeVersion -- node backend/dist/server.js
   exit $LASTEXITCODE
 }

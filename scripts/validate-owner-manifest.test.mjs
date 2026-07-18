@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import {
   assertRequiredOwners,
+  assertRequiredRelease,
   OwnerManifestValidationError,
   validateOwnerManifest
 } from './validate-owner-manifest.mjs'
@@ -16,6 +17,8 @@ const valid = {
 validateOwnerManifest(valid)
 assertRequiredOwners(valid, { management: 'node', gateway: 'node' })
 assert.throws(() => assertRequiredOwners(valid, { management: 'go' }), OwnerManifestValidationError)
+assertRequiredRelease(valid, { deploymentEpoch: 'node-production-test', nodeVersion: '0.1.0', schemaVersion: 55 })
+assert.throws(() => assertRequiredRelease(valid, { nodeVersion: '0.2.0' }), OwnerManifestValidationError)
 
 for (const invalid of [
   { ...valid, schemaVersion: 2 },

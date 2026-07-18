@@ -91,13 +91,42 @@ export function assertRequiredOwners(manifest, requiredOwners) {
   return manifest
 }
 
+export function assertRequiredRelease(manifest, requirements = {}) {
+  validateOwnerManifest(manifest)
+  if (requirements.deploymentEpoch !== undefined && manifest.deploymentEpoch !== requirements.deploymentEpoch) {
+    fail(`deploymentEpoch is ${manifest.deploymentEpoch}, expected ${requirements.deploymentEpoch}`)
+  }
+  if (requirements.nodeVersion !== undefined && manifest.release.nodeVersion !== requirements.nodeVersion) {
+    fail(`release.nodeVersion is ${manifest.release.nodeVersion}, expected ${requirements.nodeVersion}`)
+  }
+  if (requirements.schemaVersion !== undefined && manifest.release.schemaVersion !== requirements.schemaVersion) {
+    fail(`release.schemaVersion is ${manifest.release.schemaVersion}, expected ${requirements.schemaVersion}`)
+  }
+  return manifest
+}
+
 async function main() {
   const args = process.argv.slice(2)
   let requiredOwners
+  const requiredRelease = {}
   const positional = []
   for (const arg of args) {
     if (arg.startsWith('--require-owners=')) {
       requiredOwners = parseRequiredOwners(arg.slice('--require-owners='.length))
+      continue
+    }
+    if (arg.startsWith('--require-deployment-epoch=')) {
+      requiredRelease.deploymentEpoch = arg.slice('--require-deployment-epoch='.length)
+      continue
+    }
+    if (arg.startsWith('--require-node-version=')) {
+      requiredRelease.nodeVersion = arg.slice('--require-node-version='.length)
+      continue
+    }
+    if (arg.startsWith('--require-schema-version=')) {
+      const value = Number(arg.slice('--require-schema-version='.length))
+      if (!Number.isInteger(value) || value < 1) throw new OwnerManifestValidationError('required schema version must be a positive integer')
+      requiredRelease.schemaVersion = value
       continue
     }
     if (arg.startsWith('--')) throw new OwnerManifestValidationError(`unknown option: ${arg}`)
@@ -108,6 +137,7 @@ async function main() {
   }
   const manifest = await readAndValidateOwnerManifest(path.resolve(positional[0]))
   assertRequiredOwners(manifest, requiredOwners)
+  assertRequiredRelease(manifest, requiredRelease)
   process.stdout.write('Validated owner manifest: 1 file\n')
 }
 
