@@ -120,6 +120,10 @@ func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 		!strings.Contains(text, "PageDataPublisher:       accountsStaticResetPublisher") {
 		t.Fatal("server must inject the page data publisher into management groups")
 	}
+	if !strings.Contains(text, "systemAccountService := managementsystemaccounts.NewServiceWithOptions") ||
+		!strings.Contains(text, "PageDataPublisher:        accountsStaticResetPublisher") {
+		t.Fatal("server must inject the page data publisher into management system accounts")
+	}
 }
 
 type pageDataCorePublisherStub struct {
