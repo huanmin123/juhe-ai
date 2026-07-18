@@ -183,6 +183,13 @@ func TestPageDataChangePublisherValidatesConstructorAndEvents(t *testing.T) {
 		MembershipChanged: true, OrderChanged: true, FilterChanged: true, PageChanged: true,
 		OccurredAt: "2026-07-18T01:02:03.456Z",
 	}
+	optionsEvents, err := publisher.NewRangeResetEvents("accounts.options", []string{"owner-a"}, false)
+	if err != nil {
+		t.Fatalf("NewRangeResetEvents(accounts.options) error = %v", err)
+	}
+	if len(optionsEvents) != 1 || optionsEvents[0].Domain != "accounts.options" {
+		t.Fatalf("accounts.options events = %#v", optionsEvents)
+	}
 	cases := []PageDataChangeEvent{
 		func() PageDataChangeEvent { value := valid; value.EventID = " "; return value }(),
 		func() PageDataChangeEvent { value := valid; value.Domain = "accounts.runtime"; return value }(),

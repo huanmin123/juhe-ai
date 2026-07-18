@@ -3,22 +3,38 @@ package app
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 )
+
+type pageDataCacheWriterStub struct {
+	keys   []string
+	values []string
+	ttls   []time.Duration
+	err    error
+}
+
+func (s *pageDataCacheWriterStub) SetPageDataVersion(_ context.Context, key, value string, ttl time.Duration) error {
+	s.keys = append(s.keys, key)
+	s.values = append(s.values, value)
+	s.ttls = append(s.ttls, ttl)
+	return s.err
+}
 
 func TestAccountsStaticResetPublisherAdapterBuildsAndPublishesEveryEvent(t *testing.T) {
 	core := &pageDataCorePublisherStub{
 		events: []redisplatform.PageDataChangeEvent{
 			{EventID: "event-1", OwnerSystemAccountIDs: []string{"owner-a"}},
-			{EventID: "event-2", OwnerSystemAccountIDs: []string{"owner-b"}},
 		},
 	}
-	adapter := accountsStaticResetPublisherAdapter{publisher: core}
+	cache := &pageDataCacheWriterStub{}
+	adapter := accountsStaticResetPublisherAdapter{publisher: core, cache: cache, logger: slog.Default(), redisNamespace: "prod"}
 
 	if err := adapter.PublishAccountsStaticReset(t.Context(), []string{"owner-b", "owner-a"}, false); err != nil {
 		t.Fatalf("PublishAccountsStaticReset() error = %v", err)
@@ -26,8 +42,29 @@ func TestAccountsStaticResetPublisherAdapterBuildsAndPublishesEveryEvent(t *test
 	if !reflect.DeepEqual(core.ownerIDs, []string{"owner-b", "owner-a"}) || core.allScopes {
 		t.Fatalf("build input owners=%#v allScopes=%v", core.ownerIDs, core.allScopes)
 	}
-	if got, want := core.publishedIDs, []string{"event-1", "event-2"}; !reflect.DeepEqual(got, want) {
+	if got, want := core.publishedIDs, []string{"event-1", "event-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("published ids = %#v, want %#v", got, want)
+	}
+	if got, want := len(cache.keys), 2; got != want {
+		t.Fatalf("cache version writes = %d, want %d", got, want)
+	}
+	if cache.keys[0] != "juhe-ai:prod:cache-version:page_data_accounts_static" || cache.keys[1] != "juhe-ai:prod:cache-version:page_data_accounts_options" {
+		t.Fatalf("cache keys = %#v", cache.keys)
+	}
+	if cache.ttls[0] != 30*24*time.Hour || cache.ttls[1] != 30*24*time.Hour {
+		t.Fatalf("cache TTLs = %#v", cache.ttls)
+	}
+}
+
+func TestAccountsStaticResetPublisherAdapterContinuesEventsWhenCacheWriteFails(t *testing.T) {
+	cause := errors.New("cache down")
+	core := &pageDataCorePublisherStub{events: []redisplatform.PageDataChangeEvent{{EventID: "event-1"}}}
+	adapter := accountsStaticResetPublisherAdapter{publisher: core, cache: &pageDataCacheWriterStub{err: cause}, logger: slog.Default(), redisNamespace: "prod"}
+	if err := adapter.PublishAccountsStaticReset(t.Context(), []string{"owner-a"}, false); err != nil {
+		t.Fatalf("cache failure must not fail event publish: %v", err)
+	}
+	if got, want := len(core.publishedIDs), 2; got != want {
+		t.Fatalf("published events = %d, want %d", got, want)
 	}
 }
 
@@ -50,8 +87,8 @@ func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 		t.Fatalf("read server.go: %v", err)
 	}
 	text := string(source)
-	if !strings.Contains(text, "newAccountsStaticResetPublisher(stateRedis, cfg.RedisNamespace)") {
-		t.Fatal("server must construct page data publisher with the root Redis namespace")
+	if !strings.Contains(text, "newAccountsStaticResetPublisher(stateRedis, cacheRedis, cfg.RedisNamespace)") {
+		t.Fatal("server must construct page data publisher with state and cache Redis plus the root namespace")
 	}
 	if strings.Contains(text, `newAccountsStaticResetPublisher(stateRedis, cfg.RedisNamespace+":state")`) {
 		t.Fatal("server must not pass the state client namespace to the page data publisher")
@@ -67,7 +104,7 @@ type pageDataCorePublisherStub struct {
 	publishErr   error
 }
 
-func (s *pageDataCorePublisherStub) NewAccountsStaticResetEvents(ownerIDs []string, allScopes bool) ([]redisplatform.PageDataChangeEvent, error) {
+func (s *pageDataCorePublisherStub) NewRangeResetEvents(_ string, ownerIDs []string, allScopes bool) ([]redisplatform.PageDataChangeEvent, error) {
 	s.ownerIDs = append([]string(nil), ownerIDs...)
 	s.allScopes = allScopes
 	return append([]redisplatform.PageDataChangeEvent(nil), s.events...), s.buildErr

@@ -123,15 +123,23 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 	cancel()
 
+	systemAccountInvalidator, cacheRedis, closeSystemAccountInvalidator, err := newGatewaySystemAccountInvalidator(ctx, cfg, stateRedis)
+	if err != nil {
+		return err
+	}
+	defer closeSystemAccountInvalidator()
+
 	var systemAPIClientIPAllowlistVersionReader httpapi.SystemAPIClientIPAllowlistVersionReader
 	var systemAPIRateLimitSettingsVersionReader httpapi.SystemAPIRateLimitSettingsVersionReader
-	var systemAPIClientIPAllowlistCacheRedis *redisplatform.Client
-	if cfg.RedisCacheURL != "" {
+	systemAPIClientIPAllowlistCacheRedis := cacheRedis
+	if systemAPIClientIPAllowlistCacheRedis == nil && cfg.RedisCacheURL != "" {
 		systemAPIClientIPAllowlistCacheRedis, err = redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
 		if err != nil {
 			return fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
 		}
 		defer func() { _ = systemAPIClientIPAllowlistCacheRedis.Close() }()
+	}
+	if systemAPIClientIPAllowlistCacheRedis != nil {
 		systemAPIClientIPAllowlistVersionReader, err = httpapi.NewRedisSystemAPIClientIPAllowlistVersionReader(
 			systemAPIClientIPAllowlistCacheRedis,
 			cfg.RedisNamespace,
@@ -150,12 +158,6 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	systemAPIRateLimitSettingsCache := httpapi.NewSystemAPIRateLimitSettingsCache(
 		systemAPIRateLimitSettingsVersionReader,
 	)
-
-	systemAccountInvalidator, closeSystemAccountInvalidator, err := newGatewaySystemAccountInvalidator(ctx, cfg, stateRedis)
-	if err != nil {
-		return err
-	}
-	defer closeSystemAccountInvalidator()
 
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
 		cfg,
@@ -186,7 +188,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		if err != nil {
 			return fmt.Errorf("初始化账号实时并发读取器失败: %w", err)
 		}
-		publisher, err := newAccountsStaticResetPublisher(stateRedis, cfg.RedisNamespace)
+		publisher, err := newAccountsStaticResetPublisher(stateRedis, cacheRedis, cfg.RedisNamespace)
 		if err != nil {
 			return err
 		}
@@ -841,29 +843,29 @@ func newGatewaySystemAccountInvalidator(
 	ctx context.Context,
 	cfg config.Config,
 	stateRedis *redisplatform.Client,
-) (gatewayCacheInvalidator, func(), error) {
+) (gatewayCacheInvalidator, *redisplatform.Client, func(), error) {
 	closeFn := func() {}
 	if !cfg.ManagementAPIEnabled && !cfg.PublicAPIEnabled {
-		return nil, closeFn, nil
+		return nil, nil, closeFn, nil
 	}
 	if stateRedis == nil {
-		return nil, closeFn, fmt.Errorf("gateway system account invalidator requires state redis")
+		return nil, nil, closeFn, fmt.Errorf("gateway system account invalidator requires state redis")
 	}
 	var cacheRedis *redisplatform.Client
 	if cfg.RedisCacheURL == "" {
-		return nil, closeFn, fmt.Errorf("gateway invalidator requires JUHE_AI_REDIS_CACHE_URL when management or public API is enabled")
+		return nil, nil, closeFn, fmt.Errorf("gateway invalidator requires JUHE_AI_REDIS_CACHE_URL when management or public API is enabled")
 	} else {
 		var err error
 		cacheRedis, err = redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
 		if err != nil {
-			return nil, closeFn, fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
+			return nil, nil, closeFn, fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
 		}
 		closeFn = func() { _ = cacheRedis.Close() }
 		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		if err := cacheRedis.Ping(pingCtx); err != nil {
 			closeFn()
-			return nil, func() {}, fmt.Errorf("网关缓存 Redis 不可用: %w", err)
+			return nil, nil, func() {}, fmt.Errorf("网关缓存 Redis 不可用: %w", err)
 		}
 	}
 	invalidator, err := gatewaycache.NewSystemAccountInvalidator(gatewaycache.SystemAccountInvalidatorOptions{
@@ -873,9 +875,9 @@ func newGatewaySystemAccountInvalidator(
 	})
 	if err != nil {
 		closeFn()
-		return nil, func() {}, err
+		return nil, nil, func() {}, err
 	}
-	return invalidator, closeFn, nil
+	return invalidator, cacheRedis, closeFn, nil
 }
 
 func newManagementOperationLogQueue(cfg config.Config) (*queue.Client, error) {
