@@ -74,5 +74,5 @@ export function uncommittedStreamResponseBody(state: StreamPreCommitBufferState)
 }
 
 function responseCanStillFailBeforeCommit(response: StreamPreCommitResponseState): boolean {
-  return !response.headersSent && !response.writableEnded && !response.destroyed
+  return !response.writableEnded && !response.destroyed
 }

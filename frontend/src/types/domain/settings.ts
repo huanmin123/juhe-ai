@@ -9,10 +9,13 @@ export interface SystemSettings {
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
-  streamRequestTimeoutSeconds: number
-  streamIdleTimeoutSeconds: number
-  streamClientTotalWaitTimeoutSeconds: number
-  streamMaxLifetimeSeconds: number
+  textFirstResponseTimeoutSeconds: number
+  textStreamIdleTimeoutSeconds: number
+  textUncommittedAttemptMaxLifetimeSeconds: number
+  imageFirstResponseTimeoutSeconds: number
+  imageStreamIdleTimeoutSeconds: number
+  imageUncommittedAttemptMaxLifetimeSeconds: number
+  noAvailableAccountWaitTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
   operationLogRetentionDays: number

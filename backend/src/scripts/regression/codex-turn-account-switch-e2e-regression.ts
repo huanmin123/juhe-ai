@@ -110,8 +110,8 @@ async function main(): Promise<void> {
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     codexTurnRetry.clearCodexTurnRetryStateForTest()
     settingsRepository.updateSettings({
-      streamRequestTimeoutSeconds: 10,
-      streamIdleTimeoutSeconds: 10,
+      textFirstResponseTimeoutSeconds: 10,
+      textStreamIdleTimeoutSeconds: 10,
       temporaryUnschedulableRetryAttempts: 0
     })
 

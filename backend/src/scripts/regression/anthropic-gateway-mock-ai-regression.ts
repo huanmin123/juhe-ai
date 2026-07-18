@@ -93,7 +93,23 @@ const repositories = {
     input: Parameters<typeof rawRepositories.createAccount>[0],
     actor: Parameters<typeof rawRepositories.createAccount>[1]
   ) {
-    return rawRepositories.createAccount(withFixtureProfile(input), actor)
+    const fixtureInput = withFixtureProfile(input)
+    const supportedModels = Array.isArray(fixtureInput.supportedModels)
+      ? fixtureInput.supportedModels.filter((model): model is string => typeof model === 'string' && Boolean(model.trim()))
+      : []
+    const account = rawRepositories.createAccount({
+      ...fixtureInput,
+      ...(supportedModels.length > 0 && !fixtureInput.healthCheckModel
+        ? { healthCheckModel: supportedModels[0] }
+        : {})
+    }, actor)
+    rawRepositories.recordAccountHealthCheckSuccess(account.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    })
+    return account
   }
 }
 const upstreamHits: AnthropicUpstreamHit[] = []
@@ -153,13 +169,13 @@ try {
     await assertAnthropicCountTokens(baseUrl, apiKey.key)
     await assertAnthropicCountTokensUnsupportedDoesNotPoisonMessages(baseUrl, upstreamBaseUrl)
     await assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl, upstreamBaseUrl)
-    await assertAnthropicEmptyJsonContentReturnsProtocolError(baseUrl, upstreamBaseUrl)
+    await assertAnthropicEmptyJsonContentStaysOpaque(baseUrl, upstreamBaseUrl)
     await assertAnthropicModels(baseUrl, apiKey.key)
     assertAnthropicModelMappingIsOpenAIProtocolOnly(upstreamBaseUrl)
-    await assertAnthropicApiKeyPoolIsolation(baseUrl, upstreamBaseUrl)
-    await assertAnthropicResponseInspectionSwitchesAccount(baseUrl, upstreamBaseUrl)
-    await assertAnthropicJsonErrorSwitchesAccount(baseUrl, upstreamBaseUrl)
-    await assertAnthropicSseErrorSwitchesAccount(baseUrl, upstreamBaseUrl)
+    await assertAnthropicApiKeyPoolStaysOpaque(baseUrl, upstreamBaseUrl)
+    await assertAnthropicResponseInspectionStaysOpaque(baseUrl, upstreamBaseUrl)
+    await assertAnthropicJsonErrorStaysOpaque(baseUrl, upstreamBaseUrl)
+    await assertAnthropicSseErrorStaysOpaque(baseUrl, upstreamBaseUrl)
     await assertOpenAIGroupDoesNotAcceptAnthropicMessages(baseUrl, upstreamBaseUrl)
     await assertAnthropicGroupRejectsOpenAIResponses(baseUrl, apiKey.key)
     assertAnthropicSignatureDeltaIsNotOutput()
@@ -483,13 +499,9 @@ async function assertAnthropicSseRetryExhaustedErrorShape(baseUrl: string, upstr
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 503, `通用 Anthropic 客户端未提交下游时应收到 HTTP 503，实际 HTTP ${response.status}: ${text}`)
-  assert.match(response.headers.get('content-type') ?? '', /application\/json/, '通用 Anthropic 客户端应收到协议 JSON 错误')
-  const genericPayload = JSON.parse(text) as { type?: string; error?: { type?: string; message?: string; code?: string } }
-  assert.equal(genericPayload.type, 'error', '通用 Anthropic HTTP 错误顶层 type 应为 error')
-  assert.equal(genericPayload.error?.type, 'overloaded_error', '通用 Anthropic HTTP 503 应映射为 overloaded_error')
-  assert.equal(genericPayload.error?.code, 'upstream_retryable_error', '通用 Anthropic HTTP 503 应返回网关稳定可重试码')
-  assert.equal(text.includes('event: response.failed'), false, '通用 Anthropic HTTP 错误不应使用 OpenAI response.failed 事件')
+  assert.equal(response.status, 200, `通用 Anthropic 客户端应原样接收上游空 SSE，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(response.headers.get('content-type'), null, '通用 Anthropic 客户端不得替上游空 SSE 补写响应类型')
+  assert.equal(text, '', '通用 Anthropic 客户端不得把空 SSE 解释为网关协议错误')
 
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   gatewayCache.clearGatewayRuntimeCache()
@@ -785,7 +797,7 @@ async function assertAnthropicModelNotFoundDoesNotPoisonMessages(baseUrl: string
   })
 }
 
-async function assertAnthropicEmptyJsonContentReturnsProtocolError(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicEmptyJsonContentStaysOpaque(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const group = repositories.createGroup({
     name: 'Anthropic empty content 协议守卫回归分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
@@ -825,11 +837,10 @@ async function assertAnthropicEmptyJsonContentReturnsProtocolError(baseUrl: stri
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 503, `Anthropic empty content 且服务端候选耗尽时应返回可重试 HTTP 503，实际 HTTP ${response.status}: ${text}`)
-  assert.match(text, /upstream_retryable_error/, 'Anthropic empty content 最终失败应返回网关稳定可重试码')
-  assert.doesNotMatch(text, /upstream_protocol_error/, '通用 Anthropic 客户端不应收到内部上游协议分类')
-  assert.doesNotMatch(text, /"content"\s*:\s*\[\]/, '网关不应把上游 content:[] 原样暴露给下游客户端')
-  assert.equal(upstreamHits.length, 1, 'Anthropic empty content 协议守卫应命中一次 mock 上游')
+  assert.equal(response.status, 200, `通用 Anthropic 客户端应原样接收 empty content，实际 HTTP ${response.status}: ${text}`)
+  const body = JSON.parse(text) as { content?: unknown[] }
+  assert.deepEqual(body.content, [], '通用 Anthropic 客户端不得把 content:[] 解释为协议错误')
+  assert.equal(upstreamHits.length, 1, 'Anthropic empty content 透明转发应命中一次 mock 上游')
   assertAnthropicUpstreamHit(upstreamHits[0], {
     path: '/v1/messages',
     method: 'POST',
@@ -902,7 +913,7 @@ function assertAnthropicModelMappingIsOpenAIProtocolOnly(upstreamBaseUrl: string
   }, access), /当前供应商协议不支持 OpenAI 账号模型别名/, 'Anthropic Messages 账号不应允许配置 OpenAI 协议模型映射')
 }
 
-async function assertAnthropicApiKeyPoolIsolation(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicApiKeyPoolStaysOpaque(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const group = repositories.createGroup({
     name: 'Anthropic 多 Key 隔离回归分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
@@ -947,24 +958,16 @@ async function assertAnthropicApiKeyPoolIsolation(baseUrl: string, upstreamBaseU
 
   upstreamHits.length = 0
   const first = await postAnthropicMessage(baseUrl, apiKey.key, 'trigger anthropic key pool failover')
-  assert.equal(first.status, 200, `Anthropic 坏 Key 失败后应按通用策略尝试同账户后续 Key 成功，实际 HTTP ${first.status}: ${first.text}`)
+  assert.equal(first.status, 503, `通用 Anthropic 客户端应保留坏 Key 的上游状态，实际 HTTP ${first.status}: ${first.text}`)
+  assert.match(first.text, /mock key pool bad key/, '通用 Anthropic 客户端应看到坏 Key 的上游原始错误')
   assert.deepEqual(
     upstreamHits.map((hit) => hit.xApiKey),
-    ['sk-ant-keypool-bad', 'sk-ant-keypool-good'],
-    'Anthropic 多 Key 账户当前 Key 失败后，本次请求应按通用策略尝试同账户后续 Key'
-  )
-
-  upstreamHits.length = 0
-  const second = await postAnthropicMessage(baseUrl, apiKey.key, 'trigger anthropic key pool local isolation')
-  assert.equal(second.status, 200, `Anthropic 坏 Key 本地短避让后应命中同账户好 Key，实际 HTTP ${second.status}: ${second.text}`)
-  assert.deepEqual(
-    upstreamHits.map((hit) => hit.xApiKey),
-    ['sk-ant-keypool-good'],
-    'Anthropic 多 Key 账户坏 Key 被短避让后，后续请求应继续使用同账户剩余好 Key'
+    ['sk-ant-keypool-bad'],
+    '通用 Anthropic 客户端不得按上游状态轮换账户内 Key 或切换救援账户'
   )
 }
 
-async function assertAnthropicResponseInspectionSwitchesAccount(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicResponseInspectionStaysOpaque(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const group = repositories.createGroup({
     name: 'Anthropic 响应检查换号分组',
     providerCode: ANTHROPIC_PROVIDER_CODE,
@@ -1032,26 +1035,19 @@ async function assertAnthropicResponseInspectionSwitchesAccount(baseUrl: string,
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `Anthropic 响应检查换号后应返回成功，实际 HTTP ${response.status}: ${text}`)
-  assert.equal(upstreamHits.length, 2, 'Anthropic 响应检查应先命中污染账号，再服务端换号命中干净账号')
+  assert.equal(response.status, 200, `通用 Anthropic 客户端应原样接收污染响应，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(upstreamHits.length, 1, '通用 Anthropic 客户端不得按响应检查策略换号')
   assertAnthropicUpstreamHit(upstreamHits[0], {
     path: '/v1/messages',
     method: 'POST',
     bodyIncludes: 'trigger anthropic response inspection',
     xApiKey: 'sk-ant-polluted'
   })
-  assertAnthropicUpstreamHit(upstreamHits[1], {
-    path: '/v1/messages',
-    method: 'POST',
-    bodyIncludes: 'trigger anthropic response inspection',
-    xApiKey: 'sk-ant-clean'
-  })
   const body = JSON.parse(text) as { content?: Array<{ text?: string }> }
-  assert.equal(body.content?.[0]?.text, 'anthropic clean ok', `Anthropic 响应检查换号后应返回干净账号内容：${text}`)
-  assert(!text.includes('ANTHROPIC-POLLUTED'), 'Anthropic 污染账号响应不应透传给下游')
+  assert.equal(body.content?.[0]?.text, 'ANTHROPIC-POLLUTED', `通用 Anthropic 客户端应看到上游原始内容：${text}`)
 }
 
-async function assertAnthropicJsonErrorSwitchesAccount(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicJsonErrorStaysOpaque(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   createAnthropicOverloadedErrorSwitchPolicy()
   const group = repositories.createGroup({
     name: 'Anthropic JSON error 换号分组',
@@ -1108,26 +1104,20 @@ async function assertAnthropicJsonErrorSwitchesAccount(baseUrl: string, upstream
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `Anthropic JSON error 换号后应返回成功，实际 HTTP ${response.status}: ${text}`)
-  assert.equal(upstreamHits.length, 2, 'Anthropic JSON error 应先命中错误账号，再服务端换号命中干净账号')
+  assert.equal(response.status, 200, `通用 Anthropic 客户端应保留上游 JSON 响应状态，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(upstreamHits.length, 1, '通用 Anthropic 客户端不得按 JSON 错误内容换号')
   assertAnthropicUpstreamHit(upstreamHits[0], {
     path: '/v1/messages',
     method: 'POST',
     bodyIncludes: 'trigger anthropic json error inspection',
     xApiKey: 'sk-ant-error-json'
   })
-  assertAnthropicUpstreamHit(upstreamHits[1], {
-    path: '/v1/messages',
-    method: 'POST',
-    bodyIncludes: 'trigger anthropic json error inspection',
-    xApiKey: 'sk-ant-clean'
-  })
-  const body = JSON.parse(text) as { content?: Array<{ text?: string }> }
-  assert.equal(body.content?.[0]?.text, 'anthropic clean ok', `Anthropic JSON error 换号后应返回干净账号内容：${text}`)
-  assert(!text.includes('mock overloaded'), 'Anthropic JSON error 不应透传给下游')
+  const body = JSON.parse(text) as { type?: string; error?: { type?: string; message?: string } }
+  assert.equal(body.type, 'error', `通用 Anthropic 客户端应看到上游原始 JSON 错误：${text}`)
+  assert.equal(body.error?.message, 'mock overloaded', `通用 Anthropic 客户端应看到上游原始错误内容：${text}`)
 }
 
-async function assertAnthropicSseErrorSwitchesAccount(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertAnthropicSseErrorStaysOpaque(baseUrl: string, upstreamBaseUrl: string): Promise<void> {
   createAnthropicOverloadedErrorSwitchPolicy()
   const group = repositories.createGroup({
     name: 'Anthropic SSE error 换号分组',
@@ -1185,21 +1175,14 @@ async function assertAnthropicSseErrorSwitchesAccount(baseUrl: string, upstreamB
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 200, `Anthropic SSE error 换号后应返回成功，实际 HTTP ${response.status}: ${text}`)
-  assert.equal(upstreamHits.length, 2, 'Anthropic SSE error 应先命中错误账号，再服务端换号命中干净账号')
-  assert.match(text, /anthropic sse ok/, `Anthropic SSE error 换号后应返回干净 SSE 内容：${text}`)
-  assert(!text.includes('mock overloaded'), 'Anthropic SSE error 不应透传给下游')
+  assert.equal(response.status, 200, `通用 Anthropic 客户端应保留上游 SSE 状态，实际 HTTP ${response.status}: ${text}`)
+  assert.equal(upstreamHits.length, 1, '通用 Anthropic 客户端不得按 SSE 错误事件换号')
+  assert.match(text, /mock overloaded/, `通用 Anthropic 客户端应看到上游原始 SSE 错误：${text}`)
   assertAnthropicUpstreamHit(upstreamHits[0], {
     path: '/v1/messages',
     method: 'POST',
     bodyIncludes: 'trigger anthropic sse error inspection',
     xApiKey: 'sk-ant-error-sse'
-  })
-  assertAnthropicUpstreamHit(upstreamHits[1], {
-    path: '/v1/messages',
-    method: 'POST',
-    bodyIncludes: 'trigger anthropic sse error inspection',
-    xApiKey: 'sk-ant-clean-sse'
   })
 }
 
